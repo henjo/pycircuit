@@ -16,7 +16,7 @@
   </eqnarray*>
 
   where <with|mode|math|v> is a vector of length N that contains the node
-  voltages and <with|mode|math|j> is a vector of currents through the
+  voltages and <with|mode|math|j> is a vector of branch currents through
   independent voltage sources and inductors.
 
   <subsection|Solving>
@@ -95,8 +95,8 @@
 <\auxiliary>
   <\collection>
     <\associate|toc>
-      <vspace*|1fn><with|font-series|<quote|bold>|math-font-series|<quote|bold>|1<space|2spc>Circuit>
-      <datoms|<macro|x|<repeat|<arg|x>|<with|font-series|medium|<with|font-size|1|<space|0.2fn>.<space|0.2fn>>>>>|<htab|5mm>>
+      <vspace*|1fn><with|font-series|<quote|bold>|math-font-series|<quote|bold>|1<space|2spc>The
+      MNA method> <datoms|<macro|x|<repeat|<arg|x>|<with|font-series|medium|<with|font-size|1|<space|0.2fn>.<space|0.2fn>>>>>|<htab|5mm>>
       <no-break><pageref|auto-1><vspace|0.5fn>
 
       <with|par-left|<quote|1.5fn>|1.1<space|2spc>Solving
