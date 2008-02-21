@@ -1,4 +1,4 @@
-<TeXmacs|1.0.6>
+<TeXmacs|1.0.6.10>
 
 <style|article>
 
@@ -36,11 +36,11 @@
   maps the <with|mode|math|x(t)> vector to a sum of currents at a node and
   finally <with|mode|math|><with|mode|math|u(t)> is the input to the system.
 
-  If the circuit is linear or linearized equation <reference|diffeqnonlin>
+  If the circuit is linear or linearized, equation <reference|diffeqnonlin>
   can be rewritten in matrix form as:
 
   <\eqnarray*>
-    <tformat|<table|<row|<cell|C*<frac|d|dt>*x(t)+G*x(t)+u(t)=0>|<cell|>|<cell|>>>>
+    <tformat|<table|<row|<cell|C*<frac|d|dt>*x(t)+G*x(t)+u(t)=0>|<cell|>|<cell|<eq-number><label|eqlinearcircuit>>>>>
   </eqnarray*>
 
   where the matrix elements are given by:
@@ -49,8 +49,8 @@
     <tformat|<table|<row|<cell|C<rsub|j,k>=<frac|\<partial\>q<rsub|j>|\<partial\>x<rsub|k>>>|<cell|G<rsub|j,k>=<frac|\<partial\>i<rsub|j>|\<partial\>x<rsub|k>>>|<cell|>>>>
   </eqnarray*>
 
-  The <with|mode|math|C> and <with|mode|math|G> matrices can be written as a
-  matrix of 4 submatrices as:
+  The <with|mode|math|C> and <with|mode|math|G> matrices can also be written
+  as a matrix of 4 submatrices as:
 
   <\eqnarray*>
     <tformat|<table|<row|<cell|C=<matrix|<tformat|<cwith|1|1|1|1|cell-halign|r>|<cwith|1|1|1|1|cell-valign|b>|<table|<row|<cell|C<rsub|G>>|<cell|C<rsub|B>>>|<row|<cell|C<rsub|C>>|<cell|C<rsub|D>>>>>>>|<cell|G=<matrix|<tformat|<cwith|1|1|1|1|cell-halign|r>|<cwith|1|1|1|1|cell-valign|b>|<table|<row|<cell|G<rsub|G>>|<cell|G<rsub|B>>>|<row|<cell|G<rsub|C>>|<cell|G<rsub|D>>>>>>>|<cell|>>>>
@@ -74,6 +74,21 @@
 
   \;
 
+  <subsubsection|AC analysis>
+
+  In an AC analysis the stimuli the circuit is a complex sinusoid, that is\ 
+
+  <\eqnarray*>
+    <tformat|<table|<row|<cell|u(t)=Ae<rsup|j*(\<omega\>*t+\<phi\>)>>|<cell|>|<cell|>>>>
+  </eqnarray*>
+
+  The solution can be found by applying the Laplace transform to equation
+  <reference|eqlinearcircuit>:
+
+  <\eqnarray*>
+    <tformat|<table|<row|<cell|<very-large|\<cal-L\>><left|{>C*<frac|d|dt>*x(t)+G*x(t)+u(t)<right|}>=<large|<very-large|\<cal-L\>>><left|{>0<right|}>>|<cell|\<Rightarrow\>>|<cell|>>|<row|<cell|s*C*X(s)+G*X(s)+U(s)=0>|<cell|\<Rightarrow\>>|<cell|>>|<row|<cell|(G+s*C)X(s)+U(s)=0>|<cell|\<Rightarrow\>>|<cell|>>|<row|<cell|X(s)=-(G+s*C)<rsup|-1>U(s)>|<cell|>|<cell|>>>>
+  </eqnarray*>
+
   \;
 </body>
 
@@ -87,8 +102,9 @@
   <\collection>
     <associate|auto-1|<tuple|1|?>>
     <associate|auto-2|<tuple|1.1|?>>
-    <associate|auto-3|<tuple|1.2|?>>
+    <associate|auto-3|<tuple|1.1.1|?>>
     <associate|diffeqnonlin|<tuple|1|?>>
+    <associate|eqlinearcircuit|<tuple|2|?>>
   </collection>
 </references>
 
