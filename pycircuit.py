@@ -2,9 +2,10 @@ import unittest
 from numpy import *
 import pylab
 import sympy
+import result
 from sympy import Symbol, Matrix, symbols, simplify
 
-class Node:
+class Node(object):
     """A node is a region in an electric circuit where the voltage is the same.
     
     A node can have a name
@@ -15,7 +16,7 @@ class Node:
     def __repr__(self):
         return self.__class__.__name__ + '(\'' + self.name + '\')'
 
-class Branch:
+class Branch(object):
     """A branch connects two nodes.
     
     A branch is used in modified nodal analysis to describe components that defines a voltage between
@@ -39,12 +40,12 @@ class Branch:
         self.minus = minus
         self.name = name
 
-class Terminal:
+class Terminal(object):
     def __init__(self, name):
         """A Terminal connects the nodes in a Circuit to nodes in superior hierarchy levels"""
         self.name = name
 
-class Circuit:
+class Circuit(object):
     """The circuit class describes a full circuit, subcircuit or a single component. 
 
     It contains a list of nodes,terminals and parameters.
@@ -60,6 +61,7 @@ class Circuit:
     nodenames  -- A dictionary that maps a local node name to the node object in nodes. If the node is
                   connnected to superior hierarchy levels through a terminal the terminal name must
                   be the same as the local node name
+    
 
 
     >>> circuit=Circuit(terminals=["plus", "minus"])
@@ -69,11 +71,13 @@ class Circuit:
     
     """
     def __init__(self, terminals=[]):
-        self.nodes=[]
-        self.terminals=[]
-        self.nodenames={}
-        self.branches=[]
-        self.parameters={}
+        self.nodes = []
+        self.terminals = []
+        self.nodenames = {}
+        self.branches = []
+        self.parameters = {}
+        self.x = {}
+        self.resultset = InternalResultSet()
 
         map(self.addTerminal, terminals)
         
@@ -105,6 +109,20 @@ class Circuit:
         """
         return self.nodenames[name]
 
+    def getNodeName(self, node):
+        """Find the name of a node
+        
+        >>> c = Circuit()
+        >>> n1 = c.addNode("n1")
+        >>> c.getNodeName(n1)
+        'n1'
+
+        """
+        
+        for k, v in self.nodenames.items():
+            if v == node:
+                return k
+        
     def addTerminal(self, name):
         """Add a new terminal to the circuit and create a node connected to it
 
@@ -167,7 +185,60 @@ class Circuit:
         G=removeRowCol(G, ignd)
         U=removeRowCol(U, ignd)
 
+        # Calculate state vector
         return linalg.solve(G,-U)
+
+        return self.x['dc']
+
+    def rundc(self):
+        """Run a DC analysis and store the results
+
+        >>> c = SubCircuit()
+        >>> n1 = c.addNode('net1')
+        >>> c['vs'] = VS(n1, gnd, v=1.5)
+        >>> c['R'] = R(n1, gnd, r=1e3)
+        >>> c.rundc()
+        >>> c.getResult('dc').getSignalNames()
+        ['net1']
+        >>> c.getResult('dc').getSignal('net1')
+        1.5
+
+        """
+        x = self.solvedc()
+        
+        result = InternalResult()
+        
+        for xvalue, node in zip(x[:len(self.nodes)][0], self.nodes):
+            result.storeSignal(self.getNodeName(node), xvalue)
+        for i, xvalue, branch in enumerate(zip(x[len(self.nodes):], self.branches)):
+            result.storeSignal('i' + str(i), xvalue)
+        
+        self.resultset.storeResult('dc', result)
+
+    def getResult(self, name):
+        return self.resultset.getResult(name)
+
+    def nameStateVector(self, x, analysis=''):
+        """Map state variables with names and return the state variables in a dictionary keyed by the names
+
+        >>> c = SubCircuit()
+        >>> n1=c.addNode('net1')
+        >>> c['is'] = IS(gnd, n1, i=1e-3)
+        >>> c['R'] = R(n1, gnd, r=1e3)
+        >>> c.nameStateVector(c.solvedc())
+        {'net1': 1.0}
+
+        >>> 
+
+        """
+        result = {}
+        for xvalue, node in zip(x[:len(self.nodes)][0], self.nodes):
+            result[self.getNodeName(node)] = xvalue
+
+        for i, xvalue, branch in enumerate(zip(x[len(self.nodes):], self.branches)):
+            result['i' + analysis + str(i) + ')'] = xvalue            
+
+        return result
 
     def solveac(self, freqs):
         N=len(self.nodes)+len(self.branches)
@@ -205,10 +276,34 @@ class Circuit:
         G=sympy.Matrix(G)
         C=sympy.Matrix(C)
         U=sympy.Matrix(U)
-        outputvariables = map(Symbol, ['v'+node.name for node in self.nodes if not node is gnd]+
-                              ["I%d"%i for i in range(len(self.branches))])
-        return sympy.solve_linear_system((Symbol('s')*C+G).row_join(-U), outputvariables)
+        outputvariables = map(Symbol, map(str, range(size(G,0))))
+        resultdict =  sympy.solve_linear_system((Symbol('s')*C+G).row_join(-U), outputvariables)
+        return array([[resultdict[var] for var in outputvariables]]).T
 
+    def runsymbolic(self):
+        """Run a symbolic analysis with SymPy and store the results
+
+        >>> c = SubCircuit()
+        >>> n1 = c.addNode('net1')
+        >>> c['vs'] = VS(n1, gnd, v=Symbol('V'))
+        >>> c['R'] = R(n1, gnd, r=Symbol('R'))
+        >>> c.runsymbolic()
+        >>> c.getResult('symbolic').getSignal('net1')
+        V
+        >>> c.getResult('symbolic').getSignal('i0')
+        -V/R
+
+        """
+        x = self.solvesymbolic()
+        result = InternalResult()
+        
+        for xvalue, node in zip(x[:len(self.nodes),0], self.nodes):
+            result.storeSignal(self.getNodeName(node), xvalue)
+        for i, xvalue, branch in enumerate(zip(x[len(self.nodes):,0], self.branches)):
+            result.storeSignal('i' + str(i), xvalue)
+
+        self.resultset.storeResult('symbolic', result)
+        
 class SubCircuit(Circuit):
     """
     SubCircuit is container for circuits.
@@ -240,7 +335,7 @@ class SubCircuit(Circuit):
     def getNode(self, name):
         """Find a node by name.
 
-        The name can be a hierachical name and the notation is '/I1/I2/net1' for
+        The name can be a hierachical name and the notation is 'I1.I2.net1' for
         a net net1 in instance I2 of instance I1
         
         >>> c = Circuit()
@@ -252,17 +347,40 @@ class SubCircuit(Circuit):
         >>> c2 = SubCircuit()
         >>> c1['I1'] = c2
         >>> n1 = c2.addNode("net1")
-        >>> c1.getNode('/I1/net1')
+        >>> c1.getNode('I1.net1')
         Node('net1')
         
         """
-        hierlevels = [part for part in name.split('/') if part != '']
+        hierlevels = [part for part in name.split('.')]
             
         if len(hierlevels)==1:
             return self.nodenames[hierlevels[0]]
         else:
-            return self.elements[hierlevels[0]].getNode('/'.join(['']+hierlevels[1:]))
+            return self.elements[hierlevels[0]].getNode('.'.join(hierlevels[1:]))
 
+    def getNodeName(self, node):
+        """Find the name of a node
+        
+        >>> c1 = SubCircuit()
+        >>> c2 = SubCircuit()
+        >>> c1['I1'] = c2
+        >>> n1 = c2.addNode("net1")
+        >>> c1.getNodeName(n1)
+        'I1.net1'
+
+        """
+
+        ## First search among the local nodes
+        name = Circuit.getNodeName(self, node)
+        if name != None:
+            return name
+        
+        ## Then search in the circuit elements
+        for instname, element in self.elements.items():
+            name =  element.getNodeName(node)
+            if name != None:
+                return instname + '.' + name
+        
     def updateNodeMap(self):
         """Update the elementnodemap attribute"""
 
@@ -471,7 +589,29 @@ class VCCS(Circuit):
                       [gm , -gm, 0.0, 0.0],
                       [-gm,  gm, 0.0, 0.0]])
 
+class InternalResultSet(result.ResultSet):
+    """ResultSet implementation where the results are stored in memory in a dictionary"""
+    def __init__(self, results = {}):
+        self.results = results
+        
+    def getResultNames(self):
+        return self.results.keys()
 
+    def getResult(self, name):
+        return self.results[name]
+
+    def storeResult(self, name, result):
+        self.results[name] = result
+
+class InternalResult(result.Result):
+    def __init__(self, signals = {}):
+        self.signals = signals
+    
+    def getSignalNames(self): return self.signals.keys()
+    def getSignal(self, name): return self.signals[name]
+    
+    def storeSignal(self, name, signal):
+        self.signals[name] = signal
 
 gnd = Node("gnd")
 
@@ -479,6 +619,7 @@ def removeRowCol(A, n):
     for axis in range(len(A.shape)):
         A=delete(A, [n], axis=axis)
     return A
+
 
 if __name__ == "__main__":
     import doctest
