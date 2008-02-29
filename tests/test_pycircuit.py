@@ -1,3 +1,5 @@
+from numpy import *
+from scipy import *
 from pycircuit import *
 
 class SimpleTests(unittest.TestCase):
@@ -16,8 +18,6 @@ class SimpleTests(unittest.TestCase):
         U = cir.U()
         self.assertEqual(G[0,0], 2/res)
         self.assertEqual(G[0,1], -2/res)
-
-        print cir.solvedc()
 
     def testrc(self):
         cir=SubCircuit()
@@ -64,8 +64,7 @@ class SymbolicTests(unittest.TestCase):
         cir['VS']=VS(net1, gnd, v0)
 
         res = cir.solvesymbolic()
-    
-        self.assertEqual(simplify(res[Symbol('vnet2')]-v0*R2/(R1+R2)), 0.0)
+        self.assertEqual(simplify(res[1,0]-v0*R2/(R1+R2)), 0.0)
 
     def testRCfilter(self):
         
@@ -81,9 +80,7 @@ class SymbolicTests(unittest.TestCase):
         cir['VS']=VS(net1, gnd, v0)
 
         res = cir.solvesymbolic()
-        self.assertEqual(res[Symbol('vnet2')]-v0/(1+Symbol('s')*R1*C1), 0)
-        print res
+        self.assertEqual(res[1,0]-v0/(1+Symbol('s')*R1*C1), 0)
 
 if __name__ == "__main__":
     unittest.main()
-

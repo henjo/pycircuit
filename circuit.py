@@ -1,9 +1,8 @@
 import unittest
-from numpy import *
+import numpy
+from numpy import array, delete, linalg, size, zeros, concatenate, pi
 import pylab
 import sympy
-import result
-from sympy import Symbol, Matrix, symbols, simplify
 
 class Node(object):
     """A node is a region in an electric circuit where the voltage is the same.
@@ -40,10 +39,8 @@ class Branch(object):
         self.minus = minus
         self.name = name
 
-class Terminal(object):
-    def __init__(self, name):
-        """A Terminal connects the nodes in a Circuit to nodes in superior hierarchy levels"""
-        self.name = name
+### Default reference node
+gnd = Node("gnd")
 
 class Circuit(object):
     """The circuit class describes a full circuit, subcircuit or a single component. 
@@ -56,7 +53,7 @@ class Circuit(object):
     nodes      -- A list that contains Node objects. If the circuit does not contain any internal nodes
                   the length is the same as the number of terminals.
     branches   -- A list of Branch objects. The solver will solve for the currents through the branches.
-                  terminals  A list that contains Terminal objects
+    terminals  -- A list that contains terminal names
     parameters -- A dictionary of parameter values keyed by the parameter name
     nodenames  -- A dictionary that maps a local node name to the node object in nodes. If the node is
                   connnected to superior hierarchy levels through a terminal the terminal name must
@@ -64,22 +61,17 @@ class Circuit(object):
     
 
 
-    >>> circuit=Circuit(terminals=["plus", "minus"])
-    >>> circuit.terminals
-    ['plus', 'minus']
-    
-    
     """
-    def __init__(self, terminals=[]):
+    terminals = []
+    def __init__(self):
         self.nodes = []
-        self.terminals = []
         self.nodenames = {}
         self.branches = []
         self.parameters = {}
         self.x = {}
-        self.resultset = InternalResultSet()
 
-        map(self.addTerminal, terminals)
+        for terminal in self.terminals:
+            self.addNode(terminal)
         
     def addNode(self, name=None):
         """Create an internal node in the circuit and return the new node
@@ -97,6 +89,10 @@ class Circuit(object):
         if name != None:
             self.nodenames[name] = newnode
         return newnode
+
+    def getNodeIndex(self, node):
+        """Get row in the x vector of a node"""
+        return self.nodes.index(node)
 
     def getNode(self, name):
         """Find a node by name.
@@ -123,33 +119,9 @@ class Circuit(object):
             if v == node:
                 return k
         
-    def addTerminal(self, name):
-        """Add a new terminal to the circuit and create a node connected to it
-
-        >>> circuit=Circuit()
-        >>> circuit.terminals
-        []
-        >>> circuit.addTerminal("plus")
-        >>> circuit.terminals
-        ['plus']
-        >>> circuit.nodenames["plus"]
-        Node('plus')
-        
-        """
-        self.terminals.append(name)
-        self.addNode(name)
-
     def connectNode(self, terminal, node):
         """Connect an external node to a terminal
 
-        >>> circuit=Circuit(terminals=["plus", "minus"])
-        >>> node=Node("outsidenode")
-        >>> circuit.nodenames["plus"]
-        Node('plus')
-        >>> circuit.connectNode("plus", node)
-        >>> circuit.nodenames["plus"]
-        Node('outsidenode')
-        
         """
         if node != None:
             if not terminal in self.terminals:
@@ -158,65 +130,21 @@ class Circuit(object):
             self.nodes.append(node)
             self.nodenames[terminal] = node
 
+    def n(self):
+        """Return size of x vector"""
+        return len(self.nodes) + len(self.branches)
+
     def G(self, x):
         """Calculate the G ((trans)conductance) matrix of the circuit given the x-vector"""
-        N=len(self.nodes)+len(self.branches)
-        return zeros((N,N), dtype=object)
+        return zeros((self.n(), self.n()), dtype=object)
 
     def C(self, x):
-        """Calculate the C ((trans)capacitance) matrix of the circuit given the x-vector"""
-        N=len(self.nodes)+len(self.branches)
-        return zeros((N,N), dtype=object)
+        """Calculate the C (transcapacitance) matrix of the circuit given the x-vector"""
+        return zeros((self.n(), self.n()), dtype=object)
 
-    def U(self):
-        """Calculate the U (circuit input) column-vector the circuit"""
-        N=len(self.nodes)+len(self.branches)
-        return zeros((N,1), dtype=object)
-
-    def solvedc(self):
-        N=len(self.nodes)+len(self.branches)
-
-        G=self.G(zeros((N,1)))
-        U=self.U()
-
-        ## Refer the voltages to the gnd node by removing
-        ## the rows and columns that corresponds to this node
-        ignd = self.nodes.index(gnd)
-        G=removeRowCol(G, ignd)
-        U=removeRowCol(U, ignd)
-
-        # Calculate state vector
-        return linalg.solve(G,-U)
-
-        return self.x['dc']
-
-    def rundc(self):
-        """Run a DC analysis and store the results
-
-        >>> c = SubCircuit()
-        >>> n1 = c.addNode('net1')
-        >>> c['vs'] = VS(n1, gnd, v=1.5)
-        >>> c['R'] = R(n1, gnd, r=1e3)
-        >>> c.rundc()
-        >>> c.getResult('dc').getSignalNames()
-        ['net1']
-        >>> c.getResult('dc').getSignal('net1')
-        1.5
-
-        """
-        x = self.solvedc()
-        
-        result = InternalResult()
-        
-        for xvalue, node in zip(x[:len(self.nodes)][0], self.nodes):
-            result.storeSignal(self.getNodeName(node), xvalue)
-        for i, xvalue, branch in enumerate(zip(x[len(self.nodes):], self.branches)):
-            result.storeSignal('i' + str(i), xvalue)
-        
-        self.resultset.storeResult('dc', result)
-
-    def getResult(self, name):
-        return self.resultset.getResult(name)
+    def U(self, t=0.0):
+        """Calculate the U (circuit input) column-vector the circuit at time t"""
+        return zeros((self.n(), 1), dtype=object)
 
     def nameStateVector(self, x, analysis=''):
         """Map state variables with names and return the state variables in a dictionary keyed by the names
@@ -225,7 +153,7 @@ class Circuit(object):
         >>> n1=c.addNode('net1')
         >>> c['is'] = IS(gnd, n1, i=1e-3)
         >>> c['R'] = R(n1, gnd, r=1e3)
-        >>> c.nameStateVector(c.solvedc())
+        >>> c.nameStateVector(array([[1.0]]))
         {'net1': 1.0}
 
         >>> 
@@ -240,69 +168,6 @@ class Circuit(object):
 
         return result
 
-    def solveac(self, freqs):
-        N=len(self.nodes)+len(self.branches)
-
-        G=self.G(zeros((N,1)))
-        C=self.C(zeros((N,1)))
-        U=self.U()
-
-        ## Refer the voltages to the gnd node by removing
-        ## the rows and columns that corresponds to this node
-        ignd = self.nodes.index(gnd)
-        G=removeRowCol(G, ignd).astype(complex)
-        C=removeRowCol(C, ignd).astype(complex)
-        U=removeRowCol(U, ignd).astype(complex)
-
-        out = []
-        for f in freqs:
-            out.append(linalg.solve(2j*pi*f*C + G, U))
-        return out
-
-    def solvesymbolic(self):
-        N=len(self.nodes)+len(self.branches)
-
-        G=self.G(zeros((N,1)))
-        C=self.C(zeros((N,1)))
-        U=self.U()
-
-        ## Refer the voltages to the gnd node by removing
-        ## the rows and columns that corresponds to this node
-        ignd = self.nodes.index(gnd)
-        G=removeRowCol(G, ignd)
-        C=removeRowCol(C, ignd)
-        U=removeRowCol(U, ignd)
-
-        G=sympy.Matrix(G)
-        C=sympy.Matrix(C)
-        U=sympy.Matrix(U)
-        outputvariables = map(Symbol, map(str, range(size(G,0))))
-        resultdict =  sympy.solve_linear_system((Symbol('s')*C+G).row_join(-U), outputvariables)
-        return array([[resultdict[var] for var in outputvariables]]).T
-
-    def runsymbolic(self):
-        """Run a symbolic analysis with SymPy and store the results
-
-        >>> c = SubCircuit()
-        >>> n1 = c.addNode('net1')
-        >>> c['vs'] = VS(n1, gnd, v=Symbol('V'))
-        >>> c['R'] = R(n1, gnd, r=Symbol('R'))
-        >>> c.runsymbolic()
-        >>> c.getResult('symbolic').getSignal('net1')
-        V
-        >>> c.getResult('symbolic').getSignal('i0')
-        -V/R
-
-        """
-        x = self.solvesymbolic()
-        result = InternalResult()
-        
-        for xvalue, node in zip(x[:len(self.nodes),0], self.nodes):
-            result.storeSignal(self.getNodeName(node), xvalue)
-        for i, xvalue, branch in enumerate(zip(x[len(self.nodes):,0], self.branches)):
-            result.storeSignal('i' + str(i), xvalue)
-
-        self.resultset.storeResult('symbolic', result)
         
 class SubCircuit(Circuit):
     """
@@ -331,6 +196,10 @@ class SubCircuit(Circuit):
         self.branches.extend(element.branches)
 
         self.updateNodeMap()
+
+    def __getitem__(self, instancename):
+        """Get instance"""
+        return self.elements[instancename]
 
     def getNode(self, name):
         """Find a node by name.
@@ -366,10 +235,14 @@ class SubCircuit(Circuit):
         >>> c1['I1'] = c2
         >>> n1 = c2.addNode("net1")
         >>> c1.getNodeName(n1)
-        'I1.net1'
+        'net1'
 
         """
 
+        ## Use name of node object if present
+        if node.name != None:
+            return node.name
+        
         ## First search among the local nodes
         name = Circuit.getNodeName(self, node)
         if name != None:
@@ -390,8 +263,8 @@ class SubCircuit(Circuit):
                                             [self.branches.index(branch)+len(self.nodes) for branch in element.branches]
 
     def G(self, x):
-        N=len(self.nodes)+len(self.branches)
-        G=zeros((N,N), dtype=object)
+        n=self.n()
+        G=zeros((n,n), dtype=object)
 
         for instance,element in self.elements.items():
             nodemap = self.elementnodemap[instance]
@@ -400,23 +273,23 @@ class SubCircuit(Circuit):
         return G
 
     def C(self, x):
-        N=len(self.nodes)+len(self.branches)
-        C=zeros((N,N), dtype=object)
+        n=self.n()
+        C=zeros((n,n), dtype=object)
 
         for instance,element in self.elements.items():
             nodemap = self.elementnodemap[instance]
             C[[[i] for i in nodemap], nodemap] += element.C(x)
         return C
 
-    def U(self):
-        N=len(self.nodes)+len(self.branches)
-        U=zeros((N,1), dtype=object)
+    def U(self, t=0.0):
+        n=self.n()
+        U=zeros((n,1), dtype=object)
 
         self.updateNodeMap()
         
         for instance,element in self.elements.items():
             nodemap = self.elementnodemap[instance]
-            U[nodemap] += element.U()
+            U[nodemap] += element.U(t)
         return U
 
 class R(Circuit):
@@ -428,116 +301,162 @@ class R(Circuit):
     >>> c.G(0)
     array([[0.001, -0.001],
            [-0.001, 0.001]], dtype=object)
-    
+    >>> c = SubCircuit()
+    >>> n2=c.addNode('2')
+    >>> c['R'] = R(n1, n2, r=1e3)
+    >>> c.G(0)
+    array([[0.001, -0.001],
+           [-0.001, 0.001]], dtype=object)
+
     """
+    terminals = ['plus', 'minus']
+
     def __init__(self, plus, minus, r=1e3):
-        Circuit.__init__(self, terminals=['plus', 'minus'])
+        Circuit.__init__(self, )
         self.connectNode('plus', plus)
         self.connectNode('minus', minus)
         self.parameters['r']=r
         
     def G(self, x):
-        return array([[1/self.parameters['r'] , -1/self.parameters['r']],
-                       [-1/self.parameters['r'], 1/self.parameters['r']] ])
+        return array([[1/self.parameters['r'], -1/self.parameters['r']],
+                      [-1/self.parameters['r'], 1/self.parameters['r']]], dtype=object)
 
 class C(Circuit):
-    """Capacitor"""
-    def __init__(self, plus, minus, C=0.0):
-        Circuit.__init__(self, terminals=['plus', 'minus'])
+    """Capacitor
+
+    >>> c = SubCircuit()
+    >>> n1=c.addNode('1')
+    >>> c['C'] = C(n1, gnd, c=1e-12)
+    >>> c.G(0)
+    array([[0, 0],
+           [0, 0]], dtype=object)
+    >>> c.C(0)
+    array([[1e-12, -1e+12],
+           [-1e+12, 1e+12]], dtype=object)
+
+    """
+
+    terminals = ['plus', 'minus']    
+    def __init__(self, plus, minus, c=0.0):
+        Circuit.__init__(self, )
         self.connectNode('plus', plus)
         self.connectNode('minus', minus)
-        self.parameters['C']=C
-        self.terminals += (Terminal("plus"), Terminal("minus"))
-        
+        self.parameters['c'] = c
+
     def C(self, x):
-        return array([[self.parameters['C'] , -self.parameters['C']],
-                       [-self.parameters['C'], self.parameters['C']] ])
+        return array([[self.parameters['c'], -1/self.parameters['c']],
+                      [-1/self.parameters['c'], 1/self.parameters['c']]])
 
 class L(Circuit):
-    """Inductor"""
+    """Inductor
+
+    >>> c = SubCircuit()
+    >>> n1=c.addNode('1')
+    >>> c['C'] = L(n1, gnd, L=1e-9)
+    >>> c.G(0)
+    array([[0.0, 0.0, 1.0],
+           [0.0, 0.0, -1.0],
+           [1.0, -1.0, 0.0]], dtype=object)
+    >>> c.C(0)
+    array([[0, 0, 0],
+           [0, 0, 0],
+           [0, 0, 1e-09]], dtype=object)
+    """
+    terminals = ['plus', 'minus']    
+
+    _G = array([[0.0 , 0.0, 1.0],
+                [0.0 , 0.0, -1.0],
+                [1.0 , -1.0, 0.0]])
     def __init__(self, plus, minus, L=0.0):
         Circuit.__init__(self)
-        self.nodes.append(plus)
-        self.nodes.append(minus)
+        self.connectNode('plus', plus)
+        self.connectNode('minus', minus)
         self.branches.append(Branch(plus, minus))
         self.parameters['L']=L
-        self.terminals += (Terminal("plus"), Terminal("minus"))
         
     def G(self, x):
-        return array([[0.0 , 0.0, 1.0],
-                       [0.0 , 0.0, -1.0],
-                       [1.0 , -1.0, 0.0]])
+        return self._G
     def C(self, x):
-        return array([[0.0, 0.0, 0.0],
-                       [0.0, 0.0, 0.0],
-                       [0.0, 0.0, self.parameters['L']]])
+        n = self.n()
+        C = zeros((n,n), dtype=object)
+        C[-1,-1] = self.parameters['L']
+        return C
 
 class VS(Circuit):
     """Independent voltage source
 
+    >>> from analysis import DC
     >>> c = SubCircuit()
     >>> n1=c.addNode('1')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
     >>> c['R'] = R(n1, gnd, r=1e3)
-    >>> c.solvedc()
+    >>> DC(c).solve(refnode=gnd)
     array([[ 1.5   ],
+           [ 0.    ],
            [-0.0015]])
     
     """
+    terminals = ['plus', 'minus']
+
     def __init__(self, plus=None, minus=None, v=0.0):
-        Circuit.__init__(self, terminals=['plus', 'minus'])
+        Circuit.__init__(self)
         self.connectNode('plus', plus)
         self.connectNode('minus', minus)
         self.branches.append(Branch(plus, minus))
         self.parameters['v']=v
-        self.terminals += (Terminal("plus"), Terminal("minus"))
-        
+
     def G(self, x):
         return array([[0.0 , 0.0, 1.0],
                        [0.0 , 0.0, -1.0],
-                       [1.0 , -1.0, 0.0]])
+                       [1.0 , -1.0, 0.0]], dtype=object)
 
-    def U(self):
-        return array([[0.0, 0.0, -self.parameters['v']]]).T
+    def U(self, t=0.0):
+        return array([[0.0, 0.0, -self.parameters['v']]], dtype=object).T
 
 class IS(Circuit):
     """Independent current source
 
+    >>> from analysis import DC, gnd as gnd2
     >>> c = SubCircuit()
     >>> n1=c.addNode('1')
     >>> c['is'] = IS(gnd, n1, i=1e-3)
     >>> c['R'] = R(n1, gnd, r=1e3)
-    >>> c.solvedc()
-    array([[ 1.]])
+    >>> DC(c).solve(refnode=gnd)
+    array([[ 1.],
+           [ 0.]])
     
     """
+    terminals = ['plus', 'minus']
+
     def __init__(self, plus, minus, i=0.0):
-        Circuit.__init__(self, terminals=['plus', 'minus'])
+        Circuit.__init__(self)
         self.connectNode('plus', plus)
         self.connectNode('minus', minus)
         self.parameters['i']=i
-        self.terminals += (Terminal("plus"), Terminal("minus"))
         
-    def U(self):
+    def U(self, t=0.0):
         return array([[self.parameters['i'], -self.parameters['i']]]).T
 
 class VCVS(Circuit):
     """Voltage controlled voltage source
 
+    >>> from analysis import DC
     >>> c = SubCircuit()
     >>> n1=c.addNode('1')
     >>> n2=c.addNode('2')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
     >>> c['vcvs'] = VCVS(n1, gnd, n2, gnd, g=2.0)
     >>> c['rl'] = R(n2, gnd, r=1e3)
-    >>> c.solvedc()
+    >>> DC(c).solve(refnode=gnd)
     array([[ 1.5  ],
            [ 3.   ],
            [ 0.   ],
+           [ 0.   ],
            [ 0.003]])
     """
+    terminals = ('inp', 'inn', 'outp', 'outn')
     def __init__(self, inp, inn, outp, outn, g=1.0):
-        Circuit.__init__(self, terminals=['inp','inn','outp','outn'])
+        Circuit.__init__(self)
 
         self.connectNode('inp', inp)
         self.connectNode('inn', inn)
@@ -547,7 +466,6 @@ class VCVS(Circuit):
         self.branches.append(Branch(outp, outn))
 
         self.parameters['g']=g
-        self.terminals += (Terminal("inp"), Terminal("inn"), Terminal("outp"), Terminal("outn"))
         
     def G(self, x):
         return array([[0.0, 0.0, 0.0, 0.0, 0.0],
@@ -559,20 +477,24 @@ class VCVS(Circuit):
 class VCCS(Circuit):
     """Voltage controlled current source
 
+    >>> from analysis import DC
     >>> c = SubCircuit()
     >>> n1=c.addNode('1')
     >>> n2=c.addNode('2')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
     >>> c['vccs'] = VCCS(n1, gnd, n2, gnd, gm=1e-3)
     >>> c['rl'] = R(n2, gnd, r=1e3)
-    >>> c.solvedc()
+    >>> DC(c).solve(refnode=gnd)
     array([[ 1.5],
            [-1.5],
+           [ 0. ],
            [ 0. ]])
 
     """
+    terminals = ['inp', 'inn', 'outp', 'outn']
+    
     def __init__(self, inp, inn, outp, outn, gm=1e-3):
-        Circuit.__init__(self, terminals=['inp','inn','outp','outn'])
+        Circuit.__init__(self)
 
         self.connectNode('inp', inp)
         self.connectNode('inn', inn)
@@ -580,7 +502,6 @@ class VCCS(Circuit):
         self.connectNode('outn', outn)
 
         self.parameters['gm']=gm
-        self.terminals += (Terminal("inp"), Terminal("inn"), Terminal("outp"), Terminal("outn"))
         
     def G(self, x):
         gm=self.parameters['gm']
@@ -588,38 +509,6 @@ class VCCS(Circuit):
                       [0.0, 0.0, 0.0, 0.0],
                       [gm , -gm, 0.0, 0.0],
                       [-gm,  gm, 0.0, 0.0]])
-
-class InternalResultSet(result.ResultSet):
-    """ResultSet implementation where the results are stored in memory in a dictionary"""
-    def __init__(self, results = {}):
-        self.results = results
-        
-    def getResultNames(self):
-        return self.results.keys()
-
-    def getResult(self, name):
-        return self.results[name]
-
-    def storeResult(self, name, result):
-        self.results[name] = result
-
-class InternalResult(result.Result):
-    def __init__(self, signals = {}):
-        self.signals = signals
-    
-    def getSignalNames(self): return self.signals.keys()
-    def getSignal(self, name): return self.signals[name]
-    
-    def storeSignal(self, name, signal):
-        self.signals[name] = signal
-
-gnd = Node("gnd")
-
-def removeRowCol(A, n):
-    for axis in range(len(A.shape)):
-        A=delete(A, [n], axis=axis)
-    return A
-
 
 if __name__ == "__main__":
     import doctest
