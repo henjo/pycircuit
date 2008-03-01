@@ -30,6 +30,7 @@ class Analysis(object):
             result.storeSignal('i' + str(i), xvalue)
 
         self.result = result
+        return result
     
     def getResult(self):
         return self.result
@@ -44,7 +45,7 @@ class DC(Analysis):
     >>> c['vs'] = VS(n1, gnd, v=1.5)
     >>> c['R'] = R(n1, gnd, r=1e3)
     >>> dc = DC(c)
-    >>> dc.run()
+    >>> res = dc.run()
     >>> dc.result.getSignalNames()
     ['i0', 'gnd', 'net1']
     >>> dc.result.getSignal('net1')
@@ -80,7 +81,7 @@ class AC(Analysis):
     >>> c['R'] = R(n1, gnd, r=1e3)
     >>> c['C'] = C(n1, gnd, c=1e-12)
     >>> ac = AC(c)
-    >>> ac.run(freqs=array([1e6, 2e6]))
+    >>> res = ac.run(freqs=array([1e6, 2e6]))
     >>> ac.result.getSignalNames()
     ['i0', 'gnd', 'net1']
     >>> ac.result.getSignal('net1')
@@ -96,11 +97,14 @@ class AC(Analysis):
         for xvalue, node in zip(x[:len(nodes)], nodes):
             wave = Waveform(freqs, xvalue)
             result.storeSignal(self.c.getNodeName(node), wave)
-        for i, data in enumerate(zip(x[len(nodes):, 0], self.c.branches)):
+        for i, data in enumerate(zip(x[len(nodes):], self.c.branches)):
             xvalue, branch = data
-            result.storeSignal('i' + str(i), xvalue)
+            wave = Waveform(freqs, xvalue)
+            result.storeSignal('i' + str(i),wave)
 
         self.result = result
+
+        return result
 
     def solve(self, freqs, refnode=gnd):
         n=self.c.n()

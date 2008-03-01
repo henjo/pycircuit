@@ -39,6 +39,9 @@ class Branch(object):
         self.minus = minus
         self.name = name
 
+    def __repr__(self):
+        return 'Branch('+str(self.plus)+','+str(self.minus)+')'
+
 ### Default reference node
 gnd = Node("gnd")
 
@@ -58,12 +61,10 @@ class Circuit(object):
     nodenames  -- A dictionary that maps a local node name to the node object in nodes. If the node is
                   connnected to superior hierarchy levels through a terminal the terminal name must
                   be the same as the local node name
-    
-
 
     """
     terminals = []
-    def __init__(self):
+    def __init__(self, **kvargs):
         self.nodes = []
         self.nodenames = {}
         self.branches = []
@@ -72,6 +73,9 @@ class Circuit(object):
 
         for terminal in self.terminals:
             self.addNode(terminal)
+
+        self.connectTerminals(**kvargs)
+
         
     def addNode(self, name=None):
         """Create an internal node in the circuit and return the new node
@@ -119,16 +123,18 @@ class Circuit(object):
             if v == node:
                 return k
         
-    def connectNode(self, terminal, node):
-        """Connect an external node to a terminal
+    def connectTerminals(self, **kvargs):
+        """Connect nodes to terminals by using keyword arguments
 
         """
-        if node != None:
+        for terminal, node in kvargs.items():
             if not terminal in self.terminals:
                 raise ValueError('terminal '+str(terminal)+' is not defined')
-            self.nodes.remove(self.nodenames[terminal])
-            self.nodes.append(node)
-            self.nodenames[terminal] = node
+            if node != None:
+                self.nodes.remove(self.nodenames[terminal])
+                if not node in self.nodes:
+                    self.nodes.append(node)
+                self.nodenames[terminal] = node
 
     def n(self):
         """Return size of x vector"""
@@ -179,8 +185,8 @@ class SubCircuit(Circuit):
       elementbranchmap  list of translations between branch indices of the elements to the
                         branch index in the SubCircuit object.
     """
-    def __init__(self):
-        Circuit.__init__(self)
+    def __init__(self, **kvargs):
+        Circuit.__init__(self, **kvargs)
         self.elements = {}
         self.elementnodemap = []
         self.elementbranchmap = []
@@ -312,9 +318,7 @@ class R(Circuit):
     terminals = ['plus', 'minus']
 
     def __init__(self, plus, minus, r=1e3):
-        Circuit.__init__(self, )
-        self.connectNode('plus', plus)
-        self.connectNode('minus', minus)
+        Circuit.__init__(self, plus=plus, minus=minus)
         self.parameters['r']=r
         
     def G(self, x):
@@ -338,9 +342,7 @@ class C(Circuit):
 
     terminals = ['plus', 'minus']    
     def __init__(self, plus, minus, c=0.0):
-        Circuit.__init__(self, )
-        self.connectNode('plus', plus)
-        self.connectNode('minus', minus)
+        Circuit.__init__(self, plus=plus, minus=minus)
         self.parameters['c'] = c
 
     def C(self, x):
@@ -368,9 +370,7 @@ class L(Circuit):
                 [0.0 , 0.0, -1.0],
                 [1.0 , -1.0, 0.0]])
     def __init__(self, plus, minus, L=0.0):
-        Circuit.__init__(self)
-        self.connectNode('plus', plus)
-        self.connectNode('minus', minus)
+        Circuit.__init__(self, plus=plus, minus=minus)
         self.branches.append(Branch(plus, minus))
         self.parameters['L']=L
         
@@ -399,9 +399,7 @@ class VS(Circuit):
     terminals = ['plus', 'minus']
 
     def __init__(self, plus=None, minus=None, v=0.0):
-        Circuit.__init__(self)
-        self.connectNode('plus', plus)
-        self.connectNode('minus', minus)
+        Circuit.__init__(self, plus=plus, minus=minus)
         self.branches.append(Branch(plus, minus))
         self.parameters['v']=v
 
@@ -429,9 +427,7 @@ class IS(Circuit):
     terminals = ['plus', 'minus']
 
     def __init__(self, plus, minus, i=0.0):
-        Circuit.__init__(self)
-        self.connectNode('plus', plus)
-        self.connectNode('minus', minus)
+        Circuit.__init__(self, plus=plus, minus=minus)
         self.parameters['i']=i
         
     def U(self, t=0.0):
@@ -446,33 +442,34 @@ class VCVS(Circuit):
     >>> n2=c.addNode('2')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
     >>> c['vcvs'] = VCVS(n1, gnd, n2, gnd, g=2.0)
-    >>> c['rl'] = R(n2, gnd, r=1e3)
-    >>> DC(c).solve(refnode=gnd)
-    array([[ 1.5  ],
-           [ 3.   ],
-           [ 0.   ],
-           [ 0.   ],
-           [ 0.003]])
+    >>> c['vcvs'].nodes
+    [Node('2'), Node('gnd'), Node('1')]
+    >>> c['vcvs'].branches
+    [Branch(Node('2'),Node('gnd'))]
+    >>> c['vcvs'].G(0)
+    array([[0, 0, 0, 1.0],
+           [0, 0, 0, -1.0],
+           [0, 0, 0, 0],
+           [-1.0, -1.0, 2.0, 0]], dtype=object)
     """
     terminals = ('inp', 'inn', 'outp', 'outn')
     def __init__(self, inp, inn, outp, outn, g=1.0):
-        Circuit.__init__(self)
-
-        self.connectNode('inp', inp)
-        self.connectNode('inn', inn)
-        self.connectNode('outp', outp)
-        self.connectNode('outn', outn)
-
+        Circuit.__init__(self, inp=inp, inn=inn, outp=outp, outn=outn)
         self.branches.append(Branch(outp, outn))
-
         self.parameters['g']=g
         
     def G(self, x):
-        return array([[0.0, 0.0, 0.0, 0.0, 0.0],
-                      [0.0, 0.0, 0.0, 0.0, 1.0],
-                      [0.0, 0.0, 0.0, 0.0,-1.0],
-                      [0.0, 0.0, 0.0, 0.0, 0.0],
-                      [self.parameters['g']  ,-self.parameters['g']  , -1.0,1.0, 0.0]])
+        G = super(VCVS, self).G(x)
+        branchindex = -1
+        inpindex,innindex,outpindex,outnindex = \
+            (self.nodes.index(self.nodenames[name]) for name in ('inp', 'inn', 'outp', 'outn'))
+        G[outpindex, branchindex] += 1.0
+        G[outnindex, branchindex] += -1.0
+        G[branchindex, outpindex] += -1.0
+        G[branchindex, outnindex] += 1.0
+        G[branchindex, inpindex] += self.parameters['g']
+        G[branchindex, innindex] += -self.parameters['g']
+        return G
 
 class VCCS(Circuit):
     """Voltage controlled current source
@@ -494,21 +491,20 @@ class VCCS(Circuit):
     terminals = ['inp', 'inn', 'outp', 'outn']
     
     def __init__(self, inp, inn, outp, outn, gm=1e-3):
-        Circuit.__init__(self)
-
-        self.connectNode('inp', inp)
-        self.connectNode('inn', inn)
-        self.connectNode('outp', outp)
-        self.connectNode('outn', outn)
+        Circuit.__init__(self, inp=inp, inn=inn, outp=outp, outn=outn)
 
         self.parameters['gm']=gm
         
     def G(self, x):
+        G = super(VCCS, self).G(x)
         gm=self.parameters['gm']
-        return array([[0.0, 0.0, 0.0, 0.0],
-                      [0.0, 0.0, 0.0, 0.0],
-                      [gm , -gm, 0.0, 0.0],
-                      [-gm,  gm, 0.0, 0.0]])
+        inpindex,innindex,outpindex,outnindex = \
+            (self.nodes.index(self.nodenames[name]) for name in ('inp', 'inn', 'outp', 'outn'))
+        G[outpindex, inpindex] += gm
+        G[outpindex, innindex] += -gm
+        G[outnindex, inpindex] += -gm
+        G[outnindex, innindex] += gm
+        return G
 
 if __name__ == "__main__":
     import doctest

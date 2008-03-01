@@ -1,10 +1,24 @@
 from analysis import *
 from numpy import array, delete, linalg, size, zeros, concatenate, pi, zeros
+import sympy
 from circuit import Circuit, SubCircuit, VS,R,C, gnd
 from internalresult import InternalResultSet, InternalResult
 from sympy import Symbol, Matrix, symbols, simplify
 
 class Symbolic(Analysis):
+    """Circuit analysis that calculates symbolic expressions of the unknowns
+
+    >>> c = SubCircuit()
+    >>> n1 = c.addNode('net1')
+    >>> c['vs'] = VS(n1, gnd, v=Symbol('V'))
+    >>> c['R'] = R(n1, gnd, r=Symbol('R'))
+    >>> res = Symbolic(c).run()
+    >>> res.getSignal('net1')
+    V
+    >>> res.getSignal('i0')
+    -V/R
+    """
+    
     def solve(self, refnode=gnd):
         """Run a symbolic AC analysis with SymPy and store the results
 
@@ -12,7 +26,7 @@ class Symbolic(Analysis):
         >>> n1 = c.addNode('net1')
         >>> c['vs'] = VS(n1, gnd, v=Symbol('V'))
         >>> c['R'] = R(n1, gnd, r=Symbol('R'))
-        >>> c.solvesymbolic()
+        >>> Symbolic(c).solve()
         array([[V],
                [0.0],
                [-V/R]], dtype=object)
@@ -27,7 +41,7 @@ class Symbolic(Analysis):
 
         ## Refer the voltages to the gnd node by removing
         ## the rows and columns that corresponds to this node
-        irefnode = self.nodes.index(gnd)
+        irefnode = self.c.nodes.index(refnode)
         G,C,U=removeRowCol((G,C,U), irefnode)
 
         G,C,U = (sympy.Matrix(A) for A in (G,C,U))
@@ -41,29 +55,6 @@ class Symbolic(Analysis):
         x = concatenate((x[:irefnode, :], array([[0.0]]), x[irefnode:,:]))
         return x
 
-    def run(self, refnode=gnd):
-        """Run a symbolic analysis with SymPy and store the results
-
-        >>> c = SubCircuit()
-        >>> n1 = c.addNode('net1')
-        >>> c['vs'] = VS(n1, gnd, v=Symbol('V'))
-        >>> c['R'] = R(n1, gnd, r=Symbol('R'))
-        >>> c.runsymbolic()
-        >>> c.getResult('symbolic').getSignal('net1')
-        V
-        >>> c.getResult('symbolic').getSignal('i0')
-        -V/R
-
-        """
-        x = self.solvesymbolic(refnode=refnode)
-        result = InternalResult()
-
-        for xvalue, node in zip(x[:len(self.nodes),0], self.nodes):
-            result.storeSignal(self.c.getNodeName(node), xvalue)
-
-        for i, data in enumerate(zip(x[len(self.nodes):,0], self.branches)):
-            (xvalue, branch) = data
-            result.storeSignal('i' + str(i), xvalue)
-
-        self.resultset.storeResult('symbolic', result)
-
+if __name__ == "__main__":
+    import doctest
+    doctest.testmod()
