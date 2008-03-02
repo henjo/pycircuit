@@ -55,8 +55,9 @@ class DC(Analysis):
     
     def solve(self, refnode=gnd):
         n=self.c.n()
-        G=self.c.G(zeros((n,1)))
-        U=self.c.U()
+        x = zeros((n,1))
+        G=self.c.G(x)
+        U=self.c.U(x)
 
         ## Refer the voltages to the reference node by removing
         ## the rows and columns that corresponds to this node
@@ -108,10 +109,10 @@ class AC(Analysis):
 
     def solve(self, freqs, refnode=gnd):
         n=self.c.n()
-
-        G=self.c.G(zeros((n,1)))
-        C=self.c.C(zeros((n,1)))
-        U=self.c.U()
+        x = zeros((n,1))
+        G=self.c.G(x)
+        C=self.c.C(x)
+        U=self.c.U(x)
 
         ## Refer the voltages to the reference node by removing
         ## the rows and columns that corresponds to this node

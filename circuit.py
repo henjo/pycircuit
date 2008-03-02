@@ -98,6 +98,9 @@ class Circuit(object):
         """Get row in the x vector of a node"""
         return self.nodes.index(node)
 
+    def getBranchIndex(self, branch):
+        return len(self.nodes) + self.branches.index(branch)
+
     def getNode(self, name):
         """Find a node by name.
         
@@ -148,8 +151,20 @@ class Circuit(object):
         """Calculate the C (transcapacitance) matrix of the circuit given the x-vector"""
         return zeros((self.n(), self.n()), dtype=object)
 
-    def U(self, t=0.0):
-        """Calculate the U (circuit input) column-vector the circuit at time t"""
+    def U(self, x, t=0.0):
+        """Calculate the U column-vector the circuit at time t and a given x-vector.
+
+        """
+        return zeros((self.n(), 1), dtype=object)
+
+    def CY(self, x, kT):
+        """Calculate the noise sources correlation matrix
+
+        @param x:  the state vector
+        @type  x:  numpy array
+        @param kT: M{kboltzman*T} where T is the temperature in Kelvin
+        @type  kT: number        
+        """
         return zeros((self.n(), 1), dtype=object)
 
     def nameStateVector(self, x, analysis=''):
@@ -269,25 +284,12 @@ class SubCircuit(Circuit):
                                             [self.branches.index(branch)+len(self.nodes) for branch in element.branches]
 
     def G(self, x):
-        n=self.n()
-        G=zeros((n,n), dtype=object)
-
-        for instance,element in self.elements.items():
-            nodemap = self.elementnodemap[instance]
-            G[[[i] for i in nodemap], nodemap] += element.G(x)
-            
-        return G
+        return self._add_element_submatrices('G', (x,))
 
     def C(self, x):
-        n=self.n()
-        C=zeros((n,n), dtype=object)
+        return self._add_element_submatrices('C', (x,))
 
-        for instance,element in self.elements.items():
-            nodemap = self.elementnodemap[instance]
-            C[[[i] for i in nodemap], nodemap] += element.C(x)
-        return C
-
-    def U(self, t=0.0):
+    def U(self, x, t=0.0):
         n=self.n()
         U=zeros((n,1), dtype=object)
 
@@ -298,6 +300,24 @@ class SubCircuit(Circuit):
             U[nodemap] += element.U(t)
         return U
 
+    def CY(self, x, kT):
+        """Calculate composite noise source correlation matrix
+
+        The noise sources in one element are assumed to be uncorrelated with the noise sources in the other elements.
+
+        """
+        return self._add_element_submatrices('CY', (x, kT))
+        
+    def _add_element_submatrices(self, methodname, args):
+        n=self.n()
+        A=zeros((n,n), dtype=object)
+
+        for instance,element in self.elements.items():
+            nodemap = self.elementnodemap[instance]
+            A[[[i] for i in nodemap], nodemap] += getattr(element, methodname)(*args)
+        return A
+        
+        
 class R(Circuit):
     """Resistor element
 
@@ -322,8 +342,15 @@ class R(Circuit):
         self.parameters['r']=r
         
     def G(self, x):
-        return array([[1/self.parameters['r'], -1/self.parameters['r']],
-                      [-1/self.parameters['r'], 1/self.parameters['r']]], dtype=object)
+        g = 1/self.parameters['r']
+        return  array([[g, -g],
+                        [-g, g]], dtype=object)
+
+    def CY(self, x, kT):
+        iPSD = 4*kT/self.parameters['r']
+        return  array([[iPSD, -iPSD],
+                       [-iPSD, iPSD]], dtype=object)
+        
 
 class C(Circuit):
     """Capacitor
@@ -408,7 +435,7 @@ class VS(Circuit):
                        [0.0 , 0.0, -1.0],
                        [1.0 , -1.0, 0.0]], dtype=object)
 
-    def U(self, t=0.0):
+    def U(self, x, t=0.0):
         return array([[0.0, 0.0, -self.parameters['v']]], dtype=object).T
 
 class IS(Circuit):
@@ -430,7 +457,7 @@ class IS(Circuit):
         Circuit.__init__(self, plus=plus, minus=minus)
         self.parameters['i']=i
         
-    def U(self, t=0.0):
+    def U(self, x, t=0.0):
         return array([[self.parameters['i'], -self.parameters['i']]]).T
 
 class VCVS(Circuit):

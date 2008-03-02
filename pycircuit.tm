@@ -26,7 +26,7 @@
   differential equations:
 
   <\eqnarray*>
-    <tformat|<table|<row|<cell|>|<cell|>|<cell|<frac|d|dt><with|prog-scripts|maxima|q(v(t))+i(v(t))+(t)=0><eq-number><label|diffeqnonlin>>>>>
+    <tformat|<table|<row|<cell|>|<cell|>|<cell|<frac|d|dt><with|prog-scripts|maxima|q(v(t))+i(v(t))+u(t)=0><eq-number><label|diffeqnonlin>>>>>
   </eqnarray*>
 
   Where <with|mode|math|t> denotes time, v<with|mode|math|(t)> is a vector of
@@ -118,6 +118,10 @@
       <with|par-left|<quote|1.5fn>|1.1<space|2spc>Solving
       <datoms|<macro|x|<repeat|<arg|x>|<with|font-series|medium|<with|font-size|1|<space|0.2fn>.<space|0.2fn>>>>>|<htab|5mm>>
       <no-break><pageref|auto-2>>
+
+      <with|par-left|<quote|3fn>|1.1.1<space|2spc>AC analysis
+      <datoms|<macro|x|<repeat|<arg|x>|<with|font-series|medium|<with|font-size|1|<space|0.2fn>.<space|0.2fn>>>>>|<htab|5mm>>
+      <no-break><pageref|auto-3>>
     </associate>
   </collection>
 </auxiliary>
