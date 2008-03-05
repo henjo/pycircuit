@@ -146,6 +146,7 @@ class SymbolicNoise(Analysis):
         elif self.outputsrc != None:
             result.storeSignal('in2out', xn2out[0])
 
+        print zm
         # Calculate the gain from the input voltage source by using the transimpedance vector
         # to find the transfer from the branch voltage of the input source to the output
         gain = None

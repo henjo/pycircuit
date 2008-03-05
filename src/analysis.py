@@ -1,5 +1,6 @@
 from numpy import array, delete, linalg, size, zeros, concatenate, pi, zeros
-from circuit import Circuit, SubCircuit, VS,R,C, gnd
+from scipy import optimize
+from circuit import Circuit, SubCircuit, VS,IS,R,C,Diode, gnd
 from result import Waveform
 from internalresult import InternalResultSet, InternalResult
 
@@ -40,6 +41,7 @@ class Analysis(object):
 class DC(Analysis):
     """DC analyis class
     
+    Linear circuit example:
     >>> c = SubCircuit()
     >>> n1 = c.addNode('net1')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
@@ -51,6 +53,19 @@ class DC(Analysis):
     >>> dc.result.getSignal('net1')
     1.5
 
+    Non-linear example:
+
+    >>> c = SubCircuit()
+    >>> n1 = c.addNode('net1')
+    >>> c['is'] = IS(gnd, n1, i=100e-6)
+    >>> c['D'] = Diode(n1, gnd)
+    >>> c['D'].G(array([[0,0]]).T)
+    >>> dc = DC(c)
+    >>> res = dc.run()
+    >>> dc.result.getSignalNames()
+    ['i0', 'gnd', 'net1']
+    >>> dc.result.getSignal('net1')
+    0.7
     """
     
     def solve(self, refnode=gnd):
@@ -63,12 +78,25 @@ class DC(Analysis):
         ## the rows and columns that corresponds to this node
         irefnode = self.c.getNodeIndex(refnode)
         G,U=removeRowCol((G,U), irefnode)
-        # Calculate state vector
-        x = linalg.solve(G,-U)
 
+        # Solve i(x) + u = 0
+        def func(x):
+            print x
+            x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
+            f =  self.c.i(array([x]).T) + self.c.U(0)
+            (f,) = removeRowCol((f,), irefnode)
+            return array(f.T[0], dtype=float)
+        def fprime(x):
+            x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
+            J = self.c.G(array([x]).T)
+            (J,) = removeRowCol((J,), irefnode)
+            return array(J, dtype=float)
+        x0 = zeros(n-1)
+        x, infodict, ier, mesg = optimize.newton(func, x0, fprime=fprime)
+
+        x = x.reshape((n-1,1))
         # Insert reference node voltage
         x = concatenate((x[:irefnode, :], array([[0.0]]), x[irefnode:,:]))
-
         return x
 
 
@@ -134,5 +162,12 @@ class AC(Analysis):
         return array(out)[:,:,0].swapaxes(0,1)
 
 if __name__ == "__main__":
+    c = SubCircuit()
+    n1 = c.addNode('net1')
+    c['is'] = IS(gnd, n1, i=100e-6)
+    c['D'] = Diode(n1, gnd)
+    dc = DC(c)
+    res = dc.run()
+
     import doctest
     doctest.testmod()

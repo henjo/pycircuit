@@ -1,6 +1,6 @@
 import unittest
 import numpy
-from numpy import array, delete, linalg, size, zeros, concatenate, pi
+from numpy import array, delete, linalg, size, zeros, concatenate, pi, dot, exp
 import pylab
 import sympy
 
@@ -151,11 +151,18 @@ class Circuit(object):
         """Calculate the C (transcapacitance) matrix of the circuit given the x-vector"""
         return zeros((self.n(), self.n()), dtype=object)
 
-    def U(self, x, t=0.0):
-        """Calculate the U column-vector the circuit at time t and a given x-vector.
+    def U(self, t=0.0):
+        """Calculate the U column-vector the circuit at time t for a given x-vector.
 
         """
         return zeros((self.n(), 1), dtype=object)
+
+    def i(self, x):
+        """Calculate the i vector as a function of the x-vector
+
+        For linear circuits i(x(t)) = G*x
+        """
+        return dot(self.G(x), x)
 
     def CY(self, x, kT):
         """Calculate the noise sources correlation matrix
@@ -284,21 +291,16 @@ class SubCircuit(Circuit):
                                             [self.branches.index(branch)+len(self.nodes) for branch in element.branches]
 
     def G(self, x):
-        return self._add_element_submatrices('G', (x,))
+        return self._add_element_submatrices('G', x, ())
 
     def C(self, x):
-        return self._add_element_submatrices('C', (x,))
+        return self._add_element_submatrices('C', x, ())
 
-    def U(self, x, t=0.0):
-        n=self.n()
-        U=zeros((n,1), dtype=object)
+    def U(self, t=0.0):
+        return self._add_element_subvectors('U', None, (t,))
 
-        self.updateNodeMap()
-        
-        for instance,element in self.elements.items():
-            nodemap = self.elementnodemap[instance]
-            U[nodemap] += element.U(t)
-        return U
+    def i(self, x):
+        return self._add_element_subvectors('i', x, ())
 
     def CY(self, x, kT):
         """Calculate composite noise source correlation matrix
@@ -308,13 +310,30 @@ class SubCircuit(Circuit):
         """
         return self._add_element_submatrices('CY', (x, kT))
         
-    def _add_element_submatrices(self, methodname, args):
+    def _add_element_submatrices(self, methodname, x, args):
         n=self.n()
         A=zeros((n,n), dtype=object)
 
         for instance,element in self.elements.items():
             nodemap = self.elementnodemap[instance]
-            A[[[i] for i in nodemap], nodemap] += getattr(element, methodname)(*args)
+            if x != None:
+                subx = x[nodemap,:]
+                A[[[i] for i in nodemap], nodemap] += getattr(element, methodname)(subx, *args)
+            else:
+                A[[[i] for i in nodemap], nodemap] += getattr(element, methodname)(*args)
+        return A
+
+    def _add_element_subvectors(self, methodname, x, args):
+        n=self.n()
+        A=zeros((n,1), dtype=object)
+
+        for instance,element in self.elements.items():
+            nodemap = self.elementnodemap[instance]
+            if x != None:
+                subx = x[nodemap,:]
+                A[nodemap,:] += getattr(element, methodname)(subx, *args)
+            else:
+                A[nodemap,:] += getattr(element, methodname)(*args)
         return A
         
         
@@ -435,7 +454,7 @@ class VS(Circuit):
                        [0.0 , 0.0, -1.0],
                        [1.0 , -1.0, 0.0]], dtype=object)
 
-    def U(self, x, t=0.0):
+    def U(self, t=0.0):
         return array([[0.0, 0.0, -self.parameters['v']]], dtype=object).T
 
 class IS(Circuit):
@@ -457,7 +476,7 @@ class IS(Circuit):
         Circuit.__init__(self, plus=plus, minus=minus)
         self.parameters['i']=i
         
-    def U(self, x, t=0.0):
+    def U(self, t=0.0):
         return array([[self.parameters['i'], -self.parameters['i']]]).T
 
 class VCVS(Circuit):
@@ -532,6 +551,29 @@ class VCCS(Circuit):
         G[outnindex, inpindex] += -gm
         G[outnindex, innindex] += gm
         return G
+
+class Diode(Circuit):
+    terminals = ['plus', 'minus']
+    def __init__(self, plus, minus, IS=1e-6):
+        Circuit.__init__(self, plus=plus, minus=minus)
+        self.IS = IS
+        self.VT = 1.38e-23 * 300 / 1.602e-19
+        
+    def G(self, x):
+        VD = x[0,0]-x[1,0]
+        g = self.IS*exp(VD/self.VT)/self.VT
+        return array([[g, -g],
+                      [-g, g]], dtype=object)
+
+    def i(self, x):
+        """
+        >>> d = Diode()
+        >>> d.i(array([[0., 0.]]).T
+        
+        """
+        VD = x[0,0]-x[1,0]
+        I = self.IS*(exp(VD/self.VT)-1.0)
+        return array([[I, -I]], dtype=object).T
 
 if __name__ == "__main__":
     import doctest
