@@ -1,0 +1,26 @@
+( ( nil
+  version "2.1"
+  mapType "incremental"
+  blockName "psftest"
+  repList "eldoD schematic verilogAe"
+  stopList "eldoD verilogAe"
+  globalList "gnd!"
+  hierDelim "."
+  netlistDir "/home/hj03/tsmcN65/analogueIP/workspace/nellie_mysetup/simulation/hj03/psftest/eldoD/schematic/netlist"
+ )
+( instViewTable
+ )
+( net
+ )
+( inst
+ )
+( model
+( "gnd!" "0" )
+( "hj03/psftest/schematic" "PSFTEST" )
+ )
+( term
+ )
+( param
+ )
+( "PSFTEST" "ihnl/cds0/map" )
+ )

@@ -1,0 +1,599 @@
+hnlLastStopCellInfo = '(
+                           ( "analogLib" "res" "eldoD" "711409977" "1183619906" )
+                          ( "analogLib" "vcvs" "eldoD" "747426999" "1183619913" )
+                          ( "analogLib" "vdc" "eldoD" "747426999" "1183619913" )
+                       )
+hnlLastMaxNameLength = 2000
+hnlLastNamePrefix = "hnl_"
+hnlLastNetNamePrefix = "_NET"
+hnlLastInstNamePrefix = "_INST"
+hnlLastParamNamePrefix = "_par"
+hnlLastGlobalNetPrefix = "_gnet"
+hnlLastModulePrefix = "_SUB"
+hnlLastHierarchyDelimiter = "."
+hnlLastMapNetFirstChar = '(
+                            "!"
+                             "\""
+                            "#"
+                            "$"
+                            "%"
+                            "&"
+                            "'"
+                            "("
+                            ")"
+                            "*"
+                            "+"
+                            ","
+                            "-"
+                            "."
+                            "/"
+                            ":"
+                            ";"
+                            "<"
+                            "="
+                            ">"
+                            "?"
+                            "@"
+                            "["
+                             "\\"
+                            "]"
+                            "^"
+                            "`"
+                            ( "a" "A" )
+                            ( "b" "B" )
+                            ( "c" "C" )
+                            ( "d" "D" )
+                            ( "e" "E" )
+                            ( "f" "F" )
+                            ( "g" "G" )
+                            ( "h" "H" )
+                            ( "i" "I" )
+                            ( "j" "J" )
+                            ( "k" "K" )
+                            ( "l" "L" )
+                            ( "m" "M" )
+                            ( "n" "N" )
+                            ( "o" "O" )
+                            ( "p" "P" )
+                            ( "q" "Q" )
+                            ( "r" "R" )
+                            ( "s" "S" )
+                            ( "t" "T" )
+                            ( "u" "U" )
+                            ( "v" "V" )
+                            ( "w" "W" )
+                            ( "x" "X" )
+                            ( "y" "Y" )
+                            ( "z" "Z" )
+                            "{"
+                            "|"
+                            "}"
+                            "~"
+                          )
+hnlLastMapNetInName = '(
+                             "\""
+                            "'"
+                            "("
+                            ")"
+                            ","
+                            "."
+                            "/"
+                            ";"
+                            "="
+                             "\\"
+                            "^"
+                            ( "a" "A" )
+                            ( "b" "B" )
+                            ( "c" "C" )
+                            ( "d" "D" )
+                            ( "e" "E" )
+                            ( "f" "F" )
+                            ( "g" "G" )
+                            ( "h" "H" )
+                            ( "i" "I" )
+                            ( "j" "J" )
+                            ( "k" "K" )
+                            ( "l" "L" )
+                            ( "m" "M" )
+                            ( "n" "N" )
+                            ( "o" "O" )
+                            ( "p" "P" )
+                            ( "q" "Q" )
+                            ( "r" "R" )
+                            ( "s" "S" )
+                            ( "t" "T" )
+                            ( "u" "U" )
+                            ( "v" "V" )
+                            ( "w" "W" )
+                            ( "x" "X" )
+                            ( "y" "Y" )
+                            ( "z" "Z" )
+                            "{"
+                            "}"
+                          )
+hnlLastMapInstFirstChar = '(
+                            "!"
+                             "\""
+                            "#"
+                            "$"
+                            "%"
+                            "&"
+                            "'"
+                            "("
+                            ")"
+                            "*"
+                            "+"
+                            ","
+                            "-"
+                            "."
+                            "/"
+                            ":"
+                            ";"
+                            "<"
+                            "="
+                            ">"
+                            "?"
+                            "@"
+                            "["
+                             "\\"
+                            "]"
+                            "^"
+                            "`"
+                            ( "a" "A" )
+                            ( "b" "B" )
+                            ( "c" "C" )
+                            ( "d" "D" )
+                            ( "e" "E" )
+                            ( "f" "F" )
+                            ( "g" "G" )
+                            ( "h" "H" )
+                            ( "i" "I" )
+                            ( "j" "J" )
+                            ( "k" "K" )
+                            ( "l" "L" )
+                            ( "m" "M" )
+                            ( "n" "N" )
+                            ( "o" "O" )
+                            ( "p" "P" )
+                            ( "q" "Q" )
+                            ( "r" "R" )
+                            ( "s" "S" )
+                            ( "t" "T" )
+                            ( "u" "U" )
+                            ( "v" "V" )
+                            ( "w" "W" )
+                            ( "x" "X" )
+                            ( "y" "Y" )
+                            ( "z" "Z" )
+                            "{"
+                            "|"
+                            "}"
+                            "~"
+                          )
+hnlLastMapInstInName = '(
+                             "\""
+                            "'"
+                            "("
+                            ")"
+                            "*"
+                            ","
+                            "."
+                            ":"
+                            ";"
+                            "="
+                             "\\"
+                            "^"
+                            ( "a" "A" )
+                            ( "b" "B" )
+                            ( "c" "C" )
+                            ( "d" "D" )
+                            ( "e" "E" )
+                            ( "f" "F" )
+                            ( "g" "G" )
+                            ( "h" "H" )
+                            ( "i" "I" )
+                            ( "j" "J" )
+                            ( "k" "K" )
+                            ( "l" "L" )
+                            ( "m" "M" )
+                            ( "n" "N" )
+                            ( "o" "O" )
+                            ( "p" "P" )
+                            ( "q" "Q" )
+                            ( "r" "R" )
+                            ( "s" "S" )
+                            ( "t" "T" )
+                            ( "u" "U" )
+                            ( "v" "V" )
+                            ( "w" "W" )
+                            ( "x" "X" )
+                            ( "y" "Y" )
+                            ( "z" "Z" )
+                            "{"
+                            "}"
+                          )
+hnlLastMapModelFirstChar = '(
+                            "!"
+                             "\""
+                            "#"
+                            "$"
+                            "%"
+                            "&"
+                            "'"
+                            "("
+                            ")"
+                            "*"
+                            "+"
+                            ","
+                            "-"
+                            "."
+                            "/"
+                            ":"
+                            ";"
+                            "<"
+                            "="
+                            ">"
+                            "?"
+                            "@"
+                            "["
+                             "\\"
+                            "]"
+                            "^"
+                            "`"
+                            ( "a" "A" )
+                            ( "b" "B" )
+                            ( "c" "C" )
+                            ( "d" "D" )
+                            ( "e" "E" )
+                            ( "f" "F" )
+                            ( "g" "G" )
+                            ( "h" "H" )
+                            ( "i" "I" )
+                            ( "j" "J" )
+                            ( "k" "K" )
+                            ( "l" "L" )
+                            ( "m" "M" )
+                            ( "n" "N" )
+                            ( "o" "O" )
+                            ( "p" "P" )
+                            ( "q" "Q" )
+                            ( "r" "R" )
+                            ( "s" "S" )
+                            ( "t" "T" )
+                            ( "u" "U" )
+                            ( "v" "V" )
+                            ( "w" "W" )
+                            ( "x" "X" )
+                            ( "y" "Y" )
+                            ( "z" "Z" )
+                            "{"
+                            "|"
+                            "}"
+                            "~"
+                          )
+hnlLastMapModelInName = '(
+                             "\""
+                            "'"
+                            "("
+                            ")"
+                            ","
+                            "."
+                            "/"
+                            ";"
+                            "<"
+                            "="
+                            ">"
+                             "\\"
+                            "^"
+                            ( "a" "A" )
+                            ( "b" "B" )
+                            ( "c" "C" )
+                            ( "d" "D" )
+                            ( "e" "E" )
+                            ( "f" "F" )
+                            ( "g" "G" )
+                            ( "h" "H" )
+                            ( "i" "I" )
+                            ( "j" "J" )
+                            ( "k" "K" )
+                            ( "l" "L" )
+                            ( "m" "M" )
+                            ( "n" "N" )
+                            ( "o" "O" )
+                            ( "p" "P" )
+                            ( "q" "Q" )
+                            ( "r" "R" )
+                            ( "s" "S" )
+                            ( "t" "T" )
+                            ( "u" "U" )
+                            ( "v" "V" )
+                            ( "w" "W" )
+                            ( "x" "X" )
+                            ( "y" "Y" )
+                            ( "z" "Z" )
+                            "{"
+                            "}"
+                          )
+hnlLastInvalidNetNames = '(
+                     ( "gnd!" "0" )
+                   )
+hnlLastInvalidParamNames = '(
+                     ( "TEMP" )
+                     ( "snf_db" )
+                     ( "GA" )
+                     ( "nfmin" )
+                     ( "XAXIS" )
+                     ( "TGP_MAG" )
+                     ( "gopt" )
+                     ( "Tgp_Mag" )
+                     ( "GAUM_MAG" )
+                     ( "TIME" )
+                     ( "snf" )
+                     ( "Power" )
+                     ( "NFMin" )
+                     ( "FREQ" )
+                     ( "gpc" )
+                     ( "Ga" )
+                     ( "phnoise" )
+                     ( "GP" )
+                     ( "gac" )
+                     ( "B_OPT" )
+                     ( "BFACTOR" )
+                     ( "GPC" )
+                     ( "Freq" )
+                     ( "rneq" )
+                     ( "Gpc" )
+                     ( "snf_mag" )
+                     ( "Scale" )
+                     ( "NFMin_Mag" )
+                     ( "Time" )
+                     ( "NFMin_Db" )
+                     ( "mufactor" )
+                     ( "KFACTOR" )
+                     ( "Gac" )
+                     ( "NFMIN" )
+                     ( "SNF_MAG" )
+                     ( "ga" )
+                     ( "phi_opt" )
+                     ( "NFMIN_DB" )
+                     ( "Gamma_Opt" )
+                     ( "bfactor" )
+                     ( "ONoise" )
+                     ( "SNF_DB" )
+                     ( "PHNOISE" )
+                     ( "Snf_Db" )
+                     ( "SSC" )
+                     ( "MUFACTOR" )
+                     ( "gasm_mag" )
+                     ( "temp" )
+                     ( "Snf" )
+                     ( "gamma_opt_mag" )
+                     ( "Gam_Mag" )
+                     ( "scale" )
+                     ( "GOPT" )
+                     ( "nfmin_mag" )
+                     ( "gam_mag" )
+                     ( "Gam" )
+                     ( "Ssc" )
+                     ( "amnoise" )
+                     ( "GASM_MAG" )
+                     ( "BFactor" )
+                     ( "PHI_OPT" )
+                     ( "power" )
+                     ( "INoise" )
+                     ( "Tnom" )
+                     ( "Lsc" )
+                     ( "GP_MAG" )
+                     ( "PhNoise" )
+                     ( "time" )
+                     ( "RNEQ" )
+                     ( "MuFactor" )
+                     ( "NFMIN_MAG" )
+                     ( "INOISE" )
+                     ( "Gp_Mag" )
+                     ( "gp" )
+                     ( "tgp" )
+                     ( "ssc" )
+                     ( "RNeq" )
+                     ( "B_opt" )
+                     ( "Phi_Opt" )
+                     ( "GASM" )
+                     ( "GAM" )
+                     ( "Ga_Mag" )
+                     ( "SNF" )
+                     ( "b_opt" )
+                     ( "Snf_Mag" )
+                     ( "gp_mag" )
+                     ( "Gp" )
+                     ( "GAM_MAG" )
+                     ( "TNOM" )
+                     ( "lsc" )
+                     ( "GAUM" )
+                     ( "gamma_opt" )
+                     ( "xaxis" )
+                     ( "Tgp" )
+                     ( "Gasm_Mag" )
+                     ( "gasm" )
+                     ( "bopt" )
+                     ( "G_Opt" )
+                     ( "GOpt" )
+                     ( "GAC" )
+                     ( "GA_MAG" )
+                     ( "freq" )
+                     ( "Gaum_Mag" )
+                     ( "gaum_mag" )
+                     ( "GAMMA_OPT_MAG" )
+                     ( "GAMMA_OPT" )
+                     ( "AMNOISE" )
+                     ( "nfmin_db" )
+                     ( "tgp_mag" )
+                     ( "POWER" )
+                     ( "TGP" )
+                     ( "SCALE" )
+                     ( "Xaxis" )
+                     ( "tnom" )
+                     ( "LSC" )
+                     ( "Gasm" )
+                     ( "ONOISE" )
+                     ( "KFactor" )
+                     ( "g_opt" )
+                     ( "Gaum" )
+                     ( "ga_mag" )
+                     ( "kfactor" )
+                     ( "inoise" )
+                     ( "G_OPT" )
+                     ( "Bopt" )
+                     ( "Temp" )
+                     ( "onoise" )
+                     ( "gaum" )
+                     ( "gam" )
+                     ( "BOPT" )
+                     ( "Gamma_Opt_Mag" )
+                     ( "AmNoise" )
+                   )
+hnlLastInstNameDifferentFrom = '( )
+hnlLastModelNameDifferentFrom = '( )
+hnlLastNetNameDifferentFrom = '( )
+hnlLastTermNameDifferentFrom = '( )
+hnlLastParamNameDifferentFrom = '( )
+hnlLastLibInfo = '(
+                    ( "hj03" "1188458125" )
+                  )
+hnlLastConstants = '(
+                      "TEMP"
+                      "snf_db"
+                      "GA"
+                      "nfmin"
+                      "XAXIS"
+                      "TGP_MAG"
+                      "gopt"
+                      "Tgp_Mag"
+                      "GAUM_MAG"
+                      "TIME"
+                      "snf"
+                      "Power"
+                      "NFMin"
+                      "FREQ"
+                      "gpc"
+                      "Ga"
+                      "phnoise"
+                      "GP"
+                      "gac"
+                      "B_OPT"
+                      "BFACTOR"
+                      "GPC"
+                      "Freq"
+                      "rneq"
+                      "Gpc"
+                      "snf_mag"
+                      "Scale"
+                      "NFMin_Mag"
+                      "Time"
+                      "NFMin_Db"
+                      "mufactor"
+                      "KFACTOR"
+                      "Gac"
+                      "NFMIN"
+                      "SNF_MAG"
+                      "ga"
+                      "phi_opt"
+                      "NFMIN_DB"
+                      "Gamma_Opt"
+                      "bfactor"
+                      "ONoise"
+                      "SNF_DB"
+                      "PHNOISE"
+                      "Snf_Db"
+                      "SSC"
+                      "MUFACTOR"
+                      "gasm_mag"
+                      "temp"
+                      "Snf"
+                      "gamma_opt_mag"
+                      "Gam_Mag"
+                      "scale"
+                      "GOPT"
+                      "nfmin_mag"
+                      "gam_mag"
+                      "Gam"
+                      "Ssc"
+                      "amnoise"
+                      "GASM_MAG"
+                      "BFactor"
+                      "PHI_OPT"
+                      "power"
+                      "INoise"
+                      "Tnom"
+                      "Lsc"
+                      "GP_MAG"
+                      "PhNoise"
+                      "time"
+                      "RNEQ"
+                      "MuFactor"
+                      "NFMIN_MAG"
+                      "INOISE"
+                      "Gp_Mag"
+                      "gp"
+                      "tgp"
+                      "ssc"
+                      "RNeq"
+                      "B_opt"
+                      "Phi_Opt"
+                      "GASM"
+                      "GAM"
+                      "Ga_Mag"
+                      "SNF"
+                      "b_opt"
+                      "Snf_Mag"
+                      "gp_mag"
+                      "Gp"
+                      "GAM_MAG"
+                      "TNOM"
+                      "lsc"
+                      "GAUM"
+                      "gamma_opt"
+                      "xaxis"
+                      "Tgp"
+                      "Gasm_Mag"
+                      "gasm"
+                      "bopt"
+                      "G_Opt"
+                      "GOpt"
+                      "GAC"
+                      "GA_MAG"
+                      "freq"
+                      "Gaum_Mag"
+                      "gaum_mag"
+                      "GAMMA_OPT_MAG"
+                      "GAMMA_OPT"
+                      "AMNOISE"
+                      "nfmin_db"
+                      "tgp_mag"
+                      "POWER"
+                      "TGP"
+                      "SCALE"
+                      "Xaxis"
+                      "tnom"
+                      "LSC"
+                      "Gasm"
+                      "ONOISE"
+                      "KFactor"
+                      "g_opt"
+                      "Gaum"
+                      "ga_mag"
+                      "kfactor"
+                      "inoise"
+                      "G_OPT"
+                      "Bopt"
+                      "Temp"
+                      "onoise"
+                      "gaum"
+                      "gam"
+                      "BOPT"
+                      "Gamma_Opt_Mag"
+                      "AmNoise"
+                    )
+hnlLastDesignVars = '(
+                      "vdc2"
+                      "vdc1"
+                    )

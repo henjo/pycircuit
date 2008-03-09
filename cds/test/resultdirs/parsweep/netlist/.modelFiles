@@ -1,0 +1,7 @@
+.LIB $ELDO_MAPPINGS lf
+.LIB $ELDO_MODELS mos_tt
+.LIB $ELDO_MODELS cap_typ
+.LIB $ELDO_MODELS res_typ
+.LIB $ELDO_MODELS dio_typ
+.LIB $ELDO_MODELS bjt_typ
+.LIB $ELDO_MODELS var_typ

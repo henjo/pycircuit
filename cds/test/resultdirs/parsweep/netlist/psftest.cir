@@ -1,0 +1,33 @@
+***
+*** Generated for: eldoD
+*** Generated on: Oct 17 17:26:14 2007
+*** Design library name: hj03
+*** Design cell name: psftest
+*** Design view name: schematic
+.GLOBAL
+.PARAM vdc2=0
+.PARAM vdc1=0
+.LIB $ELDO_MAPPINGS lf
+.LIB $ELDO_MODELS mos_tt
+.LIB $ELDO_MODELS cap_typ
+.LIB $ELDO_MODELS res_typ
+.LIB $ELDO_MODELS dio_typ
+.LIB $ELDO_MODELS bjt_typ
+.LIB $ELDO_MODELS var_typ
+
+*** Library name: hj03
+*** Cell name: psftest
+*** View name: schematic
+R0 VOUT 0 1K
+E0 VOUT 0 VIN NET9 2
+V1 NET9 0 DC vdc2
+V0 VIN 0 DC vdc1
+.OPTION NOLAT RELTOL=1e-4 AMMETER TNOM=25 GRAMP=3 MSGNODE=0 NOASCII NOMOD 
++	AEX GEAR
+.OP 
+.DC
+.PROBE DC I(R0)
+.PLOT DC V(VOUT) V(VIN)
+.STEP PARAM vdc1 0 2 INCR 1
+.STEP PARAM vdc2 0 2 INCR 1
+.END

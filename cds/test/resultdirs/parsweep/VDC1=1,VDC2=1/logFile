@@ -1,0 +1,25 @@
+HEADER
+"PSFversion" "1.00"
+"Log Generator" "drlLog rev. 1.0"
+"Log Time Stamp" "Wed Oct 17 17:26:20 2007"
+"simulator" "Eldo"
+"date" "17-Oct-2007 17:26:20"
+TYPE
+"analysisInst" STRUCT(
+"analysisType" STRING *
+"dataFile" STRING *
+"format" STRING *
+"parent" STRING *
+"sweepVariable" ARRAY ( * ) STRING *
+"description" STRING *
+)
+VALUE
+"opBegin" "analysisInst" (
+"op"
+"opBegin"
+"PSF"
+""
+()
+"Initial Operating Point"
+)
+END
