@@ -1,1 +1,0 @@
-eldo -gwl psf -genieartist -nocou -nojwdb -nocouext -outpath ../psf -noconf -i psftest.cir  2>&1 | tee ../psf/eldod.out
