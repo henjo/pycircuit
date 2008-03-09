@@ -1,0 +1,4 @@
+#!/bin/sh
+xargs cat > netlist <<End-Of-List
+ ihnl/cds0/netlist
+End-Of-List

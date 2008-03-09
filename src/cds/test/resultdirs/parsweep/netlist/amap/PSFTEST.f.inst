@@ -1,0 +1,10 @@
+HEADER
+"PSFversion" "1.00"
+"R0v" "R0"
+"R0n" "analogLib_res_eldoD"
+"E0v" "E0"
+"E0n" "analogLib_vcvs_eldoD"
+"V1v" "V1"
+"V1n" "analogLib_vdc_eldoD"
+"V0v" "V0"
+"V0n" "analogLib_vdc_eldoD"

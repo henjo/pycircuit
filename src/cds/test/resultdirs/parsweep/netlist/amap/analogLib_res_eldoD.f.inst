@@ -1,0 +1,12 @@
+HEADER
+"PSFversion" "1.00"
+"PLUSv" ""
+"MINUSv" "(FUNCTION minus(root(\"PLUS\")))"
+"(op ?)p" "v i pwr"
+"(op v)p" "OP(inst() \"dv\")"
+"(op i)p" "OP(inst() \"id\")"
+"(op pwr)p" "OP(inst() \"p\")"
+"(opt ?)p" "v i pwr"
+"(opt v)p" "OPT(inst() \"dv\")"
+"(opt i)p" "OPT(inst() \"id\")"
+"(opt pwr)p" "OPT(inst() \"p\")"
