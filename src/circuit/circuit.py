@@ -4,6 +4,7 @@ from numpy import array, delete, linalg, size, zeros, concatenate, pi, dot, exp
 import pylab
 import sympy
 from param import Parameter, ParameterDict
+from constants import *
 
 class Node(object):
     """A node is a region in an electric circuit where the voltage is the same.
@@ -62,15 +63,15 @@ class Circuit(object):
     branches   -- A list of Branch objects. The solver will solve for the currents through the branches.
     terminals  -- A list that contains terminal names
     instparams -- A list of valid instance parameters (Parameter objects)
-    mp         -- A class variable with a ParameterDict containing model specific parameters
-    ipar         -- A ParameterDict containing instance specific parameters
+    mpar       -- A class variable with a ParameterDict containing model specific parameters
+    ipar       -- A ParameterDict containing instance specific parameters
     nodenames  -- A dictionary that maps a local node name to the node object in nodes. If the node is
                   connnected to superior hierarchy levels through a terminal the terminal name must
                   be the same as the local node name
 
     """
     terminals = []
-    mp = ParameterDict()
+    mpar = ParameterDict()
     instparams = []
     def __init__(self, *args, **kvargs):
         self.nodes = []
@@ -434,9 +435,9 @@ class L(Circuit):
     def __init__(self, plus, minus, L=0.0):
         Circuit.__init__(self, plus, minus, L=L)
         self.branches.append(Branch(plus, minus))
-    def G(self, x):
+    def G(self, x, epar):
         return self._G
-    def C(self, x):
+    def C(self, x, epar):
         n = self.n()
         C = zeros((n,n), dtype=object)
         C[-1,-1] = self.ipar.L
@@ -561,15 +562,13 @@ class VCCS(Circuit):
 
 class Diode(Circuit):
     terminals = ['plus', 'minus']
-    def __init__(self, plus, minus, IS=1e-12):
-        Circuit.__init__(self, plus=plus, minus=minus)
-        self.IS = IS
-        self.VT = 1.38e-23 * 300 / 1.602e-19
+    mpar = Circuit.mpar.copy( Parameter(name='IS', desc='Saturation current', unit='A', default=1e-14) )
         
     def G(self, x, epar=defaultepar):
         VD = x[0,0]-x[1,0]
+        VT = kboltzmann*epar.T / qelectron
         gmin = 1e-12
-        g = self.IS*exp(VD/self.VT)/self.VT + gmin
+        g = self.mpar.IS*exp(VD/VT)/VT + gmin
         return array([[g, -g],
                       [-g, g]], dtype=object)
 
@@ -578,8 +577,9 @@ class Diode(Circuit):
         
         """
         VD = x[0,0]-x[1,0]
+        VT = kboltzmann*epar.T / qelectron
         gmin = 1e-12
-        I = self.IS*(exp(VD/self.VT)-1.0) + gmin*VD
+        I = self.mpar.IS*(exp(VD/VT)-1.0) + gmin*VD
         return array([[I, -I]], dtype=object).T
 
 if __name__ == "__main__":

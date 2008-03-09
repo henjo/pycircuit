@@ -3,8 +3,9 @@ from numpy import array, delete, linalg, size, zeros, concatenate, pi
 import sympy
 from circuit import Circuit, SubCircuit, VS,R,C, gnd, VS, IS
 from internalresult import InternalResultSet, InternalResult
-from sympy import Symbol, Matrix, symbols, simplify
+from sympy import Symbol, Matrix, symbols, simplify, together, factor, cancel
 from types import TupleType
+from param import Parameter, ParameterDict
 
 class SymbolicAC(Analysis):
     """Circuit analysis that calculates symbolic expressions of the unknowns
@@ -64,8 +65,8 @@ class SymbolicNoise(Analysis):
 
     >>> c = SubCircuit()
     >>> kT = Symbol('kT')
-    >>> R1=Symbol('R1')
-    >>> R2=Symbol('R2')
+    >>> R1=Symbol('R1', real=True)
+    >>> R2=Symbol('R2', real=True)
     >>> n1 = c.addNode('net1')
     >>> n2 = c.addNode('net2')
     >>> c['vs'] = VS(n1, gnd, v=Symbol('V'))
@@ -73,9 +74,9 @@ class SymbolicNoise(Analysis):
     >>> c['R2'] = R(n2, gnd, r=R2)
     >>> res = SymbolicNoise(c, inputsrc=c['vs'], outputnodes=(n2, gnd)).run()
     >>> res.o.vn2out
-    4*kT*R2**2/(R1+R2)
+    4*R1*R2*kT/(R1 + R2)
     >>> res.o.vn2in
-    4*kT*(R1+R2)
+    4*R1*kT/R2*(R1 + R2)
     >>> simplify(res.o.gain-R2/(R1+R2))
     0
     
@@ -102,11 +103,13 @@ class SymbolicNoise(Analysis):
         s = Symbol('s')
         kT = Symbol('kT')
         
+        epar = ParameterDict(Parameter('kT', default=kT))
+        
         n=self.c.n()
         x = zeros((n,1)) # This should be the x-vector at the DC operating point
-        G=self.c.G(x)
-        C=self.c.C(x)
-        CY=self.c.CY(x=x,kT=kT)
+        G=self.c.G(x, epar)
+        C=self.c.C(x, epar)
+        CY=self.c.CY(x, epar)
 
         # Calculate output voltage noise
         if self.outputnodes != None:
@@ -135,18 +138,21 @@ class SymbolicNoise(Analysis):
 
         zm = sympy.Matrix([[resultdict[var] for var in outputvariables]]).T
 
+        ## Simplify
+        zm = zm.applyfunc(lambda x: cancel(together(x)))
+
         # Calculate output noise using correlation matrix
         xn2out = zm.T * CY * zm.applyfunc(sympy.conjugate)
+        xn2out = cancel(together(xn2out[0]))
 
         # Store results
         result = InternalResult()
 
         if self.outputnodes != None:
-            result.storeSignal('vn2out', xn2out[0])
+            result.storeSignal('vn2out', xn2out)
         elif self.outputsrc != None:
-            result.storeSignal('in2out', xn2out[0])
+            result.storeSignal('in2out', xn2out)
 
-        print zm
         # Calculate the gain from the input voltage source by using the transimpedance vector
         # to find the transfer from the branch voltage of the input source to the output
         gain = None
@@ -157,7 +163,7 @@ class SymbolicNoise(Analysis):
             gain = zm[i]
         
             result.storeSignal('gain', gain)
-            result.storeSignal('vn2in', xn2out[0]/gain**2)
+            result.storeSignal('vn2in', xn2out/gain**2)
 
         return result
     
