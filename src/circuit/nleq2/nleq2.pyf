@@ -1,0 +1,52 @@
+!    -*- f90 -*-
+
+! PySCeS - Python Simulator for Cellular Systems 
+!            (http://pysces.sourceforge.net)
+! Copyright (C) B.G. Olivier, J.M. Rohwer, J.-H.S. Hofmeyr
+! Stellenbosch, 2004-2006.
+! Triple-J Group for Molecular Cell Physiology
+! Stellenbosch University, South Africa
+! 
+! PySCeS is Open Source Software distributed under
+! the GNU GENERAL PUBLIC LICENSE (see docs/GPL)
+
+python module nleq2__user__routines
+    interface nleq2_user_interface
+        subroutine fcn(n,x,f,ifail) ! in nleq2.f
+            integer optional,check(len(x)>=n),depend(x) :: n=len(x)
+            double precision dimension(n),intent(in) :: x
+            double precision dimension(n),depend(n),intent(out) :: f
+            integer intent(hide) :: ifail
+        end subroutine fcn
+        subroutine jac(n,m1,x,a,ifail) ! in nleq2.f:n1int:unknown_interface
+            integer optional,check(len(x)>=n),depend(x) :: n=len(x)
+            integer optional,check(shape(a,0)==m1),depend(a) :: m1=shape(a,0)
+            double precision dimension(n),intent(in) :: x
+            double precision dimension(m1,n),depend(n),intent(out) :: a
+            integer intent(hide) :: ifail
+        end subroutine jac
+    end interface nleq2_user_interface
+end python module nleq2__user__routines
+
+python module nleq2 ! in nleq2.f
+    interface  nleq2
+        subroutine nleq2(n,fcn,jac,x,xscal,rtol,iopt,ierr,liwk,iwk,lrwk,rwk) ! in nleq2.f
+            use nleq2__user__routines
+            integer optional,check(len(x)>=n),depend(x) :: n=len(x)
+            external fcn
+            external jac
+            double precision dimension(n), intent(in,out) :: x
+            double precision dimension(n),depend(n), intent(in,out) :: xscal
+            double precision intent(in,out):: rtol
+            integer dimension(50), intent(in,out):: iopt
+            integer intent(out):: ierr
+            integer optional,check(len(iwk)>=liwk),depend(iwk) :: liwk=len(iwk)
+            integer dimension(liwk),intent(in) :: iwk
+            integer optional,check(len(rwk)>=lrwk),depend(rwk) :: lrwk=len(rwk)
+            double precision dimension(lrwk),intent(in) :: rwk
+        end subroutine nleq2
+    end interface
+end python module nleq2.f
+
+! This file was generated using f2py
+! See http://cens.ioc.ee/projects/f2py2e/

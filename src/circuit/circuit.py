@@ -211,6 +211,12 @@ class Circuit(object):
 
         return result
 
+    def __repr__(self):
+        return self.__class__.__name__ + \
+               '(' + \
+               ','.join([str(self.nodenames[term]) for term in self.terminals] + \
+                        ['%s=%s'%(par.name, self.ipar.get(par)) for par in self.ipar.parameters]) + \
+                        ')'
         
 class SubCircuit(Circuit):
     """
@@ -361,6 +367,8 @@ class R(Circuit):
     >>> c = SubCircuit()
     >>> n1=c.addNode('1')
     >>> c['R'] = R(n1, gnd, r=1e3)
+    >>> c['R']
+    R(Node('1'),Node('gnd'),r=1000.0)
     >>> c.G(zeros((2,1)))
     array([[0.001, -0.001],
            [-0.001, 0.001]], dtype=object)
