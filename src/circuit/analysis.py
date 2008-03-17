@@ -3,6 +3,8 @@ from scipy import optimize
 from circuit import Circuit, SubCircuit, VS,IS,R,C,Diode, gnd
 from result import Waveform
 from internalresult import InternalResultSet, InternalResult
+import numpy
+import copy
 
 class NoConvergenceError(Exception):
     pass
@@ -127,13 +129,39 @@ class DC(Analysis):
             x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
             f =  self.c.i(array([x]).T) + self.c.U(0)
             (f,) = removeRowCol((f,), irefnode)
+#            print x,f.T[0]
             return array(f.T[0], dtype=float)
         def fprime(x):
             x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
             J = self.c.G(array([x]).T)
             (J,) = removeRowCol((J,), irefnode)
+#            print "J:",array(J, dtype=float)
             return array(J, dtype=float)
         x0 = zeros(n-1)
+
+        rtol = 1e-4
+
+        self.__SI__ = numpy.zeros(x0.shape,'d')
+        iwk = numpy.zeros((100*len(self.__SI__)),'i')
+        rwk = numpy.zeros((100*len(self.__SI__)),'d')
+        iopt = numpy.zeros((50),'i')
+        s_scale = copy.copy(x0)
+        
+        iopt[2] =  1 # self.nleq2_jacgen #2
+        iopt[8] =  0 # self.nleq2_iscal  #0
+        iopt[10] = 1 # self.nleq2_mprerr #1
+        iopt[30] = 4 # self.nleq2_nonlin #4
+        iopt[31] = 0 #self.nleq2_qrank1 #0
+        iopt[34] = 0 # self.nleq2_qnscal #0
+        iopt[37] = 0 #self.nleq2_ibdamp #0
+        iopt[38] = 0 # self.nleq2_iormon #0
+
+        iwk[30] = 50
+        
+#        import nleq2.nleq2 as nleq2
+#        res,s_scale,rtol,iopt,ierr = nleq2.nleq2(func,fprime,x0,s_scale,rtol,iopt,iwk,rwk)
+#        print res, ierr
+
         x, infodict, ier, mesg = fsolve(func, x0, fprime=fprime, full_output=True)
 
         if ier != 1:

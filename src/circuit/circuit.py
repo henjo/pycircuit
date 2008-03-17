@@ -570,13 +570,12 @@ class VCCS(Circuit):
 
 class Diode(Circuit):
     terminals = ['plus', 'minus']
-    mpar = Circuit.mpar.copy( Parameter(name='IS', desc='Saturation current', unit='A', default=1e-14) )
+    mpar = Circuit.mpar.copy( Parameter(name='IS', desc='Saturation current', unit='A', default=1e-13) )
         
     def G(self, x, epar=defaultepar):
         VD = x[0,0]-x[1,0]
         VT = kboltzmann*epar.T / qelectron
-        gmin = 1e-12
-        g = self.mpar.IS*exp(VD/VT)/VT + gmin
+        g = self.mpar.IS*exp(VD/VT)/VT
         return array([[g, -g],
                       [-g, g]], dtype=object)
 
@@ -586,8 +585,7 @@ class Diode(Circuit):
         """
         VD = x[0,0]-x[1,0]
         VT = kboltzmann*epar.T / qelectron
-        gmin = 1e-12
-        I = self.mpar.IS*(exp(VD/VT)-1.0) + gmin*VD
+        I = self.mpar.IS*(exp(VD/VT)-1.0)
         return array([[I, -I]], dtype=object).T
 
 if __name__ == "__main__":
