@@ -5,24 +5,27 @@ from copy import copy
 import sympy
 
 class DDD(object):
-    def __init__(self, top, D1=None, D0=None, sign=1):
+    pass
+
+class Node(object):
+    def __init__(self, index, D1=None, D0=None, sign=1):
         """Construct a DDD (Determinant-Decision-Diagram)
         from top vertex values and 1- and 0-edges
 
-        @param top: top vertex
-        @param D1:  1-edge subgraph
-        @type  D1:  DDD object
-        @param D0:  0-edge subgraph
-        @type  D1:  DDD object
+        @param index: vertex index
+        @param D1:  1-edge 
+        @type  D1:  Node instance
+        @param D0:  0-edge 
+        @type  D1:  Node instance
         @param sign: sign of vertex (+1, -1)
-        @type  D1: int
+        @type  sign: int
         
         """
-        self.top = top
+        self.index = index
         self.sign = sign
 
         # Check if terminal nodes
-        if top in (0,1):
+        if index in (0,1):
             self.D1 = None
             self.D0 = None
         else:
@@ -39,29 +42,29 @@ class DDD(object):
         
     def cofactor(self, s):
         """Return cofactor of DDD with regards to s"""
-        if self.top < s:
-            return DDD(0)
-        elif self.top == s:
+        if self.index < s:
+            return Node(0)
+        elif self.index == s:
             return self.D1
-        elif self.top > s:
-            return DDD(self.top, D1=self.D1.cofactor(s), D0=self.D0.cofactor(s))
+        elif self.index > s:
+            return Node(self.index, D1=self.D1.cofactor(s), D0=self.D0.cofactor(s))
 
     def remainder(self, s):
-        if self.top < s:
+        if self.index < s:
             return self
-        elif self.top == s:
+        elif self.index == s:
             return self.D0
-        elif self.top > s:
-            return DDD(self.top, D1=self.D1.remainder(s), D0=self.D0.remainder(s))
+        elif self.index > s:
+            return Node(self.index, D1=self.D1.remainder(s), D0=self.D0.remainder(s))
 
     def isleaf(self):
         return self.D0 == None and self.D1 == None
 
     def __eq__(self, P):
-        if not isinstance(P, DDD):
+        if not isinstance(P, Node):
             return False
         else:
-            return self.top == P.top and self.D0 == P.D0 and self.D1 == P.D1 \
+            return self.index == P.index and self.D0 == P.D0 and self.D1 == P.D1 \
                    and self.sign == P.sign
         
     def union(self, P):
@@ -71,46 +74,46 @@ class DDD(object):
             return self
         elif self == P:
             return self
-        elif self.top > P.top:
-            return DDD(self.top, D1=self.D1, D0=self.D0.union(P))
-        elif self.top < P.top:
-            return DDD(P.top, D1=P.D1, D0=self.union(P.D0))
-        elif self.top == P.top:
-            return DDD(self.top, D1=self.D1.union(P.D1), D0=self.D0.union(P.D0))
+        elif self.index > P.index:
+            return Node(self.index, D1=self.D1, D0=self.D0.union(P))
+        elif self.index < P.index:
+            return Node(P.index, D1=P.D1, D0=self.union(P.D0))
+        elif self.index == P.index:
+            return Node(self.index, D1=self.D1.union(P.D1), D0=self.D0.union(P.D0))
 
     def intersec(self, P):
         if self == VertexZero or P == VertexZero:
             return VertexZero
         elif self == P:
             return self
-        elif self.top > P.top:
+        elif self.index > P.index:
             return self.D0.intersec(P)
-        elif self.top < P.top:
+        elif self.index < P.index:
             return self.intersec(P.D0)
-        elif self.top == P.top:
-            return DDD(self.top, D1=self.D1.intersec(P.D1), D0=self.D0.intersec(P.D0))
+        elif self.index == P.index:
+            return Node(self.index, D1=self.D1.intersec(P.D1), D0=self.D0.intersec(P.D0))
 
     def __mul__(self, s):
-        if self.top < s:
-            return DDD(s, D1=self, D0=VertexZero)
-        elif self.top == s:
+        if self.index < s:
+            return Node(s, D1=self, D0=VertexZero)
+        elif self.index == s:
             return copy(self)
-        elif self.top > s:
-            return DDD(self.top, D1=self.D1*s, D0=self.D0*s)
+        elif self.index > s:
+            return Node(self.index, D1=self.D1*s, D0=self.D0*s)
 
     def __sub__(self, P):
-        if self.top == 0 and self.isleaf():
+        if self.index == 0 and self.isleaf():
             return VertexZero
-        elif P.top == 0 and P.isleaf():
+        elif P.index == 0 and P.isleaf():
             return self
         elif self == P:
             return VertexZero
-        elif self.top > P.top:
-            return DDD(self.top, D1=self.D1, D0=self.D0-P)
-        elif self.top < P.top:
+        elif self.index > P.index:
+            return Node(self.index, D1=self.D1, D0=self.D0-P)
+        elif self.index < P.index:
             return self - P.D0
-        elif self.top == P.top:
-            return DDD(self.top, D1=self.D1 - P.D1, D0=self.D0-P.D0)
+        elif self.index == P.index:
+            return Node(self.index, D1=self.D1 - P.D1, D0=self.D0-P.D0)
         
     def __or__(self, s):
         return self.union(s)
@@ -120,18 +123,18 @@ class DDD(object):
 
     def eval(self):
         if self.D1 == None and self.D0 == None:
-            return self.top
+            return self.index
         else:
-            return self.D0.eval() + self.sign * self.top * self.D1.eval()
+            return self.D0.eval() + self.sign * self.index * self.D1.eval()
 
     def __repr__(self):
         return str(self.eval())
 
     def _asdotAddSelf(self, g):
         if self.isleaf():
-            top = g.add_node(str(self), label=str(self.top), shape='box')
+            top = g.add_node(str(self), label=str(self.index), shape='box')
         else:
-            top = g.add_node(str(self), label=str(self.top))
+            top = g.add_node(str(self), label=str(self.index))
 
             D0top = self.D0._asdotAddSelf(g)
             D1top = self.D1._asdotAddSelf(g)
@@ -143,7 +146,7 @@ class DDD(object):
         return top
         
     def asdot(self, name=None):
-        """Return GraphViz representation of DDD"""
+        """Return GraphViz representation of Node"""
         g = yapgvb.Digraph()
         topnode = self._asdotAddSelf(g)
 
@@ -153,8 +156,8 @@ class DDD(object):
             
         return g
 
-VertexOne = DDD(1, None, None)
-VertexZero = DDD(0, None, None)
+VertexOne = Node(1, None, None)
+VertexZero = Node(0, None, None)
 
 def DDD_of_matrix(A):
     """Create DDD of a Sympy matrix

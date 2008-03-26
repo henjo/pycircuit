@@ -37,6 +37,13 @@ class ParameterDict(object):
                 raise KeyError()
             self.__dict__[k] = v
 
+    def get(self, param):
+        """Get value by parameter object or parameter name"""
+        if isinstance(param, Parameter):
+            return self.__dict__[param.name]
+        else:
+            return self.__dict__[param]
+
     def copy(self, *parameters, **kvargs):
         newpd = copy.copy(self)
         newpd.append(*parameters)
@@ -86,6 +93,7 @@ class ParameterDictTest(unittest.TestCase):
         self.assertEqual(paramdict.parameters, [gm,gds])
         self.assertEqual(paramdict.gm, 2e-3)
         self.assertEqual(paramdict.gds, 1e-6)
+
     def testAppendParameter(self):
         """Test appending a parameter"""
         paramdict = ParameterDict()
@@ -94,12 +102,28 @@ class ParameterDictTest(unittest.TestCase):
         paramdict.append(gmparam)
         self.assertEqual(len(paramdict), 1)
         self.assertEqual(paramdict['gm'], gmparam)
+
+    def testGetItem(self):
+        """Test getting parameter"""
+        paramdict = ParameterDict()
+        gmparam = Parameter(name="gm", desc="Transconductance", unit="A/V", default=2.0e-6)
+        paramdict.append(gmparam)
+        self.assertEqual(paramdict['gm'], gmparam)
+
     def testGetSetValue(self):
         paramdict = ParameterDict()
-        paramdict.append(Parameter(name="gm", desc="Transconductance", unit="A/V", default=2.0e-6))
+        gmparam = Parameter(name="gm", desc="Transconductance", unit="A/V", default=2.0e-6)
+        paramdict.append(gmparam)
+
+        self.assertEqual(paramdict.get('gm'), 2e-6)
+
+        self.assertEqual(paramdict.get(gmparam), 2e-6)
+
         self.assertEqual(paramdict.gm, 2e-6)
+
         paramdict.gm = 3e-6
         self.assertEqual(paramdict.gm, 3e-6)
+
     def testSet(self):
         paramdict = ParameterDict()
         paramdict.append(Parameter(name="gm", desc="Transconductance", unit="A/V", default=2.0e-6))
@@ -117,6 +141,7 @@ class ParameterDictTest(unittest.TestCase):
         self.assertTrue(gmparam in paramdict)
         self.assertFalse('gds' in paramdict)
         self.assertFalse(Parameter(name='gds') in paramdict)
+
     def testGetParameters(self):
         paramdict = ParameterDict()
         gmparam = Parameter(name="gm", desc="Transconductance", unit="A/V", default=2.0e-6)
@@ -125,6 +150,7 @@ class ParameterDictTest(unittest.TestCase):
         self.assertEqual(paramdict.parameters, [gmparam])
         paramdict.append(gdsparam)
         self.assertEqual(paramdict.parameters, [gmparam, gdsparam])
+
     def testCopy(self):
         paramdict = ParameterDict(Parameter(name="vth0", desc="Threshold voltage", unit="V", default=0.3))
         paramdict2 = paramdict.copy()
