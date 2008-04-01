@@ -1,16 +1,28 @@
 # Based on m_matrix.h from Gnucap, Al Davis
+
+# doctest not supported yet
+
 from numpy import arange, array, zeros
 
-class BSMATRIX:
+class Bsmatrix:
   """Sparse matrix, bordered block with spikes
   
+  declare a matrix:
+  a=Bsmatrix(4)
+  tell it what positions may be used
+  a.iwant(0,1)
+  a.iwant(1,2)
+  a.iwant(0,3)
+  setup the structure
+  a.allocate()
+
   """
   def __init__(self,size=None,T=None):
     self.changed=[] #list with booleans
     self.data=None
     self.lownode=arange(size)
-    self.row0=self.lownode-1  #index of col 0 of every row
-    self.col0=self.lownode+1 #index of row 0 of every col
+    self.row0=self.lownode-1  #index of position 0 of every row
+    self.col0=self.lownode+1 #index of position 0 of every col
     self.diag=self.lownode # index of diagonal elements
     self.nzcount=0 # count of non-zero elements
     self.size=size
@@ -38,8 +50,30 @@ class BSMATRIX:
     return None
 
   def getindex(self,row,col):
-    """
-    Returns index of 1-dim data correponsing to 2-dim data
+    """Returns index of 1-dim data storage correponsing to 2-dim input
+
+    The actual data is stored in a one dimensional array (self.data) 
+    and getindex converts the 2-dimensional representation with row and 
+    column, to the corresponding index in the 1-dim data array.
+
+    >>> a=Bsmatrix(4)
+    >>> a.iwant[0,1]
+    >>> a.iwant[1,2]
+    >>> a.iwant[0,3]
+    >>> a.allocate()
+    >>> a.getindex(2,1)
+    4.0
+    >>> a.getindex(2,2)
+    5.0
+    >>> a.getindex(1,2)
+    6.0
+    >>> a.getindex(3,0)
+    7.0
+    >>> a.getindex(0,2) #not part of sparse matrix
+    7.0
+
+    
+
     """
     if row>col: #below diagonal
       return self.row0[row]+col
@@ -60,6 +94,10 @@ class BSMATRIX:
     return self.size
 
   def new_subdot(self,i,j):
+    """Solves for L/U elements by subtracting a dot-product
+
+    Solves equation A(i.j)=L(i,:)*U(:,j) for L(i,j) or U(i,j) 
+    """
     max_low_node=max(self.lownode[i],self.lownode[j])
     if i>j:# below diagonal
       min_node=j #first diagonal
@@ -74,6 +112,25 @@ class BSMATRIX:
 
   def iwant(self, node1, node2):
     """Adapt self.lownode to matrix shape
+
+    >>> a=Bsmatrix(4)
+    >>> a.iwant[0,1]
+    >>> a.iwant[1,2]
+    >>> a.iwant[0,3]
+    >>> a.allocate()
+    >>> a.lownode
+    array([0, 0, 1, 0])
+
+    node 0 has a connection downto 0
+    node 1 has a connection downto 0
+    node 2 has a connection downto 1
+    node 3 has a connection downto 0
+
+    resulting structure (of a not so sparse matrix) : (used = X, unused=-)
+    X X - X
+    X X X X
+    - X X X
+    X X X X
     """
     assert(node1 < self.size)
     assert(node2 < self.size)
@@ -92,6 +149,16 @@ class BSMATRIX:
     Setup based on matrix shape
     Now we update indices as well
     We calculate nzcount and create the data vector
+
+    >>> a=Bsmatrix(4)
+    >>> a.allocate()
+    >>> a.data
+    array([ 0.,  0.,  0.,  0.])
+    >>> a.lownode=array([0, 0, 1, 2])
+    >>> a.allocate()
+    >>> a.data
+    array([ 0.,  0.,  0.,  0.,  0.,  0.,  0.,  0.,  0.,  0.])
+
     """
     low_diff=arange(self.size)-self.lownode
     self.nzcount=zeros(self.size)
@@ -119,6 +186,17 @@ class BSMATRIX:
     Although unlikely, the result might of course be zero
     To be sure we would have to check all diagonal elements
     for zero after the addition.
+
+    >>> a=Bsmatrix(4)
+    >>> a.allocate()
+    >>> a.dezero(1)
+    >>> a.dense()
+    array([
+    [ 1.,  0.,  0.,  0.],
+    [ 0.,  1.,  0.,  0.],
+    [ 0.,  0.,  1.,  0.],
+    [ 0.,  0.,  0.,  1.]])
+
     """
     for i in xrange(self.size):
       self[i,i] += offset
@@ -136,8 +214,9 @@ class BSMATRIX:
     return None
 
   def transpose(self):
-    """LU-decomposition with normalised L-matrix
-    Matrix self(=L*U) -> self=L+U, changed in place
+    """Transpose matrix in place
+    
+    Swap all *valid* elements (i,j)->(j,i) not on diagonal.
     """
     for i in range(self.size):
       for j in range(self.lownode[i],i): #avoids diagonal
@@ -178,3 +257,12 @@ class BSMATRIX:
 ##in traversing the valid values of the sparse matrix
 ##Could be a good idea to have a traversal function, like for element in
 ##Is that called an iterator?
+
+# >>> a=Bsmatrix(4)
+# >>> a.iwant[0,1]
+# >>> a.iwant[1,2]
+# >>> a.iwant[0,3]
+# >>> a.allocate()
+# >>> a.lownode
+
+    
