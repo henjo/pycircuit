@@ -252,6 +252,40 @@ class Bsmatrix:
       dense_arr[i,i]=self[i,i]
     return dense_arr
 
+  def dense2sparse(self, dense_arr):
+    """ Setup a sparse version of a dense matrix.
+
+    Takes a dense matrix of type numpy-array (and same size), as input and 
+    adapt self to a sparse version of the dense matrix.
+
+    >>> ad=array([[ 1.,  2.,  0.,  0.,  0.],
+    >>>   [ 0.,  1.,  2.,  3.,  0.],
+    >>>   [ 0.,  0.,  1.,  3.,  0.],
+    >>>   [ 0.,  0.,  0.,  1.,  0.],
+    >>>   [ 0.,  0.,  0.,  0.,  1.]])
+    >>> asparse=Bsmatrix(5)
+    >>> asparse.dense2sparse(ad)
+    >>> asparse.dense()
+    array([[ 1.,  2.,  0.,  0.,  0.],
+       [ 0.,  1.,  2.,  3.,  0.],
+       [ 0.,  0.,  1.,  3.,  0.],
+       [ 0.,  0.,  0.,  1.,  0.],
+       [ 0.,  0.,  0.,  0.,  1.]])
+
+    """
+    assert((self.size,self.size)==dense_arr.shape)
+    nonz_row,nonz_col=dense_arr.nonzero()
+    for i,j in zip(nonz_row,nonz_col):
+      self.iwant(i,j)
+    self.allocate()
+    for i in xrange(self.size):
+      for j in xrange(self.lownode[i],i):
+        self[i,j]=dense_arr[i,j]
+        self[j,i]=dense_arr[j,i]
+      self[i,i]=dense_arr[i,i]
+    return None
+
+
         
 ##Note! lu_decomp, transpose and dense are very similar
 ##in traversing the valid values of the sparse matrix
