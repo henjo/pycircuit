@@ -1,0 +1,3 @@
+target = jwdb
+sources = sipjwdbcmodule.c
+headers = sipAPIjwdb.h
