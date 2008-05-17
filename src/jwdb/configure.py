@@ -27,10 +27,11 @@ makefile.extra_include_dirs = [os.path.join(mgchome, 'include')]
 # Add the library we are wrapping.  The name doesn't include any platform
 # specific prefixes or extensions (e.g. the "lib" prefix on UNIX, or the
 # ".dll" extension on Windows).
-makefile.extra_lib_dirs = [os.path.join(mgchome, 'libs')]
 if platform.machine() == 'x86_64':
-    makefile.extra_libs = ["gwl_64"]
+    makefile.extra_lib_dirs = [os.path.join(mgchome, 'aol', 'lib')]
+    makefile.extra_libs = ["eldogwl_64"]
 else:
+    makefile.extra_lib_dirs = [os.path.join(mgchome, 'ixl', 'lib')]
     makefile.extra_libs = ["gwl"]
 
 
