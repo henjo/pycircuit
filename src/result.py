@@ -6,6 +6,17 @@ import types
 import operator
 import pylab
 
+# Cartesian operator of a list
+def cartesian(listList):
+    if listList:
+        result = []
+        prod = cartesian(listList[:-1])
+        for x in prod:
+            for y in listList[-1]:
+                result.append(x + (y,))
+        return result
+    return [()]
+
 class ResultSet(object):
     """The ResultCollection class handles a set of results"""
 
@@ -125,9 +136,9 @@ class Waveform(object):
         """
         if isinstance(a, Waveform):
             assert(alltrue(concatenate(self._xlist) == concatenate(a.getX())), "X values must be the same")
-            return Waveform(self._xlist, self._y + a._y)
+            return Waveform(self._xlist, self._y + a._y, xlabels = self.xlabels)
         else:
-            return Waveform(self._xlist, self._y + a)
+            return Waveform(self._xlist, self._y + a, xlabels = self.xlabels)
     def __radd__(self, a):
         """Reverse add operator
 
@@ -151,9 +162,9 @@ class Waveform(object):
         if isinstance(a, Waveform):
             assert(alltrue(concatenate(self._xlist) == \
                                  concatenate(a.getX())), "X values must be the same")
-            return Waveform(self._xlist, self._y - a._y)
+            return Waveform(self._xlist, self._y - a._y, xlabels = self.xlabels)
         else:
-            return Waveform(self._xlist, self._y - a)
+            return Waveform(self._xlist, self._y - a, xlabels = self.xlabels)
     def __rsub__(self, a):
         """Reverse subtract operator
 
@@ -164,9 +175,9 @@ class Waveform(object):
         """
         if isinstance(a, Waveform):
             assert(reduce(operator.__and__, map(lambda x,y: alltrue(x==y), self._xlist, a._xlist)))
-            return Waveform(self._xlist, a._y-self._y)
+            return Waveform(self._xlist, a._y-self._y, xlabels = self.xlabels)
         else:
-            return Waveform(self._xlist, a-self._y)
+            return Waveform(self._xlist, a-self._y, xlabels = self.xlabels)
     def __mul__(self, a):
         """Multiplication operator
 
@@ -180,9 +191,9 @@ class Waveform(object):
         """
         if isinstance(a, Waveform):
             assert(reduce(operator.__and__, map(lambda x,y: alltrue(x==y), self._xlist, a._xlist)))
-            return Waveform(self._xlist, self._y * a._y)
+            return Waveform(self._xlist, self._y * a._y, xlabels = self.xlabels)
         else:
-            return Waveform(self._xlist, self._y * a)
+            return Waveform(self._xlist, self._y * a, xlabels = self.xlabels)
     def __rmul__(self, a):
         """Reverse multiplication operator
 
@@ -206,9 +217,9 @@ class Waveform(object):
         """
         if isinstance(a, Waveform):
             assert(reduce(operator.__and__, map(lambda x,y: alltrue(x==y), self._xlist, a._xlist)))
-            return Waveform(self._xlist, self._y/a._y)
+            return Waveform(self._xlist, self._y/a._y, xlabels = self.xlabels)
         else:
-            return Waveform(self._xlist, self._y/a)
+            return Waveform(self._xlist, self._y/a, xlabels = self.xlabels)
     def __rdiv__(self, a):
         """Reverse division operator
 
@@ -219,9 +230,9 @@ class Waveform(object):
         """
         if isinstance(a, Waveform):
             assert(reduce(operator.__and__, map(lambda x,y: alltrue(x==y), self._xlist, a._xlist)))
-            return Waveform(self._xlist, a._y/self._y)
+            return Waveform(self._xlist, a._y/self._y, xlabels = self.xlabels)
         else:
-            return Waveform(self._xlist, a/self._y)
+            return Waveform(self._xlist, a/self._y, xlabels = self.xlabels)
 
     def __abs__(self):
         """Absolute value operator
@@ -231,7 +242,7 @@ class Waveform(object):
         Waveform([1 2 3],[ 1.          1.          1.41421356])
 
         """
-        return Waveform(self._xlist, abs(self._y))
+        return Waveform(self._xlist, abs(self._y), xlabels = self.xlabels)
 
     def ymax(self):
         """Returns the maximum y-value
@@ -271,31 +282,81 @@ class Waveform(object):
         Waveform([1 2 3],[ 0.  1.])
 
         """
-        return Waveform(self._xlist, log10(self._y))
+        return Waveform(self._xlist, log10(self._y), xlabels = self.xlabels)
         
     def db20(self):
-        """Return 20*log10(x)
+        """Return x in dB where x is assumed to be a non-power quantity
 
-        >>> w1=Waveform(array([1,2,3]),array([complex(-1,0),complex(0,1),complex(1,-1)]))
+        >>> w1=Waveform(array([1,2,3]),array([complex(-1,0),complex(0,1),complex(1,-1)]), ylabel='x')
         >>> w1.db20()
         Waveform([1 2 3],[ 0.          0.          3.01029996])
-
+        >>> w1.db20().ylabel
+        'db20(x)'
+        
         """
-        return 20.0*abs(self).log10()
+        result = 20.0*abs(self).log10()
+        if self.ylabel:
+            result.ylabel = 'db20(%s)'%self.ylabel
+        return result
 
     # Plotting (wrapper around matplotlib)
     def _plot(self, plotfunc, *args, **kvargs):
         import pylab
         if self.getSweepDimensions() == 1:
             p=plotfunc(self.getX(0), self.getY())
-        pylab.xlabel('x')
-        pylab.ylabel('y')
+
+        if self.xlabels:
+            pylab.xlabel(self.xlabels[-1])
+        if self.ylabel:
+            pylab.ylabel(self.ylabel)
 
     def plot(self, *args, **kvargs): self._plot(pylab.plot, *args, **kvargs)
     def semilogx(self, *args, **kvargs): self._plot(pylab.semilogx, *args, **kvargs)
     def semilogy(self, *args, **kvargs): self._plot(pylab.semilogy, *args, **kvargs)
     def loglog(self, *args, **kvargs): self._plot(pylab.loglog, *args, **kvargs)
     
+    @property
+    def astable(self):
+        """Return a table in text format
+
+        >>> print Waveform(array([1,2,3]),array([3,4,5])).astable
+        ====  ===
+          x0    y
+        ====  ===
+           1    3
+           2    4
+           3    5
+        ====  ===
+
+        >>> print Waveform(array([1,2]),array([3,4]), xlabels = ('X',), ylabel = 'Y').astable
+        ===  ===
+          X    Y
+        ===  ===
+          1    3
+          2    4
+        ===  ===
+
+        >>> t=Waveform(array([1,2]),array([3,4]), xlabels = ['X'], ylabel = 'Y').astable
+
+        
+        """
+        import rsttable
+
+        xvalues = cartesian(self._xlist)
+        yvalues = list(self._y.reshape((len(xvalues))))
+
+        if self.xlabels == None:
+            xlabels = ['x%d'%i for i in range(len(self._xlist))]
+        else:
+            xlabels = self.xlabels
+
+        if self.ylabel == None:
+            ylabel = 'y'
+        else:
+            ylabel = self.ylabel
+
+        return rsttable.toRSTtable(map(lambda x,y: tuple(x)+(y,), [xlabels] + xvalues, [ylabel] + yvalues))
+
     def __repr__(self):
         if self._dim > 1:
             xlist = self._xlist
@@ -305,7 +366,7 @@ class Waveform(object):
 
 ## Waveform functions
 def db20(x):
-    return 20.0*log10(abs(x))
+    return x.db20()
 
 def db10(x):
     return 10.0*log10(abs(x))
