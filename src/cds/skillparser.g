@@ -6,7 +6,7 @@ parser skillparser:
     ignore: r'\s+'
     token FLOATNUM: r'-?[0-9]+\.[0-9e+-]*'
     token INTNUM:   r'-?[0-9]+'
-    token ID:    r'[-+*/!@$%^&=.a-zA-Z0-9_]+'
+    token ID:    r'[-+*/!@$%^&=.?a-zA-Z0-9_]+'
     token STR:   r'"([^\\"]+|\\.)*"'
         
     ## PSFAsc grammar

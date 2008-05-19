@@ -12,7 +12,7 @@ class skillparserScanner(runtime.Scanner):
         ('\\s+', re.compile('\\s+')),
         ('FLOATNUM', re.compile('-?[0-9]+\\.[0-9e+-]*')),
         ('INTNUM', re.compile('-?[0-9]+')),
-        ('ID', re.compile('[-+*/!@$%^&=.a-zA-Z0-9_]+')),
+        ('ID', re.compile('[-+*/!@$%^&=.?a-zA-Z0-9_]+')),
         ('STR', re.compile('"([^\\\\"]+|\\\\.)*"')),
     ]
     def __init__(self, str,*args,**kw):

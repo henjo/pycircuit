@@ -67,6 +67,8 @@ def parse(str):
 	True
 	>>> parse("nil")==Symbol('nil')
 	True
+	>>> parse("(1 ?a)")==[1,Symbol('?a')]
+	True
 
 	"""
 	return skillparser.parse('expr', str)
