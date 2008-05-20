@@ -1,5 +1,6 @@
 import numpy
-from numpy import array,concatenate,alltrue,max,min,log10,arange,pi,sin, sign, where, newaxis, r_, vstack, apply_along_axis, nan
+from numpy import array,concatenate,alltrue,max,min,log10,arange,pi,sin, \
+    sign, where, newaxis, r_, vstack, apply_along_axis, nan, isscalar
 import scipy
 import scipy.interpolate as interpolate
 import scipy.optimize as optimize
@@ -80,9 +81,9 @@ class Waveform(object):
         self._xlist = x
         self._y = y
         self._dim = dim
-        self._xlabels = xlabels
-        self._ylabel = ylabel
-        self._xunits = xunits
+        self.xlabels = xlabels
+        self.ylabel = ylabel
+        self.xunits = xunits
         self.yunit = yunit
         
     def getSweepDimensions(self):
@@ -122,26 +123,6 @@ class Waveform(object):
     def setY(self,value):
         "Set Y multi-dimensional array"
         self._y = value
-
-    @property
-    def xunits(self):
-        if self._xunits != None:
-            return self._xunits
-        else:
-            return len(self._xlist) * ('',)
-    @property
-    def xlabels(self):
-        if self._xlabels != None:
-            return self._xlabels
-        else:
-            return ['x%d'%i for i in range(len(self._xlist))]
-
-    @property
-    def ylabel(self):
-        if self._ylabel != None:
-            return self._ylabel
-        else:
-            return 'y'
 
     # Operations on Waveform objects
     def __add__(self, a):
@@ -286,19 +267,29 @@ class Waveform(object):
     def value(self, x):
         """Returns the interpolated y values at x
 
+        Example
+        =======
+
+        1-d waveform
+
         >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
         >>> w1.value(1.5)
-        array([ 4.])
+        4.0
+
+        2-d waveform
+        >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
+        >>> w2.value(2.5)
+        array([5.5, 6.5])
+        
+        
         """
         def findvalue(y):
             return scipy.interpolate.interp1d(self._xlist[-1], y)(x)
 
-        newy = apply_along_axis(findvalue, -1, self._y)
-
-        if len(newy.shape) == 0:
-            return float(newy)
-        else:
-            return Waveform(self._xlist[:-1], newy, xunits = self.xunits[:-1], yunit = self.yunit)
+        newy = apply_along_axis(findvalue, -1, self._y).reshape(self._y.shape[:-1])
+        
+        return Waveform(self._xlist[:-1], newy, xunits = self.xunits[:-1], yunit = self.yunit,
+                            xlabels = self.xlabels[:-1], ylabel = self.ylabel)
 
         print newy
 
@@ -379,12 +370,67 @@ class Waveform(object):
 
         return rsttable.toRSTtable(map(lambda x,y: tuple(x)+(y,), [self.xlabels] + xvalues, [ylabel] + yvalues))
 
+    def get_xunits(self):
+        if self._xunits != None:
+            return self._xunits
+        else:
+            return len(self._xlist) * ('',)
+    def set_xunits(self, units):
+        self._xunits = self.__checklabels(units)
+
+    def get_yunit(self):
+        if self._yunit != None:
+            return self._yunit
+        else:
+            return 'y'
+    def set_yunit(self, s):
+        if type(s) is not types.StringType and s != None:
+            raise ValueError('Unit must be a string')
+        self._yunit = s
+
+    def get_xlabels(self):
+        if self._xlabels != None:
+            return self._xlabels
+        else:
+            return ['x%d'%i for i in range(len(self._xlist))]
+    def set_xlabels(self, labels):
+        self._xlabels = self.__checklabels(labels)
+
+    def get_ylabel(self):
+        if self._ylabel != None:
+            return self._ylabel
+        else:
+            return 'y'
+    def set_ylabel(self, s):
+        if type(s) is not types.StringType and s != None:
+            raise ValueError('Label must be a string')
+        self._ylabel = s
+
+    xlabels = property(get_xlabels, set_xlabels, doc = 'x-axis list of labels for each dimension')
+    ylabel = property(get_ylabel, set_ylabel, doc = 'y-axis label')
+    xunits = property(get_xunits, set_xunits, doc = 'x-axis list of units for each dimension')
+    yunit = property(get_yunit, set_yunit, doc = 'y-axis unit')
+
     def __repr__(self):
         if self._dim > 1:
             xlist = self._xlist
         else:
             xlist = self._xlist[0]
         return self.__class__.__name__ + "(" + str(xlist) + "," + str(self.getY()) + ")"
+
+    def __checklabels(self, labels):
+        if not labels == None:
+            try:
+                labels = tuple(labels)
+            except:
+                raise ValueError('Cannot convert labels to tuples')
+            if len(labels) != self._dim:
+                raise ValueError('Label list should have the same length (%d) as the number of dimensions (%d)'%(len(labels), self._dim))
+            for label in labels:
+                if type(label) != types.StringType:
+                    raise ValueError('Labels should be of type string')
+        return labels
+                            
 
 ## Waveform functions
 def db20(x):
