@@ -456,7 +456,9 @@ def db20(w):
 def db10(w):
     return w.db10()
 def ymax(w, axis=-1):
-    return w.ymax(w, axis=axis)
+    return w.ymax(axis=axis)
+def ymin(w, axis=-1):
+    return w.ymax(axis=axis)
 
 def average(w, axis=-1):
     """Calculate average
