@@ -471,7 +471,7 @@ def average(w, axis=-1):
     Waveform([0, 1],[ 0.5  4. ])
 
     """
-    return reducedim(w, N.mean(w._y, axis=w.getaxis(axis)))
+    return reducedim(w, N.mean(w._y, axis=w.getaxis(axis)), axis=w.getaxis(axis))
 
 def stddev(w, axis=-1):
     """Calculate the standard deviation
@@ -488,7 +488,7 @@ def stddev(w, axis=-1):
     
 
     """
-    return reducedim(w, N.std(w._y, axis=axis), axis=w.getaxis(axis))
+    return reducedim(w, N.std(w._y, axis=w.getaxis(axis)), axis=w.getaxis(axis))
 
 
 raising = 1
