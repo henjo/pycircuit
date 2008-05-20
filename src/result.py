@@ -371,6 +371,20 @@ def db20(x):
 def db10(x):
     return 10.0*log10(abs(x))
 
+
+raising = 1
+falling = 2 
+either = 3
+def cross(w, crossval = 0.0, i=0, crosstype = either):
+    """Calculates the x-axis value where a particular crossing with the specified edge type occurs
+
+    >>> phi = arange(0, 4*pi, pi/10)+pi/4
+    >>> y = Waveform(phi, sin(phi))
+    >>> 
+    
+    """
+    
+
 if __name__ == "__main__":
     import doctest
     doctest.testmod()

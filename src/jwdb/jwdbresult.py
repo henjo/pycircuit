@@ -220,7 +220,7 @@ class _Analysis(object):
         ## Load waveform data and find out if all x-vectors are the same for all sweeps
         xfirst = None
         ylist = []
-        for varvalues in cartesian(sweepvalues):
+        for varvalues in numpy.cartesian(sweepvalues):
             sim = sweepmap[varvalues]
             waveform = sim.getWaveform(waveformname)
             x, y = waveform.read()
