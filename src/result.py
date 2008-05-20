@@ -302,9 +302,7 @@ class Waveform(object):
         def findvalue(y):
             return scipy.interpolate.interp1d(self._xlist[-1], y)(x)
 
-        newy = apply_along_axis(findvalue, -1, self._y).reshape(self._y.shape[:-1])
-        
-        return reducedim(self, newy)
+        return applyfunc_and_reducedim(findvalue, self)
 
     # Mathematical functions
     def log10(self):
@@ -446,11 +444,40 @@ class Waveform(object):
                             
 
 ## Waveform functions
-def db20(x):
-    return x.db20()
+def db20(w):
+    return w.db20()
 
-def db10(x):
-    return 10.0*log10(abs(x))
+def db10(w):
+    return w.db10()
+
+def average(w):
+    """Calculate average
+    
+    Example:
+
+    >>> w1=Waveform([range(2), range(2)],array([[1.0, 3.0], [0.0, 5.0]]))
+    >>> average(w1)
+    Waveform([0, 1],[ 2.   2.5])
+
+    """
+    return reducedim(w, N.mean(w._y, axis=-1))
+
+def stddev(w):
+    """Calculate the standard deviation
+
+    Returns the standard deviation over the highest dimension, a measure of the
+    spread of a distribution. 
+
+    Examples
+    ========
+
+    >>> w1=Waveform([range(2), range(4)], array([[1,2,3,4],[1,1,1,1]]))
+    >>> stddev(w1)
+    Waveform([0, 1],[ 1.11803399  0.        ])
+    
+
+    """
+    return reducedim(w, N.std(w._y, axis=-1))
 
 
 raising = 1
@@ -489,7 +516,6 @@ def cross(w, crossval = 0.0, n=0, crosstype=either):
     """
 
     x = w._xlist[-1]
-    shiftedy = w._y - crossval
 
     def findedge(y):
         ## Find edges
@@ -508,13 +534,17 @@ def cross(w, crossval = 0.0, n=0, crosstype=either):
         ## Find exact location of the crossing using interpolated x-values
         finterp = scipy.interpolate.interp1d(x, y)
         return optimize.zeros.brenth(finterp, x[iedge], x[iedge+1])
+ 
+    return applyfunc_and_reducedim(findedge, w - crossval, yunit = w.xunits[0], ylabel = w.xlabels[-1])
 
-    newy = apply_along_axis(findedge, -1, shiftedy)
+def applyfunc_and_reducedim(func, w, ylabel = None, yunit = None):
+    """Apply a function that reduces the dimension by one and return a new waveform or float if zero-rank"""
 
-    return reducedim(w, newy, yunit = w.xunits[0], ylabel = w.xlabels[-1])
+    newy = apply_along_axis(func, -1, w._y).reshape(w._y.shape[:-1])
+    return reducedim(w, newy, ylabel = ylabel, yunit = yunit)
 
 def reducedim(w, newy, ylabel = None, yunit = None):
-    """Create a new waveform with dimension reduced by 1 or return float if zero-rank"""
+    """Reduce the dimension by one and return a new waveform or float if zero-rank"""
 
     if rank(newy) == 0:
         return float(newy)
@@ -528,7 +558,6 @@ def reducedim(w, newy, ylabel = None, yunit = None):
     return Waveform(w._xlist[:-1], newy, xlabels = w.xlabels[:-1], ylabel = ylabel, 
                     xunits = w.xunits[:-1], yunit = yunit)
     
-
 if __name__ == "__main__":
     import doctest
     doctest.testmod()
