@@ -1,6 +1,6 @@
-import numpy
+import numpy as N
 from numpy import array,concatenate,alltrue,max,min,log10,arange,pi,sin, \
-    sign, where, newaxis, r_, vstack, apply_along_axis, nan, isscalar
+    sign, where, newaxis, r_, vstack, apply_along_axis, nan, isscalar, rank
 import scipy
 import scipy.interpolate as interpolate
 import scipy.optimize as optimize
@@ -248,21 +248,37 @@ class Waveform(object):
 
     def ymax(self):
         """Returns the maximum y-value
+        
+        Examples
+        ========
 
         >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
         >>> w1.ymax()
-        6
+        6.0
+
+        >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
+        >>> w2.ymax()
+        Waveform([1, 2],[6 7])
+
         """
-        return max(self._y)
+        return reducedim(self, N.max(self._y, axis=-1))
 
     def ymin(self):
         """Returns the minimum y-value
 
+        Examples
+        ========
+
         >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
         >>> w1.ymin()
-        3
+        3.0
+
+        >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
+        >>> w2.ymin()
+        Waveform([1, 2],[3 4])
+
         """
-        return min(self._y)
+        return reducedim(self, N.min(self._y, axis=-1))
 
     def value(self, x):
         """Returns the interpolated y values at x
@@ -279,7 +295,7 @@ class Waveform(object):
         2-d waveform
         >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
         >>> w2.value(2.5)
-        array([5.5, 6.5])
+        Waveform([1, 2],[ 4.  5.])
         
         
         """
@@ -288,10 +304,7 @@ class Waveform(object):
 
         newy = apply_along_axis(findvalue, -1, self._y).reshape(self._y.shape[:-1])
         
-        return Waveform(self._xlist[:-1], newy, xunits = self.xunits[:-1], yunit = self.yunit,
-                            xlabels = self.xlabels[:-1], ylabel = self.ylabel)
-
-        print newy
+        return reducedim(self, newy)
 
     # Mathematical functions
     def log10(self):
@@ -498,10 +511,23 @@ def cross(w, crossval = 0.0, n=0, crosstype=either):
 
     newy = apply_along_axis(findedge, -1, shiftedy)
 
-    if len(newy.shape) == 0:
+    return reducedim(w, newy, yunit = w.xunits[0], ylabel = w.xlabels[-1])
+
+def reducedim(w, newy, ylabel = None, yunit = None):
+    """Create a new waveform with dimension reduced by 1 or return float if zero-rank"""
+
+    if rank(newy) == 0:
         return float(newy)
-    else:
-        return Waveform(w._xlist[:-1], newy, yunit = w.xunits[0], xlabels = w.xlabels[:-1], ylabel = w.xlabels[-1])
+
+    if ylabel == None:
+        ylabel = w.ylabel
+
+    if yunit == None:
+        yunit = w.yunit
+
+    return Waveform(w._xlist[:-1], newy, xlabels = w.xlabels[:-1], ylabel = ylabel, 
+                    xunits = w.xunits[:-1], yunit = yunit)
+    
 
 if __name__ == "__main__":
     import doctest
