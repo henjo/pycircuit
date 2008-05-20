@@ -381,6 +381,13 @@ class Waveform(object):
 
         return rsttable.toRSTtable(map(lambda x,y: tuple(x)+(y,), [self.xlabels] + xvalues, [ylabel] + yvalues))
 
+    def getaxis(self, axis):
+        """Look up axis index by name of xlabel names"""
+        if type(axis) is types.StringType:
+            return list(self.xlabels).index(axis)
+        else:
+            return axis
+        
     def get_xunits(self):
         if self._xunits != None:
             return self._xunits
@@ -450,7 +457,7 @@ def db20(w):
 def db10(w):
     return w.db10()
 
-def average(w):
+def average(w, axis=-1):
     """Calculate average
     
     Example:
@@ -459,10 +466,14 @@ def average(w):
     >>> average(w1)
     Waveform([0, 1],[ 2.   2.5])
 
-    """
-    return reducedim(w, N.mean(w._y, axis=-1))
+    >>> w1=Waveform([range(2), range(2)],array([[1.0, 3.0], [0.0, 5.0]]), xlabels=['row','col'])
+    >>> average(w1, axis='row')
+    Waveform([0, 1],[ 0.5  4. ])
 
-def stddev(w):
+    """
+    return reducedim(w, N.mean(w._y, axis=w.getaxis(axis)))
+
+def stddev(w, axis=-1):
     """Calculate the standard deviation
 
     Returns the standard deviation over the highest dimension, a measure of the
@@ -477,7 +488,7 @@ def stddev(w):
     
 
     """
-    return reducedim(w, N.std(w._y, axis=-1))
+    return reducedim(w, N.std(w._y, axis=axis), axis=w.getaxis(axis))
 
 
 raising = 1
@@ -537,13 +548,13 @@ def cross(w, crossval = 0.0, n=0, crosstype=either):
  
     return applyfunc_and_reducedim(findedge, w - crossval, yunit = w.xunits[0], ylabel = w.xlabels[-1])
 
-def applyfunc_and_reducedim(func, w, ylabel = None, yunit = None):
+def applyfunc_and_reducedim(func, w, axis = -1, ylabel = None, yunit = None):
     """Apply a function that reduces the dimension by one and return a new waveform or float if zero-rank"""
 
-    newy = apply_along_axis(func, -1, w._y).reshape(w._y.shape[:-1])
-    return reducedim(w, newy, ylabel = ylabel, yunit = yunit)
+    newy = apply_along_axis(func, axis, w._y).reshape(w._y.shape[:-1])
+    return reducedim(w, newy, axis=axis, ylabel=ylabel, yunit=yunit)
 
-def reducedim(w, newy, ylabel = None, yunit = None):
+def reducedim(w, newy, axis=-1, ylabel=None, yunit=None):
     """Reduce the dimension by one and return a new waveform or float if zero-rank"""
 
     if rank(newy) == 0:
@@ -555,8 +566,17 @@ def reducedim(w, newy, ylabel = None, yunit = None):
     if yunit == None:
         yunit = w.yunit
 
-    return Waveform(w._xlist[:-1], newy, xlabels = w.xlabels[:-1], ylabel = ylabel, 
-                    xunits = w.xunits[:-1], yunit = yunit)
+    newxlist = list(w._xlist)
+    del(newxlist[axis])
+
+    newxlabels = list(w.xlabels)
+    del(newxlabels[axis])
+
+    newxunits = list(w.xunits)
+    del(newxunits[axis])
+        
+    return Waveform(newxlist, newy, xlabels = newxlabels, ylabel = ylabel, 
+                    xunits = newxunits, yunit = yunit)
     
 if __name__ == "__main__":
     import doctest
