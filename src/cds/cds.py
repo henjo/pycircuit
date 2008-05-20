@@ -51,8 +51,12 @@ class CadenceSession:
 			print "Got:", self.cds.before
 
 		response = [s for s in re.split("[\r]\n",self.cds.before) if s != ""][-1]
-			
-		result = skill.parse(response)
+
+		try:
+		    result = skill.parse(response)
+		except:
+		    print response
+		    raise Exception("Could not parse response")
 
 		if response.startswith("*Error*"):
 			raise Exception(response)

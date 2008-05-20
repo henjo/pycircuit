@@ -14,7 +14,7 @@ from itertools import islice, groupby
 from sets import Set
 
 analysis_types = {
-    2 : 'DC2',
+    2 : 'DCOP',
     4 : 'AC',
     7 : 'DC',
     10 : 'FSST'
@@ -221,20 +221,26 @@ class _Analysis(object):
         ## Load waveform data and find out if all x-vectors are the same for all sweeps
         xfirst = None
         ylist = []
-        for varvalues in numpy.cartesian(sweepvalues):
+        for varvalues in cartesian(sweepvalues):
             sim = sweepmap[varvalues]
             waveform = sim.getWaveform(waveformname)
             x, y = waveform.read()
-            ylist.extend(y)
 
-            if xfirst == None:
-                xfirst = x
+            ## If only one point the X-axis values makes no sense
+            if len(x) > 1:
+                ylist.extend(y)
+
+                if xfirst == None:
+                    xfirst = x
+                else:
+                    if x != xfirst:
+                        raise ValueError("All x-vectors must be the same %s != %s"%(str(xfirst), str(x)))
             else:
-                if x != xfirst:
-                    raise ValueError("All x-vectors must be the same %s != %s"%(str(xfirst), str(x)))
+                ylist.append(y)
 
-        variables.append(self.simulations[0].xunit)
-        sweepvalues.append(xfirst)
+        if len(x) > 1:
+            variables.append(self.simulations[0].xunit)
+            sweepvalues.append(xfirst)
         
         wavearray = numpy.array(ylist)
         wavearray = wavearray.reshape(map(len, sweepvalues))

@@ -1,7 +1,8 @@
 import numpy
-from numpy import array,concatenate,alltrue,max,min,log10
+from numpy import array,concatenate,alltrue,max,min,log10,arange,pi,sin, sign, where, newaxis, r_, vstack, apply_along_axis, nan
 import scipy
 import scipy.interpolate as interpolate
+import scipy.optimize as optimize
 import types
 import operator
 import pylab
@@ -74,14 +75,14 @@ class Waveform(object):
             
         dim = len(x)
 
-        assert(dim == len(y.shape))
-               
+        if dim != len(y.shape):
+            raise ValueError("Dimension of x (%s) does not match dimension of y (%s)"%(map(len, x), y.shape))
         self._xlist = x
         self._y = y
         self._dim = dim
-        self.xlabels = xlabels
-        self.ylabel = ylabel
-        self.xunits = xunits
+        self._xlabels = xlabels
+        self._ylabel = ylabel
+        self._xunits = xunits
         self.yunit = yunit
         
     def getSweepDimensions(self):
@@ -121,6 +122,26 @@ class Waveform(object):
     def setY(self,value):
         "Set Y multi-dimensional array"
         self._y = value
+
+    @property
+    def xunits(self):
+        if self._xunits != None:
+            return self._xunits
+        else:
+            return len(self._xlist) * ('',)
+    @property
+    def xlabels(self):
+        if self._xlabels != None:
+            return self._xlabels
+        else:
+            return ['x%d'%i for i in range(len(self._xlist))]
+
+    @property
+    def ylabel(self):
+        if self._ylabel != None:
+            return self._ylabel
+        else:
+            return 'y'
 
     # Operations on Waveform objects
     def __add__(self, a):
@@ -269,9 +290,17 @@ class Waveform(object):
         >>> w1.value(1.5)
         array([ 4.])
         """
-        if self._dim == 1:
-            f=scipy.interpolate.interp1d(self._xlist[0], self._y)
-        return f(x)
+        def findvalue(y):
+            return scipy.interpolate.interp1d(self._xlist[-1], y)(x)
+
+        newy = apply_along_axis(findvalue, -1, self._y)
+
+        if len(newy.shape) == 0:
+            return float(newy)
+        else:
+            return Waveform(self._xlist[:-1], newy, xunits = self.xunits[:-1], yunit = self.yunit)
+
+        print newy
 
     # Mathematical functions
     def log10(self):
@@ -305,10 +334,8 @@ class Waveform(object):
         if self.getSweepDimensions() == 1:
             p=plotfunc(self.getX(0), self.getY())
 
-        if self.xlabels:
-            pylab.xlabel(self.xlabels[-1])
-        if self.ylabel:
-            pylab.ylabel(self.ylabel)
+        pylab.xlabel(self.xlabels[-1])
+        pylab.ylabel(self.ylabel)
 
     def plot(self, *args, **kvargs): self._plot(pylab.plot, *args, **kvargs)
     def semilogx(self, *args, **kvargs): self._plot(pylab.semilogx, *args, **kvargs)
@@ -345,17 +372,12 @@ class Waveform(object):
         xvalues = cartesian(self._xlist)
         yvalues = list(self._y.reshape((len(xvalues))))
 
-        if self.xlabels == None:
-            xlabels = ['x%d'%i for i in range(len(self._xlist))]
-        else:
-            xlabels = self.xlabels
-
         if self.ylabel == None:
             ylabel = 'y'
         else:
             ylabel = self.ylabel
 
-        return rsttable.toRSTtable(map(lambda x,y: tuple(x)+(y,), [xlabels] + xvalues, [ylabel] + yvalues))
+        return rsttable.toRSTtable(map(lambda x,y: tuple(x)+(y,), [self.xlabels] + xvalues, [ylabel] + yvalues))
 
     def __repr__(self):
         if self._dim > 1:
@@ -375,15 +397,65 @@ def db10(x):
 raising = 1
 falling = 2 
 either = 3
-def cross(w, crossval = 0.0, i=0, crosstype = either):
+def cross(w, crossval = 0.0, n=0, crosstype=either):
     """Calculates the x-axis value where a particular crossing with the specified edge type occurs
 
-    >>> phi = arange(0, 4*pi, pi/10)+pi/4
+    Examples:
+
+    1-d waveform
+
+    >>> phi = arange(0, 4*pi, pi/10)-pi/4
     >>> y = Waveform(phi, sin(phi))
-    >>> 
-    
+    >>> cross(y)
+    0.0
+    >>> cross(y, crosstype=falling)
+    3.1415926535897931
+
+    2-d waveform
+
+    >>> x1 = [pi/4,pi/2]
+    >>> x2 = arange(0, 4*pi, pi/10)-pi/4
+    >>> phi = vstack([x2 for p in x1])
+    >>> y = Waveform([x1,x2], sin(phi))
+    >>> cross(y)
+    Waveform([0.78539816339744828, 1.5707963267948966],[ 0.  0.])
+
+    No crossing
+
+    >>> cross(Waveform([[0,1,2,3]], array([1,1,1,1])))
+    nan
+
+    TODO: handle case where x-values are exactly at the crossing
+
     """
-    
+
+    x = w._xlist[-1]
+    shiftedy = w._y - crossval
+
+    def findedge(y):
+        ## Find edges
+        if crosstype == either:
+            edges = sign(y[:-1]) != sign(y[1:])
+        elif crosstype == raising:
+            edges = sign(y[:-1]) < sign(y[1:])
+        elif crosstype == falling:
+            edges = sign(y[:-1]) > sign(y[1:])
+
+        if alltrue(edges == False):
+            return nan
+
+        iedge = where(edges)[0][n]
+
+        ## Find exact location of the crossing using interpolated x-values
+        finterp = scipy.interpolate.interp1d(x, y)
+        return optimize.zeros.brenth(finterp, x[iedge], x[iedge+1])
+
+    newy = apply_along_axis(findedge, -1, shiftedy)
+
+    if len(newy.shape) == 0:
+        return float(newy)
+    else:
+        return Waveform(w._xlist[:-1], newy, yunit = w.xunits[0], xlabels = w.xlabels[:-1], ylabel = w.xlabels[-1])
 
 if __name__ == "__main__":
     import doctest
