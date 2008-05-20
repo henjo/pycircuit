@@ -334,7 +334,7 @@ class Waveform(object):
     def _plot(self, plotfunc, *args, **kvargs):
         import pylab
         if self.getSweepDimensions() == 1:
-            p=plotfunc(self.getX(0), self.getY())
+            p=plotfunc(self.getX(0), self.getY(), **kvargs)
 
         pylab.xlabel(self.xlabels[-1])
         pylab.ylabel(self.ylabel)
@@ -580,7 +580,7 @@ def reducedim(w, newy, axis=-1, ylabel=None, yunit=None):
         
     return Waveform(newxlist, newy, xlabels = newxlabels, ylabel = ylabel, 
                     xunits = newxunits, yunit = yunit)
-    
+
 if __name__ == "__main__":
     import doctest
     doctest.testmod()
