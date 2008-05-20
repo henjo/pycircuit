@@ -14,6 +14,7 @@ from itertools import islice, groupby
 from sets import Set
 
 analysis_types = {
+    2 : 'DC2',
     4 : 'AC',
     7 : 'DC',
     10 : 'FSST'
@@ -332,6 +333,9 @@ class JWDBResultSet(result.ResultSet):
             if analysis.get_type() == name:
                 return JWDBResult(analysis)
 
+
+    def __repr__(self):
+        return self.__class__.__name__ + '(' + str(self.getResultNames()) + ')'
 
 class JWDBResult(result.Result):
     def __init__(self, analysisobj):
