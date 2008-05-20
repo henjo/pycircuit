@@ -246,7 +246,7 @@ class Waveform(object):
         """
         return Waveform(self._xlist, abs(self._y), xlabels = self.xlabels)
 
-    def ymax(self):
+    def ymax(self, axis=-1):
         """Returns the maximum y-value
         
         Examples
@@ -261,7 +261,7 @@ class Waveform(object):
         Waveform([1, 2],[6 7])
 
         """
-        return reducedim(self, N.max(self._y, axis=-1))
+        return reducedim(self, N.max(self._y, axis=self.getaxis(axis)), axis=self.getaxis(axis))
 
     def ymin(self):
         """Returns the minimum y-value
@@ -453,9 +453,10 @@ class Waveform(object):
 ## Waveform functions
 def db20(w):
     return w.db20()
-
 def db10(w):
     return w.db10()
+def ymax(w, axis=-1):
+    return w.ymax(w, axis=axis)
 
 def average(w, axis=-1):
     """Calculate average
