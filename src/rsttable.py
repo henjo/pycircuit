@@ -1,6 +1,6 @@
 import string
 
-def toRSTtable(rows, header=True, vdelim="  ", padding=1, justify='right'):
+def toRSTtable(rows, header=True, headerrows = 1, vdelim="  ", padding=1, justify='right'):
     """ Outputs a list of lists as a Restructured Text Table
 
     - rows - list of lists
@@ -26,8 +26,8 @@ def toRSTtable(rows, header=True, vdelim="  ", padding=1, justify='right'):
 
     # outputs table in rst format
     s += borderline + '\n'
-    for row in rows:
+    for i, row in enumerate(rows):
         s += vdelim.join([justify(unicode(item),width) for (item,width) in zip(row,colWidths)]).encode('utf-8') + '\n'
-        if header: s += borderline +'\n'; header=False
+        if header and headerrows == i+1: s += borderline +'\n'
     s += borderline
     return s

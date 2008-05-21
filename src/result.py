@@ -400,7 +400,7 @@ class Waveform(object):
         if self._yunit != None:
             return self._yunit
         else:
-            return 'y'
+            return ''
     def set_yunit(self, s):
         if type(s) is not types.StringType and s != None:
             raise ValueError('Unit must be a string')
@@ -580,6 +580,41 @@ def reducedim(w, newy, axis=-1, ylabel=None, yunit=None):
         
     return Waveform(newxlist, newy, xlabels = newxlabels, ylabel = ylabel, 
                     xunits = newxunits, yunit = yunit)
+
+def astable(waveforms):
+    """Return a table of one or more waveforms with the same sweeps in text format
+
+    Examples
+    ========
+    
+    >>> w1 = Waveform([range(2)], array([3,4]), ylabel='V1')
+    >>> w2 = Waveform([range(2)], array([4,6]), ylabel='V2')
+    >>> print astable([w1,w2])
+    
+
+    """
+    import rsttable
+
+    xvalues = cartesian(waveforms[0]._xlist)
+    yvalues = zip(*[list(w._y.flat) for w in waveforms])
+
+    xlabels = waveforms[0].xlabels
+    ylabels = [w.ylabel for w in waveforms]
+    xunits = waveforms[0].xunits
+    yunits = [w.yunit for w in waveforms]
+
+    hasunits = not reduce(operator.__and__, [yunit == '' for yunit in yunits])
+    
+    if hasunits:
+        return rsttable.toRSTtable(map(lambda x,y: list(x) + list(y), 
+                                       [xlabels] + [xunits] + xvalues, 
+                                       [ylabels] + [yunits] + yvalues), headerrows = 2)
+    else:
+        return rsttable.toRSTtable(map(lambda x,y: list(x) + list(y), 
+                                       [xlabels] + xvalues, 
+                                       [ylabels] + yvalues))
+    
+    
 
 if __name__ == "__main__":
     import doctest
