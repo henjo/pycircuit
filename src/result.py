@@ -96,7 +96,7 @@ class Waveform(object):
         """
         return self._dim
 
-    def getX(self, dim=None):
+    def getX(self, axis=None):
         """Get X vector of the given sweep dimension
 
         If no dimension is given, a list of the sweeps in all dimensions is returned
@@ -108,10 +108,12 @@ class Waveform(object):
         array([ 1.5,  2.5])
         """
 
-        if dim == None:
+        axis = self.getaxis(axis)
+
+        if axis == None:
             return self._xlist
         else:
-            return self._xlist[dim]
+            return self._xlist[axis]
     
     def getY(self):
         """Get Y vector or n-dimensional array if sweep dimension > 1"""
@@ -263,7 +265,7 @@ class Waveform(object):
         """
         return reducedim(self, N.max(self._y, axis=self.getaxis(axis)), axis=self.getaxis(axis))
 
-    def ymin(self):
+    def ymin(self, axis=-1):
         """Returns the minimum y-value
 
         Examples
@@ -278,9 +280,9 @@ class Waveform(object):
         Waveform([1, 2],[3 4])
 
         """
-        return reducedim(self, N.min(self._y, axis=-1))
+        return reducedim(self, N.min(self._y, axis=self.getaxis(axis)))
 
-    def value(self, x):
+    def value(self, x, axis = -1):
         """Returns the interpolated y values at x
 
         Example
@@ -300,9 +302,9 @@ class Waveform(object):
         
         """
         def findvalue(y):
-            return scipy.interpolate.interp1d(self._xlist[-1], y)(x)
+            return scipy.interpolate.interp1d(self._xlist[self.getaxis(axis)], y)(x)
 
-        return applyfunc_and_reducedim(findvalue, self)
+        return applyfunc_and_reducedim(findvalue, self, axis = self.getaxis(axis))
 
     # Mathematical functions
     def log10(self):
@@ -333,9 +335,13 @@ class Waveform(object):
     # Plotting (wrapper around matplotlib)
     def _plot(self, plotfunc, *args, **kvargs):
         import pylab
-        if self.getSweepDimensions() == 1:
-            p=plotfunc(self.getX(0), self.getY(), **kvargs)
 
+        pylab.hold(True)
+        for i in N.ndindex(*self._y.shape[:-1]):
+            label = ','.join([self.xlabels[axis] + '=' + str(self._xlist[axis][ix]) for axis, ix in enumerate(i)])
+            p=plotfunc(self.getX(-1), self.getY()[i], label = label, **kvargs)
+        pylab.hold(False)
+        
         pylab.xlabel(self.xlabels[-1])
         pylab.ylabel(self.ylabel)
 
@@ -369,21 +375,13 @@ class Waveform(object):
 
         
         """
-        import rsttable
-
-        xvalues = cartesian(self._xlist)
-        yvalues = list(self._y.reshape((len(xvalues))))
-
-        if self.ylabel == None:
-            ylabel = 'y'
-        else:
-            ylabel = self.ylabel
-
-        return rsttable.toRSTtable(map(lambda x,y: tuple(x)+(y,), [self.xlabels] + xvalues, [ylabel] + yvalues))
+        return astable(self)
 
     def getaxis(self, axis):
         """Look up axis index by name of xlabel names"""
         if type(axis) is types.StringType:
+            if axis not in self.xlabels:
+                raise Exception('No axis with xlabel %s (%s)'%(axis, str(self.xlabels)))
             return list(self.xlabels).index(axis)
         else:
             return axis
@@ -456,9 +454,38 @@ def db20(w):
 def db10(w):
     return w.db10()
 def ymax(w, axis=-1):
+    """Returns the maximum y-value
+
+    Examples
+    ========
+
+    >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
+    >>> ymax(w1)
+    6.0
+
+    >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
+    >>> ymax(w2)
+    Waveform([1, 2],[6 7])
+    """
     return w.ymax(axis=axis)
+
 def ymin(w, axis=-1):
-    return w.ymax(axis=axis)
+    """Returns the minimum y-value along the given axis
+
+    Examples
+    ========
+
+    >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
+    >>> ymin(w1)
+    3.0
+
+    >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
+    >>> ymin(w2)
+    Waveform([1, 2],[3 4])
+
+    """
+    
+    return w.ymin(axis=axis)
 
 def average(w, axis=-1):
     """Calculate average
@@ -551,10 +578,35 @@ def cross(w, crossval = 0.0, n=0, crosstype=either):
  
     return applyfunc_and_reducedim(findedge, w - crossval, yunit = w.xunits[0], ylabel = w.xlabels[-1])
 
+def phase(w):
+    """Return argument in degrees of complex values
+
+    Example:
+
+    >>> phase(complex(1,0))
+    0.0
+    >>> phase(complex(0,1))
+    90.0
+    >>> phase(complex(0,-1))
+    -90.0
+    
+    """
+    return N.angle(w) * 180 / pi
+
+def phaseMargin(w):
+    f0 = cross(abs(w), 1.0)
+    return 180 + phase(w.value(f0))
+
 def applyfunc_and_reducedim(func, w, axis = -1, ylabel = None, yunit = None):
     """Apply a function that reduces the dimension by one and return a new waveform or float if zero-rank"""
 
-    newy = apply_along_axis(func, axis, w._y).reshape(w._y.shape[:-1])
+    newyshape = list(w._y.shape)
+    del newyshape[axis]
+    newy = apply_along_axis(func, axis, w._y).reshape(newyshape)
+
+    if ylabel != None:
+        ylabel = func.__name__ + '(' + ylabel + ')'
+    
     return reducedim(w, newy, axis=axis, ylabel=ylabel, yunit=yunit)
 
 def reducedim(w, newy, axis=-1, ylabel=None, yunit=None):
@@ -581,7 +633,7 @@ def reducedim(w, newy, axis=-1, ylabel=None, yunit=None):
     return Waveform(newxlist, newy, xlabels = newxlabels, ylabel = ylabel, 
                     xunits = newxunits, yunit = yunit)
 
-def astable(waveforms):
+def astable(*waveforms):
     """Return a table of one or more waveforms with the same sweeps in text format
 
     Examples
@@ -589,7 +641,13 @@ def astable(waveforms):
     
     >>> w1 = Waveform([range(2)], array([3,4]), ylabel='V1')
     >>> w2 = Waveform([range(2)], array([4,6]), ylabel='V2')
-    >>> print astable([w1,w2])
+    >>> print astable(w1,w2)
+    ====  ====  ====
+      x0    V1    V2
+    ====  ====  ====
+       0     3     4
+       1     4     6
+    ====  ====  ====
     
 
     """
@@ -615,7 +673,6 @@ def astable(waveforms):
                                        [ylabels] + yvalues))
     
     
-
 if __name__ == "__main__":
     import doctest
     doctest.testmod()
