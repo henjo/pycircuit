@@ -47,7 +47,8 @@ class Result(object):
     def __init__(self):
         self.o = self.SignalAccesser(self)
 
-    def getSweepDimensions(self):
+    @property
+    def ndim(self):
         """Return the number of nested sweeps"""
         pass
     def getSweepValues(self, dimension):
@@ -283,7 +284,10 @@ class Waveform(object):
         return reducedim(self, N.min(self._y, axis=self.getaxis(axis)))
 
     def value(self, x, axis = -1):
-        """Returns the interpolated y values at x
+        """Returns and interpolated at a given point(s)
+        
+        `x` can be a number or a waveform with one less than the object
+        
 
         Example
         =======
@@ -299,12 +303,30 @@ class Waveform(object):
         >>> w2.value(2.5)
         Waveform([1, 2],[ 4.  5.])
         
-        
-        """
-        def findvalue(y):
-            return scipy.interpolate.interp1d(self._xlist[self.getaxis(axis)], y)(x)
+        `x` is a waveform
+        >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
+        >>> w2.value(Waveform([[1, 2]], array([2.5, 3.5])))
+        Waveform([1, 2],[ 4.   6.5])
 
-        return applyfunc_and_reducedim(findvalue, self, axis = self.getaxis(axis))
+        """
+        axis = self.getaxis(axis)
+        def findvalue(y):
+            return scipy.interpolate.interp1d(self._xlist[axis], y)(x)
+
+        def findvalue_mdimindex(y, i):
+            xindex = list(i)
+            del xindex[axis]
+            return scipy.interpolate.interp1d(self._xlist[axis], y)(x._y[xindex])
+
+        if iswave(x):
+            newyshape = list(self._y.shape)
+            del newyshape[axis]
+            newy = apply_along_axis_with_idx(findvalue_mdimindex,
+                                             axis,
+                                             self._y).reshape(newyshape)
+            return reducedim(self, newy, axis=axis)
+
+        return applyfunc_and_reducedim(findvalue, self, axis = axis, ylabel = self.ylabel)
 
     # Mathematical functions
     def log10(self):
@@ -449,6 +471,10 @@ class Waveform(object):
                             
 
 ## Waveform functions
+def iswave(w):
+    """Returns true if argument is a waveform"""
+    return isinstance(w, Waveform)
+
 def db20(w):
     return w.db20()
 def db10(w):
@@ -672,6 +698,67 @@ def astable(*waveforms):
                                        [xlabels] + xvalues, 
                                        [ylabels] + yvalues))
     
+
+def apply_along_axis_with_idx(func1d,axis,arr,*args):
+    """ Execute func1d(arr[i], i, *args) where func1d takes 1-D arrays
+        and arr is an N-d array.  i varies so as to apply the function
+        along the given axis for each 1-d subarray in arr.
+    """
+    arr = N.asarray(arr)
+    nd = arr.ndim
+    if axis < 0:
+        axis += nd
+    if (axis >= nd):
+        raise ValueError("axis must be less than arr.ndim; axis=%d, rank=%d."
+            % (axis,nd))
+    ind = [0]*(nd-1)
+    i = N.zeros(nd,'O')
+    indlist = range(nd)
+    indlist.remove(axis)
+    i[axis] = slice(None,None)
+    outshape = N.asarray(arr.shape).take(indlist)
+    i.put(indlist, ind)
+    res = func1d(arr[tuple(i.tolist())], tuple(i.tolist()), *args)
+    #  if res is a number, then we have a smaller output array
+    if isscalar(res):
+        outarr = N.zeros(outshape,N.asarray(res).dtype)
+        outarr[tuple(ind)] = res
+        Ntot = N.product(outshape)
+        k = 1
+        while k < Ntot:
+            # increment the index
+            ind[-1] += 1
+            n = -1
+            while (ind[n] >= outshape[n]) and (n > (1-nd)):
+                ind[n-1] += 1
+                ind[n] = 0
+                n -= 1
+            i.put(indlist,ind)
+            res = func1d(arr[tuple(i.tolist())], tuple(i.tolist()), *args)
+            outarr[tuple(ind)] = res
+            k += 1
+        return outarr
+    else:
+        Ntot = N.product(outshape)
+        holdshape = outshape
+        outshape = list(arr.shape)
+        outshape[axis] = len(res)
+        outarr = N.zeros(outshape,N.asarray(res).dtype)
+        outarr[tuple(i.tolist())] = res
+        k = 1
+        while k < Ntot:
+            # increment the index
+            ind[-1] += 1
+            n = -1
+            while (ind[n] >= holdshape[n]) and (n > (1-nd)):
+                ind[n-1] += 1
+                ind[n] = 0
+                n -= 1
+            i.put(indlist, ind)
+            res = func1d(arr[tuple(i.tolist())], tuple(i.tolist()), *args)
+            outarr[tuple(i.tolist())] = res
+            k += 1
+        return outarr
     
 if __name__ == "__main__":
     import doctest
