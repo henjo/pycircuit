@@ -14,6 +14,7 @@ from itertools import islice, groupby
 from sets import Set
 
 analysis_types = {
+    1 : 'TRAN',
     2 : 'DCOP',
     4 : 'AC',
     7 : 'DC',
@@ -104,7 +105,7 @@ class _Waveform(object):
         return xlist, ylist            
 
 reserved_params = ('CKTYPE', 'NUMPTS', 'STEP', 'ANALYSIS', 'NOISEF', 'ZCHAR',
-                   'Creation_Date', 'ICARLO', 'Creation_Time', 'Title')
+                   'Creation_Date', 'ICARLO', 'Creation_Time', 'Title', 'IALTER')
 
 class _Simulation(object):
     def __init__(self, fileid, simid):
@@ -182,7 +183,6 @@ class _Analysis(object):
         self.simulations = simulations
 
         variables = self.get_sweep_variables()
-
         ## Recover sweep vectors
         sweepsets = [Set([sim.variables[var] for sim in self.simulations]) \
                          for var in variables]
@@ -234,7 +234,7 @@ class _Analysis(object):
                     xfirst = x
                 else:
                     if x != xfirst:
-                        raise ValueError("All x-vectors must be the same %s != %s"%(str(xfirst), str(x)))
+                        raise ValueError("All x-vectors must be the same %d != %d"%(len(xfirst), len(x)))
             else:
                 ylist.append(y)
 

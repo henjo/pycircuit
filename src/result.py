@@ -7,6 +7,7 @@ import scipy.optimize as optimize
 import types
 import operator
 import pylab
+from copy import copy
 
 # Cartesian operator of a list
 def cartesian(listList):
@@ -47,10 +48,6 @@ class Result(object):
     def __init__(self):
         self.o = self.SignalAccesser(self)
 
-    @property
-    def ndim(self):
-        """Return the number of nested sweeps"""
-        pass
     def getSweepValues(self, dimension):
         """Get a numpy array of sweep values from sweep dimension dimension"""
         pass
@@ -96,6 +93,11 @@ class Waveform(object):
     
         """
         return self._dim
+
+    @property
+    def ndim(self):
+        """Return the number of nested sweeps"""
+        return self._y.ndim
 
     def getX(self, axis=None):
         """Get X vector of the given sweep dimension
@@ -167,7 +169,14 @@ class Waveform(object):
         if isinstance(a, Waveform):
             assert(alltrue(concatenate(self._xlist) == \
                                  concatenate(a.getX())), "X values must be the same")
-            return Waveform(self._xlist, self._y - a._y, xlabels = self.xlabels)
+            ay = a._y
+            y = self._y
+            if self._y.ndim < a._y.ndim:
+                y = self._y[..., newaxis]
+            if a._y.ndim < self._y.ndim:
+                ay = a._y[..., newaxis]
+
+            return Waveform(self._xlist, y - ay, xlabels = self.xlabels)
         else:
             return Waveform(self._xlist, self._y - a, xlabels = self.xlabels)
     def __rsub__(self, a):
@@ -249,6 +258,16 @@ class Waveform(object):
         """
         return Waveform(self._xlist, abs(self._y), xlabels = self.xlabels)
 
+    def __neg__(self):
+        """Unary minus operator
+
+        >>> w1=Waveform(array([1,2,3]),array([complex(-1,0),complex(0,1),complex(1,-1)]))
+        >>> -w1
+        Waveform([1 2 3],[ 1.-0.j -0.-1.j -1.+1.j])
+
+        """
+        return Waveform(self._xlist, -self._y, xlabels = self.xlabels)
+
     def ymax(self, axis=-1):
         """Returns the maximum y-value
         
@@ -257,7 +276,7 @@ class Waveform(object):
 
         >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
         >>> w1.ymax()
-        6.0
+        6
 
         >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
         >>> w2.ymax()
@@ -274,7 +293,7 @@ class Waveform(object):
 
         >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
         >>> w1.ymin()
-        3.0
+        3
 
         >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
         >>> w2.ymin()
@@ -283,7 +302,7 @@ class Waveform(object):
         """
         return reducedim(self, N.min(self._y, axis=self.getaxis(axis)))
 
-    def value(self, x, axis = -1):
+    def value(self, x, axis = -1, ylabel = None):
         """Returns and interpolated at a given point(s)
         
         `x` can be a number or a waveform with one less than the object
@@ -316,19 +335,42 @@ class Waveform(object):
         def findvalue_mdimindex(y, i):
             xindex = list(i)
             del xindex[axis]
+            xindex = tuple(xindex)
             return scipy.interpolate.interp1d(self._xlist[axis], y)(x._y[xindex])
 
         if iswave(x):
             newyshape = list(self._y.shape)
             del newyshape[axis]
+            newyshape = tuple(newyshape)
             newy = apply_along_axis_with_idx(findvalue_mdimindex,
                                              axis,
                                              self._y).reshape(newyshape)
             return reducedim(self, newy, axis=axis)
 
-        return applyfunc_and_reducedim(findvalue, self, axis = axis, ylabel = self.ylabel)
+        if ylabel == None:
+            ylabel = self.ylabel
+
+        outw = applyfunc_and_reducedim(findvalue, self, axis = axis)
+        if outw and not isscalar(outw):
+            outw.ylabel = ylabel
+        return outw
 
     # Mathematical functions
+    def real(self):
+        outw = copy(self)
+        outw._y = N.real(self._y)
+        return outw
+
+    def imag(self):
+        outw = copy(self)
+        outw._y = N.imag(self._y)
+        return outw
+
+    def conjugate(self):
+        outw = copy(self)
+        outw._y = N.conjugate(self._y)
+        return outw
+
     def log10(self):
         """Return 20*log10(x)
 
@@ -407,7 +449,42 @@ class Waveform(object):
             return list(self.xlabels).index(axis)
         else:
             return axis
+
+    def reducedimension(self, axes):
+        """Reduce given axes by selecting the first element
+
+        >>> w = Waveform([[1,2],[3,4]], array([[1,2],[3,4]]))
+        >>> w.reducedimension([0])
+        Waveform([[3, 4]],[1 2])
         
+        """
+        axes = [self.getaxis(axis) for axis in axes]
+        
+        theslice = list(N.index_exp[:] * self.ndim)
+        for axis in axes: theslice[axis] = 0
+
+        w = copy(self)
+        w._y = self._y[theslice]
+
+        newxlist = []
+        newxlabels = []
+        newxunits = []
+        for axis in range(self.ndim):
+            if axis not in axes:
+                newxlist.append(w._xlist[axis])
+                if w._xunits:
+                    newxunits.append(w._xunits[axis])
+                if w._xlabels:
+                    newxlabels.append(w._xlabels[axis])
+
+        w._xlist = newxlist
+        if w._xunits:
+            w._xunits = newxunits
+        if w._xlabels:
+            w._xlabels = newxlabels
+                
+        return w
+    
     def get_xunits(self):
         if self._xunits != None:
             return self._xunits
@@ -487,7 +564,7 @@ def ymax(w, axis=-1):
 
     >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
     >>> ymax(w1)
-    6.0
+    6
 
     >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
     >>> ymax(w2)
@@ -503,7 +580,7 @@ def ymin(w, axis=-1):
 
     >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
     >>> ymin(w1)
-    3.0
+    3
 
     >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
     >>> ymin(w2)
@@ -609,19 +686,62 @@ def phase(w):
 
     Example:
 
-    >>> phase(complex(1,0))
+    >>> phase(1)
     0.0
     >>> phase(complex(0,1))
     90.0
-    >>> phase(complex(0,-1))
-    -90.0
+    >>> phase(Waveform((range(3),), array([1, complex(1,1), complex(0,-1)])))
+    Waveform(([0, 1, 2],),[  0.  45. -90.])
     
     """
-    return N.angle(w) * 180 / pi
+    return applyfunc(N.angle, w) * 180 / pi
 
-def phaseMargin(w):
-    f0 = cross(abs(w), 1.0)
-    return 180 + phase(w.value(f0))
+def phaseMargin(g):
+    """Calculate phase margin of a open-loop gain vs frequency waveform
+
+    >>> w = 2 * pi * N.logspace(3,8,41)
+    >>> w1 = -1e6
+    >>> H = Waveform(w, 1.5 * (1 / (1 - 1j*w / w1))**2)
+    >>> phaseMargin(H)
+    110.376360667
+    
+    """
+    f0 = cross(abs(g), 1.0)
+    return phase(-g.value(f0))
+
+def bandwidth(w, db = 3.0, type = 'low'):
+    """Calculate bandwidth of transfer as function of frequency
+
+    Examples
+    ========
+
+    >>> w = 2 * pi * N.logspace(3,8)
+    >>> w1 = -1e6
+    >>> H = Waveform(w, 1 / (1 - 1j*w / w1))
+    >>> bandwidth(H)
+    1000896.9666087811
+    
+    """
+    xmin = min(w._xlist[-1])
+    w0 = abs(w.value(xmin))
+    
+    return cross(abs(w), w0*10**(-db/20.0))
+
+def unityGainFrequency(g):
+    """Calculate the frequency where the gain is unity
+    """
+    return cross(abs(g), 1.0)
+    
+    
+def applyfunc(func, w):
+    if iswave(w):
+        outw  = copy(w)
+        outw._y = func(outw._y)
+        if w.ylabel:
+            outw.ylabel = func.__name__ + '(' + w.ylabel + ')'
+        return outw
+    else:
+        return func(w)
 
 def applyfunc_and_reducedim(func, w, axis = -1, ylabel = None, yunit = None):
     """Apply a function that reduces the dimension by one and return a new waveform or float if zero-rank"""
@@ -639,7 +759,7 @@ def reducedim(w, newy, axis=-1, ylabel=None, yunit=None):
     """Reduce the dimension by one and return a new waveform or float if zero-rank"""
 
     if rank(newy) == 0:
-        return float(newy)
+        return N.asscalar(newy)
 
     if ylabel == None:
         ylabel = w.ylabel
