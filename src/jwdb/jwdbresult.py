@@ -123,8 +123,12 @@ class _Simulation(object):
             tmp, name, val = jwdb.ams_sim_get_simulation_parameter_info(fileid, i)
 
             if name not in reserved_params:
+                try:
+                    value = float(val)
+                except ValueError:
+                    continue
                 self.variablenames.append(name)
-                self.variables[name] = float(val)
+                self.variables[name] = value
             else:
                 if name in ('Creation_Date', 'Creation_Time', 'Title'):
                     self.params[name] = val
@@ -220,6 +224,7 @@ class _Analysis(object):
             
         ## Load waveform data and find out if all x-vectors are the same for all sweeps
         xfirst = None
+        xlist = []
         ylist = []
         for varvalues in cartesian(sweepvalues):
             sim = sweepmap[varvalues]
@@ -242,6 +247,7 @@ class _Analysis(object):
             variables.append(self.simulations[0].xunit)
             sweepvalues.append(xfirst)
         
+        print ylist
         wavearray = numpy.array(ylist)
         wavearray = wavearray.reshape(map(len, sweepvalues))
 

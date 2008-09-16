@@ -130,6 +130,22 @@ class Waveform(object):
         self._y = value
 
     # Operations on Waveform objects
+    def binaryop(self, op, a):
+        """Apply binary operator between self and a"""
+        if isinstance(a, Waveform):
+            assert(reduce(operator.__and__, map(lambda x,y: alltrue(x==y), self._xlist, a._xlist)))
+            return Waveform(self._xlist, op(self._y, a._y), xlabels = self.xlabels)
+        else:
+            return Waveform(self._xlist, op(self._y, a), xlabels = self.xlabels)
+
+    def rbinaryop(self, op, a):
+        """Apply binary operator between a and self"""
+        if isinstance(a, Waveform):
+            assert(reduce(operator.__and__, map(lambda x,y: alltrue(x==y), self._xlist, a._xlist)))
+            return Waveform(self._xlist, op(a._y, self._y), xlabels = self.xlabels)
+        else:
+            return Waveform(self._xlist, op(a, self._y), xlabels = self.xlabels)
+
     def __add__(self, a):
         """Add operator
 
@@ -141,11 +157,8 @@ class Waveform(object):
         Waveform([1 2 3],[ 5.  7.  8.])
 
         """
-        if isinstance(a, Waveform):
-            assert(alltrue(concatenate(self._xlist) == concatenate(a.getX())), "X values must be the same")
-            return Waveform(self._xlist, self._y + a._y, xlabels = self.xlabels)
-        else:
-            return Waveform(self._xlist, self._y + a, xlabels = self.xlabels)
+        return self.binaryop(operator.__add__, a)
+    
     def __radd__(self, a):
         """Reverse add operator
 
@@ -155,6 +168,7 @@ class Waveform(object):
 
         """
         return self.__add__(a)
+    
     def __sub__(self, a):
         """Subtract operator
 
@@ -229,11 +243,8 @@ class Waveform(object):
         Waveform([1 2 3],[ 1.5  2.5  3. ])
 
         """
-        if isinstance(a, Waveform):
-            assert(reduce(operator.__and__, map(lambda x,y: alltrue(x==y), self._xlist, a._xlist)))
-            return Waveform(self._xlist, self._y/a._y, xlabels = self.xlabels)
-        else:
-            return Waveform(self._xlist, self._y/a, xlabels = self.xlabels)
+        return self.binaryop(operator.__div__, a)
+
     def __rdiv__(self, a):
         """Reverse division operator
 
@@ -267,6 +278,24 @@ class Waveform(object):
 
         """
         return Waveform(self._xlist, -self._y, xlabels = self.xlabels)
+
+    def __eq__(self, x):
+        """Equality operator
+
+        >>> w1=Waveform(array([1,2,3]),array([1,5,2]))
+        >>> w2=Waveform(array([1,2,3]),array([1,1.5,2]))
+        >>> w1 == w2
+        Waveform([1 2 3],[ True False  True])
+        >>> w1 == 5
+        Waveform([1 2 3],[False  True False])
+        
+        """
+        return self.binaryop(operator.__eq__, x)
+
+    def __lt__(self, x):  return self.binaryop(operator.__lt__, x)
+    def __gt__(self, x):  return self.binaryop(operator.__gt__, x)
+    def __le__(self, x):  return self.binaryop(operator.__le__, x)
+    def __ge__(self, x):  return self.binaryop(operator.__ge__, x)
 
     def ymax(self, axis=-1):
         """Returns the maximum y-value
@@ -396,6 +425,11 @@ class Waveform(object):
             result.ylabel = 'db20(%s)'%self.ylabel
         return result
 
+    def clip(self, from, to = None):
+        """Restrict the waveform to the range defined by from and to
+        """
+        
+
     # Plotting (wrapper around matplotlib)
     def _plot(self, plotfunc, *args, **kvargs):
         import pylab
@@ -521,6 +555,8 @@ class Waveform(object):
             raise ValueError('Label must be a string')
         self._ylabel = s
 
+    x = property(getX, setX, doc = 'x values')
+    y = property(getY, setY, doc = 'y values')
     xlabels = property(get_xlabels, set_xlabels, doc = 'x-axis list of labels for each dimension')
     ylabel = property(get_ylabel, set_ylabel, doc = 'y-axis label')
     xunits = property(get_xunits, set_xunits, doc = 'x-axis list of units for each dimension')
@@ -879,6 +915,52 @@ def apply_along_axis_with_idx(func1d,axis,arr,*args):
             outarr[tuple(i.tolist())] = res
             k += 1
         return outarr
+
+def compatible(*args):
+    """Return True if the given waveforms have the same x-values
+
+    Example:
+    >>> compatible(Waveform(array([1,2,3]),array([3,5,6])), Waveform(array([1,2,3]),array([1,1.5,2])))
+    True
+    >>> compatible(Waveform(array([1,2]),array([3,5,6])), Waveform(array([1,2,3]),array([1,1.5,2])))
+    False
+    
+    """
+    return True
+
+def compose(wlist, x = None, xlabel = None):
+    """Compose list of waveforms into a new waveform where the waveform list becomes the outer sweep
+
+    Example:
+    >>> wlist=[Waveform(array([1,2,3]),array([3,5,6])), Waveform(array([1,2,3]),array([1,1.5,2]))]
+    >>> w = compose(wlist, x = array([1,2]), xlabel = 'index')
+    >>> w
+    Waveform([array([1, 2]), array([1, 2, 3])],[[ 3.   5.   6. ]
+     [ 1.   1.5  2. ]])
+    >>> w.xlabels
+    ('index', 'x0')
+    
+    """
+    if not compatible(*wlist):
+        return ValueError('Waveforms in wlist are not compatible')
+    if x != None and len(wlist) != len(x):
+        return ValueError('Number of x-values must be the same as the number of waveforms')
+
+    newy = N.array([w.y for w in wlist])
+
+    if x == None:
+        newx = [range(len(wlist))] + wlist[0].x
+    else:
+        newx = [x] + wlist[0].x
+
+    if xlabel == None:
+        xlabel = 'composite index'
+
+    return Waveform(newx, newy,
+                    xlabels = [xlabel] + list(wlist[0].xlabels), ylabel = wlist[0].ylabel,
+                    xunits = [''] + list(wlist[0].xunits), yunit = wlist[0].yunit)
+    
+    
     
 if __name__ == "__main__":
     import doctest

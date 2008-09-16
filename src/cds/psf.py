@@ -13,7 +13,7 @@ def warning(str):
 def indent(str, n=2):
     return "\n".join([' '*n+s for s in str.split("\n")])
 
-class PSFData:
+class PSFData(object):
     @classmethod
     def fromFile(cls, file):
         obj = cls()

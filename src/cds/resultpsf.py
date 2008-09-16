@@ -1,4 +1,4 @@
-import result
+import pycircuit.result as result
 import psf
 import os
 import re

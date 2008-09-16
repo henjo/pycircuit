@@ -58,7 +58,7 @@ class CadenceSession:
 		    print response
 		    raise Exception("Could not parse response")
 
-		if response.startswith("*Error*"):
+		if response.find("*Error*") > 0:
 			raise Exception(response)
 
 		if self.verbose:
