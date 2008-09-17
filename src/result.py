@@ -1,6 +1,6 @@
 import numpy as N
 from numpy import array,concatenate,alltrue,max,min,log10,arange,pi,sin, \
-    sign, where, newaxis, r_, vstack, apply_along_axis, nan, isscalar, rank
+    sign, where, newaxis, r_, vstack, apply_along_axis, nan, isscalar, rank, inf
 import scipy
 import scipy.interpolate as interpolate
 import scipy.optimize as optimize
@@ -425,8 +425,8 @@ class Waveform(object):
             result.ylabel = 'db20(%s)'%self.ylabel
         return result
 
-    def clip(self, from, to = None):
-        """Restrict the waveform to the range defined by from and to
+    def clip(self, xfrom, xto = None):
+        """Restrict the waveform to the range defined by xfrom and xto
         """
         
 
@@ -437,7 +437,13 @@ class Waveform(object):
         pylab.hold(True)
         for i in N.ndindex(*self._y.shape[:-1]):
             label = ','.join([self.xlabels[axis] + '=' + str(self._xlist[axis][ix]) for axis, ix in enumerate(i)])
-            p=plotfunc(self.getX(-1), self.getY()[i], label = label, **kvargs)
+
+            # Limit infinite values
+            y = self.getY()[i]
+            y[where(y == inf)] = 1e20
+            y[where(y == -inf)] = -1e20
+            
+            p=plotfunc(self.getX(-1), y, label = label, **kvargs)
         pylab.hold(False)
         
         pylab.xlabel(self.xlabels[-1])
@@ -561,6 +567,20 @@ class Waveform(object):
     ylabel = property(get_ylabel, set_ylabel, doc = 'y-axis label')
     xunits = property(get_xunits, set_xunits, doc = 'x-axis list of units for each dimension')
     yunit = property(get_yunit, set_yunit, doc = 'y-axis unit')
+
+    def __getitem__(self, key):
+        """Return the value of the given key if the data type is dictionary
+
+        >>> wave = Waveform([[1,2]], array([{'a':1, 'b':2}, {'a':3, 'b':4}]))
+        >>> wave['a']
+        Waveform([1, 2],[1 3])
+
+        """
+        def getitem(d):
+            return d[key]
+        
+        ufuncgetitem = N.vectorize(getitem)
+        return Waveform(self._xlist, ufuncgetitem(self._y), xlabels = self.xlabels)
 
     def __repr__(self):
         if self._dim > 1:
@@ -959,8 +979,6 @@ def compose(wlist, x = None, xlabel = None):
     return Waveform(newx, newy,
                     xlabels = [xlabel] + list(wlist[0].xlabels), ylabel = wlist[0].ylabel,
                     xunits = [''] + list(wlist[0].xunits), yunit = wlist[0].yunit)
-    
-    
     
 if __name__ == "__main__":
     import doctest

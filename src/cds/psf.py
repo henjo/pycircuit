@@ -424,6 +424,9 @@ class StructDef(PSFData):
     def getDataObj(self):
         return Struct(self)
 
+    def getDataSize(self):
+        return sum([child.getDataSize() for child in self.children])
+
     def toPSFasc(self, prec=None):
         s="STRUCT(\n"
         for child in self.children:
