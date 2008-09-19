@@ -279,6 +279,26 @@ class Waveform(object):
         """
         return Waveform(self._xlist, -self._y, xlabels = self.xlabels)
 
+    def __pow__(self, a):
+        """Reverse multiplication operator
+
+        >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
+        >>> w1**2
+        Waveform([1 2 3],[ 9 25 36])
+
+        """
+        return Waveform(self._xlist, self._y ** a, xlabels = self.xlabels)
+
+    def __rpow__(self, a):
+        """Reverse multiplication operator
+
+        >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
+        >>> 2**w1
+        Waveform([1 2 3],[ 8 32 64])
+
+        """
+        return Waveform(self._xlist, a ** self._y, xlabels = self.xlabels)
+
     def __eq__(self, x):
         """Equality operator
 
