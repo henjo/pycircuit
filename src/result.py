@@ -445,10 +445,39 @@ class Waveform(object):
             result.ylabel = 'db20(%s)'%self.ylabel
         return result
 
-    def clip(self, xfrom, xto = None):
+    def clip(self, xfrom, xto = None, axis=-1):
         """Restrict the waveform to the range defined by xfrom and xto
-        """
+
+        >>> w1 = Waveform(array([1.,2.,3.]), array([8., 6., 1.]), ylabel='a')
+        >>> w1.clip(2,3)
+        Waveform([ 2.  3.],[ 6.  1.])
+        >>> w1.clip(1.5, 3)
+        Waveform([ 1.5, 2.  3.],[ 7., 6.  1.])
+
         
+        """
+        ifrom = self._xlist[axis].searchsorted(xfrom)
+
+        if xto:
+            ito = self._xlist[axis].searchsorted(xto)
+        else:
+            ito = -1
+
+        xaddleft = []
+        xaddright = []
+        if self._xlist[axis][ifrom] != xfrom:
+            pass
+        if self._xlist[axis][ito] != xto:
+            pass
+
+        newxlist = copy(self._xlist)
+
+        newxlist[axis] = newxlist[axis][ifrom:ito+1]
+
+        ## FIXME, this assumes axis=0
+        newy = self._y[ifrom:ito+1]
+
+        return Waveform(newxlist, newy, xunits=self.xunits, yunit=self.yunit, xlabels=self.xlabels, ylabel=self.ylabel)
 
     # Plotting (wrapper around matplotlib)
     def _plot(self, plotfunc, *args, **kvargs):
