@@ -62,7 +62,23 @@ class Result(object):
         """
 
 class Waveform(object):
-    """The Waveform class handles swept signals. The sweep can be multi dimensional"""
+    """The Waveform class handles swept signals. The sweep can be multi dimensional.
+
+    The waveform class can handle both n-dimensional gridded data or data where the inner dimension has variable
+    length.
+
+    Examples:
+
+    Initiating N-dimensional gridded data:
+
+    >>> w = Waveform([array([1,2]), array([3,4])], array([[3,4],[4,5]]))
+
+    Initiating N-dimensional data where the inner dimension has variable length
+
+    >>> w = Waveform([array([1,2]), array([array([3,3]),array([4])], dtype=object)], array([array([3,4]),array([4])], dtype = object))
+
+    
+    """
 
     def __init__(self, x=array([]), y=array([]),
                  xlabels=None, ylabel=None,
@@ -72,9 +88,12 @@ class Waveform(object):
         if type(x) != types.ListType:
             x = [x]
             
+        self.ragged = (y.dtype == object) and (len(y.shape) == len(x)-1) and (x[-1]-x[-1] == y-y).all()
+        print self.ragged
+            
         dim = len(x)
 
-        if dim != len(y.shape):
+        if not self.ragged and dim != len(y.shape):
             raise ValueError("Dimension of x (%s) does not match dimension of y (%s)"%(map(len, x), y.shape))
         self._xlist = x
         self._y = y
