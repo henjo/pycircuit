@@ -614,6 +614,47 @@ class Nullor(Circuit):
         G[branchindex, innindex] += -1.0
         return G
 
+
+class Transformer(Circuit):
+    """Ideal transformer
+
+    >>> from analysis import DC
+    >>> c = SubCircuit()
+    >>> n1=c.addNode('1')
+    >>> n2=c.addNode('2')
+    >>> c['vs'] = VS(n1, gnd, v=1.5)
+    >>> c['vcvs'] = Transformer(n1, gnd, n2, gnd, n=2.0)
+    >>> c['vcvs'].nodes
+    [Node('2'), Node('gnd'), Node('1')]
+    >>> c['vcvs'].branches
+    [Branch(Node('2'),Node('gnd'))]
+    >>> c['vcvs'].G(zeros((4,1)))
+    array([[0, 0, 0, 1.0],
+           [0, 0, 0, -3.0],
+           [0, 0, 0, 2.0],
+           [2.0, -1.0, -1.0, 0]], dtype=object)
+    """
+    instparams = [Parameter(name='n', desc='Winding ratio', unit='', default=1.0)]
+    terminals = ('inp', 'inn', 'outp', 'outn')
+    def __init__(self, *args, **kvargs):
+        Circuit.__init__(self, *args, **kvargs)
+        self.branches.append(Branch(self.nodenames['outp'], self.nodenames['outn']))
+
+    def G(self, x, epar=defaultepar):
+        G = super(Transformer, self).G(x)
+        branchindex = -1
+        inpindex,innindex,outpindex,outnindex = \
+            (self.nodes.index(self.nodenames[name]) for name in ('inp', 'inn', 'outp', 'outn'))
+        G[inpindex, branchindex] += self.ipar.n
+        G[innindex, branchindex] += -self.ipar.n
+        G[outpindex, branchindex] += 1.0
+        G[outnindex, branchindex] += -1.0
+        G[branchindex, outpindex] += self.ipar.n
+        G[branchindex, outnindex] += -self.ipar.n
+        G[branchindex, inpindex] += -1.0
+        G[branchindex, innindex] += 1.0
+        return G
+
 class Diode(Circuit):
     terminals = ['plus', 'minus']
     mpar = Circuit.mpar.copy( Parameter(name='IS', desc='Saturation current', unit='A', default=1e-13) )
