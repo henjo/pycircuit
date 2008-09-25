@@ -1,11 +1,14 @@
-from analysis import *
+from analysis import Analysis, removeRowCol
 from numpy import array, delete, linalg, size, zeros, concatenate, pi
 import sympy
 from circuit import Circuit, SubCircuit, VS,R,C, gnd, VS, IS
-from internalresult import InternalResultSet, InternalResult
+from pycircuit.internalresult import InternalResultSet, InternalResult
 from sympy import Symbol, Matrix, symbols, simplify, together, factor, cancel
 from types import TupleType
-from param import Parameter, ParameterDict
+from pycircuit.param import Parameter, ParameterDict
+
+class NoSolutionFound(Exception):
+    pass
 
 class SymbolicAC(Analysis):
     """Circuit analysis that calculates symbolic expressions of the unknowns
@@ -52,8 +55,11 @@ class SymbolicAC(Analysis):
         G,C,U = (sympy.Matrix(A) for A in (G,C,U))
 
         outputvariables = map(Symbol, map(str, range(size(G,0))))
-        resultdict =  sympy.solve_linear_system((Symbol('s')*C+G).row_join(-U), outputvariables)
+        resultdict =  sympy.solve_linear_system((Symbol('s')*C+G).row_join(-U), *outputvariables)
 
+        if resultdict == None:
+            raise NoSolutionFound()            
+        
         x = array([[resultdict[var] for var in outputvariables]]).T
 
         # Insert reference node voltage
@@ -134,8 +140,11 @@ class SymbolicNoise(Analysis):
 
         ## Calculate transimpedances from currents in each nodes to output
         outputvariables = map(Symbol, map(str, range(size(G,0))))
-        resultdict =  sympy.solve_linear_system(Yreciprocal.row_join(-U), outputvariables)
+        resultdict =  sympy.solve_linear_system(Yreciprocal.row_join(-U), *outputvariables)
 
+        if resultdict == None:
+            raise NoSolutionFound()            
+        
         zm = sympy.Matrix([[resultdict[var] for var in outputvariables]]).T
 
         ## Simplify

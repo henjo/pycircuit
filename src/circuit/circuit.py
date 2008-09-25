@@ -1,9 +1,11 @@
+# -*- coding: latin-1 -*-
+
 import unittest
 import numpy
 from numpy import array, delete, linalg, size, zeros, concatenate, pi, dot, exp
 import pylab
 import sympy
-from param import Parameter, ParameterDict
+from pycircuit.param import Parameter, ParameterDict
 from constants import *
 
 class Node(object):
@@ -466,7 +468,8 @@ class VS(Circuit):
     
     """
     terminals = ['plus', 'minus']
-    instparams = [Parameter(name='v', desc='Source voltage', unit='V', default=1.0)]
+    instparams = [Parameter(name='v', desc='Source voltage', unit='V', default=1.0),
+                  Parameter(name='noisePSD', desc='Voltage noise power spectral density', unit='V^2/Hz', default=0.0)]
 
     def __init__(self, plus, minus, **kvargs):
         Circuit.__init__(self, plus, minus, **kvargs)
@@ -479,6 +482,10 @@ class VS(Circuit):
 
     def U(self, t=0.0, epar=defaultepar):
         return array([[0.0, 0.0, -self.ipar.v]], dtype=object).T
+
+#    def CY(self, x, epar=defaultepar):
+#        return  array([[self.ipar.noisePSD, -self.ipar.noisePSD, 0],
+#                       [-self.ipar.noisePSD, self.ipar.noisePSD]], dtype=object)
 
 class IS(Circuit):
     """Independent current source
@@ -493,11 +500,16 @@ class IS(Circuit):
            [ 0.]])
     
     """
-    instparams = [Parameter(name='i', desc='DC Current', unit='A', default=1e-3)]
+    instparams = [Parameter(name='i', desc='DC Current', unit='A', default=1e-3),
+                  Parameter(name='noisePSD', desc='Current noise power spectral density', unit='A^2/Hz', default=0.0)]
     terminals = ['plus', 'minus']
 
     def U(self, t=0.0, epar=defaultepar):
         return array([[self.ipar.i, -self.ipar.i]]).T
+
+    def CY(self, x, epar=defaultepar):
+        return  array([[self.ipar.noisePSD, -self.ipar.noisePSD],
+                       [-self.ipar.noisePSD, self.ipar.noisePSD]], dtype=object)
 
 class VCVS(Circuit):
     """Voltage controlled voltage source
@@ -566,6 +578,39 @@ class VCCS(Circuit):
         G[outpindex, innindex] += -gm
         G[outnindex, inpindex] += -gm
         G[outnindex, innindex] += gm
+        return G
+
+class Nullor(Circuit):
+    """Nullor
+
+    From Wikipedia, the free encyclopedia
+
+     A nullor is a theoretical two-port network comprised of a nullator at its input and a norator at its output.[1]
+     Nullors represent an ideal amplifier, having infinite current, voltage, transconductance and transimpedance gain.[2] Its
+     transmission parameters are all zero.
+
+      
+     1. The name "nullor" was introduced by H.J. Carlin, Singular network elements, IEEE Trans. Circuit Theory, March 1965, vol. CT-11, pp. 67-72.
+ 
+     2. Verhoeven C J M van Staveren A Monna G L E Kouwenhoven M H L & Yildiz E (2003). Structured electronic design: negative feedback amplifiers.
+          Boston/Dordrecht/London: Kluwer Academic, §2.2.2 pp. 32-34. ISBN 1402075901.
+
+    """
+    terminals = ('inp', 'inn', 'outp', 'outn')
+
+    def __init__(self, *args, **kvargs):
+        Circuit.__init__(self, *args, **kvargs)
+        self.branches.append(Branch(self.nodenames['outp'], self.nodenames['outn']))
+
+    def G(self, x, epar=defaultepar):
+        G = super(Nullor, self).G(x)
+        branchindex = -1
+        inpindex,innindex,outpindex,outnindex = \
+            (self.nodes.index(self.nodenames[name]) for name in ('inp', 'inn', 'outp', 'outn'))
+        G[outpindex, branchindex] += 1.0
+        G[outnindex, branchindex] += -1.0
+        G[branchindex, inpindex] += 1.0
+        G[branchindex, innindex] += -1.0
         return G
 
 class Diode(Circuit):

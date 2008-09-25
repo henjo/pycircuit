@@ -1,6 +1,6 @@
 import numpy as N
 from numpy import array,concatenate,alltrue,max,min,log10,arange,pi,sin, \
-    sign, where, newaxis, r_, vstack, apply_along_axis, nan, isscalar, rank, inf
+    sign, where, newaxis, r_, vstack, apply_along_axis, nan, isscalar, rank, inf, sqrt
 import scipy
 import scipy.interpolate as interpolate
 import scipy.optimize as optimize
@@ -9,7 +9,7 @@ import operator
 import pylab
 from copy import copy
 
-# Cartesian operator of a list
+# Cartesian operator of  list
 def cartesian(listList):
     if listList:
         result = []
@@ -429,6 +429,16 @@ class Waveform(object):
 
         """
         return Waveform(self._xlist, log10(self._y), xlabels = self.xlabels)
+
+    def sqrt(self):
+        """Return 20*log10(x)
+
+        >>> w1=Waveform(array([1,2,3]),array([1.0, 9.0]))
+        >>> w1.sqrt()
+        Waveform([1 2 3],[ 1.0  3.])
+
+        """
+        return Waveform(self._xlist, sqrt(self._y), xlabels = self.xlabels)
         
     def db20(self):
         """Return x in dB where x is assumed to be a non-power quantity
@@ -832,11 +842,32 @@ def bandwidth(w, db = 3.0, type = 'low'):
     
     return cross(abs(w), w0*10**(-db/20.0))
 
+def value(w, x):
+    if isinstance(w, Waveform):
+        return w.value(x)
+    else:
+        return w
+    
+
 def unityGainFrequency(g):
     """Calculate the frequency where the gain is unity
     """
     return cross(abs(g), 1.0)
     
+def IIP3(output, input, fund1, fund2, fund0=None):
+    """Calculate input referred third order intermodulation intercept point"""
+    s = abs(output)
+    if fund0 == None:
+        gain = value(s/abs(input), fund1)
+    else:
+        gain = value(s, abs(fund1)) / value(abs(input), abs(abs(fund1)+fund0))
+    return sqrt(s.value(abs(fund1)) * value(s,abs(fund2))**2 / s.value(fund1+2*fund2))/gain
+
+def clip(w, xfrom, xto=None):
+    if isinstance(w, Waveform):
+        return w.clip(xfrom, xto)
+    else:
+        return w
     
 def applyfunc(func, w):
     if iswave(w):
