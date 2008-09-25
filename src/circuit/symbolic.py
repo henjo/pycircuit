@@ -59,7 +59,7 @@ class SymbolicAC(Analysis):
 
         if resultdict == None:
             raise NoSolutionFound()            
-        
+
         x = array([[resultdict[var] for var in outputvariables]]).T
 
         # Insert reference node voltage
@@ -111,11 +111,11 @@ class SymbolicNoise(Analysis):
         
         epar = ParameterDict(Parameter('kT', default=kT))
         
-        n=self.c.n()
+        n = self.c.n()
         x = zeros((n,1)) # This should be the x-vector at the DC operating point
-        G=self.c.G(x, epar)
-        C=self.c.C(x, epar)
-        CY=self.c.CY(x, epar)
+        G = self.c.G(x, epar)
+        C = self.c.C(x, epar)
+        CY = self.c.CY(x, epar)
 
         # Calculate output voltage noise
         if self.outputnodes != None:

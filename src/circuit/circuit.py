@@ -607,7 +607,8 @@ class Nullor(Circuit):
         branchindex = -1
         inpindex,innindex,outpindex,outnindex = \
             (self.nodes.index(self.nodenames[name]) for name in ('inp', 'inn', 'outp', 'outn'))
-        G[outpindex, branchindex] += 1.0
+
+        G[outpindex, branchindex] += 1.0   
         G[outnindex, branchindex] += -1.0
         G[branchindex, inpindex] += 1.0
         G[branchindex, innindex] += -1.0

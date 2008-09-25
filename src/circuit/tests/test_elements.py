@@ -1,8 +1,6 @@
 """Circuit element tests
 """
 
-from numpy import *
-from scipy import *
 from pycircuit.circuit.circuit import VS, R, Nullor, SubCircuit, gnd
 from pycircuit.circuit.symbolic import SymbolicAC
 from sympy import Symbol, Matrix, symbols, simplify, together, factor, cancel
@@ -19,19 +17,20 @@ def test_nullor_vva():
     
     nin = c.addNode('in')
     n1 = c.addNode('n1')
-    n2 = c.addNode('n2')
     nout = c.addNode('out')
-    
+     
     c['vin'] = VS(nin, gnd, v=Vin)
     c['R1'] = R(n1, gnd, r=R1)
-    c['R2'] = R(n2, n1, r=R2)
-    c['nullor'] = Nullor(nin, n1, nout, n2)
+    c['R2'] = R(nout, n1, r=R2)
+    c['nullor'] = Nullor(n1, nin, gnd, nout)
     
-    result = SymbolicAC(c).solve()
-
+    result = SymbolicAC(c).run()
+    
     vout = result.getSignal('out')
-
-    assert vout - Vin * R1 / (R1 + R2) == 0
+    
+    assert simplify(vout - Vin * (R1 + R2) / R1) == 0, \
+        'Did not get the expected result, %s != 0'% \
+        str(simplify(vout - Vin * (R1 + R2) / R1))
 
 if __name__ == '__main__':
     test_nullor_vva()

@@ -24,6 +24,8 @@ class Analysis(object):
         self.result = None
 
     def run(self, *args, **kvargs):
+        """Start the analysis and return the result as a Result object"""
+
         x = self.solve(*args, **kvargs)
         
         result = InternalResult()

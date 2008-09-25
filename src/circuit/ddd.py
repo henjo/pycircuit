@@ -166,6 +166,7 @@ def DDD_of_matrix(A):
 
     >>> a,b,c,d,e,f,g,h,i,j=sympy.symbols('abcdefghij')
     >>> A = sympy.Matrix((a,b,0,0),(c,d,e,0),(0,f,g,h),(0,0,i,j))
+    >>> DDD_matrix(A)
     
     """
     print A
