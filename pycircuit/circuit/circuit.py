@@ -105,10 +105,12 @@ class Circuit(object):
         return newnode
 
     def getNodeIndex(self, node):
-        """Get row in the x vector of a node"""
+        """Get row in the x vector of a node voltage"""
         return self.nodes.index(node)
 
     def getBranchIndex(self, branch):
+        """Get row in the x vector of a branch current"""        
+        
         return len(self.nodes) + self.branches.index(branch)
 
     def getNode(self, name):
@@ -483,9 +485,14 @@ class VS(Circuit):
     def U(self, t=0.0, epar=defaultepar):
         return array([[0.0, 0.0, -self.ipar.v]], dtype=object).T
 
-#    def CY(self, x, epar=defaultepar):
-#        return  array([[self.ipar.noisePSD, -self.ipar.noisePSD, 0],
-#                       [-self.ipar.noisePSD, self.ipar.noisePSD]], dtype=object)
+    def CY(self, x, epar=defaultepar):
+        CY = super(VS, self).CY(x)
+        CY[2, 2] = self.ipar.noisePSD
+
+    @property
+    def branch(self):
+        """Return the branch (plus, minus)"""
+        return self.branches[0]
 
 class IS(Circuit):
     """Independent current source

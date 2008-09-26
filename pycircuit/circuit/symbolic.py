@@ -67,7 +67,12 @@ class SymbolicAC(Analysis):
         return x
 
 class SymbolicNoise(Analysis):
-    """Circuit analysis that calculates symbolic expressions of the unknowns
+    """Symbolic noise analysis that calculates input and output referred noise.
+    
+    The analysis is using the adjoint admittance matrix method to calculate the transfers from
+    each noise source to the output.
+    
+    Example, calculate input referred noise of a voltage divider:
 
     >>> c = SubCircuit()
     >>> kT = Symbol('kT')
@@ -83,7 +88,7 @@ class SymbolicNoise(Analysis):
     4*R1*R2*kT/(R1 + R2)
     >>> res.o.vn2in
     4*R1*kT/R2*(R1 + R2)
-    >>> simplify(res.o.gain-R2/(R1+R2))
+    >>> simplify(res.o.gain - R2 / (R1 + R2))
     0
     
     """
@@ -92,27 +97,40 @@ class SymbolicNoise(Analysis):
         """
         Initiate a symbolic noise analysis.
 
-        @param     circuit: The circuit to be analyzed
-        @type      circuit: Circuit instance
-        @param    inputsrc: A voltage or current source in the circuit where the input noise should be referred to
-        @type     inputsrc: VS or IS instance
-        @param outputnodes: A tuple with the output nodes (outputpos outputneg)
-        @param   outputsrc: A voltage source where the output current noise should be measured
+        Parameters
+        ----------
+        circuit : Circuit instance
+            The circuit to be analyzed
+        inputsrc : VS or IS instance
+            A voltage or current source in the circuit where the input noise should be referred to
+        outputnodes : tuple
+            A tuple with the output nodes (outputpos outputneg)
+        outputsrc: VS instance
+            The voltage source where the output current noise is measured
         """
+
         Analysis.__init__(self, circuit)
     
+        if not (outputnodes != None or outputsrc != None):
+            raise ValueError('Output is not specified')
+        elif outputnodes != None and outputsrc != None:
+            raise ValueError('Cannot measure both output current and voltage noise')
+        
         self.inputsrc = inputsrc
         self.outputnodes = outputnodes
         self.outputsrc = outputsrc
 
     def run(self, refnode=gnd):
+        
         s = Symbol('s')
         kT = Symbol('kT')
         
+        ## Set environment parameters
         epar = ParameterDict(Parameter('kT', default=kT))
         
         n = self.c.n()
         x = zeros((n,1)) # This should be the x-vector at the DC operating point
+
         G = self.c.G(x, epar)
         C = self.c.C(x, epar)
         CY = self.c.CY(x, epar)
@@ -120,9 +138,14 @@ class SymbolicNoise(Analysis):
         # Calculate output voltage noise
         if self.outputnodes != None:
             U = zeros((n,1))
-            ioutp, ioutn = (self.c.nodes.index(node) for node in self.outputnodes)
+            ioutp, ioutn = (self.c.getNodeIndex(node) for node in self.outputnodes)
             U[ioutp] = -1.0
             U[ioutn] = 1.0
+        # Calculate output current noise
+        else:
+            U - zeros((n,1))
+            ibranch = self.c.getBranchIndex(self.outputsrc.branch)
+            U[ibranch] = 1.0
 
         ## Convert to Sympy matrices
         G,C,U,CY = (sympy.Matrix(A) for A in (G, C, U, CY))
@@ -145,6 +168,7 @@ class SymbolicNoise(Analysis):
         if resultdict == None:
             raise NoSolutionFound()            
         
+        ## Collect transimpedance vector from result dictionary
         zm = sympy.Matrix([[resultdict[var] for var in outputvariables]]).T
 
         ## Simplify
