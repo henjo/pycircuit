@@ -236,6 +236,16 @@ class AC(Analysis):
 
         return array(out)[:,:,0].swapaxes(0,1)
 
+class TwoPort(Analysis):
+    """Analysis to find the 2-ports parameters of a circuit"""
+
+    def __init__(self, circuit, inp, inn, outp, outn):
+        self.c = circuit
+
+        self.ports = inp, inn, outp, outn
+
+
+
 if __name__ == "__main__":
     c = SubCircuit()
     n1 = c.addNode('net1')
