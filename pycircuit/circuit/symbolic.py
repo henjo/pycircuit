@@ -1,4 +1,5 @@
-from analysis import Analysis, removeRowCol
+import analysis
+from analysis import Analysis, removeRowCol, TwoPort
 from numpy import array, delete, linalg, size, zeros, concatenate, pi
 import sympy
 from circuit import Circuit, SubCircuit, VS,R,C, gnd, VS, IS
@@ -10,61 +11,36 @@ from pycircuit.param import Parameter, ParameterDict
 class NoSolutionFound(Exception):
     pass
 
-class SymbolicAC(Analysis):
+def symbolic_linsolve(A, b):
+    """Numpy compatible wrapper around sympy.solve_linear_system"""
+
+    A = sympy.Matrix(A)
+    b = sympy.Matrix(b)
+
+    outputvariables = map(Symbol, map(str, range(size(b))))
+    resultdict =  sympy.solve_linear_system(A.row_join(b), *outputvariables)
+    return array([[resultdict[var] for var in outputvariables]]).T
+
+
+class SymbolicAC(analysis.AC):
     """Circuit analysis that calculates symbolic expressions of the unknowns
 
     >>> c = SubCircuit()
     >>> n1 = c.addNode('net1')
     >>> c['vs'] = VS(n1, gnd, v=Symbol('V'))
     >>> c['R'] = R(n1, gnd, r=Symbol('R'))
-    >>> res = SymbolicAC(c).run()
+    >>> res = SymbolicAC(c).run(Symbol('s'), complexfreq=True)
     >>> res.getSignal('net1')
     V
     >>> res.getSignal('i0')
     -V/R
     """
-    
-    def solve(self, refnode=gnd):
-        """Run a symbolic AC analysis with SymPy and store the results
 
-        >>> c = SubCircuit()
-        >>> n1 = c.addNode('net1')
-        >>> c['vs'] = VS(n1, gnd, v=Symbol('V'))
-        >>> c['R'] = R(n1, gnd, r=Symbol('R'))
-        >>> SymbolicAC(c).solve()
-        array([[V],
-               [0.0],
-               [-V/R]], dtype=object)
+    numeric = False
 
+    @staticmethod
+    def linearsolver(A,b): return symbolic_linsolve(A,b)
 
-        """
-
-        n=self.c.n()
-
-        x = zeros((n,1)) # This should be the x-vector at the DC operating point
-
-        G=self.c.G(x)
-        C=self.c.C(x)
-        U=self.c.U(x)
-
-        ## Refer the voltages to the gnd node by removing
-        ## the rows and columns that corresponds to this node
-        irefnode = self.c.nodes.index(refnode)
-        G,C,U=removeRowCol((G,C,U), irefnode)
-
-        G,C,U = (sympy.Matrix(A) for A in (G,C,U))
-
-        outputvariables = map(Symbol, map(str, range(size(G,0))))
-        resultdict =  sympy.solve_linear_system((Symbol('s')*C+G).row_join(-U), *outputvariables)
-
-        if resultdict == None:
-            raise NoSolutionFound()            
-
-        x = array([[resultdict[var] for var in outputvariables]]).T
-
-        # Insert reference node voltage
-        x = concatenate((x[:irefnode, :], array([[0.0]]), x[irefnode:,:]))
-        return x
 
 class SymbolicNoise(Analysis):
     """Symbolic noise analysis that calculates input and output referred noise.
@@ -76,8 +52,8 @@ class SymbolicNoise(Analysis):
 
     >>> c = SubCircuit()
     >>> kT = Symbol('kT')
-    >>> R1=Symbol('R1', real=True)
-    >>> R2=Symbol('R2', real=True)
+    >>> R1=Symbol('R1')
+    >>> R2=Symbol('R2')
     >>> n1 = c.addNode('net1')
     >>> n2 = c.addNode('net2')
     >>> c['vs'] = VS(n1, gnd, v=Symbol('V'))
@@ -128,7 +104,7 @@ class SymbolicNoise(Analysis):
         ## Set environment parameters
         epar = ParameterDict(Parameter('kT', default=kT))
         
-        n = self.c.n()
+        n = self.c.n
         x = zeros((n,1)) # This should be the x-vector at the DC operating point
 
         G = self.c.G(x, epar)
@@ -199,6 +175,35 @@ class SymbolicNoise(Analysis):
             result.storeSignal('vn2in', xn2out/gain**2)
 
         return result
+
+class SymbolicTwoPort(TwoPort):
+    """Analysis to find the symbolic 2-ports parameters of a circuit
+
+    The transmission parameters are found as:
+
+    A = v(inp, inn)/v(outp, outn) | io = 0
+    B = v(inp, inn)/i(outp, outn) | vo = 0
+    C = i(inp, inn)/v(outp, outn) | io = 0
+    D = i(inp, inn)/i(outp, outn) | vo = 0
+
+    >>> c = SubCircuit()
+    >>> n1 = c.addNode('net1')
+    >>> n2 = c.addNode('net2')
+    >>> c['R1'] = R(n1, n2, r=Symbol('R1'))
+    >>> c['R2'] = R(n2, gnd, r=Symbol('R2'))
+    >>> res = SymbolicTwoPort(c, n1, gnd, n2, gnd).run(freqs = array([Symbol('s')]), complexfreq=True)
+    >>> simplify(res.getSignal('mu').y[0])
+    -R2/(-R1 - R2)
+    >>> res.getSignal('gamma').y[0]
+    1/R1
+    >>> res.getSignal('zeta').y[0]
+    R2
+    >>> res.getSignal('beta').y[0]
+    1
+    
+    """
+    
+    ACAnalysis = SymbolicAC
     
 if __name__ == "__main__":
     import doctest

@@ -23,10 +23,21 @@ def cartesian(listList):
 class ResultSet(object):
     """The ResultCollection class handles a set of results"""
 
+    def __getitem__(self, name):
+        return self.getResult(name)
+    def keys(self):
+        return self.getResultNames()
+
     def getResultNames(self):
         pass
     def getResult(self, name):
         pass
+
+    def __repr__(self):
+        print list(self)
+        return ''
+#        return self.__class__.__name__ + '(' + str(list(self)) + ')'
+
 
 class Result(object):
     """The result class manages results from a circuit simulation.
@@ -34,6 +45,9 @@ class Result(object):
        A result contains the values of one or more signals. Result can
        handle multi dimensional sweeps but not several sweeps.
     """
+    def __getitem__(self, name):
+        return self.getSignal(name)
+    
     class SignalAccesser(object):
         def __init__(self, result):
             self.__result = result
@@ -89,7 +103,6 @@ class Waveform(object):
             x = [x]
             
         self.ragged = (y.dtype == object) and (len(y.shape) == len(x)-1) and (x[-1]-x[-1] == y-y).all()
-        print self.ragged
             
         dim = len(x)
 

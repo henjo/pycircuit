@@ -1,12 +1,9 @@
 # -*- coding: latin-1 -*-
 
-import unittest
-import numpy
 from numpy import array, delete, linalg, size, zeros, concatenate, pi, dot, exp
-import pylab
-import sympy
 from pycircuit.param import Parameter, ParameterDict
 from constants import *
+from copy import copy
 
 class Node(object):
     """A node is a region in an electric circuit where the voltage is the same.
@@ -87,6 +84,15 @@ class Circuit(object):
 
         self.connectTerminals(**dict(zip(self.terminals, args)))
         
+    def __copy__(self):
+        newc = self.__class__()
+        newc.nodes = copy(self.nodes)    
+        newc.nodenames = copy(self.nodenames)    
+        newc.branches = copy(self.branches)    
+        newc.ipar = copy(self.ipar)
+        newc.x = copy(self.x)
+        return newc
+
     def addNode(self, name=None):
         """Create an internal node in the circuit and return the new node
 
@@ -103,6 +109,38 @@ class Circuit(object):
         if name != None:
             self.nodenames[name] = newnode
         return newnode
+
+    def getTerminalBranch(self, terminalname):
+        """Find the branch that is connected to the given terminal of the given element.
+
+        If no branch is found if there are more branches than one, None is returned
+
+        Returns
+        -------
+        Tuple of Branch object and an integer indicating if terminal is connected to the positive or negative side
+        of the branch. 1 == positive side, -1 == negative side
+        
+        >>> net1 = Node('net1')
+        >>> net2 = Node('net2')
+        >>> VS = VS(net1, net2)
+        >>> VS.getTerminalBranch("minus")
+        (Branch(Node('net1'),Node('net2')), -1)
+        
+        """
+        plusbranches = [] ## Branches with its positive side connected to the terminal
+        minusbranches = [] ## Branches with its negative side connected to the terminal
+        for branch in self.branches:
+            if branch.plus == self.nodenames[terminalname]:
+                plusbranches.append(branch)
+            elif branch.minus == self.nodenames[terminalname]:
+                minusbranches.append(branch)
+
+        if len(plusbranches + minusbranches) != 1:
+            return None
+        elif len(plusbranches) == 1:
+            return plusbranches[0], 1
+        elif len(minusbranches) == 1:
+            return minusbranches[0], -1            
 
     def getNodeIndex(self, node):
         """Get row in the x vector of a node voltage"""
@@ -151,23 +189,24 @@ class Circuit(object):
                     self.nodes.append(node)
                 self.nodenames[terminal] = node
 
+    @property
     def n(self):
         """Return size of x vector"""
         return len(self.nodes) + len(self.branches)
 
     def G(self, x, epar=defaultepar):
         """Calculate the G ((trans)conductance) matrix of the circuit given the x-vector"""
-        return zeros((self.n(), self.n()), dtype=object)
+        return zeros((self.n, self.n), dtype=object)
 
     def C(self, x, epar=defaultepar):
         """Calculate the C (transcapacitance) matrix of the circuit given the x-vector"""
-        return zeros((self.n(), self.n()), dtype=object)
+        return zeros((self.n, self.n), dtype=object)
 
     def U(self, t=0.0, epar=defaultepar):
         """Calculate the U column-vector the circuit at time t for a given x-vector.
 
         """
-        return zeros((self.n(), 1), dtype=object)
+        return zeros((self.n, 1), dtype=object)
 
     def i(self, x, epar=defaultepar):
         """Calculate the i vector as a function of the x-vector
@@ -191,7 +230,7 @@ class Circuit(object):
         @param epar: Environment parameters
         @type  epar: ParameterDict
         """
-        return zeros((self.n(), 1), dtype=object)
+        return zeros((self.n, 1), dtype=object)
 
     def nameStateVector(self, x, analysis=''):
         """Map state variables with names and return the state variables in a dictionary keyed by the names
@@ -238,6 +277,13 @@ class SubCircuit(Circuit):
         self.elementnodemap = []
         self.elementbranchmap = []
         
+    def __copy__(self):
+        newc = super(SubCircuit, self).__copy__()
+        newc.elements = copy(self.elements)
+        newc.elementnodemap = copy(self.elementnodemap)
+        newc.elementbranchmap = copy(self.elementbranchmap)
+        return newc
+    
     def __setitem__(self, instancename, element):
         """Adds an instance to the circuit"""
         self.elements[instancename] = element
@@ -279,6 +325,34 @@ class SubCircuit(Circuit):
             return self.nodenames[hierlevels[0]]
         else:
             return self.elements[hierlevels[0]].getNode('.'.join(hierlevels[1:]))
+
+    def getTerminalBranch(self, terminalname):
+        """Find the branch that is connected to the given terminal of the given element.
+
+        If no branch is found if there are more branches than one, None is returned
+
+        The name can be a hierachical name and the notation is 'I1.I2.plus' for
+        the terminal 'plus' of instance I2 of instance I1
+
+        Returns
+        -------
+        Tuple of Branch object and an integer indicating if terminal is connected to the positive or negative side
+        of the branch. 1 == positive side, -1 == negative side
+
+        >>> c = SubCircuit()
+        >>> net1 = c.addNode('net1')
+        >>> net2 = c.addNode('net2')
+        >>> c['vs'] = VS(net1, net2)
+        >>> c.getTerminalBranch("vs.minus")
+        (Branch(Node('net1'),Node('net2')), -1)
+        
+        """
+        hierlevels = [part for part in terminalname.split('.')]
+
+        if len(hierlevels)==1:
+            Circuit.getTerminalBranch(self, hierlevels[0])
+        else:
+            return self.elements[hierlevels[0]].getTerminalBranch('.'.join(hierlevels[1:]))
 
     def getNodeName(self, node):
         """Find the name of a node
@@ -336,7 +410,7 @@ class SubCircuit(Circuit):
         return self._add_element_submatrices('CY', x, (epar,))
         
     def _add_element_submatrices(self, methodname, x, args):
-        n=self.n()
+        n=self.n
         A=zeros((n,n), dtype=object)
 
         for instance,element in self.elements.items():
@@ -352,7 +426,7 @@ class SubCircuit(Circuit):
         return A
 
     def _add_element_subvectors(self, methodname, x, args):
-        n=self.n()
+        n=self.n
         A=zeros((n,1), dtype=object)
 
         for instance,element in self.elements.items():
@@ -411,8 +485,8 @@ class C(Circuit):
     array([[0, 0],
            [0, 0]], dtype=object)
     >>> c.C(zeros((2,1)))
-    array([[1e-12, -1e+12],
-           [-1e+12, 1e+12]], dtype=object)
+    array([[1e-12, -1e-12],
+           [-1e-12, 1e-12]], dtype=object)
 
     """
 
@@ -420,8 +494,8 @@ class C(Circuit):
     instparams = [Parameter(name='c', desc='Capacitance', unit='F', default=1e-12)]
 
     def C(self, x, epar=defaultepar):
-        return array([[self.ipar.c, -1/self.ipar.c],
-                      [-1/self.ipar.c, 1/self.ipar.c]])
+        return array([[self.ipar.c, -self.ipar.c],
+                      [-self.ipar.c, self.ipar.c]])
 
 class L(Circuit):
     """Inductor
@@ -450,7 +524,7 @@ class L(Circuit):
     def G(self, x, epar):
         return self._G
     def C(self, x, epar):
-        n = self.n()
+        n = self.n
         C = zeros((n,n), dtype=object)
         C[-1,-1] = self.ipar.L
         return C
