@@ -97,7 +97,7 @@ class DC(Analysis):
     >>> res = dc.run()
     >>> dc.result.getSignalNames()
     ['i0', 'gnd', 'net1']
-    >>> dc.result.getSignal('net1')
+    >>> dc.result['net1']
     1.5
 
     Non-linear example:
@@ -111,7 +111,7 @@ class DC(Analysis):
     >>> res = dc.run()
     >>> dc.result.getSignalNames()
     ['i0', 'gnd', 'net1']
-    >>> dc.result.getSignal('net1')
+    >>> dc.result['net1']
     0.7
     """
     
@@ -188,7 +188,7 @@ class AC(Analysis):
     >>> res = ac.run(freqs=array([1e6, 2e6]))
     >>> ac.result.getSignalNames()
     ['i0', 'gnd', 'net1']
-    >>> ac.result.getSignal('net1')
+    >>> ac.result['net1']
     Waveform([ 1000000.  2000000.],[ 1.5+0.j  1.5+0.j])
     >>> ac.v(n1, gnd)
     Waveform([ 1000000.  2000000.],[ 1.5+0.j  1.5+0.j])
@@ -231,15 +231,15 @@ class AC(Analysis):
         """Return the voltage v(node1, node2) from last run"""
 
         if self.result != None:
-            return self.result.getSignal(self.c.getNodeName(node1)) - \
-                   self.result.getSignal(self.c.getNodeName(node2))
+            return self.result[self.c.getNodeName(node1)] - \
+                   self.result[self.c.getNodeName(node2)]
 
     def i(self, term):
         """Return terminal current i(term) of a circuit element from last run"""
         if self.result != None:
             branch, sign = self.c.getTerminalBranch(term)
             ibranch = self.c.branches.index(branch)
-            return sign * self.result.getSignal('i%d'%ibranch)
+            return sign * self.result['i%d'%ibranch]
         
     def solve(self, freqs, refnode=gnd, complexfreq = False):
         n=self.c.n
@@ -258,8 +258,6 @@ class AC(Analysis):
             G,C,U = (A.astype(complex) for A in (G,C,U))
 
         out = []
-
-        
 
         if complexfreq:
             ss = freqs
@@ -297,13 +295,13 @@ class TwoPort(Analysis):
     >>> c['R1'] = R(n1, n2, r=9e3)
     >>> c['R2'] = R(n2, gnd, r=1e3)
     >>> res = TwoPort(c, n1, gnd, n2, gnd).run(freqs = array([0]))
-    >>> res.getSignal('mu').y[0]
+    >>> res['mu'].y[0]
     (0.1+0j)
-    >>> res.getSignal('gamma').y[0]
+    >>> res['gamma'].y[0]
     (0.000111111111111+0j)
-    >>> res.getSignal('zeta').y[0]
+    >>> res['zeta'].y[0]
     (1000+0j)
-    >>> res.getSignal('beta').y[0]
+    >>> res['beta'].y[0]
     (1+0j)
     
     """

@@ -1,5 +1,6 @@
 import analysis
-from analysis import Analysis, removeRowCol, TwoPort
+from analysis import Analysis, removeRowCol
+from nport import TwoPortAnalysis
 from numpy import array, delete, linalg, size, zeros, concatenate, pi
 import sympy
 from circuit import Circuit, SubCircuit, VS,R,C, gnd, VS, IS
@@ -30,9 +31,9 @@ class SymbolicAC(analysis.AC):
     >>> c['vs'] = VS(n1, gnd, v=Symbol('V'))
     >>> c['R'] = R(n1, gnd, r=Symbol('R'))
     >>> res = SymbolicAC(c).run(Symbol('s'), complexfreq=True)
-    >>> res.getSignal('net1')
+    >>> res['net1']
     V
-    >>> res.getSignal('i0')
+    >>> res['i0']
     -V/R
     """
 
@@ -176,7 +177,7 @@ class SymbolicNoise(Analysis):
 
         return result
 
-class SymbolicTwoPort(TwoPort):
+class SymbolicTwoPortAnalysis(TwoPortAnalysis):
     """Analysis to find the symbolic 2-ports parameters of a circuit
 
     The transmission parameters are found as:
@@ -191,14 +192,14 @@ class SymbolicTwoPort(TwoPort):
     >>> n2 = c.addNode('net2')
     >>> c['R1'] = R(n1, n2, r=Symbol('R1'))
     >>> c['R2'] = R(n2, gnd, r=Symbol('R2'))
-    >>> res = SymbolicTwoPort(c, n1, gnd, n2, gnd).run(freqs = array([Symbol('s')]), complexfreq=True)
-    >>> simplify(res.getSignal('mu').y[0])
+    >>> res = SymbolicTwoPortAnalysis(c, n1, gnd, n2, gnd).run(freqs = array([Symbol('s')]), complexfreq=True)
+    >>> simplify(res['mu'].y[0])
     -R2/(-R1 - R2)
-    >>> res.getSignal('gamma').y[0]
+    >>> res['gamma'].y[0]
     1/R1
-    >>> res.getSignal('zeta').y[0]
+    >>> res['zeta'].y[0]
     R2
-    >>> res.getSignal('beta').y[0]
+    >>> res['beta'].y[0]
     1
     
     """
