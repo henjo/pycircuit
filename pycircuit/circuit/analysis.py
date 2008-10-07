@@ -106,7 +106,6 @@ class DC(Analysis):
     >>> n1 = c.addNode('net1')
     >>> c['is'] = IS(gnd, n1, i=100e-6)
     >>> c['D'] = Diode(n1, gnd)
-    >>> c['D'].G(array([[0,0]]).T)
     >>> dc = DC(c)
     >>> res = dc.run()
     >>> dc.result.getSignalNames()
@@ -129,10 +128,10 @@ class DC(Analysis):
         # Solve i(x) + u = 0
         def func(x):
             x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
-            f =  self.c.i(array([x]).T) + self.c.U(0)
+            f =  self.c.i(x) + self.c.U(0)
             (f,) = removeRowCol((f,), irefnode)
 #            print x,f.T[0]
-            return array(f.T[0], dtype=float)
+            return array(f, dtype=float)
         def fprime(x):
             x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
             J = self.c.G(array([x]).T)
@@ -270,12 +269,12 @@ class AC(Analysis):
             x = solver(s*C + G, -U) 
 
             # Insert reference node voltage
-            return concatenate((x[:irefnode, :], array([[0.0]]), x[irefnode:,:]))
+            return concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
 
         if isiterable(freqs):
             out = [solvecircuit(s) for s in ss]
             # Swap frequency and x-vector dimensions
-            return array(out)[:,:,0].swapaxes(0,1)
+            return array(out).swapaxes(0,1)
         else:
             return solvecircuit(ss)
 

@@ -16,18 +16,87 @@ class NPort(object):
     """
 
     def __init__(self, K):
-        assert size(K,0) == size(K,1) and k % 2 == 0
+        assert N.size(K,0) == N.size(K,1) and N.size(K) % 2 == 0
         
-        self.K = size(K,0)
+        self.K = K
 
-        self.n = size(K,0) / 2
+        self.n = N.size(K,0)
+
+    @classmethod
+    def fromY(self, Y):
+        """Create a NPort from Y-parameters"""
+        d = Y[0,0] * Y[1,1] - Y[0,1] * Y[1,0]
+        return NPort(N.array([[-Y[1,1] / Y[1,0], -1.0 / Y[1,0]],
+                              [-d / Y[1,0], -Y[0,0] / Y[1,0]]]))
+
+    @classmethod
+    def fromZ(self, Z):
+        """Create a NPort from Z-parameters"""
+        d = Z[0,0] * Z[1,1] - Z[0,1] * Z[1,0]
+        return NPort(N.array([[-Z[0,0] / Z[1,0], -d / Z[1,0]],
+                              [1.0 / Z[1,0], Z[1,1] / Z[1,0]]]))
 
     def __mul__(self, a):
         """Cascade of two n-ports"""
         return NPort(dot(self.K, a.k))
+
+    def __floordiv__(self, a):
+        """Parallel of two n-ports
+
+        >>> import sympy as S
+        >>> a,b,c,d = S.symbols('abcd')
+        >>> A = TwoPort(N.array([[a,b], [c,d]]))
+        >>> A // A
+        array([[a, 0.5*b],
+           [-0.5*b*(-4.0*(b*c - a*d)/b**2 - 4*a*d/b**2), d]], dtype=object)
+
+        """
+        return NPort.fromY(self.Y + a.Y)
+
+    def series(self, a):
+        """Series connection with another n-port
+
+        >>> import sympy as S
+        >>> a,b,c,d = S.symbols('abcd')
+        >>> A = TwoPort(N.array([[a,b], [c,d]]))
+        >>> A.series(A).K
+        [[ a 2*b]
+         [ c/2 d]]
+        
+        """
+        return NPort.fromZ(self.Z + a.Z)
+
+    @property
+    def Z(self):
+        """Return Z-parameter matrix"""
+        if self.n != 2:
+            raise Exception('Cannot handle %d-port parameters yet'%self.n)
+        
+        A = self.K
+        d = A[0,0] * A[1,1] - A[0,1] * A[1,0]
+
+        return N.array([[A[0,0] / A[1,0], d / A[1,0]],
+                        [1.0 / A[1,0], A[1,1] / A[1,0]]])
+    
+
+    @property
+    def Y(self):
+        """Return Y-parameter matrix"""
+        if self.n != 2:
+            raise Exception('Cannot handle %d-port parameters yet'%self.n)
+
+        A = self.K
+        d = A[0,0] * A[1,1] - A[0,1]*A[1,0]
+
+        return N.array([[A[1,1] / A[0,1], -d / A[0,1]],
+                        [-1.0 / A[0,1], A[0,0] / A[0,1]]])
+    
         
     def __repr__(self):
         return repr(self.K)
+
+class TwoPort(NPort):
+    n = 2
 
 class TwoPortAnalysis(Analysis):
     """Analysis to find the 2-ports parameters of a circuit

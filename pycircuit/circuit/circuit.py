@@ -3,7 +3,9 @@
 from numpy import array, delete, linalg, size, zeros, concatenate, pi, dot, exp
 from pycircuit.param import Parameter, ParameterDict
 from constants import *
+import constants_sympy as CS
 from copy import copy
+import sympy as S
 
 class Node(object):
     """A node is a region in an electric circuit where the voltage is the same.
@@ -92,6 +94,10 @@ class Circuit(object):
         newc.ipar = copy(self.ipar)
         newc.x = copy(self.x)
         return newc
+
+    def generate_methods(self):
+        """Generate numeric i(x) method if only i_sympy is given"""
+        pass
 
     def addNode(self, name=None):
         """Create an internal node in the circuit and return the new node
@@ -200,13 +206,13 @@ class Circuit(object):
 
     def C(self, x, epar=defaultepar):
         """Calculate the C (transcapacitance) matrix of the circuit given the x-vector"""
-        return zeros((self.n, self.n), dtype=object)
+        return zeros(self.n, dtype=object)
 
     def U(self, t=0.0, epar=defaultepar):
         """Calculate the U column-vector the circuit at time t for a given x-vector.
 
         """
-        return zeros((self.n, 1), dtype=object)
+        return zeros(self.n, dtype=object)
 
     def i(self, x, epar=defaultepar):
         """Calculate the i vector as a function of the x-vector
@@ -214,6 +220,10 @@ class Circuit(object):
         For linear circuits i(x(t)) = G*x
         """
         return dot(self.G(x), x)
+
+    def i_sympy(self, x, epar=defaultepar):
+        """Symbolic version of i(x)"""
+        return self.i(x, epar=epar)
 
     def q(self, x, epar=defaultepar):
         """Calculate the q vector as a function of the x-vector
@@ -230,7 +240,7 @@ class Circuit(object):
         @param epar: Environment parameters
         @type  epar: ParameterDict
         """
-        return zeros((self.n, 1), dtype=object)
+        return zeros(self.n, dtype=object)
 
     def nameStateVector(self, x, analysis=''):
         """Map state variables with names and return the state variables in a dictionary keyed by the names
@@ -266,8 +276,8 @@ class SubCircuit(Circuit):
     SubCircuit is container for circuits.
     Attributes:
       elements          dictionary of Circuit objects keyed by its instance name
-      elementnodemap    list of translations between node indices of the elements to the
-                        node index in the SubCircuit object.
+      elementnodemap    list of translation lists that translate between node indices of the elements to the
+                        node index in the SubCircuit object for each element
       elementbranchmap  list of translations between branch indices of the elements to the
                         branch index in the SubCircuit object.
     """
@@ -401,6 +411,9 @@ class SubCircuit(Circuit):
     def i(self, x, epar=defaultepar):
         return self._add_element_subvectors('i', x, (epar,))
 
+    def i_sympy(self, x, epar=defaultepar):
+        return self._add_element_subvectors('i_sympy', x, (epar,))
+
     def CY(self, x, epar=defaultepar):
         """Calculate composite noise source correlation matrix
 
@@ -416,7 +429,7 @@ class SubCircuit(Circuit):
         for instance,element in self.elements.items():
             nodemap = self.elementnodemap[instance]
             if x != None:
-                subx = x[nodemap,:]
+                subx = x[nodemap]
                 try:
                     A[[[i] for i in nodemap], nodemap] += getattr(element, methodname)(subx, *args)
                 except Exception, e:
@@ -427,15 +440,15 @@ class SubCircuit(Circuit):
 
     def _add_element_subvectors(self, methodname, x, args):
         n=self.n
-        A=zeros((n,1), dtype=object)
+        A=zeros(n, dtype=object)
 
         for instance,element in self.elements.items():
             nodemap = self.elementnodemap[instance]
             if x != None:
-                subx = x[nodemap,:]
-                A[nodemap,:] += getattr(element, methodname)(subx, *args)
+                subx = x[nodemap]
+                A[nodemap] += getattr(element, methodname)(subx, *args)
             else:
-                A[nodemap,:] += getattr(element, methodname)(*args)
+                A[nodemap] += getattr(element, methodname)(*args)
         return A
         
         
@@ -447,13 +460,13 @@ class R(Circuit):
     >>> c['R'] = R(n1, gnd, r=1e3)
     >>> c['R']
     R(Node('1'),Node('gnd'),r=1000.0)
-    >>> c.G(zeros((2,1)))
+    >>> c.G(zeros(2))
     array([[0.001, -0.001],
            [-0.001, 0.001]], dtype=object)
     >>> c = SubCircuit()
     >>> n2=c.addNode('2')
     >>> c['R'] = R(n1, n2, r=1e3)
-    >>> c.G(zeros((2,1)))
+    >>> c.G(zeros(2))
     array([[0.001, -0.001],
            [-0.001, 0.001]], dtype=object)
 
@@ -481,10 +494,10 @@ class C(Circuit):
     >>> c = SubCircuit()
     >>> n1=c.addNode('1')
     >>> c['C'] = C(n1, gnd, c=1e-12)
-    >>> c.G(zeros((2,1)))
+    >>> c.G(zeros(2))
     array([[0, 0],
            [0, 0]], dtype=object)
-    >>> c.C(zeros((2,1)))
+    >>> c.C(zeros(2))
     array([[1e-12, -1e-12],
            [-1e-12, 1e-12]], dtype=object)
 
@@ -503,11 +516,11 @@ class L(Circuit):
     >>> c = SubCircuit()
     >>> n1=c.addNode('1')
     >>> c['L'] = L(n1, gnd, L=1e-9)
-    >>> c.G(zeros((3,1)))
+    >>> c.G(zeros(3))
     array([[0.0, 0.0, 1.0],
            [0.0, 0.0, -1.0],
            [1.0, -1.0, 0.0]], dtype=object)
-    >>> c.C(zeros((3,1)))
+    >>> c.C(zeros(3))
     array([[0, 0, 0],
            [0, 0, 0],
            [0, 0, 1e-09]], dtype=object)
@@ -557,7 +570,7 @@ class VS(Circuit):
                        [1.0 , -1.0, 0.0]], dtype=object)
 
     def U(self, t=0.0, epar=defaultepar):
-        return array([[0.0, 0.0, -self.ipar.v]], dtype=object).T
+        return array([0.0, 0.0, -self.ipar.v], dtype=object).T
 
     def CY(self, x, epar=defaultepar):
         CY = super(VS, self).CY(x)
@@ -586,7 +599,7 @@ class IS(Circuit):
     terminals = ['plus', 'minus']
 
     def U(self, t=0.0, epar=defaultepar):
-        return array([[self.ipar.i, -self.ipar.i]]).T
+        return array([self.ipar.i, -self.ipar.i]).T
 
     def CY(self, x, epar=defaultepar):
         return  array([[self.ipar.noisePSD, -self.ipar.noisePSD],
@@ -605,7 +618,7 @@ class VCVS(Circuit):
     [Node('2'), Node('gnd'), Node('1')]
     >>> c['vcvs'].branches
     [Branch(Node('2'),Node('gnd'))]
-    >>> c['vcvs'].G(zeros((4,1)))
+    >>> c['vcvs'].G(zeros(4))
     array([[0, 0, 0, 1.0],
            [0, 0, 0, -1.0],
            [0, 0, 0, 0],
@@ -709,7 +722,7 @@ class Transformer(Circuit):
     [Node('2'), Node('gnd'), Node('1')]
     >>> c['vcvs'].branches
     [Branch(Node('2'),Node('gnd'))]
-    >>> c['vcvs'].G(zeros((4,1)))
+    >>> c['vcvs'].G(zeros(4))
     array([[0, 0, 0, 1.0],
            [0, 0, 0, -3.0],
            [0, 0, 0, 2.0],
@@ -741,7 +754,7 @@ class Diode(Circuit):
     mpar = Circuit.mpar.copy( Parameter(name='IS', desc='Saturation current', unit='A', default=1e-13) )
         
     def G(self, x, epar=defaultepar):
-        VD = x[0,0]-x[1,0]
+        VD = x[0]-x[1]
         VT = kboltzmann*epar.T / qelectron
         g = self.mpar.IS*exp(VD/VT)/VT
         return array([[g, -g],
@@ -751,10 +764,19 @@ class Diode(Circuit):
         """
         
         """
-        VD = x[0,0]-x[1,0]
+        VD = x[0]-x[1]
         VT = kboltzmann*epar.T / qelectron
         I = self.mpar.IS*(exp(VD/VT)-1.0)
-        return array([[I, -I]], dtype=object).T
+        return array([I, -I])
+
+    def i_sympy(self, x, epar=defaultepar):
+        """
+        
+        """
+        VD = x[0]-x[1]
+        VT = CS.kboltzmann*epar.T / CS.qelectron
+        I = self.mpar.IS*(S.exp(VD/VT)-1.0)
+        return array([I, -I], dtype=object)
 
 if __name__ == "__main__":
     import doctest
