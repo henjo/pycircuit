@@ -2,10 +2,12 @@ import analysis
 from analysis import Analysis, removeRowCol
 from nport import TwoPortAnalysis
 from numpy import array, delete, linalg, size, zeros, concatenate, pi
-import sympy
-from circuit import Circuit, SubCircuit, VS,R,C, gnd, VS, IS
+import circuit
+from circuit import *
+from copy import copy
 from pycircuit.internalresult import InternalResultSet, InternalResult
-from sympy import Symbol, Matrix, symbols, simplify, together, factor, cancel
+import sympy
+from sympy import Symbol, Matrix, symbols, simplify, together, factor, cancel, exp, diff, Mul, factorial
 from types import TupleType
 from pycircuit.param import Parameter, ParameterDict
 
@@ -20,8 +22,7 @@ def symbolic_linsolve(A, b):
 
     outputvariables = map(Symbol, map(str, range(size(b))))
     resultdict =  sympy.solve_linear_system(A.row_join(b), *outputvariables)
-    return array([[resultdict[var] for var in outputvariables]]).T
-
+    return array([resultdict[var] for var in outputvariables])
 
 class SymbolicAC(analysis.AC):
     """Circuit analysis that calculates symbolic expressions of the unknowns
@@ -36,12 +37,13 @@ class SymbolicAC(analysis.AC):
     >>> res['i0']
     -V/R
     """
-
-    numeric = False
+    @staticmethod
+    def linearsolver(*args):
+        return linalg.solve(*args)
 
     @staticmethod
-    def linearsolver(A,b): return symbolic_linsolve(A,b)
-
+    def toMatrix(array):
+        return Matrix(array.tolist())
 
 class SymbolicNoise(Analysis):
     """Symbolic noise analysis that calculates input and output referred noise.
@@ -53,8 +55,8 @@ class SymbolicNoise(Analysis):
 
     >>> c = SubCircuit()
     >>> kT = Symbol('kT')
-    >>> R1=Symbol('R1')
-    >>> R2=Symbol('R2')
+    >>> R1=Symbol('R1', real=True)
+    >>> R2=Symbol('R2', real=True)
     >>> n1 = c.addNode('net1')
     >>> n2 = c.addNode('net2')
     >>> c['vs'] = VS(n1, gnd, v=Symbol('V'))
@@ -64,11 +66,18 @@ class SymbolicNoise(Analysis):
     >>> res.o.vn2out
     4*R1*R2*kT/(R1 + R2)
     >>> res.o.vn2in
-    4*R1*kT/R2*(R1 + R2)
+    4*R1*kT*(R1 + R2)/R2
     >>> simplify(res.o.gain - R2 / (R1 + R2))
     0
     
     """
+    @staticmethod
+    def linearsolver(*args):
+        return linalg.solve(*args)
+
+    @staticmethod
+    def toMatrix(array):
+        return Matrix(array.tolist())
 
     def __init__(self, circuit, inputsrc=None, outputnodes=None, outputsrc=None):
         """
@@ -106,7 +115,7 @@ class SymbolicNoise(Analysis):
         epar = ParameterDict(Parameter('kT', default=kT))
         
         n = self.c.n
-        x = zeros((n,1)) # This should be the x-vector at the DC operating point
+        x = zeros(n) # This should be the x-vector at the DC operating point
 
         G = self.c.G(x, epar)
         C = self.c.C(x, epar)
@@ -114,7 +123,7 @@ class SymbolicNoise(Analysis):
 
         # Calculate output voltage noise
         if self.outputnodes != None:
-            U = zeros((n,1))
+            U = zeros(n)
             ioutp, ioutn = (self.c.getNodeIndex(node) for node in self.outputnodes)
             U[ioutp] = -1.0
             U[ioutn] = 1.0
@@ -125,7 +134,7 @@ class SymbolicNoise(Analysis):
             U[ibranch] = 1.0
 
         ## Convert to Sympy matrices
-        G,C,U,CY = (sympy.Matrix(A) for A in (G, C, U, CY))
+        G,C,U,CY = (self.toMatrix(A) for A in (G, C, U, CY))
 
         ## Refer the voltages to the gnd node by removing
         ## the rows and columns that corresponds to this node

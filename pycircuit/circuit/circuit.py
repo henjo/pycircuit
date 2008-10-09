@@ -3,9 +3,7 @@
 from numpy import array, delete, linalg, size, zeros, concatenate, pi, dot, exp
 from pycircuit.param import Parameter, ParameterDict
 from constants import *
-import constants_sympy as CS
 from copy import copy
-import sympy as S
 
 class Node(object):
     """A node is a region in an electric circuit where the voltage is the same.
@@ -94,10 +92,6 @@ class Circuit(object):
         newc.ipar = copy(self.ipar)
         newc.x = copy(self.x)
         return newc
-
-    def generate_methods(self):
-        """Generate numeric i(x) method if only i_sympy is given"""
-        pass
 
     def addNode(self, name=None):
         """Create an internal node in the circuit and return the new node
@@ -208,9 +202,16 @@ class Circuit(object):
         """Calculate the C (transcapacitance) matrix of the circuit given the x-vector"""
         return zeros(self.n, dtype=object)
 
-    def U(self, t=0.0, epar=defaultepar):
-        """Calculate the U column-vector the circuit at time t for a given x-vector.
+    def U(self, t=0.0, epar=defaultepar, analysis=None):
+        """Calculate the U column-vector of the circuit at time t
 
+        Arguments
+        ---------
+
+        epar -- ParameterDict with environment parameters such as temperature
+        analysis -- This argument gives the possibility to have analysis dependent sources.
+                    for normal time dependent and dc sources this argument should be None
+        
         """
         return zeros(self.n, dtype=object)
 
@@ -220,10 +221,6 @@ class Circuit(object):
         For linear circuits i(x(t)) = G*x
         """
         return dot(self.G(x), x)
-
-    def i_sympy(self, x, epar=defaultepar):
-        """Symbolic version of i(x)"""
-        return self.i(x, epar=epar)
 
     def q(self, x, epar=defaultepar):
         """Calculate the q vector as a function of the x-vector
@@ -235,12 +232,13 @@ class Circuit(object):
     def CY(self, x, epar=defaultepar):
         """Calculate the noise sources correlation matrix
 
-        @param x:  the state vector
-        @type  x:  numpy array
-        @param epar: Environment parameters
-        @type  epar: ParameterDict
+        Arguments
+        ---------
+        x -- (numpy array) the state vector
+        epar -- (ParameterDict) Environment parameters
+
         """
-        return zeros(self.n, dtype=object)
+        return zeros((self.n, self.n), dtype=object)
 
     def nameStateVector(self, x, analysis=''):
         """Map state variables with names and return the state variables in a dictionary keyed by the names
@@ -405,14 +403,11 @@ class SubCircuit(Circuit):
     def C(self, x, epar=defaultepar):
         return self._add_element_submatrices('C', x, (epar,))
 
-    def U(self, t=0.0, epar=defaultepar):
-        return self._add_element_subvectors('U', None, (t,epar))
+    def U(self, t=0.0, epar=defaultepar, analysis=None):
+        return self._add_element_subvectors('U', None, (t,epar,analysis))
 
     def i(self, x, epar=defaultepar):
         return self._add_element_subvectors('i', x, (epar,))
-
-    def i_sympy(self, x, epar=defaultepar):
-        return self._add_element_subvectors('i_sympy', x, (epar,))
 
     def CY(self, x, epar=defaultepar):
         """Calculate composite noise source correlation matrix
@@ -558,6 +553,7 @@ class VS(Circuit):
     """
     terminals = ['plus', 'minus']
     instparams = [Parameter(name='v', desc='Source voltage', unit='V', default=1.0),
+                  Parameter(name='vac', desc='AC analysis amplitude', unit='V', default=1.0),
                   Parameter(name='noisePSD', desc='Voltage noise power spectral density', unit='V^2/Hz', default=0.0)]
 
     def __init__(self, plus, minus, **kvargs):
@@ -569,12 +565,18 @@ class VS(Circuit):
                        [0.0 , 0.0, -1.0],
                        [1.0 , -1.0, 0.0]], dtype=object)
 
-    def U(self, t=0.0, epar=defaultepar):
-        return array([0.0, 0.0, -self.ipar.v], dtype=object).T
+    def U(self, t=0.0, epar=defaultepar, analysis=None):
+        if analysis == 'ac':
+            return array([0.0, 0.0, -self.ipar.vac], dtype=object)
+        elif analysis == None:
+            return array([0.0, 0.0, -self.ipar.v], dtype=object)
+        else:
+            return super(VS, self).U(t,epar,analysis)
 
     def CY(self, x, epar=defaultepar):
         CY = super(VS, self).CY(x)
         CY[2, 2] = self.ipar.noisePSD
+        return CY
 
     @property
     def branch(self):
@@ -582,7 +584,7 @@ class VS(Circuit):
         return self.branches[0]
 
 class IS(Circuit):
-    """Independent current source
+    """Independent DC current source
 
     >>> from analysis import DC, gnd as gnd2
     >>> c = SubCircuit()
@@ -595,11 +597,17 @@ class IS(Circuit):
     
     """
     instparams = [Parameter(name='i', desc='DC Current', unit='A', default=1e-3),
+                  Parameter(name='iac', desc='Small signal current amplitude', unit='A', default=0),
                   Parameter(name='noisePSD', desc='Current noise power spectral density', unit='A^2/Hz', default=0.0)]
     terminals = ['plus', 'minus']
 
-    def U(self, t=0.0, epar=defaultepar):
-        return array([self.ipar.i, -self.ipar.i]).T
+    def U(self, t=0.0, epar=defaultepar, analysis=None):
+        if analysis == None:
+            return array([self.ipar.i, -self.ipar.i])
+        elif analysis == 'ac':
+            return array([self.ipar.iac, -self.ipar.iac])
+        else:
+            return super(IS, self).U(t,epar,analysis)
 
     def CY(self, x, epar=defaultepar):
         return  array([[self.ipar.noisePSD, -self.ipar.noisePSD],
@@ -769,14 +777,6 @@ class Diode(Circuit):
         I = self.mpar.IS*(exp(VD/VT)-1.0)
         return array([I, -I])
 
-    def i_sympy(self, x, epar=defaultepar):
-        """
-        
-        """
-        VD = x[0]-x[1]
-        VT = CS.kboltzmann*epar.T / CS.qelectron
-        I = self.mpar.IS*(S.exp(VD/VT)-1.0)
-        return array([I, -I], dtype=object)
 
 if __name__ == "__main__":
     import doctest

@@ -18,6 +18,13 @@ def removeRowCol(matrices, n):
     return tuple(result)
 
 class Analysis(object):
+    @staticmethod
+    def linearsolver(*args):
+        return linalg.solve(*args)
+
+    @staticmethod
+    def toMatrix(array): return array.astype('complex')
+        
     def __init__(self, circuit):
         self.c = circuit
 
@@ -116,7 +123,7 @@ class DC(Analysis):
     
     def solve(self, refnode=gnd):
         n=self.c.n
-        x = zeros((n,1))
+        x = zeros(n)
         G=self.c.G(x)
         U=self.c.U(x)
 
@@ -180,7 +187,7 @@ class AC(Analysis):
     
     >>> c = SubCircuit()
     >>> n1 = c.addNode('net1')
-    >>> c['vs'] = VS(n1, gnd, v=1.5)
+    >>> c['vs'] = VS(n1, gnd, vac=1.5)
     >>> c['R'] = R(n1, gnd, r=1e3)
     >>> c['C'] = C(n1, gnd, c=1e-12)
     >>> ac = AC(c)
@@ -196,10 +203,6 @@ class AC(Analysis):
 
     """
 
-    @staticmethod
-    def linearsolver(*args):
-        return linalg.solve(*args)
-        
     numeric = True
 
     def run(self, freqs, **kvargs):
@@ -243,11 +246,11 @@ class AC(Analysis):
     def solve(self, freqs, refnode=gnd, complexfreq = False):
         n=self.c.n
         
-        x = zeros((n,1)) ## FIXME, this should be calculated from the dc analysis
+        x = zeros(n) ## FIXME, this should be calculated from the dc analysis
         
         G=self.c.G(x)
         C=self.c.C(x)
-        U=self.c.U(x)
+        U=self.c.U(x, analysis='ac')
 
         ## Refer the voltages to the reference node by removing
         ## the rows and columns that corresponds to this node
@@ -277,6 +280,7 @@ class AC(Analysis):
             return array(out).swapaxes(0,1)
         else:
             return solvecircuit(ss)
+
 
 class TwoPort(Analysis):
     """Analysis to find the 2-ports parameters of a circuit
