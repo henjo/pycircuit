@@ -10,14 +10,13 @@ from analysis import Analysis, DC, removeRowCol, isiterable
 from pycircuit.param import Parameter, ParameterDict
 from pycircuit.internalresult import InternalResultSet, InternalResult
 from pycircuit.result import Waveform
-import circuit
 import sympy
-from symbolicanalysis import symbolic_linsolve
+from symbolicanalysis import SymbolicAC
 from sympy import Symbol, Matrix, symbols, simplify, together, factor, cancel, diff, Mul, factorial
-from symbolicelements import *
+from symbolicelements import R, defaultepar, gnd, Diode, SubCircuit, IS, C
 from copy import copy
 
-def K(cir, x, ordervec, epar = circuit.defaultepar):
+def K(cir, x, ordervec, epar = defaultepar):
     """Calculate the taylor series term of the given order of i(x)
 
     Example:
@@ -48,96 +47,7 @@ def K(cir, x, ordervec, epar = circuit.defaultepar):
 
 class Volterra(Analysis):
     """
-    Volterra analysis class
-    
-    """
-
-    @staticmethod
-    def linearsolver(*args):
-        return linalg.solve(*args)
-
-    @staticmethod
-    def toMatrix(array): return array.astype('complex')
-        
-    def run(self, freqs, **kvargs):
-        x = self.solve(freqs, **kvargs)
-        
-        result = InternalResult()
-
-        nodes = self.c.nodes
-        for xvalue, node in zip(x[:len(nodes)], nodes):
-            if isiterable(freqs):
-                wave = Waveform(freqs, xvalue)
-            else:
-                wave = xvalue[0]
-            result.storeSignal(self.c.getNodeName(node), wave)
-        for i, data in enumerate(zip(x[len(nodes):], self.c.branches)):
-            xvalue, branch = data
-            if isiterable(freqs):
-                wave = Waveform(freqs, xvalue)
-            else:
-                wave = xvalue[0]
-            result.storeSignal('i' + str(i),wave)
-
-        self.result = result
-
-        return result
-
-    def v(self, node1, node2):
-        """Return the voltage v(node1, node2) from last run"""
-
-        if self.result != None:
-            return self.result[self.c.getNodeName(node1)] - \
-                   self.result[self.c.getNodeName(node2)]
-
-    def i(self, term):
-        """Return terminal current i(term) of a circuit element from last run"""
-        if self.result != None:
-            branch, sign = self.c.getTerminalBranch(term)
-            ibranch = self.c.branches.index(branch)
-            return sign * self.result['i%d'%ibranch]
-        
-    def solve(self, freqs, refnode=gnd, complexfreq = False):
-        n=self.c.n
-
-        x = array([Symbol('V'), 0.0]) ## FIXME, this should be calculated from the dc analysis
-        
-        G=K(self.c, x,[1,0])
-        C=self.c.C(x)
-        U=self.c.U(x, analysis='ac')
-
-        ## Refer the voltages to the reference node by removing
-        ## the rows and columns that corresponds to this node
-        irefnode = self.c.getNodeIndex(refnode)
-        G,C,U = removeRowCol((G,C,U), irefnode)
-
-        G,C,U = (self.toMatrix(A) for A in (G,C,U))
-
-        out = []
-
-        if complexfreq:
-            ss = freqs
-        else:
-            ss = 2j*pi*freqs
-
-        def solvecircuit(s):
-            solver = self.linearsolver
-
-            x = solver(s*C + G, -U)
-            
-            # Insert reference node voltage
-            return concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
-
-        if isiterable(freqs):
-            out = [solvecircuit(s) for s in ss]
-            # Swap frequency and x-vector dimensions
-            return array(out).swapaxes(0,1)
-        else:
-            return solvecircuit(ss)
-
-class SymbolicVolterra(Volterra):
-    """
-    Symbolic volterra analysis
+    Symbolic volterra analysis class
     
     >>> cir = SubCircuit()
 
@@ -148,8 +58,8 @@ class SymbolicVolterra(Volterra):
     >>> cir['d'].mpar.IS = Symbol('IS')
     >>> cir['c'] = C(n1, gnd, c=Symbol('C'))
 
-    >>> volterra = SymbolicVolterra(cir)
-    >>> res = volterra.run(freqs=array([Symbol('s')]), complexfreq=True)
+    >>> volterra = Volterra(cir)
+    >>> res = volterra.run()
     >>> volterra.result.getSignalNames()
     ['i0', 'gnd', 'net1']
     >>> volterra.result['n1']
@@ -164,6 +74,21 @@ class SymbolicVolterra(Volterra):
     @staticmethod
     def toMatrix(array):
         return Matrix(array.tolist())
+        
+    def run(self, **kvargs):
+        x = self.solve(**kvargs)
+
+        result = InternalResult()
+
+        return result
+
+    def solve(self, refnode=gnd):
+        x = zeros(self.c.n)
+        
+        ac = SymbolicAC(self.c)
+        xac = ac.solve(freqs = Symbol('s'), refnode = refnode, complexfreq = True)
+
+        print K(self.c, x, [2, 0])
 
 if __name__ == "__main__":
     import doctest

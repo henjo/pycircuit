@@ -243,21 +243,26 @@ class AC(Analysis):
             ibranch = self.c.branches.index(branch)
             return sign * self.result['i%d'%ibranch]
         
-    def solve(self, freqs, refnode=gnd, complexfreq = False):
+    def solve(self, freqs, refnode=gnd, complexfreq = False, U = None):
         n=self.c.n
         
         x = zeros(n) ## FIXME, this should be calculated from the dc analysis
         
         G=self.c.G(x)
         C=self.c.C(x)
-        U=self.c.U(x, analysis='ac')
+
+        ## Allow for custom stimuli, mainly used by other analyses
+        if U == None:
+            U=self.c.U(x, analysis='ac')
+        else:
+            U = U
 
         ## Refer the voltages to the reference node by removing
         ## the rows and columns that corresponds to this node
         irefnode = self.c.getNodeIndex(refnode)
         G,C,U = removeRowCol((G,C,U), irefnode)
-        if self.numeric:
-            G,C,U = (A.astype(complex) for A in (G,C,U))
+
+        G,C,U = (self.toMatrix(A) for A in (G,C,U))
 
         out = []
 
@@ -267,9 +272,7 @@ class AC(Analysis):
             ss = 2j*pi*freqs
 
         def solvecircuit(s):
-            solver = self.linearsolver
-
-            x = solver(s*C + G, -U) 
+            x = self.linearsolver(s*C + G, -U) 
 
             # Insert reference node voltage
             return concatenate((x[:irefnode], array([0.0]), x[irefnode:]))

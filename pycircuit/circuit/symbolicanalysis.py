@@ -39,7 +39,7 @@ class SymbolicAC(analysis.AC):
     """
     @staticmethod
     def linearsolver(*args):
-        return linalg.solve(*args)
+        return symbolic_linsolve(*args)
 
     @staticmethod
     def toMatrix(array):

@@ -67,11 +67,14 @@ class Circuit(object):
     nodenames  -- A dictionary that maps a local node name to the node object in nodes. If the node is
                   connnected to superior hierarchy levels through a terminal the terminal name must
                   be the same as the local node name
+    linear     -- A boolean value that is true if i(x) and q(x) are linear functions
 
     """
     terminals = []
     mpar = ParameterDict()
     instparams = []
+    linear = True
+    
     def __init__(self, *args, **kvargs):
         self.nodes = []
         self.nodenames = {}
@@ -227,7 +230,7 @@ class Circuit(object):
 
         For linear circuits q(x(t)) = C*x
         """
-        return dot(self.G(x), x)
+        return dot(self.C(x), x)
 
     def CY(self, x, epar=defaultepar):
         """Calculate the noise sources correlation matrix
@@ -760,7 +763,7 @@ class Transformer(Circuit):
 class Diode(Circuit):
     terminals = ['plus', 'minus']
     mpar = Circuit.mpar.copy( Parameter(name='IS', desc='Saturation current', unit='A', default=1e-13) )
-        
+    linear = False
     def G(self, x, epar=defaultepar):
         VD = x[0]-x[1]
         VT = kboltzmann*epar.T / qelectron
