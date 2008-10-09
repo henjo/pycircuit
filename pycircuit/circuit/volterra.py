@@ -13,8 +13,18 @@ from pycircuit.result import Waveform
 import sympy
 from symbolicanalysis import SymbolicAC
 from sympy import Symbol, Matrix, symbols, simplify, together, factor, cancel, diff, Mul, factorial
-from symbolicelements import R, defaultepar, gnd, Diode, SubCircuit, IS, C
+from symbolicelements import R, defaultepar, gnd, Diode, SubCircuit, IS, C, VCCS
 from copy import copy
+
+class NLVCCS(VCCS):
+    linear = False
+    def i(self, x, epar=defaultepar):
+        """
+        
+        """
+        v = x[0]-x[1]
+        I = self.ipar.gm * v + 2 * v**2 + 3 * v**3
+        return array([0,0, I, -I])
 
 def K(cir, x, ordervec, epar = defaultepar):
     """Calculate the taylor series term of the given order of i(x)
@@ -24,13 +34,17 @@ def K(cir, x, ordervec, epar = defaultepar):
     cir.K([1,1,0] will return the vector 1/(1!*1!) * d2I(X)/dX_0dX_1
 
     >>> from circuit import Node
-    >>> d = Diode(Node('plus'), Node('minus'))
-    >>> d.mpar.IS=Symbol('IS')
+    >>> d = NLVCCS(Node('plus'), Node('minus'), Node('plus'), Node('minus'), gm=Symbol('gm'))
     >>> epar = copy(defaultepar)
     >>> epar.T = Symbol('T')
-    >>> K(d, [Symbol('v1'), Symbol('v2')], [1,0], epar=epar)
-    array([IS*qelectron*exp(qelectron*(v1 - v2)/(T*kboltzmann))/(T*kboltzmann),
-           -IS*qelectron*exp(qelectron*(v1 - v2)/(T*kboltzmann))/(T*kboltzmann)], dtype=object)
+    >>> K(d, [0,0], [1,0], epar=epar)
+    array([0, 0, gm, -gm], dtype=object)
+    >>> K(d, [0,0], [2,0], epar=epar)
+    array([0, 0, 2, -2], dtype=object)
+    >>> K(d, [0,0], [3,0], epar=epar)
+    array([0, 0, 3, -3], dtype=object)
+    >>> K(d, [0,0], [0,2], epar=epar)
+    array([0, 0, 2, -2], dtype=object)
 
     """
 
@@ -54,8 +68,7 @@ class Volterra(Analysis):
     >>> n1 = cir.addNode('n1')
 
     >>> cir['is'] = IS(n1, gnd, i=1e-3, iac=1)
-    >>> cir['d'] = Diode(n1, gnd)
-    >>> cir['d'].mpar.IS = Symbol('IS')
+    >>> cir['x'] = NLVCCS(n1, gnd, n1, gnd, gm=Symbol('gm'))
     >>> cir['c'] = C(n1, gnd, c=Symbol('C'))
 
     >>> volterra = Volterra(cir)
@@ -88,7 +101,10 @@ class Volterra(Analysis):
         ac = SymbolicAC(self.c)
         xac = ac.solve(freqs = Symbol('s'), refnode = refnode, complexfreq = True)
 
-        print K(self.c, x, [2, 0])
+        ## Find non-linear elements
+        nlelements = [e for e in self.c.xflatelements if not e.linear]
+        print self.c.n, nlelements
+#        print K(self.c, x, [2, 0]), nlelements
 
 if __name__ == "__main__":
     import doctest

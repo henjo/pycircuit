@@ -448,7 +448,15 @@ class SubCircuit(Circuit):
             else:
                 A[nodemap] += getattr(element, methodname)(*args)
         return A
-        
+
+    @property
+    def xflatelements(self):
+        """Iterator over all elements and subelements"""
+        for e in self.elements.values():
+            if not isinstance(e, SubCircuit):
+                yield e
+            else:
+                yield e.xflatelements
         
 class R(Circuit):
     """Resistor element
