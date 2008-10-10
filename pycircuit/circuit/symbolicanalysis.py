@@ -63,11 +63,11 @@ class SymbolicNoise(Analysis):
     >>> c['R1'] = R(n1, n2, r=R1)
     >>> c['R2'] = R(n2, gnd, r=R2)
     >>> res = SymbolicNoise(c, inputsrc=c['vs'], outputnodes=(n2, gnd)).run()
-    >>> res.o.vn2out
+    >>> res['vn2out']
     4*R1*R2*kT/(R1 + R2)
-    >>> res.o.vn2in
+    >>> res['vn2in']
     4*R1*kT*(R1 + R2)/R2
-    >>> simplify(res.o.gain - R2 / (R1 + R2))
+    >>> simplify(res['gain'] - R2 / (R1 + R2))
     0
     
     """
