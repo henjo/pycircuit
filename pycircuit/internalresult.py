@@ -4,13 +4,19 @@ class InternalResultSet(result.ResultSet):
     """ResultSet implementation where the results are stored in memory in a dictionary
 
     >>> rs = InternalResultSet()
-    >>> rs.storeResult('test', InternalResult(signals = {'testA': 1}))
-    >>> rs
+    >>> rs['test'] = InternalResult(signals = {'testA': 1})
+    >>> print rs
     
     """
     def __init__(self, results = {}):
         self.results = dict(results)
+
+    def __setitem__(self, name, result):
+        self.results[name] = result
         
+    def ___len__(self):
+        return len(self.results)
+
     def getResultNames(self):
         return self.results.keys()
 
@@ -25,6 +31,12 @@ class InternalResult(result.Result):
         self.signals = dict(signals)
         result.Result.__init__(self)
     
+    def __len__(self):
+        return len(self.signals)
+
+    def __setitem__(self, name, signal):
+        self.results[name] = signal
+
     def getSignalNames(self): return self.signals.keys()
     def getSignal(self, name): return self.signals[name]
     
