@@ -584,6 +584,9 @@ class HashContainer(Chunk):
         self.endpos = None
         self.hashtable = None
 
+    def __len__(self):
+        return len(self.children)
+
     def getChunks(self):
         return  self.children
 
@@ -836,6 +839,9 @@ class ValuesSectionSweep(SimpleContainer):
     def getValueNames(self):
         return self.psf.traces.getTraceNames()
 
+    def __len__(self):
+        return len(self.psf.traces)
+
     def getValueByName(self, name):
         windowedsweep = self.psf.header.properties.has_key('PSF window size')
 
@@ -945,6 +951,10 @@ class SweepValue(Chunk):
 
     def getSweepParamValues(self):
         pass
+    
+
+    def __len__(self):
+        return len(self.children)
     
     def __repr__(self):
         return self.__class__.__name__ + "(" + str(self.paramtype.name) + "=" + str(self.paramvalue) +","+ \
@@ -1265,6 +1275,9 @@ class PSFReader(object):
         if self.file == None:
             ValueError("Please open the PSF file first")
         return self.header.properties['PSF sweeps']
+
+    def __len__(self):
+        return len(self.values)
 
     def getValueNames(self):
         """Returns a tuple of the names of the traces

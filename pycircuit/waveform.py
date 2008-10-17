@@ -92,9 +92,18 @@ class Waveform(object):
         """Get Y vector or n-dimensional array if sweep dimension > 1"""
         return self._y
 
-    def setX(self,value, dim=0):
+    def setX(self,value, dim=-1):
         "Set X vector"
-        self._xlist[dim] = value
+
+        ## Swap order if new xvalues are falling
+        if value[0] > value [-1]:
+            self._xlist[dim] = value[-1::-1]
+
+            if dim != -1:
+                raise Exception("Can only swap order if dim=-1")
+
+            self._y = self._y[..., -1::-1]            
+
     def setY(self,value):
         "Set Y multi-dimensional array"
         self._y = value
@@ -286,6 +295,40 @@ class Waveform(object):
     def __gt__(self, x):  return self.binaryop(operator.__gt__, x)
     def __le__(self, x):  return self.binaryop(operator.__le__, x)
     def __ge__(self, x):  return self.binaryop(operator.__ge__, x)
+
+    def xmax(self, axis=-1):
+        """Returns the maximum x-value
+        
+        Examples
+        ========
+
+        >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
+        >>> w1.xmax()
+        3
+
+        >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
+        >>> w2.xmax()
+        6
+
+        """
+        return N.max(self._xlist[axis])
+
+    def xmin(self, axis=-1):
+        """Returns the maximum x-value
+        
+        Examples
+        ========
+
+        >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
+        >>> w1.xmin()
+        1
+
+        >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
+        >>> w2.xmin()
+        2
+
+        """
+        return N.min(self._xlist[axis])
 
     def ymax(self, axis=-1):
         """Returns the maximum y-value
@@ -689,7 +732,10 @@ def average(w, axis=-1):
     Waveform([0, 1],[ 0.5  4. ])
 
     """
-    return reducedim(w, N.mean(w._y, axis=w.getaxis(axis)), axis=w.getaxis(axis))
+    if isinstance(w, Waveform):
+        return reducedim(w, N.mean(w._y, axis=w.getaxis(axis)), axis=w.getaxis(axis))
+    else:
+        return w
 
 def stddev(w, axis=-1):
     """Calculate the standard deviation

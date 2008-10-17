@@ -2,13 +2,14 @@ import rsttable
 
 class ResultSet(object):
     """The ResultCollection class handles a set of results"""
-
     def __getitem__(self, name):
         return self.getResult(name)
     def __setitem__(self, name, result):
         raise Exception('Not implemented')
     def ___len__(self):
         raise Exception('Not implemented')
+    def __contains__(self, key):
+        return key in self.keys()
     def keys(self):
         return self.getResultNames()
 
@@ -18,9 +19,10 @@ class ResultSet(object):
         pass
 
     def __str__(self):
-        s = 'Resultset results:\n'
-        return rsttable.toRSTtable([['Result name', '# of signals']] + [[resultname, str(len(self[resultname]))] for resultname in self.keys()])
-    
+        s = 'Resultset results: %s\n'%(str(self.getResultNames()))
+        return s
+    # + rsttable.toRSTtable([['Result name', '# of signals']] + [[resultname, str(len(self[resultname]))] for resultname in self.keys()])
+    def __repr__(self):
         return self.__class__.__name__ + '(' + str(list(self.getResultNames())) + ')'
 
 
@@ -30,10 +32,14 @@ class Result(object):
        A result contains the values of one or more signals. Result can
        handle multi dimensional sweeps but not several sweeps.
     """
+    name = None
+    
     def __getitem__(self, name):
         return self.getSignal(name)
     def __setitem__(self, name, result):
         raise Exception('Not implemented')
+    def __contains__(self, key):
+        return key in self.keys()
     def keys(self):
         return self.getSignalNames()
     
@@ -54,6 +60,9 @@ class Result(object):
            the signal names
         """
         raise Exception('Not implemented')
+
+    def __str__(self):
+        return 'Result signals: %s\n'%(str(self.keys()))
 
     
 if __name__ == "__main__":

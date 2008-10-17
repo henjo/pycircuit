@@ -1,4 +1,5 @@
 import pycircuit.result as result
+import pycircuit.waveform as waveform
 import psf
 import os
 import re
@@ -285,6 +286,9 @@ class PSFResult(result.Result):
         self.psfobj.open()
         result.Result.__init__(self)
 
+    def __len__(self):
+        return len(self.psfobj)
+        
     def getSweepDimensions(self):
         """Return the number of nested sweeps
 
@@ -351,7 +355,7 @@ class PSFResult(result.Result):
             return res
         else:
             if self.psfobj.getNSweeps() > 0:
-                return result.Waveform(self.psfobj.getSweepParamValues(0), self.psfobj.getValuesByName(outputname))
+                return waveform.Waveform(self.psfobj.getSweepParamValues(0), self.psfobj.getValuesByName(outputname))
             else:
                 return self.psfobj.getValuesByName(outputname)
 
@@ -416,13 +420,13 @@ class PSFResultFamily(result.Result):
                 yvalues = numpy.concatenate([psfobj.getValuesByName(outputname) for psfobj in self.psfobjects])
                 yvalues = numpy.array(yvalues)
                 yvalues = numpy.reshape(yvalues, map(len, xvalues))
-                return result.Waveform(xvalues, yvalues)
+                return waveform.Waveform(xvalues, yvalues)
             else:
                 xvalues = self.sweepvalues
                 yvalues = [psfobj.getValuesByName(outputname) for psfobj in self.psfobjects]
                 yvalues = numpy.array(yvalues)
                 yvalues = numpy.reshape(yvalues, map(len, xvalues))
-                return result.Waveform(xvalues, yvalues)
+                return waveform.Waveform(xvalues, yvalues)
        
 if __name__ == "__main__":
     import doctest
