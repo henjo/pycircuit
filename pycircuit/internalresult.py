@@ -42,7 +42,6 @@ class InternalResult(result.Result):
     
     def storeSignal(self, name, signal):
         self.signals[name] = signal
-        self.o.update()
 
 if __name__ == "__main__":
     import doctest

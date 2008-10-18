@@ -492,6 +492,40 @@ class R(Circuit):
             iPSD = 4*kboltzmann*epar.T/self.ipar.r
         return  array([[iPSD, -iPSD],
                        [-iPSD, iPSD]], dtype=object)
+
+class G(Circuit):
+    """Conductor element
+
+    >>> c = SubCircuit()
+    >>> n1=c.addNode('1')
+    >>> c['G'] = G(n1, gnd, g=1e-3)
+    >>> c['G']
+    G(Node('1'),Node('gnd'),g=0.001,nonoise=False)
+    >>> c.G(zeros(2))
+    array([[0.001, -0.001],
+           [-0.001, 0.001]], dtype=object)
+
+    """
+    terminals = ['plus', 'minus']
+    instparams = [Parameter(name='g', desc='Conductance', unit='S', default=1e-3),
+                  Parameter(name='nonoise', desc='If true the conductance is noiseless', unit='', default=False),
+                  ]
+
+    def G(self, x, epar=defaultepar):
+        g = self.ipar.g
+        return  array([[g, -g],
+                        [-g, g]], dtype=object)
+
+    def CY(self, x, epar=defaultepar):
+        if not self.ipar.nonoise:
+            if 'kT' in epar:
+                iPSD = 4*epar.kT*self.ipar.g
+            else:
+                iPSD = 4*kboltzmann*epar.T*self.ipar.g
+            return  array([[iPSD, -iPSD],
+                           [-iPSD, iPSD]], dtype=object)
+        else:
+            return super(G, self).CY(x,epar=epar)
         
 
 class C(Circuit):

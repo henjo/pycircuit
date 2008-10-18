@@ -1,7 +1,7 @@
 from numpy import array, delete, linalg, size, zeros, concatenate, pi, zeros, alltrue, maximum
 from scipy import optimize
 from circuit import Circuit, SubCircuit, VS,IS,R,C,Diode, gnd
-from pycircuit.result import Waveform
+from pycircuit.waveform import Waveform
 from pycircuit.internalresult import InternalResultSet, InternalResult
 import numpy
 from copy import copy

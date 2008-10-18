@@ -22,6 +22,8 @@ def symbolic_linsolve(A, b):
 
     outputvariables = map(Symbol, map(str, range(size(b))))
     resultdict =  sympy.solve_linear_system(A.row_join(b), *outputvariables)
+    if resultdict == None:
+        raise NoSolutionFound('No solution was found')
     return array([resultdict[var] for var in outputvariables])
 
 class SymbolicAC(analysis.AC):
@@ -129,7 +131,7 @@ class SymbolicNoise(Analysis):
             U[ioutn] = 1.0
         # Calculate output current noise
         else:
-            U - zeros((n,1))
+            U = zeros(n)
             ibranch = self.c.getBranchIndex(self.outputsrc.branch)
             U[ibranch] = 1.0
 
@@ -176,13 +178,23 @@ class SymbolicNoise(Analysis):
         # to find the transfer from the branch voltage of the input source to the output
         gain = None
         if isinstance(self.inputsrc, VS):
-            i = self.c.getBranchIndex(self.inputsrc.branches[0])
-            if i > irefnode:
-                i -= 1
-            gain = zm[i]
+            index = self.c.getBranchIndex(self.inputsrc.branches[0])
+            if index > irefnode:
+                index -= 1
+            gain = zm[index]
         
             result.storeSignal('gain', gain)
             result.storeSignal('vn2in', xn2out/gain**2)
+        elif isinstance(self.inputsrc, IS):
+            plusindex = self.c.getNodeIndex(self.inputsrc.nodes[0])
+
+            if plusindex > irefnode:
+                plusindex -= 1
+
+            gain = zm[plusindex]
+            
+            result.storeSignal('gain', gain)
+            result.storeSignal('in2in', xn2out/gain**2)
 
         return result
 

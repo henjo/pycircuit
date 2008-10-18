@@ -64,6 +64,12 @@ class Result(object):
     def __str__(self):
         return 'Result signals: %s\n'%(str(self.keys()))
 
+    def __dict__(self):
+        return dict([(k, self.getSignal(k)) for k in self.keys()])
+
+    @property
+    def astable(self):
+        return rsttable.toRSTtable([['Signal', 'Value']] + [(k, str(v)) for k,v in dict(self).items()])
     
 if __name__ == "__main__":
     import doctest

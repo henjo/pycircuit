@@ -46,9 +46,9 @@ class NPort(object):
         >>> import sympy as S
         >>> a,b,c,d = S.symbols('abcd')
         >>> A = TwoPort(N.array([[a,b], [c,d]]))
-        >>> A // A
+        >>> print A // A
         array([[a, 0.5*b],
-           [-0.5*b*(-4.0*(b*c - a*d)/b**2 - 4*a*d/b**2), d]], dtype=object)
+           [-2c, d]], dtype=object)
 
         """
         return NPort.fromY(self.Y + a.Y)
@@ -92,7 +92,7 @@ class NPort(object):
                         [-1.0 / A[0,1], A[0,0] / A[0,1]]])
     
         
-    def __repr__(self):
+    def __str__(self):
         return repr(self.K)
 
 class TwoPort(NPort):
@@ -113,7 +113,7 @@ class TwoPortAnalysis(Analysis):
     >>> n2 = c.addNode('net2')
     >>> c['R1'] = R(n1, n2, r=9e3)
     >>> c['R2'] = R(n2, gnd, r=1e3)
-    >>> res = TwoPort(c, n1, gnd, n2, gnd).run(freqs = N.array([0]))
+    >>> res = TwoPortAnalysis(c, n1, gnd, n2, gnd).run(freqs = N.array([0]))
     >>> res['mu'].y[0]
     (0.1+0j)
     >>> res['gamma'].y[0]
@@ -136,7 +136,7 @@ class TwoPortAnalysis(Analysis):
         result = InternalResult()
 
         abcd = self.solve(freqs, **kvargs)
-        result.storeSignal('ABCD', abcd)
+        result.storeSignal('twoport', TwoPort(abcd))
 
         result.storeSignal('mu', 1/abcd[0,0])
         result.storeSignal('gamma', 1/abcd[0,1])

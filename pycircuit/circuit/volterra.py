@@ -26,6 +26,9 @@ class NLVCCS(VCCS):
         I = self.ipar.gm * v + 2 * v**2 + 3 * v**3
         return array([0,0, I, -I])
 
+def product(self, factors):
+    return Mul(*factors)
+
 def K(cir, x, ordervec, epar = defaultepar):
     """Calculate the taylor series term of the given order of i(x)
 
@@ -48,15 +51,19 @@ def K(cir, x, ordervec, epar = defaultepar):
 
     """
 
+    ## Generate a list of symbols like [x[0], x[1] ..]
     xsyms = array([Symbol('x[%d]'%i) for i in range(size(x,0))])
 
+    ## Calculate derivative
     didx = cir.i(xsyms, epar=epar)
     for xsym, order in zip(xsyms, ordervec):
         if order > 0:
             didx = diff(didx, xsym, order)
 
-    K = 1 / Mul(*map(factorial, ordervec))
+    ## Calculate taylor coefficient
+    K = 1 / product(map(factorial, ordervec))
 
+    ## Substitute x[k] with given x values
     return array([K * expr.subs(zip(xsyms, x)) for expr in didx])
 
 class Volterra(Analysis):

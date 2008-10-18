@@ -24,6 +24,7 @@ class ParameterDict(object):
         self.append(*parameters)
         self.set(**kvargs)
         
+        
     def append(self, *parameters):
         for param in parameters:
             if param.name not in self._parameters:
@@ -34,7 +35,7 @@ class ParameterDict(object):
     def set(self, **kvargs):
         for k,v in kvargs.items():
             if k not in self.__dict__:
-                raise KeyError()
+                raise KeyError('parameter %s not in parameter dictionary'%k )
             self.__dict__[k] = v
 
     def get(self, param):
