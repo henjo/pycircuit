@@ -1,7 +1,7 @@
 import re
 from sympy import Symbol, simplify, symbols, series
 
-def approx(expr, patterns, n):
+def approx(expr, patterns, n=2):
     """Approximate an expression using taylor series expansion
 
     The expression is approximated by doing a substitution of its variables as:
@@ -38,7 +38,7 @@ def approx(expr, patterns, n):
         sublist.extend([(var.name, var * t**(i+1))
                         for var in variables if re.match(pattern, var.name)])
 
-    return expr.subs(dict(sublist)).series(t.name, point=0, n=2)
+    return expr.subs(dict(sublist)).series(t, point=0, n=n, with_order=False)
 
 if __name__ == "__main__":
     import doctest
