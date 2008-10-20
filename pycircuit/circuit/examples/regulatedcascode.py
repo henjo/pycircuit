@@ -4,7 +4,8 @@ from pycircuit.circuit.symbolicanalysis import SymbolicTwoPortAnalysis, Symbolic
 from sympy import Symbol, simplify, ratsimp, sympify, factor
 from numpy import array, zeros
 from copy import copy
-
+from pycircuit.circuit.symbolicapprox import *
+    
 ## Create regulated cascode circuit
 
 c = SubCircuit()
@@ -25,13 +26,8 @@ res2port = twoportana.run(Symbol('s'), complexfreq=True)
 
 y11 = res2port['twoport'].Y[0,0]
 
-## Approximate by replacing gdsX by gdsX*t and do a taylor series around t=0
-t = Symbol('t')
-zint = 1/y11.subs({'gds1': gds1*t, 'gds2': gds2*t})
-zinapprox = zint.series('t', n=2).subs({'t': 1})
-
 print 'Input impedance:', 1/y11
-print 'Approx. input impedance', zinapprox
+print 'Approx. input impedance', approx(1/y11, ['gds'], n = 1)
 print 'Input referred current noise PSD, Sin:', ratsimp(res2port['Sin'])
 print 'Input referred voltage noise PSD, Svn:', ratsimp(res2port['Svn'])
 

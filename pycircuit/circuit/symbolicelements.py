@@ -10,3 +10,6 @@ class Diode(circuit.Diode, Circuit):
         I = self.mpar.IS*(exp(VD/VT)-1.0)
         return array([I, -I], dtype=object)
 
+if __name__ == "__main__":
+    import doctest
+    doctest.testmod()
