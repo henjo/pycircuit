@@ -35,7 +35,7 @@ class InternalResult(result.Result):
         return len(self.signals)
 
     def __setitem__(self, name, signal):
-        self.results[name] = signal
+        self.signals[name] = signal
 
     def getSignalNames(self): return self.signals.keys()
     def getSignal(self, name): return self.signals[name]

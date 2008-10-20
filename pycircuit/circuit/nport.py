@@ -1,6 +1,6 @@
 import numpy as N
-from circuit import SubCircuit, gnd, R, VS
-from analysis import Analysis, AC
+from circuit import SubCircuit, gnd, R, VS, IS
+from analysis import Analysis, AC, Noise
 from pycircuit.internalresult import InternalResultSet, InternalResult
 from copy import copy
 
@@ -126,11 +126,15 @@ class TwoPortAnalysis(Analysis):
     """
     
     ACAnalysis = AC
+    NoiseAnalysis = Noise
     
-    def __init__(self, circuit, inp, inn, outp, outn):
+    def __init__(self, circuit, inp, inn, outp, outn, noise = False, noise_outquantity = 'v'):
         self.c = circuit
 
         self.ports = inp, inn, outp, outn
+
+        self.noise = noise
+        self.noise_outquantity = noise_outquantity
         
     def run(self, freqs, **kvargs):
         result = InternalResult()
@@ -143,6 +147,35 @@ class TwoPortAnalysis(Analysis):
         result.storeSignal('zeta', 1/abcd[1,0])
         result.storeSignal('beta', 1/abcd[1,1])
 
+        if self.noise:
+            inp, inn, outp, outn = self.ports
+            
+            circuit_voltagesrc = copy(self.c)
+            circuit_voltagesrc['VS_TwoPort'] = VS(inp, inn, vac = 1)
+            
+            circuit_currentsrc = copy(self.c)
+            circuit_currentsrc['IS_TwoPort'] = IS(inp, inn, iac = 1)
+            
+            if self.noise_outquantity == 'i':
+                for src in circuit_voltagesrc, circuit_currentsrc:
+                    src['VL'] = VS(outp, outn, vac = 0)
+
+            if self.noise_outquantity == 'v':
+                res_v = self.NoiseAnalysis(circuit_voltagesrc, inputsrc=circuit_voltagesrc['VS_TwoPort'], \
+                                           outputnodes=(outp, outn)).run(freqs)
+
+                res_i = self.NoiseAnalysis(circuit_currentsrc, inputsrc=circuit_currentsrc['IS_TwoPort'], \
+                                           outputnodes=(outp, outn)).run(freqs)
+            else:
+                res_v = self.NoiseAnalysis(circuit_voltagesrc, inputsrc=circuit_voltagesrc['VS_TwoPort'], \
+                                           outputsrc=circuit_voltagesrc['VL']).run(freqs)
+
+                res_i = self.NoiseAnalysis(circuit_currentsrc, inputsrc=circuit_currentsrc['IS_TwoPort'], \
+                                           outputsrc=circuit_currentsrc['VL']).run(freqs)
+
+            result['Svn'] = res_v['Svninp']
+            result['Sin'] = res_i['Sininp']
+            
         self.result = result
 
         return result
@@ -154,11 +187,11 @@ class TwoPortAnalysis(Analysis):
         ## copies with output open and shorted respectively
         circuit_vs_open = copy(self.c)
 
-        circuit_vs_open['VS_TwoPort'] = VS(inp, inn, v=1.0)
+        circuit_vs_open['VS_TwoPort'] = VS(inp, inn, vac=1)
 
         circuit_vs_shorted = copy(circuit_vs_open)
 
-        circuit_vs_shorted['VL_TwoPort'] = VS(outp, outn, v=0.0)
+        circuit_vs_shorted['VL_TwoPort'] = VS(outp, outn, vac=0)
 
         ## Run AC-analysis on the two circuits
         ac_open = self.ACAnalysis(circuit_vs_open)

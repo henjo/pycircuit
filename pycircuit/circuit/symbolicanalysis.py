@@ -1,7 +1,7 @@
 import analysis
 from analysis import Analysis, removeRowCol
 from nport import TwoPortAnalysis
-from numpy import array, delete, linalg, size, zeros, concatenate, pi
+from numpy import array, delete, linalg, size, zeros, concatenate, pi, asarray
 import circuit
 from circuit import *
 from copy import copy
@@ -17,21 +17,28 @@ class NoSolutionFound(Exception):
 def symbolic_linsolve(A, b):
     """Numpy compatible wrapper around sympy.solve_linear_system"""
 
-    A = sympy.Matrix(A)
-    b = sympy.Matrix(b)
+    A = sympy.Matrix(A.tolist())
+    b = sympy.Matrix(b.tolist())
 
-    outputvariables = map(Symbol, map(str, range(size(b))))
-    resultdict =  sympy.solve_linear_system(A.row_join(b), *outputvariables)
-    if resultdict == None:
-        raise NoSolutionFound('No solution was found')
-    return array([resultdict[var] for var in outputvariables])
+    res = array(A.inv("ADJ") * b)
+
+    return res.reshape((size(res,0),) )
+
+class SymbolicAnalysis(Analysis):
+    @staticmethod
+    def linearsolver(*args):
+        return symbolic_linsolve(*args)
+
+    @staticmethod
+    def toMatrix(array):
+        return Matrix(array.tolist())
 
 class SymbolicAC(analysis.AC):
     """Circuit analysis that calculates symbolic expressions of the unknowns
 
     >>> c = SubCircuit()
     >>> n1 = c.addNode('net1')
-    >>> c['vs'] = VS(n1, gnd, v=Symbol('V'))
+    >>> c['vs'] = VS(n1, gnd, vac=Symbol('V'))
     >>> c['R'] = R(n1, gnd, r=Symbol('R'))
     >>> res = SymbolicAC(c).run(Symbol('s'), complexfreq=True)
     >>> res['net1']
@@ -47,7 +54,7 @@ class SymbolicAC(analysis.AC):
     def toMatrix(array):
         return Matrix(array.tolist())
 
-class SymbolicNoise(Analysis):
+class SymbolicNoise(analysis.Noise):
     """Symbolic noise analysis that calculates input and output referred noise.
     
     The analysis is using the adjoint admittance matrix method to calculate the transfers from
@@ -59,144 +66,31 @@ class SymbolicNoise(Analysis):
     >>> kT = Symbol('kT')
     >>> R1=Symbol('R1', real=True)
     >>> R2=Symbol('R2', real=True)
-    >>> n1 = c.addNode('net1')
-    >>> n2 = c.addNode('net2')
+    >>> n1,n2 = c.addNodes('net1', 'net2')
     >>> c['vs'] = VS(n1, gnd, v=Symbol('V'))
     >>> c['R1'] = R(n1, n2, r=R1)
     >>> c['R2'] = R(n2, gnd, r=R2)
-    >>> res = SymbolicNoise(c, inputsrc=c['vs'], outputnodes=(n2, gnd)).run()
-    >>> res['vn2out']
+    >>> res = SymbolicNoise(c, inputsrc=c['vs'], outputnodes=(n2, gnd)).run(Symbol('s'), complexfreq=True)
+    >>> res['Svnout']
     4*R1*R2*kT/(R1 + R2)
-    >>> res['vn2in']
-    4*R1*kT*(R1 + R2)/R2
+    >>> res['Svninp']
+    4*R1*kT*(-R1 - R2)**2/(R2*(R1 + R2))
     >>> simplify(res['gain'] - R2 / (R1 + R2))
     0
     
     """
     @staticmethod
     def linearsolver(*args):
-        return linalg.solve(*args)
+        return symbolic_linsolve(*args)
 
     @staticmethod
     def toMatrix(array):
         return Matrix(array.tolist())
 
-    def __init__(self, circuit, inputsrc=None, outputnodes=None, outputsrc=None):
-        """
-        Initiate a symbolic noise analysis.
+    def __init__(self, *args, **kvargs):
+        analysis.Noise.__init__(self, *args, **kvargs)
 
-        Parameters
-        ----------
-        circuit : Circuit instance
-            The circuit to be analyzed
-        inputsrc : VS or IS instance
-            A voltage or current source in the circuit where the input noise should be referred to
-        outputnodes : tuple
-            A tuple with the output nodes (outputpos outputneg)
-        outputsrc: VS instance
-            The voltage source where the output current noise is measured
-        """
-
-        Analysis.__init__(self, circuit)
-    
-        if not (outputnodes != None or outputsrc != None):
-            raise ValueError('Output is not specified')
-        elif outputnodes != None and outputsrc != None:
-            raise ValueError('Cannot measure both output current and voltage noise')
-        
-        self.inputsrc = inputsrc
-        self.outputnodes = outputnodes
-        self.outputsrc = outputsrc
-
-    def run(self, refnode=gnd):
-        
-        s = Symbol('s')
-        kT = Symbol('kT')
-        
-        ## Set environment parameters
-        epar = ParameterDict(Parameter('kT', default=kT))
-        
-        n = self.c.n
-        x = zeros(n) # This should be the x-vector at the DC operating point
-
-        G = self.c.G(x, epar)
-        C = self.c.C(x, epar)
-        CY = self.c.CY(x, epar)
-
-        # Calculate output voltage noise
-        if self.outputnodes != None:
-            U = zeros(n)
-            ioutp, ioutn = (self.c.getNodeIndex(node) for node in self.outputnodes)
-            U[ioutp] = -1.0
-            U[ioutn] = 1.0
-        # Calculate output current noise
-        else:
-            U = zeros(n)
-            ibranch = self.c.getBranchIndex(self.outputsrc.branch)
-            U[ibranch] = 1.0
-
-        ## Convert to Sympy matrices
-        G,C,U,CY = (self.toMatrix(A) for A in (G, C, U, CY))
-
-        ## Refer the voltages to the gnd node by removing
-        ## the rows and columns that corresponds to this node
-        irefnode = self.c.nodes.index(refnode)
-        for A in (G,C,U,CY):
-            A.row_del(irefnode)
-        for A in (G,C,CY):
-            A.col_del(irefnode)
-
-        # Calculate the reciprocal G and C matrices
-        Yreciprocal = G.T + s*C.T
-
-        ## Calculate transimpedances from currents in each nodes to output
-        outputvariables = map(Symbol, map(str, range(size(G,0))))
-        resultdict =  sympy.solve_linear_system(Yreciprocal.row_join(-U), *outputvariables)
-
-        if resultdict == None:
-            raise NoSolutionFound()            
-        
-        ## Collect transimpedance vector from result dictionary
-        zm = sympy.Matrix([[resultdict[var] for var in outputvariables]]).T
-
-        ## Simplify
-        zm = zm.applyfunc(lambda x: cancel(together(x)))
-
-        # Calculate output noise using correlation matrix
-        xn2out = zm.T * CY * zm.applyfunc(sympy.conjugate)
-        xn2out = cancel(together(xn2out[0]))
-
-        # Store results
-        result = InternalResult()
-
-        if self.outputnodes != None:
-            result.storeSignal('vn2out', xn2out)
-        elif self.outputsrc != None:
-            result.storeSignal('in2out', xn2out)
-
-        # Calculate the gain from the input voltage source by using the transimpedance vector
-        # to find the transfer from the branch voltage of the input source to the output
-        gain = None
-        if isinstance(self.inputsrc, VS):
-            index = self.c.getBranchIndex(self.inputsrc.branches[0])
-            if index > irefnode:
-                index -= 1
-            gain = zm[index]
-        
-            result.storeSignal('gain', gain)
-            result.storeSignal('vn2in', xn2out/gain**2)
-        elif isinstance(self.inputsrc, IS):
-            plusindex = self.c.getNodeIndex(self.inputsrc.nodes[0])
-
-            if plusindex > irefnode:
-                plusindex -= 1
-
-            gain = zm[plusindex]
-            
-            result.storeSignal('gain', gain)
-            result.storeSignal('in2in', xn2out/gain**2)
-
-        return result
+        self.epar.append(Parameter('kT', default=Symbol('kT')))
 
 class SymbolicTwoPortAnalysis(TwoPortAnalysis):
     """Analysis to find the symbolic 2-ports parameters of a circuit
@@ -209,11 +103,10 @@ class SymbolicTwoPortAnalysis(TwoPortAnalysis):
     D = i(inp, inn)/i(outp, outn) | vo = 0
 
     >>> c = SubCircuit()
-    >>> n1 = c.addNode('net1')
-    >>> n2 = c.addNode('net2')
-    >>> c['R1'] = R(n1, n2, r=Symbol('R1'))
-    >>> c['R2'] = R(n2, gnd, r=Symbol('R2'))
-    >>> res = SymbolicTwoPortAnalysis(c, n1, gnd, n2, gnd).run(freqs = array([Symbol('s')]), complexfreq=True)
+    >>> n1, n2 = c.addNodes('net1', 'net2')
+    >>> c['R1'] = R(n1, n2, r=Symbol('R1',real=True))
+    >>> c['R2'] = R(n2, gnd, r=Symbol('R2',real=True))
+    >>> res = SymbolicTwoPortAnalysis(c, n1, gnd, n2, gnd, noise=True).run(freqs = array([Symbol('s')]), complexfreq=True)
     >>> simplify(res['mu'].y[0])
     -R2/(-R1 - R2)
     >>> res['gamma'].y[0]
@@ -222,10 +115,14 @@ class SymbolicTwoPortAnalysis(TwoPortAnalysis):
     R2
     >>> res['beta'].y[0]
     1
-    
+    >>> res['Svn']
+    4*kT*R1*(R2+R1)/R2
+    >>> res['Sin']
+    4*kT/R2
     """
     
     ACAnalysis = SymbolicAC
+    NoiseAnalysis = SymbolicNoise
 
 if __name__ == "__main__":
     import doctest

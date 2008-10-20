@@ -4,7 +4,7 @@ from numpy import array
 from circuit import SubCircuit, VCCS, G, C, IS, Parameter, gnd
 from sympy import Symbol
 
-class MOSSmallSignal(SubCircuit):
+class MOS(SubCircuit):
     """Small-signal MOS model
 
     >>> from sympy import Symbol
@@ -28,7 +28,7 @@ class MOSSmallSignal(SubCircuit):
                   Parameter(name='gamma', desc='Excessive noise factor', unit='', default=1)
                   ]
     def __init__(self, *args, **kvargs):
-        super(MOSSmallSignal, self).__init__(*args, **kvargs)
+        super(MOS, self).__init__(*args, **kvargs)
 
         self['Igm'] = VCCS(self.nodenames['g'], self.nodenames['s'], self.nodenames['d'], self.nodenames['s'], gm=self.ipar.gm)
 

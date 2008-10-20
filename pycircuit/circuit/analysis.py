@@ -1,6 +1,6 @@
-from numpy import array, delete, linalg, size, zeros, concatenate, pi, zeros, alltrue, maximum
+from numpy import array, delete, linalg, size, zeros, concatenate, pi, zeros, alltrue, maximum, conj, dot, imag
 from scipy import optimize
-from circuit import Circuit, SubCircuit, VS,IS,R,C,Diode, gnd
+from circuit import Circuit, SubCircuit, VS,IS,R,C,Diode, gnd, defaultepar
 from pycircuit.waveform import Waveform
 from pycircuit.internalresult import InternalResultSet, InternalResult
 import numpy
@@ -20,6 +20,9 @@ def removeRowCol(matrices, n):
 class Analysis(object):
     @staticmethod
     def linearsolver(*args):
+
+        args = [A.astype('complex') for A in args]
+        
         return linalg.solve(*args)
 
     @staticmethod
@@ -215,14 +218,14 @@ class AC(Analysis):
             if isiterable(freqs):
                 wave = Waveform(freqs, xvalue)
             else:
-                wave = xvalue[0]
+                wave = xvalue
             result.storeSignal(self.c.getNodeName(node), wave)
         for i, data in enumerate(zip(x[len(nodes):], self.c.branches)):
             xvalue, branch = data
             if isiterable(freqs):
                 wave = Waveform(freqs, xvalue)
             else:
-                wave = xvalue[0]
+                wave = xvalue
             result.storeSignal('i' + str(i),wave)
 
         self.result = result
@@ -262,8 +265,6 @@ class AC(Analysis):
         irefnode = self.c.getNodeIndex(refnode)
         G,C,U = removeRowCol((G,C,U), irefnode)
 
-        G,C,U = (self.toMatrix(A) for A in (G,C,U))
-
         out = []
 
         if complexfreq:
@@ -284,83 +285,125 @@ class AC(Analysis):
         else:
             return solvecircuit(ss)
 
-
-class TwoPort(Analysis):
-    """Analysis to find the 2-ports parameters of a circuit
-
-    The transmission parameters are found as:
-
-    A = v(inp, inn)/v(outp, outn) | io = 0
-    B = v(inp, inn)/i(outp, outn) | vo = 0
-    C = i(inp, inn)/v(outp, outn) | io = 0
-    D = i(inp, inn)/i(outp, outn) | vo = 0
+class Noise(Analysis):
+    """Noise analysis that calculates input and output referred noise.
+    
+    The analysis is using the adjoint admittance matrix method to calculate the transfers from
+    each noise source to the output.
+    
+    Example, calculate input referred noise of a voltage divider:
 
     >>> c = SubCircuit()
     >>> n1 = c.addNode('net1')
     >>> n2 = c.addNode('net2')
+    >>> c['vs'] = VS(n1, gnd, vac=1.0)
     >>> c['R1'] = R(n1, n2, r=9e3)
     >>> c['R2'] = R(n2, gnd, r=1e3)
-    >>> res = TwoPort(c, n1, gnd, n2, gnd).run(freqs = array([0]))
-    >>> res['mu'].y[0]
+    >>> res = Noise(c, inputsrc=c['vs'], outputnodes=(n2, gnd)).run(0)
+    >>> res['Svnout']
+    (1.4904e-17+0j)
+    >>> res['Svninp']
+    (1.4904e-15+0j)
+    >>> res['gain']
     (0.1+0j)
-    >>> res['gamma'].y[0]
-    (0.000111111111111+0j)
-    >>> res['zeta'].y[0]
-    (1000+0j)
-    >>> res['beta'].y[0]
-    (1+0j)
     
     """
-    
-    ACAnalysis = AC
-    
-    def __init__(self, circuit, inp, inn, outp, outn):
-        self.c = circuit
+    def __init__(self, circuit, inputsrc=None, outputnodes=None, outputsrc=None):
+        """
+        Initiate a noise analysis.
 
-        self.ports = inp, inn, outp, outn
+        Parameters
+        ----------
+        circuit : Circuit instance
+            The circuit to be analyzed
+        inputsrc : VS or IS instance
+            A voltage or current source in the circuit where the input noise should be referred to
+        outputnodes : tuple
+            A tuple with the output nodes (outputpos outputneg)
+        outputsrc: VS instance
+            The voltage source where the output current noise is measured
+        """
+
+        Analysis.__init__(self, circuit)
+    
+        if not (outputnodes != None or outputsrc != None):
+            raise ValueError('Output is not specified')
+        elif outputnodes != None and outputsrc != None:
+            raise ValueError('Cannot measure both output current and voltage noise')
         
-    def run(self, freqs, **kvargs):
+        self.inputsrc = inputsrc
+        self.outputnodes = outputnodes
+        self.outputsrc = outputsrc
+        self.epar = defaultepar
+
+    def run(self, freqs, refnode=gnd, complexfreq=False):
+        n = self.c.n
+        x = zeros(n) # This should be the x-vector at the DC operating point
+
+        ## Complex frequency variable
+        complexfreq = False
+        if complexfreq:
+            s = freqs
+        else:
+            s = 2j*pi*freqs
+
+        epar = self.epar
+        G = self.c.G(x, epar)
+        C = self.c.C(x, epar)
+        CY = self.c.CY(x, imag(s),epar)
+
+        # Calculate output voltage noise
+        if self.outputnodes != None:
+            U = zeros(n, dtype=int)
+            ioutp, ioutn = (self.c.getNodeIndex(node) for node in self.outputnodes)
+            U[ioutp] = -1
+            U[ioutn] = 1
+        # Calculate output current noise
+        else:
+            U = zeros(n, dtype=int)
+            ibranch = self.c.getBranchIndex(self.outputsrc.branch)
+            U[ibranch] = -1
+
+        ## Refer the voltages to the gnd node by removing
+        ## the rows and columns that corresponds to this node
+        irefnode = self.c.nodes.index(refnode)
+        G,C,U,CY = removeRowCol((G,C,U,CY), irefnode)
+
+        # Calculate the reciprocal G and C matrices
+        Yreciprocal = G.T + s*C.T
+
+        ## Convert to Sympy matrices
+        Yreciprocal, U = (self.toMatrix(A) for A in (Yreciprocal, U))
+
+        ## Calculate transimpedances from currents in each nodes to output
+        zm = self.linearsolver(Yreciprocal, -U)
+
+        xn2out = dot(dot(zm.reshape(1,size(zm)), CY), conj(zm))
+
+        xn2out = xn2out[0]
+
+        # Store results
         result = InternalResult()
 
-        abcd = self.solve(freqs, **kvargs)
-        result.storeSignal('ABCD', abcd)
+        if self.outputnodes != None:
+            result.storeSignal('Svnout', xn2out)
+        elif self.outputsrc != None:
+            result.storeSignal('Sinout', xn2out)
 
-        result.storeSignal('mu', 1/abcd[0,0])
-        result.storeSignal('gamma', 1/abcd[0,1])
-        result.storeSignal('zeta', 1/abcd[1,0])
-        result.storeSignal('beta', 1/abcd[1,1])
-
-        self.result = result
+        # Calculate the gain from the input voltage source by using the transimpedance vector
+        # to find the transfer from the branch voltage of the input source to the output
+        gain = None
+        if isinstance(self.inputsrc, VS):
+            gain = self.c.extractI(zm, self.inputsrc.branch, refnode=refnode, refnode_removed=True)
+            result.storeSignal('gain', gain)
+            result.storeSignal('Svninp', xn2out / gain**2)
+        elif isinstance(self.inputsrc, IS):
+            gain = self.c.extractV(zm, self.inputsrc.getNode('plus'), refnode=refnode, refnode_removed=True)
+            result.storeSignal('gain', gain)
+            result.storeSignal('Sininp', xn2out / gain**2)
 
         return result
 
-    def solve(self, freqs, refnode = gnd, complexfreq = False):
-        inp, inn, outp, outn = self.ports
-                
-        ## Add voltage source at input port and create
-        ## copies with output open and shorted respectively
-        circuit_vs_open = copy(self.c)
-
-        circuit_vs_open['VS_TwoPort'] = VS(inp, inn, v=1.0)
-
-        circuit_vs_shorted = copy(circuit_vs_open)
-
-        circuit_vs_shorted['VL_TwoPort'] = VS(outp, outn, v=0.0)
-
-        ## Run AC-analysis on the two circuits
-        ac_open = self.ACAnalysis(circuit_vs_open)
-        ac_shorted = self.ACAnalysis(circuit_vs_shorted)
-
-        ac_open.run(freqs, refnode = refnode, complexfreq=complexfreq)
-
-        ac_shorted.run(freqs, refnode = refnode, complexfreq=complexfreq)
-        
-        A = ac_open.v(inp, inn) / ac_open.v(outp, outn)
-        B = ac_shorted.v(inp, inn) / ac_shorted.i('VL_TwoPort.plus')
-        C = ac_open.i('VS_TwoPort.minus') / ac_open.v(outp, outn)
-        D = ac_shorted.i('VS_TwoPort.minus') / ac_shorted.i('VL_TwoPort.plus')
-
-        return array([[A,B],[C,D]])
 
 def isiterable(object):
     return hasattr(object,'__iter__')

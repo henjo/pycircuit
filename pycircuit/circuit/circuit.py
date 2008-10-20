@@ -4,6 +4,7 @@ from numpy import array, delete, linalg, size, zeros, concatenate, pi, dot, exp
 from pycircuit.param import Parameter, ParameterDict
 from constants import *
 from copy import copy
+import types
 
 class Node(object):
     """A node is a region in an electric circuit where the voltage is the same.
@@ -47,7 +48,7 @@ class Branch(object):
 gnd = Node("gnd")
 
 defaultepar = ParameterDict(
-    Parameter("T", "Temperature", unit="K", default = 300.0))
+    Parameter("T", "Temperature", unit="K", default = 300))
 
 class Circuit(object):
     """The circuit class describes a full circuit, subcircuit or a single component. 
@@ -80,7 +81,6 @@ class Circuit(object):
         self.nodenames = {}
         self.branches = []
         self.ipar = ParameterDict(*self.instparams, **kvargs)
-        self.x = {}
 
         for terminal in self.terminals:
             self.addNode(terminal)
@@ -93,7 +93,6 @@ class Circuit(object):
         newc.nodenames = copy(self.nodenames)    
         newc.branches = copy(self.branches)    
         newc.ipar = copy(self.ipar)
-        newc.x = copy(self.x)
         return newc
 
     def addNode(self, name=None):
@@ -112,6 +111,27 @@ class Circuit(object):
         if name != None:
             self.nodenames[name] = newnode
         return newnode
+
+    def addNodes(self, *names):
+        """Create internal nodes in the circuit and return the new nodes
+
+        >>> c = Circuit()
+        >>> n1,n2 = c.addNodes("n1","n2")
+        >>> c.nodes
+        [Node('n1'), Node('n2')]
+        >>> 'n1' in c.nodenames and 'n2' in c.nodenames
+        True
+        
+        """
+        newnodes = []
+        for name in names:
+            newnode = Node(name)
+            self.nodes.append(newnode)
+            if name != None:
+                self.nodenames[name] = newnode
+            newnodes.append(newnode)
+
+        return newnodes
 
     def getTerminalBranch(self, terminalname):
         """Find the branch that is connected to the given terminal of the given element.
@@ -232,12 +252,13 @@ class Circuit(object):
         """
         return dot(self.C(x), x)
 
-    def CY(self, x, epar=defaultepar):
+    def CY(self, x, w, epar=defaultepar):
         """Calculate the noise sources correlation matrix
 
         Arguments
         ---------
         x -- (numpy array) the state vector
+        w -- Angular frequency
         epar -- (ParameterDict) Environment parameters
 
         """
@@ -264,6 +285,91 @@ class Circuit(object):
             result['i' + analysis + str(i) + ')'] = xvalue            
 
         return result
+
+    def extractV(self, x, nodep, noden = None, refnode = gnd, refnode_removed = False):
+        """Extract voltage between nodep and noden from the given x-vector.
+
+        If noden is not given the voltage is taken between nodep and refnode. x-vectors with
+        the reference node removed can be handled by setting the refnode_removed to True.
+
+        Arguments
+        ---------
+
+        x -- x-vector
+        nodep -- Node object or node reference in text format of positive node
+        noden -- Node object or node reference in text format of negative node
+        refnode -- reference node
+        refnode_removed -- If set the refernce node is expected to be removed from the x-vector
+
+        
+        >>> c = SubCircuit()
+        >>> n1, n2 = c.addNodes('n1','n2')
+        >>> c['R1'] = R(n1, n2, r=1e3)
+        >>> c['R2'] = R(n2, gnd, r=1e3)
+        >>> c.extractV(array([1.0, 0.5, 0.0]), 'n1', 'n2')
+        0.5
+        >>> c.extractV(array([1.0, 0.5, 0.0]), c.nodes[0])
+        1.0
+        >>> c.extractV(array([1.0, 0.5]), c.nodes[0], refnode_removed = True)
+        1.0
+        
+        """
+        v = []
+        for node in nodep, noden:
+            if type(node) is types.StringType:
+                node = self.getNode(node)
+            elif node == None:
+                node = refnode
+
+            nodeindex = self.getNodeIndex(node)
+
+            refnodeindex = self.getNodeIndex(refnode)
+
+            if refnode_removed:
+                if nodeindex > refnodeindex:
+                    nodeindex -= 1
+
+            if nodeindex != refnodeindex:
+                v.append(x[nodeindex])
+            else:
+                v.append(0)
+
+        return v[0] - v[1]
+
+        
+
+    def extractI(self, x, branch_or_term, refnode = gnd, refnode_removed = False):
+        """Extract branch current from the given x-vector.
+
+        Arguments
+        ---------
+
+        x -- x-vector
+        branch_or_term -- Branch object or terminal name
+        refnode -- reference node
+        refnode_removed -- If set the refernce node is expected to be removed from the x-vector
+        
+        >>> c = SubCircuit()
+        >>> net1 = c.addNode('net1')
+        >>> c['vs'] = VS(net1, gnd)
+        >>> c.extractI(array([1.0, 0, -1e-3]), 'vs.minus')
+        0.001
+        >>> c.extractI(array([1.0, -1e-3]), 'vs.minus', refnode_removed = True)
+        0.001
+        
+        """
+        if type(branch_or_term) is types.StringType:
+            branch, sign = self.getTerminalBranch(branch_or_term)
+        else:
+            branch = branch_or_term
+            sign = 1
+
+        branchindex = self.getBranchIndex(branch)
+
+        if refnode_removed:
+            branchindex -= 1
+
+        return sign * x[branchindex]        
 
     def __repr__(self):
         return self.__class__.__name__ + \
@@ -412,13 +518,13 @@ class SubCircuit(Circuit):
     def i(self, x, epar=defaultepar):
         return self._add_element_subvectors('i', x, (epar,))
 
-    def CY(self, x, epar=defaultepar):
+    def CY(self, x, w, epar=defaultepar):
         """Calculate composite noise source correlation matrix
 
         The noise sources in one element are assumed to be uncorrelated with the noise sources in the other elements.
 
         """
-        return self._add_element_submatrices('CY', x, (epar,))
+        return self._add_element_submatrices('CY', x, (w, epar,))
         
     def _add_element_submatrices(self, methodname, x, args):
         n=self.n
@@ -485,11 +591,11 @@ class R(Circuit):
         return  array([[g, -g],
                         [-g, g]], dtype=object)
 
-    def CY(self, x, epar=defaultepar):
+    def CY(self, x, w, epar=defaultepar):
         if 'kT' in epar:
-            iPSD = 4*epar.kT/self.ipar.r
+            iPSD = 4*epar.kT / self.ipar.r
         else:
-            iPSD = 4*kboltzmann*epar.T/self.ipar.r
+            iPSD = 4*kboltzmann * epar.T / self.ipar.r
         return  array([[iPSD, -iPSD],
                        [-iPSD, iPSD]], dtype=object)
 
@@ -516,7 +622,7 @@ class G(Circuit):
         return  array([[g, -g],
                         [-g, g]], dtype=object)
 
-    def CY(self, x, epar=defaultepar):
+    def CY(self, x, w, epar=defaultepar):
         if not self.ipar.nonoise:
             if 'kT' in epar:
                 iPSD = 4*epar.kT*self.ipar.g
@@ -525,7 +631,7 @@ class G(Circuit):
             return  array([[iPSD, -iPSD],
                            [-iPSD, iPSD]], dtype=object)
         else:
-            return super(G, self).CY(x,epar=epar)
+            return super(G, self).CY(x, w, epar=epar)
         
 
 class C(Circuit):
@@ -597,29 +703,29 @@ class VS(Circuit):
     
     """
     terminals = ['plus', 'minus']
-    instparams = [Parameter(name='v', desc='Source voltage', unit='V', default=1.0),
-                  Parameter(name='vac', desc='AC analysis amplitude', unit='V', default=1.0),
-                  Parameter(name='noisePSD', desc='Voltage noise power spectral density', unit='V^2/Hz', default=0.0)]
+    instparams = [Parameter(name='v', desc='Source voltage', unit='V', default=1),
+                  Parameter(name='vac', desc='AC analysis amplitude', unit='V', default=1),
+                  Parameter(name='noisePSD', desc='Voltage noise power spectral density', unit='V^2/Hz', default=0)]
 
     def __init__(self, plus, minus, **kvargs):
         Circuit.__init__(self, plus, minus, **kvargs)
         self.branches.append(Branch(plus, minus))
 
     def G(self, x, epar=defaultepar):
-        return array([[0.0 , 0.0, 1.0],
-                       [0.0 , 0.0, -1.0],
-                       [1.0 , -1.0, 0.0]], dtype=object)
+        return array([[0 , 0, 1],
+                      [0 , 0, -1],
+                      [1 , -1, 0]], dtype=object)
 
     def U(self, t=0.0, epar=defaultepar, analysis=None):
         if analysis == 'ac':
-            return array([0.0, 0.0, -self.ipar.vac], dtype=object)
+            return array([0, 0, -self.ipar.vac], dtype=object)
         elif analysis == None:
-            return array([0.0, 0.0, -self.ipar.v], dtype=object)
+            return array([0, 0, -self.ipar.v], dtype=object)
         else:
             return super(VS, self).U(t,epar,analysis)
 
-    def CY(self, x, epar=defaultepar):
-        CY = super(VS, self).CY(x)
+    def CY(self, x, w, epar=defaultepar):
+        CY = super(VS, self).CY(x, w)
         CY[2, 2] = self.ipar.noisePSD
         return CY
 
@@ -654,7 +760,7 @@ class IS(Circuit):
         else:
             return super(IS, self).U(t,epar,analysis)
 
-    def CY(self, x, epar=defaultepar):
+    def CY(self, x, w, epar=defaultepar):
         return  array([[self.ipar.noisePSD, -self.ipar.noisePSD],
                        [-self.ipar.noisePSD, self.ipar.noisePSD]], dtype=object)
 
@@ -666,18 +772,18 @@ class VCVS(Circuit):
     >>> n1=c.addNode('1')
     >>> n2=c.addNode('2')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
-    >>> c['vcvs'] = VCVS(n1, gnd, n2, gnd, g=2.0)
+    >>> c['vcvs'] = VCVS(n1, gnd, n2, gnd, g=2)
     >>> c['vcvs'].nodes
     [Node('2'), Node('gnd'), Node('1')]
     >>> c['vcvs'].branches
     [Branch(Node('2'),Node('gnd'))]
     >>> c['vcvs'].G(zeros(4))
-    array([[0, 0, 0, 1.0],
-           [0, 0, 0, -1.0],
+    array([[0, 0, 0, 1],
+           [0, 0, 0, -1],
            [0, 0, 0, 0],
-           [-1.0, -1.0, 2.0, 0]], dtype=object)
+           [-1, -1, 2, 0]], dtype=object)
     """
-    instparams = [Parameter(name='g', desc='Voltage gain', unit='V/V', default=1.0)]
+    instparams = [Parameter(name='g', desc='Voltage gain', unit='V/V', default=1)]
     terminals = ('inp', 'inn', 'outp', 'outn')
     def __init__(self, *args, **kvargs):
         Circuit.__init__(self, *args, **kvargs)
@@ -688,10 +794,10 @@ class VCVS(Circuit):
         branchindex = -1
         inpindex,innindex,outpindex,outnindex = \
             (self.nodes.index(self.nodenames[name]) for name in ('inp', 'inn', 'outp', 'outn'))
-        G[outpindex, branchindex] += 1.0
-        G[outnindex, branchindex] += -1.0
-        G[branchindex, outpindex] += -1.0
-        G[branchindex, outnindex] += 1.0
+        G[outpindex, branchindex] += 1
+        G[outnindex, branchindex] += -1
+        G[branchindex, outpindex] += -1
+        G[branchindex, outnindex] += 1
         G[branchindex, inpindex] += self.ipar.g
         G[branchindex, innindex] += -self.ipar.g
         return G
@@ -755,10 +861,10 @@ class Nullor(Circuit):
         inpindex,innindex,outpindex,outnindex = \
             (self.nodes.index(self.nodenames[name]) for name in ('inp', 'inn', 'outp', 'outn'))
 
-        G[outpindex, branchindex] += 1.0   
-        G[outnindex, branchindex] += -1.0
-        G[branchindex, inpindex] += 1.0
-        G[branchindex, innindex] += -1.0
+        G[outpindex, branchindex] += 1
+        G[outnindex, branchindex] += -1
+        G[branchindex, inpindex] += 1
+        G[branchindex, innindex] += -1
         return G
 
 
@@ -770,18 +876,18 @@ class Transformer(Circuit):
     >>> n1=c.addNode('1')
     >>> n2=c.addNode('2')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
-    >>> c['vcvs'] = Transformer(n1, gnd, n2, gnd, n=2.0)
+    >>> c['vcvs'] = Transformer(n1, gnd, n2, gnd, n=2)
     >>> c['vcvs'].nodes
     [Node('2'), Node('gnd'), Node('1')]
     >>> c['vcvs'].branches
     [Branch(Node('2'),Node('gnd'))]
     >>> c['vcvs'].G(zeros(4))
-    array([[0, 0, 0, 1.0],
-           [0, 0, 0, -3.0],
-           [0, 0, 0, 2.0],
-           [2.0, -1.0, -1.0, 0]], dtype=object)
+    array([[0, 0, 0, 1],
+           [0, 0, 0, -3],
+           [0, 0, 0, 2],
+           [2, -1, -1, 0]], dtype=object)
     """
-    instparams = [Parameter(name='n', desc='Winding ratio', unit='', default=1.0)]
+    instparams = [Parameter(name='n', desc='Winding ratio', unit='', default=1)]
     terminals = ('inp', 'inn', 'outp', 'outn')
     def __init__(self, *args, **kvargs):
         Circuit.__init__(self, *args, **kvargs)
@@ -794,12 +900,12 @@ class Transformer(Circuit):
             (self.nodes.index(self.nodenames[name]) for name in ('inp', 'inn', 'outp', 'outn'))
         G[inpindex, branchindex] += self.ipar.n
         G[innindex, branchindex] += -self.ipar.n
-        G[outpindex, branchindex] += 1.0
-        G[outnindex, branchindex] += -1.0
+        G[outpindex, branchindex] += 1
+        G[outnindex, branchindex] += -1
         G[branchindex, outpindex] += self.ipar.n
         G[branchindex, outnindex] += -self.ipar.n
-        G[branchindex, inpindex] += -1.0
-        G[branchindex, innindex] += 1.0
+        G[branchindex, inpindex] += -1
+        G[branchindex, innindex] += 1
         return G
 
 class Diode(Circuit):
