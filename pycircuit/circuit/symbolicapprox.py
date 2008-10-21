@@ -33,12 +33,14 @@ def approx(expr, patterns, n=2):
     
     variables = expr.atoms(Symbol)
 
-    sublist = []
+    substlist = []
     for i, pattern in enumerate(patterns):
-        sublist.extend([(var.name, var * t**(i+1))
+        substlist.extend([(var.name, var * t**(i+1))
                         for var in variables if re.match(pattern, var.name)])
 
-    return expr.subs(dict(sublist)).series(t, point=0, n=n, with_order=False)
+    parexpr = expr.subs(dict(substlist))
+
+    return parexpr.series(t, point=0, n=n).removeO()
 
 if __name__ == "__main__":
     import doctest

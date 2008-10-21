@@ -12,10 +12,10 @@ c = SubCircuit()
 
 nin, nout, n1 = c.addNodes('in', 'out', 'n1')
 
-gm1, gm2, gds1, gds2 = [Symbol(symname, real=True) for symname in 'gm1,gm2,gds1,gds2'.split(',')]
+gm1, gm2, gds1, gds2, Cgs1, Cgs2= [Symbol(symname, real=True) for symname in 'gm1,gm2,gds1,gds2,Cgs1,Cgs2'.split(',')]
 
-c['M2'] = MOS(nin, n1, gnd, gnd, gm = gm2, gds = gds2)
-c['M1'] = MOS(n1, nout, nin, nin, gm = gm1, gds = gds1)
+c['M2'] = MOS(nin, n1, gnd, gnd, gm = gm2, gds = gds2, Cgs=Cgs1)
+c['M1'] = MOS(n1, nout, nin, nin, gm = gm1, gds = gds1, Cgs=Cgs2)
 #c['r'] = R(nin, gnd, r = Symbol('Rs', real=True))
 
 ## Perform twoport analysis with noise
