@@ -341,7 +341,6 @@ class Noise(Analysis):
         x = zeros(n) # This should be the x-vector at the DC operating point
 
         ## Complex frequency variable
-        complexfreq = False
         if complexfreq:
             s = freqs
         else:

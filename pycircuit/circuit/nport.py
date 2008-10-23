@@ -136,10 +136,10 @@ class TwoPortAnalysis(Analysis):
         self.noise = noise
         self.noise_outquantity = noise_outquantity
         
-    def run(self, freqs, **kvargs):
+    def run(self, freqs, complexfreq = False, refnode = gnd):
         result = InternalResult()
 
-        abcd = self.solve(freqs, **kvargs)
+        abcd = self.solve(freqs, refnode=refnode, complexfreq=complexfreq)
         result.storeSignal('twoport', TwoPort(abcd))
 
         result.storeSignal('mu', 1/abcd[0,0])
@@ -162,16 +162,16 @@ class TwoPortAnalysis(Analysis):
 
             if self.noise_outquantity == 'v':
                 res_v = self.NoiseAnalysis(circuit_voltagesrc, inputsrc=circuit_voltagesrc['VS_TwoPort'], \
-                                           outputnodes=(outp, outn)).run(freqs)
+                                           outputnodes=(outp, outn)).run(freqs, complexfreq=complexfreq)
 
                 res_i = self.NoiseAnalysis(circuit_currentsrc, inputsrc=circuit_currentsrc['IS_TwoPort'], \
-                                           outputnodes=(outp, outn)).run(freqs)
+                                           outputnodes=(outp, outn)).run(freqs, complexfreq=complexfreq)
             else:
                 res_v = self.NoiseAnalysis(circuit_voltagesrc, inputsrc=circuit_voltagesrc['VS_TwoPort'], \
-                                           outputsrc=circuit_voltagesrc['VL']).run(freqs)
+                                           outputsrc=circuit_voltagesrc['VL']).run(freqs, complexfreq=complexfreq)
 
                 res_i = self.NoiseAnalysis(circuit_currentsrc, inputsrc=circuit_currentsrc['IS_TwoPort'], \
-                                           outputsrc=circuit_currentsrc['VL']).run(freqs)
+                                           outputsrc=circuit_currentsrc['VL']).run(freqs, complexfreq=complexfreq)
 
             result['Svn'] = res_v['Svninp']
             result['Sin'] = res_i['Sininp']

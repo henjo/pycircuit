@@ -1,5 +1,17 @@
 import string
 
+def heading(text):
+    return text + '\n' + '-' * len(text)
+
+def itemize(*items):
+    """Restructured text formatted itemized list
+    >>> print itemize('alpha', 'beta')
+    * alpha
+    * beta
+    """
+    
+    return '\n'.join(['* ' + item for item in items])
+
 def toRSTtable(rows, header=True, headerrows = 1, vdelim="  ", padding=1, justify='right'):
     """ Outputs a list of lists as a Restructured Text Table
 
@@ -11,7 +23,7 @@ def toRSTtable(rows, header=True, headerrows = 1, vdelim="  ", padding=1, justif
     - justify - may be left,center,right
     """
 
-    s = ''
+    s = '\n'
     
     border="=" # character for drawing the border
     justify = {'left':string.ljust,'center':string.center, 'right':string.rjust}[justify.lower()]
@@ -27,7 +39,15 @@ def toRSTtable(rows, header=True, headerrows = 1, vdelim="  ", padding=1, justif
     # outputs table in rst format
     s += borderline + '\n'
     for i, row in enumerate(rows):
-        s += vdelim.join([justify(unicode(item),width) for (item,width) in zip(row,colWidths)]).encode('utf-8') + '\n'
+        if header:
+            justfunc = string.ljust
+        else:
+            justfunc = justify
+        s += vdelim.join([justfunc(unicode(item),width) for (item,width) in zip(row,colWidths)]).encode('utf-8') + '\n'
         if header and headerrows == i+1: s += borderline +'\n'
-    s += borderline
+    s += borderline + '\n'
     return s
+
+if __name__ == "__main__":
+    import doctest
+    doctest.testmod()

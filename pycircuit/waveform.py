@@ -514,8 +514,11 @@ class Waveform(object):
             y = self.getY()[i]
             y[where(y == inf)] = 1e20
             y[where(y == -inf)] = -1e20
+
+            if 'label' not in kvargs:
+                kvargs['label'] = label
             
-            p=plotfunc(self.getX(-1), y, label = label, **kvargs)
+            p=plotfunc(self.getX(-1), y, **kvargs)
         pylab.hold(False)
         
         pylab.xlabel(self.xlabels[-1])
@@ -681,9 +684,16 @@ def iswave(w):
     return isinstance(w, Waveform)
 
 def db20(w):
-    return w.db20()
+    if iswave(w):
+        return w.db20()
+    else:
+        return 20 * log10(w)
 def db10(w):
-    return w.db10()
+    if iswave(w):
+        return w.db10()
+    else:
+        return 10 * log10(w)
+    
 def ymax(w, axis=-1):
     """Returns the maximum y-value
 
