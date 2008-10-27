@@ -104,7 +104,7 @@ class UInt64(PSFNumber):
 class Float64(PSFNumber):
     size=8
     def __float__(self):
-        return self.value
+        return float(self.value)
     def toPSFasc(self, prec=6):
         if prec:
             fmt=('%%#%dg'%prec)
@@ -116,6 +116,8 @@ class Float64(PSFNumber):
 
 class Float32(PSFNumber):
     size=4
+    def __float__(self):
+        return float(self.value)
     def deSerializeFile(self, file, size=None):
         self.value = unpack(">f",file.read(self.size))[0]
 

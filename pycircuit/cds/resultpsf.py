@@ -23,19 +23,28 @@ class PSFResultSet(result.ResultSet):
             return object.__getattribute__(self, attr)
                      
     def __init__(self, resultdir=None):
-        self.resultnames = []
-        self.resultdir = resultdir
-        self.runObjFile = psf.PSFReader(os.path.join(resultdir,"runObjFile"), asc=True)
-        self.runObjFile.open()
-
-        runNames = self.runObjFile.getValueNames()
-
         self.runs = []
         self.rundict = {}
-        for runName in runNames:
-            run = PSFRun(runName, self.runObjFile.getValuesByName(runName), self.runObjFile.getValuePropertiesByName(runName))
-            self.runs.append(run)
-            self.rundict[runName] = run
+        self.resultnames = []
+        self.resultdir = resultdir
+
+        ## Try to get available runs from runObjFile
+        runobjfile = os.path.join(resultdir,"runObjFile")
+        if os.path.exists(runobjfile):
+            self.runObjFile = psf.PSFReader(runobjfile, asc=True)
+            self.runObjFile.open()
+
+            runNames = self.runObjFile.getValueNames()
+
+            for runName in runNames:
+                run = PSFRun(runName, self.runObjFile.getValuesByName(runName), self.runObjFile.getValuePropertiesByName(runName))
+                self.runs.append(run)
+                self.rundict[runName] = run
+        ## If not present, create a single run
+        else:
+            run = PSFRun('Run1', {'logName': ['logFile'], 'parent': '', 'sweepVariable': [] }, {})
+            self.runs = [run]
+            self.rundict['Run1'] = run
 
         # Read log files
         for run in self.runs:
@@ -154,7 +163,7 @@ class PSFRun:
 
     def setParent(self, parent):
         if parent.sweepVariable in self.properties:
-            self.sweepvalue = self.properties[parent.sweepVariable]
+            self.sweepvalue = float(self.properties[parent.sweepVariable])
 
     def isLeaf(self):
         """Returns true if leaf node"""
@@ -362,6 +371,7 @@ class PSFResult(result.Result):
 class PSFResultFamily(result.Result):
     def __init__(self, sweepvariables, sweepvalues, psffilenames):
         self.sweepvariables = sweepvariables
+        print sweepvalues
         self.sweepvalues = sweepvalues
         self.psfobjects = [psf.PSFReader(psffilename) for psffilename in psffilenames]
         for po in self.psfobjects:

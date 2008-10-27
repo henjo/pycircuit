@@ -1,6 +1,9 @@
 import string
 
-def heading(text):
+def heading1(text):
+    return text + '\n' + '=' * len(text)
+
+def heading2(text):
     return text + '\n' + '-' * len(text)
 
 def itemize(*items):

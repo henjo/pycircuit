@@ -108,11 +108,22 @@ class Waveform(object):
         "Set Y multi-dimensional array"
         self._y = value
 
+    def mapx(self, func, axis=-1, xlabel = ''):
+        """Apply function func on x-values of the given axis"""
+        newxlist = copy(self._xlist)
+        newxlist[axis] = func(newxlist[axis])
+
+        newxlabels = list(self._xlabels)
+        newxlabels[axis] = xlabel
+
+        return Waveform(newxlist, copy(self._y), xlabels = newxlabels, yunit = self.yunit, ylabel = self.ylabel)
+
     # Operations on Waveform objects
     def binaryop(self, op, a):
         """Apply binary operator between self and a"""
         if isinstance(a, Waveform):
-            assert(reduce(operator.__and__, map(lambda x,y: alltrue(x==y), self._xlist, a._xlist)))
+            assert(reduce(operator.__and__, map(lambda x,y: alltrue(x==y), self._xlist, a._xlist))), \
+                                            "x-axes of the arguments must be the same"
             return Waveform(self._xlist, op(self._y, a._y), xlabels = self.xlabels)
         else:
             return Waveform(self._xlist, op(self._y, a), xlabels = self.xlabels)
@@ -392,6 +403,8 @@ class Waveform(object):
         """
         axis = self.getaxis(axis)
         def findvalue(y):
+            if len(self._xlist[axis]) == 1 and axis == -1:
+                return y[-1]
             return scipy.interpolate.interp1d(self._xlist[axis], y)(x)
 
         def findvalue_mdimindex(y, i):
@@ -501,6 +514,16 @@ class Waveform(object):
         newy = self._y[ifrom:ito+1]
 
         return Waveform(newxlist, newy, xunits=self.xunits, yunit=self.yunit, xlabels=self.xlabels, ylabel=self.ylabel)
+    def deriv(self):
+        """Calculate derivative of a waveform with respect to the inner x-axis"""
+
+        newxlist = copy(self._xlist)
+
+        newxlist[-1] = newxlist[-1][:-1]
+
+        dydx = N.diff(self.y, axis=-1) / N.diff(self._xlist[-1])
+        
+        return Waveform(newxlist, dydx, xlabels = self.xlabels)
 
     # Plotting (wrapper around matplotlib)
     def _plot(self, plotfunc, *args, **kvargs):
@@ -879,22 +902,59 @@ def unityGainFrequency(g):
     """Calculate the frequency where the gain is unity
     """
     return cross(abs(g), 1.0)
+
+def IM3(w, fund1, fund2, fund0=None):
+    """Return input referred third order intermodulation tone
+
+    The intermodulation product is evaluated at fund1 + 2 * fund2
     
+    """
+    return value(abs(w), fund1 + 2 * fund2)
+
+def IM2(w, fund1, fund2, fund0=None):
+    """Return input referred third order intermodulation tone
+
+    The intermodulation product is evaluated at fund1 + fund2
+    
+    """
+    return value(abs(w), fund1 + fund2)
+
 def IIP3(output, input, fund1, fund2, fund0=None):
-    """Calculate input referred third order intermodulation intercept point"""
+    """Calculate input referred third order intermodulation intercept point
+
+    The intermodulation product is evaluated at fund1 + 2 * fund2
+    
+    """
     s = abs(output)
     if fund0 == None:
         gain = value(s/abs(input), fund1)
     else:
         gain = value(s, abs(fund1)) / value(abs(input), abs(abs(fund1)+fund0))
-    return sqrt(s.value(abs(fund1)) * value(s,abs(fund2))**2 / s.value(fund1+2*fund2))/gain
+    return sqrt(s.value(abs(fund1)) * value(s,abs(fund2))**2 / value(s, fund1 + 2 * fund2)) / gain
+
+def IIP2(output, input, fund1, fund2, fund0=None):
+    """Calculate input referred second order intermodulation intercept point
+
+    The intermodulation product is evaluated at fund1 + fund2
+    
+    """
+    s = abs(output)
+    if fund0 == None:
+        gain = value(s/abs(input), fund1)
+    else:
+        gain = value(s, abs(fund1)) / value(abs(input), abs(abs(fund1)+fund0))
+    return value(s, abs(fund1)) * value(s, abs(fund2)) / value(s, fund1 + fund2) / gain
 
 def clip(w, xfrom, xto=None):
     if isinstance(w, Waveform):
         return w.clip(xfrom, xto)
     else:
         return w
-    
+
+def deriv(w):
+    """Calculate derivative of a waveform with respect to the inner x-axis"""
+    return w.deriv()
+
 def applyfunc(func, w):
     if iswave(w):
         outw  = copy(w)
@@ -1098,3 +1158,6 @@ def cartesian(listList):
         return result
     return [()]
 
+if __name__ == "__main__":
+    import doctest
+    doctest.testmod()
