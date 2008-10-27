@@ -265,8 +265,6 @@ class AC(Analysis):
         irefnode = self.c.getNodeIndex(refnode)
         G,C,U = removeRowCol((G,C,U), irefnode)
 
-        out = []
-
         if complexfreq:
             ss = freqs
         else:
@@ -371,7 +369,6 @@ class Noise(Analysis):
         # Calculate the reciprocal G and C matrices
         Yreciprocal = G.T + s*C.T
 
-        ## Convert to Sympy matrices
         Yreciprocal, U = (self.toMatrix(A) for A in (Yreciprocal, U))
 
         ## Calculate transimpedances from currents in each nodes to output

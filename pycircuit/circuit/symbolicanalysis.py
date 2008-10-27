@@ -20,7 +20,9 @@ def symbolic_linsolve(A, b):
     A = sympy.Matrix(A.tolist())
     b = sympy.Matrix(b.tolist())
 
-    res = array(A.inv("ADJ") * b)
+#    A.simplify(); b.simplify()
+
+    res = array(A.inverse_ADJ() * b)
 
     return res.reshape((size(res,0),) )
 
@@ -71,9 +73,9 @@ class SymbolicNoise(analysis.Noise):
     >>> c['R1'] = R(n1, n2, r=R1)
     >>> c['R2'] = R(n2, gnd, r=R2)
     >>> res = SymbolicNoise(c, inputsrc=c['vs'], outputnodes=(n2, gnd)).run(Symbol('s'), complexfreq=True)
-    >>> res['Svnout']
+    >>> simplify(res['Svnout'])
     4*R1*R2*kT/(R1 + R2)
-    >>> res['Svninp']
+    >>> simplify(res['Svninp'])
     4*R1*kT*(-R1 - R2)**2/(R2*(R1 + R2))
     >>> simplify(res['gain'] - R2 / (R1 + R2))
     0

@@ -40,7 +40,7 @@ def approx(expr, patterns, n=2):
 
     parexpr = expr.subs(dict(substlist))
 
-    return parexpr.series(t, point=0, n=n).removeO()
+    return parexpr.series(t, point=0, n=n).subs({'t': 1}).removeO()
 
 if __name__ == "__main__":
     import doctest

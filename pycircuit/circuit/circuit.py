@@ -82,8 +82,8 @@ class Circuit(object):
         self.branches = []
         self.ipar = ParameterDict(*self.instparams, **kvargs)
 
-        for terminal in self.terminals:
-            self.addNode(terminal)
+#        for terminal in self.terminals:
+#            self.addNodes(terminal)
 
         self.connectTerminals(**dict(zip(self.terminals, args)))
         
@@ -95,28 +95,11 @@ class Circuit(object):
         newc.ipar = copy(self.ipar)
         return newc
 
-    def addNode(self, name=None):
-        """Create an internal node in the circuit and return the new node
-
-        >>> c = Circuit()
-        >>> n1 = c.addNode("n1")
-        >>> c.nodes
-        [Node('n1')]
-        >>> 'n1' in c.nodenames
-        True
-        
-        """
-        newnode = Node(name)
-        self.nodes.append(newnode)
-        if name != None:
-            self.nodenames[name] = newnode
-        return newnode
-
     def addNodes(self, *names):
         """Create internal nodes in the circuit and return the new nodes
 
         >>> c = Circuit()
-        >>> n1,n2 = c.addNodes("n1","n2")
+        >>> n1, n2 = c.addNodes("n1", "n2")
         >>> c.nodes
         [Node('n1'), Node('n2')]
         >>> 'n1' in c.nodenames and 'n2' in c.nodenames
@@ -131,12 +114,16 @@ class Circuit(object):
                 self.nodenames[name] = newnode
             newnodes.append(newnode)
 
-        return newnodes
+        return tuple(newnodes)
+
+    def addNode(self, name):
+        """Create and internal node in the circuit and return the new node"""
+        return self.addNodes(name)[0]
 
     def getTerminalBranch(self, terminalname):
-        """Find the branch that is connected to the given terminal of the given element.
+        """Find the branch that is connected to the given terminal
 
-        If no branch is found if there are more branches than one, None is returned
+        If no branch is found or if there are more branches than one, None is returned
 
         Returns
         -------
@@ -166,12 +153,11 @@ class Circuit(object):
             return minusbranches[0], -1            
 
     def getNodeIndex(self, node):
-        """Get row in the x vector of a node voltage"""
+        """Get row in the x vector of a node instance"""
         return self.nodes.index(node)
 
     def getBranchIndex(self, branch):
-        """Get row in the x vector of a branch current"""        
-        
+        """Get row in the x vector of a branch instance"""        
         return len(self.nodes) + self.branches.index(branch)
 
     def getNode(self, name):
@@ -204,11 +190,15 @@ class Circuit(object):
 
         """
         for terminal, node in kvargs.items():
-            if not terminal in self.terminals:
+            if type(terminal) is not types.StringType or \
+               not isinstance(node, Node):
+                raise Exception("%s should be string and %s should be a Node object"%\
+                                (str(terminal), str(node)))
+            if terminal not in self.terminals:
                 raise ValueError('terminal '+str(terminal)+' is not defined')
             if node != None:
-                self.nodes.remove(self.nodenames[terminal])
-                if not node in self.nodes:
+#                self.nodes.remove(self.nodenames[terminal])
+                if node not in self.nodes:
                     self.nodes.append(node)
                 self.nodenames[terminal] = node
 
@@ -268,7 +258,7 @@ class Circuit(object):
         """Map state variables with names and return the state variables in a dictionary keyed by the names
 
         >>> c = SubCircuit()
-        >>> n1=c.addNode('net1')
+        >>> n1 = c.addNode('net1')
         >>> c['is'] = IS(gnd, n1, i=1e-3)
         >>> c['R'] = R(n1, gnd, r=1e3)
         >>> c.nameStateVector(array([[1.0]]))
@@ -431,7 +421,7 @@ class SubCircuit(Circuit):
         >>> c1 = SubCircuit()
         >>> c2 = SubCircuit()
         >>> c1['I1'] = c2
-        >>> n1 = c2.addNode("net1")
+        >>> n1 = c2.addNodes("net1")
         >>> c1.getNode('I1.net1')
         Node('net1')
         
@@ -457,8 +447,7 @@ class SubCircuit(Circuit):
         of the branch. 1 == positive side, -1 == negative side
 
         >>> c = SubCircuit()
-        >>> net1 = c.addNode('net1')
-        >>> net2 = c.addNode('net2')
+        >>> net1, net2 = c.addNodes('net1', 'net2')
         >>> c['vs'] = VS(net1, net2)
         >>> c.getTerminalBranch("vs.minus")
         (Branch(Node('net1'),Node('net2')), -1)
@@ -477,7 +466,7 @@ class SubCircuit(Circuit):
         >>> c1 = SubCircuit()
         >>> c2 = SubCircuit()
         >>> c1['I1'] = c2
-        >>> n1 = c2.addNode("net1")
+        >>> n1 = c2.addNodes("net1")
         >>> c1.getNodeName(n1)
         'net1'
 
@@ -530,8 +519,9 @@ class SubCircuit(Circuit):
         n=self.n
         A=zeros((n,n), dtype=object)
 
-        for instance,element in self.elements.items():
+        for instance, element in self.elements.items():
             nodemap = self.elementnodemap[instance]
+
             if x != None:
                 subx = x[nodemap]
                 try:
@@ -769,8 +759,7 @@ class VCVS(Circuit):
 
     >>> from analysis import DC
     >>> c = SubCircuit()
-    >>> n1=c.addNode('1')
-    >>> n2=c.addNode('2')
+    >>> n1, n2 =c.addNode('1', '2')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
     >>> c['vcvs'] = VCVS(n1, gnd, n2, gnd, g=2)
     >>> c['vcvs'].nodes
@@ -807,8 +796,8 @@ class VCCS(Circuit):
 
     >>> from analysis import DC
     >>> c = SubCircuit()
-    >>> n1=c.addNode('1')
-    >>> n2=c.addNode('2')
+    >>> n1=c.addNodes('1')
+    >>> n2=c.addNodes('2')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
     >>> c['vccs'] = VCCS(n1, gnd, n2, gnd, gm=1e-3)
     >>> c['rl'] = R(n2, gnd, r=1e3)
@@ -873,8 +862,7 @@ class Transformer(Circuit):
 
     >>> from analysis import DC
     >>> c = SubCircuit()
-    >>> n1=c.addNode('1')
-    >>> n2=c.addNode('2')
+    >>> n1, n2 = c.addNodes('1', '2')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
     >>> c['vcvs'] = Transformer(n1, gnd, n2, gnd, n=2)
     >>> c['vcvs'].nodes
