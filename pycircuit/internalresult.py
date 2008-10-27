@@ -1,47 +1,28 @@
 import result
 
-class InternalResultSet(result.ResultSet):
+class InternalResultDict(result.ResultDict):
     """ResultSet implementation where the results are stored in memory in a dictionary
 
-    >>> rs = InternalResultSet()
-    >>> rs['test'] = InternalResult(signals = {'testA': 1})
+    >>> rs = InternalResultDict()
+    >>> rs['test'] = InternalResultDict({'testA': 1})
     >>> print rs
+    ResultDict: ['test']
     
     """
-    def __init__(self, results = {}):
-        self.results = dict(results)
+    def __init__(self, items = {}):
+        self.items = dict(items)
 
-    def __setitem__(self, name, result):
-        self.results[name] = result
+    def keys(self): return self.items.keys()
+
+    def __getitem__(self, key):
+        return self.items[key]
+
+    def __setitem__(self, key, value):
+        self.items[key] = value
         
-    def ___len__(self):
+    def __len__(self):
         return len(self.results)
 
-    def getResultNames(self):
-        return self.results.keys()
-
-    def getResult(self, name):
-        return self.results[name]
-
-    def storeResult(self, name, result):
-        self.results[name] = result
-
-class InternalResult(result.Result):
-    def __init__(self, signals = {}):
-        self.signals = dict(signals)
-        result.Result.__init__(self)
-    
-    def __len__(self):
-        return len(self.signals)
-
-    def __setitem__(self, name, signal):
-        self.signals[name] = signal
-
-    def getSignalNames(self): return self.signals.keys()
-    def getSignal(self, name): return self.signals[name]
-    
-    def storeSignal(self, name, signal):
-        self.signals[name] = signal
 
 if __name__ == "__main__":
     import doctest

@@ -6,22 +6,13 @@ import re
 import numpy
 import operator
 
-class PSFResultSet(result.ResultSet):
+class PSFResultSet(result.ResultDict):
     """PSFResultSet class handles a PSF result directory
 
     A PSFResultSet may contain one or more runs (PSFRun objects) which in turn
     contain one or more results (PSFResult).
     """
     
-    class ResultAccesser(object):
-        def __init__(self, resultset):
-            self._resultset = resultset
-            self.__dict__.update(dict((k,None) for k in resultset.getResultNames()))
-        def __getattribute__(self, attr):
-            if not attr in ('__dict__', '_resultset'):
-                return self._resultset.getResult(attr)
-            return object.__getattribute__(self, attr)
-                     
     def __init__(self, resultdir=None):
         self.runs = []
         self.rundict = {}
@@ -54,15 +45,6 @@ class PSFResultSet(result.ResultSet):
                 parent.addChild(run)
             run.openLogs(resultdir)
 
-        # Add results to dictionary to allow for result introspection
-        self.r = self.ResultAccesser(self)
-        
-    def getRuns(self):
-        return self.runs
-
-    def getRunByName(self, name):
-        return self.rundict[name]
-
     def isfamily(self):
         """Return true if resultset is a parametric sweep
 
@@ -76,15 +58,15 @@ class PSFResultSet(result.ResultSet):
         """
         return self.rundict.has_key("Root")
 
-    def getResultNames(self):
+    def keys(self):
         """Get name of results
         
         >>> resultset=PSFResultSet('./test/resultdirs/simple')
-        >>> resultset.getResultNames()
+        >>> resultset.keys()
         ('srcSweep', 'opBegin')
 
         >>> resultset=PSFResultSet('./test/resultdirs/parsweep/psf')
-        >>> resultset.getResultNames()
+        >>> resultset.keys()
         ('srcSweep', 'opBegin')
 
         """

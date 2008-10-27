@@ -2,7 +2,7 @@ from numpy import array, delete, linalg, size, zeros, concatenate, pi, zeros, al
 from scipy import optimize
 from circuit import Circuit, SubCircuit, VS,IS,R,C,Diode, gnd, defaultepar
 from pycircuit.waveform import Waveform
-from pycircuit.internalresult import InternalResultSet, InternalResult
+from pycircuit.internalresult import InternalResultDict
 import numpy
 from copy import copy
 
@@ -38,14 +38,14 @@ class Analysis(object):
 
         x = self.solve(*args, **kvargs)
         
-        result = InternalResult()
+        result = InternalResultDict()
 
         nodes = self.c.nodes
         for xvalue, node in zip(x[:len(nodes),0], nodes):
-            result.storeSignal(self.c.getNodeName(node), xvalue)
+            result[self.c.getNodeName(node)] =  xvalue
         for i, data in enumerate(zip(x[len(nodes):, 0], self.c.branches)):
             xvalue, branch = data
-            result.storeSignal('i' + str(i), xvalue)
+            result['i' + str(i)] = xvalue
 
         self.result = result
         return result
@@ -105,7 +105,7 @@ class DC(Analysis):
     >>> c['R'] = R(n1, gnd, r=1e3)
     >>> dc = DC(c)
     >>> res = dc.run()
-    >>> dc.result.getSignalNames()
+    >>> dc.result.keys()
     ['i0', 'gnd', 'net1']
     >>> dc.result['net1']
     1.5
@@ -118,7 +118,7 @@ class DC(Analysis):
     >>> c['D'] = Diode(n1, gnd)
     >>> dc = DC(c)
     >>> res = dc.run()
-    >>> dc.result.getSignalNames()
+    >>> dc.result.keys()
     ['i0', 'gnd', 'net1']
     >>> dc.result['net1']
     0.7
@@ -195,7 +195,7 @@ class AC(Analysis):
     >>> c['C'] = C(n1, gnd, c=1e-12)
     >>> ac = AC(c)
     >>> res = ac.run(freqs=array([1e6, 2e6]))
-    >>> ac.result.getSignalNames()
+    >>> ac.result.keys()
     ['i0', 'gnd', 'net1']
     >>> ac.result['net1']
     Waveform([ 1000000.  2000000.],[ 1.5+0.j  1.5+0.j])
@@ -211,7 +211,7 @@ class AC(Analysis):
     def run(self, freqs, **kvargs):
         x = self.solve(freqs, **kvargs)
         
-        result = InternalResult()
+        result = InternalResultDict()
 
         nodes = self.c.nodes
         for xvalue, node in zip(x[:len(nodes)], nodes):
@@ -219,14 +219,14 @@ class AC(Analysis):
                 wave = Waveform(freqs, xvalue)
             else:
                 wave = xvalue
-            result.storeSignal(self.c.getNodeName(node), wave)
+            result[self.c.getNodeName(node)] = wave
         for i, data in enumerate(zip(x[len(nodes):], self.c.branches)):
             xvalue, branch = data
             if isiterable(freqs):
                 wave = Waveform(freqs, xvalue)
             else:
                 wave = xvalue
-            result.storeSignal('i' + str(i),wave)
+            result['i' + str(i)] = wave
 
         self.result = result
 
@@ -379,24 +379,24 @@ class Noise(Analysis):
         xn2out = xn2out[0]
 
         # Store results
-        result = InternalResult()
+        result = InternalResultDict()
 
         if self.outputnodes != None:
-            result.storeSignal('Svnout', xn2out)
+            result['Svnout'] = xn2out
         elif self.outputsrc != None:
-            result.storeSignal('Sinout', xn2out)
+            result['Sinout'] = xn2out
 
         # Calculate the gain from the input voltage source by using the transimpedance vector
         # to find the transfer from the branch voltage of the input source to the output
         gain = None
         if isinstance(self.inputsrc, VS):
             gain = self.c.extractI(zm, self.inputsrc.branch, refnode=refnode, refnode_removed=True)
-            result.storeSignal('gain', gain)
-            result.storeSignal('Svninp', xn2out / gain**2)
+            result['gain'] = gain
+            result['Svninp'] = xn2out / gain**2
         elif isinstance(self.inputsrc, IS):
             gain = self.c.extractV(zm, self.inputsrc.getNode('plus'), refnode=refnode, refnode_removed=True)
-            result.storeSignal('gain', gain)
-            result.storeSignal('Sininp', xn2out / gain**2)
+            result['gain'] = gain
+            result['Sininp'] = xn2out / gain**2
 
         return result
 

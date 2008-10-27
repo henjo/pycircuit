@@ -82,9 +82,6 @@ class Circuit(object):
         self.branches = []
         self.ipar = ParameterDict(*self.instparams, **kvargs)
 
-#        for terminal in self.terminals:
-#            self.addNodes(terminal)
-
         self.connectTerminals(**dict(zip(self.terminals, args)))
         
     def __copy__(self):
@@ -180,7 +177,6 @@ class Circuit(object):
         'n1'
 
         """
-        
         for k, v in self.nodenames.items():
             if v == node:
                 return k
@@ -197,11 +193,13 @@ class Circuit(object):
             if terminal not in self.terminals:
                 raise ValueError('terminal '+str(terminal)+' is not defined')
             if node != None:
-#                self.nodes.remove(self.nodenames[terminal])
                 if node not in self.nodes:
                     self.nodes.append(node)
-                self.nodenames[terminal] = node
-
+            else:
+                node = self.addNode(terminal)
+                self.nodes.append(node)
+            self.nodenames[terminal] = node
+                
     @property
     def n(self):
         """Return size of x vector"""
@@ -421,7 +419,7 @@ class SubCircuit(Circuit):
         >>> c1 = SubCircuit()
         >>> c2 = SubCircuit()
         >>> c1['I1'] = c2
-        >>> n1 = c2.addNodes("net1")
+        >>> n1 = c2.addNode("net1")
         >>> c1.getNode('I1.net1')
         Node('net1')
         
@@ -466,7 +464,7 @@ class SubCircuit(Circuit):
         >>> c1 = SubCircuit()
         >>> c2 = SubCircuit()
         >>> c1['I1'] = c2
-        >>> n1 = c2.addNodes("net1")
+        >>> n1 = c2.addNode("net1")
         >>> c1.getNodeName(n1)
         'net1'
 
@@ -759,7 +757,7 @@ class VCVS(Circuit):
 
     >>> from analysis import DC
     >>> c = SubCircuit()
-    >>> n1, n2 =c.addNode('1', '2')
+    >>> n1, n2 =c.addNodes('1', '2')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
     >>> c['vcvs'] = VCVS(n1, gnd, n2, gnd, g=2)
     >>> c['vcvs'].nodes
@@ -796,8 +794,7 @@ class VCCS(Circuit):
 
     >>> from analysis import DC
     >>> c = SubCircuit()
-    >>> n1=c.addNodes('1')
-    >>> n2=c.addNodes('2')
+    >>> n1,n2 = c.addNodes('1', '2')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
     >>> c['vccs'] = VCCS(n1, gnd, n2, gnd, gm=1e-3)
     >>> c['rl'] = R(n2, gnd, r=1e3)
