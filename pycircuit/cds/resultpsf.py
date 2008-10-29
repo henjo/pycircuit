@@ -14,8 +14,7 @@ class PSFResultSet(result.ResultDict):
     """
     
     def __init__(self, resultdir=None):
-        self.runs = []
-        self.rundict = {}
+        self.runs = {}
         self.resultnames = []
         self.resultdir = resultdir
 
@@ -29,18 +28,16 @@ class PSFResultSet(result.ResultDict):
 
             for runName in runNames:
                 run = PSFRun(runName, self.runObjFile.getValuesByName(runName), self.runObjFile.getValuePropertiesByName(runName))
-                self.runs.append(run)
-                self.rundict[runName] = run
+                self.runs[runName] = run
         ## If not present, create a single run
         else:
             run = PSFRun('Run1', {'logName': ['logFile'], 'parent': '', 'sweepVariable': [] }, {})
-            self.runs = [run]
-            self.rundict['Run1'] = run
+            self.runs['Run1'] = run
 
         # Read log files
-        for run in self.runs:
-            if self.rundict.has_key(run.parentName):
-                parent = self.rundict[run.parentName]
+        for run in self.runs.values():
+            if self.runs.has_key(run.parentName):
+                parent = self.runs[run.parentName]
                 run.setParent(parent)
                 parent.addChild(run)
             run.openLogs(resultdir)
@@ -56,7 +53,7 @@ class PSFResultSet(result.ResultDict):
         True
 
         """
-        return self.rundict.has_key("Root")
+        return self.runs.has_key("Root")
 
     def keys(self):
         """Get name of results
@@ -72,39 +69,37 @@ class PSFResultSet(result.ResultDict):
         """
 
         if not self.isfamily():
-            return self.runs[0].getLogFile().getValueNames()
+            return self.runs['Run1'].getLogFile().getValueNames()
         else:
             # Find first leaf node
-            for run in self.runs:
+            for run in self.runs.values():
                 if run.isLeaf():
                     return run.getLogFile().getValueNames()
 
-    def getResult(self, name, run="Run1"):
+    def __getitem__(self, name):
         """Get result from a run by name
         
         >>> resultset=PSFResultSet('./test/resultdirs/simple')
-        >>> res = resultset.getResult('srcSweep')
-        >>> res.getSignalNames()
+        >>> res = resultset['srcSweep']
+        >>> res.keys()
         ('VOUT', 'VIN', 'R0')
 
         Try attribute access
 
         >>> resultset=PSFResultSet('./test/resultdirs/simple')
-        >>> resultset.r.srcSweep.getSignalNames()
+        >>> resultset.r.srcSweep.keys()
         ('VOUT', 'VIN', 'R0')
 
         >>> resultset=PSFResultSet('./test/resultdirs/parsweep/psf')
-        >>> res = resultset.getResult('opBegin')
-        >>> res.getSignalNames()
+        >>> res = resultset['opBegin']
+        >>> res.keys()
         ('VOUT', 'VIN', 'R0')
 
         """
         if self.isfamily():
-            return self.rundict['Root'].getResult(name, self.resultdir)
+            return self.runs['Root'].getResult(name, self.resultdir)
         else:
-            return self.rundict[run].getResult(name, self.resultdir)
-
-    
+            return self.runs['Run1'].getResult(name, self.resultdir)
 
 
 class PSFRun:
@@ -155,7 +150,7 @@ class PSFRun:
         """Get nested sweep variable names
 
         >>> resultset=PSFResultSet('./test/resultdirs/parsweep/psf')
-        >>> run = resultset.getRunByName('Root')
+        >>> run = resultset.runs['Root']
         >>> run.getSweepVariables()
         ('VDC1', 'VDC2')
 
@@ -171,7 +166,7 @@ class PSFRun:
         """Return a PSFReader object of log file
 
         >>> resultset=PSFResultSet('./test/resultdirs/simple')
-        >>> run = resultset.getRunByName('Run1')
+        >>> run = resultset.runs['Run1']
         >>> isinstance(run.getLogFile(), psf.PSFReader)
         True
 
@@ -184,7 +179,7 @@ class PSFRun:
         """Returns the sweep variable name and sweep values associated with the run
         
         >>> resultset=PSFResultSet('./test/resultdirs/parsweep/psf')
-        >>> run = resultset.getRunByName('Root')
+        >>> run = resultset['Root']
         >>> run.getSweep()
         ('VDC1', ['0.000000e+00', '1.000000e+00', '2.000000e+00'])
 
@@ -218,7 +213,7 @@ class PSFRun:
         """Return information about a result such as name of data file, file format etc given a result name
 
         >>> resultset=PSFResultSet('./test/resultdirs/simple')
-        >>> run = resultset.getRunByName('Run1')
+        >>> run = resultset.runs['Run1']
         >>> run.getResultInfo('srcSweep')
         {'dataFile': 'srcSweep', 'description': 'Source Sweep', 'parent': '', 'format': 'PSF', 'sweepVariable': [], 'analysisType': 'dc'}
 
@@ -229,17 +224,17 @@ class PSFRun:
         """Open result data file of result with given name located in directory dir
 
         >>> resultset=PSFResultSet('./test/resultdirs/simple')
-        >>> run = resultset.getRunByName('Run1')
+        >>> run = resultset.runs['Run1']
         >>> res = run.getResult('srcSweep', resultset.resultdir)
-        >>> res.getSignalNames()
+        >>> res.keys()
         ('VOUT', 'VIN', 'R0')
 
         >>> resultset=PSFResultSet('./test/resultdirs/parsweep/psf')
-        >>> run = resultset.getRunByName('Root')
+        >>> run = resultset['Root']
         >>> run._getNestedSweeps()
         apa
         >>> res = run.getResult('srcSweep', resultset.resultdir)
-        >>> res.getSignalNames()
+        >>> res.keys()
         ('opBegin', 'srcSweep')
 
         
@@ -271,11 +266,11 @@ class PSFRun:
     def treeString(self):
         return "\n".join([self.name]+[psf.indent(child.treeString(), 2) for child in self.children])
 
-class PSFResult(result.Result):
+class PSFResult(result.ResultDict):
     def __init__(self, psffilename=None):
         self.psfobj = psf.PSFReader(psffilename)
         self.psfobj.open()
-        result.Result.__init__(self)
+        super(PSFResult, self).__init__()
 
     def __len__(self):
         return len(self.psfobj)
@@ -290,15 +285,15 @@ class PSFResult(result.Result):
         """
         return self.psfobj.getNSweeps()
 
-    def getSignalNames(self):
+    def keys(self):
         """Returns a tuple of available outputs in the result
 
         >>> result=PSFResult('./test/psf/srcSweep')
-        >>> result.getSignalNames()
+        >>> result.keys()
         ('VOUT', 'VIN', 'R0')
 
         >>> result=PSFResult('./test/psf/timeSweep')
-        >>> result.getSignalNames()[:3]
+        >>> result.keys()[:3]
         ('PSUP', 'INN', 'INP')
 
         """
@@ -318,31 +313,31 @@ class PSFResult(result.Result):
         """
         return self.psfobj.getSweepParamValues(dimension)
 
-    def getSignal(self, outputname=None):
+    def __getitem__(self, outputname=None):
         """Returns a Waveform object if the parameter is swept and a scalar otherwise. A Struct
         is given as a dictionary.
         If outputname is None it will return a dictionary of all outputs keyed by
         the output names
         
         >>> result=PSFResult('./test/psf/srcSweep')
-        >>> result.getSignal()
+        >>> result[None]
         {'R0': Waveform([ 1.  2.  3.  4.],[-0.006 -0.004 -0.002  0.   ]), 'VIN': Waveform([ 1.  2.  3.  4.],[ 1.  2.  3.  4.]), 'VOUT': Waveform([ 1.  2.  3.  4.],[-6. -4. -2.  0.])}
-        >>> result.getSignal("VOUT")
+        >>> result["VOUT"]
         Waveform([ 1.  2.  3.  4.],[-6. -4. -2.  0.])
-        >>> result.getSignal("VIN")
+        >>> result["VIN"]
         Waveform([ 1.  2.  3.  4.],[ 1.  2.  3.  4.])
-        >>> result.o.VIN
+        >>> result['VIN']
         Waveform([ 1.  2.  3.  4.],[ 1.  2.  3.  4.])
 
         >>> result=PSFResult('./test/psf/dcOpInfo.info')
-        >>> result.getSignal("R0")
+        >>> result["R0"]
         {'i': 2.5000000000000002e-06, 'res': 99999.999999999985, 'pwr': 6.2500000000000005e-07, 'v': 0.25}
 
         """
         if outputname == None:
             res = {}
-            for output in self.getSignalNames():
-                res[output] = self.getSignal(output)
+            for output in self.keys():
+                res[output] = self[output]
             return res
         else:
             if self.psfobj.getNSweeps() > 0:
@@ -350,10 +345,9 @@ class PSFResult(result.Result):
             else:
                 return self.psfobj.getValuesByName(outputname)
 
-class PSFResultFamily(result.Result):
+class PSFResultFamily(result.ResultDict):
     def __init__(self, sweepvariables, sweepvalues, psffilenames):
         self.sweepvariables = sweepvariables
-        print sweepvalues
         self.sweepvalues = sweepvalues
         self.psfobjects = [psf.PSFReader(psffilename) for psffilename in psffilenames]
         for po in self.psfobjects:
@@ -364,14 +358,14 @@ class PSFResultFamily(result.Result):
         """Return the number of nested sweeps
 
         >>> resultset=PSFResultSet('./test/resultdirs/parsweep/psf')
-        >>> result=resultset.getResult('opBegin')
+        >>> result=resultset['opBegin']
         >>> result.getSweepDimensions()
         3
 
         """
         return len(self.sweepvariables)+self.psfobjects[0].getNSweeps()
 
-    def getSignalNames(self):
+    def keys(self):
         """Returns a tuple of available outputs in the result"""
         return self.psfobjects[0].getValueNames()
 
@@ -379,7 +373,7 @@ class PSFResultFamily(result.Result):
         """Get a numpy array of sweep values from the given dimension
 
         >>> resultset=PSFResultSet('./test/resultdirs/parsweep/psf')
-        >>> result=resultset.getResult('opBegin')
+        >>> result=resultset['opBegin']
         >>> result.getSweepValues(0)
         array([ 1.,  2.,  3.])
 
@@ -389,22 +383,22 @@ class PSFResultFamily(result.Result):
         else:
             return self.sweepvalues[dimension]
 
-    def getSignal(self, outputname=None):
+    def __getitem__(self, outputname):
         """Returns a Waveform object if the parameter is swept and a scalar otherwise. A Struct
         is given as a dictionary.
         If outputname is None it will return a dictionary of all outputs keyed by
         the output names
         
-        >>> resultset=PSFResultSet('./test/resultdirs/parsweep2/psf')
-        >>> result=resultset.getResult('ac-ac')
-        >>> result.getSignal('net3')
+        >>> resultset=PSFResultSet('./test/resultdirs/parsweep/psf')
+        >>> result=resultset['ac-ac']
+        >>> result['net3']
         apa
 
         """
         if outputname == None:
             res = {}
-#            for output in self.getSignalNames():
-#                res[output] = self.getSignal(output)
+#            for output in self.keys():
+#                res[output] = self[output]
             return res
         else:
             if self.psfobjects[0].getNSweeps() > 0:
