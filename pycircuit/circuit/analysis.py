@@ -1,6 +1,6 @@
-from numpy import array, delete, linalg, size, zeros, concatenate, pi, zeros, alltrue, maximum, conj, dot, imag
+from numpy import array, delete, linalg, size, zeros, concatenate, pi, zeros, alltrue, maximum, conj, dot, imag, eye
 from scipy import optimize
-from circuit import Circuit, SubCircuit, VS,IS,R,C,Diode, gnd, defaultepar
+from circuit import Circuit, SubCircuit, VS,IS,R,C,L,Diode, gnd, defaultepar
 from pycircuit.waveform import Waveform
 from pycircuit.internalresult import InternalResultDict
 import numpy
@@ -69,9 +69,9 @@ def fsolve(f, x0, fprime=None, args=(), full_output=False, maxiter=200,
     converged = False
     ier = 2
     for i in xrange(maxiter):
-        J = fprime(x0, *args)
+        J = fprime(x0, *args) # TODO: Make sure J is never 0, e.g. by gmin (stepping)
         F = f(x0, *args)
-        xdiff = linalg.solve(J, -F)
+        xdiff = linalg.solve(J, -F)# TODO: Limit xdiff to improve convergence
         x = x0 + xdiff
 
         if alltrue(abs(xdiff) < reltol * maximum(x, x0) + xtol):
@@ -114,7 +114,7 @@ class DC(Analysis):
 
     >>> c = SubCircuit()
     >>> n1 = c.addNode('net1')
-    >>> c['is'] = IS(gnd, n1, i=100e-6)
+    >>> c['is'] = IS(gnd, n1, i=57e-3)
     >>> c['D'] = Diode(n1, gnd)
     >>> dc = DC(c)
     >>> res = dc.run()
@@ -122,12 +122,27 @@ class DC(Analysis):
     ['i0', 'gnd', 'net1']
     >>> dc.result['net1']
     0.7
+
+    >>> c = SubCircuit()
+    >>> n1 = c.addNode('net1')
+    >>> n2 = c.addNode('net2')
+    >>> c['is'] = IS(gnd, n1, i=57e-3)
+    >>> c['R'] = R(n1, n2, r=1e1)
+    >>> c['D'] = Diode(n2, gnd)
+    >>> dc = DC(c)
+    >>> res = dc.run()
+    >>> dc.result.getSignalNames()
+    ['gnd', 'net2', 'net1']
+    >>> dc.result['net2']
+    0.7
+
     """
     
     def solve(self, refnode=gnd):
         n=self.c.n
         x = zeros(n)
         G=self.c.G(x)
+        # G += eye(G.shape[0])*1e-2 # Could use this to add a Gmin to every node
         U=self.c.U(x)
 
         ## Refer the voltages to the reference node by removing
@@ -144,11 +159,13 @@ class DC(Analysis):
             return array(f, dtype=float)
         def fprime(x):
             x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
-            J = self.c.G(array([x]).T)
+#            J = self.c.G(array([x]).T)
+            J = self.c.G(x)
             (J,) = removeRowCol((J,), irefnode)
 #            print "J:",array(J, dtype=float)
             return array(J, dtype=float)
-        x0 = zeros(n-1)
+        x0 = zeros(n-1) # Would be good with a better initial guess
+        #x0 = zeros(n-1)+0.75 # works good with this guess, for example
 
         rtol = 1e-4
 
@@ -183,6 +200,101 @@ class DC(Analysis):
         x = concatenate((x[:irefnode, :], array([[0.0]]), x[irefnode:,:]))
         return x
 
+
+class Tran_spec(Analysis):
+    """Simple transient analyis class.
+
+    Starting a transient analysis class with support for linear
+    dynamic elements.
+
+    Using an explicit method (forward euler) because of it's 
+    simplicity. Without any other tricks, backward euler (being
+    an implicit method) is otherwise more suited for stiff systems 
+    of ODEs.
+    
+    The usual companion models are used.
+
+    i(t) = c*dv/dt
+    v(t) = L*di/dt
+
+    forward euler:
+    i(n+1) = c/dt*(v(n) - v(n-1)) = geq*v(n) + Ieq
+    v(n+1) = L/dt*(i(n) - i(n-1)) = req*i(n) + Veq
+
+    For each time-step:
+    (G+Geq)*x(n) + U + Ueq
+
+    Linear circuit example:
+    >>> c = SubCircuit()
+    >>> n1 = c.addNode('net1')
+    >>> n2 = c.addNode('net2')
+    >>> c['Is'] = IS(gnd, n1, i=10)
+    >>> c['R1'] = R(n1, gnd, r=1)
+    >>> c['R2'] = R(n1, n2, r=1e3)
+    >>> c['R3'] = R(n2, gnd, r=100e3)
+    >>> c['C'] = C(n2, gnd, c=1e-5)
+    >>> tran = Tran_spec(c)
+    >>> res = tran.run(tend=20e-3)
+    >>> tran.result
+    ' roughly 10,6,0?'
+
+    Linear circuit example:
+    >>> c = SubCircuit()
+    >>> n1 = c.addNode('net1')
+    >>> c['Is'] = IS(gnd, n1, i=10)
+    >>> c['R'] = R(n1, gnd, r=1)
+    >>> c['C'] = C(n1, gnd, c=1e-6)
+    >>> c['L'] = L(n1, gnd, L=1e-3)
+    >>> tran = Tran_spec(c)
+    >>> nodeset = array([1,0,0])
+    >>> res = tran.run(tend=2e-6,timestep=1e-8)
+    >>> tran.result
+    ' haven't checked yet'
+
+    """
+    # Very incomplete TODO-list:
+    # solve with implicit method (with fsolve)
+    # generalise to using different coefficients for other methods
+    # try using telescopic projective solver with explicit method
+    # much more work with presenting and storing results
+    # try differential evolution for determining steady-state solution
+    def run(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-5):
+
+        irefnode=self.c.getNodeIndex(refnode)
+        n = self.c.n
+        dt = timestep
+
+        if x0 is None:
+            x = zeros(n)
+        else:
+            x = x0
+
+        xold = x #use x(0) as x(-1) in forward euler
+        G=self.c.G(x)
+        Geq=self.c.C(x)/dt
+        U=self.c.U(x)
+        Ueq=-dot(Geq,xold) #use x0 as x(-1) in forward euler
+        
+        #create vector with timepoints and a more fitting dt
+        times,dt=numpy.linspace(0,tend,num=int(tend/dt),endpoint=True,retstep=True)
+
+        for t in times:
+            G=self.c.G(x)
+            Geq=self.c.C(x)/dt
+            U=self.c.U(x)
+            Ueq=-dot(Geq,xold)
+            G+=Geq
+            U+=Ueq
+            # Refer the voltages to the reference node by removing
+            # the rows and columns that corresponds to this node
+            G,U=removeRowCol((G,U), irefnode)
+            xold=x
+            x=linalg.solve(G,-U)
+            # Insert reference node voltage
+            x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
+            #print(x,t)
+        self.result=x
+        return x
 
 class AC(Analysis):
     """
