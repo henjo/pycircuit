@@ -200,7 +200,6 @@ class DC(Analysis):
         x = concatenate((x[:irefnode, :], array([[0.0]]), x[irefnode:,:]))
         return x
 
-
 class Tran_spec(Analysis):
     """Simple transient analyis class.
 
@@ -224,42 +223,50 @@ class Tran_spec(Analysis):
     For each time-step:
     (G+Geq)*x(n) + U + Ueq
 
+    backward euler:
+    i(n+1) = c/dt*(v(n+1) - v(n)) = geq*v(n+1) + Ieq
+    v(n+1) = L/dt*(i(n+1) - i(n)) = req*i(n+1) + Veq
+
+    (G+Geq)*x(n+1)+U+Ueq
+
     Linear circuit example:
     >>> c = SubCircuit()
     >>> n1 = c.addNode('net1')
     >>> n2 = c.addNode('net2')
-    >>> c['Is'] = IS(gnd, n1, i=10)
+    >>> c['Is'] = IS(gnd, n1, i=10)    
     >>> c['R1'] = R(n1, gnd, r=1)
     >>> c['R2'] = R(n1, n2, r=1e3)
     >>> c['R3'] = R(n2, gnd, r=100e3)
     >>> c['C'] = C(n2, gnd, c=1e-5)
     >>> tran = Tran_spec(c)
     >>> res = tran.run(tend=20e-3)
-    >>> tran.result
-    ' roughly 10,6,0?'
+    >>> tran.result[-1][1] #node 2 of last x
+    6.29
 
     Linear circuit example:
     >>> c = SubCircuit()
     >>> n1 = c.addNode('net1')
-    >>> c['Is'] = IS(gnd, n1, i=10)
-    >>> c['R'] = R(n1, gnd, r=1)
+    >>> c['Is'] = IS(gnd, n1, i=0.1)
+    >>> c['R'] = R(n1, gnd, r=1e2)
     >>> c['C'] = C(n1, gnd, c=1e-6)
     >>> c['L'] = L(n1, gnd, L=1e-3)
     >>> tran = Tran_spec(c)
-    >>> nodeset = array([1,0,0])
-    >>> res = tran.run(tend=2e-6,timestep=1e-8)
-    >>> tran.result
-    ' haven't checked yet'
+    >>> nodeset = array([-1.0,0.,0.])
+    >>> res = tran.run(tend=100e-6,timestep=1e-6)
+    >>> tran.result[-1][0]
+    0.951
 
     """
     # Very incomplete TODO-list:
     # solve with implicit method (with fsolve)
     # generalise to using different coefficients for other methods
     # try using telescopic projective solver with explicit method
+    # http://ews.uiuc.edu/~mrgates2/ode/projective-ode.pdf
     # much more work with presenting and storing results
     # try differential evolution for determining steady-state solution
     def run(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-5):
 
+        X = [] # will contain a list of all x-vectors
         irefnode=self.c.getNodeIndex(refnode)
         n = self.c.n
         dt = timestep
@@ -269,32 +276,33 @@ class Tran_spec(Analysis):
         else:
             x = x0
 
-        xold = x #use x(0) as x(-1) in forward euler
-        G=self.c.G(x)
-        Geq=self.c.C(x)/dt
-        U=self.c.U(x)
-        Ueq=-dot(Geq,xold) #use x0 as x(-1) in forward euler
+        order=2 #number of past x-values needed
+        for i in xrange(order):
+            X.append(copy(x))
         
+#        xold = x #use x(0) as x(-1) in forward euler
+
         #create vector with timepoints and a more fitting dt
         times,dt=numpy.linspace(0,tend,num=int(tend/dt),endpoint=True,retstep=True)
 
         for t in times:
-            G=self.c.G(x)
-            Geq=self.c.C(x)/dt
-            U=self.c.U(x)
-            Ueq=-dot(Geq,xold)
+            G=self.c.G(X[-1])
+            Geq=self.c.C(X[-1])/dt
+            U=self.c.U(X[-1])
+            Ueq=-dot(Geq,X[-2])
             G+=Geq
             U+=Ueq
             # Refer the voltages to the reference node by removing
             # the rows and columns that corresponds to this node
             G,U=removeRowCol((G,U), irefnode)
-            xold=x
+#            xold=x
             x=linalg.solve(G,-U)
             # Insert reference node voltage
             x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
-            #print(x,t)
-        self.result=x
-        return x
+#            print(x,t)
+            X.append(copy(x))
+        self.result = X
+        return x #returns the final value
 
 class AC(Analysis):
     """
