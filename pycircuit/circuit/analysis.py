@@ -35,7 +35,8 @@ class Analysis(object):
 
     def run(self, *args, **kvargs):
         """Start the analysis and return the result as a Result object"""
-
+        #This should probably be changed to handle multiple-x since
+        #AC, Noise, Transient and DC-sweep generates several values
         x = self.solve(*args, **kvargs)
         
         result = InternalResultDict()
@@ -140,15 +141,15 @@ class DC(Analysis):
     
     def solve(self, refnode=gnd):
         n=self.c.n
-        x = zeros(n)
-        G=self.c.G(x)
+#        x = zeros(n)
+#        G=self.c.G(x)
         # G += eye(G.shape[0])*1e-2 # Could use this to add a Gmin to every node
-        U=self.c.U(x)
+#        U=self.c.U(x)
 
         ## Refer the voltages to the reference node by removing
         ## the rows and columns that corresponds to this node
         irefnode = self.c.getNodeIndex(refnode)
-        G,U=removeRowCol((G,U), irefnode)
+#        G,U=removeRowCol((G,U), irefnode)
 
         # Solve i(x) + u = 0
         def func(x):
@@ -165,7 +166,7 @@ class DC(Analysis):
 #            print "J:",array(J, dtype=float)
             return array(J, dtype=float)
         x0 = zeros(n-1) # Would be good with a better initial guess
-        #x0 = zeros(n-1)+0.75 # works good with this guess, for example
+#        x0 = zeros(n-1)+0.75 # works good with this guess, for example
 
         rtol = 1e-4
 
@@ -223,12 +224,6 @@ class Tran_spec(Analysis):
     For each time-step:
     (G+Geq)*x(n) + U + Ueq
 
-    backward euler:
-    i(n+1) = c/dt*(v(n+1) - v(n)) = geq*v(n+1) + Ieq
-    v(n+1) = L/dt*(i(n+1) - i(n)) = req*i(n+1) + Veq
-
-    (G+Geq)*x(n+1)+U+Ueq
-
     Linear circuit example:
     >>> c = SubCircuit()
     >>> n1 = c.addNode('net1')
@@ -264,6 +259,7 @@ class Tran_spec(Analysis):
     # http://ews.uiuc.edu/~mrgates2/ode/projective-ode.pdf
     # much more work with presenting and storing results
     # try differential evolution for determining steady-state solution
+
     def run(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-5):
 
         X = [] # will contain a list of all x-vectors
@@ -279,8 +275,6 @@ class Tran_spec(Analysis):
         order=2 #number of past x-values needed
         for i in xrange(order):
             X.append(copy(x))
-        
-#        xold = x #use x(0) as x(-1) in forward euler
 
         #create vector with timepoints and a more fitting dt
         times,dt=numpy.linspace(0,tend,num=int(tend/dt),endpoint=True,retstep=True)
@@ -295,7 +289,7 @@ class Tran_spec(Analysis):
             # Refer the voltages to the reference node by removing
             # the rows and columns that corresponds to this node
             G,U=removeRowCol((G,U), irefnode)
-#            xold=x
+
             x=linalg.solve(G,-U)
             # Insert reference node voltage
             x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
@@ -303,6 +297,107 @@ class Tran_spec(Analysis):
             X.append(copy(x))
         self.result = X
         return x #returns the final value
+
+class Tran_imp(Analysis):
+    """Simple transient analyis class.
+
+    i(t) = c*dv/dt
+    v(t) = L*di/dt
+
+    backward euler:
+    The usual companion models are used.
+    i(n+1) = c/dt*(v(n+1) - v(n)) = geq*v(n+1) + Ieq
+    v(n+1) = L/dt*(i(n+1) - i(n)) = req*i(n+1) + Veq
+
+    def J(x): return G(x)+Geq(x)
+    def F(x): return U(x)+Ueq(x0)
+    x0=x(n)
+    x(n+1) = fsolve(F, x0, fprime=J)
+
+    Linear circuit example:
+    >>> c = SubCircuit()
+    >>> n1 = c.addNode('net1')
+    >>> n2 = c.addNode('net2')
+    >>> c['Is'] = IS(gnd, n1, i=10)    
+    >>> c['R1'] = R(n1, gnd, r=1)
+    >>> c['R2'] = R(n1, n2, r=1e3)
+    >>> c['R3'] = R(n2, gnd, r=100e3)
+    >>> c['C'] = C(n2, gnd, c=1e-5)
+    >>> tran = Tran_imp(c)
+    >>> res = tran.run(tend=20e-3)
+    >>> tran.result[-1][1] #node 2 of last x
+    6.29
+
+    Linear circuit example:
+    >>> c = SubCircuit()
+    >>> n1 = c.addNode('net1')
+    >>> c['Is'] = IS(gnd, n1, i=0.1)
+    >>> c['R'] = R(n1, gnd, r=1e2)
+    >>> c['C'] = C(n1, gnd, c=1e-6)
+    >>> c['L'] = L(n1, gnd, L=1e-3)
+    >>> tran = Tran_imp(c)
+    >>> nodeset = array([-1.0,0.])
+    >>> res = tran.run(tend=100e-6,timestep=1e-6)
+    >>> tran.result[-1][0]
+    0.951
+
+    """
+    def solve(self, x0, dt, refnode=gnd):
+        n=self.c.n
+        x0 = x0
+        dt = dt
+
+        ## Refer the voltages to the reference node by removing
+        ## the rows and columns that corresponds to this node
+        irefnode = self.c.getNodeIndex(refnode)
+
+        def func(x):
+            x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
+            xlast = concatenate((x0[:irefnode], array([0.0]), x0[irefnode:]))
+            Geq = self.c.C(x)/dt
+            Ueq = -dot(Geq,xlast)
+            f =  self.c.i(x) + self.c.U(x) + Ueq
+#            f =  self.c.U(x) + Ueq
+            (f,) = removeRowCol((f,), irefnode)
+            return array(f, dtype=float)
+        def fprime(x):
+            x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
+            Geq = self.c.C(x)/dt
+            J = self.c.G(x) + Geq
+            (J,) = removeRowCol((J,), irefnode)
+            return array(J, dtype=float)
+
+        rtol = 1e-4
+
+        x = fsolve(func, x0, fprime=fprime)
+        # Insert reference node voltage
+        #x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
+        return x
+
+
+    def run(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6):
+
+        X = [] # will contain a list of all x-vectors
+        irefnode=self.c.getNodeIndex(refnode)
+        n = self.c.n
+        dt = timestep
+        if x0 is None:
+            x = zeros(n-1) #currently without reference node !
+        else:
+            x = x0 # reference node not included !
+        order=1 #number of past x-values needed
+        for i in xrange(order):
+            X.append(copy(x))
+
+        #create vector with timepoints and a more fitting dt
+        times,dt=numpy.linspace(0,tend,num=int(tend/dt),endpoint=True,retstep=True)
+
+        for t in times:
+            x=self.solve(X[-1],dt)
+            print(x,t)
+            X.append(copy(x))
+        self.result = X
+        return (x,t) #returns the final value
 
 class AC(Analysis):
     """
