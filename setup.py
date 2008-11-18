@@ -6,5 +6,6 @@ setup(name='Pycircuit',
       author='Henrik Johansson, Joacim Olsson, Andreas Drejfert',
       author_email='henjo2006@gmail.com',
       url='http://rigel.johome.net/svn/pycircuit',
-      packages=['pycircuit', 'pycircuit.circuit', 'pycircuit.cds', 'pycircuit.jwdb'],
+      packages=['pycircuit', 'pycircuit.circuit', 'pycircuit.post', 'pycircuit.utilities',
+                'pycircuit.post.cds', 'pycircuit.post.jwdb'],
      )

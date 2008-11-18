@@ -1,7 +1,7 @@
 import numpy as N
 from circuit import SubCircuit, gnd, R, VS, IS
 from analysis import Analysis, AC, Noise
-from pycircuit.internalresult import InternalResultSet, InternalResult
+from pycircuit.post.internalresult import InternalResultDict
 from copy import copy
 
 class NPort(object):
@@ -137,15 +137,15 @@ class TwoPortAnalysis(Analysis):
         self.noise_outquantity = noise_outquantity
         
     def run(self, freqs, complexfreq = False, refnode = gnd):
-        result = InternalResult()
+        result = InternalResultDict()
 
         abcd = self.solve(freqs, refnode=refnode, complexfreq=complexfreq)
-        result.storeSignal('twoport', TwoPort(abcd))
+        result['twoport'] = TwoPort(abcd)
 
-        result.storeSignal('mu', 1/abcd[0,0])
-        result.storeSignal('gamma', 1/abcd[0,1])
-        result.storeSignal('zeta', 1/abcd[1,0])
-        result.storeSignal('beta', 1/abcd[1,1])
+        result['mu'] = 1/abcd[0,0]
+        result['gamma'] = 1/abcd[0,1]
+        result['zeta'] = 1/abcd[1,0]
+        result['beta'] = 1/abcd[1,1]
 
         if self.noise:
             inp, inn, outp, outn = self.ports

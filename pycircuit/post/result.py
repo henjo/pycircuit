@@ -1,4 +1,4 @@
-import rsttable
+import pycircuit.utilities.rst as rst
 
 class ResultDict(object):
     """The ResultDict class manages results from a circuit simulation.

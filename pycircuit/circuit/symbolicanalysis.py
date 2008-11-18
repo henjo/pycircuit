@@ -5,11 +5,11 @@ from numpy import array, delete, linalg, size, zeros, concatenate, pi, asarray
 import circuit
 from circuit import *
 from copy import copy
-from pycircuit.internalresult import InternalResultSet, InternalResult
+from pycircuit.post.internalresult import InternalResultDict
 import sympy
 from sympy import Symbol, Matrix, symbols, simplify, together, factor, cancel, exp, diff, Mul, factorial
 from types import TupleType
-from pycircuit.param import Parameter, ParameterDict
+from pycircuit.utilities.param import Parameter, ParameterDict
 
 class NoSolutionFound(Exception):
     pass

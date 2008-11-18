@@ -1,7 +1,7 @@
 # -*- coding: latin-1 -*-
 
 from numpy import array, delete, linalg, size, zeros, concatenate, pi, dot, exp
-from pycircuit.param import Parameter, ParameterDict
+from pycircuit.utilities.param import Parameter, ParameterDict
 from constants import *
 from copy import copy
 import types
@@ -20,9 +20,11 @@ class Node(object):
 class Branch(object):
     """A branch connects two nodes.
     
-    A branch is used in modified nodal analysis to describe components that defines a voltage between
-    two nodes as a function of current flowing between these nodes. Examples are voltage sources and inductors.
-    Positive current through a branch is defined as a current flowing from plus to minus.a
+    A branch is used in modified nodal analysis to describe components that 
+    defines a voltage between two nodes as a function of current flowing 
+    between these nodes. Examples are voltage sources and inductors.
+    Positive current through a branch is defined as a current flowing from 
+    plus to minus.a
     
     """
     def __init__(self, plus, minus, name=None):

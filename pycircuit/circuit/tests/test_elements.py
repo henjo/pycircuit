@@ -5,7 +5,6 @@ from pycircuit.circuit.circuit import VS, R, Nullor, SubCircuit, gnd
 from pycircuit.circuit.symbolic import SymbolicAC
 from sympy import Symbol, Matrix, symbols, simplify, together, factor, cancel
 
-
 def test_nullor_vva():
     """Test nullor element by building a V-V amplifier"""
     

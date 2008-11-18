@@ -1,9 +1,10 @@
-from numpy import array, delete, linalg, size, zeros, concatenate, pi, zeros, alltrue, maximum, conj, dot, imag, eye
+import numpy as np
+from numpy import array, delete, linalg, size, zeros, concatenate, pi, \
+    zeros, alltrue, maximum, conj, dot, imag, eye
 from scipy import optimize
 from circuit import Circuit, SubCircuit, VS,IS,R,C,L,Diode, gnd, defaultepar
-from pycircuit.waveform import Waveform
-from pycircuit.internalresult import InternalResultDict
-import numpy
+from pycircuit.post.waveform import Waveform
+from pycircuit.post.internalresult import InternalResultDict
 from copy import copy
 
 class NoConvergenceError(Exception):
@@ -170,10 +171,10 @@ class DC(Analysis):
 
         rtol = 1e-4
 
-        self.__SI__ = numpy.zeros(x0.shape,'d')
-        iwk = numpy.zeros((100*len(self.__SI__)),'i')
-        rwk = numpy.zeros((100*len(self.__SI__)),'d')
-        iopt = numpy.zeros((50),'i')
+        self.__SI__ = np.zeros(x0.shape,'d')
+        iwk = np.zeros((100*len(self.__SI__)),'i')
+        rwk = np.zeros((100*len(self.__SI__)),'d')
+        iopt = np.zeros((50),'i')
         s_scale = copy(x0)
         
         iopt[2] =  1 # self.nleq2_jacgen #2
@@ -277,7 +278,7 @@ class Tran_spec(Analysis):
             X.append(copy(x))
 
         #create vector with timepoints and a more fitting dt
-        times,dt=numpy.linspace(0,tend,num=int(tend/dt),endpoint=True,retstep=True)
+        times,dt=np.linspace(0,tend,num=int(tend/dt),endpoint=True,retstep=True)
 
         for t in times:
             G=self.c.G(X[-1])
@@ -390,7 +391,7 @@ class Tran_imp(Analysis):
             X.append(copy(x))
 
         #create vector with timepoints and a more fitting dt
-        times,dt=numpy.linspace(0,tend,num=int(tend/dt),endpoint=True,retstep=True)
+        times,dt=np.linspace(0,tend,num=int(tend/dt),endpoint=True,retstep=True)
 
         for t in times:
             x=self.solve(X[-1],dt)
