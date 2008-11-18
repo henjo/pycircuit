@@ -15,7 +15,7 @@ def itemize(*items):
     
     return '\n'.join(['* ' + item for item in items])
 
-def toRSTtable(rows, header=True, headerrows = 1, vdelim="  ", padding=1, justify='right'):
+def table(rows, header=True, headerrows = 1, vdelim="  ", padding=1, justify='right'):
     """ Outputs a list of lists as a Restructured Text Table
 
     - rows - list of lists

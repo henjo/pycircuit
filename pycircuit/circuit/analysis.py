@@ -357,7 +357,7 @@ class Tran_imp(Analysis):
             xlast = concatenate((x0[:irefnode], array([0.0]), x0[irefnode:]))
             Geq = self.c.C(x)/dt
             ueq = -dot(Geq,xlast)
-            f =  self.c.i(x) + self.c.u(x) + ueq
+            f =  self.c.i(x) + dot(Geq, x) + self.c.u(x) + ueq
 #            f =  self.c.u(x) + ueq
             (f,) = removeRowCol((f,), irefnode)
             return array(f, dtype=float)
@@ -395,7 +395,7 @@ class Tran_imp(Analysis):
 
         for t in times:
             x=self.solve(X[-1],dt)
-            print(x,t)
+#            print(x,t)
             X.append(copy(x))
         self.result = X
         return (x,t) #returns the final value

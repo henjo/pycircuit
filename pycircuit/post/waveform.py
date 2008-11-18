@@ -770,12 +770,12 @@ def astable(*waveforms):
     hasunits = not reduce(operator.__and__, [yunit == '' for yunit in yunits])
     
     if hasunits:
-        return rst.toRSTtable(map(lambda x,y: list(x) + list(y), 
+        return rst.table(map(lambda x,y: list(x) + list(y), 
                                        [xlabels] + [xunits] + xvalues, 
                                        [ylabels] + [yunits] + yvalues), 
                               headerrows = 2)
     else:
-        return rst.toRSTtable(map(lambda x,y: list(x) + list(y), 
+        return rst.table(map(lambda x,y: list(x) + list(y), 
                                        [xlabels] + xvalues, 
                                        [ylabels] + yvalues))
     
