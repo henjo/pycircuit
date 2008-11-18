@@ -215,8 +215,8 @@ class Circuit(object):
         """Calculate the C (transcapacitance) matrix of the circuit given the x-vector"""
         return zeros(self.n, dtype=object)
 
-    def U(self, t=0.0, epar=defaultepar, analysis=None):
-        """Calculate the U column-vector of the circuit at time t
+    def u(self, t=0.0, epar=defaultepar, analysis=None):
+        """Calculate the u column-vector of the circuit at time t
 
         Arguments
         ---------
@@ -501,8 +501,8 @@ class SubCircuit(Circuit):
     def C(self, x, epar=defaultepar):
         return self._add_element_submatrices('C', x, (epar,))
 
-    def U(self, t=0.0, epar=defaultepar, analysis=None):
-        return self._add_element_subvectors('U', None, (t,epar,analysis))
+    def u(self, t=0.0, epar=defaultepar, analysis=None):
+        return self._add_element_subvectors('u', None, (t,epar,analysis))
 
     def i(self, x, epar=defaultepar):
         return self._add_element_subvectors('i', x, (epar,))
@@ -706,13 +706,13 @@ class VS(Circuit):
                       [0 , 0, -1],
                       [1 , -1, 0]], dtype=object)
 
-    def U(self, t=0.0, epar=defaultepar, analysis=None):
+    def u(self, t=0.0, epar=defaultepar, analysis=None):
         if analysis == 'ac':
             return array([0, 0, -self.ipar.vac], dtype=object)
         elif analysis == None:
             return array([0, 0, -self.ipar.v], dtype=object)
         else:
-            return super(VS, self).U(t,epar,analysis)
+            return super(VS, self).u(t,epar,analysis)
 
     def CY(self, x, w, epar=defaultepar):
         CY = super(VS, self).CY(x, w)
@@ -742,13 +742,13 @@ class IS(Circuit):
                   Parameter(name='noisePSD', desc='Current noise power spectral density', unit='A^2/Hz', default=0.0)]
     terminals = ['plus', 'minus']
 
-    def U(self, t=0.0, epar=defaultepar, analysis=None):
+    def u(self, t=0.0, epar=defaultepar, analysis=None):
         if analysis == None:
             return array([self.ipar.i, -self.ipar.i])
         elif analysis == 'ac':
             return array([self.ipar.iac, -self.ipar.iac])
         else:
-            return super(IS, self).U(t,epar,analysis)
+            return super(IS, self).u(t,epar,analysis)
 
     def CY(self, x, w, epar=defaultepar):
         return  array([[self.ipar.noisePSD, -self.ipar.noisePSD],

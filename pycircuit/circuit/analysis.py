@@ -145,17 +145,17 @@ class DC(Analysis):
 #        x = zeros(n)
 #        G=self.c.G(x)
         # G += eye(G.shape[0])*1e-2 # Could use this to add a Gmin to every node
-#        U=self.c.U(x)
+#        u=self.c.u(x)
 
         ## Refer the voltages to the reference node by removing
         ## the rows and columns that corresponds to this node
         irefnode = self.c.getNodeIndex(refnode)
-#        G,U=removeRowCol((G,U), irefnode)
+#        G,u=removeRowCol((G,u), irefnode)
 
         # Solve i(x) + u = 0
         def func(x):
             x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
-            f =  self.c.i(x) + self.c.U(0)
+            f =  self.c.i(x) + self.c.u(0)
             (f,) = removeRowCol((f,), irefnode)
 #            print x,f.T[0]
             return array(f, dtype=float)
@@ -223,7 +223,7 @@ class Tran_spec(Analysis):
     v(n+1) = L/dt*(i(n) - i(n-1)) = req*i(n) + Veq
 
     For each time-step:
-    (G+Geq)*x(n) + U + Ueq
+    (G+Geq)*x(n) + u + ueq
 
     Linear circuit example:
     >>> c = SubCircuit()
@@ -283,15 +283,15 @@ class Tran_spec(Analysis):
         for t in times:
             G=self.c.G(X[-1])
             Geq=self.c.C(X[-1])/dt
-            U=self.c.U(X[-1])
-            Ueq=-dot(Geq,X[-2])
+            u=self.c.u(X[-1])
+            ueq=-dot(Geq,X[-2])
             G+=Geq
-            U+=Ueq
+            u+=ueq
             # Refer the voltages to the reference node by removing
             # the rows and columns that corresponds to this node
-            G,U=removeRowCol((G,U), irefnode)
+            G,u=removeRowCol((G,u), irefnode)
 
-            x=linalg.solve(G,-U)
+            x=linalg.solve(G,-u)
             # Insert reference node voltage
             x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
 #            print(x,t)
@@ -311,7 +311,7 @@ class Tran_imp(Analysis):
     v(n+1) = L/dt*(i(n+1) - i(n)) = req*i(n+1) + Veq
 
     def J(x): return G(x)+Geq(x)
-    def F(x): return U(x)+Ueq(x0)
+    def F(x): return u(x)+ueq(x0)
     x0=x(n)
     x(n+1) = fsolve(F, x0, fprime=J)
 
@@ -356,9 +356,9 @@ class Tran_imp(Analysis):
             x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
             xlast = concatenate((x0[:irefnode], array([0.0]), x0[irefnode:]))
             Geq = self.c.C(x)/dt
-            Ueq = -dot(Geq,xlast)
-            f =  self.c.i(x) + self.c.U(x) + Ueq
-#            f =  self.c.U(x) + Ueq
+            ueq = -dot(Geq,xlast)
+            f =  self.c.i(x) + self.c.u(x) + ueq
+#            f =  self.c.u(x) + ueq
             (f,) = removeRowCol((f,), irefnode)
             return array(f, dtype=float)
         def fprime(x):
@@ -462,24 +462,22 @@ class AC(Analysis):
             ibranch = self.c.branches.index(branch)
             return sign * self.result['i%d'%ibranch]
         
-    def solve(self, freqs, refnode=gnd, complexfreq = False, U = None):
-        n=self.c.n
+    def solve(self, freqs, refnode=gnd, complexfreq = False, u = None):
+        n = self.c.n
         
         x = zeros(n) ## FIXME, this should be calculated from the dc analysis
         
-        G=self.c.G(x)
-        C=self.c.C(x)
+        G = self.c.G(x)
+        C = self.c.C(x)
 
         ## Allow for custom stimuli, mainly used by other analyses
-        if U == None:
-            U=self.c.U(x, analysis='ac')
-        else:
-            U = U
+        if u == None:
+            u = self.c.u(x, analysis='ac')
 
         ## Refer the voltages to the reference node by removing
         ## the rows and columns that corresponds to this node
         irefnode = self.c.getNodeIndex(refnode)
-        G,C,U = removeRowCol((G,C,U), irefnode)
+        G,C,u = removeRowCol((G,C,u), irefnode)
 
         if complexfreq:
             ss = freqs
@@ -487,7 +485,7 @@ class AC(Analysis):
             ss = 2j*pi*freqs
 
         def solvecircuit(s):
-            x = self.linearsolver(s*C + G, -U) 
+            x = self.linearsolver(s*C + G, -u) 
 
             # Insert reference node voltage
             return concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
@@ -567,28 +565,28 @@ class Noise(Analysis):
 
         # Calculate output voltage noise
         if self.outputnodes != None:
-            U = zeros(n, dtype=int)
+            u = zeros(n, dtype=int)
             ioutp, ioutn = (self.c.getNodeIndex(node) for node in self.outputnodes)
-            U[ioutp] = -1
-            U[ioutn] = 1
+            u[ioutp] = -1
+            u[ioutn] = 1
         # Calculate output current noise
         else:
-            U = zeros(n, dtype=int)
+            u = zeros(n, dtype=int)
             ibranch = self.c.getBranchIndex(self.outputsrc.branch)
-            U[ibranch] = -1
+            u[ibranch] = -1
 
         ## Refer the voltages to the gnd node by removing
         ## the rows and columns that corresponds to this node
         irefnode = self.c.nodes.index(refnode)
-        G,C,U,CY = removeRowCol((G,C,U,CY), irefnode)
+        G,C,u,CY = removeRowCol((G,C,u,CY), irefnode)
 
         # Calculate the reciprocal G and C matrices
         Yreciprocal = G.T + s*C.T
 
-        Yreciprocal, U = (self.toMatrix(A) for A in (Yreciprocal, U))
+        Yreciprocal, u = (self.toMatrix(A) for A in (Yreciprocal, u))
 
         ## Calculate transimpedances from currents in each nodes to output
-        zm = self.linearsolver(Yreciprocal, -U)
+        zm = self.linearsolver(Yreciprocal, -u)
 
         xn2out = dot(dot(zm.reshape(1,size(zm)), CY), conj(zm))
 
