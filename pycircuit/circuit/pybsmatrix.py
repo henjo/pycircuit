@@ -1,6 +1,10 @@
 # Based on m_matrix.h from Gnucap, Al Davis
-
-# doctest not supported yet
+#
+#"The files ap_*, io_*, l_*, m_* are not Gnucap specific.
+# Although they were created for Gnucap, they are public
+# domain and may be used by anyone for any purpose."
+#
+# [http://www.gnu.org/software/gnucap/gnucap-man-html/gnucap-man108.html]
 
 from numpy import arange, array, zeros
 
@@ -57,9 +61,9 @@ class Bsmatrix:
     column, to the corresponding index in the 1-dim data array.
 
     >>> a=Bsmatrix(4)
-    >>> a.iwant[0,1]
-    >>> a.iwant[1,2]
-    >>> a.iwant[0,3]
+    >>> a.iwant(0,1)
+    >>> a.iwant(1,2)
+    >>> a.iwant(0,3)
     >>> a.allocate()
     >>> a.getindex(2,1)
     4.0
@@ -114,9 +118,9 @@ class Bsmatrix:
     """Adapt self.lownode to matrix shape
 
     >>> a=Bsmatrix(4)
-    >>> a.iwant[0,1]
-    >>> a.iwant[1,2]
-    >>> a.iwant[0,3]
+    >>> a.iwant(0,1)
+    >>> a.iwant(1,2)
+    >>> a.iwant(0,3)
     >>> a.allocate()
     >>> a.lownode
     array([0, 0, 1, 0])
@@ -191,11 +195,10 @@ class Bsmatrix:
     >>> a.allocate()
     >>> a.dezero(1)
     >>> a.dense()
-    array([
-    [ 1.,  0.,  0.,  0.],
-    [ 0.,  1.,  0.,  0.],
-    [ 0.,  0.,  1.,  0.],
-    [ 0.,  0.,  0.,  1.]])
+    array([[ 1.,  0.,  0.,  0.],
+           [ 0.,  1.,  0.,  0.],
+           [ 0.,  0.,  1.,  0.],
+           [ 0.,  0.,  0.,  1.]])
 
     """
     for i in xrange(self.size):
@@ -258,19 +261,20 @@ class Bsmatrix:
     Takes a dense matrix of type numpy-array (and same size), as input and 
     adapt self to a sparse version of the dense matrix.
 
+
     >>> ad=array([[ 1.,  2.,  0.,  0.,  0.],
-    >>>   [ 0.,  1.,  2.,  3.,  0.],
-    >>>   [ 0.,  0.,  1.,  3.,  0.],
-    >>>   [ 0.,  0.,  0.,  1.,  0.],
-    >>>   [ 0.,  0.,  0.,  0.,  1.]])
+    ... [ 0.,  1.,  2.,  3.,  0.],
+    ... [ 0.,  0.,  1.,  3.,  0.],
+    ... [ 0.,  0.,  0.,  1.,  0.],
+    ... [ 0.,  0.,  0.,  0.,  1.]])
     >>> asparse=Bsmatrix(5)
     >>> asparse.dense2sparse(ad)
     >>> asparse.dense()
     array([[ 1.,  2.,  0.,  0.,  0.],
-       [ 0.,  1.,  2.,  3.,  0.],
-       [ 0.,  0.,  1.,  3.,  0.],
-       [ 0.,  0.,  0.,  1.,  0.],
-       [ 0.,  0.,  0.,  0.,  1.]])
+           [ 0.,  1.,  2.,  3.,  0.],
+           [ 0.,  0.,  1.,  3.,  0.],
+           [ 0.,  0.,  0.,  1.,  0.],
+           [ 0.,  0.,  0.,  0.,  1.]])
 
     """
     assert((self.size,self.size)==dense_arr.shape)
@@ -300,3 +304,7 @@ class Bsmatrix:
 # >>> a.lownode
 
     
+
+if __name__ == "__main__":
+    import doctest
+    doctest.testmod()
