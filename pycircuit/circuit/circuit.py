@@ -670,9 +670,9 @@ class L(Circuit):
     def __init__(self, plus, minus, L=0.0):
         Circuit.__init__(self, plus, minus, L=L)
         self.branches.append(Branch(plus, minus))
-    def G(self, x, epar):
+    def G(self, x, epar=defaultepar):
         return self._G
-    def C(self, x, epar):
+    def C(self, x, epar=defaultepar):
         n = self.n
         C = zeros((n,n), dtype=object)
         C[-1,-1] = self.ipar.L
