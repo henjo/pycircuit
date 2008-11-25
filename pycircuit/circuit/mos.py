@@ -10,8 +10,8 @@ class MOS(SubCircuit):
     >>> from sympy import Symbol
     >>> from symbolicanalysis import SymbolicTwoPortAnalysis
     >>> c = SubCircuit()
-    >>> inp = c.addNode('inp')
-    >>> out = c.addNode('outp')
+    >>> inp = c.add_node('inp')
+    >>> out = c.add_node('outp')
     >>> c['q1'] = MOSSmallSignal(inp, out, gnd, gnd, gm = Symbol('gm'), gds = Symbol('gds'), \
                                  Cgs = Symbol('Cgs'), Cgd = 0*Symbol('Cgd'))
     >>> res = SymbolicTwoPortAnalysis(c, inp, gnd, out, gnd).run(freqs = array([Symbol('s')]), complexfreq=True)

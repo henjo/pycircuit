@@ -7,7 +7,8 @@ from circuit import *
 from copy import copy
 from pycircuit.post.internalresult import InternalResultDict
 import sympy
-from sympy import Symbol, Matrix, symbols, simplify, together, factor, cancel, exp, diff, Mul, factorial
+from sympy import Symbol, Matrix, symbols, simplify, together, factor, cancel, exp, \
+    diff, Mul, factorial
 from types import TupleType
 from pycircuit.utilities.param import Parameter, ParameterDict
 
@@ -39,7 +40,7 @@ class SymbolicAC(analysis.AC):
     """Circuit analysis that calculates symbolic expressions of the unknowns
 
     >>> c = SubCircuit()
-    >>> n1 = c.addNode('net1')
+    >>> n1 = c.add_node('net1')
     >>> c['vs'] = VS(n1, gnd, vac=Symbol('V'))
     >>> c['R'] = R(n1, gnd, r=Symbol('R'))
     >>> res = SymbolicAC(c).run(Symbol('s'), complexfreq=True)
@@ -59,8 +60,8 @@ class SymbolicAC(analysis.AC):
 class SymbolicNoise(analysis.Noise):
     """Symbolic noise analysis that calculates input and output referred noise.
     
-    The analysis is using the adjoint admittance matrix method to calculate the transfers from
-    each noise source to the output.
+    The analysis is using the adjoint admittance matrix method to calculate the 
+    transfers from each noise source to the output.
     
     Example, calculate input referred noise of a voltage divider:
 
@@ -68,11 +69,12 @@ class SymbolicNoise(analysis.Noise):
     >>> kT = Symbol('kT')
     >>> R1=Symbol('R1', real=True)
     >>> R2=Symbol('R2', real=True)
-    >>> n1,n2 = c.addNodes('net1', 'net2')
+    >>> n1,n2 = c.add_nodes('net1', 'net2')
     >>> c['vs'] = VS(n1, gnd, v=Symbol('V'))
     >>> c['R1'] = R(n1, n2, r=R1)
     >>> c['R2'] = R(n2, gnd, r=R2)
-    >>> res = SymbolicNoise(c, inputsrc=c['vs'], outputnodes=(n2, gnd)).run(Symbol('s'), complexfreq=True)
+    >>> symnoise = SymbolicNoise(c, inputsrc=c['vs'], outputnodes=(n2, gnd))
+    >>> res = symnoise.run(Symbol('s'), complexfreq=True)
     >>> simplify(res['Svnout'])
     4*R1*R2*kT/(R1 + R2)
     >>> simplify(res['Svninp'])
@@ -105,10 +107,11 @@ class SymbolicTwoPortAnalysis(TwoPortAnalysis):
     D = i(inp, inn)/i(outp, outn) | vo = 0
 
     >>> c = SubCircuit()
-    >>> n1, n2 = c.addNodes('net1', 'net2')
+    >>> n1, n2 = c.add_nodes('net1', 'net2')
     >>> c['R1'] = R(n1, n2, r=Symbol('R1',real=True))
     >>> c['R2'] = R(n2, gnd, r=Symbol('R2',real=True))
-    >>> res = SymbolicTwoPortAnalysis(c, n1, gnd, n2, gnd, noise=True).run(freqs = array([Symbol('s')]), complexfreq=True)
+    >>> symnoise = SymbolicTwoPortAnalysis(c, n1, gnd, n2, gnd, noise=True)
+    >>> res = symnoise.run(freqs = array([Symbol('s')]), complexfreq=True)
     >>> simplify(res['mu'].y[0])
     -R2/(-R1 - R2)
     >>> res['gamma'].y[0]

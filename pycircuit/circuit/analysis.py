@@ -44,7 +44,7 @@ class Analysis(object):
 
         nodes = self.c.nodes
         for xvalue, node in zip(x[:len(nodes),0], nodes):
-            result[self.c.getNodeName(node)] =  xvalue
+            result[self.c.get_node_name(node)] =  xvalue
         for i, data in enumerate(zip(x[len(nodes):, 0], self.c.branches)):
             xvalue, branch = data
             result['i' + str(i)] = xvalue
@@ -102,7 +102,7 @@ class DC(Analysis):
     
     Linear circuit example:
     >>> c = SubCircuit()
-    >>> n1 = c.addNode('net1')
+    >>> n1 = c.add_node('net1')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
     >>> c['R'] = R(n1, gnd, r=1e3)
     >>> dc = DC(c)
@@ -115,7 +115,7 @@ class DC(Analysis):
     Non-linear example:
 
     >>> c = SubCircuit()
-    >>> n1 = c.addNode('net1')
+    >>> n1 = c.add_node('net1')
     >>> c['is'] = IS(gnd, n1, i=57e-3)
     >>> c['D'] = Diode(n1, gnd)
     >>> dc = DC(c)
@@ -126,14 +126,14 @@ class DC(Analysis):
     0.7
 
     >>> c = SubCircuit()
-    >>> n1 = c.addNode('net1')
-    >>> n2 = c.addNode('net2')
+    >>> n1 = c.add_node('net1')
+    >>> n2 = c.add_node('net2')
     >>> c['is'] = IS(gnd, n1, i=57e-3)
     >>> c['R'] = R(n1, n2, r=1e1)
     >>> c['D'] = Diode(n2, gnd)
     >>> dc = DC(c)
     >>> res = dc.run()
-    >>> dc.result.getSignalNames()
+    >>> dc.result.keys()
     ['gnd', 'net2', 'net1']
     >>> dc.result['net2']
     0.7
@@ -149,7 +149,7 @@ class DC(Analysis):
 
         ## Refer the voltages to the reference node by removing
         ## the rows and columns that corresponds to this node
-        irefnode = self.c.getNodeIndex(refnode)
+        irefnode = self.c.get_node_index(refnode)
 #        G,u=removeRowCol((G,u), irefnode)
 
         # Solve i(x) + u = 0
@@ -227,8 +227,8 @@ class Tran_spec(Analysis):
 
     Linear circuit example:
     >>> c = SubCircuit()
-    >>> n1 = c.addNode('net1')
-    >>> n2 = c.addNode('net2')
+    >>> n1 = c.add_node('net1')
+    >>> n2 = c.add_node('net2')
     >>> c['Is'] = IS(gnd, n1, i=10)    
     >>> c['R1'] = R(n1, gnd, r=1)
     >>> c['R2'] = R(n1, n2, r=1e3)
@@ -241,7 +241,7 @@ class Tran_spec(Analysis):
 
     Linear circuit example:
     >>> c = SubCircuit()
-    >>> n1 = c.addNode('net1')
+    >>> n1 = c.add_node('net1')
     >>> c['Is'] = IS(gnd, n1, i=0.1)
     >>> c['R'] = R(n1, gnd, r=1e2)
     >>> c['C'] = C(n1, gnd, c=1e-6)
@@ -264,7 +264,7 @@ class Tran_spec(Analysis):
     def run(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-5):
 
         X = [] # will contain a list of all x-vectors
-        irefnode=self.c.getNodeIndex(refnode)
+        irefnode=self.c.get_node_index(refnode)
         n = self.c.n
         dt = timestep
 
@@ -317,8 +317,8 @@ class Tran_imp(Analysis):
 
     Linear circuit example:
     >>> c = SubCircuit()
-    >>> n1 = c.addNode('net1')
-    >>> n2 = c.addNode('net2')
+    >>> n1 = c.add_node('net1')
+    >>> n2 = c.add_node('net2')
     >>> c['Is'] = IS(gnd, n1, i=10)    
     >>> c['R1'] = R(n1, gnd, r=1)
     >>> c['R2'] = R(n1, n2, r=1e3)
@@ -331,7 +331,7 @@ class Tran_imp(Analysis):
 
     Linear circuit example:
     >>> c = SubCircuit()
-    >>> n1 = c.addNode('net1')
+    >>> n1 = c.add_node('net1')
     >>> c['Is'] = IS(gnd, n1, i=0.1)
     >>> c['R'] = R(n1, gnd, r=1e2)
     >>> c['C'] = C(n1, gnd, c=1e-6)
@@ -350,7 +350,7 @@ class Tran_imp(Analysis):
 
         ## Refer the voltages to the reference node by removing
         ## the rows and columns that corresponds to this node
-        irefnode = self.c.getNodeIndex(refnode)
+        irefnode = self.c.get_node_index(refnode)
 
         def func(x):
             x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
@@ -379,7 +379,7 @@ class Tran_imp(Analysis):
     def run(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6):
 
         X = [] # will contain a list of all x-vectors
-        irefnode=self.c.getNodeIndex(refnode)
+        irefnode=self.c.get_node_index(refnode)
         n = self.c.n
         dt = timestep
         if x0 is None:
@@ -405,7 +405,7 @@ class AC(Analysis):
     AC analysis class
     
     >>> c = SubCircuit()
-    >>> n1 = c.addNode('net1')
+    >>> n1 = c.add_node('net1')
     >>> c['vs'] = VS(n1, gnd, vac=1.5)
     >>> c['R'] = R(n1, gnd, r=1e3)
     >>> c['C'] = C(n1, gnd, c=1e-12)
@@ -435,7 +435,7 @@ class AC(Analysis):
                 wave = Waveform(freqs, xvalue)
             else:
                 wave = xvalue
-            result[self.c.getNodeName(node)] = wave
+            result[self.c.get_node_name(node)] = wave
         for i, data in enumerate(zip(x[len(nodes):], self.c.branches)):
             xvalue, branch = data
             if isiterable(freqs):
@@ -452,13 +452,13 @@ class AC(Analysis):
         """Return the voltage v(node1, node2) from last run"""
 
         if self.result != None:
-            return self.result[self.c.getNodeName(node1)] - \
-                   self.result[self.c.getNodeName(node2)]
+            return self.result[self.c.get_node_name(node1)] - \
+                   self.result[self.c.get_node_name(node2)]
 
     def i(self, term):
         """Return terminal current i(term) of a circuit element from last run"""
         if self.result != None:
-            branch, sign = self.c.getTerminalBranch(term)
+            branch, sign = self.c.get_terminal_branch(term)
             ibranch = self.c.branches.index(branch)
             return sign * self.result['i%d'%ibranch]
         
@@ -476,7 +476,7 @@ class AC(Analysis):
 
         ## Refer the voltages to the reference node by removing
         ## the rows and columns that corresponds to this node
-        irefnode = self.c.getNodeIndex(refnode)
+        irefnode = self.c.get_node_index(refnode)
         G,C,u = removeRowCol((G,C,u), irefnode)
 
         if complexfreq:
@@ -506,8 +506,8 @@ class Noise(Analysis):
     Example, calculate input referred noise of a voltage divider:
 
     >>> c = SubCircuit()
-    >>> n1 = c.addNode('net1')
-    >>> n2 = c.addNode('net2')
+    >>> n1 = c.add_node('net1')
+    >>> n2 = c.add_node('net2')
     >>> c['vs'] = VS(n1, gnd, vac=1.0)
     >>> c['R1'] = R(n1, n2, r=9e3)
     >>> c['R2'] = R(n2, gnd, r=1e3)
@@ -529,7 +529,8 @@ class Noise(Analysis):
         circuit : Circuit instance
             The circuit to be analyzed
         inputsrc : VS or IS instance
-            A voltage or current source in the circuit where the input noise should be referred to
+            A voltage or current source in the circuit where the input noise
+            should be referred to
         outputnodes : tuple
             A tuple with the output nodes (outputpos outputneg)
         outputsrc: VS instance
@@ -541,7 +542,8 @@ class Noise(Analysis):
         if not (outputnodes != None or outputsrc != None):
             raise ValueError('Output is not specified')
         elif outputnodes != None and outputsrc != None:
-            raise ValueError('Cannot measure both output current and voltage noise')
+            raise ValueError('Cannot measure both output current and voltage '
+                             'noise')
         
         self.inputsrc = inputsrc
         self.outputnodes = outputnodes
@@ -566,13 +568,13 @@ class Noise(Analysis):
         # Calculate output voltage noise
         if self.outputnodes != None:
             u = zeros(n, dtype=int)
-            ioutp, ioutn = (self.c.getNodeIndex(node) for node in self.outputnodes)
+            ioutp, ioutn = (self.c.get_node_index(node) for node in self.outputnodes)
             u[ioutp] = -1
             u[ioutn] = 1
         # Calculate output current noise
         else:
             u = zeros(n, dtype=int)
-            ibranch = self.c.getBranchIndex(self.outputsrc.branch)
+            ibranch = self.c.get_branch_index(self.outputsrc.branch)
             u[ibranch] = -1
 
         ## Refer the voltages to the gnd node by removing
@@ -604,11 +606,12 @@ class Noise(Analysis):
         # to find the transfer from the branch voltage of the input source to the output
         gain = None
         if isinstance(self.inputsrc, VS):
-            gain = self.c.extractI(zm, self.inputsrc.branch, refnode=refnode, refnode_removed=True)
+            gain = self.c.extract_i(zm, self.inputsrc.branch, refnode=refnode, refnode_removed=True)
             result['gain'] = gain
             result['Svninp'] = xn2out / gain**2
         elif isinstance(self.inputsrc, IS):
-            gain = self.c.extractV(zm, self.inputsrc.getNode('plus'), refnode=refnode, refnode_removed=True)
+            gain = self.c.extract_v(zm, self.inputsrc.get_node('plus'), 
+                                    refnode=refnode, refnode_removed=True)
             result['gain'] = gain
             result['Sininp'] = xn2out / gain**2
 
@@ -623,7 +626,7 @@ if __name__ == "__main__":
     doctest.testmod()
 
 #    c = SubCircuit()
-#    n1 = c.addNode('net1')
+#    n1 = c.add_node('net1')
 #    c['is'] = IS(gnd, n1, i=100e-6)
 #    c['D'] = Diode(n1, gnd)
 #    c['D'].G(array([[0,0]]).T)

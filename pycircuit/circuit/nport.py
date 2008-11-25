@@ -109,8 +109,8 @@ class TwoPortAnalysis(Analysis):
     D = i(inp, inn)/i(outp, outn) | vo = 0
 
     >>> c = SubCircuit()
-    >>> n1 = c.addNode('net1')
-    >>> n2 = c.addNode('net2')
+    >>> n1 = c.add_node('net1')
+    >>> n2 = c.add_node('net2')
     >>> c['R1'] = R(n1, n2, r=9e3)
     >>> c['R2'] = R(n2, gnd, r=1e3)
     >>> res = TwoPortAnalysis(c, n1, gnd, n2, gnd).run(freqs = npy.array([0]))

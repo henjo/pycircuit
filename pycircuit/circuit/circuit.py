@@ -1,6 +1,6 @@
 # -*- coding: latin-1 -*-
 
-from numpy import array, delete, linalg, size, zeros, concatenate, pi, dot, exp
+from numpy import array, zeros, concatenate, dot, exp
 from pycircuit.utilities.param import Parameter, ParameterDict
 from constants import *
 from copy import copy
@@ -53,24 +53,46 @@ defaultepar = ParameterDict(
     Parameter("T", "Temperature", unit="K", default = 300))
 
 class Circuit(object):
-    """The circuit class describes a full circuit, subcircuit or a single component. 
+    """Basic circuit class 
 
-    It contains a list of nodes,terminals, model and instance parameters.
-    The terminals connect nodes inside the circuit to the nodes outside the circuit. When the circuit is
-    instanciated, the outside nodes are passed to the object via the terminals.
-       
-    Attributes:
-    nodes      -- A list that contains Node objects. If the circuit does not contain any internal nodes
-                  the length is the same as the number of terminals.
-    branches   -- A list of Branch objects. The solver will solve for the currents through the branches.
-    terminals  -- A list that contains terminal names
-    instparams -- A list of valid instance parameters (Parameter objects)
-    mpar       -- A class variable with a ParameterDict containing model specific parameters
-    ipar       -- A ParameterDict containing instance specific parameters
-    nodenames  -- A dictionary that maps a local node name to the node object in nodes. If the node is
-                  connnected to superior hierarchy levels through a terminal the terminal name must
-                  be the same as the local node name
-    linear     -- A boolean value that is true if i(x) and q(x) are linear functions
+    The circuit class models electric circuits but could be used for
+    any conservative system. A circuit object contains a list of nodes and
+    branches which are associated with node voltages and branch currents in the
+    modelled system. Note that the values of these quantities are
+    stored in separate analysis classes, never inside a circuit object.
+
+    The nodes are connected to the outside through terminals. When the circuit
+    is instanciated, the outside nodes are passed to the object via the 
+    terminals.
+
+    Attributes
+    ----------
+    *nodes*
+      A list that contains Node objects. If the circuit does not 
+      contain any internal nodes
+      the length is the same as the number of terminals.
+
+    *branches*
+      list of Branch objects. The solver will solve for the 
+      currents through the branches.
+
+    *terminals*
+      list that contains terminal names
+
+    *instparams*
+      A list of valid instance parameters (Parameter objects)
+    *mpar*
+      A class variable with a ParameterDict containing model specific parameters
+    *ipar*
+      A ParameterDict containing instance specific parameters
+    *nodenames*
+      A dictionary that maps a local node name to the node object in
+      nodes. If the node is connnected to superior hierarchy levels
+      through a terminal the terminal name must be the same as the 
+      local node name
+    *linear* 
+      A boolean value that is true if i(x) and q(x) are linear 
+      functions
 
     """
     terminals = []
@@ -84,7 +106,7 @@ class Circuit(object):
         self.branches = []
         self.ipar = ParameterDict(*self.instparams, **kvargs)
 
-        self.connectTerminals(**dict(zip(self.terminals, args)))
+        self.connect_terminals(**dict(zip(self.terminals, args)))
         
     def __copy__(self):
         newc = self.__class__()
@@ -94,11 +116,11 @@ class Circuit(object):
         newc.ipar = copy(self.ipar)
         return newc
 
-    def addNodes(self, *names):
+    def add_nodes(self, *names):
         """Create internal nodes in the circuit and return the new nodes
 
         >>> c = Circuit()
-        >>> n1, n2 = c.addNodes("n1", "n2")
+        >>> n1, n2 = c.add_nodes("n1", "n2")
         >>> c.nodes
         [Node('n1'), Node('n2')]
         >>> 'n1' in c.nodenames and 'n2' in c.nodenames
@@ -115,29 +137,33 @@ class Circuit(object):
 
         return tuple(newnodes)
 
-    def addNode(self, name):
+    def add_node(self, name):
         """Create and internal node in the circuit and return the new node"""
-        return self.addNodes(name)[0]
+        return self.add_nodes(name)[0]
 
-    def getTerminalBranch(self, terminalname):
+    def get_terminal_branch(self, terminalname):
         """Find the branch that is connected to the given terminal
 
-        If no branch is found or if there are more branches than one, None is returned
+        If no branch is found or if there are more branches than one, None is 
+        returned
 
         Returns
         -------
-        Tuple of Branch object and an integer indicating if terminal is connected to the positive or negative side
-        of the branch. 1 == positive side, -1 == negative side
+        Tuple of Branch object and an integer indicating if terminal is 
+        connected to the positive or negative side of the branch. 
+        1 == positive side, -1 == negative side
         
         >>> net1 = Node('net1')
         >>> net2 = Node('net2')
         >>> VS = VS(net1, net2)
-        >>> VS.getTerminalBranch("minus")
+        >>> VS.get_terminal_branch("minus")
         (Branch(Node('net1'),Node('net2')), -1)
         
         """
-        plusbranches = [] ## Branches with its positive side connected to the terminal
-        minusbranches = [] ## Branches with its negative side connected to the terminal
+        plusbranches = [] ## Branches with positive side connected to the
+                          ## terminal
+        minusbranches = [] ## Branches with negative side connected to the
+                           ## terminal
         for branch in self.branches:
             if branch.plus == self.nodenames[terminalname]:
                 plusbranches.append(branch)
@@ -151,31 +177,31 @@ class Circuit(object):
         elif len(minusbranches) == 1:
             return minusbranches[0], -1            
 
-    def getNodeIndex(self, node):
+    def get_node_index(self, node):
         """Get row in the x vector of a node instance"""
         return self.nodes.index(node)
 
-    def getBranchIndex(self, branch):
+    def get_branch_index(self, branch):
         """Get row in the x vector of a branch instance"""        
         return len(self.nodes) + self.branches.index(branch)
 
-    def getNode(self, name):
+    def get_node(self, name):
         """Find a node by name.
         
         >>> c = Circuit()
-        >>> n1 = c.addNode("n1")
-        >>> c.getNode('n1')
+        >>> n1 = c.add_node("n1")
+        >>> c.get_node('n1')
         Node('n1')
         
         """
         return self.nodenames[name]
 
-    def getNodeName(self, node):
+    def get_node_name(self, node):
         """Find the name of a node
         
         >>> c = Circuit()
-        >>> n1 = c.addNode("n1")
-        >>> c.getNodeName(n1)
+        >>> n1 = c.add_node("n1")
+        >>> c.get_node_name(n1)
         'n1'
 
         """
@@ -183,22 +209,22 @@ class Circuit(object):
             if v == node:
                 return k
         
-    def connectTerminals(self, **kvargs):
+    def connect_terminals(self, **kvargs):
         """Connect nodes to terminals by using keyword arguments
 
         """
         for terminal, node in kvargs.items():
             if type(terminal) is not types.StringType or \
                not isinstance(node, Node):
-                raise Exception("%s should be string and %s should be a Node object"%\
-                                (str(terminal), str(node)))
+                raise Exception("%s should be string and %s should be a Node"
+                                "object"%(str(terminal), str(node)))
             if terminal not in self.terminals:
                 raise ValueError('terminal '+str(terminal)+' is not defined')
             if node != None:
                 if node not in self.nodes:
                     self.nodes.append(node)
             else:
-                node = self.addNode(terminal)
+                node = self.add_node(terminal)
                 self.nodes.append(node)
             self.nodenames[terminal] = node
                 
@@ -208,11 +234,11 @@ class Circuit(object):
         return len(self.nodes) + len(self.branches)
 
     def G(self, x, epar=defaultepar):
-        """Calculate the G ((trans)conductance) matrix of the circuit given the x-vector"""
+        """Calculate the G (trans)conductance matrix given the x-vector"""
         return zeros((self.n, self.n), dtype=object)
 
     def C(self, x, epar=defaultepar):
-        """Calculate the C (transcapacitance) matrix of the circuit given the x-vector"""
+        """Calculate the C (transcapacitance) matrix given the x-vector"""
         return zeros(self.n, dtype=object)
 
     def u(self, t=0.0, epar=defaultepar, analysis=None):
@@ -222,8 +248,10 @@ class Circuit(object):
         ---------
 
         epar -- ParameterDict with environment parameters such as temperature
-        analysis -- This argument gives the possibility to have analysis dependent sources.
-                    for normal time dependent and dc sources this argument should be None
+        analysis -- This argument gives the possibility to have analysis 
+                    dependent sources.
+                    for normal time dependent and dc sources this argument 
+                    should be None
         
         """
         return zeros(self.n, dtype=object)
@@ -254,14 +282,14 @@ class Circuit(object):
         """
         return zeros((self.n, self.n), dtype=object)
 
-    def nameStateVector(self, x, analysis=''):
-        """Map state variables with names and return the state variables in a dictionary keyed by the names
+    def name_state_vector(self, x, analysis=''):
+        """Return a dictionary of the x-vector keyed by node and branch names
 
         >>> c = SubCircuit()
-        >>> n1 = c.addNode('net1')
+        >>> n1 = c.add_node('net1')
         >>> c['is'] = IS(gnd, n1, i=1e-3)
         >>> c['R'] = R(n1, gnd, r=1e3)
-        >>> c.nameStateVector(array([[1.0]]))
+        >>> c.name_state_vector(array([[1.0]]))
         {'net1': 1.0}
 
         >>> 
@@ -269,51 +297,59 @@ class Circuit(object):
         """
         result = {}
         for xvalue, node in zip(x[:len(self.nodes)][0], self.nodes):
-            result[self.getNodeName(node)] = xvalue
+            result[self.get_node_name(node)] = xvalue
 
-        for i, xvalue, branch in enumerate(zip(x[len(self.nodes):], self.branches)):
+        nnodes = len(self.nodes)
+        for i, xvalue, branch in enumerate(zip(x[nnodes:], self.branches)):
             result['i' + analysis + str(i) + ')'] = xvalue            
 
         return result
 
-    def extractV(self, x, nodep, noden = None, refnode = gnd, refnode_removed = False):
+    def extract_v(self, x, nodep, noden=None, refnode=gnd, 
+                  refnode_removed=False):
         """Extract voltage between nodep and noden from the given x-vector.
 
-        If noden is not given the voltage is taken between nodep and refnode. x-vectors with
-        the reference node removed can be handled by setting the refnode_removed to True.
+        If noden is not given the voltage is taken between nodep and refnode. 
+        x-vectors with the reference node removed can be handled by setting 
+        the refnode_removed to True.
 
-        Arguments
-        ---------
+        *x*
+          x-vector
 
-        x -- x-vector
-        nodep -- Node object or node reference in text format of positive node
-        noden -- Node object or node reference in text format of negative node
-        refnode -- reference node
-        refnode_removed -- If set the refernce node is expected to be removed from the x-vector
+        *nodep*
+          Node object or node reference in text format of positive node
 
+        *noden*
+          Node object or node reference in text format of negative node
+
+        *refnode*
+          reference node
+
+        *refnode_removed*
+          If set the refernce node is expected to be removed from the x-vector
         
         >>> c = SubCircuit()
-        >>> n1, n2 = c.addNodes('n1','n2')
+        >>> n1, n2 = c.add_nodes('n1','n2')
         >>> c['R1'] = R(n1, n2, r=1e3)
         >>> c['R2'] = R(n2, gnd, r=1e3)
-        >>> c.extractV(array([1.0, 0.5, 0.0]), 'n1', 'n2')
+        >>> c.extract_v(array([1.0, 0.5, 0.0]), 'n1', 'n2')
         0.5
-        >>> c.extractV(array([1.0, 0.5, 0.0]), c.nodes[0])
+        >>> c.extract_v(array([1.0, 0.5, 0.0]), c.nodes[0])
         1.0
-        >>> c.extractV(array([1.0, 0.5]), c.nodes[0], refnode_removed = True)
+        >>> c.extract_v(array([1.0, 0.5]), c.nodes[0], refnode_removed = True)
         1.0
         
         """
         v = []
         for node in nodep, noden:
             if type(node) is types.StringType:
-                node = self.getNode(node)
+                node = self.get_node(node)
             elif node == None:
                 node = refnode
 
-            nodeindex = self.getNodeIndex(node)
+            nodeindex = self.get_node_index(node)
 
-            refnodeindex = self.getNodeIndex(refnode)
+            refnodeindex = self.get_node_index(refnode)
 
             if refnode_removed:
                 if nodeindex > refnodeindex:
@@ -328,33 +364,38 @@ class Circuit(object):
 
         
 
-    def extractI(self, x, branch_or_term, refnode = gnd, refnode_removed = False):
+    def extract_i(self, x, branch_or_term, refnode = gnd,
+                  refnode_removed = False):
         """Extract branch current from the given x-vector.
 
-        Arguments
-        ---------
+        *x* 
+           x-vector
 
-        x -- x-vector
-        branch_or_term -- Branch object or terminal name
-        refnode -- reference node
-        refnode_removed -- If set the refernce node is expected to be removed from the x-vector
+        *branch_or_term*
+           Branch object or terminal name
+
+        *refnode*
+           reference node
+
+        *refnode_removed*
+           If set the refernce node is expected to be removed from the x-vector
         
         >>> c = SubCircuit()
-        >>> net1 = c.addNode('net1')
+        >>> net1 = c.add_node('net1')
         >>> c['vs'] = VS(net1, gnd)
-        >>> c.extractI(array([1.0, 0, -1e-3]), 'vs.minus')
+        >>> c.extract_i(array([1.0, 0, -1e-3]), 'vs.minus')
         0.001
-        >>> c.extractI(array([1.0, -1e-3]), 'vs.minus', refnode_removed = True)
+        >>> c.extract_i(array([1.0, -1e-3]), 'vs.minus', refnode_removed = True)
         0.001
         
         """
         if type(branch_or_term) is types.StringType:
-            branch, sign = self.getTerminalBranch(branch_or_term)
+            branch, sign = self.get_terminal_branch(branch_or_term)
         else:
             branch = branch_or_term
             sign = 1
 
-        branchindex = self.getBranchIndex(branch)
+        branchindex = self.get_branch_index(branch)
 
         if refnode_removed:
             branchindex -= 1
@@ -364,19 +405,26 @@ class Circuit(object):
     def __repr__(self):
         return self.__class__.__name__ + \
                '(' + \
-               ','.join([str(self.nodenames[term]) for term in self.terminals] + \
-                        ['%s=%s'%(par.name, self.ipar.get(par)) for par in self.ipar.parameters]) + \
-                        ')'
+               ','.join([str(self.nodenames[term]) 
+                         for term in self.terminals] +
+                        ['%s=%s'%(par.name, self.ipar.get(par)) 
+                         for par in self.ipar.parameters]) + ')'
         
 class SubCircuit(Circuit):
     """
-    SubCircuit is container for circuits.
-    Attributes:
-      elements          dictionary of Circuit objects keyed by its instance name
-      elementnodemap    list of translation lists that translate between node indices of the elements to the
-                        node index in the SubCircuit object for each element
-      elementbranchmap  list of translations between branch indices of the elements to the
-                        branch index in the SubCircuit object.
+    SubCircuit is container for circuit instances
+
+    Attributes
+    ----------
+    *elements* 
+      dictionary of Circuit objects keyed by its instance name
+    
+    *elementnodemap*
+      list of translation lists that translate between node indices of the
+      elements to the node index in the SubCircuit object for each element
+      elementbranchmap list of translations between branch indices of the 
+      elements to the branch index in the SubCircuit object.
+
     """
     def __init__(self, *args, **kvargs):
         Circuit.__init__(self, *args, **kvargs)
@@ -407,22 +455,22 @@ class SubCircuit(Circuit):
         """Get instance"""
         return self.elements[instancename]
 
-    def getNode(self, name):
+    def get_node(self, name):
         """Find a node by name.
 
         The name can be a hierachical name and the notation is 'I1.I2.net1' for
         a net net1 in instance I2 of instance I1
         
         >>> c = Circuit()
-        >>> n1 = c.addNode("n1")
-        >>> c.getNode('n1')
+        >>> n1 = c.add_node("n1")
+        >>> c.get_node('n1')
         Node('n1')
 
         >>> c1 = SubCircuit()
         >>> c2 = SubCircuit()
         >>> c1['I1'] = c2
-        >>> n1 = c2.addNode("net1")
-        >>> c1.getNode('I1.net1')
+        >>> n1 = c2.add_node("net1")
+        >>> c1.get_node('I1.net1')
         Node('net1')
         
         """
@@ -431,43 +479,47 @@ class SubCircuit(Circuit):
         if len(hierlevels)==1:
             return self.nodenames[hierlevels[0]]
         else:
-            return self.elements[hierlevels[0]].getNode('.'.join(hierlevels[1:]))
+            topelement = self.elements[hierlevels[0]]
+            return topelement.get_node('.'.join(hierlevels[1:]))
 
-    def getTerminalBranch(self, terminalname):
-        """Find the branch that is connected to the given terminal of the given element.
+    def get_terminal_branch(self, terminalname):
+        """Find the branch that is connected to the given terminal
 
-        If no branch is found if there are more branches than one, None is returned
+        If no branch is found or if there are more branches than one, None is 
+        returned
 
         The name can be a hierachical name and the notation is 'I1.I2.plus' for
         the terminal 'plus' of instance I2 of instance I1
 
         Returns
         -------
-        Tuple of Branch object and an integer indicating if terminal is connected to the positive or negative side
-        of the branch. 1 == positive side, -1 == negative side
+        Tuple of Branch object and an integer indicating if terminal is 
+        connected to the positive or negative side of the branch. 
+        1 == positive side, -1 == negative side
 
         >>> c = SubCircuit()
-        >>> net1, net2 = c.addNodes('net1', 'net2')
+        >>> net1, net2 = c.add_nodes('net1', 'net2')
         >>> c['vs'] = VS(net1, net2)
-        >>> c.getTerminalBranch("vs.minus")
+        >>> c.get_terminal_branch("vs.minus")
         (Branch(Node('net1'),Node('net2')), -1)
         
         """
         hierlevels = [part for part in terminalname.split('.')]
 
         if len(hierlevels)==1:
-            Circuit.getTerminalBranch(self, hierlevels[0])
+            Circuit.get_terminal_branch(self, hierlevels[0])
         else:
-            return self.elements[hierlevels[0]].getTerminalBranch('.'.join(hierlevels[1:]))
+            topelement = self.elements[hierlevels[0]]
+            return topelement.get_terminal_branch('.'.join(hierlevels[1:]))
 
-    def getNodeName(self, node):
+    def get_node_name(self, node):
         """Find the name of a node
         
         >>> c1 = SubCircuit()
         >>> c2 = SubCircuit()
         >>> c1['I1'] = c2
-        >>> n1 = c2.addNode("net1")
-        >>> c1.getNodeName(n1)
+        >>> n1 = c2.add_node("net1")
+        >>> c1.get_node_name(n1)
         'net1'
 
         """
@@ -477,13 +529,13 @@ class SubCircuit(Circuit):
             return node.name
         
         ## First search among the local nodes
-        name = Circuit.getNodeName(self, node)
+        name = Circuit.get_node_name(self, node)
         if name != None:
             return name
         
         ## Then search in the circuit elements
         for instname, element in self.elements.items():
-            name =  element.getNodeName(node)
+            name =  element.get_node_name(node)
             if name != None:
                 return instname + '.' + name
         
@@ -492,8 +544,10 @@ class SubCircuit(Circuit):
 
         self.elementnodemap = {}
         for instance, element in self.elements.items():
-            self.elementnodemap[instance] = [self.nodes.index(node) for node in element.nodes] + \
-                                            [self.branches.index(branch)+len(self.nodes) for branch in element.branches]
+            self.elementnodemap[instance] = \
+                [self.nodes.index(node) for node in element.nodes] + \
+                [self.branches.index(branch) + len(self.nodes) 
+                 for branch in element.branches]
 
     def G(self, x, epar=defaultepar):
         return self._add_element_submatrices('G', x, (epar,))
@@ -510,7 +564,8 @@ class SubCircuit(Circuit):
     def CY(self, x, w, epar=defaultepar):
         """Calculate composite noise source correlation matrix
 
-        The noise sources in one element are assumed to be uncorrelated with the noise sources in the other elements.
+        The noise sources in one element are assumed to be uncorrelated 
+        with the noise sources in the other elements.
 
         """
         return self._add_element_submatrices('CY', x, (w, epar,))
@@ -525,11 +580,14 @@ class SubCircuit(Circuit):
             if x != None:
                 subx = x[nodemap]
                 try:
-                    A[[[i] for i in nodemap], nodemap] += getattr(element, methodname)(subx, *args)
+                    A[[[i] for i in nodemap], nodemap] += \
+                        getattr(element, methodname)(subx, *args)
                 except Exception, e:
-                    raise e.__class__(str(e) + ' at element '+str(element)+', args='+str(args))
+                    raise e.__class__(str(e) + ' at element ' + str(element) 
+                                      + ', args='+str(args))
             else:
-                A[[[i] for i in nodemap], nodemap] += getattr(element, methodname)(*args)
+                A[[[i] for i in nodemap], nodemap] += \
+                    getattr(element, methodname)(*args)
         return A
 
     def _add_element_subvectors(self, methodname, x, args):
@@ -558,7 +616,7 @@ class R(Circuit):
     """Resistor element
 
     >>> c = SubCircuit()
-    >>> n1=c.addNode('1')
+    >>> n1=c.add_node('1')
     >>> c['R'] = R(n1, gnd, r=1e3)
     >>> c['R']
     R(Node('1'),Node('gnd'),r=1000.0)
@@ -566,7 +624,7 @@ class R(Circuit):
     array([[0.001, -0.001],
            [-0.001, 0.001]], dtype=object)
     >>> c = SubCircuit()
-    >>> n2=c.addNode('2')
+    >>> n2=c.add_node('2')
     >>> c['R'] = R(n1, n2, r=1e3)
     >>> c.G(zeros(2))
     array([[0.001, -0.001],
@@ -574,7 +632,8 @@ class R(Circuit):
 
     """
     terminals = ['plus', 'minus']
-    instparams = [Parameter(name='r', desc='Resistance', unit='ohm', default=1e3)]
+    instparams = [Parameter(name='r', desc='Resistance', unit='ohm', 
+                            default=1e3)]
 
     def G(self, x, epar=defaultepar):
         g = 1/self.ipar.r
@@ -593,7 +652,7 @@ class G(Circuit):
     """Conductor element
 
     >>> c = SubCircuit()
-    >>> n1=c.addNode('1')
+    >>> n1=c.add_node('1')
     >>> c['G'] = G(n1, gnd, g=1e-3)
     >>> c['G']
     G(Node('1'),Node('gnd'),g=0.001,nonoise=False)
@@ -603,8 +662,11 @@ class G(Circuit):
 
     """
     terminals = ['plus', 'minus']
-    instparams = [Parameter(name='g', desc='Conductance', unit='S', default=1e-3),
-                  Parameter(name='nonoise', desc='If true the conductance is noiseless', unit='', default=False),
+    instparams = [Parameter(name='g', desc='Conductance', unit='S', 
+                            default=1e-3),
+                  Parameter(name='nonoise', 
+                            desc='If true the conductance is noiseless', 
+                            unit='', default=False),
                   ]
 
     def G(self, x, epar=defaultepar):
@@ -628,7 +690,7 @@ class C(Circuit):
     """Capacitor
 
     >>> c = SubCircuit()
-    >>> n1=c.addNode('1')
+    >>> n1=c.add_node('1')
     >>> c['C'] = C(n1, gnd, c=1e-12)
     >>> c.G(zeros(2))
     array([[0, 0],
@@ -640,7 +702,8 @@ class C(Circuit):
     """
 
     terminals = ['plus', 'minus']    
-    instparams = [Parameter(name='c', desc='Capacitance', unit='F', default=1e-12)]
+    instparams = [Parameter(name='c', desc='Capacitance', 
+                            unit='F', default=1e-12)]
 
     def C(self, x, epar=defaultepar):
         return array([[self.ipar.c, -self.ipar.c],
@@ -650,7 +713,7 @@ class L(Circuit):
     """Inductor
 
     >>> c = SubCircuit()
-    >>> n1=c.addNode('1')
+    >>> n1=c.add_node('1')
     >>> c['L'] = L(n1, gnd, L=1e-9)
     >>> c.G(zeros(3))
     array([[0.0, 0.0, 1.0],
@@ -662,7 +725,8 @@ class L(Circuit):
            [0, 0, 1e-09]], dtype=object)
     """
     terminals = ['plus', 'minus']    
-    instparams = [Parameter(name='L', desc='Inductance', unit='H', default=1e-9)]
+    instparams = [Parameter(name='L', desc='Inductance', 
+                            unit='H', default=1e-9)]
 
     _G = array([[0.0 , 0.0, 1.0],
                 [0.0 , 0.0, -1.0],
@@ -683,7 +747,7 @@ class VS(Circuit):
 
     >>> from analysis import DC
     >>> c = SubCircuit()
-    >>> n1=c.addNode('1')
+    >>> n1=c.add_node('1')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
     >>> c['R'] = R(n1, gnd, r=1e3)
     >>> DC(c).solve(refnode=gnd)
@@ -693,9 +757,13 @@ class VS(Circuit):
     
     """
     terminals = ['plus', 'minus']
-    instparams = [Parameter(name='v', desc='Source voltage', unit='V', default=1),
-                  Parameter(name='vac', desc='AC analysis amplitude', unit='V', default=1),
-                  Parameter(name='noisePSD', desc='Voltage noise power spectral density', unit='V^2/Hz', default=0)]
+    instparams = [Parameter(name='v', desc='Source voltage', 
+                            unit='V', default=1),
+                  Parameter(name='vac', desc='AC analysis amplitude', 
+                            unit='V', default=1),
+                  Parameter(name='noisePSD', 
+                            desc='Voltage noise power spectral density', 
+                            unit='V^2/Hz', default=0)]
 
     def __init__(self, plus, minus, **kvargs):
         Circuit.__init__(self, plus, minus, **kvargs)
@@ -729,7 +797,7 @@ class IS(Circuit):
 
     >>> from analysis import DC, gnd as gnd2
     >>> c = SubCircuit()
-    >>> n1=c.addNode('1')
+    >>> n1=c.add_node('1')
     >>> c['is'] = IS(gnd, n1, i=1e-3)
     >>> c['R'] = R(n1, gnd, r=1e3)
     >>> DC(c).solve(refnode=gnd)
@@ -737,9 +805,13 @@ class IS(Circuit):
            [ 0.]])
     
     """
-    instparams = [Parameter(name='i', desc='DC Current', unit='A', default=1e-3),
-                  Parameter(name='iac', desc='Small signal current amplitude', unit='A', default=0),
-                  Parameter(name='noisePSD', desc='Current noise power spectral density', unit='A^2/Hz', default=0.0)]
+    instparams = [Parameter(name='i', desc='DC Current', 
+                            unit='A', default=1e-3),
+                  Parameter(name='iac', desc='Small signal current amplitude', 
+                            unit='A', default=0),
+                  Parameter(name='noisePSD', 
+                            desc='Current noise power spectral density', 
+                            unit='A^2/Hz', default=0.0)]
     terminals = ['plus', 'minus']
 
     def u(self, t=0.0, epar=defaultepar, analysis=None):
@@ -759,7 +831,7 @@ class VCVS(Circuit):
 
     >>> from analysis import DC
     >>> c = SubCircuit()
-    >>> n1, n2 =c.addNodes('1', '2')
+    >>> n1, n2 =c.add_nodes('1', '2')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
     >>> c['vcvs'] = VCVS(n1, gnd, n2, gnd, g=2)
     >>> c['vcvs'].nodes
@@ -772,17 +844,20 @@ class VCVS(Circuit):
            [0, 0, 0, 0],
            [-1, -1, 2, 0]], dtype=object)
     """
-    instparams = [Parameter(name='g', desc='Voltage gain', unit='V/V', default=1)]
+    instparams = [Parameter(name='g', desc='Voltage gain', 
+                            unit='V/V', default=1)]
     terminals = ('inp', 'inn', 'outp', 'outn')
     def __init__(self, *args, **kvargs):
         Circuit.__init__(self, *args, **kvargs)
-        self.branches.append(Branch(self.nodenames['outp'], self.nodenames['outn']))
+        self.branches.append(Branch(self.nodenames['outp'], 
+                                    self.nodenames['outn']))
         
     def G(self, x, epar=defaultepar):
         G = super(VCVS, self).G(x)
         branchindex = -1
-        inpindex,innindex,outpindex,outnindex = \
-            (self.nodes.index(self.nodenames[name]) for name in ('inp', 'inn', 'outp', 'outn'))
+        inpindex, innindex, outpindex, outnindex = \
+           (self.nodes.index(self.nodenames[name]) 
+            for name in ('inp', 'inn', 'outp', 'outn'))
         G[outpindex, branchindex] += 1
         G[outnindex, branchindex] += -1
         G[branchindex, outpindex] += -1
@@ -796,7 +871,7 @@ class VCCS(Circuit):
 
     >>> from analysis import DC
     >>> c = SubCircuit()
-    >>> n1,n2 = c.addNodes('1', '2')
+    >>> n1,n2 = c.add_nodes('1', '2')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
     >>> c['vccs'] = VCCS(n1, gnd, n2, gnd, gm=1e-3)
     >>> c['rl'] = R(n2, gnd, r=1e3)
@@ -808,13 +883,15 @@ class VCCS(Circuit):
 
     """
     terminals = ['inp', 'inn', 'outp', 'outn']
-    instparams = [Parameter(name='gm', desc='Transconductance', unit='A/V', default=1e-3)]
+    instparams = [Parameter(name='gm', desc='Transconductance', 
+                            unit='A/V', default=1e-3)]
     
     def G(self, x, epar=defaultepar):
         G = super(VCCS, self).G(x)
         gm=self.ipar.gm
-        inpindex,innindex,outpindex,outnindex = \
-            (self.nodes.index(self.nodenames[name]) for name in ('inp', 'inn', 'outp', 'outn'))
+        inpindex, innindex, outpindex, outnindex = \
+            (self.nodes.index(self.nodenames[name]) 
+             for name in ('inp', 'inn', 'outp', 'outn'))
         G[outpindex, inpindex] += gm
         G[outpindex, innindex] += -gm
         G[outnindex, inpindex] += -gm
@@ -826,28 +903,36 @@ class Nullor(Circuit):
 
     From Wikipedia, the free encyclopedia
 
-     A nullor is a theoretical two-port network comprised of a nullator at its input and a norator at its output.[1]
-     Nullors represent an ideal amplifier, having infinite current, voltage, transconductance and transimpedance gain.[2] Its
-     transmission parameters are all zero.
+     A nullor is a theoretical two-port network comprised of a nullator at 
+     its input and a norator at its output.[1]
+     Nullors represent an ideal amplifier, having infinite current, 
+     voltage, transconductance and transimpedance gain.[2] 
+     Its transmission parameters are all zero.
 
-      
-     1. The name "nullor" was introduced by H.J. Carlin, Singular network elements, IEEE Trans. Circuit Theory, March 1965, vol. CT-11, pp. 67-72.
+     1. The name "nullor" was introduced by H.J. Carlin, 
+      Singular network elements, 
+      IEEE Trans. Circuit Theory, March 1965, vol. CT-11, pp. 67-72.
  
-     2. Verhoeven C J M van Staveren A Monna G L E Kouwenhoven M H L & Yildiz E (2003). Structured electronic design: negative feedback amplifiers.
-          Boston/Dordrecht/London: Kluwer Academic, §2.2.2 pp. 32-34. ISBN 1402075901.
+     2. Verhoeven C J M van Staveren A Monna G L E Kouwenhoven, 
+       M H L & Yildiz E (2003). 
+       Structured electronic design: negative feedback amplifiers.
+       Boston/Dordrecht/London: Kluwer Academic, §2.2.2 pp. 32-34. 
+       ISBN 1402075901.
 
     """
     terminals = ('inp', 'inn', 'outp', 'outn')
 
     def __init__(self, *args, **kvargs):
         Circuit.__init__(self, *args, **kvargs)
-        self.branches.append(Branch(self.nodenames['outp'], self.nodenames['outn']))
+        self.branches.append(Branch(self.nodenames['outp'], 
+                                    self.nodenames['outn']))
 
     def G(self, x, epar=defaultepar):
         G = super(Nullor, self).G(x)
         branchindex = -1
-        inpindex,innindex,outpindex,outnindex = \
-            (self.nodes.index(self.nodenames[name]) for name in ('inp', 'inn', 'outp', 'outn'))
+        inpindex, innindex, outpindex, outnindex = \
+            (self.nodes.index(self.nodenames[name]) 
+             for name in ('inp', 'inn', 'outp', 'outn'))
 
         G[outpindex, branchindex] += 1
         G[outnindex, branchindex] += -1
@@ -861,7 +946,7 @@ class Transformer(Circuit):
 
     >>> from analysis import DC
     >>> c = SubCircuit()
-    >>> n1, n2 = c.addNodes('1', '2')
+    >>> n1, n2 = c.add_nodes('1', '2')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
     >>> c['vcvs'] = Transformer(n1, gnd, n2, gnd, n=2)
     >>> c['vcvs'].nodes
@@ -878,13 +963,15 @@ class Transformer(Circuit):
     terminals = ('inp', 'inn', 'outp', 'outn')
     def __init__(self, *args, **kvargs):
         Circuit.__init__(self, *args, **kvargs)
-        self.branches.append(Branch(self.nodenames['outp'], self.nodenames['outn']))
+        self.branches.append(Branch(self.nodenames['outp'], 
+                                    self.nodenames['outn']))
 
     def G(self, x, epar=defaultepar):
         G = super(Transformer, self).G(x)
         branchindex = -1
-        inpindex,innindex,outpindex,outnindex = \
-            (self.nodes.index(self.nodenames[name]) for name in ('inp', 'inn', 'outp', 'outn'))
+        inpindex, innindex, outpindex, outnindex = \
+            (self.nodes.index(self.nodenames[name]) 
+             for name in ('inp', 'inn', 'outp', 'outn'))
         G[inpindex, branchindex] += self.ipar.n
         G[innindex, branchindex] += -self.ipar.n
         G[outpindex, branchindex] += 1
@@ -897,7 +984,9 @@ class Transformer(Circuit):
 
 class Diode(Circuit):
     terminals = ['plus', 'minus']
-    mpar = Circuit.mpar.copy( Parameter(name='IS', desc='Saturation current', unit='A', default=1e-13) )
+    mpar = Circuit.mpar.copy( 
+        Parameter(name='IS', desc='Saturation current', 
+                  unit='A', default=1e-13))
     linear = False
     def G(self, x, epar=defaultepar):
         VD = x[0]-x[1]

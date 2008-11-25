@@ -5,8 +5,8 @@ from pycircuit import *
 class SimpleTests(unittest.TestCase):
     def testGMatrix(self):
         cir=SubCircuit()
-        net1 = cir.addNode("net1")
-        net2 = cir.addNode("net2")
+        net1 = cir.add_node("net1")
+        net2 = cir.add_node("net2")
 
         res = 1e3
         cir['R1'] = R(net1, net2, res)
@@ -21,8 +21,8 @@ class SimpleTests(unittest.TestCase):
 
     def testrc(self):
         cir=SubCircuit()
-        net1 = cir.addNode("net1")
-        net2 = cir.addNode("net2")
+        net1 = cir.add_node("net1")
+        net2 = cir.add_node("net2")
 
         cir['R1'] = R(net1, net2, 1e3)
         cir['C1'] = C(net2, gnd, 1e-12)
@@ -36,8 +36,8 @@ class SimpleTests(unittest.TestCase):
 
     def testlc(self):
         cir=SubCircuit()
-        net1 = cir.addNode("net1")
-        net2 = cir.addNode("net2")
+        net1 = cir.add_node("net1")
+        net2 = cir.add_node("net2")
 
         cir['L1'] = L(net1, net2, 1e-3)
         cir['C1'] = C(net2, gnd, 1e-12)
@@ -54,8 +54,8 @@ class SymbolicTests(unittest.TestCase):
         
         cir=SubCircuit()
 
-        net1 = cir.addNode("net1")
-        net2 = cir.addNode("net2")
+        net1 = cir.add_node("net1")
+        net2 = cir.add_node("net2")
         
         v0,R1,R2=map(Symbol, ('v0','R1','R2'))
 
@@ -70,8 +70,8 @@ class SymbolicTests(unittest.TestCase):
         
         cir=SubCircuit()
 
-        net1 = cir.addNode("net1")
-        net2 = cir.addNode("net2")
+        net1 = cir.add_node("net1")
+        net2 = cir.add_node("net2")
         
         v0,R1,C1=map(Symbol, ('v0','R1','C1'))
 

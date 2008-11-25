@@ -14,9 +14,9 @@ def test_nullor_vva():
     R1 =Symbol('R1')
     R2 = Symbol('R2')
     
-    nin = c.addNode('in')
-    n1 = c.addNode('n1')
-    nout = c.addNode('out')
+    nin = c.add_node('in')
+    n1 = c.add_node('n1')
+    nout = c.add_node('out')
      
     c['vin'] = VS(nin, gnd, v=Vin)
     c['R1'] = R(n1, gnd, r=R1)
@@ -25,7 +25,7 @@ def test_nullor_vva():
     
     result = SymbolicAC(c).run()
     
-    vout = result.getSignal('out')
+    vout = result['out']
     
     assert simplify(vout - Vin * (R1 + R2) / R1) == 0, \
         'Did not get the expected result, %s != 0'% \
