@@ -1,4 +1,4 @@
-import numpy as N
+import numpy as npy
 from circuit import SubCircuit, gnd, R, VS, IS
 from analysis import Analysis, AC, Noise
 from pycircuit.post.internalresult import InternalResultDict
@@ -16,24 +16,24 @@ class NPort(object):
     """
 
     def __init__(self, K):
-        assert N.size(K,0) == N.size(K,1) and N.size(K) % 2 == 0
+        assert npy.size(K,0) == npy.size(K,1) and npy.size(K) % 2 == 0
         
         self.K = K
 
-        self.n = N.size(K,0)
+        self.n = npy.size(K,0)
 
     @classmethod
     def fromY(self, Y):
         """Create a NPort from Y-parameters"""
         d = Y[0,0] * Y[1,1] - Y[0,1] * Y[1,0]
-        return NPort(N.array([[-Y[1,1] / Y[1,0], -1.0 / Y[1,0]],
+        return NPort(npy.array([[-Y[1,1] / Y[1,0], -1.0 / Y[1,0]],
                               [-d / Y[1,0], -Y[0,0] / Y[1,0]]]))
 
     @classmethod
     def fromZ(self, Z):
         """Create a NPort from Z-parameters"""
         d = Z[0,0] * Z[1,1] - Z[0,1] * Z[1,0]
-        return NPort(N.array([[-Z[0,0] / Z[1,0], -d / Z[1,0]],
+        return NPort(npy.array([[-Z[0,0] / Z[1,0], -d / Z[1,0]],
                               [1.0 / Z[1,0], Z[1,1] / Z[1,0]]]))
 
     def __mul__(self, a):
@@ -45,7 +45,7 @@ class NPort(object):
 
         >>> import sympy as S
         >>> a,b,c,d = S.symbols('abcd')
-        >>> A = TwoPort(N.array([[a,b], [c,d]]))
+        >>> A = TwoPort(npy.array([[a,b], [c,d]]))
         >>> print A // A
         array([[a, 0.5*b],
            [-2c, d]], dtype=object)
@@ -58,7 +58,7 @@ class NPort(object):
 
         >>> import sympy as S
         >>> a,b,c,d = S.symbols('abcd')
-        >>> A = TwoPort(N.array([[a,b], [c,d]]))
+        >>> A = TwoPort(npy.array([[a,b], [c,d]]))
         >>> A.series(A).K
         [[ a 2*b]
          [ c/2 d]]
@@ -75,7 +75,7 @@ class NPort(object):
         A = self.K
         d = A[0,0] * A[1,1] - A[0,1] * A[1,0]
 
-        return N.array([[A[0,0] / A[1,0], d / A[1,0]],
+        return npy.array([[A[0,0] / A[1,0], d / A[1,0]],
                         [1.0 / A[1,0], A[1,1] / A[1,0]]])
     
 
@@ -88,7 +88,7 @@ class NPort(object):
         A = self.K
         d = A[0,0] * A[1,1] - A[0,1]*A[1,0]
 
-        return N.array([[A[1,1] / A[0,1], -d / A[0,1]],
+        return npy.array([[A[1,1] / A[0,1], -d / A[0,1]],
                         [-1.0 / A[0,1], A[0,0] / A[0,1]]])
     
         
@@ -113,7 +113,7 @@ class TwoPortAnalysis(Analysis):
     >>> n2 = c.addNode('net2')
     >>> c['R1'] = R(n1, n2, r=9e3)
     >>> c['R2'] = R(n2, gnd, r=1e3)
-    >>> res = TwoPortAnalysis(c, n1, gnd, n2, gnd).run(freqs = N.array([0]))
+    >>> res = TwoPortAnalysis(c, n1, gnd, n2, gnd).run(freqs = npy.array([0]))
     >>> res['mu'].y[0]
     (0.1+0j)
     >>> res['gamma'].y[0]
@@ -128,7 +128,8 @@ class TwoPortAnalysis(Analysis):
     ACAnalysis = AC
     NoiseAnalysis = Noise
     
-    def __init__(self, circuit, inp, inn, outp, outn, noise = False, noise_outquantity = 'v'):
+    def __init__(self, circuit, inp, inn, outp, outn, noise = False, 
+                 noise_outquantity = 'v'):
         self.c = circuit
 
         self.ports = inp, inn, outp, outn
@@ -161,17 +162,25 @@ class TwoPortAnalysis(Analysis):
                     src['VL'] = VS(outp, outn, vac = 0)
 
             if self.noise_outquantity == 'v':
-                res_v = self.NoiseAnalysis(circuit_voltagesrc, inputsrc=circuit_voltagesrc['VS_TwoPort'], \
-                                           outputnodes=(outp, outn)).run(freqs, complexfreq=complexfreq)
+                res_v = self.NoiseAnalysis(circuit_voltagesrc, 
+                                           inputsrc=circuit_voltagesrc['VS_TwoPort'],
+                                           outputnodes=(outp, outn)
+                                           ).run(freqs, complexfreq=complexfreq)
 
-                res_i = self.NoiseAnalysis(circuit_currentsrc, inputsrc=circuit_currentsrc['IS_TwoPort'], \
-                                           outputnodes=(outp, outn)).run(freqs, complexfreq=complexfreq)
+                res_i = self.NoiseAnalysis(circuit_currentsrc, 
+                                           inputsrc=circuit_currentsrc['IS_TwoPort'],
+                                           outputnodes=(outp, outn)
+                                           ).run(freqs, complexfreq=complexfreq)
             else:
-                res_v = self.NoiseAnalysis(circuit_voltagesrc, inputsrc=circuit_voltagesrc['VS_TwoPort'], \
-                                           outputsrc=circuit_voltagesrc['VL']).run(freqs, complexfreq=complexfreq)
+                res_v = self.NoiseAnalysis(circuit_voltagesrc, 
+                                           inputsrc=circuit_voltagesrc['VS_TwoPort'],
+                                           outputsrc=circuit_voltagesrc['VL']
+                                           ).run(freqs, complexfreq=complexfreq)
 
-                res_i = self.NoiseAnalysis(circuit_currentsrc, inputsrc=circuit_currentsrc['IS_TwoPort'], \
-                                           outputsrc=circuit_currentsrc['VL']).run(freqs, complexfreq=complexfreq)
+                res_i = self.NoiseAnalysis(circuit_currentsrc, 
+                                           inputsrc=circuit_currentsrc['IS_TwoPort'],
+                                           outputsrc=circuit_currentsrc['VL']
+                                           ).run(freqs, complexfreq=complexfreq)
 
             result['Svn'] = res_v['Svninp']
             result['Sin'] = res_i['Sininp']
@@ -206,7 +215,7 @@ class TwoPortAnalysis(Analysis):
         C = ac_open.i('VS_TwoPort.minus') / ac_open.v(outp, outn)
         D = ac_shorted.i('VS_TwoPort.minus') / ac_shorted.i('VL_TwoPort.plus')
 
-        return N.array([[A,B],[C,D]])
+        return npy.array([[A,B],[C,D]], dtype=object)
 
 if __name__ == "__main__":
     import doctest
