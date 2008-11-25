@@ -2,7 +2,7 @@
 """
 
 from pycircuit.circuit.circuit import VS, R, Nullor, SubCircuit, gnd
-from pycircuit.circuit.symbolic import SymbolicAC
+from pycircuit.circuit.symbolicanalysis import SymbolicAC
 from sympy import Symbol, Matrix, symbols, simplify, together, factor, cancel
 
 def test_nullor_vva():
@@ -18,15 +18,15 @@ def test_nullor_vva():
     n1 = c.add_node('n1')
     nout = c.add_node('out')
      
-    c['vin'] = VS(nin, gnd, v=Vin)
+    c['vin'] = VS(nin, gnd, vac=Vin)
     c['R1'] = R(n1, gnd, r=R1)
     c['R2'] = R(nout, n1, r=R2)
     c['nullor'] = Nullor(n1, nin, gnd, nout)
     
-    result = SymbolicAC(c).run()
+    result = SymbolicAC(c).run(Symbol('s'))
     
     vout = result['out']
-    
+
     assert simplify(vout - Vin * (R1 + R2) / R1) == 0, \
         'Did not get the expected result, %s != 0'% \
         str(simplify(vout - Vin * (R1 + R2) / R1))

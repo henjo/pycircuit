@@ -1,6 +1,7 @@
 from numpy import *
 from scipy import *
 from pycircuit import *
+import unittest
 
 class SimpleTests(unittest.TestCase):
     def testGMatrix(self):

@@ -58,7 +58,7 @@ class Analysis(object):
 
 def fsolve(f, x0, fprime=None, args=(), full_output=False, maxiter=200,
            xtol=1e-6, reltol=1e-4, abstol=1e-12):
-    """Solve a multidimensional non-linear system of equations with Newton-Raphson's method
+    """Solve a multidimensional non-linear equation with Newton-Raphson's method
 
     In each iteration the linear system
 
@@ -188,11 +188,9 @@ class DC(Analysis):
 
         iwk[30] = 50
         
-#        import nleq2.nleq2 as nleq2
-#        res,s_scale,rtol,iopt,ierr = nleq2.nleq2(func,fprime,x0,s_scale,rtol,iopt,iwk,rwk)
-#        print res, ierr
 
-        x, infodict, ier, mesg = fsolve(func, x0, fprime=fprime, full_output=True)
+        x, infodict, ier, mesg = fsolve(func, x0, fprime=fprime, 
+                                        full_output=True)
 
         if ier != 1:
             raise NoConvergenceError(mesg)
@@ -500,8 +498,8 @@ class AC(Analysis):
 class Noise(Analysis):
     """Noise analysis that calculates input and output referred noise.
     
-    The analysis is using the adjoint admittance matrix method to calculate the transfers from
-    each noise source to the output.
+    The analysis is using the adjoint admittance matrix method to calculate the 
+    transfers from each noise source to the output.
     
     Example, calculate input referred noise of a voltage divider:
 
@@ -568,7 +566,8 @@ class Noise(Analysis):
         # Calculate output voltage noise
         if self.outputnodes != None:
             u = zeros(n, dtype=int)
-            ioutp, ioutn = (self.c.get_node_index(node) for node in self.outputnodes)
+            ioutp, ioutn = (self.c.get_node_index(node) 
+                            for node in self.outputnodes)
             u[ioutp] = -1
             u[ioutn] = 1
         # Calculate output current noise
@@ -602,11 +601,13 @@ class Noise(Analysis):
         elif self.outputsrc != None:
             result['Sinout'] = xn2out
 
-        # Calculate the gain from the input voltage source by using the transimpedance vector
-        # to find the transfer from the branch voltage of the input source to the output
+        # Calculate the gain from the input voltage source by using the 
+        # transimpedance vector to find the transfer from the branch voltage of
+        # the input source to the output
         gain = None
         if isinstance(self.inputsrc, VS):
-            gain = self.c.extract_i(zm, self.inputsrc.branch, refnode=refnode, refnode_removed=True)
+            gain = self.c.extract_i(zm, self.inputsrc.branch, refnode=refnode, 
+                                    refnode_removed=True)
             result['gain'] = gain
             result['Svninp'] = xn2out / gain**2
         elif isinstance(self.inputsrc, IS):

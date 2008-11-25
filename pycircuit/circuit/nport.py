@@ -23,14 +23,14 @@ class NPort(object):
         self.n = npy.size(K,0)
 
     @classmethod
-    def fromY(self, Y):
+    def from_y(self, Y):
         """Create a NPort from Y-parameters"""
         d = Y[0,0] * Y[1,1] - Y[0,1] * Y[1,0]
         return NPort(npy.array([[-Y[1,1] / Y[1,0], -1.0 / Y[1,0]],
                               [-d / Y[1,0], -Y[0,0] / Y[1,0]]]))
 
     @classmethod
-    def fromZ(self, Z):
+    def from_z(self, Z):
         """Create a NPort from Z-parameters"""
         d = Z[0,0] * Z[1,1] - Z[0,1] * Z[1,0]
         return NPort(npy.array([[-Z[0,0] / Z[1,0], -d / Z[1,0]],
@@ -51,7 +51,7 @@ class NPort(object):
            [-2c, d]], dtype=object)
 
         """
-        return NPort.fromY(self.Y + a.Y)
+        return NPort.from_y(self.Y + a.Y)
 
     def series(self, a):
         """Series connection with another n-port
@@ -64,7 +64,7 @@ class NPort(object):
          [ c/2 d]]
         
         """
-        return NPort.fromZ(self.Z + a.Z)
+        return NPort.from_z(self.Z + a.Z)
 
     @property
     def Z(self):
@@ -151,35 +151,35 @@ class TwoPortAnalysis(Analysis):
         if self.noise:
             inp, inn, outp, outn = self.ports
             
-            circuit_voltagesrc = copy(self.c)
-            circuit_voltagesrc['VS_TwoPort'] = VS(inp, inn, vac = 1)
+            circuit_vs = copy(self.c)
+            circuit_vs['VS_TwoPort'] = VS(inp, inn, vac = 1)
             
-            circuit_currentsrc = copy(self.c)
-            circuit_currentsrc['IS_TwoPort'] = IS(inp, inn, iac = 1)
+            circuit_cs = copy(self.c)
+            circuit_cs['IS_TwoPort'] = IS(inp, inn, iac = 1)
             
             if self.noise_outquantity == 'i':
-                for src in circuit_voltagesrc, circuit_currentsrc:
+                for src in circuit_vs, circuit_cs:
                     src['VL'] = VS(outp, outn, vac = 0)
 
             if self.noise_outquantity == 'v':
-                res_v = self.NoiseAnalysis(circuit_voltagesrc, 
-                                           inputsrc=circuit_voltagesrc['VS_TwoPort'],
+                res_v = self.NoiseAnalysis(circuit_vs, 
+                                           inputsrc=circuit_vs['VS_TwoPort'],
                                            outputnodes=(outp, outn)
                                            ).run(freqs, complexfreq=complexfreq)
 
-                res_i = self.NoiseAnalysis(circuit_currentsrc, 
-                                           inputsrc=circuit_currentsrc['IS_TwoPort'],
+                res_i = self.NoiseAnalysis(circuit_cs, 
+                                           inputsrc=circuit_cs['IS_TwoPort'],
                                            outputnodes=(outp, outn)
                                            ).run(freqs, complexfreq=complexfreq)
             else:
-                res_v = self.NoiseAnalysis(circuit_voltagesrc, 
-                                           inputsrc=circuit_voltagesrc['VS_TwoPort'],
-                                           outputsrc=circuit_voltagesrc['VL']
+                res_v = self.NoiseAnalysis(circuit_vs, 
+                                           inputsrc=circuit_vs['VS_TwoPort'],
+                                           outputsrc=circuit_vs['VL']
                                            ).run(freqs, complexfreq=complexfreq)
 
-                res_i = self.NoiseAnalysis(circuit_currentsrc, 
-                                           inputsrc=circuit_currentsrc['IS_TwoPort'],
-                                           outputsrc=circuit_currentsrc['VL']
+                res_i = self.NoiseAnalysis(circuit_cs, 
+                                           inputsrc=circuit_cs['IS_TwoPort'],
+                                           outputsrc=circuit_cs['VL']
                                            ).run(freqs, complexfreq=complexfreq)
 
             result['Svn'] = res_v['Svninp']

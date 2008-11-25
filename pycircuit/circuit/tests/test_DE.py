@@ -4,7 +4,8 @@
 # Birmingham, AL 35235 USA
 # email: zunzun@zunzun.com
 
-import DESolver, numpy, time
+from pycircuit.circuit import DESolver
+import numpy, time
 
 class TestSolver(DESolver.DESolver):
 
