@@ -1,6 +1,6 @@
 # -*- coding: latin-1 -*-
 
-from numpy import array, zeros, concatenate, dot, exp
+from numpy import array, zeros, concatenate, dot, exp, inf
 from pycircuit.utilities.param import Parameter, ParameterDict
 from constants import *
 from copy import copy
@@ -9,7 +9,6 @@ import types
 class Node(object):
     """A node is a region in an electric circuit where the voltage is the same.
     
-    A node can have a name
     """
     def __init__(self, name=None):
         self.name = name
@@ -282,6 +281,10 @@ class Circuit(object):
         """
         return zeros((self.n, self.n), dtype=object)
 
+    def next_event(self, t):
+        """Returns the time of the next event given the current time t"""
+        return inf
+    
     def name_state_vector(self, x, analysis=''):
         """Return a dictionary of the x-vector keyed by node and branch names
 
