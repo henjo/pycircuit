@@ -1,3 +1,6 @@
+# Copyright (c) 2008 Pycircuit Development Team
+# See LICENSE for details.
+
 #!/usr/bin/python
 import sys
 import psf

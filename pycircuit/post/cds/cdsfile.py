@@ -1,3 +1,6 @@
+# Copyright (c) 2008 Pycircuit Development Team
+# See LICENSE for details.
+
 import skill
 import sys
 from cds import CadenceSession

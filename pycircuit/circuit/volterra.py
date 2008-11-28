@@ -1,3 +1,6 @@
+# Copyright (c) 2008 Pycircuit Development Team
+# See LICENSE for details.
+
 """Volterra analysis based on the method described in
 "Distortion analysis of analog integrated circuits" by Piet Wambacq and Willy Sansen
 

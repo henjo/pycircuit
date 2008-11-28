@@ -1,3 +1,6 @@
+# Copyright (c) 2008 Pycircuit Development Team
+# See LICENSE for details.
+
 from pycircuit.circuit.circuit import SubCircuit, VCCS, G, C, IS, VS, Parameter, gnd, R
 from pycircuit.circuit.mos import MOS
 from pycircuit.circuit.symbolicanalysis import SymbolicTwoPortAnalysis, SymbolicAC, SymbolicNoise

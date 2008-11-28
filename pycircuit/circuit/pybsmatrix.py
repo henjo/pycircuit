@@ -1,3 +1,6 @@
+# Copyright (c) 2008 Pycircuit Development Team
+# See LICENSE for details.
+
 # Based on m_matrix.h from Gnucap, Al Davis
 #
 #"The files ap_*, io_*, l_*, m_* are not Gnucap specific.

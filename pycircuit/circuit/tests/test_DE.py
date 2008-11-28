@@ -1,3 +1,6 @@
+# Copyright (c) 2008 Pycircuit Development Team
+# See LICENSE for details.
+
 # Placed into the public domain by:
 # James R. Phillips
 # 2548 Vera Cruz Drive

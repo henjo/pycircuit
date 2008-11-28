@@ -1,3 +1,6 @@
+# Copyright (c) 2008 Pycircuit Development Team
+# See LICENSE for details.
+
 # -*- coding: latin-1 -*-
 
 from numpy import array, zeros, concatenate, dot, exp, inf

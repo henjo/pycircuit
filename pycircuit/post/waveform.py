@@ -1,3 +1,6 @@
+# Copyright (c) 2008 Pycircuit Development Team
+# See LICENSE for details.
+
 """The waveform module contains classes for handling simulation results in 
 the form of X-Y data. The classes can handle results from multi-dimensional 
 sweeps.

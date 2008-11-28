@@ -1,3 +1,6 @@
+# Copyright (c) 2008 Pycircuit Development Team
+# See LICENSE for details.
+
 """This module contains functions that operates on wave objects or scalars"""
 
 from waveform import Waveform, reducedim, applyfunc, applyfunc_and_reducedim,\

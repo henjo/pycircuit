@@ -1,3 +1,6 @@
+# Copyright (c) 2008 Pycircuit Development Team
+# See LICENSE for details.
+
 import analysis
 from analysis import Analysis, removeRowCol
 from nport import TwoPortAnalysis

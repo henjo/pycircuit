@@ -1,3 +1,6 @@
+# Copyright (c) 2008 Pycircuit Development Team
+# See LICENSE for details.
+
 from numpy import *
 from scipy import *
 from pycircuit import *

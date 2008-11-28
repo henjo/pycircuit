@@ -1,3 +1,6 @@
+# Copyright (c) 2008 Pycircuit Development Team
+# See LICENSE for details.
+
 import circuit
 from circuit import *
 from constants_sympy import *

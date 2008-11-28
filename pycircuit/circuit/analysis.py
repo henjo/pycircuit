@@ -1,3 +1,6 @@
+# Copyright (c) 2008 Pycircuit Development Team
+# See LICENSE for details.
+
 import numpy as np
 from numpy import array, delete, linalg, size, zeros, concatenate, pi, \
     zeros, alltrue, maximum, conj, dot, imag, eye

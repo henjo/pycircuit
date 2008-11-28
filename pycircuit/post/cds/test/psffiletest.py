@@ -1,3 +1,6 @@
+# Copyright (c) 2008 Pycircuit Development Team
+# See LICENSE for details.
+
 # Read different kind of PSF files and compare with output from the psf command
 
 from psf import PSFReader

@@ -1,3 +1,6 @@
+# Copyright (c) 2008 Pycircuit Development Team
+# See LICENSE for details.
+
 #import yapgvb
 import os
 from StringIO import StringIO
