@@ -33,7 +33,7 @@ class Statement(object):
 class Contribution(Statement):
     def __init__(self, lhs, rhs):
         self.lhs = lhs
-        self.rhs = rhs
+        self.rhs = sympy.sympify(rhs)
 
     def nodes(self):
         """Return set of node objects referred to in lhs and rhs
@@ -57,7 +57,7 @@ class Contribution(Statement):
 
         return nodes
         
-    def icontributions(self):
+    def contributions(self):
         """Return list of (node, current expressions) pair
         
         >>> a, b = Node('a'), Node('b')
@@ -80,11 +80,30 @@ class Contribution(Statement):
                     substdict[atom] = v
                     
         rhs = rhs.subs(substdict)
-                    
+         
+        ## Split i and u terms
+        rhs = rhs.expand()
+
+        if rhs.is_Add:
+            terms = rhs.args
+        else:
+            terms = (rhs,)
+
+        iterms = []
+        uterms = []
+        for term in terms:
+            if isconstant(term):
+                uterms.append(term)
+            else:
+                iterms.append(term)
+
+        irhs = sympy.Add(*iterms)
+        urhs = sympy.Add(*uterms)
+           
         if self.lhs.quantity == 'I':
             if self.lhs.isbranch:
                 branch = self.lhs.branch_or_node
-                return ((branch.plus, rhs), (branch.minus, -rhs))
+                return ((branch.plus, irhs, urhs), (branch.minus, -irhs, -urhs))
         
 class BehaviouralMeta(type):
     def __init__(cls, name, bases, dct):
@@ -111,12 +130,15 @@ class BehaviouralMeta(type):
             ## Create vector of current expressions for each node
             nodes = set()
             icontribs = {}
+            ucontribs = {}
             for statement in statements:
-                for node, icontrib in statement.icontributions():
-                    if node in icontribs:
-                        icontribs[node] += icontrib
-                    else:
-                        icontribs[node] = icontrib
+                for node, icontrib, ucontrib in statement.contributions():
+                   if node in icontribs:
+                       icontribs[node] += icontrib
+                       ucontribs[node] += ucontrib
+                   else:
+                       icontribs[node] = icontrib
+                       ucontribs[node] = ucontrib
                     
                 nodes.update(statement.nodes())
 
@@ -124,38 +146,8 @@ class BehaviouralMeta(type):
 
             nodes = terminalnodes + internalnodes
 
-            def isconstant(expr):
-                for atom in expr.atoms():
-                    if isinstance(atom, Quantity):
-                        return False
-                return True
-
-            ivector = []
-            uvector = []
-            ## Create i and u vector
-            for node in nodes:
-                if node in icontribs:
-                    expr = icontribs[node].expand()
-
-                    if expr.is_Add:
-                        terms = expr.args
-                    else:
-                        terms = (expr,)
-                        
-                    iterms = []
-                    uterms = []
-                    for term in terms:
-                        if isconstant(term):
-                            uterms.append(term)
-                        else:
-                            iterms.append(term)
-                            
-                    ivector.append(sympy.Add(*iterms))
-                    uvector.append(sympy.Add(*uterms))
-                else:
-                    ivector.append(0)
-                    uvector.append(0)
-
+            print icontribs
+            print ucontribs
                     
 class Behavioural(circuit.Circuit):
     """
@@ -196,13 +188,19 @@ class Behavioural(circuit.Circuit):
     
     __metaclass__ = BehaviouralMeta
 
-    
+def isconstant(expr):
+    for atom in expr.atoms():
+        if isinstance(atom, Quantity):
+            return False
+    return True
+
+   
 class Resistor(Behavioural):
      instparams = [Parameter(name='r', desc='Resistance', unit='ohm')]
      @staticmethod
      def analog(plus, minus):
          b = Branch(plus, minus)
-         return Contribution(b.I, 1/r * b.V + 1),
+         return Contribution(b.I, 1/r * b.V + 1)
     
 if __name__ == "__main__":
     import doctest
