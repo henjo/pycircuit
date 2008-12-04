@@ -13,7 +13,7 @@ from copy import copy
 class NoConvergenceError(Exception):
     pass
 
-def removeRowCol(matrices, n):
+def remove_row_col(matrices, n):
     result = []
     for A in matrices:
         for axis in range(len(A.shape)):
@@ -153,20 +153,20 @@ class DC(Analysis):
         ## Refer the voltages to the reference node by removing
         ## the rows and columns that corresponds to this node
         irefnode = self.c.get_node_index(refnode)
-#        G,u=removeRowCol((G,u), irefnode)
+#        G,u=remove_row_col((G,u), irefnode)
 
         # Solve i(x) + u = 0
         def func(x):
             x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
             f =  self.c.i(x) + self.c.u(0)
-            (f,) = removeRowCol((f,), irefnode)
+            (f,) = remove_row_col((f,), irefnode)
 #            print x,f.T[0]
             return array(f, dtype=float)
         def fprime(x):
             x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
 #            J = self.c.G(array([x]).T)
             J = self.c.G(x)
-            (J,) = removeRowCol((J,), irefnode)
+            (J,) = remove_row_col((J,), irefnode)
 #            print "J:",array(J, dtype=float)
             return array(J, dtype=float)
         x0 = zeros(n-1) # Would be good with a better initial guess
@@ -290,7 +290,7 @@ class Tran_spec(Analysis):
             u+=ueq
             # Refer the voltages to the reference node by removing
             # the rows and columns that corresponds to this node
-            G,u=removeRowCol((G,u), irefnode)
+            G,u=remove_row_col((G,u), irefnode)
 
             x=linalg.solve(G,-u)
             # Insert reference node voltage
@@ -360,13 +360,13 @@ class Tran_imp(Analysis):
             ueq = -dot(Geq,xlast)
             f =  self.c.i(x) + dot(Geq, x) + self.c.u(x) + ueq
 #            f =  self.c.u(x) + ueq
-            (f,) = removeRowCol((f,), irefnode)
+            (f,) = remove_row_col((f,), irefnode)
             return array(f, dtype=float)
         def fprime(x):
             x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
             Geq = self.c.C(x)/dt
             J = self.c.G(x) + Geq
-            (J,) = removeRowCol((J,), irefnode)
+            (J,) = remove_row_col((J,), irefnode)
             return array(J, dtype=float)
 
         rtol = 1e-4
@@ -478,7 +478,7 @@ class AC(Analysis):
         ## Refer the voltages to the reference node by removing
         ## the rows and columns that corresponds to this node
         irefnode = self.c.get_node_index(refnode)
-        G,C,u = removeRowCol((G,C,u), irefnode)
+        G,C,u = remove_row_col((G,C,u), irefnode)
 
         if complexfreq:
             ss = freqs
@@ -582,7 +582,7 @@ class Noise(Analysis):
         ## Refer the voltages to the gnd node by removing
         ## the rows and columns that corresponds to this node
         irefnode = self.c.nodes.index(refnode)
-        G,C,u,CY = removeRowCol((G,C,u,CY), irefnode)
+        G,C,u,CY = remove_row_col((G,C,u,CY), irefnode)
 
         # Calculate the reciprocal G and C matrices
         Yreciprocal = G.T + s*C.T

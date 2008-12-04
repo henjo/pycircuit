@@ -2,7 +2,7 @@
 # See LICENSE for details.
 
 import analysis
-from analysis import Analysis, removeRowCol
+from analysis import Analysis, remove_row_col
 from nport import TwoPortAnalysis
 from numpy import array, delete, linalg, size, zeros, concatenate, pi, asarray
 import circuit

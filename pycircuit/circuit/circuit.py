@@ -1,7 +1,6 @@
+# -*- coding: latin-1 -*-
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
-
-# -*- coding: latin-1 -*-
 
 from numpy import array, zeros, concatenate, dot, exp, inf
 from pycircuit.utilities.param import Parameter, ParameterDict
@@ -15,6 +14,10 @@ class Node(object):
     """
     def __init__(self, name=None):
         self.name = name
+
+    @property
+    def V(self):
+        return Quantity('V', self)
 
     def __repr__(self):
         return self.__class__.__name__ + '(\'' + self.name + '\')'
@@ -44,6 +47,14 @@ class Branch(object):
         self.plus = plus
         self.minus = minus
         self.name = name
+
+    @property
+    def V(self):
+        return Quantity('V', self)
+
+    @property
+    def I(self):
+        return Quantity('I', self)
 
     def __repr__(self):
         return 'Branch('+str(self.plus)+','+str(self.minus)+')'
@@ -1010,6 +1021,48 @@ class Diode(Circuit):
         I = self.mpar.IS*(exp(VD/VT)-1.0)
         return array([I, -I])
 
+
+class Quantity(object):
+    """Reference to voltage or current of a branch or node
+
+    The quantity can be used in behavioural modelling or post processing
+    when one want to refer to a voltage or current of a branch or node
+    
+    >>> a, b = Node('a'), Node('b')
+    >>> Quantity('I', Branch(a,b))
+    I(a,b)
+    >>> Quantity('V', a)
+    V(a)
+
+    """
+    
+    def __init__(self, quantity, branch_or_node):
+        """The quantity can be 'V' or 'I' which corresponds to voltage or
+        current of the Branch or Node object branch_or_node"""
+
+        if quantity not in ('V', 'I'):
+            raise ValueError("quantity must be either 'V' or 'I'")
+        if not isinstance(branch_or_node, (Node, Branch)):
+            raise ValueError('branch_or_node must be a Branch or Node object')
+        
+        if quantity == 'I' and isinstance(branch_or_node, Node):
+            raise ValueError('Current can only be taken on branches')
+
+        self.quantity = quantity
+        self.branch_or_node = branch_or_node
+
+    @property
+    def isnode(self): return isinstance(self.branch_or_node, Node)
+
+    @property
+    def isbranch(self): return isinstance(self.branch_or_node, Branch)
+        
+    def __repr__(self):
+        if isinstance(self.branch_or_node, Branch):
+            return self.quantity + '(' + str(self.branch_or_node.plus.name) + \
+                ',' + str(self.branch_or_node.minus.name) + ')'
+        else:
+            return self.quantity + '(' + str(self.branch_or_node.name) + ')'
 
 if __name__ == "__main__":
     import doctest
