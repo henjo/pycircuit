@@ -2,6 +2,8 @@ import circuit
 import pycircuit.utilities.param as param
 
 import sympy
+import sympy.printing.lambdarepr
+import numpy as npy
 
 import inspect
 from copy import copy
@@ -58,12 +60,13 @@ class Contribution(Statement):
         return nodes
         
     def contributions(self):
-        """Return list of (node, current expressions) pair
+        """Return list of (node, iexpression, uexpression) tuples
         
         >>> a, b = Node('a'), Node('b')
         >>> b = Branch(a,b)
-        >>> Contribution(b.I, 1e-3 * b.V).icontributions()
-        ((Node(a), 1e-3 * a.V - 1e-3 * b.V), (Node(b), -1e-3 * a.V + 1e-3 * b.V))
+        >>> Contribution(b.I, 1e-3 * b.V).contributions()
+        ((Node(a), 1e-3 * a.V - 1e-3 * b.V, 0), 
+         (Node(b), -1e-3 * a.V + 1e-3 * b.V), 0)
         """
         if not isinstance(self.lhs, Quantity):
             raise ValueError('lhs must be a Quantity')
@@ -96,7 +99,8 @@ class Contribution(Statement):
                 uterms.append(term)
             else:
                 iterms.append(term)
-
+                
+        ## re-join terms 
         irhs = sympy.Add(*iterms)
         urhs = sympy.Add(*uterms)
            
@@ -104,50 +108,120 @@ class Contribution(Statement):
             if self.lhs.isbranch:
                 branch = self.lhs.branch_or_node
                 return ((branch.plus, irhs, urhs), (branch.minus, -irhs, -urhs))
+
+class NumpyPrinter(sympy.printing.StrPrinter):
+    def _print_Matrix(self, expr):
+        return "npy.array([%s])"%expr._format_str(self._print, ",")
+
+def methodstr(name, args, expr):
+    """Returns a string that can be evaluated to an instance method
+    
+    >>> x = sympy.Symbol('x')
+    >>> methodstr('G', x, x**2 * sympy.Symbol('self.p'))
+    'def G(self, x): return self.p*x**2'
+    
+    """
+
+   # Transform everything to strings.
+    expr = NumpyPrinter().doprint(expr)
+    if isinstance(args, str):
+        pass
+    elif hasattr(args, "__iter__"):
+        args = ",".join(str(a) for a in args)
+    else:
+        args = str(args)
+
+    return "def %s(self, %s): return %s" % (name, args, expr)
+
+def generate_code(cls):
+    """Returns terminal names and i,u,q,G,C,CY method strings from class obj"""
+
+    ## Get arguments (terminals)
+    terminalnames = inspect.getargspec(cls.analog)[0]
+
+    ## Create node objects of the terminals
+    terminalnodes = [Node(terminal) for terminal in terminalnames]
+
+    ## Make a copy of analog method
+    analogfunc = copy(cls.analog)
+
+    ## Inject parameters into function globals
+    params = dict((param.name, sympy.Symbol('self.ipar.' + param.name))
+                  for param in cls.instparams)
+    analogfunc.func_globals.update(params)
+
+    ## Call analog function
+    statements = analogfunc(*terminalnodes)
+
+    ## Create vector of current expressions for each node
+    nodes = set()
+    icontribs = {}
+    ucontribs = {}
+    for statement in statements:
+        for node, icontrib, ucontrib in statement.contributions():
+           if node in icontribs:
+               icontribs[node] += icontrib
+               ucontribs[node] += ucontrib
+           else:
+               icontribs[node] = icontrib
+               ucontribs[node] = ucontrib
+
+        nodes.update(statement.nodes())
+
+    internalnodes = list(nodes - set(terminalnodes))
+
+    nodes = terminalnodes + internalnodes
+
+    ## Create a substitution dictionary that maps node voltages 
+    ## to symbols
+    xvector = [sympy.Symbol('x[%d]'%i) for i in range(len(nodes))]
+    substdict = [(node.V, xsym) for node, xsym in zip(nodes, xvector)]
+    
+    ## Create i, u and q vectors
+    ivector = [icontribs[node].subs(substdict) for node in nodes]
+    qvector = list(npy.zeros(len(nodes))) ## FIXME
+    uvector = [ucontribs[node] for node in nodes]
+
+    ## Calculate G as Jacobian of i
+    icolvector = sympy.Matrix(ivector).T
+    G = icolvector.jacobian(xvector)
+
+    ## Calculate C as Jacobian matrix of q
+    qcolvector = sympy.Matrix(qvector).T
+    C = qcolvector.jacobian(xvector)
+
+    CY = sympy.zeros(len(xvector))
+
+    ## Create Circuit methods
+    ifuncstr = methodstr('i', 'x', ivector)
+    ufuncstr = methodstr('u', 't', uvector)
+    qfuncstr = methodstr('q', 'x', qvector)
+    Gfuncstr = methodstr('G', 'x', G)
+    Cfuncstr = methodstr('C', 'x', C)
+    CYfuncstr = methodstr('CY', 'x', CY)
+
+    return terminalnames, ifuncstr, ufuncstr, qfuncstr, Gfuncstr, Cfuncstr, \
+        CYfuncstr
         
 class BehaviouralMeta(type):
     def __init__(cls, name, bases, dct):
         if 'analog' in dct:
-            ## Get arguments (terminals)
-            terminalnames = inspect.getargspec(cls.analog)[0]
-            
+            ## Generate code for the Circuit methods as strings
+            strings = generate_code(cls)
+            terminalnames, ifuncstr, ufuncstr, qfuncstr, Gfuncstr, \
+                Cfuncstr, CYfuncstr = strings
+
+            ## Create methods
+            methodnames = ('i', 'u', 'q', 'G', 'C', 'CY')
+            for methodname, codestring in zip(methodnames, strings[1:]):
+                funcdef_code = compile(codestring, '<stdin>', 'exec')
+                namespace = {'npy': npy}
+                eval(funcdef_code, namespace)
+                setattr(cls, methodname, namespace[methodname])
+
             ## Add terminals
             cls.terminals = terminalnames
 
-            ## Create node objects of the terminals
-            terminalnodes = [Node(terminal) for terminal in terminalnames]
-
-            ## Make a copy of analog method
-            analogfunc = copy(cls.analog)
-
-            ## Inject parameters into function globals
-            params = dict((param.name, param) for param in cls.instparams)
-            analogfunc.func_globals.update(params)
-
-            ## Call analog function
-            statements = analogfunc(*terminalnodes)
-
-            ## Create vector of current expressions for each node
-            nodes = set()
-            icontribs = {}
-            ucontribs = {}
-            for statement in statements:
-                for node, icontrib, ucontrib in statement.contributions():
-                   if node in icontribs:
-                       icontribs[node] += icontrib
-                       ucontribs[node] += ucontrib
-                   else:
-                       icontribs[node] = icontrib
-                       ucontribs[node] = ucontrib
-                    
-                nodes.update(statement.nodes())
-
-            internalnodes = list(nodes - set(terminalnodes))
-
-            nodes = terminalnodes + internalnodes
-
-            print icontribs
-            print ucontribs
                     
 class Behavioural(circuit.Circuit):
     """
@@ -196,11 +270,11 @@ def isconstant(expr):
 
    
 class Resistor(Behavioural):
-     instparams = [Parameter(name='r', desc='Resistance', unit='ohm')]
-     @staticmethod
-     def analog(plus, minus):
-         b = Branch(plus, minus)
-         return Contribution(b.I, 1/r * b.V + 1)
+      instparams = [Parameter(name='r', desc='Resistance', unit='ohm')]
+      @staticmethod
+      def analog(plus, minus):
+          b = Branch(plus, minus)
+          return Contribution(b.I, 1/r * b.V + 1),
     
 if __name__ == "__main__":
     import doctest

@@ -20,5 +20,15 @@ def test_resistor():
 
     res = Resistor(r=1e3)
     
-    print "apa", res.i(npy.array([1, 0]))
+    v1,v2 = sympy.symbols(('v1', 'v2'))
+
+    assert res.i([v1,v2]) == [1e-3*(v1-v2), -1e-3*(v1-v2)]
+
+    assert npy.alltrue(res.G([v1,v2]) == 
+                       npy.array([[1e-3, -1e-3], [-1e-3, 1e-3]]))
+
+    assert npy.alltrue(res.C([v1,v2]) == npy.zeros((2,2)))
+
+    assert npy.alltrue(res.CY([v1,v2]) == npy.zeros((2,2)))
+
 
