@@ -235,12 +235,37 @@ class Circuit(object):
                 raise ValueError('terminal '+str(terminal)+' is not defined')
             if node != None:
                 if node not in self.nodes:
-                    self.nodes.append(node)
+                    ## Replace old node if terminal is already tied to a node
+                    if terminal in self.nodenames:
+                        oldnode = self.nodenames[terminal]
+                        index = self.nodes.index(oldnode)
+                        self.nodes[index] = node
+                    else:
+                        self.nodes.append(node)
             else:
                 node = self.add_node(terminal)
                 self.nodes.append(node)
+
             self.nodenames[terminal] = node
-                
+
+    def save_current(self, terminal):
+        """Returns a circuit where the given terminal current is saved
+        
+        >>> cir = R(Node('n1'), gnd, r=1e3)
+        >>> newcir = cir.save_current('plus')
+        >>> newcir.G(zeros(4))
+        array([[0.001, 0, -0.001, -1],
+               [0, 0, 0, 1],
+               [-0.001, 0, 0.001, 0],
+               [-1, 1, 0, 0]], dtype=object)
+        >>> newcir.nodes
+        """
+        
+        if self.get_terminal_branch(terminal) == None:
+            return ProbeWrapper(self, terminals = (terminal,))
+        else:
+            return self            
+
     @property
     def n(self):
         """Return size of x vector"""
@@ -458,8 +483,12 @@ class SubCircuit(Circuit):
     
     def __setitem__(self, instancename, element):
         """Adds an instance to the circuit"""
-        self.elements[instancename] = element
         
+        if instancename in self.elements:
+            del self[instancename]
+
+        self.elements[instancename] = element
+
         # Add nodes and branches from new element
         for node in element.nodes:
             if not node in self.nodes:
@@ -467,6 +496,32 @@ class SubCircuit(Circuit):
         self.branches.extend(element.branches)
 
         self.updateNodeMap()
+
+    def __delitem__(self, instancename):
+        """Removes instance from circuit
+        
+        >>> c = SubCircuit()
+        >>> c['V'] = VS(gnd, gnd)
+        >>> del c['V']
+        >>> c.branches
+        []
+        
+        """
+        element = self.elements[instancename]
+        
+        ## Remove nodes and branches that belongs to only this instance
+        for node in element.nodes:
+            found = False
+            for otherelement in self.elements.values():
+                if node in otherelement.nodes:
+                    found = True
+                    break
+            
+            if not found:
+                self.nodes.remove(node)
+
+        for branch in element.branches:
+            self.branches.remove(branch)
 
     def __getitem__(self, instancename):
         """Get instance"""
@@ -524,7 +579,7 @@ class SubCircuit(Circuit):
         hierlevels = [part for part in terminalname.split('.')]
 
         if len(hierlevels)==1:
-            Circuit.get_terminal_branch(self, hierlevels[0])
+            return Circuit.get_terminal_branch(self, hierlevels[0])
         else:
             topelement = self.elements[hierlevels[0]]
             return topelement.get_terminal_branch('.'.join(hierlevels[1:]))
@@ -586,6 +641,27 @@ class SubCircuit(Circuit):
 
         """
         return self._add_element_submatrices('CY', x, (w, epar,))
+
+    def save_current(self, terminal):
+        """Returns a circuit where the given terminal current is saved
+        
+        The terminal can be a hierarchical name and the notation is I1.term
+        for terminal 'term' of instance 'I1'
+        """
+        
+        hierterm = [part for part in terminal.split('.')]
+
+        if len(hierterm) == 1:
+            return Circuit.save_current(terminal)
+        elif len(hierterm) >= 2:
+            base = self
+            for instance in hierterm[:-2]:
+                base = base[instance]
+            base[hierterm[0]] = base[hierterm[0]].save_current(hierterm[1])
+        else:
+            raise Exception('Invalid terminal name: %s'%terminal)
+        
+        return self
         
     def _add_element_submatrices(self, methodname, x, args):
         n=self.n
@@ -628,7 +704,46 @@ class SubCircuit(Circuit):
                 yield e
             else:
                 yield e.xflatelements
+
+class ProbeWrapper(SubCircuit):
+    """Circuit wrapper that adds voltage sources for current probing"""
+    def __init__(self, circuit, terminals = ()):
+
+        ## Copy nodes, branches, terminals and parameters
+        self.terminals = circuit.terminals
+
+        terminalnodes = [circuit.get_node(terminal)
+                         for terminal in circuit.terminals]
+        super(ProbeWrapper, self).__init__(*terminalnodes)
         
+        self['wrapped'] = circuit
+        
+        for terminal in terminals:
+            self.save_current(terminal)
+
+    def save_current(self, terminal):
+        """Returns a circuit where the given terminal current is saved"""
+        
+        ## Add probe to terminal if it does not already exists
+        if self.get_terminal_branch(terminal) == None:
+            node = self.get_node(terminal)
+            ## Add internal node
+            internal_node = self.add_node(terminal + '_internal')
+
+            ## Create zero-voltage voltage source between terminal and
+            ## internal node
+            self[terminal + '_probe'] = IProbe(node, internal_node)
+            
+            ## Re-connect wrapped circuit to internal node
+            wrapped = self['wrapped']
+            del self['wrapped']
+            
+            wrapped.connect_terminals(**{terminal: internal_node})
+            
+            self['wrapped'] = wrapped
+            
+        return self
+    
 class R(Circuit):
     """Resistor element
 
@@ -758,6 +873,25 @@ class L(Circuit):
         C = zeros((n,n), dtype=object)
         C[-1,-1] = self.ipar.L
         return C
+
+class IProbe(Circuit):
+    """Zero voltage independent voltage source used for current probing"""
+    terminals = ['plus', 'minus']
+
+    def __init__(self, plus, minus, **kvargs):
+        Circuit.__init__(self, plus, minus, **kvargs)
+        self.branches.append(Branch(plus, minus))
+
+    def G(self, x, epar=defaultepar):
+        return array([[0 , 0, 1],
+                      [0 , 0, -1],
+                      [1 , -1, 0]], dtype=object)
+
+    @property
+    def branch(self):
+        """Return the branch (plus, minus)"""
+        return self.branches[0]
+
 
 class VS(Circuit):
     """Independent voltage source

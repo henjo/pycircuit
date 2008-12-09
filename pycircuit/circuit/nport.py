@@ -116,7 +116,7 @@ class TwoPortAnalysis(Analysis):
     >>> n2 = c.add_node('net2')
     >>> c['R1'] = R(n1, n2, r=9e3)
     >>> c['R2'] = R(n2, gnd, r=1e3)
-    >>> res = TwoPortAnalysis(c, n1, gnd, n2, gnd).run(freqs = npy.array([0]))
+    >>> res = TwoPortAnalysis(c, n1, gnd, n2, gnd).solve(freqs = npy.array([0]))
     >>> res['mu'].y[0]
     (0.1+0j)
     >>> res['gamma'].y[0]
@@ -140,10 +140,10 @@ class TwoPortAnalysis(Analysis):
         self.noise = noise
         self.noise_outquantity = noise_outquantity
         
-    def run(self, freqs, complexfreq = False, refnode = gnd):
+    def solve(self, freqs, complexfreq = False, refnode = gnd):
         result = InternalResultDict()
 
-        abcd = self.solve(freqs, refnode=refnode, complexfreq=complexfreq)
+        abcd = self.solve_abcd(freqs, refnode=refnode, complexfreq=complexfreq)
         result['twoport'] = TwoPort(abcd)
 
         result['mu'] = 1/abcd[0,0]
@@ -168,22 +168,22 @@ class TwoPortAnalysis(Analysis):
                 res_v = self.NoiseAnalysis(circuit_vs, 
                                            inputsrc=circuit_vs['VS_TwoPort'],
                                            outputnodes=(outp, outn)
-                                           ).run(freqs, complexfreq=complexfreq)
+                                           ).solve(freqs, complexfreq=complexfreq)
 
                 res_i = self.NoiseAnalysis(circuit_cs, 
                                            inputsrc=circuit_cs['IS_TwoPort'],
                                            outputnodes=(outp, outn)
-                                           ).run(freqs, complexfreq=complexfreq)
+                                           ).solve(freqs, complexfreq=complexfreq)
             else:
                 res_v = self.NoiseAnalysis(circuit_vs, 
                                            inputsrc=circuit_vs['VS_TwoPort'],
                                            outputsrc=circuit_vs['VL']
-                                           ).run(freqs, complexfreq=complexfreq)
+                                           ).solve(freqs, complexfreq=complexfreq)
 
                 res_i = self.NoiseAnalysis(circuit_cs, 
                                            inputsrc=circuit_cs['IS_TwoPort'],
                                            outputsrc=circuit_cs['VL']
-                                           ).run(freqs, complexfreq=complexfreq)
+                                           ).solve(freqs, complexfreq=complexfreq)
 
             result['Svn'] = res_v['Svninp']
             result['Sin'] = res_i['Sininp']
@@ -192,7 +192,7 @@ class TwoPortAnalysis(Analysis):
 
         return result
 
-    def solve(self, freqs, refnode = gnd, complexfreq = False):
+    def solve_abcd(self, freqs, refnode = gnd, complexfreq = False):
         inp, inn, outp, outn = self.ports
                 
         ## Add voltage source at input port and create
@@ -209,14 +209,16 @@ class TwoPortAnalysis(Analysis):
         ac_open = self.ACAnalysis(circuit_vs_open)
         ac_shorted = self.ACAnalysis(circuit_vs_shorted)
 
-        ac_open.run(freqs, refnode = refnode, complexfreq=complexfreq)
+        res_open = ac_open.solve(freqs, refnode = refnode, 
+                                 complexfreq=complexfreq)
 
-        ac_shorted.run(freqs, refnode = refnode, complexfreq=complexfreq)
+        res_shorted = ac_shorted.solve(freqs, refnode = refnode, 
+                                     complexfreq=complexfreq)
         
-        A = ac_open.v(inp, inn) / ac_open.v(outp, outn)
-        B = ac_shorted.v(inp, inn) / ac_shorted.i('VL_TwoPort.plus')
-        C = ac_open.i('VS_TwoPort.minus') / ac_open.v(outp, outn)
-        D = ac_shorted.i('VS_TwoPort.minus') / ac_shorted.i('VL_TwoPort.plus')
+        A = res_open.v(inp, inn) / res_open.v(outp, outn)
+        B = res_shorted.v(inp, inn) / res_shorted.i('VL_TwoPort.plus')
+        C = res_open.i('VS_TwoPort.minus') / res_open.v(outp, outn)
+        D = res_shorted.i('VS_TwoPort.minus') / res_shorted.i('VL_TwoPort.plus')
 
         return npy.array([[A,B],[C,D]], dtype=object)
 

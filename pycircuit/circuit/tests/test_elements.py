@@ -26,9 +26,9 @@ def test_nullor_vva():
     c['R2'] = R(nout, n1, r=R2)
     c['nullor'] = Nullor(n1, nin, gnd, nout)
     
-    result = SymbolicAC(c).run(Symbol('s'))
+    result = SymbolicAC().solve(c, Symbol('s'))
     
-    vout = result['out']
+    vout = result.v(nout)
 
     assert simplify(vout - Vin * (R1 + R2) / R1) == 0, \
         'Did not get the expected result, %s != 0'% \

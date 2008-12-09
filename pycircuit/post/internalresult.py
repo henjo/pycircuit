@@ -17,6 +17,9 @@ class InternalResultDict(result.ResultDict):
 
     def keys(self): return self.items.keys()
 
+    def __delitem__(self, key):
+        del self.items[key]
+
     def __getitem__(self, key):
         return self.items[key]
 

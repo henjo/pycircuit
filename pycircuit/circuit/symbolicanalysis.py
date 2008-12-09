@@ -46,7 +46,7 @@ class SymbolicAC(analysis.AC):
     >>> n1 = c.add_node('net1')
     >>> c['vs'] = VS(n1, gnd, vac=Symbol('V'))
     >>> c['R'] = R(n1, gnd, r=Symbol('R'))
-    >>> res = SymbolicAC(c).run(Symbol('s'), complexfreq=True)
+    >>> res = SymbolicAC(c).solve(Symbol('s'), complexfreq=True)
     >>> res['net1']
     V
     >>> res['i0']
@@ -77,7 +77,7 @@ class SymbolicNoise(analysis.Noise):
     >>> c['R1'] = R(n1, n2, r=R1)
     >>> c['R2'] = R(n2, gnd, r=R2)
     >>> symnoise = SymbolicNoise(c, inputsrc=c['vs'], outputnodes=(n2, gnd))
-    >>> res = symnoise.run(Symbol('s'), complexfreq=True)
+    >>> res = symnoise.solve(Symbol('s'), complexfreq=True)
     >>> simplify(res['Svnout'])
     4*R1*R2*kT/(R1 + R2)
     >>> simplify(res['Svninp'])
@@ -114,7 +114,7 @@ class SymbolicTwoPortAnalysis(TwoPortAnalysis):
     >>> c['R1'] = R(n1, n2, r=Symbol('R1',real=True))
     >>> c['R2'] = R(n2, gnd, r=Symbol('R2',real=True))
     >>> symnoise = SymbolicTwoPortAnalysis(c, n1, gnd, n2, gnd, noise=True)
-    >>> res = symnoise.run(freqs = array([Symbol('s')]), complexfreq=True)
+    >>> res = symnoise.solve(freqs = array([Symbol('s')]), complexfreq=True)
     >>> simplify(res['mu'].y[0])
     -R2/(-R1 - R2)
     >>> res['gamma'].y[0]

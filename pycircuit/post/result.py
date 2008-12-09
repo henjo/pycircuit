@@ -10,16 +10,18 @@ class ResultDict(object):
 
     def __dict__(self):
         return dict([(k, self[k]) for k in self.keys()])
+    def __delitem__(self, key):
+        raise NotImplementedError()
     def __getitem__(self, key):
-        raise Exception('Not implemented')
+        raise NotImplementedError()
     def __setitem__(self, key, value):
-        raise Exception('Not implemented')
+        raise NotImplementedError()
     def __len__(self):
-        raise Exception('Not implemented')
+        raise NotImplementedError()
     def __contains__(self, key):
         return key in self.keys()
     def keys(self):
-        raise Exception('Not implemented')
+        raise NotImplementedError()
 
     def __str__(self):
         s = 'ResultDict: %s'%(str(self.keys()))
@@ -28,10 +30,20 @@ class ResultDict(object):
     def __repr__(self):
         return self.__class__.__name__ + '(' + str(list(self.keys())) + ')'
 
-
     @property
     def table(self):
         return rsttable.toRSTtable([['Signal', 'Value']] + [(k, str(v)) for k,v in dict(self).items()])
+
+class IVResultDict(ResultDict):
+    """Result dictionary for storing voltages and currents"""
+    
+    def v(plus, minus=None):
+        """Returns voltage between the plus and minus node or potential of plus node"""
+        raise NotImplementedError()
+
+    def i(terminal):
+        """Returns the current flowing into the given terminal or branch object"""
+        raise NotImplementedError()
     
 if __name__ == "__main__":
     import doctest

@@ -13,7 +13,7 @@ from pycircuit.circuit.symbolicapprox import *
 
 c = SubCircuit()
 
-nin, nout, n1 = c.addNodes('in', 'out', 'n1')
+nin, nout, n1 = c.add_nodes('in', 'out', 'n1')
 
 gm1, gm2, gds1, gds2, Cgs1, Cgs2= [Symbol(symname, real=True) for symname in 'gm1,gm2,gds1,gds2,Cgs1,Cgs2'.split(',')]
 
@@ -25,7 +25,7 @@ c['M1'] = MOS(n1, nout, nin, nin, gm = gm1, gds = gds1, Cgs=0*Cgs2)
 
 twoportana = SymbolicTwoPortAnalysis(c, nin, gnd, nout, gnd, noise=True, noise_outquantity='i')
 
-res2port = twoportana.run(Symbol('s'), complexfreq=True)
+res2port = twoportana.solve(Symbol('s'), complexfreq=True)
 
 y11 = res2port['twoport'].Y[0,0]
 

@@ -19,7 +19,7 @@ class MOS(SubCircuit):
                   gm = Symbol('gm'), gds = Symbol('gds'), \
                   Cgs = Symbol('Cgs'), Cgd = 0*Symbol('Cgd'))
     >>> symtwoport = SymbolicTwoPortAnalysis(c, inp, gnd, out, gnd)
-    >>> res = symtwoport.run(freqs = array([Symbol('s')]), complexfreq=True)
+    >>> res = symtwoport.solve(freqs = array([Symbol('s')]), complexfreq=True)
     >>> print res['twoport']
     
     """

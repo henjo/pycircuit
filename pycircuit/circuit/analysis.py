@@ -7,12 +7,40 @@ from numpy import array, delete, linalg, size, zeros, concatenate, pi, \
 from scipy import optimize
 from circuit import Circuit, SubCircuit, VS,IS,R,C,L,Diode, gnd, defaultepar
 from pycircuit.post.waveform import Waveform
+from pycircuit.post.result import IVResultDict
 from pycircuit.post.internalresult import InternalResultDict
 from copy import copy
 
 class NoConvergenceError(Exception):
     pass
 
+class SingularMatrix(Exception):
+    pass
+
+class CircuitResult(IVResultDict, InternalResultDict):
+    """Result class for analyses that returns voltages and currents"""
+    def __init__(self, circuit, x):
+        super(CircuitResult, self).__init__()
+
+        nodes = circuit.nodes
+
+        if x != None:
+            for xvalue, node in zip(x[:len(nodes)], nodes):
+                self[circuit.get_node_name(node)] =  xvalue
+            for i, data in enumerate(zip(x[len(nodes):], circuit.branches)):
+                xvalue, branch = data
+                self['i' + str(i)] = xvalue
+
+        self.circuit = circuit
+        self.x = x
+
+    def v(self, plus, minus=None):
+        return self.circuit.extract_v(self.x, plus, minus)
+
+    def i(self, term):
+        """Return terminal current i(term)"""
+        return self.circuit.extract_i(self.x, term)    
+    
 def remove_row_col(matrices, n):
     result = []
     for A in matrices:
@@ -32,31 +60,9 @@ class Analysis(object):
     @staticmethod
     def toMatrix(array): return array.astype('complex')
         
-    def __init__(self, circuit):
-        self.c = circuit
-
+    def __init__(self, cir):
+        self.cir = cir
         self.result = None
-
-    def run(self, *args, **kvargs):
-        """Start the analysis and return the result as a Result object"""
-        #This should probably be changed to handle multiple-x since
-        #AC, Noise, Transient and DC-sweep generates several values
-        x = self.solve(*args, **kvargs)
-        
-        result = InternalResultDict()
-
-        nodes = self.c.nodes
-        for xvalue, node in zip(x[:len(nodes),0], nodes):
-            result[self.c.get_node_name(node)] =  xvalue
-        for i, data in enumerate(zip(x[len(nodes):, 0], self.c.branches)):
-            xvalue, branch = data
-            result['i' + str(i)] = xvalue
-
-        self.result = result
-        return result
-    
-    def getResult(self):
-        return self.result
 
 
 def fsolve(f, x0, fprime=None, args=(), full_output=False, maxiter=200,
@@ -109,7 +115,7 @@ class DC(Analysis):
     >>> c['vs'] = VS(n1, gnd, v=1.5)
     >>> c['R'] = R(n1, gnd, r=1e3)
     >>> dc = DC(c)
-    >>> res = dc.run()
+    >>> res = dc.solve()
     >>> dc.result.keys()
     ['i0', 'gnd', 'net1']
     >>> dc.result['net1']
@@ -122,7 +128,7 @@ class DC(Analysis):
     >>> c['is'] = IS(gnd, n1, i=57e-3)
     >>> c['D'] = Diode(n1, gnd)
     >>> dc = DC(c)
-    >>> res = dc.run()
+    >>> res = dc.solve()
     >>> dc.result.keys()
     ['i0', 'gnd', 'net1']
     >>> dc.result['net1']
@@ -135,7 +141,7 @@ class DC(Analysis):
     >>> c['R'] = R(n1, n2, r=1e1)
     >>> c['D'] = Diode(n2, gnd)
     >>> dc = DC(c)
-    >>> res = dc.run()
+    >>> res = dc.solve()
     >>> dc.result.keys()
     ['gnd', 'net2', 'net1']
     >>> dc.result['net2']
@@ -144,28 +150,28 @@ class DC(Analysis):
     """
     
     def solve(self, refnode=gnd):
-        n=self.c.n
+        n=self.cir.n
 #        x = zeros(n)
-#        G=self.c.G(x)
+#        G=self.cir.G(x)
         # G += eye(G.shape[0])*1e-2 # Could use this to add a Gmin to every node
-#        u=self.c.u(x)
+#        u=self.cir.u(x)
 
         ## Refer the voltages to the reference node by removing
         ## the rows and columns that corresponds to this node
-        irefnode = self.c.get_node_index(refnode)
+        irefnode = self.cir.get_node_index(refnode)
 #        G,u=remove_row_col((G,u), irefnode)
 
         # Solve i(x) + u = 0
         def func(x):
             x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
-            f =  self.c.i(x) + self.c.u(0)
+            f =  self.cir.i(x) + self.cir.u(0)
             (f,) = remove_row_col((f,), irefnode)
 #            print x,f.T[0]
             return array(f, dtype=float)
         def fprime(x):
             x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
-#            J = self.c.G(array([x]).T)
-            J = self.c.G(x)
+#            J = self.cir.G(array([x]).T)
+            J = self.cir.G(x)
             (J,) = remove_row_col((J,), irefnode)
 #            print "J:",array(J, dtype=float)
             return array(J, dtype=float)
@@ -201,7 +207,10 @@ class DC(Analysis):
         x = x.reshape((n-1,1))
         # Insert reference node voltage
         x = concatenate((x[:irefnode, :], array([[0.0]]), x[irefnode:,:]))
-        return x
+
+        self.result = CircuitResult(self.cir, x[:,0])
+
+        return self.result
 
 class Tran_spec(Analysis):
     """Simple transient analyis class.
@@ -236,7 +245,7 @@ class Tran_spec(Analysis):
     >>> c['R3'] = R(n2, gnd, r=100e3)
     >>> c['C'] = C(n2, gnd, c=1e-5)
     >>> tran = Tran_spec(c)
-    >>> res = tran.run(tend=20e-3)
+    >>> res = tran.solve(tend=20e-3)
     >>> tran.result[-1][1] #node 2 of last x
     6.29
 
@@ -249,7 +258,7 @@ class Tran_spec(Analysis):
     >>> c['L'] = L(n1, gnd, L=1e-3)
     >>> tran = Tran_spec(c)
     >>> nodeset = array([-1.0,0.,0.])
-    >>> res = tran.run(tend=100e-6,timestep=1e-6)
+    >>> res = tran.solve(tend=100e-6,timestep=1e-6)
     >>> tran.result[-1][0]
     0.951
 
@@ -262,11 +271,11 @@ class Tran_spec(Analysis):
     # much more work with presenting and storing results
     # try differential evolution for determining steady-state solution
 
-    def run(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-5):
+    def solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-5):
 
         X = [] # will contain a list of all x-vectors
-        irefnode=self.c.get_node_index(refnode)
-        n = self.c.n
+        irefnode=self.cir.get_node_index(refnode)
+        n = self.cir.n
         dt = timestep
 
         if x0 is None:
@@ -282,9 +291,9 @@ class Tran_spec(Analysis):
         times,dt=np.linspace(0,tend,num=int(tend/dt),endpoint=True,retstep=True)
 
         for t in times:
-            G=self.c.G(X[-1])
-            Geq=self.c.C(X[-1])/dt
-            u=self.c.u(X[-1])
+            G=self.cir.G(X[-1])
+            Geq=self.cir.C(X[-1])/dt
+            u=self.cir.u(X[-1])
             ueq=-dot(Geq,X[-2])
             G+=Geq
             u+=ueq
@@ -326,7 +335,7 @@ class Tran_imp(Analysis):
     >>> c['R3'] = R(n2, gnd, r=100e3)
     >>> c['C'] = C(n2, gnd, c=1e-5)
     >>> tran = Tran_imp(c)
-    >>> res = tran.run(tend=20e-3)
+    >>> res = tran.solve(tend=20e-3)
     >>> tran.result[-1][1] #node 2 of last x
     6.29
 
@@ -339,33 +348,33 @@ class Tran_imp(Analysis):
     >>> c['L'] = L(n1, gnd, L=1e-3)
     >>> tran = Tran_imp(c)
     >>> nodeset = array([-1.0,0.])
-    >>> res = tran.run(tend=100e-6,timestep=1e-6)
+    >>> res = tran.solve(tend=100e-6,timestep=1e-6)
     >>> tran.result[-1][0]
     0.951
 
     """
-    def solve(self, x0, dt, refnode=gnd):
-        n=self.c.n
+    def solve_timestep(self, x0, dt, refnode=gnd):
+        n=self.cir.n
         x0 = x0
         dt = dt
 
         ## Refer the voltages to the reference node by removing
         ## the rows and columns that corresponds to this node
-        irefnode = self.c.get_node_index(refnode)
+        irefnode = self.cir.get_node_index(refnode)
 
         def func(x):
             x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
             xlast = concatenate((x0[:irefnode], array([0.0]), x0[irefnode:]))
-            Geq = self.c.C(x)/dt
+            Geq = self.cir.C(x)/dt
             ueq = -dot(Geq,xlast)
-            f =  self.c.i(x) + dot(Geq, x) + self.c.u(x) + ueq
-#            f =  self.c.u(x) + ueq
+            f =  self.cir.i(x) + dot(Geq, x) + self.cir.u(x) + ueq
+#            f =  self.cir.u(x) + ueq
             (f,) = remove_row_col((f,), irefnode)
             return array(f, dtype=float)
         def fprime(x):
             x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
-            Geq = self.c.C(x)/dt
-            J = self.c.G(x) + Geq
+            Geq = self.cir.C(x)/dt
+            J = self.cir.G(x) + Geq
             (J,) = remove_row_col((J,), irefnode)
             return array(J, dtype=float)
 
@@ -377,11 +386,11 @@ class Tran_imp(Analysis):
         return x
 
 
-    def run(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6):
+    def solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6):
 
         X = [] # will contain a list of all x-vectors
-        irefnode=self.c.get_node_index(refnode)
-        n = self.c.n
+        irefnode=self.cir.get_node_index(refnode)
+        n = self.cir.n
         dt = timestep
         if x0 is None:
             x = zeros(n-1) #currently without reference node !
@@ -395,7 +404,7 @@ class Tran_imp(Analysis):
         times,dt=np.linspace(0,tend,num=int(tend/dt),endpoint=True,retstep=True)
 
         for t in times:
-            x=self.solve(X[-1],dt)
+            x=self.solve_timestep(X[-1],dt)
 #            print(x,t)
             X.append(copy(x))
         self.result = X
@@ -411,73 +420,36 @@ class AC(Analysis):
     >>> c['R'] = R(n1, gnd, r=1e3)
     >>> c['C'] = C(n1, gnd, c=1e-12)
     >>> ac = AC(c)
-    >>> res = ac.run(freqs=array([1e6, 2e6]))
-    >>> ac.result.keys()
+    >>> res = ac.solve(freqs=array([1e6, 2e6]))
+    >>> res.keys()
     ['i0', 'gnd', 'net1']
     >>> ac.result['net1']
     Waveform([ 1000000.  2000000.],[ 1.5+0.j  1.5+0.j])
-    >>> ac.v(n1, gnd)
+    >>> res.v(n1, gnd)
     Waveform([ 1000000.  2000000.],[ 1.5+0.j  1.5+0.j])
-    >>> ac.i('vs.minus')
+    >>> res.i('vs.minus')
     Waveform([ 1000000.  2000000.],[ 0.0015 +9.42477796e-06j  0.0015 +1.88495559e-05j])
 
     """
 
     numeric = True
 
-    def run(self, freqs, **kvargs):
-        x = self.solve(freqs, **kvargs)
-        
-        result = InternalResultDict()
-
-        nodes = self.c.nodes
-        for xvalue, node in zip(x[:len(nodes)], nodes):
-            if isiterable(freqs):
-                wave = Waveform(freqs, xvalue)
-            else:
-                wave = xvalue
-            result[self.c.get_node_name(node)] = wave
-        for i, data in enumerate(zip(x[len(nodes):], self.c.branches)):
-            xvalue, branch = data
-            if isiterable(freqs):
-                wave = Waveform(freqs, xvalue)
-            else:
-                wave = xvalue
-            result['i' + str(i)] = wave
-
-        self.result = result
-
-        return result
-
-    def v(self, node1, node2):
-        """Return the voltage v(node1, node2) from last run"""
-
-        if self.result != None:
-            return self.result[self.c.get_node_name(node1)] - \
-                   self.result[self.c.get_node_name(node2)]
-
-    def i(self, term):
-        """Return terminal current i(term) of a circuit element from last run"""
-        if self.result != None:
-            branch, sign = self.c.get_terminal_branch(term)
-            ibranch = self.c.branches.index(branch)
-            return sign * self.result['i%d'%ibranch]
-        
     def solve(self, freqs, refnode=gnd, complexfreq = False, u = None):
-        n = self.c.n
+        cir = self.cir
+        n = cir.n
         
         x = zeros(n) ## FIXME, this should be calculated from the dc analysis
         
-        G = self.c.G(x)
-        C = self.c.C(x)
+        G = cir.G(x)
+        C = cir.C(x)
 
         ## Allow for custom stimuli, mainly used by other analyses
         if u == None:
-            u = self.c.u(x, analysis='ac')
+            u = cir.u(x, analysis='ac')
 
         ## Refer the voltages to the reference node by removing
         ## the rows and columns that corresponds to this node
-        irefnode = self.c.get_node_index(refnode)
+        irefnode = cir.get_node_index(refnode)
         G,C,u = remove_row_col((G,C,u), irefnode)
 
         if complexfreq:
@@ -494,9 +466,13 @@ class AC(Analysis):
         if isiterable(freqs):
             out = [solvecircuit(s) for s in ss]
             # Swap frequency and x-vector dimensions
-            return array(out).swapaxes(0,1)
+            x = [Waveform(freqs, value) for value in array(out).swapaxes(0,1)]
         else:
-            return solvecircuit(ss)
+            x = solvecircuit(ss)
+
+        self.result = CircuitResult(cir, x)
+
+        return self.result
 
 class Noise(Analysis):
     """Noise analysis that calculates input and output referred noise.
@@ -512,7 +488,7 @@ class Noise(Analysis):
     >>> c['vs'] = VS(n1, gnd, vac=1.0)
     >>> c['R1'] = R(n1, n2, r=9e3)
     >>> c['R2'] = R(n2, gnd, r=1e3)
-    >>> res = Noise(c, inputsrc=c['vs'], outputnodes=(n2, gnd)).run(0)
+    >>> res = Noise(c, inputsrc=c['vs'], outputnodes=(n2, gnd)).solve(0)
     >>> res['Svnout']
     (1.4904e-17+0j)
     >>> res['Svninp']
@@ -551,8 +527,8 @@ class Noise(Analysis):
         self.outputsrc = outputsrc
         self.epar = defaultepar
 
-    def run(self, freqs, refnode=gnd, complexfreq=False):
-        n = self.c.n
+    def solve(self, freqs, refnode=gnd, complexfreq=False):
+        n = self.cir.n
         x = zeros(n) # This should be the x-vector at the DC operating point
 
         ## Complex frequency variable
@@ -562,26 +538,26 @@ class Noise(Analysis):
             s = 2j*pi*freqs
 
         epar = self.epar
-        G = self.c.G(x, epar)
-        C = self.c.C(x, epar)
-        CY = self.c.CY(x, imag(s),epar)
+        G = self.cir.G(x, epar)
+        C = self.cir.C(x, epar)
+        CY = self.cir.CY(x, imag(s),epar)
 
         # Calculate output voltage noise
         if self.outputnodes != None:
             u = zeros(n, dtype=int)
-            ioutp, ioutn = (self.c.get_node_index(node) 
+            ioutp, ioutn = (self.cir.get_node_index(node) 
                             for node in self.outputnodes)
             u[ioutp] = -1
             u[ioutn] = 1
         # Calculate output current noise
         else:
             u = zeros(n, dtype=int)
-            ibranch = self.c.get_branch_index(self.outputsrc.branch)
+            ibranch = self.cir.get_branch_index(self.outputsrc.branch)
             u[ibranch] = -1
 
         ## Refer the voltages to the gnd node by removing
         ## the rows and columns that corresponds to this node
-        irefnode = self.c.nodes.index(refnode)
+        irefnode = self.cir.nodes.index(refnode)
         G,C,u,CY = remove_row_col((G,C,u,CY), irefnode)
 
         # Calculate the reciprocal G and C matrices
@@ -609,12 +585,12 @@ class Noise(Analysis):
         # the input source to the output
         gain = None
         if isinstance(self.inputsrc, VS):
-            gain = self.c.extract_i(zm, self.inputsrc.branch, refnode=refnode, 
+            gain = self.cir.extract_i(zm, self.inputsrc.branch, refnode=refnode, 
                                     refnode_removed=True)
             result['gain'] = gain
             result['Svninp'] = xn2out / gain**2
         elif isinstance(self.inputsrc, IS):
-            gain = self.c.extract_v(zm, self.inputsrc.get_node('plus'), 
+            gain = self.cir.extract_v(zm, self.inputsrc.get_node('plus'), 
                                     refnode=refnode, refnode_removed=True)
             result['gain'] = gain
             result['Sininp'] = xn2out / gain**2
@@ -635,7 +611,7 @@ if __name__ == "__main__":
 #    c['D'] = Diode(n1, gnd)
 #    c['D'].G(array([[0,0]]).T)
 #    dc = DC(c)
-#    res = dc.run()
+#    res = dc.solve()
 
 
 

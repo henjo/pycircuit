@@ -10,8 +10,8 @@ p129 chapter 5.2 depicts a flowchart describing the basic algorithm used in this
 
 from numpy import array, delete, linalg, size, zeros, concatenate, pi, zeros, alltrue, maximum
 from analysis import Analysis, DC, remove_row_col, isiterable
-from pycircuit.param import Parameter, ParameterDict
-from pycircuit.internalresult import InternalResultSet, InternalResult
+from pycircuit.utilities.param import Parameter, ParameterDict
+from pycircuit.post.internalresult import InternalResultDict
 from pycircuit.result import Waveform
 import sympy
 from symbolicanalysis import SymbolicAC
