@@ -31,4 +31,31 @@ def test_resistor():
 
     assert npy.alltrue(res.CY([v1,v2]) == npy.zeros((2,2)))
 
+def test_capacitor():
+    """Verify simple capacitance model"""
+    
+    class Capacitor(Behavioural):
+         instparams = [Parameter(name='c', desc='Capacitance', unit='F')]
+         @staticmethod
+         def analog(plus, minus):
+             b = Branch(plus, minus)
+             return Contribution(b.I, dtt(c * b.V)),
+         
+    C = sympy.Symbol('C')
+
+    cap = Capacitor(c=C)
+    
+    v1,v2 = sympy.symbols(('v1', 'v2'))
+
+    assert cap.i([v1,v2]) == [0, 0]
+
+    assert cap.q([v1,v2]) == [C*(v1-v2), -C*(v1-v2)]
+
+    assert npy.alltrue(cap.C([v1,v2]) == 
+                       npy.array([[C, -C], [-C, C]]))
+
+    assert npy.alltrue(cap.G([v1,v2]) == npy.zeros((2,2)))
+
+    assert npy.alltrue(cap.CY([v1,v2]) == npy.zeros((2,2)))
+
 

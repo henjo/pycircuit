@@ -26,6 +26,10 @@ class Branch(circuit.Branch):
 class Parameter(param.Parameter, sympy.Symbol):
     pass
 
+class dtt(sympy.Function):
+    """Time derivative, d(x)/dt"""
+    pass
+
 class Quantity(circuit.Quantity, sympy.basic.Atom):
     pass
 
@@ -94,20 +98,25 @@ class Contribution(Statement):
 
         iterms = []
         uterms = []
+        qterms = []
         for term in terms:
             if isconstant(term):
                 uterms.append(term)
+            elif isinstance(term, dtt):
+                qterms.append(term.args[0])
             else:
                 iterms.append(term)
                 
         ## re-join terms 
         irhs = sympy.Add(*iterms)
         urhs = sympy.Add(*uterms)
+        qrhs = sympy.Add(*qterms)
            
         if self.lhs.quantity == 'I':
             if self.lhs.isbranch:
                 branch = self.lhs.branch_or_node
-                return ((branch.plus, irhs, urhs), (branch.minus, -irhs, -urhs))
+                return ((branch.plus, irhs, qrhs, urhs),
+                        (branch.minus, -irhs, -qrhs, -urhs))
 
 class NumpyPrinter(sympy.printing.StrPrinter):
     def _print_Matrix(self, expr):
@@ -157,14 +166,17 @@ def generate_code(cls):
     nodes = set()
     icontribs = {}
     ucontribs = {}
+    qcontribs = {}
     for statement in statements:
-        for node, icontrib, ucontrib in statement.contributions():
+        for node, icontrib, qcontrib, ucontrib in statement.contributions():
            if node in icontribs:
                icontribs[node] += icontrib
                ucontribs[node] += ucontrib
+               qcontribs[node] += qcontrib
            else:
                icontribs[node] = icontrib
                ucontribs[node] = ucontrib
+               qcontribs[node] = qcontrib
 
         nodes.update(statement.nodes())
 
@@ -179,7 +191,7 @@ def generate_code(cls):
     
     ## Create i, u and q vectors
     ivector = [icontribs[node].subs(substdict) for node in nodes]
-    qvector = list(npy.zeros(len(nodes))) ## FIXME
+    qvector = [qcontribs[node].subs(substdict) for node in nodes]
     uvector = [ucontribs[node] for node in nodes]
 
     ## Calculate G as Jacobian of i
@@ -267,8 +279,7 @@ def isconstant(expr):
         if isinstance(atom, Quantity):
             return False
     return True
-
-   
+    
 class Resistor(Behavioural):
       instparams = [Parameter(name='r', desc='Resistance', unit='ohm')]
       @staticmethod
