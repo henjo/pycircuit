@@ -8,7 +8,7 @@ from sympy import Symbol, simplify, ratsimp, sympify, factor, limit, solve
 from numpy import array, zeros
 from copy import copy
 from pycircuit.circuit.symbolicapprox import *
-    
+
 ## Multi FeedBack (MFB) Filter
 
 circuitMFB = SubCircuit()
@@ -42,15 +42,14 @@ print simplify(res['out']).limit('s',0)
 # # Remove soure to able to do an two port analysis
 del circuitMFB['VSource']
 # ## Perform twoport analysis with noise
- twoportana = SymbolicTwoPortAnalysis(circuitMFB, nin, gnd, nout, gnd, noise=True, noise_outquantity='i')
+twoportana = SymbolicTwoPortAnalysis(circuitMFB, nin, gnd, nout, gnd, noise=True, noise_outquantity='i')
 
- res2port = twoportana.solve(Symbol('s'), complexfreq=True)
+res2port = twoportana.solve(Symbol('s'), complexfreq=True)
 
- y11 = res2port['twoport'].Y[0,0]
+y11 = res2port['twoport'].Y[0,0]
 
 # print 'Input impedance:', 1/y11
 # #print 'Approx. input impedance', approx(1/y11, ['gds'], n = 1)
 # print 'Input referred current noise PSD, Sin:', ratsimp(res2port['Sin'])
 # print 'Approx. input referred current noise PSD, Sin:', approx(res2port['Sin'], ['C1'], n=1)
 # print 'Input referred voltage noise PSD, Svn:', ratsimp(res2port['Svn'])
-
