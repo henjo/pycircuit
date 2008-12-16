@@ -30,10 +30,10 @@ circuitMFB['VSource'] = VS(nin, gnd, vac=1)
 
 res = SymbolicAC(circuitMFB).solve(Symbol('s'), complexfreq=True)
 
-## DC Gain
+## AC Transfer function
 print simplify(res['out'])
 
-## AC Transfer function
+## DC Gain
 print simplify(res['out']).limit('s',0)
 
 ## Poles
