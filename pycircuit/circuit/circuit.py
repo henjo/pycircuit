@@ -495,7 +495,7 @@ class SubCircuit(Circuit):
                 self.nodes.append(node)
         self.branches.extend(element.branches)
 
-        self.updateNodeMap()
+        self.update_node_map()
 
     def __delitem__(self, instancename):
         """Removes instance from circuit
@@ -611,7 +611,7 @@ class SubCircuit(Circuit):
             if name != None:
                 return instname + '.' + name
         
-    def updateNodeMap(self):
+    def update_node_map(self):
         """Update the elementnodemap attribute"""
 
         self.elementnodemap = {}
