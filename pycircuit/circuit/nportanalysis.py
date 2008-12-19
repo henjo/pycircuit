@@ -42,7 +42,7 @@ class TwoPortAnalysis(Analysis):
         self.noise = noise
         self.noise_outquantity = noise_outquantity
 
-        self.method = 'sparam'
+        self.method = method
         
     def solve(self, freqs, complexfreq = False, refnode = gnd):
         result = InternalResultDict()

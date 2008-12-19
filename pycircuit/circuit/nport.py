@@ -314,7 +314,7 @@ class NPortS(NPort):
     @property
     def Z(self):
         """Return Z-parameter matrix"""
-        S = npy.mat(self.S)
+        S = npy.mat(self.S).astype(float)
         E = npy.mat(npy.eye(self.n, self.n))
         Zref = self.z0 * E
         Gref = 1 / npy.sqrt(npy.real(self.z0)) * E
