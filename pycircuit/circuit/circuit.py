@@ -765,7 +765,10 @@ class R(Circuit):
     """
     terminals = ['plus', 'minus']
     instparams = [Parameter(name='r', desc='Resistance', unit='ohm', 
-                            default=1e3)]
+                            default=1e3),
+                  Parameter(name='noisy', desc='No noise', unit='', 
+                            default=True),
+                  ]
 
     def G(self, x, epar=defaultepar):
         g = 1/self.ipar.r
@@ -773,10 +776,14 @@ class R(Circuit):
                         [-g, g]], dtype=object)
 
     def CY(self, x, w, epar=defaultepar):
-        if 'kT' in epar:
-            iPSD = 4*epar.kT / self.ipar.r
+        if self.ipar.noisy:
+            if 'kT' in epar:
+                iPSD = 4*epar.kT / self.ipar.r
+            else:
+                iPSD = 4*kboltzmann * epar.T / self.ipar.r
         else:
-            iPSD = 4*kboltzmann * epar.T / self.ipar.r
+            iPSD = 0
+
         return  array([[iPSD, -iPSD],
                        [-iPSD, iPSD]], dtype=object)
 

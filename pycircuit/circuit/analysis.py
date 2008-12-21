@@ -60,10 +60,10 @@ class Analysis(object):
     @staticmethod
     def toMatrix(array): return array.astype('complex')
         
-    def __init__(self, cir):
+    def __init__(self, cir, epar = defaultepar):
         self.cir = cir
         self.result = None
-
+        self.epar = copy(epar)
 
 def fsolve(f, x0, fprime=None, args=(), full_output=False, maxiter=200,
            xtol=1e-6, reltol=1e-4, abstol=1e-12):
@@ -474,6 +474,68 @@ class AC(Analysis):
 
         return self.result
 
+class NoiseTransimpedance(Analysis):
+    """Calculates transimpedance or current-gain vector
+
+    This function calculates the transimpedances from a current injected
+    in every node to a voltage or branch current in the circuit. If 
+    current=*True* the current gain is calculated.
+
+    The outbranches is a list of Branch objects and in the voltage mode
+    the output voltage is taken between the positive and negative node of
+    the branch. The result is a list of transimpedance or current-gain
+    vectors.
+
+    Note, the element corresponding the reference node is eliminated in the
+    result
+
+    """
+    def solve(self, freqs, outbranches, currentoutput=False,
+              complexfreq=False, refnode=gnd):
+        n = self.cir.n
+        x = zeros(n) # This should be the x-vector at the DC operating point
+
+        ## Complex frequency variable
+        if complexfreq:
+            s = freqs
+        else:
+            s = 2j*pi*freqs
+
+        epar = self.epar
+        G = self.cir.G(x, epar)
+        C = self.cir.C(x, epar)
+
+        ## Refer the voltages to the gnd node by removing
+        ## the rows and columns that corresponds to this node
+        irefnode = self.cir.nodes.index(refnode)
+        G,C = remove_row_col((G,C), irefnode)
+
+        # Calculate the reciprocal G and C matrices
+        Yreciprocal = G.T + s*C.T
+
+        Yreciprocal = self.toMatrix(Yreciprocal)
+
+        result = []
+        for branch in outbranches:
+            ## Stimuli
+            if currentoutput:
+                u = zeros(n, dtype=int)
+                ibranch = self.cir.get_branch_index(branch)
+                u[ibranch] = -1
+            else:
+                u = zeros(n, dtype=int)
+                ## The signed is swapped because the u-vector appears in the lhs
+                u[self.cir.get_node_index(branch.plus)] = -1
+                u[self.cir.get_node_index(branch.minus)] = 1
+
+            u, = remove_row_col((u,), irefnode)
+
+            ## Calculate transimpedances from currents in each nodes to output
+            result.append(self.linearsolver(Yreciprocal, -u))
+
+        return result
+
+
 class Noise(Analysis):
     """Noise analysis that calculates input and output referred noise.
     
@@ -525,7 +587,6 @@ class Noise(Analysis):
         self.inputsrc = inputsrc
         self.outputnodes = outputnodes
         self.outputsrc = outputsrc
-        self.epar = defaultepar
 
     def solve(self, freqs, refnode=gnd, complexfreq=False):
         n = self.cir.n

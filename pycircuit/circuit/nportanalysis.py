@@ -1,6 +1,7 @@
 from nport import *
-from circuit import SubCircuit, gnd, R, VS, IS
-from analysis import Analysis, AC, Noise
+from circuit import SubCircuit, gnd, R, VS, IS, Branch
+from analysis import Analysis, AC, Noise, NoiseTransimpedance, remove_row_col,\
+    defaultepar
 from pycircuit.post.internalresult import InternalResultDict
 
 class TwoPortAnalysis(Analysis):
@@ -34,8 +35,9 @@ class TwoPortAnalysis(Analysis):
     NoiseAnalysis = Noise
     
     def __init__(self, circuit, inp, inn, outp, outn, noise = False, 
-                 noise_outquantity = 'v', method = 'sparam'):
-        self.c = circuit
+                 noise_outquantity = 'v', method = 'sparam', 
+                 epar = defaultepar):
+        super(TwoPortAnalysis, self).__init__(circuit, epar = epar)
 
         self.ports = (inp, inn), (outp, outn)
 
@@ -62,10 +64,10 @@ class TwoPortAnalysis(Analysis):
         if self.noise:
             (inp, inn), (outp, outn) = self.ports
             
-            circuit_vs = copy(self.c)
+            circuit_vs = copy(self.cir)
             circuit_vs['VS_TwoPort'] = VS(inp, inn, vac = 1)
             
-            circuit_cs = copy(self.c)
+            circuit_cs = copy(self.cir)
             circuit_cs['IS_TwoPort'] = IS(inp, inn, iac = 1)
             
             if self.noise_outquantity == 'i':
@@ -150,7 +152,6 @@ class TwoPortAnalysis(Analysis):
         ##
         ## 
         # Reference impedance
-        import sympy
         r0 = 1
 
         N = len(self.ports)
@@ -160,7 +161,7 @@ class TwoPortAnalysis(Analysis):
         S = npy.zeros((N,N), dtype=object)
         
         for n, sourceport in enumerate(self.ports):
-            circuit = copy(self.c)
+            circuit = copy(self.cir)
             
             vs_plus = circuit.add_node('vs_plus')
             
@@ -184,14 +185,58 @@ class TwoPortAnalysis(Analysis):
                 else:
                     S[k,n] = res.v(port[0], port[1])
 
-        return NPortS(S, z0=r0)
+        ## Find noise wave correlation matrix
+        ## The method works as follows:
+        ## 1. terminate all ports with z0
+        ## 2. calculate transimpedances from a current source in each node
+        ##    to the port voltages by using the adjoint Y-matrix.
+        ##    As seen above the outgoing wave b is b=V(port_k) / sqrt(z0)
+        ##    for a terminated port.
+        ## 3. Form a transform matrix T where the columns are the transimpedance
+        ##    vectors divided by sqrt(z0)
+        ## 4. Calculate the correlation matrix as:
+        ##    CS = T * CY * T+
+        
+        circuit = copy(self.cir)
+
+        ## Terminate ports
+        for k, port in enumerate(self.ports):
+            circuit['_rl%d'%k] = R(port[0], port[1], r = r0, noisy = False)
+        
+        ## Calculate transimpedances
+        branchlist = [Branch(*port) for port in self.ports]
+        
+        refnode = self.ports[0][1]
+        zmlist = NoiseTransimpedance(circuit).solve(freqs,
+                                                    branchlist,
+                                                    refnode = self.ports[0][1], 
+                                                    complexfreq = complexfreq)
+
+        T = npy.matrix(zmlist) / npy.sqrt(r0)
+        
+        ## Complex frequency variable
+        if complexfreq:
+            s = freqs
+        else:
+            s = 2j*npy.pi*freqs
+
+        ## Calculate CY of circuit
+        x = npy.zeros(circuit.n)
+        CY = circuit.CY(x, npy.imag(s), epar = self.epar)
+        irefnode = circuit.get_node_index(refnode)
+        CY, = remove_row_col((CY,), irefnode)
+
+        ## Calculate noise wave correlation matrix
+        CS = npy.array(T * CY * T.H)
+
+        return NPortS(S, CS, z0=r0)
 
     def solve_abcd(self, freqs, refnode = gnd, complexfreq = False):
         (inp, inn), (outp, outn) = self.ports
                 
         ## Add voltage source at input port and create
         ## copies with output open and shorted respectively
-        circuit_vs_open = copy(self.c)
+        circuit_vs_open = copy(self.cir)
 
         circuit_vs_open['VS_TwoPort'] = VS(inp, inn, vac=1)
 
