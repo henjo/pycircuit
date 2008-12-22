@@ -56,7 +56,6 @@ class ParameterDict(object):
         newpd.append(*parameters)
         newpd.set(**kvargs)
 
-        print newpd._parameters is self._parameters
         return newpd
 
     def __getitem__(self, key):
