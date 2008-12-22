@@ -49,9 +49,14 @@ class ParameterDict(object):
             return self.__dict__[param]
 
     def copy(self, *parameters, **kvargs):
-        newpd = copy.copy(self)
+        newpd = ParameterDict()
+        newpd.__dict__ = copy.copy(self.__dict__)
+        newpd._parameters = copy.copy(self._parameters)
+        newpd._paramnames = copy.copy(self._paramnames)
         newpd.append(*parameters)
         newpd.set(**kvargs)
+
+        print newpd._parameters is self._parameters
         return newpd
 
     def __getitem__(self, key):
