@@ -108,8 +108,43 @@ def test_passive():
 
     for nport in nports:
         nport.passive = True
-        noisynport = nport.noisy_nport()
+        noisynport = nport.noisy_passive_nport()
 
         assert_array_almost_equal(noisynport.CY.astype(float), CYref)
 
     
+def test_parallel():
+    nports = NPortY(Yref), NPortZ(Zref), \
+        NPortS(Sref), NPortA(Aref)
+
+    for nport in nports:
+        two_in_parallel = nport // nport
+        assert_array_almost_equal(two_in_parallel.Y.astype(float), 2*Yref)
+        assert_array_almost_equal(two_in_parallel.CY.astype(float), 2*CYref)
+
+def test_series():
+    nports = NPortY(Yref, CYref), NPortZ(Zref, CZref), \
+        NPortS(Sref, CSref), NPortA(Aref, CAref)
+
+    for nport in nports:
+        two_in_series = nport.series(nport)
+        assert_array_almost_equal(two_in_series.Z.astype(float), 2*Zref, 
+                                  decimal=4)
+        assert_array_almost_equal(two_in_series.CZ.astype(float), 2*CZref,
+                                  decimal=24)
+
+def test_cascade():
+    nports = NPortY(Yref, CYref), NPortZ(Zref, CZref), \
+        NPortS(Sref, CSref), NPortA(Aref, CAref)
+
+    A_cas_ref = npy.dot(Aref, Aref)
+    CA_cas_ref = NPortA(A_cas_ref, passive=True).noisy_passive_nport().CA
+
+    for nport in nports:
+        two_in_cascade = nport * nport
+        assert_array_almost_equal(two_in_cascade.A.astype(float), A_cas_ref, 
+                                  decimal=2)
+        assert_array_almost_equal(two_in_cascade.CA.astype(float), CA_cas_ref,
+                                  decimal=24)
+    
+

@@ -25,9 +25,15 @@ class NPort(object):
     """
     passive = False
 
+    def __init__(self, passive = False):
+        self.passive = passive
+    
     def __mul__(self, a):
         """Cascade of two n-ports"""
-        anport = NPortA(dot(self.A, a.A), dot(dot(self.A, a.CA), npy.conjugate(self.A).T) + self.CA )
+        selfA = npy.mat(self.A)
+        aA = npy.mat(a.A)
+        anport = NPortA(selfA * aA,
+                        selfA * npy.mat(a.CA) * selfA.H + self.CA )
         return self.__class__(anport)
 
     def __floordiv__(self, a):
@@ -59,32 +65,34 @@ class NPort(object):
         
         return self.__class__(znport)
 
-    def noisy_nport(self, T=290):
+    def noisy_passive_nport(self, T=290):
         """Returns an n-port with noise parameters set if passive"""
 
         if not self.passive:
-            raise ValueError("Cannot calculate noise-correlation matrix of non-passive n-port")
+            raise ValueError("Cannot calculate noise-correlation matrix of "
+                             "non-passive n-port")
             
         ynport = NPortY(self)
         
-        ynport.CY = 2 * constants.kboltzmann * T * npy.real(ynport.Y)
+        ynport.CY = 4 * constants.kboltzmann * T * npy.real(ynport.Y)
 
         return ynport        
 
 class NPortY(NPort):
     """Two-port class where the internal representation is the Y-parameters"""
     
-    def __init__(self, Y, CY = None):
+    def __init__(self, Y, CY = None, passive = False):
+        self.passive = passive
         if isinstance(Y, NPort):
             self.Y = Y.Y
             self.CY = Y.CY
         else:
-            self.Y = Y
+            self.Y = npy.array(Y)
         
             if CY == None:
                 self.CY = npy.zeros(npy.shape(self.Y))
             else:
-                self.CY = CY
+                self.CY = npy.array(CY)
 
         self.n = npy.size(self.Y,0)
         
@@ -135,17 +143,18 @@ class NPortY(NPort):
 class NPortZ(NPort):
     """Two-port class where the internal representation is the Z-parameters"""
     
-    def __init__(self, Z, CZ = None):
+    def __init__(self, Z, CZ = None, passive=False):
+        self.passive = passive
         if isinstance(Z, NPort):
             self.Z = Z.Z
-            self.CZ = Z.CZ
+            self.CZ = npy.array(Z.CZ)
         else:
-            self.Z = Z
+            self.Z = npy.array(Z)
         
             if CZ == None:
                 self.CZ = npy.zeros(npy.shape(self.Y))
             else:
-                self.CZ = CZ
+                self.CZ = npy.array(CZ)
 
         self.n = npy.size(self.Z,0)
 
@@ -189,22 +198,24 @@ class NPortZ(NPort):
     @property
     def CA(self):
        T = npy.matrix([[1, -self.A[0,0]], [0, -self.A[1,0]]])
-       return T * npy.mat(self.CZ) * T.H
+       return npy.array(T * npy.mat(self.CZ) * T.H)
 
 class NPortA(NPort):
     """Two-port class where the internal representation is the ABCD-parameters"""
 
-    def __init__(self, A, CA = None):
+    def __init__(self, A, CA = None, passive=False):
+        self.passive = passive
+
         if isinstance(A, NPort):
             self.A = A.A
             self.CA = A.CA
         else:
-            self.A = A
+            self.A = npy.array(A)
 
             if CA == None:
                 self.CA = npy.zeros(npy.shape(self.Y))
             else:
-                self.CA = CA
+                self.CA = npy.array(CA)
 
         if npy.shape(self.A) != (2,2):
             raise ValueError('Can only create ABCD-two ports')
@@ -217,7 +228,6 @@ class NPortA(NPort):
         """Return Z-parameter matrix"""
         A = self.A
         d = A[0,0] * A[1,1] - A[0,1] * A[1,0]
-
         return npy.array([[A[0,0] / A[1,0], d / A[1,0]],
                         [1.0 / A[1,0], A[1,1] / A[1,0]]])
     
@@ -259,9 +269,8 @@ class NPortA(NPort):
 
     @property
     def CZ(self):
-        Z = self.Z
+        Z = npy.mat(self.Z)
         T = npy.matrix([[1, -Z[0,0]], [0, -Z[1,0]]])
-
         return npy.array(T * npy.mat(self.CA) * T.H)
 
     @property
@@ -275,19 +284,21 @@ class NPortA(NPort):
 class NPortS(NPort):
     """Two-port class where the internal representation is the S-parameters"""
     
-    def __init__(self, S, CS = None, z0 = 50):
+    def __init__(self, S, CS = None, z0 = 50, passive=False):
+        self.passive = passive
+
         self.z0 = z0
         
         if isinstance(S, NPort):
             self.S = S.S
             self.CS = S.CS
         else:
-            self.S = S
+            self.S = npy.array(S)
         
             if CS == None:
                 self.CS = npy.zeros(npy.shape(self.S))
             else:
-                self.CS = CS
+                self.CS = npy.array(CS)
 
         self.n = npy.size(self.S,0)
 
@@ -306,7 +317,7 @@ class NPortS(NPort):
         
         a = ((1 + s[0,0]) * (1 - s[1,1]) + s[0,1]*s[1,0]) / (2 * s[1,0])
         b = z0 * ((1 + s[0,0]) * (1 + s[1,1]) - s[0,1]*s[1,0]) / (2 * s[1,0])
-        c = 1 / z0 * ((1 - s[0,0]) * (1 - s[1,1]) - s[0,1]*s[1,0]) / (2 * s[1,0])
+        c = 1. / z0 * ((1 - s[0,0]) * (1 - s[1,1]) - s[0,1]*s[1,0]) / (2 * s[1,0])
         d = ((1 - s[0,0]) * (1 + s[1,1]) + s[0,1]*s[1,0]) / (2 * s[1,0])
         
         return npy.array([[a,b],[c,d]], object)
@@ -335,14 +346,14 @@ class NPortS(NPort):
         y0 = 1. / self.z0
         E = npy.mat(npy.eye(self.n, self.n))
         T = (y0 * E + Y) / npy.sqrt(y0)
-        return T * npy.mat(self.CS) * T.H
+        return npy.array(T * npy.mat(self.CS) * T.H)
 
     @property
     def CZ(self):
         Z = self.Z
         E = npy.mat(npy.eye(self.n, self.n))
         T = (self.z0 * E + Z) / npy.sqrt(self.z0)
-        return T * npy.mat(self.CS) * T.H
+        return npy.array(T * npy.mat(self.CS) * T.H)
 
     @property
     def CA(self):
@@ -351,7 +362,7 @@ class NPortS(NPort):
         A = npy.mat(self.A)
         T = npy.matrix([[npy.sqrt(z0), -(A[0,1]+A[0,0]*z0)/npy.sqrt(z0)],
                         [-1/npy.sqrt(z0), -(A[1,1]+A[1,0]*z0)/npy.sqrt(z0)]])
-        return  T * npy.mat(self.CS) * T.H
+        return npy.array(T * npy.mat(self.CS) * T.H)
 
 
 if __name__ == "__main__":

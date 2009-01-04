@@ -1,7 +1,7 @@
 from nport import *
 from circuit import SubCircuit, gnd, R, VS, IS, Branch
-from analysis import Analysis, AC, Noise, NoiseTransimpedance, remove_row_col,\
-    defaultepar
+from analysis import Analysis, AC, Noise, TransimpedanceAnalysis, \
+    remove_row_col,defaultepar
 from pycircuit.post.internalresult import InternalResultDict
 
 class TwoPortAnalysis(Analysis):
@@ -33,10 +33,11 @@ class TwoPortAnalysis(Analysis):
     
     ACAnalysis = AC
     NoiseAnalysis = Noise
-    
+    TransimpedanceAnalysis = TransimpedanceAnalysis    
+
     def __init__(self, circuit, inp, inn, outp, outn, noise = False, 
                  noise_outquantity = 'v', method = 'sparam', 
-                 epar = defaultepar):
+                 epar = defaultepar.copy()):
         super(TwoPortAnalysis, self).__init__(circuit, epar = epar)
 
         self.ports = (inp, inn), (outp, outn)
@@ -75,25 +76,26 @@ class TwoPortAnalysis(Analysis):
                     src['VL'] = VS(outp, outn, vac = 0)
 
             if self.noise_outquantity == 'v':
-                res_v = self.NoiseAnalysis(circuit_vs, 
-                                           inputsrc=circuit_vs['VS_TwoPort'],
-                                           outputnodes=(outp, outn)
-                                           ).solve(freqs, complexfreq=complexfreq)
+                na = self.NoiseAnalysis(circuit_vs, 
+                                        inputsrc=circuit_vs['VS_TwoPort'],
+                                        outputnodes=(outp, outn))
+                res_v = na.solve(freqs, complexfreq=complexfreq)
 
-                res_i = self.NoiseAnalysis(circuit_cs, 
-                                           inputsrc=circuit_cs['IS_TwoPort'],
-                                           outputnodes=(outp, outn)
-                                           ).solve(freqs, complexfreq=complexfreq)
+                na = self.NoiseAnalysis(circuit_cs, 
+                                        inputsrc=circuit_cs['IS_TwoPort'],
+                                        outputnodes=(outp, outn))
+                res_i = na.solve(freqs, complexfreq=complexfreq)
             else:
-                res_v = self.NoiseAnalysis(circuit_vs, 
+                na = self.NoiseAnalysis(circuit_vs, 
                                            inputsrc=circuit_vs['VS_TwoPort'],
                                            outputsrc=circuit_vs['VL']
-                                           ).solve(freqs, complexfreq=complexfreq)
+                                           )
+                res_v = na.solve(freqs, complexfreq=complexfreq)
 
-                res_i = self.NoiseAnalysis(circuit_cs, 
-                                           inputsrc=circuit_cs['IS_TwoPort'],
-                                           outputsrc=circuit_cs['VL']
-                                           ).solve(freqs, complexfreq=complexfreq)
+                na = self.NoiseAnalysis(circuit_cs, 
+                                        inputsrc=circuit_cs['IS_TwoPort'],
+                                        outputsrc=circuit_cs['VL'])
+                res_i = na.solve(freqs, complexfreq=complexfreq)
 
             result['Svn'] = res_v['Svninp']
             result['Sin'] = res_i['Sininp']
@@ -207,12 +209,12 @@ class TwoPortAnalysis(Analysis):
         branchlist = [Branch(*port) for port in self.ports]
         
         refnode = self.ports[0][1]
-        zmlist = NoiseTransimpedance(circuit).solve(freqs,
+        zmlist = self.TransimpedanceAnalysis(circuit).solve(freqs,
                                                     branchlist,
                                                     refnode = self.ports[0][1], 
                                                     complexfreq = complexfreq)
 
-        T = npy.matrix(zmlist) / npy.sqrt(r0)
+        T = npy.matrix(zmlist) * r0**-0.5
         
         ## Complex frequency variable
         if complexfreq:

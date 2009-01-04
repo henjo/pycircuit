@@ -3,15 +3,15 @@
 
 import analysis
 from analysis import Analysis, remove_row_col
-from nport import TwoPortAnalysis
+from nportanalysis import TwoPortAnalysis
 from numpy import array, delete, linalg, size, zeros, concatenate, pi, asarray
 import circuit
 from circuit import *
 from copy import copy
 from pycircuit.post.internalresult import InternalResultDict
 import sympy
-from sympy import Symbol, Matrix, symbols, simplify, together, factor, cancel, exp, \
-    diff, Mul, factorial
+from sympy import Symbol, Matrix, symbols, simplify, together, factor, \
+    cancel, exp, diff, Mul, factorial
 from types import TupleType
 from pycircuit.utilities.param import Parameter, ParameterDict
 
@@ -39,7 +39,7 @@ class SymbolicAnalysis(Analysis):
     def toMatrix(array):
         return Matrix(array.tolist())
 
-class SymbolicAC(analysis.AC):
+class SymbolicAC(analysis.AC, SymbolicAnalysis):
     """Circuit analysis that calculates symbolic expressions of the unknowns
 
     >>> c = SubCircuit()
@@ -52,13 +52,9 @@ class SymbolicAC(analysis.AC):
     >>> res['i0']
     -V/R
     """
-    @staticmethod
-    def linearsolver(*args):
-        return symbolic_linsolve(*args)
 
-    @staticmethod
-    def toMatrix(array):
-        return Matrix(array.tolist())
+class SymbolicTransimpedanceAnalysis(SymbolicAnalysis,
+                                     analysis.TransimpedanceAnalysis): pass
 
 class SymbolicNoise(analysis.Noise):
     """Symbolic noise analysis that calculates input and output referred noise.
@@ -81,7 +77,7 @@ class SymbolicNoise(analysis.Noise):
     >>> simplify(res['Svnout'])
     4*R1*R2*kT/(R1 + R2)
     >>> simplify(res['Svninp'])
-    4*R1*kT*(-R1 - R2)**2/(R2*(R1 + R2))
+    (4*R1*R2*kT + 4*kT*R1**2)/R2
     >>> simplify(res['gain'] - R2 / (R1 + R2))
     0
     
@@ -96,7 +92,6 @@ class SymbolicNoise(analysis.Noise):
 
     def __init__(self, *args, **kvargs):
         analysis.Noise.__init__(self, *args, **kvargs)
-
         self.epar.append(Parameter('kT', default=Symbol('kT')))
 
 class SymbolicTwoPortAnalysis(TwoPortAnalysis):
@@ -116,21 +111,27 @@ class SymbolicTwoPortAnalysis(TwoPortAnalysis):
     >>> symnoise = SymbolicTwoPortAnalysis(c, n1, gnd, n2, gnd, noise=True)
     >>> res = symnoise.solve(freqs = array([Symbol('s')]), complexfreq=True)
     >>> simplify(res['mu'].y[0])
-    -R2/(-R1 - R2)
-    >>> res['gamma'].y[0]
+    R2/(R1 + R2)
+    >>> simplify(res['gamma'].y[0])
     1/R1
-    >>> res['zeta'].y[0]
+    >>> simplify(res['zeta'].y[0])
     R2
-    >>> res['beta'].y[0]
+    >>> simplify(res['beta'].y[0])
     1
-    >>> res['Svn']
-    4*kT*R1*(R2+R1)/R2
-    >>> res['Sin']
+    >>> simplify(res['Svn'])
+    (4*R1*R2*kT + 4*kT*R1**2)/R2
+    >>> simplify(res['Sin'])
     4*kT/R2
+
     """
     
+    def __init__(self, *args, **kvargs):
+        TwoPortAnalysis.__init__(self, *args, **kvargs)
+        self.epar.append(Parameter('kT', default=Symbol('kT')))
+
     ACAnalysis = SymbolicAC
     NoiseAnalysis = SymbolicNoise
+    TransimpedanceAnalysis = SymbolicTransimpedanceAnalysis
 
 if __name__ == "__main__":
     import doctest

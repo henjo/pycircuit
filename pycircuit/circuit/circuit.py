@@ -9,9 +9,7 @@ from copy import copy
 import types
 
 class Node(object):
-    """A node is a region in an electric circuit where the voltage is the same.
-    
-    """
+    """A Node object represents a point in an electric circuit"""
     def __init__(self, name=None):
         self.name = name
 
@@ -249,7 +247,7 @@ class Circuit(object):
             self.nodenames[terminal] = node
 
     def save_current(self, terminal):
-        """Returns a circuit where the given terminal current is saved
+        """Returns a circuit where a current probe is added at a terminal
         
         >>> cir = R(Node('n1'), gnd, r=1e3)
         >>> newcir = cir.save_current('plus')
@@ -277,7 +275,7 @@ class Circuit(object):
 
     def C(self, x, epar=defaultepar):
         """Calculate the C (transcapacitance) matrix given the x-vector"""
-        return zeros(self.n, dtype=object)
+        return zeros((self.n, self.n), dtype=object)
 
     def u(self, t=0.0, epar=defaultepar, analysis=None):
         """Calculate the u column-vector of the circuit at time t
@@ -406,9 +404,10 @@ class Circuit(object):
 
         
 
-    def extract_i(self, x, branch_or_term, refnode = gnd,
-                  refnode_removed = False):
-        """Extract branch current from the given x-vector.
+    def extract_i(self, x, branch_or_term, xdot = None,
+                  refnode = gnd, refnode_removed = False,
+                  linearized = False, xdcop = None):
+        """Extract branch or terminal current from the given x-vector.
 
         *x* 
            x-vector
@@ -416,12 +415,21 @@ class Circuit(object):
         *branch_or_term*
            Branch object or terminal name
 
+        *xdot*
+           dx/dt vector. this is needed if there is no branch defined at the terminal
+
         *refnode*
            reference node
 
         *refnode_removed*
            If set the refernce node is expected to be removed from the x-vector
         
+        *linearized*
+           Set to True if the AC current is wanted
+
+        *xdcop*
+           *xcdop* is the DC operation point x-vector if linearized == True
+
         >>> c = SubCircuit()
         >>> net1 = c.add_node('net1')
         >>> c['vs'] = VS(net1, gnd)
@@ -432,7 +440,43 @@ class Circuit(object):
         
         """
         if type(branch_or_term) is types.StringType:
-            branch, sign = self.get_terminal_branch(branch_or_term)
+            ## Calculate current going in to the terminal as
+            ## self.i(x)[terminal_node] + u(t) + dq(x)/dt. 
+            ## This will work since i(x) returns
+            ## the sum of all the currents going out from the
+            ## terminal node that originates from devices within
+            ## the circuit. According to Kirchoff's current law
+            ## of the terminal node
+            ## -I_external + sum(I_internal_k) = 0
+            ## Where I_external represents the current coming from
+            ## outside the circuit going *in* to the terminal node,
+            ## I_internal_k represents one of the currents that flows
+            ## from the terminal node to a device within the circuit.
+            ## So now we can calculate I_external as 
+            ## I_external = sum(I_internal_k) = 
+            ## self.I(x)[terminal_node] + u(t) + dq(x)/dt =
+            ## self.I(x)[terminal_node] + u(t) + sum(dq(x)/dx_k * dx_k/dt) =
+            ## self.I(x)[terminal_node] + u(t) + C(x) * dx/dt
+
+            branch_sign = self.get_terminal_branch(branch_or_term)
+            
+            if branch_sign != None:
+                branch, sign = branch_sign
+            else:
+                terminal_node = self.nodenames[branch_or_term]
+                
+                if xdot == None:
+                    raise ValueError('xdot argument must not be None if no branch'
+                                     ' is connected to the terminal')
+
+                terminal_node_index = self.get_node_index(terminal_node)
+
+                if linearized:
+                    return dot(self.G(xdcop)[terminal_node_index], x) + \
+                        dot(self.C(xdcop)[terminal_node_index], xdot)
+                else:
+                    return self.i(x)[terminal_node_index] + \
+                        dot(self.C(x)[terminal_node_index], xdot)
         else:
             branch = branch_or_term
             sign = 1
@@ -662,6 +706,38 @@ class SubCircuit(Circuit):
             raise Exception('Invalid terminal name: %s'%terminal)
         
         return self
+
+    def extract_i(self, x, branch_or_term, xdot = None,
+                  refnode = gnd, refnode_removed = False, 
+                  linearized = False, xdcop = None):
+        if type(branch_or_term) is types.StringType:
+            if self.get_terminal_branch(branch_or_term) == None:
+
+                hierlevels = [part for part in branch_or_term.split('.')]
+
+                if len(hierlevels) > 1:
+                    instance_name = hierlevels[0]
+                    instance = self.elements[instance_name]
+                    terminal_name = '.'.join(hierlevels[1:])
+
+                    ## Get slice of x-vector for the instance
+                    nodemap = self.elementnodemap[instance_name]
+
+                    subx = x[nodemap]
+
+                    if xdot != None:
+                        subxdot = xdot[nodemap]
+                    else:
+                        subxdot = None
+
+                    return instance.extract_i(subx, terminal_name, xdot = subxdot, 
+                                              refnode=refnode, refnode_removed=refnode_removed,
+                                              linearized = linearized, xdcop = xdcop)
+
+
+        return Circuit.extract_i(self, x, branch_or_term, xdot = xdot,
+                                 refnode=refnode, refnode_removed=refnode_removed,
+                                 linearized = linearized, xdcop = xdcop)
         
     def _add_element_submatrices(self, methodname, x, args):
         n=self.n

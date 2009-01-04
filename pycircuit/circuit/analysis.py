@@ -19,7 +19,7 @@ class SingularMatrix(Exception):
 
 class CircuitResult(IVResultDict, InternalResultDict):
     """Result class for analyses that returns voltages and currents"""
-    def __init__(self, circuit, x):
+    def __init__(self, circuit, x, xdot = None):
         super(CircuitResult, self).__init__()
 
         nodes = circuit.nodes
@@ -33,13 +33,26 @@ class CircuitResult(IVResultDict, InternalResultDict):
 
         self.circuit = circuit
         self.x = x
+        self.xdot = xdot
 
     def v(self, plus, minus=None):
         return self.circuit.extract_v(self.x, plus, minus)
 
     def i(self, term):
         """Return terminal current i(term)"""
-        return self.circuit.extract_i(self.x, term)    
+        return self.circuit.extract_i(self.x, term, xdot = self.xdot)    
+
+class CircuitResultAC(CircuitResult):
+    """Result class for analyses that returns voltages and currents"""
+    def __init__(self, circuit, xdcop, x, xdot = None):
+        super(CircuitResultAC, self).__init__(circuit, x, xdot)
+        self.xdcop = xdcop
+
+    def i(self, term):
+        """Return terminal current i(term)"""
+        return self.circuit.extract_i(self.x, term, xdot = self.xdot, linearized=True, 
+                                      xdcop = self.xdcop)    
+
     
 def remove_row_col(matrices, n):
     result = []
@@ -60,10 +73,10 @@ class Analysis(object):
     @staticmethod
     def toMatrix(array): return array.astype('complex')
         
-    def __init__(self, cir, epar = defaultepar):
+    def __init__(self, cir, epar = defaultepar.copy()):
         self.cir = cir
         self.result = None
-        self.epar = copy(epar)
+        self.epar = epar
 
 def fsolve(f, x0, fprime=None, args=(), full_output=False, maxiter=200,
            xtol=1e-6, reltol=1e-4, abstol=1e-12):
@@ -458,7 +471,7 @@ class AC(Analysis):
             ss = 2j*pi*freqs
 
         def solvecircuit(s):
-            x = self.linearsolver(s*C + G, -u) 
+            x = self.linearsolver(s*C + G, -u)
 
             # Insert reference node voltage
             return concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
@@ -466,15 +479,15 @@ class AC(Analysis):
         if isiterable(freqs):
             out = [solvecircuit(s) for s in ss]
             # Swap frequency and x-vector dimensions
-            x = [Waveform(freqs, value) for value in array(out).swapaxes(0,1)]
+            xac = [Waveform(freqs, value) for value in array(out).swapaxes(0,1)]
         else:
-            x = solvecircuit(ss)
+            xac = solvecircuit(ss)
 
-        self.result = CircuitResult(cir, x)
+        self.result = CircuitResultAC(cir, x, xac, ss * xac)
 
         return self.result
 
-class NoiseTransimpedance(Analysis):
+class TransimpedanceAnalysis(Analysis):
     """Calculates transimpedance or current-gain vector
 
     This function calculates the transimpedances from a current injected
