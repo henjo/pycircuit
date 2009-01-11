@@ -34,6 +34,27 @@ def generate_testcircuit():
 
     return subc
 
+def test_print_netlist():
+    """Test printing of netlist"""
+
+    subc = generate_testcircuit()
+
+    netlist = subc.netlist()
+    print netlist
+    
+    refnetlist = \
+""".subckt MySubC p m
+  V1 internal gnd! VS v=1 vac=1 noisePSD=0
+  R1 p internal R r=1000.0 noisy=True
+  R2 internal m R r=1000.0 noisy=True
+  R3 internal gnd! R r=1000.0 noisy=True
+.ends
+I1 plus minus MySubC 
+R1 plus minus R r=1000.0 noisy=True
+R3 plus plus R r=1000.0 noisy=True"""
+
+    assert_equal(netlist, refnetlist)    
+
 def test_subcircuit_nodes():
     """Test node consistency of hierarchical circuit"""
     
@@ -56,7 +77,7 @@ def test_subcircuit_nodes():
 
     ## Check local names of I1
     assert_equal(subc['I1'].nodenames,
-                 {'p': Node('plus'), 'm': Node('minus'),
+                 {'p': Node('p'), 'm': Node('m'),
                   'internal': Node('internal'),
                   'gnd': gnd})
 
@@ -66,11 +87,14 @@ def test_subcircuit_nodes():
 
     ## Check nodes of I1
     assert_equal(set(subc['I1'].nodes), 
-                 set([Node('plus'), Node('minus'), Node('internal'), 
+                 set([Node('p'), Node('m'), Node('internal'), 
                       gnd]))
 
     ## Check that first nodes of I1 are terminal nodes 
-    assert_equal(subc['I1'].nodes[0:2], [Node('plus'), Node('minus')])
+    assert_equal(subc['I1'].nodes[0:2], [Node('p'), Node('m')])
+
+    ## Check terminal map
+    assert_equal(subc.term_node_map['I1'], {'p':Node('plus'), 'm':Node('minus')})
 
     ## delete I1
     del subc['I1']
@@ -83,10 +107,12 @@ def test_subcircuit_nodes():
     assert_equal(subc.nodenames,
                  {'plus': Node('plus'), 'minus': Node('minus')})
     
+    ## Check terminal map
+    assert_false('I1' in subc.term_node_map)
 
     ## Check nodes of R3
     assert_equal(subc['R3'].nodes,
-                 [Node('plus')])
+                 [Node('plus'), Node('minus')])
 
 def test_add_nodes_implicitly():
     subc = SubCircuit()
@@ -187,3 +213,11 @@ def test_adddel_subcircuit_element():
     assert_equal(cir.nodes, [n1,gnd])
     assert_equal(cir.branches, [])
 
+def test_short_resistor():
+    """Test shorting of instance terminals"""
+    cir = SubCircuit()
+
+    cir['R1'] = R(gnd, gnd)
+    
+    assert_equal(cir.G(zeros(1)), array([0]))
+    
