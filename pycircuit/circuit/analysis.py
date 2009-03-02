@@ -42,6 +42,11 @@ class CircuitResult(IVResultDict, InternalResultDict):
         """Return terminal current i(term)"""
         return self.circuit.extract_i(self.x, term, xdot = self.xdot)    
 
+class CircuitResultDC(CircuitResult):
+    def i(self, term):
+        """Return terminal current i(term)"""
+        return self.circuit.extract_i(self.x, term, xdot = zeros(self.x.shape))
+
 class CircuitResultAC(CircuitResult):
     """Result class for analyses that returns voltages and currents"""
     def __init__(self, circuit, xdcop, x, xdot = None):
@@ -50,7 +55,8 @@ class CircuitResultAC(CircuitResult):
 
     def i(self, term):
         """Return terminal current i(term)"""
-        return self.circuit.extract_i(self.x, term, xdot = self.xdot, linearized=True, 
+        return self.circuit.extract_i(self.x, term, xdot = self.xdot, 
+                                      linearized=True, 
                                       xdcop = self.xdcop)    
 
     
@@ -221,7 +227,7 @@ class DC(Analysis):
         # Insert reference node voltage
         x = concatenate((x[:irefnode, :], array([[0.0]]), x[irefnode:,:]))
 
-        self.result = CircuitResult(self.cir, x[:,0])
+        self.result = CircuitResultDC(self.cir, x[:,0])
 
         return self.result
 

@@ -34,4 +34,3 @@ print 'Input impedance:', 1/y11
 print 'Input referred current noise PSD, Sin:', ratsimp(res2port['Sin'])
 print 'Approx. input referred current noise PSD, Sin:', approx(res2port['Sin'], ['gds'], n=1)
 print 'Input referred voltage noise PSD, Svn:', ratsimp(res2port['Svn'])
-

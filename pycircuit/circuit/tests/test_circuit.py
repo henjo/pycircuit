@@ -8,7 +8,8 @@ from pycircuit.circuit.circuit import *
 from pycircuit.circuit.symbolicanalysis import SymbolicAC
 import sympy
 import numpy as npy
-from nose.tools import *
+from numpy.testing import assert_array_almost_equal
+
 
 def generate_testcircuit():
     subc = SubCircuit()

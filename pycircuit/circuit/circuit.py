@@ -10,7 +10,6 @@ from constants import *
 from copy import copy
 import types
 
-
 class Node(object):
     """A Node object represents a point in an electric circuit"""
     def __init__(self, name=None, isglobal = False):
@@ -110,47 +109,50 @@ class Circuit(object):
     is instanciated, the outside nodes are passed to the object via the 
     terminals.
 
-    Attributes
-    ----------
-    *nodes*
-      A list that contains Node objects. The first k nodes are terminal nodes
-      where k is the number of terminals.
+    **Attributes**
+        *nodes*
+          A list that contains Node objects. The first k nodes are terminal 
+          nodes where k is the number of terminals.
 
-    *branches*
-      list of Branch objects. The solver will solve for the 
-      currents through the branches.
+        *branches*
+          list of Branch objects. The solver will solve for the 
+          currents through the branches.
 
-    *terminals*
-      list that contains terminal names
+        *terminals*
+          list that contains terminal names
 
-    *instparams*
-      A list of valid instance parameters (Parameter objects)
+        *instparams*
+          A list of valid instance parameters (Parameter objects)
 
-    *mpar*
-      A class variable with a ParameterDict containing model specific parameters
+        *mpar*
+          A class variable with a ParameterDict containing model specific 
+          parameters
 
-    *ipar*
-      A ParameterDict containing instance specific parameters
+        *ipar*
+          A ParameterDict containing instance specific parameters
 
-    *nodenames*
-      A dictionary that maps a local node name to the node object in
-      nodes. If the node is connnected to superior hierarchy levels
-      through a terminal the terminal name must be the same as the
-      local node name
+        *nodenames*
+          A dictionary that maps a local node name to the node object in
+          nodes. If the node is connnected to superior hierarchy levels
+          through a terminal the terminal name must be the same as the
+          local node name
 
-    *terminalhook*
-      Temporary storage of information about what nodes in the superior
-      hierarchy level the terminals should be connected to during 
-      instantiation. It is a dictionary where the keys are terminal names
-      and the values are node objects. The value is None when it is not used.
-      The only reason for this attribute is to allow for bottom-up 
-      instantiations like: cir1['I1'] = R('n1', gnd)
+        *terminalhook*
+          Temporary storage of information about what nodes in the superior
+          hierarchy level the terminals should be connected to during 
+          instantiation. It is a dictionary where the keys are terminal names
+          and the values are node objects. The value is None when it is not 
+          used. The only reason for this attribute is to allow for bottom-up 
+          instantiations like: cir1['I1'] = R('n1', gnd)
 
-    *linear* 
-      A boolean value that is true if i(x) and q(x) are linear 
-      functions
+        *linear* 
+          A boolean value that is true if i(x) and q(x) are linear 
+          functions
 
     """
+
+    
+    nodes = []
     terminals = []
     mpar = ParameterDict()
     instparams = []
@@ -589,7 +591,8 @@ class Circuit(object):
             else:
                 yield Node(instancename + '.' + instancenode.name)
 
-    def _instance_branches(self, instance, instancename, instancebranches = None):
+    def _instance_branches(self, instance, instancename, 
+                           instancebranches = None):
         """Return circuit branches from instance branches
         """
         if instancebranches == None:
@@ -610,26 +613,26 @@ class SubCircuit(Circuit):
     """
     SubCircuit is container for circuit instances
 
-    Attributes
-    ----------
-    *elements* 
-      dictionary of Circuit objects keyed by its instance name
-    
-    *elementnodemap*
-      list of translation lists that translate between node indices of the
-      elements to the node index in the SubCircuit object for each element
+    **Attributes**
+        *elements* 
+          dictionary of Circuit objects keyed by its instance name
 
-    *term_node_map* 
-      dictionary of instance terminal to node object maps keyed by the instance
-      name. the map is itself a dictionary keyed by the terminal names
+        *elementnodemap*
+          list of translation lists which translate between node indices of the
+          elements and node indices of the parent
+
+        *term_node_map* 
+          dictionary of instance terminal to node object maps keyed by the 
+          instance name. The maps are themselves dictionaries keyed by 
+          the terminal names.
 
     """
     def __init__(self, *args, **kvargs):
         Circuit.__init__(self, *args, **kvargs)
         self.elements = {}
         self.elementnodemap = {}
-        self._rep_nodemap_list = {}
         self.term_node_map = {}
+        self._rep_nodemap_list = {}
         
     def netlist(self, top = True):
         """
@@ -1155,7 +1158,8 @@ class IProbe(Circuit):
 
     def __init__(self, plus, minus, **kvargs):
         Circuit.__init__(self, plus, minus, **kvargs)
-        self.branches.append(Branch(self.nodenames['plus'], self.nodenames['minus']))
+        self.branches.append(Branch(self.nodenames['plus'], 
+                                    self.nodenames['minus']))
 
     def G(self, x, epar=defaultepar):
         return array([[0 , 0, 1],
@@ -1191,7 +1195,8 @@ class VS(Circuit):
 
     def __init__(self, plus, minus, **kvargs):
         Circuit.__init__(self, plus, minus, **kvargs)
-        self.branches.append(Branch(self.nodenames['plus'], self.nodenames['minus']))
+        self.branches.append(Branch(self.nodenames['plus'], 
+                                    self.nodenames['minus']))
 
     def G(self, x, epar=defaultepar):
         return array([[0 , 0, 1],

@@ -1,8 +1,8 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
-import pycircuit.result as result
-import pycircuit.waveform as waveform
+import pycircuit.post.result as result
+import pycircuit.post.waveform as waveform
 import psf
 import os
 import re
