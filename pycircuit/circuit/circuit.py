@@ -247,6 +247,10 @@ class Circuit(object):
 
     def get_node_index(self, node):
         """Get row in the x vector of a node instance"""
+
+        if not isinstance(node, Node):
+            node = Node(str(node))
+
         return self.nodes.index(node)
 
     def get_branch_index(self, branch):
