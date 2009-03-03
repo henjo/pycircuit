@@ -486,10 +486,12 @@ class AC(Analysis):
             out = [solvecircuit(s) for s in ss]
             # Swap frequency and x-vector dimensions
             xac = [Waveform(freqs, value) for value in array(out).swapaxes(0,1)]
+            xacdot = [ss * xi for xi in xac]
         else:
             xac = solvecircuit(ss)
+            xacdot = ss * xac
 
-        self.result = CircuitResultAC(cir, x, xac, ss * xac)
+        self.result = CircuitResultAC(cir, x, xac, xacdot)
 
         return self.result
 
