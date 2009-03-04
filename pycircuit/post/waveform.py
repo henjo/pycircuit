@@ -138,25 +138,22 @@ class Waveform(object):
         return Waveform(newxlist, copy(self._y), xlabels = newxlabels, 
                         yunit = self.yunit, ylabel = self.ylabel)
 
-    # Operations on Waveform objects
-    def binaryop(self, op, a):
+
+    ## Operations on Waveform objects
+    def binaryop(self, op, a, ylabel = None, yunit = None):
         """Apply binary operator between self and a"""
         if isinstance(a, Waveform):
             assert(reduce(operator.__and__, map(lambda x,y: alltrue(x==y), 
                                                 self._xlist, a._xlist))), \
                                             "x-axes of the arguments must be the same"
-            return Waveform(self._xlist, op(self._y, a._y), xlabels = self.xlabels)
+            ya = a._y
         else:
-            return Waveform(self._xlist, op(self._y, a), xlabels = self.xlabels)
+            ya = a 
 
-    def rbinaryop(self, op, a):
-        """Apply binary operator between a and self"""
-        if isinstance(a, Waveform):
-            assert(reduce(operator.__and__, 
-                          map(lambda x,y: alltrue(x==y), self._xlist, a._xlist)))
-            return Waveform(self._xlist, op(a._y, self._y), xlabels = self.xlabels)
-        else:
-            return Waveform(self._xlist, op(a, self._y), xlabels = self.xlabels)
+        return Waveform(self._xlist, op(self._y, ya), 
+                        xlabels = self.xlabels, xunits = self.xunits,
+                        ylabel = ylabel, yunit = yunit)
+
 
     def __add__(self, a):
         """Add operator
@@ -192,19 +189,8 @@ class Waveform(object):
         Waveform([1 2 3],[ 1.  3.  4.])
 
         """
-        if isinstance(a, Waveform):
-            assert(alltrue(concatenate(self._xlist) == \
-                                 concatenate(a.getX())), "X values must be the same")
-            ay = a._y
-            y = self._y
-            if self._y.ndim < a._y.ndim:
-                y = self._y[..., newaxis]
-            if a._y.ndim < self._y.ndim:
-                ay = a._y[..., newaxis]
+        return self.binaryop(operator.__sub__, a)
 
-            return Waveform(self._xlist, y - ay, xlabels = self.xlabels)
-        else:
-            return Waveform(self._xlist, self._y - a, xlabels = self.xlabels)
     def __rsub__(self, a):
         """Reverse subtract operator
 
@@ -760,7 +746,7 @@ def astable(*waveforms):
     
 
     """
-    from pycircuit import rst
+    from pycircuit.utilities import rst
 
     xvalues = cartesian(waveforms[0]._xlist)
     yvalues = zip(*[list(w._y.flat) for w in waveforms])
