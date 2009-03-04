@@ -140,20 +140,24 @@ class Waveform(object):
 
 
     ## Operations on Waveform objects
-    def binaryop(self, op, a, ylabel = None, yunit = None):
+    def binaryop(self, op, a, ylabel = None, yunit = None, reverse = False):
         """Apply binary operator between self and a"""
         if isinstance(a, Waveform):
             assert(reduce(operator.__and__, map(lambda x,y: alltrue(x==y), 
                                                 self._xlist, a._xlist))), \
                                             "x-axes of the arguments must be the same"
-            ya = a._y
+            ay = a._y
         else:
-            ya = a 
+            ay = a 
 
-        return Waveform(self._xlist, op(self._y, ya), 
+        if reverse:
+            result = op(ay, self._y)
+        else:
+            result = op(self._y, ay)            
+
+        return Waveform(self._xlist, result, 
                         xlabels = self.xlabels, xunits = self.xunits,
                         ylabel = ylabel, yunit = yunit)
-
 
     def __add__(self, a):
         """Add operator
@@ -176,7 +180,7 @@ class Waveform(object):
         Waveform([1 2 3],[ 5.  7.  8.])
 
         """
-        return self.__add__(a)
+        return self.binaryop(operator.__add__, a, reverse=True)
     
     def __sub__(self, a):
         """Subtract operator
@@ -199,11 +203,8 @@ class Waveform(object):
         Waveform([1 2 3],[-1. -3. -4.])
 
         """
-        if isinstance(a, Waveform):
-            assert(reduce(operator.__and__, map(lambda x,y: alltrue(x==y), self._xlist, a._xlist)))
-            return Waveform(self._xlist, a._y-self._y, xlabels = self.xlabels)
-        else:
-            return Waveform(self._xlist, a-self._y, xlabels = self.xlabels)
+        return self.binaryop(operator.__sub__, a, reverse=True)
+
     def __mul__(self, a):
         """Multiplication operator
 
@@ -215,11 +216,8 @@ class Waveform(object):
         Waveform([1 2 3],[  6.  10.  12.])
 
         """
-        if isinstance(a, Waveform):
-            assert(reduce(operator.__and__, map(lambda x,y: alltrue(x==y), self._xlist, a._xlist)))
-            return Waveform(self._xlist, self._y * a._y, xlabels = self.xlabels)
-        else:
-            return Waveform(self._xlist, self._y * a, xlabels = self.xlabels)
+        return self.binaryop(operator.__mul__, a)
+
     def __rmul__(self, a):
         """Reverse multiplication operator
 
@@ -228,7 +226,7 @@ class Waveform(object):
         Waveform([1 2 3],[  6.  10.  12.])
 
         """
-        return self.__mul__(a)
+        return self.binaryop(operator.__mul__, a, reverse=True)
 
     def __div__(self, a):
         """Division operator
@@ -251,11 +249,7 @@ class Waveform(object):
         Waveform([1 2 3],[ 0.66666667  0.4         0.33333333])
 
         """
-        if isinstance(a, Waveform):
-            assert(reduce(operator.__and__, map(lambda x,y: alltrue(x==y), self._xlist, a._xlist)))
-            return Waveform(self._xlist, a._y/self._y, xlabels = self.xlabels)
-        else:
-            return Waveform(self._xlist, a/self._y, xlabels = self.xlabels)
+        return self.binaryop(operator.__div__, a, reverse=True)
 
     def __abs__(self):
         """Absolute value operator
