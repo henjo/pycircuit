@@ -1,0 +1,143 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Tutorial &mdash; pycircuit v0.0 documentation</title>
+    <link rel="stylesheet" href="../_static/default.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '0.0',
+        COLLAPSE_MODINDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="top" title="pycircuit v0.0 documentation" href="../index.html" />
+    <link rel="up" title="Circuit analyzer" href="index.html" />
+    <link rel="next" title="Theory" href="theory.html" />
+    <link rel="prev" title="Introduction" href="intro.html" /> 
+  </head>
+  <body>
+    <div class="related">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="theory.html" title="Theory"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="intro.html" title="Introduction"
+             accesskey="P">previous</a> |</li>
+        <li><a href="../index.html">pycircuit v0.0 documentation</a> &raquo;</li>
+          <li><a href="index.html" accesskey="U">Circuit analyzer</a> &raquo;</li> 
+      </ul>
+    </div>  
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body">
+            
+  
+  <div class="section" id="tutorial">
+<h1>Tutorial<a class="headerlink" href="#tutorial" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="simple-example-rc-low-pass-filter">
+<h2>Simple example - RC low-pass filter<a class="headerlink" href="#simple-example-rc-low-pass-filter" title="Permalink to this headline">¶</a></h2>
+<img alt="../_images/vdiv.png" src="../_images/vdiv.png" />
+<p>Find transfer function from V1 to V(2,0):</p>
+<div class="highlight-python"><div class="highlight"><pre><span class="k">import</span> <span class="nn">numpy</span><span class="o">,</span> <span class="nn">pylab</span>
+<span class="k">from</span> <span class="nn">pycircuit.circuit</span> <span class="k">import</span> <span class="o">*</span>
+<span class="k">from</span> <span class="nn">pycircuit.post.functions</span> <span class="k">import</span> <span class="o">*</span>
+
+<span class="c">## Create circuit</span>
+<span class="n">cir</span> <span class="o">=</span> <span class="n">SubCircuit</span><span class="p">()</span>
+<span class="n">cir</span><span class="p">[</span><span class="s">&#39;VS&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">VS</span><span class="p">(</span><span class="mf">1</span><span class="p">,</span> <span class="n">gnd</span><span class="p">,</span> <span class="n">vac</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+<span class="n">cir</span><span class="p">[</span><span class="s">&#39;R1&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">R</span><span class="p">(</span><span class="mf">1</span><span class="p">,</span> <span class="mf">2</span><span class="p">,</span> <span class="n">r</span><span class="o">=</span><span class="mf">1e3</span><span class="p">)</span>
+<span class="n">cir</span><span class="p">[</span><span class="s">&#39;C1&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">C</span><span class="p">(</span><span class="mf">2</span><span class="p">,</span> <span class="n">gnd</span><span class="p">,</span> <span class="n">c</span><span class="o">=</span><span class="mf">1e-12</span><span class="p">)</span>
+
+<span class="c">## Run AC analysis</span>
+<span class="n">ac</span> <span class="o">=</span> <span class="n">AC</span><span class="p">(</span><span class="n">cir</span><span class="p">)</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">ac</span><span class="o">.</span><span class="n">solve</span><span class="p">(</span><span class="n">freqs</span><span class="o">=</span><span class="n">numpy</span><span class="o">.</span><span class="n">logspace</span><span class="p">(</span><span class="mf">6</span><span class="p">,</span><span class="mf">9</span><span class="p">))</span>
+
+<span class="c">## Plot voltage between net 2 and ground</span>
+<span class="n">v2</span> <span class="o">=</span> <span class="n">db20</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">v</span><span class="p">(</span><span class="mf">2</span><span class="p">,</span> <span class="n">gnd</span><span class="p">))</span>
+<span class="n">v2</span><span class="o">.</span><span class="n">semilogx</span><span class="p">()</span>
+<span class="n">pylab</span><span class="o">.</span><span class="n">grid</span><span class="p">(</span><span class="bp">True</span><span class="p">)</span>
+</pre></div>
+</div>
+<blockquote>
+(<a class="reference external" href="../_static/circuit/1-tutorial">Source code</a>)</blockquote>
+<div class="plot-output admonition ">
+<p class="first admonition-title">Output</p>
+<div class="last figure">
+<img alt="../_images/1-tutorial.png" src="../_images/1-tutorial.png" style="width: 10cm;" />
+<p class="caption">(<a class="reference external" href="../_static/circuit/1-tutorial.hires.png">PNG</a>,
+<a class="reference external" href="../_static/circuit/1-tutorial.pdf">PDF</a>)</p>
+</div>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+      <div class="sphinxsidebar">
+        <div class="sphinxsidebarwrapper">
+            <h3><a href="../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference external" href="">Tutorial</a><ul>
+<li><a class="reference external" href="#simple-example-rc-low-pass-filter">Simple example - RC low-pass filter</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="intro.html" title="previous chapter">Introduction</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="theory.html" title="next chapter">Theory</a></p>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/circuit/tutorial.txt">Show Source</a></li>
+            </ul>
+          <h3>Quick search</h3>
+            <form class="search" action="../search.html" method="get">
+              <input type="text" name="q" size="18" /> <input type="submit" value="Go" />
+              <input type="hidden" name="check_keywords" value="yes" />
+              <input type="hidden" name="area" value="default" />
+            </form>
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="related">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="theory.html" title="Theory"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="intro.html" title="Introduction"
+             accesskey="P">previous</a> |</li>
+        <li><a href="../index.html">pycircuit v0.0 documentation</a> &raquo;</li>
+          <li><a href="index.html" accesskey="U">Circuit analyzer</a> &raquo;</li> 
+      </ul>
+    </div>
+    <div class="footer">
+      &copy; Copyright 2009, Henrik Johansson, Joacim Frisk, Andreas Drejfert.
+      Last updated on Mar 08, 2009.
+      Created using <a href="http://sphinx.pocoo.org/">Sphinx</a> 0.5.1.
+    </div>
+  </body>
+</html>
