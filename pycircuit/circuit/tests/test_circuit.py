@@ -7,7 +7,7 @@
 from pycircuit.circuit.circuit import *
 from pycircuit.circuit.symbolicanalysis import SymbolicAC
 import sympy
-import numpy as npy
+import numpy as np
 from numpy.testing import assert_array_almost_equal
 
 

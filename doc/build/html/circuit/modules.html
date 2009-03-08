@@ -1,0 +1,171 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Modules &mdash; pycircuit v0.0 documentation</title>
+    <link rel="stylesheet" href="../_static/default.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '0.0',
+        COLLAPSE_MODINDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="top" title="pycircuit v0.0 documentation" href="../index.html" />
+    <link rel="up" title="Circuit analyzer" href="index.html" />
+    <link rel="next" title="Post processing" href="../post/index.html" />
+    <link rel="prev" title="Theory" href="theory.html" /> 
+  </head>
+  <body>
+    <div class="related">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../post/index.html" title="Post processing"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="theory.html" title="Theory"
+             accesskey="P">previous</a> |</li>
+        <li><a href="../index.html">pycircuit v0.0 documentation</a> &raquo;</li>
+          <li><a href="index.html" accesskey="U">Circuit analyzer</a> &raquo;</li> 
+      </ul>
+    </div>  
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body">
+            
+  
+  <div class="section" id="modules">
+<h1>Modules<a class="headerlink" href="#modules" title="Permalink to this headline">¶</a></h1>
+<dl class="class">
+<dt id="pycircuit.circuit.Circuit">
+<!--[pycircuit.circuit.Circuit]-->class <tt class="descclassname">pycircuit.circuit.</tt><tt class="descname">Circuit</tt><big>(</big><em>*args</em>, <em>**kvargs</em><big>)</big><a class="headerlink" href="#pycircuit.circuit.Circuit" title="Permalink to this definition">¶</a></dt>
+<dd><p>Basic circuit class</p>
+<p>The circuit class models electric circuits but could be used for
+any conservative system. A circuit object contains a list of nodes and
+branches which are associated with node voltages and branch currents in the
+modelled system. Note that the values of these quantities are
+stored in separate analysis classes, never inside a circuit object.</p>
+<p>The nodes are connected to the outside through terminals. When the circuit
+is instanciated, the outside nodes are passed to the object via the 
+terminals.</p>
+<dl class="docutils">
+<dt><strong>Attributes</strong></dt>
+<dd><dl class="first last docutils">
+<dt><em>nodes</em></dt>
+<dd>A list that contains Node objects. The first k nodes are terminal 
+nodes where k is the number of terminals.</dd>
+<dt><em>branches</em></dt>
+<dd>list of Branch objects. The solver will solve for the 
+currents through the branches.</dd>
+<dt><em>terminals</em></dt>
+<dd>list that contains terminal names</dd>
+<dt><em>instparams</em></dt>
+<dd>A list of valid instance parameters (Parameter objects)</dd>
+<dt><em>mpar</em></dt>
+<dd>A class variable with a ParameterDict containing model specific 
+parameters</dd>
+<dt><em>ipar</em></dt>
+<dd>A ParameterDict containing instance specific parameters</dd>
+<dt><em>nodenames</em></dt>
+<dd>A dictionary that maps a local node name to the node object in
+nodes. If the node is connnected to superior hierarchy levels
+through a terminal the terminal name must be the same as the
+local node name</dd>
+<dt><em>terminalhook</em></dt>
+<dd>Temporary storage of information about what nodes in the superior
+hierarchy level the terminals should be connected to during 
+instantiation. It is a dictionary where the keys are terminal names
+and the values are node objects. The value is None when it is not 
+used. The only reason for this attribute is to allow for bottom-up 
+instantiations like: cir1[&#8216;I1&#8217;] = R(&#8216;n1&#8217;, gnd)</dd>
+<dt><em>linear</em> </dt>
+<dd>A boolean value that is true if i(x) and q(x) are linear 
+functions</dd>
+</dl>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="class">
+<dt id="pycircuit.circuit.SubCircuit">
+<!--[pycircuit.circuit.SubCircuit]-->class <tt class="descclassname">pycircuit.circuit.</tt><tt class="descname">SubCircuit</tt><big>(</big><em>*args</em>, <em>**kvargs</em><big>)</big><a class="headerlink" href="#pycircuit.circuit.SubCircuit" title="Permalink to this definition">¶</a></dt>
+<dd><p>SubCircuit is container for circuit instances</p>
+<dl class="docutils">
+<dt><strong>Attributes</strong></dt>
+<dd><dl class="first last docutils">
+<dt><em>elements</em> </dt>
+<dd>dictionary of Circuit objects keyed by its instance name</dd>
+<dt><em>elementnodemap</em></dt>
+<dd>list of translation lists which translate between node indices of the
+elements and node indices of the parent</dd>
+<dt><em>term_node_map</em> </dt>
+<dd>dictionary of instance terminal to node object maps keyed by the 
+instance name. The maps are themselves dictionaries keyed by 
+the terminal names.</dd>
+</dl>
+</dd>
+</dl>
+</dd></dl>
+
+</div>
+
+
+          </div>
+        </div>
+      </div>
+      <div class="sphinxsidebar">
+        <div class="sphinxsidebarwrapper">
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="theory.html" title="previous chapter">Theory</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="../post/index.html" title="next chapter">Post processing</a></p>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/circuit/modules.txt">Show Source</a></li>
+            </ul>
+          <h3>Quick search</h3>
+            <form class="search" action="../search.html" method="get">
+              <input type="text" name="q" size="18" /> <input type="submit" value="Go" />
+              <input type="hidden" name="check_keywords" value="yes" />
+              <input type="hidden" name="area" value="default" />
+            </form>
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="related">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../post/index.html" title="Post processing"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="theory.html" title="Theory"
+             accesskey="P">previous</a> |</li>
+        <li><a href="../index.html">pycircuit v0.0 documentation</a> &raquo;</li>
+          <li><a href="index.html" accesskey="U">Circuit analyzer</a> &raquo;</li> 
+      </ul>
+    </div>
+    <div class="footer">
+      &copy; Copyright 2009, Henrik Johansson, Joacim Frisk, Andreas Drejfert.
+      Last updated on Mar 08, 2009.
+      Created using <a href="http://sphinx.pocoo.org/">Sphinx</a> 0.5.1.
+    </div>
+  </body>
+</html>

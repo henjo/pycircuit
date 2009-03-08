@@ -6,7 +6,7 @@
 
 from pycircuit.circuit.hdl import *
 import sympy
-import numpy as npy
+import numpy as np
 
 def test_resistor():
     """Verify simple resistor model"""
@@ -24,12 +24,12 @@ def test_resistor():
 
     assert res.i([v1,v2]) == [1e-3*(v1-v2), -1e-3*(v1-v2)]
 
-    assert npy.alltrue(res.G([v1,v2]) == 
-                       npy.array([[1e-3, -1e-3], [-1e-3, 1e-3]]))
+    assert np.alltrue(res.G([v1,v2]) == 
+                       np.array([[1e-3, -1e-3], [-1e-3, 1e-3]]))
 
-    assert npy.alltrue(res.C([v1,v2]) == npy.zeros((2,2)))
+    assert np.alltrue(res.C([v1,v2]) == np.zeros((2,2)))
 
-    assert npy.alltrue(res.CY([v1,v2]) == npy.zeros((2,2)))
+    assert np.alltrue(res.CY([v1,v2]) == np.zeros((2,2)))
 
 def test_capacitor():
     """Verify simple capacitance model"""
@@ -51,11 +51,11 @@ def test_capacitor():
 
     assert cap.q([v1,v2]) == [C*(v1-v2), -C*(v1-v2)]
 
-    assert npy.alltrue(cap.C([v1,v2]) == 
-                       npy.array([[C, -C], [-C, C]]))
+    assert np.alltrue(cap.C([v1,v2]) == 
+                       np.array([[C, -C], [-C, C]]))
 
-    assert npy.alltrue(cap.G([v1,v2]) == npy.zeros((2,2)))
+    assert np.alltrue(cap.G([v1,v2]) == np.zeros((2,2)))
 
-    assert npy.alltrue(cap.CY([v1,v2]) == npy.zeros((2,2)))
+    assert np.alltrue(cap.CY([v1,v2]) == np.zeros((2,2)))
 
 

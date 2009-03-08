@@ -69,7 +69,6 @@ class Waveform(object):
     def __array__(self): return self._y
         
     def __array_wrap__(self, arr, context=None):
-        print arr.shape, context
         return Waveform(list(self._xlist), arr, xlabels=self.xlabels, ylabel=self.ylabel,
                         xunits=self.xunits, yunit=self.yunit)
         
@@ -490,7 +489,8 @@ class Waveform(object):
 
         pylab.hold(True)
         for i in np.ndindex(*self._y.shape[:-1]):
-            label = ','.join([self.xlabels[axis] + '=' + str(self._xlist[axis][ix]) for axis, ix in enumerate(i)])
+            label = ','.join([self.xlabels[axis] + '=' + \
+                    str(self._xlist[axis][ix]) for axis, ix in enumerate(i)])
 
             # Limit infinite values
             y = self.getY()[i]
@@ -501,10 +501,18 @@ class Waveform(object):
                 kvargs['label'] = label
             
             p=plotfunc(self.getX(-1), y, **kvargs)
+
         pylab.hold(False)
         
-        pylab.xlabel(self.xlabels[-1])
-        pylab.ylabel(self.ylabel)
+        xlabel = self.xlabels[-1]
+        if self.xunits[-1] != '':
+            xlabel += ' [%s]'%self.xunits[-1]
+        pylab.xlabel(xlabel)
+        
+        ylabel = self.ylabel
+        if self.yunit != '':
+            ylabel += ' [%s]'%self.yunit
+        pylab.ylabel(ylabel)
 
     def plot(self, *args, **kvargs): self._plot(pylab.plot, *args, **kvargs)
     def semilogx(self, *args, **kvargs): self._plot(pylab.semilogx, *args, **kvargs)

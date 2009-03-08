@@ -2,8 +2,7 @@
 # See LICENSE for details.
 
 from scipy import *
-from pycircuit.circuit.circuit import *
-from pycircuit.circuit.analysis import *
+from pycircuit.circuit import *
 from pylab import *
 from pycircuit.post.functions import *
 

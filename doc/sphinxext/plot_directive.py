@@ -99,7 +99,7 @@ sane_rcparameters = {
     'xtick.labelsize': 9,
     'ytick.labelsize': 9,
     'legend.fontsize': 9,
-    'figure.figsize': (4, 3),
+    'figure.figsize': (4*2, 3*2),
 }
 
 #------------------------------------------------------------------------------

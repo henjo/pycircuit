@@ -12,7 +12,7 @@ from pycircuit.circuit.nport import NPort, NPortY, NPortZ, NPortA, NPortS
 from pycircuit.circuit.nportanalysis import TwoPortAnalysis
 
 from math import sqrt
-import numpy as npy
+import numpy as np
 from numpy.testing import assert_array_almost_equal
 
 ## Import test vehicle from test_nport

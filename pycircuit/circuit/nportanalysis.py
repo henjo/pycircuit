@@ -19,7 +19,7 @@ class TwoPortAnalysis(Analysis):
     >>> n2 = c.add_node('net2')
     >>> c['R1'] = R(n1, n2, r=9e3)
     >>> c['R2'] = R(n2, gnd, r=1e3)
-    >>> res = TwoPortAnalysis(c, n1, gnd, n2, gnd).solve(freqs = npy.array([0]))
+    >>> res = TwoPortAnalysis(c, n1, gnd, n2, gnd).solve(freqs = np.array([0]))
     >>> res['mu'].y[0]
     (0.1+0j)
     >>> res['gamma'].y[0]
@@ -160,7 +160,7 @@ class TwoPortAnalysis(Analysis):
 
         portnumbers = range(N)
 
-        S = npy.zeros((N,N), dtype=object)
+        S = np.zeros((N,N), dtype=object)
         
         for n, sourceport in enumerate(self.ports):
             circuit = copy(self.cir)
@@ -214,22 +214,22 @@ class TwoPortAnalysis(Analysis):
                                                     refnode = self.ports[0][1], 
                                                     complexfreq = complexfreq)
 
-        T = npy.matrix(zmlist) * r0**-0.5
+        T = np.matrix(zmlist) * r0**-0.5
         
         ## Complex frequency variable
         if complexfreq:
             s = freqs
         else:
-            s = 2j*npy.pi*freqs
+            s = 2j*np.pi*freqs
 
         ## Calculate CY of circuit
-        x = npy.zeros(circuit.n)
-        CY = circuit.CY(x, npy.imag(s), epar = self.epar)
+        x = np.zeros(circuit.n)
+        CY = circuit.CY(x, np.imag(s), epar = self.epar)
         irefnode = circuit.get_node_index(refnode)
         CY, = remove_row_col((CY,), irefnode)
 
         ## Calculate noise wave correlation matrix
-        CS = npy.array(T * CY * T.H)
+        CS = np.array(T * CY * T.H)
 
         return NPortS(S, CS, z0=r0)
 
@@ -261,7 +261,7 @@ class TwoPortAnalysis(Analysis):
         C = res_open.i('VS_TwoPort.minus') / res_open.v(outp, outn)
         D = res_shorted.i('VS_TwoPort.minus') / res_shorted.i('VL_TwoPort.plus')
 
-        return npy.array([[A,B],[C,D]], dtype=object)
+        return np.array([[A,B],[C,D]], dtype=object)
 
 if __name__ == "__main__":
     import doctest

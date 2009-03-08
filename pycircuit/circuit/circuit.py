@@ -447,7 +447,7 @@ class Circuit(object):
 
         *refnode_removed*
           If set the refernce node is expected to be removed from the x-vector
-        
+
         >>> c = SubCircuit()
         >>> n1, n2 = c.add_nodes('n1','n2')
         >>> c['R1'] = R(n1, n2, r=1e3)

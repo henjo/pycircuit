@@ -36,7 +36,16 @@ class CircuitResult(IVResultDict, InternalResultDict):
         self.xdot = xdot
 
     def v(self, plus, minus=None):
-        return self.circuit.extract_v(self.x, plus, minus)
+        result = self.circuit.extract_v(self.x, plus, minus)
+
+        if isinstance(result, Waveform):
+            if minus != None:
+                result.ylabel = 'v(%s,%s)'%(str(plus), str(minus))
+            else:
+                result.ylabel = 'v(%s)'%(str(plus))
+            result.yunit = 'V'
+
+        return result
 
     def i(self, term):
         """Return terminal current i(term)"""
@@ -485,7 +494,9 @@ class AC(Analysis):
         if isiterable(freqs):
             out = [solvecircuit(s) for s in ss]
             # Swap frequency and x-vector dimensions
-            xac = [Waveform(freqs, value) for value in array(out).swapaxes(0,1)]
+            xac = [Waveform(freqs, value, 
+                            xlabels=('frequency',), xunits=('Hz',))
+                   for value in array(out).swapaxes(0,1)]
             xacdot = [ss * xi for xi in xac]
         else:
             xac = solvecircuit(ss)

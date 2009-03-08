@@ -11,7 +11,7 @@ from pycircuit.circuit.circuit import SubCircuit, R, gnd
 from pycircuit.circuit.nport import NPort, NPortY, NPortZ, NPortA, NPortS
 
 from math import sqrt
-import numpy as npy
+import numpy as np
 from numpy.testing import assert_array_almost_equal
 
 ## The test vehicle is a 1dB tee resistive attenuator
@@ -33,22 +33,22 @@ cir['R2'] = R(n1,gnd,r=R2)
 cir['R3'] = R(nout,n1,r=R3)
 
 # S,Z,Y-parameters
-Sref = npy.array([[0.00219681, 0.88898926],[0.88898926, 0.00219681]])
-Zref = npy.array([[R1+R2, R2],[R2, R2+R3]])
-Yref = npy.linalg.inv(Zref)
-Aref = npy.array([[-Yref[1,1]/Yref[1,0], -1/Yref[1,0]],
+Sref = np.array([[0.00219681, 0.88898926],[0.88898926, 0.00219681]])
+Zref = np.array([[R1+R2, R2],[R2, R2+R3]])
+Yref = np.linalg.inv(Zref)
+Aref = np.array([[-Yref[1,1]/Yref[1,0], -1/Yref[1,0]],
                   [Yref[0,1]-Yref[0,0]*Yref[1,1]/Yref[1,0], 
                    -Yref[0,0]/Yref[1,0]]])
 
 ## Using Bosma's theorem
-CYref = 4 * kboltzmann * T * npy.real(Yref)
-CZref = 4 * kboltzmann * T * npy.real(Zref)
-E = npy.eye(2)
-CSref =  kboltzmann * T * (E - npy.mat(Sref) * npy.mat(Sref).H)
+CYref = 4 * kboltzmann * T * np.real(Yref)
+CZref = 4 * kboltzmann * T * np.real(Zref)
+E = np.eye(2)
+CSref =  kboltzmann * T * (E - np.mat(Sref) * np.mat(Sref).H)
 
 ## This correlation matrix was obtained from hand calculations by "moving" the noise sources
 ## to the source
-CAref = 4*kboltzmann*T * npy.array([[R3*(1+R1/R2)**2 + R1 + R2*(R1/R2)**2,
+CAref = 4*kboltzmann*T * np.array([[R3*(1+R1/R2)**2 + R1 + R2*(R1/R2)**2,
                                      (R2*R3+R1*R3+R2*R1) / R2**2],
                                      [(R2*R3+R1*R3+R2*R1) / R2**2, (R2+R3)/R2**2,]])
 
@@ -137,7 +137,7 @@ def test_cascade():
     nports = NPortY(Yref, CYref), NPortZ(Zref, CZref), \
         NPortS(Sref, CSref), NPortA(Aref, CAref)
 
-    A_cas_ref = npy.dot(Aref, Aref)
+    A_cas_ref = np.dot(Aref, Aref)
     CA_cas_ref = NPortA(A_cas_ref, passive=True).noisy_passive_nport().CA
 
     for nport in nports:

@@ -3,7 +3,7 @@ import pycircuit.utilities.param as param
 
 import sympy
 import sympy.printing.lambdarepr
-import numpy as npy
+import numpy as np
 
 import inspect
 from copy import copy
@@ -120,7 +120,7 @@ class Contribution(Statement):
 
 class NumpyPrinter(sympy.printing.StrPrinter):
     def _print_Matrix(self, expr):
-        return "npy.array([%s])"%expr._format_str(self._print, ",")
+        return "np.array([%s])"%expr._format_str(self._print, ",")
 
 def methodstr(name, args, expr):
     """Returns a string that can be evaluated to an instance method
@@ -227,7 +227,7 @@ class BehaviouralMeta(type):
             methodnames = ('i', 'u', 'q', 'G', 'C', 'CY')
             for methodname, codestring in zip(methodnames, strings[1:]):
                 funcdef_code = compile(codestring, '<stdin>', 'exec')
-                namespace = {'npy': npy}
+                namespace = {'np': np}
                 eval(funcdef_code, namespace)
                 setattr(cls, methodname, namespace[methodname])
 
