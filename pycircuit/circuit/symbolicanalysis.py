@@ -15,9 +15,6 @@ from sympy import Symbol, Matrix, symbols, simplify, together, factor, \
 from types import TupleType
 from pycircuit.utilities.param import Parameter, ParameterDict
 
-class NoSolutionFound(Exception):
-    pass
-
 def symbolic_linsolve(A, b):
     """Numpy compatible wrapper around sympy.solve_linear_system"""
 

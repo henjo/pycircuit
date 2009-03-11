@@ -26,7 +26,8 @@ sys.path.append(os.path.abspath('../sphinxext'))
 # coming with Sphinx (named 'sphinx.ext.*') or your custom ones.
 #extensions = ['sphinx.ext.autodoc', 'sphinx.ext.jsmath']
 extensions = ['sphinx.ext.autodoc', 'sphinx.ext.pngmath', 
-              'sphinxext.plot_directive', 'sphinxext.only_directives']
+              'sphinxext.plot_directive', 'sphinxext.only_directives',
+              'sphinxext.sympy_directive']
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['.templates']

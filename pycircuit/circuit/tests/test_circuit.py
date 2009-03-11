@@ -4,12 +4,13 @@
 """ Test circuit module
 """
 
+from nose.tools import *
 from pycircuit.circuit.circuit import *
 from pycircuit.circuit.symbolicanalysis import SymbolicAC
 import sympy
 import numpy as np
 from numpy.testing import assert_array_almost_equal
-
+from copy import copy
 
 def generate_testcircuit():
     subc = SubCircuit()
@@ -222,3 +223,11 @@ def test_short_resistor():
     
     assert_equal(cir.G(zeros(1)), array([0]))
     
+def test_copy_circuit():
+    """Test to make a copy of circuit"""
+
+    cir = generate_testcircuit()
+    
+    cir_copy = copy(cir)
+
+    assert_equal(cir, cir_copy)
