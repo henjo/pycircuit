@@ -64,8 +64,10 @@ Calculate ABCD parameters:
     cir['C1'] = C(2, gnd, c=Symbol('C1'))
 
     ## Run AC analysis
-    twoport_ana = SymbolicTwoPortAnalysis(cir, Node('1'), gnd, Node('2'), gnd)
+    twoport_ana = SymbolicTwoPortAnalysis(cir, Node('1'), gnd, Node('2'), gnd, method='abcd')
     result = twoport_ana.solve(freqs=Symbol('s'), complexfreq=True)
 
     ## Print transfer function from the voltage source to net 2
-    #    Matrix(result['twoport'].A)
+    ABCD = Matrix(result['twoport'].A)
+    ABCD.simplify()
+    ABCD
