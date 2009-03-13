@@ -637,7 +637,17 @@ class SubCircuit(Circuit):
         self.elementnodemap = {}
         self.term_node_map = {}
         self._rep_nodemap_list = {}
+
+    def __copy__(self):
+        newc = Circuit.__copy__(self)
         
+        newc.elements = copy(self.elements)
+        newc.elementnodemap = copy(self.elementnodemap)
+        newc.term_node_map = copy(self.term_node_map)
+        newc._rep_nodemap_list = copy(self._rep_nodemap_list)
+        
+        return newc
+
     def netlist(self, top = True):
         """
         >>> a = SubCircuit()
