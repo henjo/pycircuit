@@ -12,13 +12,13 @@ Can be used like this::
        x,y = sympify('xy')
        1/sqrt(1+x)
 
+    Keep values of x,y using the persistent option, and use the docstring
+    syntax
+
     .. sympy::
+       :persistent:
 
-       Sympy example
-
-       >>> x,y = sympify('xy')
        >>> 1/sqrt(1+x)
-
 
 The content is interpreted as doctest formatted if it has a line starting
 with ``>>>``.
@@ -27,6 +27,10 @@ The ``sympy`` directive supports the options
 
     include-source : bool
         Whether to display the source code. Default can be changed in conf.py
+
+    persistent : bool
+        The python session starts with the namespace from previous sympy 
+        section
 
 Configuration options
 ---------------------
@@ -47,33 +51,44 @@ TODO
 
 import re
 import sympy
+from docutils.parsers.rst import directives
 
 def setup(app):
-    app.add_directive('sympy', sympy_directive, True, (0, 1, False))
+    sympy_directive_options = {'include-source': _option_boolean,
+                               'persistent': directives.flag}
+
+    app.add_directive('sympy', sympy_directive, True, (0, 1, False),
+                      **sympy_directive_options)
 
     app.add_config_value('sympy_pre_code', default_pre_code, True)
     app.add_config_value('sympy_include_source', True, True)
 
+    app.connect('source-read', purge_sympy_namespace)
 
 #------------------------------------------------------------------------------
 # sympy:: directive registration etc.
 #------------------------------------------------------------------------------
 
+saved_namespace = None
 def sympy_directive(name, arguments, options, content, lineno,
                    content_offset, block_text, state, state_machine):
+    global saved_namespace
 
     document = state_machine.document
-    config = document.settings.env.config
-
+    env = document.settings.env
+    config = env.config
+    
     options.setdefault('include-source', config.sympy_include_source)
     if options['include-source'] is None:
         options['include-source'] = config.plot_include_source
 
-    ns = {}
-
-    ## Evaluate pre-code
-    exec config.sympy_pre_code in ns
-
+    if 'persistent' in options and saved_namespace != None:
+        ns = saved_namespace
+    else:
+        ns = {}
+        ## Evaluate pre-code
+        exec config.sympy_pre_code in ns
+ 
     rst = ""
     codeblock = ''
     for line in content:
@@ -106,6 +121,9 @@ def sympy_directive(name, arguments, options, content, lineno,
     ## Flush remaining code block
     if options['include-source'] and codeblock:
         rst += rst_codeblock(codeblock)
+
+    ## Save name space
+    saved_namespace = ns        
         
     lines = rst.split("\n")
     if len(lines):
@@ -113,6 +131,9 @@ def sympy_directive(name, arguments, options, content, lineno,
             lines, state_machine.input_lines.source(0))
 
     return []
+
+def purge_sympy_namespace(app, docname, source):
+    saved_namespace = None
 
 def is_sympy_object(o):
     return isinstance(o, (sympy.Basic, sympy.Matrix))
@@ -188,9 +209,6 @@ def _option_boolean(arg):
         return True
     else:
         raise ValueError('"%s" unknown boolean' % arg)
-
-sympy_directive_options = {'include-source': _option_boolean,
-                          }
 
 default_pre_code = """from __future__ import division
 from sympy import *
