@@ -9,4 +9,4 @@ Circuit analyzer
     analyses
     theory
     modules
-
+    examples/index.rst
