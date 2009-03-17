@@ -1,0 +1,8 @@
+********
+Examples
+********
+
+.. toctree::
+
+    example2
+
