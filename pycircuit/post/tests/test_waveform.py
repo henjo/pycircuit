@@ -104,6 +104,20 @@ def test_ymax():
     w = Waveform([[2,5],[2,3,4]], array([[3,9,7], [4,6,6]]))
     check_alongaxes_func(Waveform.ymax, np.max, w)
 
+def test_value():
+    w1 = Waveform(array([1,2,3]),array([3,5,6]))
+    assert_almost_equal(w1.value(1.5), 4.0)
+
+    ## 2-d waveform
+    w2 = Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
+    assert_waveform_equal(w2.value(2.5), Waveform([[1, 2]], array([ 4.,  5.])))
+    assert_waveform_equal(w2.value(1.5, axis=0), 
+                          Waveform([[2, 3, 4]], array([ 3.5, 5.5, 6.5])))
+    ## x is a waveform
+    w2 = Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
+    assert_waveform_equal(w2.value(Waveform(array([1, 2]), array([2.5, 3.5]))), 
+                          Waveform(array([1, 2]),array([ 4.,   6.5])))
+
 def test_clip():
     ## 1D waveforms
     w1 = Waveform([[1.,2.,3.]], array([8., 6., 1.]))
@@ -148,7 +162,6 @@ def test_clip():
     
 def check_alongaxes_func(func, reference_func, w, keep_yunit = False):
     for axis in range(w.ndim):
-        print axis
         res = func(w, axis=axis)
         
         ref_x = list(w.x)
@@ -161,7 +174,9 @@ def check_alongaxes_func(func, reference_func, w, keep_yunit = False):
         else:
             yunit = ''
 
-        ref = Waveform(ref_x, np.apply_along_axis(reference_func, axis, w.y),
+        y = np.apply_along_axis(reference_func, axis, w.y)
+
+        ref = Waveform(ref_x, y,
                        xlabels = ref_xlabels, xunits = ref_xunits,
                        ylabel = func.__name__ + '(' + w.ylabel + ')',
                        yunit = yunit)
@@ -246,4 +261,8 @@ def check_binary_op(op, a, b, preserve_yunit = False):
     assert_waveform_equal(res, Waveform(ref_x, ref_y, xlabels = ref_xlabels, 
                                         xunits = ref_xunits, ylabel = ref_ylabel,
                                         yunit = ref_yunit))
-        
+
+    
+if __name__ == "__main__":
+    import doctest
+    doctest.testmod()
