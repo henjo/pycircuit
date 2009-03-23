@@ -1,5 +1,6 @@
 import numpy as N
 from itertools import izip, groupby
+from operator import itemgetter
 
 def indent(s, n=4, notfirstline = False):
     """Indent string
@@ -16,21 +17,21 @@ def indent(s, n=4, notfirstline = False):
         return '\n'.join([n*' ' + line for line in s.split('\n')])
 
 def inplace_add_selected_ref(dest, indices, values):
-    """
-    Adds values to selected elements of dest
+    """Adds an array to the selected indices of a destination array
 
     The difference compared to dest[indices] += values is that indices may contain
     duplicate indices which would add that element several times.
 
     >>> a = N.zeros(3)
-    >>> inplace_add_selected(a, [0,1,1], N.array([1,2,3]))
+    >>> inplace_add_selected_ref(a, [0,1,1], N.array([1,2,3]))
     >>> a
     array([ 1.,  5.,  0.])
 
     """
-    
+
     for i, v in izip(indices, values):
         dest[i] += v
+        
 
 def inplace_add_selected(dest, indiceslist, values):
     """Adds values to selected elements of dest using precalculated indices lists
@@ -44,7 +45,7 @@ def inplace_add_selected(dest, indiceslist, values):
         dest[dst_i] += values[src_i]
 
 def inplace_add_selected_2d(dest, indiceslist, values):
-    """Adds values to selected elements of dest using precalculated indices lists
+    """Adds a 2-dimensional array to the selected indices of a 2-d destination array
     
     The indiceslist is created as:
     
@@ -58,46 +59,32 @@ def inplace_add_selected_2d(dest, indiceslist, values):
 def create_index_vectors(indices):
     """Create list of index vectors suitable for use repeated calls to in place addition
     
-    >>> indices = [0, 1, 1, 2, 2, 2]
-    >>> dest = N.zeros(3)
-    >>> src = N.array([1,2,3,4,5,6])
-    >>> inplace_add_selected_ref(dest, indices, src)
-    >>> ref = dest
-    >>> dest = N.zeros(3)
-    >>> for dst_i, src_i in create_index_vectors(indices): dest[dst_i] += src[src_i]
-    >>> N.alltrue(ref == dest)
-    True
+    >>> create_index_vectors([2, 0, 1, 0])
+    [([0, 1, 2], [3, 2, 0]), ([0], [1])]
     
     """
 
-    i = 0
+    sorted_indices = sorted(enumerate(indices), key=itemgetter(1))
+
     dupes = {}
-    for k,group in groupby(indices):
-        n = len(list(group))
+    for dst_i, group in groupby(sorted_indices, key=itemgetter(1)):
+        src_indices = [src_i[0] for src_i in group]
+        dupes[dst_i] = src_indices
 
-        dupes[k] = i, n
-
-        i += n
-        
     result = []
-
     while len(dupes) > 0:
-        src_i = []
-        dst_i = []
-        for k, v in dupes.items():
-            i, n = v
-            
-            if n > 1:
-                dupes[k] = i+1, n-1
-            else:
-                del dupes[k]
+        src_i_list = []
+        dst_i_list = []
+        for dst_i, src_indices in dupes.items():
+            src_i = src_indices.pop()
 
-            src_i.append(i)
-            dst_i.append(k)
+            if len(src_indices) == 0:
+                del dupes[dst_i]
 
-        result.append((dst_i, src_i))
-        
+            src_i_list.append(src_i)
+            dst_i_list.append(dst_i)
 
+        result.append((dst_i_list, src_i_list))
 
     return result
     
