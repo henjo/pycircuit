@@ -105,7 +105,7 @@ class PSFResultSet(result.ResultDict):
             return self.runs['Run1'].getResult(name, self.resultdir)
 
 
-class PSFRun:
+class PSFRun(object):
     def __init__(self, name, valuedict, properties):
         """
         Initiate a PSFRun
