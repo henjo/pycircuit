@@ -23,7 +23,25 @@ testdata2 = Waveform([[1,2], [1,2,3]], array([[3,4,5],[5,4,2]]),
 
 def test_creation():
     """Test of waveform creation"""
+
+    def check(w):
+        for x, xref in zip(w.x, [array([1,2])]):
+            assert_array_equal(x, xref)
+        assert_array_equal(w.y, array([3,4]))
+
+    ## Create from arrays
+    check(Waveform([array([1,2])], array([3,4])))
+
+    ## Create from single x-array
+    check(Waveform(array([1,2]), array([3,4])))
+
+    ## Create from lists
+    check(Waveform([[1,2]], [3,4]))
+
+    ## Create from tuples
+    check(Waveform(((1,2),), (3,4)))
     
+    ## Check meta-data of testdata waveforms
     for x,xref in zip(testdata2.x, [np.array([1,2]), np.array([1,2,3])]):
         assert_array_equal(x, xref)
         
@@ -39,6 +57,8 @@ def test_creation():
     assert_array_equal(empty.y, array([]))
     assert_equal(empty.ndim, 1)
    
+
+
 def test_unary_operations():
     x = testdata1[0]
     check_func(abs, lambda w: Waveform(w.x, abs(get_y(w))),
@@ -50,7 +70,7 @@ def test_binary_operations():
     for a in testdata1:
         for b in testdata1:
             if iswave(a) or iswave(b):
-                for op in ('+', '-', '*', '**'):
+                for op in ('+', '-', '*', '**', '==', '<', '<=', '>', '>='):
                     check_binary_op(op, a, b)
 
     ## 2D data
@@ -262,6 +282,11 @@ def check_binary_op(op, a, b, preserve_yunit = False):
                                         xunits = ref_xunits, ylabel = ref_ylabel,
                                         yunit = ref_yunit))
 
+def test_array_interface():
+    for win in testdata1[0], testdata2:
+        wout = np.cos(win)
+        assert_array_equal(wout.y, np.cos(win))
+        assert_array_equal(win.x[0], wout.x[0])
     
 if __name__ == "__main__":
     import doctest
