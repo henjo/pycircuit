@@ -9,7 +9,7 @@ sweeps.
 import numpy as np
 from numpy import array,concatenate,alltrue,max,min,log10,arange,pi,sin, \
     sign, where, newaxis, r_, vstack, apply_along_axis, nan, isscalar, rank, \
-    inf, sqrt, isscalar
+    inf, isscalar
 import scipy as sp
 import scipy.interpolate as interpolate
 import types
@@ -38,7 +38,7 @@ class Waveform(object):
     
     """
 
-    def __init__(self, x=array([]), y=array([]),
+    def __init__(self, x=array([],), y=array([]),
                  xlabels=None, ylabel=None,
                  xunits=None, yunit=None
                  ):
@@ -54,7 +54,7 @@ class Waveform(object):
         if not self.ragged and dim != len(y.shape):
             raise ValueError("Dimension of x (%s) does not match dimension of"
                              " y (%s)"%(map(len, x), y.shape))
-        self._xlist = x
+        self._xlist = [array(xelement) for xelement in x]
         self._y = y
         self._dim = dim
         self.xlabels = xlabels
@@ -69,7 +69,8 @@ class Waveform(object):
     def __array__(self): return self._y
         
     def __array_wrap__(self, arr, context=None):
-        return Waveform(list(self._xlist), arr, xlabels=self.xlabels, ylabel=self.ylabel,
+        return Waveform(list(self._xlist), arr, 
+                        xlabels=self.xlabels, ylabel=self.ylabel,
                         xunits=self.xunits, yunit=self.yunit)
         
     def getSweepDimensions(self):
@@ -90,7 +91,8 @@ class Waveform(object):
     def getX(self, axis=None):
         """Get X vector of the given sweep dimension
 
-        If no dimension is given, a list of the sweeps in all dimensions is returned
+        If no dimension is given, a list of the sweeps in all dimensions 
+        is returned
 
         >>> w=Waveform([array([1,2]), array([1.5,2.5])], array([[3,4],[4,5]]))
         >>> w.getX(0)
@@ -99,11 +101,10 @@ class Waveform(object):
         array([ 1.5,  2.5])
         """
 
-        axis = self.getaxis(axis)
-
         if axis == None:
             return self._xlist
         else:
+            axis = self.getaxis(axis)
             return self._xlist[axis]
     
     def getY(self):
@@ -142,9 +143,10 @@ class Waveform(object):
     def binaryop(self, op, a, ylabel = None, yunit = None, reverse = False):
         """Apply binary operator between self and a"""
         if isinstance(a, Waveform):
-            assert(reduce(operator.__and__, map(lambda x,y: alltrue(x==y), 
-                                                self._xlist, a._xlist))), \
-                                            "x-axes of the arguments must be the same"
+            assert(reduce(operator.__and__, 
+                          map(lambda x,y: alltrue(x==y), 
+                              self._xlist, a._xlist))), \
+                "x-axes of the arguments must be the same"
             ay = a._y
         else:
             ay = a 
@@ -258,7 +260,8 @@ class Waveform(object):
         Waveform([1 2 3],[ 1.          1.          1.41421356])
 
         """
-        return Waveform(self._xlist, abs(self._y), xlabels = self.xlabels)
+        return Waveform(self._xlist, abs(self._y), xlabels = self.xlabels, xunits = self.xunits,
+                        ylabel = 'abs(%s)'%self.ylabel, yunit = self.yunit)
 
     def __neg__(self):
         """Unary minus operator
@@ -268,7 +271,8 @@ class Waveform(object):
         Waveform([1 2 3],[ 1.-0.j -0.-1.j -1.+1.j])
 
         """
-        return Waveform(self._xlist, -self._y, xlabels = self.xlabels)
+        return Waveform(self._xlist, -self._y, xlabels = self.xlabels, xunits = self.xunits,
+                        ylabel = '-%s'%self.ylabel, yunit = self.yunit)
 
     def __pow__(self, a):
         """Reverse multiplication operator
@@ -278,7 +282,7 @@ class Waveform(object):
         Waveform([1 2 3],[ 9 25 36])
 
         """
-        return Waveform(self._xlist, self._y ** a, xlabels = self.xlabels)
+        return self.binaryop(operator.__pow__, a)
 
     def __rpow__(self, a):
         """Reverse multiplication operator
@@ -288,7 +292,7 @@ class Waveform(object):
         Waveform([1 2 3],[ 8 32 64])
 
         """
-        return Waveform(self._xlist, a ** self._y, xlabels = self.xlabels)
+        return self.binaryop(operator.__pow__, a, reverse=True)
  
     def __eq__(self, x):
         """Equality operator
@@ -311,12 +315,7 @@ class Waveform(object):
     def xmax(self, axis=-1):
         """Returns the maximum x-value
         
-        Examples
-        ========
-
-        >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
-        >>> w1.xmax()
-        3
+        Examples:
 
         >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
         >>> w2.xmax()
@@ -328,12 +327,7 @@ class Waveform(object):
     def xmin(self, axis=-1):
         """Returns the maximum x-value
         
-        Examples
-        ========
-
-        >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
-        >>> w1.xmin()
-        1
+        Examples:
 
         >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
         >>> w2.xmin()
@@ -345,8 +339,7 @@ class Waveform(object):
     def ymax(self, axis=-1):
         """Returns the maximum y-value
         
-        Examples
-        ========
+        Examples:
 
         >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
         >>> w1.ymax()
@@ -363,8 +356,7 @@ class Waveform(object):
     def ymin(self, axis=-1):
         """Returns the minimum y-value
 
-        Examples
-        ========
+        Examples:
 
         >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
         >>> w1.ymin()
@@ -375,16 +367,15 @@ class Waveform(object):
         Waveform([1, 2],[3 4])
 
         """
-        return reducedim(self, np.min(self._y, axis=self.getaxis(axis)))
+        return reducedim(self, np.min(self._y, axis=self.getaxis(axis)), 
+                         axis=self.getaxis(axis))
 
     def value(self, x, axis = -1, ylabel = None):
         """Returns and interpolated at a given point(s)
         
         `x` can be a number or a waveform with one less than the object
         
-
-        Example
-        =======
+        Examples:
 
         1-d waveform
 
@@ -444,30 +435,35 @@ class Waveform(object):
         >>> w1.clip(2,3)
         Waveform([ 2.  3.],[ 6.  1.])
         >>> w1.clip(1.5, 3)
-        Waveform([ 1.5, 2.  3.],[ 7., 6.  1.])
-
+        Waveform([ 1.5  2.   3. ],[ 7.  6.  1.])
         
         """
         ifrom = self._xlist[axis].searchsorted(xfrom)
 
         if xto:
-            ito = self._xlist[axis].searchsorted(xto)
+            ito = self._xlist[axis].searchsorted(xto, side='right')
         else:
-            ito = -1
-
-        xaddleft = []
-        xaddright = []
-        if self._xlist[axis][ifrom] != xfrom:
-            pass
-        if self._xlist[axis][ito] != xto:
-            pass
+            ito = 0
 
         newxlist = copy(self._xlist)
-
-        newxlist[axis] = newxlist[axis][ifrom:ito+1]
+        newxlist[axis] = newxlist[axis][ifrom:ito]
 
         ## FIXME, this assumes axis=0
-        newy = self._y[ifrom:ito+1]
+        newy = self._y[onedim_index(slice(ifrom,ito), axis, self.ndim)]
+        
+        ## Add new items on left and right side if the clip limit
+        ## does not coincidence with an already present x-value
+        if self._xlist[axis][ifrom] != xfrom:
+            newxlist[axis] = np.insert(newxlist[axis], ifrom-1, xfrom)
+            func = lambda y: [np.interp(xfrom, self._xlist[axis], y)]
+            yfrom = np.apply_along_axis(func, axis, self._y)
+            newy = np.concatenate((yfrom, newy),axis=axis)
+
+        if self._xlist[axis][ito-1] != xto:
+            newxlist[axis] = np.insert(newxlist[axis], ito, xto)
+            func = lambda y: [np.interp(xto, self._xlist[axis], y)]
+            yto = np.apply_along_axis(func, axis, self._y)
+            newy = np.concatenate((newy, yto),axis=axis)
 
         return Waveform(newxlist, newy, xunits=self.xunits, yunit=self.yunit, 
                         xlabels=self.xlabels, ylabel=self.ylabel)
@@ -559,8 +555,12 @@ class Waveform(object):
             if axis not in self.xlabels:
                 raise Exception('No axis with xlabel %s (%s)'%(axis, str(self.xlabels)))
             return list(self.xlabels).index(axis)
-        else:
+        elif type(axis) is types.IntType:
+            if axis >= self.ndim:
+                raise ValueError('axis %d >= number of dimensions'%axis)
             return axis
+        else:
+            raise ValueError('Axis %s must be a string or an integer'%str(axis))
 
     def reducedimension(self, axes):
         """Reduce given axes by selecting the first element
@@ -619,7 +619,7 @@ class Waveform(object):
         if self._xlabels != None:
             return self._xlabels
         else:
-            return ['x%d'%i for i in range(len(self._xlist))]
+            return tuple(['x%d'%i for i in range(len(self._xlist))])
     def set_xlabels(self, labels):
         self._xlabels = self.__checklabels(labels)
 
@@ -635,13 +635,42 @@ class Waveform(object):
 
     x = property(getX, setX, doc = 'x values')
     y = property(getY, setY, doc = 'y values')
-    xlabels = property(get_xlabels, set_xlabels, doc = 'x-axis list of labels for each dimension')
+    xlabels = property(get_xlabels, set_xlabels, \
+                           doc = 'x-axis list of labels for each dimension')
     ylabel = property(get_ylabel, set_ylabel, doc = 'y-axis label')
-    xunits = property(get_xunits, set_xunits, doc = 'x-axis list of units for each dimension')
-    yunit = property(get_yunit, set_yunit, doc = 'y-axis unit')
+    xunits = property(get_xunits, set_xunits, 
+                      doc = 'x-axis list of units for each dimension')
+    yunit = property(get_yunit, set_yunit, 
+                     doc = 'y-axis unit')
 
-    def __getitem__(self, key):
-        """Return the value of the given key if the data type is dictionary
+    def __getitem__(self, index):
+        if type(index) == types.IntType:
+            index = (index,)
+
+        ## Extend index to have same length as dimension
+        index = list(index) + (self.ndim - len(index)) * [slice(None)]
+
+        if len(index) > self.ndim:
+            raise IndexError('Index order exceeds the number of dimensions')
+
+        newxlist = [x[indexpart] 
+                    for x, indexpart in zip(self._xlist, index)
+                    if type(indexpart) is not types.IntType]
+        newxlabels = [label for label,indexpart in zip(self.xlabels, index)
+                      if type(indexpart) is not types.IntType]
+        newxunits = [label for label,indexpart in zip(self.xunits, index)
+                     if type(indexpart) is not types.IntType]
+
+        newy = self._y[index]
+
+        return Waveform(tuple(newxlist), newy, 
+                        xlabels = newxlabels,
+                        xunits = newxunits,
+                        ylabel = self.ylabel,
+                        yunit = self.yunit)
+
+    def getitem(self, key):
+        """Get item of each Y-value
 
         >>> wave = Waveform([[1,2]], array([{'a':1, 'b':2}, {'a':3, 'b':4}]))
         >>> wave['a']
@@ -679,6 +708,9 @@ class Waveform(object):
 def iswave(w):
     """Returns true if argument is a waveform"""
     return isinstance(w, Waveform)
+
+def assert_waveform(w):
+    assert iswave(w), "%s is not a waveform object"%str(w)
 
 def applyfunc(func, w, funcname = None):
     if iswave(w):
@@ -733,8 +765,7 @@ def reducedim(w, newy, axis=-1, ylabel=None, yunit=None):
 def astable(*waveforms):
     """Return a table of one or more waveforms with the same sweeps in text format
 
-    Examples
-    ========
+    Examples:
     
     >>> w1 = Waveform([range(2)], array([3,4]), ylabel='V1')
     >>> w2 = Waveform([range(2)], array([4,6]), ylabel='V2')
@@ -835,12 +866,14 @@ def apply_along_axis_with_idx(func1d,axis,arr,*args):
 def compatible(*args):
     """Return True if the given waveforms have the same x-values
 
-    Example:
-    >>> compatible(Waveform(array([1,2,3]),array([3,5,6])), \
-                   Waveform(array([1,2,3]),array([1,1.5,2])))
+    Examples:
+
+    >>> w1 = Waveform(array([1,2,3]),array([3,5,6]))
+    >>> w2 = Waveform(array([1,2,3]),array([1,1.5,2]))
+    >>> w3 = Waveform(array([1,2]),array([3,5,6]))
+    >>> compatible(w1, w2)
     True
-    >>> compatible(Waveform(array([1,2]),array([3,5,6])), \
-                   Waveform(array([1,2,3]),array([1,1.5,2])))
+    >>> compatible(w1, w3)
     False
     
     """
@@ -850,7 +883,8 @@ def compose(wlist, x = None, xlabel = None):
     """Compose list of waveforms into a new waveform where the 
     waveform list becomes the outer sweep
 
-    Example:
+    Examples:
+
     >>> wlist=[Waveform(array([1,2,3]),array([3,5,6])), \
                Waveform(array([1,2,3]),array([1,1.5,2]))]
     >>> w = compose(wlist, x = array([1,2]), xlabel = 'index')
@@ -883,7 +917,7 @@ def compose(wlist, x = None, xlabel = None):
                     xunits = [''] + list(wlist[0].xunits), 
                     yunit = wlist[0].yunit)
 
-# Cartesian operator of  list
+# Cartesian product operator of list of lists
 def cartesian(listList):
     if listList:
         result = []
@@ -893,6 +927,22 @@ def cartesian(listList):
                 result.append(x + (y,))
         return result
     return [()]
+
+def onedim_index(index, axis, ndim):
+    """Return an index from a 1-dimensional index along the given axis
+    
+    >>> index = onedim_index(np.index_exp[1,2], 1)
+    >>> A=np.eye(3)
+    >>> A[index]
+    array([[ 0.,  0.],
+           [ 1.,  0.],
+           [ 0.,  1.]])
+    
+    """
+    
+    return (slice(None),) * (axis % ndim) + (index,)
+
+            
 
 def wavefunc(func):
     """Decorator for creating free functions from waveform methods
@@ -904,7 +954,7 @@ def wavefunc(func):
     """
     def g(*args, **kvargs):
         if iswave(args[0]):
-            return args[0].getattr(func.__name__)(*args, **kvargs)
+            return getattr(Waveform, func.__name__)(*args, **kvargs)
         else:
             return func(*args, **kvargs)
 

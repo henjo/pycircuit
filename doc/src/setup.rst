@@ -30,3 +30,12 @@ Or in ubuntu:
    $ sudo python setup.py install
 
 
+Development
+-----------
+
+These requirements are needed for development and documentation building
+
+* Sphinx 0.5
+* Docutils
+* Jinja
+

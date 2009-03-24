@@ -9,7 +9,7 @@ from pycircuit.circuit.circuit import *
 from pycircuit.circuit.symbolicanalysis import SymbolicAC
 import sympy
 import numpy as np
-from numpy.testing import assert_array_almost_equal
+from numpy.testing import assert_array_almost_equal, assert_array_equal
 from copy import copy
 
 def generate_testcircuit():
@@ -231,3 +231,21 @@ def test_copy_circuit():
     cir_copy = copy(cir)
 
     assert_equal(cir, cir_copy)
+
+def test_VCCS_tied():
+    """Test VCCS with some nodes tied together"""
+    cir = SubCircuit()
+
+    n3,n2 = cir.add_nodes('3','2')
+
+    gm1 = sympy.Symbol('gm1')
+
+    cir['gm'] = VCCS(gnd, n3, n2, n3, gm = gm1)   
+    
+    assert_array_equal(cir.G(zeros(cir.n)),
+                       array([[gm1, 0, -gm1],
+                              [-gm1, 0, gm1],
+                              [0, 0, 0]]))
+    
+    
+    

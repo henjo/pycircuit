@@ -21,6 +21,7 @@ class ResultDict(object):
     def __contains__(self, key):
         return key in self.keys()
     def keys(self):
+        """List of ResultDict's keys"""
         raise NotImplementedError()
 
     def __str__(self):
@@ -38,7 +39,7 @@ class IVResultDict(ResultDict):
     """Result dictionary for storing voltages and currents"""
     
     def v(plus, minus=None):
-        """Returns voltage between the plus and minus node or potential of plus node"""
+        """Returns the voltage between the plus and minus node or potential of plus node"""
         raise NotImplementedError()
 
     def i(terminal):
