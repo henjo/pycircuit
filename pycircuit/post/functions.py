@@ -16,7 +16,7 @@ def db10(w):
 
     >>> w1=Waveform(array([1,2,3]),array([complex(-1,0),complex(0,1),2]))
     >>> db10(w1)
-    Waveform([1 2 3],[ 0.          0.          3.01029996])
+    Waveform(array([1, 2, 3]), array([ 0.        ,  0.        ,  3.01029996]))
         
     """
     return applyfunc(lambda x: 10.0*log10(abs(x)), w, 'db10')
@@ -27,7 +27,7 @@ def db20(w):
     >>> w1=Waveform(array([1,2,3]),array([complex(-1,0),complex(0,1), \
               complex(1,-1)]), ylabel='x')
     >>> db20(w1)
-    Waveform([1 2 3],[ 0.          0.          3.01029996])
+    Waveform(array([1, 2, 3]), array([ 0.        ,  0.        ,  3.01029996]))
     >>> db20(w1).ylabel
     'db20(x)'
         
@@ -71,7 +71,7 @@ def cross(w, crossval = 0.0, n=0, crosstype=either):
         >>> phi = vstack([x2 for p in x1])
         >>> y = Waveform([x1,x2], sin(phi))
         >>> cross(y)
-        Waveform([0.78539816339744828, 1.5707963267948966],[ 0.  0.])
+        Waveform(array([ 0.78539816,  1.57079633]), array([ 0.,  0.]))
 
         No crossing
 
@@ -115,7 +115,7 @@ def phase(w):
     >>> phase(complex(0,1))
     90.0
     >>> phase(Waveform((range(3),), array([1, complex(1,1), complex(0,-1)])))
-    Waveform(([0, 1, 2],),[  0.  45. -90.])
+    Waveform(array([0, 1, 2]), array([  0.,  45., -90.]))
 
     """
     return applyfunc(np.angle, w) * 180 / pi
@@ -126,7 +126,7 @@ def phase_margin(g):
     >>> w = 2 * pi * np.logspace(3,8,41)
     >>> w1 = -1e6
     >>> H = Waveform(w, 1.5 * (1 / (1 - 1j*w / w1))**2)
-    >>> '%0.4g'%phaseMargin(H)
+    >>> '%0.4g'%phase_margin(H)
     '110.4'
 
     """
@@ -214,12 +214,12 @@ def average(w, axis=-1):
 
     >>> w1=Waveform([range(2), range(2)],array([[1.0, 3.0], [0.0, 5.0]]))
     >>> average(w1)
-    Waveform([0, 1],[ 2.   2.5])
+    Waveform(array([0, 1]), array([ 2. ,  2.5]))
 
     >>> w1=Waveform([range(2), range(2)],array([[1.0, 3.0], [0.0, 5.0]]), \
                     xlabels=['row','col'])
     >>> average(w1, axis='row')
-    Waveform([0, 1],[ 0.5  4. ])
+    Waveform(array([0, 1]), array([ 0.5,  4. ]))
 
     """
     return reducedim(w, np.mean(w._y, axis=w.getaxis(axis)),
@@ -240,8 +240,7 @@ def stddev(w, axis=-1):
 
         >>> w1=Waveform([range(2), range(4)], array([[1,2,3,4],[1,1,1,1]]))
         >>> stddev(w1)
-        Waveform([0, 1],[ 1.11803399  0.        ])
-
+        Waveform(array([0, 1]), array([ 1.11803399,  0.        ]))
 
     """
     return reducedim(w, np.std(w._y, axis=w.getaxis(axis)),
