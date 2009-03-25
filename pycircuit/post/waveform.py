@@ -159,22 +159,29 @@ class Waveform(object):
 
     ## Unary operators
     def __abs__(self):     
-        return Waveform(self._xlist, abs(self._y), xlabels = self.xlabels, xunits = self.xunits,
+        return Waveform(self._xlist, abs(self._y), xlabels = self.xlabels, 
+                        xunits = self.xunits,
                         ylabel = 'abs(%s)'%self.ylabel, yunit = self.yunit)
     def __neg__(self):
-        return Waveform(self._xlist, -self._y, xlabels = self.xlabels, xunits = self.xunits,
+        return Waveform(self._xlist, -self._y, xlabels = self.xlabels, 
+                        xunits = self.xunits,
                         ylabel = '-%s'%self.ylabel, yunit = self.yunit)
     ## Binary operators
     def __add__(self, a):  return self.binaryop(operator.__add__, a)
-    def __radd__(self, a): return self.binaryop(operator.__add__, a, reverse=True)
+    def __radd__(self, a): 
+        return self.binaryop(operator.__add__, a, reverse=True)
     def __sub__(self, a):  return self.binaryop(operator.__sub__, a)
-    def __rsub__(self, a): return self.binaryop(operator.__sub__, a, reverse=True)
+    def __rsub__(self, a): 
+        return self.binaryop(operator.__sub__, a, reverse=True)
     def __mul__(self, a):  return self.binaryop(operator.__mul__, a)
-    def __rmul__(self, a): return self.binaryop(operator.__mul__, a, reverse=True)
+    def __rmul__(self, a): 
+        return self.binaryop(operator.__mul__, a, reverse=True)
     def __div__(self, a):  return self.binaryop(operator.__div__, a)
-    def __rdiv__(self, a): return self.binaryop(operator.__div__, a, reverse=True)
+    def __rdiv__(self, a): 
+        return self.binaryop(operator.__div__, a, reverse=True)
     def __pow__(self, a):  return self.binaryop(operator.__pow__, a)
-    def __rpow__(self, a): return self.binaryop(operator.__pow__, a, reverse=True)
+    def __rpow__(self, a): 
+        return self.binaryop(operator.__pow__, a, reverse=True)
     def __eq__(self, x):   return self.binaryop(operator.__eq__, x)
     def __lt__(self, x):   return self.binaryop(operator.__lt__, x)
     def __gt__(self, x):   return self.binaryop(operator.__gt__, x)
@@ -571,8 +578,8 @@ def assert_waveform(w):
 
 def applyfunc(func, w, funcname = None):
     if iswave(w):
-        outw  = copy(w)
-        outw._y = func(outw._y)
+        outw  = Waveform(w.x, w.y, xlabels=w.xlabels, xunits=w.xunits)
+        outw.y = func(outw._y)
         if w.ylabel:
             if funcname:
                 outw.ylabel = funcname + '(' + w.ylabel + ')'

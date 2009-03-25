@@ -18,7 +18,7 @@ def test_db10():
 
 def test_phase():
     for testdata in testdata1:
-        check_func(phase, lambda x: 360.0/pi*np.angle(abs(x)), (testdata,))
+        check_func(phase, lambda x: np.angle(x, deg=True), (testdata,))
 
 def test_deriv():
     check_nonscalar_function(deriv)

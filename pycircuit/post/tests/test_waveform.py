@@ -89,10 +89,24 @@ def test_indexing():
                           xunits = ('V',),
                           ylabel = 'i3',
                           yunit = 'A')
-    
+
     assert_waveform_equal(w[0,:], w_sliced)
 
-    assert_waveform_equal(w[0], w_sliced)
+    w_sliced2 = Waveform(([1,2],), array([3,5]),
+                         xlabels = ('v1',),
+                         xunits = ('V',),
+                         ylabel = 'i3',
+                         yunit = 'A')
+    
+    assert_waveform_equal(w[0], w_sliced2)
+
+    w_sliced3 = Waveform(([1], [1,2,3],), array([[3,4,5]]),
+                          xlabels = ('v1', 'v2',),
+                          xunits = ('V', 'V',),
+                          ylabel = 'i3',
+                          yunit = 'A')
+    
+    assert_waveform_equal(w[0:1,:], w_sliced3)
 
     w_sliced = Waveform(([1,2],), array([5,2]),
                           xlabels = ('v1',),
@@ -209,8 +223,12 @@ def check_func(func, reference_func, args, preserve_yunit = False,
 
     ## Check result
     if iswave(res):
-        assert_array_equal(res.y, reference_func(*args).y)
-        assert_array_equal(np.array(res.x), np.array(reference_func(*args).x))
+        y_ref = reference_func(*args)
+        if iswave(y_ref):
+            y_ref = y_ref.y
+        assert_array_equal(res.y, y_ref)
+        assert_array_equal(np.array(res.x), 
+                           args[0].x)
     else:
         assert_array_equal(res, reference_func(*args))
     
@@ -288,6 +306,12 @@ def test_array_interface():
         assert_array_equal(wout.y, np.cos(win))
         assert_array_equal(win.x[0], wout.x[0])
     
+def test_repr():
+    for wref in testdata1[0], testdata2:
+        wstr = repr(wref)
+        wout = eval(wstr)
+        assert_waveform_equal(wout, wref)
+
 if __name__ == "__main__":
     import doctest
     doctest.testmod()

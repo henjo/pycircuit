@@ -118,7 +118,9 @@ def phase(w):
     Waveform(array([0, 1, 2]), array([  0.,  45., -90.]))
 
     """
-    return applyfunc(np.angle, w) * 180 / pi
+    def phase(x): 
+        return np.angle(w, deg=True)
+    return applyfunc(phase , w)
 
 def phase_margin(g):
     """Calculate phase margin of a loop gain vs frequency waveform
