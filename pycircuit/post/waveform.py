@@ -43,9 +43,12 @@ class Waveform(object):
                  xunits=None, yunit=None
                  ):
         
-        if type(x) != types.ListType:
+        if type(x) is np.ndarray:
             x = [x]
             
+        if type(y) is not np.ndarray:
+            y = array(y)
+
         self.ragged = (y.dtype == object) and (len(y.shape) == len(x)-1) \
             and (x[-1]-x[-1] == y-y).all()
             
@@ -73,22 +76,12 @@ class Waveform(object):
                         xlabels=self.xlabels, ylabel=self.ylabel,
                         xunits=self.xunits, yunit=self.yunit)
         
-    def getSweepDimensions(self):
-        """Return the number of nested sweeps
-
-        >>> w=Waveform([array([1,2]), array([1,2])], array([[3,4],[4,5]]))
-        >>> w.getSweepDimensions()
-        2
-    
-        """
-        return self._dim
-
     @property
     def ndim(self):
         """Return the number of nested sweeps"""
         return self._y.ndim
 
-    def getX(self, axis=None):
+    def get_x(self, axis=None):
         """Get X vector of the given sweep dimension
 
         If no dimension is given, a list of the sweeps in all dimensions 
@@ -107,27 +100,27 @@ class Waveform(object):
             axis = self.getaxis(axis)
             return self._xlist[axis]
     
-    def getY(self):
+    def get_y(self):
         """Get Y vector or n-dimensional array if sweep dimension > 1"""
         return self._y
 
-    def setX(self,value, dim=-1):
+    def set_x(self,value, axis=-1):
         "Set X vector"
 
         ## Swap order if new xvalues are falling
         if value[0] > value [-1]:
-            self._xlist[dim] = value[-1::-1]
+            self._xlist[axis] = value[-1::-1]
 
-            if dim != -1:
-                raise Exception("Can only swap order if dim=-1")
+            if axis != -1:
+                raise Exception("Can only swap order if axis=-1")
 
             self._y = self._y[..., -1::-1]            
 
-    def setY(self,value):
+    def set_y(self,value):
         "Set Y multi-dimensional array"
         self._y = value
 
-    def mapx(self, func, axis=-1, xlabel = ''):
+    def map_x(self, func, axis=-1, xlabel = ''):
         """Apply function func on x-values of the given axis"""
         newxlist = copy(self._xlist)
         newxlist[axis] = func(newxlist[axis])
@@ -160,160 +153,32 @@ class Waveform(object):
                         xlabels = self.xlabels, xunits = self.xunits,
                         ylabel = ylabel, yunit = yunit)
 
-    def __add__(self, a):
-        """Add operator
-
-        >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
-        >>> w2=Waveform(array([1,2,3]),array([1,1.5,2]))
-        >>> w1+w2
-        Waveform([1 2 3],[ 4.   6.5  8. ])
-        >>> w1+2.0
-        Waveform([1 2 3],[ 5.  7.  8.])
-
-        """
-        return self.binaryop(operator.__add__, a)
-    
-    def __radd__(self, a):
-        """Reverse add operator
-
-        >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
-        >>> 2.0+w1
-        Waveform([1 2 3],[ 5.  7.  8.])
-
-        """
-        return self.binaryop(operator.__add__, a, reverse=True)
-    
-    def __sub__(self, a):
-        """Subtract operator
-
-        >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
-        >>> w2=Waveform(array([1,2,3]),array([1,1.5,2]))
-        >>> w1-w2
-        Waveform([1 2 3],[ 2.   3.5  4. ])
-        >>> w1-2.0
-        Waveform([1 2 3],[ 1.  3.  4.])
-
-        """
-        return self.binaryop(operator.__sub__, a)
-
-    def __rsub__(self, a):
-        """Reverse subtract operator
-
-        >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
-        >>> 2.0-w1
-        Waveform([1 2 3],[-1. -3. -4.])
-
-        """
-        return self.binaryop(operator.__sub__, a, reverse=True)
-
-    def __mul__(self, a):
-        """Multiplication operator
-
-        >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
-        >>> w2=Waveform(array([1,2,3]),array([1,1.5,2]))
-        >>> w1*w2
-        Waveform([1 2 3],[  3.    7.5  12. ])
-        >>> w1*2.0
-        Waveform([1 2 3],[  6.  10.  12.])
-
-        """
-        return self.binaryop(operator.__mul__, a)
-
-    def __rmul__(self, a):
-        """Reverse multiplication operator
-
-        >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
-        >>> 2.0*w1
-        Waveform([1 2 3],[  6.  10.  12.])
-
-        """
-        return self.binaryop(operator.__mul__, a, reverse=True)
-
-    def __div__(self, a):
-        """Division operator
-
-        >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
-        >>> w2=Waveform(array([1,2,3]),array([1,1.5,2]))
-        >>> w1/w2
-        Waveform([1 2 3],[ 3.          3.33333333  3.        ])
-        >>> w1/2.0
-        Waveform([1 2 3],[ 1.5  2.5  3. ])
-
-        """
-        return self.binaryop(operator.__div__, a)
-
-    def __rdiv__(self, a):
-        """Reverse division operator
-
-        >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
-        >>> 2.0/w1
-        Waveform([1 2 3],[ 0.66666667  0.4         0.33333333])
-
-        """
-        return self.binaryop(operator.__div__, a, reverse=True)
-
-    def __abs__(self):
-        """Absolute value operator
-
-        >>> w1=Waveform(array([1,2,3]),array([complex(-1,0),complex(0,1),complex(1,-1)]))
-        >>> abs(w1)
-        Waveform([1 2 3],[ 1.          1.          1.41421356])
-
-        """
+    ## Unary operators
+    def __abs__(self):     
         return Waveform(self._xlist, abs(self._y), xlabels = self.xlabels, xunits = self.xunits,
                         ylabel = 'abs(%s)'%self.ylabel, yunit = self.yunit)
-
     def __neg__(self):
-        """Unary minus operator
-
-        >>> w1=Waveform(array([1,2,3]),array([complex(-1,0),complex(0,1),complex(1,-1)]))
-        >>> -w1
-        Waveform([1 2 3],[ 1.-0.j -0.-1.j -1.+1.j])
-
-        """
         return Waveform(self._xlist, -self._y, xlabels = self.xlabels, xunits = self.xunits,
                         ylabel = '-%s'%self.ylabel, yunit = self.yunit)
-
-    def __pow__(self, a):
-        """Reverse multiplication operator
-
-        >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
-        >>> w1**2
-        Waveform([1 2 3],[ 9 25 36])
-
-        """
-        return self.binaryop(operator.__pow__, a)
-
-    def __rpow__(self, a):
-        """Reverse multiplication operator
-
-        >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
-        >>> 2**w1
-        Waveform([1 2 3],[ 8 32 64])
-
-        """
-        return self.binaryop(operator.__pow__, a, reverse=True)
- 
-    def __eq__(self, x):
-        """Equality operator
-
-        >>> w1=Waveform(array([1,2,3]),array([1,5,2]))
-        >>> w2=Waveform(array([1,2,3]),array([1,1.5,2]))
-        >>> w1 == w2
-        Waveform([1 2 3],[ True False  True])
-        >>> w1 == 5
-        Waveform([1 2 3],[False  True False])
-        
-        """
-        return self.binaryop(operator.__eq__, x)
-
-    def __lt__(self, x):  return self.binaryop(operator.__lt__, x)
-    def __gt__(self, x):  return self.binaryop(operator.__gt__, x)
-    def __le__(self, x):  return self.binaryop(operator.__le__, x)
-    def __ge__(self, x):  return self.binaryop(operator.__ge__, x)
+    ## Binary operators
+    def __add__(self, a):  return self.binaryop(operator.__add__, a)
+    def __radd__(self, a): return self.binaryop(operator.__add__, a, reverse=True)
+    def __sub__(self, a):  return self.binaryop(operator.__sub__, a)
+    def __rsub__(self, a): return self.binaryop(operator.__sub__, a, reverse=True)
+    def __mul__(self, a):  return self.binaryop(operator.__mul__, a)
+    def __rmul__(self, a): return self.binaryop(operator.__mul__, a, reverse=True)
+    def __div__(self, a):  return self.binaryop(operator.__div__, a)
+    def __rdiv__(self, a): return self.binaryop(operator.__div__, a, reverse=True)
+    def __pow__(self, a):  return self.binaryop(operator.__pow__, a)
+    def __rpow__(self, a): return self.binaryop(operator.__pow__, a, reverse=True)
+    def __eq__(self, x):   return self.binaryop(operator.__eq__, x)
+    def __lt__(self, x):   return self.binaryop(operator.__lt__, x)
+    def __gt__(self, x):   return self.binaryop(operator.__gt__, x)
+    def __le__(self, x):   return self.binaryop(operator.__le__, x)
+    def __ge__(self, x):   return self.binaryop(operator.__ge__, x)
 
     def xmax(self, axis=-1):
-        """Returns the maximum x-value
+        """Returns the maximum x-value over one axis
         
         Examples:
 
@@ -325,7 +190,7 @@ class Waveform(object):
         return np.max(self._xlist[axis])
 
     def xmin(self, axis=-1):
-        """Returns the maximum x-value
+        """Returns the minimum x-value over one axis
         
         Examples:
 
@@ -337,13 +202,9 @@ class Waveform(object):
         return np.min(self._xlist[axis])
 
     def ymax(self, axis=-1):
-        """Returns the maximum y-value
+        """Returns the maximum y-value over one axis
         
         Examples:
-
-        >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
-        >>> w1.ymax()
-        6
 
         >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
         >>> w2.ymax()
@@ -354,13 +215,9 @@ class Waveform(object):
                          axis=self.getaxis(axis))
 
     def ymin(self, axis=-1):
-        """Returns the minimum y-value
+        """Returns the minimum y-value over one axis
 
         Examples:
-
-        >>> w1=Waveform(array([1,2,3]),array([3,5,6]))
-        >>> w1.ymin()
-        3
 
         >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
         >>> w2.ymin()
@@ -371,9 +228,11 @@ class Waveform(object):
                          axis=self.getaxis(axis))
 
     def value(self, x, axis = -1, ylabel = None):
-        """Returns and interpolated at a given point(s)
+        """Returns and interpolated at the given x-value
         
-        `x` can be a number or a waveform with one less than the object
+        *x* can be a number or a waveform where the number of dimensions of x is
+        is one less than the waveform it is operating on
+           
         
         Examples:
 
@@ -423,11 +282,6 @@ class Waveform(object):
             outw.ylabel = ylabel
         return outw
 
-    # Mathematical functions
-    def real(self): return np.real(self)
-    def imag(self): return np.imag(self)
-    def conjugate(self): return np.conjugate(self)
-
     def clip(self, xfrom, xto = None, axis=-1):
         """Restrict the waveform to the range defined by xfrom and xto
 
@@ -468,6 +322,11 @@ class Waveform(object):
         return Waveform(newxlist, newy, xunits=self.xunits, yunit=self.yunit, 
                         xlabels=self.xlabels, ylabel=self.ylabel)
 
+    # Mathematical functions
+    def real(self): return np.real(self)
+    def imag(self): return np.imag(self)
+    def conjugate(self): return np.conjugate(self)
+
     def deriv(self):
         """Calculate derivative of a waveform with respect to the inner x-axis"""
 
@@ -489,14 +348,14 @@ class Waveform(object):
                     str(self._xlist[axis][ix]) for axis, ix in enumerate(i)])
 
             # Limit infinite values
-            y = self.getY()[i]
+            y = self.get_y()[i]
             y[where(y == inf)] = 1e20
             y[where(y == -inf)] = -1e20
 
             if 'label' not in kvargs:
                 kvargs['label'] = label
             
-            p=plotfunc(self.getX(-1), y, **kvargs)
+            p=plotfunc(self.get_x(-1), y, **kvargs)
 
         pylab.hold(False)
         
@@ -633,8 +492,8 @@ class Waveform(object):
             raise ValueError('Label must be a string')
         self._ylabel = s
 
-    x = property(getX, setX, doc = 'x values')
-    y = property(getY, setY, doc = 'y values')
+    x = property(get_x, set_x, doc = 'x values')
+    y = property(get_y, set_y, doc = 'y values')
     xlabels = property(get_xlabels, set_xlabels, \
                            doc = 'x-axis list of labels for each dimension')
     ylabel = property(get_ylabel, set_ylabel, doc = 'y-axis label')
@@ -688,7 +547,7 @@ class Waveform(object):
             xlist = self._xlist
         else:
             xlist = self._xlist[0]
-        return self.__class__.__name__ + "(" + str(xlist) + "," + str(self.getY()) + ")"
+        return self.__class__.__name__ + "(" + str(xlist) + "," + str(self.get_y()) + ")"
 
     def __checklabels(self, labels):
         if not labels == None:
