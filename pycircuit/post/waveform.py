@@ -499,11 +499,11 @@ class Waveform(object):
                      doc = 'y-axis unit')
 
     def __getitem__(self, index):
-        if type(index) == types.IntType:
+        if type(index) in (types.IntType, slice):
             index = (index,)
 
-        ## Extend index to have same length as dimension
-        index = list(index) + (self.ndim - len(index)) * [slice(None)]
+        ## Extend index from left to have same length as dimension
+        index = (self.ndim - len(index)) * [slice(None)] + list(index)
 
         if len(index) > self.ndim:
             raise IndexError('Index order exceeds the number of dimensions')
