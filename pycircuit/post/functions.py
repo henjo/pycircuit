@@ -4,7 +4,7 @@
 """This module contains functions that operates on wave objects or scalars"""
 
 from waveform import Waveform, reducedim, applyfunc, applyfunc_and_reducedim,\
-    iswave, wavefunc
+    iswave, wavefunc, assert_waveform
 import numpy as np
 from numpy import array, pi, sign, alltrue, where, arange, vstack, \
     sin, log10, sqrt, nan
@@ -14,11 +14,9 @@ import scipy.optimize as optimize
 def db10(w):
     """Return x in dB where x is assumed to be a non-power quantity
 
-    >>> w1=Waveform(array([1,2,3]),array([complex(-1,0),complex(0,1),2]), ylabel='x')
+    >>> w1=Waveform(array([1,2,3]),array([complex(-1,0),complex(0,1),2]))
     >>> db10(w1)
     Waveform([1 2 3],[ 0.          0.          3.01029996])
-    >>> db10(w1).ylabel
-    'db10(x)'
         
     """
     return applyfunc(lambda x: 10.0*log10(abs(x)), w, 'db10')
@@ -26,7 +24,8 @@ def db10(w):
 def db20(w):
     """Return x in dB where x is assumed to be a non-power quantity
 
-    >>> w1=Waveform(array([1,2,3]),array([complex(-1,0),complex(0,1),complex(1,-1)]), ylabel='x')
+    >>> w1=Waveform(array([1,2,3]),array([complex(-1,0),complex(0,1), \
+              complex(1,-1)]), ylabel='x')
     >>> db20(w1)
     Waveform([1 2 3],[ 0.          0.          3.01029996])
     >>> db20(w1).ylabel
@@ -56,30 +55,30 @@ def cross(w, crossval = 0.0, n=0, crosstype=either):
 
     Examples:
 
-    1-d waveform
+        1-d waveform
 
-    >>> phi = arange(0, 4*pi, pi/10)-pi/4
-    >>> y = Waveform(phi, sin(phi))
-    >>> cross(y)
-    0.0
-    >>> cross(y, crosstype=falling)
-    3.1415926535897931
+        >>> phi = arange(0, 4*pi, pi/10)-pi/4
+        >>> y = Waveform(phi, sin(phi))
+        >>> cross(y)
+        0.0
+        >>> cross(y, crosstype=falling)
+        3.1415926535897931
 
-    2-d waveform
+        2-d waveform
 
-    >>> x1 = [pi/4,pi/2]
-    >>> x2 = arange(0, 4*pi, pi/10)-pi/4
-    >>> phi = vstack([x2 for p in x1])
-    >>> y = Waveform([x1,x2], sin(phi))
-    >>> cross(y)
-    Waveform([0.78539816339744828, 1.5707963267948966],[ 0.  0.])
+        >>> x1 = [pi/4,pi/2]
+        >>> x2 = arange(0, 4*pi, pi/10)-pi/4
+        >>> phi = vstack([x2 for p in x1])
+        >>> y = Waveform([x1,x2], sin(phi))
+        >>> cross(y)
+        Waveform([0.78539816339744828, 1.5707963267948966],[ 0.  0.])
 
-    No crossing
+        No crossing
 
-    >>> cross(Waveform([[0,1,2,3]], array([1,1,1,1])))
-    nan
+        >>> cross(Waveform([[0,1,2,3]], array([1,1,1,1])))
+        nan
 
-    TODO: handle case where x-values are exactly at the crossing
+    .. todo:: handle case where x-values are exactly at the crossing
 
     """
 
@@ -121,8 +120,8 @@ def phase(w):
     """
     return applyfunc(np.angle, w) * 180 / pi
 
-def phaseMargin(g):
-    """Calculate phase margin of a open-loop gain vs frequency waveform
+def phase_margin(g):
+    """Calculate phase margin of a loop gain vs frequency waveform
 
     >>> w = 2 * pi * np.logspace(3,8,41)
     >>> w1 = -1e6
@@ -137,14 +136,13 @@ def phaseMargin(g):
 def bandwidth(w, db = 3.0, type = 'low'):
     """Calculate bandwidth of transfer as function of frequency
 
-    Examples
-    ========
+    Examples:
 
-    >>> w = 2 * pi * np.logspace(3,8)
-    >>> w1 = -1e6
-    >>> H = Waveform(w, 1 / (1 - 1j*w / w1))
-    >>> bandwidth(H)
-    1000896.9666087811
+        >>> w = 2 * pi * np.logspace(3,8)
+        >>> w1 = -1e6
+        >>> H = Waveform(w, 1 / (1 - 1j*w / w1))
+        >>> bandwidth(H)
+        1000896.9666087811
 
     """
     xmin = min(w._xlist[-1])
@@ -227,18 +225,22 @@ def average(w, axis=-1):
     return reducedim(w, np.mean(w._y, axis=w.getaxis(axis)),
                      axis=w.getaxis(axis))
 
+def rms(w, axis=-1):
+    """Calculate root-mean-square"""
+    return reducedim(w, sqrt(np.mean(w._y**2, axis=w.getaxis(axis))),
+                     axis=w.getaxis(axis))
+
 def stddev(w, axis=-1):
     """Calculate the standard deviation
 
     Returns the standard deviation over the highest dimension, a measure of the
     spread of a distribution.
 
-    Examples
-    ========
+    Examples:
 
-    >>> w1=Waveform([range(2), range(4)], array([[1,2,3,4],[1,1,1,1]]))
-    >>> stddev(w1)
-    Waveform([0, 1],[ 1.11803399  0.        ])
+        >>> w1=Waveform([range(2), range(4)], array([[1,2,3,4],[1,1,1,1]]))
+        >>> stddev(w1)
+        Waveform([0, 1],[ 1.11803399  0.        ])
 
 
     """
@@ -248,6 +250,7 @@ def stddev(w, axis=-1):
 
 def deriv(w):
     """Calculate derivative of a waveform with respect to the inner x-axis"""
+    assert_waveform(w)
     return w.deriv()
 
 if __name__ == "__main__":
