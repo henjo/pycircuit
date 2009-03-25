@@ -5,7 +5,12 @@
 
 from docutils.nodes import Body, Element
 from docutils.writers.html4css1 import HTMLTranslator
-from sphinx.latexwriter import LaTeXTranslator
+
+try:
+    from sphinx.writers.latex import  LaTeXTranslator ## Sphinx 0.6
+except:
+    from sphinx.latexwriter import LaTeXTranslator    ## Sphinx 0.5
+    
 from docutils.parsers.rst import directives
 
 class html_only(Body, Element):

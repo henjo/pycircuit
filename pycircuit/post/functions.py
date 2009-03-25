@@ -136,7 +136,7 @@ def phase_margin(g):
 def bandwidth(w, db = 3.0, type = 'low'):
     """Calculate bandwidth of transfer as function of frequency
 
-    Examples:
+    Example:
 
         >>> w = 2 * pi * np.logspace(3,8)
         >>> w1 = -1e6
@@ -236,7 +236,7 @@ def stddev(w, axis=-1):
     Returns the standard deviation over the highest dimension, a measure of the
     spread of a distribution.
 
-    Examples:
+    Example:
 
         >>> w1=Waveform([range(2), range(4)], array([[1,2,3,4],[1,1,1,1]]))
         >>> stddev(w1)
