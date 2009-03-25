@@ -32,16 +32,15 @@ class Waveform(object):
 
     Initiating N-dimensional data where the inner dimension has variable length
 
-    >>> w = Waveform([array([1,2]), array([array([3,3]),array([4])], \
-    dtype=object)], array([array([3,4]),array([4])], dtype = object))
-
+    >>> x0 = array([array([1,1]), array([2])], dtype=object)
+    >>> x1 = array([array([1,2]), array([1])], dtype=object)
+    >>> w = Waveform([x0, x1], array([array([3,4]),array([4])], dtype = object))
     
     """
 
     def __init__(self, x=array([],), y=array([]),
                  xlabels=None, ylabel=None,
-                 xunits=None, yunit=None
-                 ):
+                 xunits=None, yunit=None):
         
         if type(x) is np.ndarray:
             x = [x]
@@ -49,15 +48,17 @@ class Waveform(object):
         if type(y) is not np.ndarray:
             y = array(y)
 
-        self.ragged = (y.dtype == object) and (len(y.shape) == len(x)-1) \
-            and (x[-1]-x[-1] == y-y).all()
-            
+        xlist = [array(xelement) for xelement in x]
+
+        self.ragged = (y.dtype == object) and  \
+            set([xe.shape for xe in xlist + [y]]) == set([y.shape])
+        
         dim = len(x)
 
         if not self.ragged and dim != len(y.shape):
             raise ValueError("Dimension of x (%s) does not match dimension of"
                              " y (%s)"%(map(len, x), y.shape))
-        self._xlist = [array(xelement) for xelement in x]
+        self._xlist = xlist
         self._y = y
         self._dim = dim
         self.xlabels = xlabels
@@ -81,6 +82,9 @@ class Waveform(object):
         """Return the number of nested sweeps"""
         return self._y.ndim
 
+    @property
+    def shape(self): return tuple((len(x) for x in self.x))
+
     def get_x(self, axis=None):
         """Get X vector of the given sweep dimension
 
@@ -88,9 +92,9 @@ class Waveform(object):
         is returned
 
         >>> w=Waveform([array([1,2]), array([1.5,2.5])], array([[3,4],[4,5]]))
-        >>> w.getX(0)
+        >>> w.get_x(0)
         array([1, 2])
-        >>> w.getX(1)
+        >>> w.get_x(1)
         array([ 1.5,  2.5])
         """
 
@@ -208,7 +212,7 @@ class Waveform(object):
 
         >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
         >>> w2.ymax()
-        Waveform([1, 2],[6 7])
+        Waveform(array([1, 2]), array([6, 7]))
 
         """
         return reducedim(self, np.max(self._y, axis=self.getaxis(axis)), 
@@ -221,7 +225,7 @@ class Waveform(object):
 
         >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
         >>> w2.ymin()
-        Waveform([1, 2],[3 4])
+        Waveform(array([1, 2]), array([3, 4]))
 
         """
         return reducedim(self, np.min(self._y, axis=self.getaxis(axis)), 
@@ -245,12 +249,12 @@ class Waveform(object):
         2-d waveform
         >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
         >>> w2.value(2.5)
-        Waveform([1, 2],[ 4.  5.])
+        Waveform(array([1, 2]), array([ 4.,  5.]))
         
         `x` is a waveform
         >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
         >>> w2.value(Waveform([[1, 2]], array([2.5, 3.5])))
-        Waveform([1, 2],[ 4.   6.5])
+        Waveform(array([1, 2]), array([ 4. ,  6.5]))
 
         """
         axis = self.getaxis(axis)
@@ -287,9 +291,9 @@ class Waveform(object):
 
         >>> w1 = Waveform(array([1.,2.,3.]), array([8., 6., 1.]), ylabel='a')
         >>> w1.clip(2,3)
-        Waveform([ 2.  3.],[ 6.  1.])
+        Waveform(array([ 2.,  3.]), array([ 6.,  1.]))
         >>> w1.clip(1.5, 3)
-        Waveform([ 1.5  2.   3. ],[ 7.  6.  1.])
+        Waveform(array([ 1.5,  2. ,  3. ]), array([ 7.,  6.,  1.]))
         
         """
         ifrom = self._xlist[axis].searchsorted(xfrom)
@@ -302,7 +306,6 @@ class Waveform(object):
         newxlist = copy(self._xlist)
         newxlist[axis] = newxlist[axis][ifrom:ito]
 
-        ## FIXME, this assumes axis=0
         newy = self._y[onedim_index(slice(ifrom,ito), axis, self.ndim)]
         
         ## Add new items on left and right side if the clip limit
@@ -379,28 +382,21 @@ class Waveform(object):
         """Return a table in text format
 
         >>> print Waveform(array([1,2,3]),array([3,4,5])).astable
-        <BLANKLINE>
         ====  ===
-        x0    y
+        x0    y  
         ====  ===
-        1     3
-        2     4
-        3     5
+           1    3
+           2    4
+           3    5
         ====  ===
-        <BLANKLINE>
-
         >>> print Waveform(array([1,2]),array([3,4]), xlabels = ('X',), \
                            ylabel = 'Y').astable
-        <BLANKLINE>
-        ====  ===
-        X     Y
-        ====  ===
-        1     3
-        2     4
-        3     5
-        ====  ===
-        <BLANKLINE>
-
+        ===  ===
+        X    Y  
+        ===  ===
+          1    3
+          2    4
+        ===  ===
         >>> t=Waveform(array([1,2]),array([3,4]), xlabels = ['X'], \
                        ylabel = 'Y').astable
 
@@ -426,7 +422,7 @@ class Waveform(object):
 
         >>> w = Waveform([[1,2],[3,4]], array([[1,2],[3,4]]))
         >>> w.reducedimension([0])
-        Waveform([[3, 4]],[1 2])
+        Waveform([array([3, 4])], array([1, 2]))
         
         """
         axes = [self.getaxis(axis) for axis in axes]
@@ -532,22 +528,24 @@ class Waveform(object):
         """Get item of each Y-value
 
         >>> wave = Waveform([[1,2]], array([{'a':1, 'b':2}, {'a':3, 'b':4}]))
-        >>> wave['a']
-        Waveform([1, 2],[1 3])
+        >>> wave.getitem('a')
+        Waveform(array([1, 2]), array([1, 3]))
 
         """
         def getitem(d):
             return d[key]
         
         ufuncgetitem = np.vectorize(getitem)
-        return Waveform(self._xlist, ufuncgetitem(self._y), xlabels = self.xlabels)
+        return Waveform(self._xlist, ufuncgetitem(self._y), 
+                        xlabels = self.xlabels)
 
     def __repr__(self):
         if self._dim > 1:
             xlist = self._xlist
         else:
             xlist = self._xlist[0]
-        return self.__class__.__name__ + "(" + str(xlist) + "," + str(self.get_y()) + ")"
+        return self.__class__.__name__ + "(" + repr(xlist) + ", " + \
+            repr(self.y) + ")"
 
     def __checklabels(self, labels):
         if not labels == None:
@@ -630,12 +628,11 @@ def astable(*waveforms):
     >>> w2 = Waveform([range(2)], array([4,6]), ylabel='V2')
     >>> print astable(w1,w2)
     ====  ====  ====
-      x0    V1    V2
+    x0    V1    V2  
     ====  ====  ====
        0     3     4
        1     4     6
     ====  ====  ====
-    
 
     """
     from pycircuit.utilities import rst
@@ -736,7 +733,7 @@ def compatible(*args):
     False
     
     """
-    return True
+    return set([w.shape for w in args]) == set([args[0].shape])
 
 def compose(wlist, x = None, xlabel = None):
     """Compose list of waveforms into a new waveform where the 
@@ -748,8 +745,8 @@ def compose(wlist, x = None, xlabel = None):
                Waveform(array([1,2,3]),array([1,1.5,2]))]
     >>> w = compose(wlist, x = array([1,2]), xlabel = 'index')
     >>> w
-    Waveform([array([1, 2]), array([1, 2, 3])],[[ 3.   5.   6. ]
-     [ 1.   1.5  2. ]])
+    Waveform([array([1, 2]), array([1, 2, 3])], array([[ 3. ,  5. ,  6. ],
+           [ 1. ,  1.5,  2. ]]))
     >>> w.xlabels
     ('index', 'x0')
     
@@ -790,7 +787,7 @@ def cartesian(listList):
 def onedim_index(index, axis, ndim):
     """Return an index from a 1-dimensional index along the given axis
     
-    >>> index = onedim_index(np.index_exp[1,2], 1)
+    >>> index = onedim_index(np.index_exp[1,2], 1, 3)
     >>> A=np.eye(3)
     >>> A[index]
     array([[ 0.,  0.],
