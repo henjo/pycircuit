@@ -27,6 +27,8 @@ class ParameterDict(object):
         self.append(*parameters)
         self.set(**kvargs)
         
+    def __eq__(self, a):
+        return self._parameters == a._parameters
         
     def append(self, *parameters):
         for param in parameters:

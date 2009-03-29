@@ -15,7 +15,7 @@ from copy import copy
 def generate_testcircuit():
     subc = SubCircuit()
     plus, minus = subc.add_nodes('plus', 'minus')
-    subc['R1'] = R(plus, minus)
+    subc['R1'] = R(plus, minus, r=2e3)
 
     subc['R3'] = R(plus, plus)
 
@@ -52,7 +52,7 @@ def test_print_netlist():
   R3 internal gnd! R r=1000.0 noisy=True
 .ends
 I1 plus minus MySubC 
-R1 plus minus R r=1000.0 noisy=True
+R1 plus minus R r=2000.0 noisy=True
 R3 plus plus R r=1000.0 noisy=True"""
 
     assert_equal(netlist, refnetlist)    
@@ -116,7 +116,17 @@ def test_subcircuit_nodes():
     assert_equal(subc['R3'].nodes,
                  [Node('plus'), Node('minus')])
 
-def test_add_nodes_implicitly():
+def test_subcircuit_get_instance():
+    cir = generate_testcircuit()
+
+    assert_equal(cir[''], cir)
+    assert_equal(cir['R1'], R('plus', 'minus', r=2e3))
+    assert_equal(cir['I1.R1'], R('plus', 'minus', r=1e3))
+    assert_raises(KeyError, lambda: cir['R10'])
+    assert_raises(KeyError, lambda: cir['I1.R10'])
+    assert_raises(KeyError, lambda: cir['I2.R10'])
+
+def test_subcircuit_add_nodes_implicitly():
     subc = SubCircuit()
 
     ## Test to add nodes implicitly using node objects
@@ -247,5 +257,24 @@ def test_VCCS_tied():
                               [-gm1, 0, gm1],
                               [0, 0, 0]]))
     
+def test_proxy():
     
+    refcir = generate_testcircuit()
     
+    cir = generate_testcircuit()
+
+    print CircuitProxy(cir['I1'], cir, 'I1').terminalhook
+    cir['I1'] = CircuitProxy(cir['I1'], cir, 'I1')
+    
+    assert_equal(cir['I1'].terminals, refcir['I1'].terminals)
+    assert_equal(cir['I1'].non_terminal_nodes(), refcir['I1'].non_terminal_nodes())
+    assert_equal(cir.nodes, refcir.nodes)
+    assert_equal(cir.branches, refcir.branches)
+    assert_equal(cir.n, refcir.n)
+
+    for method in ['G', 'C', 'i', 'q']:
+        assert_array_equal(getattr(cir, method)(zeros(cir.n)),
+                           getattr(refcir, method)(zeros(cir.n)),
+                           )
+
+    assert_array_equal(cir.CY(zeros(cir.n),1), refcir.CY(zeros(cir.n),1))

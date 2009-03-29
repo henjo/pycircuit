@@ -119,7 +119,7 @@ class Circuit(object):
           currents through the branches.
 
         *terminals*
-          list that contains terminal names
+          list of terminal names
 
         *instparams*
           A list of valid instance parameters (Parameter objects)
@@ -172,6 +172,12 @@ class Circuit(object):
         ## Set temporary terminal mapping information for use by instantiation
         ## method in higher hierarchy
         self.terminalhook = dict(zip(self.terminals, args))
+        
+    def __eq__(self, a):
+        return self.__class__ == a.__class__ and \
+            self.nodes == a.nodes and self.internalnodes == a.internalnodes and \
+            self.nodenames == a.nodenames and self.branches == a.branches and \
+            self.ipar == a.ipar
         
     def __copy__(self):
         newc = self.__class__()
@@ -638,6 +644,12 @@ class SubCircuit(Circuit):
         self.term_node_map = {}
         self._rep_nodemap_list = {}
 
+    def __eq__(self, a):
+        return super(SubCircuit, self).__eq__(a) and \
+            self.elements == a.elements and \
+            self.elementnodemap == a.elementnodemap and \
+            self.term_node_map == a.term_node_map
+
     def __copy__(self):
         newc = Circuit.__copy__(self)
         
@@ -772,8 +784,18 @@ class SubCircuit(Circuit):
         self.update_node_map()
 
     def __getitem__(self, instancename):
-        """Get instance"""
-        return self.elements[instancename]
+        """Get local or hierarchical instance by name"""
+        
+        instname_parts = [part for part in instancename.split('.')]
+
+        if instancename == '':
+            return self
+        if len(instname_parts) == 1:
+            return self.elements[instname_parts[0]]
+        else:
+            top_instancename = instname_parts[0]
+            sub_instancename = '.'.join(instname_parts[1:])
+            return self.elements[top_instancename][sub_instancename]
 
     def get_terminal_branch(self, terminalname):
         """Find the branch that is connected to the given terminal
@@ -1489,6 +1511,28 @@ class Quantity(object):
                 ',' + str(self.branch_or_node.minus.name) + ')'
         else:
             return self.quantity + '(' + str(self.branch_or_node.name) + ')'
+
+class CircuitProxy(Circuit):
+    def __init__(self, circuit, parent=None, instance_name=None):
+        super(CircuitProxy, self).__init__(self)
+        self.device = circuit
+        self.terminals = circuit.terminals
+        self.nodes = circuit.nodes
+        self.nodenames = circuit.nodenames
+        self.branches = circuit.branches
+        self.ipar = circuit.ipar
+        
+        ## Find out how this instance was connected to its parent
+        ## and set terminalhook accordingly
+        if isinstance(parent, SubCircuit) and instance_name != None:
+            self.terminalhook = parent.term_node_map[instance_name]
+
+    def G(self, x, epar=defaultepar): return self.device.G(x,epar)
+    def C(self, x, epar=defaultepar): return self.device.C(x,epar)
+    def u(self, t=0.0, epar=defaultepar, analysis=None): return self.device.u(x,epar)
+    def i(self, x, epar=defaultepar): return self.device.i(x,epar)
+    def q(self, x, epar=defaultepar): return self.device.q(x,epar)
+    def CY(self, x, w, epar=defaultepar): return self.device.CY(x,epar)
 
 if __name__ == "__main__":
     import doctest
