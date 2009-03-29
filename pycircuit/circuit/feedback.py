@@ -2,8 +2,8 @@ import numpy as np
 from copy import copy
 from circuit import SubCircuit, gnd, R, VS, IS, Branch, VCCS, CircuitProxy
 from analysis import Analysis, AC, Noise, TransimpedanceAnalysis, \
-    remove_row_col,defaultepar
-from pycircuit.post.internalresult import InternalResultDict
+    remove_row_col,defaultepar,isiterable
+from pycircuit.post import InternalResultDict, Waveform
 
 class LoopBreakError(Exception):
     pass
@@ -45,10 +45,11 @@ class FeedbackDeviceAnalysis(Analysis):
     >>> cir['M1'] = VCCS('g', 's', gnd, 's', gm = 20e-3)
     >>> cir['RL'] = R('s', gnd)
     >>> cir['VS'] = VS('g', gnd)
-    
-    >>> res = FeedbackDeviceAnalysis(cir, 'M1', 'inp', 'inn', 'outp', 'outn').solve([1e3])
-    >>> res['loopgain']
-    -20.0
+ 
+    >>> ana = FeedbackDeviceAnalysis(cir, 'M1', 'inp', 'inn', 'outp', 'outn')
+    >>> res = ana.solve(1e3)
+    >>> np.around(res['loopgain'])
+    (-20-0j)
     
     """
     def __init__(self, circuit, instance, inp=None, inn=None, outp=None, outn=None, 
@@ -89,14 +90,24 @@ class FeedbackDeviceAnalysis(Analysis):
         irefnode = self.cir.get_node_index(refnode)
         G,G_noloop,C,C_noloop = remove_row_col((G,G_noloop,C,C_noloop), 
                                                irefnode)
-
         if complexfreq:
-            s = freqs
+            slist = freqs
         else:
-            s = 2j*pi*freqs
+            slist = 2j*np.pi*freqs
         
         ## Calculate return difference
-        F = self.det(G + s*C) / self.det(G_noloop + s*C_noloop)
+        def Ffunc(s):
+            Y = self.toMatrix(G + s*C)
+            Y_noloop = self.toMatrix(G_noloop + s*C_noloop)
+            return self.det(Y) / self.det(Y_noloop)
+        if isiterable(slist):
+            F = Waveform(np.array(slist),
+                         np.array([Ffunc(s) for s in slist]),
+                         xlabels = ('frequency',),
+                         xunits = ('Hz',),
+                         ylabel = 'F')
+        else:
+            F = Ffunc(slist)
 
         ## Calculate loop-gain
         T = F - 1
