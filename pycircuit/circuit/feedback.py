@@ -81,14 +81,22 @@ class FeedbackDeviceAnalysis(Analysis):
         G = self.cir.G(x, epar)
         G_noloop = circuit_noloop.G(x, epar)
 
+        C = self.cir.C(x, epar)
+        C_noloop = circuit_noloop.C(x, epar)
+
         ## Refer the voltages to the reference node by removing
         ## the rows and columns that corresponds to this node
         irefnode = self.cir.get_node_index(refnode)
-        G,G_noloop = remove_row_col((G,G_noloop), irefnode)
+        G,G_noloop,C,C_noloop = remove_row_col((G,G_noloop,C,C_noloop), 
+                                               irefnode)
 
+        if complexfreq:
+            s = freqs
+        else:
+            s = 2j*pi*freqs
         
         ## Calculate return difference
-        F = self.det(G) / self.det(G_noloop)
+        F = self.det(G + s*C) / self.det(G_noloop + s*C_noloop)
 
         ## Calculate loop-gain
         T = F - 1

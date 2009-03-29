@@ -16,16 +16,18 @@ class MyFeedbackDeviceAnalysis(FeedbackDeviceAnalysis, SymbolicAnalysis):
 def test_simple():
     """Loopgain of a source follower"""
 
-    gm,RL = sympy.symbols('gm RL')
+    gm,RL,CL,s = sympy.symbols('gm RL CL s')
 
     cir = SubCircuit()
     cir['M1'] = VCCS('g', 's', gnd, 's', gm = gm)
     cir['RL'] = R('s', gnd, r=RL)
+    cir['CL'] = C('s', gnd, c=CL)
     cir['VS'] = VS('g', gnd)
 
-    res = MyFeedbackDeviceAnalysis(cir, 'M1', 'inp', 'inn', 'outp', 'outn').solve([1e3])
+    ana = MyFeedbackDeviceAnalysis(cir, 'M1', 'inp', 'inn', 'outp', 'outn')
+    res = ana.solve(s, complexfreq=True)
 
-    assert_equal(simplify(res['loopgain']), - gm * RL)
+    assert_equal(simplify(res['loopgain']), simplify(- gm / (1/RL + s*CL)))
 
 
     
