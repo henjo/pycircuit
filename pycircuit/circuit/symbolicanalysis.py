@@ -36,6 +36,11 @@ class SymbolicAnalysis(Analysis):
     def toMatrix(array):
         return Matrix(array.tolist())
 
+    @staticmethod
+    def det(x):
+        return Matrix(x).det()
+    
+
 class SymbolicAC(analysis.AC, SymbolicAnalysis):
     """Circuit analysis that calculates symbolic expressions of the unknowns
 

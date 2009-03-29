@@ -80,7 +80,6 @@ def remove_row_col(matrices, n):
 class Analysis(object):
     @staticmethod
     def linearsolver(*args):
-
         args = [A.astype('complex') for A in args]
         
         return linalg.solve(*args)
@@ -88,6 +87,9 @@ class Analysis(object):
     @staticmethod
     def toMatrix(array): return array.astype('complex')
         
+    @staticmethod
+    def det(x): return np.linalg.det(x)
+
     def __init__(self, cir, epar = defaultepar.copy()):
         self.cir = cir
         self.result = None
