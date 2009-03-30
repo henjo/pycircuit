@@ -4,37 +4,122 @@ from circuit import SubCircuit, gnd, R, VS, IS, Branch, VCCS, CircuitProxy
 from analysis import Analysis, AC, Noise, TransimpedanceAnalysis, \
     remove_row_col,defaultepar,isiterable
 from pycircuit.post import InternalResultDict, Waveform
+from pycircuit.utilities import combinations
 
 class LoopBreakError(Exception):
     pass
+
+def find_nulling_indices(circuit, x, inp=None, inn=None, outp=None, outn=None, 
+                         epar=defaultepar):
+    n = circuit.n
+    G = circuit.G(x,epar)
+    C = circuit.C(x,epar)
+    
+    terminal_node_indices = [circuit.get_node_index(t) 
+                             for t in circuit.terminals]
+    if len(circuit.terminals) == 2:
+        return [[[terminal_node_indices[0]],[terminal_node_indices[1]]],
+                terminal_node_indices]
+    else:
+        if inp == None:
+            allports = combinations(terminal_node_indices, 2)
+            all_combinations = combinations(allports, 2)
+        else:
+            i_inp, i_inn, i_outp, i_outn = [circuit.get_node_index(t)
+                                            for t in inp,inn,outp,outn]
+            all_combinations = (((i_inp, i_inn), (i_outp, i_outn)),)
+        
+        found_combinations = set()
+        for inport, outport in all_combinations:
+            for X in G,C:
+                inbranch = Branch(*[circuit.nodes[n] for n in inport])
+                outbranch = Branch(*[circuit.nodes[n] for n in outport])
+
+                if outbranch in circuit.branches:
+                    ## VCVS
+                    i_outbranch = circuit.get_branch_index(outbranch)
+                    g = X[i_outbranch, inport[0]]
+
+                    if g == 0:
+                        continue
+                    
+                    stampindex = [i_outbranch, inport]
+                    stampfound = np.alltrue(X[stampindex] == np.array([g,-g]))
+
+                    indices = set(range(n)) - set(inport) - set(outport)
+                    no_other_crossterms = np.alltrue(X[i_outbranch, 
+                                                       list(indices)] == 0)
+
+                    if stampfound and no_other_crossterms:
+                        found_combinations.add((inport, outport))
+                        null_indices = stampindex
+                    
+
+                    ## CCVS
+                    if inbranch in circuit.branches:
+                        r = X[i_outbranch, i_inbranch]
+                    
+                        if r == 0:
+                            continue
+
+                        indices = set(range(n)) - set([i_inbranch])
+                        no_other_crossterms = np.alltrue(X[i_outbranch, 
+                                                           list(indices)] == 0)
+
+                        if no_other_crossterms:
+                            found_combinations.add((inport, outport))
+                            null_indices = [(i_outbranch, i_inbranch)]
+                else:
+                    ## VCCS
+                    gm = X[outport[0], inport[0]]
+
+                    if gm == 0:
+                        continue
+
+                    stampindex = [[[outport[0]],[outport[1]]], inport]
+                    stampfound = np.alltrue(X[stampindex] == \
+                                            np.array([[gm,-gm],[-gm,gm]]))
+
+                    other_cross_rows = []; other_cross_cols = []
+                    for row in outport:
+                        for col in set(range(n)) - set(inport) - set([row]):
+                            other_cross_rows.append(row)
+                            other_cross_cols.append(col)
+
+                    no_other_crossterms = np.alltrue(X[other_cross_rows, 
+                                                       other_cross_cols] == 0)
+
+                    if stampfound and no_other_crossterms:
+                        found_combinations.add((inport, outport))
+                        null_indices = stampindex
+
+
+
+        if len(found_combinations) == 1:
+            return null_indices
+            
 
 class LoopBreaker(CircuitProxy):
     """Circuit proxy that zeros out dependent sources in the G and C methods"""
     def __init__(self, circuit, inp, inn, outp, outn, parent=None, instance_name=None):
         super(LoopBreaker, self).__init__(circuit, parent, instance_name)
         
-        self.inport = tuple([circuit.get_node_index(node) 
-                             for node in inp, inn])
-        self.outport = tuple([circuit.get_node_index(node) 
-                              for node in outp, outn])
-
+        self.nulling_indices = find_nulling_indices(circuit, 
+                                                    np.zeros(circuit.n),
+                                                    inp, inn, outp, outn)
+        
+        if self.nulling_indices == None:
+            raise LoopBreakError('Could not detect dependent source')
+        
     def G(self, x, epar=defaultepar): 
         G = self.device.G(x,epar)
-
-        ## Detect voltage-controlled current sources
-        if G[self.outport[0], self.inport[0]] == \
-           -G[self.outport[0], self.inport[1]] == \
-           -G[self.outport[1], self.inport[0]] == \
-           G[self.outport[1], self.inport[1]]:
-           for row,col in ((self.outport[0], self.inport[0]),
-                           (self.outport[0], self.inport[1]),
-                           (self.outport[1], self.inport[0]),
-                           (self.outport[1], self.inport[1])):
-               G[row,col] = 0
-        else:
-            raise LoopBreakError('Could not detect dependent source')
-
+        G[self.nulling_indices] = 0
         return G
+
+    def C(self, x, epar=defaultepar): 
+        C = self.device.C(x,epar)
+        C[self.nulling_indices] = 0
+        return C
 
 class FeedbackDeviceAnalysis(Analysis):
     """Find loop-gain by replacing a dependent source with a independent one
@@ -46,7 +131,7 @@ class FeedbackDeviceAnalysis(Analysis):
     >>> cir['RL'] = R('s', gnd)
     >>> cir['VS'] = VS('g', gnd)
  
-    >>> ana = FeedbackDeviceAnalysis(cir, 'M1', 'inp', 'inn', 'outp', 'outn')
+    >>> ana = FeedbackDeviceAnalysis(cir, 'M1')
     >>> res = ana.solve(1e3)
     >>> np.around(res['loopgain'])
     (-20-0j)
