@@ -1,6 +1,6 @@
 import numpy as np
 from copy import copy
-from circuit import SubCircuit, gnd, R, VS, IS, Branch, VCCS, CircuitProxy
+from circuit import Circuit, SubCircuit, gnd, R, VS, IS, Branch, VCCS, CircuitProxy
 from analysis import Analysis, AC, Noise, TransimpedanceAnalysis, \
     remove_row_col,defaultepar,isiterable
 from pycircuit.post import InternalResultDict, Waveform
@@ -203,7 +203,90 @@ class FeedbackDeviceAnalysis(Analysis):
         result['loopgain'] = -T
 
         return result
+
+
+class LoopVS(VS):
+    def u(self, t=0.0, epar=defaultepar, analysis=None):
+        if analysis == 'feedback':
+            return np.array([0, 0, -self.ipar.vac], dtype=object)
+        else:
+            return np.zeros(self.n)
+
+class LoopIS(IS):
+    def u(self, t=0.0, epar=defaultepar, analysis=None):
+        if analysis == 'feedback':
+            return np.array([self.ipar.iac, -self.ipar.iac])
+        else:
+            return np.zeros(self.n)
+
+class LoopProbe(SubCircuit):
+    terminals = ['inp', 'inn', 'outp', 'outn']
+
+    def __init__(self, *args, **kvargs):
+        super(LoopProbe, self).__init__(*args, **kvargs)
+
+        self['vinj'] = LoopVS(self.nodenames['inp'], self.nodenames['outp'])
+        self['iinj'] = LoopIS(self.nodenames['inp'], self.nodenames['inn'])
+
+def find_loopprobe(circuit, path=[]):
+    for name, e in circuit.elements.items():
+        if isinstance(e, LoopProbe):
+            yield ('.'.join(path + [name]), e)
+        if isinstance(e, SubCircuit):
+            find_loopprobe(e, path + [name])
+                
         
+class FeedbackLoopAnalysis(Analysis):
+    """Find loop-gain by breaking all loops with a LoopProbe element
+    """
+    
+    def __init__(self, circuit, epar = defaultepar.copy()):
+        super(FeedbackLoopAnalysis, self).__init__(circuit, epar = epar)
+        
+        ## Find LoopProbe instance
+        loopprobes = list(find_loopprobe(circuit))
+        
+        if len(loopprobes) != 1:
+            raise ValueError('The circuit must contain exactly one LoopProbe instance')
+        
+        self.loopprobe_name, self.loopprobe = loopprobes[0]
+
+
+    def solve(self, freqs, refnode = gnd, complexfreq = False):
+        x = np.zeros(self.cir.n) ## FIXME, this should be replaced by DC-analysis
+
+        self.loopprobe['vinj'].ipar.vac = 1 
+        self.loopprobe['iinj'].ipar.iac = 0 
+
+        ac_vinj = self.ACAnalysis(self.cir)
+
+        res_vinj = ac_vinj.solve(freqs, refnode = refnode, 
+                                 complexfreq=complexfreq,
+                                 u = self.cir.u(x, analysis='feedback'))
+
+        self.loopprobe['vinj'].ipar.vac = 0 
+        self.loopprobe['iinj'].ipar.iac = 1 
+
+        ac_iinj = self.ACAnalysis(self.cir)
+
+        res_iinj = ac_iinj.solve(freqs, refnode = refnode, 
+                                 complexfreq=complexfreq,
+                                 u = self.cir.u(x, analysis='feedback'))
+
+        B = res_vinj.i(self.loopprobe_name + '.vinj.plus')
+        D = res_vinj.v(self.loopprobe_name + '.inp', self.loopprobe_name + '.inn')
+        A = res_iinj.i(self.loopprobe_name + '.vinj.plus')
+        C = res_iinj.v(self.loopprobe_name + '.inp', self.loopprobe_name + '.inn')
+
+        T = (2*(A*D - B*C) - A + D) / (2*(B*C - A*D) + A - D + 1)
+        
+        result = InternalResultDict()
+        result['F'] = 1 + T
+        result['T'] = T
+        result['loopgain'] = -T
+        
+        return result
+
 if __name__ == "__main__":
     import doctest
     doctest.testmod()

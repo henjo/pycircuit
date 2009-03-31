@@ -836,7 +836,31 @@ class SubCircuit(Circuit):
 
                return branch_gen.next(), branch_sign[1]
         
+    def get_node(self, name):
+        """Find a node by name.
+        
+        >>> c = SubCircuit()
+        >>> c['V1'] = VS(1,0)
+        >>> c.get_node('V1.plus')
+        Node('1')
+        
+        """
+        if name in self.nodenames:
+            return self.nodenames[name]
+        else:
+            path = name.split('.')
 
+            top = path[0]
+
+            if len(path) < 2:
+                return ValueError('Node name %s not found'%name)
+            elif len(path) > 2:
+                return top + '.' + self[top].get_node('.'.join(path[1:]))
+            else:
+                element_node_index = self[top].get_node_index('.'.join(path[1:]))
+                node_index = self.elementnodemap[top][element_node_index]
+                return self.nodes[node_index]
+            
     def get_node_name(self, node):
         """Find the name of a node
         
@@ -1010,7 +1034,8 @@ class SubCircuit(Circuit):
             if not isinstance(e, SubCircuit):
                 yield e
             else:
-                yield e.xflatelements
+                for sube in e.xflatelements:
+                    yield sube
 
 class ProbeWrapper(SubCircuit):
     """Circuit wrapper that adds voltage sources for current probing"""

@@ -39,8 +39,11 @@ class SymbolicAnalysis(Analysis):
     @staticmethod
     def det(x):
         return Matrix(x).det()
-    
 
+    ACAnalysis = None
+    NoiseAnalysis = None
+    TransimpedanceAnalysis = None
+    
 class SymbolicAC(analysis.AC, SymbolicAnalysis):
     """Circuit analysis that calculates symbolic expressions of the unknowns
 
@@ -131,9 +134,10 @@ class SymbolicTwoPortAnalysis(TwoPortAnalysis):
         TwoPortAnalysis.__init__(self, *args, **kvargs)
         self.epar.append(Parameter('kT', default=Symbol('kT')))
 
-    ACAnalysis = SymbolicAC
-    NoiseAnalysis = SymbolicNoise
-    TransimpedanceAnalysis = SymbolicTransimpedanceAnalysis
+SymbolicAnalysis.ACAnalysis = SymbolicAC
+SymbolicAnalysis.NoiseAnalysis = SymbolicNoise
+SymbolicAnalysis.TransimpedanceAnalysis = SymbolicTransimpedanceAnalysis
+
 
 if __name__ == "__main__":
     import doctest
