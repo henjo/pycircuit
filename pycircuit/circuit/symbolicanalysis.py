@@ -99,7 +99,13 @@ class SymbolicNoise(analysis.Noise):
         analysis.Noise.__init__(self, *args, **kvargs)
         self.epar.append(Parameter('kT', default=Symbol('kT')))
 
-class SymbolicTwoPortAnalysis(TwoPortAnalysis):
+## HACK, solve the forward references to SymbolicAC, SymbolicNoise and SymbolicTransimpedanceAnalysis
+## before they are defined
+SymbolicAnalysis.ACAnalysis = SymbolicAC
+SymbolicAnalysis.NoiseAnalysis = SymbolicNoise
+SymbolicAnalysis.TransimpedanceAnalysis = SymbolicTransimpedanceAnalysis
+
+class SymbolicTwoPortAnalysis(SymbolicAnalysis, TwoPortAnalysis):
     """Analysis to find the symbolic 2-ports parameters of a circuit
 
     The transmission parameters are found as:
@@ -133,11 +139,6 @@ class SymbolicTwoPortAnalysis(TwoPortAnalysis):
     def __init__(self, *args, **kvargs):
         TwoPortAnalysis.__init__(self, *args, **kvargs)
         self.epar.append(Parameter('kT', default=Symbol('kT')))
-
-SymbolicAnalysis.ACAnalysis = SymbolicAC
-SymbolicAnalysis.NoiseAnalysis = SymbolicNoise
-SymbolicAnalysis.TransimpedanceAnalysis = SymbolicTransimpedanceAnalysis
-
 
 if __name__ == "__main__":
     import doctest

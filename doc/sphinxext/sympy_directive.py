@@ -197,7 +197,11 @@ def eval_line(line, ns = {}):
             code = compile(line, '<string>', 'single')
         except SyntaxError:
             code = compile(line, '<string>', 'exec')
-    return eval(code, ns)
+    try:
+        return eval(code, ns)
+    except Exception, e:
+        raise Exception('%s raised when evaluating the line: %s'%
+                        (repr(e), line))
 
 
 def _option_boolean(arg):
