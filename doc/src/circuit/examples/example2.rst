@@ -12,12 +12,12 @@ Find symbolic expression of transfer function from Is to V(3,0):
 
 
     from pycircuit.circuit import *
-    from sympy import var, simplify, ratsimp, sympify, factor, limit, solve, pprint, fraction, collect    
+    from sympy import symbols, simplify, ratsimp, sympify, factor, limit, solve, pprint, fraction, collect    
 
     ## Create circuit
     cir = SubCircuit()
 
-    var('R1 R2 R3 C1 C2 i_s', real=True)
+    R1,R2,R3,C1,C2,i_s = symbols('R1 R2 R3 C1 C2 is', real=True)
     s = Symbol('s', complex = True)   
 
     cir['R3'] = R(1, gnd, r = R3)
