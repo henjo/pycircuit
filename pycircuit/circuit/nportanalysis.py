@@ -1,8 +1,11 @@
+import numpy as np
 from nport import *
 from circuit import SubCircuit, gnd, R, VS, IS, Branch
 from analysis import Analysis, AC, Noise, TransimpedanceAnalysis, \
     remove_row_col,defaultepar
 from pycircuit.post.internalresult import InternalResultDict
+
+np.set_printoptions(precision=4)
 
 class TwoPortAnalysis(Analysis):
     """Analysis to find the 2-ports parameters of a circuit
@@ -14,31 +17,59 @@ class TwoPortAnalysis(Analysis):
     C = i(inp, inn)/v(outp, outn) | io = 0
     D = i(inp, inn)/i(outp, outn) | vo = 0
 
+    Examples:
+
     >>> c = SubCircuit()
     >>> n1 = c.add_node('net1')
     >>> n2 = c.add_node('net2')
     >>> c['R1'] = R(n1, n2, r=9e3)
     >>> c['R2'] = R(n2, gnd, r=1e3)
     >>> res = TwoPortAnalysis(c, n1, gnd, n2, gnd).solve(freqs = np.array([0]))
-    >>> res['mu'].y[0]
+    >>> print res['mu'].y[0]
     (0.1+0j)
-    >>> res['gamma'].y[0]
+    >>> print res['gamma'].y[0]
     (0.000111111111111+0j)
-    >>> res['zeta'].y[0]
+    >>> print res['zeta'].y[0]
     (1000+0j)
-    >>> res['beta'].y[0]
+    >>> print res['beta'].y[0]
     (1+0j)
+
+    The transmission parameters are found as:
+
+    A = v(inp, inn)/v(outp, outn) | io = 0
+    B = v(inp, inn)/i(outp, outn) | vo = 0
+    C = i(inp, inn)/v(outp, outn) | io = 0
+    D = i(inp, inn)/i(outp, outn) | vo = 0
+
+    >>> import symbolic; from sympy import simplify, Symbol
+    >>> c = SubCircuit()
+    >>> n1, n2 = c.add_nodes('net1', 'net2')
+    >>> c['R1'] = R(n1, n2, r=Symbol('R1',real=True))
+    >>> c['R2'] = R(n2, gnd, r=Symbol('R2',real=True))
+    >>> symnoise = TwoPortAnalysis(c, n1, gnd, n2, gnd, noise=True, toolkit=symbolic)
+    >>> res = symnoise.solve(freqs = np.array([Symbol('s')]), complexfreq=True)
+    >>> simplify(res['mu'].y[0])
+    R2/(R1 + R2)
+    >>> simplify(res['gamma'].y[0])
+    1/R1
+    >>> simplify(res['zeta'].y[0])
+    R2
+    >>> simplify(res['beta'].y[0])
+    1
+    >>> simplify(res['Svn'])
+    (4*R1*R2*kT + 4*kT*R1**2)/R2
+    >>> simplify(res['Sin'])
+    4*kT/R2
+
     
     """
     
-    ACAnalysis = AC
-    NoiseAnalysis = Noise
-    TransimpedanceAnalysis = TransimpedanceAnalysis    
-
     def __init__(self, circuit, inp, inn, outp, outn, noise = False, 
                  noise_outquantity = 'v', method = 'sparam', 
-                 epar = defaultepar.copy()):
-        super(TwoPortAnalysis, self).__init__(circuit, epar = epar)
+                 epar = defaultepar.copy(),
+                 toolkit = None):
+        super(TwoPortAnalysis, self).__init__(circuit, epar = epar, 
+                                              toolkit=toolkit)
 
         self.ports = (inp, inn), (outp, outn)
 
@@ -48,6 +79,8 @@ class TwoPortAnalysis(Analysis):
         self.method = method
         
     def solve(self, freqs, complexfreq = False, refnode = gnd):
+        toolkit = self.toolkit
+
         result = InternalResultDict()
 
         if self.method == 'sparam':
@@ -76,25 +109,28 @@ class TwoPortAnalysis(Analysis):
                     src['VL'] = VS(outp, outn, vac = 0)
 
             if self.noise_outquantity == 'v':
-                na = self.NoiseAnalysis(circuit_vs, 
-                                        inputsrc=circuit_vs['VS_TwoPort'],
-                                        outputnodes=(outp, outn))
+                na = Noise(circuit_vs, 
+                           inputsrc='VS_TwoPort',
+                           outputnodes=(outp, outn), 
+                           toolkit=toolkit)
                 res_v = na.solve(freqs, complexfreq=complexfreq)
 
-                na = self.NoiseAnalysis(circuit_cs, 
-                                        inputsrc=circuit_cs['IS_TwoPort'],
-                                        outputnodes=(outp, outn))
+                na = Noise(circuit_cs, 
+                           inputsrc='IS_TwoPort',
+                           outputnodes=(outp, outn),
+                           toolkit=toolkit)
                 res_i = na.solve(freqs, complexfreq=complexfreq)
             else:
-                na = self.NoiseAnalysis(circuit_vs, 
-                                           inputsrc=circuit_vs['VS_TwoPort'],
-                                           outputsrc=circuit_vs['VL']
-                                           )
+                na = Noise(circuit_vs, 
+                                inputsrc='VS_TwoPort',
+                                outputsrc='VL',
+                                toolkit=toolkit)
                 res_v = na.solve(freqs, complexfreq=complexfreq)
 
-                na = self.NoiseAnalysis(circuit_cs, 
-                                        inputsrc=circuit_cs['IS_TwoPort'],
-                                        outputsrc=circuit_cs['VL'])
+                na = Noise(circuit_cs, 
+                           inputsrc='IS_TwoPort',
+                           outputsrc='VL',
+                           toolkit=toolkit)
                 res_i = na.solve(freqs, complexfreq=complexfreq)
 
             result['Svn'] = res_v['Svninp']
@@ -153,6 +189,8 @@ class TwoPortAnalysis(Analysis):
         ## S_n_n = b_n / a_n = v_n - 1
         ##
         ## 
+        toolkit = self.toolkit
+
         # Reference impedance
         r0 = 1
 
@@ -177,8 +215,9 @@ class TwoPortAnalysis(Analysis):
                     circuit['_rl%d'%k] = R(port[0], port[1], r = r0)
             
             ## Run AC-analysis
-            res = self.ACAnalysis(circuit).solve(freqs, refnode=sourceport[1],
-                                                 complexfreq = complexfreq)
+            res = AC(circuit, toolkit=toolkit).solve(freqs, 
+                                                     refnode=sourceport[1],
+                                                     complexfreq = complexfreq)
 
             ## Obtain s-parameters
             for k, port in enumerate(self.ports):
@@ -209,10 +248,13 @@ class TwoPortAnalysis(Analysis):
         branchlist = [Branch(*port) for port in self.ports]
         
         refnode = self.ports[0][1]
-        zmlist = self.TransimpedanceAnalysis(circuit).solve(freqs,
-                                                    branchlist,
-                                                    refnode = self.ports[0][1], 
-                                                    complexfreq = complexfreq)
+        
+        transimpana = TransimpedanceAnalysis(circuit, toolkit = toolkit)
+
+        zmlist = transimpana.solve(freqs,
+                                   branchlist,
+                                   refnode = self.ports[0][1], 
+                                   complexfreq = complexfreq)
 
         T = np.matrix(zmlist) * r0**-0.5
         
@@ -236,6 +278,8 @@ class TwoPortAnalysis(Analysis):
     def solve_abcd(self, freqs, refnode = gnd, complexfreq = False):
         (inp, inn), (outp, outn) = self.ports
                 
+        toolkit = self.toolkit
+
         ## Add voltage source at input port and create
         ## copies with output open and shorted respectively
         circuit_vs_open = copy(self.cir)
@@ -247,8 +291,8 @@ class TwoPortAnalysis(Analysis):
         circuit_vs_shorted['VL_TwoPort'] = VS(outp, outn, vac=0)
 
         ## Run AC-analysis on the two circuits
-        ac_open = self.ACAnalysis(circuit_vs_open)
-        ac_shorted = self.ACAnalysis(circuit_vs_shorted)
+        ac_open = AC(circuit_vs_open, toolkit=toolkit)
+        ac_shorted = AC(circuit_vs_shorted, toolkit=toolkit)
 
         res_open = ac_open.solve(freqs, refnode = refnode, 
                                  complexfreq=complexfreq)

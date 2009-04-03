@@ -4,8 +4,7 @@
 """Circuit element tests
 """
 
-from pycircuit.circuit.circuit import VS, R, Nullor, SubCircuit, gnd
-from pycircuit.circuit.symbolicanalysis import SymbolicAC
+from pycircuit.circuit import AC, VS, R, Nullor, SubCircuit, gnd, symbolic
 from sympy import Symbol, Matrix, symbols, simplify, together, factor, cancel
 
 def test_nullor_vva():
@@ -26,7 +25,7 @@ def test_nullor_vva():
     c['R2'] = R(nout, n1, r=R2)
     c['nullor'] = Nullor(n1, nin, gnd, nout)
     
-    result = SymbolicAC().solve(c, Symbol('s'))
+    result = AC(c, toolkit=symbolic).solve(Symbol('s'))
     
     vout = result.v(nout)
 

@@ -44,7 +44,7 @@ And now symbolically using a symbolic ac analysis:
     cir['C1'] = C(2, gnd, c=Symbol('C1'))
 
     ## Run symbolic AC analysis
-    ac = SymbolicAC(cir)
+    ac = AC(cir, toolkit=symbolic)
     result = ac.solve(freqs=Symbol('s'), complexfreq=True)
 
     ## Print transfer function from the voltage source to net 2
@@ -64,7 +64,7 @@ Calculate ABCD parameters:
     cir['C1'] = C(2, gnd, c=Symbol('C1'))
 
     ## Run symbolic 2-port analysis
-    twoport_ana = SymbolicTwoPortAnalysis(cir, Node('1'), gnd, Node('2'), gnd)
+    twoport_ana = TwoPortAnalysis(cir, Node('1'), gnd, Node('2'), gnd, toolkit=symbolic)
     result = twoport_ana.solve(freqs=Symbol('s'), complexfreq=True)
 
     ## Print ABCD parameter matrix

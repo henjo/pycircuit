@@ -31,7 +31,7 @@ Find symbolic expression of transfer function from Is to V(3,0):
     cir['ISource'] = IS(1, gnd, iac=i_s)
 
     ## Run symbolic AC analysis     
-    ac = SymbolicAC(cir)
+    ac = AC(cir, toolkit=symbolic)
     result = ac.solve(freqs=s, complexfreq=True)
 
     ## Print transfer function from the voltage source to net 2

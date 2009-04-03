@@ -260,8 +260,12 @@ class Circuit(object):
         return self.nodes.index(node)
 
     def get_branch_index(self, branch):
-        """Get row in the x vector of a branch instance"""        
-        return len(self.nodes) + self.branches.index(branch)
+        """Get row in the x vector of a branch instance"""
+        if branch in self.branches:
+            return len(self.nodes) + self.branches.index(branch)
+        else:
+            raise ValueError('Branch %s is not present in circuit (%s)'%
+                             (str(branch), str(self.branches)))
 
     def get_node(self, name):
         """Find a node by name.
@@ -1037,6 +1041,11 @@ class SubCircuit(Circuit):
                 for sube in e.xflatelements:
                     yield sube
 
+    def translate_branch(self, branch, instance):
+        """Return branch from a local branch in an instance"""
+        return Branch(self.get_node(instance + '.' + branch.plus.name),
+                      self.get_node(instance + '.' + branch.minus.name))
+                    
 class ProbeWrapper(SubCircuit):
     """Circuit wrapper that adds voltage sources for current probing"""
     def __init__(self, circuit, terminals = ()):
@@ -1559,6 +1568,17 @@ class CircuitProxy(Circuit):
     def q(self, x, epar=defaultepar): return self.device.q(x,epar)
     def CY(self, x, w, epar=defaultepar): return self.device.CY(x,epar)
 
+def instjoin(*instnames):
+    """Return hierarchical instance names from instance name components
+    
+    >>> instjoin('I1','VS')
+    'I1.VS'
+    >>> instjoin('','VS')
+    'VS'
+    
+    """
+    return '.'.join([part for part in instnames if len(part) > 0])
+    
 if __name__ == "__main__":
     import doctest
     doctest.testmod()

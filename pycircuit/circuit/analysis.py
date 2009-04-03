@@ -5,11 +5,16 @@ import numpy as np
 from numpy import array, delete, linalg, size, zeros, concatenate, pi, \
     zeros, alltrue, maximum, conj, dot, imag, eye
 from scipy import optimize
-from circuit import Circuit, SubCircuit, VS,IS,R,C,L,Diode, gnd, defaultepar
+from circuit import Circuit, SubCircuit, VS,IS,R,C,L,Diode, gnd, defaultepar, instjoin
+import symbolic
 from pycircuit.post.waveform import Waveform
 from pycircuit.post.result import IVResultDict
 from pycircuit.post.internalresult import InternalResultDict
 from copy import copy
+import numeric
+import types
+
+np.set_printoptions(precision=4)
 
 class NoConvergenceError(Exception):
     pass
@@ -68,7 +73,6 @@ class CircuitResultAC(CircuitResult):
                                       linearized=True, 
                                       xdcop = self.xdcop)    
 
-    
 def remove_row_col(matrices, n):
     result = []
     for A in matrices:
@@ -78,19 +82,17 @@ def remove_row_col(matrices, n):
     return tuple(result)
 
 class Analysis(object):
-    @staticmethod
-    def linearsolver(*args):
-        args = [A.astype('complex') for A in args]
-        
-        return linalg.solve(*args)
+    def __init__(self, cir, epar = defaultepar, 
+                 toolkit=None):
+        if toolkit == None:
+            toolkit = numeric
 
-    @staticmethod
-    def toMatrix(array): return array.astype('complex')
-        
-    @staticmethod
-    def det(x): return np.linalg.det(x)
+        self.toolkit = toolkit
 
-    def __init__(self, cir, epar = defaultepar.copy()):
+        if hasattr(toolkit, 'setup_analysis'):
+            epar = epar.copy()
+            toolkit.setup_analysis(epar)
+
         self.cir = cir
         self.result = None
         self.epar = epar
@@ -443,7 +445,20 @@ class Tran_imp(Analysis):
 class AC(Analysis):
     """
     AC analysis class
+
+    Examples:
     
+    >>> from sympy import Symbol, simplify
+    >>> c = SubCircuit()
+    >>> n1 = c.add_node('net1')
+    >>> c['vs'] = VS(n1, gnd, vac=Symbol('V'))
+    >>> c['R'] = R(n1, gnd, r=Symbol('R'))
+    >>> res = AC(c, toolkit=symbolic).solve(Symbol('s'), complexfreq=True)
+    >>> res['net1']
+    V
+    >>> res['i0']
+    -V/R
+
     >>> c = SubCircuit()
     >>> n1 = c.add_node('net1')
     >>> c['vs'] = VS(n1, gnd, vac=1.5)
@@ -454,17 +469,17 @@ class AC(Analysis):
     >>> res.keys()
     ['i0', 'gnd', 'net1']
     >>> ac.result['net1']
-    Waveform([ 1000000.  2000000.],[ 1.5+0.j  1.5+0.j])
+    Waveform(array([ 1000000.,  2000000.]), array([ 1.5+0.j,  1.5+0.j]))
     >>> res.v(n1, gnd)
-    Waveform([ 1000000.  2000000.],[ 1.5+0.j  1.5+0.j])
+    Waveform(array([ 1000000.,  2000000.]), array([ 1.5+0.j,  1.5+0.j]))
     >>> res.i('vs.minus')
-    Waveform([ 1000000.  2000000.],[ 0.0015 +9.42477796e-06j  0.0015 +1.88495559e-05j])
+    Waveform(array([ 1000000.,  2000000.]), array([ 0.0015 +9.4248e-06j,  0.0015 +1.8850e-05j]))
 
-    """
-
-    numeric = True
+"""
 
     def solve(self, freqs, refnode=gnd, complexfreq = False, u = None):
+        toolkit = self.toolkit
+
         cir = self.cir
         n = cir.n
         
@@ -488,7 +503,7 @@ class AC(Analysis):
             ss = 2j*pi*freqs
 
         def solvecircuit(s):
-            x = self.linearsolver(s*C + G, -u)
+            x = toolkit.linearsolver(s*C + G, -u)
 
             # Insert reference node voltage
             return concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
@@ -526,6 +541,8 @@ class TransimpedanceAnalysis(Analysis):
     """
     def solve(self, freqs, outbranches, currentoutput=False,
               complexfreq=False, refnode=gnd):
+        toolkit = self.toolkit 
+
         n = self.cir.n
         x = zeros(n) # This should be the x-vector at the DC operating point
 
@@ -547,7 +564,7 @@ class TransimpedanceAnalysis(Analysis):
         # Calculate the reciprocal G and C matrices
         Yreciprocal = G.T + s*C.T
 
-        Yreciprocal = self.toMatrix(Yreciprocal)
+        Yreciprocal = toolkit.toMatrix(Yreciprocal)
 
         result = []
         for branch in outbranches:
@@ -565,7 +582,7 @@ class TransimpedanceAnalysis(Analysis):
             u, = remove_row_col((u,), irefnode)
 
             ## Calculate transimpedances from currents in each nodes to output
-            result.append(self.linearsolver(Yreciprocal, -u))
+            result.append(toolkit.linearsolver(Yreciprocal, -u))
 
         return result
 
@@ -584,16 +601,38 @@ class Noise(Analysis):
     >>> c['vs'] = VS(n1, gnd, vac=1.0)
     >>> c['R1'] = R(n1, n2, r=9e3)
     >>> c['R2'] = R(n2, gnd, r=1e3)
-    >>> res = Noise(c, inputsrc=c['vs'], outputnodes=(n2, gnd)).solve(0)
-    >>> res['Svnout']
+    >>> res = Noise(c, inputsrc='vs', outputnodes=(n2, gnd)).solve(0)
+    >>> print res['Svnout']
     (1.4904e-17+0j)
-    >>> res['Svninp']
+    >>> print res['Svninp']
     (1.4904e-15+0j)
-    >>> res['gain']
+    >>> print res['gain']
     (0.1+0j)
     
+    Symbolic example:
+    
+    >>> from sympy import Symbol, simplify
+    >>> c = SubCircuit()
+    >>> kT = Symbol('kT')
+    >>> R1=Symbol('R1', real=True)
+    >>> R2=Symbol('R2', real=True)
+    >>> n1,n2 = c.add_nodes('net1', 'net2')
+    >>> c['vs'] = VS(n1, gnd, v=Symbol('V'))
+    >>> c['R1'] = R(n1, n2, r=R1)
+    >>> c['R2'] = R(n2, gnd, r=R2)
+    >>> noise = Noise(c, inputsrc='vs', outputnodes=(n2, gnd), toolkit=symbolic)
+    >>> res = noise.solve(Symbol('s'), complexfreq=True)
+    >>> simplify(res['Svnout'])
+    4*R1*R2*kT/(R1 + R2)
+    >>> simplify(res['Svninp'])
+    (4*R1*R2*kT + 4*kT*R1**2)/R2
+    >>> simplify(res['gain'] - R2 / (R1 + R2))
+    0
+
     """
-    def __init__(self, circuit, inputsrc=None, outputnodes=None, outputsrc=None):
+    def __init__(self, circuit, inputsrc=None, 
+                 outputnodes=None, outputsrc=None,
+                 toolkit=None):
         """
         Initiate a noise analysis.
 
@@ -610,7 +649,7 @@ class Noise(Analysis):
             The voltage source where the output current noise is measured
         """
 
-        Analysis.__init__(self, circuit)
+        Analysis.__init__(self, circuit, toolkit=toolkit)
     
         if not (outputnodes != None or outputsrc != None):
             raise ValueError('Output is not specified')
@@ -618,11 +657,20 @@ class Noise(Analysis):
             raise ValueError('Cannot measure both output current and voltage '
                              'noise')
         
-        self.inputsrc = inputsrc
+        if not (type(inputsrc) is types.StringType and \
+                outputsrc == None or type(outputsrc) is types.StringType):
+            raise ValueError('Sources must be given as instance names')
+
+        self.inputsrc_name = inputsrc
+        self.inputsrc = self.cir[inputsrc]
         self.outputnodes = outputnodes
-        self.outputsrc = outputsrc
+        self.outputsrc_name = outputsrc
+        if self.outputsrc_name:
+            self.outputsrc = self.cir[outputsrc]
 
     def solve(self, freqs, refnode=gnd, complexfreq=False):
+        toolkit = self.toolkit
+
         n = self.cir.n
         x = zeros(n) # This should be the x-vector at the DC operating point
 
@@ -647,7 +695,9 @@ class Noise(Analysis):
         # Calculate output current noise
         else:
             u = zeros(n, dtype=int)
-            ibranch = self.cir.get_branch_index(self.outputsrc.branch)
+            plus_term = instjoin(self.outputsrc_name, 'plus')
+            branch = self.cir.get_terminal_branch(plus_term)[0]
+            ibranch = self.cir.get_branch_index(branch)
             u[ibranch] = -1
 
         ## Refer the voltages to the gnd node by removing
@@ -658,10 +708,10 @@ class Noise(Analysis):
         # Calculate the reciprocal G and C matrices
         Yreciprocal = G.T + s*C.T
 
-        Yreciprocal, u = (self.toMatrix(A) for A in (Yreciprocal, u))
+        Yreciprocal, u = (toolkit.toMatrix(A) for A in (Yreciprocal, u))
 
         ## Calculate transimpedances from currents in each nodes to output
-        zm = self.linearsolver(Yreciprocal, -u)
+        zm = toolkit.linearsolver(Yreciprocal, -u)
 
         xn2out = dot(dot(zm.reshape(1,size(zm)), CY), conj(zm))
 
@@ -680,15 +730,20 @@ class Noise(Analysis):
         # the input source to the output
         gain = None
         if isinstance(self.inputsrc, VS):
-            gain = self.cir.extract_i(zm, self.inputsrc.branch, refnode=refnode, 
-                                    refnode_removed=True)
+            gain = self.cir.extract_i(zm, 
+                                      instjoin(self.inputsrc_name, 'plus'),
+                                      refnode=refnode, 
+                                      refnode_removed=True)
             result['gain'] = gain
-            result['Svninp'] = xn2out / gain**2
+            result['Svninp'] = xn2out / abs(gain)**2
+
         elif isinstance(self.inputsrc, IS):
-            gain = self.cir.extract_v(zm, self.inputsrc.get_node('plus'), 
-                                    refnode=refnode, refnode_removed=True)
+            plus_node = instjoin(self.inputsrc_name, 'plus')
+            gain = self.cir.extract_v(zm, 
+                                      self.cir.get_node(plus_node), 
+                                      refnode=refnode, refnode_removed=True)
             result['gain'] = gain
-            result['Sininp'] = xn2out / gain**2
+            result['Sininp'] = xn2out / abs(gain)**2
 
         return result
 
@@ -699,14 +754,3 @@ def isiterable(object):
 if __name__ == "__main__":
     import doctest
     doctest.testmod()
-
-#    c = SubCircuit()
-#    n1 = c.add_node('net1')
-#    c['is'] = IS(gnd, n1, i=100e-6)
-#    c['D'] = Diode(n1, gnd)
-#    c['D'].G(array([[0,0]]).T)
-#    dc = DC(c)
-#    res = dc.solve()
-
-
-

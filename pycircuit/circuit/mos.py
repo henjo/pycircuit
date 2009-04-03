@@ -4,23 +4,22 @@
 """MOS transistor models
 """
 from numpy import array
-from circuit import SubCircuit, VCCS, G, C, IS, Parameter, gnd
+from pycircuit.circuit import SubCircuit, VCCS, G, C, IS, Parameter, gnd, \
+    symbolic, TwoPortAnalysis
 from sympy import Symbol
 
 class MOS(SubCircuit):
     """Small-signal MOS model
 
     >>> from sympy import Symbol
-    >>> from symbolicanalysis import SymbolicTwoPortAnalysis
     >>> c = SubCircuit()
     >>> inp = c.add_node('inp')
     >>> out = c.add_node('outp')
     >>> c['q1'] = MOS(inp, out, gnd, gnd, \
                   gm = Symbol('gm'), gds = Symbol('gds'), \
                   Cgs = Symbol('Cgs'), Cgd = 0*Symbol('Cgd'))
-    >>> symtwoport = SymbolicTwoPortAnalysis(c, inp, gnd, out, gnd)
-    >>> res = symtwoport.solve(freqs = array([Symbol('s')]), complexfreq=True)
-    >>> print res['twoport']
+    >>> twoport = TwoPortAnalysis(c, inp, gnd, out, gnd, toolkit=symbolic)
+    >>> res = twoport.solve(freqs = array([Symbol('s')]), complexfreq=True)
     
     """
     terminals = ('g', 'd', 's', 'b')

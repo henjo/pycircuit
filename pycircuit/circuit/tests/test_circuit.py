@@ -6,7 +6,8 @@
 
 from nose.tools import *
 from pycircuit.circuit.circuit import *
-from pycircuit.circuit.symbolicanalysis import SymbolicAC
+from pycircuit.circuit import AC, symbolic
+
 import sympy
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
@@ -35,6 +36,22 @@ def generate_testcircuit():
     subc['I1'] = MySubC(plus, minus)
 
     return subc
+
+def test_parallel():
+    cir=SubCircuit()
+
+    res = 1e3
+    cir['R1'] = R(1, 2, res)
+    cir['R2'] = R(1, 2, res)
+
+    G = cir.G(array([0,0]))
+
+    assert_array_equal(G, array([[2/res, -2/res],
+                                 [-2/res, 2/res]]))
+
+def test_print_element():
+    assert_equal(str(C(1, 0, gnd, c=sympy.Symbol('c'))),
+                 "C('plus','minus',c=c)")
 
 def test_print_netlist():
     """Test printing of netlist"""
@@ -188,12 +205,13 @@ def test_current_probing():
 
     assert cir.get_terminal_branch('I1.plus') != None
     
-    res = SymbolicAC(cir).solve(s, complexfreq=True)
+    res = AC(cir, toolkit=symbolic).solve(s, complexfreq=True)
 
     assert_equal(sympy.simplify(res.i('I1.plus')), (2 + C2*R3*s)/(1 + C2*R3*s))
 
     assert_equal(sympy.simplify(res.i('C2.plus')), s*R3*C2 / (1 + s*R3*C2))
 
+            
 def test_current_probing_wo_branch():
     """Test current probing with a current divider circuit without current probe"""
 
@@ -203,12 +221,12 @@ def test_current_probing_wo_branch():
 
     cir = create_current_divider(R1,R3,C2)
 
-    res = SymbolicAC(cir).solve(s, complexfreq=True)
+    res = AC(cir, toolkit=symbolic).solve(s, complexfreq=True)
     
     assert_equal(sympy.simplify(res.i('I1.plus')), (2 + C2*R3*s)/(1 + C2*R3*s))
 
     assert_equal(sympy.simplify(res.i('C2.plus')), s*R3*C2 / (1 + s*R3*C2))
-            
+
 def test_adddel_subcircuit_element():
     """add subcircuit element that contains a branch then delete it"""
     cir = SubCircuit()

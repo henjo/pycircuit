@@ -1,10 +1,10 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
-from pycircuit.circuit.circuit import SubCircuit, VCCS, G, C, IS, VS, Parameter, gnd, R
+from pycircuit.circuit import SubCircuit, VCCS, G, C, IS, VS, Parameter, gnd, \
+    R, symbolic, TwoPortAnalysis, AC, Noise
 from pycircuit.circuit.mos import MOS
-from pycircuit.circuit.symbolicanalysis import SymbolicTwoPortAnalysis, SymbolicAC, SymbolicNoise
-from sympy import Symbol, simplify, ratsimp, sympify, factor
+from sympy import Symbol, simplify, ratsimp, sympify, factor, limit
 from numpy import array, zeros
 from copy import copy
 from pycircuit.circuit.symbolicapprox import *
@@ -23,7 +23,7 @@ c['M1'] = MOS(n1, nout, nin, nin, gm = gm1, gds = gds1, Cgs=0*Cgs2)
 
 ## Perform twoport analysis with noise
 
-twoportana = SymbolicTwoPortAnalysis(c, nin, gnd, nout, gnd, noise=True, noise_outquantity='i')
+twoportana = TwoPortAnalysis(c, nin, gnd, nout, gnd, noise=True, noise_outquantity='i', toolkit=symbolic)
 
 res2port = twoportana.solve(Symbol('s'), complexfreq=True)
 

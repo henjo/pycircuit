@@ -9,12 +9,11 @@ p129 chapter 5.2 depicts a flowchart describing the basic algorithm used in this
 """
 
 from numpy import array, delete, linalg, size, zeros, concatenate, pi, zeros, alltrue, maximum
-from analysis import Analysis, DC, remove_row_col, isiterable
+from analysis import Analysis, AC, DC, remove_row_col, isiterable
 from pycircuit.utilities.param import Parameter, ParameterDict
 from pycircuit.post.internalresult import InternalResultDict
 from pycircuit.result import Waveform
 import sympy
-from symbolicanalysis import SymbolicAC
 from sympy import Symbol, Matrix, symbols, simplify, together, factor, cancel, diff, Mul, factorial
 from symbolicelements import R, defaultepar, gnd, Diode, SubCircuit, IS, C, VCCS
 from copy import copy
@@ -108,7 +107,7 @@ class Volterra(Analysis):
     def solve(self, refnode=gnd):
         x = zeros(self.c.n)
         
-        ac = SymbolicAC(self.c)
+        ac = AC(self.c, toolkit=symbolic)
         xac = ac.solve(freqs = Symbol('s'), refnode = refnode, complexfreq = True)
 
         ## Find non-linear elements

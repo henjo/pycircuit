@@ -1,7 +1,7 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
-from circuit.ddd import *
+from pycircuit.circuit.ddd import *
 import unittest
 
 class DDDBasicTests(unittest.TestCase):

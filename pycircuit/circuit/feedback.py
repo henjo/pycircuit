@@ -101,7 +101,8 @@ def find_nulling_indices(circuit, x, inp=None, inn=None, outp=None, outn=None,
 
 class LoopBreaker(CircuitProxy):
     """Circuit proxy that zeros out dependent sources in the G and C methods"""
-    def __init__(self, circuit, inp, inn, outp, outn, parent=None, instance_name=None):
+    def __init__(self, circuit, inp, inn, outp, outn, parent=None, 
+                 instance_name=None):
         super(LoopBreaker, self).__init__(circuit, parent, instance_name)
         
         self.nulling_indices = find_nulling_indices(circuit, 
@@ -137,9 +138,11 @@ class FeedbackDeviceAnalysis(Analysis):
     (-20-0j)
     
     """
-    def __init__(self, circuit, instance, inp=None, inn=None, outp=None, outn=None, 
-                 epar = defaultepar.copy()):
-        super(FeedbackDeviceAnalysis, self).__init__(circuit, epar = epar)
+    def __init__(self, circuit, instance, 
+                 inp=None, inn=None, outp=None, outn=None, 
+                 epar = defaultepar.copy(), toolkit=None):
+        super(FeedbackDeviceAnalysis, self).__init__(circuit, epar = epar,
+                                                     toolkit=toolkit)
 
         self.inp = inp; self.inn = inn; self.outp = outp; self.outn = outn
 
@@ -152,6 +155,8 @@ class FeedbackDeviceAnalysis(Analysis):
 
         
     def solve(self, freqs, complexfreq = False, refnode = gnd):
+        toolkit = self.toolkit
+
         circuit_noloop = copy(self.cir)
 
         circuit_noloop[self.device] = LoopBreaker(circuit_noloop[self.device], 
@@ -178,13 +183,13 @@ class FeedbackDeviceAnalysis(Analysis):
         if complexfreq:
             slist = freqs
         else:
-            slist = 2j*np.pi*freqs
+            slist = 2j * np.pi * freqs
         
         ## Calculate return difference
         def Ffunc(s):
-            Y = self.toMatrix(G + s*C)
-            Y_noloop = self.toMatrix(G_noloop + s*C_noloop)
-            return self.det(Y) / self.det(Y_noloop)
+            Y = toolkit.toMatrix(G + s*C)
+            Y_noloop = toolkit.toMatrix(G_noloop + s*C_noloop)
+            return toolkit.det(Y) / toolkit.det(Y_noloop)
         if isiterable(slist):
             F = Waveform(np.array(slist),
                          np.array([Ffunc(s) for s in slist]),
@@ -239,9 +244,9 @@ def find_loopprobe(circuit, path=[]):
 class FeedbackLoopAnalysis(Analysis):
     """Find loop-gain by breaking all loops with a LoopProbe element
     """
-    
-    def __init__(self, circuit, epar = defaultepar.copy()):
-        super(FeedbackLoopAnalysis, self).__init__(circuit, epar = epar)
+    def __init__(self, circuit, epar = defaultepar.copy(), toolkit=None):
+        super(FeedbackLoopAnalysis, self).__init__(circuit, epar = epar, 
+                                                   toolkit=toolkit)
         
         ## Find LoopProbe instance
         loopprobes = list(find_loopprobe(circuit))
@@ -253,12 +258,13 @@ class FeedbackLoopAnalysis(Analysis):
 
 
     def solve(self, freqs, refnode = gnd, complexfreq = False):
-        x = np.zeros(self.cir.n) ## FIXME, this should be replaced by DC-analysis
+        toolkit = self.toolkit
 
+        x = np.zeros(self.cir.n) ## FIXME, this should be replaced by DC-analysis
         self.loopprobe['vinj'].ipar.vac = 1 
         self.loopprobe['iinj'].ipar.iac = 0 
 
-        ac_vinj = self.ACAnalysis(self.cir)
+        ac_vinj = AC(self.cir, toolkit=toolkit)
 
         res_vinj = ac_vinj.solve(freqs, refnode = refnode, 
                                  complexfreq=complexfreq,
@@ -267,7 +273,7 @@ class FeedbackLoopAnalysis(Analysis):
         self.loopprobe['vinj'].ipar.vac = 0 
         self.loopprobe['iinj'].ipar.iac = 1 
 
-        ac_iinj = self.ACAnalysis(self.cir)
+        ac_iinj = AC(self.cir, toolkit=toolkit)
 
         res_iinj = ac_iinj.solve(freqs, refnode = refnode, 
                                  complexfreq=complexfreq,

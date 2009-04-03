@@ -28,7 +28,7 @@ Find symbolic expression of transfer function from input voltage to output volta
 
 
     ## Run symbolic AC analysis     
-    ac = SymbolicAC(cir)
+    ac = AC(cir, toolkit=symbolic)
     result = ac.solve(freqs=Symbol('s'), complexfreq=True)
 
     ## Print transfer function from the voltage source to output
