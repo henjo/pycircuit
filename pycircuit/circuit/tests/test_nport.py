@@ -7,7 +7,7 @@ Test n-port module
 """
 
 from pycircuit.circuit.constants import *
-from pycircuit.circuit.circuit import SubCircuit, R, gnd
+from pycircuit.circuit import SubCircuit, R, gnd
 from pycircuit.circuit.nport import NPort, NPortY, NPortZ, NPortA, NPortS
 
 from math import sqrt

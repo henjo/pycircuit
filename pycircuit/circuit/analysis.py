@@ -5,7 +5,8 @@ import numpy as np
 from numpy import array, delete, linalg, size, zeros, concatenate, pi, \
     zeros, alltrue, maximum, conj, dot, imag, eye
 from scipy import optimize
-from circuit import Circuit, SubCircuit, VS,IS,R,C,L,Diode, gnd, defaultepar, instjoin
+from pycircuit.circuit import Circuit, SubCircuit, VS,IS,R,C,L,Diode, gnd, \
+    defaultepar, instjoin
 import symbolic
 from pycircuit.post.waveform import Waveform
 from pycircuit.post.result import IVResultDict

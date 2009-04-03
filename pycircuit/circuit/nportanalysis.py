@@ -1,6 +1,6 @@
 import numpy as np
 from nport import *
-from circuit import SubCircuit, gnd, R, VS, IS, Branch
+from pycircuit.circuit import SubCircuit, gnd, R, VS, IS, Branch
 from analysis import Analysis, AC, Noise, TransimpedanceAnalysis, \
     remove_row_col,defaultepar
 from pycircuit.post.internalresult import InternalResultDict

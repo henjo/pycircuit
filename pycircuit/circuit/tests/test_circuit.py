@@ -6,6 +6,7 @@
 
 from nose.tools import *
 from pycircuit.circuit.circuit import *
+from pycircuit.circuit.elements import *
 from pycircuit.circuit import AC, symbolic
 
 import sympy

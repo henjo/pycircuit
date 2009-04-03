@@ -1,6 +1,7 @@
 import numpy as np
 from copy import copy
-from circuit import Circuit, SubCircuit, gnd, R, VS, IS, Branch, VCCS, CircuitProxy
+from pycircuit.circuit import Circuit, SubCircuit, gnd, R, VS, IS, \
+    Branch, VCCS, CircuitProxy
 from analysis import Analysis, AC, Noise, TransimpedanceAnalysis, \
     remove_row_col,defaultepar,isiterable
 from pycircuit.post import InternalResultDict, Waveform
