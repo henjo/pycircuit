@@ -1,3 +1,6 @@
+# Copyright (c) 2008 Pycircuit Development Team
+# See LICENSE for details.
+
 import logging
 
 from pycircuit.post import InternalResultDict, Waveform

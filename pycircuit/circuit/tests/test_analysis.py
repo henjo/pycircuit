@@ -1,3 +1,6 @@
+# Copyright (c) 2008 Pycircuit Development Team
+# See LICENSE for details.
+
 from nose.tools import *
 from pycircuit.circuit import *
 from pycircuit.circuit import symbolic

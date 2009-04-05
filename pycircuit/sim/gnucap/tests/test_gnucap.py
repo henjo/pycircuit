@@ -1,3 +1,6 @@
+# Copyright (c) 2008 Pycircuit Development Team
+# See LICENSE for details.
+
 import pycircuit.sim
 import pycircuit.sim.gnucap as gnucap
 from pycircuit.post import Waveform

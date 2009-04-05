@@ -1,3 +1,6 @@
+# Copyright (c) 2008 Pycircuit Development Team
+# See LICENSE for details.
+
 import numpy as N
 from itertools import izip, groupby
 from operator import itemgetter

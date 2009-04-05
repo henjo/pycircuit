@@ -1,3 +1,6 @@
+# Copyright (c) 2008 Pycircuit Development Team
+# See LICENSE for details.
+
 import numpy as np
 from nport import *
 from pycircuit.circuit import SubCircuit, gnd, R, VS, IS, Branch

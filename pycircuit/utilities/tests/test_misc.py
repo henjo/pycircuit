@@ -1,3 +1,6 @@
+# Copyright (c) 2008 Pycircuit Development Team
+# See LICENSE for details.
+
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 
 from pycircuit.utilities.misc import *
