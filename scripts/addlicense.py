@@ -4,7 +4,7 @@ import os
 import fnmatch
 import logging
 
-def add_license_header(dir, licenseheader, excludedfiles):
+def add_license_header(dir, licenseheader, excludedfiles, oldheaders=[]):
     def excluded(filename):
         return filename in excludedfiles
 
@@ -14,6 +14,12 @@ def add_license_header(dir, licenseheader, excludedfiles):
         f = open(filename)
         
         lines = f.readlines()
+
+        ## Remove old headers
+        for header in oldheaders:
+            if lines[:len(header)] == header:
+                lines = lines[len(header):]            
+                logging.info('found old header in ' + filename)
 
         if not lines[:len(licenseheader)] == licenseheader:
             logging.info('adding license header to ' + filename)
@@ -31,10 +37,17 @@ def add_license_header(dir, licenseheader, excludedfiles):
                     and not excluded(filename):
                 check_license(os.path.join(dirpath, filename))
 
+oldheaders = [
+    ['# Copyright (c) 2008 Pycircuit Development Team\n',
+     '# See LICENSE for details.\n',
+     '\n']
+    ]
+
 dir = '../pycircuit'
 
 licenseheader = list(open('licenseheader.txt', 'r').readlines())
 
 logging.basicConfig(level=logging.INFO)
 
-add_license_header(dir, licenseheader, ['DESolver.py', 'test_DE'])
+add_license_header(dir, licenseheader, ['DESolver.py', 'test_DE'], 
+                   oldheaders=oldheaders)
