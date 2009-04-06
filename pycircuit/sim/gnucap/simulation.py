@@ -25,7 +25,10 @@ class Simulation(pycircuit.sim.Simulation):
                              str(Circuit))
         
         if executable == None:
-            executable = which.which('gnucap')
+            if 'GNUCAP' in os.environ:
+                executable = os.environ['GNUCAP']
+            else:
+                executable = which.which('gnucap')
 
         if not os.access(executable, os.X_OK):
             raise EngineError('gnucap executable not found')
@@ -42,6 +45,11 @@ class Simulation(pycircuit.sim.Simulation):
         
         session.expect(self.prompt)
 
+        firstline = session.before.split('\n')[0]
+        
+        self.version = tuple((int(x) for x in 
+                              firstline.split(' ')[1].split('.')))
+        
         session.setecho(False)
         
         logging.info('Successfully established connection with gnucap')
@@ -56,8 +64,9 @@ class Simulation(pycircuit.sim.Simulation):
 
         reply = self.session.before.strip()
 
-        ## Strip first line
-        reply = '\n'.join(reply.split('\n')[1:])
+        ## Strip first line 
+        if self.version[0] < 2007:
+            reply = '\n'.join(reply.split('\n')[1:]).strip()
         
         logging.debug('Got: ' + reply)
 
@@ -76,7 +85,14 @@ class Simulation(pycircuit.sim.Simulation):
 
     def send_netlist(self, netlist):
         netlistfile = tempfile.NamedTemporaryFile()
-        netlistfile.write(netlist)
+
+        ## In the development version one has to send
+        ## a build command before the netlist
+        if self.version[0] > 2007:
+            netlistfile.write('clear\nbuild\n' + netlist)
+        else:
+            netlistfile.write(netlist)
+
         netlistfile.flush()
 
         reply = self.send('include ' + netlistfile.name)
@@ -85,7 +101,6 @@ class Simulation(pycircuit.sim.Simulation):
             raise GnucapError(reply)
         
         netlistfile.close()
-
 
     def close(self):
         self.session.sendline('exit')

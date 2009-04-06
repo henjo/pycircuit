@@ -29,7 +29,7 @@ def test_netlist():
 
     netlist = sim.send('list')
     
-    assert_equal(netlist, '\r\nV1 ( 1 0 )  DC  1.\r\nR1 ( 1 2 )  1.K\r\nR2 ( 2 0 )  3.K')
+    assert_equal(netlist, 'V1 ( 1 0 )  DC  1.\r\nR1 ( 1 2 )  1.K\r\nR2 ( 2 0 )  3.K')
 
 def test_raw_dcop():
     sim = gnucap.Simulation(None)
