@@ -3,6 +3,7 @@
 # See LICENSE for details.
 
 import numpy as np
+from pycircuit.utilities.param import Parameter, ParameterDict
 from numpy import array, delete, linalg, size, zeros, concatenate, pi, \
     zeros, alltrue, maximum, conj, dot, imag, eye
 from scipy import optimize
@@ -58,11 +59,6 @@ class CircuitResult(IVResultDict, InternalResultDict):
         """Return terminal current i(term)"""
         return self.circuit.extract_i(self.x, term, xdot = self.xdot)    
 
-class CircuitResultDC(CircuitResult):
-    def i(self, term):
-        """Return terminal current i(term)"""
-        return self.circuit.extract_i(self.x, term, xdot = zeros(self.x.shape))
-
 class CircuitResultAC(CircuitResult):
     """Result class for analyses that returns voltages and currents"""
     def __init__(self, circuit, xdcop, x, xdot = None):
@@ -84,8 +80,12 @@ def remove_row_col(matrices, n):
     return tuple(result)
 
 class Analysis(object):
+    parameters = []
     def __init__(self, cir, epar = defaultepar, 
-                 toolkit=None):
+                 toolkit=None, **kvargs):
+
+        self.options = ParameterDict(*self.parameters, **kvargs)
+
         if toolkit == None:
             toolkit = numeric
 
@@ -98,153 +98,6 @@ class Analysis(object):
         self.cir = cir
         self.result = None
         self.epar = epar
-
-def fsolve(f, x0, fprime=None, args=(), full_output=False, maxiter=200,
-           xtol=1e-6, reltol=1e-4, abstol=1e-12):
-    """Solve a multidimensional non-linear equation with Newton-Raphson's method
-
-    In each iteration the linear system
-
-    M{J(x_n)(x_{n+1}-x_n) + F(xn) = 0
-
-    is solved and a new value for x is obtained x_{n+1}
-    
-    """
-    
-    converged = False
-    ier = 2
-    for i in xrange(maxiter):
-        J = fprime(x0, *args) # TODO: Make sure J is never 0, e.g. by gmin (stepping)
-        F = f(x0, *args)
-        xdiff = linalg.solve(J, -F)# TODO: Limit xdiff to improve convergence
-        x = x0 + xdiff
-
-        if alltrue(abs(xdiff) < reltol * maximum(x, x0) + xtol):
-            ier = 1
-            mesg = "Success"
-            break
-        if alltrue(abs(F) < reltol * max(F) + abstol):
-            ier = 1
-            mesg = "Success"
-            break
-            
-        x0 = x
-
-    if ier == 2:
-        mesg = "No convergence. xerror = "+str(xdiff)
-    
-    infodict = {}
-    if full_output:
-        return x, infodict, ier, mesg
-    else:
-        return x
-           
-
-class DC(Analysis):
-    """DC analyis class
-    
-    Linear circuit example:
-    >>> c = SubCircuit()
-    >>> n1 = c.add_node('net1')
-    >>> c['vs'] = VS(n1, gnd, v=1.5)
-    >>> c['R'] = R(n1, gnd, r=1e3)
-    >>> dc = DC(c)
-    >>> res = dc.solve()
-    >>> dc.result.keys()
-    ['i0', 'gnd', 'net1']
-    >>> dc.result['net1']
-    1.5
-
-    Non-linear example:
-
-    >>> c = SubCircuit()
-    >>> n1 = c.add_node('net1')
-    >>> c['is'] = IS(gnd, n1, i=57e-3)
-    >>> c['D'] = Diode(n1, gnd)
-    >>> dc = DC(c)
-    >>> res = dc.solve()
-    >>> dc.result.keys()
-    ['i0', 'gnd', 'net1']
-    >>> dc.result['net1']
-    0.7
-
-    >>> c = SubCircuit()
-    >>> n1 = c.add_node('net1')
-    >>> n2 = c.add_node('net2')
-    >>> c['is'] = IS(gnd, n1, i=57e-3)
-    >>> c['R'] = R(n1, n2, r=1e1)
-    >>> c['D'] = Diode(n2, gnd)
-    >>> dc = DC(c)
-    >>> res = dc.solve()
-    >>> dc.result.keys()
-    ['gnd', 'net2', 'net1']
-    >>> dc.result['net2']
-    0.7
-
-    """
-    
-    def solve(self, refnode=gnd):
-        n=self.cir.n
-#        x = zeros(n)
-#        G=self.cir.G(x)
-        # G += eye(G.shape[0])*1e-2 # Could use this to add a Gmin to every node
-#        u=self.cir.u(x)
-
-        ## Refer the voltages to the reference node by removing
-        ## the rows and columns that corresponds to this node
-        irefnode = self.cir.get_node_index(refnode)
-#        G,u=remove_row_col((G,u), irefnode)
-
-        # Solve i(x) + u = 0
-        def func(x):
-            x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
-            f =  self.cir.i(x) + self.cir.u(0)
-            (f,) = remove_row_col((f,), irefnode)
-#            print x,f.T[0]
-            return array(f, dtype=float)
-        def fprime(x):
-            x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
-#            J = self.cir.G(array([x]).T)
-            J = self.cir.G(x)
-            (J,) = remove_row_col((J,), irefnode)
-#            print "J:",array(J, dtype=float)
-            return array(J, dtype=float)
-        x0 = zeros(n-1) # Would be good with a better initial guess
-#        x0 = zeros(n-1)+0.75 # works good with this guess, for example
-
-        rtol = 1e-4
-
-        self.__SI__ = np.zeros(x0.shape,'d')
-        iwk = np.zeros((100*len(self.__SI__)),'i')
-        rwk = np.zeros((100*len(self.__SI__)),'d')
-        iopt = np.zeros((50),'i')
-        s_scale = copy(x0)
-        
-        iopt[2] =  1 # self.nleq2_jacgen #2
-        iopt[8] =  0 # self.nleq2_iscal  #0
-        iopt[10] = 1 # self.nleq2_mprerr #1
-        iopt[30] = 4 # self.nleq2_nonlin #4
-        iopt[31] = 0 #self.nleq2_qrank1 #0
-        iopt[34] = 0 # self.nleq2_qnscal #0
-        iopt[37] = 0 #self.nleq2_ibdamp #0
-        iopt[38] = 0 # self.nleq2_iormon #0
-
-        iwk[30] = 50
-        
-
-        x, infodict, ier, mesg = fsolve(func, x0, fprime=fprime, 
-                                        full_output=True)
-
-        if ier != 1:
-            raise NoConvergenceError(mesg)
-
-        x = x.reshape((n-1,1))
-        # Insert reference node voltage
-        x = concatenate((x[:irefnode, :], array([[0.0]]), x[irefnode:,:]))
-
-        self.result = CircuitResultDC(self.cir, x[:,0])
-
-        return self.result
 
 class Tran_spec(Analysis):
     """Simple transient analyis class.
@@ -752,7 +605,3 @@ class Noise(Analysis):
 
 def isiterable(object):
     return hasattr(object,'__iter__')
-
-if __name__ == "__main__":
-    import doctest
-    doctest.testmod()
