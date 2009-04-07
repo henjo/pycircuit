@@ -42,8 +42,15 @@ class DC(Analysis):
     """
     parameters = [Parameter(name='reltol', desc='Relative tolerance', unit='', 
                             default=1e-4),
-                  Parameter(name='abstol', desc='Absolute tolerance', unit='', 
+                  Parameter(name='iabstol', 
+                            desc='Absolute current eror tolerance', unit='A', 
                             default=1e-12),
+                  Parameter(name='vabstol', 
+                            desc='Absolute voltage error tolerance', unit='V', 
+                            default=1e-12),
+                  Parameter(name='maxiter', 
+                            desc='Maximum number of iterations', unit='', 
+                            default=100),
                   ]
 
     def __init__(self, cir, epar = defaultepar, 
@@ -123,13 +130,23 @@ class DC(Analysis):
         return x
 
     def _newton(self, func, fprime, x0):
-        (x0,) = remove_row_col((x0,), self.irefnode)
+        ones_nodes = np.ones(len(self.cir.nodes))
+        ones_branches = np.ones(len(self.cir.branches))
+
+        abstol = np.concatenate((self.options.iabstol * ones_nodes,
+                                 self.options.vabstol * ones_branches))
+        xtol = np.concatenate((self.options.vabstol * ones_nodes,
+                                 self.options.iabstol * ones_branches))
+
+        (x0, abstol, xtol) = remove_row_col((x0, abstol, xtol), self.irefnode)
 
         try:
             result = fsolve(refnode_removed(func, self.irefnode), 
                             x0, 
                             fprime=refnode_removed(fprime, self.irefnode),
-                            full_output=True)
+                            full_output=True, 
+                            abstol=abstol, xtol=xtol,
+                            maxiter = self.options.maxiter)
         except np.linalg.LinAlgError, e:
             raise SingularMatrix(e.message)
 
