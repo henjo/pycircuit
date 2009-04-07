@@ -143,9 +143,10 @@ class DC(Analysis):
         try:
             result = fsolve(refnode_removed(func, self.irefnode), 
                             x0, 
-                            fprime=refnode_removed(fprime, self.irefnode),
-                            full_output=True, 
-                            abstol=abstol, xtol=xtol,
+                            fprime = refnode_removed(fprime, self.irefnode),
+                            full_output = True, 
+                            reltol = self.options.reltol,
+                            abstol = abstol, xtol=xtol,
                             maxiter = self.options.maxiter)
         except np.linalg.LinAlgError, e:
             raise SingularMatrix(e.message)
