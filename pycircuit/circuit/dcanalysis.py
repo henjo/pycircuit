@@ -100,13 +100,13 @@ class DC(Analysis):
     def _homotopy_gmin(self, x0):
         """Newton's method with gmin stepping"""
         x = x0
-        for gmin in (1e-3, 1e-6, 0):
+        for gmin in (1, 1e-1, 1e-2, 0):
             n_nodes = len(self.cir.nodes)
             Ggmin = zeros((self.cir.n, self.cir.n))
-            Ggmin[0:n_nodes, 0:n_nodes] = eye(n_nodes)
+            Ggmin[0:n_nodes, 0:n_nodes] = gmin * eye(n_nodes)
 
             def func(x):
-                return self.cir.i(x) + self.cir.u(0)
+                return self.cir.i(x) + 0*np.dot(Ggmin, x) + self.cir.u(0)
 
             def fprime(x):
                 return self.cir.G(x) + Ggmin
