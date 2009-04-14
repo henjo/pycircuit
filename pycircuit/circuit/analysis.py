@@ -176,21 +176,21 @@ class Tran_spec(Analysis):
     >>> c['R3'] = R(n2, gnd, r=100e3)
     >>> c['C'] = C(n2, gnd, c=1e-5)
     >>> tran = Tran_spec(c)
-    >>> res = tran.solve(tend=2e-3,timestep=1e-4)
+    >>> res = tran.solve(tend=1e-3,timestep=1e-4)
     >>> tran.result[-1][1] #node 2 of last x
-    6.29
+    6.3
 
     Linear circuit example:
     >>> c = SubCircuit()
     >>> n1 = c.add_node('net1')
     >>> c['Is'] = IS(gnd, n1, i=0.1)
-    >>> c['R'] = R(n1, gnd, r=1e2)
-    >>> c['C'] = C(n1, gnd, c=1e-6)
+    >>> c['R'] = R(n1, gnd, r=1e3)
+    >>> c['C'] = C(n1, gnd, c=1e-5)
     >>> c['L'] = L(n1, gnd, L=1e-3)
     >>> tran = Tran_spec(c)
-    >>> res = tran.solve(tend=100e-6,timestep=1e-6)
+    >>> res = tran.solve(tend=150e-6,timestep=1e-6)
     >>> tran.result[-1][0]
-    0.951
+    0.99
 
     """
     # Very incomplete TODO-list:
@@ -272,21 +272,21 @@ class Transient(Analysis):
     >>> c['R3'] = R(n2, gnd, r=100e3)
     >>> c['C'] = C(n2, gnd, c=1e-5)
     >>> tran = Transient(c)
-    >>> res = tran.solve(tend=2e-3,timestep=1e-4)
+    >>> res = tran.solve(tend=10e-3,timestep=1e-4)
     >>> tran.result[-1][1] #node 2 of last x
-    6.29
+    6.3
 
     Linear circuit example:
     >>> c = SubCircuit()
     >>> n1 = c.add_node('net1')
-    >>> c['Is'] = IS(gnd, n1, i=0.1)
-    >>> c['R'] = R(n1, gnd, r=1e2)
-    >>> c['C'] = C(n1, gnd, c=1e-6)
+    >>> c['Is'] = IS(gnd, n1, i=10e-3)
+    >>> c['R'] = R(n1, gnd, r=1e3)
+    >>> c['C'] = C(n1, gnd, c=1e-5)
     >>> c['L'] = L(n1, gnd, L=1e-3)
     >>> tran = Transient(c)
-    >>> res = tran.solve(tend=100e-6,timestep=1e-6)
+    >>> res = tran.solve(tend=150e-6,timestep=1e-6)
     >>> tran.result[-1][0]
-    0.951
+    0.99
 
     """
     def solve_timestep(self, x0, dt, refnode=gnd):
@@ -304,7 +304,6 @@ class Transient(Analysis):
             Geq = self.cir.C(x)/dt
             ueq = -dot(Geq,xlast)
             f =  self.cir.i(x) + dot(Geq, x) + self.cir.u(x) + ueq
-#            f =  self.cir.u(x) + ueq
             (f,) = remove_row_col((f,), irefnode)
             return array(f, dtype=float)
         def fprime(x):
@@ -341,7 +340,6 @@ class Transient(Analysis):
 
         for t in times:
             x=self.solve_timestep(X[-1],dt)
-#            print(x,t)
             X.append(copy(x))
         self.result = X
         return (x,t) #returns the final value
