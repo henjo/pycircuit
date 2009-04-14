@@ -17,6 +17,8 @@ from copy import copy
 import numeric
 import types
 
+
+
 np.set_printoptions(precision=4)
 
 class NoConvergenceError(Exception):
@@ -99,6 +101,48 @@ class Analysis(object):
         self.result = None
         self.epar = epar
 
+## Had to copy this from dcanalysis.py to solve dependency issue
+def fsolve(f, x0, fprime=None, args=(), full_output=False, maxiter=200,
+           xtol=1e-6, reltol=1e-4, abstol=1e-12):
+    """Solve a multidimensional non-linear equation with Newton-Raphson's method
+
+    In each iteration the linear system
+
+    M{J(x_n)(x_{n+1}-x_n) + F(xn) = 0
+
+    is solved and a new value for x is obtained x_{n+1}
+    
+    """
+    
+    converged = False
+    ier = 2
+    for i in xrange(maxiter):
+        J = fprime(x0, *args) # TODO: Make sure J is never 0, e.g. by gmin (stepping)
+        F = f(x0, *args)
+        xdiff = linalg.solve(J, -F)# TODO: Limit xdiff to improve convergence
+
+        x = x0 + xdiff
+
+        if alltrue(abs(xdiff) < reltol * maximum(x, x0) + xtol):
+            ier = 1
+            mesg = "Success"
+            break
+        if alltrue(abs(F) < reltol * max(F) + abstol):
+            ier = 1
+            mesg = "Success"
+            break
+            
+        x0 = x
+
+    if ier == 2:
+        mesg = "No convergence. xerror = "+str(xdiff)
+    
+    infodict = {}
+    if full_output:
+        return x, infodict, ier, mesg
+    else:
+        return x
+
 class Tran_spec(Analysis):
     """Simple transient analyis class.
 
@@ -132,7 +176,7 @@ class Tran_spec(Analysis):
     >>> c['R3'] = R(n2, gnd, r=100e3)
     >>> c['C'] = C(n2, gnd, c=1e-5)
     >>> tran = Tran_spec(c)
-    >>> res = tran.solve(tend=20e-3)
+    >>> res = tran.solve(tend=2e-3,timestep=1e-4)
     >>> tran.result[-1][1] #node 2 of last x
     6.29
 
@@ -144,7 +188,6 @@ class Tran_spec(Analysis):
     >>> c['C'] = C(n1, gnd, c=1e-6)
     >>> c['L'] = L(n1, gnd, L=1e-3)
     >>> tran = Tran_spec(c)
-    >>> nodeset = array([-1.0,0.,0.])
     >>> res = tran.solve(tend=100e-6,timestep=1e-6)
     >>> tran.result[-1][0]
     0.951
@@ -196,8 +239,15 @@ class Tran_spec(Analysis):
         self.result = X
         return x #returns the final value
 
-class Tran_imp(Analysis):
+class Transient(Analysis):
     """Simple transient analyis class.
+
+    Supports both nonlinear and dynamic elements, but not
+    yet dynamic elements who are nonlinear.
+
+    Time step is fixed.
+
+    Only method is currently backward euler.
 
     i(t) = c*dv/dt
     v(t) = L*di/dt
@@ -208,7 +258,7 @@ class Tran_imp(Analysis):
     v(n+1) = L/dt*(i(n+1) - i(n)) = req*i(n+1) + Veq
 
     def J(x): return G(x)+Geq(x)
-    def F(x): return u(x)+ueq(x0)
+    def F(x): return i(x)+Geq(x)*x+u(x)+ueq(x0)
     x0=x(n)
     x(n+1) = fsolve(F, x0, fprime=J)
 
@@ -221,8 +271,8 @@ class Tran_imp(Analysis):
     >>> c['R2'] = R(n1, n2, r=1e3)
     >>> c['R3'] = R(n2, gnd, r=100e3)
     >>> c['C'] = C(n2, gnd, c=1e-5)
-    >>> tran = Tran_imp(c)
-    >>> res = tran.solve(tend=20e-3)
+    >>> tran = Transient(c)
+    >>> res = tran.solve(tend=2e-3,timestep=1e-4)
     >>> tran.result[-1][1] #node 2 of last x
     6.29
 
@@ -233,8 +283,7 @@ class Tran_imp(Analysis):
     >>> c['R'] = R(n1, gnd, r=1e2)
     >>> c['C'] = C(n1, gnd, c=1e-6)
     >>> c['L'] = L(n1, gnd, L=1e-3)
-    >>> tran = Tran_imp(c)
-    >>> nodeset = array([-1.0,0.])
+    >>> tran = Transient(c)
     >>> res = tran.solve(tend=100e-6,timestep=1e-6)
     >>> tran.result[-1][0]
     0.951
