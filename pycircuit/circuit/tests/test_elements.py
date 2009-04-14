@@ -5,8 +5,12 @@
 """Circuit element tests
 """
 
-from pycircuit.circuit import AC, VS, R, Nullor, SubCircuit, gnd, symbolic
-from sympy import Symbol, Matrix, symbols, simplify, together, factor, cancel
+from nose.tools import *
+from pycircuit.circuit import AC, VS, R, G, C, L, Nullor, SubCircuit, gnd, \
+    symbolic
+import numpy as np
+from numpy.testing import assert_array_equal
+from sympy import var, Symbol, simplify
 
 def test_nullor_vva():
     """Test nullor element by building a V-V amplifier"""
@@ -33,6 +37,25 @@ def test_nullor_vva():
     assert simplify(vout - Vin * (R1 + R2) / R1) == 0, \
         'Did not get the expected result, %s != 0'% \
         str(simplify(vout - Vin * (R1 + R2) / R1))
+
+def gen_stamps():
+    var('R1 C1 L1')
+
+    yield(R(1,gnd, r=R1), 1/R1 * np.array([[1, -1], [-1, 1]]), np.zeros((2,2)))
+    yield(G(1,gnd, g=1/R1), 1/R1 * np.array([[1, -1], [-1, 1]]), 
+          np.zeros((2,2)))
+    yield(C(1,gnd, c=C1), np.zeros((2,2)), C1 * np.array([[1, -1], [-1, 1]]))
+
+    GL = np.array([[0,0,1], [0,0,-1], [1, -1, 0]])
+    CL = np.zeros((3,3), dtype=object)
+    CL[2,2] = -L1
+    yield(L(1,gnd, L=L1), GL, CL)
+
+def test_stamp():
+
+    for cir, G, C in gen_stamps():
+        assert_array_equal(cir.G(np.zeros(cir.n)), G)
+        assert_array_equal(cir.C(np.zeros(cir.n)), C)
 
 if __name__ == '__main__':
     test_nullor_vva()
