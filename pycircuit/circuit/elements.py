@@ -138,7 +138,7 @@ class L(Circuit):
     def C(self, x, epar=defaultepar):
         n = self.n
         C = zeros((n,n), dtype=object)
-        C[-1,-1] = self.ipar.L
+        C[-1,-1] = -self.ipar.L
         return C
 
 class VS(Circuit):
