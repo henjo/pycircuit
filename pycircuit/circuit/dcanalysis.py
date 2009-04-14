@@ -163,47 +163,6 @@ class CircuitResultDC(CircuitResult):
     def i(self, term):
         """Return terminal current i(term)"""
         return self.circuit.extract_i(self.x, term, xdot = zeros(self.x.shape))
-
-def fsolve(f, x0, fprime=None, args=(), full_output=False, maxiter=200,
-           xtol=1e-6, reltol=1e-4, abstol=1e-12):
-    """Solve a multidimensional non-linear equation with Newton-Raphson's method
-
-    In each iteration the linear system
-
-    M{J(x_n)(x_{n+1}-x_n) + F(xn) = 0
-
-    is solved and a new value for x is obtained x_{n+1}
-    
-    """
-    
-    converged = False
-    ier = 2
-    for i in xrange(maxiter):
-        J = fprime(x0, *args) # TODO: Make sure J is never 0, e.g. by gmin (stepping)
-        F = f(x0, *args)
-        xdiff = linalg.solve(J, -F)# TODO: Limit xdiff to improve convergence
-
-        x = x0 + xdiff
-
-        if alltrue(abs(xdiff) < reltol * maximum(x, x0) + xtol):
-            ier = 1
-            mesg = "Success"
-            break
-        if alltrue(abs(F) < reltol * max(F) + abstol):
-            ier = 1
-            mesg = "Success"
-            break
-            
-        x0 = x
-
-    if ier == 2:
-        mesg = "No convergence. xerror = "+str(xdiff)
-    
-    infodict = {}
-    if full_output:
-        return x, infodict, ier, mesg
-    else:
-        return x
            
 def refnode_removed(func, irefnode):
     def new(x, *args, **kvargs):
