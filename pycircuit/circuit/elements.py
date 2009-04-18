@@ -271,8 +271,8 @@ class VCVS(Circuit):
                 if len(self.ipar.denominator) < 3:
                     self.ipar.numerator.append(1)
                 else:
-                    self.ipar.numerator = \ 
-                    [0 for state in range(len(self.ipar.denominator[:-2]))]
+                    self.ipar.numerator = [0 for state in \
+                                               range(len(self.ipar.denominator[:-2]))]
                 self.ipar.numerator.append(1) # this is the b_n coefficient,dc
             if len(self.ipar.numerator) < len(self.ipar.denominator[:-1]):
                 a = self.ipar.numerator 
@@ -341,6 +341,14 @@ class VCVS(Circuit):
             G[branchindex, inpindex] += self.ipar.g
             G[branchindex, innindex] += -self.ipar.g                       
         return G
+    
+    def C(self, x, epar=defaultepar):
+        C = super(VCVS, self).C(x)
+        first = self.first_state_node
+        if self.ipar.numerator or self.ipar.denominator:
+            C[first:first+self.denlen-1, first:first+self.denlen-1] = \
+                -1*eye(self.denlen-1)
+        return C
 
 class VCCS(Circuit):
     """Voltage controlled current source
