@@ -243,26 +243,103 @@ class VCVS(Circuit):
            [2, -2, -1, 1, 0]], dtype=object)
 
     """
-    instparams = [Parameter(name='g', desc='Voltage gain', 
-                            unit='V/V', default=1)]
+    instparams = [Parameter(name='g', desc='Voltage gain',unit='V/V', 
+                            default=1),
+                  Parameter(name='numerator', 
+                            desc='Numerator coefficients of laplace defined '
+                            'transfer function',unit=None, default=None),
+                  Parameter(name='denominator', 
+                            desc='Denominator coefficients of laplace defined '
+                            'transfer function',unit=None, default=None),
+                  Parameter(name='realisation', desc='State space realisation' 
+                            'form for transfer function, '
+                            'values \"observable\" and \"controlable\""',
+                            unit=None, default='observable')]
+
     terminals = ['inp', 'inn', 'outp', 'outn']
+
     def __init__(self, *args, **kvargs):
         Circuit.__init__(self, *args, **kvargs)
-        self.branches.append(Branch(self.nodenames['outp'], 
+        if self.ipar.numerator or self.ipar.denominator:
+            self.first_state_node = len(self.nodes) # store number of nodes
+            if self.ipar.denominator == None:
+                self.ipar.denominator = [0 for state in \
+                                             range(self.ipar.numerator)]
+                self.ipar.denominator.append(1) # this is the dc coefficient
+            if self.ipar.numerator == None:
+                self.ipar.numerator=[]
+                if len(self.ipar.denominator) < 3:
+                    self.ipar.numerator.append(1)
+                else:
+                    self.ipar.numerator = \ 
+                    [0 for state in range(len(self.ipar.denominator[:-2]))]
+                self.ipar.numerator.append(1) # this is the b_n coefficient,dc
+            if len(self.ipar.numerator) < len(self.ipar.denominator[:-1]):
+                a = self.ipar.numerator 
+                for i in range( len(self.ipar.denominator[:-1])-\
+                                    len(self.ipar.numerator)):
+                    a.insert(0, 0) # add zeroes in front
+                    self.ipar.numerator = a
+            if not(len(self.ipar.numerator) < len(self.ipar.denominator)):
+                raise Exception("Number of numerator coefficients, %s, must be at least on fewer than the number of denominator coefficients length, %s, should be string"%str(len(self.ipar.numerator))%str(len(self.ipar.denominator)))          
+            self.den = array(self.ipar.denominator) / self.ipar.denominator[0]
+            self.denlen = len(self.den) 
+            self.num = array(self.ipar.numerator) / self.ipar.denominator[0]
+            self.numlen = len(self.num)
+            newnodes = [Node("_a%d"%state) for state in range(self.denlen-1)]
+            self.nodes.extend(newnodes)
+        self.branches.append(Branch(self.nodenames['outp'],
                                     self.nodenames['outn']))
-        
+               
     def G(self, x, epar=defaultepar):
         G = super(VCVS, self).G(x)
         branchindex = -1
         inpindex, innindex, outpindex, outnindex = \
-           (self.nodes.index(self.nodenames[name]) 
-            for name in ('inp', 'inn', 'outp', 'outn'))
+            (self.nodes.index(self.nodenames[name])
+             for name in ('inp', 'inn', 'outp', 'outn'))
         G[outpindex, branchindex] += 1
         G[outnindex, branchindex] += -1
         G[branchindex, outpindex] += -1
         G[branchindex, outnindex] += 1
-        G[branchindex, inpindex] += self.ipar.g
-        G[branchindex, innindex] += -self.ipar.g
+        if self.ipar.numerator or self.ipar.denominator:
+            if self.ipar.realisation == 'observable':
+                # Observable canonical state space form
+                first = self.first_state_node
+                # Add denominator coefficiencts
+                G[first:first + self.denlen-1, first] = -self.den[1:]
+                # States
+                if self.denlen-1==1:
+                    G[first+1,first+1] = 1
+                else:
+                    G[first:first+self.denlen-2, first+1:first+1+self.denlen-2] = \
+                        eye(self.denlen-2)                
+                # Input and numerator coefficients
+                G[first:first+self.numlen, inpindex] = self.num*self.ipar.g
+                G[first:first+self.numlen, innindex] = -self.num*self.ipar.g
+                # Output                
+                G[branchindex, first] = 1
+            else:
+                # Controllable canonical state space form 
+                first = self.first_state_node
+                # Add denominator coefficiencts
+                if self.denlen-1==1:
+                    G[first,first] = -self.den[1]
+                else:                
+                    G[first, first:first + self.denlen-1 ] = -self.den[1:]
+                # States
+                if self.denlen-1==1:
+                    G[first,first+1] = 1
+                else:
+                    G[first+1:first+1+self.denlen-2, first:first+self.denlen-2] = \
+                        eye(self.denlen-2)
+                # Input
+                G[first, inpindex] = self.ipar.g
+                G[first, innindex] = -self.ipar.g
+                # Output, all numerator coefficients        
+                G[branchindex, first:first+self.numlen] = self.num                
+        else:
+            G[branchindex, inpindex] += self.ipar.g
+            G[branchindex, innindex] += -self.ipar.g                       
         return G
 
 class VCCS(Circuit):
