@@ -2,7 +2,7 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
-from numpy import array, zeros, concatenate, dot, exp, inf
+from numpy import array, zeros, concatenate, dot, exp, inf, eye
 from pycircuit.utilities.param import Parameter, ParameterDict
 from pycircuit.utilities.misc import indent, inplace_add_selected, \
     inplace_add_selected_2d, create_index_vectors
