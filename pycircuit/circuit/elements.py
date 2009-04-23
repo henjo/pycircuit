@@ -121,7 +121,7 @@ class L(Circuit):
     >>> c.C(zeros(3))
     array([[0, 0, 0],
            [0, 0, 0],
-           [0, 0, 1e-09]], dtype=object)
+           [0, 0, -1e-09]], dtype=object)
     """
     terminals = ['plus', 'minus']    
     instparams = [Parameter(name='L', desc='Inductance', 
@@ -144,12 +144,12 @@ class L(Circuit):
 class VS(Circuit):
     """Independent voltage source
 
-    >>> from analysis import DC
+    >>> from dcanalysis import DC
     >>> c = SubCircuit()
     >>> n1=c.add_node('1')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
     >>> c['R'] = R(n1, gnd, r=1e3)
-    >>> DC(c).solve(refnode=gnd).x
+    >>> DC(c,refnode=gnd).solve().x
     array([ 1.5   ,  0.    , -0.0015])
     
     """
@@ -193,12 +193,12 @@ class VS(Circuit):
 class IS(Circuit):
     """Independent DC current source
 
-    >>> from analysis import DC, gnd as gnd2
+    >>> from dcanalysis import DC, gnd as gnd2
     >>> c = SubCircuit()
     >>> n1=c.add_node('1')
     >>> c['is'] = IS(gnd, n1, i=1e-3)
     >>> c['R'] = R(n1, gnd, r=1e3)
-    >>> DC(c).solve(refnode=gnd).x
+    >>> DC(c,refnode=gnd).solve().x
     array([ 1.,  0.])
 
     """
@@ -226,7 +226,7 @@ class IS(Circuit):
 class VCVS(Circuit):
     """Voltage controlled voltage source
 
-    >>> from analysis import DC
+    >>> from dcanalysis import DC
     >>> c = SubCircuit()
     >>> n1, n2 =c.add_nodes('1', '2')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
@@ -353,13 +353,13 @@ class VCVS(Circuit):
 class VCCS(Circuit):
     """Voltage controlled current source
 
-    >>> from analysis import DC
+    >>> from dcanalysis import DC
     >>> c = SubCircuit()
     >>> n1,n2 = c.add_nodes('1', '2')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
     >>> c['vccs'] = VCCS(n1, gnd, n2, gnd, gm=1e-3)
     >>> c['rl'] = R(n2, gnd, r=1e3)
-    >>> DC(c).solve(refnode=gnd).x
+    >>> DC(c,refnode=gnd).solve().x
     array([ 1.5, -1.5,  0. ,  0. ])
 
     """
@@ -425,7 +425,7 @@ class Nullor(Circuit):
 class Transformer(Circuit):
     """Ideal transformer
 
-    >>> from analysis import DC
+    >>> from dcanalysis import DC
     >>> c = SubCircuit()
     >>> n1, n2 = c.add_nodes('1', '2')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
