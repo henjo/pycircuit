@@ -23,7 +23,7 @@ class R(Circuit):
            [-0.001, 0.001]], dtype=object)
 
     """
-    terminals = ['plus', 'minus']
+    terminals = ('plus', 'minus')
     instparams = [Parameter(name='r', desc='Resistance', unit='ohm', 
                             default=1e3),
                   Parameter(name='noisy', desc='No noise', unit='', 
@@ -60,7 +60,7 @@ class G(Circuit):
            [-0.001, 0.001]], dtype=object)
 
     """
-    terminals = ['plus', 'minus']
+    terminals = ('plus', 'minus')
     instparams = [Parameter(name='g', desc='Conductance', unit='S', 
                             default=1e-3),
                   Parameter(name='nonoise', 
@@ -100,7 +100,7 @@ class C(Circuit):
 
     """
 
-    terminals = ['plus', 'minus']    
+    terminals = ('plus', 'minus')
     instparams = [Parameter(name='c', desc='Capacitance', 
                             unit='F', default=1e-12)]
 
@@ -123,16 +123,16 @@ class L(Circuit):
            [0, 0, 0],
            [0, 0, -1e-09]], dtype=object)
     """
-    terminals = ['plus', 'minus']    
+    terminals = ('plus', 'minus')
+    branches = (Branch(Node('plus'), Node('minus')),)
+
     instparams = [Parameter(name='L', desc='Inductance', 
                             unit='H', default=1e-9)]
 
     _G = array([[0.0 , 0.0, 1.0],
                 [0.0 , 0.0, -1.0],
                 [1.0 , -1.0, 0.0]])
-    def __init__(self, plus, minus, L=0.0):
-        Circuit.__init__(self, plus, minus, L=L)
-        self.branches.append(Branch(plus, minus))
+
     def G(self, x, epar=defaultepar):
         return self._G
     def C(self, x, epar=defaultepar):
@@ -153,7 +153,8 @@ class VS(Circuit):
     array([ 1.5   ,  0.    , -0.0015])
     
     """
-    terminals = ['plus', 'minus']
+    terminals = ('plus', 'minus')
+    branches = (Branch(Node('plus'), Node('minus')),)
     instparams = [Parameter(name='v', desc='Source voltage', 
                             unit='V', default=1),
                   Parameter(name='vac', desc='AC analysis amplitude', 
@@ -161,11 +162,6 @@ class VS(Circuit):
                   Parameter(name='noisePSD', 
                             desc='Voltage noise power spectral density', 
                             unit='V^2/Hz', default=0)]
-
-    def __init__(self, plus, minus, **kvargs):
-        Circuit.__init__(self, plus, minus, **kvargs)
-        self.branches.append(Branch(self.nodenames['plus'], 
-                                    self.nodenames['minus']))
 
     def G(self, x, epar=defaultepar):
         return array([[0 , 0, 1],
@@ -209,7 +205,7 @@ class IS(Circuit):
                   Parameter(name='noisePSD', 
                             desc='Current noise power spectral density', 
                             unit='A^2/Hz', default=0.0)]
-    terminals = ['plus', 'minus']
+    terminals = ('plus', 'minus')
 
     def u(self, t=0.0, epar=defaultepar, analysis=None):
         if analysis == None:
@@ -256,7 +252,8 @@ class VCVS(Circuit):
                             'values \"observable\" and \"controlable\""',
                             unit=None, default='observable')]
 
-    terminals = ['inp', 'inn', 'outp', 'outn']
+    terminals = ('inp', 'inn', 'outp', 'outn')
+    branches = (Branch(Node('outp'), Node('outn')),)
 
     def __init__(self, *args, **kvargs):
         Circuit.__init__(self, *args, **kvargs)
@@ -288,8 +285,6 @@ class VCVS(Circuit):
             self.numlen = len(self.num)
             newnodes = [Node("_a%d"%state) for state in range(self.denlen-1)]
             self.nodes.extend(newnodes)
-        self.branches.append(Branch(self.nodenames['outp'],
-                                    self.nodenames['outn']))
                
     def G(self, x, epar=defaultepar):
         G = super(VCVS, self).G(x)
@@ -363,7 +358,7 @@ class VCCS(Circuit):
     array([ 1.5, -1.5,  0. ,  0. ])
 
     """
-    terminals = ['inp', 'inn', 'outp', 'outn']
+    terminals = ('inp', 'inn', 'outp', 'outn')
     instparams = [Parameter(name='gm', desc='Transconductance', 
                             unit='A/V', default=1e-3)]
     
@@ -402,11 +397,7 @@ class Nullor(Circuit):
 
     """
     terminals = ('inp', 'inn', 'outp', 'outn')
-
-    def __init__(self, *args, **kvargs):
-        Circuit.__init__(self, *args, **kvargs)
-        self.branches.append(Branch(self.nodenames['outp'], 
-                                    self.nodenames['outn']))
+    branches = (Branch(Node('outp'), Node('outn')),)
 
     def G(self, x, epar=defaultepar):
         G = super(Nullor, self).G(x)
@@ -433,7 +424,7 @@ class Transformer(Circuit):
     >>> c['vcvs'].nodes
     [Node('inp'), Node('inn'), Node('outp'), Node('outn')]
     >>> c['vcvs'].branches
-    [Branch(Node('outp'),Node('outn'))]
+    (Branch(Node('outp'),Node('outn')),)
     >>> c['vcvs'].G(zeros(4))
     array([[0, 0, 0, 0, 2],
            [0, 0, 0, 0, -2],
@@ -443,11 +434,8 @@ class Transformer(Circuit):
 
     """
     instparams = [Parameter(name='n', desc='Winding ratio', unit='', default=1)]
-    terminals = ['inp', 'inn', 'outp', 'outn']
-    def __init__(self, *args, **kvargs):
-        Circuit.__init__(self, *args, **kvargs)
-        self.branches.append(Branch(self.nodenames['outp'], 
-                                    self.nodenames['outn']))
+    terminals = ('inp', 'inn', 'outp', 'outn')
+    branches = (Branch(Node('outp'), Node('outn')),)
 
     def G(self, x, epar=defaultepar):
         G = super(Transformer, self).G(x)
@@ -466,7 +454,7 @@ class Transformer(Circuit):
         return G
 
 class Diode(Circuit):
-    terminals = ['plus', 'minus']
+    terminals = ('plus', 'minus')
     mpar = Circuit.mpar.copy( 
         Parameter(name='IS', desc='Saturation current', 
                   unit='A', default=1e-13))

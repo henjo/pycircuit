@@ -153,17 +153,16 @@ class Circuit(object):
 
     
     nodes = []
+    branches = []
     terminals = []
     mpar = ParameterDict()
     instparams = []
     linear = True
     
     def __init__(self, *args, **kvargs):
-        self.nodes = []
-        self.internalnodes = []
         self.nodenames = {}
-        self.branches = []
         self.ipar = ParameterDict(*self.instparams, **kvargs)
+        self.ipar_expressions = ParameterDict(*self.instparams, **kvargs)
 
         ## Add terminal nodes
         for terminal in self.terminals:
@@ -175,7 +174,7 @@ class Circuit(object):
         
     def __eq__(self, a):
         return self.__class__ == a.__class__ and \
-            self.nodes == a.nodes and self.internalnodes == a.internalnodes and \
+            self.nodes == a.nodes and \
             self.nodenames == a.nodenames and self.branches == a.branches and \
             self.ipar == a.ipar
         
@@ -211,9 +210,21 @@ class Circuit(object):
 
     def append_node(self, node):
         """Append node object to circuit"""
+        ## Make a copy of node list so the class is unchanged
+        if self.__class__.nodes is self.nodes:
+            self.nodes = list(self.nodes)
+
         if node not in self.nodes:
             self.nodes.append(node)
         self.nodenames[node.name] = node
+
+    def append_branches(self, *branches):
+        """Append node object to circuit"""
+        ## Make a copy of node list so the class is unchanged
+        if self.__class__.branches is self.branches:
+            self.branches = list(self.branches)
+
+        self.branches.extend(branches)
 
     def get_terminal_branch(self, terminalname):
         """Find the branch that is connected to the given terminal
@@ -589,7 +600,12 @@ class Circuit(object):
         if refnode_removed:
             branchindex -= 1
 
-        return sign * x[branchindex]        
+        return sign * x[branchindex]      
+
+    def update_instance_parameters(self, parent_ipar, variables=None):
+        """Calculate numeric values of all instance parameters"""
+    
+        self.ipar = self.ipar_expressions.eval_expressions(parent_ipar)
 
     def __repr__(self):
         return self.__class__.__name__ + \
@@ -652,6 +668,9 @@ class SubCircuit(Circuit):
         self.elementnodemap = {}
         self.term_node_map = {}
         self._rep_nodemap_list = {}
+
+        ## Subscribe to updates of instance parameters
+        self.ipar.attach(self)
 
     def __eq__(self, a):
         return super(SubCircuit, self).__eq__(a) and \
@@ -753,7 +772,7 @@ class SubCircuit(Circuit):
 
         ## Add branches
         newbranches = self._instance_branches(instance, instancename)
-        self.branches.extend(newbranches)
+        self.append_branches(*newbranches)
 
         ## Update circuit node - instance node map
         self.update_node_map()
@@ -1004,6 +1023,9 @@ class SubCircuit(Circuit):
                                  refnode_removed=refnode_removed,
                                  linearized = linearized, xdcop = xdcop)
         
+    def update(self, subject):
+        """This is called when an instance parameter is updated"""
+
     def _add_element_submatrices(self, methodname, x, args):
         n = self.n
         lhs = zeros((n,n), dtype=object)
@@ -1135,7 +1157,7 @@ class IProbe(Circuit):
 
     def __init__(self, plus, minus, **kvargs):
         Circuit.__init__(self, plus, minus, **kvargs)
-        self.branches.append(Branch(self.nodenames['plus'], 
+        self.append_branches(Branch(self.nodenames['plus'], 
                                     self.nodenames['minus']))
 
     def G(self, x, epar=defaultepar):
