@@ -2,15 +2,18 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
-import unittest
 import copy
+import sympy
+import misc
 
-class Parameter(object):
+class Parameter(sympy.Symbol):
     def __init__(self, name, desc=None, unit=None, default=None):
-        self.name=name
-        self.desc=desc
-        self.default=default
-        self.unit=unit
+        self.desc = desc
+        self.default = default
+        self.unit = unit
+
+    def __eq__(self, a): 
+        return self.__class__ is a.__class__ and self.name == a.name 
 
     def __hash__(self):
         return self.name.__hash__()
@@ -18,16 +21,24 @@ class Parameter(object):
     def copy(self):
         return copy.copy(self)
 
-    def __repr__(self):
+    def __str__(self):
         return self.name
 
-class ParameterDict(object):
+    def __repr__(self):
+        kvargs = ('desc', 'unit', 'default')
+        args = [repr(self.name)] + \
+            [k + '=' + repr(getattr(self,k)) for k in kvargs
+             if getattr(self,k)]
+        return self.__class__.__name__ + '(' + ', '.join(args) + ')'
+
+class ParameterDict(misc.ObserverSubject):
     def __init__(self, *parameters, **kvargs):
+        super(ParameterDict, self).__init__()
         self._parameters = {}
         self._paramnames = []
         self.append(*parameters)
         self.set(**kvargs)
-        
+
     def __eq__(self, a):
         return self._parameters == a._parameters
         
@@ -37,12 +48,16 @@ class ParameterDict(object):
                 self._paramnames.append(param.name)
                 self._parameters[param.name] = param
                 self.__dict__[param.name] = param.default
+
+        self.notify()
                 
     def set(self, **kvargs):
         for k,v in kvargs.items():
             if k not in self.__dict__:
                 raise KeyError('parameter %s not in parameter dictionary'%k )
             self.__dict__[k] = v
+            
+        self.notify()
 
     def get(self, param):
         """Get value by parameter object or parameter name"""
@@ -61,118 +76,58 @@ class ParameterDict(object):
 
         return newpd
 
+    def eval_expressions(self, values):
+        """Evaluate expressions using parameter values from other ParameterDicts
+        
+        The function performs substitution of symbolic expressions using
+        parameter values from other ParameterDict objects.
+
+        The *values* argument is a ParameterDict or a sequence of 
+        (Parameter class, ParameterDict) tuples. This allows for doing 
+        substutions of different kind of Parameters using different 
+        paramter dictionaries. The order sets the priority.
+
+        """
+
+        out = ParameterDict(*self.parameters)
+
+        ## Change values argument form to dictionary if needed
+        if isinstance(values, ParameterDict):
+            values = ((Parameter, values),)
+        
+        ## Create a substition dictionary
+        substdict = {}
+        for paramclass, paramdict in values:
+            for param in paramdict.parameters:
+                substdict[param] = getattr(paramdict, param.name)
+
+        for param, expr in self.items():
+            value = expr.subs(substdict)
+            setattr(out, param, value)
+
+        return out
+    
+    def items(self):
+        return [(param.name, getattr(self, param.name)) 
+                for param in self.parameters]
+
     def __getitem__(self, key):
         return self._parameters[key]
 
+    def __setattr__(self, key, value):
+        self.__dict__[key] = value
+        if hasattr(self, '_parameters') and key in self._parameters:
+            self.notify()
+    
     def __contains__(self, key):
         if isinstance(key, Parameter):
-            return key.name in self._parameters and self._parameters[key.name] == key 
+            return key.name in self._parameters and \
+                self._parameters[key.name] == key 
         return key in self._parameters
     
     def __len__(self):
         return len(self._paramnames)
 
-    parameters = property(lambda self: [self._parameters[name] for name in self._paramnames])
-
-class ParameterTest(unittest.TestCase):
-    """Test Parameter class"""
-
-    def testInstance(self):
-        """Testing instantiating Parameter objects"""
-        param1 = Parameter("gm", "Transconductance", "A/V", default=1e-3)
-        param2 = Parameter(name="gm", desc="Transconductance", unit="A/V", default=1e-3)
-        for param in param1,param2:
-            self.assertEqual(param.name, 'gm')
-            self.assertAlmostEqual(param.default, 1e-3)
-            self.assertEqual(param.desc, 'Transconductance')
-            self.assertEqual(param.unit, 'A/V')
-
-    def testIncorrectInstantiation(self):
-        def testIncorrect():
-            param = Parameter(apa=1)
-
-        self.failUnlessRaises(TypeError, testIncorrect)
-        
-class ParameterDictTest(unittest.TestCase):
-    def testInstantiate(self):
-        paramdict = ParameterDict()
-        gm = Parameter(name="gm", desc="Transconductance", unit="A/V", default=1e-3)
-        gds = Parameter(name="gds", desc="Output conductance", unit="A/V", default=1e-6)
-        paramdict = ParameterDict(gm,gds,
-                                  gm=2e-3
-                                  )
-        self.assertEqual(paramdict.parameters, [gm,gds])
-        self.assertEqual(paramdict.gm, 2e-3)
-        self.assertEqual(paramdict.gds, 1e-6)
-
-    def testAppendParameter(self):
-        """Test appending a parameter"""
-        paramdict = ParameterDict()
-        self.assertEqual(len(paramdict), 0)
-        gmparam = Parameter(name="gm", desc="Transconductance", unit="A/V")
-        paramdict.append(gmparam)
-        self.assertEqual(len(paramdict), 1)
-        self.assertEqual(paramdict['gm'], gmparam)
-
-    def testGetItem(self):
-        """Test getting parameter"""
-        paramdict = ParameterDict()
-        gmparam = Parameter(name="gm", desc="Transconductance", unit="A/V", default=2.0e-6)
-        paramdict.append(gmparam)
-        self.assertEqual(paramdict['gm'], gmparam)
-
-    def testGetSetValue(self):
-        paramdict = ParameterDict()
-        gmparam = Parameter(name="gm", desc="Transconductance", unit="A/V", default=2.0e-6)
-        paramdict.append(gmparam)
-
-        self.assertEqual(paramdict.get('gm'), 2e-6)
-
-        self.assertEqual(paramdict.get(gmparam), 2e-6)
-
-        self.assertEqual(paramdict.gm, 2e-6)
-
-        paramdict.gm = 3e-6
-        self.assertEqual(paramdict.gm, 3e-6)
-
-    def testSet(self):
-        paramdict = ParameterDict()
-        paramdict.append(Parameter(name="gm", desc="Transconductance", unit="A/V", default=2.0e-6))
-        paramdict.set(gm=4e-6)
-        self.assertEqual(paramdict.gm, 4e-6)
-        def test():
-            paramdict.set(gds=3e-6)
-        self.failUnlessRaises(KeyError, test)
-        
-    def testContains(self):
-        paramdict = ParameterDict()
-        gmparam = Parameter(name="gm", desc="Transconductance", unit="A/V", default=2.0e-6)
-        paramdict.append(gmparam)
-        self.assertTrue('gm' in paramdict)
-        self.assertTrue(gmparam in paramdict)
-        self.assertFalse('gds' in paramdict)
-        self.assertFalse(Parameter(name='gds') in paramdict)
-
-    def testGetParameters(self):
-        paramdict = ParameterDict()
-        gmparam = Parameter(name="gm", desc="Transconductance", unit="A/V", default=2.0e-6)
-        gdsparam = Parameter(name="gds")
-        paramdict.append(gmparam)
-        self.assertEqual(paramdict.parameters, [gmparam])
-        paramdict.append(gdsparam)
-        self.assertEqual(paramdict.parameters, [gmparam, gdsparam])
-
-    def testCopy(self):
-        paramdict = ParameterDict(Parameter(name="vth0", desc="Threshold voltage", unit="V", default=0.3))
-        paramdict2 = paramdict.copy()
-        paramdict2.vth0 = 0.4
-        paramdict3 = paramdict2.copy(vth0=0.5)
-        self.assertEqual(paramdict2.vth0, 0.4)
-        self.assertEqual(paramdict.vth0, 0.3)
-        self.assertEqual(paramdict3.vth0, 0.5)
-
-if __name__ == "__main__":
-    unittest.main()
-
-
-
+    @property
+    def parameters(self):
+        return [self._parameters[name] for name in self._paramnames]
