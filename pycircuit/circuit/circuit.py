@@ -162,7 +162,16 @@ class Circuit(object):
     def __init__(self, *args, **kvargs):
         self.nodenames = {}
         self.ipar = ParameterDict(*self.instparams, **kvargs)
-        self.ipar_expressions = ParameterDict(*self.instparams, **kvargs)
+        
+        ## Set up ipar expressions
+        ipar_expressions = {}
+        for par in self.ipar.parameters:
+            if par.name in kvargs:
+                ipar_expressions[par.name] = kvargs[par.name]
+            else:
+                ipar_expressions[par.name] = None
+        self.ipar_expressions = ParameterDict(*self.instparams, 
+                                               **ipar_expressions)
 
         ## Add terminal nodes
         for terminal in self.terminals:
@@ -1025,7 +1034,9 @@ class SubCircuit(Circuit):
         
     def update(self, subject):
         """This is called when an instance parameter is updated"""
-
+        for element in self.elements.values():
+            element.update_instance_parameters(self.ipar)
+        
     def _add_element_submatrices(self, methodname, x, args):
         n = self.n
         lhs = zeros((n,n), dtype=object)

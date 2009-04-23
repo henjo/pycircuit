@@ -13,6 +13,7 @@ from pycircuit.circuit import AC, symbolic
 import sympy
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
+from numpy.testing.decorators import slow
 from copy import copy
 
 def generate_testcircuit():
@@ -314,7 +315,7 @@ def test_VCVS_laplace_n2_d3():
 
     assert_equal(sympy.simplify(res.v(n2,gnd)),(Gdc*b1+Gdc*b0*s)/(a0*s*s+a1*s+a2))
 
-
+@slow
 def test_VCVS_laplace_d4_n1_c():
     """Test VCCS with a laplace defined transfer function with first order numerator and fourth order denominator
     """
@@ -338,6 +339,7 @@ def test_VCVS_laplace_d4_n1_c():
 
     assert_equal(sympy.simplify(res.v(n2,gnd)),(Gdc*b0*s+Gdc*b1)/(a0*s*s*s*s+a1*s*s*s+a2*s*s+a3*s+a4))
 
+@slow
 def test_VCVS_laplace_d5_n2_observable():
     """Test VCCS with a laplace defined transfer function with first order order numerator and fith order denominator"""
     cir = SubCircuit()
@@ -379,3 +381,19 @@ def test_proxy():
                            )
 
     assert_array_equal(cir.CY(zeros(cir.n),1), refcir.CY(zeros(cir.n),1))
+
+def test_parameter_propagation():
+    """Test instance parameter value propagation through hierarchy"""
+
+    class A(SubCircuit):
+        instparams = [Parameter('x')]
+
+    a = A()
+
+    a['R1'] = R(1,0, r=Parameter('x') + 10)
+
+    a.ipar.x = 20
+
+    assert_equal(a['R1'].ipar.r, 30)
+    assert_equal(a['R1'].ipar.noisy, True)
+
