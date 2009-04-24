@@ -4,18 +4,18 @@ Analyses
 DC
 ~~
 
-AC
-~~
+AC (symbolic and numeric)
+~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Transient
 ~~~~~~~~~
 
-Noise
-~~~~~
+Noise (symbolic and numeric)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-2-port
-~~~~~~
+2-port (symbolic and numeric)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Symbolic analyses
-~~~~~~~~~~~~~~~~~
+Loop gain (symbolic and numeric)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
