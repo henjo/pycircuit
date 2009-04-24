@@ -2,6 +2,7 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
+from pycircuit.sim import Variable
 from numpy import array, zeros, concatenate, dot, exp, inf, eye
 from pycircuit.utilities.param import Parameter, ParameterDict
 from pycircuit.utilities.misc import indent, inplace_add_selected, \
@@ -164,14 +165,10 @@ class Circuit(object):
         self.ipar = ParameterDict(*self.instparams, **kvargs)
         
         ## Set up ipar expressions
-        ipar_expressions = {}
-        for par in self.ipar.parameters:
-            if par.name in kvargs:
-                ipar_expressions[par.name] = kvargs[par.name]
-            else:
-                ipar_expressions[par.name] = None
-        self.ipar_expressions = ParameterDict(*self.instparams, 
-                                               **ipar_expressions)
+        self.ipar_expressions = ParameterDict(*self.instparams, **kvargs)
+        for par in self.instparams:
+            if par.name not in kvargs:
+                setattr(self.ipar_expressions, par.name, None)
 
         ## Add terminal nodes
         for terminal in self.terminals:
@@ -611,10 +608,12 @@ class Circuit(object):
 
         return sign * x[branchindex]      
 
-    def update_instance_parameters(self, parent_ipar, variables=None):
-        """Calculate numeric values of all instance parameters"""
-    
-        self.ipar = self.ipar_expressions.eval_expressions(parent_ipar)
+    def update_ipar(self, parent_ipar, variables=None):
+        """Calculate numeric values of instance parameters"""
+        substvalues = ((Variable, variables),
+                       (Parameter, parent_ipar))
+        newipar = self.ipar_expressions.eval_expressions(substvalues)
+        self.ipar.update(newipar)
 
     def __repr__(self):
         return self.__class__.__name__ + \
@@ -951,7 +950,14 @@ class SubCircuit(Circuit):
 
             self.elementnodemap[instance_name] = nodemap
             self._rep_nodemap_list[instance_name] = create_index_vectors(nodemap)
-                
+    def update_ipar(self, parent_ipar, variables=None):
+        """Calculate numeric values of instance parameters"""
+        super(SubCircuit, self).update_ipar(parent_ipar, variables)
+        
+        ## Update ipar in elements
+        for element in self.elements.values():
+            element.update_ipar(self.ipar, variables)
+        
     def G(self, x, epar=defaultepar):
         return self._add_element_submatrices('G', x, (epar,))
 
@@ -1035,7 +1041,7 @@ class SubCircuit(Circuit):
     def update(self, subject):
         """This is called when an instance parameter is updated"""
         for element in self.elements.values():
-            element.update_instance_parameters(self.ipar)
+            element.update_ipar(self.ipar)
         
     def _add_element_submatrices(self, methodname, x, args):
         n = self.n

@@ -397,3 +397,25 @@ def test_parameter_propagation():
     assert_equal(a['R1'].ipar.r, 30)
     assert_equal(a['R1'].ipar.noisy, True)
 
+    ## test 2 levels of hierarchy
+    a['I1'] = A(x=Parameter('x'))
+    a['I1']['R1'] = R(1,0, r=Parameter('x') + 20)
+    
+    a.ipar.x = 30
+
+    assert_equal(a['R1'].ipar.r, 40)
+    assert_equal(a['I1']['R1'].ipar.r, 50)
+    
+def test_design_variables():
+    a = SubCircuit()
+    
+    a['R1'] = R(1,0, r=Variable('R')+10)
+    
+    ipars = ParameterDict()
+    variables = ParameterDict(Variable('R'))
+
+    variables.R = 20
+
+    a.update_ipar(ipars, variables)
+
+    assert_equal(a['R1'].ipar.r, 30)
