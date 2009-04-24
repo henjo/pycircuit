@@ -339,8 +339,8 @@ class VCVS(Circuit):
     
     def C(self, x, epar=defaultepar):
         C = super(VCVS, self).C(x)
-        first = self.first_state_node
         if self.ipar.numerator or self.ipar.denominator:
+            first = self.first_state_node
             C[first:first+self.denlen-1, first:first+self.denlen-1] = \
                 -1*eye(self.denlen-1)
         return C
