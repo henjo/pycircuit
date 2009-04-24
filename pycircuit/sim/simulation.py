@@ -2,6 +2,7 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
+from pycircuit.utilities.param import Parameter, ParameterDict
 import types
 
 class Simulation(object):
@@ -15,12 +16,18 @@ class Simulation(object):
 
     def __init__(self, circuit):
         self.circuit = circuit
+
+        ## Init environment parameters
+        self.epar = ParameterDict(Parameter("T", "Temperature", "K"))
         
+        ## Init design variables
+        self.var = ParameterDict()
+
         ## Add run_XXXX methods for each analysis
         def method_factory(analysis_class):
              def func(self, *args, **kvargs):
                 ana = analysis_class(self, *args, **kvargs)
-                return ana.run()
+                return self.run_analysis(ana)
 
              name = 'run_%s'%analysis_class.__name__.lower()
                 
@@ -30,15 +37,24 @@ class Simulation(object):
             name, method = method_factory(analysis_class)
             setattr(self, name, method)
         
-    def add_analysis(self, name, analysis):
-        """Add an analysis"""
-        
+        self.analyses = []
+
+    def clear(self):
+        """Clear analyses"""
+        self.analyses = []
+
+    def add_analysis(self, analysis):
+        """Add an analysis to simulation"""
+        self.analyses.append(analysis)
+
     def run_analysis(self, analysis):
-        """Run an analysis either by name or by analysis object"""
-        pass
+        """Run an analysis by analysis object"""
+        self.clear()
+        self.add_analysis(analysis)
+        return self.run()
     
-    def run_all(self):
-        """Run all stored analyses"""
+    def run(self):
+        """Run all analyses"""
 
 class Circuit(object):
     """Base class for circuits"""
@@ -48,4 +64,8 @@ class Analysis(object):
     def __init__(self, circuit):
         self.cir = circuit
 
+class IParam(Parameter):
+    """Instance parameter"""
 
+class Variable(Parameter):
+    """Design variable"""
