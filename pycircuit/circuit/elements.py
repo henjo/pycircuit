@@ -258,27 +258,18 @@ class VCVS(Circuit):
     def __init__(self, *args, **kvargs):
         Circuit.__init__(self, *args, **kvargs)
         if self.ipar.numerator or self.ipar.denominator:
-            self.first_state_node = len(self.nodes) # store number of nodes
+            self.first_state_node = len(self.nodes) # store number of nodes/states in inital G and C matrix
             if self.ipar.denominator == None:
-                self.ipar.denominator = [0 for state in \
-                                             range(self.ipar.numerator)]
-                self.ipar.denominator.append(1) # this is the dc coefficient
-            if self.ipar.numerator == None:
-                self.ipar.numerator=[]
+                self.ipar.denominator = [0]*len(self.ipar.numerator)+[1]
+            if self.ipar.numerator == None: # Add DC term to numerator if it is not defined
                 if len(self.ipar.denominator) < 3:
-                    self.ipar.numerator.append(1)
+                    self.ipar.numerator = 1
                 else:
-                    self.ipar.numerator = [0 for state in \
-                                               range(len(self.ipar.denominator[:-2]))]
-                self.ipar.numerator.append(1) # this is the b_n coefficient,dc
+                    self.ipar.numerator = [0]*len(self.ipar.denominator[:-2])+[1]
             if len(self.ipar.numerator) < len(self.ipar.denominator[:-1]):
-                a = self.ipar.numerator 
-                for i in range( len(self.ipar.denominator[:-1])-\
-                                    len(self.ipar.numerator)):
-                    a.insert(0, 0) # add zeroes in front
-                    self.ipar.numerator = a
-            if not(len(self.ipar.numerator) < len(self.ipar.denominator)):
-                raise Exception("Number of numerator coefficients, %s, must be at least on fewer than the number of denominator coefficients length, %s, should be string"%str(len(self.ipar.numerator))%str(len(self.ipar.denominator)))          
+                self.ipar.numerator = [0]*(len(self.ipar.denominator[:-1])-len(self.ipar.numerator))+self.ipar.numerator
+            if not(len(self.ipar.numerator) < len(self.ipar.denominator)): # make sure the transfer function is stictly proper. Is this relly neccessary?
+                raise Exception("Number of numerator coefficients, %s, must be at least on fewer than the number of denominator coefficients length, %s, should be string"%str(len(self.ipar.numerator))%str(len(self.ipar.denominator)))
             self.den = array(self.ipar.denominator) / self.ipar.denominator[0]
             self.denlen = len(self.den) 
             self.num = array(self.ipar.numerator) / self.ipar.denominator[0]
@@ -302,7 +293,7 @@ class VCVS(Circuit):
                 first = self.first_state_node
                 # Add denominator coefficiencts
                 G[first:first + self.denlen-1, first] = -self.den[1:]
-                # States
+                # Add states
                 if self.denlen-1==1:
                     G[first+1,first+1] = 1
                 else:
@@ -331,7 +322,7 @@ class VCVS(Circuit):
                 G[first, inpindex] = self.ipar.g
                 G[first, innindex] = -self.ipar.g
                 # Output, all numerator coefficients        
-                G[branchindex, first:first+self.numlen] = self.num                
+                G[branchindex, first:first+self.numlen] = self.num
         else:
             G[branchindex, inpindex] += self.ipar.g
             G[branchindex, innindex] += -self.ipar.g                       
