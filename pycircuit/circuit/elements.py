@@ -109,9 +109,12 @@ class C(Circuit):
     instparams = [Parameter(name='c', desc='Capacitance', 
                             unit='F', default=1e-12)]
 
-    def C(self, x, epar=defaultepar):
-        return array([[self.ipar.c, -self.ipar.c],
-                      [-self.ipar.c, self.ipar.c]])
+    def update(self, subject):
+        c = self.ipar.c
+        self._C =  array([[c, -c],
+                          [-c, c]], dtype=object)
+
+    def C(self, x, epar=defaultepar): return self._C
 
 class L(Circuit):
     """Inductor
