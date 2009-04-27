@@ -318,7 +318,7 @@ class VCVS(Circuit):
         branchindex = -1
         inpindex, innindex, outpindex, outnindex = \
             (self.nodes.index(self.nodenames[name])
-             for name in ('inp', 'inn', 'outp', 'outn'))
+             for name in self.terminals)
         G[outpindex, branchindex] += 1
         G[outnindex, branchindex] += -1
         G[branchindex, outpindex] += -1
