@@ -6,10 +6,11 @@
 """
 
 from nose.tools import *
-from pycircuit.circuit import AC, VS, VSin, R, G, C, L, Nullor, SubCircuit, \
-    gnd, symbolic
+from pycircuit.circuit import *
+from pycircuit.circuit.elements import *
 import numpy as np
 from numpy.testing import assert_array_equal
+from numpy.testing.decorators import slow
 from sympy import var, Symbol, simplify
 import sympy
 
