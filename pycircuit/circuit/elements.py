@@ -30,10 +30,12 @@ class R(Circuit):
                             default=True),
                   ]
 
-    def G(self, x, epar=defaultepar):
+    def update(self, subject):
         g = 1/self.ipar.r
-        return  array([[g, -g],
-                        [-g, g]], dtype=object)
+        self._G = array([[g, -g],
+                         [-g, g]], dtype=object)
+
+    def G(self, x, epar=defaultepar): return self._G
 
     def CY(self, x, w, epar=defaultepar):
         if self.ipar.noisy:
@@ -68,10 +70,12 @@ class G(Circuit):
                             unit='', default=False),
                   ]
 
-    def G(self, x, epar=defaultepar):
+    def update(self, subject):
         g = self.ipar.g
-        return  array([[g, -g],
-                        [-g, g]], dtype=object)
+        self._G = array([[g, -g],
+                         [-g, g]], dtype=object)
+
+    def G(self, x, epar=defaultepar): return self._G
 
     def CY(self, x, w, epar=defaultepar):
         if not self.ipar.nonoise:
@@ -133,13 +137,14 @@ class L(Circuit):
                 [0.0 , 0.0, -1.0],
                 [1.0 , -1.0, 0.0]])
 
-    def G(self, x, epar=defaultepar):
-        return self._G
-    def C(self, x, epar=defaultepar):
+    def update(self, subject):
         n = self.n
         C = zeros((n,n), dtype=object)
         C[-1,-1] = -self.ipar.L
-        return C
+        self._C = C
+
+    def G(self, x, epar=defaultepar): return self._G
+    def C(self, x, epar=defaultepar): return self._C
 
 class VS(Circuit):
     """Independent voltage source
@@ -155,7 +160,7 @@ class VS(Circuit):
     """
     terminals = ('plus', 'minus')
     branches = (Branch(Node('plus'), Node('minus')),)
-    instparams = [Parameter(name='v', desc='Source voltage', 
+    instparams = [Parameter(name='v', desc='Source DC voltage', 
                             unit='V', default=1),
                   Parameter(name='vac', desc='AC analysis amplitude', 
                             unit='V', default=1),

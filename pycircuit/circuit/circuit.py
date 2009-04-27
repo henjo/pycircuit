@@ -177,7 +177,12 @@ class Circuit(object):
         ## Set temporary terminal mapping information for use by instantiation
         ## method in higher hierarchy
         self.terminalhook = dict(zip(self.terminals, args))
-        
+
+        ## Subscribe to updates of instance parameters
+        if hasattr(self, 'update'):
+            self.ipar.attach(self)
+            self.update(self.ipar)
+
     def __eq__(self, a):
         return self.__class__ == a.__class__ and \
             self.nodes == a.nodes and \
@@ -671,14 +676,11 @@ class SubCircuit(Circuit):
 
     """
     def __init__(self, *args, **kvargs):
-        Circuit.__init__(self, *args, **kvargs)
         self.elements = {}
         self.elementnodemap = {}
         self.term_node_map = {}
         self._rep_nodemap_list = {}
-
-        ## Subscribe to updates of instance parameters
-        self.ipar.attach(self)
+        Circuit.__init__(self, *args, **kvargs)
 
     def __eq__(self, a):
         return super(SubCircuit, self).__eq__(a) and \
