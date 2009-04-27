@@ -40,6 +40,9 @@ class Simulation(pycircuit.sim.Simulation):
         if circuit != None:
             self.update_netlist()
 
+    def run_analysis(self, analysis):
+        return analysis.run()
+
     def setup(self):
         session = pexpect.spawn(self.gnucap, timeout=2)
         

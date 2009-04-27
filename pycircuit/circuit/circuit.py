@@ -10,6 +10,9 @@ from pycircuit.utilities.misc import indent, inplace_add_selected, \
 from constants import *
 from copy import copy
 import types
+import numeric
+
+default_toolkit = numeric
 
 class Node(object):
     """A Node object represents a point in an electric circuit"""
@@ -161,6 +164,12 @@ class Circuit(object):
     linear = True
     
     def __init__(self, *args, **kvargs):
+        if 'toolkit' in kvargs:
+            self.toolkit = kvargs['toolkit']
+            del kvargs['toolkit']
+        else:
+            self.toolkit = default_toolkit
+
         self.nodenames = {}
         self.ipar = ParameterDict(*self.instparams, **kvargs)
         
@@ -808,11 +817,19 @@ class SubCircuit(Circuit):
         """
         element = self.elements.pop(instancename)
 
-        othernodes = set([])
+        ## Remove floating terminal nodes and internal nodes
+        othernodes = set(self.terminal_nodes())
         for instance_name, e in self.elements.items():
-            othernodes.update(set(e.non_terminal_nodes(instance_name)))
+            terminal_nodes = set([self.term_node_map[instance_name][term]
+                                  for term in e.terminals])
+            othernodes.update(terminal_nodes)
+        internal_nodes = set(element.non_terminal_nodes(instancename))
+        terminal_nodes = set([self.term_node_map[instancename][term]
+                              for term in element.terminals])
+        floating_terminal_nodes =  terminal_nodes - othernodes
+        removed_nodes = internal_nodes | floating_terminal_nodes
 
-        for node in set(element.non_terminal_nodes(instancename)) - othernodes:
+        for node in removed_nodes:
             self.nodes.remove(node)
             del self.nodenames[node.name] 
 
@@ -1129,7 +1146,9 @@ class ProbeWrapper(SubCircuit):
             ## Re-connect wrapped circuit to internal node
             term_node_map = self.term_node_map['wrapped']
             circuit = self['wrapped']
+            print '<<<',self, self.nodes,'>>>'
             del self['wrapped']
+            print '<<<',self, self.nodes,'>>>'
             term_node_map[terminal] = internal_node
             self.add_instance('wrapped', circuit, **term_node_map)
 

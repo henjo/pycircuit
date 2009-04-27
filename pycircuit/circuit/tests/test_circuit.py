@@ -205,7 +205,7 @@ def test_current_probing():
     cir = create_current_divider(R1,R3,C2)
     
     cir = cir.save_current('I1.plus')
-
+    
     assert cir.get_terminal_branch('I1.plus') != None
     
     res = AC(cir, toolkit=symbolic).solve(s, complexfreq=True)
@@ -419,3 +419,12 @@ def test_design_variables():
     a.update_ipar(ipars, variables)
 
     assert_equal(a['R1'].ipar.r, 30)
+
+def test_replace_element():
+    """Test node list consitency when replacing an element"""
+    c = SubCircuit()
+    c['VS'] = VS(1, gnd)
+    assert_equal(set(c.nodes), set([Node('1'), gnd]))
+    c['VS'] = VS(1, 0)
+    assert_equal(set(c.nodes), set([Node('1'), Node('0')]))
+    

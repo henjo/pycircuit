@@ -9,7 +9,7 @@ The module is based on `numpy <http://numpy.org>`_.
 
 """
 
-from numpy import *
+from numpy import cos, sin, tan, exp, pi, linalg
 
 def linearsolver(*args):
     args = [A.astype('complex') for A in args]

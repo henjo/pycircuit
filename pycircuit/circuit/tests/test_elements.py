@@ -6,11 +6,12 @@
 """
 
 from nose.tools import *
-from pycircuit.circuit import AC, VS, R, G, C, L, Nullor, SubCircuit, gnd, \
-    symbolic
+from pycircuit.circuit import AC, VS, VSin, R, G, C, L, Nullor, SubCircuit, \
+    gnd, symbolic
 import numpy as np
 from numpy.testing import assert_array_equal
 from sympy import var, Symbol, simplify
+import sympy
 
 def test_nullor_vva():
     """Test nullor element by building a V-V amplifier"""
@@ -37,6 +38,16 @@ def test_nullor_vva():
     assert simplify(vout - Vin * (R1 + R2) / R1) == 0, \
         'Did not get the expected result, %s != 0'% \
         str(simplify(vout - Vin * (R1 + R2) / R1))
+
+def test_vsin():
+    var('vo va freq td theta phase t')
+    vsin = VSin(toolkit = symbolic,
+                vo=vo, va=va, freq=freq, td=td, theta=theta, phase=phase)
+
+    v = vo + va*sympy.exp(-theta*(t - td)) * \
+        sympy.sin(2*sympy.pi*freq*(t-td)+phase*sympy.pi/180)
+    assert_array_equal(vsin.u(t), np.array([0,0,-v]))
+           
 
 def gen_stamps():
     var('R1 C1 L1')

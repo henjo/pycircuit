@@ -52,6 +52,9 @@ class Simulation(object):
         self.clear()
         self.add_analysis(analysis)
         return self.run()
+
+    def set_sweep(*sweeps):
+        pass
     
     def run(self):
         """Run all analyses"""
@@ -69,3 +72,12 @@ class IParam(Parameter):
 
 class Variable(Parameter):
     """Design variable"""
+
+class Sweep(object):
+    """Parametric sweep of parameters"""
+    def __init__(self, pardict, parname, iter):
+        self.pardict = pardict
+        self.parname = parname
+        self.iter = iter
+    
+

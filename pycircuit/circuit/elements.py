@@ -3,6 +3,7 @@
 # See LICENSE for details.
 
 from circuit import *
+import func
 
 class R(Circuit):
     """Resistor element
@@ -147,7 +148,7 @@ class L(Circuit):
     def C(self, x, epar=defaultepar): return self._C
 
 class VS(Circuit):
-    """Independent voltage source
+    """Independent DC voltage source
 
     >>> from dcanalysis import DC
     >>> c = SubCircuit()
@@ -167,6 +168,7 @@ class VS(Circuit):
                   Parameter(name='noisePSD', 
                             desc='Voltage noise power spectral density', 
                             unit='V^2/Hz', default=0)]
+    function = func.TimeFunction()
 
     def G(self, x, epar=defaultepar):
         return array([[0 , 0, 1],
@@ -177,7 +179,8 @@ class VS(Circuit):
         if analysis == 'ac':
             return array([0, 0, -self.ipar.vac], dtype=object)
         elif analysis == None:
-            return array([0, 0, -self.ipar.v], dtype=object)
+            v = self.function.f(t)
+            return array([0, 0, -v], dtype=object)
         else:
             return super(VS, self).u(t,epar,analysis)
 
@@ -190,6 +193,31 @@ class VS(Circuit):
     def branch(self):
         """Return the branch (plus, minus)"""
         return self.branches[0]
+
+class VSin(VS):
+    instparams = VS.instparams + [
+        Parameter(name='vo', desc='Offset voltage', 
+                  unit='V', default=0),
+        Parameter(name='va', desc='Offset voltage', 
+                  unit='V', default=0),
+        Parameter(name='freq', desc='Frequency', 
+                  unit='Hz', default=0),
+        Parameter(name='td', desc='Time delay', 
+                  unit='s', default=0),
+        Parameter(name='theta', desc='Damping factor', 
+                  unit='1/s', default=0),
+        Parameter(name='phase', desc='Phase in degrees', 
+                  unit='deg', default=0)]
+    def __init__(self, *args, **kvargs):
+        super(VSin, self).__init__(*args, **kvargs)
+        self.function = func.Sin(self.ipar.vo,
+                                 self.ipar.va,
+                                 self.ipar.freq,
+                                 self.ipar.td,
+                                 self.ipar.theta,
+                                 self.ipar.phase,
+                                 toolkit = self.toolkit
+                                 )
 
 class IS(Circuit):
     """Independent DC current source

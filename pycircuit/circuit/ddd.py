@@ -185,9 +185,7 @@ def DDD_of_matrix(A):
     D0[i,j] = 0
     return DDD(A[i,j],
                D1 = DDD_of_matrix(A.minorMatrix(i,j)),
-               D1 = D1)
-               
-    
+               D0 = D0)    
 
 if __name__ == '__main__':
     from sympy import Symbol
