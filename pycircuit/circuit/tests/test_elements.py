@@ -48,7 +48,6 @@ def test_vsin():
         sympy.sin(2*sympy.pi*freq*(t-td)+phase*sympy.pi/180)
     assert_array_equal(vsin.u(t), np.array([0,0,-v]))
            
-
 def gen_stamps():
     var('R1 C1 L1')
 
