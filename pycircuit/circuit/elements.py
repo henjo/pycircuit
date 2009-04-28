@@ -166,7 +166,7 @@ class VS(Circuit):
     terminals = ('plus', 'minus')
     branches = (Branch(Node('plus'), Node('minus')),)
     instparams = [Parameter(name='v', desc='Source DC voltage', 
-                            unit='V', default=1),
+                            unit='V', default=0),
                   Parameter(name='vac', desc='AC analysis amplitude', 
                             unit='V', default=1),
                   Parameter(name='noisePSD', 
@@ -182,11 +182,9 @@ class VS(Circuit):
     def u(self, t=0.0, epar=defaultepar, analysis=None):
         if analysis == 'ac':
             return self.toolkit.array([0, 0, -self.ipar.vac])
-        elif analysis == None:
+        else:
             v = self.ipar.v + self.function.f(t)
             return self.toolkit.array([0, 0, -v])
-        else:
-            return super(VS, self).u(t,epar,analysis)
 
     def CY(self, x, w, epar=defaultepar):
         CY = super(VS, self).CY(x, w)
