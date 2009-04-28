@@ -12,7 +12,7 @@ class Diode(circuit.Diode, Circuit):
         VD = x[0]-x[1]
         VT = kboltzmann*epar.T / qelectron
         I = self.mpar.IS*(exp(VD/VT)-1.0)
-        return array([I, -I], dtype=object)
+        return self.toolkit.array([I, -I])
 
 if __name__ == "__main__":
     import doctest
