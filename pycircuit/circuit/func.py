@@ -1,4 +1,5 @@
 import numeric
+import sympy
 
 class TimeFunction(object):
     """Time dependent function"""
@@ -26,6 +27,14 @@ class Sin(TimeFunction):
         self.td = td
         self.toolkit = toolkit
     
+    def next_event(self, t):
+        """Return events at peaks and zero-crossings"""
+        
+#        phase = self.toolkit.simplify(self.omega * (t - self.td) + self.phase)
+        phase = self.omega * (t - self.td) + self.phase
+        nextevent_phase = (self.toolkit.floor(phase / (self.toolkit.pi / 2)) + 1) * self.toolkit.pi / 2
+        return t + (nextevent_phase - phase) / self.omega
+        
     def f(self, t):
         toolkit = self.toolkit
         return self.offset + \
@@ -38,11 +47,31 @@ class Pulse(TimeFunction):
             v1, v2, td, tr, tf, pw, per
         self.toolkit = toolkit
 
+    def next_event(self, t):
+        if self.per != 0:
+            tmod = t % self.per
+        else:
+            tmod = t
+        
+        if tmod == 0:
+            return t
+        elif tmod < self.td:
+            return t + self.td - tmod
+        elif tmod < self.td + self.tr:
+            return t + self.td + self.tr - tmod
+        elif tmod < self.td + self.tr + self.pw:
+            return t + self.td + self.tr + self.pw - tmod
+        elif tmod < self.td + self.tr + self.pw + self.tf:
+            return t + self.td + self.tr + self.pw + self.tf - tmod
+        else:
+            return self.toolkit.ceil(t / self.per) * self.per
+
     def f(self, t):
         toolkit = self.toolkit
         
-        t = t % self.per
-
+        if self.per != 0:
+            t = t % self.per
+        
         if t < self.td:
             return self.v1
         elif t < self.td + self.tr:

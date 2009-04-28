@@ -222,6 +222,35 @@ class VSin(VS):
                                  toolkit = self.toolkit
                                  )
 
+class VPulse(VS):
+    instparams = VS.instparams + [
+        Parameter(name='v1', desc='Initial voltage', 
+                  unit='V', default=0),
+        Parameter(name='v2', desc='Pulsed value', 
+                  unit='V', default=0),
+        Parameter(name='td', desc='Delat time', 
+                  unit='s', default=0),
+        Parameter(name='tr', desc='Rise time', 
+                  unit='s', default=0),
+        Parameter(name='tf', desc='Fall time', 
+                  unit='s', default=0),
+        Parameter(name='pw', desc='Pulse width', 
+                  unit='s', default=0),
+        Parameter(name='per', desc='Period', 
+                  unit='s', default=0)]
+
+    def __init__(self, *args, **kvargs):
+        super(VPulse, self).__init__(*args, **kvargs)
+        self.function = func.Pulse(self.ipar.v1,
+                                   self.ipar.v2,
+                                   self.ipar.td,
+                                   self.ipar.tr,
+                                   self.ipar.tf,
+                                   self.ipar.pw,
+                                   self.ipar.per,
+                                   toolkit = self.toolkit
+                                 )
+
 class IS(Circuit):
     """Independent DC current source
 

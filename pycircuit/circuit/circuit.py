@@ -765,6 +765,9 @@ class SubCircuit(Circuit):
         instance to nodes of the circuit
         """
 
+        if instance.toolkit is not self.toolkit:
+            raise ValueError('Instance must use the same toolkit as parent')
+
         if instancename in self.elements:
             del self[instancename]
 

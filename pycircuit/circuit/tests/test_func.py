@@ -18,7 +18,9 @@ def test_timefunction():
         assert f.next_event(0) == toolkit.inf
     
 def test_sin():
-    sympy.var('vo va freq td theta phase t')
+    sympy.var('vo va freq td theta t')
+    phase = sympy.Symbol('phase')
+
     sin = func.Sin(toolkit = symbolic,
                    offset=vo, amplitude=va, freq=freq, td=td, 
                    theta=theta, phase=phase)
@@ -27,6 +29,25 @@ def test_sin():
         sympy.sin(2*sympy.pi*freq*(t-td)+phase*sympy.pi/180)
     assert_equal(sin.f(t), v)
 
+    ## Test next event, phase = 0
+    sin = func.Sin(toolkit = symbolic,
+                   offset=vo, amplitude=va, freq=freq, td=td, 
+                   theta=theta, phase=0)
+    period = 1/freq
+    assert_equal(sin.next_event(period+td), period+td + period/4)
+    assert_equal(sin.next_event(period+td + period / 8), period+td + period/4)
+    assert_equal(sin.next_event(period+td - period / 16), period+td)
+
+    ## Test next event, phase = phase
+    phase = 1
+    sin = func.Sin(toolkit = symbolic,
+                   offset=vo, amplitude=va, freq=freq, td=td, 
+                   theta=theta, phase=phase)
+    period = 1/freq
+    t_nextevent = sin.next_event(period+td + period / 8 - phase*period/360)
+    assert_equal(t_nextevent.expand(),
+                 (period+td + period/4 - phase*period/360).expand())
+    
 def test_pulse():
     t = sympy.Symbol('t')
 
@@ -51,6 +72,15 @@ def test_pulse():
     
     for tstart in 0,per:
         for t in tref:
-            print t
             vref = np.interp(t,tpoints,vpoints)
             assert_almost_equal(pulse.f(t + tstart), vref)
+
+    assert_almost_equal(pulse.next_event(0), 0)
+    assert_almost_equal(pulse.next_event(td/2), td)
+    assert_almost_equal(pulse.next_event(td), td+tr)
+    assert_almost_equal(pulse.next_event(td+tr/2), td+tr)
+    assert_almost_equal(pulse.next_event(td+tr+pw), td+tr+pw+tf)
+    assert_almost_equal(pulse.next_event(td+tr+pw-eps), td+tr+pw)
+    assert_almost_equal(pulse.next_event(td+tr+pw+tf), per)
+    assert_almost_equal(pulse.next_event(td+tr+pw+tf-eps), td+tr+pw+tf)
+    assert_almost_equal(pulse.next_event(per+td/2), per+td)
