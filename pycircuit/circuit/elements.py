@@ -323,6 +323,7 @@ class VCVS(Circuit):
     branches = (Branch(Node('outp'), Node('outn')),)
 
     def __init__(self, *args, **kvargs):
+        self.wait_with_update = False
         Circuit.__init__(self, *args, **kvargs)
         if self.ipar.numerator or self.ipar.denominator:
             self.first_state_node = len(self.nodes) # store number of nodes/states in inital G and C matrix
@@ -343,65 +344,73 @@ class VCVS(Circuit):
             self.numlen = len(self.num)
             newnodes = [Node("_a%d"%state) for state in range(self.denlen-1)]
             self.nodes.extend(newnodes)
+        self.wait_with_update = True
+        self.update(self.ipar)
+
                
-    def G(self, x, epar=defaultepar):
-        G = super(VCVS, self).G(x)
-        branchindex = -1
-        inpindex, innindex, outpindex, outnindex = \
-            (self.nodes.index(self.nodenames[name])
-             for name in self.terminals)
-        G[outpindex, branchindex] += 1
-        G[outnindex, branchindex] += -1
-        G[branchindex, outpindex] += -1
-        G[branchindex, outnindex] += 1
-        if self.ipar.numerator or self.ipar.denominator:
-            if self.ipar.realisation == 'observable':
-                # Observable canonical state space form
-                first = self.first_state_node
-                # Add denominator coefficiencts
-                G[first:first + self.denlen-1, first] = -self.den[1:]
-                # Add states
-                if self.denlen-1==1:
-                    G[first+1,first+1] = 1
+    def update(self, subject):
+        if self.wait_with_update:
+            n = self.n
+            G = self.toolkit.zeros((n,n))
+            branchindex = -1
+            inpindex, innindex, outpindex, outnindex = \
+                (self.nodes.index(self.nodenames[name])
+                 for name in self.terminals)
+            G[outpindex, branchindex] += 1
+            G[outnindex, branchindex] += -1
+            G[branchindex, outpindex] += -1
+            G[branchindex, outnindex] += 1
+            if self.ipar.numerator or self.ipar.denominator:
+                if self.ipar.realisation == 'observable':
+                    # Observable canonical state space form
+                    first = self.first_state_node
+                    # Add denominator coefficiencts
+                    G[first:first + self.denlen-1, first] = -self.den[1:]
+                    # Add states
+                    if self.denlen-1==1:
+                        G[first+1,first+1] = 1
+                    else:
+                        G[first:first+self.denlen-2, first+1:first+1+self.denlen-2] = \
+                            self.toolkit.eye(self.denlen-2)                
+                    # Input and numerator coefficients
+                    G[first:first+self.numlen, inpindex] = self.num*self.ipar.g
+                    G[first:first+self.numlen, innindex] = -self.num*self.ipar.g
+                    # Output                
+                    G[branchindex, first] = 1
                 else:
-                    G[first:first+self.denlen-2, first+1:first+1+self.denlen-2] = \
-                        self.toolkit.eye(self.denlen-2)                
-                # Input and numerator coefficients
-                G[first:first+self.numlen, inpindex] = self.num*self.ipar.g
-                G[first:first+self.numlen, innindex] = -self.num*self.ipar.g
-                # Output                
-                G[branchindex, first] = 1
+                    # Controllable canonical state space form 
+                    first = self.first_state_node
+                    # Add denominator coefficiencts
+                    if self.denlen-1==1:
+                        G[first,first] = -self.den[1]
+                    else:                
+                        G[first, first:first + self.denlen-1 ] = -self.den[1:]
+                    # States
+                    if self.denlen-1==1:
+                        G[first,first+1] = 1
+                    else:
+                        G[first+1:first+1+self.denlen-2, first:first+self.denlen-2] = \
+                            self.toolkit.eye(self.denlen-2)
+                    # Input
+                    G[first, inpindex] = self.ipar.g
+                    G[first, innindex] = -self.ipar.g
+                    # Output, all numerator coefficients        
+                    G[branchindex, first:first+self.numlen] = self.num
             else:
-                # Controllable canonical state space form 
+                G[branchindex, inpindex] += self.ipar.g
+                G[branchindex, innindex] += -self.ipar.g                       
+            self._G = G
+
+            C = self.toolkit.zeros((n,n))
+            if self.ipar.numerator or self.ipar.denominator:
                 first = self.first_state_node
-                # Add denominator coefficiencts
-                if self.denlen-1==1:
-                    G[first,first] = -self.den[1]
-                else:                
-                    G[first, first:first + self.denlen-1 ] = -self.den[1:]
-                # States
-                if self.denlen-1==1:
-                    G[first,first+1] = 1
-                else:
-                    G[first+1:first+1+self.denlen-2, first:first+self.denlen-2] = \
-                        self.toolkit.eye(self.denlen-2)
-                # Input
-                G[first, inpindex] = self.ipar.g
-                G[first, innindex] = -self.ipar.g
-                # Output, all numerator coefficients        
-                G[branchindex, first:first+self.numlen] = self.num
-        else:
-            G[branchindex, inpindex] += self.ipar.g
-            G[branchindex, innindex] += -self.ipar.g                       
-        return G
-    
-    def C(self, x, epar=defaultepar):
-        C = super(VCVS, self).C(x)
-        if self.ipar.numerator or self.ipar.denominator:
-            first = self.first_state_node
-            C[first:first+self.denlen-1, first:first+self.denlen-1] = \
-                -1*self.toolkit.eye(self.denlen-1)
-        return C
+                C[first:first+self.denlen-1, first:first+self.denlen-1] = \
+                    -1*self.toolkit.eye(self.denlen-1)
+            self._C = C
+
+
+    def G(self, x, epar=defaultepar): return self._G
+    def C(self, x, epar=defaultepar): return self._C
 
 class VCCS(Circuit):
     """Voltage controlled current source
