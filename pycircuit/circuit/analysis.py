@@ -289,7 +289,7 @@ class Transient(Analysis):
     0.99
 
     """
-    def solve_timestep(self, x0, dt, refnode=gnd):
+    def solve_timestep(self, x0, t, dt, refnode=gnd):
         n=self.cir.n
         x0 = x0
         dt = dt
@@ -303,7 +303,7 @@ class Transient(Analysis):
             xlast = concatenate((x0[:irefnode], array([0.0]), x0[irefnode:]))
             Geq = self.cir.C(x)/dt
             ueq = -dot(Geq,xlast)
-            f =  self.cir.i(x) + dot(Geq, x) + self.cir.u(x) + ueq
+            f =  self.cir.i(x) + dot(Geq, x) + self.cir.u(t) + ueq
             (f,) = remove_row_col((f,), irefnode)
             return array(f, dtype=float)
         def fprime(x):
@@ -339,7 +339,7 @@ class Transient(Analysis):
         times,dt=np.linspace(0,tend,num=int(tend/dt),endpoint=True,retstep=True)
 
         for t in times:
-            x=self.solve_timestep(X[-1],dt)
+            x=self.solve_timestep(X[-1],t,dt)
             X.append(copy(x))
         self.result = X
         return (x,t) #returns the final value
