@@ -109,9 +109,12 @@ class C(Circuit):
     instparams = [Parameter(name='c', desc='Capacitance', 
                             unit='F', default=1e-12)]
 
-    def C(self, x, epar=defaultepar):
-        return array([[self.ipar.c, -self.ipar.c],
-                      [-self.ipar.c, self.ipar.c]])
+    def update(self, subject):
+        c = self.ipar.c
+        self._C =  array([[c, -c],
+                          [-c, c]], dtype=object)
+
+    def C(self, x, epar=defaultepar): return self._C
 
 class L(Circuit):
     """Inductor
@@ -315,7 +318,7 @@ class VCVS(Circuit):
         branchindex = -1
         inpindex, innindex, outpindex, outnindex = \
             (self.nodes.index(self.nodenames[name])
-             for name in ('inp', 'inn', 'outp', 'outn'))
+             for name in self.terminals)
         G[outpindex, branchindex] += 1
         G[outnindex, branchindex] += -1
         G[branchindex, outpindex] += -1

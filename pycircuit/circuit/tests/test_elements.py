@@ -6,10 +6,11 @@
 """
 
 from nose.tools import *
-from pycircuit.circuit import AC, VS, VSin, R, G, C, L, Nullor, SubCircuit, \
-    gnd, symbolic
+from pycircuit.circuit import *
+from pycircuit.circuit.elements import *
 import numpy as np
 from numpy.testing import assert_array_equal
+from numpy.testing.decorators import slow
 from sympy import var, Symbol, simplify
 import sympy
 
@@ -66,6 +67,88 @@ def test_stamp():
     for cir, G, C in gen_stamps():
         assert_array_equal(cir.G(np.zeros(cir.n)), G)
         assert_array_equal(cir.C(np.zeros(cir.n)), C)
+
+def test_VCVS_laplace_d1():
+    """Test VCCS with a laplace defined transfer function, with on denominator coefficient"""
+    cir = SubCircuit()
+
+    n1,n2 = cir.add_nodes('1','2')
+
+    a0,a1,Gdc = [sympy.Symbol(symname, real=True) for symname in 'a0,a1,Gdc'.split(',')]
+
+    s = sympy.Symbol('s', complex=True)
+
+    cir['VS']   = VS( n1, gnd, vac=1)
+    cir['VCVS'] = VCVS( n1, gnd, n2, gnd, g = Gdc, denominator = [a0, a1, 0])   
+
+    res = AC(cir, toolkit=symbolic).solve(s, complexfreq=True)
+
+    assert_equal(sympy.simplify(res.v(n2,gnd)),-Gdc/(-a0*s*s-a1*s))    
+
+def test_VCVS_laplace_n1_d2():
+    """Test VCCS with a laplace defined transfer function first order denominator and 
+    second order numerator"""
+
+    cir = SubCircuit()
+                 
+
+    n1,n2 = cir.add_nodes('1','2')
+
+    b0,a0,a1,Gdc = [sympy.Symbol(symname, real=True) for symname in 'b0,a0,a1,Gdc'.split(',')]
+
+    s = sympy.Symbol('s', complex=True)
+
+    cir['VS']   = VS( n1, gnd, vac=1)
+    cir['VCVS'] = VCVS( n1, gnd, n2, gnd, g = Gdc, denominator = [a0, a1], numerator = [b0])   
+
+    res = AC(cir, toolkit=symbolic).solve(s, complexfreq=True)
+
+    assert_equal(sympy.simplify(res.v(n2,gnd)),(Gdc*b0)/(a0*s+a1))
+
+@slow
+def test_VCVS_laplace_d3_n1_c():
+    """Test VCCS with a laplace defined transfer function with first order numerator and third order denominator
+    """
+
+    cir = SubCircuit()
+
+    n1,n2 = cir.add_nodes('1','2')
+
+    b0,b1,a0,a1,a2,a3,Gdc = [sympy.Symbol(symname, real=True) for 
+                                symname in 'b0,b1,a0,a1,a2,a3,Gdc'
+                                .split(',')]
+
+    s = sympy.Symbol('s', complex=True)
+
+    cir['VS']   = VS( n1, gnd, vac=1)
+    cir['VCVS'] = VCVS( n1, gnd, n2, gnd, 
+                        g = Gdc, denominator = [a0, a1, a2, a3], 
+                        numerator = [b0, b1])
+
+    res = AC(cir, toolkit=symbolic).solve(s, complexfreq=True)
+
+    assert_equal(sympy.simplify(res.v(n2,gnd)),(Gdc*b0*s+Gdc*b1)/(a0*s*s*s+a1*s*s+a2*s+a3))
+
+@slow
+def test_VCVS_laplace_d4_n2_observable():
+    """Test VCCS with a laplace defined transfer function with first order order numerator and fourth order denominator"""
+    cir = SubCircuit()
+
+    n1,n2 = cir.add_nodes('1','2')
+
+    b0,b1,b2,a0,a1,a2,a3,a4,Gdc = [sympy.Symbol(symname, real=True) for 
+                                      symname in 'b0,b1,b2,a0,a1,a2,a3,a4,Gdc'.split(',')]
+
+    s = sympy.Symbol('s', complex=True)
+
+    cir['VS']   = VS( n1, gnd, vac=1)
+    cir['VCVS'] = VCVS( n1, gnd, n2, gnd, g = Gdc, denominator = [a0, a1, a2, a3, a4], 
+                        numerator = [b0, b1, b2], realisation = 'controlable')
+
+    res = AC(cir, toolkit=symbolic).solve(s, complexfreq=True)
+
+    print(res.v(n2,gnd))
+    assert_equal(sympy.simplify(res.v(n2,gnd)),sympy.simplify((-Gdc*b2-Gdc*b1*s-Gdc*b0*s*s)/(-a0*s*s*s*s-a1*s*s*s-a2*s*s-a3*s-a4)))   
 
 if __name__ == '__main__':
     test_nullor_vva()
