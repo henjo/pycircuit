@@ -4,7 +4,7 @@
 
 import numpy as np
 from nport import *
-from pycircuit.circuit import SubCircuit, gnd, R, VS, IS, Branch
+from pycircuit.circuit import SubCircuit, gnd, R, VS, IS, Branch, circuit
 from analysis import Analysis, AC, Noise, TransimpedanceAnalysis, \
     remove_row_col,defaultepar
 from pycircuit.post.internalresult import InternalResultDict
@@ -46,6 +46,7 @@ class TwoPortAnalysis(Analysis):
     D = i(inp, inn)/i(outp, outn) | vo = 0
 
     >>> import symbolic; from sympy import simplify, Symbol
+    >>> circuit.default_toolkit = symbolic
     >>> c = SubCircuit()
     >>> n1, n2 = c.add_nodes('net1', 'net2')
     >>> c['R1'] = R(n1, n2, r=Symbol('R1',real=True))

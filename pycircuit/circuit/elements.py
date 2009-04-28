@@ -13,15 +13,15 @@ class R(Circuit):
     >>> c['R'] = R(n1, gnd, r=1e3)
     >>> c['R']
     R('plus','minus',r=1000.0,noisy=True)
-    >>> c.G(zeros(2))
-    array([[0.001, -0.001],
-           [-0.001, 0.001]], dtype=object)
+    >>> c.G(np.zeros(2))
+    array([[ 0.001, -0.001],
+           [-0.001,  0.001]])
     >>> c = SubCircuit()
     >>> n2=c.add_node('2')
     >>> c['R'] = R(n1, n2, r=1e3)
-    >>> c.G(zeros(2))
-    array([[0.001, -0.001],
-           [-0.001, 0.001]], dtype=object)
+    >>> c.G(np.zeros(2))
+    array([[ 0.001, -0.001],
+           [-0.001,  0.001]])
 
     """
     terminals = ('plus', 'minus')
@@ -33,8 +33,8 @@ class R(Circuit):
 
     def update(self, subject):
         g = 1/self.ipar.r
-        self._G = array([[g, -g],
-                         [-g, g]], dtype=object)
+        self._G = self.toolkit.array([[g, -g],
+                                      [-g, g]])
 
     def G(self, x, epar=defaultepar): return self._G
 
@@ -47,8 +47,8 @@ class R(Circuit):
         else:
             iPSD = 0
 
-        return  array([[iPSD, -iPSD],
-                       [-iPSD, iPSD]], dtype=object)
+        return  self.toolkit.array([[iPSD, -iPSD],
+                                    [-iPSD, iPSD]])
 
 class G(Circuit):
     """Conductor element
@@ -58,10 +58,9 @@ class G(Circuit):
     >>> c['G'] = G(n1, gnd, g=1e-3)
     >>> c['G']
     G('plus','minus',g=0.001,nonoise=False)
-    >>> c.G(zeros(2))
-    array([[0.001, -0.001],
-           [-0.001, 0.001]], dtype=object)
-
+    >>> c.G(np.zeros(2))
+    array([[ 0.001, -0.001],
+           [-0.001,  0.001]])
     """
     terminals = ('plus', 'minus')
     instparams = [Parameter(name='g', desc='Conductance', unit='S', 
@@ -73,8 +72,8 @@ class G(Circuit):
 
     def update(self, subject):
         g = self.ipar.g
-        self._G = array([[g, -g],
-                         [-g, g]], dtype=object)
+        self._G = self.toolkit.array([[g, -g],
+                                      [-g, g]])
 
     def G(self, x, epar=defaultepar): return self._G
 
@@ -84,8 +83,8 @@ class G(Circuit):
                 iPSD = 4*epar.kT*self.ipar.g
             else:
                 iPSD = 4*kboltzmann*epar.T*self.ipar.g
-            return  array([[iPSD, -iPSD],
-                           [-iPSD, iPSD]], dtype=object)
+            return  self.toolkit.array([[iPSD, -iPSD],
+                                        [-iPSD, iPSD]])
         else:
             return super(G, self).CY(x, w, epar=epar)
         
@@ -96,12 +95,12 @@ class C(Circuit):
     >>> c = SubCircuit()
     >>> n1=c.add_node('1')
     >>> c['C'] = C(n1, gnd, c=1e-12)
-    >>> c.G(zeros(2))
-    array([[0, 0],
-           [0, 0]], dtype=object)
-    >>> c.C(zeros(2))
-    array([[1e-12, -1e-12],
-           [-1e-12, 1e-12]], dtype=object)
+    >>> c.G(np.zeros(2))
+    array([[ 0.,  0.],
+           [ 0.,  0.]])
+    >>> c.C(np.zeros(2))
+    array([[  1.0000e-12,  -1.0000e-12],
+           [ -1.0000e-12,   1.0000e-12]])
 
     """
 
@@ -111,8 +110,8 @@ class C(Circuit):
 
     def update(self, subject):
         c = self.ipar.c
-        self._C =  array([[c, -c],
-                          [-c, c]], dtype=object)
+        self._C =  self.toolkit.array([[c, -c],
+                                       [-c, c]])
 
     def C(self, x, epar=defaultepar): return self._C
 
@@ -122,28 +121,30 @@ class L(Circuit):
     >>> c = SubCircuit()
     >>> n1=c.add_node('1')
     >>> c['L'] = L(n1, gnd, L=1e-9)
-    >>> c.G(zeros(3))
-    array([[0.0, 0.0, 1.0],
-           [0.0, 0.0, -1.0],
-           [1.0, -1.0, 0.0]], dtype=object)
-    >>> c.C(zeros(3))
-    array([[0, 0, 0],
-           [0, 0, 0],
-           [0, 0, -1e-09]], dtype=object)
-    """
+    >>> c.G(np.zeros(3))
+    array([[ 0.,  0.,  1.],
+           [ 0.,  0., -1.],
+           [ 1., -1.,  0.]])
+    >>> c.C(np.zeros(3))
+    array([[  0.0000e+00,   0.0000e+00,   0.0000e+00],
+           [  0.0000e+00,   0.0000e+00,   0.0000e+00],
+           [  0.0000e+00,   0.0000e+00,  -1.0000e-09]])
+   """
     terminals = ('plus', 'minus')
     branches = (Branch(Node('plus'), Node('minus')),)
 
     instparams = [Parameter(name='L', desc='Inductance', 
                             unit='H', default=1e-9)]
 
-    _G = array([[0.0 , 0.0, 1.0],
-                [0.0 , 0.0, -1.0],
-                [1.0 , -1.0, 0.0]])
+    def __init__(self, *args, **kvargs):
+        super(L, self).__init__(*args, **kvargs)
+        self._G = self.toolkit.array([[0.0 , 0.0, 1.0],
+                                      [0.0 , 0.0, -1.0],
+                                      [1.0 , -1.0, 0.0]])
 
     def update(self, subject):
         n = self.n
-        C = zeros((n,n), dtype=object)
+        C = self.toolkit.zeros((n,n))
         C[-1,-1] = -self.ipar.L
         self._C = C
 
@@ -174,16 +175,16 @@ class VS(Circuit):
     function = func.TimeFunction()
 
     def G(self, x, epar=defaultepar):
-        return array([[0 , 0, 1],
-                      [0 , 0, -1],
-                      [1 , -1, 0]], dtype=object)
+        return self.toolkit.array([[0 , 0, 1],
+                                   [0 , 0, -1],
+                                   [1 , -1, 0]])
 
     def u(self, t=0.0, epar=defaultepar, analysis=None):
         if analysis == 'ac':
-            return array([0, 0, -self.ipar.vac], dtype=object)
+            return self.toolkit.array([0, 0, -self.ipar.vac])
         elif analysis == None:
-            v = self.function.f(t)
-            return array([0, 0, -v], dtype=object)
+            v = self.ipar.v + self.function.f(t)
+            return self.toolkit.array([0, 0, -v])
         else:
             return super(VS, self).u(t,epar,analysis)
 
@@ -274,15 +275,15 @@ class IS(Circuit):
 
     def u(self, t=0.0, epar=defaultepar, analysis=None):
         if analysis == None:
-            return array([self.ipar.i, -self.ipar.i])
+            return self.toolkit.array([self.ipar.i, -self.ipar.i])
         elif analysis == 'ac':
-            return array([self.ipar.iac, -self.ipar.iac])
+            return self.toolkit.array([self.ipar.iac, -self.ipar.iac])
         else:
             return super(IS, self).u(t,epar,analysis)
 
     def CY(self, x, w, epar=defaultepar):
-        return  array([[self.ipar.noisePSD, -self.ipar.noisePSD],
-                       [-self.ipar.noisePSD, self.ipar.noisePSD]], dtype=object)
+        return  self.toolkit.array([[self.ipar.noisePSD, -self.ipar.noisePSD],
+                                    [-self.ipar.noisePSD, self.ipar.noisePSD]])
 
 class VCVS(Circuit):
     """Voltage controlled voltage source
@@ -296,12 +297,13 @@ class VCVS(Circuit):
     [Node('1'), Node('2'), Node('gnd', isglobal=True)]
     >>> c.branches
     [Branch(Node('1'),Node('gnd', isglobal=True)), Branch(Node('2'),Node('gnd', isglobal=True))]
-    >>> c['vcvs'].G(zeros(4))
-    array([[0, 0, 0, 0, 0],
-           [0, 0, 0, 0, 0],
-           [0, 0, 0, 0, 1],
-           [0, 0, 0, 0, -1],
-           [2, -2, -1, 1, 0]], dtype=object)
+    >>> c['vcvs'].G(np.zeros(4))
+    array([[ 0.,  0.,  0.,  0.,  0.],
+           [ 0.,  0.,  0.,  0.,  0.],
+           [ 0.,  0.,  0.,  0.,  1.],
+           [ 0.,  0.,  0.,  0., -1.],
+           [ 2., -2., -1.,  1.,  0.]])
+
 
     """
     instparams = [Parameter(name='g', desc='Voltage gain',unit='V/V', 
@@ -335,9 +337,9 @@ class VCVS(Circuit):
                 self.ipar.numerator = [0]*(len(self.ipar.denominator[:-1])-len(self.ipar.numerator))+self.ipar.numerator
             if not(len(self.ipar.numerator) < len(self.ipar.denominator)): # make sure the transfer function is stictly proper. Is this relly neccessary?
                 raise Exception("Number of numerator coefficients, %s, must be at least on fewer than the number of denominator coefficients length, %s, should be string"%str(len(self.ipar.numerator))%str(len(self.ipar.denominator)))
-            self.den = array(self.ipar.denominator) / self.ipar.denominator[0]
+            self.den = np.array(self.ipar.denominator) / self.ipar.denominator[0]
             self.denlen = len(self.den) 
-            self.num = array(self.ipar.numerator) / self.ipar.denominator[0]
+            self.num = np.array(self.ipar.numerator) / self.ipar.denominator[0]
             self.numlen = len(self.num)
             newnodes = [Node("_a%d"%state) for state in range(self.denlen-1)]
             self.nodes.extend(newnodes)
@@ -363,7 +365,7 @@ class VCVS(Circuit):
                     G[first+1,first+1] = 1
                 else:
                     G[first:first+self.denlen-2, first+1:first+1+self.denlen-2] = \
-                        eye(self.denlen-2)                
+                        self.toolkit.eye(self.denlen-2)                
                 # Input and numerator coefficients
                 G[first:first+self.numlen, inpindex] = self.num*self.ipar.g
                 G[first:first+self.numlen, innindex] = -self.num*self.ipar.g
@@ -382,7 +384,7 @@ class VCVS(Circuit):
                     G[first,first+1] = 1
                 else:
                     G[first+1:first+1+self.denlen-2, first:first+self.denlen-2] = \
-                        eye(self.denlen-2)
+                        self.toolkit.eye(self.denlen-2)
                 # Input
                 G[first, inpindex] = self.ipar.g
                 G[first, innindex] = -self.ipar.g
@@ -398,7 +400,7 @@ class VCVS(Circuit):
         if self.ipar.numerator or self.ipar.denominator:
             first = self.first_state_node
             C[first:first+self.denlen-1, first:first+self.denlen-1] = \
-                -1*eye(self.denlen-1)
+                -1*self.toolkit.eye(self.denlen-1)
         return C
 
 class VCCS(Circuit):
@@ -481,12 +483,12 @@ class Transformer(Circuit):
     [Node('inp'), Node('inn'), Node('outp'), Node('outn')]
     >>> c['vcvs'].branches
     (Branch(Node('outp'),Node('outn')),)
-    >>> c['vcvs'].G(zeros(4))
-    array([[0, 0, 0, 0, 2],
-           [0, 0, 0, 0, -2],
-           [0, 0, 0, 0, 1],
-           [0, 0, 0, 0, -1],
-           [-1, 1, 2, -2, 0]], dtype=object)
+    >>> c['vcvs'].G(np.zeros(4))
+    array([[ 0.,  0.,  0.,  0.,  2.],
+           [ 0.,  0.,  0.,  0., -2.],
+           [ 0.,  0.,  0.,  0.,  1.],
+           [ 0.,  0.,  0.,  0., -1.],
+           [-1.,  1.,  2., -2.,  0.]])
 
     """
     instparams = [Parameter(name='n', desc='Winding ratio', unit='', default=1)]
@@ -519,8 +521,8 @@ class Diode(Circuit):
         VD = x[0]-x[1]
         VT = kboltzmann*epar.T / qelectron
         g = self.mpar.IS*exp(VD/VT)/VT
-        return array([[g, -g],
-                      [-g, g]], dtype=object)
+        return self.toolkit.array([[g, -g],
+                                   [-g, g]])
 
     def i(self, x, epar=defaultepar):
         """

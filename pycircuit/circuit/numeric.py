@@ -9,7 +9,8 @@ The module is based on `numpy <http://numpy.org>`_.
 
 """
 
-from numpy import cos, sin, tan, exp, pi, linalg, inf, ceil, floor
+import numpy
+from numpy import cos, sin, tan, exp, pi, linalg, inf, ceil, floor, dot
 
 def linearsolver(*args):
     args = [A.astype('complex') for A in args]
@@ -23,6 +24,9 @@ def det(x):
     return linalg.det(x)
 
 def simplify(x): return x
+
+def zeros(shape, dtype=float): return numpy.zeros(shape, dtype=dtype)
+def array(x, dtype=float): return numpy.array(x, dtype=dtype)
 
 numeric = True
     

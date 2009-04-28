@@ -6,6 +6,7 @@
 """
 
 from nose.tools import *
+import pycircuit.circuit.circuit 
 from pycircuit.circuit.circuit import *
 from pycircuit.circuit.elements import *
 from pycircuit.circuit import AC, symbolic
@@ -41,23 +42,28 @@ def generate_testcircuit():
     return subc
 
 def test_parallel():
+    pycircuit.circuit.circuit.default_toolkit = numeric
+
     cir=SubCircuit()
 
     res = 1e3
     cir['R1'] = R(1, 2, res)
     cir['R2'] = R(1, 2, res)
 
-    G = cir.G(array([0,0]))
+    G = cir.G(np.array([0,0]))
 
-    assert_array_equal(G, array([[2/res, -2/res],
-                                 [-2/res, 2/res]]))
+    assert_array_equal(G, np.array([[2/res, -2/res],
+                                    [-2/res, 2/res]]))
 
 def test_print_element():
+    pycircuit.circuit.circuit.default_toolkit = symbolic
+
     assert_equal(str(C(1, 0, gnd, c=sympy.Symbol('c'))),
                  "C('plus','minus',c=c)")
 
 def test_print_netlist():
     """Test printing of netlist"""
+    pycircuit.circuit.circuit.default_toolkit = numeric
 
     subc = generate_testcircuit()
 
@@ -197,6 +203,7 @@ def create_current_divider(R1,R3,C2):
 
 def test_current_probing():
     """Test current probing with a current divider circuit"""
+    pycircuit.circuit.circuit.default_toolkit = symbolic
     
     s = sympy.Symbol('s')
 
@@ -252,7 +259,7 @@ def test_short_resistor():
 
     cir['R1'] = R(gnd, gnd)
     
-    assert_equal(cir.G(zeros(1)), array([0]))
+    assert_equal(cir.G(np.zeros(1)), np.array([0]))
     
 def test_copy_circuit():
     """Test to make a copy of circuit"""
@@ -265,6 +272,8 @@ def test_copy_circuit():
 
 def test_VCCS_tied():
     """Test VCCS with some nodes tied together"""
+    pycircuit.circuit.circuit.default_toolkit = symbolic
+
     cir = SubCircuit()
 
     n3,n2 = cir.add_nodes('3','2')
@@ -273,13 +282,14 @@ def test_VCCS_tied():
 
     cir['gm'] = VCCS(gnd, n3, n2, n3, gm = gm1)   
     
-    assert_array_equal(cir.G(zeros(cir.n)),
-                       array([[gm1, 0, -gm1],
-                              [-gm1, 0, gm1],
-                              [0, 0, 0]]))
+    assert_array_equal(cir.G(np.zeros(cir.n)),
+                       np.array([[gm1, 0, -gm1],
+                                 [-gm1, 0, gm1],
+                                 [0, 0, 0]]))
 
     
 def test_proxy():
+    pycircuit.circuit.circuit.default_toolkit = symbolic
     
     refcir = generate_testcircuit()
     
@@ -295,14 +305,15 @@ def test_proxy():
     assert_equal(cir.n, refcir.n)
 
     for method in ['G', 'C', 'i', 'q']:
-        assert_array_equal(getattr(cir, method)(zeros(cir.n)),
-                           getattr(refcir, method)(zeros(cir.n)),
+        assert_array_equal(getattr(cir, method)(np.zeros(cir.n)),
+                           getattr(refcir, method)(np.zeros(cir.n)),
                            )
 
-    assert_array_equal(cir.CY(zeros(cir.n),1), refcir.CY(zeros(cir.n),1))
+    assert_array_equal(cir.CY(np.zeros(cir.n),1), refcir.CY(np.zeros(cir.n),1))
 
 def test_parameter_propagation():
     """Test instance parameter value propagation through hierarchy"""
+    pycircuit.circuit.circuit.default_toolkit = symbolic
 
     class A(SubCircuit):
         instparams = [Parameter('x')]
@@ -326,9 +337,9 @@ def test_parameter_propagation():
     assert_equal(a['I1']['R1'].ipar.r, 50)
     
 def test_design_variables():
-    a = SubCircuit()
+    a = SubCircuit(toolkit=symbolic)
     
-    a['R1'] = R(1,0, r=Variable('R')+10)
+    a['R1'] = R(1,0, r=Variable('R')+10, toolkit=symbolic)
     
     ipars = ParameterDict()
     variables = ParameterDict(Variable('R'))

@@ -5,7 +5,7 @@
 from nose.tools import *
 
 import pycircuit.circuit.func as func
-import symbolic, numeric
+from pycircuit.circuit import symbolic, numeric
 import sympy
 import numpy as np
 

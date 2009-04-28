@@ -3,12 +3,12 @@
 # See LICENSE for details.
 
 from pycircuit.sim import Variable
-from numpy import array, zeros, concatenate, dot, exp, inf, eye
 from pycircuit.utilities.param import Parameter, ParameterDict
 from pycircuit.utilities.misc import indent, inplace_add_selected, \
     inplace_add_selected_2d, create_index_vectors
 from constants import *
 from copy import copy
+import numpy as np
 import types
 import numeric
 
@@ -353,11 +353,11 @@ class Circuit(object):
         >>> from elements import *
         >>> cir = R(Node('n1'), gnd, r=1e3)
         >>> newcir = cir.save_current('plus')
-        >>> newcir.G(zeros(4))
-        array([[0, 0, 0, 1],
-               [0, 0.001, -0.001, 0],
-               [0, -0.001, 0.001, -1],
-               [1, 0, -1, 0]], dtype=object)
+        >>> newcir.G(np.zeros(4))
+        array([[ 0.   ,  0.   ,  0.   ,  1.   ],
+               [ 0.   ,  0.001, -0.001,  0.   ],
+               [ 0.   , -0.001,  0.001, -1.   ],
+               [ 1.   ,  0.   , -1.   ,  0.   ]])
         """
         
         if self.get_terminal_branch(terminal) == None:
@@ -394,11 +394,11 @@ class Circuit(object):
 
     def G(self, x, epar=defaultepar):
         """Calculate the G (trans)conductance matrix given the x-vector"""
-        return zeros((self.n, self.n), dtype=object)
+        return self.toolkit.zeros((self.n, self.n))
 
     def C(self, x, epar=defaultepar):
         """Calculate the C (transcapacitance) matrix given the x-vector"""
-        return zeros((self.n, self.n), dtype=object)
+        return self.toolkit.zeros((self.n, self.n))
 
     def u(self, t=0.0, epar=defaultepar, analysis=None):
         """Calculate the u column-vector of the circuit at time t
@@ -413,21 +413,21 @@ class Circuit(object):
                     should be None
         
         """
-        return zeros(self.n, dtype=object)
+        return self.toolkit.zeros(self.n)
 
     def i(self, x, epar=defaultepar):
         """Calculate the i vector as a function of the x-vector
 
         For linear circuits i(x(t)) = G*x
         """
-        return dot(self.G(x), x)
+        return self.toolkit.dot(self.G(x), x)
 
     def q(self, x, epar=defaultepar):
         """Calculate the q vector as a function of the x-vector
 
         For linear circuits q(x(t)) = C*x
         """
-        return dot(self.C(x), x)
+        return self.toolkit.dot(self.C(x), x)
 
     def CY(self, x, w, epar=defaultepar):
         """Calculate the noise sources correlation matrix
@@ -439,7 +439,7 @@ class Circuit(object):
         epar -- (ParameterDict) Environment parameters
 
         """
-        return zeros((self.n, self.n), dtype=object)
+        return self.toolkit.zeros((self.n, self.n))
 
     def next_event(self, t):
         """Returns the time of the next event given the current time t"""
@@ -453,7 +453,7 @@ class Circuit(object):
         >>> n1 = c.add_node('net1')
         >>> c['is'] = IS(gnd, n1, i=1e-3)
         >>> c['R'] = R(n1, gnd, r=1e3)
-        >>> c.name_state_vector(array([[1.0]]))
+        >>> c.name_state_vector(np.array([[1.0]]))
         {'net1': 1.0}
 
         >>> 
@@ -497,11 +497,11 @@ class Circuit(object):
         >>> n1, n2 = c.add_nodes('n1','n2')
         >>> c['R1'] = R(n1, n2, r=1e3)
         >>> c['R2'] = R(n2, gnd, r=1e3)
-        >>> c.extract_v(array([1.0, 0.5, 0.0]), 'n1', 'n2')
+        >>> c.extract_v(np.array([1.0, 0.5, 0.0]), 'n1', 'n2')
         0.5
-        >>> c.extract_v(array([1.0, 0.5, 0.0]), c.nodes[0])
+        >>> c.extract_v(np.array([1.0, 0.5, 0.0]), c.nodes[0])
         1.0
-        >>> c.extract_v(array([1.0, 0.5]), c.nodes[0], refnode_removed = True)
+        >>> c.extract_v(np.array([1.0, 0.5]), c.nodes[0], refnode_removed = True)
         1.0
         
         """
@@ -564,12 +564,14 @@ class Circuit(object):
         >>> c = SubCircuit()
         >>> net1 = c.add_node('net1')
         >>> c['vs'] = VS(net1, gnd)
-        >>> c.extract_i(array([1.0, 0, -1e-3]), 'vs.minus')
+        >>> c.extract_i(np.array([1.0, 0, -1e-3]), 'vs.minus')
         0.001
-        >>> c.extract_i(array([1.0, -1e-3]), 'vs.minus', refnode_removed = True)
+        >>> c.extract_i(np.array([1.0, -1e-3]), 'vs.minus', refnode_removed = True)
         0.001
         
         """
+        dot = self.toolkit.dot
+        
         if type(branch_or_term) is types.StringType:
             ## Calculate current going in to the terminal as
             ## self.i(x)[terminal_node] + u(t) + dq(x)/dt. 
@@ -688,7 +690,7 @@ class SubCircuit(Circuit):
         self.elements = {}
         self.elementnodemap = {}
         self.term_node_map = {}
-        self._rep_nodemap_list = {}
+        self._mapmatrix = {}
         Circuit.__init__(self, *args, **kvargs)
 
     def __eq__(self, a):
@@ -971,7 +973,18 @@ class SubCircuit(Circuit):
                  for branch in element_branches]
 
             self.elementnodemap[instance_name] = nodemap
-            self._rep_nodemap_list[instance_name] = create_index_vectors(nodemap)
+
+            ## Create mapping matrix
+            if len(nodemap) > 0:
+                mapmatrix = self.toolkit.zeros((self.n, len(nodemap)),
+                                               dtype = np.integer)
+            
+                for inst_node_index, node_index in enumerate(nodemap):
+                    mapmatrix[node_index, inst_node_index] = 1
+                self._mapmatrix[instance_name] = mapmatrix
+            else:
+                self._nodemap = None
+
     def update_ipar(self, parent_ipar, variables=None):
         """Calculate numeric values of instance parameters"""
         super(SubCircuit, self).update_ipar(parent_ipar, variables)
@@ -1066,8 +1079,9 @@ class SubCircuit(Circuit):
             element.update_ipar(self.ipar)
         
     def _add_element_submatrices(self, methodname, x, args):
+        dot = self.toolkit.dot
         n = self.n
-        lhs = zeros((n,n), dtype=object)
+        lhs = self.toolkit.zeros((n,n))
 
         for instance, element in self.elements.items():
             nodemap = self.elementnodemap[instance]
@@ -1082,13 +1096,15 @@ class SubCircuit(Circuit):
             else:
                 rhs = getattr(element, methodname)(*args)
                 
-            inplace_add_selected_2d(lhs, self._rep_nodemap_list[instance], rhs)
+            T = self._mapmatrix[instance]
+        
+            lhs += dot(dot(T, rhs), T.T)
 
         return lhs
 
     def _add_element_subvectors(self, methodname, x, args):
         n = self.n
-        lhs = zeros(n, dtype=object)
+        lhs = self.toolkit.zeros(n)
 
         for instance,element in self.elements.items():
             if x != None:
@@ -1097,7 +1113,9 @@ class SubCircuit(Circuit):
             else:
                 rhs = getattr(element, methodname)(*args)
 
-            inplace_add_selected(lhs, self._rep_nodemap_list[instance], rhs)
+            T = self._mapmatrix[instance]
+            
+            lhs += self.toolkit.dot(T, rhs)
 
         return lhs
 
@@ -1149,9 +1167,7 @@ class ProbeWrapper(SubCircuit):
             ## Re-connect wrapped circuit to internal node
             term_node_map = self.term_node_map['wrapped']
             circuit = self['wrapped']
-            print '<<<',self, self.nodes,'>>>'
             del self['wrapped']
-            print '<<<',self, self.nodes,'>>>'
             term_node_map[terminal] = internal_node
             self.add_instance('wrapped', circuit, **term_node_map)
 
@@ -1202,9 +1218,9 @@ class IProbe(Circuit):
                                     self.nodenames['minus']))
 
     def G(self, x, epar=defaultepar):
-        return array([[0 , 0, 1],
-                      [0 , 0, -1],
-                      [1 , -1, 0]], dtype=object)
+        return self.toolkit.array([[0 , 0, 1],
+                                   [0 , 0, -1],
+                                   [1 , -1, 0]])
 
     @property
     def branch(self):

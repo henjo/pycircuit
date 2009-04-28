@@ -12,8 +12,11 @@ The module is based on the python CAS `sympy <http://sympy.org>`_.
 import sympy
 from sympy import cos, sin, tan, exp, pi, simplify, floor
 from sympy import oo as inf, ceiling as ceil
+from numpy import dot, eye
 import numpy as np
+import types
 from pycircuit.utilities.param import Parameter
+
 
 def linearsolver(A, b):
     """Numpy compatible wrapper around sympy.solve_linear_system"""
@@ -36,3 +39,9 @@ def det(x):
 def setup_analysis(epar):
     """Code that is run by analyses using this toolkit"""
     epar.append(Parameter('kT', default=sympy.Symbol('kT', real=True, positive=True)))
+
+def zeros(shape, dtype=object):
+    return np.zeros(shape, dtype=dtype)
+
+def array(x, dtype=object):
+    return np.array(x, dtype=dtype)

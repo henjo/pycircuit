@@ -3,6 +3,7 @@
 # See LICENSE for details.
 
 from nose.tools import *
+import pycircuit.circuit.circuit 
 from pycircuit.circuit import *
 from pycircuit.circuit import symbolic
 import numpy as np
@@ -12,6 +13,7 @@ from test_circuit import create_current_divider
 from sympy import var, simplify, integrate, oo, limit, gruntz, pi
 
 def test_symbolic_ac():
+    pycircuit.circuit.circuit.default_toolkit = symbolic
     cir=SubCircuit()
 
     var('v0 R1 C1 s')
@@ -24,6 +26,7 @@ def test_symbolic_ac():
     assert_equal(simplify(res.v(2,gnd)-v0/(1+s*R1*C1)), 0)
 
 def test_symbolic_noise_vin_vout():
+    pycircuit.circuit.circuit.default_toolkit = symbolic
     c = SubCircuit()
 
     var('R1 R2 kT V', real=True, positive=True)
@@ -41,6 +44,7 @@ def test_symbolic_noise_vin_vout():
     assert_equal(simplify(res['gain'] - R2 / (R1 + R2)), 0)
 
 def test_symbolic_noise_vin_iout():
+    pycircuit.circuit.circuit.default_toolkit = symbolic
     c = SubCircuit()
     
     var('R1 R2 R3 kT V', real=True, positive=True)
@@ -59,6 +63,7 @@ def test_symbolic_noise_vin_iout():
     assert_equal(simplify(res['gain']), 1/R1)
 
 def test_symbolic_noise_iin_vout():
+    pycircuit.circuit.circuit.default_toolkit = symbolic
     c = SubCircuit()
     
     var('R1 R2', real=True)
@@ -78,6 +83,7 @@ def test_symbolic_noise_iin_vout():
 
 
 def test_symbolic_noise_iin_iout():
+    pycircuit.circuit.circuit.default_toolkit = symbolic
     c = SubCircuit()
     
     var('R1 R2 R3', real=True)
@@ -97,6 +103,7 @@ def test_symbolic_noise_iin_iout():
     assert_equal(simplify(res['gain']), 1)
 
 def test_symbolic_noise_kt_over_C():
+    pycircuit.circuit.circuit.default_toolkit = symbolic
     cir = SubCircuit()
 
     var('r c w w1 kT V', real=True, positive=True)

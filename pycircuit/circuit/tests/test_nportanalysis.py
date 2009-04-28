@@ -41,6 +41,7 @@ def test_twoportanalysis_sparam():
                               CAref, decimal=25)
 
 def test_symbolic_twoport():
+    circuit.default_toolkit = symbolic
     cir = SubCircuit()
 
     var('R1 C1 w kT', real=True, positive=True)

@@ -6,6 +6,7 @@
 """
 
 from nose.tools import *
+import pycircuit.circuit.circuit 
 from pycircuit.circuit import *
 from pycircuit.circuit.elements import *
 import numpy as np
@@ -16,7 +17,8 @@ import sympy
 
 def test_nullor_vva():
     """Test nullor element by building a V-V amplifier"""
-    
+    pycircuit.circuit.circuit.default_toolkit = symbolic
+
     c = SubCircuit()
 
     Vin = Symbol('Vin')
@@ -47,7 +49,7 @@ def test_vsin():
 
     v = vo + va*sympy.exp(-theta*(t - td)) * \
         sympy.sin(2*sympy.pi*freq*(t-td)+phase*sympy.pi/180)
-    assert_array_equal(vsin.u(t), np.array([0,0,-v]))
+    assert_array_equal(vsin.u(t), symbolic.array([0,0,-v]))
 
 def test_vpulse():
     t = sympy.Symbol('t')
@@ -74,8 +76,8 @@ def test_vpulse():
     for tstart in 0,per:
         for t in tref:
             uref = np.array([0,0,-np.interp(t,tpoints,vpoints)])
-            assert_array_almost_equal(np.array(pulse.u(t + tstart), dtype=float),
-                                      uref)
+            u = np.array(pulse.u(t + tstart)).astype(float).reshape(3,)
+            assert_array_almost_equal(u, uref)
            
 def gen_stamps():
     var('R1 C1 L1')
@@ -91,6 +93,7 @@ def gen_stamps():
     yield(L(1,gnd, L=L1), GL, CL)
 
 def test_stamp():
+    pycircuit.circuit.circuit.default_toolkit = symbolic
 
     for cir, G, C in gen_stamps():
         assert_array_equal(cir.G(np.zeros(cir.n)), G)
@@ -98,6 +101,8 @@ def test_stamp():
 
 def test_VCVS_laplace_d1():
     """Test VCCS with a laplace defined transfer function, with on denominator coefficient"""
+    pycircuit.circuit.circuit.default_toolkit = symbolic
+
     cir = SubCircuit()
 
     n1,n2 = cir.add_nodes('1','2')
@@ -117,6 +122,7 @@ def test_VCVS_laplace_n1_d2():
     """Test VCCS with a laplace defined transfer function first order denominator and 
     second order numerator"""
 
+    pycircuit.circuit.circuit.default_toolkit = symbolic
     cir = SubCircuit()
                  
 
@@ -138,6 +144,7 @@ def test_VCVS_laplace_d3_n1_c():
     """Test VCCS with a laplace defined transfer function with first order numerator and third order denominator
     """
 
+    pycircuit.circuit.circuit.default_toolkit = symbolic
     cir = SubCircuit()
 
     n1,n2 = cir.add_nodes('1','2')
@@ -160,6 +167,8 @@ def test_VCVS_laplace_d3_n1_c():
 @slow
 def test_VCVS_laplace_d4_n2_observable():
     """Test VCCS with a laplace defined transfer function with first order order numerator and fourth order denominator"""
+    pycircuit.circuit.circuit.default_toolkit = symbolic
+
     cir = SubCircuit()
 
     n1,n2 = cir.add_nodes('1','2')

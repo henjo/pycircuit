@@ -43,9 +43,11 @@ class NPort(object):
         >>> import sympy as S
         >>> a,b,c,d = S.symbols('abcd')
         >>> A = NPortA(np.array([[a,b], [c,d]]))
-        >>> (A // A).A
-        array([[a, 0.5*b],
-           [-2c, d]], dtype=object)
+        >>> A = S.Matrix((A // A).A)
+        >>> A.simplify()
+        >>> A
+        [    a, 0.5*b]
+        [2.0*c,     d]
 
         """
         ynport = NPortY(self.Y + a.Y, self.CY + a.CY)
@@ -57,9 +59,10 @@ class NPort(object):
         >>> import sympy as S
         >>> a,b,c,d = S.symbols('abcd')
         >>> A = NPortA(np.array([[a,b], [c,d]]))
-        >>> A.series(A).A
-        [[ a 2*b]
-         [ c/2 d]]
+        >>> A = S.Matrix(A.series(A).A)
+        >>> A.expand()
+        [    a, 2*b]
+        [0.5*c,   d]
         
         """
         znport = NPortZ(self.Z + a.Z, self.CZ + a.CZ)
@@ -310,7 +313,7 @@ class NPortS(NPort):
         >>> S = np.array([[0.1,0.3],[0.5,0.6]])
         >>> NPortS(S).A
         array([[0.59, 80.5],
-               [0.0, 1.59]], dtype=object)
+               [0.0042, 1.59]], dtype=object)
 
         """
         s = self.S

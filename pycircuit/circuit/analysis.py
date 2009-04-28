@@ -8,7 +8,8 @@ from numpy import array, delete, linalg, size, zeros, concatenate, pi, \
     zeros, alltrue, maximum, conj, dot, imag, eye
 from scipy import optimize
 from pycircuit.circuit import Circuit, SubCircuit, VS,IS,R,C,L,Diode, gnd, \
-    defaultepar, instjoin
+    defaultepar, instjoin, circuit
+import pycircuit.circuit.circuit
 import symbolic
 from pycircuit.post.waveform import Waveform
 from pycircuit.post.result import IVResultDict
@@ -350,6 +351,7 @@ class AC(Analysis):
 
     Examples:
     
+    >>> circuit.default_toolkit = symbolic
     >>> from sympy import Symbol, simplify
     >>> c = SubCircuit()
     >>> n1 = c.add_node('net1')
@@ -361,6 +363,7 @@ class AC(Analysis):
     >>> res['i0']
     -V/R
 
+    >>> circuit.default_toolkit = numeric
     >>> c = SubCircuit()
     >>> n1 = c.add_node('net1')
     >>> c['vs'] = VS(n1, gnd, vac=1.5)
@@ -497,6 +500,7 @@ class Noise(Analysis):
     
     Example, calculate input referred noise of a voltage divider:
 
+    >>> circuit.default_toolkit = numeric
     >>> c = SubCircuit()
     >>> n1 = c.add_node('net1')
     >>> n2 = c.add_node('net2')
@@ -513,6 +517,7 @@ class Noise(Analysis):
     
     Symbolic example:
     
+    >>> circuit.default_toolkit = symbolic
     >>> from sympy import Symbol, simplify
     >>> c = SubCircuit()
     >>> kT = Symbol('kT')
