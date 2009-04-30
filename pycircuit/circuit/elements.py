@@ -429,8 +429,9 @@ class VCCS(Circuit):
     instparams = [Parameter(name='gm', desc='Transconductance', 
                             unit='A/V', default=1e-3)]
     
-    def G(self, x, epar=defaultepar):
-        G = super(VCCS, self).G(x)
+    def update(self, subject):
+        n = self.n
+        G = self.toolkit.zeros((n,n))
         gm=self.ipar.gm
         inpindex, innindex, outpindex, outnindex = \
             (self.nodes.index(self.nodenames[name]) 
@@ -439,7 +440,9 @@ class VCCS(Circuit):
         G[outpindex, innindex] += -gm
         G[outnindex, inpindex] += -gm
         G[outnindex, innindex] += gm
-        return G
+        self._G = G
+
+    def G(self, x, epar=defaultepar): return self._G
 
 class Nullor(Circuit):
     """Nullor
