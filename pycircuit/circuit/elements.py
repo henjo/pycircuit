@@ -174,10 +174,12 @@ class VS(Circuit):
                             unit='V^2/Hz', default=0)]
     function = func.TimeFunction()
 
-    def G(self, x, epar=defaultepar):
-        return self.toolkit.array([[0 , 0, 1],
-                                   [0 , 0, -1],
-                                   [1 , -1, 0]])
+    def update(self, subject):
+        self._G = self.toolkit.array([[0 ,  0,  1],
+                                      [0 ,  0, -1],
+                                      [1 , -1,  0]])
+
+    def G(self, x, epar=defaultepar): return self._G 
 
     def u(self, t=0.0, epar=defaultepar, analysis=None):
         if analysis == 'ac':
