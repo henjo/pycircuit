@@ -174,10 +174,12 @@ class VS(Circuit):
                             unit='V^2/Hz', default=0)]
     function = func.TimeFunction()
 
-    def G(self, x, epar=defaultepar):
-        return self.toolkit.array([[0 , 0, 1],
-                                   [0 , 0, -1],
-                                   [1 , -1, 0]])
+    def update(self, subject):
+        self._G = self.toolkit.array([[0 ,  0,  1],
+                                      [0 ,  0, -1],
+                                      [1 , -1,  0]])
+
+    def G(self, x, epar=defaultepar): return self._G 
 
     def u(self, t=0.0, epar=defaultepar, analysis=None):
         if analysis == 'ac':
@@ -427,8 +429,9 @@ class VCCS(Circuit):
     instparams = [Parameter(name='gm', desc='Transconductance', 
                             unit='A/V', default=1e-3)]
     
-    def G(self, x, epar=defaultepar):
-        G = super(VCCS, self).G(x)
+    def update(self, subject):
+        n = self.n
+        G = self.toolkit.zeros((n,n))
         gm=self.ipar.gm
         inpindex, innindex, outpindex, outnindex = \
             (self.nodes.index(self.nodenames[name]) 
@@ -437,7 +440,9 @@ class VCCS(Circuit):
         G[outpindex, innindex] += -gm
         G[outnindex, inpindex] += -gm
         G[outnindex, innindex] += gm
-        return G
+        self._G = G
+
+    def G(self, x, epar=defaultepar): return self._G
 
 class Nullor(Circuit):
     """Nullor
@@ -464,8 +469,9 @@ class Nullor(Circuit):
     terminals = ('inp', 'inn', 'outp', 'outn')
     branches = (Branch(Node('outp'), Node('outn')),)
 
-    def G(self, x, epar=defaultepar):
-        G = super(Nullor, self).G(x)
+    def update(self, subject):
+        n = self.n
+        G = self.toolkit.zeros((n,n))
         branchindex = -1
         inpindex, innindex, outpindex, outnindex = \
             (self.nodes.index(self.nodenames[name]) 
@@ -475,8 +481,9 @@ class Nullor(Circuit):
         G[outnindex, branchindex] += -1
         G[branchindex, inpindex] += 1
         G[branchindex, innindex] += -1
-        return G
+        self._G = G
 
+    def G(self, x, epar=defaultepar): return self._G
 
 class Transformer(Circuit):
     """Ideal transformer
@@ -502,8 +509,9 @@ class Transformer(Circuit):
     terminals = ('inp', 'inn', 'outp', 'outn')
     branches = (Branch(Node('outp'), Node('outn')),)
 
-    def G(self, x, epar=defaultepar):
-        G = super(Transformer, self).G(x)
+    def update(self, subject):
+        n = self.n
+        G = self.toolkit.zeros((n,n))
         branchindex = -1
         inpindex, innindex, outpindex, outnindex = \
             (self.nodes.index(self.nodenames[name]) 
@@ -516,7 +524,8 @@ class Transformer(Circuit):
         G[branchindex, outnindex] += -self.ipar.n
         G[branchindex, inpindex] += -1
         G[branchindex, innindex] += 1
-        return G
+
+    def G(self, x, epar=defaultepar): return self._G
 
 class Diode(Circuit):
     terminals = ('plus', 'minus')
