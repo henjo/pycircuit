@@ -1,0 +1,18 @@
+This is a preliminary gnucap python extension that allows the user to
+run gnucap commands from python. 
+
+
+Installation
+------------
+
+.. code-block:: sh
+
+   $ sudo python setup.py install
+
+Example
+-------
+
+.. code-block:: python
+        >>> import gnucap
+        >>> gnucap.command("list")
+
