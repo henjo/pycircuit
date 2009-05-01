@@ -524,6 +524,7 @@ class Transformer(Circuit):
         G[branchindex, outnindex] += -self.ipar.n
         G[branchindex, inpindex] += -1
         G[branchindex, innindex] += 1
+        self._G = G
 
     def G(self, x, epar=defaultepar): return self._G
 
