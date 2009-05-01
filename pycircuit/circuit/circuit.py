@@ -798,7 +798,7 @@ class SubCircuit(Circuit):
         newbranches = self._instance_branches(instance, instancename)
         self.append_branches(*newbranches)
 
-        ## Update circuit node - instance node map
+        ## Update circuit node - instance map
         self.update_node_map()
 
     def __setitem__(self, instancename, element):

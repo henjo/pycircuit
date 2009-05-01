@@ -72,7 +72,7 @@ def test_print_netlist():
     
     refnetlist = \
 """.subckt MySubC p m
-  V1 internal gnd! VS v=1 vac=1 noisePSD=0
+  V1 internal gnd! VS v=0 vac=1 noisePSD=0
   R1 p internal R r=1000.0 noisy=True
   R2 internal m R r=1000.0 noisy=True
   R3 internal gnd! R r=1000.0 noisy=True
