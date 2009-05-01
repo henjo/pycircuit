@@ -1,6 +1,12 @@
 This is a preliminary gnucap python extension that allows the user to
 run gnucap commands from python. 
 
+Requirements
+------------
+
+You have to installed the modified version of gnucap that is compiled as a
+shared library. You can download it from the git repo at
+http://github.com/henjo/gnucap.
 
 Installation
 ------------
