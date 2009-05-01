@@ -53,7 +53,7 @@ def test_vpulse():
             assert_array_almost_equal(u, uref)
            
 def gen_stamps():
-    var('R1 C1 L1')
+    var('R1 C1 L1 gain gm N')
 
     yield(R(1,gnd, r=R1), 1/R1 * np.array([[1, -1], [-1, 1]]), np.zeros((2,2)))
     yield(G(1,gnd, g=1/R1), 1/R1 * np.array([[1, -1], [-1, 1]]), 
@@ -65,9 +65,37 @@ def gen_stamps():
     CL[2,2] = -L1
     yield(L(1,gnd, L=L1), GL, CL)
 
+    GVCVS = np.array([[0,       0, 0,0, 0],
+                      [0,       0, 0,0, 0],
+                      [0,       0, 0,0, 1], 
+                      [0,       0, 0,0,-1], 
+                      [gain,-gain,-1,1, 0]])
+    CVCVS = np.zeros((5,5))
+    yield(VCVS(1, gnd, 2, gnd, g=gain),GVCVS,CVCVS )
+    GVCCS = np.zeros((4,4))
+    GVCCS[2:4,0:2] =  np.array([[1, -1],[-1, 1]])
+    yield(VCCS(1, gnd, 2, gnd, gm = gm), gm *GVCCS,
+          np.zeros((4,4)))
+    GNullor = np.array([[0,0,0, 0, 0],
+                        [0,0,0, 0, 0],
+                        [0,0,0, 0, 1], 
+                        [0,0,0, 0,-1], 
+                        [1,-1,0,0, 0]])
+    yield(Nullor(1, gnd, 2, gnd), GNullor, np.zeros((5,5)))
+    GTransformer = np.array([[0,0,0, 0,  N],
+                             [0,0,0, 0, -N],
+                             [0,0,0, 0, 1], 
+                             [0,0,0, 0,-1], 
+                             [1,-1,N,-N, 0]])
+    yield(Transformer(1, gnd, 2, gnd, n = N), np.array([[0, 0,0, 0, N],
+                                                        [0, 0,0, 0,-N],
+                                                        [0, 0,0, 0, 1], 
+                                                        [0, 0,0, 0,-1], 
+                                                        [-1,1,N,-N, 0]]), np.zeros((5,5)))
+
 def test_stamp():
     pycircuit.circuit.circuit.default_toolkit = symbolic
-
+    
     for cir, G, C in gen_stamps():
         assert_array_equal(cir.G(np.zeros(cir.n)), G)
         assert_array_equal(cir.C(np.zeros(cir.n)), C)
