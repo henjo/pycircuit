@@ -1,4 +1,4 @@
-Example 4
+Example 3
 ----------
 
 Simple example - VCCS with resistor load 
@@ -10,11 +10,12 @@ Find symbolic expression of transfer function from input voltage to output volta
 .. sympy::
      :persistent:
 
-
     import numpy, pylab
     from pycircuit.circuit import *
     from pycircuit.post.functions import *
     from sympy import Symbol, simplify, ratsimp, sympify, factor, limit, solve, pprint, fraction, collect    
+
+    pycircuit.circuit.circuit.default_toolkit = symbolic
 
     ## Create circuit
     cir = SubCircuit()
@@ -25,7 +26,6 @@ Find symbolic expression of transfer function from input voltage to output volta
     cir['VS'] = VS(n1, gnd, v=1)
     cir['R1'] = R(n2, gnd, r = R1)
     cir['VCCS'] = VCCS(n1, gnd, n2, gnd,gm=gm)
-
 
     ## Run symbolic AC analysis     
     ac = AC(cir, toolkit=symbolic)

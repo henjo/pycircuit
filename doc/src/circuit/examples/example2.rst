@@ -10,19 +10,19 @@ Find symbolic expression of transfer function from Is to V(3,0):
 .. sympy::
      :persistent:
 
-
     from pycircuit.circuit import *
     from sympy import symbols, simplify, ratsimp, sympify, factor, limit, solve, pprint, fraction, collect    
 
-    ## Create circuit
-    cir = SubCircuit()
+    circuit.default_toolkit = symbolic
 
-    R1,R2,R3,C1,C2,i_s = symbols('R1 R2 R3 C1 C2 is', real=True)
+    var('R1 R2 R3 C1 C2 i_s')
     s = Symbol('s', complex = True)   
 
-    cir['R3'] = R(1, gnd, r = R3)
-    cir['R2'] = R(1, 2, r = R2)
+    ## Create circuit
+    cir = SubCircuit()
     cir['R1'] = R(1, 3, r = R1)
+    cir['R2'] = R(1, 2, r = R2)
+    cir['R3'] = R(1, gnd, r = R3)
     cir['C1'] = C(1, gnd, c = C1)
     cir['C2'] = C(2, 3, c = C2)
     cir['Nullor'] = Nullor(2, gnd, 3, gnd)
