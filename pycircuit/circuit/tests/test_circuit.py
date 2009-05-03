@@ -386,7 +386,6 @@ def test_nullor_vva():
         'Did not get the expected result, %s != 0'% \
         str(simplify(vout - Vin * (R1 + R2) / R1))
 
-
 def test_VCVS_laplace_d1():
     """Test VCCS with a laplace defined transfer function, with on denominator coefficient"""
     pycircuit.circuit.circuit.default_toolkit = symbolic
