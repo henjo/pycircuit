@@ -528,6 +528,44 @@ class Transformer(Circuit):
 
     def G(self, x, epar=defaultepar): return self._G
 
+class Gyrator(Circuit):
+    """Gyrator
+
+    >>> c = SubCircuit()
+    >>> n1=c.add_node('1')
+    >>> c['Gyrator'] = Gyrator(n1, gnd, gm=1)
+    >>> c.G(np.zeros(4))
+    array([[  0.,   0.,  1., -1.],
+           [  0.,   0., -1.,  1.],
+           [ -1.,   1.,  0.,  0.],
+           [  1.,  -1.,  0.,  0.]])
+   """
+
+    terminals = ('inp', 'inn', 'outp', 'outn')
+    instparams = [Parameter(name='gm', desc='Transconductance', 
+                            unit='A/V', default=1e-3)]
+    
+    def update(self, subject):
+        n = self.n
+        G = self.toolkit.zeros((n,n))
+        gm=self.ipar.gm
+        inpindex, innindex, outpindex, outnindex = \
+            (self.nodes.index(self.nodenames[name]) 
+             for name in ('inp', 'inn', 'outp', 'outn'))
+        # 
+        G[outpindex, inpindex] +=  gm
+        G[outpindex, innindex] += -gm
+        G[outnindex, inpindex] += -gm
+        G[outnindex, innindex] +=  gm
+        #        
+        G[inpindex,  outpindex] += -gm
+        G[innindex,  outpindex] +=  gm
+        G[inpindex,  outnindex] +=  gm
+        G[innindex,  outnindex] += -gm
+        self._G = G
+        
+    def G(self, x, epar=defaultepar): return self._G
+
 class Diode(Circuit):
     terminals = ('plus', 'minus')
     mpar = Circuit.mpar.copy( 

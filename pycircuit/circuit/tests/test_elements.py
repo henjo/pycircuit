@@ -94,6 +94,13 @@ def gen_stamps():
                              [-1,1,N,-N, 0]])
     yield(Transformer(1, gnd, 2, gnd, n = N), GTransformer, np.zeros((5,5)))
 
+    GGyrator = array([[  0.,  0.,  -gm,  gm],
+                      [  0.,  0.,   gm, -gm],
+                      [  gm, -gm,   0.,  0.],
+                      [ -gm,  gm,   0.,  0.]])
+    yield(Gyrator(1, gnd, 2, gnd, gm = gm), GGyrator, np.zeros((4,4)))
+
+
 def test_stamp():
     pycircuit.circuit.circuit.default_toolkit = symbolic
     
