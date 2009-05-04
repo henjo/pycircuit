@@ -90,7 +90,10 @@ class Analysis(object):
         self.options = ParameterDict(*self.parameters, **kvargs)
 
         if toolkit == None:
-            toolkit = numeric
+            if cir.toolkit == None:
+                toolkit = numeric
+            else:
+                toolkit = cir.toolkit
 
         self.toolkit = toolkit
 

@@ -8,7 +8,7 @@ Test n-port module
 """
 
 from pycircuit.circuit.constants import *
-from pycircuit.circuit import SubCircuit, R, gnd
+from pycircuit.circuit import SubCircuit, R, gnd, circuit, numeric
 from pycircuit.circuit.nport import NPort, NPortY, NPortZ, NPortA, NPortS
 
 from math import sqrt
@@ -27,6 +27,7 @@ T = 290
 R1, R3 = 3., 3.
 R2 = 433.
 
+circuit.default_toolkit = numeric
 cir = SubCircuit()
 nin,n1,nout = cir.add_nodes('nin','n1','nout')
 cir['R1'] = R(nin,n1,r=R1)

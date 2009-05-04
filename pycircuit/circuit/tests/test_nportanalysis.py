@@ -28,7 +28,6 @@ def test_twoportanalysis():
     assert_array_almost_equal(result['twoport'].A.astype(float), Aref)
 
 def test_twoportanalysis_sparam():
-
     ana = TwoPortAnalysis(cir, nin, gnd, nout, gnd, method = 'sparam')
     ana.epar.T = T
 
