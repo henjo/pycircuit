@@ -73,3 +73,13 @@ C matrix:
     :persistent:
 
     cir.C(np.zeros(cir.n))
+
+G matrix again:
+
+.. sympy::
+    :persistent:
+
+    del cir['Gyrator']
+    n3, n4 = cir.add_nodes('3', '4')
+    cir['Gyrator'] = Gyrator(n1, n2, n3, n4, gm = gm1)
+    cir.G(np.zeros(cir.n))
