@@ -18,8 +18,6 @@ from copy import copy
 import numeric
 import types
 
-
-
 np.set_printoptions(precision=4)
 
 class NoConvergenceError(Exception):
@@ -30,49 +28,59 @@ class SingularMatrix(Exception):
 
 class CircuitResult(IVResultDict, InternalResultDict):
     """Result class for analyses that returns voltages and currents"""
-    def __init__(self, circuit, x, xdot = None):
+    def __init__(self, circuit, x, xdot = None, 
+                 sweep_values=[], sweep_label='', sweep_unit=''):
         super(CircuitResult, self).__init__()
 
         nodes = circuit.nodes
 
-        if x != None:
-            for xvalue, node in zip(x[:len(nodes)], nodes):
-                self[circuit.get_node_name(node)] =  xvalue
-            for i, data in enumerate(zip(x[len(nodes):], circuit.branches)):
-                xvalue, branch = data
-                self['i' + str(i)] = xvalue
-
         self.circuit = circuit
         self.x = x
         self.xdot = xdot
+        self.sweep_values = sweep_values
+        self.sweep_label = sweep_label
+        self.sweep_unit = sweep_unit
+
+    def build_waveform(self, result, ylabel, yunit):
+        if hasattr(result, '__iter__'):
+            return Waveform(self.sweep_values, result,
+                            ylabel = ylabel, yunit = 'V', 
+                            xlabels = (self.sweep_label,), 
+                            xunits=(self.sweep_unit,))
+        else:
+            return result
 
     def v(self, plus, minus=None):
         result = self.circuit.extract_v(self.x, plus, minus)
 
-        if isinstance(result, Waveform):
-            if minus != None:
-                result.ylabel = 'v(%s,%s)'%(str(plus), str(minus))
-            else:
-                result.ylabel = 'v(%s)'%(str(plus))
-            result.yunit = 'V'
+        if minus != None:
+            ylabel = 'v(%s,%s)'%(str(plus), str(minus))
+        else:
+            ylabel = 'v(%s)'%(str(plus))
 
-        return result
+        return self.build_waveform(result, ylabel, 'V')
 
     def i(self, term):
         """Return terminal current i(term)"""
-        return self.circuit.extract_i(self.x, term, xdot = self.xdot)    
+        result = self.circuit.extract_i(self.x, term, xdot = self.xdot)    
+        return self.build_waveform(result, 'i(%s)'%(str(term)), 'A')
 
 class CircuitResultAC(CircuitResult):
     """Result class for analyses that returns voltages and currents"""
-    def __init__(self, circuit, xdcop, x, xdot = None):
-        super(CircuitResultAC, self).__init__(circuit, x, xdot)
+    def __init__(self, circuit, xdcop, x, xdot = None,
+                 sweep_values=[], sweep_label='', sweep_unit=''):
+        super(CircuitResultAC, self).__init__(circuit, x, xdot,
+                                              sweep_values=sweep_values,
+                                              sweep_label=sweep_label,
+                                              sweep_unit=sweep_unit)
         self.xdcop = xdcop
 
     def i(self, term):
         """Return terminal current i(term)"""
-        return self.circuit.extract_i(self.x, term, xdot = self.xdot, 
-                                      linearized=True, 
-                                      xdcop = self.xdcop)    
+        result = self.circuit.extract_i(self.x, term, xdot = self.xdot, 
+                                        linearized=True, 
+                                        xdcop = self.xdcop)
+        return self.build_waveform(result, 'i(%s)'%(str(term)), 'A')
 
 def remove_row_col(matrices, n):
     result = []
@@ -105,8 +113,7 @@ class Analysis(object):
         self.result = None
         self.epar = epar
 
-## Had to copy this from dcanalysis.py to solve dependency issue
-def fsolve(f, x0, fprime=None, args=(), full_output=False, maxiter=200,
+def fsolve(f, x0, args=(), full_output=False, maxiter=200,
            xtol=1e-6, reltol=1e-4, abstol=1e-12):
     """Solve a multidimensional non-linear equation with Newton-Raphson's method
 
@@ -121,8 +128,7 @@ def fsolve(f, x0, fprime=None, args=(), full_output=False, maxiter=200,
     converged = False
     ier = 2
     for i in xrange(maxiter):
-        J = fprime(x0, *args) # TODO: Make sure J is never 0, e.g. by gmin (stepping)
-        F = f(x0, *args)
+        F, J = f(x0, *args) # TODO: Make sure J is never 0, e.g. by gmin (stepping)
         xdiff = linalg.solve(J, -F)# TODO: Limit xdiff to improve convergence
 
         x = x0 + xdiff
@@ -171,6 +177,7 @@ class Tran_spec(Analysis):
     (G+Geq)*x(n) + u + ueq
 
     Linear circuit example:
+    >>> circuit.default_toolkit = numeric
     >>> c = SubCircuit()
     >>> n1 = c.add_node('net1')
     >>> n2 = c.add_node('net2')
@@ -181,7 +188,7 @@ class Tran_spec(Analysis):
     >>> c['C'] = C(n2, gnd, c=1e-5)
     >>> tran = Tran_spec(c)
     >>> res = tran.solve(tend=1e-3,timestep=1e-4)
-    >>> tran.result[-1][1] #node 2 of last x
+    >>> res.v(n2,gnd)[-1] #node 2 of last x
     6.3
 
     Linear circuit example:
@@ -193,7 +200,7 @@ class Tran_spec(Analysis):
     >>> c['L'] = L(n1, gnd, L=1e-3)
     >>> tran = Tran_spec(c)
     >>> res = tran.solve(tend=150e-6,timestep=1e-6)
-    >>> tran.result[-1][0]
+    >>> res.v(n1, gnd)[-1]
     0.99
 
     """
@@ -240,8 +247,15 @@ class Tran_spec(Analysis):
             x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
 #            print(x,t)
             X.append(copy(x))
-        self.result = X
-        return x #returns the final value
+
+        X = self.toolkit.array(X[1:]).T
+
+        self.result = CircuitResult(self.cir, x=X, xdot=None,
+                                    sweep_values=times, 
+                                    sweep_label='time', 
+                                    sweep_unit='s')
+
+        return self.result
 
 class Transient(Analysis):
     """Simple transient analyis class.
@@ -261,12 +275,12 @@ class Transient(Analysis):
     i(n+1) = c/dt*(v(n+1) - v(n)) = geq*v(n+1) + Ieq
     v(n+1) = L/dt*(i(n+1) - i(n)) = req*i(n+1) + Veq
 
-    def J(x): return G(x)+Geq(x)
-    def F(x): return i(x)+Geq(x)*x+u(x)+ueq(x0)
+    def F(x): return i(x)+Geq(x)*x+u(x)+ueq(x0), G(x)+Geq(x)
     x0=x(n)
     x(n+1) = fsolve(F, x0, fprime=J)
 
     Linear circuit example:
+    >>> circuit.default_toolkit = numeric
     >>> c = SubCircuit()
     >>> n1 = c.add_node('net1')
     >>> n2 = c.add_node('net2')
@@ -277,7 +291,7 @@ class Transient(Analysis):
     >>> c['C'] = C(n2, gnd, c=1e-5)
     >>> tran = Transient(c)
     >>> res = tran.solve(tend=10e-3,timestep=1e-4)
-    >>> tran.result[-1][1] #node 2 of last x
+    >>> res.v(n2, gnd)[-1] #node 2 of last x
     6.3
 
     Linear circuit example:
@@ -289,7 +303,7 @@ class Transient(Analysis):
     >>> c['L'] = L(n1, gnd, L=1e-3)
     >>> tran = Transient(c)
     >>> res = tran.solve(tend=150e-6,timestep=1e-6)
-    >>> tran.result[-1][0]
+    >>> res.v(n1,gnd)[-1]
     0.99
 
     """
@@ -308,18 +322,13 @@ class Transient(Analysis):
             Geq = self.cir.C(x)/dt
             ueq = -dot(Geq,xlast)
             f =  self.cir.i(x) + dot(Geq, x) + self.cir.u(t) + ueq
-            (f,) = remove_row_col((f,), irefnode)
-            return array(f, dtype=float)
-        def fprime(x):
-            x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
-            Geq = self.cir.C(x)/dt
             J = self.cir.G(x) + Geq
-            (J,) = remove_row_col((J,), irefnode)
-            return array(J, dtype=float)
+            f, J = remove_row_col((f,J), irefnode)
+            return array(f, dtype=float), array(J, dtype=float)
 
         rtol = 1e-4
 
-        x = fsolve(func, x0, fprime=fprime)
+        x = fsolve(func, x0)
         # Insert reference node voltage
         #x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
         return x
@@ -345,8 +354,20 @@ class Transient(Analysis):
         for t in times:
             x=self.solve_timestep(X[-1],t,dt)
             X.append(copy(x))
-        self.result = X
-        return (x,t) #returns the final value
+
+        X = self.toolkit.array(X[1:]).T
+
+        # Insert reference node voltage
+        X = self.toolkit.concatenate((X[:irefnode], 
+                                      self.toolkit.zeros((1,len(times))), 
+                                      X[irefnode:]))
+
+        self.result = CircuitResult(self.cir, x=X, xdot=None,
+                                    sweep_values=times, 
+                                    sweep_label='time', 
+                                    sweep_unit='s')
+        
+        return self.result
 
 class AC(Analysis):
     """
@@ -361,9 +382,9 @@ class AC(Analysis):
     >>> c['vs'] = VS(n1, gnd, vac=Symbol('V'))
     >>> c['R'] = R(n1, gnd, r=Symbol('R'))
     >>> res = AC(c, toolkit=symbolic).solve(Symbol('s'), complexfreq=True)
-    >>> res['net1']
+    >>> res.v('net1')
     V
-    >>> res['i0']
+    >>> res.i('vs.plus')
     -V/R
 
     >>> circuit.default_toolkit = numeric
@@ -374,9 +395,7 @@ class AC(Analysis):
     >>> c['C'] = C(n1, gnd, c=1e-12)
     >>> ac = AC(c)
     >>> res = ac.solve(freqs=array([1e6, 2e6]))
-    >>> res.keys()
-    ['i0', 'gnd', 'net1']
-    >>> ac.result['net1']
+    >>> ac.result.v('net1')
     Waveform(array([ 1000000.,  2000000.]), array([ 1.5+0.j,  1.5+0.j]))
     >>> res.v(n1, gnd)
     Waveform(array([ 1000000.,  2000000.]), array([ 1.5+0.j,  1.5+0.j]))
@@ -417,17 +436,16 @@ class AC(Analysis):
             return concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
 
         if isiterable(freqs):
-            out = [solvecircuit(s) for s in ss]
-            # Swap frequency and x-vector dimensions
-            xac = [Waveform(freqs, value, 
-                            xlabels=('frequency',), xunits=('Hz',))
-                   for value in array(out).swapaxes(0,1)]
-            xacdot = [ss * xi for xi in xac]
+            xac = self.toolkit.array([solvecircuit(s) for s in ss]).swapaxes(0,1)
+            xacdot = ss * xac
         else:
             xac = solvecircuit(ss)
             xacdot = ss * xac
 
-        self.result = CircuitResultAC(cir, x, xac, xacdot)
+        self.result = CircuitResultAC(cir, x, xac, xacdot, 
+                                      sweep_values = freqs, 
+                                      sweep_label='frequency',
+                                      sweep_unit='Hz')
 
         return self.result
 
