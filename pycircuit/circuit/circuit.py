@@ -1000,7 +1000,12 @@ class SubCircuit(Circuit):
         return self._add_element_submatrices('C', x, (epar,))
 
     def u(self, t=0.0, epar=defaultepar, analysis=None):
-        return self._add_element_subvectors('u', None, (t,epar,analysis))
+        dtype = None
+        if analysis == 'ac':
+            dtype = self.toolkit.ac_u_dtype
+
+        return self._add_element_subvectors('u', None, (t,epar,analysis), 
+                                            dtype=dtype)
 
     def i(self, x, epar=defaultepar):
         return self._add_element_subvectors('i', x, (epar,))
@@ -1102,9 +1107,9 @@ class SubCircuit(Circuit):
 
         return lhs
 
-    def _add_element_subvectors(self, methodname, x, args):
+    def _add_element_subvectors(self, methodname, x, args, dtype=None):
         n = self.n
-        lhs = self.toolkit.zeros(n)
+        lhs = self.toolkit.zeros(n, dtype=dtype)
 
         for instance,element in self.elements.items():
             if x != None:
