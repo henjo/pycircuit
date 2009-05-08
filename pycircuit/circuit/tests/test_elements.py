@@ -12,7 +12,7 @@ from pycircuit.circuit.elements import *
 import numpy as np
 from numpy.testing import assert_array_equal, assert_array_almost_equal
 from numpy.testing.decorators import slow
-from sympy import var, Symbol, simplify
+from sympy import var, Symbol, simplify, symbols
 import sympy
 
 def test_vsin():
@@ -52,8 +52,17 @@ def test_vpulse():
             u = np.array(pulse.u(t + tstart)).astype(float).reshape(3,)
             assert_array_almost_equal(u, uref)
            
-def gen_stamps():
-    var('R1 C1 L1 gain gm N')
+def gen_stamps(toolkit=symbolic):
+    circuit.default_toolkit = toolkit
+    if toolkit is symbolic:
+        R1,C1,L1,gain,gm,N = symbols('R1 C1 L1 gain gm N')
+    else:
+        R1=1.1e3
+        C1=1e-12
+        L1=1e-5
+        gain=2.4
+        gm=1.e-3
+        N=1.2
 
     yield(R(1,gnd, r=R1), 1/R1 * np.array([[1, -1], [-1, 1]]), np.zeros((2,2)))
 
@@ -99,14 +108,38 @@ def gen_stamps():
                       [  gm, -gm,   0.,  0.],
                       [ -gm,  gm,   0.,  0.]])
     yield(Gyrator(1, gnd, 2, gnd, gm = gm), GGyrator, np.zeros((4,4)))
+    
 
+def gen_stamps_sources(toolkit=symbolic):
+    circuit.default_toolkit = toolkit
+    if toolkit is symbolic:
+        vac, phase = symbols('vac phase')
+    else:
+        vac = 1.2
+        phase = 30
+
+    v = vac * toolkit.exp(1j * toolkit.pi * phase / 180.)
+    G = array([[0, 0, 1],
+               [0, 0,-1],
+               [1, -1, 0]])
+    yield(VS(1,0,vac=vac, phase=phase), G, np.zeros((3,3)), toolkit.array([0,0,-v]))
+
+    cir = SubCircuit()
+    cir['vs'] = VS(1,0,vac=vac, phase=phase)
+    yield(cir, G, np.zeros((3,3)), toolkit.array([0,0,-v]))
 
 def test_stamp():
-    pycircuit.circuit.circuit.default_toolkit = symbolic
+    circuit.default_toolkit = symbolic
     
-    for cir, G, C in gen_stamps():
-        assert_array_equal(cir.G(np.zeros(cir.n)), G)
-        assert_array_equal(cir.C(np.zeros(cir.n)), C)
+    for toolkit in numeric, symbolic:
+        for cir, G, C in gen_stamps(toolkit=toolkit):
+            assert_array_equal(cir.G(np.zeros(cir.n)), G)
+            assert_array_equal(cir.C(np.zeros(cir.n)), C)
+
+        for cir, G, C, u in gen_stamps_sources(toolkit=toolkit):
+            assert_array_equal(cir.G(np.zeros(cir.n)), G)
+            assert_array_equal(cir.C(np.zeros(cir.n)), C)
+            assert_array_equal(cir.u(np.zeros(cir.n), analysis='ac'), u)
 
 if __name__ == '__main__':
     test_nullor_vva()
