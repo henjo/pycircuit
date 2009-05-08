@@ -73,7 +73,7 @@ def test_print_netlist():
     
     refnetlist = \
 """.subckt MySubC p m
-  V1 internal gnd! VS v=0 vac=1 noisePSD=0
+  V1 internal gnd! VS v=0 vac=1 phase=0 noisePSD=0
   R1 p internal R r=1000.0 noisy=True
   R2 internal m R r=1000.0 noisy=True
   R3 internal gnd! R r=1000.0 noisy=True
@@ -473,3 +473,4 @@ def test_VCVS_laplace_d4_n2_observable():
 
     print(res.v(n2,gnd))
     assert_equal(sympy.simplify(res.v(n2,gnd)),sympy.simplify((-Gdc*b2-Gdc*b1*s-Gdc*b0*s*s)/(-a0*s*s*s*s-a1*s*s*s-a2*s*s-a3*s-a4)))   
+
