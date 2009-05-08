@@ -8,7 +8,6 @@ Simple example - Input impedance of gyrator loaded with capacitance
 Find symbolic expression of input impedance of gyrator loaded with gounded capacitor:
 
 .. sympy::
-    :include-source: False
     :persistent:
 
     import numpy, pylab
@@ -30,7 +29,7 @@ Find symbolic expression of input impedance of gyrator loaded with gounded capac
     ## Add circuit elements
     cir['cap']  = C(n2, gnd, c = C1)
     # Gyrator
-    cir['Gyrator'] = Gyrator(n1, gnd, n2, gnd, gm = 1)
+    cir['Gyrator'] = Gyrator(n1, gnd, n2, gnd, gm = gm1)
     # Current source for AC stimuli
     cir['ISource'] = IS(gnd,n1, iac=1)
 
@@ -50,6 +49,7 @@ ABCD matrix:
     # Delet current source used to calculate input impedance 
     
     del cir['ISource']
+    del cir['cap']
 
     ## Run symbolic 2-port analysis
     twoport_ana = TwoPortAnalysis(cir, Node('1'), gnd, Node('2'), gnd, toolkit=symbolic)
@@ -59,3 +59,27 @@ ABCD matrix:
     ABCD = Matrix(result['twoport'].A)
     ABCD.simplify()
     ABCD
+
+G matrix:
+
+.. sympy::
+    :persistent:
+
+    cir.G(np.zeros(cir.n))
+
+C matrix:
+
+.. sympy::
+    :persistent:
+
+    cir.C(np.zeros(cir.n))
+
+G matrix again:
+
+.. sympy::
+    :persistent:
+
+    del cir['Gyrator']
+    n3, n4 = cir.add_nodes('3', '4')
+    cir['Gyrator'] = Gyrator(n1, n2, n3, n4, gm = gm1)
+    cir.G(np.zeros(cir.n))
