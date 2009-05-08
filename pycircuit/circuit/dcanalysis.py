@@ -79,7 +79,7 @@ class DC(Analysis):
                 try:
                     x = algorithm(x0)
                 except (NoConvergenceError, SingularMatrix), last_e:
-                    pass
+                    logging.warning('Problems encoutered: ' + str(last_e))
                 else:
                     break
 
@@ -90,12 +90,9 @@ class DC(Analysis):
     def _simple(self, x0):
         """Simple Newton's method"""
         def func(x):
-            return self.cir.i(x) + self.cir.u(0)
+            return self.cir.i(x) + self.cir.u(0), self.cir.G(x)
 
-        def fprime(x):
-            return self.cir.G(x)
-        
-        return self._newton(func, fprime, x0)
+        return self._newton(func, x0)
 
     def _homotopy_gmin(self, x0):
         """Newton's method with gmin stepping"""
@@ -106,12 +103,10 @@ class DC(Analysis):
             Ggmin[0:n_nodes, 0:n_nodes] = gmin * eye(n_nodes)
 
             def func(x):
-                return self.cir.i(x) + 0*np.dot(Ggmin, x) + self.cir.u(0)
+                return self.cir.i(x) + self.cir.u(0), \
+                       self.cir.G(x) + Ggmin
 
-            def fprime(x):
-                return self.cir.G(x) + Ggmin
-            
-            x, x0 = self._newton(func, fprime, x0), x
+            x, x0 = self._newton(func, x0), x
 
         return x
 
@@ -120,16 +115,13 @@ class DC(Analysis):
         x = x0
         for lambda_ in (0, 1e-2, 1e-1, 1):
             def func(x):
-                return self.cir.i(x) + lambda_ * self.cir.u(0)
-
-            def fprime(x):
-                return self.cir.G(x)
+                return self.cir.i(x) + lambda_ * self.cir.u(0), self.cir.G(x)
             
-            x, x0 = self._newton(func, fprime, x0), x
+            x, x0 = self._newton(func, x0), x
 
         return x
 
-    def _newton(self, func, fprime, x0):
+    def _newton(self, func, x0):
         ones_nodes = np.ones(len(self.cir.nodes))
         ones_branches = np.ones(len(self.cir.branches))
 
@@ -143,7 +135,6 @@ class DC(Analysis):
         try:
             result = fsolve(refnode_removed(func, self.irefnode), 
                             x0, 
-                            fprime = refnode_removed(fprime, self.irefnode),
                             full_output = True, 
                             reltol = self.options.reltol,
                             abstol = abstol, xtol=xtol,
@@ -167,9 +158,8 @@ class CircuitResultDC(CircuitResult):
 def refnode_removed(func, irefnode):
     def new(x, *args, **kvargs):
         newx = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
-        y = func(newx, *args, **kvargs)
-        (f,) = remove_row_col((y,), irefnode)
-        return f
+        f, J = func(newx, *args, **kvargs)
+        return remove_row_col((f, J), irefnode)
     return new
 
 if __name__ == "__main__":
