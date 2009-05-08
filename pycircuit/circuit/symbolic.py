@@ -12,11 +12,12 @@ The module is based on the python CAS `sympy <http://sympy.org>`_.
 import sympy
 from sympy import cos, sin, tan, exp, pi, simplify, floor
 from sympy import oo as inf, ceiling as ceil
-from numpy import dot, eye
+from numpy import dot, eye, linspace
 import numpy as np
 import types
 from pycircuit.utilities.param import Parameter
 
+ac_u_dtype = np.object
 
 def linearsolver(A, b):
     """Numpy compatible wrapper around sympy.solve_linear_system"""

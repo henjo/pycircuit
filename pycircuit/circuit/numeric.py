@@ -9,8 +9,13 @@ The module is based on `numpy <http://numpy.org>`_.
 
 """
 
-import numpy
-from numpy import cos, sin, tan, exp, pi, linalg, inf, ceil, floor, dot
+import numpy as np
+from numpy import cos, sin, tan, exp, pi, linalg, inf, ceil, floor, dot, \
+    linspace, eye, concatenate, sqrt, real, imag
+
+from numpy.linalg import inv
+
+ac_u_dtype = np.complex
 
 def linearsolver(*args):
     args = [A.astype('complex') for A in args]
@@ -25,8 +30,8 @@ def det(x):
 
 def simplify(x): return x
 
-def zeros(shape, dtype=float): return numpy.zeros(shape, dtype=dtype)
-def array(x, dtype=float): return numpy.array(x, dtype=dtype)
+def zeros(shape, dtype=None): return np.zeros(shape, dtype=dtype)
+def array(x, dtype=None): return np.array(x, dtype=dtype)
 
 numeric = True
     
