@@ -269,13 +269,22 @@ class Waveform(object):
         def findvalue(y):
             if len(self._xlist[axis]) == 1 and axis == -1:
                 return y[-1]
-            return sp.interpolate.interp1d(self._xlist[axis], y)(x)
+            res = sp.interpolate.interp1d(self._xlist[axis], y)(x)
+            try:
+                return np.asscalar(res)
+            except TypeError:
+                return res
 
         def findvalue_mdimindex(y, i):
             xindex = list(i)
             del xindex[axis]
             xindex = tuple(xindex)
-            return sp.interpolate.interp1d(self._xlist[axis], y)(x._y[xindex])
+            res = sp.interpolate.interp1d(self._xlist[axis], y)(x._y[xindex])
+            try:
+                return np.asscalar(res)
+            except TypeError:
+                return res
+            
 
         if iswave(x):
             newyshape = list(self._y.shape)
@@ -363,8 +372,8 @@ class Waveform(object):
             y[where(y == inf)] = 1e20
             y[where(y == -inf)] = -1e20
 
-            if 'label' not in kvargs:
-                kvargs['label'] = label
+#            if 'label' not in kvargs:
+#                kvargs['label'] = label
             
             p=plotfunc(self.get_x(-1), y, **kvargs)
 
@@ -384,6 +393,8 @@ class Waveform(object):
     def semilogx(self, *args, **kvargs): self._plot(pylab.semilogx, *args, **kvargs)
     def semilogy(self, *args, **kvargs): self._plot(pylab.semilogy, *args, **kvargs)
     def loglog(self, *args, **kvargs): self._plot(pylab.loglog, *args, **kvargs)
+
+    def stem(self, *args, **kvargs): self._plot(pylab.stem, *args, **kvargs)
     
     @property
     def astable(self):
