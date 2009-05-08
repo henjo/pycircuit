@@ -309,6 +309,19 @@ def test_array_interface():
         wout = np.cos(win)
         assert_array_equal(wout.y, np.cos(win))
         assert_array_equal(win.x[0], wout.x[0])
+
+def test_getitem():
+    w = testdata1[0]
+    assert_equal(w[0], w.y[0])
+
+    wsliced = Waveform(array([1]),array([complex(-1,0)]), 
+                       xlabels = ('freq',),
+                       xunits = ('Hz', ),
+                       ylabel = 'amplitude',
+                       yunit = 'V'
+                       )
+    assert_equal(w[0:1], wsliced)
+    
     
 def test_repr():
     for wref in testdata1[0], testdata2:

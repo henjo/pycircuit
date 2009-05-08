@@ -508,7 +508,10 @@ class Waveform(object):
 
     def __getitem__(self, index):
         if type(index) in (types.IntType, slice):
-            index = (index,)
+            if type(index) is types.IntType and len(self.shape) == 1:
+                return self._y[index]
+            else:
+                index = (index,)
 
         ## Extend index from left to have same length as dimension
         index = (self.ndim - len(index)) * [slice(None)] + list(index)
@@ -525,6 +528,7 @@ class Waveform(object):
                      if type(indexpart) is not types.IntType]
 
         newy = self._y[index]
+
 
         return Waveform(tuple(newxlist), newy, 
                         xlabels = newxlabels,
