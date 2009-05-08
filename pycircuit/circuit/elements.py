@@ -169,6 +169,8 @@ class VS(Circuit):
                             unit='V', default=0),
                   Parameter(name='vac', desc='AC analysis amplitude', 
                             unit='V', default=1),
+                  Parameter(name='phase', desc='AC analysis phase', 
+                            unit='deg', default=0),
                   Parameter(name='noisePSD', 
                             desc='Voltage noise power spectral density', 
                             unit='V^2/Hz', default=0)]
@@ -183,7 +185,9 @@ class VS(Circuit):
 
     def u(self, t=0.0, epar=defaultepar, analysis=None):
         if analysis == 'ac':
-            return self.toolkit.array([0, 0, -self.ipar.vac])
+            phase = self.ipar.phase * self.toolkit.pi / 180.
+            vac = self.ipar.vac * self.toolkit.exp(1j*phase)
+            return self.toolkit.array([0, 0, -vac])
         else:
             v = self.ipar.v + self.function.f(t)
             return self.toolkit.array([0, 0, -v])
@@ -575,7 +579,7 @@ class Diode(Circuit):
     def G(self, x, epar=defaultepar):
         VD = x[0]-x[1]
         VT = kboltzmann*epar.T / qelectron
-        g = self.mpar.IS*exp(VD/VT)/VT
+        g = self.mpar.IS * self.toolkit.exp(VD/VT) / VT
         return self.toolkit.array([[g, -g],
                                    [-g, g]])
 
@@ -585,9 +589,8 @@ class Diode(Circuit):
         """
         VD = x[0]-x[1]
         VT = kboltzmann*epar.T / qelectron
-        I = self.mpar.IS*(exp(VD/VT)-1.0)
-        return array([I, -I])
-
+        I = self.mpar.IS*(self.toolkit.exp(VD/VT)-1.0)
+        return self.toolkit.array([I, -I])
 
 
 if __name__ == "__main__":
