@@ -1,7 +1,7 @@
 from nose.tools import *
 from pycircuit.circuit import *
 from pycircuit.circuit.shooting import *
-from pycircuit.post import plotall, Waveform, average
+from pycircuit.post import plotall, Waveform, average, db20
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 from copy import copy
@@ -25,7 +25,7 @@ def test_shooting():
     res = pss.solve(period=period, timestep = period/N)
     
     v2ac = resac.v(2,gnd)
-    v2pss = res.v(2,gnd)
+    v2pss = res['tpss'].v(2,gnd)
     
     t,dt = numeric.linspace(0,period,num=N,endpoint=True,
                             retstep=True)
@@ -39,6 +39,14 @@ def test_shooting():
 #    plotall(v2pss,w2ref)
 #    pylab.grid()
 #    pylab.show()
-    rmserror = numeric.sqrt(average((v2pss-w2ref)**2))
 
+    ## Check amplitude error
+    v2rms_ac = abs(v2ac) / np.sqrt(2)
+    v2rms_pss = abs(res['fpss'].v(2,gnd)).value(1/period)
+    assert_almost_equal(v2rms_ac, v2rms_pss)
+ 
+    ## Check error of waveform
+    rmserror = numeric.sqrt(average((v2pss-w2ref)**2))
     assert rmserror < 1e-3, 'rmserror=%f too high'%rmserror
+
+ 

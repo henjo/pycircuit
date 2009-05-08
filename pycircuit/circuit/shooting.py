@@ -1,3 +1,4 @@
+from pycircuit.post import InternalResultDict
 from circuit import gnd
 from analysis import Analysis, remove_row_col
 from copy import copy
@@ -93,6 +94,22 @@ class PSS(Analysis):
                                  toolkit.zeros((1,len(times))), 
                                  X[irefnode:]))
 
-        return analysis.CircuitResult(self.cir, x=X, xdot=None,
+        tpss = analysis.CircuitResult(self.cir, x=X, xdot=None,
                                       sweep_values=times, sweep_label='time', 
                                       sweep_unit='s')
+
+        npoints = len(times) - 1
+        if X.dtype is np.complex:
+            FX = np.fft.fftshift(np.fft.fft(X[:,:-1], axis=-1)) / npoints
+            freqs = np.fft.fftshift(np.fft.fftfreq(npoints, d=dt))
+        else:
+            freqs = np.fft.fftfreq(npoints, d=dt)[:np.ceil(npoints / 2.)]
+            FX = np.fft.fft(X[:,:-1], axis=-1)[:,:len(freqs)] / npoints
+            ## Fold energy from negative frequencies
+            FX[:,1:] *= np.sqrt(2)
+
+        fpss = analysis.CircuitResult(self.cir, x=FX, xdot=None,
+                                      sweep_values=freqs, sweep_label='freq', 
+                                      sweep_unit='Hz')
+        
+        return InternalResultDict({'tpss': tpss, 'fpss': fpss})

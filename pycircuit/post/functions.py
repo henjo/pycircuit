@@ -255,6 +255,11 @@ def deriv(w):
     assert_waveform(w)
     return w.deriv()
 
+def dft(w):
+    """Calculates the discrete Fourier transform of the input waveform"""
+    
+    
+
 if __name__ == "__main__":
     import doctest
     doctest.testmod()
