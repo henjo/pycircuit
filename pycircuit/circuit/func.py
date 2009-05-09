@@ -84,6 +84,20 @@ class Pulse(TimeFunction):
         else:
             return self.v1
 
-        
+class ScalarFunction(object):
+    """Scalar function"""
     
-        
+    def __init__(self, toolkit=numeric):
+        self.toolkit = toolkit
+    
+    def f(self,x):
+        return 0        
+    
+    def fprime(self,x):
+        return 0
+
+    def fprime(self,x):
+        return 0
+
+
+                    
