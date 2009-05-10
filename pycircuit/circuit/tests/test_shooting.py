@@ -1,16 +1,17 @@
 from nose.tools import *
 from pycircuit.circuit import *
 from pycircuit.circuit.shooting import *
-from pycircuit.post import plotall, Waveform, average, db20
+from pycircuit.post import astable, plotall, Waveform, average, db20
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 from copy import copy
 import pylab
+from myCap import myC
 
 def test_shooting():
     cir = SubCircuit()
     
-    N = 20
+    N = 10
     period = 1e-3
 
     cir['vs'] = VSin(1,gnd, vac=2.0, va=2.0, freq=1/period, phase=20)
@@ -50,3 +51,21 @@ def test_shooting():
     assert rmserror < 1e-3, 'rmserror=%f too high'%rmserror
 
  
+def test_PSS_nonlinear_C():
+    """Test of PSS simulation of RLC-circuit,
+    with nonlinear capacitor.
+    """
+    c = SubCircuit()
+
+    c['VSin'] = VSin(gnd, 1, va=10, freq=50e3)
+    c['R1'] = R(1, 2, r=1e6)
+    c['C'] = myC(2, gnd)
+    #c['L'] = L(2,gnd, L=1e-3)
+    pss = PSS(c)
+    res = pss.solve(period=1/50e3,timestep=1e-8)
+    db20(res['fpss'].v(2)).stem()
+    pylab.show()
+    plotall(res['tpss'].v(1),res['tpss'].v(2))
+    pylab.show()
+
+
