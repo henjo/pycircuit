@@ -13,13 +13,13 @@ class R(Circuit):
     >>> c['R'] = R(n1, gnd, r=1e3)
     >>> c['R']
     R('plus','minus',r=1000.0,noisy=True)
-    >>> c.G(np.zeros(2))
+    >>> c.G(self.toolkit.zeros(2))
     array([[ 0.001, -0.001],
            [-0.001,  0.001]])
     >>> c = SubCircuit()
     >>> n2=c.add_node('2')
     >>> c['R'] = R(n1, n2, r=1e3)
-    >>> c.G(np.zeros(2))
+    >>> c.G(self.toolkit.zeros(2))
     array([[ 0.001, -0.001],
            [-0.001,  0.001]])
 
@@ -58,7 +58,7 @@ class G(Circuit):
     >>> c['G'] = G(n1, gnd, g=1e-3)
     >>> c['G']
     G('plus','minus',g=0.001,nonoise=False)
-    >>> c.G(np.zeros(2))
+    >>> c.G(self.toolkit.zeros(2))
     array([[ 0.001, -0.001],
            [-0.001,  0.001]])
     """
@@ -95,10 +95,10 @@ class C(Circuit):
     >>> c = SubCircuit()
     >>> n1=c.add_node('1')
     >>> c['C'] = C(n1, gnd, c=1e-12)
-    >>> c.G(np.zeros(2))
+    >>> c.G(self.toolkit.zeros(2))
     array([[ 0.,  0.],
            [ 0.,  0.]])
-    >>> c.C(np.zeros(2))
+    >>> c.C(self.toolkit.zeros(2))
     array([[  1.0000e-12,  -1.0000e-12],
            [ -1.0000e-12,   1.0000e-12]])
 
@@ -121,11 +121,11 @@ class L(Circuit):
     >>> c = SubCircuit()
     >>> n1=c.add_node('1')
     >>> c['L'] = L(n1, gnd, L=1e-9)
-    >>> c.G(np.zeros(3))
+    >>> c.G(self.toolkit.zeros(3))
     array([[ 0.,  0.,  1.],
            [ 0.,  0., -1.],
            [ 1., -1.,  0.]])
-    >>> c.C(np.zeros(3))
+    >>> c.C(self.toolkit.zeros(3))
     array([[  0.0000e+00,   0.0000e+00,   0.0000e+00],
            [  0.0000e+00,   0.0000e+00,   0.0000e+00],
            [  0.0000e+00,   0.0000e+00,  -1.0000e-09]])
@@ -301,7 +301,7 @@ class VCVS(Circuit):
     [Node('1'), Node('2'), Node('gnd', isglobal=True)]
     >>> c.branches
     [Branch(Node('1'),Node('gnd', isglobal=True)), Branch(Node('2'),Node('gnd', isglobal=True))]
-    >>> c['vcvs'].G(np.zeros(4))
+    >>> c['vcvs'].G(self.toolkit.zeros(4))
     array([[ 0.,  0.,  0.,  0.,  0.],
            [ 0.,  0.,  0.,  0.,  0.],
            [ 0.,  0.,  0.,  0.,  1.],
@@ -342,9 +342,9 @@ class VCVS(Circuit):
                 self.ipar.numerator = [0]*(len(self.ipar.denominator[:-1])-len(self.ipar.numerator))+self.ipar.numerator
             if not(len(self.ipar.numerator) < len(self.ipar.denominator)): # make sure the transfer function is stictly proper. Is this relly neccessary?
                 raise Exception("Number of numerator coefficients, %s, must be at least on fewer than the number of denominator coefficients length, %s, should be string"%str(len(self.ipar.numerator))%str(len(self.ipar.denominator)))
-            self.den = np.array(self.ipar.denominator) / self.ipar.denominator[0]
+            self.den = toolkit.array(self.ipar.denominator) / self.ipar.denominator[0]
             self.denlen = len(self.den) 
-            self.num = np.array(self.ipar.numerator) / self.ipar.denominator[0]
+            self.num = toolkit.array(self.ipar.numerator) / self.ipar.denominator[0]
             self.numlen = len(self.num)
             newnodes = [Node("_a%d"%state) for state in range(self.denlen-1)]
             self.nodes.extend(newnodes)
@@ -501,7 +501,7 @@ class Transformer(Circuit):
     [Node('inp'), Node('inn'), Node('outp'), Node('outn')]
     >>> c['vcvs'].branches
     (Branch(Node('outp'),Node('outn')),)
-    >>> c['vcvs'].G(np.zeros(4))
+    >>> c['vcvs'].G(self.toolkit.zeros(4))
     array([[ 0.,  0.,  0.,  0.,  2.],
            [ 0.,  0.,  0.,  0., -2.],
            [ 0.,  0.,  0.,  0.,  1.],
@@ -538,7 +538,7 @@ class Gyrator(Circuit):
     >>> c = SubCircuit()
     >>> n1=c.add_node('1')
     >>> c['Gyrator'] = Gyrator(n1, gnd, gm=1)
-    >>> c.G(np.zeros(4))
+    >>> c.G(self.toolkit.zeros(4))
     array([[  0.,   0.,  1., -1.],
            [  0.,   0., -1.,  1.],
            [ -1.,   1.,  0.,  0.],
