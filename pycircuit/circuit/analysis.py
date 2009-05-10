@@ -321,7 +321,7 @@ class Transient(Analysis):
             xlast = concatenate((x0[:irefnode], array([0.0]), x0[irefnode:]))
             Geq = self.cir.C(x)/dt
             ueq = -dot(Geq,xlast)
-            f =  self.cir.i(x) + dot(Geq, x) + self.cir.u(t) + ueq
+            f =  self.cir.i(x) + self.cir.q(x)/dt + self.cir.u(t) + ueq
             J = self.cir.G(x) + Geq
             f, J = remove_row_col((f,J), irefnode)
             return array(f, dtype=float), array(J, dtype=float)
