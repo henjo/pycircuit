@@ -33,7 +33,7 @@ class PSS(Analysis):
             C = self.cir.C(x)
             Geq = C/dt
             ueq = -toolkit.dot(Geq,xlast)
-            f =  self.cir.i(x) + toolkit.dot(Geq, x) + self.cir.u(t) + ueq
+            f =  self.cir.i(x) + self.cir.q(x)/dt + self.cir.u(t) + ueq
             J = self.cir.G(x) + Geq
             (f,J,C) = remove_row_col((f,J,C), irefnode)
             self._Jf, self._C = J, C
