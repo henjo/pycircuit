@@ -32,7 +32,7 @@ class PSS(Analysis):
             xlast = concatenate((x0[:irefnode], array([0.0]), x0[irefnode:]))
             C = self.cir.C(x)
             Geq = C/dt
-            ueq = -toolkit.dot(Geq,xlast)
+            ueq = -self.cir.q(xlast)/dt
             f =  self.cir.i(x) + self.cir.q(x)/dt + self.cir.u(t) + ueq
             J = self.cir.G(x) + Geq
             (f,J,C) = remove_row_col((f,J,C), irefnode)
