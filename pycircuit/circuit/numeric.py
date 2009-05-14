@@ -11,15 +11,14 @@ The module is based on `numpy <http://numpy.org>`_.
 
 import numpy as np
 from numpy import cos, sin, tan, cosh, sinh, tanh, log, exp, pi, linalg,\
-     inf, ceil, floor, dot, linspace, eye, concatenate, sqrt, real, imag
+     inf, ceil, floor, dot, linspace, eye, concatenate, sqrt, real, imag,\
+     ones, complex, diff
 
 from numpy.linalg import inv
 
 ac_u_dtype = np.complex
 
 def linearsolver(*args):
-    args = [A.astype('complex') for A in args]
-
     return linalg.solve(*args)
 
 def toMatrix(array): 
