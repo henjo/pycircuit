@@ -206,7 +206,7 @@ class VSin(VS):
     instparams = VS.instparams + [
         Parameter(name='vo', desc='Offset voltage', 
                   unit='V', default=0),
-        Parameter(name='va', desc='Offset voltage', 
+        Parameter(name='va', desc='Voltage voltage', 
                   unit='V', default=0),
         Parameter(name='freq', desc='Frequency', 
                   unit='Hz', default=0),
@@ -220,6 +220,66 @@ class VSin(VS):
         super(VSin, self).__init__(*args, **kvargs)
         self.function = func.Sin(self.ipar.vo,
                                  self.ipar.va,
+                                 self.ipar.freq,
+                                 self.ipar.td,
+                                 self.ipar.theta,
+                                 self.ipar.phase,
+                                 toolkit = self.toolkit
+                                 )
+
+class IS(Circuit):
+    """Independent DC current source
+
+    >>> from dcanalysis import DC, gnd as gnd2
+    >>> c = SubCircuit()
+    >>> n1=c.add_node('1')
+    >>> c['is'] = IS(gnd, n1, i=1e-3)
+    >>> c['R'] = R(n1, gnd, r=1e3)
+    >>> DC(c,refnode=gnd).solve().x
+    array([ 1.,  0.])
+
+    """
+    instparams = [Parameter(name='i', desc='DC Current', 
+                            unit='A', default=1e-3),
+                  Parameter(name='iac', desc='Small signal current amplitude', 
+                            unit='A', default=0),
+                  Parameter(name='noisePSD', 
+                            desc='Current noise power spectral density', 
+                            unit='A^2/Hz', default=0.0)]
+    terminals = ('plus', 'minus')
+    function = func.TimeFunction()
+
+    def u(self, t=0.0, epar=defaultepar, analysis=None):
+        if analysis == None:
+            return self.toolkit.array([self.ipar.i, -self.ipar.i])
+        elif analysis == 'ac':
+            return self.toolkit.array([self.ipar.iac, -self.ipar.iac])
+        else:
+            i = self.ipar.i + self.function.f(t)
+            return self.toolkit.array([i, -i])
+
+    def CY(self, x, w, epar=defaultepar):
+        return  self.toolkit.array([[self.ipar.noisePSD, -self.ipar.noisePSD],
+                                    [-self.ipar.noisePSD, self.ipar.noisePSD]])
+
+class ISin(IS):
+    instparams = IS.instparams + [
+        Parameter(name='io', desc='Offset current', 
+                  unit='A', default=0),
+        Parameter(name='ia', desc='Current amplitude', 
+                  unit='V', default=0),
+        Parameter(name='freq', desc='Frequency', 
+                  unit='Hz', default=0),
+        Parameter(name='td', desc='Time delay', 
+                  unit='s', default=0),
+        Parameter(name='theta', desc='Damping factor', 
+                  unit='1/s', default=0),
+        Parameter(name='phase', desc='Phase in degrees', 
+                  unit='deg', default=0)]
+    def __init__(self, *args, **kvargs):
+        super(ISin, self).__init__(*args, **kvargs)
+        self.function = func.Sin(self.ipar.io,
+                                 self.ipar.ia,
                                  self.ipar.freq,
                                  self.ipar.td,
                                  self.ipar.theta,
@@ -256,38 +316,6 @@ class VPulse(VS):
                                    toolkit = self.toolkit
                                  )
 
-class IS(Circuit):
-    """Independent DC current source
-
-    >>> from dcanalysis import DC, gnd as gnd2
-    >>> c = SubCircuit()
-    >>> n1=c.add_node('1')
-    >>> c['is'] = IS(gnd, n1, i=1e-3)
-    >>> c['R'] = R(n1, gnd, r=1e3)
-    >>> DC(c,refnode=gnd).solve().x
-    array([ 1.,  0.])
-
-    """
-    instparams = [Parameter(name='i', desc='DC Current', 
-                            unit='A', default=1e-3),
-                  Parameter(name='iac', desc='Small signal current amplitude', 
-                            unit='A', default=0),
-                  Parameter(name='noisePSD', 
-                            desc='Current noise power spectral density', 
-                            unit='A^2/Hz', default=0.0)]
-    terminals = ('plus', 'minus')
-
-    def u(self, t=0.0, epar=defaultepar, analysis=None):
-        if analysis == None:
-            return self.toolkit.array([self.ipar.i, -self.ipar.i])
-        elif analysis == 'ac':
-            return self.toolkit.array([self.ipar.iac, -self.ipar.iac])
-        else:
-            return super(IS, self).u(t,epar,analysis)
-
-    def CY(self, x, w, epar=defaultepar):
-        return  self.toolkit.array([[self.ipar.noisePSD, -self.ipar.noisePSD],
-                                    [-self.ipar.noisePSD, self.ipar.noisePSD]])
 
 class VCVS(Circuit):
     """Voltage controlled voltage source
@@ -300,7 +328,7 @@ class VCVS(Circuit):
     >>> c.nodes
     [Node('1'), Node('2'), Node('gnd', isglobal=True)]
     >>> c.branches
-    [Branch(Node('1'),Node('gnd', isglobal=True)), Branch(Node('2'),Node('gnd', isglobal=True))]
+    [Branch(Node('1'),Node('gnd', isglobal=True)), Branch(Node('2'), Node('gnd', isglobal=True))]
     >>> c['vcvs'].G(self.toolkit.zeros(4))
     array([[ 0.,  0.,  0.,  0.,  0.],
            [ 0.,  0.,  0.,  0.,  0.],
