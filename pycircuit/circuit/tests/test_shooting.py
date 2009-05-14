@@ -51,7 +51,7 @@ def test_shooting():
     assert rmserror < 1e-3, 'rmserror=%f too high'%rmserror
 
  
-def notworking_test_PSS_nonlinear_C():
+def test_PSS_nonlinear_C():
     """Test of PSS simulation of RLC-circuit,
     with nonlinear capacitor.
     """
