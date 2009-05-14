@@ -69,3 +69,25 @@ def test_PSS_nonlinear_C():
     pylab.show()
 
 
+def test_PAC():
+    N = 10
+    fc = 1e6
+
+    cir = SubCircuit()
+    cir['vs'] = VSin(1,gnd, vac=2.0, va=2.0, freq=fc, phase=20)
+    cir['R'] = R(1, 2, r=1e6)
+    cir['D'] = Diode(2,gnd)
+    cir['C'] = C(2,gnd, c=1e-12)
+    
+    pss = PSS(cir)
+
+    res = pss.solve(period=1/fc, timestep = 1/(fc*N))
+
+    pac = PAC(cir)
+    res = pac.solve(pss, freqs = fc + np.array([1e3, 2e3, 4e3]))
+
+#    plotall(db20(res.v(2, gnd)), db20(res.v(1, gnd)), plotargs=('x',))
+#    pylab.legend()
+#    pylab.show()
+    
+    assert False, "Test should compare with spectre simulation"

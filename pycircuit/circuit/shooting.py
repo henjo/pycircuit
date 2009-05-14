@@ -5,6 +5,29 @@ from copy import copy
 import analysis
 import numpy as np
 
+def freq_analysis(x, t, rms = True, axis=-1, freqoffset = 0):
+    """Return dft of equidistant sampled signal x"""
+    
+    npoints = np.size(x, axis)
+
+    dt = t[1] - t[0]
+
+    if x.dtype in (np.complex128, np.complex):
+        X = np.fft.fftshift(np.fft.fft(x, axis=axis),axes=(axis,)) / npoints
+        freqs = np.fft.fftshift(np.fft.fftfreq(npoints, d=dt))
+    else:
+        freqs = np.fft.fftfreq(npoints, d=dt)[:np.ceil(npoints / 2.)]
+        slices = [slice(None)] * x.ndim
+        slices[axis] = slice(0, len(freqs))
+        X = np.fft.fft(x, axis=axis)[slices] / npoints
+        ## Fold energy from negative frequencies
+        X[:,1:] *= np.sqrt(2)
+
+    if not rms:
+        X *= np.sqrt(2)
+
+    return freqs, X
+
 class PSS(Analysis):
     """Periodic Steady-State using shooting Newton iterations
     
@@ -49,6 +72,7 @@ class PSS(Analysis):
 
     def solve(self, refnode=gnd, period=1e-3, x0=None, timestep=1e-6, 
               maxiterations=20):
+        self.period = period
         toolkit = self.toolkit
 
         irefnode=self.cir.get_node_index(refnode)
@@ -69,8 +93,15 @@ class PSS(Analysis):
             x0 = copy(x)
             Jshoot = np.mat(toolkit.eye(n-1))
             C = copy(np.mat(self._C))
+
+            ## Save C and transient jacobian for PAC analysis
+            self.Cvec = [copy(self._C)]
+            self.Jtvec = [copy(self._Jf)]
+            self.times = times
             for t in times[1:]:
                 x = copy(self.solve_timestep(x, t, dt))
+                self.Cvec.append(copy(self._C))
+                self.Jtvec.append(copy(self._Jf))
                 Jshoot = np.mat(self._Jf).I * C * Jshoot
                 C = copy(np.mat(self._C))
 
@@ -98,18 +129,89 @@ class PSS(Analysis):
                                       sweep_values=times, sweep_label='time', 
                                       sweep_unit='s')
 
-        npoints = len(times) - 1
-        if X.dtype is np.complex:
-            FX = np.fft.fftshift(np.fft.fft(X[:,:-1], axis=-1)) / npoints
-            freqs = np.fft.fftshift(np.fft.fftfreq(npoints, d=dt))
-        else:
-            freqs = np.fft.fftfreq(npoints, d=dt)[:np.ceil(npoints / 2.)]
-            FX = np.fft.fft(X[:,:-1], axis=-1)[:,:len(freqs)] / npoints
-            ## Fold energy from negative frequencies
-            FX[:,1:] *= np.sqrt(2)
-
+        freqs, FX = freq_analysis(X[:,:-1], times[:-1])
+        
         fpss = analysis.CircuitResult(self.cir, x=FX, xdot=None,
                                       sweep_values=freqs, sweep_label='freq', 
                                       sweep_unit='Hz')
         
         return InternalResultDict({'tpss': tpss, 'fpss': fpss})
+
+class PAC(Analysis):
+    """Small-signal analysis over a time varying operating point"""
+
+    def solve(self, pss, freqs, refnode=gnd, period=1e-3, x0=None, timestep=1e-6, 
+              maxiterations=20):
+        tk = self.toolkit
+
+        ## Create U vector which is the RHS evaluated at every time instant
+        T = pss.period
+        times = pss.times[:-1]
+        hs = tk.diff(pss.times)
+
+        N = self.cir.n - 1 ## ref node removed
+        M = len(times)
+
+        irefnode = self.cir.get_node_index(refnode)
+        (u0,) = remove_row_col((self.cir.u(0, analysis='ac'),), irefnode)
+
+        ## Create LHS matrix using backward Euler discretization
+        L = tk.zeros((N*M, N*M),dtype=tk.complex)
+        B = tk.zeros(L.shape)
+        for i, (t, h, J, C) in enumerate(zip(times, hs, pss.Jtvec, pss.Cvec)):
+            L[i*N:(i+1)*N, i*N:(i+1)*N] = J
+            if i > 0:
+                L[i*N:(i+1)*N, (i-1)*N:i*N] = -C / h
+        B[0:N,(M-1)*N:M*N] = -pss.Cvec[-1] / hs[0]
+
+        outfreq = []
+        outV = []
+        for fs in freqs:
+            phase_shift = tk.zeros(N * M, dtype=complex)
+            u = tk.zeros(N * M, dtype=complex)
+            for i,t in enumerate(times):
+                phase_shift[i*N:(i+1)*N] = tk.exp(2j*tk.pi*fs*t)
+                u[i*N:(i+1)*N] = u0
+            
+            u *= phase_shift
+            
+            alpha = tk.exp(-2j*tk.pi*fs*T)
+
+            ## Solve discrete-time AC-voltage vector
+            v = tk.linearsolver(L + alpha*B, -u)
+            
+            ## multiply v matrix by exp(-j*2*pi*fs) so the spectrum
+            ## is evaluated at 2*pi*(fs + 1/T) instead of 2*pi/T
+            ## this will also make v T-periodic
+            v_shifted = (v / phase_shift)
+
+            freqs, V = freq_analysis(v_shifted.reshape(M,N),
+                                     times, axis=0)
+
+            outfreq.extend((abs(freqs + fs)).tolist())
+            outV.extend(V.tolist())
+            
+        ## Sort on frequency
+        freqs, X = zip(*sorted(zip(outfreq, outV)))
+
+        X = np.array(X)
+        freqs = np.array(freqs)
+
+        # Insert reference node voltage
+        irefnode = self.cir.get_node_index(refnode)
+        X = tk.concatenate((X[:,:irefnode], 
+                            tk.zeros((len(freqs),1)), 
+                            X[:,irefnode:]), axis=1)
+
+
+        res = analysis.CircuitResult(self.cir, x = X.T, 
+                                        xdot=None,
+                                        sweep_values=freqs, 
+                                        sweep_label='freq', 
+                                        sweep_unit='Hz')
+
+        
+        return res
+
+        
+            
