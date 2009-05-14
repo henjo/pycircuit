@@ -64,8 +64,10 @@ class Circuit(object):
     pass
 
 class Analysis(object):
-    def __init__(self, circuit):
+    parameters = []
+    def __init__(self, circuit, **parvalues):
         self.cir = circuit
+        self.par = ParameterDict(*self.parameters, **parvalues)
 
 class IParam(Parameter):
     """Instance parameter"""

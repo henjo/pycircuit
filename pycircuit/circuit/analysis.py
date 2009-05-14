@@ -3,6 +3,7 @@
 # See LICENSE for details.
 
 import numpy as np
+from pycircuit import sim
 from pycircuit.utilities.param import Parameter, ParameterDict
 from numpy import array, delete, linalg, size, zeros, concatenate, pi, \
     zeros, alltrue, maximum, conj, dot, imag, eye
@@ -90,12 +91,9 @@ def remove_row_col(matrices, n):
         result.append(A)
     return tuple(result)
 
-class Analysis(object):
-    parameters = []
-    def __init__(self, cir, epar = defaultepar, 
-                 toolkit=None, **kvargs):
-
-        self.options = ParameterDict(*self.parameters, **kvargs)
+class Analysis(sim.Analysis):
+    def __init__(self, cir, toolkit=None, **kvargs):
+        super(Analysis, self).__init__(cir, **kvargs)
 
         if toolkit == None:
             if cir.toolkit == None:
@@ -105,8 +103,8 @@ class Analysis(object):
 
         self.toolkit = toolkit
 
+        epar = defaultepar.copy()
         if hasattr(toolkit, 'setup_analysis'):
-            epar = epar.copy()
             toolkit.setup_analysis(epar)
 
         self.cir = cir
@@ -558,9 +556,19 @@ class Noise(Analysis):
     0
 
     """
-    def __init__(self, circuit, inputsrc=None, 
-                 outputnodes=None, outputsrc=None,
-                 toolkit=None):
+
+    parameters = [Parameter(name='inputsrc', desc='Input voltage source', 
+                            unit='', 
+                            default=None),
+                  Parameter(name='outputnodes', 
+                            desc='Output nodes (voltage output)', unit='', 
+                            default=None),
+                  Parameter(name='outputsrc', 
+                            desc='Output voltage source (current output)',
+                            unit='', 
+                            default=None)
+                  ]
+    def __init__(self, circuit, toolkit=None, **parvalues):
         """
         Initiate a noise analysis.
 
@@ -577,24 +585,26 @@ class Noise(Analysis):
             The voltage source where the output current noise is measured
         """
 
-        Analysis.__init__(self, circuit, toolkit=toolkit)
+        Analysis.__init__(self, circuit, toolkit=toolkit, 
+                          **parvalues)
     
-        if not (outputnodes != None or outputsrc != None):
+        if not (self.par.outputnodes != None or self.par.outputsrc != None):
             raise ValueError('Output is not specified')
-        elif outputnodes != None and outputsrc != None:
+        elif self.par.outputnodes != None and self.par.outputsrc != None:
             raise ValueError('Cannot measure both output current and voltage '
                              'noise')
         
-        if not (type(inputsrc) is types.StringType and \
-                outputsrc == None or type(outputsrc) is types.StringType):
+        if not (type(self.par.inputsrc) is types.StringType and \
+                self.par.outputsrc == None or \
+                    type(self.par.outputsrc) is types.StringType):
             raise ValueError('Sources must be given as instance names')
 
-        self.inputsrc_name = inputsrc
-        self.inputsrc = self.cir[inputsrc]
-        self.outputnodes = outputnodes
-        self.outputsrc_name = outputsrc
+        self.inputsrc_name = self.par.inputsrc
+        self.inputsrc = self.cir[self.par.inputsrc]
+        self.outputnodes = self.par.outputnodes
+        self.outputsrc_name = self.par.outputsrc
         if self.outputsrc_name:
-            self.outputsrc = self.cir[outputsrc]
+            self.outputsrc = self.cir[self.par.outputsrc]
 
     def solve(self, freqs, refnode=gnd, complexfreq=False):
         toolkit = self.toolkit
