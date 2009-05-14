@@ -1,11 +1,20 @@
 import pylab
 
-def plotall(*waveforms):
+def plotall(*waveforms, **args):
     """Plot waveforms in a single plot"""
     
+    plotargs = []
+    plotkvargs = {}
+
+    if 'plotargs' in args:
+        plotargs = args['plotargs']
+    if 'plotkvargs' in args:
+        plotkvargs = args['plotkvargs']
+
     pylab.hold(True)
     for wave in waveforms:
-        wave.plot()
+        wave.plot(*plotargs, **plotkvargs)
+
     pylab.legend([wave.ylabel for wave in waveforms])
     
     pylab.hold(False)

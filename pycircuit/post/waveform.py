@@ -375,7 +375,7 @@ class Waveform(object):
 #            if 'label' not in kvargs:
 #                kvargs['label'] = label
             
-            p=plotfunc(self.get_x(-1), y, **kvargs)
+            p=plotfunc(self.get_x(-1), y, *args, **kvargs)
 
         pylab.hold(False)
         
