@@ -6,9 +6,11 @@ import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 from copy import copy
 import pylab
-from myCap import myC
+from pycircuit.circuit.myCap import myC
 
 def test_shooting():
+    circuit.default_toolkit = circuit.numeric
+
     cir = SubCircuit()
     
     N = 10
@@ -55,6 +57,7 @@ def test_PSS_nonlinear_C():
     """Test of PSS simulation of RLC-circuit,
     with nonlinear capacitor.
     """
+    circuit.default_toolkit = circuit.numeric
     c = SubCircuit()
 
     c['VSin'] = VSin(gnd, 1, va=10, freq=50e3)
@@ -71,6 +74,7 @@ def test_PSS_nonlinear_C():
 
 
 def test_PAC():
+    circuit.default_toolkit = circuit.numeric
     N = 10
     fc = 1e6
 

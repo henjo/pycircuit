@@ -14,6 +14,7 @@ from pycircuit.post import plotall
 def test_transient_RC():
     """Test of the of transient simulation of RC-circuit
     """
+    circuit.default_toolkit = circuit.numeric
     
     c = SubCircuit()
 
@@ -35,6 +36,7 @@ def test_transient_RLC():
     """Test of transient simulation of RLC-circuit
     """
     
+    circuit.default_toolkit = circuit.numeric
     c = SubCircuit()
 
     c['VSin'] = VSin(gnd, 1, va=10, freq=50e3)
@@ -53,6 +55,7 @@ def test_transient_nonlinear_C():
     """Test of transient simulation of RLC-circuit,
     with nonlinear capacitor.
     """
+    circuit.default_toolkit = circuit.numeric
     c = SubCircuit()
 
     c['VSin'] = VSin(gnd, 1, va=10, freq=50e3)
