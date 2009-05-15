@@ -53,9 +53,8 @@ class DC(Analysis):
                             default=100),
                   ]
 
-    def __init__(self, cir, epar = defaultepar, 
-                 toolkit=None, refnode=gnd, **kvargs):
-        super(DC, self).__init__(cir, epar=epar, toolkit=toolkit, 
+    def __init__(self, cir, toolkit=None, refnode=gnd, **kvargs):
+        super(DC, self).__init__(cir, toolkit=toolkit, 
                                  **kvargs)
         
         self.irefnode = self.cir.get_node_index(refnode)

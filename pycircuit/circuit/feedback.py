@@ -145,8 +145,8 @@ class FeedbackDeviceAnalysis(Analysis):
     """
     def __init__(self, circuit, instance, 
                  inp=None, inn=None, outp=None, outn=None, 
-                 epar = defaultepar.copy(), toolkit=None):
-        super(FeedbackDeviceAnalysis, self).__init__(circuit, epar = epar,
+                 toolkit=None):
+        super(FeedbackDeviceAnalysis, self).__init__(circuit, 
                                                      toolkit=toolkit)
 
         self.inp = inp; self.inn = inn; self.outp = outp; self.outn = outn
@@ -249,8 +249,8 @@ def find_loopprobe(circuit, path=[]):
 class FeedbackLoopAnalysis(Analysis):
     """Find loop-gain by breaking all loops with a LoopProbe element
     """
-    def __init__(self, circuit, epar = defaultepar.copy(), toolkit=None):
-        super(FeedbackLoopAnalysis, self).__init__(circuit, epar = epar, 
+    def __init__(self, circuit, toolkit=None):
+        super(FeedbackLoopAnalysis, self).__init__(circuit, 
                                                    toolkit=toolkit)
         
         ## Find LoopProbe instance
