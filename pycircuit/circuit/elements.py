@@ -620,6 +620,42 @@ class Diode(Circuit):
         I = self.mpar.IS*(self.toolkit.exp(VD/VT)-1.0)
         return self.toolkit.array([I, -I])
 
+class VCVS_limited(Circuit):
+    instparams = [Parameter(name='g', desc='Voltage gain',unit='V/V',
+                            default=1),
+                  Parameter(name='level', desc='Limit voltage',unit='V',
+                            default=0.5),
+                  Parameter(name='offset', desc='offset voltage',unit='V',
+                            default=0)]
+
+    terminals = ('inp', 'inn', 'outp', 'outn')
+    branches = (Branch(Node('outp'), Node('outn')),)
+
+    def __init__(self, *args, **kvargs):
+        super( VCVS_limited, self).__init__(*args, **kvargs)
+        self.function = func.Tanh(self.ipar.offset,
+                                       self.ipar.level,
+                                       toolkit = self.toolkit)                                       
+    
+    def G(self, x, epar=defaultepar):
+        n = self.n
+        G = self.toolkit.zeros((n,n))
+        g_limit = self.function.fprime(x[1]-x[0])
+        branchindex = -1
+        inpindex, innindex, outpindex, outnindex = \
+        (self.nodes.index(self.nodenames[name])
+        for name in self.terminals)
+        G[outpindex,   branchindex] +=  1
+        G[outnindex,   branchindex] += -1
+        G[branchindex, outpindex]   += -1
+        G[branchindex, outnindex]   +=  1
+        G[branchindex, inpindex]    +=  g_limit*self.ipar.g
+        G[branchindex, innindex]    += -g_limit*self.ipar.g
+        return G
+
+    def i(self, x, epar=defaultepar):
+        vout = x[3] - x[2] - self.function.f(x[1]-x[0])
+        return self.toolkit.array([0,0,x[4],-x[4],vout])
 
 if __name__ == "__main__":
     import doctest

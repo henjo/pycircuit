@@ -99,5 +99,26 @@ class ScalarFunction(object):
     def fprime(self,x):
         return 0
 
+class Tanh(ScalarFunction):
+    """Scalar function"""
+    
+    def __init__(self, offset = 0, level = 0, 
+                 toolkit = numeric):
+        self.offset  = offset # Offset from zero
+        self.level   = level  # Level of limiting
+        self.toolkit = toolkit 
+    
+    # Function tanh
+    def f(self,x):
+        return self.toolkit.tanh((x-self.offset)/self.level)        
+    
+    # Derivate
+    def fprime(self,x):
+        return 0
+        return (1-self.toolkit.power(self.toolkit.tanh((x-self.offset)/self.level),2))/self.level
+
+    # Integral
+    def F(self,x):
+        return self.toolkit.log(self.toolkit.cosh((x-self.offset)/self.level))*self.level
 
                     
