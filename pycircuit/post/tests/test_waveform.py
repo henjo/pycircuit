@@ -8,6 +8,7 @@ from numpy.testing import assert_array_almost_equal, assert_array_equal
 import numpy as np
 from pycircuit.post import Waveform
 from pycircuit.post.functions import *
+from pycircuit.post.testing import *
 
 testdata1 = (
     Waveform(array([1,10,100]),array([complex(-1,0),complex(0,1),2]), 
@@ -94,7 +95,7 @@ def test_indexing():
                           ylabel = 'i3',
                           yunit = 'A')
 
-    assert_waveform_equal(w[0,:], w_sliced)
+    assert_waveform_almost_equal(w[0,:], w_sliced)
 
     w_sliced2 = Waveform(([1,2],), array([3,5]),
                          xlabels = ('v1',),
@@ -102,7 +103,7 @@ def test_indexing():
                          ylabel = 'i3',
                          yunit = 'A')
     
-    assert_waveform_equal(w[0], w_sliced2)
+    assert_waveform_almost_equal(w[0], w_sliced2)
 
     w_sliced3 = Waveform(([1], [1,2,3],), array([[3,4,5]]),
                           xlabels = ('v1', 'v2',),
@@ -110,7 +111,7 @@ def test_indexing():
                           ylabel = 'i3',
                           yunit = 'A')
     
-    assert_waveform_equal(w[0:1,:], w_sliced3)
+    assert_waveform_almost_equal(w[0:1,:], w_sliced3)
 
     w_sliced = Waveform(([1,2],), array([5,2]),
                           xlabels = ('v1',),
@@ -118,7 +119,7 @@ def test_indexing():
                           ylabel = 'i3',
                           yunit = 'A')
 
-    assert_waveform_equal(w[:,-1], w_sliced)
+    assert_waveform_almost_equal(w[:,-1], w_sliced)
 
 def test_xmax(): 
     w1 = Waveform(array([1,2,3]),array([3,5,6]))
@@ -148,23 +149,34 @@ def test_value():
 
     ## 2-d waveform
     w2 = Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
-    assert_waveform_equal(w2.value(2.5), Waveform([[1, 2]], array([ 4.,  5.])))
-    assert_waveform_equal(w2.value(1.5, axis=0), 
+    assert_waveform_almost_equal(w2.value(2.5), Waveform([[1, 2]], array([ 4.,  5.])))
+    assert_waveform_almost_equal(w2.value(1.5, axis=0), 
                           Waveform([[2, 3, 4]], array([ 3.5, 5.5, 6.5])))
     ## x is a waveform
     w2 = Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
-    assert_waveform_equal(w2.value(Waveform(array([1, 2]), array([2.5, 3.5]))), 
+    assert_waveform_almost_equal(w2.value(Waveform(array([1, 2]), array([2.5, 3.5]))), 
                           Waveform(array([1, 2]),array([ 4.,   6.5])))
+
+def test_xval():
+    w = Waveform([[5,2],[2,3,4]], array([[3,9,7], [4,6,6]]))
+
+    wref = Waveform([[5,2],[2,3,4]], array([[2,3,4], [2,3,4]]))
+    assert_waveform_almost_equal(w.xval(), wref)
+    assert_waveform_almost_equal(w.xval(-1), wref)
+    assert_waveform_almost_equal(w.xval(1), wref)
+
+    wref = Waveform([[5,2],[2,3,4]], array([[5,5,5], [2,2,2]]))
+    assert_waveform_almost_equal(w.xval(0), wref)
 
 def test_clip():
     ## 1D waveforms
     w1 = Waveform([[1.,2.,3.]], array([8., 6., 1.]))
 
-    assert_waveform_equal(w1.clip(2,3), 
+    assert_waveform_almost_equal(w1.clip(2,3), 
                           Waveform([[ 2.,  3.]], array([ 6.,  1.])))
-    assert_waveform_equal(w1.clip(1.5, 3),
+    assert_waveform_almost_equal(w1.clip(1.5, 3),
                           Waveform([[ 1.5, 2.,  3.]],array([ 7., 6.,  1.])))
-    assert_waveform_equal(w1.clip(1., 2.5),
+    assert_waveform_almost_equal(w1.clip(1., 2.5),
                           Waveform([[ 1., 2.,  2.5]],array([ 8., 6.,  3.5])))
     
     ## 2D waveforms
@@ -172,7 +184,7 @@ def test_clip():
                  xlabels = ('x1','x2'), xunits = ('V', 'V'),
                  ylabel = 'i', yunit = 'A')
 
-    assert_waveform_equal(w.clip(3, 4), 
+    assert_waveform_almost_equal(w.clip(3, 4), 
                           Waveform([[2,5],[3,4]], 
                                    array([[9,7], [6,6]]),
                                    xlabels = ('x1','x2'), xunits = ('V', 'V'),
@@ -183,14 +195,14 @@ def test_clip():
                  ylabel = 'i', yunit = 'A')
 
     ## Clip at non-existing x-value from left and right
-    assert_waveform_equal(w.clip(2.5, 3.5), 
+    assert_waveform_almost_equal(w.clip(2.5, 3.5), 
                           Waveform([[2,5],[2.5,3,3.5]], 
                                    array([[6,9,8], [5,6,6]]),
                                    xlabels = ('x1','x2'), xunits = ('V', 'V'),
                                    ylabel = 'i', yunit = 'A'))
 
     ## Clip at non-existing x-value from left and right
-    assert_waveform_equal(w.clip(2.5, 3.5, axis=0), 
+    assert_waveform_almost_equal(w.clip(2.5, 3.5, axis=0), 
                           Waveform([[2.5,3.5],[2.,3.,4.]], 
                                    array([[3.166667, 8.5, 6.833333], 
                                           [3.5, 7.5, 6.5]]),
@@ -219,7 +231,7 @@ def check_alongaxes_func(func, reference_func, w, keep_yunit = False):
                        ylabel = func.__name__ + '(' + w.ylabel + ')',
                        yunit = yunit)
 
-        assert_waveform_equal(res, ref)
+        assert_waveform_almost_equal(res, ref)
 
 def check_func(func, reference_func, args, preserve_yunit = False,
                ref_yunit='', ref_ylabel=None):
@@ -260,15 +272,6 @@ def check_nonscalar_function(func):
     """Check that scalar input to a  waveform-only functions raises an exception"""
     assert_raises(AssertionError, func, 10)
 
-def assert_waveform_equal(a, b):
-    for ax, bx in zip(a.x, b.x):
-        assert_array_almost_equal(ax, bx)
-    assert_array_almost_equal(np.array(a.y), np.array(b.y))
-#    assert_equal(a.xlabels, b.xlabels)
-#    assert_equal(a.ylabel, b.ylabel)
-#    assert_equal(a.xunits, b.xunits)
-#    assert_equal(a.yunit, b.yunit)
-
 def get_y(w):
     if iswave(w):
         return w._y
@@ -300,7 +303,7 @@ def check_binary_op(op, a, b, preserve_yunit = False):
 
     exec 'ref_y = get_y(a) ' + op + ' get_y(b)'
 
-    assert_waveform_equal(res, Waveform(ref_x, ref_y, xlabels = ref_xlabels, 
+    assert_waveform_almost_equal(res, Waveform(ref_x, ref_y, xlabels = ref_xlabels, 
                                         xunits = ref_xunits, ylabel = ref_ylabel,
                                         yunit = ref_yunit))
 
@@ -327,7 +330,7 @@ def test_repr():
     for wref in testdata1[0], testdata2:
         wstr = repr(wref)
         wout = eval(wstr)
-        assert_waveform_equal(wout, wref)
+        assert_waveform_almost_equal(wout, wref)
 
 if __name__ == "__main__":
     import doctest
