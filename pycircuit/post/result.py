@@ -39,11 +39,11 @@ class ResultDict(object):
 class IVResultDict(ResultDict):
     """Result dictionary for storing voltages and currents"""
     
-    def v(plus, minus=None):
+    def v(self, plus, minus=None):
         """Returns the voltage between the plus and minus node or potential of plus node"""
         raise NotImplementedError()
 
-    def i(terminal):
+    def i(self, terminal):
         """Returns the current flowing into the given terminal or branch object"""
         raise NotImplementedError()
     
