@@ -86,7 +86,10 @@ class GnucapSessionDirect(GnucapSession):
         self.runmode = gnucap.SET_RUN_MODE(gnucap.rBATCH)
 
     def command(self, command): 
-        return self.gnucap.command(command).strip()
+        logging.debug('Sending: ' + command)
+        reply = self.gnucap.command(command).strip()
+        logging.debug('Got: ' + reply)
+        return reply
 
     def __del__(self):
         self.__class__.instance = None
