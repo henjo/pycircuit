@@ -19,7 +19,7 @@ class myC(Circuit):
     instparams = [Parameter(name='c0', desc='Capacitance', 
                             unit='F', default=1e-12),
                   Parameter(name='c1', desc='Nonlinear capacitance', 
-                            unit='F', default=1e-12),
+                            unit='F', default=0.5e-12),
                   Parameter(name='v0', desc='Voltage for nominal capacitance', 
                             unit='V', default=1),
                   Parameter(name='v1', desc='Slope voltage ...?', 
@@ -39,6 +39,6 @@ class myC(Circuit):
 
     def q(self, x, epar=defaultepar):
         v=x[0]-x[1]
-        q = self.ipar.c0+c1*v1*ln(cosh((v-self.ipar.v0)/self.ipar.v1))
+        q = self.ipar.c0*v+c1*v1*ln(cosh((v-self.ipar.v0)/self.ipar.v1))
         return self.toolkit.array([q, -q])
     
