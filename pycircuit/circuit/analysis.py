@@ -256,10 +256,7 @@ class Tran_spec(Analysis):
         return self.result
 
 class Transient(Analysis):
-    """Simple transient analyis class.
-
-    Supports both nonlinear and dynamic elements, but not
-    yet dynamic elements who are nonlinear.
+    """Simple transient analysis class.
 
     Time step is fixed.
 
