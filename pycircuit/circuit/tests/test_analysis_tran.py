@@ -6,6 +6,7 @@
 
 from pycircuit.circuit.elements import VSin, IS, R, L, C, SubCircuit, gnd
 from pycircuit.circuit.analysis import Tran_spec, Transient
+from pycircuit.circuit import circuit #new
 from math import floor
 from myCap import myC
 import pylab
