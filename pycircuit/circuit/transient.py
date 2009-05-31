@@ -50,21 +50,21 @@ class Transient(Analysis):
     0.99
 
     """
-    ## TODO: provide a function to solve_timestep, for use in PSS
+    ## TODO:
     ## * Make a timestep method that provides the next timestep
     ## * Implement trapezoidal method
     ## * Implement automatic timestep adjustment, using difference between
     ## BE and trapezoidal as a measure of the error.
     ## Reference: "Time Step Control in Transient Analysis", by SHUBHA VIJAYCHAND
+    ## Perhaps use a PID-regulator for timestep adustment
 
     def get_timestep():
         """Method to provide the next timestep for transient simulation.
-
         
         """
         pass
 
-    def get_diff(self,x,xlast,dt):
+    def get_diff(self,x,xlast,dt,iqlast=None):
         """Method used to calculate time derivative for charge storing elements.
 
         Calculates and returns approximate derivatives, both for backward euler 
@@ -72,16 +72,14 @@ class Transient(Analysis):
         the next timestep (or reject the last).
         """
         #BE: i(x)=(q(x)-q(xlast))/dt
-        #Trap: i(x)=(q(x)-q(xlast))*2/dt-i(xlast)
-        qx=self.cir.q(x)
-        qxlast=self.cir.q(xlast)
-        #return 2*(qx-qxlast)/dt-self.cir.i(xlast)
-        return (qx-qxlast)/dt
+        #Trap: i(x)=(q(x)-q(xlast))*2/dt-i_qlast
+        q=self.cir.q(x)
+        qlast=self.cir.q(xlast)
+        #return 2*(qx-qxlast)/dt-self.cir.i_qlast
+        return (q-qlast)/dt
 
     
-    
-
-    def solve_timestep(self, x0, t, dt, refnode=gnd, rtol=1e-4, provided_function=None):
+    def solve_timestep(self, x0, t, dt, iqlast=None, refnode=gnd, rtol=1e-4, provided_function=None):
         #if provided_function is not None, it is called as a function with 
         #most of what is calculated during a time_step, f,J,ueq,Geq,xlast,x
 
@@ -98,10 +96,9 @@ class Transient(Analysis):
             xlast = concatenate((x0[:irefnode], array([0.0]), x0[irefnode:]))
             C = self.cir.C(x)
             Geq = C/dt
-            #ueq = -self.cir.q(xlast)/dt
-            #f =  self.cir.i(x) + self.cir.q(x)/dt + self.cir.u(t) + ueq
-            ## skip ueq and let f:
-            f =self.cir.i(x) + self.get_diff(x,xlast,dt) + self.cir.u(t)
+            ##Store dynamic current iq, so it can be reached in solve
+            self._iq = self.get_diff(x,xlast,dt,iqlast=iqlast)
+            f =self.cir.i(x) + self._iq + self.cir.u(t)
             J = self.cir.G(x) + Geq
             f, J, C = remove_row_col((f,J,C), irefnode)
             return array(f, dtype=float), array(J, dtype=float)
@@ -134,11 +131,19 @@ class Transient(Analysis):
 
         #create vector with timepoints and a more fitting dt
         times,dt=np.linspace(0,tend,num=int(tend/dt),endpoint=True,retstep=True)
+        
+        #initial step (t=0), always use backward euler
+        x,feval = self.solve_timestep(X[-1],times[0],dt,rtol=rtol,provided_function=provided_function)
+        X.append(copy(x))
+        # Store last dynamic current (iq) for use in trapezoidal method
+        # calculated in solve_timestep by method get_diff
+        iqlast = self._iq
 
-        for t in times:
-            x,feval=self.solve_timestep(X[-1],t,dt,rtol=rtol,provided_function=provided_function)
+        for t in times[1:]: #all times but first (0)
+            x,feval=self.solve_timestep(X[-1],t,dt,rtol=rtol,provided_function=provided_function,iqlast=iqlast)
             X.append(copy(x))
-
+            #save iqlast for Trapezoidal method
+            iqlast = self._iq
         X = self.toolkit.array(X[1:]).T
 
         # Insert reference node voltage
