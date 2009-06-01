@@ -45,11 +45,11 @@ def test_transient_RLC():
     c['C'] = C(2, gnd, c=1e-12)
     #c['L'] = L(2,gnd, L=1e-3)
     tran_imp = Transient(c)
-    res_imp = tran_imp.solve(tend=150e-6,timestep=1e-6)
-    expected = 0.099
+    res_imp = tran_imp.solve(tend=40e-6,timestep=1e-6)
+    expected = 2.58
     #plotall(res_imp.v(1),res_imp.v(2))
     #pylab.show()
-    assert  abs(res_imp.v(1,gnd)[-1] - expected) < 1e-2*expected,\
+    assert  abs(res_imp.v(2,gnd)[-1] - expected) < 1e-2*expected,\
         'Does not match QUCS result.'
 
 def test_transient_nonlinear_C():
@@ -64,15 +64,27 @@ def test_transient_nonlinear_C():
     c['C'] = myC(2, gnd)
     #c['L'] = L(2,gnd, L=1e-3)
     tran_imp = Transient(c)
-    res_imp = tran_imp.solve(tend=150e-6,timestep=1e-6)
-    expected = 0.099
-    plotall(res_imp.v(1),res_imp.v(2))
-    pylab.show()
-    assert  abs(res_imp.v(1,gnd)[-1] - expected) < 1e-2*expected,\
-        'Does not match QUCS result.'
+    res_imp = tran_imp.solve(tend=40e-6,timestep=1e-6)
+    expected = 3.4
+    #plotall(res_imp.v(1),res_imp.v(2))
+    #pylab.show()
+    assert  abs(res_imp.v(2,gnd)[-1] - expected) < 1e-2*expected,\
+        'Does not match QUCS result:'
+
+def test_transient_get_diff():
+    """Test of differentiation method
+    """
+    circuit.default_toolkit = circuit.numeric
+    c = SubCircuit()
+    tran = Transient(c)
+    q=1
+    qlast=0.9
+    dt=1
+    result = tran.get_diff(q,qlast,dt,iqlast=0.1,method='trapezoidal')
+    assert abs(result-0.1) < 1e-6*result
 
 if __name__ == '__main__':
     test_transient_RC()
-    #test_transient_RLC()
+    test_transient_RLC()
     test_transient_nonlinear_C()
     
