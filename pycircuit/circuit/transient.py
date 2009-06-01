@@ -34,20 +34,23 @@ class Transient(Analysis):
     >>> c['C'] = C(n2, gnd, c=1e-5)
     >>> tran = Transient(c)
     >>> res = tran.solve(tend=10e-3,timestep=1e-4)
-    >>> res.v(n2, gnd)[-1] #node 2 of last x
-    6.3
+    >>> expected = 6.3
+    >>> abs(res.v(n2, gnd)[-1] - expected) < 1e-2*expected #node 2 of last x
+    True
 
     Linear circuit example:
+    >>> from pycircuit.circuit.elements import ISin
     >>> c = SubCircuit()
     >>> n1 = c.add_node('net1')
-    >>> c['Is'] = IS(gnd, n1, i=10e-3)
-    >>> c['R'] = R(n1, gnd, r=1e3)
-    >>> c['C'] = C(n1, gnd, c=1e-5)
-    >>> c['L'] = L(n1, gnd, L=1e-3)
+    >>> c['Isin'] = ISin(gnd, n1, ia=1e-3, freq=16e3)
+    >>> c['R'] = R(n1, gnd, r=200)
+    >>> c['C'] = C(n1, gnd, c=1e-6)
+    >>> c['L'] = L(n1, gnd, L=1e-4)
     >>> tran = Transient(c)
-    >>> res = tran.solve(tend=150e-6,timestep=1e-6)
-    >>> res.v(n1,gnd)[-1]
-    0.99
+    >>> res = tran.solve(tend=260e-6,timestep=1e-6)
+    >>> expected = 0.078
+    >>> abs(res.v(n1,gnd)[-1])
+    True
 
     """
     ## TODO:
@@ -64,7 +67,7 @@ class Transient(Analysis):
         """
         pass
 
-    def get_diff(self,x,xlast,dt,iqlast=None):
+    def get_diff(self,x,xlast,dt,iqlast=None,method='euler'):
         """Method used to calculate time derivative for charge storing elements.
 
         Calculates and returns approximate derivatives, both for backward euler 
@@ -72,14 +75,20 @@ class Transient(Analysis):
         the next timestep (or reject the last).
         """
         #BE: i(x)=(q(x)-q(xlast))/dt
-        #Trap: i(x)=(q(x)-q(xlast))*2/dt-i_qlast
+        #Trap: i(x)=(q(x)-q(xlast))*2/dt-iqlast
         q=self.cir.q(x)
         qlast=self.cir.q(xlast)
-        #return 2*(qx-qxlast)/dt-self.cir.i_qlast
-        return (q-qlast)/dt
+        if iqlast == None:
+            result = (q-qlast)/dt
+        else:
+            if method == 'trapezoidal':
+                result = 2*(q-qlast)/dt-iqlast #Trapezoidal
+            else: #euler
+                result = (q-qlast)/dt #Backward Euler
+            print(2*(q-qlast)/dt-iqlast-(q-qlast)/dt) # Difference between methods
+        return result
 
-    
-    def solve_timestep(self, x0, t, dt, iqlast=None, refnode=gnd, rtol=1e-4, provided_function=None):
+    def solve_timestep(self, x0, t, dt, iqlast=None,refnode=gnd,rtol=1e-4,method='euler',provided_function=None):
         #if provided_function is not None, it is called as a function with 
         #most of what is calculated during a time_step, f,J,ueq,Geq,xlast,x
 
@@ -97,7 +106,7 @@ class Transient(Analysis):
             C = self.cir.C(x)
             Geq = C/dt
             ##Store dynamic current iq, so it can be reached in solve
-            self._iq = self.get_diff(x,xlast,dt,iqlast=iqlast)
+            self._iq = self.get_diff(x,xlast,dt,iqlast=iqlast,method=method)
             f =self.cir.i(x) + self._iq + self.cir.u(t)
             J = self.cir.G(x) + Geq
             f, J, C = remove_row_col((f,J,C), irefnode)
@@ -113,7 +122,7 @@ class Transient(Analysis):
         return result
 
 
-    def solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, rtol=1e-4,provided_function=None):
+    def solve(self,refnode=gnd,tend=1e-3,x0=None,timestep=1e-6,rtol=1e-4,method='euler',provided_function=None):
         #should perhaps call with an option dictionary for things like rtol, method etc.
         #provided_function is a function that is sent to solve_timestep for evaluation
 
@@ -131,19 +140,15 @@ class Transient(Analysis):
 
         #create vector with timepoints and a more fitting dt
         times,dt=np.linspace(0,tend,num=int(tend/dt),endpoint=True,retstep=True)
-        
-        #initial step (t=0), always use backward euler
-        x,feval = self.solve_timestep(X[-1],times[0],dt,rtol=rtol,provided_function=provided_function)
-        X.append(copy(x))
-        # Store last dynamic current (iq) for use in trapezoidal method
-        # calculated in solve_timestep by method get_diff
-        iqlast = self._iq
+        iqlast=None #forces first step to Backward Euler
 
-        for t in times[1:]: #all times but first (0)
-            x,feval=self.solve_timestep(X[-1],t,dt,rtol=rtol,provided_function=provided_function,iqlast=iqlast)
+        for t in times:
+            x,feval=self.solve_timestep(X[-1],t,dt,rtol=rtol,method=method,iqlast=iqlast\
+                                            ,provided_function=provided_function)
             X.append(copy(x))
-            #save iqlast for Trapezoidal method
-            iqlast = self._iq
+            #save last dynamic current (charge differential) for Trapezoidal method
+            #print(self._iq)
+            iqlast = self._iq #iq is calculated in solve_timestep by get_diff
         X = self.toolkit.array(X[1:]).T
 
         # Insert reference node voltage
