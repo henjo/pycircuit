@@ -55,7 +55,6 @@ class Transient(Analysis):
     """
     ## TODO:
     ## * Make a timestep method that provides the next timestep
-    ## * Implement trapezoidal method
     ## * Implement automatic timestep adjustment, using difference between
     ## BE and trapezoidal as a measure of the error.
     ## Reference: "Time Step Control in Transient Analysis", by SHUBHA VIJAYCHAND
@@ -67,17 +66,17 @@ class Transient(Analysis):
         """
         pass
 
-    def get_diff(self,x,xlast,dt,iqlast=None,method='euler'):
+    def get_diff(self,q,qlast,dt,iqlast=None,method='euler'):
         """Method used to calculate time derivative for charge storing elements.
 
-        Calculates and returns approximate derivatives, both for backward euler 
-        and trapezoidal. The difference between these can be used to determine
-        the next timestep (or reject the last).
+        Calculates approximate derivatives, both for backward euler and trapezoidal. 
+        The difference between these can be used to determine the next timestep (or 
+        reject the last). The difference is stored in a class variable/attribute and
+        return value is one of the calculated derivatives, dependent on selected
+        integration method.
         """
         #BE: i(x)=(q(x)-q(xlast))/dt
         #Trap: i(x)=(q(x)-q(xlast))*2/dt-iqlast
-        q=self.cir.q(x)
-        qlast=self.cir.q(xlast)
         if iqlast == None:
             result = (q-qlast)/dt
         else:
@@ -85,7 +84,7 @@ class Transient(Analysis):
                 result = 2*(q-qlast)/dt-iqlast #Trapezoidal
             else: #euler
                 result = (q-qlast)/dt #Backward Euler
-            print(2*(q-qlast)/dt-iqlast-(q-qlast)/dt) # Difference between methods
+            #self._diff_error = 2*(q-qlast)/dt-iqlast-(q-qlast)/dt # Difference between euler and trap.
         return result
 
     def solve_timestep(self, x0, t, dt, iqlast=None,refnode=gnd,rtol=1e-4,method='euler',provided_function=None):
@@ -105,8 +104,10 @@ class Transient(Analysis):
             xlast = concatenate((x0[:irefnode], array([0.0]), x0[irefnode:]))
             C = self.cir.C(x)
             Geq = C/dt
+            q=self.cir.q(x)
+            qlast=self.cir.q(xlast)
             ##Store dynamic current iq, so it can be reached in solve
-            self._iq = self.get_diff(x,xlast,dt,iqlast=iqlast,method=method)
+            self._iq = self.get_diff(q,qlast,dt,iqlast=iqlast,method=method)
             f =self.cir.i(x) + self._iq + self.cir.u(t)
             J = self.cir.G(x) + Geq
             f, J, C = remove_row_col((f,J,C), irefnode)
@@ -140,7 +141,7 @@ class Transient(Analysis):
 
         #create vector with timepoints and a more fitting dt
         times,dt=np.linspace(0,tend,num=int(tend/dt),endpoint=True,retstep=True)
-        iqlast=None #forces first step to Backward Euler
+        iqlast=None #forces first step to be Backward Euler
 
         for t in times:
             x,feval=self.solve_timestep(X[-1],t,dt,rtol=rtol,method=method,iqlast=iqlast\
