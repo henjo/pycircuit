@@ -47,7 +47,7 @@ class Transient(Analysis):
     >>> c['C'] = C(n1, gnd, c=1e-6)
     >>> c['L'] = L(n1, gnd, L=1e-4)
     >>> tran = Transient(c)
-    >>> res = tran.solve(tend=260e-6,timestep=1e-6)
+    >>> res = tran.solve(tend=260e-6,timestep=1e-6,method='trapezoidal')
     >>> expected = 0.078
     >>> abs(res.v(n1,gnd)[-1])
     True
@@ -60,11 +60,16 @@ class Transient(Analysis):
     ## Reference: "Time Step Control in Transient Analysis", by SHUBHA VIJAYCHAND
     ## Perhaps use a PID-regulator for timestep adustment
 
-    def get_timestep():
+    def get_timestep(self,dt,endtime):
         """Method to provide the next timestep for transient simulation.
         
         """
-        pass
+        dt=dt
+        t=0
+        while t<endtime:
+            yield t,dt
+            t+=dt
+
 
     def get_diff(self,q,qlast,dt,iqlast=None,method='euler'):
         """Method used to calculate time derivative for charge storing elements.
@@ -116,8 +121,8 @@ class Transient(Analysis):
             return array(f, dtype=float), array(J, dtype=float)
 
         x, infodict, ier, mesg = fsolve(func, x0, maxiter=10, full_output=True)
-        if ier > 1:
-            print ier, mesg
+        #if ier > 1: print ier, mesg
+        
         # Insert reference node voltage
         #x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
         if provided_function != None:
@@ -145,16 +150,16 @@ class Transient(Analysis):
 
         #create vector with timepoints and a more fitting dt
         times,dt=np.linspace(0,tend,num=int(tend/dt),endpoint=True,retstep=True)
+        #times = self.get_timestep(dt,tend)
+
         iqlast=None #forces first step to be Backward Euler
 
+        #for t,dt in times:
         for t in times:
             x,feval=self.solve_timestep(X[-1],t,dt,rtol=rtol,method=method,iqlast=iqlast\
                                             ,provided_function=provided_function)
             X.append(copy(x))
             #save last dynamic current (charge differential) for Trapezoidal method
-            #print(self._iq)
-            #if iqlast!=None:
-                #print(self._diff_error)
             iqlast = self._iq #iq is calculated in solve_timestep by get_diff
         X = self.toolkit.array(X[1:]).T
 
