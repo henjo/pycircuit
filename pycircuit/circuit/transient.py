@@ -77,14 +77,16 @@ class Transient(Analysis):
         """
         #BE: i(x)=(q(x)-q(xlast))/dt
         #Trap: i(x)=(q(x)-q(xlast))*2/dt-iqlast
+        resultEuler = (q-qlast)/dt
         if iqlast == None:
-            result = (q-qlast)/dt
+            result = resultEuler
         else:
+            resultTrap = 2*(q-qlast)/dt-iqlast #Trapezoidal
             if method == 'trapezoidal':
-                result = 2*(q-qlast)/dt-iqlast #Trapezoidal
+                result = resultTrap
             else: #euler
-                result = (q-qlast)/dt #Backward Euler
-            #self._diff_error = 2*(q-qlast)/dt-iqlast-(q-qlast)/dt # Difference between euler and trap.
+                result = resultEuler #Backward Euler
+            self._diff_error = resultTrap-resultEuler # Difference between euler and trap.
         return result
 
     def solve_timestep(self, x0, t, dt, iqlast=None,refnode=gnd,rtol=1e-4,method='euler',provided_function=None):
@@ -113,7 +115,9 @@ class Transient(Analysis):
             f, J, C = remove_row_col((f,J,C), irefnode)
             return array(f, dtype=float), array(J, dtype=float)
 
-        x = fsolve(func, x0)
+        x, infodict, ier, mesg = fsolve(func, x0, maxiter=10, full_output=True)
+        if ier > 1:
+            print ier, mesg
         # Insert reference node voltage
         #x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
         if provided_function != None:
@@ -149,6 +153,8 @@ class Transient(Analysis):
             X.append(copy(x))
             #save last dynamic current (charge differential) for Trapezoidal method
             #print(self._iq)
+            #if iqlast!=None:
+                #print(self._diff_error)
             iqlast = self._iq #iq is calculated in solve_timestep by get_diff
         X = self.toolkit.array(X[1:]).T
 
