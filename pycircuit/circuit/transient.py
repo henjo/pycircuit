@@ -60,14 +60,29 @@ class Transient(Analysis):
     ## Reference: "Time Step Control in Transient Analysis", by SHUBHA VIJAYCHAND
     ## Perhaps use a PID-regulator for timestep adustment
 
+    _iq = None #used for saving last current from dynamic elements
+    _diff_error = None #used for saving difference between euler and trapezoidal
+
     def get_timestep(self,dt,endtime):
         """Method to provide the next timestep for transient simulation.
         
         """
+        ## Use the difference between euler and trapezoidal
+        ## Error as abs(self._diff_error)/abs(self._iq) - iq_tolerance
+        ## If error > 0: decrease timestep
+        ## If error < 0: increase timestep
+        ## Make change proportionale to error
+        ## Use and integrating factor to achieve 0 error
+        ## Use differential factor to change more if error changes quick?
+        ## dt -= dt*p*error #PI-regulator (no differential)
+        iq_tolerance = 1e-4
+        iq_p =1e-3
         dt=dt
         t=0
         while t<endtime:
             yield t,dt
+            #iq_error=abs(self._diff_error)/abs(self._iq)-iq_tolerance
+            #dt -= dt*iq_p*iq_error
             t+=dt
 
 
@@ -120,7 +135,7 @@ class Transient(Analysis):
             f, J, C = remove_row_col((f,J,C), irefnode)
             return array(f, dtype=float), array(J, dtype=float)
 
-        x, infodict, ier, mesg = fsolve(func, x0, maxiter=10, full_output=True)
+        x, infodict, ier, mesg = fsolve(func, x0, maxiter=40, full_output=True)
         #if ier > 1: print ier, mesg
         
         # Insert reference node voltage
@@ -154,7 +169,6 @@ class Transient(Analysis):
 
         iqlast=None #forces first step to be Backward Euler
 
-        #for t,dt in times:
         for t in times:
             x,feval=self.solve_timestep(X[-1],t,dt,rtol=rtol,method=method,iqlast=iqlast\
                                             ,provided_function=provided_function)
@@ -165,7 +179,8 @@ class Transient(Analysis):
 
         # Insert reference node voltage
         X = self.toolkit.concatenate((X[:irefnode], 
-                                      self.toolkit.zeros((1,len(times))), 
+                                      #self.toolkit.zeros((1,len(times))), #generator have no length
+                                      self.toolkit.zeros((1,len(X[1]))),
                                       X[irefnode:]))
 
         self.result = CircuitResult(self.cir, x=X, xdot=None,
