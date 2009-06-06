@@ -81,8 +81,10 @@ class Transient(Analysis):
         t=0
         while t<endtime:
             yield t,dt
-            #iq_error=abs(self._diff_error)/abs(self._iq)-iq_tolerance
-            #dt -= dt*iq_p*iq_error
+            if (self._diff_error != None) and (self._iq != None):
+                iq_error=np.dot(self._diff_error,self._diff_error)/np.dot(self._iq,self._iq)-iq_tolerance
+                #print iq_error
+                dt -= dt*iq_p*iq_error
             t+=dt
 
 
@@ -164,27 +166,28 @@ class Transient(Analysis):
             X.append(copy(x))
 
         #create vector with timepoints and a more fitting dt
-        times,dt=np.linspace(0,tend,num=int(tend/dt),endpoint=True,retstep=True)
-        #times = self.get_timestep(dt,tend)
-
+        #times,dt=np.linspace(0,tend,num=int(tend/dt),endpoint=True,retstep=True)
+        times = self.get_timestep(dt,tend)
+        timelist=[] #for plotting purposes
         iqlast=None #forces first step to be Backward Euler
-
-        for t in times:
+        for t,dt in times:
+            print dt
+            timelist.append(t)
             x,feval=self.solve_timestep(X[-1],t,dt,rtol=rtol,method=method,iqlast=iqlast\
                                             ,provided_function=provided_function)
             X.append(copy(x))
             #save last dynamic current (charge differential) for Trapezoidal method
             iqlast = self._iq #iq is calculated in solve_timestep by get_diff
         X = self.toolkit.array(X[1:]).T
+        timelist = np.array(timelist)
 
         # Insert reference node voltage
         X = self.toolkit.concatenate((X[:irefnode], 
-                                      #self.toolkit.zeros((1,len(times))), #generator have no length
-                                      self.toolkit.zeros((1,len(X[1]))),
+                                      self.toolkit.zeros((1,len(timelist))),
                                       X[irefnode:]))
 
         self.result = CircuitResult(self.cir, x=X, xdot=None,
-                                    sweep_values=times, 
+                                    sweep_values=timelist, 
                                     sweep_label='time', 
                                     sweep_unit='s')
         
