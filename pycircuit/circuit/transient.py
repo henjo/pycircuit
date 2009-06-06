@@ -63,7 +63,7 @@ class Transient(Analysis):
     _iq = None #used for saving last current from dynamic elements
     _diff_error = None #used for saving difference between euler and trapezoidal
 
-    def get_timestep(self,dt,endtime):
+    def get_timestep(self,dt,endtime,dtmin=1e-9):
         """Method to provide the next timestep for transient simulation.
         
         """
@@ -75,16 +75,16 @@ class Transient(Analysis):
         ## Use and integrating factor to achieve 0 error
         ## Use differential factor to change more if error changes quick?
         ## dt -= dt*p*error #PI-regulator (no differential)
-        iq_tolerance = 1e-4
-        iq_p =1e-3
+        iq_tolerance = 1e-5
+        iq_p =1e4
         dt=dt
         t=0
         while t<endtime:
             yield t,dt
             if (self._diff_error != None) and (self._iq != None):
                 iq_error=np.dot(self._diff_error,self._diff_error)/np.dot(self._iq,self._iq)-iq_tolerance
-                #print iq_error
                 dt -= dt*iq_p*iq_error
+                dt = max(dt, dtmin)
             t+=dt
 
 
