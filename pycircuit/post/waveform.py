@@ -358,6 +358,23 @@ class Waveform(object):
         
         return Waveform(newxlist, dydx, xlabels = self.xlabels)
 
+    def xval(self, axis=-1):
+        """Return a waveform with the x-values from the given dimension"""
+        y = np.ones(self._y.shape)
+        
+        axis = axis % self.ndim
+
+        slices = [np.newaxis] * axis + [slice(0, len(self._xlist[axis]))]
+        
+        ## Broadcast dimension 0 to axis-1 by transpose
+        y.T[:] = self._xlist[axis][slices].T
+    
+        newxlist = copy(self._xlist)
+
+        return Waveform(newxlist, y, xunits=self.xunits, yunit=self.xunits[axis], 
+                        xlabels=self.xlabels, ylabel=self.xlabels[axis])
+        
+
     # Plotting (wrapper around matplotlib)
     def _plot(self, plotfunc, *args, **kvargs):
         import pylab
