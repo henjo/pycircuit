@@ -116,25 +116,29 @@ class TwoPortAnalysis(Analysis):
                            inputsrc='VS_TwoPort',
                            outputnodes=(outp, outn), 
                            toolkit=toolkit)
-                res_v = na.solve(freqs, complexfreq=complexfreq)
+                res_v = na.solve(freqs, complexfreq=complexfreq, 
+                                 refnode=refnode)
 
                 na = Noise(circuit_cs, 
                            inputsrc='IS_TwoPort',
                            outputnodes=(outp, outn),
                            toolkit=toolkit)
-                res_i = na.solve(freqs, complexfreq=complexfreq)
+                res_i = na.solve(freqs, complexfreq=complexfreq,
+                                 refnode=refnode)
             else:
                 na = Noise(circuit_vs, 
                                 inputsrc='VS_TwoPort',
                                 outputsrc='VL',
                                 toolkit=toolkit)
-                res_v = na.solve(freqs, complexfreq=complexfreq)
+                res_v = na.solve(freqs, complexfreq=complexfreq,
+                                 refnode=refnode)
 
                 na = Noise(circuit_cs, 
                            inputsrc='IS_TwoPort',
                            outputsrc='VL',
                            toolkit=toolkit)
-                res_i = na.solve(freqs, complexfreq=complexfreq)
+                res_i = na.solve(freqs, complexfreq=complexfreq,
+                                 refnode=refnode)
 
             result['Svn'] = res_v['Svninp']
             result['Sin'] = res_i['Sininp']

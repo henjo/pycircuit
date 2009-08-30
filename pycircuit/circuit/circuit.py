@@ -289,7 +289,11 @@ class Circuit(object):
         if not isinstance(node, Node):
             node = Node(str(node))
 
-        return self.nodes.index(node)
+        if node in self.nodes:
+            return self.nodes.index(node)
+        else:
+            raise ValueError('Node %s is not in circuit node list (%s)'%
+                             (str(node), str(self.nodes)))
 
     def get_branch_index(self, branch):
         """Get row in the x vector of a branch instance"""
@@ -514,16 +518,18 @@ class Circuit(object):
 
             nodeindex = self.get_node_index(node)
 
-            refnodeindex = self.get_node_index(refnode)
 
             if refnode_removed:
+                refnodeindex = self.get_node_index(refnode)
+
                 if nodeindex > refnodeindex:
                     nodeindex -= 1
 
-            if nodeindex != refnodeindex:
-                v.append(x[nodeindex])
-            else:
-                v.append(0)
+                if nodeindex == refnodeindex:
+                    v.append(0)
+                    continue
+                    
+            v.append(x[nodeindex])
 
         return v[0] - v[1]
 

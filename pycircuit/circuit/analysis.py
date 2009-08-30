@@ -479,7 +479,7 @@ class TransimpedanceAnalysis(Analysis):
 
         ## Refer the voltages to the gnd node by removing
         ## the rows and columns that corresponds to this node
-        irefnode = self.cir.nodes.index(refnode)
+        irefnode = self.cir.get_node_index(refnode)
         G,C = remove_row_col((G,C), irefnode)
 
         # Calculate the reciprocal G and C matrices
