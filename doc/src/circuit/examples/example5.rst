@@ -46,9 +46,9 @@ input referred noise.
     result['mu']
 
     ## Input referred voltage noise power spectral density
-    expand(Svn == result['Svn'])
+    expand(result['Svn'])
 
     ## Input referred current noise power spectral density
-    expand(Sin == result['Sin'])
+    expand(result['Sin'])
 
     
