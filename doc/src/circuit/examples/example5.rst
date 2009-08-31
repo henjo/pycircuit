@@ -42,8 +42,9 @@ input referred noise.
     ABCD.simplify()
     ABCD
 
-    ## Voltage gain (mu)
-    result['mu']
+    ## Calculate Voltage gain (mu)
+    mu = 1 / ABCD[0,0]
+    mu
 
     ## Input referred voltage noise power spectral density
     expand(result['Svn'])
