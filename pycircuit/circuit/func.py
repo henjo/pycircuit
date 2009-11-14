@@ -1,5 +1,6 @@
 import numeric
 import sympy
+from scipy import interpolate
 
 class TimeFunction(object):
     """Time dependent function"""
@@ -122,3 +123,26 @@ class Tanh(ScalarFunction):
         return self.toolkit.log(self.toolkit.cosh((x-self.offset)/self.level))*self.level
 
                     
+class TabFunc(ScalarFunction):
+    """Return interpolated values from a lookup table
+
+    >>> xvec=numeric.linspace(-2,2,100)
+    >>> yvec=numeric.tanh(xvec)
+    >>> myFunc=TabFunc(xvec,yvec)
+    >>> myFunc.f(numeric.pi)
+    1.02465815883
+    >>> myFunc.fprime(0)
+    1.00000009622
+    >>> 
+    
+    """
+
+    def __init__(self, xvec, yvec):
+        self.xyspline=interpolate.splrep(xvec, yvec)
+
+    def f(self,x):
+        return interpolate.splev(x,self.xyspline,der=0)
+
+    def fprime(self,x):
+        return interpolate.splev(x,self.xyspline,der=1)
+
