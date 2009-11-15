@@ -54,16 +54,15 @@ class Transient(Analysis):
 
     """
     ## TODO:
-    ## * Make a timestep method that provides the next timestep
     ## * Implement automatic timestep adjustment, using difference between
-    ## BE and trapezoidal as a measure of the error.
-    ## Reference: "Time Step Control in Transient Analysis", by SHUBHA VIJAYCHAND
-    ## Perhaps use a PID-regulator for timestep adustment
+    ##   BE and trapezoidal as a measure of the error.
+    ##   Reference: "Time Step Control in Transient Analysis", by SHUBHA VIJAYCHAND
+    ##   Perhaps use a PID-like regulator for timestep adustment
 
     _iq = None #used for saving last current from dynamic elements
     _diff_error = None #used for saving difference between euler and trapezoidal
 
-    def get_timestep(self,dt,endtime,dtmin=1e-9):
+    def get_timestep(self,dt,endtime,dtmin=1e-12):
         """Method to provide the next timestep for transient simulation.
         
         """
@@ -71,22 +70,36 @@ class Transient(Analysis):
         ## Error as abs(self._diff_error)/abs(self._iq) - iq_tolerance
         ## If error > 0: decrease timestep
         ## If error < 0: increase timestep
-        ## Make change proportionale to error
+
+        ## Make change proportional to error
         ## Use and integrating factor to achieve 0 error
         ## Use differential factor to change more if error changes quick?
         ## dt -= dt*p*error #PI-regulator (no differential)
-        iq_tolerance = 1e-5
-        iq_p =1e4
+
+        ## Make also simpler variant:
+        ## increase as dt *=2
+        ## decrease as dt /=2
+        ## with convergence error, both decrease and reject timestep
+
+        iq_tolerance = 1e-2
+        iq_p = 1e4 #proportionality constant
+        iq_i = 1 #integrator constant
         dt=dt
+        dtint=dt
         t=0
         while t<endtime:
             yield t,dt
-            if (self._diff_error != None) and (self._iq != None):
-                iq_error=np.dot(self._diff_error,self._diff_error)/np.dot(self._iq,self._iq)-iq_tolerance
-                dt -= dt*iq_p*iq_error
+            de=self._diff_error
+            iq=self._iq
+            if (de != None) and (iq != None):
+                iq_error=np.dot(de,de)/np.dot(iq,iq)-iq_tolerance
+                #print iq_error
+                #dt -= dt*iq_p*iq_error
+                #dtint -= iq_i*iq_error*dt
+                #dtint =max(dtint,dtmin)
+                #dt = dtint - iq_p*iq_error*dt
                 dt = max(dt, dtmin)
             t+=dt
-
 
     def get_diff(self,q,qlast,dt,iqlast=None,method='euler'):
         """Method used to calculate time derivative for charge storing elements.
@@ -171,7 +184,7 @@ class Transient(Analysis):
         timelist=[] #for plotting purposes
         iqlast=None #forces first step to be Backward Euler
         for t,dt in times:
-            print dt
+            #print t, dt
             timelist.append(t)
             x,feval=self.solve_timestep(X[-1],t,dt,rtol=rtol,method=method,iqlast=iqlast\
                                             ,provided_function=provided_function)
@@ -180,6 +193,8 @@ class Transient(Analysis):
             iqlast = self._iq #iq is calculated in solve_timestep by get_diff
         X = self.toolkit.array(X[1:]).T
         timelist = np.array(timelist)
+        
+        print("steps: "+str( len(timelist)))
 
         # Insert reference node voltage
         X = self.toolkit.concatenate((X[:irefnode], 
