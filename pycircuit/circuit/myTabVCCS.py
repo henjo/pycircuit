@@ -18,7 +18,7 @@ class myVCCS(Circuit):
    >>> n1,n2 = c.add_nodes('1', '2')
    >>> c['vsin'] = VSin(n1, gnd, freq=2e3, va=1, vo=1)
    >>> c['vccs'] = myVCCS(n1, gnd, n2, gnd, ivec=ivec, vvec=vvec, nvec=nvec)
-   >>> c['rl'] = R(n2, gnd, r=1)
+   >>> c['rl'] = R(n2, gnd, r=2.0)
    >>> tran = Transient(c)
    >>> res = tran.solve(tend=1e-3, timestep=1e-5)
    >>> plotall(res.v(n1),res.v(n2))
@@ -36,8 +36,8 @@ class myVCCS(Circuit):
    linear = False
        
    def update(self, subject):
-      self.function = func.TabFunc(self.ipar.vvec, self.ipar.ivec)                  
-      self.noiseFunction = func.TabFunc(self.ipar.vvec, self.ipar.nvec)              
+      self.function = func.TabFunc(self.ipar.vvec, self.ipar.ivec)
+      self.noiseFunction = func.TabFunc(self.ipar.vvec, self.ipar.nvec)
       n = self.n
       G = self.toolkit.zeros((n,n))
       inpindex, innindex, outpindex, outnindex = \
@@ -48,9 +48,15 @@ class myVCCS(Circuit):
       G[outnindex, inpindex] += -1
       G[outnindex, innindex] += 1
       self._G = G
+      CY = self.toolkit.zeros((n,n))
+      CY[outpindex, outpindex] +=1
+      CY[outpindex, outnindex] +=-1
+      CY[outnindex, outnindex] +=1
+      CY[outnindex, outpindex] +=-1
+      self._CY = CY
       self._I = self.toolkit.zeros(n)
-      self._I[outpindex] += 1
-      self._I[outnindex] +=-1
+      self._I[outpindex] +=-1
+      self._I[outnindex] += 1
 
    def G(self, x, epar=defaultepar):
       gm=self.function.fprime(x[1]-x[0])
@@ -63,9 +69,9 @@ class myVCCS(Circuit):
       i=self.function.f(x[1]-x[0])
       return self._I*i
    
-   #   def CY(self, x, epar=defaultepar):
-   #       """
-   #       """
+    def CY(self, x, w, epar=defaultepar):
+       ipsd=self.noiseFunction.f(x[1]-x[0])
+        return  self._CY*ipsd
 
 
 if __name__ == "__main__":
