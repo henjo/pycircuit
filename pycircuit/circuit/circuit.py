@@ -283,14 +283,27 @@ class Circuit(object):
         elif len(minusbranches) == 1:
             return minusbranches[0], -1            
 
-    def get_node_index(self, node):
-        """Get row in the x vector of a node instance"""
+    def get_node_index(self, node, refnode=None):
+        """Get row in the x vector of a node instance
+
+           If the refnode argument is given the reference node
+           is assumed to be removed
+        """
 
         if not isinstance(node, Node):
             node = Node(str(node))
+        if refnode and not isinstance(refnode, Node):
+            refnode = Node(str(refnode))
 
         if node in self.nodes:
-            return self.nodes.index(node)
+            index = self.nodes.index(node)
+            if refnode != None:
+                irefnode = self.nodes.index(refnode)
+                if index == irefnode:
+                    return None
+                if index > irefnode:
+                    return index - 1
+            return index
         else:
             raise ValueError('Node %s is not in circuit node list (%s)'%
                              (str(node), str(self.nodes)))
@@ -473,6 +486,26 @@ class Circuit(object):
 
         return result
 
+    def stamp_v(self, x, value, nodep, noden=None, refnode=None):
+        """Stamp value in vector such that x[nodep] += value, x[noden] -= value
+        
+        If refnode is not None the reference node is assumed to be removed
+        from vector
+        """
+        x[self.get_node_index(nodep, refnode)] += value
+        x[self.get_node_index(noden, refnode)] -= value
+
+    def remove_refnode(self, matrices, refnode):
+        """Remove refnode from vectors or matrices"""
+        n = self.get_node_index(refnode)
+        result = []
+        
+        for A in matrices:
+            for axis in range(len(A.shape)):
+                A=np.delete(A, [n], axis=axis)
+            result.append(A)
+        return tuple(result)
+
     def extract_v(self, x, nodep, noden=None, refnode=gnd, 
                   refnode_removed=False):
         """Extract voltage between nodep and noden from the given x-vector.
@@ -516,18 +549,14 @@ class Circuit(object):
             elif node == None:
                 node = refnode
 
-            nodeindex = self.get_node_index(node)
-
-
             if refnode_removed:
-                refnodeindex = self.get_node_index(refnode)
+                nodeindex = self.get_node_index(node, refnode)
+            else:
+                nodeindex = self.get_node_index(node, refnode)
 
-                if nodeindex > refnodeindex:
-                    nodeindex -= 1
-
-                if nodeindex == refnodeindex:
-                    v.append(0)
-                    continue
+            if nodeindex == None: ## When node == refnode
+                v.append(0)
+                continue
                     
             v.append(x[nodeindex])
 
