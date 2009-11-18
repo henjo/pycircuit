@@ -6,7 +6,7 @@ import numpy as np
 from nport import *
 from pycircuit.circuit import SubCircuit, gnd, R, VS, IS, Branch, circuit
 from analysis import Analysis, AC, Noise, TransimpedanceAnalysis, \
-    remove_row_col,defaultepar
+    remove_row_col,defaultepar, isiterable, dc_steady_state
 from pycircuit.post.internalresult import InternalResultDict
 
 np.set_printoptions(precision=4)
@@ -207,31 +207,55 @@ class TwoPortAnalysis(Analysis):
 
         S = np.zeros((N,N), dtype=object)
         
-        for n, sourceport in enumerate(self.ports):
-            circuit = copy(self.cir)
-            
-            vs_plus = circuit.add_node('vs_plus')
-            
-            ## Power source at port n
-            circuit['_vs'] = VS(vs_plus, sourceport[1], vac = 2)
-            circuit['_rs'] = R(vs_plus, sourceport[0], r = r0)
-            
-            ## Terminate other ports
-            for k, port in enumerate(self.ports):
-                if port != sourceport:
-                    circuit['_rl%d'%k] = R(port[0], port[1], r = r0)
-            
-            ## Run AC-analysis
-            res = AC(circuit, toolkit=toolkit).solve(freqs, 
-                                                     refnode=sourceport[1],
-                                                     complexfreq = complexfreq)
+        circuit = copy(self.cir)
 
-            ## Obtain s-parameters
-            for k, port in enumerate(self.ports):
-                if k == n:
-                    S[k,n] = res.v(port[0], port[1]) - 1
-                else:
-                    S[k,n] = res.v(port[0], port[1])
+        ## Place power sources at the ports
+        for n, sourceport in enumerate(self.ports):
+            circuit['_is%d'%n] = IS(sourceport[1], sourceport[0], iac = 0)
+            circuit['_rl%d'%n] = R(sourceport[1], sourceport[0], r = r0, noisy=False)
+
+        if toolkit.symbolic:
+            ## For now just one frequency is allowed
+            assert not isiterable(freqs)
+            
+            G, C, u, x, ss = dc_steady_state(circuit, freqs, 
+                                             sourceport[1], 
+                                             toolkit,
+                                             complexfreq = complexfreq)
+            Y = ss * C + G
+            detY = toolkit.det(Y)
+
+        for n, sourceport in enumerate(self.ports):
+            ## Add stimulus to the port
+            circuit['_is%d'%n].ipar.iac = 2 / r0
+
+            ## If symbolic the s-parameters are calculated using co-factors
+            if toolkit.symbolic:
+                (u,) = circuit.remove_refnode((circuit.u(x, analysis='ac'),), 
+                                           sourceport[1])
+                ## Calculate s-parameters using cofactors
+                for k, port in enumerate(self.ports):
+                    resname = "v(%s,%s)"%(port[0], port[1])
+                    res = linearsolver_partial(Y, u, sourceport[1], [resname],
+                                               circuit, toolkit, detY=detY)
+                    if k == n:
+                        S[k,n] = res[resname] - 1
+                    else:
+                        S[k,n] = res[resname]
+            else:
+                ## Run AC-analysis
+                acana = AC(circuit, toolkit=toolkit)
+                res = acana.solve(freqs, refnode=sourceport[1],
+                                  complexfreq = complexfreq)
+                ## Obtain s-parameters
+                for k, port in enumerate(self.ports):
+                    if k == n:
+                        S[k,n] = res.v(port[0], port[1]) - 1
+                    else:
+                        S[k,n] = res.v(port[0], port[1])
+
+            ## Clear stimulus to the port
+            circuit['_is%d'%n].ipar.iac = 0
 
         ## Find noise wave correlation matrix
         ## The method works as follows:
@@ -244,24 +268,16 @@ class TwoPortAnalysis(Analysis):
         ##    vectors divided by sqrt(z0)
         ## 4. Calculate the correlation matrix as:
         ##    CS = T * CY * T+
-        
-        circuit = copy(self.cir)
 
-        ## Terminate ports
-        for k, port in enumerate(self.ports):
-            circuit['_rl%d'%k] = R(port[0], port[1], r = r0, noisy = False)
-        
         ## Calculate transimpedances
         branchlist = [Branch(*port) for port in self.ports]
         
         refnode = self.ports[0][1]
         
-        transimpana = TransimpedanceAnalysis(circuit, toolkit = toolkit)
+        transimpana = TransimpedanceAnalysis(circuit, toolkit=toolkit)
 
-        zmlist = transimpana.solve(freqs,
-                                   branchlist,
-                                   refnode = self.ports[0][1], 
-                                   complexfreq = complexfreq)
+        zmlist = transimpana.solve(freqs, branchlist, refnode=refnode,
+                                   complexfreq=complexfreq)
 
         T = np.matrix(zmlist) * r0**-0.5
         
@@ -313,6 +329,42 @@ class TwoPortAnalysis(Analysis):
         D = res_shorted.i('VS_TwoPort.minus') / res_shorted.i('VL_TwoPort.plus')
 
         return np.array([[A,B],[C,D]], dtype=object)
+
+def linearsolver_partial(Y, u, refnode, selected_res, cir, toolkit, detY=None):
+    """Solve linear system Y * x = -u and return a dictionary of selected result
+
+    The function should only be used for symbolic calculations since more
+    efficient methods exists for numeric problems.
+
+    The selected_res argument is a list/tuple of desired results in the form 
+    "v(nodea, nodeb)" or "v(nodea)" for voltage potentials.
+
+    """
+
+    if detY == None:
+        detY = toolkit.det(Y)
+    
+    uindices = toolkit.nonzero(u)
+
+    result = {}
+
+    for res_str in selected_res:
+        if res_str[0:2] != 'v(' or res_str[-1] != ')':
+            raise ValueError('Invalid result selector: %s'%res_str)
+
+        nodes = res_str[2:-1].split(',')
+
+        nodes_indices = [cir.get_node_index(node, refnode) for node in nodes]
+
+        num = 0
+        for ui in uindices:
+            for sign, nodeindex in zip([1,-1], nodes_indices):
+                if nodeindex != None:
+                    num += sign * -u[ui] * toolkit.cofactor(Y, nodeindex, ui)
+
+        result[res_str] = num / detY
+
+    return result
 
 if __name__ == "__main__":
     import doctest
