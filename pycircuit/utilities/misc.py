@@ -5,6 +5,8 @@
 import numpy as N
 from itertools import izip, groupby
 from operator import itemgetter
+import tempfile
+import shutil
 
 def indent(s, n=4, notfirstline = False):
     """Indent string
@@ -132,6 +134,21 @@ class ObserverSubject(object):
         for observer in self._observers:
             if modifier != observer:
                 observer.update(self)
+
+class TempDir(object):
+    def __init__(self, srcdir=None, keep=False):
+        self.keep = keep
+        self.dir = tempfile.mkdtemp()
+
+        if srcdir:
+            copytree(srcdir, self.dir)
+
+    def __str__(self):
+        return self.dir
+    def __del__(self):
+        if not self.keep:
+            shutil.rmtree(self.dir)
+
 
 
 if __name__ == "__main__":
