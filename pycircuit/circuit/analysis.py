@@ -364,7 +364,29 @@ class Transient(Analysis):
         
         return self.result
 
-class AC(Analysis):
+class SSAnalysis(Analysis):
+    """Super class for small-signal analyses"""
+
+    def ac_map_function(self, func, ss, refnode):
+        """Apply a function over a list of frequencies or a single frequency"""
+        irefnode = self.cir.nodes.index(refnode)
+
+        def myfunc(s):
+            x = func(s)
+            # Insert reference node voltage
+            return concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
+            
+        if isiterable(ss):
+            return self.toolkit.array([myfunc(s) for s in ss]).swapaxes(0,1)
+        else:
+            return myfunc(ss)
+
+    def dc_steady_state(self, freqs, refnode, toolkit, complexfreq=False, u=None):
+        """Return G,C,u matrices at dc steady-state and complex frequencies"""
+        return dc_steady_state(self.cir, freqs, refnode, toolkit, 
+                               complexfreq = complexfreq, u = u)
+
+class AC(SSAnalysis):
     """
     AC analysis class
 
@@ -396,55 +418,26 @@ class AC(Analysis):
     Waveform(array([ 1000000.,  2000000.]), array([ 1.5+0.j,  1.5+0.j]))
     >>> res.i('vs.minus')
     Waveform(array([ 1000000.,  2000000.]), array([ 0.0015 +9.4248e-06j,  0.0015 +1.8850e-05j]))
-
-"""
-
+    
+    """
+    
     def solve(self, freqs, refnode=gnd, complexfreq = False, u = None):
-        toolkit = self.toolkit
+        G, C, u, x, ss = self.dc_steady_state(freqs, refnode, self.toolkit,
+                                         complexfreq = complexfreq, u = u)
 
-        cir = self.cir
-        n = cir.n
-        
-        x = zeros(n) ## FIXME, this should be calculated from the dc analysis
-        
-        G = cir.G(x)
-        C = cir.C(x)
+        def acsolve(s):
+            return self.toolkit.linearsolver(s*C + G, -u)
 
-        ## Allow for custom stimuli, mainly used by other analyses
-        if u == None:
-            u = cir.u(x, analysis='ac')
+        xac = self.ac_map_function(acsolve, ss, refnode)
 
-        ## Refer the voltages to the reference node by removing
-        ## the rows and columns that corresponds to this node
-        irefnode = cir.get_node_index(refnode)
-        G,C,u = remove_row_col((G,C,u), irefnode)
-
-        if complexfreq:
-            ss = freqs
-        else:
-            ss = 2j*pi*freqs
-
-        def solvecircuit(s):
-            x = toolkit.linearsolver(s*C + G, -u)
-
-            # Insert reference node voltage
-            return concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
-
-        if isiterable(freqs):
-            xac = self.toolkit.array([solvecircuit(s) for s in ss]).swapaxes(0,1)
-            xacdot = ss * xac
-        else:
-            xac = solvecircuit(ss)
-            xacdot = ss * xac
-
-        self.result = CircuitResultAC(cir, x, xac, xacdot, 
+        self.result = CircuitResultAC(self.cir, x, xac, ss * xac, 
                                       sweep_values = freqs, 
                                       sweep_label='frequency',
                                       sweep_unit='Hz')
 
         return self.result
 
-class TransimpedanceAnalysis(Analysis):
+class TransimpedanceAnalysis(SSAnalysis):
     """Calculates transimpedance or current-gain vector
 
     This function calculates the transimpedances from a current injected
@@ -508,7 +501,7 @@ class TransimpedanceAnalysis(Analysis):
         return result
 
 
-class Noise(Analysis):
+class Noise(SSAnalysis):
     """Noise analysis that calculates input and output referred noise.
     
     The analysis is using the adjoint admittance matrix method to calculate the 
@@ -685,6 +678,32 @@ class Noise(Analysis):
 
 def isiterable(object):
     return hasattr(object,'__iter__')
+
+def dc_steady_state(cir, freqs, refnode, toolkit, complexfreq = False, u = None):
+    """Return G,C,u matrices at dc steady-state and complex frequencies"""
+
+    n = cir.n
+
+    x = zeros(n) ## FIXME, this should be calculated from the dc analysis
+
+    G = cir.G(x)
+    C = cir.C(x)
+
+    ## Allow for custom stimuli, mainly used by other analyses
+    if u == None:
+        u = cir.u(x, analysis='ac')
+
+    ## Refer the voltages to the reference node by removing
+    ## the rows and columns that corresponds to this node
+    irefnode = cir.get_node_index(refnode)
+    G,C,u = remove_row_col((G,C,u), irefnode)
+
+    if complexfreq:
+        ss = freqs
+    else:
+        ss = 2j*pi*freqs
+
+    return G, C, u, x, ss
 
 if __name__ == "__main__":
     import doctest
