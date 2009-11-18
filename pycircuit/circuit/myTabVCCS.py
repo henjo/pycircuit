@@ -68,10 +68,12 @@ class myVCCS(Circuit):
       """
       i=self.function.f(x[1]-x[0])
       return self._I*i
-   
-    def CY(self, x, w, epar=defaultepar):
-       ipsd=self.noiseFunction.f(x[1]-x[0])
-        return  self._CY*ipsd
+
+   def CY(self, x, w, epar=defaultepar):
+      #gm=self.function.fprime(x[1]-x[0])
+      #ipsd=4*kT*gm
+      ipsd=self.noiseFunction.f(x[1]-x[0])
+      return  self._CY*ipsd
 
 
 if __name__ == "__main__":
