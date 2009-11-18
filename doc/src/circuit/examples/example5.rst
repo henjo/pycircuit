@@ -47,9 +47,11 @@ input referred noise.
     mu
 
     ## Input referred voltage noise power spectral density
-    expand(result['Svn'])
+    ## using |Rfb| = |mu| * Ri
+    expand(result['Svn']).subs(Rfb, abs(mu)*Ri)
 
     ## Input referred current noise power spectral density
-    expand(result['Sin'])
+    ## using |Rfb| = |mu| * Ri
+    expand(result['Sin']).subs(Rfb, abs(mu)*Ri)
 
     
