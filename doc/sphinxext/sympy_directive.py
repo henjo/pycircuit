@@ -114,7 +114,6 @@ def sympy_directive(name, arguments, options, content, lineno,
                 latex_expr = latex_expr[1:-1]
 
                 rst += '.. math::\n\n' + indent(latex_expr) + '\n'
-                print rst
             else:
                 rst += str(result) + '\n'
 
