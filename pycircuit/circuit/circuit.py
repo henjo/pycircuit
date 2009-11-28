@@ -204,6 +204,7 @@ class Circuit(object):
         newc.nodenames = copy(self.nodenames)    
         newc.branches = copy(self.branches)    
         newc.ipar = copy(self.ipar)
+        newc.toolkit = self.toolkit
         return newc
 
     def add_nodes(self, *names):
@@ -802,8 +803,8 @@ class SubCircuit(Circuit):
         instance to nodes of the circuit
         """
 
-        #if instance.toolkit != self.toolkit:
-        #    raise ValueError('Instance must use the same toolkit as parent')
+        ## Propagate parent toolkit to instance
+        instance.toolkit = self.toolkit
 
         if instancename in self.elements:
             del self[instancename]
