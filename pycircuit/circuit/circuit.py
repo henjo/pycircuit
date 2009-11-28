@@ -552,7 +552,7 @@ class Circuit(object):
             if refnode_removed:
                 nodeindex = self.get_node_index(node, refnode)
             else:
-                nodeindex = self.get_node_index(node, refnode)
+                nodeindex = self.get_node_index(node, None)
 
             if nodeindex == None: ## When node == refnode
                 v.append(0)
