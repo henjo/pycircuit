@@ -630,6 +630,7 @@ class VCVS_limited(Circuit):
 
     terminals = ('inp', 'inn', 'outp', 'outn')
     branches = (Branch(Node('outp'), Node('outn')),)
+    linear = False
 
     def __init__(self, *args, **kvargs):
         super( VCVS_limited, self).__init__(*args, **kvargs)
