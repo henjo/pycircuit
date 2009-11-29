@@ -160,7 +160,7 @@ class Waveform(object):
 
     ## Unary operators
     def __abs__(self):     
-        return Waveform(self._xlist, abs(self._y), xlabels = self.xlabels, 
+        return Waveform(self._xlist, np.abs(self._y), xlabels = self.xlabels, 
                         xunits = self.xunits,
                         ylabel = 'abs(%s)'%self.ylabel, yunit = self.yunit)
     def __neg__(self):
