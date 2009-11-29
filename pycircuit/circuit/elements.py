@@ -654,8 +654,7 @@ class VCVS_limited(Circuit):
         return G
 
     def i(self, x, epar=defaultepar):
-        g_limit = self.function.fprime(x[1]-x[0])
-        vout = x[3] - x[2] - self.ipar.g*self.function.f(x[1]-x[0])
+        vout = x[3] - x[2] - self.function.fprime(x[1]-x[0])*self.function.f(x[1]-x[0])
         return self.toolkit.array([0,0,x[4],-x[4],vout])
 
 if __name__ == "__main__":
