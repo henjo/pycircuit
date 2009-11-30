@@ -97,7 +97,7 @@ class ScalarFunction(object):
     def fprime(self,x):
         return 0
 
-    def fprime(self,x):
+    def F(self,x):
         return 0
 
 class Tanh(ScalarFunction):
