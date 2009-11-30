@@ -19,19 +19,17 @@ input referred noise.
     import numpy, pylab
     from pycircuit.circuit import *
 
-    circuit.default_toolkit = symbolic
-    
     Ri,Rfb,Sv1,Si1 = symbols('Ri Rfb Sv1 Si1', real=True, positive=True)
 
     ## Create circuit
-    cir = SubCircuit()
-    cir['Ri1'] = R('vinp', 1, r=Ri)
-    cir['Ri2'] = R('vinn', 2, r=Ri)
-    cir['Rfb1'] = R(1, 'voutp', r=Rfb)
-    cir['Rfb2'] = R(2, 'voutn', r=Rfb)
-    cir['Vn'] = VS(1, 3, vac=0, noisePSD = Sv1)
-    cir['In'] = IS(3, 2, iac=0, noisePSD = Si1)
-    cir['nullor'] = Nullor(3,2,'voutp','voutn')
+    cir = SubCircuit(toolkit=symbolic)
+    cir['Ri1'] = R('vinp', 1, r=Ri, toolkit=symbolic)
+    cir['Ri2'] = R('vinn', 2, r=Ri, toolkit=symbolic)
+    cir['Rfb1'] = R(1, 'voutp', r=Rfb, toolkit=symbolic)
+    cir['Rfb2'] = R(2, 'voutn', r=Rfb, toolkit=symbolic)
+    cir['Vn'] = VS(1, 3, vac=0, noisePSD = Sv1, toolkit=symbolic)
+    cir['In'] = IS(3, 2, iac=0, noisePSD = Si1, toolkit=symbolic)
+    cir['nullor'] = Nullor(3,2,'voutp','voutn', toolkit=symbolic)
 
     ## Run symbolic 2-port analysis
     twoport_ana = TwoPortAnalysis(cir, 'vinp', 'vinn', 'voutp', 'voutn', method='sparam', noise=True)

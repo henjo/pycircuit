@@ -13,13 +13,11 @@ Find symbolic expression of transfer function from Is to V(3,0):
     from pycircuit.circuit import *
     from sympy import symbols, simplify, ratsimp, sympify, factor, limit, solve, pprint, fraction, collect    
 
-    circuit.default_toolkit = symbolic
-
     var('R1 R2 R3 C1 C2 i_s')
     s = Symbol('s', complex = True)   
 
     ## Create circuit
-    cir = SubCircuit()
+    cir = SubCircuit(toolkit=symbolic)
     cir['R1'] = R(1, 3, r = R1)
     cir['R2'] = R(1, 2, r = R2)
     cir['R3'] = R(1, gnd, r = R3)
@@ -31,7 +29,7 @@ Find symbolic expression of transfer function from Is to V(3,0):
     cir['ISource'] = IS(1, gnd, iac=i_s)
 
     ## Run symbolic AC analysis     
-    ac = AC(cir, toolkit=symbolic)
+    ac = AC(cir)
     result = ac.solve(freqs=s, complexfreq=True)
 
     ## Print transfer function from the voltage source to net 2

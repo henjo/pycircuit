@@ -15,13 +15,11 @@ Find symbolic expression of input impedance of gyrator loaded with gounded capac
     from pycircuit.post.functions import *
     from sympy import Symbol, simplify, ratsimp, sympify, factor, limit, solve, pprint, fraction, collect
 
-    circuit.default_toolkit = symbolic
-
     C1, gm1 = [Symbol(symname, real=True , positive=True ) for symname in 'C1,gm1'.split(',')]
     s = Symbol('s', complex = True)
 
     ## Create circuit object
-    cir = SubCircuit()
+    cir = SubCircuit( toolkit=symbolic)
 
     ## Add nodes to circuit
     n1, n2 = cir.add_nodes('1', '2')
@@ -29,12 +27,12 @@ Find symbolic expression of input impedance of gyrator loaded with gounded capac
     ## Add circuit elements
     cir['cap']  = C(n2, gnd, c = C1)
     # Gyrator
-    cir['Gyrator'] = Gyrator(n1, gnd, n2, gnd, gm = gm1)
+    cir['Gyrator'] = Gyrator(n1, gnd, n2, gnd, gm = gm1, toolkit=symbolic)
     # Current source for AC stimuli
     cir['ISource'] = IS(gnd,n1, iac=1)
 
     ## Run symbolic AC analysis
-    ac = AC(cir, toolkit=symbolic)    
+    ac = AC(cir)    
     result = ac.solve(freqs=s, complexfreq=True)
 
     # Input impedance
@@ -52,7 +50,7 @@ ABCD matrix:
     del cir['cap']
 
     ## Run symbolic 2-port analysis
-    twoport_ana = TwoPortAnalysis(cir, Node('1'), gnd, Node('2'), gnd, toolkit=symbolic)
+    twoport_ana = TwoPortAnalysis(cir, Node('1'), gnd, Node('2'), gnd)
     result = twoport_ana.solve(freqs=s, complexfreq=True)
 
     ## Print ABCD parameter matrix
@@ -81,5 +79,5 @@ G matrix again:
 
     del cir['Gyrator']
     n3, n4 = cir.add_nodes('3', '4')
-    cir['Gyrator'] = Gyrator(n1, n2, n3, n4, gm = gm1)
+    cir['Gyrator'] = Gyrator(n1, n2, n3, n4, gm = gm1, toolkit=symbolic)
     cir.G(np.zeros(cir.n))

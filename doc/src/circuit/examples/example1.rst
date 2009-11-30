@@ -10,10 +10,8 @@ Simple example - RC low-pass filter
     import numpy, pylab
     from pycircuit.circuit import *
 
-    circuit.default_toolkit = symbolic
-    
     ## Create circuit
-    cir = SubCircuit()
+    cir = SubCircuit(toolkit=symbolic)
     cir['VS'] = VS(1, gnd, vac=1)
     cir['R1'] = R(1, 2, r=Symbol('R1'))
     cir['C1'] = C(2, gnd, c=Symbol('C1'))
@@ -33,13 +31,13 @@ Calculate ABCD parameters:
     from pycircuit.circuit import *
     
     ## Create circuit
-    cir = SubCircuit()
+    cir = SubCircuit(toolkit=symbolic)
     ## n1,n2 = nodes('1','2')
     cir['R1'] = R(1, 2, r=Symbol('R1'))
     cir['C1'] = C(2, gnd, c=Symbol('C1'))
 
     ## Run symbolic 2-port analysis
-    twoport_ana = TwoPortAnalysis(cir, Node('1'), gnd, Node('2'), gnd, toolkit=symbolic)
+    twoport_ana = TwoPortAnalysis(cir, Node('1'), gnd, Node('2'), gnd)
     result = twoport_ana.solve(freqs=Symbol('s'), complexfreq=True)
 
     ## Print ABCD parameter matrix
