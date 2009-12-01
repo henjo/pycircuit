@@ -209,6 +209,8 @@ class TwoPortAnalysis(Analysis):
         
         circuit = copy(self.cir)
 
+        refnode = self.ports[0][1]
+
         ## Place power sources at the ports
         for n, sourceport in enumerate(self.ports):
             circuit['_is%d'%n] = IS(sourceport[1], sourceport[0], iac = 0)
@@ -219,11 +221,11 @@ class TwoPortAnalysis(Analysis):
             assert not isiterable(freqs)
             
             G, C, u, x, ss = dc_steady_state(circuit, freqs, 
-                                             sourceport[1], 
+                                             refnode,
                                              toolkit,
                                              complexfreq = complexfreq)
             Y = ss * C + G
-            detY = toolkit.det(Y)
+            detY =  toolkit.det(Y)
 
         for n, sourceport in enumerate(self.ports):
             ## Add stimulus to the port
@@ -232,20 +234,22 @@ class TwoPortAnalysis(Analysis):
             ## If symbolic the s-parameters are calculated using co-factors
             if toolkit.symbolic:
                 (u,) = circuit.remove_refnode((circuit.u(x, analysis='ac'),), 
-                                           sourceport[1])
+                                              refnode)
                 ## Calculate s-parameters using cofactors
                 for k, port in enumerate(self.ports):
                     resname = "v(%s,%s)"%(port[0], port[1])
-                    res = linearsolver_partial(Y, u, sourceport[1], [resname],
+
+                    res = linearsolver_partial(Y, u, refnode, [resname],
                                                circuit, toolkit, detY=detY)
                     if k == n:
                         S[k,n] = res[resname] - 1
                     else:
                         S[k,n] = res[resname]
+
             else:
                 ## Run AC-analysis
                 acana = AC(circuit, toolkit=toolkit)
-                res = acana.solve(freqs, refnode=sourceport[1],
+                res = acana.solve(freqs, refnode=refnode,
                                   complexfreq = complexfreq)
                 ## Obtain s-parameters
                 for k, port in enumerate(self.ports):
@@ -271,8 +275,6 @@ class TwoPortAnalysis(Analysis):
 
         ## Calculate transimpedances
         branchlist = [Branch(*port) for port in self.ports]
-        
-        refnode = self.ports[0][1]
         
         transimpana = TransimpedanceAnalysis(circuit, toolkit=toolkit)
 
@@ -331,7 +333,7 @@ class TwoPortAnalysis(Analysis):
         return np.array([[A,B],[C,D]], dtype=object)
 
 def linearsolver_partial(Y, u, refnode, selected_res, cir, toolkit, detY=None):
-    """Solve linear system Y * x = -u and return a dictionary of selected result
+    """Solve linear system Y * x + u = 0 and return a dictionary of selected result
 
     The function should only be used for symbolic calculations since more
     efficient methods exists for numeric problems.
@@ -356,11 +358,12 @@ def linearsolver_partial(Y, u, refnode, selected_res, cir, toolkit, detY=None):
 
         nodes_indices = [cir.get_node_index(node, refnode) for node in nodes]
 
+        ## xj = (sum_i wi * cofactor(Y,i,j)) / det Y
         num = 0
         for ui in uindices:
             for sign, nodeindex in zip([1,-1], nodes_indices):
                 if nodeindex != None:
-                    num += sign * -u[ui] * toolkit.cofactor(Y, nodeindex, ui)
+                    num += sign * -u[ui] * toolkit.cofactor(Y, ui, nodeindex)
 
         result[res_str] = num / detY
 
