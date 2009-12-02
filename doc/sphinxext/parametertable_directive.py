@@ -5,7 +5,7 @@ in pycircuit.utilities.param (Parameter)
 Example
 -------
 
-    .. paramdict:: pycircuit.circuit.elements.R.instparams
+    .. parametertable:: pycircuit.circuit.elements.R.instparams
 
 
 """
@@ -18,9 +18,9 @@ from sphinx.util.compat import Directive
 import inspect
 
 def setup(app):
-    app.add_directive('paramdict', ParameterDictDirective)
+    app.add_directive('parametertable', ParameterTableDirective)
 
-class ParameterDictDirective(Directive):
+class ParameterTableDirective(Directive):
     required_arguments = 1
 
     def run(self):
@@ -39,23 +39,27 @@ class ParameterDictDirective(Directive):
         body = nodes.tbody('')
         group.append(body)
 
-        def add_row(target, *cols):
+        def add_row(target, *column_texts):
             row = nodes.row('')
-            for col in cols:
-                node = nodes.paragraph(col)
+            for text in column_texts:
+                node = nodes.paragraph('')
                 vl = ViewList()
-                vl.append(col, '<apa>')
+                vl.append(text, '<autosummary>')
                 self.state.nested_parse(vl, 0, node)
+                try:
+                    if isinstance(node[0], nodes.paragraph):
+                        node = node[0]
+                except IndexError:
+                    pass
                 row.append(nodes.entry('', node))
-
             target.append(row)
 
         def get_symbol(s):
-            paramdict_path = s.split('.')
+            parametertable_path = s.split('.')
             
-            for i in reversed(range(len(paramdict_path))):
-                module = '.'.join(paramdict_path[:i])
-                symbol = paramdict_path[i:]
+            for i in reversed(range(len(parametertable_path))):
+                module = '.'.join(parametertable_path[:i])
+                symbol = parametertable_path[i:]
 
                 try:
                     m = __import__(str(module), fromlist='true')
