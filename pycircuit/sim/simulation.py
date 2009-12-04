@@ -126,3 +126,9 @@ class LogSweep(Sweep):
         else:
             n = self.n
         return (self.stop / self.start) ** (1. / (n-1))
+
+def identify_sweep(iterator):
+    """Identifies sweep from sweep values and return sweep instance"""
+    values = list(iterator)
+    
+    

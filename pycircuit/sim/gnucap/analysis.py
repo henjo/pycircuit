@@ -4,24 +4,22 @@
 
 import pycircuit.sim
 from pycircuit.sim import Simulation, LogSweep, LinSweep, Analysis
+from pycircuit.utilities.param import Parameter
 
-class SweptAnalysis(pycircuit.sim.SweptAnalysis):
+class SweptAnalysis(pycircuit.sim.Analysis):
     command = None
-    def __init__(self, circuit, sweep, **parvalues):
-        super(SweptAnalysis, self).__init__(circuit, sweep, **parvalues)
-
-        if not isinstance(sweep, (LogSweep, LinSweep)):
-            raise ValueError('Unsupported sweep type')
+    sweep_param = None
 
     def run(self):
         self.sim.command('print %s v(nodes)'%self.command)
 
         cmdl = [self.command]
 
-        if isinstance(self.sweep , LogSweep):
-            cmdl += [self.sweep.start, self.sweep.stop, '*', self.sweep.factor]
-        elif isinstance(self.sweep, LinSweep):
-            cmdl += [self.sweep.start, self.sweep.stop, self.sweep.step]
+        paramvalue = getattr(self.par, self.sweep_param)
+        if isinstance(paramvalue, LogSweep):
+            cmdl += [paramvalue.start, paramvalue.stop, '*', paramvalue.factor]
+        elif isinstance(paramvalue, LinSweep):
+            cmdl += [paramvalue.start, paramvalue.stop, paramvalue.step]
 
         cmd = ' '.join([str(e) for e in cmdl])
 
@@ -39,9 +37,13 @@ class DCOP(Analysis):
         return self.sim.command('op %s'%str(self.T), parse_result=True)
 
 class Transient(SweptAnalysis):
+    parameters = [Parameter('t', 'Time', 's')]
+    sweep_param = 't'
     command = 'transient'
 
 class AC(SweptAnalysis):
+    parameters = [Parameter('freq', 'Frequency', 'Hz')]
+    sweep_param = 'freq'
     command = 'ac'
 
 ## Register analyses in Simulation class

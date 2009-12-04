@@ -68,7 +68,7 @@ class GnucapTest(unittest.TestCase):
 
         sim = gnucap.Simulation(cir, direct=self.direct)
 
-        res = sim.run_ac(LogSweep(1e4, 1e5, decade=10))
+        res = sim.run_ac(freq=LogSweep(1e4, 1e5, decade=10))
 
         v2 = res.v(2)
 
@@ -82,7 +82,7 @@ class GnucapTest(unittest.TestCase):
         cir = gnucap.Circuit(simple_netlist)
         sim = gnucap.Simulation(cir, direct=self.direct)
 
-        res = sim.run_transient(LinSweep(0,1,n=6))
+        res = sim.run_transient(t=LinSweep(0,1,n=6))
 
         refv2 = Waveform(np.array([0.,0.2,0.4,0.6,0.8,1.]), 
                          np.array([0.75, 0.75, 0.75, 0.75, 0.75,  0.75]))
