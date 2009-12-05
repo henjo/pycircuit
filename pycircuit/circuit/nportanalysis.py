@@ -4,9 +4,10 @@
 
 import numpy as np
 from nport import *
+from pycircuit.utilities import isiterable
 from pycircuit.circuit import SubCircuit, gnd, R, VS, IS, Branch, circuit
 from analysis import Analysis, AC, Noise, TransimpedanceAnalysis, \
-    remove_row_col,defaultepar, isiterable, dc_steady_state
+    remove_row_col,defaultepar, dc_steady_state
 from pycircuit.post.internalresult import InternalResultDict
 
 np.set_printoptions(precision=4)

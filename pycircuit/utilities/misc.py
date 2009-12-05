@@ -8,6 +8,9 @@ from operator import itemgetter
 import tempfile
 import shutil
 
+def isiterable(object):
+    return hasattr(object,'__iter__')
+
 def indent(s, n=4, notfirstline = False):
     """Indent string
 

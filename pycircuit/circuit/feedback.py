@@ -7,9 +7,9 @@ from copy import copy
 from pycircuit.circuit import Circuit, SubCircuit, gnd, R, VS, IS, \
     Branch, VCCS, CircuitProxy
 from analysis import Analysis, AC, Noise, TransimpedanceAnalysis, \
-    remove_row_col,defaultepar,isiterable
+    remove_row_col,defaultepar
 from pycircuit.post import InternalResultDict, Waveform
-from pycircuit.utilities import combinations
+from pycircuit.utilities import combinations, isiterable
 
 class LoopBreakError(Exception):
     pass

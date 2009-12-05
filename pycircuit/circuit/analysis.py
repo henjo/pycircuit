@@ -4,7 +4,7 @@
 
 import numpy as np
 from pycircuit import sim
-from pycircuit.utilities.param import Parameter, ParameterDict
+from pycircuit.utilities import Parameter, ParameterDict, isiterable
 from numpy import array, delete, linalg, size, zeros, concatenate, pi, \
     zeros, alltrue, maximum, conj, dot, imag, eye
 from scipy import optimize
@@ -675,9 +675,6 @@ class Noise(SSAnalysis):
 
         return result
 
-
-def isiterable(object):
-    return hasattr(object,'__iter__')
 
 def dc_steady_state(cir, freqs, refnode, toolkit, complexfreq = False, u = None):
     """Return G,C,u matrices at dc steady-state and complex frequencies"""

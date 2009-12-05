@@ -28,7 +28,7 @@ def linearsolver(A, b):
 
 #    A.simplify(); b.simplify()
 
-    res = np.array(A.inverse_ADJ().subs(subst_dict) * b)
+    res = np.array((A.inverse_ADJ() * b).subs(subst_dict))
 
     return res.reshape((np.size(res,0),) )
 
