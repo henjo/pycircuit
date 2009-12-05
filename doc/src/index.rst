@@ -18,6 +18,7 @@ Contents
    intro   
    setup
    circuit/index.rst
+   sim/index.rst
    post/index.rst
 
 Indices and tables
