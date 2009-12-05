@@ -68,15 +68,16 @@ class GnucapTest(unittest.TestCase):
 
         sim = gnucap.Simulation(cir, direct=self.direct)
 
-        res = sim.run_ac(freq=LogSweep(1e4, 1e5, decade=10))
+        for freq in (1e3, [1e3], [1e3, 2e3], LinSweep(1e4, 1e5, 10), LogSweep(1e4, 1e5, decade=10)):
+            res = sim.run_ac(freq=freq)
 
-        v2 = res.v(2)
+            v2 = res.v(2)
 
-        freq = v2.xval()
-        
-        v2ref = 1/(1 + 2j*np.pi * freq * 10e3 * 1e-9)
+            freq = v2.xval()
 
-        assert_waveform_almost_equal(abs(v2), abs(v2ref), 5)
+            v2ref = 1/(1 + 2j*np.pi * freq * 10e3 * 1e-9)
+
+            assert_waveform_almost_equal(abs(v2), abs(v2ref), 5)
         
     def test_transient(self):
         cir = gnucap.Circuit(simple_netlist)

@@ -3,7 +3,7 @@
 # See LICENSE for details.
 
 import pycircuit.sim
-from pycircuit.sim import Simulation, LogSweep, LinSweep, Analysis
+from pycircuit.sim import Simulation, LogSweep, LinSweep, Analysis, identify_sweep
 from pycircuit.utilities.param import Parameter
 
 class SweptAnalysis(pycircuit.sim.Analysis):
@@ -15,11 +15,13 @@ class SweptAnalysis(pycircuit.sim.Analysis):
 
         cmdl = [self.command]
 
-        paramvalue = getattr(self.par, self.sweep_param)
+        paramvalue = identify_sweep(getattr(self.par, self.sweep_param))
         if isinstance(paramvalue, LogSweep):
             cmdl += [paramvalue.start, paramvalue.stop, '*', paramvalue.factor]
         elif isinstance(paramvalue, LinSweep):
             cmdl += [paramvalue.start, paramvalue.stop, paramvalue.step]
+        else:
+            raise Exception(self.__class__.__name__ + ' only supports LinSweep and LogSweep')
 
         cmd = ' '.join([str(e) for e in cmdl])
 

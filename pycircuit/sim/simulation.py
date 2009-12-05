@@ -3,8 +3,9 @@
 # See LICENSE for details.
 
 import numpy as np
-from pycircuit.utilities.param import Parameter, ParameterDict
+from pycircuit.utilities import Parameter, ParameterDict, isiterable
 import types
+from copy import copy
 
 class Simulation(object):
     """Base class for simulations
@@ -94,9 +95,18 @@ class LinSweep(Sweep):
         self.n = n
         self.iter = np.linspace(start, stop, n).__iter__()
 
+    def __eq__(self, other):
+        return (self.start == other.start) and (self.stop == other.stop) and (self.n == other.n)
+
+    def __repr__(self):
+        return self.__class__.__name__ + '(%f, %f, %d)'%(self.start, self.stop, self.n)
+
     @property
     def step(self):
         """Difference between adjacent steps"""
+        if self.n <= 1:
+            return 1
+            
         return float(self.stop - self.start) / (self.n - 1.)
 
 class LogSweep(Sweep):
@@ -127,8 +137,22 @@ class LogSweep(Sweep):
             n = self.n
         return (self.stop / self.start) ** (1. / (n-1))
 
-def identify_sweep(iterator):
+def identify_sweep(x, maxerr = 1e-6):
     """Identifies sweep from sweep values and return sweep instance"""
-    values = list(iterator)
-    
-    
+    if isinstance(x, (LinSweep, LogSweep)):
+        return x    
+
+    if not isiterable(x):
+        return LinSweep(x, x, 1)
+        
+    values = np.array(list(x))
+
+    if len(values) == 1:
+        return LinSweep(values[0], values[0], 1)
+
+    linstep = np.diff(values)
+
+    if np.linalg.norm(linstep - linstep[0]) <= maxerr:
+        return LinSweep(values[0], values[-1], len(values))
+    else:
+        return Sweep(values)
