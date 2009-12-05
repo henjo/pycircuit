@@ -11,9 +11,14 @@ from pycircuit.sim.gnucap.session import GnucapSessionPexpect, GnucapSessionDire
 import logging
 import tempfile
 import numpy as np
+import types
 
 class Simulation(pycircuit.sim.Simulation):
     def __init__(self, circuit, direct = False, executable = None):
+        ## If circuit is a string, assume it's a netlist and create a circuit
+        if type(circuit) == types.StringType:
+            circuit = Circuit(circuit)
+            
         super(Simulation, self).__init__(circuit)
 
         if direct:

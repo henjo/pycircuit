@@ -33,13 +33,20 @@ class GnucapTest(unittest.TestCase):
         print sim.command('list')
 
     def test_netlist(self):
+        def check_netlist(sim):
+            assert_equal(sim.command('list'), 
+               'V1 ( 1 0 )  DC  1.\nR1 ( 1 2 )  1.K\nR2 ( 2 0 )  3.K')
+            
         sim = gnucap.Simulation(None, direct=self.direct)
-
         sim.send_netlist(simple_netlist)
+        check_netlist(sim)
 
-        netlist = sim.command('list')
+        cir = gnucap.Circuit(simple_netlist)
+        sim = gnucap.Simulation(cir, direct=self.direct)
+        check_netlist(sim)
 
-        assert_equal(netlist, 'V1 ( 1 0 )  DC  1.\nR1 ( 1 2 )  1.K\nR2 ( 2 0 )  3.K')
+        sim = gnucap.Simulation(simple_netlist, direct=self.direct)
+        check_netlist(sim)
 
     def test_raw_dcop(self):
         sim = gnucap.Simulation(None, direct=self.direct)
