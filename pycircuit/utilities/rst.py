@@ -19,7 +19,7 @@ def itemize(*items):
     
     return '\n'.join(['* ' + item for item in items])
 
-def table(rows, header=True, headerrows = 1, vdelim="  ", padding=1, justify='right'):
+def table(rows, header=True, headerrows = 1, vdelim=" ", padding=1, justify='right'):
     """ Outputs a list of lists as a Restructured Text Table
 
     - rows - list of lists
@@ -39,8 +39,9 @@ def table(rows, header=True, headerrows = 1, vdelim="  ", padding=1, justify='ri
     # calculate column widhts (longest item in each col
     # plus "padding" nr of spaces on both sides)
     cols = zip(*rows)
-    colWidths = [max([len(unicode(item))+2*padding for item in col]) 
+    colWidths = [max([len(unicode(item)) + 2*padding for item in col]) 
                  for col in cols]
+    print colWidths
 
     # the horizontal border needed by rst
     borderline = vdelim.join([w*border for w in colWidths])
@@ -48,7 +49,7 @@ def table(rows, header=True, headerrows = 1, vdelim="  ", padding=1, justify='ri
     # outputs table in rst format
     s += borderline + '\n'
     for i, row in enumerate(rows):
-        if header and headerrows == i+1:
+        if header and i < headerrows:
             justfunc = string.ljust
         else:
             justfunc = justify
