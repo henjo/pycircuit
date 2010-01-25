@@ -677,8 +677,22 @@ def astable(*waveforms):
     """
     from pycircuit.utilities import rst
 
-    xvalues = cartesian(waveforms[0]._xlist)
-    yvalues = zip(*[list(w._y.flat) for w in waveforms])
+    if not compatible(*waveforms):
+        raise ValueError('arguments are not compatible')
+
+    if waveforms[0].ragged:
+        def flatten_ragged(a):
+            if hasattr(a,'dtype') and a.dtype == 'object':
+                return concatenate(map(flatten_ragged, a.tolist()))
+            else:
+                return a
+
+        xvalues = zip(*map(flatten_ragged, waveforms[0]._xlist))
+        yvalues = zip(*[flatten_ragged(w._y) for w in waveforms])
+
+    else:
+        xvalues = cartesian(waveforms[0]._xlist)
+        yvalues = zip(*[list(w._y.flat) for w in waveforms])
 
     xlabels = waveforms[0].xlabels
     ylabels = [w.ylabel for w in waveforms]

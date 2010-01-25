@@ -20,8 +20,8 @@ testdata1 = (
     -1.5,
     1.5)
 testdata1_0_table = """====== ===========
-freq   amplitude
-Hz     V
+freq   amplitude  
+Hz     V          
 ====== ===========
      1     (-1+0j)
     10          1j
@@ -34,8 +34,8 @@ testdata2 = Waveform([[1,2], [1,2,3]], array([[3,4,5],[5,4,2]]),
                      ylabel = 'i3',
                      yunit = 'A')
 testdata2_table = """==== ==== ====
-v1   v2   i3
-V    V    A
+v1   v2   i3  
+V    V    A   
 ==== ==== ====
    1    1    3
    1    2    4
@@ -54,8 +54,8 @@ testdata3 = Waveform([array([array([1,1]), array([2])], dtype=object),
                            yunit = 'A')
 
 testdata3_table = """==== ==== ====
-v1   v2   i3
-V    V    A
+v1   v2   i3  
+V    V    A   
 ==== ==== ====
    1    1    3
    1    2    4
