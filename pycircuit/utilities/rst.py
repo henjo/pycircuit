@@ -41,7 +41,6 @@ def table(rows, header=True, headerrows = 1, vdelim=" ", padding=1, justify='rig
     cols = zip(*rows)
     colWidths = [max([len(unicode(item)) + 2*padding for item in col]) 
                  for col in cols]
-    print colWidths
 
     # the horizontal border needed by rst
     borderline = vdelim.join([w*border for w in colWidths])
