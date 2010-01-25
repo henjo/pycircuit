@@ -19,12 +19,49 @@ testdata1 = (
              ),    complex(0,1),
     -1.5,
     1.5)
+testdata1_0_table = """====== ===========
+freq   amplitude
+Hz     V
+====== ===========
+     1     (-1+0j)
+    10          1j
+   100      (2+0j)
+====== ==========="""
 
 testdata2 = Waveform([[1,2], [1,2,3]], array([[3,4,5],[5,4,2]]),
                      xlabels = ('v1', 'v2'),
                      xunits = ('V', 'V'),
                      ylabel = 'i3',
                      yunit = 'A')
+testdata2_table = """==== ==== ====
+v1   v2   i3
+V    V    A
+==== ==== ====
+   1    1    3
+   1    2    4
+   1    3    5
+   2    1    5
+   2    2    4
+   2    3    2
+==== ==== ===="""
+
+testdata3 = Waveform([array([array([1,1]), array([2])], dtype=object), 
+                            array([array([1,2]), array([1])], dtype=object)],
+                           array([array([3,4]),array([4])], dtype = object),
+                           xlabels = ('v1', 'v2'),
+                           xunits = ('V', 'V'),
+                           ylabel = 'i3',
+                           yunit = 'A')
+
+testdata3_table = """==== ==== ====
+v1   v2   i3
+V    V    A
+==== ==== ====
+   1    1    3
+   1    2    4
+   2    1    4
+==== ==== ===="""
+
 
 def test_creation():
     """Test of waveform creation"""
@@ -331,6 +368,12 @@ def test_repr():
         wstr = repr(wref)
         wout = eval(wstr)
         assert_waveform_almost_equal(wout, wref)
+
+def test_astable():
+
+    for w, t in zip((testdata1[0], testdata2, testdata3), 
+                    (testdata1_0_table, testdata2_table, testdata3_table)):
+        assert_equal(w.astable, t)
 
 if __name__ == "__main__":
     import doctest
