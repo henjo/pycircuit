@@ -22,15 +22,14 @@ def test_transient_RC():
 
     n1 = c.add_node('net1')
     n2 = c.add_node('net2')
-    c['ISin'] = ISin(gnd, n1, ia=10, freq=100)    
+    c['ISin'] = ISin(gnd, n1, ia=10, freq=500)    
     c['R1'] = R(n1, gnd, r=1)
     c['R2'] = R(n1, n2, r=1e3)
     c['R3'] = R(n2, gnd, r=100e3)
     c['C'] = C(n2, gnd, c=1e-5)
     tran = Transient(c)
     res = tran.solve(tend=10e-3,timestep=1e-4)
-    #plotall(res.v(n1),res.v(n2))
-    plotall(res.v(n2))
+    plotall(res.v(n1),res.v(n2))
     pylab.show()
     expected = 6.3
     assert  abs(res.v(n2,gnd)[-1] - expected) < 1e-2*expected,\
@@ -94,6 +93,6 @@ def test_transient_get_diff():
 
 if __name__ == '__main__':
     #test_transient_RC()
-    test_transient_RLC()
-    #test_transient_nonlinear_C()
+    #test_transient_RLC()
+    test_transient_nonlinear_C()
     #test_transient_get_diff()
