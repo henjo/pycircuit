@@ -149,7 +149,7 @@ class Transient(Analysis):
             de=self._diff_error
             iq=self._iq
             if (de != None) and (iq != None):
-                iq_error=np.dot(de,de)/np.dot(iq,iq)-iq_tolerance
+                #iq_error=np.dot(de,de)/np.dot(iq,iq)-iq_tolerance
                 #print iq_error
                 dt = max(dt, dtmin)
             t+=dt
@@ -167,14 +167,12 @@ class Transient(Analysis):
         #the amount of history values is determined by the length of the coefficient-vector
         
         dt=self._dt
-        #print dt
         a,b,b_=self._method[self.options.method] 
         geq=C/dt/b_
-        #print geq
         if self._iqlast == None: #first step always requires backward euler
             n=self.cir.n
-            self._iqlast=np.zeros((n,len(b))) #initialize history vectors at first step
-            self._qlast=np.zeros((n,len(a)))
+            self._iqlast=np.zeros((len(b),n)) #initialize history vectors at first step
+            self._qlast=np.zeros((len(a),n))
             iq = resultEuler = (q-self._qlast[0])/dt
         else:
             resultEuler = (q-self._qlast[0])/dt
@@ -189,10 +187,11 @@ class Transient(Analysis):
                 #dq/dt=iq(n+1)=1/b_*(q(n+1)/dt-sum((a_i/dt*x(n-i)+b_i*iq(n-i)),i=0 to p))
                 #iq(n+1)=q(n+1)/dt/b_ -1/b_*sum( (a_i/dt*q(n-i)+b_i*iq(n-i)),i=0 to p) )
                 iq=(q-a*self._qlast)/dt/b_ - b*self._iqlast/b_
-                #shift in new values to history
-                np.concatenate((iq,iqlast[1:]))
-                np.concatenate((q,qlast[1:]))
+        #shift in new values to history
+        self._iqlast = np.concatenate((np.array([iq]),self._iqlast))[:-1]
+        self._qlast = np.concatenate((np.array([q]),self._qlast))[:-1]
         self._iq=iq #make accessible by get_timestep
+        print iq
         return iq,geq
     
     
