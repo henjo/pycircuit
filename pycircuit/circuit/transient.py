@@ -3,6 +3,8 @@
 # See LICENSE for details.
 
 from pycircuit.circuit.analysis import *
+from pycircuit.circuit.dcanalysis import DC
+from pycircuit.circuit.dcanalysis import refnode_removed
 
 class Transient(Analysis):
     """Simple transient analysis class.
@@ -47,22 +49,82 @@ class Transient(Analysis):
     >>> c['C'] = C(n1, gnd, c=1e-6)
     >>> c['L'] = L(n1, gnd, L=1e-4)
     >>> tran = Transient(c)
-    >>> res = tran.solve(tend=260e-6,timestep=1e-6,method='trapezoidal')
+    >>> res = tran.solve(tend=260e-6,timestep=1e-6)
     >>> expected = 0.078
     >>> abs(res.v(n1,gnd)[-1])
     True
-
+    
     """
     ## TODO:
     ## * Implement automatic timestep adjustment, using difference between
     ##   BE and trapezoidal as a measure of the error.
     ##   Reference: "Time Step Control in Transient Analysis", by SHUBHA VIJAYCHAND
-    ##   Perhaps use a PID-like regulator for timestep adustment
-
-    _iq = None #used for saving last current from dynamic elements
+    
+    #irefnode=self.cir.get_node_index(gnd)
+    irefnode=None
+    options = ParameterDict(
+        Parameter(name='reltol', 
+                  desc='Relative tolerance', unit='', 
+                  default=1e-4),
+        Parameter(name='iabstol', 
+                  desc='Absolute current eror tolerance', unit='A', 
+                  default=1e-12),
+        Parameter(name='vabstol', 
+                  desc='Absolute voltage error tolerance', unit='V', 
+                  default=1e-12),
+        Parameter(name='maxiter', 
+                  desc='Maximum number of iterations', unit='', 
+                  default=100),
+        Parameter(name='method', 
+                  desc='Differentiation method', unit='', 
+                  default="euler")
+        )
+    
+    _method={
+        "euler":(np.array([1.]),np.array([0.]),1.),
+        "trap":(np.array([1.]),np.array([2.]),0.5),
+        "gear2":(np.array([4./3,-1./3]),np.array([0]),2./3)
+        }
+    _qlast  = None #q history
+    _iqlast = None #dq/dt history
+    
+    _dt = None
     _diff_error = None #used for saving difference between euler and trapezoidal
-
-    def get_timestep(self,dt,endtime,dtmin=1e-12):
+    
+    ## This is borrowed from dcanalysis.py, would like to 
+    ## import it from there instead.
+    ## But it's an object method requiring a DC as self
+    ## so using DC._newton doesn't work
+    def _newton(self, func, x0): 
+        ones_nodes = np.ones(len(self.cir.nodes))
+        ones_branches = np.ones(len(self.cir.branches))
+        
+        abstol = np.concatenate((self.options.iabstol * ones_nodes,
+                                 self.options.vabstol * ones_branches))
+        xtol = np.concatenate((self.options.vabstol * ones_nodes,
+                                 self.options.iabstol * ones_branches))
+        
+        (x0, abstol, xtol) = remove_row_col((x0, abstol, xtol), self.irefnode)
+        
+        try:
+            result = fsolve(refnode_removed(func, self.irefnode), 
+                            x0, 
+                            full_output = True, 
+                            reltol = self.options.reltol,
+                            abstol = abstol, xtol=xtol,
+                            maxiter = self.options.maxiter)
+        except np.linalg.LinAlgError, e:
+            raise SingularMatrix(e.message)
+        
+        x, infodict, ier, mesg = result
+        
+        if ier != 1:
+            raise NoConvergenceError(mesg)
+        
+        # Insert reference node voltage
+        return concatenate((x[:self.irefnode], array([0.0]), x[self.irefnode:]))
+    
+    def get_timestep(self,endtime,dtmin=1e-12):
         """Method to provide the next timestep for transient simulation.
         
         """
@@ -70,22 +132,17 @@ class Transient(Analysis):
         ## Error as abs(self._diff_error)/abs(self._iq) - iq_tolerance
         ## If error > 0: decrease timestep
         ## If error < 0: increase timestep
-
-        ## Make change proportional to error
-        ## Use and integrating factor to achieve 0 error
-        ## Use differential factor to change more if error changes quick?
-        ## dt -= dt*p*error #PI-regulator (no differential)
-
-        ## Make also simpler variant:
+        
+        ## Start with simple variant:
         ## increase as dt *=2
         ## decrease as dt /=2
         ## with convergence error, both decrease and reject timestep
-
+        ## support for rejecting timesteps need to be implemented
+        
         iq_tolerance = 1e-2
         iq_p = 1e4 #proportionality constant
         iq_i = 1 #integrator constant
-        dt=dt
-        dtint=dt
+        dt=self._dt
         t=0
         while t<endtime:
             yield t,dt
@@ -94,65 +151,70 @@ class Transient(Analysis):
             if (de != None) and (iq != None):
                 iq_error=np.dot(de,de)/np.dot(iq,iq)-iq_tolerance
                 #print iq_error
-                #dt -= dt*iq_p*iq_error
-                #dtint -= iq_i*iq_error*dt
-                #dtint =max(dtint,dtmin)
-                #dt = dtint - iq_p*iq_error*dt
                 dt = max(dt, dtmin)
             t+=dt
-
-    def get_diff(self,q,qlast,dt,iqlast=None,method='euler'):
-        """Method used to calculate time derivative for charge storing elements.
-
+    
+    def get_diff(self,q,C):
+        """Method used to calculate time derivative for charge storing elements (i_eq and g_eq).
+        
         Calculates approximate derivatives, both for backward euler and trapezoidal. 
         The difference between these can be used to determine the next timestep (or 
         reject the last). The difference is stored in a class variable/attribute and
         return value is one of the calculated derivatives, dependent on selected
         integration method.
         """
-        #BE: i(x)=(q(x)-q(xlast))/dt
-        #Trap: i(x)=(q(x)-q(xlast))*2/dt-iqlast
-        resultEuler = (q-qlast)/dt
-        if iqlast == None:
-            result = resultEuler
+        #calculate in a more general way with coefficients dependent on method
+        #the amount of history values is determined by the length of the coefficient-vector
+        
+        dt=self._dt
+        #print dt
+        a,b,b_=self._method[self.options.method] 
+        geq=C/dt/b_
+        #print geq
+        if self._iqlast == None: #first step always requires backward euler
+            n=self.cir.n
+            self._iqlast=np.zeros((n,len(b))) #initialize history vectors at first step
+            self._qlast=np.zeros((n,len(a)))
+            iq = resultEuler = (q-self._qlast[0])/dt
         else:
-            resultTrap = 2*(q-qlast)/dt-iqlast #Trapezoidal
-            if method == 'trapezoidal':
-                result = resultTrap
-            else: #euler
-                result = resultEuler #Backward Euler
+            resultEuler = (q-self._qlast[0])/dt
+            resultTrap = 2*(q-self._qlast)/dt-self._iqlast #Trapezoidal always calculated for diff-check
             self._diff_error = resultTrap-resultEuler # Difference between euler and trap.
-        return result
-
-    def solve_timestep(self, x0, t, dt, iqlast=None,refnode=gnd,rtol=1e-4,method='euler',provided_function=None):
+            if self.options.method == 'euler':
+                iq = resultEuler
+            elif self.options.method == 'trapezoidal':
+                iq = resultTrap
+            else:
+                #q(n+1)=sum(a_i*q(n-i),i=0,p)+dt*sum(bi*iq(n-i),i=-1 to p)
+                #dq/dt=iq(n+1)=1/b_*(q(n+1)/dt-sum((a_i/dt*x(n-i)+b_i*iq(n-i)),i=0 to p))
+                #iq(n+1)=q(n+1)/dt/b_ -1/b_*sum( (a_i/dt*q(n-i)+b_i*iq(n-i)),i=0 to p) )
+                iq=(q-a*self._qlast)/dt/b_ - b*self._iqlast/b_
+                #shift in new values to history
+                np.concatenate((iq,iqlast[1:]))
+                np.concatenate((q,qlast[1:]))
+        self._iq=iq #make accessible by get_timestep
+        return iq,geq
+    
+    
+    def solve_timestep(self, x0, t, refnode=gnd, provided_function=None):
         #if provided_function is not None, it is called as a function with 
         #most of what is calculated during a time_step, f,J,ueq,Geq,xlast,x
-
+        
         n=self.cir.n
         x0 = x0
-        dt = dt
-
-        ## Refer the voltages to the reference node by removing
-        ## the rows and columns that corresponds to this node
-        irefnode = self.cir.get_node_index(refnode)
-
-        def func(x):
-            x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
-            xlast = concatenate((x0[:irefnode], array([0.0]), x0[irefnode:]))
-            C = self.cir.C(x)
-            Geq = C/dt
-            q=self.cir.q(x)
-            qlast=self.cir.q(xlast)
-            ##Store dynamic current iq, so it can be reached in solve
-            self._iq = self.get_diff(q,qlast,dt,iqlast=iqlast,method=method)
-            f =self.cir.i(x) + self._iq + self.cir.u(t)
-            J = self.cir.G(x) + Geq
-            f, J, C = remove_row_col((f,J,C), irefnode)
-            return array(f, dtype=float), array(J, dtype=float)
-
-        x, infodict, ier, mesg = fsolve(func, x0, maxiter=40, full_output=True)
-        #if ier > 1: print ier, mesg
+        dt = self._dt
         
+        def func(x):
+            xlast = x0
+            C = self.cir.C(x)
+            q=self.cir.q(x)
+            iq,Geq = self.get_diff(q,C)
+            f =self.cir.i(x) + iq + self.cir.u(t)
+            J = self.cir.G(x) + Geq #return C somehow?
+            return array(f, dtype=float), array(J, dtype=float)
+        
+        x=self._newton(func,x0)
+               
         # Insert reference node voltage
         #x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
         if provided_function != None:
@@ -160,47 +222,38 @@ class Transient(Analysis):
         else:
             result=x,None
         return result
-
-
-    def solve(self,refnode=gnd,tend=1e-3,x0=None,timestep=1e-6,rtol=1e-4,method='euler',provided_function=None):
-        #should perhaps call with an option dictionary for things like rtol, method etc.
+    
+    
+    def solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None):
         #provided_function is a function that is sent to solve_timestep for evaluation
-
+        
         X = [] # will contain a list of all x-vectors
-        irefnode=self.cir.get_node_index(refnode)
+        self.irefnode=self.cir.get_node_index(refnode)
         n = self.cir.n
-        dt = timestep
+        self._dt = timestep
         if x0 is None:
-            x = zeros(n-1) #currently without reference node !
+            x = zeros(n)
         else:
-            x = x0 # reference node not included !
+            x = x0 
+        
+        #is this still needed
         order=1 #number of past x-values needed
         for i in xrange(order):
             X.append(copy(x))
-
-        #create vector with timepoints and a more fitting dt
-        #times,dt=np.linspace(0,tend,num=int(tend/dt),endpoint=True,retstep=True)
-        times = self.get_timestep(dt,tend)
+        
+        times = self.get_timestep(tend)
         timelist=[] #for plotting purposes
-        iqlast=None #forces first step to be Backward Euler
+        self._iqlast=None #forces first step to be Backward Euler
         for t,dt in times:
-            #print t, dt
             timelist.append(t)
-            x,feval=self.solve_timestep(X[-1],t,dt,rtol=rtol,method=method,iqlast=iqlast\
-                                            ,provided_function=provided_function)
+            self._dt=dt
+            x,feval=self.solve_timestep(X[-1], t, provided_function=provided_function)
             X.append(copy(x))
-            #save last dynamic current (charge differential) for Trapezoidal method
-            iqlast = self._iq #iq is calculated in solve_timestep by get_diff
         X = self.toolkit.array(X[1:]).T
         timelist = np.array(timelist)
         
         print("steps: "+str( len(timelist)))
-
-        # Insert reference node voltage
-        X = self.toolkit.concatenate((X[:irefnode], 
-                                      self.toolkit.zeros((1,len(timelist))),
-                                      X[irefnode:]))
-
+        
         self.result = CircuitResult(self.cir, x=X, xdot=None,
                                     sweep_values=timelist, 
                                     sweep_label='time', 
