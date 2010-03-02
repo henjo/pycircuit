@@ -154,7 +154,7 @@ class Transient(Analysis):
                 dt = max(dt, dtmin)
             t+=dt
     
-    def get_diff(self,q,C):
+    def get_diff(self,q,C):#shouldn't I provide an x0 here?
         """Method used to calculate time derivative for charge storing elements (i_eq and g_eq).
         
         Calculates approximate derivatives, both for backward euler and trapezoidal. 
@@ -169,14 +169,13 @@ class Transient(Analysis):
         dt=self._dt
         a,b,b_=self._method[self.options.method] 
         geq=C/dt/b_
+        resultEuler = (q-self._qlast[0])/dt
         if self._iqlast == None: #first step always requires backward euler
             n=self.cir.n
             self._iqlast=np.zeros((len(b),n)) #initialize history vectors at first step
-            self._qlast=np.zeros((len(a),n))
-            iq = resultEuler = (q-self._qlast[0])/dt
+            iq = resultEuler
         else:
-            resultEuler = (q-self._qlast[0])/dt
-            resultTrap = 2*(q-self._qlast)/dt-self._iqlast #Trapezoidal always calculated for diff-check
+            resultTrap = 2*(q-self._qlast[0])/dt-self._iqlast #Trapezoidal always calculated for diff-check
             self._diff_error = resultTrap-resultEuler # Difference between euler and trap.
             if self.options.method == 'euler':
                 iq = resultEuler
@@ -186,12 +185,8 @@ class Transient(Analysis):
                 #q(n+1)=sum(a_i*q(n-i),i=0,p)+dt*sum(bi*iq(n-i),i=-1 to p)
                 #dq/dt=iq(n+1)=1/b_*(q(n+1)/dt-sum((a_i/dt*x(n-i)+b_i*iq(n-i)),i=0 to p))
                 #iq(n+1)=q(n+1)/dt/b_ -1/b_*sum( (a_i/dt*q(n-i)+b_i*iq(n-i)),i=0 to p) )
-                iq=(q-a*self._qlast)/dt/b_ - b*self._iqlast/b_
-        #shift in new values to history
-        self._iqlast = np.concatenate((np.array([iq]),self._iqlast))[:-1]
-        self._qlast = np.concatenate((np.array([q]),self._qlast))[:-1]
+                iq=(q-np.dot(a,self._qlast))/dt/b_ - np.dot(b,self._iqlast/b_)
         self._iq=iq #make accessible by get_timestep
-        print iq
         return iq,geq
     
     
@@ -204,7 +199,6 @@ class Transient(Analysis):
         dt = self._dt
         
         def func(x):
-            xlast = x0
             C = self.cir.C(x)
             q=self.cir.q(x)
             iq,Geq = self.get_diff(q,C)
@@ -213,7 +207,10 @@ class Transient(Analysis):
             return array(f, dtype=float), array(J, dtype=float)
         
         x=self._newton(func,x0)
-               
+        #history update
+        self._iqlast = np.concatenate((np.array([self._iq]),self._iqlast))[:-1]
+        self._qlast = np.concatenate((np.array([self.cir.q(x)]),self._qlast))[:-1]
+        
         # Insert reference node voltage
         #x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
         if provided_function != None:
@@ -235,6 +232,13 @@ class Transient(Analysis):
         else:
             x = x0 
         
+        print x
+        a,b,b_=self._method[self.options.method] 
+        self._qlast=np.zeros((len(a),n))#initialize q-history vector
+        print self._qlast
+        #shift in q(x0) to q-history
+        self._qlast = np.concatenate((np.array([self.cir.q(x)]),self._qlast))[:-1]
+        print self._qlast
         #is this still needed
         order=1 #number of past x-values needed
         for i in xrange(order):
