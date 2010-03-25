@@ -7,7 +7,7 @@ from pycircuit.utilities import fourier_analysis
 doplot = False
 
 def test_fourier_analysis():
-    N = 100
+    N = 1000
     freq1 = 1e3
     freq2 = 2e3
     a0 = 0.9
@@ -39,4 +39,4 @@ def test_fourier_analysis():
     
     assert_array_equal(freqs, freqs_ref)
 
-    assert_array_almost_equal(X,Xref, 1)
+    assert_array_almost_equal(X,Xref, 4)
