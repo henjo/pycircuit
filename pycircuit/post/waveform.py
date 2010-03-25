@@ -379,19 +379,20 @@ class Waveform(object):
     def _plot(self, plotfunc, *args, **kvargs):
         import pylab
 
+        set_label = 'label' not in kvargs
+
         pylab.hold(True)
         for i in np.ndindex(*self._y.shape[:-1]):
-            label = ','.join([self.xlabels[axis] + '=' + \
-                    str(self._xlist[axis][ix]) for axis, ix in enumerate(i)])
-
+            if set_label:
+                label = ','.join([self.xlabels[axis] + '=' + \
+                      str(self._xlist[axis][ix]) for axis, ix in enumerate(i)])
+                kvargs['label'] = label
+            
             # Limit infinite values
             y = self.get_y()[i]
             y[where(y == inf)] = 1e20
             y[where(y == -inf)] = -1e20
 
-#            if 'label' not in kvargs:
-#                kvargs['label'] = label
-            
             p=plotfunc(self.get_x(-1), y, *args, **kvargs)
 
         pylab.hold(False)
@@ -578,6 +579,22 @@ class Waveform(object):
         ufuncgetitem = np.vectorize(getitem)
         return Waveform(self._xlist, ufuncgetitem(self._y), 
                         xlabels = self.xlabels)
+
+    def swapaxes(self, i, j):
+        def list_swap(x, i, j):
+            x = list(x)
+            x[i], x[j] = (x[j], x[i])
+            return x
+
+        w = copy(self)
+
+        w._xlist = list_swap(w._xlist, i, j)
+        w._xlabels = tuple(list_swap(w._xlabels, i, j))
+        w._xunits = tuple(list_swap(w._xunits, i, j))
+
+        w._y = w._y.swapaxes(i,j)
+        
+        return w
 
     def __repr__(self):
         if self._dim > 1:
