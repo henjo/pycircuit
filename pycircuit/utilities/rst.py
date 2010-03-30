@@ -10,6 +10,12 @@ def heading1(text):
 def heading2(text):
     return text + '\n' + '-' * len(text)
 
+def figure(imagefile, caption=None, width="11cm"):
+    str = ".. figure:: " + imagefile + "\n"
+    str += "   :width: "+str(width) + "\n\n"
+    if caption:
+        str += "   " + caption
+
 def itemize(*items):
     """Restructured text formatted itemized list
     >>> print itemize('alpha', 'beta')
