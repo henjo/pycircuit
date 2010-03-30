@@ -136,6 +136,38 @@ class Waveform(object):
         return Waveform(newxlist, copy(self._y), xlabels = newxlabels, 
                         yunit = self.yunit, ylabel = self.ylabel)
 
+    def map_xaxes(self, func, axes, xlabel = None, xunit = None):
+        """Apply function func on x-values from the given axes
+        
+           When the number of axes is greater than 1 the output waveform
+           has a lower sweep dimension. The axis of the lowest order is
+           preserved.
+        """
+        axes = sorted(list(axes))
+        
+        newxlist = copy(self._xlist)
+        
+        xargs = cartesian([self._xlist[axis] for axis in axes])
+        newxlist[axes[0]] = map(func, *zip(*xargs))
+        newxlabels = list(self.xlabels)
+        newxlabels[axes[0]] = xlabel
+        newxunits = list(self.xunits)
+        newxunits[axes[0]] = xunit
+                      
+        newyshape = list(self._y.shape)
+        newyshape[axes[0]] = len(newxlist[axes[0]])
+                
+        for axis in reversed(axes[1:]):
+            del newyshape[axis]
+            del newxlist[axis]
+            del newxlabels[axis]
+            del newxunits[axis]
+        
+        newy = copy(self._y).reshape(newyshape)        
+        
+        return Waveform(newxlist, newy, 
+                        xlabels = newxlabels, xunits = newxunits,
+                        yunit = self.yunit, ylabel = self.ylabel)
 
     ## Operations on Waveform objects
     def binaryop(self, op, a, ylabel = None, yunit = None, reverse = False):
@@ -589,12 +621,44 @@ class Waveform(object):
         w = copy(self)
 
         w._xlist = list_swap(w._xlist, i, j)
-        w._xlabels = tuple(list_swap(w._xlabels, i, j))
-        w._xunits = tuple(list_swap(w._xunits, i, j))
+        if w._xlabels != None:
+            w._xlabels = tuple(list_swap(w._xlabels, i, j))
+        if w._xunits != None:
+            w._xunits = tuple(list_swap(w._xunits, i, j))
 
         w._y = w._y.swapaxes(i,j)
         
         return w
+
+    def axesiterator(self, axes):
+        """Iterate over all combinations of given axes and return sub waveforms
+        
+        Values of xlabels, xunits and x-values are also returned along with
+        each sub waveform
+        
+        Each iteration yields a tuple (subwave, xlabels, xvalues, xunits)
+    
+        """
+        if not set(axes).issubset(range(self.ndim)):
+            raise ValueError("invalid axes argument")
+ 
+        xlabels = [self.xlabels[axis] for axis in axes]
+        xunits = [self.xunits[axis] for axis in axes]
+        xlist = [self.get_x(axis) for axis in axes]
+        xindex = [range(len(x)) for x in xlist]
+    
+        for xindices in cartesian(xindex):
+            xvalues = [xlist[i][xindices[i]] for i in range(len(axes))]
+        
+            def calc_index(axis):
+                if axis in axes:
+                    return xindices[axes.index(axis)]
+                else:
+                    return Ellipsis
+        
+            subw = self[tuple(calc_index(axis) for axis in range(self.ndim))]
+        
+            yield subw, xlabels, xvalues, xunits
 
     def __repr__(self):
         if self._dim > 1:
