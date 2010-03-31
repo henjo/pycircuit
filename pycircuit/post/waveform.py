@@ -271,6 +271,32 @@ class Waveform(object):
         return reducedim(self, np.min(self._y, axis=self.getaxis(axis)), 
                          axis=self.getaxis(axis))
 
+    def argmax(self, axis=-1):
+        """Returns the x-value where the y-value attains it maximum
+        
+        Examples:
+
+        >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
+        >>> w2.argmax()
+        Waveform(array([1, 2]), array([4, 4]))
+
+        """
+        return reducedim(self, self.x[axis][np.argmax(self._y, axis=self.getaxis(axis))], 
+                         axis=self.getaxis(axis))
+  
+  def argmin(self, axis=-1):
+        """Returns the x-value where the y-value attains it minimum
+        
+        Examples:
+
+        >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
+        >>> w2.argmin()
+        Waveform(array([1, 2]), array([2, 2]))
+
+        """
+        return reducedim(self, self.x[axis][np.argmin(self._y, axis=self.getaxis(axis))], 
+                         axis=self.getaxis(axis))
+
     def value(self, x, axis = -1, ylabel = None):
         """Returns and interpolated at the given x-value
         
