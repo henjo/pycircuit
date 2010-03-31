@@ -117,6 +117,36 @@ def combinations(iterable, r):
             indices[j] = indices[j-1] + 1
         yield tuple(pool[i] for i in indices)
 
+def factor_cartesian(table):
+    """Factor a cartesian products of lists
+    
+    The function unrolls a cartesian product of lists.
+
+    The table argument is a list of sequences and the output is a
+    tuple of lists
+        
+    Example:
+   
+    >>> factor_cartesian([('a1','b1'),('a1','b2'),('a2','b1'),('a2','b2')])
+    ['a1','a2'],['b1','b2']
+    
+    """
+    
+    if len(table[0]) == 1:
+        return (map(itemgetter(0), table),)
+    else:
+        result1 = []
+        resultk = None
+        for k, g in groupby(table, itemgetter(0)):
+            result1.append(k)
+        
+            if resultk == None:
+                rest = map(itemgetter(slice(1,None)), g)
+                resultk = factor_cartesian(rest)
+            
+        return tuple([result1] + list(resultk))
+
+
 class ObserverSubject(object):
     """Subject class in the observer design pattern"""
     def __init__(self):

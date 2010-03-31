@@ -136,6 +136,38 @@ class Waveform(object):
         return Waveform(newxlist, copy(self._y), xlabels = newxlabels, 
                         yunit = self.yunit, ylabel = self.ylabel)
 
+    def map_xaxes(self, func, axes, xlabel = None, xunit = None):
+        """Apply function func on x-values from the given axes
+        
+           When the number of axes is greater than 1 the output waveform
+           has a lower sweep dimension. The axis of the lowest order is
+           preserved.
+        """
+        axes = sorted(list(axes))
+        
+        newxlist = copy(self._xlist)
+        
+        xargs = cartesian([self._xlist[axis] for axis in axes])
+        newxlist[axes[0]] = map(func, *zip(*xargs))
+        newxlabels = list(self.xlabels)
+        newxlabels[axes[0]] = xlabel
+        newxunits = list(self.xunits)
+        newxunits[axes[0]] = xunit
+                      
+        newyshape = list(self._y.shape)
+        newyshape[axes[0]] = len(newxlist[axes[0]])
+                
+        for axis in reversed(axes[1:]):
+            del newyshape[axis]
+            del newxlist[axis]
+            del newxlabels[axis]
+            del newxunits[axis]
+        
+        newy = copy(self._y).reshape(newyshape)        
+        
+        return Waveform(newxlist, newy, 
+                        xlabels = newxlabels, xunits = newxunits,
+                        yunit = self.yunit, ylabel = self.ylabel)
 
     ## Operations on Waveform objects
     def binaryop(self, op, a, ylabel = None, yunit = None, reverse = False):
@@ -237,6 +269,32 @@ class Waveform(object):
 
         """
         return reducedim(self, np.min(self._y, axis=self.getaxis(axis)), 
+                         axis=self.getaxis(axis))
+
+    def argmax(self, axis=-1):
+        """Returns the x-value where the y-value attains it maximum
+        
+        Examples:
+
+        >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
+        >>> w2.argmax()
+        Waveform(array([1, 2]), array([4, 4]))
+
+        """
+        return reducedim(self, self.x[axis][np.argmax(self._y, axis=self.getaxis(axis))], 
+                         axis=self.getaxis(axis))
+  
+    def argmin(self, axis=-1):
+        """Returns the x-value where the y-value attains it minimum
+        
+        Examples:
+
+        >>> w2=Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
+        >>> w2.argmin()
+        Waveform(array([1, 2]), array([2, 2]))
+
+        """
+        return reducedim(self, self.x[axis][np.argmin(self._y, axis=self.getaxis(axis))], 
                          axis=self.getaxis(axis))
 
     def value(self, x, axis = -1, ylabel = None):
@@ -379,19 +437,20 @@ class Waveform(object):
     def _plot(self, plotfunc, *args, **kvargs):
         import pylab
 
+        set_label = 'label' not in kvargs
+
         pylab.hold(True)
         for i in np.ndindex(*self._y.shape[:-1]):
-            label = ','.join([self.xlabels[axis] + '=' + \
-                    str(self._xlist[axis][ix]) for axis, ix in enumerate(i)])
-
+            if set_label:
+                label = ','.join([self.xlabels[axis] + '=' + \
+                      str(self._xlist[axis][ix]) for axis, ix in enumerate(i)])
+                kvargs['label'] = label
+            
             # Limit infinite values
             y = self.get_y()[i]
             y[where(y == inf)] = 1e20
             y[where(y == -inf)] = -1e20
 
-#            if 'label' not in kvargs:
-#                kvargs['label'] = label
-            
             p=plotfunc(self.get_x(-1), y, *args, **kvargs)
 
         pylab.hold(False)
@@ -578,6 +637,54 @@ class Waveform(object):
         ufuncgetitem = np.vectorize(getitem)
         return Waveform(self._xlist, ufuncgetitem(self._y), 
                         xlabels = self.xlabels)
+
+    def swapaxes(self, i, j):
+        def list_swap(x, i, j):
+            x = list(x)
+            x[i], x[j] = (x[j], x[i])
+            return x
+
+        w = copy(self)
+
+        w._xlist = list_swap(w._xlist, i, j)
+        if w._xlabels != None:
+            w._xlabels = tuple(list_swap(w._xlabels, i, j))
+        if w._xunits != None:
+            w._xunits = tuple(list_swap(w._xunits, i, j))
+
+        w._y = w._y.swapaxes(i,j)
+        
+        return w
+
+    def axesiterator(self, axes):
+        """Iterate over all combinations of given axes and return sub waveforms
+        
+        Values of xlabels, xunits and x-values are also returned along with
+        each sub waveform
+        
+        Each iteration yields a tuple (subwave, xlabels, xvalues, xunits)
+    
+        """
+        if not set(axes).issubset(range(self.ndim)):
+            raise ValueError("invalid axes argument")
+ 
+        xlabels = [self.xlabels[axis] for axis in axes]
+        xunits = [self.xunits[axis] for axis in axes]
+        xlist = [self.get_x(axis) for axis in axes]
+        xindex = [range(len(x)) for x in xlist]
+    
+        for xindices in cartesian(xindex):
+            xvalues = [xlist[i][xindices[i]] for i in range(len(axes))]
+        
+            def calc_index(axis):
+                if axis in axes:
+                    return xindices[axes.index(axis)]
+                else:
+                    return Ellipsis
+        
+            subw = self[tuple(calc_index(axis) for axis in range(self.ndim))]
+        
+            yield subw, xlabels, xvalues, xunits
 
     def __repr__(self):
         if self._dim > 1:
