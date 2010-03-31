@@ -284,7 +284,7 @@ class Waveform(object):
         return reducedim(self, self.x[axis][np.argmax(self._y, axis=self.getaxis(axis))], 
                          axis=self.getaxis(axis))
   
-  def argmin(self, axis=-1):
+    def argmin(self, axis=-1):
         """Returns the x-value where the y-value attains it minimum
         
         Examples:
