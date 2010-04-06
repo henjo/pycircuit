@@ -63,4 +63,4 @@ def test_symbolic_twoport():
                                     [(1 + 0*R0*C1*s + 0*R1*C1*s) / R0,  (R0 + R1)/R0]]))
 
     assert_array_equal(simplify(result['Sin'] - (4*kT/R0 + 4*R1*kT/R0**2)), 0)
-    
+    assert_array_equal(simplify(result['Svn']), 4*kT*R1)
