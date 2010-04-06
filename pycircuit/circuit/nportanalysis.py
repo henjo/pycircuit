@@ -225,7 +225,7 @@ class TwoPortAnalysis(Analysis):
                                              refnode,
                                              toolkit,
                                              complexfreq = complexfreq)
-            Y = ss * C + G
+            Y = C * ss + G
             detY =  toolkit.det(Y)
 
         for n, sourceport in enumerate(self.ports):
@@ -343,7 +343,6 @@ def linearsolver_partial(Y, u, refnode, selected_res, cir, toolkit, detY=None):
     "v(nodea, nodeb)" or "v(nodea)" for voltage potentials.
 
     """
-
     if detY == None:
         detY = toolkit.det(Y)
     
@@ -360,12 +359,15 @@ def linearsolver_partial(Y, u, refnode, selected_res, cir, toolkit, detY=None):
         nodes_indices = [cir.get_node_index(node, refnode) for node in nodes]
 
         ## xj = (sum_i wi * cofactor(Y,i,j)) / det Y
-        num = 0
-        for ui in uindices:
-            for sign, nodeindex in zip([1,-1], nodes_indices):
-                if nodeindex != None:
-                    num += sign * -u[ui] * toolkit.cofactor(Y, ui, nodeindex)
-
+        if Y.shape == (1,1):
+            num = -1
+        else:
+            num = 0
+            for ui in uindices:
+                for sign, nodeindex in zip([1,-1], nodes_indices):
+                    if nodeindex != None:
+                        num += sign * -u[ui] * toolkit.cofactor(Y, ui, nodeindex)
+                        
         result[res_str] = num / detY
 
     return result

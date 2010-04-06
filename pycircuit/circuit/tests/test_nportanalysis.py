@@ -43,32 +43,24 @@ def test_symbolic_twoport():
     circuit.default_toolkit = symbolic
     cir = SubCircuit()
 
-    var('R1 C1 w kT', real=True, positive=True)
+    var('R1 R0 C1 w kT', real=True, positive=True)
     s = 1j*w
 
+    cir['R0'] = R(1, gnd, r=R0)
     cir['R1'] = R(1, 2, r=R1)
-    cir['C1'] = C(2, gnd, c=C1)
+#    cir['C1'] = C(2, gnd, c=C1)
 
     ## Run symbolic 2-port analysis
-    twoport_ana = TwoPortAnalysis(cir, Node('1'), gnd, Node('2'), gnd, 
-                                  noise = True, toolkit=symbolic)
-    result = twoport_ana.solve(freqs=s, complexfreq=True)
-
-    ABCD = Matrix(result['twoport'].A)
-    ABCD.simplify()
-
-    assert_array_equal(ABCD, array([[1 + R1*C1*s, R1],
-                                    [C1*s,  1]]))
-
-    ## Run symbolic 2-port analysis 
-    twoport_ana = TwoPortAnalysis(cir, Node('1'), gnd, Node('2'), gnd, 
+    twoport_ana = TwoPortAnalysis(cir, Node('1'), gnd, Node('2'), gnd,
                                   noise = True, toolkit=symbolic,
-                                  noise_outquantity='i')
+                                  noise_outquantity = 'v')
     result = twoport_ana.solve(freqs=s, complexfreq=True)
 
     ABCD = Matrix(result['twoport'].A)
     ABCD.simplify()
 
-    assert_array_equal(ABCD, array([[1 + R1*C1*s, R1],
-                                    [C1*s,  1]]))
+    assert_array_equal(ABCD, array([[1 + 0*R1*C1*s, R1],
+                                    [(1 + 0*R0*C1*s + 0*R1*C1*s) / R0,  (R0 + R1)/R0]]))
 
+    assert_array_equal(simplify(result['Sin'] - (4*kT/R0 + 4*R1*kT/R0**2)), 0)
+    
