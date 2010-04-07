@@ -1,3 +1,4 @@
+
 # -*- coding: latin-1 -*-
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
@@ -548,12 +549,13 @@ class Waveform(object):
         return w
     
     def get_xunits(self):
-        if self._xunits != None:
-            return self._xunits
-        else:
-            return len(self._xlist) * ('',)
+        return self._xunits
+
     def set_xunits(self, units):
-        self._xunits = self.__checklabels(units)
+        if units == None:
+            self._xunits = len(self._xlist) * ['']
+        else:
+            self._xunits = self.__checklabels(units)
 
     def get_yunit(self):
         if self._yunit != None:
@@ -566,12 +568,13 @@ class Waveform(object):
         self._yunit = s
 
     def get_xlabels(self):
-        if self._xlabels != None:
-            return self._xlabels
-        else:
-            return tuple(['x%d'%i for i in range(len(self._xlist))])
+        return self._xlabels
+
     def set_xlabels(self, labels):
-        self._xlabels = self.__checklabels(labels)
+        if labels == None:
+            self._xlabels = list(['x%d'%i for i in range(len(self._xlist))])
+        else:
+            self._xlabels = self.__checklabels(labels)
 
     def get_ylabel(self):
         if self._ylabel != None:

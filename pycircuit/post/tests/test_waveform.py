@@ -89,8 +89,8 @@ def test_creation():
         
     assert_array_equal(testdata2.y, array([[3,4,5],[5,4,2]]))
     
-    assert_equal(testdata2.xlabels, ('v1', 'v2'))
-    assert_equal(testdata2.xunits, ('V', 'V'))
+    assert_equal(testdata2.xlabels, ['v1', 'v2'])
+    assert_equal(testdata2.xunits, ['V', 'V'])
     assert_equal(testdata2.ylabel, 'i3')
     assert_equal(testdata2.yunit, 'A')
     assert_equal(testdata2.ndim, 2)
