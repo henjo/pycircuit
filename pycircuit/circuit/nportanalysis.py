@@ -12,6 +12,14 @@ from pycircuit.post.internalresult import InternalResultDict
 
 np.set_printoptions(precision=4)
 
+class ISInternal(IS):
+    """Current source that only responds to 'internalac' analysis"""
+    def u(self, t=0.0, epar=defaultepar, analysis=None):
+        if analysis == 'internalac':
+            return self.toolkit.array([self.ipar.iac, -self.ipar.iac])
+        else:
+            return self.toolkit.array([0, 0])
+
 class TwoPortAnalysis(Analysis):
     """Analysis to find the 2-ports parameters of a circuit
 
@@ -214,7 +222,7 @@ class TwoPortAnalysis(Analysis):
 
         ## Place power sources at the ports
         for n, sourceport in enumerate(self.ports):
-            circuit['_is%d'%n] = IS(sourceport[1], sourceport[0], iac = 0)
+            circuit['_is%d'%n] = ISInternal(sourceport[1], sourceport[0], iac = 0)
             circuit['_rl%d'%n] = R(sourceport[1], sourceport[0], r = r0, noisy=False)
 
         if toolkit.symbolic:
@@ -234,7 +242,7 @@ class TwoPortAnalysis(Analysis):
 
             ## If symbolic the s-parameters are calculated using co-factors
             if toolkit.symbolic:
-                (u,) = circuit.remove_refnode((circuit.u(x, analysis='ac'),), 
+                (u,) = circuit.remove_refnode((circuit.u(x, analysis='internalac'),), 
                                               refnode)
                 ## Calculate s-parameters using cofactors
                 for k, port in enumerate(self.ports):
@@ -249,7 +257,7 @@ class TwoPortAnalysis(Analysis):
 
             else:
                 ## Run AC-analysis
-                acana = AC(circuit, toolkit=toolkit)
+                acana = AC(circuit, toolkit=toolkit, analysis='internalac')
                 res = acana.solve(freqs, refnode=refnode,
                                   complexfreq = complexfreq)
                 ## Obtain s-parameters

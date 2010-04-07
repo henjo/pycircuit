@@ -201,7 +201,7 @@ class Transient(Analysis):
             C = self.cir.C(x)
             q=self.cir.q(x)
             iq,Geq = self.get_diff(q,C)
-            f =self.cir.i(x) + iq + self.cir.u(t)
+            f =self.cir.i(x) + iq + self.cir.u(t, analysis='tran')
             J = self.cir.G(x) + Geq #return C somehow?
             return array(f, dtype=float), array(J, dtype=float)
         

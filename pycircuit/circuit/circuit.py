@@ -14,6 +14,8 @@ import numeric
 
 default_toolkit = numeric
 
+timedomain_analyses = ('dc', 'tran')
+
 class Node(object):
     """A Node object represents a point in an electric circuit"""
     def __init__(self, name=None, isglobal = False):

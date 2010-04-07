@@ -50,6 +50,9 @@ def test_symbolic_twoport():
     cir['R1'] = R(1, 2, r=R1)
 #    cir['C1'] = C(2, gnd, c=C1)
 
+    ## Add an AC source to verify that the source will not affect results
+#    cir['IS'] = IS(1, gnd, iac=1) 
+
     ## Run symbolic 2-port analysis
     twoport_ana = TwoPortAnalysis(cir, Node('1'), gnd, Node('2'), gnd,
                                   noise = True, toolkit=symbolic,

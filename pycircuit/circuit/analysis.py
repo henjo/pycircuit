@@ -92,6 +92,8 @@ def remove_row_col(matrices, n):
     return tuple(result)
 
 class Analysis(sim.Analysis):
+    parameters = [Parameter(name='analysis', desc='Analysis name', 
+                            default=None)]
     def __init__(self, cir, toolkit=None, **kvargs):
         super(Analysis, self).__init__(cir, **kvargs)
 
@@ -153,7 +155,8 @@ def fsolve(f, x0, args=(), full_output=False, maxiter=200,
 
 class SSAnalysis(Analysis):
     """Super class for small-signal analyses"""
-
+    parameters = [Parameter(name='analysis', desc='Analysis name', 
+                            default='ac')]
     def ac_map_function(self, func, ss, refnode):
         """Apply a function over a list of frequencies or a single frequency"""
         irefnode = self.cir.nodes.index(refnode)
@@ -171,7 +174,8 @@ class SSAnalysis(Analysis):
     def dc_steady_state(self, freqs, refnode, toolkit, complexfreq=False, u=None):
         """Return G,C,u matrices at dc steady-state and complex frequencies"""
         return dc_steady_state(self.cir, freqs, refnode, toolkit, 
-                               complexfreq = complexfreq, u = u)
+                               complexfreq = complexfreq, u = u, 
+                               analysis=self.par.analysis)
 
 class AC(SSAnalysis):
     """
@@ -463,7 +467,8 @@ class Noise(SSAnalysis):
         return result
 
 
-def dc_steady_state(cir, freqs, refnode, toolkit, complexfreq = False, u = None):
+def dc_steady_state(cir, freqs, refnode, toolkit, complexfreq = False, 
+                    analysis='ac', u = None):
     """Return G,C,u matrices at dc steady-state and complex frequencies"""
 
     n = cir.n
@@ -475,7 +480,7 @@ def dc_steady_state(cir, freqs, refnode, toolkit, complexfreq = False, u = None)
 
     ## Allow for custom stimuli, mainly used by other analyses
     if u == None:
-        u = cir.u(x, analysis='ac')
+        u = cir.u(x, analysis=analysis)
 
     ## Refer the voltages to the reference node by removing
     ## the rows and columns that corresponds to this node
