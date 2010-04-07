@@ -697,9 +697,9 @@ class Waveform(object):
     def __checklabels(self, labels):
         if not labels == None:
             try:
-                labels = tuple(labels)
+                labels = list(labels)
             except:
-                raise ValueError('Cannot convert labels to tuples')
+                raise ValueError('Cannot convert labels to list')
             if len(labels) != self._dim:
                 raise ValueError('Label list should have the same length (%d) as the number of dimensions (%d)'%(len(labels), self._dim))
             for label in labels:
