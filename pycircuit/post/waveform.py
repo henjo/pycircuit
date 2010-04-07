@@ -495,8 +495,6 @@ class Waveform(object):
         ===  ===
         >>> t=Waveform(array([1,2]),array([3,4]), xlabels = ['X'], \
                        ylabel = 'Y').astable
-
-        
         """
         return astable(self)
 
@@ -597,9 +595,14 @@ class Waveform(object):
                      doc = 'y-axis unit')
 
     def __getitem__(self, index):
-        if type(index) in (types.IntType, slice):
+        if type(index) in (types.IntType, slice, types.EllipsisType):
             index = (index,)
 
+        if index[0] == Ellipsis:
+            index = (self.ndim - len(index)) * (slice(None),) + tuple(index)
+        else:
+            index = tuple(index) + (self.ndim - len(index)) * (slice(None),)
+        
         ## Extend index from right to have same length as dimension
         index = tuple(index) + (self.ndim - len(index)) * (slice(None),)
 
