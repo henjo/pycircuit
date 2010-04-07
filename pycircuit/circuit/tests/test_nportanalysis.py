@@ -39,6 +39,22 @@ def test_twoportanalysis_sparam():
     assert_array_almost_equal(result['twoport'].CA.astype(complex),
                               CAref, decimal=25)
 
+def test_noise2():
+    cir = SubCircuit(toolkit=symbolic)
+
+    var('R1 R2 w kT', real=True, positive=True)
+
+    cir['Rp'] = R(1, gnd, r=R1/2, toolkit=symbolic)
+    cir['Rn'] = R(2, gnd, r=R1/2, toolkit=symbolic)
+    
+    twoport_ana = TwoPortAnalysis(cir, 1,2, 2, 1,
+                                  noise = True, toolkit=symbolic,
+                                  noise_outquantity = 'v')
+    result = twoport_ana.solve(freqs=1j*w, complexfreq=True)
+
+    assert_equal(result['Sin'], 4*kT/R1)
+    assert_equal(result['Svn'], 0)
+
 def test_symbolic_twoport():
     circuit.default_toolkit = symbolic
     cir = SubCircuit()

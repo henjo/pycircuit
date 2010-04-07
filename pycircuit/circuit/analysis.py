@@ -458,8 +458,10 @@ class Noise(SSAnalysis):
 
         elif isinstance(self.inputsrc, IS):
             plus_node = instjoin(self.inputsrc_name, 'plus')
+            minus_node = instjoin(self.inputsrc_name, 'minus')
             gain = self.cir.extract_v(zm, 
                                       self.cir.get_node(plus_node), 
+                                      self.cir.get_node(minus_node), 
                                       refnode=refnode, refnode_removed=True)
             result['gain'] = gain
             result['Sininp'] = xn2out / abs(gain)**2
