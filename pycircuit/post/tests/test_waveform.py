@@ -133,6 +133,7 @@ def test_indexing():
                           yunit = 'A')
 
     assert_waveform_almost_equal(w[0,:], w_sliced)
+    assert_waveform_almost_equal(w[0], w_sliced)
 
     w_sliced2 = Waveform(([1,2],), array([3,5]),
                          xlabels = ('v1',),
@@ -140,7 +141,7 @@ def test_indexing():
                          ylabel = 'i3',
                          yunit = 'A')
     
-    assert_waveform_almost_equal(w[0], w_sliced2)
+    assert_waveform_almost_equal(w[:,0], w_sliced2)
 
     w_sliced3 = Waveform(([1], [1,2,3],), array([[3,4,5]]),
                           xlabels = ('v1', 'v2',),
@@ -149,6 +150,7 @@ def test_indexing():
                           yunit = 'A')
     
     assert_waveform_almost_equal(w[0:1,:], w_sliced3)
+    assert_equal(w[0,0], 3)
 
     w_sliced = Waveform(([1,2],), array([5,2]),
                           xlabels = ('v1',),

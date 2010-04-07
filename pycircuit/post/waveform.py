@@ -598,13 +598,14 @@ class Waveform(object):
 
     def __getitem__(self, index):
         if type(index) in (types.IntType, slice):
-            if type(index) is types.IntType and len(self.shape) == 1:
-                return self._y[index]
-            else:
-                index = (index,)
+            index = (index,)
 
-        ## Extend index from left to have same length as dimension
-        index = (self.ndim - len(index)) * [slice(None)] + list(index)
+        ## Extend index from right to have same length as dimension
+        index = tuple(index) + (self.ndim - len(index)) * (slice(None),)
+
+        ## Return value if index selects a scalar
+        if np.isscalar(self._y[index]):
+            return self._y[index]
 
         if len(index) > self.ndim:
             raise IndexError('Index order exceeds the number of dimensions')
