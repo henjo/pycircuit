@@ -143,6 +143,6 @@ class TabFunc(ScalarFunction):
     def f(self,x):
         return interpolate.splev(x,self.xyspline,der=0)
 
-    def fprime(self,x):
-        return interpolate.splev(x,self.xyspline,der=1)
+    def fprime(self,x,order=1):
+        return interpolate.splev(x,self.xyspline,der=order)
 
