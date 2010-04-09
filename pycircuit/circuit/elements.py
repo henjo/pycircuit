@@ -188,9 +188,11 @@ class VS(Circuit):
             phase = self.ipar.phase * self.toolkit.pi / 180.
             vac = self.ipar.vac * self.toolkit.exp(1j*phase)
             return self.toolkit.array([0, 0, -vac])
-        else:
+        elif analysis in timedomain_analyses:
             v = self.ipar.v + self.function.f(t)
             return self.toolkit.array([0, 0, -v])
+        else:
+            return self.toolkit.array([0, 0, 0])
 
     def CY(self, x, w, epar=defaultepar):
         CY = super(VS, self).CY(x, w)
@@ -250,13 +252,13 @@ class IS(Circuit):
     function = func.TimeFunction()
 
     def u(self, t=0.0, epar=defaultepar, analysis=None):
-        if analysis == None:
-            return self.toolkit.array([self.ipar.i, -self.ipar.i])
-        elif analysis == 'ac':
+        if analysis == 'ac':
             return self.toolkit.array([self.ipar.iac, -self.ipar.iac])
-        else:
+        elif analysis in timedomain_analyses:
             i = self.ipar.i + self.function.f(t)
             return self.toolkit.array([i, -i])
+        else:
+            return self.toolkit.array([0, 0])
 
     def CY(self, x, w, epar=defaultepar):
         return  self.toolkit.array([[self.ipar.noisePSD, -self.ipar.noisePSD],

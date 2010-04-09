@@ -361,7 +361,7 @@ class NPortS(NPort):
 
     @property
     def CA(self):
-        return NPortZ(self).CA
+#        return NPortZ(self).CA
         z0 = self.z0
         A = np.mat(self.A)
         T = np.matrix([[np.sqrt(z0), -(A[0,1]+A[0,0]*z0)/np.sqrt(z0)],

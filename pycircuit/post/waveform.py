@@ -1,3 +1,4 @@
+
 # -*- coding: latin-1 -*-
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
@@ -494,8 +495,6 @@ class Waveform(object):
         ===  ===
         >>> t=Waveform(array([1,2]),array([3,4]), xlabels = ['X'], \
                        ylabel = 'Y').astable
-
-        
         """
         return astable(self)
 
@@ -548,12 +547,13 @@ class Waveform(object):
         return w
     
     def get_xunits(self):
-        if self._xunits != None:
-            return self._xunits
-        else:
-            return len(self._xlist) * ('',)
+        return self._xunits
+
     def set_xunits(self, units):
-        self._xunits = self.__checklabels(units)
+        if units == None:
+            self._xunits = len(self._xlist) * ['']
+        else:
+            self._xunits = self.__checklabels(units)
 
     def get_yunit(self):
         if self._yunit != None:
@@ -566,12 +566,13 @@ class Waveform(object):
         self._yunit = s
 
     def get_xlabels(self):
-        if self._xlabels != None:
-            return self._xlabels
-        else:
-            return tuple(['x%d'%i for i in range(len(self._xlist))])
+        return self._xlabels
+
     def set_xlabels(self, labels):
-        self._xlabels = self.__checklabels(labels)
+        if labels == None:
+            self._xlabels = list(['x%d'%i for i in range(len(self._xlist))])
+        else:
+            self._xlabels = self.__checklabels(labels)
 
     def get_ylabel(self):
         if self._ylabel != None:
@@ -594,14 +595,20 @@ class Waveform(object):
                      doc = 'y-axis unit')
 
     def __getitem__(self, index):
-        if type(index) in (types.IntType, slice):
-            if type(index) is types.IntType and len(self.shape) == 1:
-                return self._y[index]
-            else:
-                index = (index,)
+        if type(index) in (types.IntType, slice, types.EllipsisType):
+            index = (index,)
 
-        ## Extend index from left to have same length as dimension
-        index = (self.ndim - len(index)) * [slice(None)] + list(index)
+        if index[0] == Ellipsis:
+            index = (self.ndim - len(index)) * (slice(None),) + tuple(index)
+        else:
+            index = tuple(index) + (self.ndim - len(index)) * (slice(None),)
+        
+        ## Extend index from right to have same length as dimension
+        index = tuple(index) + (self.ndim - len(index)) * (slice(None),)
+
+        ## Return value if index selects a scalar
+        if np.isscalar(self._y[index]):
+            return self._y[index]
 
         if len(index) > self.ndim:
             raise IndexError('Index order exceeds the number of dimensions')
@@ -697,9 +704,9 @@ class Waveform(object):
     def __checklabels(self, labels):
         if not labels == None:
             try:
-                labels = tuple(labels)
+                labels = list(labels)
             except:
-                raise ValueError('Cannot convert labels to tuples')
+                raise ValueError('Cannot convert labels to list')
             if len(labels) != self._dim:
                 raise ValueError('Label list should have the same length (%d) as the number of dimensions (%d)'%(len(labels), self._dim))
             for label in labels:

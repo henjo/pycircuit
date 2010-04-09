@@ -62,6 +62,23 @@ V    V    A
    2    1    4
 ==== ==== ===="""
 
+testdata4 = Waveform([[1,2], [1,2,3], [3,4]], array([[[1,3],[4,4],[5,4]],[[4,5],[4,4],[3,2]]]),
+                     xlabels = ('v1', 'v2', 'v3'),
+                     xunits = ('V', 'V', 'V'),
+                     ylabel = 'i3',
+                     yunit = 'A')
+testdata4_table = """==== ==== ====
+v1   v2   i3  
+V    V    A   
+==== ==== ====
+   1    1    3
+   1    2    4
+   1    3    5
+   2    1    5
+   2    2    4
+   2    3    2
+==== ==== ===="""
+
 
 def test_creation():
     """Test of waveform creation"""
@@ -89,8 +106,8 @@ def test_creation():
         
     assert_array_equal(testdata2.y, array([[3,4,5],[5,4,2]]))
     
-    assert_equal(testdata2.xlabels, ('v1', 'v2'))
-    assert_equal(testdata2.xunits, ('V', 'V'))
+    assert_equal(testdata2.xlabels, ['v1', 'v2'])
+    assert_equal(testdata2.xunits, ['V', 'V'])
     assert_equal(testdata2.ylabel, 'i3')
     assert_equal(testdata2.yunit, 'A')
     assert_equal(testdata2.ndim, 2)
@@ -133,6 +150,7 @@ def test_indexing():
                           yunit = 'A')
 
     assert_waveform_almost_equal(w[0,:], w_sliced)
+    assert_waveform_almost_equal(w[0], w_sliced)
 
     w_sliced2 = Waveform(([1,2],), array([3,5]),
                          xlabels = ('v1',),
@@ -140,7 +158,7 @@ def test_indexing():
                          ylabel = 'i3',
                          yunit = 'A')
     
-    assert_waveform_almost_equal(w[0], w_sliced2)
+    assert_waveform_almost_equal(w[:,0], w_sliced2)
 
     w_sliced3 = Waveform(([1], [1,2,3],), array([[3,4,5]]),
                           xlabels = ('v1', 'v2',),
@@ -149,6 +167,7 @@ def test_indexing():
                           yunit = 'A')
     
     assert_waveform_almost_equal(w[0:1,:], w_sliced3)
+    assert_equal(w[0,0], 3)
 
     w_sliced = Waveform(([1,2],), array([5,2]),
                           xlabels = ('v1',),
@@ -158,6 +177,16 @@ def test_indexing():
 
     assert_waveform_almost_equal(w[:,-1], w_sliced)
 
+    w_sliced = Waveform([[1,2], [1,2,3]], array([[1,4,5],[4,4,3]]),
+                        xlabels = ('v1', 'v2'),
+                        xunits = ('V', 'V'),
+                        ylabel = 'i3',
+                        yunit = 'A')
+
+    assert_waveform_almost_equal(testdata4[:,:, 0], w_sliced)
+    assert_waveform_almost_equal(testdata4[...], testdata4)
+    assert_waveform_almost_equal(testdata4[..., 0], w_sliced)
+    
 def test_xmax(): 
     w1 = Waveform(array([1,2,3]),array([3,5,6]))
     assert_equal(w1.xmax(), 3)
