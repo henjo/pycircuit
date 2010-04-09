@@ -34,8 +34,6 @@ class DC(Analysis):
     >>> c['D'] = Diode(n2, gnd)
     >>> dc = DC(c)
     >>> res = dc.solve()
-    >>> dc.result.keys()
-    ['gnd', 'net2', 'net1']
     >>> print np.around(res.v('net2'), 2)
     0.7
 
@@ -89,7 +87,7 @@ class DC(Analysis):
     def _simple(self, x0):
         """Simple Newton's method"""
         def func(x):
-            return self.cir.i(x) + self.cir.u(0), self.cir.G(x)
+            return self.cir.i(x) + self.cir.u(0,analysis='dc'), self.cir.G(x)
 
         return self._newton(func, x0)
 
@@ -102,7 +100,7 @@ class DC(Analysis):
             Ggmin[0:n_nodes, 0:n_nodes] = gmin * eye(n_nodes)
 
             def func(x):
-                return self.cir.i(x) + self.cir.u(0), \
+                return self.cir.i(x) + self.cir.u(0,analysis='dc'), \
                        self.cir.G(x) + Ggmin
 
             x, x0 = self._newton(func, x0), x
@@ -114,8 +112,9 @@ class DC(Analysis):
         x = x0
         for lambda_ in (0, 1e-2, 1e-1, 1):
             def func(x):
-                return self.cir.i(x) + lambda_ * self.cir.u(0), self.cir.G(x)
-            
+                f = self.cir.i(x) + lambda_ * self.cir.u(0,analysis='dc')
+                dFdx = self.cir.G(x)
+                return f, dFdx            
             x, x0 = self._newton(func, x0), x
 
         return x
@@ -124,10 +123,10 @@ class DC(Analysis):
         ones_nodes = np.ones(len(self.cir.nodes))
         ones_branches = np.ones(len(self.cir.branches))
 
-        abstol = np.concatenate((self.options.iabstol * ones_nodes,
-                                 self.options.vabstol * ones_branches))
-        xtol = np.concatenate((self.options.vabstol * ones_nodes,
-                                 self.options.iabstol * ones_branches))
+        abstol = np.concatenate((self.par.iabstol * ones_nodes,
+                                 self.par.vabstol * ones_branches))
+        xtol = np.concatenate((self.par.vabstol * ones_nodes,
+                                 self.par.iabstol * ones_branches))
 
         (x0, abstol, xtol) = remove_row_col((x0, abstol, xtol), self.irefnode)
 
@@ -135,9 +134,9 @@ class DC(Analysis):
             result = fsolve(refnode_removed(func, self.irefnode), 
                             x0, 
                             full_output = True, 
-                            reltol = self.options.reltol,
+                            reltol = self.par.reltol,
                             abstol = abstol, xtol=xtol,
-                            maxiter = self.options.maxiter)
+                            maxiter = self.par.maxiter)
         except np.linalg.LinAlgError, e:
             raise SingularMatrix(e.message)
 
