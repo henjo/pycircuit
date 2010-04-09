@@ -8,9 +8,10 @@ class myVCCS(Circuit):
    """Example of VCCS using lookup table
 
    >>> import pylab
-   >>> from elements import *
+   >>> import numeric
+   >>> from pycircuit.circuit.elements import *
    >>> from pycircuit.post import plotall
-   >>> from transient import Transient
+   >>> from pycircuit.circuit.transient import Transient
    >>> vvec=numeric.linspace(-2,2,100)
    >>> ivec=numeric.tanh(vvec)
    >>> nvec=ivec*0 # no noise
