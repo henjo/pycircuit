@@ -7,5 +7,6 @@ setup(name='Pycircuit',
       author_email='henjo2006@gmail.com',
       url='http://rigel.johome.net/svn/pycircuit',
       packages=['pycircuit', 'pycircuit.circuit', 'pycircuit.post', 'pycircuit.utilities',
-                'pycircuit.sim', 'pycircuit.post.cds', 'pycircuit.post.jwdb'],
+                'pycircuit.sim', 'pycircuit.post.cds', 'pycircuit.post.cds.yapps',
+                'pycircuit.post.jwdb'],
      )

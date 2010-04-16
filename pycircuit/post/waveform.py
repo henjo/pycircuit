@@ -438,13 +438,21 @@ class Waveform(object):
     def _plot(self, plotfunc, *args, **kvargs):
         import pylab
 
-        set_label = 'label' not in kvargs
+        set_label = 'label' not in kvargs or '%s' in kvargs['label']
+
+        if 'label' in kvargs:
+            labelarg = kvargs['label']
+        else:
+            labelarg = None
 
         pylab.hold(True)
         for i in np.ndindex(*self._y.shape[:-1]):
             if set_label:
                 label = ','.join([self.xlabels[axis] + '=' + \
                       str(self._xlist[axis][ix]) for axis, ix in enumerate(i)])
+                if labelarg != None:
+                    label = labelarg % (label,)
+                
                 kvargs['label'] = label
             
             # Limit infinite values
@@ -651,6 +659,8 @@ class Waveform(object):
             x[i], x[j] = (x[j], x[i])
             return x
 
+        i, j = [self.getaxis(axis) for axis in i,j]
+
         w = copy(self)
 
         w._xlist = list_swap(w._xlist, i, j)
@@ -672,6 +682,9 @@ class Waveform(object):
         Each iteration yields a tuple (subwave, xlabels, xvalues, xunits)
     
         """
+        ## Translate axis name or number to number
+        axes = [self.getaxis(axis) for axis in axes]
+        
         if not set(axes).issubset(range(self.ndim)):
             raise ValueError("invalid axes argument")
  

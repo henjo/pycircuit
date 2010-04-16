@@ -1035,8 +1035,8 @@ class SweepValueWindowed(SweepValue):
             self.children.append(value)
 
         # Skip trailing padding bytes
-        padsize = (self.psf.header.properties['PSF buffer size'] - (file.tell()-bufferstart))% \
-                  self.psf.header.properties['PSF buffer size']
+        padsize = int((self.psf.header.properties['PSF buffer size'] - (file.tell()-bufferstart))% \
+                  self.psf.header.properties['PSF buffer size'])
         file.seek(padsize, 1)
 
         return windowlen
@@ -1071,14 +1071,14 @@ class GroupData(PSFData):
                 # If a window is used in the PSF file, the entire window is stored
                 # and the data is aligned to the end of the window. So we need
                 # to skip window size - data size
-                file.seek(windowsize-windowlen*element.getDataSize(), 1)
+                file.seek(int(windowsize-windowlen*element.getDataSize()), 1)
 
                 for i in xrange(0,count):
                     value = element.getDataObj()
                     value.deSerializeFile(file)
                     valuearray.append(value)
 
-                file.seek((windowlen-count)*element.getDataSize(), 1)
+                file.seek(int((windowlen-count)*element.getDataSize()), 1)
 
                 self.children.append(valuearray)
     def toPSFasc(self, prec=None, index=None):
@@ -1221,7 +1221,7 @@ class PSFReader(object):
         >>> psf.open()
         """
         if not self.asc:
-            self.file = open(self.filename)
+            self.file = open(self.filename, "rb")
             
             if self.validate():
                 self.deSerializeFile(self.file)
@@ -1249,7 +1249,7 @@ class PSFReader(object):
         False
         """
         if self.file == None:
-            file = open(self.filename)
+            file = open(self.filename, "rb")
         else:
             file = self.file
             
@@ -1455,7 +1455,7 @@ class PSFReader(object):
             print "First word: 0x%x"%self.unk1
 
         # Load headers
-        file.seek(sectionoffsets[0])
+        file.seek(int(sectionoffsets[0]))
         self.header = HeaderSection(self)
         self.header.deSerializeFile(file)
         if self.verbose:
@@ -1464,7 +1464,7 @@ class PSFReader(object):
         
 
         if sectionoffsets.has_key(1):
-            file.seek(sectionoffsets[1])
+            file.seek(int(sectionoffsets[1]))
             self.types.deSerializeFile(file)
 
             if self.verbose:
@@ -1472,7 +1472,7 @@ class PSFReader(object):
                 print self.types
 
         if sectionoffsets.has_key(2):
-            file.seek(sectionoffsets[2])
+            file.seek(int(sectionoffsets[2]))
             self.sweeps = SweepSection(self)
             self.sweeps.deSerializeFile(file)
 
@@ -1481,13 +1481,13 @@ class PSFReader(object):
                 print self.sweeps
 
         if sectionoffsets.has_key(3):
-            file.seek(sectionoffsets[3])
+            file.seek(int(sectionoffsets[3]))
             self.traces = TraceSection(self)
             self.traces.deSerializeFile(file)
 #            print self.traces
 
         if sectionoffsets.has_key(4):
-            file.seek(sectionoffsets[4])
+            file.seek(int(sectionoffsets[4]))
             # Load data
             if self.sweeps:
                 self.values = ValuesSectionSweep(self)
