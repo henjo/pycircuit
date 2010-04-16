@@ -10,14 +10,19 @@ p129 chapter 5.2 depicts a flowchart describing the basic algorithm used in this
 """
 
 from numpy import array, delete, linalg, size, zeros, concatenate, pi, zeros, alltrue, maximum
-from analysis import Analysis, AC, DC, remove_row_col
+from pycircuit.circuit.analysis import Analysis, AC, remove_row_col
+from pycircuit.circuit.dcanalysis import DC
 from pycircuit.utilities import Parameter, ParameterDict, isiterable
 from pycircuit.post.internalresult import InternalResultDict
-from pycircuit.result import Waveform
+from pycircuit.post import Waveform
 import sympy
 from sympy import Symbol, Matrix, symbols, simplify, together, factor, cancel, diff, Mul, factorial
-from symbolicelements import R, defaultepar, gnd, Diode, SubCircuit, IS, C, VCCS
+#from symbolicelements import R, defaultepar, gnd, Diode, SubCircuit, IS, C, VCCS
+from pycircuit.circuit.elements import R, Diode, IS, C, VCCS
+from pycircuit.circuit.circuit import defaultepar, gnd, SubCircuit, Node, default_toolkit
 from copy import copy
+from pycircuit.circuit import symbolic
+from pycircuit.circuit import numeric
 
 class NLVCCS(VCCS):
     linear = False
@@ -40,7 +45,8 @@ def K(cir, x, ordervec, epar = defaultepar):
     cir.K([1,1,0] will return the vector 1/(1!*1!) * d2I(X)/dX_0dX_1
 
     >>> from circuit import Node
-    >>> d = NLVCCS(Node('plus'), Node('minus'), Node('plus'), Node('minus'), gm=Symbol('gm'))
+    >>> default_toolkit = symbolic
+    >>> d = NLVCCS(Node('plus'), Node('minus'), Node('plus'), Node('minus'), toolkit=symbolic, gm=Symbol('gm'))
     >>> epar = copy(defaultepar)
     >>> epar.T = Symbol('T')
     >>> K(d, [0,0], [1,0], epar=epar)
@@ -74,11 +80,12 @@ class Volterra(Analysis):
     Symbolic volterra analysis class
     
     >>> cir = SubCircuit()
+    >>> default_toolkit = symbolic
 
-    >>> n1 = cir.addNode('n1')
+    >>> n1 = cir.add_nodes('n1')
 
     >>> cir['is'] = IS(n1, gnd, i=1e-3, iac=1)
-    >>> cir['x'] = NLVCCS(n1, gnd, n1, gnd, gm=Symbol('gm'))
+    >>> cir['x'] = NLVCCS(n1, gnd, n1, gnd, toolkit=symbolic, gm=Symbol('gm'))
     >>> cir['c'] = C(n1, gnd, c=Symbol('C'))
 
     >>> volterra = Volterra(cir)

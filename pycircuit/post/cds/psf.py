@@ -1221,7 +1221,7 @@ class PSFReader(object):
         >>> psf.open()
         """
         if not self.asc:
-            self.file = open(self.filename)
+            self.file = open(self.filename, "rb")
             
             if self.validate():
                 self.deSerializeFile(self.file)
@@ -1249,7 +1249,7 @@ class PSFReader(object):
         False
         """
         if self.file == None:
-            file = open(self.filename)
+            file = open(self.filename, "rb")
         else:
             file = self.file
             
