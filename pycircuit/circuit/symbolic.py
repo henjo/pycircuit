@@ -49,8 +49,8 @@ def setup_analysis(epar):
     """Code that is run by analyses using this toolkit"""
     epar.append(Parameter('kT', default=sympy.Symbol('kT', real=True, positive=True)))
 
-def zeros(shape, dtype=object):
-    return np.zeros(shape, dtype=dtype)
+def zeros(shape, dtype=None):
+    return np.zeros(shape, dtype=object)
 
 def array(x, dtype=object):
     return np.array(x, dtype=dtype)

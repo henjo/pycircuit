@@ -1149,7 +1149,7 @@ class SubCircuit(Circuit):
         n = self.n
         lhs = self.toolkit.zeros(n, dtype=dtype)
 
-        for instance,element in self.elements.items():
+        for instance, element in self.elements.items():
             if x != None:
                 subx = x[self.elementnodemap[instance]]
                 rhs = getattr(element, methodname)(subx, *args)
@@ -1157,7 +1157,7 @@ class SubCircuit(Circuit):
                 rhs = getattr(element, methodname)(*args)
 
             T = self._mapmatrix[instance]
-            
+
             lhs += self.toolkit.dot(T, rhs)
 
         return lhs
