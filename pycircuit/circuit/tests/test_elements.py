@@ -22,7 +22,8 @@ def test_vsin():
 
     v = vo + va*sympy.exp(-theta*(t - td)) * \
         sympy.sin(2*sympy.pi*freq*(t-td)+phase*sympy.pi/180)
-    assert_array_equal(vsin.u(t), symbolic.array([0,0,-v]))
+
+    assert_array_equal(vsin.u(t, analysis='tran'), symbolic.array([0,0,-v]))
 
 def test_vpulse():
     t = sympy.Symbol('t')
@@ -49,7 +50,7 @@ def test_vpulse():
     for tstart in 0,per:
         for t in tref:
             uref = np.array([0,0,-np.interp(t,tpoints,vpoints)])
-            u = np.array(pulse.u(t + tstart)).astype(float).reshape(3,)
+            u = np.array(pulse.u(t + tstart, analysis='tran')).astype(float).reshape(3,)
             assert_array_almost_equal(u, uref)
            
 def gen_stamps(toolkit=symbolic):
