@@ -18,16 +18,23 @@ class SymbolicDC(Analysis):
         
         self.irefnode = self.cir.get_node_index(refnode)
 
-    def solve(self):
+    def get_eqsys(self):
+        """Return the equation system and variable list that gives the DC solution
+        
+        Returns eqsys, x
+        """
+        
         x = np.array([sympy.Symbol('x%d'%i) for i in range(self.cir.n)])
 
         eqsys = self.cir.i(x, epar=self.epar) + self.cir.u(0, analysis='dc', epar=self.epar)
 
         ## Refer the voltages to the reference node by removing
         ## the rows and columns that corresponds to this node
-        eqsys = [eq.subs(x[self.irefnode], 0) for eq in np.delete(eqsys, self.irefnode)]
-        
+        return [eq.subs(x[self.irefnode], 0) for eq in np.delete(eqsys, self.irefnode)], x
+
+    def solve(self):
         try:
+            eqsys, x = self.get_eqsys()
             sol = sympy.solve(eqsys, *x)
         except NotImplementedError, last_e:
             logging.error('Solver for equation %s not implemented in Sympy'%str(eqsys))

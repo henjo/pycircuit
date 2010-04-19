@@ -38,3 +38,23 @@ def test_linear():
     assert_equal(sympy.simplify(res.v(3, gnd) -  V0*R2/(R1+R2)), 0)
 
     
+def test_geteqsys():
+    var('k qelectron R1 V0 Isat q T qelectron')
+
+    c = SubCircuit(toolkit=symbolic)
+    c['V0'] = VS('net1', gnd, v=V0, toolkit=symbolic)
+    c['R1'] = R('net1', 'net2', r=R1)
+    c['D1'] = Diode('net2', gnd, IS=Isat, toolkit=symbolic)
+
+    dc = SymbolicDC(c)
+
+    dc.epar.T = Symbol('T')
+
+    eqsys, x = dc.get_eqsys()
+
+    x0, x1, x2, x3 = x
+    assert_equal(eqsys, [x3 + x0/R1 - x2/R1, 
+                         -Isat*(1 - sympy.exp(qelectron*x2/(T*k))) + x2/R1 - x0/R1, 
+                         x0 - V0])
+    
+    
