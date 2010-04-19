@@ -40,10 +40,7 @@ class R(Circuit):
 
     def CY(self, x, w, epar=defaultepar):
         if self.ipar.noisy:
-            if 'kT' in epar:
-                iPSD = 4*epar.kT / self.ipar.r
-            else:
-                iPSD = 4*kboltzmann * epar.T / self.ipar.r
+            iPSD = 4 * self.toolkit.kboltzmann * epar.T / self.ipar.r
         else:
             iPSD = 0
 
@@ -79,10 +76,7 @@ class G(Circuit):
 
     def CY(self, x, w, epar=defaultepar):
         if not self.ipar.nonoise:
-            if 'kT' in epar:
-                iPSD = 4*epar.kT*self.ipar.g
-            else:
-                iPSD = 4*kboltzmann*epar.T*self.ipar.g
+            iPSD = 4*self.toolkit.kboltzmann * epar.T*self.ipar.g
             return  self.toolkit.array([[iPSD, -iPSD],
                                         [-iPSD, iPSD]])
         else:
@@ -602,14 +596,14 @@ class Gyrator(Circuit):
 
 class Diode(Circuit):
     terminals = ('plus', 'minus')
-    mpar = Circuit.mpar.copy( 
-        Parameter(name='IS', desc='Saturation current', 
-                  unit='A', default=1e-13))
+    instparams = [Parameter(name='IS', desc='Saturation current', 
+                  unit='A', default=1e-13)]
     linear = False
     def G(self, x, epar=defaultepar):
         VD = x[0]-x[1]
-        VT = kboltzmann*epar.T / qelectron
-        g = self.mpar.IS * self.toolkit.exp(VD/VT) / VT
+
+        VT = self.toolkit.kboltzmann * epar.T / self.toolkit.qelectron
+        g = self.ipar.IS * self.toolkit.exp(VD/VT) / VT
         return self.toolkit.array([[g, -g],
                                    [-g, g]])
 
@@ -618,8 +612,8 @@ class Diode(Circuit):
         
         """
         VD = x[0]-x[1]
-        VT = kboltzmann*epar.T / qelectron
-        I = self.mpar.IS*(self.toolkit.exp(VD/VT)-1.0)
+        VT = self.toolkit.kboltzmann * epar.T / self.toolkit.qelectron
+        I = self.ipar.IS * (self.toolkit.exp(VD/VT)-1)
         return self.toolkit.array([I, -I])
 
 class VCVS_limited(Circuit):

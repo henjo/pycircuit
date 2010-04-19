@@ -130,10 +130,6 @@ class Circuit(object):
         *instparams*
           A list of valid instance parameters (Parameter objects)
 
-        *mpar*
-          A class variable with a ParameterDict containing model specific 
-          parameters
-
         *ipar*
           A ParameterDict containing instance specific parameters
 
@@ -161,7 +157,6 @@ class Circuit(object):
     nodes = []
     branches = []
     terminals = []
-    mpar = ParameterDict()
     instparams = []
     linear = True
     
