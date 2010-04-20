@@ -8,7 +8,7 @@ import sympy
 from sympy import Symbol, var, symbols, log
 
 def test_nonlinear():
-    var('k qelectron I0 Isat q')
+    var('k qelectron I0 Isat qelectron T')
 
     c = SubCircuit(toolkit=symbolic)
     c['I0'] = IS(gnd, 'net1', i=I0, toolkit=symbolic)
@@ -20,7 +20,7 @@ def test_nonlinear():
 
     res = dc.solve()
 
-    assert_equal(res.v('net1'), k * T / q * log(I0/Isat+1))
+    assert_equal(sympy.simplify(res.v('net1') - k * T / qelectron * log(I0/Isat+1)), 0)
 
 def test_linear():
     var('R1 R2 V0')
@@ -52,7 +52,7 @@ def test_geteqsys():
 
     eqsys, x = dc.get_eqsys()
 
-    x0, x1, x2, x3 = x
+    x0, x2, x3 = x
     assert_equal(eqsys, [x3 + x0/R1 - x2/R1, 
                          -Isat*(1 - sympy.exp(qelectron*x2/(T*k))) + x2/R1 - x0/R1, 
                          x0 - V0])

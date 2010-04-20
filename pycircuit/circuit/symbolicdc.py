@@ -30,23 +30,35 @@ class SymbolicDC(Analysis):
 
         ## Refer the voltages to the reference node by removing
         ## the rows and columns that corresponds to this node
-        return [eq.subs(x[self.irefnode], 0) for eq in np.delete(eqsys, self.irefnode)], x
+        return [eq.subs(x[self.irefnode], 0) for eq in np.delete(eqsys, self.irefnode)], \
+            np.delete(x, self.irefnode)
 
     def solve(self):
         try:
             eqsys, x = self.get_eqsys()
-            sol = sympy.solve(eqsys, *x)
+
+            ## Currently sympy doesn't support non-linear eq. systems only single equation
+            if len(eqsys) == 1:
+                sol = sympy.solve(eqsys[0], x[0])
+
+                if len(sol) > 1:
+                    raise NotImplemented("Multiple solutions")
+
+                sol = {x[0]: sol[0]}
+            else:
+                sol = sympy.solve(eqsys, *x)
+
         except NotImplementedError, last_e:
             logging.error('Solver for equation %s not implemented in Sympy'%str(eqsys))
 
             raise last_e
         else:
-            ## Insert reference node
-            sol[x[self.irefnode]] = 0
-
             ## Get solution vector
             x = [sol[x_n] for x_n in x]
         
+            ## Insert reference node
+            x.insert(self.irefnode, 0)
+
             self.result = CircuitResult(self.cir, x)
 
             return self.result
