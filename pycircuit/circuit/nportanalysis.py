@@ -14,7 +14,7 @@ np.set_printoptions(precision=4)
 
 class ISInternal(IS):
     """Current source that only responds to 'internalac' analysis"""
-    def u(self, t=0.0, epar=defaultepar, analysis=None):
+    def u(self, t=0, epar=defaultepar, analysis=None):
         if analysis == 'internalac':
             return self.toolkit.array([self.ipar.iac, -self.ipar.iac])
         else:
@@ -124,28 +124,32 @@ class TwoPortAnalysis(Analysis):
                 na = Noise(circuit_vs, 
                            inputsrc='VS_TwoPort',
                            outputnodes=(outp, outn), 
-                           toolkit=toolkit)
+                           toolkit=toolkit,
+                           epar=self.epar)
                 res_v = na.solve(freqs, complexfreq=complexfreq, 
                                  refnode=refnode)
 
                 na = Noise(circuit_cs, 
                            inputsrc='IS_TwoPort',
                            outputnodes=(outp, outn),
-                           toolkit=toolkit)
+                           toolkit=toolkit,
+                           epar=self.epar)
                 res_i = na.solve(freqs, complexfreq=complexfreq,
                                  refnode=refnode)
             else:
                 na = Noise(circuit_vs, 
-                                inputsrc='VS_TwoPort',
-                                outputsrc='VL',
-                                toolkit=toolkit)
+                           inputsrc='VS_TwoPort',
+                           outputsrc='VL',
+                           toolkit=toolkit,
+                           epar=self.epar)
                 res_v = na.solve(freqs, complexfreq=complexfreq,
                                  refnode=refnode)
 
                 na = Noise(circuit_cs, 
                            inputsrc='IS_TwoPort',
                            outputsrc='VL',
-                           toolkit=toolkit)
+                           toolkit=toolkit,
+                           epar=self.epar)
                 res_i = na.solve(freqs, complexfreq=complexfreq,
                                  refnode=refnode)
 
@@ -222,8 +226,8 @@ class TwoPortAnalysis(Analysis):
 
         ## Place power sources at the ports
         for n, sourceport in enumerate(self.ports):
-            circuit['_is%d'%n] = ISInternal(sourceport[1], sourceport[0], iac = 0)
-            circuit['_rl%d'%n] = R(sourceport[1], sourceport[0], r = r0, noisy=False)
+            circuit['_is%d'%n] = ISInternal(sourceport[1], sourceport[0], iac = 0, toolkit=toolkit)
+            circuit['_rl%d'%n] = R(sourceport[1], sourceport[0], r = r0, noisy=False, toolkit=toolkit)
 
         if toolkit.symbolic:
             ## For now just one frequency is allowed
@@ -232,7 +236,8 @@ class TwoPortAnalysis(Analysis):
             G, C, u, x, ss = dc_steady_state(circuit, freqs, 
                                              refnode,
                                              toolkit,
-                                             complexfreq = complexfreq)
+                                             complexfreq = complexfreq,
+                                             epar = self.epar)
             Y = C * ss + G
             detY =  toolkit.det(Y)
 
@@ -242,8 +247,8 @@ class TwoPortAnalysis(Analysis):
 
             ## If symbolic the s-parameters are calculated using co-factors
             if toolkit.symbolic:
-                (u,) = circuit.remove_refnode((circuit.u(x, analysis='internalac'),), 
-                                              refnode)
+                u_wrefnode = circuit.u(x, analysis='internalac', epar=self.epar)
+                (u,) = circuit.remove_refnode((u_wrefnode,), refnode)
                 ## Calculate s-parameters using cofactors
                 for k, port in enumerate(self.ports):
                     resname = "v(%s,%s)"%(port[0], port[1])
