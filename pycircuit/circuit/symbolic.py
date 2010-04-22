@@ -53,7 +53,7 @@ def cofactor(x, i, j):
 
 def setup_analysis(epar):
     """Code that is run by analyses using this toolkit"""
-    epar.append(Parameter('kT', default=sympy.Symbol('kT', real=True, positive=True)))
+    epar.append(Parameter('T', default=sympy.Symbol('T', real=True, positive=True)))
 
 def zeros(shape, dtype=None):
     return np.zeros(shape, dtype=object)
