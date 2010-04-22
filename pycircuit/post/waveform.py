@@ -821,6 +821,11 @@ def astable(*waveforms):
         xvalues = cartesian(waveforms[0]._xlist)
         yvalues = zip(*[list(w._y.flat) for w in waveforms])
 
+    ## Filter NaN values
+    indices = [i for i in range(len(yvalues)) if not np.isnan(yvalues[i])]
+    xvalues = [xvalues[i] for i in indices]
+    yvalues = [yvalues[i] for i in indices]        
+
     xlabels = waveforms[0].xlabels
     ylabels = [w.ylabel for w in waveforms]
     xunits = waveforms[0].xunits
