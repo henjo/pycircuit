@@ -93,7 +93,9 @@ def remove_row_col(matrices, n):
 
 class Analysis(sim.Analysis):
     parameters = [Parameter(name='analysis', desc='Analysis name', 
-                            default=None)]
+                            default=None),
+                  Parameter(name='epar', desc='Environment parameters',
+                            default=defaultepar)]
     def __init__(self, cir, toolkit=None, **kvargs):
         super(Analysis, self).__init__(cir, **kvargs)
 
@@ -105,7 +107,8 @@ class Analysis(sim.Analysis):
 
         self.toolkit = toolkit
 
-        epar = defaultepar.copy()
+        epar = self.par.epar
+
         if hasattr(toolkit, 'setup_analysis'):
             toolkit.setup_analysis(epar)
 
@@ -155,8 +158,9 @@ def fsolve(f, x0, args=(), full_output=False, maxiter=200,
 
 class SSAnalysis(Analysis):
     """Super class for small-signal analyses"""
-    parameters = [Parameter(name='analysis', desc='Analysis name', 
-                            default='ac')]
+    parameters = Analysis.parameters + \
+        [Parameter(name='analysis', desc='Analysis name', 
+                   default='ac')]
     def ac_map_function(self, func, ss, refnode):
         """Apply a function over a list of frequencies or a single frequency"""
         irefnode = self.cir.nodes.index(refnode)
@@ -171,11 +175,12 @@ class SSAnalysis(Analysis):
         else:
             return myfunc(ss)
 
-    def dc_steady_state(self, freqs, refnode, toolkit, complexfreq=False, u=None):
+    def dc_steady_state(self, freqs, refnode, toolkit, complexfreq=False, u=None, epar=defaultepar):
         """Return G,C,u matrices at dc steady-state and complex frequencies"""
         return dc_steady_state(self.cir, freqs, refnode, toolkit, 
                                complexfreq = complexfreq, u = u, 
-                               analysis=self.par.analysis)
+                               analysis=self.par.analysis,
+                               epar=epar)
 
 class AC(SSAnalysis):
     """
@@ -214,7 +219,8 @@ class AC(SSAnalysis):
     
     def solve(self, freqs, refnode=gnd, complexfreq = False, u = None):
         G, C, u, x, ss = self.dc_steady_state(freqs, refnode, self.toolkit,
-                                         complexfreq = complexfreq, u = u)
+                                              complexfreq = complexfreq, u = u,
+                                              epar = self.epar)
 
         def acsolve(s):
             return self.toolkit.linearsolver(s*C + G, -u)
@@ -338,7 +344,8 @@ class Noise(SSAnalysis):
 
     """
 
-    parameters = [Parameter(name='inputsrc', desc='Input voltage source', 
+    parameters =  SSAnalysis.parameters + \
+                  [Parameter(name='inputsrc', desc='Input voltage source', 
                             unit='', 
                             default=None),
                   Parameter(name='outputnodes', 
@@ -470,7 +477,7 @@ class Noise(SSAnalysis):
 
 
 def dc_steady_state(cir, freqs, refnode, toolkit, complexfreq = False, 
-                    analysis='ac', u = None):
+                    analysis='ac', u = None, epar=defaultepar):
     """Return G,C,u matrices at dc steady-state and complex frequencies"""
 
     n = cir.n
@@ -482,7 +489,7 @@ def dc_steady_state(cir, freqs, refnode, toolkit, complexfreq = False,
 
     ## Allow for custom stimuli, mainly used by other analyses
     if u == None:
-        u = cir.u(x, analysis=analysis)
+        u = cir.u(x, analysis=analysis, epar=epar)
 
     ## Refer the voltages to the reference node by removing
     ## the rows and columns that corresponds to this node
