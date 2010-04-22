@@ -1132,7 +1132,7 @@ class SubCircuit(Circuit):
                     raise e.__class__(str(e) + ' at element ' + str(element) 
                                       + ', args='+str(args))
             else:
-                rhs = getattr(element, methodname)(*args)
+                rhs = getattr(element, methodname)(*((None,) + tuple(args)))
                 
             T = self._mapmatrix[instance]
         
