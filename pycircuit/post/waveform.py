@@ -484,28 +484,42 @@ class Waveform(object):
         else:
             labelarg = None
 
+        if 'axis' in kvargs:
+            axis = kvargs['axis']
+            del kvargs['axis']
+        else:
+            axis = -1
+        axis = self.getaxis(axis)
+
         pylab.hold(True)
-        for i in np.ndindex(*self._y.shape[:-1]):
+        indexshape = list(self._y.shape)
+        indexshape[axis] = 1
+        for i in np.ndindex(*indexshape):
+            ## Select all elments in axis 'axis'
+            i = list(i)
+            i[axis] = slice(None)
+
             if set_label:
-                label = ','.join([self.xlabels[axis] + '=' + \
-                      str(self._xlist[axis][ix]) for axis, ix in enumerate(i)])
+                label = ','.join([self.xlabels[iaxis] + '=' + \
+                      str(self._xlist[iaxis][ix]) for iaxis, ix in enumerate(i)
+                                  if ix != slice(None)])
                 if labelarg != None:
                     label = labelarg % (label,)
                 
                 kvargs['label'] = label
             
             # Limit infinite values
-            y = self.get_y()[i]
+            y = self.y[i]
             y[where(y == inf)] = 1e20
             y[where(y == -inf)] = -1e20
 
-            p=plotfunc(self.get_x(-1), y, *args, **kvargs)
+            p=plotfunc(self.x[axis], y, *args, **kvargs)
 
         pylab.hold(False)
         
-        xlabel = self.xlabels[-1]
-        if self.xunits[-1] != '':
-            xlabel += ' [%s]'%self.xunits[-1]
+        xlabel = self.xlabels[axis]
+        if self.xunits[axis] != '':
+            xlabel += ' [%s]'%self.xunits[axis]
         pylab.xlabel(xlabel)
         
         ylabel = self.ylabel
@@ -554,6 +568,8 @@ class Waveform(object):
         elif type(axis) is types.IntType:
             if axis >= self.ndim:
                 raise ValueError('axis %d >= number of dimensions'%axis)
+            elif axis < 0:
+                axis = self.ndim + axis
             return axis
         else:
             raise ValueError('Axis %s must be a string or an integer'%str(axis))
