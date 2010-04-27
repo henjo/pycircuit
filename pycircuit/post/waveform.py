@@ -53,7 +53,8 @@ class Waveform(object):
         xlist = [array(xelement) for xelement in x]
 
         self.ragged = (y.dtype == object) and  \
-            set([xe.shape for xe in xlist + [y]]) == set([y.shape])
+            set([xe.shape for xe in xlist + [y]]) == set([y.shape]) and \
+            y.ndim > 1
         
         dim = len(x)
 
@@ -113,6 +114,8 @@ class Waveform(object):
     def set_x(self,value, axis=-1):
         "Set X vector"
 
+        axis = self.getaxis(axis)
+
         ## Swap order if new xvalues are falling
         if value[0] > value [-1]:
             self._xlist[axis] = value[-1::-1]
@@ -120,7 +123,9 @@ class Waveform(object):
             if axis != -1:
                 raise Exception("Can only swap order if axis=-1")
 
-            self._y = self._y[..., -1::-1]            
+            self._y = self._y[..., -1::-1]
+        else:
+            self._xlist[axis] = value
 
     def set_y(self,value):
         "Set Y multi-dimensional array"
@@ -171,7 +176,8 @@ class Waveform(object):
                         yunit = self.yunit, ylabel = self.ylabel)
 
     ## Operations on Waveform objects
-    def binaryop(self, op, a, ylabel = None, yunit = None, reverse = False):
+    def binaryop(self, op, a, ylabel = None, yunit = None, reverse = False, 
+                 sameunit = False):
         """Apply binary operator between self and a"""
         if isinstance(a, Waveform):
             assert(reduce(operator.__and__, 
@@ -187,6 +193,10 @@ class Waveform(object):
         else:
             result = op(self._y, ay)            
 
+        if sameunit:
+            yunit = yunit or self.yunit
+            ylabel = ylabel or self.ylabel
+
         return Waveform(self._xlist, result, 
                         xlabels = self.xlabels, xunits = self.xunits,
                         ylabel = ylabel, yunit = yunit)
@@ -201,17 +211,45 @@ class Waveform(object):
                         xunits = self.xunits,
                         ylabel = '-%s'%self.ylabel, yunit = self.yunit)
     ## Binary operators
-    def __add__(self, a):  return self.binaryop(operator.__add__, a)
+    def __add__(self, a):  return self.binaryop(operator.__add__, a, sameunit=True)
     def __radd__(self, a): 
-        return self.binaryop(operator.__add__, a, reverse=True)
-    def __sub__(self, a):  return self.binaryop(operator.__sub__, a)
+        return self.binaryop(operator.__add__, a, reverse=True, sameunit=True)
+    def __sub__(self, a):  
+        return self.binaryop(operator.__sub__, a, sameunit=True)
     def __rsub__(self, a): 
-        return self.binaryop(operator.__sub__, a, reverse=True)
-    def __mul__(self, a):  return self.binaryop(operator.__mul__, a)
+        return self.binaryop(operator.__sub__, a, reverse=True, sameunit=True)
+    def __mul__(self, a):  
+        if iswave(a):
+            ylabel = '%s * %s'%(self.ylabel, a.ylabel)
+            yunit = '%s * %s'%(self.yunit, a.yunit)
+        else:
+            ylabel = self.ylabel
+            yunit = self.yunit
+        return self.binaryop(operator.__mul__, a, ylabel = ylabel, yunit=yunit)
     def __rmul__(self, a): 
-        return self.binaryop(operator.__mul__, a, reverse=True)
-    def __div__(self, a):  return self.binaryop(operator.__div__, a)
+        if iswave(a):
+            ylabel = '%s * %s'%(a.ylabel, self.ylabel)
+            yunit = '%s * %s'%(a.yunit, self.yunit)
+        else:
+            ylabel = self.ylabel
+            yunit = self.yunit
+        return self.binaryop(operator.__mul__, a, reverse=True, ylabel=ylabel, 
+                             yunit=yunit)
+    def __div__(self, a):  
+        if iswave(a):
+            ylabel = '%s / %s'%(self.ylabel, a.ylabel)
+            yunit = '%s / %s'%(self.yunit, a.yunit)
+        else:
+            ylabel = self.ylabel
+            yunit = self.yunit
+        return self.binaryop(operator.__div__, a, ylabel=ylabel, yunit=yunit)
     def __rdiv__(self, a): 
+        if iswave(a):
+            ylabel = '%s / %s'%(a.ylabel, self.ylabel)
+            yunit = '%s / %s'%(a.yunit, self.yunit)
+        else:
+            ylabel = self.ylabel
+            yunit = self.yunit
         return self.binaryop(operator.__div__, a, reverse=True)
     def __pow__(self, a):  return self.binaryop(operator.__pow__, a)
     def __rpow__(self, a): 
@@ -298,7 +336,7 @@ class Waveform(object):
         return reducedim(self, self.x[axis][np.argmin(self._y, axis=self.getaxis(axis))], 
                          axis=self.getaxis(axis))
 
-    def value(self, x, axis = -1, ylabel = None):
+    def value(self, x, axis = -1):
         """Returns and interpolated at the given x-value
         
         *x* can be a number or a waveform where the number of dimensions of x is
@@ -354,12 +392,13 @@ class Waveform(object):
                                              self._y).reshape(newyshape)
             return reducedim(self, newy, axis=axis)
 
-        if ylabel == None:
-            ylabel = self.ylabel
-
         outw = applyfunc_and_reducedim(findvalue, self, axis = axis)
         if outw and not isscalar(outw):
-            outw.ylabel = ylabel
+            outw.ylabel = self.ylabel
+            outw.yunit = self.yunit
+            outw.xunits = self.xunits
+            outw.xlabels = self.xlabels
+
         return outw
 
     def clip(self, xfrom, xto = None, axis=-1):
@@ -786,6 +825,35 @@ def reducedim(w, newy, axis=-1, ylabel=None, yunit=None):
     return Waveform(newxlist, newy, xlabels = newxlabels, ylabel = ylabel, 
                     xunits = newxunits, yunit = yunit)
 
+def to_xy_matrices(*waveforms):
+    """Return x and y matrices"""
+    if not compatible(*waveforms):
+        raise ValueError('arguments are not compatible')
+   
+    if waveforms[0].ragged:
+        def flatten_ragged(a):
+            if hasattr(a,'dtype') and a.dtype == 'object':
+                return concatenate(map(flatten_ragged, a.tolist()))
+            else:
+                return a
+
+        xvalues = zip(*map(flatten_ragged, waveforms[0]._xlist))
+        yvalues = zip(*[flatten_ragged(w._y) for w in waveforms])
+
+    else:
+        xvalues = cartesian(waveforms[0]._xlist)
+        yvalues = zip(*[list(w._y.flat) for w in waveforms])
+
+    ## Filter NaN values
+    try:
+        indices = [i for i in range(len(yvalues)) if not np.isnan(yvalues[i]).all()]
+        xvalues = [xvalues[i] for i in indices]
+        yvalues = [yvalues[i] for i in indices]
+    except TypeError:
+        pass
+
+    return np.array(xvalues), np.array(yvalues)
+    
 def astable(*waveforms):
     """Return a table of one or more waveforms with the same sweeps in text format
 
@@ -804,27 +872,7 @@ def astable(*waveforms):
     """
     from pycircuit.utilities import rst
 
-    if not compatible(*waveforms):
-        raise ValueError('arguments are not compatible')
-
-    if waveforms[0].ragged:
-        def flatten_ragged(a):
-            if hasattr(a,'dtype') and a.dtype == 'object':
-                return concatenate(map(flatten_ragged, a.tolist()))
-            else:
-                return a
-
-        xvalues = zip(*map(flatten_ragged, waveforms[0]._xlist))
-        yvalues = zip(*[flatten_ragged(w._y) for w in waveforms])
-
-    else:
-        xvalues = cartesian(waveforms[0]._xlist)
-        yvalues = zip(*[list(w._y.flat) for w in waveforms])
-
-    ## Filter NaN values
-    indices = [i for i in range(len(yvalues)) if not np.isnan(yvalues[i])]
-    xvalues = [xvalues[i] for i in indices]
-    yvalues = [yvalues[i] for i in indices]        
+    xvalues, yvalues = [a.tolist() for a in to_xy_matrices(*waveforms)]
 
     xlabels = waveforms[0].xlabels
     ylabels = [w.ylabel for w in waveforms]
