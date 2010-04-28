@@ -452,7 +452,7 @@ class Waveform(object):
         """Return a waveform with the x-values from the given dimension"""
         y = np.ones(self._y.shape)
         
-        axis = axis % self.ndim
+        axis = self.getaxis(axis) % self.ndim
 
         slices = [np.newaxis] * axis + [slice(0, len(self._xlist[axis]))]
         
