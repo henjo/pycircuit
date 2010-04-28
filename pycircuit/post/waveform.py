@@ -767,6 +767,34 @@ class Waveform(object):
         
             yield subw, xlabels, xvalues, xunits
 
+    def apply_along_axis(self, func1d, axis=-1, ylabel=None, yunit=None):
+        """Apply a function to 1-D slices along the given axis.
+
+        Execute `func1d(a, x)` where `func1d` operates on 1-D arrays and `a`
+        is a 1-D slice of `w` along `axis`
+        """
+        axis = self.getaxis(axis)
+
+        newy = np.apply_along_axis(func1d, axis, self._y, self.x[axis])
+
+        if newy.shape == self.shape:
+            return Waveform(self.x, newy, xlabels=self.xlabels, 
+                            xunits=self.xunits,
+                            ylabel=ylabel, yunit=yunit)
+        else:
+            if len(newy.shape) == 0:
+                return newy
+            elif newy.shape == tuple(remove_index(self.shape, axis)):
+                return Waveform(remove_index(self.x, axis), newy, 
+                                xlabels=remove_index(self.xlabels, axis),
+                                xunits=remove_index(self.xunits, axis),
+                                ylabel=ylabel, yunit=yunit)
+            else:
+                print newy.shape, tuple(remove_index(self.shape, axis))
+                raise ValueError('Shape mismatch')
+
+
+
     def __repr__(self):
         if self._dim > 1:
             xlist = self._xlist
@@ -967,6 +995,8 @@ def astable(*waveforms):
                                        [xlabels] + xvalues, 
                                        [ylabels] + yvalues))
     
+
+
 
 def apply_along_axis_with_idx(func1d,axis,arr,*args):
     """ Execute func1d(arr[i], i, *args) where func1d takes 1-D arrays
