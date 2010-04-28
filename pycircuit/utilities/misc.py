@@ -12,10 +12,10 @@ def isiterable(object):
     return hasattr(object,'__iter__')
 
 def remove_index(a, index):
-    """Return a copy of list 'a' with element 'index' removed"""
-    newa = list(a)
-    newa.pop(index)
-    return newa
+    """Remove element at index of a sequence and return it as a list"""
+    a = list(a)
+    a.pop(index)
+    return a
 
 def indent(s, n=4, notfirstline = False):
     """Indent string
