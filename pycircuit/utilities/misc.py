@@ -11,6 +11,12 @@ import shutil
 def isiterable(object):
     return hasattr(object,'__iter__')
 
+def remove_index(a, index):
+    """Return a copy of list 'a' with element 'index' removed"""
+    newa = list(a)
+    newa.pop(index)
+    return newa
+
 def indent(s, n=4, notfirstline = False):
     """Indent string
 
