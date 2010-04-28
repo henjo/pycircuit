@@ -18,6 +18,7 @@ import types
 import operator
 import pylab
 from copy import copy
+from pycircuit.utilities import remove_index
 
 class Waveform(object):
     """The Waveform class handles swept signals. The sweep can be multi 
@@ -54,7 +55,7 @@ class Waveform(object):
 
         self.ragged = (y.dtype == object) and  \
             set([xe.shape for xe in xlist + [y]]) == set([y.shape]) and \
-            y.ndim > 1
+            len(xlist) > 1
         
         dim = len(x)
 
@@ -180,26 +181,17 @@ class Waveform(object):
                  sameunit = False):
         """Apply binary operator between self and a"""
         if isinstance(a, Waveform):
-            assert(reduce(operator.__and__, 
-                          map(lambda x,y: alltrue(x==y), 
-                              self._xlist, a._xlist))), \
-                "x-axes of the arguments must be the same"
-            ay = a._y
-        else:
-            ay = a 
+            if not compatible(self, a):
+                raise ValueError("Waveforms are not compatible")
 
         if reverse:
-            result = op(ay, self._y)
+            return _broadcast_apply(op, (a, self), 
+                                    ylabel=ylabel, yunit=yunit,
+                                    sameunit=sameunit)
         else:
-            result = op(self._y, ay)            
-
-        if sameunit:
-            yunit = yunit or self.yunit
-            ylabel = ylabel or self.ylabel
-
-        return Waveform(self._xlist, result, 
-                        xlabels = self.xlabels, xunits = self.xunits,
-                        ylabel = ylabel, yunit = yunit)
+            return _broadcast_apply(op, (self, a),
+                                    ylabel=ylabel, yunit=yunit,
+                                    sameunit=sameunit)
 
     ## Unary operators
     def __abs__(self):     
@@ -396,8 +388,8 @@ class Waveform(object):
         if outw and not isscalar(outw):
             outw.ylabel = self.ylabel
             outw.yunit = self.yunit
-            outw.xunits = self.xunits
-            outw.xlabels = self.xlabels
+            outw.xunits = remove_index(self.xunits, axis)
+            outw.xlabels = remove_index(self.xlabels, axis)
 
         return outw
 
@@ -728,6 +720,20 @@ class Waveform(object):
         
         return w
 
+    def reorder_axes(self, neworder):
+        neworder = [self.getaxis(axis) for axis in neworder]
+        
+        result = self
+
+        swapped = np.zeros(len(neworder))
+        for axis, newaxis in enumerate(np.argsort(neworder)):
+            if axis != newaxis:
+                if not swapped[axis]:
+                    result = result.swapaxes(axis, int(newaxis))
+                swapped[newaxis] = True
+
+        return result        
+
     def axesiterator(self, axes):
         """Iterate over all combinations of given axes and return sub waveforms
         
@@ -803,6 +809,60 @@ def applyfunc(func, w, funcname = None):
         return outw
     else:
         return func(w)
+
+def _broadcast_apply(func, args,
+                     ylabel = None, yunit = None, 
+                     sameunit = False):
+    """Re-order axes so numpy broadcasting can be used and apply function"""
+
+    if len(args) > 2:
+        raise NotImplemented("Broadcast applies with > 2 args not implemented")
+
+    ## Find argument with highest number of dimensions
+    def key_func(i):
+        if iswave(args[i]):
+            return args[i].ndim
+        else:
+            return -1
+    ihidim = sorted(range(len(args)), key = key_func, reverse=True)[0]
+    
+    bothwaves = iswave(args[0]) and iswave(args[1])
+    if bothwaves:
+        original_order = args[ihidim].xlabels
+        commonaxes = set.intersection(*[set(arg.xlabels) for arg in args])
+
+        ## Reorder axes to make the argument conform to numpy broadcast rules
+        reordered_args = []
+        for arg in args:
+            neworder = list(set(arg.xlabels)-commonaxes) + list(commonaxes)
+            reordered_args.append(arg.reorder_axes(neworder))
+
+        args = reordered_args
+
+    ## Get y array or argument itself if not a waveform
+    argsy = []
+    for arg in args:
+        if iswave(arg):
+            argsy.append(arg._y)
+        else:
+            argsy.append(arg)
+    newy = apply(func, argsy)
+
+    if sameunit:
+        yunit = yunit or args[ihidim].yunit
+        ylabel = ylabel or args[ihidim].ylabel
+
+    result = Waveform(args[ihidim]._xlist, newy, 
+                      xlabels = args[ihidim].xlabels, 
+                      xunits = args[ihidim].xunits,
+                      ylabel = ylabel, yunit = yunit)
+
+    ## Reorder axes to the original order of the arg with highest dimension
+    if bothwaves:
+        result = result.reorder_axes(original_order)
+
+    return result
+
 
 def applyfunc_and_reducedim(func, w, axis = -1, ylabel = None, yunit = None):
     """Apply a function that reduces the dimension by one and return a new waveform or float if zero-rank
@@ -983,6 +1043,7 @@ def compatible(*args):
     False
     
     """
+    return True
     return set([w.shape for w in args]) == set([args[0].shape])
 
 def compose(wlist, x = None, xlabel = None):
@@ -1049,7 +1110,6 @@ def onedim_index(index, axis, ndim):
     return (slice(None),) * (axis % ndim) + (index,)
 
             
-
 def wavefunc(func):
     """Decorator for creating free functions from waveform methods
     

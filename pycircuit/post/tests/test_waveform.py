@@ -404,6 +404,25 @@ def test_astable():
                     (testdata1_0_table, testdata2_table, testdata3_table)):
         assert_equal(w.astable, t)
 
+def test_simple_broadcasting():
+    assert_waveform_equal(testdata2 + testdata2[0],
+                          Waveform([[1,2], [1,2,3]], 
+                                   testdata2.y + testdata2.y[0],
+                                   xlabels = ('v1', 'v2'),
+                                   xunits = ('V', 'V'),
+                                   ylabel = 'i3',
+                                   yunit = 'A'))
+
+def test_reversed_broadcasting():
+    assert_waveform_equal(testdata2 + testdata2[:,0],
+                          Waveform([[1,2], [1,2,3]], 
+                                   (testdata2.y.T + (testdata2.y.T)[0]).T,
+                                   xlabels = ('v1', 'v2'),
+                                   xunits = ('V', 'V'),
+                                   ylabel = 'i3',
+                                   yunit = 'A'))
+    
+
 if __name__ == "__main__":
     import doctest
     doctest.testmod()
