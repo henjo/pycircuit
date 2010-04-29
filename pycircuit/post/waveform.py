@@ -724,14 +724,13 @@ class Waveform(object):
         neworder = [self.getaxis(axis) for axis in neworder]
         
         result = self
-
-        swapped = np.zeros(len(neworder))
-        for axis, newaxis in enumerate(np.argsort(neworder)):
-            if axis != newaxis:
-                if not swapped[axis]:
-                    result = result.swapaxes(axis, int(newaxis))
-                swapped[newaxis] = True
-
+        
+        curorder = range(self.ndim)
+        for axis in range(self.ndim):
+            if curorder[axis] != neworder[axis]:
+                newpos = curorder.index(neworder[axis])
+                result = result.swapaxes(axis, newpos)
+                curorder[axis], curorder[newpos] = curorder[newpos], curorder[axis]
         return result        
 
     def axesiterator(self, axes):
