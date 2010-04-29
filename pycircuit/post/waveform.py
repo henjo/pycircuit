@@ -194,7 +194,7 @@ class Waveform(object):
                                     sameunit=sameunit)
 
     ## Unary operators
-    def __abs__(self):     
+    def __abs__(self):
         return Waveform(self._xlist, np.abs(self._y), xlabels = self.xlabels, 
                         xunits = self.xunits,
                         ylabel = 'abs(%s)'%self.ylabel, yunit = self.yunit)
@@ -789,7 +789,6 @@ class Waveform(object):
                                 xunits=remove_index(self.xunits, axis),
                                 ylabel=ylabel, yunit=yunit)
             else:
-                print newy.shape, tuple(remove_index(self.shape, axis))
                 raise ValueError('Shape mismatch')
 
 
