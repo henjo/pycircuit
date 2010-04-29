@@ -258,7 +258,67 @@ def deriv(w):
 def dft(w):
     """Calculates the discrete Fourier transform of the input waveform"""
     
+def calc_extrapolation_line(w_db, slope, extrapolation_point=None, 
+                             axis = -1, plot = False, plotargs = {}):
+    """Return linear extrapolation line and optionally plot it"""
+    if extrapolation_point == None:
+        extrapolation_point = w_db.xval(axis=axis).ymin(axis=axis)
+       
+    m = w_db.value(extrapolation_point, axis=axis) - slope * extrapolation_point
     
+    print m.xlabels, w_db.xlabels
+    interpol_line = m + slope * w_db.xval(axis=axis)
+    
+    if plot:
+        return interpol_line, interpol_line.plot(**plotargs)
+    else:
+        return interpol_line
+    
+def compression_point(w_db, slope = 1, compression = 1, 
+                      extrapolation_point = None, axis = -1):
+    """Return input referred compression point"""
+    interpol_line = calc_extrapolation_line(w_db, slope, extrapolation_point,
+                                            axis)
+    return cross(interpol_line - w_db, compression)
+    
+def compression_plot(w_db, extrapolation_point=None,
+                     compression = 1, axis = -1):
+    """Plot of compression point of a quantity in dB
+    
+    Both x and y axis should be in dB units
+    """
+    ## Plot curve
+    w_db.plot(axis=axis)
+    
+    ## Plot extrapolation line
+    pl.hold(True)
+    calc_extrapolation_line(w_db, 1, 
+                            extrapolation_point=extrapolation_point,
+                            axis=axis,
+                            plot = True, 
+                            plotargs={'linestyle':'dashed',
+                                      'color': 'black'})
+                            
+    ## Calculate intercept point
+    w_x_cp = compression_point(w_db)
+    w_y_cp = w_db.value(w_x_cp, axis=axis)
+
+    ## Draw measurement arrows
+    for x_cp, y_cp in iterate_over_values(w_x_cp, w_y_cp):
+        ax = pl.gca()
+        x_offset = 0
+        y_offset = 0.25 * (ax.get_xbound()[1] - ax.get_xbound()[0])
+        ax.annotate("1 dB compression\n@ (%0.2g, %0.2g)"%(x_cp,y_cp), 
+                    xy = (x_cp, y_cp), xycoords='data', 
+                    xytext = (x_cp + x_offset, y_cp + y_offset), 
+                    textcoords='data',
+                    arrowprops=dict(arrowstyle="->",
+                                connectionstyle="arc3"))
+    pl.grid()
+    
+    ## Plot curve again to get labels right
+    w_db.plot(axis=axis)
+            
 
 if __name__ == "__main__":
     import doctest
