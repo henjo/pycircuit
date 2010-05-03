@@ -894,6 +894,7 @@ def applyfunc_and_reducedim(func, w, axis = -1, ylabel = None, yunit = None):
     """Apply a function that reduces the dimension by one and return a new waveform or float if zero-rank
     
     """
+    axis = w.getaxis(axis)
     newyshape = list(w._y.shape)
     del newyshape[axis]
     newy = apply_along_axis(func, axis, w._y).reshape(newyshape)
