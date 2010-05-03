@@ -553,7 +553,7 @@ class Waveform(object):
 
     def getaxis(self, axis):
         """Look up axis index by name of xlabel names"""
-        if type(axis) is types.StringType:
+        if isinstance(axis, basestring):
             if axis not in self.xlabels:
                 raise Exception('No axis with xlabel %s (%s)'%(axis, str(self.xlabels)))
             return list(self.xlabels).index(axis)
@@ -616,7 +616,7 @@ class Waveform(object):
         else:
             return ''
     def set_yunit(self, s):
-        if type(s) is not types.StringType and s != None:
+        if not isinstance(s, basestring) and s != None:
             raise ValueError('Unit must be a string')
         self._yunit = s
 
@@ -635,7 +635,7 @@ class Waveform(object):
         else:
             return 'y'
     def set_ylabel(self, s):
-        if type(s) is not types.StringType and s != None:
+        if not isinstance(s, basestring) and s != None:
             raise ValueError('Label must be a string')
         self._ylabel = s
 
@@ -810,7 +810,7 @@ class Waveform(object):
             if len(labels) != self._dim:
                 raise ValueError('Label list should have the same length (%d) as the number of dimensions (%d)'%(len(labels), self._dim))
             for label in labels:
-                if type(label) != types.StringType:
+                if not isinstance(label, basestring):
                     raise ValueError('Labels should be of type string')
         return labels
                             
