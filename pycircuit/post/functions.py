@@ -50,7 +50,7 @@ def value(w, x):
 raising = 1
 falling = 2
 either = 3
-def cross(w, crossval = 0.0, n=0, crosstype=either):
+def cross(w, crossval = 0.0, n=0, crosstype=either, axis=-1):
     """Calculates the x-axis value where a particular crossing with the
     specified edge type occurs
 
@@ -83,7 +83,7 @@ def cross(w, crossval = 0.0, n=0, crosstype=either):
 
     """
 
-    x = w._xlist[-1]
+    x = w.get_x(axis)
 
     def findedge(y):
         ## Find edges
@@ -104,7 +104,7 @@ def cross(w, crossval = 0.0, n=0, crosstype=either):
         return optimize.zeros.brenth(finterp, x[iedge], x[iedge+1])
 
     return applyfunc_and_reducedim(findedge, w - crossval, yunit = w.xunits[0],
-                                   ylabel = w.xlabels[-1])
+                                   ylabel = w.xlabels[-1], axis=axis)
 
 def phase(w):
     """Return argument in degrees of complex values
