@@ -158,9 +158,8 @@ def fsolve(f, x0, args=(), full_output=False, maxiter=200,
 
 class SSAnalysis(Analysis):
     """Super class for small-signal analyses"""
-    parameters = Analysis.parameters + \
-        [Parameter(name='analysis', desc='Analysis name', 
-                   default='ac')]
+    parameters = [Parameter(name='analysis', desc='Analysis name', 
+                   default='ac')] + Analysis.parameters
     def ac_map_function(self, func, ss, refnode):
         """Apply a function over a list of frequencies or a single frequency"""
         irefnode = self.cir.nodes.index(refnode)
