@@ -76,7 +76,6 @@ def dummy_var_matrix(A):
     """
 
     A = sympy.Matrix(A)
-
     subst_dict = {}
     def elem(i,j):
         if A[i,j] != 0:
@@ -85,7 +84,7 @@ def dummy_var_matrix(A):
             return sym
         else:
             return 0
-    Aprime = sympy.Matrix(A.lines, A.cols, elem)
+    Aprime = sympy.Matrix(A.rows, A.cols, elem)
     return Aprime, subst_dict
 
 
