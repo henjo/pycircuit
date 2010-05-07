@@ -42,6 +42,8 @@ class ParameterTableDirective(Directive):
         def add_row(target, *column_texts):
             row = nodes.row('')
             for text in column_texts:
+                if text == None:
+                    text = ""
                 node = nodes.paragraph('')
                 vl = ViewList()
                 vl.append(text, '<autosummary>')
@@ -70,7 +72,6 @@ class ParameterTableDirective(Directive):
 
             parent = m
             for sym in symbol:
-                print "sym", parent.__name__, sym
                 parent = getattr(parent, sym)
 
             return parent
@@ -79,7 +80,6 @@ class ParameterTableDirective(Directive):
 
         for param in get_symbol(self.arguments[0]):
             add_row(body, param.name, param.desc, param.unit)
-
 
         return [table]
 
