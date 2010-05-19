@@ -1,19 +1,18 @@
 #from numpy import loadtxt
 # import I of V as array with V=A[:,0], I=A[:,1], Insq=A[:,2]
-import numeric
-from circuit import *
-import func
+from pycircuit.circuit import *
+from pycircuit.circuit import func
 
 class myVCCS(Circuit):
    """Example of VCCS using lookup table
 
    >>> import pylab
-   >>> import numeric
+   >>> import np
    >>> from pycircuit.circuit.elements import *
    >>> from pycircuit.post import plotall
    >>> from pycircuit.circuit.transient import Transient
-   >>> vvec=numeric.linspace(-2,2,100)
-   >>> ivec=numeric.tanh(vvec)
+   >>> vvec=np.linspace(-2,2,100)
+   >>> ivec=np.tanh(vvec)
    >>> nvec=ivec*0 # no noise
    >>> c = SubCircuit()
    >>> n1,n2 = c.add_nodes('1', '2')
