@@ -63,6 +63,14 @@ class myVCCS(Circuit):
       gm=self.function.fprime(x[1]-x[0])
       return self._G*gm
 
+   def K2G(self, x, epar=defaultepar):
+      K2gm=self.function.fprime(x[1]-x[0],order=2)
+      return self._G*K2gm
+
+   def K3G(self, x, epar=defaultepar):
+      K3gm=self.function.fprime(x[1]-x[0],order=3)
+      return self._G*K3gm
+
    def i(self, x, epar=defaultepar):
       """
       
