@@ -194,7 +194,7 @@ class Waveform(object):
                                     sameunit=sameunit)
 
     ## Unary operators
-    def __abs__(self):     
+    def __abs__(self):
         return Waveform(self._xlist, np.abs(self._y), xlabels = self.xlabels, 
                         xunits = self.xunits,
                         ylabel = 'abs(%s)'%self.ylabel, yunit = self.yunit)
@@ -553,7 +553,7 @@ class Waveform(object):
 
     def getaxis(self, axis):
         """Look up axis index by name of xlabel names"""
-        if type(axis) is types.StringType:
+        if isinstance(axis, basestring):
             if axis not in self.xlabels:
                 raise Exception('No axis with xlabel %s (%s)'%(axis, str(self.xlabels)))
             return list(self.xlabels).index(axis)
@@ -616,7 +616,7 @@ class Waveform(object):
         else:
             return ''
     def set_yunit(self, s):
-        if type(s) is not types.StringType and s != None:
+        if not isinstance(s, basestring) and s != None:
             raise ValueError('Unit must be a string')
         self._yunit = s
 
@@ -635,7 +635,7 @@ class Waveform(object):
         else:
             return 'y'
     def set_ylabel(self, s):
-        if type(s) is not types.StringType and s != None:
+        if not isinstance(s, basestring) and s != None:
             raise ValueError('Label must be a string')
         self._ylabel = s
 
@@ -724,14 +724,13 @@ class Waveform(object):
         neworder = [self.getaxis(axis) for axis in neworder]
         
         result = self
-
-        swapped = np.zeros(len(neworder))
-        for axis, newaxis in enumerate(np.argsort(neworder)):
-            if axis != newaxis:
-                if not swapped[axis]:
-                    result = result.swapaxes(axis, int(newaxis))
-                swapped[newaxis] = True
-
+        
+        curorder = range(self.ndim)
+        for axis in range(self.ndim):
+            if curorder[axis] != neworder[axis]:
+                newpos = curorder.index(neworder[axis])
+                result = result.swapaxes(axis, newpos)
+                curorder[axis], curorder[newpos] = curorder[newpos], curorder[axis]
         return result        
 
     def axesiterator(self, axes):
@@ -790,7 +789,6 @@ class Waveform(object):
                                 xunits=remove_index(self.xunits, axis),
                                 ylabel=ylabel, yunit=yunit)
             else:
-                print newy.shape, tuple(remove_index(self.shape, axis))
                 raise ValueError('Shape mismatch')
 
 
@@ -814,7 +812,7 @@ class Waveform(object):
                                  ' as the number of dimensions (%d)'%
                                  (len(labels), self._dim))
             for label in labels:
-                if type(label) != types.StringType:
+                if not isinstance(label, basestring):
                     raise ValueError('Labels should be of type string')
 
             if unique and len(set(labels)) != len(labels):
@@ -902,6 +900,7 @@ def applyfunc_and_reducedim(func, w, axis = -1, ylabel = None, yunit = None):
     """Apply a function that reduces the dimension by one and return a new waveform or float if zero-rank
     
     """
+    axis = w.getaxis(axis)
     newyshape = list(w._y.shape)
     del newyshape[axis]
     newy = apply_along_axis(func, axis, w._y).reshape(newyshape)
