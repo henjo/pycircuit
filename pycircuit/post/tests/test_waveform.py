@@ -422,6 +422,16 @@ def test_reversed_broadcasting():
                                    ylabel = 'i3',
                                    yunit = 'A'))
     
+def test_duplicate_xlabels():
+    """Check that a waveform with duplicate xlabels raises an exception"""
+    def func():
+        return Waveform([[1,2], [1,2,3]], 
+                        (testdata2.y.T + (testdata2.y.T)[0]).T,
+                        xlabels = ('v1', 'v1'),
+                        xunits = ('V', 'V'),
+                        ylabel = 'i3',
+                        yunit = 'A')
+    assert_raises(ValueError, func)
 
 if __name__ == "__main__":
     import doctest

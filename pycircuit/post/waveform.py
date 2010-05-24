@@ -627,7 +627,7 @@ class Waveform(object):
         if labels == None:
             self._xlabels = list(['x%d'%i for i in range(len(self._xlist))])
         else:
-            self._xlabels = self.__checklabels(labels)
+            self._xlabels = self.__checklabels(labels, unique=True)
 
     def get_ylabel(self):
         if self._ylabel != None:
@@ -803,17 +803,23 @@ class Waveform(object):
         return self.__class__.__name__ + "(" + repr(xlist) + ", " + \
             repr(self.y) + ")"
 
-    def __checklabels(self, labels):
+    def __checklabels(self, labels, unique=False):
         if not labels == None:
             try:
                 labels = list(labels)
             except:
                 raise ValueError('Cannot convert labels to list')
             if len(labels) != self._dim:
-                raise ValueError('Label list should have the same length (%d) as the number of dimensions (%d)'%(len(labels), self._dim))
+                raise ValueError('Label list should have the same length (%d)'
+                                 ' as the number of dimensions (%d)'%
+                                 (len(labels), self._dim))
             for label in labels:
                 if type(label) != types.StringType:
                     raise ValueError('Labels should be of type string')
+
+            if unique and len(set(labels)) != len(labels):
+                raise ValueError('Labels must be unique')
+
         return labels
                             
 
