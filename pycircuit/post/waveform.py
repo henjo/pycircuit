@@ -403,6 +403,8 @@ class Waveform(object):
         Waveform(array([ 1.5,  2. ,  3. ]), array([ 7.,  6.,  1.]))
         
         """
+        axis = self.getaxis(axis)
+        
         ifrom = self._xlist[axis].searchsorted(xfrom)
 
         if xto:

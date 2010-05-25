@@ -236,9 +236,9 @@ def test_xval():
 
 def test_clip():
     ## 1D waveforms
-    w1 = Waveform([[1.,2.,3.]], array([8., 6., 1.]))
+    w1 = Waveform([[1.,2.,3.]], array([8., 6., 1.]), xlabels=['a'])
 
-    assert_waveform_almost_equal(w1.clip(2,3), 
+    assert_waveform_almost_equal(w1.clip(2,3,axis='a'), 
                           Waveform([[ 2.,  3.]], array([ 6.,  1.])))
     assert_waveform_almost_equal(w1.clip(1.5, 3),
                           Waveform([[ 1.5, 2.,  3.]],array([ 7., 6.,  1.])))
