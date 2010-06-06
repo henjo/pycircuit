@@ -23,10 +23,6 @@ R2 2 0 3k
 class GnucapTest(unittest.TestCase):
     direct = False
     
-    def tearDown(self):
-        del gnucap.session.GnucapSessionDirect.instance
-        gnucap.session.GnucapSessionDirect.instance = None
-    
     def test_start(self):
         sim = gnucap.Simulation(None, direct=self.direct)
 
@@ -40,10 +36,12 @@ class GnucapTest(unittest.TestCase):
         sim = gnucap.Simulation(None, direct=self.direct)
         sim.send_netlist(simple_netlist)
         check_netlist(sim)
+	sim=None
 
         cir = gnucap.Circuit(simple_netlist)
         sim = gnucap.Simulation(cir, direct=self.direct)
         check_netlist(sim)
+	sim=None
 
         sim = gnucap.Simulation(simple_netlist, direct=self.direct)
         check_netlist(sim)
@@ -97,7 +95,7 @@ class GnucapTest(unittest.TestCase):
 
         assert_waveform_equal(res.v(2), refv2)
 
-        assert_equal(res.v(2).xlabels, ('Time',))
+        assert_equal(res.v(2).xlabels, ['Time'])
 
 
     def test_construct_circuit(self):

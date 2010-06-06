@@ -8,6 +8,10 @@ import sys, StringIO
 class GnucapSession(object):
     def command(self, cmd):
         pass
+    def lock(self):
+        pass
+    def unlock(self):
+        pass
 
 class GnucapSessionPexpect(GnucapSession):
     prompt = 'gnucap>'
@@ -69,28 +73,27 @@ class GnucapSessionPexpect(GnucapSession):
         self.session.expect(pexpect.EOF)
 
 class GnucapSessionDirect(GnucapSession):
-    instance = None
-
     def __init__(self):
-        ## Only one instance is accepted since Gnucap cannot hold more
-        ## than one simulation in memory at the same time
-        if self.__class__.instance != None:
-            raise ValueError("Only one instance of a GnucapSessionDirect is allowed")
- 
-        self.__class__.instance = self
-
+        self.__class__.locked = False
+        
         import gnucap
         self.gnucap = gnucap
-
+        
         gnucap.command("set lang=acs")
         self.runmode = gnucap.SET_RUN_MODE(gnucap.rBATCH)
-
+        
+    def lock(self):
+        if self.__class__.locked == True:
+            raise(Exception("Session is already locked"))
+        else:
+            self.__class__.locked = True
+            
+    def unlock(self):
+        self.__class__.locked = False
+        
     def command(self, command): 
         logging.debug('Sending: ' + command)
         reply = self.gnucap.command(command).strip()
         logging.debug('Got: ' + reply)
         return reply
-
-    def __del__(self):
-        self.__class__.instance = None
 
