@@ -50,6 +50,8 @@ class ParameterDict(misc.ObserverSubject):
                 self._parameters[param.name] = param
                 self._paramnames.append(param.name)
                 self._values[param.name] = param.default
+            else:
+                self._values[param.name] = param.default
 
         self.notify()
                 
