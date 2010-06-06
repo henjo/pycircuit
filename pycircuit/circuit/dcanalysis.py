@@ -49,6 +49,8 @@ class DC(Analysis):
                   Parameter(name='maxiter', 
                             desc='Maximum number of iterations', unit='', 
                             default=100),
+                  Parameter(name='epar', desc='Environment parameters',
+                            default=defaultepar)
                   ]
 
     def __init__(self, cir, toolkit=None, refnode=gnd, **kvargs):
