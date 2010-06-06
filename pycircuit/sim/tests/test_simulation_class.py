@@ -50,3 +50,19 @@ sim=SimGroup(sim1,sim2) #possible to use different circuits in sim1, sim2
 sim.run()
 
 #sweep
+#sweep
+circuit=Circuit('/here/input.scs')
+circuit.elements
+circuit.par.VDC=1 #sim.par would also exist and would override circuit.par
+circuit.par.VAC=1 #sim.par would also exist and would override circuit.par
+#Add element
+circuit['VS']=VS(1,gnd,v=0,vac='VAC',vo='VDC')
+sim=Simulation(circuit)
+sim['Sweep-AC2']=Sweep( AC(LinSweep(1e4,3e4,10)), ('temp',LinSweep(-40,120,40),'type=env'))
+sim['Sweep-AC3']=Sweep( AC(LinSweep(1e4,3e4,10)), ('VDC',LinSweep(0,1,10))
+sim['Sweep-AC4']=Sweep( AC(LinSweep(1e4,3e4,10)), ('VS.vo',LinSweep(-40,120,40),'type=component'))
+sim['SwSwAC1']= Sweep( AC(LinSweep(1e4,3e4,10)), ('VDC',LinSweep(0,1,10)),('VAC',LinSweep(0,1,10)))
+
+
+result=sim.run() #run all analyses
+result['AC1'].v("IDUT.vOut")
