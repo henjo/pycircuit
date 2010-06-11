@@ -217,11 +217,15 @@ class AC(SSAnalysis):
     Waveform(array([ 1000000.,  2000000.]), array([ 0.0015 +9.4248e-06j,  0.0015 +1.8850e-05j]))
     
     """
-    
+    parameters =  SSAnalysis.parameters + \
+        [Parameter(name='dcx', desc='Provided DC-solution vector', 
+                   unit='', 
+                   default=None)
+         ]
     def solve(self, freqs, refnode=gnd, complexfreq = False, u = None):
         G, C, u, x, ss = self.dc_steady_state(freqs, refnode, self.toolkit,
                                               complexfreq = complexfreq, u = u,
-                                              epar = self.epar)
+                                              epar = self.epar, x0=self.par.dcx)
 
         def acsolve(s):
             return self.toolkit.linearsolver(s*C + G, -u)
@@ -478,12 +482,18 @@ class Noise(SSAnalysis):
 
 
 def dc_steady_state(cir, freqs, refnode, toolkit, complexfreq = False, 
-                    analysis='ac', u = None, epar=defaultepar):
+                    analysis='ac', u = None, epar=defaultepar, x0=None):
     """Return G,C,u matrices at dc steady-state and complex frequencies"""
 
     n = cir.n
 
-    x = zeros(n) ## FIXME, this should be calculated from the dc analysis
+    if x0 is None:
+        #x = zeros(n) ## FIXME, this should be calculated from the dc analysis
+        from pycircuit.circuit.dcanalysis import DC
+        resdc=DC(cir).solve()
+        x = resdc.x
+    else:
+        x = x0 #provide the DC steady-state FIXME: need to add parameter to AC
 
     G = cir.G(x)
     C = cir.C(x)
