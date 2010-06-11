@@ -1,22 +1,22 @@
 #from numpy import loadtxt
 # import I of V as array with V=A[:,0], I=A[:,1], Insq=A[:,2]
 from pycircuit.circuit import *
-from pycircuit.circuit import func
+import pycircuit.circuit.func as func
 
 class myVCCS(Circuit):
    """Example of VCCS using lookup table
 
    >>> import pylab
-   >>> import np
+   >>> from pycircuit.circuit import numeric
    >>> from pycircuit.circuit.elements import *
    >>> from pycircuit.post import plotall
    >>> from pycircuit.circuit.transient import Transient
-   >>> vvec=np.linspace(-2,2,100)
-   >>> ivec=np.tanh(vvec)
+   >>> vvec=numeric.linspace(-2,2,100)
+   >>> ivec=numeric.tanh(vvec)
    >>> nvec=ivec*0 # no noise
    >>> c = SubCircuit()
    >>> n1,n2 = c.add_nodes('1', '2')
-   >>> c['vsin'] = VSin(n1, gnd, freq=2e3, va=1, vo=1)
+   >>> c['vsin'] = VSin(n1, gnd, freq=2e3, va=1., vo=1.)
    >>> c['vccs'] = myVCCS(n1, gnd, n2, gnd, ivec=ivec, vvec=vvec, nvec=nvec)
    >>> c['rl'] = R(n2, gnd, r=2.0)
    >>> tran = Transient(c)
@@ -59,28 +59,28 @@ class myVCCS(Circuit):
       self._I[outnindex] += 1
 
    def G(self, x, epar=defaultepar):
-      gm=self.function.fprime(x[1]-x[0])
+      gm=self.function.fprime(x[0]-x[1])
       return self._G*gm
 
-   def K2G(self, x, epar=defaultepar): #use G with order instead?
-      K2gm=self.function.fprime(x[1]-x[0],order=2)
+   def K2G(self, x, epar=defaultepar):
+      K2gm=self.function.fprime(x[0]-x[1],order=2)
       return self._G*K2gm
 
    def K3G(self, x, epar=defaultepar):
-      K3gm=self.function.fprime(x[1]-x[0],order=3)
+      K3gm=self.function.fprime(x[0]-x[1],order=3)
       return self._G*K3gm
 
    def i(self, x, epar=defaultepar):
       """
       
       """
-      i=self.function.f(x[1]-x[0])
+      i=self.function.f(x[0]-x[1])
       return self._I*i
 
    def CY(self, x, w, epar=defaultepar):
-      #gm=self.function.fprime(x[1]-x[0])
+      #gm=self.function.fprime(x[0]-x[1])
       #ipsd=4*kT*gm
-      ipsd=self.noiseFunction.f(x[1]-x[0])
+      ipsd=self.noiseFunction.f(x[0]-x[1])
       return  self._CY*ipsd
 
 
