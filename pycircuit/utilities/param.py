@@ -128,6 +128,13 @@ class ParameterDict(misc.ObserverSubject):
     def __getitem__(self, key):
         return self._parameters[key]
 
+    def __setitem__(self, key, parameter):
+        if key not in self._parameters:
+            self.append(parameter)
+        else:
+            self._parameters[key] = parameter
+            self._values[key] = parameter.default
+
     def __getattr__(self, key):
         if key != '_parameters' and hasattr(self, '_parameters') and \
                 key in self._parameters:
