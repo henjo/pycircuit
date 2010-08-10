@@ -22,11 +22,11 @@ symbolic = True
 ac_u_dtype = np.object
 
 ## Symbolics for constants
-kboltzmann=sympy.Symbol('k', real=True, positive=True)          # Boltzmann's constant
-eps0 = sympy.Symbol('eps0')           # Vacuum permittivity
-epsRSi = sympy.Symbol('epsRSi')       # Relative permittivity of Si
-epsRSiO2 = sympy.Symbol('epsRSiO2')   # Relative permittivity of SiO2 
-qelectron = sympy.Symbol('qelectron')         # Elementary charge
+kboltzmann=sympy.Symbol('k', real=True, positive=True)         # Boltzmann's constant
+eps0 = sympy.Symbol('eps0', real=True, positive=True)          # Vacuum permittivity
+epsRSi = sympy.Symbol('epsRSi', real=True, positive=True)      # Relative permittivity of Si
+epsRSiO2 = sympy.Symbol('epsRSiO2', real=True, positive=True)  # Relative permittivity of SiO2 
+qelectron = sympy.Symbol('qelectron', positive=True, real=True)# Elementary charge
 
 def linearsolver(A, b):
     A,subst_dict = dummy_var_matrix(A)

@@ -8,7 +8,7 @@ import sympy
 from sympy import Symbol, var, symbols, log
 
 def test_nonlinear():
-    var('k qelectron I0 Isat qelectron T')
+    var('k qelectron I0 Isat qelectron T', positive=True, real=True)
 
     c = SubCircuit(toolkit=symbolic)
     c['I0'] = IS(gnd, 'net1', i=I0, toolkit=symbolic)
@@ -16,7 +16,7 @@ def test_nonlinear():
 
     dc = SymbolicDC(c)
 
-    dc.epar.T = Symbol('T')
+    dc.epar.T = T
 
     res = dc.solve()
 
