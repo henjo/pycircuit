@@ -366,9 +366,9 @@ class VCVS(Circuit):
                 self.ipar.numerator = [0]*(len(self.ipar.denominator[:-1])-len(self.ipar.numerator))+self.ipar.numerator
             if not(len(self.ipar.numerator) < len(self.ipar.denominator)): # make sure the transfer function is stictly proper. Is this relly neccessary?
                 raise Exception("Number of numerator coefficients, %s, must be at least on fewer than the number of denominator coefficients length, %s, should be string"%str(len(self.ipar.numerator))%str(len(self.ipar.denominator)))
-            self.den = toolkit.array(self.ipar.denominator) / self.ipar.denominator[0]
+            self.den = self.toolkit.array(self.ipar.denominator) / self.ipar.denominator[0]
             self.denlen = len(self.den) 
-            self.num = toolkit.array(self.ipar.numerator) / self.ipar.denominator[0]
+            self.num = self.toolkit.array(self.ipar.numerator) / self.ipar.denominator[0]
             self.numlen = len(self.num)
             newnodes = [Node("_a%d"%state) for state in range(self.denlen-1)]
             self.nodes.extend(newnodes)
