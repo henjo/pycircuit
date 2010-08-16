@@ -6,6 +6,7 @@ from pycircuit.circuit import symbolic
 
 import sympy
 from sympy import Symbol, var, symbols, log
+from numpy.testing import assert_array_almost_equal, assert_array_equal
 
 def test_nonlinear():
     var('k qelectron I0 Isat qelectron T', positive=True, real=True)
@@ -53,7 +54,7 @@ def test_geteqsys():
     eqsys, x = dc.get_eqsys()
 
     x0, x2, x3 = x
-    assert_equal(eqsys, [x3 + x0/R1 - x2/R1, 
+    assert_array_equal(eqsys, [x3 + x0/R1 - x2/R1, 
                          -Isat*(1 - sympy.exp(qelectron*x2/(T*k))) + x2/R1 - x0/R1, 
                          x0 - V0])
     
