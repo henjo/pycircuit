@@ -5,12 +5,51 @@
 """
 
 from pycircuit.circuit.elements import VSin, IS, R, L, C, SubCircuit, gnd
-from pycircuit.circuit.analysis import Tran_spec, Transient
-from pycircuit.circuit import circuit #new
+from pycircuit.circuit.transient import Transient
+from pycircuit.circuit import circuit, SubCircuit #new
 from math import floor
-from myCap import myC
 import pylab
 from pycircuit.post import plotall
+
+from pycircuit.circuit import Circuit, defaultepar
+from pycircuit.utilities.param import Parameter
+
+class myC(Circuit):
+    """Capacitor
+
+    >>> c = SubCircuit()
+    >>> n1=c.add_node('1')
+    >>> c['C'] = C(n1, gnd, c=1e-12)
+    >>> c.G(np.zeros(2))
+    array([[ 0.,  0.],
+           [ 0.,  0.]])
+    >>> c.C(np.zeros(2))
+    array([[  1.0000e-12,  -1.0000e-12],
+           [ -1.0000e-12,   1.0000e-12]])
+
+    """
+
+    terminals = ('plus', 'minus')
+    instparams = [Parameter(name='c0', desc='Capacitance', 
+                            unit='F', default=1e-12),
+                  Parameter(name='c1', desc='Nonlinear capacitance', 
+                            unit='F', default=0.5e-12),
+                  Parameter(name='v0', desc='Voltage for nominal capacitance', 
+                            unit='V', default=1),
+                  Parameter(name='v1', desc='Slope voltage ...?', 
+                            unit='V', default=1)
+                  ]
+
+    def C(self, x, epar=defaultepar): 
+        v=x[0]-x[1]
+        c = self.ipar.c0+self.ipar.c1*self.toolkit.tanh((v-self.ipar.v0)/self.ipar.v1)
+        return self.toolkit.array([[c, -c],
+                                  [-c, c]])
+
+    def q(self, x, epar=defaultepar):
+        v=x[0]-x[1]
+        q = self.ipar.c0*v+c1*v1*ln(cosh((v-self.ipar.v0)/self.ipar.v1))
+        return self.toolkit.array([q, -q])
 
 def test_transient_RC():
     """Test of the of transient simulation of RC-circuit
@@ -66,8 +105,8 @@ def test_transient_nonlinear_C():
     tran_imp = Transient(c)
     res_imp = tran_imp.solve(tend=150e-6,timestep=1e-6)
     expected = 0.099
-    plotall(res_imp.v(1),res_imp.v(2))
-    pylab.show()
+    #plotall(res_imp.v(1),res_imp.v(2))
+    #pylab.show()
     assert  abs(res_imp.v(1,gnd)[-1] - expected) < 1e-2*expected,\
         'Does not match QUCS result.'
 
