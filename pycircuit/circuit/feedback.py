@@ -6,8 +6,8 @@ import numpy as np
 from copy import copy
 from pycircuit.circuit import Circuit, SubCircuit, gnd, R, VS, IS, \
     Branch, VCCS, CircuitProxy
-from analysis import Analysis, AC, Noise, TransimpedanceAnalysis, \
-    remove_row_col,defaultepar
+from analysis import Analysis, remove_row_col, defaultepar
+from analysis_ss import SSAnalysis, AC, Noise, TransimpedanceAnalysis
 from pycircuit.post import InternalResultDict, Waveform
 from pycircuit.utilities import combinations, isiterable
 
@@ -49,7 +49,7 @@ def find_nulling_indices(circuit, x, inp=None, inn=None, outp=None, outn=None,
                         continue
                     
                     stampindex = [i_outbranch, inport]
-                    stampfound = np.alltrue(X[stampindex] == np.array([g,-g]))
+                    stampfound = np.alltrue(X[stampindex] == circuit.toolkit.array([g,-g]))
 
                     indices = set(range(n)) - set(inport) - set(outport)
                     no_other_crossterms = np.alltrue(X[i_outbranch, 
@@ -83,7 +83,7 @@ def find_nulling_indices(circuit, x, inp=None, inn=None, outp=None, outn=None,
 
                     stampindex = [[[outport[0]],[outport[1]]], inport]
                     stampfound = np.alltrue(X[stampindex] == \
-                                            np.array([[gm,-gm],[-gm,gm]]))
+                                            circuit.toolkit.array([[gm,-gm],[-gm,gm]]))
 
                     other_cross_rows = []; other_cross_cols = []
                     for row in outport:
@@ -111,7 +111,7 @@ class LoopBreaker(CircuitProxy):
         super(LoopBreaker, self).__init__(circuit, parent, instance_name)
         
         self.nulling_indices = find_nulling_indices(circuit, 
-                                                    np.zeros(circuit.n),
+                                                    circuit.toolkit.zeros(circuit.n),
                                                     inp, inn, outp, outn)
         
         if self.nulling_indices == None:
@@ -127,7 +127,7 @@ class LoopBreaker(CircuitProxy):
         C[self.nulling_indices] = 0
         return C
 
-class FeedbackDeviceAnalysis(Analysis):
+class FeedbackDeviceAnalysis(SSAnalysis):
     """Find loop-gain by replacing a dependent source with a independent one
 
     Example: 
@@ -171,7 +171,7 @@ class FeedbackDeviceAnalysis(Analysis):
                                                   instance_name = self.device)
 
         
-        x = np.zeros(self.cir.n) ## FIXME, this should come from the DC analysis
+        x = self.toolkit.zeros(self.cir.n) ## FIXME, this should come from the DC analysis
         
         epar = self.epar
         G = self.cir.G(x, epar)
@@ -188,7 +188,7 @@ class FeedbackDeviceAnalysis(Analysis):
         if complexfreq:
             slist = freqs
         else:
-            slist = 2j * np.pi * freqs
+            slist = 2j * self.toolkit.pi * freqs
         
         ## Calculate return difference
         def Ffunc(s):
@@ -196,8 +196,8 @@ class FeedbackDeviceAnalysis(Analysis):
             Y_noloop = toolkit.toMatrix(G_noloop + s*C_noloop)
             return toolkit.det(Y) / toolkit.det(Y_noloop)
         if isiterable(slist):
-            F = Waveform(np.array(slist),
-                         np.array([Ffunc(s) for s in slist]),
+            F = Waveform(self.toolkit.array(slist),
+                         self.toolkit.array([Ffunc(s) for s in slist]),
                          xlabels = ('frequency',),
                          xunits = ('Hz',),
                          ylabel = 'F')
@@ -218,16 +218,16 @@ class FeedbackDeviceAnalysis(Analysis):
 class LoopVS(VS):
     def u(self, t=0.0, epar=defaultepar, analysis=None):
         if analysis == 'feedback':
-            return np.array([0, 0, -self.ipar.vac], dtype=object)
+            return self.toolkit.array([0, 0, -self.ipar.vac], dtype=object)
         else:
-            return np.zeros(self.n)
+            return self.toolkit.zeros(self.n)
 
 class LoopIS(IS):
     def u(self, t=0.0, epar=defaultepar, analysis=None):
         if analysis == 'feedback':
-            return np.array([self.ipar.iac, -self.ipar.iac])
+            return self.toolkit.array([self.ipar.iac, -self.ipar.iac])
         else:
-            return np.zeros(self.n)
+            return self.toolkit.zeros(self.n)
 
 class LoopProbe(SubCircuit):
     terminals = ['inp', 'inn', 'outp', 'outn']
@@ -246,7 +246,7 @@ def find_loopprobe(circuit, path=[]):
             find_loopprobe(e, path + [name])
                 
         
-class FeedbackLoopAnalysis(Analysis):
+class FeedbackLoopAnalysis(SSAnalysis):
     """Find loop-gain by breaking all loops with a LoopProbe element
     """
     def __init__(self, circuit, toolkit=None):
@@ -265,7 +265,7 @@ class FeedbackLoopAnalysis(Analysis):
     def solve(self, freqs, refnode = gnd, complexfreq = False):
         toolkit = self.toolkit
 
-        x = np.zeros(self.cir.n) ## FIXME, this should be replaced by DC-analysis
+        x = self.toolkit.zeros(self.cir.n) ## FIXME, this should be replaced by DC-analysis
         self.loopprobe['vinj'].ipar.vac = 1 
         self.loopprobe['iinj'].ipar.iac = 0 
 

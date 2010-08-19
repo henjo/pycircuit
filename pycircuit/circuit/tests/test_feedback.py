@@ -6,7 +6,7 @@
 """
 
 from nose.tools import *
-from pycircuit.circuit import analysis
+from pycircuit.circuit import analysis, analysis_ss
 from pycircuit.circuit import symbolic, SubCircuit, R, C, VS, VCCS, VCVS, gnd
 from pycircuit.circuit.feedback import FeedbackDeviceAnalysis, LoopProbe, FeedbackLoopAnalysis
 import sympy
@@ -18,8 +18,8 @@ def test_deviceanalysis_sourcefollower():
 
     gm,RL,CL,s = sympy.symbols('gm RL CL s')
 
-    cir = SubCircuit()
-    cir['M1'] = VCCS('g', 's', gnd, 's', gm = gm)
+    cir = SubCircuit(toolkit=symbolic)
+    cir['M1'] = VCCS('g', 's', gnd, 's', gm = gm,toolkit=symbolic)
     cir['RL'] = R('s', gnd, r=RL)
     cir['CL'] = C('s', gnd, c=CL)
     cir['VS'] = VS('g', gnd)
@@ -34,8 +34,8 @@ def test_deviceanalysis_viiv():
 
     sympy.var('R1 R2 CL A s')
 
-    cir = SubCircuit()
-    cir['A1'] = VCVS(gnd, 'int', 'out', gnd, g = A)
+    cir = SubCircuit(toolkit=symbolic)
+    cir['A1'] = VCVS(gnd, 'int', 'out', gnd, g = A,toolkit=symbolic)
     cir['R1'] = R('in', 'int', r=R1)
     cir['R2'] = R('int', 'out', r=R2)
     cir['VS'] = VS('in', gnd)
@@ -68,8 +68,8 @@ def test_loopanalysis_numeric():
 def test_loopanalysis_viiv():
     sympy.var('R1 R2 CL A s')
 
-    cir = SubCircuit()
-    cir['A1'] = VCVS(gnd, 'int', 'out', gnd, g = A)
+    cir = SubCircuit(toolkit=symbolic)
+    cir['A1'] = VCVS(gnd, 'int', 'out', gnd, g = A, toolkit=symbolic)
     cir['R1'] = R('in', 'int', r=R1)
     cir['probe'] = LoopProbe('out', gnd, 'out_R2', gnd)
     cir['R2'] = R('int', 'out_R2', r=R2)
