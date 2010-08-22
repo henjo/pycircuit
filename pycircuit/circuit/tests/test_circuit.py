@@ -11,6 +11,7 @@ from pycircuit.circuit.circuit import *
 from pycircuit.circuit.elements import *
 from pycircuit.circuit import AC, symbolic
 
+
 from sympy import var, Symbol, simplify
 import sympy
 import numpy as np
@@ -386,7 +387,7 @@ def test_nullor_vva():
         'Did not get the expected result, %s != 0'% \
         str(simplify(vout - Vin * (R1 + R2) / R1))
 
-def test_VCVS_laplace_d1():
+def test_SVCVS_laplace_d1():
     """Test VCCS with a laplace defined transfer function, with on denominator coefficient"""
     pycircuit.circuit.circuit.default_toolkit = symbolic
 
@@ -399,13 +400,13 @@ def test_VCVS_laplace_d1():
     s = sympy.Symbol('s', complex=True)
 
     cir['VS']   = VS( n1, gnd, vac=1)
-    cir['VCVS'] = VCVS( n1, gnd, n2, gnd, g = Gdc, denominator = [a0, a1, 0])   
+    cir['VCVS'] = SVCVS( n1, gnd, n2, gnd, g = Gdc, denominator = [a0, a1, 0])   
 
     res = AC(cir, toolkit=symbolic).solve(s, complexfreq=True)
 
     assert_equal(sympy.simplify(res.v(n2,gnd)),sympy.simplify(Gdc/(a0*s*s+a1*s)))
 
-def test_VCVS_laplace_n1_d2():
+def test_SVCVS_laplace_n1_d2():
     """Test VCCS with a laplace defined transfer function first order denominator and 
     second order numerator"""
 
@@ -420,14 +421,14 @@ def test_VCVS_laplace_n1_d2():
     s = sympy.Symbol('s', complex=True)
 
     cir['VS']   = VS( n1, gnd, vac=1)
-    cir['VCVS'] = VCVS( n1, gnd, n2, gnd, g = Gdc, denominator = [a0, a1], numerator = [b0])   
+    cir['VCVS'] = SVCVS( n1, gnd, n2, gnd, g = Gdc, denominator = [a0, a1], numerator = [b0])   
 
     res = AC(cir, toolkit=symbolic).solve(s, complexfreq=True)
 
     assert_equal(sympy.simplify(res.v(n2,gnd)),(Gdc*b0)/(a0*s+a1))
 
 @slow
-def test_VCVS_laplace_d3_n1_c():
+def test_SVCVS_laplace_d3_n1_c():
     """Test VCCS with a laplace defined transfer function with first order numerator and third order denominator
     """
 
@@ -443,7 +444,7 @@ def test_VCVS_laplace_d3_n1_c():
     s = sympy.Symbol('s', complex=True)
 
     cir['VS']   = VS( n1, gnd, vac=1)
-    cir['VCVS'] = VCVS( n1, gnd, n2, gnd, 
+    cir['VCVS'] = SVCVS( n1, gnd, n2, gnd, 
                         g = Gdc, denominator = [a0, a1, a2, a3], 
                         numerator = [b0, b1])
 
