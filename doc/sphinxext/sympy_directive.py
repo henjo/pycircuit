@@ -108,10 +108,7 @@ def sympy_directive(name, arguments, options, content, lineno,
 
             ## Add result as math
             if is_sympy_object(result):
-                latex_expr = sympy.latex(result)
-
-                ## Remove inline math $ chars
-                latex_expr = latex_expr[1:-1]
+                latex_expr = sympy.latex(result, mode='plain')
 
                 rst += '.. math::\n\n' + indent(latex_expr) + '\n'
             else:
