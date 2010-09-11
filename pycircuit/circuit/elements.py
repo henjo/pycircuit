@@ -199,6 +199,10 @@ class VS(Circuit):
         return self.branches[0]
 
 class VSin(VS):
+    """ Independent sinus volatge source
+
+    """
+
     instparams = VS.instparams + [
         Parameter(name='vo', desc='Offset voltage', 
                   unit='V', default=0),
@@ -259,6 +263,10 @@ class IS(Circuit):
                                     [-self.ipar.noisePSD, self.ipar.noisePSD]])
 
 class ISin(IS):
+    """ Independent sinus current source
+
+    """
+
     instparams = IS.instparams + [
         Parameter(name='io', desc='Offset current', 
                   unit='A', default=0),
@@ -284,6 +292,9 @@ class ISin(IS):
                                  )
 
 class VPulse(VS):
+    """Independent pulse voltage source
+
+    """
     instparams = VS.instparams + [
         Parameter(name='v1', desc='Initial voltage', 
                   unit='V', default=0),
@@ -314,7 +325,7 @@ class VPulse(VS):
 
 
 class VCVS(Circuit):
-    """Voltage controlled voltage source with frequency dependent transfer
+    """Voltage controlled voltage source
 
     >>> from dcanalysis import DC
     >>> c = SubCircuit()
@@ -529,11 +540,11 @@ class Nullor(Circuit):
      voltage, transconductance and transimpedance gain.[2] 
      Its transmission parameters are all zero.
 
-     1. The name "nullor" was introduced by H.J. Carlin, 
+     1. The name "nullor" was introduced by H.J. Carlin
       Singular network elements, 
       IEEE Trans. Circuit Theory, March 1965, vol. CT-11, pp. 67-72.
  
-     2. Verhoeven C J M van Staveren A Monna G L E Kouwenhoven, 
+     2. Verhoeven C J M van Staveren A Monna G L E Kouwenhoven
        M H L & Yildiz E (2003). 
        Structured electronic design: negative feedback amplifiers.
        Boston/Dordrecht/London: Kluwer Academic, §2.2.2 pp. 32-34. 
@@ -641,6 +652,8 @@ class Gyrator(Circuit):
     def G(self, x, epar=defaultepar): return self._G
 
 class Diode(Circuit):
+    """ Nonlinear diode
+    """
     terminals = ('plus', 'minus')
     instparams = [Parameter(name='IS', desc='Saturation current', 
                   unit='A', default=1e-13)]
@@ -663,6 +676,11 @@ class Diode(Circuit):
         return self.toolkit.array([I, -I])
 
 class VCVS_limited(Circuit):
+    """Voltage controlled voltage source with limited output voltage.
+
+    The output voltage is limited by a $Than$ function
+    
+    """
     instparams = [Parameter(name='g', desc='Voltage gain',unit='V/V',
                             default=1),
                   Parameter(name='level', desc='Limit voltage',unit='V',

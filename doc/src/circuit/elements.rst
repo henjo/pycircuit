@@ -3,8 +3,6 @@ Circuit elements
 
 .. currentmodule:: pycircuit.circuit
 
-.. autoclass:: pycircuit.circuit.
-
 .. autoclass:: pycircuit.circuit.elements.R
 
 .. autoclass:: pycircuit.circuit.elements.C
@@ -33,7 +31,7 @@ Circuit elements
 
 .. autoclass:: pycircuit.circuit.elements.Diode
 
-.. autoclass:: pycircuit.circuit.elements.VCVS_limited
+.. autoclass:: pycircuit.circuit.elements.VCVS_limited 
 
 
 
