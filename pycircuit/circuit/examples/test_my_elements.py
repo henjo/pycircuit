@@ -12,7 +12,7 @@ from numpy.testing import assert_array_almost_equal, assert_array_equal
 from myTabVCCS import myVCCS
 from myCap import myC
 
-def test_transient_plot():
+def NOtest_transient_plot():
     vvec=np.linspace(-2,2,100)
     ivec=np.tanh(vvec)
     nvec=ivec*0 # no noise
@@ -27,7 +27,7 @@ def test_transient_plot():
     plotall(res.v(n1),res.v(n2))
     pylab.show()
 
-def test_nonlinear_gm():
+def NOtest_nonlinear_gm():
     '''Check gm as a function of bias.
 
     '''
@@ -46,7 +46,7 @@ def test_nonlinear_gm():
     assert_array_equal(G,GLin)
     
 
-def test_nonlinear_ac():
+def NOtest_nonlinear_ac():
     ''' Test that elements are linearised around DC operating point.
     
     '''
@@ -72,3 +72,24 @@ def test_nonlinear_ac():
     
     res=AC(cir, toolkit = numeric).solve(0)
     assert_almost_equal(res.v(2,gnd),-11.05)
+
+def test_source_degen():
+    '''Test myVCCS in a source-degeneration configuration'''
+    pycircuit.circuit.circuit.default_toolkit = numeric
+    cir=SubCircuit()
+    
+    vvec=np.linspace(-2,2,100)
+    ivec=np.exp(vvec/10.)
+    nvec=ivec
+    
+    cir['VB']=VS(1, gnd, v=1.)
+    cir['RL']=R(2, gnd, r=1e2)
+    cir['NVCCS']=myVCCS(1, 3, 2, 3, vvec=vvec, ivec=-ivec, nvec=nvec)
+    cir['rd'] = R(3,gnd,r=10.) #This doesn't converge
+    cir['rd'] = R(3,gnd,r=1.) #This works
+    
+    dc = DC(cir)
+    resdc = dc.solve()
+    assert_almost_equal(resdc.v(2,gnd),-110.5)
+
+
