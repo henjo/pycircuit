@@ -1,4 +1,4 @@
-from circuit import Circuit, defaultepar
+from pycircuit.circuit import Circuit, defaultepar
 from pycircuit.utilities.param import Parameter
 class myC(Circuit):
     """Capacitor

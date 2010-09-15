@@ -8,7 +8,7 @@ class myVCCS(Circuit):
 
    >>> import pylab
    >>> from pycircuit.circuit import numeric
-   >>> from pycircuit.circuit.elements import *
+   >>> from pycircuit.circuit.elements import VSin, R
    >>> from pycircuit.post import plotall
    >>> from pycircuit.circuit.transient import Transient
    >>> vvec=numeric.linspace(-2,2,100)
@@ -21,9 +21,28 @@ class myVCCS(Circuit):
    >>> c['rl'] = R(n2, gnd, r=2.0)
    >>> tran = Transient(c)
    >>> res = tran.solve(tend=1e-3, timestep=1e-5)
-   >>> plotall(res.v(n1),res.v(n2))
-   >>> pylab.show()
+   >>> #plotall(res.v(n1),res.v(n2))
+   >>> #pylab.show()
    
+   >>> import pylab
+   >>> from pycircuit.circuit import numeric
+   >>> from pycircuit.circuit.elements import VS, R
+   >>> from pycircuit.post import plotall
+   >>> from pycircuit.circuit.dcanalysis import DC
+   >>> from numpy.testing import assert_almost_equal
+   >>> vvec=numeric.linspace(-2,2,100)
+   >>> ivec=numeric.tanh(vvec)
+   >>> nvec=ivec*0 # no noise
+   >>> c = SubCircuit()
+   >>> n1,n2 = c.add_nodes('1', '2')
+   >>> c['vsin'] = VS(n1, gnd, v=0.1)
+   >>> c['vccs'] = myVCCS(n1, gnd, n2, gnd, ivec=ivec, vvec=vvec, nvec=nvec)
+   >>> c['rl'] = R(n2, gnd, r=2.0)
+   >>> dc=DC(c)
+   >>> res = dc.solve()
+   >>> assert_almost_equal(res.v(n1),0.1)
+   >>> assert_almost_equal(res.v(n2),-2*numeric.tanh(0.1))
+  
    """
    terminals = ('inp', 'inn', 'outp', 'outn')
    instparams = [Parameter(name='ivec', desc='Current vector',
