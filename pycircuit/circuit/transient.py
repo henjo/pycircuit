@@ -62,23 +62,22 @@ class Transient(Analysis):
     
     #irefnode=self.cir.get_node_index(gnd)
     irefnode=None
-    options = ParameterDict(
-        Parameter(name='reltol', 
-                  desc='Relative tolerance', unit='', 
-                  default=1e-4),
-        Parameter(name='iabstol', 
-                  desc='Absolute current error tolerance', unit='A', 
-                  default=1e-12),
-        Parameter(name='vabstol', 
-                  desc='Absolute voltage error tolerance', unit='V', 
-                  default=1e-12),
-        Parameter(name='maxiter', 
-                  desc='Maximum number of iterations', unit='', 
-                  default=100),
-        Parameter(name='method', 
-                  desc='Differentiation method', unit='', 
-                  default="euler")
-        )
+    parameters = Analysis.parameters + \
+        [Parameter(name='reltol', 
+                   desc='Relative tolerance', unit='', 
+                   default=1e-4),
+         Parameter(name='iabstol', 
+                   desc='Absolute current error tolerance', unit='A', 
+                   default=1e-12),
+         Parameter(name='vabstol', 
+                   desc='Absolute voltage error tolerance', unit='V', 
+                   default=1e-12),
+         Parameter(name='maxiter', 
+                   desc='Maximum number of iterations', unit='', 
+                   default=100),
+         Parameter(name='method', 
+                   desc='Differentiation method', unit='', 
+                   default="euler")]        
     
     _method={
         "euler":(np.array([1.]),np.array([0.]),1.),
@@ -97,13 +96,13 @@ class Transient(Analysis):
     ## But it's an object method requiring a DC as self
     ## so using DC._newton doesn't work
     def _newton(self, func, x0): 
-        ones_nodes = np.ones(len(self.cir.nodes))
-        ones_branches = np.ones(len(self.cir.branches))
+        ones_nodes = self.toolkit.ones(len(self.cir.nodes))
+        ones_branches = self.toolkit.ones(len(self.cir.branches))
         
-        abstol = np.concatenate((self.options.iabstol * ones_nodes,
-                                 self.options.vabstol * ones_branches))
-        xtol = np.concatenate((self.options.vabstol * ones_nodes,
-                                 self.options.iabstol * ones_branches))
+        abstol = self.toolkit.concatenate((self.par.iabstol * ones_nodes,
+                                 self.par.vabstol * ones_branches))
+        xtol = self.toolkit.concatenate((self.par.vabstol * ones_nodes,
+                                 self.par.iabstol * ones_branches))
         
         (x0, abstol, xtol) = remove_row_col((x0, abstol, xtol), self.irefnode)
         
@@ -111,10 +110,10 @@ class Transient(Analysis):
             result = fsolve(refnode_removed(func, self.irefnode), 
                             x0, 
                             full_output = True, 
-                            reltol = self.options.reltol,
+                            reltol = self.par.reltol,
                             abstol = abstol, xtol=xtol,
-                            maxiter = self.options.maxiter)
-        except np.linalg.LinAlgError, e:
+                            maxiter = self.par.maxiter)
+        except self.toolkit.linalg.LinAlgError, e:
             raise SingularMatrix(e.message)
         
         x, infodict, ier, mesg = result
@@ -123,7 +122,7 @@ class Transient(Analysis):
             raise NoConvergenceError(mesg)
         
         # Insert reference node voltage
-        return np.concatenate((x[:self.irefnode], np.array([0.0]), x[self.irefnode:]))
+        return self.toolkit.concatenate((x[:self.irefnode], self.toolkit.array([0.0]), x[self.irefnode:]))
     
     def get_timestep(self,endtime,dtmin=1e-12):
         """Method to provide the next timestep for transient simulation.
@@ -150,7 +149,7 @@ class Transient(Analysis):
             de=self._diff_error
             iq=self._iq
             if (de != None) and (iq != None):
-                #iq_error=np.dot(de,de)/np.dot(iq,iq)-iq_tolerance
+                #iq_error=self.toolkit.dot(de,de)/self.toolkit.dot(iq,iq)-iq_tolerance
                 #print iq_error
                 dt = max(dt, dtmin)
             t+=dt
@@ -168,23 +167,23 @@ class Transient(Analysis):
         #the amount of history values is determined by the length of the coefficient-vector
         
         dt=self._dt
-        a,b,b_=self._method[self.options.method] 
+        a,b,b_=self._method[self.par.method] 
         resultEuler = (q-self._qlast[0])/dt
         if self._iqlast == None: #first step always requires backward euler
             geq=C/dt
             n=self.cir.n
-            self._iqlast=np.zeros((len(b),n)) #initialize history vectors at first step
+            self._iqlast=self.toolkit.zeros((len(b),n)) #initialize history vectors at first step
             iq = resultEuler
         else:
             geq=C/dt/b_
             resultTrap = 2*(q-self._qlast[0])/dt-self._iqlast[0]
             self._diff_error = resultTrap-resultEuler # Difference between euler and trap.
-            if self.options.method == 'euler':
+            if self.par.method == 'euler':
                 iq = resultEuler
-            elif self.options.method == 'trapezoidal':
+            elif self.par.method == 'trapezoidal':
                 iq = resultTrap
             else:
-                iq=(q-np.dot(a,self._qlast))/dt/b_ - np.dot(b,self._iqlast)/b_
+                iq=(q-self.toolkit.dot(a,self._qlast))/dt/b_ - self.toolkit.dot(b,self._iqlast)/b_
         self._iq=iq #make accessible by get_timestep
         return iq,geq
     
@@ -203,15 +202,15 @@ class Transient(Analysis):
             iq,Geq = self.get_diff(q,C)
             f =self.cir.i(x) + iq + self.cir.u(t, analysis='tran')
             J = self.cir.G(x) + Geq #return C somehow?
-            return np.array(f, dtype=float), np.array(J, dtype=float)
+            return self.toolkit.array(f, dtype=float), self.toolkit.array(J, dtype=float)
         
         x=self._newton(func,x0)
         #history update
-        self._iqlast = np.concatenate((np.array([self._iq]),self._iqlast))[:-1]
-        self._qlast = np.concatenate((np.array([self.cir.q(x)]),self._qlast))[:-1]
+        self._iqlast = self.toolkit.concatenate((self.toolkit.array([self._iq]),self._iqlast))[:-1]
+        self._qlast = self.toolkit.concatenate((self.toolkit.array([self.cir.q(x)]),self._qlast))[:-1]
         
         # Insert reference node voltage
-        #x = np.concatenate((x[:irefnode], np.array([0.0]), x[irefnode:]))
+        #x = self.toolkit.concatenate((x[:irefnode], self.toolkit.array([0.0]), x[irefnode:]))
         if provided_function != None:
             result=x,provided_function(f,J,C)
         else:
@@ -227,14 +226,14 @@ class Transient(Analysis):
         n = self.cir.n
         self._dt = timestep
         if x0 is None:
-            x = np.zeros(n)
+            x = self.toolkit.zeros(n)
         else:
             x = x0 
         
-        a,b,b_=self._method[self.options.method] 
-        self._qlast=np.zeros((len(a),n))#initialize q-history vector
+        a,b,b_=self._method[self.par.method] 
+        self._qlast=self.toolkit.zeros((len(a),n))#initialize q-history vector
         #shift in q(x0) to q-history
-        self._qlast = np.concatenate((np.array([self.cir.q(x)]),self._qlast))[:-1]
+        self._qlast = self.toolkit.concatenate((self.toolkit.array([self.cir.q(x)]),self._qlast))[:-1]
         #is this still needed
         order=1 #number of past x-values needed
         for i in xrange(order):
@@ -249,7 +248,7 @@ class Transient(Analysis):
             x,feval=self.solve_timestep(X[-1], t, provided_function=provided_function)
             X.append(copy(x))
         X = self.toolkit.array(X[1:]).T
-        timelist = np.array(timelist)
+        timelist = self.toolkit.array(timelist)
         
         #print("steps: "+str( len(timelist)))
         
