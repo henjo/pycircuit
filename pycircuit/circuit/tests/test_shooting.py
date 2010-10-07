@@ -1,11 +1,9 @@
 from nose.tools import *
 from pycircuit.circuit import *
 from pycircuit.circuit.shooting import *
-from pycircuit.post import astable, plotall, Waveform, average, db20
+from pycircuit.post import Waveform, average
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
-from copy import copy
-import pylab
 
 class myC(Circuit):
     """Capacitor
