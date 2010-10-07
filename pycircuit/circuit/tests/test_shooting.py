@@ -73,12 +73,12 @@ def test_shooting():
                      xunits=('s',), xlabels=('vref(2,gnd!)',))
     
     ## Check amplitude error
-    v2rms_ac = abs(v2ac) / np.sqrt(2)
-    v2rms_pss = abs(res['fpss'].v(2,gnd)).value(1/period)
+    v2rms_ac = np.abs(v2ac) / np.sqrt(2)
+    v2rms_pss = np.abs(res['fpss'].v(2,gnd)).value(1/period)
     assert_almost_equal(v2rms_ac, v2rms_pss)
  
     ## Check error of waveform
-    rmserror = numeric.sqrt(average((v2pss-w2ref)**2))
+    rmserror = np.sqrt(average((v2pss-w2ref)**2))
     assert rmserror < 1e-3, 'rmserror=%f too high'%rmserror
 
  
