@@ -63,7 +63,9 @@ class Transient(Analysis):
     #irefnode=self.cir.get_node_index(gnd)
     irefnode=None
     parameters = Analysis.parameters + \
-        [Parameter(name='reltol', 
+        [Parameter(name='analysis', desc='Analysis name', 
+                   default=transient),
+         Parameter(name='reltol', 
                    desc='Relative tolerance', unit='', 
                    default=1e-4),
          Parameter(name='iabstol', 
