@@ -1,5 +1,7 @@
 import logging
 
+import numpy as np
+
 from analysis import *
 
 class DC(Analysis):
@@ -148,7 +150,7 @@ class DC(Analysis):
             raise NoConvergenceError(mesg)
 
         # Insert reference node voltage
-        return concatenate((x[:self.irefnode], array([0.0]), x[self.irefnode:]))
+        return np.concatenate((x[:self.irefnode], np.array([0.0]), x[self.irefnode:]))
 
 class CircuitResultDC(CircuitResult):
     def i(self, term):
@@ -157,7 +159,7 @@ class CircuitResultDC(CircuitResult):
            
 def refnode_removed(func, irefnode):
     def new(x, *args, **kvargs):
-        newx = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
+        newx = np.concatenate((x[:irefnode], np.array([0.0]), x[irefnode:]))
         f, J = func(newx, *args, **kvargs)
         return remove_row_col((f, J), irefnode)
     return new
