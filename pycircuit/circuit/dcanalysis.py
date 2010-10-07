@@ -69,7 +69,7 @@ class DC(Analysis):
                                self._homotopy_source, 
                                None]
 
-        x0 = zeros(self.cir.n) # Would be good with a better initial guess
+        x0 = np.zeros(self.cir.n) # Would be good with a better initial guess
 
         for algorithm in convergence_helpers:
             if algorithm == None:
@@ -100,7 +100,7 @@ class DC(Analysis):
         x = x0
         for gmin in (1, 1e-1, 1e-2, 0):
             n_nodes = len(self.cir.nodes)
-            Ggmin = zeros((self.cir.n, self.cir.n))
+            Ggmin = np.zeros((self.cir.n, self.cir.n))
             Ggmin[0:n_nodes, 0:n_nodes] = gmin * eye(n_nodes)
 
             def func(x):
@@ -155,7 +155,7 @@ class DC(Analysis):
 class CircuitResultDC(CircuitResult):
     def i(self, term):
         """Return terminal current i(term)"""
-        return self.circuit.extract_i(self.x, term, xdot = zeros(self.x.shape))
+        return self.circuit.extract_i(self.x, term, xdot = np.zeros(self.x.shape))
            
 def refnode_removed(func, irefnode):
     def new(x, *args, **kvargs):
