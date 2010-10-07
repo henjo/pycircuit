@@ -16,8 +16,6 @@ from copy import copy
 import numeric
 import types
 
-np.set_printoptions(precision=4)
-
 class NoConvergenceError(Exception):
     pass
 
@@ -76,6 +74,7 @@ class Analysis(sim.Analysis):
                             default=None),
                   Parameter(name='epar', desc='Environment parameters',
                             default=defaultepar)]
+
     def __init__(self, cir, toolkit=None, **kvargs):
         super(Analysis, self).__init__(cir, **kvargs)
 
