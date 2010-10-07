@@ -5,9 +5,6 @@
 import numpy as np
 from pycircuit import sim
 from pycircuit.utilities import Parameter, ParameterDict, isiterable
-from numpy import array, delete, linalg, size, zeros, concatenate, pi, \
-    zeros, alltrue, maximum, conj, dot, imag, eye
-from scipy import optimize
 from pycircuit.circuit import Circuit, SubCircuit, VS,IS,R,C,L,Diode, gnd, \
     defaultepar, instjoin, circuit
 import pycircuit.circuit.circuit
@@ -70,7 +67,7 @@ def remove_row_col(matrices, n):
     result = []
     for A in matrices:
         for axis in range(len(A.shape)):
-            A=delete(A, [n], axis=axis)
+            A=np.delete(A, [n], axis=axis)
         result.append(A)
     return tuple(result)
 
@@ -115,15 +112,15 @@ def fsolve(f, x0, args=(), full_output=False, maxiter=200,
     ier = 2
     for i in xrange(maxiter):
         F, J = f(x0, *args) # TODO: Make sure J is never 0, e.g. by gmin (stepping)
-        xdiff = linalg.solve(J, -F)# TODO: Limit xdiff to improve convergence
+        xdiff = np.linalg.solve(J, -F)# TODO: Limit xdiff to improve convergence
 
         x = x0 + xdiff
 
-        if alltrue(abs(xdiff) < reltol * maximum(x, x0) + xtol):
+        if np.alltrue(abs(xdiff) < reltol * np.maximum(x, x0) + xtol):
             ier = 1
             mesg = "Success"
             break
-        if alltrue(abs(F) < reltol * max(F) + abstol):
+        if np.alltrue(abs(F) < reltol * max(F) + abstol):
             ier = 1
             mesg = "Success"
             break
