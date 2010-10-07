@@ -74,11 +74,6 @@ def test_shooting():
     w2ref = Waveform(t,v2ref,ylabel='reference', yunit='V', 
                      xunits=('s',), xlabels=('vref(2,gnd!)',))
     
-#    print v2pss.astable
-#    plotall(v2pss,w2ref)
-#    pylab.grid()
-#    pylab.show()
-
     ## Check amplitude error
     v2rms_ac = abs(v2ac) / np.sqrt(2)
     v2rms_pss = abs(res['fpss'].v(2,gnd)).value(1/period)
@@ -102,11 +97,6 @@ def test_PSS_nonlinear_C():
     #c['L'] = L(2,gnd, L=1e-3)
     pss = PSS(c)
     res = pss.solve(period=1/50e3,timestep=1/50e3/20)
-    db20(res['fpss'].v(2)).stem()
-
-#    pylab.show()
-#   plotall(res['tpss'].v(1),res['tpss'].v(2))
-#    pylab.show()
 
 
 def test_PAC():
@@ -126,9 +116,5 @@ def test_PAC():
 
     pac = PAC(cir)
     res = pac.solve(pss, freqs = fc + np.array([1e3, 2e3, 4e3]))
-
-#    plotall(db20(res.v(2, gnd)), db20(res.v(1, gnd)), plotargs=('x',))
-#    pylab.legend()
-#    pylab.show()
     
     assert False, "Test should compare with spectre simulation"
