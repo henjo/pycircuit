@@ -2,6 +2,7 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
+import numpy as np
 from pycircuit.circuit.analysis import *
 from pycircuit.circuit.dcanalysis import DC
 from pycircuit.circuit.dcanalysis import refnode_removed
@@ -122,7 +123,7 @@ class Transient(Analysis):
             raise NoConvergenceError(mesg)
         
         # Insert reference node voltage
-        return concatenate((x[:self.irefnode], array([0.0]), x[self.irefnode:]))
+        return np.concatenate((x[:self.irefnode], np.array([0.0]), x[self.irefnode:]))
     
     def get_timestep(self,endtime,dtmin=1e-12):
         """Method to provide the next timestep for transient simulation.
@@ -202,7 +203,7 @@ class Transient(Analysis):
             iq,Geq = self.get_diff(q,C)
             f =self.cir.i(x) + iq + self.cir.u(t, analysis='tran')
             J = self.cir.G(x) + Geq #return C somehow?
-            return array(f, dtype=float), array(J, dtype=float)
+            return np.array(f, dtype=float), np.array(J, dtype=float)
         
         x=self._newton(func,x0)
         #history update
@@ -210,7 +211,7 @@ class Transient(Analysis):
         self._qlast = np.concatenate((np.array([self.cir.q(x)]),self._qlast))[:-1]
         
         # Insert reference node voltage
-        #x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
+        #x = np.concatenate((x[:irefnode], np.array([0.0]), x[irefnode:]))
         if provided_function != None:
             result=x,provided_function(f,J,C)
         else:
@@ -226,7 +227,7 @@ class Transient(Analysis):
         n = self.cir.n
         self._dt = timestep
         if x0 is None:
-            x = zeros(n)
+            x = np.zeros(n)
         else:
             x = x0 
         
