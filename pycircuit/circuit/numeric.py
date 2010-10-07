@@ -23,18 +23,21 @@ symbolic = False
 ac_u_dtype = np.complex
 
 def linearsolver(*args):
-    return linalg.solve(*args)
+    return np.linalg.solve(*args)
 
 def toMatrix(array): 
-    return array.astype('complex')
+    return np.array.astype('complex')
 
 def det(x): 
-    return linalg.det(x)
+    return np.linalg.det(x)
 
 def simplify(x): return x
 
-def zeros(shape, dtype=None): return np.zeros(shape, dtype=dtype)
-def array(x, dtype=None): return np.array(x, dtype=dtype)
+def zeros(shape, dtype=None): 
+    return np.zeros(shape, dtype=dtype)
+
+def array(x, dtype=None): 
+    return np.array(x, dtype=dtype)
 
 numeric = True
     
