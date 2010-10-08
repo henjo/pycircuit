@@ -69,7 +69,7 @@ class DC(Analysis):
                                self._homotopy_source, 
                                None]
 
-        x0 = np.zeros(self.cir.n) # Would be good with a better initial guess
+        x0 = self.toolkit.zeros(self.cir.n) # Would be good with a better initial guess
 
         for algorithm in convergence_helpers:
             if algorithm == None:
@@ -100,7 +100,7 @@ class DC(Analysis):
         x = x0
         for gmin in (1, 1e-1, 1e-2, 0):
             n_nodes = len(self.cir.nodes)
-            Ggmin = np.zeros((self.cir.n, self.cir.n))
+            Ggmin = self.toolkit.zeros((self.cir.n, self.cir.n))
             Ggmin[0:n_nodes, 0:n_nodes] = gmin * eye(n_nodes)
 
             def func(x):
@@ -124,24 +124,24 @@ class DC(Analysis):
         return x
 
     def _newton(self, func, x0):
-        ones_nodes = np.ones(len(self.cir.nodes))
-        ones_branches = np.ones(len(self.cir.branches))
+        ones_nodes = self.toolkit.ones(len(self.cir.nodes))
+        ones_branches = self.toolkit.ones(len(self.cir.branches))
 
-        abstol = np.concatenate((self.par.iabstol * ones_nodes,
+        abstol = self.toolkit.concatenate((self.par.iabstol * ones_nodes,
                                  self.par.vabstol * ones_branches))
-        xtol = np.concatenate((self.par.vabstol * ones_nodes,
+        xtol = self.toolkit.concatenate((self.par.vabstol * ones_nodes,
                                  self.par.iabstol * ones_branches))
 
         (x0, abstol, xtol) = remove_row_col((x0, abstol, xtol), self.irefnode)
 
         try:
-            result = fsolve(refnode_removed(func, self.irefnode), 
+            result = fsolve(refnode_removed(func, self.irefnode,self.toolkit), 
                             x0, 
                             full_output = True, 
                             reltol = self.par.reltol,
                             abstol = abstol, xtol=xtol,
                             maxiter = self.par.maxiter)
-        except np.linalg.LinAlgError, e:
+        except self.toolkit.linalg.LinAlgError, e:
             raise SingularMatrix(e.message)
 
         x, infodict, ier, mesg = result
@@ -150,16 +150,16 @@ class DC(Analysis):
             raise NoConvergenceError(mesg)
 
         # Insert reference node voltage
-        return np.concatenate((x[:self.irefnode], np.array([0.0]), x[self.irefnode:]))
+        return self.toolkit.concatenate((x[:self.irefnode], self.toolkit.array([0.0]), x[self.irefnode:]))
 
 class CircuitResultDC(CircuitResult):
     def i(self, term):
         """Return terminal current i(term)"""
         return self.circuit.extract_i(self.x, term, xdot = np.zeros(self.x.shape))
            
-def refnode_removed(func, irefnode):
+def refnode_removed(func, irefnode,toolkit):
     def new(x, *args, **kvargs):
-        newx = np.concatenate((x[:irefnode], np.array([0.0]), x[irefnode:]))
+        newx = toolkit.concatenate((x[:irefnode], toolkit.array([0.0]), x[irefnode:]))
         f, J = func(newx, *args, **kvargs)
         return remove_row_col((f, J), irefnode)
     return new

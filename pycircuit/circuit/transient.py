@@ -110,7 +110,7 @@ class Transient(Analysis):
         (x0, abstol, xtol) = remove_row_col((x0, abstol, xtol), self.irefnode)
         
         try:
-            result = fsolve(refnode_removed(func, self.irefnode), 
+            result = fsolve(refnode_removed(func, self.irefnode, self.toolkit), 
                             x0, 
                             full_output = True, 
                             reltol = self.par.reltol,
