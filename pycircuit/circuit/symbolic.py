@@ -14,6 +14,7 @@ from sympy import cos, sin, tan, exp, pi, simplify, floor
 from sympy import oo as inf, ceiling as ceil
 from numpy import dot, eye, linspace
 import numpy as np
+from numpy import delete
 import types
 from pycircuit.utilities.param import Parameter
 

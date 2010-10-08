@@ -58,13 +58,13 @@ class PSS(Analysis):
             ueq = -self.cir.q(xlast)/dt
             f =  self.cir.i(x) + self.cir.q(x)/dt + self.cir.u(t) + ueq
             J = self.cir.G(x) + Geq
-            (f,J,C) = remove_row_col((f,J,C), irefnode)
+            (f,J,C) = remove_row_col((f,J,C), irefnode, self.toolkit)
             self._Jf, self._C = J, C
             return f, J
 
         rtol = 1e-4
 
-        x = analysis.fsolve(func, x0, reltol=rtol)
+        x = analysis.fsolve(func, x0, reltol=rtol, toolkit=self.toolkit)
         # Insert reference node voltage
         #x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
         return x
@@ -111,7 +111,7 @@ class PSS(Analysis):
             return residual, D - alpha * Jshoot
         
         ## Find periodic steady state x-vector
-        x0_ss = analysis.fsolve(func, x, maxiter=maxiterations)
+        x0_ss = analysis.fsolve(func, x, maxiter=maxiterations, toolkit=self.toolkit)
         
         X = [x0_ss]
         for t in times:
@@ -153,7 +153,7 @@ class PAC(Analysis):
         M = len(times)
 
         irefnode = self.cir.get_node_index(refnode)
-        (u0,) = remove_row_col((self.cir.u(0, analysis='ac'),), irefnode)
+        (u0,) = remove_row_col((self.cir.u(0, analysis='ac'),), irefnode, self.toolkit)
 
         ## Create LHS matrix using backward Euler discretization
         L = tk.zeros((N*M, N*M),dtype=tk.complex)

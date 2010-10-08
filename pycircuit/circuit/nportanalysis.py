@@ -308,7 +308,7 @@ class TwoPortAnalysis(Analysis):
         x = np.zeros(circuit.n)
         CY = circuit.CY(x, np.imag(s), epar = self.epar)
         irefnode = circuit.get_node_index(refnode)
-        CY, = remove_row_col((CY,), irefnode)
+        CY, = remove_row_col((CY,), irefnode, self.toolkit)
 
         ## Calculate noise wave correlation matrix
         CS = np.array(T * CY * T.H)

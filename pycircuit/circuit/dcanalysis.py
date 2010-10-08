@@ -132,7 +132,7 @@ class DC(Analysis):
         xtol = self.toolkit.concatenate((self.par.vabstol * ones_nodes,
                                  self.par.iabstol * ones_branches))
 
-        (x0, abstol, xtol) = remove_row_col((x0, abstol, xtol), self.irefnode)
+        (x0, abstol, xtol) = remove_row_col((x0, abstol, xtol), self.irefnode, self.toolkit)
 
         try:
             result = fsolve(refnode_removed(func, self.irefnode,self.toolkit), 
@@ -140,7 +140,8 @@ class DC(Analysis):
                             full_output = True, 
                             reltol = self.par.reltol,
                             abstol = abstol, xtol=xtol,
-                            maxiter = self.par.maxiter)
+                            maxiter = self.par.maxiter,
+                            toolkit = self.toolkit)
         except self.toolkit.linalg.LinAlgError, e:
             raise SingularMatrix(e.message)
 
@@ -161,7 +162,7 @@ def refnode_removed(func, irefnode,toolkit):
     def new(x, *args, **kvargs):
         newx = toolkit.concatenate((x[:irefnode], toolkit.array([0.0]), x[irefnode:]))
         f, J = func(newx, *args, **kvargs)
-        return remove_row_col((f, J), irefnode)
+        return remove_row_col((f, J), irefnode, toolkit)
     return new
 
 if __name__ == "__main__":

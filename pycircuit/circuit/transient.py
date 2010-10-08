@@ -107,7 +107,7 @@ class Transient(Analysis):
         xtol = self.toolkit.concatenate((self.par.vabstol * ones_nodes,
                                  self.par.iabstol * ones_branches))
         
-        (x0, abstol, xtol) = remove_row_col((x0, abstol, xtol), self.irefnode)
+        (x0, abstol, xtol) = remove_row_col((x0, abstol, xtol), self.irefnode, self.toolkit)
         
         try:
             result = fsolve(refnode_removed(func, self.irefnode, self.toolkit), 
@@ -115,7 +115,8 @@ class Transient(Analysis):
                             full_output = True, 
                             reltol = self.par.reltol,
                             abstol = abstol, xtol=xtol,
-                            maxiter = self.par.maxiter)
+                            maxiter = self.par.maxiter,
+                            toolkit = self.toolkit)
         except self.toolkit.linalg.LinAlgError, e:
             raise SingularMatrix(e.message)
         
