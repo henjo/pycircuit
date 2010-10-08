@@ -6,12 +6,8 @@
 
 from pycircuit.circuit.elements import VSin, IS, R, L, C, SubCircuit, gnd
 from pycircuit.circuit.transient import Transient
-from pycircuit.circuit import circuit, SubCircuit #new
-from math import floor
-import pylab
-from pycircuit.post import plotall
-
-from pycircuit.circuit import Circuit, defaultepar
+from pycircuit.circuit import circuit, SubCircuit, defaultepar 
+from pycircuit.circuit import Circuit
 from pycircuit.utilities.param import Parameter
 
 class myC(Circuit):
@@ -86,8 +82,6 @@ def test_transient_RLC():
     tran_imp = Transient(c)
     res_imp = tran_imp.solve(tend=150e-6,timestep=1e-6)
     expected = 0.099
-    #plotall(res_imp.v(1),res_imp.v(2))
-    #pylab.show()
     assert  abs(res_imp.v(1,gnd)[-1] - expected) < 1e-2*expected,\
         'Does not match QUCS result.'
 
@@ -105,8 +99,6 @@ def test_transient_nonlinear_C():
     tran_imp = Transient(c)
     res_imp = tran_imp.solve(tend=150e-6,timestep=1e-6)
     expected = 0.099
-    #plotall(res_imp.v(1),res_imp.v(2))
-    #pylab.show()
     assert  abs(res_imp.v(1,gnd)[-1] - expected) < 1e-2*expected,\
         'Does not match QUCS result.'
 
