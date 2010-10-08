@@ -60,11 +60,10 @@ class Transient(Analysis):
     ##   BE and trapezoidal as a measure of the error.
     ##   Reference: "Time Step Control in Transient Analysis", by SHUBHA VIJAYCHAND
     
-    #irefnode=self.cir.get_node_index(gnd)
-    irefnode=None
+
     parameters = Analysis.parameters + \
         [Parameter(name='analysis', desc='Analysis name', 
-                   default=transient),
+                   default='transient'),
          Parameter(name='reltol', 
                    desc='Relative tolerance', unit='', 
                    default=1e-4),
@@ -80,18 +79,21 @@ class Transient(Analysis):
          Parameter(name='method', 
                    desc='Differentiation method', unit='', 
                    default="euler")]        
+
+    def __init__(self, cir, toolkit=None, irefnode=None, **kvargs):
+        super(Transient, self).__init__(cir, **kvargs)
     
-    _method={
-        "euler":(np.array([1.]),np.array([0.]),1.),
-        "trap":(np.array([1.]),np.array([0.5]),0.5),
-        "trapezoidal":(np.array([1.]),np.array([0.5]),0.5),
-        "gear2":(np.array([4./3,-1./3]),np.array([0]),2./3)
-        }
-    _qlast  = None #q history
-    _iqlast = None #dq/dt history
-    
-    _dt = None
-    _diff_error = None #used for saving difference between euler and trapezoidal
+        self._method={
+            "euler":(self.toolkit.array([1.]),self.toolkit.array([0.]),1.),
+            "trap":(self.toolkit.array([1.]),self.toolkit.array([0.5]),0.5),
+            "trapezoidal":(self.toolkit.array([1.]),self.toolkit.array([0.5]),0.5),
+            "gear2":(self.toolkit.array([4./3,-1./3]),self.toolkit.array([0]),2./3)
+            }
+        self._qlast  = None #q history
+        self._iqlast = None #dq/dt history
+        
+        self._dt = None
+        self._diff_error = None #used for saving difference between euler and trapezoidal
     
     ## This is borrowed from dcanalysis.py, would like to 
     ## import it from there instead.
