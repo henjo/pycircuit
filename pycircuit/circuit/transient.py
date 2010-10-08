@@ -2,7 +2,6 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
-import numpy as np
 from pycircuit.circuit.analysis import *
 from pycircuit.circuit.dcanalysis import DC
 from pycircuit.circuit.dcanalysis import refnode_removed
