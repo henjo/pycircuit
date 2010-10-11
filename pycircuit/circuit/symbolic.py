@@ -14,7 +14,7 @@ from sympy import cos, sin, tan, exp, pi, simplify, floor
 from sympy import oo as inf, ceiling as ceil
 from numpy import dot, eye, linspace
 import numpy as np
-from numpy import delete
+from numpy import delete, array
 import types
 from pycircuit.utilities.param import Parameter
 
@@ -58,9 +58,6 @@ def setup_analysis(epar):
 
 def zeros(shape, dtype=None):
     return np.zeros(shape, dtype=object)
-
-def array(x, dtype=object):
-    return np.array(x, dtype=dtype)
 
 def nonzero(x):
     """Return a list of non-zero indices of array x"""
