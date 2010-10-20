@@ -137,8 +137,8 @@ class TabFunc(ScalarFunction):
     
     """
 
-    def __init__(self, xvec, yvec):
-        self.xyspline=interpolate.splrep(xvec, yvec)
+    def __init__(self, xvec, yvec, s=None):
+        self.xyspline=interpolate.splrep(xvec, yvec, s=s)
 
     def f(self,x):
         return interpolate.splev(x,self.xyspline,der=0)
