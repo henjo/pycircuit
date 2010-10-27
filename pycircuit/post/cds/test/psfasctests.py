@@ -4,7 +4,7 @@
 
 import re
 
-from psf import *
+from pycircuit.post.cds.psf import *
 ## Unit tests for psf module
     
 class toPSFASCTests(unittest.TestCase):
