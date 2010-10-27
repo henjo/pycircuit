@@ -154,7 +154,7 @@ class TransimpedanceAnalysis(SSAnalysis):
         ## Refer the voltages to the gnd node by removing
         ## the rows and columns that corresponds to this node
         irefnode = self.cir.get_node_index(refnode)
-        G,C = remove_row_col((G,C), irefnode)
+        G,C = remove_row_col((G,C), irefnode, self.toolkit)
 
         # Calculate the reciprocal G and C matrices
         Yreciprocal = G.T + s*C.T
@@ -174,7 +174,7 @@ class TransimpedanceAnalysis(SSAnalysis):
                 u[self.cir.get_node_index(branch.plus)] = -1
                 u[self.cir.get_node_index(branch.minus)] = 1
 
-            u, = remove_row_col((u,), irefnode)
+            u, = remove_row_col((u,), irefnode, self.toolkit)
 
             ## Calculate transimpedances from currents in each nodes to output
             result.append(toolkit.linearsolver(Yreciprocal, -u))
@@ -279,7 +279,6 @@ class Noise(SSAnalysis):
             self.outputsrc = self.cir[self.par.outputsrc]
 
     def solve(self, freqs, refnode=gnd, complexfreq=False):
-        toolkit = self.toolkit
 
         n = self.cir.n
         x = zeros(n) # This should be the x-vector at the DC operating point
@@ -313,15 +312,15 @@ class Noise(SSAnalysis):
         ## Refer the voltages to the gnd node by removing
         ## the rows and columns that corresponds to this node
         irefnode = self.cir.nodes.index(refnode)
-        G,C,u,CY = remove_row_col((G,C,u,CY), irefnode)
+        G,C,u,CY = remove_row_col((G,C,u,CY), irefnode, self.toolkit)
 
         # Calculate the reciprocal G and C matrices
         Yreciprocal = G.T + s*C.T
 
-        Yreciprocal, u = (toolkit.toMatrix(A) for A in (Yreciprocal, u))
+        Yreciprocal, u = (self.toolkit.toMatrix(A) for A in (Yreciprocal, u))
 
         ## Calculate transimpedances from currents in each nodes to output
-        zm = toolkit.linearsolver(Yreciprocal, -u)
+        zm = self.toolkit.linearsolver(Yreciprocal, -u)
 
         xn2out = dot(dot(zm.reshape(1,size(zm)), CY), conj(zm))
 
@@ -387,7 +386,7 @@ def dc_steady_state(cir, freqs, refnode, toolkit, complexfreq = False,
     ## Refer the voltages to the reference node by removing
     ## the rows and columns that corresponds to this node
     irefnode = cir.get_node_index(refnode)
-    G,C,u = remove_row_col((G,C,u), irefnode)
+    G,C,u = remove_row_col((G,C,u), irefnode, toolkit)
 
     if complexfreq:
         ss = freqs

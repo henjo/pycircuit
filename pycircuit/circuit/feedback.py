@@ -184,7 +184,7 @@ class FeedbackDeviceAnalysis(SSAnalysis):
         ## the rows and columns that corresponds to this node
         irefnode = self.cir.get_node_index(refnode)
         G,G_noloop,C,C_noloop = remove_row_col((G,G_noloop,C,C_noloop), 
-                                               irefnode)
+                                               irefnode, self.toolkit)
         if complexfreq:
             slist = freqs
         else:

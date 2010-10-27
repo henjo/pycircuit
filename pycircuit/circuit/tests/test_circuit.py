@@ -450,4 +450,4 @@ def test_SVCVS_laplace_d3_n1_c():
 
     res = AC(cir, toolkit=symbolic).solve(s, complexfreq=True)
 
-    assert_equal(sympy.simplify(res.v(n2,gnd)),(-1.0*Gdc*b0*s-1.0*Gdc*b1)/(-a0*s*s*s-a1*s*s-a2*s-a3))
+    assert_equal(sympy.simplify(res.v(n2,gnd)),sympy.simplify((-1.0*Gdc*b0*s-1.0*Gdc*b1)/(-a0*s*s*s-a1*s*s-a2*s-a3)))

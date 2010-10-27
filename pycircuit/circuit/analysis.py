@@ -2,12 +2,8 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
-import numpy as np
 from pycircuit import sim
 from pycircuit.utilities import Parameter, ParameterDict, isiterable
-from numpy import array, delete, linalg, size, zeros, concatenate, pi, \
-    zeros, alltrue, maximum, conj, dot, imag, eye
-from scipy import optimize
 from pycircuit.circuit import Circuit, SubCircuit, VS,IS,R,C,L,Diode, gnd, \
     defaultepar, instjoin, circuit
 import pycircuit.circuit.circuit
@@ -18,8 +14,6 @@ from pycircuit.post.internalresult import InternalResultDict
 from copy import copy
 import numeric
 import types
-
-np.set_printoptions(precision=4)
 
 class NoConvergenceError(Exception):
     pass
@@ -66,11 +60,11 @@ class CircuitResult(IVResultDict, InternalResultDict):
         result = self.circuit.extract_i(self.x, term, xdot = self.xdot)    
         return self.build_waveform(result, 'i(%s)'%(str(term)), 'A')
 
-def remove_row_col(matrices, n):
+def remove_row_col(matrices, n, toolkit):
     result = []
     for A in matrices:
         for axis in range(len(A.shape)):
-            A=delete(A, [n], axis=axis)
+            A=toolkit.delete(A, [n], axis=axis)
         result.append(A)
     return tuple(result)
 
@@ -79,6 +73,7 @@ class Analysis(sim.Analysis):
                             default=None),
                   Parameter(name='epar', desc='Environment parameters',
                             default=defaultepar)]
+
     def __init__(self, cir, toolkit=None, **kvargs):
         super(Analysis, self).__init__(cir, **kvargs)
 
@@ -100,7 +95,7 @@ class Analysis(sim.Analysis):
         self.epar = epar
 
 def fsolve(f, x0, args=(), full_output=False, maxiter=200,
-           xtol=1e-6, reltol=1e-4, abstol=1e-12):
+           xtol=1e-6, reltol=1e-4, abstol=1e-12, toolkit='Numeric'):
     """Solve a multidimensional non-linear equation with Newton-Raphson's method
 
     In each iteration the linear system
@@ -115,15 +110,15 @@ def fsolve(f, x0, args=(), full_output=False, maxiter=200,
     ier = 2
     for i in xrange(maxiter):
         F, J = f(x0, *args) # TODO: Make sure J is never 0, e.g. by gmin (stepping)
-        xdiff = linalg.solve(J, -F)# TODO: Limit xdiff to improve convergence
+        xdiff = toolkit.linalg.solve(J, -F)# TODO: Limit xdiff to improve convergence
 
         x = x0 + xdiff
 
-        if alltrue(abs(xdiff) < reltol * maximum(x, x0) + xtol):
+        if toolkit.alltrue(abs(xdiff) < reltol * toolkit.maximum(x, x0) + xtol):
             ier = 1
             mesg = "Success"
             break
-        if alltrue(abs(F) < reltol * max(F) + abstol):
+        if toolkit.alltrue(abs(F) < reltol * max(F) + abstol):
             ier = 1
             mesg = "Success"
             break

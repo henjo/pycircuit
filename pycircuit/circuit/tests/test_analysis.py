@@ -104,7 +104,7 @@ def test_symbolic_noise_iin_iout():
 
 def test_symbolic_noise_kt_over_C():
     pycircuit.circuit.circuit.default_toolkit = symbolic
-    cir = SubCircuit()
+    cir = SubCircuit(toolkit = symbolic)
 
     var('r c w w1 k T V', real=True, positive=True)
 
@@ -115,7 +115,7 @@ def test_symbolic_noise_kt_over_C():
     cir['C'] = C(2, gnd, c=c)
 
     noise = Noise(cir, inputsrc='vs', outputnodes=('2', gnd), 
-                  toolkit=symbolic)
+                  toolkit = symbolic)
     res = noise.solve(s, complexfreq=True)
 
 
