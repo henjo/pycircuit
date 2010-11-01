@@ -109,12 +109,14 @@ class Float64(PSFNumber):
     size=8
     def __float__(self):
         return float(self.value)
+
     def toPSFasc(self, prec=6):
         if prec:
             fmt=('%%#%dg'%prec)
         else:
             fmt='%#g'
         return fmt%self.value
+
     def deSerializeFile(self, file, size=None):
         self.value = unpack(">d",file.read(self.size))[0]
 
@@ -827,7 +829,7 @@ class ValuesSectionSweep(SimpleContainer):
                 value = SweepValueSimple(self.psf)
 
             isweep += value.deSerializeFile(file, n=self.psf.header.properties['PSF sweep points']-isweep)
-            
+
             self.children.append(value)
 
         self.section = UInt32.fromFile(file)
@@ -1006,6 +1008,7 @@ class SweepValueSimple(SweepValue):
 class SweepValueWindowed(SweepValue):
     def deSerializeFile(self, file, n=None):
         bufferstart = file.tell()
+
         Chunk.deSerializeFile(self, file)
 
         self.paramtypeid = UInt32.fromFile(file)
@@ -1021,7 +1024,10 @@ class SweepValueWindowed(SweepValue):
 
         windowlen = leftinwindow//paramvaluesize; 
 
-        for j in xrange(0,windowlen):
+        if n > windowlen:
+            n = windowlen
+
+        for j in xrange(0, n):
             paramvalue = self.paramtype.getDataObj()
             paramvalue.deSerializeFile(file)
             if j < n:
@@ -1039,7 +1045,7 @@ class SweepValueWindowed(SweepValue):
                   self.psf.header.properties['PSF buffer size'])
         file.seek(padsize, 1)
 
-        return windowlen
+        return n
 
     def getSweepParamValues(self):
         return [v.getValue() for v in self.paramvalue]
@@ -1071,16 +1077,15 @@ class GroupData(PSFData):
                 # If a window is used in the PSF file, the entire window is stored
                 # and the data is aligned to the end of the window. So we need
                 # to skip window size - data size
-                file.seek(int(windowsize-windowlen*element.getDataSize()), 1)
+                file.seek(int(windowsize - count*element.getDataSize()), 1)
 
                 for i in xrange(0,count):
                     value = element.getDataObj()
                     value.deSerializeFile(file)
                     valuearray.append(value)
 
-                file.seek(int((windowlen-count)*element.getDataSize()), 1)
-
                 self.children.append(valuearray)
+
     def toPSFasc(self, prec=None, index=None):
         if index != None:
             return "\n".join([v[index].toPSFasc(prec) for v in self.children])
@@ -1484,7 +1489,6 @@ class PSFReader(object):
             file.seek(int(sectionoffsets[3]))
             self.traces = TraceSection(self)
             self.traces.deSerializeFile(file)
-#            print self.traces
 
         if sectionoffsets.has_key(4):
             file.seek(int(sectionoffsets[4]))
