@@ -142,5 +142,97 @@ def test_stamp():
             assert_array_equal(cir.C(np.zeros(cir.n)), C)
             assert_array_equal(cir.u(np.zeros(cir.n), analysis='ac'), u)
 
+def test_nullor_vva():
+    """Test nullor element by building a V-V amplifier"""
+    pycircuit.circuit.circuit.default_toolkit = symbolic
+
+    c = SubCircuit()
+
+    Vin = Symbol('Vin')
+    R1 =Symbol('R1')
+    R2 = Symbol('R2')
+    
+    nin = c.add_node('in')
+    n1 = c.add_node('n1')
+    nout = c.add_node('out')
+     
+    c['vin'] = VS(nin, gnd, vac=Vin)
+    c['R1'] = R(n1, gnd, r=R1)
+    c['R2'] = R(nout, n1, r=R2)
+    c['nullor'] = Nullor(n1, nin, gnd, nout)
+    
+    result = AC(c, toolkit=symbolic).solve(Symbol('s'))
+    
+    vout = result.v(nout)
+
+    assert simplify(vout - Vin * (R1 + R2) / R1) == 0, \
+        'Did not get the expected result, %s != 0'% \
+        str(simplify(vout - Vin * (R1 + R2) / R1))
+
+def test_SVCVS_laplace_d1():
+    """Test VCCS with a laplace defined transfer function, with on denominator coefficient"""
+    pycircuit.circuit.circuit.default_toolkit = symbolic
+
+    cir = SubCircuit()
+
+    n1,n2 = cir.add_nodes('1','2')
+
+    a0,a1,Gdc = [sympy.Symbol(symname, real=True) for symname in 'a0,a1,Gdc'.split(',')]
+
+    s = sympy.Symbol('s', complex=True)
+
+    cir['VS']   = VS( n1, gnd, vac=1)
+    cir['VCVS'] = SVCVS( n1, gnd, n2, gnd, g = Gdc, denominator = [a0, a1, 0])   
+
+    res = AC(cir, toolkit=symbolic).solve(s, complexfreq=True)
+
+    assert_equal(sympy.simplify(res.v(n2,gnd)),sympy.simplify(Gdc/(a0*s*s+a1*s)))
+
+def test_SVCVS_laplace_n1_d2():
+    """Test VCCS with a laplace defined transfer function first order denominator and 
+    second order numerator"""
+
+    pycircuit.circuit.circuit.default_toolkit = symbolic
+    cir = SubCircuit()
+                 
+
+    n1,n2 = cir.add_nodes('1','2')
+
+    b0,a0,a1,Gdc = [sympy.Symbol(symname, real=True) for symname in 'b0,a0,a1,Gdc'.split(',')]
+
+    s = sympy.Symbol('s', complex=True)
+
+    cir['VS']   = VS( n1, gnd, vac=1)
+    cir['VCVS'] = SVCVS( n1, gnd, n2, gnd, g = Gdc, denominator = [a0, a1], numerator = [b0])   
+
+    res = AC(cir, toolkit=symbolic).solve(s, complexfreq=True)
+
+    assert_equal(sympy.simplify(res.v(n2,gnd)),(Gdc*b0)/(a0*s+a1))
+
+@slow
+def test_SVCVS_laplace_d3_n1_c():
+    """Test VCCS with a laplace defined transfer function with first order numerator and third order denominator
+    """
+
+    pycircuit.circuit.circuit.default_toolkit = symbolic
+    cir = SubCircuit()
+
+    n1,n2 = cir.add_nodes('1','2')
+
+    b0,b1,a0,a1,a2,a3,Gdc = [sympy.Symbol(symname, real=True) for 
+                                symname in 'b0,b1,a0,a1,a2,a3,Gdc'
+                                .split(',')]
+
+    s = sympy.Symbol('s', complex=True)
+
+    cir['VS']   = VS( n1, gnd, vac=1)
+    cir['VCVS'] = SVCVS( n1, gnd, n2, gnd, 
+                        g = Gdc, denominator = [a0, a1, a2, a3], 
+                        numerator = [b0, b1])
+
+    res = AC(cir, toolkit=symbolic).solve(s, complexfreq=True)
+
+    assert_equal(sympy.simplify(res.v(n2,gnd)),sympy.simplify((-1.0*Gdc*b0*s-1.0*Gdc*b1)/(-a0*s*s*s-a1*s*s-a2*s-a3)))
+
 if __name__ == '__main__':
     test_nullor_vva()
