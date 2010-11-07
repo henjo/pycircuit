@@ -238,7 +238,7 @@ class Circuit(object):
 
     def append_branches(self, *branches):
         """Append node object to circuit"""
-        ## Make a copy of node list so the class is unchanged
+        ## Make a copy of branch list so the class is unchanged
         if self.__class__.branches is self.branches:
             self.branches = list(self.branches)
 
