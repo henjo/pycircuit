@@ -4,7 +4,7 @@
 
 # Read different kind of PSF files and compare with output from the psf command
 
-from psf import PSFReader
+from pycircuit.post.cds.psf import PSFReader
 import os, os.path, sys
 import unittest
 from psfasctests import psfAscAdjust
