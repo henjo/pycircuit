@@ -41,6 +41,10 @@ class SSAnalysis(Analysis):
     parameters = Analysis.parameters + \
         [Parameter(name='analysis', desc='Analysis name', 
                    default='ac')]
+
+    def __init__(self, cir, toolkit=None, **kvargs):
+        super(SSAnalysis, self).__init__(cir, **kvargs)
+
     def ac_map_function(self, func, ss, refnode):
         """Apply a function over a list of frequencies or a single frequency"""
         irefnode = self.cir.nodes.index(refnode)
@@ -101,6 +105,10 @@ class AC(SSAnalysis):
                    unit='', 
                    default=None)
          ]
+
+    def __init__(self, cir, toolkit=None, **kvargs):
+        super(AC, self).__init__(cir, **kvargs)
+
     def solve(self, freqs, refnode=gnd, complexfreq = False, u = None):
         G, C, u, x, ss = self.dc_steady_state(freqs, refnode, self.toolkit,
                                               complexfreq = complexfreq, u = u,
@@ -134,6 +142,9 @@ class TransimpedanceAnalysis(SSAnalysis):
     result
 
     """
+    def __init__(self, cir, toolkit=None, **kvargs):
+        super(TransimpedanceAnalysis, self).__init__(cir, **kvargs)
+
     def solve(self, freqs, outbranches, currentoutput=False,
               complexfreq=False, refnode=gnd):
         toolkit = self.toolkit 
@@ -240,7 +251,8 @@ class Noise(SSAnalysis):
                             unit='', 
                             default=None)
                   ]
-    def __init__(self, circuit, toolkit=None, **parvalues):
+
+    def __init__(self, cir, toolkit=None, **kvargs):
         """
         Initiate a noise analysis.
 
@@ -257,8 +269,7 @@ class Noise(SSAnalysis):
             The voltage source where the output current noise is measured
         """
 
-        Analysis.__init__(self, circuit, toolkit=toolkit, 
-                          **parvalues)
+        super(Noise, self).__init__(cir, **kvargs)
     
         if not (self.par.outputnodes != None or self.par.outputsrc != None):
             raise ValueError('Output is not specified')
