@@ -177,8 +177,7 @@ class Circuit(object):
                 setattr(self.ipar_expressions, par.name, None)
 
         ## Add terminal nodes
-        for terminal in self.terminals:
-            self.append_node(Node(terminal))
+        self.add_terminals(self.terminals)
 
         ## Set temporary terminal mapping information for use by instantiation
         ## method in higher hierarchy
@@ -339,22 +338,32 @@ class Circuit(object):
                 return k
 
     def add_terminals(self, terminals):
+        """Add terminals to circuit 
+
+        >>> c = Circuit()
+        >>> c.add_terminals(["n1"])
+        >>> c.terminals
+        ['n1']
+
+        """
+
         for terminal in terminals:
+            # add terminal to terminal list if it is not included
             if terminal not in self.terminals:
-                # add terminal to terminal list
                 self.terminals.append(terminal)
 
-                if not self.nodenames[terminal].name == terminal:
-                    self.add_node(terminal) 
+            ## If no node with terminal name exists create node
+            if not self.nodenames.has_key(terminal):                
+                self.add_node(terminal) 
 
-                node = self.nodenames[terminal]
+            node = self.nodenames[terminal]
 
-                if not self.nodes.index(node) < self._nterminalnodes:
-                    ## move node to position k in nodes as it is
-                    ## now a terminal node
-                    self.nodes.remove(node)
-                    self.nodes.insert(self._nterminalnodes-1, node)
-                            
+            ## move node to position k in nodes as it is
+            ## now a terminal node
+            if not self.nodes.index(node) < self._nterminalnodes:
+                self.nodes.remove(node)
+                self.nodes.insert(self._nterminalnodes-1, node)
+  
     def connect_terminals(self, **kvargs):
         """Connect nodes to terminals by using keyword arguments
 
