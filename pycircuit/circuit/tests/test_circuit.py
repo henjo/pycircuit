@@ -359,3 +359,21 @@ def test_replace_element():
     assert_equal(set(c.nodes), set([Node('1'), gnd]))
     c['VS'] = VS(1, 0)
     assert_equal(set(c.nodes), set([Node('1'), Node('0')]))
+
+def test_add_terminals():
+    cir = SubCircuit()
+
+    plus, common , minus = cir.add_nodes('plus', 'common', 'minus')
+    
+    cir.add_terminals(['plus','minus'])
+    
+    # The terminals list contains the names of all terminals
+    assert_equal(cir.terminals,['plus','minus'])
+
+    # The first k, k equal to the number of terminals, elements 
+    # of the nodes list are the nodes connected to a terminal 
+    node_list = []
+    for node in cir.nodes:
+        node_list.append(node.name)
+    
+    assert_equal(node_list,['plus','minus','common'])

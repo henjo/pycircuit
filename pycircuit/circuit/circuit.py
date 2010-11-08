@@ -337,7 +337,24 @@ class Circuit(object):
         for k, v in self.nodenames.items():
             if v == node:
                 return k
-        
+
+    def add_terminals(self, terminals):
+        for terminal in terminals:
+            if terminal not in self.terminals:
+                # add terminal to terminal list
+                self.terminals.append(terminal)
+
+                if not self.nodenames[terminal].name == terminal:
+                    self.add_node(terminal) 
+
+                node = self.nodenames[terminal]
+
+                if not self.nodes.index(node) < self._nterminalnodes:
+                    ## move node to position k in nodes as it is
+                    ## now a terminal node
+                    self.nodes.remove(node)
+                    self.nodes.insert(self._nterminalnodes-1, node)
+                            
     def connect_terminals(self, **kvargs):
         """Connect nodes to terminals by using keyword arguments
 
