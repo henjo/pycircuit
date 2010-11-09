@@ -409,7 +409,8 @@ class SVCVS(Circuit):
 
     def __init__(self, *args, **kvargs):
         self.wait_with_update = False
-        Circuit.__init__(self, *args, **kvargs)
+        super(SVCVS, self).__init__(*args, **kvargs)
+
         if self.ipar.numerator or self.ipar.denominator:
             self.first_state_node = len(self.nodes) # store number of nodes/states in inital G and C matrix
             if self.ipar.denominator == None:
@@ -423,7 +424,7 @@ class SVCVS(Circuit):
                 self.ipar.numerator = [0]*(len(self.ipar.denominator[:-1])-len(self.ipar.numerator))+self.ipar.numerator
             if not(len(self.ipar.numerator) < len(self.ipar.denominator)): # make sure the transfer function is stictly proper. Is this relly neccessary?
                 raise Exception("Number of numerator coefficients, %s, must be at least on fewer than the number of denominator coefficients length, %s, should be string"%str(len(self.ipar.numerator))%str(len(self.ipar.denominator)))
-            self.den = self.toolkit.array(self.ipar.denominator) / self.ipar.denominator[0]
+            self.den = self.toolkit.array(self.ipar.denominator) / self.toolkit.array(self.ipar.denominator[0])
             self.denlen = len(self.den) 
             self.num = self.toolkit.array(self.ipar.numerator) / self.ipar.denominator[0]
             self.numlen = len(self.num)
