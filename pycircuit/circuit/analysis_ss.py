@@ -170,7 +170,7 @@ class TransimpedanceAnalysis(SSAnalysis):
         # Calculate the reciprocal G and C matrices
         Yreciprocal = G.T + s*C.T
 
-        Yreciprocal = toolkit.toMatrix(Yreciprocal)
+        Yreciprocal = self.toolkit.toMatrix(Yreciprocal)
 
         result = []
         for branch in outbranches:
@@ -188,7 +188,7 @@ class TransimpedanceAnalysis(SSAnalysis):
             u, = remove_row_col((u,), irefnode, self.toolkit)
 
             ## Calculate transimpedances from currents in each nodes to output
-            result.append(toolkit.linearsolver(Yreciprocal, -u))
+            result.append(self.toolkit.linearsolver(Yreciprocal, -u))
 
         return result
 

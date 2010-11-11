@@ -26,7 +26,7 @@ def linearsolver(*args):
     return np.linalg.solve(*args)
 
 def toMatrix(array): 
-    return np.array.astype('complex')
+    return array.astype('complex')
 
 def det(x): 
     return np.linalg.det(x)

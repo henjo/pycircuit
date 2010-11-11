@@ -9,12 +9,10 @@ The module is based on the python CAS `sympy <http://sympy.org>`_.
 
 """
 
+import numpy as np
 import sympy
 from sympy import cos, sin, tan, exp, pi, simplify, floor
 from sympy import oo as inf, ceiling as ceil
-from numpy import dot, eye, linspace
-import numpy as np
-from numpy import delete, array
 import types
 from pycircuit.utilities.param import Parameter
 
@@ -85,4 +83,17 @@ def dummy_var_matrix(A):
     Aprime = sympy.Matrix(A.rows, A.cols, elem)
     return Aprime, subst_dict
 
+def array(*args,**kvargs):
+    return np.array(*args,**kvargs)
 
+def dot(*args,**kvargs):
+    return np.dot(*args,**kvargs)
+
+def delete(*args,**kvargs):
+    return np.delete(*args,**kvargs)
+
+def eye(*args,**kvargs):
+    return np.eye(*args,**kvargs)
+
+def linspace(*args,**kvargs):
+    return np.linspace(*args,**kvargs)
