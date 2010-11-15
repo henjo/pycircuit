@@ -746,11 +746,12 @@ class SubCircuit(Circuit):
 
     """
     def __init__(self, *args, **kvargs):
+    def __init__(self, *args, **kvargs):
+        super(Circuit, self).__init__(*args, **kvargs)
         self.elements = {}
         self.elementnodemap = {}
         self.term_node_map = {}
         self._mapmatrix = {}
-        Circuit.__init__(self, *args, **kvargs)
 
     def __eq__(self, a):
         return super(SubCircuit, self).__eq__(a) and \
@@ -1327,6 +1328,7 @@ class Quantity(object):
     def isbranch(self): return isinstance(self.branch_or_node, Branch)
         
     def __repr__(self):
+        raise ValueError("APA")
         if isinstance(self.branch_or_node, Branch):
             return self.quantity + '(' + str(self.branch_or_node.plus.name) + \
                 ',' + str(self.branch_or_node.minus.name) + ')'
