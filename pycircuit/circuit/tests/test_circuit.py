@@ -337,6 +337,20 @@ def test_parameter_propagation():
 
     assert_equal(a['R1'].ipar.r, 40)
     assert_equal(a['I1']['R1'].ipar.r, 50)
+
+def test_parameter_propagation_at_instantiation():
+    """Test instance parameter value propagation through hierarchy at instantiation"""
+    pycircuit.circuit.circuit.default_toolkit = symbolic
+
+    class A(SubCircuit):
+        instparams = [Parameter(name='resistance_value', desc = 'resistance value', default = 20)]
+
+    a = A()
+
+    a['R1'] = R(1,0, r=Parameter('resistance_value') + 10)
+
+    assert_equal(a['R1'].ipar.r, 30)
+
     
 def test_design_variables():
     a = SubCircuit(toolkit=symbolic)
