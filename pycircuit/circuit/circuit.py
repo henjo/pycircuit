@@ -746,7 +746,6 @@ class SubCircuit(Circuit):
 
     """
     def __init__(self, *args, **kvargs):
-    def __init__(self, *args, **kvargs):
         super(Circuit, self).__init__(*args, **kvargs)
         self.elements = {}
         self.elementnodemap = {}
