@@ -38,12 +38,13 @@ class CircuitResultAC(CircuitResult):
 
 class SSAnalysis(Analysis):
     """Super class for small-signal analyses"""
-    parameters = Analysis.parameters + \
-        [Parameter(name='analysis', desc='Analysis name', 
-                   default='ac')]
 
-    def __init__(self, cir, toolkit=None, **kvargs):
+    parameters = [Parameter(name='analysis', desc='Analysis name', default='ss')]
+
+    def __init__(self, cir, toolkit=None, **kvargs):    
+        self.parameters = super(SSAnalysis, self).parameters + self.parameters            
         super(SSAnalysis, self).__init__(cir, **kvargs)
+        
 
     def ac_map_function(self, func, ss, refnode):
         """Apply a function over a list of frequencies or a single frequency"""
@@ -100,13 +101,15 @@ class AC(SSAnalysis):
     Waveform(array([ 1000000.,  2000000.]), array([ 0.0015 +9.4248e-06j,  0.0015 +1.8850e-05j]))
     
     """
-    parameters =  SSAnalysis.parameters + \
-        [Parameter(name='dcx', desc='Provided DC-solution vector', 
-                   unit='', 
-                   default=None)
-         ]
+
+    parameters  = [Parameter(name='analysis', desc='Analysis name', 
+                             default='ac'),
+                   Parameter(name='dcx', desc='Provided DC-solution vector', 
+                             unit='', 
+                             default=None)]
 
     def __init__(self, cir, toolkit=None, **kvargs):
+        self.parameters = super(AC, self).parameters + self.parameters            
         super(AC, self).__init__(cir, **kvargs)
 
     def solve(self, freqs, refnode=gnd, complexfreq = False, u = None):
@@ -142,9 +145,17 @@ class TransimpedanceAnalysis(SSAnalysis):
     result
 
     """
+
+    parameters = [Parameter(name='analysis', desc='Analysis name', 
+                            default='TransimpedanceAnalysis')]
+
     def __init__(self, cir, toolkit=None, **kvargs):
+        parameters = super(TransimpedanceAnalysis, self).parameters + \
+            self.parameters
+            
         super(TransimpedanceAnalysis, self).__init__(cir, **kvargs)
 
+            
     def solve(self, freqs, outbranches, currentoutput=False,
               complexfreq=False, refnode=gnd):
         toolkit = self.toolkit 
@@ -239,8 +250,9 @@ class Noise(SSAnalysis):
 
     """
 
-    parameters =  SSAnalysis.parameters + \
-                  [Parameter(name='inputsrc', desc='Input voltage source', 
+    parameters = [Parameter(name='analysis', desc='Analysis name', 
+                            default='Noise'),
+                  Parameter(name='inputsrc', desc='Input voltage source', 
                             unit='', 
                             default=None),
                   Parameter(name='outputnodes', 
@@ -249,8 +261,7 @@ class Noise(SSAnalysis):
                   Parameter(name='outputsrc', 
                             desc='Output voltage source (current output)',
                             unit='', 
-                            default=None)
-                  ]
+                            default=None)]
 
     def __init__(self, cir, toolkit=None, **kvargs):
         """
@@ -269,7 +280,9 @@ class Noise(SSAnalysis):
             The voltage source where the output current noise is measured
         """
 
+        self.parameters = super(Noise, self).parameters + self.parameters            
         super(Noise, self).__init__(cir, **kvargs)
+
     
         if not (self.par.outputnodes != None or self.par.outputsrc != None):
             raise ValueError('Output is not specified')

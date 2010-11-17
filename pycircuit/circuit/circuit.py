@@ -199,8 +199,11 @@ class Circuit(object):
         newc.nodes = copy(self.nodes)    
         newc.nodenames = copy(self.nodenames)    
         newc.branches = copy(self.branches)    
+        newc.instparams = copy(self.instparams)
         newc.ipar = copy(self.ipar)
+        newc.linear = copy(self.linear)        
         newc.toolkit = self.toolkit
+        newc.terminals = copy(self.terminals)
         return newc
 
     def add_nodes(self, *names):
@@ -346,6 +349,9 @@ class Circuit(object):
         ['n1']
 
         """
+
+        if self.__class__.terminals is self.terminals:
+            self.terminals = list(self.terminals)
 
         for terminal in terminals:
             # add terminal to terminal list if it is not included
@@ -745,12 +751,16 @@ class SubCircuit(Circuit):
           the terminal names.
 
     """
+    elements = {}
+    elementnodemap = {}
+    term_node_map = {}
+
     def __init__(self, *args, **kvargs):
+        super(SubCircuit, self).__init__(*args, **kvargs)
         self.elements = {}
         self.elementnodemap = {}
         self.term_node_map = {}
         self._mapmatrix = {}
-        super(SubCircuit, self).__init__(*args, **kvargs)
 
     def __eq__(self, a):
         return super(SubCircuit, self).__eq__(a) and \
@@ -759,8 +769,7 @@ class SubCircuit(Circuit):
             self.term_node_map == a.term_node_map
 
     def __copy__(self):
-        newc = Circuit.__copy__(self)
-        
+        newc = super(SubCircuit, self).__copy__()        
         newc.elements = copy(self.elements)
         newc.elementnodemap = copy(self.elementnodemap)
         newc.term_node_map = copy(self.term_node_map)

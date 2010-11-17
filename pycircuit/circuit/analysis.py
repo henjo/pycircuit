@@ -75,6 +75,8 @@ class Analysis(sim.Analysis):
                             default=defaultepar)]
 
     def __init__(self, cir, toolkit=None, **kvargs):
+        
+        self.parameters = super(Analysis, self).parameters + self.parameters
         super(Analysis, self).__init__(cir, **kvargs)
 
         if toolkit == None:
@@ -110,7 +112,7 @@ def fsolve(f, x0, args=(), full_output=False, maxiter=200,
     ier = 2
     for i in xrange(maxiter):
         F, J = f(x0, *args) # TODO: Make sure J is never 0, e.g. by gmin (stepping)
-        xdiff = toolkit.linalg.solve(J, -F)# TODO: Limit xdiff to improve convergence
+        xdiff = toolkit.linearsolver(J, -F)# TODO: Limit xdiff to improve convergence
 
         x = x0 + xdiff
 
