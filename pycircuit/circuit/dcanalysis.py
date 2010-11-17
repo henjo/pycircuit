@@ -101,7 +101,7 @@ class DC(Analysis):
         for gmin in (1, 1e-1, 1e-2, 0):
             n_nodes = len(self.cir.nodes)
             Ggmin = self.toolkit.zeros((self.cir.n, self.cir.n))
-            Ggmin[0:n_nodes, 0:n_nodes] = gmin * eye(n_nodes)
+            Ggmin[0:n_nodes, 0:n_nodes] = gmin * self.toolkit.eye(n_nodes)
 
             def func(x):
                 return self.cir.i(x) + self.cir.u(0,analysis='dc'), \
