@@ -234,25 +234,5 @@ def test_SVCVS_laplace_d3_n1_c():
 
     assert_equal(sympy.simplify(res.v(n2,gnd)),sympy.simplify((-1.0*Gdc*b0*s-1.0*Gdc*b1)/(-a0*s*s*s-a1*s*s-a2*s-a3)))
 
-
-def test_integer_component_values():
-    """Test dc analysis with integer component values
-    
-       As python per default uses integer arithmetics integer
-       component values can lead to problems. (Python < 3.0)
-    """
-    c = SubCircuit()
-
-    n1,n2 = c.add_nodes('net1', 'net2')
-
-    c['vs'] = VS(n1, gnd, v = 9)
-    c['R1'] = R( n1,  n2, r = 50)
-    c['R2'] = R( n2, gnd, r = 50)
-
-    dc = DC(c)
-    res = dc.solve()
-    
-    assert_equal(res.v('net1'), 9.0)
-
 if __name__ == '__main__':
     test_nullor_vva()
