@@ -56,8 +56,8 @@ class DC(Analysis):
                   ]
 
     def __init__(self, cir, toolkit=None, refnode=gnd, **kvargs):
-        super(DC, self).__init__(cir, toolkit=toolkit, 
-                                 **kvargs)
+        self.parameters = super(DC, self).parameters + self.parameters
+        super(DC, self).__init__(cir, toolkit=toolkit, **kvargs)
         
         self.irefnode = self.cir.get_node_index(refnode)
         
@@ -142,7 +142,7 @@ class DC(Analysis):
                             abstol = abstol, xtol=xtol,
                             maxiter = self.par.maxiter,
                             toolkit = self.toolkit)
-        except self.toolkit.linalg.LinAlgError, e:
+        except self.toolkit.linearsolverError(), e:
             raise SingularMatrix(e.message)
 
         x, infodict, ier, mesg = result
