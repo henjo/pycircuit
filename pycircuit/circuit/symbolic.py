@@ -40,6 +40,9 @@ def linearsolver(A, b):
 
     return res.reshape((np.size(res,0),) )
 
+def linearsolverError(*args, **kvargs):
+    return np.linalg.LinAlgError
+
 def toMatrix(a):
     return sympy.Matrix(a.tolist())
 
@@ -98,5 +101,10 @@ def eye(*args,**kvargs):
 def linspace(*args,**kvargs):
     return np.linspace(*args,**kvargs)
 
-def ones(shape, dtype=None):
-    return np.ones(shape, dtype=object)
+def ones(*args,**kvargs):
+    return np.ones(*args,**kvargs)
+
+def concatenate(*args,**kvargs):
+    return np.concatenate(*args,**kvargs)
+
+

@@ -16,14 +16,15 @@ from numpy import cos, sin, tan, cosh, sinh, tanh, log, exp, pi, linalg,\
      inf, ceil, floor, dot, linspace, eye, concatenate, sqrt, real, imag,\
      ones, complex, diff, delete, alltrue, maximum
 
-from numpy.linalg import inv
-
 symbolic = False
 
 ac_u_dtype = np.complex
 
-def linearsolver(*args):
-    return np.linalg.solve(*args)
+def linearsolver(*args, **kvargs):
+    return np.linalg.solve(*args, **kvargs)
+
+def linearsolverError(*args, **kvargs):
+    return np.linalg.LinAlgError
 
 def toMatrix(array): 
     return array.astype('complex')
@@ -33,11 +34,14 @@ def det(x):
 
 def simplify(x): return x
 
-def zeros(shape, dtype=None): 
-    return np.zeros(shape, dtype=dtype)
+def zeros(*args, **kvargs): 
+    return np.zeros(*args, **kvargs)
 
-def array(x, dtype=None): 
-    return np.array(x, dtype=dtype)
+def array(*args, **kvargs): 
+    return np.array(*args, **kvargs)
+
+def inv(*args, **kvargs): 
+    return np.linalg.inv(*args, **kvargs)
 
 numeric = True
     
