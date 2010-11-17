@@ -97,3 +97,6 @@ def eye(*args,**kvargs):
 
 def linspace(*args,**kvargs):
     return np.linspace(*args,**kvargs)
+
+def ones(shape, dtype=None):
+    return np.ones(shape, dtype=object)
