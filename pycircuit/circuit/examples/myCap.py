@@ -1,3 +1,4 @@
+from __future__ import division
 from pycircuit.circuit import Circuit, defaultepar
 from pycircuit.utilities.param import Parameter
 class myC(Circuit):

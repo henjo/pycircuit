@@ -1,3 +1,4 @@
+from __future__ import division
 from nose.tools import *
 
 from pycircuit.circuit.elements import VS, IS, R, L, C, SubCircuit, gnd, Diode
