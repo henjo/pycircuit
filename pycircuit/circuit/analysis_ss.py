@@ -2,10 +2,7 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
-import numpy as np
 from pycircuit.utilities import Parameter, ParameterDict, isiterable
-#from numpy import array, delete, linalg, size, zeros, concatenate, pi, \
-#    zeros, alltrue, maximum, conj, dot, imag, eye
 from pycircuit.circuit.analysis import CircuitResult, Analysis, remove_row_col
 from pycircuit.circuit import Circuit, SubCircuit, VS,IS,R,C,L,Diode, gnd, \
     defaultepar, instjoin
@@ -311,7 +308,7 @@ class Noise(SSAnalysis):
         if complexfreq:
             s = freqs
         else:
-            s = 2j*pi*freqs
+            s = 2j*self.toolkit.pi*freqs
 
         epar = self.epar
         G = self.cir.G(x, epar)
