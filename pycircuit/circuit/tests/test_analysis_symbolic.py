@@ -125,23 +125,3 @@ def test_symbolic_noise_kt_over_C():
     assert_equal(noise_voltage_power, 2*pi*k*T/c)
 
     assert_equal(simplify(res['gain'] - 1/(1 + s*r*c)), 0)
-
-def test_integer_component_values():
-    """Test dc analysis with integer component values
-    
-       As python per default uses integer arithmetics integer
-       component values can lead to problems. (Python < 3.0)
-    """
-    pycircuit.circuit.circuit.default_toolkit = numeric
-    c = SubCircuit(toolkit=numeric)
-
-    n1,n2 = c.add_nodes('net1', 'net2')
-
-    c['vs'] = VS(n1, gnd, v = 9)
-    c['R1'] = R( n1,  n2, r = 50)
-    c['R2'] = R( n2, gnd, r = 50)
-
-    dc = DC(c)
-    res = dc.solve()
-    
-    assert_equal(res.v('net1'), 9.0)
