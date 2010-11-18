@@ -4,8 +4,8 @@
 
 import numpy as np
 from pycircuit.utilities import Parameter, ParameterDict, isiterable
-from numpy import array, delete, linalg, size, zeros, concatenate, pi, \
-    zeros, alltrue, maximum, conj, dot, imag, eye
+#from numpy import array, delete, linalg, size, zeros, concatenate, pi, \
+#    zeros, alltrue, maximum, conj, dot, imag, eye
 from pycircuit.circuit.analysis import CircuitResult, Analysis, remove_row_col
 from pycircuit.circuit import Circuit, SubCircuit, VS,IS,R,C,L,Diode, gnd, \
     defaultepar, instjoin
@@ -53,7 +53,7 @@ class SSAnalysis(Analysis):
         def myfunc(s):
             x = func(s)
             # Insert reference node voltage
-            return concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
+            return self.toolkit.concatenate((x[:irefnode], self.toolkit.array([0.0]), x[irefnode:]))
             
         if isiterable(ss):
             return self.toolkit.array([myfunc(s) for s in ss]).swapaxes(0,1)
@@ -305,7 +305,7 @@ class Noise(SSAnalysis):
     def solve(self, freqs, refnode=gnd, complexfreq=False):
 
         n = self.cir.n
-        x = zeros(n) # This should be the x-vector at the DC operating point
+        x = self.toolkit.zeros(n) # This should be the x-vector at the DC operating point
 
         ## Complex frequency variable
         if complexfreq:
@@ -316,18 +316,18 @@ class Noise(SSAnalysis):
         epar = self.epar
         G = self.cir.G(x, epar)
         C = self.cir.C(x, epar)
-        CY = self.cir.CY(x, imag(s),epar)
+        CY = self.cir.CY(x, self.toolkit.imag(s),epar)
 
         # Calculate output voltage noise
         if self.outputnodes != None:
-            u = zeros(n, dtype=int)
+            u = self.toolkit.zeros(n, dtype=int)
             ioutp, ioutn = (self.cir.get_node_index(node) 
                             for node in self.outputnodes)
             u[ioutp] = -1
             u[ioutn] = 1
         # Calculate output current noise
         else:
-            u = zeros(n, dtype=int)
+            u = self.toolkit.zeros(n, dtype=int)
             plus_term = instjoin(self.outputsrc_name, 'plus')
             branch = self.cir.get_terminal_branch(plus_term)[0]
             ibranch = self.cir.get_branch_index(branch)
@@ -346,7 +346,7 @@ class Noise(SSAnalysis):
         ## Calculate transimpedances from currents in each nodes to output
         zm = self.toolkit.linearsolver(Yreciprocal, -u)
 
-        xn2out = dot(dot(zm.reshape(1,size(zm)), CY), conj(zm))
+        xn2out = self.toolkit.dot(self.toolkit.dot(zm.reshape(1,self.toolkit.size(zm)), CY), self.toolkit.conj(zm))
 
         xn2out = xn2out[0]
 
@@ -368,7 +368,7 @@ class Noise(SSAnalysis):
                                       refnode=refnode, 
                                       refnode_removed=True)
             result['gain'] = gain
-            result['Svninp'] = xn2out / abs(gain)**2
+            result['Svninp'] = xn2out / self.toolkit.abs(gain)**2
 
         elif isinstance(self.inputsrc, IS):
             plus_node = instjoin(self.inputsrc_name, 'plus')
@@ -378,7 +378,7 @@ class Noise(SSAnalysis):
                                       self.cir.get_node(minus_node), 
                                       refnode=refnode, refnode_removed=True)
             result['gain'] = gain
-            result['Sininp'] = xn2out / abs(gain)**2
+            result['Sininp'] = xn2out / self.toolkit.abs(gain)**2
 
         return result
 
