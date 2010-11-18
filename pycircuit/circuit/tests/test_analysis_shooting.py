@@ -28,18 +28,25 @@ class myC(Circuit):
                   Parameter(name='v0', desc='Voltage for nominal capacitance', 
                             unit='V', default=1),
                   Parameter(name='v1', desc='Slope voltage ...?', 
-                            unit='V', default=1)
-                  ]
+                            unit='V', default=1)]
 
     def C(self, x, epar=defaultepar): 
         v=x[0]-x[1]
-        c = self.ipar.c0+self.ipar.c1*self.toolkit.tanh((v-self.ipar.v0)/self.ipar.v1)
+        c0 = self.ipar.c0
+        c1 = self.ipar.c1
+        v0 = self.ipar.v0
+        v1 = self.ipar.v1
+        c = c0+c1*self.toolkit.tanh((v-v0)/v1)
         return self.toolkit.array([[c, -c],
                                   [-c, c]])
 
     def q(self, x, epar=defaultepar):
         v=x[0]-x[1]
-        q = self.ipar.c0*v+c1*v1*ln(cosh((v-self.ipar.v0)/self.ipar.v1))
+        c0 = self.ipar.c0
+        c1 = self.ipar.c1
+        v0 = self.ipar.v0
+        v1 = self.ipar.v1
+        q = c0*v+c1*v1*self.toolkit.ln(self.toolkit.cosh((v-v0)/v1))
         return self.toolkit.array([q, -q])
 
 def test_shooting():
