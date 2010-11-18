@@ -30,3 +30,27 @@ def test_integer_component_values():
     res = dc.solve()
     
     assert_equal(res.v('net1'), 9.0)
+
+def TODOtest_noise_dc_steady_state():
+    """Test that dc-steady state is accounted for in noise simulations
+    """
+    pass
+
+def test_noise_with_frequency_vector():
+    """Test that it is possible to specify frequency as an array
+    
+    """
+    pycircuit.circuit.circuit.default_toolkit = numeric
+    c = SubCircuit(toolkit=numeric)
+
+    n1,n2 = c.add_nodes('net1', 'net2')
+
+    c['vs'] = VS(n1, gnd, v = 9.)
+    c['R1'] = R( n1,  n2, r = 50.)
+    c['R2'] = R( n2, gnd, r = 50.)
+    
+    noise = Noise(c, inputsrc='vs', outputnodes=(n2, gnd))
+    should = array([noise.solve(0)['Svnout'],noise.solve(1)['Svnout']])
+    res = noise.solve(array([0,1]))['Svnout']
+    assert_equal(res, should)
+
