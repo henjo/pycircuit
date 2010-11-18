@@ -78,7 +78,7 @@ def test_symbolic_twoport():
     ABCD = Matrix(result['twoport'].A)
     ABCD.simplify()
 
-    assert_array_equal(ABCD, array([[1 + 0*R1*C1*s, R1],
+    assert_array_equal(ABCD, np.array([[1 + 0*R1*C1*s, R1],
                                     [(1 + 0*R0*C1*s + 0*R1*C1*s) / R0,  (R0 + R1)/R0]]))
 
     assert_array_equal(simplify(result['Sin'] - (4*k*T/R0 + 4*R1*k*T/R0**2)), 0)

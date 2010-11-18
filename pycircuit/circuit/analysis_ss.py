@@ -161,13 +161,13 @@ class TransimpedanceAnalysis(SSAnalysis):
         toolkit = self.toolkit 
 
         n = self.cir.n
-        x = zeros(n) # This should be the x-vector at the DC operating point
+        x = self.toolkit.zeros(n) # This should be the x-vector at the DC operating point
 
         ## Complex frequency variable
         if complexfreq:
             s = freqs
         else:
-            s = 2j*pi*freqs
+            s = 2j*self.toolkit.pi*freqs
 
         epar = self.epar
         G = self.cir.G(x, epar)
@@ -191,7 +191,7 @@ class TransimpedanceAnalysis(SSAnalysis):
                 ibranch = self.cir.get_branch_index(branch)
                 u[ibranch] = -1
             else:
-                u = zeros(n, dtype=int)
+                u = self.toolkit.zeros(n, dtype=int)
                 ## The signed is swapped because the u-vector appears in the lhs
                 u[self.cir.get_node_index(branch.plus)] = -1
                 u[self.cir.get_node_index(branch.minus)] = 1
@@ -415,7 +415,7 @@ def dc_steady_state(cir, freqs, refnode, toolkit, complexfreq = False,
     if complexfreq:
         ss = freqs
     else:
-        ss = 2j*pi*freqs
+        ss = 2j*toolkit.pi*freqs
 
     return G, C, u, x, ss
 
