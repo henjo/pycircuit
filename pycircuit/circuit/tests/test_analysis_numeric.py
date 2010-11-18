@@ -50,7 +50,7 @@ def test_noise_with_frequency_vector():
     c['R2'] = R( n2, gnd, r = 50.)
     
     noise = Noise(c, inputsrc='vs', outputnodes=(n2, gnd))
-    should = array([noise.solve(0)['Svnout'],noise.solve(1)['Svnout']])
-    res = noise.solve(array([0,1]))['Svnout']
-    assert_equal(res, should)
+    should = np.array([noise.solve(0)['Svnout'],noise.solve(1)['Svnout']])
+    res = noise.solve(np.array([0,1]))
+    assert_array_equal(res['Svnout'], should)
 

@@ -234,11 +234,17 @@ class TwoPortAnalysis(Analysis):
             ## For now just one frequency is allowed
             assert not isiterable(freqs)
             
-            G, C, u, x, ss = dc_steady_state(circuit, freqs, 
+            G, C, CY, u, x, ss = dc_steady_state(circuit, freqs, 
                                              refnode,
                                              toolkit,
                                              complexfreq = complexfreq,
                                              epar = self.epar)
+
+           ## Refer the voltages to the reference node by removing
+           ## the rows and columns that corresponds to this node
+            irefnode = self.cir.get_node_index(refnode)
+            G,C,CY,u = remove_row_col((G,C,CY,u), irefnode, toolkit)
+
             Y = C * ss + G
             detY =  toolkit.det(Y)
 
