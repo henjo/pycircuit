@@ -1,5 +1,4 @@
 import numeric
-import sympy
 from scipy import interpolate
 
 class TimeFunction(object):
