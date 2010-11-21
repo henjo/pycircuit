@@ -2,7 +2,7 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
-from numpy.testing import assert_array_almost_equal, assert_array_equal
+from numpy.testing import assert_equal, assert_array_almost_equal, assert_array_equal
 
 from pycircuit.utilities.misc import *
 
@@ -34,7 +34,42 @@ def test_inplace_add_selected():
 
     assert_array_equal(a, aref)
         
-    
+def test_ObserverSubject_init():
+    a = ObserverSubject()
+    assert_equal(a._observers,[])
 
+def test_ObserverSubject_attach():
+    a = ObserverSubject()
+    a.attach('APA')
+    assert_equal(a._observers,['APA'])
 
+def test_ObserverSubject_detach():
+    a = ObserverSubject()
+    a._observers = ['APA']
+    assert_equal(a._observers,['APA'])    
+    a.detach('APA')
+    assert_equal(a._observers,[])
+
+def test_ObserverSubject_attach_detach():
+    a = ObserverSubject()
+    a.attach('APA')
+    assert_equal(a._observers,['APA'])
+    a.detach('APA')
+    assert_equal(a._observers,[])
+
+def test_ObserverSubject_notify():
     
+    class objectWithUpdateMethod(object):
+        def __init__(self):
+            self.value = 'Not updated'
+
+        def update(self,input):
+            self.value = 'Updated'
+            
+    a = ObserverSubject()
+    b = objectWithUpdateMethod()
+    
+    a.attach(b)
+    a.notify()
+    
+    assert_equal(b.value,'Updated')
