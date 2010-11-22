@@ -13,7 +13,7 @@ def build_lna_degen_gm():
     c['Rs'] = R(1, gnd, r=Rs)
     c['vs'] = VS(2, 1, vac=Vs)
     c['vccs'] = VCCS(2, 4, 3, 4, gm=0.1)
-    c['Cgs'] = C(2, 4, c=1e-1)
+    c['Cgs'] = C(2, 4, c=1e-9)
     c['rl'] = R(3, gnd, r=200.)
     c['rd'] = R(4, gnd, r=10.)
     return c
@@ -44,23 +44,17 @@ def wave_conv(w1,w2):
 def solve_by_freq(w,c,vac=True):
     ac=AC(c)
     xvec=w.get_x()[0]
-    yvec=w.get_y()
     vc=array([])
     vout=array([])
     if vac:
         c['inl']=IS(3,4,iac=0.)
+        c['vs']=VS(2,1,vac=1.)
     else:
         c['vs']=VS(2,1,vac=0.)
-    for x,y in zip(xvec,yvec):
-        if vac:
-            c['vs']=VS(2,1,vac=y)
-        else:
-            c['inl']=IS(3,4,iac=y)
-        res=ac.solve(x)
-        vc=np.append(vc,res.v(2,4))
-        vout=np.append(vout,res.v(3))
-    wvc=Waveform(xvec,vc)
-    wvout=Waveform(xvec,vout)
+        c['inl']=IS(3,4,iac=1.)
+    res=ac.solve(xvec)
+    wvc=res.v(2,4)*w
+    wvout=res.v(3)*w
     return wvc,wvout
 
 def lna_volterra(w):
