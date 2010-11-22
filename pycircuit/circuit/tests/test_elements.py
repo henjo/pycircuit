@@ -104,7 +104,7 @@ def gen_stamps(toolkit=symbolic):
                              [-1,1,N,-N, 0]])
     yield(Transformer(1, gnd, 2, gnd, n = N), GTransformer, np.zeros((5,5)))
 
-    GGyrator = array([[  0.,  0.,  -gm,  gm],
+    GGyrator = np.array([[  0.,  0.,  -gm,  gm],
                       [  0.,  0.,   gm, -gm],
                       [  gm, -gm,   0.,  0.],
                       [ -gm,  gm,   0.,  0.]])
@@ -120,7 +120,7 @@ def gen_stamps_sources(toolkit=symbolic):
         phase = 30
 
     v = vac * toolkit.exp(1j * toolkit.pi * phase / 180.)
-    G = array([[0, 0, 1],
+    G = np.array([[0, 0, 1],
                [0, 0,-1],
                [1, -1, 0]])
     yield(VS(1,0,vac=vac, phase=phase), G, np.zeros((3,3)), toolkit.array([0,0,-v]))
