@@ -70,7 +70,6 @@ def test_print_netlist():
     subc = generate_testcircuit()
 
     netlist = subc.netlist()
-    print netlist
     
     refnetlist = \
 """.subckt MySubC p m
@@ -297,7 +296,6 @@ def test_proxy():
     
     cir = generate_testcircuit()
 
-    print CircuitProxy(cir['I1'], cir, 'I1').terminalhook
     cir['I1'] = CircuitProxy(cir['I1'], cir, 'I1')
     
     assert_equal(cir['I1'].terminals, refcir['I1'].terminals)
@@ -324,7 +322,7 @@ def test_parameter_propagation():
 
     a['R1'] = R(1,0, r=Parameter('x') + 10)
 
-    a.ipar.x = 20
+    a.ipar_expressions.x = 20
 
     assert_equal(a['R1'].ipar.r, 30)
     assert_equal(a['R1'].ipar.noisy, True)
@@ -333,7 +331,7 @@ def test_parameter_propagation():
     a['I1'] = A(x=Parameter('x'))
     a['I1']['R1'] = R(1,0, r=Parameter('x') + 20)
     
-    a.ipar.x = 30
+    a.ipar_expressions.x = 30
 
     assert_equal(a['R1'].ipar.r, 40)
     assert_equal(a['I1']['R1'].ipar.r, 50)
@@ -347,33 +345,29 @@ def test_parameter_propagation_at_instantiation():
 
     a = A()
 
-    a['R1'] = R(1,0, r=Parameter('resistance_value') + 10)
+    a['R1'] = R(1,0, r=Parameter(name='resistance_value') + 10)
 
     assert_equal(a['R1'].ipar.r, 30)
 
 def test_parameter_at_instantiation_with_add_instance ():
-    """Test instance parameter value propagation through hierarchy at instantiation"""
+    """Test instance parameter value instantiation with add_instance"""
     pycircuit.circuit.circuit.default_toolkit = symbolic
 
     a = SubCircuit()
 
-    a['R1'] = R(1,0, r=10)
+    a['R10'] = R(1,0, r=-100)
 
     # copy 'R1' resistor
-    res  = a['R1'].__copy__()
-    res2 = a['R1'].__copy__()
+    res  = copy(a['R10'])
 
     # change resistance value
-    res.ipar.set(r=30)
-    res2.ipar.set(r= 40)
+    res.ipar_expressions.set(r = 30)
+    assert_equal(res.ipar.get('r'),30)
 
     b = SubCircuit()
     # insert copied instance into circuit b
-    b.add_instance('R1',res,**{'plus':'plus','minus':'minus'})
-    b.add_instance('R2',res2,**{'plus':'plus','minus':'minus'})
-
-    assert_equal(b['R1'].ipar.r, 30)
-    assert_equal(b['R2'].ipar.r, 40)
+    b.add_instance('R30',res,**{'plus':'plus','minus':'minus'})
+    assert_equal(b['R30'].ipar.r, 30)
     
 def test_design_variables():
     a = SubCircuit(toolkit=symbolic)
