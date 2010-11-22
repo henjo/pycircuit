@@ -339,7 +339,7 @@ class Noise(SSAnalysis):
 
             xn2out = self.toolkit.dot(self.toolkit.dot(zm.reshape(1,self.toolkit.size(zm)), CY), self.toolkit.conj(zm))
 
-            ## Etract gain
+            ## Extract gain
             gain = None
             if isinstance(self.inputsrc, VS):
                 gain = self.cir.extract_i(zm, 
