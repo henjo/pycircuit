@@ -172,7 +172,9 @@ class ObserverSubject(object):
     def notify(self, modifier=None):
         for observer in self._observers:
             if modifier != observer:
-                observer.update(self)    
+                observer.update_ipar(self)    
+                if hasattr(observer,'update'):
+                    observer.update(self)
 
 class TempDir(object):
     def __init__(self, srcdir=None, keep=False):
