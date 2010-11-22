@@ -184,8 +184,10 @@ class Circuit(object):
         self.terminalhook = dict(zip(self.terminals, args))
 
         ## Subscribe to updates of instance parameters
-        if hasattr(self, 'update'):
-            self.ipar.attach(self)
+        self.ipar_expressions.attach(self)
+        ## update self.ipar
+        self.update_ipar(ParameterDict())
+        if hasattr(self,'update'):
             self.update(self.ipar)
 
     def __eq__(self, a):
@@ -194,17 +196,24 @@ class Circuit(object):
             self.nodenames == a.nodenames and self.branches == a.branches and \
             self.ipar == a.ipar
         
-    def __copy__(self):
+    def __copy__(self):        
         newc = self.__class__()
         newc.nodes = copy(self.nodes)    
         newc.nodenames = copy(self.nodenames)    
         newc.branches = copy(self.branches)    
         newc.instparams = copy(self.instparams)
-        newc.ipar = copy(self.ipar)
-        newc.linear = copy(self.linear)        
+        newc.ipar = self.ipar.copy()
+        for observer in newc.ipar_expressions._observers:
+            newc.ipar_expressions.detach(observer)
+        newc.ipar_expressions.attach(newc)
+        newc.update_ipar(newc.ipar)                    
+        if hasattr(newc, 'update'):
+            newc.update(newc.ipar)                  
+        newc.linear = self.linear        
         newc.toolkit = self.toolkit
         newc.terminals = copy(self.terminals)
         return newc
+
 
     def add_nodes(self, *names):
         """Create internal nodes in the circuit and return the new nodes
@@ -769,12 +778,25 @@ class SubCircuit(Circuit):
             self.term_node_map == a.term_node_map
 
     def __copy__(self):
-        newc = super(SubCircuit, self).__copy__()        
+        newc = super(SubCircuit, self).__copy__()
         newc.elements = copy(self.elements)
         newc.elementnodemap = copy(self.elementnodemap)
         newc.term_node_map = copy(self.term_node_map)
         newc._rep_nodemap_list = copy(self._rep_nodemap_list)
         
+        return newc
+
+    def __deepcopy__(self, memo):
+        newc = super(SubCircuit, self).__copy__()
+        for key in self.elements.keys():
+            if self.elements[key].__class__.__name__ == 'SubCircuit':
+                self.elements[key] = deepcopy(self.elements[key],memo)
+            else:
+                self.elements[key] = copy(self.elements[key])
+        newc.elementnodemap = copy(self.elementnodemap)
+        newc.term_node_map = copy(self.term_node_map)
+        newc._rep_nodemap_list = copy(self._rep_nodemap_list)
+
         return newc
 
     def netlist(self, top = True):
@@ -784,7 +806,7 @@ class SubCircuit(Circuit):
         >>> a['R1'] = R(1,2)
         >>> print a.netlist()
         R1 1 2 R r=1000.0 noisy=True
-    
+
         """
         out = []
 
@@ -868,9 +890,9 @@ class SubCircuit(Circuit):
 
         ## Update circuit node - instance map
         self.update_node_map()
-
+        
         ## update ipar
-        self.update(self.ipar)
+        self.update_ipar(ParameterDict())
 
     def __setitem__(self, instancename, element):
         """Adds an instance to the circuit"""
@@ -1150,10 +1172,10 @@ class SubCircuit(Circuit):
                                  linearized = linearized, xdcop = xdcop)
         
     def update(self, subject):
-        """This is called when an instance parameter is updated"""
-        for element in self.elements.values():
-            element.update_ipar(self.ipar)
-        
+        """This is called when an instance parameter is updated"""        
+        # update own ipar
+        self.update_ipar(ParameterDict())
+ 
     def _add_element_submatrices(self, methodname, x, args):
         dot = self.toolkit.dot
         n = self.n
