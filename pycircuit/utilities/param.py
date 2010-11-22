@@ -72,9 +72,9 @@ class ParameterDict(misc.ObserverSubject):
 
     def copy(self, *parameters, **kvargs):
         newpd = ParameterDict()
-        newpd._values = copy.deepcopy(self._values)
-        newpd._parameters = copy.deepcopy(self._parameters)
-        newpd._paramnames = copy.deepcopy(self._paramnames)
+        newpd._values = copy.copy(self._values)
+        newpd._parameters = copy.copy(self._parameters)
+        newpd._paramnames = copy.copy(self._paramnames)
         newpd.append(*parameters)
         newpd.set(**kvargs)
 
@@ -111,7 +111,7 @@ class ParameterDict(misc.ObserverSubject):
             if substdict[key] != None:
                 new_substdict[key] = substdict[key] 
         substdict = new_substdict 
-
+            
         for param, expr in self.items():
             if expr != None:
                 try:
@@ -119,6 +119,7 @@ class ParameterDict(misc.ObserverSubject):
                 except AttributeError:
                     value = expr
                 setattr(out, param, value)
+
         return out
     
     def items(self):
