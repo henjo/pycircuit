@@ -351,6 +351,29 @@ def test_parameter_propagation_at_instantiation():
 
     assert_equal(a['R1'].ipar.r, 30)
 
+def test_parameter_at_instantiation_with_add_instance ():
+    """Test instance parameter value propagation through hierarchy at instantiation"""
+    pycircuit.circuit.circuit.default_toolkit = symbolic
+
+    a = SubCircuit()
+
+    a['R1'] = R(1,0, r=10)
+
+    # copy 'R1' resistor
+    res  = a['R1'].__copy__()
+    res2 = a['R1'].__copy__()
+
+    # change resistance value
+    res.ipar.set(r=30)
+    res2.ipar.set(r= 40)
+
+    b = SubCircuit()
+    # insert copied instance into circuit b
+    b.add_instance('R1',res,**{'plus':'plus','minus':'minus'})
+    b.add_instance('R2',res2,**{'plus':'plus','minus':'minus'})
+
+    assert_equal(b['R1'].ipar.r, 30)
+    assert_equal(b['R2'].ipar.r, 40)
     
 def test_design_variables():
     a = SubCircuit(toolkit=symbolic)

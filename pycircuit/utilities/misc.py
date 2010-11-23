@@ -165,14 +165,14 @@ class ObserverSubject(object):
 
     def detach(self, observer):
         try:
-            self._observer.remove(observer)
+            self._observers.remove(observer)
         except ValueError:
             pass
 
     def notify(self, modifier=None):
         for observer in self._observers:
             if modifier != observer:
-                observer.update(self)
+                observer.update(self)    
 
 class TempDir(object):
     def __init__(self, srcdir=None, keep=False):
