@@ -188,6 +188,11 @@ def test_parameter_dict_symbolic():
     assert_equal(pdict_values.gm, 10)
     print pdict_ab.b
     assert_equal(pdict_values.gds, 9)
+
+    ## Try to use parameter not defined in pdict_ab
+    pdict_expr.gm = 2*a + b + Parameter('c')
+
+    assert_raises(EvalError, lambda: pdict_expr.eval_expressions(pdict_ab))
     
 def test_update_parameterdict():
     paramdict1 = ParameterDict()

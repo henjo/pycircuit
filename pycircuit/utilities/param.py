@@ -32,6 +32,8 @@ class Parameter(sympy.Symbol):
              if getattr(self,k)]
         return self.__class__.__name__ + '(' + ', '.join(args) + ')'
 
+class EvalError(Exception): pass
+
 class ParameterDict(misc.ObserverSubject):
     def __init__(self, *parameters, **kvargs):
         super(ParameterDict, self).__init__()
@@ -53,7 +55,7 @@ class ParameterDict(misc.ObserverSubject):
             else:
                 self._values[param.name] = param.default
 
-        self.notify()
+        self.notify([param.name for param in parameters])
                 
     def set(self, **kvargs):
         for k,v in kvargs.items():
@@ -61,7 +63,7 @@ class ParameterDict(misc.ObserverSubject):
                 raise KeyError('parameter %s not in parameter dictionary'%k )
             self._values[k] = v
             
-        self.notify()
+        self.notify(kvargs.keys())
 
     def get(self, param):
         """Get value by parameter object or parameter name"""
@@ -89,7 +91,7 @@ class ParameterDict(misc.ObserverSubject):
         The *values* argument is a ParameterDict or a sequence of 
         (Parameter class, ParameterDict) tuples. This allows for doing 
         substutions of different kind of Parameters using different 
-        paramter dictionaries. The order sets the priority.
+        parameter dictionaries. The order sets the priority.
 
         """
         out = ParameterDict(*self.parameters)
@@ -107,6 +109,11 @@ class ParameterDict(misc.ObserverSubject):
 
         for param, expr in self.items():
             if expr != None:
+                ## Check if symbols of expression are all in substdict
+                if not expr.atoms(Parameter) <= set(substdict.keys()):
+                    msg = "Can't evaluate %s (%s)" % (param, str(expr))
+                    raise EvalError(msg)
+                    
                 try:
                     value = expr.subs(substdict)
                 except AttributeError:
@@ -145,7 +152,7 @@ class ParameterDict(misc.ObserverSubject):
     def __setattr__(self, key, value):
         if hasattr(self, '_parameters') and key in self._parameters:
             self._values[key] = value
-            self.notify()
+            self.notify(args=(key,))
         else:
             self.__dict__[key] = value
     
