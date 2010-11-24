@@ -105,13 +105,6 @@ class ParameterDict(misc.ObserverSubject):
                 for param in paramdict.parameters:
                     substdict[param] = getattr(paramdict, param.name)
 
-        ## Filter away substitutions with parameter value None
-        new_substdict = {}        
-        for key in substdict:
-            if substdict[key] != None:
-                new_substdict[key] = substdict[key] 
-        substdict = new_substdict 
-            
         for param, expr in self.items():
             if expr != None:
                 try:
