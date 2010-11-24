@@ -157,22 +157,24 @@ class ObserverSubject(object):
     """Subject class in the observer design pattern"""
     def __init__(self):
         self._observers = []
-
-    def attach(self, observer):
+        
+    def attach(self, observer, updatemethod='update'):
         """Attach observer that will be notified when an item changes"""
         if not observer in self._observers:
-            self._observers.append(observer)
+            self._observers.append((observer, updatemethod))
 
-    def detach(self, observer):
+    def detach(self, observer, updatemethod='update'):
         try:
-            self._observers.remove(observer)
+            self._observers.remove((observer, updatemethod))
         except ValueError:
             pass
 
-    def notify(self, modifier=None):
-        for observer in self._observers:
+    def notify(self, modifier=None, args=None):
+        for observer, updatemethodname in self._observers:
             if modifier != observer:
-                observer.update(self)    
+                updatemethod = getattr(observer, updatemethodname)
+                updatemethod(self, args)
+
 
 class TempDir(object):
     def __init__(self, srcdir=None, keep=False):

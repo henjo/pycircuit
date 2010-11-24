@@ -38,38 +38,48 @@ def test_ObserverSubject_init():
     a = ObserverSubject()
     assert_equal(a._observers,[])
 
-def test_ObserverSubject_attach():
-    a = ObserverSubject()
-    a.attach('APA')
-    assert_equal(a._observers,['APA'])
-
-def test_ObserverSubject_detach():
-    a = ObserverSubject()
-    a._observers = ['APA']
-    assert_equal(a._observers,['APA'])    
-    a.detach('APA')
-    assert_equal(a._observers,[])
-
-def test_ObserverSubject_attach_detach():
-    a = ObserverSubject()
-    a.attach('APA')
-    assert_equal(a._observers,['APA'])
-    a.detach('APA')
-    assert_equal(a._observers,[])
-
 def test_ObserverSubject_notify():
     
+    class MySubject(ObserverSubject):
+        def hitme(self):
+            self.notify(args=10)
+
     class objectWithUpdateMethod(object):
         def __init__(self):
-            self.value = 'Not updated'
+            self.reset()
 
-        def update(self,input):
-            self.value = 'Updated'
+        def reset(self):
+            self.value = None
+            self.value1 = None
             
-    a = ObserverSubject()
+        def update(self, subject, args):
+            self.value = ('update', subject, args)
+
+        def update1(self, subject, args):
+            self.value1 = ('update1', subject, args)
+            
+    a = MySubject()
     b = objectWithUpdateMethod()
     
     a.attach(b)
-    a.notify()
+    a.attach(b, 'update1')
+
+    a.hitme()
     
-    assert_equal(b.value,'Updated')
+    assert_equal(b.value, ('update', a, 10))
+    assert_equal(b.value1, ('update1', a, 10))
+
+    b.reset()
+
+    # Test detach
+    a.detach(b, 'update')
+    a.hitme()
+
+    assert_equal(b.value, None)
+    assert_equal(b.value1, ('update1', a, 10))
+
+    a.detach(b, 'update1')
+    a.hitme()
+
+    assert_equal(b.value, None)
+    assert_equal(b.value1, ('update1', a, 10))
