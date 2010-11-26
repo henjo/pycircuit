@@ -82,45 +82,57 @@ class ParameterDict(misc.ObserverSubject):
 
         return newpd
 
-    def eval_expressions(self, values):
+    def eval_expressions(self, values, update_only=None):
         """Evaluate expressions using parameter values from other ParameterDicts
         
         The function performs substitution of symbolic expressions using
-        parameter values from other ParameterDict objects.
+        parameter values from other ParameterDict objects and returns
+        a new ParameterDict with the evaluated expressions
 
-        The *values* argument is a ParameterDict or a sequence of 
-        (Parameter class, ParameterDict) tuples. This allows for doing 
-        substutions of different kind of Parameters using different 
-        parameter dictionaries. The order sets the priority.
+        The *values* argument is a sequence of ParameterDict objects
+        This allows for doing substutions from different parameter dictionaries. 
+        The order sets the priority. First element has lowest priority.
+
+        The *update_only* argument is a sequence of parameter names to update.
+        If the value is None, all parameters will be updated.
 
         """
         out = ParameterDict(*self.parameters)
 
-        ## Change values argument form to dictionary if needed
-        if isinstance(values, ParameterDict):
-            values = ((Parameter, values),)
-        
         ## Create a substition dictionary
         substdict = {}
-        for paramclass, paramdict in values:
+        for paramdict in values:
             if paramdict != None:
                 for param in paramdict.parameters:
                     substdict[param] = getattr(paramdict, param.name)
 
-        for param, expr in self.items():
+        if update_only:
+            paramnames = update_only
+        else:
+            paramnames = self.keys()
+
+        updated_values = {}
+        for paramname in paramnames:
+            expr = self.get(paramname)
+
             if expr != None:
                 ## Check if symbols of expression are all in substdict
-                if not expr.atoms(Parameter) <= set(substdict.keys()):
-                    msg = "Can't evaluate %s (%s)" % (param, str(expr))
+                if hasattr(expr, 'atoms') and not expr.atoms(Parameter) <= set(substdict.keys()):
+                    msg = "Can't evaluate %s (%s)" % (paramname, str(expr))
                     raise EvalError(msg)
                     
                 try:
-                    value = expr.subs(substdict)
-                except AttributeError:
-                    value = expr
-                setattr(out, param, value)
+                    print paramname, expr, substdict
+                    setattr(out, paramname, expr.subs(substdict))
+                except:
+                    pass
+                else:
+                    print "result=", expr.subs(substdict)
 
         return out
+
+    def keys(self):
+        return [param.name for param in self.parameters]
     
     def items(self):
         return [(param.name, getattr(self, param.name)) 

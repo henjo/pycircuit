@@ -173,7 +173,7 @@ class ObserverSubject(object):
         for observer, updatemethodname in self._observers:
             if modifier != observer:
                 updatemethod = getattr(observer, updatemethodname)
-                updatemethod(self, args)
+                updatemethod(self)
 
 
 class TempDir(object):

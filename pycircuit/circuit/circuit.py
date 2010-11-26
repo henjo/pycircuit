@@ -3,7 +3,7 @@
 # See LICENSE for details.
 
 from pycircuit.sim import Variable
-from pycircuit.utilities.param import Parameter, ParameterDict
+from pycircuit.utilities.param import Parameter, ParameterDict, EvalError
 from pycircuit.utilities.misc import indent, inplace_add_selected, \
     inplace_add_selected_2d, create_index_vectors
 from constants import *
@@ -168,13 +168,6 @@ class Circuit(object):
             self.toolkit = default_toolkit
 
         self.nodenames = {}
-        self.ipar = ParameterDict(*self.instparams, **kvargs)
-        
-        ## Set up ipar expressions
-        self.ipar_expressions = ParameterDict(*self.instparams, **kvargs)
-        for par in self.instparams:
-            if par.name not in kvargs:
-                setattr(self.ipar_expressions, par.name, None)
 
         ## Add terminal nodes
         self.add_terminals(self.terminals)
@@ -183,16 +176,25 @@ class Circuit(object):
         ## method in higher hierarchy
         self.terminalhook = dict(zip(self.terminals, args))
 
+        ## Create instance parameters
+        self.iparv = ParameterDict(*self.instparams)
+        self.ipar = ParameterDict(*self.instparams)
+
+        ## Arrange updating of iparv when ipar changes are detected
+        ## and set instance parameters from arguments
+        self.ipar.attach(self, updatemethod='_ipar_updated')
+        self.ipar.set(**kvargs)
+        
         ## Subscribe to updates of instance parameters
         if hasattr(self, 'update'):
-            self.ipar.attach(self)
+            self.iparv.attach(self)
             self.update(self.ipar)
 
     def __eq__(self, a):
         return self.__class__ == a.__class__ and \
             self.nodes == a.nodes and \
             self.nodenames == a.nodenames and self.branches == a.branches and \
-            self.ipar == a.ipar
+            self.iparv == a.iparv
         
     def __copy__(self):
         newc = self.__class__()
@@ -200,11 +202,17 @@ class Circuit(object):
         newc.nodenames = copy(self.nodenames)    
         newc.branches = copy(self.branches)    
         newc.instparams = copy(self.instparams)
-        newc.ipar = copy(self.ipar)
+        newc.iparv = copy(self.iparv)
         newc.linear = copy(self.linear)        
         newc.toolkit = self.toolkit
         newc.terminals = copy(self.terminals)
         return newc
+
+    def _ipar_updated(self, subject):
+        try:
+            self.update_iparv(None)
+        except EvalError:
+            pass
 
     def add_nodes(self, *names):
         """Create internal nodes in the circuit and return the new nodes
@@ -689,12 +697,15 @@ class Circuit(object):
 
         return sign * x[branchindex]      
 
-    def update_ipar(self, parent_ipar, variables=None):
+    def update_iparv(self, parent_ipar=None, globalparams=None):
         """Calculate numeric values of instance parameters"""
-        substvalues = ((Variable, variables),
-                       (Parameter, parent_ipar))
-        newipar = self.ipar_expressions.eval_expressions(substvalues)
-        self.ipar.update(newipar)
+        
+        substvalues = tuple(p for p in (globalparams, parent_ipar) if p)
+            
+        newipar = self.ipar.eval_expressions(substvalues)
+
+        print "newipar:", newipar.items()
+        self.iparv.update(newipar)
 
     def __repr__(self):
         return self.__class__.__name__ + \
@@ -869,8 +880,8 @@ class SubCircuit(Circuit):
         ## Update circuit node - instance map
         self.update_node_map()
 
-        ## update ipar
-        self.update(self.ipar)
+        ## update iparv
+        self.update_iparv(self.iparv)
 
     def __setitem__(self, instancename, element):
         """Adds an instance to the circuit"""
@@ -1056,13 +1067,13 @@ class SubCircuit(Circuit):
             else:
                 self._nodemap = None
 
-    def update_ipar(self, parent_ipar, variables=None):
+    def update_iparv(self, parent_ipar, globalparams=None):
         """Calculate numeric values of instance parameters"""
-        super(SubCircuit, self).update_ipar(parent_ipar, variables)
+        super(SubCircuit, self).update_iparv(parent_ipar, globalparams)
         
         ## Update ipar in elements
         for element in self.elements.values():
-            element.update_ipar(self.ipar, variables)
+            element.update_iparv(self.ipar, globalparams)
         
     def G(self, x, epar=defaultepar):
         return self._add_element_submatrices('G', x, (epar,))
@@ -1152,7 +1163,10 @@ class SubCircuit(Circuit):
     def update(self, subject):
         """This is called when an instance parameter is updated"""
         for element in self.elements.values():
-            element.update_ipar(self.ipar)
+            try:
+                element.update_iparv(self.ipar)
+            except EvalError:
+                pass
         
     def _add_element_submatrices(self, methodname, x, args):
         dot = self.toolkit.dot
@@ -1258,7 +1272,7 @@ class CircuitProxy(Circuit):
         self.nodes = circuit.nodes
         self.nodenames = circuit.nodenames
         self.branches = circuit.branches
-        self.ipar = circuit.ipar
+        self.iparv = circuit.iparv
         
         ## Find out how this instance was connected to its parent
         ## and set terminalhook accordingly
