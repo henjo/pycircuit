@@ -327,7 +327,7 @@ def test_parameter_propagation():
     a.ipar.x = 20
 
     assert_equal(a['R1'].iparv.r, 30)
-    assert_equal(a['R1'].ipar.noisy, True)
+    assert_equal(a['R1'].iparv.noisy, True)
 
     ## test 2 levels of hierarchy
     a['I1'] = A(x=Parameter('x'))
@@ -387,7 +387,7 @@ def test_design_variables():
 
     a.update_iparv(ipars, variables)
 
-    assert_equal(a['R1'].ipar.r, 30)
+    assert_equal(a['R1'].iparv.r, 30)
 
 def test_replace_element():
     """Test node list consitency when replacing an element"""
