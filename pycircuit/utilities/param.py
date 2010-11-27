@@ -82,7 +82,7 @@ class ParameterDict(misc.ObserverSubject):
 
         return newpd
 
-    def eval_expressions(self, values, update_only=None):
+    def eval_expressions(self, values, parameters=None, ignore_errors=False):
         """Evaluate expressions using parameter values from other ParameterDicts
         
         The function performs substitution of symbolic expressions using
@@ -93,7 +93,7 @@ class ParameterDict(misc.ObserverSubject):
         This allows for doing substutions from different parameter dictionaries. 
         The order sets the priority. First element has lowest priority.
 
-        The *update_only* argument is a sequence of parameter names to update.
+        The *parameters* argument is a sequence of parameter names to update.
         If the value is None, all parameters will be updated.
 
         """
@@ -104,30 +104,27 @@ class ParameterDict(misc.ObserverSubject):
         for paramdict in values:
             if paramdict != None:
                 for param in paramdict.parameters:
-                    substdict[param] = getattr(paramdict, param.name)
+                    substdict[param.name] = paramdict.get(param)
 
-        if update_only:
-            paramnames = update_only
-        else:
-            paramnames = self.keys()
+        if parameters == None:
+            parameters = self.keys()
 
         updated_values = {}
-        for paramname in paramnames:
+        for paramname in parameters:
             expr = self.get(paramname)
 
             if expr != None:
-                ## Check if symbols of expression are all in substdict
-                if hasattr(expr, 'atoms') and not expr.atoms(Parameter) <= set(substdict.keys()):
-                    msg = "Can't evaluate %s (%s)" % (paramname, str(expr))
-                    raise EvalError(msg)
-                    
                 try:
-                    print paramname, expr, substdict
-                    setattr(out, paramname, expr.subs(substdict))
+                    if isinstance(expr, str):
+                        value = eval(expr, substdict)
+                    else:
+                        value = expr
                 except:
-                    pass
+                    if not ignore_errors:
+                        msg = "Can't evaluate %s (%s)" % (paramname, expr)
+                        raise EvalError(msg)
                 else:
-                    print "result=", expr.subs(substdict)
+                    setattr(out, paramname, value)
 
         return out
 

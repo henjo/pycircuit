@@ -2,7 +2,6 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
-from pycircuit.sim import Variable
 from pycircuit.utilities.param import Parameter, ParameterDict, EvalError
 from pycircuit.utilities.misc import indent, inplace_add_selected, \
     inplace_add_selected_2d, create_index_vectors
@@ -180,9 +179,10 @@ class Circuit(object):
         self.iparv = ParameterDict(*self.instparams)
         self.ipar = ParameterDict(*self.instparams)
 
-        ## Arrange updating of iparv when ipar changes are detected
-        ## and set instance parameters from arguments
-        self.ipar.attach(self, updatemethod='_ipar_updated')
+        ## Subscribe to changes on ipar 
+        self.ipar.attach(self, updatemethod='_ipar_changed')
+
+        ## set instance parameters from arguments
         self.ipar.set(**kvargs)
         
         ## Subscribe to updates of instance parameters
@@ -208,11 +208,8 @@ class Circuit(object):
         newc.terminals = copy(self.terminals)
         return newc
 
-    def _ipar_updated(self, subject):
-        try:
-            self.update_iparv(None)
-        except EvalError:
-            pass
+    def _ipar_changed(self, subject):
+        self.update_iparv(ignore_errors=True)
 
     def add_nodes(self, *names):
         """Create internal nodes in the circuit and return the new nodes
@@ -697,14 +694,15 @@ class Circuit(object):
 
         return sign * x[branchindex]      
 
-    def update_iparv(self, parent_ipar=None, globalparams=None):
+    def update_iparv(self, parent_ipar=None, globalparams=None,
+                     ignore_errors=False):
         """Calculate numeric values of instance parameters"""
         
         substvalues = tuple(p for p in (globalparams, parent_ipar) if p)
             
-        newipar = self.ipar.eval_expressions(substvalues)
+        newipar = self.ipar.eval_expressions(substvalues, 
+                                             ignore_errors=ignore_errors)
 
-        print "newipar:", newipar.items()
         self.iparv.update(newipar)
 
     def __repr__(self):
@@ -881,7 +879,7 @@ class SubCircuit(Circuit):
         self.update_node_map()
 
         ## update iparv
-        self.update_iparv(self.iparv)
+        self.update_iparv(self.iparv, ignore_errors=True)
 
     def __setitem__(self, instancename, element):
         """Adds an instance to the circuit"""
@@ -1067,13 +1065,16 @@ class SubCircuit(Circuit):
             else:
                 self._nodemap = None
 
-    def update_iparv(self, parent_ipar, globalparams=None):
+    def update_iparv(self, parent_ipar=None, globalparams=None, 
+                     ignore_errors = False):
         """Calculate numeric values of instance parameters"""
-        super(SubCircuit, self).update_iparv(parent_ipar, globalparams)
+        super(SubCircuit, self).update_iparv(parent_ipar, globalparams,
+                                             ignore_errors=ignore_errors)
         
         ## Update ipar in elements
         for element in self.elements.values():
-            element.update_iparv(self.ipar, globalparams)
+            element.update_iparv(self.iparv, globalparams,
+                                 ignore_errors=ignore_errors)
         
     def G(self, x, epar=defaultepar):
         return self._add_element_submatrices('G', x, (epar,))
@@ -1163,10 +1164,7 @@ class SubCircuit(Circuit):
     def update(self, subject):
         """This is called when an instance parameter is updated"""
         for element in self.elements.values():
-            try:
-                element.update_iparv(self.ipar)
-            except EvalError:
-                pass
+            element.update_iparv(self.iparv, ignore_errors=True)
         
     def _add_element_submatrices(self, methodname, x, args):
         dot = self.toolkit.dot
