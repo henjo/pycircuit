@@ -187,7 +187,6 @@ class Circuit(object):
         
         ## Subscribe to updates of instance parameters
         if hasattr(self, 'update'):
-            print "attaching self to iparv"
             self.iparv.attach(self)
             self.update(self.ipar)
 
@@ -705,7 +704,7 @@ class Circuit(object):
         newipar = self.ipar.eval_expressions(substvalues, 
                                              ignore_errors=ignore_errors)
 
-        self.iparv.set(**dict(newipar.items()))
+        self.iparv.update_values(newipar)
 
     def __repr__(self):
         return self.__class__.__name__ + \
