@@ -187,6 +187,7 @@ class Circuit(object):
         
         ## Subscribe to updates of instance parameters
         if hasattr(self, 'update'):
+            print "attaching self to iparv"
             self.iparv.attach(self)
             self.update(self.ipar)
 
@@ -202,7 +203,8 @@ class Circuit(object):
         newc.nodenames = copy(self.nodenames)    
         newc.branches = copy(self.branches)    
         newc.instparams = copy(self.instparams)
-        newc.iparv = copy(self.iparv)
+        newc.ipar = self.ipar.copy()
+        newc.iparv = self.iparv.copy()
         newc.linear = copy(self.linear)        
         newc.toolkit = self.toolkit
         newc.terminals = copy(self.terminals)
@@ -703,7 +705,7 @@ class Circuit(object):
         newipar = self.ipar.eval_expressions(substvalues, 
                                              ignore_errors=ignore_errors)
 
-        self.iparv.update(newipar)
+        self.iparv.set(**dict(newipar.items()))
 
     def __repr__(self):
         return self.__class__.__name__ + \
@@ -1070,7 +1072,7 @@ class SubCircuit(Circuit):
         """Calculate numeric values of instance parameters"""
         super(SubCircuit, self).update_iparv(parent_ipar, globalparams,
                                              ignore_errors=ignore_errors)
-        
+
         ## Update ipar in elements
         for element in self.elements.values():
             element.update_iparv(self.iparv, globalparams,
@@ -1163,6 +1165,7 @@ class SubCircuit(Circuit):
         
     def update(self, subject):
         """This is called when an instance parameter is updated"""
+        print "update!"
         for element in self.elements.values():
             element.update_iparv(self.iparv, ignore_errors=True)
         

@@ -135,11 +135,9 @@ class ParameterDict(misc.ObserverSubject):
         return [(param.name, getattr(self, param.name)) 
                 for param in self.parameters]
 
-    def update(self, d):
-        if isinstance(d, ParameterDict):
-            self.__dict__.update(d.__dict__)
-        else:
-            self.__dict__.update(d)            
+    def update_values(self, d):
+        """Update values from another paramdict"""
+        self.set(**d._values)
 
     def __getitem__(self, key):
         return self._parameters[key]
