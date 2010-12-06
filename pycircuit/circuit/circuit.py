@@ -880,7 +880,7 @@ class SubCircuit(Circuit):
         self.update_node_map()
 
         ## update iparv
-        self.update_iparv(self.iparv, ignore_errors=True)
+        instance.update_iparv(self.iparv, ignore_errors=True)
 
     def __setitem__(self, instancename, element):
         """Adds an instance to the circuit"""
