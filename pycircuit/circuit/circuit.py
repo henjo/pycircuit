@@ -1164,7 +1164,6 @@ class SubCircuit(Circuit):
         
     def update(self, subject):
         """This is called when an instance parameter is updated"""
-        print "update!"
         for element in self.elements.values():
             element.update_iparv(self.iparv, ignore_errors=True)
         
