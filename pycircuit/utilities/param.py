@@ -19,7 +19,7 @@ class Parameter(sympy.Symbol):
     def __hash__(self):
         return self.name.__hash__()
 
-    def copy(self):
+    def __copy__(self):
         return copy.copy(self)
 
     def __str__(self):
@@ -72,7 +72,7 @@ class ParameterDict(misc.ObserverSubject):
         else:
             return self._values[param]
 
-    def copy(self, *parameters, **kvargs):
+    def __copy__(self, *parameters, **kvargs):
         newpd = ParameterDict()
         newpd._values = copy.copy(self._values)
         newpd._parameters = copy.copy(self._parameters)
