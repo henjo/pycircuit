@@ -37,8 +37,8 @@ def TODOtest_noise_dc_steady_state():
     pass
 
 def test_noise_with_frequency_vector():
-    """Test that it is possible to specify frequency as an array
-    
+    """Test that noise analysis support an array as input argument for frequency
+
     """
     pycircuit.circuit.circuit.default_toolkit = numeric
     c = SubCircuit(toolkit=numeric)
