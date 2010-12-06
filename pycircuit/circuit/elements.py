@@ -33,15 +33,15 @@ class R(Circuit):
                   ]
 
     def update(self, subject):
-        g = 1/self.ipar.r
+        g = 1/self.iparv.r
         self._G = self.toolkit.array([[g, -g],
                                       [-g, g]])
 
     def G(self, x, epar=defaultepar): return self._G
 
     def CY(self, x, w, epar=defaultepar):
-        if self.ipar.noisy:
-            iPSD = 4 * self.toolkit.kboltzmann * epar.T / self.ipar.r
+        if self.iparv.noisy:
+            iPSD = 4 * self.toolkit.kboltzmann * epar.T / self.iparv.r
         else:
             iPSD = 0
 
@@ -69,15 +69,15 @@ class G(Circuit):
                   ]
 
     def update(self, subject):
-        g = self.ipar.g
+        g = self.iparv.g
         self._G = self.toolkit.array([[g, -g],
                                       [-g, g]])
 
     def G(self, x, epar=defaultepar): return self._G
 
     def CY(self, x, w, epar=defaultepar):
-        if not self.ipar.nonoise:
-            iPSD = 4*self.toolkit.kboltzmann * epar.T*self.ipar.g
+        if not self.iparv.nonoise:
+            iPSD = 4*self.toolkit.kboltzmann * epar.T*self.iparv.g
             return  self.toolkit.array([[iPSD, -iPSD],
                                         [-iPSD, iPSD]])
         else:
@@ -104,7 +104,7 @@ class C(Circuit):
                             unit='F', default=1e-12)]
 
     def update(self, subject):
-        c = self.ipar.c
+        c = self.iparv.c
         self._C =  self.toolkit.array([[c, -c],
                                        [-c, c]])
 
@@ -140,7 +140,7 @@ class L(Circuit):
     def update(self, subject):
         n = self.n
         C = self.toolkit.zeros((n,n))
-        C[-1,-1] = -self.ipar.L
+        C[-1,-1] = -self.iparv.L
         self._C = C
 
     def G(self, x, epar=defaultepar): return self._G
@@ -180,18 +180,18 @@ class VS(Circuit):
 
     def u(self, t=0.0, epar=defaultepar, analysis=None):
         if analysis == 'ac':
-            phase = self.ipar.phase * self.toolkit.pi / 180.
-            vac = self.ipar.vac * self.toolkit.exp(1j*phase)
+            phase = self.iparv.phase * self.toolkit.pi / 180.
+            vac = self.iparv.vac * self.toolkit.exp(1j*phase)
             return self.toolkit.array([0, 0, -vac])
         elif analysis in timedomain_analyses:
-            v = self.ipar.v + self.function.f(t)
+            v = self.iparv.v + self.function.f(t)
             return self.toolkit.array([0, 0, -v])
         else:
             return self.toolkit.array([0, 0, 0])
 
     def CY(self, x, w, epar=defaultepar):
         CY = super(VS, self).CY(x, w)
-        CY[2, 2] = self.ipar.noisePSD
+        CY[2, 2] = self.iparv.noisePSD
         return CY
 
     @property
@@ -219,12 +219,12 @@ class VSin(VS):
                   unit='deg', default=0)]
     def __init__(self, *args, **kvargs):
         super(VSin, self).__init__(*args, **kvargs)
-        self.function = func.Sin(self.ipar.vo,
-                                 self.ipar.va,
-                                 self.ipar.freq,
-                                 self.ipar.td,
-                                 self.ipar.theta,
-                                 self.ipar.phase,
+        self.function = func.Sin(self.iparv.vo,
+                                 self.iparv.va,
+                                 self.iparv.freq,
+                                 self.iparv.td,
+                                 self.iparv.theta,
+                                 self.iparv.phase,
                                  toolkit = self.toolkit
                                  )
 
@@ -252,16 +252,16 @@ class IS(Circuit):
 
     def u(self, t=0.0, epar=defaultepar, analysis=None):
         if analysis == 'ac':
-            return self.toolkit.array([self.ipar.iac, -self.ipar.iac])
+            return self.toolkit.array([self.iparv.iac, -self.iparv.iac])
         elif analysis in timedomain_analyses:
-            i = self.ipar.i + self.function.f(t)
+            i = self.iparv.i + self.function.f(t)
             return self.toolkit.array([i, -i])
         else:
             return self.toolkit.array([0, 0])
 
     def CY(self, x, w, epar=defaultepar):
-        return  self.toolkit.array([[self.ipar.noisePSD, -self.ipar.noisePSD],
-                                    [-self.ipar.noisePSD, self.ipar.noisePSD]])
+        return  self.toolkit.array([[self.iparv.noisePSD, -self.iparv.noisePSD],
+                                    [-self.iparv.noisePSD, self.iparv.noisePSD]])
 
 class ISin(IS):
     """ Independent sinus current source
@@ -283,12 +283,12 @@ class ISin(IS):
                   unit='deg', default=0)]
     def __init__(self, *args, **kvargs):
         super(ISin, self).__init__(*args, **kvargs)
-        self.function = func.Sin(self.ipar.io,
-                                 self.ipar.ia,
-                                 self.ipar.freq,
-                                 self.ipar.td,
-                                 self.ipar.theta,
-                                 self.ipar.phase,
+        self.function = func.Sin(self.iparv.io,
+                                 self.iparv.ia,
+                                 self.iparv.freq,
+                                 self.iparv.td,
+                                 self.iparv.theta,
+                                 self.iparv.phase,
                                  toolkit = self.toolkit
                                  )
 
@@ -314,13 +314,13 @@ class VPulse(VS):
 
     def __init__(self, *args, **kvargs):
         super(VPulse, self).__init__(*args, **kvargs)
-        self.function = func.Pulse(self.ipar.v1,
-                                   self.ipar.v2,
-                                   self.ipar.td,
-                                   self.ipar.tr,
-                                   self.ipar.tf,
-                                   self.ipar.pw,
-                                   self.ipar.per,
+        self.function = func.Pulse(self.iparv.v1,
+                                   self.iparv.v2,
+                                   self.iparv.td,
+                                   self.iparv.tr,
+                                   self.iparv.tf,
+                                   self.iparv.pw,
+                                   self.iparv.per,
                                    toolkit = self.toolkit
                                  )
 
@@ -364,8 +364,8 @@ class VCVS(Circuit):
         G[outnindex, branchindex] += -1
         G[branchindex, outpindex] += -1
         G[branchindex, outnindex] += 1
-        G[branchindex, inpindex] += self.ipar.g
-        G[branchindex, innindex] += -self.ipar.g                       
+        G[branchindex, inpindex] += self.iparv.g
+        G[branchindex, innindex] += -self.iparv.g                       
         self._G = G
 
     def G(self, x, epar=defaultepar): return self._G
@@ -412,27 +412,27 @@ class SVCVS(Circuit):
         self.wait_with_update = False
         super(SVCVS, self).__init__(*args, **kvargs)
 
-        if self.ipar.numerator or self.ipar.denominator:
+        if self.iparv.numerator or self.iparv.denominator:
             self.first_state_node = len(self.nodes) # store number of nodes/states in inital G and C matrix
-            if self.ipar.denominator == None:
-                self.ipar.denominator = [0]*len(self.ipar.numerator)+[1]
-            if self.ipar.numerator == None: # Add DC term to numerator if it is not defined
-                if len(self.ipar.denominator) < 3:
-                    self.ipar.numerator = 1
+            if self.iparv.denominator == None:
+                self.iparv.denominator = [0]*len(self.iparv.numerator)+[1]
+            if self.iparv.numerator == None: # Add DC term to numerator if it is not defined
+                if len(self.iparv.denominator) < 3:
+                    self.iparv.numerator = 1
                 else:
-                    self.ipar.numerator = [0]*len(self.ipar.denominator[:-2])+[1]
-            if len(self.ipar.numerator) < len(self.ipar.denominator[:-1]):
-                self.ipar.numerator = [0]*(len(self.ipar.denominator[:-1])-len(self.ipar.numerator))+self.ipar.numerator
-            if not(len(self.ipar.numerator) < len(self.ipar.denominator)): # make sure the transfer function is stictly proper. Is this relly neccessary?
-                raise Exception("Number of numerator coefficients, %s, must be at least on fewer than the number of denominator coefficients length, %s, should be string"%str(len(self.ipar.numerator))%str(len(self.ipar.denominator)))
-            self.den = self.toolkit.array(self.ipar.denominator) / self.toolkit.array(self.ipar.denominator[0])
+                    self.iparv.numerator = [0]*len(self.iparv.denominator[:-2])+[1]
+            if len(self.iparv.numerator) < len(self.iparv.denominator[:-1]):
+                self.iparv.numerator = [0]*(len(self.iparv.denominator[:-1])-len(self.iparv.numerator))+self.iparv.numerator
+            if not(len(self.iparv.numerator) < len(self.iparv.denominator)): # make sure the transfer function is stictly proper. Is this relly neccessary?
+                raise Exception("Number of numerator coefficients, %s, must be at least on fewer than the number of denominator coefficients length, %s, should be string"%str(len(self.iparv.numerator))%str(len(self.iparv.denominator)))
+            self.den = self.toolkit.array(self.iparv.denominator) / self.toolkit.array(self.iparv.denominator[0])
             self.denlen = len(self.den) 
-            self.num = self.toolkit.array(self.ipar.numerator) / self.ipar.denominator[0]
+            self.num = self.toolkit.array(self.iparv.numerator) / self.iparv.denominator[0]
             self.numlen = len(self.num)
             newnodes = [Node("_a%d"%state) for state in range(self.denlen-1)]
             self.nodes.extend(newnodes)
         self.wait_with_update = True
-        self.update(self.ipar)
+        self.update(self.iparv)
 
                
     def update(self, subject):
@@ -447,8 +447,8 @@ class SVCVS(Circuit):
             G[outnindex, branchindex] += -1
             G[branchindex, outpindex] += -1
             G[branchindex, outnindex] += 1
-            if self.ipar.numerator or self.ipar.denominator:
-                if self.ipar.realisation == 'observable':
+            if self.iparv.numerator or self.iparv.denominator:
+                if self.iparv.realisation == 'observable':
                     # Observable canonical state space form
                     first = self.first_state_node
                     # Add denominator coefficiencts
@@ -460,8 +460,8 @@ class SVCVS(Circuit):
                         G[first:first+self.denlen-2, first+1:first+1+self.denlen-2] = \
                             self.toolkit.eye(self.denlen-2)                
                     # Input and numerator coefficients
-                    G[first:first+self.numlen, inpindex] = self.num*self.ipar.g
-                    G[first:first+self.numlen, innindex] = -self.num*self.ipar.g
+                    G[first:first+self.numlen, inpindex] = self.num*self.iparv.g
+                    G[first:first+self.numlen, innindex] = -self.num*self.iparv.g
                     # Output                
                     G[branchindex, first] = 1
                 else:
@@ -479,17 +479,17 @@ class SVCVS(Circuit):
                         G[first+1:first+1+self.denlen-2, first:first+self.denlen-2] = \
                             self.toolkit.eye(self.denlen-2)
                     # Input
-                    G[first, inpindex] = self.ipar.g
-                    G[first, innindex] = -self.ipar.g
+                    G[first, inpindex] = self.iparv.g
+                    G[first, innindex] = -self.iparv.g
                     # Output, all numerator coefficients        
                     G[branchindex, first:first+self.numlen] = self.num
             else:
-                G[branchindex, inpindex] += self.ipar.g
-                G[branchindex, innindex] += -self.ipar.g                       
+                G[branchindex, inpindex] += self.iparv.g
+                G[branchindex, innindex] += -self.iparv.g                       
             self._G = G
 
             C = self.toolkit.zeros((n,n))
-            if self.ipar.numerator or self.ipar.denominator:
+            if self.iparv.numerator or self.iparv.denominator:
                 first = self.first_state_node
                 C[first:first+self.denlen-1, first:first+self.denlen-1] = \
                     -1*self.toolkit.eye(self.denlen-1)
@@ -519,7 +519,7 @@ class VCCS(Circuit):
     def update(self, subject):
         n = self.n
         G = self.toolkit.zeros((n,n))
-        gm=self.ipar.gm
+        gm=self.iparv.gm
         inpindex, innindex, outpindex, outnindex = \
             (self.nodes.index(self.nodenames[name]) 
              for name in ('inp', 'inn', 'outp', 'outn'))
@@ -603,12 +603,12 @@ class Transformer(Circuit):
         inpindex, innindex, outpindex, outnindex = \
             (self.nodes.index(self.nodenames[name]) 
              for name in ('inp', 'inn', 'outp', 'outn'))
-        G[inpindex, branchindex] += self.ipar.n
-        G[innindex, branchindex] += -self.ipar.n
+        G[inpindex, branchindex] += self.iparv.n
+        G[innindex, branchindex] += -self.iparv.n
         G[outpindex, branchindex] += 1
         G[outnindex, branchindex] += -1
-        G[branchindex, outpindex] += self.ipar.n
-        G[branchindex, outnindex] += -self.ipar.n
+        G[branchindex, outpindex] += self.iparv.n
+        G[branchindex, outnindex] += -self.iparv.n
         G[branchindex, inpindex] += -1
         G[branchindex, innindex] += 1
         self._G = G
@@ -635,7 +635,7 @@ class Gyrator(Circuit):
     def update(self, subject):
         n = self.n
         G = self.toolkit.zeros((n,n))
-        gm=self.ipar.gm
+        gm=self.iparv.gm
         inpindex, innindex, outpindex, outnindex = \
             (self.nodes.index(self.nodenames[name]) 
              for name in ('inp', 'inn', 'outp', 'outn'))
@@ -664,7 +664,7 @@ class Diode(Circuit):
         VD = x[0]-x[1]
 
         VT = self.toolkit.kboltzmann * epar.T / self.toolkit.qelectron
-        g = self.ipar.IS * self.toolkit.exp(VD/VT) / VT
+        g = self.iparv.IS * self.toolkit.exp(VD/VT) / VT
         return self.toolkit.array([[g, -g],
                                    [-g, g]])
 
@@ -674,7 +674,7 @@ class Diode(Circuit):
         """
         VD = x[0]-x[1]
         VT = self.toolkit.kboltzmann * epar.T / self.toolkit.qelectron
-        I = self.ipar.IS * (self.toolkit.exp(VD/VT)-1)
+        I = self.iparv.IS * (self.toolkit.exp(VD/VT)-1)
         return self.toolkit.array([I, -I])
 
 class VCVS_limited(Circuit):
@@ -696,8 +696,8 @@ class VCVS_limited(Circuit):
 
     def __init__(self, *args, **kvargs):
         super( VCVS_limited, self).__init__(*args, **kvargs)
-        self.function = func.Tanh(self.ipar.offset,
-                                       self.ipar.level,
+        self.function = func.Tanh(self.iparv.offset,
+                                       self.iparv.level,
                                        toolkit = self.toolkit)                                       
     
     def G(self, x, epar=defaultepar):
@@ -712,8 +712,8 @@ class VCVS_limited(Circuit):
         G[outnindex,   branchindex] += -1
         G[branchindex, outpindex]   += -1
         G[branchindex, outnindex]   +=  1
-        G[branchindex, inpindex]    +=  g_limit*self.ipar.g
-        G[branchindex, innindex]    += -g_limit*self.ipar.g
+        G[branchindex, inpindex]    +=  g_limit*self.iparv.g
+        G[branchindex, innindex]    += -g_limit*self.iparv.g
         return G
 
     def i(self, x, epar=defaultepar):
