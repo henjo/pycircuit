@@ -202,8 +202,8 @@ class Circuit(object):
         newc.nodenames = copy(self.nodenames)    
         newc.branches = copy(self.branches)    
         newc.instparams = copy(self.instparams)
-        newc.ipar = self.ipar.copy()
-        newc.iparv = self.iparv.copy()
+        newc.ipar = copy(self.ipar)
+        newc.iparv = copy(self.iparv)
         newc.linear = copy(self.linear)        
         newc.toolkit = self.toolkit
         newc.terminals = copy(self.terminals)
@@ -780,11 +780,15 @@ class SubCircuit(Circuit):
 
     def __copy__(self):
         newc = super(SubCircuit, self).__copy__()        
-        newc.elements = copy(self.elements)
+        newc.elements = {}
+        for instance_name, element in self.elements.items():
+            newc.elements[instance_name] = copy(self.elements[instance_name])
         newc.elementnodemap = copy(self.elementnodemap)
         newc.term_node_map = copy(self.term_node_map)
         newc._rep_nodemap_list = copy(self._rep_nodemap_list)
         
+        newc.update_node_map()
+
         return newc
 
     def netlist(self, top = True):
