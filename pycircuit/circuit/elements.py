@@ -395,10 +395,10 @@ class SVCVS(Circuit):
     """
     instparams = [Parameter(name='numerator', 
                             desc='Numerator coefficients of laplace defined '
-                            'transfer function',unit=None, default=(0,1)),
+                            'transfer function',unit=None, default=(1,)),
                   Parameter(name='denominator', 
                             desc='Denominator coefficients of laplace defined '
-                            'transfer function',unit=None, default=(0,1)),
+                            'transfer function',unit=None, default=(1,0)),
                   Parameter(name='realisation', desc='State space realisation' 
                             'form for transfer function, '
                             'values \"observable\" and \"controlable\""',
@@ -420,8 +420,7 @@ class SVCVS(Circuit):
         # Ckeck that he order of the denominator is at least one less than
         # the orderof the denoiminator
         if not(len(self.iparv.numerator) < len(self.iparv.denominator)):
-            raise Exception("Numerator and denominator are not of equal " +
-                            "length, add coefficients with zero value")
+            raise Exception("Numerator order not less than denominator order")
         elif len(self.iparv.numerator) == 0:
             raise Exception("Numerator not defined")
 
