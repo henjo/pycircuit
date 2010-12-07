@@ -374,6 +374,7 @@ class VCVS(Circuit):
 class SVCVS(Circuit):
     """Voltage controlled voltage source with frequency dependent transfer
 
+    
     >>> from dcanalysis import DC
     >>> c = SubCircuit()
     >>> n1, n2 =c.add_nodes('1', '2')
@@ -392,14 +393,12 @@ class SVCVS(Circuit):
 
 
     """
-    instparams = [Parameter(name='g', desc='Voltage gain',unit='V/V', 
-                            default=1),
-                  Parameter(name='numerator', 
+    instparams = [Parameter(name='numerator', 
                             desc='Numerator coefficients of laplace defined '
-                            'transfer function',unit=None, default=None),
+                            'transfer function',unit=None, default=(0,1)),
                   Parameter(name='denominator', 
                             desc='Denominator coefficients of laplace defined '
-                            'transfer function',unit=None, default=None),
+                            'transfer function',unit=None, default=(0,1)),
                   Parameter(name='realisation', desc='State space realisation' 
                             'form for transfer function, '
                             'values \"observable\" and \"controlable\""',
@@ -409,94 +408,101 @@ class SVCVS(Circuit):
     branches = (Branch(Node('outp'), Node('outn')),)
 
     def __init__(self, *args, **kvargs):
-        self.wait_with_update = False
         super(SVCVS, self).__init__(*args, **kvargs)
 
-        if self.iparv.numerator or self.iparv.denominator:
-            self.first_state_node = len(self.nodes) # store number of nodes/states in inital G and C matrix
-            if self.iparv.denominator == None:
-                self.iparv.denominator = [0]*len(self.iparv.numerator)+[1]
-            if self.iparv.numerator == None: # Add DC term to numerator if it is not defined
-                if len(self.iparv.denominator) < 3:
-                    self.iparv.numerator = 1
-                else:
-                    self.iparv.numerator = [0]*len(self.iparv.denominator[:-2])+[1]
-            if len(self.iparv.numerator) < len(self.iparv.denominator[:-1]):
-                self.iparv.numerator = [0]*(len(self.iparv.denominator[:-1])-len(self.iparv.numerator))+self.iparv.numerator
-            if not(len(self.iparv.numerator) < len(self.iparv.denominator)): # make sure the transfer function is stictly proper. Is this relly neccessary?
-                raise Exception("Number of numerator coefficients, %s, must be at least on fewer than the number of denominator coefficients length, %s, should be string"%str(len(self.iparv.numerator))%str(len(self.iparv.denominator)))
-            self.den = self.toolkit.array(self.iparv.denominator) / self.toolkit.array(self.iparv.denominator[0])
-            self.denlen = len(self.den) 
-            self.num = self.toolkit.array(self.iparv.numerator) / self.iparv.denominator[0]
-            self.numlen = len(self.num)
-            newnodes = [Node("_a%d"%state) for state in range(self.denlen-1)]
-            self.nodes.extend(newnodes)
-        self.wait_with_update = True
-        self.update(self.iparv)
+        if not(self.iparv.numerator) and not(self.iparv.denominator):
+            raise Exception("Numerator and denominator not defined")
+        elif not(self.iparv.numerator):
+            raise Exception("Numerator not defined")
+        elif not(self.iparv.denominator):
+            raise Exception("Denominator not defined")
 
-               
-    def update(self, subject):
-        if self.wait_with_update:
-            n = self.n
-            G = self.toolkit.zeros((n,n))
-            branchindex = -1
-            inpindex, innindex, outpindex, outnindex = \
-                (self.nodes.index(self.nodenames[name])
-                 for name in self.terminals)
-            G[outpindex, branchindex] += 1
-            G[outnindex, branchindex] += -1
-            G[branchindex, outpindex] += -1
-            G[branchindex, outnindex] += 1
-            if self.iparv.numerator or self.iparv.denominator:
-                if self.iparv.realisation == 'observable':
-                    # Observable canonical state space form
-                    first = self.first_state_node
-                    # Add denominator coefficiencts
-                    G[first:first + self.denlen-1, first] = -self.den[1:]
-                    # Add states
-                    if self.denlen-1==1:
-                        G[first+1,first+1] = 1
-                    else:
-                        G[first:first+self.denlen-2, first+1:first+1+self.denlen-2] = \
-                            self.toolkit.eye(self.denlen-2)                
-                    # Input and numerator coefficients
-                    G[first:first+self.numlen, inpindex] = self.num*self.iparv.g
-                    G[first:first+self.numlen, innindex] = -self.num*self.iparv.g
-                    # Output                
-                    G[branchindex, first] = 1
-                else:
-                    # Controllable canonical state space form 
-                    first = self.first_state_node
-                    # Add denominator coefficiencts
-                    if self.denlen-1==1:
-                        G[first,first] = -self.den[1]
-                    else:                
-                        G[first, first:first + self.denlen-1 ] = -self.den[1:]
-                    # States
-                    if self.denlen-1==1:
-                        G[first,first+1] = 1
-                    else:
-                        G[first+1:first+1+self.denlen-2, first:first+self.denlen-2] = \
-                            self.toolkit.eye(self.denlen-2)
-                    # Input
-                    G[first, inpindex] = self.iparv.g
-                    G[first, innindex] = -self.iparv.g
-                    # Output, all numerator coefficients        
-                    G[branchindex, first:first+self.numlen] = self.num
+        # Ckeck that he order of the denominator is at least one less than
+        # the orderof the denoiminator
+        if not(len(self.iparv.numerator) < len(self.iparv.denominator)):
+            raise Exception("Numerator and denominator are not of equal " +
+                            "length, add coefficients with zero value")
+        elif len(self.iparv.numerator) == 0:
+            raise Exception("Numerator not defined")
+
+        if self.iparv.denominator[0] == 0:
+            raise Exception("The first coefficient in the denominator must" + 
+                            " not be equal to 0")
+
+        self.den = self.toolkit.array(self.iparv.denominator)
+        self.num = self.toolkit.array(self.iparv.numerator)
+
+        # Normalize
+        if self.den[0] != 1:
+            self.num = self.num/self.den[0]
+            self.den = self.den/self.den[0]
+
+        self.denlen = len(self.den)
+        self.numlen = len(self.num)
+
+        # store number of nodes/states in inital G and C matrix
+        self.first_state_node = len(self.nodes)
+
+        # Add nodes for new states, one for each pole in denominator
+        newnodes = [Node("_a%d"%state) for state in range(self.denlen-1)]
+        self.nodes.extend(newnodes)
+
+        n = self.n
+        G = self.toolkit.zeros((n,n))
+        branchindex = -1
+        inpindex, innindex, outpindex, outnindex = \
+            (self.nodes.index(self.nodenames[name])
+             for name in self.terminals)
+
+        G[outpindex, branchindex] +=  1
+        G[outnindex, branchindex] += -1
+        G[branchindex, outpindex] += -1
+        G[branchindex, outnindex] +=  1
+
+        first = self.first_state_node
+
+        if self.iparv.realisation == 'observable':
+            # Observable canonical state space form
+            # Add denominator coefficiencts
+            G[first:first + self.denlen-1, first] = -self.den[1:]
+            # Add states
+            if self.denlen-1==1:
+                G[first+1,first+1] = 1
             else:
-                G[branchindex, inpindex] += self.iparv.g
-                G[branchindex, innindex] += -self.iparv.g                       
-            self._G = G
+                G[first:first+self.denlen-2, first+1:first+1+self.denlen-2] = \
+                    self.toolkit.eye(self.denlen-2, dtype=int)
+            # Input numerator coefficients
+            index = first + self.denlen-1 - self.numlen
+            G[index:index+self.numlen, inpindex] =  self.num
+            G[index:index+self.numlen, innindex] = -self.num
+            # Output
+            G[branchindex, first] = 1
+        else:
+            # Controllable canonical state space form
+            # Add denominator coefficiencts and states
+            if self.denlen-1==1:
+                G[first,first] = -self.den[1]
+                G[first,first+1] = 1
+            else:
+                G[first, first:first + self.denlen-1 ] = -self.den[1:]
+                G[first+1:first+1+self.denlen-2, first:first+self.denlen-2] = \
+                    self.toolkit.eye(self.denlen-2, dtype=int)
+            # Input
+            G[first, inpindex] =  1
+            G[first, innindex] = -1
+            # Output, all numerator coefficients
+            index = first + self.denlen-1 - self.numlen
+            G[branchindex, index:index+self.numlen] = self.num
 
-            C = self.toolkit.zeros((n,n))
-            if self.iparv.numerator or self.iparv.denominator:
-                first = self.first_state_node
-                C[first:first+self.denlen-1, first:first+self.denlen-1] = \
-                    -1*self.toolkit.eye(self.denlen-1)
-            self._C = C
+        self._G = G
 
+        C = self.toolkit.zeros((n,n))
+        C[first:first+self.denlen-1, first:first+self.denlen-1] = \
+            -1*self.toolkit.eye(self.denlen-1, dtype=int)
+        self._C = C
 
     def G(self, x, epar=defaultepar): return self._G
+
     def C(self, x, epar=defaultepar): return self._C
 
 class VCCS(Circuit):
