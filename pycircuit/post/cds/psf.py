@@ -11,6 +11,9 @@ from copy import copy
 
 from struct import unpack, pack
 
+class PSFInvalid(Exception):
+    pass
+
 def warning(str):
     print "Warning: "+str
 
@@ -1205,7 +1208,7 @@ def readChunk(psf, file, expectedclasses=None):
     return chunk
 
 class PSFReader(object):
-    def __init__(self, filename=None, asc=False):
+    def __init__(self, filename=None, asc=None):
         self.header = None
         self.types = TypeSection(self)
         self.sweeps = None
@@ -1225,13 +1228,17 @@ class PSFReader(object):
         >>> psf=PSFReader('./test/psf/srcSweep')
         >>> psf.open()
         """
+        
+        if self.asc == None:
+            self.asc = psfasc.is_psfasc(self.filename)
+
         if not self.asc:
             self.file = open(self.filename, "rb")
             
             if self.validate():
                 self.deSerializeFile(self.file)
             else:
-                raise ValueError("Invalid PSF file")
+                raise PSFInvalid("Invalid PSF file")
         else:
             newpsfobj = psfasc.parse("psfasc", open(self.filename).read())
             self.header = newpsfobj.header                
