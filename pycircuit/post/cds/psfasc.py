@@ -289,6 +289,13 @@ def parse(rule, text):
     P = psfasc(psfascScanner(text))
     return runtime.wrap_error_reporter(P, rule)
 
+def is_psfasc(filename):
+    """Return true if a file is a PSF ascii file"""
+    if open(filename).read(6) == 'HEADER':
+        return True
+    else:
+        return False
+
 if __name__ == '__main__':
     from sys import argv, stdin
     if len(argv) >= 2:

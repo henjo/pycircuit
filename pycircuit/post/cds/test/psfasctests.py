@@ -23,53 +23,51 @@ class toPSFASCTests(unittest.TestCase):
         p=PropertyString(None, name="date", value="2:30:26 PM, Thur Sep 27, 2007")
         self.assertEqual(p.toPSFasc(),'"date" "2:30:26 PM, Thur Sep 27, 2007"')
     def testHeaderSection(self):
-        psfasc = PSFASCSplitter("examples/dc.dc.asc")
+        psfasc = PSFASCSplitter("psfasc/dc.dc.asc")
         expected=psfasc.sections["HEADER"].strip()
-        psf = PSFReader("examples/dc.dc")
+        psf = PSFReader("psf/dc.dc")
         psf.open()
         self.assertEqual(psf.header.toPSFasc(), expected)
 
     def testTypesSection(self):
-        psfasc = PSFASCSplitter("examples/dc.dc.asc")
+        psfasc = PSFASCSplitter("psfasc/dc.dc.asc")
         expected=psfasc.sections["TYPE"].strip()
-        f=open("examples/dc.dc")
-        psf = PSFReader("examples/dc.dc")
+        f=open("psf/dc.dc")
+        psf = PSFReader("psf/dc.dc")
         psf.open()
         self.assertEqual(psf.types.toPSFasc(), expected)
 
     def testSweepSection(self):
-        psfasc = PSFASCSplitter("examples/dc.dc.asc")
+        psfasc = PSFASCSplitter("psfasc/dc.dc.asc")
         expected=psfasc.sections["SWEEP"].strip()
-        f=open("examples/dc.dc")
-        psf = PSFReader("examples/dc.dc")
+        f=open("psf/dc.dc")
+        psf = PSFReader("psf/dc.dc")
         psf.open()
         self.assertEqual(psf.sweeps.toPSFasc(), expected)
 
     def testTraceSection(self):
-        psfasc = PSFASCSplitter("examples/dc.dc.asc")
+        psfasc = PSFASCSplitter("psfasc/dc.dc.asc")
         expected=psfasc.sections["TRACE"].strip()
-        f=open("examples/dc.dc")
-        psf = PSFReader("examples/dc.dc")
+        f=open("psf/dc.dc")
+        psf = PSFReader("psf/dc.dc")
         psf.open()
         self.assertEqual(psf.traces.toPSFasc(), expected)
 
     def testValueSection(self):
-        psfasc = PSFASCSplitter("examples/dc.dc.asc")
+        psfasc = PSFASCSplitter("psfasc/dc.dc.asc")
         expected=psfasc.sections["VALUE"].strip()
-        f=open("examples/dc.dc")
-        psf = PSFReader("examples/dc.dc")
+        f=open("psf/dc.dc")
+        psf = PSFReader("psf/dc.dc")
         psf.open()
         self.assertEqual(psf.values.toPSFasc(), expected)
 
 
 class PSFTests(unittest.TestCase):
     def testPSFasc(self):
-        filename = "examples/dc.dc"
-
-        psf=PSFReader(filename)
+        psf=PSFReader("psf/dc.dc")
         psf.open()
         
-        psfascfile=open(filename+".asc")
+        psfascfile=open("psfasc/dc.dc.asc")
         
         for actual, expected in zip(psf.toPSFasc().split("\n"), psfascfile.readlines()):
 #            print actual, "==", expected.strip()
