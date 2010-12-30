@@ -322,21 +322,21 @@ def test_parameter_propagation():
 
     a = A()
 
-    a['R1'] = R(1,0, r=Parameter('x') + 10)
+    a['R1'] = R(1,0, r='10+x')
 
     a.ipar.x = 20
 
-    assert_equal(a['R1'].ipar.r, 30)
-    assert_equal(a['R1'].ipar.noisy, True)
+    assert_equal(a['R1'].iparv.r, 30)
+    assert_equal(a['R1'].iparv.noisy, True)
 
     ## test 2 levels of hierarchy
-    a['I1'] = A(x=Parameter('x'))
-    a['I1']['R1'] = R(1,0, r=Parameter('x') + 20)
+    a['I1'] = A(x='x')
+    a['I1']['R1'] = R(1,0, r='x+20')
     
     a.ipar.x = 30
 
-    assert_equal(a['R1'].ipar.r, 40)
-    assert_equal(a['I1']['R1'].ipar.r, 50)
+    assert_equal(a['R1'].iparv.r, 40)
+    assert_equal(a['I1']['R1'].iparv.r, 50)
 
 def test_parameter_propagation_at_instantiation():
     """Test instance parameter value propagation through hierarchy at instantiation"""
@@ -346,13 +346,19 @@ def test_parameter_propagation_at_instantiation():
         instparams = [Parameter(name='resistance_value', desc = 'resistance value', default = 20)]
 
     a = A()
+    
+    a['R1'] = R(1,0, r='resistance_value + 10')
 
-    a['R1'] = R(1,0, r=Parameter('resistance_value') + 10)
+    assert_equal(a['R1'].iparv.r, 30)
 
-    assert_equal(a['R1'].ipar.r, 30)
+    ## Verify that global parameters has lower priority than local parameters
+    gp = ParameterDict(Parameter('resistance_value'))
+    gp.resistance_value = 100
+    a['R1'].update_iparv(a.iparv, gp)
+    assert_equal(a['R1'].iparv.r, 30)
 
 def test_parameter_at_instantiation_with_add_instance ():
-    """Test instance parameter value propagation through hierarchy at instantiation"""
+    """Test instance parameter value propagation through hierarchy with add_instance"""
     pycircuit.circuit.circuit.default_toolkit = symbolic
 
     a = SubCircuit()
@@ -360,8 +366,8 @@ def test_parameter_at_instantiation_with_add_instance ():
     a['R1'] = R(1,0, r=10)
 
     # copy 'R1' resistor
-    res  = a['R1'].__copy__()
-    res2 = a['R1'].__copy__()
+    res  = copy(a['R1'])
+    res2 = copy(a['R1'])
 
     # change resistance value
     res.ipar.set(r=30)
@@ -369,25 +375,24 @@ def test_parameter_at_instantiation_with_add_instance ():
 
     b = SubCircuit()
     # insert copied instance into circuit b
-    b.add_instance('R1',res,**{'plus':'plus','minus':'minus'})
-    b.add_instance('R2',res2,**{'plus':'plus','minus':'minus'})
+    b.add_instance('R1',res, plus='plus', minus='minus')
+    b.add_instance('R2',res2, plus='plus', minus='minus')
 
-    assert_equal(b['R1'].ipar.r, 30)
-    assert_equal(b['R2'].ipar.r, 40)
+    assert_equal(b['R1'].iparv.r, 30)
+    assert_equal(b['R2'].iparv.r, 40)
     
-def test_design_variables():
-    a = SubCircuit(toolkit=symbolic)
+def test_global_parameters():
+    a = SubCircuit()
     
-    a['R1'] = R(1,0, r=Variable('R')+10, toolkit=symbolic)
+    a['R1'] = R(1,0, r='R+10')
     
-    ipars = ParameterDict()
-    variables = ParameterDict(Variable('R'))
+    globalparams = ParameterDict(Parameter('R'))
 
-    variables.R = 20
+    globalparams.R = 20
 
-    a.update_ipar(ipars, variables)
+    a.update_iparv(globalparams=globalparams)
 
-    assert_equal(a['R1'].ipar.r, 30)
+    assert_equal(a['R1'].iparv.r, 30)
 
 def test_replace_element():
     """Test node list consitency when replacing an element"""

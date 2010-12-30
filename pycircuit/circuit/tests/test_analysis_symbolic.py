@@ -119,8 +119,7 @@ def test_symbolic_noise_kt_over_C():
     res = noise.solve(s, complexfreq=True)
 
 
-    noise_voltage_power = limit(integrate(simplify(res['Svnout']), 
-                                          (w, 0, w1)), w1, oo)
+    noise_voltage_power = integrate(simplify(res['Svnout']),(w, 0, oo))
 
     assert_equal(noise_voltage_power, 2*pi*k*T/c)
 

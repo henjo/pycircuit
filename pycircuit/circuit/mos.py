@@ -42,26 +42,29 @@ class MOS(SubCircuit):
     def __init__(self, *args, **kvargs):
         super(MOS, self).__init__(*args, **kvargs)
 
-        self['Igm'] = VCCS(self.nodenames['g'], self.nodenames['s'], 
-                           self.nodenames['d'], self.nodenames['s'], 
+        self['Igm'] = VCCS('g', 's', 
+                           'd', 's', 
                            gm=self.ipar.gm)
 
-        self['Igmb'] = VCCS(self.nodenames['b'], self.nodenames['s'], 
-                            self.nodenames['d'], self.nodenames['s'], 
+        self['Igmb'] = VCCS('b', 's', 
+                            'd', 's', 
                             gm=self.ipar.gmb)
 
-        self['gds'] = G(self.nodenames['d'], self.nodenames['s'], 
+        self['gds'] = G('d', 's', 
                         g = self.ipar.gds, nonoise = True)
 
-        self['Cgs'] = C(self.nodenames['g'], self.nodenames['s'], 
+        self['Cgs'] = C('g', 's', 
                         c = self.ipar.Cgs)
-        self['Cgd'] = C(self.nodenames['g'], self.nodenames['d'], 
+        self['Cgd'] = C('g', 'd', 
                         c = self.ipar.Cgd)
-        self['Cdb'] = C(self.nodenames['d'], self.nodenames['b'], 
+        self['Cdb'] = C('d', 'b', 
                         c = self.ipar.Cdb)
 
-        inoisepsd = 4 * Symbol('kT') * self.ipar.gamma * self.ipar.gm
-        self['idnoise'] = IS(self.nodenames['d'], self.nodenames['s'], 
+        toolkit = self.toolkit
+        kt = toolkit.kboltzmann * Symbol('T')
+
+        inoisepsd = 4 * kt * self.ipar.gamma * self.ipar.gm
+        self['idnoise'] = IS('d', 's', 
                              i = 0, iac = 0, 
                              noisePSD = inoisepsd)
 
@@ -98,26 +101,26 @@ class MOS_ACM(SubCircuit):
     def __init__(self, *args, **kvargs):
         super(MOS, self).__init__(*args, **kvargs)
 
-        self['Igm'] = VCCS(self.nodenames['g'], self.nodenames['s'], 
-                           self.nodenames['d'], self.nodenames['s'], 
+        self['Igm'] = VCCS('g', 's', 
+                           'd', 's', 
                            gm=self.ipar.gm)
 
-        self['Igmb'] = VCCS(self.nodenames['b'], self.nodenames['s'], 
-                            self.nodenames['d'], self.nodenames['s'], 
+        self['Igmb'] = VCCS('b', 's', 
+                            'd', 's', 
                             gm=self.ipar.gmb)
 
-        self['gds'] = G(self.nodenames['d'], self.nodenames['s'], 
+        self['gds'] = G('d', 's', 
                         g = self.ipar.gds, nonoise = True)
 
-        self['Cgs'] = C(self.nodenames['g'], self.nodenames['s'], 
+        self['Cgs'] = C('g', 's', 
                         c = self.ipar.Cgs)
-        self['Cgd'] = C(self.nodenames['g'], self.nodenames['d'], 
+        self['Cgd'] = C('g', 'd', 
                         c = self.ipar.Cgd)
-        self['Cdb'] = C(self.nodenames['d'], self.nodenames['b'], 
+        self['Cdb'] = C('d', 'b', 
                         c = self.ipar.Cdb)
 
         inoisepsd = 4 * Symbol('kT') * self.ipar.gamma * self.ipar.gm
-        self['idnoise'] = IS(self.nodenames['d'], self.nodenames['s'], 
+        self['idnoise'] = IS('d', 's', 
                              i = 0, iac = 0, 
                              noisePSD = inoisepsd)
 
