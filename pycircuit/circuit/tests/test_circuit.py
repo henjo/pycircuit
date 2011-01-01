@@ -419,3 +419,10 @@ def test_add_terminals():
         node_list.append(node.name)
     
     assert_equal(node_list,['plus','minus','common'])
+
+def test_get_node():
+    """Test  get_node""" 
+    c = SubCircuit()
+    out = c.add_node('out')
+    c['V1'] = VS(out, gnd)
+    assert_equal(c.get_node('V1.plus'), out)
