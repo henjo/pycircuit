@@ -198,14 +198,20 @@ class Circuit(object):
         
     def __copy__(self):
         newc = self.__class__()
+        newc.toolkit = self.toolkit
         newc.nodes = copy(self.nodes)    
         newc.nodenames = copy(self.nodenames)    
         newc.branches = copy(self.branches)    
         newc.instparams = copy(self.instparams)
-        newc.ipar = copy(self.ipar)
+        newc.ipar = copy(self.ipar)        
+        newc.ipar.detach(self)
+        newc.ipar.attach(newc, updatemethod='_ipar_changed')
         newc.iparv = copy(self.iparv)
+        if hasattr(newc, 'update'):
+            newc.iparv.detach(self)
+            newc.iparv.attach(newc)
+            newc.update(newc.ipar)
         newc.linear = copy(self.linear)        
-        newc.toolkit = self.toolkit
         newc.terminals = copy(self.terminals)
         return newc
 
@@ -785,7 +791,6 @@ class SubCircuit(Circuit):
             newc.elements[instance_name] = copy(self.elements[instance_name])
         newc.elementnodemap = copy(self.elementnodemap)
         newc.term_node_map = copy(self.term_node_map)
-        newc._rep_nodemap_list = copy(self._rep_nodemap_list)
         
         newc.update_node_map()
 
@@ -1004,7 +1009,11 @@ class SubCircuit(Circuit):
             if len(path) < 2:
                 return ValueError('Node name %s not found'%name)
             elif len(path) > 2:
-                return top + '.' + self[top].get_node('.'.join(path[1:]))
+                node = self[top].get_node('.'.join(path[1:]))
+                index = self[top].get_node_index(node)
+                index2 = self.elementnodemap[top][index]
+                node2 = self.nodes[index2]
+                return node2.name
             else:
                 element_node_index = self[top].get_node_index('.'.join(path[1:]))
                 node_index = self.elementnodemap[top][element_node_index]
