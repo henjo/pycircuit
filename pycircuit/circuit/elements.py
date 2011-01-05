@@ -133,9 +133,9 @@ class L(Circuit):
 
     def __init__(self, *args, **kvargs):
         super(L, self).__init__(*args, **kvargs)
-        self._G = self.toolkit.array([[0.0 , 0.0, 1.0],
-                                      [0.0 , 0.0, -1.0],
-                                      [1.0 , -1.0, 0.0]])
+        self._G = self.toolkit.array([[0 , 0, 1],
+                                      [0 , 0, -1],
+                                      [1 , -1, 0]])
 
     def update(self, subject):
         n = self.n
@@ -447,7 +447,7 @@ class SVCVS(Circuit):
         self.nodes.extend(newnodes)
 
         n = self.n
-        G = self.toolkit.zeros((n,n))
+        G = self.toolkit.zeros((n,n), dtype = int)
         branchindex = -1
         inpindex, innindex, outpindex, outnindex = \
             (self.nodes.index(self.nodenames[name])
@@ -495,7 +495,7 @@ class SVCVS(Circuit):
 
         self._G = G
 
-        C = self.toolkit.zeros((n,n))
+        C = self.toolkit.zeros((n,n), dtype=int)
         C[first:first+self.denlen-1, first:first+self.denlen-1] = \
             -1*self.toolkit.eye(self.denlen-1, dtype=int)
         self._C = C
