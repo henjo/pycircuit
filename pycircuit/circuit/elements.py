@@ -242,8 +242,10 @@ class IS(Circuit):
     """
     instparams = [Parameter(name='i', desc='DC Current', 
                             unit='A', default=1e-3),
-                  Parameter(name='iac', desc='Small signal current amplitude', 
+                  Parameter(name='iac', desc='AC analysis current amplitude', 
                             unit='A', default=0),
+                  Parameter(name='phase', desc='AC analysis phase', 
+                            unit='deg', default=0),
                   Parameter(name='noisePSD', 
                             desc='Current noise power spectral density', 
                             unit='A^2/Hz', default=0.0)]
@@ -252,7 +254,9 @@ class IS(Circuit):
 
     def u(self, t=0.0, epar=defaultepar, analysis=None):
         if analysis == 'ac':
-            return self.toolkit.array([self.iparv.iac, -self.iparv.iac])
+            phase = self.iparv.phase * self.toolkit.pi / 180.            
+            iac = self.iparv.vac * self.toolkit.exp(1j*phase)
+            return self.toolkit.array([iac, -iac])
         elif analysis in timedomain_analyses:
             i = self.iparv.i + self.function.f(t)
             return self.toolkit.array([i, -i])
