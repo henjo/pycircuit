@@ -1221,6 +1221,16 @@ class SubCircuit(Circuit):
 
         return lhs
 
+    def find_class_instances(self, instance_class):
+        instances = []        
+        for instanceName, element in self.elements.items():
+            if isinstance(element, instance_class):
+                instances.append(instanceName)
+            elif isinstance(element, SubCircuit):
+                for instance in element.find_class_instances(instance_class):
+                    instances.append(instanceName + '.' + instance)
+        return instances
+
     @property
     def xflatelements(self):
         """Iterator over all elements and subelements"""
