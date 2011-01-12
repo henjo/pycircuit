@@ -255,7 +255,7 @@ class IS(Circuit):
     def u(self, t=0.0, epar=defaultepar, analysis=None):
         if analysis == 'ac':
             phase = self.iparv.phase * self.toolkit.pi / 180.            
-            iac = self.iparv.vac * self.toolkit.exp(1j*phase)
+            iac = self.iparv.iac * self.toolkit.exp(1j*phase)
             return self.toolkit.array([iac, -iac])
         elif analysis in timedomain_analyses:
             i = self.iparv.i + self.function.f(t)
