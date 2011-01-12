@@ -5,10 +5,8 @@
 from nose.tools import *
 import pycircuit.circuit.circuit 
 from pycircuit.circuit import *
-from pycircuit.circuit import symbolic
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
-from copy import copy
 from test_circuit import create_current_divider
 
 def test_integer_component_values():
