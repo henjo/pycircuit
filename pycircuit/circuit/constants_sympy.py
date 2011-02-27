@@ -7,8 +7,11 @@ from sympy import Symbol
 Physical constants
 """
 
-kboltzmann=Symbol('kboltzmann')    # Boltzmann's constant
-eps0 = Symbol('eps0')              # Vacuum permittivity
-epsRSi = Symbol('epsRSi')          # Relative permittivity of Si
-epsRSiO2 = Symbol('epsRSi02')      # Relative permittivity of SiO2 
-qelectron= Symbol('qelectron')     # Elementary charge
+## Symbolics for constants
+kboltzmann=sympy.Symbol('k', real=True, positive=True)         # Boltzmann's constant
+eps0 = sympy.Symbol('eps0', real=True, positive=True)          # Vacuum permittivity
+epsRSi = sympy.Symbol('epsRSi', real=True, positive=True)      # Relative permittivity of Si
+epsRSiO2 = sympy.Symbol('epsRSiO2', real=True, positive=True)  # Relative permittivity of SiO2 
+qelectron = sympy.Symbol('qelectron', positive=True, real=True)# Elementary charge
+
+

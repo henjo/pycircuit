@@ -19,6 +19,7 @@ from numpy import cos, sin, tan, cosh, sinh, tanh, log, exp, pi, linalg,\
 symbolic = False
 
 ac_u_dtype = np.complex
+integer    = np.integer
 
 def linearsolver(*args, **kvargs):
     return np.linalg.solve(*args, **kvargs)

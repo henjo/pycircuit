@@ -2,10 +2,12 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
-from pycircuit.utilities.param import Parameter, ParameterDict#, EvalError
+from pycircuit.utilities.param import Parameter, ParameterDict, EvalError
 from pycircuit.utilities.misc import indent, inplace_add_selected, \
     inplace_add_selected_2d, create_index_vectors
+from constants import *
 from copy import copy
+import numpy as np
 import types
 import numeric
 
@@ -408,7 +410,6 @@ class Circuit(object):
         """Returns a circuit where a current probe is added at a terminal
         
         >>> from elements import *
-        >>> import numpy as np
         >>> cir = R(Node('n1'), gnd, r=1e3)
         >>> newcir = cir.save_current('plus')
         >>> newcir.G(np.zeros(4))
@@ -507,7 +508,6 @@ class Circuit(object):
         """Return a dictionary of the x-vector keyed by node and branch names
 
         >>> from elements import *
-        >>> import numpy as np
         >>> c = SubCircuit()
         >>> n1 = c.add_node('net1')
         >>> c['is'] = IS(gnd, n1, i=1e-3)
@@ -544,7 +544,7 @@ class Circuit(object):
         
         for A in matrices:
             for axis in range(len(A.shape)):
-                A=self.toolkit.delete(A, [n], axis=axis)
+                A=np.delete(A, [n], axis=axis)
             result.append(A)
         return tuple(result)
 
@@ -572,7 +572,6 @@ class Circuit(object):
           If set the refernce node is expected to be removed from the x-vector
 
         >>> from elements import *
-        >>> import numpy as np
         >>> c = SubCircuit()
         >>> n1, n2 = c.add_nodes('n1','n2')
         >>> c['R1'] = R(n1, n2, r=1e3)
@@ -639,7 +638,6 @@ class Circuit(object):
            *xcdop* is the DC operation point x-vector if linearized == True
 
         >>> from elements import *
-        >>> import numpy as np
         >>> c = SubCircuit()
         >>> net1 = c.add_node('net1')
         >>> c['vs'] = VS(net1, gnd)
@@ -1073,7 +1071,7 @@ class SubCircuit(Circuit):
             ## Create mapping matrix
             if len(nodemap) > 0:
                 mapmatrix = self.toolkit.zeros((self.n, len(nodemap)),
-                                               dtype = self.toolkit.integer)
+                                               dtype = np.integer)
             
                 for inst_node_index, node_index in enumerate(nodemap):
                     mapmatrix[node_index, inst_node_index] = 1
@@ -1222,16 +1220,6 @@ class SubCircuit(Circuit):
             lhs += self.toolkit.dot(T, rhs)
 
         return lhs
-
-    def find_class_instances(self, instance_class):
-        instances = []        
-        for instanceName, element in self.elements.items():
-            if isinstance(element, instance_class):
-                instances.append(instanceName)
-            elif isinstance(element, SubCircuit):
-                for instance in element.find_class_instances(instance_class):
-                    instances.append(instanceName + '.' + instance)
-        return instances
 
     @property
     def xflatelements(self):

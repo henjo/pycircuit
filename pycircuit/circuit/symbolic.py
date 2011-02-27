@@ -15,17 +15,12 @@ from sympy import cos, sin, tan, exp, pi, simplify, floor
 from sympy import oo as inf, ceiling as ceil
 import types
 from pycircuit.utilities.param import Parameter
+from constants_sympy import kboltzmann, eps0, epsRSi, epsRSiO2, qelectron
 
 symbolic = True
 
 ac_u_dtype = np.object
-
-## Symbolics for constants
-kboltzmann=sympy.Symbol('k', real=True, positive=True)         # Boltzmann's constant
-eps0 = sympy.Symbol('eps0', real=True, positive=True)          # Vacuum permittivity
-epsRSi = sympy.Symbol('epsRSi', real=True, positive=True)      # Relative permittivity of Si
-epsRSiO2 = sympy.Symbol('epsRSiO2', real=True, positive=True)  # Relative permittivity of SiO2 
-qelectron = sympy.Symbol('qelectron', positive=True, real=True)# Elementary charge
+integer = np.integer
 
 def linearsolver(A, b):
     A,subst_dict = dummy_var_matrix(A)
@@ -118,3 +113,4 @@ def abs(*args,**kvargs):
 
 def size(*args,**kvargs):
     return np.size(*args,**kvargs)
+
