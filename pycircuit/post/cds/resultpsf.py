@@ -10,6 +10,11 @@ import re
 import numpy
 import operator
 
+try:
+    import psflibpsf
+except ImportError:
+    psflibpsf = None
+
 class PSFResultSet(result.ResultDict):
     """PSFResultSet class handles a PSF result directory
 
@@ -271,9 +276,14 @@ class PSFRun(object):
         return "\n".join([self.name]+[psf.indent(child.treeString(), 2) for child in self.children])
 
 class PSFResult(result.ResultDict):
-    def __init__(self, psffilename=None):
-        self.psfobj = psf.PSFReader(psffilename)
+    def __init__(self, psffilename=None, use_libpsf=True):
+        if use_libpsf and psflibpsf:
+            self.psfobj = psflibpsf.PSFReader(psffilename)
+        else:
+            self.psfobj = psf.PSFReader(psffilename)
+
         self.psfobj.open()
+
         super(PSFResult, self).__init__()
 
     def __len__(self):

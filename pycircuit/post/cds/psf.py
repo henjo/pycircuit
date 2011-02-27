@@ -919,6 +919,8 @@ class NonSweepValue(Chunk):
         self.value = self.valuetype.getDataObj()
         
         self.value.deSerializeFile(file)
+
+        print [ddef.datatypeid for ddef in self.valuetype.structdef.children]
         
         # Read possible property objects that belongs to the type by peeking ahead
         while True:
@@ -1030,7 +1032,7 @@ class SweepValueWindowed(SweepValue):
         if n > windowlen:
             n = windowlen
 
-        for j in xrange(0, n):
+        for j in xrange(n):
             paramvalue = self.paramtype.getDataObj()
             paramvalue.deSerializeFile(file)
             if j < n:
@@ -1039,7 +1041,7 @@ class SweepValueWindowed(SweepValue):
         # Get trace values
         for trace in self.psf.traces.children:
             value = trace.getDataObj()
-            value.deSerializeFile(file, windowlen=windowlen, count=n,
+            value.deSerializeFile(file, count=n,
                                   windowsize=self.psf.header.properties['PSF window size'].value)
             self.children.append(value)
 
@@ -1068,7 +1070,7 @@ class GroupData(PSFData):
         PSFData.__init__(self)
         self.groupdef = groupdef
         self.children = []
-    def deSerializeFile(self, file, count=None, windowsize=None, windowlen=None):
+    def deSerializeFile(self, file, count=None, windowsize=None):
         for element in self.groupdef.children:
             if count==None:
                 value = element.getDataObj()
