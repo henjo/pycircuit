@@ -151,7 +151,7 @@ class PSFReader(object):
         """
         if self.ds == None:
             raise ValueError("Please open the PSF file first")
-        return self.ds.get_signal_vector(name)
+        return self.ds.get_signal(name)
         
     def nTraces(self):
         """Returns number of traces
