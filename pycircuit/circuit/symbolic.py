@@ -109,7 +109,7 @@ def conj(*args,**kvargs):
     return sympy.conjugate(*args,**kvargs)
 
 def abs(*args,**kvargs):
-    return sympy.abs(*args,**kvargs)
+    return sympy.Abs(*args,**kvargs)
 
 def size(*args,**kvargs):
     return np.size(*args,**kvargs)
