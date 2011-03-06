@@ -61,12 +61,12 @@ class SSAnalysis(Analysis):
         else:
             return myfunc(ss)
 
-    def dc_steady_state(self, freqs, refnode, toolkit, complexfreq=False, u=None, epar=defaultepar,x0=None):
+    def dc_steady_state(self, freqs, refnode, complexfreq=False, u=None):
         """Return G,C,u matrices at dc steady-state and complex frequencies"""
-        return dc_steady_state(self.cir, freqs, refnode, toolkit, 
+        return dc_steady_state(self.cir, freqs, refnode, self.toolkit, 
                                complexfreq = complexfreq, u = u, 
                                analysis=self.par.analysis,
-                               epar=epar,x0=x0)
+                               epar=self.epar,x0=self.par.dcx)
 
 class AC(SSAnalysis):
     """
@@ -111,9 +111,8 @@ class AC(SSAnalysis):
         super(AC, self).__init__(cir, **kvargs)
 
     def solve(self, freqs, refnode=gnd, complexfreq = False, u = None):
-        G, C, CY, u, x, ss = self.dc_steady_state(freqs, refnode, self.toolkit,
-                                              complexfreq = complexfreq, u = u,
-                                              epar = self.epar, x0=self.par.dcx)
+        G, C, CY, u, x, ss = self.dc_steady_state(freqs, refnode,
+                                              complexfreq = complexfreq, u = u)
 
         ## Refer the voltages to the reference node by removing
         ## the rows and columns that corresponds to this node
@@ -325,9 +324,8 @@ class Noise(SSAnalysis):
             return myfunc(ss)
 
     def solve(self, freqs, refnode=gnd, complexfreq = False, u = None):
-        G, C, CY, u, x, ss = self.dc_steady_state(freqs, refnode, self.toolkit,
-                                              complexfreq = complexfreq, u = u,
-                                              epar = self.epar, x0=self.par.dcx)
+        G, C, CY, u, x, ss = self.dc_steady_state(freqs, refnode,
+                                              complexfreq = complexfreq, u = u)
 
         def noisesolve(s):
             # Calculate the reciprocal G and C matrices
