@@ -1,4 +1,3 @@
-bg
 # -*- coding: latin-1 -*-
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
