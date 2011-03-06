@@ -80,6 +80,7 @@ class Transient(Analysis):
                    default="euler")]        
 
     def __init__(self, cir, toolkit=None, irefnode=None, **kvargs):
+        self.parameters = super(Transient, self).parameters + self.parameters            
         super(Transient, self).__init__(cir, **kvargs)
     
         self._method={
@@ -204,7 +205,7 @@ class Transient(Analysis):
             C = self.cir.C(x)
             q=self.cir.q(x)
             iq,Geq = self.get_diff(q,C)
-            f =self.cir.i(x) + iq + self.cir.u(t, analysis='tran')
+            f =self.cir.i(x) + iq + self.cir.u(t, analysis=self.par.analysis)
             J = self.cir.G(x) + Geq #return C somehow?
             return self.toolkit.array(f, dtype=float), self.toolkit.array(J, dtype=float)
         
