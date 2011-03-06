@@ -2,7 +2,9 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
+import sympy
 from sympy import Symbol
+
 """
 Physical constants
 """
