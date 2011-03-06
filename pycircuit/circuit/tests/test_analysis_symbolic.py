@@ -1,3 +1,4 @@
+bg
 # -*- coding: latin-1 -*-
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
@@ -14,13 +15,13 @@ from sympy import var, simplify, integrate, oo, limit, gruntz, pi
 
 def test_symbolic_ac():
     pycircuit.circuit.circuit.default_toolkit = symbolic
-    cir=SubCircuit()
+    cir = SubCircuit()
 
     var('v0 R1 C1 s')
 
-    cir['R1']=R(1, 2, r=R1)
-    cir['R2']=C(2, gnd, c=C1)
-    cir['VS']=VS(1, gnd, vac=v0)
+    cir['R1'] = R(1, 2, r=R1)
+    cir['R2'] = C(2, gnd, c=C1)
+    cir['VS'] = VS(1, gnd, vac=v0)
 
     res = AC(cir, toolkit = symbolic).solve(freqs = s, complexfreq=True)
     assert_equal(simplify(res.v(2,gnd)-v0/(1+s*R1*C1)), 0)
