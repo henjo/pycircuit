@@ -46,7 +46,7 @@ class SSAnalysis(Analysis):
         super(SSAnalysis, self).__init__(cir, **kvargs)
         
 
-    def ac_map_function(self, func, ss, refnode):
+    def ss_map_function(self, func, ss, refnode):
         """Apply a function over a list of frequencies or a single frequency"""
         irefnode = self.cir.nodes.index(refnode)
 
@@ -122,7 +122,7 @@ class AC(SSAnalysis):
         def acsolve(s):
             return self.toolkit.linearsolver(s*C + G, -u)
 
-        xac = self.ac_map_function(acsolve, ss, refnode)
+        xac = self.ss_map_function(acsolve, ss, refnode)
 
         self.result = CircuitResultAC(self.cir, x, xac, ss * xac, 
                                       sweep_values = freqs, 
