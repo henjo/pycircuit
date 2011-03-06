@@ -11,6 +11,7 @@ import symbolic
 from pycircuit.post.waveform import Waveform
 from pycircuit.post.result import IVResultDict
 from pycircuit.post.internalresult import InternalResultDict
+from pycircuit.circuit.dcanalysis import DC
 
 import numeric
 import types
@@ -414,7 +415,6 @@ def dc_steady_state(cir, freqs, refnode, toolkit, complexfreq = False,
             x=None
         else:
         #x = zeros(n) ## FIXME, this should be calculated from the dc analysis
-            from pycircuit.circuit.dcanalysis import DC
             resdc=DC(cir).solve()
             x = resdc.x
     else:
