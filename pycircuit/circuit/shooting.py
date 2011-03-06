@@ -1,6 +1,6 @@
 from pycircuit.post import InternalResultDict
 from circuit import gnd
-from analysis import Analysis, remove_row_col
+from pycircuit.circuit.analysis import *
 from copy import copy
 import analysis
 import numpy as np
@@ -40,12 +40,37 @@ class PSS(Analysis):
         ISBN 0792390695
     
     """
+
+    parameters = Analysis.parameters + \
+        [Parameter(name='analysis', desc='Analysis name', 
+                   default='PSS'),
+         Parameter(name='reltol', 
+                   desc='Relative tolerance', unit='', 
+                   default=1e-4),
+         Parameter(name='iabstol', 
+                   desc='Absolute current error tolerance', unit='A', 
+                   default=1e-12),
+         Parameter(name='vabstol', 
+                   desc='Absolute voltage error tolerance', unit='V', 
+                   default=1e-12),
+         Parameter(name='maxiter', 
+                   desc='Maximum number of iterations', unit='', 
+                   default=100),
+         Parameter(name='method', 
+                   desc='Differentiation method', unit='', 
+                   default="euler")]        
+
+    
+    def __init__(self, cir, toolkit=None, irefnode=None, **kvargs):
+        self.parameters = super(PSS, self).parameters + self.parameters            
+        super(PSS, self).__init__(cir, **kvargs)
+
     def solve_timestep(self, x0, t, dt, refnode=gnd):
         toolkit = self.toolkit
         concatenate, array = toolkit.concatenate, toolkit.array
 
         n=self.cir.n
-
+        analysis_name = self.par.analysis
         ## Refer the voltages to the reference node by removing
         ## the rows and columns that corresponds to this node
         irefnode = self.cir.get_node_index(refnode)
@@ -56,15 +81,13 @@ class PSS(Analysis):
             C = self.cir.C(x)
             Geq = C/dt
             ueq = -self.cir.q(xlast)/dt
-            f =  self.cir.i(x) + self.cir.q(x)/dt + self.cir.u(t) + ueq
+            f =  self.cir.i(x) + self.cir.q(x)/dt + self.cir.u(t, analysis=analysis_name) + ueq
             J = self.cir.G(x) + Geq
             (f,J,C) = remove_row_col((f,J,C), irefnode, self.toolkit)
             self._Jf, self._C = J, C
             return f, J
 
-        rtol = 1e-4
-
-        x = analysis.fsolve(func, x0, reltol=rtol, toolkit=self.toolkit)
+        x = analysis.fsolve(func, x0, reltol=self.par.reltol, toolkit=self.toolkit)
         # Insert reference node voltage
         #x = concatenate((x[:irefnode], array([0.0]), x[irefnode:]))
         return x
@@ -140,10 +163,18 @@ class PSS(Analysis):
 class PAC(Analysis):
     """Small-signal analysis over a time varying operating point"""
 
+    parameters  = [Parameter(name='analysis', desc='Analysis name', 
+                             default='ac')]
+
+    def __init__(self, cir, toolkit=None, **kvargs):
+        self.parameters = super(PAC, self).parameters + self.parameters            
+        super(PAC, self).__init__(cir, **kvargs)
+    
     def solve(self, pss, freqs, refnode=gnd, period=1e-3, x0=None, timestep=1e-6, 
               maxiterations=20):
         tk = self.toolkit
-
+        analysis_name = self.par.analysis
+        print 'solve PAC analysis_name = ' + analysis 
         ## Create U vector which is the RHS evaluated at every time instant
         T = pss.period
         times = pss.times[:-1]
@@ -153,7 +184,7 @@ class PAC(Analysis):
         M = len(times)
 
         irefnode = self.cir.get_node_index(refnode)
-        (u0,) = remove_row_col((self.cir.u(0, analysis='ac'),), irefnode, self.toolkit)
+        (u0,) = remove_row_col((self.cir.u(0, analysis_name),), irefnode, self.toolkit)
 
         ## Create LHS matrix using backward Euler discretization
         L = tk.zeros((N*M, N*M),dtype=tk.complex)
