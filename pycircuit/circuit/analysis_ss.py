@@ -388,11 +388,11 @@ class Noise(SSAnalysis):
         # the input source to the output
         if isinstance(self.inputsrc, VS):
             result['gain'] = gain
-            result['Svninp'] = xn2out / self.toolkit.abs(gain)**2
+            result['Svninp'] = xn2out / abs(gain)**2
 
         elif isinstance(self.inputsrc, IS):
             result['gain'] = gain
-            result['Sininp'] = xn2out / self.toolkit.abs(gain)**2
+            result['Sininp'] = xn2out / abs(gain)**2
 
         return result
 
