@@ -49,6 +49,8 @@ def toSkill(x):
         return 't'
     elif type(x) is BooleanType and x == False:
         return 'nil'
+    elif isinstance(x, Symbol):
+        return "'%s"%x.name
     else:
         return str(x)
 
@@ -76,6 +78,9 @@ def parse(str):
 
 	"""
 	return skillparser.parse('expr', str)
+
+## Define some useful constants
+nil = Symbol('nil')
 
 if __name__ == "__main__":
     import doctest
