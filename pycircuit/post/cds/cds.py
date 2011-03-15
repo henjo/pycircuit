@@ -5,6 +5,7 @@
 import pexpect
 import skill
 import re
+import os, sys
 
 class CadenceSession:
 	"""Class to handle a non-graphical cadence session
@@ -18,17 +19,25 @@ class CadenceSession:
 	[1, 2, 3]
 	
 	"""
-	def __init__(self, cmd="icfb -nograph", timeout=30, verbose=False):
-	    self.verbose = verbose
-	    self.cds = pexpect.spawn(cmd, timeout=timeout)
-	    self.cds.setecho(False)
+	def __init__(self, cmd=None, timeout=30, verbose=False):
+		## Find virtuoso binary
+		if cmd == None:
+			virtuosocmd = find_executable("icfb") or find_executable("virtuoso")
+			if  virtuosocmd == None:
+				raise ValueError("Cannot find virtuoso executable")
+
+			cmd = virtuosocmd + " -nograph"
+
+		self.verbose = verbose
+		self.cds = pexpect.spawn(cmd, timeout=timeout)
+		self.cds.setecho(False)
 	    
-	    self.prompt = "1> "
+		self.prompt = "1?> "
 	    
-	    self.cds.expect(self.prompt)
-	    self.startup = self.cds.before
-	    if verbose:
-		    print self.startup
+		self.cds.expect(self.prompt)
+		self.startup = self.cds.before
+		if verbose:
+			print self.startup
 
 	def callfunc(self, name, *args, **optargs):
 		return self.send("(%s "%name +
@@ -70,9 +79,43 @@ class CadenceSession:
 		
 		return result
 	def __del__(self):
-		self.cds.sendline("exit")
-		self.cds.expect(pexpect.EOF)
+		if self.cds:
+			self.cds.sendline("exit")
+			self.cds.expect(pexpect.EOF)
 
+
+def find_executable(executable, path=None):
+    """Try to find 'executable' in the directories listed in 'path' (a
+    string listing directories separated by 'os.pathsep'; defaults to
+    os.environ['PATH']).  Returns the complete filename or None if not
+    found
+    """
+    if path is None:
+        path = os.environ['PATH']
+    paths = path.split(os.pathsep)
+    extlist = ['']
+    if os.name == 'os2':
+        (base, ext) = os.path.splitext(executable)
+        # executable files on OS/2 can have an arbitrary extension, but
+        # .exe is automatically appended if no dot is present in the name
+        if not ext:
+            executable = executable + ".exe"
+    elif sys.platform == 'win32':
+        pathext = os.environ['PATHEXT'].lower().split(os.pathsep)
+        (base, ext) = os.path.splitext(executable)
+        if ext.lower() not in pathext:
+            extlist = pathext
+    for ext in extlist:
+        execname = executable + ext
+        if os.path.isfile(execname):
+            return execname
+        else:
+            for p in paths:
+                f = os.path.join(p, execname)
+                if os.path.isfile(f):
+                    return f
+    else:
+	    return None
 
 if __name__ == "__main__":
     import doctest
