@@ -16,7 +16,6 @@ import scipy as sp
 import scipy.interpolate as interpolate
 import types
 import operator
-import pylab
 from copy import copy
 from pycircuit.utilities import remove_index
 
@@ -528,12 +527,22 @@ class Waveform(object):
             ylabel += ' [%s]'%self.yunit
         pylab.ylabel(ylabel)
 
-    def plot(self, *args, **kvargs): self._plot(pylab.plot, *args, **kvargs)
-    def semilogx(self, *args, **kvargs): self._plot(pylab.semilogx, *args, **kvargs)
-    def semilogy(self, *args, **kvargs): self._plot(pylab.semilogy, *args, **kvargs)
-    def loglog(self, *args, **kvargs): self._plot(pylab.loglog, *args, **kvargs)
+    def plot(self, *args, **kvargs): 
+        import pylab
+        self._plot(pylab.plot, *args, **kvargs)
+    def semilogx(self, *args, **kvargs): 
+        import pylab
+        self._plot(pylab.semilogx, *args, **kvargs)
+    def semilogy(self, *args, **kvargs): 
+        import pylab
+        self._plot(pylab.semilogy, *args, **kvargs)
+    def loglog(self, *args, **kvargs): 
+        import pylab
+        self._plot(pylab.loglog, *args, **kvargs)
 
-    def stem(self, *args, **kvargs): self._plot(pylab.stem, *args, **kvargs)
+    def stem(self, *args, **kvargs): 
+        import pylab
+        self._plot(pylab.stem, *args, **kvargs)
     
     @property
     def astable(self):
