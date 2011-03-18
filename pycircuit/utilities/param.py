@@ -3,10 +3,9 @@
 # See LICENSE for details.
 
 import copy
-import sympy
 import misc
 
-class Parameter(sympy.Symbol):
+class Parameter(object):
     def __init__(self, name, desc=None, unit=None, default=None):
         self.name = name
         self.desc = desc
