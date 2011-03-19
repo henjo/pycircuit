@@ -6,8 +6,6 @@ import unittest
 from nose.tools import *
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 
-import sympy
-
 from pycircuit.utilities.param import *
 
 def test_parameter():
@@ -34,14 +32,6 @@ def test_subclass_parameter():
     assert_equal(repr(p3),
                  "MyParameter('name', desc='Description', unit='V', default=1)")
 
-def test_parameter_symbolic():
-    """Test symbolic manipulation features of Parameter's"""
-
-    p1 = Parameter('p1')
-    p2 = Parameter('p2')
-    
-    assert_equal(p1+p2, sympy.Add(p1,p2))
-    
 class ParameterTest(unittest.TestCase):
     """Test Parameter class"""
 
@@ -160,13 +150,13 @@ def test_parameter_dict_symbolic():
     pdict_expr = ParameterDict(gmparam,gdsparam)
     pdict_ab = ParameterDict(a,b)
 
-    pdict_expr.gm = 2*a + b
-    pdict_expr.gds = -3*a + 2*b
+    pdict_expr.gm = "2*a + b"
+    pdict_expr.gds = "-3*a + 2*b"
 
     pdict_ab.a = 3
     pdict_ab.b = 4
 
-    pdict_values = pdict_expr.eval_expressions(pdict_ab)
+    pdict_values = pdict_expr.eval_expressions((pdict_ab,))
 
     assert_equal(pdict_values.gm, 10)
     assert_equal(pdict_values.gds, -1)
@@ -180,19 +170,17 @@ def test_parameter_dict_symbolic():
 
     pdict_vars.a = 10
 
-    pdict_expr.gds = -3*a + 2*b + vara
+    pdict_expr.gds = "-3*a + 2*b"
 
-    pdict_values = pdict_expr.eval_expressions(((Variable, pdict_vars),
-                                                (Parameter, pdict_ab)))
+    pdict_values = pdict_expr.eval_expressions((pdict_ab, pdict_vars))
 
-    assert_equal(pdict_values.gm, 10)
-    print pdict_ab.b
-    assert_equal(pdict_values.gds, 9)
+    assert_equal(pdict_values.gm, 24)
+    assert_equal(pdict_values.gds, -22)
 
     ## Try to use parameter not defined in pdict_ab
-    pdict_expr.gm = 2*a + b + Parameter('c')
+    pdict_expr.gm = "2*a + b + c"
 
-    assert_raises(EvalError, lambda: pdict_expr.eval_expressions(pdict_ab))
+    assert_raises(EvalError, lambda: pdict_expr.eval_expressions((pdict_ab,)))
     
 def test_update_parameterdict():
     paramdict1 = ParameterDict()
@@ -205,7 +193,7 @@ def test_update_parameterdict():
     paramdict1.gm = 10
     paramdict2.gm = 30
 
-    paramdict1.update(paramdict2)
+    paramdict1.update_values(paramdict2)
     
     assert_equal(paramdict1.gm, 30)
     assert_equal(paramdict2.gm, 30)
