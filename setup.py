@@ -9,4 +9,7 @@ setup(name='Pycircuit',
       packages=['pycircuit', 'pycircuit.circuit', 'pycircuit.post', 'pycircuit.utilities',
                 'pycircuit.sim', 'pycircuit.sim.gnucap', 'pycircuit.post.cds', 'pycircuit.post.cds.yapps',
                 'pycircuit.post.jwdb'],
+
+      scripts=[os.path.join('pycircuit', 'post', 'cds', 'cdsnetlist')
+
      )
