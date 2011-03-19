@@ -18,7 +18,7 @@ class Parameter(object):
     def __hash__(self):
         return self.name.__hash__()
 
-    def __copy__(self):
+    def copy(self):
         return copy.copy(self)
 
     def __str__(self):
@@ -71,7 +71,7 @@ class ParameterDict(misc.ObserverSubject):
         else:
             return self._values[param]
 
-    def __copy__(self, *parameters, **kvargs):
+    def copy(self, *parameters, **kvargs):
         newpd = ParameterDict()
         newpd._values = copy.copy(self._values)
         newpd._parameters = copy.copy(self._parameters)
