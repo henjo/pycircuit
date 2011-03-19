@@ -81,6 +81,9 @@ class ParameterDict(misc.ObserverSubject):
 
         return newpd
 
+    def __copy__(self):
+        return self.copy()
+
     def eval_expressions(self, values, parameters=None, ignore_errors=False):
         """Evaluate expressions using parameter values from other ParameterDicts
         
