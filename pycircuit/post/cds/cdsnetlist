@@ -16,6 +16,19 @@ parser = OptionParser(usage=usage,
                       prog='cdsnetlist',
                       description='Cadence Virtuoso netlister')
 
+parser.add_option('-m', '--simulator',
+                  default='spectre',
+                  help='Simulator name, default: %default')
+
+parser.add_option('-s', '--stopviews',
+                  default='spectre,schematic,veriloga',
+                  help='Stop view list (comma separated), default: %default')
+
+parser.add_option('-w', '--switchviews',
+                  default='spectre',
+                  help='Switch view list (comma separated), default: %default')
+
+
 (options, args) = parser.parse_args()
 
 if len(args) < 2:
@@ -33,7 +46,10 @@ remove_targetdir_after = True
 
 try:
     session = cds.CadenceSession()
-    result = netlist.netlist_cell(session, lib, cell, view)
+    result = netlist.netlist_cell(session, lib, cell, view,
+                                  simulator=options.simulator,
+                                  stop_view_list=options.stopviews.split(','),
+                                  switch_view_list=options.switchviews.split(','))
     
     print open(result["netlist_filename"], "r").read()
 

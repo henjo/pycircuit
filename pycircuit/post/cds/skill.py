@@ -9,10 +9,10 @@ from types import *
 Python module for various Cadence Skill interfacing functions
 """
 
-class Symbol:
+class Symbol(object):
     def __init__(self, name):
         self.name = name
-    def __bool__(self):
+    def __nonzero__(self):
         if self.name=='nil':
             return False
         elif self.name=='t':

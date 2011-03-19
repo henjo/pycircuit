@@ -5,6 +5,8 @@ import tempfile
 import cds
 import skill
 
+class InvalidSimulator(Exception):
+    pass
 class CellViewNotFound(Exception):
     pass
 
@@ -31,7 +33,9 @@ def netlist_cell(session, libname, cellname, viewname, simulator='spectre',
             targetdir = os.curdir
 
         session.envSetVal('asimenv.startup', 'projectDir', skill.Symbol('string'), projectdir)
-        session.simulator(simulator)    
+        
+        if session.simulator(simulator) == skill.nil:
+            raise InvalidSimulator('Invalid simulator "%s"'%simulator)
 
         if session.ddGetObj(libname, cellname, viewname) != skill.nil:
             session.envOption(skill.Symbol('switchViewList'), switch_view_list)
@@ -59,7 +63,7 @@ def netlist_cell(session, libname, cellname, viewname, simulator='spectre',
                     result["modelinclude_filename"] = modelincludes
 
             else:
-                CellViewNotFound("Cellview (%s/%s/%s) not found"%(libname,cellname,viewname))
+                raise CellViewNotFound("Cellview (%s/%s/%s) not found"%(libname,cellname,viewname))
 
     finally:
         if remove_projectdir_after:

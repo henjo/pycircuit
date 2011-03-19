@@ -1,3 +1,4 @@
+import os
 from distutils.core import setup
 
 setup(name='Pycircuit',
@@ -9,7 +10,5 @@ setup(name='Pycircuit',
       packages=['pycircuit', 'pycircuit.circuit', 'pycircuit.post', 'pycircuit.utilities',
                 'pycircuit.sim', 'pycircuit.sim.gnucap', 'pycircuit.post.cds', 'pycircuit.post.cds.yapps',
                 'pycircuit.post.jwdb'],
-
-      scripts=[os.path.join('pycircuit', 'post', 'cds', 'cdsnetlist')
-
+      scripts=[os.path.join('pycircuit', 'post', 'cds', 'cdsnetlist')]
      )
