@@ -108,7 +108,7 @@ def imag(*args,**kvargs):
 def conj(xarray):
     conjlist = []
     for x in xarray:
-        conjlist = conjlist + [sympy.conjugate(x)]
+        conjlist.append(sympy.conjugate(x))
     return array(conjlist)
 
 def size(*args,**kvargs):
