@@ -105,8 +105,11 @@ def concatenate(*args,**kvargs):
 def imag(*args,**kvargs):
     return sympy.im(*args,**kvargs)
 
-def conj(*args,**kvargs):
-    return sympy.conjugate(*args,**kvargs)
+def conj(xarray):
+    conjlist = []
+    for x in xarray:
+        conjlist.append(sympy.conjugate(x))
+    return array(conjlist)
 
 def size(*args,**kvargs):
     return np.size(*args,**kvargs)
