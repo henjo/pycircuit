@@ -1,8 +1,7 @@
-import pylab
-
 def plotall(*waveforms, **args):
     """Plot waveforms in a single plot"""
-    
+    import pylab
+
     plotargs = []
     plotkvargs = {}
 
