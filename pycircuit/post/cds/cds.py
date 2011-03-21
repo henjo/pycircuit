@@ -7,7 +7,7 @@ import skill
 import re
 import os, sys
 
-class CadenceSession:
+class CadenceSession(object):
 	"""Class to handle a non-graphical cadence session
 
 	>>> s = CadenceSession()
@@ -40,9 +40,14 @@ class CadenceSession:
 			print self.startup
 
 	def callfunc(self, name, *args, **optargs):
-		return self.send("(%s "%name +
-				 " ".join(map(skill.toSkill, args) + ["?%s %s"%(k,skill.toSkill(v)) for k,v in optargs.items()])+
-				 ")")
+		skillobject = skill.SkillObject(self)
+		skillobject.eval(
+			"(%s "%name + 
+			" ".join(map(skill.toSkill, args) + 
+				 ["?%s %s"%(k,skill.toSkill(v)) for k,v in optargs.items()])+
+			")")
+		return skillobject
+
 	def _makeskillfunc(self, name):
 		def func(*args, **optargs):
 			return self.callfunc(name, *args, **optargs)

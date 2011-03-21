@@ -21,13 +21,18 @@ parser.add_option('-m', '--simulator',
                   help='Simulator name, default: %default')
 
 parser.add_option('-s', '--stopviews',
-                  default='spectre,schematic,veriloga',
+                  default='spectre',
                   help='Stop view list (comma separated), default: %default')
 
 parser.add_option('-w', '--switchviews',
-                  default='spectre',
+                  default='spectre,schematic,veriloga',
                   help='Switch view list (comma separated), default: %default')
 
+parser.add_option('-c', '--subcircuit', action='store_true', default=False,
+                  help='Netlist cell as a subcircuit')
+
+parser.add_option('-d', '--debug', action='store_true', default=False,
+                  help='Write interaction with Virtuoso to stderr')
 
 (options, args) = parser.parse_args()
 
@@ -45,11 +50,13 @@ targetdir = tempfile.mkdtemp()
 remove_targetdir_after = True
 
 try:
-    session = cds.CadenceSession()
+    session = cds.CadenceSession(verbose = options.debug)
+
     result = netlist.netlist_cell(session, lib, cell, view,
                                   simulator=options.simulator,
                                   stop_view_list=options.stopviews.split(','),
-                                  switch_view_list=options.switchviews.split(','))
+                                  switch_view_list=options.switchviews.split(','),
+                                  subcircuit=options.subcircuit)
     
     print open(result["netlist_filename"], "r").read()
 
