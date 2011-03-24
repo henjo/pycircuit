@@ -41,12 +41,13 @@ def keep_subcircuits(netlist):
     for line in netlist.split('\n'):
         if line.startswith('subckt'):
             insubckt += 1
-        elif line.startswith('ends'):
-            insubckt -= 1
-            
+
         ## Keep line if subcircuit or empty line
         if insubckt > 0 or re.match('^\s*$', line):
             lines.append(line)
+
+        if line.startswith('ends'):
+            insubckt -= 1
 
     return '\n'.join(lines)
 
