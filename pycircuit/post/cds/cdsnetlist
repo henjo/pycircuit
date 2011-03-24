@@ -50,7 +50,7 @@ targetdir = tempfile.mkdtemp()
 remove_targetdir_after = True
 
 try:
-    session = cds.CadenceSession(verbose = options.debug)
+    session = cds.CadenceSession(verbose = options.debug, timeout=300)
 
     result = netlist.netlist_cell(session, lib, cell, view,
                                   simulator=options.simulator,
