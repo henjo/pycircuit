@@ -10,7 +10,7 @@ import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 from copy import copy
 from test_circuit import create_current_divider
-from sympy import var, simplify, integrate, oo, limit, gruntz, pi
+from sympy import var, simplify, integrate, oo, limit, gruntz, pi, I
 
 def test_symbolic_ac():
     pycircuit.circuit.circuit.default_toolkit = symbolic
@@ -29,7 +29,7 @@ def test_symbolic_noise_vin_vout():
     pycircuit.circuit.circuit.default_toolkit = symbolic
     c = SubCircuit()
 
-    var('R1 R2 k T V', real=True, positive=True)
+    var('R1 R2 V', real=True, positive=True)
 
     c['vs'] = VS(1, gnd, vac=V)
     c['R1'] = R(1, 2, r=R1)
@@ -39,15 +39,15 @@ def test_symbolic_noise_vin_vout():
                   toolkit=symbolic)
     res = noise.solve(s, complexfreq=True)
 
-    assert_equal(simplify(res['Svnout']), simplify(4*R1*R2*k*T/(R1 + R2)))
-    assert_equal(simplify(res['Svninp']), (4*R1*R2*k*T + 4*k*T*R1**2)/R2)
+    assert_equal(simplify(res['Svnout']), simplify(4*R1*R2*noise.toolkit.kboltzmann*noise.par.epar.T/(R1 + R2)))
+    assert_equal(simplify(res['Svninp']), 4*noise.toolkit.kboltzmann*noise.par.epar.T*R1*(R2 + R1)/R2)
     assert_equal(simplify(res['gain'] - R2 / (R1 + R2)), 0)
 
 def test_symbolic_noise_vin_iout():
     pycircuit.circuit.circuit.default_toolkit = symbolic
     c = SubCircuit()
     
-    var('R1 R2 R3 k T V', real=True, positive=True)
+    var('R1 R2 R3 V', real=True, positive=True)
 
     c['vs'] = VS(1, gnd, vac=V)
     c['R1'] = R(1, 2, r=R1)
@@ -58,8 +58,8 @@ def test_symbolic_noise_vin_iout():
                   toolkit=symbolic)
     res = noise.solve(s, complexfreq=True)
     
-    assert_equal(simplify(res['Sinout']), simplify(4*k*T*(R1+R2)/(R1*R2)))
-    assert_equal(simplify(res['Svninp']), (4*R1*R2*k*T + 4*k*T*R1**2)/R2)
+    assert_equal(simplify(res['Sinout']), simplify(4*noise.toolkit.kboltzmann*noise.par.epar.T*(R1+R2)/(R1*R2)))
+    assert_equal(simplify(res['Svninp']), 4*noise.toolkit.kboltzmann*noise.par.epar.T*R1*(R2+R1)/R2)
     assert_equal(simplify(res['gain']), 1/R1)
 
 def test_symbolic_noise_iin_vout():
@@ -67,9 +67,9 @@ def test_symbolic_noise_iin_vout():
     c = SubCircuit()
     
     var('R1 R2', real=True)
-    var('k T I')
+    var('Iin')
 
-    c['is'] = IS(1, gnd, iac=I)
+    c['is'] = IS(1, gnd, iac=Iin)
     c['R1'] = R(1, 2, r=R1)
     c['R2'] = R(2, gnd, r=R2)
 
@@ -77,8 +77,8 @@ def test_symbolic_noise_iin_vout():
                   toolkit=symbolic)
     res = noise.solve(s, complexfreq=True)
 
-    assert_equal(simplify(res['Svnout']), 4*R2*k*T)
-    assert_equal(simplify(res['Sininp']), 4*k*T/R2)
+    assert_equal(simplify(res['Svnout']), 4*R2*noise.toolkit.kboltzmann*noise.par.epar.T)
+    assert_equal(simplify(res['Sininp']), 4*noise.toolkit.kboltzmann*noise.par.epar.T/R2)
     assert_equal(simplify(res['gain']), R2)
 
 
@@ -87,9 +87,9 @@ def test_symbolic_noise_iin_iout():
     c = SubCircuit()
     
     var('R1 R2 R3', real=True)
-    var('k T I s')
+    var('Iin s')
 
-    c['is'] = IS(1, gnd, iac=I)
+    c['is'] = IS(1, gnd, iac=Iin)
     c['R1'] = R(1, 2, r=R1)
     c['R2'] = R(2, gnd, r=R2)
     c['vl'] = VS(2, gnd)
@@ -98,17 +98,17 @@ def test_symbolic_noise_iin_iout():
                   toolkit=symbolic)
     res = noise.solve(s, complexfreq=True)
 
-    assert_equal(simplify(res['Sinout']), 4*k*T/R2)
-    assert_equal(simplify(res['Sininp']), 4*k*T/R2)
+    assert_equal(simplify(res['Sinout']), 4*noise.toolkit.kboltzmann*noise.par.epar.T/R2)
+    assert_equal(simplify(res['Sininp']), 4*noise.toolkit.kboltzmann*noise.par.epar.T/R2)
     assert_equal(simplify(res['gain']), 1)
 
 def test_symbolic_noise_kt_over_C():
     pycircuit.circuit.circuit.default_toolkit = symbolic
     cir = SubCircuit(toolkit = symbolic)
 
-    var('r c w w1 k T V', real=True, positive=True)
+    var('r c w w1 V', real=True, positive=True)
 
-    s = 1j * w
+    s = I * w
 
     cir['vs'] = VS(1, gnd, vac=V)
     cir['R'] = R(1, 2, r=r)
@@ -119,8 +119,8 @@ def test_symbolic_noise_kt_over_C():
     res = noise.solve(s, complexfreq=True)
 
 
-    noise_voltage_power = integrate(simplify(res['Svnout']),(w, 0, oo))
+    noise_voltage_power = simplify(integrate(simplify(res['Svnout']),(w, 0, oo)))
 
-    assert_equal(noise_voltage_power, 2*pi*k*T/c)
+    assert_equal(noise_voltage_power, 2*pi*noise.toolkit.kboltzmann*noise.par.epar.T/c)
 
     assert_equal(simplify(res['gain'] - 1/(1 + s*r*c)), 0)
