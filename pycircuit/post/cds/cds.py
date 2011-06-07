@@ -1,4 +1,4 @@
-# -*- coding: latin-1 -*-
+B0;136;0c# -*- coding: latin-1 -*-
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
@@ -6,6 +6,15 @@ import pexpect
 import skill
 import re
 import os, sys
+
+def find_virtuoso():
+	"""Find Cadence Virtuoso binary"""
+	virtuosocmd = find_executable("icfb") or find_executable("virtuoso")
+	if  virtuosocmd == None:
+		raise ValueError("Cannot find virtuoso executable")
+		
+	cmd = virtuosocmd + " -nograph"
+	return cmd
 
 class CadenceSession(object):
 	"""Class to handle a non-graphical cadence session
@@ -20,21 +29,14 @@ class CadenceSession(object):
 	
 	"""
 	def __init__(self, cmd=None, timeout=30, verbose=False):
-		## Find virtuoso binary
 		if cmd == None:
-			virtuosocmd = find_executable("icfb") or find_executable("virtuoso")
-			if  virtuosocmd == None:
-				raise ValueError("Cannot find virtuoso executable")
-
-			cmd = virtuosocmd + " -nograph"
-
+			cmd = find_virtuoso()
 		self.verbose = verbose
 		self.cds = pexpect.spawn(cmd, timeout=timeout)
 		self.cds.setecho(False)
 	    
-		self.prompt = "1?> "
+		self.prompt = re.compile("1?> ")
 	    
-		self.cds.expect(self.prompt)
 		self.startup = self.cds.before
 		if verbose:
 			print self.startup
@@ -83,6 +85,7 @@ class CadenceSession(object):
 			print "Result:", result
 		
 		return result
+
 	def __del__(self):
 		if self.cds:
 			self.cds.sendline("exit")
