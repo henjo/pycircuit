@@ -23,6 +23,7 @@ class PSFResultSet(result.ResultDict):
     """
     
     def __init__(self, resultdir=None):
+        runlist = []
         self.runs = {}
         self.resultnames = []
         self.resultdir = resultdir
@@ -33,18 +34,19 @@ class PSFResultSet(result.ResultDict):
             self.runObjFile = psf.PSFReader(runobjfile, asc=True)
             self.runObjFile.open()
 
-            runNames = self.runObjFile.getValueNames()
-
-            for runName in runNames:
+            for runName in self.runObjFile.getValueNames():
                 run = PSFRun(runName, self.runObjFile.getValuesByName(runName), self.runObjFile.getValuePropertiesByName(runName))
+                runlist.append(run)
                 self.runs[runName] = run
+
         ## If not present, create a single run
         else:
             run = PSFRun('Run1', {'logName': ['logFile'], 'parent': '', 'sweepVariable': [] }, {})
             self.runs['Run1'] = run
+            runlist.append(run)
 
         # Read log files
-        for run in self.runs.values():
+        for run in runlist:
             if self.runs.has_key(run.parentName):
                 parent = self.runs[run.parentName]
                 run.setParent(parent)

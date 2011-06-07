@@ -327,16 +327,19 @@ class Noise(SSAnalysis):
         G, C, CY, u, x, ss = self.dc_steady_state(freqs, refnode,
                                               complexfreq = complexfreq, u = u)
 
+        tk = self.toolkit
+        
         def noisesolve(s):
+
             # Calculate the reciprocal G and C matrices
             Yreciprocal = G.T + s*C.T
             
-            Yreciprocal2, uu = (self.toolkit.toMatrix(A) for A in (Yreciprocal, u))
+            Yreciprocal2, uu = (tk.toMatrix(A) for A in (Yreciprocal, u))
             
             ## Calculate transimpedances from currents in each nodes to output
-            zm =  self.toolkit.linearsolver(Yreciprocal2, -uu)
+            zm =  tk.linearsolver(Yreciprocal2, -uu)
 
-            xn2out = self.toolkit.dot(self.toolkit.dot(zm.reshape(1,self.toolkit.size(zm)), CY), self.toolkit.conj(zm))
+            xn2out = tk.dot(tk.dot(zm.reshape(1, tk.size(zm)), CY), tk.conj(zm))
 
             ## Etract gain
             gain = None
@@ -371,7 +374,7 @@ class Noise(SSAnalysis):
         ## Refer the voltages to the gnd node by removing
         ## the rows and columns that corresponds to this node
         irefnode = self.cir.nodes.index(refnode)
-        G,C,CY,u = remove_row_col((G,C,CY,u), irefnode, self.toolkit)
+        G,C,CY,u = remove_row_col((G,C,CY,u), irefnode, tk)
         
         xn2out, gain = self.noise_map_function(noisesolve, ss, refnode)
 

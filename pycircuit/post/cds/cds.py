@@ -35,7 +35,7 @@ class CadenceSession(object):
 		self.cds = pexpect.spawn(cmd, timeout=timeout)
 		self.cds.setecho(False)
 	    
-		self.prompt = re.compile("1?> ")
+		self.prompt = re.compile("^1?> ", re.MULTILINE)
 	    
 		self.startup = self.cds.before
 		if verbose:
