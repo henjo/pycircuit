@@ -5,7 +5,7 @@
 import numpy as np
 from nport import *
 from pycircuit.utilities import isiterable
-from pycircuit.circuit import SubCircuit, gnd, R, VS, IS, Branch, circuit
+from pycircuit.circuit import SubCircuit, gnd, G, R, VS, IS, Branch, circuit
 from analysis import Analysis, remove_row_col,defaultepar
 from analysis_ss import AC, Noise, TransimpedanceAnalysis, dc_steady_state
 
@@ -90,7 +90,7 @@ class TwoPortAnalysis(Analysis):
         self.noise_outquantity = noise_outquantity
 
         self.method = method
-        
+
     def solve(self, freqs, complexfreq = False, refnode = gnd):
         toolkit = self.toolkit
 
@@ -209,11 +209,11 @@ class TwoPortAnalysis(Analysis):
         ## => S_k_n = b_k / a_n = v_k | k != n
         ## S_n_n = b_n / a_n = v_n - 1
         ##
-        ## 
+        ##
         toolkit = self.toolkit
 
         # Reference impedance
-        r0 = 1
+        g0 = 1
 
         N = len(self.ports)
 
@@ -227,30 +227,29 @@ class TwoPortAnalysis(Analysis):
 
         ## Place power sources at the ports
         for n, sourceport in enumerate(self.ports):
-            circuit['_is%d'%n] = ISInternal(sourceport[1], sourceport[0], iac = 0, toolkit=toolkit)
-            circuit['_rl%d'%n] = R(sourceport[1], sourceport[0], r = r0, noisy=False, toolkit=toolkit)
-
+            circuit['_is%d'%n] = ISInternal(sourceport[1], sourceport[0], i=0,iac = 0, toolkit=toolkit)
+            circuit['_rl%d'%n] = G(sourceport[1], sourceport[0], g = g0, noisy=False, toolkit=toolkit)
+            
         if toolkit.symbolic:
             ## For now just one frequency is allowed
             assert not isiterable(freqs)
-            
-            G, C, CY, u, x, ss = dc_steady_state(circuit, freqs, 
+
+            Gmat, C, CY, u, x, ss = dc_steady_state(circuit, freqs, 
                                              refnode,
                                              toolkit,
                                              complexfreq = complexfreq,
                                              epar = self.epar)
-
            ## Refer the voltages to the reference node by removing
            ## the rows and columns that corresponds to this node
             irefnode = self.cir.get_node_index(refnode)
-            G,C,CY,u = remove_row_col((G,C,CY,u), irefnode, toolkit)
+            Gmat,C,CY,u = remove_row_col((Gmat,C,CY,u), irefnode, toolkit)
 
-            Y = C * ss + G
+            Y = C * ss + Gmat
             detY =  toolkit.det(Y)
 
         for n, sourceport in enumerate(self.ports):
             ## Add stimulus to the port
-            circuit['_is%d'%n].ipar.iac = 2 / r0
+            circuit['_is%d'%n].ipar.iac = 2 * g0
 
             ## If symbolic the s-parameters are calculated using co-factors
             if toolkit.symbolic:
@@ -302,7 +301,7 @@ class TwoPortAnalysis(Analysis):
         zmlist = transimpana.solve(freqs, branchlist, refnode=refnode,
                                    complexfreq=complexfreq)
 
-        T = np.matrix(zmlist) * r0**-0.5
+        T = np.matrix(zmlist) * g0**0.5
         
         ## Complex frequency variable
         if complexfreq:
@@ -319,7 +318,7 @@ class TwoPortAnalysis(Analysis):
         ## Calculate noise wave correlation matrix
         CS = np.array(T * CY * T.H)
 
-        return NPortS(S, CS, z0=r0)
+        return NPortS(S, CS, z0=1/toolkit.integer(g0))
 
     def solve_abcd(self, freqs, refnode = gnd, complexfreq = False):
         (inp, inn), (outp, outn) = self.ports

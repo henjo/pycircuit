@@ -63,9 +63,8 @@ class G(Circuit):
     terminals = ('plus', 'minus')
     instparams = [Parameter(name='g', desc='Conductance', unit='S', 
                             default=1e-3),
-                  Parameter(name='nonoise', 
-                            desc='If true the conductance is noiseless', 
-                            unit='', default=False),
+                  Parameter(name='noisy', desc='No noise', unit='', 
+                            default=False)
                   ]
 
     def update(self, subject):
@@ -76,7 +75,7 @@ class G(Circuit):
     def G(self, x, epar=defaultepar): return self._G
 
     def CY(self, x, w, epar=defaultepar):
-        if not self.iparv.nonoise:
+        if self.iparv.noisy:
             iPSD = 4*self.toolkit.kboltzmann * epar.T*self.iparv.g
             return  self.toolkit.array([[iPSD, -iPSD],
                                         [-iPSD, iPSD]])
@@ -180,7 +179,7 @@ class VS(Circuit):
 
     def u(self, t=0.0, epar=defaultepar, analysis=None):
         if analysis == 'ac':
-            phase = self.iparv.phase * self.toolkit.pi / 180.
+            phase = self.iparv.phase * self.toolkit.pi / 180
             vac = self.iparv.vac * self.toolkit.exp(1j*phase)
             return self.toolkit.array([0, 0, -vac])
         elif analysis in timedomain_analyses:

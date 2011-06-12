@@ -20,7 +20,6 @@ from constants_sympy import kboltzmann, eps0, epsRSi, epsRSiO2, qelectron
 symbolic = True
 
 ac_u_dtype = np.object
-integer = np.integer
 
 def linearsolver(A, b):
     A,subst_dict = dummy_var_matrix(A)
@@ -114,3 +113,5 @@ def conj(xarray):
 def size(*args,**kvargs):
     return np.size(*args,**kvargs)
 
+def integer(x):
+    return sympy.Integer(x)

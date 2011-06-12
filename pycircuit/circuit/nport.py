@@ -2,6 +2,8 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
+from __future__ import division
+
 import numpy as np
 from copy import copy
 import constants
@@ -321,7 +323,7 @@ class NPortS(NPort):
         
         a = ((1 + s[0,0]) * (1 - s[1,1]) + s[0,1]*s[1,0]) / (2 * s[1,0])
         b = z0 * ((1 + s[0,0]) * (1 + s[1,1]) - s[0,1]*s[1,0]) / (2 * s[1,0])
-        c = 1. / z0 * ((1 - s[0,0]) * (1 - s[1,1]) - s[0,1]*s[1,0]) / (2 * s[1,0])
+        c = 1 / z0 * ((1 - s[0,0]) * (1 - s[1,1]) - s[0,1]*s[1,0]) / (2 * s[1,0])
         d = ((1 - s[0,0]) * (1 + s[1,1]) + s[0,1]*s[1,0]) / (2 * s[1,0])
         
         return np.array([[a,b],[c,d]], object)

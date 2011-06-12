@@ -8,6 +8,7 @@ from pycircuit.utilities.misc import indent, inplace_add_selected, \
 from copy import copy
 import types
 import numeric
+import numpy as np
 
 default_toolkit = numeric
 
@@ -1073,7 +1074,7 @@ class SubCircuit(Circuit):
             ## Create mapping matrix
             if len(nodemap) > 0:
                 mapmatrix = self.toolkit.zeros((self.n, len(nodemap)),
-                                               dtype = self.toolkit.integer)
+                                               dtype = np.integer)
             
                 for inst_node_index, node_index in enumerate(nodemap):
                     mapmatrix[node_index, inst_node_index] = 1
