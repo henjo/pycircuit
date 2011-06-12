@@ -1,4 +1,4 @@
-B0;136;0c# -*- coding: latin-1 -*-
+# -*- coding: latin-1 -*-
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
