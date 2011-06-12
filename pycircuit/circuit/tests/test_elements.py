@@ -85,9 +85,9 @@ def gen_stamps(toolkit=symbolic):
     CVCVS = np.zeros((5,5))
     yield(VCVS(1, gnd, 2, gnd, g=gain),GVCVS,CVCVS)
 
-    GVCCS = np.zeros((4,4))
+    GVCCS = toolkit.zeros((4,4))
     GVCCS[2:4,0:2] =  np.array([[1, -1],[-1, 1]])
-    yield(VCCS(1, gnd, 2, gnd, gm = gm), gm *GVCCS,
+    yield(VCCS(1, gnd, 2, gnd, gm = gm), gm * GVCCS,
           np.zeros((4,4)))
 
     GNullor = np.array([[0,0,0, 0, 0],
@@ -104,8 +104,8 @@ def gen_stamps(toolkit=symbolic):
                              [-1,1,N,-N, 0]])
     yield(Transformer(1, gnd, 2, gnd, n = N), GTransformer, np.zeros((5,5)))
 
-    GGyrator = np.array([[  0.,  0.,  -gm,  gm],
-                      [  0.,  0.,   gm, -gm],
+    GGyrator = np.array([[  0,  0,  -gm,  gm],
+                      [  0,  0,   gm, -gm],
                       [  gm, -gm,   0.,  0.],
                       [ -gm,  gm,   0.,  0.]])
     yield(Gyrator(1, gnd, 2, gnd, gm = gm), GGyrator, np.zeros((4,4)))

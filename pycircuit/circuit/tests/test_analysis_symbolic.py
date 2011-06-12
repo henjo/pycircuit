@@ -88,6 +88,7 @@ def test_symbolic_noise_iin_iout():
     
     var('R1 R2 R3', real=True)
     var('Iin s')
+    k = symbolic.kboltzmann
 
     c['is'] = IS(1, gnd, iac=Iin)
     c['R1'] = R(1, 2, r=R1)
@@ -98,14 +99,17 @@ def test_symbolic_noise_iin_iout():
                   toolkit=symbolic)
     res = noise.solve(s, complexfreq=True)
 
-    assert_equal(simplify(res['Sinout']), 4*noise.toolkit.kboltzmann*noise.par.epar.T/R2)
-    assert_equal(simplify(res['Sininp']), 4*noise.toolkit.kboltzmann*noise.par.epar.T/R2)
+    T = noise.par.epar.T
+
+    assert_equal(simplify(res['Sinout']), 4*k*T/R2)
+    assert_equal(simplify(res['Sininp']), 4*k*T/R2)
     assert_equal(simplify(res['gain']), 1)
 
 def test_symbolic_noise_kt_over_C():
     pycircuit.circuit.circuit.default_toolkit = symbolic
     cir = SubCircuit(toolkit = symbolic)
 
+    k = symbolic.kboltzmann
     var('r c w w1 V', real=True, positive=True)
 
     s = I * w
@@ -118,9 +122,12 @@ def test_symbolic_noise_kt_over_C():
                   toolkit = symbolic)
     res = noise.solve(s, complexfreq=True)
 
+    T = noise.par.epar.T
 
-    noise_voltage_power = simplify(integrate(simplify(res['Svnout']),(w, 0, oo)))
+    svnout = simplify(res['Svnout'])
 
-    assert_equal(noise_voltage_power, 2*pi*noise.toolkit.kboltzmann*noise.par.epar.T/c)
+    noise_voltage_power = limit(simplify(integrate(svnout, (w, 0, w1))), w1, oo)
+
+    assert_equal(noise_voltage_power, 2*pi*k*T/c)
 
     assert_equal(simplify(res['gain'] - 1/(1 + s*r*c)), 0)

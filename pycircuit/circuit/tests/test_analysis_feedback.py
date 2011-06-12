@@ -71,11 +71,12 @@ def test_loopanalysis_viiv():
     cir = SubCircuit(toolkit=symbolic)
     cir['A1'] = VCVS(gnd, 'int', 'out', gnd, g = A, toolkit=symbolic)
     cir['R1'] = R('in', 'int', r=R1)
-    cir['probe'] = LoopProbe('out', gnd, 'out_R2', gnd)
+    cir['probe'] = LoopProbe('out', gnd, 'out_R2', gnd, toolkit=symbolic)
     cir['R2'] = R('int', 'out_R2', r=R2)
     cir['VS'] = VS('in', gnd)
 
     ana = FeedbackLoopAnalysis(cir, toolkit=symbolic)
+
     res = ana.solve(s, complexfreq=True)
 
-    assert simplify(res['loopgain'] - (- A * R1 / (R1 + R2))) == 0
+    assert sympy.simplify(res['loopgain'] - (- A * R1 / (R1 + R2))) == 0

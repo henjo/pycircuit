@@ -59,7 +59,8 @@ def test_symbolic_twoport():
     circuit.default_toolkit = symbolic
     cir = SubCircuit()
 
-    var('R1 R0 C1 w k T', real=True, positive=True)
+    k = symbolic.kboltzmann
+    var('R1 R0 C1 w T', real=True, positive=True)
     s = 1j*w
 
     cir['R0'] = R(1, gnd, r=R0)
@@ -74,7 +75,7 @@ def test_symbolic_twoport():
                                   noise = True, toolkit=symbolic,
                                   noise_outquantity = 'v')
     result = twoport_ana.solve(freqs=s, complexfreq=True)
-
+    
     ABCD = Matrix(result['twoport'].A)
     ABCD.simplify()
 

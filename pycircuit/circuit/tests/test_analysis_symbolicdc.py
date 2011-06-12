@@ -8,6 +8,7 @@ from pycircuit.circuit import symbolic
 import sympy
 from sympy import Symbol, var, symbols, log
 from numpy.testing import assert_array_almost_equal, assert_array_equal
+import numpy as np
 
 def test_nonlinear():
     var('k qelectron I0 Isat qelectron T', positive=True, real=True)
@@ -41,7 +42,10 @@ def test_linear():
 
     
 def test_geteqsys():
-    var('k qelectron R1 V0 Isat q T qelectron')
+    var('R1 V0 Isat T')
+    k = symbolic.kboltzmann
+    qelectron = symbolic.qelectron
+    
 
     c = SubCircuit(toolkit=symbolic)
     c['V0'] = VS('net1', gnd, v=V0, toolkit=symbolic)
@@ -50,13 +54,17 @@ def test_geteqsys():
 
     dc = SymbolicDC(c)
 
-    dc.epar.T = Symbol('T')
+    dc.epar.T = T
 
     eqsys, x = dc.get_eqsys()
 
     x0, x2, x3 = x
-    assert_array_equal(eqsys, [x3 + x0/R1 - x2/R1, 
-                         -Isat*(1 - sympy.exp(qelectron*x2/(T*k))) + x2/R1 - x0/R1, 
-                         x0 - V0])
-    
-    
+
+    eqsys_ref = np.array([x3 + x0/R1 - x2/R1, 
+                          -Isat*(1 - sympy.exp(qelectron*x2/(T*k))) + x2/R1 - x0/R1, 
+                          x0 - V0])
+
+    assert sympy.simplify(eqsys_ref[0] - eqsys_ref[0]) == 0
+    assert sympy.simplify(eqsys_ref[0] - eqsys_ref[0]) == 0
+    assert sympy.simplify(eqsys_ref[0] - eqsys_ref[0]) == 0
+

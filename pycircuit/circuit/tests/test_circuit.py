@@ -209,7 +209,7 @@ def test_current_probing():
     
     s = sympy.Symbol('s')
 
-    R1, R3, C2 = sympy.symbols('R1', 'R3', 'C2')
+    R1, R3, C2 = sympy.symbols(('R1', 'R3', 'C2'))
 
     cir = create_current_divider(R1,R3,C2)
     
@@ -229,7 +229,7 @@ def test_current_probing_wo_branch():
 
     s = sympy.Symbol('s')
 
-    R1, C2, R3 = sympy.symbols('R1', 'C2', 'R3')
+    R1, C2, R3 = sympy.symbols(('R1', 'C2', 'R3'))
 
     cir = create_current_divider(R1,R3,C2)
 
