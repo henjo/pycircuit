@@ -37,17 +37,32 @@ class CadenceSession(object):
 	    
 		self.prompt = re.compile("^1?> ", re.MULTILINE)
 	    
+		self.cds.expect(self.prompt)
+
 		self.startup = self.cds.before
+
 		if verbose:
 			print self.startup
 
 	def callfunc(self, name, *args, **optargs):
+		"""Call skill function in session"""
 		skillobject = skill.SkillObject(self)
 		skillobject.eval(
 			"(%s "%name + 
 			" ".join(map(skill.toSkill, args) + 
 				 ["?%s %s"%(k,skill.toSkill(v)) for k,v in optargs.items()])+
 			")")
+		return skillobject
+
+	def evalexpr(self, expr, *args):
+		"""Eval skill-expression with optional SkillObjects arguments expanded
+		
+		   SkillObjects can be used in the expression by using %s and supplying
+		   the SkillObjects to be expanded in the args argument
+		"""
+
+		skillobject = skill.SkillObject(self)
+		skillobject.eval(expr % tuple(arg.varname for arg in args))
 		return skillobject
 
 	def _makeskillfunc(self, name):
@@ -62,24 +77,29 @@ class CadenceSession(object):
 		else:
 			raise AttributeError()
 
-	def send(self, expr):
+	def send(self, expr, parse=True, parseall=False):
 		if self.verbose:
-			print "Sending: "+expr
+			print "Sending: " + expr
 		self.cds.sendline(expr)
 		self.cds.expect(self.prompt)
 		if self.verbose:
 			print "Got:", self.cds.before
 
-		response = [s for s in re.split("[\r]\n",self.cds.before) if s != ""][-1]
+		responselines = [s for s in re.split("[\r]\n",self.cds.before) if s != ""]
 
-		try:
-		    result = skill.parse(response)
-		except:
-		    print response
-		    raise Exception("Could not parse response")
+		if responselines[-1].find("*Error*") > 0:
+			raise Exception(self.cds.before)
 
-		if response.find("*Error*") > 0:
-			raise Exception(response)
+		result = True
+		if parse:
+			if parseall:
+				response = self.cds.before
+			else:
+				response = responselines
+			try:
+			    result = skill.parse(response)
+			except:
+			    raise Exception("Could not parse response")
 
 		if self.verbose:
 			print "Result:", result

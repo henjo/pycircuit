@@ -24,7 +24,9 @@ class SkillObject(object):
             return self._varname
 
 	def eval(self, expr):
-            self.value = self.session.send('%s=%s'%(self._varname, expr))
+            self.session.send('%s=%s'%(self._varname, expr), parse=False)
+            self.value = self.session.send('%s' % self._varname, 
+					   parse=True, parseall=True)
             self.valid = True
             return self.value
 
@@ -37,6 +39,8 @@ class SkillObject(object):
             ## FIXME
             ## self.varname = 'unbound
             pass
+
+
 
 class Symbol(object):
     def __init__(self, name):
