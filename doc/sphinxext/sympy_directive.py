@@ -212,7 +212,7 @@ def _option_boolean(arg):
 
 default_pre_code = """from __future__ import division
 from sympy import *
-x, y, z = symbols('xyz')
-k, m, n = symbols('kmn', integer=True)
+x, y, z = symbols('x,y,z')
+k, m, n = symbols('k,m,n', integer=True)
 f, g, h = map(Function, 'fgh')
 """
