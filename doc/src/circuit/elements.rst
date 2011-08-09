@@ -1,5 +1,5 @@
 Circuit elements
--------
+-----------------
 
 .. currentmodule:: pycircuit.circuit
 
