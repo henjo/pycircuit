@@ -40,7 +40,7 @@ def test_symbolic_noise_vin_vout():
     res = noise.solve(s, complexfreq=True)
 
     assert_equal(simplify(res['Svnout']), simplify(4*R1*R2*noise.toolkit.kboltzmann*noise.par.epar.T/(R1 + R2)))
-    assert_equal(simplify(res['Svninp']), 4*noise.toolkit.kboltzmann*noise.par.epar.T*R1*(R2 + R1)/R2)
+    assert_equal(simplify(res['Svninp']), simplify(4*noise.toolkit.kboltzmann*noise.par.epar.T*R1*(R2 + R1)/R2))
     assert_equal(simplify(res['gain'] - R2 / (R1 + R2)), 0)
 
 def test_symbolic_noise_vin_iout():
@@ -59,7 +59,7 @@ def test_symbolic_noise_vin_iout():
     res = noise.solve(s, complexfreq=True)
     
     assert_equal(simplify(res['Sinout']), simplify(4*noise.toolkit.kboltzmann*noise.par.epar.T*(R1+R2)/(R1*R2)))
-    assert_equal(simplify(res['Svninp']), 4*noise.toolkit.kboltzmann*noise.par.epar.T*R1*(R2+R1)/R2)
+    assert_equal(simplify(res['Svninp']), simplify(4*noise.toolkit.kboltzmann*noise.par.epar.T*R1*(R2+R1)/R2))
     assert_equal(simplify(res['gain']), 1/R1)
 
 def test_symbolic_noise_iin_vout():
@@ -126,7 +126,7 @@ def test_symbolic_noise_kt_over_C():
 
     svnout = simplify(res['Svnout'])
 
-    noise_voltage_power = limit(simplify(integrate(svnout, (w, 0, w1))), w1, oo)
+    noise_voltage_power = simplify(integrate(svnout, (w, 0, oo)))
 
     assert_equal(noise_voltage_power, 2*pi*k*T/c)
 
