@@ -80,6 +80,8 @@ today_fmt = '%B %d, %Y'
 # The name of the Pygments (syntax highlighting) style to use.
 pygments_style = 'sphinx'
 
+# Make todo extension produce ouput
+todo_include_todos = True
 
 # Options for HTML output
 # -----------------------
