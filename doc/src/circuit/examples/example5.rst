@@ -19,7 +19,7 @@ input referred noise.
     import numpy, pylab
     from pycircuit.circuit import *
 
-    Ri,Rfb,Sv1,Si1 = symbols('Ri Rfb Sv1 Si1', real=True, positive=True)
+    Ri,Rfb,Sv1,Si1,mu = symbols('R_i R_{fb} S_{v_{1}} S_{i_{1}} mu', real=True, positive=True)
 
     ## Create circuit
     cir = SubCircuit(toolkit=symbolic)
@@ -40,16 +40,47 @@ input referred noise.
     ABCD.simplify()
     ABCD
 
-    ## Calculate Voltage gain (mu)
-    mu = 1 / ABCD[0,0]
-    mu
+Calculate Voltage gain (mu)
 
-    ## Input referred voltage noise power spectral density
-    ## using |Rfb| = |mu| * Ri
-    expand(result['Svn']).subs(Rfb, abs(mu)*Ri)
 
-    ## Input referred current noise power spectral density
-    ## using |Rfb| = |mu| * Ri
-    expand(result['Sin']).subs(Rfb, abs(mu)*Ri)
+.. sympy::
+   :persistent:
+
+   mu_calc = 1 / ABCD[0,0]
+   mu_calc 
+
+ 
+Solve for Rfb
+
+
+.. sympy::
+   :persistent:
+
+   mu_solve = solve(mu-abs(mu_calc),Rfb)
+   mu_solve[0]
+
+
+Input referred voltage noise power spectral density
+
+.. sympy::
+   :persistent:
+
+   a = expand(result['Svn'])
+   collect(a,[Sv1,Si1,twoport_ana.par.epar.T*twoport_ana.toolkit.kboltzmann])
+
+Using Rfb = |mu| * Ri
+
+.. sympy::
+   :persistent:
+
+   collect(expand(a.subs({Rfb:mu_solve[0]})),[Sv1,Si1,twoport_ana.par.epar.T*twoport_ana.toolkit.kboltzmann])
+
+
+Input referred current noise power spectral density
+
+.. sympy::
+   :persistent:
+
+   collect(expand(result['Sin']).subs({Rfb:mu_solve[0]}),[Sv1,Si1,twoport_ana.par.epar.T*twoport_ana.toolkit.kboltzmann])
 
     
