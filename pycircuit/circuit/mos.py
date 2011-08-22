@@ -51,7 +51,7 @@ class MOS(SubCircuit):
                             gm=self.ipar.gmb)
 
         self['gds'] = G('d', 's', 
-                        g = self.ipar.gds, nonoise = True)
+                        g = self.ipar.gds, noisy = False)
 
         self['Cgs'] = C('g', 's', 
                         c = self.ipar.Cgs)
@@ -110,7 +110,7 @@ class MOS_ACM(SubCircuit):
                             gm=self.ipar.gmb)
 
         self['gds'] = G('d', 's', 
-                        g = self.ipar.gds, nonoise = True)
+                        g = self.ipar.gds, noisy = False)
 
         self['Cgs'] = C('g', 's', 
                         c = self.ipar.Cgs)
