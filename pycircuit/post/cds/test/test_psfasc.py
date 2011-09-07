@@ -3,11 +3,16 @@
 # See LICENSE for details.
 
 import re
+import os
+import doctest
+import pycircuit
 
 from pycircuit.post.cds.psf import *
 ## Unit tests for psf module
     
 class toPSFASCTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = os.path.dirname(__file__)
     def testString(self):
         s=String(value="test1234")
         self.assertEqual(s.toPSFasc(), '"test1234"')
@@ -18,59 +23,30 @@ class toPSFASCTests(unittest.TestCase):
         v=ComplexFloat64(value=complex(0.000291959, -2.81639e-09))
         self.assertEqual(v.toPSFasc(), '(0.000291959 -2.81639e-09)')
     def testProperty(self):
-        p=PropertyFloat64(None, name="tolerance.relative", value=1e-3)
+        p=PropertyFloat64(name="tolerance.relative", value=1e-3)
         self.assertEqual(p.toPSFasc(prec=9), '"tolerance.relative" 0.00100000')
-        p=PropertyString(None, name="date", value="2:30:26 PM, Thur Sep 27, 2007")
+        p=PropertyString(name="date", value="2:30:26 PM, Thur Sep 27, 2007")
         self.assertEqual(p.toPSFasc(),'"date" "2:30:26 PM, Thur Sep 27, 2007"')
-    def testHeaderSection(self):
-        psfasc = PSFASCSplitter("psfasc/dc.dc.asc")
-        expected=psfasc.sections["HEADER"].strip()
-        psf = PSFReader("psf/dc.dc")
-        psf.open()
-        self.assertEqual(psf.header.toPSFasc(), expected)
 
-    def testTypesSection(self):
-        psfasc = PSFASCSplitter("psfasc/dc.dc.asc")
-        expected=psfasc.sections["TYPE"].strip()
-        f=open("psf/dc.dc")
-        psf = PSFReader("psf/dc.dc")
+for section in [("HEADER", "header"), ("TYPE", "types"), ("SWEEP", "sweeps"), ("TRACE", "traces"), ("VALUE", "values")]:
+    def method(self):
+        psfasc = PSFASCSplitter(self.dir + "/psfasc/dc.dc.asc")
+        expected=psfasc.sections[section[0]].strip()
+        psf = PSFReader(self.dir + "/psf/dc.dc")
         psf.open()
-        self.assertEqual(psf.types.toPSFasc(), expected)
-
-    def testSweepSection(self):
-        psfasc = PSFASCSplitter("psfasc/dc.dc.asc")
-        expected=psfasc.sections["SWEEP"].strip()
-        f=open("psf/dc.dc")
-        psf = PSFReader("psf/dc.dc")
-        psf.open()
-        self.assertEqual(psf.sweeps.toPSFasc(), expected)
-
-    def testTraceSection(self):
-        psfasc = PSFASCSplitter("psfasc/dc.dc.asc")
-        expected=psfasc.sections["TRACE"].strip()
-        f=open("psf/dc.dc")
-        psf = PSFReader("psf/dc.dc")
-        psf.open()
-        self.assertEqual(psf.traces.toPSFasc(), expected)
-
-    def testValueSection(self):
-        psfasc = PSFASCSplitter("psfasc/dc.dc.asc")
-        expected=psfasc.sections["VALUE"].strip()
-        f=open("psf/dc.dc")
-        psf = PSFReader("psf/dc.dc")
-        psf.open()
-        self.assertEqual(psf.values.toPSFasc(), expected)
-
+        self.assertEqual(getattr(psf, section[1]).toPSFasc(), expected)
+    setattr(toPSFASCTests, "test%sSection" % section[1], method)
 
 class PSFTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = os.path.dirname(__file__)
     def testPSFasc(self):
-        psf=PSFReader("psf/dc.dc")
+        psf=PSFReader(self.dir + "/psf/dc.dc")
         psf.open()
         
-        psfascfile=open("psfasc/dc.dc.asc")
+        psfascfile=open(self.dir + "/psfasc/dc.dc.asc")
         
         for actual, expected in zip(psf.toPSFasc().split("\n"), psfascfile.readlines()):
-#            print actual, "==", expected.strip()
             self.assertEqual(actual, expected.strip())
         
 class PSFASCSplitter:
@@ -101,10 +77,9 @@ def psfAscAdjust(str):
     str = re.sub("-(0\.0*$)", '\\1', str)
     return re.sub("-(0\.0*\D)", '\\1', str)
     
+# def load_tests(loader, tests, ignore):
+#     tests.addTests(doctest.DocTestSuite(pycircuit.post.cds.test.test_psfasc))
+#     #tests.addTests(doctest.DocTestSuite(pycircuit.post.cds.psf))
+#     return tests
 
-if __name__ == '__main__':
-    import doctest
-    doctest.testmod()
-
-#    unittest.main()
 

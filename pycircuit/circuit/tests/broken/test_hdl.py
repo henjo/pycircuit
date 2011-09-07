@@ -5,7 +5,7 @@
 """ Test high-level circuit definition
 """
 
-from pycircuit.circuit.hdl import *
+from pycircuit.circuit.hdl import Behavioural
 import sympy
 import numpy as np
 

@@ -33,7 +33,7 @@ def psfresultset(libpsf, rawdir):
     else:
         os.environ['USELIBPSF'] = '0'
 
-    rs = PSFResultSet(rawdir)
+    rs = PSFResultSet(os.path.dirname(__file__) + '/' + rawdir)
 
     for resultname, signal, refvalue in psfresultset_testvectors[rawdir]:
         value = rs[resultname][signal]
@@ -45,5 +45,11 @@ def psfresultset(libpsf, rawdir):
 
     if libpsf == withlibpsf:
         ## Verify that libpsf was really used if libpsf was set
-        assert bool(int(os.environ['USELIBPSF'])), 'libpsf could not be loaded'
+        try:
+            import libpsf
+        except ImportError:
+            #libpsf not available
+            pass
+        else:
+            assert bool(int(os.environ['USELIBPSF'])), 'libpsf could not be loaded'
 

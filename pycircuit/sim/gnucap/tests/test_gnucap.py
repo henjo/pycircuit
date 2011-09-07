@@ -12,6 +12,12 @@ import numpy as np
 import logging
 import unittest
 from nose.tools import *
+from nose.exc import SkipTest
+
+try:
+    import gnucap
+except ImportError:
+    raise SkipTest("gnucap not installed") 
 
 #logging.basicConfig(level = logging.DEBUG)
 

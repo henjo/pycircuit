@@ -7,16 +7,14 @@
 from pycircuit.post.cds.psf import PSFReader
 import os, os.path, sys
 import unittest
-from psfasctests import psfAscAdjust
+from test_psfasc import psfAscAdjust
 
-class readAndExportTest(unittest.TestCase):
-    def __init__(self, psffile, psfascfile):
-        unittest.TestCase.__init__(self)
-        self.psffile = psffile
-        self.psfascfile = psfascfile
+class readAndExportTest():
+    psffile = None
 
     def runTest(self):
-        f = open(self.psffile)
+        if not self.psffile:
+            return
         psf = PSFReader(self.psffile)
         psf.open()
 
@@ -32,14 +30,9 @@ class readAndExportTest(unittest.TestCase):
         return "Readin PSF (%s), export to PSFASC, comparing with psf tool output."%self.psffile
         
 
-def makeSuite():
-    return suite
-
-if __name__ == '__main__':
-    suite = unittest.TestSuite()
-
+def makeSuite(suite):
     # Find PSF files with .asc counterparts
-    dirname=os.path.dirname(sys.argv[0])
+    dirname=os.path.dirname(__file__)
     if dirname == "":
         dirname = "."
 
@@ -48,12 +41,14 @@ if __name__ == '__main__':
         
     psffiles = [f for f in os.listdir(os.path.join(dirname, "psf")) if f[0] != "."]
 
-    for file in psffiles:
-        suite.addTest(readAndExportTest(os.path.join(psfdir, file), os.path.join(psfascdir, file+".asc")))
+    for filename in psffiles:
+        class TestPsf(unittest.TestCase, readAndExportTest):
+            pass
+        t = TestPsf()
+        t.psffile = os.path.join(psfdir, filename)
+        t.psfascfile = os.path.join(psfascdir, filename+".asc")
+        suite.addTest(t)
+    return suite
 
-    unittest.main(defaultTest="makeSuite")
-#    makeSuite()
-
-            
-        
-        
+#def load_tests(loader, tests, ignore):
+#    return makeSuite(tests)
