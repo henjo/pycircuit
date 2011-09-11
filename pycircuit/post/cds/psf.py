@@ -285,6 +285,7 @@ TYPECOMPLEXDOUBLE = 12
 TYPESTRUCT = 16
 TYPESTRING = 2 ## Incorrect number
 TYPEARRAY = 3 ## Incorrect number
+TYPEINTLONG = 5
 class DataTypeDef(Chunk):
     """Class representing data type of waveform data"""
     type=16
@@ -293,13 +294,15 @@ class DataTypeDef(Chunk):
         TYPEINTBYTE: Int8,
         TYPECOMPLEXDOUBLE: ComplexFloat64,
         TYPESTRING: String,
-        TYPEARRAY: Array
+        TYPEARRAY: Array,
+        TYPEINTLONG: Int32
     }
     PSFASCDict = {
         TYPEFLOATDOUBLE: "FLOAT DOUBLE",
         TYPEINTBYTE: "INT BYTE",
         TYPECOMPLEXDOUBLE: "COMPLEX DOUBLE",
-        TYPESTRING: "STRING *"
+        TYPESTRING: "STRING *",
+        TYPEINTLONG: "INT LONG"
     }
     
     def __init__(self, psf, id=0, name=None, datatypeid=0, structdef=None):
