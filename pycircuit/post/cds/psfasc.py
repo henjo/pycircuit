@@ -1,7 +1,3 @@
-# -*- coding: latin-1 -*-
-# Copyright (c) 2008 Pycircuit Development Team
-# See LICENSE for details.
-
 import psf
 
 def createValue(psfobj, name, typename=None, value=None):
@@ -28,6 +24,7 @@ class psfascScanner(runtime.Scanner):
         ('"STRUCT\\("', re.compile('STRUCT\\(')),
         ('"\\*"', re.compile('\\*')),
         ('"STRING"', re.compile('STRING')),
+        ('"LONG"', re.compile('LONG')),
         ('"BYTE"', re.compile('BYTE')),
         ('"INT"', re.compile('INT')),
         ('"DOUBLE"', re.compile('DOUBLE')),
@@ -37,6 +34,8 @@ class psfascScanner(runtime.Scanner):
         ('r"\\("', re.compile('\\(')),
         ('"PROP"', re.compile('PROP')),
         ('"HEADER"', re.compile('HEADER')),
+        ("'NaN'", re.compile('NaN')),
+        ("'Inf'", re.compile('Inf')),
         ('"END"', re.compile('END')),
         ('\\s+', re.compile('\\s+')),
         ('FLOATNUM', re.compile('-?[0-9]+\\.[0-9e+-]*')),
@@ -73,6 +72,19 @@ class psfasc(runtime.Parser):
         STR = self._scan('STR', context=_context)
         return eval(STR)
 
+    def FLOAT(self, _parent=None):
+        _context = self.Context(_parent, self._scanner, 'FLOAT', [])
+        _token = self._peek('FLOATNUM', "'Inf'", "'NaN'", context=_context)
+        if _token == 'FLOATNUM':
+            FLOATNUM = self._scan('FLOATNUM', context=_context)
+            return FLOATNUM
+        elif _token == "'Inf'":
+            self._scan("'Inf'", context=_context)
+            return 'inf'
+        else: # == "'NaN'"
+            self._scan("'NaN'", context=_context)
+            return 'nan'
+
     def headersec(self, psfobj, _parent=None):
         _context = self.Context(_parent, self._scanner, 'headersec', [psfobj])
         self._scan('"HEADER"', context=_context)
@@ -85,10 +97,10 @@ class psfasc(runtime.Parser):
     def property(self, _parent=None):
         _context = self.Context(_parent, self._scanner, 'property', [])
         name = self.name(_context)
-        _token = self._peek('FLOATNUM', 'INTNUM', 'STR', context=_context)
-        if _token == 'FLOATNUM':
-            FLOATNUM = self._scan('FLOATNUM', context=_context)
-            return psf.PropertyFloat64(name=name, value=FLOATNUM)
+        _token = self._peek('FLOATNUM', "'Inf'", "'NaN'", 'INTNUM', 'STR', context=_context)
+        if _token not in ['INTNUM', 'STR']:
+            FLOAT = self.FLOAT(_context)
+            return psf.PropertyFloat64(name=name, value=FLOAT)
         elif _token == 'INTNUM':
             INTNUM = self._scan('INTNUM', context=_context)
             return psf.PropertyUInt(name=name, value=INTNUM)
@@ -136,8 +148,8 @@ class psfasc(runtime.Parser):
             typedefFloat = self.typedefFloat(_context)
             return psf.TYPEFLOATDOUBLE, None
         elif _token == '"INT"':
-            typedefIntByte = self.typedefIntByte(_context)
-            return psf.TYPEINTBYTE, None
+            typedefInt = self.typedefInt(_context)
+            return typedefInt, None
         elif _token == '"ARRAY"':
             typedefArray = self.typedefArray(_context)
             return psf.TYPEARRAY, typedefArray
@@ -150,10 +162,16 @@ class psfasc(runtime.Parser):
         self._scan('"FLOAT"', context=_context)
         self._scan('"DOUBLE"', context=_context)
 
-    def typedefIntByte(self, _parent=None):
-        _context = self.Context(_parent, self._scanner, 'typedefIntByte', [])
+    def typedefInt(self, _parent=None):
+        _context = self.Context(_parent, self._scanner, 'typedefInt', [])
         self._scan('"INT"', context=_context)
-        self._scan('"BYTE"', context=_context)
+        _token = self._peek('"BYTE"', '"LONG"', context=_context)
+        if _token == '"BYTE"':
+            self._scan('"BYTE"', context=_context)
+            return psf.TYPEINTBYTE
+        else: # == '"LONG"'
+            self._scan('"LONG"', context=_context)
+            return psf.TYPEINTLONG
 
     def typedefString(self, _parent=None):
         _context = self.Context(_parent, self._scanner, 'typedefString', [])
@@ -230,7 +248,7 @@ class psfasc(runtime.Parser):
         _context = self.Context(_parent, self._scanner, 'value', [psfobj])
         opttypename = None
         name = self.name(_context)
-        if self._peek('STR', 'FLOATNUM', 'INTNUM', 'r"\\("', context=_context) == 'STR':
+        if self._peek('STR', 'FLOATNUM', "'Inf'", "'NaN'", 'INTNUM', 'r"\\("', context=_context) == 'STR':
             STR = self._scan('STR', context=_context)
             opttypename = eval(STR)
         value = createValue(psfobj, name, opttypename)
@@ -246,27 +264,27 @@ class psfasc(runtime.Parser):
         name = self.name(_context)
         STR = self._scan('STR', context=_context)
         while 1:
-            _token = self._peek('FLOATNUM', 'INTNUM', 'r"\\("', context=_context)
+            _token = self._peek('FLOATNUM', "'Inf'", "'NaN'", 'INTNUM', 'r"\\("', context=_context)
             if _token == 'r"\\("':
                 structarrayvalue = self.structarrayvalue(_context)
-            elif _token == 'FLOATNUM':
-                FLOATNUM = self._scan('FLOATNUM', context=_context)
+            elif _token != 'INTNUM':
+                FLOAT = self.FLOAT(_context)
             else: # == 'INTNUM'
                 INTNUM = self._scan('INTNUM', context=_context)
-            if self._peek('FLOATNUM', 'INTNUM', 'r"\\("', '"PROP"', 'STR', 'r"\\)"', '"END"', '"VALUE"', '"TRACE"', '"SWEEP"', context=_context) not in ['FLOATNUM', 'INTNUM', 'r"\\("']: break
+            if self._peek('FLOATNUM', "'Inf'", "'NaN'", 'INTNUM', 'r"\\("', '"PROP"', 'STR', 'r"\\)"', '"END"', '"VALUE"', '"TRACE"', '"TYPE"', '"SWEEP"', context=_context) not in ['FLOATNUM', "'Inf'", "'NaN'", 'INTNUM', 'r"\\("']: break
         if self._peek('"PROP"', 'STR', '"END"', '"VALUE"', '"TRACE"', 'r"\\)"', '"SWEEP"', context=_context) == '"PROP"':
             proplist = self.proplist(_context)
         return name
 
     def valuedata(self, _parent=None):
         _context = self.Context(_parent, self._scanner, 'valuedata', [])
-        _token = self._peek('FLOATNUM', 'INTNUM', 'STR', 'r"\\("', context=_context)
+        _token = self._peek('FLOATNUM', "'Inf'", "'NaN'", 'INTNUM', 'STR', 'r"\\("', context=_context)
         if _token == 'r"\\("':
             structarrayvalue = self.structarrayvalue(_context)
             return structarrayvalue
-        elif _token == 'FLOATNUM':
-            FLOATNUM = self._scan('FLOATNUM', context=_context)
-            return float(FLOATNUM)
+        elif _token not in ['INTNUM', 'STR']:
+            FLOAT = self.FLOAT(_context)
+            return float(FLOAT)
         elif _token == 'INTNUM':
             INTNUM = self._scan('INTNUM', context=_context)
             return int(INTNUM)
@@ -278,7 +296,7 @@ class psfasc(runtime.Parser):
         _context = self.Context(_parent, self._scanner, 'structarrayvalue', [])
         self._scan('r"\\("', context=_context)
         structval = []
-        while self._peek('r"\\)"', 'FLOATNUM', 'INTNUM', 'STR', 'r"\\("', context=_context) != 'r"\\)"':
+        while self._peek('r"\\)"', 'FLOATNUM', "'Inf'", "'NaN'", 'INTNUM', 'STR', 'r"\\("', context=_context) != 'r"\\)"':
             valuedata = self.valuedata(_context)
             structval.append(valuedata)
         self._scan('r"\\)"', context=_context)
@@ -288,13 +306,6 @@ class psfasc(runtime.Parser):
 def parse(rule, text):
     P = psfasc(psfascScanner(text))
     return runtime.wrap_error_reporter(P, rule)
-
-def is_psfasc(filename):
-    """Return true if a file is a PSF ascii file"""
-    if open(filename).read(6) == 'HEADER':
-        return True
-    else:
-        return False
 
 if __name__ == '__main__':
     from sys import argv, stdin

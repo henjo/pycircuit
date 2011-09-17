@@ -35,6 +35,12 @@ parser psfasc:
     ## Basic rules
     rule name: STR                 {{ return eval(STR) }}
 
+    rule FLOAT:
+        (FLOATNUM {{ return FLOATNUM }} 
+        | 'Inf' {{ return 'inf' }} 
+        | 'NaN' {{ return 'nan' }}
+        )
+
     ## Header
     rule headersec<<psfobj>>:
         "HEADER"                   {{ header = psf.HeaderSection(psfobj) }}
@@ -44,7 +50,7 @@ parser psfasc:
     ## Properties
     rule property: 
         name
-        ( FLOATNUM                 {{ return psf.PropertyFloat64(name=name, value=FLOATNUM) }}
+        ( FLOAT                    {{ return psf.PropertyFloat64(name=name, value=FLOAT) }}
           | INTNUM                 {{ return psf.PropertyUInt(name=name, value=INTNUM) }}
           | STR                    {{ return psf.PropertyString(name=name, value=eval(STR)) }}
         )
@@ -68,13 +74,17 @@ parser psfasc:
     rule typedef<<psfobj>>:
         typedefStruct<<psfobj>>     {{ return psf.TYPESTRUCT, typedefStruct }}
         | typedefFloat              {{ return psf.TYPEFLOATDOUBLE, None }}
-        | typedefIntByte            {{ return psf.TYPEINTBYTE, None }}
+        | typedefInt                {{ return typedefInt, None }}
         | typedefArray              {{ return psf.TYPEARRAY, typedefArray }}
         | typedefString             {{ return psf.TYPESTRING, None }}
 
     rule typedefFloat: "FLOAT" "DOUBLE"
 
-    rule typedefIntByte: "INT" "BYTE"
+    rule typedefInt: 
+        "INT" 
+        ( "BYTE" {{ return psf.TYPEINTBYTE }}
+        | "LONG"   {{ return psf.TYPEINTLONG }}
+        ) 
 
     rule typedefString: "STRING" "\*"
 
@@ -134,7 +144,7 @@ parser psfasc:
         name
         STR
         (structarrayvalue
-         | FLOATNUM
+         | FLOAT
          | INTNUM
         )+
         [proplist]               {{ return name }}
@@ -142,7 +152,7 @@ parser psfasc:
 
     rule valuedata:
         structarrayvalue         {{ return structarrayvalue }}
-        | FLOATNUM               {{ return float(FLOATNUM) }}
+        | FLOAT                  {{ return float(FLOAT) }}
         | INTNUM                 {{ return int(INTNUM) }}
         | STR                    {{ return eval(STR) }}
 
@@ -151,3 +161,4 @@ parser psfasc:
         (valuedata               {{ structval.append(valuedata) }}
         )*
         r"\)"                    {{ return structval }}
+

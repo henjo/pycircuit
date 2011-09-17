@@ -20,12 +20,37 @@ def warning(str):
 def indent(str, n=2):
     return "\n".join([' '*n+s for s in str.split("\n")])
 
+def is_psfasc(filename):
+    """Return true if a file is a PSF ascii file"""
+    if open(filename).read(6) == 'HEADER':
+        return True
+    else:
+        return False
+
+#type_format = {
+#    TYPEFLOATDOUBLE: '>d',
+#    TYPEINTBYTE: 'b',
+#    TYPEINTLONG: 'i',
+#    TYPECOMPLEXDOUBLE: '>dd'
+#}
+
+TYPESTRUCT = 16
+TYPESTRING = 2 ## Incorrect number
+TYPEARRAY = 3 ## Incorrect number
+
+SECTION_HEADER = 0
+SECTION_TYPE = 1
+SECTION_SWEEP = 2
+SECTION_TRACE = 3
+SECTION_VALUE = 4
+
+
 class PSFData(object):
     @classmethod
     def fromFile(cls, file):
         obj = cls()
-        obj.deSerializeFile(file)
-        return obj
+        size = obj.deSerializeFile(file)
+        return obj, size
 
     size=None
     
@@ -78,30 +103,38 @@ class PSFNumber(PSFData):
         return UInt32(self.value%int(a))
 
 class Int8(PSFNumber):
+    format='b'
     size=4
     def deSerializeFile(self, file, size=None):
         data=file.read(self.size)
         self.value = unpack("b",data[3])[0]
 class UInt8(PSFNumber):
+    format='B'
     size=4
     def deSerializeFile(self, file, size=None):
         data=file.read(self.size)
         self.value = unpack("B",data[3])[0]
 class Int32(PSFNumber):
+    format='i'
     size=4
     def deSerializeFile(self, file, size=None):
         self.value = unpack(">i",file.read(self.size))[0]
 class UInt32(PSFNumber):
+    format='I'
     size=4
-    def deSerializeFile(self, file, size=None):
-        self.value = unpack(">I",file.read(self.size))[0]
+    def deSerializeFile(self, data, size=None):
+        self.value = struct.unpack_from(">I", data)[0]
+        return 4
+
 class Int64(PSFNumber):
+    format='q'
     size=8
     def __int__(self):
         return self.value
     def deSerializeFile(self, file, size=None):
         self.value = unpack(">q",file.read(self.size))[0]
 class UInt64(PSFNumber):
+    format='Q'
     size=8
     def __int__(self):
         return self.value
@@ -109,6 +142,7 @@ class UInt64(PSFNumber):
         self.value = unpack(">Q",file.read(self.size))[0]
 
 class Float64(PSFNumber):
+    format='d'
     size=8
     def __float__(self):
         return float(self.value)
@@ -120,10 +154,12 @@ class Float64(PSFNumber):
             fmt='%#g'
         return fmt%self.value
 
-    def deSerializeFile(self, file, size=None):
-        self.value = unpack(">d",file.read(self.size))[0]
+    def deSerializeFile(self, data, size=None):
+        self.value = struct.unpack_from(">d", data)[0]
+        return 8
 
 class Float32(PSFNumber):
+    format='f'
     size=4
     def __float__(self):
         return float(self.value)
@@ -131,6 +167,7 @@ class Float32(PSFNumber):
         self.value = unpack(">f",file.read(self.size))[0]
 
 class ComplexFloat64(PSFNumber):
+    format='dd'
     size=16
     def toPSFasc(self, prec=6):
         if prec:
@@ -147,14 +184,14 @@ class ComplexFloat64(PSFNumber):
 class String(PSFData):
     def __str__(self):
         return self.value
-    def deSerializeFile(self, file, size=None):
-        self.len = unpack(">I",file.read(4))[0]
+    def deSerializeFile(self, data, size=None):
+        self.len = struct.unpack_from(">I", data)[0]
         if self.len < 0x100:
-            self.value = file.read(self.len)
-            # Pad to 32-bit boundary
-            file.read((4-self.len)%4)
+            self.value = data[4:4+self.len]
         else:
             raise Exception("String too long %d"%self.len)
+
+        return 4 + self.len + (4-self.len)%4
 
     def toPSFasc(self, prec=None):
         return "\""+str(self.value)+"\""
@@ -218,6 +255,12 @@ class Array(PSFData):
         return "\n".join([indent(s) for s in map(str,self.children)]) + "\n"
 
 class Chunk:
+    @classmethod
+    def fromFile(cls, psf, file):
+        obj = cls()
+        obj.deSerializeFile(file)
+        return obj
+
     """Base class for chunk"""
     def __init__(self, psf=None, type=None):
         self.psf = psf
@@ -227,14 +270,12 @@ class Chunk:
         self.verbose = False
         self.name = ""
             
-    def deSerializeFile(self, file):
-        self.fileoffset = file.tell()
-
-        type = UInt32.fromFile(file)
+    def deSerializeFile(self, data):
+        type = struct.unpack('>I', data.read(4))[0]
         if (self.type != None) and self.type != type:
-            file.seek(-UInt32.size, 1)
+            data.seek(-4,1)
             raise IncorrectChunk(type, self.type)
-
+        
     def __repr__(self):
         return self.__class__.__name__
 
@@ -258,11 +299,12 @@ class Property(Chunk):
         Chunk.__init__(self)
         self.name = String(name)
         self.value = self.valueclass(value)
-    def deSerializeFile(self, file):
-        Chunk.deSerializeFile(self, file)
+    def deSerializeFile(self, data):
+        Chunk.deSerializeFile(self, data)
 
-        self.name = String.fromFile(file)
-        self.value = self.valueclass.fromFile(file)
+        self.name, strsize = String.fromFile(data)
+        self.value, valsize = self.valueclass.fromFile(data)
+
     def toPSFasc(self, prec=9):
         return self.name.toPSFasc() + " " + self.value.toPSFasc(prec=prec)
     def __repr__(self):
@@ -278,20 +320,24 @@ class PropertyFloat64(Property):
     valueclass=Float64
     
 PropertyClasses = [PropertyString, PropertyUInt, PropertyFloat64]
+property_chunktypes = [pc.type for pc in PropertyClasses]
 
 TYPEFLOATDOUBLE = 11
 TYPEINTBYTE = 1
+TYPEINTLONG = 5
 TYPECOMPLEXDOUBLE = 12
 TYPESTRUCT = 16
 TYPESTRING = 2 ## Incorrect number
 TYPEARRAY = 3 ## Incorrect number
 TYPEINTLONG = 5
+
 class DataTypeDef(Chunk):
     """Class representing data type of waveform data"""
     type=16
     ClassDict = {
         TYPEFLOATDOUBLE: Float64,
         TYPEINTBYTE: Int8,
+        TYPEINTLONG: Int32,
         TYPECOMPLEXDOUBLE: ComplexFloat64,
         TYPESTRING: String,
         TYPEARRAY: Array,
@@ -300,6 +346,7 @@ class DataTypeDef(Chunk):
     PSFASCDict = {
         TYPEFLOATDOUBLE: "FLOAT DOUBLE",
         TYPEINTBYTE: "INT BYTE",
+        TYPEINTLONG: "INT LONG",
         TYPECOMPLEXDOUBLE: "COMPLEX DOUBLE",
         TYPESTRING: "STRING *",
         TYPEINTLONG: "INT LONG"
@@ -316,11 +363,14 @@ class DataTypeDef(Chunk):
 
     def getDataObj(self):
         """Get a data object described by the DataType"""
+
         if self.datatypeid == TYPESTRUCT:
             return self.structdef.getDataObj()
         elif self.datatypeid == TYPEARRAY:
             return Array(extarg=(self.ClassDict[self.structdef[0]], self.structdef[1]))
         else:
+            if self.datatypeid not in self.ClassDict:
+                raise NotImplementedError('Data type %d not implemented'%self.datatypeid)
             return self.ClassDict[self.datatypeid](extarg=self.structdef)
 
     def toPSFasc(self, prec=None):
@@ -343,33 +393,41 @@ class DataTypeDef(Chunk):
         else:
             return self.ClassDict[self.datatypeid].size
             
-    def deSerializeFile(self, file):
-        start = file.tell()
-        Chunk.deSerializeFile(self, file)
-        self.id = UInt32.fromFile(file)
-        self.name = String.fromFile(file)
+    def deSerializeFile(self, data, nameonly=False):
+        startdata = data
 
-        arraytype = UInt32.fromFile(file)
+        Chunk.deSerializeFile(self, data)
 
-        self.datatypeid = UInt32.fromFile(file)
+        self.id = struct.unpack_from('>I', data, 4)
+        self.name, namesize = String.fromFile(data, 8)
 
-        if arraytype != 0:
-            self.datatypeid, self.structdef = TYPEARRAY, (UInt32.fromFile(file), self.datatypeid)
-            
-        if self.datatypeid == 16:
-            self.structdef = StructDef.fromFile(file, self.psf)
+        if not nameonly:
+            arraytype = struct.unpack_from('>I', data, 8+namesize)[0]
 
-        # Read possible property objects that belongs to the type by peeking ahead
-        while True:
-            oldpos = file.tell()
-            try:
-                prop = readChunk(self.psf, file, expectedclasses=PropertyClasses)
-                self.properties.append(prop)
-            except ValueError:
-                file.seek(oldpos)
-                break
+            self.datatypeid = struct.unpack_from('>I', data, 12+namesize)[0]
 
-                
+            data = data.seek(16+namesize)
+
+            if arraytype != 0:
+                self.datatypeid = TYPEARRAY
+                self.structdef =  (struct.unpack_from('>I', data)[0], self.datatypeid)
+                data = data[4:]
+
+            if self.datatypeid == 16:
+                self.structdef, size = StructDef.fromFile(data, self.psf)
+                data = data[size:]
+
+            # Read possible property objects that belongs to the type by peeking ahead
+            while True:
+                try:
+                    prop, size = readChunk(self.psf, data, expectedclasses=PropertyClasses)
+                    data = data[size:]
+                    self.properties.append(prop)
+                except ValueError:
+                    break
+
+        return len(startdata) - len(data)
+
     def __repr__(self):
         return self.__class__.__name__+"("+str({"name":self.name,"id":"0x%x"%self.id, "datatypeid":self.datatypeid, 
                                                 "properties":self.properties})+")"
@@ -386,7 +444,7 @@ class DataTypeRef(Chunk):
 
     def getDataObj(self):
         """Get a data object described by the DataType"""
-        return self.psf.types.idMap[self.datatypeid].getDataObj()
+        return self.psf.types.getType(self.datatypeid).getDataObj()
 
     def toPSFasc(self, prec=None):
         r=self.name.toPSFasc(prec) + " "
@@ -429,8 +487,8 @@ class StructDef(PSFData):
     @classmethod
     def fromFile(cls, file, psf):
         obj = cls()
-        obj.deSerializeFile(file, psf)
-        return obj
+        size = obj.deSerializeFile(file, psf)
+        return obj, size
 
     def __init__(self):
         self.children = []
@@ -448,13 +506,17 @@ class StructDef(PSFData):
         s+=")"
         return s
     
-    def deSerializeFile(self, file, psf):
+    def deSerializeFile(self, data, psf):
+        startdata = data
         while True:
-            chunk = readChunk(psf, file, expectedclasses=[DataTypeDef, EndOfStructDef])
+            chunk, size = readChunk(psf, data, expectedclasses=[DataTypeDef, EndOfStructDef])
+            data = data[size:]
             if isinstance(chunk, EndOfStructDef):
                 break
             else:
                 self.children.append(chunk)
+
+        return len(startdata) - len(data)
 
     def __repr__(self):
         return self.__class__.__name__ + "(\n"+\
@@ -463,7 +525,8 @@ class StructDef(PSFData):
 
 class SimpleContainer(Chunk):
     type = 21
-    def __init__(self, psf, type=None, childrenclslist=None, childrenclsignore=None):
+    def __init__(self, psf, type=None, childrenclslist=None, 
+                 childrenclsignore=None):
         Chunk.__init__(self, psf, type)
         self.section = None
         self.children = []
@@ -471,25 +534,26 @@ class SimpleContainer(Chunk):
         self.childrenclsignore = childrenclsignore
         self.endpos = None
 
-    def getChunks(self):
-        return  self.children
-        
-    def deSerializeFile(self, file):
-        Chunk.deSerializeFile(self, file)
-        self.endpos = UInt32.fromFile(file).value
+    def deSerializeFile(self, data):
+        Chunk.deSerializeFile(self, data)
+
+        self.endpos = struct.unpack_from('>I', data, 4)[0]
+        data.seek(4,1)
+
         self.children = []
 
-        while file.tell() < self.endpos:
-            chunk = readChunk(self.psf, file, expectedclasses=self.childrenclslist+self.childrenclsignore)
+        while data.tell() < self.endpos:
+            chunk = readChunk(self.psf, data, expectedclasses=self.childrenclslist+self.childrenclsignore)
             if chunk.__class__ in self.childrenclslist:
                 self.children.append(chunk)
 
         # Read trailing bytes
-        if self.endpos-file.tell() != 0:
-            warning("%d trailing bytes in %s"%(self.endpos-file.tell(), self.__class__.__name__))
+        if self.endpos-abspos != 0:
+            warning("%d trailing bytes in %s"%(self.endpos-abspos, self.__class__.__name__))
             
-        self.tail = file.read(self.endpos-file.tell())
-        file.seek(self.endpos)
+        self.tail = data[self.endpos-abspos:]
+
+        return len(data)
 
     def __repr__(self):
         s=""
@@ -506,29 +570,53 @@ class Container22(Chunk):
     def __init__(self, psf, type=None, n=None, childrenclslist=None):
         Chunk.__init__(self, psf, 22)
         self.section = None
-        self.children = []
+        self._children = []
         self.childrenclslist = childrenclslist
         self.endpos = None
+        
+    @property
+    def children(self):
+        if self.psf.defer_read:
+            savedpos = self.file.tell()
+            self.file.seek(self.fileoffset + 8)
+            while self.file.tell() < self.endpos:
+                chunk = readChunk(self.psf, self.file,
+                                  expectedclasses=self.childrenclslist)
+                savedposinternal = self.file.tell()
 
-    def getChunks(self):
-        return  self.children
+                self.file.seek(savedpos)
+                yield chunk
+                savedpos = self.file.tell()
 
-    def deSerializeFile(self, file):
-        Chunk.deSerializeFile(self, file)
-        self.endpos = UInt32.fromFile(file).value # Save end position of Container
+                self.file.seek(savedposinternal)
+        else:
+            for child in self._children:
+                yield child
 
-        self.children = []
-        while file.tell() < self.endpos:
-            chunk = readChunk(self.psf, file,
-                              expectedclasses=self.childrenclslist)
-            self.children.append(chunk)
+    def deSerializeFile(self, data, abspos):
+        Chunk.deSerializeFile(self, data)
 
-        # Read trailing bytes
-        if self.endpos-file.tell() != 0:
-            warning("%d trailing bytes in %s"%(self.endpos-file.tell(), self.__class__.__name__))
-            
-        self.tail = file.read(self.endpos-file.tell())
-        file.seek(self.endpos)
+        self.endpos = struct.unpack_from('>I', data[4:])[0]
+
+        size = self.endpos - abspos
+
+        data = data[8:size+8]
+
+        if not self.psf.defer_read:
+            self._children = []
+            while len(data) > 0:
+                chunk,size = readChunk(self.psf, data,
+                                       expectedclasses=self.childrenclslist)
+                print chunk
+                data = data[size:]
+
+                self._children.append(chunk)
+
+            # Read trailing bytes
+            if self.endpos-data.tell() != 0:
+                warning("%d trailing bytes in %s"%(self.endpos-data.tell(), self.__class__.__name__))
+
+            self.tail = data.read(self.endpos-data.tell())
 
     def __repr__(self):
         return "0x%x"%self.fileoffset +":" + self.__class__.__name__  +\
@@ -549,7 +637,8 @@ class HashTable(Chunk):
     def __init__(self, psf, n=None):
         Chunk.__init__(self, psf, type)
         self.children = []
-        self.extra=[]
+        self.offsetdict = {}
+
     def deSerializeFile(self, file):
         Chunk.deSerializeFile(self, file)
 
@@ -559,6 +648,12 @@ class HashTable(Chunk):
         for i in range(0, size/8):
             id = UInt32.fromFile(file)
             offset = UInt32.fromFile(file)
+
+            if id not in self.offsetdict:
+                self.offsetdict[id] = [offset]
+            else:
+                self.offsetdict[id].append(offset)
+
             self.children.append((id, offset))
 
     def __repr__(self):
@@ -589,44 +684,118 @@ class HashTableTrace(Chunk):
 class HashContainer(Chunk):
     type=21
     hashclass = HashTable
-    def __init__(self, psf, childrenclslist=None, childrenclsignore=None):
+    def __init__(self, psf, childrenclslist=None, childrenclsignore=None, filehandle=None):
         Chunk.__init__(self, psf, type)
         self.section = None
-        self.children = []
+        self._children = []
         self.childrenclslist = childrenclslist
         self.childrenclsignore = childrenclsignore
         self.endpos = None
         self.hashtable = None
-
+        self.file = filehandle
     def __len__(self):
-        return len(self.children)
+        return len(self._children)
 
-    def getChunks(self):
-        return  self.children
+    @property
+    def children(self):
+        savedpos = self.file.tell()
 
-    def deSerializeFile(self, file):
-        Chunk.deSerializeFile(self, file)
-        self.endpos = UInt32.fromFile(file).value
-        self.children = []
+        if self.psf.defer_read:
+            return self.data.children
+        else:
+            return self._children
+
+    def nameiter(self):
+        for child in self.childiter():
+            yield child.name
+        
+    def _find(self, hashvalue, id=None, name=None):
+        """Find child matching hash value and id or name"""
+        savedpos = self.file.tell()
+
+        result = None
+        for offset in self.hashtable.offsetdict[hashvalue]:
+            self.file.seek(int(offset))
+            chunk = readChunk(self.psf, self.file,
+                              expectedclasses=self.childrenclslist,
+                              nameonly=True)
+            if (chunk.name == name) or (chunk.id == id):
+                self.file.seek(int(offset))
+                chunk = readChunk(self.psf, self.file,
+                                  expectedclasses=self.childrenclslist)
+                result = chunk
+        
+        self.file.seek(savedpos)
+        return result
+
+    def find_by_name(self, name):
+        """Find a child identified by name in defer read mode"""
+        savedpos = self.file.tell()
+
+        hashvalue = self._find(struct.unpack(">I", name[0:4])[0], name=name)
+
+        result = None
+        for offset in self.hashtable.offsetdict[hashvalue]:
+            self.file.seek(int(offset))
+            chunk = readChunk(self.psf, self.file,
+                              expectedclasses=self.childrenclslist,
+                              nameonly=True)
+            if chunk.name == name:
+                self.file.seek(int(offset))
+                chunk = readChunk(self.psf, self.file,
+                                  expectedclasses=self.childrenclslist)
+                result = chunk
+        
+        self.file.seek(savedpos)
+        return result
+        
+    def find_by_id(self, id):
+        """Find a child identified by id in defer read mode"""
+
+        savedpos = self.file.tell()
+
+        offset = self.hashtable.offsetdict[id][0]
+
+        self.file.seek(int(offset))
+
+        result = readChunk(self.psf, self.file,
+                           expectedclasses=self.childrenclslist)
+        
+        self.file.seek(savedpos)
+        
+        return result
+    
+    def deSerializeFile(self, data):
+        Chunk.deSerializeFile(self, data)
+
+        self.endpos = struct.unpack_from('>I', data, 4)[0]
+        data.seek(4,1)
+
+        self._children = []
 
         self.data = Container22(self.psf,
                                 childrenclslist=self.childrenclslist)
-        self.data.deSerializeFile(file)
+        
+        self.data.deSerializeFile(data)
+        
+        self.end2 = data.tell()
 
         self.hashtable = self.hashclass(self.psf)
-        self.hashtable.deSerializeFile(file)
+
+        self.hashtable.deSerializeFile(data)
 
         # Copy children reference from data
-        self.children = self.data.children
+        self._children = self.data.children
 
-        self.section = UInt32.fromFile(file)
+        self.section = UInt32.fromFile(data)
         
         # Read trailing bytes
-        if self.endpos-file.tell() != 0:
-            warning("%d trailing bytes in %s"%(self.endpos-file.tell(), self.__class__.__name__))
+        if self.endpos-data.tell() != 0:
+            warning("%d trailing bytes in %s"%(self.endpos-data.tell(), self.__class__.__name__))
             
-        self.tail = file.read(self.endpos-file.tell())
-        file.seek(self.endpos)
+        self.tail = data.read(self.endpos-data.tell())
+        
+        return self.endpos - abspos
 
     def __repr__(self):
         s=""
@@ -635,7 +804,7 @@ class HashContainer(Chunk):
         s += self.__class__.__name__  + "(" + str(self.type) +")"
         if self.endpos:
             s+=" size="+str(self.endpos-self.fileoffset) + "\n"
-        s += "\n".join([indent(s) for s in map(str,(self.children, self.hashtable))]) + "\n"
+        s += "\n".join([indent(s) for s in map(str,(self._children, self.hashtable))]) + "\n"
         return s
     
 class HeaderSection(SimpleContainer):
@@ -650,8 +819,8 @@ class HeaderSection(SimpleContainer):
         self.children.append(prop)
         self.properties[prop.name] = prop.value
 
-    def deSerializeFile(self, file):
-        SimpleContainer.deSerializeFile(self, file)
+    def deSerializeFile(self, data):
+        SimpleContainer.deSerializeFile(self, data)
 
         # Read header properties
         self.properties = {}
@@ -701,25 +870,28 @@ class TypeSection(HashContainer):
         
     def addType(self, type):
         type.id = self.psf.allocId()
-        self.children.append(type)
+        self._children.append(type)
         self.idMap[type.id] = type
         self.nameMap[type.name] = type
         
     def getType(self, id):
-        return self.idMap[id]
+        if self.psf.defer_read:
+            return self.find_by_id(id)
+        else:
+            return self.idMap[id]
 
     def getTypeByName(self, name):
         return self.nameMap[name]
                 
-    def deSerializeFile(self, file):
-        HashContainer.deSerializeFile(self, file)
+    def deSerializeFile(self, data):
+        self.file = data
 
-        # Read header properties
-        self.idMap = {}
+        HashContainer.deSerializeFile(self, data)
+        if not self.psf.defer_read:
+            self.idMap = {}
 
-        for chunk in self.children:
-            self.idMap[chunk.id] = chunk
-            self.nameMap[chunk.name] = type
+            for chunk in self.children:
+                self.idMap[chunk.id] = chunk
             
     def toPSFasc(self, prec=None):
         r="TYPE\n"
@@ -736,23 +908,29 @@ class TraceSection(HashContainer):
         
     def deSerializeFile(self, file):
         HashContainer.deSerializeFile(self, file)
-
+        
         self.idMap = {}
         
-        for index, chunk in enumerate(self.children):
-            self.idMap[chunk.id] = chunk
-            if isinstance(chunk, GroupDef):
-                self.nameIndex.update(dict([(par, (index,)+value) for par,value in chunk.getNameIndex().items()]))
-            else:
-                self.nameIndex[chunk.name] = (index,)
+        self.file = file
+        if not self.psf.defer_read:
+            for index, chunk in enumerate(self.children):
+                self.idMap[chunk.id] = chunk
+                if isinstance(chunk, GroupDef):
+                    self.nameIndex.update(dict([(par, (index,)+value) for par,value in chunk.getNameIndex().items()]))
+                else:
+                    self.nameIndex[chunk.name] = (index,)
 
     def getNameIndex(self):
         return self.nameIndex
             
+    def getSweepParamValues(self):
+        return reduce(operator.__add__, [child.getSweepParamValues() for child in self.children])
+
     def toPSFasc(self, prec=None):
         r="TRACE\n"
         r+="\n".join([child.toPSFasc(prec) for child in self.children])
         return r
+
     def getTraceNames(self):
         result = []
         for trace in self.children:
@@ -761,6 +939,7 @@ class TraceSection(HashContainer):
             else:
                 result.append(trace.name)
         return tuple(map(str, result))
+
     def getTraceIndexByName(self, name):
         """Returns an index to the given trace name
         
@@ -778,14 +957,19 @@ class TraceSection(HashContainer):
         (0,)
 
         """
-        return self.nameIndex[name]
+        if self.psf.defer_read:
+            print "hej"
+            1/0
+        else:
+            return self.nameIndex[name]
 
 class ValuesSectionNonSweep(HashContainer):
     type=21
-    def __init__(self, psf):
+    def __init__(self, psf, filehandle=None):
         HashContainer.__init__(self, psf, childrenclslist=[NonSweepValue])
         self.idMap={}
         self.nameMap={}
+        self.file = filehandle
 
     def addValue(self, value):
         value.id = self.psf.allocId()
@@ -793,11 +977,11 @@ class ValuesSectionNonSweep(HashContainer):
             raise ValueError("Value should be a NonSweepValue")
         self.idMap[value.id] = value
         self.nameMap[value.name] = value
-        self.children.append(value)
+        self._children.append(value)
 
     def deSerializeFile(self, file):
         HashContainer.deSerializeFile(self, file)
-
+        
         for child in self.children:
             self.nameMap[child.name] = child
 
@@ -805,10 +989,15 @@ class ValuesSectionNonSweep(HashContainer):
         return dict([(prop.name, prop.value) for prop in self.nameMap[name].properties])
 
     def getValueByName(self, name):
+        if self.psf.defer_read:
+            return self._read_value_chunk(name).getValue()
         return self.nameMap[name].getValue()
 
     def getValueNames(self):
-        return tuple([child.name for child in self.children])
+        if self.psf.defer_read:
+            return list(self._read_names())
+        else:
+            return tuple([child.name for child in self.children])
 
     def toPSFasc(self, prec=None):
         r="VALUE\n"
@@ -827,23 +1016,24 @@ class ValuesSectionSweep(SimpleContainer):
             el = ZeroPad(self.psf)
             el.deSerializeFile(file)
 
-        isweep=0
-        while isweep < self.psf.header.properties['PSF sweep points']:
-            if windowedsweep:
-                value = SweepValueWindowed(self.psf)
-            else:
-                value = SweepValueSimple(self.psf)
+        if True or not self.psf.defer_read:
+            isweep=0
+            while isweep < self.psf.header.properties['PSF sweep points']:
+                if windowedsweep:
+                    value = SweepValueWindowed(self.psf)
+                else:
+                    value = SweepValueSimple(self.psf)
+                isweep += value.deSerializeFile(file, n=self.psf.header.properties['PSF sweep points']-isweep)
 
-            isweep += value.deSerializeFile(file, n=self.psf.header.properties['PSF sweep points']-isweep)
+                print value
+                self.children.append(value)
 
-            self.children.append(value)
+            self.section = UInt32.fromFile(file)
 
-        self.section = UInt32.fromFile(file)
-
-        # Read trailing bytes
-        if self.endpos-file.tell() != 0:
-            warning("%d trailing bytes in %s"%(self.endpos-file.tell(), self.__class__.__name__))
-            self.tail = file.read(self.endpos-file.tell())
+            # Read trailing bytes
+            if self.endpos-file.tell() != 0:
+                warning("%d trailing bytes in %s"%(self.endpos-file.tell(), self.__class__.__name__))
+                self.tail = file.read(self.endpos-file.tell())
 
         file.seek(self.endpos)
 
@@ -889,7 +1079,7 @@ class NonSweepValue(Chunk):
         self.typeid = typeid
 
         if typeid:
-            self.valuetype = self.psf.types.idMap[self.typeid]
+            self.valuetype = self.psf.types.getType(self.typeid)
         else:
             self.valuetype = None
 
@@ -907,33 +1097,32 @@ class NonSweepValue(Chunk):
     def setValue(self, value):
         self.value.setValue(value)
 
-    def deSerializeFile(self, file):
+    def deSerializeFile(self, file, nameonly=False):
         startpos = file.tell()
         Chunk.deSerializeFile(self, file)
         self.id = UInt32.fromFile(file)
         self.name = String.fromFile(file)
 
-        self.typeid = UInt32.fromFile(file)
+        if not nameonly:
+            self.typeid = UInt32.fromFile(file)
 
-        assert(self.typeid != 0)
+            assert(self.typeid != 0)
 
-        self.valuetype = self.psf.types.idMap[self.typeid]
+            self.valuetype = self.psf.types.getType(self.typeid)
 
-        self.value = self.valuetype.getDataObj()
-        
-        self.value.deSerializeFile(file)
+            self.value = self.valuetype.getDataObj()
 
-        print [ddef.datatypeid for ddef in self.valuetype.structdef.children]
-        
-        # Read possible property objects that belongs to the type by peeking ahead
-        while True:
-            oldpos = file.tell()
-            try:
-                prop = readChunk(self.psf, file, expectedclasses=PropertyClasses)
-                self.properties.append(prop)
-            except ValueError:
-                file.seek(oldpos)
-                break
+            self.value.deSerializeFile(file)
+
+            # Read possible property objects that belongs to the type by peeking ahead
+            while True:
+                oldpos = file.tell()
+                try:
+                    prop = readChunk(self.psf, file, expectedclasses=PropertyClasses)
+                    self.properties.append(prop)
+                except ValueError:
+                    file.seek(oldpos)
+                    break
         
     def toPSFasc(self, prec=None):
         r = self.name.toPSFasc(prec) + " " + self.valuetype.name.toPSFasc(prec) + " " + self.value.toPSFasc(prec)
@@ -993,13 +1182,13 @@ class SweepValueSimple(SweepValue):
                 valuetypeid = UInt32.fromFile(file)
 
                 if valuetypeid != datatype.id:
-                    raise Exception("Unexpected trace trace type id %d should be %d"%(valuetypeid, datatype.id))
+                    raise Exception("Unexpected trace type id %d should be %d"%(valuetypeid, datatype.id))
 
                 value = datatype.getDataObj()
                 value.deSerializeFile(file)
                 self.children.append(value)
             else:
-                raise Exception("Datatypeid unknown 0x%x"%self.datatypeid)
+                raise Exception("Datatypeid unknown 0x%x"%datatypeid)
 
         return 1
 
@@ -1171,9 +1360,14 @@ class IncorrectChunk(Exception):
 class LastValue(Exception):
     pass
     
-def readChunk(psf, file, expectedclasses=None):
-    type = UInt32.fromFile(file)
-    file.seek(-4, 1) # Rewind one word since the type will be read again by the deSerializeFile function
+def readChunk(psf, data, expectedclasses=None, nameonly=False):
+    """Read chunk from data
+    
+    The expectedclasses argument is a list of classes that are expected. This argument is needed since 
+    one chunk type can be used by several classes.
+    """
+
+    type = struct.unpack_from('>I', data)[0]
 
     if expectedclasses:
         if not type in [cls.type for cls in expectedclasses]:
@@ -1183,39 +1377,19 @@ def readChunk(psf, file, expectedclasses=None):
                 chunk = cls(psf)
     else:
         raise Exception("Use expectedclasses!")
-        if type == 21:
-            chunk = Section(psf)
-        elif type == 20:
-            chunk = ZeroPad(psf)
-        elif type == 22:
-            chunk = Container22(psf, type, n=n)
-        elif type == 33:
-            chunk = PropertyString(psf)
-        elif type == 34:
-            chunk = PropertyUInt(psf)
-        elif type == 35:
-            chunk = PropertyFloat64(psf)
-        elif type == 16:
-            chunk = DataTypeDef(psf,type)
-        elif type == 17:
-            chunk = GroupDef(psf)
-        elif type == 19:
-            chunk = HashTable(psf, n=n)
-        elif type in (1,2,3,4):
-            file.seek(4,1)
-            return None
-        else:
-            warning("Unknown chunk %d"%type)
-            raise UnknownChunk(type)
 
-    chunk.deSerializeFile(file)
-    
-    return chunk
+    if nameonly:
+        size = chunk.deSerializeFile(data, nameonly=True)
+    else:
+        size = chunk.deSerializeFile(data)
+
+    return chunk, size
 
 class PSFReader(object):
-    def __init__(self, filename=None, asc=None):
+    def __init__(self, filename=None, defer_read=False, asc=None):
         self.header = None
         self.types = TypeSection(self)
+
         self.sweeps = None
         self.traces = None
         self.lastid = 0x10000000;
@@ -1224,6 +1398,7 @@ class PSFReader(object):
         self.file = None
         self.values = None
         self.asc = asc
+        self.defer_read = defer_read
         
     def open(self):
         """Open a PSF file and read its headers.
@@ -1235,7 +1410,7 @@ class PSFReader(object):
         """
         
         if self.asc == None:
-            self.asc = psfasc.is_psfasc(self.filename)
+            self.asc = is_psfasc(self.filename)
 
         if not self.asc:
             self.file = open(self.filename, "rb")
@@ -1317,7 +1492,7 @@ class PSFReader(object):
         ('R0', 'V1', 'V0', 'E0', 'VIN', 'NET9', 'VOUT')
 
         """
-        if self.values:
+        if self.values != None:
             return self.values.getValueNames()
     
     def getSweepParamValues(self, dim=0):
@@ -1427,89 +1602,89 @@ class PSFReader(object):
             sweeps=0
         self.header.addProperty(PropertyUInt("PSF sweeps", sweeps))
 
-    def deSerializeFile(self, file):
+    def deSerializeFile(self, f):
+        import mmap
+        psfdata = mmap.mmap(f.fileno(), 0, access=mmap.PROT_READ)
+        
         # Find filesize
-        file.seek(0,2)
-        filesize = file.tell()
+        filesize = len(psfdata)
         
         # Last word contains the size of the data
-        file.seek(-4,2)
-        datasize = UInt32.fromFile(file).value
+        datasize = struct.unpack('>I', psfdata[-4:])[0]
         if self.verbose:
             print "Total data size: ",datasize
 
         # Read Clarissa signature
-        file.seek(-4-8,2)
-        clarissa = file.read(8)
-        if not clarissa == "Clarissa":
+        if not psfdata[-12:].startswith("Clarissa"):
             raise ValueError("Clarissa signature not found")
 
         # Read section index table
         sectionoffsets = {}
-        file.seek(-4-8-8,2)
-        pos = file.tell()
+        nsections = (filesize - datasize - 12) / 8
 
-        sectionnums = []
-        while file.tell() >= datasize:
-            sectionnum = UInt32.fromFile(file)
-            sectionnums.insert(0,sectionnum.value)
-            offset = UInt32.fromFile(file)
+        sections = []
+        for pos in range(datasize, datasize+8*nsections, 8):
+            sectionnum, offset = struct.unpack_from('>II', psfdata, pos)
             sectionoffsets[sectionnum] = offset
-            pos -= 8
-            file.seek(pos)
+            sections.append(sectionnum)
 
-        offsets = [sectionoffsets[secnum] for secnum in sectionnums]
+        print sectionoffsets
+
+        offsets = [sectionoffsets[secnum] for secnum in sections]
         sizes = map(operator.sub, offsets[1:]+[datasize], offsets)
-        sectionsizes = dict(zip(sectionnums, sizes))
+        sectionsizes = dict(zip(sections, sizes))
 
         if self.verbose:
-            print sectionoffsets, sectionsizes
-        
-        file.seek(0)
-
-        self.unk1 = UInt32.fromFile(file)
-        if self.verbose:
-            print "First word: 0x%x"%self.unk1
+            print "First word: 0x%x"%struct.unpack_from('>I', psfdata)
 
         # Load headers
-        file.seek(int(sectionoffsets[0]))
         self.header = HeaderSection(self)
-        self.header.deSerializeFile(file)
+        start = sectionoffsets[SECTION_HEADER]
+        stop = start + sectionsizes[SECTION_HEADER]
+        psfdata.seek(start)
+        self.header.deSerializeFile(psfdata)
         if self.verbose:
             print "HEADER"
             print self.header
         
 
-        if sectionoffsets.has_key(1):
-            file.seek(int(sectionoffsets[1]))
-            self.types.deSerializeFile(file)
+        if sectionoffsets.has_key(SECTION_TYPE):
+            start = sectionoffsets[SECTION_TYPE]
+            stop = start + sectionsizes[SECTION_TYPE]
+            psfdata.seek(start)
+            self.types.deSerializeFile(psfdata)
 
             if self.verbose:
                 print "TYPE"
                 print self.types
 
         if sectionoffsets.has_key(2):
-            file.seek(int(sectionoffsets[2]))
+            f.seek(int(sectionoffsets[2]))
             self.sweeps = SweepSection(self)
-            self.sweeps.deSerializeFile(file)
+            self.sweeps.deSerializeFile(f)
 
             if self.verbose:
                 print "SWEEPS"
                 print self.sweeps
 
         if sectionoffsets.has_key(3):
-            file.seek(int(sectionoffsets[3]))
+            f.seek(int(sectionoffsets[3]))
             self.traces = TraceSection(self)
-            self.traces.deSerializeFile(file)
+            self.traces.deSerializeFile(f)
+
+            if self.verbose:
+                print "TRACES"
+                print self.traces
 
         if sectionoffsets.has_key(4):
-            file.seek(int(sectionoffsets[4]))
+            f.seek(int(sectionoffsets[4]))
             # Load data
             if self.sweeps:
                 self.values = ValuesSectionSweep(self)
             else:
-                self.values = ValuesSectionNonSweep(self)
-            self.values.deSerializeFile(file)
+                self.values = ValuesSectionNonSweep(self, filehandle=f)
+
+            self.values.deSerializeFile(f)
 
     def printme(self):
         print "HEADER"
