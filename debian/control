@@ -2,18 +2,18 @@ Source: pycircuit
 Section: electronics
 Priority: extra
 Maintainer: Henrik Johansson <henrik@johome.net>
-Build-Depends: cdbs, debhelper, python-support, python-all-dev
+Build-Depends: cdbs, debhelper (>=8), python-support, python-all
 XS-Python-Version: >=2.4
-Standards-Version: 3.8.4
+Standards-Version: 3.9.1
 
 Package: pycircuit
 Section: electronics
 Architecture: all
 Homepage: https://github.com/henjo/pycircuit
 XB-Python-Version: >=2.4
-Depends: ${misc:Depends}, ${python:Depends}
-Recommends: python-libpsf
+Depends: ${misc:Depends}, ${python:Depends}, python-numpy, python-scipy
+Recommends: python-libpsf, python-matplotlib, python-sympy
 Description: Circuit analysis environment for Python
-  pycircuit is an electric circuit analysis package written in Python. 
-  In addition to the circuit analysis part it provides post-processing 
-  functionality and interfaces to other simulators.
+ pycircuit is an electric circuit analysis package written in Python. 
+ In addition to the circuit analysis part it provides post-processing 
+ functionality and interfaces to other simulators.
