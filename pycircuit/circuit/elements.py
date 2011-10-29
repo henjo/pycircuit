@@ -446,8 +446,8 @@ class SVCVS(Circuit):
         self.first_state_node = len(self.nodes)
 
         # Add nodes for new states, one for each pole in denominator
-        newnodes = [Node("_a%d"%state) for state in range(self.denlen-1)]
-        self.nodes.extend(newnodes)
+        newnodes = ["_a%d"%state for state in range(self.denlen-1)]
+        self.add_nodes(*newnodes)
 
         n = self.n
         G = self.toolkit.zeros((n,n), dtype = int)
