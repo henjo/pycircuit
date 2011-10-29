@@ -413,6 +413,8 @@ class SVCVS(Circuit):
     def __init__(self, *args, **kvargs):
         super(SVCVS, self).__init__(*args, **kvargs)
 
+        tk = self.toolkit
+        
         if not(self.iparv.numerator) and not(self.iparv.denominator):
             raise Exception("Numerator and denominator not defined")
         elif not(self.iparv.numerator):
@@ -431,8 +433,8 @@ class SVCVS(Circuit):
             raise Exception("The first coefficient in the denominator must" + 
                             " not be equal to 0")
 
-        self.den = self.toolkit.array(self.iparv.denominator)
-        self.num = self.toolkit.array(self.iparv.numerator)
+        self.den = tk.array(self.iparv.denominator)
+        self.num = tk.array(self.iparv.numerator)
 
         # Normalize
         if self.den[0] != 1:
@@ -450,7 +452,7 @@ class SVCVS(Circuit):
         self.add_nodes(*newnodes)
 
         n = self.n
-        G = self.toolkit.zeros((n,n), dtype = int)
+        G = tk.zeros((n,n), dtype = int)
         branchindex = -1
         inpindex, innindex, outpindex, outnindex = \
             (self.nodes.index(self.nodenames[name])
@@ -472,7 +474,7 @@ class SVCVS(Circuit):
                 G[first+1,first+1] = 1
             else:
                 G[first:first+self.denlen-2, first+1:first+1+self.denlen-2] = \
-                    self.toolkit.eye(self.denlen-2, dtype=int)
+                    tk.eye(self.denlen-2, dtype=int)
             # Input numerator coefficients
             index = first + self.denlen-1 - self.numlen
             G[index:index+self.numlen, inpindex] =  self.num
@@ -488,7 +490,7 @@ class SVCVS(Circuit):
             else:
                 G[first, first:first + self.denlen-1 ] = -self.den[1:]
                 G[first+1:first+1+self.denlen-2, first:first+self.denlen-2] = \
-                    self.toolkit.eye(self.denlen-2, dtype=int)
+                    tk.eye(self.denlen-2, dtype=int)
             # Input
             G[first, inpindex] =  1
             G[first, innindex] = -1
@@ -498,9 +500,9 @@ class SVCVS(Circuit):
 
         self._G = G
 
-        C = self.toolkit.zeros((n,n), dtype=int)
+        C = tk.zeros((n,n), dtype=int)
         C[first:first+self.denlen-1, first:first+self.denlen-1] = \
-            -1*self.toolkit.eye(self.denlen-1, dtype=int)
+            -1*tk.eye(self.denlen-1, dtype=int)
         self._C = C
 
     def G(self, x, epar=defaultepar): return self._G
