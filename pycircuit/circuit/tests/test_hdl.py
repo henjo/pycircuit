@@ -40,7 +40,7 @@ def test_capacitor():
          @staticmethod
          def analog(plus, minus):
              b = Branch(plus, minus)
-             return Contribution(b.I, dtt(c * b.V)),
+             return Contribution(b.I, ddt(c * b.V)),
          
     C = sympy.Symbol('C')
 
