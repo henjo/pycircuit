@@ -286,7 +286,7 @@ def test_Idt_tran():
     #plot(result.v(nout))
     show()
 
-def test_Idtmod_tran_():
+def test_Idtmod_tran():
     """Test modulo integrator element in transient"""
     pycircuit.circuit.circuit.default_toolkit = numeric
 

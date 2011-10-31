@@ -782,7 +782,7 @@ class Idtmod(Circuit):
     branches = (Branch(Node('oplus'), Node('ominus')),)
         
     def __init__(self, *args, **kvargs):
-        super(Idt, self).__init__(*args, **kvargs)
+        super(Idtmod, self).__init__(*args, **kvargs)
         branchindex = -1 ## add last in matrix
         idt_index = self.nodes.index(self.add_node('idt_node')) #note side effect
         inpindex, innindex, outpindex, outnindex = \
@@ -800,13 +800,20 @@ class Idtmod(Circuit):
         C = self.toolkit.zeros((self.n,self.n))
         C[idt_index, idt_index] +=  1
         self._C = C
-
+        self.modulus = self.iparv.modulus
+        
     def C(self, x, epar=defaultepar):
         return self._C
     
     def G(self, x, epar=defaultepar):
         return self._G
 
+    def q(self, x, epar=defaultepar):
+        #print(x)
+        return self.toolkit.dot(self._C, x)  % self.modulus #self._C is constant
+
+    #def i(self, x, epar=defaultepar):
+        #pass
 
 if __name__ == "__main__":
     import doctest
