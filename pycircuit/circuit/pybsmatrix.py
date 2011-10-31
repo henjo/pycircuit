@@ -10,7 +10,7 @@
 #
 # [http://www.gnu.org/software/gnucap/gnucap-man-html/gnucap-man108.html]
 
-from numpy import arange, array, zeros
+from numpy import arange, array, zeros, dot
 
 class Bsmatrix:
   """Sparse matrix, bordered block with spikes
@@ -101,15 +101,15 @@ class Bsmatrix:
   def size(self):
     return self.size
 
-  def new_subdot(self,i,j):
+  def subdot(self,i,j):
     """Solves for L/U elements by subtracting a dot-product
 
     Solves equation A(i.j)=L(i,:)*U(:,j) for L(i,j) or U(i,j) 
     """
     max_low_node=max(self.lownode[i],self.lownode[j])
     if i>j:# below diagonal
-      min_node=j #first diagonal
-      diagonal=self[j,j] #lower diagonal
+      min_node=j # first diagonal
+      diagonal=self[j,j] # lower diagonal
     else:
       min_node=i
       diagonal=1
@@ -212,12 +212,24 @@ class Bsmatrix:
   def lu_decomp(self):
     """LU-decomposition with normalised L-matrix
     Matrix self(=L*U) -> self=L+U, changed in place
+
+    >>> from numpy.testing import assert_array_equal
+    >>> from numpy import eye
+    >>> L=array([[1,0,0,0,0],[2,1,0,0,0],[3,2,1,0,0],[1,3,2,2,0],[1,2,2,3,1]])
+    >>> U=array([[2,2,3,1,2],[0,3,2,1,2],[0,0,1,2,1],[0,0,0,2,3],[0,0,0,0,1]])
+    >>> A=dot(L,U)
+    >>> Alu=L+U-eye(5)
+    >>> As=Bsmatrix(5)
+    >>> As.dense2sparse(A)
+    >>> As.lu_decomp()
+    >>> print(As.dense(),Alu)
+    >>> assert_array_equal(As.dense(),Alu)
     """
     for i in range(self.size):
       for j in range(self.lownode[i],i): #avoids diagonal
-        self.new_subdot(i,j)
-        self.new_subdot(j,i)
-      self.new_subdot(i,i)
+        self.subdot(i,j)
+        self.subdot(j,i)
+      self.subdot(i,i)
     return None
 
   def transpose(self):
@@ -245,6 +257,20 @@ class Bsmatrix:
       for k in xrange(self.size-1,i,-1):
         vec[i] -= vec[k]*self[i,k]
         vec[i] /= self[i,i]
+    return None
+
+  def fbsub_transpose(self,vec):
+    """
+    Forward backward substitution of transposed matrix.
+    vec is right side vector and will be substituted in place
+    """
+    for i in xrange(self.size):
+      for k in xrange(i):
+        vec[i] -= vec[k]*self[k,i]
+        vec[i] /= self[i,i]
+    for i in xrange(self.size):
+      for k in xrange(self.size-1,i,-1):
+        vec[i] -= vec[k]*self[k,i]
     return None
 
   def dense(self):
