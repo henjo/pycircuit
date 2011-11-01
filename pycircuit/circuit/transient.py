@@ -62,7 +62,8 @@ class Transient(Analysis):
 
     parameters = Analysis.parameters + \
         [Parameter(name='analysis', desc='Analysis name', 
-                   default='transient'),
+                   #default='transient'),
+                   default='tran'),
          Parameter(name='reltol', 
                    desc='Relative tolerance', unit='', 
                    default=1e-4),

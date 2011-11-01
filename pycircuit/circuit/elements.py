@@ -358,7 +358,7 @@ class VCVS(Circuit):
     def update(self, subject):
         n = self.n
         G = self.toolkit.zeros((n,n))
-        branchindex = -1
+        branchindex = -1 ## add last in matrix
         inpindex, innindex, outpindex, outnindex = \
             (self.nodes.index(self.nodenames[name])
              for name in self.terminals)
@@ -729,6 +729,92 @@ class VCVS_limited(Circuit):
     def i(self, x, epar=defaultepar):
         vout = x[3] - x[2] - self.function.fprime(x[1]-x[0])*self.function.f(x[1]-x[0])
         return self.toolkit.array([0,0,x[4],-x[4],vout])
+
+class Idt(Circuit):
+    """Integrator
+    
+    Output voltage is the time integral of input voltage.
+    
+    """
+    
+    terminals = ('iplus', 'iminus', 'oplus', 'ominus')
+    branches = (Branch(Node('oplus'), Node('ominus')),)
+        
+    def __init__(self, *args, **kvargs):
+        super(Idt, self).__init__(*args, **kvargs)
+        branchindex = -1 ## add last in matrix
+        idt_index = self.nodes.index(self.add_node('idt_node')) #note side effect
+        inpindex, innindex, outpindex, outnindex = \
+            (self.nodes.index(self.nodenames[name]) for name in self.terminals)
+        G = self.toolkit.zeros((self.n,self.n))
+        G[idt_index, inpindex] +=  1
+        G[idt_index, innindex] += -1
+        G[outpindex, branchindex] +=  1
+        G[outnindex, branchindex] += -1
+        G[branchindex, idt_index] += -1
+        G[branchindex, outpindex] += -1
+        G[branchindex, outnindex] +=  1
+        self._G = G
+        
+        C = self.toolkit.zeros((self.n,self.n))
+        C[idt_index, idt_index] +=  1
+        self._C = C
+
+    def C(self, x, epar=defaultepar):
+        return self._C
+    
+    def G(self, x, epar=defaultepar):
+        return self._G
+
+class Idtmod(Circuit):
+    """Modulus integrator
+    
+    Output voltage is the time integral of input voltage,
+    modulus "modulus", and and offset.
+    
+    """
+    instparams = [Parameter(name='modulus', desc='Output modulus',unit='V/V',
+                            default=1.),
+                  Parameter(name='offset', desc='offset voltage',unit='V',
+                            default=0.)]
+    
+    terminals = ('iplus', 'iminus', 'oplus', 'ominus')
+    branches = (Branch(Node('oplus'), Node('ominus')),)
+        
+    def __init__(self, *args, **kvargs):
+        super(Idtmod, self).__init__(*args, **kvargs)
+        branchindex = -1 ## add last in matrix
+        idt_index = self.nodes.index(self.add_node('idt_node')) #note side effect
+        inpindex, innindex, outpindex, outnindex = \
+            (self.nodes.index(self.nodenames[name]) for name in self.terminals)
+        G = self.toolkit.zeros((self.n,self.n))
+        G[idt_index, inpindex] +=  1
+        G[idt_index, innindex] += -1
+        G[outpindex, branchindex] +=  1
+        G[outnindex, branchindex] += -1
+        G[branchindex, idt_index] += -1
+        G[branchindex, outpindex] += -1
+        G[branchindex, outnindex] +=  1
+        self._G = G
+        
+        C = self.toolkit.zeros((self.n,self.n))
+        C[idt_index, idt_index] +=  1
+        self._C = C
+        self.modulus = self.iparv.modulus
+        self.offset = self.iparv.offset
+        
+    def C(self, x, epar=defaultepar):
+        return self._C
+    
+    def G(self, x, epar=defaultepar):
+        return self._G
+
+    def q(self, x, epar=defaultepar): # q == -v_out in current implementation
+        #self._C is constant and _q is non-zero at one index only
+        _q = (self.toolkit.dot(self._C, x)  % -self.modulus)
+        _qmask = np.sign(np.abs(_q))
+        _q += _qmask*self.offset
+        return _q
 
 if __name__ == "__main__":
     import doctest
