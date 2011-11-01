@@ -206,7 +206,7 @@ class VSin(VS):
     instparams = VS.instparams + [
         Parameter(name='vo', desc='Offset voltage', 
                   unit='V', default=0),
-        Parameter(name='va', desc='Voltage voltage', 
+        Parameter(name='va', desc='Voltage amplitude', 
                   unit='V', default=0),
         Parameter(name='freq', desc='Frequency', 
                   unit='Hz', default=0),
