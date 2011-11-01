@@ -801,6 +801,7 @@ class Idtmod(Circuit):
         C[idt_index, idt_index] +=  1
         self._C = C
         self.modulus = self.iparv.modulus
+        self.offset = self.iparv.offset
         
     def C(self, x, epar=defaultepar):
         return self._C
@@ -808,12 +809,12 @@ class Idtmod(Circuit):
     def G(self, x, epar=defaultepar):
         return self._G
 
-    def q(self, x, epar=defaultepar):
-        #print(x)
-        return self.toolkit.dot(self._C, x)  % self.modulus #self._C is constant
-
-    #def i(self, x, epar=defaultepar):
-        #pass
+    def q(self, x, epar=defaultepar): # q == -v_out in current implementation
+        #self._C is constant and _q is non-zero at one index only
+        _q = (self.toolkit.dot(self._C, x)  % -self.modulus)
+        _qmask = np.sign(np.abs(_q))
+        _q += _qmask*self.offset
+        return _q
 
 if __name__ == "__main__":
     import doctest

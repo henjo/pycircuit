@@ -275,14 +275,39 @@ def test_Idt_tran():
     nin = c.add_node('in')
     nout = c.add_node('out')
      
-    c['vin'] = VS(nin, gnd, v=1.)
+    c['vin'] = VS(nin, gnd, v=1.0)
     c['R1'] = R(nout, gnd, r=1e3)
     c['Idt'] = Idt(nin, gnd, nout, gnd)
     
-    tran = Transient(c)
-    result = tran.solve(tend=1.0,timestep=1e-3)
-    plot(result.v(nout))
-    show()
+    tran = Transient(c, toolkit=numeric)
+    result = tran.solve(tend=0.5,timestep=1e-2)
+    y = result.v(nout).y
+    x = result.v(nout).x[0]
+    # vout = vin * t with constant input => test that v(nout) = t
+    assert_array_equal(y[1:]/x[1:], np.ones(y[1:].size)) #avoid divide by t=0.0
+
+def test_Idtmod_sym():
+    """Test modulus integrator element symbolically"""
+    pycircuit.circuit.circuit.default_toolkit = symbolic
+
+    c = SubCircuit()
+
+    Vin = Symbol('Vin')
+    R1 = Symbol('R1')
+    
+    nin = c.add_node('in')
+    nout = c.add_node('out')
+     
+    c['vin'] = VS(nin, gnd, vac=Vin)
+    c['R1'] = R(nout, gnd, r=R1)
+    c['Idtmod'] = Idtmod(nin, gnd, nout, gnd)
+    
+    result = AC(c, toolkit=symbolic).solve(Symbol('s'),complexfreq=True)
+    
+    vtr = simplify(result.v(nout)/result.v(nin))
+    assert_equal(vtr, 1/Symbol('s'))
+
+
 
 def test_Idtmod_tran():
     """Test modulo integrator element in transient"""
@@ -292,15 +317,35 @@ def test_Idtmod_tran():
     nin = c.add_node('in')
     nout = c.add_node('out')
      
-    c['vin'] = VS(nin, gnd, v=1.)
+    c['vin'] = VS(nin, gnd, v=1.0)
     c['R1'] = R(nout, gnd, r=1e3)
-    c['Idtmod'] = Idt(nin, gnd, nout, gnd, modulus = 1., offset = -0.5)
+    c['Idtmod'] = Idtmod(nin, gnd, nout, gnd, modulus = 1., offset = -0.)
     
-    tran = Transient(c)
-    result = tran.solve(tend=1.0,timestep=1e-3)
-    plot(result.v(nout))
-    show()
+    tran = Transient(c, toolkit=numeric)
+    result = tran.solve(tend=0.5,timestep=1e-2)
+    y = result.v(nout).y
+    x = result.v(nout).x[0]
+    # vout = vin * t with constant input => test that v(nout) = t
+    assert_array_equal(y[1:]/x[1:], np.ones(y[1:].size)) #avoid divide by t=0.0
 
+def test_Idtmod_modulo():
+    """Test modulo integrator element in transient"""
+    pycircuit.circuit.circuit.default_toolkit = numeric
+
+    c = SubCircuit()
+    nin = c.add_node('in')
+    nout = c.add_node('out')
+     
+    c['vin'] = VS(nin, gnd, v=1.0)
+    c['R1'] = R(nout, gnd, r=1e3)
+    c['Idtmod'] = Idtmod(nin, gnd, nout, gnd, modulus = 1., offset = -0.)
+    
+    tran = Transient(c, toolkit=numeric)
+    result = tran.solve(tend=2.0,timestep=1e-2)
+    y = result.v(nout).y
+    x = result.v(nout).x[0]
+    # vout = vin * t with constant input => test that v(nout) = t
+    assert_array_equal(y[1:]/(x[1:]%1.0), np.ones(y[1:].size)) #avoid divide by t=0.0
 
 if __name__ == '__main__':
     test_nullor_vva()
