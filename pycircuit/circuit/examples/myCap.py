@@ -40,6 +40,5 @@ class myC(Circuit):
 
     def q(self, x, epar=defaultepar):
         v=x[0]-x[1]
-        q = self.ipar.c0*v+c1*v1*ln(cosh((v-self.ipar.v0)/self.ipar.v1))
+        q = self.ipar.c0*v+self.ipar.c1*self.ipar.v1*self.toolkit.log(self.toolkit.cosh((v-self.ipar.v0)/self.ipar.v1))
         return self.toolkit.array([q, -q])
-    
