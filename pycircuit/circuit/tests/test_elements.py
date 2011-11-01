@@ -275,15 +275,13 @@ def test_Idt_tran():
     nin = c.add_node('in')
     nout = c.add_node('out')
      
-    c['vin'] = VSin(nin, gnd, va=1., freq=1e3)
+    c['vin'] = VS(nin, gnd, v=1.)
     c['R1'] = R(nout, gnd, r=1e3)
     c['Idt'] = Idt(nin, gnd, nout, gnd)
     
     tran = Transient(c)
-    result = tran.solve(tend=10e-4,timestep=1e-5)
-    plot(result.v(nin),result.v(nout))
-    #plotall(result.v(nin),result.v(nout))
-    #plot(result.v(nout))
+    result = tran.solve(tend=1.0,timestep=1e-3)
+    plot(result.v(nout))
     show()
 
 def test_Idtmod_tran():
@@ -294,15 +292,13 @@ def test_Idtmod_tran():
     nin = c.add_node('in')
     nout = c.add_node('out')
      
-    c['vin'] = VS(nin, gnd, v=100.)
+    c['vin'] = VS(nin, gnd, v=1.)
     c['R1'] = R(nout, gnd, r=1e3)
     c['Idtmod'] = Idt(nin, gnd, nout, gnd, modulus = 1., offset = -0.5)
     
     tran = Transient(c)
-    result = tran.solve(tend=10e-3,timestep=1e-5)
-    plot(result.v(nin),result.v(nout))
-    #plotall(result.v(nin),result.v(nout))
-    #plot(result.v(nout))
+    result = tran.solve(tend=1.0,timestep=1e-3)
+    plot(result.v(nout))
     show()
 
 
