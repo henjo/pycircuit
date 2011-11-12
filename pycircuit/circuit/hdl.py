@@ -30,7 +30,7 @@ class Branch(circuit.Branch):
 class Parameter(param.Parameter, sympy.Symbol):
     pass
 
-class dtt(sympy.Function):
+class ddt(sympy.Function):
     """Time derivative, d(x)/dt"""
     pass
 
@@ -106,7 +106,7 @@ class Contribution(Statement):
         for term in terms:
             if isconstant(term):
                 uterms.append(term)
-            elif isinstance(term, dtt):
+            elif isinstance(term, ddt):
                 qterms.append(term.args[0])
             else:
                 iterms.append(term)

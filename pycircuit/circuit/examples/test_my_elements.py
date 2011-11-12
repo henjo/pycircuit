@@ -12,7 +12,7 @@ from numpy.testing import assert_array_almost_equal, assert_array_equal
 from myTabVCCS import myVCCS
 from myCap import myC
 
-def NOtest_transient_plot():
+def test_transient_plot():
     vvec=np.linspace(-2,2,100)
     ivec=np.tanh(vvec)
     nvec=ivec*0 # no noise
@@ -27,7 +27,7 @@ def NOtest_transient_plot():
     plotall(res.v(n1),res.v(n2))
     pylab.show()
 
-def NOtest_nonlinear_gm():
+def test_nonlinear_gm():
     '''Check gm as a function of bias.
 
     '''
@@ -46,7 +46,7 @@ def NOtest_nonlinear_gm():
     assert_array_equal(G,GLin)
     
 
-def NOtest_nonlinear_ac():
+def test_nonlinear_ac():
     ''' Test that elements are linearised around DC operating point.
     
     '''
@@ -93,3 +93,5 @@ def test_source_degen():
     assert_almost_equal(resdc.v(2,gnd),-110.5)
 
 
+if __name__ == "__main__":
+    test_transient_plot()

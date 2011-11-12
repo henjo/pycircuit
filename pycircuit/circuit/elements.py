@@ -206,7 +206,7 @@ class VSin(VS):
     instparams = VS.instparams + [
         Parameter(name='vo', desc='Offset voltage', 
                   unit='V', default=0),
-        Parameter(name='va', desc='Voltage voltage', 
+        Parameter(name='va', desc='Voltage amplitude', 
                   unit='V', default=0),
         Parameter(name='freq', desc='Frequency', 
                   unit='Hz', default=0),
@@ -782,7 +782,7 @@ class Idtmod(Circuit):
     branches = (Branch(Node('oplus'), Node('ominus')),)
         
     def __init__(self, *args, **kvargs):
-        super(Idt, self).__init__(*args, **kvargs)
+        super(Idtmod, self).__init__(*args, **kvargs)
         branchindex = -1 ## add last in matrix
         idt_index = self.nodes.index(self.add_node('idt_node')) #note side effect
         inpindex, innindex, outpindex, outnindex = \
@@ -800,13 +800,21 @@ class Idtmod(Circuit):
         C = self.toolkit.zeros((self.n,self.n))
         C[idt_index, idt_index] +=  1
         self._C = C
-
+        self.modulus = self.iparv.modulus
+        self.offset = self.iparv.offset
+        
     def C(self, x, epar=defaultepar):
         return self._C
     
     def G(self, x, epar=defaultepar):
         return self._G
 
+    def q(self, x, epar=defaultepar): # q == -v_out in current implementation
+        #self._C is constant and _q is non-zero at one index only
+        _q = (self.toolkit.dot(self._C, x)  % -self.modulus)
+        _qmask = np.sign(np.abs(_q))
+        _q += _qmask*self.offset
+        return _q
 
 if __name__ == "__main__":
     import doctest

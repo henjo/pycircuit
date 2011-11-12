@@ -1110,6 +1110,10 @@ class SubCircuit(Circuit):
     def i(self, x, epar=defaultepar):
         return self._add_element_subvectors('i', x, (epar,))
 
+    #This seemed to be missing
+    def q(self, x, epar=defaultepar):
+        return self._add_element_subvectors('q', x, (epar,))
+
     def CY(self, x, w, epar=defaultepar):
         """Calculate composite noise source correlation matrix
 
