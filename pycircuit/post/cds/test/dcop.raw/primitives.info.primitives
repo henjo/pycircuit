@@ -1,0 +1,40 @@
+HEADER
+"PSFversion" "1.00"
+"simulator" "spectre"
+"version" "10.1.1.164.isr11"
+"date" "4:45:11 PM, Sat Oct 22, 2011"
+"design" "(no title)"
+"analysis type" "info.primitives"
+"analysis name" "primitives"
+"analysis description" "Circuit Information"
+"xVecSorted" "unsorted"
+"tolerance.relative" 0.00100000
+TYPE
+"primitive" STRUCT(
+"model" STRING *
+"oppoint" STRING *
+"output" STRING *
+"inst" STRING *
+"region" STRING *
+"terminals" STRING *
+) PROP(
+"key" "prim"
+)
+VALUE
+"resistor" "primitive" (
+"r rsh thresh rthresh rac l w etch etchl scaler tc1 tc2 tnom trise coeffs nonlinform symmetric kf af wdexp ldexp weexp leexp fexp mr mrl mrlp mrw mrwp mrlw1 mrlw1p mrlw2 mrlw2p c cj cjsw thick di cratio tc1c tc2c shrink scalec dtemp cap dw dlr cox capsw res bv_max "
+"v i res pwr "
+"leff weff reff ceff "
+"r l w m scale resform tc1 tc1r tc2 tc2r trise isnoisy bv_max c tc1c tc2c rac scaler scalec dtemp cap "
+""
+"1 2 0 "
+)
+"vsource" "primitive" (
+""
+"v i pwr "
+""
+"dc type fundname delay edgetype val0 val1 period rise fall width file offset scale stretch rms pwlfilter rolloff pwlbandwidth allbrkpts pwlperiod pwlperiodstart twidth sinedc ampl freq sinephase ampl2 freq2 sinephase2 fundname2 iqmodfiles fmmodindex fmmodfreq fmmodfiles ammodindex ammodoffset ammodfreq ammodphase damp freqvec amplvec phasevec maxharms td1 tau1 td2 tau2 data rptstart rpttimes ref jitter seed taps noisefile isnoisy mag phase xfmag pacmag pacphase m tc1 tc2 tnom "
+""
+"p n ctl "
+)
+END

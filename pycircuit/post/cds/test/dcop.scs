@@ -1,0 +1,17 @@
+parameters k=0.5
+
+v1 (vin 0) vsource dc=5 type=dc
+r1 (vin vout) resistor r=10k*(1-k)
+r2 (vout 0) resistor r=10k*k
+
+dcOp dc
+
+save vin vout
+
+modelParameter info what=models where=rawfile
+element info what=inst where=rawfile
+outputParameter info what=output where=rawfile
+designParamVals info what=parameters where=rawfile
+primitives info what=primitives where=rawfile
+subckts info what=subckts  where=rawfile
+

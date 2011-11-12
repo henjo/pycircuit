@@ -684,7 +684,7 @@ class SweepSection(SimpleContainer):
     
     def getNames(self):
         return tuple([str(child.name) for child in self.children])
-
+    
     def toPSFasc(self, prec=None):
         r="SWEEP\n"
         r+="\n".join([child.toPSFasc(prec) for child in self.children])
@@ -923,8 +923,6 @@ class NonSweepValue(Chunk):
         
         self.value.deSerializeFile(file)
 
-        print [ddef.datatypeid for ddef in self.valuetype.structdef.children]
-        
         # Read possible property objects that belongs to the type by peeking ahead
         while True:
             oldpos = file.tell()
@@ -1218,7 +1216,7 @@ class PSFReader(object):
         self.types = TypeSection(self)
         self.sweeps = None
         self.traces = None
-        self.lastid = 0x10000000;
+        self.lastid = 0x1000
         self.verbose = False
         self.filename = filename
         self.file = None
@@ -1319,6 +1317,9 @@ class PSFReader(object):
         """
         if self.values:
             return self.values.getValueNames()
+
+    def getSweepParamNames(self):
+        return self.sweeps.getNames()
     
     def getSweepParamValues(self, dim=0):
         """Returns a numpy.array of sweep parameter values for sweep dimension dim.

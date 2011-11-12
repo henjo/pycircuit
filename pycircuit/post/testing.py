@@ -13,7 +13,7 @@ def assert_waveform_equal(a, b):
 
 def assert_waveform_almost_equal(a, b, decimal=6):
     for ax, bx in zip(a.x, b.x):
-        assert_array_equal(ax, bx)
+        assert_array_almost_equal(ax, bx, decimal=decimal)
     assert_array_almost_equal(np.array(a.y), np.array(b.y), decimal=decimal)
 #    assert_equal(a.xlabels, b.xlabels)
 #    assert_equal(a.ylabel, b.ylabel)

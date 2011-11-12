@@ -1,0 +1,11 @@
+parameters vdc1 = 1
+parameters vdc2 = 1
+parameters vdc3 = 1
+
+// out = vdc1 - vdc2 + 2*vdc3
+v1 (1 0) vsource dc=vdc1
+v2 (2 1) vsource dc=-vdc2
+v3 (out 2) vsource dc=2*vdc3
+
+dc1 dc param=vdc1 start=1 stop=9 lin=3
+

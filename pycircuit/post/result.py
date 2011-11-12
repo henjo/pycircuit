@@ -25,6 +25,9 @@ class ResultDict(object):
         """List of ResultDict's keys"""
         raise NotImplementedError()
 
+    def values(self):
+        return [self[k] for k in self.keys()]
+
     def __str__(self):
         s = 'ResultDict: %s'%(str(self.keys()))
         return s

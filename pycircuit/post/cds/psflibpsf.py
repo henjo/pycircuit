@@ -46,7 +46,7 @@ class PSFReader(object):
         >>> psf.getNSweeps()
         1
         """
-        return 1
+        return self.ds.get_nsweeps()
 
     def __len__(self):
         return len(self.ds.get_signal_names())
@@ -70,6 +70,9 @@ class PSFReader(object):
             raise ValueError("Please open the PSF file first")
         return tuple(self.ds.get_signal_names())
     
+    def getSweepParamNames(self):
+        return self.ds.get_sweep_param_names()
+
     def getSweepParamValues(self, dim=0):
         """Returns a numpy.array of sweep parameter values for sweep dimension dim.
 

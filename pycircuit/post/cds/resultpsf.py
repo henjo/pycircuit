@@ -10,11 +10,6 @@ import re
 import numpy
 import operator
 
-try:
-    import psflibpsf
-except ImportError:
-    psflibpsf = None
-
 class PSFResultSet(result.ResultDict):
     """PSFResultSet class handles a PSF result directory
 
@@ -80,12 +75,12 @@ class PSFResultSet(result.ResultDict):
         """
 
         if not self.isfamily():
-            return self.runs['Run1'].getLogFile().getValueNames()
+            return self.runs['Run1'].get_log().get_result_names()
         else:
             # Find first leaf node
             for run in self.runs.values():
                 if run.isLeaf():
-                    return run.getLogFile().getValueNames()
+                    return run.get_log().get_result_names()
 
     def __getitem__(self, name):
         """Get result from a run by name
@@ -111,7 +106,6 @@ class PSFResultSet(result.ResultDict):
             return self.runs['Root'].getResult(name, self.resultdir)
         else:
             return self.runs['Run1'].getResult(name, self.resultdir)
-
 
 class PSFRun(object):
     def __init__(self, name, valuedict, properties):
@@ -143,8 +137,7 @@ class PSFRun(object):
     def openLogs(self, resultdir):
         for logname in self.logName:
             if len(logname) > 0:
-                self.logs[logname] = psf.PSFReader(os.path.join(resultdir, str(logname)),asc=True)
-                self.logs[logname].open()                
+                self.logs[logname] = PSFLog(os.path.join(resultdir, str(logname)))
 
     def addChild(self, child):
         self.children.append(child)
@@ -173,12 +166,12 @@ class PSFRun(object):
             res += self.children[0].getSweepVariables()
         return tuple(res)
     
-    def getLogFile(self):
+    def get_log(self):
         """Return a PSFReader object of log file
 
         >>> resultset=PSFResultSet('./test/resultdirs/simple')
         >>> run = resultset.runs['Run1']
-        >>> isinstance(run.getLogFile(), psf.PSFReader)
+        >>> isinstance(run.get_log(), psf.PSFReader)
         True
 
         """
@@ -229,7 +222,7 @@ class PSFRun(object):
         {'dataFile': 'srcSweep', 'description': 'Source Sweep', 'parent': '', 'format': 'PSF', 'sweepVariable': [], 'analysisType': 'dc'}
 
         """
-        return self.getLogFile().getValuesByName(resultname)
+        return self.get_log().getValuesByName(resultname)
 
     def getResult(self, name, dir):
         """Open result data file of result with given name located in directory dir
@@ -251,25 +244,25 @@ class PSFRun(object):
         
         """
         if self.isLeaf():
-            resultinfo = self.getResultInfo(name)
-
-            if resultinfo['format'] == 'PSF':
-                return PSFResult(os.path.join(dir, str(resultinfo['dataFile'])))
-            else:
-                raise ValueError("Cannot handle format "+resultinfo['format'])
+            return self.get_log().get_result(name)
         else:
-            sweepvalues = self._getNestedSweepValues()
             leafs = self._findLeafs()
+
+            firstlog = leafs[0].get_log()
+            firstlogitem = firstlog[name]
+            sweepvalues = self._getNestedSweepValues() + firstlogitem.get_sweep_values(firstlog)
+            sweepvariables = self.getSweepVariables() + firstlogitem.get_sweep_variables(firstlog)
+
             psffiles = []
             for leaf in leafs:
                 try:
-                    resultinfo = leaf.getResultInfo(name)
-                    psffiles.append(os.path.join(dir, leaf.logDir,
-                                                 str(resultinfo['dataFile'])))
+                    logitem = leaf.get_log()[name]
+                    psffiles.extend(logitem.get_datafiles(leaf.get_log()))
                 except KeyError:
                     psffiles.append(None)
 
-            return PSFResultFamily(self.getSweepVariables(), sweepvalues, psffiles)
+            print psffiles
+            return PSFResultFamily(sweepvariables, sweepvalues, psffiles)
         
     def __repr__(self):
         return str(self.__dict__)
@@ -277,12 +270,127 @@ class PSFRun(object):
     def treeString(self):
         return "\n".join([self.name]+[psf.indent(child.treeString(), 2) for child in self.children])
 
-class PSFResult(result.ResultDict):
-    def __init__(self, psffilename=None, use_libpsf=True):
-        if use_libpsf and psflibpsf:
-            self.psfobj = psflibpsf.PSFReader(psffilename)
+class PSFLog(object):
+    def __init__(self, filename):
+        self.filename = filename
+
+        self.psfobj = psf.PSFReader(filename, asc=True)
+        self.psfobj.open()
+
+        self.itemnames = []
+        self.items = {}
+        self.roots = []
+        
+        for item_name in self.psfobj.getValueNames():
+            new_item = PSFLogItem(item_name, self.psfobj.getValuesByName(item_name))
+
+            if new_item.parentname != '':
+                self.items[new_item.parentname].add_child(new_item)
+            else:
+                self.roots.append(new_item)
+                
+            self.items[item_name] = new_item
+
+    def keys(self):
+        return self.itemnames
+
+    def __getitem__(self, key):
+        return self.items[key]
+
+    def get_result_names(self):
+        return [item.name for item in self.roots]
+
+    def get_result(self, name):
+        return self.items[name].get_result(self)
+
+    def dirname(self):
+        return os.path.dirname(self.filename)
+
+class PSFLogItem(object):
+    def __init__(self, name, valuedict):
+        self.name = name
+        self.valuedict = valuedict
+        self.children = []
+        self.psfobj = None
+
+    def is_leaf(self):
+        return len(self.children) == 0
+
+    def add_child(self, item):
+        self.children.append(item)
+
+    def tree_string(self):
+        return "\n".join([self.name]+[psf.indent(child.tree_string(), 2) for child in self.children])
+
+    def get_datafile(self, log):
+        return os.path.join(log.dirname(), self.valuedict['dataFile'])
+    
+    def get_psfobj(self, log):
+        if self.psfobj == None:
+            if self.valuedict['format'] == 'PSF':
+                self.psfobj = create_psfreader(self.get_datafile(log))
+                self.psfobj.open()
+            else:
+                raise ValueError("Cannot handle format " + self.valuedict['format'])
+
+        return self.psfobj
+
+    def get_sweep_variables(self, log):
+        """Get nested sweep variable names"""
+        res = []
+        
+        if len(self.children) > 0:
+            return self.get_psfobj(log).getSweepParamNames() + self.children[0].get_sweep_variables(log)
         else:
-            self.psfobj = psf.PSFReader(psffilename)
+            return ()
+
+    def get_sweep_values(self, log):
+        """Get all nested sweep variable values as a list of arrays with sweep values
+
+        """
+        theitem = self
+        sweepvalues = []
+
+        while not theitem.is_leaf():
+            sweepvalues.append(theitem.get_psfobj(log).getSweepParamValues())
+            theitem = theitem.children[0]
+
+        return sweepvalues
+
+    def get_leafs(self):
+        """Return all leafs from this log item and down in depth-first order"""
+        result = []
+
+        if self.is_leaf():
+            result = [self]
+        else:
+            for child in self.children:
+                if child.is_leaf():
+                    result.append(child)
+                else:
+                    result.extend(child.get_leafs())
+        
+        return result
+
+    def get_datafiles(self, log):
+        """Return datafiles of all leafs from this log item and down in depth-first order"""
+        return [item.get_datafile(log) for item in self.get_leafs()]
+
+    def get_result(self, log):
+        """Open result data file of result with given name located in directory dir"""
+        if self.is_leaf():
+            return PSFResult(self.get_datafile(log))
+        else:
+            psffiles = self.get_datafiles(log)
+            return PSFResultFamily(self.get_sweep_variables(log), self.get_sweep_values(log), psffiles)
+
+    @property
+    def parentname(self):
+        return self.valuedict['parent']
+
+class PSFResult(result.ResultDict):
+    def __init__(self, psffilename=None):
+        self.psfobj = create_psfreader(psffilename)
 
         self.psfobj.open()
 
@@ -357,7 +465,9 @@ class PSFResult(result.ResultDict):
             return res
         else:
             if self.psfobj.getNSweeps() > 0:
-                return waveform.Waveform(self.psfobj.getSweepParamValues(0), self.psfobj.getValuesByName(outputname))
+                return waveform.Waveform(self.psfobj.getSweepParamValues(0), 
+                                         self.psfobj.getValuesByName(outputname),
+                                         xlabels=self.psfobj.getSweepParamNames(), ylabel=outputname)
             else:
                 return self.psfobj.getValuesByName(outputname)
 
@@ -365,7 +475,8 @@ class PSFResultFamily(result.ResultDict):
     def __init__(self, sweepvariables, sweepvalues, psffilenames):
         self.sweepvariables = sweepvariables
         self.sweepvalues = sweepvalues
-        self.psfobjects = [psf.PSFReader(psffilename) for psffilename in psffilenames]
+        self.psfobjects = [create_psfreader(psffilename) 
+                           for psffilename in psffilenames]
         for po in self.psfobjects:
             po.open()
 #        self.o = SignalAccesser(self)
@@ -419,16 +530,39 @@ class PSFResultFamily(result.ResultDict):
         else:
             if self.psfobjects[0].getNSweeps() > 0:
                 xvalues = self.sweepvalues + [self.psfobjects[0].getSweepParamValues(0)]
+                xlabels = self.sweepvariables + self.psfobjects[0].getSweepParamNames()
                 yvalues = numpy.concatenate([psfobj.getValuesByName(outputname) for psfobj in self.psfobjects])
                 yvalues = numpy.array(yvalues)
                 yvalues = numpy.reshape(yvalues, map(len, xvalues))
-                return waveform.Waveform(xvalues, yvalues)
+                return waveform.Waveform(xvalues, yvalues, xlabels=xlabels, ylabel=outputname)
             else:
                 xvalues = self.sweepvalues
+                xlabels = self.sweepvariables
                 yvalues = [psfobj.getValuesByName(outputname) for psfobj in self.psfobjects]
                 yvalues = numpy.array(yvalues)
                 yvalues = numpy.reshape(yvalues, map(len, xvalues))
-                return waveform.Waveform(xvalues, yvalues)
+                return waveform.Waveform(xvalues, yvalues, xlabels=xlabels, ylabel=outputname)
+
+def create_psfreader(*args, **kwargs):
+    """PSFReader factory that can use either libpsf or pure python"""
+    use_libpsf = True
+    
+    if 'USELIBPSF' in os.environ:
+        use_libpsf = bool(int(os.environ['USELIBPSF']))
+
+    ## Try to import libpsf
+    if use_libpsf:
+        try:
+            import psflibpsf
+        except ImportError:
+            use_libpsf = False
+            os.environ['USELIBPSF'] = '0'
+
+    if use_libpsf:
+        return psflibpsf.PSFReader(*args, **kwargs)
+    else:
+        return psf.PSFReader(*args, **kwargs)
+
        
 if __name__ == "__main__":
     import doctest
