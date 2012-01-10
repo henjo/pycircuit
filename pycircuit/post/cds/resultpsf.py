@@ -5,6 +5,7 @@
 import pycircuit.post.result as result
 import pycircuit.post.waveform as waveform
 import psf
+import psfasc
 import os
 import re
 import numpy
@@ -558,7 +559,7 @@ def create_psfreader(*args, **kwargs):
             use_libpsf = False
             os.environ['USELIBPSF'] = '0'
 
-    if use_libpsf:
+    if use_libpsf and not psfasc.is_psfasc(args[0]):
         return psflibpsf.PSFReader(*args, **kwargs)
     else:
         return psf.PSFReader(*args, **kwargs)

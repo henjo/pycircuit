@@ -8,10 +8,11 @@ from pycircuit.post.testing import *
 
 psfresultset_testvectors = {
     'dcop.raw':
-        (('dcOp-dc', 'vout', 2.5), 
-         ('dcOp-dc', 'vin' , 5.0)),
+        ((('dcOp-dc', 'vout'), 2.5), 
+         (('dcOp-dc', 'vin') , 5.0),
+         (('designParamVals-info', 'top-level', 'k'), 0.5)),
     'dcsweep.raw':
-        (('dc1-dc', 'out', 
+        ((('dc1-dc', 'out'), 
           Waveform(([  1.        ,   3.66666667,   6.33333333,  9.        ],), 
                     [  2.        ,   4.66666667,   7.33333333,  10.        ])),),
 }
@@ -35,8 +36,17 @@ def psfresultset(libpsf, rawdir):
 
     rs = PSFResultSet(rawdir)
 
-    for resultname, signal, refvalue in psfresultset_testvectors[rawdir]:
-        value = rs[resultname][signal]
+    for hierarchical_signal, refvalue in psfresultset_testvectors[rawdir]:
+        ## Get result with the possibly to have several hierarchy levels
+        result = rs
+        for resultkey in hierarchical_signal[:-1]:
+            result = result[resultkey]
+
+        signal = hierarchical_signal[-1]
+            
+        assert signal in result, '%s not in %s' % (signal, result.keys())
+
+        value = result[signal]
         if isinstance(refvalue, Waveform):
             assert_waveform_almost_equal(value, refvalue)
         else:
