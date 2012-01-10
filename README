@@ -1,0 +1,13 @@
+Getting Started
+---------------
+
+sudo apt-get install gnucap swig virtualenv python-dev
+virtualenv py
+. py/bin/activate
+wget http://www.gnucap.org/devel/gnucap-2009-12-07.tar.gz
+tar zxf gnucap-2009-12-07.tar.gz
+cd gnucap-2009-12-07
+./configure
+make
+sudo make install
+pip install -e git+https://github.com/henjo/gnucap-python.git#egg=gnucap
