@@ -1383,7 +1383,7 @@ class PSFReader(object):
         4.7957014499434756
 
         swept psf file withouth groups
-        >>> psf=PSFReader('./test/resultdirs/parsweep2/C=1e-12,R=1e-12/psf/ac.ac')
+        >>> psf=PSFReader('./test/resultdirs/parsweep/C=1e-12,R=1e-12/psf/ac.ac')
         >>> psf.open()
         >>> psf.getValuesByName("net3")
         array([ 0.+0.j,  0.+0.j,  0.+0.j,  0.+0.j,  0.+0.j,  0.+0.j,  0.+0.j,
