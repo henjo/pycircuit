@@ -1,6 +1,7 @@
 from __future__ import division
 import numpy as np
-from scipy import factorial, interpolate, linalg
+from scipy.misc import factorial
+from scipy import interpolate, linalg
 
 
 def fourier_analysis(t, x, harmonics=range(9)):
