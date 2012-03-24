@@ -2,7 +2,7 @@ Source: pycircuit
 Section: electronics
 Priority: extra
 Maintainer: Henrik Johansson <henrik@johome.net>
-Build-Depends: cdbs, debhelper (>=8), python-support, python-all
+Build-Depends: cdbs, debhelper (>=8), python-support, python-all, python-setuptools
 XS-Python-Version: >=2.4
 Standards-Version: 3.9.1
 
