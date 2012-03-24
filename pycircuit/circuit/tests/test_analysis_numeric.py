@@ -19,16 +19,16 @@ def test_integer_component_values():
     pycircuit.circuit.circuit.default_toolkit = numeric
     c = SubCircuit(toolkit=numeric)
 
-    n1,n2 = c.add_nodes('net1', 'net2')
-
-    c['vs'] = VS(n1, gnd, v = 9)
-    c['R1'] = R( n1,  n2, r = 50)
-    c['R2'] = R( n2, gnd, r = 50)
+    c['vs'] = VS('net1', gnd, v = 9)
+    c['R1'] = R( 'net1',  'net2', r = 50)
+    c['R2'] = R( 'net2', gnd, r = 50)
 
     dc = DC(c)
     res = dc.solve()
     
-    assert_equal(res.v('net1'), 9.0)
+    assert_equal(res.v('net2'), 4.5)
+
+    assert_equal(res.i('R2.plus'), 0.09)
 
 def TODOtest_noise_dc_steady_state():
     """Test that dc-steady state is accounted for in noise simulations

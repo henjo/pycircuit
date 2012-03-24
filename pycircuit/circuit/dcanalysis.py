@@ -84,7 +84,7 @@ class DC(Analysis):
                 else:
                     break
 
-        self.result = CircuitResultDC(self.cir, x)
+        self.result = CircuitResult(self.cir, x)
 
         return self.result
 
@@ -153,11 +153,6 @@ class DC(Analysis):
         # Insert reference node voltage
         return self.toolkit.concatenate((x[:self.irefnode], self.toolkit.array([0.0]), x[self.irefnode:]))
 
-class CircuitResultDC(CircuitResult):
-    def i(self, term):
-        """Return terminal current i(term)"""
-        return self.circuit.extract_i(self.x, term, xdot = np.zeros(self.x.shape))
-           
 def refnode_removed(func, irefnode,toolkit):
     def new(x, *args, **kvargs):
         newx = toolkit.concatenate((x[:irefnode], toolkit.array([0.0]), x[irefnode:]))

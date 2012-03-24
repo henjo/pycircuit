@@ -621,7 +621,7 @@ class Circuit(object):
            Branch object or terminal name
 
         *xdot*
-           dx/dt vector. this is needed if there is no branch defined at the
+           dx/dt vector. this is needed if dx/dt is non-zero and there is no branch defined at the
            terminal
 
         *refnode*
@@ -678,21 +678,27 @@ class Circuit(object):
             else:
                 terminal_node = self.nodenames[branch_or_term]
                 
-                if xdot == None:
-                    raise ValueError('xdot argument must not be None if no' 
-                                     'branch is connected to the terminal')
-
                 terminal_node_index = self.get_node_index(terminal_node)
 
-                if linearized:
-                    return dot(self.G(xdcop)[terminal_node_index], x) + \
-                        dot(self.C(xdcop)[terminal_node_index], xdot) + \
-                        self.u(t, analysis = 'ac')[terminal_node_index]
-                        
+                if xdot != None:
+                    if linearized:
+                        return dot(self.G(xdcop)[terminal_node_index], x) + \
+                            dot(self.C(xdcop)[terminal_node_index], xdot) + \
+                            self.u(t, analysis = 'ac')[terminal_node_index]
+
+                    else:
+                        return self.i(x)[terminal_node_index] + \
+                            dot(self.C(x)[terminal_node_index], xdot) + \
+                            self.u(t)[terminal_node_index]
                 else:
-                    return self.i(x)[terminal_node_index] + \
-                        dot(self.C(x)[terminal_node_index], xdot) + \
-                        self.u(t)[terminal_node_index]
+                    if linearized:
+                        return dot(self.G(xdcop)[terminal_node_index], x) + \
+                            self.u(t, analysis = 'ac')[terminal_node_index]
+
+                    else:
+                        return self.i(x)[terminal_node_index] + \
+                            self.u(t)[terminal_node_index]
+
         else:
             branch = branch_or_term
             sign = 1

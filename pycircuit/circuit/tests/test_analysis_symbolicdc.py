@@ -38,8 +38,11 @@ def test_linear():
 
     res = dc.solve()
 
+    ## Check voltage
     assert_equal(sympy.simplify(res.v(3, gnd) -  V0*R2/(R1+R2)), 0)
 
+    ## Check current through R2
+    assert_equal(sympy.simplify(res.i('R2.plus') - V0/(R1+R2)), 0)
     
 def test_geteqsys():
     var('R1 V0 Isat T')

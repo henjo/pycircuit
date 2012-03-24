@@ -59,6 +59,6 @@ class SymbolicDC(Analysis):
             ## Insert reference node
             x.insert(self.irefnode, 0)
 
-            self.result = CircuitResult(self.cir, x)
+            self.result = CircuitResult(self.cir, np.array(x))
 
             return self.result
