@@ -44,11 +44,13 @@ class MOS(SubCircuit):
 
         self['Igm'] = VCCS('g', 's', 
                            'd', 's', 
-                           gm=self.ipar.gm)
+                           gm=self.ipar.gm,
+                           toolkit=self.toolkit)
 
         self['Igmb'] = VCCS('b', 's', 
                             'd', 's', 
-                            gm=self.ipar.gmb)
+                            gm=self.ipar.gmb,
+                            toolkit=self.toolkit)
 
         self['gds'] = G('d', 's', 
                         g = self.ipar.gds, noisy = False)
@@ -103,11 +105,13 @@ class MOS_ACM(SubCircuit):
 
         self['Igm'] = VCCS('g', 's', 
                            'd', 's', 
-                           gm=self.ipar.gm)
+                           gm=self.ipar.gm,
+                           toolkit=self.toolkit)
 
         self['Igmb'] = VCCS('b', 's', 
                             'd', 's', 
-                            gm=self.ipar.gmb)
+                            gm=self.ipar.gmb,
+                            toolkit=self.toolkit)
 
         self['gds'] = G('d', 's', 
                         g = self.ipar.gds, noisy = False)
