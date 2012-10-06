@@ -13,7 +13,7 @@ def find_virtuoso():
 	if  virtuosocmd == None:
 		raise ValueError("Cannot find virtuoso executable")
 		
-	cmd = virtuosocmd + " -nograph"
+	cmd = virtuosocmd + " -nographE"
 	return cmd
 
 class CadenceSession(object):
