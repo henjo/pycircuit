@@ -3,8 +3,25 @@
 ## Use docstring
 
 ## TODO:
+
 ## Separate linear and non-linear
 
+## Sparse matrix interface (to NA)
+#Several classes?
+#Switching between different sparse matrices
+
+## Topology analysis
+#Done in circuit
+
+## Noise
+#Separate update process?
+#Shaped noise
+
+## Decorated functions
+# Pass decorated function (function with some parameters preset) to
+# instances/branches to let them update in correct place.
+# Will probably give some overhead due to function calling.
+# Will look cleaner and give less for-loops in xNA
 
 class NA(object):
     '''Nodal analysis base class.
@@ -39,8 +56,10 @@ class MNA(NA):
         #self.i = 
 
     def update(self,x,t):
-        
-        in_i_branches = [[inst0_branchR1],        # in branches in inst0
+        '''Concept/example implementation of update !!
+        Will look quite different when done. 
+        '''
+        in_i_branches = [[ntioinst0_branchR1],        # in branches in inst0
                          [inst1_branchR1], ....]  # in branches in inst1
         in_i_branch_indices = [ [[0,1]],          # plus and minus node indices for branches in inst0
                                 [[1,0]] ]         # plus and minus node indices for branches in inst1
