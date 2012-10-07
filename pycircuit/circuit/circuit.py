@@ -119,8 +119,7 @@ class Circuit(object):
           nodes where k is the number of terminals.
 
         *branches*
-          list of Branch objects. The solver will solve for the 
-          currents through the branches.
+          list of Branch objects.
 
         *terminals*
           list of terminal names
@@ -194,7 +193,8 @@ class Circuit(object):
             self.nodes == a.nodes and \
             self.nodenames == a.nodenames and self.branches == a.branches and \
             self.iparv == a.iparv
-        
+
+    ## Change/remove this ??
     def __copy__(self):
         newc = self.__class__()
         newc.toolkit = self.toolkit
@@ -249,14 +249,7 @@ class Circuit(object):
             self.nodes.append(node)
         self.nodenames[node.name] = node
 
-    def append_branches(self, *branches):
-        """Append node object to circuit"""
-        ## Make a copy of branch list so the class is unchanged
-        if self.__class__.branches is self.branches:
-            self.branches = list(self.branches)
-
-        self.branches.extend(branches)
-
+    ## Need a rewrite to fine branches of type potential!!
     def get_terminal_branch(self, terminalname):
         """Find the branch that is connected to the given terminal
 
@@ -294,6 +287,7 @@ class Circuit(object):
         elif len(minusbranches) == 1:
             return minusbranches[0], -1            
 
+    ## Need to be moved, since circuit doesn't know about x-vector!!
     def get_node_index(self, node, refnode=None):
         """Get row in the x vector of a node instance
 
@@ -319,6 +313,7 @@ class Circuit(object):
             raise ValueError('Node %s is not in circuit node list (%s)'%
                              (str(node), str(self.nodes)))
 
+    ## Need to be moved, since circuit doesn't know about x-vector!!
     def get_branch_index(self, branch):
         """Get row in the x vector of a branch instance"""
         if branch in self.branches:
@@ -404,7 +399,7 @@ class Circuit(object):
                 self.nodes.insert(self._nterminalnodes, node)
             
             self.nodenames[terminal] = node            
-            
+
     def save_current(self, terminal):
         """Returns a circuit where a current probe is added at a terminal
         
@@ -451,59 +446,11 @@ class Circuit(object):
                     result.append(Node(instancename + '.' + node.name))
             return result
 
-    def G(self, x, epar=defaultepar):
-        """Calculate the G (trans)conductance matrix given the x-vector"""
-        return self.toolkit.zeros((self.n, self.n))
-
-    def C(self, x, epar=defaultepar):
-        """Calculate the C (transcapacitance) matrix given the x-vector"""
-        return self.toolkit.zeros((self.n, self.n))
-
-    def u(self, t=0.0, epar=defaultepar, analysis=None):
-        """Calculate the u column-vector of the circuit at time t
-
-        Arguments
-        ---------
-
-        epar -- ParameterDict with environment parameters such as temperature
-        analysis -- This argument gives the possibility to have analysis 
-                    dependent sources.
-                    for normal time dependent and dc sources this argument 
-                    should be None
-        
-        """
-        return self.toolkit.zeros(self.n)
-
-    def i(self, x, epar=defaultepar):
-        """Calculate the i vector as a function of the x-vector
-
-        For linear circuits i(x(t)) = G*x
-        """
-        return self.toolkit.dot(self.G(x), x)
-
-    def q(self, x, epar=defaultepar):
-        """Calculate the q vector as a function of the x-vector
-
-        For linear circuits q(x(t)) = C*x
-        """
-        return self.toolkit.dot(self.C(x), x)
-
-    def CY(self, x, w, epar=defaultepar):
-        """Calculate the noise sources correlation matrix
-
-        Arguments
-        ---------
-        x -- (numpy array) the state vector
-        w -- Angular frequency
-        epar -- (ParameterDict) Environment parameters
-
-        """
-        return self.toolkit.zeros((self.n, self.n))
-
     def next_event(self, t):
         """Returns the time of the next event given the current time t"""
         return inf
     
+    ## Move this function to NA where the x-vector is known
     def name_state_vector(self, x, analysis=''):
         """Return a dictionary of the x-vector keyed by node and branch names
 
@@ -529,26 +476,7 @@ class Circuit(object):
 
         return result
 
-    def stamp_v(self, x, value, nodep, noden=None, refnode=None):
-        """Stamp value in vector such that x[nodep] += value, x[noden] -= value
-        
-        If refnode is not None the reference node is assumed to be removed
-        from vector
-        """
-        x[self.get_node_index(nodep, refnode)] += value
-        x[self.get_node_index(noden, refnode)] -= value
-
-    def remove_refnode(self, matrices, refnode):
-        """Remove refnode from vectors or matrices"""
-        n = self.get_node_index(refnode)
-        result = []
-        
-        for A in matrices:
-            for axis in range(len(A.shape)):
-                A=self.toolkit.delete(A, [n], axis=axis)
-            result.append(A)
-        return tuple(result)
-
+    ## Move this to NA!!
     def extract_v(self, x, nodep, noden=None, refnode=gnd, 
                   refnode_removed=False):
         """Extract voltage between nodep and noden from the given x-vector.
@@ -607,7 +535,7 @@ class Circuit(object):
         return v[0] - v[1]
 
         
-
+    ## Move this to NA!!
     def extract_i(self, x, branch_or_term, xdot = None,
                   refnode = gnd, refnode_removed = False,
                   t = 0,
@@ -957,7 +885,8 @@ class SubCircuit(Circuit):
             top_instancename = instname_parts[0]
             sub_instancename = '.'.join(instname_parts[1:])
             return self.elements[top_instancename][sub_instancename]
-
+        
+    ## Need a rewrite to find branches of type potential!!
     def get_terminal_branch(self, terminalname):
         """Find the branch that is connected to the given terminal
 
@@ -1152,6 +1081,7 @@ class SubCircuit(Circuit):
         
         return self
 
+    ## Move to NA !!
     def extract_i(self, x, branch_or_term, xdot = None,
                   refnode = gnd, refnode_removed = False, 
                   linearized = False, xdcop = None):
@@ -1192,49 +1122,12 @@ class SubCircuit(Circuit):
         """This is called when an instance parameter is updated"""
         for element in self.elements.values():
             element.update_iparv(self.iparv, ignore_errors=True)
-        
-    def _add_element_submatrices(self, methodname, x, args):
-        dot = self.toolkit.dot
-        n = self.n
-        lhs = self.toolkit.zeros((n,n))
-
-        for instance, element in self.elements.items():
-            nodemap = self.elementnodemap[instance]
-
-            if x != None:
-                subx = x[nodemap]
-                try:
-                    rhs = getattr(element, methodname)(subx, *args)
-                except Exception, e:
-                    raise e.__class__(str(e) + ' at element ' + str(element) 
-                                      + ', args='+str(args))
-            else:
-                rhs = getattr(element, methodname)(*((None,) + tuple(args)))
-                
-            T = self._mapmatrix[instance]
-        
-            lhs += dot(dot(T, rhs), T.T)
-
-        return lhs
-
-    def _add_element_subvectors(self, methodname, x, args, dtype=None):
-        n = self.n
-        lhs = self.toolkit.zeros(n, dtype=dtype)
-
-        for instance, element in self.elements.items():
-            if x != None:
-                subx = x[self.elementnodemap[instance]]
-                rhs = getattr(element, methodname)(subx, *args)
-            else:
-                rhs = getattr(element, methodname)(*args)
-
-            T = self._mapmatrix[instance]
-
-            lhs += self.toolkit.dot(T, rhs)
-
-        return lhs
 
     def find_class_instances(self, instance_class):
+        '''Find all elements of this type
+
+        All resistors in a circuit for example.
+        '''
         instances = []        
         for instanceName, element in self.elements.items():
             if isinstance(element, instance_class):
@@ -1254,12 +1147,13 @@ class SubCircuit(Circuit):
                 for sube in e.xflatelements:
                     yield sube
 
-    def translate_branch(self, branch, instance):
-        """Return branch from a local branch in an instance"""
-        return Branch(self.get_node(instance + '.' + branch.plus.name),
-                      self.get_node(instance + '.' + branch.minus.name))
+    ## Remove or move or change !!
+    # def translate_branch(self, branch, instance):
+    #     """Return branch from a local branch in an instance"""
+    #     return Branch(self.get_node(instance + '.' + branch.plus.name),
+    #                   self.get_node(instance + '.' + branch.minus.name))
                     
-class ProbeWrapper(SubCircuit):
+class ProbeWrapper(SubCircuit): #!!
     """Circuit wrapper that adds voltage sources for current probing"""
     def __init__(self, circuit, terminals = ()):
 
@@ -1299,7 +1193,7 @@ class ProbeWrapper(SubCircuit):
         return self
     
 
-class CircuitProxy(Circuit):
+class CircuitProxy(Circuit): #!!
     def __init__(self, circuit, parent=None, instance_name=None):
         super(CircuitProxy, self).__init__(self)
         self.device = circuit
