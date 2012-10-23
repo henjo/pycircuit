@@ -52,47 +52,89 @@ class Node(object):
 class Branch(object):
     """A branch connects two nodes.
     
-    A branch is used in modified nodal analysis to describe components that 
-    defines a voltage between two nodes as a function of current flowing 
-    between these nodes. Examples are voltage sources and inductors.
-    Positive current through a branch is defined as a current flowing from 
-    plus to minus.a
+    A branch is used to tell the nodal analyzer to enforce a potential or define a flow
+    between its plus and minus nodes. It may also just be used by other branches to 
+    measure potential difference or current through a potential branch. A branch may also
+    be 
+    
+
+    **Attributes**
+        *plus*
+          Positive node
+        *minus*
+          Negative node
+        *i*
+          Flow between its plus and minus node
+        *q*
+          Time integral
+        *v*
+          Potential between plus and 
+        *G*
+          i jacobian, di/d(v or i of input branches). The derivatives are stored as a list
+        *C*
+          q jacobian, di/d(v or i of input branches). The derivatives are stored as a list
+        *potential*
+          If set the branch the solver will enforce a potential between it's plus and minus nodes. Otherwise
+          it is a flow branch.
+        *output* 
+          out is a string that indicates if the circuit may set its q, u and/or i value. For example, if the
+          string contains the letter 'q' it may set the q value. The string 'qui' indicates that the circuit
+          may set all three values.
+        *input* 
+          If set, the circuit may use the voltage or current value of the branch
+        *linear*
+          If true, the voltage or current of output branches is a linear function
+    
     
     """
-    def __init__(self, plus, minus, name=None):
-        """Initiate a branch
 
-        Arguments:
-        plus -- Node object connected to the postive terminal of the branch
-        minus -- Node object connected to the negative terminal of the branch
+    ## Possibly add inormation regarding memory(q), linearity etc.
+    
+    i = None #flow
+    q = None #time integral
+    v = None #potential
+    G = None #i jacobian, 
+    C = None #q jacobian
 
-        Keyword arguments:
-        name -- branch name
-
-        """
-
+    def __init__(self, plus, minus, potential=False, 
+                 output='', input=False, linear=True
+                 ): # default is 'flow' branch, not 'potential' branch
+        self.potential = potential
         self.plus = plus
         self.minus = minus
-        self.name = name
+        self.output = output
+        self.input = input
+        self.linear = True
 
-    def __hash__(self): return hash(self.plus) ^ hash(self.minus)
+        self.i = 0
+        self.q = 0
+        self.v = 0
+        self.u = 0
 
-    def __eq__(self, a): 
-        try:
-            return self.plus == a.plus and self.minus == a.minus
-        except:
-            return False        
+    def G(self,wrt):
+        '''Method for calculating conductance
+        '''
+        pass
 
-    @property
-    def V(self):
-        return Quantity('V', self)
+    def C(self,wrt):
+        '''Method for calculating derivative of q wrt to branch potential or flow
+        '''
+        pass
 
-    @property
-    def I(self):
-        return Quantity('I', self)
+class BranchI(Branch):
+    '''Flow branch
 
-    def __repr__(self):
-        return 'Branch('+repr(self.plus)+','+repr(self.minus)+')'
+    i = dq/dt
+    '''
+    potential = False
+
+class BranchV(Branch):
+    '''Potential type branch
+
+    v = dq/dt
+    '''
+    potential = True
+
 
 ### Default reference node
 gnd = Node("gnd", isglobal=True)
@@ -187,6 +229,10 @@ class Circuit(object):
         if hasattr(self, 'update'):
             self.iparv.attach(self)
             self.update(self.ipar)
+
+        ## Copy branches from class variables
+        ## Is this needed or not!!
+#        self.branches = map(copy, self.branches)
 
     def __eq__(self, a):
         return self.__class__ == a.__class__ and \
@@ -418,7 +464,7 @@ class Circuit(object):
             return ProbeWrapper(self, terminals = (terminal,))
         else:
             return self            
-
+    ## Should be moved to NA!!
     @property
     def n(self):
         """Return size of x vector"""
@@ -476,167 +522,6 @@ class Circuit(object):
 
         return result
 
-    ## Move this to NA!!
-    def extract_v(self, x, nodep, noden=None, refnode=gnd, 
-                  refnode_removed=False):
-        """Extract voltage between nodep and noden from the given x-vector.
-
-        If noden is not given the voltage is taken between nodep and refnode. 
-        x-vectors with the reference node removed can be handled by setting 
-        the refnode_removed to True.
-
-        *x*
-          x-vector
-
-        *nodep*
-          Node object or node reference in text format of positive node
-
-        *noden*
-          Node object or node reference in text format of negative node
-
-        *refnode*
-          reference node
-
-        *refnode_removed*
-          If set the refernce node is expected to be removed from the x-vector
-
-        >>> from elements import *
-        >>> import numpy as np
-        >>> c = SubCircuit()
-        >>> n1, n2 = c.add_nodes('n1','n2')
-        >>> c['R1'] = R(n1, n2, r=1e3)
-        >>> c['R2'] = R(n2, gnd, r=1e3)
-        >>> c.extract_v(np.array([1.0, 0.5, 0.0]), 'n1', 'n2')
-        0.5
-        >>> c.extract_v(np.array([1.0, 0.5, 0.0]), c.nodes[0])
-        1.0
-        >>> c.extract_v(np.array([1.0, 0.5]), c.nodes[0], refnode_removed = True)
-        1.0
-        
-        """
-        v = []
-        for node in nodep, noden:
-            if type(node) is types.StringType:
-                node = self.get_node(node)
-            elif node == None:
-                node = refnode
-
-            if refnode_removed:
-                nodeindex = self.get_node_index(node, refnode)
-            else:
-                nodeindex = self.get_node_index(node, None)
-
-            if nodeindex == None: ## When node == refnode
-                v.append(0)
-                continue
-                    
-            v.append(x[nodeindex])
-
-        return v[0] - v[1]
-
-        
-    ## Move this to NA!!
-    def extract_i(self, x, branch_or_term, xdot = None,
-                  refnode = gnd, refnode_removed = False,
-                  t = 0,
-                  linearized = False, xdcop = None):
-        """Extract branch or terminal current from the given x-vector.
-
-        *x* 
-           x-vector
-
-        *branch_or_term*
-           Branch object or terminal name
-
-        *xdot*
-           dx/dt vector. this is needed if dx/dt is non-zero and there is no branch defined at the
-           terminal
-
-        *refnode*
-           reference node
-
-        *refnode_removed*
-           If set the refernce node is expected to be removed from the x-vector
-
-        *t*
-           Time when the sources are to be evaluated
-        
-        *linearized*
-           Set to True if the AC current is wanted
-
-        *xdcop*
-           *xcdop* is the DC operation point x-vector if linearized == True
-
-        >>> from elements import *
-        >>> import numpy as np
-        >>> c = SubCircuit()
-        >>> net1 = c.add_node('net1')
-        >>> c['vs'] = VS(net1, gnd)
-        >>> c.extract_i(np.array([1.0, 0, -1e-3]), 'vs.minus')
-        0.001
-        >>> c.extract_i(np.array([1.0, -1e-3]), 'vs.minus', refnode_removed = True)
-        0.001
-        
-        """
-        dot = self.toolkit.dot
-        
-        if type(branch_or_term) is types.StringType:
-            ## Calculate current going in to the terminal as
-            ## self.i(x)[terminal_node] + u(t) + dq(x)/dt. 
-            ## This will work since i(x) returns
-            ## the sum of all the currents going out from the
-            ## terminal node that originates from devices within
-            ## the circuit. According to Kirchoff's current law
-            ## of the terminal node
-            ## -I_external + sum(I_internal_k) = 0
-            ## Where I_external represents the current coming from
-            ## outside the circuit going *in* to the terminal node,
-            ## I_internal_k represents one of the currents that flows
-            ## from the terminal node to a device within the circuit.
-            ## So now we can calculate I_external as 
-            ## I_external = sum(I_internal_k) = 
-            ## self.I(x)[terminal_node] + u(t) + dq(x)/dt =
-            ## self.I(x)[terminal_node] + u(t) + sum(dq(x)/dx_k * dx_k/dt) =
-            ## self.I(x)[terminal_node] + u(t) + C(x) * dx/dt
-
-            branch_sign = self.get_terminal_branch(branch_or_term)
-
-            if branch_sign != None:
-                branch, sign = branch_sign
-            else:
-                terminal_node = self.nodenames[branch_or_term]
-                
-                terminal_node_index = self.get_node_index(terminal_node)
-
-                if xdot != None:
-                    if linearized:
-                        return dot(self.G(xdcop)[terminal_node_index], x) + \
-                            dot(self.C(xdcop)[terminal_node_index], xdot) + \
-                            self.u(t, analysis = 'ac')[terminal_node_index]
-
-                    else:
-                        return self.i(x)[terminal_node_index] + \
-                            dot(self.C(x)[terminal_node_index], xdot) + \
-                            self.u(t)[terminal_node_index]
-                else:
-                    if linearized:
-                        return dot(self.G(xdcop)[terminal_node_index], x) + \
-                            self.u(t, analysis = 'ac')[terminal_node_index]
-
-                    else:
-                        return self.i(x)[terminal_node_index] + \
-                            self.u(t)[terminal_node_index]
-
-        else:
-            branch = branch_or_term
-            sign = 1
-
-        branchindex = self.get_branch_index(branch)
-
-        if refnode_removed:
-            branchindex -= 1
-
-        return sign * x[branchindex]      
 
     def update_iparv(self, parent_ipar=None, globalparams=None,
                      ignore_errors=False):
@@ -648,6 +533,12 @@ class Circuit(object):
                                              ignore_errors=ignore_errors)
 
         self.iparv.update_values(newipar)
+
+    def eval_iqu(self, inputvalues):
+        pass
+
+    def eval_iqu_and_der(self, inputvalues):
+        return self.eval_iqu_and_der_func(self, inputvalues)
 
     def __repr__(self):
         return self.__class__.__name__ + \
@@ -668,6 +559,19 @@ class Circuit(object):
             else:
                 yield Node(instancename + '.' + instancenode.name)
 
+    ## Branch related functions
+    def xflatbranchmap(self):
+        """Returns all instances, branches and their global node indices
+        """
+        for branch in self.branches:
+            plus  = self.get_node_index(branch.plus)
+            minus = self.get_node_index(branch.minus)
+            yield None, self, branch, (plus, minus)
+
+    @property
+    def inputbranches(self):
+        return [branch for branch in self.branches if branch.input]
+
     def _instance_branches(self, instance, instancename, 
                            instancebranches = None):
         """Return circuit branches from instance branches
@@ -679,7 +583,10 @@ class Circuit(object):
             plus, minus = self._instance_nodes([instancebranch.plus, 
                                                 instancebranch.minus],
                                                instance, instancename)
-            yield Branch(plus,minus)
+            branch = copy(instancebranch)
+            branch.plus  = plus
+            branch.minus = minus
+            yield branch
 
     @property
     def _nterminalnodes(self):
@@ -694,7 +601,8 @@ class SubCircuit(Circuit):
         *elements* 
           dictionary of Circuit objects keyed by its instance name
 
-        *elementnodemap*
+        Maybe we can remove this!!
+        *elementnodemap* 
           list of translation lists which translate between node indices of the
           elements and node indices of the parent
 
@@ -817,10 +725,6 @@ class SubCircuit(Circuit):
 
             ## Update terminal-node map
             term_node_map[terminal] = node            
-
-        ## Add branches
-        newbranches = self._instance_branches(instance, instancename)
-        self.append_branches(*newbranches)
 
         ## Update circuit node - instance map
         self.update_node_map()
@@ -997,12 +901,7 @@ class SubCircuit(Circuit):
             for node in element.non_terminal_nodes(instance_name):
                 element_nodes.append(node)
         
-            element_branches = self._instance_branches(element, instance_name)
-
-            nodemap = \
-                [self.nodes.index(node) for node in element_nodes] + \
-                [self.branches.index(branch) + len(self.nodes) 
-                 for branch in element_branches]
+            nodemap = [self.nodes.index(node) for node in element_nodes]
 
             self.elementnodemap[instance_name] = nodemap
 
@@ -1136,7 +1035,8 @@ class SubCircuit(Circuit):
                 for instance in element.find_class_instances(instance_class):
                     instances.append(instanceName + '.' + instance)
         return instances
-
+    
+    ## Could be replaced by xflatinstances !!
     @property
     def xflatelements(self):
         """Iterator over all elements and subelements"""
@@ -1146,6 +1046,26 @@ class SubCircuit(Circuit):
             else:
                 for sube in e.xflatelements:
                     yield sube
+
+    def xflatinstances(self, instname_prefixes=()):
+        """Iterator over all elements and subelements"""
+        for instname, e in self.elements.items():
+            if not isinstance(e, SubCircuit):
+                yield '.'.join(instname_prefixes + (instname,)), e
+            else:
+                for subinst in e.xflatinstances(instname_prefixes + (instname,)):
+                    yield subinst
+
+    def xflatbranchmap(self):
+        """Returns all instances, branches and their global node indices
+        """
+        for instname, inst in self.xflatinstances():
+            for branch in inst.branches:
+                plus  = self.get_node(instname + '.' + branch.plus.name)
+                minus = self.get_node(instname + '.' + branch.minus.name)
+                yield instname, inst, branch, \
+                    (self.get_node_index(plus), self.get_node_index(minus))
+
 
     ## Remove or move or change !!
     # def translate_branch(self, branch, instance):

@@ -421,8 +421,32 @@ def test_add_terminals():
     assert_equal(node_list,['plus','minus','common'])
 
 def test_get_node():
-    """Test  get_node""" 
+    """Test get_node""" 
     c = SubCircuit()
     out = c.add_node('out')
     c['V1'] = VS(out, gnd)
     assert_equal(c.get_node('V1.plus'), out)
+
+def test_xflatbranchmap():
+    """Test xflatbranchmap""" 
+    c = SubCircuit()
+    c['R1'] = R(1, 2, r=1e3)
+    c['R2'] = R(2, 1, r=2e3)
+
+    ## Test subcircuit level
+    branchmap = list(c.xflatbranchmap())
+
+    assert_equal([('R1', c['R1'], c['R1'].branches[0], 
+                   (c.get_node_index(1), c.get_node_index(2))),
+                  ('R2', c['R2'], c['R2'].branches[0], 
+                   (c.get_node_index(2), c.get_node_index(1)))
+                  ],
+                 branchmap)
+
+    ## Test circuit level
+    
+    branchmap = list(c['R2'].xflatbranchmap())
+
+    assert_equal([(None, c['R2'], c['R2'].branches[0], 
+                   (c['R2'].get_node_index('plus'), c['R2'].get_node_index('minus')))],
+                 branchmap)

@@ -26,6 +26,7 @@ class R(Circuit):
 
     """
     terminals = ('plus', 'minus')
+    branches = (BranchI(Node('plus'), Node('minus'), input=True, output='i'),)
     instparams = [Parameter(name='r', desc='Resistance', unit='ohm', 
                             default=1e3),
                   Parameter(name='noisy', desc='No noise', unit='', 
@@ -36,6 +37,14 @@ class R(Circuit):
         g = 1/self.iparv.r
         self._G = self.toolkit.array([[g, -g],
                                       [-g, g]])
+
+    def update_qiu(self, t):
+        branch = self.branches[0]
+        branch.i =  branch.v / self.iparv.r
+
+    def eval_iqu(self, x):
+        branch_v = x[0]
+        return branch_v / self.iparv.r,
 
     def G(self, x, epar=defaultepar): return self._G
 

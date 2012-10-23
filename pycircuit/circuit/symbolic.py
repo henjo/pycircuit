@@ -115,3 +115,62 @@ def size(*args,**kvargs):
 
 def integer(x):
     return sympy.Integer(x)
+
+def generate_update_iqu_and_der(cir):
+    """Generate update_qiu_and_der method and attach to circuit instance"""
+    inbranches =    cir.inputbranches
+    ioutbranches =  [branch for branch in cir.branches if 'i' in branch.output]
+
+    inputvars = [sympy.var('x%d'%i) for i in range(len(inbranches))]
+
+    ## Set branch inputs to sympy variables
+    for branch, invar in zip(cir.inputbranches, inputvars):
+        branch.v = invar
+
+    cir.update_qiu(0)
+
+    ## Copy branch outputs to sympy vector
+    i_out = sympy.Matrix([outbranch.i for outbranch in i_outbranches])
+    
+    ## Calculate jacobian
+    J = i_out.jacobian(inputvars)
+
+    def eval_iqu_and_der_func(cir, t):
+        cir.update_qiu(t)
+
+        for i, branch in enumerate(i_outbranches):
+            branch.G = J.row(i).tolist()[0]
+    
+    cir.eval_iqu_and_der_func = update_qiu_and_der_func
+
+
+def generate_eval_iqu_and_der(cir):
+    """Generate update_qiu_and_der method and attach to circuit instance"""
+    inbranches      = cir.inputbranches
+    n_iqoutbranches = len([None for branch in cir.branches 
+                           if 'i' in branch.output or
+                              'q' in branch.output])
+
+    inputvars = [sympy.var('x%d'%i) for i in range(len(inbranches))]
+
+    ## Set branch inputs to sympy variables
+    iqu = cir.eval_iqu(inputvars)
+
+    ## Copy branch outputs to sympy vector
+    i_out = sympy.Matrix(iqu[:n_iqoutbranches])
+    
+    ## Calculate jacobian
+    J = i_out.jacobian(inputvars)
+
+    def eval_iqu_and_der_func(cir, x):
+        iqu = cir.eval_iqu(x)
+
+        Jeval = J.subs(dict(zip(inputvars, x)))
+
+        der = []
+        for i in range(n_iqoutbranches):
+            der.extend(Jeval.row(i).tolist()[0])
+
+        return iqu, der
+    
+    cir.eval_iqu_and_der_func = eval_iqu_and_der_func

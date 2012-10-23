@@ -34,6 +34,7 @@ class NA(object):
     u = None
     
     def __init__(self,cir):
+        self.cir = cir
         self.branches = []
         pass
     
@@ -129,18 +130,61 @@ class Circuit(object):
         pass
 
 class Branch(object):
-    '''Copy most from existing branch doc.
-    '''
+    """A branch connects two nodes.
+    
+    A branch is used to tell the nodal analyzer to enforce a potential or define a flow
+    between its plus and minus nodes. It may also just be used by other branches to 
+    measure potential difference or current through a potential branch. A branch may also
+    be 
+    
+
+    **Attributes**
+        *plus*
+          Positive node
+        *minus*
+          Negative node
+        *i*
+          Flow between its plus and minus node
+        *q*
+          Time integral
+        *v*
+          Potential between plus and 
+        *G*
+          i jacobian, di/d(v or i of input branches). The derivatives are stored as a list
+        *C*
+          q jacobian, di/d(v or i of input branches). The derivatives are stored as a list
+        *potential*
+          If set the branch the solver will enforce a potential between it's plus and minus nodes. Otherwise
+          it is a flow branch.
+        *out* 
+          out is a string that indicates if the circuit may set its q, u and/or i value. For example, if the
+          string contains the letter 'q' it may set the q value. The string 'qui' indicates that the circuit
+          may set all three values.
+        *in* 
+          If set, the circuit may use the voltage or current value of the branch
+        *linear*
+          If true, the voltage or current of output branches is a linear function
+    
+    
+    """
+
     ## Possibly add inormation regarding memory(q), linearity etc.
     
     i = None #flow
     q = None #time integral
     v = None #potential
+    G = None #i jacobian, 
+    C = None #q jacobian
 
-    def __init__(self, plus, minus, potential=False): # default is 'flow' branch, not 'potential' branch
+    def __init__(self, plus, minus, potential=False, 
+                 out='', in=False, linear=True)                 
+                 ): # default is 'flow' branch, not 'potential' branch
         self.potential = potential
         self.plus = plus
         self.minus = minus
+        self.out = out
+        self.in = in
+        self.linear = True
 
     def G(self,wrt):
         '''Method for calculating conductance
@@ -159,20 +203,12 @@ class BranchI(Branch):
     '''
     potential = False
 
-    def __init__(self, plus, minus):
-        self.plus = plus
-        self.minus = minus        
-
 class BranchV(Branch):
     '''Potential type branch
 
     v = dq/dt
     '''
     potential = True
-
-    def __init__(self, plus, minus):
-        self.plus = plus
-        self.minus = minus        
 
 class Pi(Circuit):
     '''Pi network circuit
