@@ -1,9 +1,13 @@
 import numpy as np
+from itertools import groupby
 
 import circuit
 import numeric
 
 from collections import defaultdict
+
+## Constants
+I, Q, U, n_IQU = range(4)
 
 class NA(object):
     '''Nodal analysis base class.
@@ -34,14 +38,17 @@ class NA(object):
         toolkit = self.toolkit
 
         n = self.n
-        self.i  = toolkit.zeros(n)
-        self.q  = toolkit.zeros(n)
-        self.u  = toolkit.zeros(n)
+        self.i          = toolkit.zeros(n)
+        self.q          = toolkit.zeros(n)
+        self.u          = toolkit.zeros(n)
+        self.outvectors = [self.i, self.q, self.u]
 
-        self.G  = toolkit.zeros((n,n))
-        self.C  = toolkit.zeros((n,n))
-        self.CY = toolkit.zeros((n,n))
-        
+        self.G          = toolkit.zeros((n,n))
+        self.Gconst     = toolkit.zeros((n,n))
+        self.C          = toolkit.zeros((n,n))
+        self.jacobians  = [self.G, self.C]
+        self.CY         = toolkit.zeros((n,n))
+
     def update(x,t):
         raise NotImplementedError()
     
@@ -225,18 +232,20 @@ class MNA(NA):
 
         ## Find all potential branches and mapping to the x-vector
         self.potentialbranch_x_map = {}
-        for i, branchinfo in enumerate(self.cir.xflatbranchmap()):
+        for i, branchinfo in enumerate(self.cir.xflatbranchmap(potential=True)):
             instname, inst, branch, nodemap = branchinfo
 
-            if branch.potential:
-                key = (instname, branch)
-                self.potentialbranch_x_map[key] = i + self.n
+            key = (instname, branch)
+            self.potentialbranch_x_map[key] = i + self.n
 
         self.n += len(self.potentialbranch_x_map)
 
         ## Create matrices
         self.create_matrices()
  
+        ## Set up Gconstant
+        self.setup_Gconst()
+        
         self.setup_branch_mapping()
 
     def map_branch_input(self, instname, inst, branch, nodemap):
@@ -246,7 +255,40 @@ class MNA(NA):
         else:
             return self.potentialbranch_x_map[(instname, branch)], None
 
-    map_branch_output = MNA.map_branch_input
+    def map_branch_output(self, instname, inst, branch, nodemap):
+        if not branch.potential:
+            return (self.node_index_to_x_index[nodemap[0]],
+                    self.node_index_to_x_index[nodemap[1]])
+        else:
+            return self.potentialbranch_x_map[(instname, branch)], None
+
+    def setup_Gconst(self):
+        ## Add gyrators for all potential branches
+        ## KCL:
+        ## i(branch.plus)  = i(branch)
+        ## i(branch.minus) = i(branch)
+        ## KVL:
+        ## v(branch.plus) - v(branch.minus) = 0
+        for i, branchinfo in enumerate(self.cir.xflatbranchmap()):
+            instname, inst, branch, nodemap = branchinfo
+
+            if branch.potential:
+                ## Find indices to plus and minus nodes and branch current
+                i_x_plus  = self.node_index_to_x_index[nodemap[0]] 
+                i_x_minus = self.node_index_to_x_index[nodemap[1]] 
+                i_x_branch = self.potentialbranch_x_map[(instname, branch)]
+
+                ## KCL
+                if i_x_plus is not None:
+                    self.Gconst[i_x_plus,  i_x_branch] += 1
+                if i_x_minus is not None:
+                    self.Gconst[i_x_minus, i_x_branch] -= 1
+                ## KVL
+                if i_x_plus is not None:
+                    self.Gconst[i_x_branch, i_x_plus]  += 1
+                if i_x_minus is not None:
+                    self.Gconst[i_x_branch, i_x_minus] -= 1
+            
 
     def setup_branch_mapping(self):
         ## Set up mapping between global x-vector and inputs of all input branches.
@@ -261,19 +303,77 @@ class MNA(NA):
         ## This allows for either direct mapping between the x-vector and branch input
         ## or as the difference between two x-values
         ##
-        inputbranch_counter = 0
-        self.ix_branch_p    = []
-        self.ix_branch_n    = []
-        self.ix_p           = []
-        self.ix_n           = []
-        instances           = []
-        n_inputs_inst       = defaultdict(int)
-        n_outputs_inst      = defaultdict(int)
-        n_iq_outputs_inst   = defaultdict(int)
-        for instname, inst, branch, nodemap in self.cir.xflatbranchmap():
-            if branch.input:
-                ixp, ixn = self.map_branch_input_to_x(instname, inst, branch, 
-                                                      nodemap)
+        ## Output mapping is set up between the branch outputs
+        ## branch_iqu = [inst0_ioutbranch0, inst0_ioutbranch1, ...
+        ##               inst0_qoutbranch0, inst0_qoutbranch1, ...
+        ##               inst0_uoutbranch0, inst0_uoutbranch1, ...
+        ##               inst1_ioutbranch0, inst1_ioutbranch1, ...
+        ##               inst1_qoutbranch0, inst1_qoutbranch1, ...
+        ##               inst1_uoutbranch0, inst1_uoutbranch1, ...
+        ##               ...
+        ## and global i, q, u vectors
+        ## as
+        ## i[i_index_p] <- i[i_index_p] + branch_i[iqu_i_index_p]
+        ## i[i_index_n] <- i[i_index_n] - branch_i[iqu_i_index_n]
+
+        self.out_branch_index_p       = list_of_lists(n_IQU)
+        self.out_branch_index_n       = list_of_lists(n_IQU)
+        self.out_index_p              = list_of_lists(n_IQU)
+        self.out_index_n              = list_of_lists(n_IQU)
+        self.jacobian_index_p1        = list_of_lists(n_IQU)
+        self.jacobian_index_n1        = list_of_lists(n_IQU)
+        self.jacobian_index_p2        = list_of_lists(n_IQU)
+        self.jacobian_index_n2        = list_of_lists(n_IQU)
+        self.jacobian_branch_index_p1 = list_of_lists(n_IQU)
+        self.jacobian_branch_index_n1 = list_of_lists(n_IQU)
+        self.jacobian_branch_index_p2 = list_of_lists(n_IQU)
+        self.jacobian_branch_index_n2 = list_of_lists(n_IQU)
+
+        inputbranch_counter     = 0
+        out_branch_counter      = 0
+        jacobian_branch_counter = 0
+        self.ix_branch_p        = []
+        self.ix_branch_n        = []
+        self.ix_p               = []
+        self.ix_n               = []
+        instances               = []
+        branch_input_sizes      = []
+        branch_output_sizes     = []
+        jacobian_sizes          = []
+        for (instname, inst), instbranchmaps in groupby(self.cir.xflatbranchmap(), 
+                                                        lambda x: x[0:2]):
+            ## Generate list from iterator
+            instbranchmaps = list(instbranchmaps)
+
+            ## Save instances
+            instances.append(inst)
+
+            ## Extract branches and mapping for each instance
+            branches   = [branch          
+                          for iname, inst, branch, mapping in instbranchmaps]
+            branchmaps = dict([(branch, mapping)
+                               for iname, inst, branch, mapping in instbranchmaps])
+
+            ## Categorize branches in input and output branches
+            inbranches =  [branch 
+                           for branch in branches if branch.input]
+            outbranches = [[branch 
+                            for branch in branches if 'i' in branch.output],
+                           [branch 
+                            for branch in branches if 'q' in branch.output],
+                           [branch 
+                            for branch in branches if 'u' in branch.output]]
+
+            ## Calculate sizes of instance slices of branch input and output vectors
+            branch_output_size = sum(map(len, outbranches))
+            branch_input_sizes.append(len(inbranches))
+            branch_output_sizes.append(branch_output_size)
+            jacobian_sizes.append(branch_output_size * len(inbranches))
+
+            ## Calculate mapping for branch inputs
+            for branch in inbranches:
+                ixp, ixn = self.map_branch_input(instname, inst, branch, 
+                                                 branchmaps[branch])
                 if ixp is not None:
                     self.ix_branch_p.append(inputbranch_counter)
                     self.ix_p.append(ixp)
@@ -282,49 +382,74 @@ class MNA(NA):
                     self.ix_branch_n.append(inputbranch_counter)
                     self.ix_n.append(ixn)
                 
-                n_inputs_inst[inst] += 1
-
                 inputbranch_counter += 1
+            
+            ## Calculate mapping between branch outputs and jacobians
+            ## output i, q, u vectors and jacobians G, C matrices
+            for out_type in I, Q, U:
+                for branch in outbranches[out_type]:
+                    ioutp, ioutn = self.map_branch_output(instname, inst, 
+                                                          branch, 
+                                                          branchmaps[branch])
+                    ## Set up mapping index vectors between branches and i,q,u
+                    if ioutp is not None:
+                        self.out_branch_index_p[out_type].append(out_branch_counter)
+                        self.out_index_p[out_type].append(ioutp)
+                    if ioutn is not None:
+                        self.out_branch_index_n[out_type].append(out_branch_counter)
+                        self.out_index_n[out_type].append(ioutn)
 
-            if set(branch.output) & set('iqu'):
-                ioutp, ioutn = self.map_branch_output(instname, inst, branch, 
-                                                      nodemap)
+                    ## Set up mapping index vectors between branches and G, C
+                    if out_type in (I,Q):
+                        for inbranch in inbranches:
+                            nodemap = branchmaps[inbranch]
+                            ixp, ixn = self.map_branch_input(instname,inst,
+                                                             inbranch,
+                                                             nodemap)
+                            if ioutp is not None and ixp is not None:
+                                self.jacobian_index_p1[out_type].append((ioutp, ixp))
+                                self.jacobian_branch_index_p1[out_type].append(jacobian_branch_counter)
 
+                            if ioutp is not None and ixn is not None:
+                                self.jacobian_index_n1[out_type].append((ioutp, ixn))
+                                self.jacobian_branch_index_n1[out_type].append(jacobian_branch_counter)
 
-                if 'i' in branch.output:
-                    self.i_index_p.append(ioutp)
-                
-                n_outputs_inst[inst] += 1
+                            if ioutn is not None and ixp is not None:
+                                self.jacobian_index_n2[out_type].append((ioutn, ixp))
+                                self.jacobian_branch_index_n2[out_type].append(jacobian_branch_counter)
 
-                if 'u' not in branch.output:
-                    n_iq_outputs_inst[inst] += 1
+                            if ioutn is not None and ixn is not None:
+                                self.jacobian_index_p2[out_type].append((ioutn, ixn))
+                                self.jacobian_branch_index_p2[out_type].append(jacobian_branch_counter)
 
-        ## List of instances
-        instances           = n_inputs_inst.keys()
+                            jacobian_branch_counter += 1
 
-        ## Create x_branch vector
-        self.x_branch       = np.zeros(inputbranch_counter)
-        xbranch_slize_sizes = [n_inputs_inst[inst] for inst in instances]
+                    out_branch_counter += 1
 
-        ## Create iqu and derivative vectors
-        iqu_slize_sizes = [n_outputs_inst[inst] for inst in instances]
-        der_slize_sizes = [n_iq_outputs_inst[inst] * n_inputs_inst[inst]
-                           for inst in instances]
-        self.iqu        = np.zeros(np.sum(iqu_slize_sizes))
-        self.der        = np.zeros(np.sum(der_slize_sizes))
+        ## Create branch input, output and jacobian vectors
+        self.x_branch   = self.toolkit.zeros(inputbranch_counter)
+        self.iqu        = self.toolkit.zeros(out_branch_counter)
+        self.jacobian   = self.toolkit.zeros(jacobian_branch_counter)
 
         ## Slice it over instances
-        x_branch_slices = slice_array(self.x_branch, xbranch_slize_sizes)
-        iqu_slices      = slice_array(self.iqu,      iqu_slize_sizes)
-        der_slices      = slice_array(self.der,      der_slize_sizes)
+        x_branch_slices = slice_array(self.x_branch, branch_input_sizes)
+        iqu_slices      = slice_array(self.iqu,      branch_output_sizes)
+        jacobian_slices = slice_array(self.jacobian, jacobian_sizes)
         
-        self.inst_and_slices = zip(instances, x_branch_slices, iqu_slices, der_slices)
+        self.inst_and_slices = zip(instances, 
+                                   x_branch_slices,
+                                   iqu_slices, 
+                                   jacobian_slices)
 
-        ## Create mapping from iqu branch output vectors to 
-        ## circuit i, q and u global vectors
+    def update(self, x, epar, static=True, dynamic=True, jacobians=True, noise=False):
+        ## Init output vectors and matrices
+        self.i[:] = self.toolkit.dot(self.Gconst, x)
+        self.q[:] = 0
         
+        if jacobians:
+            self.G[:,:] = self.Gconst[:,:]
+            self.C[:,:] = 0
 
-    def update(self, x, static=True, dynamic=True, jacobians=True, noise=False):
         ## Update input potentials of flow branches
         x_branch                    = self.x_branch
         x_branch[self.ix_branch_n]  =  0
@@ -336,44 +461,55 @@ class MNA(NA):
             for inst_and_slices in self.inst_and_slices:
                 inst, x_branch_slice, iqu_slice, der_slice = inst_and_slices
 
-                iqu_slice[:], der_slice[:] = inst.eval_iqu_and_der(x_branch_slice)
+                iqu_slice[:], der_slice[:] = inst.eval_iqu_and_der(x_branch_slice, epar)
         else:
-            for inst, slices in self.inst_and_slices:
+            for inst_and_slices in self.inst_and_slices:
                 inst, x_branch_slice, iqu_slice, der_slice = inst_and_slices
 
-                iqu_slice[:] = inst.eval_iqu(x_branch_slice)
+                iqu_slice[:] = inst.eval_iqu(x_branch_slice, epar)
 
         ## Add outputs to i,q,u-vectors
         ## It would have been nice if this could have been done as:
         ## self.i[i_index_p] += iqu[iqu_i_index_p]
         ## self.i[i_index_n] -= iqu[iqu_i_index_n]
         ## Unfortunately i_index_p may have the same index twice which screws upp the addition
-        iqu = self.iqu
-        inplace_add_from(self.i, iqu, self.i_index_p, self.iqu_i_index_p)
-        inplace_sub_from(self.i, iqu, self.i_index_n, self.iqu_i_index_n)
-        inplace_add_from(self.q, iqu, self.q_index_p, self.iqu_q_index_p)
-        inplace_sub_from(self.q, iqu, self.q_index_n, self.iqu_q_index_n)
-        inplace_add_from(self.u, iqu, self.u_index_p, self.iqu_u_index_p)
-        inplace_sub_from(self.u, iqu, self.u_index_n, self.iqu_u_index_n)
+        branch_output = self.iqu
 
+        for out_type in I,Q,U:
+            inplace_add_from(self.outvectors[out_type],
+                             branch_output, 
+                             self.out_index_p[out_type], 
+                             self.out_branch_index_p[out_type])
+            inplace_sub_from(self.outvectors[out_type],
+                             branch_output, 
+                             self.out_index_n[out_type], 
+                             self.out_branch_index_n[out_type])
+            
         if dynamic:
-            inplace_add_from(self.G, der, G_index_p1, der_G_index)
-            inplace_sub_from(self.G, der, G_index_n1, der_G_index)
-            inplace_add_from(self.G, der, G_index_p2, der_G_index)
-            inplace_sub_from(self.G, der, G_index_n2, der_G_index)
+            branch_jacobian = self.jacobian
 
-            inplace_add_from(self.C, der, C_index_p1, der_C_index)
-            inplace_sub_from(self.C, der, C_index_n1, der_C_index)
-            inplace_add_from(self.C, der, C_index_p2, der_C_index)
-            inplace_sub_from(self.C, der, C_index_n2, der_C_index)
-
+            for out_type in I, Q:
+                inplace_add_from(self.jacobians[out_type], branch_jacobian, 
+                                 self.jacobian_index_p1[out_type], 
+                                 self.jacobian_branch_index_p1[out_type])
+                inplace_sub_from(self.jacobians[out_type], branch_jacobian,
+                                 self.jacobian_index_n1[out_type], 
+                                 self.jacobian_branch_index_n1[out_type])
+                inplace_add_from(self.jacobians[out_type], branch_jacobian, 
+                                 self.jacobian_index_p2[out_type], 
+                                 self.jacobian_branch_index_p2[out_type])
+                inplace_sub_from(self.jacobians[out_type], branch_jacobian,
+                                 self.jacobian_index_n2[out_type], 
+                                 self.jacobian_branch_index_n2[out_type])
 
     def generate_eval_iqu_and_der(self):
         for inst in self.cir.xflatelements:
             if not hasattr(inst, 'eval_iqu_and_der_func'):
                 self.toolkit.generate_eval_iqu_and_der(inst)
 
-    
+def list_of_lists(n):    
+    return [[] for i in range(n)]
+
 def inplace_add_from(dest, src, idest, isrc):
     """dest[idest] += src[isrc]"""
     for i_dst, i_src in zip(idest, isrc):

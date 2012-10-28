@@ -96,10 +96,11 @@ class Branch(object):
     G = None #i jacobian, 
     C = None #q jacobian
 
-    def __init__(self, plus, minus, potential=False, 
+    def __init__(self, plus, minus, potential=None, 
                  output='', input=False, linear=True
                  ): # default is 'flow' branch, not 'potential' branch
-        self.potential = potential
+        if potential is not None:
+            self.potential = potential
         self.plus = plus
         self.minus = minus
         self.output = output
@@ -140,7 +141,10 @@ class BranchV(Branch):
 gnd = Node("gnd", isglobal=True)
 
 defaultepar = ParameterDict(
-    Parameter("T", "Temperature", unit="K", default = 300))
+    Parameter("T", "Temperature", unit="K", default = 300,),
+    Parameter("t", "Time", unit="s", default = 0,),
+    Parameter("analysis", "Analysis", default = 'ac',),
+    )
 
 class Circuit(object):
     """Basic circuit class 
@@ -534,11 +538,11 @@ class Circuit(object):
 
         self.iparv.update_values(newipar)
 
-    def eval_iqu(self, inputvalues):
+    def eval_iqu(self, inputvalues, epar):
         pass
 
-    def eval_iqu_and_der(self, inputvalues):
-        return self.eval_iqu_and_der_func(self, inputvalues)
+    def eval_iqu_and_der(self, inputvalues, epar):
+        return self.eval_iqu_and_der_func(self, inputvalues, epar)
 
     def __repr__(self):
         return self.__class__.__name__ + \
@@ -560,13 +564,18 @@ class Circuit(object):
                 yield Node(instancename + '.' + instancenode.name)
 
     ## Branch related functions
-    def xflatbranchmap(self):
-        """Returns all instances, branches and their global node indices
+    def xflatbranchmap(self, **filter):
+        """Returns instances, branches and their global node indices
+
+        The filter argument is used to filter out branches that match the 
+        filter criteria. filter is a dictionary with branch attribute names
+        as keys and the desired branch attribute values as values
         """
         for branch in self.branches:
-            plus  = self.get_node_index(branch.plus)
-            minus = self.get_node_index(branch.minus)
-            yield None, self, branch, (plus, minus)
+            if all([getattr(branch,k) == v for k,v in filter.items()]):
+                plus  = self.get_node_index(branch.plus)
+                minus = self.get_node_index(branch.minus)
+                yield None, self, branch, (plus, minus)
 
     @property
     def inputbranches(self):
@@ -1056,16 +1065,20 @@ class SubCircuit(Circuit):
                 for subinst in e.xflatinstances(instname_prefixes + (instname,)):
                     yield subinst
 
-    def xflatbranchmap(self):
-        """Returns all instances, branches and their global node indices
+    def xflatbranchmap(self, **filter):
+        """Returns instances, branches and their global node indices
+
+        The filter argument is used to filter out branches that match the 
+        filter criteria. filter is a dictionary with branch attribute names
+        as keys and the desired branch attribute values as values
         """
         for instname, inst in self.xflatinstances():
             for branch in inst.branches:
-                plus  = self.get_node(instname + '.' + branch.plus.name)
-                minus = self.get_node(instname + '.' + branch.minus.name)
-                yield instname, inst, branch, \
-                    (self.get_node_index(plus), self.get_node_index(minus))
-
+                if all([getattr(branch,k) == v for k,v in filter.items()]):
+                    plus  = self.get_node(instname + '.' + branch.plus.name)
+                    minus = self.get_node(instname + '.' + branch.minus.name)
+                    yield instname, inst, branch, \
+                        (self.get_node_index(plus), self.get_node_index(minus))
 
     ## Remove or move or change !!
     # def translate_branch(self, branch, instance):

@@ -16,6 +16,7 @@ from sympy import oo as inf, ceiling as ceil
 import types
 from pycircuit.utilities.param import Parameter
 from constants_sympy import kboltzmann, eps0, epsRSi, epsRSiO2, qelectron
+from circuit import defaultepar
 
 symbolic = True
 
@@ -154,16 +155,19 @@ def generate_eval_iqu_and_der(cir):
     inputvars = [sympy.var('x%d'%i) for i in range(len(inbranches))]
 
     ## Set branch inputs to sympy variables
-    iqu = cir.eval_iqu(inputvars)
+    iqu = cir.eval_iqu(inputvars, defaultepar)
 
     ## Copy branch outputs to sympy vector
     i_out = sympy.Matrix(iqu[:n_iqoutbranches])
     
     ## Calculate jacobian
-    J = i_out.jacobian(inputvars)
+    if len(i_out) > 0 and len(inputvars) > 0:
+        J = i_out.jacobian(inputvars)
+    else:
+        J = sympy.Matrix([])
 
-    def eval_iqu_and_der_func(cir, x):
-        iqu = cir.eval_iqu(x)
+    def eval_iqu_and_der_func(cir, x, epar):
+        iqu = cir.eval_iqu(x, epar)
 
         Jeval = J.subs(dict(zip(inputvars, x)))
 

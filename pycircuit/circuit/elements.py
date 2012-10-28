@@ -34,19 +34,15 @@ class R(Circuit):
                   ]
 
     def update(self, subject):
-        g = 1/self.iparv.r
-        self._G = self.toolkit.array([[g, -g],
-                                      [-g, g]])
+        self.g = 1/self.iparv.r
 
     def update_qiu(self, t):
         branch = self.branches[0]
         branch.i =  branch.v / self.iparv.r
 
-    def eval_iqu(self, x):
+    def eval_iqu(self, x, epar):
         branch_v = x[0]
-        return branch_v / self.iparv.r,
-
-    def G(self, x, epar=defaultepar): return self._G
+        return self.g * branch_v,
 
     def CY(self, x, w, epar=defaultepar):
         if self.iparv.noisy:
@@ -108,15 +104,14 @@ class C(Circuit):
     """
 
     terminals = ('plus', 'minus')
+    branches = (BranchI(Node('plus'), Node('minus'), input=True, output='q'),)
     instparams = [Parameter(name='c', desc='Capacitance', 
                             unit='F', default=1e-12)]
 
-    def update(self, subject):
-        c = self.iparv.c
-        self._C =  self.toolkit.array([[c, -c],
-                                       [-c, c]])
-
-    def C(self, x, epar=defaultepar): return self._C
+    def eval_iqu(self, x, epar):
+        branch_v = x[0]
+        q = self.ipar.c * branch_v
+        return q,
 
 class L(Circuit):
     """Inductor
@@ -124,35 +119,17 @@ class L(Circuit):
     >>> c = SubCircuit()
     >>> n1=c.add_node('1')
     >>> c['L'] = L(n1, gnd, L=1e-9)
-    >>> c.G(self.toolkit.zeros(3))
-    array([[ 0.,  0.,  1.],
-           [ 0.,  0., -1.],
-           [ 1., -1.,  0.]])
-    >>> c.C(self.toolkit.zeros(3))
-    array([[  0.0000e+00,   0.0000e+00,   0.0000e+00],
-           [  0.0000e+00,   0.0000e+00,   0.0000e+00],
-           [  0.0000e+00,   0.0000e+00,  -1.0000e-09]])
    """
     terminals = ('plus', 'minus')
-    branches = (Branch(Node('plus'), Node('minus')),)
+    branches = (BranchV(Node('plus'), Node('minus'), input=True, output='q'),)
 
     instparams = [Parameter(name='L', desc='Inductance', 
                             unit='H', default=1e-9)]
 
-    def __init__(self, *args, **kvargs):
-        super(L, self).__init__(*args, **kvargs)
-        self._G = self.toolkit.array([[0 , 0, 1],
-                                      [0 , 0, -1],
-                                      [1 , -1, 0]])
-
-    def update(self, subject):
-        n = self.n
-        C = self.toolkit.zeros((n,n))
-        C[-1,-1] = -self.iparv.L
-        self._C = C
-
-    def G(self, x, epar=defaultepar): return self._G
-    def C(self, x, epar=defaultepar): return self._C
+    def eval_iqu(self, x, epar):
+        branch_i = x[0]
+        q = -self.ipar.L * branch_i
+        return q,
 
 class VS(Circuit):
     """Independent DC voltage source
@@ -167,7 +144,7 @@ class VS(Circuit):
     
     """
     terminals = ('plus', 'minus')
-    branches = (Branch(Node('plus'), Node('minus')),)
+    branches = (BranchV(Node('plus'), Node('minus'), output='u'),)
     instparams = [Parameter(name='v', desc='Source DC voltage', 
                             unit='V', default=0),
                   Parameter(name='vac', desc='AC analysis amplitude', 
@@ -179,23 +156,16 @@ class VS(Circuit):
                             unit='V^2/Hz', default=0)]
     function = func.TimeFunction()
 
-    def update(self, subject):
-        self._G = self.toolkit.array([[0 ,  0,  1],
-                                      [0 ,  0, -1],
-                                      [1 , -1,  0]])
-
-    def G(self, x, epar=defaultepar): return self._G 
-
-    def u(self, t=0.0, epar=defaultepar, analysis=None):
-        if analysis == 'ac':
+    def eval_iqu(self, x, epar):
+        if epar.analysis == 'ac':
             phase = self.iparv.phase * self.toolkit.pi / 180
             vac = self.iparv.vac * self.toolkit.exp(1j*phase)
-            return self.toolkit.array([0, 0, -vac])
-        elif analysis in timedomain_analyses:
+            return -vac,
+        elif epar.analysis in timedomain_analyses:
             v = self.iparv.v + self.function.f(t)
-            return self.toolkit.array([0, 0, -v])
+            return -v,
         else:
-            return self.toolkit.array([0, 0, 0])
+            return 0,
 
     def CY(self, x, w, epar=defaultepar):
         CY = super(VS, self).CY(x, w)
