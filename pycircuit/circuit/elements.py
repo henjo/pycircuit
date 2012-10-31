@@ -128,7 +128,7 @@ class L(Circuit):
 
     def eval_iqu(self, x, epar):
         branch_i = x[0]
-        q = -self.ipar.L * branch_i
+        q = -self.ipar.L * branch_i ## Why is L negative??
         return q,
 
 class VS(Circuit):
@@ -538,7 +538,7 @@ class Nullor(Circuit):
      2. Verhoeven C J M van Staveren A Monna G L E Kouwenhoven
        M H L & Yildiz E (2003). 
        Structured electronic design: negative feedback amplifiers.
-       Boston/Dordrecht/London: Kluwer Academic, §2.2.2 pp. 32-34. 
+       Boston/Dordrecht/London: Kluwer Academic, ï¿½2.2.2 pp. 32-34. 
        ISBN 1402075901.
 
     """
