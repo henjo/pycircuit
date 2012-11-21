@@ -28,11 +28,13 @@ def test_nonlinear():
 def test_linear():
     var('R1 R2 V0')
 
-    c = SubCircuit(toolkit=symbolic)
-    c['V0'] = VS(1, gnd, v=V0, vac=1, toolkit=symbolic)
-    c['L'] = L(1,2, L=1e-3)
+    c = SubCircuit()
+    c['V0'] = VS(1, gnd, v=V0, vac=1)
+    c['L']  = L(1,2, L=1e-3)
     c['R1'] = R(2, 3, r = Symbol('R1'))
     c['R2'] = R(3, gnd, r = Symbol('R2'))
+    
+    c = c.save_current('R2.plus')
 
     dc = SymbolicDC(c)
 

@@ -1,6 +1,7 @@
 import logging
 
 from analysis import *
+from .na import MNA
 
 import numpy as np
 import sympy
@@ -16,22 +17,20 @@ class SymbolicDC(Analysis):
     def __init__(self, cir, refnode=gnd, **kvargs):
         super(SymbolicDC, self).__init__(cir, toolkit=symbolic)
         
-        self.irefnode = self.cir.get_node_index(refnode)
-
+        self.na = MNA(cir, refnode=refnode, toolkit=symbolic)
+        self.na.setup()
+        
     def get_eqsys(self):
         """Return the equation system and variable list that gives the DC solution
         
         Returns eqsys, x
         """
-        
-        x = np.array([sympy.Symbol('x%d'%i) for i in range(self.cir.n)])
 
-        eqsys = self.cir.i(x, epar=self.epar) + self.cir.u(0, analysis='dc', epar=self.epar)
-
-        ## Refer the voltages to the reference node by removing
-        ## the rows and columns that corresponds to this node
-        return [eq.subs(x[self.irefnode], 0) for eq in np.delete(eqsys, self.irefnode)], \
-            np.delete(x, self.irefnode)
+        ## Update output vectors
+        x = np.array([sympy.Symbol('x%d'%i) for i in range(self.na.n)])
+        self.epar.analysis = 'dc'
+        self.na.update(x, self.epar)
+        return self.na.i + self.na.u, x
 
     def solve(self):
         try:
@@ -56,9 +55,6 @@ class SymbolicDC(Analysis):
             ## Get solution vector
             x = [sol[x_n] for x_n in x]
         
-            ## Insert reference node
-            x.insert(self.irefnode, 0)
-
-            self.result = CircuitResult(self.cir, np.array(x))
+            self.result = CircuitResult(self.na, x)
 
             return self.result

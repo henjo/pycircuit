@@ -11,9 +11,10 @@ The module is based on `numpy <http://numpy.org>`_.
 
 from constants import *
 
+import scipy.sparse as sp
 import numpy as np
 from numpy import cos, sin, tan, cosh, sinh, tanh, log, exp, pi, linalg,\
-     inf, ceil, floor, dot, linspace, eye, concatenate, sqrt, real, imag,\
+     inf, ceil, floor, linspace, eye, concatenate, sqrt, real, imag,\
      ones, complex, diff, delete, alltrue, maximum, size, conj
 
 symbolic = False
@@ -32,12 +33,33 @@ def toMatrix(array):
 def det(x): 
     return np.linalg.det(x)
 
+def dot(a,b):
+    return a.dot(b)
+
 def simplify(x): return x
 
 def zeros(*args, **kvargs): 
+    shape = args[0]
+    
+    ## Use numpy array vectors and sparse matrices
+#    if type(shape) == int or len(shape) < 2:
     return np.zeros(*args, **kvargs)
+#    else:
+#        return sp.csr_matrix(shape, **kvargs)
 
 def array(*args, **kvargs): 
+    arr = np.array(*args, **kvargs)
+
+    ## Use numpy array vectors and sparse matrices
+    if len(arr.shape) < 2:
+        return arr
+    else:
+        return sp.coo_matrix(arr, **kvargs)
+
+def todense(a):
+    return a.todense()
+
+def array(*args, **kvargs):
     return np.array(*args, **kvargs)
 
 def inv(*args, **kvargs): 

@@ -14,9 +14,25 @@ default_toolkit = numeric
 
 timedomain_analyses = ('dc', 'tran')
 
+def makenode(node_or_name):
+    if isinstance(node_or_name, Node):
+        return node_or_name
+    else:
+        return Node(str(node_or_name))
+
+def basename(hiername):
+    sepchar = '.'
+    return hiername.split(sepchar)[-1]
+
+def instname(hiername):
+    sepchar = '.'
+    return sepchar.join(hiername.split(sepchar)[:-1])
+
 class Node(object):
     """A Node object represents a point in an electric circuit"""
     def __init__(self, name=None, isglobal = False):
+        name = str(name)
+
         if name.endswith('!'):
             name = name[:-1]
             isglobal = True
@@ -35,6 +51,10 @@ class Node(object):
     @property
     def V(self):
         return Quantity('V', self)
+
+    @property
+    def I(self):
+        return Quantity('I', self)
 
     def __str__(self):
         name = self.name
@@ -90,27 +110,21 @@ class Branch(object):
 
     ## Possibly add inormation regarding memory(q), linearity etc.
     
-    i = None #flow
-    q = None #time integral
-    v = None #potential
-    G = None #i jacobian, 
-    C = None #q jacobian
-
+    potential = False
+    input = False
+    linear = True
+    output = ''
+    
     def __init__(self, plus, minus, potential=None, 
                  output='', input=False, linear=True
                  ): # default is 'flow' branch, not 'potential' branch
         if potential is not None:
             self.potential = potential
-        self.plus = plus
-        self.minus = minus
+        self.plus   = makenode(plus)
+        self.minus  = makenode(minus)
         self.output = output
-        self.input = input
-        self.linear = True
-
-        self.i = 0
-        self.q = 0
-        self.v = 0
-        self.u = 0
+        self.input  = input
+        self.linear = linear
 
     def G(self,wrt):
         '''Method for calculating conductance
@@ -121,7 +135,7 @@ class Branch(object):
         '''Method for calculating derivative of q wrt to branch potential or flow
         '''
         pass
-
+    
 class BranchI(Branch):
     '''Flow branch
 
@@ -136,6 +150,29 @@ class BranchV(Branch):
     '''
     potential = True
 
+class BranchRef(Branch):
+    """Reference to a branch in an instance in a SubCircuit"""
+    def __init__(self, instname, inst, branch):
+        self.instname    = instname
+        self.inst        = inst
+        self.branch      = branch
+
+        for attr in ('plus', 'minus', 'potential', 'input',  'output', 'linear'):
+            setattr(self, attr, getattr(self.branch, attr))
+
+    def plusnode(self, cir):
+        """Return circuit node name of branch plus node"""
+        return cir.get_node(instjoin(self.instname, self.plus.name))
+
+    def minusnode(self, cir):
+        """Return circuit node name of branch plus node"""
+        return cir.get_node(instjoin(self.instname, self.minus.name))
+
+    def __hash__(self):
+        return hash(self.branch)
+
+    def __eq__(self, a):
+        return self.branch == a
 
 ### Default reference node
 gnd = Node("gnd", isglobal=True)
@@ -143,6 +180,8 @@ gnd = Node("gnd", isglobal=True)
 defaultepar = ParameterDict(
     Parameter("T", "Temperature", unit="K", default = 300,),
     Parameter("t", "Time", unit="s", default = 0,),
+    Parameter("w", "Angular frequency used by frequency domain analyses", 
+              unit="rad/s", default = 0,),
     Parameter("analysis", "Analysis", default = 'ac',),
     )
 
@@ -299,7 +338,6 @@ class Circuit(object):
             self.nodes.append(node)
         self.nodenames[node.name] = node
 
-    ## Need a rewrite to fine branches of type potential!!
     def get_terminal_branch(self, terminalname):
         """Find the branch that is connected to the given terminal
 
@@ -320,48 +358,43 @@ class Circuit(object):
         (Branch(Node('plus'),Node('minus')), -1)
         
         """
-        plusbranches = [] ## Branches with positive side connected to the
-                          ## terminal
-        minusbranches = [] ## Branches with negative side connected to the
-                           ## terminal
-        for branch in self.branches:
-            if branch.plus == self.nodenames[terminalname]:
-                plusbranches.append(branch)
-            elif branch.minus == self.nodenames[terminalname]:
-                minusbranches.append(branch)
+        
+        terminalnode      = self.get_node(terminalname)
+        terminal_instname = instname(terminalname)
 
-        if len(plusbranches + minusbranches) != 1:
-            return None
-        elif len(plusbranches) == 1:
-            return plusbranches[0], 1
-        elif len(minusbranches) == 1:
-            return minusbranches[0], -1            
+        result = None
+        ## Keep track of branches connected to terminal and 
+        ## wether they are inside or outside instanace of terminal
+        inside_branches  = [] 
+        outside_branches = [] 
+        for branch in self.xflatbranches():
+            ## Is branch connected to terminal?
+            connected_branch = (branch.plusnode(self) == terminalnode) or \
+                               (branch.minusnode(self) == terminalnode)
+            if connected_branch:  
+                ## Is branch in same element as terminal?
+                in_same_element = branch.instname.startswith(terminal_instname)
 
-    ## Need to be moved, since circuit doesn't know about x-vector!!
-    def get_node_index(self, node, refnode=None):
-        """Get row in the x vector of a node instance
+                if in_same_element:
+                    inside_branches.append(branch)
+                else:
+                    outside_branches.append(branch)
 
-           If the refnode argument is given the reference node
-           is assumed to be removed
-        """
-
-        if not isinstance(node, Node):
-            node = Node(str(node))
-        if refnode and not isinstance(refnode, Node):
-            refnode = Node(str(refnode))
-
-        if node in self.nodes:
-            index = self.nodes.index(node)
-            if refnode != None:
-                irefnode = self.nodes.index(refnode)
-                if index == irefnode:
-                    return None
-                if index > irefnode:
-                    return index - 1
-            return index
+        if len(outside_branches) == 1 and outside_branches[0].potential:
+            sign = -1 
+            branch = outside_branches[0]
+        elif len(inside_branches ) == 1 and inside_branches[0].potential:
+            sign = 1
+            branch = inside_branches[0]
         else:
-            raise ValueError('Node %s is not in circuit node list (%s)'%
-                             (str(node), str(self.nodes)))
+            return None
+
+        if branch.plusnode(self) == terminalnode:
+            result = (branch, sign)
+        elif branch.minusnode(self) == terminalnode:
+            result = (branch, -sign)
+
+        return result
 
     ## Need to be moved, since circuit doesn't know about x-vector!!
     def get_branch_index(self, branch):
@@ -500,33 +533,6 @@ class Circuit(object):
         """Returns the time of the next event given the current time t"""
         return inf
     
-    ## Move this function to NA where the x-vector is known
-    def name_state_vector(self, x, analysis=''):
-        """Return a dictionary of the x-vector keyed by node and branch names
-
-        >>> from elements import *
-        >>> import numpy as np
-        >>> c = SubCircuit()
-        >>> n1 = c.add_node('net1')
-        >>> c['is'] = IS(gnd, n1, i=1e-3)
-        >>> c['R'] = R(n1, gnd, r=1e3)
-        >>> c.name_state_vector(np.array([[1.0]]))
-        {'net1': 1.0}
-
-        >>> 
-
-        """
-        result = {}
-        for xvalue, node in zip(x[:len(self.nodes)][0], self.nodes):
-            result[self.get_node_name(node)] = xvalue
-
-        nnodes = len(self.nodes)
-        for i, xvalue, branch in enumerate(zip(x[nnodes:], self.branches)):
-            result['i' + analysis + str(i) + ')'] = xvalue            
-
-        return result
-
-
     def update_iparv(self, parent_ipar=None, globalparams=None,
                      ignore_errors=False):
         """Calculate numeric values of instance parameters"""
@@ -539,7 +545,7 @@ class Circuit(object):
         self.iparv.update_values(newipar)
 
     def eval_iqu(self, inputvalues, epar):
-        pass
+        return ()
 
     def eval_iqu_and_der(self, inputvalues, epar):
         return self.eval_iqu_and_der_func(self, inputvalues, epar)
@@ -564,43 +570,48 @@ class Circuit(object):
                 yield Node(instancename + '.' + instancenode.name)
 
     ## Branch related functions
-    def xflatbranchmap(self, **filter):
-        """Returns instances, branches and their global node indices
+    def xflatbranches(self, instancefilter=None, branchfilter=None, **matchall):
+        """Returns branch reference object to all branches in circuit
 
-        The filter argument is used to filter out branches that match the 
-        filter criteria. filter is a dictionary with branch attribute names
-        as keys and the desired branch attribute values as values
+        The instancefilter is a function that takes an instance name as argument
+        and returns True if the instance is to be included.
+        The branchfilter argument is a function that takes a branch object
+        as argument and returns True if the branch is to be included.
+        Finally for simpler branch filtering tasks the function also takes
+        keyword arguments with branch properties that all have to match certain 
+        values. For example c.xflatbranches(potential=True, input=True) will
+        only yield input potential branches. Note, keyword arguments only work 
+        if no branchfilter is supplied.
         """
+        if branchfilter is None:
+            branchfilter = matchbranches(**matchall)
+
         for branch in self.branches:
-            if all([getattr(branch,k) == v for k,v in filter.items()]):
-                plus  = self.get_node_index(branch.plus)
-                minus = self.get_node_index(branch.minus)
-                yield None, self, branch, (plus, minus)
+            if branchfilter(branch):
+                yield BranchRef('', self, branch)
 
     @property
     def inputbranches(self):
         return [branch for branch in self.branches if branch.input]
 
-    def _instance_branches(self, instance, instancename, 
-                           instancebranches = None):
-        """Return circuit branches from instance branches
-        """
-        if instancebranches == None:
-            instancebranches = instance.branches
-
-        for instancebranch in instancebranches:
-            plus, minus = self._instance_nodes([instancebranch.plus, 
-                                                instancebranch.minus],
-                                               instance, instancename)
-            branch = copy(instancebranch)
-            branch.plus  = plus
-            branch.minus = minus
-            yield branch
-
     @property
     def _nterminalnodes(self):
         """Return number of terminal nodes"""
         return len(self.terminals)
+
+    @property
+    def I(self):
+        if len(self.branches) == 1:
+            return Quantity('I', self.branches[0])
+        else:
+            raise Exception('The I property only works for circuits with one branch')
+
+    @property
+    def V(self):
+        if len(self.branches) == 1:
+            return Quantity('V', self.branches[0])
+        else:
+            raise Exception('The V property only works for circuits with one branch')
 
 class SubCircuit(Circuit):
     """
@@ -778,9 +789,6 @@ class SubCircuit(Circuit):
             self.nodes.remove(node)
             del self.nodenames[node.name] 
 
-        for branch in self._instance_branches(element, instancename):
-            self.branches.remove(branch)
-
         del self.term_node_map[instancename]
 
         self.update_node_map()
@@ -798,47 +806,6 @@ class SubCircuit(Circuit):
             top_instancename = instname_parts[0]
             sub_instancename = '.'.join(instname_parts[1:])
             return self.elements[top_instancename][sub_instancename]
-        
-    ## Need a rewrite to find branches of type potential!!
-    def get_terminal_branch(self, terminalname):
-        """Find the branch that is connected to the given terminal
-
-        If no branch is found or if there are more branches than one, None is 
-        returned
-
-        The name can be a hierachical name and the notation is 'I1.I2.plus' for
-        the terminal 'plus' of instance I2 of instance I1
-
-        Returns
-        -------
-        Tuple of Branch object and an integer indicating if terminal is 
-        connected to the positive or negative side of the branch. 
-        1 == positive side, -1 == negative side
-
-        >>> from elements import *
-        >>> c = SubCircuit()
-        >>> net1, net2 = c.add_nodes('net1', 'net2')
-        >>> c['vs'] = VS(net1, net2)
-        >>> c.get_terminal_branch("vs.minus")
-        (Branch(Node('net1'),Node('net2')), -1)
-        
-        """
-        hierlevels = [part for part in terminalname.split('.')]
-
-        if len(hierlevels)==1:
-            return Circuit.get_terminal_branch(self, hierlevels[0])
-        else:
-            instancename = hierlevels[0]
-            topelement = self.elements[instancename]
-            branch_sign = \
-                topelement.get_terminal_branch('.'.join(hierlevels[1:]))
-
-            if branch_sign:
-               ## Add prefix to node names in branch
-               branch_gen = self._instance_branches(topelement, instancename, 
-                                                    (branch_sign[0],))
-
-               return branch_gen.next(), branch_sign[1]
         
     def get_node(self, name):
         """Find a node by name.
@@ -860,13 +827,13 @@ class SubCircuit(Circuit):
             if len(path) < 2:
                 return ValueError('Node name %s not found'%name)
             elif len(path) > 2:
-                node = self[top].get_node('.'.join(path[1:]))
-                index = self[top].get_node_index(node)
-                index2 = self.elementnodemap[top][index]
-                node2 = self.nodes[index2]
-                return node2.name
+                element_node = self[top].get_node('.'.join(path[1:]))
+                element_node_index = self[top].nodes.index(element_node)
+                node_index = self.elementnodemap[top][element_node_index]
+                return self.nodes[node_index]
             else:
-                element_node_index = self[top].get_node_index('.'.join(path[1:]))
+                element_node = Node('.'.join(path[1:]))
+                element_node_index = self[top].nodes.index(element_node)
                 node_index = self.elementnodemap[top][element_node_index]
                 return self.nodes[node_index]
             
@@ -916,9 +883,8 @@ class SubCircuit(Circuit):
 
             ## Create mapping matrix
             if len(nodemap) > 0:
-                mapmatrix = self.toolkit.zeros((self.n, len(nodemap)),
-                                               dtype = np.integer)
-            
+                mapmatrix = np.zeros((self.n, len(nodemap)),
+                                     dtype = np.integer)
                 for inst_node_index, node_index in enumerate(nodemap):
                     mapmatrix[node_index, inst_node_index] = 1
                 self._mapmatrix[instance_name] = mapmatrix
@@ -936,36 +902,6 @@ class SubCircuit(Circuit):
             element.update_iparv(self.iparv, globalparams,
                                  ignore_errors=ignore_errors)
         
-    def G(self, x, epar=defaultepar):
-        return self._add_element_submatrices('G', x, (epar,))
-
-    def C(self, x, epar=defaultepar):
-        return self._add_element_submatrices('C', x, (epar,))
-
-    def u(self, t=0.0, epar=defaultepar, analysis=None):
-        dtype = None
-        if analysis == 'ac':
-            dtype = self.toolkit.ac_u_dtype
-
-        return self._add_element_subvectors('u', None, (t,epar,analysis), 
-                                            dtype=dtype)
-
-    def i(self, x, epar=defaultepar):
-        return self._add_element_subvectors('i', x, (epar,))
-
-    #This seemed to be missing
-    def q(self, x, epar=defaultepar):
-        return self._add_element_subvectors('q', x, (epar,))
-
-    def CY(self, x, w, epar=defaultepar):
-        """Calculate composite noise source correlation matrix
-
-        The noise sources in one element are assumed to be uncorrelated 
-        with the noise sources in the other elements.
-
-        """
-        return self._add_element_submatrices('CY', x, (w, epar,))
-
     def save_current(self, terminal):
         """Returns a circuit where the given terminal current is saved
         
@@ -973,6 +909,9 @@ class SubCircuit(Circuit):
         for terminal 'term' of instance 'I1'
         """
         
+        if self.get_terminal_branch(terminal) is not None:
+            return self
+
         hierterm = [part for part in terminal.split('.')]
 
         if len(hierterm) == 1:
@@ -989,43 +928,6 @@ class SubCircuit(Circuit):
         
         return self
 
-    ## Move to NA !!
-    def extract_i(self, x, branch_or_term, xdot = None,
-                  refnode = gnd, refnode_removed = False, 
-                  linearized = False, xdcop = None):
-        if type(branch_or_term) is types.StringType:
-            if self.get_terminal_branch(branch_or_term) == None:
-
-                hierlevels = [part for part in branch_or_term.split('.')]
-
-                if len(hierlevels) > 1:
-                    instance_name = hierlevels[0]
-                    instance = self.elements[instance_name]
-                    terminal_name = '.'.join(hierlevels[1:])
-
-                    ## Get slice of x-vector for the instance
-                    nodemap = self.elementnodemap[instance_name]
-
-                    subx = x[nodemap]
-
-                    if xdot != None:
-                        subxdot = xdot[nodemap]
-                    else:
-                        subxdot = None
-
-                    return instance.extract_i(subx, terminal_name, 
-                                              xdot = subxdot, 
-                                              refnode=refnode,
-                                              refnode_removed=refnode_removed,
-                                              linearized = linearized, 
-                                              xdcop = xdcop)
-
-
-        return Circuit.extract_i(self, x, branch_or_term, xdot = xdot,
-                                 refnode=refnode, 
-                                 refnode_removed=refnode_removed,
-                                 linearized = linearized, xdcop = xdcop)
-        
     def update(self, subject):
         """This is called when an instance parameter is updated"""
         for element in self.elements.values():
@@ -1045,41 +947,71 @@ class SubCircuit(Circuit):
                     instances.append(instanceName + '.' + instance)
         return instances
     
-    ## Could be replaced by xflatinstances !!
-    @property
-    def xflatelements(self):
-        """Iterator over all elements and subelements"""
-        for e in self.elements.values():
-            if not isinstance(e, SubCircuit):
-                yield e
-            else:
-                for sube in e.xflatelements:
-                    yield sube
-
-    def xflatinstances(self, instname_prefixes=()):
-        """Iterator over all elements and subelements"""
+    def xflatinstances(self, instancefilter=None, instnameprefix=''):
+        """Iterator over all elements and subelements
+        
+        If instancefilter is given is used to filter out instances by name.
+        The parameter should contain a sequence of instance names.
+        """
         for instname, e in self.elements.items():
+            full_instname = instjoin(instnameprefix, instname)
+
+            ## Filter out instances by name
+            if instancefilter is not None and \
+               full_instname not in instancefilter:
+                continue
+            
             if not isinstance(e, SubCircuit):
-                yield '.'.join(instname_prefixes + (instname,)), e
+                yield full_instname, e
             else:
-                for subinst in e.xflatinstances(instname_prefixes + (instname,)):
+                for subinst in e.xflatinstances(instnameprefix=full_instname):
                     yield subinst
 
-    def xflatbranchmap(self, **filter):
-        """Returns instances, branches and their global node indices
-
-        The filter argument is used to filter out branches that match the 
-        filter criteria. filter is a dictionary with branch attribute names
-        as keys and the desired branch attribute values as values
+    def get_branch_global_nodes(self, branch, instname=None):
+        """Return node indices of plus and minus node of branch
+        
+        instname is used to get node map of branches of instances
         """
-        for instname, inst in self.xflatinstances():
-            for branch in inst.branches:
-                if all([getattr(branch,k) == v for k,v in filter.items()]):
-                    plus  = self.get_node(instname + '.' + branch.plus.name)
-                    minus = self.get_node(instname + '.' + branch.minus.name)
-                    yield instname, inst, branch, \
-                        (self.get_node_index(plus), self.get_node_index(minus))
+        if instname is not None:
+            return (self.get_node(instname + '.' + branch.plus.name),
+                    self.get_node(instname + '.' + branch.minus.name))
+        else:
+            return (branch.plus.name, branch.minus.name)
 
+    def xflatbranches(self, instancefilter=None, branchfilter=None, **matchall):
+        """Returns branch reference object to all branches in circuit
+
+        The instancefilter is a function that takes an instance name as argument
+        and returns True if the instance is to be included.
+        The branchfilter argument is a function that takes a branch object
+        as argument and returns True if the branch is to be included.
+        Finally for simpler branch filtering tasks the function also takes
+        keyword arguments with branch properties that all have to match certain 
+        values. For example c.xflatbranches(potential=True, input=True) will
+        only yield input potential branches. Note, keyword arguments only work 
+        if no branchfilter is supplied.
+        """
+        if branchfilter is None:
+            branchfilter = matchbranches(**matchall)
+
+        for instname, inst in self.xflatinstances(instancefilter=instancefilter):
+            for branch in inst.branches:
+                if branchfilter(branch):
+                    yield BranchRef(instname, inst, branch)
+
+    def get_connections(self, node):
+        node = self.get_node(node)
+        
+        connections = []
+
+        for instname, inst in self.xflatinstances(instancefilter):
+            for terminal in inst.terminals:
+                fullterminalname = instjoin(instname, terminal)
+                if node == self.get_node(fullterminalname):
+                    connections.append(fullterminalname)
+
+        return connections
+        
     ## Remove or move or change !!
     # def translate_branch(self, branch, instance):
     #     """Return branch from a local branch in an instance"""
@@ -1089,7 +1021,6 @@ class SubCircuit(Circuit):
 class ProbeWrapper(SubCircuit): #!!
     """Circuit wrapper that adds voltage sources for current probing"""
     def __init__(self, circuit, terminals = ()):
-
         ## Copy nodes, branches, terminals and parameters
         self.terminals = circuit.terminals
 
@@ -1141,14 +1072,6 @@ class CircuitProxy(Circuit): #!!
         if isinstance(parent, SubCircuit) and instance_name != None:
             self.terminalhook = parent.term_node_map[instance_name]
 
-    def G(self, x, epar=defaultepar): return self.device.G(x,epar)
-    def C(self, x, epar=defaultepar): return self.device.C(x,epar)
-    def u(self, t=0.0, epar=defaultepar, analysis=None): 
-        return self.device.u(x,epar)
-    def i(self, x, epar=defaultepar): return self.device.i(x,epar)
-    def q(self, x, epar=defaultepar): return self.device.q(x,epar)
-    def CY(self, x, w, epar=defaultepar): return self.device.CY(x,epar)
-
 def instjoin(*instnames):
     """Return hierarchical instance names from instance name components
     
@@ -1162,22 +1085,8 @@ def instjoin(*instnames):
     
 class IProbe(Circuit):
     """Zero voltage independent voltage source used for current probing"""
+    branches = (BranchV('plus', 'minus'),)
     terminals = ['plus', 'minus']
-
-    def __init__(self, plus, minus, **kvargs):
-        Circuit.__init__(self, plus, minus, **kvargs)
-        self.append_branches(Branch(self.nodenames['plus'], 
-                                    self.nodenames['minus']))
-
-    def G(self, x, epar=defaultepar):
-        return self.toolkit.array([[0 , 0, 1],
-                                   [0 , 0, -1],
-                                   [1 , -1, 0]])
-
-    @property
-    def branch(self):
-        """Return the branch (plus, minus)"""
-        return self.branches[0]
 
 class Quantity(object):
     """Reference to voltage or current of a branch or node
@@ -1201,12 +1110,20 @@ class Quantity(object):
             raise ValueError("quantity must be either 'V' or 'I'")
         if not isinstance(branch_or_node, (Node, Branch)):
             raise ValueError('branch_or_node must be a Branch or Node object')
-        
-        if quantity == 'I' and isinstance(branch_or_node, Node):
-            raise ValueError('Current can only be taken on branches')
 
         self.quantity = quantity
+
         self.branch_or_node = branch_or_node
+
+    def __eq__(self, a):
+        return self.quantity == a.quantity and \
+               self.branch_or_node == a.branch_or_node
+
+    @property
+    def is_i(self): return 'I' == self.quantity
+
+    @property
+    def is_v(self): return 'V' == self.quantity
 
     @property
     def isnode(self): return isinstance(self.branch_or_node, Node)
@@ -1215,13 +1132,25 @@ class Quantity(object):
     def isbranch(self): return isinstance(self.branch_or_node, Branch)
         
     def __repr__(self):
-        raise ValueError("APA")
         if isinstance(self.branch_or_node, Branch):
-            return self.quantity + '(' + str(self.branch_or_node.plus.name) + \
-                ',' + str(self.branch_or_node.minus.name) + ')'
+            branch = self.branch_or_node
+            if isinstance(branch, BranchRef) and self.quantity == 'I':
+                return self.quantity + '(' + branch.instname + ')'
+            else:
+                return self.quantity + '(' + str(branch.plus.name) + \
+                    ',' + str(branch.minus.name) + ')'
         else:
-            return self.quantity + '(' + str(self.branch_or_node.name) + ')'
+            node = self.branch_or_node
+            return self.quantity + '(' + str(node.name) + ')'
 
+def matchbranches(**attr_and_values):
+    """Create filter where given values of branch properties all have to match
+    """
+    def alltrue(branch):
+        return all([getattr(branch,k) == v 
+                    for k,v in attr_and_values.items()])
+    return alltrue
+        
 if __name__ == "__main__":
     import doctest
     doctest.testmod()

@@ -5,13 +5,14 @@
 from pycircuit.utilities import Parameter, ParameterDict, isiterable
 from pycircuit.circuit.analysis import CircuitResult, Analysis, remove_row_col
 from pycircuit.circuit import Circuit, SubCircuit, VS,IS,R,C,L,Diode, gnd, \
-    defaultepar, instjoin
+    defaultepar, instjoin, Branch, Node
 import pycircuit.circuit.circuit
 import symbolic
 from pycircuit.post.waveform import Waveform
 from pycircuit.post.result import IVResultDict
 from pycircuit.post.internalresult import InternalResultDict
 from pycircuit.circuit.dcanalysis import DC
+from .na import U
 
 import numeric
 import types
@@ -19,54 +20,46 @@ import types
 
 class CircuitResultAC(CircuitResult):
     """Result class for analyses that returns voltages and currents"""
-    def __init__(self, circuit, xdcop, x, xdot = None,
+    def __init__(self, na, x, xdot = None,
                  sweep_values=[], sweep_label='', sweep_unit=''):
-        super(CircuitResultAC, self).__init__(circuit, x, xdot,
+        super(CircuitResultAC, self).__init__(na, x, xdot,
                                               sweep_values=sweep_values,
                                               sweep_label=sweep_label,
                                               sweep_unit=sweep_unit)
-        self.xdcop = xdcop
-
     def i(self, term):
         """Return terminal current i(term)"""
-        result = self.circuit.extract_i(self.x, term, xdot = self.xdot, 
-                                        linearized=True, 
-                                        xdcop = self.xdcop)
+        result = self.na.extract_i(self.x, term, xdot=self.xdot, 
+                                    linearized=True)
         return self.build_waveform(result, 'i(%s)'%(str(term)), 'A')
 
 class SSAnalysis(Analysis):
     """Super class for small-signal analyses"""
 
     parameters = [Parameter(name='analysis', desc='Analysis name', default='ss'),
-                   Parameter(name='dcx', desc='Provided DC-solution vector', 
-                             unit='', 
-                             default=None)]
+                  Parameter(name='dcx', desc='Provided DC-solution vector', 
+                            unit='', 
+                            default=None)]
 
     def __init__(self, cir, toolkit=None, **kvargs):    
         self.parameters = super(SSAnalysis, self).parameters + self.parameters            
         super(SSAnalysis, self).__init__(cir, **kvargs)
-        
+        self.epar.analysis = self.par.analysis
 
-    def ss_map_function(self, func, ss, refnode):
+    def ss_map_function(self, func, ss):
         """Apply a function over a list of frequencies or a single frequency"""
-        irefnode = self.cir.nodes.index(refnode)
-
-        def myfunc(s):
-            x = func(s)
-            # Insert reference node voltage
-            return self.toolkit.concatenate((x[:irefnode], self.toolkit.array([0.0]), x[irefnode:]))
-            
         if isiterable(ss):
-            return self.toolkit.array([myfunc(s) for s in ss]).swapaxes(0,1)
+            return self.toolkit.array([func(s) for s in ss]).swapaxes(0,1)
         else:
-            return myfunc(ss)
+            return func(ss)
 
-    def dc_steady_state(self, freqs, refnode, complexfreq=False, u=None):
-        """Return G,C,u matrices at dc steady-state and complex frequencies"""
-        return dc_steady_state(self.cir, freqs, refnode, self.toolkit, 
-                               complexfreq = complexfreq, u = u, 
-                               analysis=self.par.analysis,
-                               epar=self.epar,x0=self.par.dcx)
+    def set_frequency(self, freq, complexfreq=False):
+        """Set frequency parameter and return complex frequency"""
+        s = to_complex_frequencies(freq, self.toolkit, complexfreq=complexfreq)
+        self.epar.w = self.toolkit.imag(s)
+        return s
+        
+    def dc_steady_state(self, u=None):
+        return dc_steady_state(self.na, u = u, epar=self.epar, x0=self.par.dcx)
 
 class AC(SSAnalysis):
     """
@@ -111,20 +104,19 @@ class AC(SSAnalysis):
         super(AC, self).__init__(cir, **kvargs)
 
     def solve(self, freqs, refnode=gnd, complexfreq = False, u = None):
-        G, C, CY, u, x, ss = self.dc_steady_state(freqs, refnode,
-                                              complexfreq = complexfreq, u = u)
+        ss = self.set_frequency(freqs, complexfreq=complexfreq)
 
-        ## Refer the voltages to the reference node by removing
-        ## the rows and columns that corresponds to this node
-        irefnode = self.cir.get_node_index(refnode)
-        G,C,CY,u = remove_row_col((G,C,CY,u), irefnode, self.toolkit)
+        self.dc_steady_state(u = u)
+
+        ## Get node-analysis object
+        na = self.na
 
         def acsolve(s):
-            return self.toolkit.linearsolver(s*C + G, -u)
+            return self.toolkit.linearsolver(s*na.C + na.G, -na.u)
 
-        xac = self.ss_map_function(acsolve, ss, refnode)
+        xac = self.ss_map_function(acsolve, ss)
 
-        self.result = CircuitResultAC(self.cir, x, xac, ss * xac, 
+        self.result = CircuitResultAC(na, xac, ss * xac, 
                                       sweep_values = freqs, 
                                       sweep_label='frequency',
                                       sweep_unit='Hz')
@@ -304,79 +296,63 @@ class Noise(SSAnalysis):
         if self.outputsrc_name:
             self.outputsrc = self.cir[self.par.outputsrc]
 
-    def noise_map_function(self, func, ss, refnode):
+    def noise_map_function(self, func, ss):
         """Apply a function over a list of frequencies or a single frequency"""
-        irefnode = self.cir.nodes.index(refnode)
-
-        def myfunc(s):
-            x, g = func(s)
-            return x,g 
-            
         if isiterable(ss):
             xlist = []
             glist = []
             for s in ss:
-                x,g = myfunc(s)
+                x,g   = func(s)
                 xlist = xlist + [x]
                 glist = glist + [g]
             return self.toolkit.array(xlist),self.toolkit.array(glist) 
         else:
-            return myfunc(ss)
+            return func(ss)
 
     def solve(self, freqs, refnode=gnd, complexfreq = False, u = None):
-        G, C, CY, u, x, ss = self.dc_steady_state(freqs, refnode,
-                                              complexfreq = complexfreq, u = u)
-
-        tk = self.toolkit
+        ss = self.set_frequency(freqs)
         
-        def noisesolve(s):
+        ## Perform DC-analysis and evaluate cicuit
+        self.dc_steady_state(u = u)
+        
+        ## Get node-analysis object
+        na = self.na
+        tk = self.toolkit
 
+        def noisesolve(s):
             # Calculate the reciprocal G and C matrices
-            Yreciprocal = G.T + s*C.T
+            Yreciprocal = na.G.T + s*na.C.T
             
-            Yreciprocal2, uu = (tk.toMatrix(A) for A in (Yreciprocal, u))
+            Yreciprocal2, uu = (tk.toMatrix(A) for A in (Yreciprocal, na.u))
             
             ## Calculate transimpedances from currents in each nodes to output
             zm =  tk.linearsolver(Yreciprocal2, -uu)
 
-            xn2out = tk.dot(tk.dot(zm.reshape(1, tk.size(zm)), CY), tk.conj(zm))
+            xn2out = tk.dot(tk.dot(zm.reshape(1, tk.size(zm)), na.CY), tk.conj(zm))
 
-            ## Etract gain
+            ## Extract gain
             gain = None
             if isinstance(self.inputsrc, VS):
-                gain = self.cir.extract_i(zm, 
-                                          instjoin(self.inputsrc_name, 'plus'),
-                                          refnode=refnode, 
-                                          refnode_removed=True)
+                gain = na.extract_i(zm, 
+                                    instjoin(self.inputsrc_name, 'plus'))
                 
             elif isinstance(self.inputsrc, IS):
-                plus_node = instjoin(self.inputsrc_name, 'plus')
+                plus_node  = instjoin(self.inputsrc_name, 'plus')
                 minus_node = instjoin(self.inputsrc_name, 'minus')
-                gain = self.cir.extract_v(zm, 
-                                          self.cir.get_node(plus_node), 
-                                          self.cir.get_node(minus_node), 
-                                          refnode=refnode, refnode_removed=True)
+                gain = na.extract_v(zm, 
+                                    self.cir.get_node(plus_node), 
+                                    self.cir.get_node(minus_node))
             return xn2out[0], gain
 
         # Calculate output voltage noise
-        if self.outputnodes != None:
-            ioutp, ioutn = (self.cir.get_node_index(node) 
-                            for node in self.outputnodes)
-            u[ioutp] = -1
-            u[ioutn] = 1
+        if self.outputnodes is not None:
+            branch = Branch(self.outputnodes[0], self.outputnodes[1])
+            na.set_out_vector_branch(U, None, branch, -1)
         # Calculate output current noise
         else:
-            plus_term = instjoin(self.outputsrc_name, 'plus')
-            branch = self.cir.get_terminal_branch(plus_term)[0]
-            ibranch = self.cir.get_branch_index(branch)
-            u[ibranch] = -1
+            na.set_out_vector_branch(U, self.outputsrc_name, None, -1)
             
-        ## Refer the voltages to the gnd node by removing
-        ## the rows and columns that corresponds to this node
-        irefnode = self.cir.nodes.index(refnode)
-        G,C,CY,u = remove_row_col((G,C,CY,u), irefnode, tk)
-        
-        xn2out, gain = self.noise_map_function(noisesolve, ss, refnode)
+        xn2out, gain = self.noise_map_function(noisesolve, ss)
 
         # Store results
         result = InternalResultDict()
@@ -400,37 +376,34 @@ class Noise(SSAnalysis):
         return result
 
 
-def dc_steady_state(cir, freqs, refnode, toolkit, complexfreq = False, 
-                    analysis='ac', u = None, epar=defaultepar, x0=None):
-    """Return G,C,CY,u matrices at dc steady-state and complex frequencies"""
+def dc_steady_state(na, u = None, epar=defaultepar, x0=None):
+    """Solve circuit at DC and evaluate circuit"""
 
-    n = cir.n
+    toolkit = na.toolkit
 
-    if complexfreq:
-        ss = freqs
-    else:
-        ss = 2j*toolkit.pi*freqs
+    n = na.n
 
     if x0 is None:
         if toolkit.symbolic:
-            x=None
+            x=toolkit.zeros(n)
         else:
         #x = zeros(n) ## FIXME, this should be calculated from the dc analysis
-            resdc=DC(cir).solve()
+            resdc=DC(na.cir).solve()
             x = resdc.x
     else:
         x = x0 #provide the DC steady-state FIXME: need to add parameter to AC
 
-    G = cir.G(x, epar)
-    C = cir.C(x, epar)
-    CY = cir.CY(x, toolkit.imag(ss), epar)
+    na.update(x, epar, noise=True)
 
     ## Allow for custom stimuli, mainly used by other analyses
-    if u == None:
-        u = cir.u(x, analysis=analysis, epar=epar)
+    if u is not None:
+        na.u = u
 
-    return G, C, CY, u, x, ss
-
+def to_complex_frequencies(freqs, toolkit, complexfreq=False):
+    if complexfreq:
+        return freqs
+    else:
+        return 2j*toolkit.pi*freqs
 
 if __name__ == "__main__":
     import doctest

@@ -43,20 +43,6 @@ def generate_testcircuit():
 
     return subc
 
-def test_parallel():
-    pycircuit.circuit.circuit.default_toolkit = numeric
-
-    cir=SubCircuit()
-
-    res = 1e3
-    cir['R1'] = R(1, 2, res)
-    cir['R2'] = R(1, 2, res)
-
-    G = cir.G(np.array([0,0]))
-
-    assert_array_equal(G, np.array([[2/res, -2/res],
-                                    [-2/res, 2/res]]))
-
 def test_print_element():
     pycircuit.circuit.circuit.default_toolkit = symbolic
 
@@ -101,19 +87,11 @@ def test_subcircuit_nodes():
                   'I1.internal': Node('I1.internal'),
                   'gnd': gnd})
 
-    ## Check branches of subc
-    assert_equal(subc.branches,
-                 [Branch(Node('I1.internal'), gnd)])
-
     ## Check local names of I1
     assert_equal(subc['I1'].nodenames,
                  {'p': Node('p'), 'm': Node('m'),
                   'internal': Node('internal'),
                   'gnd': gnd})
-
-    ## Check branches of I1
-    assert_equal(subc['I1'].branches,
-                 [Branch(Node('internal'), gnd)])
 
     ## Check nodes of I1
     assert_equal(set(subc['I1'].nodes), 
@@ -181,28 +159,6 @@ def test_subcircuit_add_nodes_implicitly():
                  {'a': Node('a'), 'b': Node('b'), 'c': Node('c'), 
                   '1': Node('1')})
     
-def create_current_divider(R1,R3,C2):
-    cir = SubCircuit()
-
-    n1,n2 = cir.add_nodes('n1', 'n2')
-    
-    class MySubC(SubCircuit):
-        terminals = ['plus', 'minus']
-
-        def __init__(self, *args, **kvargs):
-            super(MySubC, self).__init__(*args, **kvargs)
-
-            self['R3'] = R(self.nodenames['plus'], self.nodenames['minus'], r=R3)
-            self['I2'] = IS(self.nodenames['plus'], self.nodenames['minus'], iac=1)
-
-
-    cir['IS'] = IS(gnd,n1, iac=2)
-    cir['R1'] = R(n1, n2, r=R1)
-    cir['I1'] = MySubC(n2, gnd)
-    cir['C2'] = C(n2, gnd, c=C2)
- 
-    return cir
-
 def test_current_probing():
     """Test current probing with a current divider circuit"""
     pycircuit.circuit.circuit.default_toolkit = symbolic
@@ -255,14 +211,6 @@ def test_adddel_subcircuit_element():
     assert_equal(cir.nodes, [n1,gnd])
     assert_equal(cir.branches, [])
 
-def test_short_resistor():
-    """Test shorting of instance terminals"""
-    cir = SubCircuit()
-
-    cir['R1'] = R(gnd, gnd)
-    
-    assert_equal(cir.G(np.zeros(1)), np.array([0]))
-    
 def test_copy_circuit():
     """Test to make a copy of circuit"""
 
@@ -272,24 +220,6 @@ def test_copy_circuit():
 
     assert_equal(cir, cir_copy)
 
-def test_VCCS_tied():
-    """Test VCCS with some nodes tied together"""
-    pycircuit.circuit.circuit.default_toolkit = symbolic
-
-    cir = SubCircuit()
-
-    n3,n2 = cir.add_nodes('3','2')
-
-    gm1 = sympy.Symbol('gm1')
-
-    cir['gm'] = VCCS(gnd, n3, n2, n3, gm = gm1)   
-    
-    assert_array_equal(cir.G(np.zeros(cir.n)),
-                       np.array([[gm1, 0, -gm1],
-                                 [-gm1, 0, gm1],
-                                 [0, 0, 0]]))
-
-    
 def test_proxy():
     pycircuit.circuit.circuit.default_toolkit = symbolic
     
@@ -427,26 +357,59 @@ def test_get_node():
     c['V1'] = VS(out, gnd)
     assert_equal(c.get_node('V1.plus'), out)
 
-def test_xflatbranchmap():
-    """Test xflatbranchmap""" 
+def test_xflatbranches():
+    """Test xflatbranches""" 
     c = SubCircuit()
     c['R1'] = R(1, 2, r=1e3)
     c['R2'] = R(2, 1, r=2e3)
 
     ## Test subcircuit level
-    branchmap = list(c.xflatbranchmap())
+    branches    = list(c.xflatbranches())
 
-    assert_equal([('R1', c['R1'], c['R1'].branches[0], 
-                   (c.get_node_index(1), c.get_node_index(2))),
-                  ('R2', c['R2'], c['R2'].branches[0], 
-                   (c.get_node_index(2), c.get_node_index(1)))
-                  ],
-                 branchmap)
+    refbranches = [BranchRef('R1', c['R1'], c['R1'].branches[0]),
+                   BranchRef('R2', c['R2'], c['R2'].branches[0])]
+
+    assert_equal(branches, refbranches)
+
+    ## Comparison of BranchRef objects only compares what branch they refer too
+    for branch, refbranch in zip(branches, refbranches):
+        assert_equal(branch.instname, refbranch.instname)
+        assert_equal(branch.inst, refbranch.inst)
 
     ## Test circuit level
     
-    branchmap = list(c['R2'].xflatbranchmap())
+    branches = list(c['R2'].xflatbranches())
+    refbranches = [BranchRef('', c['R2'], c['R2'].branches[0])]
 
-    assert_equal([(None, c['R2'], c['R2'].branches[0], 
-                   (c['R2'].get_node_index('plus'), c['R2'].get_node_index('minus')))],
-                 branchmap)
+    assert_equal(branches, refbranches)
+
+def test_getconnections():
+    c = generate_testcircuit()
+
+    connections = set(c.get_connections('I1.internal'))
+    
+    refconnections = set(['I1.R1.minus', 'I1.R2.plus', 'I1.V1.plus', 'I1.R3.plus'])
+
+    assert_equal(connections, refconnections)
+
+def create_current_divider(R1,R3,C2):
+    cir = SubCircuit()
+
+    n1,n2 = cir.add_nodes('n1', 'n2')
+    
+    class MySubC(SubCircuit):
+        terminals = ['plus', 'minus']
+
+        def __init__(self, *args, **kvargs):
+            super(MySubC, self).__init__(*args, **kvargs)
+
+            self['R3'] = R(self.nodenames['plus'], self.nodenames['minus'], r=R3)
+            self['I2'] = IS(self.nodenames['plus'], self.nodenames['minus'], iac=1)
+
+
+    cir['IS'] = IS(gnd,n1, iac=2)
+    cir['R1'] = R(n1, n2, r=R1)
+    cir['I1'] = MySubC(n2, gnd)
+    cir['C2'] = C(n2, gnd, c=C2)
+ 
+    return cir

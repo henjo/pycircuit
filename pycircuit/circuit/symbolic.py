@@ -117,6 +117,9 @@ def size(*args,**kvargs):
 def integer(x):
     return sympy.Integer(x)
 
+def todense(a):
+    return a
+
 def generate_update_iqu_and_der(cir):
     """Generate update_qiu_and_der method and attach to circuit instance"""
     inbranches =    cir.inputbranches

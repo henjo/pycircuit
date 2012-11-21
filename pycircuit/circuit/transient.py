@@ -4,7 +4,7 @@
 
 from pycircuit.circuit.analysis import *
 from pycircuit.circuit.dcanalysis import DC
-from pycircuit.circuit.dcanalysis import refnode_removed
+import theanotk
 
 class Transient(Analysis):
     """Simple transient analysis class.
@@ -80,9 +80,9 @@ class Transient(Analysis):
                    desc='Differentiation method', unit='', 
                    default="euler")]        
 
-    def __init__(self, cir, toolkit=None, irefnode=None, **kvargs):
+    def __init__(self, cir, toolkit=theanotk, **kvargs):
         self.parameters = super(Transient, self).parameters + self.parameters            
-        super(Transient, self).__init__(cir, **kvargs)
+        super(Transient, self).__init__(cir, toolkit=toolkit, **kvargs)
     
         self._method={
             "euler":(self.toolkit.array([1.]),self.toolkit.array([0.]),1.),
@@ -95,6 +95,8 @@ class Transient(Analysis):
         
         self._dt = None
         self._diff_error = None #used for saving difference between euler and trapezoidal
+
+        self.epar.analysis = 'tran'
     
     ## This is borrowed from dcanalysis.py, would like to 
     ## import it from there instead.
@@ -109,10 +111,8 @@ class Transient(Analysis):
         xtol = self.toolkit.concatenate((self.par.vabstol * ones_nodes,
                                  self.par.iabstol * ones_branches))
         
-        (x0, abstol, xtol) = remove_row_col((x0, abstol, xtol), self.irefnode, self.toolkit)
-        
         try:
-            result = fsolve(refnode_removed(func, self.irefnode, self.toolkit), 
+            result = fsolve(func, 
                             x0, 
                             full_output = True, 
                             reltol = self.par.reltol,
@@ -128,7 +128,7 @@ class Transient(Analysis):
             raise NoConvergenceError(mesg)
         
         # Insert reference node voltage
-        return self.toolkit.concatenate((x[:self.irefnode], self.toolkit.array([0.0]), x[self.irefnode:]))
+        return x
     
     def get_timestep(self,endtime,dtmin=1e-12):
         """Method to provide the next timestep for transient simulation.
@@ -198,22 +198,25 @@ class Transient(Analysis):
         #if provided_function is not None, it is called as a function with 
         #most of what is calculated during a time_step, f,J,ueq,Geq,xlast,x
         
+        self.epar.t = t
+        
         n=self.cir.n
         x0 = x0
         dt = self._dt
         
         def func(x):
-            C = self.cir.C(x)
-            q=self.cir.q(x)
+            self.na.update(x, self.epar)
+            C = self.na.C
+            q = self.na.q
             iq,Geq = self.get_diff(q,C)
-            f =self.cir.i(x) + iq + self.cir.u(t, analysis=self.par.analysis)
-            J = self.cir.G(x) + Geq #return C somehow?
+            f = self.na.i + iq + self.na.u
+            J = self.na.G + Geq #return C somehow?
             return self.toolkit.array(f, dtype=float), self.toolkit.array(J, dtype=float)
         
         x=self._newton(func,x0)
         #history update
         self._iqlast = self.toolkit.concatenate((self.toolkit.array([self._iq]),self._iqlast))[:-1]
-        self._qlast = self.toolkit.concatenate((self.toolkit.array([self.cir.q(x)]),self._qlast))[:-1]
+        self._qlast = self.toolkit.concatenate((self.toolkit.array([self.na.q]),self._qlast))[:-1]
         
         # Insert reference node voltage
         #x = self.toolkit.concatenate((x[:irefnode], self.toolkit.array([0.0]), x[irefnode:]))
@@ -221,15 +224,16 @@ class Transient(Analysis):
             result=x,provided_function(f,J,C)
         else:
             result=x,None
+
         return result
     
     
     def solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None):
         #provided_function is a function that is sent to solve_timestep for evaluation
+        self.na.setup()
         
         X = [] # will contain a list of all x-vectors
-        self.irefnode=self.cir.get_node_index(refnode)
-        n = self.cir.n
+        n = self.na.n
         self._dt = timestep
         if x0 is None:
             x = self.toolkit.zeros(n)
@@ -239,7 +243,7 @@ class Transient(Analysis):
         a,b,b_=self._method[self.par.method] 
         self._qlast=self.toolkit.zeros((len(a),n))#initialize q-history vector
         #shift in q(x0) to q-history
-        self._qlast = self.toolkit.concatenate((self.toolkit.array([self.cir.q(x)]),self._qlast))[:-1]
+        self._qlast = self.toolkit.concatenate((self.toolkit.array([self.na.q]),self._qlast))[:-1]
         #is this still needed
         order=1 #number of past x-values needed
         for i in xrange(order):
@@ -258,7 +262,7 @@ class Transient(Analysis):
         
         #print("steps: "+str( len(timelist)))
         
-        self.result = CircuitResult(self.cir, x=X, xdot=None,
+        self.result = CircuitResult(self.na, x=X, xdot=None,
                                     sweep_values=timelist, 
                                     sweep_label='time', 
                                     sweep_unit='s')

@@ -1,8 +1,13 @@
+import scipy.sparse as sp
 import numpy as np
 from itertools import groupby
+import types
+from copy import copy 
 
 import circuit
+from circuit import Quantity, defaultepar
 import numeric
+from ..utilities import report
 
 from collections import defaultdict
 
@@ -10,34 +15,39 @@ from collections import defaultdict
 I, Q, U, n_IQU = range(4)
 
 class NA(object):
-    '''Nodal analysis base class.
-    '''
+    """Nodal analysis base class.
+
+    **Attributes**
+       *linear*
+          If True, only the linear branches will be evaluated
+          If False, only the non-linear branches will be evaluated
+    """
     ## Output vectors and jacobians
+    x = None
     i = None
     q = None
     G = None
     C = None
     CY = None
     u = None
-
+    
     ## Length of x-vector
     n = None 
-    
-    def __init__(self, cir, toolkit=numeric, refnode=circuit.gnd):
+
+    def __init__(self, cir, toolkit=numeric, refnode=circuit.gnd, linear=None):
         self.cir = cir
         self.refnode = refnode
         self.branches = []
         self.toolkit = toolkit
-
-        if refnode is not None:
-            self.refnode_index = self.cir.get_node_index(refnode)
-
-        self.generate_eval_iqu_and_der()
+        self.linear = linear
+        self.dirty = True
+        self.circuitdirty = True
 
     def create_matrices(self):
         toolkit = self.toolkit
 
         n = self.n
+        self.x          = toolkit.zeros(n)
         self.i          = toolkit.zeros(n)
         self.q          = toolkit.zeros(n)
         self.u          = toolkit.zeros(n)
@@ -46,237 +56,303 @@ class NA(object):
         self.G          = toolkit.zeros((n,n))
         self.Gconst     = toolkit.zeros((n,n))
         self.C          = toolkit.zeros((n,n))
+        self.Cconst     = toolkit.zeros((n,n))
         self.jacobians  = [self.G, self.C]
         self.CY         = toolkit.zeros((n,n))
 
-    def update(x,t):
+    def setup_GCconst(self):
+        """Evaluate linear part"""
+        self.Gconst     = self.toolkit.zeros((self.n,self.n))
+        self.Cconst     = self.toolkit.zeros((self.n,self.n))
+
+        ## Set up branch mapping for linear and non-source branches only
+        ## and evaluate G
+        branchfilter = lambda branch: branch.linear and 'u' not in branch.output
+        self.setup_branch_mapping(branchfilter)
+        self.dirty = False # unset dirty flag to avoid infinite recursion
+        self.update(self.x, defaultepar)
+        self.dirty = True
+
+        ## Update Gconst with it
+        self.Gconst = self.G.copy()
+        self.Cconst = self.C.copy()
+
+    def update(self, x, epar, static=True, dynamic=True, jacobians=True, noise=False):
         raise NotImplementedError()
     
-    ## Moved from circuit, Needs to be rewritten!!
-    # def extract_v(self, x, nodep, noden=None, refnode=gnd, 
-    #               refnode_removed=False):
-    #     """Extract voltage between nodep and noden from the given x-vector.
+    def extract_v(self, x, nodep, noden=None):
+        """Extract voltage between nodep and noden from the given x-vector.
 
-    #     If noden is not given the voltage is taken between nodep and refnode. 
-    #     x-vectors with the reference node removed can be handled by setting 
-    #     the refnode_removed to True.
+        If noden is not given the voltage is taken between nodep and refnode. 
 
-    #     *x*
-    #       x-vector
+        *x*
+          Solution vector
 
-    #     *nodep*
-    #       Node object or node reference in text format of positive node
+        *nodep*
+          Node object or node reference in text format of positive node
 
-    #     *noden*
-    #       Node object or node reference in text format of negative node
-
-    #     *refnode*
-    #       reference node
-
-    #     *refnode_removed*
-    #       If set the refernce node is expected to be removed from the x-vector
-
-    #     >>> from elements import *
-    #     >>> import numpy as np
-    #     >>> c = SubCircuit()
-    #     >>> n1, n2 = c.add_nodes('n1','n2')
-    #     >>> c['R1'] = R(n1, n2, r=1e3)
-    #     >>> c['R2'] = R(n2, gnd, r=1e3)
-    #     >>> c.extract_v(np.array([1.0, 0.5, 0.0]), 'n1', 'n2')
-    #     0.5
-    #     >>> c.extract_v(np.array([1.0, 0.5, 0.0]), c.nodes[0])
-    #     1.0
-    #     >>> c.extract_v(np.array([1.0, 0.5]), c.nodes[0], refnode_removed = True)
-    #     1.0
-        
-    #     """
-    #     v = []
-    #     for node in nodep, noden:
-    #         if type(node) is types.StringType:
-    #             node = self.get_node(node)
-    #         elif node == None:
-    #             node = refnode
-
-    #         if refnode_removed:
-    #             nodeindex = self.get_node_index(node, refnode)
-    #         else:
-    #             nodeindex = self.get_node_index(node, None)
-
-    #         if nodeindex == None: ## When node == refnode
-    #             v.append(0)
-    #             continue
-                    
-    #         v.append(x[nodeindex])
-
-    #     return v[0] - v[1]
-
-        
-    # ## Moved from NA, Needs to be rewritten!!
-    # def extract_i(self, x, branch_or_term, xdot = None,
-    #               refnode = gnd, refnode_removed = False,
-    #               t = 0,
-    #               linearized = False, xdcop = None):
-    #     """Extract branch or terminal current from the given x-vector.
-
-    #     *x* 
-    #        x-vector
-
-    #     *branch_or_term*
-    #        Branch object or terminal name
-
-    #     *xdot*
-    #        dx/dt vector. this is needed if dx/dt is non-zero and there is no branch defined at the
-    #        terminal
-
-    #     *refnode*
-    #        reference node
-
-    #     *refnode_removed*
-    #        If set the refernce node is expected to be removed from the x-vector
-
-    #     *t*
-    #        Time when the sources are to be evaluated
-        
-    #     *linearized*
-    #        Set to True if the AC current is wanted
-
-    #     *xdcop*
-    #        *xcdop* is the DC operation point x-vector if linearized == True
-
-    #     >>> from elements import *
-    #     >>> import numpy as np
-    #     >>> c = SubCircuit()
-    #     >>> net1 = c.add_node('net1')
-    #     >>> c['vs'] = VS(net1, gnd)
-    #     >>> c.extract_i(np.array([1.0, 0, -1e-3]), 'vs.minus')
-    #     0.001
-    #     >>> c.extract_i(np.array([1.0, -1e-3]), 'vs.minus', refnode_removed = True)
-    #     0.001
-        
-    #     """
-    #     dot = self.toolkit.dot
-        
-    #     if type(branch_or_term) is types.StringType:
-    #         ## Calculate current going in to the terminal as
-    #         ## self.i(x)[terminal_node] + u(t) + dq(x)/dt. 
-    #         ## This will work since i(x) returns
-    #         ## the sum of all the currents going out from the
-    #         ## terminal node that originates from devices within
-    #         ## the circuit. According to Kirchoff's current law
-    #         ## of the terminal node
-    #         ## -I_external + sum(I_internal_k) = 0
-    #         ## Where I_external represents the current coming from
-    #         ## outside the circuit going *in* to the terminal node,
-    #         ## I_internal_k represents one of the currents that flows
-    #         ## from the terminal node to a device within the circuit.
-    #         ## So now we can calculate I_external as 
-    #         ## I_external = sum(I_internal_k) = 
-    #         ## self.I(x)[terminal_node] + u(t) + dq(x)/dt =
-    #         ## self.I(x)[terminal_node] + u(t) + sum(dq(x)/dx_k * dx_k/dt) =
-    #         ## self.I(x)[terminal_node] + u(t) + C(x) * dx/dt
-
-    #         branch_sign = self.get_terminal_branch(branch_or_term)
-
-    #         if branch_sign != None:
-    #             branch, sign = branch_sign
-    #         else:
-    #             terminal_node = self.nodenames[branch_or_term]
-                
-    #             terminal_node_index = self.get_node_index(terminal_node)
-
-    #             if xdot != None:
-    #                 if linearized:
-    #                     return dot(self.G(xdcop)[terminal_node_index], x) + \
-    #                         dot(self.C(xdcop)[terminal_node_index], xdot) + \
-    #                         self.u(t, analysis = 'ac')[terminal_node_index]
-
-    #                 else:
-    #                     return self.i(x)[terminal_node_index] + \
-    #                         dot(self.C(x)[terminal_node_index], xdot) + \
-    #                         self.u(t)[terminal_node_index]
-    #             else:
-    #                 if linearized:
-    #                     return dot(self.G(xdcop)[terminal_node_index], x) + \
-    #                         self.u(t, analysis = 'ac')[terminal_node_index]
-
-    #                 else:
-    #                     return self.i(x)[terminal_node_index] + \
-    #                         self.u(t)[terminal_node_index]
-
-    #     else:
-    #         branch = branch_or_term
-    #         sign = 1
-
-    #     branchindex = self.get_branch_index(branch)
-
-    #     if refnode_removed:
-    #         branchindex -= 1
-
-    #     return sign * x[branchindex]      
-
-
+        *noden*
+          Node object or node reference in text format of negative node
+        """
+        raise NotImplementedError()
+    
 class MNA(NA):
     """Modified nodal analysis"""
+    def setup(self):
+        if self.circuitdirty:
+            self.setup_circuit()
+            self.create_matrices()
+            self.generate_eval_iqu_and_der()
+            self.circuitdirty = False
+ 
+        ## Set up Gconstant
+        self.setup_GCconst()
 
-    def __init__(self, cir, toolkit=numeric, refnode=circuit.gnd):
-        super(MNA, self).__init__(cir, refnode=refnode, toolkit=toolkit)
+        ## Only evaluate non-linear branches and sources
+        ## as all linear non-source branches are already evaluated in
+        ## Gconst and Cconst            
+        branchfilter = lambda branch: not branch.linear or 'u' in branch.output
+        self.setup_branch_mapping(branchfilter)
 
+        ## Now everything is set up
+        self.dirty = False
+
+    def setup_circuit(self):
+        """Set up circuit related attributes"""
         ## Find mapping between circuit node indices and x index
         if self.refnode is not None:
-            self.node_index_to_x_index = range(self.refnode_index) + [None] + \
-                range(self.refnode_index, len(self.cir.nodes)-1)
-            self.n  = len(self.cir.nodes) - 1
+            self.nodes = [node for node in self.cir.nodes 
+                          if node is not self.refnode]
         else:
-            self.node_index_to_x_index = range(self.cir.nodes)        
-            self.n  = len(self.cir.nodes)
+            self.nodes = self.cir.nodes
 
         ## Find all potential branches and mapping to the x-vector
         self.potentialbranch_x_map = {}
-        for i, branchinfo in enumerate(self.cir.xflatbranchmap(potential=True)):
-            instname, inst, branch, nodemap = branchinfo
+        self.potentialbranches = []
+        n_nodes = len(self.nodes)
+        branches = self.cir.xflatbranches(potential=True)
+        for i, branch in enumerate(branches):
+            self.potentialbranch_x_map[branch] = i + n_nodes
+            self.potentialbranches.append(branch)
 
-            key = (instname, branch)
-            self.potentialbranch_x_map[key] = i + self.n
+        self.n = n_nodes + len(self.potentialbranch_x_map)
 
-        self.n += len(self.potentialbranch_x_map)
+    def describe_x_vector(self, ):
+        """Describe what quantities the elements of the x-vector represents
 
-        ## Create matrices
-        self.create_matrices()
- 
-        ## Set up Gconstant
-        self.setup_Gconst()
+        >>> from elements import *
+        >>> import numpy as np
+        >>> c = SubCircuit()
+        >>> c['VS'] = VS(1, gnd, v=1e-3)
+        >>> c['R'] = R(1, gnd, r=1e3)
+        >>> na = MNA(c, refnode=gnd, toolkit=symbolic)
+        >>> na.describe_state_vector()
+        [V(1), I(VS)]
+
+        """
+        return [Quantity('V', node)   for node in self.nodes] + \
+               [Quantity('I', branch) for branch in self.potentialbranches]
+
+    def describe_i_vector(self):
+        """Describe what quantities the elements of the i-vector represents"""
+
+        return [Quantity('I', node)   for node in self.nodes] + \
+               [Quantity('V', branch) for branch in self.potentialbranches]
+
+    def get_node_index(self, node, instname=None):
+        """Return index to node voltage in solution vector of node"""
+
+        node = circuit.makenode(node)
+
+        if instname is not None:
+            node = self.cir.get_node(circuit.instjoin(instname, node.name))
+
+        if node == self.refnode:
+            return None
+        elif node in self.nodes:
+            return self.nodes.index(node)
+        else:
+            raise ValueError('Node %s is not in MNA node list (%s)'%
+                             (str(node), str(self.nodes)))
+
+    def set_out_vector_branch(self, outtype, instname, branch, value):
+        """Add to i, q or u vector elements that corresponds to given branch
         
-        self.setup_branch_mapping()
+        This function is used by some analyses to set stimulus without changing the circuit
 
-    def map_branch_input(self, instname, inst, branch, nodemap):
-        if not branch.potential:
-            return (self.node_index_to_x_index[nodemap[0]],
-                    self.node_index_to_x_index[nodemap[1]])
+        if instance name is given and branch is set to None the first branch of that
+        instance will be used.
+        """
+        if instname is None:
+            inst = self.cir
         else:
-            return self.potentialbranch_x_map[(instname, branch)], None
+            inst = self.cir[instname]
+        
 
-    def map_branch_output(self, instname, inst, branch, nodemap):
-        if not branch.potential:
-            return (self.node_index_to_x_index[nodemap[0]],
-                    self.node_index_to_x_index[nodemap[1]])
+        if branch is None:
+            branch = inst.branches[0]
+
+        out = self.outvectors[outtype]
+
+        if branch.potential:
+            index = self.potentialbranch_x_map[branch]
+            out[index] += value
         else:
-            return self.potentialbranch_x_map[(instname, branch)], None
+            indexp, indexn = (self.get_node_index(branch.plus, instname),
+                              self.get_node_index(branch.minus, instname))
 
-    def setup_Gconst(self):
+            if indexp is not None:
+                out[indexp] += value
+            if indexn is not None:
+                out[indexn] += value
+
+    def extract_v(self, x, nodep, noden=None):
+        """Extract voltage between nodep and noden from the given x-vector.
+
+        If noden is not given the voltage is taken between nodep and refnode. 
+
+        *x*
+          Solution vector
+
+        *nodep*
+          Node object or node reference in text format of positive node
+
+        *noden*
+          Node object or node reference in text format of negative node
+
+        >>> from elements import *
+        >>> import numpy as np
+        >>> c = SubCircuit()
+        >>> n1, n2 = c.add_nodes('n1','n2')
+        >>> c['R1'] = R(n1, n2, r=1e3)
+        >>> c['R2'] = R(n2, gnd, r=1e3)
+        >>> mna = MNA(cir)
+        >>> mna.extract_v(np.array([1.0, 0.5, 0.0]), 'n1', 'n2')
+        0.5
+        >>> mna.extract_v(np.array([1.0, 0.5, 0.0]), c.nodes[0])
+        1.0
+        
+        """
+        v = []
+        for node in nodep, noden:
+            if node is None:
+                node = self.refnode
+
+            index = self.get_node_index(node)
+
+            if index is None: ## When node == refnode
+                v.append(0)
+            else:
+                v.append(x[index])
+
+        return v[0] - v[1]
+
+    def extract_i(self, x, branch_or_term, xdot = None):
+        """Extract branch or terminal current from the given x-vector.
+
+        *branch_or_term*
+           Branch object or terminal name
+
+        *xdot*
+           dx/dt vector. this is needed if dx/dt is non-zero and there is no branch defined 
+           at the terminal
+
+        >>> from elements import *
+        >>> import numpy as np
+        >>> c = SubCircuit()
+        >>> net1 = c.add_node('net1')
+        >>> c['vs'] = VS(net1, gnd)
+        >>> c.extract_i(np.array([1.0, -1e-3]), 'vs.minus')
+        0.001
+        
+        """
+        dot = self.toolkit.dot
+        
+        if type(branch_or_term) is types.StringType:
+            ## Calculate current going in to the terminal as
+            ## self.i(x)[terminal_node] + u(t) + dq(x)/dt. 
+            ## This will work since i(x) returns
+            ## the sum of all the currents going out from the
+            ## terminal node that originates from devices within
+            ## the circuit. According to Kirchoff's current law
+            ## of the terminal node
+            ## -I_external + sum(I_internal_k) = 0
+            ## Where I_external represents the current coming from
+            ## outside the circuit going *in* to the terminal node,
+            ## I_internal_k represents one of the currents that flows
+            ## from the terminal node to a device within the circuit.
+            ## So now we can calculate I_external as 
+            ## I_external = sum(I_internal_k) = 
+            ## self.I(x)[terminal_node] + u(t) + dq(x)/dt =
+            ## self.I(x)[terminal_node] + u(t) + sum(dq(x)/dx_k * dx_k/dt) =
+            ## self.I(x)[terminal_node] + u(t) + C(x) * dx/dt
+
+            branch_sign = self.cir.get_terminal_branch(branch_or_term)
+            
+            if branch_sign is not None:
+                branch, sign = branch_sign
+            else:
+                raise ValueError('Current not saved. Use circuit.save_current')
+
+                terminal_node = self.cir.get_node(branch_or_term)
+                
+                terminal_node_index = self.get_node_index(terminal_node)
+
+                if xdot is not None:
+                    if linearized:
+                        return dot(self.G[terminal_node_index], x) + \
+                            dot(self.C[terminal_node_index], xdot) + \
+                            self.u[terminal_node_index]
+
+                    else:
+                        return self.i[terminal_node_index] + \
+                            dot(self.C[terminal_node_index], xdot) + \
+                            self.u[terminal_node_index]
+                else:
+                    if linearized:
+                        return dot(self.G[terminal_node_index], x) + \
+                            self.u[terminal_node_index]
+
+                    else:
+                        return self.i[terminal_node_index] + \
+                            self.u[terminal_node_index]
+
+        else:
+            branch = branch_or_term
+            sign = 1
+
+        branchindex = self.potentialbranch_x_map[branch] 
+
+        return sign * x[branchindex]      
+
+    def map_branch_input(self, branchref):
+        if not branchref.potential:
+            return (self.get_node_index(branchref.plus,  branchref.instname),
+                    self.get_node_index(branchref.minus, branchref.instname))
+        else:
+            return self.potentialbranch_x_map[branchref], None
+
+    def map_branch_output(self, branchref):
+        if not branchref.potential:
+            return (self.get_node_index(branchref.plus,  branchref.instname),
+                    self.get_node_index(branchref.minus, branchref.instname))
+        else:
+            return self.potentialbranch_x_map[branchref], None
+
+    def setup_GCconst(self):
+        super(MNA, self).setup_GCconst()
         ## Add gyrators for all potential branches
         ## KCL:
         ## i(branch.plus)  = i(branch)
         ## i(branch.minus) = i(branch)
         ## KVL:
         ## v(branch.plus) - v(branch.minus) = 0
-        for i, branchinfo in enumerate(self.cir.xflatbranchmap()):
-            instname, inst, branch, nodemap = branchinfo
-
+        for i, branch in enumerate(self.cir.xflatbranches()):
             if branch.potential:
                 ## Find indices to plus and minus nodes and branch current
-                i_x_plus  = self.node_index_to_x_index[nodemap[0]] 
-                i_x_minus = self.node_index_to_x_index[nodemap[1]] 
-                i_x_branch = self.potentialbranch_x_map[(instname, branch)]
+                i_x_plus  = self.get_node_index(branch.plus,  branch.instname)
+                i_x_minus = self.get_node_index(branch.minus, branch.instname)
+                i_x_branch = self.potentialbranch_x_map[branch]
 
                 ## KCL
                 if i_x_plus is not None:
@@ -284,13 +360,14 @@ class MNA(NA):
                 if i_x_minus is not None:
                     self.Gconst[i_x_minus, i_x_branch] -= 1
                 ## KVL
+                ## -V(branch) + i(x) + dq/dt(i(x0) + u(t) = 0
                 if i_x_plus is not None:
-                    self.Gconst[i_x_branch, i_x_plus]  += 1
+                    self.Gconst[i_x_branch, i_x_plus]  -= 1
                 if i_x_minus is not None:
-                    self.Gconst[i_x_branch, i_x_minus] -= 1
+                    self.Gconst[i_x_branch, i_x_minus] += 1
             
 
-    def setup_branch_mapping(self):
+    def setup_branch_mapping(self, branchfilter=None):
         ## Set up mapping between global x-vector and inputs of all input branches.
         ##
         ## Branch inputs are potentials for flow branches and
@@ -340,29 +417,26 @@ class MNA(NA):
         branch_input_sizes      = []
         branch_output_sizes     = []
         jacobian_sizes          = []
-        for (instname, inst), instbranchmaps in groupby(self.cir.xflatbranchmap(), 
-                                                        lambda x: x[0:2]):
+
+        ## Iterate over all branches
+        branches = self.cir.xflatbranches(branchfilter=branchfilter)
+        for (instname, inst), branchrefs in groupby(branches, 
+                                                    lambda b: (b.instname, b.inst)):
             ## Generate list from iterator
-            instbranchmaps = list(instbranchmaps)
+            branchrefs = list(branchrefs)
 
             ## Save instances
             instances.append(inst)
 
-            ## Extract branches and mapping for each instance
-            branches   = [branch          
-                          for iname, inst, branch, mapping in instbranchmaps]
-            branchmaps = dict([(branch, mapping)
-                               for iname, inst, branch, mapping in instbranchmaps])
-
             ## Categorize branches in input and output branches
             inbranches =  [branch 
-                           for branch in branches if branch.input]
+                           for branch in branchrefs if branch.input]
             outbranches = [[branch 
-                            for branch in branches if 'i' in branch.output],
+                            for branch in branchrefs if 'i' in branch.output],
                            [branch 
-                            for branch in branches if 'q' in branch.output],
+                            for branch in branchrefs if 'q' in branch.output],
                            [branch 
-                            for branch in branches if 'u' in branch.output]]
+                            for branch in branchrefs if 'u' in branch.output]]
 
             ## Calculate sizes of instance slices of branch input and output vectors
             branch_output_size = sum(map(len, outbranches))
@@ -372,8 +446,7 @@ class MNA(NA):
 
             ## Calculate mapping for branch inputs
             for branch in inbranches:
-                ixp, ixn = self.map_branch_input(instname, inst, branch, 
-                                                 branchmaps[branch])
+                ixp, ixn = self.map_branch_input(branch)
                 if ixp is not None:
                     self.ix_branch_p.append(inputbranch_counter)
                     self.ix_p.append(ixp)
@@ -388,9 +461,7 @@ class MNA(NA):
             ## output i, q, u vectors and jacobians G, C matrices
             for out_type in I, Q, U:
                 for branch in outbranches[out_type]:
-                    ioutp, ioutn = self.map_branch_output(instname, inst, 
-                                                          branch, 
-                                                          branchmaps[branch])
+                    ioutp, ioutn = self.map_branch_output(branch)
                     ## Set up mapping index vectors between branches and i,q,u
                     if ioutp is not None:
                         self.out_branch_index_p[out_type].append(out_branch_counter)
@@ -402,10 +473,8 @@ class MNA(NA):
                     ## Set up mapping index vectors between branches and G, C
                     if out_type in (I,Q):
                         for inbranch in inbranches:
-                            nodemap = branchmaps[inbranch]
-                            ixp, ixn = self.map_branch_input(instname,inst,
-                                                             inbranch,
-                                                             nodemap)
+                            ixp, ixn = self.map_branch_input(inbranch)
+
                             if ioutp is not None and ixp is not None:
                                 self.jacobian_index_p1[out_type].append((ioutp, ixp))
                                 self.jacobian_branch_index_p1[out_type].append(jacobian_branch_counter)
@@ -440,21 +509,30 @@ class MNA(NA):
                                    x_branch_slices,
                                    iqu_slices, 
                                    jacobian_slices)
-
     def update(self, x, epar, static=True, dynamic=True, jacobians=True, noise=False):
+        if self.dirty:
+            self.setup()
+
         ## Init output vectors and matrices
-        self.i[:] = self.toolkit.dot(self.Gconst, x)
-        self.q[:] = 0
+        if x is not None and x is not self.x:
+            self.x[:] = x
+        self.i[:] = self.toolkit.dot(self.Gconst, self.x)
+        self.q[:] = self.toolkit.dot(self.Cconst, self.x)
+        self.u[:] = 0
         
         if jacobians:
-            self.G[:,:] = self.Gconst[:,:]
-            self.C[:,:] = 0
+            self.G = self.Gconst.copy()
+            ## the jacobians vector needs to be updated beause G is a new object
+            self.jacobians[I] = self.G
+            self.C = self.Cconst.copy()
+            ## the jacobians vector needs to be updated beause C is a new object
+            self.jacobians[Q] = self.C
 
         ## Update input potentials of flow branches
         x_branch                    = self.x_branch
         x_branch[self.ix_branch_n]  =  0
-        x_branch[self.ix_branch_p]  =  x[self.ix_p]
-        x_branch[self.ix_branch_n]  -= x[self.ix_n]
+        x_branch[self.ix_branch_p]  =  self.x[self.ix_p]
+        x_branch[self.ix_branch_n]  -= self.x[self.ix_n]
         
         ## Evaluate circuit
         if dynamic:
@@ -503,7 +581,7 @@ class MNA(NA):
                                  self.jacobian_branch_index_n2[out_type])
 
     def generate_eval_iqu_and_der(self):
-        for inst in self.cir.xflatelements:
+        for instname, inst in self.cir.xflatinstances():
             if not hasattr(inst, 'eval_iqu_and_der_func'):
                 self.toolkit.generate_eval_iqu_and_der(inst)
 

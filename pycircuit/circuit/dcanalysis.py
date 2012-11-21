@@ -4,6 +4,8 @@ import numpy as np
 
 from analysis import *
 
+from na import MNA
+
 class DC(Analysis):
     """DC analyis class
     
@@ -55,21 +57,43 @@ class DC(Analysis):
                             default=defaultepar)
                   ]
 
-    def __init__(self, cir, toolkit=None, refnode=gnd, **kvargs):
+    def __init__(self, cir, refnode=gnd, toolkit=None, **kvargs):
         self.parameters = super(DC, self).parameters + self.parameters
         super(DC, self).__init__(cir, toolkit=toolkit, **kvargs)
-        
-        self.irefnode = self.cir.get_node_index(refnode)
+
+        self.refnode = refnode
+
+        self.epar.analysis = 'dc'
         
     def solve(self):
-        ## Refer the voltages to the reference node by removing
-        ## the rows and columns that corresponds to this node
+        ## Set up tolerances
+        self.na = MNA(self.cir, toolkit=self.toolkit, refnode=self.refnode)
+        self.na.setup()
 
+        self.abstol = []
+        self.xtol   = []
+        for x_quantity, i_quantity in zip(self.na.describe_x_vector(),
+                                          self.na.describe_i_vector()):
+            if x_quantity.is_v:
+                self.xtol.append(self.par.vabstol)
+            elif x_quantity.is_i:
+                self.xtol.append(self.par.iabstol)
+            else:
+                raise ValueError('Unknown quantity %s' % quantity.quantity)
+
+            if i_quantity.is_v:
+                self.abstol.append(self.par.vabstol)
+            elif i_quantity.is_i:
+                self.abstol.append(self.par.iabstol)
+            else:
+                raise ValueError('Unknown quantity %s' % quantity.quantity)
+        
+        ## Set up convergence helpers
         convergence_helpers = [self._simple, self._homotopy_gmin, 
                                self._homotopy_source, 
                                None]
 
-        x0 = self.toolkit.zeros(self.cir.n) # Would be good with a better initial guess
+        x0 = self.toolkit.zeros(self.na.n) # Would be good with a better initial guess
 
         for algorithm in convergence_helpers:
             if algorithm == None:
@@ -84,14 +108,15 @@ class DC(Analysis):
                 else:
                     break
 
-        self.result = CircuitResult(self.cir, x)
+        self.result = CircuitResult(self.na, x)
 
         return self.result
 
     def _simple(self, x0):
         """Simple Newton's method"""
         def func(x):
-            return self.cir.i(x) + self.cir.u(0,analysis='dc'), self.cir.G(x)
+            self.na.update(x, self.epar)
+            return self.na.i + self.na.u, self.na.G.todense()
 
         return self._newton(func, x0)
 
@@ -104,8 +129,8 @@ class DC(Analysis):
             Ggmin[0:n_nodes, 0:n_nodes] = gmin * self.toolkit.eye(n_nodes)
 
             def func(x):
-                return self.cir.i(x) + self.cir.u(0,analysis='dc'), \
-                       self.cir.G(x) + Ggmin
+                self.na.update(x, self.epar)
+                return self.na.i + self.na.u, self.na.G + Ggmin
 
             x, x0 = self._newton(func, x0), x
 
@@ -124,22 +149,12 @@ class DC(Analysis):
         return x
 
     def _newton(self, func, x0):
-        ones_nodes = self.toolkit.ones(len(self.cir.nodes))
-        ones_branches = self.toolkit.ones(len(self.cir.branches))
-
-        abstol = self.toolkit.concatenate((self.par.iabstol * ones_nodes,
-                                 self.par.vabstol * ones_branches))
-        xtol = self.toolkit.concatenate((self.par.vabstol * ones_nodes,
-                                 self.par.iabstol * ones_branches))
-
-        (x0, abstol, xtol) = remove_row_col((x0, abstol, xtol), self.irefnode, self.toolkit)
-
         try:
-            result = fsolve(refnode_removed(func, self.irefnode,self.toolkit), 
+            result = fsolve(func,
                             x0, 
                             full_output = True, 
                             reltol = self.par.reltol,
-                            abstol = abstol, xtol=xtol,
+                            abstol = self.abstol, xtol=self.xtol,
                             maxiter = self.par.maxiter,
                             toolkit = self.toolkit)
         except self.toolkit.linearsolverError(), e:
@@ -150,15 +165,7 @@ class DC(Analysis):
         if ier != 1:
             raise NoConvergenceError(mesg)
 
-        # Insert reference node voltage
-        return self.toolkit.concatenate((x[:self.irefnode], self.toolkit.array([0.0]), x[self.irefnode:]))
-
-def refnode_removed(func, irefnode,toolkit):
-    def new(x, *args, **kvargs):
-        newx = toolkit.concatenate((x[:irefnode], toolkit.array([0.0]), x[irefnode:]))
-        f, J = func(newx, *args, **kvargs)
-        return remove_row_col((f, J), irefnode, toolkit)
-    return new
+        return x
 
 if __name__ == "__main__":
     import doctest

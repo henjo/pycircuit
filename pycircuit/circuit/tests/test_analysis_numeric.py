@@ -9,6 +9,7 @@ import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 from test_circuit import create_current_divider
 import unittest
+from .. import theanotk
 
 def test_integer_component_values():
     """Test dc analysis with integer component values
@@ -16,18 +17,21 @@ def test_integer_component_values():
        As python per default uses integer arithmetics integer
        component values can lead to problems. (Python < 3.0)
     """
-    pycircuit.circuit.circuit.default_toolkit = numeric
-    c = SubCircuit(toolkit=numeric)
+    c = SubCircuit()
 
     c['vs'] = VS('net1', gnd, v = 9)
-    c['R1'] = R( 'net1',  'net2', r = 50)
+    c['R1'] = R( 'net1', 'net2', r = 50)
     c['R2'] = R( 'net2', gnd, r = 50)
 
-    dc = DC(c)
+    c = c.save_current('R1.plus')
+    c = c.save_current('R2.plus')
+
+    dc = DC(c, toolkit=theanotk)
     res = dc.solve()
     
     assert_equal(res.v('net2'), 4.5)
 
+    assert_equal(res.i('R1.plus'), 0.09)
     assert_equal(res.i('R2.plus'), 0.09)
 
 def TODOtest_noise_dc_steady_state():
@@ -43,11 +47,9 @@ def test_noise_with_frequency_vector():
     pycircuit.circuit.circuit.default_toolkit = numeric
     c = SubCircuit(toolkit=numeric)
 
-    n1,n2 = c.add_nodes('net1', 'net2')
-
-    c['vs'] = VS(n1, gnd, v = 9.)
-    c['R1'] = R( n1,  n2, r = 50.)
-    c['R2'] = R( n2, gnd, r = 50.)
+    c['vs'] = VS(1, gnd, v = 9.)
+    c['R1'] = R(1,  2,   r = 50.)
+    c['R2'] = R(2,  gnd, r = 50.)
     
     noise = Noise(c, inputsrc='vs', outputnodes=(n2, gnd))
     should = np.array([noise.solve(0)['Svnout'],noise.solve(1)['Svnout']])

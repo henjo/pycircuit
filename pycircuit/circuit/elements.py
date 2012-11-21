@@ -110,7 +110,7 @@ class C(Circuit):
 
     def eval_iqu(self, x, epar):
         branch_v = x[0]
-        q = self.ipar.c * branch_v
+        q = self.iparv.c * branch_v
         return q,
 
 class L(Circuit):
@@ -128,7 +128,7 @@ class L(Circuit):
 
     def eval_iqu(self, x, epar):
         branch_i = x[0]
-        q = -self.ipar.L * branch_i
+        q = self.iparv.L * branch_i
         return q,
 
 class VS(Circuit):
@@ -159,11 +159,9 @@ class VS(Circuit):
     def eval_iqu(self, x, epar):
         if epar.analysis == 'ac':
             phase = self.iparv.phase * self.toolkit.pi / 180
-            vac = self.iparv.vac * self.toolkit.exp(1j*phase)
-            return -vac,
+            return self.iparv.vac * self.toolkit.exp(1j*phase),
         elif epar.analysis in timedomain_analyses:
-            v = self.iparv.v + self.function.f(t)
-            return -v,
+            return self.iparv.v + self.function.f(epar.t),
         else:
             return 0,
 
@@ -218,6 +216,7 @@ class IS(Circuit):
     array([ 1.,  0.])
 
     """
+    branches = (BranchI(Node('plus'), Node('minus'), output='u'),)
     instparams = [Parameter(name='i', desc='DC Current', 
                             unit='A', default=1e-3),
                   Parameter(name='iac', desc='AC analysis current amplitude', 
@@ -230,16 +229,14 @@ class IS(Circuit):
     terminals = ('plus', 'minus')
     function = func.TimeFunction()
 
-    def u(self, t=0.0, epar=defaultepar, analysis=None):
-        if analysis == 'ac':
+    def eval_iqu(self, x, epar):
+        if epar.analysis == 'ac':
             phase = self.iparv.phase * self.toolkit.pi / 180.            
-            iac = self.iparv.iac * self.toolkit.exp(1j*phase)
-            return self.toolkit.array([iac, -iac])
-        elif analysis in timedomain_analyses:
-            i = self.iparv.i + self.function.f(t)
-            return self.toolkit.array([i, -i])
+            return self.iparv.iac * self.toolkit.exp(1j*phase),
+        elif epar.analysis in timedomain_analyses:
+            return self.iparv.i + self.function.f(epar.t),
         else:
-            return self.toolkit.array([0, 0])
+            return 0,
 
     def CY(self, x, w, epar=defaultepar):
         return  self.toolkit.array([[self.iparv.noisePSD, -self.iparv.noisePSD],
@@ -332,26 +329,12 @@ class VCVS(Circuit):
                             default=1)]
 
     terminals = ('inp', 'inn', 'outp', 'outn')
-    branches = (Branch(Node('outp'), Node('outn')),)
+    branches = ( Branch( Node('inp'),  Node('inn'),  input=True),
+                 BranchV(Node('outp'), Node('outn'), output='x') )
                
-    def update(self, subject):
-        n = self.n
-        G = self.toolkit.zeros((n,n))
-        branchindex = -1 ## add last in matrix
-        inpindex, innindex, outpindex, outnindex = \
-            (self.nodes.index(self.nodenames[name])
-             for name in self.terminals)
-
-        G[outpindex, branchindex] += 1
-        G[outnindex, branchindex] += -1
-        G[branchindex, outpindex] += -1
-        G[branchindex, outnindex] += 1
-        G[branchindex, inpindex] += self.iparv.g
-        G[branchindex, innindex] += -self.iparv.g                       
-        self._G = G
-
-    def G(self, x, epar=defaultepar): return self._G
-
+    def eval_iqu(self, x, epar):
+        inbranch_v = x[0]
+        return self.iparv.g * inbranch_v,
 
 class SVCVS(Circuit):
     """Voltage controlled voltage source with frequency dependent transfer
@@ -502,23 +485,14 @@ class VCCS(Circuit):
 
     """
     terminals = ('inp', 'inn', 'outp', 'outn')
+    branches = ( Branch( Node('inp'),  Node('inn'),  input=True),
+                 BranchI(Node('outp'), Node('outn'), output='x') )
     instparams = [Parameter(name='gm', desc='Transconductance', 
                             unit='A/V', default=1e-3)]
     
-    def update(self, subject):
-        n = self.n
-        G = self.toolkit.zeros((n,n))
-        gm=self.iparv.gm
-        inpindex, innindex, outpindex, outnindex = \
-            (self.nodes.index(self.nodenames[name]) 
-             for name in ('inp', 'inn', 'outp', 'outn'))
-        G[outpindex, inpindex] += gm
-        G[outpindex, innindex] += -gm
-        G[outnindex, inpindex] += -gm
-        G[outnindex, innindex] += gm
-        self._G = G
-
-    def G(self, x, epar=defaultepar): return self._G
+    def eval_iqu(self, x, epar):
+        inbranch_v = x[0]
+        return self.iparv.gm * inbranch_v,
 
 class Nullor(Circuit):
     """Nullor
@@ -646,25 +620,16 @@ class Diode(Circuit):
     """ Nonlinear diode
     """
     terminals = ('plus', 'minus')
+    branches = (BranchI(Node('plus'), Node('minus'), input=True, output='i', 
+                        linear=False),)
     instparams = [Parameter(name='IS', desc='Saturation current', 
                   unit='A', default=1e-13)]
     linear = False
-    def G(self, x, epar=defaultepar):
-        VD = x[0]-x[1]
-
+    
+    def eval_iqu(self, x, epar):
+        VD = x[0]
         VT = self.toolkit.kboltzmann * epar.T / self.toolkit.qelectron
-        g = self.iparv.IS * self.toolkit.exp(VD/VT) / VT
-        return self.toolkit.array([[g, -g],
-                                   [-g, g]])
-
-    def i(self, x, epar=defaultepar):
-        """
-        
-        """
-        VD = x[0]-x[1]
-        VT = self.toolkit.kboltzmann * epar.T / self.toolkit.qelectron
-        I = self.iparv.IS * (self.toolkit.exp(VD/VT)-1)
-        return self.toolkit.array([I, -I])
+        return self.iparv.IS * (self.toolkit.exp(VD/VT)-1),
 
 class VCVS_limited(Circuit):
     """Voltage controlled voltage source with limited output voltage.

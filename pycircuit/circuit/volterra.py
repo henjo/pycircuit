@@ -119,7 +119,7 @@ class Volterra(Analysis):
         xac = ac.solve(freqs = Symbol('s'), refnode = refnode, complexfreq = True)
 
         ## Find non-linear elements
-        nlelements = [e for e in self.c.xflatelements if not e.linear]
+        nlelements = [e for instname, e in self.c.xflatinstances() if not e.linear]
         print self.c.n, nlelements
 #        print K(self.c, x, [2, 0]), nlelements
 

@@ -20,17 +20,18 @@ def test_symbolic_ac():
     var('v0 R1 C1 s')
 
     cir['R1'] = R(1, 2, r=R1)
-    cir['R2'] = C(2, gnd, c=C1)
+    cir['C1'] = C(2, gnd, c=C1)
     cir['VS'] = VS(1, gnd, vac=v0)
 
-    res = AC(cir, toolkit = symbolic).solve(freqs = s, complexfreq=True)
-    assert_equal(simplify(res.v(2,gnd)-v0/(1+s*R1*C1)), 0)
+    ac = AC(cir, toolkit = symbolic)
+    res = ac.solve(freqs = s, complexfreq=True)
+    assert_equal(simplify(res.v(2)-v0/(1+s*R1*C1)), 0)
 
 def test_symbolic_noise_vin_vout():
     pycircuit.circuit.circuit.default_toolkit = symbolic
     c = SubCircuit()
 
-    var('R1 R2 V', real=True, positive=True)
+    var('R1 R2 V s', real=True, positive=True)
 
     c['vs'] = VS(1, gnd, vac=V)
     c['R1'] = R(1, 2, r=R1)

@@ -2,6 +2,10 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
+from copy import copy
+import numeric
+import types
+
 from pycircuit import sim
 from pycircuit.utilities import Parameter, ParameterDict, isiterable
 from pycircuit.circuit import Circuit, SubCircuit, VS,IS,R,C,L,Diode, gnd, \
@@ -11,9 +15,7 @@ import symbolic
 from pycircuit.post.waveform import Waveform
 from pycircuit.post.result import IVResultDict
 from pycircuit.post.internalresult import InternalResultDict
-from copy import copy
-import numeric
-import types
+from .na import MNA, U
 
 class NoConvergenceError(Exception):
     pass
@@ -23,14 +25,12 @@ class SingularMatrix(Exception):
 
 class CircuitResult(IVResultDict, InternalResultDict):
     """Result class for analyses that returns voltages and currents"""
-    def __init__(self, circuit, x, xdot = None, 
+    def __init__(self, na, x, xdot = None, 
                  sweep_values=[], sweep_label='', sweep_unit=''):
         super(CircuitResult, self).__init__()
 
-        nodes = circuit.nodes
-
-        self.circuit = circuit
-        self.x = x
+        self.na = na
+        self.x  = x
         self.xdot = xdot
         self.sweep_values = sweep_values
         self.sweep_label = sweep_label
@@ -46,7 +46,7 @@ class CircuitResult(IVResultDict, InternalResultDict):
             return result
 
     def v(self, plus, minus=None):
-        result = self.circuit.extract_v(self.x, plus, minus)
+        result = self.na.extract_v(self.x, plus, minus)
 
         if minus != None:
             ylabel = 'v(%s,%s)'%(str(plus), str(minus))
@@ -57,7 +57,7 @@ class CircuitResult(IVResultDict, InternalResultDict):
 
     def i(self, term):
         """Return terminal current i(term)"""
-        result = self.circuit.extract_i(self.x, term, xdot = self.xdot)    
+        result = self.na.extract_i(self.x, term, xdot = self.xdot)    
         return self.build_waveform(result, 'i(%s)'%(str(term)), 'A')
 
 def remove_row_col(matrices, n, toolkit):
@@ -72,7 +72,8 @@ class Analysis(sim.Analysis):
     parameters = [Parameter(name='analysis', desc='Analysis name', 
                             default=None),
                   Parameter(name='epar', desc='Environment parameters',
-                            default=defaultepar)]
+                            default=defaultepar)
+                  ]
 
     def __init__(self, cir, toolkit=None, **kvargs):
         
@@ -92,10 +93,13 @@ class Analysis(sim.Analysis):
         if hasattr(toolkit, 'setup_analysis'):
             toolkit.setup_analysis(epar)
 
-        self.cir = cir
+        self.cir    = cir
         self.result = None
-        self.epar = epar
+        self.epar   = epar
 
+        ## Create node-analysis object
+        self.na     = MNA(cir, toolkit=toolkit)
+ 
 def fsolve(f, x0, args=(), full_output=False, maxiter=200,
            xtol=1e-6, reltol=1e-4, abstol=1e-12, toolkit='Numeric'):
     """Solve a multidimensional non-linear equation with Newton-Raphson's method

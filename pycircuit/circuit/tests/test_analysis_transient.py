@@ -11,7 +11,7 @@ from math import floor
 import numpy as np
 import unittest
 
-from pycircuit.circuit import Circuit, defaultepar
+from pycircuit.circuit import Circuit, MNA, defaultepar, theanotk
 from pycircuit.utilities.param import Parameter
 
 class myC(Circuit):
@@ -86,14 +86,13 @@ def test_transient_RLC():
     """Test of transient simulation of RLC-circuit
     """
     
-    circuit.default_toolkit = circuit.numeric
-    c = SubCircuit()
+    c = SubCircuit(toolkit=theanotk)
     
-    c['VSin'] = VSin(gnd, 1, va=10, freq=50e3)
+    c['VSin'] = VSin(gnd, 1, va=10, freq=50e3, toolkit=theanotk)
     c['R1'] = R(1, 2, r=1e6)
     c['C'] = C(2, gnd, c=1e-12)
     #c['L'] = L(2,gnd, L=1e-3)
-    tran_imp = Transient(c)
+    tran_imp = Transient(c, toolkit=theanotk)
     res_imp = tran_imp.solve(tend=40e-6,timestep=1e-6)
     expected = 2.58
     assert  abs(res_imp.v(2,gnd)[-1] - expected) < 1e-2*expected,\
@@ -120,16 +119,20 @@ def test_transient_nonlinear_C():
 def test_transient_get_diff():
     """Test of differentiation method
     """
-    circuit.default_toolkit = circuit.numeric
-    c = SubCircuit()
-    c['VSin'] = VSin(gnd, 1, va=10, freq=50e3)
+    c = SubCircuit(toolkit=theanotk)
+    c['VSin'] = VSin(gnd, 1, va=10, freq=50e3, toolkit=theanotk)
     c['R1'] = R(1, 2, r=1e6)
     c['C'] = C(2, gnd, c=1e-12)
-    tran = Transient(c)
+    tran = Transient(c, toolkit=theanotk)
     tran._dt=1e-6
+
+    na = MNA(c, toolkit=theanotk)
     x0=np.ones(c.n)
-    q=c.q(x0)
-    Cmatrix=c.C(x0)
+    na.update(x0, defaultepar)
+
+    q       = na.q
+    Cmatrix = na.C
+
     print tran.parameters
     a,b,b_=tran._method[tran.par.method] 
     tran._qlast=np.zeros((len(a),tran.cir.n))#initialize q-history vector
