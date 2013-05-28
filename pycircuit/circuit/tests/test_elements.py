@@ -108,11 +108,11 @@ def gen_stamps(toolkit=symbolic):
                              [-1,1,N,-N, 0]])
     yield(Transformer(1, gnd, 2, gnd, n = N), GTransformer, np.zeros((5,5)))
 
-    GGyrator = np.array([[  0,  0,  -gm,  gm],
-                      [  0,  0,   gm, -gm],
-                      [  gm, -gm,   0.,  0.],
-                      [ -gm,  gm,   0.,  0.]])
-    yield(Gyrator(1, gnd, 2, gnd, gm = gm), GGyrator, np.zeros((4,4)))
+    GGyrator = np.array([[ 0., 0., 1.,-1.],
+                         [ 0., 0.,-1., 1.],
+                         [-1., 1., 0., 0.],
+                         [ 1.,-1., 0., 0.]])
+    yield(Gyrator(1, gnd, 2, gnd, gm = 1.), GGyrator, np.zeros((4,4)))
     
 
 def gen_stamps_sources(toolkit=symbolic):
@@ -195,7 +195,7 @@ def test_SVCVS_laplace_integrator():
 
     res = AC(cir, toolkit=symbolic).solve(s, complexfreq=True)
 
-    assert_equal(sympy.simplify(res.v(n2,gnd)),sympy.simplify(b0/(a0*s)))
+    assert_equal(sympy.expand(res.v(n2,gnd)),sympy.expand(b0/(a0*s)))
 
 def test_SVCVS_laplace_n1_d2():
     """Test VCCS with a laplace defined transfer function first order numerator
@@ -218,7 +218,7 @@ def test_SVCVS_laplace_n1_d2():
 
     res = AC(cir, toolkit=symbolic).solve(s, complexfreq=True)
 
-    assert_equal(sympy.simplify(res.v(n2,gnd)),b0*s/(a0*s*s+a1*s+a2))
+    assert_equal(sympy.expand(res.v(n2,gnd)),sympy.expand(b0*s/(a0*s*s+a1*s+a2)))
 
 @slow
 def test_SVCVS_laplace_d3_n1():
@@ -244,8 +244,8 @@ def test_SVCVS_laplace_d3_n1():
 
     res = AC(cir, toolkit=symbolic).solve(s, complexfreq=True)
 
-    assert_equal(sympy.simplify(res.v(n2,gnd)),
-                 sympy.simplify((b0*s*s)/(a0*s*s*s+a1*s*s+a2*s+a3)))
+    assert_equal(sympy.cancel(sympy.expand(res.v(n2,gnd))),
+                 sympy.expand((b0*s*s)/(a0*s*s*s+a1*s*s+a2*s+a3)))
 
 def test_Idt_sym():
     """Test integrator element symbolically"""
