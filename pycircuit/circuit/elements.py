@@ -509,6 +509,61 @@ class SVCVS(Circuit):
 
     def C(self, x, epar=defaultepar): return self._C
 
+class CCVS(Circuit):
+    """Current Controlled Voltage Source
+
+    >>> from dcanalysis import DC
+    >>> c = SubCircuit()
+    >>> n1, n2 =c.add_nodes('1', '2')
+    >>> c['is'] = IS(n1, gnd, i=1)
+    >>> c['ccvs'] = CCVS(n1, gnd, n2, gnd, r=1)
+    >>> c.nodes
+    [Node('1'), Node('2'), Node('gnd', isglobal=True)]
+    >>> c.branches
+    [Branch(Node('1'),Node('gnd', isglobal=True)), Branch(Node('2'),Node('gnd', isglobal=True))]
+    >>> c['ccvs'].G(numeric.zeros(6))
+    array([[ 0.,  0.,  0.,  0.,  1.,  0.],
+           [ 0.,  0.,  0.,  0., -1.,  0.],
+           [ 0.,  0.,  0.,  0.,  0.,  1.],
+           [ 0.,  0.,  0.,  0.,  0., -1.],
+           [ 1., -1.,  0.,  0.,  0., -1.],
+           [ 0.,  0.,  1., -1.,  0.,  0.]])
+
+
+    """
+    instparams = [Parameter(name='r', desc='Transresistance',unit='V/I', 
+                            default=1)]
+
+    terminals = ('inp', 'inn', 'outp', 'outn')
+    branches = (Branch(Node('inp'), Node('inn')),Branch(Node('outp'), Node('outn')))
+               
+    def update(self, subject):
+        n = self.n
+        G = self.toolkit.zeros((n,n))
+        branchindexK = 5 ## add last in matrix
+        branchindexJ = 4 ## add last in matrix
+        inpindex, innindex, outpindex, outnindex = \
+            (self.nodes.index(self.nodenames[name])
+             for name in self.terminals)
+
+        G[outpindex, branchindexK] += 1
+        G[outnindex, branchindexK] += -1
+        G[branchindexK, outpindex] += 1
+        G[branchindexK, outnindex] += -1
+
+        G[inpindex, branchindexJ] += 1
+        G[innindex, branchindexJ] += -1
+        G[branchindexJ, inpindex] += 1
+        G[branchindexJ, innindex] += -1
+
+
+        G[branchindexJ, branchindexK] += -self.iparv.r
+        self._G = G
+
+    def G(self, x, epar=defaultepar): return self._G
+
+
+
 class VCCS(Circuit):
     """Voltage controlled current source
 
