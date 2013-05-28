@@ -687,10 +687,10 @@ class Gyrator(Circuit):
     >>> n4=c.add_node('4')
     >>> c['Gyrator'] = Gyrator(n1, n2, n3, n4, gm=1)
     >>> c['Gyrator'].G(numeric.zeros(4))
-    array([[  0.,   0.,  1., -1.],
-           [  0.,   0., -1.,  1.],
-           [ -1.,   1.,  0.,  0.],
-           [  1.,  -1.,  0.,  0.]])
+    array([[ 0.,  0.,  1., -1.],
+           [ 0.,  0., -1.,  1.],
+           [-1.,  1.,  0.,  0.],
+           [ 1., -1.,  0.,  0.]])
    """
 
     terminals = ('inp', 'inn', 'outp', 'outn')
@@ -705,15 +705,15 @@ class Gyrator(Circuit):
             (self.nodes.index(self.nodenames[name]) 
              for name in ('inp', 'inn', 'outp', 'outn'))
         # 
-        G[outpindex, inpindex] +=  gm
-        G[outpindex, innindex] += -gm
-        G[outnindex, inpindex] += -gm
-        G[outnindex, innindex] +=  gm
+        G[outpindex, inpindex] += -gm
+        G[outpindex, innindex] +=  gm
+        G[outnindex, inpindex] +=  gm
+        G[outnindex, innindex] += -gm
         #        
-        G[inpindex,  outpindex] += -gm
-        G[innindex,  outpindex] +=  gm
-        G[inpindex,  outnindex] +=  gm
-        G[innindex,  outnindex] += -gm
+        G[inpindex,  outpindex] +=  gm
+        G[inpindex,  outnindex] += -gm
+        G[innindex,  outpindex] += -gm
+        G[innindex,  outnindex] +=  gm
         self._G = G
         
     def G(self, x, epar=defaultepar): return self._G
