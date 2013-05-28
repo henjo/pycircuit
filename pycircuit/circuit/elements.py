@@ -14,13 +14,13 @@ class R(Circuit):
     >>> c['R'] = R(n1, gnd, r=1e3)
     >>> c['R']
     R('plus','minus',r=1000.0,noisy=True)
-    >>> c.G(self.toolkit.zeros(2))
+    >>> c.G(numeric.zeros(2))
     array([[ 0.001, -0.001],
            [-0.001,  0.001]])
     >>> c = SubCircuit()
     >>> n2=c.add_node('2')
     >>> c['R'] = R(n1, n2, r=1e3)
-    >>> c.G(self.toolkit.zeros(2))
+    >>> c.G(numeric.zeros(2))
     array([[ 0.001, -0.001],
            [-0.001,  0.001]])
 
@@ -55,8 +55,8 @@ class G(Circuit):
     >>> n1=c.add_node('1')
     >>> c['G'] = G(n1, gnd, g=1e-3)
     >>> c['G']
-    G('plus','minus',g=0.001,nonoise=False)
-    >>> c.G(self.toolkit.zeros(2))
+    G('plus','minus',g=0.001,noisy=False)
+    >>> c.G(numeric.zeros(2))
     array([[ 0.001, -0.001],
            [-0.001,  0.001]])
     """
@@ -89,12 +89,12 @@ class C(Circuit):
     >>> c = SubCircuit()
     >>> n1=c.add_node('1')
     >>> c['C'] = C(n1, gnd, c=1e-12)
-    >>> c.G(self.toolkit.zeros(2))
+    >>> c.G(numeric.zeros(2))
     array([[ 0.,  0.],
            [ 0.,  0.]])
-    >>> c.C(self.toolkit.zeros(2))
-    array([[  1.0000e-12,  -1.0000e-12],
-           [ -1.0000e-12,   1.0000e-12]])
+    >>> c.C(numeric.zeros(2))
+    array([[  1.00000000e-12,  -1.00000000e-12],
+           [ -1.00000000e-12,   1.00000000e-12]])
 
     """
 
@@ -115,11 +115,11 @@ class L(Circuit):
     >>> c = SubCircuit()
     >>> n1=c.add_node('1')
     >>> c['L'] = L(n1, gnd, L=1e-9)
-    >>> c.G(self.toolkit.zeros(3))
+    >>> c.G(numeric.zeros(3))
     array([[ 0.,  0.,  1.],
            [ 0.,  0., -1.],
            [ 1., -1.,  0.]])
-    >>> c.C(self.toolkit.zeros(3))
+    >>> c.C(numeric.zeros(3))
     array([[  0.0000e+00,   0.0000e+00,   0.0000e+00],
            [  0.0000e+00,   0.0000e+00,   0.0000e+00],
            [  0.0000e+00,   0.0000e+00,  -1.0000e-09]])
@@ -130,14 +130,11 @@ class L(Circuit):
     instparams = [Parameter(name='L', desc='Inductance', 
                             unit='H', default=1e-9)]
 
-    def __init__(self, *args, **kvargs):
-        super(L, self).__init__(*args, **kvargs)
+    def update(self, subject):
+        n = self.n
         self._G = self.toolkit.array([[0 , 0, 1],
                                       [0 , 0, -1],
                                       [1 , -1, 0]])
-
-    def update(self, subject):
-        n = self.n
         C = self.toolkit.zeros((n,n))
         C[-1,-1] = -self.iparv.L
         self._C = C
@@ -339,8 +336,8 @@ class VCVS(Circuit):
     >>> c.nodes
     [Node('1'), Node('2'), Node('gnd', isglobal=True)]
     >>> c.branches
-    [Branch(Node('1'),Node('gnd', isglobal=True)), Branch(Node('2'), Node('gnd', isglobal=True))]
-    >>> c['vcvs'].G(self.toolkit.zeros(4))
+    [Branch(Node('1'),Node('gnd', isglobal=True)), Branch(Node('2'),Node('gnd', isglobal=True))]
+    >>> c['vcvs'].G(numeric.zeros(4))
     array([[ 0.,  0.,  0.,  0.,  0.],
            [ 0.,  0.,  0.,  0.,  0.],
            [ 0.,  0.,  0.,  0.,  1.],
@@ -386,8 +383,8 @@ class SVCVS(Circuit):
     >>> c.nodes
     [Node('1'), Node('2'), Node('gnd', isglobal=True)]
     >>> c.branches
-    [Branch(Node('1'),Node('gnd', isglobal=True)), Branch(Node('2'), Node('gnd', isglobal=True))]
-    >>> c['vcvs'].G(self.toolkit.zeros(4))
+    [Branch(Node('1'),Node('gnd', isglobal=True)), Branch(Node('2'),Node('gnd', isglobal=True))]
+    >>> c['vcvs'].G(numeric.zeros(4))
     array([[ 0.,  0.,  0.,  0.,  0.],
            [ 0.,  0.,  0.,  0.,  0.],
            [ 0.,  0.,  0.,  0.,  1.],
@@ -649,7 +646,7 @@ class Transformer(Circuit):
     [Node('inp'), Node('inn'), Node('outp'), Node('outn')]
     >>> c['vcvs'].branches
     (Branch(Node('outp'),Node('outn')),)
-    >>> c['vcvs'].G(self.toolkit.zeros(4))
+    >>> c['vcvs'].G(numeric.zeros(4))
     array([[ 0.,  0.,  0.,  0.,  2.],
            [ 0.,  0.,  0.,  0., -2.],
            [ 0.,  0.,  0.,  0.,  1.],
@@ -685,8 +682,11 @@ class Gyrator(Circuit):
 
     >>> c = SubCircuit()
     >>> n1=c.add_node('1')
-    >>> c['Gyrator'] = Gyrator(n1, gnd, gm=1)
-    >>> c.G(self.toolkit.zeros(4))
+    >>> n2=c.add_node('2')
+    >>> n3=c.add_node('3')
+    >>> n4=c.add_node('4')
+    >>> c['Gyrator'] = Gyrator(n1, n2, n3, n4, gm=1)
+    >>> c['Gyrator'].G(numeric.zeros(4))
     array([[  0.,   0.,  1., -1.],
            [  0.,   0., -1.,  1.],
            [ -1.,   1.,  0.,  0.],
