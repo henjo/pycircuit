@@ -22,7 +22,7 @@ symbolic = True
 ac_u_dtype = np.object
 
 ## Symbolics for constants
-kboltzmann=sympy.Symbol('k', real=True, positive=True)          # Boltzmann's constant
+kboltzmann=sympy.Symbol('k')          # Boltzmann's constant
 eps0 = sympy.Symbol('eps0')           # Vacuum permittivity
 epsRSi = sympy.Symbol('epsRSi')       # Relative permittivity of Si
 epsRSiO2 = sympy.Symbol('epsRSiO2')   # Relative permittivity of SiO2 
@@ -53,7 +53,7 @@ def cofactor(x, i, j):
 
 def setup_analysis(epar):
     """Code that is run by analyses using this toolkit"""
-    epar['T'] = Parameter('T', default=sympy.Symbol('T', real=True, positive=True))
+    epar.append(Parameter('T', default=sympy.Symbol('T', real=True, positive=True)))
 
 def zeros(shape, dtype=None):
     return np.zeros(shape, dtype=object)
@@ -85,7 +85,7 @@ def dummy_var_matrix(A):
             return sym
         else:
             return 0
-    Aprime = sympy.Matrix(A.rows, A.cols, elem)
+    Aprime = sympy.Matrix(A.lines, A.cols, elem)
     return Aprime, subst_dict
 
 
