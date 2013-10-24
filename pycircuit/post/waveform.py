@@ -54,7 +54,7 @@ class Waveform(object):
 
         self.ragged = (y.dtype == object) and  \
             set([xe.shape for xe in xlist + [y]]) == set([y.shape]) and \
-            y.ndim > 1
+            len(xlist) > 1
         
         dim = len(x)
 
@@ -180,29 +180,20 @@ class Waveform(object):
                  sameunit = False):
         """Apply binary operator between self and a"""
         if isinstance(a, Waveform):
-            assert(reduce(operator.__and__, 
-                          map(lambda x,y: alltrue(x==y), 
-                              self._xlist, a._xlist))), \
-                "x-axes of the arguments must be the same"
-            ay = a._y
-        else:
-            ay = a 
+            if not compatible(self, a):
+                raise ValueError("Waveforms are not compatible")
 
         if reverse:
-            result = op(ay, self._y)
+            return _broadcast_apply(op, (a, self), 
+                                    ylabel=ylabel, yunit=yunit,
+                                    sameunit=sameunit)
         else:
-            result = op(self._y, ay)            
-
-        if sameunit:
-            yunit = yunit or self.yunit
-            ylabel = ylabel or self.ylabel
-
-        return Waveform(self._xlist, result, 
-                        xlabels = self.xlabels, xunits = self.xunits,
-                        ylabel = ylabel, yunit = yunit)
+            return _broadcast_apply(op, (self, a),
+                                    ylabel=ylabel, yunit=yunit,
+                                    sameunit=sameunit)
 
     ## Unary operators
-    def __abs__(self):     
+    def __abs__(self):
         return Waveform(self._xlist, np.abs(self._y), xlabels = self.xlabels, 
                         xunits = self.xunits,
                         ylabel = 'abs(%s)'%self.ylabel, yunit = self.yunit)
@@ -396,8 +387,8 @@ class Waveform(object):
         if outw and not isscalar(outw):
             outw.ylabel = self.ylabel
             outw.yunit = self.yunit
-            outw.xunits = self.xunits
-            outw.xlabels = self.xlabels
+            outw.xunits = remove_index(self.xunits, axis)
+            outw.xlabels = remove_index(self.xlabels, axis)
 
         return outw
 
@@ -411,6 +402,8 @@ class Waveform(object):
         Waveform(array([ 1.5,  2. ,  3. ]), array([ 7.,  6.,  1.]))
         
         """
+        axis = self.getaxis(axis)
+        
         ifrom = self._xlist[axis].searchsorted(xfrom)
 
         if xto:
@@ -571,7 +564,7 @@ class Waveform(object):
 
     def getaxis(self, axis):
         """Look up axis index by name of xlabel names"""
-        if type(axis) is types.StringType:
+        if isinstance(axis, basestring):
             if axis not in self.xlabels:
                 raise Exception('No axis with xlabel %s (%s)'%(axis, str(self.xlabels)))
             return list(self.xlabels).index(axis)
@@ -634,7 +627,7 @@ class Waveform(object):
         else:
             return ''
     def set_yunit(self, s):
-        if type(s) is not types.StringType and s != None:
+        if not isinstance(s, basestring) and s != None:
             raise ValueError('Unit must be a string')
         self._yunit = s
 
@@ -645,7 +638,7 @@ class Waveform(object):
         if labels == None:
             self._xlabels = list(['x%d'%i for i in range(len(self._xlist))])
         else:
-            self._xlabels = self.__checklabels(labels)
+            self._xlabels = self.__checklabels(labels, unique=True)
 
     def get_ylabel(self):
         if self._ylabel != None:
@@ -653,7 +646,7 @@ class Waveform(object):
         else:
             return 'y'
     def set_ylabel(self, s):
-        if type(s) is not types.StringType and s != None:
+        if not isinstance(s, basestring) and s != None:
             raise ValueError('Label must be a string')
         self._ylabel = s
 
@@ -738,6 +731,19 @@ class Waveform(object):
         
         return w
 
+    def reorder_axes(self, neworder):
+        neworder = [self.getaxis(axis) for axis in neworder]
+        
+        result = self
+        
+        curorder = range(self.ndim)
+        for axis in range(self.ndim):
+            if curorder[axis] != neworder[axis]:
+                newpos = curorder.index(neworder[axis])
+                result = result.swapaxes(axis, newpos)
+                curorder[axis], curorder[newpos] = curorder[newpos], curorder[axis]
+        return result        
+
     def axesiterator(self, axes):
         """Iterate over all combinations of given axes and return sub waveforms
         
@@ -794,7 +800,6 @@ class Waveform(object):
                                 xunits=remove_index(self.xunits, axis),
                                 ylabel=ylabel, yunit=yunit)
             else:
-                print newy.shape, tuple(remove_index(self.shape, axis))
                 raise ValueError('Shape mismatch')
 
 
@@ -807,17 +812,23 @@ class Waveform(object):
         return self.__class__.__name__ + "(" + repr(xlist) + ", " + \
             repr(self.y) + ")"
 
-    def __checklabels(self, labels):
+    def __checklabels(self, labels, unique=False):
         if not labels == None:
             try:
                 labels = list(labels)
             except:
                 raise ValueError('Cannot convert labels to list')
             if len(labels) != self._dim:
-                raise ValueError('Label list should have the same length (%d) as the number of dimensions (%d)'%(len(labels), self._dim))
+                raise ValueError('Label list should have the same length (%d)'
+                                 ' as the number of dimensions (%d)'%
+                                 (len(labels), self._dim))
             for label in labels:
-                if type(label) != types.StringType:
+                if not isinstance(label, basestring):
                     raise ValueError('Labels should be of type string')
+
+            if unique and len(set(labels)) != len(labels):
+                raise ValueError('Labels must be unique')
+
         return labels
                             
 
@@ -842,10 +853,65 @@ def applyfunc(func, w, funcname = None):
     else:
         return func(w)
 
+def _broadcast_apply(func, args,
+                     ylabel = None, yunit = None, 
+                     sameunit = False):
+    """Re-order axes so numpy broadcasting can be used and apply function"""
+
+    if len(args) > 2:
+        raise NotImplemented("Broadcast applies with > 2 args not implemented")
+
+    ## Find argument with highest number of dimensions
+    def key_func(i):
+        if iswave(args[i]):
+            return args[i].ndim
+        else:
+            return -1
+    ihidim = sorted(range(len(args)), key = key_func, reverse=True)[0]
+    
+    bothwaves = iswave(args[0]) and iswave(args[1])
+    if bothwaves:
+        original_order = args[ihidim].xlabels
+        commonaxes = set.intersection(*[set(arg.xlabels) for arg in args])
+
+        ## Reorder axes to make the argument conform to numpy broadcast rules
+        reordered_args = []
+        for arg in args:
+            neworder = list(set(arg.xlabels)-commonaxes) + list(commonaxes)
+            reordered_args.append(arg.reorder_axes(neworder))
+
+        args = reordered_args
+
+    ## Get y array or argument itself if not a waveform
+    argsy = []
+    for arg in args:
+        if iswave(arg):
+            argsy.append(arg._y)
+        else:
+            argsy.append(arg)
+    newy = apply(func, argsy)
+
+    if sameunit:
+        yunit = yunit or args[ihidim].yunit
+        ylabel = ylabel or args[ihidim].ylabel
+
+    result = Waveform(args[ihidim]._xlist, newy, 
+                      xlabels = args[ihidim].xlabels, 
+                      xunits = args[ihidim].xunits,
+                      ylabel = ylabel, yunit = yunit)
+
+    ## Reorder axes to the original order of the arg with highest dimension
+    if bothwaves:
+        result = result.reorder_axes(original_order)
+
+    return result
+
+
 def applyfunc_and_reducedim(func, w, axis = -1, ylabel = None, yunit = None):
     """Apply a function that reduces the dimension by one and return a new waveform or float if zero-rank
     
     """
+    axis = w.getaxis(axis)
     newyshape = list(w._y.shape)
     del newyshape[axis]
     newy = apply_along_axis(func, axis, w._y).reshape(newyshape)
@@ -1023,6 +1089,7 @@ def compatible(*args):
     False
     
     """
+    return True
     return set([w.shape for w in args]) == set([args[0].shape])
 
 def compose(wlist, x = None, xlabel = None):
@@ -1089,7 +1156,6 @@ def onedim_index(index, axis, ndim):
     return (slice(None),) * (axis % ndim) + (index,)
 
             
-
 def wavefunc(func):
     """Decorator for creating free functions from waveform methods
     

@@ -240,9 +240,9 @@ def test_xval():
 
 def test_clip():
     ## 1D waveforms
-    w1 = Waveform([[1.,2.,3.]], array([8., 6., 1.]))
+    w1 = Waveform([[1.,2.,3.]], array([8., 6., 1.]), xlabels=['a'])
 
-    assert_waveform_almost_equal(w1.clip(2,3), 
+    assert_waveform_almost_equal(w1.clip(2,3,axis='a'), 
                           Waveform([[ 2.,  3.]], array([ 6.,  1.])))
     assert_waveform_almost_equal(w1.clip(1.5, 3),
                           Waveform([[ 1.5, 2.,  3.]],array([ 7., 6.,  1.])))
@@ -408,6 +408,35 @@ def test_astable():
     for w, t in zip((testdata1[0], testdata2), 
                     (testdata1_0_table, testdata2_table)):
         assert_equal(w.astable, t)
+
+def test_simple_broadcasting():
+    assert_waveform_equal(testdata2 + testdata2[0],
+                          Waveform([[1,2], [1,2,3]], 
+                                   testdata2.y + testdata2.y[0],
+                                   xlabels = ('v1', 'v2'),
+                                   xunits = ('V', 'V'),
+                                   ylabel = 'i3',
+                                   yunit = 'A'))
+
+def test_reversed_broadcasting():
+    assert_waveform_equal(testdata2 + testdata2[:,0],
+                          Waveform([[1,2], [1,2,3]], 
+                                   (testdata2.y.T + (testdata2.y.T)[0]).T,
+                                   xlabels = ('v1', 'v2'),
+                                   xunits = ('V', 'V'),
+                                   ylabel = 'i3',
+                                   yunit = 'A'))
+    
+def test_duplicate_xlabels():
+    """Check that a waveform with duplicate xlabels raises an exception"""
+    def func():
+        return Waveform([[1,2], [1,2,3]], 
+                        (testdata2.y.T + (testdata2.y.T)[0]).T,
+                        xlabels = ('v1', 'v1'),
+                        xunits = ('V', 'V'),
+                        ylabel = 'i3',
+                        yunit = 'A')
+    assert_raises(ValueError, func)
 
 if __name__ == "__main__":
     import doctest
