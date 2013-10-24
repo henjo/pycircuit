@@ -212,7 +212,6 @@ def test_ymax():
     w = Waveform([[2,5],[2,3,4]], array([[3,9,7], [4,6,6]]))
     check_alongaxes_func(Waveform.ymax, np.max, w)
 
-@unittest.skip("Skip failing test")
 def test_value():
     w1 = Waveform(array([1,2,3]),array([3,5,6]))
     assert_almost_equal(w1.value(1.5), 4.0)
