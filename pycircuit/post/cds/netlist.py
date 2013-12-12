@@ -61,17 +61,17 @@ def netlist_cell(session, libname, cellname, viewname, simulator='spectre',
                  subcircuit = True):
     result = { "modelinclude_filename": None }
 
-    if projectdir == None:
+    if projectdir is None:
         projectdir = tempfile.mkdtemp()
         remove_projectdir_after = True
     else:
         remove_projectdir_after = False
 
-    if targetname == None:
+    if targetname is None:
         targetname = cellname + '.scs'
 
     try:
-        if targetdir == None:
+        if targetdir is None:
             targetdir = os.curdir
 
         session.envSetVal('asimenv.startup', 'projectDir', skill.Symbol('string'), 
@@ -109,7 +109,7 @@ def netlist_cell(session, libname, cellname, viewname, simulator='spectre',
                 targetnetlist = open(os.path.join(targetdir, targetname), "w")
                 targetnetlist.write(header + rawnetlist + footer)
 
-                result["netlist_filename"] = targetname
+                result["netlist_filename"] = os.path.join(targetdir, targetname)
 
                 ## Write model definition
                 if write_modelincludes:

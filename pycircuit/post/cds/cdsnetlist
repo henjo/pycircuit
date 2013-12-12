@@ -41,6 +41,9 @@ parser.add_option('--host', default='localhost',
                   help='Host name of Skill command server when running in '
                   'server mode, default: %default')
 
+parser.add_option('-p', '--projectdir',
+                  help='Directory where Virtuoso will write the netlist')
+
 (options, args) = parser.parse_args()
 
 session = CadenceSession(verbose = options.debug, timeout=300)
@@ -70,11 +73,12 @@ else:
 
     try:
         result = netlist_cell(session, lib, cell, view,
-                          simulator=options.simulator,
-                          targetdir = targetdir,
-                          stop_view_list=options.stopviews.split(','),
-                          switch_view_list=options.switchviews.split(','),
-                          subcircuit=options.subcircuit)
+                              simulator=options.simulator,
+                              targetdir = targetdir,
+                              stop_view_list=options.stopviews.split(','),
+                              switch_view_list=options.switchviews.split(','),
+                              subcircuit=options.subcircuit,
+                              projectdir=options.projectdir)
 
         print open(result["netlist_filename"], "r").read()
 
