@@ -54,11 +54,13 @@ def keep_subcircuits(netlist):
 def netlist_cell(session, libname, cellname, viewname, simulator='spectre', 
                  stop_view_list=('spectre', 'veriloga'),
                  switch_view_list=('simulation', 'schematic', 'spectre', 'veriloga'),
-                 targetdir = None,
-                 targetname = None,
-                 projectdir = None,
-                 write_modelincludes = False,
-                 subcircuit = True):
+                 targetdir=None,
+                 targetname=None,
+                 projectdir=None,
+                 write_modelincludes=False,
+                 write_amap=False,
+                 subcircuit=True):
+
     result = { "modelinclude_filename": None }
 
     if projectdir is None:
@@ -114,9 +116,14 @@ def netlist_cell(session, libname, cellname, viewname, simulator='spectre',
                 ## Write model definition
                 if write_modelincludes:
                     modelincludes = os.path.join(targetdir, "models.scs")
-                    shutil.copy(os.path.join(netlistdir, ".modelFiles"), modelincludes)
+                    shutil.copytree(os.path.join(netlistdir, ".modelFiles"), modelincludes)
                     result["modelinclude_filename"] = modelincludes
 
+                ## Copy amap and inhl directories
+                if write_amap:
+                    for dir in ('amap', 'ihnl'):
+                        shutil.copytree(os.path.join(netlistdir, dir), 
+                                        os.path.join(targetdir, dir))
             else:
                 raise CellViewNotFound("Cellview (%s/%s/%s) not found"%(libname,cellname,viewname))
 
