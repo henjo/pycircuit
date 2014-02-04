@@ -28,6 +28,9 @@ parser.add_option('-s', '--stopviews',
                   default='spectre',
                   help='Stop view list (comma separated), default: %default')
 
+parser.add_option('-r', '--rundir',
+                  help='The directory where virtuoso will be run.')
+
 parser.add_option('-t', '--target',
                   help='Target directory. If set, the netlist will be written to this directory and the top netlist file name will written to stdout.')
 
@@ -52,6 +55,9 @@ parser.add_option('-p', '--projectdir',
 
 if not options.list and len(args) < 2:
     parser.error("incorrect number of arguments")
+
+if options.rundir:
+    os.chdir(options.rundir)
 
 session = CadenceSession(verbose = options.debug, timeout=300)
 #    session = CadenceSessionTCP(verbose = options.debug)
