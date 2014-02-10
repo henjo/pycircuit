@@ -73,7 +73,7 @@ class Waveform(object):
 
     __array_priority__ = 100.0
 
-    def __array__(self): return self._y
+    def __array__(self, t=None): return self._y
         
     def __array_wrap__(self, arr, context=None):
         return Waveform(list(self._xlist), arr, 
@@ -434,9 +434,9 @@ class Waveform(object):
                         xlabels=self.xlabels, ylabel=self.ylabel)
 
     # Mathematical functions
-    def real(self): return np.real(self)
-    def imag(self): return np.imag(self)
-    def conjugate(self): return np.conjugate(self)
+    def real(self): return applyfunc(np.real, self, 'real')
+    def imag(self): return applyfunc(np.imag, self, 'imag')
+    def conjugate(self): return applyfunc(np.conjugate, self, 'conjugate')
 
     def deriv(self):
         """Calculate derivative of a waveform with respect to the inner x-axis"""

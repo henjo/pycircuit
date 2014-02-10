@@ -47,6 +47,14 @@ def ymin(w, axis=-1):
 def value(w, x):
     return w
 
+@wavefunc
+def imag(w):
+    return np.imag(w)
+
+@wavefunc
+def real(w):
+    return np.real(w)
+
 raising = 1
 falling = 2
 either = 3
