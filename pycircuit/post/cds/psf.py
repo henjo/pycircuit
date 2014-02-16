@@ -991,13 +991,21 @@ class SweepValueSimple(SweepValue):
                 valuetypeid = UInt32.fromFile(file)
 
                 if valuetypeid != datatype.id:
-                    raise Exception("Unexpected trace trace type id %d should be %d"%(valuetypeid, datatype.id))
+                    ## Unexpected value type id found
+                    ## This is probably because of missing trace values
+                    ## Undo read of datatypeid, valuetypeid and break out of loop and 
+                    file.seek(-2*UInt32.size, 1)
+                    break
 
                 value = datatype.getDataObj()
                 value.deSerializeFile(file)
                 self.children.append(value)
+            elif datatypeid == 15:
+                ## End of section
+                file.seek(-UInt32.size, 1)
+                break
             else:
-                raise Exception("Datatypeid unknown 0x%x"%self.datatypeid)
+                raise Exception("Datatypeid unknown 0x%x" % datatypeid)
 
         return 1
 
