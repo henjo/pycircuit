@@ -42,7 +42,7 @@ class CadenceSession(object):
 		self.startup = self.cds.before
 
 		if verbose:
-			print self.startup
+			print >> sys.stderr, self.startup
 
 	def callfunc(self, name, *args, **optargs):
 		"""Call skill function in session"""
@@ -79,11 +79,11 @@ class CadenceSession(object):
 
 	def send(self, expr, parse=True, parseall=False):
 		if self.verbose:
-			print "Sending: " + expr
+			print >> sys.stderr, "Sending: " + expr
 		self.cds.sendline(expr)
 		self.cds.expect(self.prompt)
 		if self.verbose:
-			print "Got:", self.cds.before
+			print >> sys.stderr, "Got:", self.cds.before
 
 		responselines = [s for s in re.split("[\r]\n",self.cds.before) if s != ""]
 
@@ -102,7 +102,7 @@ class CadenceSession(object):
 			    raise Exception("Could not parse response")
 
 		if self.verbose:
-			print "Result:", result
+			print >> sys.stderr, "Result:", result
 		
 		return result
 
