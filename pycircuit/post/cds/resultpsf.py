@@ -341,7 +341,7 @@ class PSFLogItem(object):
         res = []
         
         if len(self.children) > 0:
-            return self.get_psfobj(log).getSweepParamNames() + self.children[0].get_sweep_variables(log)
+            return tuple(self.get_psfobj(log).getSweepParamNames()) + self.children[0].get_sweep_variables(log)
         else:
             return ()
 
@@ -531,7 +531,7 @@ class PSFResultFamily(result.ResultDict):
         else:
             if self.psfobjects[0].getNSweeps() > 0:
                 xvalues = self.sweepvalues + [self.psfobjects[0].getSweepParamValues(0)]
-                xlabels = self.sweepvariables + self.psfobjects[0].getSweepParamNames()
+                xlabels = self.sweepvariables + tuple(self.psfobjects[0].getSweepParamNames())
                 yvalues = numpy.concatenate([psfobj.getValuesByName(outputname) for psfobj in self.psfobjects])
                 yvalues = numpy.array(yvalues)
                 yvalues = numpy.reshape(yvalues, map(len, xvalues))
