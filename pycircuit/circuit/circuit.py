@@ -1004,7 +1004,7 @@ class SubCircuit(Circuit):
         
         connections = []
 
-        for instname, inst in self.xflatinstances(instancefilter):
+        for instname, inst in self.xflatinstances():
             for terminal in inst.terminals:
                 fullterminalname = instjoin(instname, terminal)
                 if node == self.get_node(fullterminalname):
