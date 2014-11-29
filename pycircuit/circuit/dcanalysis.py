@@ -116,7 +116,7 @@ class DC(Analysis):
         """Simple Newton's method"""
         def func(x):
             self.na.update(x, self.epar)
-            return self.na.i + self.na.u, self.na.G.todense()
+            return self.na.i + self.na.u, self.na.G
 
         return self._newton(func, x0)
 
