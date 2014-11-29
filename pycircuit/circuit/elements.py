@@ -332,7 +332,7 @@ class VCVS(Circuit):
 
     terminals = ('inp', 'inn', 'outp', 'outn')
     branches = ( Branch( Node('inp'),  Node('inn'),  input=True),
-                 BranchV(Node('outp'), Node('outn'), output='x') )
+                 BranchV(Node('outp'), Node('outn'), output='i') )
                
     def eval_iqu(self, x, epar):
         inbranch_v = x[0]
@@ -488,7 +488,7 @@ class VCCS(Circuit):
     """
     terminals = ('inp', 'inn', 'outp', 'outn')
     branches = ( Branch( Node('inp'),  Node('inn'),  input=True),
-                 BranchI(Node('outp'), Node('outn'), output='x') )
+                 BranchI(Node('outp'), Node('outn'), output='ib') )
     instparams = [Parameter(name='gm', desc='Transconductance', 
                             unit='A/V', default=1e-3)]
     
