@@ -517,23 +517,21 @@ class MNA(NA):
                                    iqu_slices, 
                                    jacobian_slices)
 
-    def setup_branch_noise_mapping(self, branchfilter=None):
-        ## Set up mapping between instance noise correlations and global CY matrix
-        ##
-        ## The mapping is calculated as:
-        ##
-        ## CY[
-        ## and global CY matrix
-        ## as
-        ## i[i_index_p] <- i[i_index_p] + branch_i[iqu_i_index_p]
-        ## i[i_index_n] <- i[i_index_n] - branch_i[iqu_i_index_n]
+    # def setup_branch_noise_mapping(self, branchfilter=None):
+    #     ## Set up mapping between instance noise correlations and global CY matrix
+    #     ##
+    #     ## The mapping is calculated as:
+    #     ##
+    #     ## CY[
+    #     ## and global CY matrix
+    #     ## as
+    #     ## i[i_index_p] <- i[i_index_p] + branch_i[iqu_i_index_p]
+    #     ## i[i_index_n] <- i[i_index_n] - branch_i[iqu_i_index_n]
 
-        ## Iterate over noisy branches
-        branches = self.cir.xflatbranches(branchfilter=lambda branch: branch.noisy)
-        for (instname, inst), branchrefs in groupby(branches, 
-                                                    lambda b: (b.instname, b.inst)):
-            
-
+    #     ## Iterate over noisy branches
+    #     branches = self.cir.xflatbranches(branchfilter=lambda branch: branch.noisy)
+    #     for (instname, inst), branchrefs in groupby(branches, 
+    #                                                 lambda b: (b.instname, b.inst))
 
     def update(self, x, epar, static=True, dynamic=True, jacobians=True, noise=False):
         if self.dirty:
