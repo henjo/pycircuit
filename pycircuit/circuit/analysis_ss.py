@@ -28,8 +28,7 @@ class CircuitResultAC(CircuitResult):
                                               sweep_unit=sweep_unit)
     def i(self, term):
         """Return terminal current i(term)"""
-        result = self.na.extract_i(self.x, term, xdot=self.xdot, 
-                                    linearized=True)
+        result = self.na.extract_i(self.x, term, xdot=self.xdot)
         return self.build_waveform(result, 'i(%s)'%(str(term)), 'A')
 
 class SSAnalysis(Analysis):

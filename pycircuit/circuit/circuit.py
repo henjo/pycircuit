@@ -15,6 +15,8 @@ default_toolkit = numeric
 timedomain_analyses = ('dc', 'tran')
 
 def makenode(node_or_name):
+    if node_or_name is None:
+        return None
     if isinstance(node_or_name, Node):
         return node_or_name
     else:
@@ -169,10 +171,13 @@ class BranchRef(Branch):
         return cir.get_node(instjoin(self.instname, self.minus.name))
 
     def __hash__(self):
-        return hash(self.branch)
+        return hash(self.branch) ^ hash(self.instname)
 
     def __eq__(self, a):
-        return self.branch == a
+        if a.__class__ is BranchRef:
+            return (self.branch == a.branch) and (self.instname == a.instname)
+        else:
+            return False
 
 ### Default reference node
 gnd = Node("gnd", isglobal=True)
@@ -336,7 +341,13 @@ class Circuit(object):
 
         if node not in self.nodes:
             self.nodes.append(node)
-        self.nodenames[node.name] = node
+
+        if node is None:
+            node_name = None
+        else:
+            node_name = node.name
+
+        self.nodenames[node_name] = node
 
     def get_terminal_branch(self, terminalname):
         """Find the branch that is connected to the given terminal
@@ -366,12 +377,12 @@ class Circuit(object):
         ## Keep track of branches connected to terminal and 
         ## wether they are inside or outside instanace of terminal
         inside_branches  = [] 
-        outside_branches = [] 
+        outside_branches = []
         for branch in self.xflatbranches():
             ## Is branch connected to terminal?
             connected_branch = (branch.plusnode(self) == terminalnode) or \
                                (branch.minusnode(self) == terminalnode)
-            if connected_branch:  
+            if connected_branch:
                 ## Is branch in same element as terminal?
                 in_same_element = branch.instname.startswith(terminal_instname)
 
@@ -381,7 +392,7 @@ class Circuit(object):
                     outside_branches.append(branch)
 
         if len(outside_branches) == 1 and outside_branches[0].potential:
-            sign = -1 
+            sign = -1
             branch = outside_branches[0]
         elif len(inside_branches ) == 1 and inside_branches[0].potential:
             sign = 1
@@ -738,7 +749,10 @@ class SubCircuit(Circuit):
         for terminal, node in connection.items():
             ## Create a node object if it is not already
             if not isinstance(node, Node):
-                node = Node(str(node))
+                if node is None:
+                    node = None
+                else:
+                    node = Node(str(node))
             
             ## Add node
             self.append_node(node)

@@ -122,7 +122,7 @@ class MNA(NA):
         ## Find mapping between circuit node indices and x index
         if self.refnode is not None:
             self.nodes = [node for node in self.cir.nodes 
-                          if node is not self.refnode]
+                          if node is not self.refnode and node is not None]
         else:
             self.nodes = self.cir.nodes
 
@@ -146,7 +146,7 @@ class MNA(NA):
         >>> c['VS'] = VS(1, gnd, v=1e-3)
         >>> c['R'] = R(1, gnd, r=1e3)
         >>> na = MNA(c, refnode=gnd, toolkit=symbolic)
-        >>> na.describe_state_vector()
+        >>> na.describe_x_vector()
         [V(1), I(VS)]
 
         """
@@ -162,16 +162,22 @@ class MNA(NA):
     def get_node_index(self, node, instname=None):
         """Return index to node voltage in solution vector of node"""
 
+        # A node that is None means global ground
+        if node is None:
+            return None
+
         node = circuit.makenode(node)
 
         if instname is not None:
             node = self.cir.get_node(circuit.instjoin(instname, node.name))
 
-        if node == self.refnode:
+        if node in (self.refnode, None):
             return None
         elif node in self.nodes:
             return self.nodes.index(node)
         else:
+            from IPython import embed
+            embed()
             raise ValueError('Node %s is not in MNA node list (%s)'%
                              (str(node), str(self.nodes)))
 
