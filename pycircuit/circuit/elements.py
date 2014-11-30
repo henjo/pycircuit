@@ -113,6 +113,46 @@ class C(Circuit):
         q = self.iparv.c * branch_v
         return q,
 
+class nC(Circuit):
+    """Capacitor
+
+    >>> c = SubCircuit()
+    >>> n1=c.add_node('1')
+    >>> c['C'] = C(n1, gnd, c=1e-12)
+    >>> c.G(np.zeros(2))
+    array([[ 0.,  0.],
+           [ 0.,  0.]])
+    >>> c.C(np.zeros(2))
+    array([[  1.0000e-12,  -1.0000e-12],
+           [ -1.0000e-12,   1.0000e-12]])
+
+    """
+
+    terminals = ('plus', 'minus')
+    branches = (BranchI(Node('plus'), Node('minus'), input=True, output='q'),)
+    instparams = [Parameter(name='c0', desc='Capacitance', 
+                            unit='F', default=1e-12),
+                  Parameter(name='c1', desc='Nonlinear capacitance', 
+                            unit='F', default=0.5e-12),
+                  Parameter(name='v0', desc='Voltage for nominal capacitance', 
+                            unit='V', default=1),
+                  Parameter(name='v1', desc='Slope voltage ...', 
+                            unit='V', default=1)
+                  ]
+
+    linear = False
+
+    def eval_iqu(self, x, epar):
+        branch_v = x[0]
+
+        c0 = self.ipar.c0
+        c1 = self.ipar.c1
+        v0 = self.ipar.v0
+        v1 = self.ipar.v1
+
+        q = c0*branch_v+c1*v1*self.toolkit.log(self.toolkit.cosh((branch_v-v0)/v1))
+        return q,
+
 class L(Circuit):
     """Inductor
 

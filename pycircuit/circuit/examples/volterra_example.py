@@ -34,8 +34,8 @@ def wave_conv(w1,w2):
                 wdict[x1+x2]+=y1*y2
             else:
                 wdict[x1+x2]=y1*y2
-    newx=np.sort(array(wdict.keys()))
-    newy=array([])
+    newx=np.sort(np.array(wdict.keys()))
+    newy=np.array([])
     for x in newx:
         newy=np.append(newy,wdict[x])
     newwave=Waveform(newx,newy)
@@ -44,8 +44,8 @@ def wave_conv(w1,w2):
 def solve_by_freq(w,c,vac=True):
     ac=AC(c)
     xvec=w.get_x()[0]
-    vc=array([])
-    vout=array([])
+    vc=np.array([])
+    vout=np.array([])
     if vac:
         c['inl']=IS(3,4,iac=0.)
         c['vs']=VS(2,1,vac=1.)
@@ -83,8 +83,8 @@ def lna_volterra(w):
     return vout_1,vout_2,vout_31,vout_32
 
 def test_volterra():
-    f=array([-1200.,-1000.,1000.,1200.])
-    v=array([2.,2.,2.,2.])
+    f=np.array([-1200.,-1000.,1000.,1200.])
+    v=np.array([2.,2.,2.,2.])
     w=Waveform(f,v)
     v1,v2,v31,v32=lna_volterra(w)
     pylab.subplot(4,1,1)
