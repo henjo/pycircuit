@@ -4,7 +4,7 @@
 """Circuit element tests
 """
 
-from pycircuit.circuit.elements import VSin, ISin, IS, R, L, C, SubCircuit, gnd
+from pycircuit.circuit.elements import VSin, ISin, IS, R, L, C, SubCircuit, gnd, nC
 from pycircuit.circuit.transient import Transient
 from pycircuit.circuit import *#circuit #new
 from math import floor
@@ -14,45 +14,6 @@ import unittest
 from pycircuit.circuit import Circuit, MNA, defaultepar, theanotk
 from pycircuit.utilities.param import Parameter
 
-class myC(Circuit):
-    """Capacitor
-
-    >>> c = SubCircuit()
-    >>> n1=c.add_node('1')
-    >>> c['C'] = C(n1, gnd, c=1e-12)
-    >>> c.G(np.zeros(2))
-    array([[ 0.,  0.],
-           [ 0.,  0.]])
-    >>> c.C(np.zeros(2))
-    array([[  1.0000e-12,  -1.0000e-12],
-           [ -1.0000e-12,   1.0000e-12]])
-
-    """
-
-    terminals = ('plus', 'minus')
-    branches = (BranchI(Node('plus'), Node('minus'), input=True, output='q'),)
-    instparams = [Parameter(name='c0', desc='Capacitance', 
-                            unit='F', default=1e-12),
-                  Parameter(name='c1', desc='Nonlinear capacitance', 
-                            unit='F', default=0.5e-12),
-                  Parameter(name='v0', desc='Voltage for nominal capacitance', 
-                            unit='V', default=1),
-                  Parameter(name='v1', desc='Slope voltage ...?', 
-                            unit='V', default=1)
-                  ]
-
-    linear = False
-
-    def eval_iqu(self, x, epar):
-        branch_v = x[0]
-
-        c0 = self.ipar.c0
-        c1 = self.ipar.c1
-        v0 = self.ipar.v0
-        v1 = self.ipar.v1
-
-        q = c0*branch_v+c1*v1*self.toolkit.log(self.toolkit.cosh((branch_v-v0)/v1))
-        return q,
 
 @unittest.skip("Skip failing test")
 def test_transient_RC():
@@ -100,15 +61,14 @@ def test_transient_RLC():
 
 #@unittest.skip("Skip failing test")
 def test_transient_nonlinear_C():
-    """Test of transient simulation of RLC-circuit,
-    with nonlinear capacitor.
+    """Test of transient simulation of RLC-circuit, with nonlinear capacitor.
     """
-    circuit.default_toolkit = circuit.numeric
-    c = SubCircuit()
+
+    c = SubCircuit(toolkit=theanotk)
     
-    c['VSin'] = VSin(gnd, 1, va=10, freq=50e3)
+    c['VSin'] = VSin(gnd, 1, va=10, freq=50e3, toolkit=theanotk)
     c['R1'] = R(1, 2, r=1e6)
-    c['C'] = myC(2, gnd)
+    c['C'] = nC(2, gnd)
     #c['L'] = L(2,gnd, L=1e-3)
     tran_imp = Transient(c)
     res_imp = tran_imp.solve(tend=40e-6,timestep=1e-6)
