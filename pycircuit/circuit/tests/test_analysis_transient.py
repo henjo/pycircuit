@@ -87,15 +87,14 @@ def test_transient_get_diff():
     tran._dt=1e-6
 
     na = MNA(c, toolkit=theanotk)
-    x0=np.ones(c.n)
+    x0=np.ones(na.n)
     na.update(x0, defaultepar)
 
     q       = na.q
     Cmatrix = na.C
 
-    print tran.parameters
-    a,b,b_=tran._method[tran.par.method] 
-    tran._qlast=np.zeros((len(a),tran.cir.n))#initialize q-history vector
+    a,b,b_=tran._method[tran.par.method]
+    tran._qlast=np.zeros((len(a),na.n))#initialize q-history vector
     iq,geq = tran.get_diff(q,Cmatrix)
     print iq,geq
 
