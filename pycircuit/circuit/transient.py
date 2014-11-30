@@ -154,7 +154,7 @@ class Transient(Analysis):
             yield t,dt
             de=self._diff_error
             iq=self._iq
-            if (de != None) and (iq != None):
+            if (de is not None) and (iq is not None):
                 #iq_error=self.toolkit.dot(de,de)/self.toolkit.dot(iq,iq)-iq_tolerance
                 #print iq_error
                 dt = max(dt, dtmin)
