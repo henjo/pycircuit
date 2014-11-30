@@ -26,7 +26,7 @@ class R(Circuit):
 
     """
     terminals = ('plus', 'minus')
-    branches = (BranchI(Node('plus'), Node('minus'), input=True, output='i'),)
+    branches = (BranchI(Node('plus'), Node('minus'), input=True, output='i', noisy=True),)
     instparams = [Parameter(name='r', desc='Resistance', unit='ohm', 
                             default=1e3),
                   Parameter(name='noisy', desc='No noise', unit='', 
@@ -43,6 +43,13 @@ class R(Circuit):
     def eval_iqu(self, x, epar):
         branch_v = x[0]
         return self.g * branch_v,
+
+    def eval_noise(self, epar):
+        if self.iparv.noisy:
+            iPSD = 4 * self.toolkit.kboltzmann * epar.T / self.iparv.r
+        else:
+            iPSD = 0
+        return iPSD,
 
     def CY(self, x, w, epar=defaultepar):
         if self.iparv.noisy:

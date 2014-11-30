@@ -106,7 +106,8 @@ class Branch(object):
           If set, the circuit may use the voltage or current value of the branch
         *linear*
           If true, the voltage or current of output branches is a linear function
-    
+        *noisy*
+          If true, the voltage or current of output branches is noisy    
     
     """
 
@@ -127,6 +128,9 @@ class Branch(object):
         self.output = output
         self.input  = input
         self.linear = linear
+
+    def __repr__(self):
+        return '%s(%s, %s)' % (self.__class__.__name__, self.plus, self.minus)
 
     def G(self,wrt):
         '''Method for calculating conductance
@@ -169,6 +173,9 @@ class BranchRef(Branch):
     def minusnode(self, cir):
         """Return circuit node name of branch plus node"""
         return cir.get_node(instjoin(self.instname, self.minus.name))
+
+    def __repr__(self):
+        return 'BranchRef(%s, %s, %s)' % (self.instname, self.inst, repr(self.branch))
 
     def __hash__(self):
         return hash(self.branch) ^ hash(self.instname)

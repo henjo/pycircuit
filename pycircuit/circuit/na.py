@@ -201,7 +201,8 @@ class MNA(NA):
         out = self.outvectors[outtype]
 
         if branch.potential:
-            index = self.potentialbranch_x_map[branch]
+            branchref = circuit.BranchRef(instname, inst, branch)
+            index = self.potentialbranch_x_map[branchref]
             out[index] += value
         else:
             indexp, indexn = (self.get_node_index(branch.plus, instname),
@@ -515,6 +516,25 @@ class MNA(NA):
                                    x_branch_slices,
                                    iqu_slices, 
                                    jacobian_slices)
+
+    def setup_branch_noise_mapping(self, branchfilter=None):
+        ## Set up mapping between instance noise correlations and global CY matrix
+        ##
+        ## The mapping is calculated as:
+        ##
+        ## CY[
+        ## and global CY matrix
+        ## as
+        ## i[i_index_p] <- i[i_index_p] + branch_i[iqu_i_index_p]
+        ## i[i_index_n] <- i[i_index_n] - branch_i[iqu_i_index_n]
+
+        ## Iterate over noisy branches
+        branches = self.cir.xflatbranches(branchfilter=lambda branch: branch.noisy)
+        for (instname, inst), branchrefs in groupby(branches, 
+                                                    lambda b: (b.instname, b.inst)):
+            
+
+
     def update(self, x, epar, static=True, dynamic=True, jacobians=True, noise=False):
         if self.dirty:
             self.setup()
