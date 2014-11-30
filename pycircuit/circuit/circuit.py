@@ -119,7 +119,7 @@ class Branch(object):
     output = ''
     
     def __init__(self, plus, minus, potential=None, 
-                 output='', input=False, linear=True
+                 output='', input=False, linear=True, noise=False
                  ): # default is 'flow' branch, not 'potential' branch
         if potential is not None:
             self.potential = potential
