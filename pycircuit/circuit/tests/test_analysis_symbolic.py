@@ -49,7 +49,7 @@ def test_symbolic_noise_vin_iout():
     pycircuit.circuit.circuit.default_toolkit = symbolic
     c = SubCircuit()
     
-    var('R1 R2 R3 V', real=True, positive=True)
+    var('R1 R2 R3 V w', real=True, positive=True)
 
     c['vs'] = VS(1, gnd, vac=V)
     c['R1'] = R(1, 2, r=R1)
@@ -58,6 +58,7 @@ def test_symbolic_noise_vin_iout():
 
     noise = Noise(c, inputsrc='vs', outputsrc='vl', 
                   toolkit=symbolic)
+    s = I * w
     res = noise.solve(s, complexfreq=True)
     
     assert_equal(simplify(res['Sinout']), simplify(4*noise.toolkit.kboltzmann*noise.par.epar.T*(R1+R2)/(R1*R2)))
