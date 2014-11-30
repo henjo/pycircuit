@@ -119,8 +119,8 @@ def fsolve(f, x0, args=(), full_output=False, maxiter=200,
         xdiff = toolkit.linearsolver(J, -F)# TODO: Limit xdiff to improve convergence
 
         x = x0 + xdiff
-
-        if toolkit.alltrue(abs(xdiff) < reltol * toolkit.maximum(x, x0) + xtol):
+        
+        if toolkit.alltrue(abs(xdiff) < reltol * numeric.maximum(x, x0) + xtol):
             ier = 1
             mesg = "Success"
             break
