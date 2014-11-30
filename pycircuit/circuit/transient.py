@@ -103,14 +103,14 @@ class Transient(Analysis):
     ## But it's an object method requiring a DC as self
     ## so using DC._newton doesn't work
     def _newton(self, func, x0): 
-        ones_nodes = self.toolkit.ones(len(self.cir.nodes))
-        ones_branches = self.toolkit.ones(len(self.cir.branches))
-        
+        ones_nodes = self.toolkit.ones(len(self.na.nodes))
+        ones_branches = self.toolkit.ones(len(self.na.potentialbranches))
+
         abstol = self.toolkit.concatenate((self.par.iabstol * ones_nodes,
                                  self.par.vabstol * ones_branches))
         xtol = self.toolkit.concatenate((self.par.vabstol * ones_nodes,
                                  self.par.iabstol * ones_branches))
-        
+        print xtol
         try:
             result = fsolve(func, 
                             x0, 
@@ -177,7 +177,7 @@ class Transient(Analysis):
         resultEuler = (q-self._qlast[0])/dt
         if self._iqlast is None: #first step always requires backward euler
             geq=C/dt
-            n=self.cir.n
+            n=self.na.n
             self._iqlast=self.toolkit.zeros((len(b),n)) #initialize history vectors at first step
             iq = resultEuler
         else:
