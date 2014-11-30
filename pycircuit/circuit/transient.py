@@ -110,7 +110,6 @@ class Transient(Analysis):
                                  self.par.vabstol * ones_branches))
         xtol = self.toolkit.concatenate((self.par.vabstol * ones_nodes,
                                  self.par.iabstol * ones_branches))
-        print xtol
         try:
             result = fsolve(func, 
                             x0, 
