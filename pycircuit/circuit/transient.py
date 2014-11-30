@@ -175,7 +175,7 @@ class Transient(Analysis):
         dt=self._dt
         a,b,b_=self._method[self.par.method] 
         resultEuler = (q-self._qlast[0])/dt
-        if self._iqlast == None: #first step always requires backward euler
+        if self._iqlast is None: #first step always requires backward euler
             geq=C/dt
             n=self.cir.n
             self._iqlast=self.toolkit.zeros((len(b),n)) #initialize history vectors at first step
