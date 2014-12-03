@@ -346,10 +346,10 @@ class Noise(SSAnalysis):
         # Calculate output voltage noise
         if self.outputnodes is not None:
             branch = Branch(self.outputnodes[0], self.outputnodes[1])
-            na.set_out_vector_branch(U, None, branch, -1)
-        # Calculate output current noise
+            na.set_out_vector_branch(U, None, branch, 1)
         else:
-            na.set_out_vector_branch(U, self.outputsrc_name, None, -1)
+            # Calculate output current noise
+            na.set_out_vector_branch(U, self.outputsrc_name, None, 1)
             
         xn2out, gain = self.noise_map_function(noisesolve, ss)
 

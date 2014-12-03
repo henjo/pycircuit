@@ -36,10 +36,6 @@ class R(Circuit):
     def update(self, subject):
         self.g = 1/self.iparv.r
 
-    def update_qiu(self, t):
-        branch = self.branches[0]
-        branch.i =  branch.v / self.iparv.r
-
     def eval_iqu(self, x, epar):
         branch_v = x[0]
         return self.g * branch_v,
