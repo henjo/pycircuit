@@ -348,12 +348,16 @@ class MNA(NA):
 
     def setup_GCconst(self):
         super(MNA, self).setup_GCconst()
-        ## Add gyrators for all potential branches
+        ## Add gyrators for all direct potential branches
+        ## Indirect potential nodes only have a KCL that ensures that the flow
+        ## of the branch goes out and in of the plus and minus nodes
+        ##
         ## KCL:
         ## i(branch.plus)  = i(branch)
         ## i(branch.minus) = i(branch)
         ## KVL:
         ## v(branch.plus) - v(branch.minus) = 0
+        ##
         for i, branch in enumerate(self.cir.xflatbranches()):
             if branch.potential:
                 ## Find indices to plus and minus nodes and branch current
@@ -366,13 +370,14 @@ class MNA(NA):
                     self.Gconst[i_x_plus,  i_x_branch] += 1
                 if i_x_minus is not None:
                     self.Gconst[i_x_minus, i_x_branch] -= 1
-                ## KVL
-                ## -V(branch) + i(x) + dq/dt(i(x0) + u(t) = 0
-                if i_x_plus is not None:
-                    self.Gconst[i_x_branch, i_x_plus]  -= 1
-                if i_x_minus is not None:
-                    self.Gconst[i_x_branch, i_x_minus] += 1
-            
+
+                if not branch.indirect:
+                    ## KVL
+                    ## -V(branch) + i(x) + dq/dt(i(x0) + u(t) = 0
+                    if i_x_plus is not None:
+                        self.Gconst[i_x_branch, i_x_plus]  -= 1
+                    if i_x_minus is not None:
+                        self.Gconst[i_x_branch, i_x_minus] += 1
 
     def setup_branch_mapping(self, branchfilter=None):
         ## Set up mapping between global x-vector and inputs of all input branches.

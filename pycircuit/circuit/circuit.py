@@ -104,6 +104,9 @@ class Branch(object):
           may set all three values.
         *input* 
           If set, the circuit may use the voltage or current value of the branch
+        *indirect*
+          If set, the output quantity is not set directly but rather it takes the value that is required
+          to solve an equation. 
         *linear*
           If true, the voltage or current of output branches is a linear function
         *noisy*
@@ -125,6 +128,7 @@ class Branch(object):
     
     def __init__(self, plus, minus, potential=None, 
                  output='', input=False, linear=True, 
+                 indirect=False,
                  noisy=False, noise_correlated = False, noise_constant = False
                  ): # default is 'flow' branch, not 'potential' branch
         if potential is not None:
@@ -133,6 +137,7 @@ class Branch(object):
         self.minus            = makenode(minus)
         self.output           = output
         self.input            = input
+        self.indirect         = indirect
         self.linear           = linear
         self.noisy            = noisy
         self.noise_correlated = noise_correlated
@@ -172,7 +177,8 @@ class BranchRef(Branch):
         self.inst        = inst
         self.branch      = branch
 
-        for attr in ('plus', 'minus', 'potential', 'input',  'output', 'linear'):
+        for attr in ('plus', 'minus', 'potential', 'input',  'output', 'linear', 
+                     'indirect', 'noisy', 'noise_constant', 'noise_correlated'):
             setattr(self, attr, getattr(self.branch, attr))
 
     def plusnode(self, cir):

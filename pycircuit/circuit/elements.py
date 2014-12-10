@@ -562,23 +562,14 @@ class Nullor(Circuit):
 
     """
     terminals = ('inp', 'inn', 'outp', 'outn')
-    branches = (Branch(Node('outp'), Node('outn')),)
+    branches = (Branch('inp', 'inn', input=True), BranchV('outp', 'outn', indirect=True, output='i'))
 
-    def update(self, subject):
-        n = self.n
-        G = self.toolkit.zeros((n,n))
-        branchindex = -1
-        inpindex, innindex, outpindex, outnindex = \
-            (self.nodes.index(self.nodenames[name]) 
-             for name in ('inp', 'inn', 'outp', 'outn'))
-
-        G[outpindex, branchindex] += 1
-        G[outnindex, branchindex] += -1
-        G[branchindex, inpindex] += 1
-        G[branchindex, innindex] += -1
-        self._G = G
-
-    def G(self, x, epar=defaultepar): return self._G
+    def eval_iqu(self, x, epar):
+        input_v = x[0]
+        ## The ouput branch voltage should adjust it value so that the equation
+        ## invput_v == 0 is fulfilled
+        eq = input_v # input_v == 0
+        return eq,
 
 class Transformer(Circuit):
     """Ideal transformer
