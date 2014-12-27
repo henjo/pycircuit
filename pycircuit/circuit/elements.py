@@ -121,7 +121,7 @@ class C(Circuit):
         return q,
 
 class nC(Circuit):
-    """Capacitor
+    """Nonlinear capacitor
 
     >>> c = SubCircuit()
     >>> n1=c.add_node('1')
