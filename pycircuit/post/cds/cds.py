@@ -7,6 +7,9 @@ import skill
 import re
 import os, sys
 
+class SkillError(Exception):
+	pass
+
 def find_virtuoso():
 	"""Find Cadence Virtuoso binary"""
 	virtuosocmd = find_executable("icfb") or find_executable("virtuoso")
@@ -88,7 +91,7 @@ class CadenceSession(object):
 		responselines = [s for s in re.split("[\r]\n",self.cds.before) if s != ""]
 
 		if responselines[-1].find("*Error*") > 0:
-			raise Exception(self.cds.before)
+			raise SkillError(self.cds.before)
 
 		result = True
 		if parse:

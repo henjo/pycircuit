@@ -80,7 +80,7 @@ def toSkill(x):
         return '"' + x + '"'
     elif type(x) is BooleanType and x == True:
         return 't'
-    elif type(x) is BooleanType and x == False:
+    elif type(x) is BooleanType and x == False or x is None:
         return 'nil'
     elif isinstance(x, Symbol):
         return "'%s"%x.name
