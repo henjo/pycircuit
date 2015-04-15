@@ -69,6 +69,7 @@ class G(Circuit):
            [-0.001,  0.001]])
     """
     terminals = ('plus', 'minus')
+    branches = (BranchI(Node('plus'), Node('minus'), input=True, output='i', noisy=True),)
     instparams = [Parameter(name='g', desc='Conductance', unit='S', 
                             default=1e-3),
                   Parameter(name='noisy', desc='No noise', unit='', 
@@ -79,16 +80,29 @@ class G(Circuit):
         g = self.iparv.g
         self._G = self.toolkit.array([[g, -g],
                                       [-g, g]])
+    
+    def eval_iqu(self, x, epar):
+        branch_v = x[0]
+        return self.iparv.g * branch_v,
 
-    def G(self, x, epar=defaultepar): return self._G
+    def eval_noise(self, epar):
+        if self.iparv.noisy:
+            iPSD = 4 * self.toolkit.kboltzmann * epar.T * self.iparv.g
+        else:
+            iPSD = 0
+        return iPSD,
+
+
+    # def G(self, x, epar=defaultepar): return self._G
 
     def CY(self, x, w, epar=defaultepar):
         if self.iparv.noisy:
             iPSD = 4*self.toolkit.kboltzmann * epar.T*self.iparv.g
-            return  self.toolkit.array([[iPSD, -iPSD],
-                                        [-iPSD, iPSD]])
         else:
-            return super(G, self).CY(x, w, epar=epar)
+            iPSD = 0
+
+        return  self.toolkit.array([[iPSD, -iPSD],
+                                    [-iPSD, iPSD]])
         
 
 class C(Circuit):
