@@ -206,7 +206,7 @@ class MNA(NA):
             out[index] += value
         else:
             indexp, indexn = (self.get_node_index(branch.plus, instname),
-                              self.get_node_index(branch.minus, instname))
+                              self.get_node_index(branch.minus, instname)) 
 
             if indexp is not None:
                 out[indexp] += value
@@ -348,12 +348,16 @@ class MNA(NA):
 
     def setup_GCconst(self):
         super(MNA, self).setup_GCconst()
-        ## Add gyrators for all potential branches
+        ## Add gyrators for all direct potential branches
+        ## Indirect potential nodes only have a KCL that ensures that the flow
+        ## of the branch goes out and in of the plus and minus nodes
+        ##
         ## KCL:
         ## i(branch.plus)  = i(branch)
         ## i(branch.minus) = i(branch)
         ## KVL:
         ## v(branch.plus) - v(branch.minus) = 0
+        ##
         for i, branch in enumerate(self.cir.xflatbranches()):
             if branch.potential:
                 ## Find indices to plus and minus nodes and branch current
@@ -366,13 +370,14 @@ class MNA(NA):
                     self.Gconst[i_x_plus,  i_x_branch] += 1
                 if i_x_minus is not None:
                     self.Gconst[i_x_minus, i_x_branch] -= 1
-                ## KVL
-                ## -V(branch) + i(x) + dq/dt(i(x0) + u(t) = 0
-                if i_x_plus is not None:
-                    self.Gconst[i_x_branch, i_x_plus]  -= 1
-                if i_x_minus is not None:
-                    self.Gconst[i_x_branch, i_x_minus] += 1
-            
+
+                if not branch.indirect:
+                    ## KVL
+                    ## -V(branch) + i(x) + dq/dt(i(x0) + u(t) = 0
+                    if i_x_plus is not None:
+                        self.Gconst[i_x_branch, i_x_plus]  -= 1
+                    if i_x_minus is not None:
+                        self.Gconst[i_x_branch, i_x_minus] += 1
 
     def setup_branch_mapping(self, branchfilter=None):
         ## Set up mapping between global x-vector and inputs of all input branches.
@@ -511,27 +516,92 @@ class MNA(NA):
         x_branch_slices = slice_array(self.x_branch, branch_input_sizes)
         iqu_slices      = slice_array(self.iqu,      branch_output_sizes)
         jacobian_slices = slice_array(self.jacobian, jacobian_sizes)
-        
+
         self.inst_and_slices = zip(instances, 
                                    x_branch_slices,
                                    iqu_slices, 
                                    jacobian_slices)
 
-    # def setup_branch_noise_mapping(self, branchfilter=None):
-    #     ## Set up mapping between instance noise correlations and global CY matrix
-    #     ##
-    #     ## The mapping is calculated as:
-    #     ##
-    #     ## CY[
-    #     ## and global CY matrix
-    #     ## as
-    #     ## i[i_index_p] <- i[i_index_p] + branch_i[iqu_i_index_p]
-    #     ## i[i_index_n] <- i[i_index_n] - branch_i[iqu_i_index_n]
+        ## Set up branch noise to CY matrix mapping
+        self.setup_branch_noise_mapping()
 
-    #     ## Iterate over noisy branches
-    #     branches = self.cir.xflatbranches(branchfilter=lambda branch: branch.noisy)
-    #     for (instname, inst), branchrefs in groupby(branches, 
-    #                                                 lambda b: (b.instname, b.inst))
+    def setup_branch_noise_mapping(self, branchfilter=None):
+        # Set up mapping between instance noise correlations and global CY matrix
+        
+        # Output mapping is set up between the branch noise outputs
+        # branch_noise = [inst0_noise_corr_branch_0_0, inst0_noise_corr_branch_0_1, 
+        #                 inst0_noise_corr_branch_1_0, inst0_noise_corr_branch_1_1, 
+        #                 inst1_noise_corr_branch_0_0, inst1_noise_corr_branch_1_1, 
+        #                 ...
+        #                ]
+        
+        # and global CY matrix
+        # as
+        # CY[cy_indices_add] <- CY[cy_indices_add] + branch_noise[branch_noise_index_add]
+        # CY[cy_indices_sub] <- CY[cy_indices_sub] - branch_noise[branch_noise_index_sub]
+
+        cy_branch_i_p, cy_branch_i_n = None, None
+        cy_branch_j_p, cy_branch_j_n = None, None
+        def append_quad(cy_i_p, cy_i_n, cy_j_p, cy_j_n, branch_i):
+            self.cy_indices_add.append((cy_i_p, cy_j_p))
+            self.branch_noise_index_add.append(branch_i)
+
+            if (cy_i_n is not None) and (cy_j_n is not None):
+                self.cy_indices_add.append((cy_i_n, cy_j_n))
+                self.branch_noise_index_add.append(branch_i)
+
+            if cy_j_n is not None:
+                self.cy_indices_sub.append((cy_i_p, cy_j_n))
+                self.branch_noise_index_sub.append(branch_i)
+            
+            if cy_i_n is not None:
+                self.cy_indices_sub.append((cy_i_n, cy_j_p))
+                self.branch_noise_index_sub.append(branch_i)
+        
+        ## Init index vectors
+        self.cy_indices_add = []
+        self.cy_indices_sub = []
+        self.branch_noise_index_add = []
+        self.branch_noise_index_sub = []
+
+        ## Iterate over noisy branches
+        branches = self.cir.xflatbranches(branchfilter=lambda branch: branch.noisy)
+        noise_sizes = [] # number of noise correlation parameters returned by inst.eval_noise()
+        instances = []
+        branch_index = 0
+        for (instname, inst), branchrefs in groupby(branches, 
+                                                    lambda b: (b.instname, b.inst)):
+            start_branch_index = branch_index
+            instances.append(inst)
+
+            ## Generate list from iterator
+            branchrefs = list(branchrefs)
+
+            n_branches = len(branchrefs)
+            i_noise = 0 # index in eval_noise method return value
+            for i, branchref_i in enumerate(branchrefs):
+                cy_branch_i_p, cy_branch_i_n = self.map_branch_output(branchref_i)
+                
+                if branchref_i.branch.noise_correlated:
+                    for j, branchref_j in enumerate(branchrefs):
+                        if branchref_j.branch.noise_correlated:
+                            cy_branch_j_p, cy_branch_j_n = self.map_branch_output(branch_j)
+                            append_quad(cy_branch_i_p, cy_branch_i_n,
+                                        cy_branch_j_p, cy_branch_j_n, branch_index)
+                            branch_index += 1
+                else:
+                    append_quad(cy_branch_i_p, cy_branch_i_n,
+                                cy_branch_i_p, cy_branch_i_n, branch_index)
+                    branch_index += 1
+
+            noise_sizes.append(branch_index - start_branch_index)
+
+        self.branch_noise = self.toolkit.zeros(branch_index)
+
+        noise_slices = slice_array(self.branch_noise, noise_sizes)
+        
+        self.noise_inst_and_slices = zip(instances, noise_slices)
+
 
     def update(self, x, epar, static=True, dynamic=True, jacobians=True, noise=False):
         if self.dirty:
@@ -603,6 +673,15 @@ class MNA(NA):
                 inplace_sub_from(self.jacobians[out_type], branch_jacobian,
                                  self.jacobian_index_n2[out_type], 
                                  self.jacobian_branch_index_n2[out_type])
+            
+        if noise:
+            for inst, branch_noise_slice in self.noise_inst_and_slices:
+                branch_noise_slice[:] = inst.eval_noise(epar)
+
+            inplace_add_from(self.CY, self.branch_noise, 
+                             self.cy_indices_add, self.branch_noise_index_add)
+            inplace_sub_from(self.CY, self.branch_noise, 
+                             self.cy_indices_sub, self.branch_noise_index_sub)
 
     def generate_eval_iqu_and_der(self):
         for instname, inst in self.cir.xflatinstances():

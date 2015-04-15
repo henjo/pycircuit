@@ -94,7 +94,7 @@ class Branch(object):
         *G*
           i jacobian, di/d(v or i of input branches). The derivatives are stored as a list
         *C*
-          q jacobian, di/d(v or i of input branches). The derivatives are stored as a list
+          q jacobian, dq/d(v or i of input branches). The derivatives are stored as a list
         *potential*
           If set the branch the solver will enforce a potential between it's plus and minus nodes. Otherwise
           it is a flow branch.
@@ -104,10 +104,18 @@ class Branch(object):
           may set all three values.
         *input* 
           If set, the circuit may use the voltage or current value of the branch
+        *indirect*
+          If set, the output quantity is not set directly but rather it takes the value that is required
+          to solve an equation. 
         *linear*
           If true, the voltage or current of output branches is a linear function
         *noisy*
           If true, the voltage or current of output branches is noisy    
+        *noise_correlated*
+          If true, the branch noise is correlated with noise from other branches
+        *noise_constant*
+          If true, the branch noise does not vary with operating point, the noise may 
+          with the absolute temperature and still be considered constant
     
     """
 
@@ -119,15 +127,21 @@ class Branch(object):
     output = ''
     
     def __init__(self, plus, minus, potential=None, 
-                 output='', input=False, linear=True, noisy=False
+                 output='', input=False, linear=True, 
+                 indirect=False,
+                 noisy=False, noise_correlated = False, noise_constant = False
                  ): # default is 'flow' branch, not 'potential' branch
         if potential is not None:
             self.potential = potential
-        self.plus   = makenode(plus)
-        self.minus  = makenode(minus)
-        self.output = output
-        self.input  = input
-        self.linear = linear
+        self.plus             = makenode(plus)
+        self.minus            = makenode(minus)
+        self.output           = output
+        self.input            = input
+        self.indirect         = indirect
+        self.linear           = linear
+        self.noisy            = noisy
+        self.noise_correlated = noise_correlated
+        self.noise_constant   = noise_constant
 
     def __repr__(self):
         return '%s(%s, %s)' % (self.__class__.__name__, self.plus, self.minus)
@@ -163,7 +177,8 @@ class BranchRef(Branch):
         self.inst        = inst
         self.branch      = branch
 
-        for attr in ('plus', 'minus', 'potential', 'input',  'output', 'linear'):
+        for attr in ('plus', 'minus', 'potential', 'input',  'output', 'linear', 
+                     'indirect', 'noisy', 'noise_constant', 'noise_correlated'):
             setattr(self, attr, getattr(self.branch, attr))
 
     def plusnode(self, cir):
@@ -567,6 +582,9 @@ class Circuit(object):
 
     def eval_iqu_and_der(self, inputvalues, epar):
         return self.eval_iqu_and_der_func(self, inputvalues, epar)
+
+    def eval_noise(self, epar):
+        return ()
 
     def __repr__(self):
         return self.__class__.__name__ + \

@@ -39,6 +39,7 @@ def test_symbolic_noise_vin_vout():
 
     noise = Noise(c, inputsrc='vs', outputnodes=('2', gnd), 
                   toolkit=symbolic)
+    
     res = noise.solve(s, complexfreq=True)
 
     assert_equal(simplify(res['Svnout']), simplify(4*R1*R2*noise.toolkit.kboltzmann*noise.par.epar.T/(R1 + R2)))
@@ -72,7 +73,7 @@ def test_symbolic_noise_iin_vout():
     var('R1 R2', real=True)
     var('Iin')
 
-    c['is'] = IS(1, gnd, iac=Iin)
+    c['is'] = IS(gnd, 1, iac=Iin)
     c['R1'] = R(1, 2, r=R1)
     c['R2'] = R(2, gnd, r=R2)
 
@@ -93,7 +94,7 @@ def test_symbolic_noise_iin_iout():
     var('Iin s')
     k = symbolic.kboltzmann
 
-    c['is'] = IS(1, gnd, iac=Iin)
+    c['is'] = IS(gnd, 1, iac=Iin)
     c['R1'] = R(1, 2, r=R1)
     c['R2'] = R(2, gnd, r=R2)
     c['vl'] = VS(2, gnd)
