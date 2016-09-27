@@ -984,28 +984,29 @@ class SweepValueSimple(SweepValue):
         self.paramvalue = self.paramtype.getDataObj()
         self.paramvalue.deSerializeFile(file)
 
-        for datatype in self.psf.traces.children:
-            datatypeid = UInt32.fromFile(file)
+        if self.psf.traces is not None:
+            for datatype in self.psf.traces.children:
+                datatypeid = UInt32.fromFile(file)
 
-            if datatypeid in (17,16):
-                valuetypeid = UInt32.fromFile(file)
+                if datatypeid in (17,16):
+                    valuetypeid = UInt32.fromFile(file)
 
-                if valuetypeid != datatype.id:
-                    ## Unexpected value type id found
-                    ## This is probably because of missing trace values
-                    ## Undo read of datatypeid, valuetypeid and break out of loop and 
-                    file.seek(-2*UInt32.size, 1)
+                    if valuetypeid != datatype.id:
+                        ## Unexpected value type id found
+                        ## This is probably because of missing trace values
+                        ## Undo read of datatypeid, valuetypeid and break out of loop and 
+                        file.seek(-2*UInt32.size, 1)
+                        break
+
+                    value = datatype.getDataObj()
+                    value.deSerializeFile(file)
+                    self.children.append(value)
+                elif datatypeid == 15:
+                    ## End of section
+                    file.seek(-UInt32.size, 1)
                     break
-
-                value = datatype.getDataObj()
-                value.deSerializeFile(file)
-                self.children.append(value)
-            elif datatypeid == 15:
-                ## End of section
-                file.seek(-UInt32.size, 1)
-                break
-            else:
-                raise Exception("Datatypeid unknown 0x%x" % datatypeid)
+                else:
+                    raise Exception("Datatypeid unknown 0x%x" % datatypeid)
 
         return 1
 
@@ -1048,11 +1049,12 @@ class SweepValueWindowed(SweepValue):
                 self.paramvalue.append(paramvalue)
 
         # Get trace values
-        for trace in self.psf.traces.children:
-            value = trace.getDataObj()
-            value.deSerializeFile(file, count=n,
-                                  windowsize=self.psf.header.properties['PSF window size'].value)
-            self.children.append(value)
+        if self.psf.traces is not None:
+            for trace in self.psf.traces.children:
+                value = trace.getDataObj()
+                value.deSerializeFile(file, count=n,
+                                      windowsize=self.psf.header.properties['PSF window size'].value)
+                self.children.append(value)
 
         # Skip trailing padding bytes
         padsize = int((self.psf.header.properties['PSF buffer size'] - (file.tell()-bufferstart))% \
