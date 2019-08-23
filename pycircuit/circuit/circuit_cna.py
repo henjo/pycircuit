@@ -309,7 +309,7 @@ class Circuit(object):
 
         if node in self.nodes:
             index = self.nodes.index(node)
-            if refnode != None:
+            if refnode is not None:
                 irefnode = self.nodes.index(refnode)
                 if index == irefnode:
                     return None
@@ -419,7 +419,7 @@ class Circuit(object):
                [ 1.   ,  0.   , -1.   ,  0.   ]])
         """
         
-        if self.get_terminal_branch(terminal) == None:
+        if self.get_terminal_branch(terminal) is None:
             return ProbeWrapper(self, terminals = (terminal,))
         else:
             return self            
@@ -440,7 +440,7 @@ class Circuit(object):
         will have a instancename<dot> prefix added to the node name
 
         """
-        if instancename == None:
+        if instancename is None:
             return self.nodes[self._nterminalnodes:]
         else:
             result = []
@@ -588,7 +588,7 @@ class Circuit(object):
         for node in nodep, noden:
             if type(node) is types.StringType:
                 node = self.get_node(node)
-            elif node == None:
+            elif node is None:
                 node = refnode
 
             if refnode_removed:
@@ -596,7 +596,7 @@ class Circuit(object):
             else:
                 nodeindex = self.get_node_index(node, None)
 
-            if nodeindex == None: ## When node == refnode
+            if nodeindex is None: ## When node == refnode
                 v.append(0)
                 continue
                     
@@ -670,12 +670,12 @@ class Circuit(object):
 
             branch_sign = self.get_terminal_branch(branch_or_term)
 
-            if branch_sign != None:
+            if branch_sign is not None:
                 branch, sign = branch_sign
             else:
                 terminal_node = self.nodenames[branch_or_term]
                 
-                if xdot == None:
+                if xdot is None:
                     raise ValueError('xdot argument must not be None if no' 
                                      'branch is connected to the terminal')
 
@@ -735,7 +735,7 @@ class Circuit(object):
                            instancebranches = None):
         """Return circuit branches from instance branches
         """
-        if instancebranches == None:
+        if instancebranches is None:
             instancebranches = instance.branches
 
         for instancebranch in instancebranches:
@@ -1032,18 +1032,18 @@ class SubCircuit(Circuit):
         """
 
         ## Use name of node object if present
-        if node.name != None:
+        if node.name is not None:
             return node.name
         
         ## First search among the local nodes
         name = Circuit.get_node_name(self, node)
-        if name != None:
+        if name is not None:
             return name
         
         ## Then search in the circuit elements
         for instname, element in self.elements.items():
             name =  element.get_node_name(node)
-            if name != None:
+            if name is not None:
                 return instname + '.' + name
         
     def update_node_map(self):
@@ -1143,7 +1143,7 @@ class SubCircuit(Circuit):
                   refnode = gnd, refnode_removed = False, 
                   linearized = False, xdcop = None):
         if type(branch_or_term) is types.StringType:
-            if self.get_terminal_branch(branch_or_term) == None:
+            if self.get_terminal_branch(branch_or_term) is None:
 
                 hierlevels = [part for part in branch_or_term.split('.')]
 
@@ -1157,7 +1157,7 @@ class SubCircuit(Circuit):
 
                     subx = x[nodemap]
 
-                    if xdot != None:
+                    if xdot is not None:
                         subxdot = xdot[nodemap]
                     else:
                         subxdot = None
@@ -1188,7 +1188,7 @@ class SubCircuit(Circuit):
         for instance, element in self.elements.items():
             nodemap = self.elementnodemap[instance]
 
-            if x != None:
+            if x is not None:
                 subx = x[nodemap]
                 try:
                     rhs = getattr(element, methodname)(subx, *args)
@@ -1209,7 +1209,7 @@ class SubCircuit(Circuit):
         lhs = self.toolkit.zeros(n, dtype=dtype)
 
         for instance, element in self.elements.items():
-            if x != None:
+            if x is not None:
                 subx = x[self.elementnodemap[instance]]
                 rhs = getattr(element, methodname)(subx, *args)
             else:
@@ -1257,7 +1257,7 @@ class ProbeWrapper(SubCircuit):
         """Returns a circuit where the given terminal current is saved"""
         
         ## Add probe to terminal if it does not already exists
-        if self.get_terminal_branch(terminal) == None:
+        if self.get_terminal_branch(terminal) is None:
             node = self.get_node(terminal)
             ## Add internal node
             internal_node = self.add_node(terminal + '_internal')
@@ -1288,7 +1288,7 @@ class CircuitProxy(Circuit):
         
         ## Find out how this instance was connected to its parent
         ## and set terminalhook accordingly
-        if isinstance(parent, SubCircuit) and instance_name != None:
+        if isinstance(parent, SubCircuit) and instance_name is not None:
             self.terminalhook = parent.term_node_map[instance_name]
 
     def G(self, x, epar=defaultepar): return self.device.G(x,epar)

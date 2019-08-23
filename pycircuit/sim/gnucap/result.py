@@ -23,7 +23,7 @@ class GnucapResult(InternalResultDict, IVResultDict):
         names = re.split("\s+", header.rstrip())
         data = {}
 
-        if xlabels == None:
+        if xlabels is None:
             xlabels = names[:sweep_dimensions]
         else:
             xlabels = list(xlabels)
@@ -53,7 +53,7 @@ class GnucapResult(InternalResultDict, IVResultDict):
         """Returns the voltage between the plus and minus node or potential of plus node"""
         vplus = self['v(' + str(plus) + ')'] 
         vminus = 0
-        if minus != None:
+        if minus is not None:
             vminus = self['v(' + str(minus) + ')']
         return vplus - vminus
 

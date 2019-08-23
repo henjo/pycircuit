@@ -154,7 +154,7 @@ class Transient(Analysis):
             yield t,dt
             de=self._diff_error
             iq=self._iq
-            if (de != None) and (iq != None):
+            if (de is not None) and (iq is not None):
                 #iq_error=self.toolkit.dot(de,de)/self.toolkit.dot(iq,iq)-iq_tolerance
                 #print iq_error
                 dt = max(dt, dtmin)
@@ -175,7 +175,7 @@ class Transient(Analysis):
         dt=self._dt
         a,b,b_=self._method[self.par.method] 
         resultEuler = (q-self._qlast[0])/dt
-        if self._iqlast == None: #first step always requires backward euler
+        if self._iqlast is None: #first step always requires backward euler
             geq=C/dt
             n=self.cir.n
             self._iqlast=self.toolkit.zeros((len(b),n)) #initialize history vectors at first step
@@ -217,7 +217,7 @@ class Transient(Analysis):
         
         # Insert reference node voltage
         #x = self.toolkit.concatenate((x[:irefnode], self.toolkit.array([0.0]), x[irefnode:]))
-        if provided_function != None:
+        if provided_function is not None:
             result=x,provided_function(f,J,C)
         else:
             result=x,None

@@ -104,18 +104,18 @@ class ParameterDict(misc.ObserverSubject):
         ## Create a substition dictionary
         substdict = {}
         for paramdict in values:
-            if paramdict != None:
+            if paramdict is not None:
                 for param in paramdict.parameters:
                     substdict[param.name] = paramdict.get(param)
 
-        if parameters == None:
+        if parameters is None:
             parameters = self.keys()
 
         updated_values = {}
         for paramname in parameters:
             expr = self.get(paramname)
 
-            if expr != None:
+            if expr is not None:
                 try:
                     if isinstance(expr, str):
                         value = eval(expr, substdict)

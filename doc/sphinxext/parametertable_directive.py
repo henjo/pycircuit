@@ -42,7 +42,7 @@ class ParameterTableDirective(Directive):
         def add_row(target, *column_texts):
             row = nodes.row('')
             for text in column_texts:
-                if text == None:
+                if text is None:
                     text = ""
                 node = nodes.paragraph('')
                 vl = ViewList()

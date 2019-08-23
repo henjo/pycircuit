@@ -190,7 +190,7 @@ def IIP3(output, input, fund1, fund2, fund0=None):
 
     """
     s = abs(output)
-    if fund0 == None:
+    if fund0 is None:
         gain = value(s/abs(input), fund1)
     else:
         gain = value(s, abs(fund1)) / value(abs(input), abs(abs(fund1)+fund0))
@@ -204,7 +204,7 @@ def IIP2(output, input, fund1, fund2, fund0=None):
 
     """
     s = abs(output)
-    if fund0 == None:
+    if fund0 is None:
         gain = value(s/abs(input), fund1)
     else:
         gain = value(s, abs(fund1)) / value(abs(input), abs(abs(fund1)+fund0))
@@ -269,7 +269,7 @@ def dft(w):
 def calc_extrapolation_line(w_db, slope, extrapolation_point=None, 
                              axis = -1, plot = False, plotargs = {}):
     """Return linear extrapolation line and optionally plot it"""
-    if extrapolation_point == None:
+    if extrapolation_point is None:
         extrapolation_point = w_db.xval(axis=axis).ymin(axis=axis)
        
     m = w_db.value(extrapolation_point, axis=axis) - slope * extrapolation_point

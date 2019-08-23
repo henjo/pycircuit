@@ -119,11 +119,11 @@ class LogSweep(Sweep):
         self.n = n
         self.decade = decade
 
-        if n == None and decade == None or \
-                n != None and decade != None:
-            raise ValueError("Either n or decade must be != None")
+        if n is None and decade is None or \
+                n is not None and decade is not None:
+            raise ValueError("Either n or decade must be is not None")
         
-        if decade != None:
+        if decade is not None:
             n = (np.log10(stop) - np.log10(start)) * decade + 1
 
         self.iter = np.logspace(np.log10(start), np.log10(stop), n).__iter__()

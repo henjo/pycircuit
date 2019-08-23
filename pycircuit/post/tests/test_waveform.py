@@ -325,7 +325,7 @@ def check_func(func, reference_func, args, preserve_yunit = False,
         assert_equal(res.xlabels, x.xlabels)
         assert_equal(res.xunits, x.xunits)
 
-        if ref_ylabel == None:
+        if ref_ylabel is None:
             ref_ylabel = func.__name__ + '(' + x.ylabel + ')'
         else:
             ref_ylabel = ref_ylabel%x.ylabel

@@ -34,7 +34,7 @@ class PSFReader(object):
         >>> psf.getNSweepPoints()
         4
         """
-        if self.ds == None:
+        if self.ds is None:
             ValueError("Please open the PSF file first")
         return self.ds.get_sweep_npoints()
 
@@ -66,7 +66,7 @@ class PSFReader(object):
         ('R0', 'V1', 'V0', 'E0', 'VIN', 'NET9', 'VOUT')
 
         """
-        if self.ds == None:
+        if self.ds is None:
             raise ValueError("Please open the PSF file first")
         return tuple(self.ds.get_signal_names())
     
@@ -88,7 +88,7 @@ class PSFReader(object):
         array([  0.00000000e+00,   2.00000000e-11,   5.33333333e-11])
 
         """
-        if self.ds == None:
+        if self.ds is None:
             raise ValueError("Please open the PSF file first")
         return self.ds.get_sweep_values()
 
@@ -101,7 +101,7 @@ class PSFReader(object):
         'subthreshold'
 
         """
-        if self.ds == None:
+        if self.ds is None:
             raise ValueError("Please open the PSF file first")
         return self.ds.get_signal_properties(name)
 
@@ -152,7 +152,7 @@ class PSFReader(object):
                 0.+0.j,  0.+0.j])
 
         """
-        if self.ds == None:
+        if self.ds is None:
             raise ValueError("Please open the PSF file first")
         return self.ds.get_signal(name)
         
@@ -164,7 +164,7 @@ class PSFReader(object):
         >>> psf.nTraces()
         3
         """
-        if self.ds == None:
+        if self.ds is None:
             raise ValueError("Please open the PSF file first")
         return self.hprops['PSF traces']
 

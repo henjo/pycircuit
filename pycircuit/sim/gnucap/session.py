@@ -17,7 +17,7 @@ class GnucapSessionPexpect(GnucapSession):
     prompt = 'gnucap>'
     
     def __init__(self, executable = None):
-        if executable == None:
+        if executable is None:
             if 'GNUCAP' in os.environ:
                 executable = os.environ['GNUCAP']
             else:

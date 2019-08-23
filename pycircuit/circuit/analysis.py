@@ -48,7 +48,7 @@ class CircuitResult(IVResultDict, InternalResultDict):
     def v(self, plus, minus=None):
         result = self.circuit.extract_v(self.x, plus, minus)
 
-        if minus != None:
+        if minus is not None:
             ylabel = 'v(%s,%s)'%(str(plus), str(minus))
         else:
             ylabel = 'v(%s)'%(str(plus))
@@ -79,8 +79,8 @@ class Analysis(sim.Analysis):
         self.parameters = super(Analysis, self).parameters + self.parameters
         super(Analysis, self).__init__(cir, **kvargs)
 
-        if toolkit == None:
-            if cir.toolkit == None:
+        if toolkit is None:
+            if cir.toolkit is None:
                 toolkit = numeric
             else:
                 toolkit = cir.toolkit

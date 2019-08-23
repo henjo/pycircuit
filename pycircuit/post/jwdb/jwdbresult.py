@@ -239,7 +239,7 @@ class _Analysis(object):
             if len(x) > 1:
                 ylist.extend(y)
 
-                if xfirst == None:
+                if xfirst is None:
                     xfirst = x
                 else:
                     if x != xfirst:

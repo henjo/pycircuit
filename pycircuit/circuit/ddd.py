@@ -34,12 +34,12 @@ class Node(object):
             self.D0 = None
         else:
             # Default arguments
-            if D1 == None:
+            if D1 is None:
                 self.D1 = VertexOne
             else:
                 self.D1 = D1
 
-            if D0 == None:
+            if D0 is None:
                 self.D0 = VertexZero
             else:
                 self.D0 = D0
@@ -62,7 +62,7 @@ class Node(object):
             return Node(self.index, D1=self.D1.remainder(s), D0=self.D0.remainder(s))
 
     def isleaf(self):
-        return self.D0 == None and self.D1 == None
+        return self.D0 is None and self.D1 is None
 
     def __eq__(self, P):
         if not isinstance(P, Node):
@@ -126,7 +126,7 @@ class Node(object):
         return self.intersec(s)
 
     def eval(self):
-        if self.D1 == None and self.D0 == None:
+        if self.D1 is None and self.D0 is None:
             return self.index
         else:
             return self.D0.eval() + self.sign * self.index * self.D1.eval()

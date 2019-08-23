@@ -16,14 +16,14 @@ class Circuit(pycircuit.sim.Circuit):
         if not isinstance(value, Instance):
             raise ValueError('instance must be Instance object')
 
-        if value.name_prefix != None and not key.startswith(value.name_prefix):
+        if value.name_prefix is not None and not key.startswith(value.name_prefix):
             raise ValueError('instance name must start with %s'%
                              value.name_prefix)
 
         self.instances[key] = value
 
     def __str__(self):
-        if self.netlist == None:
+        if self.netlist is None:
             res = ''
             for k, v in self.instances.items():
                 res += k + ' ' + str(v) + '\n'

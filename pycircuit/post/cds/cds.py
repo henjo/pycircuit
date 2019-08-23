@@ -13,7 +13,7 @@ class SkillError(Exception):
 def find_virtuoso():
 	"""Find Cadence Virtuoso binary"""
 	virtuosocmd = find_executable("icfb") or find_executable("virtuoso")
-	if  virtuosocmd == None:
+	if  virtuosocmd is None:
 		raise ValueError("Cannot find virtuoso executable")
 		
 	cmd = virtuosocmd + " -nographE"
@@ -32,7 +32,7 @@ class CadenceSession(object):
 	
 	"""
 	def __init__(self, cmd=None, timeout=30, verbose=False):
-		if cmd == None:
+		if cmd is None:
 			cmd = find_virtuoso()
 		self.verbose = verbose
 		self.cds = pexpect.spawn(cmd, timeout=timeout)

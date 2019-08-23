@@ -101,7 +101,7 @@ class Waveform(object):
         array([ 1.5,  2.5])
         """
 
-        if axis == None:
+        if axis is None:
             return self._xlist
         else:
             axis = self.getaxis(axis)
@@ -496,7 +496,7 @@ class Waveform(object):
                 label = ','.join([self.xlabels[iaxis] + '=' + \
                       str(self._xlist[iaxis][ix]) for iaxis, ix in enumerate(i)
                                   if ix != slice(None)])
-                if labelarg != None:
+                if labelarg is not None:
                     label = labelarg % (label,)
                 
                 kvargs['label'] = label
@@ -616,18 +616,18 @@ class Waveform(object):
         return self._xunits
 
     def set_xunits(self, units):
-        if units == None:
+        if units is None:
             self._xunits = len(self._xlist) * ['']
         else:
             self._xunits = self.__checklabels(units)
 
     def get_yunit(self):
-        if self._yunit != None:
+        if self._yunit is not None:
             return self._yunit
         else:
             return ''
     def set_yunit(self, s):
-        if not isinstance(s, basestring) and s != None:
+        if not isinstance(s, basestring) and s is not None:
             raise ValueError('Unit must be a string')
         self._yunit = s
 
@@ -635,18 +635,18 @@ class Waveform(object):
         return self._xlabels
 
     def set_xlabels(self, labels):
-        if labels == None:
+        if labels is None:
             self._xlabels = list(['x%d'%i for i in range(len(self._xlist))])
         else:
             self._xlabels = self.__checklabels(labels, unique=True)
 
     def get_ylabel(self):
-        if self._ylabel != None:
+        if self._ylabel is not None:
             return self._ylabel
         else:
             return 'y'
     def set_ylabel(self, s):
-        if not isinstance(s, basestring) and s != None:
+        if not isinstance(s, basestring) and s is not None:
             raise ValueError('Label must be a string')
         self._ylabel = s
 
@@ -722,9 +722,9 @@ class Waveform(object):
         w = copy(self)
 
         w._xlist = list_swap(w._xlist, i, j)
-        if w._xlabels != None:
+        if w._xlabels is not None:
             w._xlabels = tuple(list_swap(w._xlabels, i, j))
-        if w._xunits != None:
+        if w._xunits is not None:
             w._xunits = tuple(list_swap(w._xunits, i, j))
 
         w._y = w._y.swapaxes(i,j)
@@ -813,7 +813,7 @@ class Waveform(object):
             repr(self.y) + ")"
 
     def __checklabels(self, labels, unique=False):
-        if not labels == None:
+        if not labels is None:
             try:
                 labels = list(labels)
             except:
@@ -916,7 +916,7 @@ def applyfunc_and_reducedim(func, w, axis = -1, ylabel = None, yunit = None):
     del newyshape[axis]
     newy = apply_along_axis(func, axis, w._y).reshape(newyshape)
 
-    if ylabel != None:
+    if ylabel is not None:
         ylabel = func.__name__ + '(' + ylabel + ')'
     
     return reducedim(w, newy, axis=axis, ylabel=ylabel, yunit=yunit)
@@ -927,10 +927,10 @@ def reducedim(w, newy, axis=-1, ylabel=None, yunit=None):
     if rank(newy) == 0:
         return np.asscalar(newy)
 
-    if ylabel == None:
+    if ylabel is None:
         ylabel = w.ylabel
 
-    if yunit == None:
+    if yunit is None:
         yunit = w.yunit
 
     newxlist = list(w._xlist)
@@ -1110,18 +1110,18 @@ def compose(wlist, x = None, xlabel = None):
     """
     if not compatible(*wlist):
         return ValueError('Waveforms in wlist are not compatible')
-    if x != None and len(wlist) != len(x):
+    if x is not None and len(wlist) != len(x):
         return ValueError('Number of x-values must be the same '
                           'as the number of waveforms')
 
     newy = np.array([w.y for w in wlist])
 
-    if x == None:
+    if x is None:
         newx = [range(len(wlist))] + wlist[0].x
     else:
         newx = [x] + wlist[0].x
 
-    if xlabel == None:
+    if xlabel is None:
         xlabel = 'composite index'
 
     return Waveform(newx, newy,

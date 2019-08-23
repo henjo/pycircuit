@@ -26,7 +26,7 @@ def find_nulling_indices(circuit, x, inp=None, inn=None, outp=None, outn=None,
         return [[[terminal_node_indices[0]],[terminal_node_indices[1]]],
                 terminal_node_indices]
     else:
-        if inp == None:
+        if inp is None:
             allports = combinations(terminal_node_indices, 2)
             all_combinations = combinations(allports, 2)
         else:
@@ -114,7 +114,7 @@ class LoopBreaker(CircuitProxy):
                                                     circuit.toolkit.zeros(circuit.n),
                                                     inp, inn, outp, outn)
         
-        if self.nulling_indices == None:
+        if self.nulling_indices is None:
             raise LoopBreakError('Could not detect dependent source')
         
     def G(self, x, epar=defaultepar): 

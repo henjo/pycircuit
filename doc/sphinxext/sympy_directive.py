@@ -82,7 +82,7 @@ def sympy_directive(name, arguments, options, content, lineno,
     if options['include-source'] is None:
         options['include-source'] = config.plot_include_source
 
-    if 'persistent' in options and saved_namespace != None:
+    if 'persistent' in options and saved_namespace is not None:
         ns = saved_namespace
     else:
         ns = {}
@@ -101,7 +101,7 @@ def sympy_directive(name, arguments, options, content, lineno,
         ## Evaluate statement
         result = eval_line(unescape_doctest(line), ns)
 
-        if result != None:
+        if result is not None:
             if options['include-source']:
                 rst += rst_codeblock(codeblock)
                 codeblock = ''

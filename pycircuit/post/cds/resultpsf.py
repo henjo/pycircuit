@@ -327,7 +327,7 @@ class PSFLogItem(object):
         return os.path.join(log.dirname(), self.valuedict['dataFile'])
     
     def get_psfobj(self, log):
-        if self.psfobj == None:
+        if self.psfobj is None:
             if self.valuedict['format'] == 'PSF':
                 self.psfobj = create_psfreader(self.get_datafile(log))
                 self.psfobj.open()
@@ -459,7 +459,7 @@ class PSFResult(result.ResultDict):
         {'i': 2.5000000000000002e-06, 'res': 99999.999999999985, 'pwr': 6.2500000000000005e-07, 'v': 0.25}
 
         """
-        if outputname == None:
+        if outputname is None:
             res = {}
             for output in self.keys():
                 res[output] = self[output]
@@ -523,7 +523,7 @@ class PSFResultFamily(result.ResultDict):
         apa
 
         """
-        if outputname == None:
+        if outputname is None:
             res = {}
 #            for output in self.keys():
 #                res[output] = self[output]

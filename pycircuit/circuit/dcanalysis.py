@@ -72,7 +72,7 @@ class DC(Analysis):
         x0 = self.toolkit.zeros(self.cir.n) # Would be good with a better initial guess
 
         for algorithm in convergence_helpers:
-            if algorithm == None:
+            if algorithm is None:
                 raise last_e
             else:
                 if algorithm.__doc__:

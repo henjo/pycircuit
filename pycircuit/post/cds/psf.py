@@ -174,7 +174,7 @@ class Struct(PSFData):
         return dict([(k,v.getValue()) for k,v in self.value.items()])
 
     def setValue(self, value):
-        assert(value != None and len(value) == len(self.structdef.children))
+        assert(value is not None and len(value) == len(self.structdef.children))
         for element, val in zip(self.structdef.children, value):
             valueobj = element.getDataObj()
             valueobj.setValue(val)
@@ -200,7 +200,7 @@ class Array(PSFData):
     def setValue(self, value):
         dataclass, length = self.extarg
 
-        if value != None:
+        if value is not None:
             self.children = [dataclass(value=val) for val in value]
         else:
             self.children = [dataclass(value=None) for val in range(length)]
@@ -231,7 +231,7 @@ class Chunk:
         self.fileoffset = file.tell()
 
         type = UInt32.fromFile(file)
-        if (self.type != None) and self.type != type:
+        if (self.type is not None) and self.type != type:
             file.seek(-UInt32.size, 1)
             raise IncorrectChunk(type, self.type)
 
@@ -1083,7 +1083,7 @@ class GroupData(PSFData):
         self.children = []
     def deSerializeFile(self, file, count=None, windowsize=None):
         for element in self.groupdef.children:
-            if count==None:
+            if count is None:
                 value = element.getDataObj()
                 value.deSerializeFile(file)
                 self.children.append(value)
@@ -1103,7 +1103,7 @@ class GroupData(PSFData):
                 self.children.append(valuearray)
 
     def toPSFasc(self, prec=None, index=None):
-        if index != None:
+        if index is not None:
             return "\n".join([v[index].toPSFasc(prec) for v in self.children])
         else:
             return "\n".join([v.toPSFasc(prec) for v in self.children])
@@ -1242,7 +1242,7 @@ class PSFReader(object):
         >>> psf.open()
         """
         
-        if self.asc == None:
+        if self.asc is None:
             self.asc = psfasc.is_psfasc(self.filename)
 
         if not self.asc:
@@ -1273,7 +1273,7 @@ class PSFReader(object):
         >>> psf.validate()
         False
         """
-        if self.file == None:
+        if self.file is None:
             file = open(self.filename, "rb")
         else:
             file = self.file
@@ -1291,7 +1291,7 @@ class PSFReader(object):
         >>> psf.getNSweepPoints()
         4
         """
-        if self.file == None:
+        if self.file is None:
             ValueError("Please open the PSF file first")
         return self.header.properties['PSF sweep points']
 
@@ -1303,7 +1303,7 @@ class PSFReader(object):
         >>> psf.getNSweeps()
         1
         """
-        if self.file == None:
+        if self.file is None:
             ValueError("Please open the PSF file first")
         return self.header.properties['PSF sweeps']
 
@@ -1416,7 +1416,7 @@ class PSFReader(object):
         >>> psf.nTraces()
         3
         """
-        if self.file == None:
+        if self.file is None:
             ValueError("Please open the PSF file first")
         return self.header.properties['PSF traces']
 

@@ -286,14 +286,14 @@ class Noise(SSAnalysis):
         super(Noise, self).__init__(cir, **kvargs)
 
     
-        if not (self.par.outputnodes != None or self.par.outputsrc != None):
+        if not (self.par.outputnodes is not None or self.par.outputsrc is not None):
             raise ValueError('Output is not specified')
-        elif self.par.outputnodes != None and self.par.outputsrc != None:
+        elif self.par.outputnodes is not None and self.par.outputsrc is not None:
             raise ValueError('Cannot measure both output current and voltage '
                              'noise')
         
         if not (type(self.par.inputsrc) is types.StringType and \
-                self.par.outputsrc == None or \
+                self.par.outputsrc is None or \
                     type(self.par.outputsrc) is types.StringType):
             raise ValueError('Sources must be given as instance names')
 
@@ -359,7 +359,7 @@ class Noise(SSAnalysis):
             return xn2out[0], gain
 
         # Calculate output voltage noise
-        if self.outputnodes != None:
+        if self.outputnodes is not None:
             ioutp, ioutn = (self.cir.get_node_index(node) 
                             for node in self.outputnodes)
             u[ioutp] = -1
@@ -381,9 +381,9 @@ class Noise(SSAnalysis):
         # Store results
         result = InternalResultDict()
 
-        if self.outputnodes != None:
+        if self.outputnodes is not None:
             result['Svnout'] = xn2out
-        elif self.outputsrc != None:
+        elif self.outputsrc is not None:
             result['Sinout'] = xn2out
 
         # Calculate the gain from the input voltage source by using the 
@@ -426,7 +426,7 @@ def dc_steady_state(cir, freqs, refnode, toolkit, complexfreq = False,
     CY = cir.CY(x, toolkit.imag(ss), epar)
 
     ## Allow for custom stimuli, mainly used by other analyses
-    if u == None:
+    if u is None:
         u = cir.u(x, analysis=analysis, epar=epar)
 
     return G, C, CY, u, x, ss

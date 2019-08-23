@@ -31,7 +31,7 @@ def fourier_analysis(t, x, harmonics=range(9)):
     pwc = np.array([x[:-1] - t[:-1] * xdelta / h, xdelta / h])
 
 #    tck = interpolate.splrep(t, x, per=1)  
-#    if xdot == None:
+#    if xdot is None:
 #        xdot = interpolate.splev(t, tck, der=1)
 
     c_k = []

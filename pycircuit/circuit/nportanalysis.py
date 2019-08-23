@@ -362,7 +362,7 @@ def linearsolver_partial(Y, u, refnode, selected_res, cir, toolkit, detY=None):
     "v(nodea, nodeb)" or "v(nodea)" for voltage potentials.
 
     """
-    if detY == None:
+    if detY is None:
         detY = toolkit.det(Y)
     
     uindices = toolkit.nonzero(u)
@@ -384,7 +384,7 @@ def linearsolver_partial(Y, u, refnode, selected_res, cir, toolkit, detY=None):
             num = 0
             for ui in uindices:
                 for sign, nodeindex in zip([1,-1], nodes_indices):
-                    if nodeindex != None:
+                    if nodeindex is not None:
                         num += sign * -u[ui] * toolkit.cofactor(Y, ui, nodeindex)
                         
         result[res_str] = num / detY

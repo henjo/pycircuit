@@ -146,7 +146,7 @@ def factor_cartesian(table):
         for k, g in groupby(table, itemgetter(0)):
             result1.append(k)
         
-            if resultk == None:
+            if resultk is None:
                 rest = map(itemgetter(slice(1,None)), g)
                 resultk = factor_cartesian(rest)
             

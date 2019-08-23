@@ -95,7 +95,7 @@ class NPortY(NPort):
         else:
             self.Y = np.array(Y)
         
-            if CY == None:
+            if CY is None:
                 self.CY = np.zeros(np.shape(self.Y))
             else:
                 self.CY = np.array(CY)
@@ -157,7 +157,7 @@ class NPortZ(NPort):
         else:
             self.Z = np.array(Z)
         
-            if CZ == None:
+            if CZ is None:
                 self.CZ = np.zeros(np.shape(self.Y))
             else:
                 self.CZ = np.array(CZ)
@@ -218,7 +218,7 @@ class NPortA(NPort):
         else:
             self.A = np.array(A)
 
-            if CA == None:
+            if CA is None:
                 self.CA = np.zeros(np.shape(self.Y))
             else:
                 self.CA = np.array(CA)
@@ -301,7 +301,7 @@ class NPortS(NPort):
         else:
             self.S = np.array(S)
         
-            if CS == None:
+            if CS is None:
                 self.CS = np.zeros(np.shape(self.S))
             else:
                 self.CS = np.array(CS)

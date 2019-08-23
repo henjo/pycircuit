@@ -26,11 +26,11 @@ class Simulation(pycircuit.sim.Simulation):
         else:
             self.session = GnucapSessionPexpect(executable)
 
-        if circuit != None and not isinstance(circuit, Circuit):
+        if circuit is not None and not isinstance(circuit, Circuit):
             raise ValueError('Circuit instance must be a %s instance'%
                              str(Circuit))
         
-        if circuit != None:
+        if circuit is not None:
             self.update_netlist()
 
     def command(self, command, parse_result = False):

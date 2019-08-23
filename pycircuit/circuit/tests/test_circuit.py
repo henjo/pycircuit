@@ -215,7 +215,7 @@ def test_current_probing():
     
     cir = cir.save_current('I1.plus')
     
-    assert cir.get_terminal_branch('I1.plus') != None
+    assert cir.get_terminal_branch('I1.plus') is not None
     
     res = AC(cir, toolkit=symbolic).solve(s, complexfreq=True)
 
