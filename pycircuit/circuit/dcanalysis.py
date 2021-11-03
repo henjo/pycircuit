@@ -79,7 +79,7 @@ class DC(Analysis):
                     logging.info('Trying ' + algorithm.__doc__)
                 try:
                     x = algorithm(x0)
-                except (NoConvergenceError, SingularMatrix), last_e:
+                except (NoConvergenceError, SingularMatrix) as last_e:
                     logging.warning('Problems encoutered: ' + str(last_e))
                 else:
                     break
@@ -142,7 +142,7 @@ class DC(Analysis):
                             abstol = abstol, xtol=xtol,
                             maxiter = self.par.maxiter,
                             toolkit = self.toolkit)
-        except self.toolkit.linearsolverError(), e:
+        except self.toolkit.linearsolverError() as e:
             raise SingularMatrix(e.message)
 
         x, infodict, ier, mesg = result

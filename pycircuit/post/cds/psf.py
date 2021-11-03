@@ -1447,7 +1447,7 @@ class PSFReader(object):
         file.seek(-4,2)
         datasize = UInt32.fromFile(file).value
         if self.verbose:
-            print "Total data size: ",datasize
+            print("Total data size: ",datasize)
 
         # Read Clarissa signature
         file.seek(-4-8,2)

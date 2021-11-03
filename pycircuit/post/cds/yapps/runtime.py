@@ -435,7 +435,7 @@ def print_error(err, scanner, max_ctx=None):
 def wrap_error_reporter(parser, rule, *args,**kw):
 	try:
 		return getattr(parser, rule)(*args,**kw)
-	except SyntaxError, e:
+	except SyntaxError as e:
 		print_error(e, parser._scanner)
 	except NoMoreTokens:
 		print >>sys.stderr, 'Could not complete parsing; stopped around here:'

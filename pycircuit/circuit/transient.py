@@ -119,7 +119,7 @@ class Transient(Analysis):
                             abstol = abstol, xtol=xtol,
                             maxiter = self.par.maxiter,
                             toolkit = self.toolkit)
-        except self.toolkit.linalg.LinAlgError, e:
+        except self.toolkit.linalg.LinAlgError as e:
             raise SingularMatrix(e.message)
         
         x, infodict, ier, mesg = result

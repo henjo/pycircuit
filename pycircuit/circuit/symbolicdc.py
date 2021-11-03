@@ -48,7 +48,7 @@ class SymbolicDC(Analysis):
             else:
                 sol = sympy.solve(eqsys, *x)
 
-        except NotImplementedError, last_e:
+        except NotImplementedError as last_e:
             logging.error('Solver for equation %s not implemented in Sympy'%str(eqsys))
 
             raise last_e
