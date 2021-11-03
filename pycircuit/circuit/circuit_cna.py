@@ -801,7 +801,7 @@ class SubCircuit(Circuit):
         >>> from elements import *
         >>> a = SubCircuit()
         >>> a['R1'] = R(1,2)
-        >>> print a.netlist()
+        >>> print(a.netlist())
         R1 1 2 R r=1000.0 noisy=True
     
         """

@@ -262,7 +262,6 @@ class PSFRun(object):
                 except KeyError:
                     psffiles.append(None)
 
-            print psffiles
             return PSFResultFamily(sweepvariables, sweepvalues, psffiles)
         
     def __repr__(self):

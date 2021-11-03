@@ -39,13 +39,13 @@ class TwoPortAnalysis(Analysis):
     >>> c['R1'] = R(n1, n2, r=9e3)
     >>> c['R2'] = R(n2, gnd, r=1e3)
     >>> res = TwoPortAnalysis(c, n1, gnd, n2, gnd).solve(freqs = np.array([0]))
-    >>> print res['mu'].y[0]
+    >>> print(res['mu'].y[0])
     (0.1+0j)
-    >>> print res['gamma'].y[0]
+    >>> print(res['gamma'].y[0])
     (0.000111111111111+0j)
-    >>> print res['zeta'].y[0]
+    >>> print(res['zeta'].y[0])
     (1000+0j)
-    >>> print res['beta'].y[0]
+    >>> print(res['beta'].y[0])
     (1+0j)
 
     The transmission parameters are found as:
@@ -174,7 +174,7 @@ class TwoPortAnalysis(Analysis):
         >>> an = TwoPortAnalysis(c, n1, gnd, n2, gnd)
         >>> twoport = an.solve_s(freqs = 0)
         >>> mu = 1/twoport.A[0,0]
-        >>> print mu
+        >>> print(mu)
         (0.1+0j)
 
         """

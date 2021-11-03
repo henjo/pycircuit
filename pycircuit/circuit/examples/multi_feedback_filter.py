@@ -11,7 +11,7 @@ from copy import copy
 from pycircuit.circuit.symbolicapprox import *
 
 ## Multi FeedBack (MFB) Filter
-print "Multi FeedBack (MFB) Filter Example"
+print("Multi FeedBack (MFB) Filter Example")
 
 circuit_MFB = SubCircuit()
 
@@ -40,34 +40,34 @@ res_simp = simplify(res_out.subs('s',s))
 
 ## DC Gain
 dc_gain = simplify(res_simp).limit('s',0)
-print ""
-print "DC Gain:"
+print("")
+print("DC Gain:")
 pprint(dc_gain)
-print ""
+print("")
 
 ## AC Transfer function
 tf = collect(res_simp,s)
-print "AC Transfer function:"
+print("AC Transfer function:")
 pprint(tf)
-print ""
+print("")
 
 ## Denominator of transfer function
 tf_denom = fraction(tf)[1]
 tf_denom = tf_denom.expand()
-print "Denominator of transfer function times R[1]:"
+print("Denominator of transfer function times R[1]:")
 pprint(tf_denom)
-print ""
+print("")
 
 ## Poles
 tf_poles = solve(tf_denom,s) 
 tf_poles = simplify(tf_poles)
-print "Poles of transfer function:"
-print tf_poles
+print("Poles of transfer function:")
+print(tf_poles)
 p1 = tf_poles # Need to exctract one pole
 p2 = tf_poles # Need to extract one pole
 pprint(p1)
 pprint(p2)
-print ""
+print("")
 
 ## Remove soure to able to do an two port analysis
 del circuit_MFB['VSource']
@@ -78,8 +78,8 @@ res2port = twoportana.solve(Symbol('s'), complexfreq=True)
 
 y11 = res2port['twoport'].Y[0,0]
 
-# print 'Input impedance:', 1/y11
-# #print 'Approx. input impedance', approx(1/y11, ['gds'], n = 1)
-# print 'Input referred current noise PSD, Sin:', ratsimp(res2port['Sin'])
-# print 'Approx. input referred current noise PSD, Sin:', approx(res2port['Sin'], ['C1'], n=1)
-# print 'Input referred voltage noise PSD, Svn:', ratsimp(res2port['Svn'])
+# print('Input impedance:', 1/y11)
+# #print('Approx. input impedance', approx(1/y11, ['gds'], n = 1))
+# print('Input referred current noise PSD, Sin:', ratsimp(res2port['Sin']))
+# print('Approx. input referred current noise PSD, Sin:', approx(res2port['Sin'], ['C1'], n=1))
+# print('Input referred voltage noise PSD, Svn:', ratsimp(res2port['Svn']))

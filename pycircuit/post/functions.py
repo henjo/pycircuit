@@ -274,7 +274,7 @@ def calc_extrapolation_line(w_db, slope, extrapolation_point=None,
        
     m = w_db.value(extrapolation_point, axis=axis) - slope * extrapolation_point
     
-    print m.xlabels, w_db.xlabels
+    print(m.xlabels, w_db.xlabels)
     interpol_line = m + slope * w_db.xval(axis=axis)
     
     if plot:

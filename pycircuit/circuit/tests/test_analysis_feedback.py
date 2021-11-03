@@ -64,7 +64,7 @@ def test_loopanalysis_numeric():
 
     ana = FeedbackLoopAnalysis(cir)
     res = ana.solve(np.logspace(4,6), complexfreq=True)
-    print abs(res['loopgain'])
+    print(abs(res['loopgain']))
     
 def test_loopanalysis_viiv():
     sympy.var('R1 R2 CL A s')

@@ -15,7 +15,7 @@ class PSFInvalid(Exception):
     pass
 
 def warning(str):
-    print "Warning: "+str
+    print("Warning: "+str)
 
 def indent(str, n=2):
     return "\n".join([' '*n+s for s in str.split("\n")])
@@ -1474,21 +1474,21 @@ class PSFReader(object):
         sectionsizes = dict(zip(sectionnums, sizes))
 
         if self.verbose:
-            print sectionoffsets, sectionsizes
+            print(sectionoffsets, sectionsizes)
         
         file.seek(0)
 
         self.unk1 = UInt32.fromFile(file)
         if self.verbose:
-            print "First word: 0x%x"%self.unk1
+            print(f"First word: 0x{int(self.unk1):x}")
 
         # Load headers
         file.seek(int(sectionoffsets[0]))
         self.header = HeaderSection(self)
         self.header.deSerializeFile(file)
         if self.verbose:
-            print "HEADER"
-            print self.header
+            print("HEADER")
+            print(self.header)
         
 
         if sectionoffsets.has_key(1):
@@ -1496,8 +1496,8 @@ class PSFReader(object):
             self.types.deSerializeFile(file)
 
             if self.verbose:
-                print "TYPE"
-                print self.types
+                print("TYPE")
+                print(self.types)
 
         if sectionoffsets.has_key(2):
             file.seek(int(sectionoffsets[2]))
@@ -1505,8 +1505,8 @@ class PSFReader(object):
             self.sweeps.deSerializeFile(file)
 
             if self.verbose:
-                print "SWEEPS"
-                print self.sweeps
+                print("SWEEPS")
+                print(self.sweeps)
 
         if sectionoffsets.has_key(3):
             file.seek(int(sectionoffsets[3]))
@@ -1523,18 +1523,18 @@ class PSFReader(object):
             self.values.deSerializeFile(file)
 
     def printme(self):
-        print "HEADER"
-        print self.header
-        print "TYPES"
-        print self.types
+        print("HEADER")
+        print(self.header)
+        print("TYPES")
+        print(self.types)
         if self.sweeps:
-            print "SWEEP"
-            print self.sweeps
+            print("SWEEP")
+            print(self.sweeps)
         if self.traces:
-            print "TRACE"
-            print self.traces
-        print "VALUES"
-        print self.values
+            print("TRACE")
+            print(self.traces)
+        print("VALUES")
+        print(self.values)
 
     def toPSFasc(self, prec=None):
         """Export to PSF ascii"""

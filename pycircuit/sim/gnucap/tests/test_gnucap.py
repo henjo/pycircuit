@@ -32,7 +32,7 @@ class GnucapTest(unittest.TestCase):
     def test_start(self):
         sim = gnucap.Simulation(None, direct=self.direct)
 
-        print sim.command('list')
+        print(sim.command('list'))
 
     def test_netlist(self):
         def check_netlist(sim):
@@ -42,12 +42,12 @@ class GnucapTest(unittest.TestCase):
         sim = gnucap.Simulation(None, direct=self.direct)
         sim.send_netlist(simple_netlist)
         check_netlist(sim)
-	sim=None
+        sim=None
 
         cir = gnucap.Circuit(simple_netlist)
         sim = gnucap.Simulation(cir, direct=self.direct)
         check_netlist(sim)
-	sim=None
+        sim=None
 
         sim = gnucap.Simulation(simple_netlist, direct=self.direct)
         check_netlist(sim)
@@ -111,6 +111,6 @@ class GnucapTest(unittest.TestCase):
         cir['R1'] = gnucap.R(1,2,'1k')
         cir['R2'] = gnucap.R(2,0,'3k')
 
-        print gnucap.Circuit(simple_netlist)
+        print(gnucap.Circuit(simple_netlist))
         assert_equal(cir, gnucap.Circuit(simple_netlist))
 

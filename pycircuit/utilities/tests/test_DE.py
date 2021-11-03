@@ -46,18 +46,18 @@ if __name__ == '__main__':
     tStart = time.time()
     solver.Solve()
     tElapsed = time.time() - tStart
-    print "Best energy:", solver.bestEnergy, ": Elapsed time", tElapsed, 'seconds for', solver.generation, 'generation(s)'
-    print tElapsed / solver.generation, 'seconds per generation with polisher on'
-    print
+    print("Best energy:", solver.bestEnergy, ": Elapsed time", tElapsed, 'seconds for', solver.generation, 'generation(s)')
+    print(tElapsed / solver.generation, 'seconds per generation with polisher on')
+    print()
     
     # parameterCount, populationSize, maxGenerations, minInitialValue, maxInitialValue, deStrategy, diffScale, crossoverProb, cutoffEnergy, useClassRandomNumberMethods, polishTheBestTrials
     solver = TestSolver(3, 600, 600, -10, 10, "Rand2Exp", 0.7, 0.6, 0.01, True, False)
     tStart = time.time()
     solver.Solve()
     tElapsed = time.time() - tStart
-    print "Best energy:", solver.bestEnergy, ": Elapsed time", tElapsed, 'seconds for', solver.generation, 'generation(s)'
-    print tElapsed / solver.generation, 'seconds per generation with polisher off'
-    print
+    print("Best energy:", solver.bestEnergy, ": Elapsed time", tElapsed, 'seconds for', solver.generation, 'generation(s)')
+    print(tElapsed / solver.generation, 'seconds per generation with polisher off')
+    print()
 
     #Test500()
-    #print "Elapsed time for 500 tests", time.time()-tStart
+    #print("Elapsed time for 500 tests", time.time()-tStart)

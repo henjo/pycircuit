@@ -15,6 +15,6 @@ c['M1']=mos.MOS(inp,out,gnd,gnd,gm=gm1,gds=0,gmb=0,toolkit=symbolic)
 ac=AC(c)
 res=ac.solve(s,complexfreq=True)
 gain=sympy.simplify(res.v('out')/res.v('inp'))
-print "The gain of the CS stage is:"
+print("The gain of the CS stage is:")
 sympy.pprint(gain)
 

@@ -156,7 +156,7 @@ class Transient(Analysis):
             iq=self._iq
             if (de is not None) and (iq is not None):
                 #iq_error=self.toolkit.dot(de,de)/self.toolkit.dot(iq,iq)-iq_tolerance
-                #print iq_error
+                #print(iq_error)
                 dt = max(dt, dtmin)
             t+=dt
     

@@ -247,7 +247,7 @@ class Node(Element):
 	def get_url(self, x, y):
 		if self.url is None:
 			return None
-		#print (x, y), (self.x1, self.y1), "-", (self.x2, self.y2)
+		#print((x, y), (self.x1, self.y1), "-", (self.x2, self.y2))
 		if self.is_inside(x, y):
 			return self.url
 		return None
@@ -573,7 +573,7 @@ class DotWidget(gtk.DrawingArea):
 		self.set_xdotcode(xdotcode)
 
 	def set_xdotcode(self, xdotcode):
-		#print xdotcode
+		#print(xdotcode)
 		parser = XDotParser(xdotcode)
 		self.graph = parser.parse()
 		self.zoom_image(self.zoom_ratio, center=True)

@@ -85,7 +85,7 @@ def test_nport_conversion():
         NPortS(Sref, CSref), NPortA(Aref, CAref)
 
     for nport in nports:
-        print "testing nport = " + str(nport)
+        print("testing nport = " + str(nport))
 
         assert_array_almost_equal(nport.Y.astype(float), Yref)
 

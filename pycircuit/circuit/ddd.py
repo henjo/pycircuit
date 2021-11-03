@@ -172,7 +172,7 @@ def DDD_of_matrix(A):
     >>> DDD_matrix(A)
     
     """
-    print A
+    print(A)
     if A == sympy.zero(1):
         return VertexZero
     if A == sympy.one(1):
@@ -200,7 +200,7 @@ if __name__ == '__main__':
     I = F - C
     J = F & C
     
-    print ','.join(map(str, [A,B,C,D,E,F,G,H,I,J]))
+    print(','.join(map(str, [A,B,C,D,E,F,G,H,I,J])))
 
 #    def displaygraph(D):
 #        D.asdot().write('/tmp/graph.dot')

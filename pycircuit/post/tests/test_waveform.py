@@ -354,12 +354,12 @@ def get_ylabel(w):
         return str(w)
 
 def check_binary_op(op, a, b, preserve_yunit = False):
-    exec 'res = a' + op + 'b'
+    exec('res = a' + op + 'b')
 
     ref_yunit = ''
 
     for arg in a,b:
-        print str(a) + ' ' + op + ' ' + str(b)
+        print(str(a) + ' ' + op + ' ' + str(b))
         if iswave(arg):
             ref_x = arg.x
             ref_xlabels = arg.xlabels
@@ -370,7 +370,7 @@ def check_binary_op(op, a, b, preserve_yunit = False):
     
     ref_ylabel = get_ylabel(a) + op + get_ylabel(b)
 
-    exec 'ref_y = get_y(a) ' + op + ' get_y(b)'
+    exec('ref_y = get_y(a) ' + op + ' get_y(b)')
 
     assert_waveform_almost_equal(res, Waveform(ref_x, ref_y, xlabels = ref_xlabels, 
                                         xunits = ref_xunits, ylabel = ref_ylabel,

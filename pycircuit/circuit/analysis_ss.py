@@ -222,11 +222,11 @@ class Noise(SSAnalysis):
     >>> c['R1'] = R(n1, n2, r=9e3)
     >>> c['R2'] = R(n2, gnd, r=1e3)
     >>> res = Noise(c, inputsrc='vs', outputnodes=(n2, gnd)).solve(0)
-    >>> print res['Svnout']
+    >>> print(res['Svnout'])
     (1.4904e-17+0j)
-    >>> print res['Svninp']
+    >>> print(res['Svninp'])
     (1.4904e-15+0j)
-    >>> print res['gain']
+    >>> print(res['gain'])
     (0.1+0j)
     
     Symbolic example:

@@ -20,7 +20,7 @@ res = ac.solve(freqs=logspace(6,9))
 
 vnet1 = db20(res['net2'])
 
-print vnet1
+print(vnet1)
 vnet1.semilogx()
 grid(True)
 show()

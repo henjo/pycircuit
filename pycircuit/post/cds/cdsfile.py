@@ -26,7 +26,7 @@ class CadenceSessionFile(CadenceSession):
 
 	def send(self, expr):
 		if self.verbose:
-			print "Sending: "+expr
+			print("Sending: "+expr)
 		self.file.write(expr+'\n')
 		return None
 	def __del__(self):

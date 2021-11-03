@@ -25,7 +25,7 @@ class DC(Analysis):
     >>> c['D'] = Diode(n1, gnd)
     >>> dc = DC(c)
     >>> res = dc.solve()
-    >>> print np.around(res.v('net1'), 2)
+    >>> print(np.around(res.v('net1'), 2))
     0.7
 
     >>> c = SubCircuit()
@@ -36,7 +36,7 @@ class DC(Analysis):
     >>> c['D'] = Diode(n2, gnd)
     >>> dc = DC(c)
     >>> res = dc.solve()
-    >>> print np.around(res.v('net2'), 2)
+    >>> print(np.around(res.v('net2'), 2))
     0.7
 
     """

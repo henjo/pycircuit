@@ -120,8 +120,8 @@ class Volterra(Analysis):
 
         ## Find non-linear elements
         nlelements = [e for e in self.c.xflatelements if not e.linear]
-        print self.c.n, nlelements
-#        print K(self.c, x, [2, 0]), nlelements
+        print(self.c.n, nlelements)
+#        print(K(self.c, x, [2, 0]), nlelements)
 
 if __name__ == "__main__":
     import doctest

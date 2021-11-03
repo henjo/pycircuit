@@ -17,7 +17,7 @@ c['M1']=mos.MOS(inp1,out,gnd,gnd,gm=gm1,gds=0,gmb=0,Cgs=Cgs1,Cgd=Cgd1,Cdb=Cdb1,t
 ac=AC(c)
 res=ac.solve(s,complexfreq=True)
 gain=simplify(res.v('out')/res.v('inp'))
-print "\nThe transfer function of the CS stage is:"
+print("\nThe transfer function of the CS stage is:")
 sympy.pprint(gain)
-print "\nShowing the denominator as polynomial:"
+print("\nShowing the denominator as polynomial:")
 sympy.pprint(denom(gain).as_poly(s))

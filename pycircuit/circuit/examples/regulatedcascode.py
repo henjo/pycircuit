@@ -30,8 +30,8 @@ res2port = twoportana.solve(Symbol('s'), complexfreq=True)
 
 y11 = res2port['twoport'].Y[0,0]
 
-print 'Input impedance:', 1/y11
-#print 'Approx. input impedance', approx(1/y11, ['gds'], n = 1)
-print 'Input referred current noise PSD, Sin:', ratsimp(res2port['Sin'])
-print 'Approx. input referred current noise PSD, Sin:', approx(res2port['Sin'], ['gds'], n=1)
-print 'Input referred voltage noise PSD, Svn:', ratsimp(res2port['Svn'])
+print('Input impedance:', 1/y11)
+#print('Approx. input impedance', approx(1/y11, ['gds'], n = 1))
+print('Input referred current noise PSD, Sin:', ratsimp(res2port['Sin']))
+print('Approx. input referred current noise PSD, Sin:', approx(res2port['Sin'], ['gds'], n=1))
+print('Input referred voltage noise PSD, Svn:', ratsimp(res2port['Svn']))

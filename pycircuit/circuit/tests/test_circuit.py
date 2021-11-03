@@ -69,7 +69,7 @@ def test_print_netlist():
     subc = generate_testcircuit()
 
     netlist = subc.netlist()
-    print netlist
+    print(netlist)
     
     refnetlist = \
 """.subckt MySubC p m
@@ -296,7 +296,7 @@ def test_proxy():
     
     cir = generate_testcircuit()
 
-    print CircuitProxy(cir['I1'], cir, 'I1').terminalhook
+    print(CircuitProxy(cir['I1'], cir, 'I1').terminalhook)
     cir['I1'] = CircuitProxy(cir['I1'], cir, 'I1')
     
     assert_equal(cir['I1'].terminals, refcir['I1'].terminals)
