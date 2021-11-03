@@ -10,14 +10,16 @@ sweeps.
 
 import numpy as np
 from numpy import array,concatenate,alltrue,max,min,log10,arange,pi,sin, \
-    sign, where, newaxis, r_, vstack, apply_along_axis, nan, isscalar, rank, \
+    sign, where, newaxis, r_, vstack, apply_along_axis, nan, isscalar, \
     inf, isscalar
+from numpy.linalg import matrix_rank
 import scipy as sp
 import scipy.interpolate as interpolate
 import types
 import operator
 from copy import copy
 from pycircuit.utilities import remove_index
+from functools import reduce
 
 class Waveform(object):
     """The Waveform class handles swept signals. The sweep can be multi 
@@ -924,7 +926,7 @@ def applyfunc_and_reducedim(func, w, axis = -1, ylabel = None, yunit = None):
 def reducedim(w, newy, axis=-1, ylabel=None, yunit=None):
     """Reduce the dimension by one and return a new waveform or float if zero-rank"""
 
-    if rank(newy) == 0:
+    if matrix_rank(newy) == 0:
         return np.asscalar(newy)
 
     if ylabel is None:

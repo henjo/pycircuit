@@ -2,9 +2,9 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
-import skill
+import pycircuit.post.cds.skill as skill
 import sys
-from cds import CadenceSession
+from pycircuit.post.cds.cds import CadenceSession
 
 class CadenceSessionFile(CadenceSession):
 	"""Class to handle that writes to a skill file instead of real cadence session.

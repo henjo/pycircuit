@@ -5,7 +5,7 @@
 # email: zunzun@zunzun.com
 
 import numpy, random
-import pp # http;//www.parallelpython.com - can be single CPU, multi-core SMP, or cluster parallelization
+#import pp # http;//www.parallelpython.com - can be single CPU, multi-core SMP, or cluster parallelization
 
 # runs only in remote worker
 def MakeGlobalDESolverObjectInWorker(in_solver):

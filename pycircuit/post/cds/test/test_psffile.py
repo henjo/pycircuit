@@ -7,7 +7,7 @@
 from pycircuit.post.cds.psf import PSFReader
 import os, os.path, sys
 import unittest
-from test_psfasc import psfAscAdjust
+from pycircuit.post.cds.test.test_psfasc import psfAscAdjust
 
 class readAndExportTest():
     psffile = None

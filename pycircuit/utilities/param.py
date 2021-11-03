@@ -3,7 +3,7 @@
 # See LICENSE for details.
 
 import copy
-import misc
+from .misc import ObserverSubject
 
 class Parameter(object):
     def __init__(self, name, desc=None, unit=None, default=None):
@@ -33,7 +33,7 @@ class Parameter(object):
 
 class EvalError(Exception): pass
 
-class ParameterDict(misc.ObserverSubject):
+class ParameterDict(ObserverSubject):
     def __init__(self, *parameters, **kvargs):
         super(ParameterDict, self).__init__()
         self._paramnames = []

@@ -2,7 +2,7 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
-import psf
+import pycircuit.post.cds.psf as psf
 
 def createValue(psfobj, name, typename=None, value=None):
     if psfobj.getNSweeps() == 0:

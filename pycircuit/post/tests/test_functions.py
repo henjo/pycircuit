@@ -8,7 +8,7 @@ import numpy as np
 from pycircuit.post import Waveform
 from pycircuit.post.functions import *
 
-from test_waveform import testdata1, check_func, check_nonscalar_function
+from .test_waveform import testdata1, check_func, check_nonscalar_function
 
 ## Test unary functions
 

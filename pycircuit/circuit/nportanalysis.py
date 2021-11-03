@@ -3,11 +3,11 @@
 # See LICENSE for details.
 
 import numpy as np
-from nport import *
+from pycircuit.circuit.nport import *
 from pycircuit.utilities import isiterable
 from pycircuit.circuit import SubCircuit, gnd, G, R, VS, IS, Branch, circuit
-from analysis import Analysis, remove_row_col,defaultepar
-from analysis_ss import AC, Noise, TransimpedanceAnalysis, dc_steady_state
+from pycircuit.circuit.analysis import Analysis, remove_row_col,defaultepar
+from pycircuit.circuit.analysis_ss import AC, Noise, TransimpedanceAnalysis, dc_steady_state
 
 from pycircuit.post.internalresult import InternalResultDict
 

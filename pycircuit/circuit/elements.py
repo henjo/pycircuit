@@ -3,8 +3,8 @@
 # See LICENSE for details.
 
 from __future__ import division
-from circuit import *
-import func
+from .circuit import *
+import pycircuit.circuit.func as func
 
 class R(Circuit):
     """Resistor element

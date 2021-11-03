@@ -6,8 +6,8 @@ import numpy as np
 from copy import copy
 from pycircuit.circuit import Circuit, SubCircuit, gnd, R, VS, IS, \
     Branch, VCCS, CircuitProxy
-from analysis import Analysis, remove_row_col, defaultepar
-from analysis_ss import SSAnalysis, AC, Noise, TransimpedanceAnalysis
+from .analysis import remove_row_col, defaultepar
+from .analysis_ss import SSAnalysis, AC, Noise, TransimpedanceAnalysis
 from pycircuit.post import InternalResultDict, Waveform
 from pycircuit.utilities import combinations, isiterable
 

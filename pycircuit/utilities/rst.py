@@ -2,7 +2,6 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
-import string
 
 def heading1(text):
     return text + '\n' + '=' * len(text)
@@ -40,13 +39,13 @@ def table(rows, header=True, headerrows = 1, vdelim=" ", padding=1, justify='rig
     s = ''
     
     border="=" # character for drawing the border
-    justify = {'left':string.ljust,'center':string.center, 
-               'right':string.rjust}[justify.lower()]
+    justify = {'left':str.ljust,'center':str.center, 
+               'right':str.rjust}[justify.lower()]
 
     # calculate column widhts (longest item in each col
     # plus "padding" nr of spaces on both sides)
     cols = zip(*rows)
-    colWidths = [max([len(unicode(item)) + 2*padding for item in col]) 
+    colWidths = [max([len(str(item)) + 2*padding for item in col]) 
                  for col in cols]
 
     # the horizontal border needed by rst
@@ -56,12 +55,11 @@ def table(rows, header=True, headerrows = 1, vdelim=" ", padding=1, justify='rig
     s += borderline + '\n'
     for i, row in enumerate(rows):
         if header and i < headerrows:
-            justfunc = string.ljust
+            justfunc = str.ljust
         else:
             justfunc = justify
-
-        s += vdelim.join([justfunc(unicode(item),width) for (item,width) 
-                          in zip(row,colWidths)]).encode('utf-8') + '\n'
+        s += vdelim.join([justfunc(str(item),width) for (item,width) 
+                          in zip(row,colWidths)]) + '\n'
 
         if header and headerrows == i+1: s += borderline +'\n'
     s += borderline

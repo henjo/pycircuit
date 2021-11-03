@@ -9,9 +9,11 @@ from pycircuit.circuit import symbolic
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 from copy import copy
-from test_circuit import create_current_divider
+from pycircuit.circuit.tests.test_circuit import create_current_divider
+from .test_circuit import create_current_divider
 from sympy import var, simplify, integrate, oo, limit, gruntz, pi, I
 import unittest
+from numpy.testing import assert_equal
 
 def test_symbolic_ac():
     pycircuit.circuit.circuit.default_toolkit = symbolic

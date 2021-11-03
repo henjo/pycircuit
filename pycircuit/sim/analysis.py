@@ -1,4 +1,4 @@
-from simulation import Sweep
+from pycircuit.sim.simulation import Sweep
 from pycircuit.utilities.param import Parameter, ParameterDict
 
 class Analysis(object):

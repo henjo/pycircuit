@@ -4,8 +4,6 @@
 
 import re
 import os
-import doctest
-import pycircuit
 
 from pycircuit.post.cds.psf import *
 ## Unit tests for psf module
@@ -76,10 +74,3 @@ def psfAscAdjust(str):
     """
     str = re.sub("-(0\.0*$)", '\\1', str)
     return re.sub("-(0\.0*\D)", '\\1', str)
-    
-# def load_tests(loader, tests, ignore):
-#     tests.addTests(doctest.DocTestSuite(pycircuit.post.cds.test.test_psfasc))
-#     #tests.addTests(doctest.DocTestSuite(pycircuit.post.cds.psf))
-#     return tests
-
-

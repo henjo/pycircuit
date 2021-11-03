@@ -3,7 +3,7 @@
 # See LICENSE for details.
 
 import pexpect
-import skill
+import pycircuit.post.cds.skill as skill
 import re
 import os, sys
 

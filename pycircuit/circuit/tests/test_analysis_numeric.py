@@ -7,7 +7,7 @@ import pycircuit.circuit.circuit
 from pycircuit.circuit import *
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
-from test_circuit import create_current_divider
+from .test_circuit import create_current_divider
 import unittest
 
 def test_integer_component_values():

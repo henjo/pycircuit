@@ -3,7 +3,7 @@
 # See LICENSE for details.
 
 import numpy as N
-from itertools import izip, groupby
+from itertools import groupby
 from operator import itemgetter
 import tempfile
 import shutil
@@ -44,7 +44,7 @@ def inplace_add_selected_ref(dest, indices, values):
 
     """
 
-    for i, v in izip(indices, values):
+    for i, v in zip(indices, values):
         dest[i] += v
         
 

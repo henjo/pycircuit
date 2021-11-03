@@ -11,7 +11,6 @@ from pycircuit.circuit import *
 from pycircuit.circuit.elements import *
 import numpy as np
 from numpy.testing import assert_array_equal, assert_array_almost_equal
-from numpy.testing.decorators import slow
 from sympy import var, Symbol, simplify, symbols
 import sympy
 import unittest
@@ -220,7 +219,6 @@ def test_SVCVS_laplace_n1_d2():
 
     assert_equal(sympy.expand(res.v(n2,gnd)),sympy.expand(b0*s/(a0*s*s+a1*s+a2)))
 
-@slow
 def test_SVCVS_laplace_d3_n1():
     """Test VCCS with a laplace defined transfer function with second order
     numerator and third order denominator

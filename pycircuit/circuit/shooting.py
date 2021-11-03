@@ -1,8 +1,8 @@
 from pycircuit.post import InternalResultDict
-from circuit import gnd
+from .circuit import gnd
 from pycircuit.circuit.analysis import *
 from copy import copy
-import analysis
+import pycircuit.circuit.analysis as analysis
 import numpy as np
 
 def freq_analysis(x, t, rms = True, axis=-1, freqoffset = 0):

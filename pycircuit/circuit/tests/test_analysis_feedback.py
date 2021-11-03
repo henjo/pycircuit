@@ -12,6 +12,7 @@ from pycircuit.circuit.feedback import FeedbackDeviceAnalysis, LoopProbe, Feedba
 import sympy
 from sympy import simplify
 import numpy as np
+from numpy.testing import *
 
 def test_deviceanalysis_sourcefollower():
     """Loopgain of a source follower"""

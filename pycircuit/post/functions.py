@@ -4,7 +4,7 @@
 
 """This module contains functions that operates on wave objects or scalars"""
 
-from waveform import Waveform, reducedim, applyfunc, applyfunc_and_reducedim,\
+from .waveform import Waveform, reducedim, applyfunc, applyfunc_and_reducedim,\
     iswave, wavefunc, assert_waveform
 import numpy as np
 from numpy import array, pi, sign, alltrue, where, arange, vstack, \

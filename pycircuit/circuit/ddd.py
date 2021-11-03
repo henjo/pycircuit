@@ -4,7 +4,6 @@
 
 #import yapgvb
 import os
-from StringIO import StringIO
 from copy import copy
 import sympy
 

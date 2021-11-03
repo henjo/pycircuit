@@ -4,8 +4,8 @@
 
 import pycircuit.post.result as result
 import pycircuit.post.waveform as waveform
-import psf
-import psfasc
+import pycircuit.post.cds.psf as psf
+import pycircuit.post.cds.psfasc as psfasc
 import os
 import re
 import numpy

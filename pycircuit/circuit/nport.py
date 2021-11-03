@@ -6,7 +6,7 @@ from __future__ import division
 
 import numpy as np
 from copy import copy
-import constants
+import pycircuit.circuit.constants as constants
 
 class NPort(object):
     """Class that represents an n-port with optional noise parameters

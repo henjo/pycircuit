@@ -1,6 +1,6 @@
 from __future__ import division
 import numpy as np
-from scipy.misc import factorial
+from scipy.special import factorial
 from scipy import interpolate, linalg
 
 

@@ -1,11 +1,11 @@
 import logging
 
-from analysis import *
+from pycircuit.circuit.analysis import *
 
 import numpy as np
 import sympy
 
-import symbolic
+import pycircuit.circuit.symbolic as symbolic
 
 class SymbolicDC(Analysis):
     """Symbolic DC analyis class

@@ -2,7 +2,7 @@ import logging
 
 import numpy as np
 
-from analysis import *
+from pycircuit.circuit.analysis import *
 
 class DC(Analysis):
     """DC analyis class

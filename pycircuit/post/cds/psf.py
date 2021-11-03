@@ -6,10 +6,10 @@ import unittest
 import struct, os, re
 import operator
 import numpy
-import psfasc
+import pycircuit.post.cds.psfasc as psfasc
 from copy import copy
-
 from struct import unpack, pack
+from functools import reduce
 
 class PSFInvalid(Exception):
     pass

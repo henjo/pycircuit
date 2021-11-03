@@ -1,5 +1,5 @@
-from analysis import *
-from simulation import *
-from circuit import *
-from result import *
+from pycircuit.sim.analysis import *
+from pycircuit.sim.simulation import *
+from pycircuit.circuit import *
+from pycircuit.post.result import *
 

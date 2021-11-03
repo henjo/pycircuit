@@ -15,8 +15,7 @@ from pycircuit.circuit import AC, symbolic
 from sympy import var, Symbol, simplify
 import sympy
 import numpy as np
-from numpy.testing import assert_array_almost_equal, assert_array_equal
-from numpy.testing.decorators import slow
+from numpy.testing import * #assert_array_almost_equal, assert_array_equal
 from copy import copy
 
 def generate_testcircuit():

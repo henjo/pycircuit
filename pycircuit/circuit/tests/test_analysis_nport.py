@@ -19,7 +19,7 @@ from sympy import Matrix, var, simplify
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 
 ## Import test vehicle from test_nport
-from test_nport import cir, Aref, CAref, nin, nout, NPortS, CSref, T
+from .test_nport import cir, Aref, CAref, nin, nout, NPortS, CSref, T
 
 import unittest
 

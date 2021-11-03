@@ -15,7 +15,7 @@ from sympy import cos, sin, tan, exp, pi, simplify, floor
 from sympy import oo as inf, ceiling as ceil
 import types
 from pycircuit.utilities.param import Parameter
-from constants_sympy import kboltzmann, eps0, epsRSi, epsRSiO2, qelectron
+from pycircuit.circuit.constants_sympy import kboltzmann, eps0, epsRSi, epsRSiO2, qelectron
 
 symbolic = True
 

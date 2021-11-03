@@ -9,7 +9,7 @@ The module is based on `numpy <http://numpy.org>`_.
 
 """
 
-from constants import *
+from .constants import *
 
 import numpy as np
 from numpy import cos, sin, tan, cosh, sinh, tanh, log, exp, pi, linalg,\

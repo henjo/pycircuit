@@ -2,9 +2,9 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
-import result
+from .result import ResultDict
 
-class InternalResultDict(result.ResultDict):
+class InternalResultDict(ResultDict):
     """ResultSet implementation where the results are stored in memory in a dictionary
 
     >>> rs = InternalResultDict()

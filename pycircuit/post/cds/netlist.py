@@ -3,8 +3,8 @@ import shutil
 import tempfile
 import re
 
-import cds
-import skill
+import pycircuit.post.cds.cds as cds
+import pycircuit.post.cds.skill as skill
 
 class InvalidSimulator(Exception):
     pass
