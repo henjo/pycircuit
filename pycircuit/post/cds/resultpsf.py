@@ -464,7 +464,7 @@ class PSFResult(result.ResultDict):
                 res[output] = self[output]
             return res
         else:
-            if self.psfobj.getNSweeps() > 0:
+            if int(self.psfobj.getNSweeps()) > 0:
                 return waveform.Waveform(self.psfobj.getSweepParamValues(0), 
                                          self.psfobj.getValuesByName(outputname),
                                          xlabels=self.psfobj.getSweepParamNames(), ylabel=outputname)

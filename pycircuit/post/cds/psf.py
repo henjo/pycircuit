@@ -371,7 +371,9 @@ class DataTypeDef(Chunk):
 
                 
     def __repr__(self):
-        return self.__class__.__name__+"("+str({"name":self.name,"id":"0x%x"%self.id, "datatypeid":self.datatypeid, 
+        return self.__class__.__name__+"("+str({"name":self.name,
+                                                "id":f"0x{int(self.id):x}",
+                                                "datatypeid":self.datatypeid, 
                                                 "properties":self.properties})+")"
 
 class DataTypeRef(Chunk):
@@ -421,8 +423,11 @@ class DataTypeRef(Chunk):
                 break
 
     def __repr__(self):
-        return self.__class__.__name__+"("+str({"name":self.name,"id":"0x%x"%self.id, "datatypeid":self.datatypeid,
-                                                "properties":self.properties})+")"
+        return self.__class__.__name__+"("+str({"name":self.name,
+                                                "id":f"0x{self.id:x}",
+                                                "datatypeid":self.datatypeid,
+                                                "properties":self.properties
+                                                })+")"
 
 class StructDef(PSFData):
     """Class representing struct definition"""
@@ -556,13 +561,14 @@ class HashTable(Chunk):
         startpos = file.tell()
         size = UInt32.fromFile(file)
 
-        for i in range(0, size/8):
+        for i in range(0, int(size//8)):
             id = UInt32.fromFile(file)
             offset = UInt32.fromFile(file)
             self.children.append((id, offset))
 
     def __repr__(self):
-        return self.__class__.__name__+"\n"+ "\n".join(["  0x%x: 0x%x"%(k,v.value) for k,v in self.children])+")"
+        print([(k,v) for k,v in self.children])
+        return self.__class__.__name__+"\n"+ "\n".join(["  0x%x: 0x%x"%(int(k),int(v.value)) for k,v in self.children])+")"
 
 class HashTableTrace(Chunk):
     type = 19
@@ -575,7 +581,7 @@ class HashTableTrace(Chunk):
         
         self.size = UInt32.fromFile(file)
 
-        for i in range(0, self.size.value/16):
+        for i in range(0, int(self.size.value/16)):
             id = UInt32.fromFile(file)
             offset = UInt32.fromFile(file)
             data1 = UInt32.fromFile(file).value
@@ -828,7 +834,7 @@ class ValuesSectionSweep(SimpleContainer):
             el.deSerializeFile(file)
 
         isweep=0
-        while isweep < self.psf.header.properties['PSF sweep points']:
+        while isweep < int(self.psf.header.properties['PSF sweep points']):
             if windowedsweep:
                 value = SweepValueWindowed(self.psf)
             else:
