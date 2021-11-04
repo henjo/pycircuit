@@ -370,7 +370,7 @@ class Circuit(object):
                 self.terminals.append(terminal)
 
             ## If no node with terminal name exists create node
-            if not self.nodenames.has_key(terminal):                
+            if terminal not in self.nodenames:                
                 self.add_node(terminal) 
 
             node = self.nodenames[terminal]

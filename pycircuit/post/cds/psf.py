@@ -821,7 +821,7 @@ class ValuesSectionSweep(SimpleContainer):
         Chunk.deSerializeFile(self, file)
         self.endpos = UInt32.fromFile(file).value
 
-        windowedsweep = self.psf.header.properties.has_key('PSF window size')
+        windowedsweep = 'PSF window size' in self.psf.header.properties
 
         if windowedsweep:
             el = ZeroPad(self.psf)
@@ -857,7 +857,7 @@ class ValuesSectionSweep(SimpleContainer):
         return len(self.psf.traces)
 
     def getValueByName(self, name):
-        windowedsweep = self.psf.header.properties.has_key('PSF window size')
+        windowedsweep = 'PSF window size' in self.psf.header.properties
 
         index = self.psf.traces.getTraceIndexByName(name)
 
@@ -1491,7 +1491,7 @@ class PSFReader(object):
             print(self.header)
         
 
-        if sectionoffsets.has_key(1):
+        if 1 in sectionoffsets:
             file.seek(int(sectionoffsets[1]))
             self.types.deSerializeFile(file)
 
@@ -1499,7 +1499,7 @@ class PSFReader(object):
                 print("TYPE")
                 print(self.types)
 
-        if sectionoffsets.has_key(2):
+        if 2 in sectionoffsets:
             file.seek(int(sectionoffsets[2]))
             self.sweeps = SweepSection(self)
             self.sweeps.deSerializeFile(file)
@@ -1508,12 +1508,12 @@ class PSFReader(object):
                 print("SWEEPS")
                 print(self.sweeps)
 
-        if sectionoffsets.has_key(3):
+        if 3 in sectionoffsets:
             file.seek(int(sectionoffsets[3]))
             self.traces = TraceSection(self)
             self.traces.deSerializeFile(file)
 
-        if sectionoffsets.has_key(4):
+        if 4 in sectionoffsets:
             file.seek(int(sectionoffsets[4]))
             # Load data
             if self.sweeps:

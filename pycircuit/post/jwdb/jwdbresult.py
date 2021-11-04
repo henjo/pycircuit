@@ -162,13 +162,13 @@ class _Simulation(object):
     def get_analysistype(self):
         """Find out analysis type"""
 
-        if self.params.has_key('ANALYSIS'):
+        if 'ANALYSIS in self.params':
             analysis = int(self.params['ANALYSIS'])
             if analysis not in analysis_types:
                 raise ValueError('Unknown analysis type: %d'%analysis)
             return analysis_types[analysis]
         else:
-            if self.params.has_key('CKTYPE'):
+            if 'CKTYPE' in self.params:
                 return 'Ext'
             else:
                 return 'Noise'

@@ -30,7 +30,7 @@ def wave_conv(w1,w2):
     wdict={}
     for x1,y1 in zip(x1vec,y1vec):
         for x2,y2 in zip(x2vec,y2vec):
-            if wdict.has_key(x1+x2):
+            if x1+x2 in wdict:
                 wdict[x1+x2]+=y1*y2
             else:
                 wdict[x1+x2]=y1*y2

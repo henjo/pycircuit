@@ -43,7 +43,7 @@ class PSFResultSet(result.ResultDict):
 
         # Read log files
         for run in runlist:
-            if self.runs.has_key(run.parentName):
+            if run.parentName in self.runs:
                 parent = self.runs[run.parentName]
                 run.setParent(parent)
                 parent.addChild(run)
@@ -60,7 +60,7 @@ class PSFResultSet(result.ResultDict):
         True
 
         """
-        return self.runs.has_key("Root")
+        return "Root" in self.runs
 
     def keys(self):
         """Get name of results
