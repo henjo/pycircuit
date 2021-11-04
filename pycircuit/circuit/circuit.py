@@ -996,7 +996,7 @@ class SubCircuit(Circuit):
                branch_gen = self._instance_branches(topelement, instancename, 
                                                     (branch_sign[0],))
 
-               return branch_gen.next(), branch_sign[1]
+               return next(branch_gen), branch_sign[1]
         
     def get_node(self, name):
         """Find a node by name.
