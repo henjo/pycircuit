@@ -291,10 +291,16 @@ def parse(rule, text):
 
 def is_psfasc(filename):
     """Return true if a file is a PSF ascii file"""
-    if open(filename).read(6) == 'HEADER':
-        return True
-    else:
-        return False
+    print(filename)
+    with open(filename) as psffile:
+        try:
+            tmp = psffile.read(6)
+        except UnicodeDecodeError:
+            tmp = None
+        if tmp == 'HEADER':
+            return True
+        else:
+            return False
 
 if __name__ == '__main__':
     from sys import argv, stdin
