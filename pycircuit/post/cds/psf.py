@@ -81,12 +81,12 @@ class Int8(PSFNumber):
     size=4
     def deSerializeFile(self, file, size=None):
         data=file.read(self.size)
-        self.value = unpack("b",data[3])[0]
+        self.value = unpack("b",data[3:])[0]
 class UInt8(PSFNumber):
     size=4
     def deSerializeFile(self, file, size=None):
         data=file.read(self.size)
-        self.value = unpack("B",data[3])[0]
+        self.value = unpack("B",data[3:])[0]
 class Int32(PSFNumber):
     size=4
     def deSerializeFile(self, file, size=None):
@@ -151,6 +151,8 @@ class String(PSFData):
         self.len = unpack(">I",file.read(4))[0]
         if self.len < 0x100:
             self.value = file.read(self.len)
+            if type(self.value) == bytes:
+                self.value = self.value.decode()
             # Pad to 32-bit boundary
             file.read((4-self.len)%4)
         else:
@@ -267,6 +269,8 @@ class Property(Chunk):
         return self.name.toPSFasc() + " " + self.value.toPSFasc(prec=prec)
     def __repr__(self):
         return self.__class__.__name__+"("+str(self.name)+","+str(self.value)+")"
+
+
 class PropertyString(Property):
     type=33
     valueclass=String
@@ -1287,6 +1291,8 @@ class PSFReader(object):
         # Read Clarissa signature
         file.seek(-4-8,2)
         clarissa = file.read(8)
+        if type(clarissa) == bytes:
+            clarissa = clarissa.decode()
         return clarissa == "Clarissa"
 
     def getNSweepPoints(self):
@@ -1458,6 +1464,8 @@ class PSFReader(object):
         # Read Clarissa signature
         file.seek(-4-8,2)
         clarissa = file.read(8)
+        if type(clarissa) == bytes:
+            clarissa = clarissa.decode()
         if not clarissa == "Clarissa":
             raise ValueError("Clarissa signature not found")
 
