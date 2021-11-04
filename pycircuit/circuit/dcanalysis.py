@@ -56,8 +56,8 @@ class DC(Analysis):
                   ]
 
     def __init__(self, cir, toolkit=None, refnode=gnd, **kvargs):
-        self.parameters = super(DC, self).parameters + self.parameters
-        super(DC, self).__init__(cir, toolkit=toolkit, **kvargs)
+        self.parameters = super().parameters + self.parameters
+        super().__init__(cir, toolkit=toolkit, **kvargs)
         
         self.irefnode = self.cir.get_node_index(refnode)
         

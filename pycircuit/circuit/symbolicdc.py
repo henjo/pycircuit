@@ -14,7 +14,7 @@ class SymbolicDC(Analysis):
     on linear or very simple non-linear circuits.
     """
     def __init__(self, cir, refnode=gnd, **kvargs):
-        super(SymbolicDC, self).__init__(cir, toolkit=symbolic)
+        super().__init__(cir, toolkit=symbolic)
         
         self.irefnode = self.cir.get_node_index(refnode)
 

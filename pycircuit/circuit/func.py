@@ -1,7 +1,7 @@
 import pycircuit.circuit.numeric as numeric
 from scipy import interpolate
 
-class TimeFunction(object):
+class TimeFunction():
     """Time dependent function"""
     
     def __init__(self, toolkit=numeric):
@@ -84,7 +84,7 @@ class Pulse(TimeFunction):
         else:
             return self.v1
 
-class ScalarFunction(object):
+class ScalarFunction():
     """Scalar function"""
     
     def __init__(self, toolkit=numeric):

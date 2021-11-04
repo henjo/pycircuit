@@ -7,10 +7,10 @@ import os
 from copy import copy
 import sympy
 
-class DDD(object):
+class DDD():
     pass
 
-class Node(object):
+class Node():
     def __init__(self, index, D1=None, D0=None, sign=1):
         """Construct a DDD (Determinant-Decision-Diagram)
         from top vertex values and 1- and 0-edges

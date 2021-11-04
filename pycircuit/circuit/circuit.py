@@ -14,7 +14,7 @@ default_toolkit = numeric
 
 timedomain_analyses = ('dc', 'tran')
 
-class Node(object):
+class Node():
     """A Node object represents a point in an electric circuit"""
     def __init__(self, name=None, isglobal = False):
         if name.endswith('!'):
@@ -49,7 +49,7 @@ class Node(object):
         else:
             return self.__class__.__name__ + '(' + repr(self.name) + ')'            
 
-class Branch(object):
+class Branch():
     """A branch connects two nodes.
     
     A branch is used in modified nodal analysis to describe components that 
@@ -100,7 +100,7 @@ gnd = Node("gnd", isglobal=True)
 defaultepar = ParameterDict(
     Parameter("T", "Temperature", unit="K", default = 300))
 
-class Circuit(object):
+class Circuit():
     """Basic circuit class 
 
     The circuit class models electric circuits but could be used for
@@ -781,20 +781,20 @@ class SubCircuit(Circuit):
     term_node_map = {}
 
     def __init__(self, *args, **kvargs):
-        super(SubCircuit, self).__init__(*args, **kvargs)
+        super().__init__(*args, **kvargs)
         self.elements = {}
         self.elementnodemap = {}
         self.term_node_map = {}
         self._mapmatrix = {}
 
     def __eq__(self, a):
-        return super(SubCircuit, self).__eq__(a) and \
+        return super().__eq__(a) and \
             self.elements == a.elements and \
             self.elementnodemap == a.elementnodemap and \
             self.term_node_map == a.term_node_map
 
     def __copy__(self):
-        newc = super(SubCircuit, self).__copy__()        
+        newc = super().__copy__()        
         newc.elements = {}
         for instance_name, element in self.elements.items():
             newc.elements[instance_name] = copy(self.elements[instance_name])
@@ -1091,7 +1091,7 @@ class SubCircuit(Circuit):
     def update_iparv(self, parent_ipar=None, globalparams=None, 
                      ignore_errors = False):
         """Calculate numeric values of instance parameters"""
-        super(SubCircuit, self).update_iparv(parent_ipar, globalparams,
+        super().update_iparv(parent_ipar, globalparams,
                                              ignore_errors=ignore_errors)
 
         ## Update ipar in elements
@@ -1268,7 +1268,7 @@ class ProbeWrapper(SubCircuit):
 
         terminalnodes = [circuit.get_node(terminal)
                          for terminal in circuit.terminals]
-        super(ProbeWrapper, self).__init__(*terminalnodes)
+        super().__init__(*terminalnodes)
         
         self.add_instance('wrapped', circuit, 
                           **dict(zip(circuit.terminals, terminalnodes)))
@@ -1301,7 +1301,7 @@ class ProbeWrapper(SubCircuit):
 
 class CircuitProxy(Circuit):
     def __init__(self, circuit, parent=None, instance_name=None):
-        super(CircuitProxy, self).__init__(self)
+        super().__init__(self)
         self.device = circuit
         self.terminals = circuit.terminals
         self.nodes = circuit.nodes
@@ -1352,7 +1352,7 @@ class IProbe(Circuit):
         """Return the branch (plus, minus)"""
         return self.branches[0]
 
-class Quantity(object):
+class Quantity():
     """Reference to voltage or current of a branch or node
 
     The quantity can be used in behavioural modelling or post processing

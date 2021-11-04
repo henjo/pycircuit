@@ -80,7 +80,7 @@ class G(Circuit):
             return  self.toolkit.array([[iPSD, -iPSD],
                                         [-iPSD, iPSD]])
         else:
-            return super(G, self).CY(x, w, epar=epar)
+            return super().CY(x, w, epar=epar)
         
 
 class C(Circuit):
@@ -186,7 +186,7 @@ class VS(Circuit):
             return self.toolkit.array([0, 0, 0])
 
     def CY(self, x, w, epar=defaultepar):
-        CY = super(VS, self).CY(x, w)
+        CY = super().CY(x, w)
         CY[2, 2] = self.iparv.noisePSD
         return CY
 
@@ -214,7 +214,7 @@ class VSin(VS):
         Parameter(name='phase', desc='Phase in degrees', 
                   unit='deg', default=0)]
     def __init__(self, *args, **kvargs):
-        super(VSin, self).__init__(*args, **kvargs)
+        super().__init__(*args, **kvargs)
         self.function = func.Sin(self.iparv.vo,
                                  self.iparv.va,
                                  self.iparv.freq,
@@ -282,7 +282,7 @@ class ISin(IS):
         Parameter(name='phase', desc='Phase in degrees', 
                   unit='deg', default=0)]
     def __init__(self, *args, **kvargs):
-        super(ISin, self).__init__(*args, **kvargs)
+        super().__init__(*args, **kvargs)
         self.function = func.Sin(self.iparv.io,
                                  self.iparv.ia,
                                  self.iparv.freq,
@@ -313,7 +313,7 @@ class VPulse(VS):
                   unit='s', default=0)]
 
     def __init__(self, *args, **kvargs):
-        super(VPulse, self).__init__(*args, **kvargs)
+        super().__init__(*args, **kvargs)
         self.function = func.Pulse(self.iparv.v1,
                                    self.iparv.v2,
                                    self.iparv.td,
@@ -408,7 +408,7 @@ class SVCVS(Circuit):
     branches = (Branch(Node('outp'), Node('outn')),)
 
     def __init__(self, *args, **kvargs):
-        super(SVCVS, self).__init__(*args, **kvargs)
+        super().__init__(*args, **kvargs)
 
         tk = self.toolkit
         
@@ -760,7 +760,7 @@ class VCVS_limited(Circuit):
     linear = False
 
     def __init__(self, *args, **kvargs):
-        super( VCVS_limited, self).__init__(*args, **kvargs)
+        super().__init__(*args, **kvargs)
         self.function = func.Tanh(self.iparv.offset,
                                        self.iparv.level,
                                        toolkit = self.toolkit)                                       
@@ -796,7 +796,7 @@ class Idt(Circuit):
     branches = (Branch(Node('oplus'), Node('ominus')),)
         
     def __init__(self, *args, **kvargs):
-        super(Idt, self).__init__(*args, **kvargs)
+        super().__init__(*args, **kvargs)
         branchindex = -1 ## add last in matrix
         idt_index = self.nodes.index(self.add_node('idt_node')) #note side effect
         inpindex, innindex, outpindex, outnindex = \
@@ -837,7 +837,7 @@ class Idtmod(Circuit):
     branches = (Branch(Node('oplus'), Node('ominus')),)
         
     def __init__(self, *args, **kvargs):
-        super(Idtmod, self).__init__(*args, **kvargs)
+        super().__init__(*args, **kvargs)
         branchindex = -1 ## add last in matrix
         idt_index = self.nodes.index(self.add_node('idt_node')) #note side effect
         inpindex, innindex, outpindex, outnindex = \

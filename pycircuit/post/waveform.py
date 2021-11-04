@@ -486,7 +486,6 @@ class Waveform(object):
             axis = -1
         axis = self.getaxis(axis)
 
-        pylab.hold(True)
         indexshape = list(self._y.shape)
         indexshape[axis] = 1
         for i in np.ndindex(*indexshape):
@@ -510,7 +509,6 @@ class Waveform(object):
 
             p=plotfunc(self.x[axis], y, *args, **kvargs)
 
-        pylab.hold(False)
         
         xlabel = self.xlabels[axis]
         if self.xunits[axis] != '':

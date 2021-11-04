@@ -37,7 +37,7 @@ class ddt(sympy.Function):
 class Quantity(circuit.Quantity, sympy.basic.Atom):
     pass
 
-class Statement(object):
+class Statement():
     pass
 
 class Contribution(Statement):

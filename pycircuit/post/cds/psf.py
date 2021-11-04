@@ -20,7 +20,7 @@ def warning(str):
 def indent(str, n=2):
     return "\n".join([' '*n+s for s in str.split("\n")])
 
-class PSFData(object):
+class PSFData:
     @classmethod
     def fromFile(cls, file):
         obj = cls()
@@ -1230,7 +1230,7 @@ def readChunk(psf, file, expectedclasses=None):
     
     return chunk
 
-class PSFReader(object):
+class PSFReader:
     def __init__(self, filename=None, asc=None):
         self.header = None
         self.types = TypeSection(self)

@@ -15,7 +15,7 @@ class L(SubCircuit):
                             unit='H', default=1e-9)]
 
     def __init__(self, *args, **kvargs):
-        super(L, self).__init__(*args, **kvargs)
+        super().__init__(*args, **kvargs)
         ## Gyrator
         self['gyrator'] = Gyrator('plus', 'minus', 'capnode', 'refnode', gm=1)
         ## Capacitor with a 
@@ -38,7 +38,7 @@ class VS(SubCircuit):
                             unit='V^2/Hz', default=0)]
 
     def __init__(self, *args, **kvargs):
-        super(VS, self).__init__(*args, **kvargs)
+        super().__init__(*args, **kvargs)
         ## Gyrator
         self['gyrator'] = Gyrator('plus', 'minus', 'capnode', 'refnode', gm=1)
         ## Capacitor with a 
@@ -66,7 +66,7 @@ class Nullor(Circuit):
     terminals = ('inp', 'inn', 'outp', 'outn')
 
     def __init__(self, *args, **kvargs):
-        super(Nullor, self).__init__(*args, **kvargs)
+        super().__init__(*args, **kvargs)
         n = self.n
         G = self.toolkit.zeros((n,n))
         self._G = G
@@ -83,7 +83,7 @@ class VCCS(SubCircuit):
     terminals = ('inp', 'inn', 'outp', 'outn')
                                
     def __init__(self, *args, **kvargs):
-        super(VCCS, self).__init__(*args, **kvargs)
+        super().__init__(*args, **kvargs)
         i_p, i_n = self.add_nodes('internal_p', 'internal_n')
 
         self['Nullor_p'] = Nullor('inp',i_p,'outp',i_p)
@@ -100,6 +100,9 @@ class CCVS(SubCircuit):
     terminals = ('inp', 'inn', 'outp', 'outn')
                                
     def __init__(self, *args, **kvargs):
+        # Question: is this intenional or is it intended to call super of CCVS?
+        # In the latter case use 'super().__init__' instead.
+        # VCCS and CCVS both inherit from SubCircuit, so it shouldn't make a difference.
         super(VCCS, self).__init__(*args, **kvargs)
 
         self['Nullor'] = Nullor('inp', 'inn', 'outp', 'outn')
@@ -115,6 +118,9 @@ class VCVS(SubCircuit):
     terminals = ('inp', 'inn', 'outp', 'outn')
                                
     def __init__(self, *args, **kvargs):
+        # Question: is this intenional or is it intended to call super of VCVS?
+        # In the latter case use 'super().__init__' instead.
+        # VCCS and VCVS both inherit from SubCircuit, so it shouldn't make a difference. 
         super(VCCS, self).__init__(*args, **kvargs)
         i_p, i_n = self.add_nodes('internal_p', 'internal_n')
 
@@ -131,6 +137,9 @@ class CCCS(SubCircuit):
     terminals = ('inp', 'inn', 'outp', 'outn')
                                
     def __init__(self, *args, **kvargs):
+        # Question: is this intenional or is it intended to call super of CCCS?
+        # In the latter case use 'super().__init__' instead.
+        # VCCS and CCCS both inherit from SubCircuit, so it shouldn't make a difference. 
         super(VCCS, self).__init__(*args, **kvargs)
         i_p, i_n = self.add_nodes('internal_p', 'internal_n')
 

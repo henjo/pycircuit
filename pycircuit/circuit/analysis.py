@@ -25,7 +25,7 @@ class CircuitResult(IVResultDict, InternalResultDict):
     """Result class for analyses that returns voltages and currents"""
     def __init__(self, circuit, x, xdot = None, 
                  sweep_values=[], sweep_label='', sweep_unit=''):
-        super(CircuitResult, self).__init__()
+        super().__init__()
 
         nodes = circuit.nodes
 
@@ -76,8 +76,8 @@ class Analysis(sim.Analysis):
 
     def __init__(self, cir, toolkit=None, **kvargs):
         
-        self.parameters = super(Analysis, self).parameters + self.parameters
-        super(Analysis, self).__init__(cir, **kvargs)
+        self.parameters = super().parameters + self.parameters
+        super().__init__(cir, **kvargs)
 
         if toolkit is None:
             if cir.toolkit is None:

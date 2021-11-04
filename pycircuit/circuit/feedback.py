@@ -108,7 +108,7 @@ class LoopBreaker(CircuitProxy):
     """Circuit proxy that zeros out dependent sources in the G and C methods"""
     def __init__(self, circuit, inp, inn, outp, outn, parent=None, 
                  instance_name=None):
-        super(LoopBreaker, self).__init__(circuit, parent, instance_name)
+        super().__init__(circuit, parent, instance_name)
         
         self.nulling_indices = find_nulling_indices(circuit, 
                                                     circuit.toolkit.zeros(circuit.n),
@@ -146,7 +146,7 @@ class FeedbackDeviceAnalysis(SSAnalysis):
     def __init__(self, circuit, instance, 
                  inp=None, inn=None, outp=None, outn=None, 
                  toolkit=None):
-        super(FeedbackDeviceAnalysis, self).__init__(circuit, 
+        super().__init__(circuit, 
                                                      toolkit=toolkit)
 
         self.inp = inp; self.inn = inn; self.outp = outp; self.outn = outn
@@ -233,7 +233,7 @@ class LoopProbe(SubCircuit):
     terminals = ['inp', 'inn', 'outp', 'outn']
 
     def __init__(self, *args, **kvargs):
-        super(LoopProbe, self).__init__(*args, **kvargs)
+        super().__init__(*args, **kvargs)
 
         self['vinj'] = LoopVS(self.nodenames['inp'], self.nodenames['outp'])
         self['iinj'] = LoopIS(self.nodenames['inp'], self.nodenames['inn'])
@@ -250,8 +250,7 @@ class FeedbackLoopAnalysis(SSAnalysis):
     """Find loop-gain by breaking all loops with a LoopProbe element
     """
     def __init__(self, circuit, toolkit=None):
-        super(FeedbackLoopAnalysis, self).__init__(circuit, 
-                                                   toolkit=toolkit)
+        super().__init__(circuit, toolkit=toolkit)
         
         ## Find LoopProbe instance
         loopprobes = list(find_loopprobe(circuit))

@@ -82,7 +82,7 @@ class TwoPortAnalysis(Analysis):
     def __init__(self, circuit, inp, inn, outp, outn, noise = False, 
                  noise_outquantity = 'v', method = 'sparam', 
                  toolkit = None):
-        super(TwoPortAnalysis, self).__init__(circuit, toolkit=toolkit)
+        super().__init__(circuit, toolkit=toolkit)
 
         self.ports = (inp, inn), (outp, outn)
 

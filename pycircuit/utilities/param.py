@@ -35,7 +35,7 @@ class EvalError(Exception): pass
 
 class ParameterDict(ObserverSubject):
     def __init__(self, *parameters, **kvargs):
-        super(ParameterDict, self).__init__()
+        super().__init__()
         self._paramnames = []
         self._parameters = {}
         self._values = {}

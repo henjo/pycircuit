@@ -21,7 +21,7 @@ class CircuitResultAC(CircuitResult):
     """Result class for analyses that returns voltages and currents"""
     def __init__(self, circuit, xdcop, x, xdot = None,
                  sweep_values=[], sweep_label='', sweep_unit=''):
-        super(CircuitResultAC, self).__init__(circuit, x, xdot,
+        super().__init__(circuit, x, xdot,
                                               sweep_values=sweep_values,
                                               sweep_label=sweep_label,
                                               sweep_unit=sweep_unit)
@@ -43,8 +43,8 @@ class SSAnalysis(Analysis):
                              default=None)]
 
     def __init__(self, cir, toolkit=None, **kvargs):    
-        self.parameters = super(SSAnalysis, self).parameters + self.parameters            
-        super(SSAnalysis, self).__init__(cir, **kvargs)
+        self.parameters = super().parameters + self.parameters            
+        super().__init__(cir, **kvargs)
         
 
     def ss_map_function(self, func, ss, refnode):
@@ -107,8 +107,8 @@ class AC(SSAnalysis):
                              default='ac')]
 
     def __init__(self, cir, toolkit=None, **kvargs):
-        self.parameters = super(AC, self).parameters + self.parameters            
-        super(AC, self).__init__(cir, **kvargs)
+        self.parameters = super().parameters + self.parameters            
+        super().__init__(cir, **kvargs)
 
     def solve(self, freqs, refnode=gnd, complexfreq = False, u = None):
         G, C, CY, u, x, ss = self.dc_steady_state(freqs, refnode,
@@ -152,10 +152,10 @@ class TransimpedanceAnalysis(SSAnalysis):
                             default='TransimpedanceAnalysis')]
 
     def __init__(self, cir, toolkit=None, **kvargs):
-        parameters = super(TransimpedanceAnalysis, self).parameters + \
+        parameters = super().parameters + \
             self.parameters
             
-        super(TransimpedanceAnalysis, self).__init__(cir, **kvargs)
+        super().__init__(cir, **kvargs)
 
             
     def solve(self, freqs, outbranches, currentoutput=False,
@@ -282,8 +282,8 @@ class Noise(SSAnalysis):
             The voltage source where the output current noise is measured
         """
 
-        self.parameters = super(Noise, self).parameters + self.parameters            
-        super(Noise, self).__init__(cir, **kvargs)
+        self.parameters = super().parameters + self.parameters            
+        super().__init__(cir, **kvargs)
 
     
         if not (self.par.outputnodes is not None or self.par.outputsrc is not None):
