@@ -719,7 +719,7 @@ class Waveform(object):
             x[i], x[j] = (x[j], x[i])
             return x
 
-        i, j = [self.getaxis(axis) for axis in i,j]
+        i, j = [self.getaxis(axis) for axis in (i,j)]
 
         w = copy(self)
 
@@ -738,7 +738,7 @@ class Waveform(object):
         
         result = self
         
-        curorder = range(self.ndim)
+        curorder = list(range(self.ndim))
         for axis in range(self.ndim):
             if curorder[axis] != neworder[axis]:
                 newpos = curorder.index(neworder[axis])

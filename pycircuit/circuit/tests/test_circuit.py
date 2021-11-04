@@ -250,7 +250,7 @@ def test_adddel_subcircuit_element():
     
     del cir['V']
     
-    assert_equal(cir.elements.values(), [cir['R1']])
+    assert_equal(list(cir.elements.values()), [cir['R1']])
     assert_equal(cir.nodes, [n1,gnd])
     assert_equal(cir.branches, [])
 
@@ -260,7 +260,7 @@ def test_short_resistor():
 
     cir['R1'] = R(gnd, gnd)
     
-    assert_equal(cir.G(np.zeros(1)), np.array([0]))
+    assert_equal(cir.G(np.zeros(1)), np.zeros(1))
     
 def test_copy_circuit():
     """Test to make a copy of circuit"""

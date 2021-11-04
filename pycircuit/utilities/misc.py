@@ -90,7 +90,7 @@ def create_index_vectors(indices):
     while len(dupes) > 0:
         src_i_list = []
         dst_i_list = []
-        for dst_i, src_indices in dupes.items():
+        for dst_i, src_indices in list(dupes.items()):
             src_i = src_indices.pop()
 
             if len(src_indices) == 0:

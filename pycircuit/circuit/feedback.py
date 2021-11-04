@@ -31,7 +31,7 @@ def find_nulling_indices(circuit, x, inp=None, inn=None, outp=None, outn=None,
             all_combinations = combinations(allports, 2)
         else:
             i_inp, i_inn, i_outp, i_outn = [circuit.get_node_index(t)
-                                            for t in inp,inn,outp,outn]
+                                            for t in (inp,inn,outp,outn)]
             all_combinations = (((i_inp, i_inn), (i_outp, i_outn)),)
         
         found_combinations = set()
@@ -124,7 +124,7 @@ class LoopBreaker(CircuitProxy):
 
     def C(self, x, epar=defaultepar): 
         C = self.device.C(x,epar)
-        C[self.nulling_indices] = 0
+        C[tuple(self.nulling_indices)] = 0
         return C
 
 class FeedbackDeviceAnalysis(SSAnalysis):
