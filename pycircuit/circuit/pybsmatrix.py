@@ -174,7 +174,7 @@ class Bsmatrix:
     self.nzcount=self.nzcount.cumsum()
     self.setzero() #makes sure all elements in space are zero
     self.diag=zeros(self.size)
-    for i in xrange(self.size-1):
+    for i in range(self.size-1):
       self.diag[i+1]=self.diag[i]+low_diff[i]+low_diff[i+1]+1
     #self.diag=self.diag-1 #modification since matrix start@1
     self.row0=self.diag-arange(self.size)
@@ -205,7 +205,7 @@ class Bsmatrix:
            [ 0.,  0.,  0.,  1.]])
 
     """
-    for i in xrange(self.size):
+    for i in range(self.size):
       self[i,i] += offset
     return None
 
@@ -250,11 +250,11 @@ class Bsmatrix:
     Forward backward substitution
     vec is right side vector and will be substituted in place
     """
-    for i in xrange(self.size):
-      for k in xrange(i):
+    for i in range(self.size):
+      for k in range(i):
         vec[i] -= vec[k]*self[i,k]
-    for i in xrange(self.size):
-      for k in xrange(self.size-1,i,-1):
+    for i in range(self.size):
+      for k in range(self.size-1,i,-1):
         vec[i] -= vec[k]*self[i,k]
         vec[i] /= self[i,i]
     return None
@@ -264,12 +264,12 @@ class Bsmatrix:
     Forward backward substitution of transposed matrix.
     vec is right side vector and will be substituted in place
     """
-    for i in xrange(self.size):
-      for k in xrange(i):
+    for i in range(self.size):
+      for k in range(i):
         vec[i] -= vec[k]*self[k,i]
         vec[i] /= self[i,i]
-    for i in xrange(self.size):
-      for k in xrange(self.size-1,i,-1):
+    for i in range(self.size):
+      for k in range(self.size-1,i,-1):
         vec[i] -= vec[k]*self[k,i]
     return None
 
@@ -278,8 +278,8 @@ class Bsmatrix:
     Returns a dense array version of the sparse matrix
     """
     dense_arr=zeros((self.size,self.size))
-    for i in xrange(self.size):
-      for j in xrange(self.lownode[i],i):
+    for i in range(self.size):
+      for j in range(self.lownode[i],i):
         dense_arr[i,j]=self[i,j]
         dense_arr[j,i]=self[j,i]
       dense_arr[i,i]=self[i,i]
@@ -312,8 +312,8 @@ class Bsmatrix:
     for i,j in zip(nonz_row,nonz_col):
       self.iwant(i,j)
     self.allocate()
-    for i in xrange(self.size):
-      for j in xrange(self.lownode[i],i):
+    for i in range(self.size):
+      for j in range(self.lownode[i],i):
         self[i,j]=dense_arr[i,j]
         self[j,i]=dense_arr[j,i]
       self[i,i]=dense_arr[i,i]

@@ -192,7 +192,7 @@ class BezierShape(Shape):
 	def draw(self, cr):
 		x0, y0 = self.points[0]
 		cr.move_to(x0, y0)
-		for i in xrange(1, len(self.points), 3):
+		for i in range(1, len(self.points), 3):
 			x1, y1 = self.points[i]
 			x2, y2 = self.points[i + 1]
 			x3, y3 = self.points[i + 2]

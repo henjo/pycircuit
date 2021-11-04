@@ -110,7 +110,7 @@ def fsolve(f, x0, args=(), full_output=False, maxiter=200,
     
     converged = False
     ier = 2
-    for i in xrange(maxiter):
+    for i in range(maxiter):
         F, J = f(x0, *args) # TODO: Make sure J is never 0, e.g. by gmin (stepping)
         xdiff = toolkit.linearsolver(J, -F)# TODO: Limit xdiff to improve convergence
 

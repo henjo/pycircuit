@@ -242,7 +242,7 @@ class Transient(Analysis):
         self._qlast = self.toolkit.concatenate((self.toolkit.array([self.cir.q(x)]),self._qlast))[:-1]
         #is this still needed
         order=1 #number of past x-values needed
-        for i in xrange(order):
+        for i in range(order):
             X.append(copy(x))
         
         times = self.get_timestep(tend)

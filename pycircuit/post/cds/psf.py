@@ -1048,7 +1048,7 @@ class SweepValueWindowed(SweepValue):
         if n > windowlen:
             n = windowlen
 
-        for j in xrange(n):
+        for j in range(n):
             paramvalue = self.paramtype.getDataObj()
             paramvalue.deSerializeFile(file)
             if j < n:
@@ -1101,7 +1101,7 @@ class GroupData(PSFData):
                 # to skip window size - data size
                 file.seek(int(windowsize - count*element.getDataSize()), 1)
 
-                for i in xrange(0,count):
+                for i in range(0,count):
                     value = element.getDataObj()
                     value.deSerializeFile(file)
                     valuearray.append(value)
