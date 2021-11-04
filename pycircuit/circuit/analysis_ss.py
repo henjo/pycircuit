@@ -292,9 +292,9 @@ class Noise(SSAnalysis):
             raise ValueError('Cannot measure both output current and voltage '
                              'noise')
         
-        if not (type(self.par.inputsrc) is types.StringType and \
+        if not (type(self.par.inputsrc) is str and \
                 self.par.outputsrc is None or \
-                    type(self.par.outputsrc) is types.StringType):
+                    type(self.par.outputsrc) is str):
             raise ValueError('Sources must be given as instance names')
 
         self.inputsrc_name = self.par.inputsrc

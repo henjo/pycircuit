@@ -588,7 +588,7 @@ class Circuit(object):
         """
         v = []
         for node in nodep, noden:
-            if type(node) is types.StringType:
+            if type(node) is str:
                 node = self.get_node(node)
             elif node is None:
                 node = refnode
@@ -652,7 +652,7 @@ class Circuit(object):
         """
         dot = self.toolkit.dot
         
-        if type(branch_or_term) is types.StringType:
+        if type(branch_or_term) is str:
             ## Calculate current going in to the terminal as
             ## self.i(x)[terminal_node] + u(t) + dq(x)/dt. 
             ## This will work since i(x) returns
@@ -1155,7 +1155,7 @@ class SubCircuit(Circuit):
     def extract_i(self, x, branch_or_term, xdot = None,
                   refnode = gnd, refnode_removed = False, 
                   linearized = False, xdcop = None):
-        if type(branch_or_term) is types.StringType:
+        if type(branch_or_term) is str:
             if self.get_terminal_branch(branch_or_term) is None:
 
                 hierlevels = [part for part in branch_or_term.split('.')]

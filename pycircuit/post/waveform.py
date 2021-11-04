@@ -566,11 +566,11 @@ class Waveform(object):
 
     def getaxis(self, axis):
         """Look up axis index by name of xlabel names"""
-        if isinstance(axis, basestring):
+        if isinstance(axis, str):
             if axis not in self.xlabels:
                 raise Exception('No axis with xlabel %s (%s)'%(axis, str(self.xlabels)))
             return list(self.xlabels).index(axis)
-        elif type(axis) is types.IntType:
+        elif type(axis) is int:
             if axis >= self.ndim:
                 raise ValueError('axis %d >= number of dimensions'%axis)
             elif axis < 0:
@@ -629,7 +629,7 @@ class Waveform(object):
         else:
             return ''
     def set_yunit(self, s):
-        if not isinstance(s, basestring) and s is not None:
+        if not isinstance(s, str) and s is not None:
             raise ValueError('Unit must be a string')
         self._yunit = s
 
@@ -648,7 +648,7 @@ class Waveform(object):
         else:
             return 'y'
     def set_ylabel(self, s):
-        if not isinstance(s, basestring) and s is not None:
+        if not isinstance(s, str) and s is not None:
             raise ValueError('Label must be a string')
         self._ylabel = s
 
@@ -663,7 +663,7 @@ class Waveform(object):
                      doc = 'y-axis unit')
 
     def __getitem__(self, index):
-        if type(index) in (types.IntType, slice, types.EllipsisType):
+        if type(index) in (int, slice, type(Ellipsis)):
             index = (index,)
 
         if index[0] == Ellipsis:
@@ -683,11 +683,11 @@ class Waveform(object):
 
         newxlist = [x[indexpart] 
                     for x, indexpart in zip(self._xlist, index)
-                    if type(indexpart) is not types.IntType]
+                    if type(indexpart) is not int]
         newxlabels = [label for label,indexpart in zip(self.xlabels, index)
-                      if type(indexpart) is not types.IntType]
+                      if type(indexpart) is not int]
         newxunits = [label for label,indexpart in zip(self.xunits, index)
-                     if type(indexpart) is not types.IntType]
+                     if type(indexpart) is not int]
 
         newy = self._y[index]
 
@@ -825,7 +825,7 @@ class Waveform(object):
                                  ' as the number of dimensions (%d)'%
                                  (len(labels), self._dim))
             for label in labels:
-                if not isinstance(label, basestring):
+                if not isinstance(label, str):
                     raise ValueError('Labels should be of type string')
 
             if unique and len(set(labels)) != len(labels):
