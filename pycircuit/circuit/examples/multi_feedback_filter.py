@@ -2,18 +2,19 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
-from pycircuit.circuit.circuit import SubCircuit, VCCS, G, C, IS, VS, Parameter, gnd, R, Nullor, VCVS
-from pycircuit.circuit.mos import MOS
-from pycircuit.circuit.symbolicanalysis import SymbolicTwoPortAnalysis, SymbolicAC, SymbolicNoise
-from sympy import Symbol, simplify, ratsimp, sympify, factor, limit, solve, pprint, fraction, collect
+from sympy import *
+from pycircuit.circuit import *
+from pycircuit.circuit import mos
+
 from numpy import array, zeros
 from copy import copy
 from pycircuit.circuit.symbolicapprox import *
+import pycircuit.circuit.symbolic as symbolic
 
 ## Multi FeedBack (MFB) Filter
 print("Multi FeedBack (MFB) Filter Example")
 
-circuit_MFB = SubCircuit()
+circuit_MFB = SubCircuit(toolkit=symbolic)
 
 nin, nout, n1, n2, n3 = circuit_MFB.add_nodes('in', 'out', 'n1', 'n2','n3')
 
@@ -30,11 +31,10 @@ circuit_MFB['Nullor'] = Nullor(n2, gnd, n3, gnd)
 # Voltage source for AC analysis
 circuit_MFB['VSource'] = VS(nin, gnd, vac=1)
 
-res = SymbolicAC(circuit_MFB).solve(Symbol('s'), complexfreq=True) # What assumptions are added to symbol 's'?
-
-res_out = simplify(res['out'])
-
 s = Symbol('s', complex = True)
+res = AC(circuit_MFB, toolkit=symbolic).solve(s, complexfreq=True) # What assumptions are added to symbol 's'?
+print(res)
+res_out = simplify(res['out'])
 
 res_simp = simplify(res_out.subs('s',s))
 
@@ -72,7 +72,7 @@ print("")
 ## Remove soure to able to do an two port analysis
 del circuit_MFB['VSource']
 ## Perform twoport analysis with noise
-twoportana = SymbolicTwoPortAnalysis(circuit_MFB, nin, gnd, nout, gnd, noise=True, noise_outquantity='i')
+twoportana = TwoPortAnalysis(circuit_MFB, nin, gnd, nout, gnd, noise=True, noise_outquantity='i',toolkit=symbolic)
 
 res2port = twoportana.solve(Symbol('s'), complexfreq=True)
 

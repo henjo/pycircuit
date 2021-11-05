@@ -18,9 +18,9 @@ cir['VS'] = VS(net1, gnd, vac=1.0)
 ac = AC(cir)
 res = ac.solve(freqs=logspace(6,9))
 
-vnet1 = db20(res['net2'])
+vnet2 = db20(res.v('net2'))
 
-print(vnet1)
-vnet1.semilogx()
+print(vnet2)
+vnet2.semilogx()
 grid(True)
 show()
