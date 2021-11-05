@@ -9,7 +9,7 @@ import numpy as np
 from pycircuit.post import Waveform
 from pycircuit.post.functions import *
 from pycircuit.post.testing import *
-import unittest
+from numpy.testing import *
 
 testdata1 = (
     Waveform(array([1,10,100]),array([complex(-1,0),complex(0,1),2]), 
@@ -354,8 +354,7 @@ def get_ylabel(w):
         return str(w)
 
 def check_binary_op(op, a, b, preserve_yunit = False):
-    exec('res = a' + op + 'b')
-
+    res = eval('a' + op + 'b')
     ref_yunit = ''
 
     for arg in a,b:
@@ -370,7 +369,7 @@ def check_binary_op(op, a, b, preserve_yunit = False):
     
     ref_ylabel = get_ylabel(a) + op + get_ylabel(b)
 
-    exec('ref_y = get_y(a) ' + op + ' get_y(b)')
+    ref_y = eval('get_y(a) ' + op + ' get_y(b)')
 
     assert_waveform_almost_equal(res, Waveform(ref_x, ref_y, xlabels = ref_xlabels, 
                                         xunits = ref_xunits, ylabel = ref_ylabel,

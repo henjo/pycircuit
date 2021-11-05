@@ -62,7 +62,7 @@ class Waveform(object):
 
         if not self.ragged and dim != len(y.shape):
             raise ValueError("Dimension of x (%s) does not match dimension of"
-                             " y (%s)"%(map(len, x), y.shape))
+                             " y (%s)"%(list(map(len, x)), y.shape))
         self._xlist = xlist
         self._y = y
         self._dim = dim
@@ -156,7 +156,7 @@ class Waveform(object):
         newxlist = copy(self._xlist)
         
         xargs = cartesian([self._xlist[axis] for axis in axes])
-        newxlist[axes[0]] = map(func, *zip(*xargs))
+        newxlist[axes[0]] = list(map(func, *list(zip(*xargs))))
         newxlabels = list(self.xlabels)
         newxlabels[axes[0]] = xlabel
         newxunits = list(self.xunits)
@@ -756,13 +756,13 @@ class Waveform(object):
         ## Translate axis name or number to number
         axes = [self.getaxis(axis) for axis in axes]
         
-        if not set(axes).issubset(range(self.ndim)):
+        if not set(axes).issubset(list(range(self.ndim))):
             raise ValueError("invalid axes argument")
  
         xlabels = [self.xlabels[axis] for axis in axes]
         xunits = [self.xunits[axis] for axis in axes]
         xlist = [self.get_x(axis) for axis in axes]
-        xindex = [range(len(x)) for x in xlist]
+        xindex = [list(range(len(x))) for x in xlist]
     
         for xindices in cartesian(xindex):
             xvalues = [xlist[i][xindices[i]] for i in range(len(axes))]
@@ -867,7 +867,7 @@ def _broadcast_apply(func, args,
             return args[i].ndim
         else:
             return -1
-    ihidim = sorted(range(len(args)), key = key_func, reverse=True)[0]
+    ihidim = sorted(list(range(len(args))), key = key_func, reverse=True)[0]
     
     bothwaves = iswave(args[0]) and iswave(args[1])
     if bothwaves:
@@ -889,7 +889,7 @@ def _broadcast_apply(func, args,
             argsy.append(arg._y)
         else:
             argsy.append(arg)
-    newy = apply(func, argsy)
+    newy = func(*argsy)
 
     if sameunit:
         yunit = yunit or args[ihidim].yunit
@@ -953,16 +953,16 @@ def to_xy_matrices(*waveforms):
     if waveforms[0].ragged:
         def flatten_ragged(a):
             if hasattr(a,'dtype') and a.dtype == 'object':
-                return concatenate(map(flatten_ragged, a.tolist()))
+                return concatenate(list(map(flatten_ragged, a.tolist())))
             else:
                 return a
 
-        xvalues = zip(*map(flatten_ragged, waveforms[0]._xlist))
-        yvalues = zip(*[flatten_ragged(w._y) for w in waveforms])
+        xvalues = list(zip(*list(map(flatten_ragged, waveforms[0]._xlist))))
+        yvalues = list(zip(*[flatten_ragged(w._y) for w in waveforms]))
 
     else:
         xvalues = cartesian(waveforms[0]._xlist)
-        yvalues = zip(*[list(w._y.flat) for w in waveforms])
+        yvalues = list(zip(*[list(w._y.flat) for w in waveforms]))
 
     ## Filter NaN values
     try:
@@ -1002,14 +1002,14 @@ def astable(*waveforms):
     hasunits = not reduce(operator.__and__, [yunit == '' for yunit in yunits])
     
     if hasunits:
-        return rst.table(map(lambda x,y: list(x) + list(y), 
+        return rst.table(list(map(lambda x,y: list(x) + list(y), 
                                        [xlabels] + [xunits] + xvalues, 
-                                       [ylabels] + [yunits] + yvalues), 
+                                       [ylabels] + [yunits] + yvalues)), 
                               headerrows = 2)
     else:
-        return rst.table(map(lambda x,y: list(x) + list(y), 
+        return rst.table(list(map(lambda x,y: list(x) + list(y), 
                                        [xlabels] + xvalues, 
-                                       [ylabels] + yvalues))
+                                       [ylabels] + yvalues)))
     
 
 
@@ -1028,7 +1028,7 @@ def apply_along_axis_with_idx(func1d,axis,arr,*args):
             % (axis,nd))
     ind = [0]*(nd-1)
     i = np.zeros(nd,'O')
-    indlist = range(nd)
+    indlist = list(range(nd))
     indlist.remove(axis)
     i[axis] = slice(None,None)
     outshape = np.asarray(arr.shape).take(indlist)
@@ -1117,7 +1117,7 @@ def compose(wlist, x = None, xlabel = None):
     newy = np.array([w.y for w in wlist])
 
     if x is None:
-        newx = [range(len(wlist))] + wlist[0].x
+        newx = [list(range(len(wlist)))] + wlist[0].x
     else:
         newx = [x] + wlist[0].x
 
