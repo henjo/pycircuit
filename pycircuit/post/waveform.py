@@ -924,7 +924,7 @@ def applyfunc_and_reducedim(func, w, axis = -1, ylabel = None, yunit = None):
 def reducedim(w, newy, axis=-1, ylabel=None, yunit=None):
     """Reduce the dimension by one and return a new waveform or float if zero-rank"""
 
-    if matrix_rank(newy) == 0:
+    if newy.ndim == 0:
         return np.asscalar(newy)
 
     if ylabel is None:

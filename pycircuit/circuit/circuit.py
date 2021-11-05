@@ -1229,7 +1229,7 @@ class SubCircuit(Circuit):
                 rhs = getattr(element, methodname)(*args)
 
             T = self._mapmatrix[instance]
-
+            
             lhs += self.toolkit.dot(T, rhs)
 
         return lhs
