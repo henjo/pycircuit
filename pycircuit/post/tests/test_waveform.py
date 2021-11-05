@@ -322,6 +322,7 @@ def check_func(func, reference_func, args, preserve_yunit = False,
 
     ## Check x label and units
     if iswave(args[0]):
+        x = args[0]
         assert_equal(res.xlabels, x.xlabels)
         assert_equal(res.xunits, x.xunits)
 
