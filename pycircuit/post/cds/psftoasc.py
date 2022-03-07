@@ -7,10 +7,10 @@ import sys
 from pycircuit.post.cds import psf
 
 if len(sys.argv) < 2:
-    print "Usage: psftoasc PSFFILE"
+    print("Usage: psftoasc PSFFILE")
 else:
     filename = sys.argv[1]
 
     psfobj = psf.PSFData.fromFile(open(filename))
 
-    print psfobj.toPSFasc()
+    print(psfobj.toPSFasc())
