@@ -47,7 +47,7 @@ class VS(SubCircuit):
 
 class Nullor(Circuit):
     """Nullor
-
+    
        For Nullor documentations se first the Nullor in elements.py
 
        This Nullor is for Compact Nodal Analysis (CNA) instead of
@@ -58,8 +58,8 @@ class Nullor(Circuit):
        1. Esteban Tlelo Cuautle / Arturo Sarmiento Reyes
           A PURE NODAL-ANALYSIS METHOD SUITABLE FOR ANALOG CIRCUITS USING
           NULLORS
-          Journal of Applied Research and Technology, october, año/vol. 1,
-          número 003
+          Journal of Applied Research and Technology, october, ano/vol. 1,
+          numero 003
        
     """
 
