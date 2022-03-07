@@ -7,11 +7,11 @@ import getopt, sys
 import psf
 
 def usage():
-    print "Usage: psftoasc [-OPTION] PSFFILE"
-    print "Options:"
-    print "  -h, --help\tPrint this help"
-    print "  -i, --info\tPrint information about the PSF"
-    print "  -a, --asc\tExport to PSFasc (default)"
+    print("Usage: psftoasc [-OPTION] PSFFILE")
+    print( "Options:")
+    print( "  -h, --help\tPrint this help")
+    print( "  -i, --info\tPrint information about the PSF")
+    print( "  -a, --asc\tExport to PSFasc (default)")
 
 def main():
     try:
@@ -47,9 +47,9 @@ def main():
     psfobj.open()
 
     if cmd == "psfasc":
-        print psfobj.toPSFasc()
+        print(psfobj.toPSFasc())
     elif cmd == "info":
-        print psfobj.info()
+        print(psfobj.info())
         if verbose:
             psfobj.printme()
     
