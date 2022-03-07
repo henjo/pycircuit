@@ -5,7 +5,7 @@ from pycircuit.circuit.analysis import *
 import numpy as np
 import sympy
 
-import pycircuit.circuit.symbolic as symbolic
+from . import symbolic as symbolic
 
 class SymbolicDC(Analysis):
     """Symbolic DC analyis class
