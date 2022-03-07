@@ -1192,7 +1192,7 @@ class SubCircuit(Circuit):
                 subx = x[nodemap]
                 try:
                     rhs = getattr(element, methodname)(subx, *args)
-                except Exception, e:
+                except Exception as e:
                     raise e.__class__(str(e) + ' at element ' + str(element) 
                                       + ', args='+str(args))
             else:
