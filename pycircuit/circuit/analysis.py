@@ -6,13 +6,13 @@ from pycircuit import sim
 from pycircuit.utilities import Parameter, ParameterDict, isiterable
 from pycircuit.circuit import Circuit, SubCircuit, VS,IS,R,C,L,Diode, gnd, \
     defaultepar, instjoin, circuit
-import pycircuit.circuit.circuit
-import pycircuit.circuit.symbolic as symbolic
+from . import circuit
+from . import symbolic as symbolic
 from pycircuit.post.waveform import Waveform
 from pycircuit.post.result import IVResultDict
 from pycircuit.post.internalresult import InternalResultDict
 from copy import copy
-import pycircuit.circuit.numeric as numeric
+from . import numeric as numeric
 import types
 
 class NoConvergenceError(Exception):
