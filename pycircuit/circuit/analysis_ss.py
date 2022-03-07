@@ -7,13 +7,13 @@ from pycircuit.circuit.analysis import CircuitResult, Analysis, remove_row_col
 from pycircuit.circuit import Circuit, SubCircuit, VS,IS,R,C,L,Diode, gnd, \
     defaultepar, instjoin
 import pycircuit.circuit.circuit
-import pycircuit.circuit.symbolic as symbolic
+from . import symbolic as symbolic
 from pycircuit.post.waveform import Waveform
 from pycircuit.post.result import IVResultDict
 from pycircuit.post.internalresult import InternalResultDict
 from pycircuit.circuit.dcanalysis import DC
 
-import pycircuit.circuit.numeric as numeric
+from . import numeric as numeric
 import types
 
 
