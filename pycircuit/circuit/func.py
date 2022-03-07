@@ -1,4 +1,4 @@
-import pycircuit.circuit.numeric as numeric
+from . import numeric as numeric
 from scipy import interpolate
 
 class TimeFunction():
