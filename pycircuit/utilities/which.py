@@ -284,17 +284,17 @@ def main(argv):
     try:
         optlist, args = getopt.getopt(argv[1:], 'haVvqp:e:',
             ['help', 'all', 'version', 'verbose', 'quiet', 'path=', 'exts='])
-    except getopt.GetoptError, msg:
+    except getopt.GetoptError as msg:
         sys.stderr.write("which: error: %s. Your invocation was: %s\n"\
                          % (msg, argv))
         sys.stderr.write("Try 'which --help'.\n")
         return 1
     for opt, optarg in optlist:
         if opt in ('-h', '--help'):
-            print _cmdlnUsage
+            print(_cmdlnUsage)
             return 0
         elif opt in ('-V', '--version'):
-            print "which %s" % __version__
+            print("which %s" % __version__)
             return 0
         elif opt in ('-a', '--all'):
             all = 1
@@ -322,9 +322,9 @@ def main(argv):
         nmatches = 0
         for match in whichgen(arg, path=altpath, verbose=verbose, exts=exts):
             if verbose:
-                print "%s (%s)" % match
+                print("%s (%s)" % match)
             else:
-                print match
+                print(match)
             nmatches += 1
             if not all:
                 break
