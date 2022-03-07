@@ -251,7 +251,7 @@ class _Analysis(object):
             variables.append(self.simulations[0].xunit)
             sweepvalues.append(xfirst)
         
-        print ylist
+        print(ylist)
         wavearray = numpy.array(ylist)
         wavearray = wavearray.reshape(map(len, sweepvalues))
 
