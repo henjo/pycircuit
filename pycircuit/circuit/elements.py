@@ -4,7 +4,7 @@
 
 from __future__ import division
 from .circuit import *
-import pycircuit.circuit.func as func
+from . import func as func
 
 class R(Circuit):
     """Resistor element
