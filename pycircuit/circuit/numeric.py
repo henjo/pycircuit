@@ -14,11 +14,11 @@ from .constants import *
 import numpy as np
 from numpy import cos, sin, tan, cosh, sinh, tanh, log, exp, pi, linalg,\
      inf, ceil, floor, dot, linspace, eye, concatenate, sqrt, real, imag,\
-     ones, complex, diff, delete, alltrue, maximum, size, conj
+     ones, diff, delete, alltrue, maximum, size, conj, cdouble
 
 symbolic = False
 
-ac_u_dtype = np.complex
+ac_u_dtype = np.cdouble
 
 def linearsolver(*args, **kvargs):
     return np.linalg.solve(*args, **kvargs)
@@ -27,7 +27,7 @@ def linearsolverError(*args, **kvargs):
     return np.linalg.LinAlgError
 
 def toMatrix(array): 
-    return array.astype('complex')
+    return array.astype('cdouble')
 
 def det(x): 
     return np.linalg.det(x)
@@ -45,6 +45,9 @@ def inv(*args, **kvargs):
 
 def integer(x):
     return int(x)
+
+def complex(x):
+    return complex(x)
 
 numeric = True
     

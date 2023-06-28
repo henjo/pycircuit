@@ -40,7 +40,7 @@ def fourier_analysis(t, x, harmonics=range(9)):
         if k == 0:
             if True:
                 n = np.arange(1, N)
-                tmp = np.zeros(n.shape, dtype=np.complex)
+                tmp = np.zeros(n.shape, dtype=np.csingle)
 
                 m = np.arange(M+1)[:,np.newaxis]
 
@@ -56,7 +56,7 @@ def fourier_analysis(t, x, harmonics=range(9)):
                 c_k.append(1 / T * (integral[...,1] - integral[..., 0]))
         else:
             n = np.arange(1, N)
-            tmp = np.zeros(n.shape, dtype=np.complex)
+            tmp = np.zeros(n.shape, dtype=np.csingle)
             for m in range(M+1):
                 tmp += pwc[m,n-1] * alpha(k,m,n)
             c_k.append(1/T * sum(tmp))

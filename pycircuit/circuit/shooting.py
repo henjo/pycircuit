@@ -12,7 +12,7 @@ def freq_analysis(x, t, rms = True, axis=-1, freqoffset = 0):
 
     dt = t[1] - t[0]
 
-    if x.dtype in (np.complex128, np.complex):
+    if x.dtype in (np.cdouble, np.cdouble):
         X = np.fft.fftshift(np.fft.fft(x, axis=axis),axes=(axis,)) / npoints
         freqs = np.fft.fftshift(np.fft.fftfreq(npoints, d=dt))
     else:
@@ -187,7 +187,7 @@ class PAC(Analysis):
         (u0,) = remove_row_col((self.cir.u(0, analysis_name),), irefnode, self.toolkit)
 
         ## Create LHS matrix using backward Euler discretization
-        L = tk.zeros((N*M, N*M),dtype=tk.complex)
+        L = tk.zeros((N*M, N*M),dtype=tk.cdouble)
         B = tk.zeros(L.shape)
         for i, (t, h, J, C) in enumerate(zip(times, hs, pss.Jtvec, pss.Cvec)):
             L[i*N:(i+1)*N, i*N:(i+1)*N] = J
@@ -198,8 +198,8 @@ class PAC(Analysis):
         outfreq = []
         outV = []
         for fs in freqs:
-            phase_shift = tk.zeros(N * M, dtype=complex)
-            u = tk.zeros(N * M, dtype=complex)
+            phase_shift = tk.zeros(N * M, dtype=tk.cdouble)
+            u = tk.zeros(N * M, dtype=tk.cdouble)
             for i,t in enumerate(times):
                 phase_shift[i*N:(i+1)*N] = tk.exp(2j*tk.pi*fs*t)
                 u[i*N:(i+1)*N] = u0
