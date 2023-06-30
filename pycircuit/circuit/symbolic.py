@@ -19,18 +19,32 @@ from pycircuit.circuit.constants_sympy import kboltzmann, eps0, epsRSi, epsRSiO2
 
 symbolic = True
 
-ac_u_dtype = np.object
+ac_u_dtype = object
+
+# def linearsolver(A, b):
+#     A,subst_dict = dummy_var_matrix(A)
+#     b = sympy.Matrix(b.tolist())
+
+# #    A.simplify(); b.simplify()
+
+#     if A.shape == (1,1):
+#         return np.array([(b[0] / A[0,0]).subs(subst_dict)])
+#     else:
+#         res = np.array((A.inverse_ADJ() * b).subs(subst_dict))
+
+#     return res.reshape((np.size(res,0),) )
 
 def linearsolver(A, b):
-    A,subst_dict = dummy_var_matrix(A)
+    A = sympy.Matrix(A)
     b = sympy.Matrix(b.tolist())
 
 #    A.simplify(); b.simplify()
 
     if A.shape == (1,1):
-        return np.array([(b[0] / A[0,0]).subs(subst_dict)])
+        return np.array([(b[0] / A[0,0])])
     else:
-        res = np.array((A.inverse_ADJ() * b).subs(subst_dict))
+        #res = np.array((A.inverse_ADJ() * b))
+        res = np.array((A.LUsolve(b)))
 
     return res.reshape((np.size(res,0),) )
 
