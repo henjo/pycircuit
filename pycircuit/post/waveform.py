@@ -9,7 +9,7 @@ sweeps.
 """
 
 import numpy as np
-from numpy import array,concatenate,alltrue,max,min,log10,arange,pi,sin, \
+from numpy import array,concatenate,max,min,log10,arange,pi,sin, \
     sign, where, newaxis, r_, vstack, apply_along_axis, nan, isscalar, \
     inf, isscalar
 from numpy.linalg import matrix_rank
