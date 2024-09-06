@@ -7,7 +7,7 @@
 from .waveform import Waveform, reducedim, applyfunc, applyfunc_and_reducedim,\
     iswave, wavefunc, assert_waveform
 import numpy as np
-from numpy import array, pi, sign, alltrue, where, arange, vstack, \
+from numpy import array, pi, sign, all, where, arange, vstack, \
     sin, log10, sqrt, nan
 import scipy as sp
 import scipy.optimize as optimize
@@ -102,7 +102,7 @@ def cross(w, crossval = 0.0, n=0, crosstype=either, axis=-1):
         elif crosstype == falling:
             edges = sign(y[:-1]) > sign(y[1:])
 
-        if alltrue(edges == False):
+        if all(edges == False):
             return nan
 
         iedge = where(edges)[0][n]
