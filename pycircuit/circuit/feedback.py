@@ -23,8 +23,8 @@ def find_nulling_indices(circuit, x, inp=None, inn=None, outp=None, outn=None,
     terminal_node_indices = [circuit.get_node_index(t) 
                              for t in circuit.terminals]
     if len(circuit.terminals) == 2:
-        return [[[terminal_node_indices[0]],[terminal_node_indices[1]]],
-                terminal_node_indices]
+        return ([[terminal_node_indices[0]],[terminal_node_indices[1]]],
+                terminal_node_indices)
     else:
         if inp is None:
             allports = combinations(terminal_node_indices, 2)
@@ -48,7 +48,7 @@ def find_nulling_indices(circuit, x, inp=None, inn=None, outp=None, outn=None,
                     if g == 0:
                         continue
                     
-                    stampindex = [i_outbranch, inport]
+                    stampindex = (i_outbranch, list(inport))
                     stampfound = np.all(X[stampindex] == circuit.toolkit.array([g,-g]))
 
                     indices = set(range(n)) - set(inport) - set(outport)
@@ -81,7 +81,7 @@ def find_nulling_indices(circuit, x, inp=None, inn=None, outp=None, outn=None,
                     if gm == 0:
                         continue
 
-                    stampindex = [[[outport[0]],[outport[1]]], inport]
+                    stampindex = ([[outport[0]],[outport[1]]], list(inport))
                     stampfound = np.all(X[stampindex] == \
                                             circuit.toolkit.array([[gm,-gm],[-gm,gm]]))
 

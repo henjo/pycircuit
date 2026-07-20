@@ -1214,7 +1214,7 @@ class SubCircuit(Circuit):
                 
             T = self._mapmatrix[instance]
         
-            lhs += dot(dot(T, rhs), T.T)
+            lhs = lhs + dot(dot(T, rhs), T.T)
 
         return lhs
 
@@ -1231,7 +1231,7 @@ class SubCircuit(Circuit):
 
             T = self._mapmatrix[instance]
             
-            lhs += self.toolkit.dot(T, rhs)
+            lhs = lhs + self.toolkit.dot(T, rhs)
 
         return lhs
 
