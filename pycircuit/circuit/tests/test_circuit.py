@@ -259,8 +259,10 @@ def test_short_resistor():
     cir = SubCircuit()
 
     cir['R1'] = R(gnd, gnd)
-    
-    assert_equal(cir.G(np.zeros(1)), np.zeros(1))
+
+    ## G is the n-by-n MNA conductance matrix; for the single gnd node
+    ## that is a 1-by-1 zero matrix.
+    assert_equal(cir.G(np.zeros(1)), np.zeros((1, 1)))
     
 def test_copy_circuit():
     """Test to make a copy of circuit"""
