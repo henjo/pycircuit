@@ -54,6 +54,13 @@ def linearsolver(A, b):
         dM = DomainMatrix.from_Matrix(A)
         db = DomainMatrix.from_Matrix(b)
         domain = dM.domain.unify(db.domain)
+        ## Fraction-free elimination needs an *exact* domain.  Float component
+        ## values land in an inexact RR[...]/CC[...] domain where solve_den is
+        ## pathologically slow (and does not raise, so it would hang rather
+        ## than fall back).  Convert to the corresponding exact domain (QQ[...])
+        ## first; this is both fast and exact.
+        if not domain.is_Exact:
+            domain = domain.get_exact()
         xnum, den = dM.convert_to(domain).solve_den(db.convert_to(domain))
         xnum = xnum.to_Matrix()
         den = domain.to_sympy(den)
