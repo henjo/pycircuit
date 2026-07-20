@@ -168,7 +168,7 @@ class PAC(Analysis):
 
     def __init__(self, cir, toolkit=None, **kvargs):
         self.parameters = super(PAC, self).parameters + self.parameters            
-        super(PAC, self).__init__(cir, **kvargs)
+        super(PAC, self).__init__(cir, toolkit=toolkit, **kvargs)
     
     def solve(self, pss, freqs, refnode=gnd, period=1e-3, x0=None, timestep=1e-6, 
               maxiterations=20):

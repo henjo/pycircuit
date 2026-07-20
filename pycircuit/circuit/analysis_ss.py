@@ -44,7 +44,7 @@ class SSAnalysis(Analysis):
 
     def __init__(self, cir, toolkit=None, **kvargs):    
         self.parameters = super().parameters + self.parameters            
-        super().__init__(cir, **kvargs)
+        super().__init__(cir, toolkit=toolkit, **kvargs)
         
 
     def ss_map_function(self, func, ss, refnode):
@@ -108,7 +108,7 @@ class AC(SSAnalysis):
 
     def __init__(self, cir, toolkit=None, **kvargs):
         self.parameters = super().parameters + self.parameters            
-        super().__init__(cir, **kvargs)
+        super().__init__(cir, toolkit=toolkit, **kvargs)
 
     def solve(self, freqs, refnode=gnd, complexfreq = False, u = None):
         G, C, CY, u, x, ss = self.dc_steady_state(freqs, refnode,
@@ -155,7 +155,7 @@ class TransimpedanceAnalysis(SSAnalysis):
         parameters = super().parameters + \
             self.parameters
             
-        super().__init__(cir, **kvargs)
+        super().__init__(cir, toolkit=toolkit, **kvargs)
 
             
     def solve(self, freqs, outbranches, currentoutput=False,
@@ -283,7 +283,7 @@ class Noise(SSAnalysis):
         """
 
         self.parameters = super().parameters + self.parameters            
-        super().__init__(cir, **kvargs)
+        super().__init__(cir, toolkit=toolkit, **kvargs)
 
     
         if not (self.par.outputnodes is not None or self.par.outputsrc is not None):
