@@ -155,35 +155,27 @@ class Contribution(Statement):
                 return ((branch.plus, irhs, qrhs, urhs),
                         (branch.minus, -irhs, -qrhs, -urhs))
 
-class NumpyPrinter(sympy.printing.StrPrinter):
-    def _print_MatrixBase(self, expr):
-        rows = ["[" + ", ".join(self._print(expr[i, j])
-                                for j in range(expr.cols)) + "]"
-                for i in range(expr.rows)]
-        return "np.array([%s])" % ", ".join(rows)
+def _bind_x_method(func, paramnames):
+    """Wrap a lambdified f(x, *params) as an instance method self.<name>(x)."""
+    def method(self, x):
+        return func(x, *[getattr(self.ipar, name) for name in paramnames])
+    return method
 
-def methodstr(name, args, expr):
-    """Returns a string that can be evaluated to an instance method
-    
-    >>> x = sympy.Symbol('x')
-    >>> methodstr('G', x, x**2 * sympy.Symbol('self.p'))
-    'def G(self, x): return self.p*x**2'
-    
-    """
-
-   # Transform everything to strings.
-    expr = NumpyPrinter().doprint(expr)
-    if isinstance(args, str):
-        pass
-    elif hasattr(args, "__iter__"):
-        args = ",".join(str(a) for a in args)
-    else:
-        args = str(args)
-
-    return "def %s(self, %s): return %s" % (name, args, expr)
+def _bind_t_method(func, paramnames):
+    """Wrap a lambdified f(t, *params) as an instance method self.u(t)."""
+    def method(self, t=0.0):
+        return func(t, *[getattr(self.ipar, name) for name in paramnames])
+    return method
 
 def generate_code(cls):
-    """Returns terminal names and i,u,q,G,C,CY method strings from class obj"""
+    """Return terminal names and lambdified i,u,q,G,C,CY functions.
+
+    The analog() behaviour is turned into symbolic i/u/q vectors and the
+    G/C Jacobians, which are then compiled to fast numpy functions with
+    ``sympy.lambdify(..., cse=True)``.  The instance parameters are the
+    trailing arguments of each compiled function and are supplied from
+    ``self.ipar`` by the wrappers created in the metaclass.
+    """
 
     ## Get arguments (terminals)
     terminalnames = inspect.getfullargspec(cls.analog)[0]
@@ -195,10 +187,11 @@ def generate_code(cls):
     analogfunc = copy(cls.analog)
 
     ## Inject parameters into function globals so the analog body can refer to
-    ## instance parameters by name (they resolve to self.ipar.<name> symbols).
-    params = dict((param.name, sympy.Symbol('self.ipar.' + param.name))
-                  for param in cls.instparams)
-    analogfunc.__globals__.update(params)
+    ## instance parameters by name.  They become plain symbols here and are
+    ## bound to self.ipar.<name> values by the compiled-function wrappers.
+    paramnames = [param.name for param in cls.instparams]
+    paramsyms = [sympy.Symbol(name) for name in paramnames]
+    analogfunc.__globals__.update(dict(zip(paramnames, paramsyms)))
 
     ## Call analog function
     statements = analogfunc(*terminalnodes)
@@ -225,11 +218,10 @@ def generate_code(cls):
 
     nodes = terminalnodes + internalnodes
 
-    ## Create a substitution dictionary that maps node voltages 
-    ## to symbols
-    xvector = [sympy.Symbol('x[%d]'%i) for i in range(len(nodes))]
+    ## Create a substitution dictionary that maps node voltages to symbols
+    xvector = [sympy.Symbol('x_%d' % i) for i in range(len(nodes))]
     substdict = [(node.V, xsym) for node, xsym in zip(nodes, xvector)]
-    
+
     ## Create i, u and q vectors
     ivector = [icontribs[node].subs(substdict) for node in nodes]
     qvector = [qcontribs[node].subs(substdict) for node in nodes]
@@ -245,32 +237,41 @@ def generate_code(cls):
 
     CY = sympy.zeros(len(xvector))
 
-    ## Create Circuit methods
-    ifuncstr = methodstr('i', 'x', ivector)
-    ufuncstr = methodstr('u', 't', uvector)
-    qfuncstr = methodstr('q', 'x', qvector)
-    Gfuncstr = methodstr('G', 'x', G)
-    Cfuncstr = methodstr('C', 'x', C)
-    CYfuncstr = methodstr('CY', 'x', CY)
+    ## Compile to numpy functions.  A DeferredVector lets the state vector be
+    ## passed as a single indexable argument, x, while the instance parameters
+    ## follow as scalar arguments.  cse=True shares common subexpressions.
+    x = sympy.DeferredVector('x')
+    xsubs = dict(zip(xvector, [x[i] for i in range(len(xvector))]))
 
-    return terminalnames, ifuncstr, ufuncstr, qfuncstr, Gfuncstr, Cfuncstr, \
-        CYfuncstr
-        
+    def compile_x(expr):
+        expr = expr.subs(xsubs) if hasattr(expr, 'subs') else \
+            [e.subs(xsubs) for e in expr]
+        return sympy.lambdify([x] + paramsyms, expr, modules='numpy', cse=True)
+
+    t = sympy.Symbol('t')
+
+    funcs = dict(
+        i=compile_x(ivector),
+        q=compile_x(qvector),
+        G=compile_x(G),
+        C=compile_x(C),
+        CY=compile_x(CY),
+        u=sympy.lambdify([t] + paramsyms, uvector, modules='numpy', cse=True),
+    )
+
+    return terminalnames, paramnames, funcs
+
 class BehaviouralMeta(type):
     def __init__(cls, name, bases, dct):
         if 'analog' in dct:
-            ## Generate code for the Circuit methods as strings
-            strings = generate_code(cls)
-            terminalnames, ifuncstr, ufuncstr, qfuncstr, Gfuncstr, \
-                Cfuncstr, CYfuncstr = strings
+            terminalnames, paramnames, funcs = generate_code(cls)
 
-            ## Create methods
-            methodnames = ('i', 'u', 'q', 'G', 'C', 'CY')
-            for methodname, codestring in zip(methodnames, strings[1:]):
-                funcdef_code = compile(codestring, '<stdin>', 'exec')
-                namespace = {'np': np}
-                exec(funcdef_code, namespace)
-                setattr(cls, methodname, namespace[methodname])
+            ## Bind the compiled functions as instance methods, supplying the
+            ## instance parameters from self.ipar.
+            for methodname in ('i', 'q', 'G', 'C', 'CY'):
+                setattr(cls, methodname,
+                        _bind_x_method(funcs[methodname], paramnames))
+            setattr(cls, 'u', _bind_t_method(funcs['u'], paramnames))
 
             ## Add terminals
             cls.terminals = terminalnames
