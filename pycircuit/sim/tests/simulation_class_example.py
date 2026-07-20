@@ -8,7 +8,7 @@ circuit['VS']=VS(1,gnd,v=0,vac='VAC')
 circuit['IDUT.Rout'].par.r=100e3
 del circuit['IDUT.Rbias']
 del circuit['IDUT']['Rbias'] #change subcircuit
-circuit['IDUT.Rbias']=R(IDUT.1,IDUT.2,r=1e3) #change in in instance (not in subcircuit)
+circuit['IDUT.Rbias']=R('IDUT.1','IDUT.2',r=1e3) #change in in instance (not in subcircuit)
 sim=Simulation(circuit)
 sim['AC1']=AC(LogSweep(1e4, 1e5, decade=10)+LinSweep(1e4,3e4,10)) #+ indicates union of all sweep points
 sim['AC1'].options.reltol=1e-3
@@ -59,7 +59,7 @@ circuit.par.VAC=1 #sim.par would also exist and would override circuit.par
 circuit['VS']=VS(1,gnd,v=0,vac='VAC',vo='VDC')
 sim=Simulation(circuit)
 sim['Sweep-AC2']=Sweep( AC(LinSweep(1e4,3e4,10)), ('temp',LinSweep(-40,120,40),'type=env'))
-sim['Sweep-AC3']=Sweep( AC(LinSweep(1e4,3e4,10)), ('VDC',LinSweep(0,1,10))
+sim['Sweep-AC3']=Sweep( AC(LinSweep(1e4,3e4,10)), ('VDC',LinSweep(0,1,10)))
 sim['Sweep-AC4']=Sweep( AC(LinSweep(1e4,3e4,10)), ('VS.vo',LinSweep(-40,120,40),'type=component'))
 sim['SwSwAC1']= Sweep( AC(LinSweep(1e4,3e4,10)), ('VDC',LinSweep(0,1,10)),('VAC',LinSweep(0,1,10)))
 

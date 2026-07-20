@@ -35,16 +35,16 @@ while loadflag > 0:
 
     ## Get unit of X axis
     xunit = jwdb.ams_sim_get_x_unit_name(fileid)
-    print "xunit", xunit
+    print("xunit", xunit)
 
     ## Get first waveform name and identifier by putting 0 at last argument
     wid, wavename = jwdb.ams_sim_get_next_waveform_name(fileid, 0)
     while wid > 0:
-        print wid, wavename
+        print(wid, wavename)
 
         ## Get unit of Y axis
         yunit = jwdb.ams_sim_get_wave_unit_name(fileid, wid)
-        print "yunit", yunit
+        print("yunit", yunit)
 
         ## Handle digital waveforms
         if not jwdb.ams_sim_is_analog_wave(yunit):
