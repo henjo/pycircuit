@@ -5,7 +5,7 @@
 """ Test high-level circuit definition
 """
 
-from pycircuit.circuit.hdl import Behavioural
+from pycircuit.circuit.hdl import Behavioural, Parameter, Branch, Contribution, ddt
 import sympy
 import numpy as np
 
@@ -25,12 +25,12 @@ def test_resistor():
 
     assert res.i([v1,v2]) == [1e-3*(v1-v2), -1e-3*(v1-v2)]
 
-    assert np.alltrue(res.G([v1,v2]) == 
+    assert np.all(res.G([v1,v2]) == 
                        np.array([[1e-3, -1e-3], [-1e-3, 1e-3]]))
 
-    assert np.alltrue(res.C([v1,v2]) == np.zeros((2,2)))
+    assert np.all(res.C([v1,v2]) == np.zeros((2,2)))
 
-    assert np.alltrue(res.CY([v1,v2]) == np.zeros((2,2)))
+    assert np.all(res.CY([v1,v2]) == np.zeros((2,2)))
 
 def test_capacitor():
     """Verify simple capacitance model"""
@@ -50,13 +50,15 @@ def test_capacitor():
 
     assert cap.i([v1,v2]) == [0, 0]
 
-    assert cap.q([v1,v2]) == [C*(v1-v2), -C*(v1-v2)]
+    ## The model returns the charge terms in expanded form (its i/u/q term
+    ## splitting relies on Expr.expand), so compare against expanded values.
+    assert cap.q([v1,v2]) == [sympy.expand(C*(v1-v2)), sympy.expand(-C*(v1-v2))]
 
-    assert np.alltrue(cap.C([v1,v2]) == 
+    assert np.all(cap.C([v1,v2]) == 
                        np.array([[C, -C], [-C, C]]))
 
-    assert np.alltrue(cap.G([v1,v2]) == np.zeros((2,2)))
+    assert np.all(cap.G([v1,v2]) == np.zeros((2,2)))
 
-    assert np.alltrue(cap.CY([v1,v2]) == np.zeros((2,2)))
+    assert np.all(cap.CY([v1,v2]) == np.zeros((2,2)))
 
 

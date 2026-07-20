@@ -2,7 +2,7 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
-import circuit
+from pycircuit.circuit import circuit
 import pycircuit.utilities.param as param
 
 import sympy
@@ -34,8 +34,41 @@ class ddt(sympy.Function):
     """Time derivative, d(x)/dt"""
     pass
 
-class Quantity(circuit.Quantity, sympy.basic.Atom):
-    pass
+class Quantity(sympy.AtomicExpr):
+    """Reference to a voltage or current of a branch or node.
+
+    Implemented as a sympy atom so it can take part in symbolic expressions
+    (arithmetic, .subs(), Matrix.jacobian(), ...).
+    """
+    def __new__(cls, quantity, branch_or_node):
+        if quantity not in ('V', 'I'):
+            raise ValueError("quantity must be either 'V' or 'I'")
+        if not isinstance(branch_or_node, (Node, Branch)):
+            raise ValueError('branch_or_node must be a Branch or Node object')
+        if quantity == 'I' and isinstance(branch_or_node, Node):
+            raise ValueError('Current can only be taken on branches')
+
+        obj = super().__new__(cls)
+        obj.quantity = quantity
+        obj.branch_or_node = branch_or_node
+        return obj
+
+    def _hashable_content(self):
+        return (self.quantity, self.branch_or_node)
+
+    @property
+    def isnode(self): return isinstance(self.branch_or_node, Node)
+
+    @property
+    def isbranch(self): return isinstance(self.branch_or_node, Branch)
+
+    def __repr__(self):
+        if self.isbranch:
+            return '%s(%s,%s)' % (self.quantity, self.branch_or_node.plus.name,
+                                  self.branch_or_node.minus.name)
+        return '%s(%s)' % (self.quantity, self.branch_or_node.name)
+
+    __str__ = __repr__
 
 class Statement():
     pass
@@ -123,8 +156,11 @@ class Contribution(Statement):
                         (branch.minus, -irhs, -qrhs, -urhs))
 
 class NumpyPrinter(sympy.printing.StrPrinter):
-    def _print_Matrix(self, expr):
-        return "np.array([%s])"%expr._format_str(self._print, ",")
+    def _print_MatrixBase(self, expr):
+        rows = ["[" + ", ".join(self._print(expr[i, j])
+                                for j in range(expr.cols)) + "]"
+                for i in range(expr.rows)]
+        return "np.array([%s])" % ", ".join(rows)
 
 def methodstr(name, args, expr):
     """Returns a string that can be evaluated to an instance method
@@ -150,7 +186,7 @@ def generate_code(cls):
     """Returns terminal names and i,u,q,G,C,CY method strings from class obj"""
 
     ## Get arguments (terminals)
-    terminalnames = inspect.getargspec(cls.analog)[0]
+    terminalnames = inspect.getfullargspec(cls.analog)[0]
 
     ## Create node objects of the terminals
     terminalnodes = [Node(terminal) for terminal in terminalnames]
@@ -158,10 +194,11 @@ def generate_code(cls):
     ## Make a copy of analog method
     analogfunc = copy(cls.analog)
 
-    ## Inject parameters into function globals
+    ## Inject parameters into function globals so the analog body can refer to
+    ## instance parameters by name (they resolve to self.ipar.<name> symbols).
     params = dict((param.name, sympy.Symbol('self.ipar.' + param.name))
                   for param in cls.instparams)
-    analogfunc.func_globals.update(params)
+    analogfunc.__globals__.update(params)
 
     ## Call analog function
     statements = analogfunc(*terminalnodes)
@@ -232,14 +269,14 @@ class BehaviouralMeta(type):
             for methodname, codestring in zip(methodnames, strings[1:]):
                 funcdef_code = compile(codestring, '<stdin>', 'exec')
                 namespace = {'np': np}
-                eval(funcdef_code, namespace)
+                exec(funcdef_code, namespace)
                 setattr(cls, methodname, namespace[methodname])
 
             ## Add terminals
             cls.terminals = terminalnames
 
                     
-class Behavioural(circuit.Circuit):
+class Behavioural(circuit.Circuit, metaclass=BehaviouralMeta):
     """
     Behavioral circuit model
 
@@ -275,8 +312,7 @@ class Behavioural(circuit.Circuit):
                 I(plus, minus) <= 1/self['r'] * I(plus, minus)    
             
     """
-    
-    __metaclass__ = BehaviouralMeta
+    pass
 
 def isconstant(expr):
     for atom in expr.atoms():
