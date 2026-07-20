@@ -386,13 +386,22 @@ def test_getitem():
     w = testdata1[0]
     assert_equal(w[0], w.y[0])
 
-    wsliced = Waveform(array([1]),array([complex(-1,0)]), 
+    wsliced = Waveform(array([1]),array([complex(-1,0)]),
                        xlabels = ('freq',),
                        xunits = ('Hz', ),
                        ylabel = 'amplitude',
                        yunit = 'V'
                        )
-    assert_equal(w[0:1], wsliced)
+    ## Compare component-wise: numpy.testing.assert_equal treats a Waveform
+    ## as a complex object (its __array__ yields complex y) and would try to
+    ## compare the .real method rather than the data.
+    wout = w[0:1]
+    assert_array_equal(wout.y, wsliced.y)
+    assert_array_equal(wout.x[0], wsliced.x[0])
+    assert_equal(wout.xlabels, wsliced.xlabels)
+    assert_equal(wout.xunits, wsliced.xunits)
+    assert_equal(wout.ylabel, wsliced.ylabel)
+    assert_equal(wout.yunit, wsliced.yunit)
     
     
 def test_repr():

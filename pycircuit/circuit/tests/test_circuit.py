@@ -73,14 +73,14 @@ def test_print_netlist():
     
     refnetlist = \
 """.subckt MySubC p m
-  V1 internal gnd! VS v=0 vac=1 phase=0 noisePSD=0
   R1 p internal R r=1000.0 noisy=True
   R2 internal m R r=1000.0 noisy=True
+  V1 internal gnd! VS v=0 vac=1 phase=0 noisePSD=0
   R3 internal gnd! R r=1000.0 noisy=True
 .ends
-I1 plus minus MySubC 
 R1 plus minus R r=2000.0 noisy=True
-R3 plus plus R r=1000.0 noisy=True"""
+R3 plus plus R r=1000.0 noisy=True
+I1 plus minus MySubC """
 
     assert_equal(netlist, refnetlist)    
 

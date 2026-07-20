@@ -228,22 +228,22 @@ class Waveform(object):
             yunit = self.yunit
         return self.binaryop(operator.__mul__, a, reverse=True, ylabel=ylabel, 
                              yunit=yunit)
-    def __div__(self, a):  
+    def __truediv__(self, a):
         if iswave(a):
             ylabel = '%s / %s'%(self.ylabel, a.ylabel)
             yunit = '%s / %s'%(self.yunit, a.yunit)
         else:
             ylabel = self.ylabel
             yunit = self.yunit
-        return self.binaryop(operator.__div__, a, ylabel=ylabel, yunit=yunit)
-    def __rdiv__(self, a): 
+        return self.binaryop(operator.truediv, a, ylabel=ylabel, yunit=yunit)
+    def __rtruediv__(self, a):
         if iswave(a):
             ylabel = '%s / %s'%(a.ylabel, self.ylabel)
             yunit = '%s / %s'%(a.yunit, self.yunit)
         else:
             ylabel = self.ylabel
             yunit = self.yunit
-        return self.binaryop(operator.__div__, a, reverse=True)
+        return self.binaryop(operator.truediv, a, reverse=True)
     def __pow__(self, a):  return self.binaryop(operator.__pow__, a)
     def __rpow__(self, a): 
         return self.binaryop(operator.__pow__, a, reverse=True)
@@ -503,7 +503,7 @@ class Waveform(object):
                 kvargs['label'] = label
             
             # Limit infinite values
-            y = self.y[i]
+            y = self.y[tuple(i)]
             y[where(y == inf)] = 1e20
             y[where(y == -inf)] = -1e20
 

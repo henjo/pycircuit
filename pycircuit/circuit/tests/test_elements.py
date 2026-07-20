@@ -217,7 +217,9 @@ def test_SVCVS_laplace_n1_d2():
 
     res = AC(cir, toolkit=symbolic).solve(s, complexfreq=True)
 
-    assert_equal(sympy.expand(res.v(n2,gnd)),sympy.expand(b0*s/(a0*s*s+a1*s+a2)))
+    ## Compare via full simplification; sympy.expand does not reduce the
+    ## nested-fraction form these two algebraically-equal expressions take.
+    assert sympy.simplify(res.v(n2,gnd) - b0*s/(a0*s*s+a1*s+a2)) == 0
 
 def test_SVCVS_laplace_d3_n1():
     """Test VCCS with a laplace defined transfer function with second order

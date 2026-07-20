@@ -218,7 +218,8 @@ class FeedbackDeviceAnalysis(SSAnalysis):
 class LoopVS(VS):
     def u(self, t=0.0, epar=defaultepar, analysis=None):
         if analysis == 'feedback':
-            return self.toolkit.array([0, 0, -self.ipar.vac], dtype=object)
+            return self.toolkit.array([0, 0, -self.ipar.vac],
+                                      dtype=self.toolkit.ac_u_dtype)
         else:
             return self.toolkit.zeros(self.n)
 
