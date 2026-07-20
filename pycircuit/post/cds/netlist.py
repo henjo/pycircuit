@@ -83,7 +83,7 @@ def keep_subcircuits(netlist):
             insubckt += 1
 
         ## Keep line if subcircuit or empty line
-        if insubckt > 0 or re.match('^\s*$', line):
+        if insubckt > 0 or re.match(r'^\s*$', line):
             lines.append(line)
 
         if line.startswith('ends'):

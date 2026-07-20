@@ -6,7 +6,7 @@ import re
 from sympy import Symbol, simplify, symbols, series
 
 def approx(expr, patterns, n=2):
-    """Approximate an expression using taylor series expansion
+    r"""Approximate an expression using taylor series expansion
 
     The expression is approximated by doing a substitution of its variables as:
 

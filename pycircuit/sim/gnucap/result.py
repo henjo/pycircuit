@@ -20,7 +20,7 @@ class GnucapResult(InternalResultDict, IVResultDict):
         lines = s.split('\n')
 
         header = lines[0][1:]
-        names = re.split("\s+", header.rstrip())
+        names = re.split(r"\s+", header.rstrip())
         data = {}
 
         if xlabels is None:

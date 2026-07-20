@@ -72,5 +72,5 @@ def psfAscAdjust(str):
     >>> psfAscAdjust("bla bla bla -0.00 0.00 -0.001 1.00000e-05")
     'bla bla bla 0.00 0.00 -0.001 1.00000e-05'
     """
-    str = re.sub("-(0\.0*$)", '\\1', str)
-    return re.sub("-(0\.0*\D)", '\\1', str)
+    str = re.sub(r"-(0\.0*$)", r'\1', str)
+    return re.sub(r"-(0\.0*\D)", r'\1', str)
