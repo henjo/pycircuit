@@ -1071,7 +1071,7 @@ class SubCircuit(Circuit):
             ## Create mapping matrix
             if len(nodemap) > 0:
                 mapmatrix = self.toolkit.zeros((self.n, len(nodemap)),
-                                               dtype = np.integer)
+                                               dtype = int)
             
                 for inst_node_index, node_index in enumerate(nodemap):
                     mapmatrix[node_index, inst_node_index] = 1

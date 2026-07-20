@@ -49,10 +49,10 @@ def find_nulling_indices(circuit, x, inp=None, inn=None, outp=None, outn=None,
                         continue
                     
                     stampindex = [i_outbranch, inport]
-                    stampfound = np.alltrue(X[stampindex] == circuit.toolkit.array([g,-g]))
+                    stampfound = np.all(X[stampindex] == circuit.toolkit.array([g,-g]))
 
                     indices = set(range(n)) - set(inport) - set(outport)
-                    no_other_crossterms = np.alltrue(X[i_outbranch, 
+                    no_other_crossterms = np.all(X[i_outbranch, 
                                                        list(indices)] == 0)
 
                     if stampfound and no_other_crossterms:
@@ -68,7 +68,7 @@ def find_nulling_indices(circuit, x, inp=None, inn=None, outp=None, outn=None,
                             continue
 
                         indices = set(range(n)) - set([i_inbranch])
-                        no_other_crossterms = np.alltrue(X[i_outbranch, 
+                        no_other_crossterms = np.all(X[i_outbranch, 
                                                            list(indices)] == 0)
 
                         if no_other_crossterms:
@@ -82,7 +82,7 @@ def find_nulling_indices(circuit, x, inp=None, inn=None, outp=None, outn=None,
                         continue
 
                     stampindex = [[[outport[0]],[outport[1]]], inport]
-                    stampfound = np.alltrue(X[stampindex] == \
+                    stampfound = np.all(X[stampindex] == \
                                             circuit.toolkit.array([[gm,-gm],[-gm,gm]]))
 
                     other_cross_rows = []; other_cross_cols = []
@@ -91,7 +91,7 @@ def find_nulling_indices(circuit, x, inp=None, inn=None, outp=None, outn=None,
                             other_cross_rows.append(row)
                             other_cross_cols.append(col)
 
-                    no_other_crossterms = np.alltrue(X[other_cross_rows, 
+                    no_other_crossterms = np.all(X[other_cross_rows, 
                                                        other_cross_cols] == 0)
 
                     if stampfound and no_other_crossterms:

@@ -33,10 +33,10 @@ class NPort(object):
     
     def __mul__(self, a):
         """Cascade of two n-ports"""
-        selfA = np.mat(self.A)
-        aA = np.mat(a.A)
+        selfA = np.asmatrix(self.A)
+        aA = np.asmatrix(a.A)
         anport = NPortA(selfA * aA,
-                        selfA * np.mat(a.CA) * selfA.H + self.CA )
+                        selfA * np.asmatrix(a.CA) * selfA.H + self.CA )
         return self.__class__(anport)
 
     def __floordiv__(self, a):
@@ -122,29 +122,29 @@ class NPortY(NPort):
     def S(self, z0 = 50.0):
         """Return scattering parameters"""
         Y = self.Y
-        E = np.mat(np.eye(self.n, self.n))
+        E = np.asmatrix(np.eye(self.n, self.n))
         Zref = z0 * E
         Gref = 1 / np.sqrt(np.real(z0)) * E
         return Gref * (E - Zref * Y) * (E + Zref * Y)**-1 * Gref**-1
 
     @property
     def CZ(self):
-        Z = np.mat(self.Z)
+        Z = np.asmatrix(self.Z)
         return np.array(Z * self.CY * Z.H)
 
     @property
     def CS(self, z0 = 50.):
-        S = np.mat(self.S)
-        E = np.mat(np.eye(self.n, self.n))
-        return np.array((E + S) * (np.mat(self.CY)*z0) * (E + S).H / 4)
+        S = np.asmatrix(self.S)
+        E = np.asmatrix(np.eye(self.n, self.n))
+        return np.array((E + S) * (np.asmatrix(self.CY)*z0) * (E + S).H / 4)
 
     @property
     def CA(self):
-        T = np.mat(self.A)
+        T = np.asmatrix(self.A)
         T[0,0] = 0
         T[1,0] = 1
 
-        return np.array(T * np.mat(self.CY) * T.H)
+        return np.array(T * np.asmatrix(self.CY) * T.H)
 
 class NPortZ(NPort):
     """Two-port class where the internal representation is the Z-parameters"""
@@ -184,27 +184,27 @@ class NPortZ(NPort):
     def S(self, z0 = 50.0):
         """Return scattering parameters"""
         Z = self.Z
-        E = np.mat(np.eye(self.n, self.n))
+        E = np.asmatrix(np.eye(self.n, self.n))
         Zref = z0 * E
         Gref = 1 / np.sqrt(np.real(z0)) * E
         return Gref * (Z - Zref) * (Z + Zref)**-1 * Gref**-1
 
     @property
     def CY(self):
-        Y = np.mat(self.Y)
+        Y = np.asmatrix(self.Y)
         return Y * self.CZ * Y.H
 
     @property
     def CS(self, z0 = 50.):
-        S = np.mat(self.S)
-        E = np.mat(np.eye(self.n, self.n))
+        S = np.asmatrix(self.S)
+        E = np.asmatrix(np.eye(self.n, self.n))
         T = (E - S) / (2 * np.sqrt(z0))
-        return  T * np.mat(self.CZ) * T.H
+        return  T * np.asmatrix(self.CZ) * T.H
 
     @property
     def CA(self):
        T = np.matrix([[1, -self.A[0,0]], [0, -self.A[1,0]]])
-       return np.array(T * np.mat(self.CZ) * T.H)
+       return np.array(T * np.asmatrix(self.CZ) * T.H)
 
 class NPortA(NPort):
     """Two-port class where the internal representation is the ABCD-parameters"""
@@ -271,13 +271,13 @@ class NPortA(NPort):
         Y = self.Y
         T = np.matrix([[-Y[0,0], 1], [-Y[1,0], 0]])
 
-        return np.array(T * np.mat(self.CA) * T.H)
+        return np.array(T * np.asmatrix(self.CA) * T.H)
 
     @property
     def CZ(self):
-        Z = np.mat(self.Z)
+        Z = np.asmatrix(self.Z)
         T = np.matrix([[1, -Z[0,0]], [0, -Z[1,0]]])
-        return np.array(T * np.mat(self.CA) * T.H)
+        return np.array(T * np.asmatrix(self.CA) * T.H)
 
     @property
     def CS(self, z0=50.):
@@ -331,8 +331,8 @@ class NPortS(NPort):
     @property
     def Z(self):
         """Return Z-parameter matrix"""
-        S = np.mat(self.S).astype(float)
-        E = np.mat(np.eye(self.n, self.n))
+        S = np.asmatrix(self.S).astype(float)
+        E = np.asmatrix(np.eye(self.n, self.n))
         Zref = self.z0 * E
         Gref = 1 / np.sqrt(np.real(self.z0)) * E
         return np.array(Gref.I * (E - S).I * (S + E) * Zref * Gref)
@@ -340,35 +340,35 @@ class NPortS(NPort):
     @property
     def Y(self):
         """Return Z-parameter matrix"""
-        S = np.mat(self.S)
-        E = np.mat(np.eye(self.n, self.n))
+        S = np.asmatrix(self.S)
+        E = np.asmatrix(np.eye(self.n, self.n))
         Zref = self.z0 * E
         Gref = 1 / np.sqrt(np.real(self.z0)) * E
         return np.array(Gref**-1 * Zref**-1 * (S + E)**-1 * (E - S) * Gref)
 
     @property
     def CY(self):
-        Y = np.mat(self.Y)
+        Y = np.asmatrix(self.Y)
         y0 = 1. / self.z0
-        E = np.mat(np.eye(self.n, self.n))
+        E = np.asmatrix(np.eye(self.n, self.n))
         T = (y0 * E + Y) / np.sqrt(y0)
-        return np.array(T * np.mat(self.CS) * T.H)
+        return np.array(T * np.asmatrix(self.CS) * T.H)
 
     @property
     def CZ(self):
         Z = self.Z
-        E = np.mat(np.eye(self.n, self.n))
+        E = np.asmatrix(np.eye(self.n, self.n))
         T = (self.z0 * E + Z) / np.sqrt(self.z0)
-        return np.array(T * np.mat(self.CS) * T.H)
+        return np.array(T * np.asmatrix(self.CS) * T.H)
 
     @property
     def CA(self):
 #        return NPortZ(self).CA
         z0 = self.z0
-        A = np.mat(self.A)
+        A = np.asmatrix(self.A)
         T = np.matrix([[np.sqrt(z0), -(A[0,1]+A[0,0]*z0)/np.sqrt(z0)],
                         [-1/np.sqrt(z0), -(A[1,1]+A[1,0]*z0)/np.sqrt(z0)]])
-        return np.array(T * np.mat(self.CS) * T.H)
+        return np.array(T * np.asmatrix(self.CS) * T.H)
 
 
 if __name__ == "__main__":

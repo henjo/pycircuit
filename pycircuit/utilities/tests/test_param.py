@@ -49,7 +49,7 @@ class ParameterTest(unittest.TestCase):
         def testIncorrect():
             param = Parameter(apa=1)
 
-        self.failUnlessRaises(TypeError, testIncorrect)
+        self.assertRaises(TypeError, testIncorrect)
         
 class ParameterDictTest(unittest.TestCase):
     def testInstantiate(self):
@@ -105,7 +105,7 @@ class ParameterDictTest(unittest.TestCase):
         self.assertEqual(paramdict.gm, 4e-6)
         def test():
             paramdict.set(gds=3e-6)
-        self.failUnlessRaises(KeyError, test)
+        self.assertRaises(KeyError, test)
         
     def testContains(self):
         paramdict = ParameterDict()

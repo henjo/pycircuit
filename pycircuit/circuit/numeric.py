@@ -16,6 +16,8 @@ from numpy import cos, sin, tan, cosh, sinh, tanh, log, exp, pi, linalg,\
      inf, ceil, floor, dot, linspace, eye, concatenate, sqrt, real, imag,\
      ones, diff, delete, all, maximum, size, conj, cdouble
 
+alltrue = all
+
 symbolic = False
 
 ac_u_dtype = np.cdouble

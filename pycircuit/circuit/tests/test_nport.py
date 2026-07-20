@@ -46,7 +46,7 @@ Aref = np.array([[-Yref[1,1]/Yref[1,0], -1/Yref[1,0]],
 CYref = 4 * kboltzmann * T * np.real(Yref)
 CZref = 4 * kboltzmann * T * np.real(Zref)
 E = np.eye(2)
-CSref =  kboltzmann * T * (E - np.mat(Sref) * np.mat(Sref).H)
+CSref =  kboltzmann * T * (E - np.asmatrix(Sref) * np.asmatrix(Sref).H)
 
 ## This correlation matrix was obtained from hand calculations by "moving" the noise sources
 ## to the source

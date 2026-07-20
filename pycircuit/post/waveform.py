@@ -361,7 +361,7 @@ class Waveform(object):
                 return y[-1]
             res = sp.interpolate.interp1d(self._xlist[axis], y)(x)
             try:
-                return np.asscalar(res)
+                return res.item()
             except TypeError:
                 return res
 
@@ -371,7 +371,7 @@ class Waveform(object):
             xindex = tuple(xindex)
             res = sp.interpolate.interp1d(self._xlist[axis], y)(x._y[xindex])
             try:
-                return np.asscalar(res)
+                return res.item()
             except TypeError:
                 return res
             
@@ -460,7 +460,7 @@ class Waveform(object):
         slices = [np.newaxis] * axis + [slice(0, len(self._xlist[axis]))]
         
         ## Broadcast dimension 0 to axis-1 by transpose
-        y.T[:] = self._xlist[axis][slices].T
+        y.T[:] = self._xlist[axis][tuple(slices)].T
     
         newxlist = copy(self._xlist)
 
@@ -925,7 +925,7 @@ def reducedim(w, newy, axis=-1, ylabel=None, yunit=None):
     """Reduce the dimension by one and return a new waveform or float if zero-rank"""
 
     if newy.ndim == 0:
-        return np.asscalar(newy)
+        return newy.item()
 
     if ylabel is None:
         ylabel = w.ylabel
@@ -1038,7 +1038,7 @@ def apply_along_axis_with_idx(func1d,axis,arr,*args):
     if isscalar(res):
         outarr = np.zeros(outshape,np.asarray(res).dtype)
         outarr[tuple(ind)] = res
-        Ntot = np.product(outshape)
+        Ntot = np.prod(outshape)
         k = 1
         while k < Ntot:
             # increment the index
@@ -1054,7 +1054,7 @@ def apply_along_axis_with_idx(func1d,axis,arr,*args):
             k += 1
         return outarr
     else:
-        Ntot = np.product(outshape)
+        Ntot = np.prod(outshape)
         holdshape = outshape
         outshape = list(arr.shape)
         outshape[axis] = len(res)

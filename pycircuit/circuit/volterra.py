@@ -9,7 +9,7 @@ p129 chapter 5.2 depicts a flowchart describing the basic algorithm used in this
 
 """
 
-from numpy import array, delete, linalg, size, zeros, concatenate, pi, zeros, alltrue, maximum
+from numpy import array, delete, linalg, size, zeros, concatenate, pi, zeros, all, maximum
 from pycircuit.circuit.analysis import Analysis, AC, remove_row_col
 from pycircuit.circuit.dcanalysis import DC
 from pycircuit.utilities import Parameter, ParameterDict, isiterable
