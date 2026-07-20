@@ -24,9 +24,9 @@ def test_psfresultset():
     for uselibpsf in False, True:
         for rawdir in psfresultset_testvectors.keys():
             if uselibpsf:
-                yield psfresultset, withlibpsf, rawdir
+                psfresultset(withlibpsf, rawdir)
             else:
-                yield psfresultset, withoutlibpsf, rawdir
+                psfresultset(withoutlibpsf, rawdir)
 
 def psfresultset(libpsf, rawdir):
     if libpsf == withlibpsf:
