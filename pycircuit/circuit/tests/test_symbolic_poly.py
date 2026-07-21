@@ -228,6 +228,19 @@ def test_numeric_roots_require_numeric_coefficients():
         res.tf('out', gnd).poles(numeric=True)
 
 
+def test_tf_frequencyresponse():
+    """frequencyresponse() evaluates H over a frequency array in Hz."""
+    R0, C0 = 1e3, 1e-9
+    cir = _rc_lowpass(R0, C0)
+    s = Symbol('s', imaginary=True)
+    res = AC(cir, toolkit=symbolic_poly).solve(s, complexfreq=True)
+
+    freqs = np.array([1e3, 1e6, 1e9])
+    got = res.tf('out', gnd).frequencyresponse(freqs)
+    expected = 1/(1 + 2j*np.pi*freqs*R0*C0)
+    assert np.allclose(got, expected)
+
+
 def test_symbolic_result_has_no_tf():
     """The stock symbolic toolkit produces a plain result without tf()."""
     Rv, Cv = sympy.symbols('R C', positive=True)

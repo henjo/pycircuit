@@ -98,5 +98,12 @@ class TransferFunction:
         """
         return sympy.lambdify(self.s, self.canonical(), modules)
 
+    def frequencyresponse(self, freqs):
+        """Return the complex response ``H(s=2*pi*j*f)`` over an array of Hz.
+
+        Convenience wrapper over :meth:`bode`; requires numeric coefficients.
+        """
+        return self.bode()(2j * np.pi * np.asarray(freqs, dtype=float))
+
     def __repr__(self):
         return 'TransferFunction(%s, %s)' % (self.num, self.den)
