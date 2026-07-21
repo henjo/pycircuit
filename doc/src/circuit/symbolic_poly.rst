@@ -152,7 +152,7 @@ expression:
 
 
 Selecting the toolkit
---------------------
+---------------------
 
 Pass ``toolkit=`` to an analysis, or scope the construction-time default with
 the ``use_toolkit`` context manager (the recommended replacement for assigning
