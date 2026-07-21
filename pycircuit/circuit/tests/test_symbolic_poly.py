@@ -180,6 +180,54 @@ def test_tf_bode_numeric_matches():
     assert np.allclose(np.asarray(got, dtype=complex), expected)
 
 
+def test_numeric_poles_and_zeros():
+    """numeric=True finds poles/zeros with numpy.roots for numeric circuits."""
+    R0, C0 = 1e3, 1e-9                       # numeric values -> pole at -1/RC
+    cir = _rc_lowpass(R0, C0)
+    s = Symbol('s', imaginary=True)
+    res = AC(cir, toolkit=symbolic_poly).solve(s, complexfreq=True)
+
+    poles = res.poles(numeric=True)
+    assert len(poles) == 1
+    assert np.allclose(poles, [-1/(R0*C0)])
+
+    ## tf-level numeric poles/zeros agree; low-pass has no finite zero
+    H = res.tf('out', gnd)
+    assert np.allclose(H.poles(numeric=True), [-1/(R0*C0)])
+    assert len(H.zeros(numeric=True)) == 0
+
+
+def test_numeric_poles_scale():
+    """A larger numeric ladder yields the right number of poles quickly."""
+    s = Symbol('s', imaginary=True)
+    with use_toolkit(symbolic_poly):
+        cir = SubCircuit()
+        cir['VS'] = VS('in', gnd, vac=1)
+        prev = 'in'
+        for i in range(6):
+            cir['R%d' % i] = R(prev, 'n%d' % i, r=1e3)
+            cir['C%d' % i] = C('n%d' % i, gnd, c=1e-9)
+            prev = 'n%d' % i
+    res = AC(cir, toolkit=symbolic_poly).solve(s, complexfreq=True)
+    poles = res.poles(numeric=True)
+    assert len(poles) == 6
+    ## a passive RC network is stable: all poles on the negative real axis
+    assert np.all(np.real(poles) < 0)
+
+
+def test_numeric_roots_require_numeric_coefficients():
+    """numeric=True on a symbolic-valued circuit raises a helpful error."""
+    Rv, Cv = sympy.symbols('R C', positive=True)
+    cir = _rc_lowpass(Rv, Cv)
+    s = Symbol('s', imaginary=True)
+    res = AC(cir, toolkit=symbolic_poly).solve(s, complexfreq=True)
+    import pytest
+    with pytest.raises(ValueError):
+        res.poles(numeric=True)
+    with pytest.raises(ValueError):
+        res.tf('out', gnd).poles(numeric=True)
+
+
 def test_symbolic_result_has_no_tf():
     """The stock symbolic toolkit produces a plain result without tf()."""
     Rv, Cv = sympy.symbols('R C', positive=True)

@@ -47,15 +47,42 @@ class TransferFunction:
         return sympy.Poly(num, self.s), sympy.Poly(den, self.s)
 
     # -- poles / zeros / gain ----------------------------------------------
-    def poles(self):
-        """Return the poles as ``{root: multiplicity}`` (roots of the denominator)."""
-        _, den = self.as_num_den()
-        return sympy.roots(den)
+    @staticmethod
+    def _roots(poly, numeric):
+        """Roots of a sympy ``Poly`` in ``s``.
 
-    def zeros(self):
-        """Return the zeros as ``{root: multiplicity}`` (roots of the numerator)."""
+        With ``numeric=False`` return the symbolic ``sympy.roots`` mapping
+        ``{root: multiplicity}``.  With ``numeric=True`` require the polynomial
+        to have numeric coefficients and return a numpy array of complex roots
+        via ``numpy.roots`` -- fast and reliable for high-degree denominators
+        where the symbolic solver has no closed form.
+        """
+        if not numeric:
+            return sympy.roots(poly)
+
+        coeff_symbols = set().union(*[c.free_symbols for c in poly.all_coeffs()]) \
+            if poly.all_coeffs() else set()
+        if coeff_symbols:
+            raise ValueError(
+                "numeric root-finding needs numeric coefficients; substitute "
+                "values for %s first" % ', '.join(map(str, sorted(coeff_symbols, key=str))))
+        return np.roots([complex(c) for c in poly.all_coeffs()])
+
+    def poles(self, numeric=False):
+        """Return the poles (roots of the denominator).
+
+        See :meth:`_roots` for the ``numeric`` flag.
+        """
+        _, den = self.as_num_den()
+        return self._roots(den, numeric)
+
+    def zeros(self, numeric=False):
+        """Return the zeros (roots of the numerator).
+
+        See :meth:`_roots` for the ``numeric`` flag.
+        """
         num, _ = self.as_num_den()
-        return sympy.roots(num)
+        return self._roots(num, numeric)
 
     def dcgain(self):
         """Return the DC gain ``H(s=0)``."""

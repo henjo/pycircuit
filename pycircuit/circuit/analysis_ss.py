@@ -59,12 +59,14 @@ class CircuitResultACPoly(CircuitResultAC):
         num = self.circuit.extract_v(self._num, plus, minus)
         return TransferFunction(num, self._den, self._s)
 
-    def poles(self):
+    def poles(self, numeric=False):
         """Return the circuit poles (roots of the shared denominator).
 
         Computed once from the network determinant ``D`` for the whole circuit.
+        With ``numeric=True`` (requires numeric coefficients) the roots are found
+        with ``numpy.roots`` -- fast and reliable for high-degree denominators.
         """
-        return sympy.roots(sympy.Poly(self._den, self._s))
+        return TransferFunction._roots(sympy.Poly(self._den, self._s), numeric)
 
 
 class SSAnalysis(Analysis):
