@@ -12,7 +12,7 @@ Find symbolic expression of transfer function from Is to V(3,0)
 
    from pycircuit.circuit import *
    from sympy import symbols, simplify, ratsimp, sympify, factor, limit, solve, pprint, fraction, collect, powsimp, powdenest, Add, sqrtdenest, I, Rational
-   from sympy.simplify.simplify import fraction_expand
+   ## fraction_expand is provided by the sympy:: pre-code compatibility shim
 
 
 Symbol definition

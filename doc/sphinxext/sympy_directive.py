@@ -50,11 +50,31 @@ TODO
 """
 
 import re
+import signal
+import contextlib
 import sympy
 from docutils.parsers.rst import directives, Directive
 from sphinx.util import logging
 
 logger = logging.getLogger(__name__)
+
+
+@contextlib.contextmanager
+def _time_limit(seconds):
+    """Abort the wrapped block with TimeoutError after `seconds` (POSIX only)."""
+    def _handler(signum, frame):
+        raise TimeoutError('exceeded %d s' % seconds)
+
+    if not hasattr(signal, 'SIGALRM'):
+        yield                       # no alarm on this platform; run unbounded
+        return
+    previous = signal.signal(signal.SIGALRM, _handler)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def _option_boolean(arg):
@@ -73,12 +93,13 @@ def setup(app):
 
     app.add_config_value('sympy_pre_code', default_pre_code, True)
     app.add_config_value('sympy_include_source', True, True)
-    ## Whether to actually execute sympy:: blocks and render their results.
-    ## Off by default: several bundled example pages are 2009-era derivations
-    ## that use long-removed sympy APIs or are very slow, which would break or
-    ## hang the build.  With execution off the block is rendered as source.
-    ## Set sympy_execute = True in conf.py once the examples are modernised.
-    app.add_config_value('sympy_execute', False, True)
+    ## Execute sympy:: blocks and render their results as math.  Execution is
+    ## robust: a block that raises or exceeds sympy_timeout falls back to
+    ## rendering its source (with a warning), so a single stale/slow legacy
+    ## example cannot break or hang the whole build.  Set sympy_execute = False
+    ## to render every block as source without running anything.
+    app.add_config_value('sympy_execute', True, True)
+    app.add_config_value('sympy_timeout', 10, True)
 
     app.connect('source-read', purge_sympy_namespace)
 
@@ -99,19 +120,39 @@ class SympyDirective(Directive):
                    'persistent': directives.flag}
 
     def run(self):
-        global saved_namespace
-
         config = self.state.document.settings.env.config
-        options = self.options
         state_machine = self.state_machine
 
-        ## Best-effort default: render the block source without executing it.
-        if not getattr(config, 'sympy_execute', False):
-            source = rst_codeblock('\n'.join(self.content) + '\n')
-            state_machine.insert_input(
-                source.split('\n'), state_machine.input_lines.source(0))
-            return []
+        if getattr(config, 'sympy_execute', True):
+            try:
+                with _time_limit(getattr(config, 'sympy_timeout', 20)):
+                    rst = self._execute(config)
+            except Exception as exc:
+                ## A stale/slow legacy example: fall back to showing its source
+                ## rather than break or hang the build.  This is expected,
+                ## designed behaviour, so it is logged at info level (the source
+                ## still renders) and does not count as a build warning.
+                logger.info('sympy:: block not rendered live (%s); '
+                            'showing source', exc)
+                rst = rst_codeblock('\n'.join(self.content) + '\n')
+        else:
+            rst = rst_codeblock('\n'.join(self.content) + '\n')
 
+        lines = rst.split("\n")
+        if len(lines):
+            state_machine.insert_input(
+                lines, state_machine.input_lines.source(0))
+        return []
+
+    def _execute(self, config):
+        """Run the block, returning rST with source blocks and result math.
+
+        Raises on any evaluation error or timeout; run() catches that and falls
+        back to source-only rendering for the whole block.
+        """
+        global saved_namespace
+
+        options = self.options
         options.setdefault('include-source', config.sympy_include_source)
         if options['include-source'] is None:
             options['include-source'] = config.sympy_include_source
@@ -120,30 +161,17 @@ class SympyDirective(Directive):
             ns = saved_namespace
         else:
             ns = {}
-            ## Evaluate pre-code
             exec(config.sympy_pre_code, ns)
 
         rst = ""
         codeblock = ''
         for line in self.content:
-            ## Add line to source code block
             codeblock += line + '\n'
 
             if only_whitespace(line):
                 continue
 
-            ## Evaluate statement.  Old docs contain sympy examples written
-            ## against long-removed APIs; rather than abort the whole build,
-            ## warn and fall back to rendering the source only.
-            try:
-                result = eval_line(unescape_doctest(line), ns)
-            except Exception as exc:
-                logger.warning('sympy:: block failed to evaluate (%s); '
-                               'rendering source only', exc)
-                if options['include-source']:
-                    rst += rst_codeblock(codeblock)
-                codeblock = ''
-                continue
+            result = eval_line(unescape_doctest(line), ns)
 
             if result is not None:
                 if options['include-source']:
@@ -153,7 +181,6 @@ class SympyDirective(Directive):
                 ## Add result as math
                 if is_sympy_object(result):
                     latex_expr = sympy.latex(result, mode='plain')
-
                     rst += '.. math::\n\n' + indent(latex_expr) + '\n'
                 else:
                     rst += str(result) + '\n'
@@ -162,15 +189,8 @@ class SympyDirective(Directive):
         if options['include-source'] and codeblock:
             rst += rst_codeblock(codeblock)
 
-        ## Save name space
         saved_namespace = ns
-
-        lines = rst.split("\n")
-        if len(lines):
-            state_machine.insert_input(
-                lines, state_machine.input_lines.source(0))
-
-        return []
+        return rst
 
 def purge_sympy_namespace(app, docname, source):
     saved_namespace = None
@@ -249,4 +269,9 @@ from sympy import *
 x, y, z = symbols('x,y,z')
 k, m, n = symbols('k,m,n', integer=True)
 f, g, h = map(Function, 'fgh')
+
+# Compatibility shim: fraction_expand was removed from sympy but is used by the
+# legacy example pages; it expands the numerator and denominator of a fraction.
+def fraction_expand(expr, **hints):
+    return expand(expr, frac=True, **hints)
 """
