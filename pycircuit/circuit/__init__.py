@@ -6,4 +6,5 @@ from .symbolicdc import *
 from .analysis_ss import *
 from .nportanalysis import *
 from . import symbolic
-from . import numeric 
+from . import symbolic_poly
+from . import numeric

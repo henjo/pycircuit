@@ -13,8 +13,6 @@ import numpy as np
 import sympy
 from sympy import cos, sin, tan, exp, pi, simplify, floor
 from sympy import oo as inf, ceiling as ceil
-from sympy.polys.matrices import DomainMatrix
-from sympy.polys.matrices.exceptions import DMError
 import types
 from pycircuit.utilities.param import Parameter
 from pycircuit.circuit.constants_sympy import kboltzmann, eps0, epsRSi, epsRSiO2, qelectron
@@ -40,38 +38,15 @@ def linearsolver(A, b):
     A = sympy.Matrix(A)
     b = sympy.Matrix(b.tolist())
 
+#    A.simplify(); b.simplify()
+
     if A.shape == (1,1):
         return np.array([(b[0] / A[0,0])])
-
-    ## Fraction-free (Bareiss) solve over sympy's polynomial/rational domain.
-    ## This keeps intermediate entries as polynomials instead of the nested
-    ## fractions that LUsolve produces, avoiding the expression swell that
-    ## makes LUsolve blow up on larger circuits, and returns the solution as
-    ## numerator vector over a shared denominator (x_i = numer_i / den).  The
-    ## division below is a cheap Mul, not an expansion, so no swell is added;
-    ## canonicalisation (cancel / Poly / lambdify) is left to the caller.
-    try:
-        dM = DomainMatrix.from_Matrix(A)
-        db = DomainMatrix.from_Matrix(b)
-        domain = dM.domain.unify(db.domain)
-        ## Fraction-free elimination needs an *exact* domain.  Float component
-        ## values land in an inexact RR[...]/CC[...] domain where solve_den is
-        ## pathologically slow (and does not raise, so it would hang rather
-        ## than fall back).  Convert to the corresponding exact domain (QQ[...])
-        ## first; this is both fast and exact.
-        if not domain.is_Exact:
-            domain = domain.get_exact()
-        xnum, den = dM.convert_to(domain).solve_den(db.convert_to(domain))
-        xnum = xnum.to_Matrix()
-        den = domain.to_sympy(den)
-        return np.array([xnum[i, 0] / den for i in range(xnum.rows)],
-                        dtype=object)
-    except (DMError, sympy.PolynomialError, TypeError, AttributeError):
-        ## Fall back to plain LUsolve when the entries do not live in a
-        ## polynomial/rational domain (e.g. transcendental functions land in
-        ## the EX domain, where the fraction-free path gives no benefit).
+    else:
+        #res = np.array((A.inverse_ADJ() * b))
         res = np.array((A.LUsolve(b)))
-        return res.reshape((np.size(res,0),) )
+
+    return res.reshape((np.size(res,0),) )
 
 def linearsolverError(*args, **kvargs):
     return np.linalg.LinAlgError
