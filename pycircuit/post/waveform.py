@@ -77,8 +77,8 @@ class Waveform(object):
 
     def __array__(self, t=None): return self._y
         
-    def __array_wrap__(self, arr, context=None):
-        return Waveform(list(self._xlist), arr, 
+    def __array_wrap__(self, arr, context=None, return_scalar=False):
+        return Waveform(list(self._xlist), arr,
                         xlabels=self.xlabels, ylabel=self.ylabel,
                         xunits=self.xunits, yunit=self.yunit)
         
