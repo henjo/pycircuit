@@ -42,8 +42,12 @@ class PSS(Analysis):
     """
 
     parameters = Analysis.parameters + \
-        [Parameter(name='analysis', desc='Analysis name', 
-                   default='PSS'),
+        [Parameter(name='analysis', desc='Analysis name',
+                   ## Sources supply their time-domain waveform only for an
+                   ## analysis name in timedomain_analyses (('dc','tran')); the
+                   ## old default 'PSS' matched nothing, so cir.u(t) returned 0
+                   ## and the whole shooting solve had no excitation.
+                   default='tran'),
          Parameter(name='reltol', 
                    desc='Relative tolerance', unit='', 
                    default=1e-4),
