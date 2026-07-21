@@ -13,11 +13,18 @@
 
 import sys, os
 
-# If your extensions are in another directory, add it here. If the directory
-# is relative to the documentation root, use os.path.abspath to make it
-# absolute, like shown here.
-sys.path.append(os.path.abspath('..'))
-sys.path.append(os.path.abspath('../sphinxext'))
+# Paths are computed relative to this conf.py so the build works regardless of
+# the current working directory (e.g. `make html` runs from doc/).
+_confdir = os.path.dirname(os.path.abspath(__file__))          # doc/src
+_docdir = os.path.abspath(os.path.join(_confdir, os.pardir))   # doc
+_root = os.path.abspath(os.path.join(_docdir, os.pardir))      # repo root
+
+# Put the local pycircuit source first so autodoc imports it rather than any
+# (possibly stale) installed copy on sys.path.
+sys.path.insert(0, _root)
+# The custom sphinx extensions live under doc/sphinxext.
+sys.path.insert(0, _docdir)
+sys.path.insert(0, os.path.join(_docdir, 'sphinxext'))
 
 # General configuration
 # ---------------------
