@@ -35,7 +35,6 @@ def TODOtest_noise_dc_steady_state():
     """
     pass
 
-@unittest.skip("Skip failing test")
 def test_noise_with_frequency_vector():
     """Test that noise analysis support an array as input argument for frequency
 
