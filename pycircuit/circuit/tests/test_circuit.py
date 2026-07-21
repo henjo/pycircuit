@@ -256,6 +256,8 @@ def test_adddel_subcircuit_element():
 
 def test_short_resistor():
     """Test shorting of instance terminals"""
+    pycircuit.circuit.circuit.default_toolkit = numeric
+
     cir = SubCircuit()
 
     cir['R1'] = R(gnd, gnd)
