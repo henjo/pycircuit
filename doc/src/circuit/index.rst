@@ -7,6 +7,7 @@ Circuit analyzer
     intro
     tutorial
     analyses
+    symbolic_poly
     theory
     modules
     elements

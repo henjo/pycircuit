@@ -25,6 +25,20 @@ class TransferFunction:
     (and possibly other symbols, treated as parameters).  They are not assumed
     to be coprime; :meth:`canonical`, :meth:`poles` and :meth:`zeros` cancel
     common factors as needed.
+
+    >>> import sympy
+    >>> from pycircuit.circuit.transferfunction import TransferFunction
+    >>> s = sympy.Symbol('s')
+    >>> R, C = sympy.symbols('R C', positive=True)
+    >>> H = TransferFunction(1, 1 + s*R*C, s)   # a first-order low-pass
+    >>> H.canonical()
+    1/(C*R*s + 1)
+    >>> H.poles()
+    {-1/(C*R): 1}
+    >>> H.zeros()
+    {}
+    >>> H.dcgain()
+    1
     """
 
     def __init__(self, num, den, s):

@@ -89,6 +89,23 @@ class SymbolicPolyToolkit(SymbolicToolkit):
     (``DomainMatrix.solve_den``) rather than with ``Matrix.LUsolve``.  This
     keeps intermediate entries as polynomials instead of nested fractions and
     avoids the expression swell that makes LUsolve blow up on larger circuits.
+
+    An AC solve with this toolkit returns a transfer-function-capable result
+    (see :doc:`/circuit/symbolic_poly`)::
+
+        import sympy
+        from pycircuit.circuit import symbolic_poly, use_toolkit, SubCircuit, R, C, VS, gnd
+        from pycircuit.circuit.analysis_ss import AC
+
+        s = sympy.Symbol('s', imaginary=True)
+        with use_toolkit(symbolic_poly):
+            cir = SubCircuit()
+            cir['VS'] = VS('in', gnd, vac=1)
+            cir['R'] = R('in', 'out', r=sympy.Symbol('R', positive=True))
+            cir['C'] = C('out', gnd, c=sympy.Symbol('C', positive=True))
+
+        res = AC(cir, toolkit=symbolic_poly).solve(s, complexfreq=True)
+        res.tf('out', gnd).poles()      # -> {-1/(C*R): 1}
     """
     poly = True
 
