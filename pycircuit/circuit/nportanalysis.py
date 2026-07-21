@@ -301,7 +301,7 @@ class TwoPortAnalysis(Analysis):
         zmlist = transimpana.solve(freqs, branchlist, refnode=refnode,
                                    complexfreq=complexfreq)
 
-        T = np.matrix(zmlist) * g0**0.5
+        T = np.asarray(zmlist) * g0**0.5
         
         ## Complex frequency variable
         if complexfreq:
@@ -316,7 +316,7 @@ class TwoPortAnalysis(Analysis):
         CY, = remove_row_col((CY,), irefnode, self.toolkit)
 
         ## Calculate noise wave correlation matrix
-        CS = np.array(T * CY * T.H)
+        CS = np.asarray(T @ CY @ T.conj().T)
 
         return NPortS(S, CS, z0=1/toolkit.integer(g0))
 

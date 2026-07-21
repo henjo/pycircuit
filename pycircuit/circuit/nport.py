@@ -33,10 +33,10 @@ class NPort(object):
     
     def __mul__(self, a):
         """Cascade of two n-ports"""
-        selfA = np.asmatrix(self.A)
-        aA = np.asmatrix(a.A)
-        anport = NPortA(selfA * aA,
-                        selfA * np.asmatrix(a.CA) * selfA.H + self.CA )
+        selfA = np.asarray(self.A)
+        aA = np.asarray(a.A)
+        anport = NPortA(selfA @ aA,
+                        selfA @ np.asarray(a.CA) @ selfA.conj().T + self.CA )
         return self.__class__(anport)
 
     def __floordiv__(self, a):
@@ -122,29 +122,31 @@ class NPortY(NPort):
     def S(self, z0 = 50.0):
         """Return scattering parameters"""
         Y = self.Y
-        E = np.asmatrix(np.eye(self.n, self.n))
+        E = np.eye(self.n, self.n)
         Zref = z0 * E
         Gref = 1 / np.sqrt(np.real(z0)) * E
-        return Gref * (E - Zref * Y) * (E + Zref * Y)**-1 * Gref**-1
+        return Gref @ (E - Zref @ Y) @ np.linalg.inv(E + Zref @ Y) @ \
+            np.linalg.inv(Gref)
 
     @property
     def CZ(self):
-        Z = np.asmatrix(self.Z)
-        return np.array(Z * self.CY * Z.H)
+        Z = np.asarray(self.Z)
+        return np.asarray(Z @ self.CY @ Z.conj().T)
 
     @property
     def CS(self, z0 = 50.):
-        S = np.asmatrix(self.S)
-        E = np.asmatrix(np.eye(self.n, self.n))
-        return np.array((E + S) * (np.asmatrix(self.CY)*z0) * (E + S).H / 4)
+        S = np.asarray(self.S)
+        E = np.eye(self.n, self.n)
+        return np.asarray((E + S) @ (np.asarray(self.CY) * z0) @
+                          (E + S).conj().T / 4)
 
     @property
     def CA(self):
-        T = np.asmatrix(self.A)
+        T = np.array(self.A, copy=True)
         T[0,0] = 0
         T[1,0] = 1
 
-        return np.array(T * np.asmatrix(self.CY) * T.H)
+        return np.asarray(T @ np.asarray(self.CY) @ T.conj().T)
 
 class NPortZ(NPort):
     """Two-port class where the internal representation is the Z-parameters"""
@@ -184,27 +186,27 @@ class NPortZ(NPort):
     def S(self, z0 = 50.0):
         """Return scattering parameters"""
         Z = self.Z
-        E = np.asmatrix(np.eye(self.n, self.n))
+        E = np.eye(self.n, self.n)
         Zref = z0 * E
         Gref = 1 / np.sqrt(np.real(z0)) * E
-        return Gref * (Z - Zref) * (Z + Zref)**-1 * Gref**-1
+        return Gref @ (Z - Zref) @ np.linalg.inv(Z + Zref) @ np.linalg.inv(Gref)
 
     @property
     def CY(self):
-        Y = np.asmatrix(self.Y)
-        return Y * self.CZ * Y.H
+        Y = np.asarray(self.Y)
+        return np.asarray(Y @ self.CZ @ Y.conj().T)
 
     @property
     def CS(self, z0 = 50.):
-        S = np.asmatrix(self.S)
-        E = np.asmatrix(np.eye(self.n, self.n))
+        S = np.asarray(self.S)
+        E = np.eye(self.n, self.n)
         T = (E - S) / (2 * np.sqrt(z0))
-        return  T * np.asmatrix(self.CZ) * T.H
+        return np.asarray(T @ np.asarray(self.CZ) @ T.conj().T)
 
     @property
     def CA(self):
-       T = np.matrix([[1, -self.A[0,0]], [0, -self.A[1,0]]])
-       return np.array(T * np.asmatrix(self.CZ) * T.H)
+       T = np.array([[1, -self.A[0,0]], [0, -self.A[1,0]]])
+       return np.asarray(T @ np.asarray(self.CZ) @ T.conj().T)
 
 class NPortA(NPort):
     """Two-port class where the internal representation is the ABCD-parameters"""
@@ -269,15 +271,15 @@ class NPortA(NPort):
     @property
     def CY(self):
         Y = self.Y
-        T = np.matrix([[-Y[0,0], 1], [-Y[1,0], 0]])
+        T = np.array([[-Y[0,0], 1], [-Y[1,0], 0]])
 
-        return np.array(T * np.asmatrix(self.CA) * T.H)
+        return np.asarray(T @ np.asarray(self.CA) @ T.conj().T)
 
     @property
     def CZ(self):
-        Z = np.asmatrix(self.Z)
-        T = np.matrix([[1, -Z[0,0]], [0, -Z[1,0]]])
-        return np.array(T * np.asmatrix(self.CA) * T.H)
+        Z = np.asarray(self.Z)
+        T = np.array([[1, -Z[0,0]], [0, -Z[1,0]]])
+        return np.asarray(T @ np.asarray(self.CA) @ T.conj().T)
 
     @property
     def CS(self, z0=50.):
@@ -331,44 +333,46 @@ class NPortS(NPort):
     @property
     def Z(self):
         """Return Z-parameter matrix"""
-        S = np.asmatrix(self.S).astype(float)
-        E = np.asmatrix(np.eye(self.n, self.n))
+        S = np.asarray(self.S).astype(float)
+        E = np.eye(self.n, self.n)
         Zref = self.z0 * E
         Gref = 1 / np.sqrt(np.real(self.z0)) * E
-        return np.array(Gref.I * (E - S).I * (S + E) * Zref * Gref)
+        return np.asarray(np.linalg.inv(Gref) @ np.linalg.inv(E - S) @
+                          (S + E) @ Zref @ Gref)
 
     @property
     def Y(self):
         """Return Z-parameter matrix"""
-        S = np.asmatrix(self.S)
-        E = np.asmatrix(np.eye(self.n, self.n))
+        S = np.asarray(self.S)
+        E = np.eye(self.n, self.n)
         Zref = self.z0 * E
         Gref = 1 / np.sqrt(np.real(self.z0)) * E
-        return np.array(Gref**-1 * Zref**-1 * (S + E)**-1 * (E - S) * Gref)
+        return np.asarray(np.linalg.inv(Gref) @ np.linalg.inv(Zref) @
+                          np.linalg.inv(S + E) @ (E - S) @ Gref)
 
     @property
     def CY(self):
-        Y = np.asmatrix(self.Y)
+        Y = np.asarray(self.Y)
         y0 = 1. / self.z0
-        E = np.asmatrix(np.eye(self.n, self.n))
+        E = np.eye(self.n, self.n)
         T = (y0 * E + Y) / np.sqrt(y0)
-        return np.array(T * np.asmatrix(self.CS) * T.H)
+        return np.asarray(T @ np.asarray(self.CS) @ T.conj().T)
 
     @property
     def CZ(self):
         Z = self.Z
-        E = np.asmatrix(np.eye(self.n, self.n))
+        E = np.eye(self.n, self.n)
         T = (self.z0 * E + Z) / np.sqrt(self.z0)
-        return np.array(T * np.asmatrix(self.CS) * T.H)
+        return np.asarray(T @ np.asarray(self.CS) @ T.conj().T)
 
     @property
     def CA(self):
 #        return NPortZ(self).CA
         z0 = self.z0
-        A = np.asmatrix(self.A)
-        T = np.matrix([[np.sqrt(z0), -(A[0,1]+A[0,0]*z0)/np.sqrt(z0)],
+        A = np.asarray(self.A)
+        T = np.array([[np.sqrt(z0), -(A[0,1]+A[0,0]*z0)/np.sqrt(z0)],
                         [-1/np.sqrt(z0), -(A[1,1]+A[1,0]*z0)/np.sqrt(z0)]])
-        return np.array(T * np.asmatrix(self.CS) * T.H)
+        return np.asarray(T @ np.asarray(self.CS) @ T.conj().T)
 
 
 if __name__ == "__main__":

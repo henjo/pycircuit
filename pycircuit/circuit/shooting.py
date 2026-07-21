@@ -114,8 +114,8 @@ class PSS(Analysis):
         def func(x):
             x = self.solve_timestep(x, times[0], dt)
             x0 = copy(x)
-            Jshoot = np.asmatrix(toolkit.eye(n-1))
-            C = copy(np.asmatrix(self._C))
+            Jshoot = np.asarray(toolkit.eye(n-1))
+            C = copy(np.asarray(self._C))
 
             ## Save C and transient jacobian for PAC analysis
             self.Cvec = [copy(self._C)]
@@ -125,12 +125,12 @@ class PSS(Analysis):
                 x = copy(self.solve_timestep(x, t, dt))
                 self.Cvec.append(copy(self._C))
                 self.Jtvec.append(copy(self._Jf))
-                Jshoot = np.asmatrix(self._Jf).I * C * Jshoot
-                C = copy(np.asmatrix(self._C))
+                Jshoot = np.linalg.inv(np.asarray(self._Jf)) @ C @ Jshoot
+                C = copy(np.asarray(self._C))
 
             residual = x0 - x
 
-            D = np.asmatrix(toolkit.eye(n-1))
+            D = np.asarray(toolkit.eye(n-1))
             return residual, D - alpha * Jshoot
         
         ## Find periodic steady state x-vector
