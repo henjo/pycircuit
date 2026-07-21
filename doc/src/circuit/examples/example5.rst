@@ -22,14 +22,14 @@ input referred noise.
     Ri,Rfb,Sv1,Si1,mu = symbols('R_i R_{fb} S_{v_{1}} S_{i_{1}} mu', real=True, positive=True)
 
     ## Create circuit
-    cir = SubCircuit(toolkit=symbolic)
-    cir['Ri1'] = R('vinp', 1, r=Ri, toolkit=symbolic)
-    cir['Ri2'] = R('vinn', 2, r=Ri, toolkit=symbolic)
-    cir['Rfb1'] = R(1, 'voutp', r=Rfb, toolkit=symbolic)
-    cir['Rfb2'] = R(2, 'voutn', r=Rfb, toolkit=symbolic)
-    cir['Vn'] = VS(1, 3, vac=0, noisePSD = Sv1, toolkit=symbolic)
-    cir['In'] = IS(3, 2, iac=0, noisePSD = Si1, toolkit=symbolic)
-    cir['nullor'] = Nullor(3,2,'voutp','voutn', toolkit=symbolic)
+    cir = SubCircuit(toolkit=symbolic_poly)
+    cir['Ri1'] = R('vinp', 1, r=Ri, toolkit=symbolic_poly)
+    cir['Ri2'] = R('vinn', 2, r=Ri, toolkit=symbolic_poly)
+    cir['Rfb1'] = R(1, 'voutp', r=Rfb, toolkit=symbolic_poly)
+    cir['Rfb2'] = R(2, 'voutn', r=Rfb, toolkit=symbolic_poly)
+    cir['Vn'] = VS(1, 3, vac=0, noisePSD = Sv1, toolkit=symbolic_poly)
+    cir['In'] = IS(3, 2, iac=0, noisePSD = Si1, toolkit=symbolic_poly)
+    cir['nullor'] = Nullor(3,2,'voutp','voutn', toolkit=symbolic_poly)
 
     ## Run symbolic 2-port analysis
     twoport_ana = TwoPortAnalysis(cir, 'vinp', 'vinn', 'voutp', 'voutn', method='sparam', noise=True)

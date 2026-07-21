@@ -99,7 +99,7 @@ def setup(app):
     ## example cannot break or hang the whole build.  Set sympy_execute = False
     ## to render every block as source without running anything.
     app.add_config_value('sympy_execute', True, True)
-    app.add_config_value('sympy_timeout', 10, True)
+    app.add_config_value('sympy_timeout', 30, True)
 
     app.connect('source-read', purge_sympy_namespace)
 
