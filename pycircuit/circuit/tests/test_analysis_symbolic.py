@@ -118,7 +118,6 @@ def test_symbolic_noise_iin_iout(toolkit):
     assert_equal(simplify(res['Sininp']), 4*k*T/R2)
     assert_equal(simplify(res['gain']), 1)
 
-@unittest.skip("Skip failing test")
 @pytest.mark.parametrize("toolkit", TOOLKITS)
 def test_symbolic_noise_kt_over_C(toolkit):
     pycircuit.circuit.circuit.default_toolkit = toolkit
