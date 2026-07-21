@@ -51,82 +51,126 @@ TODO
 
 import re
 import sympy
-from docutils.parsers.rst import directives
+from docutils.parsers.rst import directives, Directive
+from sphinx.util import logging
+
+logger = logging.getLogger(__name__)
+
+
+def _option_boolean(arg):
+    if not arg or not arg.strip():
+        return None
+    elif arg.strip().lower() in ('no', '0', 'false'):
+        return False
+    elif arg.strip().lower() in ('yes', '1', 'true'):
+        return True
+    else:
+        raise ValueError('"%s" unknown boolean' % arg)
+
 
 def setup(app):
-    sympy_directive_options = {'include-source': _option_boolean,
-                               'persistent': directives.flag}
-
-    app.add_directive('sympy', sympy_directive, True, (0, 1, False),
-                      **sympy_directive_options)
+    app.add_directive('sympy', SympyDirective)
 
     app.add_config_value('sympy_pre_code', default_pre_code, True)
     app.add_config_value('sympy_include_source', True, True)
+    ## Whether to actually execute sympy:: blocks and render their results.
+    ## Off by default: several bundled example pages are 2009-era derivations
+    ## that use long-removed sympy APIs or are very slow, which would break or
+    ## hang the build.  With execution off the block is rendered as source.
+    ## Set sympy_execute = True in conf.py once the examples are modernised.
+    app.add_config_value('sympy_execute', False, True)
 
     app.connect('source-read', purge_sympy_namespace)
+
+    return {'parallel_read_safe': False, 'parallel_write_safe': True}
 
 #------------------------------------------------------------------------------
 # sympy:: directive registration etc.
 #------------------------------------------------------------------------------
 
 saved_namespace = None
-def sympy_directive(name, arguments, options, content, lineno,
-                   content_offset, block_text, state, state_machine):
-    global saved_namespace
 
-    document = state_machine.document
-    env = document.settings.env
-    config = env.config
-    
-    options.setdefault('include-source', config.sympy_include_source)
-    if options['include-source'] is None:
-        options['include-source'] = config.plot_include_source
+class SympyDirective(Directive):
+    has_content = True
+    required_arguments = 0
+    optional_arguments = 1
+    final_argument_whitespace = False
+    option_spec = {'include-source': _option_boolean,
+                   'persistent': directives.flag}
 
-    if 'persistent' in options and saved_namespace is not None:
-        ns = saved_namespace
-    else:
-        ns = {}
-        ## Evaluate pre-code
-        exec config.sympy_pre_code in ns
- 
-    rst = ""
-    codeblock = ''
-    for line in content:
-        ## Add line to source code block
-        codeblock += line + '\n'
+    def run(self):
+        global saved_namespace
 
-        if only_whitespace(line):
-            continue
+        config = self.state.document.settings.env.config
+        options = self.options
+        state_machine = self.state_machine
 
-        ## Evaluate statement
-        result = eval_line(unescape_doctest(line), ns)
+        ## Best-effort default: render the block source without executing it.
+        if not getattr(config, 'sympy_execute', False):
+            source = rst_codeblock('\n'.join(self.content) + '\n')
+            state_machine.insert_input(
+                source.split('\n'), state_machine.input_lines.source(0))
+            return []
 
-        if result is not None:
-            if options['include-source']:
-                rst += rst_codeblock(codeblock)
+        options.setdefault('include-source', config.sympy_include_source)
+        if options['include-source'] is None:
+            options['include-source'] = config.sympy_include_source
+
+        if 'persistent' in options and saved_namespace is not None:
+            ns = saved_namespace
+        else:
+            ns = {}
+            ## Evaluate pre-code
+            exec(config.sympy_pre_code, ns)
+
+        rst = ""
+        codeblock = ''
+        for line in self.content:
+            ## Add line to source code block
+            codeblock += line + '\n'
+
+            if only_whitespace(line):
+                continue
+
+            ## Evaluate statement.  Old docs contain sympy examples written
+            ## against long-removed APIs; rather than abort the whole build,
+            ## warn and fall back to rendering the source only.
+            try:
+                result = eval_line(unescape_doctest(line), ns)
+            except Exception as exc:
+                logger.warning('sympy:: block failed to evaluate (%s); '
+                               'rendering source only', exc)
+                if options['include-source']:
+                    rst += rst_codeblock(codeblock)
                 codeblock = ''
+                continue
 
-            ## Add result as math
-            if is_sympy_object(result):
-                latex_expr = sympy.latex(result, mode='plain')
+            if result is not None:
+                if options['include-source']:
+                    rst += rst_codeblock(codeblock)
+                    codeblock = ''
 
-                rst += '.. math::\n\n' + indent(latex_expr) + '\n'
-            else:
-                rst += str(result) + '\n'
+                ## Add result as math
+                if is_sympy_object(result):
+                    latex_expr = sympy.latex(result, mode='plain')
 
-    ## Flush remaining code block
-    if options['include-source'] and codeblock:
-        rst += rst_codeblock(codeblock)
+                    rst += '.. math::\n\n' + indent(latex_expr) + '\n'
+                else:
+                    rst += str(result) + '\n'
 
-    ## Save name space
-    saved_namespace = ns        
-        
-    lines = rst.split("\n")
-    if len(lines):
-        state_machine.insert_input(
-            lines, state_machine.input_lines.source(0))
+        ## Flush remaining code block
+        if options['include-source'] and codeblock:
+            rst += rst_codeblock(codeblock)
 
-    return []
+        ## Save name space
+        saved_namespace = ns
+
+        lines = rst.split("\n")
+        if len(lines):
+            state_machine.insert_input(
+                lines, state_machine.input_lines.source(0))
+
+        return []
 
 def purge_sympy_namespace(app, docname, source):
     saved_namespace = None
@@ -195,20 +239,10 @@ def eval_line(line, ns = {}):
             code = compile(line, '<string>', 'exec')
     try:
         return eval(code, ns)
-    except Exception, e:
+    except Exception as e:
         raise Exception('%s raised when evaluating the line: %s'%
                         (repr(e), line))
 
-
-def _option_boolean(arg):
-    if not arg or not arg.strip():
-        return None
-    elif arg.strip().lower() in ('no', '0', 'false'):
-        return False
-    elif arg.strip().lower() in ('yes', '1', 'true'):
-        return True
-    else:
-        raise ValueError('"%s" unknown boolean' % arg)
 
 default_pre_code = """from __future__ import division
 from sympy import *

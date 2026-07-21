@@ -1,0 +1,12 @@
+# Toolchain for building the pycircuit documentation.
+#
+#   pip install -r doc/requirements.txt
+#   cd doc && make html          # output in doc/build/html
+#
+# The circuit package itself must be importable (autodoc), i.e. numpy/scipy/
+# sympy available and pycircuit on the path.
+sphinx
+matplotlib
+numpy
+scipy
+sympy

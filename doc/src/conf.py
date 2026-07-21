@@ -25,8 +25,8 @@ sys.path.append(os.path.abspath('../sphinxext'))
 # Add any Sphinx extension module names here, as strings. They can be extensions
 # coming with Sphinx (named 'sphinx.ext.*') or your custom ones.
 #extensions = ['sphinx.ext.autodoc', 'sphinx.ext.jsmath']
-extensions = ['sphinx.ext.autodoc', 'sphinx.ext.pngmath', 'sphinx.ext.todo', 
-              'sphinxext.plot_directive', 'sphinxext.only_directives',
+extensions = ['sphinx.ext.autodoc', 'sphinx.ext.napoleon', 'sphinx.ext.mathjax',
+              'sphinx.ext.todo', 'matplotlib.sphinxext.plot_directive',
               'sphinxext.sympy_directive', 'sphinxext.parametertable_directive']
 
 # Add any paths that contain templates here, relative to this directory.
@@ -110,7 +110,7 @@ html_style = 'default.css'
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-html_static_path = ['_static']
+html_static_path = []
 
 # If not '', a 'Last updated on:' timestamp is inserted at every page bottom,
 # using the given strftime format.

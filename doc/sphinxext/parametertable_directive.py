@@ -14,7 +14,7 @@ import re
 import pycircuit.utilities.param as param
 from docutils import nodes
 from docutils.statemachine import ViewList
-from sphinx.util.compat import Directive
+from docutils.parsers.rst import Directive
 import inspect
 
 def setup(app):

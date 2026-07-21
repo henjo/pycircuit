@@ -68,7 +68,7 @@ Input referred voltage noise power spectral density
    a = expand(result['Svn'])
    collect(a,[Sv1,Si1,twoport_ana.par.epar.T*twoport_ana.toolkit.kboltzmann])
 
-Using Rfb = |mu| * Ri
+Using Rfb = μ * Ri
 
 .. sympy::
    :persistent:
