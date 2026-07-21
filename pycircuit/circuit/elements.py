@@ -604,14 +604,14 @@ class Nullor(Circuit):
      voltage, transconductance and transimpedance gain.[2] 
      Its transmission parameters are all zero.
 
-     1. The name "nullor" was introduced by H.J. Carlin
-      Singular network elements, 
+     [1] The name "nullor" was introduced by H.J. Carlin
+      Singular network elements,
       IEEE Trans. Circuit Theory, March 1965, vol. CT-11, pp. 67-72.
- 
-     2. Verhoeven C J M van Staveren A Monna G L E Kouwenhoven
+
+     [2] Verhoeven C J M van Staveren A Monna G L E Kouwenhoven
        M H L & Yildiz E (2003). 
        Structured electronic design: negative feedback amplifiers.
-       Boston/Dordrecht/London: Kluwer Academic, §2.2.2 pp. 32-34. 
+       Boston/Dordrecht/London: Kluwer Academic, ï¿½2.2.2 pp. 32-34. 
        ISBN 1402075901.
 
     """

@@ -21,8 +21,6 @@ Circuit elements
 
 .. autoclass:: pycircuit.circuit.elements.SVCVS
 
-.. autoclass:: pycircuit.circuit.elements.C
-
 .. autoclass:: pycircuit.circuit.elements.VCCS
 
 .. autoclass:: pycircuit.circuit.elements.Nullor

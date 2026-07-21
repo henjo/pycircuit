@@ -7,9 +7,8 @@ Simple example
 This example shows a transient analysis of a CMOS inverter where
 the circuit is given as a native gnucap netlist.
 
-.. plot::
-     :include-source: True
-      
+.. code-block:: python
+
      import numpy as np
      import pylab
      import pycircuit.sim.gnucap as gnucap
