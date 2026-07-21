@@ -99,7 +99,6 @@ def test_transient_RLC():
     assert  abs(res_imp.v(2,gnd)[-1] - expected) < 1e-2*expected,\
         'Does not match QUCS result.'
 
-@unittest.skip("Skip failing test")
 def test_transient_nonlinear_C():
     """Test of transient simulation of RLC-circuit,
     with nonlinear capacitor.

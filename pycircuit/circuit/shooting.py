@@ -16,10 +16,10 @@ def freq_analysis(x, t, rms = True, axis=-1, freqoffset = 0):
         X = np.fft.fftshift(np.fft.fft(x, axis=axis),axes=(axis,)) / npoints
         freqs = np.fft.fftshift(np.fft.fftfreq(npoints, d=dt))
     else:
-        freqs = np.fft.fftfreq(npoints, d=dt)[:np.ceil(npoints / 2.)]
+        freqs = np.fft.fftfreq(npoints, d=dt)[:int(np.ceil(npoints / 2.))]
         slices = [slice(None)] * x.ndim
         slices[axis] = slice(0, len(freqs))
-        X = np.fft.fft(x, axis=axis)[slices] / npoints
+        X = np.fft.fft(x, axis=axis)[tuple(slices)] / npoints
         ## Fold energy from negative frequencies
         X[:,1:] *= np.sqrt(2)
 

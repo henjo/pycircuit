@@ -18,6 +18,9 @@ from numpy import cos, sin, tan, cosh, sinh, tanh, log, exp, pi, linalg,\
 
 alltrue = all
 
+# natural logarithm; matches sympy's ``ln`` name used by circuit models
+ln = log
+
 symbolic = False
 
 ac_u_dtype = np.cdouble
