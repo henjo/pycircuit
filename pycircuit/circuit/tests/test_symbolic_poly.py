@@ -241,6 +241,50 @@ def test_tf_frequencyresponse():
     assert np.allclose(got, expected)
 
 
+def test_noise_shared_denominator():
+    """symbolic_poly noise gives the same PSD as symbolic, but far more compact.
+
+    The generic form builds zm^T CY conj(zm) as an O(n^2) sum of divided
+    rationals; the polynomial toolkit keeps it as N^T CY conj(N) / (D conj(D)),
+    a single rational with a compact intermediate.
+    """
+    from pycircuit.circuit.analysis_ss import Noise
+
+    def rc_noise(tk):
+        with use_toolkit(tk):
+            c = SubCircuit()
+            Rv, Cv = sympy.symbols('R C', positive=True)
+            c['vs'] = VS(1, gnd, vac=1)
+            c['R'] = R(1, 2, r=Rv)
+            c['C1'] = C(2, gnd, c=Cv)
+            noise = Noise(c, inputsrc='vs', outputnodes=('2', gnd), toolkit=tk)
+            return noise.solve(Symbol('s', imaginary=True), complexfreq=True)['Svnout']
+
+    S_sym = rc_noise(symbolic)
+    S_poly = rc_noise(symbolic_poly)
+
+    ## same value
+    assert sympy.simplify(S_sym - S_poly) == 0
+    ## compact: the shared-denominator intermediate is much smaller
+    assert sympy.count_ops(S_poly) < sympy.count_ops(S_sym)
+    ## imaginary s resolves conjugation -- no lingering conjugate() terms
+    assert not S_poly.has(sympy.conjugate)
+
+
+def test_toolkit_noise_psd_matches():
+    """The noise_psd toolkit methods agree between symbolic and symbolic_poly."""
+    s = Symbol('s', imaginary=True)
+    Rv, Cv, k, T = sympy.symbols('R C k T', positive=True)
+    ## 2-node reciprocal system with a diagonal noise matrix
+    Y = np.array([[1/Rv + s*Cv, -1/Rv], [-1/Rv, 1/Rv]], dtype=object)
+    u = np.array([1, 0], dtype=object)
+    CY = np.array([[4*k*T/Rv, 0], [0, 4*k*T/Rv]], dtype=object)
+
+    zm_s, psd_s = symbolic.noise_psd(Y, u, CY, s)
+    zm_p, psd_p = symbolic_poly.noise_psd(Y, u, CY, s)
+    assert sympy.simplify(psd_s - psd_p) == 0
+
+
 def test_symbolic_result_has_no_tf():
     """The stock symbolic toolkit produces a plain result without tf()."""
     Rv, Cv = sympy.symbols('R C', positive=True)

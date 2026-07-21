@@ -387,13 +387,12 @@ class Noise(SSAnalysis):
 
             # Calculate the reciprocal G and C matrices
             Yreciprocal = G.T + s*C.T
-            
-            Yreciprocal2, uu = (tk.toMatrix(A) for A in (Yreciprocal, u))
-            
-            ## Calculate transimpedances from currents in each nodes to output
-            zm =  tk.linearsolver(Yreciprocal2, -uu)
 
-            xn2out = tk.dot(tk.dot(zm.reshape(1, tk.size(zm)), CY), tk.conj(zm))
+            ## Transimpedances from a current in each node to the output, and the
+            ## output noise PSD zm^T CY conj(zm).  Dispatched to the toolkit so a
+            ## polynomial toolkit can keep it as a single shared-denominator
+            ## rational instead of a swelling sum of divided rationals.
+            zm, xn2out = tk.noise_psd(Yreciprocal, u, CY, s)
 
             ## Etract gain
             gain = None
@@ -410,7 +409,7 @@ class Noise(SSAnalysis):
                                           self.cir.get_node(plus_node), 
                                           self.cir.get_node(minus_node), 
                                           refnode=refnode, refnode_removed=True)
-            return xn2out[0], gain
+            return xn2out, gain
 
         # Calculate output voltage noise
         if self.outputnodes is not None:

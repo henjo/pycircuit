@@ -55,6 +55,21 @@ class Toolkit:
         """
         return False
 
+    def noise_psd(self, Y, u, CY, s):
+        """Return ``(transimpedance_vector, output noise PSD)``.
+
+        Solves the reciprocal system ``Y zm = -u`` and forms the noise power
+        ``zm^T CY conj(zm)``.  ``s`` is unused in this generic implementation but
+        is part of the interface so toolkits that need it can override (see
+        :class:`SymbolicPolyToolkit`).
+        """
+        Ym = self.toMatrix(Y)
+        um = self.toMatrix(u)
+        zm = self.linearsolver(Ym, -um)
+        psd = self.dot(self.dot(zm.reshape(1, self.size(zm)), CY),
+                       self.conj(zm))
+        return zm, psd[0]
+
 
 class NumericToolkit(Toolkit):
     """Numeric toolkit backed by numpy."""
@@ -128,6 +143,26 @@ class SymbolicPolyToolkit(SymbolicToolkit):
         """
         num, den = self.linearsolver_num_den(A, b)
         return np.array([ni / den for ni in num], dtype=object)
+
+    def noise_psd(self, Y, u, CY, s):
+        """Shared-denominator noise PSD.
+
+        With ``zm = N/D`` (fraction-free), the noise power
+        ``zm^T CY conj(zm)`` equals ``(N^T CY conj(N)) / (D conj(D))`` -- a
+        single rational with a polynomial numerator over ``|D|^2`` rather than
+        the O(n^2) sum of divided rationals the generic form builds.  Value is
+        identical; only the intermediate is kept compact.
+
+        Conjugation is ``sympy.conjugate``, which resolves to ``N(-s)``
+        automatically when ``s`` is imaginary (``s = j*omega``).
+        """
+        N, D = self.linearsolver_num_den(self.toMatrix(Y), -self.toMatrix(u))
+        N = sympy.Matrix(list(N))
+        CYm = sympy.Matrix(np.asarray(CY).tolist())
+        num = (N.T * CYm * N.applyfunc(sympy.conjugate))[0]
+        den = D * sympy.conjugate(D)
+        zm = np.array([ni / D for ni in N], dtype=object)
+        return zm, num / den
 
 
 ## Singletons -- drop-in replacements for the old toolkit modules.
