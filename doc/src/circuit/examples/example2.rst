@@ -213,38 +213,38 @@ Q
    :persistent:
    :include-source: False
 
-   apa = solve([omega_0-omega0r,zeta-zr,G-R1],[C1,C2,R1]) 
+   # apa = solve([omega_0-omega0r,zeta-zr,G-R1],[C1,C2,R1]) 
 
 .. sympy::
    :persistent:
    :include-source: False
 
-   Eq(C1,apa[0][0])
+   # Eq(C1,apa[0][0])
 
 .. sympy::
    :persistent:
    :include-source: False
 
-   Eq(C2,apa[0][1])
+   # Eq(C2,apa[0][1])
 
 .. sympy::
    :persistent:
    :include-source: False
 
-   Eq(C2/C1,ratsimp(apa[0][1]/apa[0][0]))
+   # Eq(C2/C1,ratsimp(apa[0][1]/apa[0][0]))
 
 .. sympy::
    :persistent:
    :include-source: False
 
-   Eq(R1,apa[0][2])
+   # Eq(R1,apa[0][2])
 
 .. sympy::
    :persistent:
    :include-source: False
 
-   tf = ratsimp(simplify(result.v(3, gnd) / i_s).subs({R1:G,C1:apa[0][0],C2:apa[0][1]}))
-   tf 
+   # tf = ratsimp(simplify(result.v(3, gnd) / i_s).subs({R1:G,C1:apa[0][0],C2:apa[0][1]}))
+   # tf 
 
 
 Input impedance
