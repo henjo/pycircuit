@@ -9,7 +9,7 @@ from pycircuit.circuit import mos
 from numpy import array, zeros
 from copy import copy
 from pycircuit.circuit.symbolicapprox import *
-import pycircuit.circuit.symbolic as symbolic
+from pycircuit.circuit.toolkit import symbolic
 
 ## Multi FeedBack (MFB) Filter
 print("Multi FeedBack (MFB) Filter Example")

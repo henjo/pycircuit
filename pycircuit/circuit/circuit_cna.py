@@ -9,7 +9,7 @@ from constants import *
 from copy import copy
 import numpy as np
 import types
-import numeric
+from .toolkit import numeric
 
 default_toolkit = numeric
 

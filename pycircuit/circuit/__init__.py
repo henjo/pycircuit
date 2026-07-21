@@ -5,6 +5,4 @@ from .dcanalysis import *
 from .symbolicdc import *
 from .analysis_ss import *
 from .nportanalysis import *
-from . import symbolic
-from . import symbolic_poly
-from . import numeric
+from .toolkit import numeric, symbolic, symbolic_poly

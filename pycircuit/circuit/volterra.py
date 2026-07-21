@@ -21,8 +21,8 @@ from sympy import Symbol, Matrix, symbols, simplify, together, factor, cancel, d
 from pycircuit.circuit.elements import R, Diode, IS, C, VCCS
 from pycircuit.circuit.circuit import defaultepar, gnd, SubCircuit, Node, default_toolkit
 from copy import copy
-from pycircuit.circuit import symbolic
-from pycircuit.circuit import numeric
+from pycircuit.circuit.toolkit import symbolic
+from pycircuit.circuit.toolkit import numeric
 
 class NLVCCS(VCCS):
     linear = False

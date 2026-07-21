@@ -1,4 +1,4 @@
-from . import numeric as numeric
+from .toolkit import numeric
 from scipy import interpolate
 
 class TimeFunction():

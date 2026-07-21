@@ -7,8 +7,8 @@ from pycircuit.utilities.misc import indent, inplace_add_selected, \
     inplace_add_selected_2d, create_index_vectors
 from copy import copy
 import types
-from . import numeric
-from . import symbolic
+from .toolkit import numeric
+from .toolkit import symbolic
 import numpy as np
 
 default_toolkit = numeric
