@@ -59,6 +59,27 @@ class CircuitResultACPoly(CircuitResultAC):
         num = self.circuit.extract_v(self._num, plus, minus)
         return TransferFunction(num, self._den, self._s)
 
+    def tf_i(self, branch_or_term):
+        """Return the :class:`TransferFunction` to the current into ``branch_or_term``.
+
+        The AC current is affine in the state vector, ``i = L*x + c`` (``c`` the
+        source term).  With ``x = N/D`` this is ``(L*N + c*D)/D``.  ``L*N`` and
+        the source term ``c`` are recovered with two ``extract_i`` calls on the
+        numerator vector -- reusing the terminal/branch/sign logic while keeping
+        the result as a single ``num/D`` (no swelling cancel):
+
+            A  = extract_i(N,    s*N)  = L*N + c
+            c0 = extract_i(0,    0)    = c
+            num = A + c0*(D - 1)       = L*N + c*D
+        """
+        N, D, s = self._num, self._den, self._s
+        zero = 0 * N
+        A = self.circuit.extract_i(N, branch_or_term, xdot=s*N,
+                                   linearized=True, xdcop=self.xdcop)
+        c0 = self.circuit.extract_i(zero, branch_or_term, xdot=zero,
+                                    linearized=True, xdcop=self.xdcop)
+        return TransferFunction(A + c0*(D - 1), D, s)
+
     def poles(self, numeric=False):
         """Return the circuit poles (roots of the shared denominator).
 

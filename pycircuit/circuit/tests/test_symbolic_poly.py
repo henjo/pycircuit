@@ -180,6 +180,40 @@ def test_tf_bode_numeric_matches():
     assert np.allclose(np.asarray(got, dtype=complex), expected)
 
 
+def test_tf_i_current_transfer():
+    """tf_i gives the current transfer function and matches res.i()."""
+    Rv, Cv = sympy.symbols('R C', positive=True)
+    cir = _rc_lowpass(Rv, Cv)              # VS -> R -> C to gnd
+    s = Symbol('s', imaginary=True)
+    res = AC(cir, toolkit=symbolic_poly).solve(s, complexfreq=True)
+
+    Hi = res.tf_i('R.plus')                # current out of the source through R
+    assert sympy.simplify(Hi.canonical() - s*Cv/(1 + s*Rv*Cv)) == 0
+    assert Hi.poles() == {-1/(Rv*Cv): 1}
+    assert Hi.zeros() == {0: 1}            # zero at DC (no current at s=0)
+
+    ## matches the existing current extraction
+    i_ref = cir.extract_i(res.x, 'R.plus', xdot=res.xdot,
+                          linearized=True, xdcop=res.xdcop)
+    assert sympy.simplify(Hi.expr() - i_ref) == 0
+
+
+def test_input_impedance_via_voltage_tf():
+    """A unit current source makes the node-voltage tf the input impedance."""
+    from pycircuit.circuit import IS
+    Rv, Cv = sympy.symbols('R C', positive=True)
+    with use_toolkit(symbolic_poly):
+        cir = SubCircuit()
+        cir['IS'] = IS(gnd, 'in', iac=1)   # 1 A into 'in'
+        cir['R'] = R('in', gnd, r=Rv)
+        cir['C'] = C('in', gnd, c=Cv)      # R || C
+    s = Symbol('s', imaginary=True)
+    res = AC(cir, toolkit=symbolic_poly).solve(s, complexfreq=True)
+
+    Zin = res.tf('in', gnd)                # v/1 = Zin
+    assert sympy.simplify(Zin.canonical() - Rv/(1 + s*Rv*Cv)) == 0
+
+
 def test_numeric_poles_and_zeros():
     """numeric=True finds poles/zeros with numpy.roots for numeric circuits."""
     R0, C0 = 1e3, 1e-9                       # numeric values -> pole at -1/RC
