@@ -269,7 +269,7 @@ Input current noise
    in_s = symbols('i_{n}', real=True, positive=True, bounded=True)
 
    ## Run symbolic Noise analysis     
-   noise = Noise(cir, inputsrc='ISource', outputnodes=('3', gnd), toolkit=symbolic)
+   noise = Noise(cir, inputsrc='ISource', outputnodes=('3', gnd), toolkit=symbolic_poly)
    resultNoise = noise.solve(freqs=0, complexfreq=False)
 
    a = ratsimp(collect(resultNoise['Sininp'],[noise.toolkit.kboltzmann*noise.par.epar.T]).subs({R1:G}))
