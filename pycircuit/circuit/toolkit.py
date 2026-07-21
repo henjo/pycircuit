@@ -80,19 +80,25 @@ class SymbolicPolyToolkit(SymbolicToolkit):
     def supports(self, capability):
         return capability in ('num_den',)
 
-    def linearsolver(self, A, b):
-        """Solve ``A x = b`` fraction-free over an exact polynomial domain.
+    def linearsolver_num_den(self, A, b):
+        """Solve ``A x = b`` returning ``(numerator_vector, shared_denominator)``.
 
-        Returns the solution as ``x_i = numer_i / den`` (a cheap ``Mul``, not an
-        expansion).  Falls back to the stock symbolic ``LUsolve`` when the
-        entries do not live in a polynomial/rational domain (e.g. transcendental
-        functions land in sympy's ``EX`` domain, where there is no benefit).
+        The solution is ``x_i = numerator[i] / denominator``.  In the polynomial
+        domain the shared denominator is the network determinant, computed
+        fraction-free so intermediate entries stay polynomials rather than the
+        nested fractions ``LUsolve`` produces.  This keeps the transfer function
+        as a single ``N(s)/D(s)`` without a swelling ``cancel``.
+
+        Falls back to the stock symbolic ``LUsolve`` when the entries are not in
+        a polynomial/rational domain (transcendental functions land in sympy's
+        ``EX`` domain); the denominator is then 1 and the numerators are the
+        LUsolve solution directly.
         """
         A = sympy.Matrix(A)
         b = sympy.Matrix(b.tolist())
 
         if A.shape == (1, 1):
-            return np.array([(b[0] / A[0, 0])])
+            return np.array([b[0]], dtype=object), A[0, 0]
 
         try:
             dM = DomainMatrix.from_Matrix(A)
@@ -107,10 +113,21 @@ class SymbolicPolyToolkit(SymbolicToolkit):
             xnum, den = dM.convert_to(domain).solve_den(db.convert_to(domain))
             xnum = xnum.to_Matrix()
             den = domain.to_sympy(den)
-            return np.array([xnum[i, 0] / den for i in range(xnum.rows)],
-                            dtype=object)
+            return (np.array([xnum[i, 0] for i in range(xnum.rows)], dtype=object),
+                    den)
         except (DMError, sympy.PolynomialError, TypeError, AttributeError):
-            return self._backend.linearsolver(A, b)
+            x = np.array(self._backend.linearsolver(A, b), dtype=object)
+            return x.reshape((np.size(x, 0),)), sympy.Integer(1)
+
+    def linearsolver(self, A, b):
+        """Solve ``A x = b`` fraction-free; returns the divided solution vector.
+
+        Thin wrapper over :meth:`linearsolver_num_den` (``x_i = numer_i / den``)
+        so the toolkit honours the standard solution-vector contract used by the
+        analyses.
+        """
+        num, den = self.linearsolver_num_den(A, b)
+        return np.array([ni / den for ni in num], dtype=object)
 
 
 ## Singletons -- drop-in replacements for the old toolkit modules.

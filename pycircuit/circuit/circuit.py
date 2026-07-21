@@ -6,12 +6,53 @@ from pycircuit.utilities.param import Parameter, ParameterDict#, EvalError
 from pycircuit.utilities.misc import indent, inplace_add_selected, \
     inplace_add_selected_2d, create_index_vectors
 from copy import copy
+import contextlib
 import types
 from .toolkit import numeric
 from .toolkit import symbolic
 import numpy as np
 
+## The process-wide fallback toolkit used when a circuit is built without an
+## explicit toolkit= argument.
+##
+## Assigning this global directly is deprecated: it is mutable shared state that
+## leaks between analyses and tests (a construction-time choice that is easy to
+## get wrong).  Prefer passing toolkit= explicitly, or scope it with the
+## use_toolkit() context manager below.
 default_toolkit = numeric
+
+
+def set_default_toolkit(toolkit):
+    """Set the process-wide default toolkit.
+
+    Deprecated in favour of passing ``toolkit=`` explicitly or using
+    :func:`use_toolkit`; provided so the global is only mutated through a
+    documented entry point.
+    """
+    global default_toolkit
+    default_toolkit = toolkit
+
+
+@contextlib.contextmanager
+def use_toolkit(toolkit):
+    """Temporarily select the default toolkit within a ``with`` block.
+
+    Restores the previous value on exit, so the choice does not leak to later
+    code.  This is the recommended replacement for assigning
+    ``circuit.default_toolkit`` directly::
+
+        with use_toolkit(symbolic):
+            cir = SubCircuit()
+            ...
+    """
+    global default_toolkit
+    previous = default_toolkit
+    default_toolkit = toolkit
+    try:
+        yield toolkit
+    finally:
+        default_toolkit = previous
+
 
 timedomain_analyses = ('dc', 'tran')
 

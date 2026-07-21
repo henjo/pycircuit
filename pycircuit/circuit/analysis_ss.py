@@ -14,6 +14,9 @@ from pycircuit.post.internalresult import InternalResultDict
 from pycircuit.circuit.dcanalysis import DC
 
 from .toolkit import numeric
+from .transferfunction import TransferFunction
+import numpy as np
+import sympy
 import types
 
 
@@ -33,6 +36,36 @@ class CircuitResultAC(CircuitResult):
                                         linearized=True, 
                                         xdcop = self.xdcop)
         return self.build_waveform(result, 'i(%s)'%(str(term)), 'A')
+
+
+class CircuitResultACPoly(CircuitResultAC):
+    """AC result that also exposes the transfer function as ``N(s)/D(s)``.
+
+    Produced when the analysis runs with a toolkit that supports fraction-free
+    ``num/den`` solving (``symbolic_poly``) and the frequency is a single
+    symbol.  It carries the numerator vector ``N`` (indexed like ``x``, with the
+    reference node inserted) and the shared denominator ``D`` (the network
+    determinant), which lets it hand back transfer functions and circuit poles
+    without a swelling ``cancel``.
+    """
+    def __init__(self, circuit, xdcop, x, xdot, num, den, s, **kvargs):
+        super().__init__(circuit, xdcop, x, xdot, **kvargs)
+        self._num = num
+        self._den = den
+        self._s = s
+
+    def tf(self, plus, minus=None):
+        """Return the :class:`TransferFunction` to ``v(plus[, minus])``."""
+        num = self.circuit.extract_v(self._num, plus, minus)
+        return TransferFunction(num, self._den, self._s)
+
+    def poles(self):
+        """Return the circuit poles (roots of the shared denominator).
+
+        Computed once from the network determinant ``D`` for the whole circuit.
+        """
+        return sympy.roots(sympy.Poly(self._den, self._s))
+
 
 class SSAnalysis(Analysis):
     """Super class for small-signal analyses"""
@@ -119,13 +152,32 @@ class AC(SSAnalysis):
         irefnode = self.cir.get_node_index(refnode)
         G,C,CY,u = remove_row_col((G,C,CY,u), irefnode, self.toolkit)
 
+        ## Fast transfer-function path: when the toolkit provides fraction-free
+        ## num/den solving and the frequency is a single symbol, keep the result
+        ## as N(s)/D(s) (shared denominator) so poles/zeros are available without
+        ## a swelling cancel.
+        if self.toolkit.supports('num_den') and not isiterable(ss):
+            s = ss
+            num, den = self.toolkit.linearsolver_num_den(s*C + G, -u)
+            ## Re-insert the reference node (v(refnode) = 0 => numerator 0)
+            num = self.toolkit.concatenate((num[:irefnode],
+                                            self.toolkit.array([0]),
+                                            num[irefnode:]))
+            xac = np.array([ni / den for ni in num], dtype=object)
+            self.result = CircuitResultACPoly(self.cir, x, xac, s * xac,
+                                              num, den, s,
+                                              sweep_values = freqs,
+                                              sweep_label='frequency',
+                                              sweep_unit='Hz')
+            return self.result
+
         def acsolve(s):
             return self.toolkit.linearsolver(s*C + G, -u)
 
         xac = self.ss_map_function(acsolve, ss, refnode)
 
-        self.result = CircuitResultAC(self.cir, x, xac, ss * xac, 
-                                      sweep_values = freqs, 
+        self.result = CircuitResultAC(self.cir, x, xac, ss * xac,
+                                      sweep_values = freqs,
                                       sweep_label='frequency',
                                       sweep_unit='Hz')
 
