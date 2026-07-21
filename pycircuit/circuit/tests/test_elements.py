@@ -58,7 +58,7 @@ def test_vpulse():
            
 def gen_stamps(toolkit=symbolic):
     circuit.default_toolkit = toolkit
-    if toolkit is symbolic:
+    if toolkit.symbolic:
         R1,C1,L1,gain,gm,N = symbols('R1 C1 L1 gain gm N')
     else:
         R1=1.1e3
@@ -116,7 +116,7 @@ def gen_stamps(toolkit=symbolic):
 
 def gen_stamps_sources(toolkit=symbolic):
     circuit.default_toolkit = toolkit
-    if toolkit is symbolic:
+    if toolkit.symbolic:
         vac, phase = symbols('vac phase')
     else:
         vac = 1.2
@@ -135,7 +135,7 @@ def gen_stamps_sources(toolkit=symbolic):
 def test_stamp():
     circuit.default_toolkit = symbolic
     
-    for toolkit in numeric, symbolic:
+    for toolkit in numeric, symbolic, symbolic_poly:
         for cir, G, C in gen_stamps(toolkit=toolkit):
             assert_array_equal(cir.G(np.zeros(cir.n)), G)
             assert_array_equal(cir.C(np.zeros(cir.n)), C)
