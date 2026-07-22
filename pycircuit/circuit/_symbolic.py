@@ -43,8 +43,11 @@ def linearsolver(A, b):
     if A.shape == (1,1):
         return np.array([(b[0] / A[0,0])])
     else:
-        #res = np.array((A.inverse_ADJ() * b))
-        res = np.array((A.LUsolve(b)))
+        try:
+            res = np.array((A.LUsolve(b)))
+        except sympy.matrices.exceptions.NonInvertibleMatrixError:
+            print("Fallback hit!")
+            res = np.array((A.adjugate() * b) / A.det())
 
     return res.reshape((np.size(res,0),) )
 
@@ -115,8 +118,10 @@ def ones(*args,**kvargs):
 def concatenate(*args,**kvargs):
     return np.concatenate(*args,**kvargs)
 
-def imag(*args,**kvargs):
-    return sympy.im(*args,**kvargs)
+def imag(xarray):
+    if isinstance(xarray, np.ndarray):
+        return np.array([sympy.im(x) for x in xarray])
+    return sympy.im(xarray)
 
 def conj(xarray):
     conjlist = []

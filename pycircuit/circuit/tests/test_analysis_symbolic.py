@@ -20,8 +20,7 @@ from numpy.testing import assert_equal
 ## Run every symbolic test on both the stock and the polynomial-domain toolkit
 TOOLKITS = [symbolic, symbolic_poly]
 
-@pytest.mark.parametrize("toolkit", TOOLKITS)
-def test_symbolic_ac(toolkit):
+def check_symbolic_ac(toolkit):
     pycircuit.circuit.circuit.default_toolkit = toolkit
     cir = SubCircuit()
 
@@ -34,8 +33,7 @@ def test_symbolic_ac(toolkit):
     res = AC(cir, toolkit = toolkit).solve(freqs = s, complexfreq=True)
     assert_equal(simplify(res.v(2,gnd)-v0/(1+s*R1*C1)), 0)
 
-@pytest.mark.parametrize("toolkit", TOOLKITS)
-def test_symbolic_noise_vin_vout(toolkit):
+def check_symbolic_noise_vin_vout(toolkit):
     pycircuit.circuit.circuit.default_toolkit = toolkit
     c = SubCircuit()
 
@@ -53,8 +51,7 @@ def test_symbolic_noise_vin_vout(toolkit):
     assert_equal(simplify(res['Svninp']), simplify(4*noise.toolkit.kboltzmann*noise.par.epar.T*R1*(R2 + R1)/R2))
     assert_equal(simplify(res['gain'] - R2 / (R1 + R2)), 0)
 
-@pytest.mark.parametrize("toolkit", TOOLKITS)
-def test_symbolic_noise_vin_iout(toolkit):
+def check_symbolic_noise_vin_iout(toolkit):
     pycircuit.circuit.circuit.default_toolkit = toolkit
     c = SubCircuit()
     
@@ -73,8 +70,7 @@ def test_symbolic_noise_vin_iout(toolkit):
     assert_equal(simplify(res['Svninp']), simplify(4*noise.toolkit.kboltzmann*noise.par.epar.T*R1*(R2+R1)/R2))
     assert_equal(simplify(res['gain']), 1/R1)
 
-@pytest.mark.parametrize("toolkit", TOOLKITS)
-def test_symbolic_noise_iin_vout(toolkit):
+def check_symbolic_noise_iin_vout(toolkit):
     pycircuit.circuit.circuit.default_toolkit = toolkit
     c = SubCircuit()
     
@@ -94,8 +90,7 @@ def test_symbolic_noise_iin_vout(toolkit):
     assert_equal(simplify(res['gain']), R2)
 
 
-@pytest.mark.parametrize("toolkit", TOOLKITS)
-def test_symbolic_noise_iin_iout(toolkit):
+def check_symbolic_noise_iin_iout(toolkit):
     pycircuit.circuit.circuit.default_toolkit = toolkit
     c = SubCircuit()
     
@@ -118,8 +113,7 @@ def test_symbolic_noise_iin_iout(toolkit):
     assert_equal(simplify(res['Sininp']), 4*k*T/R2)
     assert_equal(simplify(res['gain']), 1)
 
-@pytest.mark.parametrize("toolkit", TOOLKITS)
-def test_symbolic_noise_kt_over_C(toolkit):
+def check_symbolic_noise_kt_over_C(toolkit):
     pycircuit.circuit.circuit.default_toolkit = toolkit
     cir = SubCircuit(toolkit = toolkit)
 
@@ -145,3 +139,27 @@ def test_symbolic_noise_kt_over_C(toolkit):
     assert_equal(noise_voltage_power, 2*pi*k*T/c)
 
     assert_equal(simplify(res['gain'] - 1/(1 + s*r*c)), 0)
+
+def test_symbolic_ac():
+    for t in TOOLKITS:
+        yield check_symbolic_ac, t
+
+def test_symbolic_noise_vin_vout():
+    for t in TOOLKITS:
+        yield check_symbolic_noise_vin_vout, t
+
+def test_symbolic_noise_vin_iout():
+    for t in TOOLKITS:
+        yield check_symbolic_noise_vin_iout, t
+
+def test_symbolic_noise_iin_vout():
+    for t in TOOLKITS:
+        yield check_symbolic_noise_iin_vout, t
+
+def test_symbolic_noise_iin_iout():
+    for t in TOOLKITS:
+        yield check_symbolic_noise_iin_iout, t
+
+def test_symbolic_noise_kt_over_C():
+    for t in TOOLKITS:
+        yield check_symbolic_noise_kt_over_C, t

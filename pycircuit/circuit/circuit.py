@@ -7,7 +7,6 @@ from pycircuit.utilities.misc import indent, inplace_add_selected, \
     inplace_add_selected_2d, create_index_vectors
 from copy import copy
 import contextlib
-import types
 from .toolkit import numeric
 from .toolkit import symbolic
 import numpy as np
@@ -194,10 +193,10 @@ class Circuit():
     """
 
     
-    nodes = []
-    branches = []
-    terminals = []
-    instparams = []
+    nodes = ()
+    branches = ()
+    terminals = ()
+    instparams = ()
     linear = True
     
     def __init__(self, *args, **kvargs):
@@ -206,6 +205,15 @@ class Circuit():
             del kvargs['toolkit']
         else:
             self.toolkit = default_toolkit
+
+        if self.nodes is self.__class__.nodes:
+            self.nodes = list(self.__class__.nodes)
+        if self.branches is self.__class__.branches:
+            self.branches = list(self.__class__.branches)
+        if self.terminals is self.__class__.terminals:
+            self.terminals = list(self.__class__.terminals)
+        if self.instparams is self.__class__.instparams:
+            self.instparams = list(self.__class__.instparams)
 
         self.nodenames = {}
 
@@ -284,9 +292,6 @@ class Circuit():
     def append_node(self, node):
         """Append node object to circuit"""
         ## Make a copy of node list so the class is unchanged
-        if self.__class__.nodes is self.nodes:
-            self.nodes = list(self.nodes)
-
         if node not in self.nodes:
             self.nodes.append(node)
         self.nodenames[node.name] = node
@@ -294,9 +299,6 @@ class Circuit():
     def append_branches(self, *branches):
         """Append node object to circuit"""
         ## Make a copy of branch list so the class is unchanged
-        if self.__class__.branches is self.branches:
-            self.branches = list(self.branches)
-
         self.branches.extend(branches)
 
     def get_terminal_branch(self, terminalname):
@@ -403,9 +405,6 @@ class Circuit():
 
         """
 
-        if self.__class__.terminals is self.terminals:
-            self.terminals = list(self.terminals)
-
         for terminal in terminals:
             # add terminal to terminal list if it is not included
             if terminal not in self.terminals:
@@ -429,7 +428,7 @@ class Circuit():
         """
         for terminal, node in kvargs.items():
             ## Sanity check
-            if type(terminal) is not types.StringType:
+            if not isinstance(terminal, str):
                 raise Exception("%s should be string"%str(terminal))
             if terminal not in self.terminals:
                 raise ValueError('terminal '+str(terminal)+' is not defined')

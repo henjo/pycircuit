@@ -88,6 +88,9 @@ class Analysis(sim.Analysis):
         self.toolkit = toolkit
 
         epar = self.par.epar
+        if epar is defaultepar:
+            epar = epar.copy()
+            self.par.epar = epar
 
         if hasattr(toolkit, 'setup_analysis'):
             toolkit.setup_analysis(epar)

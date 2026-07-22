@@ -268,7 +268,7 @@ class TwoPortAnalysis(Analysis):
 
             else:
                 ## Run AC-analysis
-                acana = AC(circuit, toolkit=toolkit, analysis='internalac')
+                acana = AC(circuit, toolkit=toolkit, analysis='internalac', epar=self.epar)
                 res = acana.solve(freqs, refnode=refnode,
                                   complexfreq = complexfreq)
                 ## Obtain s-parameters
@@ -296,7 +296,7 @@ class TwoPortAnalysis(Analysis):
         ## Calculate transimpedances
         branchlist = [Branch(*port) for port in self.ports]
         
-        transimpana = TransimpedanceAnalysis(circuit, toolkit=toolkit)
+        transimpana = TransimpedanceAnalysis(circuit, toolkit=toolkit, epar=self.epar)
 
         zmlist = transimpana.solve(freqs, branchlist, refnode=refnode,
                                    complexfreq=complexfreq)

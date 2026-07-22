@@ -44,7 +44,7 @@ def test_twoportanalysis_sparam():
 def test_noise2():
     cir = SubCircuit(toolkit=symbolic)
 
-    var('R1 R2 w k T', real=True, positive=True)
+    R1, R2, w, k, T_sym = sympy.symbols('R1 R2 w k T', real=True, positive=True)
 
     cir['Rp'] = R(1, gnd, r=R1/2, toolkit=symbolic)
     cir['Rn'] = R(2, gnd, r=R1/2, toolkit=symbolic)
@@ -54,7 +54,7 @@ def test_noise2():
                                   noise_outquantity = 'v')
     result = twoport_ana.solve(freqs=1j*w, complexfreq=True)
 
-    assert_equal(result['Sin'], 4*k*T/R1)
+    assert_equal(result['Sin'], 4*k*T_sym/R1)
     assert_equal(result['Svn'], 0)
 
 def test_symbolic_twoport():
@@ -62,7 +62,7 @@ def test_symbolic_twoport():
     cir = SubCircuit()
 
     k = symbolic.kboltzmann
-    var('R1 R0 C1 w T', real=True, positive=True)
+    R1, R0, C1, w, T_sym2 = sympy.symbols('R1 R0 C1 w T', real=True, positive=True)
     s = 1j*w
 
     cir['R0'] = R(1, gnd, r=R0)
@@ -84,5 +84,5 @@ def test_symbolic_twoport():
     assert_array_equal(ABCD, np.array([[1 + 0*R1*C1*s, R1],
                                     [(1 + 0*R0*C1*s + 0*R1*C1*s) / R0,  (R0 + R1)/R0]]))
 
-    assert_array_equal(simplify(result['Sin'] - (4*k*T/R0 + 4*R1*k*T/R0**2)), 0)
-    assert_array_equal(simplify(result['Svn']), 4*k*T*R1)
+    assert_array_equal(simplify(result['Sin'] - (4*k*T_sym2/R0 + 4*R1*k*T_sym2/R0**2)), 0)
+    assert_array_equal(simplify(result['Svn']), 4*k*T_sym2*R1)

@@ -11,7 +11,7 @@ from numpy.testing import assert_array_almost_equal, assert_array_equal
 import numpy as np
 
 def test_nonlinear():
-    var('k qelectron I0 Isat qelectron T', positive=True, real=True)
+    k, qelectron, I0, Isat, T_sym = sympy.symbols('k qelectron I0 Isat T', positive=True, real=True)
 
     c = SubCircuit(toolkit=symbolic)
     c['I0'] = IS(gnd, 'net1', i=I0, toolkit=symbolic)
@@ -19,11 +19,11 @@ def test_nonlinear():
 
     dc = SymbolicDC(c)
 
-    dc.epar.T = T
+    dc.epar.T = T_sym
 
     res = dc.solve()
 
-    assert_equal(sympy.simplify(res.v('net1') - k * T / qelectron * log(I0/Isat+1)), 0)
+    assert_equal(sympy.simplify(res.v('net1') - k * T_sym / qelectron * log(I0/Isat+1)), 0)
 
 def test_linear():
     var('R1 R2 V0')
@@ -45,7 +45,7 @@ def test_linear():
     assert_equal(sympy.simplify(res.i('R2.plus') - V0/(R1+R2)), 0)
     
 def test_geteqsys():
-    var('R1 V0 Isat T')
+    R1, V0, Isat, T_sym = sympy.symbols('R1 V0 Isat T')
     k = symbolic.kboltzmann
     qelectron = symbolic.qelectron
     
@@ -57,14 +57,14 @@ def test_geteqsys():
 
     dc = SymbolicDC(c)
 
-    dc.epar.T = T
+    dc.epar.T = T_sym
 
     eqsys, x = dc.get_eqsys()
 
     x0, x2, x3 = x
 
     eqsys_ref = np.array([x3 + x0/R1 - x2/R1, 
-                          -Isat*(1 - sympy.exp(qelectron*x2/(T*k))) + x2/R1 - x0/R1, 
+                          -Isat*(1 - sympy.exp(qelectron*x2/(T_sym*k))) + x2/R1 - x0/R1, 
                           x0 - V0])
 
     assert sympy.simplify(eqsys_ref[0] - eqsys_ref[0]) == 0
