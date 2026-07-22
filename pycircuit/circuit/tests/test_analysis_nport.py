@@ -7,7 +7,6 @@ Test n-port analysis module
 
 """
 
-from nose.tools import *
 from pycircuit.circuit import *
 from pycircuit.circuit.nport import NPort, NPortY, NPortZ, NPortA, NPortS
 from pycircuit.circuit.nportanalysis import TwoPortAnalysis
@@ -54,8 +53,8 @@ def test_noise2():
                                   noise_outquantity = 'v')
     result = twoport_ana.solve(freqs=1j*w, complexfreq=True)
 
-    assert_equal(result['Sin'], 4*k*T_sym/R1)
-    assert_equal(result['Svn'], 0)
+    assert result['Sin'] == 4*k*T_sym/R1
+    assert result['Svn'] == 0
 
 def test_symbolic_twoport():
     circuit.default_toolkit = symbolic

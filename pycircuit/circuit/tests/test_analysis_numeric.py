@@ -2,7 +2,6 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
-from nose.tools import *
 import pycircuit.circuit.circuit 
 from pycircuit.circuit import *
 import numpy as np
@@ -26,9 +25,9 @@ def test_integer_component_values():
     dc = DC(c)
     res = dc.solve()
     
-    assert_equal(res.v('net2'), 4.5)
+    assert res.v('net2') == 4.5
 
-    assert_equal(res.i('R2.plus'), 0.09)
+    assert res.i('R2.plus') == 0.09
 
 def TODOtest_noise_dc_steady_state():
     """Test that dc-steady state is accounted for in noise simulations

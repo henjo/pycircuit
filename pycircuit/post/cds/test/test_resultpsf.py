@@ -1,6 +1,6 @@
+from numpy.testing import assert_almost_equal
 import os
 
-from nose.tools import *
 
 from pycircuit.post.cds import PSFResultSet
 from pycircuit.post import Waveform

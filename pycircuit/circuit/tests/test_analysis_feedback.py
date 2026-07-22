@@ -1,3 +1,4 @@
+import pytest
 # -*- coding: latin-1 -*-
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
@@ -5,7 +6,6 @@
 """ Test loopgain module
 """
 
-from nose.tools import *
 from pycircuit.circuit import analysis, analysis_ss
 from pycircuit.circuit import symbolic, SubCircuit, R, C, VS, VCCS, VCVS, gnd
 from pycircuit.circuit.feedback import FeedbackDeviceAnalysis, LoopProbe, FeedbackLoopAnalysis
@@ -28,7 +28,7 @@ def test_deviceanalysis_sourcefollower():
     ana = FeedbackDeviceAnalysis(cir, 'M1', toolkit=symbolic)
     res = ana.solve(s, complexfreq=True)
 
-    assert_equal(simplify(res['loopgain']), simplify(- gm / (1/RL + s*CL)))
+    assert simplify(res['loopgain']) == simplify(- gm / (1/RL + s*CL))
 
 def test_deviceanalysis_viiv():
     """Loopgain of a resistor V-I and a I-V amplifier with a vcvs as gain element"""
@@ -48,11 +48,13 @@ def test_deviceanalysis_viiv():
 
 def test_loopanalysis_incorrect_circuit():
     cir = SubCircuit()
-    assert_raises(ValueError, lambda: FeedbackLoopAnalysis(cir))
+    with pytest.raises(ValueError):
+        FeedbackLoopAnalysis(cir)
 
     cir['probe1'] = LoopProbe('out', gnd, 'out_R2', gnd)
     cir['probe2'] = LoopProbe('out', gnd, 'out_R2', gnd)
-    assert_raises(ValueError, lambda: FeedbackLoopAnalysis(cir))
+    with pytest.raises(ValueError):
+        FeedbackLoopAnalysis(cir)
 
 def test_loopanalysis_numeric():
     cir = SubCircuit()

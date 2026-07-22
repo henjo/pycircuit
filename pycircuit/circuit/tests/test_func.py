@@ -2,14 +2,13 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
-from nose.tools import *
 
 import pycircuit.circuit.func as func
 from pycircuit.circuit import symbolic, numeric
 import sympy
 import numpy as np
 
-from numpy.testing import assert_array_equal
+from numpy.testing import assert_array_equal, assert_almost_equal
 
 def test_timefunction():
     for toolkit in symbolic, numeric:
@@ -27,16 +26,16 @@ def test_sin():
 
     v = vo + va*sympy.exp(-theta*(t - td)) * \
         sympy.sin(2*sympy.pi*freq*(t-td)+phase*sympy.pi/180)
-    assert_equal(sin.f(t), v)
+    assert sin.f(t) == v
 
     ## Test next event, phase = 0
     sin = func.Sin(toolkit = symbolic,
                    offset=vo, amplitude=va, freq=freq, td=td, 
                    theta=theta, phase=0)
     period = 1/freq
-    assert_equal(sin.next_event(period+td), period+td + period/4)
-    assert_equal(sin.next_event(period+td + period / 8), period+td + period/4)
-    assert_equal(sin.next_event(period+td - period / 16), period+td)
+    assert sin.next_event(period+td) == period+td + period/4
+    assert sin.next_event(period+td + period / 8) == period+td + period/4
+    assert sin.next_event(period+td - period / 16) == period+td
 
     ## Test next event, phase = phase
     phase = 1
@@ -45,8 +44,7 @@ def test_sin():
                    theta=theta, phase=phase)
     period = 1/freq
     t_nextevent = sin.next_event(period+td + period / 8 - phase*period/360)
-    assert_equal(t_nextevent.expand(),
-                 (period+td + period/4 - phase*period/360).expand())
+    assert t_nextevent.expand() == (period+td + period/4 - phase*period/360).expand()
     
 def test_pulse():
     t = sympy.Symbol('t')

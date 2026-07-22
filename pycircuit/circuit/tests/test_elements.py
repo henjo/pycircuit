@@ -5,7 +5,6 @@
 """Circuit element tests
 """
 
-from nose.tools import *
 import pycircuit.circuit.circuit 
 from pycircuit.circuit import *
 from pycircuit.circuit.elements import *
@@ -194,7 +193,7 @@ def test_SVCVS_laplace_integrator():
 
     res = AC(cir, toolkit=symbolic).solve(s, complexfreq=True)
 
-    assert_equal(sympy.expand(res.v(n2,gnd)),sympy.expand(b0/(a0*s)))
+    assert sympy.expand(res.v(n2,gnd)) == sympy.expand(b0/(a0*s))
 
 def test_SVCVS_laplace_n1_d2():
     """Test VCCS with a laplace defined transfer function first order numerator
@@ -244,8 +243,7 @@ def test_SVCVS_laplace_d3_n1():
 
     res = AC(cir, toolkit=symbolic).solve(s, complexfreq=True)
 
-    assert_equal(sympy.cancel(sympy.expand(res.v(n2,gnd))),
-                 sympy.expand((b0*s*s)/(a0*s*s*s+a1*s*s+a2*s+a3)))
+    assert sympy.cancel(sympy.expand(res.v(n2,gnd))) == sympy.expand((b0*s*s)/(a0*s*s*s+a1*s*s+a2*s+a3))
 
 def test_Idt_sym():
     """Test integrator element symbolically"""
@@ -266,7 +264,7 @@ def test_Idt_sym():
     result = AC(c, toolkit=symbolic).solve(Symbol('s'),complexfreq=True)
     
     vtr = simplify(result.v(nout)/result.v(nin))
-    assert_equal(vtr, 1/Symbol('s'))
+    assert vtr == 1/Symbol('s')
 
 @unittest.skip("Skip failing test")
 def test_Idt_tran():
@@ -307,7 +305,7 @@ def test_Idtmod_sym():
     result = AC(c, toolkit=symbolic).solve(Symbol('s'),complexfreq=True)
     
     vtr = simplify(result.v(nout)/result.v(nin))
-    assert_equal(vtr, 1/Symbol('s'))
+    assert vtr == 1/Symbol('s')
 
 
 @unittest.skip("Skip failing test")

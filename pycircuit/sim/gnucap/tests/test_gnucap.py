@@ -11,13 +11,12 @@ import numpy as np
 
 import logging
 import unittest
-from nose.tools import *
-from nose.exc import SkipTest
+import pytest
 
 try:
     import gnucap
 except ImportError:
-    raise SkipTest("gnucap not installed") 
+    pytest.skip("gnucap not installed", allow_module_level=True) 
 
 #logging.basicConfig(level = logging.DEBUG)
 
@@ -36,8 +35,7 @@ class GnucapTest(unittest.TestCase):
 
     def test_netlist(self):
         def check_netlist(sim):
-            assert_equal(sim.command('list'), 
-               'V1 ( 1 0 )  DC  1.\nR1 ( 1 2 )  1.K\nR2 ( 2 0 )  3.K')
+            assert sim.command('list') == 'V1 ( 1 0 )  DC  1.\nR1 ( 1 2 )  1.K\nR2 ( 2 0 )  3.K'
             
         sim = gnucap.Simulation(None, direct=self.direct)
         sim.send_netlist(simple_netlist)
@@ -61,7 +59,7 @@ class GnucapTest(unittest.TestCase):
 
         res = sim.command('op 27', parse_result=True)
 
-        assert_equal(res['v(2)'].value(27), 0.75)
+        assert res['v(2)'].value(27) == 0.75
 
     def test_dcop(self):
         cir = gnucap.Circuit(simple_netlist)
@@ -69,7 +67,7 @@ class GnucapTest(unittest.TestCase):
 
         res = sim.run_dcop()
 
-        assert_equal(res['v(2)'].value(27), 0.75)
+        assert res['v(2)'].value(27) == 0.75
 
     def test_ac(self):
         cir = gnucap.Circuit()
@@ -101,7 +99,7 @@ class GnucapTest(unittest.TestCase):
 
         assert_waveform_equal(res.v(2), refv2)
 
-        assert_equal(res.v(2).xlabels, ['Time'])
+        assert res.v(2).xlabels == ['Time']
 
 
     def test_construct_circuit(self):
@@ -112,5 +110,5 @@ class GnucapTest(unittest.TestCase):
         cir['R2'] = gnucap.R(2,0,'3k')
 
         print(gnucap.Circuit(simple_netlist))
-        assert_equal(cir, gnucap.Circuit(simple_netlist))
+        assert cir == gnucap.Circuit(simple_netlist)
 

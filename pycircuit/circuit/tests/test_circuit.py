@@ -1,3 +1,4 @@
+import pytest
 # -*- coding: latin-1 -*-
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
@@ -5,7 +6,6 @@
 """ Test circuit module
 """
 
-from nose.tools import *
 import pycircuit.circuit.circuit 
 from pycircuit.circuit.circuit import *
 from pycircuit.circuit.elements import *
@@ -59,8 +59,7 @@ def test_parallel():
 def test_print_element():
     pycircuit.circuit.circuit.default_toolkit = symbolic
 
-    assert_equal(str(C(1, 0, gnd, c=sympy.Symbol('c'))),
-                 "C('plus','minus',c=c)")
+    assert str(C(1, 0, gnd, c=sympy.Symbol('c'))) == "C('plus','minus',c=c)"
 
 def test_print_netlist():
     """Test printing of netlist"""
@@ -82,7 +81,7 @@ R1 plus minus R r=2000.0 noisy=True
 R3 plus plus R r=1000.0 noisy=True
 I1 plus minus MySubC """
 
-    assert_equal(netlist, refnetlist)    
+    assert netlist == refnetlist    
 
 def test_subcircuit_nodes():
     """Test node consistency of hierarchical circuit"""
@@ -90,68 +89,62 @@ def test_subcircuit_nodes():
     subc = generate_testcircuit()
 
     ## Check nodes of subc
-    assert_equal(set(subc.nodes), 
-                 set([Node('plus'), Node('minus'), Node('I1.internal'), 
-                      gnd]))
+    assert set(subc.nodes) == set([Node('plus'), Node('minus'), Node('I1.internal'), 
+                      gnd])
 
     ## Check local names of subc
-    assert_equal(subc.nodenames,
-                 {'plus': Node('plus'), 'minus': Node('minus'),
+    assert subc.nodenames == {'plus': Node('plus'), 'minus': Node('minus'),
                   'I1.internal': Node('I1.internal'),
-                  'gnd': gnd})
+                  'gnd': gnd}
 
     ## Check branches of subc
-    assert_equal(subc.branches,
-                 [Branch(Node('I1.internal'), gnd)])
+    assert subc.branches == [Branch(Node('I1.internal'), gnd)]
 
     ## Check local names of I1
-    assert_equal(subc['I1'].nodenames,
-                 {'p': Node('p'), 'm': Node('m'),
+    assert subc['I1'].nodenames == {'p': Node('p'), 'm': Node('m'),
                   'internal': Node('internal'),
-                  'gnd': gnd})
+                  'gnd': gnd}
 
     ## Check branches of I1
-    assert_equal(subc['I1'].branches,
-                 [Branch(Node('internal'), gnd)])
+    assert subc['I1'].branches == [Branch(Node('internal'), gnd)]
 
     ## Check nodes of I1
-    assert_equal(set(subc['I1'].nodes), 
-                 set([Node('p'), Node('m'), Node('internal'), 
-                      gnd]))
+    assert set(subc['I1'].nodes) == set([Node('p'), Node('m'), Node('internal'), 
+                      gnd])
 
     ## Check that first nodes of I1 are terminal nodes 
-    assert_equal(subc['I1'].nodes[0:2], [Node('p'), Node('m')])
+    assert subc['I1'].nodes[0:2] == [Node('p'), Node('m')]
 
     ## Check terminal map
-    assert_equal(subc.term_node_map['I1'], {'p':Node('plus'), 'm':Node('minus')})
+    assert subc.term_node_map['I1'] == {'p':Node('plus'), 'm':Node('minus')}
 
     ## delete I1
     del subc['I1']
     
     ## Check nodes of subc
-    assert_equal(set(subc.nodes), 
-                 set([Node('plus'), Node('minus')]))
+    assert set(subc.nodes) == set([Node('plus'), Node('minus')])
 
     ## Check local names of subc
-    assert_equal(subc.nodenames,
-                 {'plus': Node('plus'), 'minus': Node('minus')})
+    assert subc.nodenames == {'plus': Node('plus'), 'minus': Node('minus')}
     
     ## Check terminal map
-    assert_false('I1' in subc.term_node_map)
+    assert not 'I1' in subc.term_node_map
 
     ## Check nodes of R3
-    assert_equal(subc['R3'].nodes,
-                 [Node('plus'), Node('minus')])
+    assert subc['R3'].nodes == [Node('plus'), Node('minus')]
 
 def test_subcircuit_get_instance():
     cir = generate_testcircuit()
 
-    assert_equal(cir[''], cir)
-    assert_equal(cir['R1'], R('plus', 'minus', r=2e3))
-    assert_equal(cir['I1.R1'], R('plus', 'minus', r=1e3))
-    assert_raises(KeyError, lambda: cir['R10'])
-    assert_raises(KeyError, lambda: cir['I1.R10'])
-    assert_raises(KeyError, lambda: cir['I2.R10'])
+    assert cir[''] == cir
+    assert cir['R1'] == R('plus', 'minus', r=2e3)
+    assert cir['I1.R1'] == R('plus', 'minus', r=1e3)
+    with pytest.raises(KeyError):
+        cir['R10']
+    with pytest.raises(KeyError):
+        cir['I1.R10']
+    with pytest.raises(KeyError):
+        cir['I2.R10']
 
 def test_subcircuit_add_nodes_implicitly():
     subc = SubCircuit()
@@ -160,25 +153,21 @@ def test_subcircuit_add_nodes_implicitly():
     subc['R1'] = R(Node('a'), Node('b'))
     
     ## Check nodes of subc
-    assert_equal(set(subc.nodes), 
-                 set([Node('a'), Node('b')]))
+    assert set(subc.nodes) == set([Node('a'), Node('b')])
 
     ## Check local names of subc
-    assert_equal(subc.nodenames,
-                 {'a': Node('a'), 'b': Node('b') })
+    assert subc.nodenames == {'a': Node('a'), 'b': Node('b') }
 
     ## Test to add nodes implicitly using strings
     subc['R2'] = R('a', 'c')
     subc['R3'] = R('b', 1)
     
     ## Check nodes of subc
-    assert_equal(set(subc.nodes), 
-                 set([Node('a'), Node('b'), Node('c'), Node('1')]))
+    assert set(subc.nodes) == set([Node('a'), Node('b'), Node('c'), Node('1')])
 
     ## Check local names of subc
-    assert_equal(subc.nodenames,
-                 {'a': Node('a'), 'b': Node('b'), 'c': Node('c'), 
-                  '1': Node('1')})
+    assert subc.nodenames == {'a': Node('a'), 'b': Node('b'), 'c': Node('c'), 
+                  '1': Node('1')}
     
 def create_current_divider(R1,R3,C2):
     cir = SubCircuit()
@@ -218,9 +207,9 @@ def test_current_probing():
     
     res = AC(cir, toolkit=symbolic).solve(s, complexfreq=True)
 
-    assert_equal(sympy.simplify(res.i('I1.plus')), (2 + C2*R3*s)/(1 + C2*R3*s))
+    assert sympy.simplify(res.i('I1.plus')) == (2 + C2*R3*s)/(1 + C2*R3*s)
 
-    assert_equal(sympy.simplify(res.i('C2.plus')), s*R3*C2 / (1 + s*R3*C2))
+    assert sympy.simplify(res.i('C2.plus')) == s*R3*C2 / (1 + s*R3*C2)
 
             
 def test_current_probing_wo_branch():
@@ -234,9 +223,9 @@ def test_current_probing_wo_branch():
 
     res = AC(cir, toolkit=symbolic).solve(s, complexfreq=True)
     
-    assert_equal(sympy.simplify(res.i('I1.plus')), (2 + C2*R3*s)/(1 + C2*R3*s))
+    assert sympy.simplify(res.i('I1.plus')) == (2 + C2*R3*s)/(1 + C2*R3*s)
 
-    assert_equal(sympy.simplify(res.i('C2.plus')), s*R3*C2 / (1 + s*R3*C2))
+    assert sympy.simplify(res.i('C2.plus')) == s*R3*C2 / (1 + s*R3*C2)
 
 def test_adddel_subcircuit_element():
     """add subcircuit element that contains a branch then delete it"""
@@ -250,9 +239,9 @@ def test_adddel_subcircuit_element():
     
     del cir['V']
     
-    assert_equal(list(cir.elements.values()), [cir['R1']])
-    assert_equal(cir.nodes, [n1,gnd])
-    assert_equal(cir.branches, [])
+    assert list(cir.elements.values()) == [cir['R1']]
+    assert cir.nodes == [n1,gnd]
+    assert cir.branches == []
 
 def test_short_resistor():
     """Test shorting of instance terminals"""
@@ -264,7 +253,7 @@ def test_short_resistor():
 
     ## G is the n-by-n MNA conductance matrix; for the single gnd node
     ## that is a 1-by-1 zero matrix.
-    assert_equal(cir.G(np.zeros(1)), np.zeros((1, 1)))
+    assert cir.G(np.zeros(1)) == np.zeros((1, 1))
     
 def test_copy_circuit():
     """Test to make a copy of circuit"""
@@ -273,7 +262,7 @@ def test_copy_circuit():
     
     cir_copy = copy(cir)
 
-    assert_equal(cir, cir_copy)
+    assert cir == cir_copy
 
 def test_VCCS_tied():
     """Test VCCS with some nodes tied together"""
@@ -303,11 +292,11 @@ def test_proxy():
     print(CircuitProxy(cir['I1'], cir, 'I1').terminalhook)
     cir['I1'] = CircuitProxy(cir['I1'], cir, 'I1')
     
-    assert_equal(cir['I1'].terminals, refcir['I1'].terminals)
-    assert_equal(cir['I1'].non_terminal_nodes(), refcir['I1'].non_terminal_nodes())
-    assert_equal(cir.nodes, refcir.nodes)
-    assert_equal(cir.branches, refcir.branches)
-    assert_equal(cir.n, refcir.n)
+    assert cir['I1'].terminals == refcir['I1'].terminals
+    assert cir['I1'].non_terminal_nodes() == refcir['I1'].non_terminal_nodes()
+    assert cir.nodes == refcir.nodes
+    assert cir.branches == refcir.branches
+    assert cir.n == refcir.n
 
     for method in ['G', 'C', 'i', 'q']:
         assert_array_equal(getattr(cir, method)(np.zeros(cir.n)),
@@ -329,8 +318,8 @@ def test_parameter_propagation():
 
     a.ipar.x = 20
 
-    assert_equal(a['R1'].iparv.r, 30)
-    assert_equal(a['R1'].iparv.noisy, True)
+    assert a['R1'].iparv.r == 30
+    assert a['R1'].iparv.noisy == True
 
     ## test 2 levels of hierarchy
     a['I1'] = A(x='x')
@@ -338,8 +327,8 @@ def test_parameter_propagation():
     
     a.ipar.x = 30
 
-    assert_equal(a['R1'].iparv.r, 40)
-    assert_equal(a['I1']['R1'].iparv.r, 50)
+    assert a['R1'].iparv.r == 40
+    assert a['I1']['R1'].iparv.r == 50
 
 def test_parameter_propagation_at_instantiation():
     """Test instance parameter value propagation through hierarchy at instantiation"""
@@ -352,13 +341,13 @@ def test_parameter_propagation_at_instantiation():
     
     a['R1'] = R(1,0, r='resistance_value + 10')
 
-    assert_equal(a['R1'].iparv.r, 30)
+    assert a['R1'].iparv.r == 30
 
     ## Verify that global parameters has lower priority than local parameters
     gp = ParameterDict(Parameter('resistance_value'))
     gp.resistance_value = 100
     a['R1'].update_iparv(a.iparv, gp)
-    assert_equal(a['R1'].iparv.r, 30)
+    assert a['R1'].iparv.r == 30
 
 def test_parameter_at_instantiation_with_add_instance ():
     """Test instance parameter value propagation through hierarchy with add_instance"""
@@ -381,8 +370,8 @@ def test_parameter_at_instantiation_with_add_instance ():
     b.add_instance('R1',res, plus='plus', minus='minus')
     b.add_instance('R2',res2, plus='plus', minus='minus')
 
-    assert_equal(b['R1'].iparv.r, 30)
-    assert_equal(b['R2'].iparv.r, 40)
+    assert b['R1'].iparv.r == 30
+    assert b['R2'].iparv.r == 40
     
 def test_global_parameters():
     a = SubCircuit()
@@ -395,15 +384,15 @@ def test_global_parameters():
 
     a.update_iparv(globalparams=globalparams)
 
-    assert_equal(a['R1'].iparv.r, 30)
+    assert a['R1'].iparv.r == 30
 
 def test_replace_element():
     """Test node list consitency when replacing an element"""
     c = SubCircuit()
     c['VS'] = VS(1, gnd)
-    assert_equal(set(c.nodes), set([Node('1'), gnd]))
+    assert set(c.nodes) == set([Node('1'), gnd])
     c['VS'] = VS(1, 0)
-    assert_equal(set(c.nodes), set([Node('1'), Node('0')]))
+    assert set(c.nodes) == set([Node('1'), Node('0')])
 
 def test_add_terminals():
     cir = SubCircuit()
@@ -413,7 +402,7 @@ def test_add_terminals():
     cir.add_terminals(['plus','minus'])
     
     # The terminals list contains the names of all terminals
-    assert_equal(cir.terminals,['plus','minus'])
+    assert cir.terminals == ['plus','minus']
 
     # The first k, k equal to the number of terminals, elements 
     # of the nodes list are the nodes connected to a terminal 
@@ -421,11 +410,11 @@ def test_add_terminals():
     for node in cir.nodes:
         node_list.append(node.name)
     
-    assert_equal(node_list,['plus','minus','common'])
+    assert node_list == ['plus','minus','common']
 
 def test_get_node():
     """Test  get_node""" 
     c = SubCircuit()
     out = c.add_node('out')
     c['V1'] = VS(out, gnd)
-    assert_equal(c.get_node('V1.plus'), out)
+    assert c.get_node('V1.plus') == out

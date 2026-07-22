@@ -1,9 +1,9 @@
+import pytest
 # -*- coding: latin-1 -*-
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
 import unittest
-from nose.tools import *
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 
 from pycircuit.utilities.param import *
@@ -11,13 +11,12 @@ from pycircuit.utilities.param import *
 def test_parameter():
     p = Parameter('name', desc='Description', unit='V', default=1)
 
-    assert_equal(str(p), 'name')
-    assert_equal(repr(p),
-                 "Parameter('name', desc='Description', unit='V', default=1)")
+    assert str(p) == 'name'
+    assert repr(p) == "Parameter('name', desc='Description', unit='V', default=1)"
 
     p2 = p.copy()
     
-    assert_equal(p, p2)
+    assert p == p2
 
 def test_subclass_parameter():
     p = Parameter('name', desc='Description', unit='V', default=1)
@@ -27,10 +26,9 @@ def test_subclass_parameter():
 
     p3 = MyParameter('name', desc='Description', unit='V', default=1)
     
-    assert_not_equal(p,p3)
+    assert p != p3
 
-    assert_equal(repr(p3),
-                 "MyParameter('name', desc='Description', unit='V', default=1)")
+    assert repr(p3) == "MyParameter('name', desc='Description', unit='V', default=1)"
 
 class ParameterTest(unittest.TestCase):
     """Test Parameter class"""
@@ -158,8 +156,8 @@ def test_parameter_dict_symbolic():
 
     pdict_values = pdict_expr.eval_expressions((pdict_ab,))
 
-    assert_equal(pdict_values.gm, 10)
-    assert_equal(pdict_values.gds, -1)
+    assert pdict_values.gm == 10
+    assert pdict_values.gds == -1
     
     class Variable(Parameter):
         pass
@@ -174,13 +172,14 @@ def test_parameter_dict_symbolic():
 
     pdict_values = pdict_expr.eval_expressions((pdict_ab, pdict_vars))
 
-    assert_equal(pdict_values.gm, 24)
-    assert_equal(pdict_values.gds, -22)
+    assert pdict_values.gm == 24
+    assert pdict_values.gds == -22
 
     ## Try to use parameter not defined in pdict_ab
     pdict_expr.gm = "2*a + b + c"
 
-    assert_raises(EvalError, lambda: pdict_expr.eval_expressions((pdict_ab,)))
+    with pytest.raises(EvalError):
+        pdict_expr.eval_expressions((pdict_ab,))
     
 def test_update_parameterdict():
     paramdict1 = ParameterDict()
@@ -195,6 +194,6 @@ def test_update_parameterdict():
 
     paramdict1.update_values(paramdict2)
     
-    assert_equal(paramdict1.gm, 30)
-    assert_equal(paramdict2.gm, 30)
+    assert paramdict1.gm == 30
+    assert paramdict2.gm == 30
     

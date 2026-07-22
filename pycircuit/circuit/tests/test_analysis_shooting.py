@@ -1,4 +1,3 @@
-from nose.tools import *
 from pycircuit.circuit import *
 from pycircuit.circuit.shooting import *
 from pycircuit.post import Waveform, average

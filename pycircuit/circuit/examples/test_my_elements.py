@@ -4,7 +4,6 @@ from pycircuit.circuit.elements import *
 from pycircuit.post import plotall
 from pycircuit.circuit.transient import Transient
 
-from nose.tools import *
 import pycircuit.circuit.circuit 
 import numpy as np
 from numpy.testing import *

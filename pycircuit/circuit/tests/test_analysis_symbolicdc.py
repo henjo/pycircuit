@@ -1,5 +1,4 @@
 from __future__ import division
-from nose.tools import *
 
 from pycircuit.circuit.elements import VS, IS, R, L, C, SubCircuit, gnd, Diode
 from pycircuit.circuit.symbolicdc import SymbolicDC
@@ -23,7 +22,7 @@ def test_nonlinear():
 
     res = dc.solve()
 
-    assert_equal(sympy.simplify(res.v('net1') - k * T_sym / qelectron * log(I0/Isat+1)), 0)
+    assert sympy.simplify(res.v('net1') - k * T_sym / qelectron * log(I0/Isat+1)) == 0
 
 def test_linear():
     var('R1 R2 V0')
@@ -39,10 +38,10 @@ def test_linear():
     res = dc.solve()
 
     ## Check voltage
-    assert_equal(sympy.simplify(res.v(3, gnd) -  V0*R2/(R1+R2)), 0)
+    assert sympy.simplify(res.v(3, gnd) -  V0*R2/(R1+R2)) == 0
 
     ## Check current through R2
-    assert_equal(sympy.simplify(res.i('R2.plus') - V0/(R1+R2)), 0)
+    assert sympy.simplify(res.i('R2.plus') - V0/(R1+R2)) == 0
     
 def test_geteqsys():
     R1, V0, Isat, T_sym = sympy.symbols('R1 V0 Isat T')

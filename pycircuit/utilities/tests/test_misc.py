@@ -38,7 +38,7 @@ def test_inplace_add_selected():
 @unittest.skip("Skip failing test")
 def test_ObserverSubject_init():
     a = ObserverSubject()
-    assert_equal(a._observers,[])
+    assert a._observers == []
 
 @unittest.skip("Skip failing test")
 def test_ObserverSubject_notify():
@@ -69,8 +69,8 @@ def test_ObserverSubject_notify():
 
     a.hitme()
     
-    assert_equal(b.value, ('update', a, 10))
-    assert_equal(b.value1, ('update1', a, 10))
+    assert b.value == ('update', a, 10)
+    assert b.value1 == ('update1', a, 10)
 
     b.reset()
 
@@ -78,11 +78,11 @@ def test_ObserverSubject_notify():
     a.detach(b, 'update')
     a.hitme()
 
-    assert_equal(b.value, None)
-    assert_equal(b.value1, ('update1', a, 10))
+    assert b.value == None
+    assert b.value1 == ('update1', a, 10)
 
     a.detach(b, 'update1')
     a.hitme()
 
-    assert_equal(b.value, None)
-    assert_equal(b.value1, ('update1', a, 10))
+    assert b.value == None
+    assert b.value1 == ('update1', a, 10)

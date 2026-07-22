@@ -1,8 +1,8 @@
+import pytest
 # -*- coding: latin-1 -*-
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
-from nose.tools import *
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 
 import numpy as np
@@ -109,15 +109,15 @@ def test_creation():
         
     assert_array_equal(testdata2.y, array([[3,4,5],[5,4,2]]))
     
-    assert_equal(testdata2.xlabels, ['v1', 'v2'])
-    assert_equal(testdata2.xunits, ['V', 'V'])
-    assert_equal(testdata2.ylabel, 'i3')
-    assert_equal(testdata2.yunit, 'A')
-    assert_equal(testdata2.ndim, 2)
+    assert testdata2.xlabels == ['v1', 'v2']
+    assert testdata2.xunits == ['V', 'V']
+    assert testdata2.ylabel == 'i3'
+    assert testdata2.yunit == 'A'
+    assert testdata2.ndim == 2
  
     empty = Waveform()
     assert_array_equal(empty.y, array([]))
-    assert_equal(empty.ndim, 1)
+    assert empty.ndim == 1
    
 
 
@@ -170,7 +170,7 @@ def test_indexing():
                           yunit = 'A')
     
     assert_waveform_almost_equal(w[0:1,:], w_sliced3)
-    assert_equal(w[0,0], 3)
+    assert w[0,0] == 3
 
     w_sliced = Waveform(([1,2],), array([5,2]),
                           xlabels = ('v1',),
@@ -192,17 +192,17 @@ def test_indexing():
     
 def test_xmax(): 
     w1 = Waveform(array([1,2,3]),array([3,5,6]))
-    assert_equal(w1.xmax(), 3)
+    assert w1.xmax() == 3
 
     w2 = Waveform([[1,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
-    assert_equal(w2.xmax(), 4)
+    assert w2.xmax() == 4
 
 def test_xmin(): 
     w1 = Waveform(array([1,2,3]),array([3,5,6]))
-    assert_equal(w1.xmin(), 1)
+    assert w1.xmin() == 1
 
     w2 = Waveform([[5,2],[2,3,4]], array([[3,5,6], [4,6,7]]))
-    assert_equal(w2.xmin(), 2)
+    assert w2.xmin() == 2
 
 def test_ymin():
     w = Waveform([[5,2],[2,3,4]], array([[3,9,7], [4,6,6]]))
@@ -323,24 +323,25 @@ def check_func(func, reference_func, args, preserve_yunit = False,
     ## Check x label and units
     if iswave(args[0]):
         x = args[0]
-        assert_equal(res.xlabels, x.xlabels)
-        assert_equal(res.xunits, x.xunits)
+        assert res.xlabels == x.xlabels
+        assert res.xunits == x.xunits
 
         if ref_ylabel is None:
             ref_ylabel = func.__name__ + '(' + x.ylabel + ')'
         else:
             ref_ylabel = ref_ylabel%x.ylabel
 
-        assert_equal(res.ylabel, ref_ylabel)
+        assert res.ylabel == ref_ylabel
 
         if preserve_yunit:
-            assert_equal(res.yunit, x.yunit)
+            assert res.yunit == x.yunit
         else:
-            assert_equal(res.yunit, ref_yunit)
+            assert res.yunit == ref_yunit
 
 def check_nonscalar_function(func):
     """Check that scalar input to a  waveform-only functions raises an exception"""
-    assert_raises(AssertionError, func, 10)
+    with pytest.raises(AssertionError):
+        func(10)
 
 def get_y(w):
     if iswave(w):
@@ -384,7 +385,7 @@ def test_array_interface():
 
 def test_getitem():
     w = testdata1[0]
-    assert_equal(w[0], w.y[0])
+    assert w[0] == w.y[0]
 
     wsliced = Waveform(array([1]),array([complex(-1,0)]),
                        xlabels = ('freq',),
@@ -398,10 +399,10 @@ def test_getitem():
     wout = w[0:1]
     assert_array_equal(wout.y, wsliced.y)
     assert_array_equal(wout.x[0], wsliced.x[0])
-    assert_equal(wout.xlabels, wsliced.xlabels)
-    assert_equal(wout.xunits, wsliced.xunits)
-    assert_equal(wout.ylabel, wsliced.ylabel)
-    assert_equal(wout.yunit, wsliced.yunit)
+    assert wout.xlabels == wsliced.xlabels
+    assert wout.xunits == wsliced.xunits
+    assert wout.ylabel == wsliced.ylabel
+    assert wout.yunit == wsliced.yunit
     
     
 def test_repr():
@@ -415,7 +416,7 @@ def test_astable():
 
     for w, t in zip((testdata1[0], testdata2), 
                     (testdata1_0_table, testdata2_table)):
-        assert_equal(w.astable, t)
+        assert w.astable == t
 
 def test_simple_broadcasting():
     assert_waveform_equal(testdata2 + testdata2[0],
@@ -444,7 +445,8 @@ def test_duplicate_xlabels():
                         xunits = ('V', 'V'),
                         ylabel = 'i3',
                         yunit = 'A')
-    assert_raises(ValueError, func)
+    with pytest.raises(ValueError):
+        func()
 
 if __name__ == "__main__":
     import doctest

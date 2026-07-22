@@ -2,7 +2,6 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
-from nose.tools import *
 
 import numpy as np
 from pycircuit.post import Waveform

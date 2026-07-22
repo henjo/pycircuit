@@ -11,7 +11,5 @@ setup(name='Pycircuit',
                 'pycircuit.sim', 'pycircuit.sim.gnucap', 'pycircuit.post.cds', 'pycircuit.post.cds.yapps',
                 'pycircuit.post.jwdb'],
       scripts=[os.path.join('pycircuit', 'post', 'cds', 'cdsnetlist')],
-      tests_require=['unittest2', 'nose'],
-      #test_suite='unittest2.collector',
-      test_suite='nose.collector',
+      tests_require=['pytest'],
      )
