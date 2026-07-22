@@ -65,67 +65,32 @@ class DC(Analysis):
         ## Refer the voltages to the reference node by removing
         ## the rows and columns that corresponds to this node
 
-        convergence_helpers = [self._simple, self._homotopy_gmin, 
-                               self._homotopy_source, 
-                               None]
-
         x0 = self.toolkit.zeros(self.cir.n) # Would be good with a better initial guess
 
-        for algorithm in convergence_helpers:
-            if algorithm is None:
-                raise last_e
-            else:
-                if algorithm.__doc__:
-                    logging.info('Trying ' + algorithm.__doc__)
-                try:
-                    x = algorithm(x0)
-                except (NoConvergenceError, SingularMatrix) as last_e:
-                    logging.warning('Problems encoutered: ' + str(last_e))
-                else:
-                    break
-
-        self.result = CircuitResult(self.cir, x)
-
-        return self.result
-
-    def _simple(self, x0):
-        """Simple Newton's method"""
         def func(x):
             return self.cir.i(x, self.epar) + self.cir.u(0, analysis='dc', epar=self.epar), self.cir.G(x, self.epar)
+            
+        def source_callback(x, lambda_):
+            f = self.cir.i(x, self.epar) + lambda_ * self.cir.u(0, analysis='dc', epar=self.epar)
+            dFdx = self.cir.G(x, self.epar)
+            return f, dFdx
+            
+        from pycircuit.circuit.nrsolver import StandardNewton, GminSteppingNewton, SourceSteppingNewton
+        
+        base_solver = StandardNewton()
+        gmin_solver = GminSteppingNewton(base_solver)
+        solver_chain = SourceSteppingNewton(gmin_solver, refnode_removed(source_callback, self.irefnode, self.toolkit))
 
-        return self._newton(func, x0)
+        try:
+            x = self._newton(func, x0, solver_chain)
+        except (NoConvergenceError, SingularMatrix) as last_e:
+            logging.warning('Problems encountered: ' + str(last_e))
+            raise last_e
 
-    def _homotopy_gmin(self, x0):
-        """Newton's method with gmin stepping"""
-        x = x0
-        for gmin in (1, 1e-1, 1e-2, 0):
-            n_nodes = len(self.cir.nodes)
-            Ggmin = self.toolkit.zeros((self.cir.n, self.cir.n))
-            Ggmin[0:n_nodes, 0:n_nodes] = gmin * self.toolkit.eye(n_nodes)
+        self.result = CircuitResult(self.cir, x)
+        return self.result
 
-            def func(x):
-                # Apply gmin to nodes: F = i(x) + u + gmin*V
-                F = self.cir.i(x, self.epar) + self.cir.u(0, analysis='dc', epar=self.epar)
-                F[:n_nodes] += gmin * x[:n_nodes]
-                return F, self.cir.G(x, self.epar) + Ggmin
-
-            x, x0 = self._newton(func, x0), x
-
-        return x
-
-    def _homotopy_source(self, x0):
-        """Newton's method with source stepping"""
-        x = x0
-        for lambda_ in (0, 1e-2, 1e-1, 1):
-            def func(x):
-                f = self.cir.i(x, self.epar) + lambda_ * self.cir.u(0, analysis='dc', epar=self.epar)
-                dFdx = self.cir.G(x, self.epar)
-                return f, dFdx            
-            x, x0 = self._newton(func, x0), x
-
-        return x
-
-    def _newton(self, func, x0):
+    def _newton(self, func, x0, solver):
         ones_nodes = self.toolkit.ones(len(self.cir.nodes))
         ones_branches = self.toolkit.ones(len(self.cir.branches))
 
@@ -150,8 +115,6 @@ class DC(Analysis):
             self.cir.limit(x, x0_full, self.epar)
             return self.toolkit.concatenate((x[:self.irefnode], x[self.irefnode+1:]))
 
-        from pycircuit.circuit.nrsolver import StandardNewton
-        solver = StandardNewton()
         try:
             x_res, _ = solver.solve_system(
                 x0,

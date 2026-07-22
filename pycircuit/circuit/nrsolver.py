@@ -92,6 +92,41 @@ class GminSteppingNewton(NonLinearSolver):
         # Finally, solve the exact pure system using the guided initial guess
         return self.base_solver.solve_system(x_curr, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter)
 
+class SourceSteppingNewton(NonLinearSolver):
+    """
+    Continuation Method: Source-Stepping Decorator.
+    
+    If the base solver fails to converge, this wrapper iteratively scales 
+    the independent sources from 0 to 1 to guide the solver.
+    """
+    def __init__(self, base_solver: NonLinearSolver, source_callback):
+        self.base_solver = base_solver
+        self.source_callback = source_callback
+        
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None):
+        try:
+            # Note: eval_FJ natively evaluates sources at 1.0
+            return self.base_solver.solve_system(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter)
+        except NoConvergenceError:
+            pass # Proceed to source stepping
+            
+        x_curr = x0
+        lambdas = [0.0, 1e-2, 1e-1, 1.0]
+        
+        for lambda_ in lambdas:
+            def eval_FJ_with_source(x):
+                # The callback MUST scale the source term specifically.
+                # In PyCircuit, F = i(x) + lambda_ * u(0)
+                # But evaluating this requires access to the circuit elements.
+                return self.source_callback(x, lambda_)
+                
+            try:
+                x_curr, _ = self.base_solver.solve_system(x_curr, eval_FJ_with_source, toolkit, reltol, abstol, xtol, maxiter, limiter)
+            except NoConvergenceError:
+                raise NoConvergenceError(f"Source Stepping failed at lambda={lambda_}")
+                
+        return self.base_solver.solve_system(x_curr, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter)
+
 class SchurCoupledNewton(NonLinearSolver):
     """
     Coupled Newton-Raphson Solver using the Schur Complement.
