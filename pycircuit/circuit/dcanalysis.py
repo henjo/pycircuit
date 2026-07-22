@@ -91,7 +91,7 @@ class DC(Analysis):
     def _simple(self, x0):
         """Simple Newton's method"""
         def func(x):
-            return self.cir.i(x) + self.cir.u(0,analysis='dc'), self.cir.G(x)
+            return self.cir.i(x, self.epar) + self.cir.u(0, analysis='dc', epar=self.epar), self.cir.G(x, self.epar)
 
         return self._newton(func, x0)
 
@@ -104,8 +104,10 @@ class DC(Analysis):
             Ggmin[0:n_nodes, 0:n_nodes] = gmin * self.toolkit.eye(n_nodes)
 
             def func(x):
-                return self.cir.i(x) + self.cir.u(0,analysis='dc'), \
-                       self.cir.G(x) + Ggmin
+                # Apply gmin to nodes: F = i(x) + u + gmin*V
+                F = self.cir.i(x, self.epar) + self.cir.u(0, analysis='dc', epar=self.epar)
+                F[:n_nodes] += gmin * x[:n_nodes]
+                return F, self.cir.G(x, self.epar) + Ggmin
 
             x, x0 = self._newton(func, x0), x
 
@@ -116,8 +118,8 @@ class DC(Analysis):
         x = x0
         for lambda_ in (0, 1e-2, 1e-1, 1):
             def func(x):
-                f = self.cir.i(x) + lambda_ * self.cir.u(0,analysis='dc')
-                dFdx = self.cir.G(x)
+                f = self.cir.i(x, self.epar) + lambda_ * self.cir.u(0, analysis='dc', epar=self.epar)
+                dFdx = self.cir.G(x, self.epar)
                 return f, dFdx            
             x, x0 = self._newton(func, x0), x
 

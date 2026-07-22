@@ -211,9 +211,9 @@ class Transient(Analysis):
         return result
     
     
-    def solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False, coupled_lte=False):
+    def solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False, coupled_lte=False, analytical_eh=True):
         if coupled_lte:
-            return self._solve_coupled(refnode, tend, x0, timestep, provided_function)
+            return self._solve_coupled(refnode, tend, x0, timestep, provided_function, analytical_eh)
         X = []
         self.irefnode=self.cir.get_node_index(refnode)
         n = self.cir.n
@@ -332,7 +332,7 @@ class Transient(Analysis):
         return self.result
 
 
-    def _solve_coupled(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None):
+    def _solve_coupled(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, analytical_eh=True):
         import numpy as np
         from copy import copy
         from pycircuit.circuit.analysis import CircuitResult
@@ -427,26 +427,38 @@ class Transient(Analysis):
                 
                 E = calc_E(x_curr, h_curr)
                 
-                if self._is_first_step:
+                gamma_min = 0.7
+                gamma_max = 3.0
+                
+                if analytical_eh and ((gamma_min - 1.0) * TRTOL <= E <= (gamma_max - 1.0) * TRTOL) and not self._is_first_step:
+                    E_x_r = self.toolkit.zeros(len(F_r))
+                    E_h = 1.0
+                    E = 0.0  # Forces dh = 0
+                elif self._is_first_step:
                     E_x_r = self.toolkit.zeros(len(F_r))
                     E_h = 1.0
                 else:
-                    E_p = calc_E(x_curr, h_curr + eps)
-                    E_m = calc_E(x_curr, h_curr - eps)
-                    E_h = (E_p - E_m) / (2 * eps)
+                    if analytical_eh:
+                        p = 3.0 if self.par.method == "trapezoidal" else 2.0
+                        E_h = p * (E + TRTOL) / h_curr
+                    else:
+                        E_p = calc_E(x_curr, h_curr + eps)
+                        E_m = calc_E(x_curr, h_curr - eps)
+                        E_h = (E_p - E_m) / (2 * eps)
                     
                     E_x_r = self.toolkit.zeros(len(F_r))
-                    for i in range(len(F_r)):
-                        idx = i if i < self.irefnode else i + 1
-                        x_p = copy(x_curr)
-                        x_p[idx] += eps
-                        E_xp = calc_E(x_p, h_curr)
-                        
-                        x_m = copy(x_curr)
-                        x_m[idx] -= eps
-                        E_xm = calc_E(x_m, h_curr)
-                        
-                        E_x_r[i] = (E_xp - E_xm) / (2 * eps)
+                    if not analytical_eh:
+                        for i in range(len(F_r)):
+                            idx = i if i < self.irefnode else i + 1
+                            x_p = copy(x_curr)
+                            x_p[idx] += eps
+                            E_xp = calc_E(x_p, h_curr)
+                            
+                            x_m = copy(x_curr)
+                            x_m[idx] -= eps
+                            E_xm = calc_E(x_m, h_curr)
+                            
+                            E_x_r[i] = (E_xp - E_xm) / (2 * eps)
                 
                 # Schur complement solve
                 rhs = np.column_stack([-F_r, -J_h_r])
@@ -476,16 +488,30 @@ class Transient(Analysis):
                 x_next[:self.irefnode] += dx_r[:self.irefnode]
                 x_next[self.irefnode+1:] += dx_r[self.irefnode:]
                 
+                self.cir.limit(x_next, x_curr, self.epar)
+                
                 x_curr = x_next
                 h_curr += dh
                 
-                if np.all(np.abs(dx_r) < reltol * np.maximum(np.abs(x_curr[x_curr != 0]), 1e-12) + xtol):
+                x_curr_r = self.toolkit.delete(x_curr, self.irefnode)
+                abstol_r = self.toolkit.delete(abstol, self.irefnode)
+                
+                converged_x = np.all(np.abs(dx_r) < reltol * np.maximum(np.abs(x_curr_r), 1e-12) + abstol_r)
+                converged_h = np.abs(dh) < 0.15 * h_curr
+                
+                # NEW KCL Check for Option A
+                I_scale_r = np.dot(np.abs(J_r), np.abs(x_curr_r)) + np.abs(F_r)
+                converged_F = np.all(np.abs(F_r) < reltol * I_scale_r + abstol_r)
+                
+                if converged_x and converged_h and converged_F:
                     converged = True
                     break
                     
             if not converged:
                 # If NR failed, reduce step drastically
                 h *= 0.25
+                if h < 1e-15:
+                    raise RuntimeError("Timestep too small")
                 continue
                 
             t += h_curr

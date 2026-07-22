@@ -122,11 +122,13 @@ def fsolve(f, x0, args=(), full_output=False, maxiter=200,
         if limiter is not None:
             x = limiter(x, x0)
 
-        if toolkit.alltrue(abs(xdiff) < reltol * toolkit.maximum(abs(x), abs(x0)) + xtol):
-            ier = 1
-            mesg = "Success"
-            break
-        if toolkit.alltrue(abs(F) < reltol * max(abs(F)) + abstol):
+        # KCL Scale: Upper bound of absolute branch currents/voltages
+        I_scale = toolkit.dot(abs(J), abs(x)) + abs(F)
+
+        conv_x = toolkit.alltrue(abs(xdiff) < reltol * toolkit.maximum(abs(x), abs(x0)) + xtol)
+        conv_f = toolkit.alltrue(abs(F) < reltol * I_scale + abstol)
+
+        if conv_x and conv_f:
             ier = 1
             mesg = "Success"
             break
