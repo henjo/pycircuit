@@ -195,10 +195,13 @@ class Transient(Analysis):
             result=x,None, J, f
         return result
     
-    
     def solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False, coupled_lte=False, analytical_eh=True):
         if coupled_lte:
             return self._solve_coupled(refnode, tend, x0, timestep, provided_function, analytical_eh)
+        
+        from pycircuit.circuit.stepcontroller import IntegralController
+        self.step_controller = IntegralController()
+        
         X = []
         self.irefnode=self.cir.get_node_index(refnode)
         n = self.cir.n
@@ -249,37 +252,30 @@ class Transient(Analysis):
                 continue
                 
             if not fixed_timestep:
-                # LTE Computation (Yao et al. ICECS 2014)
-                if self._is_first_step:
-                    err = 0.5 
-                else:
-                    Eg, p = self.active_integrator.compute_lte(
-                        q_curr=self.cir.q(x),
-                        h_curr=dt,
-                        q_last=self._qlast,
-                        iq_last=self._iqlast,
-                        h_last=getattr(self, '_dt_last', dt),
-                        is_first_step=self._is_first_step,
-                        toolkit=self.toolkit
-                    )
-                    
-                    J_reduced, Eg_reduced = remove_row_col((J, Eg), self.irefnode, self.toolkit)
-                    
-                    try:
-                        lte_reduced = self.toolkit.linalg.solve(J_reduced, Eg_reduced)
-                    except Exception:
-                        lte_reduced = Eg_reduced
-                    
-                    lte = self.toolkit.concatenate((lte_reduced[:self.irefnode], self.toolkit.array([0.0]), lte_reduced[self.irefnode:]))
-                    
-                    import numpy as np
-                    etol = self.par.reltol * np.maximum(np.abs(x), np.abs(X[-1])) + abstol
-                    err_array = np.abs(lte) / etol
-                    err = np.max(err_array)
+                accept, dt_next = self.step_controller.evaluate_step(
+                    x_curr=x,
+                    x_last=X[-1],
+                    q_curr=self.cir.q(x),
+                    q_last_hist=self._qlast,
+                    iq_last_hist=self._iqlast,
+                    h_curr=dt,
+                    h_last=getattr(self, '_dt_last', dt),
+                    is_first_step=self._is_first_step,
+                    J=J,
+                    active_integrator=self.active_integrator,
+                    irefnode=self.irefnode,
+                    reltol=self.par.reltol,
+                    abstol=abstol,
+                    toolkit=self.toolkit,
+                    max_step=max_step,
+                    TRTOL=TRTOL
+                )
                 
-                    if err > 1.0:
-                        dt = dt * max(0.2, (1.0 / err)**0.5)
-                        continue
+                if not accept:
+                    dt = dt_next
+                    continue
+                else:
+                    next_dt = dt_next
             
             t = next_t
             timelist.append(t)
@@ -291,10 +287,8 @@ class Transient(Analysis):
             
             self._is_first_step = False
             
-            # Predict next step size
             if not fixed_timestep:
-                dt = dt * min(2.0, (TRTOL / max(err, 1e-12))**0.5)
-                dt = min(dt, max_step)
+                dt = next_dt
             
         X = self.toolkit.array(X[1:]).T
         timelist = self.toolkit.array(timelist)
