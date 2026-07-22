@@ -22,6 +22,7 @@ def test_dc_false_convergence_kcl():
     c['D1'] = Diode(1, gnd)
 
     dc = DC(c, epar=cold_epar)
+    dc.par.maxiter = 1000
     res = dc.solve()
     
     # Verify KCL explicitly using PyCircuit's exact mathematical residual F

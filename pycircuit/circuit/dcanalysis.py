@@ -148,27 +148,28 @@ class DC(Analysis):
             x0_full[self.irefnode+1:] = x0r[self.irefnode:]
             
             self.cir.limit(x, x0_full, self.epar)
-            return xr
+            return self.toolkit.concatenate((x[:self.irefnode], x[self.irefnode+1:]))
 
+        from pycircuit.circuit.nrsolver import StandardNewton
+        solver = StandardNewton()
         try:
-            result = fsolve(refnode_removed(func, self.irefnode,self.toolkit), 
-                            x0, 
-                            full_output = True, 
-                            reltol = self.par.reltol,
-                            abstol = abstol, xtol=xtol,
-                            maxiter = self.par.maxiter,
-                            toolkit = self.toolkit,
-                            limiter = limiter_func)
-        except self.toolkit.linearsolverError() as e:
-            raise SingularMatrix(str(e))
-
-        x, infodict, ier, mesg = result
-
-        if ier != 1:
-            raise NoConvergenceError(mesg)
+            x_res, _ = solver.solve_system(
+                x0,
+                refnode_removed(func, self.irefnode, self.toolkit),
+                self.toolkit,
+                self.par.reltol,
+                abstol,
+                xtol,
+                self.par.maxiter,
+                limiter=limiter_func
+            )
+        except Exception as e:
+            if "Singular" in str(e) or "linearsolver" in str(e).lower():
+                raise SingularMatrix(str(e))
+            raise NoConvergenceError(str(e))
 
         # Insert reference node voltage
-        return self.toolkit.concatenate((x[:self.irefnode], self.toolkit.array([0.0]), x[self.irefnode:]))
+        return self.toolkit.concatenate((x_res[:self.irefnode], self.toolkit.array([0.0]), x_res[self.irefnode:]))
 
 def refnode_removed(func, irefnode,toolkit):
     def new(x, *args, **kvargs):
