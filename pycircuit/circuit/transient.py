@@ -147,35 +147,36 @@ class Transient(Analysis):
     
 
     
-    def get_diff(self,q,C):#shouldn't I provide an x0 here?
-        """Method used to calculate time derivative for charge storing elements (i_eq and g_eq).
+    def get_diff(self, q, C, method=None):
+        """Method used to calculate time derivative for charge storing elements (i_eq and g_eq)."""
+        dt = self._dt
+        method = method or self.par.method
         
-        Calculates approximate derivatives, both for backward euler and trapezoidal. 
-        The difference between these can be used to determine the next timestep (or 
-        reject the last). The difference is stored in a class variable/attribute and
-        return value is one of the calculated derivatives, dependent on selected
-        integration method.
-        """
-        #calculate in a more general way with coefficients dependent on method
-        #the amount of history values is determined by the length of the coefficient-vector
+        resultEuler = (q - self._qlast[0]) / dt
         
-        dt=self._dt
-        a,b,b_=self._method[self.par.method] 
-        resultEuler = (q-self._qlast[0])/dt
+        # Bizzarri & Brambilla: Protect against sudden time step variations.
+        # If the step shrinks by more than 10x, high-order history polynomials become invalid.
+        # We forcefully drop order to Backward Euler to safely cross the discontinuity.
+        if method == 'gear2' and not getattr(self, '_is_first_step', False):
+            h1 = getattr(self, '_dt_last', dt)
+            if dt / h1 < 0.1:
+                method = 'euler'
         
         if getattr(self, '_is_first_step', False): #first step always requires backward euler
-            geq=C/dt
+            geq = C / dt
             iq = resultEuler
             self._diff_error = self.toolkit.zeros(len(q))
         else:
-            geq=C/dt/b_
-            resultTrap = 2*(q-self._qlast[0])/dt-self._iqlast[0]
-            self._diff_error = resultTrap-resultEuler # Difference between euler and trap.
-            if self.par.method == 'euler':
+            _, _, b_ = self._method.get('trap', (None, None, 0.5))
+            resultTrap = 2*(q - self._qlast[0])/dt - self._iqlast[0]
+            self._diff_error = resultTrap - resultEuler 
+            if method == 'euler':
                 iq = resultEuler
-            elif self.par.method in ('trapezoidal', 'trap'):
+                geq = C / dt
+            elif method in ('trapezoidal', 'trap'):
                 iq = resultTrap
-            elif self.par.method == 'gear2':
+                geq = C / dt / b_
+            elif method == 'gear2':
                 h = dt
                 h1 = getattr(self, '_dt_last', dt)
                 alpha0 = (2*h + h1) / (h * (h + h1))
@@ -184,9 +185,14 @@ class Transient(Analysis):
                 geq = C * alpha0
                 iq = alpha0 * q + alpha1 * self._qlast[0] + alpha2 * self._qlast[1]
             else:
-                iq=(q-self.toolkit.dot(a,self._qlast[:len(a)]))/dt/b_ - self.toolkit.dot(b,self._iqlast[:len(b)])/b_
-        self._iq=iq #make accessible by get_timestep
-        return iq,geq
+                a, b, b_ = self._method[method] 
+                iq = (q - self.toolkit.dot(a, self._qlast[:len(a)])) / dt / b_ - self.toolkit.dot(b, self._iqlast[:len(b)]) / b_
+                geq = C / dt / b_
+                
+        self._iq = iq 
+        self._effective_method = method
+        return iq, geq
+
     
     
     def solve_timestep(self, x0, t, refnode=gnd, provided_function=None):
@@ -271,15 +277,15 @@ class Transient(Analysis):
                     gn_1 = self._iqlast[0]
                     gn_2 = self._iqlast[1]
                     
-                    if self.par.method == 'euler':
+                    if self._effective_method == 'euler':
                         Eg = -0.5 * (gn - gn_1)
-                    elif self.par.method in ('trap', 'trapezoidal'):
+                    elif self._effective_method in ('trap', 'trapezoidal'):
                         h = dt
                         h1 = getattr(self, '_dt_last', dt)
                         dd1 = (gn - gn_1) / h
                         dd2 = (gn_1 - gn_2) / h1
                         Eg = -(1.0/3.0) * h**2 * (dd1 - dd2) / (h + h1)
-                    elif self.par.method == 'gear2':
+                    elif self._effective_method == 'gear2':
                         h = dt
                         h1 = getattr(self, '_dt_last', dt)
                         dd1 = (gn - gn_1) / h
@@ -410,11 +416,11 @@ class Transient(Analysis):
                     if self._is_first_step:
                         return 0.0
                     q_val = self.cir.q(x_val)
-                    if self.par.method == "trapezoidal":
+                    if self._effective_method in ("trapezoidal", "trap"):
                         dd2 = (q_val - self._qlast[0]) / h_val - self._iqlast[0]
                         dd2 = dd2 * 2.0 / h_val
                         lte = 1.0 / 12.0 * (h_val**3) * dd2
-                    elif self.par.method == "gear2":
+                    elif self._effective_method == "gear2":
                         dd1_n = (q_val - self._qlast[0]) / h_val
                         dd1_nm1 = (self._qlast[0] - self._qlast[1]) / self._dt_last
                         dd2_n = (dd1_n - dd1_nm1) / (h_val + self._dt_last)
@@ -439,7 +445,7 @@ class Transient(Analysis):
                     E_h = 1.0
                 else:
                     if analytical_eh:
-                        p = 3.0 if self.par.method == "trapezoidal" else 2.0
+                        p = 3.0 if self._effective_method in ("trapezoidal", "trap") else 2.0
                         E_h = p * (E + TRTOL) / h_curr
                     else:
                         E_p = calc_E(x_curr, h_curr + eps)
