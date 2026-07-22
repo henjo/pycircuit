@@ -134,6 +134,20 @@ class DC(Analysis):
 
         (x0, abstol, xtol) = remove_row_col((x0, abstol, xtol), self.irefnode, self.toolkit)
 
+        def limiter_func(xr, x0r):
+            n = self.cir.n
+            x = self.toolkit.zeros(n)
+            x0_full = self.toolkit.zeros(n)
+            
+            x[:self.irefnode] = xr[:self.irefnode]
+            x[self.irefnode+1:] = xr[self.irefnode:]
+            
+            x0_full[:self.irefnode] = x0r[:self.irefnode]
+            x0_full[self.irefnode+1:] = x0r[self.irefnode:]
+            
+            self.cir.limit(x, x0_full, self.epar)
+            return xr
+
         try:
             result = fsolve(refnode_removed(func, self.irefnode,self.toolkit), 
                             x0, 
@@ -141,9 +155,10 @@ class DC(Analysis):
                             reltol = self.par.reltol,
                             abstol = abstol, xtol=xtol,
                             maxiter = self.par.maxiter,
-                            toolkit = self.toolkit)
+                            toolkit = self.toolkit,
+                            limiter = limiter_func)
         except self.toolkit.linearsolverError() as e:
-            raise SingularMatrix(e.message)
+            raise SingularMatrix(str(e))
 
         x, infodict, ier, mesg = result
 

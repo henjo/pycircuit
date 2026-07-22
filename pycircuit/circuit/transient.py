@@ -111,6 +111,20 @@ class Transient(Analysis):
         
         (x0, abstol, xtol) = remove_row_col((x0, abstol, xtol), self.irefnode, self.toolkit)
         
+        def limiter_func(xr, x0r):
+            n = self.cir.n
+            x = self.toolkit.zeros(n)
+            x0_full = self.toolkit.zeros(n)
+            
+            x[:self.irefnode] = xr[:self.irefnode]
+            x[self.irefnode+1:] = xr[self.irefnode:]
+            
+            x0_full[:self.irefnode] = x0r[:self.irefnode]
+            x0_full[self.irefnode+1:] = x0r[self.irefnode:]
+            
+            self.cir.limit(x, x0_full, self.epar)
+            return xr
+
         try:
             result = fsolve(refnode_removed(func, self.irefnode, self.toolkit), 
                             x0, 
@@ -118,9 +132,10 @@ class Transient(Analysis):
                             reltol = self.par.reltol,
                             abstol = abstol, xtol=xtol,
                             maxiter = self.par.maxiter,
-                            toolkit = self.toolkit)
+                            toolkit = self.toolkit,
+                            limiter = limiter_func)
         except self.toolkit.linalg.LinAlgError as e:
-            raise SingularMatrix(e.message)
+            raise SingularMatrix(str(e))
         
         x, infodict, ier, mesg = result
         
@@ -201,14 +216,15 @@ class Transient(Analysis):
         self.irefnode=self.cir.get_node_index(refnode)
         n = self.cir.n
         if x0 is None:
-            # Calculate DC operating point as initial state
-            dc = DC(self.cir, toolkit=self.toolkit, refnode=refnode)
-            dc.par.reltol = self.par.reltol
-            dc.par.vabstol = self.par.vabstol
-            dc.par.iabstol = self.par.iabstol
-            dc.par.maxiter = self.par.maxiter
-            dc_res = dc.solve()
-            x = dc_res.x
+            # Use DC operating point if x0 is not provided
+            from pycircuit.circuit.dcanalysis import DC
+            dc = DC(self.cir)
+            try:
+                dc_res = dc.solve()
+                x0 = dc_res.x
+            except Exception:
+                x0 = self.toolkit.zeros(self.cir.n)
+            x = x0
         else:
             x = x0 
         

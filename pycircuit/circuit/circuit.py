@@ -1161,6 +1161,14 @@ class SubCircuit(Circuit):
     def q(self, x, epar=defaultepar):
         return self._add_element_subvectors('q', x, (epar,))
 
+    def limit(self, x, x0, epar=defaultepar):
+        for instance, element in self.elements.items():
+            if hasattr(element, 'limit'):
+                subx = x[self.elementnodemap[instance]]
+                subx0 = x0[self.elementnodemap[instance]]
+                element.limit(subx, subx0, epar)
+        return x
+
     def CY(self, x, w, epar=defaultepar):
         """Calculate composite noise source correlation matrix
 

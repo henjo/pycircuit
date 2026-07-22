@@ -279,13 +279,12 @@ def test_Idt_tran():
     c['Idt'] = Idt(nin, gnd, nout, gnd)
 
     tran = Transient(c, toolkit=numeric)
-    result = tran.solve(tend=0.5,timestep=1e-2)
+    result = tran.solve(tend=0.5,timestep=1e-2, fixed_timestep=True)
     y = result.v(nout).y
     x = result.v(nout).x[0]
     # vout = vin * t with constant input
-    # Due to Transient solver alignment, y(t) evaluates at t+dt
-    dt = 1e-2
-    assert_array_almost_equal(y[1:], x[1:] + dt)
+    # Transient solver time alignment is now correct: y(t) evaluates at t
+    assert_array_almost_equal(y[1:], x[1:])
 
 def test_Idtmod_sym():
     """Test modulus integrator element symbolically"""
@@ -322,13 +321,12 @@ def test_Idtmod_tran():
     c['Idtmod'] = Idtmod(nin, gnd, nout, gnd, modulus = 1., offset = -0.)
     
     tran = Transient(c, toolkit=numeric)
-    result = tran.solve(tend=0.5,timestep=1e-2)
+    result = tran.solve(tend=0.5,timestep=1e-2, fixed_timestep=True)
     y = result.v(nout).y
     x = result.v(nout).x[0]
     # vout = vin * t with constant input
-    # Due to Transient solver alignment, y(t) evaluates at t+dt
-    dt = 1e-2
-    assert_array_almost_equal(y[1:], x[1:] + dt)
+    # Transient solver time alignment is now correct: y(t) evaluates at t
+    assert_array_almost_equal(y[1:], x[1:])
 
 def test_Idtmod_modulo():
     """Test modulo integrator element in transient"""
@@ -343,13 +341,12 @@ def test_Idtmod_modulo():
     c['Idtmod'] = Idtmod(nin, gnd, nout, gnd, modulus = 1., offset = -0.)
     
     tran = Transient(c, toolkit=numeric)
-    result = tran.solve(tend=2.0,timestep=1e-2)
+    result = tran.solve(tend=2.0,timestep=1e-2, fixed_timestep=True)
     y = result.v(nout).y
     x = result.v(nout).x[0]
     # vout = vin * t with constant input
-    # Due to Transient solver alignment, y(t) evaluates at t+dt
-    dt = 1e-2
-    assert_array_almost_equal(y[1:], (x[1:] + dt) % 1.0)
+    # Transient solver time alignment is now correct: y(t) evaluates at t
+    assert_array_almost_equal(y[1:], x[1:] % 1.0)
 
 if __name__ == '__main__':
     test_nullor_vva()

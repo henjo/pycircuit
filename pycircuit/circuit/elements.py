@@ -725,22 +725,58 @@ class Diode(Circuit):
     instparams = [Parameter(name='IS', desc='Saturation current', 
                   unit='A', default=1e-13)]
     linear = False
-    def G(self, x, epar=defaultepar):
-        VD = x[0]-x[1]
+    def limit(self, x, x0, epar=defaultepar):
+        if not hasattr(self, '_vlim'):
+            self._vlim = x0[0] - x0[1]
 
+        vnew = x[0] - x[1]
+        vold = self._vlim
+        VT = self.toolkit.kboltzmann * epar.T / self.toolkit.qelectron
+        IS = self.iparv.IS
+        
+        # Critical voltage for pnjlim
+        if IS > 0.0:
+            vc = VT * self.toolkit.log(VT / (IS * 1.414))
+        else:
+            vc = 0.0
+
+        if vnew > vc and vnew > 0.0:
+            if vold > 0.0:
+                arg = 1.0 + (vnew - vold) / VT
+                if arg > 0.0:
+                    vnew = vold + VT * self.toolkit.log(arg)
+                else:
+                    vnew = vc
+            else:
+                vnew = VT * self.toolkit.log(vnew / VT)
+
+        self._vlim = vnew
+
+    def G(self, x, epar=defaultepar):
+        if not hasattr(self, '_vlim'):
+            self._vlim = x[0]-x[1]
+
+        VD = self._vlim
         VT = self.toolkit.kboltzmann * epar.T / self.toolkit.qelectron
         g = self.iparv.IS * self.toolkit.exp(VD/VT) / VT
         return self.toolkit.array([[g, -g],
                                    [-g, g]])
 
     def i(self, x, epar=defaultepar):
-        """
-        
-        """
-        VD = x[0]-x[1]
+        if not hasattr(self, '_vlim'):
+            self._vlim = x[0]-x[1]
+
+        VD = self._vlim
         VT = self.toolkit.kboltzmann * epar.T / self.toolkit.qelectron
         I = self.iparv.IS * (self.toolkit.exp(VD/VT)-1)
-        return self.toolkit.array([I, -I])
+        
+        # Predictor/Corrector Newton-Raphson (PCNR) Schur complement equivalent
+        # Subtract Geq * (vlim - v_nodes) from the effective current residual
+        g = self.iparv.IS * self.toolkit.exp(VD/VT) / VT
+        v_nodes = x[0] - x[1]
+        I_eff = I - g * (VD - v_nodes)
+        
+        return self.toolkit.array([I_eff, -I_eff])
 
 class VCVS_limited(Circuit):
     """Voltage controlled voltage source with limited output voltage.

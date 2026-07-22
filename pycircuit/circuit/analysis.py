@@ -100,7 +100,7 @@ class Analysis(sim.Analysis):
         self.epar = epar
 
 def fsolve(f, x0, args=(), full_output=False, maxiter=200,
-           xtol=1e-6, reltol=1e-4, abstol=1e-12, toolkit='Numeric'):
+           xtol=1e-6, reltol=1e-4, abstol=1e-12, toolkit='Numeric', limiter=None):
     """Solve a multidimensional non-linear equation with Newton-Raphson's method
 
     In each iteration the linear system
@@ -118,6 +118,9 @@ def fsolve(f, x0, args=(), full_output=False, maxiter=200,
         xdiff = toolkit.linearsolver(J, -F)# TODO: Limit xdiff to improve convergence
 
         x = x0 + xdiff
+        
+        if limiter is not None:
+            x = limiter(x, x0)
 
         if toolkit.alltrue(abs(xdiff) < reltol * toolkit.maximum(abs(x), abs(x0)) + xtol):
             ier = 1
