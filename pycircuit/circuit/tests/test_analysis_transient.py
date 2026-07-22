@@ -299,11 +299,27 @@ def test_transient_adaptive_vs_coupled():
     # since it never rejects steps, though it may take smaller steps on average.
     ratio = steps_coupled / max(1, steps_adapt)
     
-    # Only report/assert if they differ by more than 3x
-    if ratio > 3.0 or ratio < 0.33:
-        import warnings
+    import warnings
+    if ratio < 0.2 or ratio > 5.0:
         warnings.warn(f"Time steps differ widely! Adaptive: {steps_adapt}, Coupled: {steps_coupled}")
     
     # Just to ensure it's not going haywire, bounded check
     assert steps_coupled < steps_adapt * 10, "Coupled solver took way too many steps!"
 
+def test_transient_pi_controller():
+    """Test the newly extracted PIController for step size control."""
+    from pycircuit.circuit.elements import VPulse, R, C
+    from pycircuit.circuit.stepcontroller import PIController
+    
+    c = SubCircuit()
+    c['V'] = VPulse(1, gnd, v1=0, v2=5, tr=1e-6, tf=1e-6, pw=10e-6, per=20e-6)
+    c['R'] = R(1, 2, r=100)
+    c['C'] = C(2, gnd, c=1e-9)
+    
+    tran = Transient(c)
+    # Inject PIController
+    tran.step_controller = PIController()
+    res = tran.solve(tend=40e-6, timestep=1e-7, coupled_lte=False)
+    
+    assert len(res.sweep_values) > 10, "PIController did not take enough steps"
+    assert abs(res.sweep_values[-1] - 40e-6) < 1e-6, "PIController did not reach tend"

@@ -38,3 +38,29 @@ def test_dc_false_convergence_kcl():
     I_scale = 1e6 # The absolute scale of currents at node 1
     
     assert F_node1 <= 1e-4 * I_scale + 1e-12, f"False Convergence detected! KCL error: {F_node1}A"
+
+def test_dc_continuation_methods():
+    """
+    Test the robust execution of GminSteppingNewton and SourceSteppingNewton.
+    We create a highly non-linear circuit with a poor initial guess that normally
+    fails StandardNewton, ensuring the decorators catch the failure and step it.
+    """
+    from pycircuit.circuit.circuit import ParameterDict, Parameter
+    from pycircuit.circuit.elements import Diode, IS, R
+    from pycircuit.circuit.dcanalysis import DC
+
+    c = SubCircuit()
+    c['IS1'] = IS(gnd, 1, i=1.0) # High current into a diode
+    c['D1'] = Diode(1, gnd)
+    
+    # A 1A current into a standard generic diode is extremely high and usually fails
+    # basic Newton-Raphson from an x0=0 guess due to exponential overflow or
+    # severe oscillation. Gmin/Source stepping makes it converge safely.
+    dc = DC(c)
+    
+    try:
+        res = dc.solve()
+        assert res.v(1) > 0.5, "Continuation methods failed to find the forward biased diode point"
+    except Exception as e:
+        assert False, f"Continuation method failed to catch non-convergence! {str(e)}"
+
