@@ -131,9 +131,10 @@ def test_transient_get_diff():
     q=c.q(x0)
     Cmatrix=c.C(x0)
     print(tran.parameters)
-    a,b,b_=tran._method[tran.par.method] 
-    tran._qlast=np.zeros((len(a),tran.cir.n))#initialize q-history vector
-    tran._iqlast=np.zeros((len(b),tran.cir.n))
+    tran.base_integrator = tran._get_integrator()
+    hist_len = max(2, tran.base_integrator.get_required_history())
+    tran._qlast=np.zeros((hist_len,tran.cir.n))#initialize q-history vector
+    tran._iqlast=np.zeros((hist_len,tran.cir.n))
     tran._is_first_step = False
     iq,geq = tran.get_diff(q,Cmatrix)
     print(iq,geq)

@@ -58,6 +58,16 @@ class Transient(Analysis):
     ## * Implement automatic timestep adjustment, using difference between
     ##   BE and trapezoidal as a measure of the error.
     ##   Reference: "Time Step Control in Transient Analysis", by SHUBHA VIJAYCHAND
+    def _get_integrator(self):
+        from pycircuit.circuit.integrator import EulerIntegrator, TrapezoidalIntegrator, Gear2Integrator
+        if self.par.method == 'euler':
+            return EulerIntegrator()
+        elif self.par.method in ('trap', 'trapezoidal'):
+            return TrapezoidalIntegrator()
+        elif self.par.method == 'gear2':
+            return Gear2Integrator()
+        else:
+            raise ValueError(f"Unknown integration method: {self.par.method}")
     
 
     parameters = Analysis.parameters + \
@@ -84,19 +94,12 @@ class Transient(Analysis):
         self.parameters = super(Transient, self).parameters + self.parameters            
         super(Transient, self).__init__(cir, **kvargs)
     
-        self._method={
-            "euler":(self.toolkit.array([1.]),self.toolkit.array([0.]),1.),
-            "trap":(self.toolkit.array([1.]),self.toolkit.array([0.5]),0.5),
-            "trapezoidal":(self.toolkit.array([1.]),self.toolkit.array([0.5]),0.5),
-            "gear2":(self.toolkit.array([4./3,-1./3]),self.toolkit.array([0]),2./3)
-            }
         self._qlast  = None #q history
         self._iqlast = None #dq/dt history
         
         self._dt = None
-        self._diff_error = None #used for saving difference between euler and trapezoidal
-    
-    ## This is borrowed from dcanalysis.py, would like to 
+        self._dt_last = None
+        self._is_first_step = True
     ## import it from there instead.
     ## But it's an object method requiring a DC as self
     ## so using DC._newton doesn't work
@@ -149,48 +152,21 @@ class Transient(Analysis):
     
     def get_diff(self, q, C, method=None):
         """Method used to calculate time derivative for charge storing elements (i_eq and g_eq)."""
-        dt = self._dt
-        method = method or self.par.method
+        # Determine the active integrator based on step size variations
+        h_last = getattr(self, '_dt_last', self._dt)
+        self.active_integrator = self.base_integrator.check_order_drop(
+            self._dt, h_last, getattr(self, '_is_first_step', False)
+        )
         
-        resultEuler = (q - self._qlast[0]) / dt
+        iq, geq = self.active_integrator.compute_derivatives(
+            q_curr=q, C_curr=C, h_curr=self._dt, 
+            q_last=self._qlast, iq_last=self._iqlast, h_last=h_last,
+            is_first_step=getattr(self, '_is_first_step', False),
+            toolkit=self.toolkit
+        )
         
-        # Bizzarri & Brambilla: Protect against sudden time step variations.
-        # If the step shrinks by more than 10x, high-order history polynomials become invalid.
-        # We forcefully drop order to Backward Euler to safely cross the discontinuity.
-        if method == 'gear2' and not getattr(self, '_is_first_step', False):
-            h1 = getattr(self, '_dt_last', dt)
-            if dt / h1 < 0.1:
-                method = 'euler'
-        
-        if getattr(self, '_is_first_step', False): #first step always requires backward euler
-            geq = C / dt
-            iq = resultEuler
-            self._diff_error = self.toolkit.zeros(len(q))
-        else:
-            _, _, b_ = self._method.get('trap', (None, None, 0.5))
-            resultTrap = 2*(q - self._qlast[0])/dt - self._iqlast[0]
-            self._diff_error = resultTrap - resultEuler 
-            if method == 'euler':
-                iq = resultEuler
-                geq = C / dt
-            elif method in ('trapezoidal', 'trap'):
-                iq = resultTrap
-                geq = C / dt / b_
-            elif method == 'gear2':
-                h = dt
-                h1 = getattr(self, '_dt_last', dt)
-                alpha0 = (2*h + h1) / (h * (h + h1))
-                alpha1 = -(h + h1) / (h * h1)
-                alpha2 = h / (h1 * (h + h1))
-                geq = C * alpha0
-                iq = alpha0 * q + alpha1 * self._qlast[0] + alpha2 * self._qlast[1]
-            else:
-                a, b, b_ = self._method[method] 
-                iq = (q - self.toolkit.dot(a, self._qlast[:len(a)])) / dt / b_ - self.toolkit.dot(b, self._iqlast[:len(b)]) / b_
-                geq = C / dt / b_
-                
         self._iq = iq 
-        self._effective_method = method
+        self._effective_method = 'euler' if self.active_integrator.__class__.__name__ == 'EulerIntegrator' else self.par.method
         return iq, geq
 
     
@@ -236,10 +212,11 @@ class Transient(Analysis):
         else:
             x = x0 
         
-        a,b,b_=self._method[self.par.method] 
+        self.base_integrator = self._get_integrator()
+        hist_len = max(2, self.base_integrator.get_required_history())
         q0 = self.cir.q(x)
-        self._qlast = self.toolkit.array([q0 for _ in range(max(2, len(a)))])
-        self._iqlast = self.toolkit.zeros((max(2, len(b)), n))
+        self._qlast = self.toolkit.array([q0 for _ in range(hist_len)])
+        self._iqlast = self.toolkit.zeros((hist_len, n))
         
         X.append(copy(x))
         
@@ -273,26 +250,15 @@ class Transient(Analysis):
                 if self._is_first_step:
                     err = 0.5 
                 else:
-                    gn = self._iq
-                    gn_1 = self._iqlast[0]
-                    gn_2 = self._iqlast[1]
-                    
-                    if self._effective_method == 'euler':
-                        Eg = -0.5 * (gn - gn_1)
-                    elif self._effective_method in ('trap', 'trapezoidal'):
-                        h = dt
-                        h1 = getattr(self, '_dt_last', dt)
-                        dd1 = (gn - gn_1) / h
-                        dd2 = (gn_1 - gn_2) / h1
-                        Eg = -(1.0/3.0) * h**2 * (dd1 - dd2) / (h + h1)
-                    elif self._effective_method == 'gear2':
-                        h = dt
-                        h1 = getattr(self, '_dt_last', dt)
-                        dd1 = (gn - gn_1) / h
-                        dd2 = (gn_1 - gn_2) / h1
-                        Eg = -(2.0/3.0) * h**2 * (dd1 - dd2) / (h + h1)
-                    else:
-                        Eg = self.toolkit.zeros(len(gn))
+                    Eg, p = self.active_integrator.compute_lte(
+                        q_curr=self.cir.q(x),
+                        h_curr=dt,
+                        q_last=self._qlast,
+                        iq_last=self._iqlast,
+                        h_last=getattr(self, '_dt_last', dt),
+                        is_first_step=self._is_first_step,
+                        toolkit=self.toolkit
+                    )
                     
                     J_reduced, Eg_reduced = remove_row_col((J, Eg), self.irefnode, self.toolkit)
                     
@@ -356,10 +322,11 @@ class Transient(Analysis):
                 x0 = self.toolkit.zeros(n)
         
         x = x0
-        a,b,b_ = self._method[self.par.method]
+        self.base_integrator = self._get_integrator()
+        hist_len = max(2, self.base_integrator.get_required_history())
         q0 = self.cir.q(x)
-        self._qlast = self.toolkit.array([q0 for _ in range(max(2, len(a)))])
-        self._iqlast = self.toolkit.zeros((max(2, len(b)), n))
+        self._qlast = self.toolkit.array([q0 for _ in range(hist_len)])
+        self._iqlast = self.toolkit.zeros((hist_len, n))
         
         X.append(copy(x))
         timelist = []
