@@ -119,11 +119,11 @@ def fsolve(f, x0, args=(), full_output=False, maxiter=200,
 
         x = x0 + xdiff
 
-        if toolkit.alltrue(abs(xdiff) < reltol * toolkit.maximum(x, x0) + xtol):
+        if toolkit.alltrue(abs(xdiff) < reltol * toolkit.maximum(abs(x), abs(x0)) + xtol):
             ier = 1
             mesg = "Success"
             break
-        if toolkit.alltrue(abs(F) < reltol * max(F) + abstol):
+        if toolkit.alltrue(abs(F) < reltol * max(abs(F)) + abstol):
             ier = 1
             mesg = "Success"
             break

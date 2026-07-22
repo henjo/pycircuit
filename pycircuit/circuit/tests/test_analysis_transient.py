@@ -95,7 +95,7 @@ def test_transient_RLC():
     c['C'] = C(2, gnd, c=1e-12)
     #c['L'] = L(2,gnd, L=1e-3)
     tran_imp = Transient(c)
-    res_imp = tran_imp.solve(tend=40e-6,timestep=1e-6)
+    res_imp = tran_imp.solve(tend=40e-6,timestep=1e-6, fixed_timestep=True)
     expected = 2.58
     assert  abs(res_imp.v(2,gnd)[-1] - expected) < 1e-2*expected,\
         'Does not match QUCS result.'
@@ -112,7 +112,7 @@ def test_transient_nonlinear_C():
     c['C'] = myC(2, gnd)
     #c['L'] = L(2,gnd, L=1e-3)
     tran_imp = Transient(c)
-    res_imp = tran_imp.solve(tend=40e-6,timestep=1e-6)
+    res_imp = tran_imp.solve(tend=40e-6,timestep=1e-6, fixed_timestep=True)
     expected = 3.4
     assert  abs(res_imp.v(2,gnd)[-1] - expected) < 1e-2*expected,\
         'Does not match QUCS result:'
@@ -163,11 +163,46 @@ def test_transient_methods_step_response():
         tran = Transient(c)
         tran.par.method = method
         x0_zeros = np.zeros(c.n)
-        result = tran.solve(tend=3.0, timestep=1.0, x0=x0_zeros)
+        result = tran.solve(tend=3.0, timestep=1.0, x0=x0_zeros, fixed_timestep=True)
         
         computed = result.v(n2, gnd).y
         
         np.testing.assert_allclose(computed, expected, rtol=1e-5, err_msg=f"Failed for method {method}")
+def test_transient_adaptive_efficiency():
+    """Test comparing adaptive time step efficiency versus fixed time step.
+    Verifies adaptive takes fewer steps and both pass tolerance checks for all methods.
+    """
+    circuit.default_toolkit = circuit.numeric
+    from pycircuit.circuit.elements import IS
+    
+    methods = ['euler', 'trap', 'trapezoidal', 'gear2']
+    
+    for method in methods:
+        c = SubCircuit()
+        n1 = c.add_node('net1')
+        n2 = c.add_node('net2')
+        c['Is'] = IS(gnd, n1, i=10)    
+        c['R1'] = R(n1, gnd, r=1)
+        c['R2'] = R(n1, n2, r=1e3)
+        c['R3'] = R(n2, gnd, r=100e3)
+        c['C'] = C(n2, gnd, c=1e-5)
+        
+        tran = Transient(c)
+        tran.par.method = method
+        x0_zeros = np.zeros(c.n)
+        
+        res_fixed = tran.solve(tend=10e-3, timestep=1e-4, x0=x0_zeros, fixed_timestep=True)
+        res_adapt = tran.solve(tend=10e-3, timestep=1e-3, x0=x0_zeros, fixed_timestep=False)
+        
+        fixed_steps = len(res_fixed.sweep_values)
+        adapt_steps = len(res_adapt.sweep_values)
+        
+        expected = 6.3
+        
+        assert abs(res_fixed.v(n2, gnd)[-1] - expected) < 2e-2*expected, f'Fixed step failed tolerance check for {method}.'
+        assert abs(res_adapt.v(n2, gnd)[-1] - expected) < 2e-2*expected, f'Adaptive step failed tolerance check for {method}.'
+        assert adapt_steps < fixed_steps, f'Adaptive step took {adapt_steps} steps, which is not less than fixed {fixed_steps} steps for {method}.'
+
 
 if __name__ == '__main__':
     #test_transient_RC()

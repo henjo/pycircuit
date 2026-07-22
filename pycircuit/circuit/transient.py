@@ -130,35 +130,7 @@ class Transient(Analysis):
         # Insert reference node voltage
         return self.toolkit.concatenate((x[:self.irefnode], self.toolkit.array([0.0]), x[self.irefnode:]))
     
-    def get_timestep(self,endtime,dtmin=1e-12):
-        """Method to provide the next timestep for transient simulation.
-        
-        """
-        ## Use the difference between euler and trapezoidal
-        ## Error as abs(self._diff_error)/abs(self._iq) - iq_tolerance
-        ## If error > 0: decrease timestep
-        ## If error < 0: increase timestep
-        
-        ## Start with simple variant:
-        ## increase as dt *=2
-        ## decrease as dt /=2
-        ## with convergence error, both decrease and reject timestep
-        ## support for rejecting timesteps need to be implemented
-        
-        iq_tolerance = 1e-2
-        iq_p = 1e4 #proportionality constant
-        iq_i = 1 #integrator constant
-        dt=self._dt
-        t=0
-        while t<endtime:
-            yield t,dt
-            de=self._diff_error
-            iq=self._iq
-            if (de is not None) and (iq is not None):
-                #iq_error=self.toolkit.dot(de,de)/self.toolkit.dot(iq,iq)-iq_tolerance
-                #print(iq_error)
-                dt = max(dt, dtmin)
-            t+=dt
+
     
     def get_diff(self,q,C):#shouldn't I provide an x0 here?
         """Method used to calculate time derivative for charge storing elements (i_eq and g_eq).
@@ -189,17 +161,13 @@ class Transient(Analysis):
             elif self.par.method == 'trapezoidal':
                 iq = resultTrap
             else:
-                iq=(q-self.toolkit.dot(a,self._qlast))/dt/b_ - self.toolkit.dot(b,self._iqlast)/b_
+                iq=(q-self.toolkit.dot(a,self._qlast[:len(a)]))/dt/b_ - self.toolkit.dot(b,self._iqlast[:len(b)])/b_
         self._iq=iq #make accessible by get_timestep
         return iq,geq
     
     
     def solve_timestep(self, x0, t, refnode=gnd, provided_function=None):
-        #if provided_function is not None, it is called as a function with 
-        #most of what is calculated during a time_step, f,J,ueq,Geq,xlast,x
-        
         n=self.cir.n
-        x0 = x0
         dt = self._dt
         
         def func(x):
@@ -207,30 +175,23 @@ class Transient(Analysis):
             q=self.cir.q(x)
             iq,Geq = self.get_diff(q,C)
             f =self.cir.i(x) + iq + self.cir.u(t, analysis=self.par.analysis)
-            J = self.cir.G(x) + Geq #return C somehow?
+            J = self.cir.G(x) + Geq
             return self.toolkit.array(f, dtype=float), self.toolkit.array(J, dtype=float)
         
         x=self._newton(func,x0)
-        #history update
-        self._iqlast = self.toolkit.concatenate((self.toolkit.array([self._iq]),self._iqlast))[:-1]
-        self._qlast = self.toolkit.concatenate((self.toolkit.array([self.cir.q(x)]),self._qlast))[:-1]
+        f, J = func(x)
         
-        # Insert reference node voltage
-        #x = self.toolkit.concatenate((x[:irefnode], self.toolkit.array([0.0]), x[irefnode:]))
         if provided_function is not None:
-            result=x,provided_function(f,J,C)
+            result=x,provided_function(f,J,self.cir.C(x)), J, f
         else:
-            result=x,None
+            result=x,None, J, f
         return result
     
     
-    def solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None):
-        #provided_function is a function that is sent to solve_timestep for evaluation
-        
-        X = [] # will contain a list of all x-vectors
+    def solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False):
+        X = []
         self.irefnode=self.cir.get_node_index(refnode)
         n = self.cir.n
-        self._dt = timestep
         if x0 is None:
             # Calculate DC operating point as initial state
             dc = DC(self.cir, toolkit=self.toolkit, refnode=refnode)
@@ -245,27 +206,88 @@ class Transient(Analysis):
         
         a,b,b_=self._method[self.par.method] 
         q0 = self.cir.q(x)
-        self._qlast = self.toolkit.array([q0 for _ in range(len(a))])
-        self._iqlast = self.toolkit.zeros((len(b), n))
+        self._qlast = self.toolkit.array([q0 for _ in range(max(2, len(a)))])
+        self._iqlast = self.toolkit.zeros((max(2, len(b)), n))
         
-        #is this still needed
-        order=1 #number of past x-values needed
-        for i in range(order):
-            X.append(copy(x))
+        X.append(copy(x))
         
-        times = self.get_timestep(tend)
-        timelist=[] #for plotting purposes
+        timelist = []
         self._is_first_step = True
-        for t,dt in times:
+        t = 0.0
+        max_step = timestep
+        dt = timestep
+        TRTOL = 7.0
+        
+        ones_nodes = self.toolkit.ones(len(self.cir.nodes))
+        ones_branches = self.toolkit.ones(len(self.cir.branches))
+        abstol = self.toolkit.concatenate((self.par.iabstol * ones_nodes,
+                                         self.par.vabstol * ones_branches))
+
+        while t < tend:
+            if t + dt > tend:
+                dt = tend - t
+            
+            self._dt = dt
+            next_t = t + dt
+            
+            try:
+                x, feval, J, f = self.solve_timestep(X[-1], next_t, provided_function=provided_function)
+            except NoConvergenceError:
+                dt = dt * 0.25
+                continue
+                
+            if not fixed_timestep:
+                # LTE Computation (Yao et al. ICECS 2014)
+                if self._is_first_step:
+                    err = 0.5 
+                else:
+                    gn = self._iq
+                    gn_1 = self._iqlast[0]
+                    gn_2 = self._iqlast[1]
+                    
+                    if self.par.method == 'euler':
+                        Eg = -0.5 * (gn - gn_1)
+                    elif self.par.method in ('trap', 'trapezoidal'):
+                        Eg = -(1./6.) * (gn - 2*gn_1 + gn_2)
+                    elif self.par.method == 'gear2':
+                        Eg = -(1./3.) * (gn - 2*gn_1 + gn_2)
+                    else:
+                        Eg = self.toolkit.zeros(len(gn))
+                    
+                    J_reduced, Eg_reduced = remove_row_col((J, Eg), self.irefnode, self.toolkit)
+                    
+                    try:
+                        lte_reduced = self.toolkit.linalg.solve(J_reduced, Eg_reduced)
+                    except Exception:
+                        lte_reduced = Eg_reduced
+                    
+                    lte = self.toolkit.concatenate((lte_reduced[:self.irefnode], self.toolkit.array([0.0]), lte_reduced[self.irefnode:]))
+                    
+                    import numpy as np
+                    etol = self.par.reltol * np.maximum(np.abs(x), np.abs(X[-1])) + abstol
+                    err_array = np.abs(lte) / etol
+                    err = np.max(err_array)
+                
+                    if err > 1.0:
+                        dt = dt * max(0.2, (1.0 / err)**0.5)
+                        continue
+            
+            t = next_t
             timelist.append(t)
-            self._dt=dt
-            x,feval=self.solve_timestep(X[-1], t, provided_function=provided_function)
             X.append(copy(x))
+            
+            self._iqlast = self.toolkit.concatenate((self.toolkit.array([self._iq]), self._iqlast))[:-1]
+            self._qlast = self.toolkit.concatenate((self.toolkit.array([self.cir.q(x)]), self._qlast))[:-1]
+            
             self._is_first_step = False
+            
+            # Predict next step size
+            if not fixed_timestep:
+                dt = dt * min(2.0, (TRTOL / max(err, 1e-12))**0.5)
+                dt = min(dt, max_step)
+            
         X = self.toolkit.array(X[1:]).T
         timelist = self.toolkit.array(timelist)
-        
-        #print("steps: "+str( len(timelist)))
         
         self.result = CircuitResult(self.cir, x=X, xdot=None,
                                     sweep_values=timelist, 
