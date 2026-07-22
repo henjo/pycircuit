@@ -126,24 +126,27 @@ class Transient(Analysis):
             x0_full[self.irefnode+1:] = x0r[self.irefnode:]
             
             self.cir.limit(x, x0_full, self.epar)
-            return xr
+            return self.toolkit.concatenate((x[:self.irefnode], x[self.irefnode+1:]))
 
+        from pycircuit.circuit.nrsolver import StandardNewton, NoConvergenceError
+        solver = StandardNewton()
         try:
-            result = fsolve(refnode_removed(func, self.irefnode, self.toolkit), 
-                            x0, 
-                            full_output = True, 
-                            reltol = self.par.reltol,
-                            abstol = abstol, xtol=xtol,
-                            maxiter = self.par.maxiter,
-                            toolkit = self.toolkit,
-                            limiter = limiter_func)
-        except self.toolkit.linalg.LinAlgError as e:
-            raise SingularMatrix(str(e))
+            x_res, _ = solver.solve_system(
+                x0,
+                refnode_removed(func, self.irefnode, self.toolkit),
+                self.toolkit,
+                self.par.reltol,
+                abstol,
+                xtol,
+                self.par.maxiter,
+                limiter=limiter_func
+            )
+        except Exception as e:
+            if "Singular" in str(e) or "linearsolver" in str(e).lower() or "LinAlgError" in str(e):
+                raise SingularMatrix(str(e))
+            raise NoConvergenceError(str(e))
         
-        x, infodict, ier, mesg = result
-        
-        if ier != 1:
-            raise NoConvergenceError(mesg)
+        x = x_res
         
         # Insert reference node voltage
         return self.toolkit.concatenate((x[:self.irefnode], self.toolkit.array([0.0]), x[self.irefnode:]))
@@ -351,37 +354,38 @@ class Transient(Analysis):
             h_curr = h
             converged = False
             
-            for iter_idx in range(self.par.maxiter):
-                # Compute F and J
+            # Prepare eval_FJ callback for SchurCoupledNewton
+            def eval_FJ(xr, h_curr):
+                x_full = self.toolkit.zeros(n)
+                x_full[:self.irefnode] = xr[:self.irefnode]
+                x_full[self.irefnode+1:] = xr[self.irefnode:]
+                
                 self._dt = h_curr
-                C = self.cir.C(x_curr)
-                q = self.cir.q(x_curr)
+                C = self.cir.C(x_full)
+                q = self.cir.q(x_full)
                 iq, Geq = self.get_diff(q, C)
-                F = self.cir.i(x_curr) + iq + self.cir.u(t + h_curr, analysis=self.par.analysis)
-                J = self.cir.G(x_curr) + Geq
+                F = self.cir.i(x_full) + iq + self.cir.u(t + h_curr, analysis=self.par.analysis)
+                J = self.cir.G(x_full) + Geq
                 
                 F_r = self.toolkit.delete(F, self.irefnode)
                 J_r = self.toolkit.delete(J, self.irefnode, axis=0)
                 J_r = self.toolkit.delete(J_r, self.irefnode, axis=1)
                 
-                # Finite difference J_h
                 eps = max(1e-8 * h_curr, 1e-15)
                 self._dt = h_curr + eps
-                iq_p, Geq_p = self.get_diff(q, C)
-                F_p = self.cir.i(x_curr) + iq_p + self.cir.u(t + h_curr + eps, analysis=self.par.analysis)
+                iq_p, _ = self.get_diff(q, C)
+                F_p = self.cir.i(x_full) + iq_p + self.cir.u(t + h_curr + eps, analysis=self.par.analysis)
                 
                 self._dt = h_curr - eps
-                iq_m, Geq_m = self.get_diff(q, C)
-                F_m = self.cir.i(x_curr) + iq_m + self.cir.u(t + h_curr - eps, analysis=self.par.analysis)
+                iq_m, _ = self.get_diff(q, C)
+                F_m = self.cir.i(x_full) + iq_m + self.cir.u(t + h_curr - eps, analysis=self.par.analysis)
                 
                 J_h = (F_p - F_m) / (2 * eps)
                 J_h_r = self.toolkit.delete(J_h, self.irefnode)
                 self._dt = h_curr
                 
-                # Compute E, E_x, E_h
                 def calc_E(x_val, h_val):
-                    if self._is_first_step:
-                        return 0.0
+                    if self._is_first_step: return 0.0
                     q_val = self.cir.q(x_val)
                     if self._effective_method in ("trapezoidal", "trap"):
                         dd2 = (q_val - self._qlast[0]) / h_val - self._iqlast[0]
@@ -398,15 +402,13 @@ class Transient(Analysis):
                     etol = reltol * self.toolkit.maximum(np.abs(q_val), np.abs(self._qlast[0])) + abstol
                     return np.max(np.abs(lte) / etol) - TRTOL
                 
-                E = calc_E(x_curr, h_curr)
+                E = calc_E(x_full, h_curr)
                 
-                gamma_min = 0.7
-                gamma_max = 3.0
-                
+                gamma_min, gamma_max = 0.7, 3.0
                 if analytical_eh and ((gamma_min - 1.0) * TRTOL <= E <= (gamma_max - 1.0) * TRTOL) and not self._is_first_step:
                     E_x_r = self.toolkit.zeros(len(F_r))
                     E_h = 1.0
-                    E = 0.0  # Forces dh = 0
+                    E = 0.0
                 elif self._is_first_step:
                     E_x_r = self.toolkit.zeros(len(F_r))
                     E_h = 1.0
@@ -415,70 +417,59 @@ class Transient(Analysis):
                         p = 3.0 if self._effective_method in ("trapezoidal", "trap") else 2.0
                         E_h = p * (E + TRTOL) / h_curr
                     else:
-                        E_p = calc_E(x_curr, h_curr + eps)
-                        E_m = calc_E(x_curr, h_curr - eps)
-                        E_h = (E_p - E_m) / (2 * eps)
+                        E_h = (calc_E(x_full, h_curr + eps) - calc_E(x_full, h_curr - eps)) / (2 * eps)
                     
                     E_x_r = self.toolkit.zeros(len(F_r))
                     if not analytical_eh:
                         for i in range(len(F_r)):
                             idx = i if i < self.irefnode else i + 1
-                            x_p = copy(x_curr)
+                            x_p = copy(x_full)
                             x_p[idx] += eps
-                            E_xp = calc_E(x_p, h_curr)
-                            
-                            x_m = copy(x_curr)
+                            x_m = copy(x_full)
                             x_m[idx] -= eps
-                            E_xm = calc_E(x_m, h_curr)
+                            E_x_r[i] = (calc_E(x_p, h_curr) - calc_E(x_m, h_curr)) / (2 * eps)
                             
-                            E_x_r[i] = (E_xp - E_xm) / (2 * eps)
+                return F_r, J_r, J_h_r, E, E_x_r, E_h
+
+            def limiter_func(xr_next, xr_curr):
+                x_next_full = self.toolkit.zeros(n)
+                x_curr_full = self.toolkit.zeros(n)
+                x_next_full[:self.irefnode] = xr_next[:self.irefnode]
+                x_next_full[self.irefnode+1:] = xr_next[self.irefnode:]
+                x_curr_full[:self.irefnode] = xr_curr[:self.irefnode]
+                x_curr_full[self.irefnode+1:] = xr_curr[self.irefnode:]
                 
-                # Schur complement solve
-                rhs = np.column_stack([-F_r, -J_h_r])
-                try:
-                    dx_res = self.toolkit.linearsolver(J_r, rhs)
-                except Exception:
-                    # Fallback if singular
-                    dx_res = np.zeros_like(rhs)
+                self.cir.limit(x_next_full, x_curr_full, self.epar)
+                return self.toolkit.concatenate((x_next_full[:self.irefnode], x_next_full[self.irefnode+1:]))
+
+            from pycircuit.circuit.nrsolver import SchurCoupledNewton, NoConvergenceError
+            solver = SchurCoupledNewton()
+            
+            x_curr_r = self.toolkit.concatenate((X[-1][:self.irefnode], X[-1][self.irefnode+1:]))
+            abstol_r = self.toolkit.concatenate((abstol[:self.irefnode], abstol[self.irefnode+1:]))
+            
+            try:
+                (x_next_r, h_next), _ = solver.solve_system(
+                    (x_curr_r, h),
+                    eval_FJ,
+                    self.toolkit,
+                    reltol,
+                    abstol_r,
+                    xtol,
+                    self.par.maxiter,
+                    limiter=limiter_func
+                )
+                converged = True
+            except NoConvergenceError:
+                converged = False
                 
-                dx_0 = dx_res[:, 0]
-                dx_h = dx_res[:, 1]
+            if converged:
+                x_next = self.toolkit.zeros(n)
+                x_next[:self.irefnode] = x_next_r[:self.irefnode]
+                x_next[self.irefnode+1:] = x_next_r[self.irefnode:]
                 
-                if self._is_first_step:
-                    dh = 0.0
-                else:
-                    denom = np.dot(E_x_r, dx_h) + E_h
-                    if abs(denom) < 1e-20:
-                        dh = 0.0
-                    else:
-                        dh = (-E - np.dot(E_x_r, dx_0)) / denom
-                
-                dh = max(-0.5 * h_curr, min(2.0 * h_curr, dh))
-                
-                dx_r = dx_0 + dx_h * dh
-                
-                x_next = copy(x_curr)
-                x_next[:self.irefnode] += dx_r[:self.irefnode]
-                x_next[self.irefnode+1:] += dx_r[self.irefnode:]
-                
-                self.cir.limit(x_next, x_curr, self.epar)
-                
+                h = h_next
                 x_curr = x_next
-                h_curr += dh
-                
-                x_curr_r = self.toolkit.delete(x_curr, self.irefnode)
-                abstol_r = self.toolkit.delete(abstol, self.irefnode)
-                
-                converged_x = np.all(np.abs(dx_r) < reltol * np.maximum(np.abs(x_curr_r), 1e-12) + abstol_r)
-                converged_h = np.abs(dh) < 0.15 * h_curr
-                
-                # NEW KCL Check for Option A
-                I_scale_r = np.dot(np.abs(J_r), np.abs(x_curr_r)) + np.abs(F_r)
-                converged_F = np.all(np.abs(F_r) < reltol * I_scale_r + abstol_r)
-                
-                if converged_x and converged_h and converged_F:
-                    converged = True
-                    break
                     
             if not converged:
                 # If NR failed, reduce step drastically
@@ -495,8 +486,8 @@ class Transient(Analysis):
             self._dt = h_curr
             self._dt_last = h_curr
             self._is_first_step = False
-            self._iqlast = self.toolkit.concatenate((self.toolkit.array([iq]), self._iqlast))[:-1]
-            self._qlast = self.toolkit.concatenate((self.toolkit.array([q]), self._qlast))[:-1]
+            self._iqlast = self.toolkit.concatenate((self.toolkit.array([self._iq]), self._iqlast))[:-1]
+            self._qlast = self.toolkit.concatenate((self.toolkit.array([self.cir.q(x_curr)]), self._qlast))[:-1]
             
         X = self.toolkit.array(X[1:]).T
         timelist = self.toolkit.array(timelist)

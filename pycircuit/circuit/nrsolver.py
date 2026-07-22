@@ -91,3 +91,61 @@ class GminSteppingNewton(NonLinearSolver):
                 
         # Finally, solve the exact pure system using the guided initial guess
         return self.base_solver.solve_system(x_curr, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter)
+
+class SchurCoupledNewton(NonLinearSolver):
+    """
+    Coupled Newton-Raphson Solver using the Schur Complement.
+    
+    Optimizes a dual-state (x, h) by partitioning the Jacobian into blocks.
+    The callback `eval_FJ(x, h)` must return the full set of partitioned matrices:
+    (F, J_x, J_h, E, E_x, E_h)
+    """
+    
+    def solve_system(self, S0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None):
+        x_curr, h_curr = S0
+        
+        for i in range(maxiter):
+            F, J_x, J_h, E, E_x, E_h = eval_FJ(x_curr, h_curr)
+            
+            # Formulate the Schur Complement RHS
+            import numpy as np
+            # Note: We assume the caller handles reference node stripping within eval_FJ
+            rhs = np.column_stack([-F, -J_h])
+            try:
+                dx_res = toolkit.linearsolver(J_x, rhs)
+            except Exception:
+                dx_res = np.zeros_like(rhs)
+                
+            dx_0 = dx_res[:, 0]
+            dx_h = dx_res[:, 1]
+            
+            denom = toolkit.dot(E_x, dx_h) + E_h
+            if abs(denom) < 1e-20:
+                dh = 0.0
+            else:
+                dh = (-E - toolkit.dot(E_x, dx_0)) / denom
+                
+            dh = max(-0.5 * h_curr, min(2.0 * h_curr, dh))
+            dx = dx_0 + dx_h * dh
+            
+            x_next = x_curr + dx
+            h_next = h_curr + dh
+            
+            if limiter is not None:
+                x_next = limiter(x_next, x_curr)
+                # Re-compute dx after limiting
+                dx = x_next - x_curr
+                
+            I_scale = toolkit.dot(abs(J_x), abs(x_next)) + abs(F)
+            
+            conv_x = toolkit.alltrue(abs(dx) < reltol * toolkit.maximum(abs(x_next), 1e-12) + xtol)
+            conv_h = abs(dh) < 0.15 * h_curr
+            conv_F = toolkit.alltrue(abs(F) < reltol * I_scale + abstol)
+            
+            if conv_x and conv_h and conv_F:
+                return (x_next, h_next), i + 1
+                
+            x_curr = x_next
+            h_curr = h_next
+            
+        raise NoConvergenceError(f"SchurCoupledNewton failed to converge after {maxiter} iterations.")
