@@ -158,8 +158,16 @@ class Transient(Analysis):
             self._diff_error = resultTrap-resultEuler # Difference between euler and trap.
             if self.par.method == 'euler':
                 iq = resultEuler
-            elif self.par.method == 'trapezoidal':
+            elif self.par.method in ('trapezoidal', 'trap'):
                 iq = resultTrap
+            elif self.par.method == 'gear2':
+                h = dt
+                h1 = getattr(self, '_dt_last', dt)
+                alpha0 = (2*h + h1) / (h * (h + h1))
+                alpha1 = -(h + h1) / (h * h1)
+                alpha2 = h / (h1 * (h + h1))
+                geq = C * alpha0
+                iq = alpha0 * q + alpha1 * self._qlast[0] + alpha2 * self._qlast[1]
             else:
                 iq=(q-self.toolkit.dot(a,self._qlast[:len(a)]))/dt/b_ - self.toolkit.dot(b,self._iqlast[:len(b)])/b_
         self._iq=iq #make accessible by get_timestep
@@ -248,9 +256,17 @@ class Transient(Analysis):
                     if self.par.method == 'euler':
                         Eg = -0.5 * (gn - gn_1)
                     elif self.par.method in ('trap', 'trapezoidal'):
-                        Eg = -(1./6.) * (gn - 2*gn_1 + gn_2)
+                        h = dt
+                        h1 = getattr(self, '_dt_last', dt)
+                        dd1 = (gn - gn_1) / h
+                        dd2 = (gn_1 - gn_2) / h1
+                        Eg = -(1.0/3.0) * h**2 * (dd1 - dd2) / (h + h1)
                     elif self.par.method == 'gear2':
-                        Eg = -(1./3.) * (gn - 2*gn_1 + gn_2)
+                        h = dt
+                        h1 = getattr(self, '_dt_last', dt)
+                        dd1 = (gn - gn_1) / h
+                        dd2 = (gn_1 - gn_2) / h1
+                        Eg = -(2.0/3.0) * h**2 * (dd1 - dd2) / (h + h1)
                     else:
                         Eg = self.toolkit.zeros(len(gn))
                     
@@ -278,6 +294,7 @@ class Transient(Analysis):
             
             self._iqlast = self.toolkit.concatenate((self.toolkit.array([self._iq]), self._iqlast))[:-1]
             self._qlast = self.toolkit.concatenate((self.toolkit.array([self.cir.q(x)]), self._qlast))[:-1]
+            self._dt_last = dt
             
             self._is_first_step = False
             
