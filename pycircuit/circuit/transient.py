@@ -211,7 +211,9 @@ class Transient(Analysis):
         return result
     
     
-    def solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False):
+    def solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False, coupled_lte=False):
+        if coupled_lte:
+            return self._solve_coupled(refnode, tend, x0, timestep, provided_function)
         X = []
         self.irefnode=self.cir.get_node_index(refnode)
         n = self.cir.n
@@ -328,6 +330,183 @@ class Transient(Analysis):
                                     sweep_unit='s')
         
         return self.result
+
+
+    def _solve_coupled(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None):
+        import numpy as np
+        from copy import copy
+        from pycircuit.circuit.analysis import CircuitResult
+        
+        X = []
+        self.irefnode = self.cir.get_node_index(refnode)
+        n = self.cir.n
+        if x0 is None:
+            from pycircuit.circuit.dcanalysis import DC
+            dc = DC(self.cir)
+            try:
+                dc_res = dc.solve()
+                x0 = dc_res.x
+            except Exception:
+                x0 = self.toolkit.zeros(n)
+        
+        x = x0
+        a,b,b_ = self._method[self.par.method]
+        q0 = self.cir.q(x)
+        self._qlast = self.toolkit.array([q0 for _ in range(max(2, len(a)))])
+        self._iqlast = self.toolkit.zeros((max(2, len(b)), n))
+        
+        X.append(copy(x))
+        timelist = []
+        
+        self._is_first_step = True
+        t = 0.0
+        h = timestep
+        TRTOL = 7.0
+        
+        ones_nodes = self.toolkit.ones(len(self.cir.nodes))
+        ones_branches = self.toolkit.ones(len(self.cir.branches))
+        abstol = self.toolkit.concatenate((self.par.iabstol * ones_nodes,
+                                         self.par.vabstol * ones_branches))
+        reltol = self.par.reltol
+        xtol = self.par.vabstol
+        
+        while t < tend:
+            if t + h > tend:
+                h = tend - t
+                
+            x_curr = copy(X[-1])
+            h_curr = h
+            converged = False
+            
+            for iter_idx in range(self.par.maxiter):
+                # Compute F and J
+                self._dt = h_curr
+                C = self.cir.C(x_curr)
+                q = self.cir.q(x_curr)
+                iq, Geq = self.get_diff(q, C)
+                F = self.cir.i(x_curr) + iq + self.cir.u(t + h_curr, analysis=self.par.analysis)
+                J = self.cir.G(x_curr) + Geq
+                
+                F_r = self.toolkit.delete(F, self.irefnode)
+                J_r = self.toolkit.delete(J, self.irefnode, axis=0)
+                J_r = self.toolkit.delete(J_r, self.irefnode, axis=1)
+                
+                # Finite difference J_h
+                eps = max(1e-8 * h_curr, 1e-15)
+                self._dt = h_curr + eps
+                iq_p, Geq_p = self.get_diff(q, C)
+                F_p = self.cir.i(x_curr) + iq_p + self.cir.u(t + h_curr + eps, analysis=self.par.analysis)
+                
+                self._dt = h_curr - eps
+                iq_m, Geq_m = self.get_diff(q, C)
+                F_m = self.cir.i(x_curr) + iq_m + self.cir.u(t + h_curr - eps, analysis=self.par.analysis)
+                
+                J_h = (F_p - F_m) / (2 * eps)
+                J_h_r = self.toolkit.delete(J_h, self.irefnode)
+                self._dt = h_curr
+                
+                # Compute E, E_x, E_h
+                def calc_E(x_val, h_val):
+                    if self._is_first_step:
+                        return 0.0
+                    q_val = self.cir.q(x_val)
+                    if self.par.method == "trapezoidal":
+                        dd2 = (q_val - self._qlast[0]) / h_val - self._iqlast[0]
+                        dd2 = dd2 * 2.0 / h_val
+                        lte = 1.0 / 12.0 * (h_val**3) * dd2
+                    elif self.par.method == "gear2":
+                        dd1_n = (q_val - self._qlast[0]) / h_val
+                        dd1_nm1 = (self._qlast[0] - self._qlast[1]) / self._dt_last
+                        dd2_n = (dd1_n - dd1_nm1) / (h_val + self._dt_last)
+                        lte = (h_val**2) * (h_val + self._dt_last) / 3.0 * dd2_n
+                    else:
+                        lte = self.toolkit.zeros(n)
+                        
+                    etol = reltol * self.toolkit.maximum(np.abs(q_val), np.abs(self._qlast[0])) + abstol
+                    return np.max(np.abs(lte) / etol) - TRTOL
+                
+                E = calc_E(x_curr, h_curr)
+                
+                if self._is_first_step:
+                    E_x_r = self.toolkit.zeros(len(F_r))
+                    E_h = 1.0
+                else:
+                    E_p = calc_E(x_curr, h_curr + eps)
+                    E_m = calc_E(x_curr, h_curr - eps)
+                    E_h = (E_p - E_m) / (2 * eps)
+                    
+                    E_x_r = self.toolkit.zeros(len(F_r))
+                    for i in range(len(F_r)):
+                        idx = i if i < self.irefnode else i + 1
+                        x_p = copy(x_curr)
+                        x_p[idx] += eps
+                        E_xp = calc_E(x_p, h_curr)
+                        
+                        x_m = copy(x_curr)
+                        x_m[idx] -= eps
+                        E_xm = calc_E(x_m, h_curr)
+                        
+                        E_x_r[i] = (E_xp - E_xm) / (2 * eps)
+                
+                # Schur complement solve
+                rhs = np.column_stack([-F_r, -J_h_r])
+                try:
+                    dx_res = self.toolkit.linearsolver(J_r, rhs)
+                except Exception:
+                    # Fallback if singular
+                    dx_res = np.zeros_like(rhs)
+                
+                dx_0 = dx_res[:, 0]
+                dx_h = dx_res[:, 1]
+                
+                if self._is_first_step:
+                    dh = 0.0
+                else:
+                    denom = np.dot(E_x_r, dx_h) + E_h
+                    if abs(denom) < 1e-20:
+                        dh = 0.0
+                    else:
+                        dh = (-E - np.dot(E_x_r, dx_0)) / denom
+                
+                dh = max(-0.5 * h_curr, min(2.0 * h_curr, dh))
+                
+                dx_r = dx_0 + dx_h * dh
+                
+                x_next = copy(x_curr)
+                x_next[:self.irefnode] += dx_r[:self.irefnode]
+                x_next[self.irefnode+1:] += dx_r[self.irefnode:]
+                
+                x_curr = x_next
+                h_curr += dh
+                
+                if np.all(np.abs(dx_r) < reltol * np.maximum(np.abs(x_curr[x_curr != 0]), 1e-12) + xtol):
+                    converged = True
+                    break
+                    
+            if not converged:
+                # If NR failed, reduce step drastically
+                h *= 0.25
+                continue
+                
+            t += h_curr
+            h = h_curr
+            timelist.append(t)
+            X.append(copy(x_curr))
+            
+            self._dt = h_curr
+            self._dt_last = h_curr
+            self._is_first_step = False
+            self._iqlast = self.toolkit.concatenate((self.toolkit.array([iq]), self._iqlast))[:-1]
+            self._qlast = self.toolkit.concatenate((self.toolkit.array([q]), self._qlast))[:-1]
+            
+        X = self.toolkit.array(X[1:]).T
+        timelist = self.toolkit.array(timelist)
+        self.result = CircuitResult(self.cir, x=X, xdot=None,
+                                    sweep_values=timelist, 
+                                    sweep_label='time', 
+                                    sweep_unit='s')
+        return self.result
+
 
 
 if __name__ == "__main__":

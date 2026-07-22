@@ -241,3 +241,25 @@ def test_transient_pcnr_diode():
     v_diode_max = max(res.v(2, gnd))
     assert 0.5 < v_diode_max < 1.5, f"Diode voltage {v_diode_max} outside expected forward bias range"
 
+
+def test_transient_coupled_lte():
+    """Test Option A: Coupled Nonlinear System for Adaptive Timestepping."""
+    from pycircuit.circuit.elements import VS, R, C
+    c = SubCircuit()
+    c['VS'] = VS(1, gnd, v=10)
+    c['R1'] = R(1, 2, r=10)
+    c['C1'] = C(2, gnd, c=1e-6)
+    
+    tran = Transient(c)
+    # Using coupled_lte=True to trigger Schur Complement Option A solver
+    res = tran.solve(tend=50e-6, timestep=1e-6, coupled_lte=True)
+    
+    # Simple check that simulation completed and final time is close to tend
+    assert len(res.sweep_values) > 5, "Coupled simulation took too few steps"
+    assert abs(res.sweep_values[-1] - 50e-6) < 1e-6, "Simulation did not reach tend"
+    
+    # Simple RC charging check at final time (tau = 10 us, tend = 50 us -> ~5 tau)
+    # V_c(5tau) ≈ 10 * (1 - e^-5) ≈ 9.93V
+    v_c_final = res.v(2, gnd)[-1]
+    assert 9.0 < v_c_final < 10.1, f"RC voltage {v_c_final} is way off"
+

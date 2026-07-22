@@ -590,6 +590,22 @@ class Circuit():
             result.append(A)
         return tuple(result)
 
+    def check_kcl(self, x, t=0.0, iq=None, abstol=1e-12):
+        """Manually evaluate KCL at each node by summing the currents and ensuring 
+        the residual is within < abstol.
+        """
+        f = self.i(x) + self.u(t)
+        if iq is not None:
+            f += iq
+        # Check only the node rows (len(self.nodes))
+        nnodes = len(self.nodes)
+        node_residuals = f[:nnodes]
+        import numpy as np
+        max_residual = np.max(np.abs(node_residuals))
+        if max_residual > abstol:
+            raise ValueError("KCL check failed! Max residual {} > {}".format(max_residual, abstol))
+        return max_residual
+
     def extract_v(self, x, nodep, noden=None, refnode=gnd, 
                   refnode_removed=False):
         """Extract voltage between nodep and noden from the given x-vector.
