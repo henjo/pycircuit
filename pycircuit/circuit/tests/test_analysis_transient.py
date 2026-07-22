@@ -209,3 +209,35 @@ if __name__ == '__main__':
     test_transient_RLC()
     test_transient_nonlinear_C()
     #test_transient_get_diff()
+
+def test_transient_pcnr_diode():
+    """Test PCNR limiting in Transient simulation with a diode driven by a large voltage step.
+    
+    Reasoning:
+    Without PCNR, driving a non-linear junction with such an extreme voltage step 
+    (10V, 1ns rise time) usually causes the Newton-Raphson iteration's initial 
+    forward-voltage prediction to wildly overshoot (e.g. hundreds of volts). 
+    This would cause a Python OverflowError when evaluating I = Is * exp(V/Vt), 
+    or completely diverge.
+    
+    With our PCNR pnjlim algorithm enabled in Diode, the iteration limits the 
+    exponential argument gracefully. The solver successfully clamps and solves 
+    the diode at a realistic forward bias voltage.
+    """
+    from pycircuit.circuit.elements import Diode, VPulse, R
+    c = SubCircuit()
+    
+    # A 10V step source with very fast rise time (which typically causes NR overshoot)
+    c['VPulse'] = VPulse(1, gnd, v1=0, v2=10, tr=1e-9, tf=1e-9, pw=1e-3, per=2e-3)
+    c['R1'] = R(1, 2, r=10) # Small resistor to allow large current
+    c['D1'] = Diode(2, gnd)
+    
+    tran = Transient(c)
+    # The solver should converge without OverflowError due to PCNR pnjlim
+    res = tran.solve(tend=2e-3, timestep=1e-5)
+    
+    # Check that diode forward voltage settles around 0.7-0.9V (typical for 1A current)
+    # The current will be roughly (10V - 0.8V) / 10 = 0.92A
+    v_diode_max = max(res.v(2, gnd))
+    assert 0.5 < v_diode_max < 1.5, f"Diode voltage {v_diode_max} outside expected forward bias range"
+
