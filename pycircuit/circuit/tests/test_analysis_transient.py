@@ -263,3 +263,46 @@ def test_transient_coupled_lte():
     v_c_final = res.v(2, gnd)[-1]
     assert 9.0 < v_c_final < 10.1, f"RC voltage {v_c_final} is way off"
 
+
+def test_transient_adaptive_vs_coupled():
+    """Compare adaptive time stepping (Option B) vs coupled solver (Option A)."""
+    from pycircuit.circuit.elements import VPulse, R, C, Diode
+    c = SubCircuit()
+    
+    # Non-linear circuit to challenge the step size controllers
+    c['VPulse'] = VPulse(1, gnd, v1=0, v2=5, tr=1e-6, tf=1e-6, pw=10e-6, per=20e-6)
+    c['R1'] = R(1, 2, r=100)
+    c['D1'] = Diode(2, 3)
+    c['C1'] = C(3, gnd, c=1e-9)
+    c['R2'] = R(3, gnd, r=1e3)
+    
+    tran = Transient(c)
+    
+    # 1. Option B (Standard Adaptive LTE)
+    res_adapt = tran.solve(tend=40e-6, timestep=1e-7, coupled_lte=False)
+    steps_adapt = len(res_adapt.sweep_values)
+    
+    # 2. Option A (Coupled Schur Complement Solver)
+    res_coupled = tran.solve(tend=40e-6, timestep=1e-7, coupled_lte=True)
+    steps_coupled = len(res_coupled.sweep_values)
+    
+    # Compare final state accuracy
+    v_adapt_final = res_adapt.v(3, gnd)[-1]
+    v_coupled_final = res_coupled.v(3, gnd)[-1]
+    
+    err = abs(v_adapt_final - v_coupled_final)
+    assert err < 1e-2, f"Option A and Option B diverged! Error: {err}"
+    
+    # Compare step counts
+    # The coupled solver should ideally require fewer or comparable steps 
+    # since it never rejects steps, though it may take smaller steps on average.
+    ratio = steps_coupled / max(1, steps_adapt)
+    
+    # Only report/assert if they differ by more than 3x
+    if ratio > 3.0 or ratio < 0.33:
+        import warnings
+        warnings.warn(f"Time steps differ widely! Adaptive: {steps_adapt}, Coupled: {steps_coupled}")
+    
+    # Just to ensure it's not going haywire, bounded check
+    assert steps_coupled < steps_adapt * 10, "Coupled solver took way too many steps!"
+
