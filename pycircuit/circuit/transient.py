@@ -175,11 +175,11 @@ class Transient(Analysis):
         dt=self._dt
         a,b,b_=self._method[self.par.method] 
         resultEuler = (q-self._qlast[0])/dt
-        if self._iqlast is None: #first step always requires backward euler
+        
+        if getattr(self, '_is_first_step', False): #first step always requires backward euler
             geq=C/dt
-            n=self.cir.n
-            self._iqlast=self.toolkit.zeros((len(b),n)) #initialize history vectors at first step
             iq = resultEuler
+            self._diff_error = self.toolkit.zeros(len(q))
         else:
             geq=C/dt/b_
             resultTrap = 2*(q-self._qlast[0])/dt-self._iqlast[0]
@@ -237,9 +237,10 @@ class Transient(Analysis):
             x = x0 
         
         a,b,b_=self._method[self.par.method] 
-        self._qlast=self.toolkit.zeros((len(a),n))#initialize q-history vector
-        #shift in q(x0) to q-history
-        self._qlast = self.toolkit.concatenate((self.toolkit.array([self.cir.q(x)]),self._qlast))[:-1]
+        q0 = self.cir.q(x)
+        self._qlast = self.toolkit.array([q0 for _ in range(len(a))])
+        self._iqlast = self.toolkit.zeros((len(b), n))
+        
         #is this still needed
         order=1 #number of past x-values needed
         for i in range(order):
@@ -247,12 +248,13 @@ class Transient(Analysis):
         
         times = self.get_timestep(tend)
         timelist=[] #for plotting purposes
-        self._iqlast=None #forces first step to be Backward Euler
+        self._is_first_step = True
         for t,dt in times:
             timelist.append(t)
             self._dt=dt
             x,feval=self.solve_timestep(X[-1], t, provided_function=provided_function)
             X.append(copy(x))
+            self._is_first_step = False
         X = self.toolkit.array(X[1:]).T
         timelist = self.toolkit.array(timelist)
         

@@ -60,7 +60,7 @@ class myC(Circuit):
         return self.toolkit.array([q, -q])
     
 
-@unittest.skip("Skip failing test")
+
 def test_transient_RC():
     """Test of the of transient simulation of RC-circuit
     """
@@ -70,7 +70,7 @@ def test_transient_RC():
 
     n1 = c.add_node('net1')
     n2 = c.add_node('net2')
-    c['ISin'] = ISin(gnd, n1, ia=10, freq=500)    
+    c['Is'] = IS(gnd, n1, i=10)    
     c['R1'] = R(n1, gnd, r=1)
     c['R2'] = R(n1, n2, r=1e3)
     c['R3'] = R(n2, gnd, r=100e3)
@@ -132,9 +132,40 @@ def test_transient_get_diff():
     print(tran.parameters)
     a,b,b_=tran._method[tran.par.method] 
     tran._qlast=np.zeros((len(a),tran.cir.n))#initialize q-history vector
+    tran._iqlast=np.zeros((len(b),tran.cir.n))
+    tran._is_first_step = False
     iq,geq = tran.get_diff(q,Cmatrix)
     print(iq,geq)
 
+
+def test_transient_methods_step_response():
+    """Targeted step-response integration test to explicitly verify solvers.
+    """
+    circuit.default_toolkit = circuit.numeric
+    from pycircuit.circuit.elements import VS
+    
+    expected_results = {
+        'euler': [0.5, 0.75, 0.875],
+        'trapezoidal': [0.5, 5/6, 17/18],
+        'trap': [0.5, 5/6, 17/18],
+        'gear2': [0.5, 0.8, 0.94]
+    }
+    
+    for method, expected in expected_results.items():
+        c = SubCircuit()
+        n1 = c.add_node('n1')
+        n2 = c.add_node('n2')
+        c['vin'] = VS(n1, gnd, v=1.0)
+        c['R'] = R(n1, n2, r=1)
+        c['C'] = C(n2, gnd, c=1.0)
+        
+        tran = Transient(c)
+        tran.par.method = method
+        result = tran.solve(tend=3.0, timestep=1.0)
+        
+        computed = result.v(n2, gnd).y
+        
+        np.testing.assert_allclose(computed, expected, rtol=1e-5, err_msg=f"Failed for method {method}")
 
 if __name__ == '__main__':
     #test_transient_RC()
