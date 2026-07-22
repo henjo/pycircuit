@@ -8,3 +8,4 @@ Examples
    example3
    example4
    example5
+   example6

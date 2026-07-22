@@ -31,6 +31,9 @@ Circuit elements
 
 .. autoclass:: pycircuit.circuit.elements.VCVS_limited 
 
+.. autoclass:: pycircuit.circuit.elements.Idtmod
+
+
 
 
 

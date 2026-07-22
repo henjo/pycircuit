@@ -825,8 +825,19 @@ class Idtmod(Circuit):
     """Modulus integrator
     
     Output voltage is the time integral of input voltage,
-    modulus "modulus", and and offset.
-    
+    modulo "modulus", and an offset.
+
+    >>> import pycircuit.circuit._numeric as numeric
+    >>> from pycircuit.circuit.transient import Transient
+    >>> c = SubCircuit()
+    >>> nin, nout = c.add_nodes('in', 'out')
+    >>> c['vin'] = VS(nin, gnd, v=1.0)
+    >>> c['R'] = R(nout, gnd, r=1e3)
+    >>> c['Idtmod'] = Idtmod(nin, gnd, nout, gnd, modulus=1.0)
+    >>> tran = Transient(c, toolkit=numeric)
+    >>> result = tran.solve(tend=1.5, timestep=0.5)
+    >>> result.v(nout).y
+    array([ 0.5,  0. ,  0.5])
     """
     instparams = [Parameter(name='modulus', desc='Output modulus',unit='V/V',
                             default=1.),
@@ -835,25 +846,26 @@ class Idtmod(Circuit):
     
     terminals = ('iplus', 'iminus', 'oplus', 'ominus')
     branches = (Branch(Node('oplus'), Node('ominus')),)
+    linear = False
         
     def __init__(self, *args, **kvargs):
         super().__init__(*args, **kvargs)
         branchindex = -1 ## add last in matrix
-        idt_index = self.nodes.index(self.add_node('idt_node')) #note side effect
+        self._idt_index = self.nodes.index(self.add_node('idt_node')) #note side effect
         inpindex, innindex, outpindex, outnindex = \
             (self.nodes.index(self.nodenames[name]) for name in self.terminals)
         G = self.toolkit.zeros((self.n,self.n))
-        G[idt_index, inpindex] +=  1
-        G[idt_index, innindex] += -1
+        G[self._idt_index, inpindex] +=  1
+        G[self._idt_index, innindex] += -1
         G[outpindex, branchindex] +=  1
         G[outnindex, branchindex] += -1
-        G[branchindex, idt_index] += -1
+        G[branchindex, self._idt_index] += -1
         G[branchindex, outpindex] += -1
         G[branchindex, outnindex] +=  1
         self._G = G
         
         C = self.toolkit.zeros((self.n,self.n))
-        C[idt_index, idt_index] +=  1
+        C[self._idt_index, self._idt_index] +=  1
         self._C = C
         self.modulus = self.iparv.modulus
         self.offset = self.iparv.offset
@@ -864,12 +876,18 @@ class Idtmod(Circuit):
     def G(self, x, epar=defaultepar):
         return self._G
 
-    def q(self, x, epar=defaultepar): # q == -v_out in current implementation
-        #self._C is constant and _q is non-zero at one index only
-        _q = (self.toolkit.dot(self._C, x)  % -self.modulus)
-        _qmask = np.sign(np.abs(_q))
-        _q += _qmask*self.offset
-        return _q
+    def i(self, x, epar=defaultepar):
+        _i = self.toolkit.dot(self._G, x)
+        branchindex = -1
+        
+        # Remove the linear term for v_idt
+        _i[branchindex] -= self._G[branchindex, self._idt_index] * x[self._idt_index]
+        
+        # Add the nonlinear modulo term
+        v_mod = (-x[self._idt_index] % self.modulus) + self.offset
+        _i[branchindex] += v_mod
+        
+        return _i
 
 if __name__ == "__main__":
     import doctest
