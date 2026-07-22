@@ -11,6 +11,7 @@ Circuit analyzer
     theory
     modules
     elements
+    modular_engine
     time_stepping
     lte_dae
     pcnr_limiting

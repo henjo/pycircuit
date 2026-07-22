@@ -36,7 +36,9 @@ def test_vss_gear2_sudden_step_variation():
     
     # This should be standard gear2
     tran._dt = 1.1e-6
-    iq, geq = tran.active_integrator.compute_derivatives(q, cap, tran._dt, tran._qlast, tran._dt_last, False, tran.toolkit)
+    tran.base_integrator = tran._get_integrator()
+    tran.active_integrator = tran.base_integrator.check_order_drop(tran._dt, tran._dt_last, False)
+    iq, geq = tran.active_integrator.compute_derivatives(q, cap, tran._dt, tran._qlast, tran._iqlast, tran._dt_last, False, tran.toolkit)
     
     # Verify it looks like gear2 (alpha0 ~ 1.5, etc)
     # Gear2 formula: iq ~ (C/dt) * (alpha0*q + alpha1*q_last1 + alpha2*q_last2)
@@ -51,7 +53,7 @@ def test_vss_gear2_sudden_step_variation():
     # Sudden drop (e.g. hitting a sharp discontinuity)
     tran._dt = 1e-8
     integrator = tran.active_integrator.check_order_drop(tran._dt, tran._dt_last, False)
-    iq, geq = integrator.compute_derivatives(q, cap, tran._dt, tran._qlast, tran._dt_last, False, tran.toolkit)
+    iq, geq = integrator.compute_derivatives(q, cap, tran._dt, tran._qlast, tran._iqlast, tran._dt_last, False, tran.toolkit)
     assert isinstance(integrator, EulerIntegrator), "Should drop to Euler when step size drops by >10x"
     
     print("VSS Gear-2 Order Drop Test Passed!")
