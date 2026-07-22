@@ -232,7 +232,14 @@ class Transient(Analysis):
         n = self.cir.n
         self._dt = timestep
         if x0 is None:
-            x = self.toolkit.zeros(n)
+            # Calculate DC operating point as initial state
+            dc = DC(self.cir, toolkit=self.toolkit, refnode=refnode)
+            dc.par.reltol = self.par.reltol
+            dc.par.vabstol = self.par.vabstol
+            dc.par.iabstol = self.par.iabstol
+            dc.par.maxiter = self.par.maxiter
+            dc_res = dc.solve()
+            x = dc_res.x
         else:
             x = x0 
         

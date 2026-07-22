@@ -76,7 +76,8 @@ def test_transient_RC():
     c['R3'] = R(n2, gnd, r=100e3)
     c['C'] = C(n2, gnd, c=1e-5)
     tran = Transient(c)
-    res = tran.solve(tend=10e-3,timestep=1e-4)
+    x0_zeros = np.zeros(c.n)
+    res = tran.solve(tend=10e-3,timestep=1e-4, x0=x0_zeros)
     expected = 6.3
     assert  abs(res.v(n2,gnd)[-1] - expected) < 1e-2*expected,\
         'Does not match QUCS result.'
@@ -161,7 +162,8 @@ def test_transient_methods_step_response():
         
         tran = Transient(c)
         tran.par.method = method
-        result = tran.solve(tend=3.0, timestep=1.0)
+        x0_zeros = np.zeros(c.n)
+        result = tran.solve(tend=3.0, timestep=1.0, x0=x0_zeros)
         
         computed = result.v(n2, gnd).y
         
