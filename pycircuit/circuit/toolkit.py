@@ -27,6 +27,7 @@ from sympy.polys.matrices import DomainMatrix
 from sympy.polys.matrices.exceptions import DMError
 
 from . import _numeric
+from . import _sparse_numeric
 from . import _symbolic
 
 
@@ -74,6 +75,11 @@ class Toolkit:
 class NumericToolkit(Toolkit):
     """Numeric toolkit backed by numpy."""
     symbolic = False
+
+class SparseNumericToolkit(NumericToolkit):
+    """Numeric toolkit backed by scipy.sparse."""
+    symbolic = False
+    poly = False
 
 
 class SymbolicToolkit(Toolkit):
@@ -184,5 +190,6 @@ class SymbolicPolyToolkit(SymbolicToolkit):
 
 ## Singletons -- drop-in replacements for the old toolkit modules.
 numeric = NumericToolkit(_numeric)
+sparse_numeric = SparseNumericToolkit(_sparse_numeric)
 symbolic = SymbolicToolkit(_symbolic)
 symbolic_poly = SymbolicPolyToolkit(_symbolic)
