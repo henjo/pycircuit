@@ -238,7 +238,25 @@ class Transient(Analysis):
         abstol = self.toolkit.concatenate((self.par.iabstol * ones_nodes,
                                          self.par.vabstol * ones_branches))
 
+        was_break_step = False
         while t < tend:
+            # If the last step landed exactly on a breakpoint, we must restart the 
+            # integration history because the derivative is discontinuous here!
+            if was_break_step:
+                self._is_first_step = True
+            
+            next_t_break = self.cir.next_event(t)
+            
+            # Ensure next_t_break strictly advances time to avoid infinite dt=0 loops
+            if next_t_break <= t + 1e-14 * max(abs(t), 1.0):
+                next_t_break = self.cir.next_event(t + 1e-11 * max(abs(t), 1.0))
+            
+            if t + dt > next_t_break:
+                dt = float(next_t_break - t)
+                was_break_step = True
+            else:
+                was_break_step = False
+                
             if t + dt > tend:
                 dt = tend - t
             

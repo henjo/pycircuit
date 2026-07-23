@@ -185,6 +185,11 @@ class VS(Circuit):
         else:
             return self.toolkit.array([0, 0, 0])
 
+    def next_event(self, t):
+        if hasattr(self, 'function') and hasattr(self.function, 'next_event'):
+            return self.function.next_event(t)
+        return self.toolkit.inf
+
     def CY(self, x, w, epar=defaultepar):
         CY = super().CY(x, w)
         CY[2, 2] = self.iparv.noisePSD
@@ -258,6 +263,11 @@ class IS(Circuit):
             return self.toolkit.array([i, -i])
         else:
             return self.toolkit.array([0, 0])
+
+    def next_event(self, t):
+        if hasattr(self, 'function') and hasattr(self.function, 'next_event'):
+            return self.function.next_event(t)
+        return self.toolkit.inf
 
     def CY(self, x, w, epar=defaultepar):
         return  self.toolkit.array([[self.iparv.noisePSD, -self.iparv.noisePSD],
@@ -731,6 +741,10 @@ class Diode(Circuit):
 
         vnew = x[0] - x[1]
         vold = self._vlim
+        if abs(vnew - vold) < 1e-12:
+            self._vlim = vnew
+            return
+            
         VT = self.toolkit.kboltzmann * epar.T / self.toolkit.qelectron
         IS = self.iparv.IS
         
@@ -757,22 +771,31 @@ class Diode(Circuit):
             self._vlim = x[0]-x[1]
 
         VD = self._vlim
+        if hasattr(self, '_vlim_cached_G') and abs(VD - self._vlim_cached_G) < 1e-12:
+            return self._G_cached
+            
         VT = self.toolkit.kboltzmann * epar.T / self.toolkit.qelectron
         g = self.iparv.IS * self.toolkit.exp(VD/VT) / VT
-        return self.toolkit.array([[g, -g],
-                                   [-g, g]])
+        
+        self._G_cached = self.toolkit.array([[g, -g], [-g, g]])
+        self._vlim_cached_G = VD
+        return self._G_cached
 
     def i(self, x, epar=defaultepar):
         if not hasattr(self, '_vlim'):
             self._vlim = x[0]-x[1]
 
         VD = self._vlim
-        VT = self.toolkit.kboltzmann * epar.T / self.toolkit.qelectron
-        I = self.iparv.IS * (self.toolkit.exp(VD/VT)-1)
-        
-        # Predictor/Corrector Newton-Raphson (PCNR) Schur complement equivalent
-        # Subtract Geq * (vlim - v_nodes) from the effective current residual
-        g = self.iparv.IS * self.toolkit.exp(VD/VT) / VT
+        if hasattr(self, '_vlim_cached_i') and abs(VD - self._vlim_cached_i) < 1e-12:
+            I, g = self._I_cached, self._g_cached
+        else:
+            VT = self.toolkit.kboltzmann * epar.T / self.toolkit.qelectron
+            I = self.iparv.IS * (self.toolkit.exp(VD/VT)-1)
+            g = self.iparv.IS * self.toolkit.exp(VD/VT) / VT
+            self._I_cached = I
+            self._g_cached = g
+            self._vlim_cached_i = VD
+            
         v_nodes = x[0] - x[1]
         I_eff = I - g * (VD - v_nodes)
         

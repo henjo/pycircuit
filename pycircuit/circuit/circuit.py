@@ -543,7 +543,7 @@ class Circuit():
 
     def next_event(self, t):
         """Returns the time of the next event given the current time t"""
-        return inf
+        return self.toolkit.inf
     
     def name_state_vector(self, x, analysis=''):
         """Return a dictionary of the x-vector keyed by node and branch names
@@ -1193,6 +1193,14 @@ class SubCircuit(Circuit):
 
         """
         return self._add_element_submatrices('CY', x, (w, epar,))
+    def next_event(self, t):
+        """Returns the time of the next event given the current time t
+        by polling all elements in the subcircuit."""
+        events = [element.next_event(t) for element in self.elements.values() 
+                  if hasattr(element, 'next_event')]
+        if events:
+            return self.toolkit.maximum(t, min(events)) # Ensure we don't go backwards
+        return self.toolkit.inf
 
     def save_current(self, terminal):
         """Returns a circuit where the given terminal current is saved
