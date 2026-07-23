@@ -93,11 +93,18 @@ class Analysis(sim.Analysis):
             self.par.epar = epar
             
         try:
+            bypass = self.par.bypass
+        except (AttributeError, KeyError):
+            bypass = False
+
+        try:
             bypasstol = self.par.bypasstol
         except (AttributeError, KeyError):
             bypasstol = None
             
-        if bypasstol is None:
+        if not bypass:
+            bypasstol = -1.0
+        elif bypasstol is None:
             # Dynamically derive bypasstol from reltol if not explicitly set
             try:
                 reltol = self.par.reltol

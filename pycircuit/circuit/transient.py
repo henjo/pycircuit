@@ -95,6 +95,9 @@ class Transient(Analysis):
          Parameter(name='minbreak',
                    desc='Minimum time difference for breakpoint events', unit='s',
                    default=1e-14),
+         Parameter(name='bypass',
+                   desc='Enable device model bypassing', unit='',
+                   default=False),
          Parameter(name='bypasstol',
                    desc='Bypass tolerance for device models', unit='V',
                    default=None)]
