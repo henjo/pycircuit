@@ -88,7 +88,10 @@ class Transient(Analysis):
                    default=100),
          Parameter(name='method', 
                    desc='Differentiation method', unit='', 
-                   default="euler")]        
+                   default="euler"),
+         Parameter(name='uic',
+                   desc='Use initial conditions (skip DC OP computation)', unit='',
+                   default=False)]
 
     def __init__(self, cir, toolkit=None, irefnode=None, **kvargs):
         self.parameters = super(Transient, self).parameters + self.parameters            
@@ -206,14 +209,18 @@ class Transient(Analysis):
         self.irefnode=self.cir.get_node_index(refnode)
         n = self.cir.n
         if x0 is None:
-            # Use DC operating point if x0 is not provided
-            from pycircuit.circuit.dcanalysis import DC
-            dc = DC(self.cir)
-            try:
-                dc_res = dc.solve()
-                x0 = dc_res.x
-            except Exception:
-                x0 = self.toolkit.zeros(self.cir.n)
+            if self.par.uic:
+                # Use Initial Conditions = skip DC operating point, start at zero
+                x0 = self.toolkit.zeros(n)
+            else:
+                # Use DC operating point if x0 is not provided
+                from pycircuit.circuit.dcanalysis import DC
+                dc = DC(self.cir)
+                try:
+                    dc_res = dc.solve()
+                    x0 = dc_res.x
+                except Exception:
+                    x0 = self.toolkit.zeros(n)
             x = x0
         else:
             x = x0 
