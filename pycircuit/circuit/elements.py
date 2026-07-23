@@ -741,9 +741,16 @@ class Diode(Circuit):
 
         vnew = x[0] - x[1]
         vold = self._vlim
-        if abs(vnew - vold) < 1e-12:
-            self._vlim = vnew
-            return
+        try:
+            bypasstol = epar.bypasstol
+        except (AttributeError, KeyError):
+            bypasstol = 1e-12
+        try:
+            if abs(vnew - vold) < bypasstol:
+                self._vlim = vnew
+                return
+        except TypeError:
+            pass
             
         VT = self.toolkit.kboltzmann * epar.T / self.toolkit.qelectron
         IS = self.iparv.IS
@@ -771,8 +778,15 @@ class Diode(Circuit):
             self._vlim = x[0]-x[1]
 
         VD = self._vlim
-        if hasattr(self, '_vlim_cached_G') and abs(VD - self._vlim_cached_G) < 1e-12:
-            return self._G_cached
+        try:
+            bypasstol = epar.bypasstol
+        except (AttributeError, KeyError):
+            bypasstol = 1e-12
+        try:
+            if hasattr(self, '_vlim_cached_G') and abs(VD - self._vlim_cached_G) < bypasstol:
+                return self._G_cached
+        except TypeError:
+            pass
             
         VT = self.toolkit.kboltzmann * epar.T / self.toolkit.qelectron
         g = self.iparv.IS * self.toolkit.exp(VD/VT) / VT
@@ -786,7 +800,17 @@ class Diode(Circuit):
             self._vlim = x[0]-x[1]
 
         VD = self._vlim
-        if hasattr(self, '_vlim_cached_i') and abs(VD - self._vlim_cached_i) < 1e-12:
+        try:
+            bypasstol = epar.bypasstol
+        except (AttributeError, KeyError):
+            bypasstol = 1e-12
+        bypass = False
+        try:
+            bypass = hasattr(self, '_vlim_cached_i') and abs(VD - self._vlim_cached_i) < bypasstol
+        except TypeError:
+            pass
+            
+        if bypass:
             I, g = self._I_cached, self._g_cached
         else:
             VT = self.toolkit.kboltzmann * epar.T / self.toolkit.qelectron

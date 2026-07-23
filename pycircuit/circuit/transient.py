@@ -94,7 +94,10 @@ class Transient(Analysis):
                    default=False),
          Parameter(name='minbreak',
                    desc='Minimum time difference for breakpoint events', unit='s',
-                   default=1e-14)]
+                   default=1e-14),
+         Parameter(name='bypasstol',
+                   desc='Bypass tolerance for device models', unit='V',
+                   default=None)]
 
     def __init__(self, cir, toolkit=None, irefnode=None, **kvargs):
         self.parameters = super(Transient, self).parameters + self.parameters            

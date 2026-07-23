@@ -91,6 +91,21 @@ class Analysis(sim.Analysis):
         if epar is defaultepar:
             epar = epar.copy()
             self.par.epar = epar
+            
+        try:
+            bypasstol = self.par.bypasstol
+        except (AttributeError, KeyError):
+            bypasstol = None
+            
+        if bypasstol is None:
+            # Dynamically derive bypasstol from reltol if not explicitly set
+            try:
+                reltol = self.par.reltol
+            except (AttributeError, KeyError):
+                reltol = 1e-4
+            bypasstol = reltol * 1e-8
+            
+        epar.bypasstol = bypasstol
 
         if hasattr(toolkit, 'setup_analysis'):
             toolkit.setup_analysis(epar)

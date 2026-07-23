@@ -51,6 +51,9 @@ class DC(Analysis):
                   Parameter(name='maxiter', 
                             desc='Maximum number of iterations', unit='', 
                             default=100),
+                  Parameter(name='bypasstol',
+                            desc='Bypass tolerance for device models', unit='V',
+                            default=None),
                   Parameter(name='epar', desc='Environment parameters',
                             default=defaultepar)
                   ]
