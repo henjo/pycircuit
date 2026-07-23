@@ -70,3 +70,30 @@ def test_gmin_stepping_trigger():
         
     assert len(gmins_seen) > 0
     assert np.isclose(gmins_seen[0], 1e-3)
+
+def test_schur_coupled_newton():
+    from pycircuit.circuit.nrsolver import SchurCoupledNewton
+    
+    # System:
+    # F(x, h) = x + h - 5 = 0
+    # E(x, h) = 2x - 3h = 0
+    # Solution: x = 3, h = 2
+    
+    def eval_FJ(x, h):
+        F = np.array([x[0] + h - 5.0])
+        J_x = np.array([[1.0]])
+        J_h = np.array([1.0])
+        E = 2.0 * x[0] - 3.0 * h
+        E_x = np.array([2.0])
+        E_h = -3.0
+        return F, J_x, J_h, E, E_x, E_h
+        
+    solver = SchurCoupledNewton()
+    x0 = np.array([0.0])
+    h0 = 0.5
+    
+    # Needs a few iterations to scale dh if limited, but linear system should solve fast.
+    (x_res, h_res), iters = solver.solve_system((x0, h0), eval_FJ, numeric, 1e-3, 1e-6, 1e-6, 20)
+    
+    assert np.isclose(x_res[0], 3.0)
+    assert np.isclose(h_res, 2.0)
