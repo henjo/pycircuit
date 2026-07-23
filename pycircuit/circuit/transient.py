@@ -91,7 +91,10 @@ class Transient(Analysis):
                    default="euler"),
          Parameter(name='uic',
                    desc='Use initial conditions (skip DC OP computation)', unit='',
-                   default=False)]
+                   default=False),
+         Parameter(name='minbreak',
+                   desc='Minimum time difference for breakpoint events', unit='s',
+                   default=1e-14)]
 
     def __init__(self, cir, toolkit=None, irefnode=None, **kvargs):
         self.parameters = super(Transient, self).parameters + self.parameters            
@@ -255,8 +258,8 @@ class Transient(Analysis):
             next_t_break = self.cir.next_event(t)
             
             # Ensure next_t_break strictly advances time to avoid infinite dt=0 loops
-            if next_t_break <= t + 1e-14 * max(abs(t), 1.0):
-                next_t_break = self.cir.next_event(t + 1e-11 * max(abs(t), 1.0))
+            if next_t_break <= t + self.par.minbreak * max(abs(t), 1.0):
+                next_t_break = self.cir.next_event(t + (self.par.minbreak * 1e3) * max(abs(t), 1.0))
             
             if t + dt > next_t_break:
                 dt = float(next_t_break - t)
