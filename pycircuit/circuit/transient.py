@@ -98,6 +98,9 @@ class Transient(Analysis):
          Parameter(name='bypass',
                    desc='Enable device model bypassing', unit='',
                    default=False),
+         Parameter(name='minstep',
+                   desc='Minimum timestep to prevent infinite loops', unit='s',
+                   default=1e-18),
          Parameter(name='bypasstol',
                    desc='Bypass tolerance for device models', unit='V',
                    default=None)]
@@ -283,6 +286,8 @@ class Transient(Analysis):
                 x, feval, J, f = self.solve_timestep(X[-1], next_t, provided_function=provided_function)
             except NoConvergenceError:
                 dt = dt * 0.25
+                if dt < getattr(self.par, 'minstep', 1e-18):
+                    raise RuntimeError(f"Transient solver failed to converge: timestep shrank below {getattr(self.par, 'minstep', 1e-18):g}s at t={t}")
                 continue
                 
             if not fixed_timestep:
@@ -307,6 +312,8 @@ class Transient(Analysis):
                 
                 if not accept:
                     dt = dt_next
+                    if dt < getattr(self.par, 'minstep', 1e-18):
+                        raise RuntimeError(f"Transient solver integration error: timestep shrank below {getattr(self.par, 'minstep', 1e-18):g}s at t={t}")
                     continue
                 else:
                     next_dt = dt_next
