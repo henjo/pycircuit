@@ -1,10 +1,11 @@
 import pytest
 import numpy as np
-from pycircuit.circuit.nrsolver import NonLinearSolver, StandardNewton, GminSteppingNewton, SourceSteppingNewton, NoConvergenceError
+from pycircuit.circuit.nrsolver import NonLinearSolver, StandardNewton, DampedNewton, GminSteppingNewton, SourceSteppingNewton, NoConvergenceError
+from pycircuit.circuit.scaler import NoneScaler, RowMaxScaler, RowL2Scaler, SinkhornKnoppScaler
 from pycircuit.circuit import numeric
 
 class MockFailingSolver(NonLinearSolver):
-    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None):
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None):
         try:
             eval_FJ(x0)
         except Exception:
@@ -15,7 +16,7 @@ class MockSourceSteppingBaseSolver(NonLinearSolver):
     def __init__(self):
         self.call_count = 0
         
-    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None):
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None):
         self.call_count += 1
         # The first call is the direct solve (no source stepping), we want it to fail
         if self.call_count == 1:
@@ -52,7 +53,7 @@ def test_gmin_stepping_trigger():
         return x, np.eye(len(x))
 
     class MockFailingGmin(NonLinearSolver):
-        def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None):
+        def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None):
             try:
                 F, J = eval_FJ(x0)
                 gmin = J[0,0] - 1.0
@@ -97,3 +98,52 @@ def test_schur_coupled_newton():
     
     assert np.isclose(x_res[0], 3.0)
     assert np.isclose(h_res, 2.0)
+
+def test_damped_newton_backtracking():
+    solver = DampedNewton()
+    
+    # x^2 - 4 = 0 (roots at -2, +2)
+    # F = x^2 - 4
+    # J = 2x
+    # Standard Newton from x0=100 takes x1 = 100 - (10000-4)/200 = 50.02
+    def eval_FJ(x):
+        return np.array([x[0]**2 - 4.0]), np.array([[2.0 * x[0]]])
+        
+    x0 = np.array([100.0])
+    x_res, iters = solver.solve_system(x0, eval_FJ, numeric, 1e-4, 1e-12, 1e-12, 100)
+    
+    assert np.isclose(x_res[0], 2.0)
+
+@pytest.mark.parametrize("scaler_class", [NoneScaler, RowMaxScaler, RowL2Scaler, SinkhornKnoppScaler])
+def test_scalers_linear_system(scaler_class):
+    # Create a highly ill-conditioned linear system J * x = -F
+    # Row 1 is huge, Row 2 is tiny
+    J = np.array([[1e9, 2e9], [3e-9, 4e-9]])
+    # True solution: x = [1, -1]
+    # -F = J * x = [ -1e9, -1e-9 ] => F = [ 1e9, 1e-9 ]
+    F = np.array([1e9, 1e-9])
+    
+    scaler = scaler_class()
+    J_s, F_s, c_scale = scaler.scale(J, F, numeric)
+    
+    dx_s = numeric.linearsolver(J_s, -F_s)
+    dx = scaler.unscale_solution(dx_s, c_scale, numeric)
+    
+    assert np.allclose(dx, [1.0, -1.0])
+
+def test_sinkhorn_knopp_matrix_stochasticity():
+    scaler = SinkhornKnoppScaler(max_iter=10)
+    
+    J = np.array([[1.0, 100.0, 0.5],
+                  [10.0, 1.0, 50.0],
+                  [0.1, 0.05, 1.0]])
+    F = np.array([1.0, 1.0, 1.0])
+    
+    J_s, _, _ = scaler.scale(J, F, numeric)
+    
+    # Check if the matrix is doubly stochastic (row/col sums near 1)
+    row_sums = np.sum(np.abs(J_s), axis=1)
+    col_sums = np.sum(np.abs(J_s), axis=0)
+    
+    assert np.allclose(row_sums, 1.0, atol=1e-2)
+    assert np.allclose(col_sums, 1.0, atol=1e-2)

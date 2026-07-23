@@ -27,6 +27,9 @@ class IntegralController(StepController):
             err = 0.5
             return True, h_curr
         
+        # --- LOCAL TRUNCATION ERROR (LTE) CALCULATION ---
+        # 1. Ask the active integrator (e.g. Gear2, Trapezoidal) to calculate the 
+        #    raw unscaled truncation error vector (Eg) based on charge curvature.
         Eg, p = active_integrator.compute_lte(
             q_curr=q_curr,
             h_curr=h_curr,
@@ -37,6 +40,8 @@ class IntegralController(StepController):
             toolkit=toolkit
         )
         
+        # 2. Convert charge error into voltage error by multiplying by the 
+        #    inverse of the Jacobian matrix: lte = J^-1 * Eg
         from pycircuit.circuit.analysis import remove_row_col
         J_reduced, Eg_reduced = remove_row_col((J, Eg), irefnode, toolkit)
         
@@ -47,16 +52,20 @@ class IntegralController(StepController):
             
         lte = toolkit.concatenate((lte_reduced[:irefnode], toolkit.array([0.0]), lte_reduced[irefnode:]))
         
+        # 3. Calculate dynamic tolerance for each node based on its current voltage level
         etol = reltol * toolkit.maximum(abs(x_curr), abs(x_last)) + abstol
-        err_array = abs(lte) / etol
         
-        # Max error across all variables
+        # 4. Normalize the error
+        err_array = abs(lte) / etol
         err = float(np.max(err_array))
         
+        # --- STEP REJECTION / ACCEPTANCE ---
         if err > 1.0:
-            # Step rejected
+            # Step rejected: The curvature was too sharp for the current timestep.
+            # We shrink h_next and return False to force the solver to recalculate.
             h_next = h_curr * max(0.2, (1.0 / err)**0.5)
             return False, h_next
+
             
         # Step accepted: predict next size
         h_next = h_curr * min(2.0, (TRTOL / max(err, 1e-12))**0.5)

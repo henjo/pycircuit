@@ -214,6 +214,8 @@ def test_current_probing():
             
 def test_current_probing_wo_branch():
     """Test current probing with a current divider circuit without current probe"""
+    import pycircuit.circuit.circuit
+    pycircuit.circuit.circuit.default_toolkit = symbolic
 
     s = sympy.Symbol('s')
 

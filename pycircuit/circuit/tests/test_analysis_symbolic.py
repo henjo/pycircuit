@@ -19,6 +19,13 @@ from numpy.testing import assert_equal
 ## Run every symbolic test on both the stock and the polynomial-domain toolkit
 TOOLKITS = [symbolic, symbolic_poly]
 
+@pytest.fixture(autouse=True)
+def reset_default_toolkit():
+    """Reset the default toolkit after each test to prevent leaking symbolic."""
+    from pycircuit.circuit.toolkit import numeric
+    yield
+    pycircuit.circuit.circuit.default_toolkit = numeric
+
 def check_symbolic_ac(toolkit):
     pycircuit.circuit.circuit.default_toolkit = toolkit
     cir = SubCircuit()

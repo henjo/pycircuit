@@ -72,7 +72,11 @@ class Analysis(sim.Analysis):
     parameters = [Parameter(name='analysis', desc='Analysis name', 
                             default=None),
                   Parameter(name='epar', desc='Environment parameters',
-                            default=defaultepar)]
+                            default=defaultepar),
+                  Parameter(name='nrsolver', desc='Newton-Raphson solver algorithm',
+                            default='standard'),
+                  Parameter(name='scaler', desc='Jacobian matrix scaling algorithm',
+                            default='none')]
 
     def __init__(self, cir, toolkit=None, **kvargs):
         
@@ -120,6 +124,30 @@ class Analysis(sim.Analysis):
         self.cir = cir
         self.result = None
         self.epar = epar
+
+    def _get_nrsolver(self):
+        from pycircuit.circuit.nrsolver import StandardNewton, DampedNewton
+        method = getattr(self.par, 'nrsolver', 'standard').lower()
+        if method == 'standard':
+            return StandardNewton()
+        elif method == 'damped':
+            return DampedNewton()
+        else:
+            raise ValueError(f"Unknown Newton-Raphson solver: {method}")
+            
+    def _get_scaler(self):
+        from pycircuit.circuit.scaler import NoneScaler, RowMaxScaler, RowL2Scaler, SinkhornKnoppScaler
+        method = getattr(self.par, 'scaler', 'none').lower()
+        if method == 'none':
+            return NoneScaler()
+        elif method == 'max':
+            return RowMaxScaler()
+        elif method == 'l2':
+            return RowL2Scaler()
+        elif method == 'sinkhorn':
+            return SinkhornKnoppScaler(max_iter=5)
+        else:
+            raise ValueError(f"Unknown matrix scaler: {method}")
 
 def fsolve(f, x0, args=(), full_output=False, maxiter=200,
            xtol=1e-6, reltol=1e-4, abstol=1e-12, toolkit='Numeric', limiter=None):

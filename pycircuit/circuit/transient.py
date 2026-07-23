@@ -143,8 +143,9 @@ class Transient(Analysis):
             self.cir.limit(x, x0_full, self.epar)
             return self.toolkit.concatenate((x[:self.irefnode], x[self.irefnode+1:]))
 
-        from pycircuit.circuit.nrsolver import StandardNewton, NoConvergenceError
-        solver = StandardNewton()
+        from pycircuit.circuit.nrsolver import NoConvergenceError
+        solver = self._get_nrsolver()
+        scaler = self._get_scaler()
         try:
             x_res, _ = solver.solve_system(
                 x0,
@@ -154,7 +155,8 @@ class Transient(Analysis):
                 abstol,
                 xtol,
                 self.par.maxiter,
-                limiter=limiter_func
+                limiter=limiter_func,
+                scaler=scaler
             )
         except Exception as e:
             if "Singular" in str(e) or "linearsolver" in str(e).lower() or "LinAlgError" in str(e):
@@ -244,6 +246,8 @@ class Transient(Analysis):
         self._iqlast = self.toolkit.zeros((hist_len, n))
         
         X.append(copy(x))
+        if hasattr(self.cir, 'accept_step'):
+            self.cir.accept_step(0.0, X[-1], self.epar)
         
         timelist = []
         self._is_first_step = True
@@ -259,8 +263,25 @@ class Transient(Analysis):
 
         was_break_step = False
         while t < tend:
-            # If the last step landed exactly on a breakpoint, we must restart the 
-            # integration history because the derivative is discontinuous here!
+            # --- BREAKPOINT HANDLING ---
+            # A breakpoint generally signifies a mathematical discontinuity (such as 
+            # the sharp corner of a VPulse/IPulse square wave).
+            # 
+            # When the solver approaches a breakpoint, it does three vital things to 
+            # maintain mathematical stability:
+            # 1. Truncates Step (dt): If normal step size overshoots the breakpoint, 
+            #    it forces dt to land *exactly* on the breakpoint timestamp.
+            # 2. Flags the Breakpoint: was_break_step is set to True.
+            # 3. Resets Integrator History: Immediately after crossing the breakpoint 
+            #    (was_break_step == True in the next iteration), it sets 
+            #    `self._is_first_step = True`. 
+            #    
+            # Why reset the history? Integrators (like Gear2 or Trapezoidal) use 
+            # past state history to fit a smooth mathematical polynomial. If they 
+            # tried to fit a polynomial across a sharp discontinuous edge, the 
+            # simulation would suffer from massive artificial ringing and overshoot.
+            # Resetting the history forces a drop to a safer 1st-order method 
+            # (like Backward Euler) to gracefully navigate the corner and rebuild.
             if was_break_step:
                 self._is_first_step = True
             
@@ -322,6 +343,15 @@ class Transient(Analysis):
             timelist.append(t)
             X.append(copy(x))
             
+            if hasattr(self.cir, 'accept_step'):
+                self.cir.accept_step(t, X[-1], self.epar)
+            
+            # --- INTEGRATOR HISTORY RING BUFFERS ---
+            # To support 2nd-order (and higher) integration methods, we must preserve the 
+            # charge (q) and current/derivative (iq) of previous timesteps.
+            # We push the newest values to index 0, and slice off the oldest `[:-1]` to 
+            # maintain a constant buffer size (e.g. size 2 for Gear2).
+            # This acts as a mathematical sliding window across the simulation time.
             self._iqlast = self.toolkit.concatenate((self.toolkit.array([self._iq]), self._iqlast))[:-1]
             self._qlast = self.toolkit.concatenate((self.toolkit.array([self.cir.q(x)]), self._qlast))[:-1]
             self._dt_last = dt
@@ -367,6 +397,8 @@ class Transient(Analysis):
         self._iqlast = self.toolkit.zeros((hist_len, n))
         
         X.append(copy(x))
+        if hasattr(self.cir, 'accept_step'):
+            self.cir.accept_step(0.0, X[-1], self.epar)
         timelist = []
         
         self._is_first_step = True
@@ -517,6 +549,9 @@ class Transient(Analysis):
             h = h_curr
             timelist.append(t)
             X.append(copy(x_curr))
+            
+            if hasattr(self.cir, 'accept_step'):
+                self.cir.accept_step(t, X[-1], self.epar)
             
             self._dt = h_curr
             self._dt_last = h_curr

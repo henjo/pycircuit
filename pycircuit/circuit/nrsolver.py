@@ -2,6 +2,8 @@ from abc import ABC, abstractmethod
 import numpy as np
 
 from pycircuit.circuit.analysis import NoConvergenceError
+from pycircuit.circuit.scaler import NoneScaler
+
 class NonLinearSolver(ABC):
     """
     Abstract Base Class for Non-Linear Algebraic Solvers.
@@ -12,7 +14,7 @@ class NonLinearSolver(ABC):
     """
     
     @abstractmethod
-    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None):
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None):
         pass
 
 
@@ -22,13 +24,20 @@ class StandardNewton(NonLinearSolver):
     Used natively by DCAnalysis and standard adaptive Transient simulations.
     """
     
-    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None):
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None):
         x = x0
+        if scaler is None:
+            scaler = NoneScaler()
+            
         for i in range(maxiter):
             F, J = eval_FJ(x)
             
+            # --- EQUILIBRATION SCALING ---
+            J_s, F_s, s_vec = scaler.scale(J, F, toolkit)
+            
             try:
-                xdiff = toolkit.linearsolver(J, -F)
+                xdiff = toolkit.linearsolver(J_s, -F_s)
+                xdiff = scaler.unscale_solution(xdiff, s_vec, toolkit)
             except Exception as e:
                 raise NoConvergenceError(f"Singular Jacobian: {str(e)}")
             
@@ -38,7 +47,17 @@ class StandardNewton(NonLinearSolver):
                 # Recompute xdiff based on limited step
                 xdiff = x_next - x
                 
-            # KCL Scale: Upper bound of absolute branch currents/voltages
+            # --- CONVERGENCE CRITERIA ---
+            # To declare victory, two conditions must be met:
+            # 1. Voltage/Current Update (conv_x): The state vector (x) must stop changing.
+            #    We check if the difference (xdiff) is smaller than a relative tolerance
+            #    based on the current values, plus an absolute floor (xtol) to prevent 
+            #    division-by-zero for zero-crossing nodes.
+            
+            # 2. KCL Residual (conv_f): The sum of currents at each node (F) must be near zero.
+            #    However, 1mA error is huge for a micro-power circuit, but tiny for a 100A power 
+            #    supply. Therefore, we scale the tolerance dynamically (I_scale) by looking at the 
+            #    absolute magnitude of currents flowing into the node.
             I_scale = toolkit.dot(abs(J), abs(x_next)) + abs(F)
             
             conv_x = toolkit.alltrue(abs(xdiff) < reltol * toolkit.maximum(abs(x_next), abs(x)) + xtol)
@@ -50,6 +69,59 @@ class StandardNewton(NonLinearSolver):
             x = x_next
             
         raise NoConvergenceError(f"StandardNewton failed to converge after {maxiter} iterations.")
+
+
+class DampedNewton(NonLinearSolver):
+    """
+    Damped Newton-Raphson Solver (Backtracking Line Search).
+    If a full step causes the residual to increase, the step size (alpha) is halved.
+    """
+    
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None):
+        x = x0
+        if scaler is None:
+            scaler = NoneScaler()
+            
+        for i in range(maxiter):
+            F, J = eval_FJ(x)
+            F_norm = toolkit.sum(abs(F))
+            
+            J_s, F_s, s_vec = scaler.scale(J, F, toolkit)
+            
+            try:
+                xdiff = toolkit.linearsolver(J_s, -F_s)
+                xdiff = scaler.unscale_solution(xdiff, s_vec, toolkit)
+            except Exception as e:
+                raise NoConvergenceError(f"Singular Jacobian: {str(e)}")
+            
+            alpha = 1.0
+            x_next = x + xdiff
+            if limiter is not None:
+                x_next = limiter(x_next, x)
+                xdiff = x_next - x
+                
+            # Backtracking line search
+            while alpha > 0.05:
+                x_test = x + alpha * xdiff
+                F_test, _ = eval_FJ(x_test)
+                if toolkit.sum(abs(F_test)) <= F_norm * (1.0 - 1e-4 * alpha):
+                    # Step accepted
+                    x_next = x_test
+                    F = F_test
+                    break
+                alpha *= 0.5
+            
+            I_scale = toolkit.dot(abs(J), abs(x_next)) + abs(F)
+            
+            conv_x = toolkit.alltrue(abs(alpha * xdiff) < reltol * toolkit.maximum(abs(x_next), abs(x)) + xtol)
+            conv_f = toolkit.alltrue(abs(F) < reltol * I_scale + abstol)
+            
+            if conv_x and conv_f:
+                return x_next, i + 1
+                
+            x = x_next
+            
+        raise NoConvergenceError(f"DampedNewton failed to converge after {maxiter} iterations.")
 
 
 class GminSteppingNewton(NonLinearSolver):
@@ -64,10 +136,10 @@ class GminSteppingNewton(NonLinearSolver):
     def __init__(self, base_solver: NonLinearSolver):
         self.base_solver = base_solver
         
-    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None):
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None):
         try:
             # First, attempt to solve the pure system without Gmin injection
-            return self.base_solver.solve_system(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter)
+            return self.base_solver.solve_system(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler)
         except NoConvergenceError:
             pass # Proceed to Gmin stepping
             
@@ -85,12 +157,12 @@ class GminSteppingNewton(NonLinearSolver):
                 return F_gmin, J_gmin
                 
             try:
-                x_curr, _ = self.base_solver.solve_system(x_curr, eval_FJ_with_gmin, toolkit, reltol, abstol, xtol, maxiter, limiter)
+                x_curr, _ = self.base_solver.solve_system(x_curr, eval_FJ_with_gmin, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler)
             except NoConvergenceError:
                 raise NoConvergenceError(f"Gmin Stepping failed at gmin={gmin}")
                 
         # Finally, solve the exact pure system using the guided initial guess
-        return self.base_solver.solve_system(x_curr, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter)
+        return self.base_solver.solve_system(x_curr, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler)
 
 class SourceSteppingNewton(NonLinearSolver):
     """
@@ -103,10 +175,10 @@ class SourceSteppingNewton(NonLinearSolver):
         self.base_solver = base_solver
         self.source_callback = source_callback
         
-    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None):
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None):
         try:
             # Note: eval_FJ natively evaluates sources at 1.0
-            return self.base_solver.solve_system(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter)
+            return self.base_solver.solve_system(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler)
         except NoConvergenceError:
             pass # Proceed to source stepping
             
@@ -121,11 +193,11 @@ class SourceSteppingNewton(NonLinearSolver):
                 return self.source_callback(x, lambda_)
                 
             try:
-                x_curr, _ = self.base_solver.solve_system(x_curr, eval_FJ_with_source, toolkit, reltol, abstol, xtol, maxiter, limiter)
+                x_curr, _ = self.base_solver.solve_system(x_curr, eval_FJ_with_source, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler)
             except NoConvergenceError:
                 raise NoConvergenceError(f"Source Stepping failed at lambda={lambda_}")
                 
-        return self.base_solver.solve_system(x_curr, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter)
+        return self.base_solver.solve_system(x_curr, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler)
 
 class SchurCoupledNewton(NonLinearSolver):
     """
@@ -136,7 +208,7 @@ class SchurCoupledNewton(NonLinearSolver):
     (F, J_x, J_h, E, E_x, E_h)
     """
     
-    def solve_system(self, S0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None):
+    def solve_system(self, S0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None):
         x_curr, h_curr = S0
         
         for i in range(maxiter):

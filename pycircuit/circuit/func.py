@@ -36,6 +36,14 @@ class Sin(TimeFunction):
         return t + (nextevent_phase - phase) / self.omega
         
     def f(self, t):
+        # --- DAMPED SINE WAVE EQUATION ---
+        # The SPICE sine wave is defined as a decaying/growing sinusoid:
+        # V(t) = V_offset + V_amplitude * exp(-theta * (t - td)) * sin(2*pi*freq*(t - td) + phase)
+        # 
+        # Parameters:
+        # - theta: The damping factor (1/seconds). If theta > 0, the sine wave exponentially decays.
+        # - td: Time delay before the sine wave begins.
+        # - omega: Angular frequency (2 * pi * freq).
         toolkit = self.toolkit
         return self.offset + \
             self.amplitude * toolkit.exp(-self.theta*(t-self.td)) * \
@@ -48,6 +56,12 @@ class Pulse(TimeFunction):
         self.toolkit = toolkit
 
     def next_event(self, t):
+        """
+        Dynamically calculates the very next breakpoint after time t.
+        Because Pulse is periodic, this avoids pre-allocating an infinite 
+        number of breakpoints. The modulo arithmetic ensures that only the
+        immediate next edge is returned.
+        """
         if self.per != 0:
             tmod = t % self.per
         else:
@@ -67,22 +81,114 @@ class Pulse(TimeFunction):
             return self.toolkit.ceil(t / self.per) * self.per
 
     def f(self, t):
+        # --- PERIODIC PULSE WAVEFORM EVALUATION ---
         toolkit = self.toolkit
         
+        # Modulo arithmetic folds continuous time t into the [0, PER) base period
         if self.per != 0:
             t = t % self.per
         
+        # Phase 1: Initial Delay (td)
         if t < self.td:
             return self.v1
+        # Phase 2: Rising Edge (tr)
         elif t < self.td + self.tr:
             return self.v1 + ((self.v2 - self.v1) / self.tr) * (t - self.td)
+        # Phase 3: Pulse Width / Plateau (pw)
         elif t < self.td + self.tr + self.pw:
             return self.v2
+        # Phase 4: Falling Edge (tf)
         elif t < self.td + self.tr + self.pw + self.tf:
             return self.v2 + \
                 (self.v1 - self.v2) / self.tf * (t - (self.td+self.tr+self.pw))
+        # Phase 5: Off-time (remainder of the period)
         else:
             return self.v1
+
+class PWL(TimeFunction):
+    def __init__(self, t_v_pairs, toolkit=numeric):
+        """t_v_pairs is a flat list/array of alternating time and voltage/current: [t0, v0, t1, v1, ...]"""
+        self.toolkit = toolkit
+        if len(t_v_pairs) % 2 != 0:
+            raise ValueError("PWL requires an even number of values [t0, v0, t1, v1, ...]")
+        self.times = t_v_pairs[0::2]
+        self.values = t_v_pairs[1::2]
+        
+    def next_event(self, t):
+        for pt in self.times:
+            if pt > t:
+                return pt
+        return self.toolkit.inf
+        
+    def f(self, t):
+        if t <= self.times[0]:
+            return self.values[0]
+        if t >= self.times[-1]:
+            return self.values[-1]
+            
+        # Interpolate
+        for i in range(len(self.times) - 1):
+            if self.times[i] <= t <= self.times[i+1]:
+                t0, v0 = self.times[i], self.values[i]
+                t1, v1 = self.times[i+1], self.values[i+1]
+                if t1 == t0:
+                    return v1
+                return v0 + (v1 - v0) * (t - t0) / (t1 - t0)
+        return self.values[-1]
+
+class Exp(TimeFunction):
+    def __init__(self, v1, v2, td1, tau1, td2, tau2, toolkit=numeric):
+        self.v1, self.v2 = v1, v2
+        self.td1, self.tau1 = td1, tau1
+        self.td2, self.tau2 = td2, tau2
+        self.toolkit = toolkit
+        
+    def next_event(self, t):
+        if t < self.td1: return self.td1
+        if t < self.td2: return self.td2
+        return self.toolkit.inf
+        
+    def f(self, t):
+        if t <= self.td1:
+            return self.v1
+        elif t <= self.td2:
+            return self.v1 + (self.v2 - self.v1) * (1 - self.toolkit.exp(-(t - self.td1) / self.tau1))
+        else:
+            v_at_td2 = self.v1 + (self.v2 - self.v1) * (1 - self.toolkit.exp(-(self.td2 - self.td1) / self.tau1))
+            return v_at_td2 + (self.v1 - v_at_td2) * (1 - self.toolkit.exp(-(t - self.td2) / self.tau2))
+
+class AM(TimeFunction):
+    def __init__(self, vo, va, fc, fm, m, toolkit=numeric):
+        self.vo, self.va = vo, va
+        self.fc, self.fm = fc, fm
+        self.m = m
+        self.toolkit = toolkit
+        
+    def next_event(self, t):
+        return self.toolkit.inf
+        
+    def f(self, t):
+        # vo + va * (1 + m * sin(2*pi*fm*t)) * sin(2*pi*fc*t)
+        pi = self.toolkit.pi
+        sin = self.toolkit.sin
+        mod = 1.0 + self.m * sin(2.0 * pi * self.fm * t)
+        return self.vo + self.va * mod * sin(2.0 * pi * self.fc * t)
+
+class SFFM(TimeFunction):
+    def __init__(self, vo, va, fc, mdi, fm, toolkit=numeric):
+        self.vo, self.va = vo, va
+        self.fc, self.fm = fc, fm
+        self.mdi = mdi
+        self.toolkit = toolkit
+        
+    def next_event(self, t):
+        return self.toolkit.inf
+        
+    def f(self, t):
+        # vo + va * sin(2*pi*fc*t + mdi * sin(2*pi*fm*t))
+        pi = self.toolkit.pi
+        sin = self.toolkit.sin
+        return self.vo + self.va * sin(2.0 * pi * self.fc * t + self.mdi * sin(2.0 * pi * self.fm * t))
 
 class ScalarFunction():
     """Scalar function"""

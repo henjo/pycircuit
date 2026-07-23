@@ -81,9 +81,9 @@ class DC(Analysis):
             dFdx = self.cir.G(x, self.epar)
             return f, dFdx
             
-        from pycircuit.circuit.nrsolver import StandardNewton, GminSteppingNewton, SourceSteppingNewton
+        from pycircuit.circuit.nrsolver import GminSteppingNewton, SourceSteppingNewton
         
-        base_solver = StandardNewton()
+        base_solver = self._get_nrsolver()
         gmin_solver = GminSteppingNewton(base_solver)
         solver_chain = SourceSteppingNewton(gmin_solver, refnode_removed(source_callback, self.irefnode, self.toolkit))
 
@@ -122,6 +122,7 @@ class DC(Analysis):
             return self.toolkit.concatenate((x[:self.irefnode], x[self.irefnode+1:]))
 
         try:
+            scaler = self._get_scaler()
             x_res, _ = solver.solve_system(
                 x0,
                 refnode_removed(func, self.irefnode, self.toolkit),
@@ -130,7 +131,8 @@ class DC(Analysis):
                 abstol,
                 xtol,
                 self.par.maxiter,
-                limiter=limiter_func
+                limiter=limiter_func,
+                scaler=scaler
             )
         except Exception as e:
             if "Singular" in str(e) or "linearsolver" in str(e).lower():

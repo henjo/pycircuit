@@ -157,8 +157,11 @@ class ParameterDict(ObserverSubject):
             return self._values[key]
         else:
             if key=='_parameters' and '_parameters' not in self.__dict__:
-                raise AttributeError
-            return self.__dict__[key]
+                raise AttributeError(key)
+            try:
+                return self.__dict__[key]
+            except KeyError:
+                raise AttributeError(key)
 
     def __setattr__(self, key, value):
         if hasattr(self, '_parameters') and key in self._parameters:

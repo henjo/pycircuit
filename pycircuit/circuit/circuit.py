@@ -238,6 +238,12 @@ class Circuit():
         if hasattr(self, 'update'):
             self.iparv.attach(self)
             self.update(self.ipar)
+            
+        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
+            if hasattr(self, 'eval_i'):
+                self.toolkit.generate_eval_i_and_G(self)
+            if hasattr(self, 'eval_q'):
+                self.toolkit.generate_eval_q_and_C(self)
 
     def __eq__(self, a):
         return self.__class__ == a.__class__ and \
@@ -421,6 +427,12 @@ class Circuit():
             if not self.nodes.index(node) < self._nterminalnodes:
                 self.nodes.remove(node)
                 self.nodes.insert(self._nterminalnodes-1, node)
+                
+    def accept_step(self, t, x, epar):
+        """Called by the transient solver when a time step is accepted.
+        This allows elements with state history (e.g. T-Lines) to update their internal history buffers.
+        """
+        pass
   
     def connect_terminals(self, **kvargs):
         """Connect nodes to terminals by using keyword arguments
@@ -494,39 +506,33 @@ class Circuit():
 
     def G(self, x, epar=defaultepar):
         """Calculate the G (trans)conductance matrix given the x-vector"""
+        if hasattr(self, 'eval_i_and_G'):
+            i_vec, G_mat = self.eval_i_and_G(x, epar)
+            return G_mat
         return self.toolkit.zeros((self.n, self.n))
 
     def C(self, x, epar=defaultepar):
         """Calculate the C (transcapacitance) matrix given the x-vector"""
+        if hasattr(self, 'eval_q_and_C'):
+            q_vec, C_mat = self.eval_q_and_C(x, epar)
+            return C_mat
         return self.toolkit.zeros((self.n, self.n))
 
     def u(self, t=0.0, epar=defaultepar, analysis=None):
-        """Calculate the u column-vector of the circuit at time t
-
-        Arguments
-        ---------
-
-        epar -- ParameterDict with environment parameters such as temperature
-        analysis -- This argument gives the possibility to have analysis 
-                    dependent sources.
-                    for normal time dependent and dc sources this argument 
-                    should be None
-        
-        """
         return self.toolkit.zeros(self.n)
 
     def i(self, x, epar=defaultepar):
-        """Calculate the i vector as a function of the x-vector
-
-        For linear circuits i(x(t)) = G*x
-        """
+        """Calculate the i vector as a function of the x-vector"""
+        if hasattr(self, 'eval_i_and_G'):
+            i_vec, G_mat = self.eval_i_and_G(x, epar)
+            return i_vec
         return self.toolkit.dot(self.G(x), x)
 
     def q(self, x, epar=defaultepar):
-        """Calculate the q vector as a function of the x-vector
-
-        For linear circuits q(x(t)) = C*x
-        """
+        """Calculate the q vector as a function of the x-vector"""
+        if hasattr(self, 'eval_q_and_C'):
+            q_vec, C_mat = self.eval_q_and_C(x, epar)
+            return q_vec
         return self.toolkit.dot(self.C(x), x)
 
     def CY(self, x, w, epar=defaultepar):
@@ -1117,6 +1123,8 @@ class SubCircuit(Circuit):
 
         self.elementnodemap = {}
         self._rep_nodemap_list = {}
+        self._map_indices_1d = {}
+        self._map_indices_2d = {}
         
         for instance_name, element in self.elements.items():
             nodemap = self.term_node_map[instance_name]
@@ -1134,14 +1142,17 @@ class SubCircuit(Circuit):
 
             self.elementnodemap[instance_name] = nodemap
 
-            ## Create mapping matrix
+            ## Create mapping coordinates instead of dense matrices
             if len(nodemap) > 0:
-                mapmatrix = self.toolkit.zeros((self.n, len(nodemap)),
-                                               dtype = int)
-            
-                for inst_node_index, node_index in enumerate(nodemap):
-                    mapmatrix[node_index, inst_node_index] = 1
-                self._mapmatrix[instance_name] = mapmatrix
+                # For 1D vector stamping (e.g. u, i, q)
+                self._map_indices_1d[instance_name] = nodemap
+                
+                # For 2D matrix stamping (e.g. G, C)
+                # We need all (row, col) combinations
+                # meshgrid(nodemap, nodemap, indexing='ij') creates the grid
+                import numpy as np
+                rows, cols = np.meshgrid(nodemap, nodemap, indexing='ij')
+                self._map_indices_2d[instance_name] = (rows.flatten(), cols.flatten())
             else:
                 self._nodemap = None
 
@@ -1155,6 +1166,57 @@ class SubCircuit(Circuit):
         for element in self.elements.values():
             element.update_iparv(self.iparv, globalparams,
                                  ignore_errors=ignore_errors)
+        
+        self._build_evaluation_groups()
+
+    def _build_evaluation_groups(self):
+        if not (hasattr(self.toolkit, 'jax') and self.toolkit.jax):
+            self._eval_groups = {}
+            return
+            
+        import numpy as np
+        self._eval_groups = {}
+        for instance_name, element in self.elements.items():
+            cls = element.__class__
+            if not hasattr(cls, 'eval_i_pure') and not hasattr(cls, 'eval_q_pure'):
+                continue
+                
+            if cls not in self._eval_groups:
+                self._eval_groups[cls] = {
+                    'instances': [],
+                    'nodemaps_2d': [],
+                    'params': {},
+                    'rows': [],
+                    'cols': [],
+                    '1d_indices': []
+                }
+                
+            group = self._eval_groups[cls]
+            group['instances'].append(element)
+            group['nodemaps_2d'].append(self._map_indices_1d[instance_name])
+            
+            rows, cols = self._map_indices_2d[instance_name]
+            group['rows'].append(rows)
+            group['cols'].append(cols)
+            group['1d_indices'].append(self._map_indices_1d[instance_name])
+            
+            p_dict = {}
+            if hasattr(element, 'iparv') and hasattr(element.iparv, '_values'):
+                p_dict = element.iparv._values
+                
+            for k, v in p_dict.items():
+                if k not in group['params']:
+                    group['params'][k] = []
+                group['params'][k].append(v)
+                
+        for cls, group in self._eval_groups.items():
+            group['nodemaps_2d'] = np.array(group['nodemaps_2d'], dtype=int)
+            group['rows'] = np.array(group['rows']).flatten()
+            group['cols'] = np.array(group['cols']).flatten()
+            group['1d_indices'] = np.array(group['1d_indices']).flatten()
+            
+            for k in group['params']:
+                group['params'][k] = self.toolkit.array(group['params'][k])
         
     def G(self, x, epar=defaultepar):
         return self._add_element_submatrices('G', x, (epar,))
@@ -1261,17 +1323,58 @@ class SubCircuit(Circuit):
                                  refnode_removed=refnode_removed,
                                  linearized = linearized, xdcop = xdcop)
         
+    def accept_step(self, t, x, epar):
+        """Propagate accept_step to all child elements"""
+        for instance, element in self.elements.items():
+            if hasattr(element, 'accept_step'):
+                subx = x[self.elementnodemap[instance]]
+                element.accept_step(t, subx, epar)
+            
     def update(self, subject):
         """This is called when an instance parameter is updated"""
         for element in self.elements.values():
             element.update_iparv(self.iparv, ignore_errors=True)
         
     def _add_element_submatrices(self, methodname, x, args):
-        dot = self.toolkit.dot
         n = self.n
-        lhs = self.toolkit.zeros((n,n))
+        
+        # Check if toolkit prefers sparse assembly directly
+        build_sparse = hasattr(self.toolkit, 'build_sparse')
+        
+        if build_sparse:
+            all_data, all_rows, all_cols = [], [], []
+        else:
+            lhs = self.toolkit.zeros((n,n))
+
+        if getattr(self, '_eval_groups', None) and x is not None:
+            # --- HIGH-PERFORMANCE GPU/CPU VECTORIZATION ---
+            import numpy as np
+            for cls, group in self._eval_groups.items():
+                X_batch = x[group['nodemaps_2d']]
+                method_key = 'i' if methodname in ('G', 'i') else 'q'
+                batched_eval, batched_jac = self.toolkit.generate_batched_eval(cls, method_key)
+                
+                epar = args[0]
+                if methodname in ('G', 'C'):
+                    rhs_batch = batched_jac(X_batch, group['params'], epar)
+                else:
+                    rhs_batch = batched_eval(X_batch, group['params'], epar)
+                    
+                rhs_flat = np.asarray(rhs_batch).reshape(len(group['instances']), -1).flatten()
+                
+                if build_sparse:
+                    all_data.append(rhs_flat)
+                    all_rows.append(group['rows'])
+                    all_cols.append(group['cols'])
+                elif hasattr(self.toolkit, 'add_at'):
+                    lhs = self.toolkit.add_at(lhs, (group['rows'], group['cols']), rhs_flat)
+                else:
+                    np.add.at(lhs, (group['rows'], group['cols']), rhs_flat)
 
         for instance, element in self.elements.items():
+            if getattr(self, '_eval_groups', None) and element.__class__ in self._eval_groups:
+                continue # Handled by vectorization above
+                
             nodemap = self.elementnodemap[instance]
 
             if x is not None:
@@ -1284,26 +1387,82 @@ class SubCircuit(Circuit):
             else:
                 rhs = getattr(element, methodname)(*((None,) + tuple(args)))
                 
-            T = self._mapmatrix[instance]
-        
-            lhs = lhs + dot(dot(T, rhs), T.T)
+            if instance in self._map_indices_2d:
+                rows, cols = self._map_indices_2d[instance]
+                import numpy as np
+                rhs_flat = np.asarray(rhs).flatten()
+                
+                if build_sparse:
+                    all_data.append(rhs_flat)
+                    all_rows.append(rows)
+                    all_cols.append(cols)
+                elif hasattr(self.toolkit, 'add_at'):
+                    lhs = self.toolkit.add_at(lhs, (rows, cols), rhs_flat)
+                else:
+                    try:
+                        np.add.at(lhs, (rows, cols), rhs_flat)
+                    except TypeError:
+                        # Fallback for symbolic expressions into numeric lhs
+                        lhs = lhs.astype(object)
+                        np.add.at(lhs, (rows, cols), rhs_flat)
 
+        if build_sparse:
+            import numpy as np
+            if not all_data:
+                return self.toolkit.build_sparse([], [], [], shape=(n,n))
+            return self.toolkit.build_sparse(
+                np.concatenate(all_data),
+                np.concatenate(all_rows),
+                np.concatenate(all_cols),
+                shape=(n,n)
+            )
         return lhs
 
     def _add_element_subvectors(self, methodname, x, args, dtype=None):
         n = self.n
         lhs = self.toolkit.zeros(n, dtype=dtype)
 
+        if getattr(self, '_eval_groups', None) and x is not None:
+            # --- HIGH-PERFORMANCE GPU/CPU VECTORIZATION ---
+            import numpy as np
+            for cls, group in self._eval_groups.items():
+                X_batch = x[group['nodemaps_2d']]
+                method_key = 'i' if methodname in ('G', 'i') else 'q'
+                batched_eval, batched_jac = self.toolkit.generate_batched_eval(cls, method_key)
+                
+                epar = args[0]
+                rhs_batch = batched_eval(X_batch, group['params'], epar)
+                    
+                rhs_flat = np.asarray(rhs_batch).reshape(len(group['instances']), -1).flatten()
+                
+                if hasattr(self.toolkit, 'add_at'):
+                    lhs = self.toolkit.add_at(lhs, group['1d_indices'], rhs_flat)
+                else:
+                    np.add.at(lhs, group['1d_indices'], rhs_flat)
+
         for instance, element in self.elements.items():
+            if getattr(self, '_eval_groups', None) and element.__class__ in self._eval_groups:
+                continue # Handled by vectorization above
+                
             if x is not None:
                 subx = x[self.elementnodemap[instance]]
                 rhs = getattr(element, methodname)(subx, *args)
             else:
                 rhs = getattr(element, methodname)(*args)
 
-            T = self._mapmatrix[instance]
-            
-            lhs = lhs + self.toolkit.dot(T, rhs)
+            if instance in self._map_indices_1d:
+                indices = self._map_indices_1d[instance]
+                import numpy as np
+                rhs_flat = np.asarray(rhs).flatten()
+                
+                if hasattr(self.toolkit, 'add_at'):
+                    lhs = self.toolkit.add_at(lhs, indices, rhs_flat)
+                else:
+                    try:
+                        np.add.at(lhs, indices, rhs_flat)
+                    except TypeError:
+                        lhs = lhs.astype(object)
+                        np.add.at(lhs, indices, rhs_flat)
 
         return lhs
 

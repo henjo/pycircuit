@@ -68,11 +68,35 @@ class G(Circuit):
                   ]
 
     def update(self, subject):
+        # --- MODIFIED NODAL ANALYSIS (MNA) STAMP ---
+        # For a conductor G connected between nodes 'plus' and 'minus',
+        # the current leaving the 'plus' node is I = G * (V_plus - V_minus).
+        # The current entering the 'minus' node is -I.
+        # This yields the classic 2x2 admittance stamp matrix in the G matrix:
+        #        plus    minus
+        # plus  [  G,     -G  ]
+        # minus [ -G,      G  ]
         g = self.iparv.g
         self._G = self.toolkit.array([[g, -g],
                                       [-g, g]])
 
-    def G(self, x, epar=defaultepar): return self._G
+    @staticmethod
+    def eval_i_pure(x, params, epar, toolkit):
+        # MNA stamp for Resistor as pure function for JAX vmap
+        # I = G * (V_plus - V_minus)
+        g = params.get('g', 1e-3)
+        v = x[0] - x[1]
+        i = v * g
+        return toolkit.array([i, -i])
+
+    def G(self, x, epar=defaultepar): 
+        # For symbolic backward compatibility and non-vectorized execution
+        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
+            params = {'g': self.iparv.g}
+            import jax
+            G_jac = jax.jacfwd(self.eval_i_pure)(x, params, epar, self.toolkit)
+            return G_jac
+        return self._G
 
     def CY(self, x, w, epar=defaultepar):
         if self.iparv.noisy:
@@ -103,11 +127,32 @@ class C(Circuit):
                             unit='F', default=1e-12)]
 
     def update(self, subject):
+        # --- CAPACITOR MNA STAMP ---
+        # A capacitor's current equation is I = C * d(V_plus - V_minus)/dt.
+        # Instead of going in the conductance matrix G, it goes into the 
+        # capacitance matrix C, which the Integrator will multiply by the 
+        # inverse time-step (e.g. 1/dt) to convert it into an algorithmic 
+        # equivalent conductance (Geq) during transient simulation.
         c = self.iparv.c
         self._C =  self.toolkit.array([[c, -c],
                                        [-c, c]])
 
-    def C(self, x, epar=defaultepar): return self._C
+    @staticmethod
+    def eval_q_pure(x, params, epar, toolkit):
+        # The pure charge equation for JAX
+        # q = C * (V_plus - V_minus)
+        c = params.get('c', 1e-12)
+        v = x[0] - x[1]
+        q = c * v
+        return toolkit.array([q, -q])
+
+    def C(self, x, epar=defaultepar): 
+        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
+            params = {'c': self.iparv.c}
+            import jax
+            C_jac = jax.jacfwd(self.eval_q_pure)(x, params, epar, self.toolkit)
+            return C_jac
+        return self._C
 
 class L(Circuit):
     """Inductor
@@ -131,16 +176,57 @@ class L(Circuit):
                             unit='H', default=1e-9)]
 
     def update(self, subject):
+        # --- INDUCTOR MNA STAMP (EXTRA BRANCH EQUATION) ---
+        # Unlike R and C, the voltage across an inductor depends on the *derivative* 
+        # of its current: V_plus - V_minus = L * di/dt.
+        # Therefore, we cannot express it purely in terms of nodal voltages.
+        # We must introduce an extra "branch" variable representing the current `I_L`.
+        # This makes the element matrix 3x3 (V_plus, V_minus, I_L).
         n = self.n
+        
+        # The G matrix handles the KCL/KVL structural links:
+        # Row 1 (plus node KCL): I_L flows out -> +1
+        # Row 2 (minus node KCL): I_L flows in -> -1
+        # Row 3 (Inductor KVL branch eqn): V_plus - V_minus ... 
         self._G = self.toolkit.array([[0 , 0, 1],
                                       [0 , 0, -1],
                                       [1 , -1, 0]])
-        C = self.toolkit.zeros((n,n))
-        C[-1,-1] = -self.iparv.L
-        self._C = C
+                                      
+        # The C matrix handles the dynamic part:
+        # ... = L * d(I_L)/dt -> Row 3, Col 3 gets -L (moved to RHS conceptually)
+        L = self.iparv.L
+        self._C = self.toolkit.array([[0, 0, 0],
+                                      [0, 0, 0],
+                                      [0, 0, -L]])
 
-    def G(self, x, epar=defaultepar): return self._G
-    def C(self, x, epar=defaultepar): return self._C
+    @staticmethod
+    def eval_i_pure(x, params, epar, toolkit):
+        v_plus = x[0]
+        v_minus = x[1]
+        i_L = x[2]
+        return toolkit.array([i_L, -i_L, v_plus - v_minus])
+
+    @staticmethod
+    def eval_q_pure(x, params, epar, toolkit):
+        L = params.get('L', 1e-9)
+        i_L = x[2]
+        return toolkit.array([0.0, 0.0, -L * i_L])
+
+    def G(self, x, epar=defaultepar): 
+        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
+            params = {'L': self.iparv.L}
+            import jax
+            G_jac = jax.jacfwd(self.eval_i_pure)(x, params, epar, self.toolkit)
+            return G_jac
+        return self._G
+
+    def C(self, x, epar=defaultepar): 
+        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
+            params = {'L': self.iparv.L}
+            import jax
+            C_jac = jax.jacfwd(self.eval_q_pure)(x, params, epar, self.toolkit)
+            return C_jac
+        return self._C
 
 class VS(Circuit):
     """Independent DC voltage source
@@ -172,7 +258,20 @@ class VS(Circuit):
                                       [0 ,  0, -1],
                                       [1 , -1,  0]])
 
-    def G(self, x, epar=defaultepar): return self._G 
+    @staticmethod
+    def eval_i_pure(x, params, epar, toolkit):
+        i_branch = x[2]
+        v_plus = x[0]
+        v_minus = x[1]
+        return toolkit.array([i_branch, -i_branch, v_plus - v_minus])
+
+    def G(self, x, epar=defaultepar): 
+        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
+            params = {}
+            import jax
+            G_jac = jax.jacfwd(self.eval_i_pure)(x, params, epar, self.toolkit)
+            return G_jac
+        return self._G
 
     def u(self, t=0.0, epar=defaultepar, analysis=None):
         if analysis == 'ac':
@@ -282,7 +381,7 @@ class ISin(IS):
         Parameter(name='io', desc='Offset current', 
                   unit='A', default=0),
         Parameter(name='ia', desc='Current amplitude', 
-                  unit='V', default=0),
+                  unit='A', default=0),
         Parameter(name='freq', desc='Frequency', 
                   unit='Hz', default=0),
         Parameter(name='td', desc='Time delay', 
@@ -302,6 +401,38 @@ class ISin(IS):
                                  toolkit = self.toolkit
                                  )
 
+class IPulse(IS):
+    """Independent pulse current source
+
+    """
+    instparams = IS.instparams + [
+        Parameter(name='i1', desc='Initial current', 
+                  unit='A', default=0),
+        Parameter(name='i2', desc='Pulsed value', 
+                  unit='A', default=0),
+        Parameter(name='td', desc='Delay time', 
+                  unit='s', default=0),
+        Parameter(name='tr', desc='Rise time', 
+                  unit='s', default=0),
+        Parameter(name='tf', desc='Fall time', 
+                  unit='s', default=0),
+        Parameter(name='pw', desc='Pulse width', 
+                  unit='s', default=0),
+        Parameter(name='per', desc='Period', 
+                  unit='s', default=0)]
+
+    def __init__(self, *args, **kvargs):
+        super().__init__(*args, **kvargs)
+        self.function = func.Pulse(self.iparv.i1,
+                                   self.iparv.i2,
+                                   self.iparv.td,
+                                   self.iparv.tr,
+                                   self.iparv.tf,
+                                   self.iparv.pw,
+                                   self.iparv.per,
+                                   toolkit = self.toolkit
+                                 )
+
 class VPulse(VS):
     """Independent pulse voltage source
 
@@ -311,7 +442,7 @@ class VPulse(VS):
                   unit='V', default=0),
         Parameter(name='v2', desc='Pulsed value', 
                   unit='V', default=0),
-        Parameter(name='td', desc='Delat time', 
+        Parameter(name='td', desc='Delay time', 
                   unit='s', default=0),
         Parameter(name='tr', desc='Rise time', 
                   unit='s', default=0),
@@ -774,6 +905,11 @@ class Diode(Circuit):
         self._vlim = vnew
 
     def G(self, x, epar=defaultepar):
+        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
+            params = {'IS': self.iparv.IS}
+            import jax
+            return jax.jacfwd(self.eval_i_pure)(x, params, epar, self.toolkit)
+            
         if not hasattr(self, '_vlim'):
             self._vlim = x[0]-x[1]
 
@@ -795,7 +931,19 @@ class Diode(Circuit):
         self._vlim_cached_G = VD
         return self._G_cached
 
+    @staticmethod
+    def eval_i_pure(x, params, epar, toolkit):
+        v = x[0] - x[1]
+        VT = toolkit.kboltzmann * epar.T / toolkit.qelectron
+        IS = params.get('IS', 1e-13)
+        i = IS * (toolkit.exp(v / VT) - 1.0)
+        return toolkit.array([i, -i])
+
     def i(self, x, epar=defaultepar):
+        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
+            params = {'IS': self.iparv.IS}
+            return self.eval_i_pure(x, params, epar, self.toolkit)
+            
         if not hasattr(self, '_vlim'):
             self._vlim = x[0]-x[1]
 
@@ -972,6 +1120,543 @@ class Idtmod(Circuit):
         
         return _i
 
+class VPWL(VS):
+    """Independent piecewise linear voltage source"""
+    instparams = VS.instparams + [
+        Parameter(name='tvpairs', desc='List of time/voltage pairs', default=[])]
+
+    def __init__(self, *args, **kvargs):
+        super().__init__(*args, **kvargs)
+        self.function = func.PWL(self.iparv.tvpairs, toolkit=self.toolkit)
+
+class IPWL(IS):
+    """Independent piecewise linear current source"""
+    instparams = IS.instparams + [
+        Parameter(name='tvpairs', desc='List of time/current pairs', default=[])]
+
+    def __init__(self, *args, **kvargs):
+        super().__init__(*args, **kvargs)
+        self.function = func.PWL(self.iparv.tvpairs, toolkit=self.toolkit)
+
+class VExp(VS):
+    """Independent exponential voltage source"""
+    instparams = VS.instparams + [
+        Parameter(name='v1', desc='Initial voltage', unit='V', default=0),
+        Parameter(name='v2', desc='Pulsed voltage', unit='V', default=0),
+        Parameter(name='td1', desc='Rise delay time', unit='s', default=0),
+        Parameter(name='tau1', desc='Rise time constant', unit='s', default=0),
+        Parameter(name='td2', desc='Fall delay time', unit='s', default=0),
+        Parameter(name='tau2', desc='Fall time constant', unit='s', default=0)]
+
+    def __init__(self, *args, **kvargs):
+        super().__init__(*args, **kvargs)
+        self.function = func.Exp(self.iparv.v1, self.iparv.v2, self.iparv.td1, 
+                                 self.iparv.tau1, self.iparv.td2, self.iparv.tau2, 
+                                 toolkit=self.toolkit)
+
+class IExp(IS):
+    """Independent exponential current source"""
+    instparams = IS.instparams + [
+        Parameter(name='i1', desc='Initial current', unit='A', default=0),
+        Parameter(name='i2', desc='Pulsed current', unit='A', default=0),
+        Parameter(name='td1', desc='Rise delay time', unit='s', default=0),
+        Parameter(name='tau1', desc='Rise time constant', unit='s', default=0),
+        Parameter(name='td2', desc='Fall delay time', unit='s', default=0),
+        Parameter(name='tau2', desc='Fall time constant', unit='s', default=0)]
+
+    def __init__(self, *args, **kvargs):
+        super().__init__(*args, **kvargs)
+        self.function = func.Exp(self.iparv.i1, self.iparv.i2, self.iparv.td1, 
+                                 self.iparv.tau1, self.iparv.td2, self.iparv.tau2, 
+                                 toolkit=self.toolkit)
+
+class VAM(VS):
+    """Independent Amplitude Modulated voltage source"""
+    instparams = VS.instparams + [
+        Parameter(name='vo', desc='Offset voltage', unit='V', default=0),
+        Parameter(name='va', desc='Amplitude', unit='V', default=1),
+        Parameter(name='fc', desc='Carrier frequency', unit='Hz', default=1e3),
+        Parameter(name='fm', desc='Modulation frequency', unit='Hz', default=1e2),
+        Parameter(name='m', desc='Modulation index', unit='', default=1.0)]
+
+    def __init__(self, *args, **kvargs):
+        super().__init__(*args, **kvargs)
+        self.function = func.AM(self.iparv.vo, self.iparv.va, self.iparv.fc, 
+                                self.iparv.fm, self.iparv.m, toolkit=self.toolkit)
+
+class IAM(IS):
+    """Independent Amplitude Modulated current source"""
+    instparams = IS.instparams + [
+        Parameter(name='io', desc='Offset current', unit='A', default=0),
+        Parameter(name='ia', desc='Amplitude', unit='A', default=1),
+        Parameter(name='fc', desc='Carrier frequency', unit='Hz', default=1e3),
+        Parameter(name='fm', desc='Modulation frequency', unit='Hz', default=1e2),
+        Parameter(name='m', desc='Modulation index', unit='', default=1.0)]
+
+    def __init__(self, *args, **kvargs):
+        super().__init__(*args, **kvargs)
+        self.function = func.AM(self.iparv.io, self.iparv.ia, self.iparv.fc, 
+                                self.iparv.fm, self.iparv.m, toolkit=self.toolkit)
+
+class VSFFM(VS):
+    """Independent Single Frequency FM voltage source"""
+    instparams = VS.instparams + [
+        Parameter(name='vo', desc='Offset voltage', unit='V', default=0),
+        Parameter(name='va', desc='Amplitude', unit='V', default=1),
+        Parameter(name='fc', desc='Carrier frequency', unit='Hz', default=1e3),
+        Parameter(name='mdi', desc='Modulation index', unit='', default=1.0),
+        Parameter(name='fm', desc='Modulation frequency', unit='Hz', default=1e2)]
+
+    def __init__(self, *args, **kvargs):
+        super().__init__(*args, **kvargs)
+        self.function = func.SFFM(self.iparv.vo, self.iparv.va, self.iparv.fc, 
+                                  self.iparv.mdi, self.iparv.fm, toolkit=self.toolkit)
+
+class ISFFM(IS):
+    """Independent Single Frequency FM current source"""
+    instparams = IS.instparams + [
+        Parameter(name='io', desc='Offset current', unit='A', default=0),
+        Parameter(name='ia', desc='Amplitude', unit='A', default=1),
+        Parameter(name='fc', desc='Carrier frequency', unit='Hz', default=1e3),
+        Parameter(name='mdi', desc='Modulation index', unit='', default=1.0),
+        Parameter(name='fm', desc='Modulation frequency', unit='Hz', default=1e2)]
+
+    def __init__(self, *args, **kvargs):
+        super().__init__(*args, **kvargs)
+        self.function = func.SFFM(self.iparv.io, self.iparv.ia, self.iparv.fc, 
+                                  self.iparv.mdi, self.iparv.fm, toolkit=self.toolkit)
+
+class CoupledInductors(Circuit):
+    """Coupled Inductors (Mutual Inductance)"""
+    terminals = ('p1', 'm1', 'p2', 'm2')
+    branches = (Branch(Node('p1'), Node('m1')), Branch(Node('p2'), Node('m2')))
+
+    instparams = [Parameter(name='L1', desc='Inductance 1', unit='H', default=1e-9),
+                  Parameter(name='L2', desc='Inductance 2', unit='H', default=1e-9),
+                  Parameter(name='K', desc='Coupling Coefficient', unit='', default=0.99)]
+
+    def update(self, subject):
+        n = self.n
+        # Nodes: p1, m1, p2, m2, br1, br2
+        # G matrix inserts 1, -1 for branch currents into node KCLs, and 1, -1 for node voltages into branch equations
+        G = self.toolkit.zeros((n, n))
+        # Branch 1 KCL contributions
+        G[0, 4] = 1; G[1, 4] = -1
+        # Branch 1 voltage equation
+        G[4, 0] = 1; G[4, 1] = -1
+        
+        # Branch 2 KCL contributions
+        G[2, 5] = 1; G[3, 5] = -1
+        # Branch 2 voltage equation
+        G[5, 2] = 1; G[5, 3] = -1
+        
+        self._G = G
+        
+        C = self.toolkit.zeros((n, n))
+        L1, L2, K = self.iparv.L1, self.iparv.L2, self.iparv.K
+        M = K * self.toolkit.sqrt(L1 * L2)
+        
+        C[4, 4] = -L1
+        C[5, 5] = -L2
+        C[4, 5] = -M
+        C[5, 4] = -M
+        self._C = C
+
+    def G(self, x, epar=defaultepar): return self._G
+    def C(self, x, epar=defaultepar): return self._C
+
+class VSwitch(Circuit):
+    """Voltage Controlled Switch"""
+    terminals = ('plus', 'minus', 'cp', 'cm')
+    instparams = [Parameter('Ron', 'On resistance', default=1.0),
+                  Parameter('Roff', 'Off resistance', default=1e6),
+                  Parameter('Von', 'Control voltage for on state', default=1.0),
+                  Parameter('Voff', 'Control voltage for off state', default=0.0)]
+
+    def i(self, x, epar=defaultepar):
+        v = x[0] - x[1]
+        vc = x[2] - x[3]
+        Ron = self.iparv.Ron
+        Roff = self.iparv.Roff
+        Von = self.iparv.Von
+        Voff = self.iparv.Voff
+        
+        Gon = 1.0 / Ron
+        Goff = 1.0 / Roff
+        
+        Vmid = (Von + Voff) / 2.0
+        Vscale = Von - Voff
+        if Vscale == 0:
+            Vscale = 1e-6
+            
+        x_norm = (vc - Vmid) / Vscale
+        factor = (self.toolkit.tanh(x_norm * 2.0) + 1.0) / 2.0
+        g = Goff + (Gon - Goff) * factor
+        
+        i_val = v * g
+        return self.toolkit.array([i_val, -i_val, 0.0, 0.0])
+
+    def G(self, x, epar=defaultepar):
+        v = x[0] - x[1]
+        vc = x[2] - x[3]
+        Ron = self.iparv.Ron
+        Roff = self.iparv.Roff
+        Von = self.iparv.Von
+        Voff = self.iparv.Voff
+        
+        Gon = 1.0 / Ron
+        Goff = 1.0 / Roff
+        
+        Vmid = (Von + Voff) / 2.0
+        Vscale = Von - Voff
+        if Vscale == 0:
+            Vscale = 1e-6
+            
+        x_norm = (vc - Vmid) / Vscale
+        tanh_val = self.toolkit.tanh(x_norm * 2.0)
+        factor = (tanh_val + 1.0) / 2.0
+        g = Goff + (Gon - Goff) * factor
+        
+        d_factor = (1.0 - tanh_val**2) / Vscale
+        dg_dvc = (Gon - Goff) * d_factor
+        
+        G_mat = self.toolkit.zeros((4, 4))
+        
+        G_mat[0, 0] = g
+        G_mat[0, 1] = -g
+        G_mat[1, 0] = -g
+        G_mat[1, 1] = g
+        
+        g_vc = v * dg_dvc
+        G_mat[0, 2] = g_vc
+        G_mat[0, 3] = -g_vc
+        G_mat[1, 2] = -g_vc
+        G_mat[1, 3] = g_vc
+        
+        return G_mat
+
+class CCCS(Circuit):
+    """Current Controlled Current Source"""
+    instparams = [Parameter(name='F', desc='Current gain', unit='A/A', default=1.0)]
+    terminals = ('inp', 'inn', 'outp', 'outn')
+    branches = (Branch(Node('inp'), Node('inn')),)
+    
+    def update(self, subject):
+        n = self.n
+        G = self.toolkit.zeros((n, n))
+        inpindex, innindex, outpindex, outnindex = \
+            (self.nodes.index(self.nodenames[name]) for name in self.terminals)
+        branchindex = 4
+        
+        # Branch KCL (Input acts as short, measuring current)
+        G[inpindex, branchindex] += 1
+        G[innindex, branchindex] += -1
+        
+        # Branch equation: V_inp - V_inn = 0
+        G[branchindex, inpindex] += 1
+        G[branchindex, innindex] += -1
+        
+        # Output current injections
+        G[outpindex, branchindex] += self.iparv.F
+        G[outnindex, branchindex] += -self.iparv.F
+        
+        self._G = G
+
+    def G(self, x, epar=defaultepar): return self._G
+
+class ISwitch(Circuit):
+    """Current Controlled Switch"""
+    terminals = ('plus', 'minus', 'cp', 'cm')
+    branches = (Branch(Node('cp'), Node('cm')),)
+    instparams = [Parameter('Ron', 'On resistance', default=1.0),
+                  Parameter('Roff', 'Off resistance', default=1e6),
+                  Parameter('Ion', 'Control current for on state', default=1e-3),
+                  Parameter('Ioff', 'Control current for off state', default=0.0)]
+                  
+    def i(self, x, epar=defaultepar):
+        v = x[0] - x[1]
+        i_ctrl = x[4]
+        Ron, Roff, Ion, Ioff = self.iparv.Ron, self.iparv.Roff, self.iparv.Ion, self.iparv.Ioff
+        Gon, Goff = 1.0/Ron, 1.0/Roff
+        Imid = (Ion + Ioff) / 2.0
+        Iscale = Ion - Ioff
+        if Iscale == 0: Iscale = 1e-9
+        x_norm = (i_ctrl - Imid) / Iscale
+        factor = (self.toolkit.tanh(x_norm * 2.0) + 1.0) / 2.0
+        g = Goff + (Gon - Goff) * factor
+        i_val = v * g
+        return self.toolkit.array([i_val, -i_val, i_ctrl, -i_ctrl, 0.0])
+
+    def G(self, x, epar=defaultepar):
+        v = x[0] - x[1]
+        i_ctrl = x[4]
+        Ron, Roff, Ion, Ioff = self.iparv.Ron, self.iparv.Roff, self.iparv.Ion, self.iparv.Ioff
+        Gon, Goff = 1.0/Ron, 1.0/Roff
+        Imid = (Ion + Ioff) / 2.0
+        Iscale = Ion - Ioff
+        if Iscale == 0: Iscale = 1e-9
+        x_norm = (i_ctrl - Imid) / Iscale
+        
+        tanh_val = self.toolkit.tanh(x_norm * 2.0)
+        factor = (tanh_val + 1.0) / 2.0
+        g = Goff + (Gon - Goff) * factor
+        d_factor = (1.0 - tanh_val**2) / Iscale
+        dg_di = (Gon - Goff) * d_factor
+        
+        G_mat = self.toolkit.zeros((5, 5))
+        
+        # d(i_val)/dv = g
+        G_mat[0, 0] = g; G_mat[0, 1] = -g
+        G_mat[1, 0] = -g; G_mat[1, 1] = g
+        
+        # d(i_val)/di_ctrl = v * dg_di
+        g_i = v * dg_di
+        G_mat[0, 4] = g_i
+        G_mat[1, 4] = -g_i
+        
+        # cp/cm KCL contributions
+        G_mat[2, 4] = 1.0
+        G_mat[3, 4] = -1.0
+        
+        # Branch equation V_cp - V_cm = 0
+        G_mat[4, 2] = 1.0
+        G_mat[4, 3] = -1.0
+        
+        return G_mat
+
+class BSource(Circuit):
+    """Behavioral Source for non-linear current and charge (capacitance)
+    
+    Can evaluate both a static current function i_out = i_func(v_ctrl)
+    and a charge function q_out = q_func(v_ctrl).
+    """
+    terminals = ('inp', 'inn', 'outp', 'outn')
+    instparams = [Parameter('i_func', 'Function i_out = f(v_ctrl)', default=None),
+                  Parameter('q_func', 'Function q_out = f(v_ctrl)', default=None)]
+    
+    def i(self, x, epar=defaultepar):
+        if self.iparv.i_func is None:
+            return self.toolkit.zeros(4)
+        v_ctrl = x[0] - x[1]
+        i_val = self.iparv.i_func(v_ctrl)
+        return self.toolkit.array([0.0, 0.0, i_val, -i_val])
+
+    def G(self, x, epar=defaultepar):
+        if self.iparv.i_func is None:
+            return self.toolkit.zeros((4, 4))
+        v_ctrl = x[0] - x[1]
+        
+        # Use JAX if available, else central difference
+        try:
+            import jax
+            grad_func = jax.grad(self.iparv.i_func)
+            di_dv = grad_func(v_ctrl)
+        except ImportError:
+            eps = 1e-6
+            di_dv = (self.iparv.i_func(v_ctrl + eps) - self.iparv.i_func(v_ctrl - eps)) / (2 * eps)
+            
+        G_mat = self.toolkit.zeros((4, 4))
+        G_mat[2, 0] = di_dv
+        G_mat[2, 1] = -di_dv
+        G_mat[3, 0] = -di_dv
+        G_mat[3, 1] = di_dv
+        return G_mat
+
+    def q(self, x, epar=defaultepar):
+        if self.iparv.q_func is None:
+            return self.toolkit.zeros(4)
+        v_ctrl = x[0] - x[1]
+        q_val = self.iparv.q_func(v_ctrl)
+        return self.toolkit.array([0.0, 0.0, q_val, -q_val])
+
+    def C(self, x, epar=defaultepar):
+        if self.iparv.q_func is None:
+            return self.toolkit.zeros((4, 4))
+        v_ctrl = x[0] - x[1]
+        
+        try:
+            import jax
+            grad_func = jax.grad(self.iparv.q_func)
+            dq_dv = grad_func(v_ctrl)
+        except ImportError:
+            eps = 1e-6
+            dq_dv = (self.iparv.q_func(v_ctrl + eps) - self.iparv.q_func(v_ctrl - eps)) / (2 * eps)
+            
+        C_mat = self.toolkit.zeros((4, 4))
+        C_mat[2, 0] = dq_dv
+        C_mat[2, 1] = -dq_dv
+        C_mat[3, 0] = -dq_dv
+        C_mat[3, 1] = dq_dv
+        return C_mat
+
+NonLinearVCCS = BSource
+
 if __name__ == "__main__":
     import doctest
     doctest.testmod()
+
+class TLine(Circuit):
+    """
+    Ideal Lossless Transmission Line using Method of Characteristics.
+    """
+    terminals = ('p1', 'm1', 'p2', 'm2')
+    branches = (Branch(Node('p1'), Node('m1')), Branch(Node('p2'), Node('m2')))
+    
+    instparams = [
+        Parameter('Z0', 'Characteristic Impedance', default=50.0, unit='Ohm'),
+        Parameter('TD', 'Time Delay', default=1e-9, unit='s')
+    ]
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.history = []  # List of (t, V1, V2, I1, I2) tuples
+        
+    def accept_step(self, t, x, epar):
+        # Extract voltages and currents from x
+        # x is [Vp1, Vm1, Vp2, Vm2, I1, I2]
+        v1 = x[0] - x[1]
+        v2 = x[2] - x[3]
+        i1 = x[4]
+        i2 = x[5]
+        self.history.append((float(t), float(v1), float(v2), float(i1), float(i2)))
+        
+        # Prune history older than t - TD (keep at least one point before t-TD for interpolation)
+        td = self.iparv.TD
+        while len(self.history) > 2 and self.history[1][0] < t - td:
+            self.history.pop(0)
+
+    def _interpolate_history(self, t_target):
+        # --- TRANSMISSION LINE HISTORY INTERPOLATION ---
+        # A lossless transmission line uses the Method of Characteristics.
+        # This requires looking up the exact voltage/current states from exactly 
+        # `t - TD` (Time Delay) ago. Because the adaptive timestep `dt` rarely 
+        # lands exactly on a multiple of TD, we must mathematically interpolate 
+        # the historical points.
+        #
+        # We use a 3-point Quadratic Lagrange Interpolation (rather than linear) 
+        # because the Integrator (Gear2/Trapezoidal) fits 2nd order polynomials.
+        # If the transmission line only used linear interpolation, it would inject 
+        # 1st-order truncation errors back into a 2nd-order solver, destroying 
+        # the convergence and creating numerical ringing.
+        if len(self.history) == 0:
+            return 0.0, 0.0, 0.0, 0.0
+            
+        if len(self.history) == 1 or t_target <= self.history[0][0]:
+            h = self.history[0]
+            return h[1], h[2], h[3], h[4]
+            
+        if t_target >= self.history[-1][0]:
+            h = self.history[-1]
+            return h[1], h[2], h[3], h[4]
+            
+        # Find the interval
+        for i in range(len(self.history) - 1):
+            if self.history[i][0] <= t_target <= self.history[i+1][0]:
+                # Exact match avoids interpolation (perfect for coupled solver)
+                if abs(t_target - self.history[i][0]) < 1e-15:
+                    h = self.history[i]
+                    return h[1], h[2], h[3], h[4]
+                if abs(t_target - self.history[i+1][0]) < 1e-15:
+                    h = self.history[i+1]
+                    return h[1], h[2], h[3], h[4]
+                
+                # Use quadratic interpolation if we have a point before the interval
+                if i > 0:
+                    t0, v1_0, v2_0, i1_0, i2_0 = self.history[i-1]
+                    t1, v1_1, v2_1, i1_1, i2_1 = self.history[i]
+                    t2, v1_2, v2_2, i1_2, i2_2 = self.history[i+1]
+                    
+                    # Lagrange basis polynomials
+                    L0 = (t_target - t1) * (t_target - t2) / ((t0 - t1) * (t0 - t2))
+                    L1 = (t_target - t0) * (t_target - t2) / ((t1 - t0) * (t1 - t2))
+                    L2 = (t_target - t0) * (t_target - t1) / ((t2 - t0) * (t2 - t1))
+                    
+                    v1 = v1_0 * L0 + v1_1 * L1 + v1_2 * L2
+                    v2 = v2_0 * L0 + v2_1 * L1 + v2_2 * L2
+                    i1 = i1_0 * L0 + i1_1 * L1 + i1_2 * L2
+                    i2 = i2_0 * L0 + i2_1 * L1 + i2_2 * L2
+                    return v1, v2, i1, i2
+                else:
+                    # Linear interpolation (fallback)
+                    t0, v1_0, v2_0, i1_0, i2_0 = self.history[i]
+                    t1, v1_1, v2_1, i1_1, i2_1 = self.history[i+1]
+                    alpha = (t_target - t0) / (t1 - t0)
+                    v1 = v1_0 + alpha * (v1_1 - v1_0)
+                    v2 = v2_0 + alpha * (v2_1 - v2_0)
+                    i1 = i1_0 + alpha * (i1_1 - i1_0)
+                    i2 = i2_0 + alpha * (i2_1 - i2_0)
+                    return v1, v2, i1, i2
+                
+        h = self.history[-1]
+        return h[1], h[2], h[3], h[4]
+
+    def G(self, x, epar=None):
+        Z0 = self.iparv.Z0
+        G_mat = self.toolkit.zeros((6, 6))
+        
+        # Check if we are in DC (no history)
+        if len(self.history) == 0:
+            # DC behavior: V1 = V2, I1 = -I2
+            # Branch eq 1: Vp1 - Vm1 - Vp2 + Vm2 = 0
+            # Branch eq 2: I1 + I2 = 0
+            
+            # Row 4 (Branch 1 eq)
+            G_mat[4, 0] = 1.0   # p1
+            G_mat[4, 1] = -1.0  # m1
+            G_mat[4, 2] = -1.0  # p2
+            G_mat[4, 3] = 1.0   # m2
+            
+            # Row 5 (Branch 2 eq)
+            G_mat[5, 4] = 1.0   # I1
+            G_mat[5, 5] = 1.0   # I2
+        else:
+            # Transient behavior
+            # Branch eq 1: V1 - Z0*I1 = E1(t)
+            # Branch eq 2: V2 - Z0*I2 = E2(t)
+            
+            # Row 4 (Branch 1 eq)
+            G_mat[4, 0] = 1.0   # p1
+            G_mat[4, 1] = -1.0  # m1
+            G_mat[4, 4] = -Z0   # I1
+            
+            # Row 5 (Branch 2 eq)
+            G_mat[5, 2] = 1.0   # p2
+            G_mat[5, 3] = -1.0  # m2
+            G_mat[5, 5] = -Z0   # I2
+            
+        # Nodal KCL contributions from branch currents
+        # I1 flows p1 -> m1, I2 flows p2 -> m2
+        G_mat[0, 4] = 1.0   # p1 gets +I1 (leaving)
+        G_mat[1, 4] = -1.0  # m1 gets -I1 (entering)
+        
+        G_mat[2, 5] = 1.0   # p2 gets +I2 (leaving)
+        G_mat[3, 5] = -1.0  # m2 gets -I2 (entering)
+        
+        return G_mat
+        
+    def u(self, t=0.0, epar=None, analysis=None):
+        out = self.toolkit.zeros(6)
+        
+        if len(self.history) == 0:
+            return out
+            
+        if analysis not in ('tran', 'transient', 'time'):
+            return out
+            
+        td = self.iparv.TD
+        Z0 = self.iparv.Z0
+        
+        # E1(t) = V2(t-TD) + Z0 * I2(t-TD)
+        # E2(t) = V1(t-TD) + Z0 * I1(t-TD)
+        
+        v1_past, v2_past, i1_past, i2_past = self._interpolate_history(t - td)
+        
+        e1 = v2_past + Z0 * i2_past
+        e2 = v1_past + Z0 * i1_past
+        
+        # u is added to i(x), so F = Gx + u = 0.
+        # We want Gx = E, so u = -E
+        out[4] = -e1
+        out[5] = -e2
+        
+        return out

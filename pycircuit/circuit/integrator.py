@@ -129,12 +129,19 @@ class Gear2Integrator(Integrator):
         return self
         
     def compute_derivatives(self, q_curr, C_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit):
-        # Dynamically compute VSS BDF-2 coefficients
+        # --- VARIABLE STEP-SIZE BDF-2 (GEAR-2) DERIVATION ---
+        # Traditional SPICE2 uses fixed-step BDF formulas which fail when dt changes.
+        # Here we calculate the true Variable Step-Size (VSS) coefficients for a 2nd-order 
+        # polynomial fit through the current point (n) and two previous points (n-1, n-2).
+        # These coefficients mathematically convert the continuous time derivative dq/dt 
+        # into a discrete algebraic equivalent.
         alpha0 = (2 * h_curr + h_last) / (h_curr * (h_curr + h_last))
         alpha1 = -(h_curr + h_last) / (h_curr * h_last)
         alpha2 = h_curr / (h_last * (h_curr + h_last))
         
+        # Equivalent conductance represents the 'algorithmic resistance' introduced by the timestep
         geq = C_curr * alpha0
+        # The numerical derivative of charge
         iq = alpha0 * q_curr + alpha1 * q_last[0] + alpha2 * q_last[1]
         return iq, geq
         
@@ -142,11 +149,18 @@ class Gear2Integrator(Integrator):
         if is_first_step:
             return toolkit.zeros(len(q_curr)), 1.0
             
-        # Dynamically compute VSS Gear2 LTE
-        # Note: the LTE formula currently used in PyCircuit computes difference of derivatives
+        # --- GEAR-2 LOCAL TRUNCATION ERROR ---
+        # The truncation error for a 2nd-order method is proportional to the 3rd derivative
+        # of the charge with respect to time. We approximate this 3rd derivative using
+        # divided differences (dd).
+        # 1st divided difference at n (velocity)
         dd1_n = (q_curr - q_last[0]) / h_curr
+        # 1st divided difference at n-1 (past velocity)
         dd1_nm1 = (q_last[0] - q_last[1]) / h_last
+        # 2nd divided difference (acceleration/curvature)
         dd2_n = (dd1_n - dd1_nm1) / (h_curr + h_last)
+        
+        # The final LTE is scaled by the step sizes based on the Taylor series remainder.
         lte = (h_curr**2) * (h_curr + h_last) / 3.0 * dd2_n
         
-        return lte, 2.0  # p=2.0 for gear2
+        return lte, 3.0  # p=3.0 (LTE scales with h^3 for 2nd order methods)

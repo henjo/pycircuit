@@ -29,6 +29,7 @@ from sympy.polys.matrices.exceptions import DMError
 from . import _numeric
 from . import _sparse_numeric
 from . import _symbolic
+from . import _jaxtoolkit
 
 
 class Toolkit:
@@ -36,6 +37,7 @@ class Toolkit:
 
     symbolic = False
     poly = False
+    jax = False
 
     def __init__(self, backend):
         self._backend = backend
@@ -80,7 +82,115 @@ class SparseNumericToolkit(NumericToolkit):
     """Numeric toolkit backed by scipy.sparse."""
     symbolic = False
     poly = False
+    sparse = True
+    
+    def build_sparse(self, data, rows, cols, shape):
+        from scipy.sparse import coo_matrix
+        return coo_matrix((data, (rows, cols)), shape=shape)
 
+class JAXToolkit(Toolkit):
+    """Numeric toolkit backed by JAX for auto-differentiation."""
+    symbolic = False
+    poly = False
+    jax = True
+    
+    def generate_batched_eval(self, element_cls, method='i'):
+        import jax
+        
+        cache_attr = f'_jax_batched_{method}'
+        if not hasattr(element_cls, cache_attr):
+            setattr(element_cls, cache_attr, {})
+            
+        cache = getattr(element_cls, cache_attr)
+        
+        def batched_eval_func(X_batch, params_batch, epar):
+            if hasattr(epar, '_values'):
+                key = frozenset(epar._values.items())
+            else:
+                key = id(epar)
+                
+            if key not in cache:
+                @jax.jit
+                def compiled_func(X_b, p_b):
+                    def single_eval(x, p):
+                        if method == 'i':
+                            return element_cls.eval_i_pure(x, p, epar, self)
+                        elif method == 'q':
+                            return element_cls.eval_q_pure(x, p, epar, self)
+                    
+                    # --- HIGH-PERFORMANCE GPU/CPU VECTORIZATION ---
+                    # Instead of evaluating thousands of Diodes/Transistors in a Python `for` loop,
+                    # we use JAX's `vmap` (Vectorizing Map). It takes our `single_eval` function 
+                    # (which operates on a single device) and maps it across a massive stacked array 
+                    # of inputs (X_b) and parameters (p_b). 
+                    # 
+                    # Simultaneously, `jax.jacfwd` performs Forward-Mode Automatic Differentiation 
+                    # to EXACTLY calculate the Jacobian (the Conductance / Capacitance matrix) for 
+                    # every single device without manually writing calculus formulas.
+                    # 
+                    # JAX compiles this entire block via `@jax.jit` into a highly optimized 
+                    # XLA executable that executes simultaneously in C++/GPU space.
+                    val_batch = jax.vmap(single_eval)(X_b, p_b)
+                    jac_batch = jax.vmap(jax.jacfwd(single_eval))(X_b, p_b)
+                    return val_batch, jac_batch
+                    
+                cache[key] = compiled_func
+                
+            return cache[key](X_batch, params_batch)
+            
+        return batched_eval_func
+        
+    def generate_eval_i_and_G(self, element):
+        import jax
+        
+        element._jax_cache_i = {}
+        
+        def eval_i_and_G_func(x, epar):
+            if hasattr(epar, '_values'):
+                key = frozenset(epar._values.items())
+            else:
+                key = id(epar)
+                
+            if key not in element._jax_cache_i:
+                @jax.jit
+                def compiled_func(x_inner):
+                    i_vec = element.eval_i(x_inner, epar)
+                    G_mat = jax.jacfwd(element.eval_i)(x_inner, epar)
+                    return i_vec, G_mat
+                element._jax_cache_i[key] = compiled_func
+                
+            return element._jax_cache_i[key](x)
+            
+        element.eval_i_and_G = eval_i_and_G_func
+
+    def generate_eval_q_and_C(self, element):
+        import jax
+        
+        element._jax_cache_q = {}
+        
+        def eval_q_and_C_func(x, epar):
+            if hasattr(epar, '_values'):
+                key = frozenset(epar._values.items())
+            else:
+                key = id(epar)
+                
+            if key not in element._jax_cache_q:
+                @jax.jit
+                def compiled_func(x_inner):
+                    q_vec = element.eval_q(x_inner, epar)
+                    C_mat = jax.jacfwd(element.eval_q)(x_inner, epar)
+                    return q_vec, C_mat
+                element._jax_cache_q[key] = compiled_func
+                
+            return element._jax_cache_q[key](x)
+            
+        element.eval_q_and_C = eval_q_and_C_func
+
+    def add_at(self, lhs, indices, rhs):
+        """Perform in-place addition for JAX arrays using .at[].add()"""
+        # JAX arrays are immutable, so we must return the new array.
+        # circuit.py does `lhs = toolkit.add_at(lhs, indices, rhs)`
+        return lhs.at[indices].add(rhs)
 
 class SymbolicToolkit(Toolkit):
     """Symbolic toolkit backed by sympy (stock LUsolve solver)."""
@@ -119,7 +229,7 @@ class SymbolicPolyToolkit(SymbolicToolkit):
         return capability in ('num_den',)
 
     def linearsolver_num_den(self, A, b):
-        """Solve ``A x = b`` returning ``(numerator_vector, shared_denominator)``.
+        """Solve ``A x = b`` fraction-free; returns ``(numerator_vector, denominator)``.
 
         The solution is ``x_i = numerator[i] / denominator``.  In the polynomial
         domain the shared denominator is the network determinant, computed
@@ -193,3 +303,9 @@ numeric = NumericToolkit(_numeric)
 sparse_numeric = SparseNumericToolkit(_sparse_numeric)
 symbolic = SymbolicToolkit(_symbolic)
 symbolic_poly = SymbolicPolyToolkit(_symbolic)
+
+try:
+    import pycircuit.circuit._jaxtoolkit as _jaxtoolkit
+    jaxtoolkit = JAXToolkit(_jaxtoolkit)
+except ImportError:
+    jaxtoolkit = None

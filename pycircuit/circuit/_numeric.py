@@ -14,7 +14,7 @@ from .constants import *
 import numpy as np
 from numpy import cos, sin, tan, cosh, sinh, tanh, log, exp, pi, linalg,\
      inf, ceil, floor, dot, linspace, eye, concatenate, sqrt, real, imag,\
-     ones, diff, delete, all, maximum, size, conj, cdouble
+     ones, diff, delete, all, maximum, size, conj, cdouble, sum, max, where, abs
 
 alltrue = all
 
