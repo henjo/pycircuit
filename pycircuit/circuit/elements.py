@@ -1757,6 +1757,23 @@ if __name__ == "__main__":
 class TLine(Circuit):
     """
     Ideal Lossless Transmission Line using Method of Characteristics.
+    
+    JAX VECTORIZATION NOTE:
+    TLine intentionally does NOT implement `eval_i_pure` and is completely 
+    excluded from JAX `vmap` vectorization mapping. 
+    
+    Why?
+    Unlike all other elements, TLine depends on *historical* states (t - delay).
+    To vectorize this in JAX, we would need to pre-allocate massive fixed-shape
+    2D history buffers and pass them into the `vmap` on every single iteration,
+    then perform JAX-native temporal interpolation. 
+    Doing so would dramatically slow down the evaluation of all other simple 
+    elements (resistors, diodes) by exhausting GPU memory bandwidth just to carry 
+    around unused historical time-series data. It would also break Symbolic evaluations.
+    
+    By leaving TLine on the legacy Python fallback path, the rest of the circuit 
+    remains blazingly fast in pure JAX, while Python handles the messy dynamic 
+    memory lookups for the delayed states!
     """
     terminals = ('p1', 'm1', 'p2', 'm2')
     branches = (Branch(Node('p1'), Node('m1')), Branch(Node('p2'), Node('m2')))
