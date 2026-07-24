@@ -77,9 +77,9 @@ def compute_integration(q_curr, C_curr, state: TransientState, method='trap'):
             
         return jax.lax.cond(fallback, _euler, _gear)
     
-    if method in ('euler', 'gear'):
+    if method == 'euler':
         return do_euler()
-    elif method == 'gear':
+    elif method in ('gear', 'gear2'):
         return do_gear2()
     else:
         return do_trap()
@@ -156,8 +156,13 @@ def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tl
         return I_u
 
     
-    def cond_fun(nr_state: NewtonState):
-        return jnp.logical_and(nr_state.F_norm > 1e-6, nr_state.iters < 20)
+    ## Convergence uses the passed tolerances (previously hardcoded to
+    ## F_norm > 1e-6 and iters < 20, ignoring the reltol/abstol/maxiter args).
+    ## conv_tol is set below once the initial residual F_norm0 is known.
+    def make_cond(conv_tol):
+        def cond_fun(nr_state: NewtonState):
+            return jnp.logical_and(nr_state.F_norm > conv_tol, nr_state.iters < maxiter)
+        return cond_fun
     
     def body_fun(nr_state: NewtonState):
         x = nr_state.x
@@ -212,31 +217,61 @@ def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tl
 
     initial_nr_state = NewtonState(x=x_next0, xdiff=xdiff0, F_norm=F_norm0, iters=1)
 
-    return jax.lax.while_loop(cond_fun, body_fun, initial_nr_state)
+    ## Relative + absolute residual test on the L1 residual norm.
+    conv_tol = abstol + reltol * F_norm0
+    return jax.lax.while_loop(make_cond(conv_tol), body_fun, initial_nr_state)
 
 # ---------------------------------------------------------------------------
 # Phase 3: Outer Time Loop & Adaptive Control
 # ---------------------------------------------------------------------------
 
 def estimate_lte(q_curr, state: TransientState, method='trap'):
+    """Charge-domain LTE estimate and the method order+1.
+
+    Returns ``(lte_vector, order_plus_one)``.  ``order_plus_one`` is the step
+    predictor exponent denominator (2 for 1st-order Euler, 3 for the 2nd-order
+    methods).  Unlike the CPU transient this estimator is charge-domain (it does
+    not apply ``J^-1``), matching the existing JAX design.
+    """
     dt = state.dt
     q_prev = state.q_history[0]
+    dt_prev = jnp.where(state.h_history[0] == 0.0, dt, state.h_history[0])
 
-    if method in ('euler', 'gear'):
+    if method == 'euler':
+        # Backward Euler: LTE ~ 0.5 h^2 q'' .
         dd1_n = (q_curr - q_prev) / dt
-        dd1_nm1 = (q_prev - state.q_history[1]) / jnp.where(state.h_history[0] == 0.0, 1e-9, state.h_history[0])
+        dd1_nm1 = (q_prev - state.q_history[1]) / dt_prev
         q_double_prime = (dd1_n - dd1_nm1) / dt
-        return 0.5 * (dt**2) * jnp.abs(q_double_prime)
+        return 0.5 * (dt**2) * jnp.abs(q_double_prime), 2.0
+    elif method in ('gear', 'gear2'):
+        # Gear2 / BDF2: 2nd-order, LTE ~ h^3 q''' via a second divided
+        # difference of the charge (previously this fell through to the Euler
+        # estimate, under-controlling the step for the 2nd-order method).
+        q_prev2 = state.q_history[1]
+        dd1_n = (q_curr - q_prev) / dt
+        dd1_nm1 = (q_prev - q_prev2) / dt_prev
+        dd2_n = (dd1_n - dd1_nm1) / (dt + dt_prev)
+        return (dt**2) * (dt + dt_prev) / 3.0 * jnp.abs(dd2_n), 3.0
     else:
+        # Trapezoidal.
         iq_prev = state.iq_history[0]
         dd2 = (q_curr - q_prev) / dt - iq_prev
         dd2 = dd2 * 2.0 / dt
-        return (1.0 / 12.0) * (dt**3) * jnp.abs(dd2)
+        return (1.0 / 12.0) * (dt**3) * jnp.abs(dd2), 3.0
 
-def calculate_next_dt(dt, lte, dt_min, dt_max, t_breaks_array, current_t, trtol=7.0, lte_rel=1e-3, lte_abs=1e-6, q_curr=None):
+def lte_error_ratio(lte, q_curr, trtol=7.0, lte_rel=1e-3, lte_abs=1e-6):
+    """Normalized LTE: <=1 means the step is within tolerance.
+
+    ``trtol`` is folded into the tolerance so the accept test and the step-size
+    predictor share the same target (the CPU transient had these disagree,
+    causing an accept/reject oscillation)."""
     tol = trtol * (lte_rel * jnp.maximum(jnp.abs(q_curr), 1e-12) + lte_abs)
-    error_ratio = jnp.max(lte / tol)
-    factor = jnp.where(error_ratio == 0.0, 2.0, 1.0 / jnp.sqrt(error_ratio))
+    return jnp.max(lte / tol)
+
+
+def calculate_next_dt(dt, error_ratio, dt_min, dt_max, t_breaks_array, current_t, order_p1=2.0):
+    # Predictor exponent 1/(order+1): sqrt for 1st order, cube root for 2nd.
+    factor = jnp.where(error_ratio <= 0.0, 2.0, error_ratio ** (-1.0 / order_p1))
     factor = jnp.clip(factor, 0.1, 2.0)
     dt_new = dt * factor
     dt_new = jnp.clip(dt_new, dt_min, dt_max)
@@ -248,67 +283,75 @@ def calculate_next_dt(dt, lte, dt_min, dt_max, t_breaks_array, current_t, trtol=
     dt_new = jnp.maximum(dt_new, dt_min)
     return dt_new
 
-def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None):
+def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-3, abstol=1e-6, maxiter=50):
 
     def time_cond(state: TransientState):
         under_time = state.t < tend
         under_chunk = state.step_idx < chunk_size
         return jnp.logical_and(under_time, under_chunk)
-    
+
     def time_body(state: TransientState):
-        nr_state = newton_inner_loop(state, circuit, irefnode, tline_params, tline_indices, eval_method=eval_method, params_tree=params_tree)
+        nr_state = newton_inner_loop(state, circuit, irefnode, tline_params, tline_indices,
+                                     eval_method=eval_method, reltol=reltol, abstol=abstol,
+                                     maxiter=maxiter, params_tree=params_tree)
         x_curr = nr_state.x
         q_curr = circuit.q(x_curr, params_tree=params_tree)
-        i_curr, _ = compute_integration(q_curr, circuit.C(x_curr, params_tree=params_tree), state, method=eval_method)
-    
-        lte = estimate_lte(q_curr, state, method=eval_method)
-        next_dt = calculate_next_dt(state.dt, lte, dt_min, dt_max, t_breaks_array, state.t, q_curr=q_curr)
-    
-        x_hist_new = jnp.roll(state.x_history, shift=1, axis=0)
-        x_hist_new = x_hist_new.at[0].set(x_curr)
-    
-        q_hist_new = jnp.roll(state.q_history, shift=1, axis=0)
-        q_hist_new = q_hist_new.at[0].set(q_curr)
-    
-        iq_hist_new = jnp.roll(state.iq_history, shift=1, axis=0)
-        iq_hist_new = iq_hist_new.at[0].set(i_curr)
-    
-        h_hist_new = jnp.roll(state.h_history, shift=1, axis=0)
-        h_hist_new = h_hist_new.at[0].set(state.dt)
-    
-        res_buf = state.results_buffer.at[state.step_idx].set(x_curr)
-        time_buf = state.time_buffer.at[state.step_idx].set(state.t + state.dt)
-    
-        n_tlines = tline_params.shape[0]
-        def update_tlines():
-            v1 = x_curr[tline_indices[:, 0]] - x_curr[tline_indices[:, 1]]
-            v2 = x_curr[tline_indices[:, 2]] - x_curr[tline_indices[:, 3]]
-            i1 = x_curr[tline_indices[:, 4]]
-            i2 = x_curr[tline_indices[:, 5]]
-        
-            tline_data = jnp.stack([jnp.full(n_tlines, state.t + state.dt), v1, v2, i1, i2], axis=1)
-            new_head = (state.tline_head + 1) % 10000
-        
-            # Using jax.vmap or simple indexing
-            new_history = state.tline_history.at[:, new_head, :].set(tline_data)
-            return new_history, new_head
-        
-        tline_history_new, tline_head_new = jax.lax.cond(n_tlines > 0, update_tlines, lambda: (state.tline_history, state.tline_head))
-    
-        return TransientState(
-            t=state.t + state.dt,
-            dt=next_dt,
-            step_idx=state.step_idx + 1,
-            x_history=x_hist_new,
-            q_history=q_hist_new,
-            iq_history=iq_hist_new,
-            h_history=h_hist_new,
-            results_buffer=res_buf,
-            time_buffer=time_buf,
-            tline_history=tline_history_new,
-            tline_head=tline_head_new
-        )
-    
+        C_curr = circuit.C(x_curr, params_tree=params_tree)
+        i_curr, _ = compute_integration(q_curr, C_curr, state, method=eval_method)
+
+        lte, order_p1 = estimate_lte(q_curr, state, method=eval_method)
+        error_ratio = lte_error_ratio(lte, q_curr)
+
+        ## Accept when the LTE is within tolerance.  Always accept the first step
+        ## (no history for the estimate) and when dt has reached the floor -- the
+        ## latter guarantees forward progress so a rejection loop cannot deadlock.
+        at_floor = state.dt <= dt_min * (1.0 + 1e-9)
+        first = state.step_idx < 1
+        accept = jnp.logical_or(jnp.logical_or(error_ratio <= 1.0, at_floor), first)
+
+        def do_accept(_):
+            next_dt = calculate_next_dt(state.dt, error_ratio, dt_min, dt_max,
+                                        t_breaks_array, state.t, order_p1)
+
+            x_hist_new = jnp.roll(state.x_history, shift=1, axis=0).at[0].set(x_curr)
+            q_hist_new = jnp.roll(state.q_history, shift=1, axis=0).at[0].set(q_curr)
+            iq_hist_new = jnp.roll(state.iq_history, shift=1, axis=0).at[0].set(i_curr)
+            h_hist_new = jnp.roll(state.h_history, shift=1, axis=0).at[0].set(state.dt)
+
+            res_buf = state.results_buffer.at[state.step_idx].set(x_curr)
+            time_buf = state.time_buffer.at[state.step_idx].set(state.t + state.dt)
+
+            n_tlines = tline_params.shape[0]
+            def update_tlines():
+                v1 = x_curr[tline_indices[:, 0]] - x_curr[tline_indices[:, 1]]
+                v2 = x_curr[tline_indices[:, 2]] - x_curr[tline_indices[:, 3]]
+                i1 = x_curr[tline_indices[:, 4]]
+                i2 = x_curr[tline_indices[:, 5]]
+                tline_data = jnp.stack([jnp.full(n_tlines, state.t + state.dt), v1, v2, i1, i2], axis=1)
+                new_head = (state.tline_head + 1) % 10000
+                new_history = state.tline_history.at[:, new_head, :].set(tline_data)
+                return new_history, new_head
+
+            tline_history_new, tline_head_new = jax.lax.cond(
+                n_tlines > 0, update_tlines,
+                lambda: (state.tline_history, state.tline_head))
+
+            return TransientState(
+                t=state.t + state.dt, dt=next_dt, step_idx=state.step_idx + 1,
+                x_history=x_hist_new, q_history=q_hist_new,
+                iq_history=iq_hist_new, h_history=h_hist_new,
+                results_buffer=res_buf, time_buffer=time_buf,
+                tline_history=tline_history_new, tline_head=tline_head_new)
+
+        def do_reject(_):
+            ## LTE above tolerance: shrink the step (bounded below by dt_min) and
+            ## retry the same time point without committing anything.
+            shrink = jnp.clip(error_ratio ** (-1.0 / order_p1), 0.1, 0.9)
+            retry_dt = jnp.maximum(state.dt * shrink, dt_min)
+            return state._replace(dt=retry_dt)
+
+        return jax.lax.cond(accept, do_accept, do_reject, None)
+
     return jax.lax.while_loop(time_cond, time_body, initial_state)
 
 # ---------------------------------------------------------------------------
@@ -475,8 +518,8 @@ class JAXTransient(Analysis):
         if x0 is None:
             if kwargs.get('uic', False):
                 x0 = np.zeros(n)
-                # Load node initial conditions if they exist
-                for node in self.cir.nodes.values():
+                # Load node initial conditions if they exist (cir.nodes is a list).
+                for node in self.cir.nodes:
                     if hasattr(node, 'ic'):
                         idx = self.cir.get_node_index(node)
                         x0[idx] = node.ic
