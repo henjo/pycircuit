@@ -416,155 +416,85 @@ class Transient(Analysis):
         self._is_first_step = True
         t = 0.0
         h = timestep
+        max_step = timestep
         TRTOL = 7.0
-        
+        minstep = getattr(self.par, 'minstep', 1e-18)
+
         ones_nodes = self.toolkit.ones(len(self.cir.nodes))
         ones_branches = self.toolkit.ones(len(self.cir.branches))
         abstol = self.toolkit.concatenate((self.par.iabstol * ones_nodes,
                                          self.par.vabstol * ones_branches))
         reltol = self.par.reltol
-        xtol = self.par.vabstol
-        
+
+        ## Coupled adaptive time-stepping, Fang, "A New Time-Stepping Method for
+        ## Circuit Simulation" (DAC 2013).  The circuit solution and the step size
+        ## are co-determined at each time point: converge the circuit at a fixed
+        ## step (stage 1), then bring the local truncation error into the accept
+        ## band by driving the step with Gear's formula and re-solving.  This is
+        ## the paper's robust "approximate Newton" (sec. 3.4); it replaces the
+        ## exact (N+1) Schur update, which is very sensitive to step changes and
+        ## collapses the step size.  The LTE evaluation and Gear prediction are
+        ## shared with the standard adaptive controller (IntegralController) so
+        ## the coupled and adaptive paths stay consistent.
+        from pycircuit.circuit.stepcontroller import IntegralController
+        from pycircuit.circuit.nrsolver import NoConvergenceError
+        controller = IntegralController()
+        MAX_LTE_ITERS = 10
+
         while t < tend:
             if t + h > tend:
                 h = tend - t
-                
-            x_curr = copy(X[-1])
+
+            ## Co-determine (x, h): converge the circuit at h_curr, evaluate the
+            ## LTE, and while it is above the band shrink the step (Gear-predicted
+            ## by the controller) and re-solve.
             h_curr = h
-            converged = False
-            
-            # Prepare eval_FJ callback for SchurCoupledNewton
-            def eval_FJ(xr, h_curr):
-                x_full = self.toolkit.zeros(n)
-                x_full[:self.irefnode] = xr[:self.irefnode]
-                x_full[self.irefnode+1:] = xr[self.irefnode:]
-                
+            x_curr = copy(X[-1])
+            h_next = h
+            for lte_iter in range(MAX_LTE_ITERS):
                 self._dt = h_curr
-                C = self.cir.C(x_full)
-                q = self.cir.q(x_full)
-                iq, Geq = self.get_diff(q, C)
-                F = self.cir.i(x_full) + iq + self.cir.u(t + h_curr, analysis=self.par.analysis)
-                J = self.cir.G(x_full) + Geq
-                
-                F_r = self.toolkit.delete(F, self.irefnode)
-                J_r = self.toolkit.delete(J, self.irefnode, axis=0)
-                J_r = self.toolkit.delete(J_r, self.irefnode, axis=1)
-                
-                eps = max(1e-8 * h_curr, 1e-15)
-                self._dt = h_curr + eps
-                iq_p, _ = self.get_diff(q, C)
-                F_p = self.cir.i(x_full) + iq_p + self.cir.u(t + h_curr + eps, analysis=self.par.analysis)
-                
-                self._dt = h_curr - eps
-                iq_m, _ = self.get_diff(q, C)
-                F_m = self.cir.i(x_full) + iq_m + self.cir.u(t + h_curr - eps, analysis=self.par.analysis)
-                
-                J_h = (F_p - F_m) / (2 * eps)
-                J_h_r = self.toolkit.delete(J_h, self.irefnode)
-                self._dt = h_curr
-                
-                def calc_E(x_val, h_val):
-                    if self._is_first_step: return 0.0
-                    q_val = self.cir.q(x_val)
-                    if self._effective_method in ("trapezoidal", "trap"):
-                        dd2 = (q_val - self._qlast[0]) / h_val - self._iqlast[0]
-                        dd2 = dd2 * 2.0 / h_val
-                        lte = 1.0 / 12.0 * (h_val**3) * dd2
-                    elif self._effective_method == "gear2":
-                        dd1_n = (q_val - self._qlast[0]) / h_val
-                        dd1_nm1 = (self._qlast[0] - self._qlast[1]) / self._dt_last
-                        dd2_n = (dd1_n - dd1_nm1) / (h_val + self._dt_last)
-                        lte = (h_val**2) * (h_val + self._dt_last) / 3.0 * dd2_n
-                    else:
-                        lte = self.toolkit.zeros(n)
-                        
-                    etol = reltol * self.toolkit.maximum(np.abs(q_val), np.abs(self._qlast[0])) + abstol
-                    return np.max(np.abs(lte) / etol) - TRTOL
-                
-                E = calc_E(x_full, h_curr)
-                
-                gamma_min, gamma_max = 0.7, 3.0
-                if analytical_eh and ((gamma_min - 1.0) * TRTOL <= E <= (gamma_max - 1.0) * TRTOL) and not self._is_first_step:
-                    E_x_r = self.toolkit.zeros(len(F_r))
-                    E_h = 1.0
-                    E = 0.0
-                elif self._is_first_step:
-                    E_x_r = self.toolkit.zeros(len(F_r))
-                    E_h = 1.0
-                else:
-                    if analytical_eh:
-                        p = 3.0 if self._effective_method in ("trapezoidal", "trap") else 2.0
-                        E_h = p * (E + TRTOL) / h_curr
-                    else:
-                        E_h = (calc_E(x_full, h_curr + eps) - calc_E(x_full, h_curr - eps)) / (2 * eps)
-                    
-                    E_x_r = self.toolkit.zeros(len(F_r))
-                    if not analytical_eh:
-                        for i in range(len(F_r)):
-                            idx = i if i < self.irefnode else i + 1
-                            x_p = copy(x_full)
-                            x_p[idx] += eps
-                            x_m = copy(x_full)
-                            x_m[idx] -= eps
-                            E_x_r[i] = (calc_E(x_p, h_curr) - calc_E(x_m, h_curr)) / (2 * eps)
-                            
-                return F_r, J_r, J_h_r, E, E_x_r, E_h
+                try:
+                    x_new, feval, J, f = self.solve_timestep(
+                        X[-1], t + h_curr, provided_function=provided_function)
+                except NoConvergenceError:
+                    ## Circuit did not converge at this step -> shrink and retry.
+                    h_curr *= 0.25
+                    if h_curr < minstep:
+                        raise RuntimeError(f"Coupled transient: timestep shrank below {minstep:g}s at t={t}")
+                    continue
 
-            def limiter_func(xr_next, xr_curr):
-                x_next_full = self.toolkit.insert(xr_next, self.irefnode, 0.0)
-                x_curr_full = self.toolkit.insert(xr_curr, self.irefnode, 0.0)
-                x_next_full = self.cir.limit(x_next_full, x_curr_full, self.epar)
-                return self.toolkit.concatenate((x_next_full[:self.irefnode], x_next_full[self.irefnode+1:]))
+                accept, h_next = controller.evaluate_step(
+                    x_curr=x_new, x_last=X[-1],
+                    q_curr=self.cir.q(x_new),
+                    q_last_hist=self._qlast, iq_last_hist=self._iqlast,
+                    h_curr=h_curr, h_last=getattr(self, '_dt_last', h_curr),
+                    is_first_step=self._is_first_step, J=J,
+                    active_integrator=self.active_integrator,
+                    irefnode=self.irefnode, reltol=reltol, abstol=abstol,
+                    toolkit=self.toolkit, max_step=max_step, TRTOL=TRTOL)
 
-            from pycircuit.circuit.nrsolver import SchurCoupledNewton, NoConvergenceError
-            solver = SchurCoupledNewton()
-            
-            x_curr_r = self.toolkit.concatenate((X[-1][:self.irefnode], X[-1][self.irefnode+1:]))
-            abstol_r = self.toolkit.concatenate((abstol[:self.irefnode], abstol[self.irefnode+1:]))
-            
-            try:
-                (x_next_r, h_next), _ = solver.solve_system(
-                    (x_curr_r, h),
-                    eval_FJ,
-                    self.toolkit,
-                    reltol,
-                    abstol_r,
-                    xtol,
-                    self.par.maxiter,
-                    limiter=limiter_func
-                )
-                converged = True
-            except NoConvergenceError:
-                converged = False
-                
-            if converged:
-                x_next = self.toolkit.zeros(n)
-                x_next[:self.irefnode] = x_next_r[:self.irefnode]
-                x_next[self.irefnode+1:] = x_next_r[self.irefnode:]
-                
-                h = h_next
-                x_curr = x_next
-                    
-            if not converged:
-                # If NR failed, reduce step drastically
-                h *= 0.25
-                if h < 1e-15:
-                    raise RuntimeError("Timestep too small")
-                continue
-                
+                x_curr = x_new
+                if accept or lte_iter == MAX_LTE_ITERS - 1:
+                    break
+                if h_next < minstep:
+                    raise RuntimeError(f"Coupled transient: timestep shrank below {minstep:g}s at t={t}")
+                h_curr = h_next
+
             t += h_curr
-            h = h_curr
             timelist.append(t)
             X.append(copy(x_curr))
-            
+
             if hasattr(self.cir, 'accept_step'):
                 self.cir.accept_step(t, X[-1], self.epar)
-            
+
             self._dt = h_curr
             self._dt_last = h_curr
             self._is_first_step = False
             self._iqlast = self.toolkit.concatenate((self.toolkit.array([self._iq]), self._iqlast))[:-1]
             self._qlast = self.toolkit.concatenate((self.toolkit.array([self.cir.q(x_curr)]), self._qlast))[:-1]
+
+            ## Next step: Gear-predicted size (already bounded by max_step).
+            h = min(max_step, max(h_next, minstep))
             
         X = self.toolkit.array(X[1:]).T
         timelist = self.toolkit.array(timelist)
