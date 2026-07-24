@@ -34,7 +34,8 @@ sys.path.insert(0, os.path.join(_docdir, 'sphinxext'))
 #extensions = ['sphinx.ext.autodoc', 'sphinx.ext.jsmath']
 extensions = ['sphinx.ext.autodoc', 'sphinx.ext.napoleon', 'sphinx.ext.mathjax',
               'sphinx.ext.todo', 'matplotlib.sphinxext.plot_directive',
-              'sphinxext.sympy_directive', 'sphinxext.parametertable_directive']
+              'sphinxext.sympy_directive', 'sphinxext.parametertable_directive',
+              'sphinxext.exec_directive']
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['.templates']

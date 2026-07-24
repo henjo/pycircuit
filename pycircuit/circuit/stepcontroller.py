@@ -8,11 +8,11 @@ class StepController(ABC):
     
     @abstractmethod
     def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, is_first_step, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0):
-        """
-        Evaluates the Local Truncation Error (LTE) for the current step.
+        """Evaluate the Local Truncation Error (LTE) for the current step.
+
         Returns:
-            accept_step: bool
-            h_next: float
+            tuple: ``(accept_step, h_next)`` -- whether the step is accepted and
+            the predicted next step size.
         """
         pass
 

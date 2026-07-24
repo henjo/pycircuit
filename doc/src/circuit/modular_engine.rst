@@ -24,7 +24,7 @@ simulations into a strictly modular orchestration engine utilizing the
 ``DCAnalysis``) will remain agnostic to the math, relying entirely on
 three injectable, toolkit-aware interfaces.
 
-.. code:: mermaid
+.. code-block:: text
 
    classDiagram
        %% Orchestrators

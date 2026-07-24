@@ -1,5 +1,5 @@
 Example 8: Frequency Response via JAX Transient Sweep
----------------------------------------------------
+-----------------------------------------------------
 
 This example leverages the extremely fast compiled execution of `JAXTransient` to perform a frequency sweep in the time-domain. We characterize the frequency response of an RC low-pass filter (which is normally done via AC analysis) by actually simulating the transient response at multiple frequencies.
 
