@@ -51,26 +51,34 @@ class IntegralController(StepController):
             lte_reduced = Eg_reduced
             
         lte = toolkit.concatenate((lte_reduced[:irefnode], toolkit.array([0.0]), lte_reduced[irefnode:]))
-        
-        # 3. Calculate dynamic tolerance for each node based on its current voltage level
-        etol = reltol * toolkit.maximum(abs(x_curr), abs(x_last)) + abstol
-        
+
+        # 3. Dynamic per-node tolerance, relaxed by the transient error factor TRTOL.
+        #    TRTOL is the SPICE "transient tolerance" (Spectre calls the equivalent
+        #    `lteratio`): the LTE estimate is deliberately conservative, so the
+        #    allowed truncation error is TRTOL times the Newton-solve tolerance.
+        #    Folding TRTOL into etol makes the accept threshold (err<=1) and the
+        #    step-size prediction aim at the same target instead of oscillating.
+        etol = TRTOL * (reltol * toolkit.maximum(abs(x_curr), abs(x_last)) + abstol)
+
         # 4. Normalize the error
         err_array = abs(lte) / etol
         err = float(np.max(err_array))
-        
+
+        # Step-size prediction exponent is 1/(order+1); compute_lte returns that
+        # (order+1) as ``p`` (2 for Euler, 3 for the 2nd-order methods).
+        exponent = 1.0 / p
+        safety = 0.9
+
         # --- STEP REJECTION / ACCEPTANCE ---
         if err > 1.0:
-            # Step rejected: The curvature was too sharp for the current timestep.
-            # We shrink h_next and return False to force the solver to recalculate.
-            h_next = h_curr * max(0.2, (1.0 / err)**0.5)
+            # Step rejected: shrink and recalculate.
+            h_next = h_curr * max(0.2, safety * (1.0 / err)**exponent)
             return False, h_next
 
-            
-        # Step accepted: predict next size
-        h_next = h_curr * min(2.0, (TRTOL / max(err, 1e-12))**0.5)
+        # Step accepted: predict next size with the same controller law.
+        h_next = h_curr * min(2.0, safety * (1.0 / max(err, 1e-12))**exponent)
         h_next = min(h_next, max_step)
-        
+
         return True, h_next
 
 class PIController(StepController):
@@ -108,26 +116,29 @@ class PIController(StepController):
             lte_reduced = Eg_reduced
             
         lte = toolkit.concatenate((lte_reduced[:irefnode], toolkit.array([0.0]), lte_reduced[irefnode:]))
-        
-        etol = reltol * toolkit.maximum(abs(x_curr), abs(x_last)) + abstol
+
+        # Relax the LTE tolerance by TRTOL (see IntegralController) so the accept
+        # threshold matches the target the PI update drives toward.
+        etol = TRTOL * (reltol * toolkit.maximum(abs(x_curr), abs(x_last)) + abstol)
         err_array = abs(lte) / etol
-        
+
         err = float(np.max(err_array))
-        
+        exponent = 1.0 / p
+
         if err > 1.0:
-            # Step rejected
-            # When rejected, we use a standard backoff
-            h_next = h_curr * max(0.2, (1.0 / err)**0.5)
+            # Step rejected: standard backoff using the method order.
+            h_next = h_curr * max(0.2, 0.9 * (1.0 / err)**exponent)
             return False, h_next
             
         # Step accepted: use PI update
         if self.last_err is None:
             self.last_err = err
             
-        # Standard PI formula for step size control
-        err_norm = max(err, 1e-12) / TRTOL
-        err_last_norm = max(self.last_err, 1e-12) / TRTOL
-        
+        # Standard PI formula for step size control.  err is already normalized so
+        # that err==1 is the target (TRTOL is folded into etol above).
+        err_norm = max(err, 1e-12)
+        err_last_norm = max(self.last_err, 1e-12)
+
         factor = (err_norm ** (-self.k_i)) * ((err_last_norm / err_norm) ** self.k_p)
         
         # Limit the step size change

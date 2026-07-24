@@ -209,9 +209,12 @@ class Transient(Analysis):
         if coupled_lte:
             return self._solve_coupled(refnode, tend, x0, timestep, provided_function, analytical_eh)
         
-        from pycircuit.circuit.stepcontroller import IntegralController
-        self.step_controller = IntegralController()
-        
+        ## Respect a step controller injected by the caller (e.g. PIController);
+        ## only fall back to the default IntegralController when none was set.
+        if getattr(self, 'step_controller', None) is None:
+            from pycircuit.circuit.stepcontroller import IntegralController
+            self.step_controller = IntegralController()
+
         X = []
         self.irefnode=self.cir.get_node_index(refnode)
         n = self.cir.n
@@ -248,6 +251,15 @@ class Transient(Analysis):
         max_step = timestep
         dt = timestep
         TRTOL = 7.0
+        ## Bound the number of consecutive LTE rejections at a single time point.
+        ## Near a source discontinuity (e.g. a VPulse corner) the truncation-error
+        ## estimate can stay above tolerance for arbitrarily small steps while the
+        ## stored history is frozen; without a cap the step size collapses and the
+        ## solve grinds indefinitely.  After MAX_REJECT rejections we accept the
+        ## already-converged Newton solution (only its LTE was too high) so time
+        ## advances and the integrator history refreshes.
+        reject_count = 0
+        MAX_REJECT = 3
         
         ones_nodes = self.toolkit.ones(len(self.cir.nodes))
         ones_branches = self.toolkit.ones(len(self.cir.branches))
@@ -324,14 +336,21 @@ class Transient(Analysis):
                     TRTOL=TRTOL
                 )
                 
-                if not accept:
+                if not accept and reject_count < MAX_REJECT:
+                    reject_count += 1
                     dt = dt_next
                     if dt < getattr(self.par, 'minstep', 1e-18):
                         raise RuntimeError(f"Transient solver integration error: timestep shrank below {getattr(self.par, 'minstep', 1e-18):g}s at t={t}")
                     continue
+                elif not accept:
+                    ## Rejection cap reached: accept the converged solution at the
+                    ## current (small) step, but grow dt back toward max_step so we
+                    ## escape the collapsed regime instead of crawling step by step.
+                    next_dt = min(max_step, dt * 10.0)
                 else:
                     next_dt = dt_next
-            
+                reject_count = 0
+
             t = next_t
             timelist.append(t)
             X.append(copy(x))
