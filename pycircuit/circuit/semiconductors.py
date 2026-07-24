@@ -206,17 +206,24 @@ class ZenerDiode(Semiconductor):
         Parameter('IBV', 'Reverse breakdown current', default=1e-10, unit='A'),
     ]
 
-    def i(self, x, epar=defaultepar):
+    @staticmethod
+    def eval_i_pure(x, params, epar, toolkit):
         v = x[0] - x[1]
-        VT = self.toolkit.kboltzmann * epar.T / self.toolkit.qelectron
+        VT = toolkit.kboltzmann * epar.T / toolkit.qelectron
+        IS = params.get('IS', 1e-14)
+        BV = params.get('BV', 5.0)
+        IBV = params.get('IBV', 1e-10)
         
-        i_fwd = self.iparv.IS * (self.toolkit.exp(v / VT) - 1.0)
-        
-        v_zener = -v - self.iparv.BV
-        i_zener = -self.iparv.IBV * (self.toolkit.exp(v_zener / VT) - 1.0)
+        i_fwd = IS * (toolkit.exp(v / VT) - 1.0)
+        v_zener = -v - BV
+        i_zener = -IBV * (toolkit.exp(v_zener / VT) - 1.0)
         
         i_tot = i_fwd + i_zener
-        return self.toolkit.array([i_tot, -i_tot])
+        return toolkit.array([i_tot, -i_tot])
+
+    def i(self, x, epar=defaultepar):
+        params = {'IS': self.iparv.IS, 'BV': self.iparv.BV, 'IBV': self.iparv.IBV}
+        return self.eval_i_pure(x, params, epar, self.toolkit)
 
 class Varactor(Semiconductor):
     """Voltage-dependent Capacitor"""
@@ -227,31 +234,29 @@ class Varactor(Semiconductor):
         Parameter('M', 'Grading coefficient', default=0.5),
     ]
 
+    @staticmethod
+    def eval_i_pure(x, params, epar, toolkit):
+        return toolkit.zeros(2)
+
+    @staticmethod
+    def eval_q_pure(x, params, epar, toolkit):
+        v = x[0] - x[1]
+        CJ0 = params.get('CJ0', 1e-12)
+        VJ = params.get('VJ', 1.0)
+        M = params.get('M', 0.5)
+        
+        minimum = getattr(toolkit, 'minimum', None)
+        if minimum is None:
+            import jax.numpy as jnp
+            minimum = jnp.minimum
+            
+        v_eff = minimum(v, 0.99 * VJ)
+        q_val = CJ0 * VJ / (1.0 - M) * (1.0 - (1.0 - v_eff / VJ)**(1.0 - M))
+        return toolkit.array([q_val, -q_val])
+
     def i(self, x, epar=defaultepar):
-        return self.toolkit.zeros(2)
+        return self.eval_i_pure(x, {}, epar, self.toolkit)
         
     def q(self, x, epar=defaultepar):
-        v = x[0] - x[1]
-        
-        CJ0 = self.iparv.CJ0
-        VJ = self.iparv.VJ
-        M = self.iparv.M
-        
-        # JAX-friendly min function
-        try:
-            import jax.numpy as jnp
-            is_tracer = isinstance(v, jnp.ndarray) or hasattr(v, 'aval')
-        except ImportError:
-            is_tracer = False
-            
-        if is_tracer or hasattr(self.toolkit, 'minimum'):
-            minimum = getattr(self.toolkit, 'minimum', None)
-            if minimum is None:
-                import jax.numpy as jnp
-                minimum = jnp.minimum
-            v_eff = minimum(v, 0.99 * VJ)
-        else:
-            v_eff = v if v <= 0.99 * VJ else 0.99 * VJ
-                
-        q_val = CJ0 * VJ / (1.0 - M) * (1.0 - (1.0 - v_eff / VJ)**(1.0 - M))
-        return self.toolkit.array([q_val, -q_val])
+        params = {'CJ0': self.iparv.CJ0, 'VJ': self.iparv.VJ, 'M': self.iparv.M}
+        return self.eval_q_pure(x, params, epar, self.toolkit)
