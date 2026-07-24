@@ -5,22 +5,35 @@ a compiled C++ CAS for the linear solve instead of pure sympy. Plugs into the
 existing toolkit architecture (`pycircuit/circuit/toolkit.py`) exactly like
 `symbolic_poly`, so `numeric`/`symbolic`/`symbolic_poly` stay untouched.
 
-## Decision gate (2026-07) — PASSED
+## Decision gate (2026-07) — symengine `LUsolve` does NOT win (corrected)
 
-Benchmark: solve a symbolic-`s` RC/RLC ladder MNA system (numeric component
-values + one symbolic generator `s`) — the sweet spot for fraction-free
-solving. Compared sympy `DomainMatrix.solve_den` (current `symbolic_poly` path)
-vs **symengine** `LUsolve`:
+A first "gate" timed symengine `LUsolve` followed by *numeric* evaluation and
+looked ~10× faster than sympy `solve_den`. **That was measuring the wrong
+thing** — numeric evaluation, not symbolic `N(s)/D(s)` extraction. Re-run
+end-to-end (AC solve + transfer function on numeric-components + symbolic-`s`
+ladders), the `SymengineToolkit` is *slower*, and worsens with N (N=10:
+symengine ~1.4 s vs sympy `symbolic_poly` ~0.04 s).
 
-| N (nodes) | sympy solve_den | symengine | correct? |
-|-----------|-----------------|-----------|----------|
-| 4  | 0.016 s | 0.002 s | yes (machine precision) |
-| 6  | 0.022 s | 0.002 s | yes |
-| 8  | 0.036 s | 0.003 s | yes |
-| 10 | 0.062 s | 0.004 s | yes |
+Why:
 
-~10–15× faster, correct to machine precision, gap grows with N. A compiled
-backend is worth it.
+- symengine's `LUsolve`/`det` are **not fraction-free** — the denominator comes
+  back as a large *unexpanded nested expression with divisions*
+  (`/(1e-9*s+101)…`), exactly the expression swell `symbolic_poly`'s
+  fraction-free `DomainMatrix.solve_den` was built to avoid. sympy then has to
+  cancel that mess downstream.
+- symengine *does* expose fraction-free `FFLU`/`FFLDU`, but they don't cancel to
+  a compact determinant here: `FFLU` is instant, yet the last pivot (the
+  determinant) **expands to ~125 M characters at N=8** and explodes beyond.
+
+**Conclusion:** the lever is **fraction-free elimination with real polynomial
+cancellation**, which sympy's polynomial-domain `solve_den` already does well
+(see the live benchmark in `doc/src/circuit/symbolic_poly.rst`: `symbolic_poly`
+is ~2–3× faster than stock `symbolic` and ~30× smaller expressions). A compiled
+win requires **GiNaC's `normal()`** (multivariate-GCD cancellation), which
+symengine lacks and which is not installable in this environment.
+
+`SymengineToolkit` is therefore kept as a **correct-but-experimental plug-in
+point** (relabelled in its docstring), not a speed win.
 
 ## Environment reality
 
@@ -61,7 +74,22 @@ simplification (`cancel`/`poles`) is still sympy; a deeper Option B (native
 objects end-to-end) is only worth it if profiling shows assembly or post-solve
 simplification dominates. See the earlier `sympy_review.md` notes.
 
-## Next step
+## Status & next step
 
-Implement the minimal `SymengineToolkit.linearsolver_num_den` + a singleton and
-one regression test (RC transfer-function poles vs `symbolic_poly`).
+Done: `SymengineToolkit.linearsolver_num_den` + optional `symengine_toolkit`
+singleton + regression test (RC poles vs `symbolic_poly`). It is correct but,
+per the corrected gate above, **not faster** — so it stays experimental.
+
+The real next step is a **GiNaC** backend using `normal()` for fraction-free
+cancellation, behind the identical interface:
+
+1. Get `libginac-dev` available (needs root/apt in this environment).
+2. Minimal pybind11 extension: `solve_numden(matrix, rhs, s) -> (N, D)` that
+   does the solve + `normal()` in C++ and returns compact polynomials.
+3. Benchmark GiNaC `normal()` vs sympy `solve_den` on the ladder above; only
+   then does a `GinacToolkit` replace `symbolic_poly` for large numeric+`s`
+   circuits.
+
+Until then, `symbolic_poly` (sympy polynomial-domain, fraction-free) is the
+fastest available symbolic backend for the numeric-components + symbolic-`s`
+regime.

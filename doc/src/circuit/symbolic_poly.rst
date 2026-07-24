@@ -166,3 +166,62 @@ the deprecated ``circuit.default_toolkit`` global):
         cir = SubCircuit()
         ...                     # circuits built here use symbolic_poly
     # default restored on exit
+
+Why fraction-free: a live benchmark
+-----------------------------------
+
+The table below is **generated when this page is built**.  It runs an AC solve of
+an :math:`N`-section RC ladder with *numeric* component values and a *symbolic*
+complex frequency :math:`s` -- the regime ``symbolic_poly`` targets -- under the
+stock ``symbolic`` toolkit (``LUsolve``) and ``symbolic_poly``
+(``DomainMatrix.solve_den``), reporting the solve time and the size of the
+resulting node-voltage expression (``sympy.count_ops``).
+
+Fraction-free elimination keeps intermediate results as a single
+:math:`N(s)/D(s)` instead of the nested fractions ``LUsolve`` accumulates, so
+the expression stays small and the solve is faster as :math:`N` grows.
+
+.. exec-rst::
+
+    import time, sympy
+    from pycircuit.circuit import SubCircuit, R, C, VS, gnd, symbolic, symbolic_poly
+    from pycircuit.circuit.analysis_ss import AC
+
+    def run(N, tk):
+        s = sympy.Symbol('s', imaginary=True)
+        cir = SubCircuit(toolkit=tk)
+        cir['VS'] = VS('n0', gnd, vac=1)
+        for i in range(N):
+            cir['R%d' % i] = R('n%d' % i, 'n%d' % (i + 1), r=100.0 * (i + 1))
+            cir['C%d' % i] = C('n%d' % (i + 1), gnd, c=1e-9 * (i + 1))
+        t = time.time()
+        res = AC(cir, toolkit=tk).solve(s, complexfreq=True)
+        v = res.v('n%d' % N, gnd)
+        return time.time() - t, sympy.count_ops(v)
+
+    print(".. list-table:: AC solve of an N-section RC ladder"
+          " (numeric R,C + symbolic s)")
+    print("   :header-rows: 1")
+    print("   :widths: 8 16 14 18 14")
+    print("")
+    print("   * - N")
+    print("     - symbolic time")
+    print("     - symbolic ops")
+    print("     - symbolic_poly time")
+    print("     - symbolic_poly ops")
+    for N in (2, 4, 6, 8):
+        ta, oa = run(N, symbolic)
+        tb, ob = run(N, symbolic_poly)
+        print("   * - %d" % N)
+        print("     - %.3f s" % ta)
+        print("     - %d" % oa)
+        print("     - %.3f s" % tb)
+        print("     - %d" % ob)
+
+.. note::
+
+   The win is specific to **few symbolic generators** (numeric components with a
+   symbolic ``s``, the usual AC/noise case).  For *fully* symbolic circuits (all
+   ``R``/``C`` symbolic) the fraction-free determinant is a large multivariate
+   polynomial and ``symbolic_poly`` offers no advantage -- use the stock
+   ``symbolic`` toolkit there.

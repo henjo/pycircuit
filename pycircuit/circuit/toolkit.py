@@ -299,18 +299,21 @@ class SymbolicPolyToolkit(SymbolicToolkit):
 
 
 class SymengineToolkit(SymbolicPolyToolkit):
-    """Symbolic toolkit whose linear solve runs through the compiled ``symengine``
-    CAS (a GiNaC-style C++ core), keeping the same ``N(s)/D(s)`` contract.
+    """EXPERIMENTAL symbolic toolkit that solves through the compiled ``symengine``
+    CAS, keeping the same ``N(s)/D(s)`` contract.  Correct, but **not a speed
+    win** as implemented -- kept as a plug-in point for a fraction-free compiled
+    backend (see ``doc/ginac_toolkit_design.md``).
 
-    Behaves like :class:`SymbolicPolyToolkit` -- assembly stays in sympy -- but
-    :meth:`linearsolver_num_den` solves in symengine, which is ~10x faster than
-    sympy's ``DomainMatrix.solve_den`` on the numeric-components + symbolic-``s``
-    circuits that dominate symbolic AC/noise analysis.  Falls back to the sympy
-    fraction-free path when symengine cannot handle the entries.
-
-    This is the drop-in vehicle for a future GiNaC C++ backend (see
-    ``doc/ginac_toolkit_design.md``): the interface is identical; only the
-    internal solver changes.
+    Behaves like :class:`SymbolicPolyToolkit` (assembly stays in sympy) but
+    :meth:`linearsolver_num_den` solves in symengine.  The catch: symengine's
+    ``LUsolve``/``det`` are *not* fraction-free -- they leave nested divisions
+    that swell downstream -- so for symbolic ``N(s)/D(s)`` extraction this is
+    slower than sympy's polynomial-domain ``DomainMatrix.solve_den`` (which
+    :class:`SymbolicPolyToolkit` uses).  A real compiled win needs proper
+    polynomial-GCD cancellation (GiNaC's ``normal()``); symengine's ``FFLU``
+    fraction-free primitive does not cancel to a compact determinant here.
+    Falls back to the sympy fraction-free path when symengine cannot handle the
+    entries.
     """
 
     def linearsolver_num_den(self, A, b):
