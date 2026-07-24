@@ -504,31 +504,31 @@ class Circuit():
                     result.append(Node(instancename + '.' + node.name))
             return result
 
-    def G(self, x, epar=defaultepar):
+    def G(self, x, epar=defaultepar, params_tree=None):
         """Calculate the G (trans)conductance matrix given the x-vector"""
         if hasattr(self, 'eval_i_and_G'):
             i_vec, G_mat = self.eval_i_and_G(x, epar)
             return G_mat
         return self.toolkit.zeros((self.n, self.n))
 
-    def C(self, x, epar=defaultepar):
+    def C(self, x, epar=defaultepar, params_tree=None):
         """Calculate the C (transcapacitance) matrix given the x-vector"""
         if hasattr(self, 'eval_q_and_C'):
             q_vec, C_mat = self.eval_q_and_C(x, epar)
             return C_mat
         return self.toolkit.zeros((self.n, self.n))
 
-    def u(self, t=0.0, epar=defaultepar, analysis=None):
+    def u(self, t=0.0, epar=defaultepar, analysis=None, params_tree=None):
         return self.toolkit.zeros(self.n)
 
-    def i(self, x, epar=defaultepar):
+    def i(self, x, epar=defaultepar, params_tree=None):
         """Calculate the i vector as a function of the x-vector"""
         if hasattr(self, 'eval_i_and_G'):
             i_vec, G_mat = self.eval_i_and_G(x, epar)
             return i_vec
         return self.toolkit.dot(self.G(x), x)
 
-    def q(self, x, epar=defaultepar):
+    def q(self, x, epar=defaultepar, params_tree=None):
         """Calculate the q vector as a function of the x-vector"""
         if hasattr(self, 'eval_q_and_C'):
             q_vec, C_mat = self.eval_q_and_C(x, epar)
@@ -1126,6 +1126,8 @@ class SubCircuit(Circuit):
         self._map_indices_1d = {}
         self._map_indices_2d = {}
         
+        branch_offset = 0
+        
         for instance_name, element in self.elements.items():
             nodemap = self.term_node_map[instance_name]
             element_nodes = [nodemap[terminal] for terminal in element.terminals]
@@ -1133,12 +1135,15 @@ class SubCircuit(Circuit):
             for node in element.non_terminal_nodes(instance_name):
                 element_nodes.append(node)
         
-            element_branches = self._instance_branches(element, instance_name)
+            element_branches = list(self._instance_branches(element, instance_name))
+
+            branch_indices = []
+            for _ in element_branches:
+                branch_indices.append(branch_offset + len(self.nodes))
+                branch_offset += 1
 
             nodemap = \
-                [self.nodes.index(node) for node in element_nodes] + \
-                [self.branches.index(branch) + len(self.nodes) 
-                 for branch in element_branches]
+                [self.nodes.index(node) for node in element_nodes] + branch_indices
 
             import numpy as np
             nodemap = np.array(nodemap, dtype=int)
@@ -1219,26 +1224,26 @@ class SubCircuit(Circuit):
             for k in group['params']:
                 group['params'][k] = self.toolkit.array(group['params'][k])
         
-    def G(self, x, epar=defaultepar):
-        return self._add_element_submatrices('G', x, (epar,))
+    def G(self, x, epar=defaultepar, params_tree=None):
+        return self._add_element_submatrices('G', x, (epar,), params_tree=params_tree)
 
-    def C(self, x, epar=defaultepar):
-        return self._add_element_submatrices('C', x, (epar,))
+    def C(self, x, epar=defaultepar, params_tree=None):
+        return self._add_element_submatrices('C', x, (epar,), params_tree=params_tree)
 
-    def u(self, t=0.0, epar=defaultepar, analysis=None):
+    def u(self, t=0.0, epar=defaultepar, analysis=None, params_tree=None):
         dtype = None
         if analysis == 'ac':
             dtype = self.toolkit.ac_u_dtype
 
-        return self._add_element_subvectors('u', None, (t,epar,analysis), 
+        return self._add_element_subvectors('u', None, (t,epar,analysis), params_tree=params_tree, 
                                             dtype=dtype)
 
-    def i(self, x, epar=defaultepar):
-        return self._add_element_subvectors('i', x, (epar,))
+    def i(self, x, epar=defaultepar, params_tree=None):
+        return self._add_element_subvectors('i', x, (epar,), params_tree=params_tree)
 
     #This seemed to be missing
-    def q(self, x, epar=defaultepar):
-        return self._add_element_subvectors('q', x, (epar,))
+    def q(self, x, epar=defaultepar, params_tree=None):
+        return self._add_element_subvectors('q', x, (epar,), params_tree=params_tree)
 
     def limit(self, x, x0, epar=defaultepar):
         for instance, element in self.elements.items():
@@ -1336,7 +1341,7 @@ class SubCircuit(Circuit):
         for element in self.elements.values():
             element.update_iparv(self.iparv, ignore_errors=True)
         
-    def _add_element_submatrices(self, methodname, x, args):
+    def _add_element_submatrices(self, methodname, x, args, params_tree=None):
         n = self.n
         
         # Check if toolkit prefers sparse assembly directly
@@ -1353,16 +1358,20 @@ class SubCircuit(Circuit):
             for cls, group in self._eval_groups.items():
                 X_batch = x[group['nodemaps_2d']]
                 method_key = 'i' if methodname in ('G', 'i') else 'q'
-                batched_eval, batched_jac = self.toolkit.generate_batched_eval(cls, method_key)
+                batched_eval_func = self.toolkit.generate_batched_eval(cls, method_key)
                 
                 epar = args[0]
+                params_to_use = group['params']
+                if params_tree is not None and cls.__name__ in params_tree:
+                    params_to_use = params_tree[cls.__name__]
+                val_batch, jac_batch = batched_eval_func(X_batch, params_to_use, epar)
                 if methodname in ('G', 'C'):
-                    rhs_batch = batched_jac(X_batch, group['params'], epar)
+                    rhs_batch = jac_batch
                 else:
-                    rhs_batch = batched_eval(X_batch, group['params'], epar)
+                    rhs_batch = val_batch
                     
                 if build_sparse:
-                    rhs_flat = np.asarray(rhs_batch).reshape(len(group['instances']), -1).flatten()
+                    rhs_flat = self.toolkit.reshape(rhs_batch, (len(group['instances']), -1)).flatten()
                     all_data.append(rhs_flat)
                     all_rows.append(group['rows'])
                     all_cols.append(group['cols'])
@@ -1370,7 +1379,7 @@ class SubCircuit(Circuit):
                     rhs_flat = self.toolkit.reshape(rhs_batch, (len(group['instances']), -1)).flatten()
                     lhs = self.toolkit.add_at(lhs, (group['rows'], group['cols']), rhs_flat)
                 else:
-                    rhs_flat = np.asarray(rhs_batch).reshape(len(group['instances']), -1).flatten()
+                    rhs_flat = self.toolkit.reshape(rhs_batch, (len(group['instances']), -1)).flatten()
                     np.add.at(lhs, (group['rows'], group['cols']), rhs_flat)
 
         for instance, element in self.elements.items():
@@ -1391,16 +1400,19 @@ class SubCircuit(Circuit):
                 
             if instance in self._map_indices_2d:
                 rows, cols = self._map_indices_2d[instance]
-                import numpy as np
-                rhs_flat = np.asarray(rhs).flatten()
                 
                 if build_sparse:
+                    import numpy as np
+                    rhs_flat = np.asarray(rhs).flatten()
                     all_data.append(rhs_flat)
                     all_rows.append(rows)
                     all_cols.append(cols)
                 elif hasattr(self.toolkit, 'add_at'):
+                    rhs_flat = self.toolkit.reshape(rhs, (-1,)).flatten()
                     lhs = self.toolkit.add_at(lhs, (rows, cols), rhs_flat)
                 else:
+                    import numpy as np
+                    rhs_flat = np.asarray(rhs).flatten()
                     try:
                         np.add.at(lhs, (rows, cols), rhs_flat)
                     except TypeError:
@@ -1420,7 +1432,7 @@ class SubCircuit(Circuit):
             )
         return lhs
 
-    def _add_element_subvectors(self, methodname, x, args, dtype=None):
+    def _add_element_subvectors(self, methodname, x, args, dtype=None, params_tree=None):
         n = self.n
         lhs = self.toolkit.zeros(n, dtype=dtype)
 
@@ -1430,12 +1442,15 @@ class SubCircuit(Circuit):
             for cls, group in self._eval_groups.items():
                 X_batch = x[group['nodemaps_2d']]
                 method_key = 'i' if methodname in ('G', 'i') else 'q'
-                batched_eval, batched_jac = self.toolkit.generate_batched_eval(cls, method_key)
+                batched_eval_func = self.toolkit.generate_batched_eval(cls, method_key)
                 
                 epar = args[0]
-                rhs_batch = batched_eval(X_batch, group['params'], epar)
+                params_to_use = group['params']
+                if params_tree is not None and cls.__name__ in params_tree:
+                    params_to_use = params_tree[cls.__name__]
+                rhs_batch, jac_batch = batched_eval_func(X_batch, params_to_use, epar)
                     
-                rhs_flat = np.asarray(rhs_batch).reshape(len(group['instances']), -1).flatten()
+                rhs_flat = self.toolkit.reshape(rhs_batch, (len(group['instances']), -1)).flatten()
                 
                 if hasattr(self.toolkit, 'add_at'):
                     lhs = self.toolkit.add_at(lhs, group['1d_indices'], rhs_flat)
@@ -1443,7 +1458,7 @@ class SubCircuit(Circuit):
                     np.add.at(lhs, group['1d_indices'], rhs_flat)
 
         for instance, element in self.elements.items():
-            if getattr(self, '_eval_groups', None) and element.__class__ in self._eval_groups:
+            if getattr(self, '_eval_groups', None) and element.__class__ in self._eval_groups and x is not None:
                 continue # Handled by vectorization above
                 
             if x is not None:
@@ -1454,12 +1469,13 @@ class SubCircuit(Circuit):
 
             if instance in self._map_indices_1d:
                 indices = self._map_indices_1d[instance]
-                import numpy as np
-                rhs_flat = np.asarray(rhs).flatten()
                 
                 if hasattr(self.toolkit, 'add_at'):
+                    rhs_flat = self.toolkit.reshape(rhs, (-1,)).flatten()
                     lhs = self.toolkit.add_at(lhs, indices, rhs_flat)
                 else:
+                    import numpy as np
+                    rhs_flat = np.asarray(rhs).flatten()
                     try:
                         np.add.at(lhs, indices, rhs_flat)
                     except TypeError:
@@ -1548,12 +1564,12 @@ class CircuitProxy(Circuit):
         if isinstance(parent, SubCircuit) and instance_name is not None:
             self.terminalhook = parent.term_node_map[instance_name]
 
-    def G(self, x, epar=defaultepar): return self.device.G(x,epar)
-    def C(self, x, epar=defaultepar): return self.device.C(x,epar)
-    def u(self, t=0.0, epar=defaultepar, analysis=None): 
+    def G(self, x, epar=defaultepar, params_tree=None): return self.device.G(x,epar)
+    def C(self, x, epar=defaultepar, params_tree=None): return self.device.C(x,epar)
+    def u(self, t=0.0, epar=defaultepar, analysis=None, params_tree=None): 
         return self.device.u(x,epar)
-    def i(self, x, epar=defaultepar): return self.device.i(x,epar)
-    def q(self, x, epar=defaultepar): return self.device.q(x,epar)
+    def i(self, x, epar=defaultepar, params_tree=None): return self.device.i(x,epar)
+    def q(self, x, epar=defaultepar, params_tree=None): return self.device.q(x,epar)
     def CY(self, x, w, epar=defaultepar): return self.device.CY(x,epar)
 
 def instjoin(*instnames):
@@ -1576,7 +1592,7 @@ class IProbe(Circuit):
         self.append_branches(Branch(self.nodenames['plus'], 
                                     self.nodenames['minus']))
 
-    def G(self, x, epar=defaultepar):
+    def G(self, x, epar=defaultepar, params_tree=None):
         return self.toolkit.array([[0 , 0, 1],
                                    [0 , 0, -1],
                                    [1 , -1, 0]])

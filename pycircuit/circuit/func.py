@@ -89,21 +89,20 @@ class Pulse(TimeFunction):
             t = t % self.per
         
         # Phase 1: Initial Delay (td)
-        if t < self.td:
-            return self.v1
-        # Phase 2: Rising Edge (tr)
-        elif t < self.td + self.tr:
-            return self.v1 + ((self.v2 - self.v1) / self.tr) * (t - self.td)
-        # Phase 3: Pulse Width / Plateau (pw)
-        elif t < self.td + self.tr + self.pw:
-            return self.v2
-        # Phase 4: Falling Edge (tf)
-        elif t < self.td + self.tr + self.pw + self.tf:
-            return self.v2 + \
-                (self.v1 - self.v2) / self.tf * (t - (self.td+self.tr+self.pw))
-        # Phase 5: Off-time (remainder of the period)
-        else:
-            return self.v1
+        v_out = self.v1
+        v_out = self.toolkit.where(t < self.td + self.tr + self.pw + self.tf,
+                                   self.v2 + (self.v1 - self.v2) / self.tf * (t - (self.td+self.tr+self.pw)),
+                                   v_out)
+        v_out = self.toolkit.where(t < self.td + self.tr + self.pw,
+                                   self.v2,
+                                   v_out)
+        v_out = self.toolkit.where(t < self.td + self.tr,
+                                   self.v1 + ((self.v2 - self.v1) / self.tr) * (t - self.td),
+                                   v_out)
+        v_out = self.toolkit.where(t < self.td,
+                                   self.v1,
+                                   v_out)
+        return v_out
 
 class PWL(TimeFunction):
     def __init__(self, t_v_pairs, toolkit=numeric):

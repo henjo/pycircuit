@@ -37,7 +37,18 @@ class R(Circuit):
         self._G = self.toolkit.array([[g, -g],
                                       [-g, g]])
 
-    def G(self, x, epar=defaultepar): return self._G
+    @staticmethod
+    def eval_i_pure(x, params, epar, toolkit):
+        r = params.get('r', 1.0)
+        i = (x[0] - x[1]) / r
+        return toolkit.array([i, -i])
+
+    def G(self, x, epar=defaultepar):
+        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
+            import jax
+            G_jac = jax.jacfwd(self.eval_i_pure)(x, {'r': self.iparv.r}, epar, self.toolkit)
+            return G_jac
+        return self._G
 
     def CY(self, x, w, epar=defaultepar):
         if self.iparv.noisy:
@@ -1868,53 +1879,51 @@ class TLine(Circuit):
 
     def G(self, x, epar=None):
         Z0 = self.iparv.Z0
-        G_mat = self.toolkit.zeros((6, 6))
+        
+        # Build G_mat in standard python list to avoid JAX immutability issues
+        G = [[0.0 for _ in range(6)] for _ in range(6)]
         
         # Check if we are in DC (no history)
         if len(self.history) == 0:
-            # DC behavior: V1 = V2, I1 = -I2
-            # Branch eq 1: Vp1 - Vm1 - Vp2 + Vm2 = 0
-            # Branch eq 2: I1 + I2 = 0
-            
-            # Row 4 (Branch 1 eq)
-            G_mat[4, 0] = 1.0   # p1
-            G_mat[4, 1] = -1.0  # m1
-            G_mat[4, 2] = -1.0  # p2
-            G_mat[4, 3] = 1.0   # m2
-            
-            # Row 5 (Branch 2 eq)
-            G_mat[5, 4] = 1.0   # I1
-            G_mat[5, 5] = 1.0   # I2
+            G[4][0] = 1.0
+            G[4][1] = -1.0
+            G[4][2] = -1.0
+            G[4][3] = 1.0
+            G[5][4] = 1.0
+            G[5][5] = 1.0
         else:
-            # Transient behavior
-            # Branch eq 1: V1 - Z0*I1 = E1(t)
-            # Branch eq 2: V2 - Z0*I2 = E2(t)
+            G[4][0] = 1.0
+            G[4][1] = -1.0
+            G[4][4] = -Z0
+            G[5][2] = 1.0
+            G[5][3] = -1.0
+            G[5][5] = -Z0
             
-            # Row 4 (Branch 1 eq)
-            G_mat[4, 0] = 1.0   # p1
-            G_mat[4, 1] = -1.0  # m1
-            G_mat[4, 4] = -Z0   # I1
-            
-            # Row 5 (Branch 2 eq)
-            G_mat[5, 2] = 1.0   # p2
-            G_mat[5, 3] = -1.0  # m2
-            G_mat[5, 5] = -Z0   # I2
-            
-        # Nodal KCL contributions from branch currents
-        # I1 flows p1 -> m1, I2 flows p2 -> m2
-        G_mat[0, 4] = 1.0   # p1 gets +I1 (leaving)
-        G_mat[1, 4] = -1.0  # m1 gets -I1 (entering)
+        G[0][4] = 1.0
+        G[1][4] = -1.0
+        G[2][5] = 1.0
+        G[3][5] = -1.0
         
-        G_mat[2, 5] = 1.0   # p2 gets +I2 (leaving)
-        G_mat[3, 5] = -1.0  # m2 gets -I2 (entering)
-        
-        return G_mat
+        return self.toolkit.array(G)
+
         
     def u(self, t=0.0, epar=None, analysis=None):
-        out = self.toolkit.zeros(6)
+        if len(self.history) == 0 or analysis not in ('tran', 'transient', 'time'):
+            return self.toolkit.zeros(6)
+            
+        td = self.iparv.TD
+        Z0 = self.iparv.Z0
         
-        if len(self.history) == 0:
-            return out
+        v1_past, v2_past, i1_past, i2_past = self._interpolate_history(t - td)
+        
+        e1 = v2_past + Z0 * i2_past
+        e2 = v1_past + Z0 * i1_past
+        
+        out = [0.0]*6
+        out[4] = -e1
+        out[5] = -e2
+        return self.toolkit.array(out)
+
             
         if analysis not in ('tran', 'transient', 'time'):
             return out
