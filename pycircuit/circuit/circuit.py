@@ -851,9 +851,15 @@ class SubCircuit(Circuit):
         self._mapmatrix = {}
 
     def __eq__(self, a):
+        ## elementnodemap values are numpy arrays, so a plain dict ``==``
+        ## raises "truth value of an array is ambiguous"; compare element-wise.
+        def _nodemap_eq(m1, m2):
+            if m1.keys() != m2.keys():
+                return False
+            return all(np.array_equal(m1[k], m2[k]) for k in m1)
         return super().__eq__(a) and \
             self.elements == a.elements and \
-            self.elementnodemap == a.elementnodemap and \
+            _nodemap_eq(self.elementnodemap, a.elementnodemap) and \
             self.term_node_map == a.term_node_map
 
     def __copy__(self):

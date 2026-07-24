@@ -134,3 +134,13 @@ def size(*args,**kvargs):
 
 def integer(x):
     return sympy.Integer(x)
+
+def where(cond, a, b):
+    """Symbolic analogue of ``numpy.where`` for scalars.
+
+    Returns ``a`` where ``cond`` holds else ``b`` as a ``sympy.Piecewise``.
+    Used by the piecewise time functions in :mod:`pycircuit.circuit.func`
+    (e.g. ``Pulse``) so they work under the symbolic toolkit; a concrete
+    (``True``/``False``) condition collapses to the selected branch.
+    """
+    return sympy.Piecewise((a, cond), (b, True))
