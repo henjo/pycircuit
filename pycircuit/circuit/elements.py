@@ -722,7 +722,26 @@ class CCVS(Circuit):
         G[branchindexJ, branchindexK] += -self.iparv.r
         self._G = G
 
-    def G(self, x, epar=defaultepar): return self._G
+    @staticmethod
+    def eval_i_pure(x, params, epar, toolkit):
+        v_inp, v_inn, v_outp, v_outn, i_in, i_out = x[0], x[1], x[2], x[3], x[4], x[5]
+        r = params.get('r', 1.0)
+        return toolkit.array([
+            i_in,
+            -i_in,
+            i_out,
+            -i_out,
+            v_inp - v_inn - r * i_out,
+            v_outp - v_outn
+        ])
+
+    def G(self, x, epar=defaultepar): 
+        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
+            params = {'r': self.iparv.r}
+            import jax
+            G_jac = jax.jacfwd(self.eval_i_pure)(x, params, epar, self.toolkit)
+            return G_jac
+        return self._G
 
 
 
@@ -1568,7 +1587,25 @@ class CCCS(Circuit):
         
         self._G = G
 
-    def G(self, x, epar=defaultepar): return self._G
+    @staticmethod
+    def eval_i_pure(x, params, epar, toolkit):
+        v_inp, v_inn, v_outp, v_outn, i_in = x[0], x[1], x[2], x[3], x[4]
+        F = params.get('F', 1.0)
+        return toolkit.array([
+            i_in,
+            -i_in,
+            F * i_in,
+            -F * i_in,
+            v_inp - v_inn
+        ])
+
+    def G(self, x, epar=defaultepar): 
+        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
+            params = {'F': self.iparv.F}
+            import jax
+            G_jac = jax.jacfwd(self.eval_i_pure)(x, params, epar, self.toolkit)
+            return G_jac
+        return self._G
 
 class ISwitch(Circuit):
     """Current Controlled Switch"""
