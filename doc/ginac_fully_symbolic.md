@@ -76,6 +76,9 @@ The gap widens with size; the compact `tf` string is also ~25× smaller than the
 materialised full solution. This unlocks #2 (native manipulation/eval) and gives
 #3/#4 a native result object to build on.
 
+*(These numbers regenerate live on every docs build — see the Sphinx page
+`doc/src/circuit/ginac_native.rst`; the table above is a point-in-time record.)*
+
 ### 2. Use GiNaC where it is actually faster — *after* the solve — **DONE**
 
 The symbolic form is the same size, but GiNaC manipulates and (especially)
@@ -105,6 +108,9 @@ Extracting the `N(s)/D(s)` coefficients of a fully-symbolic RC-ladder transfer
 function, native `tf_coeffs` vs sympy `Poly` (both starting from the native
 `tf`): ~4.7× (N=4), ~4× (N=6). The gap grows with expression size; this is the
 "manipulate in GiNaC, only the small structured result crosses back" win.
+
+*(Also regenerated live on every docs build — see
+`doc/src/circuit/ginac_native.rst`.)*
 
 ### 3. Don't force the canonical `N/D` — Sequence of Expressions (SoE)  *(prototyped)*
 

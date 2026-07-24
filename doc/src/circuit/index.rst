@@ -8,6 +8,7 @@ Circuit analyzer
     tutorial
     analyses
     symbolic_poly
+    ginac_native
     soe_symbolic
     theory
     modules
