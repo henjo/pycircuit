@@ -259,6 +259,46 @@ def estimate_lte(q_curr, state: TransientState, method='trap'):
         dd2 = dd2 * 2.0 / dt
         return (1.0 / 12.0) * (dt**3) * jnp.abs(dd2), 3.0
 
+def ywr_error_ratio(i_curr, x_curr, x_last, J, state: TransientState, irefnode,
+                    method='trap', trtol=7.0, lte_rel=1e-3, lte_abs=1e-6):
+    """Yao-Wang-Roychowdhury DAE LTE, returned as a normalized error ratio.
+
+    Mirrors the CPU transient's ``lte_formula='ywr'``: forms the residual as a
+    difference of the charge derivative ``g = dq/dt`` (the companion current),
+    maps it to the solution space with ``J^-1`` (the DAE Jacobian factor), and
+    normalizes by a voltage-domain tolerance.  ``g_n`` is the just-computed
+    companion current, ``g_{n-1}``/``g_{n-2}`` come from the iq history.
+
+    Returns ``(error_ratio, order_plus_one)``.
+    """
+    dt = state.dt
+    dt_prev = jnp.where(state.h_history[0] == 0.0, dt, state.h_history[0])
+    g_n = i_curr
+    g_nm1 = state.iq_history[0]
+    g_nm2 = state.iq_history[1]
+
+    if method == 'euler':
+        Eg = -0.5 * (g_n - g_nm1)
+        order_p1 = 2.0
+    elif method in ('gear', 'gear2'):
+        h1, h2 = dt, dt_prev
+        Eg = -(1.0 / 8.0) * ((h1 + h2) / (h1 * h2)) * \
+            (h2 * g_n - (h1 + h2) * g_nm1 + h1 * g_nm2)
+        order_p1 = 3.0
+    else:  # trapezoidal
+        Eg = -(1.0 / 6.0) * (g_n - 2.0 * g_nm1 + g_nm2)
+        order_p1 = 3.0
+
+    # lte = J^-1 Eg in the reduced (reference-node-removed) space.
+    J_r = jnp.delete(jnp.delete(J, irefnode, axis=0), irefnode, axis=1)
+    Eg_r = jnp.delete(Eg, irefnode)
+    lte_r = jnp.linalg.solve(J_r, Eg_r)
+    lte = jnp.insert(lte_r, irefnode, 0.0)
+
+    etol = trtol * (lte_rel * jnp.maximum(jnp.abs(x_curr), jnp.abs(x_last)) + lte_abs)
+    return jnp.max(jnp.abs(lte) / etol), order_p1
+
+
 def lte_error_ratio(lte, q_curr, trtol=7.0, lte_rel=1e-3, lte_abs=1e-6):
     """Normalized LTE: <=1 means the step is within tolerance.
 
@@ -283,7 +323,7 @@ def calculate_next_dt(dt, error_ratio, dt_min, dt_max, t_breaks_array, current_t
     dt_new = jnp.maximum(dt_new, dt_min)
     return dt_new
 
-def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-3, abstol=1e-6, maxiter=50):
+def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-3, abstol=1e-6, maxiter=50, lte_formula='ywr'):
 
     def time_cond(state: TransientState):
         under_time = state.t < tend
@@ -297,10 +337,20 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
         x_curr = nr_state.x
         q_curr = circuit.q(x_curr, params_tree=params_tree)
         C_curr = circuit.C(x_curr, params_tree=params_tree)
-        i_curr, _ = compute_integration(q_curr, C_curr, state, method=eval_method)
+        i_curr, Geq = compute_integration(q_curr, C_curr, state, method=eval_method)
 
-        lte, order_p1 = estimate_lte(q_curr, state, method=eval_method)
-        error_ratio = lte_error_ratio(lte, q_curr)
+        ## lte_formula is a Python-static string, so this branch is resolved at
+        ## trace time (no jax.lax.cond needed).
+        if lte_formula == 'ywr':
+            # DAE LTE: g-difference mapped through J^-1 (one extra G eval + solve).
+            J = circuit.G(x_curr, params_tree=params_tree) + Geq
+            error_ratio, order_p1 = ywr_error_ratio(
+                i_curr, x_curr, state.x_history[0], J, state, irefnode,
+                method=eval_method)
+        else:
+            # Charge-domain estimate (no J^-1).
+            lte, order_p1 = estimate_lte(q_curr, state, method=eval_method)
+            error_ratio = lte_error_ratio(lte, q_curr)
 
         ## Accept when the LTE is within tolerance.  Always accept the first step
         ## (no history for the estimate) and when dt has reached the floor -- the
@@ -371,7 +421,7 @@ class JAXTransient(Analysis):
             raise ValueError("JAXTransient requires the circuit to use _jaxtoolkit.py.")
         
 
-    def solve_batched(self, irefnode, override_params_tree, tend, timestep=1e-12, CHUNK_SIZE=5000, dt_min=1e-15, dt_max=None, uic=False):
+    def solve_batched(self, irefnode, override_params_tree, tend, timestep=1e-12, CHUNK_SIZE=5000, dt_min=1e-15, dt_max=None, uic=False, lte_formula='ywr'):
         import jax
         
         self.cir.update_iparv()
@@ -445,7 +495,7 @@ class JAXTransient(Analysis):
         tline_head = jnp.zeros(batch_size, dtype=jnp.int32)
         
         def run_chunk(s, p_tree):
-            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear', params_tree=p_tree)
+            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear', params_tree=p_tree, lte_formula=lte_formula)
             
         # JIT the vmapped run_chunk
         batched_run_chunk = jax.jit(jax.vmap(run_chunk))
@@ -511,7 +561,7 @@ class JAXTransient(Analysis):
             res.append(r)
         return res
 
-    def solve(self, refnode=0, tend=1e-3, x0=None, timestep=1e-6, CHUNK_SIZE=5000, **kwargs):
+    def solve(self, refnode=0, tend=1e-3, x0=None, timestep=1e-6, CHUNK_SIZE=5000, lte_formula='ywr', **kwargs):
         n = self.cir.n
         irefnode = self.cir.get_node_index(refnode)
     
@@ -596,7 +646,7 @@ class JAXTransient(Analysis):
         # but tend is a runtime parameter.
         @jax.jit
         def run_chunk(s):
-            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear')
+            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear', lte_formula=lte_formula)
         
         results_list = [np.array([x0])]
         times_list = [np.array([0.0])]

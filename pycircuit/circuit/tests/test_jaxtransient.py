@@ -51,8 +51,12 @@ def test_jax_estimate_lte_order():
     assert p_trap == 3.0
 
 
-def test_jaxtransient_rc_charging():
-    """End-to-end JAXTransient: RC charging from 0 matches the analytic curve."""
+@pytest.mark.parametrize("lte_formula", ["ywr", "classic"])
+def test_jaxtransient_rc_charging(lte_formula):
+    """End-to-end JAXTransient: RC charging from 0 matches the analytic curve.
+
+    Runs under both the YWR (J^-1) DAE LTE and the charge-domain estimate.
+    """
     from pycircuit.circuit import circuit as circuit_mod
     import pycircuit.circuit._jaxtoolkit as jtk
     from pycircuit.circuit.elements import SubCircuit, R, C, VS
@@ -68,7 +72,8 @@ def test_jaxtransient_rc_charging():
         cir['V1'] = VS('in', gnd, v=1.0)
         cir['R1'] = R('in', 'out', r=1e3)      # tau = R*C = 1e-3
         cir['C1'] = C('out', gnd, c=1e-6)
-        res = JAXTransient(cir).solve(gnd, tend=5e-3, timestep=1e-4, uic=True)
+        res = JAXTransient(cir).solve(gnd, tend=5e-3, timestep=1e-4, uic=True,
+                                      lte_formula=lte_formula)
         out_idx = cir.get_node_index('out')
     finally:
         circuit_mod.default_toolkit = saved_toolkit
