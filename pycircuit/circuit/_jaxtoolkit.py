@@ -55,3 +55,26 @@ def integer(x):
 
 def complex(x):
     return complex(x)
+
+def sum(*args, **kvargs):
+    return jnp.sum(*args, **kvargs)
+
+def reshape(a, newshape):
+    return jnp.reshape(a, newshape)
+
+def add_at(a, indices, b):
+    # indices is a tuple of (rows, cols)
+    return a.at[indices].add(b)
+
+def delete(arr, obj, axis=None):
+    if isinstance(obj, list):
+        obj = jnp.array(obj)
+    return jnp.delete(arr, obj, axis=axis)
+
+def insert(arr, obj, values, axis=None):
+    if isinstance(obj, list):
+        obj = jnp.array(obj)
+    return jnp.insert(arr, obj, values, axis=axis)
+
+
+

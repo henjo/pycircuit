@@ -108,17 +108,10 @@ class DC(Analysis):
         (x0, abstol, xtol) = remove_row_col((x0, abstol, xtol), self.irefnode, self.toolkit)
 
         def limiter_func(xr, x0r):
-            n = self.cir.n
-            x = self.toolkit.zeros(n)
-            x0_full = self.toolkit.zeros(n)
+            x = self.toolkit.insert(xr, self.irefnode, 0.0)
+            x0_full = self.toolkit.insert(x0r, self.irefnode, 0.0)
             
-            x[:self.irefnode] = xr[:self.irefnode]
-            x[self.irefnode+1:] = xr[self.irefnode:]
-            
-            x0_full[:self.irefnode] = x0r[:self.irefnode]
-            x0_full[self.irefnode+1:] = x0r[self.irefnode:]
-            
-            self.cir.limit(x, x0_full, self.epar)
+            x = self.cir.limit(x, x0_full, self.epar)
             return self.toolkit.concatenate((x[:self.irefnode], x[self.irefnode+1:]))
 
         try:

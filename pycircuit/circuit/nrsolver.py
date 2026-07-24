@@ -256,3 +256,80 @@ class SchurCoupledNewton(NonLinearSolver):
             h_curr = h_next
             
         raise NoConvergenceError(f"SchurCoupledNewton failed to converge after {maxiter} iterations.")
+
+class JAXNewtonSolver(NonLinearSolver):
+    """
+    A Pure JAX Newton-Raphson Solver.
+    Uses `jax.lax.while_loop` to compile the entire solution process into a single GPU kernel.
+    Only supports Dense matrices and full-JAX compatible circuits (no Python fallback elements).
+    """
+    
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None):
+        if not (hasattr(toolkit, 'jax') and toolkit.jax):
+            raise ValueError("JAXNewtonSolver requires the JAX toolkit (_jaxtoolkit.py).")
+            
+        import jax
+        import jax.numpy as jnp
+        
+        # We need a fallback or check to ensure eval_FJ is fully jittable.
+        # But we'll try to just JIT it and if it fails, it throws a Tracer error.
+        
+        def cond_fun(state):
+            x, xdiff, F_norm, iters = state
+            
+            # Convergence conditions
+            conv_f = F_norm < abstol
+            conv_x = jnp.all(jnp.abs(xdiff) < reltol * jnp.abs(x) + xtol)
+            
+            converged = jnp.logical_and(conv_f, conv_x)
+            not_converged = jnp.logical_not(converged)
+            under_max = iters < maxiter
+            
+            return jnp.logical_and(not_converged, under_max)
+            
+        def body_fun(state):
+            x, _, _, iters = state
+            
+            F, J = eval_FJ(x)
+            F_norm = jnp.sum(jnp.abs(F))
+            
+            # Simple dense linear solve (no scaler implementation for now)
+            xdiff = jnp.linalg.solve(J, -F)
+            
+            x_next = x + xdiff
+            if limiter is not None:
+                x_next = limiter(x_next, x)
+                xdiff = x_next - x
+                
+            return (x_next, xdiff, F_norm, iters + 1)
+            
+        # Compile the while loop
+        @jax.jit
+        def compiled_nr(x_init):
+            # Evaluate once to get initial F_norm and seed the loop state
+            F0, J0 = eval_FJ(x_init)
+            F_norm0 = jnp.sum(jnp.abs(F0))
+            xdiff0 = jnp.linalg.solve(J0, -F0)
+            
+            x_next = x_init + xdiff0
+            if limiter is not None:
+                x_next = limiter(x_next, x_init)
+                xdiff0 = x_next - x_init
+                
+            initial_state = (x_next, xdiff0, F_norm0, 1)
+            
+            # Run the compiled loop
+            final_state = jax.lax.while_loop(cond_fun, body_fun, initial_state)
+            return final_state
+            
+        final_x, final_xdiff, final_F_norm, final_iters = compiled_nr(x0)
+        
+        # In pure JAX, we can't raise Python exceptions inside the compiled loop easily.
+        # We check convergence after the loop finishes.
+        conv_f = final_F_norm < abstol
+        conv_x = jnp.all(jnp.abs(final_xdiff) < reltol * jnp.abs(final_x) + xtol)
+        if not (conv_f and conv_x):
+            raise NoConvergenceError(f"JAXNewtonSolver failed to converge after {maxiter} iterations.")
+            
+        return final_x, int(final_iters)
+

@@ -1140,6 +1140,8 @@ class SubCircuit(Circuit):
                 [self.branches.index(branch) + len(self.nodes) 
                  for branch in element_branches]
 
+            import numpy as np
+            nodemap = np.array(nodemap, dtype=int)
             self.elementnodemap[instance_name] = nodemap
 
             ## Create mapping coordinates instead of dense matrices
@@ -1150,7 +1152,6 @@ class SubCircuit(Circuit):
                 # For 2D matrix stamping (e.g. G, C)
                 # We need all (row, col) combinations
                 # meshgrid(nodemap, nodemap, indexing='ij') creates the grid
-                import numpy as np
                 rows, cols = np.meshgrid(nodemap, nodemap, indexing='ij')
                 self._map_indices_2d[instance_name] = (rows.flatten(), cols.flatten())
             else:
@@ -1360,15 +1361,16 @@ class SubCircuit(Circuit):
                 else:
                     rhs_batch = batched_eval(X_batch, group['params'], epar)
                     
-                rhs_flat = np.asarray(rhs_batch).reshape(len(group['instances']), -1).flatten()
-                
                 if build_sparse:
+                    rhs_flat = np.asarray(rhs_batch).reshape(len(group['instances']), -1).flatten()
                     all_data.append(rhs_flat)
                     all_rows.append(group['rows'])
                     all_cols.append(group['cols'])
                 elif hasattr(self.toolkit, 'add_at'):
+                    rhs_flat = self.toolkit.reshape(rhs_batch, (len(group['instances']), -1)).flatten()
                     lhs = self.toolkit.add_at(lhs, (group['rows'], group['cols']), rhs_flat)
                 else:
+                    rhs_flat = np.asarray(rhs_batch).reshape(len(group['instances']), -1).flatten()
                     np.add.at(lhs, (group['rows'], group['cols']), rhs_flat)
 
         for instance, element in self.elements.items():
