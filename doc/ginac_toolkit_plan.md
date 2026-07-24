@@ -5,15 +5,36 @@ GiNaC's `normal()` (multivariate-GCD cancellation) behind the identical toolkit
 interface. Rationale and the negative symengine result are in
 `ginac_toolkit_design.md`.
 
-## The one question that gates everything
+## The one question that gates everything — ANSWERED: GiNaC wins
 
-**Does GiNaC `normal()` actually beat sympy `DomainMatrix.solve_den` on
-numeric-components + symbolic-`s` circuits?** symengine failed this (its
-fraction-free primitives don't cancel to a compact determinant). GiNaC's
-`normal()` is purpose-built for this and *should* win, but it is unproven in
-this repo. **Phase 3's benchmark is a hard go/no-go gate** — do not wire
-`GinacToolkit` into anything until it demonstrably beats `solve_den` on the
-`symbolic_poly.rst` ladder.
+**Does GiNaC `normal()` beat sympy `DomainMatrix.solve_den` on numeric-components
++ symbolic-`s` circuits?** symengine failed this. **GiNaC passes**, measured
+2026-07 with a raw C++ RC-ladder solve (`determinant().normal()` + `solve()` +
+`normal()` on the output):
+
+| N  | GiNaC time | denom degree | sympy solve_den (ref) |
+|----|-----------|--------------|-----------------------|
+| 10 | 5.6 ms    | 10           | ~42 ms                |
+| 12 | 8.5 ms    | 12           | (slower, growing)     |
+| 16 | 67 ms     | 16           | —                     |
+| 20 | 152 ms    | 20           | —                     |
+
+~8–10× faster, clean cancelled polynomials (degree = N), scales to N=20 in
+150 ms. Proceed with the extension. (The end-to-end win still depends on the
+sympy↔GiNaC bridge not dominating — re-confirm in Phase 3 with the live
+`symbolic_poly.rst` benchmark.)
+
+## Installed (no root, from source)
+
+GiNaC 1.8.10 + CLN 1.3.7 built into `~/.local/ginac` (sudo needs a password
+here; built from ginac.de tarballs instead). Build script:
+`scratchpad/build_ginac.sh`. To use:
+
+```
+export PKG_CONFIG_PATH=$HOME/.local/ginac/lib/pkgconfig
+pkg-config --cflags --libs ginac      # rpath is baked in; no LD_LIBRARY_PATH needed
+g++ -std=c++17 x.cpp $(pkg-config --cflags --libs ginac)
+```
 
 ## Environment prerequisites (one-time, needs you)
 
