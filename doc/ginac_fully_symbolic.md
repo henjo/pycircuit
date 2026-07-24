@@ -170,6 +170,28 @@ to #1/#2.
   sparsity / connected components to cut the term count *before* GiNaC
   arithmetic.
 
+## Numeric-coefficient regime: O(1) scaling — **DONE**
+
+The other failure mode was *numeric* components: values like `1e-9` become
+rationals whose products across the determinant explode into astronomically
+large CLN integers that stall GiNaC around dimension 16 (this is separate from
+the fully-symbolic exponential). The fix is **frequency + magnitude scaling** so
+GiNaC sees O(1) coefficients: for a numeric AC system `G + s C`, substitute
+`s = w0*sigma` and divide by an amplitude `amp`, both chosen as **powers of ten**
+so the scaled entries are exact small rationals (irrational geometric-mean
+factors reintroduce the blow-up). Solve in `sigma`, then back-substitute
+`sigma = s/w0` — a cheap coefficient rescale on the already-compact result.
+
+Implemented in `pycircuit.circuit._ginac` (`detect_freq`, `_frequency_scale`,
+auto-applied by `linearsolver_num_den`) and wired through `GinacToolkit`, which
+now drops the `ginac_max_dim` guard whenever the system is scalable. Result: the
+numeric-AC solve is fast far past the old cliff (e.g. dim 24 in ~0.4 s, machine
+precision). `AC(..., toolkit=ginac_toolkit)` therefore handles large numeric
+ladders directly, and `TransferFunction.as_num_den` uses GiNaC `poly_coeffs` for
+the **symbolic** coefficient collection (poles/zeros) while numeric transfer
+functions stay on sympy/`numpy` (a scaled numeric result spans ~1e0…1e-90, where
+GiNaC's `limit_denominator` would drop tiny high-order terms).
+
 ## Bottom line
 
 GiNaC will not make the exact fully-symbolic transfer function smaller — that is

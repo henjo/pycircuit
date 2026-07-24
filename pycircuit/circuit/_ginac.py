@@ -112,11 +112,87 @@ def _system_strings(A, b):
     return n, entries, rhs, list(orig_syms.keys()), orig_syms
 
 
-def linearsolver_num_den(A, b):
+def _solve_numden_core(A, b):
+    """The plain GiNaC num/den solve (no scaling)."""
+    n, entries, rhs, symbols, orig_syms = _system_strings(A, b)
+    num_strs, den_str = _ginac_ext.solve_numden(n, entries, rhs, symbols)
+    num = np.array([_to_sympy(x, orig_syms) for x in num_strs], dtype=object)
+    den = _to_sympy(den_str, orig_syms)
+    return num, den
+
+
+def detect_freq(A):
+    """The lone free symbol of ``A`` (the numeric-AC ``s``), or ``None``.
+
+    Used to auto-enable frequency scaling: when the system has exactly one free
+    symbol it is the frequency, and scaling to O(1) coefficients avoids the CLN
+    integer blow-up that otherwise stalls GiNaC around dimension 16.
+    """
+    syms = sympy.Matrix(A).free_symbols
+    return next(iter(syms)) if len(syms) == 1 else None
+
+
+def _frequency_scale(A, b, freq):
+    """Rescale ``A x = b`` so GiNaC sees O(1) coefficients.
+
+    For a system that is degree <= 1 in ``freq`` with purely numeric
+    coefficients (the numeric-component AC regime ``G + s C``), substitute
+    ``freq = w0*sigma`` and divide through by an amplitude ``amp`` -- both chosen
+    as powers of ten so the scaled entries are *exact small rationals*. That
+    keeps CLN integers small (irrational scale factors would reintroduce the
+    blow-up). Returns ``(Ap, bp, sigma, w0)``; ``None`` if not applicable.
+    """
+    A = sympy.Matrix(A)
+    n = A.rows
+    G = sympy.zeros(n, n)
+    C = sympy.zeros(n, n)
+    for i in range(n):
+        for j in range(n):
+            e = sympy.expand(A[i, j])
+            if e.has(freq) and sympy.degree(e, freq) > 1:
+                return None
+            c0, c1 = e.coeff(freq, 0), e.coeff(freq, 1)
+            if c0.free_symbols or c1.free_symbols:
+                return None                       # non-numeric coefficient
+            if sympy.expand(c0 + c1 * freq - e) != 0:
+                return None                       # e.g. freq in a denominator
+            G[i, j], C[i, j] = c0, c1
+
+    def geomean(vals):
+        return float(np.exp(np.mean(np.log(vals)))) if vals else None
+
+    gvals = [abs(float(G[i, j])) for i in range(n) for j in range(n) if G[i, j] != 0]
+    cvals = [abs(float(C[i, j])) for i in range(n) for j in range(n) if C[i, j] != 0]
+    gm, cm = geomean(gvals), geomean(cvals)
+    if gm is None:
+        return None
+    amp = 10.0 ** round(np.log10(gm))
+    w0 = 10.0 ** round(np.log10(gm / cm)) if cm is not None else 1.0
+
+    # GiNaC's parser rejects leading underscores, so use a plain identifier
+    # unlikely to collide with circuit symbols.
+    sigma = sympy.Symbol('sigmafreqscale', imaginary=True)
+    Ap = sympy.zeros(n, n)
+    for i in range(n):
+        for j in range(n):
+            Ap[i, j] = G[i, j] / amp + (C[i, j] * w0 / amp) * sigma
+    bm = sympy.Matrix(np.asarray(b).reshape(-1).tolist())
+    bp = np.array([bm[i] / amp for i in range(n)], dtype=object)
+    return Ap, bp, sigma, w0
+
+
+def linearsolver_num_den(A, b, freq=None):
     """Solve ``A x = b`` in GiNaC; return ``(numerators, denominator)``.
 
     ``x_i = numerators[i] / denominator`` with the shared denominator equal to
     the network determinant, matching the :class:`SymbolicPolyToolkit` contract.
+
+    For a numeric-component AC system (entries ``G + s C`` with a single
+    frequency symbol) the coefficients are scaled to O(1) before the solve
+    (:func:`_frequency_scale`), avoiding the CLN blow-up that otherwise stalls
+    GiNaC around dimension 16 -- so the solve stays fast to much higher order.
+    ``freq`` is auto-detected when the system has one free symbol; pass it
+    explicitly (e.g. from an analysis) to be sure.
 
     This eagerly sympifies the full (determinant-sized) result.  When you only
     need a compact piece -- a transfer function, or a numeric sweep -- prefer
@@ -127,12 +203,20 @@ def linearsolver_num_den(A, b):
     if Am.shape == (1, 1):
         return np.array([sympy.Matrix(b.tolist())[0]], dtype=object), Am[0, 0]
 
-    n, entries, rhs, symbols, orig_syms = _system_strings(A, b)
-    num_strs, den_str = _ginac_ext.solve_numden(n, entries, rhs, symbols)
+    if freq is None:
+        freq = detect_freq(Am)
+    if freq is not None:
+        scaled = _frequency_scale(Am, b, freq)
+        if scaled is not None:
+            Ap, bp, sigma, w0 = scaled
+            num, den = _solve_numden_core(Ap, bp)
+            back = {sigma: freq / w0}
+            num = np.array([sympy.expand(ni.xreplace(back)) for ni in num],
+                           dtype=object)
+            den = sympy.expand(den.xreplace(back))
+            return num, den
 
-    num = np.array([_to_sympy(x, orig_syms) for x in num_strs], dtype=object)
-    den = _to_sympy(den_str, orig_syms)
-    return num, den
+    return _solve_numden_core(Am, b)
 
 
 class GinacResult:

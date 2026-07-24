@@ -263,3 +263,128 @@ def test_mfb_filter_post_processing_matches_symby():
     from pycircuit.circuit import symbolic
     H_ref = AC(build(), toolkit=symbolic).solve(s, complexfreq=True).v(3, gnd) / i_s
     assert sympy.simplify(N / D - H_ref) == 0
+
+
+def _numeric_ladder(N, Rv=1e3, Cv=1e-9):
+    s = sympy.Symbol('s', imaginary=True)
+    A = sympy.zeros(N, N)
+    for k in range(N):
+        g = 1.0 / Rv
+        gnext = 1.0 / Rv if k + 1 < N else 0.0
+        A[k, k] = g + gnext + s * Cv
+        if k + 1 < N:
+            A[k, k + 1] = -gnext
+            A[k + 1, k] = -gnext
+    b = np.zeros(N, dtype=object)
+    b[0] = 1.0 / Rv
+    return np.array(A.tolist(), dtype=object), b, s
+
+
+def test_detect_freq():
+    from pycircuit.circuit import _ginac
+    A, b, s = _numeric_ladder(3)
+    assert _ginac.detect_freq(A) == s
+    # fully symbolic: many symbols -> not a single frequency
+    Rs, Cs = sympy.symbols('R C', positive=True)
+    Asym = np.array([[1 / Rs + s * Cs, -1 / Rs], [-1 / Rs, 1 / Rs]], dtype=object)
+    assert _ginac.detect_freq(Asym) is None
+
+
+def test_scaling_high_dim_numeric_matches_direct_solve():
+    # Above the old ginac_max_dim cap, the scaled solve must be correct (and not
+    # hang on the CLN blow-up). Compare the transfer function to a direct solve.
+    from pycircuit.circuit import _ginac
+    N = 18
+    A, b, s = _numeric_ladder(N)
+    num, den = _ginac.linearsolver_num_den(A, b)   # auto-scaled
+    freqs = 1j * 2 * np.pi * np.logspace(3, 7, 5)
+    H = sympy.lambdify(s, num[N - 1] / num[0], 'numpy')(freqs)
+    Href = []
+    for wk in freqs:
+        M = np.array([[complex(A[i, j].subs(s, wk)) for j in range(N)]
+                      for i in range(N)])
+        x = np.linalg.solve(M, np.array([complex(b[i]) for i in range(N)]))
+        Href.append(x[N - 1] / x[0])
+    Href = np.array(Href)
+    assert np.max(np.abs(H - Href)) < 1e-9 * np.max(np.abs(Href))
+
+
+def test_scaling_matches_sympy_poly_backend():
+    # Scaled GiNaC result must agree with the sympy fraction-free backend.
+    from pycircuit.circuit import _ginac
+    N = 8
+    A, b, s = _numeric_ladder(N)
+    ng, dg = _ginac.linearsolver_num_den(A, b)
+    ns, ds = symbolic_poly.linearsolver_num_den(A, b)
+    freqs = 1j * 2 * np.pi * np.logspace(3, 7, 4)
+    fg = sympy.lambdify(s, ng[N - 1] / dg, 'numpy')(freqs)
+    fs = sympy.lambdify(s, ns[N - 1] / ds, 'numpy')(freqs)
+    assert np.max(np.abs(fg - fs)) < 1e-9 * np.max(np.abs(fs))
+
+
+def _rc_ladder_circuit(stages, tk, Rv=1e3, Cv=1e-9):
+    cir = SubCircuit(toolkit=tk)
+    cir['VS'] = VS('n0', gnd, vac=1)
+    for k in range(stages):
+        cir['R%d' % k] = R('n%d' % k, 'n%d' % (k + 1), r=Rv)
+        cir['C%d' % k] = C('n%d' % (k + 1), gnd, c=Cv)
+    return cir
+
+
+def test_ac_ginac_high_dim_matches_symbolic_poly():
+    # End-to-end (#1 scaling + #2): a numeric RC ladder whose MNA dimension is
+    # well above the old ginac_max_dim cap, solved through AC with ginac_toolkit.
+    # Poles and frequency response must match the sympy fraction-free backend.
+    s = sympy.Symbol('s', imaginary=True)
+    stages = 15                                   # MNA dim ~ stages + 2 = 17
+    out = 'n%d' % stages
+    tf = AC(_rc_ladder_circuit(stages, ginac_toolkit),
+            toolkit=ginac_toolkit).solve(s, complexfreq=True).tf(out, gnd)
+    ref = AC(_rc_ladder_circuit(stages, symbolic_poly),
+             toolkit=symbolic_poly).solve(s, complexfreq=True).tf(out, gnd)
+
+    pg = np.sort_complex(tf.poles(numeric=True))
+    pr = np.sort_complex(ref.poles(numeric=True))
+    assert len(pg) == len(pr) == stages
+    assert np.max(np.abs(pg - pr)) < 1e-6 * np.max(np.abs(pr))
+
+    freqs = np.logspace(2, 6, 6)
+    hg, hr = tf.frequencyresponse(freqs), ref.frequencyresponse(freqs)
+    assert np.max(np.abs(hg - hr)) < 1e-9 * np.max(np.abs(hr))
+
+
+def test_transferfunction_symbolic_poles_use_ginac_and_match_sympy():
+    from pycircuit.circuit.transferfunction import TransferFunction
+    s = sympy.Symbol('s')
+    Rs, Cs = sympy.symbols('R C', positive=True)
+    # a 2nd-order symbolic denominator; GiNaC coeff path must give the same poles
+    H = TransferFunction(1, 1 + 3 * s * Rs * Cs + 2 * (s * Rs * Cs)**2, s)
+    assert H._ginac_coeffs() is not None          # symbolic -> GiNaC path active
+    assert H.poles() == sympy.roots(
+        sympy.Poly(2 * (s * Rs * Cs)**2 + 3 * s * Rs * Cs + 1, s))
+
+
+def test_transferfunction_numeric_skips_ginac():
+    from pycircuit.circuit.transferfunction import TransferFunction
+    s = sympy.Symbol('s')
+    H = TransferFunction(1.0, 1.0 + 2e-6 * s + 1e-12 * s**2, s)
+    assert H._ginac_coeffs() is None              # numeric -> sympy/numpy path
+    assert len(H.poles(numeric=True)) == 2
+
+
+def test_scaling_non_power_of_ten_values():
+    # Odd component values (not powers of ten) must still scale and stay correct.
+    from pycircuit.circuit import _ginac
+    N = 14
+    A, b, s = _numeric_ladder(N, Rv=1500.0, Cv=2.2e-9)
+    num, den = _ginac.linearsolver_num_den(A, b)
+    freqs = 1j * 2 * np.pi * np.logspace(3, 7, 4)
+    H = sympy.lambdify(s, num[N - 1] / num[0], 'numpy')(freqs)
+    Href = []
+    for wk in freqs:
+        M = np.array([[complex(A[i, j].subs(s, wk)) for j in range(N)]
+                      for i in range(N)])
+        x = np.linalg.solve(M, np.array([complex(b[i]) for i in range(N)]))
+        Href.append(x[N - 1] / x[0])
+    Href = np.array(Href)
+    assert np.max(np.abs(H - Href)) < 1e-9 * np.max(np.abs(Href))

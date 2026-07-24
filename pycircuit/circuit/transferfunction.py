@@ -55,8 +55,43 @@ class TransferFunction:
         """Return ``num/den`` with common factors cancelled."""
         return sympy.cancel(self.num / self.den)
 
+    def _ginac_coeffs(self):
+        """``(num_coeffs, den_coeffs)`` in ``s`` (low order first) via GiNaC.
+
+        Uses :func:`pycircuit.circuit._ginac.poly_coeffs`, which does the
+        cancellation and polynomial collection natively in GiNaC (~4x faster than
+        sympy on the collect step, and it cancels common factors like
+        ``sympy.cancel``).
+
+        Only used when the coefficients are *symbolic* (free parameters besides
+        ``s``): there the values are exact, so the rationalisation in GiNaC is
+        loss-free.  For a purely numeric transfer function the coefficients are
+        floats that can span a huge dynamic range (a scaled solve produces terms
+        from 1e0 down to ~1e-90); GiNaC's ``limit_denominator`` would round the
+        tiny high-order ones to zero and silently drop poles, so this returns
+        ``None`` and the caller uses sympy/``numpy``.  ``None`` is also returned
+        if the extension is unavailable or the extraction fails.
+        """
+        if not (self.num.free_symbols | self.den.free_symbols) - {self.s}:
+            return None                          # numeric: not safe for GiNaC
+        try:
+            from . import _ginac
+            return _ginac.poly_coeffs(self.num / self.den, self.s)
+        except Exception:
+            return None
+
     def as_num_den(self):
-        """Return ``(Poly(num, s), Poly(den, s))`` after cancellation."""
+        """Return ``(Poly(num, s), Poly(den, s))`` after cancellation.
+
+        When the GiNaC extension is built the coefficients are collected
+        natively (faster; see :meth:`_ginac_coeffs`); otherwise sympy's
+        ``cancel``/``fraction`` is used.  Either way ``num``/``den`` are coprime.
+        """
+        coeffs = self._ginac_coeffs()
+        if coeffs is not None:
+            nums, dens = coeffs
+            return (sympy.Poly(list(reversed(nums)), self.s),
+                    sympy.Poly(list(reversed(dens)), self.s))
         num, den = sympy.fraction(self.canonical())
         return sympy.Poly(num, self.s), sympy.Poly(den, self.s)
 

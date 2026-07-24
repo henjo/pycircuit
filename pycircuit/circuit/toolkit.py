@@ -357,35 +357,35 @@ class GinacToolkit(SymbolicPolyToolkit):
     """EXPERIMENTAL symbolic toolkit that solves through the compiled GiNaC
     extension.  Correct, but **not a general speed win** -- kept for evaluation.
 
-    GiNaC's ``normal()`` does perform true fraction-free cancellation (unlike
-    symengine), and on a *raw* solve with small integer coefficients it is
-    ~8-10x faster than sympy's ``DomainMatrix.solve_den``.  But end-to-end on
-    real circuits it loses: components such as ``1e-9`` become rational
-    coefficients whose products across the network determinant explode into
-    astronomically large integers that stall CLN (the solve *hangs* around
-    dimension 16), whereas sympy's polynomial domain handles the same
-    gracefully.  The real fix is frequency/impedance scaling to O(1)
-    coefficients (see ``doc/ginac_toolkit_plan.md``); until then
-    :class:`SymbolicPolyToolkit` is the faster backend for numeric + symbolic-s
-    circuits.
+    GiNaC's ``normal()`` performs true fraction-free cancellation (unlike
+    symengine).  On a numeric-component AC system (entries ``G + s C``) the
+    coefficients are first scaled to O(1) (:func:`._ginac._frequency_scale`),
+    which avoids the CLN integer blow-up that otherwise stalls the solve around
+    dimension 16 -- in that regime the scaled GiNaC solve is fast to high order
+    (e.g. dim 24 in ~0.4 s) and beats sympy's ``DomainMatrix.solve_den``.  When
+    the system cannot be scaled to O(1) (mixed numeric/symbolic entries that are
+    not a single-frequency ``G + s C``), the :attr:`ginac_max_dim` guard still
+    applies as a safety net; fully symbolic circuits do not blow up.
 
     Requires the built ``_ginac_ext`` extension (GiNaC + pybind11); the
-    ``ginac_toolkit`` singleton is ``None`` when it is unavailable.  Guards:
-    systems larger than :attr:`ginac_max_dim` fall back to sympy (so the CLN
-    blow-up cannot hang a solve), as does any per-solve failure (parse error,
-    singular, transcendental entries).
+    ``ginac_toolkit`` singleton is ``None`` when it is unavailable.  Any
+    per-solve failure (parse error, singular, transcendental entries) falls back
+    to sympy.
     """
 
-    #: Above this system dimension, fall back to sympy to avoid the CLN
-    #: coefficient-explosion hang.  Below the observed cliff (~16).
+    #: Fallback guard: above this dimension, a system that *cannot* be scaled to
+    #: O(1) coefficients falls back to sympy to avoid the CLN blow-up.  Scalable
+    #: (numeric-AC) systems are not subject to it.  Below the observed cliff ~16.
     ginac_max_dim = 12
 
     def linearsolver_num_den(self, A, b):
         try:
-            if sympy.Matrix(A).rows > self.ginac_max_dim:
-                return super().linearsolver_num_den(A, b)
             from . import _ginac
-            return _ginac.linearsolver_num_den(A, b)
+            Am = sympy.Matrix(A)
+            scalable = _ginac.detect_freq(Am) is not None
+            if not scalable and Am.rows > self.ginac_max_dim:
+                return super().linearsolver_num_den(A, b)
+            return _ginac.linearsolver_num_den(Am, b)
         except Exception:
             return super().linearsolver_num_den(A, b)
 
