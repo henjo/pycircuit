@@ -112,7 +112,27 @@ function, native `tf_coeffs` vs sympy `Poly` (both starting from the native
 *(Also regenerated live on every docs build — see
 `doc/src/circuit/ginac_native.rst`.)*
 
-### 3. Don't force the canonical `N/D` — Sequence of Expressions (SoE)  *(prototyped)*
+### 3. Don't force the canonical `N/D` — Sequence of Expressions (SoE)  — **DONE**
+
+**Implemented** as a result object: `pycircuit.circuit.soe.solve_soe(A, b)`
+returns an `SoESolution` holding the ordered `(symbol, expr)` assignments and the
+node solution. `.eval(params)` resolves the assignments *in order* over a
+parameter sweep (vectorised numpy) and `.eval_tf(i, j, params)` gives a swept
+transfer function; `.to_ratio(i, j)` inlines to a single sympy expression for the
+GiNaC `N(s)/D(s)` tools.
+
+**Key finding:** the SoE's compactness is entirely from *sharing* -- each
+intermediate symbol is referenced several times but stored once. The assignment
+count stays linear for a ladder (72/156/240/324 ops at N=4/8/12/16), but
+*inlining* (`to_ratio`) destroys the sharing and regrows super-linearly
+(213/1235/3633/7983 ops). So the scalable path is **sequential evaluation**, not
+compiling one expression -- and, notably, a single GiNaC `compile_ex` cannot
+help here (it does not CSE, so it would re-expand the shared form). `to_ratio` ->
+`poly_coeffs` is therefore a *small-circuit* bridge only: for a fully symbolic
+ladder the coefficient extraction hits the inherent multivariate exponential
+(the very blow-up SoE avoids). Live demo + check: `doc/src/circuit/soe_symbolic.rst`.
+
+Original prototype notes:
 
 For fully symbolic circuits, poles have no closed form anyway (degree ≥ 5), so
 the exploded `N/D` is rarely worth its exponential size. Represent the solution

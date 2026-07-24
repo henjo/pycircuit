@@ -88,3 +88,69 @@ solve.
 
 The op-count grows only linearly in ``N`` while the exploded ``N(s)/D(s)`` grows
 exponentially -- yet the divided transfer function evaluates to the same value.
+
+As a result object
+==================
+
+:func:`pycircuit.circuit.soe.solve_soe` returns an
+:class:`~pycircuit.circuit.soe.SoESolution` wrapping the assignment list and the
+node solution. Its :meth:`~pycircuit.circuit.soe.SoESolution.eval` resolves the
+assignments *in order* over a parameter sweep (vectorised ``numpy``), so the
+compact **shared** form is evaluated directly -- never inlined into one big
+expression. Inlining (via
+:meth:`~pycircuit.circuit.soe.SoESolution.to_ratio`) discards that sharing and
+regrows super-linearly, so it is reserved for *small* circuits or for handing a
+transfer function to the GiNaC ``N(s)/D(s)`` tools (poles/zeros).
+
+The table below is **generated when this page is built**: it evaluates the SoE
+node voltages of an ``N``-section ladder over a frequency sweep and checks them
+against a direct ``numpy`` solve at each point.
+
+.. exec-rst::
+
+    import numpy as np
+    import sympy
+    from pycircuit.circuit.soe import solve_soe
+
+    def ladder(N):
+        s = sympy.Symbol('s')
+        R = [sympy.Symbol('R%d' % i, positive=True) for i in range(N)]
+        C = [sympy.Symbol('C%d' % i, positive=True) for i in range(N)]
+        A = sympy.zeros(N, N); b = sympy.zeros(N, 1)
+        for i in range(N):
+            A[i, i] = 1 / R[i] + s * C[i] + (1 / R[i - 1] if i > 0 else 0)
+            if i + 1 < N:
+                A[i, i + 1] = -1 / R[i]; A[i + 1, i] = -1 / R[i]
+        b[0] = 1 / R[0]
+        return A, b, s, R, C
+
+    print(".. list-table:: SoE node-voltage sweep vs a direct solve")
+    print("   :header-rows: 1")
+    print("   :widths: 8 16 20")
+    print("")
+    print("   * - N")
+    print("     - assignments")
+    print("     - matches direct solve")
+    for N in (4, 8, 12):
+        A, b, s, R, C = ladder(N)
+        sol = solve_soe(A, b)
+        env = {R[i]: 100.0 * (i + 1) for i in range(N)}
+        env.update({C[i]: 1e-9 * (i + 1) for i in range(N)})
+        ws = 1j * 2 * np.pi * np.logspace(3, 7, 5)
+        params = dict(env); params[s] = ws
+        vals = sol.eval(params)                       # (N, 5), sequential eval
+
+        ok = True
+        for p, wk in enumerate(ws):
+            An = np.array([[complex(A[i, j].subs({**env, s: wk}))
+                            for j in range(N)] for i in range(N)])
+            bn = np.array([complex(b[i].subs({**env, s: wk})) for i in range(N)])
+            xn = np.linalg.solve(An, bn)
+            ok = ok and np.max(np.abs(vals[:, p] - xn)) < 1e-6 * max(1, np.max(np.abs(xn)))
+
+        print("   * - %d" % N)
+        print("     - %d" % len(sol.assignments))
+        print("     - %s" % ok)
+
+The assignment count stays linear and the swept evaluation matches the direct
+solve at every point.
