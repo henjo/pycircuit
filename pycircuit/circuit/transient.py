@@ -91,9 +91,10 @@ class Transient(Analysis):
                    desc='Differentiation method', unit='',
                    default="euler"),
          Parameter(name='lte_formula',
-                   desc="Local truncation error formula: 'classic' or 'ywr' "
-                        "(Yao-Wang-Roychowdhury DAE LTE, ICECS 2014)", unit='',
-                   default='classic'),
+                   desc="Local truncation error formula: 'ywr' "
+                        "(Yao-Wang-Roychowdhury DAE LTE, ICECS 2014) or 'classic'",
+                   unit='',
+                   default='ywr'),
          Parameter(name='uic',
                    desc='Use initial conditions (skip DC OP computation)', unit='',
                    default=False),
