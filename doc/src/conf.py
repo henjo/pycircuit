@@ -25,6 +25,8 @@ sys.path.insert(0, _root)
 # The custom sphinx extensions live under doc/sphinxext.
 sys.path.insert(0, _docdir)
 sys.path.insert(0, os.path.join(_docdir, 'sphinxext'))
+# Research prototypes imported by live (exec-rst) documentation examples.
+sys.path.insert(0, os.path.join(_docdir, 'prototypes'))
 
 # General configuration
 # ---------------------

@@ -8,6 +8,7 @@ Circuit analyzer
     tutorial
     analyses
     symbolic_poly
+    soe_symbolic
     theory
     modules
     elements
