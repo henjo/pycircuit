@@ -60,12 +60,13 @@ class Transient(Analysis):
     ##   Reference: "Time Step Control in Transient Analysis", by SHUBHA VIJAYCHAND
     def _get_integrator(self):
         from pycircuit.circuit.integrator import EulerIntegrator, TrapezoidalIntegrator, Gear2Integrator
+        lte_formula = getattr(self.par, 'lte_formula', 'classic')
         if self.par.method == 'euler':
-            return EulerIntegrator()
+            return EulerIntegrator(lte_formula)
         elif self.par.method in ('trap', 'trapezoidal'):
-            return TrapezoidalIntegrator()
+            return TrapezoidalIntegrator(lte_formula)
         elif self.par.method == 'gear2':
-            return Gear2Integrator()
+            return Gear2Integrator(lte_formula)
         else:
             raise ValueError(f"Unknown integration method: {self.par.method}")
     
@@ -86,9 +87,13 @@ class Transient(Analysis):
          Parameter(name='maxiter', 
                    desc='Maximum number of iterations', unit='', 
                    default=100),
-         Parameter(name='method', 
-                   desc='Differentiation method', unit='', 
+         Parameter(name='method',
+                   desc='Differentiation method', unit='',
                    default="euler"),
+         Parameter(name='lte_formula',
+                   desc="Local truncation error formula: 'classic' or 'ywr' "
+                        "(Yao-Wang-Roychowdhury DAE LTE, ICECS 2014)", unit='',
+                   default='classic'),
          Parameter(name='uic',
                    desc='Use initial conditions (skip DC OP computation)', unit='',
                    default=False),

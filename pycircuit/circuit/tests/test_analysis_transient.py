@@ -323,3 +323,38 @@ def test_transient_pi_controller():
     
     assert len(res.sweep_values) > 10, "PIController did not take enough steps"
     assert abs(res.sweep_values[-1] - 40e-6) < 1e-6, "PIController did not reach tend"
+
+
+def test_lte_formula_ywr():
+    """Yao-Wang-Roychowdhury DAE LTE (ICECS 2014) as a step-control option.
+
+    For Backward Euler the YWR and classic formulas coincide.  For Gear2 the
+    classic q'' divided-difference estimate under-resolves, while the YWR
+    g-difference formula controls the true truncation error and is more
+    accurate on this RC charging transient (tau = 10 us).
+    """
+    from pycircuit.circuit.elements import VS
+
+    def run(method, lte):
+        c = SubCircuit()
+        c['VS'] = VS(1, gnd, v=10)
+        c['R1'] = R(1, 2, r=10)
+        c['C1'] = C(2, gnd, c=1e-6)
+        tran = Transient(c, method=method, lte_formula=lte, uic=True)
+        res = tran.solve(tend=50e-6, timestep=5e-6, coupled_lte=False)
+        t = np.asarray(res.sweep_values, dtype=float)
+        v_analytic = 10 * (1 - np.exp(-t[-1] / 10e-6))
+        return len(t), abs(res.v(2, gnd)[-1] - v_analytic)
+
+    # Backward Euler: the two formulas are mathematically identical.
+    n_ec, e_ec = run('euler', 'classic')
+    n_ey, e_ey = run('euler', 'ywr')
+    assert n_ec == n_ey
+    assert abs(e_ec - e_ey) < 1e-9
+
+    # Gear2: YWR controls the error properly -> more (appropriate) steps and a
+    # smaller error than the classic estimate, which under-resolves.
+    n_gc, e_gc = run('gear2', 'classic')
+    n_gy, e_gy = run('gear2', 'ywr')
+    assert n_gy > n_gc
+    assert e_gy < e_gc

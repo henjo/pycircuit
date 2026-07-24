@@ -54,10 +54,16 @@ class Integrator(ABC):
 
 class EulerIntegrator(Integrator):
     """Backward Euler (1st order) Integration Method"""
-    
+
+    def __init__(self, lte_formula='classic'):
+        ## 'classic' or 'ywr' (Yao-Wang-Roychowdhury DAE LTE, ICECS 2014).  For
+        ## Backward Euler the two coincide, so this is only carried through so an
+        ## order-drop from Gear2/Trap preserves the chosen formula.
+        self.lte_formula = lte_formula
+
     def get_required_history(self) -> int:
         return 1
-        
+
     def check_order_drop(self, h_curr: float, h_last: float, is_first_step: bool) -> Integrator:
         # Euler is 1st order, no lower order to drop to.
         return self
@@ -79,15 +85,18 @@ class EulerIntegrator(Integrator):
 
 class TrapezoidalIntegrator(Integrator):
     """Trapezoidal (2nd order) Integration Method"""
-    
+
+    def __init__(self, lte_formula='classic'):
+        self.lte_formula = lte_formula
+
     def get_required_history(self) -> int:
         return 1
-        
+
     def check_order_drop(self, h_curr: float, h_last: float, is_first_step: bool) -> Integrator:
-        # Trapezoidal rule only looks back 1 step, so its polynomial isn't 
+        # Trapezoidal rule only looks back 1 step, so its polynomial isn't
         # distorted by past step sizes. No drop needed.
         if is_first_step:
-            return EulerIntegrator()
+            return EulerIntegrator(self.lte_formula)
         return self
         
     def compute_derivatives(self, q_curr, C_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit):
@@ -100,32 +109,44 @@ class TrapezoidalIntegrator(Integrator):
         if is_first_step:
             return toolkit.zeros(len(q_curr)), 1.0
             
+        # g = dq/dt companion current at the last three points (g_n reconstructed
+        # from the trapezoidal companion formula, g_{n-1}, g_{n-2} from history).
         gn = 2 * (q_curr - q_last[0]) / h_curr - iq_last[0]
         gn_1 = iq_last[0]
         gn_2 = iq_last[1] if len(iq_last) > 1 else iq_last[0]
-        
-        # Trapezoidal LTE
-        dd1 = (gn - gn_1) / h_curr
-        dd2 = (gn_1 - gn_2) / h_last
-        lte = -(1.0/3.0) * h_curr**2 * (dd1 - dd2) / (h_curr + h_last)
+
+        if self.lte_formula == 'ywr':
+            # Yao-Wang-Roychowdhury DAE LTE (ICECS 2014, Table I, TRAP):
+            #   eps = -(1/12)(q_x + 0.5 h f_x)^-1 (g_n - 2 g_{n-1} + g_{n-2}) h
+            # With (q_x + 0.5 h f_x) = 0.5 h (G + 2C/h) = 0.5 h J, the h cancels
+            # and, since the controller applies J^-1, Eg = -(1/6)(2nd diff of g).
+            lte = -(1.0/6.0) * (gn - 2 * gn_1 + gn_2)
+        else:
+            # Classic divided-difference form.
+            dd1 = (gn - gn_1) / h_curr
+            dd2 = (gn_1 - gn_2) / h_last
+            lte = -(1.0/3.0) * h_curr**2 * (dd1 - dd2) / (h_curr + h_last)
         return lte, 3.0  # p=3.0 for Trapezoidal
 
 
 class Gear2Integrator(Integrator):
     """Gear-2 / BDF-2 (2nd order) Variable Step Size Integration Method"""
-    
+
+    def __init__(self, lte_formula='classic'):
+        self.lte_formula = lte_formula
+
     def get_required_history(self) -> int:
         return 2
-        
+
     def check_order_drop(self, h_curr: float, h_last: float, is_first_step: bool) -> Integrator:
         if is_first_step:
-            return EulerIntegrator()
-            
+            return EulerIntegrator(self.lte_formula)
+
         # Bizzarri & Brambilla Order Drop Protection
         # If the step shrinks by more than 10x, high-order polynomials become invalid.
         if h_curr / h_last < 0.1:
-            return EulerIntegrator()
-            
+            return EulerIntegrator(self.lte_formula)
+
         return self
         
     def compute_derivatives(self, q_curr, C_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit):
@@ -149,7 +170,26 @@ class Gear2Integrator(Integrator):
         if is_first_step:
             return toolkit.zeros(len(q_curr)), 1.0
             
-        # --- GEAR-2 LOCAL TRUNCATION ERROR ---
+        if self.lte_formula == 'ywr':
+            # Yao-Wang-Roychowdhury DAE LTE (ICECS 2014, Table I, GEAR2).  Uses the
+            # 2nd difference of g = dq/dt (not a q'' divided difference).  h1=h_curr,
+            # h2=h_last; g_n is the Gear2 companion current reconstructed from the
+            # charge history, g_{n-1}, g_{n-2} come from the iq history.  The paper's
+            # (q_x + [h1(h1+h2)/(2h1+h2)] f_x)^-1 factor equals alpha0*J^-1, and since
+            # the controller applies J^-1, the residual reduces to:
+            #   Eg = -(1/8) ((h1+h2)/(h1 h2)) (h2 g_n - (h1+h2) g_{n-1} + h1 g_{n-2})
+            h1, h2 = h_curr, h_last
+            alpha0 = (2 * h1 + h2) / (h1 * (h1 + h2))
+            alpha1 = -(h1 + h2) / (h1 * h2)
+            alpha2 = h1 / (h2 * (h1 + h2))
+            g_n = alpha0 * q_curr + alpha1 * q_last[0] + alpha2 * q_last[1]
+            g_nm1 = iq_last[0]
+            g_nm2 = iq_last[1] if len(iq_last) > 1 else iq_last[0]
+            lte = -(1.0/8.0) * ((h1 + h2) / (h1 * h2)) * \
+                (h2 * g_n - (h1 + h2) * g_nm1 + h1 * g_nm2)
+            return lte, 3.0
+
+        # --- CLASSIC GEAR-2 LOCAL TRUNCATION ERROR ---
         # The truncation error for a 2nd-order method is proportional to the 3rd derivative
         # of the charge with respect to time. We approximate this 3rd derivative using
         # divided differences (dd).
@@ -159,8 +199,8 @@ class Gear2Integrator(Integrator):
         dd1_nm1 = (q_last[0] - q_last[1]) / h_last
         # 2nd divided difference (acceleration/curvature)
         dd2_n = (dd1_n - dd1_nm1) / (h_curr + h_last)
-        
+
         # The final LTE is scaled by the step sizes based on the Taylor series remainder.
         lte = (h_curr**2) * (h_curr + h_last) / 3.0 * dd2_n
-        
+
         return lte, 3.0  # p=3.0 (LTE scales with h^3 for 2nd order methods)
