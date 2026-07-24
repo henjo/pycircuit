@@ -29,6 +29,17 @@ static std::string ex_to_str(const ex &e) {
     return os.str();
 }
 
+// Coefficients of ``poly`` as a polynomial in ``var``, low order first
+// (index k = coefficient of var^k).  ``poly`` must be expanded in ``var``.
+static std::vector<std::string> coeff_list(const ex &poly, const ex &var) {
+    int d = poly.degree(var);
+    std::vector<std::string> c;
+    c.reserve(d + 1);
+    for (int k = 0; k <= d; ++k)
+        c.push_back(ex_to_str(poly.coeff(var, k)));
+    return c;
+}
+
 // Solve A x = b for an n x n system whose entries are GiNaC-parseable strings.
 // Returns (numerators, denominator) as strings with the SHARED denominator equal
 // to the network determinant, so x_i = numerators[i] / denominator.  Raises on a
@@ -107,6 +118,7 @@ eval_sweep(const std::string &expr,
 struct GinacResult {
     std::vector<ex> num;  // numerators; solution component x_i = num[i] / den
     ex den;               // shared denominator (the network determinant)
+    symtab tab;           // name -> symbol, to look up variables by identity
 
     size_t size() const { return num.size(); }
 
@@ -123,6 +135,31 @@ struct GinacResult {
     // cancels, so this stays compact even when the full solution is huge.
     std::string tf_str(size_t i, size_t j) const {
         return ex_to_str((num.at(i) / num.at(j)).normal());
+    }
+
+    const ex &var_ex(const std::string &var) const {
+        auto it = tab.find(var);
+        if (it == tab.end())
+            throw std::runtime_error("unknown variable: " + var);
+        return it->second;
+    }
+
+    // Transfer function x_i/x_j as polynomial-in-``var`` coefficient vectors
+    // (numerator, denominator), low order first -- the canonical N(var)/D(var)
+    // form.  Cancellation + collection run natively; only the (small)
+    // coefficients cross back to Python.
+    std::pair<std::vector<std::string>, std::vector<std::string>>
+    tf_coeffs(size_t i, size_t j, const std::string &var) const {
+        ex e = (num.at(i) / num.at(j)).normal();
+        const ex &sv = var_ex(var);
+        return {coeff_list(e.numer().expand(), sv),
+                coeff_list(e.denom().expand(), sv)};
+    }
+
+    // Coefficients of the denominator (network determinant) as a polynomial in
+    // ``var`` -- the characteristic polynomial whose roots are the poles.
+    std::vector<std::string> denominator_coeffs(const std::string &var) const {
+        return coeff_list(den.expand(), var_ex(var));
     }
 };
 
@@ -151,11 +188,54 @@ solve_native(int n,
     matrix x = A.solve(vars, b);  // throws std::runtime_error if singular
 
     GinacResult res;
+    res.tab = tab;  // keep the symbol table for later coeff/series lookups
     res.num.reserve(n);
     for (int i = 0; i < n; ++i)
         res.num.push_back((x(i, 0) * det).normal());
     res.den = det.normal();
     return res;
+}
+
+// Polynomial-in-``var`` coefficients of an arbitrary rational expression
+// ``expr``: returns (numerator_coeffs, denominator_coeffs), low order first.
+// normal()/numer_denom()/collection run in GiNaC; only coefficients are
+// stringified.  ``symbols`` lists every symbol in ``expr`` (incl. ``var``).
+static std::pair<std::vector<std::string>, std::vector<std::string>>
+poly_coeffs(const std::string &expr,
+            const std::string &var,
+            const std::vector<std::string> &symbols) {
+    symtab tab;
+    for (const auto &nm : symbols)
+        tab[nm] = symbol(nm);
+    if (!tab.count(var))
+        tab[var] = symbol(var);
+    parser reader(tab);
+    ex e = reader(expr).normal();
+    ex sv = tab[var];
+    return {coeff_list(e.numer().expand(), sv),
+            coeff_list(e.denom().expand(), sv)};
+}
+
+// Truncated series of ``expr`` in ``var`` about ``point`` to ``order`` terms,
+// returned as a single ordinary-polynomial string (the Order term dropped).
+// Laurent expansion for low-/high-frequency and pole/zero approximation.
+static std::string
+series_expr(const std::string &expr,
+            const std::string &var,
+            const std::string &point,
+            int order,
+            const std::vector<std::string> &symbols) {
+    symtab tab;
+    for (const auto &nm : symbols)
+        tab[nm] = symbol(nm);
+    if (!tab.count(var))
+        tab[var] = symbol(var);
+    parser reader(tab);
+    ex e = reader(expr);
+    ex sv = tab[var];
+    ex pt = reader(point);
+    ex se = series_to_poly(e.series(sv == pt, order));
+    return ex_to_str(se);
 }
 
 PYBIND11_MODULE(_ginac_ext, m) {
@@ -171,7 +251,16 @@ PYBIND11_MODULE(_ginac_ext, m) {
         .def("num_str", &GinacResult::num_str, py::arg("i"))
         .def("den_str", &GinacResult::den_str)
         .def("component_str", &GinacResult::component_str, py::arg("i"))
-        .def("tf_str", &GinacResult::tf_str, py::arg("i"), py::arg("j"));
+        .def("tf_str", &GinacResult::tf_str, py::arg("i"), py::arg("j"))
+        .def("tf_coeffs", &GinacResult::tf_coeffs,
+             py::arg("i"), py::arg("j"), py::arg("var"))
+        .def("denominator_coeffs", &GinacResult::denominator_coeffs,
+             py::arg("var"));
     m.def("solve_native", &solve_native,
           py::arg("n"), py::arg("entries"), py::arg("rhs"), py::arg("symbols"));
+    m.def("poly_coeffs", &poly_coeffs,
+          py::arg("expr"), py::arg("var"), py::arg("symbols"));
+    m.def("series_expr", &series_expr,
+          py::arg("expr"), py::arg("var"), py::arg("point"), py::arg("order"),
+          py::arg("symbols"));
 }

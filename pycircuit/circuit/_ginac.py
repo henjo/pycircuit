@@ -176,6 +176,29 @@ class GinacResult:
         """Transfer function ``x_i/x_j`` as sympy -- cancelled natively, so compact."""
         return _to_sympy(self._native.tf_str(i, j), self._orig_syms)
 
+    def tf_coeffs(self, i, j, var):
+        """Transfer function ``x_i/x_j`` as ``(num_coeffs, den_coeffs)`` in ``var``.
+
+        Each is a list of sympy coefficients, low order first, so that
+        ``x_i/x_j = sum_k num_coeffs[k] var**k / sum_k den_coeffs[k] var**k`` --
+        the canonical ``N(var)/D(var)`` form (e.g. ``var = s`` for poles/zeros or
+        a ``scipy.signal`` transfer function).  Collected natively in GiNaC; only
+        the coefficients are converted to sympy.
+        """
+        var = sympy.sympify(var)
+        nums, dens = self._native.tf_coeffs(i, j, str(var))
+        return ([_to_sympy(c, self._orig_syms) for c in nums],
+                [_to_sympy(c, self._orig_syms) for c in dens])
+
+    def denominator_coeffs(self, var):
+        """Denominator (network determinant) as coefficients in ``var``, low first.
+
+        The characteristic polynomial whose roots are the poles.
+        """
+        var = sympy.sympify(var)
+        return [_to_sympy(c, self._orig_syms)
+                for c in self._native.denominator_coeffs(str(var))]
+
     def eval_tf(self, i, j, params):
         """Numerically evaluate the transfer function ``x_i/x_j`` over a sweep.
 
@@ -201,3 +224,44 @@ def solve_native(A, b):
     n, entries, rhs, symbols, orig_syms = _system_strings(A, b)
     native = _ginac_ext.solve_native(n, entries, rhs, symbols)
     return GinacResult(native, orig_syms)
+
+
+def _expr_strings(expr):
+    """sympy ``expr`` -> (ginac string, symbol names, name->symbol map)."""
+    expr = sympy.sympify(expr)
+    orig_syms = {sym.name: sym for sym in expr.free_symbols}
+    return _to_ginac(expr), list(orig_syms.keys()), orig_syms
+
+
+def poly_coeffs(expr, var):
+    """Polynomial-in-``var`` coefficients of a rational ``expr``.
+
+    Returns ``(num_coeffs, den_coeffs)``, each a list of sympy coefficients low
+    order first, so ``expr == sum_k num_coeffs[k] var**k / sum_k den_coeffs[k]
+    var**k``.  The ``normal()`` + collection run in GiNaC (fast on large
+    multivariate); only the coefficients are converted back to sympy.
+    """
+    var = sympy.sympify(var)
+    gstr, symbols, orig_syms = _expr_strings(expr)
+    if str(var) not in symbols:
+        symbols.append(str(var))
+    nums, dens = _ginac_ext.poly_coeffs(gstr, str(var), symbols)
+    return ([_to_sympy(c, orig_syms) for c in nums],
+            [_to_sympy(c, orig_syms) for c in dens])
+
+
+def series(expr, var, order, point=0):
+    """Truncated series of ``expr`` in ``var`` about ``point`` to ``order`` terms.
+
+    Returns a sympy polynomial (the ``O(var**order)`` term dropped) -- a Laurent
+    expansion for low-/high-frequency and pole/zero approximation.  Expanded in
+    GiNaC (much faster than sympy on large multivariate); the compact result is
+    converted back.
+    """
+    var = sympy.sympify(var)
+    gstr, symbols, orig_syms = _expr_strings(expr)
+    if str(var) not in symbols:
+        symbols.append(str(var))
+    s = _ginac_ext.series_expr(gstr, str(var), _to_ginac(point), int(order),
+                               symbols)
+    return _to_sympy(s, orig_syms)

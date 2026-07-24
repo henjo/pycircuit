@@ -173,3 +173,54 @@ def test_solve_native_preserves_symbol_assumptions():
     res = ginac_toolkit.solve_native(A, b)
     returned_s = [sy for sy in res.denominator().free_symbols if sy.name == 's']
     assert returned_s and returned_s[0].is_imaginary
+
+
+def test_poly_coeffs_reconstructs():
+    from pycircuit.circuit import _ginac
+    s, R, C_ = sympy.symbols('s R C', positive=True)
+    expr = (2 + s) / (1 + 3 * s + 2 * s**2)
+    num, den = _ginac.poly_coeffs(expr, s)
+    N = sum(c * s**k for k, c in enumerate(num))
+    D = sum(c * s**k for k, c in enumerate(den))
+    assert sympy.simplify(N / D - expr) == 0
+    # RC low-pass: 1/(1+sRC) -> num [1], den [1, RC]
+    num, den = _ginac.poly_coeffs(1 / (1 + s * R * C_), s)
+    assert [sympy.expand(x) for x in num] == [1]
+    assert [sympy.expand(x) for x in den] == [1, sympy.expand(R * C_)]
+
+
+def test_poly_coeffs_cancels_common_factor():
+    # (1+s)/((1+s)(1+2s)) must cancel to 1/(1+2s) natively.
+    from pycircuit.circuit import _ginac
+    s = sympy.Symbol('s', positive=True)
+    num, den = _ginac.poly_coeffs((1 + s) / (1 + 3 * s + 2 * s**2), s)
+    N = sum(c * s**k for k, c in enumerate(num))
+    D = sum(c * s**k for k, c in enumerate(den))
+    assert sympy.simplify(N / D - 1 / (1 + 2 * s)) == 0
+
+
+def test_series_low_frequency():
+    from pycircuit.circuit import _ginac
+    s, R, C_ = sympy.symbols('s R C', positive=True)
+    ser = _ginac.series(1 / (1 + s * R * C_), s, order=3)
+    assert sympy.expand(ser - (1 - s * R * C_ + s**2 * R**2 * C_**2)) == 0
+
+
+def test_solve_native_tf_coeffs_reconstruct_tf():
+    A, b, s = _rc_ladder(3)
+    res = ginac_toolkit.solve_native(A, b)
+    num, den = res.tf_coeffs(2, 0, s)
+    tf = (sum(c * s**k for k, c in enumerate(num))
+          / sum(c * s**k for k, c in enumerate(den)))
+    assert sympy.simplify(tf - res.tf(2, 0)) == 0
+
+
+def test_solve_native_denominator_coeffs_are_poly():
+    A, b, s = _rc_ladder(3)
+    res = ginac_toolkit.solve_native(A, b)
+    coeffs = res.denominator_coeffs(s)
+    poly = sum(c * s**k for k, c in enumerate(coeffs))
+    # coefficients are s-free and reconstruct the denominator up to scale
+    assert all(s not in c.free_symbols for c in coeffs)
+    ratio = sympy.simplify(sympy.cancel(poly / res.denominator()))
+    assert ratio.free_symbols == set()

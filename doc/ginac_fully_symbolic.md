@@ -76,7 +76,7 @@ The gap widens with size; the compact `tf` string is also ~25× smaller than the
 materialised full solution. This unlocks #2 (native manipulation/eval) and gives
 #3/#4 a native result object to build on.
 
-### 2. Use GiNaC where it is actually faster — *after* the solve
+### 2. Use GiNaC where it is actually faster — *after* the solve — **DONE**
 
 The symbolic form is the same size, but GiNaC manipulates and (especially)
 *evaluates* it much faster than sympy:
@@ -88,6 +88,23 @@ The symbolic form is the same size, but GiNaC manipulates and (especially)
 - `factor()`, `collect()`, `series()` (Laurent expansion for pole/zero
   approximation) — much faster on large multivariate.
 - GiNaC expressions are shared DAGs, so common subexpressions cost memory once.
+
+**Implemented.** Numeric evaluation is `eval_sweep` (native `compile_ex`, see the
+`eval_sweep` docs). Native symbolic manipulation, running on the GiNaC `ex` and
+returning only the compact structured result:
+
+- `_ginac.poly_coeffs(expr, var)` and `GinacResult.tf_coeffs(i, j, var)` /
+  `.denominator_coeffs(var)` — collect a rational into `N(var)/D(var)`
+  coefficient vectors (the canonical transfer-function form for poles/zeros or a
+  `scipy.signal` handoff). `normal()` + collection run in GiNaC; the common
+  factor is cancelled natively.
+- `_ginac.series(expr, var, order, point=0)` — truncated Laurent/Taylor series
+  for low-/high-frequency and pole/zero approximation.
+
+Extracting the `N(s)/D(s)` coefficients of a fully-symbolic RC-ladder transfer
+function, native `tf_coeffs` vs sympy `Poly` (both starting from the native
+`tf`): ~4.7× (N=4), ~4× (N=6). The gap grows with expression size; this is the
+"manipulate in GiNaC, only the small structured result crosses back" win.
 
 ### 3. Don't force the canonical `N/D` — Sequence of Expressions (SoE)  *(prototyped)*
 
