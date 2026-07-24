@@ -130,17 +130,10 @@ class Transient(Analysis):
         (x0, abstol, xtol) = remove_row_col((x0, abstol, xtol), self.irefnode, self.toolkit)
         
         def limiter_func(xr, x0r):
-            n = self.cir.n
-            x = self.toolkit.zeros(n)
-            x0_full = self.toolkit.zeros(n)
+            x = self.toolkit.insert(xr, self.irefnode, 0.0)
+            x0_full = self.toolkit.insert(x0r, self.irefnode, 0.0)
             
-            x[:self.irefnode] = xr[:self.irefnode]
-            x[self.irefnode+1:] = xr[self.irefnode:]
-            
-            x0_full[:self.irefnode] = x0r[:self.irefnode]
-            x0_full[self.irefnode+1:] = x0r[self.irefnode:]
-            
-            self.cir.limit(x, x0_full, self.epar)
+            x = self.cir.limit(x, x0_full, self.epar)
             return self.toolkit.concatenate((x[:self.irefnode], x[self.irefnode+1:]))
 
         from pycircuit.circuit.nrsolver import NoConvergenceError
@@ -499,14 +492,9 @@ class Transient(Analysis):
                 return F_r, J_r, J_h_r, E, E_x_r, E_h
 
             def limiter_func(xr_next, xr_curr):
-                x_next_full = self.toolkit.zeros(n)
-                x_curr_full = self.toolkit.zeros(n)
-                x_next_full[:self.irefnode] = xr_next[:self.irefnode]
-                x_next_full[self.irefnode+1:] = xr_next[self.irefnode:]
-                x_curr_full[:self.irefnode] = xr_curr[:self.irefnode]
-                x_curr_full[self.irefnode+1:] = xr_curr[self.irefnode:]
-                
-                self.cir.limit(x_next_full, x_curr_full, self.epar)
+                x_next_full = self.toolkit.insert(xr_next, self.irefnode, 0.0)
+                x_curr_full = self.toolkit.insert(xr_curr, self.irefnode, 0.0)
+                x_next_full = self.cir.limit(x_next_full, x_curr_full, self.epar)
                 return self.toolkit.concatenate((x_next_full[:self.irefnode], x_next_full[self.irefnode+1:]))
 
             from pycircuit.circuit.nrsolver import SchurCoupledNewton, NoConvergenceError

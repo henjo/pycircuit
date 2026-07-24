@@ -126,12 +126,14 @@ class Analysis(sim.Analysis):
         self.epar = epar
 
     def _get_nrsolver(self):
-        from pycircuit.circuit.nrsolver import StandardNewton, DampedNewton
+        from pycircuit.circuit.nrsolver import StandardNewton, DampedNewton, JAXNewtonSolver
         method = getattr(self.par, 'nrsolver', 'standard').lower()
         if method == 'standard':
             return StandardNewton()
         elif method == 'damped':
             return DampedNewton()
+        elif method == 'jax':
+            return JAXNewtonSolver()
         else:
             raise ValueError(f"Unknown Newton-Raphson solver: {method}")
             
