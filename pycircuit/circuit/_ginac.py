@@ -101,26 +101,103 @@ def eval_sweep(expr, params):
     return np.asarray(out, dtype=complex) * np.ones(npts)
 
 
+def _system_strings(A, b):
+    """Common set-up: sympy ``(A, b)`` -> GiNaC-parseable strings + symbol map."""
+    A = sympy.Matrix(A)
+    b = sympy.Matrix(b.tolist())
+    n = A.rows
+    orig_syms = {sym.name: sym for sym in (A.free_symbols | b.free_symbols)}
+    entries = [_to_ginac(A[i, j]) for i in range(n) for j in range(n)]
+    rhs = [_to_ginac(b[i]) for i in range(n)]
+    return n, entries, rhs, list(orig_syms.keys()), orig_syms
+
+
 def linearsolver_num_den(A, b):
     """Solve ``A x = b`` in GiNaC; return ``(numerators, denominator)``.
 
     ``x_i = numerators[i] / denominator`` with the shared denominator equal to
     the network determinant, matching the :class:`SymbolicPolyToolkit` contract.
+
+    This eagerly sympifies the full (determinant-sized) result.  When you only
+    need a compact piece -- a transfer function, or a numeric sweep -- prefer
+    :func:`solve_native`, which keeps ``num[]``/``den`` as native GiNaC ``ex``
+    and converts only the small result you ask for.
     """
-    A = sympy.Matrix(A)
-    b = sympy.Matrix(b.tolist())
-    n = A.rows
+    Am = sympy.Matrix(A)
+    if Am.shape == (1, 1):
+        return np.array([sympy.Matrix(b.tolist())[0]], dtype=object), Am[0, 0]
 
-    if (A.rows, A.cols) == (1, 1):
-        return np.array([b[0]], dtype=object), A[0, 0]
-
-    orig_syms = {sym.name: sym for sym in (A.free_symbols | b.free_symbols)}
-    symbols = list(orig_syms.keys())
-    entries = [_to_ginac(A[i, j]) for i in range(n) for j in range(n)]
-    rhs = [_to_ginac(b[i]) for i in range(n)]
-
+    n, entries, rhs, symbols, orig_syms = _system_strings(A, b)
     num_strs, den_str = _ginac_ext.solve_numden(n, entries, rhs, symbols)
 
     num = np.array([_to_sympy(x, orig_syms) for x in num_strs], dtype=object)
     den = _to_sympy(den_str, orig_syms)
     return num, den
+
+
+class GinacResult:
+    """Native GiNaC solve result -- lazy, partial conversion back to sympy.
+
+    Wraps the C++ :class:`_ginac_ext.GinacResult` (which holds the numerators
+    and shared denominator as GiNaC ``ex``).  The determinant-sized full result
+    is *never* round-tripped through sympy unless explicitly requested; the
+    common outputs are compact and are cancelled natively in GiNaC before the
+    single small piece crosses back:
+
+    * :meth:`tf` -- a transfer function ``x_i/x_j = num_i/num_j`` (the shared
+      denominator cancels), and
+    * :meth:`denominator` -- the network determinant, for poles.
+
+    Symbol assumptions that do not survive the string round-trip (e.g.
+    ``Symbol('s', imaginary=True)``) are re-mapped onto the returned sympy
+    expressions, as in :func:`linearsolver_num_den`.
+    """
+
+    def __init__(self, native, orig_syms):
+        self._native = native
+        self._orig_syms = orig_syms
+
+    def __len__(self):
+        return len(self._native)
+
+    def numerator(self, i):
+        """Raw numerator ``num[i]`` as sympy (``x_i = num[i]/den``); may be large."""
+        return _to_sympy(self._native.num_str(i), self._orig_syms)
+
+    def denominator(self):
+        """Shared denominator (network determinant) as sympy -- for poles."""
+        return _to_sympy(self._native.den_str(), self._orig_syms)
+
+    def component(self, i):
+        """Full solution component ``x_i = num[i]/den`` as sympy; may be large."""
+        return _to_sympy(self._native.component_str(i), self._orig_syms)
+
+    def tf(self, i, j):
+        """Transfer function ``x_i/x_j`` as sympy -- cancelled natively, so compact."""
+        return _to_sympy(self._native.tf_str(i, j), self._orig_syms)
+
+    def eval_tf(self, i, j, params):
+        """Numerically evaluate the transfer function ``x_i/x_j`` over a sweep.
+
+        Composes the native-cancelled (compact) :meth:`tf` with
+        :func:`eval_sweep`, so neither the large intermediate nor a large source
+        ever materialises.  ``params`` is as in :func:`eval_sweep`.
+        """
+        return eval_sweep(self.tf(i, j), params)
+
+    def eval_component(self, i, params):
+        """Numerically evaluate the full component ``x_i = num[i]/den`` over a sweep."""
+        return eval_sweep(self.component(i), params)
+
+
+def solve_native(A, b):
+    """Solve ``A x = b`` in GiNaC, returning a :class:`GinacResult`.
+
+    Unlike :func:`linearsolver_num_den`, the determinant-sized numerators and
+    denominator stay as native GiNaC ``ex``; only the compact pieces you ask for
+    (a transfer function, the denominator, a numeric sweep) are converted back,
+    avoiding the sympy round-trip that dominates a large symbolic solve.
+    """
+    n, entries, rhs, symbols, orig_syms = _system_strings(A, b)
+    native = _ginac_ext.solve_native(n, entries, rhs, symbols)
+    return GinacResult(native, orig_syms)

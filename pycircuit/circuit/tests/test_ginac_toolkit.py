@@ -102,3 +102,74 @@ def test_eval_sweep_missing_symbol_raises():
     a, b_ = sympy.symbols('a b', real=True)
     with pytest.raises(ValueError):
         _ginac.eval_sweep(a + b_, {a: np.array([1.0, 2.0])})
+
+
+def _rc_ladder(nstage):
+    """Symbolic RC ladder A x = b (node voltages, unit source at node 0)."""
+    Rs = sympy.symbols('R1:%d' % (nstage + 1), positive=True)
+    Cs = sympy.symbols('C1:%d' % (nstage + 1), positive=True)
+    s = sympy.Symbol('s', imaginary=True)
+    n = nstage
+    A = sympy.zeros(n, n)
+    for k in range(n):
+        g = 1 / Rs[k]
+        gnext = 1 / Rs[k + 1] if k + 1 < n else 0
+        A[k, k] = g + gnext + s * Cs[k]
+        if k + 1 < n:
+            A[k, k + 1] = -gnext
+            A[k + 1, k] = -gnext
+    b = np.zeros(n, dtype=object)
+    b[0] = 1 / Rs[0]
+    return np.array(A.tolist(), dtype=object), b, s
+
+
+def test_solve_native_len_and_component_match():
+    A, b, s = _rc_ladder(3)
+    res = ginac_toolkit.solve_native(A, b)
+    assert len(res) == 3
+    num, den = symbolic_poly.linearsolver_num_den(A, b)
+    for i in range(3):
+        assert sympy.simplify(res.component(i) - num[i] / den) == 0
+
+
+def test_solve_native_tf_matches_symbolic_poly():
+    # Transfer function v2/v0 -- cancelled natively in GiNaC, must equal the
+    # sympy reference (shared denominator cancels).
+    A, b, s = _rc_ladder(3)
+    res = ginac_toolkit.solve_native(A, b)
+    num, den = symbolic_poly.linearsolver_num_den(A, b)
+    tf_ref = sympy.cancel((num[2] / den) / (num[0] / den))
+    assert sympy.simplify(res.tf(2, 0) - tf_ref) == 0
+
+
+def test_solve_native_denominator_matches_up_to_scalar():
+    A, b, s = _rc_ladder(3)
+    res = ginac_toolkit.solve_native(A, b)
+    _, den = symbolic_poly.linearsolver_num_den(A, b)
+    ratio = sympy.simplify(sympy.cancel(res.denominator() / den))
+    assert ratio.free_symbols == set()  # differ only by a constant scale
+
+
+def test_solve_native_eval_tf_numeric():
+    from pycircuit.circuit import _ginac
+    A, b, s = _rc_ladder(3)
+    res = _ginac.solve_native(A, b)
+    tf = res.tf(2, 0)
+    subs = {sy: 1000.0 for sy in tf.free_symbols if sy.name.startswith('R')}
+    subs.update({sy: 1e-9 for sy in tf.free_symbols if sy.name.startswith('C')})
+    w = sympy.Symbol('w', real=True)
+    Hjw = tf.subs(subs).subs(s, sympy.I * w)
+    ws = np.logspace(3, 8, 6)
+    Hnum = _ginac.eval_sweep(Hjw, {w: ws})
+    ref = sympy.lambdify(w, Hjw, 'numpy')(ws)
+    assert np.max(np.abs(Hnum - ref)) < 1e-9
+    # low-pass ladder: |H| ~ 1 at DC, rolls off at high frequency
+    assert abs(Hnum[0]) > 0.9 and abs(Hnum[-1]) < 1e-3
+
+
+def test_solve_native_preserves_symbol_assumptions():
+    # The imaginary-s assumption must be re-applied on the returned sympy expr.
+    A, b, s = _rc_ladder(2)
+    res = ginac_toolkit.solve_native(A, b)
+    returned_s = [sy for sy in res.denominator().free_symbols if sy.name == 's']
+    assert returned_s and returned_s[0].is_imaginary

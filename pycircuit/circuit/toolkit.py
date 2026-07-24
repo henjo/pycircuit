@@ -400,6 +400,17 @@ class GinacToolkit(SymbolicPolyToolkit):
         from . import _ginac
         return _ginac.eval_sweep(expr, params)
 
+    def solve_native(self, A, b):
+        """Solve ``A x = b`` returning a native :class:`._ginac.GinacResult`.
+
+        Keeps the determinant-sized ``num[]``/``den`` as GiNaC ``ex`` and
+        converts only the compact piece requested (transfer function,
+        denominator, numeric sweep), avoiding the sympy round-trip that
+        dominates a large symbolic solve.
+        """
+        from . import _ginac
+        return _ginac.solve_native(A, b)
+
 
 ## Singletons -- drop-in replacements for the old toolkit modules.
 numeric = NumericToolkit(_numeric)

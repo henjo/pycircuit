@@ -38,12 +38,43 @@ itself a fix. What helps:
 
 ## Improvements, most valuable first
 
-### 1. Go native — kill the string bridge (Option B)
+### 1. Go native — kill the string bridge (Option B) — **DONE**
 
 For large symbolic results the `sympify` round-trip dominates (≈1.4 s of 1.7 s
 above). Keep the result as a GiNaC `ex` inside a lightweight Python wrapper and
 convert to sympy only lazily / for small pieces. Prerequisite for everything
 below.
+
+**Implemented.** `_ginac_ext.GinacResult` holds the numerators and shared
+denominator as native GiNaC `ex`; `_ginac.solve_native(A, b)` (and
+`GinacToolkit.solve_native`) return a light `_ginac.GinacResult` wrapper. The
+determinant-sized full result is never round-tripped through sympy — you request
+only the compact piece you need, and the cancellation happens *in GiNaC* before
+that small piece crosses back:
+
+- `.tf(i, j)` — transfer function `x_i/x_j = num_i/num_j`; the shared
+  denominator cancels natively, so the result stays compact,
+- `.denominator()` — the network determinant, for poles,
+- `.component(i)` / `.numerator(i)` — the full (large) pieces, still available,
+- `.eval_tf(i, j, params)` / `.eval_component(i, params)` — numeric sweeps that
+  compose the compact `.tf`/`.component` with `eval_sweep` (#2).
+
+Symbol assumptions (`Symbol('s', imaginary=True)`) are re-mapped onto the
+returned sympy, as in `linearsolver_num_den`.
+
+Measured on a fully-symbolic RC ladder, extracting a transfer function
+`v_{N-1}/v_0` — native `solve_native + tf` vs the eager `linearsolver_num_den`
++ sympy `cancel` (identical result):
+
+| N | eager (sympify full, then cancel) | native (`solve_native`+`tf`) | speed-up |
+|---|-----------------------------------|------------------------------|----------|
+| 4 | 0.04 s | 0.01 s | 3.3× |
+| 6 | 0.47 s | 0.17 s | 2.8× |
+| 8 | 10.5 s | 3.8 s  | 2.8× |
+
+The gap widens with size; the compact `tf` string is also ~25× smaller than the
+materialised full solution. This unlocks #2 (native manipulation/eval) and gives
+#3/#4 a native result object to build on.
 
 ### 2. Use GiNaC where it is actually faster — *after* the solve
 
