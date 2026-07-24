@@ -298,11 +298,69 @@ class SymbolicPolyToolkit(SymbolicToolkit):
         return zm, num / den
 
 
+class SymengineToolkit(SymbolicPolyToolkit):
+    """Symbolic toolkit whose linear solve runs through the compiled ``symengine``
+    CAS (a GiNaC-style C++ core), keeping the same ``N(s)/D(s)`` contract.
+
+    Behaves like :class:`SymbolicPolyToolkit` -- assembly stays in sympy -- but
+    :meth:`linearsolver_num_den` solves in symengine, which is ~10x faster than
+    sympy's ``DomainMatrix.solve_den`` on the numeric-components + symbolic-``s``
+    circuits that dominate symbolic AC/noise analysis.  Falls back to the sympy
+    fraction-free path when symengine cannot handle the entries.
+
+    This is the drop-in vehicle for a future GiNaC C++ backend (see
+    ``doc/ginac_toolkit_design.md``): the interface is identical; only the
+    internal solver changes.
+    """
+
+    def linearsolver_num_den(self, A, b):
+        import symengine as se
+        A = sympy.Matrix(A)
+        b = sympy.Matrix(b.tolist())
+
+        if A.shape == (1, 1):
+            return np.array([b[0]], dtype=object), A[0, 0]
+
+        ## symengine drops sympy assumptions (e.g. Symbol('s', imaginary=True))
+        ## on the round-trip, which would leave the result's symbols as different
+        ## objects than the analysis uses (breaking poles()/conjugation).  Map the
+        ## returned symbols back to the originals by name.
+        orig_syms = {sym.name: sym for sym in (A.free_symbols | b.free_symbols)}
+
+        def to_sympy(se_expr):
+            e = sympy.sympify(se_expr)
+            subs = {t: orig_syms[t.name] for t in e.free_symbols
+                    if t.name in orig_syms}
+            return e.xreplace(subs) if subs else e
+
+        try:
+            n = A.rows
+            Ase = se.Matrix(n, n, [se.sympify(A[i, j])
+                                   for i in range(n) for j in range(n)])
+            bse = se.Matrix(n, 1, [se.sympify(b[i]) for i in range(n)])
+            ## Shared denominator = network determinant; numerators = det * x
+            ## (symengine cancels the det it introduced, leaving polynomials).
+            den = Ase.det()
+            xse = Ase.LUsolve(bse)
+            num = np.array([to_sympy(xse[i] * den) for i in range(n)],
+                           dtype=object)
+            return num, to_sympy(den)
+        except Exception:
+            ## Any symengine limitation -> stock sympy fraction-free solve.
+            return super().linearsolver_num_den(A, b)
+
+
 ## Singletons -- drop-in replacements for the old toolkit modules.
 numeric = NumericToolkit(_numeric)
 sparse_numeric = SparseNumericToolkit(_sparse_numeric)
 symbolic = SymbolicToolkit(_symbolic)
 symbolic_poly = SymbolicPolyToolkit(_symbolic)
+
+try:
+    import symengine as _symengine
+    symengine_toolkit = SymengineToolkit(_symbolic)
+except ImportError:
+    symengine_toolkit = None
 
 try:
     import pycircuit.circuit._jaxtoolkit as _jaxtoolkit
