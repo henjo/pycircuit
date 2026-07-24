@@ -20,9 +20,34 @@ interface. Rationale and the negative symengine result are in
 | 20 | 152 ms    | 20           | —                     |
 
 ~8–10× faster, clean cancelled polynomials (degree = N), scales to N=20 in
-150 ms. Proceed with the extension. (The end-to-end win still depends on the
-sympy↔GiNaC bridge not dominating — re-confirm in Phase 3 with the live
-`symbolic_poly.rst` benchmark.)
+150 ms **with small integer coefficients**.
+
+### ...but the end-to-end result is NEGATIVE (coefficient explosion)
+
+Phase 1 built the extension + bridge + `GinacToolkit` and it is **correct** (RC
+poles / 2×2 solve match `symbolic_poly`). But end-to-end on *real* circuits it
+loses, and **hangs around dimension 16** while `symbolic_poly` stays ~0.3 s:
+
+| N  | symbolic_poly | ginac_toolkit |
+|----|---------------|---------------|
+| 10 | 0.04 s        | 0.07 s        |
+| 12 | 0.23 s        | 0.03 s        |
+| 16 | 0.28 s        | **hangs**     |
+
+The go/no-go gate above used *integer* coefficients. Real components (`1e-9`
+caps) become rationals whose products across the N×N determinant explode into
+`~(1e9)^N` astronomically large integers that stall CLN; sympy's polynomial
+domain handles the same gracefully. Rationalizing to *clean small* denominators
+(`limit_denominator`: `1e-9 → 1/1e9`) pushes the cliff from N=12 to N=16 but
+does not remove it.
+
+**The real unlock is frequency/impedance scaling**: substitute `s → s_ref·s'`
+and scale component values so the matrix has O(1) integer-ish coefficients
+(where GiNaC's raw solve genuinely *is* 8–10× faster), solve, then unscale the
+poles/zeros. That is a separate feature; until it exists, `symbolic_poly` is the
+faster backend for numeric-components + symbolic-`s` circuits, and `GinacToolkit`
+is shipped **experimental** with a `ginac_max_dim` guard (fall back to sympy
+above dimension 12) so the CLN blow-up cannot hang a solve.
 
 ## Installed (no root, from source)
 

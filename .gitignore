@@ -2,6 +2,8 @@
 ###################
 *.pyc
 __pycache__/
+*.so
+*.o
 
 # Build / packaging artifacts #
 ###############################

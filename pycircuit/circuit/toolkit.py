@@ -353,6 +353,43 @@ class SymengineToolkit(SymbolicPolyToolkit):
             return super().linearsolver_num_den(A, b)
 
 
+class GinacToolkit(SymbolicPolyToolkit):
+    """EXPERIMENTAL symbolic toolkit that solves through the compiled GiNaC
+    extension.  Correct, but **not a general speed win** -- kept for evaluation.
+
+    GiNaC's ``normal()`` does perform true fraction-free cancellation (unlike
+    symengine), and on a *raw* solve with small integer coefficients it is
+    ~8-10x faster than sympy's ``DomainMatrix.solve_den``.  But end-to-end on
+    real circuits it loses: components such as ``1e-9`` become rational
+    coefficients whose products across the network determinant explode into
+    astronomically large integers that stall CLN (the solve *hangs* around
+    dimension 16), whereas sympy's polynomial domain handles the same
+    gracefully.  The real fix is frequency/impedance scaling to O(1)
+    coefficients (see ``doc/ginac_toolkit_plan.md``); until then
+    :class:`SymbolicPolyToolkit` is the faster backend for numeric + symbolic-s
+    circuits.
+
+    Requires the built ``_ginac_ext`` extension (GiNaC + pybind11); the
+    ``ginac_toolkit`` singleton is ``None`` when it is unavailable.  Guards:
+    systems larger than :attr:`ginac_max_dim` fall back to sympy (so the CLN
+    blow-up cannot hang a solve), as does any per-solve failure (parse error,
+    singular, transcendental entries).
+    """
+
+    #: Above this system dimension, fall back to sympy to avoid the CLN
+    #: coefficient-explosion hang.  Below the observed cliff (~16).
+    ginac_max_dim = 12
+
+    def linearsolver_num_den(self, A, b):
+        try:
+            if sympy.Matrix(A).rows > self.ginac_max_dim:
+                return super().linearsolver_num_den(A, b)
+            from . import _ginac
+            return _ginac.linearsolver_num_den(A, b)
+        except Exception:
+            return super().linearsolver_num_den(A, b)
+
+
 ## Singletons -- drop-in replacements for the old toolkit modules.
 numeric = NumericToolkit(_numeric)
 sparse_numeric = SparseNumericToolkit(_sparse_numeric)
@@ -364,6 +401,12 @@ try:
     symengine_toolkit = SymengineToolkit(_symbolic)
 except ImportError:
     symengine_toolkit = None
+
+try:
+    from pycircuit.circuit import _ginac_ext as _ginac_ext_probe
+    ginac_toolkit = GinacToolkit(_symbolic)
+except ImportError:
+    ginac_toolkit = None
 
 try:
     import pycircuit.circuit._jaxtoolkit as _jaxtoolkit
