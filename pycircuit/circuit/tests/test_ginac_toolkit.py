@@ -224,3 +224,42 @@ def test_solve_native_denominator_coeffs_are_poly():
     assert all(s not in c.free_symbols for c in coeffs)
     ratio = sympy.simplify(sympy.cancel(poly / res.denominator()))
     assert ratio.free_symbols == set()
+
+
+def test_mfb_filter_post_processing_matches_symby():
+    # Example 10: the MFB filter of Example 2, post-processed via GiNaC. The
+    # transfer function, DC gain and omega0/Q must match the pure-sympy result.
+    from pycircuit.circuit import _ginac, IS, Nullor
+    R1, R2, R3, C1, C2, i_s = sympy.symbols('R1 R2 R3 C1 C2 i_s',
+                                            real=True, positive=True)
+    s = sympy.Symbol('s', complex=True)
+
+    def build():
+        cir = SubCircuit(toolkit=symbolic_poly)
+        cir['R1'] = R(1, 3, r=R1)
+        cir['R2'] = R(1, 2, r=R2)
+        cir['R3'] = R(1, gnd, r=R3)
+        cir['C1'] = C(1, gnd, c=C1)
+        cir['C2'] = C(2, 3, c=C2)
+        cir['Nullor'] = Nullor(2, gnd, 3, gnd)
+        cir['ISource'] = IS(1, gnd, iac=i_s)
+        return cir
+
+    H = AC(build(), toolkit=ginac_toolkit).solve(s, complexfreq=True).v(3, gnd) / i_s
+    num, den = _ginac.poly_coeffs(H, s)
+
+    # second-order lowpass
+    assert len(den) == 3
+    D = sum(c * s**k for k, c in enumerate(den))
+    N = sum(c * s**k for k, c in enumerate(num))
+
+    # DC gain = N(0)/D(0) = R1 for this topology
+    assert sympy.simplify(num[0] / den[0] - R1) == 0
+    # omega0 = 1/sqrt(C1 C2 R1 R2)
+    omega0 = sympy.sqrt(den[0] / den[2])
+    assert sympy.simplify(omega0 - 1 / sympy.sqrt(C1 * C2 * R1 * R2)) == 0
+
+    # full transfer function matches the pure-sympy reference
+    from pycircuit.circuit import symbolic
+    H_ref = AC(build(), toolkit=symbolic).solve(s, complexfreq=True).v(3, gnd) / i_s
+    assert sympy.simplify(N / D - H_ref) == 0
