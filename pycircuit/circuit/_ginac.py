@@ -37,6 +37,70 @@ def _to_sympy(s, orig_syms):
     return e.xreplace(subs) if subs else e
 
 
+#: Above this GiNaC-source length (characters) skip the native ``compile_ex``
+#: path -- which invokes a C++ compiler at runtime -- and evaluate via sympy
+#: instead.  A runaway ``compile_ex`` on a huge expression can make g++ exhaust
+#: memory (it once OOM-crashed the box); keep the emitted source bounded.
+MAX_COMPILE_CHARS = 200_000
+
+
+def _to_ginac_eval(expr):
+    """String form for the ``compile_ex`` (numeric) path.
+
+    Unlike :func:`_to_ginac` this keeps floats as-is: ``compile_ex`` evaluates
+    numerically, so rationalizing floats only bloats the source.  Only the power
+    operator is translated (``**`` -> ``^``).
+    """
+    return str(sympy.sympify(expr)).replace('**', '^')
+
+
+def eval_sweep(expr, params):
+    """Evaluate ``expr`` over a parameter sweep, fast, via native GiNaC code.
+
+    ``params`` maps each free symbol of ``expr`` (the symbol object or its name)
+    to an array of values; the arrays broadcast to a common length ``N``.
+    ``expr`` may be complex-valued (contain sympy ``I``, e.g. a transfer function
+    evaluated at ``s = I*w``).  Returns a complex :class:`numpy.ndarray` of
+    length ``N``.
+
+    The expression is compiled to native machine code once (GiNaC
+    ``compile_ex``) and evaluated per point -- the "derive once, evaluate many"
+    win.  If the emitted source would exceed :data:`MAX_COMPILE_CHARS`, or the
+    native path fails for any reason, it falls back to :func:`sympy.lambdify`
+    (pure numpy, no compiler) so a runaway compile can never occur.
+    """
+    expr = sympy.sympify(expr)
+    free = {sym.name: sym for sym in expr.free_symbols}
+
+    items = [(str(k), v) for k, v in params.items()]
+    names = [nm for nm, _ in items]
+    missing = set(free) - set(names)
+    if missing:
+        raise ValueError(
+            "params missing free symbols: %s" % sorted(missing))
+
+    arrs = np.broadcast_arrays(
+        *[np.atleast_1d(np.asarray(v, dtype=float)) for _, v in items])
+    npts = arrs[0].shape[0] if arrs else 0
+
+    gstr = _to_ginac_eval(expr)
+    if len(gstr) <= MAX_COMPILE_CHARS:
+        try:
+            points = [[float(a[i]) for a in arrs] for i in range(npts)]
+            res = _ginac_ext.eval_sweep(gstr, names, points)
+            return np.asarray(res, dtype=complex)
+        except Exception:
+            pass  # fall through to the sympy path
+
+    # Fallback: sympy lambdify -- uses the expression's real free symbols (so
+    # assumptions like Symbol('s', imaginary=True) still substitute) and never
+    # shells out to a compiler.
+    syms = [free.get(nm, sympy.Symbol(nm)) for nm in names]
+    f = sympy.lambdify(syms, expr, modules='numpy')
+    out = f(*arrs)
+    return np.asarray(out, dtype=complex) * np.ones(npts)
+
+
 def linearsolver_num_den(A, b):
     """Solve ``A x = b`` in GiNaC; return ``(numerators, denominator)``.
 

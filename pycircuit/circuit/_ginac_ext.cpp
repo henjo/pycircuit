@@ -12,7 +12,9 @@
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <pybind11/complex.h>
 #include <ginac/ginac.h>
+#include <complex>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -60,8 +62,45 @@ solve_numden(int n,
     return {nums, ex_to_str(det.normal())};
 }
 
+// Compile a (complex-valued) symbolic expression to native code and evaluate it
+// over a batch of real parameter points.  ``expr`` is a GiNaC-parseable string
+// that may contain the imaginary unit ``I``; ``names`` are the real parameters
+// (row order of ``points``).  The expression's real and imaginary parts are
+// compiled together (compile_ex, native machine code) and evaluated per point.
+static std::vector<std::complex<double>>
+eval_sweep(const std::string &expr,
+           const std::vector<std::string> &names,
+           const std::vector<std::vector<double>> &points) {
+    symtab tab;
+    tab["I"] = I;  // imaginary unit, not a symbol
+    lst syms;
+    for (const auto &nm : names) {
+        realsymbol sy(nm);
+        tab[nm] = sy;
+        syms.append(sy);
+    }
+    parser reader(tab);
+    ex e = reader(expr);
+
+    lst outs = {e.real_part(), e.imag_part()};
+    FUNCP_CUBA fp;
+    compile_ex(outs, syms, fp);  // native compile (needs a C++ compiler at runtime)
+
+    int ndim = static_cast<int>(names.size()), ncomp = 2;
+    std::vector<std::complex<double>> res;
+    res.reserve(points.size());
+    double out[2];
+    for (const auto &pt : points) {
+        fp(&ndim, pt.data(), &ncomp, out);
+        res.emplace_back(out[0], out[1]);
+    }
+    return res;
+}
+
 PYBIND11_MODULE(_ginac_ext, m) {
-    m.doc() = "Fraction-free symbolic linear solve via GiNaC (normal()).";
+    m.doc() = "Fraction-free symbolic linear solve + fast eval via GiNaC.";
     m.def("solve_numden", &solve_numden,
           py::arg("n"), py::arg("entries"), py::arg("rhs"), py::arg("symbols"));
+    m.def("eval_sweep", &eval_sweep,
+          py::arg("expr"), py::arg("names"), py::arg("points"));
 }

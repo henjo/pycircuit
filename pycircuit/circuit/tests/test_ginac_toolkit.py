@@ -59,3 +59,46 @@ def test_ginac_large_system_falls_back():
     b[0] = 1
     num, den = ginac_toolkit.linearsolver_num_den(A, b)
     assert sympy.simplify(num[0] / den - 1 / (1 + s)) == 0
+
+
+def test_eval_sweep_rc_lowpass_matches_numpy():
+    # H(jw) = 1 / (1 + jwRC): compile once (native), evaluate over a sweep.
+    from pycircuit.circuit import _ginac
+    w, Rs, Cs = sympy.symbols('w R C', real=True)
+    H = 1 / (1 + sympy.I * w * Rs * Cs)
+    ws = np.linspace(1e3, 1e7, 16)
+    got = _ginac.eval_sweep(H, {w: ws, Rs: 1000.0, Cs: 1e-9})
+    ref = 1.0 / (1.0 + 1j * ws * 1000.0 * 1e-9)
+    assert got.shape == ws.shape
+    assert np.max(np.abs(got - ref)) < 1e-9
+
+
+def test_eval_sweep_toolkit_method():
+    w = sympy.Symbol('w', real=True)
+    got = ginac_toolkit.eval_sweep(2 * w + 1, {w: np.array([0.0, 1.0, 2.0])})
+    assert np.allclose(got, [1.0, 3.0, 5.0])
+
+
+def test_eval_sweep_preserves_symbol_assumptions_in_fallback():
+    # A symbol carrying assumptions (imaginary s) must still substitute on the
+    # sympy fallback path -- force the fallback with a tiny char budget.
+    from pycircuit.circuit import _ginac
+    s = sympy.Symbol('s', imaginary=True)
+    w = sympy.Symbol('w', real=True)
+    H = 1 / (1 + s)
+    ws = np.array([1.0, 2.0, 3.0])
+    orig = _ginac.MAX_COMPILE_CHARS
+    _ginac.MAX_COMPILE_CHARS = 1  # force the lambdify fallback (no compiler)
+    try:
+        got = _ginac.eval_sweep(H.subs(s, sympy.I * w), {w: ws})
+    finally:
+        _ginac.MAX_COMPILE_CHARS = orig
+    ref = 1.0 / (1.0 + 1j * ws)
+    assert np.max(np.abs(got - ref)) < 1e-12
+
+
+def test_eval_sweep_missing_symbol_raises():
+    from pycircuit.circuit import _ginac
+    a, b_ = sympy.symbols('a b', real=True)
+    with pytest.raises(ValueError):
+        _ginac.eval_sweep(a + b_, {a: np.array([1.0, 2.0])})

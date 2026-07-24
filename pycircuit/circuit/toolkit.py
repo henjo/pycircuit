@@ -389,6 +389,17 @@ class GinacToolkit(SymbolicPolyToolkit):
         except Exception:
             return super().linearsolver_num_den(A, b)
 
+    def eval_sweep(self, expr, params):
+        """Evaluate ``expr`` over a parameter sweep via native GiNaC code.
+
+        "Derive once, evaluate many": compiles the (possibly complex-valued)
+        expression to machine code once and evaluates it per sweep point.  See
+        :func:`._ginac.eval_sweep`; guarded so an oversized expression falls
+        back to sympy rather than invoking the compiler on a huge source.
+        """
+        from . import _ginac
+        return _ginac.eval_sweep(expr, params)
+
 
 ## Singletons -- drop-in replacements for the old toolkit modules.
 numeric = NumericToolkit(_numeric)
