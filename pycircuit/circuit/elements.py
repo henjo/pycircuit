@@ -1089,9 +1089,11 @@ class VCVS_limited(Circuit):
 
     def __init__(self, *args, **kvargs):
         super().__init__(*args, **kvargs)
-        self.function = func.Tanh(self.iparv.offset,
-                                       self.iparv.level,
-                                       toolkit = self.toolkit)                                       
+        ## A pure limiter, saturating at +/-level.  The offset is applied by
+        ## this element to its *input*, not by the limiter, because `offset` is
+        ## an input-referred offset voltage while `level` clamps the output.
+        self.function = func.Tanh(0.0, self.iparv.level,
+                                  toolkit = self.toolkit)
     
     @staticmethod
     def eval_i_pure(x, params, epar, toolkit):
@@ -1110,8 +1112,12 @@ class VCVS_limited(Circuit):
         ## interchangeable while they agree.  An earlier inlining here used
         ## ``offset + level*tanh(...)``, which func.Tanh does not, so the
         ## differentiated and stamped paths were limiting differently.
-        u = v_inn - v_inp
-        f = level * toolkit.tanh((u - offset) / level)
+        ## vout = level * tanh(g * vin / level):  the gain sits *inside* the
+        ## limiter, so the output saturates at +/-level whatever the gain is,
+        ## while the small-signal gain is still exactly g.  With the gain
+        ## outside it instead, the clamp would scale with g.
+        din = v_inp - v_inn - offset
+        f = level * toolkit.tanh(g * din / level)
 
         ## Branch equation  v_outn - v_outp - g*f(v_inn - v_inp) = 0.
         ##
@@ -1123,7 +1129,7 @@ class VCVS_limited(Circuit):
         ## It previously read ``- fprime(u)*f(u)`` with no g at all, which
         ## matched neither the stamp nor the documented behaviour -- for
         ## v_inp - v_inn beyond the knee it even carried the opposite sign.
-        vout = v_outn - v_outp - g * f
+        vout = v_outn - v_outp + f
         return toolkit.array([0.0, 0.0, i_branch, -i_branch, vout])
 
     def i(self, x, epar=defaultepar):
@@ -1136,7 +1142,12 @@ class VCVS_limited(Circuit):
                                          {'g': self.iparv.g, 'level': self.iparv.level, 'offset': self.iparv.offset}, epar)
         n = self.n
         G = self.toolkit.zeros((n,n))
-        g_limit = self.function.fprime(x[1]-x[0])
+        ## f' is evaluated at the *amplified, offset-shifted* input, since that
+        ## is what the limiter sees -- d/dv_inp [level*tanh(g*din/level)] is
+        ## g*f'(g*din).  Evaluating it at the raw input instead would be right
+        ## only in the small-signal limit.
+        din = x[0] - x[1] - self.iparv.offset
+        g_limit = self.function.fprime(self.iparv.g * din)
         branchindex = -1
         inpindex, innindex, outpindex, outnindex = \
         (self.nodes.index(self.nodenames[name])

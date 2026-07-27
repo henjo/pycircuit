@@ -311,22 +311,31 @@ Verified to fail on all three historical defects when they are reinstated.
 Extend `CASES` there when adding a nonlinear element; it is the cheapest guard
 this codebase has against a whole class of silent error.
 
-The limiter itself was wrong too, and the specified behaviour is
-`vout = g * level * tanh(vin / level)`. `func.Tanh.f` was a bare
-`tanh((x-offset)/level)`, missing the `level` factor -- so it saturated at ±1
-regardless of `level`, and its slope at the origin was `1/level` rather than 1,
-which made every `VCVS_limited` gain off by that factor. With the factor
-restored, small-signal gain is exactly `g` and the output saturates at
-`g*level`; both are pinned by tests.
+The limiter itself was wrong too. The specified behaviour is
 
-Note the consequence for the parameter description: `level` is documented as
-"Limit voltage, unit V", but the *output* limit is `g*level` -- `level` is
-input-referred. The description is worth revisiting.
+```
+vout = level * tanh(g * vin / level)
+```
 
-`fprime` and `F` were updated with `f`, since the three must stay mutually
-consistent: `VCVS_limited` stamps its Jacobian from `fprime` while computing
-its residual from `f`, so a change to one alone silently reintroduces exactly
-the class of bug above.
+with the gain **inside** the limiter, which is what makes `level`
+output-referred: the output clamps at ±`level` whatever the gain, while the
+small-signal gain is still exactly `g`. `offset` is input-referred.
+
+`func.Tanh.f` was a bare `tanh((x-offset)/level)`, missing the `level` factor,
+so it saturated at ±1 regardless of `level` and had slope `1/level` at the
+origin rather than 1 — every `VCVS_limited` gain was off by that factor. It is
+now a unit-slope limiter, `level * tanh((x-offset)/level)`, and `VCVS_limited`
+passes it the *amplified* input.
+
+`fprime` and `F` were updated with `f`, because the three must stay mutually
+consistent: `VCVS_limited` stamps its Jacobian from `fprime` while computing its
+residual from `f`, so a change to one alone silently reintroduces exactly the
+class of bug above. The stamp also evaluates `f'` at the amplified,
+offset-shifted input, since that is what the limiter sees.
+
+Verified across `g` = 1, 3 and 29: gain exactly `g`, saturation exactly
+±`level` and independent of `g`, and `G` equal to `∂i/∂x` at every operating
+point including past the knee.
 
 ### P8 — a 17-year-old shadowed derivative *(fixed)*
 

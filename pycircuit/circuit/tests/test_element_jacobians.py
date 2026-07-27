@@ -95,9 +95,11 @@ def test_vcvs_limited_uses_its_gain():
                                        g=1.0, level=10.0, offset=0.0))
     strong = _build(lambda: VCVS_limited('inp', 'inn', 'outp', 'outn',
                                          g=4.0, level=10.0, offset=0.0))
-    x = np.array([0.1, 0.0, 0.0, 0.0, 0.0])
+    ## Probed deep in the linear region: the gain sits inside the limiter, so
+    ## the ratio is only exactly g away from the tanh knee.
+    x = np.array([1e-4, 0.0, 0.0, 0.0, 0.0])
     ## Branch residual is the last entry; with the output held at zero it is
-    ## -g*f(v_inn - v_inp), so it must scale with g.
+    ## level*tanh(g*vin/level), which is ~g*vin here, so it must scale with g.
     rw = float(np.asarray(weak.i(x), dtype=float)[-1])
     rs = float(np.asarray(strong.i(x), dtype=float)[-1])
     assert abs(rw) > 1e-12, 'branch residual is identically zero'
@@ -105,35 +107,47 @@ def test_vcvs_limited_uses_its_gain():
         'residual did not scale with the gain: g=1 -> %g, g=4 -> %g' % (rw, rs))
 
 
-def test_vcvs_limited_gain_and_saturation():
-    """The specified behaviour: ``vout = g * level * tanh(vin / level)``.
-
-    Two consequences worth pinning separately, because each was wrong before
-    and each fails independently:
-
-    * small-signal gain is exactly ``g`` -- the ``level`` factor in
-      :class:`~pycircuit.circuit.func.Tanh` is what makes ``f'(0) == 1``.
-      Without it the slope at the origin is ``1/level`` and every gain is off
-      by that factor.
-    * the output saturates at ``g * level``.
-    """
+def _vout(element, vin):
+    """Differential output solving the branch residual, with v_outn = 0."""
     from scipy.optimize import brentq
+    residual = lambda vo: float(np.asarray(
+        element.i(np.array([vin, 0.0, vo, 0.0, 0.0])), dtype=float)[-1])
+    return brentq(residual, -1e4, 1e4)
 
-    g, level = 3.0, 0.4
+
+@pytest.mark.parametrize('g', [1.0, 3.0, 29.0])
+def test_vcvs_limited_gain_and_saturation(g):
+    """The specified behaviour: ``vout = level * tanh(g * vin / level)``.
+
+    The gain sits *inside* the limiter, which is what makes ``level``
+    output-referred: the clamp is the same whatever the gain. Two properties,
+    pinned across a wide range of ``g`` because the distinguishing feature of
+    the wrong forms is precisely that one of them varies with ``g``:
+
+    * small-signal gain is exactly ``g``;
+    * the output saturates at ``+/-level`` **independently of** ``g``.
+
+    Historically both were wrong: the limiter saturated at +/-1 regardless of
+    ``level``, and its unit-slope factor was missing, so the gain came out as
+    ``g/level``.
+    """
+    level = 0.4
     element = _build(lambda: VCVS_limited('inp', 'inn', 'outp', 'outn',
                                           g=g, level=level, offset=0.0))
 
-    def vout(vin):
-        """Differential output solving the branch residual, with v_outn = 0."""
-        residual = lambda vo: float(np.asarray(
-            element.i(np.array([vin, 0.0, vo, 0.0, 0.0])), dtype=float)[-1])
-        return brentq(residual, -1e3, 1e3)
+    slope = (_vout(element, 1e-7) - _vout(element, -1e-7)) / 2e-7
+    assert abs(slope - g) < 1e-4 * max(1.0, g), (
+        'small-signal gain %g, expected %g' % (slope, g))
 
-    slope = (vout(1e-6) - vout(-1e-6)) / 2e-6
-    assert abs(slope - g) < 1e-4, 'small-signal gain %g, expected %g' % (slope, g)
+    assert abs(_vout(element, 1e3) - level) < 1e-6
+    assert abs(_vout(element, -1e3) + level) < 1e-6
 
-    assert abs(vout(50.0) - g * level) < 1e-6
-    assert abs(vout(-50.0) + g * level) < 1e-6
+
+def test_vcvs_limited_offset_is_input_referred():
+    """``offset`` shifts the input, so the output is zero when vin == offset."""
+    element = _build(lambda: VCVS_limited('inp', 'inn', 'outp', 'outn',
+                                          g=2.0, level=1.0, offset=0.05))
+    assert abs(_vout(element, 0.05)) < 1e-9
 
 
 def test_tanh_is_a_unit_slope_limiter():
