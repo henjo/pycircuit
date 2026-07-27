@@ -845,6 +845,16 @@ rather than assumed.
    may be costly as Python objects; memory is the likely first casualty of a bad
    ordering.
 
+**A robustness advantage found while building Stage B** (not a risk — an
+argument *for* DDD that was missing from this document): *[OURS]* `soe.py`
+eliminates **without pivoting**, so a pivot that is nonzero symbolically can
+evaluate to exactly zero at particular parameter values and produce `NaN`. The
+first dense benchmark fixtures triggered this by accident. **DDD evaluation is
+division-free** — each vertex contributes only `D0 + sign·entry·D1`, one add and
+one multiply — so it has no pivots that can vanish. That is a correctness/
+robustness advantage over any elimination-based representation, independent of
+size, and it belongs in the P0 assessment alongside the operation counts.
+
 ---
 
 ## 9. Deliberately not doing — and why

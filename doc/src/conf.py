@@ -27,6 +27,9 @@ sys.path.insert(0, _docdir)
 sys.path.insert(0, os.path.join(_docdir, 'sphinxext'))
 # Research prototypes imported by live (exec-rst) documentation examples.
 sys.path.insert(0, os.path.join(_docdir, 'prototypes'))
+# Benchmark harness (developer tooling, outside the package) used by the live
+# comparison tables on the DDD page.
+sys.path.insert(0, os.path.join(_root, 'benchmarks'))
 
 # General configuration
 # ---------------------
@@ -35,7 +38,7 @@ sys.path.insert(0, os.path.join(_docdir, 'prototypes'))
 # coming with Sphinx (named 'sphinx.ext.*') or your custom ones.
 #extensions = ['sphinx.ext.autodoc', 'sphinx.ext.jsmath']
 extensions = ['sphinx.ext.autodoc', 'sphinx.ext.napoleon', 'sphinx.ext.mathjax',
-              'sphinx.ext.todo', 'matplotlib.sphinxext.plot_directive',
+              'sphinx.ext.todo', 'sphinx.ext.graphviz', 'matplotlib.sphinxext.plot_directive',
               'sphinxext.sympy_directive', 'sphinxext.parametertable_directive',
               'sphinxext.exec_directive']
 

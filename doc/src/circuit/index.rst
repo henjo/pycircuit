@@ -10,6 +10,7 @@ Circuit analyzer
     symbolic_poly
     ginac_native
     soe_symbolic
+    ddd
     theory
     modules
     elements
