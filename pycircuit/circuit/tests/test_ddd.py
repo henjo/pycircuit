@@ -1312,3 +1312,82 @@ def test_sensitivities_on_the_ua741_match_finite_differences():
     scale = max(abs(r) for r in references)
     for parameter, reference in zip(parameters, references):
         assert abs(got[parameter] - reference) <= 1e-5 * scale
+
+
+## -- Tier 2 calibration: cascaded opamps and a Cauer filter ---------------
+
+@pytest.mark.parametrize('blocks', [1, 2, 3])
+def test_cascaded_opamps_grow_as_expected(blocks):
+    system = bc.cascaded_opamps(blocks)
+    assert system.cir is not None
+    assert system.dim == 2 + 5 * blocks         # source branch, input, 5/stage
+
+    env = dict(system.params)
+    env[system.s] = 1j * 2 * np.pi * 1e3
+    n = system.dim
+    A = np.array([[complex(system.A[i, j].subs(env)) for j in range(n)]
+                  for i in range(n)], dtype=complex)
+    b = np.array([complex(system.b[i].subs(env)) for i in range(n)],
+                 dtype=complex)
+    x = np.linalg.solve(A, b)
+    gain = abs(x[system.out_index] / x[system.in_index])
+    assert gain > 10 ** blocks                  # each stage contributes gain
+
+
+def test_cauer_filter_has_inductors_and_stays_polynomial():
+    """Inductors get a branch current, not a ``1/(sL)`` admittance.
+
+    That distinction decides whether the s-expansion applies at all: an
+    admittance-form inductor would put ``1/s`` in an entry, which has no
+    coefficient split.
+    """
+    system = bc.cauer_lowpass(3)
+    expansion = s_expand(system.A, system.s)     # would raise if not polynomial
+    assert expansion.degree >= 3
+    assert any(str(sym).startswith('Ls') for sym in system.A.free_symbols)
+
+
+def test_cauer_filter_is_a_lowpass():
+    system = bc.cauer_lowpass(3)
+    n = system.dim
+
+    def gain(freq):
+        env = dict(system.params)
+        env[system.s] = 1j * 2 * np.pi * freq
+        A = np.array([[complex(system.A[i, j].subs(env)) for j in range(n)]
+                      for i in range(n)], dtype=complex)
+        b = np.array([complex(system.b[i].subs(env)) for i in range(n)],
+                     dtype=complex)
+        x = np.linalg.solve(A, b)
+        return abs(x[system.out_index] / x[system.in_index])
+
+    assert gain(1e7) < gain(1e3)                # attenuates well above the band
+
+
+@pytest.mark.parametrize('name,builder', [
+    ('cascade', lambda: bc.cascaded_opamps(2)),
+    ('cauer', lambda: bc.cauer_lowpass(3)),
+])
+def test_ddd_is_a_few_times_more_compact_than_soe(name, builder):
+    """Calibration against Tan & Shi's own SCAPP comparison.
+
+    Their Table II reports diagram-to-sequence ratios of 5.0–6.0 on cascaded
+    opamps.  Ours land in the same band on comparable circuits, which is the
+    external check on a claim this project could otherwise only make against
+    itself.  Note what it does *not* say: the advantage is a small factor, not
+    the orders of magnitude the papers' prose might suggest.
+    """
+    from pycircuit.circuit.soe import solve_soe
+
+    system = builder()
+    out, inp = system.out_index, system.in_index
+    _, numerators = ddd_cramer(system.A, system.b, indices=[out, inp])
+    diagram = numerators[out].size + numerators[inp].size
+
+    solution = solve_soe(system.A, system.b)
+    H = solution.solution[out] / solution.solution[inp]
+    sequence = int(sum(sympy.count_ops(e) for _, e in solution.assignments)
+                   + sympy.count_ops(H))
+
+    ratio = sequence / diagram
+    assert 2.0 < ratio < 10.0, 'ratio %.1f outside the published band' % ratio

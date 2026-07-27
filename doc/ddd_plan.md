@@ -294,6 +294,7 @@ solution-object refactor and calibration tiers 1 and 3.
 | H2 — sequential suppression | **Done.** Gate passed: µA741 1040 → 156 vertices, 6.7× |
 | H3 — noise through the reduction | **Done.** Gate passed: PSD identical, µA741 noise 11 088 → 26 vertices and 86 s → 0.48 s |
 | H4 — symbolic sensitivity | **Done.** Gate passed: matches finite differences to ~1e-8; ten parameters cost what one does |
+| H5 — Tier 2 calibration | **Done.** Our DDD-vs-SoE ratios 3.3–5.6× land in the published 5.0–6.0× band |
 
 The original definition of done is met: exact s-expanded coefficients held
 compactly, dominant pole/zero estimates from coefficient ratios, exact numeric
@@ -427,7 +428,7 @@ to component parameters; expose on `DDDSolution` and the AC result.
 at a cost that is a small multiple of a single solve rather than one solve per
 parameter.
 
-### H5 — Tier 2 calibration
+### H5 — Tier 2 calibration — **DONE**
 
 The Cauer low-pass filter and the cascaded-opamp series from TCAD 2000, both
 constructible from `R`/`C`/`VCCS` today. The cascaded series is the one their
@@ -480,9 +481,12 @@ recorded even when negative.
   tolerance every later vertex count is read against.
 - H3 depends on H2 and on nothing else — it is the direct application of the
   reduction machinery to the analysis that most wants it.
-- H1–H4 are done. What remains is H5 (Tier 2 calibration), H6 (frequency and
-  impedance scaling for the conditioning measured in P1) and H7 (DC, scoping) —
-  none of which adds a capability, so the order between them is free.
+- H1–H5 are done. What remains is H6 (frequency and impedance scaling for the
+  conditioning measured in P1) and H7 (DC, scoping).
+- H5's outcome is worth carrying forward: the diagram-versus-sequence advantage
+  is a *small factor*, a few times, in their measurements and ours alike. Claims
+  of orders of magnitude belong to the comparison against the **expanded** form,
+  not against another shared representation.
 - One thing H3 turned up that applies more widely: the `_resolve` fast path and
   unmultiplied factors sped the reduced solve ~200×, and the same pattern —
   sympy substitution in a hot loop — is worth watching wherever payloads are

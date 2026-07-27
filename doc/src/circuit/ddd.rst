@@ -1418,3 +1418,106 @@ sensitivity.
    development that produced an apparent error of 1e21 on a result that was
    entirely correct. The tests scale to the largest sensitivity in the set
    instead.
+
+Calibration against the sequence-of-expressions baseline
+========================================================
+
+The comparison this page keeps making — a diagram against a sequence of
+expressions (:doc:`soe_symbolic`) — is one the literature also made, and it is
+worth checking ours against theirs rather than only against itself.
+
+Tan & Shi cascade Miller-compensated gain stages and compare against **SCAPP**, a
+sequence-of-expressions analyser (TCAD 2000, Table II). Their figures:
+
+.. list-table:: Tan & Shi, TCAD 2000, Table II
+   :header-rows: 1
+   :widths: 10 12 12 12 16 14
+
+   * - blocks
+     - matrix
+     - ``|DDD|``
+     - product terms
+     - SCAPP add + mul
+     - ratio
+   * - 1
+     - 23
+     - 142
+     - 500
+     - 830
+     - 5.8×
+   * - 2
+     - 39
+     - 367
+     - 2.60e4
+     - 2193
+     - 6.0×
+   * - 3
+     - 55
+     - 566
+     - 1.60e6
+     - 2846
+     - 5.0×
+   * - 4
+     - 71
+     - 765
+     - 1.01e8
+     - 4118
+     - 5.4×
+
+The same comparison on our circuits — a cascade of gain stages, and the Cauer
+elliptic filter they use as a worked example:
+
+.. exec-rst::
+
+    import sympy
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.ddd import ddd_cramer
+    from pycircuit.circuit.soe import solve_soe
+
+    cases = ([('cascade ×%d' % k, bc.cascaded_opamps(k)) for k in (1, 2, 3)] +
+             [('Cauer %d-section' % k, bc.cauer_lowpass(k)) for k in (2, 3, 4)])
+
+    print(".. list-table:: The same comparison here")
+    print("   :header-rows: 1")
+    print("   :widths: 18 8 12 12 10")
+    print("")
+    print("   * - circuit")
+    print("     - dim")
+    print("     - ``|DDD|``")
+    print("     - SoE ops")
+    print("     - ratio")
+    for label, system in cases:
+        out, inp = system.out_index, system.in_index
+        _, numerators = ddd_cramer(system.A, system.b, indices=[out, inp])
+        diagram = numerators[out].size + numerators[inp].size
+
+        solution = solve_soe(system.A, system.b)
+        H = solution.solution[out] / solution.solution[inp]
+        sequence = int(sum(sympy.count_ops(e) for _, e in solution.assignments)
+                       + sympy.count_ops(H))
+
+        print("   * - %s" % label)
+        print("     - %d" % system.dim)
+        print("     - %d" % diagram)
+        print("     - %d" % sequence)
+        print("     - %.1f×" % (sequence / diagram))
+
+Ours land in the same band as theirs. That is the external check this project
+could not otherwise make: every other comparison on this page is a diagram
+against *our* sequence-of-expressions solver, which shares its author's
+assumptions.
+
+It is also worth reading for what it does **not** say. The advantage is a **small
+factor — a few times**, consistently, across ladders, cascades and filters, and
+in both their measurements and ours. The papers' prose ("much more compact than
+the sequence-of-expression representation") invites a stronger reading than their
+own table supports. Where a diagram wins by orders of magnitude is against the
+*expanded* form — a few dozen vertices for millions of product terms — not
+against a shared representation that was already avoiding the expansion.
+
+The Cauer filter earns its place for a second reason: it is the one fixture here
+with inductors. pycircuit gives an inductor a branch current rather than a
+``1/(sL)`` admittance, so its matrix entries stay polynomial in ``s`` and the
+s-expansion applies. An admittance-form inductor would put ``1/s`` in an entry,
+which has no coefficient split at all — the construction would refuse it, as
+:func:`~pycircuit.circuit.ddd.s_expand` does.

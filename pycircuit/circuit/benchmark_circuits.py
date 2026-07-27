@@ -502,3 +502,149 @@ def _build_ua741(symbolic_devices, miller):
     return system_from_circuit(cir, 'ua741', params,
                                out_index=names.index('out'),
                                in_index=names.index('inp'))
+
+
+def cascaded_opamps(blocks=1, symbolic_devices=()):
+    """``blocks`` Miller-compensated gain stages in cascade.
+
+    The structure Tan & Shi cascade for their comparison against SCAPP (TCAD
+    2000, Fig. 13 and Table II), which is the one published measurement of a
+    diagram against a *sequence of expressions* -- the same representation as
+    :doc:`soe_symbolic`.  Their circuit grows by 16 unknowns per block; this one
+    grows by a similar amount, so the interesting quantity, the ratio between the
+    two representations, is comparable even though the blocks are not identical.
+
+    Args:
+        blocks: How many stages to cascade.
+        symbolic_devices: Device names whose ``gm`` stays symbolic.
+
+    Returns:
+        BenchSystem.
+    """
+    import pycircuit.circuit.circuit as _circuit_module
+    saved = _circuit_module.default_toolkit
+    _circuit_module.default_toolkit = symbolic
+    try:
+        return _build_cascade(blocks, symbolic_devices)
+    finally:
+        _circuit_module.default_toolkit = saved
+
+
+def _build_cascade(blocks, symbolic_devices):
+    cir = SubCircuit(toolkit=symbolic)
+    vin = sympy.Symbol('vin')
+    params = {vin: 1.0}
+    names = ['in']
+    node = {'in': cir.add_node('in')}
+    cir['vs'] = VS(node['in'], gnd, vac=vin)
+
+    def gm_of(dev, nominal):
+        if dev in symbolic_devices:
+            sym = sympy.Symbol('gm_%s' % dev, positive=True)
+            params[sym] = nominal
+            return sym
+        return nominal
+
+    previous = node['in']
+    for b in range(blocks):
+        stage = ['e%d' % b, 'c%d' % b, 'd%d' % b, 'g%d' % b, 'o%d' % b]
+        for name in stage:
+            node[name] = cir.add_node(name)
+            names.append(name)
+
+        ## Differential pair against a mirror load, then a Miller-compensated
+        ## common-emitter stage into a follower.
+        add_small_signal_bjt(cir, 'q%da' % b, previous, node['c%d' % b],
+                             node['e%d' % b], gm_of('q%da' % b, 2e-3),
+                             25e3, 1e6, 3e-12, 0.5e-12)
+        add_small_signal_bjt(cir, 'q%db' % b, gnd, node['d%d' % b],
+                             node['e%d' % b], gm_of('q%db' % b, 2e-3),
+                             25e3, 1e6, 3e-12, 0.5e-12)
+        cir['rt%d' % b] = R(node['e%d' % b], gnd, r=500e3)
+        add_small_signal_bjt(cir, 'q%dm' % b, node['c%d' % b], node['d%d' % b],
+                             gnd, gm_of('q%dm' % b, 2e-3), 25e3, 1e6,
+                             3e-12, 0.5e-12)
+        cir['rc%d' % b] = R(node['c%d' % b], gnd, r=100e3)
+
+        add_small_signal_bjt(cir, 'q%dg' % b, node['d%d' % b], node['g%d' % b],
+                             gnd, gm_of('q%dg' % b, 5e-3), 10e3, 200e3,
+                             10e-12, 1e-12)
+        cir['rg%d' % b] = R(node['g%d' % b], gnd, r=100e3)
+        cir['cc%d' % b] = C(node['d%d' % b], node['g%d' % b], c=5e-12)
+
+        add_small_signal_bjt(cir, 'q%do' % b, node['g%d' % b], gnd,
+                             node['o%d' % b], gm_of('q%do' % b, 20e-3),
+                             5e3, 50e3, 20e-12, 2e-12)
+        cir['ro%d' % b] = R(node['o%d' % b], gnd, r=10e3)
+        previous = node['o%d' % b]
+
+    return system_from_circuit(cir, 'cascaded_opamps_%d' % blocks, params,
+                               out_index=names.index('o%d' % (blocks - 1)),
+                               in_index=names.index('in'))
+
+
+def cauer_lowpass(sections=2, symbolic=True):
+    """An elliptic (Cauer) LC low-pass ladder -- the paper's worked example.
+
+    Tan & Shi illustrate hierarchical analysis on a Cauer filter (TCAD 2000
+    §VI).  It is also the one fixture here containing inductors, which matters:
+    pycircuit gives an inductor a branch current rather than a ``1/(sL)``
+    admittance, so the matrix entries stay *polynomial* in ``s`` and the
+    s-expansion applies -- an admittance-form inductor would not expand.
+
+    Each section is a parallel ``L``-``C`` trap in the series arm (which places
+    the transmission zeros) and a shunt capacitor to ground.
+
+    Args:
+        sections: Number of ladder sections.
+        symbolic: Keep component values symbolic.
+
+    Returns:
+        BenchSystem.
+    """
+    import pycircuit.circuit.circuit as _circuit_module
+    saved = _circuit_module.default_toolkit
+    _circuit_module.default_toolkit = _symbolic_toolkit_for(symbolic)
+    try:
+        return _build_cauer(sections, symbolic)
+    finally:
+        _circuit_module.default_toolkit = saved
+
+
+def _symbolic_toolkit_for(is_symbolic):
+    return symbolic
+
+
+def _build_cauer(sections, use_symbols):
+    from pycircuit.circuit import L as Inductor
+
+    cir = SubCircuit(toolkit=symbolic)
+    names = ['in'] + ['n%d' % i for i in range(sections)]
+    node = {name: cir.add_node(name) for name in names}
+    params = {}
+
+    def value(prefix, i, nominal):
+        if use_symbols:
+            sym = sympy.Symbol('%s%d' % (prefix, i), positive=True)
+            params[sym] = nominal
+            return sym
+        return nominal
+
+    vin = sympy.Symbol('vin')
+    params[vin] = 1.0
+    cir['vs'] = VS(node['in'], gnd, vac=vin)
+    cir['rs'] = R(node['in'], node['n0'], r=value('Rs', 0, 50.0))
+
+    for i in range(sections):
+        here = node['n%d' % i]
+        there = node['n%d' % (i + 1)] if i + 1 < sections else gnd
+        if i + 1 < sections:
+            ## Parallel trap in the series arm places a transmission zero.
+            cir['Ls%d' % i] = Inductor(here, there, L=value('Ls', i, 1e-3))
+            cir['Cs%d' % i] = C(here, there, c=value('Cs', i, 1e-9))
+        cir['Cp%d' % i] = C(here, gnd, c=value('Cp', i, 2e-9))
+    cir['rl'] = R(node['n%d' % (sections - 1)], gnd, r=value('Rl', 0, 50.0))
+
+    return system_from_circuit(cir, 'cauer_%d' % sections, params,
+                               out_index=names.index('n%d' % (sections - 1)),
+                               in_index=names.index('in'))
