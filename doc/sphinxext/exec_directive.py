@@ -16,15 +16,29 @@ The block's ``stdout`` is captured and re-parsed as reStructuredText, so the
 content (tables, numbers, figures) is regenerated on every documentation build
 rather than being pasted in and going stale.
 
-Robustness mirrors the ``sympy::`` directive: the block runs under a timeout and
-any failure falls back to rendering the source (logged at info level), so a
-single slow or broken block cannot break or hang the whole build.
+A block that fails falls back to rendering its source, so one slow or broken
+block cannot break or hang the whole build.  **That fallback is loud**, and
+deliberately so: it is logged as a *warning* and an admonition naming the
+exception is rendered above the source in the built page.
+
+The reason is worth stating, because the quiet version of this caused a real
+problem.  When the fallback logged at info level, a block whose imports were
+unresolvable rendered its own source and the build still reported "succeeded" --
+so a page that was supposed to prove its numbers by regenerating them was
+instead displaying the code that would have produced them, indefinitely and
+invisibly.  A live-documentation directive that fails silently is worse than no
+directive, because it looks like evidence.
+
+Build with ``sphinx-build -W`` to make any such fallback fatal.  Whether the
+docs are allowed to ship with a dead block is then a decision someone makes,
+rather than one nobody sees.
 
 Configuration
 -------------
 
     exec_rst_execute : bool
-        Run blocks (default ``True``).  Set ``False`` to render source only.
+        Run blocks (default ``True``).  Set ``False`` to render source only --
+        the one case where falling back is not a failure, so it stays quiet.
     exec_rst_timeout : int
         Per-block wall-clock limit in seconds (default 60).
 """
@@ -84,11 +98,24 @@ class ExecRstDirective(Directive):
                         exec(code, {'__name__': '__exec_rst__'})
                     rst = buf.getvalue()
             except Exception as exc:
-                ## Fall back to showing the source rather than break/hang the
-                ## build; expected, designed behaviour -> info level, no warning.
-                logger.info('exec-rst block not rendered live (%s); showing source', exc)
-                rst = ".. code-block:: python\n\n" + _indent(code) + "\n"
+                ## Fall back to the source so one bad block cannot break the
+                ## build -- but say so, in the log *and* on the page.  A live
+                ## block that quietly renders source still looks like generated
+                ## output to a reader, which is the failure mode this avoids.
+                logger.warning(
+                    'exec-rst block did not run (%s: %s); rendering its source '
+                    'instead -- the figures on this page are NOT live',
+                    type(exc).__name__, exc,
+                    location=(self.state.document['source'], self.lineno))
+                rst = (".. warning::\n\n"
+                       "   This block did not run at build time (``%s: %s``), so\n"
+                       "   the source is shown instead of its output. Any numbers\n"
+                       "   it was meant to generate are missing, not stale.\n\n"
+                       % (type(exc).__name__, exc)
+                       + ".. code-block:: python\n\n" + _indent(code) + "\n")
         else:
+            ## Execution switched off wholesale -- a deliberate choice, not a
+            ## failure, so this one stays quiet.
             rst = ".. code-block:: python\n\n" + _indent(code) + "\n"
 
         lines = rst.split("\n")

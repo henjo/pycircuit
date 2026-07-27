@@ -42,6 +42,13 @@ extensions = ['sphinx.ext.autodoc', 'sphinx.ext.napoleon', 'sphinx.ext.mathjax',
               'sphinxext.sympy_directive', 'sphinxext.parametertable_directive',
               'sphinxext.exec_directive']
 
+# The heaviest live block on the DDD page -- the ICCAD 2010 Table II
+# calibration, which builds diagrams up to n = 11 -- runs ~55 s standalone and
+# longer under build load, so the 60 s default made it fail intermittently.  A
+# failed block renders its source with a warning rather than a table, so the
+# limit has to sit well clear of the worst case, not just above the typical one.
+exec_rst_timeout = 300
+
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['.templates']
 

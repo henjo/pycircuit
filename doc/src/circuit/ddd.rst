@@ -978,7 +978,7 @@ The effect is that total size becomes a **sum over blocks instead of a product**
         hier = HierarchicalDDD(system.A, tuple(range(n // 2)))
         print("   * - %d" % n)
         print("     - %d" % flat.size)
-        print("     - %d" % hier.family.size)
+        print("     - %d" % hier.levels[0]['family'].size)
         print("     - %d" % hier.top.size)
         print("     - %d" % hier.size)
         print("     - %.1f×" % (flat.size / hier.size))
