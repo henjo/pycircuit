@@ -168,7 +168,80 @@ net (they already cover both branches). If it cannot be made green without
 touching behaviour, abandon it and accept one extra branch — the refactor is an
 investment against future bloat, not a prerequisite for DDD.
 
-### 3.4 Dependency discipline
+### 3.4 Are the other issues the same shape? Mostly not
+
+**DECIDED (2026-07-27): the 3.3 delegation fix is accepted.** Before generalising
+it, note that the remaining issues are *different* problems, and applying the same
+remedy to all of them would be wrong.
+
+The distinction that matters: **delegation answers "who decides"; duck typing
+answers "what type flows through".** The AC dispatch is a *who decides* problem —
+shared code was making the choice and constructing the result — so no amount of
+duck typing removes that branch. Conflating the two is the usual mistake here.
+
+| Issue | Same shape? | Right fix |
+|---|---|---|
+| AC dispatch `supports('num_den')` + inline construction | — this is the one | Delegation (3.3) ✔ accepted |
+| `supports()` capability strings generally | **Yes**, same family | Disappears with 3.3 — no separate work |
+| `tf_i` arithmetic on `N` (`0*N`, `s*N`, `A + c0*(D-1)`) | **No** — not a branch, an implicit *operator contract* | **Duck typing** — see 3.5 |
+| `Toolkit.__getattr__` forwarding to the backend | **No** — this is *already* unbounded duck typing, and it is the cautionary case | Do not extend it; DDD methods explicit on `DDDToolkit` |
+| `noise_psd` overridable on `Toolkit` base | **No** — already correct polymorphism | Nothing. Use it as the model |
+| `default_toolkit` global | **No** — global mutable state | Out of scope; do not entrench it further |
+| `isinstance(self.inputsrc, VS/IS)` (`analysis_ss.py:420,426,466,470`) | **Yes**, same anti-pattern family | **Out of scope.** Noted only as evidence the pattern recurs; fixing it is not DDD's job |
+
+### 3.5 Would duck typing help? Yes, in one place; no in another
+
+**Where it helps — and it is already how the code works.** `tf_i` does
+`0 * N`, `s * N`, `A + c0*(D - 1)` on the numerator vector. That is not a type
+check, it is an operator protocol, and it *already* serves both numpy arrays
+(`numeric`) and sympy expressions (`symbolic`). If the DDD numerator objects
+implement `__mul__` and `__add__`, **`tf_i` needs no change at all**.
+
+This is a better fit than it first looks: DDDs form an algebra, and the operations
+required are the standard ones — the 2008 `ddd.py` already sketched `__mul__`,
+`__sub__` and `union` for exactly this reason. So the protocol DDD must satisfy is
+one it naturally has.
+
+*Caveat, and it is a real one:* duck typing here hides **cost**, not correctness. A
+DDD will happily accept `s * N` and quietly build a larger graph;
+`A + c0*(D - 1)` combines two graphs. Nothing errors — it just gets expensive. So
+`DDDSolution.tf_i` should be measured early, and may need its own implementation
+rather than inheriting the generic arithmetic. Silent expense is harder to notice
+than a silent wrong answer.
+
+**Where it does not help — the solution object itself.** With several toolkits and
+multiple solution flavours, a contract that exists only implicitly is a
+maintenance hazard, and this codebase has already been bitten by exactly that:
+`Toolkit.__getattr__` forwards any unknown attribute to the backend module, which
+makes `hasattr()` unreliable, turns typos into confusing errors, and means
+anything dropped into `_symbolic.py` silently widens every symbolic toolkit's
+surface. That is unbounded duck typing, and it is a argument *against* reflexively
+adding more.
+
+**Recommendation — follow the precedent already in this repo.** `integrator.py`
+defines its strategy family (`Integrator`, and likewise `StepController`,
+`NonLinearSolver`) as an **`ABC` with `@abstractmethod`** and type hints. That is
+the codebase's own, most recent answer for a pluggable strategy family, and the
+solution objects are the same kind of thing. Concretely:
+
+- a small `ACSolution` ABC with abstract `tf`, `tf_i`, `poles`, `eval`;
+- `NumDenSolution` and `DDDSolution` inherit it — free, since we write both and
+  there are no third-party implementers;
+- benefit over pure duck typing: a missing method fails at construction with a
+  clear message, instead of an `AttributeError` surfacing deep inside a frequency
+  sweep.
+
+`typing.Protocol` would be the alternative (structural, no inheritance), but it
+buys flexibility we do not need and departs from the existing convention. Prefer
+consistency with `integrator.py`.
+
+**The cheap guard that makes this safe: one parametrised conformance test.** A
+single test parametrised over `[NumDenSolution, DDDSolution]` asserting the whole
+contract — including the operator behaviour that stays duck-typed — costs almost
+nothing and is what keeps two implementations from drifting. This is the piece
+that makes duck typing tolerable at this scale.
+
+### 3.6 Dependency discipline
 
 - **No new runtime dependencies.** `ddd_toolkit` must import with sympy alone.
   Follow the established optional pattern (`ginac_toolkit = None` on `ImportError`)
