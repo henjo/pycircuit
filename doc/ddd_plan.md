@@ -157,9 +157,17 @@ Tests:
 - **Nullor:** MFB result checked against `symbolic_poly`, not merely measured.
 
 **Gate (two criteria — passing *either* continues; both failing stops):**
-- **(a) Capability** — a correct flat DDD whose vertex count makes P1 plausible at
-  N ≥ 8 on the ladder, where `to_ratio`/`poly_coeffs` currently hang.
+- **(a) Capability** — on the N = 8 ladder, where *[OURS]* `to_ratio` /
+  `poly_coeffs` do not complete: construction finishes within the benchmark
+  timeout, the graph evaluates numerically to the same transfer function as
+  `numeric` (to `1e-10` relative), and `|DDD|` is **under 10 000 vertices** so that
+  P1's `q·d·|DDD|` expansion stays tractable. Concrete pass/fail, not a judgement.
 - **(b) Size** — `|DDD| ≤ 2×` SoE ops at N = 12, growing no faster across N = 4→16.
+  **Caveat on (b): this is not yet an apples-to-apples comparison.** Under the
+  compact-symbol convention a DDD vertex carries a whole matrix entry
+  (`g₁+g₂+s(c₁+c₂)`) while an SoE operation is over component-level symbols — the
+  DDD has fewer, fatter units. Report the per-vertex payload sizes alongside, and
+  if the two cannot be reconciled, treat (a) as decisive and (b) as indicative.
 
 **Disambiguate before acting:** the Tier-1 identity must pass first. A poor gate
 result with Tier 1 *failing* means our sharing is broken, not that DDD is wrong —
@@ -193,21 +201,52 @@ subgraphs, and the measured linearity table.
 
 ---
 
-### Stage P2 — `DDDResult` + toolkit integration *(~2 days)*
+### Stage P2 — `DDDResult` + toolkit integration *(~3 days)*
 
-Tasks: `DDDResult` (lazy Cramer numerators, `tf`, `denominator`, `poles`, `eval`);
-`DDDToolkit(SymbolicPolyToolkit)` overriding `linearsolver_num_den` and inheriting
-`supports('num_den')`; `ddd_toolkit` singleton.
+**Read this before planning P2 in detail — the obvious integration is a trap.**
+`SymbolicPolyToolkit.linearsolver_num_den` returns *sympy expressions*, and the
+whole downstream path is eager about it: `analysis_ss.py:184` immediately builds
+`xac = np.array([ni / den for ni in num], dtype=object)`, and
+`TransferFunction.as_num_den` calls `sympy.fraction(self.canonical())`. So a
+`DDDToolkit` that satisfies the existing contract **must flatten its DDDs into
+sympy expressions — which is exactly the exponential blow-up the DDD exists to
+avoid.** Flattening works only for circuits small enough that `symbolic_poly`
+already handles them, i.e. not the motivating case.
 
-Conservative integration only — returns sympy `num/den`, so nothing else in the
-codebase learns about DDD. The `supports('ddd')` deep path is deferred until there
-is a reason for it.
+Therefore P2 has two deliverables, and the second is **not** optional:
 
-**Gate:** `AC(cir, toolkit=ddd_toolkit)` produces results agreeing with
-`symbolic_poly` on every circuit where the latter runs; **the full existing test
-suite stays green**.
+1. **Compatibility path** (`linearsolver_num_den` → sympy). Keep it, because it
+   makes every existing analysis work unchanged and is the cheapest correctness
+   check against `symbolic_poly`. But label it honestly: it is valid for **small
+   circuits only**, and must carry a size guard that refuses (or warns and falls
+   back) above a vertex/term threshold rather than hanging — the same discipline as
+   `ginac_max_dim` and `MAX_COMPILE_CHARS`.
+2. **Graph-preserving path** — `DDDResult` as the primary interface, never
+   flattened: `denominator()`, `numerator(i)`, `tf(i,j)` and `eval(params)` all
+   operating on the graph, with numeric evaluation done by walking it. This is
+   where the value actually is, and deferring it (as an earlier draft of this plan
+   did) would leave the project unable to serve its own use case.
 
-**Docs:** cofactors → Cramer → transfer functions, and the user-facing API.
+Tasks: `DDDResult`; `DDDToolkit(SymbolicPolyToolkit)` with both paths;
+`ddd_toolkit` singleton; `supports('ddd')` plus the `CircuitResultACPoly`
+subclass needed to reach the graph path from `AC`.
+
+**Integration details to check early** (each has bitten a previous backend):
+- `self.toolkit.concatenate` / `array` at `analysis_ss.py:186` operate on the
+  numerator vector; confirm they behave for whatever objects the graph path
+  returns, or arrange for the graph path to bypass that branch entirely.
+- interaction with the deprecated `default_toolkit` global;
+- sympy expressions as vertex payloads hash structurally — `Add`/`Mul` are
+  canonicalised so `g1+g2` and `g2+g1` collide correctly, but this should have a
+  test rather than being assumed.
+
+**Gate:** `AC(cir, toolkit=ddd_toolkit)` agrees with `symbolic_poly` on every
+circuit where the latter runs; the graph path returns correct numeric results on a
+circuit where the compatibility path cannot complete; **full existing test suite
+green**.
+
+**Docs:** cofactors → Cramer → transfer functions, the two paths and why both
+exist, and the user-facing API.
 
 ---
 
@@ -263,10 +302,37 @@ than part of making DDD work.
    fallback means a live example failed and the doc is no longer verifying);
 4. its gate evaluated and the result recorded — including a negative one.
 
-**Overall** — symbolic poles and zeros of a fully-symbolic ~10–15 node circuit, in
-seconds, via `AC(cir, toolkit=ddd_toolkit)`, agreeing with `symbolic_poly`
-wherever that can still produce an answer. Today this is impossible at any
-non-trivial size.
+**Overall.** An earlier draft said "symbolic poles and zeros of a fully-symbolic
+~10–15 node circuit". **That target is impossible in principle and has been
+corrected.** Two independent reasons:
+
+- *Abel–Ruffini.* A 10–15 node circuit has a denominator of degree ~10–15, and a
+  general polynomial of degree ≥5 has no closed-form roots. Verified concretely:
+  `sympy.roots` on a general degree-5 polynomial with symbolic coefficients
+  returns `{}`. No representation — DDD or otherwise — can produce what does not
+  exist.
+- *Size.* Even the exact symbolic *coefficients* of such a circuit stand for
+  ~10³⁰⁺ product terms (`ddd_conclusions.md` §4.3). They can be represented
+  compactly and evaluated, but never printed or read.
+
+The corrected target, which is what the literature actually delivers:
+
+1. **Exact s-expanded coefficients**, held compactly as a multiroot DDD, for a
+   fully-symbolic ~10–15 node circuit, in seconds — never flattened, and correct
+   when evaluated numerically against `symbolic_poly`/`numeric` where those can
+   run.
+2. **Dominant pole/zero estimates** as ratios of coefficients of consecutive
+   powers of `s` — *[LIT]* TCAD 2001 §I, and the only route to interpretable
+   poles for a circuit this size.
+3. **Exact numeric poles** via `numpy.roots` once parameters are substituted.
+4. **A short, readable symbolic expression** only after approximation prunes to
+   dominant terms.
+
+**Consequence for sequencing:** items 2 and 4 are P5 work, so **P5 is on the
+critical path to any human-readable result for large circuits** — it is not the
+optional finishing touch that §4's ordering implies. P1–P4 produce something
+correct, compact and evaluable but not yet *readable*. If the point of the
+exercise is designer insight, P5 must be scheduled, not merely listed.
 
 ---
 
@@ -275,8 +341,16 @@ non-trivial size.
 - Stage B strictly first — its baselines must be recorded *before* DDD exists, or
   the comparison is retrospective.
 - P0's symbol-convention decision precedes P0 coding; it defines the hash key.
-- P1 depends on P0; P2 on P1 (the result object exposes coefficients). P3–P6 are
-  independent of each other and can be reordered by value once P2 lands.
+- P1 depends on P0; P2 on P1 (the result object exposes coefficients). P3, P4 and
+  P6 are independent of each other and can be reordered by value once P2 lands.
+  **P5 is not in that set** — per §5 it is the only route to human-readable output
+  for large circuits, so it should be scheduled directly after P2 unless the
+  semi-symbolic regime (P3) is the more urgent user need.
+- **Python-level practicalities to settle in P0, not discover in P4**: recursion
+  depth (LED expansion is naturally recursive and will exceed
+  `sys.setrecursionlimit` defaults on realistic matrices — write it iteratively or
+  raise the limit deliberately), and the cost of sympy expression payloads per
+  vertex, which dominates memory (§Stage B).
 - Paper calibration circuits (µA741/µA725, Tier 3) come *after* P0 passes. They
   need a hybrid-π `SubCircuit` — `VCCS` + `R` + `C`, no new element types — and
   should not gate P0, since a µA741 is exactly where a first implementation

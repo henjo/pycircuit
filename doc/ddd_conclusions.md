@@ -490,11 +490,17 @@ Each conclusion states its reason; §-references point to the evidence.
 Each stage ends in a measurable gate. Stop or re-plan if a gate fails.
 
 **Definition of done for the whole effort** (so progress is judged against
-something user-visible, not against internal metrics): *symbolic poles and zeros
-of a fully-symbolic circuit of ~10–15 nodes, obtained in seconds, from
-`AC(cir, toolkit=ddd_toolkit).solve(...)`, with the result agreeing with
-`symbolic_poly` wherever `symbolic_poly` can still produce an answer.* Today that
-is impossible at any size beyond trivial (§4.9).
+something user-visible, not against internal metrics). An earlier version of this
+said "symbolic poles and zeros of a fully-symbolic ~10–15 node circuit"; **that is
+impossible in principle** — a general polynomial of degree ≥5 has no closed-form
+roots (verified: `sympy.roots` returns `{}` for a general symbolic quintic), and
+the exact coefficients stand for ~10³⁰⁺ terms, so they can be evaluated but never
+read. The corrected target, which is what the literature actually delivers:
+*exact s-expanded coefficients held compactly for such a circuit in seconds;
+**dominant** pole/zero estimates as ratios of consecutive coefficients; exact
+numeric poles once parameters are substituted; and a short readable expression
+only after approximation.* See `ddd_plan.md` §5 — this makes approximation (P5)
+critical-path for readable output, not an optional finish.
 
 Effort figures below are rough order-of-magnitude sizing to let priorities be
 weighed against cost — they are guesses, not estimates from a decomposition.
