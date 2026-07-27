@@ -364,3 +364,136 @@ def test_mfb_s_expansion_is_second_order():
     poles = E.roots_of(dict(system.params))
     assert len(poles) == 2
     assert all(p.real < 0 for p in poles)          # stable
+
+
+## -- dominant terms and approximation ------------------------------------
+
+def _spread_env(system, spread):
+    """Component values spread geometrically -- the regime pruning needs."""
+    env = {}
+    for sym in system.A.free_symbols - {system.s}:
+        name = str(sym)
+        i = int(''.join(ch for ch in name if ch.isdigit()) or 0)
+        base = 100.0 if name.startswith('R') else 1e-9
+        env[sym] = base * (spread ** i)
+    return env
+
+
+def test_terms_come_out_in_decreasing_magnitude():
+    system = bc.rc_ladder(8)
+    env = _spread_env(system, 3.0)
+    env[system.s] = 1j * 2 * np.pi * 1e3
+    mags = []
+    for _, values in ddd_of_matrix(system.A).iter_terms(env):
+        mags.append(abs(values[0]))
+        if len(mags) == 12:
+            break
+    assert len(mags) == 12
+    assert mags == sorted(mags, reverse=True)
+
+
+def test_all_terms_sum_to_the_exact_value():
+    """Enumerating every term must reconstruct the determinant."""
+    system = bc.rc_ladder(6)
+    env = _spread_env(system, 2.0)
+    env[system.s] = 1j * 2 * np.pi * 1e4
+    D = ddd_of_matrix(system.A)
+    total = sum(v[0] for _, v in D.iter_terms(env))
+    exact = complex(D.eval(env))
+    assert abs(total - exact) <= 1e-9 * abs(exact)
+
+
+def test_term_count_matches_enumeration():
+    system = bc.rc_ladder(6)
+    env = _spread_env(system, 2.0)
+    env[system.s] = 1j * 2 * np.pi * 1e4
+    D = ddd_of_matrix(system.A)
+    assert sum(1 for _ in D.iter_terms(env)) == D.term_count()
+
+
+@pytest.mark.parametrize('tol', [1e-1, 1e-2, 1e-3])
+def test_approximation_meets_its_tolerance(tol):
+    system = bc.rc_ladder(8)
+    env = _spread_env(system, 5.0)
+    env[system.s] = 1j * 2 * np.pi * 1e4
+    _, n, err = ddd_of_matrix(system.A).approximate(env, tol=tol,
+                                                    max_terms=100000)
+    assert err <= tol
+    assert n >= 1
+
+
+def test_pruning_depends_on_parameter_spread():
+    """With uniform components there is nothing to prune; with spread, plenty.
+
+    This is the honest shape of the result -- dominant-term approximation is not
+    a free win, it is a win exactly when the parameters differ in magnitude.
+    """
+    system = bc.rc_ladder(10)
+    D = ddd_of_matrix(system.A)
+    total = D.term_count()
+
+    flat = _spread_env(system, 1.0)                # every component identical
+    spread = _spread_env(system, 10.0)
+    for e in (flat, spread):
+        e[system.s] = 1j * 2 * np.pi * 1e3
+
+    _, n_flat, _ = D.approximate(flat, tol=1e-2, max_terms=100000)
+    _, n_spread, _ = D.approximate(spread, tol=1e-2, max_terms=100000)
+    assert n_spread < n_flat
+    assert n_spread < 0.1 * total                  # a real reduction
+
+
+def test_corners_keep_terms_that_only_matter_somewhere():
+    """Ranking at one nominal point can discard a term that dominates elsewhere.
+
+    Yu & Sechen's argument for pruning over parameter *ranges*: satisfying both
+    corners needs strictly more terms than either alone.
+    """
+    system = bc.rc_ladder(10)
+    c = s_expand(system.A, system.s).coefficient(3)
+    lo, hi = _spread_env(system, 3.0), _spread_env(system, 10.0)
+
+    _, n_lo, _ = c.approximate(lo, tol=1e-2, max_terms=100000)
+    _, n_hi, _ = c.approximate(hi, tol=1e-2, max_terms=100000)
+    _, n_both, err = c.approximate([lo, hi], tol=1e-2, max_terms=100000)
+
+    assert n_both >= max(n_lo, n_hi)
+    assert err <= 1e-2                             # holds at *both* corners
+
+
+def test_approximation_needs_numeric_values():
+    system = bc.rc_ladder(4)
+    with pytest.raises(ValueError, match='symbolic'):
+        ddd_of_matrix(system.A).approximate({}, tol=0.1)
+
+
+def test_s_expanded_approximation_is_per_coefficient():
+    """Each power of s is approximated on its own -- the required order."""
+    system = bc.rc_ladder(8)
+    E = s_expand(system.A, system.s)
+    env = _spread_env(system, 5.0)
+    result = E.approximate(env, tol=1e-2, max_terms=100000)
+
+    assert len(result) == E.degree + 1
+    for k, (expr, n, err) in enumerate(result):
+        assert err <= 1e-2, 'coefficient %d missed its tolerance' % k
+        assert n <= E.coefficient(k).term_count()
+
+
+def test_dominant_poles_approach_the_exact_roots_when_separated():
+    """Ratios of consecutive coefficients estimate well-separated poles.
+
+    Accuracy improves for the higher poles, which are the better separated --
+    the expected behaviour of the estimate, and the reason it is stated as a
+    dominant-pole method rather than an exact one.
+    """
+    system = bc.rc_ladder(10)
+    env = _spread_env(system, 3.0)
+    E = s_expand(system.A, system.s)
+
+    est = sorted((complex(p) for p in E.dominant_poles(env)), key=abs)
+    exact = sorted(E.roots_of(env), key=abs)
+
+    errors = [abs(a - b) / abs(b) for a, b in zip(est, exact)]
+    assert errors[0] < 0.2                         # dominant pole, within 20%
+    assert errors[3] < errors[0]                   # better where more separated

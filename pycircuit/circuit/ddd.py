@@ -247,6 +247,163 @@ class DDD:
                               + memo[id(node.zero_edge)])
         return memo[id(self.root)]
 
+    ## -- approximation ---------------------------------------------------
+
+    def _entry_values(self, env):
+        """Numeric value of each vertex payload; raises if any stays symbolic."""
+        values = {}
+        for v in self.vertices():
+            key = id(v.entry)
+            if key not in values:
+                e = v.entry
+                if getattr(e, 'free_symbols', None):
+                    e = e.subs(env)
+                try:
+                    values[key] = complex(e)
+                except (TypeError, ValueError):
+                    raise ValueError(
+                        'entry %s is still symbolic after substitution; '
+                        'dominant-term extraction ranks terms by magnitude and '
+                        'so needs numeric values' % (v.entry,))
+        return values
+
+    def _best_completion(self, values):
+        """Largest product magnitude reachable from each vertex to the 1 terminal.
+
+        This is what makes the search a best-first one rather than an
+        enumeration: multiplying the magnitude accumulated so far by this bound
+        gives the best any completion of a partial term could achieve, so terms
+        come out in decreasing order without generating the rest.
+        """
+        best = {id(ONE): 1.0, id(ZERO): 0.0}
+        stack = [(self.root, False)]
+        while stack:
+            node, expanded = stack.pop()
+            if node.is_terminal or id(node) in best:
+                continue
+            if not expanded:
+                stack.append((node, True))
+                stack.append((node.one_edge, False))
+                stack.append((node.zero_edge, False))
+                continue
+            take = abs(values[id(node.entry)]) * best[id(node.one_edge)]
+            best[id(node)] = max(take, best[id(node.zero_edge)])
+        return best
+
+    def iter_terms(self, env=None):
+        """Yield product terms in decreasing order of magnitude.
+
+        Each term is one 1-path of the diagram -- one product in the expanded
+        determinant.  They are produced lazily and *in order*, so taking the
+        first few costs a fraction of enumerating all of them: that is what makes
+        approximation feasible on a diagram standing for millions of terms.
+
+        Args:
+            env: Substitution giving every symbol a numeric value.  May instead
+                be a *sequence* of substitutions -- parameter corners -- in which
+                case terms are ranked by their worst-case magnitude across all of
+                them.  Ranking at a single nominal point can drop a term that
+                dominates elsewhere in the design space (Yu & Sechen, 1996).
+
+        Yields:
+            ``(expression, values)`` -- the term as sympy, and its value at each
+            corner (a list, in the order given).
+
+        Raises:
+            ValueError: If any entry remains symbolic after substitution.
+        """
+        import heapq
+
+        envs = self._as_envs(env)
+        if self.root is ZERO:
+            return
+        values = [self._entry_values(e) for e in envs]
+        bests = [self._best_completion(v) for v in values]
+
+        def bound(node, acc):
+            return max(abs(a) * b[id(node)] for a, b in zip(acc, bests))
+
+        start_acc = tuple(1.0 + 0j for _ in envs)
+        counter = 0
+        heap = [(-bound(self.root, start_acc), counter, self.root, start_acc, None)]
+        while heap:
+            neg, _, node, acc, taken = heapq.heappop(heap)
+            if -neg == 0.0:
+                continue                       # nothing reachable this way
+            if node is ONE:
+                chain, factors = taken, []
+                while chain is not None:
+                    v, chain = chain
+                    factors.append(v.sign * v.entry)
+                yield sympy.Mul(*reversed(factors)), list(acc)
+                continue
+            if node is ZERO:
+                continue
+
+            take = tuple(a * node.sign * v[id(node.entry)]
+                         for a, v in zip(acc, values))
+            b = bound(node.one_edge, take)
+            if b > 0.0:
+                counter += 1
+                heapq.heappush(heap, (-b, counter, node.one_edge, take,
+                                      (node, taken)))
+            b = bound(node.zero_edge, acc)
+            if b > 0.0:
+                counter += 1
+                heapq.heappush(heap, (-b, counter, node.zero_edge, acc, taken))
+
+    @staticmethod
+    def _as_envs(env):
+        if env is None:
+            return [{}]
+        if isinstance(env, dict):
+            return [env]
+        return list(env)
+
+    def approximate(self, env=None, tol=0.01, max_terms=200):
+        """Keep the dominant terms until the value is within ``tol``.
+
+        Terms are added in decreasing magnitude until the partial sum matches the
+        exact value to a relative error of ``tol`` -- at *every* corner, if
+        several were given.
+
+        The criterion is the **error**, not the fraction of magnitude
+        accumulated.  Product terms of a determinant routinely cancel, so a set
+        of terms carrying most of the magnitude need not carry most of the value.
+
+        How much this prunes depends entirely on how far apart the component
+        values are; see ``doc/src/circuit/ddd.rst``.  With uniform components
+        there is little to drop.
+
+        Args:
+            env: Numeric substitution, or a sequence of them (corners).
+            tol: Target relative error.
+            max_terms: Stop after this many terms even if ``tol`` is unmet.
+
+        Returns:
+            ``(expression, n_terms, relative_error)`` -- the error being the
+            worst across corners.
+        """
+        envs = self._as_envs(env)
+        ## Validate before evaluating, so a missing substitution reports what is
+        ## actually wrong rather than failing on a float conversion later.
+        for e in envs:
+            self._entry_values(e)
+        exact = [complex(self.eval(e)) for e in envs]
+        total = [0.0 + 0j] * len(envs)
+        kept = []
+        for expr, values in self.iter_terms(env):
+            kept.append(expr)
+            total = [t + v for t, v in zip(total, values)]
+            err = max(abs(t - x) / abs(x) if abs(x) > 0 else abs(t)
+                      for t, x in zip(total, exact))
+            if err <= tol or len(kept) >= max_terms:
+                break
+        else:
+            err = max(abs(t - x) / abs(x) if abs(x) > 0 else abs(t)
+                      for t, x in zip(total, exact)) if kept else 1.0
+        return sympy.Add(*kept), len(kept), err
+
     ## -- rendering -------------------------------------------------------
 
     def to_dot(self, max_vertices=200, name='DDD'):
@@ -569,6 +726,52 @@ class SExpandedDDD:
                              'for %s first' % bad[0].free_symbols)
         ## numpy.roots wants highest power first.
         return np.roots([complex(c) for c in reversed(coeffs)])
+
+    def approximate(self, env=None, tol=0.01, max_terms=200):
+        """Approximate each coefficient of ``s`` separately.
+
+        Approximating the determinant as a whole weights the powers of ``s`` by
+        whatever the frequency happens to be, so a coefficient that dominates the
+        response in one band gets discarded for another.  Approximating *after*
+        the s-expansion treats every power on an equal footing, which is why
+        Shi & Tan (TCAD 2001) require this order -- and it is what leaves the
+        result usable across the whole frequency range rather than at one point.
+
+        Returns:
+            List of ``(expression, n_terms, relative_error)``, one per power of
+            ``s``, lowest first.
+        """
+        return [self.coefficient(k).approximate(env, tol, max_terms)
+                for k in range(len(self.roots))]
+
+    def dominant_poles(self, env=None):
+        """Estimate poles as ratios of consecutive coefficients.
+
+        For a polynomial whose roots are widely separated -- the usual situation
+        in an analog circuit, where a dominant pole is often orders of magnitude
+        below the rest -- the ``k``-th pole is approximately
+        ``-d[k-1] / d[k]``.
+
+        This is what makes a big circuit *interpretable*: each estimate is a
+        ratio of two symbolic coefficients, so it can be read and reasoned
+        about, where the exact root of a degree-15 polynomial cannot be written
+        down at all.  It is also better conditioned than root-finding, since no
+        polynomial is solved.
+
+        Args:
+            env: Numeric substitution; omit for symbolic ratios.
+
+        Returns:
+            List of estimates, lowest-frequency pole first.
+        """
+        coeffs = self.eval_coeffs(env)
+        out = []
+        for k in range(1, len(coeffs)):
+            lower, upper = coeffs[k - 1], coeffs[k]
+            if upper == 0:
+                continue
+            out.append(-lower / upper)
+        return out
 
     def __repr__(self):
         return '<SExpandedDDD degree=%d size=%d order=%s>' % (

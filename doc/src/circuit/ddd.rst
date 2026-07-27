@@ -12,7 +12,8 @@ Determinant Decision Diagrams (DDD) for symbolic circuit analysis
 
    Implemented so far: the measurement harness (Stage B), the layered
    determinant construction with Cramer solving (Stage P0), the s-expanded
-   multiroot form (Stage P1), and the toolkit integration (Stage P2).
+   multiroot form (Stage P1), the toolkit integration (Stage P2), and
+   dominant-term approximation (Stage P5).
 
 Why this exists
 ===============
@@ -354,8 +355,8 @@ own child process.
 
 .. rubric:: Next sections
 
-Next: semi-symbolic numeric terminals, then dominant-term approximation -- which
-is what turns an exact-but-unwritable answer into a formula a designer can read.
+Next: semi-symbolic numeric terminals, and hierarchical construction over
+:class:`~pycircuit.circuit.SubCircuit`.
 
 .. _ddd-s-expanded:
 
@@ -540,3 +541,165 @@ diagram being the only usable form of the answer. What a designer actually wants
 from a circuit that size is not the exact expression but a *pruned* one — which
 is the approximation stage, and the reason it is on the critical path rather
 than an optional extra.
+
+Approximation: from exact to readable
+=====================================
+
+The 32-section table above states the problem this section solves. An exact
+answer that stands for two million product terms is correct and useless: nobody
+reads it. What a designer wants is the handful of terms that actually matter.
+
+Terms can be enumerated **in decreasing order of magnitude** directly on the
+diagram, without expanding it. Each vertex is annotated with the largest product
+still reachable from it, which bounds what any completion of a partial term could
+achieve; a best-first search then produces terms in order, so taking the first
+few costs a fraction of enumerating them all.
+
+Approximation happens **after** the s-expansion, never before. Approximating the
+determinant as a whole weights the powers of ``s`` by whatever frequency happens
+to be in play, so a coefficient that dominates in one band is discarded for
+another; approximating each coefficient separately treats every power on an equal
+footing, and leaves a result usable across the whole frequency range.
+
+Where it helps — and where it does not
+--------------------------------------
+
+Dominant-term approximation is not a free win. It prunes exactly to the extent
+that component values *differ in magnitude*, and on a ladder whose components are
+all alike there is nothing to discard:
+
+.. exec-rst::
+
+    import numpy as np
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.ddd import ddd_of_matrix
+
+    system = bc.rc_ladder(10)
+    D = ddd_of_matrix(system.A)
+    total = D.term_count()
+
+    def env_for(spread):
+        env = {}
+        for sym in system.A.free_symbols - {system.s}:
+            name = str(sym)
+            i = int(''.join(c for c in name if c.isdigit()) or 0)
+            base = 100.0 if name.startswith('R') else 1e-9
+            env[sym] = base * (spread ** i)
+        env[system.s] = 1j * 2 * np.pi * 1e3
+        return env
+
+    print(".. list-table:: Terms needed for 1%% accuracy vs component spread")
+    print("   :header-rows: 1")
+    print("   :widths: 16 14 16 12")
+    print("")
+    print("   * - value spread")
+    print("     - total terms")
+    print("     - terms kept")
+    print("     - fraction")
+    for spread in (1.0, 2.0, 5.0, 10.0, 100.0):
+        _, n, err = D.approximate(env_for(spread), tol=1e-2, max_terms=100000)
+        print("   * - %g× per section" % spread)
+        print("     - %d" % total)
+        print("     - %d" % n)
+        print("     - %.1f%%" % (100.0 * n / total))
+
+With identical components almost every term matters; with an order of magnitude
+between them a handful do. Real analog circuits sit firmly at the useful end --
+transconductances, output conductances and compensation capacitors differ by
+orders of magnitude — which is why the technique is worth having. But the honest
+statement is conditional, and a uniform network is a case where it earns nothing.
+
+One nominal point is not enough
+-------------------------------
+
+Ranking terms at a single set of values can discard a term that dominates
+somewhere else in the design space. Passing several parameter corners ranks by
+worst case across all of them and requires the tolerance to hold at each — the
+argument Yu & Sechen made in 1996:
+
+.. exec-rst::
+
+    import numpy as np
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.ddd import s_expand
+
+    system = bc.rc_ladder(10)
+    coeff = s_expand(system.A, system.s).coefficient(3)
+
+    def env_for(spread):
+        env = {}
+        for sym in system.A.free_symbols - {system.s}:
+            name = str(sym)
+            i = int(''.join(c for c in name if c.isdigit()) or 0)
+            base = 100.0 if name.startswith('R') else 1e-9
+            env[sym] = base * (spread ** i)
+        return env
+
+    lo, hi = env_for(3.0), env_for(10.0)
+    rows = [("corner A alone", coeff.approximate(lo, tol=1e-2, max_terms=100000)),
+            ("corner B alone", coeff.approximate(hi, tol=1e-2, max_terms=100000)),
+            ("both corners", coeff.approximate([lo, hi], tol=1e-2, max_terms=100000))]
+
+    print(".. list-table:: Pruning one coefficient over parameter corners")
+    print("   :header-rows: 1")
+    print("   :widths: 20 14 18")
+    print("")
+    print("   * - ranked over")
+    print("     - terms kept")
+    print("     - worst-case error")
+    for label, (_, n, err) in rows:
+        print("   * - %s" % label)
+        print("     - %d" % n)
+        print("     - %.1e" % err)
+
+Satisfying both corners needs strictly more terms than either alone — which is
+the point. A simplification valid only at nominal is not a simplification a
+designer can rely on.
+
+Dominant poles without root-finding
+-----------------------------------
+
+The other half of interpretability. For a polynomial whose roots are well
+separated — the usual situation, where a dominant pole sits orders of magnitude
+below the rest — the ``k``-th pole is approximately ``-d[k-1]/d[k]``.
+
+That matters twice over. Each estimate is a **ratio of two symbolic
+coefficients**, so it can be read and reasoned about, where the exact root of a
+degree-15 polynomial cannot be written down at all. And it avoids root-finding
+entirely, so it sidesteps the conditioning problem measured earlier on this page.
+
+.. exec-rst::
+
+    import numpy as np
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.ddd import s_expand
+
+    system = bc.rc_ladder(10)
+    env = {}
+    for sym in system.A.free_symbols - {system.s}:
+        name = str(sym)
+        i = int(''.join(c for c in name if c.isdigit()) or 0)
+        env[sym] = (100.0 if name.startswith('R') else 1e-9) * (3.0 ** i)
+
+    E = s_expand(system.A, system.s)
+    est = sorted((complex(p) for p in E.dominant_poles(env)), key=abs)
+    exact = sorted(E.roots_of(env), key=abs)
+
+    print(".. list-table:: Dominant-pole estimates vs exact roots")
+    print("   :header-rows: 1")
+    print("   :widths: 8 20 20 16")
+    print("")
+    print("   * - pole")
+    print("     - -d[k-1]/d[k]")
+    print("     - exact root")
+    print("     - relative error")
+    for k in range(5):
+        print("   * - %d" % k)
+        print("     - %.4g" % est[k].real)
+        print("     - %.4g" % exact[k].real)
+        print("     - %.1e" % (abs(est[k] - exact[k]) / abs(exact[k])))
+
+Accuracy improves for the higher poles, which are the better separated. That is
+the expected behaviour of the estimate and the reason it is called a
+*dominant-pole* method rather than an exact one: it is a tool for insight, and
+the exact numeric roots remain available when precision is what is wanted.
