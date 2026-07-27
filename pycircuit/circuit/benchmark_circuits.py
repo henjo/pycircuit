@@ -359,3 +359,143 @@ def _build_opamp_741_like(symbolic_devices, miller):
     return system_from_circuit(cir, 'opamp_741_like', params,
                                out_index=names.index('out'),
                                in_index=names.index('inp'))
+
+
+## Nominal small-signal parameters by device role.  Values are representative of
+## a bipolar op-amp biased at a few tens of microamps; the point of this fixture
+## is the topology and matrix structure, not predicting a datasheet number.
+_UA741_ROLES = {
+    ## role          gm      rpi     ro      cpi     cmu
+    'input':      (0.4e-3,  250e3,  2.0e6,  3e-12,  0.5e-12),
+    'mirror':     (0.4e-3,  250e3,  2.0e6,  3e-12,  0.5e-12),
+    'bias':       (0.6e-3,  180e3,  1.5e6,  3e-12,  0.5e-12),
+    'gain':       (2.0e-3,   50e3,  400e3,  8e-12,  1.0e-12),
+    'output':     (8.0e-3,   12e3,  100e3, 20e-12,  2.0e-12),
+    ## Protection devices sit cut off in normal operation: negligible
+    ## transconductance, very high impedances.  They still contribute nodes and
+    ## a little capacitive coupling, which is why they are not simply omitted.
+    'off':        (1e-9,      1e9,    1e9,  0.5e-12, 0.2e-12),
+}
+
+
+def ua741(symbolic_devices=(), miller=True):
+    """The µA741 operational amplifier, small-signal -- the calibration circuit.
+
+    Transcribed from Fig. 15 of Tan & Shi, *Hierarchical Symbolic Analysis of
+    Analog Integrated Circuits via Determinant Decision Diagrams* (IEEE TCAD
+    19(4), 2000), the circuit their published DDD sizes are measured on: 24
+    transistors and 11 resistors, reported there as a 24x24 MNA matrix with 89
+    nonzeros, a flat diagram of 6654 vertices standing for 119 011 product terms.
+
+    Supply rails are AC grounds, and each transistor is the hybrid-pi model of
+    :func:`add_small_signal_bjt`, so the matrix structure follows the schematic
+    while the device values are representative rather than taken from a DC
+    operating point.  Q13's split collector is modelled as a single collector.
+
+    Args:
+        symbolic_devices: Device names (``'q1'`` ... ``'q24'``) whose ``gm``
+            stays symbolic.  Empty gives a numeric circuit plus ``s``.
+        miller: Include the 30 pF compensation capacitor.
+
+    Returns:
+        BenchSystem.
+    """
+    import pycircuit.circuit.circuit as _circuit_module
+    saved = _circuit_module.default_toolkit
+    _circuit_module.default_toolkit = symbolic
+    try:
+        return _build_ua741(symbolic_devices, miller)
+    finally:
+        _circuit_module.default_toolkit = saved
+
+
+def _build_ua741(symbolic_devices, miller):
+    cir = SubCircuit(toolkit=symbolic)
+    names = (
+        'inp', 'inn',            # inputs
+        'e1', 'e2', 'c1', 'c2',  # input pair emitters / collectors
+        'nb34', 'nq9',           # cascode bases, Q8/Q9 mirror diode node
+        'c3', 'c4',              # first-stage outputs (c4 is the high-Z node)
+        'nb56', 'e5', 'e6',      # load mirror base node and degeneration
+        'nb1011', 'e10', 'nr5',  # Widlar bias chain, Q12/Q13 mirror node
+        'e16', 'e17', 'c17',     # second stage
+        'e23', 'nb14', 'nb20',   # output drive
+        'n19', 'nr6', 'nr7',     # Vbe multiplier, output degeneration
+        'out',
+    )
+    n = {name: cir.add_node(name) for name in names}
+
+    vin = sympy.Symbol('vin')
+    params = {vin: 1.0}
+    cir['vs'] = VS(n['inp'], gnd, vac=vin)
+    cir['rinn'] = R(n['inn'], gnd, r=1e6)          # inverting input tied down
+
+    def bjt(dev, role, b, c, e):
+        gm, rpi, ro, cpi, cmu = _UA741_ROLES[role]
+        if dev in symbolic_devices:
+            sym = sympy.Symbol('gm_%s' % dev, positive=True)
+            params[sym] = gm
+            gm = sym
+        add_small_signal_bjt(cir, dev, b, c, e, gm, rpi, ro, cpi, cmu)
+
+    ## -- input stage: emitter followers Q1/Q2 into common-base Q3/Q4 --------
+    ## Q1/Q2 are followers whose emitters drive the common-base pair Q3/Q4 --
+    ## two separate signal paths, not a shared tail node.
+    bjt('q1', 'input', n['inp'], n['c1'], n['e1'])
+    bjt('q2', 'input', n['inn'], n['c2'], n['e2'])
+    bjt('q3', 'input', n['nb34'], n['c3'], n['e1'])
+    bjt('q4', 'input', n['nb34'], n['c4'], n['e2'])
+
+    ## Q8/Q9 mirror loading the input pair collectors.
+    bjt('q8', 'mirror', n['nq9'], n['c1'], gnd)
+    bjt('q9', 'mirror', n['nq9'], n['nq9'], gnd)
+    cir['rq9'] = R(n['c2'], n['nq9'], r=1e3)
+
+    ## -- Q5/Q6 active load with Q7 buffering the mirror base ----------------
+    bjt('q5', 'mirror', n['nb56'], n['c3'], n['e5'])
+    bjt('q6', 'mirror', n['nb56'], n['c4'], n['e6'])
+    bjt('q7', 'mirror', n['c3'], gnd, n['nb56'])
+    cir['R1'] = R(n['e5'], gnd, r=1e3)
+    cir['R2'] = R(n['nb56'], gnd, r=50e3)
+    cir['R3'] = R(n['e6'], gnd, r=1e3)
+
+    ## -- Widlar bias chain: Q10/Q11 with R4, mirrored by Q12 into Q13 -------
+    bjt('q10', 'bias', n['nb1011'], n['nb34'], n['e10'])
+    bjt('q11', 'bias', n['nb1011'], n['nb1011'], gnd)
+    bjt('q12', 'bias', n['nr5'], n['nr5'], gnd)
+    cir['R4'] = R(n['e10'], gnd, r=5e3)
+    cir['R5'] = R(n['nr5'], n['nb1011'], r=39e3)
+
+    ## -- second stage: Q16 follower into Q17, Miller compensated ------------
+    bjt('q16', 'gain', n['c4'], gnd, n['e16'])
+    bjt('q17', 'gain', n['e16'], n['c17'], n['e17'])
+    cir['R9'] = R(n['e16'], gnd, r=50e3)
+    cir['R8'] = R(n['e17'], gnd, r=100)
+    bjt('q13', 'bias', n['nr5'], n['c17'], gnd)    # current-source load
+    if miller:
+        cir['cc'] = C(n['c4'], n['c17'], c=30e-12)
+
+    ## -- output stage: Q23 driver, Q18/Q19 Vbe multiplier, Q14/Q20 pair -----
+    bjt('q23', 'gain', n['c17'], gnd, n['e23'])
+    cir['R11'] = R(n['e23'], gnd, r=50e3)
+    bjt('q18', 'bias', n['n19'], n['nb14'], n['nb20'])
+    bjt('q19', 'bias', n['nb20'], n['n19'], gnd)
+    cir['R10'] = R(n['n19'], n['nb20'], r=40e3)
+    cir['rdrv'] = R(n['e23'], n['nb14'], r=1e3)
+
+    bjt('q14', 'output', n['nb14'], gnd, n['nr6'])
+    bjt('q20', 'output', n['nb20'], gnd, n['nr7'])
+    cir['R6'] = R(n['nr6'], n['out'], r=27)
+    cir['R7'] = R(n['nr7'], n['out'], r=22)
+
+    ## -- short-circuit protection and remaining bias devices ----------------
+    bjt('q15', 'off', n['nr6'], n['nb14'], gnd)
+    bjt('q21', 'off', n['nr7'], n['nb20'], gnd)
+    bjt('q22', 'off', n['e17'], n['c17'], gnd)
+    bjt('q24', 'off', n['nb1011'], n['nb1011'], gnd)
+
+    cir['rload'] = R(n['out'], gnd, r=2e3)
+
+    return system_from_circuit(cir, 'ua741', params,
+                               out_index=names.index('out'),
+                               in_index=names.index('inp'))

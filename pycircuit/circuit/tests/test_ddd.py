@@ -817,3 +817,80 @@ def test_hierarchy_agrees_on_the_opamp():
     ## Suppress the input stage: e1, e2, c3, e5, e6.
     hier = complex(HierarchicalDDD(system.A, (2, 3, 4, 6, 7)).eval(env))
     assert abs(flat - hier) <= 1e-7 * abs(flat)
+
+
+## -- the µA741 calibration circuit ---------------------------------------
+
+def test_ua741_structure_is_close_to_the_published_circuit():
+    """Tan & Shi report a 24x24 matrix with 89 nonzeros for the µA741."""
+    system = bc.ua741()
+    assert 24 <= system.dim <= 30
+    nonzeros = sum(1 for i in range(system.dim) for j in range(system.dim)
+                   if system.A[i, j] != 0)
+    assert 80 <= nonzeros <= 130
+
+
+def test_ua741_behaves_like_an_opamp():
+    """Guard the topology: high DC gain rolling off at 20 dB/decade.
+
+    A wiring error shows up here and nowhere else -- an earlier version tied
+    both input emitters to one node, which is electrically a short between the
+    two signal paths, and it merely reduced the gain to 3 rather than failing.
+    """
+    system = bc.ua741()
+    n = system.dim
+
+    def gain(freq):
+        env = dict(system.params)
+        env[system.s] = 1j * 2 * np.pi * freq
+        A = np.array([[complex(system.A[i, j].subs(env)) for j in range(n)]
+                      for i in range(n)])
+        b = np.array([complex(system.b[i].subs(env)) for i in range(n)])
+        x = np.linalg.solve(A, b)
+        return abs(x[system.out_index] / x[system.in_index])
+
+    assert gain(1.0) > 1e4                       # high open-loop gain
+    ## One decade of frequency costs about one decade of gain once compensated.
+    assert 5 < gain(1e2) / gain(1e3) < 20
+    assert gain(1e5) < gain(1e3)
+
+
+def test_ua741_determinant_agrees_with_numpy():
+    system = bc.ua741()
+    env = dict(system.params)
+    env[system.s] = 1j * 2 * np.pi * 1e3
+    n = system.dim
+    A = np.array([[complex(system.A[i, j].subs(env)) for j in range(n)]
+                  for i in range(n)])
+    got = complex(ddd_of_matrix(system.A).eval(env))
+    ref = np.linalg.det(A)
+    assert abs(got - ref) <= 1e-6 * abs(ref)
+
+
+def test_ua741_diagram_is_in_the_published_regime():
+    """Thousands of vertices standing for millions of terms."""
+    D = ddd_of_matrix(bc.ua741().A)
+    assert 200 < D.size < 20000              # theirs: 6654
+    assert D.term_count() > 1e5              # theirs: 119011
+
+
+def test_min_degree_ordering_beats_row_wise_on_the_ua741():
+    """Ordering is worth a factor here, which matters when comparing sizes.
+
+    Their 2000 figure predates the expansion-ordering scheme used here, and Shi
+    (ICCAD 2010) later measured the older Greedy-Labeling order as dramatically
+    worse -- so a smaller vertex count than the paper's is expected rather than
+    suspicious.
+    """
+    A = bc.ua741().A
+    assert ddd_of_matrix(A, order='min-degree').size \
+        < ddd_of_matrix(A, order='row').size
+
+
+def test_singular_internal_block_is_reported_clearly():
+    """Suppression inverts the block, so a singular partition must be refused."""
+    a, b = sympy.symbols('a b')
+    ## Second row/column carries nothing: the internal sub-matrix is singular.
+    A = sympy.Matrix([[a, 0, b], [0, 0, 0], [b, 0, a]])
+    with pytest.raises((ValueError, ZeroDivisionError), match='singular'):
+        HierarchicalDDD(A, (1,)).eval({a: 1.0, b: 0.5})

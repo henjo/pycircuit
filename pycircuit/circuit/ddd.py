@@ -1339,6 +1339,11 @@ class HierarchicalDDD:
 
         self.top = ddd_of_matrix(Msym, order=order)
         self._m = m
+        if self.family.denominator.root is ZERO:
+            raise ValueError(
+                'the internal block is structurally singular, so it cannot be '
+                'suppressed; choose a partition whose internal sub-matrix is '
+                'non-singular')
 
     @property
     def size(self):
@@ -1372,6 +1377,15 @@ class HierarchicalDDD:
         D = memo[id(self.family.denominator.root)]
         if self._m == 1:
             return value
+        if D == 0:
+            ## Suppressing a block inverts its own matrix, so the partition has
+            ## to leave that block non-singular.  A block whose determinant
+            ## vanishes usually means it was cut somewhere the circuit does not
+            ## separate -- nodes pulled in without the elements that bias them.
+            raise ZeroDivisionError(
+                'the internal block is singular (its determinant is zero), so '
+                'it cannot be suppressed; choose a partition whose internal '
+                'sub-matrix is non-singular')
         return value / D ** (self._m - 1)
 
     def __repr__(self):

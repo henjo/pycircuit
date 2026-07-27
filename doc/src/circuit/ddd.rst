@@ -954,70 +954,89 @@ establishes that sharing works at all — and, importantly, it means a
 disappointing size result elsewhere is evidence about the *method* rather than
 about our implementation.
 
-**An approximate one.** :func:`~pycircuit.circuit.benchmark_circuits.opamp_741_like`
-is a µA741-class amplifier built from primitives pycircuit already had — a
-hybrid-π BJT is a `VCCS` plus two resistances and two capacitances — following
-the same signal path at comparable node count:
+**An approximate one.**  :func:`~pycircuit.circuit.benchmark_circuits.ua741` is
+the µA741 itself, transcribed from Fig. 15 of the same paper -- 24 transistors
+and 11 resistors, each a hybrid-π model built from primitives pycircuit already
+had (a `VCCS` plus two resistances and two capacitances, no new element types).
+Supply rails are AC grounds and the device values are representative rather than
+taken from a DC operating point, so the *structure* is theirs and the numbers are
+ours.
+
+That it is wired correctly is checked by behaviour, not by inspection: the
+circuit must show high open-loop gain rolling off at 20 dB per decade. That test
+earns its place -- an earlier version tied both input emitters to a single node,
+which shorts the two signal paths, and the only symptom was a gain of 3 instead
+of 30 000.
 
 .. exec-rst::
 
-    import numpy as np
     from pycircuit.circuit import benchmark_circuits as bc
     from pycircuit.circuit.ddd import ddd_of_matrix
 
-    devices = ('q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q16', 'q17', 'q23', 'q14')
+    system = bc.ua741()
+    nonzeros = sum(1 for i in range(system.dim) for j in range(system.dim)
+                   if system.A[i, j] != 0)
+    D = ddd_of_matrix(system.A)
+    row = ddd_of_matrix(system.A, order='row')
 
-    print(".. list-table:: A 741-class amplifier, small-signal")
+    print(".. list-table:: µA741 -- ours against Tan & Shi (TCAD 2000, Table IV)")
     print("   :header-rows: 1")
-    print("   :widths: 22 10 12 14 16")
+    print("   :widths: 26 16 16")
     print("")
-    print("   * - symbolic devices")
-    print("     - dim")
-    print("     - free symbols")
-    print("     - vertices")
-    print("     - product terms")
-    for label, devs in (("none (numeric + s)", ()),
-                        ("3 transconductances", devices[:3]),
-                        ("all 10", devices)):
-        system = bc.opamp_741_like(symbolic_devices=devs)
-        D = ddd_of_matrix(system.A)
-        print("   * - %s" % label)
-        print("     - %d" % system.dim)
-        print("     - %d" % len(system.A.free_symbols))
-        print("     - %d" % D.size)
-        print("     - %d" % D.term_count())
+    print("   * - quantity")
+    print("     - this implementation")
+    print("     - published")
+    print("   * - matrix size")
+    print("     - %d" % system.dim)
+    print("     - 24")
+    print("   * - nonzeros")
+    print("     - %d" % nonzeros)
+    print("     - 89")
+    print("   * - ``|DDD|`` (min-degree)")
+    print("     - %d" % D.size)
+    print("     - 6654")
+    print("   * - ``|DDD|`` (row-wise)")
+    print("     - %d" % row.size)
+    print("     - --")
+    print("   * - product terms")
+    print("     - %s" % format(D.term_count(), ","))
+    print("     - 119,011")
 
-The striking column is the fourth: **the vertex count does not move**. Ten
-symbolic device parameters cost exactly what one does, because a diagram's shape
-is fixed by the matrix sparsity pattern and the symbols merely ride along as
-payloads. An expanded expression behaves in the opposite way entirely, and that
-difference is the whole reason for the representation.
+The matrix agrees closely in size and sparsity, so the circuits are comparable.
+The vertex count does not, and the direction is the interesting part: **ours is
+several times smaller than theirs**, which needs explaining rather than
+celebrating.
 
-What this does and does not tell us
------------------------------------
+The explanation is ordering. The row-wise figure above is ~1.8× the min-degree
+one on this circuit, and their 2000 result predates the expansion-ordering scheme
+used here -- it used the Greedy-Labeling order, which Shi later measured
+(ICCAD 2010) as dramatically worse again, by more than 30× at n=18. A smaller
+diagram than the 2000 paper's is therefore the expected outcome of implementing
+the 2010 construction, not evidence of an error. The term counts differ in the
+other direction because our device model puts both junction capacitances on every
+transistor, which adds couplings their small-signal model may not have.
 
-Tan & Shi (TCAD 2000) report 6654 vertices for a flat µA741, reduced to 117 by
-three-level two-way partitioning. Our amplifier gives 108 for the flat diagram.
-**This is not a reproduction of their result, and the gap should not be read as
-one.** Two known differences account for it before any question of
-implementation quality arises:
+Where hierarchy does *not* reproduce the paper
+----------------------------------------------
 
-* **size** — theirs is the full µA741, *26 transistors and 11 resistors*
-  (TCAD 2000 §VII); ours has ten transistors, so it is roughly a third of the
-  circuit.
+Tan & Shi reduce that 6654 to 117 -- the 56× quoted earlier on this page. **We do
+not reproduce it, and the reason is a limitation of what is implemented here.**
 
-The symbol convention, at least, is *not* a difference: TCAD 2001 §VI states
-that they view "each nonzero entry in the MNA circuit matrix as a distinct
-symbol", which is the same compact-symbol choice made here. (An earlier draft of
-this page claimed otherwise and has been corrected.)
+Their result uses a *three-level recursive* partition into very small leaves:
+Table IV lists leaf matrix sizes of 3, 4, 4 and 3, with cut sets of 5 and 6 nets.
+:class:`~pycircuit.circuit.ddd.HierarchicalDDD` performs a **single** level of
+suppression, and measured on the µA741 it loses either way round:
 
-So the honest statement is that our sizes are *plausible* for a circuit a third
-the size, and nothing stronger. The claim that carries weight is the
-exact identity, not this comparison — which is why the calibration is reported
-here with its caveats rather than quoted as agreement.
+* suppressing a *small* block leaves ~21 terminals, so the reduced system is
+  nearly as hard as the original;
+* suppressing a *large* block (21 internal nodes, 6 terminals) costs its cofactor
+  family -- 4842 vertices against 1072 for the flat diagram, 4.5× worse.
 
-One further honest note: hierarchy buys little on this amplifier (ratios of
-1.2–1.4), for the same reason it buys little on a ladder — the circuit is sparse,
-so the flat diagram is already small and there is no exponential to break up. The
-large hierarchical gains shown earlier are on dense blocks, and a real amplifier
-is not one.
+The gains shown earlier for hierarchy are real but belong to a different
+situation: one split of a *dense* block, where the flat construction is genuinely
+exponential. Reproducing 56× on a real amplifier needs recursive partitioning
+into small leaves, which is further work rather than a tuning parameter.
+
+Stating that plainly is the point of a calibration circuit. The published number
+was quotable long before it was testable; having the circuit makes it testable,
+and the honest result is that one level of hierarchy does not get there.
