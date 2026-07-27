@@ -5,7 +5,16 @@ concluded and why, including the gates). This document says *what to build, in
 what order, and when to stop*. Where the three disagree, `ddd_conclusions.md`
 wins on rationale and this file wins on sequencing.
 
-Written 2026-07-27. No DDD code exists yet.
+Written 2026-07-27; rebuilt the same day once round one finished. **Stages B and
+P0–P6 are complete** — see §4 for what each one actually returned, including the
+two that contradicted the plan that produced them. §5 is the remaining work, in
+priority order.
+
+Sections 1–3 are carried forward unchanged: the ground rules, the
+documentation-with-the-code rule and the architectural analysis all still govern,
+and the decisions recorded in §3 (solution-object delegation, the ABC-versus-duck-
+typing split, dependency discipline) are settled rather than open. Read them as
+constraints on round two, not as history.
 
 ---
 
@@ -83,6 +92,11 @@ built, and then keeps testing it.
 | s-expansion / multiroot | P1 | One root per power of `s`, **rendered showing shared subgraphs**; measured linearity |
 | Numeric terminals | P3 | Semi-symbolic; why the coefficient blow-up cannot form |
 | How it compares | P0→ | Live table: DDD vs SoE vs `symbolic_poly`, regenerated at build |
+| Approximation, noise, hierarchy | P5, P4, P6 | Written as those stages landed |
+| Calibration against the papers | Tier 1/3 | The exact identity, and the µA741 |
+| *Recursive hierarchy* | H1 | Replaces the "does not reproduce 56×" note with the measured outcome |
+| *Ordering* | H2 | The distribution over node numberings, not a single figure |
+| *Sensitivity* | H3 | New section |
 
 ---
 
@@ -119,7 +133,7 @@ deliberately rather than discovered at P2.
 | `toolkit.py` | `DDDToolkit` + `ddd_toolkit` singleton | Low — purely additive, follows the `ginac_toolkit` pattern |
 | `CircuitResultACPoly` | Not reusable as-is — see 3.3 | Medium |
 | `doc/src/conf.py` | add `sphinx.ext.graphviz` | Trivial, doc-build only |
-| `SubCircuit` (P6 only) | Hierarchical stamps | Deferred; the deepest leak, and a reason to keep P6 last |
+| `SubCircuit` (hierarchy) | Hierarchical stamps | Still open: H1 works on matrices, and wiring it to `SubCircuit` remains the deepest leak |
 
 ### 3.3 The bloat problem, and the fix
 
@@ -259,273 +273,156 @@ that makes duck typing tolerable at this scale.
   becomes reachable from *every* symbolic toolkit and quietly widens their surface.
   DDD methods go on `DDDToolkit` explicitly.
 
-## 4. File map
+## 4. Status — round one is complete
 
-| Path | Status | Contents |
-|---|---|---|
-| `pycircuit/circuit/ddd.py` | **rewritten** | `DDD` vertex/graph, `ddd_of_matrix` (LED), minor hash table, `eval`, `cofactor`, `to_dot` |
-| `pycircuit/circuit/dddresult.py` | new | `DDDResult` — lazy Cramer numerators, `tf`, `poles`, `denominator`, `eval` |
-| `pycircuit/circuit/toolkit.py` | edited | `DDDToolkit(SymbolicPolyToolkit)` + `ddd_toolkit` singleton |
-| `pycircuit/circuit/symbolic_benchmark.py` | new | Benchmark circuits + runner (size, time, memory, completion) |
-| `pycircuit/circuit/tests/test_ddd.py` | rewritten | Core: identities, signs, `det` cross-checks, randomised |
-| `pycircuit/circuit/tests/test_dddresult.py` | new | Result object + toolkit integration |
-| `doc/src/circuit/ddd.rst` | new | The theory document (§2) |
-| `doc/src/conf.py` | edited | add `sphinx.ext.graphviz` |
-| `doc/src/circuit/index.rst` | edited | toctree entry |
+Stages B and P0–P6 are implemented, measured and documented, together with the
+solution-object refactor and calibration tiers 1 and 3.
+
+| Stage | Outcome |
+|---|---|
+| B — benchmark harness | Gate passed: reproduces the published SoE op counts exactly |
+| P0 — LED construction | Both gates passed; `\|DDD\|` 63 vs SoE 466 at N=16, where `symbolic_poly` times out |
+| P1 — s-expanded multiroot | All three gates passed, including pole *accuracy* |
+| P2 — `ddd_toolkit` | Gate passed; graph path answers where expansion cannot (94 vertices for 2.18M terms) |
+| P3 — numeric terminals | **Measured negative.** Implemented, correct, off by default: its premise did not hold |
+| P4 — noise | Gate passed; whole transimpedance family for ~3× one transfer function |
+| P5 — approximation | Delivered, and conditional: prunes only as far as component values differ |
+| P6 — hierarchy | Delivered **single-level**; does *not* reach the published 56× |
+| Calibration | Tier 1 exact (`n·2^(n-1)`, n = 1…7); Tier 3 µA741 built and compared |
+
+The original definition of done is met: exact s-expanded coefficients held
+compactly, dominant pole/zero estimates from coefficient ratios, exact numeric
+poles after substitution, and a readable expression after approximation.
+
+Two results contradicted the plan that produced them, and both are recorded as
+such rather than quietly dropped — P3's premise (the exact-rational blow-up it
+was meant to prevent cannot arise in a representation that never multiplies
+entries symbolically) and P5's generality (approximation is conditional on
+parameter spread). A third, P6's single-level limitation, is what round two
+opens with.
 
 ---
 
-## 5. Stages
+## 5. Round two — remaining work, in priority order
 
-Effort figures are rough sizing, not estimates from a decomposition.
+Ordering is as directed: hierarchy first, then ordering, then the rest.
 
-### Stage B — Benchmark harness *(~1 day)*
+### H1 — Recursive hierarchy *(the headline gap)*
 
-**Goal:** make every later gate executable, and fix the comparison before results
-exist.
+**Why first.** `HierarchicalDDD` splits the matrix *once*, and on the µA741 that
+loses whichever way it is pointed: suppress a small block and ~21 terminals
+remain, so the reduced system is nearly the original; suppress a large block (21
+internal, 6 terminals) and its cofactor family costs 4842 vertices against 1072
+flat. Tan & Shi's 56× comes from never building a large matrix at all — Table IV
+shows leaves of 3, 4, 4 and 3 nodes, suppressed bottom-up into middles of 2 and 3.
 
 Tasks:
-1. `symbolic_benchmark.py` with the **circuit builders** (all real pycircuit
-   circuits): fully-symbolic RC ladder (N = 4, 8, 12, 16, matching
-   `soe_symbolic.rst` exactly, same `v_out/v_in`); the Example-10 MFB filter (has
-   a `Nullor`); a semi-symbolic opamp-like circuit; and dense symbolic n×n
-   matrices for n = 3…8 (matrix-level, for the Tier-1 identity).
-2. A runner producing per (circuit, backend): representation size, **raw
-   expression size** (the confound), construction time, evaluation time per sweep
-   point, **peak memory**, correctness vs a reference, and **completion status** —
-   `ok` / `timeout` / `killed`, since several backends hang rather than fail.
-3. Every case runs under a timeout and `ulimit -v`.
-4. Baselines recorded now, before any DDD exists: `symbolic_poly`, `ginac`, `soe`.
+1. Generalise `HierarchicalDDD` to take a **partition tree** rather than one index
+   set, and evaluate bottom-up: each subcircuit is reduced to its cut-set before
+   its parent is built.
+2. Terminal/cut-set bookkeeping per level — the piece that does not exist today.
+3. Reuse what is already right: `DDDFamily` is the correct primitive for a
+   block's cofactors, `eval_roots` already prevents the quadratic re-walk, and the
+   `_blk_*` symbol indirection already lets a parent treat a reduced block as an
+   opaque payload.
+4. Transcribe their Fig. 16 partition of the µA741 so the comparison is
+   like-for-like rather than a partition of our choosing.
 
-**Gate:** the harness reproduces the published SoE op counts (73/157/241/325) for
-the ladder. If it cannot reproduce our own numbers, it cannot referee anything.
+**Gate.** Total vertices across all levels must beat the flat diagram on the
+µA741 (currently 1040), evaluating to the same value. Reaching their ~117 with a
+comparable three-level two-way partition is the target; failing that while still
+beating flat is a partial pass, and losing to flat is a negative result to write
+up as P3 was.
 
-**Docs:** the "How we measure" section, including what each metric means and the
-symbol-convention note (see Stage P0).
+*Effort: the largest remaining item.*
 
----
+### H2 — Expansion and node ordering
 
-### Stage P0 — Core construction *(largest stage, a few days)*
-
-**Decide first — the symbol convention** (`ddd_conclusions.md` §7). Build the DDD
-over *matrix entries* (compact), keeping each entry's symbolic expression as the
-vertex payload so component-level results remain available. Record the choice in
-the docs beside every number. Validate at P0; do not assume.
+**Why second.** Rebuilding the µA741 with a different node *numbering* moved
+`|DDD|` from 1040 to 2424 — a 2.3× swing from something arbitrary. Every vertex
+count reported anywhere in this work carries that much slack, including the
+comparisons against SoE and against the paper, so it caps the precision of any
+claim built on them.
 
 Tasks:
-1. LED construction: layered expansion, whole row/column at a time; min-degree
-   expansion ordering chosen on the fly; **minor hash table keyed by
-   `(row-index tuple, col-index tuple)`**; signs determined during construction.
-2. LED → DDD conversion (next-layer pointers become 1-edges; 0-edges along sibling
-   groups terminating at `0`; bottom queue terminates at `1`).
-3. Numeric evaluation over the graph.
-4. `to_dot()` with a vertex limit.
-5. Drive it from real circuits through the existing MNA path.
+1. Characterise it: permute node order repeatedly, report the distribution of
+   `|DDD|` rather than a single number.
+2. Compare policies — the current on-the-fly min-degree, row-wise, and at least
+   one stronger heuristic (min-degree with a fill-based tie-break, or a
+   Markowitz-style criterion).
+3. Decide between ordering once up-front as a permutation and continuing to
+   choose per minor.
+4. Re-state the standard suite's figures under the chosen policy, with the spread.
 
-Tests:
-- **Tier-1 identity:** `|DDD| == n·2^(n-1)` exactly, dense n×n, row-wise, n = 3…8.
-  This is the structural check that sharing works.
-- **Signs:** numeric evaluation vs `sympy.Matrix.det` on random sparse matrices.
-- **Randomised:** dimension 3–8, `det` and Cramer vs `linearsolver_num_den`.
-- **Nullor:** MFB result checked against `symbolic_poly`, not merely measured.
+**Gate.** A documented policy whose worst case over random node numberings is
+within a stated factor of its best, and republished suite numbers carrying that
+spread.
 
-**Gate (two criteria — passing *either* continues; both failing stops):**
-- **(a) Capability** — on the N = 8 ladder, where *[OURS]* `to_ratio` /
-  `poly_coeffs` do not complete: construction finishes within the benchmark
-  timeout, the graph evaluates numerically to the same transfer function as
-  `numeric` (to `1e-10` relative), and `|DDD|` is **under 10 000 vertices** so that
-  P1's `q·d·|DDD|` expansion stays tractable. Concrete pass/fail, not a judgement.
-- **(b) Size** — `|DDD| ≤ 2×` SoE ops at N = 12, growing no faster across N = 4→16.
-  **Caveat on (b): this is not yet an apples-to-apples comparison.** Under the
-  compact-symbol convention a DDD vertex carries a whole matrix entry
-  (`g₁+g₂+s(c₁+c₂)`) while an SoE operation is over component-level symbols — the
-  DDD has fewer, fatter units. Report the per-vertex payload sizes alongside, and
-  if the two cannot be reconciled, treat (a) as decisive and (b) as indicative.
+### H3 — Symbolic sensitivity
 
-**Disambiguate before acting:** the Tier-1 identity must pass first. A poor gate
-result with Tier 1 *failing* means our sharing is broken, not that DDD is wrong —
-fix the code. Only a gate failure with Tier 1 passing is evidence about the method.
+The plan's own judgement, deferred pending P0 and now due: *pycircuit has none,
+and a DDD makes it nearly free — the derivative of a determinant with respect to
+a symbol **is** the cofactor.* The infrastructure exists and is tested;
+`DDDFamily` already produces exactly those cofactors, shared.
 
-**On failure of both (Tier 1 passing):** write up the negative result in `doc/`
-beside the symengine and GiNaC write-ups, leave the module experimental and
-unwired, close the roadmap item. **If (b) fails but (a) passes:** continue, but
-drop the compactness claim and justify on capability only.
+It is also the only remaining item that gives pycircuit a **user-facing
+capability it currently lacks**, rather than improving a number.
 
-**Docs:** the bulk of the theory document — problem, Laplace→DDD, LED, sharing,
-signs, ordering/complexity, all with rendered diagrams and the measured-vs-theory
-plot.
+Tasks: sensitivity of the determinant to a matrix entry from the cofactor; chain
+to component parameters; expose on `DDDSolution` and the AC result.
 
----
+**Gate.** Agreement with finite differences on the ladder, the MFB and the µA741,
+at a cost that is a small multiple of a single solve rather than one solve per
+parameter.
 
-### Stage P1 — s-expanded / multiroot DDD *(~2 days)*
+### H4 — Tier 2 calibration
 
-Tasks: coefficient split, one root per power of `s`, roots sharing subgraphs;
-`q`/`d` measurement to test Theorem 1's linearity empirically.
+The Cauer low-pass filter and the cascaded-opamp series from TCAD 2000, both
+constructible from `R`/`C`/`VCCS` today. The cascaded series is the one their
+SCAPP comparison uses, so it lets the DDD-versus-SoE question be checked against
+their 117 vertices vs 539 operations rather than only against our own SoE.
 
-**Gate:**
-- coefficients match `symbolic_poly` / `_ginac.poly_coeffs` where both can run;
-- size grows linearly in `|DDD|`;
-- **pole accuracy**, not merely coefficient agreement — per
-  `ddd_conclusions.md` §8.6, root-finding from expanded high-degree coefficients
-  is ill-conditioned, and we have already silently dropped poles this way once.
+### H5 — Frequency and impedance scaling
 
-**Docs:** s-expansion section, with a rendered multiroot diagram showing shared
-subgraphs, and the measured linearity table.
+P1 measured denominator coefficients spanning 10⁹⁷ by N = 20, with pole accuracy
+degrading to 5e-10. Scaling toward O(1) coefficients is recorded there as the
+mitigation and has never been applied; it is the same fix that rescued the GiNaC
+backend from a related blow-up.
+
+**Gate.** Pole accuracy at N = 20 improves by orders of magnitude with no
+regression at small N.
+
+### H6 — DC and other analyses
+
+Everything built so far is AC and noise. Nothing rules out DC symbolic solving
+through the same machinery and nothing has been thought about. Scoping only.
 
 ---
 
-### Stage P2 — `DDDResult` + toolkit integration *(~3 days)*
+## 6. Definition of done for round two
 
-**Read this before planning P2 in detail — the obvious integration is a trap.**
-`SymbolicPolyToolkit.linearsolver_num_den` returns *sympy expressions*, and the
-whole downstream path is eager about it: `analysis_ss.py:184` immediately builds
-`xac = np.array([ni / den for ni in num], dtype=object)`, and
-`TransferFunction.as_num_den` calls `sympy.fraction(self.canonical())`. So a
-`DDDToolkit` that satisfies the existing contract **must flatten its DDDs into
-sympy expressions — which is exactly the exponential blow-up the DDD exists to
-avoid.** Flattening works only for circuits small enough that `symbolic_poly`
-already handles them, i.e. not the motivating case.
+1. **Hierarchy earns its place**: recursive suppression beats the flat diagram on
+   a real amplifier, or the negative result is written up with the measurement.
+2. **Vertex counts are trustworthy**: every published figure carries a known
+   ordering policy and a known spread.
+3. **A designer gains something they did not have**: symbolic sensitivity,
+   agreeing with finite differences.
 
-Therefore P2 has two deliverables, and the second is **not** optional:
-
-1. **Compatibility path** (`linearsolver_num_den` → sympy). Keep it, because it
-   makes every existing analysis work unchanged and is the cheapest correctness
-   check against `symbolic_poly`. But label it honestly: it is valid for **small
-   circuits only**, and must carry a size guard that refuses (or warns and falls
-   back) above a vertex/term threshold rather than hanging — the same discipline as
-   `ginac_max_dim` and `MAX_COMPILE_CHARS`.
-2. **Graph-preserving path** — `DDDResult` as the primary interface, never
-   flattened: `denominator()`, `numerator(i)`, `tf(i,j)` and `eval(params)` all
-   operating on the graph, with numeric evaluation done by walking it. This is
-   where the value actually is, and deferring it (as an earlier draft of this plan
-   did) would leave the project unable to serve its own use case.
-
-Tasks: `DDDResult`; `DDDToolkit(SymbolicPolyToolkit)` with both paths;
-`ddd_toolkit` singleton; `supports('ddd')` plus the `CircuitResultACPoly`
-subclass needed to reach the graph path from `AC`.
-
-**Integration details to check early** (each has bitten a previous backend):
-- `self.toolkit.concatenate` / `array` at `analysis_ss.py:186` operate on the
-  numerator vector; confirm they behave for whatever objects the graph path
-  returns, or arrange for the graph path to bypass that branch entirely.
-- interaction with the deprecated `default_toolkit` global;
-- sympy expressions as vertex payloads hash structurally — `Add`/`Mul` are
-  canonicalised so `g1+g2` and `g2+g1` collide correctly, but this should have a
-  test rather than being assumed.
-
-**Gate:** `AC(cir, toolkit=ddd_toolkit)` agrees with `symbolic_poly` on every
-circuit where the latter runs; the graph path returns correct numeric results on a
-circuit where the compatibility path cannot complete; **full existing test suite
-green**.
-
-**Docs:** cofactors → Cramer → transfer functions, the two paths and why both
-exist, and the user-facing API.
-
----
-
-### Stage P3 — Numeric terminals (semi-symbolic / MTDDD) *(~2 days)*
-
-Terminals carry numeric values; numeric sub-products collapse during construction.
-
-**Gate:** no exact-rational blow-up at dimensions where GiNaC stalled (~16+), and
-results still agree with `symbolic_poly` where it runs.
-
-**Docs:** numeric-terminal section — why the blow-up cannot form.
-
----
-
-### Stage P4 — Noise via a single multiroot DDD *(~2 days)*
-
-All per-noise-source transfer functions in one multiroot DDD.
-
-**Gate:** agrees with existing `noise_psd`, at a cost comparable to a single
-transfer function.
-
----
-
-### Stage P5 — Approximation / dominant terms *(~3 days)*
-
-`approximate(tol)` on the s-expanded form (never before it); dominant poles/zeros
-as ratios of consecutive coefficients; prune on component *variation ranges*
-rather than a single nominal value.
-
----
-
-### Stage P6 — Hierarchy *(~3 days)*
-
-Symbolic stamps per `SubCircuit` (ASP-DAC 2011 formulation).
-
----
-
-### Not scheduled — revisit after P2
-
-**Symbolic sensitivity.** pycircuit has none, and DDD makes it nearly free (the
-derivative with respect to a symbol *is* the cofactor). Plausibly the best
-value-per-effort item in the programme, but it is a new user-facing feature rather
-than part of making DDD work.
-
----
-
-## 6. Definition of done
-
-**Per stage** — all four, or the stage is not done:
-1. code + tests, full suite green;
-2. its theory-document section written, **in the same commit as the code**;
-3. `make html` builds clean — 0 warnings, 0 errors, no `exec-rst` fallbacks (a
-   fallback means a live example failed and the doc is no longer verifying);
-4. its gate evaluated and the result recorded — including a negative one.
-
-**Overall.** An earlier draft said "symbolic poles and zeros of a fully-symbolic
-~10–15 node circuit". **That target is impossible in principle and has been
-corrected.** Two independent reasons:
-
-- *Abel–Ruffini.* A 10–15 node circuit has a denominator of degree ~10–15, and a
-  general polynomial of degree ≥5 has no closed-form roots. Verified concretely:
-  `sympy.roots` on a general degree-5 polynomial with symbolic coefficients
-  returns `{}`. No representation — DDD or otherwise — can produce what does not
-  exist.
-- *Size.* Even the exact symbolic *coefficients* of such a circuit stand for
-  ~10³⁰⁺ product terms (`ddd_conclusions.md` §4.3). They can be represented
-  compactly and evaluated, but never printed or read.
-
-The corrected target, which is what the literature actually delivers:
-
-1. **Exact s-expanded coefficients**, held compactly as a multiroot DDD, for a
-   fully-symbolic ~10–15 node circuit, in seconds — never flattened, and correct
-   when evaluated numerically against `symbolic_poly`/`numeric` where those can
-   run.
-2. **Dominant pole/zero estimates** as ratios of coefficients of consecutive
-   powers of `s` — *[LIT]* TCAD 2001 §I, and the only route to interpretable
-   poles for a circuit this size.
-3. **Exact numeric poles** via `numpy.roots` once parameters are substituted.
-4. **A short, readable symbolic expression** only after approximation prunes to
-   dominant terms.
-
-**Consequence for sequencing:** items 2 and 4 are P5 work, so **P5 is on the
-critical path to any human-readable result for large circuits** — it is not the
-optional finishing touch that §5's ordering implies. P1–P4 produce something
-correct, compact and evaluable but not yet *readable*. If the point of the
-exercise is designer insight, P5 must be scheduled, not merely listed.
+Per-stage, the round-one rules stand unchanged: code plus tests with the full
+suite green, the theory-document section in the **same commit**, `make html`
+clean with no `exec-rst` fallbacks, and the gate evaluated with its result
+recorded even when negative.
 
 ---
 
 ## 7. Sequencing notes
 
-- Stage B strictly first — its baselines must be recorded *before* DDD exists, or
-  the comparison is retrospective.
-- P0's symbol-convention decision precedes P0 coding; it defines the hash key.
-- P1 depends on P0; P2 on P1 (the result object exposes coefficients). P3, P4 and
-  P6 are independent of each other and can be reordered by value once P2 lands.
-  **P5 is not in that set** — per §6 it is the only route to human-readable output
-  for large circuits, so it should be scheduled directly after P2 unless the
-  semi-symbolic regime (P3) is the more urgent user need.
-- **Python-level practicalities to settle in P0, not discover in P4**: recursion
-  depth (LED expansion is naturally recursive and will exceed
-  `sys.setrecursionlimit` defaults on realistic matrices — write it iteratively or
-  raise the limit deliberately), and the cost of sympy expression payloads per
-  vertex, which dominates memory (§Stage B).
-- Paper calibration circuits (µA741/µA725, Tier 3) come *after* P0 passes. They
-  need a hybrid-π `SubCircuit` — `VCCS` + `R` + `C`, no new element types — and
-  should not gate P0, since a µA741 is exactly where a first implementation
-  struggles for uninteresting reasons.
+- H1 and H2 interact: ordering affects every hierarchical measurement, so if H1's
+  numbers look marginal, do H2 before concluding anything from them.
+- H3 is independent of both and could run in parallel; it touches only new code.
+- H4 is cheap and worth doing alongside whichever of H1/H2 is active, since it
+  supplies reference points for both.
+- H5 is self-contained and only affects the s-expanded path.
 - Keep paper PDFs out of the repo; they live in `~/pycircuit_agy/papers/ddd/`.
+  `benchmarks/paper_extract.py` renders their figures and tables, which are
+  300-dpi scans rather than text.
