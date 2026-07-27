@@ -446,10 +446,116 @@ backend from a related blow-up.
 **Gate.** Pole accuracy at N = 20 improves by orders of magnitude with no
 regression at small N.
 
-### H7 — DC and other analyses
+### H7 — Extend the DDD family to the remaining linear-algebraic analyses
 
-Everything built so far is AC and noise. Nothing rules out DC symbolic solving
-through the same machinery and nothing has been thought about. Scoping only.
+**Scope corrected.** This stage was written as "DC and other analyses", which
+aimed at the wrong target. Taking DC first, so it can be closed:
+
+* **Linear DC is already done.** For a linear circuit DC is AC at ``s = 0``:
+  substitute and every diagram evaluates, and ``s_expand(...).coefficient(0)``
+  *is* the DC network function. Nothing to build.
+* **Nonlinear DC is not a symbolic-determinant problem.**
+  :class:`~pycircuit.circuit.dcanalysis.DC` solves by Newton iteration, and the
+  linearisation changes every step, so a symbolic representation of one step
+  buys nothing over a numeric solve — building a diagram per iteration would be
+  strictly slower.
+* **The exception worth naming** is sensitivity of the *operating point*, which
+  is H4's adjoint machinery applied to the converged Jacobian. That is an
+  application of what exists, not a new capability, and it belongs with H4.
+
+What is actually worth doing is extending the **DDD family** to the analyses that
+are already linear algebra over a symbolic matrix, where a shared cofactor family
+is exactly the right primitive.
+
+**Hard constraint: the existing analyses are not modified.** ``TwoPortAnalysis``,
+``FeedbackLoopAnalysis``, ``FeedbackDeviceAnalysis`` and
+``TransimpedanceAnalysis`` keep their current behaviour, as ground rule 3
+requires — this stage *adds* DDD-backed counterparts beside them and leaves the
+originals alone. They remain the reference the new ones are checked against,
+which only works if they are untouched.
+
+#### The reuse mechanism already exists
+
+Surveying the analyses settles how this should be built, and it is far less work
+than a new implementation:
+
+* :class:`~pycircuit.circuit.nportanalysis.TwoPortAnalysis` computes its
+  parameters from ``toolkit.det(Y)``;
+* :class:`~pycircuit.circuit.feedback.FeedbackLoopAnalysis` computes loop gain as
+  ``toolkit.det(Y) / toolkit.det(Y_noloop)`` — a *ratio of two determinants*;
+* :class:`~pycircuit.circuit.analysis_ss.TransimpedanceAnalysis` likewise routes
+  through the toolkit.
+
+All three already ask the toolkit for the quantity a diagram is best at. Nothing
+overrides ``det`` today, so it falls through ``Toolkit.__getattr__`` to sympy's.
+**Overriding ``det`` on ``DDDToolkit`` is therefore the whole backend job** — one
+method, after which the existing analyses' mathematics runs on diagrams without a
+line of it being rewritten or duplicated.
+
+That also means the analyses stay untouched, satisfying ground rule 3 and keeping
+them usable as the reference the new results are checked against.
+
+#### The frontend stays separate
+
+Reusing the backend does not mean users reach it by threading a toolkit argument
+through an existing class. The DDD analyses get their **own entry points**, in a
+``dddanalysis`` module, so the family is discoverable as a family:
+
+.. code-block:: python
+
+    from pycircuit.circuit.dddanalysis import DDDTwoPort, DDDLoopGain
+
+Each is a thin subclass that binds ``ddd_toolkit`` and adds the diagram-level
+accessors the base class has no concept of — sizes, the shared family, s-expanded
+coefficients, sensitivity. The inherited analysis logic is *not* copied: a
+frontend that duplicated the port bookkeeping or the return-ratio derivation
+would be two implementations to keep in step, which is exactly what this avoids.
+
+#### H7a — Two-port parameters
+
+Y, Z and ABCD parameters are ratios of determinants and cofactors of one matrix —
+what `DDDFamily` produces and shares — so all four sets should come from a single
+construction.
+
+**Gate.** Agreement with ``TwoPortAnalysis`` on every circuit it can handle, and
+one family serving all parameters rather than one construction per parameter.
+
+#### H7b — Return ratio and loop gain
+
+The neatest of the three, because most of it is already built. Where the matrix
+depends linearly on a controlled-source parameter ``k``,
+
+.. math::
+
+    \det A = \det A\big|_{k=0} + k \cdot \frac{\partial \det A}{\partial k}
+
+and that derivative is exactly what
+:func:`~pycircuit.circuit.ddd.determinant_sensitivity` returns, as a single
+cofactor. The existing analysis forms the same thing as two separate
+determinants; on a diagram the second is a cofactor of the first.
+
+**Gate.** Agreement with ``FeedbackLoopAnalysis`` where both run, from one family
+rather than two independent determinant constructions.
+
+#### H7c — Transimpedance
+
+Mostly exposure: :func:`~pycircuit.circuit.ddd.ddd_cofactor_solve` already
+produces the transimpedance vector and H3 recovers it through a reduction. This
+gives it a documented entry point beside the others.
+
+**Gate.** Agreement with ``TransimpedanceAnalysis``.
+
+#### Out of scope
+
+``PSS`` and ``PAC`` are periodic-steady-state, hence time-varying; a determinant
+of a fixed matrix is not the right object and they are not in this family.
+
+*Effort: small throughout. The backend is one ``det`` override; the frontends are
+thin subclasses. H7b is mostly assembly of H4's output, H7c mostly documentation.
+If any of it turns into a substantial reimplementation, that is a sign the reuse
+route has been abandoned and it should be reconsidered rather than pushed
+through.*
+
 
 ---
 
@@ -482,7 +588,10 @@ recorded even when negative.
   tolerance every later vertex count is read against.
 - H3 depends on H2 and on nothing else — it is the direct application of the
   reduction machinery to the analysis that most wants it.
-- H1–H6 are done. Only H7 (DC, scoping) remains.
+- H1–H6 are done. H7 remains, rescoped: DC is closed (linear DC is ``s = 0``,
+  nonlinear DC is not a symbolic-determinant problem), and what is left is
+  extending the DDD family to the two-port, feedback and transimpedance
+  analyses — beside the existing ones, which are not modified.
 - H6 refuted its own premise, which is worth remembering when reading the rest of
   this plan: the mitigation it proposed had been borrowed from GiNaC's failure
   (exact-arithmetic growth, which scaling does fix) and applied to a different
