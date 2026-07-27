@@ -23,9 +23,10 @@ import pytest
 import sympy
 
 from pycircuit.circuit import benchmark_circuits as bc
-from pycircuit.circuit.ddd import (DDDSizeError, NumericTerminal, ONE, ZERO,
+from pycircuit.circuit.ddd import (DDDSizeError, HierarchicalDDD,
+                                   NumericTerminal, ONE, ZERO,
                                    ddd_cofactor_solve, ddd_cramer,
-                                   ddd_of_matrix, s_expand)
+                                   ddd_of_matrix, eval_roots, s_expand)
 
 
 def _full_matrix(n):
@@ -673,3 +674,77 @@ def test_collapsed_diagram_renders():
                         collapse_max_dim=4).to_dot(max_vertices=500)
     assert dot.startswith('digraph')
     assert dot.rstrip().endswith('}')
+
+
+## -- hierarchy ------------------------------------------------------------
+
+@pytest.mark.parametrize('internal', [(1, 2), (1, 2, 3), (2, 3, 4), (1, 2, 3, 4)])
+def test_hierarchical_determinant_matches_the_flat_one(internal):
+    """Suppressing an internal block must not change the determinant."""
+    system = bc.rc_ladder(6)
+    env = dict(system.params)
+    env[system.s] = 1j * 2 * np.pi * 1e4
+
+    flat = complex(ddd_of_matrix(system.A).eval(env))
+    hier = complex(HierarchicalDDD(system.A, internal).eval(env))
+    assert abs(flat - hier) <= 1e-9 * abs(flat)
+
+
+@pytest.mark.parametrize('n', [6, 8, 10])
+def test_hierarchy_beats_a_flat_dense_determinant(n):
+    """Where the flat diagram is exponential, splitting it is a large win.
+
+    A ladder gains nothing -- its flat diagram is already linear -- so the
+    benefit is stated on the case that actually has one: total size becomes a
+    sum over blocks instead of a product.
+    """
+    system = bc.dense_symbolic_matrix(n)
+    env = dict(system.params)
+
+    flat = ddd_of_matrix(system.A)
+    hier = HierarchicalDDD(system.A, tuple(range(n // 2)))
+
+    assert abs(complex(hier.eval(env)) - complex(flat.eval(env))) \
+        <= 1e-7 * abs(complex(flat.eval(env)))
+    assert hier.size < flat.size / 4
+
+
+def test_hierarchy_on_a_circuit_with_a_nullor():
+    system = bc.mfb_filter()
+    env = dict(system.params)
+    env[system.s] = 1j * 2 * np.pi * 1e4
+    flat = complex(ddd_of_matrix(system.A).eval(env))
+    hier = complex(HierarchicalDDD(system.A, (1,)).eval(env))
+    assert abs(flat - hier) <= 1e-9 * abs(flat)
+
+
+def test_hierarchy_rejects_a_degenerate_partition():
+    A = bc.rc_ladder(4).A
+    with pytest.raises(ValueError, match='proper non-empty'):
+        HierarchicalDDD(A, ())
+    with pytest.raises(ValueError, match='proper non-empty'):
+        HierarchicalDDD(A, tuple(range(A.rows)))
+    with pytest.raises(ValueError, match='square'):
+        HierarchicalDDD(sympy.Matrix([[1, 2, 3], [4, 5, 6]]), (0,))
+
+
+def test_hierarchy_size_is_a_sum_of_its_levels():
+    system = bc.dense_symbolic_matrix(8)
+    hier = HierarchicalDDD(system.A, (0, 1, 2, 3))
+    assert hier.size == hier.family.size + hier.top.size
+
+
+def test_eval_roots_matches_individual_evaluation():
+    """The shared evaluation pass must agree with evaluating one at a time."""
+    system = bc.rc_ladder(5)
+    env = dict(system.params)
+    env[system.s] = 1j * 2 * np.pi * 1e4
+    family, nums = ddd_cofactor_solve(system.A, system.b)
+
+    roots = [family.denominator.root]
+    for combination in nums.values():
+        roots.extend(combination.roots())
+    shared = eval_roots(roots, env)
+
+    assert abs(complex(shared[id(family.denominator.root)])
+               - complex(family.denominator.eval(env))) < 1e-9

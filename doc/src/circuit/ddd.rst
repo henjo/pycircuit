@@ -14,7 +14,8 @@ Determinant Decision Diagrams (DDD) for symbolic circuit analysis
    determinant construction with Cramer solving (Stage P0), the s-expanded
    multiroot form (Stage P1), the toolkit integration (Stage P2), and
    dominant-term approximation (Stage P5), shared-construction noise (Stage P4),
-   and numeric terminals (Stage P3, off by default -- see below).
+   numeric terminals (Stage P3, off by default -- see below), and hierarchical
+   construction (Stage P6).
 
 Why this exists
 ===============
@@ -355,8 +356,6 @@ Each case runs isolated, so a backend that exhausts memory takes down only its
 own child process.
 
 .. rubric:: Next sections
-
-Next: hierarchical construction over :class:`~pycircuit.circuit.SubCircuit`.
 
 .. rubric:: Noise
 
@@ -863,3 +862,71 @@ where a circuit contains a *compact* numeric block rather than a long numeric
 chain — a ladder's parameter-free minors are its tails, which are large and so
 excluded by the cap. That structural case is better served by hierarchy, where a
 whole numeric subcircuit reduces to a stamp, which is the next stage.
+
+Hierarchy: a sum over blocks, not a product
+===========================================
+
+Everything so far builds one diagram for the whole matrix. But a circuit is not
+flat — it is subcircuits — and a subcircuit's internal nodes can be eliminated
+before the rest is considered at all.
+
+With the unknowns split into internal ``i`` and terminal ``t``, the Schur
+complement gives ``det(A) = det(A_ii)·det(A_tt - A_ti A_ii⁻¹ A_it)``. Clearing
+the inverse keeps every part polynomial:
+
+.. math::
+
+    M = \det(A_{ii})\,A_{tt} - A_{ti}\,\mathrm{adj}(A_{ii})\,A_{it}
+    \qquad
+    \det(A) = \frac{\det(M)}{\det(A_{ii})^{\,m-1}}
+
+where ``m`` is the number of terminals. Every entry of ``adj(A_ii)`` is a
+cofactor of ``A_ii`` — and cofactors do not depend on the right-hand side, so the
+whole internal block comes out of the *one* shared family built for noise
+(:class:`~pycircuit.circuit.ddd.DDDFamily`). The reduced system is then only as
+dense as the fill-in between nodes that actually touch the block.
+
+The effect is that total size becomes a **sum over blocks instead of a product**:
+
+.. exec-rst::
+
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.ddd import HierarchicalDDD, ddd_of_matrix
+
+    print(".. list-table:: Splitting a dense determinant in half")
+    print("   :header-rows: 1")
+    print("   :widths: 6 14 12 12 12 10")
+    print("")
+    print("   * - n")
+    print("     - flat vertices")
+    print("     - block")
+    print("     - reduced")
+    print("     - total")
+    print("     - ratio")
+    for n in (6, 8, 10, 12):
+        system = bc.dense_symbolic_matrix(n)
+        flat = ddd_of_matrix(system.A)
+        hier = HierarchicalDDD(system.A, tuple(range(n // 2)))
+        print("   * - %d" % n)
+        print("     - %d" % flat.size)
+        print("     - %d" % hier.family.size)
+        print("     - %d" % hier.top.size)
+        print("     - %d" % hier.size)
+        print("     - %.1f×" % (flat.size / hier.size))
+
+The ratio grows with circuit size, which is the point — this is the same effect
+behind Tan & Shi's 56× on a µA741 (TCAD 2000), where three levels of two-way
+partitioning reduced 6654 vertices to 117.
+
+Note where it does **not** help. A ladder gains nothing: its flat diagram is
+already linear in the number of sections, so there is no exponential to break up,
+and the cofactors of the eliminated block cost more than they save. Hierarchy
+pays where the flat construction is expensive — dense or highly-connected blocks —
+which is exactly the structural case that numeric terminals could not reach.
+
+One implementation note that matters for anyone extending this. Each entry of the
+reduced system is a combination of diagrams drawn from the same family, so they
+overlap almost completely. Evaluating them one at a time re-walks that shared
+structure once per entry, which is quadratic in exactly the situation sharing
+exists to make cheap; :func:`~pycircuit.circuit.ddd.eval_roots` evaluates them all
+in a single pass instead. Building the ``n = 12`` case above takes ~0.07 s.

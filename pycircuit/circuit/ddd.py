@@ -45,7 +45,7 @@ import sympy
 __all__ = ['DDD', 'DDDVertex', 'SExpandedDDD', 'DDDFamily', 'DDDCombination',
            'NumericTerminal',
            'ONE', 'ZERO', 'ddd_of_matrix', 'ddd_cramer', 'ddd_cofactor_solve',
-           's_expand', 'DDDSizeError']
+           's_expand', 'HierarchicalDDD', 'eval_roots', 'DDDSizeError']
 
 
 class DDDSizeError(Exception):
@@ -142,6 +142,47 @@ def _resolve(value, env):
     if value.has(sympy.Float):
         return complex(value)
     return value
+
+
+def eval_roots(roots, env=None):
+    """Evaluate several diagrams in one pass over their shared structure.
+
+    Calling :meth:`DDD.eval` per diagram re-walks and re-substitutes everything
+    they have in common, which is most of it when the diagrams come from one
+    family -- the cost becomes quadratic in exactly the case sharing was meant to
+    make cheap.  This resolves each payload once and memoises across all roots.
+
+    Args:
+        roots: Vertices or terminals to evaluate.
+        env: Substitution.
+
+    Returns:
+        Dict mapping ``id(root)`` to its value.
+    """
+    env = env or {}
+    memo = {}
+    values = {}
+    for root in roots:
+        stack = [(root, False)]
+        while stack:
+            node, expanded = stack.pop()
+            if node.is_terminal:
+                if id(node) not in memo:
+                    memo[id(node)] = _resolve(node.value, env)
+                continue
+            if id(node) in memo:
+                continue
+            if not expanded:
+                stack.append((node, True))
+                stack.append((node.one_edge, False))
+                stack.append((node.zero_edge, False))
+                continue
+            key = id(node.entry)
+            if key not in values:
+                values[key] = _resolve(node.entry, env)
+            memo[id(node)] = (node.sign * values[key] * memo[id(node.one_edge)]
+                              + memo[id(node.zero_edge)])
+    return {id(r): memo[id(r)] for r in roots}
 
 
 class DDD:
@@ -1057,9 +1098,12 @@ class DDDCombination:
         self.parts = list(parts)                 # [(coefficient, DDD), ...]
 
     def eval(self, env=None):
+        ## The coefficients are matrix entries in their own right, so they need
+        ## the same substitution as the diagrams they multiply -- evaluating the
+        ## diagram alone would leave a half-substituted expression behind.
         total = 0
         for coeff, diagram in self.parts:
-            total = total + coeff * diagram.eval(env)
+            total = total + _resolve(coeff, env or {}) * diagram.eval(env)
         return total
 
     def roots(self):
@@ -1115,6 +1159,7 @@ class DDDFamily:
         self._rows = tuple(range(self.matrix.rows))
         self._cols = tuple(range(self.matrix.cols))
         self._numerators = {}
+        self._cofactors = []
 
         self.denominator = DDD(self._builder.build(self._rows, self._cols),
                                self.matrix, order, len(self._builder.cache))
@@ -1148,9 +1193,22 @@ class DDDFamily:
         self._numerators[i] = combination
         return combination
 
+    def cofactor(self, k, i):
+        """Diagram for the minor deleting row ``k`` and column ``i``.
+
+        Cofactors do not depend on the right-hand side, so one family serves
+        every solve against the same matrix -- which is what lets a subcircuit be
+        suppressed towards all of its terminals at once.
+        """
+        rows = tuple(r for r in self._rows if r != k)
+        cols = tuple(c for c in self._cols if c != i)
+        root = self._builder.build(rows, cols)
+        self._cofactors.append(root)
+        return DDD(root, self.matrix, self.order, len(self._builder.cache))
+
     @property
     def size(self):
-        roots = [self.denominator.root]
+        roots = [self.denominator.root] + self._cofactors
         for combination in self._numerators.values():
             roots.extend(combination.roots())
         return len(_distinct_vertices(roots))
@@ -1192,3 +1250,130 @@ def ddd_cofactor_solve(A, b, indices=None, order='min-degree'):
     if indices is None:
         indices = range(family.matrix.cols)
     return family, {i: family.numerator(i) for i in indices}
+
+
+## ------------------------------------------------------------ hierarchy --
+
+class HierarchicalDDD:
+    """A determinant computed by suppressing an internal block first.
+
+    Instead of expanding one flat determinant, eliminate a subcircuit's internal
+    unknowns and stamp what is left into the remaining system -- Tan & Shi's
+    hierarchical DDD (TCAD 2000), in the "symbolic stamp" formulation of Xu, Shi
+    & Li (ASP-DAC 2011) that matches how a
+    :class:`~pycircuit.circuit.SubCircuit` already composes.
+
+    With unknowns partitioned into internal ``i`` and terminal ``t``, the Schur
+    complement gives ``det(A) = det(A_ii) · det(A_tt - A_ti A_ii⁻¹ A_it)``.
+    Clearing the inverse keeps everything polynomial::
+
+        M = det(A_ii)·A_tt - A_ti · adj(A_ii) · A_it
+        det(A) = det(M) / det(A_ii)^(m-1)          (m = number of terminals)
+
+    and every piece of ``adj(A_ii)`` is a cofactor of ``A_ii``, so the whole
+    internal block comes out of one shared construction (`DDDFamily`).
+
+    Why it pays: the eliminated block contributes its own diagram once, and the
+    reduced system is only as dense as the *fill-in* between nodes that touch the
+    block.  Total size is a sum over blocks rather than a product.
+
+    Attributes:
+        family: The internal block's shared diagram family.
+        top: Diagram of the reduced system ``M``.
+        size: Vertices across both levels.
+    """
+
+    def __init__(self, A, internal, order='min-degree'):
+        A = sympy.Matrix(A)
+        if A.rows != A.cols:
+            raise ValueError('DDD needs a square matrix, got %dx%d'
+                             % (A.rows, A.cols))
+        n = A.rows
+        internal = tuple(sorted(set(internal)))
+        if not internal or len(internal) >= n:
+            raise ValueError('internal block must be a proper non-empty subset')
+        terminal = tuple(i for i in range(n) if i not in set(internal))
+
+        self.matrix = A
+        self.internal = internal
+        self.terminal = terminal
+        self.order = order
+
+        Aii = A.extract(list(internal), list(internal))
+        Ait = A.extract(list(internal), list(terminal))
+        Ati = A.extract(list(terminal), list(internal))
+        Att = A.extract(list(terminal), list(terminal))
+
+        ## One family for the whole block: its cofactors serve every terminal.
+        self.family = DDDFamily(Aii, sympy.zeros(len(internal), 1), order=order)
+        ni, m = len(internal), len(terminal)
+        cof = {}
+
+        def cofactor(k, p):
+            if (k, p) not in cof:
+                cof[(k, p)] = self.family.cofactor(k, p)
+            return cof[(k, p)]
+
+        ## M[a][b] = A_tt[a][b]·D - sum_{p,k} A_ti[a][p]·A_it[k][b]·(-1)^(k+p)·M_kp
+        self.blocks = {}
+        Msym = sympy.zeros(m, m)
+        for a in range(m):
+            for b in range(m):
+                parts = []
+                if Att[a, b] != 0:
+                    parts.append((Att[a, b], self.family.denominator))
+                for p in range(ni):
+                    if Ati[a, p] == 0:
+                        continue
+                    for k in range(ni):
+                        if Ait[k, b] == 0:
+                            continue
+                        sign = -1 if (k + p) % 2 else 1
+                        coeff = -sign * Ati[a, p] * Ait[k, b]
+                        parts.append((coeff, cofactor(k, p)))
+                if not parts:
+                    continue                     # structurally zero: keep sparse
+                sym = sympy.Symbol('_blk_%d_%d' % (a, b))
+                self.blocks[sym] = DDDCombination(parts)
+                Msym[a, b] = sym
+
+        self.top = ddd_of_matrix(Msym, order=order)
+        self._m = m
+
+    @property
+    def size(self):
+        """Vertices across both levels -- a sum, not a product."""
+        return self.family.size + self.top.size
+
+    def eval(self, env=None):
+        """Evaluate ``det(A)`` hierarchically.
+
+        The internal block is evaluated once into the reduced system's entries,
+        then the reduced system is evaluated.
+        """
+        env = env or {}
+
+        ## Evaluate the block's determinant and every cofactor in ONE pass.  The
+        ## combinations overlap almost completely, so evaluating them separately
+        ## would re-walk the shared structure once per entry of the reduced
+        ## system -- quadratic in precisely the case sharing exists to help.
+        roots = [self.family.denominator.root]
+        for combination in self.blocks.values():
+            roots.extend(combination.roots())
+        memo = eval_roots(roots, env)
+
+        resolved = dict(env)
+        for sym, combination in self.blocks.items():
+            total = 0
+            for coeff, diagram in combination.parts:
+                total = total + _resolve(coeff, env) * memo[id(diagram.root)]
+            resolved[sym] = total
+        value = self.top.eval(resolved)
+        D = memo[id(self.family.denominator.root)]
+        if self._m == 1:
+            return value
+        return value / D ** (self._m - 1)
+
+    def __repr__(self):
+        return '<HierarchicalDDD internal=%d terminal=%d size=%d>' % (
+            len(self.internal), len(self.terminal), self.size)
