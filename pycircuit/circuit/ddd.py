@@ -42,8 +42,9 @@ See ``doc/src/circuit/ddd.rst`` for worked examples and rendered diagrams, and
 import sympy
 
 
-__all__ = ['DDD', 'DDDVertex', 'SExpandedDDD', 'ONE', 'ZERO',
-           'ddd_of_matrix', 'ddd_cramer', 's_expand', 'DDDSizeError']
+__all__ = ['DDD', 'DDDVertex', 'SExpandedDDD', 'DDDFamily', 'DDDCombination',
+           'ONE', 'ZERO', 'ddd_of_matrix', 'ddd_cramer', 'ddd_cofactor_solve',
+           's_expand', 'DDDSizeError']
 
 
 class DDDSizeError(Exception):
@@ -927,3 +928,158 @@ def s_expand(A, s, order='min-degree'):
     while roots and roots[-1] is ZERO:            # trim trailing zero powers
         roots.pop()
     return SExpandedDDD(roots, A, s, order, len(builder.cache))
+
+
+## ------------------------------------------------- shared cofactor solve --
+
+class DDDCombination:
+    """A linear combination of diagrams: ``sum_k coeff_k * diagram_k``.
+
+    A Cramer numerator expanded along its substituted column is a weighted sum
+    of *cofactors* of the original matrix -- and cofactors are minors of that
+    same matrix, so they come out of the same memo table as the determinant.
+    Keeping the numerator as a combination rather than one diagram is what lets
+    a whole family of transfer functions share one construction.
+    """
+
+    __slots__ = ('parts',)
+
+    def __init__(self, parts):
+        self.parts = list(parts)                 # [(coefficient, DDD), ...]
+
+    def eval(self, env=None):
+        total = 0
+        for coeff, diagram in self.parts:
+            total = total + coeff * diagram.eval(env)
+        return total
+
+    def roots(self):
+        return [d.root for d in (p[1] for p in self.parts)]
+
+    def term_count(self):
+        return sum(d.term_count() for _, d in self.parts)
+
+    def __repr__(self):
+        return '<DDDCombination parts=%d>' % len(self.parts)
+
+
+def _distinct_vertices(roots):
+    seen, stack = set(), list(roots)
+    while stack:
+        v = stack.pop()
+        if v.is_terminal or id(v) in seen:
+            continue
+        seen.add(id(v))
+        stack.append(v.one_edge)
+        stack.append(v.zero_edge)
+    return seen
+
+
+class DDDFamily:
+    """A determinant and its Cramer numerators, sharing a single memo table.
+
+    Building each numerator as its own diagram (:func:`ddd_cramer`) re-expands
+    minors that the determinant already covered, because a substituted column
+    makes it a different matrix.  Expanding along that column instead expresses
+    every numerator through cofactors of the *original* matrix, so the whole
+    family is built once.
+
+    This is the structure behind Shi & Tan's observation (TCAD 2001) that noise
+    analysis -- which needs one transfer function per noise source -- costs
+    little more than a single transfer function: the transimpedances share
+    almost everything.
+
+    Attributes:
+        denominator: The network determinant, as a `DDD`.
+        size: Distinct vertices across everything built, counting sharing once.
+    """
+
+    def __init__(self, A, b, order='min-degree'):
+        self.matrix = sympy.Matrix(A)
+        if self.matrix.rows != self.matrix.cols:
+            raise ValueError('DDD needs a square matrix, got %dx%d'
+                             % (self.matrix.rows, self.matrix.cols))
+        self.b = sympy.Matrix(b).reshape(self.matrix.rows, 1)
+        self.order = order
+
+        self._builder = _Builder(self.matrix, order)
+        self._rows = tuple(range(self.matrix.rows))
+        self._cols = tuple(range(self.matrix.cols))
+        self._numerators = {}
+
+        self.denominator = DDD(self._builder.build(self._rows, self._cols),
+                               self.matrix, order, len(self._builder.cache))
+
+    def numerator(self, i):
+        """Cramer numerator for unknown ``i``, as a `DDDCombination`.
+
+        Expanded along the substituted column: ``sum_k b[k] * (-1)^(k+i) *
+        M_ki``, where ``M_ki`` deletes row ``k`` and column ``i``.  Only the
+        nonzero entries of ``b`` contribute, so a sparse right-hand side -- the
+        usual case -- costs very few cofactors.
+        """
+        if i in self._numerators:
+            return self._numerators[i]
+
+        parts = []
+        cols = tuple(c for c in self._cols if c != i)
+        for k in range(self.matrix.rows):
+            bk = self.b[k]
+            if bk == 0:
+                continue
+            rows = tuple(r for r in self._rows if r != k)
+            root = self._builder.build(rows, cols)
+            if root is ZERO:
+                continue
+            sign = -1 if (k + i) % 2 else 1
+            parts.append((sign * bk,
+                          DDD(root, self.matrix, self.order,
+                              len(self._builder.cache))))
+        combination = DDDCombination(parts)
+        self._numerators[i] = combination
+        return combination
+
+    @property
+    def size(self):
+        roots = [self.denominator.root]
+        for combination in self._numerators.values():
+            roots.extend(combination.roots())
+        return len(_distinct_vertices(roots))
+
+    def eval_node(self, i, env=None):
+        """Value of unknown ``i`` -- numerator over the shared determinant."""
+        return self.numerator(i).eval(env) / self.denominator.eval(env)
+
+    def __repr__(self):
+        return '<DDDFamily n=%d built=%d size=%d>' % (
+            self.matrix.rows, len(self._numerators), self.size)
+
+
+def ddd_cofactor_solve(A, b, indices=None, order='min-degree'):
+    """Solve ``A x = b`` with every numerator sharing one diagram construction.
+
+    Equivalent in value to :func:`ddd_cramer`, but far cheaper when several
+    unknowns are wanted, because the numerators are expressed as cofactors of
+    ``A`` rather than as determinants of ``n`` different matrices.
+
+    Args:
+        A: Square sympy ``Matrix``.
+        b: Right-hand side.
+        indices: Unknowns to build numerators for; ``None`` builds all.
+        order: Expansion ordering.
+
+    Returns:
+        ``(family, numerators)`` -- the `DDDFamily` (carrying the shared
+        denominator and the size accounting) and a dict of `DDDCombination`.
+
+    Example:
+        >>> import sympy
+        >>> a, b_, c, d = sympy.symbols('a b c d')
+        >>> fam, num = ddd_cofactor_solve(sympy.Matrix([[a, b_], [c, d]]), [1, 0])
+        >>> sympy.simplify(num[0].eval() - d) == 0
+        True
+    """
+    family = DDDFamily(A, b, order=order)
+    if indices is None:
+        indices = range(family.matrix.cols)
+    return family, {i: family.numerator(i) for i in indices}

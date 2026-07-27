@@ -13,7 +13,8 @@ Determinant Decision Diagrams (DDD) for symbolic circuit analysis
    Implemented so far: the measurement harness (Stage B), the layered
    determinant construction with Cramer solving (Stage P0), the s-expanded
    multiroot form (Stage P1), the toolkit integration (Stage P2), and
-   dominant-term approximation (Stage P5).
+   dominant-term approximation (Stage P5), and shared-construction noise
+   (Stage P4).
 
 Why this exists
 ===============
@@ -357,6 +358,8 @@ own child process.
 
 Next: semi-symbolic numeric terminals, and hierarchical construction over
 :class:`~pycircuit.circuit.SubCircuit`.
+
+.. rubric:: Noise
 
 .. _ddd-s-expanded:
 
@@ -703,3 +706,67 @@ Accuracy improves for the higher poles, which are the better separated. That is
 the expected behaviour of the estimate and the reason it is called a
 *dominant-pole* method rather than an exact one: it is a tool for insight, and
 the exact numeric roots remain available when precision is what is wanted.
+
+Noise: many transfer functions for the price of one
+===================================================
+
+Noise analysis needs a transfer function from **every** noise source to the
+output — the whole transimpedance vector ``z = Y⁻¹(-u)``, not a single response.
+Done naively that is ``n`` separate solves.
+
+The saving comes from a change of formulation. A Cramer numerator is the
+determinant of ``Y`` with one column replaced, which makes it a *different*
+matrix and shares nothing with the network determinant. Expand along that
+substituted column instead and each numerator becomes a weighted sum of
+**cofactors of ``Y`` itself** — and cofactors are minors of the original matrix,
+so they come straight out of the same memo table:
+
+.. math::
+
+    N_i = \sum_k b_k \, (-1)^{k+i} \, M_{ki}
+
+Only the nonzero entries of ``b`` contribute, so the usual single-source drive
+costs very few cofactors per unknown. The whole family is then built once:
+
+.. exec-rst::
+
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.ddd import ddd_cofactor_solve, ddd_cramer
+
+    print(".. list-table:: Determinant plus *every* transimpedance")
+    print("   :header-rows: 1")
+    print("   :widths: 6 8 16 18 18")
+    print("")
+    print("   * - N")
+    print("     - dim")
+    print("     - determinant only")
+    print("     - shared (cofactors)")
+    print("     - separate (Cramer)")
+    for N in (4, 8, 12, 16):
+        system = bc.rc_ladder(N)
+        family, _ = ddd_cofactor_solve(system.A, system.b)
+        den, nums = ddd_cramer(system.A, system.b)
+        separate = den.size + sum(v.size for v in nums.values())
+        print("   * - %d" % N)
+        print("     - %d" % system.dim)
+        print("     - %d" % family.denominator.size)
+        print("     - %d" % family.size)
+        print("     - %d" % separate)
+
+This is Shi & Tan's observation that noise costs little more than a single
+transfer function, reproduced on our own circuits: the shared column is a small
+multiple of the determinant alone, while building each numerator separately grows
+with the number of unknowns.
+
+``ddd_toolkit`` uses this for :meth:`noise_psd`, and the result is identical to
+the fraction-free form — the shared denominator makes the PSD independent of any
+overall sign convention, so this is a *construction* saving and not a different
+answer. It reaches the ordinary :class:`~pycircuit.circuit.analysis_ss.Noise`
+analysis with no change to that analysis at all:
+
+.. code-block:: python
+
+    noise = Noise(cir, inputsrc='vs', outputnodes=('out', gnd),
+                  toolkit=ddd_toolkit)
+    res = noise.solve(s, complexfreq=True)
+    res['Svnout']            # same expression symbolic_poly would give

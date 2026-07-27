@@ -23,8 +23,8 @@ import pytest
 import sympy
 
 from pycircuit.circuit import benchmark_circuits as bc
-from pycircuit.circuit.ddd import (DDDSizeError, ONE, ZERO, ddd_cramer,
-                                   ddd_of_matrix, s_expand)
+from pycircuit.circuit.ddd import (DDDSizeError, ONE, ZERO, ddd_cofactor_solve,
+                                   ddd_cramer, ddd_of_matrix, s_expand)
 
 
 def _full_matrix(n):
@@ -497,3 +497,101 @@ def test_dominant_poles_approach_the_exact_roots_when_separated():
     errors = [abs(a - b) / abs(b) for a, b in zip(est, exact)]
     assert errors[0] < 0.2                         # dominant pole, within 20%
     assert errors[3] < errors[0]                   # better where more separated
+
+
+## -- shared cofactor family (the structure noise needs) ------------------
+
+@pytest.mark.parametrize('N', [4, 6, 8])
+def test_cofactor_numerators_match_cramer(N):
+    """Same values, built a cheaper way."""
+    system = bc.rc_ladder(N)
+    _, cramer = ddd_cramer(system.A, system.b)
+    _, cofactor = ddd_cofactor_solve(system.A, system.b)
+    for i in range(system.dim):
+        assert sympy.simplify(cofactor[i].eval() - cramer[i].eval()) == 0
+
+
+@pytest.mark.parametrize('N', [6, 10, 14])
+def test_the_whole_family_costs_little_more_than_the_determinant(N):
+    """Shi & Tan's claim, checked on our own circuits.
+
+    Every transimpedance plus the determinant, sharing one memo table, must cost
+    far less than building each numerator as its own diagram -- and stay within a
+    small factor of the determinant alone.  That is what makes noise analysis,
+    which needs one transfer function per noise source, affordable.
+    """
+    system = bc.rc_ladder(N)
+    family, _ = ddd_cofactor_solve(system.A, system.b)
+
+    den, separate_nums = ddd_cramer(system.A, system.b)
+    separate = den.size + sum(v.size for v in separate_nums.values())
+
+    assert family.size < separate / 2
+    assert family.size < 5 * family.denominator.size
+
+
+def test_sparse_right_hand_side_costs_few_cofactors():
+    """Only nonzero entries of b contribute, so a one-source drive is cheap."""
+    system = bc.rc_ladder(6)
+    _, nums = ddd_cofactor_solve(system.A, system.b)
+    nonzeros = sum(1 for k in range(system.dim) if system.b[k] != 0)
+    for i in range(system.dim):
+        assert len(nums[i].parts) <= nonzeros
+
+
+def test_family_rejects_non_square():
+    with pytest.raises(ValueError, match='square'):
+        ddd_cofactor_solve(sympy.Matrix([[1, 2, 3], [4, 5, 6]]), [1, 0, 0])
+
+
+## -- noise ----------------------------------------------------------------
+
+def test_noise_psd_matches_symbolic_poly():
+    """Identical PSD, despite a different construction.
+
+    The shared denominator makes the PSD independent of any overall sign
+    convention, so the two agree exactly rather than up to a factor.
+    """
+    from pycircuit.circuit.toolkit import ddd_toolkit, symbolic_poly
+
+    s = sympy.Symbol('s', imaginary=True)
+    R1, R2, C1, kT = sympy.symbols('R1 R2 C1 kT', positive=True)
+    Y = sympy.Matrix([[1 / R1 + 1 / R2 + s * C1, -1 / R2], [-1 / R2, 1 / R2]])
+    u = sympy.Matrix([0, 1])
+    CY = sympy.Matrix([[4 * kT / R1, 0], [0, 4 * kT / R2]])
+
+    z_ref, psd_ref = symbolic_poly.noise_psd(Y, u, CY, s)
+    z_got, psd_got = ddd_toolkit.noise_psd(Y, u, CY, s)
+
+    assert sympy.simplify(sympy.cancel(psd_got - psd_ref)) == 0
+    for a, b in zip(z_got, z_ref):
+        assert sympy.simplify(a - b) == 0
+
+
+def test_noise_analysis_through_the_toolkit():
+    """End to end: the Noise analysis itself, driven with ``ddd_toolkit``."""
+    import pycircuit.circuit.circuit
+    from pycircuit.circuit import SubCircuit, R, VS, gnd
+    from pycircuit.circuit.analysis_ss import Noise
+    from pycircuit.circuit.toolkit import ddd_toolkit, symbolic
+
+    R1v, R2v, Vv = sympy.symbols('R1 R2 V', real=True, positive=True)
+    s = sympy.Symbol('s')
+
+    saved = pycircuit.circuit.circuit.default_toolkit
+    try:
+        pycircuit.circuit.circuit.default_toolkit = symbolic
+        cir = SubCircuit(toolkit=symbolic)
+        cir['vs'] = VS(1, gnd, vac=Vv)
+        cir['R1'] = R(1, 2, r=R1v)
+        cir['R2'] = R(2, gnd, r=R2v)
+
+        noise = Noise(cir, inputsrc='vs', outputnodes=('2', gnd),
+                      toolkit=ddd_toolkit)
+        res = noise.solve(s, complexfreq=True)
+    finally:
+        pycircuit.circuit.circuit.default_toolkit = saved
+
+    kT = noise.toolkit.kboltzmann * noise.par.epar.T
+    assert sympy.simplify(res['Svnout'] - 4 * R1v * R2v * kT / (R1v + R2v)) == 0
+    assert sympy.simplify(res['gain'] - R2v / (R1v + R2v)) == 0
