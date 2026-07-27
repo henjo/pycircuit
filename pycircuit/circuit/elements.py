@@ -44,11 +44,8 @@ class R(Circuit):
         return toolkit.array([i, -i])
 
     def G(self, x, epar=defaultepar):
-        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
-            import jax
-            G_jac = jax.jacfwd(self.eval_i_pure)(x, {'r': self.iparv.r}, epar, self.toolkit)
-            return G_jac
-        return self._G
+        return self.toolkit.jacobian(self.eval_i_pure, x, {'r': self.iparv.r},
+                                     epar, self._G)
 
     def CY(self, x, w, epar=defaultepar):
         if self.iparv.noisy:
@@ -102,12 +99,8 @@ class G(Circuit):
 
     def G(self, x, epar=defaultepar): 
         # For symbolic backward compatibility and non-vectorized execution
-        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
-            params = {'g': self.iparv.g}
-            import jax
-            G_jac = jax.jacfwd(self.eval_i_pure)(x, params, epar, self.toolkit)
-            return G_jac
-        return self._G
+        return self.toolkit.jacobian(self.eval_i_pure, x, {'g': self.iparv.g},
+                                     epar, self._G)
 
     def CY(self, x, w, epar=defaultepar):
         if self.iparv.noisy:
@@ -158,12 +151,8 @@ class C(Circuit):
         return toolkit.array([q, -q])
 
     def C(self, x, epar=defaultepar): 
-        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
-            params = {'c': self.iparv.c}
-            import jax
-            C_jac = jax.jacfwd(self.eval_q_pure)(x, params, epar, self.toolkit)
-            return C_jac
-        return self._C
+        return self.toolkit.jacobian(self.eval_q_pure, x, {'c': self.iparv.c},
+                                     epar, self._C)
 
 class L(Circuit):
     """Inductor
@@ -224,20 +213,12 @@ class L(Circuit):
         return toolkit.array([0.0, 0.0, -L * i_L])
 
     def G(self, x, epar=defaultepar): 
-        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
-            params = {'L': self.iparv.L}
-            import jax
-            G_jac = jax.jacfwd(self.eval_i_pure)(x, params, epar, self.toolkit)
-            return G_jac
-        return self._G
+        return self.toolkit.jacobian(self.eval_i_pure, x, {'L': self.iparv.L},
+                                     epar, self._G)
 
     def C(self, x, epar=defaultepar): 
-        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
-            params = {'L': self.iparv.L}
-            import jax
-            C_jac = jax.jacfwd(self.eval_q_pure)(x, params, epar, self.toolkit)
-            return C_jac
-        return self._C
+        return self.toolkit.jacobian(self.eval_q_pure, x, {'L': self.iparv.L},
+                                     epar, self._C)
 
 class VS(Circuit):
     """Independent DC voltage source
@@ -277,12 +258,8 @@ class VS(Circuit):
         return toolkit.array([i_branch, -i_branch, v_plus - v_minus])
 
     def G(self, x, epar=defaultepar): 
-        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
-            params = {}
-            import jax
-            G_jac = jax.jacfwd(self.eval_i_pure)(x, params, epar, self.toolkit)
-            return G_jac
-        return self._G
+        return self.toolkit.jacobian(self.eval_i_pure, x, {},
+                                     epar, self._G)
 
     def u(self, t=0.0, epar=defaultepar, analysis=None):
         if analysis == 'ac':
@@ -539,12 +516,8 @@ class VCVS(Circuit):
         ])
 
     def G(self, x, epar=defaultepar): 
-        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
-            params = {'g': self.iparv.g}
-            import jax
-            G_jac = jax.jacfwd(self.eval_i_pure)(x, params, epar, self.toolkit)
-            return G_jac
-        return self._G
+        return self.toolkit.jacobian(self.eval_i_pure, x, {'g': self.iparv.g},
+                                     epar, self._G)
 
 
 class SVCVS(Circuit):
@@ -747,12 +720,8 @@ class CCVS(Circuit):
         ])
 
     def G(self, x, epar=defaultepar): 
-        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
-            params = {'r': self.iparv.r}
-            import jax
-            G_jac = jax.jacfwd(self.eval_i_pure)(x, params, epar, self.toolkit)
-            return G_jac
-        return self._G
+        return self.toolkit.jacobian(self.eval_i_pure, x, {'r': self.iparv.r},
+                                     epar, self._G)
 
 
 
@@ -803,12 +772,8 @@ class VCCS(Circuit):
         ])
 
     def G(self, x, epar=defaultepar): 
-        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
-            params = {'gm': self.iparv.gm}
-            import jax
-            G_jac = jax.jacfwd(self.eval_i_pure)(x, params, epar, self.toolkit)
-            return G_jac
-        return self._G
+        return self.toolkit.jacobian(self.eval_i_pure, x, {'gm': self.iparv.gm},
+                                     epar, self._G)
 
 class Nullor(Circuit):
     """Nullor
@@ -865,11 +830,8 @@ class Nullor(Circuit):
         ])
 
     def G(self, x, epar=defaultepar): 
-        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
-            import jax
-            G_jac = jax.jacfwd(self.eval_i_pure)(x, params={}, epar=epar, toolkit=self.toolkit)
-            return G_jac
-        return self._G
+        return self.toolkit.jacobian(self.eval_i_pure, x, {},
+                                     epar, self._G)
 
 class Transformer(Circuit):
     """Ideal transformer
@@ -935,12 +897,8 @@ class Transformer(Circuit):
         ])
 
     def G(self, x, epar=defaultepar): 
-        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
-            params = {'n': self.iparv.n}
-            import jax
-            G_jac = jax.jacfwd(self.eval_i_pure)(x, params, epar, self.toolkit)
-            return G_jac
-        return self._G
+        return self.toolkit.jacobian(self.eval_i_pure, x, {'n': self.iparv.n},
+                                     epar, self._G)
 
 class Gyrator(Circuit):
     """Gyrator
@@ -999,12 +957,8 @@ class Gyrator(Circuit):
         ])
 
     def G(self, x, epar=defaultepar): 
-        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
-            params = {'gm': self.iparv.gm}
-            import jax
-            G_jac = jax.jacfwd(self.eval_i_pure)(x, params, epar, self.toolkit)
-            return G_jac
-        return self._G
+        return self.toolkit.jacobian(self.eval_i_pure, x, {'gm': self.iparv.gm},
+                                     epar, self._G)
 
 class Diode(Circuit):
     """ Nonlinear diode
@@ -1052,11 +1006,9 @@ class Diode(Circuit):
         self._vlim = vnew
 
     def G(self, x, epar=defaultepar):
-        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
-            params = {'IS': self.iparv.IS}
-            import jax
-            return jax.jacfwd(self.eval_i_pure)(x, params, epar, self.toolkit)
-            
+        if self.toolkit.supports('autodiff'):
+            return self.toolkit.jacobian(self.eval_i_pure, x,
+                                         {'IS': self.iparv.IS}, epar)
         if not hasattr(self, '_vlim'):
             self._vlim = x[0]-x[1]
 
@@ -1087,10 +1039,8 @@ class Diode(Circuit):
         return toolkit.array([i, -i])
 
     def i(self, x, epar=defaultepar):
-        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
-            params = {'IS': self.iparv.IS}
-            return self.eval_i_pure(x, params, epar, self.toolkit)
-            
+        if self.toolkit.supports('autodiff'):
+            return self.eval_i_pure(x, {'IS': self.iparv.IS}, epar, self.toolkit)
         if not hasattr(self, '_vlim'):
             self._vlim = x[0]-x[1]
 
@@ -1190,17 +1140,9 @@ class VCVS_limited(Circuit):
         return self.eval_i_pure(x, params, epar, self.toolkit)
 
     def G(self, x, epar=defaultepar):
-        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
-            params = {'g': self.iparv.g, 'level': self.iparv.level, 'offset': self.iparv.offset}
-            import jax
-            G_jac = jax.jacfwd(self.eval_i_pure)(x, params, epar, self.toolkit)
-            
-            # Since original pycircuit's VCVS_limited had a bug where i() didn't match G(),
-            # and the tests might rely on the original G(), let's just fall back to original G() 
-            # if we aren't completely replacing it, but wait, the plan is to vectorize!
-            # If we vectorize, we MUST return G_jac. Let's see if tests pass.
-            return G_jac
-            
+        if self.toolkit.supports('autodiff'):
+            return self.toolkit.jacobian(self.eval_i_pure, x,
+                                         {'g': self.iparv.g, 'level': self.iparv.level, 'offset': self.iparv.offset}, epar)
         n = self.n
         G = self.toolkit.zeros((n,n))
         g_limit = self.function.fprime(x[1]-x[0])
@@ -1485,19 +1427,12 @@ class CoupledInductors(Circuit):
         ])
 
     def G(self, x, epar=defaultepar): 
-        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
-            import jax
-            G_jac = jax.jacfwd(self.eval_i_pure)(x, params={}, epar=epar, toolkit=self.toolkit)
-            return G_jac
-        return self._G
+        return self.toolkit.jacobian(self.eval_i_pure, x, {},
+                                     epar, self._G)
 
     def C(self, x, epar=defaultepar): 
-        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
-            params = {'L1': self.iparv.L1, 'L2': self.iparv.L2, 'K': self.iparv.K}
-            import jax
-            C_jac = jax.jacfwd(self.eval_q_pure)(x, params, epar, self.toolkit)
-            return C_jac
-        return self._C
+        return self.toolkit.jacobian(
+            self.eval_q_pure, x, {'L1': self.iparv.L1, 'L2': self.iparv.L2, 'K': self.iparv.K}, epar, self._C)
 
 class VSwitch(Circuit):
     """Voltage Controlled Switch"""
@@ -1536,12 +1471,9 @@ class VSwitch(Circuit):
         return self.eval_i_pure(x, params, epar, self.toolkit)
 
     def G(self, x, epar=defaultepar):
-        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
-            params = {'Ron': self.iparv.Ron, 'Roff': self.iparv.Roff, 'Von': self.iparv.Von, 'Voff': self.iparv.Voff}
-            import jax
-            G_jac = jax.jacfwd(self.eval_i_pure)(x, params, epar, self.toolkit)
-            return G_jac
-            
+        if self.toolkit.supports('autodiff'):
+            return self.toolkit.jacobian(self.eval_i_pure, x,
+                                         {'Ron': self.iparv.Ron, 'Roff': self.iparv.Roff, 'Von': self.iparv.Von, 'Voff': self.iparv.Voff}, epar)
         v = x[0] - x[1]
         vc = x[2] - x[3]
         Ron = self.iparv.Ron
@@ -1611,12 +1543,8 @@ class CCCS(Circuit):
         ])
 
     def G(self, x, epar=defaultepar): 
-        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
-            params = {'F': self.iparv.F}
-            import jax
-            G_jac = jax.jacfwd(self.eval_i_pure)(x, params, epar, self.toolkit)
-            return G_jac
-        return self._G
+        return self.toolkit.jacobian(self.eval_i_pure, x, {'F': self.iparv.F},
+                                     epar, self._G)
 
 class ISwitch(Circuit):
     """Current Controlled Switch"""
@@ -1652,12 +1580,9 @@ class ISwitch(Circuit):
         return self.eval_i_pure(x, params, epar, self.toolkit)
 
     def G(self, x, epar=defaultepar):
-        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
-            params = {'Ron': self.iparv.Ron, 'Roff': self.iparv.Roff, 'Ion': self.iparv.Ion, 'Ioff': self.iparv.Ioff}
-            import jax
-            G_jac = jax.jacfwd(self.eval_i_pure)(x, params, epar, self.toolkit)
-            return G_jac
-            
+        if self.toolkit.supports('autodiff'):
+            return self.toolkit.jacobian(self.eval_i_pure, x,
+                                         {'Ron': self.iparv.Ron, 'Roff': self.iparv.Roff, 'Ion': self.iparv.Ion, 'Ioff': self.iparv.Ioff}, epar)
         v = x[0] - x[1]
         i_ctrl = x[4]
         Ron, Roff, Ion, Ioff = self.iparv.Ron, self.iparv.Roff, self.iparv.Ion, self.iparv.Ioff
@@ -1716,15 +1641,8 @@ class BSource(Circuit):
             return self.toolkit.zeros((4, 4))
         v_ctrl = x[0] - x[1]
         
-        # Use JAX if available, else central difference
-        try:
-            import jax
-            grad_func = jax.grad(self.iparv.i_func)
-            di_dv = grad_func(v_ctrl)
-        except ImportError:
-            eps = 1e-6
-            di_dv = (self.iparv.i_func(v_ctrl + eps) - self.iparv.i_func(v_ctrl - eps)) / (2 * eps)
-            
+        di_dv = self.toolkit.derivative(self.iparv.i_func, v_ctrl)
+
         G_mat = self.toolkit.zeros((4, 4))
         G_mat[2, 0] = di_dv
         G_mat[2, 1] = -di_dv
@@ -1744,14 +1662,8 @@ class BSource(Circuit):
             return self.toolkit.zeros((4, 4))
         v_ctrl = x[0] - x[1]
         
-        try:
-            import jax
-            grad_func = jax.grad(self.iparv.q_func)
-            dq_dv = grad_func(v_ctrl)
-        except ImportError:
-            eps = 1e-6
-            dq_dv = (self.iparv.q_func(v_ctrl + eps) - self.iparv.q_func(v_ctrl - eps)) / (2 * eps)
-            
+        dq_dv = self.toolkit.derivative(self.iparv.q_func, v_ctrl)
+
         C_mat = self.toolkit.zeros((4, 4))
         C_mat[2, 0] = dq_dv
         C_mat[2, 1] = -dq_dv

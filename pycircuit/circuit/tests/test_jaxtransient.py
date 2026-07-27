@@ -58,13 +58,17 @@ def test_jaxtransient_rc_charging(lte_formula):
     Runs under both the YWR (J^-1) DAE LTE and the charge-domain estimate.
     """
     from pycircuit.circuit import circuit as circuit_mod
-    import pycircuit.circuit._jaxtoolkit as jtk
+    from pycircuit.circuit.toolkit import jaxtoolkit
     from pycircuit.circuit.elements import SubCircuit, R, C, VS
     from pycircuit.circuit import gnd
     from pycircuit.circuit.jaxtransient import JAXTransient
 
+    ## The toolkit is the JAXToolkit *instance*, not the backend module.
+    ## Elements reach differentiation through toolkit.jacobian(), which is a
+    ## method on the class -- a bare module has no such thing, and passing one
+    ## used to work only because every element carried its own `import jax`.
     saved_toolkit = circuit_mod.default_toolkit
-    circuit_mod.default_toolkit = jtk
+    circuit_mod.default_toolkit = jaxtoolkit
     try:
         cir = SubCircuit()
         cir.add_node('in')

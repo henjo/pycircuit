@@ -29,8 +29,14 @@ from sympy.polys.matrices.exceptions import DMError
 from . import _numeric
 from . import _sparse_numeric
 from . import _symbolic
-from . import _jaxtoolkit
 from .acsolution import NumDenSolution
+
+## _jaxtoolkit is deliberately NOT imported here: it does `import jax` at module
+## level, so importing it eagerly made JAX a hard dependency of the whole
+## package -- the numeric and symbolic paths included, which never touch it.
+## The guarded import at the bottom of this file is what makes it optional, and
+## an unconditional import here silently defeated that guard.  See
+## test_jax_optional.
 
 
 class Toolkit:
@@ -58,6 +64,52 @@ class Toolkit:
         toolkit provides them, without assuming every toolkit does.
         """
         return False
+
+    def jacobian(self, func, x, params, epar, fallback=None):
+        """Jacobian of ``func`` with respect to ``x`` -- or ``fallback``.
+
+        An element that knows its own conductance or capacitance matrix stamps
+        it directly; one differentiated automatically does not need to.  Both
+        answers come from here so the *element* never has to know which kind of
+        toolkit it is running under.
+
+        Before this existed, every such element carried its own
+        ``if hasattr(toolkit, 'jax') and toolkit.jax: import jax; ...`` branch --
+        twenty of them in ``elements.py`` alone, each importing jax inside a
+        method, which is how an optional accelerator came to be named all over
+        the element layer.  Adding a differentiating backend should not mean
+        touching twenty elements again.
+
+        Args:
+            func: Pure ``f(x, params, epar, toolkit)`` to differentiate.
+            x: Point to differentiate at.
+            params: Element parameters passed through to ``func``.
+            epar: Environment parameters passed through to ``func``.
+            fallback: The precomputed matrix to return when this toolkit does
+                not differentiate.  A plain attribute on the element, so
+                evaluating it eagerly costs nothing.  Elements whose
+                non-differentiating path is a *computation* (device limiting,
+                a piecewise switch model) cannot pass it eagerly -- they guard
+                with ``supports('autodiff')`` instead and leave this unset.
+        """
+        return fallback
+
+    def derivative(self, func, at, eps=1e-6):
+        """``d func / d at`` for a scalar, user-supplied function.
+
+        Behavioural sources take an arbitrary Python callable, so there is no
+        precomputed matrix to fall back on -- the derivative has to be computed.
+        This does it by central difference; a differentiating toolkit overrides
+        with exact differentiation.
+
+        The elements that need this used to write ``try: import jax ... except
+        ImportError:`` inline, which chose the method by whether JAX was
+        *installed* rather than by which toolkit was running.  With JAX present,
+        a numeric circuit silently got JAX arrays stamped into its matrix.
+        Routing through the toolkit makes the active backend the thing that
+        decides, which is the only correct answer.
+        """
+        return (func(at + eps) - func(at - eps)) / (2 * eps)
 
     def ac_solution(self, A, b, s, irefnode):
         """Return an :class:`~pycircuit.circuit.acsolution.ACSolution`, or None.
@@ -113,7 +165,23 @@ class JAXToolkit(Toolkit):
     symbolic = False
     poly = False
     jax = True
-    
+
+    def supports(self, capability):
+        ## 'autodiff' means: derivatives come from differentiating the pure
+        ## element functions, so an element must hand over its smooth form and
+        ## skip the manual limiting a Newton solver would otherwise apply.
+        return capability in ('autodiff',)
+
+    def jacobian(self, func, x, params, epar, fallback=None):
+        """Differentiate ``func`` at ``x`` -- the fallback matrix is unused."""
+        import jax
+        return jax.jacfwd(func)(x, params, epar, self)
+
+    def derivative(self, func, at, eps=None):
+        """Exact scalar derivative; ``eps`` is accepted and ignored."""
+        import jax
+        return jax.grad(func)(at)
+
     def generate_batched_eval(self, element_cls, method='i'):
         import jax
         

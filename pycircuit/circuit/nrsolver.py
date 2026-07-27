@@ -265,7 +265,7 @@ class JAXNewtonSolver(NonLinearSolver):
     """
     
     def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None):
-        if not (hasattr(toolkit, 'jax') and toolkit.jax):
+        if not toolkit.supports('autodiff'):
             raise ValueError("JAXNewtonSolver requires the JAX toolkit (_jaxtoolkit.py).")
             
         import jax

@@ -239,7 +239,7 @@ class Circuit():
             self.iparv.attach(self)
             self.update(self.ipar)
             
-        if hasattr(self.toolkit, 'jax') and self.toolkit.jax:
+        if self.toolkit.supports('autodiff'):
             if hasattr(self, 'eval_i'):
                 self.toolkit.generate_eval_i_and_G(self)
             if hasattr(self, 'eval_q'):
@@ -1182,7 +1182,7 @@ class SubCircuit(Circuit):
         self._build_evaluation_groups()
 
     def _build_evaluation_groups(self):
-        if not (hasattr(self.toolkit, 'jax') and self.toolkit.jax):
+        if not self.toolkit.supports('autodiff'):
             self._eval_groups = {}
             return
             

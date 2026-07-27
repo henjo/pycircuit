@@ -417,7 +417,7 @@ class JAXTransient(Analysis):
     def __init__(self, cir, **kwargs):
         super().__init__(cir, **kwargs)
         self.toolkit = getattr(self.cir, 'toolkit', None)
-        if not (self.toolkit and hasattr(self.toolkit, 'jax') and self.toolkit.jax):
+        if not (self.toolkit and self.toolkit.supports('autodiff')):
             raise ValueError("JAXTransient requires the circuit to use _jaxtoolkit.py.")
         
 
