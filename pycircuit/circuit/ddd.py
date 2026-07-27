@@ -138,6 +138,17 @@ def _resolve(value, env):
     an exact symbolic result into a floating-point one, so only values that are
     already inexact are converted.
     """
+    ## Fast path.  A payload is very often a bare symbol -- always so for the
+    ## stamp entries a reduction produces -- and a dict lookup is orders of
+    ## magnitude cheaper than sympy's substitution machinery, which has to walk
+    ## the whole environment.  During a multi-level reduction that environment
+    ## grows to thousands of entries and this call dominates everything else.
+    if value.__class__ is sympy.Symbol:
+        hit = env.get(value)
+        if hit is not None:
+            return hit
+        return value
+
     if getattr(value, 'free_symbols', None):
         value = value.subs(env)
     if getattr(value, 'free_symbols', None) or not getattr(value, 'is_number', False):
@@ -1196,15 +1207,36 @@ class DDDCombination:
     __slots__ = ('parts',)
 
     def __init__(self, parts):
-        self.parts = list(parts)                 # [(coefficient, DDD), ...]
+        ## [(factors, DDD), ...] where ``factors`` is a tuple multiplied
+        ## together.  They are kept separate rather than pre-multiplied because
+        ## each factor is usually a bare symbol, which resolves by dict lookup;
+        ## a pre-multiplied product is a sympy expression and costs a full
+        ## substitution instead.  On a multi-level reduction that difference is
+        ## most of the runtime.
+        self.parts = [(tuple(f) if isinstance(f, tuple) else (f,), d)
+                      for f, d in parts]
 
     def eval(self, env=None):
-        ## The coefficients are matrix entries in their own right, so they need
-        ## the same substitution as the diagrams they multiply -- evaluating the
+        ## The factors are matrix entries in their own right, so they need the
+        ## same substitution as the diagrams they multiply -- evaluating the
         ## diagram alone would leave a half-substituted expression behind.
+        env = env or {}
         total = 0
-        for coeff, diagram in self.parts:
-            total = total + _resolve(coeff, env or {}) * diagram.eval(env)
+        for factors, diagram in self.parts:
+            value = diagram.eval(env)
+            for f in factors:
+                value = _resolve(f, env) * value
+            total = total + value
+        return total
+
+    def resolve(self, env, memo):
+        """Value of the combination given a pre-computed diagram memo."""
+        total = 0
+        for factors, diagram in self.parts:
+            value = memo[id(diagram.root)]
+            for f in factors:
+                value = _resolve(f, env) * value
+            total = total + value
         return total
 
     def roots(self):
@@ -1501,7 +1533,8 @@ class HierarchicalDDD:
                         if (k, p) not in cof:
                             cof[(k, p)] = family.cofactor(k, p)
                         sign = -1 if (k + p) % 2 else 1
-                        parts.append((-sign * Ati[a, p] * Ait[k, b], cof[(k, p)]))
+                        parts.append(((-sign, Ati[a, p], Ait[k, b]),
+                                      cof[(k, p)]))
                 if not parts:
                     continue                     # structurally zero: stay sparse
                 sym = sympy.Symbol('_lvl%d_%d_%d' % (level, a, b))
@@ -1545,12 +1578,8 @@ class HierarchicalDDD:
             ## cancellation.  Dividing each entry by D here recovers the actual
             ## Schur complement, so each level contributes a single factor of D
             ## and nothing is ever raised to a power.
-            resolved = {}
-            for sym, combination in lvl['blocks'].items():
-                total = 0
-                for coeff, diagram in combination.parts:
-                    total = total + _resolve(coeff, env) * memo[id(diagram.root)]
-                resolved[sym] = total / D
+            resolved = {sym: combination.resolve(env, memo) / D
+                        for sym, combination in lvl['blocks'].items()}
             factors.append(D)
             env.update(resolved)
 
@@ -1677,10 +1706,7 @@ def hierarchical_solve(hier, b, env):
         if D == 0:
             raise ZeroDivisionError('an internal block is singular')
         for sym, combination in lvl['blocks'].items():
-            total = 0
-            for coeff, diagram in combination.parts:
-                total = total + _resolve(coeff, env) * memo[id(diagram.root)]
-            env[sym] = total / D
+            env[sym] = combination.resolve(env, memo) / D
 
         Aii = _numeric_matrix(lvl['Aii'], env)
         Ait = _numeric_matrix(lvl['Ait'], env)

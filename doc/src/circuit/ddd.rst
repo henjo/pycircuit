@@ -1292,11 +1292,25 @@ as in the flat computation — but the test drives it with a dense Hermitian
 correlation anyway, since an implementation that quietly assumed independence
 would agree on every diagonal-only case.
 
-.. note::
+On the µA741 the same comparison is 11 088 vertices against 26 — a factor of
+several hundred — with the power spectral density agreeing to one part in 10¹⁴,
+in under half a second.
 
-   The saving here is **representational**, not yet wall-clock. Vertex counts
-   fall by orders of magnitude, but building many levels currently costs more in
-   Python and sympy overhead than the smaller diagrams save — the µA741 case
-   takes tens of seconds, dominated by per-level matrix extraction and
-   evaluation rather than by anything about diagrams. That is an optimisation
-   target, not a property of the method.
+That last figure took some finding, and the story is worth keeping because the
+lesson generalises. The first working version took **86 seconds** on that
+circuit, and it was tempting to write the saving off as representational only.
+Profiling said otherwise: construction was 0.1 s and the *solve* was 87.8 s, so
+nothing about diagrams was to blame. The cost was sympy substitution, in two
+places:
+
+* stamp entries are bare symbols, and resolving one by walking sympy's
+  substitution machinery against an environment that grows to thousands of
+  entries is enormously more expensive than a dict lookup — a fast path for that
+  case alone took 87.8 s to 20.5 s;
+* the remaining time went on coefficients that had been *pre-multiplied* into
+  sympy products at construction, so they missed that fast path. Keeping the
+  factors separate and multiplying them numerically at evaluation took it to
+  **0.44 s**.
+
+Together that is roughly 200×, with the answer unchanged to 1e-13. The
+representation was never the problem; the arithmetic around it was.
