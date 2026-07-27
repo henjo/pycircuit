@@ -48,16 +48,15 @@ class CircuitResultACPoly(CircuitResultAC):
     determinant), which lets it hand back transfer functions and circuit poles
     without a swelling ``cancel``.
     """
-    def __init__(self, circuit, xdcop, x, xdot, num, den, s, **kvargs):
+    def __init__(self, circuit, xdcop, x, xdot, solution, **kvargs):
         super().__init__(circuit, xdcop, x, xdot, **kvargs)
-        self._num = num
-        self._den = den
-        self._s = s
+        self._solution = solution
+        self._s = solution.s
 
     def tf(self, plus, minus=None):
         """Return the :class:`TransferFunction` to ``v(plus[, minus])``."""
-        num = self.circuit.extract_v(self._num, plus, minus)
-        return TransferFunction(num, self._den, self._s)
+        num = self.circuit.extract_v(self._solution.numerators(), plus, minus)
+        return self._solution.transfer_function(num)
 
     def tf_i(self, branch_or_term):
         """Return the :class:`TransferFunction` to the current into ``branch_or_term``.
@@ -72,13 +71,14 @@ class CircuitResultACPoly(CircuitResultAC):
             c0 = extract_i(0,    0)    = c
             num = A + c0*(D - 1)       = L*N + c*D
         """
-        N, D, s = self._num, self._den, self._s
+        N = self._solution.numerators()
+        D, s = self._solution.denominator(), self._s
         zero = 0 * N
         A = self.circuit.extract_i(N, branch_or_term, xdot=s*N,
                                    linearized=True, xdcop=self.xdcop)
         c0 = self.circuit.extract_i(zero, branch_or_term, xdot=zero,
                                     linearized=True, xdcop=self.xdcop)
-        return TransferFunction(A + c0*(D - 1), D, s)
+        return self._solution.transfer_function(A + c0*(D - 1))
 
     def poles(self, numeric=False):
         """Return the circuit poles (roots of the shared denominator).
@@ -87,7 +87,7 @@ class CircuitResultACPoly(CircuitResultAC):
         With ``numeric=True`` (requires numeric coefficients) the roots are found
         with ``numpy.roots`` -- fast and reliable for high-degree denominators.
         """
-        return TransferFunction._roots(sympy.Poly(self._den, self._s), numeric)
+        return self._solution.poles(numeric)
 
 
 class SSAnalysis(Analysis):
@@ -179,16 +179,13 @@ class AC(SSAnalysis):
         ## num/den solving and the frequency is a single symbol, keep the result
         ## as N(s)/D(s) (shared denominator) so poles/zeros are available without
         ## a swelling cancel.
-        if self.toolkit.supports('num_den') and not isiterable(ss):
-            s = ss
-            num, den = self.toolkit.linearsolver_num_den(s*C + G, -u)
-            ## Re-insert the reference node (v(refnode) = 0 => numerator 0)
-            num = self.toolkit.concatenate((num[:irefnode],
-                                            self.toolkit.array([0]),
-                                            num[irefnode:]))
-            xac = np.array([ni / den for ni in num], dtype=object)
-            self.result = CircuitResultACPoly(self.cir, x, xac, s * xac,
-                                              num, den, s,
+        solution = None
+        if not isiterable(ss):
+            solution = self.toolkit.ac_solution(ss*C + G, -u, ss, irefnode)
+        if solution is not None:
+            xac = solution.node_voltages()
+            self.result = CircuitResultACPoly(self.cir, x, xac, ss * xac,
+                                              solution,
                                               sweep_values = freqs,
                                               sweep_label='frequency',
                                               sweep_unit='Hz')

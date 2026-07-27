@@ -30,6 +30,7 @@ from . import _numeric
 from . import _sparse_numeric
 from . import _symbolic
 from . import _jaxtoolkit
+from .acsolution import NumDenSolution
 
 
 class Toolkit:
@@ -57,6 +58,25 @@ class Toolkit:
         toolkit provides them, without assuming every toolkit does.
         """
         return False
+
+    def ac_solution(self, A, b, s, irefnode):
+        """Return an :class:`~pycircuit.circuit.acsolution.ACSolution`, or None.
+
+        A toolkit that can express the AC answer in a compact shared form
+        overrides this; returning ``None`` means "no compact form available",
+        and the analysis falls back to solving frequency by frequency.
+
+        Keeping the choice here rather than in the analysis is what lets a new
+        representation be added without another branch in ``analysis_ss``.
+
+        Args:
+            A: The system matrix ``s*C + G`` with the reference node removed.
+            b: Right-hand side, likewise reduced.
+            s: The frequency symbol.
+            irefnode: Index at which to re-insert the reference node, whose
+                voltage is zero by definition.
+        """
+        return None
 
     def noise_psd(self, Y, u, CY, s):
         """Return ``(transimpedance_vector, output noise PSD)``.
@@ -227,6 +247,13 @@ class SymbolicPolyToolkit(SymbolicToolkit):
 
     def supports(self, capability):
         return capability in ('num_den',)
+
+    def ac_solution(self, A, b, s, irefnode):
+        """Solve fraction-free and keep the result as ``N(s)/D(s)``."""
+        num, den = self.linearsolver_num_den(A, b)
+        ## Re-insert the reference node: v(refnode) = 0, so its numerator is 0.
+        num = self.concatenate((num[:irefnode], self.array([0]), num[irefnode:]))
+        return NumDenSolution(num, den, s)
 
     def linearsolver_num_den(self, A, b):
         """Solve ``A x = b`` fraction-free; returns ``(numerator_vector, denominator)``.
