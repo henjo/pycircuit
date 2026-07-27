@@ -541,6 +541,55 @@ pattern exists, so reuse it rather than inventing a framework. Its value extends
 past DDD: it unifies the per-feature comparison tables we already maintain
 separately, and gives `symbolic_poly`, `ginac`, `soe` and `ddd` one axis.
 
+#### Test cases taken from the papers — yes, and one of them is exact
+
+Worth doing, and for a reason that is stronger than "more coverage": **published
+reference numbers are the only thing that can tell a failed method from a failed
+implementation.** Without them, a P0 gate failure is ambiguous — "our DDD is
+bigger than our SoE" cannot distinguish *DDD does not help pycircuit* from *we
+built the DDD badly* (a hash table that silently fails to share still produces
+correct answers, just enormous ones). With an external calibration point we know
+which, and that materially improves the quality of the stop/continue decision.
+
+Three tiers, by cost:
+
+**Tier 1 — an exact analytic check, free, do it first.** *[LIT]* TCAS-II 2010
+proves that for a **full** n×n matrix under row-wise ordering the optimal DDD size
+is exactly `n·2^(n-1)`. That is not a benchmark, it is a **unit test**: build a
+dense symbolic n×n matrix for n = 3…8 and assert the vertex count equals
+`n·2^(n-1)` exactly. It validates ordering *and* sharing in one assertion, needs
+no circuit, and fails loudly the moment the minor hash table stops sharing. This
+is the single most valuable check available to us and it costs almost nothing.
+*[LIT]* ICCAD 2010 (Table II) additionally tabulates LED-row-wise versus
+Greedy-ordered DDD sizes for full matrices up to 18×18, so the growth curve can be
+compared too.
+
+**Tier 2 — cheap circuits, include in Stage B.** The Cauer low-pass filter used to
+illustrate TCAD 2000, and the cascaded-opamp-block series (1–4 blocks) that is
+their SCAPP comparison. Both are constructible from `R`, `C`, `VCCS` today.
+
+**Tier 3 — the headline circuits, after P0 passes.** µA741 (both TCAD papers) and
+µA725 (ICCAD 2010) are where all the quotable numbers live: flat DDD 6654
+vertices, three-level hierarchical 117, s-expanded 99 844. These need a
+small-signal device model, but **no new element types** — a hybrid-π BJT is
+`VCCS` (gm) + `R` (rπ, ro) + `C` (Cπ, Cµ), i.e. an ordinary `SubCircuit` built
+from primitives pycircuit already has. Real but bounded work. It should **not**
+gate P0, both because it is the most effort and because a µA741 is exactly the
+size where a first implementation will struggle for uninteresting reasons.
+Independently of DDD it is a useful addition — a reusable symbolic small-signal
+opamp example for the docs.
+
+**Caveat that governs all of them: these are calibration, not targets.** *[LIT]*
+TCAD 2001 reports **99 844 versus 297 115 vertices for the same µA741** depending
+only on whether the "compact symbol" or "full symbol" representation is used — a
+3× swing from convention alone. Add differences in MNA formulation, which
+parameters are kept symbolic, the input/output pair chosen, and ordering, and
+exact agreement is not a reasonable expectation. The usable signal is
+order-of-magnitude: landing within a small factor means the implementation is
+sound; being 100× off means it is broken. **Whichever symbol convention we adopt
+must be recorded next to every number we publish**, or our own figures will be as
+uninterpretable to the next reader as these were to us.
+
 **Two cautions:**
 - *Do not overfit to the ladder.* The RC ladder is our most-used case and the one
   DDD's ordering heuristics will look best on. The MFB (with its `Nullor`) and a
@@ -597,10 +646,17 @@ failing stops the project.**
   assignment are not exactly the same unit; the growth-rate comparison matters more
   than the constant.
 
-**Failure handling** — what "stop" means, concretely: if both criteria fail, write
-up the negative result in `doc/` alongside the symengine and GiNaC write-ups,
-leave the standalone module in the tree marked experimental, do **not** wire it
-into any toolkit, and close the roadmap item. If (b) fails but (a) passes,
+**Before acting on a failure, disambiguate it.** The Tier-1 check above
+(`|DDD| = n·2^(n-1)` exactly, for full matrices) must pass first. If it does not,
+a poor gate result says nothing about DDD as a method — it says our sharing or
+ordering is broken, and the correct response is to fix the implementation, not to
+abandon the approach. Only a gate failure *with* Tier 1 passing is evidence about
+the method.
+
+**Failure handling** — what "stop" means, concretely: if both criteria fail with
+Tier 1 passing, write up the negative result in `doc/` alongside the symengine and
+GiNaC write-ups, leave the module in the tree marked experimental, do **not** wire
+it into any toolkit, and close the roadmap item. If (b) fails but (a) passes,
 continue — but drop the claim that DDD is a compactness win and justify it purely
 on capability, which changes what we should say in the docs.
 
