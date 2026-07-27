@@ -94,3 +94,49 @@ def test_jax_vectorized_stamping():
     assert np.isclose(G[1, 1], 1/5)
     assert np.isclose(G[0, 1], -1/5)
     assert np.isclose(G[1, 0], -1/5)
+
+
+def test_batched_stamping_matches_per_element_on_mixed_circuit():
+    """Batched and per-element stamping must agree, for every stamp.
+
+    Regression: element classes are grouped by type, and each stamp asks every
+    group for a value *and* a Jacobian.  A diode has no charge and a capacitor
+    no static current, so each group is missing one of the pure forms -- and a
+    circuit containing both used to raise ``AttributeError`` on G, C, i and q
+    alike, i.e. any JAX circuit mixing a nonlinear device with a reactive one
+    was unusable.  The missing form now contributes zeros.
+
+    Comparing against the numeric toolkit, which stamps element by element,
+    checks the batching produces the same matrix and not merely *a* matrix.
+    """
+    from pycircuit.circuit import circuit as circuit_module
+    from pycircuit.circuit import gnd as ground
+
+    def build(toolkit):
+        saved = circuit_module.default_toolkit
+        circuit_module.default_toolkit = toolkit
+        try:
+            cir = SubCircuit(toolkit=toolkit)
+            cir['R1'] = R('a', 'b', r=1e3)
+            cir['D1'] = Diode('a', ground)
+            cir['D2'] = Diode('b', ground)
+            cir['C1'] = C('a', ground, c=1e-9)
+            cir.update_iparv()
+            return cir
+        finally:
+            circuit_module.default_toolkit = saved
+
+    batched = build(jax_tk)
+    per_element = build(num_tk)
+
+    ## The point of the test is that the JAX circuit really is batching.
+    assert batched._eval_groups, 'nothing was grouped; the test proves nothing'
+    assert not per_element._eval_groups
+
+    x = np.array([0.6, 0.3, 0.0])
+    for methodname in ('G', 'C', 'i', 'q'):
+        a = np.asarray(getattr(batched, methodname)(x), dtype=float)
+        b = np.asarray(getattr(per_element, methodname)(x), dtype=float)
+        assert np.allclose(a, b, atol=1e-12), (
+            '%s differs between batched and per-element stamping:\n%s\nvs\n%s'
+            % (methodname, a, b))

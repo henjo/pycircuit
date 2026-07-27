@@ -111,6 +111,37 @@ class Toolkit:
         """
         return (func(at + eps) - func(at - eps)) / (2 * eps)
 
+    def evaluation_groups(self, circuit):
+        """Element classes this toolkit can evaluate in a batch -- none, here.
+
+        A toolkit that evaluates elements one at a time has no use for the
+        grouping, so the empty mapping means "stamp every element individually"
+        and the circuit needs no branch on toolkit type.
+        """
+        return {}
+
+    def batched_contributions(self, circuit, groups, methodname, x, args,
+                              params_tree, ndim):
+        """Stamp contributions for grouped elements, or None if not batching.
+
+        Returning ``None`` -- the base behaviour -- tells the circuit that
+        nothing was handled in bulk and every element must be visited normally.
+
+        Args:
+            circuit: The circuit being stamped.
+            groups: The mapping from :meth:`evaluation_groups`.
+            methodname: ``'G'``, ``'C'``, ``'i'`` or ``'q'``.
+            x: State vector.
+            args: Extra arguments the element method takes (``epar`` first).
+            params_tree: Optional parameter override tree.
+            ndim: 2 for a matrix stamp, 1 for a vector stamp.
+
+        Returns:
+            ``(values, indices)`` where ``indices`` is ``(rows, cols)`` for
+            ``ndim=2`` and a flat index array for ``ndim=1``; or ``None``.
+        """
+        return None
+
     def ac_solution(self, A, b, s, irefnode):
         """Return an :class:`~pycircuit.circuit.acsolution.ACSolution`, or None.
 
@@ -182,52 +213,131 @@ class JAXToolkit(Toolkit):
         import jax
         return jax.grad(func)(at)
 
+    def evaluation_groups(self, circuit):
+        """Group a circuit's elements by class, for batched evaluation.
+
+        Elements of one class differ only in their node map and parameters, so
+        they can be evaluated in a single ``vmap`` rather than a Python loop.
+        Building the grouping is meaningless for a toolkit that cannot batch,
+        which is why the base returns nothing and this lives here rather than in
+        :mod:`pycircuit.circuit.circuit`.
+        """
+        import numpy as np
+        groups = {}
+        for instance_name, element in circuit.elements.items():
+            cls = element.__class__
+            if not (hasattr(cls, 'eval_i_pure') or hasattr(cls, 'eval_q_pure')):
+                continue
+            group = groups.setdefault(cls, {
+                'instances': [], 'nodemaps_2d': [], 'params': {},
+                'rows': [], 'cols': [], '1d_indices': []})
+            group['instances'].append(element)
+            group['nodemaps_2d'].append(circuit._map_indices_1d[instance_name])
+            rows, cols = circuit._map_indices_2d[instance_name]
+            group['rows'].append(rows)
+            group['cols'].append(cols)
+            group['1d_indices'].append(circuit._map_indices_1d[instance_name])
+            values = getattr(getattr(element, 'iparv', None), '_values', {}) or {}
+            for key, value in values.items():
+                group['params'].setdefault(key, []).append(value)
+
+        for group in groups.values():
+            group['nodemaps_2d'] = np.array(group['nodemaps_2d'], dtype=int)
+            group['rows'] = np.array(group['rows']).flatten()
+            group['cols'] = np.array(group['cols']).flatten()
+            group['1d_indices'] = np.array(group['1d_indices']).flatten()
+            for key in group['params']:
+                group['params'][key] = self.array(group['params'][key])
+        return groups
+
     def generate_batched_eval(self, element_cls, method='i'):
+        """Compile a vmapped value-and-Jacobian evaluator for one element class.
+
+        Instead of evaluating thousands of diodes in a Python loop, ``vmap``
+        maps the pure single-device function across a stacked array of inputs
+        and parameters, while ``jacfwd`` differentiates it to get each device's
+        conductance or capacitance matrix.  ``jit`` compiles the pair into one
+        XLA executable.
+
+        An element class supplies whichever pure forms it needs -- a diode has
+        no charge, a capacitor no static current -- so the missing one
+        contributes **zeros** rather than raising.  Without that, any circuit
+        mixing a nonlinear element with a reactive one failed on every stamp,
+        because the two land in different groups and each stamp asks every group
+        for both forms.
+        """
         import jax
-        
-        cache_attr = f'_jax_batched_{method}'
+        import jax.numpy as jnp
+
+        cache_attr = '_jax_batched_%s' % method
         if not hasattr(element_cls, cache_attr):
             setattr(element_cls, cache_attr, {})
-            
         cache = getattr(element_cls, cache_attr)
-        
+
+        wanted = 'eval_%s_pure' % ('i' if method == 'i' else 'q')
+        other = 'eval_%s_pure' % ('q' if method == 'i' else 'i')
+
         def batched_eval_func(X_batch, params_batch, epar):
             if hasattr(epar, '_values'):
                 key = frozenset(epar._values.items())
             else:
                 key = id(epar)
-                
+
             if key not in cache:
                 @jax.jit
                 def compiled_func(X_b, p_b):
                     def single_eval(x, p):
-                        if method == 'i':
-                            return element_cls.eval_i_pure(x, p, epar, self)
-                        elif method == 'q':
-                            return element_cls.eval_q_pure(x, p, epar, self)
-                    
-                    # --- HIGH-PERFORMANCE GPU/CPU VECTORIZATION ---
-                    # Instead of evaluating thousands of Diodes/Transistors in a Python `for` loop,
-                    # we use JAX's `vmap` (Vectorizing Map). It takes our `single_eval` function 
-                    # (which operates on a single device) and maps it across a massive stacked array 
-                    # of inputs (X_b) and parameters (p_b). 
-                    # 
-                    # Simultaneously, `jax.jacfwd` performs Forward-Mode Automatic Differentiation 
-                    # to EXACTLY calculate the Jacobian (the Conductance / Capacitance matrix) for 
-                    # every single device without manually writing calculus formulas.
-                    # 
-                    # JAX compiles this entire block via `@jax.jit` into a highly optimized 
-                    # XLA executable that executes simultaneously in C++/GPU space.
-                    val_batch = jax.vmap(single_eval)(X_b, p_b)
-                    jac_batch = jax.vmap(jax.jacfwd(single_eval))(X_b, p_b)
-                    return val_batch, jac_batch
-                    
+                        func = getattr(element_cls, wanted, None)
+                        if func is not None:
+                            return func(x, p, epar, self)
+                        ## This class has no such form; contribute nothing, but
+                        ## with the shape the other form defines so the stamp
+                        ## still lines up.
+                        shape_of = getattr(element_cls, other)
+                        return jnp.zeros_like(shape_of(x, p, epar, self))
+
+                    return (jax.vmap(single_eval)(X_b, p_b),
+                            jax.vmap(jax.jacfwd(single_eval))(X_b, p_b))
+
                 cache[key] = compiled_func
-                
             return cache[key](X_batch, params_batch)
-            
+
         return batched_eval_func
-        
+
+    def batched_contributions(self, circuit, groups, methodname, x, args,
+                              params_tree, ndim):
+        """Evaluate every grouped class in one vmapped call per class."""
+        if not groups or x is None:
+            return None
+
+        method_key = 'i' if methodname in ('G', 'i') else 'q'
+        want_jacobian = methodname in ('G', 'C')
+        epar = args[0]
+
+        values, rows, cols, flat = [], [], [], []
+        for cls, group in groups.items():
+            evaluate = self.generate_batched_eval(cls, method_key)
+            params = group['params']
+            if params_tree is not None and cls.__name__ in params_tree:
+                params = params_tree[cls.__name__]
+            value_batch, jacobian_batch = evaluate(
+                x[group['nodemaps_2d']], params, epar)
+            batch = jacobian_batch if want_jacobian else value_batch
+            values.append(self.reshape(
+                batch, (len(group['instances']), -1)).flatten())
+            if ndim == 2:
+                rows.append(group['rows'])
+                cols.append(group['cols'])
+            else:
+                flat.append(group['1d_indices'])
+
+        if not values:
+            return None
+        joined = self.concatenate(values) if len(values) > 1 else values[0]
+        if ndim == 2:
+            return joined, (np.concatenate(rows), np.concatenate(cols))
+        return joined, np.concatenate(flat)
+
     def generate_eval_i_and_G(self, element):
         import jax
         

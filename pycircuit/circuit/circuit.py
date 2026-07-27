@@ -1182,53 +1182,13 @@ class SubCircuit(Circuit):
         self._build_evaluation_groups()
 
     def _build_evaluation_groups(self):
-        if not self.toolkit.supports('autodiff'):
-            self._eval_groups = {}
-            return
-            
-        import numpy as np
-        self._eval_groups = {}
-        for instance_name, element in self.elements.items():
-            cls = element.__class__
-            if not hasattr(cls, 'eval_i_pure') and not hasattr(cls, 'eval_q_pure'):
-                continue
-                
-            if cls not in self._eval_groups:
-                self._eval_groups[cls] = {
-                    'instances': [],
-                    'nodemaps_2d': [],
-                    'params': {},
-                    'rows': [],
-                    'cols': [],
-                    '1d_indices': []
-                }
-                
-            group = self._eval_groups[cls]
-            group['instances'].append(element)
-            group['nodemaps_2d'].append(self._map_indices_1d[instance_name])
-            
-            rows, cols = self._map_indices_2d[instance_name]
-            group['rows'].append(rows)
-            group['cols'].append(cols)
-            group['1d_indices'].append(self._map_indices_1d[instance_name])
-            
-            p_dict = {}
-            if hasattr(element, 'iparv') and hasattr(element.iparv, '_values'):
-                p_dict = element.iparv._values
-                
-            for k, v in p_dict.items():
-                if k not in group['params']:
-                    group['params'][k] = []
-                group['params'][k].append(v)
-                
-        for cls, group in self._eval_groups.items():
-            group['nodemaps_2d'] = np.array(group['nodemaps_2d'], dtype=int)
-            group['rows'] = np.array(group['rows']).flatten()
-            group['cols'] = np.array(group['cols']).flatten()
-            group['1d_indices'] = np.array(group['1d_indices']).flatten()
-            
-            for k in group['params']:
-                group['params'][k] = self.toolkit.array(group['params'][k])
+        """Ask the toolkit which element classes it will batch.
+
+        The grouping is an optimisation only a differentiating toolkit can
+        use, so the toolkit decides and the base returns nothing -- this
+        module needs no knowledge of JAX to offer the opportunity.
+        """
+        self._eval_groups = self.toolkit.evaluation_groups(self)
         
     def G(self, x, epar=defaultepar, params_tree=None):
         return self._add_element_submatrices('G', x, (epar,), params_tree=params_tree)
@@ -1358,35 +1318,20 @@ class SubCircuit(Circuit):
         else:
             lhs = self.toolkit.zeros((n,n))
 
-        if getattr(self, '_eval_groups', None) and x is not None:
-            # --- HIGH-PERFORMANCE GPU/CPU VECTORIZATION ---
-            import numpy as np
-            for cls, group in self._eval_groups.items():
-                X_batch = x[group['nodemaps_2d']]
-                method_key = 'i' if methodname in ('G', 'i') else 'q'
-                batched_eval_func = self.toolkit.generate_batched_eval(cls, method_key)
-                
-                epar = args[0]
-                params_to_use = group['params']
-                if params_tree is not None and cls.__name__ in params_tree:
-                    params_to_use = params_tree[cls.__name__]
-                val_batch, jac_batch = batched_eval_func(X_batch, params_to_use, epar)
-                if methodname in ('G', 'C'):
-                    rhs_batch = jac_batch
-                else:
-                    rhs_batch = val_batch
-                    
-                if build_sparse:
-                    rhs_flat = self.toolkit.reshape(rhs_batch, (len(group['instances']), -1)).flatten()
-                    all_data.append(rhs_flat)
-                    all_rows.append(group['rows'])
-                    all_cols.append(group['cols'])
-                elif hasattr(self.toolkit, 'add_at'):
-                    rhs_flat = self.toolkit.reshape(rhs_batch, (len(group['instances']), -1)).flatten()
-                    lhs = self.toolkit.add_at(lhs, (group['rows'], group['cols']), rhs_flat)
-                else:
-                    rhs_flat = self.toolkit.reshape(rhs_batch, (len(group['instances']), -1)).flatten()
-                    np.add.at(lhs, (group['rows'], group['cols']), rhs_flat)
+        ## Elements the toolkit can evaluate in bulk are stamped in one go; the
+        ## loop below then skips them.  A toolkit that cannot batch returns
+        ## None and everything goes through the loop.
+        batched = self.toolkit.batched_contributions(
+            self, getattr(self, '_eval_groups', None), methodname, x, args,
+            params_tree, ndim=2)
+        if batched is not None:
+            values, (rows, cols) = batched
+            if build_sparse:
+                all_data.append(values)
+                all_rows.append(rows)
+                all_cols.append(cols)
+            else:
+                lhs = self.toolkit.add_at(lhs, (rows, cols), values)
 
         for instance, element in self.elements.items():
             if getattr(self, '_eval_groups', None) and element.__class__ in self._eval_groups:
@@ -1442,26 +1387,12 @@ class SubCircuit(Circuit):
         n = self.n
         lhs = self.toolkit.zeros(n, dtype=dtype)
 
-        if getattr(self, '_eval_groups', None) and x is not None:
-            # --- HIGH-PERFORMANCE GPU/CPU VECTORIZATION ---
-            import numpy as np
-            for cls, group in self._eval_groups.items():
-                X_batch = x[group['nodemaps_2d']]
-                method_key = 'i' if methodname in ('G', 'i') else 'q'
-                batched_eval_func = self.toolkit.generate_batched_eval(cls, method_key)
-                
-                epar = args[0]
-                params_to_use = group['params']
-                if params_tree is not None and cls.__name__ in params_tree:
-                    params_to_use = params_tree[cls.__name__]
-                rhs_batch, jac_batch = batched_eval_func(X_batch, params_to_use, epar)
-                    
-                rhs_flat = self.toolkit.reshape(rhs_batch, (len(group['instances']), -1)).flatten()
-                
-                if hasattr(self.toolkit, 'add_at'):
-                    lhs = self.toolkit.add_at(lhs, group['1d_indices'], rhs_flat)
-                else:
-                    np.add.at(lhs, group['1d_indices'], rhs_flat)
+        batched = self.toolkit.batched_contributions(
+            self, getattr(self, '_eval_groups', None), methodname, x, args,
+            params_tree, ndim=1)
+        if batched is not None:
+            values, indices = batched
+            lhs = self.toolkit.add_at(lhs, indices, values)
 
         for instance, element in self.elements.items():
             if getattr(self, '_eval_groups', None) and element.__class__ in self._eval_groups and x is not None:

@@ -291,6 +291,32 @@ and docs, reachable from no analysis. It is a research prototype promoted to
 package code without an integration path — compare DDD, which got
 `ac_solution`, a result object and an analysis family.
 
+### P6a — batched evaluation now lives in the toolkit *(fixed)*
+
+The JAX vectorisation had put its machinery in core `circuit.py`: building the
+per-class evaluation groups, and two copies of a vmapped stamping loop. That
+made the topology module carry autodiff-shaped code, and hid a bug (below).
+
+It is now three toolkit hooks, with base implementations that do nothing:
+
+| hook | base | `JAXToolkit` |
+|---|---|---|
+| `evaluation_groups(circuit)` | `{}` | groups elements by class |
+| `batched_contributions(...)` | `None` | one vmapped call per class |
+| `generate_batched_eval(cls, method)` | — | jit/vmap/jacfwd evaluator |
+
+`circuit.py` offers the opportunity and accumulates the result; it names
+nothing JAX-specific. `-96` lines there, and the duplicate
+`generate_batched_eval` in `_jaxtoolkit.py` is gone — there is one
+implementation now.
+
+**The bug it was hiding:** each stamp asks every group for both a value and a
+Jacobian, but a diode has no charge and a capacitor no static current. Any JAX
+circuit mixing a nonlinear device with a reactive one raised `AttributeError`
+on `G`, `C`, `i` *and* `q` — i.e. every stamp. The missing pure form now
+contributes zeros. Pinned by a test that compares the batched stamp against the
+per-element one rather than merely checking it returns something.
+
 ### P6 — two extension conventions, built opposite ways
 
 The transient engine has a second pluggability system: ABCs `Integrator`,
