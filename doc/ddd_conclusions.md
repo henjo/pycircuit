@@ -599,6 +599,14 @@ size where a first implementation will struggle for uninteresting reasons.
 Independently of DDD it is a useful addition — a reusable symbolic small-signal
 opamp example for the docs.
 
+> **RESOLVED (µA741 done, µA725 declined).** The µA741 was transcribed and is a
+> live calibration. The µA725 was examined and rejected on the extraction rule:
+> the only schematic of it in the literature (ASP-DAC 2012, Fig. 4) draws no
+> junction dots, so its connectivity is not recoverable, and the papers that do
+> publish sizes for it disagree — 34×34/1.28e8 terms (ICCAD 2010) against
+> 32×32/5.47e7 (TCAD 2013). Ambiguous circuit, ambiguous target. See
+> "The µA725 in particular" in `doc/src/circuit/ddd.rst`.
+
 **Caveat that governs all of them: these are calibration, not targets.** *[LIT]*
 TCAD 2001 reports **99 844 versus 297 115 vertices for the same µA741** depending
 only on whether the "compact symbol" or "full symbol" representation is used — a

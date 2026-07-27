@@ -1114,6 +1114,50 @@ the 2010 construction, not evidence of an error. The term counts differ in the
 other direction because our device model puts both junction capacitances on every
 transistor, which adds couplings their small-signal model may not have.
 
+How far a comparison like this can be pushed
+--------------------------------------------
+
+Ordering explains the *direction*, but it is worth knowing how much the published
+figures move on their own, because that sets the precision any such comparison
+can have. The µA741 is measured twice in this literature, by the same group:
+
+.. list-table:: The same part, two papers
+   :header-rows: 1
+   :widths: 26 12 12 16 20
+
+   * - source
+     - devices
+     - matrix
+     - ``|DDD|``
+     - product terms
+   * - Tan & Shi, TCAD 2000
+     - 24 BJT
+     - 23 × 23
+     - 6 654 (Greedy)
+     - 119 011
+   * - Shi, ICCAD 2010
+     - 20 BJT
+     - 25 × 25
+     - 13 722 (LED), 19 572 (Greedy)
+     - 4 203 232
+
+Both rows say "µA741", and they agree on neither the device count, the matrix
+size, nor the number of product terms -- and the term count, which does not
+depend on expansion order at all, differs by 35×. The later paper states that its
+"MNA matrices are augmented by one dimension" and that "the unknown symbol is
+ordered first", so at least part of the gap is formulation; the rest is a
+different small-signal model carrying more symbols.
+
+Note also that the 2010 LED figure is *larger* than the 2000 Greedy figure, even
+though LED is the better ordering. That is not a contradiction — it is a
+different, larger problem — but it does mean a bare vertex count carried across
+papers cannot be read as a like-for-like ordering comparison.
+
+The practical consequence: a published ``|DDD|`` for a named op-amp pins down an
+order of magnitude, not a number. That is enough to catch a construction that
+shares nothing, which is what this check is for, and it is the reason the
+comparison above is stated as such rather than as an equality.
+
 Hierarchy on the µA741
 ----------------------
 
@@ -1829,9 +1873,58 @@ MTDDD paper (DAC 2000) tabulates semi-symbolic µA741 results, but which
 parameters were kept symbolic is not stated, and the answer depends entirely on
 that choice. The symbolic-stamp and graph-reduction papers describe their
 benchmarks as "a two-stage Miller MOSFET amplifier" and "a MOS op-amp containing
-44 transistors" — names again. The µA725 appears with a schematic and could be
-transcribed as the µA741 was, but it would be the same kind of check we already
-have.
+44 transistors" — names again.
+
+The µA725 in particular
+~~~~~~~~~~~~~~~~~~~~~~~
+
+The µA725 is the one benchmark in this literature that looks like it should
+qualify — it is a real part, it is the largest circuit solved flat, and unlike
+``miller`` or ``bigtst`` a schematic for it does exist (Song & Shi, ASP-DAC 2012,
+Fig. 4). It was examined on that basis and rejected, for two independent reasons.
+
+**The schematic carries no junction dots.** Rendered at 600 dpi the device labels
+Q1–Q26 and R1A–R19 are perfectly legible, but the figure marks no connections:
+every place a wire meets another wire is a bare crossing, and whether it is a
+node or a fly-over cannot be recovered. On a 26-transistor circuit that is
+dozens of independent coin flips, each of which changes the matrix dimension.
+The µA741 was transcribable because its topology is independently known and the
+figure only had to confirm it; the µA725's is not.
+
+**The published numbers do not agree on what the circuit is.** Three figures
+exist for it, from the same group:
+
+.. list-table:: µA725, as published
+   :header-rows: 1
+   :widths: 30 14 18 22
+
+   * - source
+     - matrix
+     - ``|DDD|``
+     - product terms
+   * - Shi, ICCAD 2010
+     - 34 × 34
+     - 115 590 (LED), 38 997 (Greedy)
+     - 1.280604e8
+   * - Shi et al., TCAD 2013 (GPDD)
+     - 32 × 32
+     - 42 505
+     - 5.47e7
+   * - Chen & Shi, ASP-DAC 2007
+     - —
+     - —
+     - schematic explicitly omitted
+
+Two different dimensions and a 2.3× spread in product-term count, which as noted
+above is order-independent. So the schematic we would transcribe from is in a
+paper that reports no flat ``|DDD|`` for the circuit at all, and the papers that
+do report one disagree with each other about the netlist.
+
+Put together: an ambiguous figure compared against an ambiguous target. If our
+size landed near one of those numbers it would not tell us the transcription was
+right, and if it landed between them it would tell us nothing whatsoever. The
+work would have produced a test that cannot fail informatively — which is exactly
+the failure mode the extraction rule exists to prevent.
 
 Fitting a circuit until its numbers matched would produce a test that always
 passes and means nothing — the opposite of what these comparisons are for. Four
