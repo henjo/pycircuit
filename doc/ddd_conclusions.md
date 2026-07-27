@@ -530,6 +530,11 @@ argument is not general good practice; it is specific to this project:
   size, since these units are not identical (§7 confound);
 - **construction time** and **evaluation time per sweep point**, reported
   separately — conflating them is how the symengine error happened;
+- **peak memory.** Absent from every metric in this document until now, and it
+  should not be: a DDD vertex in Python is an object plus a hash-table entry, so a
+  graph the papers hold comfortably in C++ costs us an order of magnitude more.
+  Memory, not time, is the likely failure mode on a bad ordering, and we have
+  OOM-crashed this box once already;
 - **correctness** against a reference backend on circuits small enough for one;
 - **completion status** — did it finish, or hit a timeout? Several of our backends
   do not fail, they *hang* (GiNaC past dim 16, `to_ratio` for N≥5), so "did not
@@ -602,6 +607,55 @@ uninterpretable to the next reader as these were to us.
 
 *Effort: small — a day or so, most of it circuit definitions that the P0 gate
 needs anyway.*
+
+### The first design decision: what counts as a symbol
+
+This has to be settled before a line of P0 is written, because it defines the hash
+key, and it is the single choice with the largest measured consequence in the
+whole literature: *[LIT]* the **same** µA741 gives **99 844** vertices under
+"compact symbol" representation and **297 115** under "full symbol" — 3× from this
+decision alone (§ paper caveat above).
+
+The choice, concretely, for an MNA entry like `g₁ + g₂ + s·(c₁ + c₂)`:
+
+- **Compact** — the whole matrix entry is *one* symbol. Fewer, larger symbols;
+  smaller DDD; `d ≤ 2` so Theorem 1's factor stays small. But individual component
+  parameters are no longer visible in the result, which weakens interpretability
+  and makes per-component sensitivity and approximation harder.
+- **Full** — each device contributes its own symbol. Larger DDD (~3×), but the
+  result is expressed in the designer's actual parameters, which is the point of
+  symbolic analysis in the first place.
+
+**Recommendation: build the DDD over matrix entries (compact) but keep each entry's
+symbolic expression intact as the vertex payload**, so the arithmetic backend can
+expand to components on demand. That gets the compact graph *and* component-level
+results, at the cost of larger per-vertex payloads — which is exactly the confound
+the P0 measurement is told to record separately. This should be validated at P0
+rather than assumed; it is the most likely place for the plan to be wrong in a way
+that is cheap to correct early and expensive later.
+
+### Correctness and validation — separate from benchmarking
+
+Benchmarks measure size and speed; they do not establish that the answer is right,
+and this is an algorithm where being *plausibly* wrong is easy. Explicitly needed:
+
+- **Signs are the classic DDD bug.** The LED construction's selling point is that
+  signs fall out during construction (§4.1) rather than from a traversal pass —
+  which means a sign error is a construction bug with no separate stage to inspect.
+  Test by evaluating the DDD numerically against `sympy.Matrix.det` on small
+  random sparse matrices; a sign error shows immediately and nowhere else.
+- **Randomised comparison**, not just fixed circuits: random sparse symbolic
+  matrices of dimension 3–8, DDD evaluation versus `det`, and Cramer solutions
+  versus `linearsolver_num_den`. Cheap, and it covers structures our three test
+  circuits never produce.
+- **The Tier-1 identity** `|DDD| = n·2^(n-1)` (above) as the structural check that
+  sharing works.
+- **Nullors specifically.** `Nullor` stamps ±1 entries into `G` at branch/node
+  crossings and contributes no diagonal entry, so nullor rows and columns look
+  structurally unlike passive ones: many identical unit entries (good for sharing,
+  but also the classic source of cancelling terms) and a degree profile that may
+  mislead the min-degree heuristic. The MFB test circuit covers this — but the
+  result must be checked against `symbolic_poly`, not merely measured.
 
 ### P0 — Core construction + measurement (gate: go / no-go for everything else)
 
@@ -705,6 +759,32 @@ nominal value (Yu & Sechen).
 
 Symbolic stamps per `SubCircuit`.
 
+### Opportunities noted but not scheduled
+
+- **Symbolic sensitivity.** pycircuit has no sensitivity analysis today (verified —
+  nothing in the code base). DDD makes it unusually cheap: the derivative of a
+  determinant with respect to a symbol *is* the cofactor, which is precisely the
+  operation the structure already provides (`cofactor` exists even in the old
+  `ddd.py`). *[LIT]* it is one of the applications both TCAD papers highlight, and
+  analog designers want it. This is plausibly the highest value-per-effort item in
+  the whole programme *if* P0 succeeds — but it is a new user-facing feature rather
+  than part of making DDD work, so it is recorded here rather than given a stage.
+- **DC and other analyses.** Everything above is AC/noise. Nothing rules out DC
+  symbolic solving through the same machinery, but nothing has been thought about
+  either.
+
+### End state: does DDD replace SoE?
+
+Worth stating, because the document sets them against each other and a reader will
+reasonably ask what happens to the loser. **Expected answer: neither replaces the
+other, and both stay.** They are good at different things — SoE keeps a compact
+*sequential* form that evaluates efficiently but structurally cannot deliver N/D
+coefficients (§4.9), while DDD's value is exactly those coefficients and what
+follows from them (poles, zeros, approximation, sensitivity). The likely end state
+is DDD for *structure* and the existing SoE/`lambdify`/GiNaC paths for
+*evaluation* (§8.4). If P0 and P1 succeed, this should be revisited with data
+rather than assumed.
+
 ### Cross-cutting
 
 - Live doc page (`exec-rst`, as for `soe_symbolic.rst` and `ginac_native.rst`)
@@ -741,6 +821,23 @@ Symbolic stamps per `SubCircuit`.
    floating values. Need to decide, per use, whether coefficients stay exact
    (poles from exact polynomials) or go numeric — this is exactly the trade that
    bit us in the GiNaC `_ginac_coeffs` gating bug.
+6. **Conditioning of the s-expanded form — a risk to the whole approach, not just
+   the implementation.** s-expansion is exact *symbolically*, but the thing we
+   ultimately do with it is numeric: evaluate high-degree coefficient polynomials
+   and root-find for poles. Coefficients of a degree-15 polynomial routinely span
+   many orders of magnitude, and root-finding from expanded coefficients is
+   notoriously ill-conditioned — small relative errors in a coefficient can move
+   poles substantially. We have already met the mild form of this: *[OURS]* in the
+   GiNaC work a scaled numeric result spanning ~1e0…1e-90 had its tiny high-order
+   coefficients zeroed by `limit_denominator`, silently **dropping poles** (4
+   returned instead of 15). The papers do not dwell on this because their emphasis
+   is symbolic compactness. Consequence: expanded coefficients are the right form
+   for *interpretation* and approximation, but for *numeric* pole extraction the
+   existing factored/numeric paths may remain better, and P1's gate should compare
+   pole accuracy, not only coefficient agreement.
+7. **Memory in Python** (see Stage B). Vertex counts that are unremarkable in C++
+   may be costly as Python objects; memory is the likely first casualty of a bad
+   ordering.
 
 ---
 
