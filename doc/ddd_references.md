@@ -107,16 +107,53 @@ Washington)
   zero mentions — because the survey follows the UW/SJTU fully-symbolic BDD line.
   Easy to miss.
 
+## A4. s-expanded (multiroot) DDD — the same idea, done rigorously
+
+**Shi & Tan, "Compact Representation and Efficient Generation of s-Expanded
+Symbolic Network Functions for Computer-Aided Analog Circuit Design," IEEE TCAD
+20(7), July 2001, pp. 813–827.**
+- (open, Wayback) https://web.archive.org/web/20240416213605if_/http://labs.ece.uw.edu/mscad/shi/Papers/TCAD_2001_July_1.pdf
+- local: `~/pycircuit_agy/papers/ddd/TCAD_2001_Jul_sexpanded.pdf`
+- Why: **this is the definitive treatment of the coefficient-form idea**, and the
+  companion to A3. Where MTDDD introduced multiple roots for the semi-symbolic
+  case, this paper states it generally and proves it. "s-expanded DDD" and
+  "multiroot DDD" are the same object: one root per coefficient of a power of `s`
+  in the numerator and denominator, with all roots sharing common subgraphs.
+  Again, that is exactly `TransferFunction.as_num_den`'s output shape.
+  - **Theorem 1** is the reason to care: from a complex DDD of size `|DDD|`, the
+    s-expanded DDD is built in time proportional to `q·d·|DDD|` and has no more
+    than `q·d·|DDD|` vertices, where `q` = degree of the denominator polynomial
+    and `d` = max devices attached to a node (and under MNA "compact symbol"
+    form, `d ≤ 2`). So **s-expansion is linear in the complex DDD**, even though
+    the number of s-expanded product terms is astronomically larger.
+  - The numbers make the point: the µA741 denominator has 108 032 *complex*
+    product terms, whose s-expansion is ~7.8×10³⁴ product terms — represented by
+    an s-expanded DDD of 99 844 vertices, built in a few seconds on an
+    UltraSPARC-I. Under full-symbol representation the term count rises nine
+    orders of magnitude while the DDD grows only ~3× (297 115 vertices).
+  - **Noise** (§V, directly relevant to us): noise analysis is a *set* of transfer
+    functions, one per noise source, which share most subexpressions — so
+    represent them all in a **single multiroot DDD**, at cost comparable to one
+    transfer function. This is the same insight as `SymbolicPolyToolkit`'s
+    shared-denominator `noise_psd`, generalised and scaled.
+  - Ordering consequence for our roadmap: §I notes approximation *requires* the
+    s-expanded form, so that coefficients of each power of `s` are approximated
+    on an equal footing — otherwise the result is unreliable. Likewise dominant
+    poles/zeros come out as ratios of coefficients of consecutive powers of `s`.
+    **So s-expansion is a prerequisite for section B, not a parallel option.**
+
 ## B. Approximate / dominant-term analysis — the "readable formula for a big circuit" payoff
 
-**Tan & Shi, DDD-based generation of s-expanded / dominant-term symbolic
-functions** (behavioral-modeling line; shortest-path & dynamic-programming term
-generation, linear in the number of DDD vertices).
+Note: per A4, do this **on the s-expanded form**, not on a raw network function.
+
+**Tan & Shi, DDD-based dominant-term generation** (behavioral-modeling line;
+shortest-path & dynamic-programming term generation, linear in the number of DDD
+vertices).
 - (may need access) Overview: https://link.springer.com/content/pdf/10.1023/A:1015041927036.pdf
-- (may need access) s-expanded functions: https://www.academia.edu/77305832/Compact_representation_and_efficient_generation_of_s_expanded_symbolic_network_functions_for_computer_aided_analog_circuit_design
 - Why: the algorithm behind `DDDResult.approximate(tol)` — extracting the few
   dominant product terms directly on the graph in linear time. Turns a big
   circuit's exact-but-huge function into a short, interpretable expression.
+  (The s-expanded representation it consumes is A4.)
 
 **Yu & Sechen, "A unified approach to the approximate symbolic analysis of large
 analog integrated circuits," IEEE TCAS-I 43(8), 1996.**
@@ -127,6 +164,31 @@ analog integrated circuits," IEEE TCAS-I 43(8), 1996.**
   across the design space.
 
 ## C. Hierarchical DDD — scaling to very large circuits
+
+**Tan & Shi, "Hierarchical Symbolic Analysis of Analog Integrated Circuits via
+Determinant Decision Diagrams," IEEE TCAD 19(4), April 2000, pp. 401–412.**
+- (open, Wayback) https://web.archive.org/web/20240416164453if_/http://labs.ece.uw.edu/mscad/shi/Papers/TCAD_2000_Apr_1.pdf
+- local: `~/pycircuit_agy/papers/ddd/TCAD_2000_Apr_hierDDD.pdf`
+- Why: **the primary hierarchical-DDD paper** (the DAC 2004 entry below is the
+  later, shorter follow-up). Method: suppress each subcircuit to its terminals in
+  terms of its matrix determinant and cofactors, represent those with DDDs, then
+  apply Cramer's rule at the top level. Illustrated on a Cauer low-pass filter.
+- **It also contains the head-to-head we most need**, because its baseline SCAPP
+  is a *sequence-of-expressions* analyser — i.e. the same representation as our
+  `soe.py`. Their claims, on cascaded-opamp circuits: the DDD is "much more
+  compact than the sequence-of-expression representation used in SCAPP"; DDD size
+  grows almost linearly in circuit size while product terms grow exponentially;
+  and DDD beats both SCAPP and SPICE on repetitive evaluation. On a µA741,
+  three-level two-way hierarchical DDD needs **117 vertices vs 6654 for flat DDD
+  (56×), vs 119 011 sum-of-product terms**.
+- Crucially it gives us a **directly comparable metric**: each DDD vertex costs
+  one addition and one multiplication, so `|DDD|` is an operation count — exactly
+  what we already report for SoE in `soe_symbolic.rst` (73/157/241/325 ops at
+  N=4/8/12/16). Phase 0 can therefore put DDD vertices and SoE ops on one axis
+  for the same circuits. Treat "DDD ≪ SoE" as a claim to *verify*, not assume:
+  their SCAPP baseline is hierarchical-suppression SoE on cascaded opamps, while
+  ours is Gaussian-elimination SoE measured on ladders, where we found linear
+  growth.
 
 **Tan & Shi, "Hierarchical Approach to Exact Symbolic Analysis of Large Analog
 Circuits," DAC 2004.**
