@@ -48,7 +48,8 @@ __all__ = ['DDD', 'DDDVertex', 'SExpandedDDD', 'DDDFamily', 'DDDCombination',
            'ONE', 'ZERO', 'ddd_of_matrix', 'ddd_cramer', 'ddd_cofactor_solve',
            's_expand', 'HierarchicalDDD', 'eval_roots',
            'reverse_cuthill_mckee', 'suppression_order',
-           'hierarchical_solve', 'noise_psd_reduced', 'DDDSizeError']
+           'hierarchical_solve', 'noise_psd_reduced',
+           'determinant_sensitivity', 'adjoint_sensitivities', 'DDDSizeError']
 
 
 class DDDSizeError(Exception):
@@ -1763,3 +1764,122 @@ def noise_psd_reduced(Y, u, CY, env, keep=(), order='auto', blocks=None):
     z = hierarchical_solve(hier, -um, env)
     CYn = _numeric_matrix(sympy.Matrix(np.asarray(CY).tolist()), env)
     return z, complex(z @ CYn @ z.conj())
+
+
+## ---------------------------------------------------------- sensitivity --
+
+def determinant_sensitivity(A, parameter, order='auto', family=None):
+    """``d det(A) / d parameter``, as a combination of cofactors.
+
+    This is the observation that makes sensitivity nearly free on a diagram: the
+    derivative of a determinant with respect to a matrix entry *is* the cofactor
+    of that entry,
+
+    .. math::
+
+        \\frac{\\partial \\det A}{\\partial A_{ij}} = (-1)^{i+j} M_{ij}
+
+    so by the chain rule ``d det/dp`` is a weighted sum of cofactors, weighted by
+    how each entry depends on ``p``.  Those cofactors are exactly what
+    `DDDFamily` already builds and shares, so a sensitivity costs a handful of
+    extra terms rather than a second construction.
+
+    Only entries that actually depend on ``p`` contribute, and in a circuit
+    matrix a component appears in a couple of entries, so the sum is short.
+
+    Args:
+        A: Square sympy ``Matrix``.
+        parameter: The symbol to differentiate with respect to.
+        order: Expansion ordering.
+        family: An existing `DDDFamily` over ``A`` to reuse.
+
+    Returns:
+        ``(combination, family)`` -- the derivative as a `DDDCombination`, and
+        the family its cofactors came from so further parameters can reuse it.
+    """
+    A = sympy.Matrix(A)
+    if family is None:
+        family = DDDFamily(A, sympy.zeros(A.rows, 1), order=order)
+
+    parts = []
+    for i in range(A.rows):
+        for j in range(A.cols):
+            entry = A[i, j]
+            if not getattr(entry, 'free_symbols', None):
+                continue
+            if parameter not in entry.free_symbols:
+                continue
+            derivative = sympy.diff(entry, parameter)
+            if derivative == 0:
+                continue
+            sign = -1 if (i + j) % 2 else 1
+            parts.append(((sign, derivative), family.cofactor(i, j)))
+    return DDDCombination(parts), family
+
+
+def adjoint_sensitivities(A, b, env, parameters, out_index,
+                          keep=(), order='auto'):
+    """Sensitivity of one unknown to every parameter, from two solves.
+
+    Differentiating ``A x = b`` gives ``A (dx/dp) = db/dp - (dA/dp) x``, so a
+    naive implementation solves once per parameter.  The adjoint form avoids
+    that: with ``Aᵀ λ = e_out``,
+
+    .. math::
+
+        \\frac{\\partial x_{out}}{\\partial p}
+            = λ^{T}\\left(\\frac{\\partial b}{\\partial p}
+                          - \\frac{\\partial A}{\\partial p} x\\right)
+
+    which needs **two** solves in total no matter how many parameters are asked
+    about -- and the derivative matrices are nearly empty, since a component
+    touches a couple of entries.  That is what makes sensitivity to every device
+    in a circuit affordable rather than quadratic.
+
+    Both solves go through the reduction, so they cost what a reduced solve
+    costs.
+
+    Args:
+        A: Square sympy ``Matrix``.
+        b: Right-hand side.
+        env: Numeric substitution for every symbol.
+        parameters: Symbols to differentiate with respect to.
+        out_index: Which unknown the sensitivity is of.
+        keep: Unknowns not to suppress; ``out_index`` is added automatically.
+        order: Expansion ordering.
+
+    Returns:
+        Dict mapping each parameter to ``d x[out_index] / d parameter``.
+    """
+    A = sympy.Matrix(A)
+    n = A.rows
+    b = sympy.Matrix(b).reshape(n, 1)
+    keep = sorted(set(int(i) for i in keep) | {int(out_index)})
+
+    blocks = suppression_order(A, keep=keep)
+    forward = HierarchicalDDD(A, blocks, order=order) if blocks else None
+
+    unit = sympy.zeros(n, 1)
+    unit[out_index] = 1
+    At = A.T
+    blocks_t = suppression_order(At, keep=keep)
+    adjoint = HierarchicalDDD(At, blocks_t, order=order) if blocks_t else None
+
+    def solve(hier, matrix, rhs):
+        if hier is not None:
+            return hierarchical_solve(hier, rhs, env)
+        dense = _numeric_matrix(matrix, env)
+        return np.linalg.solve(dense, _numeric_matrix(rhs, env).ravel())
+
+    x = solve(forward, A, b)
+    lam = solve(adjoint, At, unit)
+
+    out = {}
+    for p in parameters:
+        dA = A.applyfunc(lambda e: sympy.diff(e, p)
+                         if getattr(e, 'free_symbols', None) else 0)
+        db = b.applyfunc(lambda e: sympy.diff(e, p)
+                         if getattr(e, 'free_symbols', None) else 0)
+        rhs = _numeric_matrix(db, env).ravel() - _numeric_matrix(dA, env) @ x
+        out[p] = complex(lam @ rhs)
+    return out

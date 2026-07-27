@@ -293,6 +293,7 @@ solution-object refactor and calibration tiers 1 and 3.
 | H1 — node ordering | **Done.** Gate passed: spread 2.7–2.8× → 1.00× (ladder, MFB) and 1.42× (µA741) |
 | H2 — sequential suppression | **Done.** Gate passed: µA741 1040 → 156 vertices, 6.7× |
 | H3 — noise through the reduction | **Done.** Gate passed: PSD identical, µA741 noise 11 088 → 26 vertices and 86 s → 0.48 s |
+| H4 — symbolic sensitivity | **Done.** Gate passed: matches finite differences to ~1e-8; ten parameters cost what one does |
 
 The original definition of done is met: exact s-expanded coefficients held
 compactly, dominant pole/zero estimates from coefficient ratios, exact numeric
@@ -409,7 +410,7 @@ independent internally, so the referred correlation is a full matrix rather than
 a diagonal. Testing against the flat result on a circuit with several noisy
 elements in one block is what catches an incorrectly diagonal assumption.
 
-### H4 — Symbolic sensitivity
+### H4 — Symbolic sensitivity — **DONE**
 
 The plan's own judgement, deferred pending P0 and now due: *pycircuit has none,
 and a DDD makes it nearly free — the derivative of a determinant with respect to
@@ -459,8 +460,12 @@ through the same machinery and nothing has been thought about. Scoping only.
 3. ~~**Reduction reaches the analysis that needs it most**~~ — done (H3): noise
    through the reduction gives an identical PSD, 426× fewer vertices and 180×
    faster on the µA741.
-4. **A designer gains something they did not have**: symbolic sensitivity,
-   agreeing with finite differences.
+4. ~~**A designer gains something they did not have**~~ — done (H4): sensitivity
+   to every device, agreeing with finite differences, at the cost of two solves
+   regardless of how many parameters are asked about.
+
+All four round-two objectives are met. What remains (H5–H7) is calibration and
+scoping rather than capability.
 
 Per-stage, the round-one rules stand unchanged: code plus tests with the full
 suite green, the theory-document section in the **same commit**, `make html`
@@ -475,8 +480,9 @@ recorded even when negative.
   tolerance every later vertex count is read against.
 - H3 depends on H2 and on nothing else — it is the direct application of the
   reduction machinery to the analysis that most wants it.
-- H3 is done. H4 is next by default: it is the only remaining item that adds a
-  capability rather than improving a number.
+- H1–H4 are done. What remains is H5 (Tier 2 calibration), H6 (frequency and
+  impedance scaling for the conditioning measured in P1) and H7 (DC, scoping) —
+  none of which adds a capability, so the order between them is free.
 - One thing H3 turned up that applies more widely: the `_resolve` fast path and
   unmultiplied factors sped the reduced solve ~200×, and the same pattern —
   sympy substitution in a hot loop — is worth watching wherever payloads are

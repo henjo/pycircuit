@@ -29,7 +29,8 @@ from pycircuit.circuit.ddd import (DDDSizeError, HierarchicalDDD,
                                    ddd_of_matrix, eval_roots,
                                    reverse_cuthill_mckee,
                                    suppression_order, hierarchical_solve,
-                                   noise_psd_reduced, s_expand)
+                                   noise_psd_reduced, determinant_sensitivity,
+                                   adjoint_sensitivities, s_expand)
 
 
 def _full_matrix(n):
@@ -1196,3 +1197,118 @@ def test_reduced_noise_needs_something_to_suppress():
         noise_psd_reduced(system.A, [0] * system.dim,
                           [[0] * system.dim] * system.dim, dict(system.params),
                           keep=list(range(system.dim)))
+
+
+## -- sensitivity ----------------------------------------------------------
+
+def _finite_difference(system, env, parameter, out, rel=1e-6):
+    """Central difference on a dense solve -- the independent reference."""
+    n = system.dim
+
+    def solve(e):
+        A = np.array([[complex(system.A[i, j].subs(e)) for j in range(n)]
+                      for i in range(n)], dtype=complex)
+        b = np.array([complex(system.b[i].subs(e)) for i in range(n)],
+                     dtype=complex)
+        return np.linalg.solve(A, b)[out]
+
+    step = abs(complex(env[parameter])) * rel
+    plus = dict(env)
+    plus[parameter] = env[parameter] + step
+    minus = dict(env)
+    minus[parameter] = env[parameter] - step
+    return (solve(plus) - solve(minus)) / (2 * step)
+
+
+@pytest.mark.parametrize('N', [3, 4, 5])
+def test_determinant_sensitivity_is_exact(N):
+    """``d det/dp`` from cofactors must equal sympy's derivative exactly."""
+    system = bc.rc_ladder(N)
+    for parameter in sorted(system.A.free_symbols - {system.s}, key=str)[:3]:
+        combination, _ = determinant_sensitivity(system.A, parameter)
+        reference = sympy.diff(system.A.det(), parameter)
+        assert sympy.simplify(combination.eval() - reference) == 0
+
+
+def test_determinant_sensitivity_reuses_one_family():
+    """Every parameter should come out of the same shared cofactors.
+
+    That is the reason this is cheap: the derivative of a determinant with
+    respect to an entry *is* a cofactor, and the family already holds them.
+    """
+    system = bc.rc_ladder(6)
+    parameters = sorted(system.A.free_symbols - {system.s}, key=str)[:4]
+
+    _, family = determinant_sensitivity(system.A, parameters[0])
+    for parameter in parameters[1:]:
+        combination, same = determinant_sensitivity(system.A, parameter,
+                                                    family=family)
+        assert same is family
+        assert combination.parts                 # each really uses cofactors
+
+
+def test_sensitivity_of_an_absent_parameter_is_zero():
+    system = bc.rc_ladder(4)
+    stranger = sympy.Symbol('not_in_this_circuit')
+    combination, _ = determinant_sensitivity(system.A, stranger)
+    assert combination.parts == []
+    assert combination.eval() == 0
+
+
+@pytest.mark.parametrize('name', ['ladder', 'mfb'])
+def test_adjoint_sensitivities_match_finite_differences(name):
+    system = bc.rc_ladder(6) if name == 'ladder' else bc.mfb_filter()
+    env = dict(system.params)
+    env[system.s] = 1j * 2 * np.pi * 1e3
+    parameters = sorted(system.A.free_symbols - {system.s}, key=str)[:5]
+
+    got = adjoint_sensitivities(system.A, system.b, env, parameters,
+                                system.out_index)
+    references = [_finite_difference(system, env, p, system.out_index)
+                  for p in parameters]
+
+    ## Scale to the largest sensitivity: a parameter the output barely depends
+    ## on has a reference near zero, and a per-element relative error there
+    ## measures rounding noise rather than correctness.
+    scale = max(abs(r) for r in references)
+    for parameter, reference in zip(parameters, references):
+        assert abs(got[parameter] - reference) <= 1e-6 * scale
+
+
+def test_adjoint_cost_does_not_grow_with_parameter_count():
+    """Two solves regardless -- the property that makes this worth doing.
+
+    Differentiating naively costs one solve per parameter; the adjoint form
+    costs two in total, so asking about every device is affordable.
+    """
+    system = bc.ua741(symbolic_devices=('q1', 'q2', 'q3', 'q4', 'q5',
+                                        'q6', 'q16', 'q17', 'q23', 'q14'))
+    env = dict(system.params)
+    env[system.s] = 1j * 2 * np.pi * 1e3
+    parameters = sorted(system.A.free_symbols - {system.s}, key=str)
+
+    import time
+    timings = []
+    for count in (1, len(parameters)):
+        start = time.perf_counter()
+        adjoint_sensitivities(system.A, system.b, env, parameters[:count],
+                              system.out_index)
+        timings.append(time.perf_counter() - start)
+
+    ## Ten parameters must not cost ten times one.
+    assert timings[1] < 3 * timings[0]
+
+
+def test_sensitivities_on_the_ua741_match_finite_differences():
+    system = bc.ua741(symbolic_devices=('q1', 'q17'))
+    env = dict(system.params)
+    env[system.s] = 1j * 2 * np.pi * 1e3
+    parameters = sorted(system.A.free_symbols - {system.s}, key=str)
+
+    got = adjoint_sensitivities(system.A, system.b, env, parameters,
+                                system.out_index)
+    references = [_finite_difference(system, env, p, system.out_index)
+                  for p in parameters]
+    scale = max(abs(r) for r in references)
+    for parameter, reference in zip(parameters, references):
+        assert abs(got[parameter] - reference) <= 1e-5 * scale

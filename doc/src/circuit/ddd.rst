@@ -1314,3 +1314,107 @@ places:
 
 Together that is roughly 200×, with the answer unchanged to 1e-13. The
 representation was never the problem; the arithmetic around it was.
+
+Sensitivity
+===========
+
+A designer rarely wants only the response — they want to know **which component
+moved it**. pycircuit had no sensitivity analysis at all, and a diagram makes one
+nearly free, because the derivative of a determinant with respect to a matrix
+entry *is* the cofactor of that entry:
+
+.. math::
+
+    \frac{\partial \det A}{\partial A_{ij}} = (-1)^{i+j} M_{ij}
+
+so by the chain rule ``d det/dp`` is a short weighted sum of cofactors — and
+cofactors are exactly what the shared family built for noise and for hierarchy
+already holds. A component appears in a couple of matrix entries, so the sum has
+a couple of terms:
+
+.. exec-rst::
+
+    import sympy
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.ddd import determinant_sensitivity
+
+    system = bc.rc_ladder(4)
+    parameters = sorted(system.A.free_symbols - {system.s}, key=str)[:4]
+
+    print(".. list-table:: ``d det(A)/dp`` as a sum of cofactors")
+    print("   :header-rows: 1")
+    print("   :widths: 14 12 22")
+    print("")
+    print("   * - parameter")
+    print("     - cofactor terms")
+    print("     - matches ``sympy.diff``")
+    family = None
+    for parameter in parameters:
+        combination, family = determinant_sensitivity(system.A, parameter,
+                                                      family=family)
+        exact = sympy.diff(system.A.det(), parameter)
+        print("   * - ``%s``" % parameter)
+        print("     - %d" % len(combination.parts))
+        print("     - %s"
+              % (sympy.simplify(combination.eval() - exact) == 0))
+
+Every parameter above comes out of **one** family — the second and later
+parameters cost only their own handful of terms.
+
+Every device at once
+--------------------
+
+For a numeric answer the useful question is different: not one parameter, but
+*all* of them. Differentiating ``A x = b`` directly gives
+``A (dx/dp) = db/dp - (dA/dp) x``, which is one solve per parameter. The adjoint
+form avoids that — with ``Aᵀ λ = e_out``,
+
+.. math::
+
+    \frac{\partial x_{out}}{\partial p}
+        = λ^{T}\left(\frac{\partial b}{\partial p}
+                     - \frac{\partial A}{\partial p} x\right)
+
+so **two solves answer for any number of parameters**, and both go through the
+reduction. The derivative matrices are nearly empty, since a component touches a
+couple of entries, so each additional parameter costs a sparse product.
+
+.. exec-rst::
+
+    import time
+    import numpy as np
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.ddd import adjoint_sensitivities
+
+    devices = ('q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q16', 'q17', 'q23', 'q14')
+    system = bc.ua741(symbolic_devices=devices)
+    env = dict(system.params)
+    env[system.s] = 1j * 2 * np.pi * 1e3
+    parameters = sorted(system.A.free_symbols - {system.s}, key=str)
+
+    print(".. list-table:: µA741 -- sensitivity of the output to device gm")
+    print("   :header-rows: 1")
+    print("   :widths: 18 14")
+    print("")
+    print("   * - parameters asked")
+    print("     - time")
+    for count in (1, 5, 10):
+        start = time.perf_counter()
+        adjoint_sensitivities(system.A, system.b, env, parameters[:count],
+                              system.out_index)
+        print("   * - %d" % count)
+        print("     - %.2f s" % (time.perf_counter() - start))
+
+Ten parameters cost what one does. Correctness is checked against central
+finite differences on the ladder, the MFB filter and the µA741, agreeing to
+about 1e-8 — which is the accuracy of the finite difference, not of the
+sensitivity.
+
+.. note::
+
+   Watch the error metric when checking sensitivities. A parameter the output
+   barely depends on has a reference near zero, and a *per-element* relative
+   error there measures rounding noise rather than correctness — during
+   development that produced an apparent error of 1e21 on a result that was
+   entirely correct. The tests scale to the largest sensitivity in the set
+   instead.
