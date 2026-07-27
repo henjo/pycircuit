@@ -1746,12 +1746,60 @@ and 19 803 s-expanded against their 16 767 — which is worth more than the smal
 cases, because that is where an implementation with broken sharing would have
 diverged beyond recognition.
 
-What is *not* taken from the table
-----------------------------------
+Full matrices: the paper's own measurements
+-------------------------------------------
 
-Table II lists thirteen circuits; two ladders and the µA741 are used above and
-the other ten are deliberately left alone. The rule applied is simple and worth
-stating, because a benchmark that fails it is worse than no benchmark:
+One benchmark needs no transcription at all. "The dense ``n × n`` matrix of
+distinct symbols" is a complete specification, so full matrices satisfy the
+extraction rule trivially — and they are the benchmark in ICCAD 2010, the paper
+this construction is implemented from.
+
+Its Table II lists diagram sizes for ``n`` = 2…18 under the layered expansion and
+under the older Greedy-Labeling order. Every value in its LED column is exactly
+``n·2^(n-1)`` — the optimum the TCAS-II identity predicts — and ours reproduces
+it:
+
+.. exec-rst::
+
+    import sympy
+    from pycircuit.circuit.ddd import ddd_of_matrix
+
+    led = {4: 32, 6: 192, 8: 1024, 10: 5120, 11: 11264}
+    greedy = {4: 40, 6: 340, 8: 2708, 10: 20828, 11: 57266}
+
+    print(".. list-table:: Full matrices: ICCAD 2010 Table II against ours")
+    print("   :header-rows: 1")
+    print("   :widths: 8 14 14 16 12")
+    print("")
+    print("   * - n")
+    print("     - ours")
+    print("     - LED (paper)")
+    print("     - Greedy (paper)")
+    print("     - ordering worth")
+    for n in sorted(led):
+        A = sympy.Matrix(n, n, lambda i, j: sympy.Symbol('a%d_%d' % (i, j)))
+        ours = ddd_of_matrix(A).size
+        print("   * - %d" % n)
+        print("     - %d" % ours)
+        print("     - %d" % led[n])
+        print("     - %d" % greedy[n])
+        print("     - %.1f×" % (greedy[n] / led[n]))
+
+This is a stronger statement than the identity alone. The theorem says
+``n·2^(n-1)`` is the optimum; the table says the ICCAD-2010 construction attains
+it, and this reproduces the attainment exactly rather than approximately.
+
+The last column is also the explanation, in the authors' own numbers, for why our
+µA741 diagram comes out several times smaller than the one published in 2000: the
+earlier figures were measured with Greedy-Labeling, which costs a factor of
+nearly three by ``n`` = 8 and thirty by ``n`` = 18.
+
+What is *not* taken from the papers
+-----------------------------------
+
+Across the papers, four benchmarks are used — full matrices, two RC ladders and
+the µA741 — and the rest are deliberately left alone. The rule applied is simple
+and worth stating, because a benchmark that fails it is worse than no benchmark:
 
 **A published figure is only usable as a test if the circuit and the measurement
 are both understood.**
@@ -1776,6 +1824,15 @@ The rest do not, for concrete reasons rather than caution:
   not stated, so a matching size would be luck and a mismatching one
   uninterpretable.
 
+The other papers were surveyed on the same rule and yield nothing further. The
+MTDDD paper (DAC 2000) tabulates semi-symbolic µA741 results, but which
+parameters were kept symbolic is not stated, and the answer depends entirely on
+that choice. The symbolic-stamp and graph-reduction papers describe their
+benchmarks as "a two-stage Miller MOSFET amplifier" and "a MOS op-amp containing
+44 transistors" — names again. The µA725 appears with a schematic and could be
+transcribed as the µA741 was, but it would be the same kind of check we already
+have.
+
 Fitting a circuit until its numbers matched would produce a test that always
-passes and means nothing — the opposite of what these comparisons are for. Two
-solid external checks are worth more than twelve invented ones.
+passes and means nothing — the opposite of what these comparisons are for. Four
+solid external checks are worth more than twenty invented ones.

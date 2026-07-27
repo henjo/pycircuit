@@ -1626,3 +1626,62 @@ def test_noise_psd_is_unchanged_by_the_shared_evaluation():
     _, reference = symbolic_poly.noise_psd(Y, u, CY, s)
     _, got = ddd_toolkit.noise_psd(Y, u, CY, s)
     assert sympy.simplify(sympy.cancel(got - reference)) == 0
+
+
+## -- calibration against ICCAD 2010 Table II ------------------------------
+##
+## Full matrices are the one benchmark that needs no transcription: "the dense
+## n x n matrix of distinct symbols" is a complete specification, so the
+## extraction rule is satisfied trivially.  This is also the paper the
+## construction here is implemented from, which makes it the most direct check
+## available -- its LED column is what our builder should reproduce.
+
+ICCAD2010_TABLE_II_LED = {
+    2: 4, 3: 12, 4: 32, 5: 80, 6: 192, 7: 448, 8: 1024,
+    9: 2304, 10: 5120, 11: 11264,
+}
+
+## Their Greedy-Labeling column, for contrast.  We do not implement that
+## ordering, so these are not reproduced -- they are here to record how much the
+## ordering was worth: 2708 against 1024 at n=8, and 30x by n=18.
+ICCAD2010_TABLE_II_GREEDY = {
+    2: 4, 3: 13, 4: 40, 5: 118, 6: 340, 7: 965, 8: 2708,
+    9: 7535, 10: 20828, 11: 57266,
+}
+
+
+@pytest.mark.parametrize('n', sorted(ICCAD2010_TABLE_II_LED))
+def test_full_matrix_sizes_match_the_published_led_column(n):
+    """Exact agreement with Shi's own measurements, not just with his theorem.
+
+    The TCAS-II identity says the optimum is ``n*2**(n-1)``; this says the
+    ICCAD-2010 construction actually attains it, and that ours attains the same.
+    Every value in the paper's LED column is that optimum.
+    """
+    A = _full_matrix(n)
+    assert ddd_of_matrix(A, order='row').size == ICCAD2010_TABLE_II_LED[n]
+    assert ICCAD2010_TABLE_II_LED[n] == n * 2 ** (n - 1)
+
+
+@pytest.mark.parametrize('n', [4, 6, 8])
+def test_auto_ordering_also_attains_the_optimum_on_full_matrices(n):
+    """Nothing is given up by defaulting to ``auto``.
+
+    On a full matrix every row has the same degree, so min-degree ties resolve
+    to the first row and the band reordering has nothing to gain -- both reach
+    the optimum.
+    """
+    assert ddd_of_matrix(_full_matrix(n)).size == ICCAD2010_TABLE_II_LED[n]
+
+
+@pytest.mark.parametrize('n', [6, 8, 10])
+def test_we_are_on_the_good_side_of_the_ordering_comparison(n):
+    """Records what the expansion ordering is worth on the paper's own numbers.
+
+    The 2000-era Greedy-Labeling order is what the earlier papers' figures were
+    measured with, which is why our µA741 diagram comes out several times
+    smaller than the one published in TCAD 2000.
+    """
+    ours = ddd_of_matrix(_full_matrix(n)).size
+    assert ours == ICCAD2010_TABLE_II_LED[n]
+    assert ours < ICCAD2010_TABLE_II_GREEDY[n]
