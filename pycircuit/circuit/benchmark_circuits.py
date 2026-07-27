@@ -413,7 +413,7 @@ def _build_ua741(symbolic_devices, miller):
     cir = SubCircuit(toolkit=symbolic)
     names = (
         'inp', 'inn',            # inputs
-        'e1', 'e2', 'c1', 'c2',  # input pair emitters / collectors
+        'e1', 'e2', 'c12',       # input pair emitters, common collector node
         'nb34', 'nq9',           # cascode bases, Q8/Q9 mirror diode node
         'c3', 'c4',              # first-stage outputs (c4 is the high-Z node)
         'nb56', 'e5', 'e6',      # load mirror base node and degeneration
@@ -441,15 +441,18 @@ def _build_ua741(symbolic_devices, miller):
     ## -- input stage: emitter followers Q1/Q2 into common-base Q3/Q4 --------
     ## Q1/Q2 are followers whose emitters drive the common-base pair Q3/Q4 --
     ## two separate signal paths, not a shared tail node.
-    bjt('q1', 'input', n['inp'], n['c1'], n['e1'])
-    bjt('q2', 'input', n['inn'], n['c2'], n['e2'])
+    ## Q1/Q2 are followers: their collectors carry bias, not signal, and tie
+    ## together at the Q8 collector.  Splitting them into two nodes is both an
+    ## extra unknown and electrically wrong.
+    bjt('q1', 'input', n['inp'], n['c12'], n['e1'])
+    bjt('q2', 'input', n['inn'], n['c12'], n['e2'])
     bjt('q3', 'input', n['nb34'], n['c3'], n['e1'])
     bjt('q4', 'input', n['nb34'], n['c4'], n['e2'])
 
     ## Q8/Q9 mirror loading the input pair collectors.
-    bjt('q8', 'mirror', n['nq9'], n['c1'], gnd)
+    bjt('q8', 'mirror', n['nq9'], n['c12'], gnd)
     bjt('q9', 'mirror', n['nq9'], n['nq9'], gnd)
-    cir['rq9'] = R(n['c2'], n['nq9'], r=1e3)
+    cir['rq9'] = R(n['c12'], n['nq9'], r=1e3)
 
     ## -- Q5/Q6 active load with Q7 buffering the mirror base ----------------
     bjt('q5', 'mirror', n['nb56'], n['c3'], n['e5'])

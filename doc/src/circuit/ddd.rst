@@ -1002,6 +1002,35 @@ of 30 000.
     print("     - %s" % format(D.term_count(), ","))
     print("     - 119,011")
 
+Why the sizes are not identical
+-------------------------------
+
+Our matrix is a couple of unknowns larger, and the difference decomposes exactly.
+Ours is **26 node voltages plus one branch current** for the input voltage
+source. Theirs is 24 in total, so we carry two or three unknowns they do not:
+
+* **the inverting input is a live node here.** It is tied down through a large
+  resistance rather than grounded, so a single-ended drive costs one extra
+  unknown. Grounding it outright gives 25.
+* **the source branch.** MNA carries a current unknown for a voltage source; a
+  current-source drive would not have one, which would account for the last
+  difference exactly.
+
+A third candidate turned out to be an outright error on our side rather than a
+convention, and is worth recording because it shows what these comparisons are
+for. Q1 and Q2 are *emitter followers* — their collectors carry bias current, not
+signal, and tie together at the Q8 collector. An earlier version gave them
+separate collector nodes, which is both an extra unknown and electrically wrong.
+Merging them removed a node and *raised* the open-loop gain from 31 000 to
+40 500, i.e. the more faithful circuit is also the better-behaved one. Nothing in
+the correctness tests could have caught that; comparing against a published
+matrix size did.
+
+The nonzero counts differ for a separate reason: our device model puts *both*
+junction capacitances on every transistor, which adds couplings a simpler
+small-signal model would not have. That also explains why our product-term count
+runs higher than theirs while the vertex count runs lower.
+
 The matrix agrees closely in size and sparsity, so the circuits are comparable.
 The vertex count does not, and the direction is the interesting part: **ours is
 several times smaller than theirs**, which needs explaining rather than
