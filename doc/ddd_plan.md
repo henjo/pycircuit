@@ -296,6 +296,7 @@ solution-object refactor and calibration tiers 1 and 3.
 | H4 — symbolic sensitivity | **Done.** Gate passed: matches finite differences to ~1e-8; ten parameters cost what one does |
 | H5 — Tier 2 calibration | **Done.** Our DDD-vs-SoE ratios 3.3–5.6× land in the published 5.0–6.0× band |
 | H6 — conditioning | **Done, by a different route.** Scaling does not help; extended precision takes N=20 from 5e-10 to 1.6e-15 |
+| H7 — the DDD analysis family | **Done.** Two-port and loop gain agree exactly with the originals; backend is a `det`/`cofactor` override, frontends define no `solve` |
 
 The original definition of done is met: exact s-expanded coefficients held
 compactly, dominant pole/zero estimates from coefficient ratios, exact numeric
@@ -446,7 +447,7 @@ backend from a related blow-up.
 **Gate.** Pole accuracy at N = 20 improves by orders of magnitude with no
 regression at small N.
 
-### H7 — Extend the DDD family to the remaining linear-algebraic analyses
+### H7 — Extend the DDD family to the remaining linear-algebraic analyses — **DONE**
 
 **Scope corrected.** This stage was written as "DC and other analyses", which
 aimed at the wrong target. Taking DC first, so it can be closed:
@@ -588,10 +589,9 @@ recorded even when negative.
   tolerance every later vertex count is read against.
 - H3 depends on H2 and on nothing else — it is the direct application of the
   reduction machinery to the analysis that most wants it.
-- H1–H6 are done. H7 remains, rescoped: DC is closed (linear DC is ``s = 0``,
-  nonlinear DC is not a symbolic-determinant problem), and what is left is
-  extending the DDD family to the two-port, feedback and transimpedance
-  analyses — beside the existing ones, which are not modified.
+- H1–H7 are done; the plan is complete. The reuse route held: the backend was a
+  ``det``/``cofactor`` override and the frontends define no ``solve`` at all,
+  which a test now enforces.
 - H6 refuted its own premise, which is worth remembering when reading the rest of
   this plan: the mitigation it proposed had been borrowed from GiNaC's failure
   (exact-arithmetic growth, which scaling does fix) and applied to a different

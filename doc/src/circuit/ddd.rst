@@ -1605,3 +1605,92 @@ span and works in ``mpmath``, costing a few seconds at N = 20.
    accuracy achieves nothing — the first attempt did exactly that and improved
    the error by a factor of two rather than a factor of 300 000. A binary float
    is itself an exact rational, so converting the environment discards nothing.
+
+The DDD family of analyses
+==========================
+
+The analyses beyond AC and noise — two-port parameters, loop gain,
+transimpedance — turned out to need almost no new code, and the reason is worth
+stating because it was not obvious before looking.
+
+**They already ask the toolkit for exactly what a diagram is best at.**
+:class:`~pycircuit.circuit.nportanalysis.TwoPortAnalysis` reaches its parameters
+through ``toolkit.det`` and ``toolkit.cofactor``;
+:class:`~pycircuit.circuit.feedback.FeedbackLoopAnalysis` forms the return
+difference as ``det(Y) / det(Y_noloop)``. Nothing overrode ``det``, so it fell
+through to sympy's. Overriding those two primitives on ``DDDToolkit`` moves the
+whole family onto diagrams **without a line of analysis logic being rewritten**.
+
+The originals are untouched, which matters twice over: it is what the additive
+ground rule requires, and it keeps them usable as the reference every DDD result
+is checked against.
+
+Separate entry points, shared implementation
+--------------------------------------------
+
+Reuse does not mean reaching the family by threading a toolkit argument through
+an existing class. The DDD analyses have their own names:
+
+.. code-block:: python
+
+    from pycircuit.circuit.dddanalysis import DDDTwoPort, DDDLoopGain
+
+    res = DDDTwoPort(cir, inp, gnd, outp, gnd).solve(s, complexfreq=True)
+    res['mu'], res['gamma'], res['zeta'], res['beta']
+
+Each is a thin subclass that binds the toolkit and adds the diagram-level
+accessors the base class has no concept of — the shared family, the determinant
+as an unexpanded diagram, the sensitivity a return ratio is built from. **None of
+them defines** ``solve``, and there is a test asserting so: if one ever did, the
+reuse route would have been abandoned and there would be two implementations of
+the port bookkeeping to keep in step.
+
+Where the sharing shows up
+--------------------------
+
+A two-port asks for a determinant and then a series of cofactors **of the same
+matrix**. Those are all minors of one matrix, so the toolkit keeps the family
+between calls and the whole parameter set costs one construction:
+
+.. exec-rst::
+
+    import sympy
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.toolkit import ddd_toolkit, symbolic
+
+    A = bc.rc_ladder(5).A
+    ddd_toolkit.det(A)
+    family = ddd_toolkit._family_cache[1]
+    for i in range(A.rows):
+        ddd_toolkit.cofactor(A, i, 0)
+
+    print(".. list-table:: One family for a determinant and every cofactor")
+    print("   :header-rows: 1")
+    print("   :widths: 30 18")
+    print("")
+    print("   * - quantity")
+    print("     - value")
+    print("   * - matrix")
+    print("     - %d×%d" % (A.rows, A.cols))
+    print("   * - determinant vertices")
+    print("     - %d" % family.denominator.size)
+    print("   * - vertices, det + %d cofactors" % A.rows)
+    print("     - %d" % family.size)
+    print("   * - family rebuilt?")
+    print("     - %s" % (ddd_toolkit._family_cache[1] is not family))
+
+Loop gain is the neatest case. Where the matrix depends linearly on the
+loop-forming parameter ``k``,
+
+.. math::
+
+    \det A = \det A\big|_{k=0} + k \cdot \frac{\partial \det A}{\partial k}
+
+so the second determinant the original analysis builds independently is a
+*cofactor of the first* — which is what
+:func:`~pycircuit.circuit.ddd.determinant_sensitivity` already returns.
+``DDDLoopGain.loop_sensitivity`` exposes it directly.
+
+Both agree with the originals exactly: two-port parameters and loop gain match
+term for term on the circuits the existing analyses handle, which is the only
+check that means anything here.

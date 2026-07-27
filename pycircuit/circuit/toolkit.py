@@ -469,6 +469,52 @@ class DDDToolkit(SymbolicPolyToolkit):
         from .dddresult import DDDSolution
         return DDDSolution(A, b, s, irefnode, max_terms=self.ddd_max_terms)
 
+    def _ddd_family(self, A):
+        """Shared family for a matrix, reused across calls on the same matrix.
+
+        ``TwoPortAnalysis`` asks for a determinant and then a series of
+        cofactors of the *same* matrix.  Those are all minors of one matrix, so
+        rebuilding per call would throw away exactly the sharing that makes a
+        diagram worth having.  One entry is enough -- an analysis works through
+        one matrix at a time.
+        """
+        from .ddd import DDDFamily
+        Am = sympy.Matrix(A)
+        key = (Am.rows, Am.cols, tuple(Am))
+        cached = getattr(self, '_family_cache', None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        family = DDDFamily(Am, sympy.zeros(Am.rows, 1))
+        self._family_cache = (key, family)
+        return family
+
+    def det(self, A):
+        """Determinant, built as a diagram.
+
+        Overriding this is what lets the existing analyses run on diagrams
+        without being modified: ``TwoPortAnalysis`` and ``FeedbackLoopAnalysis``
+        both reach their answer through ``toolkit.det``, so they need no
+        knowledge of the representation.
+
+        The result is a sympy expression, so it expands -- guarded by
+        ``ddd_max_terms``, as every compatibility path here is.
+        """
+        return self._ddd_family(A).denominator.to_sympy(
+            max_terms=self.ddd_max_terms)
+
+    def cofactor(self, A, i, j):
+        """Cofactor, from the same shared family as :meth:`det`.
+
+        The two-port parameters are a determinant followed by cofactors of the
+        one matrix, and taking them from a single family is the difference
+        between one construction and one per parameter.
+        """
+        from .ddd import DDDSizeError
+        family = self._ddd_family(A)
+        minor = family.cofactor(i, j)
+        sign = -1 if (i + j) % 2 else 1
+        return sign * minor.to_sympy(max_terms=self.ddd_max_terms)
+
     def noise_psd(self, Y, u, CY, s):
         """Noise PSD with every transimpedance sharing one construction.
 
