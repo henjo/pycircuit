@@ -17,6 +17,52 @@ a lot and that matters for planning:
 
 ---
 
+## 0. How to check and attack this document
+
+The point of the tags above is that you should be able to disagree with any
+conclusion here by going to its source. To make that practical:
+
+- **The papers are local**, in `~/pycircuit_agy/papers/ddd/` (filenames per
+  paper in `ddd_references.md`). Every `[LIT]` claim below cites a locator
+  (section / table / figure) so you can find it without reading the whole paper.
+- **Our own results are reproducible**: SoE operation counts come from the live
+  table in `doc/src/circuit/soe_symbolic.rst` (regenerated at doc build);
+  the GiNaC results from `doc/src/circuit/ginac_native.rst` and
+  `doc/ginac_fully_symbolic.md`.
+- **Two extraction caveats.** Our reading of the IEEE PDFs is via `pdftotext`,
+  which **drops superscripts and inline math glyphs**. Where a number or formula
+  depended on those, it is marked *(reconstructed — verify in the PDF)* rather
+  than quoted. Do not build anything load-bearing on a reconstructed figure
+  without opening the paper. Separately, the PDD papers (§4.7) are paywalled and
+  assessed from abstracts only.
+
+**Where to aim if you want to break the argument.** Three claims carry most of
+the weight, and each is the honest weak point of its section:
+
+1. **That DDD beats what we already have.** This is *not* established — see the
+   §7 P0 gate and §8.1. If it fails, the plan stops.
+2. **That s-expansion is linear in the flat DDD** (Theorem 1, §4.3). The bound's
+   symbols were lost in extraction; the form below is reconstructed. Conclusion 2
+   leans on it.
+3. **That the regime we care about is the one DDD is good at** (§4.9). pycircuit's
+   worst case is *fully* symbolic, and some of DDD's most attractive features
+   (numeric terminals) help most in the *semi*-symbolic middle.
+
+### Terms used below
+
+| Term | Meaning |
+|---|---|
+| **minor** | Sub-determinant left after deleting a chosen row and column; identified by its `(row-index tuple, col-index tuple)`. |
+| **1-path** | Path from a vertex to the `1` terminal; each corresponds to one product term. |
+| **`\|DDD\|`** | Vertex count, excluding terminals. Doubles as an operation count: one add + one multiply per vertex. |
+| **complex DDD** | DDD of the MNA matrix *as stamped*, i.e. entries embed the frequency variable `s` (e.g. `g + s·c`). Terms are products of such entries. |
+| **s-expanded / multiroot DDD** | The same solution re-expressed with one root per power of `s`, so each root is a polynomial coefficient. Roots share subgraphs. |
+| **sibling group** | Elements of one expanded row/column sharing a parent minor; joined by 0-edges. |
+| **`q`, `d`** | In Theorem 1: `q` = denominator polynomial degree; `d` = max devices attached to one circuit node. |
+| **SoE** | Sequence of expressions — our `soe.py`: elimination emitted as ordered assignments to fresh symbols. |
+
+---
+
 ## 1. The question
 
 pycircuit's symbolic analysis is fast where the circuit is *mostly numeric with a
@@ -123,14 +169,23 @@ fit for pure Python than the BDD-package route, and it is the difference between
 
 ### 4.2 The hard limit, and where the win actually comes from
 
-**[LIT]** Shi, TCAS-II 2010: a row-wise order is *optimal* for a **full** n×n
-matrix, and the optimal size is then exactly `n·2^(n-1)`.
+**[LIT]** Shi, TCAS-II 57(10) 2010 (abstract + main result): a row-wise (or
+column-wise) order is *optimal* for a **full** n×n matrix, and the optimal size is
+then exactly `n·2^(n-1)`.
 
-**Conclusion 4.2** — DDD is still exponential in the worst case. All of its value
-comes from **sparsity and sharing**, so the Phase-0 measurement must be vertex
-count on *our* sparse circuit matrices, and `n·2^(n-1)` is the "no sharing
-achieved" reference line to plot against. This also settles ordering for the dense
-case, so we need not go hunting for a heuristic.
+Read that carefully, because it cuts both ways. `n·2^(n-1)` is the **best**
+achievable size on a dense matrix *with* sharing working perfectly — it is not a
+no-sharing baseline (no sharing would be the `n!` product terms). So:
+
+**Conclusion 4.2** — DDD is still exponential in the worst case, *even with optimal
+ordering and full sharing*. All of its practical value therefore comes from
+**sparsity**. The consequence for P0 is that measuring vertex counts on our own
+sparse circuit matrices is the only thing that settles the question — the papers'
+figures are on their circuits, and the dense bound guarantees nothing for us. Two
+useful reference lines when plotting: `n·2^(n-1)` above (the dense-matrix optimum,
+which sparse matrices should beat comfortably — if we approach it, sparsity is not
+being exploited) and our SoE op counts alongside (§4.6). The result also settles
+ordering for the dense case, so we need not hunt for a heuristic there.
 
 ### 4.3 The key structural finding: the coefficient / s-expanded form
 
@@ -140,14 +195,32 @@ This is the most important result of the review, and it arrives twice:
   beyond `{0,1}` to carry arbitrary **numeric values**, so numeric sub-products
   collapse into a single terminal *during construction*. The "coefficient MTDDD"
   is **multi-root**: one root per power of `s`.
-- **[LIT]** *General and proven* — Shi & Tan, s-expanded DDD (TCAD 2001).
-  "s-expanded DDD" and "multiroot DDD" are the same object. **Theorem 1**: from a
-  complex DDD of size `|DDD|`, the s-expanded DDD is built in time and size
-  ~`q·d·|DDD|`, where `q` = denominator degree and `d` = max devices per node
-  (`d ≤ 2` under MNA compact-symbol form). So **s-expansion is linear in the
-  complex DDD**, though the expanded term count is astronomically larger — µA741:
-  108 032 complex product terms → ~7.8×10³⁴ expanded terms, held in 99 844
-  vertices, built in seconds on a 1998 workstation.
+- **[LIT]** *General and proven* — Shi & Tan, s-expanded DDD (TCAD 20(7) 2001,
+  §III–IV for the construction, Theorem 1 in §IV, experiments §VI Table II /
+  Fig. 14). "s-expanded DDD" and "multiroot DDD" are the same object.
+
+  **Theorem 1** *(reconstructed — verify in the PDF)*: from a complex DDD of size
+  `|DDD|`, the s-expanded DDD is constructed in time and with no more than
+  ~`q·d·|DDD|` vertices, where `q` = denominator polynomial degree and `d` = max
+  devices attached to a node. The paper notes `d ≤ 2` under its "compact symbol"
+  MNA form, and remarks that Fig. 14 shows measured size clearly bounded by this
+  expression. **The exact symbolic form of the bound did not survive text
+  extraction**; the factor `q·d` is inferred from the surrounding prose. What is
+  safe to carry forward is the *shape* of the claim — **linear in `|DDD|`, with a
+  modest factor** — and that the authors validate it experimentally. Confirm the
+  precise bound before any design decision rests on the constant.
+
+  Scale of the effect, from §VI (verified figures only): the µA741 transfer
+  function's denominator has **108 032 complex product terms**; s-expanding them
+  yields a term count whose *mantissas* are given as 7.77 (numerator) and 9.31
+  (denominator) — **the exponents are lost in extraction**, but the abstract's
+  headline instance is "over 10³⁵ symbolic product terms represented by a multiroot
+  DDD with less than 17 K vertices", so the order is ~10³⁰⁺. That s-expanded
+  transfer function is held in **99 844 vertices**, built in **a few CPU seconds on
+  an UltraSPARC-I**. Under full-symbol representation the term count grows by
+  **nine orders of magnitude** while vertices rise only to **297 115 (~3×)** — which
+  is the more persuasive number, because it isolates representation growth from
+  term growth.
 
 Why this matters more than it first appears: **the s-expanded coefficient form is
 the shape pycircuit already speaks.** `TransferFunction.as_num_den` and
@@ -181,11 +254,17 @@ options; that was wrong.
 
 ### 4.5 Hierarchy
 
-**[LIT]** Tan & Shi (TCAD 19(4), April 2000) is the primary paper: suppress each
-subcircuit to its terminals via its determinant and cofactors, then Cramer at the
-top. On a µA741, three-level two-way hierarchy needs **117 vertices vs 6654 flat
-(56×) vs 119 011 sum-of-product terms**, and DDD size grows almost linearly in
-circuit size while product terms grow exponentially.
+**[LIT]** Tan & Shi (TCAD 19(4), April 2000; method §II–V, experiments §VII
+Tables I–IV) is the primary paper: suppress each subcircuit to its terminals via
+its determinant and cofactors, then Cramer at the top. On a µA741, a **three-level
+two-way** partition needs **117 vertices vs 6654 for their flat DDD (56×) vs
+119 011 sum-of-product terms**, and DDD size grows almost linearly in circuit size
+while product terms grow exponentially.
+
+Caveats on that 56×: it is *their* flat DDD as the baseline (not ours), on one
+partitioning of one circuit, and the vertex→operation conversion assumes their
+one-add-one-multiply-per-vertex accounting. Treat it as evidence that hierarchy is
+worth doing, not as a factor we can expect to inherit.
 
 **[LIT]** Xu, Shi & Li (ASP-DAC 2011) is the better *fit*: a subcircuit reduces to
 a **"symbolic stamp"** — an n-terminal block that stamps into the parent MNA
@@ -201,18 +280,29 @@ formulation when we get there.
 The TCAD-2000 hierarchical paper benchmarks against **SCAPP, a
 sequence-of-expressions analyser** — the same representation as our `soe.py`.
 
-**[LIT]** Their claims: DDD is "much more compact than the sequence-of-expression
-representation used in SCAPP", and beats both SCAPP and SPICE on repetitive
+**[LIT]** Their claims (§VII, Tables II and III): DDD is "much more compact than
+the sequence-of-expression representation used in SCAPP", DDD size grows almost
+linearly in circuit size, and DDD beats both SCAPP and SPICE on repetitive
 evaluation.
 
 Critically, they give us a **comparable metric**: each DDD vertex costs one
 addition and one multiplication, so `|DDD|` *is* an operation count — the same
 quantity we already report for SoE.
 
-**[VERIFY]** We should not accept "DDD ≪ SoE" as given. Their SCAPP baseline is
-hierarchical-suppression SoE on cascaded opamps; ours is Gaussian-elimination SoE
-measured on ladders, where **[OURS]** we found linear growth (§3). These may not
-be the same contest. This comparison is the core of the Phase-0 gate.
+**[VERIFY]** We should not accept "DDD ≪ SoE" as given, for three reasons:
+1. Their SCAPP baseline is *hierarchical-suppression* SoE on cascaded opamps; ours
+   is *Gaussian-elimination* SoE measured on RC ladders, where **[OURS]** we found
+   linear growth (§3). Possibly not the same contest.
+2. Their Table III timing gives SCAPP a handicap they acknowledge — SCAPP's
+   sequence of expressions is emitted as C, compiled, and linked, and the
+   compilation time is counted. They note SCAPP could be reimplemented to keep the
+   sequence in memory and avoid it. Our SoE has no such penalty (numpy `lambdify`),
+   so their *evaluation-time* margin should not be assumed to transfer at all.
+3. Being smaller is not the same as being more useful — see §4.9. SoE can be
+   compact and still unable to produce N/D coefficients.
+
+This comparison is the core of the P0 gate, and §7 states it as two separate
+criteria because of point 3.
 
 ### 4.7 Alternatives considered and rejected
 
@@ -243,6 +333,29 @@ shared coefficient expressions**.
 
 Their tool **CirSym** (freeware, C source, SPICE netlist input) is usable as an
 **independent oracle** for cross-checking our compact output and operation counts.
+
+### 4.9 Which regime does each thing actually help? (a tension to be honest about)
+
+§1 says the problem case is *fully or largely symbolic*. But several of DDD's most
+attractive properties help most in the **semi-symbolic middle**. These are not the
+same regime, and conflating them would let us build the wrong thing. Explicitly:
+
+| Regime | What we have today | What DDD work adds |
+|---|---|---|
+| Numeric components + symbolic `s` | **Already fast** — `symbolic_poly` (`solve_den`), GiNaC with frequency scaling | Little. Do not justify the project here. |
+| A few symbolic params + numeric rest + `s` | Degrades; GiNaC stalls ~dim 16 on exact rationals | **Most of the win**: numeric terminals (MTDDD) + s-expanded coefficients |
+| Fully symbolic (all R, C symbols) | `symbolic_poly` has **no advantage** *[OURS]*; SoE stays compact but cannot deliver N/D — `to_ratio`/`poly_coeffs` hang for N≥5 *[OURS]* | **The capability gap**: s-expanded coefficients (hence poles/zeros/approximation) where nothing we own can produce them |
+
+**Conclusion 4.9** — the project's justification differs by regime, so the plan
+must not be evaluated on a single number:
+- in the *fully symbolic* case the argument is **capability**, not speed — we
+  currently cannot get poles at all beyond tiny N;
+- in the *semi-symbolic* case the argument is **scale** — pushing past the
+  dim-16 wall;
+- in the *mostly numeric* case there is **no argument**, and we should not pretend
+  otherwise.
+
+This distinction drives the two-axis P0 gate in §7.
 
 ---
 
@@ -279,9 +392,25 @@ Concrete shape (all additive):
    It inherits `supports('num_den')`, so `AC(..., toolkit=ddd_toolkit)` works
    through the existing branch. Two integration depths:
    - *conservative*: `linearsolver_num_den` builds DDDs and returns sympy
-     `num/den` — correct, zero API change;
+     `num/den`. This genuinely is a zero-change integration — it overrides one
+     method on a subclass and nothing else in the codebase learns about it.
    - *full*: add `supports('ddd')` plus a `CircuitResultACPoly` subclass so
      `poles`/`eval`/`approximate` run **on the compressed graph**.
+
+**Honest qualification of "nothing existing changes".** That is true of the
+conservative path, and *nearly* true of the full path: the full path adds one more
+`if toolkit.supports(...)` branch at the dispatch sites in shared analysis code.
+That is the mechanism the toolkit design was built for and it does not alter any
+existing behaviour, but it is a change to shared files, not zero. The claim being
+made is "additive and independently revertible", not "literally no diff outside
+new modules".
+
+**Also unresolved at this stage**: the arithmetic interface above (`add`, `mul`,
+`zero`, `one`, `evaluate`) is sufficient for *evaluating* a graph, but s-expansion
+(P1) additionally needs coefficient extraction with respect to `s`, and
+approximation (P5) needs magnitude comparison of terms. The interface will need to
+grow; treat the five operations as a starting sketch rather than a settled design,
+and expect to revisit it at P1.
 
 ---
 
@@ -300,10 +429,12 @@ Each conclusion states its reason; §-references point to the evidence.
    s-expanded coefficient form is exactly what `as_num_den` produces and
    `poles()`/`zeros()` consume, and because Theorem 1 makes the expansion *linear*
    in the flat DDD, so it is cheap to add and irrational to omit (§4.3).
-3. **Numeric terminals (MTDDD) are core, not an optimisation** — because
-   pycircuit's matrices are mostly numeric in normal use, and because folding
-   numerics into terminal values during construction structurally prevents the
-   exact-rational blow-up that capped the GiNaC backend at ~dim 16 (§3, §4.3).
+3. **Numeric terminals (MTDDD) are core for the semi-symbolic regime** — because
+   folding numerics into terminal values during construction structurally prevents
+   the exact-rational blow-up that capped the GiNaC backend at ~dim 16 (§3, §4.3).
+   Note the scope: this helps where *some* parameters are numeric, so it is the
+   answer for the semi-symbolic middle and does **nothing** for the fully-symbolic
+   case, which is served by conclusion 2 instead (§4.9).
 4. **Approximation comes after s-expansion, never before** — because approximating
    a non-s-expanded function treats the powers of `s` unequally and gives
    unreliable results (§4.4).
@@ -318,9 +449,14 @@ Each conclusion states its reason; §-references point to the evidence.
    backend** — because all symbolic toolkits already differ *only* on that axis
    (§5), so this is the one shape that adds a strategy without touching stamping,
    existing toolkits, or the analyses.
-8. **The bar is SoE, not sympy** — because we already own a representation that
-   does not blow up (§3), so beating sympy proves nothing. DDD must beat
-   `|SoE ops|` on circuits where `symbolic_poly` fails to earn its complexity.
+8. **The bar is SoE, not sympy — but on two axes, not one** — because we already
+   own a representation that does not blow up (§3), so beating sympy proves
+   nothing. However, "smaller than SoE" is the wrong single test: SoE is compact
+   yet **structurally cannot** produce N/D coefficients for fully-symbolic circuits
+   (`to_ratio`/`poly_coeffs` hang for N≥5 *[OURS]*), so DDD can lose on raw
+   operation count and still be the right answer because it delivers a capability
+   SoE has not got. The gate therefore tests **capability** and **size**
+   separately (§7, §4.9).
 
 ---
 
@@ -328,24 +464,62 @@ Each conclusion states its reason; §-references point to the evidence.
 
 Each stage ends in a measurable gate. Stop or re-plan if a gate fails.
 
+**Definition of done for the whole effort** (so progress is judged against
+something user-visible, not against internal metrics): *symbolic poles and zeros
+of a fully-symbolic circuit of ~10–15 nodes, obtained in seconds, from
+`AC(cir, toolkit=ddd_toolkit).solve(...)`, with the result agreeing with
+`symbolic_poly` wherever `symbolic_poly` can still produce an answer.* Today that
+is impossible at any size beyond trivial (§4.9).
+
+Effort figures below are rough order-of-magnitude sizing to let priorities be
+weighed against cost — they are guesses, not estimates from a decomposition.
+
 ### P0 — Core construction + measurement (gate: go / no-go for everything else)
+
+*Effort: the largest single piece — a few days. Everything after it is smaller.*
 
 Rewrite `DDD_of_matrix` per ICCAD 2010: layered expansion, minor hash table keyed
 by `(row-index tuple, col-index tuple)`, min-degree expansion ordering, signs
 during construction. Add numeric evaluation over the graph. Standalone module and
 tests — **no toolkit wiring yet**.
 
-Measure, on fully-symbolic ladders (N = 4…16), the MFB filter from Example 10, and
-a larger opamp-like circuit:
+**Test circuits** (fixed now, so the comparison is not chosen after seeing
+results). All must be the *same* circuits we already report SoE numbers for:
+1. fully-symbolic RC ladder, N = 4, 8, 12, 16 — the `soe_symbolic.rst` circuit,
+   transfer function `v_out/v_in`, so `|DDD|` is directly comparable to the
+   published SoE ops 73 / 157 / 241 / 325;
+2. the MFB filter of Example 10 (has a `Nullor` — exercises dependent sources);
+3. one larger, more realistic opamp-like circuit, semi-symbolic.
 
-- `|DDD|` (= add/multiply count) vs **our existing SoE op counts** (73/157/241/325);
-- `|DDD|` vs flat product-term count, and vs the `n·2^(n-1)` no-sharing line;
-- construction time, and numeric evaluation time per sweep point.
+**Measurements**: `|DDD|`; SoE ops on the same circuit; flat product-term count;
+the `n·2^(n-1)` dense-optimum line (§4.2); construction time; numeric evaluation
+time per sweep point.
 
-**Gate**: `|DDD|` must be competitive with, and ideally well below, SoE ops on
-circuits where `symbolic_poly` is known to fail. If it is not, DDD does not earn
-its complexity here and SoE + GiNaC remain the answer — record the negative
-result (as we did for symengine and GiNaC) and stop.
+**Gate — two independent criteria. Passing *either* justifies continuing; both
+failing stops the project.**
+
+- **(a) Capability.** Can we obtain s-expanded N/D coefficients at a size where
+  our existing machinery cannot? Concretely: **at N ≥ 8 on circuit 1**, where
+  *[OURS]* `to_ratio`/`poly_coeffs` hang and `symbolic_poly` has no advantage. This
+  is a yes/no, and it is the criterion that actually matters (§4.9). Strictly this
+  is settled at P1, so P0 passes (a) by demonstrating a correct flat DDD whose
+  vertex count is small enough to make P1 plausible.
+- **(b) Size.** `|DDD|` **≤ 2× SoE ops at N = 12**, and growing no faster than SoE
+  across N = 4→16. The 2× allowance reflects that a DDD vertex and an SoE
+  assignment are not exactly the same unit; the growth-rate comparison matters more
+  than the constant.
+
+**Failure handling** — what "stop" means, concretely: if both criteria fail, write
+up the negative result in `doc/` alongside the symengine and GiNaC write-ups,
+leave the standalone module in the tree marked experimental, do **not** wire it
+into any toolkit, and close the roadmap item. If (b) fails but (a) passes,
+continue — but drop the claim that DDD is a compactness win and justify it purely
+on capability, which changes what we should say in the docs.
+
+**Known confound to control for**: `|DDD|` counts graph vertices while SoE ops
+count arithmetic operations on *sympy expressions whose own size varies*. Record
+expression sizes alongside, or the comparison flatters whichever side has fatter
+per-node payloads.
 
 ### P1 — s-expanded / multiroot DDD
 
@@ -408,9 +582,17 @@ Symbolic stamps per `SubCircuit`.
 3. **Cancellation.** DDD expands a determinant and can generate terms that later
    cancel; GPDD exists precisely because of this. We accept it (§4.7) but should
    watch for it on circuits with dependent sources and nullors.
-4. **Python constant factors.** All the cited runtimes are C/C++. A pure-Python
-   LED build may be fine (it is dict operations plus small arithmetic) but the
-   arithmetic backend choice may matter more than in the papers.
+4. **Python constant factors — and one claim that probably does *not* transfer.**
+   All cited runtimes are C/C++ on 1998–2010 hardware. Construction should be fine
+   in Python (dict operations plus small arithmetic). But the papers' *numeric
+   evaluation* win — DDD beating SPICE and SCAPP on frequency sweeps — rests on
+   walking the graph per sweep point in compiled code. In Python that is a
+   per-vertex interpreted loop, which will very likely lose to what we already
+   have (`lambdify`/numpy vectorised over the whole sweep, or `_ginac.eval_sweep`).
+   **Working assumption: use DDD for *structure* (compact exact coefficients) and
+   keep the existing machinery for *evaluation*.** We should therefore not promise
+   evaluation speedups, and P0's evaluation timing exists to confirm this
+   expectation rather than to chase a win.
 5. **Where numerics enter.** MTDDD's numeric terminals trade exact rationals for
    floating values. Need to decide, per use, whether coefficients stay exact
    (poles from exact polynomials) or go numeric — this is exactly the trade that
