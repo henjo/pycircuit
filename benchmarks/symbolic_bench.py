@@ -172,6 +172,24 @@ def run_ginac(system):
                 value=value)
 
 
+def run_ddd_toolkit(system):
+    """Through the toolkit, as an analysis would reach it."""
+    from pycircuit.circuit.toolkit import ddd_toolkit
+    from pycircuit.circuit.dddresult import DDDSolution
+
+    t0 = time.perf_counter()
+    sol = DDDSolution(system.A, system.b, system.s, irefnode=system.A.rows)
+    den = sol.denominator_diagram()
+    build_s = time.perf_counter() - t0
+
+    env = _sub_env(system)
+    t0 = time.perf_counter()
+    value = sol.eval_tf(system.out_index, system.in_index, env)
+    eval_s = time.perf_counter() - t0
+    return dict(size=den.size, payload=den.term_count(), build_s=build_s,
+                eval_s=eval_s, value=value)
+
+
 def run_ddd(system):
     """Determinant decision diagram: shared graph, never expanded."""
     from pycircuit.circuit.ddd import ddd_cramer
@@ -203,6 +221,7 @@ BACKENDS = {
     'soe': run_soe,
     'ginac': run_ginac,
     'ddd': run_ddd,
+    'ddd_toolkit': run_ddd_toolkit,
 }
 
 

@@ -439,11 +439,58 @@ class GinacToolkit(SymbolicPolyToolkit):
         return _ginac.solve_native(A, b)
 
 
+class DDDToolkit(SymbolicPolyToolkit):
+    """Symbolic toolkit that solves via determinant decision diagrams.
+
+    Stamping is unchanged -- circuits are built and stamped exactly as for any
+    other symbolic toolkit.  What differs is the *representation* of the answer:
+    instead of an expanded ``N(s)/D(s)``, the solution is a shared graph that is
+    evaluated or split by powers of ``s`` without ever being written out.
+
+    Use it like any other toolkit::
+
+        from pycircuit.circuit.toolkit import ddd_toolkit
+        res = AC(cir, toolkit=ddd_toolkit).solve(s, complexfreq=True)
+        res.poles(numeric=True)      # works without expanding the determinant
+
+    The compatibility surface (``linearsolver_num_den``, ``res.tf(...)``) has to
+    expand, so it is limited by ``ddd_max_terms`` and raises rather than hanging.
+    That limit is not a defect: for a fully symbolic circuit of any size the
+    expanded form genuinely is unusable, which is the reason this toolkit exists.
+    """
+
+    #: Refuse to expand a diagram into sympy beyond this many product terms.
+    ddd_max_terms = 5000
+
+    def supports(self, capability):
+        return capability in ('num_den', 'ddd')
+
+    def ac_solution(self, A, b, s, irefnode):
+        from .dddresult import DDDSolution
+        return DDDSolution(A, b, s, irefnode, max_terms=self.ddd_max_terms)
+
+    def linearsolver_num_den(self, A, b):
+        """Solve via diagrams, then expand -- the compatibility path.
+
+        Raises:
+            DDDSizeError: If the expansion would exceed ``ddd_max_terms``.  The
+                diagram API has no such limit; see :class:`DDDSolution`.
+        """
+        from .ddd import ddd_cramer
+        Am = sympy.Matrix(A)
+        den, nums = ddd_cramer(Am, b, order='min-degree')
+        num = [nums[i].to_sympy(max_terms=self.ddd_max_terms)
+               for i in range(Am.rows)]
+        return np.array(num, dtype=object), den.to_sympy(max_terms=self.ddd_max_terms)
+
+
+
 ## Singletons -- drop-in replacements for the old toolkit modules.
 numeric = NumericToolkit(_numeric)
 sparse_numeric = SparseNumericToolkit(_sparse_numeric)
 symbolic = SymbolicToolkit(_symbolic)
 symbolic_poly = SymbolicPolyToolkit(_symbolic)
+ddd_toolkit = DDDToolkit(_symbolic)
 
 try:
     import symengine as _symengine

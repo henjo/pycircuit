@@ -11,8 +11,8 @@ Determinant Decision Diagrams (DDD) for symbolic circuit analysis
    incompatibly, this page changes with it or the build fails.
 
    Implemented so far: the measurement harness (Stage B), the layered
-   determinant construction with Cramer solving (Stage P0), and the s-expanded
-   multiroot form (Stage P1).
+   determinant construction with Cramer solving (Stage P0), the s-expanded
+   multiroot form (Stage P1), and the toolkit integration (Stage P2).
 
 Why this exists
 ===============
@@ -354,8 +354,8 @@ own child process.
 
 .. rubric:: Next sections
 
-Next: a ``DDDResult`` and toolkit integration, so ``AC(cir, toolkit=ddd_toolkit)``
-reaches all of this through the ordinary analysis path.
+Next: semi-symbolic numeric terminals, then dominant-term approximation -- which
+is what turns an exact-but-unwritable answer into a formula a designer can read.
 
 .. _ddd-s-expanded:
 
@@ -479,3 +479,64 @@ towards ``O(1)`` (which is what rescued the GiNaC backend from a related
 blow-up), and — for the interpretable answer a designer actually wants —
 extracting *dominant* poles as ratios of consecutive coefficients rather than
 root-finding on the whole polynomial.
+
+Using it: the ``ddd`` toolkit
+=============================
+
+None of the above requires a different way of describing a circuit. A DDD is a
+*representation* choice, so it enters where every other backend does — as a
+toolkit:
+
+.. code-block:: python
+
+    from pycircuit.circuit.toolkit import ddd_toolkit
+
+    res = AC(cir, toolkit=ddd_toolkit).solve(s, complexfreq=True)
+    res.poles(numeric=True)          # never expands the determinant
+
+Circuits are built and stamped exactly as for ``symbolic`` or ``symbolic_poly``;
+elements and :class:`~pycircuit.circuit.SubCircuit` know nothing about diagrams.
+
+Two paths, and why the limit is not a defect
+--------------------------------------------
+
+The solution object offers two routes to an answer:
+
+**The graph path** — ``poles(numeric=True)``, ``eval_tf()``, ``eval_node()``,
+``s_expanded()`` — answers without ever building an expression.
+
+**The compatibility path** — ``res.tf(...)``, ``denominator()``,
+``linearsolver_num_den()`` — returns sympy, so everything already written
+against ``N(s)/D(s)`` keeps working. That means *expanding*, which is the one
+thing the representation exists to avoid, so it is guarded by product-term count
+and raises rather than hanging.
+
+That guard is easy to misread as a limitation of the diagram. It is the
+opposite — a statement about the expanded form:
+
+.. exec-rst::
+
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.ddd import ddd_of_matrix
+
+    print(".. list-table:: Diagram size vs the expansion it stands for")
+    print("   :header-rows: 1")
+    print("   :widths: 8 10 14 20")
+    print("")
+    print("   * - N")
+    print("     - dim")
+    print("     - vertices")
+    print("     - product terms if expanded")
+    for N in (8, 16, 24, 32):
+        D = ddd_of_matrix(bc.rc_ladder(N).A)
+        print("   * - %d" % N)
+        print("     - %d" % D.matrix.rows)
+        print("     - %d" % D.size)
+        print("     - %s" % format(D.term_count(), ','))
+
+At 32 sections the determinant is a few dozen vertices standing for millions of
+product terms. Refusing to write that out is not the diagram failing; it is the
+diagram being the only usable form of the answer. What a designer actually wants
+from a circuit that size is not the exact expression but a *pruned* one — which
+is the approximation stage, and the reason it is on the critical path rather
+than an optional extra.

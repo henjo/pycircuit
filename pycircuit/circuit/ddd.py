@@ -147,6 +147,51 @@ class DDD:
         """The distinct ``(row, col)`` positions referenced by the graph."""
         return {(v.row, v.col) for v in self.vertices()}
 
+    def term_count(self):
+        """Number of product terms the diagram stands for (its 1-paths).
+
+        This is the size the expression would have if expanded, so it is the
+        right quantity to guard on before converting to sympy.  Computing it is
+        cheap -- one pass over the DAG -- precisely because the diagram shares:
+        the count can be astronomically larger than ``size``.
+        """
+        memo = {id(ONE): 1, id(ZERO): 0}
+        stack = [(self.root, False)]
+        while stack:
+            node, expanded = stack.pop()
+            if node.is_terminal or id(node) in memo:
+                continue
+            if not expanded:
+                stack.append((node, True))
+                stack.append((node.one_edge, False))
+                stack.append((node.zero_edge, False))
+                continue
+            memo[id(node)] = memo[id(node.one_edge)] + memo[id(node.zero_edge)]
+        return memo[id(self.root)]
+
+    def to_sympy(self, max_terms=5000):
+        """Expand the diagram into a sympy expression.
+
+        This is the operation the representation exists to avoid, so it is
+        guarded: for a fully symbolic circuit the expanded form can have more
+        terms than there are atoms in anything worth counting.
+
+        Args:
+            max_terms: Refuse if the expansion would exceed this many product
+                terms.
+
+        Raises:
+            DDDSizeError: If the expansion is too large.  Evaluate the diagram
+                numerically, or work with the s-expanded coefficients, instead.
+        """
+        n = self.term_count()
+        if n > max_terms:
+            raise DDDSizeError(
+                'expanding this diagram would give %d product terms, above the '
+                '%d limit; evaluate it numerically or use the s-expanded '
+                'coefficients instead of flattening it' % (n, max_terms))
+        return self.eval()
+
     ## -- evaluation ------------------------------------------------------
 
     def eval(self, env=None):
@@ -173,10 +218,16 @@ class DDD:
                 e = v.entry
                 if getattr(e, 'free_symbols', None):
                     e = e.subs(env)
-                try:
+                ## Convert to machine complex only when the value is already
+                ## inexact.  Coercing an exact Integer or Rational would quietly
+                ## turn an exact symbolic result into a floating-point one --
+                ## ``1`` becoming ``1.0`` in an otherwise exact transfer function.
+                if getattr(e, 'free_symbols', None) or not getattr(e, 'is_number', False):
+                    values[key] = e
+                elif e.has(sympy.Float):
                     values[key] = complex(e)
-                except (TypeError, ValueError):
-                    values[key] = e                      # still symbolic
+                else:
+                    values[key] = e                      # exact; keep it exact
         memo = {id(ONE): 1, id(ZERO): 0}
 
         ## Iterative post-order.  Depth is bounded by the matrix dimension, but
