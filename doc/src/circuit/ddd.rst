@@ -1745,3 +1745,37 @@ At a hundred unknowns the agreement still holds — 298 vertices against their 3
 and 19 803 s-expanded against their 16 767 — which is worth more than the small
 cases, because that is where an implementation with broken sharing would have
 diverged beyond recognition.
+
+What is *not* taken from the table
+----------------------------------
+
+Table II lists thirteen circuits; two ladders and the µA741 are used above and
+the other ten are deliberately left alone. The rule applied is simple and worth
+stating, because a benchmark that fails it is worse than no benchmark:
+
+**A published figure is only usable as a test if the circuit and the measurement
+are both understood.**
+
+An RC ladder qualifies — the topology is unambiguous, and matrix size and
+sparsity confirm it before any size is compared. The µA741 qualifies for its
+*degree*, which is fixed by the reactive topology, and for order-of-magnitude on
+its sizes, with the schematic transcribed from the paper's own figure.
+
+The rest do not, for concrete reasons rather than caution:
+
+* ``miller``, ``Cascode``, ``bigtst`` — names, not specifications. Any circuit
+  we invented to match a matrix size would be *a* circuit of that size, and
+  agreement or disagreement would say nothing.
+* ``butter`` — a Butterworth filter of some order and realisation, with a
+  denominator degree of 12 on a 7×7 matrix. Without knowing the realisation the
+  degree alone cannot be reproduced.
+* ``rlctest``, ``ccstest``, ``vcstest`` — test circuits for particular element
+  types, with no topology given.
+* ``rctreeA``/``rctreeB`` — RC trees, and the nonzero counts do suggest 40 and
+  53 nodes. But a tree's diagram size depends on its *shape*, and the shape is
+  not stated, so a matching size would be luck and a mismatching one
+  uninterpretable.
+
+Fitting a circuit until its numbers matched would produce a test that always
+passes and means nothing — the opposite of what these comparisons are for. Two
+solid external checks are worth more than twelve invented ones.

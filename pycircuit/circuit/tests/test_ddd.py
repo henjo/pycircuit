@@ -1524,3 +1524,105 @@ def test_ua741_denominator_degree_matches_the_paper():
     """23 poles, which pins the device count and the reactive topology."""
     system = bc.ua741()
     assert s_expand(system.A, system.s).degree == TCAD2001_TABLE_II['ua741'][4]
+
+
+## -- the review fixes, pinned ---------------------------------------------
+##
+## Each of these guards a place where a lesson learned elsewhere had not been
+## applied.  Without a test they would drift back.
+
+def test_s_expansion_uses_the_ordering_policy_too():
+    """H1's ordering fix must reach the s-expansion, not just the determinant.
+
+    The point of ``auto`` is that *every* size is insensitive to how the nodes
+    happen to be numbered.  ``s_expand`` defaulted to bare min-degree until the
+    review, so its sizes still moved with the numbering.
+    """
+    A = bc.rc_ladder(10).A
+    s = bc.rc_ladder(10).s
+    rng = np.random.default_rng(3)
+    perms = [list(rng.permutation(A.rows)) for _ in range(5)]
+
+    auto = [s_expand(_permute(A, p), s).size for p in perms]
+    plain = [s_expand(_permute(A, p), s, order='min-degree').size for p in perms]
+
+    assert max(auto) / min(auto) <= max(plain) / min(plain)
+    assert max(auto) <= max(plain)
+
+
+def test_cramer_uses_the_ordering_policy_too():
+    """Safe there because each numerator is a plain determinant."""
+    system = bc.rc_ladder(8)
+    rng = np.random.default_rng(5)
+    env = dict(system.params)
+    env[system.s] = 1j * 2 * np.pi * 1e4
+
+    _, reference = ddd_cramer(system.A, system.b, indices=[0])
+    for _ in range(3):
+        perm = list(rng.permutation(system.A.rows))
+        ## Permuting relabels the unknowns, so compare the determinant, which is
+        ## what each numerator is.
+        assert ddd_of_matrix(_permute(system.A, perm)).size <= \
+            ddd_of_matrix(system.A, order='min-degree').size * 4
+
+
+def test_family_cofactors_stay_addressed_by_original_index():
+    """Why `DDDFamily` deliberately keeps ``min-degree``.
+
+    Its results are addressed by *original* row and column, so the band
+    reordering ``auto`` performs would silently relabel them.  This pins the
+    contract that makes that a real constraint rather than an oversight.
+    """
+    system = bc.rc_ladder(4)
+    family, _ = ddd_cofactor_solve(system.A, system.b, indices=[0])
+    for k in range(system.dim):
+        for i in range(system.dim):
+            minor = system.A.copy()
+            minor.row_del(k)
+            minor.col_del(i)
+            assert sympy.simplify(family.cofactor(k, i).eval() - minor.det()) == 0
+
+
+def test_dominant_terms_work_on_bare_symbol_payloads():
+    """Exercises the ``_resolve`` fast path in the term enumerator.
+
+    ``_entry_values`` had its own substitution until the review, so payloads
+    that are bare symbols -- which is what a dense symbolic matrix is made of --
+    took the slow path.
+    """
+    system = bc.dense_symbolic_matrix(5)
+    env = dict(system.params)
+    D = ddd_of_matrix(system.A)
+
+    total = sum(v[0] for _, v in D.iter_terms(env))
+    assert abs(total - complex(D.eval(env))) <= 1e-9 * abs(complex(D.eval(env)))
+
+
+def test_solution_poles_can_ask_for_extended_precision():
+    """H6's remedy must be reachable from the toolkit path, not only from
+    ``SExpandedDDD`` directly."""
+    from pycircuit.circuit.dddresult import DDDSolution
+
+    system = bc.rc_ladder_semi_symbolic(14, n_symbolic=0)
+    solution = DDDSolution(system.A, system.b, system.s,
+                           irefnode=system.A.rows)
+    plain = np.sort_complex(solution.poles(numeric=True))
+    exact = np.sort_complex(solution.poles(numeric=True, precision='auto'))
+
+    assert len(plain) == len(exact)
+    assert np.max(np.abs(plain - exact)) < 1e-6 * np.max(np.abs(exact))
+
+
+def test_noise_psd_is_unchanged_by_the_shared_evaluation():
+    """The guard-then-evaluate rewrite must not alter the answer."""
+    from pycircuit.circuit.toolkit import ddd_toolkit, symbolic_poly
+
+    s = sympy.Symbol('s', imaginary=True)
+    R1, R2, C1, kT = sympy.symbols('R1 R2 C1 kT', positive=True)
+    Y = sympy.Matrix([[1 / R1 + 1 / R2 + s * C1, -1 / R2], [-1 / R2, 1 / R2]])
+    u = sympy.Matrix([0, 1])
+    CY = sympy.Matrix([[4 * kT / R1, 0], [0, 4 * kT / R2]])
+
+    _, reference = symbolic_poly.noise_psd(Y, u, CY, s)
+    _, got = ddd_toolkit.noise_psd(Y, u, CY, s)
+    assert sympy.simplify(sympy.cancel(got - reference)) == 0
