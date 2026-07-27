@@ -219,8 +219,19 @@ class Tanh(ScalarFunction):
     
     # Derivate
     def fprime(self,x):
-        return 0
-        return (1-self.toolkit.power(self.toolkit.tanh((x-self.offset)/self.level),2))/self.level
+        ## d/dx tanh(u) = 1 - tanh(u)**2, with u = (x-offset)/level.
+        ##
+        ## This body was unreachable behind a `return 0` from 2009 until 2026,
+        ## so VCVS_limited's Jacobian carried no input-to-output coupling at all
+        ## and Newton had to converge without it.  The shadowing was not
+        ## careless: the expression called `toolkit.power`, which no backend
+        ## has ever provided, so unshadowing it alone raises AttributeError.
+        ##
+        ## `**` is used instead of a `power` primitive because numpy arrays,
+        ## sympy expressions and JAX arrays all implement it -- adding the
+        ## primitive would have meant adding it to every backend to get the
+        ## same result.  Reach for an operator before a primitive.
+        return (1 - self.toolkit.tanh((x-self.offset)/self.level)**2)/self.level
 
     # Integral
     def F(self,x):
