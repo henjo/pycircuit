@@ -24,7 +24,7 @@ import sympy
 
 from pycircuit.circuit import benchmark_circuits as bc
 from pycircuit.circuit.ddd import (DDDSizeError, ONE, ZERO, ddd_cramer,
-                                   ddd_of_matrix)
+                                   ddd_of_matrix, s_expand)
 
 
 def _full_matrix(n):
@@ -236,3 +236,131 @@ def test_ladder_diagram_stays_small(N):
     """
     D = ddd_of_matrix(bc.rc_ladder(N).A)
     assert D.size < 8 * N
+
+
+## -- s-expanded (multiroot) form -----------------------------------------
+
+def test_s_expansion_coefficients_are_exact():
+    """Coefficients must equal ``Poly(det, s)`` term for term."""
+    s, g, c = sympy.symbols('s g c')
+    A = sympy.Matrix([[g + s * c, -g], [-g, g + s * c]])
+    E = s_expand(A, s)
+    ref = list(reversed(sympy.Poly(sympy.expand(A.det()), s).all_coeffs()))
+    got = E.eval_coeffs()
+    assert len(got) == len(ref)
+    for a, b in zip(got, ref):
+        assert sympy.simplify(a - b) == 0
+
+
+@pytest.mark.parametrize('N', [2, 3, 4])
+def test_s_expansion_matches_sympy_on_a_real_circuit(N):
+    system = bc.rc_ladder(N)
+    E = s_expand(system.A, system.s)
+    ref = list(reversed(sympy.Poly(sympy.expand(system.A.det()),
+                                   system.s).all_coeffs()))
+    got = E.eval_coeffs()
+    assert len(got) == len(ref)
+    for a, b in zip(got, ref):
+        assert sympy.simplify(a - b) == 0
+
+
+@pytest.mark.parametrize('N', [3, 5])
+def test_s_expansion_agrees_with_symbolic_poly(N):
+    """Same determinant as the fraction-free solver, up to an overall sign.
+
+    ``symbolic_poly`` fixes its own sign convention during elimination, so the
+    two agree up to a constant -- which is what a transfer function cancels.
+    """
+    from pycircuit.circuit.toolkit import symbolic_poly
+
+    system = bc.rc_ladder(N)
+    _, den = symbolic_poly.linearsolver_num_den(system.A, system.b)
+    E = s_expand(system.A, system.s)
+    det = sum(c * system.s ** k for k, c in enumerate(E.eval_coeffs()))
+    ratio = sympy.simplify(sympy.cancel(det / den))
+    assert not ratio.free_symbols            # a constant, not a function
+    assert abs(abs(complex(ratio)) - 1.0) < 1e-12
+
+
+@pytest.mark.parametrize('N', [4, 8, 12, 16])
+def test_s_expansion_respects_the_theorem_1_bound(N):
+    """Size must stay within ``q * d * |DDD|`` (Shi & Tan, TCAD 2001, Thm 1).
+
+    ``q`` is the degree in ``s`` and ``d`` the maximum devices at a node, which
+    is at most 2 for an MNA matrix in the compact-symbol form.  The point of the
+    theorem is that s-expansion costs a *modest factor* over the plain
+    determinant diagram, not another exponential.
+    """
+    system = bc.rc_ladder(N)
+    D = ddd_of_matrix(system.A)
+    E = s_expand(system.A, system.s)
+    assert E.size <= E.degree * 2 * D.size
+
+
+def test_s_expansion_shares_between_coefficients():
+    """The union must be smaller than the coefficients taken separately."""
+    system = bc.rc_ladder(8)
+    E = s_expand(system.A, system.s)
+    separate = sum(E.coefficient(k).size for k in range(E.degree + 1))
+    assert E.size < separate
+
+
+def test_s_expansion_degree_and_trimming():
+    s, g, c = sympy.symbols('s g c')
+    ## Purely resistive: no powers of s at all.
+    A = sympy.Matrix([[g, -g], [-g, 2 * g]])
+    assert s_expand(A, s).degree == 0
+    ## One capacitor per node: degree 2.
+    B = sympy.Matrix([[g + s * c, -g], [-g, g + s * c]])
+    assert s_expand(B, s).degree == 2
+
+
+def test_s_expansion_rejects_non_polynomial_entries():
+    s, g, l = sympy.symbols('s g l')
+    A = sympy.Matrix([[g + 1 / (s * l), -g], [-g, g]])
+    with pytest.raises(ValueError, match='polynomial'):
+        s_expand(A, s)
+
+
+def test_roots_of_requires_numeric_coefficients():
+    s, g, c = sympy.symbols('s g c')
+    A = sympy.Matrix([[g + s * c, -g], [-g, g + s * c]])
+    with pytest.raises(ValueError, match='symbolic'):
+        s_expand(A, s).roots_of()
+
+
+@pytest.mark.parametrize('N,tol', [(4, 1e-12), (8, 1e-11), (12, 1e-10)])
+def test_poles_match_a_generalized_eigenvalue_solve(N, tol):
+    """Pole *accuracy*, not merely coefficient agreement.
+
+    Coefficients can be exactly right and the poles still wrong, because
+    root-finding from an expanded polynomial is ill-conditioned.  The reference
+    is the generalized eigenproblem ``G x = -s C x``, which never forms the
+    polynomial and so is not subject to the same error.
+    """
+    import scipy.linalg as la
+
+    system = bc.rc_ladder(N)
+    env = dict(system.params)
+    got = np.sort_complex(s_expand(system.A, system.s).roots_of(env))
+
+    n = system.dim
+    G = np.array([[complex(system.A[i, j].subs({**env, system.s: 0}))
+                   for j in range(n)] for i in range(n)])
+    C = np.array([[complex(sympy.diff(system.A[i, j], system.s).subs(env))
+                   for j in range(n)] for i in range(n)])
+    ref = np.sort_complex(np.array(
+        [e for e in la.eig(G, -C, right=False) if np.isfinite(e)]))
+
+    assert len(got) == len(ref)
+    assert np.max(np.abs(got - ref) / np.abs(ref)) < tol
+
+
+def test_mfb_s_expansion_is_second_order():
+    """The multiple-feedback filter is a two-pole section."""
+    system = bc.mfb_filter()
+    E = s_expand(system.A, system.s)
+    assert E.degree == 2
+    poles = E.roots_of(dict(system.params))
+    assert len(poles) == 2
+    assert all(p.real < 0 for p in poles)          # stable

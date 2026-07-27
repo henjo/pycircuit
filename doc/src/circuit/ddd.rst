@@ -10,9 +10,9 @@ Determinant Decision Diagrams (DDD) for symbolic circuit analysis
    cannot drift from what is actually implemented — if the code changes
    incompatibly, this page changes with it or the build fails.
 
-   Implemented so far: the measurement harness (Stage B) and the layered
-   determinant construction with Cramer solving (Stage P0). The s-expanded
-   multiroot form is next.
+   Implemented so far: the measurement harness (Stage B), the layered
+   determinant construction with Cramer solving (Stage P0), and the s-expanded
+   multiroot form (Stage P1).
 
 Why this exists
 ===============
@@ -354,5 +354,128 @@ own child process.
 
 .. rubric:: Next sections
 
-Next: the s-expanded (multiroot) form, where each root is the coefficient of one
-power of ``s``, giving poles and zeros without ever expanding the determinant.
+Next: a ``DDDResult`` and toolkit integration, so ``AC(cir, toolkit=ddd_toolkit)``
+reaches all of this through the ordinary analysis path.
+
+.. _ddd-s-expanded:
+
+The s-expanded (multiroot) form
+===============================
+
+A determinant is not what a designer wants; a network function as a rational
+polynomial in ``s`` is, because that is what yields poles, zeros and
+interpretable coefficients. Writing ``det(A)`` out as ``d0 + d1·s + d2·s² + …``
+term by term is hopeless — the count of s-expanded product terms dwarfs even the
+determinant's own — but the **coefficients can stay diagrams**.
+
+That is Shi & Tan's multiroot DDD (TCAD 2001): one root per power of ``s``, with
+the roots sharing subgraphs. It falls out of the same construction by widening
+the memo key from ``(rows, cols)`` to ``(rows, cols, power)`` and splitting each
+entry ``g + s·c`` into its powers, so a vertex carries one coefficient of one
+entry:
+
+.. math::
+
+    \mathrm{coeff}_k(M) = \sum_{\text{terms}} \pm \sum_d e_d \cdot
+                          \mathrm{coeff}_{k-d}(\text{sub-minor})
+
+Because the sub-minor-and-power pairs recur across different coefficients, the
+whole family costs far less than the coefficients built separately:
+
+.. exec-rst::
+
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.ddd import ddd_of_matrix, s_expand
+
+    print(".. list-table:: s-expansion cost, fully symbolic RC ladder")
+    print("   :header-rows: 1")
+    print("   :widths: 6 8 10 12 12 14 12")
+    print("")
+    print("   * - N")
+    print("     - dim")
+    print("     - degree q")
+    print("     - ``|DDD|``")
+    print("     - s-expanded")
+    print("     - if unshared")
+    print("     - vs q·d·\\|DDD\\|")
+    for N in (4, 8, 12, 16, 20):
+        system = bc.rc_ladder(N)
+        D = ddd_of_matrix(system.A)
+        E = s_expand(system.A, system.s)
+        unshared = sum(E.coefficient(k).size for k in range(E.degree + 1))
+        bound = E.degree * 2 * D.size
+        print("   * - %d" % N)
+        print("     - %d" % system.dim)
+        print("     - %d" % E.degree)
+        print("     - %d" % D.size)
+        print("     - %d" % E.size)
+        print("     - %d" % unshared)
+        print("     - %d (%s)" % (bound, 'within' if E.size <= bound else 'OVER'))
+
+The last column is Theorem 1 of that paper: the s-expanded diagram is bounded by
+``q·d·|DDD|``, where ``q`` is the degree and ``d`` the maximum number of devices
+at a node (at most 2 for an MNA matrix in compact-symbol form). The significance
+is that s-expansion costs a *modest factor* over the plain determinant — not
+another exponential — and the measurements stay comfortably inside it.
+
+Poles, and an honest limit
+--------------------------
+
+With numeric component values the coefficients evaluate to numbers, and the poles
+are the roots of the denominator polynomial. Correct coefficients are **not**
+sufficient for correct poles, though: root-finding from an expanded polynomial is
+ill-conditioned when the coefficients span many orders of magnitude, which for a
+circuit they emphatically do. The table below measures both, against a
+generalized eigenvalue solve of ``G x = -s C x`` that never forms the polynomial
+and so is not subject to the same error:
+
+.. exec-rst::
+
+    import numpy as np
+    import scipy.linalg as la
+    import sympy
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.ddd import s_expand
+
+    print(".. list-table:: Pole accuracy vs a generalized eigenvalue solve")
+    print("   :header-rows: 1")
+    print("   :widths: 8 10 20 22")
+    print("")
+    print("   * - N")
+    print("     - poles")
+    print("     - coefficient range")
+    print("     - max relative error")
+    for N in (4, 8, 12, 16, 20):
+        system = bc.rc_ladder(N)
+        env = dict(system.params)
+        E = s_expand(system.A, system.s)
+        mags = [abs(complex(c)) for c in E.eval_coeffs(env)]
+        mags = [m for m in mags if m > 0]
+        got = np.sort_complex(E.roots_of(env))
+
+        n = system.dim
+        G = np.array([[complex(system.A[i, j].subs({**env, system.s: 0}))
+                       for j in range(n)] for i in range(n)])
+        C = np.array([[complex(sympy.diff(system.A[i, j], system.s).subs(env))
+                       for j in range(n)] for i in range(n)])
+        ref = np.sort_complex(np.array(
+            [e for e in la.eig(G, -C, right=False) if np.isfinite(e)]))
+        err = np.max(np.abs(got - ref) / np.abs(ref))
+
+        print("   * - %d" % N)
+        print("     - %d" % len(got))
+        print("     - %.1e" % (max(mags) / min(mags)))
+        print("     - %.2e" % err)
+
+Read the middle column: the coefficients span tens of orders of magnitude, and
+grow worse with circuit size. The accuracy column degrades accordingly — roughly
+a decade of precision lost per four ladder sections. It is excellent for moderate
+circuits and it is *not* something to rely on unexamined for large ones.
+
+This is a property of the **polynomial form**, not of the diagram: any method
+that expands to coefficients and then finds roots inherits it. Two mitigations,
+neither yet applied here: frequency and impedance scaling to bring coefficients
+towards ``O(1)`` (which is what rescued the GiNaC backend from a related
+blow-up), and — for the interpretable answer a designer actually wants —
+extracting *dominant* poles as ratios of consecutive coefficients rather than
+root-finding on the whole polynomial.

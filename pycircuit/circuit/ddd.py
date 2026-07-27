@@ -42,8 +42,8 @@ See ``doc/src/circuit/ddd.rst`` for worked examples and rendered diagrams, and
 import sympy
 
 
-__all__ = ['DDD', 'DDDVertex', 'ONE', 'ZERO', 'ddd_of_matrix', 'ddd_cramer',
-           'DDDSizeError']
+__all__ = ['DDD', 'DDDVertex', 'SExpandedDDD', 'ONE', 'ZERO',
+           'ddd_of_matrix', 'ddd_cramer', 's_expand', 'DDDSizeError']
 
 
 class DDDSizeError(Exception):
@@ -164,15 +164,19 @@ class DDD:
         """
         env = env or {}
         values = {}
-        for (i, j) in self.entries():
-            e = self.matrix[i, j]
-            if getattr(e, 'free_symbols', None):
-                e = e.subs(env)
-            try:
-                values[(i, j)] = complex(e)
-            except (TypeError, ValueError):
-                values[(i, j)] = e                       # still symbolic
-
+        for v in self.vertices():
+            ## Payloads are shared objects (a matrix cell, or one s-coefficient
+            ## of it), so identity is a sound cache key and avoids re-substituting
+            ## the same expression once per vertex that references it.
+            key = id(v.entry)
+            if key not in values:
+                e = v.entry
+                if getattr(e, 'free_symbols', None):
+                    e = e.subs(env)
+                try:
+                    values[key] = complex(e)
+                except (TypeError, ValueError):
+                    values[key] = e                      # still symbolic
         memo = {id(ONE): 1, id(ZERO): 0}
 
         ## Iterative post-order.  Depth is bounded by the matrix dimension, but
@@ -187,7 +191,7 @@ class DDD:
                 stack.append((node.one_edge, False))
                 stack.append((node.zero_edge, False))
                 continue
-            memo[id(node)] = (node.sign * values[(node.row, node.col)]
+            memo[id(node)] = (node.sign * values[id(node.entry)]
                               * memo[id(node.one_edge)]
                               + memo[id(node.zero_edge)])
         return memo[id(self.root)]
@@ -418,3 +422,254 @@ def ddd_cramer(A, b, indices=None, order='min-degree'):
         Ai[:, i] = bcol
         numerators[i] = ddd_of_matrix(Ai, order=order)
     return denominator, numerators
+
+
+## ------------------------------------------------- s-expanded (multiroot) --
+
+class SExpandedDDD:
+    """The determinant split by powers of the frequency variable.
+
+    A network function is wanted as a rational polynomial in ``s``,
+    ``N(s)/D(s)``, because that is what yields poles, zeros and interpretable
+    coefficients.  Expanding a symbolic determinant into that form term by term
+    is hopeless -- the count of ``s``-expanded product terms dwarfs even the
+    determinant's own -- but the *coefficients* can be kept as diagrams.
+
+    This is Shi & Tan's multiroot DDD (TCAD 2001): one root per power of ``s``,
+    with the roots sharing subgraphs.  Sharing works because the memo key is
+    ``(rows, cols, power)``, so any minor-and-power pair reached from several
+    coefficients is built once.
+
+    Attributes:
+        roots: One graph per power of ``s``; ``roots[k]`` is the coefficient of
+            ``s**k``.  Trailing zero coefficients are trimmed.
+        matrix, s, order: Provenance.
+        n_minors: Size of the sharing table.
+    """
+
+    def __init__(self, roots, matrix, s, order, n_minors):
+        self.roots = roots
+        self.matrix = matrix
+        self.s = s
+        self.order = order
+        self.n_minors = n_minors
+        self._size = None
+
+    @property
+    def degree(self):
+        """Degree in ``s`` (``-1`` for an identically zero determinant)."""
+        return len(self.roots) - 1
+
+    def coefficient(self, k):
+        """The coefficient of ``s**k`` as a `DDD`."""
+        if not 0 <= k < len(self.roots):
+            return DDD(ZERO, self.matrix, self.order, 0)
+        return DDD(self.roots[k], self.matrix, self.order, self.n_minors)
+
+    @property
+    def size(self):
+        """Distinct vertices across *all* coefficients, counting sharing once.
+
+        Summing ``coefficient(k).size`` would double-count every shared vertex,
+        which is the whole point of the representation, so it is counted over the
+        union instead.
+        """
+        if self._size is None:
+            seen, stack = set(), list(self.roots)
+            while stack:
+                v = stack.pop()
+                if v.is_terminal or id(v) in seen:
+                    continue
+                seen.add(id(v))
+                stack.append(v.one_edge)
+                stack.append(v.zero_edge)
+            self._size = len(seen)
+        return self._size
+
+    def eval_coeffs(self, env=None):
+        """Evaluate every coefficient, lowest power of ``s`` first."""
+        return [self.coefficient(k).eval(env) for k in range(len(self.roots))]
+
+    def roots_of(self, env=None):
+        """Numeric roots of the polynomial, i.e. the poles of ``1/det``.
+
+        Args:
+            env: Substitution grounding every symbol other than ``s``.
+
+        Returns:
+            ``numpy`` array of complex roots.
+
+        Raises:
+            ValueError: If any coefficient is still symbolic after ``env``.
+
+        Note:
+            Root-finding from *expanded* coefficients is ill-conditioned when
+            they span many orders of magnitude, which they routinely do for a
+            circuit -- this is a property of the polynomial form, not of the
+            diagram.  Where a factored form is available it will be better
+            behaved; see ``doc/ddd_conclusions.md`` §8.6.
+        """
+        import numpy as np
+
+        coeffs = self.eval_coeffs(env)
+        bad = [c for c in coeffs if getattr(c, 'free_symbols', None)]
+        if bad:
+            raise ValueError('coefficients still symbolic; substitute values '
+                             'for %s first' % bad[0].free_symbols)
+        ## numpy.roots wants highest power first.
+        return np.roots([complex(c) for c in reversed(coeffs)])
+
+    def __repr__(self):
+        return '<SExpandedDDD degree=%d size=%d order=%s>' % (
+            self.degree, self.size, self.order)
+
+
+class _SBuilder(_Builder):
+    """Builds coefficient diagrams, memoised on ``(rows, cols, power)``.
+
+    The recurrence is the ordinary Laplace expansion with the entry split into
+    its powers of ``s``.  With ``entry = e0 + e1*s + ...``, the coefficient of
+    ``s**k`` in a minor's determinant is::
+
+        coeff_k(M) = sum_terms sign * sum_d  e_d * coeff_(k-d)(sub-minor)
+
+    so one vertex is emitted per ``(entry, power)`` pair rather than per entry.
+    """
+
+    def __init__(self, matrix, s, order='min-degree'):
+        super().__init__(matrix, order)
+        self.s = s
+        self._coeffs = {}
+
+    def entry_coeffs(self, i, j):
+        """Coefficients of ``matrix[i, j]`` in ``s``, lowest power first."""
+        key = (i, j)
+        hit = self._coeffs.get(key)
+        if hit is None:
+            e = sympy.expand(self.M[i, j])
+            if e.has(self.s):
+                try:
+                    poly = sympy.Poly(e, self.s)
+                except sympy.PolynomialError as exc:
+                    ## A 1/s entry -- an inductor stamped in admittance form,
+                    ## typically.  The coefficient split is only defined for
+                    ## polynomial entries, so say so plainly rather than letting
+                    ## sympy's error surface.
+                    raise ValueError(
+                        'entry (%d,%d) = %s is not polynomial in %s, so it has '
+                        'no s-power expansion (%s)' % (i, j, e, self.s, exc))
+                hit = list(reversed(poly.all_coeffs()))
+            else:
+                hit = [e]
+            self._coeffs[key] = hit
+        return hit
+
+    def max_degree(self):
+        """Upper bound on the determinant's degree in ``s``.
+
+        Every product term takes one entry from each row, so the degree cannot
+        exceed the sum over rows of the highest degree in that row.
+        """
+        total = 0
+        for i in range(self.M.rows):
+            best = 0
+            for j in range(self.M.cols):
+                if self.nonzero(i, j):
+                    best = max(best, len(self.entry_coeffs(i, j)) - 1)
+            total += best
+        return total
+
+    def build_coeff(self, rows, cols, k):
+        """Diagram for the coefficient of ``s**k`` in ``det(M[rows, cols])``."""
+        if k < 0:
+            return ZERO
+        if not rows:
+            ## An empty minor has determinant 1 -- entirely in the s^0 term.
+            return ONE if k == 0 else ZERO
+
+        key = (rows, cols, k)
+        hit = self.cache.get(key)
+        if hit is not None:
+            return hit
+
+        pivot = self._select(rows, cols)
+        if pivot is None:
+            self.cache[key] = ZERO
+            return ZERO
+
+        kind, pos = pivot
+        if kind == 'row':
+            r = rows[pos]
+            terms = [(pos, q, r, cols[q]) for q in range(len(cols))
+                     if self.nonzero(r, cols[q])]
+        else:
+            c = cols[pos]
+            terms = [(p, pos, rows[p], c) for p in range(len(rows))
+                     if self.nonzero(rows[p], c)]
+
+        ## Emit one vertex per (entry, power-of-s) pair, back to front so each
+        ## 0-edge chains to the next alternative.
+        node = ZERO
+        for (p, q, i, j) in reversed(terms):
+            sub_rows = tuple(x for x in rows if x != i)
+            sub_cols = tuple(x for x in cols if x != j)
+            sign = -1 if (p + q) % 2 else 1
+            coeffs = self.entry_coeffs(i, j)
+            for d in reversed(range(len(coeffs))):
+                if coeffs[d] == 0 or d > k:
+                    continue
+                child = self.build_coeff(sub_rows, sub_cols, k - d)
+                if child is ZERO:
+                    continue                     # contributes nothing; skip it
+                node = DDDVertex(i, j, coeffs[d], sign, child, node)
+
+        self.cache[key] = node
+        return node
+
+
+def s_expand(A, s, order='min-degree'):
+    """Split ``det(A)`` into coefficients of powers of ``s``, as shared diagrams.
+
+    Args:
+        A: Square sympy ``Matrix`` whose entries are polynomial in ``s`` (an MNA
+            matrix ``G + s*C`` is degree 1 in every entry).
+        s: The frequency symbol.
+        order: Expansion ordering, as for :func:`ddd_of_matrix`.
+
+    Returns:
+        SExpandedDDD: one root per power of ``s``, sharing subgraphs.
+
+    Raises:
+        ValueError: If ``A`` is not square, or an entry is not polynomial in
+            ``s`` (a ``1/s`` entry, say) -- the coefficient split is only defined
+            for polynomial entries.
+
+    Example:
+        >>> import sympy
+        >>> s, g, c = sympy.symbols('s g c')
+        >>> A = sympy.Matrix([[g + s*c, -g], [-g, g + s*c]])
+        >>> E = s_expand(A, s)
+        >>> E.degree
+        2
+        >>> sympy.simplify(E.coefficient(2).eval() - c**2) == 0
+        True
+    """
+    A = sympy.Matrix(A)
+    if A.rows != A.cols:
+        raise ValueError('DDD needs a square matrix, got %dx%d' % (A.rows, A.cols))
+
+    builder = _SBuilder(A, s, order)
+    ## Validate every entry up front: a clear error before any work beats one
+    ## surfacing halfway through a build.
+    for i in range(A.rows):
+        for j in range(A.cols):
+            if builder.nonzero(i, j):
+                builder.entry_coeffs(i, j)
+
+    rows = tuple(range(A.rows))
+    cols = tuple(range(A.cols))
+    roots = [builder.build_coeff(rows, cols, k)
+             for k in range(builder.max_degree() + 1)]
+    while roots and roots[-1] is ZERO:            # trim trailing zero powers
+        roots.pop()
+    return SExpandedDDD(roots, A, s, order, len(builder.cache))
