@@ -172,10 +172,37 @@ def run_ginac(system):
                 value=value)
 
 
+def run_ddd(system):
+    """Determinant decision diagram: shared graph, never expanded."""
+    from pycircuit.circuit.ddd import ddd_cramer
+    import sympy as _sp
+
+    out, inp = system.out_index, system.in_index
+    t0 = time.perf_counter()
+    den, nums = ddd_cramer(system.A, system.b, indices=[out, inp])
+    build_s = time.perf_counter() - t0
+
+    ## The transfer function is a ratio of two numerator diagrams -- the shared
+    ## determinant cancels -- so the denominator is not part of the cost of an
+    ## x_out/x_in query.  Report what the query actually needs.
+    graphs = [nums[out]] if out == inp else [nums[out], nums[inp]]
+    size = sum(g.size for g in graphs)
+    payload = int(sum(_sp.count_ops(g.matrix[i, j])
+                      for g in graphs for (i, j) in g.entries()))
+
+    env = _sub_env(system)
+    t0 = time.perf_counter()
+    value = complex(nums[out].eval(env)) / complex(nums[inp].eval(env))
+    eval_s = time.perf_counter() - t0
+    return dict(size=size, payload=payload, build_s=build_s, eval_s=eval_s,
+                value=value, den_size=den.size)
+
+
 BACKENDS = {
     'symbolic_poly': run_symbolic_poly,
     'soe': run_soe,
     'ginac': run_ginac,
+    'ddd': run_ddd,
 }
 
 
