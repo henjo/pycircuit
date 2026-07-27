@@ -549,9 +549,13 @@ class DDDToolkit(SymbolicPolyToolkit):
                     % (what, n, self.ddd_max_terms))
             return obj.eval()
 
+        ## Guard first, then evaluate.  Flattening each transimpedance with its
+        ## own call would re-walk the family once per unknown -- the same
+        ## quadratic re-walk that cost 200x in the reduced solve.
+        for i in range(Ym.rows):
+            flatten(nums[i], 'transimpedance %d' % i)
         D = flatten(family.denominator, 'the determinant')
-        N = sympy.Matrix([flatten(nums[i], 'transimpedance %d' % i)
-                          for i in range(Ym.rows)])
+        N = sympy.Matrix([nums[i].eval() for i in range(Ym.rows)])
         CYm = sympy.Matrix(np.asarray(CY).tolist())
         num = (N.T * CYm * N.applyfunc(sympy.conjugate))[0]
         den = D * sympy.conjugate(D)

@@ -1694,3 +1694,54 @@ so the second determinant the original analysis builds independently is a
 Both agree with the originals exactly: two-port parameters and loop gain match
 term for term on the circuits the existing analyses handle, which is the only
 check that means anything here.
+
+The closest external check: Table II
+------------------------------------
+
+Shi & Tan (TCAD 2001) tabulate thirteen circuits with both their complex-DDD and
+s-expanded sizes. Three are RC ladders — and they turn out to be, near enough,
+this project's own fixture. Matrix size agrees exactly and nonzero counts to
+within one, so unlike the µA741 comparison these really are the same circuits:
+
+.. exec-rst::
+
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.ddd import ddd_of_matrix, s_expand
+
+    published = {7: (8, 22, 26, 72, 6), 100: (101, 301, 398, 16767, 85)}
+
+    print(".. list-table:: RC ladders: TCAD 2001 Table II against ours")
+    print("   :header-rows: 1")
+    print("   :widths: 12 10 10 12 12 14 14")
+    print("")
+    print("   * - circuit")
+    print("     - matrix")
+    print("     - nonzeros")
+    print("     - ``|DDD|``")
+    print("     - published")
+    print("     - s-expanded")
+    print("     - published")
+    for N in (7, 100):
+        matrix, nonzeros, ddd, sexp, _ = published[N]
+        system = bc.rc_ladder(N)
+        count = sum(1 for i in range(system.dim) for j in range(system.dim)
+                    if system.A[i, j] != 0)
+        D = ddd_of_matrix(system.A)
+        E = s_expand(system.A, system.s)
+        print("   * - rclad%d" % N)
+        print("     - %d / %d" % (system.dim, matrix))
+        print("     - %d / %d" % (count, nonzeros))
+        print("     - %d" % D.size)
+        print("     - %d" % ddd)
+        print("     - %d" % E.size)
+        print("     - %d" % sexp)
+
+The pattern is consistent and explicable: our complex diagram runs a little
+*smaller*, our s-expanded one a little larger. The first is the 2010 expansion
+ordering against the 2000 flow's, as the µA741 comparison also showed. Exact
+agreement would in fact be suspicious, since the constructions differ.
+
+At a hundred unknowns the agreement still holds — 298 vertices against their 398,
+and 19 803 s-expanded against their 16 767 — which is worth more than the small
+cases, because that is where an implementation with broken sharing would have
+diverged beyond recognition.

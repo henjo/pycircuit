@@ -145,7 +145,7 @@ class DDDSolution(ACSolution):
     def transfer_function(self, numerator):
         return TransferFunction(numerator, self.denominator(), self.s)
 
-    def poles(self, numeric=False):
+    def poles(self, numeric=False, precision=None):
         """Circuit poles -- roots of the determinant.
 
         With ``numeric=True`` this uses the **graph path**: the s-expanded
@@ -156,15 +156,23 @@ class DDDSolution(ACSolution):
         With ``numeric=False`` a symbolic polynomial has to be formed, which
         expands and is therefore guarded.
 
+        Args:
+            numeric: Use the graph path and ``numpy``/``mpmath`` roots.
+            precision: Passed through to
+                :meth:`~pycircuit.circuit.ddd.SExpandedDDD.roots_of` -- an
+                integer or ``'auto'`` works in extended precision, which is the
+                remedy for the conditioning noted below.  Without this the fix
+                would be unreachable from the toolkit path.
+
         Note:
             Root-finding from expanded coefficients is ill-conditioned when they
             span many orders of magnitude, as they do for any sizeable circuit --
-            a property of the polynomial form, not of the diagram.  See
-            ``doc/src/circuit/ddd.rst``.
+            a property of the polynomial form, not of the diagram, and one that
+            rescaling does not address.  See ``doc/src/circuit/ddd.rst``.
         """
         expanded = self.s_expanded()
         if numeric:
-            return expanded.roots_of()
+            return expanded.roots_of(precision=precision)
 
         coeffs = expanded.eval_coeffs()
         total = sum(expanded.coefficient(k).term_count()

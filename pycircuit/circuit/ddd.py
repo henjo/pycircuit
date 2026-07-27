@@ -357,11 +357,11 @@ class DDD:
         for v in self.vertices():
             key = id(v.entry)
             if key not in values:
-                e = v.entry
-                if getattr(e, 'free_symbols', None):
-                    e = e.subs(env)
+                ## Same fast path as everywhere else: a bare symbol resolves by
+                ## dict lookup rather than by sympy substitution.
+                resolved = _resolve(v.entry, env)
                 try:
-                    values[key] = complex(e)
+                    values[key] = complex(resolved)
                 except (TypeError, ValueError):
                     raise ValueError(
                         'entry %s is still symbolic after substitution; '
@@ -850,7 +850,7 @@ def _build_ddd(A, order, keep_symbolic, collapse_max_dim):
     return result
 
 
-def ddd_cramer(A, b, indices=None, order='min-degree'):
+def ddd_cramer(A, b, indices=None, order='auto'):
     """Solve ``A x = b`` by Cramer's rule, as diagrams.
 
     ``x_i = det(A_i) / det(A)``, where ``A_i`` is ``A`` with column ``i``
@@ -1192,7 +1192,7 @@ class _SBuilder(_Builder):
         return node
 
 
-def s_expand(A, s, order='min-degree'):
+def s_expand(A, s, order='auto'):
     """Split ``det(A)`` into coefficients of powers of ``s``, as shared diagrams.
 
     Args:
@@ -1223,6 +1223,21 @@ def s_expand(A, s, order='min-degree'):
     if A.rows != A.cols:
         raise ValueError('DDD needs a square matrix, got %dx%d' % (A.rows, A.cols))
 
+    if order == 'auto':
+        ## Safe here for the same reason it is safe for a determinant: a
+        ## symmetric permutation leaves every coefficient of ``s`` unchanged, and
+        ## the roots are addressed by power rather than by matrix index.
+        candidates = [_s_expand_with(A, s, 'min-degree')]
+        perm = reverse_cuthill_mckee(A)
+        if perm != list(range(A.rows)):
+            candidates.append(_s_expand_with(A.extract(perm, perm), s,
+                                             'min-degree'))
+        return min(candidates, key=lambda e: e.size)
+
+    return _s_expand_with(A, s, order)
+
+
+def _s_expand_with(A, s, order):
     builder = _SBuilder(A, s, order)
     ## Validate every entry up front: a clear error before any work beats one
     ## surfacing halfway through a build.
@@ -1328,6 +1343,12 @@ class DDDFamily:
         size: Distinct vertices across everything built, counting sharing once.
     """
 
+    ## Note the default is 'min-degree', not the 'auto' used elsewhere.  'auto'
+    ## works by band-reordering the matrix, and this class addresses its results
+    ## by *original* row and column -- ``cofactor(k, i)`` means the minor
+    ## deleting row k and column i -- so a permutation would silently relabel
+    ## them.  Ordering robustness would need the indices remapped throughout,
+    ## which is not worth the risk of getting wrong.
     def __init__(self, A, b, order='min-degree'):
         self.matrix = sympy.Matrix(A)
         if self.matrix.rows != self.matrix.cols:

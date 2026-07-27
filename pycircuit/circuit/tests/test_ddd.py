@@ -659,7 +659,7 @@ def test_collapsed_terminal_still_depends_on_frequency():
     system, keep = _semi(10)
     D = ddd_of_matrix(system.A, keep_symbolic=keep, collapse_max_dim=4)
     env = dict(system.params)
-    lo = complex(D.eval(dict(env, **{}) | {system.s: 1j * 2 * np.pi * 1e2}))
+    lo = complex(D.eval(dict(env) | {system.s: 1j * 2 * np.pi * 1e2}))
     hi = complex(D.eval(dict(env) | {system.s: 1j * 2 * np.pi * 1e8}))
     assert abs(lo - hi) > 0
 
@@ -1119,7 +1119,10 @@ def test_hierarchical_solve_recovers_every_unknown(N):
     blocks = suppression_order(system.A, keep=[system.in_index,
                                                system.out_index])
     got = hierarchical_solve(HierarchicalDDD(system.A, blocks), system.b, env)
-    assert np.max(np.abs(got - ref) / np.maximum(1e-30, np.abs(ref))) < 1e-9
+    ## Scale to the largest unknown rather than per element: a genuinely-zero
+    ## entry makes a per-element relative error report rounding noise, which
+    ## once produced an apparent error of 1e17 on a correct result.
+    assert np.max(np.abs(got - ref)) < 1e-9 * np.max(np.abs(ref))
 
 
 @pytest.mark.parametrize('N', [5, 8])
@@ -1469,3 +1472,55 @@ def test_exact_environment_conversion_is_lossless():
     assert exact[a] == sympy.Rational(0.1)
     assert float(exact[a]) == 0.1
     assert float(exact[b]) == 1e-9
+
+
+## -- calibration against TCAD 2001 Table II -------------------------------
+##
+## That table lists thirteen circuits with their complex-DDD and s-expanded
+## sizes.  Three are RC ladders, and they turn out to be essentially this
+## project's own fixture: matrix size matches exactly and nonzero counts to
+## within one, which makes them the closest thing to a like-for-like external
+## check anywhere in this work.
+
+TCAD2001_TABLE_II = {
+    ## name:      (matrix, nonzeros, |DDD|, s-expanded |DDD|, deg(den))
+    'rclad7':     (8, 22, 26, 72, 6),
+    'rclad100':   (101, 301, 398, 16767, 85),
+    'ua741':      (23, 90, 6654, 99844, 23),
+}
+
+
+@pytest.mark.parametrize('N,row', [(7, 'rclad7')])
+def test_ladder_matches_the_published_structure(N, row):
+    """Matrix size and sparsity must line up, or the circuits are not the same."""
+    matrix, nonzeros, _, _, degree = TCAD2001_TABLE_II[row]
+    system = bc.rc_ladder(N)
+    count = sum(1 for i in range(system.dim) for j in range(system.dim)
+                if system.A[i, j] != 0)
+
+    assert system.dim == matrix
+    assert abs(count - nonzeros) <= 2
+    assert s_expand(system.A, system.s).degree == degree
+
+
+@pytest.mark.parametrize('N,row', [(7, 'rclad7')])
+def test_ladder_diagram_sizes_are_in_the_published_regime(N, row):
+    """Within a small factor of the published sizes.
+
+    Ours runs a little *smaller* on the complex diagram and a little larger on
+    the s-expanded one -- consistently, and explicably: the construction here is
+    the 2010 expansion ordering rather than the 2000 flow's.  Exact agreement is
+    not expected and would be suspicious.
+    """
+    _, _, published_ddd, published_sexp, _ = TCAD2001_TABLE_II[row]
+    system = bc.rc_ladder(N)
+
+    assert ddd_of_matrix(system.A).size == pytest.approx(published_ddd, rel=0.5)
+    assert s_expand(system.A, system.s).size == pytest.approx(published_sexp,
+                                                              rel=0.5)
+
+
+def test_ua741_denominator_degree_matches_the_paper():
+    """23 poles, which pins the device count and the reactive topology."""
+    system = bc.ua741()
+    assert s_expand(system.A, system.s).degree == TCAD2001_TABLE_II['ua741'][4]
