@@ -748,3 +748,72 @@ def test_eval_roots_matches_individual_evaluation():
 
     assert abs(complex(shared[id(family.denominator.root)])
                - complex(family.denominator.eval(env))) < 1e-9
+
+
+## -- paper calibration: a 741-class amplifier ----------------------------
+
+def _opamp_env(system, freq=1e3):
+    env = dict(system.params)
+    env[system.s] = 1j * 2 * np.pi * freq
+    return env
+
+
+def test_opamp_is_a_real_circuit_that_solves():
+    """Sanity before calibration: it must behave like an amplifier."""
+    system = bc.opamp_741_like()
+    assert system.cir is not None
+    assert system.dim == 14
+
+    env = _opamp_env(system)
+    n = system.dim
+    A = np.array([[complex(system.A[i, j].subs(env)) for j in range(n)]
+                  for i in range(n)])
+    b = np.array([complex(system.b[i].subs(env)) for i in range(n)])
+    x = np.linalg.solve(A, b)
+    gain = abs(x[system.out_index] / x[system.in_index])
+    assert 1e3 < gain < 1e7          # a 741 is ~100 dB open loop
+
+
+def test_opamp_determinant_agrees_with_numpy():
+    system = bc.opamp_741_like()
+    env = _opamp_env(system)
+    n = system.dim
+    A = np.array([[complex(system.A[i, j].subs(env)) for j in range(n)]
+                  for i in range(n)])
+    got = complex(ddd_of_matrix(system.A).eval(env))
+    ref = np.linalg.det(A)
+    assert abs(got - ref) <= 1e-6 * abs(ref)
+
+
+def test_diagram_size_is_independent_of_how_many_symbols_there_are():
+    """The property that separates a diagram from an expression.
+
+    A DDD's shape is fixed by the matrix *sparsity pattern*; the symbols ride
+    along as payloads.  So making ten device parameters symbolic instead of one
+    changes nothing about its size -- where an expanded expression would grow
+    explosively.
+    """
+    sizes = set()
+    for devices in ((), ('q1', 'q2', 'q17'),
+                    ('q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q16', 'q17',
+                     'q23', 'q14')):
+        system = bc.opamp_741_like(symbolic_devices=devices)
+        sizes.add(ddd_of_matrix(system.A).size)
+    assert len(sizes) == 1
+
+
+def test_opamp_symbolic_devices_really_are_symbolic():
+    system = bc.opamp_741_like(symbolic_devices=('q1', 'q17'))
+    names = {str(sym) for sym in system.A.free_symbols}
+    assert 'gm_q1' in names and 'gm_q17' in names
+    assert 'gm_q2' not in names
+
+
+def test_hierarchy_agrees_on_the_opamp():
+    """Correct on a real amplifier, even though it saves little there."""
+    system = bc.opamp_741_like()
+    env = _opamp_env(system)
+    flat = complex(ddd_of_matrix(system.A).eval(env))
+    ## Suppress the input stage: e1, e2, c3, e5, e6.
+    hier = complex(HierarchicalDDD(system.A, (2, 3, 4, 6, 7)).eval(env))
+    assert abs(flat - hier) <= 1e-7 * abs(flat)

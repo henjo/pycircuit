@@ -914,9 +914,14 @@ The effect is that total size becomes a **sum over blocks instead of a product**
         print("     - %d" % hier.size)
         print("     - %.1f×" % (flat.size / hier.size))
 
-The ratio grows with circuit size, which is the point — this is the same effect
-behind Tan & Shi's 56× on a µA741 (TCAD 2000), where three levels of two-way
-partitioning reduced 6654 vertices to 117.
+The ratio grows with circuit size, which is the point.
+
+For scale, Tan & Shi (TCAD 2000) report 6654 vertices reduced to 117 — 56× — for
+a µA741 under three levels of two-way partitioning. That is *their* result on
+*their* circuit and formulation; the numbers above are a single half-split of a
+dense random matrix, so the two are not a like-for-like comparison and the
+mechanism being the same is an expectation rather than something demonstrated
+here. See :ref:`ddd-calibration` for a measurement on an actual amplifier.
 
 Note where it does **not** help. A ladder gains nothing: its flat diagram is
 already linear in the number of sections, so there is no exponential to break up,
@@ -930,3 +935,89 @@ overlap almost completely. Evaluating them one at a time re-walks that shared
 structure once per entry, which is quadratic in exactly the situation sharing
 exists to make cheap; :func:`~pycircuit.circuit.ddd.eval_roots` evaluates them all
 in a single pass instead. Building the ``n = 12`` case above takes ~0.07 s.
+
+.. _ddd-calibration:
+
+Calibration against the literature
+==================================
+
+Every number on this page so far is internally consistent — the diagram agrees
+with a flat determinant, with ``symbolic_poly``, with ``numpy``. That establishes
+correctness but not *competence*: a diagram whose sharing quietly failed would
+still be correct, merely enormous. Some external reference point is needed.
+
+Two are available, and they are worth distinguishing.
+
+**An exact one.** The ``n·2^(n-1)`` identity earlier on this page is a theorem,
+not a benchmark, and it is checked exactly for ``n`` = 1…7. It is what
+establishes that sharing works at all — and, importantly, it means a
+disappointing size result elsewhere is evidence about the *method* rather than
+about our implementation.
+
+**An approximate one.** :func:`~pycircuit.circuit.benchmark_circuits.opamp_741_like`
+is a µA741-class amplifier built from primitives pycircuit already had — a
+hybrid-π BJT is a `VCCS` plus two resistances and two capacitances — following
+the same signal path at comparable node count:
+
+.. exec-rst::
+
+    import numpy as np
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.ddd import ddd_of_matrix
+
+    devices = ('q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q16', 'q17', 'q23', 'q14')
+
+    print(".. list-table:: A 741-class amplifier, small-signal")
+    print("   :header-rows: 1")
+    print("   :widths: 22 10 12 14 16")
+    print("")
+    print("   * - symbolic devices")
+    print("     - dim")
+    print("     - free symbols")
+    print("     - vertices")
+    print("     - product terms")
+    for label, devs in (("none (numeric + s)", ()),
+                        ("3 transconductances", devices[:3]),
+                        ("all 10", devices)):
+        system = bc.opamp_741_like(symbolic_devices=devs)
+        D = ddd_of_matrix(system.A)
+        print("   * - %s" % label)
+        print("     - %d" % system.dim)
+        print("     - %d" % len(system.A.free_symbols))
+        print("     - %d" % D.size)
+        print("     - %d" % D.term_count())
+
+The striking column is the fourth: **the vertex count does not move**. Ten
+symbolic device parameters cost exactly what one does, because a diagram's shape
+is fixed by the matrix sparsity pattern and the symbols merely ride along as
+payloads. An expanded expression behaves in the opposite way entirely, and that
+difference is the whole reason for the representation.
+
+What this does and does not tell us
+-----------------------------------
+
+Tan & Shi (TCAD 2000) report 6654 vertices for a flat µA741, reduced to 117 by
+three-level two-way partitioning. Our amplifier gives 108 for the flat diagram.
+**This is not a reproduction of their result, and the gap should not be read as
+one.** Two known differences account for it before any question of
+implementation quality arises:
+
+* **size** — theirs is the full µA741, *26 transistors and 11 resistors*
+  (TCAD 2000 §VII); ours has ten transistors, so it is roughly a third of the
+  circuit.
+
+The symbol convention, at least, is *not* a difference: TCAD 2001 §VI states
+that they view "each nonzero entry in the MNA circuit matrix as a distinct
+symbol", which is the same compact-symbol choice made here. (An earlier draft of
+this page claimed otherwise and has been corrected.)
+
+So the honest statement is that our sizes are *plausible* for a circuit a third
+the size, and nothing stronger. The claim that carries weight is the
+exact identity, not this comparison — which is why the calibration is reported
+here with its caveats rather than quoted as agreement.
+
+One further honest note: hierarchy buys little on this amplifier (ratios of
+1.2–1.4), for the same reason it buys little on a ladder — the circuit is sparse,
+so the flat diagram is already small and there is no exponential to break up. The
+large hierarchical gains shown earlier are on dense blocks, and a real amplifier
+is not one.

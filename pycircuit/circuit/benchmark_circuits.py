@@ -21,7 +21,7 @@ needed to form a transfer function.
 import numpy as np
 import sympy
 
-from pycircuit.circuit import SubCircuit, R, C, VS, IS, Nullor, gnd
+from pycircuit.circuit import SubCircuit, R, C, VS, IS, VCCS, Nullor, gnd
 from pycircuit.circuit.toolkit import symbolic
 from pycircuit.circuit.analysis import remove_row_col
 from pycircuit.circuit.analysis_ss import dc_steady_state
@@ -235,3 +235,127 @@ def standard_suite():
     suite += [('mfb', mfb_filter())]
     suite += [('dense', dense_symbolic_matrix(n)) for n in range(3, 7)]
     return suite
+
+
+## ------------------------------------------------ paper calibration case --
+
+def add_small_signal_bjt(cir, name, b, c, e, gm, rpi, ro, cpi=None, cmu=None):
+    """Stamp a hybrid-pi small-signal BJT into ``cir``.
+
+    Built entirely from primitives pycircuit already has -- a transconductance
+    (`VCCS`), base and output resistances, and the two junction capacitances --
+    so no new element type is needed to model an amplifier symbolically.
+
+    Args:
+        cir: Circuit to add to.
+        name: Instance prefix for the stamped elements.
+        b, c, e: Base, collector and emitter nodes.
+        gm, rpi, ro: Transconductance, base-emitter and output resistance.
+        cpi, cmu: Optional junction capacitances; omit for a DC-only model.
+    """
+    cir[name + '_rpi'] = R(b, e, r=rpi)
+    cir[name + '_ro'] = R(c, e, r=ro)
+    cir[name + '_gm'] = VCCS(b, e, c, e, gm=gm)
+    if cpi is not None:
+        cir[name + '_cpi'] = C(b, e, c=cpi)
+    if cmu is not None:
+        cir[name + '_cmu'] = C(b, c, c=cmu)
+
+
+def opamp_741_like(symbolic_devices=(), miller=True):
+    """A µA741-class operational amplifier, small-signal.
+
+    **Not a bit-exact µA741 netlist.**  It follows the same signal path at
+    comparable node count -- differential input pair into common-base stages, a
+    degenerated current-mirror active load, an emitter-follower into a
+    Miller-compensated common-emitter gain stage, and a push-pull output -- so
+    that the diagram sizes it produces can be compared *in order of magnitude*
+    with published figures for a real µA741.
+
+    Those figures depend on the authors' own netlist, symbol convention and
+    partitioning, so exact agreement is not the expectation.  This is
+    calibration, not a target: landing within a small factor says the
+    implementation is sound, being orders out says it is not.  See
+    ``doc/ddd_conclusions.md``.
+
+    Args:
+        symbolic_devices: Names of devices whose ``gm`` stays a symbol.  Empty
+            gives an entirely numeric small-signal circuit (plus ``s``).
+        miller: Include the compensation capacitor.
+
+    Returns:
+        BenchSystem.
+    """
+    ## VCCS builds its stamp at construction time from ``default_toolkit``, not
+    ## from the parent's toolkit, so a symbolic ``gm`` needs the global set while
+    ## the circuit is assembled -- the same thing the symbolic analysis tests do.
+    import pycircuit.circuit.circuit as _circuit_module
+    _saved_toolkit = _circuit_module.default_toolkit
+    _circuit_module.default_toolkit = symbolic
+    try:
+        return _build_opamp_741_like(symbolic_devices, miller)
+    finally:
+        _circuit_module.default_toolkit = _saved_toolkit
+
+
+def _build_opamp_741_like(symbolic_devices, miller):
+    cir = SubCircuit(toolkit=symbolic)
+    names = ('inp', 'inn', 'e1', 'e2', 'c3', 'c4', 'e5', 'e6',
+             'e16', 'c17', 'e17', 'e23', 'out')
+    n = {name: cir.add_node(name) for name in names}
+
+    vin = sympy.Symbol('vin')
+    params = {vin: 1.0}
+    cir['vs'] = VS(n['inp'], gnd, vac=vin)
+    cir['rinn'] = R(n['inn'], gnd, r=1e3)
+
+    def gm_of(dev, nominal):
+        if dev in symbolic_devices:
+            sym = sympy.Symbol('gm_%s' % dev, positive=True)
+            params[sym] = nominal
+            return sym
+        return nominal
+
+    ## Input pair: emitter followers into common-base stages (the 741's cascode
+    ## input), sharing degenerated tails.
+    add_small_signal_bjt(cir, 'q1', n['inp'], gnd, n['e1'],
+                         gm_of('q1', 2e-3), 25e3, 1e6, 3e-12, 0.5e-12)
+    add_small_signal_bjt(cir, 'q2', n['inn'], gnd, n['e2'],
+                         gm_of('q2', 2e-3), 25e3, 1e6, 3e-12, 0.5e-12)
+    add_small_signal_bjt(cir, 'q3', gnd, n['c3'], n['e1'],
+                         gm_of('q3', 2e-3), 25e3, 1e6, 3e-12, 0.5e-12)
+    add_small_signal_bjt(cir, 'q4', gnd, n['c4'], n['e2'],
+                         gm_of('q4', 2e-3), 25e3, 1e6, 3e-12, 0.5e-12)
+    cir['rt1'] = R(n['e1'], gnd, r=500e3)
+    cir['rt2'] = R(n['e2'], gnd, r=500e3)
+
+    ## Degenerated current-mirror load: q5 diode-connected, q6 mirrors it.
+    add_small_signal_bjt(cir, 'q5', n['c3'], n['c3'], n['e5'],
+                         gm_of('q5', 2e-3), 25e3, 1e6, 3e-12, 0.5e-12)
+    add_small_signal_bjt(cir, 'q6', n['c3'], n['c4'], n['e6'],
+                         gm_of('q6', 2e-3), 25e3, 1e6, 3e-12, 0.5e-12)
+    cir['r5'] = R(n['e5'], gnd, r=1e3)
+    cir['r6'] = R(n['e6'], gnd, r=1e3)
+
+    ## Emitter follower into the Miller-compensated gain stage.
+    add_small_signal_bjt(cir, 'q16', n['c4'], gnd, n['e16'],
+                         gm_of('q16', 3e-3), 20e3, 500e3, 5e-12, 1e-12)
+    cir['r16'] = R(n['e16'], gnd, r=50e3)
+    add_small_signal_bjt(cir, 'q17', n['e16'], n['c17'], n['e17'],
+                         gm_of('q17', 5e-3), 10e3, 200e3, 10e-12, 1e-12)
+    cir['r17'] = R(n['e17'], gnd, r=100)
+    cir['rl17'] = R(n['c17'], gnd, r=100e3)
+    if miller:
+        cir['cc'] = C(n['e16'], n['c17'], c=30e-12)
+
+    ## Output: follower pair driving the load.
+    add_small_signal_bjt(cir, 'q23', n['c17'], gnd, n['e23'],
+                         gm_of('q23', 8e-3), 8e3, 100e3, 8e-12, 1e-12)
+    cir['r23'] = R(n['e23'], gnd, r=50e3)
+    add_small_signal_bjt(cir, 'q14', n['e23'], gnd, n['out'],
+                         gm_of('q14', 20e-3), 5e3, 50e3, 20e-12, 2e-12)
+    cir['rload'] = R(n['out'], gnd, r=2e3)
+
+    return system_from_circuit(cir, 'opamp_741_like', params,
+                               out_index=names.index('out'),
+                               in_index=names.index('inp'))
