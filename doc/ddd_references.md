@@ -70,6 +70,43 @@ IEEE TCAS-II 57(10), 2010, pp. 828–832.**
   measured vertex count against. It also settles the ordering question for the
   dense case (use row-wise) so we don't go hunting for a heuristic.
 
+## A3. Semi-symbolic (MTDDD) — the regime pycircuit is *actually* in
+
+**Pi & Shi, "Multi-Terminal Determinant Decision Diagrams: A New Approach to
+Semi-Symbolic Analysis of Analog Integrated Circuits," DAC 2000.** (Univ. of
+Washington)
+- (open) https://www.cs.york.ac.uk/rts/docs/SIGDA-Compendium-1994-2004/papers/2000/dac00/pdffiles/01_5.pdf
+- local: `~/pycircuit_agy/papers/ddd/dac2000_york.pdf`
+- Why: **the highest-value paper here after A2**, and the one that matches how
+  pycircuit is actually used: most parameters numeric, a few symbolic, plus `s`.
+  Two ideas, both of which land directly on code we already have:
+
+  1. **Multiple numeric terminals.** A DDD has only the `0` and `1` terminals; an
+     MTDDD adds terminals carrying arbitrary nonzero *numeric values*. Numeric
+     sub-products are therefore collapsed into a single terminal value **during
+     construction** instead of being carried symbolically. Result: far fewer
+     symbolic vertices, faster repeated numeric evaluation, and only the
+     parameters of interest survive as symbols (so the output stays readable).
+     Note this is also a structural answer to the coefficient blow-up that killed
+     the GiNaC backend at ~dim 16 (see `ginac_fully_symbolic.md`): there, numeric
+     component values became exact rationals whose products exploded into huge
+     CLN integers. MTDDD never forms those — numerics are folded into a terminal
+     as they arise.
+  2. **The "coefficient MTDDD"** — a *multi-root* MTDDD in which each root is the
+     coefficient of one power of `s` in the numerator or denominator, i.e. the
+     s-expanded rational `H(p,s) = Σ nᵢ(p)sⁱ / Σ dⱼ(p)sʲ`. **This is exactly the
+     form `TransferFunction.as_num_den` / `_ginac.poly_coeffs` already produce and
+     that `poles()`/`zeros()`/bode consume.** Built from the "complex DDD" (the
+     DDD of the MNA matrix, whose entries embed `s`) by a graph algorithm, with
+     sub-graph sharing across coefficients. Exact — no approximation.
+
+  Reported result: full semi-symbolic transfer function for the µA741 in under a
+  minute — on a 450 MHz Pentium-II, in 2000.
+
+  Caveat worth knowing: this paper is **not** covered by Shi's 2011 survey (E) —
+  zero mentions — because the survey follows the UW/SJTU fully-symbolic BDD line.
+  Easy to miss.
+
 ## B. Approximate / dominant-term analysis — the "readable formula for a big circuit" payoff
 
 **Tan & Shi, DDD-based generation of s-expanded / dominant-term symbolic
@@ -172,12 +209,8 @@ Methods and Applications*, Springer, 2014.** (book)
   years after the original papers. If any single item is worth buying/borrowing,
   it is this. Not needed to start Phase 0 (the papers above cover it).
 
-**"A New Approach to Semi-Symbolic Analysis of Analog Integrated Circuits," DAC
-2000.**
-- (open) https://www.cs.york.ac.uk/rts/docs/SIGDA-Compendium-1994-2004/papers/2000/dac00/pdffiles/01_5.pdf
-- Why: *semi-symbolic* = keep some elements numeric, others symbolic — precisely
-  pycircuit's common regime (numeric components + symbolic `s`, or a few symbolic
-  parameters). Informs which entries to keep symbolic in the DDD.
+(The semi-symbolic DAC 2000 paper formerly listed here is the MTDDD paper — it has
+been corrected and promoted to section A3.)
 
 **Shokouhifar, Yazdanjouei & Weber, "Direct Simplified Symbolic Analysis (DSSA)
 Tool," arXiv:2510.15901, Sep 2025.**
@@ -191,15 +224,73 @@ Tool," arXiv:2510.15901, Sep 2025.**
   Phase 0; potentially interesting later, and it composes with our existing
   numeric-evaluation path.
 
+## D3. Parameter Decision Diagrams (PDD) — a separate, later school
+
+A third representation family, from the Filaretov / Rodanski / Lasota line
+(Russian & Polish groups), developed independently of the UW/SJTU BDD work and
+running later, to ~2020. Assessed and **not** recommended as an implementation
+target for pycircuit — reasons below — but worth knowing about.
+
+**Lasota, "Symbolic analysis of electric networks with higher order summative
+cofactors and parameter decision diagrams," Int. J. Circuit Theory Appl. 46,
+2018.**
+- (paywalled, Wiley) https://doi.org/10.1002/cta.2495
+- What: introduces *higher order summative cofactors* (HOSC — "a cofactor of a
+  cofactor") as the arithmetic, giving a cancellation-free symbolic technique
+  that builds a BDD called a **parameter decision diagram** *directly from the
+  netlist*. Rolling up already-analysed parts yields a multilevel **HPDD**
+  (hierarchical PDD) that stays cancellation-free at every level and compresses
+  via the circuit's self-similarity. Pathological elements (nullors, mirrors)
+  fall out naturally.
+- Why **not** for us: the same architectural objection as GPDD (D2), and it is
+  the decisive one. PDD is *netlist/topology*-driven; pycircuit is
+  *MNA-matrix*-driven — elements stamp into `G`/`C`/`u` and there is no
+  topological circuit-graph model to build a PDD from. Adopting it means writing
+  a parallel front end plus a new arithmetic (HOSC), i.e. a second engine rather
+  than another strategy on the existing toolkit axis. DDD/MTDDD, by contrast,
+  consume the matrix we already build.
+- Worth noting anyway: native handling of nullors is interesting given pycircuit
+  *has* a `Nullor` (it carries the MFB example), which currently goes through
+  ordinary MNA stamps.
+
+**Filaretov & Gorshkov, "Efficient generation of compact symbolic network
+functions in a nested rational form," Int. J. Circuit Theory Appl. 48, 2020.**
+- (paywalled, Wiley) https://doi.org/10.1002/cta.2789
+- Why this one *does* matter to us, more than PDD itself: it is independent
+  confirmation of the central finding from our own SoE experiment — that a
+  **nested / shared** representation stays compact where an expanded one does
+  not. They generate the s-expanded form "with every coefficient being a
+  compact-nested expression," by implicit parameter extraction and factoring by
+  grouping, and report expressions more compact than the factorisation
+  algorithms of commercial CAS. That is precisely the combination our roadmap is
+  converging on: MTDDD's per-power-of-`s` coefficient split (A3) with SoE's
+  nested/shared coefficient expressions (`soe.py`, and see the "sharing vs
+  inlining" result in `soe_symbolic.rst`).
+- **CirSym** — their implementation, freeware, C source at
+  https://github.com/k-gorshkov/cirsym, online at http://intersyn.net/en/cirsym.html,
+  input is a lightly-modified SPICE netlist. Directly useful as an **independent
+  oracle**: feed it the same netlist and compare our nested/compact output and
+  operation counts against a published tool.
+
+*Caveat: both Wiley papers are paywalled; the notes above are from abstracts and
+secondary sources, not full text. Get the PDFs before implementing anything from
+this section.*
+
 ## F. How current is this field?
 
 Searched (Jul 2026) for newer DDD work, post-2015 extensions, ML-based symbolic
-analysis and recent PhD theses. Conclusion: **the field peaked 1997–2013 and the
-list above is essentially complete.** The most recent substantive items are Shi's
-2010–2013 SJTU papers (A2, D2), the 2014 Springer book (E), and the 2025 DSSA
-paper (B) which is outside the BDD line altogether. No newer thesis or DDD
-successor surfaced. This is stable ground — implement against A2, not against a
-moving target.
+analysis and recent PhD theses.
+
+The **BDD/DDD line specifically** peaked 1997–2013: its most recent substantive
+items are Shi's 2010–2013 SJTU papers (A2, D2) and the 2014 Springer book (E). No
+newer thesis or DDD successor surfaced, so implementing against A2 is not chasing
+a moving target.
+
+*Symbolic analysis as a whole, however, did not stop there* — the Filaretov /
+Lasota parameter-extraction school (D3) runs to 2018–2020 with a working tool, and
+the 2025 DSSA paper (B) attacks approximation from a Monte-Carlo/GA direction
+outside the BDD world entirely. Neither displaces DDD for our architecture, but
+"the field ended in 2013" would be wrong.
 
 ## Author PDF directories (many more open PDFs)
 
