@@ -45,7 +45,8 @@ import sympy
 __all__ = ['DDD', 'DDDVertex', 'SExpandedDDD', 'DDDFamily', 'DDDCombination',
            'NumericTerminal',
            'ONE', 'ZERO', 'ddd_of_matrix', 'ddd_cramer', 'ddd_cofactor_solve',
-           's_expand', 'HierarchicalDDD', 'eval_roots', 'DDDSizeError']
+           's_expand', 'HierarchicalDDD', 'eval_roots',
+           'reverse_cuthill_mckee', 'DDDSizeError']
 
 
 class DDDSizeError(Exception):
@@ -684,6 +685,31 @@ class _Builder:
             return None
         if self.order == 'row':
             return ('row', 0)
+
+        if self.order == 'markowitz':
+            ## Degree alone leaves many ties, and breaking them by index lets the
+            ## arbitrary node numbering decide -- which is why the same circuit
+            ## renumbered can give a diagram several times larger.  Score instead
+            ## by what the expansion costs downstream: a row of degree d branches
+            ## d ways, and each branch removes one of the intersecting columns, so
+            ## weigh the row by the degrees of the lines it will consume.
+            best, choice = None, None
+            for p, r in enumerate(rows):
+                cost = (row_deg[p] - 1) * sum(
+                    col_deg[q] - 1 for q, c in enumerate(cols)
+                    if self.nonzero(r, c))
+                key = (cost, row_deg[p])
+                if best is None or key < best:
+                    best, choice = key, ('row', p)
+            for q, c in enumerate(cols):
+                cost = (col_deg[q] - 1) * sum(
+                    row_deg[p] - 1 for p, r in enumerate(rows)
+                    if self.nonzero(r, c))
+                key = (cost, col_deg[q])
+                if key < best:
+                    best, choice = key, ('col', q)
+            return choice
+
         best_row = min(range(len(rows)), key=lambda p: row_deg[p])
         best_col = min(range(len(cols)), key=lambda q: col_deg[q])
         if row_deg[best_row] <= col_deg[best_col]:       # ties go to the row
@@ -691,7 +717,56 @@ class _Builder:
         return ('col', best_col)
 
 
-def ddd_of_matrix(A, order='min-degree', keep_symbolic=None,
+def reverse_cuthill_mckee(A):
+    """A node numbering that clusters each row's nonzeros near the diagonal.
+
+    Diagram size turns out to depend sharply on how the nodes happen to be
+    numbered -- the same circuit renumbered can give a diagram several times
+    larger -- because the expansion heuristic breaks ties by index.  Reordering
+    to a banded form first removes that dependence: minors stay contiguous, so
+    the same minors recur and the sharing table hits.
+
+    This is the standard Cuthill-McKee sweep, reversed: start from a lowest-degree
+    node, visit each level's neighbours in increasing degree, reverse the result.
+    Implemented here rather than taken from scipy to keep this module free of
+    anything but sympy.
+
+    Args:
+        A: Square sympy ``Matrix``; only its sparsity pattern is used.
+
+    Returns:
+        List of original indices in their new order.
+    """
+    n = A.rows
+    adjacency = [set() for _ in range(n)]
+    for i in range(n):
+        for j in range(n):
+            if i != j and (A[i, j] != 0 or A[j, i] != 0):
+                adjacency[i].add(j)
+                adjacency[j].add(i)
+    degree = [len(a) for a in adjacency]
+
+    seen = [False] * n
+    order = []
+    ## Several passes: a circuit matrix need not be structurally connected.
+    while len(order) < n:
+        remaining = [i for i in range(n) if not seen[i]]
+        start = min(remaining, key=lambda i: (degree[i], i))
+        seen[start] = True
+        queue = [start]
+        while queue:
+            node = queue.pop(0)
+            order.append(node)
+            nbrs = sorted((j for j in adjacency[node] if not seen[j]),
+                          key=lambda j: (degree[j], j))
+            for j in nbrs:
+                seen[j] = True
+            queue.extend(nbrs)
+    order.reverse()
+    return order
+
+
+def ddd_of_matrix(A, order='auto', keep_symbolic=None,
                   collapse_max_dim=8):
     """Build the determinant decision diagram of a sympy matrix.
 
@@ -699,9 +774,14 @@ def ddd_of_matrix(A, order='min-degree', keep_symbolic=None,
         A: Square sympy ``Matrix``.  Entries may be arbitrary expressions; each
             becomes one vertex payload (see the module docstring on the compact
             symbol convention).
-        order: ``'min-degree'`` (default) picks the sparsest row or column of
-            each minor on the fly; ``'row'`` always expands the first row, which
-            is optimal for full matrices.
+        order: ``'auto'`` (default) builds both as given and band-reordered and
+            keeps the smaller, which makes the result nearly independent of how
+            the nodes happen to be numbered -- see
+            :func:`reverse_cuthill_mckee`.  ``'min-degree'`` picks the sparsest
+            row or column of each minor on the fly; ``'markowitz'`` scores ties by
+            the degrees of the lines an expansion consumes; ``'row'`` always
+            expands the first row, which is optimal for full matrices and is what
+            makes the ``n*2**(n-1)`` identity hold exactly.
         keep_symbolic: Symbols that must stay symbolic.  When given, any minor
             containing none of them is evaluated once into a single terminal
             (see :class:`NumericTerminal`) instead of being expanded -- the
@@ -726,9 +806,28 @@ def ddd_of_matrix(A, order='min-degree', keep_symbolic=None,
     A = sympy.Matrix(A)
     if A.rows != A.cols:
         raise ValueError('DDD needs a square matrix, got %dx%d' % (A.rows, A.cols))
-    if order not in ('min-degree', 'row'):
+    if order not in ('auto', 'min-degree', 'row', 'markowitz'):
         raise ValueError('unknown order %r' % (order,))
 
+    if order == 'auto':
+        ## Build both as given and band-reordered, and keep the smaller.  A
+        ## favourable node numbering (nodes added in signal order, say) can beat
+        ## the reordering, while a poor one is far worse than it -- so trying both
+        ## keeps the good case and bounds the bad one.  Construction is
+        ## milliseconds and the diagram is used many times over.
+        candidates = [_build_ddd(A, 'min-degree', keep_symbolic,
+                                 collapse_max_dim)]
+        perm = reverse_cuthill_mckee(A)
+        if perm != list(range(A.rows)):
+            banded = _build_ddd(A.extract(perm, perm), 'min-degree',
+                                keep_symbolic, collapse_max_dim)
+            candidates.append(banded)
+        return min(candidates, key=lambda d: d.size)
+
+    return _build_ddd(A, order, keep_symbolic, collapse_max_dim)
+
+
+def _build_ddd(A, order, keep_symbolic, collapse_max_dim):
     builder = _Builder(A, order, keep_symbolic=keep_symbolic,
                        collapse_max_dim=collapse_max_dim)
     root = builder.build(tuple(range(A.rows)), tuple(range(A.cols)))

@@ -26,7 +26,8 @@ from pycircuit.circuit import benchmark_circuits as bc
 from pycircuit.circuit.ddd import (DDDSizeError, HierarchicalDDD,
                                    NumericTerminal, ONE, ZERO,
                                    ddd_cofactor_solve, ddd_cramer,
-                                   ddd_of_matrix, eval_roots, s_expand)
+                                   ddd_of_matrix, eval_roots,
+                                   reverse_cuthill_mckee, s_expand)
 
 
 def _full_matrix(n):
@@ -894,3 +895,80 @@ def test_singular_internal_block_is_reported_clearly():
     A = sympy.Matrix([[a, 0, b], [0, 0, 0], [b, 0, a]])
     with pytest.raises((ValueError, ZeroDivisionError), match='singular'):
         HierarchicalDDD(A, (1,)).eval({a: 1.0, b: 0.5})
+
+
+## -- expansion and node ordering -----------------------------------------
+
+def _permute(A, perm):
+    """Symmetric permutation: same determinant, different node numbering."""
+    return A.extract(list(perm), list(perm))
+
+
+def test_rcm_is_a_permutation():
+    A = bc.rc_ladder(6).A
+    perm = reverse_cuthill_mckee(A)
+    assert sorted(perm) == list(range(A.rows))
+
+
+def test_rcm_handles_a_disconnected_pattern():
+    """A circuit matrix need not be structurally connected."""
+    a, b = sympy.symbols('a b')
+    A = sympy.diag(sympy.Matrix([[a, a], [a, a]]), sympy.Matrix([[b, b], [b, b]]))
+    assert sorted(reverse_cuthill_mckee(A)) == [0, 1, 2, 3]
+
+
+def test_permutation_does_not_change_the_determinant():
+    """The premise of the whole ordering question."""
+    system = bc.rc_ladder(5)
+    env = dict(system.params)
+    env[system.s] = 1j * 2 * np.pi * 1e4
+    rng = np.random.default_rng(4)
+    ref = complex(ddd_of_matrix(system.A).eval(env))
+    for _ in range(4):
+        perm = list(rng.permutation(system.A.rows))
+        got = complex(ddd_of_matrix(_permute(system.A, perm)).eval(env))
+        assert abs(got - ref) <= 1e-9 * abs(ref)
+
+
+@pytest.mark.parametrize('name', ['ladder', 'mfb'])
+def test_auto_ordering_is_insensitive_to_node_numbering(name):
+    """The point of the default policy.
+
+    Bare min-degree breaks ties by index, so an arbitrary renumbering of the same
+    circuit changes the diagram size several-fold.  Band-reordering first removes
+    that dependence.
+    """
+    A = bc.rc_ladder(12).A if name == 'ladder' else bc.mfb_filter().A
+    rng = np.random.default_rng(1)
+    perms = [list(rng.permutation(A.rows)) for _ in range(6)]
+
+    auto = [ddd_of_matrix(_permute(A, p), order='auto').size for p in perms]
+    plain = [ddd_of_matrix(_permute(A, p), order='min-degree').size for p in perms]
+
+    assert max(auto) / min(auto) <= 1.05          # essentially invariant
+    assert max(auto) <= max(plain)                # never worse at the worst case
+
+
+def test_auto_keeps_a_favourable_given_ordering():
+    """It must not throw away a good numbering to gain determinism.
+
+    Nodes added in signal order give a better diagram than band-reordering does
+    on the µA741, so ``auto`` tries both and keeps the smaller.
+    """
+    A = bc.ua741().A
+    auto = ddd_of_matrix(A, order='auto').size
+    banded = ddd_of_matrix(_permute(A, reverse_cuthill_mckee(A)),
+                           order='min-degree').size
+    assert auto <= banded
+
+
+@pytest.mark.parametrize('order', ['auto', 'min-degree', 'markowitz', 'row'])
+def test_every_ordering_gives_the_same_value(order):
+    system = bc.rc_ladder(5)
+    env = dict(system.params)
+    env[system.s] = 1j * 2 * np.pi * 1e4
+    ref = complex(np.linalg.det(np.array(
+        [[complex(system.A[i, j].subs(env)) for j in range(system.dim)]
+         for i in range(system.dim)])))
+    got = complex(ddd_of_matrix(system.A, order=order).eval(env))
+    assert abs(got - ref) <= 1e-7 * abs(ref)

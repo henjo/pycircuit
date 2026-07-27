@@ -137,9 +137,10 @@ Expansion ordering
 ==================
 
 Which row or column to expand next is chosen **on the fly**, so there is no
-symbol-ordering pre-pass. ``min-degree`` (the default) takes whichever row or
-column has fewest nonzeros; ``row`` always takes the first row, which is what
-makes the identity above hold exactly.
+symbol-ordering pre-pass. ``min-degree`` takes whichever row or column has fewest
+nonzeros; ``markowitz`` scores ties by the degrees of the lines an expansion will
+consume; ``row`` always takes the first row, which is what makes the identity
+above hold exactly.
 
 Ordering changes the graph but never the value. On a sparse circuit matrix it
 changes the *size*, which is where it matters:
@@ -163,6 +164,74 @@ changes the *size*, which is where it matters:
         print("     - %d" % A.rows)
         print("     - %d" % ddd_of_matrix(A, order='row').size)
         print("     - %d" % ddd_of_matrix(A, order='min-degree').size)
+
+Node numbering is part of the ordering
+--------------------------------------
+
+There is a trap here worth stating plainly, because it silently caps the
+precision of every vertex count on this page. ``min-degree`` leaves many ties —
+in a sparse circuit matrix most rows have the same low degree — and breaking them
+by index means **the arbitrary order in which nodes were added to the circuit
+decides the diagram size**.
+
+It is not a small effect. Permuting the µA741's node numbering (the same circuit,
+symmetrically permuted, so the determinant is unchanged) moves the diagram
+through nearly a factor of three, and a badly-numbered ladder is worse still:
+
+.. exec-rst::
+
+    import statistics
+    import numpy as np
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.ddd import ddd_of_matrix
+
+    def permute(A, p):
+        return A.extract(list(p), list(p))
+
+    cases = [('RC ladder N=12', bc.rc_ladder(12).A, 8),
+             ('µA741', bc.ua741().A, 6)]
+
+    print(".. list-table:: Diagram size over random node numberings")
+    print("   :header-rows: 1")
+    print("   :widths: 16 14 10 10 10 12")
+    print("")
+    print("   * - circuit")
+    print("     - policy")
+    print("     - best")
+    print("     - median")
+    print("     - worst")
+    print("     - spread")
+    for name, A, trials in cases:
+        rng = np.random.default_rng(0)
+        perms = [list(rng.permutation(A.rows)) for _ in range(trials)]
+        for policy in ('min-degree', 'auto'):
+            sizes = [ddd_of_matrix(permute(A, p), order=policy).size
+                     for p in perms]
+            print("   * - %s" % name)
+            print("     - ``%s``" % policy)
+            print("     - %d" % min(sizes))
+            print("     - %d" % int(statistics.median(sizes)))
+            print("     - %d" % max(sizes))
+            print("     - %.2f×" % (max(sizes) / min(sizes)))
+
+The fix is to stop letting the numbering matter. ``auto`` — the default — builds
+the diagram twice: once as given, and once after a **reverse Cuthill-McKee**
+reordering that clusters each row's nonzeros near the diagonal, then keeps the
+smaller. Banding helps for a structural reason: contiguous minors recur, so the
+sharing table hits.
+
+Both halves earn their place. Band-reordering alone is what collapses the spread.
+Keeping the as-given build alongside it matters because a circuit whose nodes were
+added in signal order can already be well numbered — on the µA741 that hand
+ordering beats the band-reordered one — and it would be perverse to discard a good
+ordering in the name of determinism. Construction costs milliseconds and the
+diagram is used many times, so building both is cheap insurance.
+
+What remains is small and now *known*: essentially nothing on a ladder, and about
+1.4× on the µA741, because Cuthill-McKee itself breaks its own ties by index.
+**Every vertex count elsewhere on this page should be read with that tolerance**,
+including the comparisons against the sequence-of-expressions solver and against
+the published figures.
 
 On a real circuit
 =================
