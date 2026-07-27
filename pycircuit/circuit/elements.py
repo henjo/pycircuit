@@ -37,15 +37,12 @@ class R(Circuit):
         self._G = self.toolkit.array([[g, -g],
                                       [-g, g]])
 
-    @staticmethod
-    def eval_i_pure(x, params, epar, toolkit):
-        r = params.get('r', 1.0)
-        i = (x[0] - x[1]) / r
-        return toolkit.array([i, -i])
 
     def G(self, x, epar=defaultepar):
-        return self.toolkit.jacobian(self.eval_i_pure, x, {'r': self.iparv.r},
-                                     epar, self._G)
+        ## Linear element: the Jacobian *is* this stored matrix, so there
+        ## is nothing to differentiate and no second form to keep in step
+        ## with it.  The base class derives i(x) as dot(G(x), x).
+        return self._G
 
     def CY(self, x, w, epar=defaultepar):
         if self.iparv.noisy:
@@ -88,19 +85,12 @@ class G(Circuit):
         self._G = self.toolkit.array([[g, -g],
                                       [-g, g]])
 
-    @staticmethod
-    def eval_i_pure(x, params, epar, toolkit):
-        # MNA stamp for Resistor as pure function for JAX vmap
-        # I = G * (V_plus - V_minus)
-        g = params.get('g', 1e-3)
-        v = x[0] - x[1]
-        i = v * g
-        return toolkit.array([i, -i])
 
-    def G(self, x, epar=defaultepar): 
-        # For symbolic backward compatibility and non-vectorized execution
-        return self.toolkit.jacobian(self.eval_i_pure, x, {'g': self.iparv.g},
-                                     epar, self._G)
+    def G(self, x, epar=defaultepar):
+        ## Linear element: the Jacobian *is* this stored matrix, so there
+        ## is nothing to differentiate and no second form to keep in step
+        ## with it.  The base class derives i(x) as dot(G(x), x).
+        return self._G
 
     def CY(self, x, w, epar=defaultepar):
         if self.iparv.noisy:
@@ -199,12 +189,6 @@ class L(Circuit):
                                       [0, 0, 0],
                                       [0, 0, -L]])
 
-    @staticmethod
-    def eval_i_pure(x, params, epar, toolkit):
-        v_plus = x[0]
-        v_minus = x[1]
-        i_L = x[2]
-        return toolkit.array([i_L, -i_L, v_plus - v_minus])
 
     @staticmethod
     def eval_q_pure(x, params, epar, toolkit):
@@ -212,9 +196,11 @@ class L(Circuit):
         i_L = x[2]
         return toolkit.array([0.0, 0.0, -L * i_L])
 
-    def G(self, x, epar=defaultepar): 
-        return self.toolkit.jacobian(self.eval_i_pure, x, {'L': self.iparv.L},
-                                     epar, self._G)
+    def G(self, x, epar=defaultepar):
+        ## Linear element: the Jacobian *is* this stored matrix, so there
+        ## is nothing to differentiate and no second form to keep in step
+        ## with it.  The base class derives i(x) as dot(G(x), x).
+        return self._G
 
     def C(self, x, epar=defaultepar): 
         return self.toolkit.jacobian(self.eval_q_pure, x, {'L': self.iparv.L},
@@ -250,16 +236,12 @@ class VS(Circuit):
                                       [0 ,  0, -1],
                                       [1 , -1,  0]])
 
-    @staticmethod
-    def eval_i_pure(x, params, epar, toolkit):
-        i_branch = x[2]
-        v_plus = x[0]
-        v_minus = x[1]
-        return toolkit.array([i_branch, -i_branch, v_plus - v_minus])
 
-    def G(self, x, epar=defaultepar): 
-        return self.toolkit.jacobian(self.eval_i_pure, x, {},
-                                     epar, self._G)
+    def G(self, x, epar=defaultepar):
+        ## Linear element: the Jacobian *is* this stored matrix, so there
+        ## is nothing to differentiate and no second form to keep in step
+        ## with it.  The base class derives i(x) as dot(G(x), x).
+        return self._G
 
     def u(self, t=0.0, epar=defaultepar, analysis=None):
         if analysis == 'ac':
@@ -497,27 +479,12 @@ class VCVS(Circuit):
         G[branchindex, innindex] += -self.iparv.g                       
         self._G = G
 
-    @staticmethod
-    def eval_i_pure(x, params, epar, toolkit):
-        v_inp = x[0]
-        v_inn = x[1]
-        v_outp = x[2]
-        v_outn = x[3]
-        i_branch = x[4]
-        g = params.get('g', 1.0)
-        
-        # Branch eq: -v_outp + v_outn + g*v_inp - g*v_inn
-        return toolkit.array([
-            0.0,
-            0.0,
-            i_branch,
-            -i_branch,
-            -v_outp + v_outn + g*v_inp - g*v_inn
-        ])
 
-    def G(self, x, epar=defaultepar): 
-        return self.toolkit.jacobian(self.eval_i_pure, x, {'g': self.iparv.g},
-                                     epar, self._G)
+    def G(self, x, epar=defaultepar):
+        ## Linear element: the Jacobian *is* this stored matrix, so there
+        ## is nothing to differentiate and no second form to keep in step
+        ## with it.  The base class derives i(x) as dot(G(x), x).
+        return self._G
 
 
 class SVCVS(Circuit):
@@ -706,22 +673,12 @@ class CCVS(Circuit):
         G[branchindexJ, branchindexK] += -self.iparv.r
         self._G = G
 
-    @staticmethod
-    def eval_i_pure(x, params, epar, toolkit):
-        v_inp, v_inn, v_outp, v_outn, i_in, i_out = x[0], x[1], x[2], x[3], x[4], x[5]
-        r = params.get('r', 1.0)
-        return toolkit.array([
-            i_in,
-            -i_in,
-            i_out,
-            -i_out,
-            v_inp - v_inn - r * i_out,
-            v_outp - v_outn
-        ])
 
-    def G(self, x, epar=defaultepar): 
-        return self.toolkit.jacobian(self.eval_i_pure, x, {'r': self.iparv.r},
-                                     epar, self._G)
+    def G(self, x, epar=defaultepar):
+        ## Linear element: the Jacobian *is* this stored matrix, so there
+        ## is nothing to differentiate and no second form to keep in step
+        ## with it.  The base class derives i(x) as dot(G(x), x).
+        return self._G
 
 
 
@@ -755,25 +712,12 @@ class VCCS(Circuit):
         G[outnindex, innindex] += gm
         self._G = G
 
-    @staticmethod
-    def eval_i_pure(x, params, epar, toolkit):
-        v_inp = x[0]
-        v_inn = x[1]
-        v_outp = x[2] # Unused by physics, but passed because it's a node
-        v_outn = x[3] # Unused by physics
-        gm = params.get('gm', 1e-3)
-        i = gm * (v_inp - v_inn)
-        
-        return toolkit.array([
-            0.0,
-            0.0,
-            i,
-            -i
-        ])
 
-    def G(self, x, epar=defaultepar): 
-        return self.toolkit.jacobian(self.eval_i_pure, x, {'gm': self.iparv.gm},
-                                     epar, self._G)
+    def G(self, x, epar=defaultepar):
+        ## Linear element: the Jacobian *is* this stored matrix, so there
+        ## is nothing to differentiate and no second form to keep in step
+        ## with it.  The base class derives i(x) as dot(G(x), x).
+        return self._G
 
 class Nullor(Circuit):
     """Nullor
@@ -814,24 +758,12 @@ class Nullor(Circuit):
         G[branchindex, innindex] += -1
         self._G = G
 
-    @staticmethod
-    def eval_i_pure(x, params, epar, toolkit):
-        v_inp = x[0]
-        v_inn = x[1]
-        v_outp = x[2]
-        v_outn = x[3]
-        i_branch = x[4]
-        return toolkit.array([
-            0.0,
-            0.0,
-            i_branch,
-            -i_branch,
-            v_inp - v_inn
-        ])
 
-    def G(self, x, epar=defaultepar): 
-        return self.toolkit.jacobian(self.eval_i_pure, x, {},
-                                     epar, self._G)
+    def G(self, x, epar=defaultepar):
+        ## Linear element: the Jacobian *is* this stored matrix, so there
+        ## is nothing to differentiate and no second form to keep in step
+        ## with it.  The base class derives i(x) as dot(G(x), x).
+        return self._G
 
 class Transformer(Circuit):
     """Ideal transformer
@@ -874,31 +806,12 @@ class Transformer(Circuit):
         G[branchindex, innindex] += 1
         self._G = G
 
-    @staticmethod
-    def eval_i_pure(x, params, epar, toolkit):
-        v_inp = x[0]
-        v_inn = x[1]
-        v_outp = x[2]
-        v_outn = x[3]
-        i_branch = x[4]
-        n_ratio = params.get('n', 1.0)
-        
-        # Current mapping:
-        # I_inp = n * i_branch
-        # I_outp = i_branch
-        # Branch eq: -v_inp + v_inn + n*v_outp - n*v_outn = 0
-        
-        return toolkit.array([
-            n_ratio * i_branch,
-            -n_ratio * i_branch,
-            i_branch,
-            -i_branch,
-            -v_inp + v_inn + n_ratio*v_outp - n_ratio*v_outn
-        ])
 
-    def G(self, x, epar=defaultepar): 
-        return self.toolkit.jacobian(self.eval_i_pure, x, {'n': self.iparv.n},
-                                     epar, self._G)
+    def G(self, x, epar=defaultepar):
+        ## Linear element: the Jacobian *is* this stored matrix, so there
+        ## is nothing to differentiate and no second form to keep in step
+        ## with it.  The base class derives i(x) as dot(G(x), x).
+        return self._G
 
 class Gyrator(Circuit):
     """Gyrator
@@ -939,26 +852,12 @@ class Gyrator(Circuit):
         G[innindex,  outnindex] +=  gm
         self._G = G
         
-    @staticmethod
-    def eval_i_pure(x, params, epar, toolkit):
-        v_inp = x[0]
-        v_inn = x[1]
-        v_outp = x[2]
-        v_outn = x[3]
-        gm = params.get('gm', 1e-3)
-        i_in = -gm * (v_outp - v_outn)
-        i_out = gm * (v_inp - v_inn)
-        
-        return toolkit.array([
-            -i_in,
-            i_in,
-            -i_out,
-            i_out
-        ])
 
-    def G(self, x, epar=defaultepar): 
-        return self.toolkit.jacobian(self.eval_i_pure, x, {'gm': self.iparv.gm},
-                                     epar, self._G)
+    def G(self, x, epar=defaultepar):
+        ## Linear element: the Jacobian *is* this stored matrix, so there
+        ## is nothing to differentiate and no second form to keep in step
+        ## with it.  The base class derives i(x) as dot(G(x), x).
+        return self._G
 
 class Diode(Circuit):
     """ Nonlinear diode
@@ -1406,14 +1305,6 @@ class CoupledInductors(Circuit):
         C[5, 4] = -M
         self._C = C
 
-    @staticmethod
-    def eval_i_pure(x, params, epar, toolkit):
-        v_p1, v_m1, v_p2, v_m2, i1, i2 = x[0], x[1], x[2], x[3], x[4], x[5]
-        return toolkit.array([
-            i1, -i1, i2, -i2,
-            v_p1 - v_m1,
-            v_p2 - v_m2
-        ])
 
     @staticmethod
     def eval_q_pure(x, params, epar, toolkit):
@@ -1428,9 +1319,11 @@ class CoupledInductors(Circuit):
             -M * i1 - L2 * i2
         ])
 
-    def G(self, x, epar=defaultepar): 
-        return self.toolkit.jacobian(self.eval_i_pure, x, {},
-                                     epar, self._G)
+    def G(self, x, epar=defaultepar):
+        ## Linear element: the Jacobian *is* this stored matrix, so there
+        ## is nothing to differentiate and no second form to keep in step
+        ## with it.  The base class derives i(x) as dot(G(x), x).
+        return self._G
 
     def C(self, x, epar=defaultepar): 
         return self.toolkit.jacobian(
@@ -1532,21 +1425,12 @@ class CCCS(Circuit):
         
         self._G = G
 
-    @staticmethod
-    def eval_i_pure(x, params, epar, toolkit):
-        v_inp, v_inn, v_outp, v_outn, i_in = x[0], x[1], x[2], x[3], x[4]
-        F = params.get('F', 1.0)
-        return toolkit.array([
-            i_in,
-            -i_in,
-            F * i_in,
-            -F * i_in,
-            v_inp - v_inn
-        ])
 
-    def G(self, x, epar=defaultepar): 
-        return self.toolkit.jacobian(self.eval_i_pure, x, {'F': self.iparv.F},
-                                     epar, self._G)
+    def G(self, x, epar=defaultepar):
+        ## Linear element: the Jacobian *is* this stored matrix, so there
+        ## is nothing to differentiate and no second form to keep in step
+        ## with it.  The base class derives i(x) as dot(G(x), x).
+        return self._G
 
 class ISwitch(Circuit):
     """Current Controlled Switch"""

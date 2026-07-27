@@ -153,6 +153,37 @@ differentiates. **An element must never ask which toolkit it has.** Elements
 that genuinely need two algorithms — device limiting versus a smooth form —
 guard on `self.toolkit.supports('autodiff')`.
 
+### State the element once
+
+The base class already derives one side from the other:
+
+```python
+def i(self, x, epar=defaultepar, params_tree=None):
+    return self.toolkit.dot(self.G(x), x)     # and q from C likewise
+```
+
+So **a linear element states only its matrix.** `i` follows exactly, and the
+Jacobian *is* the matrix, so there is nothing to differentiate:
+
+```python
+def G(self, x, epar=defaultepar):
+    return self._G
+```
+
+Twelve linear elements briefly carried an `eval_i_pure` as well — a second
+encoding of the same conductance, added so JAX could batch them. It bought
+nothing (differentiating a linear function to rediscover a stored constant) and
+cost a consistency obligation, so it is gone; the JAX paths measured the same
+without it.
+
+**A nonlinear element states only its current**, `eval_i_pure`, and gets its
+Jacobian from `toolkit.jacobian`. Four elements — `Diode`, `VCVS_limited`,
+`VSwitch`, `ISwitch` — still hand-write a stamp *as well*, because their
+non-autodiff path applies device limiting. Those four are the only place the
+two-sources-of-truth problem can still arise, and they are exactly the elements
+`test_element_jacobians.py` exists to police. Do not add a fifth without adding
+a case there.
+
 ## 5. Worked trace: what `AC.solve` does
 
 1. `dc_steady_state()` finds the operating point (skipped for symbolic
