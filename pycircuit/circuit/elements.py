@@ -1111,7 +1111,7 @@ class VCVS_limited(Circuit):
         ## ``offset + level*tanh(...)``, which func.Tanh does not, so the
         ## differentiated and stamped paths were limiting differently.
         u = v_inn - v_inp
-        f = toolkit.tanh((u - offset) / level)
+        f = level * toolkit.tanh((u - offset) / level)
 
         ## Branch equation  v_outn - v_outp - g*f(v_inn - v_inp) = 0.
         ##

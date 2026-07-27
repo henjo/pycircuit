@@ -105,6 +105,47 @@ def test_vcvs_limited_uses_its_gain():
         'residual did not scale with the gain: g=1 -> %g, g=4 -> %g' % (rw, rs))
 
 
+def test_vcvs_limited_gain_and_saturation():
+    """The specified behaviour: ``vout = g * level * tanh(vin / level)``.
+
+    Two consequences worth pinning separately, because each was wrong before
+    and each fails independently:
+
+    * small-signal gain is exactly ``g`` -- the ``level`` factor in
+      :class:`~pycircuit.circuit.func.Tanh` is what makes ``f'(0) == 1``.
+      Without it the slope at the origin is ``1/level`` and every gain is off
+      by that factor.
+    * the output saturates at ``g * level``.
+    """
+    from scipy.optimize import brentq
+
+    g, level = 3.0, 0.4
+    element = _build(lambda: VCVS_limited('inp', 'inn', 'outp', 'outn',
+                                          g=g, level=level, offset=0.0))
+
+    def vout(vin):
+        """Differential output solving the branch residual, with v_outn = 0."""
+        residual = lambda vo: float(np.asarray(
+            element.i(np.array([vin, 0.0, vo, 0.0, 0.0])), dtype=float)[-1])
+        return brentq(residual, -1e3, 1e3)
+
+    slope = (vout(1e-6) - vout(-1e-6)) / 2e-6
+    assert abs(slope - g) < 1e-4, 'small-signal gain %g, expected %g' % (slope, g)
+
+    assert abs(vout(50.0) - g * level) < 1e-6
+    assert abs(vout(-50.0) + g * level) < 1e-6
+
+
+def test_tanh_is_a_unit_slope_limiter():
+    """``Tanh.f`` saturates at ``level`` and has unit slope at the offset."""
+    from pycircuit.circuit import func
+    level = 0.4
+    fn = func.Tanh(0.0, level, toolkit=numeric)
+    assert abs(fn.fprime(0.0) - 1.0) < 1e-12
+    assert abs(fn.f(50.0) - level) < 1e-9
+    assert abs(fn.f(-50.0) + level) < 1e-9
+
+
 def test_tanh_fprime_is_the_derivative_of_f():
     """``func.Tanh.fprime`` must differentiate ``func.Tanh.f``.
 

@@ -213,13 +213,26 @@ class Tanh(ScalarFunction):
         self.level   = level  # Level of limiting
         self.toolkit = toolkit 
     
+    ## A smooth symmetric limiter:  f(x) = level * tanh((x - offset) / level).
+    ##
+    ## The `level` factor is what makes this a limiter with a *unit* slope
+    ## rather than a bare `tanh`: f'(offset) == 1, so a driver multiplying by a
+    ## gain g gets small-signal gain exactly g, and saturation at g*level.
+    ## Without it the slope at the origin is 1/level and every gain is off by
+    ## that factor.
+    ##
+    ## The three methods must stay mutually consistent -- fprime is the
+    ## derivative of f and F its integral -- because callers mix them:
+    ## VCVS_limited stamps its Jacobian from fprime while computing its
+    ## residual from f.  test_element_jacobians checks exactly that.
+
     # Function tanh
     def f(self,x):
-        return self.toolkit.tanh((x-self.offset)/self.level)        
-    
+        return self.level * self.toolkit.tanh((x-self.offset)/self.level)
+
     # Derivate
     def fprime(self,x):
-        ## d/dx tanh(u) = 1 - tanh(u)**2, with u = (x-offset)/level.
+        ## d/dx [level * tanh(u)] with u = (x-offset)/level  ->  1 - tanh(u)**2.
         ##
         ## This body was unreachable behind a `return 0` from 2009 until 2026,
         ## so VCVS_limited's Jacobian carried no input-to-output coupling at all
@@ -231,11 +244,12 @@ class Tanh(ScalarFunction):
         ## sympy expressions and JAX arrays all implement it -- adding the
         ## primitive would have meant adding it to every backend to get the
         ## same result.  Reach for an operator before a primitive.
-        return (1 - self.toolkit.tanh((x-self.offset)/self.level)**2)/self.level
+        return 1 - self.toolkit.tanh((x-self.offset)/self.level)**2
 
     # Integral
     def F(self,x):
-        return self.toolkit.log(self.toolkit.cosh((x-self.offset)/self.level))*self.level
+        return self.level**2 * \
+            self.toolkit.log(self.toolkit.cosh((x-self.offset)/self.level))
 
                     
 class TabFunc(ScalarFunction):

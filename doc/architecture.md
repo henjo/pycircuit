@@ -311,11 +311,22 @@ Verified to fail on all three historical defects when they are reinstated.
 Extend `CASES` there when adding a nonlinear element; it is the cheapest guard
 this codebase has against a whole class of silent error.
 
-One thing deliberately **not** changed: the `level` parameter is documented as
-"Limit voltage, unit V", but `func.Tanh.f` is `tanh((x-offset)/level)`, which
-saturates at ±1 regardless of `level` -- `level` acts as a transition width, not
-an amplitude. Whether the parameter or the function is wrong needs someone who
-knows the intent.
+The limiter itself was wrong too, and the specified behaviour is
+`vout = g * level * tanh(vin / level)`. `func.Tanh.f` was a bare
+`tanh((x-offset)/level)`, missing the `level` factor -- so it saturated at ±1
+regardless of `level`, and its slope at the origin was `1/level` rather than 1,
+which made every `VCVS_limited` gain off by that factor. With the factor
+restored, small-signal gain is exactly `g` and the output saturates at
+`g*level`; both are pinned by tests.
+
+Note the consequence for the parameter description: `level` is documented as
+"Limit voltage, unit V", but the *output* limit is `g*level` -- `level` is
+input-referred. The description is worth revisiting.
+
+`fprime` and `F` were updated with `f`, since the three must stay mutually
+consistent: `VCVS_limited` stamps its Jacobian from `fprime` while computing
+its residual from `f`, so a change to one alone silently reintroduces exactly
+the class of bug above.
 
 ### P8 — a 17-year-old shadowed derivative *(fixed)*
 
