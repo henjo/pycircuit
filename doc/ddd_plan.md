@@ -292,6 +292,7 @@ solution-object refactor and calibration tiers 1 and 3.
 | Calibration | Tier 1 exact (`n·2^(n-1)`, n = 1…7); Tier 3 µA741 built and compared |
 | H1 — node ordering | **Done.** Gate passed: spread 2.7–2.8× → 1.00× (ladder, MFB) and 1.42× (µA741) |
 | H2 — sequential suppression | **Done.** Gate passed: µA741 1040 → 156 vertices, 6.7× |
+| H3 — noise through the reduction | **Done.** Gate passed: PSD identical, µA741 noise 11 088 → 26 vertices and 86 s → 0.48 s |
 
 The original definition of done is met: exact s-expanded coefficients held
 compactly, dominant pole/zero estimates from coefficient ratios, exact numeric
@@ -369,7 +370,7 @@ flat is a negative result to write up as P3 was.
 
 *Effort: the largest remaining item.*
 
-### H3 — Noise through the reduction
+### H3 — Noise through the reduction — **DONE**
 
 **Why this follows H2 immediately.** P4 already builds every transimpedance from
 one shared cofactor family, but it does so on the **flat** matrix — and H2 showed
@@ -455,9 +456,9 @@ through the same machinery and nothing has been thought about. Scoping only.
    ordering policy and a 1.42× worst-case spread.
 2. ~~**Hierarchy earns its place**~~ — done (H2): µA741 1040 → 156 vertices, 6.7×,
    well beyond that spread.
-3. **Reduction reaches the analysis that needs it most**: noise computed through
-   the reduction gives an *identical* PSD to the flat result, at a cost that falls
-   with the reduction rather than staying flat.
+3. ~~**Reduction reaches the analysis that needs it most**~~ — done (H3): noise
+   through the reduction gives an identical PSD, 426× fewer vertices and 180×
+   faster on the µA741.
 4. **A designer gains something they did not have**: symbolic sensitivity,
    agreeing with finite differences.
 
@@ -474,9 +475,13 @@ recorded even when negative.
   tolerance every later vertex count is read against.
 - H3 depends on H2 and on nothing else — it is the direct application of the
   reduction machinery to the analysis that most wants it.
-- H3 and H4 compete for the next slot and the choice is a judgement call: H3
-  makes an existing analysis cheaper on real circuits, H4 gives pycircuit a
-  capability it does not have at all.
+- H3 is done. H4 is next by default: it is the only remaining item that adds a
+  capability rather than improving a number.
+- One thing H3 turned up that applies more widely: the `_resolve` fast path and
+  unmultiplied factors sped the reduced solve ~200×, and the same pattern —
+  sympy substitution in a hot loop — is worth watching wherever payloads are
+  sympy objects. Timings recorded before that change understate what the code
+  now does.
 - H3 is independent of both and could run in parallel; it touches only new code.
 - H4 is cheap and worth doing alongside whichever of H1/H2 is active, since it
   supplies reference points for both.
