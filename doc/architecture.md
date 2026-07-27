@@ -291,7 +291,7 @@ and docs, reachable from no analysis. It is a research prototype promoted to
 package code without an integration path — compare DDD, which got
 `ac_solution`, a result object and an analysis family.
 
-### P6a — batched evaluation now lives in the toolkit *(fixed)*
+### P6 — batched evaluation now lives in the toolkit *(fixed)*
 
 The JAX vectorisation had put its machinery in core `circuit.py`: building the
 per-class evaluation groups, and two copies of a vmapped stamping loop. That
@@ -317,7 +317,73 @@ on `G`, `C`, `i` *and* `q` — i.e. every stamp. The missing pure form now
 contributes zeros. Pinned by a test that compares the batched stamp against the
 per-element one rather than merely checking it returns something.
 
-### P6 — two extension conventions, built opposite ways
+### P7 — the toolkit reaches into element instances *(diagnosed, not yet fixed)*
+
+The remaining odd coupling, and the one to be deliberate about.
+
+`Circuit.__init__` ends with:
+
+```python
+if self.toolkit.supports('autodiff'):
+    if hasattr(self, 'eval_i'):
+        self.toolkit.generate_eval_i_and_G(self)
+    if hasattr(self, 'eval_q'):
+        self.toolkit.generate_eval_q_and_C(self)
+```
+
+and `JAXToolkit.generate_eval_i_and_G` **installs a method on the element
+instance** (`element.eval_i_and_G = ...`, plus a per-instance `_jax_cache_i`),
+which `Circuit.G`, `C`, `i` and `q` then discover with `hasattr`. So the toolkit
+mutates element state, and the base class picks the result up by name.
+
+**What was measured (2026-07-27):**
+
+* **No shipped element defines `eval_i` or `eval_q`**, so the guard is false for
+  every element in the package and the automatic path never runs.
+* The only definition anywhere is `JAXDiode` inside `test_jax_autodiff.py`, a
+  test-local subclass. That test calls `generate_eval_i_and_G` **by hand**.
+* It has to: `JAXDiode.__init__` assigns `self.toolkit = jax_tk` *after*
+  `super().__init__()`, so at guard time the toolkit is still numeric. As far as
+  the code shows, **the automatic path has never fired for anything**.
+* Consequently the four `hasattr(self, 'eval_i_and_G')` branches in
+  `Circuit.G/C/i/q` are unreachable in production.
+
+This is also a *second* pure-form convention: bound `eval_i(self, x, epar)`
+here, against static `eval_i_pure(x, params, epar, toolkit)` used by
+:meth:`~pycircuit.circuit.toolkit.Toolkit.jacobian` and by batching. Two
+conventions for one job is the duplication P9 is about, one level up.
+
+#### How to proceed
+
+1. **Measure before touching.** Put a `raise` in both `generate_*` methods and
+   run the full suite; everything except `test_jax_autodiff` should pass. This
+   turns "grep suggests dead" into "measured dead", which is the standard the
+   rest of this document is held to.
+
+2. **Decide what it is** — a judgement call, not something the code answers:
+   * *Vestigial* — an earlier autodiff design superseded by `eval_i_pure` plus
+     `jacobian`/batching. The differing signature convention and the absence of
+     any user both point this way.
+   * *A deliberate escape hatch* — a per-instance route for an out-of-tree
+     element to opt into autodiff without the static-signature discipline,
+     getting value and Jacobian from one compiled call.
+
+3. **Then either:**
+   * **Delete** — roughly 45 lines from `toolkit.py`, four branches from
+     `Circuit.G/C/i/q`, and the hook in `__init__`; or
+   * **Make it real** — document the contract, fix the `__init__` ordering so
+     the guard can actually fire, and ship one in-tree element that uses it. An
+     extension point with no in-tree user rots, which is how this one got here.
+
+4. **Rewrite the test first, either way.** Point it at `eval_i_pure` +
+   `toolkit.jacobian` so its actual intent — *a user-defined nonlinear element
+   gets an exact autodiff Jacobian* — stays covered while the mechanism changes
+   underneath it. Coverage should never dip during the change.
+
+Deferred rather than done because step 2 is a product decision: removing dead
+code is routine, removing an extension point is not.
+
+### P8 — two extension conventions, built opposite ways
 
 The transient engine has a second pluggability system: ABCs `Integrator`,
 `StepController`, `NonLinearSolver`, `Scaler`, chosen by **string parameter**
@@ -336,7 +402,7 @@ extension should use. Concrete wart: `transient.py:188` decides behaviour with
 a polymorphic hierarchy by class-name string. An `order` property would do it
 properly.
 
-### P7 — the invariant nothing enforced: `G` vs ∂i/∂x *(fixed, and now tested)*
+### P9 — the invariant nothing enforced: `G` vs ∂i/∂x *(fixed, and now tested)*
 
 The promise in §2 is that one element definition serves every toolkit. The place
 it failed is worth keeping on record, because the failure was **silent**.
@@ -349,7 +415,7 @@ different point -- so nothing looks broken.
 
 `VCVS_limited` had three defects at once, all pre-dating the JAX work:
 
-1. `func.Tanh.fprime` returned a hard `0` (P8), so the stamp had no
+1. `func.Tanh.fprime` returned a hard `0` (P10), so the stamp had no
    input-to-output coupling at all.
 2. `i()` computed `v_out - f'(u)*f(u)` and never used the gain `g`, while `G()`
    stamped `g*f'(u)`. Beyond the knee it even carried the opposite sign.
@@ -394,7 +460,7 @@ Verified across `g` = 1, 3 and 29: gain exactly `g`, saturation exactly
 ±`level` and independent of `g`, and `G` equal to `∂i/∂x` at every operating
 point including past the knee.
 
-### P8 — a 17-year-old shadowed derivative *(fixed)*
+### P10 — a 17-year-old shadowed derivative *(fixed)*
 
 `func.Tanh.fprime` was:
 
@@ -422,7 +488,7 @@ distinguish a correct Jacobian from a zero one, because Newton still converged.
 transmission-line `u()` returns before its entire transient branch, so a TLine
 contributes no transient stimulus. Not investigated further.
 
-### P9 — `_symbolic` is missing primitives `_numeric` has
+### P11 — `_symbolic` is missing primitives `_numeric` has
 
 `_numeric` provides `tanh`; `_symbolic` provides neither `tanh` nor `power`. So
 `func.Tanh` — and any element built on it — cannot run symbolically at all,
@@ -432,7 +498,7 @@ apart without anything detecting it.
 A test that asserts the backend modules expose the same primitive names would
 pin this cheaply.
 
-### P10 — smaller, verified
+### P12 — smaller, verified
 
 - `analysis.py:155` — `fsolve(..., toolkit='Numeric', ...)`: a **string** where a
   toolkit object is required, so the default is unusable (`str.linearsolver`).
@@ -445,7 +511,7 @@ pin this cheaply.
 - Comments left mid-thought in production code, e.g. `elements.py` VCVS_limited:
   *"but wait, the plan is to vectorize! ... Let's see if tests pass."*
 
-### P11 — test coverage is shaped inversely to risk
+### P13 — test coverage is shaped inversely to risk
 
 489 tests. **180 of them (37%) are `test_ddd.py`** — the newest subsystem. The
 two most depended-upon modules are the thinnest covered:
@@ -462,6 +528,31 @@ indirectly by analysis tests, so the gap is smaller than the raw counts
 suggest — but the direction is real.)
 
 ---
+
+## 7.1 State of the list
+
+Fixed during this review, each with a regression test: P1 (JAX made optional
+again), P6 (batched evaluation moved into the toolkit, fixing an
+`AttributeError` on every stamp for circuits mixing nonlinear and reactive
+elements), P9 (`G` versus `∂i/∂x`, plus the `VCVS_limited` residual and limiter
+semantics), P10 (the shadowed `Tanh.fprime`).
+
+Open, in the order I would take them:
+
+| # | item | size | blocked on |
+|---|---|---|---|
+| P7 | toolkit reaches into element instances | small | a product decision — see its plan |
+| P4 | ~1528 lines of maintained dead code | small | knowing what CNA was for |
+| P11 | `_symbolic` missing `tanh`/`power` | small | nothing |
+| P2 | delegation error messages | small | nothing |
+| P13 | test coverage inverted against risk | large | nothing |
+| P3 | hierarchy claims more than it delivers | medium | nothing |
+| P5 | no user-facing backend story | medium | nothing |
+| P8 | two extension conventions | medium | a convention decision |
+
+P7 and P4 are first not because they are the most valuable but because they are
+the two where the code is *actively misleading* — one advertises an extension
+point that has never fired, the other keeps two `Circuit` classes alive.
 
 ## 8. Conventions
 
