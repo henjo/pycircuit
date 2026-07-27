@@ -23,8 +23,9 @@ import pytest
 import sympy
 
 from pycircuit.circuit import benchmark_circuits as bc
-from pycircuit.circuit.ddd import (DDDSizeError, ONE, ZERO, ddd_cofactor_solve,
-                                   ddd_cramer, ddd_of_matrix, s_expand)
+from pycircuit.circuit.ddd import (DDDSizeError, NumericTerminal, ONE, ZERO,
+                                   ddd_cofactor_solve, ddd_cramer,
+                                   ddd_of_matrix, s_expand)
 
 
 def _full_matrix(n):
@@ -595,3 +596,80 @@ def test_noise_analysis_through_the_toolkit():
     kT = noise.toolkit.kboltzmann * noise.par.epar.T
     assert sympy.simplify(res['Svnout'] - 4 * R1v * R2v * kT / (R1v + R2v)) == 0
     assert sympy.simplify(res['gain'] - R2v / (R1v + R2v)) == 0
+
+
+## -- numeric terminals (semi-symbolic / MTDDD) ---------------------------
+
+def _semi(N, n_symbolic=2):
+    system = bc.rc_ladder_semi_symbolic(N, n_symbolic=n_symbolic)
+    return system, system.A.free_symbols - {system.s}
+
+
+@pytest.mark.parametrize('N', [8, 12, 16])
+def test_numeric_terminals_do_not_change_the_value(N):
+    """Collapsing a parameter-free minor is an accounting change, not a new answer."""
+    system, keep = _semi(N)
+    env = dict(system.params)
+    env[system.s] = 1j * 2 * np.pi * 1e5
+
+    plain = ddd_of_matrix(system.A)
+    collapsed = ddd_of_matrix(system.A, keep_symbolic=keep, collapse_max_dim=4)
+
+    a, b = complex(plain.eval(env)), complex(collapsed.eval(env))
+    assert abs(a - b) <= 1e-9 * abs(a)
+
+
+def test_numeric_terminals_are_opt_in():
+    """Default construction must produce no collapsed terminals."""
+    system, keep = _semi(12)
+    plain = ddd_of_matrix(system.A)
+    assert plain.n_collapsed == 0
+    assert not any(isinstance(v.one_edge, NumericTerminal)
+                   or isinstance(v.zero_edge, NumericTerminal)
+                   for v in plain.vertices())
+
+
+def test_numeric_terminals_shrink_the_diagram():
+    system, keep = _semi(16)
+    plain = ddd_of_matrix(system.A)
+    collapsed = ddd_of_matrix(system.A, keep_symbolic=keep, collapse_max_dim=5)
+    assert collapsed.n_collapsed > 0
+    assert collapsed.size < plain.size
+
+
+def test_collapse_respects_its_size_cap():
+    """A larger cap collapses more, because evaluating a determinant is costly."""
+    system, keep = _semi(16)
+    sizes = [ddd_of_matrix(system.A, keep_symbolic=keep,
+                           collapse_max_dim=cap).size for cap in (2, 3, 4, 5)]
+    assert sizes == sorted(sizes, reverse=True)
+
+
+def test_collapsed_terminal_still_depends_on_frequency():
+    """A collapsed minor is a polynomial in s, not a constant.
+
+    Its value has to be substituted like any other payload -- a terminal is not
+    automatically a number.
+    """
+    system, keep = _semi(10)
+    D = ddd_of_matrix(system.A, keep_symbolic=keep, collapse_max_dim=4)
+    env = dict(system.params)
+    lo = complex(D.eval(dict(env, **{}) | {system.s: 1j * 2 * np.pi * 1e2}))
+    hi = complex(D.eval(dict(env) | {system.s: 1j * 2 * np.pi * 1e8}))
+    assert abs(lo - hi) > 0
+
+
+def test_collapse_keeps_the_symbols_it_was_told_to():
+    system, keep = _semi(10)
+    D = ddd_of_matrix(system.A, keep_symbolic=keep, collapse_max_dim=4)
+    ## Substituting only the frequency must leave the kept parameters behind.
+    value = D.eval({system.s: 1j})
+    assert value.free_symbols == keep
+
+
+def test_collapsed_diagram_renders():
+    system, keep = _semi(8)
+    dot = ddd_of_matrix(system.A, keep_symbolic=keep,
+                        collapse_max_dim=4).to_dot(max_vertices=500)
+    assert dot.startswith('digraph')
+    assert dot.rstrip().endswith('}')

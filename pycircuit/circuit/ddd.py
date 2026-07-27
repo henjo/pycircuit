@@ -43,6 +43,7 @@ import sympy
 
 
 __all__ = ['DDD', 'DDDVertex', 'SExpandedDDD', 'DDDFamily', 'DDDCombination',
+           'NumericTerminal',
            'ONE', 'ZERO', 'ddd_of_matrix', 'ddd_cramer', 'ddd_cofactor_solve',
            's_expand', 'DDDSizeError']
 
@@ -96,6 +97,51 @@ class _Terminal:
 
 ONE = _Terminal(1, 'ONE')
 ZERO = _Terminal(0, 'ZERO')
+
+
+class NumericTerminal:
+    """A terminal carrying a collapsed sub-determinant.
+
+    A plain DDD has only the ``0`` and ``1`` leaves, so every factor of every
+    product term becomes a vertex -- including the ones that carry no symbol we
+    care about.  Allowing terminals to hold *values* lets a whole parameter-free
+    minor collapse into a single leaf, which is Pi & Shi's multi-terminal DDD
+    (DAC 2000).
+
+    It matters for more than size.  Those sub-determinants are the ones whose
+    entries are actual component values, and multiplying them out symbolically is
+    what turns numeric components into ever-growing exact rationals -- the
+    failure that capped the GiNaC backend.  Evaluating the minor once, to a
+    number or a small polynomial, means those products are never formed.
+
+    Attributes:
+        value: The sub-determinant, already evaluated.
+    """
+
+    __slots__ = ('value',)
+    is_terminal = True
+
+    def __init__(self, value):
+        self.value = value
+
+    def __repr__(self):
+        return '<NumericTerminal %s>' % (self.value,)
+
+
+def _resolve(value, env):
+    """Substitute ``env`` into a payload, keeping exact values exact.
+
+    Coercing an exact Integer or Rational to machine complex would quietly turn
+    an exact symbolic result into a floating-point one, so only values that are
+    already inexact are converted.
+    """
+    if getattr(value, 'free_symbols', None):
+        value = value.subs(env)
+    if getattr(value, 'free_symbols', None) or not getattr(value, 'is_number', False):
+        return value
+    if value.has(sympy.Float):
+        return complex(value)
+    return value
 
 
 class DDD:
@@ -156,11 +202,16 @@ class DDD:
         cheap -- one pass over the DAG -- precisely because the diagram shares:
         the count can be astronomically larger than ``size``.
         """
-        memo = {id(ONE): 1, id(ZERO): 0}
+        memo = {}
         stack = [(self.root, False)]
         while stack:
             node, expanded = stack.pop()
-            if node.is_terminal or id(node) in memo:
+            if node.is_terminal:
+                ## A collapsed minor is one leaf, so one term -- which is the
+                ## point: it stands in for what would have been many.
+                memo.setdefault(id(node), 0 if node.value == 0 else 1)
+                continue
+            if id(node) in memo:
                 continue
             if not expanded:
                 stack.append((node, True))
@@ -216,27 +267,21 @@ class DDD:
             ## the same expression once per vertex that references it.
             key = id(v.entry)
             if key not in values:
-                e = v.entry
-                if getattr(e, 'free_symbols', None):
-                    e = e.subs(env)
-                ## Convert to machine complex only when the value is already
-                ## inexact.  Coercing an exact Integer or Rational would quietly
-                ## turn an exact symbolic result into a floating-point one --
-                ## ``1`` becoming ``1.0`` in an otherwise exact transfer function.
-                if getattr(e, 'free_symbols', None) or not getattr(e, 'is_number', False):
-                    values[key] = e
-                elif e.has(sympy.Float):
-                    values[key] = complex(e)
-                else:
-                    values[key] = e                      # exact; keep it exact
-        memo = {id(ONE): 1, id(ZERO): 0}
+                values[key] = _resolve(v.entry, env)
+        memo = {}
 
         ## Iterative post-order.  Depth is bounded by the matrix dimension, but
         ## an explicit stack keeps evaluation independent of the recursion limit.
         stack = [(self.root, False)]
         while stack:
             node, expanded = stack.pop()
-            if node.is_terminal or id(node) in memo:
+            if node.is_terminal:
+                ## A collapsed minor may itself depend on the frequency, so its
+                ## value needs the same substitution as a vertex payload.
+                if id(node) not in memo:
+                    memo[id(node)] = _resolve(node.value, env)
+                continue
+            if id(node) in memo:
                 continue
             if not expanded:
                 stack.append((node, True))
@@ -276,11 +321,15 @@ class DDD:
         gives the best any completion of a partial term could achieve, so terms
         come out in decreasing order without generating the rest.
         """
-        best = {id(ONE): 1.0, id(ZERO): 0.0}
+        best = {}
         stack = [(self.root, False)]
         while stack:
             node, expanded = stack.pop()
-            if node.is_terminal or id(node) in best:
+            if node.is_terminal:
+                best.setdefault(id(node), abs(complex(values[id(node)]))
+                                if id(node) in values else abs(complex(node.value)))
+                continue
+            if id(node) in best:
                 continue
             if not expanded:
                 stack.append((node, True))
@@ -331,14 +380,15 @@ class DDD:
             neg, _, node, acc, taken = heapq.heappop(heap)
             if -neg == 0.0:
                 continue                       # nothing reachable this way
-            if node is ONE:
+            if node.is_terminal:
+                if node.value == 0:
+                    continue
                 chain, factors = taken, []
                 while chain is not None:
                     v, chain = chain
                     factors.append(v.sign * v.entry)
+                factors.append(node.value)
                 yield sympy.Mul(*reversed(factors)), list(acc)
-                continue
-            if node is ZERO:
                 continue
 
             take = tuple(a * node.sign * v[id(node.entry)]
@@ -432,11 +482,19 @@ class DDD:
 
         ids = {id(v): 'v%d' % k for k, v in enumerate(verts)}
 
+        extra = {}
+
         def ref(node):
             if node is ONE:
                 return 'ONE'
             if node is ZERO:
                 return 'ZERO'
+            if node.is_terminal:
+                name = 't%d' % len(extra)
+                key = id(node)
+                if key not in extra:
+                    extra[key] = (name, node.value)
+                return extra[key][0]
             return ids[id(node)]
 
         lines = ['digraph %s {' % name,
@@ -452,6 +510,9 @@ class DDD:
             lines.append('  %s -> %s;' % (ids[id(v)], ref(v.one_edge)))
             lines.append('  %s -> %s [style=dashed];'
                          % (ids[id(v)], ref(v.zero_edge)))
+        for name, value in extra.values():
+            lines.append('  %s [shape=square, label="%s"];'
+                         % (name, sympy.sstr(value)[:18]))
         lines.append('}')
         return '\n'.join(lines)
 
@@ -472,11 +533,45 @@ class _Builder:
     why no BDD package is needed.
     """
 
-    def __init__(self, matrix, order='min-degree'):
+    def __init__(self, matrix, order='min-degree', keep_symbolic=None,
+                 collapse_max_dim=8):
         self.M = matrix
         self.order = order
+        self.keep_symbolic = None if keep_symbolic is None else set(keep_symbolic)
+        self.collapse_max_dim = collapse_max_dim
         self.cache = {}
         self._nonzero = {}
+        self._collapsed = 0
+
+    def collapsible(self, rows, cols):
+        """True if this minor carries none of the symbols we must keep.
+
+        Such a minor is just a value, so it can be evaluated once instead of
+        contributing a vertex per factor per product term.
+        """
+        ## Collapsing evaluates a determinant, which is itself expensive above a
+        ## certain size -- past that the collapse costs more than the vertices it
+        ## saves, so large parameter-free minors are still expanded and only
+        ## their sub-minors collapse.
+        if self.keep_symbolic is None or not 2 <= len(rows) <= self.collapse_max_dim:
+            return False
+        for i in rows:
+            for j in cols:
+                free = getattr(self.M[i, j], 'free_symbols', None)
+                if free and (free & self.keep_symbolic):
+                    return False
+        return True
+
+    def collapse(self, rows, cols):
+        """Evaluate a parameter-free minor into a single terminal."""
+        sub = self.M.extract(list(rows), list(cols))
+        value = sympy.expand(sub.det())
+        self._collapsed += 1
+        if value == 0:
+            return ZERO
+        if value == 1:
+            return ONE
+        return NumericTerminal(value)
 
     def nonzero(self, i, j):
         """Structural nonzero test, memoised (sympy comparisons are not cheap)."""
@@ -496,6 +591,11 @@ class _Builder:
         hit = self.cache.get(key)
         if hit is not None:
             return hit
+
+        if self.collapsible(rows, cols):
+            node = self.collapse(rows, cols)
+            self.cache[key] = node
+            return node
 
         pivot = self._select(rows, cols)
         if pivot is None:                                # a zero row or column
@@ -550,7 +650,8 @@ class _Builder:
         return ('col', best_col)
 
 
-def ddd_of_matrix(A, order='min-degree'):
+def ddd_of_matrix(A, order='min-degree', keep_symbolic=None,
+                  collapse_max_dim=8):
     """Build the determinant decision diagram of a sympy matrix.
 
     Args:
@@ -560,6 +661,11 @@ def ddd_of_matrix(A, order='min-degree'):
         order: ``'min-degree'`` (default) picks the sparsest row or column of
             each minor on the fly; ``'row'`` always expands the first row, which
             is optimal for full matrices.
+        keep_symbolic: Symbols that must stay symbolic.  When given, any minor
+            containing none of them is evaluated once into a single terminal
+            (see :class:`NumericTerminal`) instead of being expanded -- the
+            semi-symbolic mode, where most components are numbers and only a few
+            parameters are of interest.  ``None`` (default) expands everything.
 
     Returns:
         DDD: the built diagram.
@@ -582,9 +688,12 @@ def ddd_of_matrix(A, order='min-degree'):
     if order not in ('min-degree', 'row'):
         raise ValueError('unknown order %r' % (order,))
 
-    builder = _Builder(A, order)
+    builder = _Builder(A, order, keep_symbolic=keep_symbolic,
+                       collapse_max_dim=collapse_max_dim)
     root = builder.build(tuple(range(A.rows)), tuple(range(A.cols)))
-    return DDD(root, A, order, len(builder.cache))
+    result = DDD(root, A, order, len(builder.cache))
+    result.n_collapsed = builder._collapsed
+    return result
 
 
 def ddd_cramer(A, b, indices=None, order='min-degree'):

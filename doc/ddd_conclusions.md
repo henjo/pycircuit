@@ -454,7 +454,16 @@ Each conclusion states its reason; §-references point to the evidence.
    s-expanded coefficient form is exactly what `as_num_den` produces and
    `poles()`/`zeros()` consume, and because Theorem 1 makes the expansion *linear*
    in the flat DDD, so it is cheap to add and irrational to omit (§4.3).
-3. **Numeric terminals (MTDDD) are core for the semi-symbolic regime** — because
+3. **Numeric terminals (MTDDD) — SUPERSEDED BY MEASUREMENT (P3, 2026-07-27).**
+   Implemented, correct, and **off by default**. The premise below turned out not
+   to hold: the exact-rational blow-up is a property of representations that
+   *multiply entries symbolically*, and a diagram never does — it holds each
+   entry as a payload. The plain diagram handles the semi-symbolic case at
+   dim 33 in ~10 ms, well past where GiNaC stalled, so this stage's acceptance
+   criterion was already met by P0. Collapsing costs ~200x the build time for a
+   third off the vertices. Kept as an option; the structural case it would suit
+   (a compact numeric block) is better served by hierarchy. Original reasoning:
+   **Numeric terminals (MTDDD) are core for the semi-symbolic regime** — because
    folding numerics into terminal values during construction structurally prevents
    the exact-rational blow-up that capped the GiNaC backend at ~dim 16 (§3, §4.3).
    Note the scope: this helps where *some* parameters are numeric, so it is the

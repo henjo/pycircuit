@@ -13,8 +13,8 @@ Determinant Decision Diagrams (DDD) for symbolic circuit analysis
    Implemented so far: the measurement harness (Stage B), the layered
    determinant construction with Cramer solving (Stage P0), the s-expanded
    multiroot form (Stage P1), the toolkit integration (Stage P2), and
-   dominant-term approximation (Stage P5), and shared-construction noise
-   (Stage P4).
+   dominant-term approximation (Stage P5), shared-construction noise (Stage P4),
+   and numeric terminals (Stage P3, off by default -- see below).
 
 Why this exists
 ===============
@@ -356,8 +356,7 @@ own child process.
 
 .. rubric:: Next sections
 
-Next: semi-symbolic numeric terminals, and hierarchical construction over
-:class:`~pycircuit.circuit.SubCircuit`.
+Next: hierarchical construction over :class:`~pycircuit.circuit.SubCircuit`.
 
 .. rubric:: Noise
 
@@ -770,3 +769,97 @@ analysis with no change to that analysis at all:
                   toolkit=ddd_toolkit)
     res = noise.solve(s, complexfreq=True)
     res['Svnout']            # same expression symbolic_poly would give
+
+Numeric terminals — and why they are off by default
+===================================================
+
+A plain diagram has only the ``0`` and ``1`` leaves, so every factor of every
+product term becomes a vertex, including factors carrying no symbol anyone cares
+about. Pi & Shi's multi-terminal DDD (DAC 2000) lets a terminal hold a *value*,
+so a minor free of the parameters of interest collapses into a single leaf::
+
+    D = ddd_of_matrix(A, keep_symbolic={R1, R2})
+
+It works, it is tested, and it is **not enabled by default** — for two reasons
+worth stating plainly, because the second one invalidates the motivation this
+stage was planned around.
+
+**It costs more than it saves.** Collapsing means evaluating a determinant, which
+is itself expensive, so it is capped by minor size. On a 16-section semi-symbolic
+ladder the trade is:
+
+.. exec-rst::
+
+    import time
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.ddd import ddd_of_matrix
+
+    system = bc.rc_ladder_semi_symbolic(16, n_symbolic=2)
+    keep = system.A.free_symbols - {system.s}
+
+    t = time.perf_counter()
+    plain = ddd_of_matrix(system.A)
+    t_plain = time.perf_counter() - t
+
+    print(".. list-table:: Collapsing parameter-free minors: size against cost")
+    print("   :header-rows: 1")
+    print("   :widths: 14 12 12 16")
+    print("")
+    print("   * - collapse cap")
+    print("     - vertices")
+    print("     - collapsed")
+    print("     - build time")
+    print("   * - off (default)")
+    print("     - %d" % plain.size)
+    print("     - 0")
+    print("     - %.4f s" % t_plain)
+    for cap in (2, 3, 4, 5):
+        t = time.perf_counter()
+        D = ddd_of_matrix(system.A, keep_symbolic=keep, collapse_max_dim=cap)
+        dt = time.perf_counter() - t
+        print("   * - %d" % cap)
+        print("     - %d" % D.size)
+        print("     - %d" % D.n_collapsed)
+        print("     - %.4f s" % dt)
+
+A third off the vertices for a couple of hundred times the build time is not a
+trade worth taking by default.
+
+**The problem it was meant to solve does not arise here.** Numeric terminals were
+planned into this work to prevent a specific failure: numeric component values
+becoming exact rationals whose products explode, which is what stalled the GiNaC
+backend past about dimension 16. That failure belongs to representations which
+*multiply entries symbolically*. A diagram never does — it holds each entry as a
+payload and evaluates it, so those products are never formed:
+
+.. exec-rst::
+
+    import time
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.ddd import ddd_of_matrix
+
+    print(".. list-table:: Plain diagram on semi-symbolic circuits, no collapse")
+    print("   :header-rows: 1")
+    print("   :widths: 10 14 16")
+    print("")
+    print("   * - dim")
+    print("     - vertices")
+    print("     - build time")
+    for N in (16, 24, 32):
+        system = bc.rc_ladder_semi_symbolic(N, n_symbolic=2)
+        t = time.perf_counter()
+        D = ddd_of_matrix(system.A)
+        dt = time.perf_counter() - t
+        print("   * - %d" % system.dim)
+        print("     - %d" % D.size)
+        print("     - %.4f s" % dt)
+
+Well past the dimension where the exact-rational approach stalled, in
+milliseconds. The stage's own acceptance criterion was already met before it was
+written.
+
+The feature is kept because it is cheap to keep, correct, and genuinely useful
+where a circuit contains a *compact* numeric block rather than a long numeric
+chain — a ladder's parameter-free minors are its tails, which are large and so
+excluded by the cap. That structural case is better served by hierarchy, where a
+whole numeric subcircuit reduces to a stamp, which is the next stage.
