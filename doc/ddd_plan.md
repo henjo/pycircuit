@@ -274,10 +274,11 @@ that makes duck typing tolerable at this scale.
   becomes reachable from *every* symbolic toolkit and quietly widens their surface.
   DDD methods go on `DDDToolkit` explicitly.
 
-## 4. Status — round one is complete
+## 4. Status — both rounds are complete
 
 Stages B and P0–P6 are implemented, measured and documented, together with the
-solution-object refactor and calibration tiers 1 and 3.
+solution-object refactor and calibration tiers 1 and 3; round two (H1–H7)
+followed, then a review pass and the closing calibration work.
 
 | Stage | Outcome |
 |---|---|
@@ -297,6 +298,8 @@ solution-object refactor and calibration tiers 1 and 3.
 | H5 — Tier 2 calibration | **Done.** Our DDD-vs-SoE ratios 3.3–5.6× land in the published 5.0–6.0× band |
 | H6 — conditioning | **Done, by a different route.** Scaling does not help; extended precision takes N=20 from 5e-10 to 1.6e-15 |
 | H7 — the DDD analysis family | **Done.** Two-port and loop gain agree exactly with the originals; backend is a `det`/`cofactor` override, frontends define no `solve` |
+| Review pass | **Done.** Development learnings applied everywhere they applied; every fix pinned by a test; the extraction rule written down |
+| Calibration close-out | **Done.** ICCAD 2010 Table II reproduced *exactly* (full matrices, LED column); µA725 examined and declined with reasons |
 
 The original definition of done is met: exact s-expanded coefficients held
 compactly, dominant pole/zero estimates from coefficient ratios, exact numeric
@@ -610,6 +613,25 @@ recorded even when negative.
 - H4 is cheap and worth doing alongside whichever of H1/H2 is active, since it
   supplies reference points for both.
 - H5 is self-contained and only affects the s-expanded path.
+- **What the external calibration can and cannot assert.** Closing out the
+  benchmarks turned up the boundary. Full matrices are exact: ICCAD 2010's
+  Table II LED column is reproduced value for value, because "the dense `n × n`
+  matrix of distinct symbols" is a complete specification. Named op-amps are
+  not: the µA741 is published twice by the same group as 23×23 / 6654 / 119 011
+  terms (TCAD 2000) and 25×25 / 13 722 / 4 203 232 terms (ICCAD 2010), and the
+  term count does not depend on expansion order, so the difference is
+  formulation and device model. A published `|DDD|` for a named circuit
+  therefore pins an **order of magnitude, not a number** — enough to catch a
+  construction that shares nothing, which is what it is used for here.
+- **The µA725 is declined, and should not be reopened without new material.**
+  Two independent reasons, both recorded in the theory document under "The µA725
+  in particular": its only published schematic (ASP-DAC 2012, Fig. 4) draws no
+  junction dots, so connectivity is unrecoverable on a 26-transistor circuit;
+  and the papers reporting sizes for it disagree (34×34 / 1.280604e8 terms in
+  ICCAD 2010 against 32×32 / 5.47e7 in TCAD 2013), while the paper carrying the
+  schematic reports no flat `|DDD|` at all. Ambiguous figure, ambiguous target.
+  New material would be a dotted schematic or a netlist — not a re-reading of
+  the same figure.
 - Keep paper PDFs out of the repo; they live in `~/pycircuit_agy/papers/ddd/`.
   `benchmarks/paper_extract.py` renders their figures and tables, which are
   300-dpi scans rather than text.

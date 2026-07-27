@@ -358,6 +358,44 @@ the 2025 DSSA paper (B) attacks approximation from a Monte-Carlo/GA direction
 outside the BDD world entirely. Neither displaces DDD for our architecture, but
 "the field ended in 2013" would be wrong.
 
+## What was actually extracted as tests (surveyed 2026-07-27)
+
+Every paper here was read for reusable benchmarks under one rule: **a published
+figure is only usable as a test if the circuit and the measurement are both
+understood.** The outcome, so nobody re-runs the survey:
+
+| source | yields | as what |
+|---|---|---|
+| A2 ICCAD 2010, Table II | full `n × n` matrices, LED and Greedy columns | **exact** — every LED value is `n·2^(n-1)` and ours reproduces it |
+| A (TCAD 2000), Table IV | µA741 flat / hierarchical / s-expanded sizes | order-of-magnitude, plus an exact *degree* check |
+| A (TCAD 2000), Table II | DDD-vs-SCAPP (= sequence-of-expressions) op counts | ratio check against our `soe.py` |
+| A (TCAD 2000) | Cauer low-pass, cascaded op-amp blocks | Tier 2 fixtures |
+| C, A3, D2, D3 | — | nothing usable, see below |
+
+Declined, with the reason:
+
+- **µA725** — the tempting one, and the most carefully rejected. Its only
+  published schematic (`songyang_aspdac12.pdf`, Fig. 4) draws **no junction
+  dots**, so on 26 transistors the connectivity is not recoverable; and the
+  papers reporting sizes disagree about the netlist — 34×34 / 1.280604e8 terms
+  (A2) against 32×32 / 5.47e7 (D2), while ASP-DAC 2007 says outright "schematic
+  omitted". Ambiguous figure, ambiguous target. Reopen only with a dotted
+  schematic or a netlist.
+- **`miller`, `Cascode`, `bigtst`, `rlctest`, `ccstest`, `vcstest`** — names, not
+  specifications.
+- **`butter`** — realisation not stated, so its degree cannot be reproduced.
+- **`rctreeA` / `rctreeB`** — node counts inferable, but a tree's diagram size
+  depends on its *shape*, which is not given.
+- **A3 (MTDDD)** — tabulates semi-symbolic µA741 results without saying which
+  parameters were kept symbolic, which is the entire content of the measurement.
+
+Two facts worth carrying: published `|DDD|` figures for a *named* circuit pin an
+order of magnitude, not a number — the µA741 appears as 23×23 / 6654 / 119 011
+terms in A and 25×25 / 13 722 / 4 203 232 terms in A2, and term count is
+order-independent. Full matrices have no such ambiguity, which is why they are
+the exact check. `benchmarks/paper_extract.py` renders these scans and vector
+figures to PNG, which is how the tables above were read at all.
+
 ## Author PDF directories (many more open PDFs)
 
 - Sheldon X.-D. Tan (UC Riverside): https://intra.engr.ucr.edu/~stan/papers/
