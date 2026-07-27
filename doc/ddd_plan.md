@@ -96,7 +96,8 @@ built, and then keeps testing it.
 | Calibration against the papers | Tier 1/3 | The exact identity, and the µA741 |
 | *Ordering* | H1 | The distribution over node numberings, not a single figure |
 | *Recursive hierarchy* | H2 | Replaces the "does not reproduce 56×" note with the measured outcome |
-| *Sensitivity* | H3 | New section |
+| *Reduced noise* | H3 | How internal sources are referred to terminals |
+| *Sensitivity* | H4 | New section |
 
 ---
 
@@ -289,6 +290,8 @@ solution-object refactor and calibration tiers 1 and 3.
 | P5 — approximation | Delivered, and conditional: prunes only as far as component values differ |
 | P6 — hierarchy | Delivered **single-level**; does *not* reach the published 56× |
 | Calibration | Tier 1 exact (`n·2^(n-1)`, n = 1…7); Tier 3 µA741 built and compared |
+| H1 — node ordering | **Done.** Gate passed: spread 2.7–2.8× → 1.00× (ladder, MFB) and 1.42× (µA741) |
+| H2 — sequential suppression | **Done.** Gate passed: µA741 1040 → 156 vertices, 6.7× |
 
 The original definition of done is met: exact s-expanded coefficients held
 compactly, dominant pole/zero estimates from coefficient ratios, exact numeric
@@ -307,7 +310,7 @@ opens with.
 
 Ordering is as directed: hierarchy first, then ordering, then the rest.
 
-### H1 — Expansion and node ordering *(first, because everything else is measured in vertices)*
+### H1 — Expansion and node ordering — **DONE**
 
 **Why first.** Rebuilding the µA741 with a different node *numbering* moved
 `|DDD|` from 1040 to 2424 — a 2.3× swing from something arbitrary. Every vertex
@@ -337,7 +340,7 @@ read against.
 *Effort: small to moderate — mostly measurement, and the construction already
 takes an ordering strategy.*
 
-### H2 — Recursive hierarchy *(the headline gap)*
+### H2 — Recursive hierarchy — **DONE**
 
 **Why second.** `HierarchicalDDD` splits the matrix *once*, and on the µA741 that
 loses whichever way it is pointed: suppress a small block and ~21 terminals
@@ -366,7 +369,46 @@ flat is a negative result to write up as P3 was.
 
 *Effort: the largest remaining item.*
 
-### H3 — Symbolic sensitivity
+### H3 — Noise through the reduction
+
+**Why this follows H2 immediately.** P4 already builds every transimpedance from
+one shared cofactor family, but it does so on the **flat** matrix — and H2 showed
+that matrix is several times larger than it needs to be on a real amplifier.
+Noise is the analysis with most to gain, because it is the one that needs the
+*whole* transimpedance vector: the cost reduction attacks is exactly the cost
+noise pays once per source.
+
+**The part that is not just plumbing.** An internal unknown cannot simply be
+suppressed and forgotten. Every resistor in a suppressed block *is a noise
+source*, and its contribution has to arrive at the terminals. So a reduced block
+must stamp **two** things into its parent: the admittance stamp H2 already
+produces, and an equivalent noise correlation referred to its terminals. Omitting
+the second does not fail loudly — it silently under-reports noise, which is the
+kind of error that looks entirely plausible in a plot.
+
+Tasks:
+1. Carry each block's noise correlation through its suppression: the
+   terminal-referred correlation is ``T · CY_block · Tᴴ``, where ``T`` maps the
+   block's internal sources to its terminals. ``T`` is built from the *same
+   cofactors* already computed for the admittance stamp, so the sharing that
+   makes P4 and H2 cheap should serve this too.
+2. Combine the referred correlation with the parent's own ``CY``.
+3. Wire it into `DDDToolkit.noise_psd`, so `Noise(cir, toolkit=ddd_toolkit)`
+   benefits with no change to that analysis — the same zero-lines-outside-DDD
+   property P4 had.
+
+**Gate.** The PSD must be **identical** to the flat result, not merely close, on
+the ladder and the MFB — a reduction that loses a noise source would still look
+reasonable, so equality is the only safe test. On the µA741 the construction cost
+should fall by a factor comparable to H2's 6.7×, rather than staying flat.
+
+**Risk to watch.** Correlation is where reductions usually go wrong: sources
+inside a block become *correlated* at the terminals even when they were
+independent internally, so the referred correlation is a full matrix rather than
+a diagonal. Testing against the flat result on a circuit with several noisy
+elements in one block is what catches an incorrectly diagonal assumption.
+
+### H4 — Symbolic sensitivity
 
 The plan's own judgement, deferred pending P0 and now due: *pycircuit has none,
 and a DDD makes it nearly free — the derivative of a determinant with respect to
@@ -383,14 +425,14 @@ to component parameters; expose on `DDDSolution` and the AC result.
 at a cost that is a small multiple of a single solve rather than one solve per
 parameter.
 
-### H4 — Tier 2 calibration
+### H5 — Tier 2 calibration
 
 The Cauer low-pass filter and the cascaded-opamp series from TCAD 2000, both
 constructible from `R`/`C`/`VCCS` today. The cascaded series is the one their
 SCAPP comparison uses, so it lets the DDD-versus-SoE question be checked against
 their 117 vertices vs 539 operations rather than only against our own SoE.
 
-### H5 — Frequency and impedance scaling
+### H6 — Frequency and impedance scaling
 
 P1 measured denominator coefficients spanning 10⁹⁷ by N = 20, with pole accuracy
 degrading to 5e-10. Scaling toward O(1) coefficients is recorded there as the
@@ -400,7 +442,7 @@ backend from a related blow-up.
 **Gate.** Pole accuracy at N = 20 improves by orders of magnitude with no
 regression at small N.
 
-### H6 — DC and other analyses
+### H7 — DC and other analyses
 
 Everything built so far is AC and noise. Nothing rules out DC symbolic solving
 through the same machinery and nothing has been thought about. Scoping only.
@@ -409,12 +451,14 @@ through the same machinery and nothing has been thought about. Scoping only.
 
 ## 6. Definition of done for round two
 
-1. **Vertex counts are trustworthy**: every published figure carries a known
-   ordering policy and a known spread.
-2. **Hierarchy earns its place**: recursive suppression beats the flat diagram on
-   a real amplifier by more than that spread, or the negative result is written up
-   with the measurement.
-3. **A designer gains something they did not have**: symbolic sensitivity,
+1. ~~**Vertex counts are trustworthy**~~ — done (H1): every figure carries a known
+   ordering policy and a 1.42× worst-case spread.
+2. ~~**Hierarchy earns its place**~~ — done (H2): µA741 1040 → 156 vertices, 6.7×,
+   well beyond that spread.
+3. **Reduction reaches the analysis that needs it most**: noise computed through
+   the reduction gives an *identical* PSD to the flat result, at a cost that falls
+   with the reduction rather than staying flat.
+4. **A designer gains something they did not have**: symbolic sensitivity,
    agreeing with finite differences.
 
 Per-stage, the round-one rules stand unchanged: code plus tests with the full
@@ -426,10 +470,13 @@ recorded even when negative.
 
 ## 7. Sequencing notes
 
-- H1 before H2 is a dependency, not a preference: H2's gate compares vertex
-  counts, and H1 is what makes a vertex count mean something. H1 also produces the
-  number H2's gate is stated against — "beat flat by more than the ordering
-  spread" is unquantified until H1 has run.
+- H1 and H2 are done; the spread H1 measured (1.42× on the µA741) is the
+  tolerance every later vertex count is read against.
+- H3 depends on H2 and on nothing else — it is the direct application of the
+  reduction machinery to the analysis that most wants it.
+- H3 and H4 compete for the next slot and the choice is a judgement call: H3
+  makes an existing analysis cheaper on real circuits, H4 gives pycircuit a
+  capability it does not have at all.
 - H3 is independent of both and could run in parallel; it touches only new code.
 - H4 is cheap and worth doing alongside whichever of H1/H2 is active, since it
   supplies reference points for both.
