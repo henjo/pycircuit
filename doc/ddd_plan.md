@@ -86,7 +86,107 @@ built, and then keeps testing it.
 
 ---
 
-## 3. File map
+## 3. Architectural integration — what changes outside DDD
+
+Ground rule 3 says "additive only". That is achievable, but **not** by the obvious
+route, and the places where DDD presses on the rest of pycircuit should be decided
+deliberately rather than discovered at P2.
+
+### 3.1 What the existing architecture already gives us (verified)
+
+- **The import graph is clean and hierarchical**, which is the main thing that
+  makes this containable. `transferfunction.py` imports only numpy and sympy;
+  `toolkit.py` imports numpy, sympy and the `_*` backend modules — **neither knows
+  about `circuit` or `analysis`**. `analysis_ss.py` sits on top and imports both.
+  - **Rule that follows:** `ddd.py` stays a **leaf** — sympy only, no imports from
+    `circuit`, `analysis` or `toolkit`. `dddresult.py` may import
+    `transferfunction`. Then `toolkit → dddresult → transferfunction` stays
+    acyclic. Violating this is the fastest way to create an import cycle in a
+    package that currently has none in this area.
+- **Noise needs no external change at all.** `noise_psd` is already a method on the
+  `Toolkit` base (with `SymbolicPolyToolkit` overriding it), so **P4 is a pure
+  override** — zero lines outside DDD. This extension point already exists and was
+  built for exactly this.
+- **Stamping needs nothing.** DDD consumes `G`, `C`, `u` as stamped; `_symbolic.py`
+  is untouched, and no new backend primitives are required. Axis 1 really is
+  unaffected.
+
+### 3.2 Where DDD genuinely presses outside itself
+
+| Site | What is needed | Risk |
+|---|---|---|
+| `analysis_ss.py` AC path (~line 182) | A route that does **not** flatten to sympy | **High** — see 3.3 |
+| `toolkit.py` | `DDDToolkit` + `ddd_toolkit` singleton | Low — purely additive, follows the `ginac_toolkit` pattern |
+| `CircuitResultACPoly` | Not reusable as-is — see 3.3 | Medium |
+| `doc/src/conf.py` | add `sphinx.ext.graphviz` | Trivial, doc-build only |
+| `SubCircuit` (P6 only) | Hierarchical stamps | Deferred; the deepest leak, and a reason to keep P6 last |
+
+### 3.3 The bloat problem, and the fix
+
+**The smell.** `analysis_ss.py` currently does capability-query plus inline
+construction:
+
+```python
+if self.toolkit.supports('num_den') and not isiterable(ss):
+    num, den = self.toolkit.linearsolver_num_den(s*C + G, -u)
+    xac = np.array([ni / den for ni in num], dtype=object)
+    self.result = CircuitResultACPoly(...)
+```
+
+Every new representation adds another capability string, another branch, and
+another result class. Two backends is fine; this is precisely how analysis code
+rots. DDD would make it three, and P3's semi-symbolic variant four.
+
+`CircuitResultACPoly` cannot simply be reused, either: `tf_i` performs real
+arithmetic on the numerator vector (`0 * N`, `s * N`, `A + c0*(D - 1)`), which
+presumes sympy expressions. Graphs would need every one of those operations.
+
+**The naive fix does not work.** The instinct is a factory on the toolkit —
+`toolkit.make_ac_result(...)`. But result classes live in `analysis_ss.py`, which
+imports `toolkit.py`; having `toolkit` import them creates a **cycle**. Worth
+stating explicitly because it is the first thing anyone will try.
+
+**Recommended fix — delegation, not inheritance or factories.** Have the toolkit
+return a representation-agnostic **solution object** with a uniform interface
+(`tf(plus, minus)`, `tf_i(...)`, `poles()`, `eval(params)`), and let
+`CircuitResultACPoly` *hold* one and delegate to it:
+
+- `symbolic_poly` returns a `NumDenSolution` wrapping `(num, den, s)` — today's
+  behaviour, moved not changed;
+- `ddd_toolkit` returns a `DDDSolution` wrapping the graph, which never flattens;
+- `analysis_ss.py` keeps **one** path, no capability branch, no `dtype=object`
+  array on the graph route;
+- the solution classes live beside the toolkits, so nothing imports upward.
+
+Net effect: this **removes** the existing conditional rather than adding to it, and
+each future backend costs zero lines in shared analysis code.
+
+**Honest caveat.** This is a change to shared code, which sits against ground rule
+3. Reconcile it as follows: it is a **behaviour-preserving refactor**, done as its
+own commit **before P2**, with the existing AC/`symbolic_poly` tests as the safety
+net (they already cover both branches). If it cannot be made green without
+touching behaviour, abandon it and accept one extra branch — the refactor is an
+investment against future bloat, not a prerequisite for DDD.
+
+### 3.4 Dependency discipline
+
+- **No new runtime dependencies.** `ddd_toolkit` must import with sympy alone.
+  Follow the established optional pattern (`ginac_toolkit = None` on `ImportError`)
+  only if something optional is ever needed — for pure-Python DDD, nothing is.
+- **Graphviz is a documentation-build dependency, not a runtime one.** `to_dot()`
+  returns a *string*; nothing in the library shells out to `dot`. Keep it that way,
+  and keep `dot` out of `install_requires`.
+- **Benchmarks: split by audience.** The circuit *builders* are reusable fixtures
+  wanted by both tests and the doc build, so they belong in the package. The
+  *harness* (timing, memory, `ulimit`, timeout handling) is developer tooling and
+  should not ship inside the library — put it under `doc/` (already on the doc
+  build path via `conf.py`) or a top-level `benchmarks/`.
+- **Do not add DDD primitives to `_symbolic.py`.** `Toolkit.__getattr__` silently
+  forwards unknown attributes to the backend module, so anything placed there
+  becomes reachable from *every* symbolic toolkit and quietly widens their surface.
+  DDD methods go on `DDDToolkit` explicitly.
+
+## 4. File map
 
 | Path | Status | Contents |
 |---|---|---|
@@ -102,7 +202,7 @@ built, and then keeps testing it.
 
 ---
 
-## 4. Stages
+## 5. Stages
 
 Effort figures are rough sizing, not estimates from a decomposition.
 
@@ -128,7 +228,7 @@ Tasks:
 the ladder. If it cannot reproduce our own numbers, it cannot referee anything.
 
 **Docs:** the "How we measure" section, including what each metric means and the
-symbol-convention note (§5 below).
+symbol-convention note (see Stage P0).
 
 ---
 
@@ -293,7 +393,7 @@ than part of making DDD work.
 
 ---
 
-## 5. Definition of done
+## 6. Definition of done
 
 **Per stage** — all four, or the stage is not done:
 1. code + tests, full suite green;
@@ -330,20 +430,20 @@ The corrected target, which is what the literature actually delivers:
 
 **Consequence for sequencing:** items 2 and 4 are P5 work, so **P5 is on the
 critical path to any human-readable result for large circuits** — it is not the
-optional finishing touch that §4's ordering implies. P1–P4 produce something
+optional finishing touch that §5's ordering implies. P1–P4 produce something
 correct, compact and evaluable but not yet *readable*. If the point of the
 exercise is designer insight, P5 must be scheduled, not merely listed.
 
 ---
 
-## 6. Sequencing notes
+## 7. Sequencing notes
 
 - Stage B strictly first — its baselines must be recorded *before* DDD exists, or
   the comparison is retrospective.
 - P0's symbol-convention decision precedes P0 coding; it defines the hash key.
 - P1 depends on P0; P2 on P1 (the result object exposes coefficients). P3, P4 and
   P6 are independent of each other and can be reordered by value once P2 lands.
-  **P5 is not in that set** — per §5 it is the only route to human-readable output
+  **P5 is not in that set** — per §6 it is the only route to human-readable output
   for large circuits, so it should be scheduled directly after P2 unless the
   semi-symbolic regime (P3) is the more urgent user need.
 - **Python-level practicalities to settle in P0, not discover in P4**: recursion
