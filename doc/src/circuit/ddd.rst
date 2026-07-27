@@ -1521,3 +1521,87 @@ with inductors. pycircuit gives an inductor a branch current rather than a
 s-expansion applies. An admittance-form inductor would put ``1/s`` in an entry,
 which has no coefficient split at all — the construction would refuse it, as
 :func:`~pycircuit.circuit.ddd.s_expand` does.
+
+Conditioning: precision, not rescaling
+======================================
+
+The s-expanded form earlier on this page comes with a warning — coefficients
+spanning tens of orders of magnitude, and pole accuracy decaying with circuit
+size. The obvious remedy was frequency and impedance scaling, since that is what
+rescued the GiNaC backend from a related blow-up. **It does not work here**, and
+finding out why produced the fix.
+
+Two hypotheses, and they are distinguishable by experiment. Either the
+*coefficients* are inaccurate, in which case computing them exactly should help;
+or the *root-finding* is ill-conditioned, in which case only precision will.
+
+.. exec-rst::
+
+    import numpy as np
+    import sympy
+    import scipy.linalg as la
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.ddd import s_expand
+
+    def eigen_poles(system, env):
+        n = system.dim
+        G = np.array([[complex(system.A[i, j].subs({**env, system.s: 0}))
+                       for j in range(n)] for i in range(n)], dtype=complex)
+        C = np.array([[complex(sympy.diff(system.A[i, j], system.s).subs(env))
+                       for j in range(n)] for i in range(n)], dtype=complex)
+        return np.sort_complex(np.array(
+            [e for e in la.eig(G, -C, right=False) if np.isfinite(e)]))
+
+    print(".. list-table:: Pole error against a solve that never forms the polynomial")
+    print("   :header-rows: 1")
+    print("   :widths: 8 16 18 12")
+    print("")
+    print("   * - N")
+    print("     - double precision")
+    print("     - extended precision")
+    print("     - improvement")
+    for N in (8, 12, 16, 20):
+        system = bc.rc_ladder(N)
+        env = dict(system.params)
+        expansion = s_expand(system.A, system.s)
+        reference = eigen_poles(system, env)
+
+        def error(roots):
+            roots = np.sort_complex(roots)
+            m = min(len(reference), len(roots))
+            return np.max(np.abs(roots[:m] - reference[:m])
+                          / np.abs(reference[:m]))
+
+        plain = error(expansion.roots_of(env))
+        exact = error(expansion.roots_of(env, precision='auto'))
+        print("   * - %d" % N)
+        print("     - %.1e" % plain)
+        print("     - %.1e" % exact)
+        print("     - %.0f×" % (plain / exact))
+
+The experiment settles it. Feeding *exact rational* coefficients into a
+double-precision root-finder changes almost nothing — at N = 20 the error stays
+at 5e-10. Raising the working precision takes the same problem to 2e-15. The
+error was never in the coefficients.
+
+That also explains why scaling cannot help. A single frequency scale is a
+similarity transformation; it can correct a poor *choice of units*, but the
+coefficient spread here reflects a genuine spread of pole magnitudes — a ladder's
+poles cover ten decades or more — and no scale factor compresses that. The GiNaC
+failure was a different animal: exact-arithmetic growth, integers exploding in a
+rational determinant, which scaling to powers of ten genuinely does fix.
+
+So :meth:`~pycircuit.circuit.ddd.SExpandedDDD.roots_of` takes a ``precision``
+argument. It defaults to ``None`` — plain ``numpy``, fast, and fine for moderate
+circuits. ``precision='auto'`` picks a digit count from how far the coefficients
+span and works in ``mpmath``, costing a few seconds at N = 20.
+
+.. note::
+
+   One subtlety made the difference between a working fix and a useless one.
+   The coefficients must be re-evaluated **exactly** before the extended-precision
+   solve. Converting them through ``complex()`` first rounds every one to 53 bits,
+   and carrying fifty digits of precision on numbers that have already lost their
+   accuracy achieves nothing — the first attempt did exactly that and improved
+   the error by a factor of two rather than a factor of 300 000. A binary float
+   is itself an exact rational, so converting the environment discards nothing.

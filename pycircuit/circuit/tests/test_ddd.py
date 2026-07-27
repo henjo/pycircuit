@@ -1391,3 +1391,81 @@ def test_ddd_is_a_few_times_more_compact_than_soe(name, builder):
 
     ratio = sequence / diagram
     assert 2.0 < ratio < 10.0, 'ratio %.1f outside the published band' % ratio
+
+
+## -- conditioning of pole extraction --------------------------------------
+
+def _eigen_poles(system, env):
+    """Reference that never forms the polynomial, so it avoids the issue."""
+    import scipy.linalg as la
+    n = system.dim
+    G = np.array([[complex(system.A[i, j].subs({**env, system.s: 0}))
+                   for j in range(n)] for i in range(n)], dtype=complex)
+    C = np.array([[complex(sympy.diff(system.A[i, j], system.s).subs(env))
+                   for j in range(n)] for i in range(n)], dtype=complex)
+    return np.sort_complex(np.array(
+        [e for e in la.eig(G, -C, right=False) if np.isfinite(e)]))
+
+
+@pytest.mark.parametrize('N', [12, 16])
+def test_extended_precision_recovers_pole_accuracy(N):
+    """The error is in the root-finding, not the coefficients.
+
+    Supplying exact coefficients changes nothing; raising the working precision
+    changes everything.  A 16-section ladder goes from ~5e-11 to ~2e-15.
+    """
+    system = bc.rc_ladder(N)
+    env = dict(system.params)
+    expansion = s_expand(system.A, system.s)
+    reference = _eigen_poles(system, env)
+
+    plain = np.sort_complex(expansion.roots_of(env))
+    exact = np.sort_complex(expansion.roots_of(env, precision='auto'))
+
+    def error(roots):
+        m = min(len(reference), len(roots))
+        return np.max(np.abs(roots[:m] - reference[:m])
+                      / np.abs(reference[:m]))
+
+    assert error(exact) < error(plain) / 100      # orders of magnitude better
+    assert error(exact) < 1e-13
+
+
+def test_extended_precision_does_not_regress_small_circuits():
+    system = bc.rc_ladder(6)
+    env = dict(system.params)
+    expansion = s_expand(system.A, system.s)
+    reference = _eigen_poles(system, env)
+
+    exact = np.sort_complex(expansion.roots_of(env, precision='auto'))
+    m = min(len(reference), len(exact))
+    assert np.max(np.abs(exact[:m] - reference[:m])
+                  / np.abs(reference[:m])) < 1e-13
+
+
+def test_precision_may_be_given_explicitly():
+    system = bc.rc_ladder(8)
+    env = dict(system.params)
+    expansion = s_expand(system.A, system.s)
+    coarse = np.sort_complex(expansion.roots_of(env, precision=25))
+    fine = np.sort_complex(expansion.roots_of(env, precision=60))
+    assert len(coarse) == len(fine)
+    assert np.allclose(coarse, fine, rtol=1e-8)
+
+
+def test_suggested_precision_grows_with_coefficient_spread():
+    small = s_expand(bc.rc_ladder(4).A, bc.rc_ladder(4).s)
+    large = s_expand(bc.rc_ladder(16).A, bc.rc_ladder(16).s)
+    assert (large._suggested_precision(large.eval_coeffs(dict(bc.rc_ladder(16).params)))
+            > small._suggested_precision(small.eval_coeffs(dict(bc.rc_ladder(4).params))))
+
+
+def test_exact_environment_conversion_is_lossless():
+    """A binary float is an exact rational, so nothing is discarded."""
+    from pycircuit.circuit.ddd import _exact_env
+    a, b = sympy.symbols('a b')
+    env = {a: 0.1, b: 1e-9}
+    exact = _exact_env(env)
+    assert exact[a] == sympy.Rational(0.1)
+    assert float(exact[a]) == 0.1
+    assert float(exact[b]) == 1e-9

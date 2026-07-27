@@ -962,11 +962,14 @@ class SExpandedDDD:
         """Evaluate every coefficient, lowest power of ``s`` first."""
         return [self.coefficient(k).eval(env) for k in range(len(self.roots))]
 
-    def roots_of(self, env=None):
-        """Numeric roots of the polynomial, i.e. the poles of ``1/det``.
+    def roots_of(self, env=None, precision=None):
+        """Numeric roots of the polynomial -- the poles of ``1/det``.
 
         Args:
             env: Substitution grounding every symbol other than ``s``.
+            precision: ``None`` (default) uses ``numpy``.  An integer uses
+                that many decimal digits via ``mpmath``; ``'auto'`` picks a
+                figure from how far the coefficients span.
 
         Returns:
             ``numpy`` array of complex roots.
@@ -975,21 +978,66 @@ class SExpandedDDD:
             ValueError: If any coefficient is still symbolic after ``env``.
 
         Note:
-            Root-finding from *expanded* coefficients is ill-conditioned when
-            they span many orders of magnitude, which they routinely do for a
-            circuit -- this is a property of the polynomial form, not of the
-            diagram.  Where a factored form is available it will be better
-            behaved; see ``doc/ddd_conclusions.md`` §8.6.
-        """
-        import numpy as np
+            Root-finding from expanded coefficients is ill-conditioned when the
+            roots span many decades, which for a circuit they do -- a ladder's
+            poles cover ten orders of magnitude or more.  The error is in the
+            *root-finding*, not the coefficients: supplying exact rational
+            coefficients changes nothing, while raising the working precision
+            takes a 20-section ladder from ~5e-10 to ~2e-15.
 
+            So the remedy is precision, not rescaling.  Frequency and impedance
+            scaling -- the fix that rescued the GiNaC backend -- does not help
+            here, because that was exact-arithmetic growth (integers exploding
+            in a rational determinant) and this is floating-point conditioning.
+            A single scale factor cannot compress a genuine spread of pole
+            magnitudes.
+        """
         coeffs = self.eval_coeffs(env)
         bad = [c for c in coeffs if getattr(c, 'free_symbols', None)]
         if bad:
             raise ValueError('coefficients still symbolic; substitute values '
                              'for %s first' % bad[0].free_symbols)
-        ## numpy.roots wants highest power first.
-        return np.roots([complex(c) for c in reversed(coeffs)])
+
+        if precision is None:
+            ## numpy.roots wants highest power first.
+            return np.roots([complex(c) for c in reversed(coeffs)])
+
+        if precision == 'auto':
+            precision = self._suggested_precision(coeffs)
+
+        ## Re-evaluate exactly.  Going through ``complex()`` would round every
+        ## coefficient to double precision before mpmath ever saw it, which is
+        ## self-defeating -- the extra digits would be carried on numbers that
+        ## had already lost them.  A float is itself an exact binary rational,
+        ## so converting the environment loses nothing.
+        exact = self.eval_coeffs(_exact_env(env or {}))
+
+        import mpmath
+        saved = mpmath.mp.dps
+        try:
+            mpmath.mp.dps = int(precision)
+            poly = [mpmath.mpmathify(sympy.N(c, int(precision)))
+                    for c in reversed(exact)]
+            roots = mpmath.polyroots(poly, maxsteps=500,
+                                     extraprec=4 * int(precision))
+        finally:
+            mpmath.mp.dps = saved
+        return np.array([complex(z) for z in roots])
+
+    @staticmethod
+    def _suggested_precision(coeffs):
+        """Digits to ask for, from how far the coefficients span.
+
+        Each decade of spread between the smallest and largest coefficient costs
+        roughly half a digit of accuracy in the roots, so budget for that on top
+        of double precision's sixteen.
+        """
+        import math
+        mags = [abs(complex(c)) for c in coeffs if complex(c) != 0]
+        if len(mags) < 2:
+            return 20
+        spread = math.log10(max(mags) / min(mags))
+        return int(min(120, max(20, 16 + spread / 2)))
 
     def approximate(self, env=None, tol=0.01, max_terms=200):
         """Approximate each coefficient of ``s`` separately.
@@ -1013,8 +1061,7 @@ class SExpandedDDD:
 
         For a polynomial whose roots are widely separated -- the usual situation
         in an analog circuit, where a dominant pole is often orders of magnitude
-        below the rest -- the ``k``-th pole is approximately
-        ``-d[k-1] / d[k]``.
+        below the rest -- the ``k``-th pole is approximately ``-d[k-1] / d[k]``.
 
         This is what makes a big circuit *interpretable*: each estimate is a
         ratio of two symbolic coefficients, so it can be read and reasoned
@@ -1661,6 +1708,25 @@ def suppression_order(A, keep=(), limit=None):
                     neighbours[a].add(b)
         neighbours[i] = set()
     return chosen
+
+
+def _exact_env(env):
+    """Re-express a numeric environment exactly, for extended-precision work.
+
+    A binary float *is* an exact rational, so this discards nothing -- it merely
+    stops sympy from treating the value as a 53-bit approximation and rounding
+    later arithmetic to match.
+    """
+    out = {}
+    for key, value in env.items():
+        if isinstance(value, complex):
+            out[key] = (sympy.Rational(value.real)
+                        + sympy.I * sympy.Rational(value.imag))
+        elif isinstance(value, float):
+            out[key] = sympy.Rational(value)
+        else:
+            out[key] = value
+    return out
 
 
 def _numeric_matrix(M, env):

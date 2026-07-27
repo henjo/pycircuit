@@ -295,6 +295,7 @@ solution-object refactor and calibration tiers 1 and 3.
 | H3 — noise through the reduction | **Done.** Gate passed: PSD identical, µA741 noise 11 088 → 26 vertices and 86 s → 0.48 s |
 | H4 — symbolic sensitivity | **Done.** Gate passed: matches finite differences to ~1e-8; ten parameters cost what one does |
 | H5 — Tier 2 calibration | **Done.** Our DDD-vs-SoE ratios 3.3–5.6× land in the published 5.0–6.0× band |
+| H6 — conditioning | **Done, by a different route.** Scaling does not help; extended precision takes N=20 from 5e-10 to 1.6e-15 |
 
 The original definition of done is met: exact s-expanded coefficients held
 compactly, dominant pole/zero estimates from coefficient ratios, exact numeric
@@ -435,7 +436,7 @@ constructible from `R`/`C`/`VCCS` today. The cascaded series is the one their
 SCAPP comparison uses, so it lets the DDD-versus-SoE question be checked against
 their 117 vertices vs 539 operations rather than only against our own SoE.
 
-### H6 — Frequency and impedance scaling
+### H6 — Frequency and impedance scaling — **DONE (premise refuted)**
 
 P1 measured denominator coefficients spanning 10⁹⁷ by N = 20, with pole accuracy
 degrading to 5e-10. Scaling toward O(1) coefficients is recorded there as the
@@ -481,8 +482,12 @@ recorded even when negative.
   tolerance every later vertex count is read against.
 - H3 depends on H2 and on nothing else — it is the direct application of the
   reduction machinery to the analysis that most wants it.
-- H1–H5 are done. What remains is H6 (frequency and impedance scaling for the
-  conditioning measured in P1) and H7 (DC, scoping).
+- H1–H6 are done. Only H7 (DC, scoping) remains.
+- H6 refuted its own premise, which is worth remembering when reading the rest of
+  this plan: the mitigation it proposed had been borrowed from GiNaC's failure
+  (exact-arithmetic growth, which scaling does fix) and applied to a different
+  one (floating-point root conditioning, which it does not). Two failures that
+  look alike in a summary are not necessarily the same failure.
 - H5's outcome is worth carrying forward: the diagram-versus-sequence advantage
   is a *small factor*, a few times, in their measurements and ours alike. Claims
   of orders of magnitude belong to the comparison against the **expanded** form,
