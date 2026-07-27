@@ -1,5 +1,9 @@
 # DDD (Determinant Decision Diagram) — reference papers
 
+**Companion document: `ddd_conclusions.md`** records what we concluded from these
+papers, the reasoning, and the staged priorities. This file is the reading list;
+that one is the argument. Use both as input to the implementation plan.
+
 Reading list for the Determinant Decision Diagram work (improvement #4 in
 `ginac_fully_symbolic.md`): compact, canonical representation of a symbolic
 network determinant for symbolic analysis of *large* / *fully symbolic* circuits,
