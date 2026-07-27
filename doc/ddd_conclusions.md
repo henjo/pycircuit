@@ -105,9 +105,28 @@ Verified against the tree at commit `5bae9b7`, not from memory:
 - Existing result objects to be a sibling of: `TransferFunction` /
   `CircuitResultACPoly`, `GinacResult`, `SoESolution` (`soe.py`).
 
-**Conclusion 2.1** — the existing `ddd.py` is worth keeping only as the `Node`
-vocabulary and its tests. `DDD_of_matrix` should be *rewritten*, not repaired, and
-the rewrite must introduce a hash table for sharing.
+**Conclusion 2.1** — `ddd.py` is **not a constraint on the design**. It is a
+partial 2008 sketch that has never run, and the LED construction (§4.1) produces a
+different structure anyway — layered queues plus a minor hash table, rather than
+recursively-built `Node`s compared structurally. Forcing the new work through the
+old `Node` API would be a straitjacket for no benefit. Treat the new
+implementation as greenfield: keep `ddd.py`'s *ideas* (the vocabulary of 1-edges,
+0-edges, cofactor, remainder) where they fit, adopt its tests only where the new
+API happens to match, and otherwise supersede it. Whether the old module is
+deleted or left in place unused is a tidiness decision for the plan, not a design
+one.
+
+**Conclusion 2.2 — this is a new way of analysing pycircuit circuits, not a new
+tool.** Circuits must be built exactly as they are for numeric and symbolic
+simulation today — `Circuit` / `SubCircuit`, the same elements, the same
+stamping — and DDD must be reached through the normal analysis path
+(`AC(cir, toolkit=...)`). Concretely this rules out a parallel front end with its
+own circuit description, its own netlist format, or hand-constructed matrices as
+the primary interface. The DDD core itself naturally takes a matrix (it is a
+determinant algorithm, and that keeps it unit-testable in isolation), but **every
+matrix it is judged on must come from a real pycircuit circuit through the
+existing MNA path**. This is the same requirement that rules out GPDD and PDD
+(§4.7) — applied to our own work.
 
 ---
 
@@ -374,6 +393,12 @@ Axis 1 and differ only on Axis 2**. So `symbolic_poly`, `ginac` and a new `ddd`
 are interchangeable *representation* strategies over the same sympy-stamped
 system. Stamping is untouched; elements and `Circuit` never learn that DDD exists.
 
+This is also what makes DDD **a new way of analysing pycircuit circuits rather
+than a new tool** (§2.2). The user-facing change is choosing a different toolkit —
+`AC(cir, toolkit=ddd_toolkit)` beside `toolkit=symbolic_poly` — on a circuit
+described exactly as it is for every other analysis. Nothing about how a circuit
+is *defined* changes, which is the whole reason to enter on Axis 2.
+
 DDD adds one genuinely new thing: **the graph's shape depends only on matrix
 sparsity/entry identity, while the per-vertex operation `D0 + sign·entry·D1` is
 where arithmetic happens.** So DDD composes with a pluggable **arithmetic
@@ -474,17 +499,80 @@ is impossible at any size beyond trivial (§4.9).
 Effort figures below are rough order-of-magnitude sizing to let priorities be
 weighed against cost — they are guesses, not estimates from a decomposition.
 
+### Stage B — Benchmarks, before any DDD code
+
+**Do we actually need to build benchmarks? Yes — and first, not alongside.** The
+argument is not general good practice; it is specific to this project:
+
+1. **Every gate in this plan is a measurement.** P0's criteria are stated in
+   `|DDD|` versus SoE ops at fixed N. Without a harness that produces those
+   numbers, the gates are decorative and the decision to continue will be made on
+   impression instead.
+2. **We have already been burned by exactly this, on this codebase.** *[OURS]* The
+   symengine backend was adopted on a "~10× faster" result that turned out to be
+   timing **numeric evaluation** rather than the **symbolic N/D extraction** we
+   actually needed; end-to-end it was slower, and a toolkit had been written before
+   the mistake surfaced. A harness that fixes *what is measured* before the
+   implementation exists is the direct countermeasure. This is the strongest reason
+   in the list — it is a failure we made, not one we imagine.
+3. **Benchmarks guide the implementation, they do not merely judge it.** The
+   expansion-ordering heuristic (§8.2) is the main technical risk, and there is no
+   way to choose or tune it without a fast feedback loop on vertex counts. Same for
+   deciding where numeric terminals pay off (P3). Building the measurement after
+   the code means tuning blind.
+4. **They stop us moving the goalposts.** §7's test circuits are fixed in advance
+   precisely so the comparison cannot be chosen after seeing results. That
+   commitment only means something if it is executable.
+
+**What it should measure**, per (circuit, backend) pair:
+
+- **representation size** — `|DDD|` / SoE ops / sympy op count, plus raw expression
+  size, since these units are not identical (§7 confound);
+- **construction time** and **evaluation time per sweep point**, reported
+  separately — conflating them is how the symengine error happened;
+- **correctness** against a reference backend on circuits small enough for one;
+- **completion status** — did it finish, or hit a timeout? Several of our backends
+  do not fail, they *hang* (GiNaC past dim 16, `to_ratio` for N≥5), so "did not
+  complete within T" is a first-class result, not an error.
+
+**Scope discipline.** This should be a small module plus a live doc page in the
+`exec-rst` style already used by `soe_symbolic.rst` and `ginac_native.rst` — the
+pattern exists, so reuse it rather than inventing a framework. Its value extends
+past DDD: it unifies the per-feature comparison tables we already maintain
+separately, and gives `symbolic_poly`, `ginac`, `soe` and `ddd` one axis.
+
+**Two cautions:**
+- *Do not overfit to the ladder.* The RC ladder is our most-used case and the one
+  DDD's ordering heuristics will look best on. The MFB (with its `Nullor`) and a
+  semi-symbolic opamp must be in the set from the start, or we will tune to one
+  topology.
+- *Run under resource limits.* We have crashed this box once already, when an
+  unbounded GiNaC `compile_ex` consumed all RAM. Benchmarks explore exactly the
+  regime where things blow up, so every case runs under a timeout and an address
+  space cap (`ulimit -v`), with "killed" recorded as a result.
+
+*Effort: small — a day or so, most of it circuit definitions that the P0 gate
+needs anyway.*
+
 ### P0 — Core construction + measurement (gate: go / no-go for everything else)
 
 *Effort: the largest single piece — a few days. Everything after it is smaller.*
 
-Rewrite `DDD_of_matrix` per ICCAD 2010: layered expansion, minor hash table keyed
-by `(row-index tuple, col-index tuple)`, min-degree expansion ordering, signs
-during construction. Add numeric evaluation over the graph. Standalone module and
-tests — **no toolkit wiring yet**.
+Implement the LED construction per ICCAD 2010 — layered expansion, minor hash
+table keyed by `(row-index tuple, col-index tuple)`, min-degree expansion
+ordering, signs during construction — plus numeric evaluation over the graph. New
+module; `ddd.py` is not a constraint (§2.1).
 
-**Test circuits** (fixed now, so the comparison is not chosen after seeing
-results). All must be the *same* circuits we already report SoE numbers for:
+**No toolkit wiring yet** (that is P2), but per §2.2 **the matrices under test
+come from real pycircuit circuits** — built with `Circuit`/`SubCircuit` and the
+ordinary elements, stamped through the existing MNA path, exactly as
+`AC(cir, toolkit=symbolic_poly)` would. The core function may take a matrix, but
+no hand-written matrices and no alternative circuit description. If P0 cannot be
+driven from a `Circuit`, it is building the wrong thing.
+
+**Test circuits** (fixed now by Stage B, so the comparison is not chosen after
+seeing results). All must be the *same* circuits we already report SoE numbers
+for:
 1. fully-symbolic RC ladder, N = 4, 8, 12, 16 — the `soe_symbolic.rst` circuit,
    transfer function `v_out/v_in`, so `|DDD|` is directly comparable to the
    published SoE ops 73 / 157 / 241 / 325;
