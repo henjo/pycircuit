@@ -94,8 +94,8 @@ built, and then keeps testing it.
 | How it compares | P0→ | Live table: DDD vs SoE vs `symbolic_poly`, regenerated at build |
 | Approximation, noise, hierarchy | P5, P4, P6 | Written as those stages landed |
 | Calibration against the papers | Tier 1/3 | The exact identity, and the µA741 |
-| *Recursive hierarchy* | H1 | Replaces the "does not reproduce 56×" note with the measured outcome |
-| *Ordering* | H2 | The distribution over node numberings, not a single figure |
+| *Ordering* | H1 | The distribution over node numberings, not a single figure |
+| *Recursive hierarchy* | H2 | Replaces the "does not reproduce 56×" note with the measured outcome |
 | *Sensitivity* | H3 | New section |
 
 ---
@@ -307,9 +307,39 @@ opens with.
 
 Ordering is as directed: hierarchy first, then ordering, then the rest.
 
-### H1 — Recursive hierarchy *(the headline gap)*
+### H1 — Expansion and node ordering *(first, because everything else is measured in vertices)*
 
-**Why first.** `HierarchicalDDD` splits the matrix *once*, and on the µA741 that
+**Why first.** Rebuilding the µA741 with a different node *numbering* moved
+`|DDD|` from 1040 to 2424 — a 2.3× swing from something arbitrary. Every vertex
+count reported anywhere in this work carries that much slack, including the
+comparisons against SoE and against the published figures.
+
+That matters most for what comes next. H2's gate is "does recursive suppression
+beat the flat diagram", and both sides of that comparison are vertex counts. A
+marginal result would be uninterpretable — method or numbering? — so the
+measurement has to be made trustworthy before it is relied on.
+
+Tasks:
+1. Characterise it: permute node order repeatedly and report the **distribution**
+   of `|DDD|`, not a single number.
+2. Compare policies — the current on-the-fly min-degree, row-wise, and at least
+   one stronger heuristic (min-degree with a fill-based tie-break, or a
+   Markowitz-style criterion).
+3. Decide between ordering once up-front as a permutation and continuing to
+   choose per minor.
+4. Re-state the standard suite's figures under the chosen policy, with the spread.
+
+**Gate.** A documented policy whose worst case over random node numberings is
+within a stated factor of its best, and republished suite numbers carrying that
+spread. The factor is the deliverable: it is what every later comparison must be
+read against.
+
+*Effort: small to moderate — mostly measurement, and the construction already
+takes an ordering strategy.*
+
+### H2 — Recursive hierarchy *(the headline gap)*
+
+**Why second.** `HierarchicalDDD` splits the matrix *once*, and on the µA741 that
 loses whichever way it is pointed: suppress a small block and ~21 terminals
 remain, so the reduced system is nearly the original; suppress a large block (21
 internal, 6 terminals) and its cofactor family costs 4842 vertices against 1072
@@ -329,34 +359,12 @@ Tasks:
    like-for-like rather than a partition of our choosing.
 
 **Gate.** Total vertices across all levels must beat the flat diagram on the
-µA741 (currently 1040), evaluating to the same value. Reaching their ~117 with a
-comparable three-level two-way partition is the target; failing that while still
-beating flat is a partial pass, and losing to flat is a negative result to write
-up as P3 was.
+µA741 — under H1's ordering policy, and by more than H1's measured spread, or the
+result says nothing. Reaching their ~117 with a comparable three-level two-way
+partition is the target; beating flat by less is a partial pass, and losing to
+flat is a negative result to write up as P3 was.
 
 *Effort: the largest remaining item.*
-
-### H2 — Expansion and node ordering
-
-**Why second.** Rebuilding the µA741 with a different node *numbering* moved
-`|DDD|` from 1040 to 2424 — a 2.3× swing from something arbitrary. Every vertex
-count reported anywhere in this work carries that much slack, including the
-comparisons against SoE and against the paper, so it caps the precision of any
-claim built on them.
-
-Tasks:
-1. Characterise it: permute node order repeatedly, report the distribution of
-   `|DDD|` rather than a single number.
-2. Compare policies — the current on-the-fly min-degree, row-wise, and at least
-   one stronger heuristic (min-degree with a fill-based tie-break, or a
-   Markowitz-style criterion).
-3. Decide between ordering once up-front as a permutation and continuing to
-   choose per minor.
-4. Re-state the standard suite's figures under the chosen policy, with the spread.
-
-**Gate.** A documented policy whose worst case over random node numberings is
-within a stated factor of its best, and republished suite numbers carrying that
-spread.
 
 ### H3 — Symbolic sensitivity
 
@@ -401,10 +409,11 @@ through the same machinery and nothing has been thought about. Scoping only.
 
 ## 6. Definition of done for round two
 
-1. **Hierarchy earns its place**: recursive suppression beats the flat diagram on
-   a real amplifier, or the negative result is written up with the measurement.
-2. **Vertex counts are trustworthy**: every published figure carries a known
+1. **Vertex counts are trustworthy**: every published figure carries a known
    ordering policy and a known spread.
+2. **Hierarchy earns its place**: recursive suppression beats the flat diagram on
+   a real amplifier by more than that spread, or the negative result is written up
+   with the measurement.
 3. **A designer gains something they did not have**: symbolic sensitivity,
    agreeing with finite differences.
 
@@ -417,8 +426,10 @@ recorded even when negative.
 
 ## 7. Sequencing notes
 
-- H1 and H2 interact: ordering affects every hierarchical measurement, so if H1's
-  numbers look marginal, do H2 before concluding anything from them.
+- H1 before H2 is a dependency, not a preference: H2's gate compares vertex
+  counts, and H1 is what makes a vertex count mean something. H1 also produces the
+  number H2's gate is stated against — "beat flat by more than the ordering
+  spread" is unquantified until H1 has run.
 - H3 is independent of both and could run in parallel; it touches only new code.
 - H4 is cheap and worth doing alongside whichever of H1/H2 is active, since it
   supplies reference points for both.
