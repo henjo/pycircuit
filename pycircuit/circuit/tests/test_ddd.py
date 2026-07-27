@@ -28,7 +28,8 @@ from pycircuit.circuit.ddd import (DDDSizeError, HierarchicalDDD,
                                    ddd_cofactor_solve, ddd_cramer,
                                    ddd_of_matrix, eval_roots,
                                    reverse_cuthill_mckee,
-                                   suppression_order, s_expand)
+                                   suppression_order, hierarchical_solve,
+                                   noise_psd_reduced, s_expand)
 
 
 def _full_matrix(n):
@@ -1073,3 +1074,125 @@ def test_blocks_must_be_disjoint_and_leave_something():
         HierarchicalDDD(A, [(1, 2), (2, 3)])
     with pytest.raises(ValueError, match='at least one unknown'):
         HierarchicalDDD(A, [tuple(range(A.rows))])
+
+
+## -- noise through the reduction ------------------------------------------
+
+def _flat_noise(system, u, CY, env):
+    """Reference: substitute everything and solve densely."""
+    n = system.dim
+    Y = np.array([[complex(system.A[i, j].subs(env)) for j in range(n)]
+                  for i in range(n)], dtype=complex)
+    un = np.array([complex(sympy.sympify(u[i]).subs(env)) for i in range(n)],
+                  dtype=complex)
+    z = np.linalg.solve(Y, -un)
+    C = np.array([[complex(sympy.sympify(CY[i][j]).subs(env)) for j in range(n)]
+                  for i in range(n)], dtype=complex)
+    return z, complex(z @ C @ z.conj())
+
+
+def _noise_setup(system, freq=1e3):
+    n = system.dim
+    env = dict(system.params)
+    env[system.s] = 1j * 2 * np.pi * freq
+    u = [0] * n
+    u[system.out_index] = 1
+    CY = [[(4e-21 if i == j else 0) for j in range(n)] for i in range(n)]
+    return env, u, CY
+
+
+@pytest.mark.parametrize('N', [5, 8])
+def test_hierarchical_solve_recovers_every_unknown(N):
+    """Including the suppressed ones -- noise needs them."""
+    system = bc.rc_ladder(N)
+    env = dict(system.params)
+    env[system.s] = 1j * 2 * np.pi * 1e4
+    n = system.dim
+
+    A = np.array([[complex(system.A[i, j].subs(env)) for j in range(n)]
+                  for i in range(n)], dtype=complex)
+    b = np.array([complex(system.b[i].subs(env)) for i in range(n)],
+                 dtype=complex)
+    ref = np.linalg.solve(A, b)
+
+    blocks = suppression_order(system.A, keep=[system.in_index,
+                                               system.out_index])
+    got = hierarchical_solve(HierarchicalDDD(system.A, blocks), system.b, env)
+    assert np.max(np.abs(got - ref) / np.maximum(1e-30, np.abs(ref))) < 1e-9
+
+
+@pytest.mark.parametrize('N', [5, 8])
+def test_reduced_noise_matches_the_flat_result(N):
+    """Equality, not closeness.
+
+    A reduction that lost a noise source would still return a plausible-looking
+    number, so the test has to be exact agreement rather than a tolerance chosen
+    to pass.
+    """
+    system = bc.rc_ladder(N)
+    env, u, CY = _noise_setup(system)
+    _, flat = _flat_noise(system, u, CY, env)
+    _, reduced = noise_psd_reduced(system.A, u, CY, env,
+                                   keep=[system.in_index, system.out_index])
+    assert abs(reduced - flat) <= 1e-12 * abs(flat)
+
+
+def test_reduced_noise_keeps_sources_on_suppressed_unknowns():
+    """The failure mode this stage exists to avoid.
+
+    Put the *only* noise source on an unknown that gets suppressed. If the
+    reduction dropped internal sources the answer would come back near zero --
+    quietly, and looking entirely reasonable.
+    """
+    system = bc.rc_ladder(6)
+    n = system.dim
+    env = dict(system.params)
+    env[system.s] = 1j * 2 * np.pi * 1e3
+    u = [0] * n
+    u[system.out_index] = 1
+
+    keep = [system.in_index, system.out_index]
+    suppressed = suppression_order(system.A, keep=keep)[0][0]
+    assert suppressed not in keep
+
+    CY = [[0] * n for _ in range(n)]
+    CY[suppressed][suppressed] = 4e-21          # the only source in the circuit
+
+    _, flat = _flat_noise(system, u, CY, env)
+    _, reduced = noise_psd_reduced(system.A, u, CY, env, keep=keep)
+
+    assert abs(flat) > 0                        # the source does reach the output
+    assert abs(reduced - flat) <= 1e-12 * abs(flat)
+
+
+def test_reduced_noise_handles_correlated_sources():
+    """Sources inside a block are correlated at its terminals.
+
+    A referred correlation is a full matrix, not a diagonal one, so a
+    reduction that assumed independence would be wrong here and right on the
+    diagonal-only cases above.
+    """
+    system = bc.rc_ladder(6)
+    n = system.dim
+    env = dict(system.params)
+    env[system.s] = 1j * 2 * np.pi * 1e3
+    u = [0] * n
+    u[system.out_index] = 1
+
+    rng = np.random.default_rng(11)
+    root = rng.normal(size=(n, n)) + 1j * rng.normal(size=(n, n))
+    C = (root @ root.conj().T) * 1e-21          # Hermitian, positive semidefinite
+    CY = [[complex(C[i, j]) for j in range(n)] for i in range(n)]
+
+    _, flat = _flat_noise(system, u, CY, env)
+    _, reduced = noise_psd_reduced(system.A, u, CY, env,
+                                   keep=[system.in_index, system.out_index])
+    assert abs(reduced - flat) <= 1e-10 * abs(flat)
+
+
+def test_reduced_noise_needs_something_to_suppress():
+    system = bc.rc_ladder(4)
+    with pytest.raises(ValueError, match='nothing can be suppressed'):
+        noise_psd_reduced(system.A, [0] * system.dim,
+                          [[0] * system.dim] * system.dim, dict(system.params),
+                          keep=list(range(system.dim)))

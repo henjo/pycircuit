@@ -1213,3 +1213,90 @@ and counting only the eliminable ones picks the wrong unknown first.
 
 was quotable long before it was testable; having the circuit makes it testable,
 and the honest result is that one level of hierarchy does not get there.
+
+Noise through the reduction
+---------------------------
+
+Noise has more to gain from suppressing unknowns than any other analysis, because
+it is the one that needs a transfer function from *every* source rather than a
+single response. The cost a reduction removes is exactly the cost noise pays once
+per source.
+
+The obstacle is that noise sources do not politely sit on the unknowns you plan
+to keep. Every resistor inside a suppressed block is a source, so a reduction that
+produced only terminal quantities would be useless — the internal ones have to
+come back. :func:`~pycircuit.circuit.ddd.hierarchical_solve` does that: it solves
+the reduced system, then walks back out through each block, recovering the
+suppressed unknowns from the cofactors that block already built for its stamp.
+
+.. exec-rst::
+
+    import numpy as np
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.ddd import (HierarchicalDDD, ddd_cofactor_solve,
+                                       noise_psd_reduced, suppression_order)
+
+    print(".. list-table:: Noise: flat construction against a reduced one")
+    print("   :header-rows: 1")
+    print("   :widths: 14 8 16 16 12 14")
+    print("")
+    print("   * - circuit")
+    print("     - dim")
+    print("     - flat vertices")
+    print("     - reduced vertices")
+    print("     - ratio")
+    print("     - PSD agrees")
+    for label, system in (('RC ladder N=8', bc.rc_ladder(8)),
+                          ('MFB filter', bc.mfb_filter())):
+        n = system.dim
+        env = dict(system.params)
+        env[system.s] = 1j * 2 * np.pi * 1e3
+        u = [0] * n
+        u[system.out_index] = 1
+        CY = [[(4e-21 if i == j else 0) for j in range(n)] for i in range(n)]
+
+        Y = np.array([[complex(system.A[i, j].subs(env)) for j in range(n)]
+                      for i in range(n)], dtype=complex)
+        z = np.linalg.solve(Y, -np.array([complex(x) for x in u]))
+        C = np.array([[complex(CY[i][j]) for j in range(n)] for i in range(n)])
+        flat_psd = complex(z @ C @ z.conj())
+
+        keep = [system.in_index, system.out_index]
+        _, reduced_psd = noise_psd_reduced(system.A, u, CY, env, keep=keep)
+
+        family, _ = ddd_cofactor_solve(system.A, system.b)
+        hier = HierarchicalDDD(system.A, suppression_order(system.A, keep=keep))
+
+        print("   * - %s" % label)
+        print("     - %d" % n)
+        print("     - %d" % family.size)
+        print("     - %d" % hier.size)
+        print("     - %.1f×" % (family.size / hier.size))
+        print("     - %s" % (abs(reduced_psd - flat_psd) <= 1e-12 * abs(flat_psd)))
+
+On the µA741 the same comparison is 11 088 vertices against 26 — a factor of
+several hundred — with the power spectral density agreeing to one part in 10¹⁴.
+
+Two things are tested rather than assumed, because both would fail quietly:
+
+**A source on a suppressed unknown must still be heard.** The test puts the
+circuit's *only* noise source on an unknown that gets eliminated. Had the
+reduction discarded internal sources the answer would come back near zero,
+looking entirely reasonable.
+
+**Sources become correlated at the terminals.** Independent sources inside a
+block are not independent once referred outward, so a referred correlation is a
+full matrix rather than a diagonal. Recovering the internal unknowns sidesteps
+the question — the correlation is applied to the whole solution vector, exactly
+as in the flat computation — but the test drives it with a dense Hermitian
+correlation anyway, since an implementation that quietly assumed independence
+would agree on every diagonal-only case.
+
+.. note::
+
+   The saving here is **representational**, not yet wall-clock. Vertex counts
+   fall by orders of magnitude, but building many levels currently costs more in
+   Python and sympy overhead than the smaller diagrams save — the µA741 case
+   takes tens of seconds, dominated by per-level matrix extraction and
+   evaluation rather than by anything about diagrams. That is an optimisation
+   target, not a property of the method.

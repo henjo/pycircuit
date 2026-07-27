@@ -47,7 +47,8 @@ __all__ = ['DDD', 'DDDVertex', 'SExpandedDDD', 'DDDFamily', 'DDDCombination',
            'NumericTerminal',
            'ONE', 'ZERO', 'ddd_of_matrix', 'ddd_cramer', 'ddd_cofactor_solve',
            's_expand', 'HierarchicalDDD', 'eval_roots',
-           'reverse_cuthill_mckee', 'suppression_order', 'DDDSizeError']
+           'reverse_cuthill_mckee', 'suppression_order',
+           'hierarchical_solve', 'noise_psd_reduced', 'DDDSizeError']
 
 
 class DDDSizeError(Exception):
@@ -1419,11 +1420,20 @@ class HierarchicalDDD:
             if not rest:
                 raise ValueError('the last block would eliminate everything; '
                                  'leave at least one unknown')
+            previous = current
             current, family, mapping = self._suppress(
                 current, positions, rest, order, counter)
             counter += 1
-            self.levels.append({'family': family, 'blocks': mapping,
-                                'm': current.rows})
+            self.levels.append({
+                'family': family, 'blocks': mapping, 'm': current.rows,
+                'positions': positions, 'rest': rest,
+                ## Kept so a solve can undo the elimination: the block's own
+                ## coupling to what remains is what recovers the suppressed
+                ## unknowns by back-substitution.
+                'Aii': previous.extract(positions, positions),
+                'Ait': previous.extract(positions, rest),
+                'Ati': previous.extract(rest, positions),
+            })
             alive = [alive[p] for p in rest]
 
         self.top = ddd_of_matrix(current, order=order)
@@ -1621,3 +1631,109 @@ def suppression_order(A, keep=(), limit=None):
                     neighbours[a].add(b)
         neighbours[i] = set()
     return chosen
+
+
+def _numeric_matrix(M, env):
+    """Evaluate a sympy matrix to a complex numpy array."""
+    return np.array([[complex(_resolve(M[i, j], env)) for j in range(M.cols)]
+                     for i in range(M.rows)], dtype=complex)
+
+
+def hierarchical_solve(hier, b, env):
+    """Solve ``A x = b`` through a reduction, recovering every unknown.
+
+    The expensive part -- the solve -- happens on the reduced system, which for a
+    real amplifier is a fraction of the size.  The suppressed unknowns are then
+    recovered by back-substitution through each block, in reverse order, using
+    the cofactors that block already built for its stamp.
+
+    This is what lets *noise* use the reduction.  Noise needs a transimpedance
+    from every source to the output, and its sources sit on the suppressed
+    unknowns as much as on the surviving ones, so a reduction that only produced
+    terminal quantities would be no use: the internal ones have to come back.
+
+    Args:
+        hier: A built `HierarchicalDDD`.
+        b: Right-hand side over the *original* unknowns.
+        env: Numeric substitution.
+
+    Returns:
+        ``numpy`` array of every unknown, in the original ordering.
+    """
+    b = np.array([complex(_resolve(x, env)) for x in
+                  sympy.Matrix(b).reshape(hier.matrix.rows, 1)], dtype=complex)
+
+    ## Forward: fold each block's share of the right-hand side into what remains,
+    ## keeping what is needed to undo it afterwards.
+    env = dict(env)
+    stack = []
+    rhs = b
+    for lvl in hier.levels:
+        roots = [lvl['family'].denominator.root]
+        for combination in lvl['blocks'].values():
+            roots.extend(combination.roots())
+        memo = eval_roots(roots, env)
+        D = memo[id(lvl['family'].denominator.root)]
+        if D == 0:
+            raise ZeroDivisionError('an internal block is singular')
+        for sym, combination in lvl['blocks'].items():
+            total = 0
+            for coeff, diagram in combination.parts:
+                total = total + _resolve(coeff, env) * memo[id(diagram.root)]
+            env[sym] = total / D
+
+        Aii = _numeric_matrix(lvl['Aii'], env)
+        Ait = _numeric_matrix(lvl['Ait'], env)
+        Ati = _numeric_matrix(lvl['Ati'], env)
+        bi = rhs[lvl['positions']]
+        bt = rhs[lvl['rest']]
+        stack.append((lvl, Aii, Ait, bi))
+        rhs = bt - Ati @ np.linalg.solve(Aii, bi)
+
+    ## Solve what is left, then walk back out.
+    x = np.linalg.solve(_numeric_matrix(hier.reduced, env), rhs)
+    for lvl, Aii, Ait, bi in reversed(stack):
+        xi = np.linalg.solve(Aii, bi - Ait @ x)
+        merged = np.empty(len(xi) + len(x), dtype=complex)
+        merged[lvl['positions']] = xi
+        merged[lvl['rest']] = x
+        x = merged
+    return x
+
+
+def noise_psd_reduced(Y, u, CY, env, keep=(), order='auto', blocks=None):
+    """Output noise PSD, computed through a reduction.
+
+    Noise is the analysis with most to gain from suppressing unknowns, because it
+    is the one that needs a transfer function from *every* source rather than one
+    response: the cost a reduction removes is the cost noise pays once per source.
+
+    The transimpedances come from :func:`hierarchical_solve`, so the internal
+    sources are recovered rather than lost -- every resistor inside a suppressed
+    block is a noise source, and dropping its contribution would quietly
+    under-report the result instead of failing.
+
+    Args:
+        Y, u, CY: Admittance matrix, output selector and noise correlation, as
+            for :meth:`~pycircuit.circuit.toolkit.Toolkit.noise_psd`.
+        env: Numeric substitution.
+        keep: Unknowns that must not be suppressed.
+        order: Expansion ordering.
+        blocks: Explicit suppression sequence; chosen by
+            :func:`suppression_order` when omitted.
+
+    Returns:
+        ``(transimpedances, psd)`` -- both numeric.
+    """
+    Ym = sympy.Matrix(Y)
+    um = sympy.Matrix(u).reshape(Ym.rows, 1)
+    if blocks is None:
+        blocks = suppression_order(Ym, keep=keep)
+    if not blocks:
+        raise ValueError('nothing can be suppressed; every unknown is kept or '
+                         'has no diagonal')
+
+    hier = HierarchicalDDD(Ym, blocks, order=order)
+    z = hierarchical_solve(hier, -um, env)
+    CYn = _numeric_matrix(sympy.Matrix(np.asarray(CY).tolist()), env)
+    return z, complex(z @ CYn @ z.conj())
