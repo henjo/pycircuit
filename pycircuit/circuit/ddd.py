@@ -39,6 +39,7 @@ See ``doc/src/circuit/ddd.rst`` for worked examples and rendered diagrams, and
 ``doc/ddd_conclusions.md`` for why this representation was chosen.
 """
 
+import numpy as np
 import sympy
 
 
@@ -46,7 +47,7 @@ __all__ = ['DDD', 'DDDVertex', 'SExpandedDDD', 'DDDFamily', 'DDDCombination',
            'NumericTerminal',
            'ONE', 'ZERO', 'ddd_of_matrix', 'ddd_cramer', 'ddd_cofactor_solve',
            's_expand', 'HierarchicalDDD', 'eval_roots',
-           'reverse_cuthill_mckee', 'DDDSizeError']
+           'reverse_cuthill_mckee', 'suppression_order', 'DDDSizeError']
 
 
 class DDDSizeError(Exception):
@@ -1354,7 +1355,7 @@ def ddd_cofactor_solve(A, b, indices=None, order='min-degree'):
 ## ------------------------------------------------------------ hierarchy --
 
 class HierarchicalDDD:
-    """A determinant computed by suppressing an internal block first.
+    """A determinant computed by suppressing subcircuits before the rest.
 
     Instead of expanding one flat determinant, eliminate a subcircuit's internal
     unknowns and stamp what is left into the remaining system -- Tan & Shi's
@@ -1363,130 +1364,260 @@ class HierarchicalDDD:
     :class:`~pycircuit.circuit.SubCircuit` already composes.
 
     With unknowns partitioned into internal ``i`` and terminal ``t``, the Schur
-    complement gives ``det(A) = det(A_ii) · det(A_tt - A_ti A_ii⁻¹ A_it)``.
+    complement gives ``det(A) = det(A_ii)·det(A_tt - A_ti A_ii^-1 A_it)``.
     Clearing the inverse keeps everything polynomial::
 
-        M = det(A_ii)·A_tt - A_ti · adj(A_ii) · A_it
-        det(A) = det(M) / det(A_ii)^(m-1)          (m = number of terminals)
+        M = det(A_ii)*A_tt - A_ti * adj(A_ii) * A_it
+        det(A) = det(M) / det(A_ii)**(m-1)         (m = dim of M)
 
-    and every piece of ``adj(A_ii)`` is a cofactor of ``A_ii``, so the whole
-    internal block comes out of one shared construction (`DDDFamily`).
+    and every entry of ``adj(A_ii)`` is a cofactor of ``A_ii``, so a whole block
+    comes out of one shared construction (`DDDFamily`).
 
-    Why it pays: the eliminated block contributes its own diagram once, and the
-    reduced system is only as dense as the *fill-in* between nodes that touch the
-    block.  Total size is a sum over blocks rather than a product.
+    **Several blocks are suppressed in turn**, which is what makes it worth
+    doing.  A single split has to choose between leaving too many terminals (the
+    reduced system is nearly the original) and eliminating too much at once (the
+    block's own cofactor family costs more than the flat diagram).  Suppressing a
+    sequence of small blocks avoids both: no large matrix is ever built, because
+    each level hands the next one something already reduced.  That is the
+    structure behind the published 56x on a µA741, where the leaves are three and
+    four nodes across.
+
+    Args:
+        A: Square sympy ``Matrix``.
+        blocks: Either one iterable of indices (a single suppression) or a
+            sequence of **disjoint** index sets, eliminated in the order given --
+            leaves first, then whatever they fed.  Indices are always in the
+            original numbering.
+        order: Expansion ordering for every diagram built.
 
     Attributes:
-        family: The internal block's shared diagram family.
-        top: Diagram of the reduced system ``M``.
-        size: Vertices across both levels.
+        levels: One record per suppression, each carrying its `DDDFamily`.
+        top: Diagram of whatever remained after the last suppression.
+        size: Vertices across every level -- a sum, not a product.
     """
 
-    def __init__(self, A, internal, order='min-degree'):
+    def __init__(self, A, blocks, order='auto'):
         A = sympy.Matrix(A)
         if A.rows != A.cols:
             raise ValueError('DDD needs a square matrix, got %dx%d'
                              % (A.rows, A.cols))
         n = A.rows
-        internal = tuple(sorted(set(internal)))
-        if not internal or len(internal) >= n:
-            raise ValueError('internal block must be a proper non-empty subset')
-        terminal = tuple(i for i in range(n) if i not in set(internal))
 
+        blocks = self._normalise(blocks, n)
         self.matrix = A
-        self.internal = internal
-        self.terminal = terminal
+        self.blocks = blocks
         self.order = order
+        self.levels = []
 
-        Aii = A.extract(list(internal), list(internal))
-        Ait = A.extract(list(internal), list(terminal))
-        Ati = A.extract(list(terminal), list(internal))
-        Att = A.extract(list(terminal), list(terminal))
+        current = A
+        alive = list(range(n))                   # original index of each row
+        counter = 0
 
-        ## One family for the whole block: its cofactors serve every terminal.
-        self.family = DDDFamily(Aii, sympy.zeros(len(internal), 1), order=order)
-        ni, m = len(internal), len(terminal)
-        cof = {}
+        for block in blocks:
+            positions = [alive.index(i) for i in block]
+            rest = [p for p in range(len(alive)) if p not in set(positions)]
+            if not rest:
+                raise ValueError('the last block would eliminate everything; '
+                                 'leave at least one unknown')
+            current, family, mapping = self._suppress(
+                current, positions, rest, order, counter)
+            counter += 1
+            self.levels.append({'family': family, 'blocks': mapping,
+                                'm': current.rows})
+            alive = [alive[p] for p in rest]
 
-        def cofactor(k, p):
-            if (k, p) not in cof:
-                cof[(k, p)] = self.family.cofactor(k, p)
-            return cof[(k, p)]
+        self.top = ddd_of_matrix(current, order=order)
+        self.reduced = current
+        self.alive = alive
 
-        ## M[a][b] = A_tt[a][b]·D - sum_{p,k} A_ti[a][p]·A_it[k][b]·(-1)^(k+p)·M_kp
-        self.blocks = {}
-        Msym = sympy.zeros(m, m)
+    @staticmethod
+    def _normalise(blocks, n):
+        """Accept one index set or a sequence of them; validate disjointness."""
+        blocks = list(blocks)
+        if blocks and all(isinstance(b, (int, np.integer)) for b in blocks):
+            blocks = [blocks]
+        out, seen = [], set()
+        for block in blocks:
+            block = tuple(sorted(set(int(i) for i in block)))
+            if not block:
+                raise ValueError('empty block')
+            if any(i < 0 or i >= n for i in block):
+                raise ValueError('block index out of range')
+            if seen & set(block):
+                raise ValueError('blocks must be disjoint')
+            seen.update(block)
+            out.append(block)
+        if not out:
+            raise ValueError('at least one block is required')
+        if len(seen) >= n:
+            raise ValueError('blocks must leave at least one unknown')
+        return out
+
+    @staticmethod
+    def _suppress(M, positions, rest, order, level):
+        """One Schur step: eliminate ``positions``, return the reduced matrix.
+
+        The reduced matrix's entries are fresh symbols standing for combinations
+        of the block's cofactors.  Keeping them opaque is what lets the next
+        level treat this one as an ordinary matrix -- a vertex payload is never
+        inspected, only evaluated.
+        """
+        Aii = M.extract(positions, positions)
+        Ait = M.extract(positions, rest)
+        Ati = M.extract(rest, positions)
+        Att = M.extract(rest, rest)
+
+        family = DDDFamily(Aii, sympy.zeros(len(positions), 1), order=order)
+        if family.denominator.root is ZERO:
+            raise ValueError(
+                'block %d is structurally singular, so it cannot be suppressed; '
+                'choose a partition whose internal sub-matrix is non-singular'
+                % level)
+
+        ni, m = len(positions), len(rest)
+        cof, mapping = {}, {}
+        reduced = sympy.zeros(m, m)
         for a in range(m):
             for b in range(m):
                 parts = []
                 if Att[a, b] != 0:
-                    parts.append((Att[a, b], self.family.denominator))
+                    parts.append((Att[a, b], family.denominator))
                 for p in range(ni):
                     if Ati[a, p] == 0:
                         continue
                     for k in range(ni):
                         if Ait[k, b] == 0:
                             continue
+                        if (k, p) not in cof:
+                            cof[(k, p)] = family.cofactor(k, p)
                         sign = -1 if (k + p) % 2 else 1
-                        coeff = -sign * Ati[a, p] * Ait[k, b]
-                        parts.append((coeff, cofactor(k, p)))
+                        parts.append((-sign * Ati[a, p] * Ait[k, b], cof[(k, p)]))
                 if not parts:
-                    continue                     # structurally zero: keep sparse
-                sym = sympy.Symbol('_blk_%d_%d' % (a, b))
-                self.blocks[sym] = DDDCombination(parts)
-                Msym[a, b] = sym
-
-        self.top = ddd_of_matrix(Msym, order=order)
-        self._m = m
-        if self.family.denominator.root is ZERO:
-            raise ValueError(
-                'the internal block is structurally singular, so it cannot be '
-                'suppressed; choose a partition whose internal sub-matrix is '
-                'non-singular')
+                    continue                     # structurally zero: stay sparse
+                sym = sympy.Symbol('_lvl%d_%d_%d' % (level, a, b))
+                mapping[sym] = DDDCombination(parts)
+                reduced[a, b] = sym
+        return reduced, family, mapping
 
     @property
     def size(self):
-        """Vertices across both levels -- a sum, not a product."""
-        return self.family.size + self.top.size
+        """Vertices across every level, counting each level's sharing once."""
+        return sum(lvl['family'].size for lvl in self.levels) + self.top.size
 
     def eval(self, env=None):
-        """Evaluate ``det(A)`` hierarchically.
+        """Evaluate ``det(A)``, one level at a time.
 
-        The internal block is evaluated once into the reduced system's entries,
-        then the reduced system is evaluated.
+        Each level is resolved before the next is touched, because a level's
+        diagrams are built over the previous level's stamp symbols.
         """
-        env = env or {}
+        env = dict(env or {})
+        factors = []
 
-        ## Evaluate the block's determinant and every cofactor in ONE pass.  The
-        ## combinations overlap almost completely, so evaluating them separately
-        ## would re-walk the shared structure once per entry of the reduced
-        ## system -- quadratic in precisely the case sharing exists to help.
-        roots = [self.family.denominator.root]
-        for combination in self.blocks.values():
-            roots.extend(combination.roots())
-        memo = eval_roots(roots, env)
+        for lvl in self.levels:
+            ## One pass over everything this level needs, rather than one walk
+            ## per stamp entry -- they overlap almost completely.
+            roots = [lvl['family'].denominator.root]
+            for combination in lvl['blocks'].values():
+                roots.extend(combination.roots())
+            memo = eval_roots(roots, env)
+            D = memo[id(lvl['family'].denominator.root)]
+            if D == 0:
+                raise ZeroDivisionError(
+                    'an internal block is singular (its determinant is zero), '
+                    'so it cannot be suppressed; choose a partition whose '
+                    'internal sub-matrix is non-singular')
 
-        resolved = dict(env)
-        for sym, combination in self.blocks.items():
-            total = 0
-            for coeff, diagram in combination.parts:
-                total = total + _resolve(coeff, env) * memo[id(diagram.root)]
-            resolved[sym] = total
-        value = self.top.eval(resolved)
-        D = memo[id(self.family.denominator.root)]
-        if self._m == 1:
-            return value
-        if D == 0:
-            ## Suppressing a block inverts its own matrix, so the partition has
-            ## to leave that block non-singular.  A block whose determinant
-            ## vanishes usually means it was cut somewhere the circuit does not
-            ## separate -- nodes pulled in without the elements that bias them.
-            raise ZeroDivisionError(
-                'the internal block is singular (its determinant is zero), so '
-                'it cannot be suppressed; choose a partition whose internal '
-                'sub-matrix is non-singular')
-        return value / D ** (self._m - 1)
+            ## The stamp is built as ``M = D*A_tt - ...`` because that keeps it
+            ## polynomial, which is what a diagram needs.  Numerically, though,
+            ## carrying that factor through and dividing by ``D**(m-1)`` at the
+            ## end is ruinous: with a couple of dozen unknowns the power spans
+            ## tens of orders of magnitude and the answer is lost to
+            ## cancellation.  Dividing each entry by D here recovers the actual
+            ## Schur complement, so each level contributes a single factor of D
+            ## and nothing is ever raised to a power.
+            resolved = {}
+            for sym, combination in lvl['blocks'].items():
+                total = 0
+                for coeff, diagram in combination.parts:
+                    total = total + _resolve(coeff, env) * memo[id(diagram.root)]
+                resolved[sym] = total / D
+            factors.append(D)
+            env.update(resolved)
+
+        value = self.top.eval(env)
+        for D in factors:
+            value = value * D
+        return value
 
     def __repr__(self):
-        return '<HierarchicalDDD internal=%d terminal=%d size=%d>' % (
-            len(self.internal), len(self.terminal), self.size)
+        return '<HierarchicalDDD levels=%d remaining=%d size=%d>' % (
+            len(self.levels), self.top.matrix.rows, self.size)
+
+
+def suppression_order(A, keep=(), limit=None):
+    """Choose which unknowns to suppress, and in what order.
+
+    Three things decide it, and only the first is a matter of taste.
+
+    **Correctness.** Suppressing a block inverts it, so its sub-matrix must be
+    non-singular.  For a single unknown that means a nonzero diagonal, which
+    rules out rows that have none -- in MNA the branch equation of a voltage
+    source is exactly such a row: it states ``v+ - v- = E`` and carries nothing
+    on its own diagonal.  Those rows are skipped.
+
+    **Purpose.** Whatever the answer is asked about has to survive: ports, the
+    nodes a transfer function is taken between, anything to be swept or
+    differentiated.  Those are named in ``keep``.
+
+    **Cost.** Eliminating an unknown couples all of its neighbours to each other,
+    so a low-degree unknown is cheap and a highly-connected one is not.  Taking
+    them in increasing degree *of the pattern as it fills in* is the classic
+    minimum-degree elimination ordering, and it is what keeps each block's
+    cofactor family small enough to be worth building.
+
+    Args:
+        A: Square sympy ``Matrix``.
+        keep: Indices that must not be suppressed.
+        limit: Stop after this many; ``None`` suppresses everything eligible.
+
+    Returns:
+        List of single-index tuples, ready to pass to `HierarchicalDDD` as
+        ``blocks``.
+
+    Note:
+        Fill-in is tracked on the sparsity *pattern*, which is cheap.  A pivot
+        that is structurally fine can still vanish numerically for particular
+        component values; `HierarchicalDDD` reports that when it happens.
+    """
+    A = sympy.Matrix(A)
+    n = A.rows
+    keep = set(int(i) for i in keep)
+
+    neighbours = {i: set() for i in range(n)}
+    for i in range(n):
+        for j in range(n):
+            if i != j and (A[i, j] != 0 or A[j, i] != 0):
+                neighbours[i].add(j)
+                neighbours[j].add(i)
+
+    ## A zero diagonal cannot be a 1x1 pivot.
+    eligible = {i for i in range(n)
+                if i not in keep and A[i, i] != 0}
+
+    chosen = []
+    while eligible and (limit is None or len(chosen) < limit):
+        ## Count *all* neighbours, not just the ones still eligible: eliminating
+        ## an unknown couples every neighbour to every other, and fill-in landing
+        ## on a kept node is just as real as fill-in landing on an eliminable one.
+        i = min(eligible, key=lambda k: (len(neighbours[k]), k))
+        chosen.append((i,))
+        eligible.discard(i)
+        ## Eliminating i makes its neighbours mutually adjacent.
+        nbrs = neighbours[i]
+        for a in nbrs:
+            neighbours[a].discard(i)
+            for b in nbrs:
+                if a != b:
+                    neighbours[a].add(b)
+        neighbours[i] = set()
+    return chosen

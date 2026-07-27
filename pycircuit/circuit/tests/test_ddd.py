@@ -27,7 +27,8 @@ from pycircuit.circuit.ddd import (DDDSizeError, HierarchicalDDD,
                                    NumericTerminal, ONE, ZERO,
                                    ddd_cofactor_solve, ddd_cramer,
                                    ddd_of_matrix, eval_roots,
-                                   reverse_cuthill_mckee, s_expand)
+                                   reverse_cuthill_mckee,
+                                   suppression_order, s_expand)
 
 
 def _full_matrix(n):
@@ -721,9 +722,9 @@ def test_hierarchy_on_a_circuit_with_a_nullor():
 
 def test_hierarchy_rejects_a_degenerate_partition():
     A = bc.rc_ladder(4).A
-    with pytest.raises(ValueError, match='proper non-empty'):
+    with pytest.raises(ValueError, match='at least one block'):
         HierarchicalDDD(A, ())
-    with pytest.raises(ValueError, match='proper non-empty'):
+    with pytest.raises(ValueError, match='at least one unknown'):
         HierarchicalDDD(A, tuple(range(A.rows)))
     with pytest.raises(ValueError, match='square'):
         HierarchicalDDD(sympy.Matrix([[1, 2, 3], [4, 5, 6]]), (0,))
@@ -732,7 +733,7 @@ def test_hierarchy_rejects_a_degenerate_partition():
 def test_hierarchy_size_is_a_sum_of_its_levels():
     system = bc.dense_symbolic_matrix(8)
     hier = HierarchicalDDD(system.A, (0, 1, 2, 3))
-    assert hier.size == hier.family.size + hier.top.size
+    assert hier.size == sum(l['family'].size for l in hier.levels) + hier.top.size
 
 
 def test_eval_roots_matches_individual_evaluation():
@@ -972,3 +973,103 @@ def test_every_ordering_gives_the_same_value(order):
          for i in range(system.dim)])))
     got = complex(ddd_of_matrix(system.A, order=order).eval(env))
     assert abs(got - ref) <= 1e-7 * abs(ref)
+
+
+## -- recursive (multi-block) hierarchy ------------------------------------
+
+def test_more_smaller_blocks_beat_one_big_one():
+    """The point of suppressing in sequence rather than all at once.
+
+    A single split must either leave too many terminals or pay for one large
+    cofactor family.  Suppressing a series of small blocks avoids both, because
+    each level hands the next something already reduced.
+    """
+    system = bc.rc_ladder(6)
+    env = dict(system.params)
+    env[system.s] = 1j * 2 * np.pi * 1e4
+    ref = complex(ddd_of_matrix(system.A).eval(env))
+
+    one = HierarchicalDDD(system.A, (1, 2))
+    many = HierarchicalDDD(system.A, [(1,), (2,), (4,), (5,)])
+
+    for h in (one, many):
+        assert abs(complex(h.eval(env)) - ref) <= 1e-8 * abs(ref)
+    assert many.size < one.size
+    assert len(many.levels) == 4
+
+
+def test_suppression_order_skips_rows_that_cannot_be_pivots():
+    """A voltage source's branch row has no diagonal, so it cannot be suppressed."""
+    system = bc.rc_ladder(5)
+    chosen = {b[0] for b in suppression_order(system.A)}
+    for i in range(system.dim):
+        if system.A[i, i] == 0:
+            assert i not in chosen
+
+
+def test_suppression_order_respects_keep():
+    system = bc.rc_ladder(5)
+    keep = [system.in_index, system.out_index]
+    chosen = {b[0] for b in suppression_order(system.A, keep=keep)}
+    assert not (chosen & set(keep))
+
+
+def test_suppression_order_is_ordered_cheapest_first():
+    """Low-degree unknowns first: eliminating one couples its neighbours."""
+    system = bc.rc_ladder(8)
+    blocks = suppression_order(system.A, keep=[system.in_index])
+    first = blocks[0][0]
+
+    def adjacency_degree(i):
+        ## The implementation counts *neighbours* on the symmetrised pattern,
+        ## not row nonzeros -- the diagonal is not a coupling.
+        return sum(1 for j in range(system.dim)
+                   if j != i and (system.A[i, j] != 0 or system.A[j, i] != 0))
+
+    eligible = [i for i in range(system.dim)
+                if system.A[i, i] != 0 and i != system.in_index]
+    assert adjacency_degree(first) == min(adjacency_degree(i) for i in eligible)
+
+
+@pytest.mark.parametrize('limit', [2, 4, 6])
+def test_suppression_is_exact_at_every_depth(limit):
+    system = bc.rc_ladder(8)
+    env = dict(system.params)
+    env[system.s] = 1j * 2 * np.pi * 1e4
+    ref = complex(ddd_of_matrix(system.A).eval(env))
+
+    blocks = suppression_order(system.A, keep=[system.in_index,
+                                               system.out_index], limit=limit)
+    got = complex(HierarchicalDDD(system.A, blocks).eval(env))
+    assert abs(got - ref) <= 1e-9 * abs(ref)
+
+
+def test_hierarchy_beats_the_flat_diagram_on_the_ua741():
+    """H2's gate: beat flat by more than H1's measured ordering spread (1.42×).
+
+    Reaching this needed the numerics fixed as well as the structure. Building
+    the stamp as ``D*A_tt - ...`` keeps it polynomial, but carrying that factor
+    through and dividing by ``D**(m-1)`` at the end is ruinous once ``m`` is a
+    couple of dozen -- the power spans tens of orders of magnitude. Dividing per
+    entry instead recovers the Schur complement exactly.
+    """
+    system = bc.ua741()
+    env = dict(system.params)
+    env[system.s] = 1j * 2 * np.pi * 1e3
+    flat = ddd_of_matrix(system.A)
+    ref = complex(flat.eval(env))
+
+    blocks = suppression_order(system.A, keep=[system.in_index,
+                                               system.out_index], limit=8)
+    h = HierarchicalDDD(system.A, blocks)
+
+    assert abs(complex(h.eval(env)) - ref) <= 1e-8 * abs(ref)
+    assert h.size < flat.size / 1.42            # beyond the ordering spread
+
+
+def test_blocks_must_be_disjoint_and_leave_something():
+    A = bc.rc_ladder(4).A
+    with pytest.raises(ValueError, match='disjoint'):
+        HierarchicalDDD(A, [(1, 2), (2, 3)])
+    with pytest.raises(ValueError, match='at least one unknown'):
+        HierarchicalDDD(A, [tuple(range(A.rows))])

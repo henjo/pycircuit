@@ -1114,27 +1114,102 @@ the 2010 construction, not evidence of an error. The term counts differ in the
 other direction because our device model puts both junction capacitances on every
 transistor, which adds couplings their small-signal model may not have.
 
-Where hierarchy does *not* reproduce the paper
-----------------------------------------------
+Hierarchy on the µA741
+----------------------
 
-Tan & Shi reduce that 6654 to 117 -- the 56× quoted earlier on this page. **We do
-not reproduce it, and the reason is a limitation of what is implemented here.**
+Tan & Shi reduce that 6654 to 117 by three-level two-way partitioning. Suppressing
+a *sequence* of small blocks reaches the same regime:
 
-Their result uses a *three-level recursive* partition into very small leaves:
-Table IV lists leaf matrix sizes of 3, 4, 4 and 3, with cut sets of 5 and 6 nets.
-:class:`~pycircuit.circuit.ddd.HierarchicalDDD` performs a **single** level of
-suppression, and measured on the µA741 it loses either way round:
+.. exec-rst::
 
-* suppressing a *small* block leaves ~21 terminals, so the reduced system is
-  nearly as hard as the original;
-* suppressing a *large* block (21 internal nodes, 6 terminals) costs its cofactor
-  family -- 4842 vertices against 1072 for the flat diagram, 4.5× worse.
+    import numpy as np
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.ddd import (HierarchicalDDD, ddd_of_matrix,
+                                       suppression_order)
 
-The gains shown earlier for hierarchy are real but belong to a different
-situation: one split of a *dense* block, where the flat construction is genuinely
-exponential. Reproducing 56× on a real amplifier needs recursive partitioning
-into small leaves, which is further work rather than a tuning parameter.
+    system = bc.ua741()
+    flat = ddd_of_matrix(system.A)
+    keep = [system.in_index, system.out_index]
 
-Stating that plainly is the point of a calibration circuit. The published number
+    env = dict(system.params)
+    env[system.s] = 1j * 2 * np.pi * 1e3
+    reference = complex(flat.eval(env))
+
+    print(".. list-table:: µA741 -- suppressing unknowns in sequence")
+    print("   :header-rows: 1")
+    print("   :widths: 14 12 12 14 14")
+    print("")
+    print("   * - suppressed")
+    print("     - levels")
+    print("     - vertices")
+    print("     - vs flat")
+    print("     - relative error")
+    print("   * - none (flat)")
+    print("     - 0")
+    print("     - %d" % flat.size)
+    print("     - 1.0×")
+    print("     - --")
+    for limit in (4, 8, 12):
+        blocks = suppression_order(system.A, keep=keep, limit=limit)
+        h = HierarchicalDDD(system.A, blocks)
+        value = complex(h.eval(env))
+        print("   * - %d" % len(blocks))
+        print("     - %d" % len(h.levels))
+        print("     - %d" % h.size)
+        print("     - %.1f×" % (flat.size / h.size))
+        print("     - %.0e" % (abs(value - reference) / abs(reference)))
+
+**Our hierarchical result and theirs land in the same place** — a few hundred
+vertices against a flat diagram of thousands — and the absolute figures are
+close, ours around 156 against their 117 for a circuit two unknowns larger.
+
+Our *ratio* is smaller than their 56× for a reason that is not a deficiency: our
+flat baseline was already several times better than theirs, because it uses the
+2010 expansion ordering rather than the 2000 Greedy-Labeling one (see the
+comparison table above). Both papers' endpoints agree with ours; it is the
+starting point that moved.
+
+Two things were needed to get here, and neither was the Schur algebra:
+
+**Suppress a sequence, not one block.** A single split has to choose between
+leaving too many terminals — the reduced system is then nearly the original — and
+eliminating so much at once that the block's own cofactor family costs more than
+the flat diagram. Measured on this circuit, a single large block gave 4842
+vertices against 1072 flat, 4.5× *worse*. Suppressing small blocks in turn avoids
+both, because each level hands the next something already reduced.
+
+**Do not carry the determinant factor through.** The stamp is built as
+``M = det(A_ii)·A_tt - …`` because that keeps it polynomial, which is what a
+diagram needs. Recovering the determinant then wants a division by
+``det(A_ii)^(m-1)``, and with a couple of dozen unknowns that power spans tens of
+orders of magnitude — the answer is lost to cancellation, silently. Dividing each
+stamp entry by ``det(A_ii)`` instead recovers the Schur complement exactly, so
+each level contributes a single factor and nothing is raised to a power. The
+relative errors above are the result; before the change one configuration
+returned a confidently wrong number.
+
+Which unknowns to suppress
+--------------------------
+
+:func:`~pycircuit.circuit.ddd.suppression_order` chooses them, on three criteria
+of which only the last is a matter of judgement.
+
+**Correctness.** Suppressing a block inverts it, so its sub-matrix must be
+non-singular. For a single unknown that means a nonzero diagonal — which rules
+out a voltage source's branch row, since it states ``v+ - v- = E`` and carries
+nothing on its own diagonal. Those rows are skipped rather than discovered later
+as a division by zero.
+
+**Purpose.** Whatever the answer is about has to survive: ports, the nodes a
+transfer function is taken between, anything to be swept or differentiated. Those
+are named in ``keep``.
+
+**Cost.** Eliminating an unknown couples all of its neighbours to one another, so
+a low-degree unknown is cheap and a highly-connected one is not. Taking them in
+increasing degree of the pattern *as it fills in* is the classic minimum-degree
+elimination ordering. The neighbour count includes kept nodes — fill-in landing
+on a node you are keeping is just as real as fill-in landing on one you are not,
+and counting only the eliminable ones picks the wrong unknown first.
+
 was quotable long before it was testable; having the circuit makes it testable,
 and the honest result is that one level of hierarchy does not get there.
