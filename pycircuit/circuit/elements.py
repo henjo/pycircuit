@@ -1104,35 +1104,26 @@ class VCVS_limited(Circuit):
         level = params.get('level', 0.5)
         offset = params.get('offset', 0.0)
         
-        # We manually inline func.Tanh to make it JAX traceable
-        # The Tanh function in pycircuit is: offset + level * tanh((x_val - offset)/level)
-        # But wait, original code: func.Tanh(offset, level).f(x)
-        x_val = v_inp - v_inn
-        tanh_f = offset + level * toolkit.tanh((x_val - offset) / level)
-        # However, the VCVS_limited current equation uses:
-        # vout = x[3] - x[2] - fprime(x)*f(x)
-        # Wait, the original code multiplies by g implicitly?
-        # Let's look at the original i():
-        # vout = x[3] - x[2] - self.function.fprime(x[1]-x[0])*self.function.f(x[1]-x[0])
-        # Wait, that's what's currently in VCVS_limited.i().
-        # Actually, let's just write exactly what it had:
-        
-        dx = x_val - offset
-        f = offset + level * toolkit.tanh(dx / level)
-        fprime = 1.0 / toolkit.cosh(dx / level)**2
-        
-        # Original code had x[1]-x[0] which is v_inn - v_inp
-        orig_x_val = v_inn - v_inp
-        orig_dx = orig_x_val - offset
-        orig_f = offset + level * toolkit.tanh(orig_dx / level)
-        orig_fprime = 1.0 / toolkit.cosh(orig_dx / level)**2
-        
-        vout = v_outn - v_outp - orig_fprime * orig_f  # matching exact original behavior
-        
-        # Wait, the original VCVS_limited.i() does not have g?
-        # G() has `g_limit*self.iparv.g`. The `i()` function was probably bugged in original pycircuit!
-        # I will preserve the original `i()` bug/behavior to pass tests, and we are just generating jacobian from it.
-        # Wait, I should also use G_jac from JAX so the bug matches.
+        ## func.Tanh.f inlined, so the expression stays traceable by an autodiff
+        ## toolkit.  It must track func.Tanh *exactly*: G()'s hand-written path
+        ## differentiates that object, and the two forms are only
+        ## interchangeable while they agree.  An earlier inlining here used
+        ## ``offset + level*tanh(...)``, which func.Tanh does not, so the
+        ## differentiated and stamped paths were limiting differently.
+        u = v_inn - v_inp
+        f = toolkit.tanh((u - offset) / level)
+
+        ## Branch equation  v_outn - v_outp - g*f(v_inn - v_inp) = 0.
+        ##
+        ## This is fixed by the hand-written G(), which stamps -1/+1 on the
+        ## output nodes and ±g*f'(u) on the inputs; the residual with those
+        ## derivatives is the one above, and it agrees with the stamp to
+        ## finite-difference precision at every operating point tested.
+        ##
+        ## It previously read ``- fprime(u)*f(u)`` with no g at all, which
+        ## matched neither the stamp nor the documented behaviour -- for
+        ## v_inp - v_inn beyond the knee it even carried the opposite sign.
+        vout = v_outn - v_outp - g * f
         return toolkit.array([0.0, 0.0, i_branch, -i_branch, vout])
 
     def i(self, x, epar=defaultepar):

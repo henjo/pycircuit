@@ -279,35 +279,43 @@ extension should use. Concrete wart: `transient.py:188` decides behaviour with
 a polymorphic hierarchy by class-name string. An `order` property would do it
 properly.
 
-### P7 — where the abstraction actually leaks: `G` is not always ∂i/∂x
+### P7 — the invariant nothing enforced: `G` vs ∂i/∂x *(fixed, and now tested)*
 
-The promise in §2 is that one element definition serves every toolkit. It holds
-almost everywhere, and the place it fails is worth knowing because the failure is
-**silent**.
+The promise in §2 is that one element definition serves every toolkit. The place
+it failed is worth keeping on record, because the failure was **silent**.
 
-An element may supply its conductance matrix two ways: hand-written `G()`, or
-autodiff of `eval_i_pure`. Nothing checks that these agree. For
-`VCVS_limited` they do not — measured on a properly initialised element at
-`x = [0.1, 0, 0.3, 0, 0.05]`, `g = 2`, `level = 0.5`:
+An element may state its conductance matrix twice: as a hand-written `G()`
+stamp, and implicitly through `i()`, which a differentiating toolkit turns into
+the same matrix by autodiff. Nothing made those agree. When they disagree Newton
+gets a wrong Jacobian and often still converges -- more slowly, or to a slightly
+different point -- so nothing looks broken.
 
-```
-hand-written G, branch row : [ 0.      0.     -1.   1.   0. ]
-d i / d x,      branch row : [ 0.8487 -0.8487 -1.   1.   0. ]
-```
+`VCVS_limited` had three defects at once, all pre-dating the JAX work:
 
-Two distinct causes, both pre-dating the JAX work (both present in
-`py3-support`):
+1. `func.Tanh.fprime` returned a hard `0` (P8), so the stamp had no
+   input-to-output coupling at all.
+2. `i()` computed `v_out - f'(u)*f(u)` and never used the gain `g`, while `G()`
+   stamped `g*f'(u)`. Beyond the knee it even carried the opposite sign.
+3. `eval_i_pure` inlined `offset + level*tanh(...)` as "func.Tanh", which is not
+   what `func.Tanh.f` computes -- so the differentiated and stamped paths were
+   limiting differently.
 
-1. `i()` computes `v_out - f'(v_in)·f(v_in)` and never uses the gain `g`, while
-   `G()` stamps `g_limit·g`. The `f'·f` product looks wrong for a VCVS on its
-   face — you would expect `f(g·v_in)` — but the intended semantics are not
-   recorded anywhere, so it is **left alone** pending someone who knows.
-2. `Tanh.fprime` returned a hard `0` — see below. **Fixed.**
+The `G()` stamp is correct and was taken as the specification. The residual with
+its derivatives is `v_outn - v_outp - g*f(v_inn - v_inp)`, which reproduces the
+stamp to finite-difference precision at every operating point tested; `i()` and
+`eval_i_pure` were corrected to that, and now use one definition of `f`.
 
-The general lesson for the architecture: an element with both a manual Jacobian
-and a pure form has an invariant nothing enforces. A test that finite-differences
-`i()` and compares against `G()` for every nonlinear element would have caught
-this, and is the single highest-value test this codebase does not have.
+**`test_element_jacobians.py` pins the invariant** -- it finite-differences
+`i()` and compares against `G()` across operating points that straddle the knee.
+Verified to fail on all three historical defects when they are reinstated.
+Extend `CASES` there when adding a nonlinear element; it is the cheapest guard
+this codebase has against a whole class of silent error.
+
+One thing deliberately **not** changed: the `level` parameter is documented as
+"Limit voltage, unit V", but `func.Tanh.f` is `tanh((x-offset)/level)`, which
+saturates at ±1 regardless of `level` -- `level` acts as a transition width, not
+an amplitude. Whether the parameter or the function is wrong needs someone who
+knows the intent.
 
 ### P8 — a 17-year-old shadowed derivative *(fixed)*
 
