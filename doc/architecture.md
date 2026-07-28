@@ -632,7 +632,62 @@ the test-count *shape* (DDD still 35% of the suite) is unchanged. This item
 stays open for anyone who wants to extend it; what's fixed is recorded so it
 doesn't get redone by accident.
 
----
+### P14 — the legacy corners `--doctest-modules` found, deferred out of P13
+
+P13's scope check (does turning on doctests project-wide open a bigger can
+of worms than the two flagged modules) surfaced **13 real collection
+errors** (verified with real `jax` importable, not the coverage
+workaround's blocked-jax artifact, which added two more that don't
+reproduce otherwise). None are hard to understand individually; the
+question this item is really about is whether they're worth anyone's time,
+categorized by cause:
+
+**Expected-missing optional native/vendor dependencies** — correctly failing
+without proprietary tools this environment doesn't have, the same shape as
+the already-accepted `pycircuit.post.cds` baseline in §8's conventions:
+`post/cds/psflibpsf.py` (`libpsf`), `post/cds/psftool.py` (`psf`),
+`post/jwdb/jwdbresult.py` + `post/jwdb/test/example.py` (`jwdb`, a
+proprietary waveform-database format), `post/jwdb/configure.py`
+(`sipconfig`, the PyQt/SIP build tool for `jwdb`'s native extension),
+`circuit/xdot.py` (`gobject`, a GTK graph-viewer dependency, a dev-time
+visualization tool unrelated to core analysis). Not bugs; nothing to fix
+without the vendor library, though `post/cds/psftoasc.py`'s error
+(`FileNotFoundError`, it shells out to an external binary) is worth a second
+look to confirm it's the same shape.
+
+**A genuine, mechanical Python-2 leftover, live code:** `sim/gnucap/session.py`
+and `sim/gnucap/simulation.py` (which imports from it) both do
+`import sys, StringIO` — the Python-2 stdlib module, never ported to `io.StringIO`.
+Same fix shape as P4's dead files, except this code isn't dead the way
+`circuit_cna.py` was — worth checking what (if anything) still calls into
+`pycircuit.sim.gnucap` before deciding whether to port or delete.
+
+**A real, currently-broken module, not doctest-specific:**
+`circuit/volterra.py` does `from pycircuit.circuit.analysis import ...AC...`
+at its top level — `AC` only exists in `analysis_ss.py`, not `analysis.py`,
+so `import pycircuit.circuit.volterra` fails outright for anyone, always,
+regardless of doctests. Confirmed nothing else in the codebase imports it.
+Either a one-line import fix (if Volterra analysis is still wanted) or a
+deletion candidate in the P4 sense (confirm not just this one import, but
+whether the whole module still makes sense against the current `analysis_ss`
+API before assuming a one-line fix is sufficient).
+
+**Broken or incomplete example scripts**, orphaned (nothing imports these
+either): `sim/tests/simulation_class_example.py` uses `Circuit(...)` without
+importing it at all — reads as an unfinished stub, not a regression.
+`circuit/examples/multi_feedback_filter.py` and
+`circuit/examples/regulatedcascode.py` both run but produce wrong results
+against the *current* API (an empty result dict where `'out'` was expected;
+`np.sqrt` called on a sympy `One` where a numeric value was expected) —
+plausible API drift since these were last touched, the same staleness shape
+P13 found in `circuit.py`/`elements.py`'s doctests, just in standalone
+scripts rather than docstrings.
+
+Not attempted here — deliberately deferred out of P13 to keep that item's
+scope bounded (see its writeup above). No regression-test gate is proposed
+yet because the right unit of work differs per bucket (delete vs. port vs.
+fix vs. investigate-before-deciding); whoever picks this up should scope
+each bucket separately rather than treating it as one task.
 
 ## 7.1 State of the list
 
@@ -671,11 +726,16 @@ Open, in the order I would take them:
 | P3 | hierarchy claims more than it delivers | medium | nothing |
 | P5 | no user-facing backend story | medium | nothing |
 | P8 | two extension conventions | medium | a convention decision |
+| P14 | legacy corners `--doctest-modules` found (cds/jwdb/gnucap/volterra/examples) | medium, split into per-bucket work | nothing, but scope each bucket separately |
 
 Everything left is medium, and P8 is the only one blocked (on a convention
 decision, not investigation). P3 is the next one I'd take: small enough in
 isolation (a `NumDenMixin` extraction) and, like P2, purely a
-naming-matches-reality fix with no open design question.
+naming-matches-reality fix with no open design question. P14 is lower
+priority than it looks — most of its 13 errors are expected-missing vendor
+dependencies, not bugs; the two genuine items inside it (`volterra.py`'s
+broken top-level import, `gnucap`'s unported `StringIO`) are small once
+isolated from the rest.
 
 ## 8. Conventions
 
