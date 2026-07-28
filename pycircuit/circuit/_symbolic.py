@@ -136,6 +136,23 @@ def size(*args,**kvargs):
 def integer(x):
     return sympy.Integer(x)
 
+def minimum(a, b):
+    """Symbolic analogue of ``numpy.minimum`` -- elementwise smaller of two.
+
+    Present for backend parity: without it an element reaching for
+    ``toolkit.minimum`` fell through to ``jax.numpy.minimum``, which rejects
+    sympy objects outright (and, under the numeric toolkit, silently pulled
+    JAX into a plain numpy circuit).  ``Varactor``'s junction-capacitance
+    clamp is the caller.
+    """
+    return sympy.Min(a, b)
+
+
+def maximum(a, b):
+    """Symbolic analogue of ``numpy.maximum``; see :func:`minimum`."""
+    return sympy.Max(a, b)
+
+
 def where(cond, a, b):
     """Symbolic analogue of ``numpy.where`` for scalars.
 

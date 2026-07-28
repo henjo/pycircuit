@@ -2,65 +2,39 @@
 from pycircuit.circuit import Circuit, Parameter, defaultepar
 
 class Semiconductor(Circuit):
-    """Base class for non-linear semiconductors with automatic Jacobians"""
-    
+    """Base class for non-linear semiconductors with automatic Jacobians.
+
+    These devices deliberately write no ``G``/``C`` of their own: the model
+    lives once, in ``eval_i_pure``/``eval_q_pure``, and the Jacobian is
+    obtained by differentiating it.  That is the invariant ``P9``/``P10`` in
+    ``doc/architecture.md`` exist to protect -- a hand-written stamp that
+    silently disagrees with ``i()`` still lets Newton converge, just to a
+    slightly wrong answer.
+
+    Which differentiation is used is the *toolkit's* decision, not this
+    class's.  It used to be decided here by ``try: import jax``, i.e. by
+    whether JAX happened to be installed rather than by which backend was
+    running -- the same defect ``Toolkit.jacobian`` and ``Toolkit.derivative``
+    were introduced to remove from ``elements.py``, which this module was
+    never migrated onto.  With a symbolic toolkit that fell through to a
+    central difference, perturbing a *sympy symbol* by ``1e-6``.
+    """
+
+    def _model_params(self):
+        """Instance parameters as a plain dict, for the pure model functions."""
+        return {p.name: getattr(self.iparv, p.name) for p in self.instparams}
+
     def G(self, x, epar=defaultepar):
-        try:
-            import jax
-            if isinstance(x, jax.numpy.ndarray) or hasattr(self.toolkit, 'add_at'):
-                # We can use JAX
-                jac_func = jax.jacfwd(lambda v: self.i(v, epar))
-                return self.toolkit.array(jac_func(x))
-        except ImportError:
-            pass
-            
-        # Fallback to central difference
-        n = self.n
-        G_mat = self.toolkit.zeros((n, n))
-        eps = 1e-6
-        for j in range(n):
-            import copy
-            x_plus = list(x)
-            x_minus = list(x)
-            x_plus[j] += eps
-            x_minus[j] -= eps
-            
-            i_plus = self.i(self.toolkit.array(x_plus), epar)
-            i_minus = self.i(self.toolkit.array(x_minus), epar)
-            
-            for k in range(n):
-                G_mat[k, j] = (i_plus[k] - i_minus[k]) / (2 * eps)
-        return G_mat
+        return self.toolkit.jacobian(self.eval_i_pure, x,
+                                     self._model_params(), epar)
 
     def C(self, x, epar=defaultepar):
-        # Default C is zero unless q is overridden
+        ## No charge model means no capacitance -- nothing to differentiate.
         if not hasattr(self.__class__, 'q') or self.__class__.q is Circuit.q:
             return self.toolkit.zeros((self.n, self.n))
-            
-        try:
-            import jax
-            if isinstance(x, jax.numpy.ndarray) or hasattr(self.toolkit, 'add_at'):
-                jac_func = jax.jacfwd(lambda v: self.q(v, epar))
-                return self.toolkit.array(jac_func(x))
-        except ImportError:
-            pass
-            
-        # Fallback to central difference
-        n = self.n
-        C_mat = self.toolkit.zeros((n, n))
-        eps = 1e-6
-        for j in range(n):
-            x_plus = list(x)
-            x_minus = list(x)
-            x_plus[j] += eps
-            x_minus[j] -= eps
-            
-            q_plus = self.q(self.toolkit.array(x_plus), epar)
-            q_minus = self.q(self.toolkit.array(x_minus), epar)
-            
-            for k in range(n):
-                C_mat[k, j] = (q_plus[k] - q_minus[k]) / (2 * eps)
-        return C_mat
+
+        return self.toolkit.jacobian(self.eval_q_pure, x,
+                                     self._model_params(), epar)
 
 class BJT(Semiconductor):
     """NPN Bipolar Junction Transistor (Ebers-Moll Level 1)"""
@@ -114,13 +88,7 @@ class BJT(Semiconductor):
         return toolkit.array([i_c_val, i_b_val, i_e_val])
 
     def i(self, x, epar=defaultepar):
-        params = {
-            'IS': self.iparv.IS,
-            'BF': self.iparv.BF,
-            'BR': self.iparv.BR,
-            'VA': self.iparv.VA
-        }
-        return self.eval_i_pure(x, params, epar, self.toolkit)
+        return self.eval_i_pure(x, self._model_params(), epar, self.toolkit)
 
 
 class JFET(Semiconductor):
@@ -143,11 +111,8 @@ class JFET(Semiconductor):
         v_ds = v_d - v_s
         v_gd = v_g - v_d
         
-        where = getattr(toolkit, 'where', None)
-        if where is None:
-            import jax.numpy as jnp
-            where = jnp.where
-            
+        where = toolkit.where
+
         VTO = params.get('VTO', -2.0)
         BETA = params.get('BETA', 1e-4)
         LAMBDA = params.get('LAMBDA', 0.0)
@@ -189,13 +154,7 @@ class JFET(Semiconductor):
         return toolkit.array([i_drain, i_g, i_source])
 
     def i(self, x, epar=defaultepar):
-        params = {
-            'VTO': self.iparv.VTO,
-            'BETA': self.iparv.BETA,
-            'LAMBDA': self.iparv.LAMBDA,
-            'IS': self.iparv.IS
-        }
-        return self.eval_i_pure(x, params, epar, self.toolkit)
+        return self.eval_i_pure(x, self._model_params(), epar, self.toolkit)
 
 class ZenerDiode(Semiconductor):
     """Diode with Avalanche Breakdown"""
@@ -222,8 +181,7 @@ class ZenerDiode(Semiconductor):
         return toolkit.array([i_tot, -i_tot])
 
     def i(self, x, epar=defaultepar):
-        params = {'IS': self.iparv.IS, 'BV': self.iparv.BV, 'IBV': self.iparv.IBV}
-        return self.eval_i_pure(x, params, epar, self.toolkit)
+        return self.eval_i_pure(x, self._model_params(), epar, self.toolkit)
 
 class Varactor(Semiconductor):
     """Voltage-dependent Capacitor"""
@@ -245,18 +203,14 @@ class Varactor(Semiconductor):
         VJ = params.get('VJ', 1.0)
         M = params.get('M', 0.5)
         
-        minimum = getattr(toolkit, 'minimum', None)
-        if minimum is None:
-            import jax.numpy as jnp
-            minimum = jnp.minimum
-            
+        minimum = toolkit.minimum
+
         v_eff = minimum(v, 0.99 * VJ)
         q_val = CJ0 * VJ / (1.0 - M) * (1.0 - (1.0 - v_eff / VJ)**(1.0 - M))
         return toolkit.array([q_val, -q_val])
 
     def i(self, x, epar=defaultepar):
-        return self.eval_i_pure(x, {}, epar, self.toolkit)
-        
+        return self.eval_i_pure(x, self._model_params(), epar, self.toolkit)
+
     def q(self, x, epar=defaultepar):
-        params = {'CJ0': self.iparv.CJ0, 'VJ': self.iparv.VJ, 'M': self.iparv.M}
-        return self.eval_q_pure(x, params, epar, self.toolkit)
+        return self.eval_q_pure(x, self._model_params(), epar, self.toolkit)

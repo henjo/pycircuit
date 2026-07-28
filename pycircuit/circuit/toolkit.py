@@ -191,6 +191,33 @@ class NumericToolkit(Toolkit):
     """Numeric toolkit backed by numpy."""
     symbolic = False
 
+    def jacobian(self, func, x, params, epar, fallback=None):
+        """``fallback`` if the element has one, else a central difference.
+
+        An element that stamps its own conductance matrix still wins -- this
+        only computes anything for elements that have no hand-written form,
+        which is what :class:`~pycircuit.circuit.semiconductors.Semiconductor`
+        relies on.  The difference used to be hand-rolled inside that class;
+        having it here means there is one implementation to be wrong rather
+        than one per element family.
+        """
+        if fallback is not None:
+            return fallback
+
+        eps = 1e-6
+        f0 = func(x, params, epar, self)
+        n, m = len(x), len(f0)
+        J = self.zeros((m, n))
+        for j in range(n):
+            x_plus, x_minus = list(x), list(x)
+            x_plus[j] += eps
+            x_minus[j] -= eps
+            f_plus = func(self.array(x_plus), params, epar, self)
+            f_minus = func(self.array(x_minus), params, epar, self)
+            for k in range(m):
+                J[k, j] = (f_plus[k] - f_minus[k]) / (2 * eps)
+        return J
+
 class SparseNumericToolkit(NumericToolkit):
     """Numeric toolkit backed by scipy.sparse."""
     symbolic = False
@@ -357,6 +384,35 @@ class JAXToolkit(Toolkit):
 class SymbolicToolkit(Toolkit):
     """Symbolic toolkit backed by sympy (stock LUsolve solver)."""
     symbolic = True
+
+    def jacobian(self, func, x, params, epar, fallback=None):
+        """``fallback`` if the element has one, else an *exact* sympy derivative.
+
+        Without this the base class returned ``fallback`` -- ``None`` for an
+        element whose whole design is to be differentiated automatically -- and
+        the element was left to do it itself.  ``semiconductors.py`` did, by
+        central difference, which under a symbolic toolkit perturbs a *symbol*
+        by ``1e-6`` and divides by ``2e-6``: a numerical approximation of an
+        expression that sympy can differentiate in closed form, simultaneously
+        enormous and inexact.  Differentiating here is both exact and cheaper.
+
+        ``x`` may hold symbols or concrete values, so differentiation goes
+        through fresh dummies and substitutes back -- ``diff`` needs a symbol
+        to differentiate with respect to, and an operating point is often
+        numeric even under a symbolic toolkit.
+        """
+        if fallback is not None:
+            return fallback
+
+        import sympy
+        dummies = [sympy.Dummy() for _ in range(len(x))]
+        f = func(self.array(dummies), params, epar, self)
+        back = dict(zip(dummies, x))
+        J = self.zeros((len(f), len(x)))
+        for k in range(len(f)):
+            for j in range(len(x)):
+                J[k, j] = sympy.diff(f[k], dummies[j]).subs(back)
+        return J
 
 
 class NumDenMixin:
