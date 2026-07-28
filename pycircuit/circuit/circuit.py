@@ -239,12 +239,6 @@ class Circuit():
             self.iparv.attach(self)
             self.update(self.ipar)
             
-        if self.toolkit.supports('autodiff'):
-            if hasattr(self, 'eval_i'):
-                self.toolkit.generate_eval_i_and_G(self)
-            if hasattr(self, 'eval_q'):
-                self.toolkit.generate_eval_q_and_C(self)
-
     def __eq__(self, a):
         return self.__class__ == a.__class__ and \
             self.nodes == a.nodes and \
@@ -506,16 +500,10 @@ class Circuit():
 
     def G(self, x, epar=defaultepar, params_tree=None):
         """Calculate the G (trans)conductance matrix given the x-vector"""
-        if hasattr(self, 'eval_i_and_G'):
-            i_vec, G_mat = self.eval_i_and_G(x, epar)
-            return G_mat
         return self.toolkit.zeros((self.n, self.n))
 
     def C(self, x, epar=defaultepar, params_tree=None):
         """Calculate the C (transcapacitance) matrix given the x-vector"""
-        if hasattr(self, 'eval_q_and_C'):
-            q_vec, C_mat = self.eval_q_and_C(x, epar)
-            return C_mat
         return self.toolkit.zeros((self.n, self.n))
 
     def u(self, t=0.0, epar=defaultepar, analysis=None, params_tree=None):
@@ -523,16 +511,10 @@ class Circuit():
 
     def i(self, x, epar=defaultepar, params_tree=None):
         """Calculate the i vector as a function of the x-vector"""
-        if hasattr(self, 'eval_i_and_G'):
-            i_vec, G_mat = self.eval_i_and_G(x, epar)
-            return i_vec
         return self.toolkit.dot(self.G(x), x)
 
     def q(self, x, epar=defaultepar, params_tree=None):
         """Calculate the q vector as a function of the x-vector"""
-        if hasattr(self, 'eval_q_and_C'):
-            q_vec, C_mat = self.eval_q_and_C(x, epar)
-            return q_vec
         return self.toolkit.dot(self.C(x), x)
 
     def CY(self, x, w, epar=defaultepar):

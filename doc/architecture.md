@@ -317,11 +317,11 @@ on `G`, `C`, `i` *and* `q` — i.e. every stamp. The missing pure form now
 contributes zeros. Pinned by a test that compares the batched stamp against the
 per-element one rather than merely checking it returns something.
 
-### P7 — the toolkit reaches into element instances *(diagnosed, not yet fixed)*
+### P7 — the toolkit reaches into element instances *(fixed)*
 
-The remaining odd coupling, and the one to be deliberate about.
+The odd coupling, resolved.
 
-`Circuit.__init__` ends with:
+`Circuit.__init__` used to end with:
 
 ```python
 if self.toolkit.supports('autodiff'):
@@ -331,57 +331,51 @@ if self.toolkit.supports('autodiff'):
         self.toolkit.generate_eval_q_and_C(self)
 ```
 
-and `JAXToolkit.generate_eval_i_and_G` **installs a method on the element
+and `JAXToolkit.generate_eval_i_and_G` **installed a method on the element
 instance** (`element.eval_i_and_G = ...`, plus a per-instance `_jax_cache_i`),
-which `Circuit.G`, `C`, `i` and `q` then discover with `hasattr`. So the toolkit
-mutates element state, and the base class picks the result up by name.
+which `Circuit.G`, `C`, `i` and `q` then discovered with `hasattr`. So the
+toolkit mutated element state, and the base class picked the result up by name.
 
-**What was measured (2026-07-27):**
+**What was measured (2026-07-27, extended 2026-07-28).** The 2026-07-27 pass
+established: no shipped element defines `eval_i` or `eval_q`, so the guard was
+false for every element in the package; the only definition anywhere was
+`JAXDiode` inside `test_jax_autodiff.py`, a test-local subclass, and that test
+called `generate_eval_i_and_G` **by hand** because `JAXDiode.__init__` assigns
+its toolkit *after* `super().__init__()`, so the guard never sees an autodiff
+toolkit at construction time. The follow-up measurement (2026-07-28) confirmed
+this with a `raise` planted in both `generate_*` methods and a full suite run:
+**498 passed, 6 skipped, 1 failed**, and the one failure was exactly
+`test_jax_autodiff.py`'s manual call. The `generate_eval_q_and_C` probe never
+fired **at all** — not automatically, not even by hand — so the charge/
+capacitance half of the mechanism had zero exercise anywhere in the codebase,
+a stronger form of "dead" than the `eval_i` half.
 
-* **No shipped element defines `eval_i` or `eval_q`**, so the guard is false for
-  every element in the package and the automatic path never runs.
-* The only definition anywhere is `JAXDiode` inside `test_jax_autodiff.py`, a
-  test-local subclass. That test calls `generate_eval_i_and_G` **by hand**.
-* It has to: `JAXDiode.__init__` assigns `self.toolkit = jax_tk` *after*
-  `super().__init__()`, so at guard time the toolkit is still numeric. As far as
-  the code shows, **the automatic path has never fired for anything**.
-* Consequently the four `hasattr(self, 'eval_i_and_G')` branches in
-  `Circuit.G/C/i/q` are unreachable in production.
-
-This is also a *second* pure-form convention: bound `eval_i(self, x, epar)`
+This was also a *second* pure-form convention: bound `eval_i(self, x, epar)`
 here, against static `eval_i_pure(x, params, epar, toolkit)` used by
 :meth:`~pycircuit.circuit.toolkit.Toolkit.jacobian` and by batching. Two
-conventions for one job is the duplication P9 is about, one level up.
+conventions for one job was the duplication P9 is about, one level up.
 
-#### How to proceed
+**Decision:** delete, made by the user after the measurement above (deferred
+here on 2026-07-27 as a product judgement the code could not make for itself —
+vestigial design superseded by `eval_i_pure`/`jacobian`, or a deliberate
+escape hatch for an out-of-tree element). The evidence — no in-tree user, a
+differing signature convention, and the `eval_q` half unexercised even by
+hand — favoured vestigial, and that is the call that was made.
 
-1. **Measure before touching.** Put a `raise` in both `generate_*` methods and
-   run the full suite; everything except `test_jax_autodiff` should pass. This
-   turns "grep suggests dead" into "measured dead", which is the standard the
-   rest of this document is held to.
-
-2. **Decide what it is** — a judgement call, not something the code answers:
-   * *Vestigial* — an earlier autodiff design superseded by `eval_i_pure` plus
-     `jacobian`/batching. The differing signature convention and the absence of
-     any user both point this way.
-   * *A deliberate escape hatch* — a per-instance route for an out-of-tree
-     element to opt into autodiff without the static-signature discipline,
-     getting value and Jacobian from one compiled call.
-
-3. **Then either:**
-   * **Delete** — roughly 45 lines from `toolkit.py`, four branches from
-     `Circuit.G/C/i/q`, and the hook in `__init__`; or
-   * **Make it real** — document the contract, fix the `__init__` ordering so
-     the guard can actually fire, and ship one in-tree element that uses it. An
-     extension point with no in-tree user rots, which is how this one got here.
-
-4. **Rewrite the test first, either way.** Point it at `eval_i_pure` +
-   `toolkit.jacobian` so its actual intent — *a user-defined nonlinear element
-   gets an exact autodiff Jacobian* — stays covered while the mechanism changes
-   underneath it. Coverage should never dip during the change.
-
-Deferred rather than done because step 2 is a product decision: removing dead
-code is routine, removing an extension point is not.
+**What changed.** Removed `generate_eval_i_and_G`/`generate_eval_q_and_C` from
+`toolkit.py` (~45 lines), the `autodiff`/`hasattr` hook at the end of
+`Circuit.__init__`, and the four `hasattr(self, 'eval_i_and_G'/'eval_q_and_C')`
+branches in `Circuit.G/C/i/q` — those methods now just do what the base always
+did: read the stamped matrix, or derive `i`/`q` from it. `test_jax_autodiff.py`
+was rewritten first, per the plan above, to point at the mechanism that was
+always the real one: it builds a real `Diode` with `toolkit=jaxtoolkit` and
+checks that `Diode.G`/`Diode.i` — which already guard on
+`supports('autodiff')` and call `eval_i_pure` / `toolkit.jacobian` — agree with
+the numeric-toolkit stamp. Coverage of "JAX autodiff produces a correct
+Jacobian for a real element" did not dip; it improved, since the old test only
+ever exercised a mechanism nothing else used. Full suite: 499 passed, 6
+skipped, 0 failed — same test count as the probe run, confirming nothing else
+depended on the removed path.
 
 ### P8 — two extension conventions, built opposite ways
 
@@ -480,8 +474,9 @@ finished. The fix uses `**` instead, which numpy, sympy and JAX all implement �
 *reach for an operator before adding a primitive to every backend.* All ten
 transient stress tests pass with the corrected derivative.
 
-This one also shows why P7's proposed test matters: no existing test could
-distinguish a correct Jacobian from a zero one, because Newton still converged.
+This one also shows why P9's finite-difference test matters: no existing test
+could distinguish a correct Jacobian from a zero one, because Newton still
+converged.
 
 **Unreachable code is worth grepping for generally** — an AST scan found four
 `return`-followed-by-code sites. `elements.py:1840` is another live one: a
@@ -534,14 +529,16 @@ suggest — but the direction is real.)
 Fixed during this review, each with a regression test: P1 (JAX made optional
 again), P6 (batched evaluation moved into the toolkit, fixing an
 `AttributeError` on every stamp for circuits mixing nonlinear and reactive
-elements), P9 (`G` versus `∂i/∂x`, plus the `VCVS_limited` residual and limiter
-semantics), P10 (the shadowed `Tanh.fprime`).
+elements), P7 (the per-instance `eval_i_and_G`/`eval_q_and_C` mechanism
+deleted — measured dead, decided vestigial, test rewritten to the real
+`eval_i_pure`/`toolkit.jacobian` path), P9 (`G` versus `∂i/∂x`, plus the
+`VCVS_limited` residual and limiter semantics), P10 (the shadowed
+`Tanh.fprime`).
 
 Open, in the order I would take them:
 
 | # | item | size | blocked on |
 |---|---|---|---|
-| P7 | toolkit reaches into element instances | small | a product decision — see its plan |
 | P4 | ~1528 lines of maintained dead code | small | knowing what CNA was for |
 | P11 | `_symbolic` missing `tanh`/`power` | small | nothing |
 | P2 | delegation error messages | small | nothing |
@@ -550,9 +547,8 @@ Open, in the order I would take them:
 | P5 | no user-facing backend story | medium | nothing |
 | P8 | two extension conventions | medium | a convention decision |
 
-P7 and P4 are first not because they are the most valuable but because they are
-the two where the code is *actively misleading* — one advertises an extension
-point that has never fired, the other keeps two `Circuit` classes alive.
+P4 is first not because it is the most valuable but because the code is
+*actively misleading* there — it keeps two `Circuit` classes alive.
 
 ## 8. Conventions
 

@@ -338,52 +338,6 @@ class JAXToolkit(Toolkit):
             return joined, (np.concatenate(rows), np.concatenate(cols))
         return joined, np.concatenate(flat)
 
-    def generate_eval_i_and_G(self, element):
-        import jax
-        
-        element._jax_cache_i = {}
-        
-        def eval_i_and_G_func(x, epar):
-            if hasattr(epar, '_values'):
-                key = frozenset(epar._values.items())
-            else:
-                key = id(epar)
-                
-            if key not in element._jax_cache_i:
-                @jax.jit
-                def compiled_func(x_inner):
-                    i_vec = element.eval_i(x_inner, epar)
-                    G_mat = jax.jacfwd(element.eval_i)(x_inner, epar)
-                    return i_vec, G_mat
-                element._jax_cache_i[key] = compiled_func
-                
-            return element._jax_cache_i[key](x)
-            
-        element.eval_i_and_G = eval_i_and_G_func
-
-    def generate_eval_q_and_C(self, element):
-        import jax
-        
-        element._jax_cache_q = {}
-        
-        def eval_q_and_C_func(x, epar):
-            if hasattr(epar, '_values'):
-                key = frozenset(epar._values.items())
-            else:
-                key = id(epar)
-                
-            if key not in element._jax_cache_q:
-                @jax.jit
-                def compiled_func(x_inner):
-                    q_vec = element.eval_q(x_inner, epar)
-                    C_mat = jax.jacfwd(element.eval_q)(x_inner, epar)
-                    return q_vec, C_mat
-                element._jax_cache_q[key] = compiled_func
-                
-            return element._jax_cache_q[key](x)
-            
-        element.eval_q_and_C = eval_q_and_C_func
-
     def add_at(self, lhs, indices, rhs):
         """Perform in-place addition for JAX arrays using .at[].add()"""
         # JAX arrays are immutable, so we must return the new array.
