@@ -116,14 +116,18 @@ Only attempted if Stage 2 is positive. Add a `CCVS`-via-nullor composition
 win from the survey). Same gate shape as Stage 1: correctness against the
 mainline `CCVS`, plus a symbolic-size comparison for a circuit that uses one.
 
-### Stage 4 — delete the old files
+### Stage 4 — delete the old files *(done, 2026-07-28)*
 
-`circuit_cna.py` and `elements_cna.py` are removed regardless of Stage 2/3's
-outcome — nothing in this plan depends on repairing them, and
-`doc/cna_conclusions.md` records why they were beyond repair rather than
-merely unused. Update `doc/architecture.md`'s P4 entry to `*(fixed)*` with a
-pointer to this plan and its outcome (including if Stage 2/3 turned out
-negative — say so plainly).
+`circuit_cna.py` and `elements_cna.py` removed. Stage 1 came back refuted (see
+above), so Stages 2/3 were not attempted — the user chose to stop here rather
+than scope the bigger node-graph-surgery implementation Stage 1's result
+would require. Nothing in this deletion depended on that outcome either way:
+neither file imported under Python 3, and `circuit_cna.py`'s 1377 lines were
+pure duplicate `Circuit`/`SubCircuit` engine with no CNA-specific content.
+`doc/architecture.md`'s P4 entry updated to `*(fixed)*` with a pointer here.
+CNA revival remains open for the future if someone wants to scope the
+node-merging implementation — this plan and `cna_conclusions.md` are the
+starting point, not a dead end.
 
 ## Testing and doc conventions to follow (already established in this repo)
 

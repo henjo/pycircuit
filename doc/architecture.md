@@ -269,15 +269,36 @@ inheritance asserts a kinship that the code does not use.
 A `NumDenMixin` carrying the `N(s)/D(s)` contract would say what is true. Low
 urgency, but it misleads every reader who assumes the hierarchy means something.
 
-### P4 — ~1528 lines of maintained dead code
+### P4 — ~1528 lines of maintained dead code *(fixed)*
 
-`circuit_cna.py` (1377 lines) and `elements_cna.py` (151) are imported by
+`circuit_cna.py` (1377 lines) and `elements_cna.py` (151) were imported by
 nothing — not the package, tests, docs or benchmarks — yet `circuit_cna.py`
-duplicates eight core class names including `Circuit` and `SubCircuit`. Git
-shows both receiving the Python-3 port, the NumPy 2.0 fixes and the toolkit
-refactor. Effort is being spent maintaining code nothing runs, and duplicated
-core classes invite an edit landing in the wrong file. Establish what CNA was
-meant to be, then delete or revive.
+duplicated eight core class names including `Circuit` and `SubCircuit`. Git
+showed both receiving the Python-3 port, the NumPy 2.0 fixes and the toolkit
+refactor, despite neither actually importing under Python 3 at all (both used
+Python-2 implicit relative imports — `from constants import *` /
+`from circuit import *`).
+
+CNA turned out to mean Compact Nodal Analysis, a real cited technique
+(Tlelo-Cuautle & Sarmiento-Reyes, JART 2003 — downloaded and read, see
+`doc/cna_conclusions.md`) for reducing matrix size in nullor-containing
+circuits, and the user chose to attempt a real revival rather than a plain
+delete. The reasoning, staged plan and outcome are in `doc/cna_conclusions.md`
+and `doc/cna_plan.md`: Stage 1's hypothesis — that pycircuit's own
+NA-compatible elements would let a single zero-`G`, no-branch `Nullor` reach
+the paper's "Compacted PNA" size for free — was tested against the paper's
+own worked example and **refuted**: the naive element produces a genuinely
+singular matrix, not merely a less-compact one, because the paper's row/column
+merge-and-delete rules are load-bearing, not an artifact of their own
+methodology. Real compaction would need node-graph surgery at circuit-assembly
+time — a materially bigger, more invasive feature than an element class,
+scoped separately if pursued further. The negative result is pinned by
+`pycircuit/circuit/tests/test_nullor_cna.py` (the wrong candidate stays
+test-local, not shipped in `elements.py`, since it gives incorrect answers).
+`circuit_cna.py`/`elements_cna.py` are deleted regardless of that outcome —
+nothing in the finding depended on repairing them, and 1377 of the 1528 lines
+were pure duplicate `Circuit`/`SubCircuit` engine with zero CNA-specific
+content in the first place.
 
 ### P5 — six symbolic paths and no user-facing story
 
@@ -527,7 +548,10 @@ suggest — but the direction is real.)
 ## 7.1 State of the list
 
 Fixed during this review, each with a regression test: P1 (JAX made optional
-again), P6 (batched evaluation moved into the toolkit, fixing an
+again), P4 (`circuit_cna.py`/`elements_cna.py` deleted; the CNA revival
+attempt refuted at Stage 1 and the negative result kept as a regression test
+rather than the dead files themselves — see `doc/cna_conclusions.md`,
+`doc/cna_plan.md`), P6 (batched evaluation moved into the toolkit, fixing an
 `AttributeError` on every stamp for circuits mixing nonlinear and reactive
 elements), P7 (the per-instance `eval_i_and_G`/`eval_q_and_C` mechanism
 deleted — measured dead, decided vestigial, test rewritten to the real
@@ -539,7 +563,6 @@ Open, in the order I would take them:
 
 | # | item | size | blocked on |
 |---|---|---|---|
-| P4 | ~1528 lines of maintained dead code | small | knowing what CNA was for |
 | P11 | `_symbolic` missing `tanh`/`power` | small | nothing |
 | P2 | delegation error messages | small | nothing |
 | P13 | test coverage inverted against risk | large | nothing |
@@ -547,8 +570,9 @@ Open, in the order I would take them:
 | P5 | no user-facing backend story | medium | nothing |
 | P8 | two extension conventions | medium | a convention decision |
 
-P4 is first not because it is the most valuable but because the code is
-*actively misleading* there — it keeps two `Circuit` classes alive.
+P11 is first among what's left: small and unblocked, and it's the kind of
+silent backend drift (§7 P11's own description) worth closing before it grows
+another primitive gap.
 
 ## 8. Conventions
 
