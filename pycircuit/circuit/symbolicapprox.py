@@ -28,10 +28,10 @@ def approx(expr, patterns, n=2):
     Examples
     --------
 
-    >>> a,b = symbols('ab')
+    >>> a,b = symbols('a b')
     >>> approx(1+a+(a+b)*(2*a+3*b), ['a','b'], 3)
-    3*a+3*b**2
-    
+    2*a**2 + a + 1
+
     """
     t = Symbol('t')
     
@@ -44,7 +44,7 @@ def approx(expr, patterns, n=2):
 
     parexpr = expr.subs(dict(substlist))
 
-    return parexpr.series(t, point=0, n=n).subs({'t': 1}).removeO()
+    return parexpr.series(t, x0=0, n=n).removeO().subs({'t': 1})
 
 if __name__ == "__main__":
     import doctest

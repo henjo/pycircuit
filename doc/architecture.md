@@ -728,15 +728,13 @@ the test-count *shape* (DDD still 35% of the suite) is unchanged. This item
 stays open for anyone who wants to extend it; what's fixed is recorded so it
 doesn't get redone by accident.
 
-### P14 — the legacy corners `--doctest-modules` found, deferred out of P13
+### P14 — the legacy corners `--doctest-modules` found, deferred out of P13 *(fixed)*
 
 P13's scope check (does turning on doctests project-wide open a bigger can
 of worms than the two flagged modules) surfaced **13 real collection
 errors** (verified with real `jax` importable, not the coverage
 workaround's blocked-jax artifact, which added two more that don't
-reproduce otherwise). None are hard to understand individually; the
-question this item is really about is whether they're worth anyone's time,
-categorized by cause:
+reproduce otherwise). Resolved bucket by bucket, each on its own merits:
 
 **Expected-missing optional native/vendor dependencies** — correctly failing
 without proprietary tools this environment doesn't have, the same shape as
@@ -745,45 +743,91 @@ the already-accepted `pycircuit.post.cds` baseline in §8's conventions:
 `post/jwdb/jwdbresult.py` + `post/jwdb/test/example.py` (`jwdb`, a
 proprietary waveform-database format), `post/jwdb/configure.py`
 (`sipconfig`, the PyQt/SIP build tool for `jwdb`'s native extension),
-`circuit/xdot.py` (`gobject`, a GTK graph-viewer dependency, a dev-time
-visualization tool unrelated to core analysis). Not bugs; nothing to fix
-without the vendor library, though `post/cds/psftoasc.py`'s error
-(`FileNotFoundError`, it shells out to an external binary) is worth a second
-look to confirm it's the same shape.
+`circuit/xdot.py` (`gobject`, a GTK graph-viewer dependency). Not bugs; left
+alone. `post/cds/psftoasc.py`'s `FileNotFoundError` turned out to be a
+different, benign shape: a `#!`-shebang CLI script with top-level
+side-effecting code (`open(sys.argv[1])`), which only misbehaves because
+`--doctest-modules` imports every file as a module — nothing imports it as
+a library, so nothing to fix.
 
-**A genuine, mechanical Python-2 leftover, live code:** `sim/gnucap/session.py`
-and `sim/gnucap/simulation.py` (which imports from it) both do
-`import sys, StringIO` — the Python-2 stdlib module, never ported to `io.StringIO`.
-Same fix shape as P4's dead files, except this code isn't dead the way
-`circuit_cna.py` was — worth checking what (if anything) still calls into
-`pycircuit.sim.gnucap` before deciding whether to port or delete.
+**`sim/gnucap/session.py` + `simulation.py` — deleted.** Confirmed fully
+orphaned: `sim/gnucap/__init__.py` imports the *generic*
+`pycircuit.sim.simulation`, not these; nothing else references them.
+Independently broken on top of the `StringIO` import that started this
+(an undefined `EngineError`, Python-2-only `types.StringType`) and
+superseded by the direct-gnucap-bindings path `test_gnucap.py`/
+`test_gnucap_direct.py` actually use (skipped here for lack of a real
+gnucap install, not broken). Matches the P4 precedent.
 
-**A real, currently-broken module, not doctest-specific:**
-`circuit/volterra.py` does `from pycircuit.circuit.analysis import ...AC...`
-at its top level — `AC` only exists in `analysis_ss.py`, not `analysis.py`,
-so `import pycircuit.circuit.volterra` fails outright for anyone, always,
-regardless of doctests. Confirmed nothing else in the codebase imports it.
-Either a one-line import fix (if Volterra analysis is still wanted) or a
-deletion candidate in the P4 sense (confirm not just this one import, but
-whether the whole module still makes sense against the current `analysis_ss`
-API before assuming a one-line fix is sufficient).
+**`sim/tests/simulation_class_example.py` — deleted.** Never valid code: a
+design sketch referencing `Circuit`/`Simulation`/`Alter`/`SetVariables`/
+`SimGroup`, none defined or imported anywhere.
 
-**Broken or incomplete example scripts**, orphaned (nothing imports these
-either): `sim/tests/simulation_class_example.py` uses `Circuit(...)` without
-importing it at all — reads as an unfinished stub, not a regression.
-`circuit/examples/multi_feedback_filter.py` and
-`circuit/examples/regulatedcascode.py` both run but produce wrong results
-against the *current* API (an empty result dict where `'out'` was expected;
-`np.sqrt` called on a sympy `One` where a numeric value was expected) —
-plausible API drift since these were last touched, the same staleness shape
-P13 found in `circuit.py`/`elements.py`'s doctests, just in standalone
-scripts rather than docstrings.
+**`circuit/volterra.py` — fixed, and left honestly incomplete.** The
+top-level import (`AC` moved to `analysis_ss.py`) was the smallest of what
+running its doctests (not just reading them) turned up: `self.c` where the
+base class sets `self.cir`, an undefined `symbolic_linsolve` and dead
+`toMatrix` (deleted, never called), `InternalResult` where only
+`InternalResultDict` exists (which had a matching bug of its own —
+`__len__` read `self.results`, `__init__` sets `self.items`, fixed
+separately since the class is used well beyond this file), a stray `self`
+parameter on a module-level function, a sympy-version change in how `diff`
+applies to a plain array (now elementwise), and `NLVCCS` (a test-only
+nonlinear element defined in the same file) hitting the same G-vs-i
+mismatch P9 fixed for the shipped elements. `Volterra.solve()`/`.run()`
+remain a deliberately unfinished stub — the call to `K()` (the complete,
+tested Taylor-series primitive) was commented out in 2008 and never
+finished, and investigating why turned up a second, structural reason:
+`AC(toolkit=symbolic)` never computes an operating point to linearise a
+nonlinear element around (the same gap P11 documented for `SymbolicDC` vs
+`AC`), so a circuit with a real nonlinear element fails inside the `AC`
+solve itself before `solve()` even lists them. Completing the orchestration
+means implementing the Wambacq & Sansen algorithm from a source not in
+hand — not attempted; the docstring says so plainly instead of claiming
+output the class never produced.
 
-Not attempted here — deliberately deferred out of P13 to keep that item's
-scope bounded (see its writeup above). No regression-test gate is proposed
-yet because the right unit of work differs per bucket (delete vs. port vs.
-fix vs. investigate-before-deciding); whoever picks this up should scope
-each bucket separately rather than treating it as one task.
+**`circuit/examples/multi_feedback_filter.py` and `regulatedcascode.py` —
+fixed and verified, not just made to run.** Both were broken by real API
+drift: the 2008-era dict-style `res['out']` never worked against `AC`'s
+result object (empty by design), and a symbolic-toolkit `z0` crashed
+`NPortS.Y` in three independent ways (`np.sqrt`/`np.real` are ufuncs that
+can't dispatch on a sympy object; two of `.Y`'s three `np.linalg.inv` calls
+were needless — `Gref`/`Zref` are scalar multiples of the identity, whose
+inverse is just the reciprocal; the third, a genuine matrix inverse,
+needs `sympy.Matrix.inv()` for object-dtype input). Fixed by adding a
+`real` primitive to `_symbolic.py` (sympy has `sqrt` already but not `real`
+under that name — it's `re` — the same backend-parity gap P11 found for
+`tanh`) and threading a `toolkit` through `NPortS` so `.Y` can call
+`self.toolkit.sqrt(self.toolkit.real(...))` instead of hardcoding numpy.
+`multi_feedback_filter.py` also needed its own migration to `res.v(node,
+gnd)`. Along the way, `symbolicapprox.py` (imported by both examples for
+an `approx()` call) turned out to have two independent bugs in one line —
+`series(..., point=0, ...)` (sympy renamed the keyword to `x0`), and
+`.subs({'t': 1}).removeO()` in the wrong order, which silently zeroed the
+result for 18 years (substituting a concrete value into an expression that
+still carries a symbolic `O(t**3)` term collapses it before `removeO()`
+ever runs) — its own docstring's claimed example output was itself never
+verified and is now the checked value. Every fix was checked against real
+output, not just a clean exit: the MFB filter's DC gain (`-R1/R3`) and
+input impedance share the same characteristic polynomial as its transfer
+function, a real cross-check that this is correct and not merely
+non-crashing.
+
+New tests: `pycircuit/circuit/tests/test_examples.py` runs both scripts as
+subprocesses and checks real output content; `test_doctests.py` (P13)
+extended to `volterra.py` and `symbolicapprox.py`;
+`pycircuit/post/tests/test_internalresult.py` pins the `InternalResultDict`
+fix. Full suite: 521 passed, 6 skipped, 0 failed. Doc build: succeeded, 2
+warnings (unchanged baseline).
+
+Aside, found while investigating a suspected regression from the P8 work
+(the user correctly asked whether it was implicated, given
+`test_stress_stiff_rlc_pulse` is a `Transient` test): measured directly,
+via a git worktree at the pre-P8 commit, that this test takes ~266s both
+before and after — a pre-existing property of the test, close to or over
+the standard 120s per-test timeout independent of any code here, not a
+regression. Worth `--timeout=300` (or running it in isolation) rather than
+the default when it shows up as a timeout.
 
 ## 7.1 State of the list
 
@@ -815,7 +859,13 @@ six symbolic toolkits; `soe`'s missing integration is explained rather than
 fixed — a real architecture question, not a wiring gap), P8 (`Integrator`/
 `NonLinearSolver`/`Scaler` now take an instance, matching `StepController`'s
 existing convention; the old string form removed outright rather than kept
-as sugar, since there is no external API contract to protect).
+as sugar, since there is no external API contract to protect), P14 (all
+five buckets resolved on their own merits — two deletions, one module fixed
+and left honestly incomplete, two example scripts fixed and verified
+against real output, plus three supporting library bugs the investigation
+turned up along the way: `InternalResultDict.__len__`, `NPortS.Y`'s
+symbolic-toolkit incompatibility, and two independent bugs in
+`symbolicapprox.approx`).
 
 P13 stays partly open by nature — "large," not a bounded bug — so it isn't
 struck off the list, just narrowed: the doctest mechanism and the two bugs
@@ -824,17 +874,13 @@ line-coverage gap on `circuit.py`/`elements.py` (83%/86%, measured) and the
 test-count shape (DDD still 35% of the suite) remain exactly as open as
 before, for whoever wants to extend it next.
 
-Open, in the order I would take them:
-
-| # | item | size | blocked on |
-|---|---|---|---|
-| P14 | legacy corners `--doctest-modules` found (cds/jwdb/gnucap/volterra/examples) | medium, split into per-bucket work | nothing, but scope each bucket separately |
-
-P14 is the only item left, and it's lower priority than its error count
-suggests — most of its 13 errors are expected-missing vendor dependencies,
-not bugs; the two genuine items inside it (`volterra.py`'s broken top-level
-import, `gnucap`'s unported `StringIO`) are small once isolated from the
-rest.
+**Nothing is open.** Every other item in this list (P1-P14) is now fixed or
+explicitly resolved — P13's residual scope is the one exception, by its own
+nature (see above), and P5's `soe` integration question is likewise
+deliberately left as an open architecture question rather than a queued
+task. If this document is being read to decide what to work on next, there
+isn't a next item here; it means either picking up one of those two open
+questions, or something not yet surveyed at all.
 
 ## 8. Conventions
 

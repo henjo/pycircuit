@@ -318,7 +318,7 @@ class TwoPortAnalysis(Analysis):
         ## Calculate noise wave correlation matrix
         CS = np.asarray(T @ CY @ T.conj().T)
 
-        return NPortS(S, CS, z0=1/toolkit.integer(g0))
+        return NPortS(S, CS, z0=1/toolkit.integer(g0), toolkit=toolkit)
 
     def solve_abcd(self, freqs, refnode = gnd, complexfreq = False):
         (inp, inn), (outp, outn) = self.ports

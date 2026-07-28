@@ -8,6 +8,20 @@ import numpy as np
 from copy import copy
 from . import constants as constants
 
+
+def _inv(M):
+    """Matrix inverse of ``M``, which may hold sympy expressions.
+
+    ``np.linalg.inv`` requires a float/complex dtype; an object-dtype array
+    (a symbolic toolkit's S-parameters) needs ``sympy.Matrix.inv()`` instead.
+    """
+    M = np.asarray(M)
+    if M.dtype == object:
+        import sympy
+        return np.array(sympy.Matrix(M.tolist()).inv().tolist(), dtype=object)
+    return np.linalg.inv(M)
+
+
 class NPort(object):
     """Class that represents an n-port with optional noise parameters
 
@@ -291,11 +305,16 @@ class NPortA(NPort):
 
 class NPortS(NPort):
     """Two-port class where the internal representation is the S-parameters"""
-    
-    def __init__(self, S, CS = None, z0 = 50, passive=False):
+
+    def __init__(self, S, CS = None, z0 = 50, passive=False, toolkit=None):
         self.passive = passive
 
         self.z0 = z0
+
+        if toolkit is None:
+            from .toolkit import numeric
+            toolkit = numeric
+        self.toolkit = toolkit
         
         if isinstance(S, NPort):
             self.S = S.S
@@ -345,10 +364,17 @@ class NPortS(NPort):
         """Return Z-parameter matrix"""
         S = np.asarray(self.S)
         E = np.eye(self.n, self.n)
-        Zref = self.z0 * E
-        Gref = 1 / np.sqrt(np.real(self.z0)) * E
-        return np.asarray(np.linalg.inv(Gref) @ np.linalg.inv(Zref) @
-                          np.linalg.inv(S + E) @ (E - S) @ Gref)
+        ## Gref, Zref are scalar multiples of the identity -- their inverse
+        ## is just the reciprocal scalar, needing no matrix inversion at
+        ## all (np.linalg.inv can't handle the object-dtype arrays a
+        ## symbolic toolkit's z0 produces here anyway).
+        zref_scalar = self.z0
+        gref_scalar = 1 / self.toolkit.sqrt(self.toolkit.real(self.z0))
+        Zref_inv = (1 / zref_scalar) * E
+        Gref_inv = (1 / gref_scalar) * E
+        Gref = gref_scalar * E
+        return np.asarray(Gref_inv @ Zref_inv @
+                          _inv(S + E) @ (E - S) @ Gref)
 
     @property
     def CY(self):

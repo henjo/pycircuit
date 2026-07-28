@@ -13,6 +13,7 @@ import numpy as np
 import sympy
 from sympy import cos, sin, tan, tanh, exp, log, pi, simplify, floor, sqrt
 from sympy import oo as inf, ceiling as ceil
+from sympy import re as real
 import types
 from pycircuit.utilities.param import Parameter
 from pycircuit.circuit.constants_sympy import kboltzmann, eps0, epsRSi, epsRSiO2, qelectron

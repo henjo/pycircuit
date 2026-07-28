@@ -41,12 +41,23 @@ sympy-version change in how ``diff`` applies to a plain array. All fixed;
 orchestration calling ``K()`` per element was commented out in 2008 and
 never completed) -- the doctest reflects that honestly rather than
 inventing the missing algorithm.
+
+Fixing ``volterra.py`` in turn required fixing ``symbolicapprox.py``, whose
+own doctest turned up two independent bugs in one line: ``series(...,
+point=0, ...)`` (modern sympy renamed the keyword to ``x0``), and
+``.subs({'t': 1}).removeO()`` -- substituting a concrete value into an
+expression that still carries a symbolic ``O(t**3)`` term collapses the
+whole thing to ``0`` before ``removeO()`` ever runs, silently. Swapped to
+``.removeO().subs({'t': 1})``; the docstring's own claimed example output
+was itself wrong (never verified, same 18-year-invisible pattern) and is
+now the actual, checked value.
 """
 import doctest
 
 from pycircuit.circuit import circuit as circuit_module
 from pycircuit.circuit import elements as elements_module
 from pycircuit.circuit import volterra as volterra_module
+from pycircuit.circuit import symbolicapprox as symbolicapprox_module
 
 
 def test_circuit_module_doctests():
@@ -67,4 +78,11 @@ def test_volterra_module_doctests():
     results = doctest.testmod(volterra_module, verbose=False)
     assert results.failed == 0, (
         '%d of %d doctests in volterra.py failed' %
+        (results.failed, results.attempted))
+
+
+def test_symbolicapprox_module_doctests():
+    results = doctest.testmod(symbolicapprox_module, verbose=False)
+    assert results.failed == 0, (
+        '%d of %d doctests in symbolicapprox.py failed' %
         (results.failed, results.attempted))
