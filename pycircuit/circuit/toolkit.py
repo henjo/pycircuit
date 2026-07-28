@@ -359,7 +359,39 @@ class SymbolicToolkit(Toolkit):
     symbolic = True
 
 
-class SymbolicPolyToolkit(SymbolicToolkit):
+class NumDenMixin:
+    """The ``N(s)/D(s)`` contract shared by every fraction-free toolkit.
+
+    Implement :meth:`linearsolver_num_den` (``A x = b`` ->
+    ``(numerator_vector, shared_denominator)``, with ``x_i = numer_i / den``)
+    and this mixin provides the standard divided :meth:`linearsolver` and
+    declares ``supports('num_den')``.
+
+    Deliberately *not* a base class carrying ``ac_solution``/``noise_psd`` as
+    well: those two answer "what does a solve return", which
+    :class:`SymbolicPolyToolkit` and :class:`DDDToolkit` do very differently
+    (a flat ``NumDenSolution`` vs. a shared diagram) despite both satisfying
+    this same num/den contract. Giving them a common base implied a kinship
+    the code didn't use -- see problem P3 in ``doc/architecture.md``, which
+    this mixin resolves.
+    """
+    poly = True
+
+    def supports(self, capability):
+        return capability == 'num_den'
+
+    def linearsolver(self, A, b):
+        """Solve ``A x = b`` fraction-free; returns the divided solution vector.
+
+        Thin wrapper over :meth:`linearsolver_num_den` (``x_i = numer_i / den``)
+        so the toolkit honours the standard solution-vector contract used by the
+        analyses.
+        """
+        num, den = self.linearsolver_num_den(A, b)
+        return np.array([ni / den for ni in num], dtype=object)
+
+
+class SymbolicPolyToolkit(NumDenMixin, SymbolicToolkit):
     """Experimental symbolic toolkit using polynomial-domain linear algebra.
 
     Behaves like :class:`SymbolicToolkit` but solves linear systems
@@ -385,10 +417,6 @@ class SymbolicPolyToolkit(SymbolicToolkit):
         res = AC(cir, toolkit=symbolic_poly).solve(s, complexfreq=True)
         res.tf('out', gnd).poles()      # -> {-1/(C*R): 1}
     """
-    poly = True
-
-    def supports(self, capability):
-        return capability in ('num_den',)
 
     def ac_solution(self, A, b, s, irefnode):
         """Solve fraction-free and keep the result as ``N(s)/D(s)``."""
@@ -435,16 +463,6 @@ class SymbolicPolyToolkit(SymbolicToolkit):
         except (DMError, sympy.PolynomialError, TypeError, AttributeError):
             x = np.array(self._backend.linearsolver(A, b), dtype=object)
             return x.reshape((np.size(x, 0),)), sympy.Integer(1)
-
-    def linearsolver(self, A, b):
-        """Solve ``A x = b`` fraction-free; returns the divided solution vector.
-
-        Thin wrapper over :meth:`linearsolver_num_den` (``x_i = numer_i / den``)
-        so the toolkit honours the standard solution-vector contract used by the
-        analyses.
-        """
-        num, den = self.linearsolver_num_den(A, b)
-        return np.array([ni / den for ni in num], dtype=object)
 
     def noise_psd(self, Y, u, CY, s):
         """Shared-denominator noise PSD.
@@ -581,7 +599,7 @@ class GinacToolkit(SymbolicPolyToolkit):
         return _ginac.solve_native(A, b)
 
 
-class DDDToolkit(SymbolicPolyToolkit):
+class DDDToolkit(NumDenMixin, SymbolicToolkit):
     """Symbolic toolkit that solves via determinant decision diagrams.
 
     Stamping is unchanged -- circuits are built and stamped exactly as for any
@@ -599,6 +617,14 @@ class DDDToolkit(SymbolicPolyToolkit):
     expand, so it is limited by ``ddd_max_terms`` and raises rather than hanging.
     That limit is not a defect: for a fully symbolic circuit of any size the
     expanded form genuinely is unusable, which is the reason this toolkit exists.
+
+    Shares the :class:`NumDenMixin` contract with :class:`SymbolicPolyToolkit`
+    (both implement ``linearsolver_num_den`` and get the standard
+    ``linearsolver`` for free) but is not a subclass of it: ``ac_solution`` and
+    ``noise_psd`` here are diagram-aware and share nothing with
+    ``SymbolicPolyToolkit``'s flat ``NumDenSolution`` form, so inheriting from
+    it would have claimed a kinship this toolkit doesn't use (formerly problem
+    P3 in ``doc/architecture.md``).
     """
 
     #: Refuse to expand a diagram into sympy beyond this many product terms.

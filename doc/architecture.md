@@ -79,14 +79,22 @@ Toolkit                       supports(), jacobian(), derivative(),
 │   └── SparseNumericToolkit
 ├── JAXToolkit                 autodiff; the only Axis-1 outlier
 └── SymbolicToolkit            sympy LUsolve
-    └── SymbolicPolyToolkit    fraction-free N(s)/D(s)   <- the num/den contract
-        ├── SymengineToolkit   EXPERIMENTAL, measured slower
-        ├── GinacToolkit       EXPERIMENTAL, conditional win
-        └── DDDToolkit         decision diagrams
+    ├── NumDenMixin + SymbolicToolkit -> SymbolicPolyToolkit
+    │       fraction-free N(s)/D(s), flat NumDenSolution
+    │       ├── SymengineToolkit   EXPERIMENTAL, measured slower
+    │       └── GinacToolkit       EXPERIMENTAL, conditional win
+    └── NumDenMixin + SymbolicToolkit -> DDDToolkit
+            decision diagrams, its own ac_solution/noise_psd
 ```
 
-Read the `SymbolicPolyToolkit` subtree as *"shares the `N(s)/D(s)` contract"*,
-not as *"is a kind of polynomial toolkit"* — see problem P3 below.
+`NumDenMixin` carries only the `N(s)/D(s)` *contract*: implement
+`linearsolver_num_den` and get `linearsolver` and `supports('num_den')` for
+free. `SymbolicPolyToolkit` and `DDDToolkit` are siblings under it, not
+parent/child — they answer `ac_solution`/`noise_psd` too differently (a flat
+result vs. a shared diagram) to share a base carrying those. `SymengineToolkit`
+and `GinacToolkit` *do* genuinely subclass `SymbolicPolyToolkit`: they override
+only `linearsolver_num_den` and keep its `ac_solution`/`noise_psd` unchanged
+(formerly problem P3, now fixed this way).
 
 ### Optional capabilities
 
@@ -266,15 +274,35 @@ today — a latent hazard, not a live bug, same shape as the first half of
 this item). Declared `sparse = False` on the base `Toolkit` alongside the
 other three flags.
 
-### P3 — the toolkit hierarchy claims more than it delivers
+### P3 — the toolkit hierarchy claims more than it delivers *(fixed)*
 
-`DDDToolkit` extends `SymbolicPolyToolkit` but overrides `supports`,
+`DDDToolkit` extended `SymbolicPolyToolkit` but overrode `supports`,
 `ac_solution`, `noise_psd` and `linearsolver_num_den` — nearly everything it
-inherits. What it actually reuses is one method, `linearsolver`. The
-inheritance asserts a kinship that the code does not use.
+inherited. What it actually reused was one method, `linearsolver`, itself a
+two-line wrapper that just calls back into `linearsolver_num_den` — i.e.
+`DDDToolkit`'s own override. The inheritance asserted a kinship the code
+never used.
 
-A `NumDenMixin` carrying the `N(s)/D(s)` contract would say what is true. Low
-urgency, but it misleads every reader who assumes the hierarchy means something.
+Checked first whether anything depended on the exact hierarchy before
+changing it: no `isinstance(toolkit, SymbolicPolyToolkit)` checks anywhere in
+analyses or tests, and the one place `.poly` is read
+(`test_symbolic_poly.py`) checks the `symbolic_poly` singleton specifically —
+safe to restructure.
+
+Extracted `NumDenMixin` (`toolkit.py`): implement `linearsolver_num_den` and
+get the standard `linearsolver` and `supports('num_den')` for free — nothing
+about `ac_solution`/`noise_psd`, since that's exactly the part
+`SymbolicPolyToolkit` and `DDDToolkit` answer differently. `DDDToolkit` now
+inherits `NumDenMixin` + `SymbolicToolkit` directly, a sibling of
+`SymbolicPolyToolkit` rather than a subclass of it. `SymengineToolkit` and
+`GinacToolkit` are unchanged: they only ever overrode `linearsolver_num_den`
+and genuinely want `SymbolicPolyToolkit`'s `ac_solution`/`noise_psd`
+defaults, so they keep subclassing it directly — the fix is precise about
+which relationships were real and which weren't. Verified behaviourally
+identical: `ddd_toolkit.poly`/`.symbolic`/`.supports(...)` and
+`linearsolver`'s output are unchanged before and after, pinned by
+`test_toolkit.py`; full DDD/GiNaC/symengine/symbolic_poly suites (247 tests)
+pass unmodified.
 
 ### P4 — ~1528 lines of maintained dead code *(fixed)*
 
@@ -710,7 +738,10 @@ the base `Toolkit` alongside `symbolic`/`poly`/`jax` so it's safe to read on
 any toolkit), P13's doctest-collection gap (both real bugs it was hiding —
 `Quantity.__repr__`'s shadowed `raise`, `name_state_vector`'s double bug —
 found and fixed, all 29 `circuit.py`/`elements.py` doctests now run as part
-of the ordinary suite via `test_doctests.py`).
+of the ordinary suite via `test_doctests.py`), P3 (`NumDenMixin` extracted;
+`DDDToolkit` is now a sibling of `SymbolicPolyToolkit` under it rather than a
+subclass overriding nearly everything inherited; `SymengineToolkit`/
+`GinacToolkit` unchanged, since they genuinely wanted what they inherited).
 
 P13 stays partly open by nature — "large," not a bounded bug — so it isn't
 struck off the list, just narrowed: the doctest mechanism and the two bugs
@@ -723,19 +754,15 @@ Open, in the order I would take them:
 
 | # | item | size | blocked on |
 |---|---|---|---|
-| P3 | hierarchy claims more than it delivers | medium | nothing |
 | P5 | no user-facing backend story | medium | nothing |
 | P8 | two extension conventions | medium | a convention decision |
 | P14 | legacy corners `--doctest-modules` found (cds/jwdb/gnucap/volterra/examples) | medium, split into per-bucket work | nothing, but scope each bucket separately |
 
-Everything left is medium, and P8 is the only one blocked (on a convention
-decision, not investigation). P3 is the next one I'd take: small enough in
-isolation (a `NumDenMixin` extraction) and, like P2, purely a
-naming-matches-reality fix with no open design question. P14 is lower
-priority than it looks — most of its 13 errors are expected-missing vendor
-dependencies, not bugs; the two genuine items inside it (`volterra.py`'s
-broken top-level import, `gnucap`'s unported `StringIO`) are small once
-isolated from the rest.
+P8 is the only one blocked (on a convention decision, not investigation).
+P14 is lower priority than it looks — most of its 13 errors are
+expected-missing vendor dependencies, not bugs; the two genuine items inside
+it (`volterra.py`'s broken top-level import, `gnucap`'s unported
+`StringIO`) are small once isolated from the rest.
 
 ## 8. Conventions
 
