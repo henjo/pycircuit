@@ -2,6 +2,7 @@ import pytest
 from pycircuit.circuit.circuit import SubCircuit, gnd
 from pycircuit.circuit.elements import R, C, Diode, VPulse
 from pycircuit.circuit.transient import Transient
+from pycircuit.circuit.integrator import EulerIntegrator
 from pycircuit.circuit.nrsolver import NoConvergenceError
 
 def test_transient_minstep_convergence_failure():
@@ -15,7 +16,7 @@ def test_transient_minstep_convergence_failure():
     # This will force the transient solver to cut the timestep.
     # We set minstep to 1e-10. Since it starts with dt=1e-9, it will cut 1e-9 -> 2.5e-10 -> 6.25e-11 < 1e-10
     # Thus, it should raise RuntimeError on the 2nd cut!
-    tran = Transient(c, method='euler', minstep=1e-10, maxiter=2, bypass=False)
+    tran = Transient(c, integrator=EulerIntegrator(), minstep=1e-10, maxiter=2, bypass=False)
     
     with pytest.raises(RuntimeError, match="timestep shrank below"):
         res = tran.solve(tend=2e-6, timestep=1e-9)

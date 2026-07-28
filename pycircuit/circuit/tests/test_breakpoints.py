@@ -3,6 +3,7 @@ import pytest
 from pycircuit.circuit.circuit import SubCircuit, gnd
 from pycircuit.circuit.elements import R, C, VSin, VPulse
 from pycircuit.circuit.transient import Transient
+from pycircuit.circuit.integrator import EulerIntegrator, Gear2Integrator
 from pycircuit.circuit.toolkit import numeric
 
 def test_transient_breakpoints():
@@ -12,7 +13,7 @@ def test_transient_breakpoints():
     c['R'] = R('in', 'out', r=1.0)
     c['C'] = C('out', gnd, c=1e-6)
     
-    tran = Transient(c, method='gear2')
+    tran = Transient(c, integrator=Gear2Integrator())
     res = tran.solve(tend=0.6e-3, timestep=10e-6)
     
     # Check if breakpoints were hit exactly using np.isclose
@@ -41,7 +42,7 @@ def test_transient_minbreak():
     
     # With minbreak = 1e-14, the simulator should skip the 1e-15s delta and combine them into a single step
     # or skip the second breakpoint because it's too close to the first.
-    tran = Transient(c, method='euler', minbreak=1e-14)
+    tran = Transient(c, integrator=EulerIntegrator(), minbreak=1e-14)
     res = tran.solve(tend=2e-6, timestep=1e-6)
     
     t_points = res.sweep_values

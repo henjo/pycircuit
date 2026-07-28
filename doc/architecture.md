@@ -453,24 +453,72 @@ ever exercised a mechanism nothing else used. Full suite: 499 passed, 6
 skipped, 0 failed — same test count as the probe run, confirming nothing else
 depended on the removed path.
 
-### P8 — two extension conventions, built opposite ways
+### P8 — two extension conventions, built opposite ways *(fixed)*
 
-The transient engine has a second pluggability system: ABCs `Integrator`,
-`StepController`, `NonLinearSolver`, `Scaler`, chosen by **string parameter**
-through an if/elif factory.
+The transient engine had a second pluggability system: ABCs `Integrator`,
+`StepController`, `NonLinearSolver`, `Scaler`, three of the four chosen by
+**string parameter** through an if/elif factory (`Transient._get_integrator`,
+`Analysis._get_nrsolver`, `Analysis._get_scaler`).
 
-| | toolkit layer | strategy layer |
+| | toolkit layer | strategy layer (before) |
 |---|---|---|
 | base | plain class, duck-typed | `ABC` |
 | selection | pass an object | pass a string |
 | capabilities | flags + `supports()` | class identity |
 
-They are not the same idea twice — one chooses arithmetic, the other an
-algorithm inside transient — but there is no stated rule for which a new
-extension should use. Concrete wart: `transient.py:188` decides behaviour with
-`self.active_integrator.__class__.__name__ == 'EulerIntegrator'`, interrogating
-a polymorphic hierarchy by class-name string. An `order` property would do it
-properly.
+Decided in favour of the toolkit convention (pass an instance), not kept as a
+choice between equals: `StepController` — the fourth ABC in the same file —
+**already worked this way** (`transient.py` constructs `IntegralController()`
+directly, only overriding it if the caller injected one), so this wasn't
+picking a side, it was making the other three consistent with a pattern
+already established next to them. Concrete reasons beyond consistency: an
+`Integrator`/`Scaler` often needs its own sub-configuration
+(`EulerIntegrator(lte_formula=...)`, and `Scaler`'s hardcoded
+`SinkhornKnoppScaler(max_iter=5)` had no way to be configured differently at
+all through the public API) — the string convention has to thread that as a
+*second*, separately-named parameter and pair the two back together inside
+the factory; passing the object directly carries its own configuration, no
+pairing required. `Integrator.check_order_drop()` already returns a (possibly
+different) `Integrator` instance internally, so the object-as-unit-of-
+exchange story was already how the ABC worked beneath the string entry point.
+
+The string form is **not** kept as compatibility sugar: this project has
+never had a version bump past `0.0` (`setup.py`) and has no `pyproject.toml`
+or external distribution, so there is no downstream API contract to protect
+— keeping a permanent dual-path "accept a string or an instance" convention
+exists to protect *other people's* code against a large installed base,
+which doesn't apply here. Passing the old string form now raises a clear
+`TypeError` immediately (e.g. `"integrator must be an Integrator instance...,
+not 'euler'"`), rather than failing confusingly deep inside a Newton loop.
+
+Fixed the concrete wart as part of the same change: `transient.py:188`
+compared `self.active_integrator.__class__.__name__` to the literal string
+`'EulerIntegrator'`, and referenced `self.par.method`, which no longer
+exists. Since the object itself is now what's threaded through,
+`_effective_method` is derived directly from the live instance
+(`type(self.active_integrator).__name__`) — more accurate than the old
+binary euler/not-euler check, and it needed no new API surface to get there.
+
+`Transient.parameters`'s `lte_formula` was removed as a standalone
+parameter: it only ever existed to be paired back up with `method` inside the
+factory, and is now fully expressible on the `Integrator` instance itself
+(`Gear2Integrator(lte_formula='ywr')`). `Analysis.parameters`'s `nrsolver`/
+`scaler` keep their names but their default changes from a string to `None`
+(resolved to `StandardNewton()`/`NoneScaler()` in the getters, matching
+`StepController`'s existing default-construction pattern exactly).
+
+Updated every internal call site using the old string/attribute form (none
+were external — none exist to update): `test_breakpoints.py`,
+`test_minstep.py`, `test_vss_gear2.py`, `test_bypass.py`,
+`test_analysis_transient.py` (three separate patterns: constructor kwarg,
+post-construction `tran.par.method = ...` assignment, and the
+`lte_formula`-paired-with-`method` helper in `test_lte_formula_ywr`), and
+`doc/src/circuit/lte_dae.rst`'s prose and its live `exec-rst` benchmark
+table. New `test_strategy_objects.py` pins the convention itself: defaults,
+accepting an instance, and the `TypeError` on the old string form. Full
+suite: 516 passed, 6 skipped, 0 failed. Doc build succeeded, 2 warnings
+(unchanged baseline); the `lte_dae.rst` table verified still rendering live,
+not falling back to source.
 
 ### P9 — the invariant nothing enforced: `G` vs ∂i/∂x *(fixed, and now tested)*
 
@@ -764,7 +812,10 @@ subclass overriding nearly everything inherited; `SymengineToolkit`/
 `GinacToolkit` unchanged, since they genuinely wanted what they inherited),
 P5 (a new `doc/src/circuit/symbolic_backends.rst` orients a reader among the
 six symbolic toolkits; `soe`'s missing integration is explained rather than
-fixed — a real architecture question, not a wiring gap).
+fixed — a real architecture question, not a wiring gap), P8 (`Integrator`/
+`NonLinearSolver`/`Scaler` now take an instance, matching `StepController`'s
+existing convention; the old string form removed outright rather than kept
+as sugar, since there is no external API contract to protect).
 
 P13 stays partly open by nature — "large," not a bounded bug — so it isn't
 struck off the list, just narrowed: the doctest mechanism and the two bugs
@@ -777,14 +828,13 @@ Open, in the order I would take them:
 
 | # | item | size | blocked on |
 |---|---|---|---|
-| P8 | two extension conventions | medium | a convention decision |
 | P14 | legacy corners `--doctest-modules` found (cds/jwdb/gnucap/volterra/examples) | medium, split into per-bucket work | nothing, but scope each bucket separately |
 
-P8 is the only one blocked (on a convention decision, not investigation).
-P14 is lower priority than it looks — most of its 13 errors are
-expected-missing vendor dependencies, not bugs; the two genuine items inside
-it (`volterra.py`'s broken top-level import, `gnucap`'s unported
-`StringIO`) are small once isolated from the rest.
+P14 is the only item left, and it's lower priority than its error count
+suggests — most of its 13 errors are expected-missing vendor dependencies,
+not bugs; the two genuine items inside it (`volterra.py`'s broken top-level
+import, `gnucap`'s unported `StringIO`) are small once isolated from the
+rest.
 
 ## 8. Conventions
 

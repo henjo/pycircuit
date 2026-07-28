@@ -59,16 +59,15 @@ class Transient(Analysis):
     ##   BE and trapezoidal as a measure of the error.
     ##   Reference: "Time Step Control in Transient Analysis", by SHUBHA VIJAYCHAND
     def _get_integrator(self):
-        from pycircuit.circuit.integrator import EulerIntegrator, TrapezoidalIntegrator, Gear2Integrator
-        lte_formula = getattr(self.par, 'lte_formula', 'classic')
-        if self.par.method == 'euler':
-            return EulerIntegrator(lte_formula)
-        elif self.par.method in ('trap', 'trapezoidal'):
-            return TrapezoidalIntegrator(lte_formula)
-        elif self.par.method == 'gear2':
-            return Gear2Integrator(lte_formula)
-        else:
-            raise ValueError(f"Unknown integration method: {self.par.method}")
+        from pycircuit.circuit.integrator import Integrator, EulerIntegrator
+        integrator = getattr(self.par, 'integrator', None)
+        if integrator is None:
+            return EulerIntegrator()
+        if not isinstance(integrator, Integrator):
+            raise TypeError(
+                "integrator must be an Integrator instance (e.g. EulerIntegrator(), "
+                "TrapezoidalIntegrator(), Gear2Integrator()), not %r" % (integrator,))
+        return integrator
     
 
     parameters = Analysis.parameters + \
@@ -87,14 +86,12 @@ class Transient(Analysis):
          Parameter(name='maxiter', 
                    desc='Maximum number of iterations', unit='', 
                    default=100),
-         Parameter(name='method',
-                   desc='Differentiation method', unit='',
-                   default="euler"),
-         Parameter(name='lte_formula',
-                   desc="Local truncation error formula: 'ywr' "
-                        "(Yao-Wang-Roychowdhury DAE LTE, ICECS 2014) or 'classic'",
+         Parameter(name='integrator',
+                   desc='Integration strategy (an Integrator instance, e.g. '
+                        "EulerIntegrator(), TrapezoidalIntegrator(), "
+                        "Gear2Integrator(lte_formula='ywr')); default EulerIntegrator()",
                    unit='',
-                   default='ywr'),
+                   default=None),
          Parameter(name='uic',
                    desc='Use initial conditions (skip DC OP computation)', unit='',
                    default=False),
@@ -184,8 +181,12 @@ class Transient(Analysis):
             toolkit=self.toolkit
         )
         
-        self._iq = iq 
-        self._effective_method = 'euler' if self.active_integrator.__class__.__name__ == 'EulerIntegrator' else self.par.method
+        self._iq = iq
+        ## The class actually running this step -- check_order_drop() may have
+        ## dropped to a lower-order integrator than the one requested, so this
+        ## is derived from the live object rather than compared against a
+        ## removed user-supplied method name.
+        self._effective_method = type(self.active_integrator).__name__
         return iq, geq
 
     

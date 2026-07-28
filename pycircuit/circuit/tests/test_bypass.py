@@ -5,6 +5,7 @@ from pycircuit.circuit.circuit import SubCircuit, gnd
 from pycircuit.circuit.elements import Diode, IS, R, VS
 from pycircuit.circuit.dcanalysis import DC
 from pycircuit.circuit.transient import Transient
+from pycircuit.circuit.integrator import EulerIntegrator
 
 def test_bypass_dc_consistency():
     """Verify that DC analysis with bypass=True converges to the same result as bypass=False."""
@@ -30,11 +31,11 @@ def test_bypass_transient_consistency():
     c['r1'] = R(1, 2, r=100)
     c['d1'] = Diode(2, gnd)
 
-    tran_off = Transient(c, bypass=False, method='euler')
+    tran_off = Transient(c, bypass=False, integrator=EulerIntegrator())
     res_off = tran_off.solve(timestep=1e-6, tend=10e-6)
     v_off = res_off.v(2)
 
-    tran_on = Transient(c, bypass=True, method='euler')
+    tran_on = Transient(c, bypass=True, integrator=EulerIntegrator())
     res_on = tran_on.solve(timestep=1e-6, tend=10e-6)
     v_on = res_on.v(2)
 

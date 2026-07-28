@@ -3,6 +3,7 @@ import pytest
 from pycircuit.circuit.circuit import SubCircuit, gnd
 from pycircuit.circuit.elements import Diode, IS, C
 from pycircuit.circuit.transient import Transient
+from pycircuit.circuit.integrator import Gear2Integrator, EulerIntegrator
 
 def test_vss_gear2_sudden_step_variation():
     """
@@ -18,7 +19,7 @@ def test_vss_gear2_sudden_step_variation():
     # Initial DC state
     x0 = np.array([0.0, 0.0]) # Node 0 is gnd, Node 1 is 0V
     
-    tran = Transient(c, method='gear2')
+    tran = Transient(c, integrator=Gear2Integrator())
     
     # We will manually step it to simulate a sudden step reduction
     tran.irefnode = 0
@@ -46,7 +47,6 @@ def test_vss_gear2_sudden_step_variation():
     assert iq.shape == (1,)
     assert geq.shape == (1, 1)
     
-    from pycircuit.circuit.integrator import Gear2Integrator, EulerIntegrator
     integrator = tran.active_integrator.check_order_drop(tran._dt, tran._dt_last, False)
     assert isinstance(integrator, Gear2Integrator), "Should remain Gear-2 for normal step variations"
     

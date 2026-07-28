@@ -145,14 +145,21 @@ def test_transient_methods_step_response():
     """
     circuit.default_toolkit = circuit.numeric
     from pycircuit.circuit.elements import VS
-    
+    from pycircuit.circuit.integrator import EulerIntegrator, TrapezoidalIntegrator, Gear2Integrator
+
+    integrators = {
+        'euler': EulerIntegrator,
+        'trapezoidal': TrapezoidalIntegrator,
+        'trap': TrapezoidalIntegrator,
+        'gear2': Gear2Integrator,
+    }
     expected_results = {
         'euler': [0.5, 0.75, 0.875],
         'trapezoidal': [0.5, 5/6, 17/18],
         'trap': [0.5, 5/6, 17/18],
         'gear2': [0.5, 0.8, 0.94]
     }
-    
+
     for method, expected in expected_results.items():
         c = SubCircuit()
         n1 = c.add_node('n1')
@@ -160,14 +167,13 @@ def test_transient_methods_step_response():
         c['vin'] = VS(n1, gnd, v=1.0)
         c['R'] = R(n1, n2, r=1)
         c['C'] = C(n2, gnd, c=1.0)
-        
-        tran = Transient(c)
-        tran.par.method = method
+
+        tran = Transient(c, integrator=integrators[method]())
         x0_zeros = np.zeros(c.n)
         result = tran.solve(tend=3.0, timestep=1.0, x0=x0_zeros, fixed_timestep=True)
-        
+
         computed = result.v(n2, gnd).y
-        
+
         np.testing.assert_allclose(computed, expected, rtol=1e-5, err_msg=f"Failed for method {method}")
 def test_transient_adaptive_efficiency():
     """Test comparing adaptive time step efficiency versus fixed time step.
@@ -175,21 +181,27 @@ def test_transient_adaptive_efficiency():
     """
     circuit.default_toolkit = circuit.numeric
     from pycircuit.circuit.elements import IS
-    
+    from pycircuit.circuit.integrator import EulerIntegrator, TrapezoidalIntegrator, Gear2Integrator
+
+    integrators = {
+        'euler': EulerIntegrator,
+        'trap': TrapezoidalIntegrator,
+        'trapezoidal': TrapezoidalIntegrator,
+        'gear2': Gear2Integrator,
+    }
     methods = ['euler', 'trap', 'trapezoidal', 'gear2']
-    
+
     for method in methods:
         c = SubCircuit()
         n1 = c.add_node('net1')
         n2 = c.add_node('net2')
-        c['Is'] = IS(gnd, n1, i=10)    
+        c['Is'] = IS(gnd, n1, i=10)
         c['R1'] = R(n1, gnd, r=1)
         c['R2'] = R(n1, n2, r=1e3)
         c['R3'] = R(n2, gnd, r=100e3)
         c['C'] = C(n2, gnd, c=1e-5)
-        
-        tran = Transient(c)
-        tran.par.method = method
+
+        tran = Transient(c, integrator=integrators[method]())
         x0_zeros = np.zeros(c.n)
         
         res_fixed = tran.solve(tend=10e-3, timestep=1e-4, x0=x0_zeros, fixed_timestep=True)
@@ -334,27 +346,28 @@ def test_lte_formula_ywr():
     accurate on this RC charging transient (tau = 10 us).
     """
     from pycircuit.circuit.elements import VS
+    from pycircuit.circuit.integrator import EulerIntegrator, Gear2Integrator
 
-    def run(method, lte):
+    def run(integrator_cls, lte):
         c = SubCircuit()
         c['VS'] = VS(1, gnd, v=10)
         c['R1'] = R(1, 2, r=10)
         c['C1'] = C(2, gnd, c=1e-6)
-        tran = Transient(c, method=method, lte_formula=lte, uic=True)
+        tran = Transient(c, integrator=integrator_cls(lte), uic=True)
         res = tran.solve(tend=50e-6, timestep=5e-6, coupled_lte=False)
         t = np.asarray(res.sweep_values, dtype=float)
         v_analytic = 10 * (1 - np.exp(-t[-1] / 10e-6))
         return len(t), abs(res.v(2, gnd)[-1] - v_analytic)
 
     # Backward Euler: the two formulas are mathematically identical.
-    n_ec, e_ec = run('euler', 'classic')
-    n_ey, e_ey = run('euler', 'ywr')
+    n_ec, e_ec = run(EulerIntegrator, 'classic')
+    n_ey, e_ey = run(EulerIntegrator, 'ywr')
     assert n_ec == n_ey
     assert abs(e_ec - e_ey) < 1e-9
 
     # Gear2: YWR controls the error properly -> more (appropriate) steps and a
     # smaller error than the classic estimate, which under-resolves.
-    n_gc, e_gc = run('gear2', 'classic')
-    n_gy, e_gy = run('gear2', 'ywr')
+    n_gc, e_gc = run(Gear2Integrator, 'classic')
+    n_gy, e_gy = run(Gear2Integrator, 'ywr')
     assert n_gy > n_gc
     assert e_gy < e_gc

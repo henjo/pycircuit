@@ -68,8 +68,9 @@ with :math:`h_1 = t_n - t_{n-1}` and :math:`h_2 = t_{n-1} - t_{n-2}`.
 Selecting the formula
 =====================
 
-The formula is chosen with the ``lte_formula`` parameter of
-:class:`~pycircuit.circuit.transient.Transient`:
+The formula is chosen with the ``lte_formula`` argument of the
+:class:`~pycircuit.circuit.integrator.Integrator` strategy passed to
+:class:`~pycircuit.circuit.transient.Transient` as ``integrator=``:
 
 * ``lte_formula='ywr'`` (default) -- the Yao--Wang--Roychowdhury DAE formulas
   above;
@@ -80,7 +81,9 @@ It applies to both the standard adaptive path and the coupled solver
 
 .. code-block:: python
 
-    tran = Transient(cir, method='gear2', lte_formula='ywr')
+    from pycircuit.circuit.integrator import Gear2Integrator
+
+    tran = Transient(cir, integrator=Gear2Integrator(lte_formula='ywr'))
 
 Classic vs. YWR: a live comparison
 ==================================
@@ -96,25 +99,30 @@ solution :math:`v(t) = V\,(1 - e^{-t/\tau})`.
     from pycircuit.circuit.elements import VS, R, C
     from pycircuit.circuit.circuit import SubCircuit, gnd
     from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.integrator import (EulerIntegrator,
+                                              TrapezoidalIntegrator,
+                                              Gear2Integrator)
 
     TAU = 10e-6
 
-    def run(method, lte):
+    def run(integrator_cls, lte):
         c = SubCircuit()
         c['VS'] = VS(1, gnd, v=10)
         c['R1'] = R(1, 2, r=10)
         c['C1'] = C(2, gnd, c=1e-6)
-        tran = Transient(c, method=method, lte_formula=lte, uic=True)
+        tran = Transient(c, integrator=integrator_cls(lte), uic=True)
         res = tran.solve(tend=50e-6, timestep=5e-6, coupled_lte=False)
         t = np.asarray(res.sweep_values, dtype=float)
         v_analytic = 10.0 * (1.0 - np.exp(-t[-1] / TAU))
         return len(t), abs(res.v(2, gnd)[-1] - v_analytic)
 
     rows = []
-    for method in ('euler', 'trap', 'gear2'):
-        nc, ec = run(method, 'classic')
-        ny, ey = run(method, 'ywr')
-        rows.append((method, nc, ec, ny, ey))
+    for name, integrator_cls in (('euler', EulerIntegrator),
+                                 ('trap', TrapezoidalIntegrator),
+                                 ('gear2', Gear2Integrator)):
+        nc, ec = run(integrator_cls, 'classic')
+        ny, ey = run(integrator_cls, 'ywr')
+        rows.append((name, nc, ec, ny, ey))
 
     print(".. list-table:: RC charging (uic, tau = 10 us, max step 5 us):"
           " steps and absolute error vs analytic")
@@ -126,8 +134,8 @@ solution :math:`v(t) = V\,(1 - e^{-t/\tau})`.
     print("     - classic error")
     print("     - ywr steps")
     print("     - ywr error")
-    for method, nc, ec, ny, ey in rows:
-        print("   * - %s" % method)
+    for name, nc, ec, ny, ey in rows:
+        print("   * - %s" % name)
         print("     - %d" % nc)
         print("     - %.2e" % ec)
         print("     - %d" % ny)

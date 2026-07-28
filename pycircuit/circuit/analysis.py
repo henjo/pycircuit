@@ -73,10 +73,16 @@ class Analysis(sim.Analysis):
                             default=None),
                   Parameter(name='epar', desc='Environment parameters',
                             default=defaultepar),
-                  Parameter(name='nrsolver', desc='Newton-Raphson solver algorithm',
-                            default='standard'),
-                  Parameter(name='scaler', desc='Jacobian matrix scaling algorithm',
-                            default='none')]
+                  Parameter(name='nrsolver',
+                            desc='Newton-Raphson solver strategy (a NonLinearSolver '
+                                 'instance, e.g. StandardNewton(), DampedNewton(), '
+                                 'JAXNewtonSolver()); default StandardNewton()',
+                            default=None),
+                  Parameter(name='scaler',
+                            desc='Jacobian scaling strategy (a Scaler instance, e.g. '
+                                 'NoneScaler(), RowMaxScaler(), RowL2Scaler(), '
+                                 'SinkhornKnoppScaler()); default NoneScaler()',
+                            default=None)]
 
     def __init__(self, cir, toolkit=None, **kvargs):
         
@@ -126,30 +132,26 @@ class Analysis(sim.Analysis):
         self.epar = epar
 
     def _get_nrsolver(self):
-        from pycircuit.circuit.nrsolver import StandardNewton, DampedNewton, JAXNewtonSolver
-        method = getattr(self.par, 'nrsolver', 'standard').lower()
-        if method == 'standard':
+        from pycircuit.circuit.nrsolver import NonLinearSolver, StandardNewton
+        solver = getattr(self.par, 'nrsolver', None)
+        if solver is None:
             return StandardNewton()
-        elif method == 'damped':
-            return DampedNewton()
-        elif method == 'jax':
-            return JAXNewtonSolver()
-        else:
-            raise ValueError(f"Unknown Newton-Raphson solver: {method}")
-            
+        if not isinstance(solver, NonLinearSolver):
+            raise TypeError(
+                "nrsolver must be a NonLinearSolver instance (e.g. StandardNewton(), "
+                "DampedNewton(), JAXNewtonSolver()), not %r" % (solver,))
+        return solver
+
     def _get_scaler(self):
-        from pycircuit.circuit.scaler import NoneScaler, RowMaxScaler, RowL2Scaler, SinkhornKnoppScaler
-        method = getattr(self.par, 'scaler', 'none').lower()
-        if method == 'none':
+        from pycircuit.circuit.scaler import Scaler, NoneScaler
+        scaler = getattr(self.par, 'scaler', None)
+        if scaler is None:
             return NoneScaler()
-        elif method == 'max':
-            return RowMaxScaler()
-        elif method == 'l2':
-            return RowL2Scaler()
-        elif method == 'sinkhorn':
-            return SinkhornKnoppScaler(max_iter=5)
-        else:
-            raise ValueError(f"Unknown matrix scaler: {method}")
+        if not isinstance(scaler, Scaler):
+            raise TypeError(
+                "scaler must be a Scaler instance (e.g. NoneScaler(), RowMaxScaler(), "
+                "RowL2Scaler(), SinkhornKnoppScaler()), not %r" % (scaler,))
+        return scaler
 
 def fsolve(f, x0, args=(), full_output=False, maxiter=200,
            xtol=1e-6, reltol=1e-4, abstol=1e-12, toolkit='Numeric', limiter=None):
