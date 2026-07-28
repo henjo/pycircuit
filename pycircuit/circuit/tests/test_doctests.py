@@ -26,11 +26,27 @@ Two real, previously-undetected bugs were hiding behind this exact gap:
 This test makes running every doctest in both modules a permanent part of
 the ordinary suite, so a shadowed ``raise`` or a bad unpacking can't go
 undetected behind a dead example again.
+
+``volterra.py`` (P14, the legacy corners this same doctest sweep found)
+joined this file the same way: its own doctests turned up a chain of
+real bugs the same gap had hidden -- a stale absolute import, ``self.c``
+where the base class sets ``self.cir``, an undefined ``symbolic_linsolve``,
+``InternalResult`` where only ``InternalResultDict`` exists (which itself
+had a matching bug: ``__len__`` read ``self.results``, ``__init__`` sets
+``self.items``), a stray ``self`` parameter on a module-level function, and
+``NLVCCS`` (a test-only nonlinear element defined in the same file) hitting
+the same G-vs-i mismatch P9 fixed for the shipped elements, plus a
+sympy-version change in how ``diff`` applies to a plain array. All fixed;
+``Volterra.solve()``/``.run()`` remain a deliberately unfinished stub (the
+orchestration calling ``K()`` per element was commented out in 2008 and
+never completed) -- the doctest reflects that honestly rather than
+inventing the missing algorithm.
 """
 import doctest
 
 from pycircuit.circuit import circuit as circuit_module
 from pycircuit.circuit import elements as elements_module
+from pycircuit.circuit import volterra as volterra_module
 
 
 def test_circuit_module_doctests():
@@ -44,4 +60,11 @@ def test_elements_module_doctests():
     results = doctest.testmod(elements_module, verbose=False)
     assert results.failed == 0, (
         '%d of %d doctests in elements.py failed' %
+        (results.failed, results.attempted))
+
+
+def test_volterra_module_doctests():
+    results = doctest.testmod(volterra_module, verbose=False)
+    assert results.failed == 0, (
+        '%d of %d doctests in volterra.py failed' %
         (results.failed, results.attempted))

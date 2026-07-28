@@ -28,7 +28,7 @@ class InternalResultDict(ResultDict):
         self.items[key] = value
         
     def __len__(self):
-        return len(self.results)
+        return len(self.items)
 
 
 if __name__ == "__main__":
