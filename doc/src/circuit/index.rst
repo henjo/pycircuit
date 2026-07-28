@@ -7,6 +7,7 @@ Circuit analyzer
     intro
     tutorial
     analyses
+    symbolic_backends
     symbolic_poly
     ginac_native
     soe_symbolic

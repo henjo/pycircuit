@@ -335,17 +335,37 @@ nothing in the finding depended on repairing them, and 1377 of the 1528 lines
 were pure duplicate `Circuit`/`SubCircuit` engine with zero CNA-specific
 content in the first place.
 
-### P5 — six symbolic paths and no user-facing story
+### P5 — six symbolic paths and no user-facing story *(fixed)*
 
 `symbolic`, `symbolic_poly`, `soe`, `ginac`, `ddd`, `symengine`. Two are
 honestly labelled experimental negative results, which is good practice and
-should stay. But the answer to *"which should I use?"* lives in commit messages
-and scattered doc pages, not in the API or one table.
+should stay. But the answer to *"which should I use?"* lived in commit
+messages and scattered doc pages, not in the API or one table.
 
-`soe` is the odd one out: a module-level `solve_soe()` used by tests, benchmarks
-and docs, reachable from no analysis. It is a research prototype promoted to
-package code without an integration path — compare DDD, which got
-`ac_solution`, a result object and an analysis family.
+Added `doc/src/circuit/symbolic_backends.rst` — a comparison table plus a
+short decision-tree paragraph, deliberately additive (doesn't touch or
+duplicate the existing per-backend pages, just orients a reader among them).
+Left specific benchmark numbers out of it on purpose: the existing pages
+already regenerate theirs live via `exec-rst` (rule #6 — never paste a
+measured number into prose), so this page states each backend's
+representation and "best when" qualitatively and links out for the numbers.
+
+`soe` is the odd one out: a module-level `solve_soe()` used by tests,
+benchmarks and docs, reachable from no analysis. It is a research prototype
+promoted to package code without an integration path — compare DDD, which got
+`ac_solution`, a result object and an analysis family. Investigated *why*
+before writing it off as a simple gap: `ACSolution` (the interface every
+other representation implements) assumes a shared denominator —
+`numerators()` over one `denominator()`, `poles()` as its roots — which is
+still true of a DDD graph (mathematically `N(s)/D(s)`, just never expanded)
+but not of SoE, whose entire point is that inlining into that shape is the
+exponential blow-up it exists to avoid. Giving `soe` a real integration is
+therefore a genuine architecture question — extend `ACSolution` to a
+denominator-less representation, or give SoE its own analysis family the way
+DDD has one — not a wiring task like P3's mixin was. Recorded as the
+explanation on the new page and left as an explicit open question rather than
+attempted here; the "no user-facing story" complaint this item was about is
+resolved regardless of how that question is eventually answered.
 
 ### P6 — batched evaluation now lives in the toolkit *(fixed)*
 
@@ -741,7 +761,10 @@ found and fixed, all 29 `circuit.py`/`elements.py` doctests now run as part
 of the ordinary suite via `test_doctests.py`), P3 (`NumDenMixin` extracted;
 `DDDToolkit` is now a sibling of `SymbolicPolyToolkit` under it rather than a
 subclass overriding nearly everything inherited; `SymengineToolkit`/
-`GinacToolkit` unchanged, since they genuinely wanted what they inherited).
+`GinacToolkit` unchanged, since they genuinely wanted what they inherited),
+P5 (a new `doc/src/circuit/symbolic_backends.rst` orients a reader among the
+six symbolic toolkits; `soe`'s missing integration is explained rather than
+fixed — a real architecture question, not a wiring gap).
 
 P13 stays partly open by nature — "large," not a bounded bug — so it isn't
 struck off the list, just narrowed: the doctest mechanism and the two bugs
@@ -754,7 +777,6 @@ Open, in the order I would take them:
 
 | # | item | size | blocked on |
 |---|---|---|---|
-| P5 | no user-facing backend story | medium | nothing |
 | P8 | two extension conventions | medium | a convention decision |
 | P14 | legacy corners `--doctest-modules` found (cds/jwdb/gnucap/volterra/examples) | medium, split into per-bucket work | nothing, but scope each bucket separately |
 
