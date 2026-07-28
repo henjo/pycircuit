@@ -504,15 +504,41 @@ converged.
 transmission-line `u()` returns before its entire transient branch, so a TLine
 contributes no transient stimulus. Not investigated further.
 
-### P11 — `_symbolic` is missing primitives `_numeric` has
+### P11 — `_symbolic` was missing `tanh` *(fixed)*
 
-`_numeric` provides `tanh`; `_symbolic` provides neither `tanh` nor `power`. So
-`func.Tanh` — and any element built on it — cannot run symbolically at all,
-despite nothing in its design being numeric-specific. The backends have drifted
-apart without anything detecting it.
+Corrected from the original framing: `power` was never actually a live gap —
+nothing in the codebase calls `toolkit.power` (the one call site was inside
+the shadowed, unreachable half of `Tanh.fprime`, removed by P10's fix in
+favour of `**`), and `_numeric` itself doesn't define `power` either. The only
+real asymmetry was `tanh`: `_numeric.py` imports it from `numpy`, `_symbolic.py`
+never imported it from `sympy`. One-line fix.
 
-A test that asserts the backend modules expose the same primitive names would
-pin this cheaply.
+The reason this mattered at all is worth stating precisely, since it's easy
+to overstate: `tanh` (hence `func.Tanh`, hence `VCVS_limited`) is nonlinear,
+and every toolkit in the `symbolic_poly`/`ddd`/`ginac`/`soe`/`symengine`
+family is fundamentally a *linear*-circuit method — `AC.dc_steady_state`
+explicitly skips finding an operating point for symbolic toolkits (`x=None`),
+so a nonlinear element's `G`/`i` are never meaningfully evaluated through any
+of those paths regardless of what primitives `_symbolic` has. The one real,
+reachable nonlinear-symbolic path is `SymbolicDC` (`symbolicdc.py`) — it
+builds and solves the full symbolic KCL equation system with `sympy.solve`
+rather than numeric Newton iteration, and already had a passing test
+(`test_nonlinear`) using `Diode`. Fixing `tanh` without checking whether
+`SymbolicDC` could actually *use* it would have been declaring victory on an
+import, not a capability — the standard this document tries to hold itself
+to (§11 of `CLAUDE.md`: verify the output, not the exit code).
+
+It couldn't, not fully: `SymbolicDC.solve()` assumed `sympy.solve` always
+returns a dict (`{symbol: value}`). True for linear systems and for the
+single-equation nonlinear case (which the code special-cases by hand), but
+`sympy.solve` returns a **list of solution tuples** for a genuinely nonlinear
+*multi*-equation system — unreachable before `tanh` existed, since nothing
+could build one, so this was a latent bug rather than a previously-passing
+path that broke. Fixed by handling both shapes. Verified end-to-end (not
+just that the import resolves): a `VCVS_limited` circuit now solves
+symbolically to `level*tanh(g*Vin/level)`, exactly the corrected limiter
+semantics P9 established, pinned by `test_nonlinear_multivariable` in
+`test_analysis_symbolicdc.py`.
 
 ### P12 — smaller, verified
 
@@ -557,22 +583,24 @@ elements), P7 (the per-instance `eval_i_and_G`/`eval_q_and_C` mechanism
 deleted — measured dead, decided vestigial, test rewritten to the real
 `eval_i_pure`/`toolkit.jacobian` path), P9 (`G` versus `∂i/∂x`, plus the
 `VCVS_limited` residual and limiter semantics), P10 (the shadowed
-`Tanh.fprime`).
+`Tanh.fprime`), P11 (`_symbolic` missing `tanh` — `power` turned out not to be
+a real gap on either side; fixing `tanh` also exposed and fixed a latent
+`SymbolicDC.solve()` bug that could only be reached once a multi-equation
+nonlinear symbolic system was actually possible to build).
 
 Open, in the order I would take them:
 
 | # | item | size | blocked on |
 |---|---|---|---|
-| P11 | `_symbolic` missing `tanh`/`power` | small | nothing |
 | P2 | delegation error messages | small | nothing |
 | P13 | test coverage inverted against risk | large | nothing |
 | P3 | hierarchy claims more than it delivers | medium | nothing |
 | P5 | no user-facing backend story | medium | nothing |
 | P8 | two extension conventions | medium | a convention decision |
 
-P11 is first among what's left: small and unblocked, and it's the kind of
-silent backend drift (§7 P11's own description) worth closing before it grows
-another primitive gap.
+P2 is first among what's left: small, unblocked, and purely a
+diagnostics-quality fix (a better `__getattr__` error message) with no design
+decision attached.
 
 ## 8. Conventions
 

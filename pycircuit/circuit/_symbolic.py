@@ -11,7 +11,7 @@ The module is based on the python CAS `sympy <http://sympy.org>`_.
 
 import numpy as np
 import sympy
-from sympy import cos, sin, tan, exp, log, pi, simplify, floor, sqrt
+from sympy import cos, sin, tan, tanh, exp, log, pi, simplify, floor, sqrt
 from sympy import oo as inf, ceiling as ceil
 import types
 from pycircuit.utilities.param import Parameter

@@ -1,6 +1,6 @@
 from __future__ import division
 
-from pycircuit.circuit.elements import VS, IS, R, L, C, SubCircuit, gnd, Diode
+from pycircuit.circuit.elements import VS, IS, R, L, C, SubCircuit, gnd, Diode, VCVS_limited
 from pycircuit.circuit.symbolicdc import SymbolicDC
 from pycircuit.circuit import symbolic
 
@@ -43,6 +43,32 @@ def test_linear():
     ## Check current through R2
     assert sympy.simplify(res.i('R2.plus') - V0/(R1+R2)) == 0
     
+def test_nonlinear_multivariable():
+    """A genuinely nonlinear, multi-equation symbolic system.
+
+    ``Diode`` (test_nonlinear, above) reduces to a single equation, so
+    sympy.solve returns a plain root list there and SymbolicDC.solve()
+    converts it to a dict by hand. A tanh-based element pulls in more nodes
+    (VCVS_limited's own branch, the load), so this is the first test to
+    exercise sympy.solve's *other* nonlinear return shape -- a list of
+    solution tuples, not a dict -- which SymbolicDC.solve() didn't handle
+    before (see architecture.md P11; this was unreachable until _symbolic
+    gained ``tanh``, not merely untested).
+    """
+    Vin, g, level, RL = sympy.symbols('Vin g level RL', real=True, positive=True)
+
+    c = SubCircuit(toolkit=symbolic)
+    c['V0'] = VS(1, gnd, v=Vin, toolkit=symbolic)
+    c['E1'] = VCVS_limited(1, gnd, 2, gnd, g=g, level=level, offset=0,
+                           toolkit=symbolic)
+    c['RL'] = R(2, gnd, r=RL)
+
+    dc = SymbolicDC(c)
+    res = dc.solve()
+
+    expected = level * sympy.tanh(g * Vin / level)
+    assert sympy.simplify(res.v(2, gnd) - expected) == 0
+
 def test_geteqsys():
     R1, V0, Isat, T_sym = sympy.symbols('R1 V0 Isat T')
     k = symbolic.kboltzmann

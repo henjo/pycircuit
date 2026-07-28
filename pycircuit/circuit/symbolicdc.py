@@ -37,16 +37,27 @@ class SymbolicDC(Analysis):
         try:
             eqsys, x = self.get_eqsys()
 
-            ## Currently sympy doesn't support non-linear eq. systems only single equation
             if len(eqsys) == 1:
                 sol = sympy.solve(eqsys[0], x[0])
 
                 if len(sol) > 1:
-                    raise NotImplemented("Multiple solutions")
+                    raise NotImplementedError("Multiple solutions")
 
                 sol = {x[0]: sol[0]}
             else:
                 sol = sympy.solve(eqsys, *x)
+
+                ## sympy.solve returns a dict for a linear system (a unique
+                ## solution) but a list of solution tuples for a genuinely
+                ## nonlinear one, even when there is only one solution. This
+                ## branch was only ever exercised by linear circuits until
+                ## _symbolic gained `tanh` -- nothing could build a
+                ## multi-equation nonlinear system before that (see
+                ## architecture.md P11).
+                if isinstance(sol, list):
+                    if len(sol) > 1:
+                        raise NotImplementedError("Multiple solutions")
+                    sol = dict(zip(x, sol[0]))
 
         except NotImplementedError as last_e:
             logging.error('Solver for equation %s not implemented in Sympy'%str(eqsys))
