@@ -108,11 +108,11 @@ class C(Circuit):
     >>> n1=c.add_node('1')
     >>> c['C'] = C(n1, gnd, c=1e-12)
     >>> c.G(numeric.zeros(2))
-    array([[ 0.,  0.],
-           [ 0.,  0.]])
+    array([[0., 0.],
+           [0., 0.]])
     >>> c.C(numeric.zeros(2))
-    array([[  1.00000000e-12,  -1.00000000e-12],
-           [ -1.00000000e-12,   1.00000000e-12]])
+    array([[ 1.e-12, -1.e-12],
+           [-1.e-12,  1.e-12]])
 
     """
 
@@ -155,9 +155,9 @@ class L(Circuit):
            [ 0.,  0., -1.],
            [ 1., -1.,  0.]])
     >>> c.C(numeric.zeros(3))
-    array([[  0.0000e+00,   0.0000e+00,   0.0000e+00],
-           [  0.0000e+00,   0.0000e+00,   0.0000e+00],
-           [  0.0000e+00,   0.0000e+00,  -1.0000e-09]])
+    array([[ 0.e+00,  0.e+00,  0.e+00],
+           [ 0.e+00,  0.e+00,  0.e+00],
+           [ 0.e+00,  0.e+00, -1.e-09]])
    """
     terminals = ('plus', 'minus')
     branches = (Branch(Node('plus'), Node('minus')),)
@@ -209,7 +209,7 @@ class L(Circuit):
 class VS(Circuit):
     """Independent DC voltage source
 
-    >>> from dcanalysis import DC
+    >>> from pycircuit.circuit.dcanalysis import DC
     >>> c = SubCircuit()
     >>> n1=c.add_node('1')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
@@ -301,16 +301,16 @@ class VSin(VS):
 class IS(Circuit):
     """Independent DC current source
 
-    >>> from dcanalysis import DC, gnd as gnd2
+    >>> from pycircuit.circuit.dcanalysis import DC, gnd as gnd2
     >>> c = SubCircuit()
     >>> n1=c.add_node('1')
     >>> c['is'] = IS(gnd, n1, i=1e-3)
     >>> c['R'] = R(n1, gnd, r=1e3)
     >>> DC(c,refnode=gnd).solve().x
-    array([ 1.,  0.])
+    array([1., 0.])
 
     """
-    instparams = [Parameter(name='i', desc='DC Current', 
+    instparams = [Parameter(name='i', desc='DC Current',
                             unit='A', default=1e-3),
                   Parameter(name='iac', desc='AC analysis current amplitude', 
                             unit='A', default=0),
@@ -439,7 +439,7 @@ class VPulse(VS):
 class VCVS(Circuit):
     """Voltage controlled voltage source
 
-    >>> from dcanalysis import DC
+    >>> from pycircuit.circuit.dcanalysis import DC
     >>> c = SubCircuit()
     >>> n1, n2 =c.add_nodes('1', '2')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
@@ -491,7 +491,7 @@ class SVCVS(Circuit):
     """Voltage controlled voltage source with frequency dependent transfer
 
     
-    >>> from dcanalysis import DC
+    >>> from pycircuit.circuit.dcanalysis import DC
     >>> c = SubCircuit()
     >>> n1, n2 =c.add_nodes('1', '2')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
@@ -625,7 +625,7 @@ class SVCVS(Circuit):
 class CCVS(Circuit):
     """Current Controlled Voltage Source
 
-    >>> from dcanalysis import DC
+    >>> from pycircuit.circuit.dcanalysis import DC
     >>> c = SubCircuit()
     >>> n1, n2 =c.add_nodes('1', '2')
     >>> c['is'] = IS(n1, gnd, i=1)
@@ -685,7 +685,7 @@ class CCVS(Circuit):
 class VCCS(Circuit):
     """Voltage controlled current source
 
-    >>> from dcanalysis import DC
+    >>> from pycircuit.circuit.dcanalysis import DC
     >>> c = SubCircuit()
     >>> n1,n2 = c.add_nodes('1', '2')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
@@ -768,7 +768,7 @@ class Nullor(Circuit):
 class Transformer(Circuit):
     """Ideal transformer
 
-    >>> from dcanalysis import DC
+    >>> from pycircuit.circuit.dcanalysis import DC
     >>> c = SubCircuit()
     >>> n1, n2 = c.add_nodes('1', '2')
     >>> c['vs'] = VS(n1, gnd, v=1.5)
@@ -776,7 +776,7 @@ class Transformer(Circuit):
     >>> c['vcvs'].nodes
     [Node('inp'), Node('inn'), Node('outp'), Node('outn')]
     >>> c['vcvs'].branches
-    (Branch(Node('outp'),Node('outn')),)
+    [Branch(Node('outp'),Node('outn'))]
     >>> c['vcvs'].G(numeric.zeros(4))
     array([[ 0.,  0.,  0.,  0.,  2.],
            [ 0.,  0.,  0.,  0., -2.],
@@ -1111,7 +1111,7 @@ class Idtmod(Circuit):
     >>> tran = Transient(c, toolkit=numeric)
     >>> result = tran.solve(tend=1.5, timestep=0.5)
     >>> result.v(nout).y
-    array([ 0.5,  0. ,  0.5])
+    array([0.5, 0. , 0.5])
     """
     instparams = [Parameter(name='modulus', desc='Output modulus',unit='V/V',
                             default=1.),

@@ -313,7 +313,7 @@ class Circuit():
         connected to the positive or negative side of the branch. 
         1 == positive side, -1 == negative side
         
-        >>> from elements import *
+        >>> from pycircuit.circuit.elements import *
         >>> net1 = Node('net1')
         >>> net2 = Node('net2')
         >>> VS = VS(net1, net2)
@@ -455,7 +455,7 @@ class Circuit():
     def save_current(self, terminal):
         """Returns a circuit where a current probe is added at a terminal
         
-        >>> from elements import *
+        >>> from pycircuit.circuit.elements import *
         >>> import numpy as np
         >>> cir = R(Node('n1'), gnd, r=1e3)
         >>> newcir = cir.save_current('plus')
@@ -536,25 +536,23 @@ class Circuit():
     def name_state_vector(self, x, analysis=''):
         """Return a dictionary of the x-vector keyed by node and branch names
 
-        >>> from elements import *
+        >>> from pycircuit.circuit.elements import *
         >>> import numpy as np
         >>> c = SubCircuit()
         >>> n1 = c.add_node('net1')
-        >>> c['is'] = IS(gnd, n1, i=1e-3)
+        >>> c['vs'] = VS(n1, gnd, v=1.0)
         >>> c['R'] = R(n1, gnd, r=1e3)
-        >>> c.name_state_vector(np.array([[1.0]]))
-        {'net1': 1.0}
-
-        >>> 
+        >>> c.name_state_vector(np.array([1.0, 0.0, -1e-3]))
+        {'net1': np.float64(1.0), 'gnd': np.float64(0.0), 'i0)': np.float64(-0.001)}
 
         """
         result = {}
-        for xvalue, node in zip(x[:len(self.nodes)][0], self.nodes):
+        for xvalue, node in zip(x[:len(self.nodes)], self.nodes):
             result[self.get_node_name(node)] = xvalue
 
         nnodes = len(self.nodes)
-        for i, xvalue, branch in enumerate(zip(x[nnodes:], self.branches)):
-            result['i' + analysis + str(i) + ')'] = xvalue            
+        for i, (xvalue, branch) in enumerate(zip(x[nnodes:], self.branches)):
+            result['i' + analysis + str(i) + ')'] = xvalue
 
         return result
 
@@ -617,18 +615,18 @@ class Circuit():
         *refnode_removed*
           If set the refernce node is expected to be removed from the x-vector
 
-        >>> from elements import *
+        >>> from pycircuit.circuit.elements import *
         >>> import numpy as np
         >>> c = SubCircuit()
         >>> n1, n2 = c.add_nodes('n1','n2')
         >>> c['R1'] = R(n1, n2, r=1e3)
         >>> c['R2'] = R(n2, gnd, r=1e3)
         >>> c.extract_v(np.array([1.0, 0.5, 0.0]), 'n1', 'n2')
-        0.5
+        np.float64(0.5)
         >>> c.extract_v(np.array([1.0, 0.5, 0.0]), c.nodes[0])
-        1.0
+        np.float64(1.0)
         >>> c.extract_v(np.array([1.0, 0.5]), c.nodes[0], refnode_removed = True)
-        1.0
+        np.float64(1.0)
         
         """
         v = []
@@ -684,15 +682,15 @@ class Circuit():
         *xdcop*
            *xcdop* is the DC operation point x-vector if linearized == True
 
-        >>> from elements import *
+        >>> from pycircuit.circuit.elements import *
         >>> import numpy as np
         >>> c = SubCircuit()
         >>> net1 = c.add_node('net1')
         >>> c['vs'] = VS(net1, gnd)
         >>> c.extract_i(np.array([1.0, 0, -1e-3]), 'vs.minus')
-        0.001
+        np.float64(0.001)
         >>> c.extract_i(np.array([1.0, -1e-3]), 'vs.minus', refnode_removed = True)
-        0.001
+        np.float64(0.001)
         
         """
         dot = self.toolkit.dot
@@ -858,7 +856,7 @@ class SubCircuit(Circuit):
 
     def netlist(self, top = True):
         """
-        >>> from elements import *
+        >>> from pycircuit.circuit.elements import *
         >>> a = SubCircuit()
         >>> a['R1'] = R(1,2)
         >>> print(a.netlist())
@@ -962,7 +960,7 @@ class SubCircuit(Circuit):
     def __delitem__(self, instancename):
         """Removes instance from circuit
         
-        >>> from elements import *
+        >>> from pycircuit.circuit.elements import *
         >>> c = SubCircuit()
         >>> c['V'] = VS(gnd, gnd)
         >>> del c['V']
@@ -1024,7 +1022,7 @@ class SubCircuit(Circuit):
         connected to the positive or negative side of the branch. 
         1 == positive side, -1 == negative side
 
-        >>> from elements import *
+        >>> from pycircuit.circuit.elements import *
         >>> c = SubCircuit()
         >>> net1, net2 = c.add_nodes('net1', 'net2')
         >>> c['vs'] = VS(net1, net2)
@@ -1052,7 +1050,7 @@ class SubCircuit(Circuit):
     def get_node(self, name):
         """Find a node by name.
         
-        >>> from elements import *
+        >>> from pycircuit.circuit.elements import *
         >>> c = SubCircuit()
         >>> c['V1'] = VS(1,0)
         >>> c.get_node('V1.plus')
@@ -1557,7 +1555,6 @@ class Quantity():
     def isbranch(self): return isinstance(self.branch_or_node, Branch)
         
     def __repr__(self):
-        raise ValueError("APA")
         if isinstance(self.branch_or_node, Branch):
             return self.quantity + '(' + str(self.branch_or_node.plus.name) + \
                 ',' + str(self.branch_or_node.minus.name) + ')'

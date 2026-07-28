@@ -560,21 +560,77 @@ semantics P9 established, pinned by `test_nonlinear_multivariable` in
 - Comments left mid-thought in production code, e.g. `elements.py` VCVS_limited:
   *"but wait, the plan is to vectorize! ... Let's see if tests pass."*
 
-### P13 — test coverage is shaped inversely to risk
+### P13 — test coverage is shaped inversely to risk *(the doctest gap fixed; the rest stays open)*
 
-489 tests. **180 of them (37%) are `test_ddd.py`** — the newest subsystem. The
-two most depended-upon modules are the thinnest covered:
+Re-measured 2026-07-28 rather than trusted: 511 tests, 180 of them (35%,
+was 37% at 489) still `test_ddd.py` — the newest subsystem. The direction the
+original count pointed at is real, but "tests in its main file" was a proxy;
+`pytest-cov` (worked around a hard crash where its import-tracing hook
+collides with `jaxlib`'s native module init — block `jax` at the
+`sys.modules` level first, the same trick `test_jax_optional.py` already
+relies on) gives an actual number: **`circuit.py` 83% covered (121/699
+statements missed), `elements.py` 86% (109/802 missed)** — thinner than
+`ddd.py`'s tests-per-line ratio, on the two modules with the highest fan-in
+in the codebase (29 and 24 respectively).
 
-| module | fan-in | lines | tests in its main file |
-|---|---:|---:|---:|
-| `circuit.py` | 29 | 1656 | 20 |
-| `elements.py` | 24 | 1947 | 12 |
-| `ddd.py` | low | 1972 | 180 |
+**What the gap actually was, found by reading the missing lines rather than
+just counting them:** both files carry many doctests documenting their public
+API (`get_node`, `add_terminals`, `save_current`, `name_state_vector`,
+`Quantity`, most elements' constructors...) but none of them ran under
+pytest — gated behind `if __name__ == "__main__": doctest.testmod()`, which
+only fires when a module is executed as a script, never on import. Enabling
+`--doctest-modules` on just these two files surfaced **20 failures**, and
+tracing each one down (not just batch-updating expected output) found:
 
-Newest code best tested, oldest and most-depended-upon least. That is backwards
-from where a regression hurts most. (Element behaviour is also exercised
-indirectly by analysis tests, so the gap is smaller than the raw counts
-suggest — but the direction is real.)
+* **Two real, previously-undetected bugs**, both invisible for the same
+  reason. `Quantity.__repr__` (circuit.py) unconditionally raised
+  `ValueError("APA")` before its actual logic — introduced 2010, unreachable
+  ever since, the same shadowed-dead-code shape as `func.Tanh.fprime`'s
+  2009–2026 bug (P10). `Circuit.name_state_vector` had two bugs at once:
+  `x[:len(self.nodes)][0]` double-indexed into a scalar instead of slicing
+  (only "worked" because its own doctest happened to pass a `(1,1)`-shaped
+  array rather than the flat 1-D `x` every other caller in the codebase
+  uses), and its branch-naming loop unpacked `enumerate(zip(...))` — a
+  2-tuple — into three names. Nothing in the live codebase calls this method,
+  so nothing else was affected, but it's public API and the docstring
+  advertises a working example.
+* **Six stale expected-output strings**, purely numpy-version drift
+  (`array([ 0.5,  0. ])` → `array([0.5, 0. ])`; bare floats → `np.float64(...)`
+  repr; `array([[ 0.0000e+00, ...`  → `array([[ 0.e+00, ...`) and one
+  intentional-but-undocumented API evolution (`Transformer.branches` is a
+  list at the instance level, not the tuple the class declares — needed so
+  `append_branches`'s `.extend()` works, confirmed before treating it as
+  a mere doctest update rather than a behaviour change).
+* Nine doctests failing purely on **Python-2-era absolute imports**
+  (`from elements import *`, `from dcanalysis import DC`) never updated for
+  the package-relative form — the exact same staleness pattern P4 found in
+  `circuit_cna.py`/`elements_cna.py`, except here on live, maintained code.
+
+All fixed; all 29 doctests across both files now pass, and
+`test_doctests.py` runs them as a permanent part of the ordinary suite (no
+special flag needed) so this can't go silently dead again.
+
+**Scope boundary, deliberate.** Checked what `--doctest-modules` finds
+project-wide before deciding how far to take this: **15 collection errors**
+in largely legacy, peripheral modules — `pycircuit/post/cds`,
+`pycircuit/post/jwdb`, `pycircuit/sim/gnucap` (`import sys, StringIO`, a
+Python-2-only stdlib module, still unported), a couple of broken example
+scripts, and the JAX-dependent modules (an artifact of the jax-blocking
+workaround used to measure coverage, not a real gap). That's a separate,
+larger cleanup — reviving several already-known-neglected corners of the
+tree — not something to fold into closing out this item. *Reconsider if*
+those modules are touched for another reason and it becomes cheap to fix
+their imports at the same time.
+
+**What's still genuinely open.** The doctest-collection mechanism is fixed
+for the two flagged modules, and the two bugs it had been hiding are gone,
+but this doesn't make `circuit.py`/`elements.py` well-tested in the
+"P13 is large" sense the doc originally meant — 83%/86% line coverage still
+leaves real gaps (much of the *rest* of the missing 121+109 lines is
+plausible defensive/error-branch code, not audited line-by-line here), and
+the test-count *shape* (DDD still 35% of the suite) is unchanged. This item
+stays open for anyone who wants to extend it; what's fixed is recorded so it
+doesn't get redone by accident.
 
 ---
 
@@ -596,20 +652,29 @@ a real gap on either side; fixing `tanh` also exposed and fixed a latent
 nonlinear symbolic system was actually possible to build), P2 (`__getattr__`
 now names the toolkit class, not just the backend module; `sparse` moved to
 the base `Toolkit` alongside `symbolic`/`poly`/`jax` so it's safe to read on
-any toolkit).
+any toolkit), P13's doctest-collection gap (both real bugs it was hiding —
+`Quantity.__repr__`'s shadowed `raise`, `name_state_vector`'s double bug —
+found and fixed, all 29 `circuit.py`/`elements.py` doctests now run as part
+of the ordinary suite via `test_doctests.py`).
+
+P13 stays partly open by nature — "large," not a bounded bug — so it isn't
+struck off the list, just narrowed: the doctest mechanism and the two bugs
+behind it are fixed and won't get redone by accident; the broader
+line-coverage gap on `circuit.py`/`elements.py` (83%/86%, measured) and the
+test-count shape (DDD still 35% of the suite) remain exactly as open as
+before, for whoever wants to extend it next.
 
 Open, in the order I would take them:
 
 | # | item | size | blocked on |
 |---|---|---|---|
-| P13 | test coverage inverted against risk | large | nothing |
 | P3 | hierarchy claims more than it delivers | medium | nothing |
 | P5 | no user-facing backend story | medium | nothing |
 | P8 | two extension conventions | medium | a convention decision |
 
-Everything left is medium-or-larger, and P8 is the only one blocked (on a
-convention decision, not investigation). P3 is the next one I'd take: small
-enough in isolation (a `NumDenMixin` extraction) and, like P2, purely a
+Everything left is medium, and P8 is the only one blocked (on a convention
+decision, not investigation). P3 is the next one I'd take: small enough in
+isolation (a `NumDenMixin` extraction) and, like P2, purely a
 naming-matches-reality fix with no open design question.
 
 ## 8. Conventions
