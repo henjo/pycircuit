@@ -65,6 +65,35 @@ and re-derive from the nullor's definition rather than pattern the old code
 blindly; record as a full negative result next to the other five in
 `[[ddd-implementation]]`'s style.
 
+**RESULT (2026-07-28): failure, and a clean one.** Built exactly this
+circuit (`pycircuit/circuit/tests/test_nullor_cna.py`) and ran it under `AC`
+with the `symbolic` toolkit. The mainline branch-based `Nullor` reproduces
+the published `Vo/Vi = -Rf/Ri` exactly (sanity check on the test itself).
+`NullorCNA` does not: its reduced (ground-removed) 3×3 system has
+`det() == 0` **exactly**, verified directly with `sympy.Matrix.det()`, not
+inferred from a solver exception. Traced by hand: with `inn=gnd` and
+`outn=gnd` (both ports grounded on one side, as in this circuit), a correct
+nullor must (a) treat the nullator's other terminal (node 2) as *literally
+aliased to ground* for every other element's stamp — not merely uninvolved
+in the nullor's own row — and (b) drop the norator's own KCL row at node 3
+(its current is unconstrained, so conservation cannot be enforced there),
+replacing it with node 2's now-substituted-with-known-zero row, which is
+exactly the classical "virtual ground" derivation of the inverting amplifier.
+Neither of those is a per-element `G`-stamp; both are node-index-level graph
+surgery (merge/delete rows and columns *before* the matrix is even
+assembled), which is precisely what the paper's four rules (§4) describe and
+what this stage had hoped pycircuit's existing NA-compatible elements would
+let it skip. **They don't.** The hypothesis in `cna_conclusions.md` is
+refuted.
+
+This means implementing CNA correctly is a bigger, more architecturally
+invasive feature than "add one new element class" — it needs a preprocessing
+pass over node identification at circuit-assembly time (classify each
+nullor's ports as floating/grounded, alias or eliminate node indices
+accordingly), which is a different kind of change than anything else in this
+review pass and deserves its own scoping decision before continuing. Not
+attempted further without that decision.
+
 ### Stage 2 — measure the compactness claim
 
 Rebuild `example10`'s MFB filter (or Stage 1's gate circuit, if it's the

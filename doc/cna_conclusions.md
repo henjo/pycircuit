@@ -73,6 +73,22 @@ nullator+norator decomposition — consistent with treating it as the
 hypothesis to test rather than an already-working reference implementation
 (it doesn't import under Python 3 either way, see below).
 
+**Hypothesis REFUTED (2026-07-28) — see `cna_plan.md`'s Stage 1 result.** The
+direct-terminal, zero-`G`, no-branch element produces a genuinely singular
+system for the paper's own example (`det() == 0`, verified symbolically, not
+inferred from an exception). It fails to enforce the nullator's constraint
+(the old, dead `elements_cna.py` code never actually worked, even on its own
+terms) and fails to give the norator's node a current-balancing degree of
+freedom. The paper's row/column merge-and-delete rules are load-bearing, not
+an artifact of their own methodology that pycircuit's better element set
+lets us route around. Getting the real "compact" result requires operating
+on node indices at circuit-assembly time — classifying each nullor's ports
+as floating or grounded and aliasing/eliminating accordingly before the
+matrix is built — which is a materially larger, more architecturally
+invasive feature than adding one new element class, and changes the
+cost/benefit calculus for continuing. See `cna_plan.md` for the decision
+point this raises.
+
 ## What was measured, and what it changes about the plan
 
 I read the composed forms in `elements_cna.py` and counted unknowns against
