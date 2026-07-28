@@ -28,7 +28,7 @@ Each stage states its success condition before running it, per the project's
 gate discipline. A negative result at Stage 2 is kept and recorded, not
 discarded.
 
-### Stage 1 — the CNA `Nullor`, correctness only
+### Stage 1 — the CNA `Nullor`, correctness against the paper's own example
 
 Add a new element (working name `NullorCNA`; naming open for review) to
 `elements.py`: `terminals = ('inp', 'inn', 'outp', 'outn')`, no `branches`,
@@ -36,17 +36,34 @@ Add a new element (working name `NullorCNA`; naming open for review) to
 `elements_cna.py`'s `Nullor.G`, against the current `Circuit` base and
 `self.toolkit.zeros` rather than the old file's hardcoded numeric-only zeros.
 
-**Gate:** build a small feedback circuit two ways — once with the mainline
-`Nullor`, once with `NullorCNA` — solve both under `DC` and `AC` with the
-`numeric` toolkit, and assert node voltages / transfer function agree to
-numerical precision. A unity-gain buffer or the existing MFB topology with a
-resistive load both work; pick whichever composes more simply with what
-`example10.py` already builds, so Stage 2 can reuse the same circuit.
-**Success:** matches. **Failure:** the zero-`G` formulation is not
-electrically equivalent for some topology — stop and re-derive from the
-nullor's definition (nullator/norator, i.e. `v=0` at the input port, arbitrary
-current; arbitrary voltage at the output port, `i=0`) rather than pattern the
-old code blindly.
+**Gate, stated before running it — two parts, both against the paper itself
+(`doc/cna_conclusions.md`'s "open question" section), not an invented test
+circuit:**
+
+1. **Correctness.** Build the paper's own inverting-amplifier example
+   (Fig. 8: `Ri` from input to `v-`, `Rf` feedback, `NullorCNA` across
+   `(v-, gnd)`–`(vout, gnd)`), driven by pycircuit's `IS` at the input node
+   rather than the paper's voltage-source-to-nullor transform (unnecessary
+   here — `IS` is already NA-compatible). Solve under `numeric`, and check
+   the resulting `Vo/Vin` against the published closed form `-Rf/Ri` (eq. 3).
+2. **Compactness.** Check whether the assembled system's dimension for that
+   circuit already matches what the paper's Compacted-PNA would give it
+   (order reduced by 1 relative to what the mainline branch-based `Nullor`
+   needs for the same circuit), *without* implementing the paper's explicit
+   row/column merge algorithm — on the hypothesis that pycircuit's existing
+   NA-compatible elements make that algorithm unnecessary (see
+   `cna_conclusions.md`).
+
+**Success:** both hold — the element is correct and the reduction is free.
+**Partial failure (1 holds, 2 doesn't):** the element is still a valid,
+correct `Nullor` alternative and worth keeping, but the "compact" framing
+needs qualifying — record as a partial negative result and reconsider whether
+Stage 2/3 are worth pursuing given the actual size of the win.
+**Failure (1 doesn't hold):** the zero-`G` no-branch formulation is not
+electrically equivalent in this topology — stop, do not proceed to Stage 2,
+and re-derive from the nullor's definition rather than pattern the old code
+blindly; record as a full negative result next to the other five in
+`[[ddd-implementation]]`'s style.
 
 ### Stage 2 — measure the compactness claim
 

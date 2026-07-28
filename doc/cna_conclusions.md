@@ -5,30 +5,73 @@ the plan records what and in what order.*
 
 ## What CNA is
 
-`elements_cna.py`'s `Nullor` docstring names the source:
+`elements_cna.py`'s `Nullor` docstring names the source, and the paper is now
+downloaded and read (not text-extracted — rendered pages via the `Read` tool,
+per the project's PDF-verification rule): Esteban Tlelo-Cuautle & Arturo
+Sarmiento-Reyes, *A Pure Nodal-Analysis Method Suitable for Analog Circuits
+Using Nullors*, Journal of Applied Research and Technology, vol. 1 no. 3,
+2003, pp. 235-247 — `~/pycircuit_agy/papers/cna/2003_JART_TleloCuautle_pure-nodal-nullors.pdf`.
+A related follow-up by the same group is also saved:
+`2005_JART_TleloCuautle_enhancing-symbolic-analysis.pdf` ("Compact system of
+equations," avoiding multiplications by zero in determinant evaluation — not
+yet read in full; noted for later if Stage 2/3 need it).
 
-> Esteban Tlelo-Cuautle / Arturo Sarmiento-Reyes, *A Pure Nodal-Analysis
-> Method Suitable for Analog Circuits Using Nullors*, Journal of Applied
-> Research and Technology, vol. 1, no. 3.
+**The mechanism is subtler than "the element stamps zero," and matters for
+scope.** A nullor is a nullator (input port, `V=0, I=0`) plus a norator
+(output port, arbitrary `V, I`) (§2.1, Fig. 1). The paper's base method,
+"Pure Nodal Analysis" (PNA, §3, eq. 1), transforms *every* non-NA-compatible
+element — including plain independent voltage sources (§2.2, Fig. 2) — into a
+nullor-based equivalent, so the assembled matrix contains only R, C, nullors
+and independent current sources. This transform-everything approach adds
+nodes (the worked inverting-amplifier example, Fig. 8→9, goes from 3 physical
+nodes to a 4-node nullor circuit, partly because the input voltage source
+itself is turned into a nullor + current source per Fig. 2). "Compacted PNA"
+(CPNA, §4, eq. 2) then removes that self-inflicted bloat by four row/column
+rules on the assembled `Y_PNA` matrix: merge the two columns of a floating
+nullator's terminals (its voltage is 0, so they're the same unknown), merge
+the two rows of a floating norator's terminals (conservation makes its
+current bookkeeping redundant), or delete the column/row outright when either
+is grounded. §6: "the order of the matrix is reduced in one by each nullor."
+Two worked, published examples anchor this claim with real numbers: the
+CCII-based GIC (Fig. 12/13) goes from a 26×26 `Y_PNA` to a 12×12 `Y_CPNA` with
+14 nullors (eq. 9); the lossy Gm-C integrator (Fig. 14/15) goes from 7×7 to
+2×2 with 5 nullors, with the closed-form result `Vo/Vin = 1/(1 + sC/gm)`
+(eq. 14) — both `26 − 14 = 12` and `7 − 5 = 2` match the headline rule
+exactly.
 
-**The paper itself is not available locally** — nothing in `~/pycircuit_agy/papers/`
-or elsewhere in this checkout. Per the extraction rule, no number or formula
-from it is used here; everything below is re-derived from circuit theory and
-cross-checked against the *existing, tested* MNA elements, which is a stronger
-standard for this purpose than trusting an unseen citation would be. If the
-paper turns up later, treat this as independently re-derived, not "confirmed by
-the paper."
+**Open question this plan resolves empirically, not by assumption.**
+pycircuit already has proper NA-compatible primitives — `IS` is a genuine
+independent current source, so nothing needs the paper's voltage-source→nullor
+transform (Fig. 2) that inflates their node count in the first place. A single
+4-terminal `Circuit` element stamping an all-zero `G` and declaring no
+`branches`, wired directly onto a circuit's *existing* terminal nodes (no
+extra internal nodes synthesized), might therefore land at the same reduced
+order "for free" — without ever needing the explicit row/column merge
+algorithm, simply because it never introduces the artifact nodes that
+algorithm exists to remove. That is a hypothesis, not a derivation: hand-
+tracing the paper's own intermediate matrix (eq. 4) from a photographed page
+risks exactly the transcription error this project's own working method warns
+against (rule #10). The sound test is behavioural, matching how this codebase
+already validates elements elsewhere (`test_element_jacobians.py`; DDD's
+calibration against published `|DDD|` values rather than re-deriving the
+recursion): build the paper's own inverting-amplifier example (Fig. 8, using
+pycircuit's `IS`/`R` so no source-nullor transform is needed) with the
+candidate zero-`G` no-branch element, solve it with pycircuit's existing,
+tested numeric machinery, and check the transfer function against the
+published closed form `Vo/Vi = -Rf/Ri` (eq. 3). If it matches, the direct
+implementation is validated end-to-end without needing the paper's merge
+algorithm at all. If it does not, that means the naive element is not
+electrically equivalent to a real nullor in this topology, and Stage 1 must
+implement something closer to the literal nullator/norator decomposition
+instead — a materially bigger feature. Stage 1 in the plan is this test,
+stated as a gate before it's run, exactly so a negative result here is
+recorded rather than quietly worked around.
 
-The idea, confirmed by reading both the old CNA code and the current MNA code
-side by side: MNA gives every element that defines a *voltage* (a source, or a
-nullor's zero-input constraint) an extra unknown — a branch current — plus a
-row and column enforcing that constraint. CNA's nullor instead stamps an
-**all-zero G with no branch at all**: `elements_cna.py`'s `Nullor.G` returns a
-zero matrix and declares no `branches`, versus the mainline
-`elements.py:722` `Nullor`, which adds one branch and four stamped entries.
-Other elements (inductors, voltage sources, controlled sources) are then
-*composed* from nullors, gyrators and resistors rather than given their own
-branch equations.
+The old `elements_cna.py`'s `Nullor.G` (all-zero, no branches, four terminals
+mapped directly) is the direct-terminal form, not the paper's literal
+nullator+norator decomposition — consistent with treating it as the
+hypothesis to test rather than an already-working reference implementation
+(it doesn't import under Python 3 either way, see below).
 
 ## What was measured, and what it changes about the plan
 
@@ -84,7 +127,20 @@ meaningful `|DDD|` or symbolic-size reduction on a realistic circuit is an
 open question the plan's Stage 2 gate answers empirically, following rule #6
 (never type a measured number into prose — an `exec-rst` block regenerates it
 at doc-build time, the pattern already used for `soe_symbolic.rst` and
-`ginac_native.rst`).
+`ginac_native.rst`). The paper's own two examples (26→12 for 14 nullors,
+7→2 for 5 nullors) are a real published upper bound on what's possible for a
+*nullor-dense* circuit — `example10`'s single-nullor MFB filter should show
+much less, proportionally, than either.
+
+One more thing from the paper worth carrying forward honestly: its own
+conclusion (§6) states the method should be used "only if low accuracy is
+required" — nullors are ideal, zero-order models. That's not a new limitation
+CNA introduces; the mainline `elements.py` `Nullor` is exactly as ideal
+already, so nothing changes about what accuracy trade-off a user is making by
+using a nullor at all. It only bears on whether *this specific reduction
+technique* is being oversold as a general-purpose accuracy improvement, which
+it isn't and doesn't need to be — the target is smaller symbolic determinants
+for circuits that already use idealized nullors.
 
 ## Scope
 
