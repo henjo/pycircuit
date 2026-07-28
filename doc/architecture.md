@@ -239,25 +239,32 @@ dependency of the whole package. Fixed, and pinned by `test_jax_optional.py`.
 package at top level must itself only ever be imported lazily. `_ginac` and
 `symengine` follow this correctly today; check any new backend against it.
 
-### P2 — `__getattr__` delegation gives misleading errors
+### P2 — `__getattr__` delegation gives misleading errors *(fixed)*
 
-A name missing from both class and backend raises an `AttributeError` naming the
-*backend module*:
+A name missing from both class and backend used to raise an `AttributeError`
+naming the *backend module*:
 
 ```
 numeric.sparse -> AttributeError: module 'pycircuit.circuit._numeric' has no attribute 'sparse'
 ```
 
-which sends a reader to the wrong file. More seriously in principle: a method
-removed from a subclass silently falls through to the backend instead of
-failing. **I found no instance of that second case actually happening** — this is
-a hazard, not a bug report.
+which sent a reader to the wrong file. More seriously in principle: a method
+removed from a subclass would silently fall through to the backend instead of
+failing. **No instance of that second case was found actually happening** —
+that risk is a hazard worth naming, not a bug report, and the delegation
+itself earns its keep and stays (architecture.md §2/§6: it's the main
+extension mechanism). `Toolkit.__getattr__` now catches the backend's
+`AttributeError` and re-raises naming the toolkit class first, with the
+backend module kept as parenthetical context rather than the headline:
+`"'NumericToolkit' toolkit (backend 'pycircuit.circuit._numeric') has no
+attribute 'sparse'"`. Pinned by `test_toolkit.py`.
 
-The delegation earns its keep and should stay; the fix is a better
-`__getattr__` error message, not removal. Note also that `sparse` is set only on
-`SparseNumericToolkit`, so unlike `symbolic`/`poly`/`jax` it is not safe to read
-on an arbitrary toolkit. Declare it on the base, or route it through
-`supports()`.
+The secondary note is fixed too: `sparse` was set only on
+`SparseNumericToolkit`, so unlike `symbolic`/`poly`/`jax` it wasn't safe to
+read on an arbitrary toolkit (confirmed nothing actually read it that way
+today — a latent hazard, not a live bug, same shape as the first half of
+this item). Declared `sparse = False` on the base `Toolkit` alongside the
+other three flags.
 
 ### P3 — the toolkit hierarchy claims more than it delivers
 
@@ -586,21 +593,24 @@ deleted — measured dead, decided vestigial, test rewritten to the real
 `Tanh.fprime`), P11 (`_symbolic` missing `tanh` — `power` turned out not to be
 a real gap on either side; fixing `tanh` also exposed and fixed a latent
 `SymbolicDC.solve()` bug that could only be reached once a multi-equation
-nonlinear symbolic system was actually possible to build).
+nonlinear symbolic system was actually possible to build), P2 (`__getattr__`
+now names the toolkit class, not just the backend module; `sparse` moved to
+the base `Toolkit` alongside `symbolic`/`poly`/`jax` so it's safe to read on
+any toolkit).
 
 Open, in the order I would take them:
 
 | # | item | size | blocked on |
 |---|---|---|---|
-| P2 | delegation error messages | small | nothing |
 | P13 | test coverage inverted against risk | large | nothing |
 | P3 | hierarchy claims more than it delivers | medium | nothing |
 | P5 | no user-facing backend story | medium | nothing |
 | P8 | two extension conventions | medium | a convention decision |
 
-P2 is first among what's left: small, unblocked, and purely a
-diagnostics-quality fix (a better `__getattr__` error message) with no design
-decision attached.
+Everything left is medium-or-larger, and P8 is the only one blocked (on a
+convention decision, not investigation). P3 is the next one I'd take: small
+enough in isolation (a `NumDenMixin` extraction) and, like P2, purely a
+naming-matches-reality fix with no open design question.
 
 ## 8. Conventions
 

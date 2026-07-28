@@ -45,6 +45,7 @@ class Toolkit:
     symbolic = False
     poly = False
     jax = False
+    sparse = False
 
     def __init__(self, backend):
         self._backend = backend
@@ -55,7 +56,16 @@ class Toolkit:
         ## self._backend before __init__ has run.
         if name.startswith('_'):
             raise AttributeError(name)
-        return getattr(self._backend, name)
+        try:
+            return getattr(self._backend, name)
+        except AttributeError:
+            ## Plain delegation would raise here naming the *backend module*
+            ## (e.g. "module 'pycircuit.circuit._numeric' has no attribute
+            ## 'sparse'"), sending a reader to the wrong file -- the toolkit
+            ## class, not the backend, is what a caller actually named.
+            raise AttributeError(
+                "%r toolkit (backend %r) has no attribute %r"
+                % (type(self).__name__, self._backend.__name__, name)) from None
 
     def supports(self, capability):
         """Return True if this toolkit implements an optional capability.
