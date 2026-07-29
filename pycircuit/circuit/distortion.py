@@ -575,21 +575,25 @@ def harmonic_response_spectral(apply_G, U, f, fprime, tones, toolkit,
     ``n_harmonics`` is the Fourier cutoff.  ``order`` is the number of
     perturbation steps.
 
-    **How ``order`` is realised.**  ``order=2`` reproduces the two-step
-    structure explicitly (nonlinearity on the linear solution, then derivative
-    times that correction).  Higher orders are taken by *Picard iteration* on
-    ``x = G(u - f(x))``, which the 2005 reference proves agrees with the
-    perturbation series term by term at each order (its Theorems 1 and 2).
-    Each additional iteration therefore adds a perturbation order.
+    **``order`` counts Picard iterations, and that is NOT the same as raising
+    the perturbation order.**  ``order=2`` reproduces the two-step structure
+    explicitly.  Beyond that the routine iterates ``x = G(u - f(x))``, and the
+    k-th iterate equals the k-th perturbation truncation *plus a fragment of
+    the orders beyond it* -- they agree at k=0 and k=1 and differ from k=2 on.
+    For the scalar problem ``Y x + b x**2 = u`` the second iterate exceeds
+    ``x0+x1+x2`` by exactly ``-G b x1**2``, which is one of the two terms of
+    ``x3``, not all of it.
 
-    **What raising it does and does not buy.**  The iteration converges only
-    while ``|G f'(x)| < 1``; above that threshold it diverges and additional
-    orders make matters worse rather than better.  And note that neither this
-    nor ``n_harmonics`` produces a *consistent* truncation in the drive
-    amplitude the way the published second-order form does -- see
-    ``doc/src/circuit/distortion.rst``, "What the truncation is actually
-    truncating".  This function exists to measure those effects, not to
-    supersede :func:`harmonic_response`.
+    Genuinely raising the perturbation order means building ``x3``, ``x4`` ...
+    from the composition formula (Faà di Bruno).  **That is not implemented.**
+    The parameter name is a convenience; do not read results from it as
+    statements about perturbation order.
+
+    Which converges faster is not settled.  On the scalar problem above the
+    Picard iterates are *more* accurate than the corresponding perturbation
+    partial sums at every order past the first, so the intuition that a
+    consistent truncation must beat an inconsistent one does not survive
+    contact with that example.
 
     Returns:
         :class:`DistortionSolution` carrying harmonics 1..``n_harmonics``.

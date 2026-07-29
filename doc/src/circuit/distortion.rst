@@ -787,19 +787,22 @@ implementation: the two agree as :math:`U \to 0`, exactly as they must, and
 the discrepancy scales as :math:`U^2` relative to the leading term, which is
 the signature of the :math:`O(U^4)` contributions being restored.
 
-The reason is that the restored contributions are *incomplete*.  They are the
-:math:`U^4` terms from second-order perturbation — but third-order
-perturbation also produces :math:`U^4` terms, and those are still missing.
-The result keeps some of :math:`U^4` and not the rest.
+Why remains **open**, and an earlier version of this page asserted a reason it
+should not have.  The tempting explanation is that the restored contributions
+are incomplete — they are the :math:`O(U^4)` terms from second-order
+perturbation, while third-order perturbation also produces :math:`O(U^4)`
+terms that are still missing — so the expansion is left unbalanced.  That
+story is plausible and may even be right here, but it is contradicted as a
+*general* principle by the scalar comparison in
+`Picard iteration, and why it is not simply "higher order"`_, where carrying
+an incomplete higher-order fragment makes the answer **better** at every
+order.
 
-The arithmetic analogy is exact.  Summing :math:`1 + x + x^2 + \dots`, it is
-fine to stop after :math:`1 + x`, and fine to stop after
-:math:`1 + x + x^2`.  What is *not* fine is
-:math:`1 + x + (\text{half of the } x^2 \text{ terms})`: that is worse than
-either, because the half you kept is no longer balanced by the half you
-dropped.  An inconsistent truncation can be worse than a cruder consistent
-one, and this is a standard way to walk into that while believing one is
-being more careful.
+So what is established is the measurement, not the mechanism: on this circuit,
+at this drive, restoring those terms degrades agreement with the transient.
+Whether that is the inconsistency, the harmonic truncation in the spectral
+form, or something specific to how HD is referred to a node has not been
+determined.
 
 So the truncation in the published method is principled rather than
 convenient, and "keep more terms" is the wrong instinct here.  The way to
@@ -840,22 +843,42 @@ Expanding the second iterate shows the connection to the perturbation series:
        &= x^{(0)} + x^{(1)} + x^{(2)} + \bigl(\text{a tail of higher-order terms}\bigr)
 
 The :math:`n`-th iterate therefore contains **all** perturbation terms up to
-order :math:`n` — this is the 2005 reference's Theorem 2, which proves the
-perturbation, Picard and Volterra constructions agree term by term at each
-order — **plus an incomplete tail** of terms beyond it.
+order :math:`n` — this is the 2005 reference's Theorem 2 — **plus a fragment
+of the orders beyond it**.
 
-That tail is the whole difficulty, and it is the same one described above
-under `What the truncation is actually truncating`_.  The published method
-generates terms with the recurrence and then truncates the *final*
-expressions cleanly at :math:`U^3`.  A Picard iterate does not: it is that
-clean truncation *plus* a partial, unbalanced set of higher-order terms.  So
+.. important::
 
-.. warning::
+   Picard iteration is **not** the same thing as raising the perturbation
+   order, and the two must not be conflated.  They agree at :math:`n = 0` and
+   :math:`n = 1` and differ from :math:`n = 2` onward.  For the scalar problem
+   :math:`Yx + bx^2 = u` the difference at the second iterate is exactly
+   :math:`-\mathcal{G}bx_1^2`, which is one of the two terms of
+   :math:`x^{(3)} = -\mathcal{G}b\bigl(2x_0x_2 + x_1^2\bigr)` — a fragment
+   of the next order, not the whole of it.
 
-   A Picard iterate is **not** the same object as an :math:`n`-th order
-   perturbation truncation, and more iterations do not automatically mean a
-   better answer.  Where the published second-order form is consistent at
-   :math:`U^3`, an iterate carries a fragment of :math:`U^4` and beyond.
+   Genuinely raising the perturbation order means constructing
+   :math:`x^{(3)}, x^{(4)}, \dots` explicitly from the composition formula
+   (Faà di Bruno, which the 1997 reference uses for exactly this purpose).
+   **That is not implemented here.**  The ``order`` parameter of
+   :func:`~pycircuit.circuit.distortion.harmonic_response_spectral` counts
+   Picard iterations, and its name is a convenience rather than a claim.
+
+Which of the two converges faster is **not settled**, and the little evidence
+available points against the intuition that a clean truncation must win.  On
+that same scalar problem, comparing successive partial sums of the true
+perturbation series against successive Picard iterates:
+
+.. code-block:: text
+
+    n    true perturbation      Picard
+    0        6.594e-02        6.594e-02
+    1        2.156e-02        2.156e-02
+    2        9.067e-03        6.387e-03
+    3        4.331e-03        1.955e-03
+    4        2.234e-03        5.927e-04
+
+Both are monotone, and the *inconsistent* one — Picard, carrying its partial
+higher-order fragment — is the more accurate at every order past the first.
 
 Convergence is the familiar condition.  Picard converges precisely when the
 map is a contraction, :math:`|\mathcal{G}f'(x)| < 1` — the same
@@ -937,13 +960,17 @@ truncation lands within a fraction of a percent, the Picard iterates at order
 2 and 5 are several times further away, and by order 12 the iteration has
 converged and is closer than any of them.
 
-The shape of that is worth reading carefully.  Convergence is **not
-monotonic**: order 5 is worse than order 2.  An iterate carries an incomplete
-tail of higher-order terms (see `Picard iteration, and why it is not simply
-"higher order"`_), and until enough passes have accumulated for the tail to
-fill in, that partial correction can push the answer further out than leaving
-it alone.  The contraction factor here is about 0.25, so roughly a dozen
-passes are needed before the residue is negligible.
+The shape of that needs a caveat, and it is an important one.  These are
+*Picard iterates*, not perturbation-order truncations — see the box in
+`Picard iteration, and why it is not simply "higher order"`_.  The
+non-monotonicity visible here (order 5 worse than order 2) is therefore a
+property of **this iteration under a harmonic cutoff**, and specifically not
+evidence that the perturbation series behaves that way.  On a scalar problem
+where the true series can be written down term by term, it converges
+monotonically.
+
+Whether a genuine third- or fifth-order perturbation truncation would improve
+these numbers is **unanswered**, because it has not been built.
 
 The harmonic cutoff meanwhile **saturates**.  Raising it from 6 to 12 to 24
 changes nothing at all — every digit is identical.  Six harmonics is simply

@@ -1098,3 +1098,114 @@ def test_restoring_dropped_terms_moves_the_answer_at_moderate_drive():
         'the restored terms should grow as U**2 relative to the leading one, '
         'i.e. ~4x for a doubled drive; got %.4f -> %.4f (%.2fx)'
         % (small, large, large / small))
+
+
+## ------------------- Picard is not the same as perturbation order
+
+"""Pinning a correction: ``order`` counts Picard iterations, nothing more.
+
+An earlier version of this work labelled a Picard-iteration count ``order``
+and then reported its behaviour as though it described the perturbation
+series. It does not. The two agree at n=0 and n=1 and diverge from n=2, where
+a Picard iterate carries a *fragment* of the next perturbation order.
+
+These tests use the scalar problem ``Y x + b x**2 = u``, whose perturbation
+series can be written down exactly and whose solution is a quadratic root, so
+both constructions can be compared against truth with no numerical method in
+between.
+"""
+
+_SC_Y, _SC_B, _SC_U = 2.0, 0.7, 1.0
+
+
+def _scalar_perturbation_terms():
+    """Exact term-by-term perturbation series for Y x + b x**2 = u.
+
+    f = b x**2, so expanding f(x0 + e x1 + e^2 x2 + ...) gives
+        e^1 : b x0^2
+        e^2 : b (2 x0 x1)
+        e^3 : b (2 x0 x2 + x1^2)
+    """
+    G = 1.0 / _SC_Y
+    x0 = G * _SC_U
+    x1 = -G * _SC_B * x0 ** 2
+    x2 = -G * _SC_B * (2 * x0 * x1)
+    x3 = -G * _SC_B * (2 * x0 * x2 + x1 ** 2)
+    return [x0, x1, x2, x3]
+
+
+def _scalar_picard(n):
+    G = 1.0 / _SC_Y
+    x = G * _SC_U
+    for _ in range(n):
+        x = G * (_SC_U - _SC_B * x ** 2)
+    return x
+
+
+def _scalar_exact():
+    return (-_SC_Y + np.sqrt(_SC_Y ** 2 + 4 * _SC_B * _SC_U)) / (2 * _SC_B)
+
+
+def test_picard_matches_perturbation_only_for_the_first_two_orders():
+    """They are the same object at n=0 and n=1, and different after."""
+    terms = _scalar_perturbation_terms()
+    partial = [sum(terms[:k + 1]) for k in range(4)]
+
+    assert abs(_scalar_picard(0) - partial[0]) < 1e-15
+    assert abs(_scalar_picard(1) - partial[1]) < 1e-15
+    assert abs(_scalar_picard(2) - partial[2]) > 1e-6, (
+        'Picard and the perturbation truncation must differ from n=2')
+
+
+def test_the_picard_excess_is_a_fragment_of_the_next_order():
+    """Quantify the difference rather than merely asserting one exists.
+
+    The second Picard iterate exceeds x0+x1+x2 by exactly -G*b*x1**2, which is
+    one of the two terms of x3 = -G*b*(2*x0*x2 + x1**2). Not the whole next
+    order -- a piece of it.
+    """
+    x0, x1, x2, x3 = _scalar_perturbation_terms()
+    G = 1.0 / _SC_Y
+
+    excess = _scalar_picard(2) - (x0 + x1 + x2)
+    fragment = -G * _SC_B * x1 ** 2
+
+    assert abs(excess - fragment) < 1e-15, 'excess is not the expected fragment'
+    assert abs(excess) < abs(x3), 'the excess should be smaller than all of x3'
+    assert abs(excess / x3 - 0.2) < 0.05, (
+        'for these values the fragment is a fifth of x3; got %.4f'
+        % (excess / x3))
+
+
+def test_the_true_perturbation_series_converges_monotonically():
+    """The claim that raising the order is non-monotonic was about Picard.
+
+    On the true series it is not. Pinned because the retracted claim is the
+    kind that gets repeated once written down.
+    """
+    terms = _scalar_perturbation_terms()
+    exact = _scalar_exact()
+    errors = [abs(sum(terms[:k + 1]) - exact) for k in range(4)]
+
+    assert all(errors[i] > errors[i + 1] for i in range(len(errors) - 1)), (
+        'perturbation partial sums should improve monotonically, got %s'
+        % ['%.3e' % e for e in errors])
+
+
+def test_the_inconsistent_truncation_is_not_automatically_worse():
+    """Retraction guard: 'inconsistent is worse' does not generalise.
+
+    Picard carries an unbalanced fragment of the next order, which by the
+    tidy-truncation argument ought to hurt. Here it helps -- at every order
+    past the first. The circuit measurement that prompted that argument stands;
+    the explanation offered for it does not.
+    """
+    terms = _scalar_perturbation_terms()
+    exact = _scalar_exact()
+
+    for n in (2, 3):
+        pert_err = abs(sum(terms[:n + 1]) - exact)
+        pic_err = abs(_scalar_picard(n) - exact)
+        assert pic_err < pert_err, (
+            'at n=%d Picard (%.3e) should beat the consistent truncation '
+            '(%.3e) for this problem' % (n, pic_err, pert_err))
