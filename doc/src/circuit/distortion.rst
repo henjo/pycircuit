@@ -565,6 +565,72 @@ n\omega_2`, and because harmonics are stored two-sided the product
 with no case analysis over which combinations of sum and difference
 frequencies land where.
 
+**And two tones on the filter**, against their eq. (52), at tone pairs
+spanning below, at and above the resonant peak:
+
+.. exec-rst::
+
+    import numpy as np
+    from pycircuit.circuit.distortion import (graded_response_mimo,
+                                              GradedSpectrum, GradedVector)
+
+    g1, g2 = 31.26e-6, -31.26e-6      # g2 is negative in the source
+    g3, g4 = 625.2e-6, -625.2e-6
+    C1 = C2 = 9.3054e-12
+    alpha = -0.0535
+    g1c, g2c, g3c, g4c = (alpha*g for g in (g1, g2, g3, g4))
+    q = lambda w: g3*g4 + C1*C2*w**2 + g2*C2*1j*w
+    w0 = np.sqrt(-g3*g4/(C1*C2))
+
+    def solve(s, rhs):
+        M = np.array([[-g2 + s*C1, -g4], [-g3, s*C2]], dtype=complex)
+        return np.linalg.solve(M, np.asarray(rhs, dtype=complex))
+
+    def cube(sp, n):
+        return ((sp*sp).truncated(n) * sp).truncated(n)
+
+    def ours(Xin, w1, w2, n=3):
+        xin = (GradedSpectrum.from_phasor((1, 0), 1, Xin)
+               + GradedSpectrum.from_phasor((0, 1), 1, Xin))
+        src = xin.scaled(g1) + cube(xin, n).scaled(g1c)
+        f = lambda x: GradedVector(
+            [cube(x[0], n).scaled(-g2c) + cube(x[1], n).scaled(-g4c),
+             cube(x[0], n).scaled(-g3c)])
+        return graded_response_mimo(
+            solve, GradedVector([src, GradedSpectrum()]), f, (w1, w2), n)
+
+    Xin = 1e-3
+    head = ['f1/f0', 'f2/f1', 'IM3 ours', 'their eq. (52)', 'rel. difference']
+    rows = []
+    for r1, r2 in ((0.5, 0.9), (0.9, 0.95), (1.0, 0.99), (1.0, 0.9),
+                   (1.5, 0.9), (2.0, 0.8)):
+        w1, w2 = r1*w0, r2*r1*w0
+        got = (abs(ours(Xin, w1, w2)[0].phasor((2, -1)))
+               / abs(-1j*w1*C2*g1*Xin/q(w1)))
+        qt2 = np.conj(q(w2))
+        den = 4*q(w1)*qt2*q(2*w1 - w2)
+        a = (3*(2*w1-w2)/(w1*g1)
+             * (g4c*g1**3*g3**3 - g1c*q(w1)**2*qt2)/den)
+        b = 3*g1**2*C2**2*w1*w2*(g3c*g4 + g2c*C2*1j*(2*w1-w2))/den
+        want = abs((a + b)*Xin**2)
+        rows.append(['%.2f' % r1, '%.2f' % r2, '%.6e' % got,
+                     '%.6e' % want, '%.1e' % (abs(got-want)/want)])
+
+    widths = [max(len(r[i]) for r in rows + [head]) for i in range(len(head))]
+    sep = ' '.join('=' * w for w in widths)
+    print(sep)
+    print(' '.join('%-*s' % (w, h) for w, h in zip(widths, head)))
+    print(sep)
+    for r in rows:
+        print(' '.join('%-*s' % (w, c) for w, c in zip(widths, r)))
+    print(sep)
+
+That table settles a published inconsistency from the outside.  Equation (49)
+in the same paper is missing a factor :math:`1/g_1` and equation (52) carries
+it; the two cannot both be right.  The agreement above is independent support
+for (52), reached without the dimensional argument that first identified the
+discrepancy.
+
 Three points about what these tables do and do not establish.
 
 **They agree to floating point, not merely closely.**  That is the expected

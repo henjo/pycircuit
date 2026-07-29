@@ -2295,3 +2295,57 @@ def test_u3_cannot_resolve_gain_deviation_at_a_resonant_peak():
         b = abs(fundamental(w, 11))/abs(x0) - 1
         assert a < 0 and b < 0, 'both should show compression at %g f0' % ratio
         assert abs(a - b) <= 2e-2*abs(b), 'U^3 should track U^11 off the peak'
+
+
+def _bq_run_two_tone(Xin, w1, w2, maxp=3, nonlinearity=None):
+    """Filter driven by two tones.
+
+    ``nonlinearity`` is a parameter so the cross-term work can substitute a
+    different one against this same, now well-verified, circuit.
+    """
+    xin = (GradedSpectrum.from_phasor((1, 0), 1, Xin)
+           + GradedSpectrum.from_phasor((0, 1), 1, Xin))
+    src = xin.scaled(_BQ_G1) + _cube(xin, maxp).scaled(_BQ_G1C)
+
+    if nonlinearity is None:
+        def nonlinearity(x):
+            return GradedVector([_cube(x[0], maxp).scaled(-_BQ_G2C)
+                                 + _cube(x[1], maxp).scaled(-_BQ_G4C),
+                                 _cube(x[0], maxp).scaled(-_BQ_G3C)])
+
+    return graded_response_mimo(_bq_solve,
+                                GradedVector([src, GradedSpectrum()]),
+                                nonlinearity, (w1, w2), max_power=maxp)
+
+
+@pytest.mark.parametrize('r1,r2', [(0.5, 0.9), (0.9, 0.95), (1.0, 0.99),
+                                   (1.0, 0.9), (1.5, 0.9), (2.0, 0.8)])
+def test_filter_im3_matches_published_eq52(r1, r2):
+    """Second two-tone gate, on a different topology from eq. (43).
+
+    Also corroborates a recorded erratum from the outside: eq. (49) in the
+    same paper is missing a factor ``1/g_1`` while eq. (52) carries it, and
+    the two are mutually inconsistent.  Our machinery agrees with (52) as
+    printed, which is independent support for (52) being the correct one.
+
+    Tone pairs span below, at and above the resonant peak, including
+    ``f2 = 0.99 f1`` where the difference frequency falls inside the
+    passband and the IM3 product is an order of magnitude larger.
+    """
+    w0 = _bq_centre()
+    w1 = r1*w0
+    w2 = r2*w1
+    Xin = 1e-3
+
+    got = (abs(_bq_run_two_tone(Xin, w1, w2)[0].phasor((2, -1)))
+           / abs(-1j*w1*_BQ_C2*_BQ_G1*Xin/_bq_q(w1)))
+
+    qt2 = np.conj(_bq_q(w2))
+    den = 4*_bq_q(w1)*qt2*_bq_q(2*w1 - w2)
+    a = (3*(2*w1 - w2)/(w1*_BQ_G1)
+         * (_BQ_G4C*_BQ_G1**3*_BQ_G3**3 - _BQ_G1C*_bq_q(w1)**2*qt2)/den)
+    b = (3*_BQ_G1**2*_BQ_C2**2*w1*w2
+         * (_BQ_G3C*_BQ_G4 + _BQ_G2C*_BQ_C2*1j*(2*w1 - w2))/den)
+    want = abs((a + b)*Xin**2)
+
+    assert abs(got - want) <= 1e-11*want

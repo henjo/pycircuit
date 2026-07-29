@@ -328,10 +328,23 @@ published closed forms are moduli of products, so agreement with them is
 strong evidence about magnitudes and none at all about phase.** Worth stating
 plainly, because four gates in this plan rest on them.
 
-**Still open in this area:** eq. (52), the `IM3` closed form for the gm-C
-filter, is a second two-tone gate on a different topology and has not been
-run. Check dimensions first — eq. (49) in the same paper is missing a factor
-`1/g_1`, and eq. (52) is the one that carries it correctly.
+**eq. (52) now run as well — gate passed at 2.4e-15** across six tone pairs
+spanning below, at and above the resonant peak (including `f2 = 0.99 f1`,
+where the difference frequency lands in the passband and `IM3` is an order of
+magnitude larger). Second two-tone gate, different topology from eq. (43).
+
+That result **corroborates a recorded erratum from the outside**: eq. (49) is
+missing a factor `1/g_1` while eq. (52) carries it, and the two are mutually
+inconsistent. Our machinery agrees with (52) as printed, which is independent
+support for (52) being the correct one — arrived at without using the
+dimensional argument that originally identified the erratum.
+
+**Constants for both circuits now verified at 600 dpi.** After the `g_2`
+episode (section 6), all fifteen amplifier values were re-read from a rendered
+page: `g_m1`, `g_01`, `g_m2`, `g_m2q`, `g_m2c`, `g_02`, `g_m3`, `g_m3q`,
+`g_m3c`, `g_03`, `g_03q`, `g_03c`, `C_L`, `C_1`, `C_2`. **All correct, all
+positive — no second transcription error.** This closes the one hole the
+published gates structurally cannot cover.
 
 *Original entry, kept for the reasoning:*
 
@@ -386,7 +399,32 @@ real-coefficient matrix `M(conj s) = conj M(s)`, so that expression is the
 evidence that phase could not discriminate. A mutation that changes nothing is
 worse than no mutation, because it reads as a passing result.
 
-### 8.2 Cross-terms `x_j x_k` are permitted but unverified
+### 8.2 Cross-terms `x_j x_k` — plan, drafted while doing 8.1
+
+The blocker recorded below was "no published example uses a cross-term, so
+there is nothing to check against". That framing was too narrow: a cross-term
+does not need a *published* reference, only an *independent* one, and two are
+available.
+
+1. **A time-domain integration**, the same instrument that validated phase.
+   Add a genuine cross-term `k * x1 * x2` to the biquad — whose linear part is
+   now verified against eq. (47) and whose constants are checked at 600 dpi —
+   integrate its ODEs, and compare harmonics. This is a real external gate,
+   not self-consistency, and is the strong one.
+2. **The polarisation identity**, as a cheap algebraic cross-check:
+   `x1*x2 = ((x1+x2)^2 - x1^2 - x2^2)/2`. Writing the nonlinearity both ways
+   must agree to floating point. Weaker — it mostly tests bilinearity of the
+   convolution — so it is a supplement, not the gate.
+
+**State the difference in strength wherever this lands.** Route 1 is evidence
+of the same kind as the published comparisons; route 2 is internal
+self-consistency. A commit that presents them together must not imply the
+cross-term carries the same backing as `IM3`.
+
+`_bq_run_two_tone` already takes the nonlinearity as a parameter for exactly
+this, so the circuit setup is shared.
+
+*Original entry:*
 
 `graded_response_mimo` takes the nonlinearity as a callable in the graded ring,
 where a cross term costs nothing extra — but **no published example in this
