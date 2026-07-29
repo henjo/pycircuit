@@ -39,6 +39,8 @@ See ``doc/src/circuit/ddd.rst`` for worked examples and rendered diagrams, and
 ``doc/ddd_conclusions.md`` for why this representation was chosen.
 """
 
+import warnings
+
 import numpy as np
 import sympy
 
@@ -217,6 +219,7 @@ class DDD:
         self.matrix = matrix
         self.order = order
         self.n_minors = n_minors
+        self._minor_pos = None
         self._size = None
 
     def __len__(self):
@@ -509,6 +512,251 @@ class DDD:
         else:
             err = max(abs(t - x) / abs(x) if abs(x) > 0 else abs(t)
                       for t, x in zip(total, exact)) if kept else 1.0
+        if err > tol:
+            ## The previous round of this work reported a 994%-error result as a
+            ## working approximation because the third return value was never
+            ## printed.  Returning the error is evidently not enough on its own,
+            ## so say so out loud: `cancellation` explains *why* in one number.
+            warnings.warn(
+                'dominant-term approximation stopped at relative error %.3g, '
+                'above the requested tol=%.3g, after %d terms; the diagram\'s '
+                'cancellation factor is what decides whether this can ever '
+                'converge -- see DDD.cancellation and '
+                'DDD.approximate_groups' % (err, tol, len(kept)),
+                RuntimeWarning, stacklevel=2)
+        return sympy.Add(*kept), len(kept), err
+
+    ## -- cancellation-aware approximation --------------------------------
+
+    def subdiagram_values(self, env=None):
+        """Exact value of every subdiagram, and of its absolute companion.
+
+        Two shaped passes over the DAG.  ``values[id(v)]`` is the sum of the
+        product terms below ``v``, which is what :meth:`eval` computes at the
+        root; ``absolutes[id(v)]`` is the sum of their *absolute values*, which
+        costs no more because absolute value distributes over a product::
+
+            A[v] = |entry(v)| * A[v.one_edge] + A[v.zero_edge]
+
+        So a diagram standing for millions of terms yields both the sum and the
+        total absolute mass of those terms in time linear in its vertex count.
+
+        Args:
+            env: Substitution giving every symbol a numeric value.
+
+        Returns:
+            ``(values, absolutes)``, both keyed by ``id(node)``.
+
+        Raises:
+            ValueError: If any entry remains symbolic after substitution.
+        """
+        entry = self._entry_values(env or {})
+        values, absolutes = {}, {}
+        stack = [(self.root, False)]
+        while stack:
+            node, expanded = stack.pop()
+            if node.is_terminal:
+                val = complex(_resolve(node.value, env or {}))
+                values.setdefault(id(node), val)
+                absolutes.setdefault(id(node), abs(val))
+                continue
+            if id(node) in values:
+                continue
+            if not expanded:
+                stack.append((node, True))
+                stack.append((node.one_edge, False))
+                stack.append((node.zero_edge, False))
+                continue
+            e = entry[id(node.entry)]
+            values[id(node)] = (node.sign * e * values[id(node.one_edge)]
+                                + values[id(node.zero_edge)])
+            absolutes[id(node)] = (abs(e) * absolutes[id(node.one_edge)]
+                                   + absolutes[id(node.zero_edge)])
+        return values, absolutes
+
+    def cancellation(self, env=None):
+        """How much the determinant's terms cancel: ``sum|term| / |sum term|``.
+
+        This one number decides in advance whether **magnitude-ranked**
+        approximation can converge on a given circuit, and it costs one pass
+        over the diagram.  Keeping a set of terms and dropping the rest leaves
+        an error bounded only by the dropped terms' absolute mass, so to reach a
+        relative error ``tol`` a magnitude ranking must capture a fraction
+
+            1 - tol / cancellation
+
+        of the total absolute mass.  At ``cancellation = 1`` (a positive matrix,
+        nothing cancels) that is ``1 - tol`` and approximation is easy.  On a
+        real operational amplifier it runs to ``10**4`` and beyond, where
+        99.999% of the mass must be recovered and no tractable number of terms
+        will do it -- not a tuning problem but an impossibility, and the reason
+        :meth:`approximate_groups` exists.
+
+        It is also the condition number of the summation, so the value returned
+        carries a relative error of about ``cancellation * 2**-53``; above
+        ``10**14`` the diagram's own numeric evaluation is noise and needs
+        extended precision (compare :meth:`SExpandedDDD.roots_of`).
+
+        Args:
+            env: Substitution giving every symbol a numeric value.
+
+        Returns:
+            float: the ratio, or ``inf`` if the determinant is exactly zero.
+        """
+        values, absolutes = self.subdiagram_values(env)
+        total = values[id(self.root)]
+        mass = absolutes[id(self.root)]
+        if mass == 0.0:
+            return 1.0
+        return float('inf') if total == 0 else mass / abs(total)
+
+    def minor_positions(self):
+        """``id(node) -> (rows, cols)``: the minor each subdiagram expands.
+
+        Recovered from the diagram rather than kept by the builder: the root is
+        the whole matrix, a 0-edge is the next sibling of the *same* expansion
+        and so stays in the same minor, and a 1-edge strikes out the vertex's own
+        row and column.  Sharing is keyed on ``(rows, cols)``, so the assignment
+        is unique -- which the walk asserts rather than assumes.
+
+        This is what lets an unexpanded group be reported as a determinant of
+        named matrix entries instead of an opaque placeholder.
+        """
+        if self._minor_pos is not None:
+            return self._minor_pos
+        n = self.matrix.rows
+        pos = {id(self.root): (tuple(range(n)), tuple(range(n)))}
+        stack = [self.root]
+        while stack:
+            node = stack.pop()
+            if node.is_terminal:
+                continue
+            rows, cols = pos[id(node)]
+            for child, key in (
+                    (node.one_edge, (tuple(r for r in rows if r != node.row),
+                                     tuple(c for c in cols if c != node.col))),
+                    (node.zero_edge, (rows, cols))):
+                if child.is_terminal:
+                    continue
+                seen = pos.get(id(child))
+                if seen is None:
+                    pos[id(child)] = key
+                    stack.append(child)
+                else:
+                    assert seen == key, 'node shared between distinct minors'
+        self._minor_pos = pos
+        return pos
+
+    def approximate_groups(self, env=None, tol=0.01, max_minor=0,
+                           max_splits=200000):
+        """Approximate by ranking *groups* of terms, not individual terms.
+
+        Magnitude ranking (:meth:`approximate`) sees only ``|prod entries|``, an
+        upper bound on what a term can contribute, so a million terms that
+        cancel among themselves must all be kept or the answer is lost.  That is
+        why it fails on a real amplifier; :meth:`cancellation` is the number
+        that says by how much.
+
+        Here the ranked object is a **group**: a chosen prefix of entries
+        together with a node, standing for every term below that node carrying
+        that prefix.  A group's contribution is ``(prod prefix) * V[node]``
+        **exactly**, because the value of a subdiagram is already known.  So the
+        million cancelling terms are dropped in one step at their true, tiny
+        cost.
+
+        The search splits the largest-contributing group, at each step
+        maintaining
+
+            kept + (everything still in the frontier) = the determinant, exactly
+
+        which makes ``|det - kept| / |det|`` the *exact* error of the kept
+        expression at every step rather than a bound.  That is the stopping
+        criterion; whatever remains in the frontier is simply not kept.
+
+        Args:
+            env: Substitution giving every symbol a numeric value.
+            tol: Target relative error -- exact, not bounded.
+            max_minor: When non-zero, a group whose node stands for a minor of
+                dimension at most this is *retained whole*, contributing
+                ``(prod prefix) * det(M[rows, cols])`` -- a factored form over
+                determinants of named entries, which is smaller than the fully
+                expanded one.  ``0`` expands every group to a product term.
+            max_splits: Give up after this many splits.
+
+        Returns:
+            ``(expression, n_terms, relative_error)``, the error measured
+            against the exact determinant at ``env``.
+
+        Raises:
+            ValueError: If any entry stays symbolic, or the determinant is zero.
+        """
+        import heapq
+
+        env = env or {}
+        entry = self._entry_values(env)
+        values, _absolutes = self.subdiagram_values(env)
+        pos = self.minor_positions() if max_minor else None
+        exact = values[id(self.root)]
+        if exact == 0:
+            raise ValueError('the determinant is zero at these values, so a '
+                             'relative error is undefined')
+
+        ## A counter breaks ties on equal magnitude so that nodes, which have no
+        ## ordering, are never compared.
+        counter = 0
+        heap = [(-abs(exact), counter, self.root, 1.0 + 0j, None)]
+        kept, kept_sum, splits, minor_dets = [], 0.0 + 0j, 0, {}
+
+        def term_of(chain, tail):
+            factors = []
+            while chain is not None:
+                v, chain = chain
+                factors.append(v.sign * v.entry)
+            factors.append(tail)
+            return sympy.Mul(*reversed(factors))
+
+        while True:
+            err = abs(exact - kept_sum) / abs(exact)
+            if err <= tol or not heap or splits >= max_splits:
+                break
+            neg, _, node, acc, chain = heapq.heappop(heap)
+            if -neg == 0.0:
+                continue                       # contributes nothing at all
+
+            if max_minor:
+                rows, cols = pos[id(node)]
+                if len(rows) <= max_minor:
+                    ## The same minor is retained under many prefixes and a
+                    ## symbolic determinant is not cheap, so memoise it.
+                    if (rows, cols) not in minor_dets:
+                        minor_dets[(rows, cols)] = self.matrix.extract(
+                            list(rows), list(cols)).det()
+                    kept.append(term_of(chain, minor_dets[(rows, cols)]))
+                    kept_sum += acc * values[id(node)]
+                    continue
+
+            splits += 1
+            take = acc * node.sign * entry[id(node.entry)]
+            for child, child_acc, child_chain in (
+                    (node.one_edge, take, (node, chain)),
+                    (node.zero_edge, acc, chain)):
+                contribution = child_acc * values[id(child)]
+                if contribution == 0:
+                    continue
+                if child.is_terminal:
+                    kept.append(term_of(child_chain, child.value))
+                    kept_sum += contribution
+                    continue
+                counter += 1
+                heapq.heappush(heap, (-abs(contribution), counter, child,
+                                      child_acc, child_chain))
+
+        err = abs(exact - kept_sum) / abs(exact)
+        if err > tol:
+            warnings.warn(
+                'group-ranked approximation stopped at relative error %.3g, '
+                'above the requested tol=%.3g, after %d groups and %d splits'
+                % (err, tol, len(kept), splits), RuntimeWarning, stacklevel=2)
         return sympy.Add(*kept), len(kept), err
 
     ## -- rendering -------------------------------------------------------

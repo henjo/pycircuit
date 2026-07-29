@@ -1,0 +1,223 @@
+# Cancellation-aware ranking — implementation plan
+
+Reasoning behind this plan, including what is out of scope and what would bring
+each rejected route back: `doc/cancellation_ranking_conclusions.md`. Read that
+first; this document only says what will be done, in what order, and what
+result makes each stage a success.
+
+Predecessor: `doc/hierarchical_approximation_plan.md`. Its §5 records the
+negative result this plan responds to.
+
+**Status: stages 0-4 run. Stage 1's tolerance is met at both operating points
+and its term-count budget at one; stage 3 meets its count and accuracy gates
+and fails its interpretability gate. See §"Outcomes" — every number there comes
+from a logged run of the three scripts named in it.**
+
+## Fixture, fixed in advance for every stage
+
+`benchmark_circuits.ua741(symbolic_devices=('q1', 'q2', 'q17'))` — 26 unknowns,
+flat diagram 1040 vertices, 2 773 885 product terms. Evaluated at **1 kHz**,
+`s = 2πj·10^3`. Two operating points, as in the previous round:
+
+| point | `gm_q1`, `gm_q2`, `gm_q17` |
+|---|---|
+| nominal | 1.0 mA/V |
+| degraded | 0.1 mA/V |
+
+**Corrected after stage 0.** This table first said 0.4 / 2 mA/V, which was taken
+from the fixture's own defaults rather than from the previous round, and stage 0
+was measured there before the mistake was caught (`κ = 6.66e+03` / `1.18e+05`).
+Those points are *not* the ones the 994% baseline was measured at, so stage 0 was
+re-run at the points above and only the re-run is reported. The reason it
+mattered is not the size of the difference — it is that the baseline to beat
+becomes unreproducible if the operating point drifts.
+
+The baseline to beat is the measured failure of `DDD.approximate`: **994%**
+relative error at nominal and **17 300%** at degraded, keeping 500 of 2 773 885
+terms at `tol = 0.05`.
+
+Everything is reported as `(term count, relative error)` **together**. A count
+without an error is the specific mistake the previous round made and wrote down.
+
+## Stage 0 — where does the cancellation live?
+
+One pass over the DAG, no search, no new API. Compute the absolute-value
+companion `A[v]` and the exact value `V[v]` for every vertex, and the ratio
+`κ[v] = A[v] / |V[v]|`.
+
+Report:
+
+1. `κ[root]`, and the double-precision error it implies (`κ · 2^-53`).
+2. The distribution of `κ[v]` by depth — the question of
+   `cancellation_ranking_conclusions.md` §4, concentrated versus uniform.
+3. The same two numbers recomputed in `mpmath` at the precision `κ[root]`
+   demands, whenever `κ[root] · 2^-53 > 10^-6`.
+
+**Gate, declared before running.**
+
+- **PASS** if a cut of the diagram exists on which most groups have `κ[v] < 10`
+  — i.e. cancellation is *concentrated*. Then stage 1 is worth building.
+- **FAIL** if `κ[v]` stays within an order of magnitude of `κ[root]` at every
+  depth. That refutes the premise, and the outcome is a recorded negative
+  result about term ranking as such — not an implementation defect. Stop, write
+  it down, and reconsider preconditioning (§6 of the reasoning document).
+- Anything between is a **partial**: the route survives as a heuristic and
+  stage 1 proceeds with its guarantee downgraded in advance.
+
+## Stage 1 — group ranking as a script, not an API
+
+Best-first expansion over groups, exactly as
+`cancellation_ranking_conclusions.md` §2 defines them. A script under
+`benchmarks/`, not a method on `DDD`, so that a failure costs nothing to throw
+away.
+
+- frontier starts as the single group `((), root)`;
+- repeatedly split the largest-`|value|` non-terminal group;
+- drop any child with `|value| < tol · |V[root]|`, accumulating the dropped sum
+  exactly;
+- stop when every non-terminal group is below threshold, or at a frontier cap.
+
+**Simplified during implementation, and the simplification is the better
+mechanism.** The drop threshold and the dropped-sum accumulator were both
+dropped. Because `kept + frontier = det` holds exactly at every step,
+`|det − kept| / |det|` is *already* the kept expression's own error, so the
+stopping test needs no threshold and no bookkeeping: whatever is still in the
+frontier when the error reaches `tol` is simply not kept. A threshold would have
+been a tuning parameter standing in for a quantity that is directly available.
+
+**Gate.** At `tol = 0.05`, at **both** operating points:
+
+- relative error `≤ 0.05`, computed against `DDD.eval`, and
+- at most **1000** kept groups, and
+- the kept expression contains `gm_q1`, `gm_q2`, `gm_q17` or `s` — device
+  symbols survive, which is the entire point;
+- **FAIL** if the frontier exceeds 200 000 groups without reaching `tol`.
+
+Beating 994% is not sufficient. The gate is `tol`, not "better than before".
+
+## Stage 2 — the retained form, and whether it is readable
+
+Only if stage 1 passes. Two things:
+
+1. **Cancellation-stopped splitting.** Refuse to split a group whose split
+   raises `κ` by more than a declared factor; keep it as
+   `(Π P) · det(M[rows, cols])`. Requires recording node → `(rows, cols)`,
+   which the builder's cache already knows and currently discards.
+2. **The size distribution of retained minors.**
+
+**Built differently, deliberately.** The retention rule shipped is *minor
+dimension* (`max_minor=k`), not a `κ`-growth factor. Dimension is the quantity
+that decides whether the retained determinant is readable, which is what the
+gate is about, and it needs no threshold to tune. A `κ`-growth rule remains
+worth trying — it would retain exactly the groups that cancel internally rather
+than the ones that happen to be small — but it was not needed to answer the
+stage's question. `minor_positions` was recovered from the diagram rather than
+from the builder's cache, so no construction path changed.
+
+**Gate.** The expression is symbolic in device parameters, and **the retained
+minors are at most 6×6** (§3's reconsider-if). Report the distribution
+regardless of pass or fail; the distribution is the useful output even when the
+gate misses.
+
+## Stage 3 — the leapfrog
+
+Only if stage 2 says the form is readable. Group ranking on the 127-unknown
+leapfrog via `HierarchicalDDD`, which is the only representation that reaches it.
+(The predecessor plan records 299 vertices for this; that did not reproduce —
+see the last section.)
+
+**Gate.** Fewer than ~1000 groups, verified against the numeric solve to a
+stated tolerance, **visibly different at a second operating point**, and — the
+condition stage A failed — **naming device parameters rather than level
+placeholders**.
+
+## Stage 4 — library API, tests, docs
+
+Only after stage 3. `DDD.approximate_groups` (name provisional), tests, and a
+section in `doc/src/circuit/ddd.rst` with every number generated at build time.
+The explanation ships in the same commit as the code.
+
+## What would make this whole plan fail
+
+- Stage 0 finds uniform cancellation. Most likely single outcome, and the
+  cheapest to discover.
+- The frontier grows without the error falling — exact at every step, but never
+  compact.
+- The retained minors are large, so the compact form is compact over objects
+  nobody can read. This is stage A's failure recurring in a new shape, and it is
+  the reason stage 2 has a size gate rather than only a symbol-presence gate.
+- Double precision turns out insufficient everywhere, not just near the root, so
+  group values are no longer cheap.
+
+## Outcomes
+
+_From measured runs only. Negative results recorded here, not edited out — the
+DDD work kept five and they are among its more useful output._
+
+Scripts: `benchmarks/cancellation_profile.py` (stage 0),
+`benchmarks/cancellation_groups.py` (stages 1-2),
+`benchmarks/cancellation_leapfrog.py` (stage 3).
+
+| Stage | Outcome |
+|---|---|
+| 0 — cancellation profile | **PASS, and it explains the previous round quantitatively.** `κ[root] = 9.376e+03` nominal, `1.403e+05` degraded, so magnitude ranking had to capture **99.99947%** / **99.99996%** of the total absolute mass to reach `tol=0.05`. Cancellation is **not uniform**: median `κ` falls from 9.4e3 at the root to 1.0 by depth 27, monotonically. Double precision is ample (`κ·2^-53 = 1.6e-11`), so mpmath was not needed. |
+| 1 — group ranking | **Tolerance met at both points; count budget met at one.** `tol=0.05` reached with **734 groups / err 4.11e-02** at nominal (0.2 s) and **2401 groups / err 3.70e-02** at degraded (1.2 s). The gate asked for ≤1000, so degraded **misses on count while converging on accuracy**. Also 337 / 185 groups at `tol=0.2` and 7573 / 8788 at `tol=1e-3`. Device symbols present throughout. |
+| baseline check | **The previous round's numbers reproduce exactly.** `DDD.approximate` at 500 terms: err **9.938** (994%) nominal, **1.728e+02** (17 280%) degraded — the recorded figures, re-measured rather than quoted. At *equal* term count the comparison is 11.86 vs 0.041 (nominal, 734 terms) and 13.78 vs 0.037 (degraded, 2401 terms): **289× and 372× lower error for the same expression size.** |
+| 2 — retained form readable | **PASS, and the trade is monotone.** At `tol=0.05`, retaining minors instead of expanding them: 2×2 → 516 / 1669 items, 3×3 → 353 / 1007, **6×6 → 182 / 503** (err 3.3e-02 / 8.5e-03). So the 6×6 form is **4.0× and 4.8× smaller** than the fully expanded one, names `gm_q1`, `gm_q2`, `gm_q17`, `s` throughout, and brings the degraded point **inside** stage 1's 1000-item budget that expansion missed. |
+| 3 — the leapfrog | **Count and accuracy gates PASS; the interpretability gate FAILS, as predicted.** 127 unknowns, 16 symbols, 536 nonzeros; 111 levels, top diagram 16×16 / 1847 vertices / **374 608 terms**. `κ` of the *top* diagram is only **13.8** nominal and **160** degraded. `tol=1e-3` reached with **181 groups** (0.07 s) and **221** at degraded; `tol=1e-8` with 821 / 1248. Verified against `DDD.eval` (1.3e-15) and against `numpy.linalg.det` of the reduced matrix (4.1e-15). **But every symbol in every group is a level stamp (`_lvl110_*`); not one device parameter appears.** |
+| 4 — library API | **Done.** `DDD.cancellation`, `DDD.subdiagram_values`, `DDD.minor_positions`, `DDD.approximate_groups` in `ddd.py`; twelve tests in `test_ddd.py`; three new subsections of `doc/src/circuit/ddd.rst` with every number generated at build time. `DDD.approximate` now **warns** when it returns without meeting `tol`. |
+
+### Three results worth carrying forward
+
+**1. `κ = Σ|term| / |Σ term|` decides in advance whether term-ranked
+approximation can converge**, and costs one pass over the diagram. To reach
+relative error `tol` a magnitude ranking must capture a `1 − tol/κ` fraction of
+the absolute mass; the µA741's `κ = 9.4e3` at `tol = 0.05` demands 99.99947% of
+it, which is why 500 of 2.77M terms left 994% error. This is the difference
+between "the approximation is hard" and "the approximation is impossible as
+posed", and nothing in the code measured it before.
+
+**2. The cancellation is concentrated near the root, not uniform.** Median `κ`
+runs 9.4e3 at depth 0 down to 1.0 by depth 27. Term ranking fails on the whole
+determinant while succeeding on almost every deep subdeterminant of it — which
+is the condition under which ranking groups with exact values works. Measured:
+734 groups at 4.1% error against 734 terms at 1186%.
+
+**3. Where the readable-output problem actually lives.** The leapfrog's *top*
+diagram barely cancels (`κ = 13.8`) and needs only 181 groups. The µA741's does
+cancel hard (`κ = 9.4e3`). Since a leapfrog block **is** a µA741, the difficulty
+is entirely **inside the blocks** — which is also the only place device
+parameters exist. So group ranking is aimed at the right target and applied at
+the wrong level.
+
+### The next stage, named rather than left implicit
+
+**Rank inside a suppressed block.** Each stamp symbol `_lvlN_a_b` is a
+`DDDCombination` over cofactors of that block's internal matrix, whose entries
+*are* device parameters. Group-ranking those diagrams — with the top-level
+group's coefficient as the prefix — would put `gm_q17` back into the answer and
+close the gap stage A of `doc/hierarchical_approximation_plan.md` opened. The
+machinery needed is a `group_rank` that accepts an initial frontier of several
+roots rather than a single one; everything else already exists.
+
+**Reconsider-if this is not worth doing:** if a block's own `κ` turns out to be
+near 1 after the `/D` normalisation the level walk applies, there is nothing for
+group ranking to fix inside the block either, and the compact-but-anonymous form
+is the best this representation offers.
+
+### Two findings outside the plan's scope, recorded rather than dropped
+
+**`HierarchicalDDD.eval` returns `0` on the leapfrog, and it is not wrong.**
+`log10|det(A)| = -358.6` at nominal and `-372.9` at degraded, so the product of
+111 level factors underflows double precision. The value is unrepresentable, not
+miscomputed — but a caller cannot tell those apart from a returned `0.0`, and
+`ZeroDivisionError` from a relative-error check is how it surfaced here. A
+log-magnitude return, or a raise, would be the honest interface.
+
+**The previously recorded hierarchical size does not reproduce.**
+`doc/hierarchical_approximation_plan.md` §1 records the leapfrog's hierarchical
+form as **299 vertices**; the run here measures **1958** (top diagram 1847) with
+the same 16 terminals and the 111-node suppression. The fixtures differ — that
+round had 121 symbols against 16 here — but more symbols should not give a
+*smaller* diagram, so the discrepancy is **unexplained and left standing rather
+than reconciled by assumption**. Re-derive before quoting either figure.

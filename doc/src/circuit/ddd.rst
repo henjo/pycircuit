@@ -726,6 +726,195 @@ Satisfying both corners needs strictly more terms than either alone — which is
 the point. A simplification valid only at nominal is not a simplification a
 designer can rely on.
 
+.. _ddd-cancellation:
+
+Where it fails outright, and the one number that predicts it
+------------------------------------------------------------
+
+The subsection above says pruning depends on component spread. On a real
+operational amplifier there is a second condition, and it is the one that
+binds: **the terms cancel**. Magnitude ranking assumes the sum is dominated by
+its largest parts, and in a determinant of millions of terms it is not.
+
+Make that quantitative. Alongside the determinant, a diagram can compute the
+sum of its terms' *absolute* values in the same single pass, because absolute
+value distributes over a product:
+
+.. math::
+
+   A[v] = |\mathrm{entry}(v)|\,A[v_1] + A[v_0],
+   \qquad
+   \kappa = \frac{A[\mathrm{root}]}{|\det|}
+
+:math:`\kappa` — :meth:`~pycircuit.circuit.ddd.DDD.cancellation` — is the
+condition number of the summation. Dropping a set of terms leaves an error
+bounded only by their absolute mass, so to reach a relative error ``tol`` a
+magnitude ranking must capture a fraction :math:`1 - \mathrm{tol}/\kappa` of
+that mass. That is a hard requirement, not a tuning parameter:
+
+.. exec-rst::
+
+    import numpy as np
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.ddd import ddd_of_matrix
+
+    system = bc.ua741(symbolic_devices=('q1', 'q2', 'q17'))
+    D = ddd_of_matrix(system.A)
+
+    def env_for(gm, freq=1e3):
+        env = {system.s: 2j * np.pi * freq}
+        for sym in system.A.free_symbols - {system.s}:
+            env[sym] = gm if str(sym).startswith('gm_') else complex(
+                system.params[sym])
+        return env
+
+    print(".. list-table:: uA741, %d terms: what magnitude ranking is asked for"
+          % D.term_count())
+    print("   :header-rows: 1")
+    print("   :widths: 18 14 26 22")
+    print("")
+    print("   * - operating point")
+    print("     - kappa")
+    print("     - mass needed for 5% error")
+    print("     - error at 500 terms")
+    import warnings
+    for label, gm in (("nominal gm", 1.0e-3), ("degraded gm", 0.1e-3)):
+        env = env_for(gm)
+        k = D.cancellation(env)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            _e, _n, err = D.approximate(env, tol=0.05, max_terms=500)
+        print("   * - %s" % label)
+        print("     - %.2e" % k)
+        print("     - %.6f%%" % (100.0 * (1.0 - 0.05 / k)))
+        print("     - %.0f%%" % (100.0 * err))
+
+Those last two columns are the same fact twice. Recovering all but a
+hundred-thousandth of the absolute mass is not achievable at any tractable term
+count, and the error column is what happens instead. **This is not a bug in the
+ranking; it is the ranking being asked to do something impossible.** The
+diagnostic costs one pass over the diagram, so it is worth computing before
+trusting any dominant-term result — an earlier round of this work reported a
+994% error as a working simplification, and :math:`\kappa` is what would have
+said so in advance.
+
+Ranking groups instead of terms
+-------------------------------
+
+The fix is to change what is ranked. A term carries only ``|prod entries|``, an
+*upper bound* on its contribution. But a diagram node already knows the exact
+sum of every term beneath it — that is what :meth:`~pycircuit.circuit.ddd.DDD.eval`
+computes — so rank a **group** instead: a chosen prefix of entries together with
+a node, standing for every term below that node carrying that prefix, and
+contributing ``(prod prefix) * V[node]`` *exactly*.
+
+Three things follow, and together they are
+:meth:`~pycircuit.circuit.ddd.DDD.approximate_groups`:
+
+* **Dropping is exact, not bounded.** A million terms that cancel among
+  themselves are dropped in one step at their real — tiny — cost. Magnitude
+  ranking has to keep all million or lose the answer.
+* **The error is exact at every step.** Splitting a group at its node's two
+  edges gives two groups whose values sum to the parent's, so
+  ``kept + frontier = det`` always holds and ``|det - kept| / |det|`` is the
+  kept expression's own error rather than an estimate of it. That is the
+  stopping criterion.
+* **Cancellation is visible.** A split whose children dwarf their parent has
+  *created* the cancellation, which is a local, measurable event.
+
+.. exec-rst::
+
+    import numpy as np
+    import warnings
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.ddd import ddd_of_matrix
+
+    system = bc.ua741(symbolic_devices=('q1', 'q2', 'q17'))
+    D = ddd_of_matrix(system.A)
+
+    def env_for(gm, freq=1e3):
+        env = {system.s: 2j * np.pi * freq}
+        for sym in system.A.free_symbols - {system.s}:
+            env[sym] = gm if str(sym).startswith('gm_') else complex(
+                system.params[sym])
+        return env
+
+    print(".. list-table:: Same diagram, same tolerance (5%), same term budget")
+    print("   :header-rows: 1")
+    print("   :widths: 16 12 20 20")
+    print("")
+    print("   * - operating point")
+    print("     - terms")
+    print("     - group-ranked error")
+    print("     - magnitude-ranked error")
+    for label, gm in (("nominal gm", 1.0e-3), ("degraded gm", 0.1e-3)):
+        env = env_for(gm)
+        _e, n, err = D.approximate_groups(env, tol=0.05)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            _f, _nf, err_flat = D.approximate(env, tol=0.05, max_terms=n)
+        print("   * - %s" % label)
+        print("     - %d" % n)
+        print("     - %.1f%%" % (100.0 * err))
+        print("     - %.0f%%" % (100.0 * err_flat))
+
+At an *equal* term count — so the comparison is about the ranking and not about
+the budget — the two differ by more than two orders of magnitude, and only one
+of them is inside the requested tolerance. Both expressions keep ``gm_q1``,
+``gm_q2``, ``gm_q17`` and ``s``: the numerics rank the terms, they do not
+replace them.
+
+A factored form over named minors
+---------------------------------
+
+A group need not be expanded all the way. ``max_minor=k`` retains any group
+whose node stands for a minor of dimension at most ``k``, contributing
+``(prod prefix) * det(M[rows, cols])``.
+:meth:`~pycircuit.circuit.ddd.DDD.minor_positions` recovers which minor that is
+from the diagram alone, so the retained factor is a determinant of the original
+matrix's **own named entries** — not an opaque placeholder, which is what
+distinguishes this from a hierarchical reduction's stamp symbols.
+
+.. exec-rst::
+
+    import numpy as np
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.ddd import ddd_of_matrix
+
+    system = bc.ua741(symbolic_devices=('q1', 'q2', 'q17'))
+    D = ddd_of_matrix(system.A)
+    env = {system.s: 2j * np.pi * 1e3}
+    for sym in system.A.free_symbols - {system.s}:
+        env[sym] = 1.0e-3 if str(sym).startswith('gm_') else complex(
+            system.params[sym])
+
+    print(".. list-table:: Retaining minors instead of expanding them (5% target)")
+    print("   :header-rows: 1")
+    print("   :widths: 20 14 16")
+    print("")
+    print("   * - retained up to")
+    print("     - items kept")
+    print("     - error")
+    for max_minor in (0, 2, 3, 6):
+        _e, n, err = D.approximate_groups(env, tol=0.05, max_minor=max_minor)
+        print("   * - %s" % ("product terms" if not max_minor
+                             else "%dx%d minors" % (max_minor, max_minor)))
+        print("     - %d" % n)
+        print("     - %.1f%%" % (100.0 * err))
+
+The trade is monotone and worth having: a few hundred items over small
+determinants of named entries, instead of several times as many fully expanded
+products, at the same accuracy.
+
+**What this does not yet solve.** On a hierarchically reduced circuit the top
+diagram's entries are the reduction's stamp symbols, so group ranking there
+produces compact expressions over placeholders — measured on the five-amplifier
+leapfrog in ``benchmarks/cancellation_leapfrog.py``, where 181 groups reach
+:math:`10^{-3}` and not one of them names a device. The cancellation lives
+*inside* the blocks, which is exactly where this ranking would pay; reaching it
+means ranking a block's own cofactor diagrams, and that is not implemented.
+See ``doc/cancellation_ranking_plan.md``.
+
 Dominant poles without root-finding
 -----------------------------------
 

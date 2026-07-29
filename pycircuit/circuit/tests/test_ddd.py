@@ -1685,3 +1685,158 @@ def test_we_are_on_the_good_side_of_the_ordering_comparison(n):
     ours = ddd_of_matrix(_full_matrix(n)).size
     assert ours == ICCAD2010_TABLE_II_LED[n]
     assert ours < ICCAD2010_TABLE_II_GREEDY[n]
+
+
+## -- cancellation-aware approximation ------------------------------------
+##
+## The premise, measured in `benchmarks/cancellation_profile.py`: magnitude
+## ranking must recover a `1 - tol/cancellation` fraction of the total absolute
+## mass, so on the µA741 (cancellation ~1e4) no tractable term count converges.
+## Group ranking knows each group's *exact* contribution instead of a bound.
+
+
+def _ua741_env(gm, freq=1e3):
+    system = bc.ua741(symbolic_devices=('q1', 'q2', 'q17'))
+    env = {system.s: 2j * np.pi * freq}
+    for sym in system.A.free_symbols:
+        if sym == system.s:
+            continue
+        env[sym] = gm if str(sym).startswith('gm_') else complex(
+            system.params[sym])
+    return system, env
+
+
+def test_cancellation_is_one_when_nothing_cancels():
+    """A matrix whose expansion has no sign changes cannot cancel."""
+    a, b, c, d = sympy.symbols('a b c d')
+    ## det = a*d - b*c, so making b*c negative aligns both terms in sign.
+    D = ddd_of_matrix(sympy.Matrix([[a, b], [-c, d]]))
+    env = {a: 2.0, b: 3.0, c: 5.0, d: 7.0}
+    assert D.cancellation(env) == pytest.approx(1.0)
+
+
+def test_cancellation_grows_as_the_sum_approaches_zero():
+    a, b, c, d = sympy.symbols('a b c d')
+    D = ddd_of_matrix(sympy.Matrix([[a, b], [c, d]]))
+    ## a*d - b*c with a*d -> b*c: the absolute mass stays put, the sum vanishes.
+    near = D.cancellation({a: 1.0, b: 1.0, c: 1.0, d: 1.0 + 1e-6})
+    far = D.cancellation({a: 1.0, b: 1.0, c: 1.0, d: 3.0})
+    assert far < 10 < near
+    assert near == pytest.approx(2.0 / 1e-6, rel=1e-3)
+
+
+def test_absolute_companion_is_the_sum_of_term_magnitudes():
+    """`subdiagram_values` computes in one pass what enumeration would."""
+    system = bc.rc_ladder(5)
+    env = _spread_env(system, 3.0)
+    env[system.s] = 1j * 2 * np.pi * 1e4
+    D = ddd_of_matrix(system.A)
+    _values, absolutes = D.subdiagram_values(env)
+    by_term = sum(abs(v[0]) for _expr, v in D.iter_terms(env))
+    assert absolutes[id(D.root)] == pytest.approx(by_term, rel=1e-9)
+
+
+def test_group_ranking_converges_where_magnitude_ranking_cannot():
+    """The result this whole route exists for, on the calibration amplifier.
+
+    Same diagram, same operating point, same tolerance: magnitude ranking is
+    left with an error hundreds of times the answer, group ranking meets the
+    tolerance.  The comparison is made at an *equal term count* so that it is
+    about the ranking and not about the budget.
+    """
+    system, env = _ua741_env(1.0e-3)
+    D = ddd_of_matrix(system.A)
+
+    _expr, n, err = D.approximate_groups(env, tol=0.05)
+    assert err <= 0.05
+    assert n < 0.001 * D.term_count()
+
+    with pytest.warns(RuntimeWarning, match='cancellation'):
+        _flat, n_flat, err_flat = D.approximate(env, tol=0.05, max_terms=n)
+    assert n_flat == n
+    assert err_flat > 100 * err            # measured: ~1186% against ~4%
+
+
+def test_group_ranking_keeps_device_symbols():
+    """Numerics rank; they do not replace.  The point of the whole exercise."""
+    system, env = _ua741_env(1.0e-3)
+    expr, _n, _err = ddd_of_matrix(system.A).approximate_groups(env, tol=0.2)
+    names = {str(s) for s in expr.free_symbols}
+    assert {'gm_q1', 'gm_q2', 'gm_q17', 's'} <= names
+
+
+def test_group_ranking_error_is_exact_not_bounded():
+    """The reported error must be the kept expression's own error.
+
+    Checked by evaluating the returned sympy expression independently of the
+    bookkeeping that selected it -- if the invariant were merely a bound the two
+    would differ.
+    """
+    system = bc.rc_ladder(7)
+    env = _spread_env(system, 4.0)
+    env[system.s] = 1j * 2 * np.pi * 1e4
+    D = ddd_of_matrix(system.A)
+    expr, _n, err = D.approximate_groups(env, tol=1e-3)
+    exact = complex(D.eval(env))
+    got = complex(expr.xreplace(env))
+    assert abs(got - exact) / abs(exact) == pytest.approx(err, rel=1e-6)
+
+
+@pytest.mark.parametrize('tol', [1e-1, 1e-2, 1e-4])
+def test_group_ranking_meets_its_tolerance(tol):
+    system = bc.rc_ladder(8)
+    env = _spread_env(system, 5.0)
+    env[system.s] = 1j * 2 * np.pi * 1e4
+    _expr, n, err = ddd_of_matrix(system.A).approximate_groups(env, tol=tol)
+    assert err <= tol
+    assert n >= 1
+
+
+def test_retaining_minors_shrinks_the_expression():
+    """Stage 2: a factored form over small determinants is smaller than the
+    fully expanded one, and still names device parameters."""
+    system, env = _ua741_env(1.0e-3)
+    D = ddd_of_matrix(system.A)
+    _expr, n_expanded, err_expanded = D.approximate_groups(env, tol=0.05)
+    expr, n_factored, err = D.approximate_groups(env, tol=0.05, max_minor=6)
+    assert err <= 0.05 and err_expanded <= 0.05
+    assert n_factored < 0.5 * n_expanded
+    assert {'gm_q1', 'gm_q2', 'gm_q17'} <= {str(s) for s in expr.free_symbols}
+
+
+def test_retained_minors_are_determinants_of_named_entries():
+    """What distinguishes a retained group from a hierarchical placeholder.
+
+    `minor_positions` recovers which minor each node expands, so an unexpanded
+    group is reported as `det(M[rows, cols])` over the original matrix's own
+    entries rather than as an opaque symbol.
+    """
+    system = bc.rc_ladder(6)
+    D = ddd_of_matrix(system.A)
+    n = D.matrix.rows
+    pos = D.minor_positions()
+    assert pos[id(D.root)] == (tuple(range(n)), tuple(range(n)))
+    ## A 1-edge strikes out the vertex's row and column; a 0-edge does not.
+    root = D.root
+    assert pos[id(root.one_edge)][0] == tuple(
+        r for r in range(n) if r != root.row)
+    assert pos[id(root.one_edge)][1] == tuple(
+        c for c in range(n) if c != root.col)
+    if not root.zero_edge.is_terminal:
+        assert pos[id(root.zero_edge)] == pos[id(root)]
+
+
+def test_group_ranking_needs_numeric_values():
+    system = bc.rc_ladder(4)
+    with pytest.raises(ValueError, match='symbolic'):
+        ddd_of_matrix(system.A).approximate_groups({}, tol=0.1)
+
+
+def test_unmet_tolerance_is_warned_about_not_only_returned():
+    """The mechanism fix.  A previous round reported a 994%-error result as a
+    working approximation because the returned error was never printed; an
+    unmet tolerance now says so."""
+    system, env = _ua741_env(1.0e-3)
+    D = ddd_of_matrix(system.A)
+    with pytest.warns(RuntimeWarning, match='above the requested tol'):
+        D.approximate(env, tol=0.05, max_terms=50)
