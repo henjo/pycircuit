@@ -812,6 +812,59 @@ that will fail.
 
 .. _picard-iteration:
 
+Why this method suits a *symbolic* tool
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Everything above weighs accuracy.  For a symbolic circuit analyser there is a
+prior consideration that settles the matter more firmly: **what the answer
+looks like as an expression.**
+
+Take the scalar circuit :math:`Yx + bx^2 = u` and carry both constructions
+through with every quantity symbolic.  The perturbation terms come out as
+single monomials:
+
+.. code-block:: text
+
+    x(0) =      u/Y         1 term,   1 op
+    x(1) =  -  b u^2/Y^3    1 term,   5 ops
+    x(2) =    2 b^2 u^3/Y^5 1 term,   6 ops
+    x(3) =  - 5 b^3 u^4/Y^7 1 term,   7 ops
+    x(4) =   14 b^4 u^5/Y^9 1 term,   6 ops
+
+while the Picard iterates double in length every pass:
+
+.. code-block:: text
+
+    iterate 1:   2 terms,    6 ops
+    iterate 2:   4 terms,   19 ops
+    iterate 3:   8 terms,   47 ops
+    iterate 4:  16 terms,  103 ops
+    iterate 5:  32 terms,  215 ops
+
+Two things follow.
+
+**The perturbation terms are readable.**  :math:`-5b^3u^4/Y^7` states directly
+how the third-order contribution scales with the nonlinearity, the drive and
+the admittance — which is the entire point of computing it symbolically rather
+than numerically.  A 32-term iterate is a number generator wearing algebra.
+(The coefficients 1, 1, 2, 5, 14 are the Catalan numbers, the expected
+signature of a quadratic fixed point; the structure is clean, not accidental.)
+
+**Iteration cannot be carried symbolically in any case.**  Each Picard pass
+substitutes the whole previous expression into :math:`f`, so a cubic
+nonlinearity cubes the expression size every time — the doubling above is the
+mild quadratic case.  And
+:func:`~pycircuit.circuit.distortion.harmonic_response_spectral` in particular
+is FFT-based: it samples waveforms in time and transforms them numerically,
+which is not a symbolic operation at all.  It is a numeric measuring
+instrument and cannot be anything else.
+
+So the truncation is not merely a choice about accuracy or consistency.  The
+closed-form Fourier coefficients of `Where the Taylor coefficients come from`_
+keep every order at bounded degree, and **that boundedness is what makes
+symbolic distortion analysis possible at all**.  An iterative method, however
+accurate, forfeits it.
+
 Picard iteration, and why it is not simply "higher order"
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

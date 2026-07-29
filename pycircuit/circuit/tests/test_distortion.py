@@ -1209,3 +1209,36 @@ def test_the_inconsistent_truncation_is_not_automatically_worse():
         assert pic_err < pert_err, (
             'at n=%d Picard (%.3e) should beat the consistent truncation '
             '(%.3e) for this problem' % (n, pic_err, pert_err))
+
+
+def test_perturbation_terms_stay_single_monomials_symbolically():
+    """The reason this method suits a symbolic tool, pinned.
+
+    Carried symbolically, each perturbation order of ``Y x + b x**2 = u`` is a
+    single monomial -- ``-5*b**3*u**4/Y**7`` and so on -- readable as a design
+    formula. A Picard iterate doubles in length every pass and is unreadable
+    by the third. Bounded expression growth is what makes symbolic distortion
+    analysis feasible, and an iterative method forfeits it.
+    """
+    Y, b, u = sympy.symbols('Y b u')
+    G = 1/Y
+
+    x0 = G*u
+    x1 = sympy.expand(-G*b*x0**2)
+    x2 = sympy.expand(-G*b*(2*x0*x1))
+    x3 = sympy.expand(-G*b*(2*x0*x2 + x1**2))
+
+    for order, term in enumerate((x0, x1, x2, x3)):
+        assert len(sympy.Add.make_args(sympy.expand(term))) == 1, (
+            'perturbation term x(%d) should be a single monomial, got %s'
+            % (order, term))
+
+    ## Picard, by contrast, doubles.
+    x = G*u
+    lengths = []
+    for _ in range(4):
+        x = sympy.expand(G*(u - b*x**2))
+        lengths.append(len(sympy.Add.make_args(x)))
+
+    assert lengths == [2, 4, 8, 16], (
+        'expected Picard iterates to double in length, got %s' % lengths)
