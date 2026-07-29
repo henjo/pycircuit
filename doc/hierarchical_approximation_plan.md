@@ -90,6 +90,44 @@ is a *heuristic* ranking with a measured error distribution rather than a
 guarantee, clearly labelled as such — which is still useful, and is what most
 published symbolic approximation actually offers.
 
+## 2b. Three routes, and what the literature already says (added 2026-07-29)
+
+Two papers were added to the reference set after this plan was drafted, and
+they change what the stages should aim at. Extractions and caveats:
+`doc/ddd_references.md`.
+
+**The interpretability problem is known, and reported by the DDD authors
+themselves.** Qi, Tan, Yu & He state that "the hierarchical DDD graphs by
+DDD-based hierarchical decomposition method are difficult to interpret. The
+resulting symbolic expressions are too complicated to gain insights into
+circuit behavior". We measured the same thing independently before reading it:
+the leapfrog's hierarchical form is 299 vertices over *anonymous* placeholders
+(`_lvl109_16_0`, `count_ops = 0`). **So stage A's output being uninterpretable
+is the expected outcome, not a surprise to be discovered.**
+
+That reframes the stages. There are three distinct routes to a readable
+answer, not one:
+
+| route | what survives | our machinery |
+|---|---|---|
+| term-ranked approximation | dominant **product terms**, symbols intact | `DDD.approximate` — **flat only** |
+| moment matching / multi-point MOR | **moments** at expansion points | none |
+| direct truncation (DTT, Ismail & Friedman) | dominant **coefficients / poles** | `SExpandedDDD`, `dominant_poles` |
+
+**The honest tension, stated plainly:** the maintainer wants an expression
+symbolic *in the device parameters*. Poles and residues are numbers — route 2
+and route 3 both give up parameter symbols. Route 1 keeps them but needs a
+flat diagram, which does not reach 127 unknowns. **No route delivers all
+three of: large circuit, parameter-symbolic, readable.** Choosing which to
+give up is the actual decision, and it belongs to the maintainer rather than
+to this plan.
+
+**Reconsider-if for the stage order below:** if route 3 (direct truncation of
+the `s`-expanded form) turns out to reach the leapfrog, it is cheaper than
+stages B and C and uses machinery that exists. It should be measured before
+the Schur-complement work is attempted. That was not obvious when the stages
+were written.
+
 ## 3. Stages
 
 Ordered cheapest-first, and the first stage may make the rest unnecessary.

@@ -411,3 +411,71 @@ figures to PNG, which is how the tables above were read at all.
 Note: the papers already in `~/pycircuit_agy/papers/` (Fang DAC'13, Yao–Wang
 ICECS'14) concern *transient / LTE step control*, unrelated to DDD — this is a
 separate reading set.
+
+## Added 2026-07-29 — three routes to a *readable* result
+
+Both papers were read at 300 dpi from the local PDFs in
+`~/pycircuit_agy/papers/ddd/`. **No number is quoted from either**: they are
+recorded for their framing and their stated problem, which is what bears on
+our plan. Neither has been reproduced, and the extraction rule applies before
+any figure from them is used as a target.
+
+### Qi, Tan, Yu & He — *Wideband Modeling of RF/Analog Circuits via
+### Hierarchical Multi-Point Model Order Reduction*
+
+**Why it matters: it states as known the thing we measured independently.**
+Its introduction says the sequence-of-expressions methods, the hierarchical
+network methods, *and* **"the hierarchical DDD graphs by DDD-based hierarchical
+decomposition method are difficult to interpret. The resulting symbolic
+expressions are too complicated to gain insights into circuit behavior"**.
+
+That is exactly what we found on the leapfrog: hierarchical reduction gives a
+compact diagram (299 vertices for 127 unknowns, fully symbolic) whose entries
+are *anonymous generated placeholders* — `_lvl109_16_0` — with `count_ops = 0`.
+Compact and uninterpretable. **Note the author: Sheldon X.-D. Tan, of the same
+group whose DDD papers our implementation is calibrated against.** The
+limitation is theirs to report and they report it.
+
+Two claims worth having:
+
+- **s-domain hierarchical reduction is equivalent to implicit moment matching
+  around `s = 0`.** If true, it explains directly why one-point hierarchical
+  reduction loses accuracy with frequency — it is a Taylor expansion at the
+  origin — and why our numeric-`omega` results are single-frequency by nature.
+- **Higher reduction order does not fix that**, because of truncation and
+  numerical noise. Their Fig. 2 shows high-order curves *diverging* from exact
+  at high frequency rather than converging. **Reconsider-if:** we have not
+  reproduced this, and it is the sort of claim that could be an artifact of
+  their arithmetic rather than of the method.
+
+Their answer is *not* symbolic interpretation. It is a **pole-residue model**
+obtained by expanding at several frequency points, on the argument that poles
+near an expansion point are captured more accurately than poles far from it.
+So the interpretable output is **poles and residues**, not dominant product
+terms.
+
+### Ismail & Friedman — *DTT: direct truncation of the transfer function — an
+### alternative to moment matching for tree structured interconnect*
+
+IEEE TCAD 21(2):131–144, Feb 2003. Reference [10] of the paper above.
+
+**A third route, and the one closest to machinery we already have.** Instead
+of matching moments at an expansion point, truncate the transfer function
+*directly* — keep the dominant part of the rational function itself. That is
+what `SExpandedDDD` is already shaped for: it holds the coefficients of each
+power of `s` as shared diagrams, and `dominant_poles` exists on it.
+
+So the three routes to a readable answer are distinct, and we have partial
+machinery for all three:
+
+| route | keeps | our machinery |
+|---|---|---|
+| term-ranked approximation | dominant *product terms* | `DDD.approximate` — flat only |
+| moment matching / MOR | *moments* at expansion points | none |
+| **direct truncation (DTT)** | dominant *coefficients / poles* | `SExpandedDDD`, `dominant_poles` |
+
+**What none of them gives** is what the maintainer asked for in the strongest
+form: an expression symbolic *in the device parameters* for a 127-unknown
+circuit. Poles and residues are numbers. Term-ranked approximation keeps
+symbols but needs a flat diagram. That tension is the real content of
+`doc/hierarchical_approximation_plan.md`.
