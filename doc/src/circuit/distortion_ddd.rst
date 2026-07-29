@@ -385,6 +385,80 @@ blowing up, and this one is linear in circuit size and builds a transistor-level
 amplifier in under a second.  That stage is therefore **not being built**, and
 this paragraph records why rather than leaving the plan's proposal dangling.
 
+What kind of object this is — and what it is not
+-------------------------------------------------
+
+.. warning::
+
+   **This page originally invited a comparison it should not have.**  The
+   graph sizes above are much smaller than the diagram sizes in :doc:`ddd`,
+   and it is natural to read that as the representation being better.  It is
+   not: **the two represent different objects**, and only one of them is what
+   symbolic analysis usually means.
+
+Measured on the same circuit — the µA741 with all 24 transconductances and
+:math:`s` symbolic:
+
+.. exec-rst::
+
+    import time
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.ddd import ddd_of_matrix
+    from pycircuit.circuit.distortion_ddd import Expr, nodes_of
+
+    sysm = bc.ua741(symbolic_devices=tuple('q%d' % i for i in range(1, 25)))
+    n = sysm.dim
+
+    D = ddd_of_matrix(sysm.A, order='min-degree')
+
+    rows = [[sysm.A[i, j] for j in range(n)] for i in range(n)]
+    M = [[Expr.atom(e) if e != 0 else Expr.atom(0) for e in row]
+         for row in rows]
+    det = Expr.atom(1)
+    for i in range(n):
+        det = det * M[i][i]
+        for r in range(i+1, n):
+            if M[r][i]._is_zero():
+                continue
+            fac = M[r][i]/M[i][i]
+            for j in range(i, n):
+                if not M[i][j]._is_zero():
+                    M[r][j] = M[r][j] - fac*M[i][j]
+
+    print('The **same determinant**, two representations:')
+    print('')
+    print('* a determinant decision diagram -- ``%d`` vertices, standing for'
+          % D.size)
+    print('  ``%d`` expanded product terms;' % D.term_count())
+    print('* this page\'s expression graph -- ``%d`` nodes.' % nodes_of(det))
+
+The graph is smaller because it is **a record of the elimination's
+arithmetic** — a straight-line program of :math:`O(n^3)` operations — and it
+never expands, so the size of the expanded polynomial never costs it
+anything.  The diagram is a *canonical form of that expanded polynomial*.
+
+The consequence is a capability difference, not a size one:
+
+.. code-block:: text
+
+    expression graph        decision diagram
+    ----------------        ----------------
+    evaluate fast, at       evaluate
+    many parameter values
+                            coefficients of s**k  (poles, zeros)
+                            rank terms by magnitude
+                            term-ranked approximation
+                            sensitivity to any parameter
+
+**So the honest summary of this page is narrower than it first appears.**  The
+cost recorded in :doc:`distortion` section 8.3 was removed by *not producing
+the expensive object*: no normal form is ever built, so nothing has to be
+simplified.  That is exactly the right trade when the goal is a **number** —
+distortion at given parameter values, swept over frequency or over a
+parameter, which is what this analysis is usually for.  It is the wrong trade
+when the goal is an **expression** a designer reads, and for that the
+diagrams in :doc:`ddd` remain the tool.
+
 What this does *not* establish
 -------------------------------
 

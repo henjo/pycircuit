@@ -141,3 +141,69 @@ def test_harness_reports_rather_than_raises_on_a_bad_backend():
         del BACKENDS['_boom']
     assert rec['status'] == 'error'
     assert 'deliberate' in rec['error']
+
+
+def test_leapfrog_is_a_fifth_order_lowpass():
+    """The fixture must be the filter it claims to be.
+
+    A leapfrog realises an LC ladder as integrators with feedback between
+    adjacent stages, and its terminating integrators must be **damped** to
+    simulate the ladder's source and load resistances.  The first version of
+    this fixture omitted that: it integrated at DC, never developed a
+    passband, and rolled off at roughly half the intended rate -- a circuit
+    that would have been a perfectly plausible-looking test case for
+    something that was not a fifth-order filter.
+
+    So this checks the two things that would catch that: a flat passband at
+    the doubly-terminated ladder's 0.5, and a stopband slope of 100 dB per
+    decade, which is 5 x 20.
+    """
+    import numpy as np
+    import sympy
+    from pycircuit.circuit import benchmark_circuits as bc
+
+    system = bc.leapfrog_5th_order()
+    n = system.dim
+    rows = sympy.Matrix(system.A)
+    source = sympy.Matrix(system.b)
+    vin = list(system.b.free_symbols)[0]
+
+    def gain(frequency):
+        env = {system.s: 1j*2*np.pi*frequency, vin: 1.0}
+        M = np.array([[complex(rows[i, j].subs(env)) for j in range(n)]
+                      for i in range(n)], dtype=complex)
+        b = np.array([complex(source[i].subs(env)) for i in range(n)])
+        return abs(np.linalg.solve(M, b)[system.out_index])
+
+    ## Doubly-terminated ladders have a passband gain of one half.
+    assert abs(gain(10.0) - 0.5) < 0.02
+    assert abs(gain(1e3)/gain(10.0) - 1.0) < 0.05, 'passband must be flat'
+
+    ## Fifth order: 100 dB per decade, measured across an octave well into
+    ## the stopband.
+    decade = 20*np.log10(gain(2e5)/gain(1e5))/np.log10(2.0)
+    assert -110 < decade < -90, 'expected ~-100 dB/decade, got %.1f' % decade
+
+
+def test_leapfrog_reuses_the_calibration_amplifier_unchanged():
+    """Five µA741s, and the single-amplifier fixture must be untouched.
+
+    ``ua741()`` is the circuit the published DDD sizes are calibrated
+    against, so extracting its device stamping for reuse had to leave its
+    matrix bit-identical.  This pins the shapes that would move if it did
+    not: node count, nonzero count, and that the leapfrog is five amplifiers
+    plus its passive network.
+    """
+    from pycircuit.circuit import benchmark_circuits as bc
+
+    single = bc.ua741()
+    assert single.dim == 26
+    assert sum(1 for e in single.A if e != 0) == 103
+
+    filt = bc.leapfrog_5th_order()
+    ## 5 amplifiers of 25 nodes each, the input node, and one more unknown:
+    ## MNA carries a branch current for the voltage source.
+    assert filt.dim == 5*len(bc._UA741_NODE_NAMES) + 2
+    assert filt.dim == 127
+    assert single.dim == len(bc._UA741_NODE_NAMES) + 1, (
+        'the single amplifier is its own nodes plus the source branch')

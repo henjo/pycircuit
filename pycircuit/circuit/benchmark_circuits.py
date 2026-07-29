@@ -409,6 +409,85 @@ def ua741(symbolic_devices=(), miller=True):
         _circuit_module.default_toolkit = saved
 
 
+def _stamp_ua741_devices(cir, n, bjt, miller, pfx=''):
+    """Stamp the µA741's devices, given nodes already created.
+
+    Split out of :func:`_build_ua741` so the amplifier can be
+    instantiated several times in one circuit -- the leapfrog filter
+    needs five.  Node *creation* deliberately stays with the caller:
+    node order fixes the matrix row order, and ``ua741()`` is the
+    calibration circuit whose published diagram sizes depend on it.
+
+    Args:
+        cir: Circuit to stamp into.
+        n: Mapping from the µA741 node names to nodes.
+        bjt: ``bjt(device, role, b, c, e)``, supplied by the caller so
+            it decides which transconductances stay symbolic.
+        miller: Include the 30 pF compensation capacitor.
+        pfx: Element-name prefix, so instances do not collide.
+    """
+    ## -- input stage: emitter followers Q1/Q2 into common-base Q3/Q4 --------
+    ## Q1/Q2 are followers whose emitters drive the common-base pair Q3/Q4 --
+    ## two separate signal paths, not a shared tail node.
+    ## Q1/Q2 are followers: their collectors carry bias, not signal, and tie
+    ## together at the Q8 collector.  Splitting them into two nodes is both an
+    ## extra unknown and electrically wrong.
+    bjt('q1', 'input', n['inp'], n['c12'], n['e1'])
+    bjt('q2', 'input', n['inn'], n['c12'], n['e2'])
+    bjt('q3', 'input', n['nb34'], n['c3'], n['e1'])
+    bjt('q4', 'input', n['nb34'], n['c4'], n['e2'])
+
+    ## Q8/Q9 mirror loading the input pair collectors.
+    bjt('q8', 'mirror', n['nq9'], n['c12'], gnd)
+    bjt('q9', 'mirror', n['nq9'], n['nq9'], gnd)
+    cir[pfx + 'rq9'] = R(n['c12'], n['nq9'], r=1e3)
+
+    ## -- Q5/Q6 active load with Q7 buffering the mirror base ----------------
+    bjt('q5', 'mirror', n['nb56'], n['c3'], n['e5'])
+    bjt('q6', 'mirror', n['nb56'], n['c4'], n['e6'])
+    bjt('q7', 'mirror', n['c3'], gnd, n['nb56'])
+    cir[pfx + 'R1'] = R(n['e5'], gnd, r=1e3)
+    cir[pfx + 'R2'] = R(n['nb56'], gnd, r=50e3)
+    cir[pfx + 'R3'] = R(n['e6'], gnd, r=1e3)
+
+    ## -- Widlar bias chain: Q10/Q11 with R4, mirrored by Q12 into Q13 -------
+    bjt('q10', 'bias', n['nb1011'], n['nb34'], n['e10'])
+    bjt('q11', 'bias', n['nb1011'], n['nb1011'], gnd)
+    bjt('q12', 'bias', n['nr5'], n['nr5'], gnd)
+    cir[pfx + 'R4'] = R(n['e10'], gnd, r=5e3)
+    cir[pfx + 'R5'] = R(n['nr5'], n['nb1011'], r=39e3)
+
+    ## -- second stage: Q16 follower into Q17, Miller compensated ------------
+    bjt('q16', 'gain', n['c4'], gnd, n['e16'])
+    bjt('q17', 'gain', n['e16'], n['c17'], n['e17'])
+    cir[pfx + 'R9'] = R(n['e16'], gnd, r=50e3)
+    cir[pfx + 'R8'] = R(n['e17'], gnd, r=100)
+    bjt('q13', 'bias', n['nr5'], n['c17'], gnd)    # current-source load
+    if miller:
+        cir[pfx + 'cc'] = C(n['c4'], n['c17'], c=30e-12)
+
+    ## -- output stage: Q23 driver, Q18/Q19 Vbe multiplier, Q14/Q20 pair -----
+    bjt('q23', 'gain', n['c17'], gnd, n['e23'])
+    cir[pfx + 'R11'] = R(n['e23'], gnd, r=50e3)
+    bjt('q18', 'bias', n['n19'], n['nb14'], n['nb20'])
+    bjt('q19', 'bias', n['nb20'], n['n19'], gnd)
+    cir[pfx + 'R10'] = R(n['n19'], n['nb20'], r=40e3)
+    cir[pfx + 'rdrv'] = R(n['e23'], n['nb14'], r=1e3)
+
+    bjt('q14', 'output', n['nb14'], gnd, n['nr6'])
+    bjt('q20', 'output', n['nb20'], gnd, n['nr7'])
+    cir[pfx + 'R6'] = R(n['nr6'], n['out'], r=27)
+    cir[pfx + 'R7'] = R(n['nr7'], n['out'], r=22)
+
+    ## -- short-circuit protection and remaining bias devices ----------------
+    bjt('q15', 'off', n['nr6'], n['nb14'], gnd)
+    bjt('q21', 'off', n['nr7'], n['nb20'], gnd)
+    bjt('q22', 'off', n['e17'], n['c17'], gnd)
+    bjt('q24', 'off', n['nb1011'], n['nb1011'], gnd)
+
+    cir[pfx + 'rload'] = R(n['out'], gnd, r=2e3)
+
+
 def _build_ua741(symbolic_devices, miller):
     cir = SubCircuit(toolkit=symbolic)
     names = (
@@ -438,70 +517,122 @@ def _build_ua741(symbolic_devices, miller):
             gm = sym
         add_small_signal_bjt(cir, dev, b, c, e, gm, rpi, ro, cpi, cmu)
 
-    ## -- input stage: emitter followers Q1/Q2 into common-base Q3/Q4 --------
-    ## Q1/Q2 are followers whose emitters drive the common-base pair Q3/Q4 --
-    ## two separate signal paths, not a shared tail node.
-    ## Q1/Q2 are followers: their collectors carry bias, not signal, and tie
-    ## together at the Q8 collector.  Splitting them into two nodes is both an
-    ## extra unknown and electrically wrong.
-    bjt('q1', 'input', n['inp'], n['c12'], n['e1'])
-    bjt('q2', 'input', n['inn'], n['c12'], n['e2'])
-    bjt('q3', 'input', n['nb34'], n['c3'], n['e1'])
-    bjt('q4', 'input', n['nb34'], n['c4'], n['e2'])
-
-    ## Q8/Q9 mirror loading the input pair collectors.
-    bjt('q8', 'mirror', n['nq9'], n['c12'], gnd)
-    bjt('q9', 'mirror', n['nq9'], n['nq9'], gnd)
-    cir['rq9'] = R(n['c12'], n['nq9'], r=1e3)
-
-    ## -- Q5/Q6 active load with Q7 buffering the mirror base ----------------
-    bjt('q5', 'mirror', n['nb56'], n['c3'], n['e5'])
-    bjt('q6', 'mirror', n['nb56'], n['c4'], n['e6'])
-    bjt('q7', 'mirror', n['c3'], gnd, n['nb56'])
-    cir['R1'] = R(n['e5'], gnd, r=1e3)
-    cir['R2'] = R(n['nb56'], gnd, r=50e3)
-    cir['R3'] = R(n['e6'], gnd, r=1e3)
-
-    ## -- Widlar bias chain: Q10/Q11 with R4, mirrored by Q12 into Q13 -------
-    bjt('q10', 'bias', n['nb1011'], n['nb34'], n['e10'])
-    bjt('q11', 'bias', n['nb1011'], n['nb1011'], gnd)
-    bjt('q12', 'bias', n['nr5'], n['nr5'], gnd)
-    cir['R4'] = R(n['e10'], gnd, r=5e3)
-    cir['R5'] = R(n['nr5'], n['nb1011'], r=39e3)
-
-    ## -- second stage: Q16 follower into Q17, Miller compensated ------------
-    bjt('q16', 'gain', n['c4'], gnd, n['e16'])
-    bjt('q17', 'gain', n['e16'], n['c17'], n['e17'])
-    cir['R9'] = R(n['e16'], gnd, r=50e3)
-    cir['R8'] = R(n['e17'], gnd, r=100)
-    bjt('q13', 'bias', n['nr5'], n['c17'], gnd)    # current-source load
-    if miller:
-        cir['cc'] = C(n['c4'], n['c17'], c=30e-12)
-
-    ## -- output stage: Q23 driver, Q18/Q19 Vbe multiplier, Q14/Q20 pair -----
-    bjt('q23', 'gain', n['c17'], gnd, n['e23'])
-    cir['R11'] = R(n['e23'], gnd, r=50e3)
-    bjt('q18', 'bias', n['n19'], n['nb14'], n['nb20'])
-    bjt('q19', 'bias', n['nb20'], n['n19'], gnd)
-    cir['R10'] = R(n['n19'], n['nb20'], r=40e3)
-    cir['rdrv'] = R(n['e23'], n['nb14'], r=1e3)
-
-    bjt('q14', 'output', n['nb14'], gnd, n['nr6'])
-    bjt('q20', 'output', n['nb20'], gnd, n['nr7'])
-    cir['R6'] = R(n['nr6'], n['out'], r=27)
-    cir['R7'] = R(n['nr7'], n['out'], r=22)
-
-    ## -- short-circuit protection and remaining bias devices ----------------
-    bjt('q15', 'off', n['nr6'], n['nb14'], gnd)
-    bjt('q21', 'off', n['nr7'], n['nb20'], gnd)
-    bjt('q22', 'off', n['e17'], n['c17'], gnd)
-    bjt('q24', 'off', n['nb1011'], n['nb1011'], gnd)
-
-    cir['rload'] = R(n['out'], gnd, r=2e3)
+    _stamp_ua741_devices(cir, n, bjt, miller)
 
     return system_from_circuit(cir, 'ua741', params,
                                out_index=names.index('out'),
                                in_index=names.index('inp'))
+
+
+_UA741_NODE_NAMES = (
+    'inp', 'inn', 'e1', 'e2', 'c12', 'nb34', 'nq9', 'c3', 'c4',
+    'nb56', 'e5', 'e6', 'nb1011', 'e10', 'nr5', 'e16', 'e17', 'c17',
+    'e23', 'nb14', 'nb20', 'n19', 'nr6', 'nr7', 'out',
+)
+
+
+def leapfrog_5th_order(symbolic_devices=(), miller=True):
+    """A 5th-order leapfrog filter built from five µA741 amplifiers.
+
+    Leapfrog (ladder-simulation) filters realise an LC ladder as a chain of
+    integrators with **feedback between adjacent stages** -- that bidirectional
+    coupling is the point of the topology, and it is what makes this a harder
+    test than a cascade: the matrix does not decompose into independent blocks
+    and every stage's response depends on its neighbours in both directions.
+
+    Five inverting integrators simulate the ``L1 C2 L3 C4 L5`` prototype.  Each
+    stage's summing junction takes a resistor from the previous stage, a
+    resistor back from the *next* stage, and an integrating capacitor from its
+    own output.
+
+    Each amplifier is the full µA741 of :func:`ua741` -- 24 transistors -- so
+    this is around 120 unknowns, an order of magnitude beyond the single
+    amplifier and well beyond the cascade fixtures.
+
+    Args:
+        symbolic_devices: Device names whose ``gm`` stays symbolic.  Names are
+            per-stage, ``'s0_q1'`` through ``'s4_q24'``.
+        miller: Include each amplifier's compensation capacitor.
+
+    Returns:
+        BenchSystem.
+    """
+    import pycircuit.circuit.circuit as _circuit_module
+    saved = _circuit_module.default_toolkit
+    _circuit_module.default_toolkit = symbolic
+    try:
+        return _build_leapfrog(symbolic_devices, miller)
+    finally:
+        _circuit_module.default_toolkit = saved
+
+
+def _build_leapfrog(symbolic_devices, miller):
+    cir = SubCircuit(toolkit=symbolic)
+    vin = sympy.Symbol('vin')
+    params = {vin: 1.0}
+
+    STAGES = 5
+    names = ['in']
+    node = {'in': cir.add_node('in')}
+    cir['vs'] = VS(node['in'], gnd, vac=vin)
+
+    ## One amplifier per reactive element of the LC prototype.  Nodes are
+    ## created stage by stage in the µA741's own order, so each block of the
+    ## matrix has the structure the single-amplifier fixture has.
+    amp = []
+    for k in range(STAGES):
+        local = {}
+        for base in _UA741_NODE_NAMES:
+            name = 's%d_%s' % (k, base)
+            local[base] = cir.add_node(name)
+            names.append(name)
+        amp.append(local)
+
+    def bjt_for(stage):
+        def bjt(dev, role, b, c, e):
+            gm, rpi, ro, cpi, cmu = _UA741_ROLES[role]
+            full = 's%d_%s' % (stage, dev)
+            if full in symbolic_devices:
+                sym = sympy.Symbol('gm_%s' % full, positive=True)
+                params[sym] = gm
+                gm = sym
+            add_small_signal_bjt(cir, full, b, c, e, gm, rpi, ro, cpi, cmu)
+        return bjt
+
+    for k in range(STAGES):
+        _stamp_ua741_devices(cir, amp[k], bjt_for(k), miller,
+                             pfx='s%d_' % k)
+        ## Non-inverting input grounded: these are inverting integrators.
+        cir['sg%d' % k] = R(amp[k]['inp'], gnd, r=1.0)
+
+    ## Integrating capacitor around each amplifier.
+    for k in range(STAGES):
+        cir['ci%d' % k] = C(amp[k]['out'], amp[k]['inn'], c=1e-9)
+
+    ## The terminating stages are LOSSY integrators, damped by a resistor
+    ## across the capacitor: they simulate the ladder's source and load
+    ## resistances.  Without them the chain integrates at DC, the passband
+    ## never flattens, and the result is not a filter at all -- which is
+    ## exactly what the first version of this fixture did.
+    cir['rd0'] = R(amp[0]['out'], amp[0]['inn'], r=10e3)
+    cir['rd%d' % (STAGES - 1)] = R(amp[STAGES-1]['out'],
+                                   amp[STAGES-1]['inn'], r=10e3)
+
+    ## Forward path: input, then each stage into the next.
+    cir['rin'] = R(node['in'], amp[0]['inn'], r=10e3)
+    for k in range(1, STAGES):
+        cir['rf%d' % k] = R(amp[k-1]['out'], amp[k]['inn'], r=10e3)
+
+    ## THE LEAPFROG FEEDBACK: each stage but the last is also driven from the
+    ## stage *after* it.  Without these the circuit is an integrator chain,
+    ## not a ladder simulation.
+    for k in range(STAGES - 1):
+        cir['rb%d' % k] = R(amp[k+1]['out'], amp[k]['inn'], r=10e3)
+
+    return system_from_circuit(cir, 'leapfrog_5th_order', params,
+                               out_index=names.index('s%d_out'
+                                                     % (STAGES - 1)),
+                               in_index=names.index('in'))
 
 
 def cascaded_opamps(blocks=1, symbolic_devices=()):
