@@ -1,6 +1,8 @@
 # Higher-order perturbation by Faà di Bruno — implementation plan
 
-**Status: nothing implemented. Gates declared in advance.**
+**Status: all four stages complete, all gates passed. Gates were declared in advance; outcomes in section 6.**
+
+**Headline: raising the perturbation order helps, substantially — reversing the conclusion reached earlier from Picard iterations.**
 
 Follows on from `doc/distortion_plan.md`, whose five stages are complete. This
 one answers a question that work left genuinely open.
@@ -25,6 +27,14 @@ scalar evidence is that the series converges monotonically but slowly — errors
 implement, converged faster on the same problem. It is entirely possible that
 the honest outcome is "third order costs much more and buys little", and that
 is a result worth having rather than a failure.
+
+> **This prediction was wrong, and is left standing deliberately.** The
+> measured outcome (§6) is a large win — roughly 100× at a drive well inside
+> the validity range. The scalar problem was a poor guide because its
+> convergence is governed by the contraction factor alone, whereas the circuit
+> case also benefits from the harmonic structure being resolved more finely at
+> higher truncation. Left unedited so the gates can be seen not to have been
+> written around a known answer.
 
 ## 2. The mathematics, verified before planning around it
 
@@ -149,10 +159,10 @@ at all.
 
 | Stage | Outcome |
 |---|---|
-| A — scalar series | not started |
-| B — `U³`, must reproduce `harmonic_response` | not started |
-| C — `U⁵` | not started |
-| D — worth it? | not started |
+| A — scalar series | **Gate passed exactly**, and one order beyond what was asked. Every term is a single monomial with Catalan coefficients: `u/Y`, `−b u²/Y³`, `2b² u³/Y⁵`, `−5b³ u⁴/Y⁷`, `14b⁴ u⁵/Y⁹`, and `−42b⁵ u⁶/Y¹¹`. Added `_compositions`, `composition_coefficient`, `perturbation_terms`. Five tests, including a check of the formula against a direct series expansion and an explicit guard that these terms are *not* the Picard iterates — the confusion this plan exists to correct. Composition counts verified as `2^(k-1)`, the expected total |
+| B — `U³`, must reproduce `harmonic_response` | **Gate passed**, with one finding. Harmonics 2 and 3 reproduce `harmonic_response` to floating point (`0` to `2e-16`) at every drive tested. The **fundamental differs by design**: the published form drops its `U³` correction at assembly, the graded form carries it, and the difference is verified to scale as `U²` relative to the fundamental — the signature of an `O(U³)` term, not an error. Added `GradedSpectrum` (two-sided harmonics × drive-power grading) and `graded_response`. **Design note:** substituting-and-re-truncating in the graded ring *terminates exactly* on the consistent truncation rather than converging toward it, because each pass raises the lowest new power by at least one and the filter removes the rest — so the same filter that enforces consistency also removes the unbalanced tail that makes a plain Picard iterate a different object. **Process note:** the first test point had `\|X₂/X₁\| = 0.90`, essentially at the divergence threshold, where the fundamental "correction" came out 5× the fundamental — arithmetically right, operating point meaningless. A test now guards that the test point is weakly nonlinear |
+| C — `U⁵` | **Gate passed decisively.** Against the transient cross-check, error falls monotonically with truncation order at every drive tested: at `a=0.221` HD3 goes 2.85% (`U³`) → 0.00% (`U⁵`); at `a=0.442` HD2 goes 8.40% → 0.70% → 0.05% (`U⁷`). Symbolic requirement also met — third-harmonic term count grows 2 → 7 → 16 for `U³` → `U⁵` → `U⁷`, polynomial in the order, against an iterative scheme's doubling |
+| D — worth it? | **Yes, on both criteria.** (a) Better than 2× inside the validity range — HD3 improves ~100× at `a=0.221`, where the perturbation ratio is 0.05 and the method is comfortably valid. (b) The usable range widens materially: `U³` is marginal at `a=0.442` (8–12% error) where `U⁷` reaches 0.05%. **This reverses the earlier conclusion**, which was drawn from Picard iterations rather than perturbation order |
 
 ## 7. Things already known that bear on this
 

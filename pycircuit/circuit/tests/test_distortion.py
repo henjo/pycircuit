@@ -1242,3 +1242,336 @@ def test_perturbation_terms_stay_single_monomials_symbolically():
 
     assert lengths == [2, 4, 8, 16], (
         'expected Picard iterates to double in length, got %s' % lengths)
+
+
+## ============ higher-order plan, stage A: the scalar series ============
+
+"""Stage A of ``doc/distortion_higher_order_plan.md``.
+
+Builds the perturbation terms genuinely order by order via the Faà di Bruno
+composition formula -- the thing an earlier attempt substituted Picard
+iteration for. Scalar and circuit-free by design, so the combinatorics can be
+gated on their own before harmonics are involved.
+
+The gate, declared in the plan before this code: for ``Y x + b x**2 = u``
+every term must be a *single monomial* with Catalan coefficients
+1, -1, 2, -5, 14. Anything that expands to a sum means the composition
+bookkeeping is wrong.
+"""
+
+from pycircuit.circuit.distortion import (_compositions,
+                                          composition_coefficient,
+                                          perturbation_terms)
+
+
+def _quadratic_series(order):
+    """Terms of Y x + b x**2 = u, symbolically."""
+    Y, b, u = sympy.symbols('Y b u')
+    G = 1 / Y
+    x0 = G * u
+    derivatives = {1: 2 * b * x0, 2: 2 * b, 3: 0, 4: 0, 5: 0, 6: 0}
+    return perturbation_terms(G, b * x0 ** 2, derivatives, x0, order)
+
+
+def test_compositions_enumerates_ordered_tuples():
+    """Ordered, not unordered -- collapsing them would drop multiplicities."""
+    assert sorted(_compositions(3, 1)) == [(3,)]
+    assert sorted(_compositions(3, 2)) == [(1, 2), (2, 1)]
+    assert sorted(_compositions(3, 3)) == [(1, 1, 1)]
+    assert sorted(_compositions(4, 2)) == [(1, 3), (2, 2), (3, 1)]
+    for k in range(1, 7):
+        total = sum(len(list(_compositions(k, m))) for m in range(1, k + 1))
+        assert total == 2 ** (k - 1), (
+            'compositions of %d should number 2**(k-1)' % k)
+
+
+def test_composition_formula_matches_a_direct_series_expansion():
+    """Check the formula against sympy expanding f(x0+y) itself.
+
+    Deliberately with a *concrete* f: a first version of this check used
+    symbolic Derivative placeholders, whose substitution silently failed and
+    reported the formula wrong from k=3. The formula was right; the check was
+    not.
+    """
+    eps, x0, b, c = sympy.symbols('eps x0 b c')
+    xs = sympy.symbols('x1:6')
+    f = lambda v: b * v ** 2 + c * v ** 3
+    derivatives = {m: sympy.diff(f(x0), x0, m) for m in range(1, 6)}
+    terms = [x0] + list(xs)
+
+    y = sum(eps ** n * xs[n - 1] for n in range(1, 6))
+    direct = sympy.expand(sympy.series(f(x0 + y), eps, 0, 6).removeO())
+
+    for k in range(1, 6):
+        formula = composition_coefficient(k, terms, derivatives)
+        assert sympy.simplify(sympy.expand(direct.coeff(eps, k) - formula)) == 0, (
+            'composition formula disagrees at order %d' % k)
+
+
+def test_scalar_terms_are_single_monomials_with_catalan_coefficients():
+    """The stage A gate, exactly as declared in the plan."""
+    Y, b, u = sympy.symbols('Y b u')
+    terms = _quadratic_series(5)
+    expected = [u / Y,
+                -b * u ** 2 / Y ** 3,
+                2 * b ** 2 * u ** 3 / Y ** 5,
+                -5 * b ** 3 * u ** 4 / Y ** 7,
+                14 * b ** 4 * u ** 5 / Y ** 9,
+                -42 * b ** 5 * u ** 6 / Y ** 11]
+
+    for order, (got, want) in enumerate(zip(terms, expected)):
+        assert len(sympy.Add.make_args(sympy.expand(got))) == 1, (
+            'x(%d) is not a single monomial: %s' % (order, sympy.expand(got)))
+        assert sympy.simplify(got - want) == 0, (
+            'x(%d): got %s, expected %s' % (order, sympy.simplify(got), want))
+
+
+def test_partial_sums_converge_to_the_exact_root():
+    """Numerically, the truncations must approach the true solution.
+
+    ``Y x + b x**2 = u`` has a closed-form root, so this needs no simulation
+    and no reference implementation.
+    """
+    Y, b, u = sympy.symbols('Y b u')
+    values = {Y: 2.0, b: 0.7, u: 1.0}
+    terms = [float(t.subs(values)) for t in _quadratic_series(4)]
+    exact = (-2.0 + np.sqrt(4.0 + 4 * 0.7 * 1.0)) / (2 * 0.7)
+
+    errors = [abs(sum(terms[:k + 1]) - exact) for k in range(5)]
+    assert all(errors[i] > errors[i + 1] for i in range(4)), (
+        'partial sums should improve monotonically, got %s'
+        % ['%.3e' % e for e in errors])
+
+
+def test_the_series_is_not_the_picard_iteration():
+    """Guard the distinction this whole plan exists because of.
+
+    An earlier attempt reported Picard results as perturbation results. These
+    must not silently become the same object again.
+    """
+    Y, b, u = sympy.symbols('Y b u')
+    values = {Y: 2.0, b: 0.7, u: 1.0}
+    terms = [float(t.subs(values)) for t in _quadratic_series(3)]
+
+    G, B, U = 1 / 2.0, 0.7, 1.0
+    picard = G * U
+    for _ in range(2):
+        picard = G * (U - B * picard ** 2)
+
+    assert abs(picard - sum(terms[:3])) > 1e-6, (
+        'the second Picard iterate and the second-order truncation must '
+        'differ -- they are different constructions')
+
+
+## ====== higher-order plan, stage B: harmonics + graded truncation ======
+
+"""Stage B of ``doc/distortion_higher_order_plan.md``.
+
+Adds the harmonic index and grading by power of the drive, then truncates at
+``U**3``. The gate: the result must reproduce ``harmonic_response`` exactly,
+because the published second-order form *is* the consistent ``U**3``
+truncation. If it does not, the grading is wrong and no higher-order number
+built on it can be trusted.
+
+It does, on harmonics 2 and 3, to floating point. The fundamental differs by
+design -- ``harmonic_response`` drops its ``U**3`` correction at assembly (see
+"The fundamental is not corrected" in the theory page) while the graded form
+carries it -- and that difference is verified to scale as ``U**2`` relative to
+the fundamental, which is exactly the signature of an ``O(U**3)`` term.
+"""
+
+from pycircuit.circuit.distortion import GradedSpectrum, graded_response
+
+_GR_Y0, _GR_C0, _GR_B, _GR_C = 4.4e-3, 1e-9, 0.35, 4.7
+_GR_W0 = 2 * np.pi * 1e4
+
+
+def _graded_setup(drive):
+    Y = lambda s: _GR_Y0 + s * _GR_C0
+    response = lambda s: 1.0 / Y(s)
+
+    def apply_G(harmonic, rhs):
+        return [np.asarray(rhs, dtype=complex)[0]
+                / Y(1j * harmonic.frequency((_GR_W0,)))]
+
+    published = harmonic_response(
+        apply_G, [drive],
+        CubicNonlinearity(np.array([[_GR_B]]), np.array([[_GR_C]])),
+        tones=(_GR_W0,), toolkit=numeric)
+    graded = graded_response(response, drive, [_GR_B, _GR_C], (_GR_W0,),
+                             max_power=3)
+    return published, graded
+
+
+def test_graded_spectrum_products_match_the_analytic_coefficients():
+    """The convolution must give textbook harmonic coefficients.
+
+    For x = Re[X e^{jt}]: x**2 has second-harmonic coefficient X**2/2 and DC
+    |X|**2/2; x**3 has third-harmonic X**3/4 and fundamental 3|X|**2 X/4.
+    """
+    x = GradedSpectrum.from_phasor(1, 1, 2 + 0j)
+    square, cube = x * x, x * x * x
+
+    assert abs(square.phasor(2) - 2.0) < 1e-15      # X**2/2
+    assert abs(square.phasor(0) - 2.0) < 1e-15      # |X|**2/2
+    assert abs(cube.phasor(3) - 2.0) < 1e-15        # X**3/4
+    assert abs(cube.phasor(1) - 6.0) < 1e-15        # 3|X|**2 X/4
+
+
+def test_grading_tracks_the_power_of_the_drive():
+    """Harmonic m from a single tone must first appear at exactly U**m."""
+    x = GradedSpectrum.from_phasor(1, 1, 1 + 0j)
+    assert x.powers_present(1) == [1]
+    assert (x * x).powers_present(2) == [2]
+    assert (x * x * x).powers_present(3) == [3]
+
+
+@pytest.mark.parametrize('drive', [1e-5, 1e-6, 1e-7])
+def test_graded_truncation_reproduces_the_published_form(drive):
+    """The stage B gate, on the harmonics both constructions report."""
+    published, graded = _graded_setup(drive)
+
+    for m in (2, 3):
+        want = published.amplitude((m,), 0)
+        got = graded.phasor(m)
+        assert abs(got - want) / abs(want) < 1e-12, (
+            'harmonic %d at drive %g: graded %r vs published %r'
+            % (m, drive, got, want))
+
+
+def test_the_graded_form_carries_the_fundamental_correction():
+    """And the published one does not -- verified as an O(U**3) difference.
+
+    Not a disagreement: ``harmonic_response`` drops this term deliberately.
+    Checking that the difference scales as U**2 relative to the fundamental
+    confirms it is the O(U**3) correction and not an error somewhere.
+    """
+    ratios = []
+    for drive in (1e-5, 1e-6):
+        _, graded = _graded_setup(drive)
+        linear = graded.phasor(1, max_power=1)
+        ratios.append(abs(graded.phasor(1) - linear) / abs(linear))
+
+    assert ratios[0] > 10 * ratios[1], (
+        'the correction should fall as U**2, i.e. ~100x for a decade of '
+        'drive; got %.3e -> %.3e' % tuple(ratios))
+
+
+def test_the_test_point_is_inside_the_validity_range():
+    """Guard the guard: these parameters must be weakly nonlinear.
+
+    A first attempt at this comparison used a drive giving |X2/X1| = 0.90 --
+    essentially at the divergence threshold -- where the 'correction' to the
+    fundamental came out five times the fundamental. The numbers were
+    arithmetically right and the operating point meaningless.
+    """
+    published, _ = _graded_setup(1e-5)
+    assert published.HD2(0) < 0.15, (
+        'test drive is not weakly nonlinear: HD2 = %.3f' % published.HD2(0))
+
+
+## ====== higher-order plan, stage C: does raising the order help? ======
+
+"""Stages C and D of ``doc/distortion_higher_order_plan.md``.
+
+**It helps, substantially.** Against the transient cross-check on the biased
+diode, raising the truncation from ``U**3`` to ``U**5`` improves accuracy at
+every drive, and by two orders of magnitude in the middle of the valid range.
+
+This is the opposite of what an earlier experiment concluded. That experiment
+raised *Picard iterations* rather than the perturbation order and reported
+non-monotonic behaviour; the genuine truncation is monotone. The tests below
+pin the corrected result so the earlier one cannot quietly return.
+"""
+
+import math as _math
+
+
+def _diode_taylor(highest_power):
+    """Taylor coefficients of the biased diode, quadratic term upward."""
+    VT = numeric.kboltzmann * 300 / numeric.qelectron
+    v0 = brentq_operating_point()
+    IS_eff = 1e-13 * np.exp(v0 / VT)
+    return [IS_eff / (_math.factorial(n) * VT ** n)
+            for n in range(2, highest_power + 1)]
+
+
+def brentq_operating_point():
+    from scipy.optimize import brentq
+    VT = numeric.kboltzmann * 300 / numeric.qelectron
+    return brentq(lambda v: v / 1e3 + 1e-13 * np.expm1(v / VT) - 1e-3, 0, 1)
+
+
+def _diode_graded_hd(drive, max_power):
+    VT = numeric.kboltzmann * 300 / numeric.qelectron
+    v0 = brentq_operating_point()
+    alpha = (1e-13 / VT) * np.exp(v0 / VT)
+    w0 = 2 * np.pi * 1e4
+    response = lambda s: 1.0 / (1 / 1e3 + s * 1e-9 + alpha)
+
+    g = graded_response(response, drive, _diode_taylor(max_power), (w0,),
+                        max_power=max_power)
+    fundamental = abs(g.phasor(1))
+    return abs(g.phasor(2)) / fundamental, abs(g.phasor(3)) / fundamental
+
+
+@pytest.mark.parametrize('drive', [1e-4, 2e-4])
+def test_higher_truncation_improves_accuracy(drive):
+    """The stage C gate: U**5 must beat U**3 against the transient.
+
+    Uses the measurement helper from test_distortion_vs_transient, so the
+    reference is a real simulation and not another perturbation calculation.
+    """
+    from pycircuit.circuit.tests.test_distortion_vs_transient import _measure
+
+    hd2_meas, hd3_meas, _, _ = _measure(drive)
+    err = {}
+    for power in (3, 5):
+        hd2, hd3 = _diode_graded_hd(drive, power)
+        err[power] = (abs(hd2_meas / hd2 - 1), abs(hd3_meas / hd3 - 1))
+
+    assert err[5][0] < err[3][0], (
+        'HD2 at drive %g: U**5 error %.4f should beat U**3 error %.4f'
+        % (drive, err[5][0], err[3][0]))
+    assert err[5][1] < err[3][1], (
+        'HD3 at drive %g: U**5 error %.4f should beat U**3 error %.4f'
+        % (drive, err[5][1], err[3][1]))
+
+
+def test_the_improvement_is_large_enough_to_be_worth_it():
+    """Stage D's gate: better than 2x inside the validity range.
+
+    Declared in the plan before the measurement, so that "it helps a little"
+    would have been recorded as a negative result rather than argued up.
+    """
+    from pycircuit.circuit.tests.test_distortion_vs_transient import _measure
+
+    drive = 1e-4                      # perturbation ratio ~0.05, comfortably valid
+    hd2_meas, hd3_meas, _, _ = _measure(drive)
+
+    hd2_3, hd3_3 = _diode_graded_hd(drive, 3)
+    hd2_5, hd3_5 = _diode_graded_hd(drive, 5)
+
+    gain_hd2 = abs(hd2_meas / hd2_3 - 1) / max(abs(hd2_meas / hd2_5 - 1), 1e-12)
+    assert gain_hd2 > 2.0, (
+        'stage D wants better than 2x; HD2 improved only %.2fx' % gain_hd2)
+
+
+def test_symbolic_growth_stays_polynomial_with_order():
+    """The other half of stage C: the method must remain symbolically usable.
+
+    Terms in the third harmonic go 2 -> 7 -> 16 for truncations U**3, U**5,
+    U**7 -- polynomial in the order. An iterative scheme doubles instead (see
+    the limits page), which is what would make it unusable symbolically.
+    """
+    Y0, b, c, d, e, A = sympy.symbols('Y0 b c d e A')
+    w0 = sympy.Symbol('w0', positive=True)
+    response = lambda s: 1 / Y0
+
+    counts = []
+    for power, coeffs in ((3, [b, c]), (5, [b, c, d, e])):
+        g = graded_response(response, A, coeffs, (w0,), max_power=power)
+        counts.append(len(sympy.Add.make_args(sympy.expand(g.phasor(3)))))
+
+    assert counts[0] < counts[1] < 4 * counts[0], (
+        'third-harmonic term count should grow polynomially, got %s' % counts)

@@ -441,6 +441,242 @@ class CompositeNonlinearity:
             'doc/distortion_plan.md section 7.')
 
 
+def _compositions(k, m):
+    """Ordered ``m``-tuples of positive integers summing to ``k``.
+
+    These index the ways an order-``k`` term can be assembled from ``m``
+    lower-order factors, which is what the composition formula sums over.
+    Ordered, not unordered: expanding ``(sum_n x_n)**m`` genuinely produces
+    each ordering, so collapsing them would drop multiplicities.
+    """
+    if m == 1:
+        yield (k,)
+        return
+    for first in range(1, k - m + 2):
+        for rest in _compositions(k - first, m - 1):
+            yield (first,) + rest
+
+
+def composition_coefficient(k, terms, derivatives):
+    """The ``eps**k`` coefficient of ``f(x0 + sum_n eps**n x_n)``.
+
+    This is the Faà di Bruno / Bell-polynomial construction:
+
+    .. code-block:: text
+
+        z_k = sum_{m=1..k}  f^(m)(x0)/m!  *  sum over ordered (j_1..j_m),
+                                                 sum j_i = k,
+                                             of  x_{j_1} * ... * x_{j_m}
+
+    Verified symbolically against a direct series expansion through fifth
+    order.  (A first attempt at that check reported failure from k=3; the
+    fault was a ``Derivative`` substitution in the *check* rather than in the
+    formula, so verify with a concrete ``f``, never with symbolic derivative
+    placeholders.)
+
+    Args:
+        k: The order wanted.
+        terms: ``[x_0, x_1, ...]``, indexed by perturbation order.
+        derivatives: ``{m: f^(m)(x_0)}`` for ``m >= 1``.
+
+    Returns:
+        ``z_k``.
+    """
+    import math
+
+    total = 0
+    for m in range(1, k + 1):
+        inner = 0
+        for comp in _compositions(k, m):
+            product = 1
+            for j in comp:
+                product = product * terms[j]
+            inner = inner + product
+        if inner != 0:
+            total = total + derivatives[m] / math.factorial(m) * inner
+    return total
+
+
+def perturbation_terms(G, f_at_x0, derivatives, x0, order):
+    """Successive perturbation terms ``x_0 ... x_order`` for a scalar problem.
+
+    Solves ``Y x + f(x) = u`` order by order, from ``x = G(u - f(x))``:
+
+    .. code-block:: text
+
+        x_0 = G u                      (given as x0)
+        x_k = -G * z_{k-1}             for k >= 1
+
+    This is the genuine order-by-order expansion, **not** an iteration: each
+    term is a distinct power of the perturbation parameter, and the partial
+    sums are consistent truncations.  Contrast
+    :func:`harmonic_response_spectral`, whose ``order`` counts Picard
+    iterations and whose iterates carry an unbalanced tail.
+
+    Scalar and circuit-free by design -- this is stage A of
+    ``doc/distortion_higher_order_plan.md``, isolating the combinatorics from
+    the harmonic bookkeeping so each can be gated separately.
+
+    Args:
+        G: The linear operator, a scalar here.
+        f_at_x0: ``f(x_0)``, the nonlinearity at the generating solution.
+        derivatives: ``{m: f^(m)(x_0)}`` for ``m >= 1``.
+        x0: The generating (linear) solution.
+        order: Highest term index wanted.
+
+    Returns:
+        ``[x_0, x_1, ..., x_order]``.
+    """
+    terms = [x0]
+    for k in range(1, order + 1):
+        z = f_at_x0 if k == 1 else composition_coefficient(k - 1, terms,
+                                                           derivatives)
+        terms.append(-G * z)
+    return terms
+
+
+class GradedSpectrum:
+    """A periodic signal graded by harmonic index *and* power of the drive.
+
+    Terms are ``{(m, p): coefficient}`` where ``m`` is a harmonic index and
+    ``p`` the power of the drive amplitude that term carries.  Harmonics are
+    stored **two-sided** (``m`` may be negative, with
+    ``c[-m] = conj(c[m])`` for a real signal), because then multiplying two
+    signals is a plain convolution in ``m`` rather than a case analysis over
+    sum and difference frequencies.
+
+    **Why grade by power of the drive at all.**  Truncating a perturbation
+    expansion consistently means keeping *all* terms up to a given power of
+    the drive and none beyond it -- and a single perturbation order spans
+    several powers, while a single power draws on several orders.  Carrying
+    ``p`` explicitly makes truncation one uniform filter instead of something
+    the implementer has to reason about term by term.  Getting that wrong is
+    what made the spectral experiment worse than the published method; see
+    ``doc/src/circuit/distortion_limits.rst``.
+
+    One-sided phasors, as the rest of this module uses, relate by
+    ``X_m = 2 c_m`` for ``m >= 1`` and ``X_0 = c_0``.
+    """
+
+    __slots__ = ('terms',)
+
+    def __init__(self, terms=None):
+        self.terms = {k: v for k, v in (terms or {}).items() if v != 0}
+
+    @classmethod
+    def from_phasor(cls, harmonic, power, phasor):
+        """A single one-sided harmonic, stored two-sided."""
+        if harmonic == 0:
+            return cls({(0, power): phasor})
+        half = phasor / 2
+        return cls({(harmonic, power): half,
+                    (-harmonic, power): _conjugate(half)})
+
+    def phasor(self, harmonic, max_power=None):
+        """One-sided phasor of ``harmonic``, summed over kept powers."""
+        total = 0
+        for (m, p), v in self.terms.items():
+            if m == harmonic and (max_power is None or p <= max_power):
+                total = total + v
+        return total if harmonic == 0 else 2 * total
+
+    def powers_present(self, harmonic):
+        return sorted(p for (m, p) in self.terms if m == harmonic)
+
+    def __add__(self, other):
+        out = dict(self.terms)
+        for k, v in other.terms.items():
+            out[k] = out.get(k, 0) + v
+        return GradedSpectrum(out)
+
+    def __mul__(self, other):
+        """Convolution in the harmonic index, addition in the drive power."""
+        out = {}
+        for (m1, p1), v1 in self.terms.items():
+            for (m2, p2), v2 in other.terms.items():
+                key = (m1 + m2, p1 + p2)
+                out[key] = out.get(key, 0) + v1 * v2
+        return GradedSpectrum(out)
+
+    def scaled(self, factor):
+        return GradedSpectrum({k: v * factor for k, v in self.terms.items()})
+
+    def truncated(self, max_power):
+        """Drop every term above ``max_power`` -- the consistency filter."""
+        return GradedSpectrum({k: v for k, v in self.terms.items()
+                               if k[1] <= max_power})
+
+    def through(self, response, tones):
+        """Push each component back through a linear response at its own frequency.
+
+        ``response(s)`` is evaluated at ``s = j*(m*w)`` for each harmonic
+        ``m`` present -- the step that makes this an analysis rather than a
+        solver.
+        """
+        out = {}
+        for (m, p), v in self.terms.items():
+            out[(m, p)] = v * response(1j * m * tones[0])
+        return GradedSpectrum(out)
+
+    def __repr__(self):
+        return 'GradedSpectrum(%d terms, harmonics %s)' % (
+            len(self.terms), sorted({m for m, _ in self.terms}))
+
+
+def _conjugate(v):
+    try:
+        return v.conjugate()
+    except AttributeError:
+        return v
+
+
+def graded_response(response, drive, coefficients, tones, max_power):
+    """Consistent perturbation truncation at a chosen power of the drive.
+
+    Solves ``x = G(u - f(x))`` in the graded ring of :class:`GradedSpectrum`,
+    where ``f(v) = coefficients[0]*v**2 + coefficients[1]*v**3 + ...``.
+
+    **This is a genuine truncation, not an iteration with a tail**, and the
+    grading is what makes the difference.  Substituting and re-truncating
+    looks like Picard, but each pass raises the lowest new power of the drive
+    by at least one (``f`` is strictly nonlinear, so ``f(x) ~ U**2`` when
+    ``x ~ U``), and the filter discards everything above ``max_power``.  After
+    enough passes nothing below the cut can change again: the iteration
+    *terminates exactly* on the consistent ``U**max_power`` truncation rather
+    than converging toward something.  The unbalanced tail that makes a plain
+    Picard iterate a different object is removed by the same filter that
+    enforces consistency.
+
+    Args:
+        response: ``response(s) -> complex``, the linear response ``1/Y(s)``.
+        drive: Source phasor at the fundamental.
+        coefficients: Polynomial coefficients from the quadratic term up.
+        tones: Angular frequencies; single tone.
+        max_power: Highest power of the drive to keep.
+
+    Returns:
+        :class:`GradedSpectrum` truncated at ``max_power``.
+    """
+    x0 = GradedSpectrum.from_phasor(1, 1, drive * response(1j * tones[0]))
+    x = x0
+
+    ## Each pass can only introduce terms one power higher, so max_power
+    ## passes suffice; the loop breaks as soon as nothing below the cut moves.
+    for _ in range(max_power):
+        f = GradedSpectrum()
+        power_of_x = x
+        for c in coefficients:
+            power_of_x = power_of_x * x           # v**2, then v**3, ...
+            power_of_x = power_of_x.truncated(max_power)
+            if c != 0:
+                f = f + power_of_x.scaled(c)
+        nxt = (x0 + f.scaled(-1).through(response, tones)).truncated(max_power)
+        if nxt.terms == x.terms:
+            break
+        x = nxt
+    return x
+
+
 def harmonic_response(apply_G, U, nonlinearity, tones, toolkit):
     """Harmonics of a weakly nonlinear circuit, to second perturbation order.
 

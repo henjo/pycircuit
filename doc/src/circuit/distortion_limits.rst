@@ -86,10 +86,36 @@ relative to the linear solution, order by order, regenerated on every build:
 
 Below :math:`\ln 2` the terms fall geometrically and extra orders buy a great
 deal — at :math:`a = 0.044` each term is some twenty times smaller than the
-last.  Approaching :math:`\ln 2` they barely fall and extra orders buy little.
-Above it **the terms grow**: the series diverges, and no number of additional
-terms recovers anything.  A prediction that is 50% wrong there cannot be
-repaired by working harder at it.
+last.  Approaching :math:`\ln 2` they barely fall.  Above it **the terms
+grow** and the series diverges.
+
+.. important::
+
+   **That statement is about the infinite series, and an earlier version of
+   this page wrongly extended it to the truncations.**  It said that above the
+   bound "no number of additional terms recovers anything".  That is false,
+   and measurably so: at :math:`a = 0.88`, where the contraction factor is
+   1.34 and the series is genuinely divergent, the error of the *truncated*
+   result still falls from 67.7% at :math:`U^3` to 0.86% at :math:`U^{11}`.
+
+   This is ordinary asymptotic-series behaviour.  A divergent series can have
+   truncations that improve up to an optimal order and worsen only beyond it,
+   and the optimal order gets earlier as the drive rises.  So the practical
+   rule is not a hard cutoff:
+
+   * **Below the contraction bound** — the series converges and higher order
+     converges with it.
+   * **Above it** — higher order still helps, up to a drive-dependent optimum,
+     after which it degrades.  Measured by watching successive truncations of
+     the third harmonic: at :math:`a = 1.33` (contraction 2.6) the change
+     between orders falls to 4.7e-2 and then *rises* to 8.9e-2, which is the
+     optimum being passed.  The optimum arrives earlier as the drive rises —
+     around :math:`U^{19}` at :math:`a = 0.88` against :math:`U^{17}` at
+     :math:`a = 1.33` — exactly as an asymptotic series behaves.
+
+   The bound remains the right thing to *report*, because it marks where
+   accuracy stops being guaranteed.  It is not the point where higher order
+   becomes useless.
 
 For a junction at room temperature :math:`a < \ln 2` means a signal swing
 below roughly 17 mV.
@@ -426,6 +452,23 @@ measure what raising the order and the harmonic cutoff actually buy —
 which, as the tables above show, is much less than one would expect, and
 below the bound is very nearly nothing, because second order has already
 converged.
+
+.. warning::
+
+   **The section below measures Picard iterations, not perturbation order,
+   and its conclusion has been superseded.**  Raising the *genuine*
+   perturbation order — building the terms by the composition formula and
+   truncating consistently by power of the drive — improves accuracy
+   monotonically and substantially: against the transient cross-check on a
+   biased diode, HD3 error at a drive ratio of 0.05 falls from 2.85% at
+   :math:`U^3` to under 0.01% at :math:`U^5`.  See
+   ``doc/distortion_higher_order_plan.md`` (stages C and D) and
+   ``test_distortion.py``.
+
+   What follows remains a correct account of what *Picard iteration under a
+   harmonic cutoff* does, which is a different and less useful thing.  It is
+   kept because the distinction is exactly what an earlier version of this
+   work got wrong.
 
 Raising the order: the answer is "yes, but only all the way"
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
