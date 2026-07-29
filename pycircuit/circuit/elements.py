@@ -311,7 +311,7 @@ class IS(Circuit):
 
     """
     instparams = [Parameter(name='i', desc='DC Current',
-                            unit='A', default=1e-3),
+                            unit='A', default=0),
                   Parameter(name='iac', desc='AC analysis current amplitude', 
                             unit='A', default=0),
                   Parameter(name='phase', desc='AC analysis phase', 
