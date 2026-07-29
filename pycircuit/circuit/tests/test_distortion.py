@@ -923,3 +923,178 @@ def test_taylor_coefficients_track_the_operating_point():
         'b did not track the operating point: ratio %.3e, expected %.3e'
         % (b_biased / b_zero, expected))
     assert abs(c_biased / c_zero / expected - 1) < 0.05
+
+
+## --------------------------------------- higher-order polynomial fits
+
+@pytest.mark.parametrize('seed', [0, 1, 2])
+def test_polynomial_harmonic_sources_match_numerical_fourier(seed):
+    """Fifth-order coefficients must be right, not just plausible.
+
+    ``x**4`` feeds the second harmonic and ``x**5`` the third, so the quartic
+    and quintic coefficients change ``F2``/``F3`` even though the recurrence
+    keeps no harmonic above the third.  Checked against direct numerical
+    Fourier extraction rather than against a re-derivation of the same
+    algebra.
+    """
+    from pycircuit.circuit.distortion import PolynomialNonlinearity
+
+    rng = np.random.default_rng(seed)
+    coefficients = list(rng.normal(size=4))
+    X = complex(rng.normal(), rng.normal())
+
+    F2, F3, B1_apply = PolynomialNonlinearity(coefficients).harmonic_sources(
+        [X], numeric)
+
+    N = 8192
+    theta = 2 * np.pi * np.arange(N) / N
+    x = np.real(X * np.exp(1j * theta))
+    f = sum(c * x ** (k + 2) for k, c in enumerate(coefficients))
+    fprime = sum((k + 2) * c * x ** (k + 1) for k, c in enumerate(coefficients))
+    ref = lambda g, m: 2 * (g * np.exp(-1j * m * theta)).mean()
+
+    assert abs(F2[0] - ref(f, 2)) / abs(ref(f, 2)) < 1e-10
+    assert abs(F3[0] - ref(f, 3)) / abs(ref(f, 3)) < 1e-10
+    assert abs(B1_apply([1.0])[0] - ref(fprime, 1)) / abs(ref(fprime, 1)) < 1e-10
+
+
+def test_cubic_is_the_three_term_special_case():
+    """A polynomial truncated at third order must equal ``CubicNonlinearity``."""
+    from pycircuit.circuit.distortion import PolynomialNonlinearity
+
+    b, c = 3e-3, 7e-3
+    X = [0.01 + 0.003j]
+    poly_F2, poly_F3, poly_B = PolynomialNonlinearity([b, c]).harmonic_sources(
+        X, numeric)
+    cub_F2, cub_F3, cub_B = CubicNonlinearity(
+        np.array([[b]]), np.array([[c]])).harmonic_sources(X, numeric)
+
+    assert abs(poly_F2[0] - cub_F2[0]) < 1e-18
+    assert abs(poly_F3[0] - cub_F3[0]) < 1e-18
+    assert abs(poly_B([1.0])[0] - cub_B([1.0])[0]) < 1e-18
+
+
+def test_quintic_of_an_exponential_beats_its_cubic_fit():
+    """Fifth order must move the answer toward the exact Bessel result.
+
+    The point of the class: it separates device-model truncation from
+    perturbation truncation, so the two can be attributed independently.
+    """
+    from pycircuit.circuit.distortion import PolynomialNonlinearity
+
+    I_S, VT = 1e-6, 25e-3
+    X = [8e-3 + 0j]
+
+    cubic = PolynomialNonlinearity.taylor_of_exponential(I_S, VT, 3)
+    quintic = PolynomialNonlinearity.taylor_of_exponential(I_S, VT, 5)
+    exact = ExponentialNonlinearity(I_S, VT, port=0, n=1)
+
+    f2 = lambda nl: abs(nl.harmonic_sources(X, numeric)[0][0])
+    gap_cubic = abs(f2(cubic) - f2(exact))
+    gap_quintic = abs(f2(quintic) - f2(exact))
+
+    assert gap_quintic < gap_cubic, (
+        'the quintic fit should be closer to the exact exponential than the '
+        'cubic one (gaps %.3e vs %.3e)' % (gap_quintic, gap_cubic))
+
+
+def test_orders_beyond_five_are_refused():
+    """Silently dropping a term that feeds the kept harmonics is not acceptable."""
+    from pycircuit.circuit.distortion import PolynomialNonlinearity
+
+    with pytest.raises(NotImplementedError):
+        PolynomialNonlinearity([1.0, 2.0, 3.0, 4.0, 5.0])
+
+
+## ------------------------------ harmonic cutoff vs consistent truncation
+
+"""The published truncation is principled; restoring its dropped terms hurts.
+
+``harmonic_response`` keeps only the leading ``B1 X2`` term of the
+second-order convolution. ``harmonic_response_spectral`` keeps all of them up
+to a cutoff. The instinct is that the latter must be more accurate. It is not:
+the restored terms are ``O(U**4)``, third-order perturbation also contributes
+at ``O(U**4)``, and restoring some while omitting others breaks the
+expansion's consistency.
+"""
+
+_SPEC_IS, _SPEC_VT = 1e-6, 25e-3
+
+
+def _spectral_setup():
+    from pycircuit.circuit.distortion import harmonic_response_spectral
+    alpha = _SPEC_IS / _SPEC_VT
+    w0 = 2 * np.pi * 1e4
+    Y = lambda s: 1e-3 + s * 1e-9 + alpha
+    apply_G = lambda h, rhs: [np.asarray(rhs, dtype=complex)[0]
+                              / Y(1j * h.frequency((w0,)))]
+    f = lambda v: _SPEC_IS * (np.expm1(v / _SPEC_VT) - v / _SPEC_VT)
+    fp = lambda v: (_SPEC_IS / _SPEC_VT) * np.expm1(v / _SPEC_VT)
+    return harmonic_response_spectral, apply_G, f, fp, w0
+
+
+def test_spectral_and_truncated_agree_as_the_drive_vanishes():
+    """The two must coincide at small signal, or one of them is simply wrong.
+
+    The terms the truncation drops are higher order in the drive, so they
+    vanish faster than the terms it keeps. This is the check that the
+    spectral implementation is sound before using it to draw a conclusion.
+    """
+    spectral, apply_G, f, fp, w0 = _spectral_setup()
+    exact = ExponentialNonlinearity(_SPEC_IS, _SPEC_VT, port=0, n=1)
+
+    ## Drives chosen so the gap is resolvable: below ~2e-6 the two agree to
+    ## floating-point, which would make a "decreasing" assertion vacuous.
+    gaps = []
+    for drive in (1.6e-5, 4e-6, 1e-6):
+        trunc = harmonic_response(apply_G, [drive], exact,
+                                  tones=(w0,), toolkit=numeric)
+        spec = spectral(apply_G, [drive], f, fp, (w0,), numeric, n_harmonics=3)
+        gaps.append(abs(spec.HD3(0) / trunc.HD3(0) - 1))
+
+    assert gaps[0] > gaps[1] > gaps[2], (
+        'the two should converge as the drive shrinks, got %s'
+        % ['%.5f' % g for g in gaps])
+    assert gaps[-1] < 1e-3, 'still %.5f apart at small signal' % gaps[-1]
+
+
+def test_doubling_the_harmonic_cutoff_changes_little():
+    """Harmonics above the third barely feed back at second order.
+
+    Pinned because it is the cheap thing to try when a prediction is poor,
+    and it does not help -- worth knowing before spending effort on it.
+    """
+    spectral, apply_G, f, fp, w0 = _spectral_setup()
+    drive = 5e-7
+
+    three = spectral(apply_G, [drive], f, fp, (w0,), numeric, n_harmonics=3)
+    six = spectral(apply_G, [drive], f, fp, (w0,), numeric, n_harmonics=6)
+
+    assert abs(six.HD2(0) / three.HD2(0) - 1) < 0.01
+    assert abs(six.HD3(0) / three.HD3(0) - 1) < 0.05
+
+
+def test_restoring_dropped_terms_moves_the_answer_at_moderate_drive():
+    """The inconsistent-truncation effect must be real and O(U**2) relative.
+
+    Not asserting which is *better* here -- that needs the transient
+    reference, and ``test_distortion_vs_transient`` has it. This pins that
+    the restored terms are not negligible, and that their relative size grows
+    with drive as an O(U**4) contribution should.
+    """
+    spectral, apply_G, f, fp, w0 = _spectral_setup()
+    exact = ExponentialNonlinearity(_SPEC_IS, _SPEC_VT, port=0, n=1)
+
+    def relative_gap(drive):
+        trunc = harmonic_response(apply_G, [drive], exact,
+                                  tones=(w0,), toolkit=numeric)
+        spec = spectral(apply_G, [drive], f, fp, (w0,), numeric, n_harmonics=3)
+        return abs(spec.HD2(0) / trunc.HD2(0) - 1)
+
+    ## Doubling the drive should quadruple the gap if it is O(U**4) sitting
+    ## beside an O(U**2) leading term.
+    small, large = relative_gap(4e-6), relative_gap(8e-6)
+    assert 3.0 < large / small < 5.0, (
+        'the restored terms should grow as U**2 relative to the leading one, '
+        'i.e. ~4x for a doubled drive; got %.4f -> %.4f (%.2fx)'
+        % (small, large, large / small))

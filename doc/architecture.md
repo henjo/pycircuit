@@ -656,6 +656,50 @@ semantics P9 established, pinned by `test_nonlinear_multivariable` in
 - Comments left mid-thought in production code, e.g. `elements.py` VCVS_limited:
   *"but wait, the plan is to vectorize! ... Let's see if tests pass."*
 
+### P15 — one test is 70% of the suite's runtime *(open)*
+
+`test_analysis_transient_stress.py::test_stress_stiff_rlc_pulse` takes
+**~266 s**, out of a full-suite total of ~380 s. Every other test in the
+project put together accounts for roughly 25 s.
+
+It is not a regression. The timing was measured at HEAD and again at a
+`git worktree` checkout of a commit several fixes earlier, identical both
+places, when a change was suspected of having caused it. It is a property of
+the test as written, and it is why the suite needs `--timeout=300` rather than
+the default 120 — see the note in the running-tests recipe.
+
+Where the cost comes from, for anyone picking this up:
+
+- `tend=25e-6` with `timestep=1e-9` asks for 25 000 steps *before* adaptivity
+  has any say.
+- `_compare_methods` then runs the whole thing **twice** — once with
+  `coupled_lte=False` and once with `True` — since comparing the two step
+  controllers is the point of the file.
+- The circuit is genuinely stiff (`R=1`, `L=1 mH`, `C=1 nF`, with 1 µs pulse
+  edges), so the adaptive controller has real work to do at every edge.
+
+**It would be good to reduce this**, and there are three plausible routes,
+none of them yet tried:
+
+1. **Start with a larger `timestep`.** It is the *initial* step; the adaptive
+   controller is supposed to find its own. If 1 ns is merely a conservative
+   opening guess rather than a requirement, raising it may cost nothing.
+   Check first whether the step controller actually converges to the same
+   trajectory from a coarser start — that is a measurement, not an assumption.
+2. **Shorten `tend`.** The assertion depends on landing at 25 µs inside the
+   second pulse (20–30 µs is high), so this needs the pulse period changed
+   too, not just the end time.
+3. **Mark it slow and exclude it by default** (`@pytest.mark.slow`), keeping
+   it in full runs. This takes the routine suite from ~6.5 min to about 2 min
+   and costs nothing analytically — but it is a change to how the suite
+   behaves for everyone, so it is a decision rather than a cleanup.
+
+Route 1 is the cheapest to evaluate and the only one that might be free.
+Whatever is done, the guard to keep is that the test's *purpose* — comparing
+the adaptive and coupled step controllers on a stiff circuit — survives; a
+faster test that no longer stresses the controller would be worse than a slow
+one that does.
+
 ### P13 — test coverage is shaped inversely to risk *(the doctest gap fixed; the rest stays open)*
 
 Re-measured 2026-07-28 rather than trusted: 511 tests, 180 of them (35%,
@@ -881,6 +925,12 @@ deliberately left as an open architecture question rather than a queued
 task. If this document is being read to decide what to work on next, there
 isn't a next item here; it means either picking up one of those two open
 questions, or something not yet surveyed at all.
+
+**P15 (one test is 70% of the suite runtime) is open**, added 2026-07-29
+while working on the distortion analysis. It is a cost problem rather than a
+correctness one — the test passes and measures something worth measuring —
+so it is recorded rather than fixed, with three candidate routes and a note
+on which is cheapest to evaluate.
 
 ## 8. Conventions
 

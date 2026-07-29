@@ -202,6 +202,71 @@ class CubicNonlinearity:
         return F_2m1, F_20, F_1m1, mix, X01c
 
 
+class PolynomialNonlinearity:
+    """A single-port polynomial nonlinearity of arbitrary order.
+
+    ``f(v) = c[0]*v**2 + c[1]*v**3 + c[2]*v**4 + ...`` -- coefficients start at
+    the quadratic term, since a strictly nonlinear ``f`` has no linear part.
+
+    Orders above three matter even though the recurrence keeps only harmonics
+    up to the third: ``v**4`` contributes to the *second* harmonic and
+    ``v**5`` to the third.  Raising the polynomial order is therefore a
+    different axis from raising the harmonic order -- it sharpens the
+    harmonics already being computed rather than adding new ones.
+
+    For a drive ``x = Re[X e^{jt}]`` with ``A = |X|`` the standard cosine
+    power expansions give
+
+    .. code-block:: text
+
+        F2 = (X**2/2)(c2 + c4 A**2 + ...)
+        F3 = (X**3/4)(c3 + (5/4) c5 A**2 + ...)
+        B1 =  X      (2 c2 + 3 c4 A**2 + ...)
+
+    which this implements up to fifth order.  Beyond that it raises rather
+    than silently dropping terms.
+    """
+
+    def __init__(self, coefficients):
+        self.c = list(coefficients)
+        if len(self.c) > 4:
+            raise NotImplementedError(
+                'PolynomialNonlinearity is derived to fifth order; a %d-order '
+                'term would also feed the harmonics kept here and cannot be '
+                'ignored silently.' % (len(self.c) + 1))
+
+    def _padded(self):
+        c = self.c + [0] * (4 - len(self.c))
+        return c[0], c[1], c[2], c[3]        # c2, c3, c4, c5
+
+    def harmonic_sources(self, X1, toolkit):
+        c2, c3, c4, c5 = self._padded()
+        X = X1[0]
+        A2 = abs(X) ** 2
+        F2 = [(X ** 2 / 2) * (c2 + c4 * A2)]
+        F3 = [(X ** 3 / 4) * (c3 + 1.25 * c5 * A2)]
+        b1 = X * (2 * c2 + 3 * c4 * A2)
+        return F2, F3, (lambda vec: [b1 * vec[0]])
+
+    def intermodulation_sources(self, X10, X01, toolkit):
+        raise NotImplementedError(
+            'Two-tone for a general polynomial is not derived here; use '
+            'CubicNonlinearity, whose two-tone case the sources cover.')
+
+    @classmethod
+    def taylor_of_exponential(cls, I_S, V_T, order=5):
+        """Coefficients of ``I_S(e^{v/V_T} - 1 - v/V_T)`` up to ``order``.
+
+        Handy for asking how much of a distortion error is the *device model*
+        being truncated rather than the perturbation series: compare this
+        against :class:`ExponentialNonlinearity`, which has no such
+        truncation.
+        """
+        import math
+        return cls([I_S / (math.factorial(n) * V_T ** n)
+                    for n in range(2, order + 1)])
+
+
 class ExponentialNonlinearity:
     r"""A junction nonlinearity ``f(v) = I_S (e^{v/V_T} - 1 - v/V_T)``.
 
@@ -495,6 +560,111 @@ def intermodulation_response(apply_G, U1, U2, nonlinearity, tones, toolkit):
         Harmonic(('first',)): first,
         Harmonic(('second',)): second,
     }, tones, toolkit)
+
+
+def harmonic_response_spectral(apply_G, U, f, fprime, tones, toolkit,
+                               n_harmonics=3, n_samples=1024, order=2):
+    """Perturbation with explicit harmonic cutoff and perturbation order.
+
+    :func:`harmonic_response` implements the published recurrence: second
+    perturbation order, truncated at the third power of the drive, keeping
+    only the one second-order convolution term that reaches ``U**3``.  This
+    variant makes both truncations adjustable so their effects can be
+    measured separately.
+
+    ``n_harmonics`` is the Fourier cutoff.  ``order`` is the number of
+    perturbation steps.
+
+    **How ``order`` is realised.**  ``order=2`` reproduces the two-step
+    structure explicitly (nonlinearity on the linear solution, then derivative
+    times that correction).  Higher orders are taken by *Picard iteration* on
+    ``x = G(u - f(x))``, which the 2005 reference proves agrees with the
+    perturbation series term by term at each order (its Theorems 1 and 2).
+    Each additional iteration therefore adds a perturbation order.
+
+    **What raising it does and does not buy.**  The iteration converges only
+    while ``|G f'(x)| < 1``; above that threshold it diverges and additional
+    orders make matters worse rather than better.  And note that neither this
+    nor ``n_harmonics`` produces a *consistent* truncation in the drive
+    amplitude the way the published second-order form does -- see
+    ``doc/src/circuit/distortion.rst``, "What the truncation is actually
+    truncating".  This function exists to measure those effects, not to
+    supersede :func:`harmonic_response`.
+
+    Returns:
+        :class:`DistortionSolution` carrying harmonics 1..``n_harmonics``.
+    """
+    import numpy as np
+
+    if len(tones) != 1:
+        raise ValueError('harmonic_response_spectral is single-tone')
+    if order < 1:
+        raise ValueError('order must be at least 1')
+
+    X1 = np.asarray(apply_G(Harmonic((1,)), U), dtype=complex)
+    n_nodes = len(X1)
+    theta = 2 * np.pi * np.arange(n_samples) / n_samples
+
+    def waveform(spectrum):
+        out = np.zeros((n_nodes, n_samples))
+        for m, vec in spectrum.items():
+            for i in range(n_nodes):
+                out[i] += np.real(vec[i] * np.exp(1j * m * theta))
+        return out
+
+    def coefficients(signal, m):
+        c = 2 * (signal * np.exp(-1j * m * theta)).mean(axis=1)
+        return c / 2 if m == 0 else c
+
+    def solve_all(F_of_m):
+        """Push each harmonic of a drive back through G at its own frequency."""
+        return {m: np.asarray(apply_G(Harmonic((m,)), -F_of_m(m)), dtype=complex)
+                for m in range(0, n_harmonics + 1)}
+
+    ## Order 1: the nonlinearity on the linear solution.
+    x0 = waveform({1: X1})
+    f0 = f(x0)
+    first = solve_all(lambda m: coefficients(f0, m))
+
+    if order == 1:
+        total = {Harmonic((m,)): (X1 if m == 1 else first[m])
+                 for m in range(1, n_harmonics + 1)}
+        return DistortionSolution(total, tones, toolkit)
+
+    ## Order 2: derivative times the whole first-order correction.
+    x1 = waveform({m: v for m, v in first.items() if m > 0})
+    x1 += np.real(first[0])[:, None]
+    f1 = fprime(x0) * x1
+    second = solve_all(lambda m: coefficients(f1, m))
+
+    total = {}
+    for m in range(1, n_harmonics + 1):
+        base = X1 if m == 1 else first[m]
+        total[Harmonic((m,))] = base + (0 if m == 1 else second[m])
+
+    if order == 2:
+        return DistortionSolution(total, tones, toolkit)
+
+    ## Orders beyond the second: continue by Picard iteration on the full
+    ## equation, each pass adding one perturbation order.
+    spectrum = {0: np.zeros(n_nodes, dtype=complex)}
+    spectrum.update({m: total[Harmonic((m,))] for m in
+                     range(1, n_harmonics + 1)})
+    Uvec = np.asarray(U, dtype=complex)
+
+    for _ in range(order - 2):
+        xt = waveform({m: v for m, v in spectrum.items() if m > 0})
+        xt += np.real(spectrum[0])[:, None]
+        ft = f(xt)
+        drive = {m: coefficients(ft, m) for m in range(0, n_harmonics + 1)}
+        drive[1] = drive[1] - Uvec
+        spectrum = {m: np.asarray(apply_G(Harmonic((m,)), -drive[m]),
+                                  dtype=complex)
+                    for m in range(0, n_harmonics + 1)}
+
+    return DistortionSolution(
+        {Harmonic((m,)): spectrum[m] for m in range(1, n_harmonics + 1)},
+        tones, toolkit)
 
 
 def _negate(vec):
