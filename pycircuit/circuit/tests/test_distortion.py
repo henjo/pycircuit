@@ -2237,3 +2237,61 @@ def test_biquad_phase_and_waveform_match_the_ode_integration():
             rebuilt = rebuilt + np.real(phasor*np.exp(1j*m*w*ts))
     peak = np.max(np.abs(sol.y[0]))
     assert np.max(np.abs(rebuilt - sol.y[0]))/peak < 1e-8
+
+
+def test_u3_cannot_resolve_gain_deviation_at_a_resonant_peak():
+    """Why ``U**3`` reports expansion where the circuit compresses.
+
+    Driven exactly at the centre of a high-``Q`` resonator, the cubic
+    correction to the fundamental comes out in **quadrature** -- it rotates
+    the phasor rather than shrinking it, which is the Duffing detuning this
+    circuit is known for.  A rotation changes the magnitude only at second
+    order, so the leading gain deviation is ``O(U**4)``, one order beyond
+    what a ``U**3`` truncation resolves.
+
+    What ``U**3`` does produce is exactly ``|1 + j*delta| - 1 = delta**2/2``,
+    which is **always positive** -- hence apparent expansion, whichever way
+    the circuit really goes.  The real ``O(U**4)`` term arrives with the
+    ``U**5`` truncation and reverses it.
+
+    **This is narrow, and the earlier note in the plan overstated it.**  Away
+    from the peak the correction is nearly anti-phase, it changes the
+    magnitude directly, and ``U**3`` agrees with the converged result to
+    three or four digits -- including at ``0.99 f0``.  The caveat is "do not
+    read gain compression off a ``U**3`` truncation at a resonant peak", not
+    "the published truncation has the sign wrong".
+    """
+    w0 = _bq_centre()
+    Xin = 0.10
+
+    def fundamental(w, power):
+        return _bq_run_with(_bq_solve, Xin, w, power)[0].phasor(1)
+
+    def linear(w):
+        return -1j*w*_BQ_C2*_BQ_G1*Xin/_bq_q(w)
+
+    ## At the peak: quadrature, and U^3 disagrees in sign with the converged
+    ## result while matching it in magnitude.
+    x0 = linear(w0)
+    correction = fundamental(w0, 3) - x0
+    assert abs(abs(np.angle(correction/x0, deg=True)) - 90.0) < 0.01
+
+    delta = abs(correction/x0)
+    dev3 = abs(fundamental(w0, 3))/abs(x0) - 1
+    dev11 = abs(fundamental(w0, 11))/abs(x0) - 1
+    assert dev3 > 0 and dev11 < 0, 'expected the sign disagreement'
+    ## The U^3 value is entirely the |1 + j delta| artifact.
+    assert abs(dev3 - delta**2/2) <= 1e-3*abs(dev3)
+    ## Same size, opposite sign -- both are O(U**4).
+    assert abs(abs(dev3) - abs(dev11)) < 1e-2*abs(dev11)
+
+    ## Off the peak the correction is nearly anti-phase and U^3 is fine.
+    for ratio in (0.5, 0.9, 1.1, 2.0):
+        w = ratio*w0
+        x0 = linear(w)
+        phase = abs(np.angle((fundamental(w, 3) - x0)/x0, deg=True))
+        assert phase > 160.0, 'expected near anti-phase at %g f0' % ratio
+        a = abs(fundamental(w, 3))/abs(x0) - 1
+        b = abs(fundamental(w, 11))/abs(x0) - 1
+        assert a < 0 and b < 0, 'both should show compression at %g f0' % ratio
+        assert abs(a - b) <= 2e-2*abs(b), 'U^3 should track U^11 off the peak'

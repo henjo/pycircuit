@@ -57,14 +57,34 @@ ODE integration: `-0.0011 dB` at `X_in = 0.1 V`, `-0.0177` at 0.2,
 truncations start disagreeing by 0.5 V — so roughly 2x beyond the limit, not
 the 8x recorded before. Still out of reach, but much less comfortably.
 
-**A finding that only appeared once the sign was right: at `U^3` the
-truncation gets the *sign* of the gain deviation wrong.** Against the ODE at
-all three drives, `U^3` reports expansion of almost exactly the magnitude by
+**A finding that only appeared once the sign was right, now run down.** At
+`U^3` the truncation reports expansion of almost exactly the magnitude by
 which the circuit actually compresses (`+0.0897` against `-0.0866` at 0.3 V),
-while `U^11` tracks the ODE to about 1%. The published second-order form is
-therefore not merely imprecise about compression on this circuit — it points
-the wrong way. Worth following up; it is the sort of thing a designer would
-act on.
+while `U^11` tracks the ODE to about 1%.
+
+*An earlier version of this entry stopped there and said "the published
+second-order form points the wrong way". That was overstated.* The cause is
+specific and the scope is narrow:
+
+- Driven **exactly at the centre** of the `Q = 20` resonator, the cubic
+  correction is in **quadrature** — measured `-90.000 deg` at every drive. It
+  rotates the phasor rather than shrinking it, which is the Duffing detuning
+  this circuit is already known for.
+- A rotation changes a magnitude only at second order, so the leading gain
+  deviation is `O(U^4)` — confirmed, the deviation scales 16.0x per doubling
+  of drive, not 4x. That is one order beyond what `U^3` resolves.
+- What `U^3` does produce is *exactly* `|1 + j delta| - 1 = delta^2/2`
+  (measured ratio 1.000), which is **always positive**. Hence apparent
+  expansion, whichever way the circuit really goes.
+- **Away from the peak `U^3` is fine.** At `0.5`, `0.9`, `1.1` and `2.0` times
+  centre the correction is near anti-phase (`>160 deg`), it changes the
+  magnitude directly, and `U^3` agrees with `U^11` to three or four digits.
+  Even at `0.99 f0` it has the right sign and is within 1.5%.
+
+So the honest caveat is **"do not read gain compression off a `U^3`
+truncation at a resonant peak"**, not "the published truncation has the sign
+wrong". Pinned by
+`test_u3_cannot_resolve_gain_deviation_at_a_resonant_peak`.
 
 The RNMC amplifier's cubic coefficients are positive (`g_m2c = +60 mA/V^3`,
 `g_m3c = +3 mA/V^3`) so it expands. **Reconsider if** a reference circuit

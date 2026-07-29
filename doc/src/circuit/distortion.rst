@@ -254,6 +254,33 @@ property; two of them derive the correction and then drop it at the final
 assembly step.  It is a consequence of truncating at the third power of the
 input, not an oversight.
 
+The graded forms (:func:`~pycircuit.circuit.distortion.graded_response` and
+its multi-node counterpart) *do* carry the correction, which raises the
+question of whether a :math:`U^3` truncation can then be used for gain
+compression.  **At a resonant peak it cannot, and it fails in a way worth
+knowing about: it reports expansion where the circuit compresses.**
+
+Driven at the centre of a high-:math:`Q` resonator, the cubic correction to
+the fundamental comes out in *quadrature* — measured at exactly
+:math:`-90^\circ` for the gm-C biquad, at every drive level.  It rotates the
+phasor rather than shrinking it, which is the Duffing detuning such a circuit
+is known for.  A rotation changes a magnitude only at second order, so the
+leading gain deviation is :math:`O(U^4)`, one order beyond what :math:`U^3`
+resolves.  What :math:`U^3` produces instead is exactly
+:math:`|1 + j\delta| - 1 = \delta^2/2`, which is **always positive** whichever
+way the circuit really goes.  The genuine :math:`O(U^4)` term arrives with
+:math:`U^5` and reverses the sign.
+
+**Away from the peak this does not arise.**  At half, 0.9, 1.1 and twice the
+centre frequency the correction is near anti-phase, changes the magnitude
+directly, and the :math:`U^3` result agrees with the converged one to three or
+four digits — including at :math:`0.99 f_0`.
+
+So the rule is narrow: *do not read gain compression off a* :math:`U^3`
+*truncation at a resonant peak.*  Use :math:`U^5` or higher there, or measure
+off the peak.  Harmonic distortion, which is what these truncations are for,
+is unaffected.
+
 Relation to the Volterra series
 -------------------------------
 
