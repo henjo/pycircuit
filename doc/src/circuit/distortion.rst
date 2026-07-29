@@ -17,8 +17,9 @@ vol. 52, no. 8, pp. 1620–1631 (2005).
 .. note::
 
    This covers stages 1–4 of the plan in ``doc/distortion_plan.md``: any
-   number of nonlinear devices; single-tone harmonic distortion for cubic or
-   exponential nonlinearities, and two-tone intermodulation for cubic ones.
+   number of nonlinear devices, of mixed kinds; single-tone harmonic
+   distortion and two-tone intermodulation, for cubic, polynomial,
+   :math:`\tanh` and exponential nonlinearities alike.
 
 The idea
 --------
@@ -1132,15 +1133,12 @@ error in either contribution is amplified in the total, which is why
 sum: checking only the total would let compensating errors through, and
 checking only the terms would miss a sign error in how they combine.
 
-Not implemented: two tones on an exponential device
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Two tones on an exponential device
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The two-tone derivation in the reference covers cubic polynomials only, and
-:class:`~pycircuit.circuit.distortion.ExponentialNonlinearity` raises rather
-than returning a number from a derivation nobody has checked.
-
-The obstacle is *not* the mathematics, which is easy.  The exponential
-factorises over a sum of tones,
+The two-tone derivation in the reference covers cubic polynomials only.  The
+exponential case is nevertheless exact, and for the same reason the
+single-tone one is: the exponential **factorises** over a sum of tones,
 
 .. math::
 
@@ -1148,38 +1146,59 @@ factorises over a sum of tones,
      = \sum_{m,n} I_m(a_1)\, I_n(a_2)\, e^{j(m\theta_1 + n\theta_2)}
 
 so the coefficient at :math:`(m,n)` is an ordinary *product* of Bessel
-functions — no special two-argument function is involved.
+functions.  No two-argument special function is involved, and no polynomial
+truncation.
 
-What is missing is phase, and the shape of that gap is worth understanding
-because it is a good example of a defect that hides.
+**What had to be got right was phase, and the shape of that gap is worth
+understanding because it is a good example of a defect that hides.**
 
 The Jacobi–Anger expansion is stated for a real cosine drive, so a drive
-:math:`A e^{j\phi}` gives harmonic :math:`m` a factor :math:`e^{jm\phi}`.
-Omit it and every magnitude is still exactly right while every argument is
-wrong.  For **one tone and one device that is unobservable**: the same factor
-multiplies :math:`F_m` and the second-order mixing term, so it becomes a
-common multiplier on the whole harmonic — precisely a choice of time origin —
-and cancels in every ratio.  No single-tone answer was ever wrong because of
-it, and no single-device test could have detected it.
+:math:`A e^{j\phi}` gives index :math:`(m,n)` a factor
+:math:`e^{j(m\phi_1 + n\phi_2)}`.  Omit it and every magnitude is still
+exactly right while every argument is wrong.  For **one tone and one device
+that is unobservable**: the same factor multiplies :math:`F_m` and the
+second-order mixing term, so it becomes a common multiplier on the whole
+harmonic — precisely a choice of time origin — and cancels in every ratio.
+No single-tone answer was ever wrong because of it, and no single-device test
+could have detected it.
 
-It stops being free as soon as the phases cannot all be absorbed into one time
-origin.  Two cases do that: two tones (only one phase can be absorbed), and
-**two nonlinear devices whose controlling nodes sit at different phases**.
-The second is reachable today with
-:class:`~pycircuit.circuit.distortion.CompositeNonlinearity`, and
-``test_distortion`` uses it — an exponential device and a cubic one on two
-capacitively coupled nodes about 65° apart — as the regression test that the
-single-device configuration could not provide.
+It stops being free as soon as the phases cannot all be absorbed into one
+time origin.  Two cases do that: two tones (only one phase can be absorbed),
+and **two nonlinear devices whose controlling nodes sit at different
+phases**.  Both are now exercised — the second by
+:class:`~pycircuit.circuit.distortion.CompositeNonlinearity` in
+``test_distortion``, with an exponential device and a cubic one on two
+capacitively coupled nodes about 65° apart.
 
-So extending to two tones means carrying complex amplitudes through the Bessel
-path rather than magnitudes: a real piece of work, but a bounded one, and not
-a mathematical obstacle.
+It matters here more than the argument alone suggests, because the first- and
+second-order contributions to :math:`IM_3` very nearly cancel: the total is a
+difference of two larger numbers, so it is sensitive to a relative phase in a
+way that no individual coefficient is.
 
-.. _when-more-terms-stop-helping:
+Two gates, neither of them a comparison against our own arithmetic:
 
+* **A two-dimensional numerical Fourier extraction** of the actual two-tone
+  waveform — build :math:`v(\theta_1,\theta_2)`, apply the exponential,
+  transform.  Agreement is to :math:`3\times10^{-15}` in magnitude and
+  :math:`10^{-14}` degrees in phase, at drives from :math:`a_1 = 0.05` to
+  :math:`0.5`, with the tones given a 40° relative phase so that no time
+  origin makes both real.
+* **The cubic fit in the small-signal limit**, since a cubic fit *is* the
+  exponential's Taylor expansion.  The gap shrinks quadratically with drive,
+  which is the order of the leading term the cubic omits — and it is the
+  check that would catch a wrong argument scaling inside the Bessel
+  functions, which a working-amplitude comparison alone could not separate
+  from ordinary truncation error.
 
+.. note::
 
-
+   One asymmetry with the cubic is worth knowing if you write a nonlinearity
+   of your own.  A cubic's :math:`f'` is *linear*, so its mixing multiplier
+   is proportional to the vector it is handed and can be computed from it.
+   The exponential's is a Bessel function of that vector's *amplitude*, which
+   an arbitrary vector does not determine.  Its ``mix`` therefore dispatches
+   on which of the recurrence's two call sites it is, and raises on anything
+   else rather than guessing.
 
 Why this method suits a *symbolic* tool
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

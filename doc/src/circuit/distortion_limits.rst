@@ -20,6 +20,8 @@ would otherwise try — but they are not the method.
    calls it.  See :doc:`distortion` under "Why this method suits a symbolic
    tool" for why that matters.
 
+.. _when-more-terms-stop-helping:
+
 When more terms stop helping
 ----------------------------
 

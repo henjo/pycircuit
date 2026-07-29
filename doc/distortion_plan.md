@@ -275,61 +275,56 @@ reading them.
   (offsets of exactly +6 dB on HD2 and +12 dB on HD3 — the signature of a
   doubled input).
 
-## 7. Deferred — exponential devices with two tones
+## 7. Two tones on an exponential device — **DONE**
 
-Stage 4 covers two-tone intermodulation for cubic nonlinearities only, which
-is all the sources derive. Extending it to exponential (diode/bipolar)
-devices is a genuine gap and worth closing **after** stage 5.
+**Gate passed.** `ExponentialNonlinearity.intermodulation_sources` is
+implemented and checked against two independent references.
 
-**It is not blocked on mathematics, and an earlier note in this repository
-overstated that.** The exponential factorises over a sum of tones:
+The exponential factorises over a sum of tones, so the `(m,n)` coefficient is
+an ordinary **product** `I_m(a1) I_n(a2)` times a phase — no two-argument
+special function, and no polynomial truncation.
 
-```
-exp(a1 cos t1 + a2 cos t2) = sum_{m,n} I_m(a1) I_n(a2) exp(j(m t1 + n t2))
-```
+**The obstacle really was phase, exactly as recorded.** Jacobi–Anger is stated
+for a real cosine drive, so index `(m,n)` carries `exp(j(m phi1 + n phi2))`.
+With one tone that factor is a common multiplier — a choice of time origin —
+and cancels from every ratio, so no single-tone result was ever wrong without
+it and no single-device test could have caught it. With two tones only one
+phase can be absorbed. It matters more than the argument alone suggests
+because the first- and second-order contributions to `IM3` nearly cancel: the
+total is a difference of larger numbers and is sensitive to a relative phase
+that no individual coefficient is.
 
-so the coefficient at `(m,n)` is an ordinary *product* of Bessel functions.
-Verified to machine precision (~1e-15 relative) against a direct 2-D numerical
-Fourier transform. There is no two-argument special function involved.
+Gates, neither of them against our own arithmetic:
 
-**The real obstacles, both bounded:**
+- **2-D numerical Fourier extraction** of the actual two-tone waveform:
+  **3e-15** in magnitude and **1e-14 degrees** in phase, at `a1` from 0.05 to
+  0.5, tones 40° apart so no time origin makes both real.
+- **The cubic fit at small drive**, since a cubic fit *is* the exponential's
+  Taylor expansion. The gap grows **quadratically** with drive — the order of
+  the leading term the cubic omits — which is what would catch a wrong
+  argument scaling inside the Bessel functions.
 
-1. **Phase — and precisely why it is free today and will not be.** The
-   Jacobi–Anger expansion is stated for a real cosine drive, so a drive
-   `A·exp(jφ)` gives harmonic `m` a factor `exp(jmφ)`. `ExponentialNonlinearity`
-   now carries that factor, but it made no difference to any single-tone
-   result and **no shipped answer was ever wrong**: the same factor multiplies
-   `F_m` and the second-order mixing term, so it is a common multiplier on the
-   whole harmonic — exactly a choice of time origin, cancelling in every
-   magnitude ratio. Pinned by
-   `test_single_tone_magnitudes_are_invariant_to_the_drive_phase`.
-   It stops being free the moment the phases cannot all be absorbed into one
-   time origin, which is the case with two tones (only one phase can be
-   absorbed) or with two nonlinear devices seeing different phases. Since the
-   two IM3 contributions nearly cancel, the total is then sensitive to it.
+A third test pins that `IM3` actually tracks the tones' relative phase, since
+dropping the factors would leave every `|F|` right and the answer wrong.
 
-   The second of those cases is reachable *today*, via `CompositeNonlinearity`,
-   and is now the regression test the single-device configuration could not
-   provide: an exponential device and a cubic one on two capacitively coupled
-   nodes ~65° apart, where a magnitude-only exponential shifts HD3 by ~10%.
-   The operating point was chosen on the broad plateau of that sensitivity
-   rather than at its peak — sensitivity rises to ~80% where the two devices
-   nearly cancel, but a test sitting there would be brittle, so a sweep across
-   two decades of the cubic coefficient asserts detection holds throughout.
-   Mutation-checked: reverting the phase fix fails 7 tests, where before this
-   work it would have failed none.
-2. **Nothing currently checks the answer.** No reference in the set publishes
-   two-tone exponential numbers. But this is solvable without more reading:
-   **numerically extract the Fourier coefficient of `exp(x(t)/V_T)` for a
-   two-tone `x(t)` and compare.** That is an independent oracle of exactly the
-   kind stage 1 used against Volterra, and it is how the factorisation claim
-   above was checked in the first place.
+**An asymmetry worth knowing** if writing a nonlinearity: a cubic's `f'` is
+linear, so its mixing multiplier is proportional to the vector handed in and
+computable from it. The exponential's is a Bessel function of that vector's
+*amplitude*, which an arbitrary vector does not determine — so its `mix`
+dispatches on which of the recurrence's two call sites it is, and raises on
+anything else rather than guessing.
 
-**Suggested gate when picked up:** the Bessel-product coefficients must match
-a 2-D numerical Fourier extraction to ~1e-10 across a range of drive
-amplitudes, *and* the end-to-end IM3 must converge to the cubic result at
-small signal — the same small-signal convergence check that guards the
-single-tone Bessel path in stage 3.
+**What remains, and it is now unblocked rather than blocked.**
+`CompositeNonlinearity.intermodulation_sources` still raises. Its recorded
+reason — that the members "would have to agree on the phase convention first"
+— **no longer applies**, since the exponential now carries the same explicit
+convention the cubic always did. It is ordinary work (sum the three source
+vectors; combine the members' `mix` callables by summing their results) with
+a ready gate: the same 2-D extraction applied to two devices of different
+kinds at different phases. Left unwritten because it has no gate *yet*, not
+because it is hard. Note that the exponential's `mix` dispatches on argument
+identity, so a composite must pass its members the very vectors it received.
+
 
 ## 8. Result: a quantitative validity bound, where the sources give none
 

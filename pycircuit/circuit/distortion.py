@@ -20,12 +20,12 @@ the *same* linear operator ``Y(s) = G + sC``, evaluated at a different
 frequency.  Nothing here needs a nonlinear solve, a new matrix structure, or
 a change to ``circuit.py`` -- ``Y`` is what AC analysis already assembles.
 
-Scope of this module today (stages 1-4 of the plan): any number of nonlinear
-devices; single-tone harmonic distortion with either cubic-polynomial or
-exponential (diode/bipolar) nonlinearities, and two-tone intermodulation for
-cubic ones.  Two-tone for an exponential device is not implemented because no
-reference derives it -- see
-:meth:`ExponentialNonlinearity.intermodulation_sources`.
+Scope of this module today: any number of nonlinear devices, of mixed kinds;
+single-tone harmonic distortion and two-tone intermodulation, for
+cubic-polynomial, ``tanh`` and exponential (diode/bipolar) nonlinearities
+alike.  Multi-node circuits and arbitrary truncation order go through
+:func:`graded_response_mimo`, where the ring is polynomial -- so a junction
+there is a truncated series rather than the exact Bessel form.
 
 **One function here is not an analysis path.**
 :func:`harmonic_response_spectral` is a *numeric measuring instrument*: it
@@ -507,34 +507,95 @@ class ExponentialNonlinearity:
         return F2, F3, B1_apply
 
     def intermodulation_sources(self, X10, X01, toolkit):
-        """Not implemented -- see ``doc/distortion_plan.md`` section 7.
+        r"""Two-tone sources, exact at every index via a Bessel product.
 
-        Not for the reason it might appear.  The mathematics is easy: the
-        exponential *factorises* over a sum of tones, so
-        ``exp(a1 cos t1 + a2 cos t2)`` expands as
-        ``sum_{m,n} I_m(a1) I_n(a2) exp(j(m t1 + n t2))`` -- an ordinary
-        product of Bessel functions, verified to machine precision against a
-        2-D numerical Fourier transform.  There is no two-argument special
-        function involved.
+        The exponential *factorises* over a sum of tones, so with
+        ``X10 = A1 exp(j p1)`` and ``X01 = A2 exp(j p2)``,
+        ``a1 = A1/V_T``, ``a2 = A2/V_T``:
 
-        What is actually missing is phase.  For a single tone the drive can
-        be taken real by absorbing its phase into the time origin, which is
-        what this class does (it uses ``abs(X1[port])``).  With two tones only
-        one phase can be absorbed; the *relative* phase is physical, and the
-        first- and second-order contributions to IM3 nearly cancel in
-        practice, so the total depends on it.  Supporting this means carrying
-        complex amplitudes through the Bessel path rather than magnitudes.
+        .. math::
 
-        Refused rather than guessed because no reference in the source set
-        derives it and nothing would currently check the result.  A numerical
-        two-tone Fourier extraction is a perfectly good oracle -- that is the
-        route, not more reading.
+            e^{v/V_T} = \sum_{m,n} I_m(a_1) I_n(a_2)
+                        e^{j(m\phi_1 + n\phi_2)} e^{j(m\theta_1 + n\theta_2)}
+
+        An ordinary *product* of modified Bessel functions -- no two-argument
+        special function is involved -- and no polynomial truncation, exactly
+        as in the single-tone case.  One-sided phasors are twice the
+        two-sided coefficients above.
+
+        **The phase factors are the whole content of this method.**  For one
+        tone the drive can be made real by choosing the time origin, so
+        ``exp(j m phi)`` is a common multiplier that cancels from every
+        magnitude ratio.  With two tones only one phase can be absorbed: the
+        *relative* phase is physical, and since the first- and second-order
+        contributions to IM3 very nearly cancel, the total depends on it.
+        Dropping the factors would leave every individual ``|F|`` correct and
+        the answer wrong -- the failure mode this class's ``harmonic_sources``
+        already documents.
+
+        ``I_{-n} = I_n``, so a negative index costs only a conjugated phase.
+
+        Gated against a 2-D numerical Fourier extraction of the actual
+        two-tone waveform, and against the cubic in the small-signal limit
+        where the two must agree.
         """
-        raise NotImplementedError(
-            'Two-tone intermodulation for an exponential device is not '
-            'implemented: the Bessel path here carries magnitudes only, and '
-            'two tones need relative phase. See doc/distortion_plan.md '
-            'section 7.')
+        drive1, drive2 = X10[self.port], X01[self.port]
+        a1 = abs(drive1) / self.V_T
+        a2 = abs(drive2) / self.V_T
+        phase1 = 1 if a1 == 0 else drive1 / abs(drive1)
+        phase2 = 1 if a2 == 0 else drive2 / abs(drive2)
+        phase2c = toolkit.conj(phase2)
+
+        I0_1 = self._bessel(0, a1, toolkit)
+        I1_1 = self._bessel(1, a1, toolkit)
+        I2_1 = self._bessel(2, a1, toolkit)
+        I0_2 = self._bessel(0, a2, toolkit)
+        I1_2 = self._bessel(1, a2, toolkit)
+
+        def at_port(value):
+            ## Lists, not toolkit.zeros(): that returns a real array and would
+            ## silently drop the imaginary part -- see harmonic_sources.
+            out = [0] * self.n
+            out[self.port] = value
+            return out
+
+        two_IS = 2 * self.I_S
+        F_2m1 = at_port(two_IS * I2_1 * I1_2 * phase1 ** 2 * phase2c)
+        F_20 = at_port(two_IS * I2_1 * I0_2 * phase1 ** 2)
+        F_1m1 = at_port(two_IS * I1_1 * I1_2 * phase1 * phase2c)
+
+        ## f'(v) = (I_S/V_T)(e^{v/V_T} - 1); `mix` must supply twice its
+        ## two-sided coefficient at the index of its first argument, which is
+        ## the convention CubicNonlinearity's `2 b diag(u) v` also satisfies.
+        slope = 2 * (self.I_S / self.V_T)
+        at_10 = slope * I1_1 * I0_2 * phase1          # index (1, 0)
+        at_0m1 = slope * I0_1 * I1_2 * phase2c        # index (0, -1)
+
+        X01c = [toolkit.conj(v) for v in X01]
+
+        def mix(u, v):
+            """Apply ``f'`` shifted by ``u``'s index.
+
+            Unlike a cubic -- whose ``f'`` is *linear*, so the multiplier is
+            proportional to ``u`` itself -- the exponential's multiplier is a
+            Bessel function of ``|u|`` and cannot be recovered from ``u``.  So
+            this dispatches on which of the recurrence's two call sites it is,
+            and refuses anything else rather than guessing.
+            """
+            if u is X10:
+                multiplier = at_10
+            elif u is X01c:
+                multiplier = at_0m1
+            else:
+                raise ValueError(
+                    'ExponentialNonlinearity.mix is defined for the two '
+                    'components the 2*w1-w2 recurrence uses, X10 and '
+                    'conj(X01); it cannot infer the harmonic index of an '
+                    'arbitrary vector because the multiplier is a Bessel '
+                    'function of the amplitude, not proportional to it.')
+            return at_port(multiplier * v[self.port])
+
+        return F_2m1, F_20, F_1m1, mix, X01c
 
 
 class CompositeNonlinearity:
@@ -578,10 +639,28 @@ class CompositeNonlinearity:
         return F2_total, F3_total, B1_apply_all
 
     def intermodulation_sources(self, X10, X01, toolkit):
+        """Not implemented -- but the recorded reason no longer applies.
+
+        This used to say the members "would have to agree on the phase
+        convention first".  They now do:
+        :class:`ExponentialNonlinearity` carries
+        ``exp(j(m phi1 + n phi2))`` explicitly, as
+        :class:`CubicNonlinearity` always did.  So the obstacle is gone and
+        what remains is ordinary work -- sum the three source vectors, and
+        combine the members' ``mix`` callables by summing their results.
+
+        Left unimplemented rather than written blind because it needs its own
+        gate, and a good one exists: the same two-dimensional numerical
+        Fourier extraction used for the single-device case, applied to a
+        circuit carrying two devices of different kinds at different phases.
+        Note that :class:`ExponentialNonlinearity`'s ``mix`` dispatches on the
+        identity of its argument, so a composite must pass the members the
+        very vectors it was given.
+        """
         raise NotImplementedError(
-            'Two-tone for a composite nonlinearity is not implemented; the '
-            'members would have to agree on the phase convention first. See '
-            'doc/distortion_plan.md section 7.')
+            'Two-tone for a composite nonlinearity is not implemented. The '
+            'members now share a phase convention, so this is unblocked work '
+            'rather than a design problem -- see the docstring.')
 
 
 def _compositions(k, m):

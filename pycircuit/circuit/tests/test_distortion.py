@@ -596,17 +596,31 @@ def test_im3_needs_both_coefficients():
     assert abs(first_no_b - first_full) < first_full * 1e-9
 
 
-def test_exponential_two_tone_is_refused_not_guessed():
-    """Two-tone for an exponential device is not in any reference paper.
+def test_composite_two_tone_is_refused_not_guessed():
+    """The remaining two-tone gap, and it is a *composite* one.
 
-    The 2013 paper derives intermodulation for cubic polynomials only.  The
-    exponential case would need a two-argument Bessel expansion that no source
-    in this set provides, so it raises rather than silently returning a number
-    from an unverified derivation.
+    This test previously asserted that the **exponential** case was refused,
+    on the stated grounds that it "would need a two-argument Bessel expansion
+    that no source in this set provides".  That reason was wrong: the
+    exponential factorises over a sum of tones, so the coefficient is an
+    ordinary *product* of Bessel functions, and it is now implemented and
+    gated against a 2-D numerical transform.
+
+    What is still refused is a *composite* of several devices under two
+    tones.  That is ordinary work rather than a design problem -- the phase
+    convention the members would have to share is now settled -- but it has
+    no gate yet, so it raises instead of returning an unchecked number.
     """
-    nl = ExponentialNonlinearity(_IBQ, _VT, port=0, n=1)
+    device = CompositeNonlinearity(
+        ExponentialNonlinearity(_IBQ, _VT, port=0, n=1),
+        CubicNonlinearity([[1e-3]], [[1e-3]]))
     with pytest.raises(NotImplementedError):
-        nl.intermodulation_sources([1.0], [1.0], numeric)
+        device.intermodulation_sources([1.0], [1.0], numeric)
+
+    ## ...while the exponential alone no longer refuses.
+    single = ExponentialNonlinearity(_IBQ, _VT, port=0, n=1)
+    sources = single.intermodulation_sources([1e-3 + 0j], [7e-4 + 0j], numeric)
+    assert len(sources) == 5
 
 
 def _exponential_fourier_reference(X1, I_S, V_T, m, derivative=False):
@@ -2816,3 +2830,140 @@ def test_mixed_device_types_are_valid_input():
     for m in (1, 2, 3, 5):
         assert np.isfinite(abs(got[0].phasor(m)))
     assert abs(got[0].phasor(2)) > 0, 'the quadratic parts must show up'
+
+
+# ---------------------------------------------------------------------------
+# Two tones on an exponential device.  doc/distortion_plan.md section 7.
+# ---------------------------------------------------------------------------
+
+_XT_IS, _XT_VT = 1e-12, 25.85e-3
+
+
+def _xt_numeric_coefficient(m, n, X10, X01, samples=256):
+    """Two-sided ``(m, n)`` Fourier coefficient of ``f``, by 2-D FFT.
+
+    The oracle the old NotImplementedError named.  Independent of the Bessel
+    expansion entirely: it builds the actual two-tone waveform, applies the
+    exponential, and transforms.
+    """
+    grid = 2*np.pi*np.arange(samples)/samples
+    T1, T2 = np.meshgrid(grid, grid, indexing='ij')
+    v = np.real(X10*np.exp(1j*T1)) + np.real(X01*np.exp(1j*T2))
+    f = _XT_IS*(np.expm1(v/_XT_VT) - v/_XT_VT)
+    return (np.fft.fft2(f)/samples**2)[m % samples, n % samples]
+
+
+@pytest.mark.parametrize('a1', [0.05, 0.2, 0.5])
+def test_exponential_two_tone_sources_match_a_numerical_transform(a1):
+    """Section 7's gate: the Bessel *product* form, magnitudes and phases.
+
+    ``exp(a1 cos t1 + a2 cos t2)`` factorises, so the ``(m,n)`` coefficient is
+    ``I_m(a1) I_n(a2)`` times a phase -- an ordinary product, no two-argument
+    special function.  The phases are the part that was actually missing, and
+    are checked explicitly: dropping them leaves every magnitude right and
+    every argument wrong.
+
+    The tones are given a 40 degree relative phase precisely so that no time
+    origin makes both real.
+    """
+    X10 = a1*_XT_VT*np.exp(1j*0.7)
+    X01 = 0.6*a1*_XT_VT*np.exp(1j*(0.7 + np.deg2rad(40)))
+    device = ExponentialNonlinearity(_XT_IS, _XT_VT, port=0, n=1)
+
+    F_2m1, F_20, F_1m1, _, _ = device.intermodulation_sources(
+        [X10], [X01], numeric)
+
+    for index, got in (((2, -1), F_2m1[0]), ((2, 0), F_20[0]),
+                       ((1, -1), F_1m1[0])):
+        want = 2*_xt_numeric_coefficient(index[0], index[1], X10, X01)
+        assert abs(got - want) <= 1e-12*abs(want), 'magnitude at %s' % (index,)
+        assert abs(np.angle(got/want, deg=True)) < 1e-9, 'phase at %s' % (index,)
+
+
+def test_exponential_two_tone_agrees_with_its_cubic_fit_at_small_drive():
+    """A cubic fit *is* the exponential's Taylor expansion, so they must meet.
+
+    This is the two-tone analogue of the single-tone consistency check, and
+    it is the one that would catch a wrong argument scaling inside the Bessel
+    functions -- an error a working-amplitude comparison alone would not
+    separate from ordinary truncation error.
+
+    The gap must shrink as the drive does, and quadratically: the leading
+    correction the cubic omits is ``O(a**2)`` relative.
+    """
+    w1 = 2*np.pi*1e6
+    w2 = 0.9*w1
+    alpha = _XT_IS/_XT_VT
+    Y = lambda s: 1e-3 + s*1e-12 + alpha
+    aG = lambda h, r: [np.asarray(r, dtype=complex)[0]
+                       / Y(1j*h.frequency((w1, w2)))]
+
+    exact = ExponentialNonlinearity(_XT_IS, _XT_VT, port=0, n=1)
+    fit = CubicNonlinearity([[_XT_IS/(2*_XT_VT**2)]],
+                            [[_XT_IS/(6*_XT_VT**3)]])
+
+    gaps = []
+    for scale in (1e-3, 1e-2, 1e-1):
+        U1 = [scale*1e-6]
+        U2 = [0.6*scale*1e-6*np.exp(1j*np.deg2rad(40))]
+        a = intermodulation_response(aG, U1, U2, exact, (w1, w2), numeric)
+        b = intermodulation_response(aG, U1, U2, fit, (w1, w2), numeric)
+        got = abs(a[Harmonic((2, -1))][0])
+        want = abs(b[Harmonic((2, -1))][0])
+        gaps.append(abs(got - want)/want)
+
+    assert gaps[0] < 1e-8, 'should agree closely at small drive: %s' % gaps
+    for coarse, fine in zip(gaps, gaps[1:]):
+        assert fine > coarse, 'gap must grow with drive: %s' % gaps
+    ## Quadratic in amplitude: a decade of drive is ~100x the gap.
+    for coarse, fine in zip(gaps, gaps[1:]):
+        assert 30 < fine/coarse < 300, gaps
+
+
+def test_exponential_two_tone_depends_on_the_relative_phase():
+    """Pins that the phase factors are carried, not merely present in a docstring.
+
+    With one tone the drive's phase is a choice of time origin and cancels
+    from every magnitude.  With two it does not: only one phase can be
+    absorbed, so the *relative* phase is physical.  If the Bessel path
+    dropped ``exp(j(m phi1 + n phi2))`` this result would be independent of
+    it, and every individual ``|F|`` would still look right.
+    """
+    w1 = 2*np.pi*1e6
+    w2 = 0.9*w1
+    alpha = _XT_IS/_XT_VT
+    Y = lambda s: 1e-3 + s*1e-12 + alpha
+    aG = lambda h, r: [np.asarray(r, dtype=complex)[0]
+                       / Y(1j*h.frequency((w1, w2)))]
+    device = ExponentialNonlinearity(_XT_IS, _XT_VT, port=0, n=1)
+
+    def im3(degrees):
+        U1 = [3e-7]
+        U2 = [2e-7*np.exp(1j*np.deg2rad(degrees))]
+        solution = intermodulation_response(aG, U1, U2, device,
+                                            (w1, w2), numeric)
+        return solution[Harmonic((2, -1))][0]
+
+    values = [im3(d) for d in (0.0, 40.0, 90.0, 180.0)]
+    spread = max(abs(np.angle(v/values[0], deg=True)) for v in values)
+    assert spread > 1.0, (
+        'IM3 phase should track the tones\' relative phase, spread %.3f deg'
+        % spread)
+
+
+def test_exponential_mix_refuses_an_index_it_cannot_infer():
+    """The dispatch is guarded rather than guessing.
+
+    A cubic's ``f'`` is linear, so its mixing multiplier is proportional to
+    the vector handed in.  The exponential's is a Bessel function of that
+    vector's *amplitude*, which cannot be recovered from an arbitrary
+    argument -- so an unrecognised one must fail loudly.
+    """
+    device = ExponentialNonlinearity(_XT_IS, _XT_VT, port=0, n=1)
+    X10, X01 = [1e-3 + 0j], [7e-4 + 2e-4j]
+    _, _, _, mix, X01c = device.intermodulation_sources(X10, X01, numeric)
+
+    assert mix(X10, [1.0])[0] != 0
+    assert mix(X01c, [1.0])[0] != 0
+    with pytest.raises(ValueError):
+        mix([5e-4 + 0j], [1.0])
