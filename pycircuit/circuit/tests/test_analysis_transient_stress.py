@@ -5,6 +5,11 @@ from pycircuit.circuit.transient import Transient
 import numpy as np
 import warnings
 
+## Every test in this module drives a full transient integration; together
+## they are the largest single block of suite runtime.  Deselected by default
+## via pytest.ini; run them with `-m slow` or `-m ""`.  See architecture P15.
+pytestmark = pytest.mark.slow
+
 def _compare_methods(c, tend, timestep, test_name):
     tran = Transient(c)
     

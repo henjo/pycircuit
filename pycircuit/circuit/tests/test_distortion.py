@@ -34,7 +34,9 @@ from pycircuit.circuit.distortion import (CompositeNonlinearity,
                                           ExponentialNonlinearity, Harmonic,
                                           harmonic_response,
                                           intermodulation_response,
+                                          PolynomialNonlinearity,
                                           scalar_nonlinearity,
+                                          TanhNonlinearity,
                                           taylor_coefficients)
 
 
@@ -1515,6 +1517,8 @@ def _diode_graded_hd(drive, max_power):
     return abs(g.phasor(2)) / fundamental, abs(g.phasor(3)) / fundamental
 
 
+## ~30 s per parameter: each case runs a transient for its reference.
+@pytest.mark.slow
 @pytest.mark.parametrize('drive', [1e-4, 2e-4])
 def test_higher_truncation_improves_accuracy(drive):
     """The stage C gate: U**5 must beat U**3 against the transient.
@@ -2563,3 +2567,252 @@ def test_gm_cell_p1db_converges_with_truncation_order():
     assert shifts[-1] < 0.05, 'expected convergence, got %s' % shifts
     assert abs(points[0] - points[-1])/points[-1] > 0.1, (
         'U^3 should be visibly off, else the test proves nothing')
+
+
+# ---------------------------------------------------------------------------
+# TanhNonlinearity: a saturating model that never expands.
+# ---------------------------------------------------------------------------
+
+def test_tanh_series_coefficients_match_sympy():
+    """The recurrence must reproduce the actual Taylor series.
+
+    Generated from ``y' = 1 - y**2`` rather than transcribed from a
+    Bernoulli-number table, and checked here against an independent
+    expansion -- this module has already lost time to a typed constant.
+    """
+    order = 13
+    got = TanhNonlinearity.series_coefficients(order)
+    u = sympy.Symbol('u')
+    want = sympy.series(sympy.tanh(u), u, 0, order + 1).removeO()
+    for n in range(order + 1):
+        assert abs(got[n] - float(want.coeff(u, n))) < 1e-14, n
+    ## Odd function: every even coefficient vanishes.
+    assert all(got[n] == 0.0 for n in range(0, order + 1, 2))
+
+
+def test_tanh_cell_compresses_and_never_expands():
+    """The property a cubic cannot offer: monotone saturation.
+
+    ``tanh`` has ``di/dv = (I0/Vx) sech**2 > 0`` everywhere, so it saturates
+    rather than turning over.  There is no amplitude at which the device
+    stops being physical, and a time-domain solve needs no ramped drive --
+    unlike the cubic cell, where a step start overshoots the turning point
+    and diverges to overflow.
+
+    Checked against a direct integration, including **past the Taylor
+    radius** ``pi/2``: at the largest drive here the node peak exceeds it and
+    the truncation is still within a few thousandths of a dB, which is the
+    asymptotic behaviour documented on the limits page.
+    """
+    from scipy.integrate import solve_ivp
+
+    I_0, V_x = 625.2e-6, 1.0
+    g = I_0/V_x
+    Rs, Cl, f0 = 1.0/g, 1e-12, 1e6
+    w = 2*np.pi*f0
+    resp = lambda s: 1.0/(1/Rs + g + s*Cl)
+    device = TanhNonlinearity(I_0, V_x)
+    small = g*abs(resp(1j*w))/Rs
+    series = TanhNonlinearity.series_coefficients(13)
+
+    def dev_db(Vin, power=13):
+        v = graded_response(resp, Vin/Rs, device.coefficients(power),
+                            (w,), max_power=power)
+        iout = v.scaled(g)
+        term = v
+        for k in range(2, power + 1):
+            term = (term*v).truncated(power)
+            if series[k]:
+                iout = iout + term.scaled(I_0*series[k]/V_x**k)
+        return 20*np.log10(abs(iout.phasor(1))/(small*Vin))
+
+    def ode_db(Vin, cycles=8, keep=4):
+        ## The node settles in ~0.8 ns against a 1 us period, so a handful of
+        ## cycles is ample; 100 was 20x the cost for no extra accuracy.
+        period = 2*np.pi/w
+        def rhs(t, y):
+            return [((Vin*np.cos(w*t) - y[0])/Rs - I_0*np.tanh(y[0]/V_x))/Cl]
+        tend = cycles*period
+        ts = np.linspace(tend - keep*period, tend, keep*512, endpoint=False)
+        sol = solve_ivp(rhs, (0, tend), [0.0], t_eval=ts, method='DOP853',
+                        rtol=1e-10, atol=1e-16, max_step=period/40)
+        spec = np.fft.rfft(I_0*np.tanh(sol.y[0]/V_x))/len(sol.y[0])
+        return (20*np.log10(2*abs(spec[keep])/(small*Vin)),
+                np.max(np.abs(sol.y[0])))
+
+    previous = 0.0
+    peak = 0.0
+    for Vin in (0.5, 1.0, 1.5, 2.0, 2.5):
+        ours = dev_db(Vin)
+        reference, peak = ode_db(Vin)
+        ## Compression, never expansion -- the point of using tanh.
+        assert ours < 0, 'expected compression at Vin=%g, got %+.4f' % (Vin, ours)
+        assert ours < previous, 'compression should deepen with drive'
+        previous = ours
+        assert abs(ours - reference) < 5e-3, (
+            'Vin=%g: ours %.4f vs ODE %.4f' % (Vin, ours, reference))
+        assert np.isfinite(peak), 'tanh must not run away'
+
+    ## The largest drive really does pass the Taylor radius.
+    assert peak > device.radius_of_convergence()
+
+
+def test_tanh_reaches_1db_inside_its_series_radius():
+    """1 dB compression, with headroom the cubic model cannot offer.
+
+    Both models put 1 dB at roughly two thirds of their limit, but the
+    limits are not comparable: the cubic's is where the **device** stops
+    being physical, ``tanh``'s is only where the **series** stops
+    converging.
+    """
+    from scipy.optimize import brentq
+
+    I_0, V_x = 625.2e-6, 1.0
+    g = I_0/V_x
+    Rs, Cl, f0 = 1.0/g, 1e-12, 1e6
+    w = 2*np.pi*f0
+    resp = lambda s: 1.0/(1/Rs + g + s*Cl)
+    device = TanhNonlinearity(I_0, V_x)
+    small = g*abs(resp(1j*w))/Rs
+    series = TanhNonlinearity.series_coefficients(13)
+
+    def dev_db(Vin):
+        v = graded_response(resp, Vin/Rs, device.coefficients(13),
+                            (w,), max_power=13)
+        iout = v.scaled(g)
+        term = v
+        for k in range(2, 14):
+            term = (term*v).truncated(13)
+            if series[k]:
+                iout = iout + term.scaled(I_0*series[k]/V_x**k)
+        return 20*np.log10(abs(iout.phasor(1))/(small*Vin))
+
+    p1 = brentq(lambda V: dev_db(V) + 1.0, 0.5, 3.0, xtol=1e-9)
+    node = graded_response(resp, p1/Rs, device.coefficients(13),
+                           (w,), max_power=13)
+    v1 = abs(node.phasor(1))
+
+    assert v1 < device.radius_of_convergence()
+    assert 0.5 < v1/device.radius_of_convergence() < 0.8
+
+
+def test_tanh_saturation_level_is_an_independent_handle():
+    """The two parameters are ``gm`` and the output limit, and both matter.
+
+    ``i -> +-I_0``, so the saturation level is directly settable; the knee
+    ``V_x = I_0/gm`` then follows.  Being able to fix the small-signal gain
+    and the output limit *separately* is what makes this fittable to a real
+    device, and is the practical difference from a cubic -- whose second
+    parameter only sets how fast the model leaves its region of validity.
+    """
+    gm, i_sat = 625.2e-6, 1.2e-3
+    device = TanhNonlinearity.from_transconductance(gm, i_sat)
+
+    assert abs(device.I_0 - i_sat) < 1e-18
+    assert abs(device.V_x - i_sat/gm) < 1e-12
+
+    ## Small-signal transconductance is gm, whatever the saturation level.
+    series = TanhNonlinearity.series_coefficients(3)
+    assert abs(device.I_0*series[1]/device.V_x - gm) < 1e-15
+
+    ## Saturation is where it was asked to be.
+    assert abs(device.I_0*np.tanh(50.0) - i_sat) < 1e-9
+
+    ## Holding gm and doubling the output limit doubles the knee, and so
+    ## moves the compression point out by the same factor -- the point of
+    ## having the handle at all.
+    wider = TanhNonlinearity.from_transconductance(gm, 2*i_sat)
+    assert abs(wider.V_x/device.V_x - 2.0) < 1e-12
+    assert abs(wider.radius_of_convergence()
+               / device.radius_of_convergence() - 2.0) < 1e-12
+
+    ## Same gm, so the leading cubic coefficient scales as 1/V_x**2.
+    a = device.coefficients(3)[-1]
+    b = wider.coefficients(3)[-1]
+    assert abs(b/a - 0.25) < 1e-12
+
+
+def test_exponential_coefficients_have_no_order_cap():
+    """The graded path may ask for any order; the fifth-order cap is not its.
+
+    ``PolynomialNonlinearity.taylor_of_exponential`` refuses above fifth
+    order, correctly, because *that* class is only derived to fifth order for
+    the published second-order path.  The graded ring has no such limit, and
+    routing through the capped class blocked a legitimate use --
+    a mixed-device circuit truncated at ``U**7`` could not include a junction.
+    """
+    import math
+
+    device = ExponentialNonlinearity(1e-9, 25.85e-3, port=0, n=1)
+
+    ## The capped class still refuses, and should.
+    with pytest.raises(NotImplementedError):
+        PolynomialNonlinearity.taylor_of_exponential(1e-9, 25.85e-3, order=7)
+
+    ## The device itself does not.
+    for power in (3, 5, 7, 11):
+        got = device.coefficients(power)
+        assert len(got) == power - 1
+        for i, k in enumerate(range(2, power + 1)):
+            want = 1e-9/(math.factorial(k)*25.85e-3**k)
+            assert abs(got[i] - want) <= 1e-12*want
+
+    ## And agrees with the capped route where both are defined.
+    assert np.allclose(device.coefficients(5),
+                       PolynomialNonlinearity.taylor_of_exponential(
+                           1e-9, 25.85e-3, order=5).c, rtol=1e-15)
+
+
+def test_mixed_device_types_are_valid_input():
+    """A circuit may carry different nonlinearity kinds at once, both paths.
+
+    Recorded as a test because it is a question a user will ask and the
+    answer is not obvious from the types involved.
+    """
+    w0 = 2*np.pi*1e4
+    Y = lambda s: 1e-3 + s*1e-9 + 0.01
+    aG = lambda h, r: [np.asarray(r, dtype=complex)[0]
+                       / Y(1j*h.frequency((w0,)))]
+
+    ## Published path: four kinds summed, exponential kept exact via Bessel.
+    mixed = CompositeNonlinearity(
+        ExponentialNonlinearity(1e-9, 25.85e-3, port=0, n=1),
+        CubicNonlinearity([[2e-3]], [[5e-3]]),
+        PolynomialNonlinearity([1e-3, 2e-3, 3e-4, 4e-5]),
+        TanhNonlinearity(1e-3, 0.5))
+    solution = harmonic_response(aG, [1e-5], mixed, tones=(w0,),
+                                 toolkit=numeric)
+    assert np.isfinite(solution.HD2(0)) and solution.HD2(0) > 0
+    assert np.isfinite(solution.HD3(0)) and solution.HD3(0) > 0
+
+    ## Graded path: different kinds on different nodes, plus a cross term,
+    ## at an order the published path cannot reach.
+    power = 7
+
+    def solve(s, rhs):
+        M = np.array([[1e-3 + s*1e-9, -2e-4], [-2e-4, 1e-3 + s*1e-9]],
+                     dtype=complex)
+        return np.linalg.solve(M, np.asarray(rhs, dtype=complex))
+
+    def poly(spectrum, coeffs):
+        out, term = GradedSpectrum(), spectrum
+        for c in coeffs:
+            term = (term*spectrum).truncated(power)
+            if c:
+                out = out + term.scaled(c)
+        return out
+
+    tanh_c = TanhNonlinearity(1e-3, 0.5).coefficients(power)
+    exp_c = ExponentialNonlinearity(1e-9, 25.85e-3, 0, 1).coefficients(power)
+
+    def f(x):
+        node1 = (poly(x[0], tanh_c) + poly(x[0], [0.0, 5e-3])
+                 + (x[0]*x[1]).truncated(power).scaled(1e-4))
+        return GradedVector([node1, poly(x[1], exp_c)])
+
+    source = GradedVector([GradedSpectrum.from_phasor(1, 1, 1e-5),
+                           GradedSpectrum()])
+    got = graded_response_mimo(solve, source, f, (w0,), max_power=power)
+    for m in (1, 2, 3, 5):
+        assert np.isfinite(abs(got[0].phasor(m)))
+    assert abs(got[0].phasor(2)) > 0, 'the quadratic parts must show up'

@@ -885,17 +885,133 @@ device.  Setting the fundamental to :math:`-1` dB gives
 .. math::
 
    \frac{v_{\mathrm{turn}}}{v_{1\mathrm{dB}}}
-     = \sqrt{\frac{1/3}{\left(1 - 10^{-1/20}\right)/0.75}} = 1.5162
+     = \sqrt{\frac{1/3}{\left(1 - 10^{-1/20}\right)/0.75}}
 
-**independent of** :math:`\alpha` — so 1 dB always falls at 66% of the
-amplitude where the model breaks down.  That is the real reason none of the
-published circuits reaches 1 dB: not the perturbation method, and not the
-choice of circuit, but that **a cubic is a weakly nonlinear model and 1 dB
-compression is about where weak nonlinearity stops describing the device.**
+.. exec-rst::
+
+    import numpy as np
+
+    ## Evaluated here rather than typed: this page has already shipped one
+    ## pasted measurement that a later change falsified.
+    ratio = np.sqrt((1/3.)/((1 - 10**(-1/20.))/0.75))
+    print('which is ``%.6f``, **independent of** ``alpha`` -- so 1 dB always'
+          % ratio)
+    print('falls at **%.1f%%** of the amplitude where the model breaks down.'
+          % (100/ratio))
+
+That is the real reason none of the published circuits reaches 1 dB: not the
+perturbation method, and not the choice of circuit, but that **a cubic is a
+weakly nonlinear model and 1 dB compression is about where weak nonlinearity
+stops describing the device.**
 
 The loaded cell is worse than the isolated device, sitting nearer that limit
-than 66% suggests, because the same negative :math:`\alpha` that compresses
+than the ratio above suggests, because the same negative :math:`\alpha` that
+compresses
 the output current also reduces the node's loading — so the node voltage
 *expands* toward the breakdown even as the output compresses.  It is also why
 the reference integration ramps its drive: started as a step, the transient
 overshoots :math:`v_{\mathrm{turn}}` and the cubic diverges to overflow.
+
+A saturating model: ``tanh``
+-----------------------------
+
+The cubic's difficulty above is not the perturbation method's — it is that a
+cubic stops being a device before it finishes compressing.  A saturating model
+has neither problem.
+:class:`~pycircuit.circuit.distortion.TanhNonlinearity` implements
+:math:`i(v) = I_0 \tanh(v/V_x)`, whose differential conductance
+:math:`(I_0/V_x)\,\mathrm{sech}^2(v/V_x)` is positive everywhere: it saturates
+instead of turning over, and stays physical at any amplitude.
+
+It needed no new machinery.  :func:`~pycircuit.circuit.distortion.graded_response`
+already accepts an arbitrary coefficient list, so a ``tanh`` device is a
+supplier of Taylor coefficients rather than a new code path — and those
+coefficients are *generated* from :math:`y' = 1 - y^2` rather than transcribed.
+
+.. exec-rst::
+
+    import numpy as np
+    from scipy.optimize import brentq
+    from scipy.integrate import solve_ivp
+    from pycircuit.circuit.distortion import (graded_response,
+                                              TanhNonlinearity)
+
+    I_0, V_x = 625.2e-6, 1.0
+    g = I_0/V_x
+    Rs, Cl, f0 = 1.0/g, 1e-12, 1e6
+    w = 2*np.pi*f0
+    resp = lambda s: 1.0/(1/Rs + g + s*Cl)
+    device = TanhNonlinearity(I_0, V_x)
+    series = TanhNonlinearity.series_coefficients(13)
+    small = g*abs(resp(1j*w))/Rs
+
+    def dev_db(Vin, power=13):
+        v = graded_response(resp, Vin/Rs, device.coefficients(power),
+                            (w,), max_power=power)
+        iout = v.scaled(g)
+        term = v
+        for k in range(2, power + 1):
+            term = (term*v).truncated(power)
+            if series[k]:
+                iout = iout + term.scaled(I_0*series[k]/V_x**k)
+        return 20*np.log10(abs(iout.phasor(1))/(small*Vin))
+
+    def ode(Vin, cycles=8, keep=4):
+        T = 2*np.pi/w
+        def rhs(t, y):
+            return [((Vin*np.cos(w*t) - y[0])/Rs - I_0*np.tanh(y[0]/V_x))/Cl]
+        tend = cycles*T
+        ts = np.linspace(tend-keep*T, tend, keep*512, endpoint=False)
+        s = solve_ivp(rhs, (0, tend), [0.], t_eval=ts, method='DOP853',
+                      rtol=1e-10, atol=1e-16, max_step=T/40)
+        S = np.fft.rfft(I_0*np.tanh(s.y[0]/V_x))/len(s.y[0])
+        return (20*np.log10(2*abs(S[keep])/(small*Vin)),
+                np.max(np.abs(s.y[0]))/V_x)
+
+    head = ['Vin (V)', 'U^5', 'U^9', 'U^13', 'integration', 'peak v/Vx']
+    rows = []
+    for Vin in (0.5, 1.0, 1.5, 2.0, 2.5):
+        ref, peak = ode(Vin)
+        rows.append(['%.2f' % Vin] +
+                    ['%.4f' % dev_db(Vin, n) for n in (5, 9, 13)] +
+                    ['%.4f' % ref, '%.4f' % peak])
+
+    widths = [max(len(r[i]) for r in rows + [head]) for i in range(len(head))]
+    sep = ' '.join('=' * w for w in widths)
+    print(sep)
+    print(' '.join('%-*s' % (w, h) for w, h in zip(widths, head)))
+    print(sep)
+    for r in rows:
+        print(' '.join('%-*s' % (w, c) for w, c in zip(widths, r)))
+    print(sep)
+    print('')
+
+    p1 = brentq(lambda V: dev_db(V) + 1.0, 0.5, 3.0, xtol=1e-9)
+    v1 = abs(graded_response(resp, p1/Rs, device.coefficients(13), (w,),
+                             max_power=13).phasor(1))
+    print('1 dB compression at ``Vin = %.4f V``, node fundamental'
+          ' ``%.4f V`` --' % (p1, v1))
+    print('``%.0f%%`` of the Taylor radius ``pi/2 V_x = %.4f V``.'
+          % (100*v1/device.radius_of_convergence(),
+             device.radius_of_convergence()))
+
+**Every entry compresses; none expands.**  That is the property the cubic
+cell could not offer, and it holds by construction rather than by luck.
+
+Both models place 1 dB at roughly two thirds of their limit — the exact
+fractions are computed above and in the cubic section — but **the
+two limits are not the same kind of thing.**  The cubic's is where the
+*device* stops being physical; past it a time-domain solve runs away.
+:math:`\tanh`'s is only where the *series* stops converging, and the last row
+above is past it: the node peak exceeds :math:`\pi/2` while :math:`U^{13}` is
+still within a few thousandths of a dB of the integration, in the usual
+asymptotic way.
+
+So a saturating model can be pushed into compression and beyond without ever
+leaving the region where it describes a device.  For fitting there are two
+independent handles — :math:`I_0` is the saturation level and
+:math:`V_x = I_0/g_m` the knee — so a measured small-signal gain and a
+measured output limit can both be matched;
+:meth:`~pycircuit.circuit.distortion.TanhNonlinearity.from_transconductance`
+takes exactly that pair.  A cubic also has two parameters, but its second one
+only sets how quickly the model runs out of validity.

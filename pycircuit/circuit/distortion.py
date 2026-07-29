@@ -275,6 +275,121 @@ class PolynomialNonlinearity:
                     for n in range(2, order + 1)])
 
 
+class TanhNonlinearity:
+    r"""A saturating transconductor ``i(v) = I_0 \tanh(v/V_x)``.
+
+    The strictly nonlinear part is ``f(v) = I_0 (tanh(v/V_x) - v/V_x)``, the
+    linear transconductance ``g = I_0/V_x`` having been absorbed into ``Y``.
+
+    **Why this exists alongside the cubic.**  A cubic soft-limiting model
+    ``g(v + a v**3)`` with ``a < 0`` stops being a physical device at
+    ``v = 1/sqrt(3|a|)``, where its differential conductance passes through
+    zero and goes negative.  Past that a time-domain solve runs away rather
+    than saturating.  Worse, the limit is close: 1 dB of compression always
+    falls at 66% of that amplitude, *independently of* ``a`` -- so a cubic
+    can only just represent 1 dB compression.  See
+    ``doc/src/circuit/distortion_limits.rst``.
+
+    ``tanh`` has neither problem.  It is monotonic everywhere
+    (``di/dv = (I_0/V_x) sech^2 > 0``), so it saturates instead of diverging
+    and stays a physical device at any amplitude.  Its limit is the *Taylor
+    series'* radius of convergence, ``|v/V_x| < pi/2`` from the poles at
+    ``+-i pi/2`` -- a limitation of the representation rather than of the
+    device, and truncations remain useful past it in the usual asymptotic
+    way.
+
+    **Coefficients are generated, not tabulated.**  ``tanh`` satisfies
+    ``y' = 1 - y**2``, which gives the exact recurrence
+
+    .. code-block:: text
+
+        (n+1) a_{n+1} = [n == 0] - sum_k a_k a_{n-k}
+
+    used below.  A transcribed table of Bernoulli-derived coefficients would
+    be one more place for a typo to hide, and this module has already lost
+    time to exactly that.
+    """
+
+    def __init__(self, I_0, V_x, port=0):
+        """``I_0`` is the **saturation level**: ``i -> +-I_0`` as
+        ``v -> +-infinity``.  ``V_x`` is the knee, and the small-signal
+        transconductance is ``g = I_0/V_x``.
+
+        Those are two independent handles, which is what makes this usable
+        as a *fitted* model rather than only an illustrative one: a real
+        device's small-signal gain and its output limit can both be matched.
+        See :meth:`from_transconductance` for that parameterisation.  A cubic
+        also has two parameters, but its second one only sets how quickly the
+        model runs out of validity.
+        """
+        self.I_0 = I_0
+        self.V_x = V_x
+        self.port = port
+
+    @classmethod
+    def from_transconductance(cls, gm, i_sat, port=0):
+        """Build from the two quantities a datasheet or a fit actually gives.
+
+        Args:
+            gm: Small-signal transconductance at the operating point.
+            i_sat: Output level the device saturates at, ``+-i_sat``.
+
+        The knee follows as ``V_x = i_sat/gm``.  Because 1 dB compression
+        sits at a fixed fraction of ``V_x`` (about 64% of ``pi/2 V_x`` for
+        this cell), choosing ``i_sat`` for a given ``gm`` places the
+        compression point where the device really has it.
+        """
+        return cls(i_sat, i_sat / gm, port=port)
+
+    @staticmethod
+    def series_coefficients(order):
+        """Taylor coefficients of ``tanh(u)`` up to and including ``u**order``.
+
+        Index ``n`` holds the coefficient of ``u**n``; even entries are zero.
+        """
+        a = [0.0] * (order + 1)
+        if order >= 1:
+            a[1] = 1.0
+        for n in range(1, order):
+            convolution = sum(a[k] * a[n - k] for k in range(n + 1))
+            a[n + 1] = -convolution / (n + 1)
+        return a
+
+    def coefficients(self, max_power):
+        """Coefficients of ``f`` from the quadratic term up.
+
+        The form :func:`graded_response` takes.  ``max_power`` is the highest
+        power of ``v`` to include, so it lines up with the truncation order
+        the caller is about to use.
+        """
+        series = self.series_coefficients(max_power)
+        return [self.I_0 * series[n] / self.V_x ** n
+                for n in range(2, max_power + 1)]
+
+    def radius_of_convergence(self):
+        """Amplitude beyond which the Taylor series diverges.
+
+        ``tanh`` is analytic on the real line; the nearest singularities are
+        at ``+-i pi/2``, so the series -- not the device -- fails there.
+        """
+        import math
+        return math.pi * self.V_x / 2
+
+    def harmonic_sources(self, X1, toolkit):
+        """Published second-order path, via the fifth-order polynomial form.
+
+        The graded path takes :meth:`coefficients` directly and is not
+        limited to fifth order; this exists so a ``tanh`` device can be used
+        with :func:`harmonic_response` as well.
+        """
+        return PolynomialNonlinearity(
+            self.coefficients(5)).harmonic_sources(X1, toolkit)
+
+    def intermodulation_sources(self, X10, X01, toolkit):
+        return PolynomialNonlinearity(
+            self.coefficients(5)).intermodulation_sources(X10, X01, toolkit)
+
+
 class ExponentialNonlinearity:
     r"""A junction nonlinearity ``f(v) = I_S (e^{v/V_T} - 1 - v/V_T)``.
 
@@ -309,6 +424,34 @@ class ExponentialNonlinearity:
         self.V_T = V_T
         self.port = port
         self.n = n
+
+    def coefficients(self, max_power):
+        """Taylor coefficients of ``f`` from the quadratic term up.
+
+        The form :func:`graded_response` and :func:`graded_response_mimo`
+        take, mirroring :meth:`TanhNonlinearity.coefficients`, and with **no
+        order limit**.
+
+        .. warning::
+
+           These are a *truncation* of what this class otherwise computes
+           exactly.  The Bessel path in :meth:`harmonic_sources` has no
+           polynomial error at all; this does, and it is the very error the
+           class docstring above warns about -- around 20% on the second
+           harmonic for a cubic fit at working drive.  Use this only on the
+           graded path, where the ring is polynomial and there is no
+           alternative, and raise ``max_power`` until the answer stops moving.
+
+        Deliberately *not* routed through
+        :meth:`PolynomialNonlinearity.taylor_of_exponential`: that returns a
+        :class:`PolynomialNonlinearity`, which is derived only to fifth order
+        and rejects anything higher.  That cap belongs to the published
+        second-order path and has no bearing on the graded one, but it was
+        blocking a legitimate use.
+        """
+        import math
+        return [self.I_S / (math.factorial(k) * self.V_T ** k)
+                for k in range(2, max_power + 1)]
 
     def _bessel(self, order, arg, toolkit):
         try:

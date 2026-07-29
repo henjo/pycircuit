@@ -656,11 +656,52 @@ semantics P9 established, pinned by `test_nonlinear_multivariable` in
 - Comments left mid-thought in production code, e.g. `elements.py` VCVS_limited:
   *"but wait, the plan is to vectorize! ... Let's see if tests pass."*
 
-### P15 — one test is 70% of the suite's runtime *(open)*
+### P15 — slow transient tests dominate the suite *(route 3 taken; the underlying cost is still open)*
 
-`test_analysis_transient_stress.py::test_stress_stiff_rlc_pulse` takes
-**~266 s**, out of a full-suite total of ~380 s. Every other test in the
-project put together accounts for roughly 25 s.
+**Route 3 below has been applied**: the transient-heavy tests are now marked
+`@pytest.mark.slow` and **deselected by default** by `pytest.ini`. Run them
+with `pytest pycircuit -m slow`, or the whole suite with `-m ""`. **CI and any
+release check must use `-m ""`.**
+
+**The framing below was measured again on 2026-07-29 and had gone stale.** It
+said one test was 70% of the runtime. It is not, and no longer was even before
+the marking:
+
+| test | time |
+|---|---|
+| `test_stress_stiff_rlc_pulse` | 98 s |
+| `test_determinant_sensitivity_is_exact[5]` | 46 s |
+| `test_prediction_visibly_fails_outside_the_validity_range` | 38 s |
+| `test_higher_truncation_improves_accuracy` (2 params) | 61 s |
+| `test_operating_point_and_fundamental_agree` | 25 s |
+| `test_stress_charge_pump` / `full_wave_bridge` / `lc_tank` | 53 s |
+
+Full suite 502 s over 673 tests. The stress test is **20%**, not 70% — the
+suite has roughly doubled in size since the original note, and the cost is now
+spread across many transient-based tests rather than concentrated in one. Any
+plan built on "fix the one test" would have been aimed at the wrong target.
+
+**What is still open, and it is the substantive part.** Marking tests slow
+hides the cost; it does not remove it. The circuits above are genuinely
+expensive and several take far longer than the physics requires — the `tanh`
+test added the same day integrated 100 drive cycles where the node settles in
+under one, a 13x overcharge that a review caught only by accident. **A pass
+over the slow set asking "how many cycles does this actually need?" is likely
+to recover most of the time without touching what any test checks.**
+
+**And a real risk was accepted by marking them.** These are the *only* tests
+that compare the analysis against a time-domain reference. That is exactly the
+evidence class that caught the `g_2` sign error which four published-formula
+gates could not see (`doc/distortion_mimo_plan.md` section 6). A default that
+skips them is a default that skips the strongest checks in the distortion work.
+Hence the insistence on `-m ""` in CI.
+
+*Original note follows, kept because its analysis of the stress test is still
+accurate.*
+
+`test_analysis_transient_stress.py::test_stress_stiff_rlc_pulse` was measured
+at **~266 s** against a full-suite total of ~380 s, at a point when every other
+test together accounted for roughly 25 s.
 
 It is not a regression. The timing was measured at HEAD and again at a
 `git worktree` checkout of a commit several fixes earlier, identical both
@@ -693,6 +734,9 @@ none of them yet tried:
    it in full runs. This takes the routine suite from ~6.5 min to about 2 min
    and costs nothing analytically — but it is a change to how the suite
    behaves for everyone, so it is a decision rather than a cleanup.
+   **This is the route taken, 2026-07-29, at the maintainer's request.**
+   Routes 1 and 2 remain open and are the ones that would actually reduce the
+   work rather than defer it.
 
 Route 1 is the cheapest to evaluate and the only one that might be free.
 Whatever is done, the guard to keep is that the test's *purpose* — comparing
@@ -926,11 +970,14 @@ task. If this document is being read to decide what to work on next, there
 isn't a next item here; it means either picking up one of those two open
 questions, or something not yet surveyed at all.
 
-**P15 (one test is 70% of the suite runtime) is open**, added 2026-07-29
-while working on the distortion analysis. It is a cost problem rather than a
-correctness one — the test passes and measures something worth measuring —
-so it is recorded rather than fixed, with three candidate routes and a note
-on which is cheapest to evaluate.
+**P15 (slow transient tests dominate the suite) is partly addressed**, added
+2026-07-29 while working on the distortion analysis. The transient-heavy tests
+are now marked `slow` and deselected by default; **CI must run `-m ""`**,
+because those are the only tests comparing the analysis against a time-domain
+reference. The underlying cost is untouched and the original "one test is 70%"
+framing turned out to be stale when re-measured — see P15 for the current
+numbers and for why route 1 (fewer integration cycles) is still the one worth
+doing.
 
 ## 8. Conventions
 

@@ -961,6 +961,101 @@ a wrong argument scaling in the Bessel functions, which a working-amplitude
 comparison alone would not.  At working drive they must diverge, in the
 direction of the exact treatment predicting *more* distortion.
 
+Choosing a device model, and where a cubic stops being one
+-----------------------------------------------------------
+
+The section above concerns *accuracy* — a cubic fit under-predicts an
+exponential's harmonics.  There is a second and sharper limit that has
+nothing to do with accuracy: **a cubic stops describing a device at all,
+at an amplitude that 1 dB of compression very nearly reaches.**
+
+A soft-limiting cubic :math:`i(v) = g(v + \alpha v^3)` with
+:math:`\alpha < 0` has
+:math:`\mathrm{d}i/\mathrm{d}v = g(1 + 3\alpha v^2)`, which passes through
+zero at
+
+.. math::
+
+   v_{\mathrm{turn}} = \frac{1}{\sqrt{3|\alpha|}}
+
+Beyond that the differential conductance is **negative**: the model no
+longer saturates, it turns round, and a time-domain solve on it diverges
+rather than limiting.  Meanwhile the fundamental of the current is
+:math:`g(v + \tfrac{3}{4}\alpha v^3)`, so 1 dB of compression needs
+:math:`\tfrac{3}{4}|\alpha| v^2 = 1 - 10^{-1/20}`.  The ratio of the two
+amplitudes is a pure number — the :math:`\alpha` cancels:
+
+.. exec-rst::
+
+    import numpy as np
+
+    ratio = np.sqrt((1/3.)/((1 - 10**(-1/20.))/0.75))
+    print('.. math::')
+    print('')
+    print('   \\frac{v_{\\mathrm{turn}}}{v_{1\\mathrm{dB}}} = %.6f' % ratio)
+    print('')
+    print('So 1 dB compression always falls at **%.1f%%** of the amplitude at'
+          % (100/ratio))
+    print('which the model stops being physical, whatever ``alpha`` is —')
+    print('leaving about %.0f%% headroom in amplitude and none at all in'
+          % (100*(ratio - 1)))
+    print('confidence.')
+
+That is worth knowing before fitting a cubic to a compressing device.  It
+is not a statement about the perturbation method: the series is still
+converging comfortably at that drive (contraction factor about 0.4 for the
+cell on :doc:`distortion_limits`).  It is a statement about the *model* —
+**a cubic is a weakly nonlinear description, and 1 dB compression is roughly
+where weak nonlinearity stops describing the device.**
+
+:class:`~pycircuit.circuit.distortion.TanhNonlinearity` exists for this
+reason.  It is monotonic everywhere, so it saturates instead of turning
+over and remains a device at any amplitude; its limit is the Taylor
+series' radius :math:`\pi V_x/2`, which bounds the *representation* rather
+than the device, and truncations stay useful past it.  It also gives two
+independent fitting handles — saturation level and knee — where a cubic's
+second parameter only sets how fast it leaves validity.  The measured
+comparison is on :doc:`distortion_limits`.
+
+So, for choosing a model:
+
+* **Exponential junction** — use
+  :class:`~pycircuit.circuit.distortion.ExponentialNonlinearity`; it is exact
+  at every harmonic and needs no fit.
+* **Saturating transconductor** — use
+  :class:`~pycircuit.circuit.distortion.TanhNonlinearity`, especially if the
+  drive approaches compression.
+* **Cubic** — fine for small-signal distortion figures, which is what the
+  source papers use it for.  Do not push it to compression.
+
+**Mixing kinds is valid input.**  A circuit may carry any number of
+nonlinearities of different types at once, and both paths accept it:
+
+* :class:`~pycircuit.circuit.distortion.CompositeNonlinearity` sums any
+  number of device objects for :func:`~pycircuit.circuit.distortion.harmonic_response`,
+  each injected at its own node — exponential, cubic, quintic and
+  :math:`\tanh` together.  It is also what makes a *relative phase* error
+  between two devices observable, since with one device the common phase
+  factor cancels out of every magnitude.
+* :func:`~pycircuit.circuit.distortion.graded_response_mimo` takes the
+  nonlinearity as a callable in the graded ring, so an arbitrary mixture is
+  simply written out — including cross terms between nodes.
+
+The one thing that changes with the path is **exactness, not validity**.  The
+graded ring knows only ``+``, ``*`` and scaling, so a non-polynomial device
+enters it as a *truncated Taylor series*: on that path
+:class:`~pycircuit.circuit.distortion.ExponentialNonlinearity` loses the exact
+Bessel treatment described above and becomes a polynomial like any other, via
+its :meth:`~pycircuit.circuit.distortion.ExponentialNonlinearity.coefficients`
+method.  For :math:`\tanh` that costs nothing real, since its coefficients
+generate to any order; for a junction it is exactly the 20% error this section
+opened with.
+
+So the trade is: an **exact device model at** :math:`U^3` (the published
+path), or **arbitrary truncation order and arbitrary mixing** (the graded
+path) with every device polynomialised.  Raise ``max_power`` on the graded
+path until the answer stops moving.
+
 Node quantities are not output quantities
 ------------------------------------------
 

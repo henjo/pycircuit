@@ -498,6 +498,54 @@ This also explains an integration failure met on the way: a step-response
 start overshoots past `v_turn` and the cubic runs away to overflow. The
 reference drive is ramped over 60 cycles for that reason.
 
+### 8.4b `tanh` as a second device model — **DONE**
+
+Prompted by the observation that a saturating nonlinearity would never
+expand, unlike the cubic. It does not, and it turned out to need **no new
+machinery**: `graded_response` already takes an arbitrary coefficient list,
+so a `tanh` device is a coefficient supplier, not a new code path.
+
+`TanhNonlinearity` added. Coefficients are **generated** from the ODE
+`y' = 1 - y^2` (exact recurrence `(n+1)a_{n+1} = [n==0] - sum_k a_k a_{n-k}`)
+rather than transcribed from a Bernoulli table, and checked against an
+independent sympy expansion — this module has already lost time to a typed
+constant.
+
+| Vin (V) | U^5 | U^9 | U^13 | ODE | peak v/Vx |
+|---|---|---|---|---|---|
+| 0.50 | -0.0685 | -0.0685 | -0.0685 | -0.0685 | 0.25 |
+| 1.00 | -0.2816 | -0.2811 | -0.2811 | -0.2811 | 0.52 |
+| 1.50 | -0.6641 | -0.6569 | -0.6569 | -0.6569 | 0.82 |
+| 2.00 | -1.2638 | -1.2135 | -1.2154 | -1.2156 | 1.17 |
+| 2.50 | -2.1663 | -1.9191 | -1.9489 | -1.9510 | **1.58** |
+
+1 dB compression at `Vin = 1.8261 V`; against the integration **0.0001 dB**.
+
+**Why it is the better model, and it is not the headline number.** Both
+models put 1 dB at roughly two thirds of their limit — 66% of the cubic's
+turning point, 64% of `tanh`'s Taylor radius `pi/2`. **The limits are not
+comparable.** The cubic's is where the *device* stops being physical
+(negative differential conductance, and a time-domain solve diverges to
+overflow). `tanh`'s is only where the *series* stops converging; the device
+remains monotonic and physical at any amplitude, and the truncations stay
+useful past it — at `Vin = 2.5` the node peak exceeds `pi/2` and `U^13` is
+still within 0.002 dB of the integration.
+
+Practical consequences: the reference needs no ramped drive, and there is no
+amplitude at which the model must be abandoned rather than merely refined.
+
+**Two independent fitting handles**, which is what makes it a *fitted* model
+rather than an illustrative one: `I_0` is the saturation level (`i -> +-I_0`)
+and `V_x = I_0/gm` the knee, so a real device's small-signal gain and its
+output limit can both be matched. `from_transconductance(gm, i_sat)` takes
+exactly those. A cubic also has two parameters, but its second only sets how
+fast the model leaves its region of validity.
+
+**Test cost**, recorded because it was nearly shipped wrong: the first
+version integrated 100 drive cycles and took 170 s. The node settles in
+~0.8 ns against a 1 us period, so 8 cycles are ample — 12.7 s for the same
+assertions.
+
 ### 8.5 CLOSED — there was no eq. (46) instability
 
 This entry previously read "the pencil as printed has right-half-plane poles;

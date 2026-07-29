@@ -30,6 +30,11 @@ from scipy.optimize import brentq
 
 from pycircuit.circuit import SubCircuit, gnd, numeric
 from pycircuit.circuit import circuit as circuit_module
+
+## This whole module compares the analysis against transient simulation, so
+## every test here pays for an integration.  Deselected by default
+## via pytest.ini; run them with `-m slow` or `-m ""`.  See architecture P15.
+pytestmark = pytest.mark.slow
 from pycircuit.circuit.elements import Diode, ISin, R, C
 from pycircuit.circuit.transient import Transient
 from pycircuit.circuit.distortion import harmonic_response, CubicNonlinearity
