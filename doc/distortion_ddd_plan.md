@@ -1,7 +1,8 @@
 # Symbolic distortion on decision diagrams — implementation plan
 
-**Status: stage A complete and its gate met. Stages B–E are therefore NOT
-being built — the plan's own stop condition fired.** Outcomes in section 5;
+**Status: stages A and C2 complete, both gates met. Stages B, C, D and E are
+NOT being built — the plan's own stop condition fired at A, and C2 then showed
+there is nothing left for a decision diagram to rescue.** Outcomes in section 5;
 the live measurements are `doc/src/circuit/distortion_ddd.rst`.
 
 **Goal, stated by the maintainer: run distortion analysis on bigger circuits.**
@@ -222,7 +223,7 @@ output._
 | A — factored ring, no DDD, swept `U^7`..`U^13` | **Gate met, and the plan stops here.** Reached `U^13`: build 0.25 s, 434 graph nodes, evaluate 4.5 ms, agreeing with the numeric path to **3.6e-16**. `sympy.cancel` could not finish `U^7` in 900 s. Growth 89 → 434 nodes over the sweep is polynomial, not geometric. **Also measured on the circuit-size axis**, which stage A was not asked for but the stated goal needs: on a *dense* matrix (worst-case fill-in) graph size scales as `n**1.90` — roughly quadratic — with 12 circuit nodes building in 0.6 s. So the representation is polynomial on **both** axes. The cost recorded in §8.3 was **simplification, not the method** |
 | B — DDD-backed solve | **not built.** Stage A's gate says so explicitly: if a plain factored ring makes `U^13` tractable, the diagram stages are an optimisation of a solved problem |
 | C — `s_expand` across harmonics | **not built**, same reason |
-| C2 — hierarchy, for bigger circuits | **not built, and this is the one worth reopening.** Stage A's circuit-size result is on a *synthetic dense matrix*, not a real transistor-level circuit where parameters are shared across entries. Hierarchy's measured wins on the µA741 (1040 → 156 vertices) were on a real one |
+| C2 — hierarchy, for bigger circuits | **Gate met, and hierarchy turned out not to be needed.** On the **µA741** (26x26, 103 nonzeros, built through the same path AC analysis uses): third harmonic agrees with the numeric path to **1.88e-14** against a gate of 1e-10, with 3175 graph nodes and a 0.86 s build at `U^7`. On **cascaded op-amps**, with the nonlinearity in the *first* block and the output read at the last so the representation must carry the whole chain, growth is **linear** in circuit size — 227, 400, 567, 734 nodes for dimensions 7, 12, 17, 22 — at ~2e-14 throughout. The second half of the gate, a measured vertex reduction from suppression, is **moot**: suppression exists to rescue a representation that is blowing up, and this one is linear and sub-second |
 | D — worth it? | **answered without building B–E.** Neither criterion can be met: stage A already reaches the truncation order, so there is no order it 'cannot reach at all', and a 3x size reduction against a representation this small is not worth new machinery |
 | E — a graded multiroot diagram | **not built.** Was gated on C2 reporting first, and C2 was not run |
 

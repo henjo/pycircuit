@@ -208,3 +208,143 @@ def test_stage_a_cost_is_polynomial_in_circuit_size():
     ## Doubling the node count must not do worse than cubic.
     assert large < 8*small, (small, large)
     assert large > small, (small, large)
+
+
+## ------------------------------------------------ stage C2: real circuits --
+
+def _bench_solver(A, s_sym, n):
+    """Gaussian elimination over :class:`Expr`, from a circuit's own matrix.
+
+    Sparsity is exploited by skipping zero pivots; a real MNA matrix is
+    mostly zeros (the µA741 is 103 nonzeros out of 676) and eliminating
+    against them would build nodes carrying no information.
+    """
+    rows = [[A[i, j] for j in range(n)] for i in range(n)]
+
+    def solve(s, rhs):
+        M = [[Expr.atom(e.subs(s_sym, s)
+                        if getattr(e, 'free_symbols', set()) else e)
+              if e != 0 else Expr.atom(0) for e in row] for row in rows]
+        b = [r if isinstance(r, Expr) else Expr.atom(r) for r in rhs]
+        for i in range(n):
+            for r in range(i + 1, n):
+                if M[r][i]._is_zero():
+                    continue
+                factor = M[r][i]/M[i][i]
+                for j in range(i, n):
+                    if not M[i][j]._is_zero():
+                        M[r][j] = M[r][j] - factor*M[i][j]
+                b[r] = b[r] - factor*b[i]
+        x = [None]*n
+        for i in range(n - 1, -1, -1):
+            acc = b[i]
+            for j in range(i + 1, n):
+                if not M[i][j]._is_zero():
+                    acc = acc - M[i][j]*x[j]
+            x[i] = acc/M[i][i]
+        return x
+    return solve
+
+
+def _numeric_bench_solver(A, s_sym, n, env):
+    rows = sympy.Matrix(A)
+
+    def solve(s, rhs):
+        local = dict(env)
+        local[s_sym] = s
+        M = np.array([[complex(rows[i, j].subs(local)) for j in range(n)]
+                      for i in range(n)], dtype=complex)
+        return list(np.linalg.solve(M, np.asarray(rhs, dtype=complex)))
+    return solve
+
+
+def _bench_case(system, nonlinear_nodes, power, drive_index, out_index):
+    n, s_sym = system.dim, system.s
+    ks = [sympy.Symbol('kk%d' % i) for i in nonlinear_nodes]
+    drive = sympy.Symbol('Adrv')
+
+    env = {k: 1e-9 for k in ks}
+    env[drive] = 1e-3
+    for symbol in system.A.free_symbols:
+        if str(symbol).startswith('gm_'):
+            env[symbol] = 1e-3
+
+    def make_f(coeffs):
+        def f(x):
+            out = [GradedSpectrum() for _ in range(n)]
+            for idx, node in enumerate(nonlinear_nodes):
+                out[node] = _cube(x[node], power).scaled(coeffs[idx])
+            return GradedVector(out)
+        return f
+
+    def source(value):
+        vec = GradedVector([GradedSpectrum() for _ in range(n)])
+        vec.components[drive_index].terms.update(
+            GradedSpectrum.from_phasor(1, 1, value).terms)
+        return vec
+
+    tone = 2*np.pi*1e3
+    graph = graded_response_mimo(
+        _bench_solver(system.A, s_sym, n), source(Expr.atom(drive)),
+        make_f([Expr.atom(k) for k in ks]), (tone,), max_power=power)
+    root = graph[out_index].phasor(3)
+
+    numeric = graded_response_mimo(
+        _numeric_bench_solver(system.A, s_sym, n, env),
+        source(complex(env[drive])),
+        make_f([complex(env[k]) for k in ks]), (tone,), max_power=power)
+
+    return (evaluate_one(root, env), numeric[out_index].phasor(3),
+            nodes_of(root))
+
+
+def test_stage_c2_ua741_matches_the_numeric_path():
+    """Stage C2's gate, on a real circuit rather than a synthetic matrix.
+
+    The µA741 as transcribed for the DDD work: 26x26, 103 nonzeros, built
+    through the same path AC analysis uses.  The gate asked for 1e-10.
+
+    Driven at the circuit's *own* input and read at its *own* output.  An
+    earlier run drove node 0 and read node 0 instead, which produced entirely
+    plausible build times and node counts against a harmonic that was
+    identically zero -- a reminder that a size measurement says nothing about
+    whether the analysis did anything.
+    """
+    from pycircuit.circuit import benchmark_circuits as bc
+
+    system = bc.ua741(symbolic_devices=('q1', 'q2', 'q3', 'q4'))
+    drive_index = [i for i in range(system.dim) if system.b[i] != 0][0]
+    got, want, size = _bench_case(system, [17, 18, 22], 5,
+                                  drive_index, system.out_index)
+
+    assert abs(want) > 0, 'the oracle must produce a nonzero third harmonic'
+    assert abs(got - want) <= 1e-10*abs(want)
+    ## A few thousand nodes for a 26-node op-amp; guards a blow-up.
+    assert size < 20000, size
+
+
+def test_stage_c2_size_grows_linearly_with_circuit_size():
+    """The axis that decides whether bigger circuits are reachable.
+
+    Cascaded op-amps, with the nonlinearity in the **first** block and the
+    output read at the last, so the representation has to carry the whole
+    chain.  Placing it in the last block instead makes size *constant* in the
+    number of blocks, which flatters the result and measures locality rather
+    than scale -- so it is deliberately not done that way here.
+    """
+    from pycircuit.circuit import benchmark_circuits as bc
+
+    sizes = []
+    for blocks in (1, 3):
+        system = bc.cascaded_opamps(blocks=blocks,
+                                    symbolic_devices=('q1', 'q2'))
+        drive_index = [i for i in range(system.dim) if system.b[i] != 0][0]
+        got, want, size = _bench_case(system, [1, 2, 3], 5,
+                                      drive_index, system.out_index)
+        assert abs(want) > 0
+        assert abs(got - want) <= 1e-10*abs(want)
+        sizes.append(size)
+
+    ## Linear, not exponential: tripling the blocks must not square the graph.
+    assert sizes[1] < 4*sizes[0], sizes
+    assert sizes[1] > sizes[0], sizes

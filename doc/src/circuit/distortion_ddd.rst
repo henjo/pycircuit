@@ -229,6 +229,162 @@ in circuit size, the latter measured on the least favourable topology.  There
 is no exponential barrier in either direction, which is the result that
 decides whether larger circuits are reachable at all.
 
+A real circuit
+---------------
+
+The measurements above use synthetic matrices, which is the right way to
+isolate scaling but says nothing about whether a real circuit behaves the
+same.  The µA741 below is transcribed from Tan & Shi's TCAD 2000 paper — the
+circuit their published diagram sizes are measured on — and its matrix is
+built through the *same* path :class:`~pycircuit.circuit.analysis_ss.AC` uses,
+so it is the analysis's own matrix rather than a hand-written one.
+
+It is 26x26 with 103 nonzeros: sparse, and mostly numeric with a handful of
+symbolic device parameters, which is what a real analysis looks like and is
+quite unlike a dense matrix of distinct symbols.
+
+.. exec-rst::
+
+    import time
+    import numpy as np, sympy
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.distortion import (graded_response_mimo,
+                                              GradedSpectrum, GradedVector)
+    from pycircuit.circuit.distortion_ddd import Expr, evaluate_one, nodes_of
+
+    def cube(sp, p):
+        return ((sp*sp).truncated(p) * sp).truncated(p)
+
+    def expr_solve(A, s_sym, n):
+        rows = [[A[i, j] for j in range(n)] for i in range(n)]
+        def solve(s, rhs):
+            M = [[Expr.atom(e.subs(s_sym, s)
+                            if getattr(e, 'free_symbols', set()) else e)
+                  if e != 0 else Expr.atom(0) for e in row] for row in rows]
+            b = [r if isinstance(r, Expr) else Expr.atom(r) for r in rhs]
+            for i in range(n):
+                for r in range(i+1, n):
+                    if M[r][i]._is_zero():
+                        continue
+                    fac = M[r][i]/M[i][i]
+                    for j in range(i, n):
+                        if not M[i][j]._is_zero():
+                            M[r][j] = M[r][j] - fac*M[i][j]
+                    b[r] = b[r] - fac*b[i]
+            x = [None]*n
+            for i in range(n-1, -1, -1):
+                acc = b[i]
+                for j in range(i+1, n):
+                    if not M[i][j]._is_zero():
+                        acc = acc - M[i][j]*x[j]
+                x[i] = acc/M[i][i]
+            return x
+        return solve
+
+    def num_solve(A, s_sym, n, env):
+        rows = sympy.Matrix(A)
+        def solve(s, rhs):
+            loc = dict(env); loc[s_sym] = s
+            M = np.array([[complex(rows[i, j].subs(loc)) for j in range(n)]
+                          for i in range(n)], dtype=complex)
+            return list(np.linalg.solve(M, np.asarray(rhs, dtype=complex)))
+        return solve
+
+    sysm = bc.ua741(symbolic_devices=('q1', 'q2', 'q3', 'q4'))
+    n, s_sym = sysm.dim, sysm.s
+    IN = [i for i in range(n) if sysm.b[i] != 0][0]
+    OUT = sysm.out_index
+    NL = [17, 18, 22]
+    ks = [sympy.Symbol('kk%d' % i) for i in NL]
+    drive = sympy.Symbol('Adrv')
+    env = {k: 1e-9 for k in ks}
+    env[drive] = 1e-3
+    for d in sysm.A.free_symbols:
+        if str(d).startswith('gm_'):
+            env[d] = 1e-3
+
+    def make_f(coeffs, power):
+        def f(x):
+            out = [GradedSpectrum() for _ in range(n)]
+            for idx, node in enumerate(NL):
+                out[node] = cube(x[node], power).scaled(coeffs[idx])
+            return GradedVector(out)
+        return f
+
+    def source(value):
+        vec = GradedVector([GradedSpectrum() for _ in range(n)])
+        vec.components[IN].terms.update(
+            GradedSpectrum.from_phasor(1, 1, value).terms)
+        return vec
+
+    tone = 2*np.pi*1e3
+    head = ['truncation', 'build (s)', 'graph nodes', 'evaluate (s)',
+            'vs numeric']
+    rows = []
+    for power in (3, 5, 7):
+        t = time.time()
+        g = graded_response_mimo(expr_solve(sysm.A, s_sym, n),
+                                 source(Expr.atom(drive)),
+                                 make_f([Expr.atom(k) for k in ks], power),
+                                 (tone,), max_power=power)
+        root = g[OUT].phasor(3)
+        build = time.time() - t
+        t = time.time(); got = evaluate_one(root, env); ev = time.time() - t
+
+        nn = graded_response_mimo(num_solve(sysm.A, s_sym, n, env),
+                                  source(complex(env[drive])),
+                                  make_f([complex(env[k]) for k in ks], power),
+                                  (tone,), max_power=power)
+        want = nn[OUT].phasor(3)
+        rows.append(['U^%d' % power, '%.2f' % build, '%d' % nodes_of(root),
+                     '%.4f' % ev, '%.1e' % (abs(got-want)/abs(want))])
+
+    widths = [max(len(r[i]) for r in rows + [head]) for i in range(len(head))]
+    sep = ' '.join('=' * w for w in widths)
+    print(sep)
+    print(' '.join('%-*s' % (w, h) for w, h in zip(widths, head)))
+    print(sep)
+    for r in rows:
+        print(' '.join('%-*s' % (w, c) for w, c in zip(widths, r)))
+    print(sep)
+
+**A transistor-level operational amplifier is comfortably in reach**, with the
+symbolic result agreeing with the numeric one to around :math:`10^{-14}`.
+
+Two things about that table are worth knowing rather than inferring.
+
+The graph is barely sensitive to how many device parameters are left
+symbolic — going from two symbolic transconductances to eight changed the node
+count by under 1%, because symbols are *leaves* on structure that is shared
+regardless.
+
+And on cascaded amplifiers the growth is **linear** in circuit size when the
+nonlinearity sits far from the output.  Placing it *near* the output instead
+makes the size constant, which looks better and measures the wrong thing: it
+reports the locality of the nonlinear subcircuit rather than the scale of the
+circuit.  The linear figure is the honest one.
+
+.. warning::
+
+   A size measurement says nothing about whether the analysis did anything.
+   An earlier version of this page's measurement drove node 0 and read node 0,
+   producing entirely plausible build times and node counts against a third
+   harmonic that was **identically zero**.  It was caught only by comparing
+   against the numeric path, which is why every table here carries that
+   column.
+
+Consequences for hierarchy
+---------------------------
+
+The plan behind this work proposed hierarchical node suppression — the
+machinery in :doc:`ddd`, which reduces the µA741's determinant diagram from
+1040 vertices to 156 — as the route to larger circuits.
+
+It is not needed here.  Suppression exists to rescue a representation that is
+blowing up, and this one is linear in circuit size and builds a transistor-level
+amplifier in under a second.  That stage is therefore **not being built**, and
+this paragraph records why rather than leaving the plan's proposal dangling.
+
 What this does *not* establish
 -------------------------------
 

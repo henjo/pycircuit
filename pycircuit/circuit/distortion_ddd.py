@@ -105,6 +105,10 @@ class Expr:
             return self
         ## Flatten and order: `a + b` and `b + a` must intern to one node, or
         ## the sharing this class exists for is lost to argument order.
+        if self._is_number() and other._is_number():
+            ## A real circuit is mostly numeric: fold, or the graph fills
+            ## with arithmetic that could have been done once at build time.
+            return Expr.atom(self._number() + other._number())
         terms = self._flat('add') + other._flat('add')
         return Expr('add', _ordered(terms))
 
@@ -118,6 +122,8 @@ class Expr:
             return other
         if other._is_one():
             return self
+        if self._is_number() and other._is_number():
+            return Expr.atom(self._number() * other._number())
         factors = self._flat('mul') + other._flat('mul')
         return Expr('mul', _ordered(factors))
 
@@ -125,6 +131,8 @@ class Expr:
 
     def __truediv__(self, other):
         other = Expr.atom(other)
+        if other._is_number():
+            return self * Expr.atom(1.0 / other._number())
         return self * Expr('inv', (other,))
 
     def __neg__(self):
@@ -147,6 +155,18 @@ class Expr:
 
     def _flat(self, op):
         return list(self.args) if self.op == op else [self]
+
+    def _is_number(self):
+        if self.op != 'atom':
+            return False
+        value = self.value
+        if isinstance(value, sympy.Expr):
+            return bool(value.is_number)
+        return True
+
+    def _number(self):
+        value = self.value
+        return complex(value) if not isinstance(value, complex) else value
 
     def _is_zero(self):
         return self.op == 'atom' and self.value == 0
