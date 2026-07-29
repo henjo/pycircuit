@@ -2349,3 +2349,101 @@ def test_filter_im3_matches_published_eq52(r1, r2):
     want = abs((a + b)*Xin**2)
 
     assert abs(got - want) <= 1e-11*want
+
+
+# ---------------------------------------------------------------------------
+# Cross-terms x_j x_k.  Plan section 8.2.
+# ---------------------------------------------------------------------------
+
+## A current into node 1 controlled by the PRODUCT of the two node voltages.
+## No published example in this line has such a term -- the source
+## formulation assumes self-terms only -- so the gates below are independent
+## rather than published.
+_BQ_KAPPA = 2.0e-4          # A/V**2
+
+
+def _bq_cross_run(Xin, w, maxp, factored=False):
+    src = GradedSpectrum.from_phasor(1, 1, _BQ_G1*Xin)
+
+    def f(x):
+        if factored:
+            ## Same term via the polarisation identity.
+            total = ((x[0] + x[1]) * (x[0] + x[1])).truncated(maxp)
+            total = total + (x[0]*x[0]).truncated(maxp).scaled(-1)
+            total = total + (x[1]*x[1]).truncated(maxp).scaled(-1)
+            product = total.scaled(0.5)
+        else:
+            product = (x[0]*x[1]).truncated(maxp)
+        return GradedVector([product.scaled(-_BQ_KAPPA), GradedSpectrum()])
+
+    return graded_response_mimo(_bq_solve,
+                                GradedVector([src, GradedSpectrum()]),
+                                f, (w,), max_power=maxp)
+
+
+def test_cross_term_matches_an_independent_integration():
+    """Plan 8.2, **the strong gate**: a cross term against a time-domain run.
+
+    ``graded_response_mimo`` takes the nonlinearity as a callable in the
+    graded ring, so a term controlled by the *product of two different node
+    voltages* costs nothing extra to express.  Whether it is *correct* is a
+    separate question, and no paper in this line has such a term to check
+    against -- the source formulation assumes self-terms only.
+
+    A published reference is not the only kind.  Integrating the circuit's
+    own differential equations is independent of the perturbation machinery,
+    sharing only the circuit, and it is what validated phase elsewhere in
+    this file.  This is evidence of the same kind as the published
+    comparisons, not self-consistency.
+
+    Note the second harmonic: ``x1*x2`` is quadratic, so unlike the biquad's
+    own purely cubic nonlinearities it generates even harmonics.  That is
+    what makes this a real test of the cross path rather than a relabelled
+    self-term.
+    """
+    from scipy.integrate import solve_ivp
+
+    Xin = 0.05
+    w = _bq_centre()
+
+    def rhs(t, y):
+        x1, x2 = y
+        u = Xin*np.cos(w*t)
+        return [(_BQ_G2*x1 + _BQ_G4*x2 + _BQ_G1*u + _BQ_KAPPA*x1*x2)/_BQ_C1,
+                (_BQ_G3*x1)/_BQ_C2]
+
+    period = 2*np.pi/w
+    tend = 300*period
+    keep = 32
+    ts = np.linspace(tend - keep*period, tend, keep*256, endpoint=False)
+    sol = solve_ivp(rhs, (0, tend), [0.0, 0.0], t_eval=ts, method='DOP853',
+                    rtol=1e-12, atol=1e-20, max_step=period/60)
+    spectrum = np.fft.rfft(sol.y[0])/len(sol.y[0])
+
+    got = _bq_cross_run(Xin, w, 5)
+    for m, tol in ((1, 1e-8), (2, 1e-5), (3, 1e-5)):
+        ours = got[0].phasor(m)
+        want = 2*spectrum[m*keep]
+        assert abs(abs(ours) - abs(want)) <= tol*abs(want), 'harmonic %d' % m
+        assert abs(np.angle(ours/want, deg=True)) < 0.01, 'phase, harmonic %d' % m
+
+    ## The quadratic cross term must actually produce a second harmonic --
+    ## otherwise the test would pass against a circuit with no cross path.
+    assert abs(got[0].phasor(2)) > 1e-3*abs(got[0].phasor(1))
+
+
+def test_cross_term_agrees_with_its_polarisation_identity():
+    """Plan 8.2, **the weak gate**, and labelled as such deliberately.
+
+    ``x1*x2 == ((x1+x2)**2 - x1**2 - x2**2)/2`` must hold in the graded ring.
+    This is internal self-consistency: it mostly tests that the convolution
+    is bilinear, and it would pass even if the whole circuit were wrong.  It
+    is kept as a supplement to the integration above, not as evidence that
+    cross terms are right.
+    """
+    w = _bq_centre()
+    direct = _bq_cross_run(0.05, w, 5, factored=False)
+    factored = _bq_cross_run(0.05, w, 5, factored=True)
+    for m in (1, 2, 3):
+        a, b = direct[0].phasor(m), factored[0].phasor(m)
+        assert abs(a - b) <= 1e-14*abs(b), 'harmonic %d' % m

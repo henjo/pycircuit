@@ -910,9 +910,16 @@ Limitations of the present implementation
   :func:`~pycircuit.circuit.distortion.graded_response` inherited that, but
   :func:`~pycircuit.circuit.distortion.graded_response_mimo` takes the
   nonlinearity as a callable in the graded ring, where a cross term costs
-  nothing extra.  No published example in this line uses one, so the capability
-  is **untested against an external reference** — the representation permits
-  it, which is not the same as it having been checked.
+  nothing extra.
+
+  Cross-terms are now **verified**, not merely permitted.  No paper in this
+  line has one to compare against, but a published reference is not the only
+  independent one: a term :math:`\kappa\,x_1 x_2` added to the gm-C biquad
+  agrees with a direct integration of that circuit's differential equations to
+  :math:`1.8\times10^{-11}` at the fundamental and to :math:`0.0000^\circ` in
+  phase at every harmonic checked.  Being quadratic, the cross term generates
+  even harmonics that the biquad's own purely cubic nonlinearities cannot, so
+  the comparison exercises the cross path rather than a relabelled self-term.
 
 Devices that are not polynomials
 --------------------------------

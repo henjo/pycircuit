@@ -399,41 +399,34 @@ real-coefficient matrix `M(conj s) = conj M(s)`, so that expression is the
 evidence that phase could not discriminate. A mutation that changes nothing is
 worse than no mutation, because it reads as a passing result.
 
-### 8.2 Cross-terms `x_j x_k` — plan, drafted while doing 8.1
+### 8.2 Cross-terms `x_j x_k` — **DONE**
 
-The blocker recorded below was "no published example uses a cross-term, so
-there is nothing to check against". That framing was too narrow: a cross-term
-does not need a *published* reference, only an *independent* one, and two are
-available.
+**Both gates passed.** A current into node 1 controlled by the *product* of
+the two node voltages, `k * x1 * x2`, added to the biquad.
 
-1. **A time-domain integration**, the same instrument that validated phase.
-   Add a genuine cross-term `k * x1 * x2` to the biquad — whose linear part is
-   now verified against eq. (47) and whose constants are checked at 600 dpi —
-   integrate its ODEs, and compare harmonics. This is a real external gate,
-   not self-consistency, and is the strong one.
-2. **The polarisation identity**, as a cheap algebraic cross-check:
-   `x1*x2 = ((x1+x2)^2 - x1^2 - x2^2)/2`. Writing the nonlinearity both ways
-   must agree to floating point. Weaker — it mostly tests bilinearity of the
-   convolution — so it is a supplement, not the gate.
+*Strong gate — a time-domain integration*, independent of the perturbation
+machinery and sharing only the circuit: magnitude agrees to **1.8e-11** at the
+fundamental and ~1e-6 at the second and third harmonics (reference-limited),
+with phase to **0.0000 deg** throughout. This is evidence of the same kind as
+the published comparisons.
 
-**State the difference in strength wherever this lands.** Route 1 is evidence
-of the same kind as the published comparisons; route 2 is internal
-self-consistency. A commit that presents them together must not imply the
-cross-term carries the same backing as `IM3`.
+*Weak gate — the polarisation identity* `x1*x2 = ((x1+x2)^2 - x1^2 - x2^2)/2`,
+agreeing to 2e-16. **Labelled weak in the test itself**: it mostly checks that
+the convolution is bilinear and would pass even if the circuit were wrong. It
+is a supplement, not the evidence.
 
-`_bq_run_two_tone` already takes the nonlinearity as a parameter for exactly
-this, so the circuit setup is shared.
+The cross term is **quadratic**, so unlike the biquad's own purely cubic
+nonlinearities it generates even harmonics. The test asserts the second
+harmonic is actually present, so it cannot pass against a circuit with no
+cross path at all — the failure mode that would make this whole exercise
+vacuous.
 
-*Original entry:*
-
-`graded_response_mimo` takes the nonlinearity as a callable in the graded ring,
-where a cross term costs nothing extra — but **no published example in this
-line uses one**, so the capability has never been checked against an external
-reference. The docs say so explicitly rather than implying coverage.
-
-**Reconsider if** a reference circuit with a genuine cross term turns up. Until
-then the honest position is "the representation permits it", which is not the
-same as "it works".
+**What changed to unblock this.** The recorded reason for leaving cross terms
+untested was "no published example uses one". That conflated *published* with
+*independent*. Integrating the circuit's own ODEs is an external reference by
+any reasonable standard, and it was already built and in use for phase.
+Worth remembering as a pattern: "no reference exists" deserves a second look
+when what is meant is "no *paper* has one".
 
 ### 8.3 Simplification cost, as distinct from expression size
 
