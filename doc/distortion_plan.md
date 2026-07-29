@@ -1,6 +1,7 @@
 # Perturbation distortion analysis — implementation plan
 
-**Status: nothing implemented. Gates below are declared in advance.**
+**Status: stages 1-4 done, all gates passed. Stage 5 and the deferred item in
+§7 remain. Gates were declared in advance of each stage; outcomes are in §5.**
 
 Companion documents:
 
@@ -273,3 +274,42 @@ reading them.
   Fig. 6 caption says 10 mV but the plotted curves correspond to 20 mV
   (offsets of exactly +6 dB on HD2 and +12 dB on HD3 — the signature of a
   doubled input).
+
+## 7. Deferred — exponential devices with two tones
+
+Stage 4 covers two-tone intermodulation for cubic nonlinearities only, which
+is all the sources derive. Extending it to exponential (diode/bipolar)
+devices is a genuine gap and worth closing **after** stage 5.
+
+**It is not blocked on mathematics, and an earlier note in this repository
+overstated that.** The exponential factorises over a sum of tones:
+
+```
+exp(a1 cos t1 + a2 cos t2) = sum_{m,n} I_m(a1) I_n(a2) exp(j(m t1 + n t2))
+```
+
+so the coefficient at `(m,n)` is an ordinary *product* of Bessel functions.
+Verified to machine precision (~1e-15 relative) against a direct 2-D numerical
+Fourier transform. There is no two-argument special function involved.
+
+**The real obstacles, both bounded:**
+
+1. **Phase.** For one tone the drive can be taken real by absorbing its phase
+   into the time origin, which is what `ExponentialNonlinearity` does today —
+   it uses `abs(X1[port])`. With two tones only one phase can be absorbed; the
+   relative phase is physical. And it matters here specifically: the first-
+   and second-order contributions to IM3 nearly cancel, so the total is
+   sensitive to it. This means carrying complex amplitudes through the Bessel
+   path rather than magnitudes.
+2. **Nothing currently checks the answer.** No reference in the set publishes
+   two-tone exponential numbers. But this is solvable without more reading:
+   **numerically extract the Fourier coefficient of `exp(x(t)/V_T)` for a
+   two-tone `x(t)` and compare.** That is an independent oracle of exactly the
+   kind stage 1 used against Volterra, and it is how the factorisation claim
+   above was checked in the first place.
+
+**Suggested gate when picked up:** the Bessel-product coefficients must match
+a 2-D numerical Fourier extraction to ~1e-10 across a range of drive
+amplitudes, *and* the end-to-end IM3 must converge to the cubic result at
+small signal — the same small-signal convergence check that guards the
+single-tone Bessel path in stage 3.

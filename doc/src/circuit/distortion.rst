@@ -372,8 +372,25 @@ checking only the terms would miss a sign error in how they combine.
 Not implemented: two tones on an exponential device
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The two-tone derivation in the reference covers cubic polynomials only.  An
-exponential device would need a two-argument Bessel expansion that none of the
-source papers provides, so
+The two-tone derivation in the reference covers cubic polynomials only, and
 :class:`~pycircuit.circuit.distortion.ExponentialNonlinearity` raises rather
 than returning a number from a derivation nobody has checked.
+
+The obstacle is *not* the mathematics, which is easy.  The exponential
+factorises over a sum of tones,
+
+.. math::
+
+   e^{a_1\cos\theta_1 + a_2\cos\theta_2}
+     = \sum_{m,n} I_m(a_1)\, I_n(a_2)\, e^{j(m\theta_1 + n\theta_2)}
+
+so the coefficient at :math:`(m,n)` is an ordinary *product* of Bessel
+functions — no special two-argument function is involved.
+
+What is missing is phase.  For a single tone the drive can be taken real by
+absorbing its phase into the time origin, which is what the implementation
+does.  With two tones only one phase can be absorbed; the relative phase is
+physical, and since the two contributions to IM3 nearly cancel, the total
+depends on it.  Supporting exponential devices with two tones means carrying
+complex amplitudes through the Bessel path rather than magnitudes — a real
+piece of work, but a bounded one.

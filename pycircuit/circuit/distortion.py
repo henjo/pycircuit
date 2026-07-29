@@ -270,12 +270,34 @@ class ExponentialNonlinearity:
         return F2, F3, B1_apply
 
     def intermodulation_sources(self, X10, X01, toolkit):
+        """Not implemented -- see ``doc/distortion_plan.md`` section 7.
+
+        Not for the reason it might appear.  The mathematics is easy: the
+        exponential *factorises* over a sum of tones, so
+        ``exp(a1 cos t1 + a2 cos t2)`` expands as
+        ``sum_{m,n} I_m(a1) I_n(a2) exp(j(m t1 + n t2))`` -- an ordinary
+        product of Bessel functions, verified to machine precision against a
+        2-D numerical Fourier transform.  There is no two-argument special
+        function involved.
+
+        What is actually missing is phase.  For a single tone the drive can
+        be taken real by absorbing its phase into the time origin, which is
+        what this class does (it uses ``abs(X1[port])``).  With two tones only
+        one phase can be absorbed; the *relative* phase is physical, and the
+        first- and second-order contributions to IM3 nearly cancel in
+        practice, so the total depends on it.  Supporting this means carrying
+        complex amplitudes through the Bessel path rather than magnitudes.
+
+        Refused rather than guessed because no reference in the source set
+        derives it and nothing would currently check the result.  A numerical
+        two-tone Fourier extraction is a perfectly good oracle -- that is the
+        route, not more reading.
+        """
         raise NotImplementedError(
-            'Two-tone intermodulation is derived only for cubic '
-            'nonlinearities in the source (2013 paper, section 2.2). The '
-            'exponential case would need the two-argument Bessel expansion, '
-            'which is not in any of the reference papers -- implementing it '
-            'would mean deriving new mathematics, not following one.')
+            'Two-tone intermodulation for an exponential device is not '
+            'implemented: the Bessel path here carries magnitudes only, and '
+            'two tones need relative phase. See doc/distortion_plan.md '
+            'section 7.')
 
 
 def harmonic_response(apply_G, U, nonlinearity, tones, toolkit):
