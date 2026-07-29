@@ -428,18 +428,37 @@ any reasonable standard, and it was already built and in use for phase.
 Worth remembering as a pattern: "no reference exists" deserves a second look
 when what is meant is "no *paper* has one".
 
-### 8.3 Simplification cost, as distinct from expression size
+### 8.3 Simplification cost — **surveyed; plan written, not started**
 
 Stage E measured expression *size* and found it polynomial. It did **not**
 measure simplification *cost*: `sympy.cancel` failed to finish in 900 s at
-`U^7` on a two-node system. The theory page's claim is about size; the
-practical limit for a user may well be cost. **These are different claims and
-only one is established.**
+`U^7` on a two-node system. Those are different claims and only one is
+established.
 
-Worth measuring properly, because if cost is the binding constraint the useful
-fix is a different representation (rational functions kept factored, or
-per-harmonic numeric evaluation) rather than anything about the perturbation
-method.
+Feasibility of reusing the DDD work for this has been investigated and written
+up — `doc/distortion_ddd_conclusions.md` (reasoning and measurements) and
+`doc/distortion_ddd_plan.md` (staged plan). **Separate module, separate tests,
+separate label**: the existing implementation stays untouched, because it is
+the oracle the new path is checked against.
+
+Three things came out of the survey worth having here:
+
+- **The structural fit is real.** The distortion method's own claim is that
+  every step is a solve against the same pencil at a different frequency, and
+  that is precisely what `s_expand` (determinant by powers of `s`, shared) and
+  `DDDFamily` (numerators as cofactors of the *original* matrix, so a new
+  right-hand side is a recombination) are built for. `DDDFamily`'s stated
+  motivation — noise analysis, many right-hand sides against one matrix — is
+  the same shape as a graded solve.
+- **A 1000x trap sits on the obvious route.** Per right-hand side,
+  `DDDCombination.eval(env)` costs **3.05 ms**; `eval_roots` memoised once per
+  frequency then recombined costs **3.07 us**, same answer to 2.5e-15. A
+  prototype reaching for `eval` in a loop would measure DDD as hopeless and be
+  wrong. (The DDD memory records the same trap at 200x.)
+- **The cheapest fix may not need DDD at all**, and is stage A of that plan:
+  stop calling `cancel` and keep coefficients factored, evaluating through one
+  memo. If that alone makes `U^7` tractable, DDD is an optimisation of a
+  solved problem and the plan says to stop and record it.
 
 ### 8.4 A usable 1 dB compression example — **DONE**
 
