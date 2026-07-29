@@ -144,3 +144,95 @@ representation correct rather than merely plausible.
 - **Separate files and a separate label throughout**, per the instruction that
   prompted this: the existing implementation must remain the reference, not a
   thing to be refactored around.
+
+## 8. Which diagram for which regime — the framing that matters
+
+Added after the first draft, prompted by two things: the question of whether a
+*determinant* diagram is even the right shape, and the goal of running
+distortion analysis on **bigger circuits**. The second inverts part of §4.
+
+The cost has two independent sources, and they dominate in opposite regimes:
+
+| | small circuit, high truncation order | big circuit, low order |
+|---|---|---|
+| dominant cost | the **product tree** of graded coefficients | the **determinant and cofactors** |
+| right tool | a canonical *polynomial* diagram, or just factored evaluation | **DDD, exactly as built** |
+| evidence | tree/DAG ratio 1.6 → 4.7 over `U^3`..`U^9`; `cancel` unfinished at `U^7` on 2 nodes | µA741 flat `\|DDD\|` 1040, hierarchy 1040 → 156, noise 11 088 → 26 vertices |
+
+**§4 said "the blow-up is not in the determinant". That is true of the 2x2
+biquad and false of a 25x25 op-amp.** On the biquad the determinant has five
+vertices and the products dominate; on a real amplifier the determinant is the
+millions-of-terms object DDD was built for, and the graded products sit *on
+top of* it. For the stated goal — bigger circuits — DDD is not the wrong
+shape. It is the necessary substrate, and the polynomial growth rides above it.
+
+The two compose rather than compete: a graded coefficient on a large circuit
+is a product of cofactors, each of which DDD represents compactly.
+
+## 9. Other diagram variants, and an honest note on sourcing
+
+**These are directions to evaluate, not results.** The project rule applies:
+*only use external data if both the thing measured and the measurement are
+understood*. None of the literature below has been re-read for this document
+and **no number from it should be quoted until the paper is in hand**. What
+follows is a shape-matching argument, which is all it claims to be.
+
+### 9.1 The natural extension of what already exists — a *graded* diagram
+
+`SExpandedDDD` is "one root per power of `s`, sharing subgraphs, memo key
+`(rows, cols, power)`". The distortion work grades by `(harmonic, power of the
+drive)`. So the direct analogue is **one root per graded key, memo key
+`(rows, cols, harmonic, power)`** — the same multiroot construction Shi & Tan
+use for `s`, applied to the grading this analysis already carries.
+
+This is the cheapest variant to try because the machinery, the sharing
+argument and the trimming of zero coefficients all exist; only the expansion
+variable changes. **It is also the one most likely to pay**, because the
+grading is exactly where the repeated structure lives.
+
+### 9.2 Diagrams built for polynomials rather than determinants
+
+A determinant is one specific polynomial — a signed sum over permutations —
+and DDD's variable order and zero-suppression are tuned to it. The graded
+numerator is a *general* multivariate polynomial. Two families were built for
+that case:
+
+- **Taylor Expansion Diagrams (TED)** — canonical form for multivariate
+  polynomials by Taylor decomposition, `f = f(0) + x f'(0) + x^2 f''(0)/2 +
+  ...`, each child a diagram. Developed for datapath verification, where BDDs
+  blow up on arithmetic. The decomposition is the same one this analysis
+  already performs on its devices, which is at least suggestive.
+- **Multiplicative binary moment diagrams (`*BMD`, `K*BMD`)** — moment
+  decomposition `f = f_0 + x f_1` with **multiplicative edge weights**. Those
+  weights are the canonical version of the trick that gave 1000x in §3:
+  keeping a common factor out of the representation instead of distributing
+  it.
+
+**Reconsider-if, and it is a real one:** both are canonical forms for
+polynomials over a *fixed* variable set. Here each harmonic contributes its
+own set of transfer-function values, so the variable count grows with the
+truncation order. Whether either stays compact under that is exactly the
+question, and it is unmeasured.
+
+### 9.3 Considered and set aside
+
+- **ZDD over factor multisets.** Terms are *multisets* — a factor can appear
+  squared — and ZDDs are canonical for *sets*. Encoding multiplicity as
+  distinct variables is possible but reintroduces the growth it was meant to
+  remove. **Reconsider if** a formulation appears where every factor is
+  square-free.
+- **ADD / MTBDD.** Terminals carrying values help when many coefficients
+  repeat exactly. Here they are distinct rational functions.
+
+### 9.4 The lever for *bigger circuits*, which needs no new diagram at all
+
+`HierarchicalDDD` and `suppression_order` already exist and already work:
+1040 → 156 vertices on the µA741, 11 088 → 26 and 86 s → 0.48 s on noise.
+Suppressing internal nodes before expanding is a property of **the matrix**,
+and the distortion path solves the same matrix at every harmonic.
+
+**So the most promising route to larger circuits may not be a new diagram
+variant but the existing hierarchy applied to the existing solve** — cheaper
+than anything in §9.2 and already validated on a circuit far larger than
+anything the distortion work has run. It goes in the plan ahead of the exotic
+options for that reason.

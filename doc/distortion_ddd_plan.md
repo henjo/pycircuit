@@ -2,6 +2,12 @@
 
 **Status: planned, not started.**
 
+**Goal, stated by the maintainer: run distortion analysis on bigger circuits.**
+That is the objective the stages are ordered against; reducing `sympy.cancel`
+cost (§8.3) is the presenting symptom, not the target. The two are not the
+same problem — see `distortion_ddd_conclusions.md` §8, which measures that the
+dominant cost *changes regime* with circuit size.
+
 Reasoning and feasibility measurements behind this plan:
 `doc/distortion_ddd_conclusions.md`. Read that first — it contains the
 measurement that decides whether the plan is worth running at all, and the one
@@ -102,6 +108,26 @@ sharing does not reduce the count, say so: it would mean the harmonics have
 less structure in common than the shared pencil suggests, which is worth
 knowing and contradicts the motivating argument.
 
+### Stage C2 — the lever for bigger circuits, before any new diagram
+
+**Ahead of the exotic options deliberately.** `HierarchicalDDD` and
+`suppression_order` already exist and are already validated on a circuit far
+larger than anything the distortion work has run: 1040 → 156 vertices on the
+µA741, and 11 088 → 26 vertices with 86 s → 0.48 s on noise. Suppressing
+internal nodes is a property of **the matrix**, and the distortion path solves
+the same matrix at every harmonic — so this should transfer with no new
+representation at all.
+
+**Gate.** Distortion on a circuit substantially larger than the biquad — take
+one from `benchmark_circuits.py` — with the harmonics reproduced against the
+existing numeric path to 1e-10, and a **measured** vertex reduction from
+suppression. If suppression does not reduce the count here although it does
+for the plain determinant, that is a finding about the graded solve worth
+recording, not a failure to hide.
+
+**This stage is the one that most directly serves the stated goal.** If it
+works, bigger circuits become reachable without inventing anything.
+
 ### Stage D — is it worth it?
 
 **Gate, stated in advance so it is not rationalised afterwards.** The DDD path
@@ -118,6 +144,26 @@ be equally willing to produce a sixth.
 
 Scale matters for this stage: the 2x2 biquad has five shared vertices and
 proves nothing. Use the existing `benchmark_circuits.py`.
+
+### Stage E — a *graded* multiroot diagram, if C2 leaves a gap
+
+The natural extension of what exists rather than a new family:
+`SExpandedDDD` keys its memo on `(rows, cols, power-of-s)`; the distortion
+work grades by `(harmonic, power-of-drive)`. One root per graded key, memo key
+`(rows, cols, harmonic, power)`, is the same multiroot construction applied to
+the expansion variable this analysis already carries.
+
+**Gate.** Fewer distinct vertices than stage C at equal accuracy, on the
+stage C2 circuit. **Do not start this before C2 reports** — if hierarchy
+already reaches the target circuit sizes, this is effort spent on a solved
+problem.
+
+Polynomial-shaped diagrams (TED, `*BMD`) are deliberately *not* a stage. They
+are the right shape for the numerator polynomial and are discussed in
+`distortion_ddd_conclusions.md` §9.2, but they would be new machinery, their
+compactness under a variable set that grows with truncation order is
+unmeasured, and **no number should be taken from that literature without the
+paper in hand.**
 
 ## 4. What would make this fail, stated in advance
 
@@ -144,7 +190,9 @@ output._
 | A — factored ring, no DDD | not started |
 | B — DDD-backed solve | not started |
 | C — `s_expand` across harmonics | not started |
+| C2 — hierarchy, for bigger circuits | not started |
 | D — worth it? | not started |
+| E — a graded multiroot diagram | not started, and optional |
 
 ## 6. Carried-over facts that bear on this
 
