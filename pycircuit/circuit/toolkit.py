@@ -121,6 +121,35 @@ class Toolkit:
         """
         return (func(at + eps) - func(at - eps)) / (2 * eps)
 
+    def nth_derivative(self, func, at, order):
+        """``d^order func / d at^order`` for a scalar function of a scalar.
+
+        Distortion analysis needs the *second and third* Taylor coefficients of
+        a device characteristic, where every other analysis needs only the
+        first (the Jacobian).  Rather than ask elements to declare higher
+        derivatives -- a second statement of the device model, free to drift
+        from ``i()``, which is the defect ``test_element_jacobians`` exists to
+        catch -- they are derived from the same pure function the element
+        already exposes.  See ``doc/distortion_plan.md`` section 2.3.
+
+        The base implementation is a central difference applied ``order``
+        times, with the step widened for higher orders: differencing amplifies
+        round-off as ``eps**-order``, so the naive 1e-6 that is right for a
+        first derivative is hopeless for a third.  A symbolic backend
+        overrides this and is exact at every order.
+        """
+        ## eps ~ macheps**(1/(order+2)) balances truncation against round-off
+        ## for a central difference; the exponent is the standard result.
+        eps = 1e-16 ** (1.0 / (order + 2))
+
+        def diff_once(f):
+            return lambda v: (f(v + eps) - f(v - eps)) / (2 * eps)
+
+        d = func
+        for _ in range(order):
+            d = diff_once(d)
+        return d(at)
+
     def evaluation_groups(self, circuit):
         """Element classes this toolkit can evaluate in a batch -- none, here.
 
@@ -413,6 +442,19 @@ class SymbolicToolkit(Toolkit):
             for j in range(len(x)):
                 J[k, j] = sympy.diff(f[k], dummies[j]).subs(back)
         return J
+
+    def nth_derivative(self, func, at, order):
+        """Exact ``d^order func / d at^order`` -- no differencing, any order.
+
+        The base class differences ``order`` times, which loses roughly
+        ``order`` significant digits; sympy differentiates in closed form, so
+        the third derivative is as exact as the first.  That is the whole
+        reason distortion analysis can take its Taylor coefficients from the
+        model rather than from a separate declaration.
+        """
+        import sympy
+        t = sympy.Dummy()
+        return sympy.diff(func(t), t, order).subs(t, at)
 
 
 class NumDenMixin:

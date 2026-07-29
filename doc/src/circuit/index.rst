@@ -12,6 +12,7 @@ Circuit analyzer
     ginac_native
     soe_symbolic
     ddd
+    distortion
     theory
     modules
     elements
