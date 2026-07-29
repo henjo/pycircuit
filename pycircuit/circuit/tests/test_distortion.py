@@ -1758,3 +1758,141 @@ def test_biquad_omitted_nonlinearities_are_not_negligible():
     assert full > 1e3*partial, (
         'expected the node-2 and input cubics to dominate at low frequency, '
         'got full=%g partial=%g' % (full, partial))
+
+
+## Stage D: the 2013 paper's worked example 1, 3-stage RNMC amplifier.
+## Structurally different from the biquad: three nodes, *quadratic* as well
+## as cubic terms, and nonlinearities that act on a node other than the one
+## they are injected into.
+_AMP = dict(gm1=245e-6, g01=1/98e3, gm2=200e-6, g02=1/107e3,
+            gm2q=4e-3, gm2c=60e-3, gm3=1e-3, g03=1/23e3,
+            gm3q=2e-3, gm3c=3e-3, CL=10e-12, C1=2e-12, C2=1e-12)
+
+
+def _amp_p(w):
+    return _AMP['g03'] + 1j*w*_AMP['CL']
+
+
+def _amp_q(w):
+    a = _AMP
+    return (a['g01']*a['g02']*a['g03']
+            + 1j*w*(a['CL']*a['g01']*a['g02']
+                    + a['C1']*(a['g02']*a['g03'] + a['gm2']*a['gm3'])
+                    + a['C2']*a['g03']*(a['g02'] + a['gm2']))
+            - w**2*((a['C1']+a['C2'])*a['CL']*a['g02']
+                    + a['C2']*a['CL']*a['gm2']))
+
+
+def _amp_r(w):
+    a = _AMP
+    return a['g01']*a['g02'] + 1j*w*(a['C1']*a['g02']
+                                     + a['C2']*(a['g02'] + a['gm2']))
+
+
+def _amp_solve(s, rhs):
+    """Open-loop form of published eq. (45).
+
+    The paper prints the *feedback* configuration; the open-loop matrix is
+    its limit ``k_in -> 1``, ``k_3 -> 0``, ``g_03e -> g_03``.  That
+    reconstruction is not assumed -- it is checked against published eq. (39)
+    by :func:`test_amplifier_matrix_reproduces_published_linear_solution`.
+    """
+    a = _AMP
+    M = np.array([[a['g01'] + (a['C1']+a['C2'])*s, -a['C2']*s, -a['C1']*s],
+                  [a['gm2'], a['g02'], 0.0],
+                  [0.0, a['gm3'], -a['g03'] - a['CL']*s]], dtype=complex)
+    return np.linalg.solve(M, np.asarray(rhs, dtype=complex))
+
+
+def _amp_run(Xin, w, maxp):
+    ## Published eqs. (41)/(42) are explicitly restricted to the output
+    ## transconductor's nonlinearities, so gm2q/gm2c and g03q/g03c stay off.
+    def f(x):
+        sq = (x[1] * x[1]).truncated(maxp)
+        cu = (sq * x[1]).truncated(maxp)
+        return GradedVector([GradedSpectrum(), GradedSpectrum(),
+                             sq.scaled(_AMP['gm3q']) + cu.scaled(_AMP['gm3c'])])
+
+    src = GradedVector([GradedSpectrum.from_phasor(1, 1, _AMP['gm1']*Xin),
+                        GradedSpectrum(), GradedSpectrum()])
+    return graded_response_mimo(_amp_solve, src, f, (w,), max_power=maxp)
+
+
+def _amp_linear_node3(w, Xin):
+    """Published eq. (39), third node -- the linearised fundamental."""
+    return -_AMP['gm1']*_AMP['gm2']*_AMP['gm3']*Xin/_amp_q(w)
+
+
+def _amp_published(w, Xin):
+    a = _AMP
+    hd2 = abs(a['gm3q']*a['gm1']*a['gm2']*Xin*_amp_p(w)**2*_amp_r(2*w)
+              / (2*a['gm3']*_amp_q(w)*_amp_q(2*w)))
+    hd3 = (abs(a['gm1']**2*a['gm2']**2*Xin**2*_amp_p(w)**3*_amp_r(3*w)
+               / (a['gm3']*_amp_q(w)**2*_amp_q(3*w)))
+           * abs(a['gm3c']/4
+                 - 1j*w*a['C1']*a['gm3q']**2*a['gm2']/_amp_q(2*w)))
+    return hd2, hd3
+
+
+@pytest.mark.parametrize('freq', [1e2, 1e4, 1e6, 1e7])
+def test_amplifier_matrix_reproduces_published_linear_solution(freq):
+    """The open-loop matrix is reconstructed, so it gets its own gate.
+
+    The paper prints eq. (45) for the feedback configuration only; the
+    open-loop matrix used here is its limit.  Published eq. (39) gives the
+    linearised solution at all three nodes independently, so it checks the
+    reconstruction without reference to any nonlinearity.
+    """
+    w = 2*np.pi*freq
+    Xin = 1e-4
+    got = _amp_solve(1j*w, [_AMP['gm1']*Xin, 0, 0])
+    want = [_AMP['gm1']*_AMP['g02']*Xin*_amp_p(w)/_amp_q(w),
+            -_AMP['gm1']*_AMP['gm2']*Xin*_amp_p(w)/_amp_q(w),
+            _amp_linear_node3(w, Xin)]
+    for node, (a, b) in enumerate(zip(got, want)):
+        assert abs(a - b) <= 1e-12*abs(b), 'node %d' % (node + 1)
+
+
+@pytest.mark.parametrize('freq', [1e2, 1e3, 1e4, 1e5, 1e6, 1e7])
+def test_amplifier_hd2_hd3_match_published_eq41_eq42(freq):
+    """Stage D gate: a second circuit, and the first with quadratic terms.
+
+    HD3 is the sign-sensitive one: it sums a direct cubic contribution
+    against a second-order contribution of the *quadratic* coefficient, so a
+    wrong sign convention fails it while HD2, a magnitude ratio, would still
+    pass.  That is why both are checked and not just the larger.
+
+    Ratios are taken against the **linearised** fundamental, which is what
+    the paper's ``X_{1,3}`` denotes.  The graded fundamental additionally
+    carries its own ``U**3`` correction; see the companion test.
+    """
+    w = 2*np.pi*freq
+    Xin = 1e-4
+    g = _amp_run(Xin, w, 3)
+    lin = _amp_linear_node3(w, Xin)
+    want2, want3 = _amp_published(w, Xin)
+    assert abs(abs(g[2].phasor(2)/lin) - want2) <= 1e-11*want2
+    assert abs(abs(g[2].phasor(3)/lin) - want3) <= 1e-11*want3
+
+
+def test_amplifier_fundamental_correction_scales_as_drive_squared():
+    """Pins *why* the published ratio uses the linearised fundamental.
+
+    Dividing by the graded fundamental instead disagrees with eq. (41) by
+    5.7e-3 at 100 Hz, which looks like an error and is not: the graded form
+    carries the fundamental's ``U**3`` correction and the published one drops
+    it.  The signature of that -- rather than of a mistake -- is that the gap
+    falls by 100x per decade of drive.  Asserting the *scaling* rather than
+    the value is what distinguishes the two explanations.
+    """
+    w = 2*np.pi*1e2
+    gaps = []
+    for Xin in (1e-4, 1e-5, 1e-6):
+        g = _amp_run(Xin, w, 3)
+        hd2 = abs(g[2].phasor(2)/g[2].phasor(1))
+        want = _amp_published(w, Xin)[0]
+        gaps.append(abs(hd2 - want)/want)
+
+    for coarse, fine in zip(gaps, gaps[1:]):
+        assert 90.0 < coarse/fine < 110.0, (
+            'gap should scale as U**2, got ratios %s' % gaps)

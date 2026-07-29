@@ -557,3 +557,224 @@ So the honest summary for anyone asking whether to raise the order:
 * **The published second-order form remains the right default.**  It is
   consistent at :math:`U^3`, costs three linear solves, and is within a
   fraction of a percent wherever the method is valid at all.
+
+Harmonic amplitudes against the transient, order by order
+---------------------------------------------------------
+
+The tables below give each harmonic's amplitude at four drive levels and five
+truncation orders, with the transient simulation as reference and the
+difference from it in parentheses.  Regenerated on every build.
+
+``a = |X1|/V_T`` is the drive measured against the thermal voltage; the
+contraction bound sits near ``a = 0.7``.  A dash means the harmonic does not
+exist at that truncation: harmonic ``m`` first appears at exactly ``U**m``, so
+the fifth harmonic is genuinely absent below ``U**5`` rather than zero.
+
+.. exec-rst::
+
+    import numpy as np, math
+    from scipy.optimize import brentq
+    from pycircuit.circuit import SubCircuit, gnd, R, C, ISin, numeric
+    from pycircuit.circuit import circuit as cm
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.distortion import graded_response, Harmonic
+
+    IS_D = 1e-13
+    VT = numeric.kboltzmann*300/numeric.qelectron
+    Ib, Rl, Cl, f0 = 1e-3, 1e3, 1e-9, 1e4
+    cm.default_toolkit = numeric
+    v0 = brentq(lambda v: v/Rl + IS_D*np.expm1(v/VT) - Ib, 0, 1)
+    ISe = IS_D*np.exp(v0/VT); al = ISe/VT
+    w0 = 2*np.pi*f0
+    Y = lambda s: 1/Rl + s*Cl + al
+    resp = lambda s: 1.0/Y(s)
+    aG = lambda h, r: [np.asarray(r, dtype=complex)[0]/Y(1j*h.frequency((w0,)))]
+    taylor = [ISe/(math.factorial(n)*VT**n) for n in range(2, 14)]
+
+    ORDERS = (3, 5, 7, 9, 11)
+    HARMONICS = (1, 2, 3, 5)
+    DRIVES = (1e-4, 2e-4, 4e-4, 6e-4)
+
+    def measure(A, per=16, pts=256, keep=8):
+        c = SubCircuit(toolkit=numeric); n = c.add_node('n1')
+        c['I'] = ISin(gnd, n, io=Ib, ia=A, freq=f0)
+        c['R'] = R(n, gnd, r=Rl); c['C'] = C(n, gnd, c=Cl)
+        c['D'] = Diode(n, gnd, IS=IS_D)
+        res = Transient(c, toolkit=numeric).solve(
+            refnode=gnd, tend=per/f0, timestep=1.0/(f0*pts))
+        w = res.v(n); t = np.asarray(w.x[0]); v = np.asarray(w.y)
+        g = np.linspace(t[-1]-keep/f0, t[-1], keep*pts, endpoint=False)
+        S = np.fft.rfft(np.interp(g, t, v))/(keep*pts)
+        return {m: 2*abs(S[m*keep]) for m in HARMONICS}
+
+    ref = {A: measure(A) for A in DRIVES}
+    got = {}
+    for A in DRIVES:
+        for P in ORDERS:
+            g = graded_response(resp, A, taylor[:P-1], (w0,), max_power=P)
+            for m in HARMONICS:
+                got[(A, P, m)] = abs(g.phasor(m))
+
+    for m in HARMONICS:
+        head = ['a'] + ['U^%d' % P for P in ORDERS] + ['transient']
+        rows = []
+        for A in DRIVES:
+            a = abs(aG(Harmonic((1,)), [A])[0])/VT
+            r = ref[A][m]
+            cells = ['%.3f' % a]
+            for P in ORDERS:
+                if m > P:
+                    cells.append('--')
+                else:
+                    v = got[(A, P, m)]
+                    cells.append('%.4g (%+.1f%%)' % (v, (v/r - 1)*100))
+            cells.append('%.4g' % r)
+            rows.append(cells)
+
+        ## Column widths from the content: a fixed guess overflows the moment
+        ## a percentage needs an extra digit, and reST rejects the table
+        ## rather than wrapping it.
+        widths = [max(len(r[i]) for r in rows + [head])
+                  for i in range(len(head))]
+        sep = ' '.join('=' * w for w in widths)
+
+        print('')
+        print('**Harmonic %d** (volts)' % m)
+        print('')
+        print(sep)
+        print(' '.join('%-*s' % (w, h) for w, h in zip(widths, head)))
+        print(sep)
+        for cells in rows:
+            print(' '.join('%-*s' % (w, c) for w, c in zip(widths, cells)))
+        print(sep)
+
+Three things to read out of these.
+
+**Convergence below the bound is excellent and orderly.**  At ``a = 0.22``
+every harmonic settles by ``U**5``–``U**7`` to within a few hundredths of a
+percent of the simulation, and further orders change nothing.
+
+**Above the bound the truncations overshoot rather than merely lag.**  At
+``a = 1.33`` the successive orders sail past the reference — the third
+harmonic reaching about +7% and the fifth about +41% at ``U**11`` — which is
+the asymptotic series turning around, not slow convergence.  This is visible
+here in a way the error-only tables elsewhere on this page obscure, because
+the sign of the discrepancy is what distinguishes overshoot from lag.
+
+**The fifth harmonic cannot be validated well at either end.**  At low drive
+it is around 1e-7 V, where the transient's own resolution limits the
+comparison to a few percent; at high drive the truncation has begun to
+diverge.  Its agreement in the middle rows is the meaningful part, and the
+outer rows say more about the reference than about the method.
+
+The 1 dB point, order by order
+------------------------------
+
+Sweeping the input current amplitude ``i_in`` and watching the fundamental
+depart from its small-signal extrapolation gives a single scalar figure of
+merit, and so a sharper test of truncation order than any individual harmonic:
+each order must predict *where* on the drive axis a threshold is crossed, not
+merely an amplitude at a drive chosen for it.
+
+.. note::
+
+   **On this circuit the 1 dB point is an expansion point, not a compression
+   point.**  The fundamental grows *faster* than the drive, so the departure
+   is :math:`+1` dB.  This is a property of the topology rather than a sign
+   convention: the drive is a *current* into a shunt diode, so on the negative
+   half-cycle the diode turns off and the node sees the load resistor alone —
+   a small-signal conductance of ``1/R`` instead of ``1/R + g_d``, here a
+   factor of 17 more transimpedance.  The positive half-cycle compresses, but
+   only logarithmically, and the negative half wins.  Both the perturbation
+   result and the independent transient simulation agree on the sign.
+
+   A configuration with ``1/R >> g_d`` does not compress either; it simply
+   becomes linear, the diode having stopped mattering.  Getting genuine
+   compression out of this cell requires a different topology (a series
+   element with a clamped load), not a different drive level.
+
+.. exec-rst::
+
+    import numpy as np, math
+    from scipy.optimize import brentq
+    from pycircuit.circuit import SubCircuit, gnd, R, C, ISin, numeric
+    from pycircuit.circuit import circuit as cm
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.distortion import graded_response
+
+    IS_D = 1e-13
+    VT = numeric.kboltzmann*300/numeric.qelectron
+    Ib, Rl, Cl, f0 = 1e-3, 1e3, 1e-9, 1e4
+    cm.default_toolkit = numeric
+    v0 = brentq(lambda v: v/Rl + IS_D*np.expm1(v/VT) - Ib, 0, 1)
+    ISe = IS_D*np.exp(v0/VT); al = ISe/VT
+    w0 = 2*np.pi*f0
+    Y = lambda s: 1/Rl + s*Cl + al
+    resp = lambda s: 1.0/Y(s)
+    taylor = [ISe/(math.factorial(n)*VT**n) for n in range(2, 14)]
+    g0 = abs(resp(1j*w0))               # small-signal transimpedance, V/A
+
+    ORDERS = (3, 5, 7, 9, 11)
+    TARGET = 10**(1/20.)                # +1 dB in amplitude
+
+    def transient_H1(A, per=16, pts=256, keep=8):
+        c = SubCircuit(toolkit=numeric); n = c.add_node('n1')
+        c['I'] = ISin(gnd, n, io=Ib, ia=A, freq=f0)
+        c['R'] = R(n, gnd, r=Rl); c['C'] = C(n, gnd, c=Cl)
+        c['D'] = Diode(n, gnd, IS=IS_D)
+        res = Transient(c, toolkit=numeric).solve(
+            refnode=gnd, tend=per/f0, timestep=1.0/(f0*pts))
+        w = res.v(n); t = np.asarray(w.x[0]); v = np.asarray(w.y)
+        g = np.linspace(t[-1]-keep/f0, t[-1], keep*pts, endpoint=False)
+        S = np.fft.rfft(np.interp(g, t, v))/(keep*pts)
+        return 2*abs(S[keep])
+
+    ## Bracket kept tight: each transient evaluation is a full simulation, and
+    ## a wide bracket costs build time without buying accuracy.
+    A_tr = brentq(lambda A: transient_H1(A)/(g0*A) - TARGET,
+                  2.0e-4, 5.0e-4, xtol=1e-8)
+
+    def dev(A, P):
+        g = graded_response(resp, A, taylor[:P-1], (w0,), max_power=P)
+        return abs(g.phasor(1))/(g0*A) - TARGET
+
+    ## No pipes in generated text: reST reads |X1| as a substitution
+    ## reference and errors, and reports it at line 1 of the page because
+    ## generated reST carries no source-line provenance.
+    head = ['truncation', 'i_in at +1 dB', 'a = X1/VT', 'error vs transient']
+    rows = []
+    for P in ORDERS:
+        Ap = brentq(lambda A: dev(A, P), 1e-5, 3e-3, xtol=1e-10)
+        rows.append(['U^%d' % P, '%.2f uA' % (Ap*1e6),
+                     '%.4f' % (abs(resp(1j*w0)*Ap)/VT),
+                     '%+.2f%%' % ((Ap/A_tr - 1)*100)])
+    rows.append(['transient', '%.2f uA' % (A_tr*1e6),
+                 '%.4f' % (abs(resp(1j*w0)*A_tr)/VT), '--'])
+
+    widths = [max(len(r[i]) for r in rows + [head]) for i in range(len(head))]
+    sep = ' '.join('=' * w for w in widths)
+    print(sep)
+    print(' '.join('%-*s' % (w, h) for w, h in zip(widths, head)))
+    print(sep)
+    for cells in rows:
+        print(' '.join('%-*s' % (w, c) for w, c in zip(widths, cells)))
+    print(sep)
+    print('')
+    print('Contraction bound ``a = ln 2 = %.4f``.' % math.log(2))
+
+**The threshold estimate converges monotonically and fast** — the second-order
+form misplaces the 1 dB point by about 11%, and each further order removes
+roughly a factor of five, reaching the transient's own resolution by
+:math:`U^9`.
+
+**The 1 dB point sits essentially at the convergence bound**, ``a = 0.68``
+against ``ln 2 = 0.693``.  That near-coincidence is not luck: both are set by
+the same ratio of nonlinear to linear response, one asking when the series
+stops contracting and the other asking when the fundamental has been visibly
+pulled off its linear extrapolation.  It has a practical consequence — this
+figure of merit is computable by the method almost exactly up to the point
+where the method stops being valid, and not beyond.  A circuit whose 1 dB
+point lay well above the bound could not be characterised this way at any
+order.

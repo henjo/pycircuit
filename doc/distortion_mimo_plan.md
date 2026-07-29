@@ -162,11 +162,30 @@ edited out._
 | A — `GradedVector`, scalar equivalence | **Gate passed.** 1x1 MIMO equals `graded_response` to **1.7e-15** worst case over 4 drives x 5 truncation orders x 4 harmonics; a block-diagonal 2x2 carries two independent problems to **2.2e-16**. Added `GradedVector` and `graded_response_mimo` |
 | B — biquad, `g_2c`/`g_3c` only | **Gate passed**, worst **2.3e-14** against the `g_3c`/`g_2c` fraction of published eq. (48) at five frequencies |
 | C — full biquad, all four cubics | **Gate passed**, worst **2.3e-14** against the *complete* published eq. (48). This is capability the scalar path does not have at all. **And the omitted terms were not small:** at 100 kHz the full third harmonic is `1.87e-14` against the scalar-reachable `1.37e-21` — a factor of 1.3e4. A scalar reduction is not a mild approximation off resonance, it misses essentially the whole answer. Guarded by its own test |
-| D — RNMC amplifier, 3 nodes | **not run.** Needs eq. (33)'s open-loop matrices and the `p`/`q` definitions, which are on a page not yet read. Deliberately left un-run rather than skipped quietly: the capability is validated on one circuit, not two, and the quadratic-term path is therefore **unexercised at multi-node** |
+| D — RNMC amplifier, 3 nodes | **Gate passed**, worst **9.1e-16** on both `HD2` (eq. 41) and `HD3` (eq. 42) at six frequencies from 100 Hz to 10 MHz. Second circuit, structurally unlike the biquad: three nodes, **quadratic as well as cubic** terms, and a nonlinearity acting on a node other than the one it is injected into. The paper prints only the *feedback* matrix (eq. 45), so the open-loop matrix was reconstructed as its limit `k_in -> 1`, `k_3 -> 0`, `g_03e -> g_03`; that reconstruction has its own gate against published eq. (39), passed at **2.8e-16** |
 | E — higher order, multi-node | **not run.** Depends on nothing from D; the open question it settles — whether term count stays polynomial in the order when there are several nodes — is the one that bears on the theory page's central claim |
 
+**A finding from stage D worth keeping: the published ratio uses the
+*linearised* fundamental.** Dividing by the graded fundamental instead
+disagrees with eq. (41) by 5.7e-3 at 100 Hz. That is not an error — the graded
+form carries the fundamental's own `U^3` correction and the published form
+drops it, exactly as recorded for stage B of the higher-order plan. What
+distinguishes the two explanations is the *scaling*: the gap falls by 100x per
+decade of drive (measured 99.4, 100.0), the signature of an `O(U^3)` term
+against an `O(U)` fundamental. The test asserts the scaling rather than the
+value, because only the scaling separates "by design" from "wrong".
+
+The tell that pointed there: **HD2 and HD3 showed identical relative error at
+every frequency.** Two different harmonics cannot be wrong by the same factor
+unless the fault is in something they share — their denominator.
+
 **Mutation check.** Flipping the sign of the nonlinear feedback term in
-`graded_response_mimo` fails 12 of the 13 new tests. The survivor is
+`graded_response_mimo` fails 12 of the 13 stage A–C tests, and 6 of the stage D
+tests. Measured, not assumed: under that mutation `HD2` is unchanged to
+7.96e-14% while `HD3` is wrong by **125%**. So `HD2` cannot detect a sign error
+and `HD3` can — `HD3` sums a direct cubic against a second-order contribution
+of the *quadratic* coefficient, and only their relative sign moves. This is why
+both are asserted and not just the larger. The survivor is
 `test_biquad_omitted_nonlinearities_are_not_negligible`, which compares a
 ratio and is sign-insensitive by construction — expected, and noted so it is
 not mistaken later for a weak test.

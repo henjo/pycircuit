@@ -327,14 +327,185 @@ therefore reports the ratio :math:`\|\mathcal{G}f(x_0)\| / \|\mathcal{G}u\|`
 alongside every result, so that the assumption is visible rather than
 implicit.
 
+Validation against published closed forms
+-----------------------------------------
+
+The multi-node path,
+:func:`~pycircuit.circuit.distortion.graded_response_mimo`, is checked against
+**closed-form expressions printed by Buonomo & Lo Schiavo** (*Analog Integr.
+Circ. Sig. Process.* 77:483–493, 2013) for both of that paper's worked
+examples.  These are not comparisons against our own arithmetic, and nothing
+is fitted: the reference is an independently-derived algebraic formula, and
+the circuits were chosen by the authors, not by us.
+
+Every number below is recomputed on each build.
+
+**Worked example 2 — Tow–Thomas gm-C biquad** (their eq. 46), two nodes and
+four cubic transconductor nonlinearities, against their eq. (48) for the third
+harmonic at the output node:
+
+.. exec-rst::
+
+    import numpy as np
+    from pycircuit.circuit.distortion import (graded_response_mimo,
+                                              GradedSpectrum, GradedVector)
+
+    g1 = g2 = 31.26e-6; g3 = 625.2e-6; g4 = -625.2e-6
+    C1 = C2 = 9.3054e-12
+    alpha = -0.0535                      # every cubic tied to its linear
+    g1c, g2c, g3c, g4c = (alpha*g for g in (g1, g2, g3, g4))
+    q = lambda w: g3*g4 + C1*C2*w**2 + g2*C2*1j*w
+
+    def solve(s, rhs):
+        M = np.array([[-g2 + s*C1, -g4], [-g3, s*C2]], dtype=complex)
+        return np.linalg.solve(M, np.asarray(rhs, dtype=complex))
+
+    def cube(sp, n):
+        return ((sp*sp).truncated(n) * sp).truncated(n)
+
+    def ours(Xin, w, n=3):
+        src = (GradedSpectrum.from_phasor(1, 1, g1*Xin)
+               + cube(GradedSpectrum.from_phasor(1, 1, Xin), n).scaled(g1c))
+        f = lambda x: GradedVector([
+            cube(x[0], n).scaled(-g2c) + cube(x[1], n).scaled(-g4c),
+            cube(x[0], n).scaled(-g3c)])
+        return graded_response_mimo(
+            solve, GradedVector([src, GradedSpectrum()]), f, (w,), n)
+
+    def eq48(w, Xin):
+        first = 3*(g4c*g1**3*g3**3 - g1c*q(w)**3)
+        second = -g1**3*C2**2*w**2*(g3c*g4 + 3*g2c*C2*1j*w)
+        return Xin**3*C2*1j*w*(first + second)/(4*q(3*w)*q(w)**3)
+
+    Xin = 1e-3
+    head = ['f (Hz)', 'ours', 'their eq. (48)', 'rel. difference']
+    rows = []
+    for f in (1e5, 1e6, 5e6, 1.06931e7, 2e7):
+        w = 2*np.pi*f
+        a, b = abs(ours(Xin, w)[0].phasor(3)), abs(eq48(w, Xin))
+        rows.append(['%.4g' % f, '%.6e' % a, '%.6e' % b,
+                     '%.1e' % (abs(a-b)/b)])
+
+    widths = [max(len(r[i]) for r in rows + [head]) for i in range(len(head))]
+    sep = ' '.join('=' * w for w in widths)
+    print(sep)
+    print(' '.join('%-*s' % (w, h) for w, h in zip(widths, head)))
+    print(sep)
+    for r in rows:
+        print(' '.join('%-*s' % (w, c) for w, c in zip(widths, r)))
+    print(sep)
+
+**Worked example 1 — three-stage RNMC amplifier** (their eq. 45), three nodes,
+with **quadratic as well as cubic** terms, against their eqs. (41) and (42)
+for :math:`HD_2` and :math:`HD_3`.  Their formulas are restricted to the
+output transconductor's nonlinearities, so the comparison switches the others
+off to match:
+
+.. exec-rst::
+
+    import numpy as np
+    from pycircuit.circuit.distortion import (graded_response_mimo,
+                                              GradedSpectrum, GradedVector)
+
+    gm1, g01 = 245e-6, 1/98e3
+    gm2, g02 = 200e-6, 1/107e3
+    gm3, g03 = 1e-3, 1/23e3
+    gm3q, gm3c = 2e-3, 3e-3
+    CL, C1, C2 = 10e-12, 2e-12, 1e-12
+
+    p = lambda w: g03 + 1j*w*CL
+    r = lambda w: g01*g02 + 1j*w*(C1*g02 + C2*(g02+gm2))
+    q = lambda w: (g01*g02*g03
+                   + 1j*w*(CL*g01*g02 + C1*(g02*g03 + gm2*gm3)
+                           + C2*g03*(g02+gm2))
+                   - w**2*((C1+C2)*CL*g02 + C2*CL*gm2))
+
+    def solve(s, rhs):
+        ## Open-loop limit of their eq. (45): k_in -> 1, k_3 -> 0,
+        ## g_03e -> g_03.  Checked against their eq. (39) in the test suite.
+        M = np.array([[g01 + (C1+C2)*s, -C2*s, -C1*s],
+                      [gm2, g02, 0.0],
+                      [0.0, gm3, -g03 - CL*s]], dtype=complex)
+        return np.linalg.solve(M, np.asarray(rhs, dtype=complex))
+
+    def ours(Xin, w, n=3):
+        def f(x):
+            sq = (x[1]*x[1]).truncated(n)
+            return GradedVector([GradedSpectrum(), GradedSpectrum(),
+                                 sq.scaled(gm3q)
+                                 + (sq*x[1]).truncated(n).scaled(gm3c)])
+        src = GradedVector([GradedSpectrum.from_phasor(1, 1, gm1*Xin),
+                            GradedSpectrum(), GradedSpectrum()])
+        return graded_response_mimo(solve, src, f, (w,), n)
+
+    Xin = 1e-4
+    head = ['f (Hz)', 'HD2 ours', 'HD2 eq. (41)', 'rel.',
+            'HD3 ours', 'HD3 eq. (42)', 'rel.']
+    rows = []
+    for fr in (1e2, 1e3, 1e4, 1e5, 1e6, 1e7):
+        w = 2*np.pi*fr
+        g = ours(Xin, w)
+        ## Their X_{1,3} is the *linearised* fundamental; the graded form
+        ## additionally carries the fundamental's own U**3 correction.
+        lin = -gm1*gm2*gm3*Xin/q(w)
+        h2, h3 = abs(g[2].phasor(2)/lin), abs(g[2].phasor(3)/lin)
+        e41 = abs(gm3q*gm1*gm2*Xin*p(w)**2*r(2*w)/(2*gm3*q(w)*q(2*w)))
+        e42 = (abs(gm1**2*gm2**2*Xin**2*p(w)**3*r(3*w)
+                   / (gm3*q(w)**2*q(3*w)))
+               * abs(gm3c/4 - 1j*w*C1*gm3q**2*gm2/q(2*w)))
+        rows.append(['%.4g' % fr, '%.4e' % h2, '%.4e' % e41,
+                     '%.0e' % (abs(h2-e41)/e41), '%.4e' % h3,
+                     '%.4e' % e42, '%.0e' % (abs(h3-e42)/e42)])
+
+    widths = [max(len(r[i]) for r in rows + [head]) for i in range(len(head))]
+    sep = ' '.join('=' * w for w in widths)
+    print(sep)
+    print(' '.join('%-*s' % (w, h) for w, h in zip(widths, head)))
+    print(sep)
+    for r in rows:
+        print(' '.join('%-*s' % (w, c) for w, c in zip(widths, r)))
+    print(sep)
+
+Three points about what these tables do and do not establish.
+
+**They agree to floating point, not merely closely.**  That is the expected
+outcome and the reason the gate was set there: the published forms *are*
+consistent :math:`U^3` truncations of the same expansion, so anything short of
+round-off would mean one of the two is wrong.  A comparison that agreed to
+"within a few percent" would have been a failure, not a success.
+
+**The amplifier's matrix is reconstructed, and that is checked separately.**
+The paper prints only the feedback configuration (its eq. 45); the open-loop
+matrix used here is its limit.  A reconstruction is an assumption, so it has
+its own gate against their eq. (39), which gives the linearised solution at
+all three nodes — otherwise a wrong matrix would surface as a distortion
+discrepancy and be misdiagnosed as one.
+
+**The ratios use the linearised fundamental**, which is what the papers'
+:math:`\hat X_{1,3}` denotes.  Dividing by the graded fundamental instead
+disagrees by about half a percent at low frequency — not an error, but the
+fundamental's own :math:`U^3` correction, which the published form drops and
+this one carries.  The distinguishing evidence is that the gap falls by
+:math:`100\times` per decade of drive, the signature of an :math:`O(U^3)` term
+against an :math:`O(U)` fundamental; see `The fundamental is not corrected`_.
+
 Limitations of the present implementation
 -----------------------------------------
 
-* Cubic polynomial nonlinearity, single tone, one nonlinear element.
-* Cross-terms :math:`x_j x_k` between different controlling variables are not
-  covered — the source formulation assumes self-terms only.
-* The fundamental is uncorrected, so gain compression and AM-AM effects are
-  outside the model.
+* Single tone.  :func:`~pycircuit.circuit.distortion.intermodulation_response`
+  covers two tones, but only on the scalar path.
+* The fundamental is uncorrected in the published second-order form, so gain
+  compression and AM-AM effects are outside *that* model — though the graded
+  forms do carry the correction; see `The fundamental is not corrected`_.
+* **No longer a limitation:** several nonlinear elements across several nodes,
+  and cross-terms :math:`x_j x_k` between different controlling variables.
+  The source formulation assumes self-terms only and the scalar
+  :func:`~pycircuit.circuit.distortion.graded_response` inherited that, but
+  :func:`~pycircuit.circuit.distortion.graded_response_mimo` takes the
+  nonlinearity as a callable in the graded ring, where a cross term costs
+  nothing extra.  No published example in this line uses one, so the capability
+  is **untested against an external reference** — the representation permits
+  it, which is not the same as it having been checked.
 
 Devices that are not polynomials
 --------------------------------
