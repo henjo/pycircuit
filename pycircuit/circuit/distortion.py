@@ -566,22 +566,25 @@ class GradedSpectrum:
     @classmethod
     def from_phasor(cls, harmonic, power, phasor):
         """A single one-sided harmonic, stored two-sided."""
-        if harmonic == 0:
-            return cls({(0, power): phasor})
+        index = _index(harmonic)
+        if not any(index):
+            return cls({(index, power): phasor})
         half = phasor / 2
-        return cls({(harmonic, power): half,
-                    (-harmonic, power): _conjugate(half)})
+        return cls({(index, power): half,
+                    (_negate_index(index), power): _conjugate(half)})
 
     def phasor(self, harmonic, max_power=None):
         """One-sided phasor of ``harmonic``, summed over kept powers."""
+        index = _index(harmonic)
         total = 0
         for (m, p), v in self.terms.items():
-            if m == harmonic and (max_power is None or p <= max_power):
+            if m == index and (max_power is None or p <= max_power):
                 total = total + v
-        return total if harmonic == 0 else 2 * total
+        return total if not any(index) else 2 * total
 
     def powers_present(self, harmonic):
-        return sorted(p for (m, p) in self.terms if m == harmonic)
+        index = _index(harmonic)
+        return sorted(p for (m, p) in self.terms if m == index)
 
     def __add__(self, other):
         out = dict(self.terms)
@@ -590,11 +593,18 @@ class GradedSpectrum:
         return GradedSpectrum(out)
 
     def __mul__(self, other):
-        """Convolution in the harmonic index, addition in the drive power."""
+        """Convolution in the harmonic index, addition in the drive power.
+
+        With two tones the index is ``(m, n)`` for ``m*w1 + n*w2`` and the
+        convolution is componentwise -- which is the whole reason harmonics
+        are stored two-sided.  ``(2, -1)`` arises as ``(1,0) + (1,0) +
+        (0,-1)``, a plain sum, with no case analysis over which combinations
+        of sum and difference frequencies can land where.
+        """
         out = {}
         for (m1, p1), v1 in self.terms.items():
             for (m2, p2), v2 in other.terms.items():
-                key = (m1 + m2, p1 + p2)
+                key = (tuple(a + b for a, b in zip(m1, m2)), p1 + p2)
                 out[key] = out.get(key, 0) + v1 * v2
         return GradedSpectrum(out)
 
@@ -615,12 +625,34 @@ class GradedSpectrum:
         """
         out = {}
         for (m, p), v in self.terms.items():
-            out[(m, p)] = v * response(1j * m * tones[0])
+            out[(m, p)] = v * response(1j * _frequency(m, tones))
         return GradedSpectrum(out)
 
     def __repr__(self):
         return 'GradedSpectrum(%d terms, harmonics %s)' % (
             len(self.terms), sorted({m for m, _ in self.terms}))
+
+
+def _index(harmonic):
+    """Harmonic indices are tuples internally, one entry per tone.
+
+    A bare integer means the single-tone case and is accepted everywhere the
+    public API takes a harmonic, so ``phasor(3)`` keeps working; two tones
+    use ``(m, n)`` for ``m*w1 + n*w2``.  Normalising on the way in means the
+    arithmetic below never has to test which form it holds.
+    """
+    return harmonic if isinstance(harmonic, tuple) else (harmonic,)
+
+
+def _negate_index(index):
+    ## NB: a module-level `_negate` already exists further down for vectors.
+    ## Defining a second one here silently shadowed it -- Python does not
+    ## warn -- and every harmonic index came back as a list.
+    return tuple(-m for m in index)
+
+
+def _frequency(index, tones):
+    return sum(m * w for m, w in zip(index, tones))
 
 
 def _conjugate(v):
@@ -740,9 +772,8 @@ class GradedVector:
 
         out = [{} for _ in self.components]
         for key in keys:
-            m = key[0]
             rhs = [c.terms.get(key, 0) for c in self.components]
-            for i, v in enumerate(solve(1j * m * tones[0], rhs)):
+            for i, v in enumerate(solve(1j * _frequency(key[0], tones), rhs)):
                 if v != 0:
                     out[i][key] = v
         return GradedVector([GradedSpectrum(d) for d in out])

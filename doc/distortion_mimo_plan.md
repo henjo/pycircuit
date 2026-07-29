@@ -248,7 +248,39 @@ not mistaken later for a weak test.
 Ordered by value, with the gate named where one already exists. Nothing here
 is blocking anything shipped; all five stages are complete.
 
-### 8.1 Two tones on the multi-node path — the recommended next step
+### 8.1 Two tones on the multi-node path — **DONE**
+
+**Gate passed: `IM3` matches published eq. (43) to 6.8e-16 at six frequencies
+from 100 Hz to 10 MHz**, on the three-node amplifier with the paper's own tone
+ratio `f2 = 0.9 f1`.
+
+Harmonic indices are now tuples throughout `GradedSpectrum`, so convolution is
+componentwise addition and `(2,-1)` arises as `(1,0)+(1,0)+(0,-1)` — a plain
+sum, with no case analysis over which combinations of sum and difference
+frequencies land where. A bare int still means the single-tone case, so
+`phasor(3)` is unchanged; 100 existing tests pass untouched.
+
+**One trap, and it cost a wrong docstring before it was measured.** A
+module-level `_negate` already existed for vectors, further down the file.
+Defining a second one for harmonic indices **silently shadowed it** — Python
+does not warn — and every index came back as a list. Renamed to
+`_negate_index`. The lesson is that this module is long enough that a new
+private helper needs a `grep` first.
+
+**And a claim that turned out false:** the conjugates in eq. (43) (`p~`, `q~`)
+make no difference to the comparison. The factor is a pure product and ratio
+inside `|.|`, and conjugation leaves a modulus unchanged. This is the *same*
+blindness that hides the eq. (46) instability, and it generalises: **these
+published closed forms are moduli of products, so agreement with them is
+strong evidence about magnitudes and none at all about phase.** Worth stating
+plainly, because four gates in this plan rest on them.
+
+**Still open in this area:** eq. (52), the `IM3` closed form for the gm-C
+filter, is a second two-tone gate on a different topology and has not been
+run. Check dimensions first — eq. (49) in the same paper is missing a factor
+`1/g_1`, and eq. (52) is the one that carries it correctly.
+
+*Original entry, kept for the reasoning:*
 
 `intermodulation_response` is still scalar-only, so the multi-node path is
 single-tone. This is the natural completion of the work and unusually cheap:

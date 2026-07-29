@@ -2050,3 +2050,98 @@ def test_biquad_converges_monotonically_below_the_bound(Xin):
     for coarse, fine in zip(errors, errors[1:]):
         assert fine < coarse, 'not monotone: %s' % errors
     assert errors[-1] < 1e-6, 'expected deep convergence, got %s' % errors
+
+
+# ---------------------------------------------------------------------------
+# Two tones on the multi-node path (plan section 8.1).
+# ---------------------------------------------------------------------------
+
+def _amp_run_two_tone(Xin, w1, w2, maxp=3):
+    src = (GradedSpectrum.from_phasor((1, 0), 1, _AMP['gm1']*Xin)
+           + GradedSpectrum.from_phasor((0, 1), 1, _AMP['gm1']*Xin))
+
+    def f(x):
+        sq = (x[1] * x[1]).truncated(maxp)
+        cu = (sq * x[1]).truncated(maxp)
+        return GradedVector([GradedSpectrum(), GradedSpectrum(),
+                             sq.scaled(_AMP['gm3q']) + cu.scaled(_AMP['gm3c'])])
+
+    return graded_response_mimo(
+        _amp_solve,
+        GradedVector([src, GradedSpectrum(), GradedSpectrum()]),
+        f, (w1, w2), max_power=maxp)
+
+
+def test_harmonic_index_accepts_ints_and_tuples_alike():
+    """The tuple refactor must not change the single-tone API.
+
+    Indices are stored as tuples internally so that two-tone convolution is
+    componentwise addition, but ``phasor(3)`` has to keep meaning the third
+    harmonic of one tone.  A bare int is normalised on the way in.
+    """
+    s = GradedSpectrum.from_phasor(2, 1, 4.0)
+    assert s.phasor(2) == s.phasor((2,))
+    assert s.powers_present(2) == s.powers_present((2,)) == [1]
+    assert list(s.terms) == [((2,), 1), ((-2,), 1)]
+
+
+def test_two_tone_index_arithmetic_is_componentwise():
+    """``(2,-1)`` must arise as a plain sum of one-sided components.
+
+    This is what storing harmonics two-sided buys: no case analysis over
+    which combinations of sum and difference frequencies produce a given
+    product.  A concatenating ``+`` (the default for tuples) would silently
+    produce nonsense indices instead of failing.
+    """
+    a = GradedSpectrum.from_phasor((1, 0), 1, 2.0)
+    b = GradedSpectrum.from_phasor((0, 1), 1, 2.0)
+    cube = ((a + b) * (a + b) * (a + b))
+    assert ((2, -1), 3) in cube.terms
+    assert ((3, 0), 3) in cube.terms
+    for index, _ in cube.terms:
+        assert len(index) == 2, 'index %r has been concatenated' % (index,)
+
+
+@pytest.mark.parametrize('f1', [1e2, 1e3, 1e4, 1e5, 1e6, 1e7])
+def test_amplifier_im3_matches_published_eq43(f1):
+    """Plan section 8.1 gate: two tones, three nodes, against eq. (43).
+
+    The tone ratio ``f2 = 0.9 f1`` and drive are the paper's own (its
+    Fig. 4b).  As with eqs. (41)/(42), the formula is restricted to the
+    output transconductor's nonlinearities and the ratio is taken against
+    the *linearised* fundamental.
+
+    The tildes in the printed formula (``p~(jw2)``, ``q~(jw2)``) are complex
+    conjugates, because the ``(2,-1)`` product takes ``w2`` with a negative
+    sign.  **They make no difference to this comparison** -- measured, after
+    an earlier version of this docstring asserted they did: the factor is a
+    pure product and ratio inside ``|.|``, and conjugating any factor leaves
+    a modulus unchanged.  They are kept because the formula is transcribed
+    as printed, not because the test can see them.
+
+    That is the same reason the right-half-plane pencil of eq. (46) is
+    invisible in this paper's results, and it is worth noticing twice: these
+    closed forms are moduli of products, so they are blind to an entire class
+    of sign and phase error.  Agreement with them is strong evidence about
+    magnitudes and no evidence at all about phase.
+
+    Six frequencies rather than one because they span six decades of IM3
+    magnitude and the circuit's poles lie inside that range.
+    """
+    a = _AMP
+    Xin = 1e-4
+    w1 = 2*np.pi*f1
+    w2 = 0.9*w1
+
+    got = (abs(_amp_run_two_tone(Xin, w1, w2)[2].phasor((2, -1)))
+           / abs(_amp_linear_node3(w1, Xin)))
+
+    first = abs(a['gm1']**2*a['gm2']**2*Xin**2*_amp_p(w1)**2
+                * np.conj(_amp_p(w2))*_amp_r(2*w1 - w2)
+                / (a['gm3']*_amp_q(w1)*np.conj(_amp_q(w2))*_amp_q(2*w1 - w2)))
+    second = abs(3*a['gm3c']/4
+                 - a['C1']*a['gm3q']**2*a['gm2']
+                 * (1j*w1/_amp_q(2*w1) + 1j*(w1 - w2)/_amp_q(w1 - w2)))
+    want = first*second
+
+    assert abs(got - want) <= 1e-11*want

@@ -466,6 +466,77 @@ off to match:
         print(' '.join('%-*s' % (w, c) for w, c in zip(widths, r)))
     print(sep)
 
+**Two tones on the same amplifier**, against their eq. (43) for the
+:math:`2\omega_1-\omega_2` intermodulation product, at the paper's own tone
+ratio :math:`f_2 = 0.9 f_1`:
+
+.. exec-rst::
+
+    import numpy as np
+    from pycircuit.circuit.distortion import (graded_response_mimo,
+                                              GradedSpectrum, GradedVector)
+
+    gm1, g01 = 245e-6, 1/98e3
+    gm2, g02 = 200e-6, 1/107e3
+    gm3, g03 = 1e-3, 1/23e3
+    gm3q, gm3c = 2e-3, 3e-3
+    CL, C1, C2 = 10e-12, 2e-12, 1e-12
+
+    p = lambda w: g03 + 1j*w*CL
+    r = lambda w: g01*g02 + 1j*w*(C1*g02 + C2*(g02+gm2))
+    q = lambda w: (g01*g02*g03
+                   + 1j*w*(CL*g01*g02 + C1*(g02*g03 + gm2*gm3)
+                           + C2*g03*(g02+gm2))
+                   - w**2*((C1+C2)*CL*g02 + C2*CL*gm2))
+
+    def solve(s, rhs):
+        M = np.array([[g01 + (C1+C2)*s, -C2*s, -C1*s],
+                      [gm2, g02, 0.0],
+                      [0.0, gm3, -g03 - CL*s]], dtype=complex)
+        return np.linalg.solve(M, np.asarray(rhs, dtype=complex))
+
+    def ours(Xin, w1, w2, n=3):
+        src = (GradedSpectrum.from_phasor((1, 0), 1, gm1*Xin)
+               + GradedSpectrum.from_phasor((0, 1), 1, gm1*Xin))
+        def f(x):
+            sq = (x[1]*x[1]).truncated(n)
+            return GradedVector([GradedSpectrum(), GradedSpectrum(),
+                                 sq.scaled(gm3q)
+                                 + (sq*x[1]).truncated(n).scaled(gm3c)])
+        return graded_response_mimo(
+            solve, GradedVector([src, GradedSpectrum(), GradedSpectrum()]),
+            f, (w1, w2), n)
+
+    Xin = 1e-4
+    head = ['f1 (Hz)', 'IM3 ours', 'their eq. (43)', 'rel. difference']
+    rows = []
+    for f1 in (1e2, 1e3, 1e4, 1e5, 1e6, 1e7):
+        w1 = 2*np.pi*f1
+        w2 = 0.9*w1
+        got = (abs(ours(Xin, w1, w2)[2].phasor((2, -1)))
+               / abs(-gm1*gm2*gm3*Xin/q(w1)))
+        want = abs(gm1**2*gm2**2*Xin**2*p(w1)**2*np.conj(p(w2))*r(2*w1-w2)
+                   / (gm3*q(w1)*np.conj(q(w2))*q(2*w1-w2))) \
+            * abs(3*gm3c/4 - C1*gm3q**2*gm2*(1j*w1/q(2*w1)
+                                             + 1j*(w1-w2)/q(w1-w2)))
+        rows.append(['%.4g' % f1, '%.6e' % got, '%.6e' % want,
+                     '%.1e' % (abs(got-want)/want)])
+
+    widths = [max(len(r[i]) for r in rows + [head]) for i in range(len(head))]
+    sep = ' '.join('=' * w for w in widths)
+    print(sep)
+    print(' '.join('%-*s' % (w, h) for w, h in zip(widths, head)))
+    print(sep)
+    for r in rows:
+        print(' '.join('%-*s' % (w, c) for w, c in zip(widths, r)))
+    print(sep)
+
+The two-tone index is a pair :math:`(m, n)` meaning :math:`m\omega_1 +
+n\omega_2`, and because harmonics are stored two-sided the product
+:math:`(2,-1)` arises as :math:`(1,0)+(1,0)+(0,-1)` — a componentwise sum,
+with no case analysis over which combinations of sum and difference
+frequencies land where.
+
 Three points about what these tables do and do not establish.
 
 **They agree to floating point, not merely closely.**  That is the expected
@@ -488,6 +559,25 @@ fundamental's own :math:`U^3` correction, which the published form drops and
 this one carries.  The distinguishing evidence is that the gap falls by
 :math:`100\times` per decade of drive, the signature of an :math:`O(U^3)` term
 against an :math:`O(U)` fundamental; see `The fundamental is not corrected`_.
+
+.. warning::
+
+   **These closed forms are moduli of products, so they are blind to a whole
+   class of error.**  Every one of them is written as
+   :math:`\left|\,\cdot\,\right|` around a product and ratio of transfer
+   functions, and conjugating any factor leaves a modulus unchanged.
+
+   Two consequences, both observed here rather than supposed.  The conjugates
+   the paper writes as :math:`\tilde p`, :math:`\tilde q` make **no
+   difference** to the comparison — dropping them changes nothing.  And the
+   pencil printed as eq. (46) has right-half-plane poles without any of these
+   comparisons noticing.
+
+   So agreement to :math:`10^{-15}` against these formulas is strong evidence
+   about **magnitudes** and no evidence at all about **phase**.  Anything that
+   depends on phase — cancellation between contributions, stability, a
+   time-domain waveform — needs a different check, which is why the
+   convergence table below uses a time-domain integration instead.
 
 Higher order on a multi-node circuit
 ------------------------------------
