@@ -20,11 +20,12 @@ the *same* linear operator ``Y(s) = G + sC``, evaluated at a different
 frequency.  Nothing here needs a nonlinear solve, a new matrix structure, or
 a change to ``circuit.py`` -- ``Y`` is what AC analysis already assembles.
 
-Scope of this module today (stages 1-3 of the plan): single tone, any number
-of nonlinear devices, with either cubic-polynomial or exponential
-(diode/bipolar) nonlinearities.  Two-tone intermodulation is a later stage;
-the frequency index is deliberately kept general (a tuple, not an integer) so
-that it is an extension rather than a rewrite -- see :class:`Harmonic`.
+Scope of this module today (stages 1-4 of the plan): any number of nonlinear
+devices; single-tone harmonic distortion with either cubic-polynomial or
+exponential (diode/bipolar) nonlinearities, and two-tone intermodulation for
+cubic ones.  Two-tone for an exponential device is not implemented because no
+reference derives it -- see
+:meth:`ExponentialNonlinearity.intermodulation_sources`.
 
 **The harmonics returned are node quantities.**  Distortion at the
 nonlinearity's controlling node is *not* distortion at the circuit output:
@@ -168,6 +169,38 @@ class CubicNonlinearity:
             dot(self.b, _elementwise_mul(X1, vec)), 2)
         return F2, F3, B1_apply
 
+    def intermodulation_sources(self, X10, X01, toolkit):
+        """Fourier coefficients for the ``2*w1 - w2`` product (2013 eqs. 24, 29).
+
+        Note which coefficient reaches which term.  Only the **cubic**
+        coefficient produces ``2*w1 - w2`` directly: squaring two tones gives
+        components at ``2w1``, ``2w2``, ``w1 +/- w2`` and DC, never at
+        ``2w1 - w2``.  The quadratic coefficient reaches the intermodulation
+        product only at second order, by mixing the ``2w1`` and ``w1 - w2``
+        products it *does* create back against a tone.  That is why an
+        analysis truncated at first order can badly misjudge IM3 in a circuit
+        whose dominant nonlinearity is quadratic -- and, in the worked example,
+        why the two contributions very nearly cancel.
+        """
+        dot = toolkit.dot
+        conj = toolkit.conj
+        X01c = [conj(v) for v in X01]
+
+        ## eq. 24 -- cubic only.
+        F_2m1 = _scale(dot(self.c, _elementwise_mul(X01c,
+                                                    _elementwise_pow(X10, 2))),
+                       3 * _reciprocal(toolkit, 4))
+        ## eq. 29 -- the quadratic mixing products, both from b.
+        F_20 = _scale(dot(self.b, _elementwise_pow(X10, 2)),
+                      _reciprocal(toolkit, 2))
+        F_1m1 = dot(self.b, _elementwise_mul(X10, X01c))
+
+        def mix(u, v):
+            """``2 b diag(u) v`` -- the derivative coefficient applied to v."""
+            return _scale(dot(self.b, _elementwise_mul(u, v)), 2)
+
+        return F_2m1, F_20, F_1m1, mix, X01c
+
 
 class ExponentialNonlinearity:
     r"""A junction nonlinearity ``f(v) = I_S (e^{v/V_T} - 1 - v/V_T)``.
@@ -236,6 +269,14 @@ class ExponentialNonlinearity:
 
         return F2, F3, B1_apply
 
+    def intermodulation_sources(self, X10, X01, toolkit):
+        raise NotImplementedError(
+            'Two-tone intermodulation is derived only for cubic '
+            'nonlinearities in the source (2013 paper, section 2.2). The '
+            'exponential case would need the two-argument Bessel expansion, '
+            'which is not in any of the reference papers -- implementing it '
+            'would mean deriving new mathematics, not following one.')
+
 
 def harmonic_response(apply_G, U, nonlinearity, tones, toolkit):
     """Harmonics of a weakly nonlinear circuit, to second perturbation order.
@@ -300,6 +341,70 @@ def harmonic_response(apply_G, U, nonlinearity, tones, toolkit):
     X3 = apply_G(three, _negate(_add(F3, mixing)))
 
     return DistortionSolution({one: X1, two: X2, three: X3}, tones, toolkit)
+
+
+def intermodulation_response(apply_G, U1, U2, nonlinearity, tones, toolkit):
+    """The ``2*w1 - w2`` intermodulation product, to second perturbation order.
+
+    Implements the 2013 paper's eqs. (21)-(30).  This is the *same* recurrence
+    as :func:`harmonic_response` -- evaluate the nonlinearity on a known
+    solution, push each component back through ``G`` at its own frequency --
+    with the scalar harmonic index replaced by a pair.  Carrying
+    :class:`Harmonic` as a tuple from the first commit is what makes this an
+    extension rather than a rewrite.
+
+    Second order is written here as an explicit two-term sum rather than as a
+    general convolution: ``2*w1 - w2`` decomposes exactly two ways, as
+    ``(2*w1) + (-w2)`` and as ``(w1) + (w1 - w2)``, and those are the two
+    products that can mix back up to it.  The 2005 paper writes the same thing
+    as a double convolution over all index pairs; enumerating it is equivalent
+    once the sum is truncated to terms of third order in the input.
+
+    Args:
+        apply_G: ``apply_G(harmonic, rhs) -> vector``.
+        U1, U2: Source vectors for the two tones.
+        nonlinearity: Must provide ``intermodulation_sources``.
+        tones: ``(w1, w2)``.
+        toolkit: The active toolkit.
+
+    Returns:
+        :class:`DistortionSolution` carrying the fundamentals, the two mixing
+        products, and the intermodulation product itself under
+        ``Harmonic((2, -1))``.  The first- and second-order contributions are
+        kept separately under ``('first',)`` and ``('second',)`` -- in the
+        reference circuit they very nearly cancel, so the split is what makes
+        a disagreement diagnosable rather than merely visible.
+    """
+    if len(tones) != 2:
+        raise ValueError('intermodulation_response needs exactly two tones')
+
+    h10, h01 = Harmonic((1, 0)), Harmonic((0, 1))
+    h2m1, h20, h1m1 = Harmonic((2, -1)), Harmonic((2, 0)), Harmonic((1, -1))
+
+    ## eq. 21 -- each tone's linear response, at its own frequency.
+    X10 = apply_G(h10, U1)
+    X01 = apply_G(h01, U2)
+
+    F_2m1, F_20, F_1m1, mix, X01c = nonlinearity.intermodulation_sources(
+        X10, X01, toolkit)
+
+    ## eq. 25 -- first order: the cubic coefficient reaching 2w1-w2 directly.
+    first = apply_G(h2m1, _negate(F_2m1))
+
+    ## eq. 29 -- the quadratic products that exist at 2w1 and w1-w2 ...
+    X20 = apply_G(h20, _negate(F_20))
+    X1m1 = apply_G(h1m1, _negate(F_1m1))
+
+    ## eq. 28 -- ... mixed back up to 2w1-w2 against a tone.
+    second = apply_G(h2m1, _negate(_scale(
+        _add(mix(X01c, X20), mix(X10, X1m1)), _reciprocal(toolkit, 2))))
+
+    return DistortionSolution({
+        h10: X10, h01: X01, h20: X20, h1m1: X1m1,
+        h2m1: _add(first, second),
+        Harmonic(('first',)): first,
+        Harmonic(('second',)): second,
+    }, tones, toolkit)
 
 
 def _negate(vec):

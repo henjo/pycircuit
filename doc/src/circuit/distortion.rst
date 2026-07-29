@@ -16,10 +16,9 @@ vol. 52, no. 8, pp. 1620–1631 (2005).
 
 .. note::
 
-   This covers stages 1–3 of the plan in ``doc/distortion_plan.md``: a single
-   tone, any number of nonlinear devices, with either cubic-polynomial or
-   exponential (diode/bipolar) nonlinearities.  Two-tone intermodulation is a
-   later stage.
+   This covers stages 1–4 of the plan in ``doc/distortion_plan.md``: any
+   number of nonlinear devices; single-tone harmonic distortion for cubic or
+   exponential nonlinearities, and two-tone intermodulation for cubic ones.
 
 The idea
 --------
@@ -314,3 +313,67 @@ and referring HD to :math:`y` rather than to :math:`v_{be}` changes it by a
 factor of ten for the published component values.  Ten is a plausible number
 to see and no error is raised, which is why ``test_distortion`` pins the
 distinction explicitly.
+
+Two tones, and intermodulation
+------------------------------
+
+Harmonic distortion tells only part of the story.  Drive a circuit with two
+closely spaced tones :math:`\omega_1` and :math:`\omega_2` and the
+nonlinearity generates products at :math:`2\omega_1 - \omega_2` and
+:math:`2\omega_2 - \omega_1` — which land *inside* the passband and cannot be
+filtered away.  That is usually the figure a designer actually cares about.
+
+Nothing about the method changes.  The recurrence is the same: evaluate the
+nonlinearity on a known solution, push each component back through
+:math:`\mathcal{G}` at its own frequency.  Only the frequency index becomes
+richer — a pair :math:`(m, n)` denoting :math:`m\omega_1 + n\omega_2` in place
+of a single harmonic number.  That is why :class:`Harmonic` has been a tuple
+since the first commit of this module.
+
+Which coefficient reaches the product, and how
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This is the part worth understanding, because it is not symmetric.
+
+**Only the cubic coefficient reaches** :math:`2\omega_1 - \omega_2`
+**directly.**  Squaring two tones produces components at :math:`2\omega_1`,
+:math:`2\omega_2`, :math:`\omega_1 \pm \omega_2` and DC — never at
+:math:`2\omega_1 - \omega_2`.  So at first perturbation order the quadratic
+coefficient contributes nothing at all.
+
+It arrives at *second* order instead, by mixing: the quadratic nonlinearity
+creates products at :math:`2\omega_1` and :math:`\omega_1 - \omega_2`, and
+those mix back up against a tone.  There are exactly two routes,
+
+.. math::
+
+   2\omega_1 - \omega_2 = (2\omega_1) + (-\omega_2)
+                        = (\omega_1) + (\omega_1 - \omega_2)
+
+and the implementation enumerates both.  The 2005 reference writes the same
+thing as a double convolution over all index pairs; enumerating is equivalent
+once the sum is truncated to third order in the input.
+
+The two contributions can very nearly cancel
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+In the reference amplifier they do.  The first- and second-order
+contributions differ by 0.74 dB and partially cancel, leaving a total some
+22 dB below either one.
+
+Two consequences follow, and both matter more than the headline number.  An
+analysis truncated at first perturbation order would report IM3 roughly 21 dB
+*too high* here — not a refinement, a wrong answer.  And any implementation
+error in either contribution is amplified in the total, which is why
+``test_distortion`` checks the two contributions separately as well as their
+sum: checking only the total would let compensating errors through, and
+checking only the terms would miss a sign error in how they combine.
+
+Not implemented: two tones on an exponential device
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The two-tone derivation in the reference covers cubic polynomials only.  An
+exponential device would need a two-argument Bessel expansion that none of the
+source papers provides, so
+:class:`~pycircuit.circuit.distortion.ExponentialNonlinearity` raises rather
+than returning a number from a derivation nobody has checked.

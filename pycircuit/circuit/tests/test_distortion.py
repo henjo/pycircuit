@@ -32,6 +32,7 @@ from pycircuit.circuit import numeric, symbolic
 from pycircuit.circuit.distortion import (CubicNonlinearity,
                                           ExponentialNonlinearity, Harmonic,
                                           harmonic_response,
+                                          intermodulation_response,
                                           scalar_nonlinearity,
                                           taylor_coefficients)
 
@@ -485,3 +486,121 @@ def test_exponential_reduces_to_cubic_for_small_signals():
     assert abs(hd2_exact / hd2_cubic - 1) < 0.02, (
         'exponential and cubic must agree at small signal, ratio %.4f'
         % (hd2_exact / hd2_cubic))
+
+
+## ------------------------------------------- stage 4: two-tone / IM3
+
+"""Stage 4 gate: the 2*w1 - w2 intermodulation product.
+
+The most sensitive gate in the plan, and deliberately so.  For the reference
+amplifier the first- and second-order contributions to IM3 differ by only
+0.74 dB and very nearly cancel -- the total lands 21.8 dB below the larger of
+the two.  A ~1% error in either term moves the total by a visible amount, so
+this checks the two contributions *separately* as well as their sum.  Checking
+only the total would let compensating errors through; checking only the terms
+would miss a sign error in how they combine.
+
+Reference values are the low-frequency asymptote.  Note 100 Hz is *not* yet on
+the plateau for this circuit (it gives -62.21 dB against the asymptotic
+-62.73), which is exactly the kind of near-miss the cancellation amplifies --
+the individual terms are still within 0.07 dB there.
+"""
+
+_IM_TONE_RATIO = 0.9          # f2 = 0.9 * f1, per the paper's Fig. 4(b)
+
+
+def _rnmc_im3(f1):
+    """First-order, second-order and total IM3 at the output node, in dB."""
+    w1 = 2 * np.pi * f1
+    w2 = 2 * np.pi * _IM_TONE_RATIO * f1
+    b, c = _rnmc_coefficients()
+    U = np.array([_GM1 * _XIN, 0.0, 0.0], dtype=complex)
+
+    def apply_G(harmonic, rhs):
+        s = 1j * harmonic.frequency((w1, w2))
+        return np.linalg.solve(_rnmc_admittance(s),
+                               np.asarray(rhs, dtype=complex))
+
+    sol = intermodulation_response(apply_G, U, U, CubicNonlinearity(b, c),
+                                   (w1, w2), numeric)
+    db = lambda v: 20 * np.log10(abs(v))
+    return (db(sol.amplitude(('first',), _OUT)),
+            db(sol.amplitude(('second',), _OUT)),
+            db(sol.amplitude((2, -1), _OUT)))
+
+
+@pytest.mark.parametrize('label,index,expected', [
+    ('first-order contribution',  0, -41.65),
+    ('second-order contribution', 1, -40.92),
+    ('total IM3',                 2, -62.73),
+])
+def test_rnmc_im3_matches_published_values(label, index, expected):
+    got = _rnmc_im3(1.0)[index]
+    assert abs(got - expected) < 0.5, (
+        '%s: got %.3f dB, expected %.2f dB' % (label, got, expected))
+
+
+def test_im3_contributions_very_nearly_cancel():
+    """The cancellation is the physics, not an artefact -- pin it.
+
+    If a future change made the two contributions merely additive, every
+    individual-term assertion above would still pass while the total moved by
+    20 dB.  This states the relationship between them directly.
+    """
+    first, second, total = _rnmc_im3(1.0)
+
+    assert abs(first - second) < 1.5, (
+        'the two contributions should be within ~1 dB of each other, '
+        'got %.2f and %.2f' % (first, second))
+    assert total < max(first, second) - 15.0, (
+        'expected strong cancellation; total %.2f dB is not far enough below '
+        'the larger contribution %.2f dB' % (total, max(first, second)))
+
+
+def test_im3_needs_both_coefficients():
+    """Both b and c must reach IM3, by different routes.
+
+    Only the cubic coefficient produces 2*w1 - w2 at first order -- squaring
+    two tones cannot make that frequency.  The quadratic coefficient reaches
+    it only at second order, by mixing the 2*w1 and w1-w2 products it does
+    create.  Zeroing either must change the answer, and by design they change
+    *different* contributions.
+    """
+    w1 = 2 * np.pi
+    w2 = 2 * np.pi * _IM_TONE_RATIO
+    U = np.array([_GM1 * _XIN, 0.0, 0.0], dtype=complex)
+
+    def run(b, c):
+        def apply_G(h, rhs):
+            return np.linalg.solve(_rnmc_admittance(1j * h.frequency((w1, w2))),
+                                   np.asarray(rhs, dtype=complex))
+        sol = intermodulation_response(apply_G, U, U, CubicNonlinearity(b, c),
+                                       (w1, w2), numeric)
+        return (abs(sol.amplitude(('first',), _OUT)),
+                abs(sol.amplitude(('second',), _OUT)))
+
+    b, c = _rnmc_coefficients()
+    first_full, second_full = run(b, c)
+    first_no_c, second_no_c = run(b, np.zeros_like(c))
+    first_no_b, second_no_b = run(np.zeros_like(b), c)
+
+    ## Cubic drives the first-order term and nothing else.
+    assert first_no_c < first_full * 1e-9, 'first order should vanish with c=0'
+    assert abs(second_no_c - second_full) < second_full * 1e-9
+
+    ## Quadratic drives the second-order term and nothing else.
+    assert second_no_b < second_full * 1e-9, 'second order should vanish with b=0'
+    assert abs(first_no_b - first_full) < first_full * 1e-9
+
+
+def test_exponential_two_tone_is_refused_not_guessed():
+    """Two-tone for an exponential device is not in any reference paper.
+
+    The 2013 paper derives intermodulation for cubic polynomials only.  The
+    exponential case would need a two-argument Bessel expansion that no source
+    in this set provides, so it raises rather than silently returning a number
+    from an unverified derivation.
+    """
+    nl = ExponentialNonlinearity(_IBQ, _VT, port=0, n=1)
+    with pytest.raises(NotImplementedError):
+        nl.intermodulation_sources([1.0], [1.0], numeric)
