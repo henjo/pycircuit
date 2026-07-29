@@ -27,6 +27,14 @@ cubic ones.  Two-tone for an exponential device is not implemented because no
 reference derives it -- see
 :meth:`ExponentialNonlinearity.intermodulation_sources`.
 
+**One function here is not an analysis path.**
+:func:`harmonic_response_spectral` is a *numeric measuring instrument*: it
+exists to quantify what raising the perturbation order or the harmonic cutoff
+would buy, and its findings are recorded in
+``doc/src/circuit/distortion_limits.rst``.  It is FFT-based, so it cannot be
+used symbolically at all, and nothing in the analysis path calls it.  Do not
+reach for it to compute distortion.
+
 **The harmonics returned are node quantities.**  Distortion at the
 nonlinearity's controlling node is *not* distortion at the circuit output:
 mapping to an output generally carries both a feedforward path and a

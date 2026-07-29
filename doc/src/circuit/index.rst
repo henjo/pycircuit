@@ -13,6 +13,7 @@ Circuit analyzer
     soe_symbolic
     ddd
     distortion
+    distortion_limits
     theory
     modules
     elements
