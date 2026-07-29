@@ -1896,3 +1896,157 @@ def test_amplifier_fundamental_correction_scales_as_drive_squared():
     for coarse, fine in zip(gaps, gaps[1:]):
         assert 90.0 < coarse/fine < 110.0, (
             'gap should scale as U**2, got ratios %s' % gaps)
+
+
+# ---------------------------------------------------------------------------
+# Stage E: higher order on a multi-node circuit.
+# ---------------------------------------------------------------------------
+
+def _bq_solve_stable(s, rhs):
+    """The biquad pencil with the damping sign flipped.
+
+    **The pencil as printed in eq. (46) has right-half-plane poles**
+    (``Re s = +1.68e6``); see the test below.  Every published result for
+    this circuit is a modulus, and ``|q(w)|`` is conjugation-invariant, so
+    the sign is invisible in the paper's figures.  A time-domain reference
+    needs a stable system, so it uses this variant.
+    """
+    M = np.array([[_BQ_G2 + s*_BQ_C1, -_BQ_G4],
+                  [-_BQ_G3, s*_BQ_C2]], dtype=complex)
+    return np.linalg.solve(M, np.asarray(rhs, dtype=complex))
+
+
+def _bq_run_with(solve, Xin, w, maxp):
+    src = (GradedSpectrum.from_phasor(1, 1, _BQ_G1*Xin)
+           + _cube(GradedSpectrum.from_phasor(1, 1, Xin), maxp).scaled(_BQ_G1C))
+
+    def f(x):
+        return GradedVector([_cube(x[0], maxp).scaled(-_BQ_G2C)
+                             + _cube(x[1], maxp).scaled(-_BQ_G4C),
+                             _cube(x[0], maxp).scaled(-_BQ_G3C)])
+
+    return graded_response_mimo(solve, GradedVector([src, GradedSpectrum()]),
+                                f, (w,), max_power=maxp)
+
+
+def _bq_centre():
+    return np.sqrt(-_BQ_G3*_BQ_G4/(_BQ_C1*_BQ_C2))
+
+
+def test_printed_biquad_pencil_has_right_half_plane_poles():
+    """Records a property of the *reference*, not of our code.
+
+    Kept as a test because it is the reason the convergence check below uses
+    a modified pencil, and without it that modification looks like fudging
+    the circuit until the numbers agree.
+    """
+    roots = np.roots([_BQ_C1*_BQ_C2, -_BQ_G2*_BQ_C2, -_BQ_G3*_BQ_G4])
+    assert all(r.real > 0 for r in roots), roots
+    flipped = np.roots([_BQ_C1*_BQ_C2, _BQ_G2*_BQ_C2, -_BQ_G3*_BQ_G4])
+    assert all(r.real < 0 for r in flipped), flipped
+
+
+def test_conjugate_pencils_agree_on_q_but_not_on_the_nonlinear_result():
+    """Guards against an over-generalisation that was actually made here.
+
+    ``|q(w)|`` is identical for the printed and stable pencils, which invites
+    the conclusion that the damping sign cannot affect any magnitude.  It
+    does: the graded computation *adds* complex quantities across harmonics,
+    and addition is not invariant under conjugation.  Only products and
+    ratios of ``q`` are, which is why the published closed forms survive it.
+    """
+    w = _bq_centre()
+    qp = abs(_bq_q(w))
+    qs = abs(np.conj(_bq_q(w)))
+    assert abs(qp - qs) <= 1e-15*qs, 'moduli of q should be identical'
+
+    a = abs(_bq_run_with(_bq_solve, 0.3, w, 7)[0].phasor(3))
+    b = abs(_bq_run_with(_bq_solve_stable, 0.3, w, 7)[0].phasor(3))
+    assert abs(a - b) > 1e-3*b, (
+        'the nonlinear results should NOT coincide, got %g vs %g' % (a, b))
+
+
+def test_multinode_symbolic_growth_stays_polynomial():
+    """Stage E gate: the claim that this method suits a symbolic tool has to
+    survive going to several nodes.
+
+    Both sides use an ``s``-dependent response and a pure cubic, so the only
+    difference is one node against two coupled ones.  A first attempt gave
+    the scalar case ``response = 1/Y`` -- no ``s`` at all, so it could never
+    accumulate denominators -- and measured raw ``count_ops``; that pair of
+    mistakes made multi-node look like it blew up by 16x per two orders.  It
+    does not.
+    """
+    a, c1, c2, b, d, k3, A, w0 = sympy.symbols('a c1 c2 b d k3 A w0')
+
+    def solve(s, rhs):
+        det = (a + s*c1)*(s*c2) - b*d
+        return [(s*c2*rhs[0] + b*rhs[1])/det,
+                (d*rhs[0] + (a + s*c1)*rhs[1])/det]
+
+    def size(e):
+        num, _ = sympy.fraction(sympy.together(e))
+        return len(sympy.Add.make_args(sympy.expand(num)))
+
+    ratios = []
+    for power in (3, 5, 7):
+        coeffs = [0, k3] + [0]*(power - 2)
+        scalar = graded_response(lambda s: 1/(a + s*c1), A, coeffs,
+                                 (w0,), max_power=power)
+        mimo = graded_response_mimo(
+            solve,
+            GradedVector([GradedSpectrum.from_phasor(1, 1, A),
+                          GradedSpectrum()]),
+            lambda x: GradedVector([GradedSpectrum(),
+                                    _cube(x[0], power).scaled(k3)]),
+            (w0,), max_power=power)
+
+        ## Keys are the structural measure: exactly one set per node.
+        assert (sum(len(c.terms) for c in mimo.components)
+                == 2*len(scalar.terms))
+        ratios.append(size(mimo[0].phasor(3)) / size(scalar.phasor(3)))
+
+    assert max(ratios) < 5.0, (
+        'multi-node should cost a small constant factor, got %s' % ratios)
+
+
+@pytest.mark.parametrize('Xin', [0.05, 0.10])
+def test_biquad_converges_monotonically_below_the_bound(Xin):
+    """Stage E gate: error must fall with every added order, below the bound.
+
+    Reference is a direct integration of the biquad's own ODEs -- genuinely
+    independent of the perturbation machinery, sharing only the circuit.  It
+    is insensitive to cycles (200/400/800) and tolerance (1e-11..1e-13) to
+    nine significant figures, so it is not the limiting factor here.
+
+    At ``Xin = 0.3`` this ordering breaks (the sequence goes 1.0e-1, 1.3e-1,
+    8.2e-3, 1.2e-2, 1.6e-3).  That is the convergence bound, not a defect,
+    and it is why the drives here are below it.
+    """
+    from scipy.integrate import solve_ivp
+
+    w = _bq_centre()
+
+    def rhs(t, y):
+        x1, x2 = y
+        u = Xin*np.cos(w*t)
+        return [(-_BQ_G2*x1 + _BQ_G4*x2 + _BQ_G1*u + _BQ_G1C*u**3
+                 + _BQ_G2C*x1**3 + _BQ_G4C*x2**3)/_BQ_C1,
+                (_BQ_G3*x1 + _BQ_G3C*x1**3)/_BQ_C2]
+
+    period = 2*np.pi/w
+    tend = 200*period
+    keep = 32
+    ts = np.linspace(tend - keep*period, tend, keep*256, endpoint=False)
+    sol = solve_ivp(rhs, (0, tend), [0.0, 0.0], t_eval=ts, method='DOP853',
+                    rtol=1e-11, atol=1e-18, max_step=period/40)
+    spectrum = np.fft.rfft(sol.y[0])/len(sol.y[0])
+    want = 2*abs(spectrum[3*keep])
+
+    errors = [abs(abs(_bq_run_with(_bq_solve_stable, Xin, w, n)[0].phasor(3))
+                  - want)/want
+              for n in (3, 5, 7, 9, 11)]
+
+    for coarse, fine in zip(errors, errors[1:]):
+        assert fine < coarse, 'not monotone: %s' % errors
+    assert errors[-1] < 1e-6, 'expected deep convergence, got %s' % errors

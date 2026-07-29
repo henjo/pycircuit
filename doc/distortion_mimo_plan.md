@@ -1,6 +1,13 @@
 # Multi-node graded perturbation response — implementation plan
 
-**Status: planned, not started.**
+**Status: all five stages complete, all gates passed. Gates were declared in
+advance; outcomes in section 6.**
+
+**Headline: the multi-node extension works, and going multi-node costs a small
+constant factor symbolically — not the blow-up an early mismeasurement
+suggested.** Validated against four published closed forms across two
+circuits, and against an independent ODE integration for the higher orders the
+papers do not print.
 
 Follows `doc/distortion_plan.md` (5 stages, complete) and
 `doc/distortion_higher_order_plan.md` (4 stages, complete).
@@ -163,7 +170,37 @@ edited out._
 | B — biquad, `g_2c`/`g_3c` only | **Gate passed**, worst **2.3e-14** against the `g_3c`/`g_2c` fraction of published eq. (48) at five frequencies |
 | C — full biquad, all four cubics | **Gate passed**, worst **2.3e-14** against the *complete* published eq. (48). This is capability the scalar path does not have at all. **And the omitted terms were not small:** at 100 kHz the full third harmonic is `1.87e-14` against the scalar-reachable `1.37e-21` — a factor of 1.3e4. A scalar reduction is not a mild approximation off resonance, it misses essentially the whole answer. Guarded by its own test |
 | D — RNMC amplifier, 3 nodes | **Gate passed**, worst **9.1e-16** on both `HD2` (eq. 41) and `HD3` (eq. 42) at six frequencies from 100 Hz to 10 MHz. Second circuit, structurally unlike the biquad: three nodes, **quadratic as well as cubic** terms, and a nonlinearity acting on a node other than the one it is injected into. The paper prints only the *feedback* matrix (eq. 45), so the open-loop matrix was reconstructed as its limit `k_in -> 1`, `k_3 -> 0`, `g_03e -> g_03`; that reconstruction has its own gate against published eq. (39), passed at **2.8e-16** |
-| E — higher order, multi-node | **not run.** Depends on nothing from D; the open question it settles — whether term count stays polynomial in the order when there are several nodes — is the one that bears on the theory page's central claim |
+| E — higher order, multi-node | **Gate passed, both halves.** *Symbolic size:* growth stays polynomial and multi-node costs a **small constant factor**, not an explosion — numerator terms over a common denominator go 1 → 10 → 46 (scalar) against 1 → 18 → 117 (two-node) for `U^3` → `U^5` → `U^7`, a ratio drifting 1.0 → 1.8 → 2.5. Graded keys are exactly 2x throughout, one set per node. *Convergence:* strictly monotone at every drive below the bound, against an independent ODE integration — at `Xin = 0.05` the error falls 1.9e-3 → 9.3e-5 → 2.9e-7 → 6.4e-9 → **2.3e-11** across `U^3`..`U^11` (600 cycles, `rtol=1e-13`; the doc table uses cheaper settings and bottoms out at 3.1e-10 instead — **that last cell measures the integrator, not the method**, and moves with integrator settings while no other cell does). It goes non-monotone only at `Xin = 0.3` (1.0e-1, 1.3e-1, 8.2e-3, 1.2e-2, 1.6e-3), which is the bound, and matches the asymptotic behaviour already documented for the scalar case |
+
+**Two findings from stage E, both about how easily a wrong answer looked
+convincing.**
+
+*The multi-node "blow-up" was an artifact of the measurement.* The first run
+showed `count_ops` going 52 → 766 → 13396 → 222924 against a scalar 6 → 17 →
+31 → 45, which reads as a catastrophic explosion and would have refuted the
+theory page's central claim. It was wrong twice over: the scalar baseline was
+given `response(s) = 1/Y`, a bare symbol with **no `s` dependence**, so it
+could never accumulate denominators; and raw `count_ops` counts redundancy
+that putting the expression over a common denominator removes. Both errors
+pushed the same way, which is what made the result look solid. With a fair
+baseline the factor is ~2.5 and shrinking relative to order.
+
+*Caveat kept deliberately:* `cancel` did not finish in 900 s at `U^7`, so the
+counts are terms over a common denominator **without** full cancellation — an
+upper bound on the true size. The practical limit for symbolic use may be
+simplification *cost* rather than expression size, which is a different claim
+from the one the theory page makes and is **not** established here.
+
+**The pencil printed in eq. (46) has right-half-plane poles**
+(`Re s = +1.68e6`). Every published result for this circuit is a modulus and
+`|q|` is conjugation-invariant, so the sign is invisible in the paper's
+figures — and all our stage B/C gates passed with it. It matters anyway: a
+time-domain reference needs a stable system. **And the natural
+over-generalisation is false** — identical `|q|` does *not* mean identical
+magnitudes for the nonlinear result, which differs by 1-2%, because the graded
+computation adds complex quantities across harmonics and addition is not
+conjugation-invariant. Only products and ratios of `q` are, which is why the
+published closed forms survive. Both facts are pinned by tests.
 
 **A finding from stage D worth keeping: the published ratio uses the
 *linearised* fundamental.** Dividing by the graded fundamental instead
@@ -203,4 +240,93 @@ not mistaken later for a weak test.
 - **A transient cross-check needs a cubic transconductor element**, which
   pycircuit does not currently have. Stages B–D are gated on published closed
   forms instead, which is stronger; a transient would only be needed to go
-  beyond what the paper prints.
+  beyond what the paper prints. Stage E sidestepped it by integrating the
+  circuit's own ODEs directly with `solve_ivp`, which needs no element.
+
+## 8. What is left
+
+Ordered by value, with the gate named where one already exists. Nothing here
+is blocking anything shipped; all five stages are complete.
+
+### 8.1 Two tones on the multi-node path — the recommended next step
+
+`intermodulation_response` is still scalar-only, so the multi-node path is
+single-tone. This is the natural completion of the work and unusually cheap:
+
+- **The representation already supports it.** `Harmonic` has been a tuple from
+  the outset and `GradedSpectrum` keys on `(harmonic, power)` with the harmonic
+  index free to be a tuple, so two-tone is a matter of the driver and the
+  convolution bookkeeping, not of the data structure.
+- **Published gates already exist and are identified**: eq. (43) `IM3` for the
+  amplifier and eq. (52) `IM3` for the filter. Both are in the same paper whose
+  eqs. (41), (42), (47), (48) the single-tone path already matches to ~1e-15,
+  so the gates are of known quality.
+- **Note the recorded erratum before starting:** eq. (49) is missing a factor
+  `1/g_1`, and eq. (52) — the `IM3` formula — is the one that is *right*. Check
+  dimensions first.
+
+**Reconsider if** the double convolution turns out to make term counts grow
+faster than the single-tone case did; stage E's measurement should be repeated
+for two tones rather than assumed to carry over.
+
+### 8.2 Cross-terms `x_j x_k` are permitted but unverified
+
+`graded_response_mimo` takes the nonlinearity as a callable in the graded ring,
+where a cross term costs nothing extra — but **no published example in this
+line uses one**, so the capability has never been checked against an external
+reference. The docs say so explicitly rather than implying coverage.
+
+**Reconsider if** a reference circuit with a genuine cross term turns up. Until
+then the honest position is "the representation permits it", which is not the
+same as "it works".
+
+### 8.3 Simplification cost, as distinct from expression size
+
+Stage E measured expression *size* and found it polynomial. It did **not**
+measure simplification *cost*: `sympy.cancel` failed to finish in 900 s at
+`U^7` on a two-node system. The theory page's claim is about size; the
+practical limit for a user may well be cost. **These are different claims and
+only one is established.**
+
+Worth measuring properly, because if cost is the binding constraint the useful
+fix is a different representation (rational functions kept factored, or
+per-harmonic numeric evaluation) rather than anything about the perturbation
+method.
+
+### 8.4 A usable 1 dB compression example
+
+The question that prompted the multi-node work, still unanswered, and **not
+answerable from either published circuit** — see §2. The route that would work:
+a minimal single-node transconductor cell using this paper's cubic model and
+`alpha = -0.0535 V^-2`, with the output taken as the **transconductor current**
+rather than a node voltage. 1 dB of cubic compression corresponds to a
+contraction factor of about 0.44, comfortably inside the bound, so unlike the
+published circuits it is reachable.
+
+The topology would be ours rather than a reference's, so the result is a
+demonstration of the method, **not** a validation of it. It should be labelled
+that way wherever it lands.
+
+### 8.5 A decision, not a task: the eq. (46) instability
+
+The pencil as printed has right-half-plane poles. That is a defect in the
+source, alongside the four errata already recorded for the same paper in
+`distrortion_pertybation_reference.md`. Nothing in our code depends on
+resolving it — the gates pass with the matrix as printed, and stage E
+documents the flip. Whether it goes any further than our notes is a call for
+the maintainer.
+
+### 8.6 Open elsewhere, recorded here only as pointers
+
+Not part of this plan; listed so this section is a complete answer to "what is
+left" rather than a partial one.
+
+- **Two tones on an *exponential* device** — §7 of `doc/distortion_plan.md`.
+  Blocked on carrying complex amplitudes through the Bessel path, not on
+  mathematics.
+- **P15**, `doc/architecture.md` — `test_stress_stiff_rlc_pulse` is roughly
+  two-thirds of total suite runtime. Three candidate routes written up, none
+  attempted.
+- **`supports('autodiff')` conflates two things** — exact differentiation and
+  skipping Newton limiting — plus an unfixed `cosh` gap in `_symbolic` that
+  leaves `VSwitch.G` unusable symbolically.

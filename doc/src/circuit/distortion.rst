@@ -489,6 +489,116 @@ this one carries.  The distinguishing evidence is that the gap falls by
 :math:`100\times` per decade of drive, the signature of an :math:`O(U^3)` term
 against an :math:`O(U)` fundamental; see `The fundamental is not corrected`_.
 
+Higher order on a multi-node circuit
+------------------------------------
+
+The published forms above are :math:`U^3` truncations.  Raising the truncation
+on a *multi-node* circuit is checked separately, against a direct integration
+of the biquad's own differential equations — a reference that shares the
+circuit with the analysis and nothing else.  Errors in the third harmonic at
+the resonant node:
+
+.. exec-rst::
+
+    import numpy as np
+    from scipy.integrate import solve_ivp
+    from pycircuit.circuit.distortion import (graded_response_mimo,
+                                              GradedSpectrum, GradedVector)
+
+    g1 = g2 = 31.26e-6; g3 = 625.2e-6; g4 = -625.2e-6
+    C1 = C2 = 9.3054e-12
+    alpha = -0.0535
+    g1c, g2c, g3c, g4c = (alpha*g for g in (g1, g2, g3, g4))
+    w0 = np.sqrt(-g3*g4/(C1*C2))
+
+    def solve(s, rhs):
+        ## Damping sign flipped from eq. (46): as printed the pencil has
+        ## right-half-plane poles, so it has no periodic steady state to
+        ## integrate toward.  See the note below the table.
+        M = np.array([[g2 + s*C1, -g4], [-g3, s*C2]], dtype=complex)
+        return np.linalg.solve(M, np.asarray(rhs, dtype=complex))
+
+    def cube(sp, n):
+        return ((sp*sp).truncated(n) * sp).truncated(n)
+
+    def ours(Xin, n):
+        src = (GradedSpectrum.from_phasor(1, 1, g1*Xin)
+               + cube(GradedSpectrum.from_phasor(1, 1, Xin), n).scaled(g1c))
+        f = lambda x: GradedVector([cube(x[0], n).scaled(-g2c)
+                                    + cube(x[1], n).scaled(-g4c),
+                                    cube(x[0], n).scaled(-g3c)])
+        return graded_response_mimo(
+            solve, GradedVector([src, GradedSpectrum()]), f, (w0,), n)
+
+    def reference(Xin, cycles=200, keep=32):
+        def rhs(t, y):
+            x1, x2 = y
+            u = Xin*np.cos(w0*t)
+            return [(-g2*x1 + g4*x2 + g1*u + g1c*u**3
+                     + g2c*x1**3 + g4c*x2**3)/C1,
+                    (g3*x1 + g3c*x1**3)/C2]
+        T = 2*np.pi/w0
+        tend = cycles*T
+        ts = np.linspace(tend - keep*T, tend, keep*256, endpoint=False)
+        s = solve_ivp(rhs, (0, tend), [0.0, 0.0], t_eval=ts, method='DOP853',
+                      rtol=1e-11, atol=1e-18, max_step=T/40)
+        S = np.fft.rfft(s.y[0])/len(s.y[0])
+        return 2*abs(S[3*keep])
+
+    ORDERS = (3, 5, 7, 9, 11)
+    head = ['drive X_in'] + ['U^%d' % n for n in ORDERS] + ['monotone?']
+    rows = []
+    for Xin in (0.05, 0.10, 0.20, 0.30):
+        want = reference(Xin)
+        errs = [abs(abs(ours(Xin, n)[0].phasor(3)) - want)/want
+                for n in ORDERS]
+        ok = all(b < a for a, b in zip(errs, errs[1:]))
+        rows.append(['%.2f' % Xin] + ['%.2e' % e for e in errs]
+                    + ['yes' if ok else 'NO'])
+
+    widths = [max(len(r[i]) for r in rows + [head]) for i in range(len(head))]
+    sep = ' '.join('=' * w for w in widths)
+    print(sep)
+    print(' '.join('%-*s' % (w, h) for w, h in zip(widths, head)))
+    print(sep)
+    for r in rows:
+        print(' '.join('%-*s' % (w, c) for w, c in zip(widths, r)))
+    print(sep)
+
+**Below the bound every added order helps, and by orders of magnitude.**  The
+last row is above the bound, and there the sequence stops being monotone: it
+improves overall but wanders on the way, which is the same asymptotic
+behaviour the single-node case shows (see :doc:`distortion_limits`).  Monotone
+improvement is a property of being inside the radius of convergence, not of
+the method.
+
+One caveat on reading the smallest numbers in the table.  At the lowest drive
+and highest truncation the discrepancy is down at the level of **the
+reference's own accuracy**, not the analysis's: tightening the integrator
+(more cycles, smaller tolerance) moves that entry by an order of magnitude
+while leaving every other entry unchanged.  Those cells bound how well the
+comparison can be made, not how well the method does.  The columns to trust
+for the method are the ones where the error is still comfortably above the
+integrator's floor.
+
+.. note::
+
+   **The pencil printed as eq. (46) has right-half-plane poles**,
+   :math:`\mathrm{Re}\,s = +1.68\times10^{6}`.  The table above therefore
+   flips the sign of the damping term, because an unstable system has no
+   periodic steady state for the reference to integrate toward.
+
+   This is invisible in the source: every published result for this circuit
+   is a modulus, and :math:`|q(j\omega)|` is unchanged by conjugating the
+   pencil — which is why the comparisons against eqs. (47) and (48) above
+   pass using the matrix exactly as printed.
+
+   It does **not** follow that the sign never affects a magnitude.  It
+   affects this one by 1–2%: the graded computation *adds* complex quantities
+   across harmonics, and addition is not invariant under conjugation.  Only
+   products and ratios of :math:`q` are, which is precisely the form the
+   published closed forms take.
+
 Limitations of the present implementation
 -----------------------------------------
 
