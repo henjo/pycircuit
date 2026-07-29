@@ -247,7 +247,7 @@ not omitted.
 | Stage | Outcome |
 |---|---|
 | Prerequisite — element derivatives | **Gate passed** (`148bd95`): symbolic Jacobians match finite differences to 3e-10 (BJT) / 2.5e-07 (JFET); suite 521 → 536 |
-| 1 — cubic, single tone | not started |
+| 1 — cubic, single tone | **Gate passed** (`b8ec918`): HD2 and HD3 agree symbolically with Volterra kernels derived independently, on both a resistive and an RC circuit. Mutation-checked — dropping the second order fails 3 tests, a wrong Fourier factor fails 4, a wrong evaluation frequency fails 1. Suite 536 → 544. **Two findings:** `taylor_coefficients` silently fell back to default device parameters for non-`Semiconductor` elements (fixed; caught by comparing against a symbolic `IS` and getting a number back), and the general frequency index was carried from the start as planned, so `Harmonic((2,-1))` already resolves `2w1-w2` |
 | 2 — several nonlinearities | not started |
 | 3 — exponential | not started |
 | 4 — two tones | not started |
