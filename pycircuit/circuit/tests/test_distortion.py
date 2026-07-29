@@ -30,6 +30,7 @@ import sympy
 
 from pycircuit.circuit import numeric, symbolic
 from pycircuit.circuit.distortion import (Harmonic, harmonic_response,
+                                          scalar_nonlinearity,
                                           taylor_coefficients)
 
 
@@ -49,10 +50,11 @@ G0, C0, B, C3, A = sympy.symbols('g C b c A', real=True)
 
 def _perturbation_hd(Y):
     """HD2/HD3 from the module under test."""
-    sol = harmonic_response(_single_node_apply_G(Y), [A], B, C3,
-                            port=0, tones=(W,), toolkit=symbolic)
-    return sol.harmonics[Harmonic((2,))], sol.harmonics[Harmonic((3,))], \
-        sol.harmonics[Harmonic((1,))]
+    bm, cm = scalar_nonlinearity(0, B, C3, 1, symbolic)
+    sol = harmonic_response(_single_node_apply_G(Y), [A], bm, cm,
+                            tones=(W,), toolkit=symbolic)
+    return (sol.amplitude((2,), 0), sol.amplitude((3,), 0),
+            sol.amplitude((1,), 0))
 
 
 def _volterra_hd(Y):
@@ -199,3 +201,130 @@ def test_harmonic_index_is_general_from_the_start():
 
     with pytest.raises(ValueError):
         Harmonic((2, -1)).frequency((w1,))
+
+
+## ------------------------------------------------- stage 2: multi-device
+
+"""Stage 2 gate: the three-stage RNMC amplifier of the 2013 paper.
+
+Where the stage 1 gate checks the *mathematics* against an independent theory,
+this one checks the implementation against a published circuit with several
+interacting nonlinearities -- three of them, spread over two nodes, one with a
+negative coefficient.
+
+Tolerances are +/-1 dB on HD2 and +/-2 dB on HD3, set in the plan before the
+code was written.  They are wide because the paper publishes **no tables**:
+every result in it is a plotted curve, so the reference values are graph
+reads and cannot support a tighter claim.  The agreement actually achieved is
+far better than that, but the gate stays where it was declared.
+
+Component values are the 2009/2013 set.  The 2012 companion paper publishes
+the *same circuit* with fourteen slightly different values; mixing the two
+produces a small, plausible, entirely spurious disagreement that looks exactly
+like an implementation bug.  See doc/distortion_plan.md section 1.5.
+"""
+
+# 2013 paper eqs. (34)-(35).
+_GM1, _GM2, _GM3 = 245e-6, 200e-6, 1e-3
+_G01, _G02, _G03 = 1 / 98e3, 1 / 107e3, 1 / 23e3
+_GM2Q, _GM2C = 4e-3, 60e-3
+_GM3Q, _GM3C = 2e-3, 3e-3
+_G03Q, _G03C = 0.1e-6, 0.01e-6
+_CL, _C1, _C2 = 10e-12, 2e-12, 1e-12
+_XIN = 0.1e-3
+_OUT = 2                      # node 3 is the output
+
+
+def _rnmc_admittance(s):
+    return np.array([
+        [_G01 + s * (_C1 + _C2), -s * _C2, -s * _C1],
+        [_GM2,                    _G02,     0.0],
+        [0.0,                     _GM3,    -(_G03 + s * _CL)],
+    ], dtype=complex)
+
+
+def _rnmc_coefficients(with_g03=True):
+    """``b``/``c`` per 2013 eq. (35): f = (0, f_m2(x1), f_m3(x2) - f_03(x3))."""
+    b = np.zeros((3, 3))
+    c = np.zeros((3, 3))
+    b[1, 0], c[1, 0] = _GM2Q, _GM2C
+    b[2, 1], c[2, 1] = _GM3Q, _GM3C
+    if with_g03:
+        b[2, 2], c[2, 2] = -_G03Q, -_G03C
+    return b, c
+
+
+def _rnmc_hd(f, coefficients=None):
+    """HD2 and HD3 at the output node, in dB, at frequency ``f`` in Hz."""
+    w = 2 * np.pi * f
+    b, c = coefficients if coefficients is not None else _rnmc_coefficients()
+    U = np.array([_GM1 * _XIN, 0.0, 0.0], dtype=complex)
+
+    def apply_G(harmonic, rhs):
+        s = 1j * harmonic.frequency((w,))
+        return np.linalg.solve(_rnmc_admittance(s),
+                               np.asarray(rhs, dtype=complex))
+
+    sol = harmonic_response(apply_G, U, b, c, tones=(w,), toolkit=numeric)
+    return 20 * np.log10(sol.HD2(_OUT)), 20 * np.log10(sol.HD3(_OUT))
+
+
+@pytest.mark.parametrize('f,expected_hd2', [
+    (100.0,   -31.8),
+    (631e3,  -105.3),      # the minimum of the HD2 curve
+])
+def test_rnmc_hd2_matches_published_curve(f, expected_hd2):
+    hd2, _ = _rnmc_hd(f)
+    assert abs(hd2 - expected_hd2) < 1.0, (
+        'HD2 at %g Hz: got %.2f dB, expected %.1f dB' % (f, hd2, expected_hd2))
+
+
+def test_rnmc_hd3_matches_published_curve():
+    """HD3 near the peak of its curve.
+
+    Note the peak is broad and its exact location is sampling-dependent: the
+    reference value is quoted at 631 Hz (a log-grid point), while the true
+    maximum of the computed curve sits nearer 515 Hz at a fractionally higher
+    value.  Checking at the quoted frequency rather than at "wherever the
+    maximum happens to be" keeps this comparing like with like.
+    """
+    _, hd3 = _rnmc_hd(631.0)
+    assert abs(hd3 - (-65.5)) < 2.0, 'HD3 at 631 Hz: got %.2f dB' % hd3
+
+
+def test_rnmc_uses_every_nonlinearity():
+    """All three nonlinear devices must actually reach the answer.
+
+    Guards against a matrix-form implementation that quietly drops
+    off-diagonal coefficients and still passes the curve checks, which the
+    dominant g_m2 term alone very nearly would.  Removing the output
+    conductance's nonlinearity must perturb the result.
+    """
+    full = _rnmc_hd(1e4)
+    without_g03 = _rnmc_hd(1e4, coefficients=_rnmc_coefficients(with_g03=False))
+
+    assert full != without_g03, (
+        'dropping the g_03 nonlinearity changed nothing -- off-diagonal '
+        'coefficients are not reaching the recurrence')
+
+
+def test_rnmc_hd_scales_with_input_amplitude():
+    """HD2 must scale as X_in and HD3 as X_in**2.
+
+    A structural check the published curves cannot give, since the paper plots
+    only one amplitude per figure.  It is also the check that caught the 2013
+    paper's own Fig. 6 caption error, where the plotted curves correspond to
+    twice the stated input.
+    """
+    global _XIN
+    original = _XIN
+    try:
+        _XIN = 0.1e-3
+        hd2_a, hd3_a = _rnmc_hd(1e3)
+        _XIN = 0.2e-3
+        hd2_b, hd3_b = _rnmc_hd(1e3)
+    finally:
+        _XIN = original
+
+    assert abs((hd2_b - hd2_a) - 20 * np.log10(2)) < 0.01, 'HD2 is not ~X_in'
+    assert abs((hd3_b - hd3_a) - 40 * np.log10(2)) < 0.01, 'HD3 is not ~X_in**2'

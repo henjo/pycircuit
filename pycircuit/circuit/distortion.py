@@ -20,11 +20,12 @@ the *same* linear operator ``Y(s) = G + sC``, evaluated at a different
 frequency.  Nothing here needs a nonlinear solve, a new matrix structure, or
 a change to ``circuit.py`` -- ``Y`` is what AC analysis already assembles.
 
-Scope of this module today (stage 1 of the plan): cubic polynomial
-nonlinearity, single tone, one nonlinear element.  The frequency index is
-deliberately kept general (a tuple, not an integer) so that two-tone
-intermodulation is an extension rather than a rewrite -- see
-:class:`Harmonic`.
+Scope of this module today (stages 1-2 of the plan): cubic polynomial
+nonlinearities, single tone, any number of nonlinear devices, plus an
+optional nonlinearity acting on the input.  Exponential devices and two-tone
+intermodulation are later stages.  The frequency index is deliberately kept
+general (a tuple, not an integer) so that two-tone is an extension rather
+than a rewrite -- see :class:`Harmonic`.
 """
 
 from . import circuit as circuit_module
@@ -116,68 +117,127 @@ def taylor_coefficients(element, x0, epar=defaultepar, toolkit=None):
     return d2 / 2, d3 / 6
 
 
-def harmonic_response(apply_G, U, b, c, port, tones, toolkit):
+def scalar_nonlinearity(port, b, c, n, toolkit):
+    """Coefficient matrices for one nonlinearity at ``port`` in an ``n``-node circuit.
+
+    Convenience for the common single-device case; the matrices it builds are
+    the same objects :func:`harmonic_response` takes in general.
+    """
+    B = toolkit.zeros((n, n))
+    C = toolkit.zeros((n, n))
+    B[port, port] = b
+    C[port, port] = c
+    return B, C
+
+
+def harmonic_response(apply_G, U, b, c, tones, toolkit,
+                      b_h=None, c_h=None, X_in=None):
     """Harmonics of a weakly nonlinear circuit, to second perturbation order.
 
-    Implements the 2013 paper's eqs. (18)-(20) for a single cubic
-    nonlinearity, no input nonlinearity (``f_h = 0``).
+    Implements the 2013 paper's eqs. (18)-(20) in their general matrix form:
+    any number of nonlinear devices, plus an optional nonlinearity acting on
+    the *input* itself.
 
     Every line below is a solve against the *same* linear operator at a
     different frequency -- ``apply_G`` is called at the fundamental, at twice
     it and at three times it, and nothing else about the circuit changes.
     That is the property that makes this an analysis rather than a solver.
 
+    The coefficient matrices follow the paper's eq. (6): entry ``b[s, k]`` is
+    the quadratic coefficient of the nonlinear current injected at node ``s``
+    and controlled by node ``k``.  Note the model restriction that comes with
+    it -- **self-terms only**.  A device whose current depends on the product
+    of two *different* controlling voltages is outside this formulation.
+
     Args:
         apply_G: ``apply_G(harmonic, rhs) -> vector``, solving ``Y(s) x = rhs``
-            with ``s`` the frequency of ``harmonic``.  This is the caller's
-            single point of contact with the circuit.
-        U: Source vector driving the fundamental.
-        b, c: Quadratic and cubic Taylor coefficients of the nonlinearity,
-            from :func:`taylor_coefficients`.
-        port: Index of the node the nonlinear current is injected into.
-        tones: Angular frequencies of the input tones (one, for now).
+            with ``s`` the frequency of ``harmonic``.  The caller's single
+            point of contact with the circuit.
+        U: Source vector driving the fundamental (the paper's ``G_h X_in``).
+        b, c: ``n x n`` quadratic and cubic coefficient matrices.
+        tones: Angular frequencies of the input tones.
         toolkit: The active toolkit.
+        b_h, c_h: Optional coefficient matrices for a nonlinearity acting on
+            the input vector rather than on the solution.
+        X_in: The raw input vector, required if ``b_h``/``c_h`` are given.
 
     Returns:
-        :class:`DistortionSolution`.
+        :class:`DistortionSolution` holding the full harmonic *vectors*.
     """
-    one = Harmonic((1,) + (0,) * (len(tones) - 1))
-    two = Harmonic((2,) + (0,) * (len(tones) - 1))
-    three = Harmonic((3,) + (0,) * (len(tones) - 1))
+    pad = (0,) * (len(tones) - 1)
+    one, two, three = (Harmonic((m,) + pad) for m in (1, 2, 3))
 
-    ## Order 0 (eq. 18): the plain linear response.  Note this is also the
-    ## final answer for the fundamental -- the perturbation never corrects it
-    ## at this truncation, so no gain compression is predicted.
+    dot = toolkit.dot
+
+    ## Order 0 (eq. 18): the plain linear response.  This is also the final
+    ## answer for the fundamental -- the perturbation never corrects it at
+    ## this truncation, so no gain compression is predicted.
     X1 = apply_G(one, U)
-    v1 = X1[port]
+
+    ## The input nonlinearity contributes only here: it does not depend on the
+    ## solution, so it never re-enters at a later order.
+    def input_drive(coeffs, power):
+        if coeffs is None:
+            return None
+        if X_in is None:
+            raise ValueError('b_h/c_h given without X_in')
+        return dot(coeffs, _elementwise_pow(X_in, power))
 
     ## Order 1 (eq. 19).  The nonlinearity is evaluated on the *known* linear
-    ## solution, so its harmonics are known in closed form: for x = Re[V e^jt],
-    ## the second-harmonic coefficient of x**2 is V**2/2.  That Fourier step is
-    ## where harmonic balance enters -- and each harmonic is then pushed back
-    ## through G at *its own* frequency, not at the fundamental.
-    f2 = b * v1 ** 2 / 2
-    X2 = apply_G(two, -_inject(f2, port, len(X1), toolkit))
-    v2 = X2[port]
+    ## solution, so its harmonics follow in closed form: for x = Re[V e^jt],
+    ## the second-harmonic coefficient of x**2 is V**2/2.  That Fourier step
+    ## is where harmonic balance enters -- and each harmonic is then pushed
+    ## back through G at *its own* frequency, not at the fundamental.
+    drive2 = -dot(b, _elementwise_pow(X1, 2))
+    h2 = input_drive(b_h, 2)
+    if h2 is not None:
+        drive2 = drive2 + h2
+    ## G is linear, so halving the drive is the same as halving the answer --
+    ## and keeps the arithmetic elementwise rather than on the solve result.
+    X2 = apply_G(two, _scale(drive2, _reciprocal(toolkit, 2)))
 
     ## Order 2 (eq. 20).  Two contributions at the third harmonic: the cubic
-    ## coefficient acting on the fundamental directly, and -- via the second
-    ## perturbation order -- the *quadratic* coefficient mixing the fundamental
-    ## with the second harmonic it produced.  Dropping the second term is the
-    ## classic way to under-predict HD3 in a circuit whose dominant
-    ## nonlinearity is quadratic.
-    f3 = c * v1 ** 3 / 4 + b * v1 * v2
-    X3 = apply_G(three, -_inject(f3, port, len(X1), toolkit))
+    ## coefficient acting on the fundamental directly, and -- through the
+    ## second perturbation order -- the *quadratic* coefficient mixing the
+    ## fundamental with the second harmonic it produced.  Dropping the second
+    ## term is the classic way to under-predict HD3 in a circuit whose
+    ## dominant nonlinearity is quadratic.
+    ##
+    ## The paper writes that mixing term as
+    ##   -2 b diag(X1) G(j2w) (b_h Xin^2 - b X1^2),
+    ## and the inner factor is exactly 2*X2 by eq. (19), so it collapses to
+    ## -4 b (X1 elementwise* X2).
+    drive3 = -dot(c, _elementwise_pow(X1, 3)) - 4 * dot(b, _elementwise_mul(X1, X2))
+    h3 = input_drive(c_h, 3)
+    if h3 is not None:
+        drive3 = drive3 + h3
+    X3 = apply_G(three, _scale(drive3, _reciprocal(toolkit, 4)))
 
-    return DistortionSolution({one: X1[port], two: v2, three: X3[port]},
-                              tones, toolkit)
+    return DistortionSolution({one: X1, two: X2, three: X3}, tones, toolkit)
 
 
-def _inject(value, port, n, toolkit):
-    """A length-``n`` vector carrying ``value`` at ``port`` and zero elsewhere."""
-    v = toolkit.zeros(n)
-    v[port] = value
-    return v
+def _scale(vec, factor):
+    return [v * factor for v in vec]
+
+
+def _reciprocal(toolkit, n):
+    """``1/n`` in the toolkit's own number type.
+
+    Exact (a sympy Rational) under a symbolic toolkit, so the stage-1 gate can
+    compare expressions rather than floats; a plain float otherwise.
+    """
+    try:
+        return toolkit.integer(1) / n
+    except AttributeError:
+        return 1.0 / n
+
+
+def _elementwise_pow(vec, power):
+    return [v ** power for v in vec]
+
+
+def _elementwise_mul(a, b):
+    return [x * y for x, y in zip(a, b)]
 
 
 class DistortionSolution:
@@ -196,23 +256,32 @@ class DistortionSolution:
         self.toolkit = toolkit
 
     def __getitem__(self, index):
+        """The whole node vector for one frequency component."""
         return self.harmonics[Harmonic(index)]
 
-    def fundamental(self):
-        return self.harmonics[Harmonic((1,) + (0,) * (len(self.tones) - 1))]
+    def amplitude(self, index, node):
+        """Complex amplitude of component ``index`` at ``node``."""
+        return self.harmonics[Harmonic(index)][node]
 
-    def ratio(self, index):
-        """Amplitude of component ``index`` relative to the fundamental."""
-        return abs(self.harmonics[Harmonic(index)]) / abs(self.fundamental())
+    def fundamental(self, node):
+        pad = (0,) * (len(self.tones) - 1)
+        return self.amplitude((1,) + pad, node)
 
-    def HD2(self):
-        """Second-harmonic distortion."""
-        return self.ratio((2,))
+    def ratio(self, index, node):
+        """Amplitude of component ``index`` at ``node``, relative to the fundamental.
 
-    def HD3(self):
-        """Third-harmonic distortion."""
-        return self.ratio((3,))
+        The denominator is the *linear* fundamental -- see the class docstring.
+        """
+        return abs(self.amplitude(index, node)) / abs(self.fundamental(node))
+
+    def HD2(self, node):
+        """Second-harmonic distortion at ``node``."""
+        return self.ratio((2,), node)
+
+    def HD3(self, node):
+        """Third-harmonic distortion at ``node``."""
+        return self.ratio((3,), node)
 
     def __repr__(self):
-        return 'DistortionSolution(%s)' % ', '.join(
-            '%r: %r' % (tuple(k), v) for k, v in sorted(self.harmonics.items()))
+        return 'DistortionSolution(%d harmonics, %d tone(s))' % (
+            len(self.harmonics), len(self.tones))

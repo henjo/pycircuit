@@ -16,9 +16,10 @@ vol. 52, no. 8, pp. 1620–1631 (2005).
 
 .. note::
 
-   This is stage 1 of the plan in ``doc/distortion_plan.md``: a single cubic
-   nonlinearity driven by a single tone.  Several nonlinearities, exponential
-   devices and two-tone intermodulation are later stages.
+   This covers stages 1–2 of the plan in ``doc/distortion_plan.md``: cubic
+   nonlinearities driven by a single tone, with any number of nonlinear
+   devices.  Exponential devices and two-tone intermodulation are later
+   stages.
 
 The idea
 --------
@@ -130,6 +131,36 @@ make a second harmonic and once to mix that back up against the fundamental.
 A circuit whose dominant nonlinearity is quadratic can therefore have its
 third-harmonic distortion dominated by :math:`b`, and an analysis that stops
 at first perturbation order will miss it entirely.
+
+Several nonlinear devices at once
+---------------------------------
+
+A real circuit has more than one nonlinear device, and they interact: a
+distortion product generated in one stage is amplified by the next, and may
+partially cancel one generated there.  Nothing in the derivation above
+assumed a single device — promoting :math:`b` and :math:`c` from scalars to
+matrices covers the general case.
+
+Entry :math:`b_{sk}` is the quadratic coefficient of the nonlinear current
+injected at node :math:`s` and controlled by node :math:`k`, so the
+nonlinearity is
+
+.. math::
+
+   f_s = \sum_k \left( b_{sk}\,x_k^2 + c_{sk}\,x_k^3 \right)
+
+and the recurrence is unchanged — the products above simply become
+matrix–vector products with elementwise powers.
+
+One restriction comes with this form and is worth stating plainly: the sum
+is over **self-terms only**.  A device whose current depends on the *product*
+of two different controlling voltages, :math:`x_j x_k`, is outside the
+formulation.
+
+The worked example in the reference — a three-stage amplifier with reversed
+nested Miller compensation, carrying three nonlinearities across two nodes,
+one of them a nonlinear output conductance with a negative coefficient — is
+reproduced in ``test_distortion``.
 
 The fundamental is not corrected
 --------------------------------

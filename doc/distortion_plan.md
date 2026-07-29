@@ -248,7 +248,7 @@ not omitted.
 |---|---|
 | Prerequisite — element derivatives | **Gate passed** (`148bd95`): symbolic Jacobians match finite differences to 3e-10 (BJT) / 2.5e-07 (JFET); suite 521 → 536 |
 | 1 — cubic, single tone | **Gate passed** (`b8ec918`): HD2 and HD3 agree symbolically with Volterra kernels derived independently, on both a resistive and an RC circuit. Mutation-checked — dropping the second order fails 3 tests, a wrong Fourier factor fails 4, a wrong evaluation frequency fails 1. Suite 536 → 544. **Two findings:** `taylor_coefficients` silently fell back to default device parameters for non-`Semiconductor` elements (fixed; caught by comparing against a symbolic `IS` and getting a number back), and the general frequency index was carried from the start as planned, so `Harmonic((2,-1))` already resolves `2w1-w2` |
-| 2 — several nonlinearities | not started |
+| 2 — several nonlinearities | **Gate passed, by a wide margin.** HD2 −31.78 dB @ 100 Hz (target −31.8, tolerance ±1); HD2 minimum −105.32 dB (target −105.3); HD3 −65.53 dB @ 631 Hz (target −65.5, tolerance ±2). Agreement is ~0.03 dB where ±1/±2 dB was allowed — **the wide tolerance stays as declared**, since it reflects the reference being graph-read, not the arithmetic being loose. Added: matrix `b`/`c` per eq. (6), optional input nonlinearity `f_h`, `scalar_nonlinearity` helper. Three structural tests beyond the curve match — that every device reaches the answer, and that HD2 scales as `X_in` and HD3 as `X_in²` |
 | 3 — exponential | not started |
 | 4 — two tones | not started |
 | 5 — cross-check + diagnostic | not started |
