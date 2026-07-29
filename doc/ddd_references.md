@@ -454,25 +454,46 @@ near an expansion point are captured more accurately than poles far from it.
 So the interpretable output is **poles and residues**, not dominant product
 terms.
 
-### Ismail & Friedman — *DTT: direct truncation of the transfer function — an
-### alternative to moment matching for tree structured interconnect*
+### Ismail & Friedman — *DTT: Direct Truncation of the Transfer Function — An
+### Alternative to Moment Matching for Tree Structured Interconnect*
 
-IEEE TCAD 21(2):131–144, Feb 2003. Reference [10] of the paper above.
+IEEE TCAD 21(2):131-144, Feb 2003. Reference [10] of the paper above.
 
-**A third route, and the one closest to machinery we already have.** Instead
-of matching moments at an expansion point, truncate the transfer function
-*directly* — keep the dominant part of the rational function itself. That is
-what `SExpandedDDD` is already shaped for: it holds the coefficients of each
-power of `s` as shared diagrams, and `dominant_poles` exists on it.
+**CORRECTION.** An earlier version of this entry described DTT as "a third
+route, and the closest to machinery we already have", on the argument that
+truncating a rational function directly is the shape `SExpandedDDD` has. That
+was written from the **title alone**; the paper had not been read. Having read
+the abstract, the characterisation was wrong and the inference does not hold.
 
-So the three routes to a readable answer are distinct, and we have partial
-machinery for all three:
+What it actually is, from the abstract:
 
-| route | keeps | our machinery |
-|---|---|---|
-| term-ranked approximation | dominant *product terms* | `DDD.approximate` — flat only |
-| moment matching / MOR | *moments* at expansion points | none |
-| **direct truncation (DTT)** | dominant *coefficients / poles* | `SExpandedDDD`, `dominant_poles` |
+- a method to evaluate **time-domain signals in RLC *trees*** — tree
+  structured *passive* interconnect;
+- it finds a **low-frequency reduced-order transfer function** by truncating
+  the exact one at the nodes of that tree, and determines a **common set of
+  poles** characterising every node;
+- **numeric** poles, with guaranteed stability below five poles, and
+  complexity linear in the number of branches;
+- its comparison target is **AWE**, whose problems it names: unstable poles
+  even at low order, and numerical breakdown above roughly eight poles.
+
+So it is a numerical interconnect-timing method, an AWE alternative. **It is
+not a symbolic-expression technique, and its domain is passive trees.** A
+leapfrog filter of five µA741s is neither a tree nor passive, so its
+applicability here is *unestablished* rather than close.
+
+**Reconsider-if:** if the goal shifts from symbolic expressions to a compact
+*numeric* wideband model — a pole-residue macromodel of the filter — then DTT
+and the multi-point MOR paper are both directly relevant, and DTT's stability
+argument is the interesting part. For symbolic extraction in the device
+parameters they are not.
+
+**The lesson, recorded because it is the rule this project already has.** The
+extraction rule says to use external data only when both the thing measured
+and the measurement are understood. A title is neither. This entry asserted a
+paper's method and its relevance to our machinery from its title, and a
+reconsider-if in `hierarchical_approximation_plan.md` was written on that
+basis.
 
 **What none of them gives** is what the maintainer asked for in the strongest
 form: an expression symbolic *in the device parameters* for a 127-unknown

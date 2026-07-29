@@ -112,7 +112,7 @@ answer, not one:
 |---|---|---|
 | term-ranked approximation | dominant **product terms**, symbols intact | `DDD.approximate` — **flat only** |
 | moment matching / multi-point MOR | **moments** at expansion points | none |
-| direct truncation (DTT, Ismail & Friedman) | dominant **coefficients / poles** | `SExpandedDDD`, `dominant_poles` |
+| direct truncation (DTT, Ismail & Friedman) | **numeric poles** of a passive *RLC tree* | not applicable as written — see below |
 
 **The honest tension, stated plainly:** the maintainer wants an expression
 symbolic *in the device parameters*. Poles and residues are numbers — route 2
@@ -122,11 +122,15 @@ three of: large circuit, parameter-symbolic, readable.** Choosing which to
 give up is the actual decision, and it belongs to the maintainer rather than
 to this plan.
 
-**Reconsider-if for the stage order below:** if route 3 (direct truncation of
-the `s`-expanded form) turns out to reach the leapfrog, it is cheaper than
-stages B and C and uses machinery that exists. It should be measured before
-the Schur-complement work is attempted. That was not obvious when the stages
-were written.
+**A reconsider-if here was WITHDRAWN.** It said route 3 should be measured
+before stages B and C, because it was "cheaper and uses machinery that
+exists". That was written from DTT's *title*. Having read the paper: DTT
+evaluates time-domain signals in **passive RLC trees**, produces a **numeric**
+common pole set, and its comparison target is AWE. The leapfrog is neither a
+tree nor passive, and numeric poles are not symbolic in the device parameters.
+**Route 3 is therefore not a shortcut to this plan's goal**, and the stage
+order stands. See `ddd_references.md` for the correction and the reason it
+happened.
 
 ## 3. Stages
 
