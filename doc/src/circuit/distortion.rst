@@ -387,10 +387,27 @@ factorises over a sum of tones,
 so the coefficient at :math:`(m,n)` is an ordinary *product* of Bessel
 functions — no special two-argument function is involved.
 
-What is missing is phase.  For a single tone the drive can be taken real by
-absorbing its phase into the time origin, which is what the implementation
-does.  With two tones only one phase can be absorbed; the relative phase is
-physical, and since the two contributions to IM3 nearly cancel, the total
-depends on it.  Supporting exponential devices with two tones means carrying
-complex amplitudes through the Bessel path rather than magnitudes — a real
-piece of work, but a bounded one.
+What is missing is phase, and the shape of that gap is worth understanding
+because it is a good example of a defect that hides.
+
+The Jacobi–Anger expansion is stated for a real cosine drive, so a drive
+:math:`A e^{j\phi}` gives harmonic :math:`m` a factor :math:`e^{jm\phi}`.
+Omit it and every magnitude is still exactly right while every argument is
+wrong.  For **one tone and one device that is unobservable**: the same factor
+multiplies :math:`F_m` and the second-order mixing term, so it becomes a
+common multiplier on the whole harmonic — precisely a choice of time origin —
+and cancels in every ratio.  No single-tone answer was ever wrong because of
+it, and no single-device test could have detected it.
+
+It stops being free as soon as the phases cannot all be absorbed into one time
+origin.  Two cases do that: two tones (only one phase can be absorbed), and
+**two nonlinear devices whose controlling nodes sit at different phases**.
+The second is reachable today with
+:class:`~pycircuit.circuit.distortion.CompositeNonlinearity`, and
+``test_distortion`` uses it — an exponential device and a cubic one on two
+capacitively coupled nodes about 65° apart — as the regression test that the
+single-device configuration could not provide.
+
+So extending to two tones means carrying complex amplitudes through the Bessel
+path rather than magnitudes: a real piece of work, but a bounded one, and not
+a mathematical obstacle.

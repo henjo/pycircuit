@@ -245,22 +245,43 @@ class ExponentialNonlinearity:
             return iv(order, arg)
 
     def harmonic_sources(self, X1, toolkit):
-        amplitude = abs(X1[self.port]) / self.V_T
+        drive = X1[self.port]
+        amplitude = abs(drive) / self.V_T
+
+        ## The Jacobi-Anger expansion is stated for a *real* cosine drive,
+        ## exp(a cos t) = sum_m I_m(a) exp(j m t).  A drive X1 = A exp(j phi)
+        ## is A cos(t + phi), so harmonic m picks up exp(j m phi).
+        ##
+        ## Omitting that factor leaves every |F_m| right and every argument
+        ## wrong.  For *one tone and one device* that turns out to be
+        ## unobservable: the same factor multiplies F_m and the second-order
+        ## mixing term, so it comes out as a common multiplier on the whole
+        ## harmonic -- exactly a choice of time origin, and it cancels in
+        ## every magnitude ratio (pinned by
+        ## test_single_tone_magnitudes_are_invariant_to_the_drive_phase).
+        ##
+        ## It is carried anyway because it stops being free the moment the
+        ## phases cannot all be absorbed into one time origin: a second
+        ## nonlinear device seeing a different phase, or a second tone.  That
+        ## is the real reason two-tone support needs complex amplitudes here,
+        ## not any difficulty in the Bessel expansion itself.
+        phase = 1 if amplitude == 0 else drive / abs(drive)
+
+        I1 = self._bessel(1, amplitude, toolkit)
         I2 = self._bessel(2, amplitude, toolkit)
         I3 = self._bessel(3, amplitude, toolkit)
-        I1 = self._bessel(1, amplitude, toolkit)
 
         ## Built as lists, not toolkit.zeros(): that returns a *real* array,
         ## and assigning a complex harmonic into it silently discards the
-        ## imaginary part -- a phase error that only shows up off DC.
+        ## imaginary part -- the same class of defect as the missing phase.
         F2 = [0] * self.n
         F3 = [0] * self.n
-        F2[self.port] = 2 * self.I_S * I2
-        F3[self.port] = 2 * self.I_S * I3
+        F2[self.port] = 2 * self.I_S * I2 * phase ** 2
+        F3[self.port] = 2 * self.I_S * I3 * phase ** 3
 
         ## B1 is the fundamental Fourier coefficient of df/dv, which for the
         ## exponential is (I_S/V_T)*exp(v/V_T) -- again a Bessel coefficient.
-        b1 = 2 * (self.I_S / self.V_T) * I1
+        b1 = 2 * (self.I_S / self.V_T) * I1 * phase
 
         def B1_apply(vec):
             out = [0] * self.n
@@ -298,6 +319,53 @@ class ExponentialNonlinearity:
             'implemented: the Bessel path here carries magnitudes only, and '
             'two tones need relative phase. See doc/distortion_plan.md '
             'section 7.')
+
+
+class CompositeNonlinearity:
+    """Several nonlinearities in one circuit, summed.
+
+    A real circuit mixes device types -- a junction here, a transconductor
+    there -- and their harmonic contributions simply add, each injected at its
+    own node.  This composes any number of nonlinearity objects into one.
+
+    It is also what makes a *phase* error in any single member observable.
+    For one tone and one device the factor ``exp(j m phi)`` is common to every
+    term and cancels out of all magnitudes (it is just a choice of time
+    origin).  With two devices whose controlling nodes sit at different
+    phases, no single time origin makes both real, so their relative phase is
+    physical and a member that drops it produces a wrong sum.  See
+    ``test_distortion``.
+    """
+
+    def __init__(self, *parts):
+        if not parts:
+            raise ValueError('CompositeNonlinearity needs at least one part')
+        self.parts = parts
+
+    def harmonic_sources(self, X1, toolkit):
+        F2_total = F3_total = None
+        appliers = []
+        for part in self.parts:
+            F2, F3, B1_apply = part.harmonic_sources(X1, toolkit)
+            F2_total = F2 if F2_total is None else _add(F2_total, F2)
+            F3_total = F3 if F3_total is None else _add(F3_total, F3)
+            appliers.append(B1_apply)
+
+        def B1_apply_all(vec):
+            total = None
+            for apply in appliers:
+                contribution = apply(vec)
+                total = (contribution if total is None
+                         else _add(total, contribution))
+            return total
+
+        return F2_total, F3_total, B1_apply_all
+
+    def intermodulation_sources(self, X10, X01, toolkit):
+        raise NotImplementedError(
+            'Two-tone for a composite nonlinearity is not implemented; the '
+            'members would have to agree on the phase convention first. See '
+            'doc/distortion_plan.md section 7.')
 
 
 def harmonic_response(apply_G, U, nonlinearity, tones, toolkit):

@@ -29,7 +29,8 @@ import pytest
 import sympy
 
 from pycircuit.circuit import numeric, symbolic
-from pycircuit.circuit.distortion import (CubicNonlinearity,
+from pycircuit.circuit.distortion import (CompositeNonlinearity,
+                                          CubicNonlinearity,
                                           ExponentialNonlinearity, Harmonic,
                                           harmonic_response,
                                           intermodulation_response,
@@ -604,3 +605,227 @@ def test_exponential_two_tone_is_refused_not_guessed():
     nl = ExponentialNonlinearity(_IBQ, _VT, port=0, n=1)
     with pytest.raises(NotImplementedError):
         nl.intermodulation_sources([1.0], [1.0], numeric)
+
+
+def _exponential_fourier_reference(X1, I_S, V_T, m, derivative=False):
+    """Fourier coefficient of f(x0(t)) by direct numerical integration.
+
+    An oracle that owes nothing to the Bessel derivation: build the waveform,
+    apply the exponential, and transform.  Used because the Bessel path is the
+    only part of this module with no published numbers to check it against.
+    """
+    N = 40000
+    theta = 2 * np.pi * np.arange(N) / N
+    x0 = np.real(X1 * np.exp(1j * theta))
+    if derivative:
+        f = (I_S / V_T) * (np.exp(x0 / V_T) - 1)
+    else:
+        f = I_S * (np.exp(x0 / V_T) - 1 - x0 / V_T)
+    return 2 * (f * np.exp(-1j * m * theta)).mean()
+
+
+@pytest.mark.parametrize('phase_deg', [0, 30, 90, 137, 210, 359])
+def test_exponential_harmonics_carry_phase(phase_deg):
+    """The Bessel coefficients must be right in *argument*, not only magnitude.
+
+    Regression for a shipped bug.  The Jacobi-Anger expansion is stated for a
+    real cosine drive; a drive A*exp(j*phi) is A*cos(t + phi), so harmonic m
+    carries exp(j*m*phi).  The original implementation returned real
+    coefficients, which left every |F_m| exactly right and every argument
+    wrong -- at phi = 90 degrees the second harmonic had the opposite sign.
+
+    Nothing caught it: the stage 3 gate compared the *cubic* path against the
+    paper's closed form, and the exponential tests compared only |HD| ratios
+    at frequencies where the controlling node happened to be nearly real.  A
+    magnitude-only check cannot see a phase error, which is the whole reason
+    this test compares complex values.
+    """
+    X1 = 0.02 * np.exp(1j * np.deg2rad(phase_deg))
+    F2, F3, B1_apply = ExponentialNonlinearity(
+        _IBQ, _VT, port=0, n=1).harmonic_sources([X1], numeric)
+
+    ref2 = _exponential_fourier_reference(X1, _IBQ, _VT, 2)
+    ref3 = _exponential_fourier_reference(X1, _IBQ, _VT, 3)
+    ref_b = _exponential_fourier_reference(X1, _IBQ, _VT, 1, derivative=True)
+
+    assert abs(F2[0] - ref2) / abs(ref2) < 1e-9, (
+        'F2 at %d deg: got %r, exact %r' % (phase_deg, F2[0], ref2))
+    assert abs(F3[0] - ref3) / abs(ref3) < 1e-9, (
+        'F3 at %d deg: got %r, exact %r' % (phase_deg, F3[0], ref3))
+    assert abs(B1_apply([1.0])[0] - ref_b) / abs(ref_b) < 1e-9, (
+        'B1 at %d deg is wrong' % phase_deg)
+
+
+def test_single_tone_magnitudes_are_invariant_to_the_drive_phase():
+    """...and yet no single-tone result depends on that phase. Both are true.
+
+    The factor exp(j*m*phi) is *common* to F_m and to the second-order mixing
+    term, so it multiplies the whole m-th harmonic and cancels in every
+    magnitude ratio.  For one tone and one device it is exactly a choice of
+    time origin, and therefore unobservable.
+
+    This is worth pinning for two reasons.  It records why the incomplete
+    coefficients produced no wrong answer in the shipped single-tone scope --
+    the omission was a latent incorrectness, not an active bug.  And it fails
+    loudly if someone later introduces a genuine phase asymmetry (a second
+    nonlinear device seeing a different phase, or a second tone), because then
+    the factor no longer cancels and this invariance no longer holds.
+    """
+    def hd3_with_drive_phase(phase_deg):
+        X1 = 0.02 * np.exp(1j * np.deg2rad(phase_deg))
+        nl = ExponentialNonlinearity(_IBQ, _VT, port=0, n=1)
+        F2, F3, B1_apply = nl.harmonic_sources([X1], numeric)
+        ## Reproduce the recurrence's combination step with a unit circuit,
+        ## isolating the nonlinearity from any frequency dependence.
+        mixing = 0.5 * B1_apply([-F2[0]])[0]
+        return abs(F3[0] + mixing)
+
+    reference = hd3_with_drive_phase(0)
+    for phase_deg in (30, 90, 137, 250):
+        got = hd3_with_drive_phase(phase_deg)
+        assert abs(got / reference - 1) < 1e-12, (
+            'a single-tone magnitude changed with the drive phase (%d deg): '
+            'that should be unobservable' % phase_deg)
+
+
+## ------------------------------- genuine phase asymmetry: two devices
+
+"""A configuration where a dropped phase is actually observable.
+
+Everything above this point is blind to the argument of the Bessel
+coefficients.  With one tone and one device the factor exp(j*m*phi) multiplies
+every term of the m-th harmonic alike, so it is a choice of time origin and
+cancels out of all magnitudes -- which is why the original phase-less
+implementation produced no wrong single-tone answer, and why no existing test
+could have caught it.
+
+Two nonlinear devices whose controlling nodes sit at *different* phases break
+that.  No single time origin makes both drives real, so their relative phase
+is physical, and a device that reports magnitude-only coefficients combines
+with the other one wrongly.
+
+The circuit is the smallest one that produces the asymmetry: two nodes coupled
+by a capacitor, an exponential device on one and a cubic on the other.  At
+30 kHz the nodes sit about 65 degrees apart.
+"""
+
+_PA_IS, _PA_VT = 1e-6, 25e-3
+_PA_G0, _PA_G1, _PA_CC = 1e-3, 2e-3, 5e-9
+_PA_U = 2e-5
+_PA_B, _PA_C = 3e-3, 1e-3
+_PA_F = 3e4
+
+
+class _MagnitudeOnlyExponential(ExponentialNonlinearity):
+    """The pre-fix behaviour, kept so the difference can be measured."""
+
+    def harmonic_sources(self, X1, toolkit):
+        a = abs(X1[self.port]) / self.V_T
+        F2 = [0] * self.n
+        F3 = [0] * self.n
+        F2[self.port] = 2 * self.I_S * self._bessel(2, a, toolkit)
+        F3[self.port] = 2 * self.I_S * self._bessel(3, a, toolkit)
+        b1 = 2 * (self.I_S / self.V_T) * self._bessel(1, a, toolkit)
+
+        def B1_apply(vec):
+            out = [0] * self.n
+            out[self.port] = b1 * vec[self.port]
+            return out
+
+        return F2, F3, B1_apply
+
+
+def _two_node_admittance(s):
+    return np.array([[_PA_G0 + s * _PA_CC, -s * _PA_CC],
+                     [-s * _PA_CC, _PA_G1 + s * _PA_CC]], dtype=complex)
+
+
+def _mixed_device_hd3(exponential_cls, f=_PA_F):
+    w = 2 * np.pi * f
+    U = np.array([_PA_U, 0.0], dtype=complex)
+    b = np.zeros((2, 2))
+    c = np.zeros((2, 2))
+    b[1, 1], c[1, 1] = _PA_B, _PA_C
+
+    def apply_G(harmonic, rhs):
+        return np.linalg.solve(_two_node_admittance(1j * harmonic.frequency((w,))),
+                               np.asarray(rhs, dtype=complex))
+
+    nl = CompositeNonlinearity(exponential_cls(_PA_IS, _PA_VT, port=0, n=2),
+                               CubicNonlinearity(b, c))
+    return harmonic_response(apply_G, U, nl, tones=(w,), toolkit=numeric).HD3(1)
+
+
+def test_the_two_nodes_really_are_at_different_phases():
+    """The premise of the test below -- assert it rather than assume it."""
+    w = 2 * np.pi * _PA_F
+    X1 = np.linalg.solve(_two_node_admittance(1j * w),
+                         np.array([_PA_U, 0.0], dtype=complex))
+    separation = abs(np.rad2deg(np.angle(X1[0]) - np.angle(X1[1])))
+
+    assert 30 < separation < 150, (
+        'nodes are %.1f deg apart; the asymmetry this file needs is not '
+        'present at this operating point' % separation)
+
+
+def test_dropped_phase_is_caught_when_two_devices_disagree():
+    """The regression test that the single-device tests could not provide.
+
+    A magnitude-only exponential must give a *different* answer from the
+    correct one here.  If this ever stops failing for the buggy class, the
+    configuration has lost its asymmetry and is guarding nothing.
+    """
+    correct = _mixed_device_hd3(ExponentialNonlinearity)
+    magnitude_only = _mixed_device_hd3(_MagnitudeOnlyExponential)
+
+    difference = abs(correct / magnitude_only - 1)
+    assert difference > 0.05, (
+        'dropping the phase changed HD3 by only %.2f%% -- this configuration '
+        'no longer detects the defect it exists to detect' % (100 * difference))
+
+
+def test_phase_sensitivity_is_not_a_knife_edge():
+    """The detection must not depend on a fragile near-cancellation.
+
+    Sensitivity to the dropped phase rises sharply where the two devices'
+    contributions nearly cancel, which would make a brittle test: a small
+    change anywhere would move it.  This checks the chosen operating point
+    sits on the broad plateau instead, by sweeping the cubic coefficient two
+    decades either side and requiring the defect to stay visible throughout.
+    """
+    global _PA_C
+    original = _PA_C
+    detected = []
+    try:
+        for c in (1e-4, 3e-4, 1e-3, 3e-3):
+            _PA_C = c
+            d = abs(_mixed_device_hd3(ExponentialNonlinearity)
+                    / _mixed_device_hd3(_MagnitudeOnlyExponential) - 1)
+            detected.append(d)
+    finally:
+        _PA_C = original
+
+    assert min(detected) > 0.05, (
+        'detection collapses somewhere in the sweep: %s'
+        % ['%.3f' % d for d in detected])
+
+
+def test_composite_sums_its_parts():
+    """A composite of one part must equal that part; of two, their sum."""
+    X1 = [0.01 + 0.002j, 0.004 - 0.001j]
+    b = np.zeros((2, 2))
+    c = np.zeros((2, 2))
+    b[1, 1], c[1, 1] = 2e-3, 5e-3
+    cubic = CubicNonlinearity(b, c)
+    expo = ExponentialNonlinearity(_PA_IS, _PA_VT, port=0, n=2)
+
+    solo_F2, _, _ = cubic.harmonic_sources(X1, numeric)
+    wrapped_F2, _, _ = CompositeNonlinearity(cubic).harmonic_sources(X1, numeric)
+    assert np.allclose(np.array(solo_F2, dtype=complex),
+                       np.array(wrapped_F2, dtype=complex))
+
+    e_F2, _, _ = expo.harmonic_sources(X1, numeric)
+    both_F2, _, _ = CompositeNonlinearity(cubic, expo).harmonic_sources(X1, numeric)
+    assert np.allclose(np.array(both_F2, dtype=complex),
+                       np.array(solo_F2, dtype=complex)
+                       + np.array(e_F2, dtype=complex))

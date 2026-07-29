@@ -294,13 +294,30 @@ Fourier transform. There is no two-argument special function involved.
 
 **The real obstacles, both bounded:**
 
-1. **Phase.** For one tone the drive can be taken real by absorbing its phase
-   into the time origin, which is what `ExponentialNonlinearity` does today —
-   it uses `abs(X1[port])`. With two tones only one phase can be absorbed; the
-   relative phase is physical. And it matters here specifically: the first-
-   and second-order contributions to IM3 nearly cancel, so the total is
-   sensitive to it. This means carrying complex amplitudes through the Bessel
-   path rather than magnitudes.
+1. **Phase — and precisely why it is free today and will not be.** The
+   Jacobi–Anger expansion is stated for a real cosine drive, so a drive
+   `A·exp(jφ)` gives harmonic `m` a factor `exp(jmφ)`. `ExponentialNonlinearity`
+   now carries that factor, but it made no difference to any single-tone
+   result and **no shipped answer was ever wrong**: the same factor multiplies
+   `F_m` and the second-order mixing term, so it is a common multiplier on the
+   whole harmonic — exactly a choice of time origin, cancelling in every
+   magnitude ratio. Pinned by
+   `test_single_tone_magnitudes_are_invariant_to_the_drive_phase`.
+   It stops being free the moment the phases cannot all be absorbed into one
+   time origin, which is the case with two tones (only one phase can be
+   absorbed) or with two nonlinear devices seeing different phases. Since the
+   two IM3 contributions nearly cancel, the total is then sensitive to it.
+
+   The second of those cases is reachable *today*, via `CompositeNonlinearity`,
+   and is now the regression test the single-device configuration could not
+   provide: an exponential device and a cubic one on two capacitively coupled
+   nodes ~65° apart, where a magnitude-only exponential shifts HD3 by ~10%.
+   The operating point was chosen on the broad plateau of that sensitivity
+   rather than at its peak — sensitivity rises to ~80% where the two devices
+   nearly cancel, but a test sitting there would be brittle, so a sweep across
+   two decades of the cubic coefficient asserts detection holds throughout.
+   Mutation-checked: reverting the phase fix fails 7 tests, where before this
+   work it would have failed none.
 2. **Nothing currently checks the answer.** No reference in the set publishes
    two-tone exponential numbers. But this is solvable without more reading:
    **numerically extract the Fourier coefficient of `exp(x(t)/V_T)` for a
