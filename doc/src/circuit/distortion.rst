@@ -411,3 +411,98 @@ single-device configuration could not provide.
 So extending to two tones means carrying complex amplitudes through the Bessel
 path rather than magnitudes: a real piece of work, but a bounded one, and not
 a mathematical obstacle.
+
+When more terms stop helping
+----------------------------
+
+The natural response to a prediction that is off by 20% is to take another
+term.  For this method that works up to a point and then stops working
+entirely, and the boundary is sharp enough to state.
+
+The perturbation series is a fixed-point iteration:
+:math:`x \leftarrow \mathcal{G}(u - f(x))`.  Its terms shrink only if the
+iteration is a contraction, i.e. if
+:math:`|\mathcal{G}\,f'(x)| < 1`.  For a junction whose own conductance
+dominates the node, :math:`\mathcal{G} \approx 1/(I_S/V_T)` and
+:math:`f'(v) = (I_S/V_T)(e^{v/V_T}-1)`, so the contraction factor at a drive
+amplitude :math:`a = |X_1|/V_T` is simply
+
+.. math::
+
+   |\mathcal{G}f'| \approx e^{a} - 1
+
+which crosses 1 at :math:`a = \ln 2 \approx 0.693`.
+
+Running the iteration and watching successive terms confirms it — magnitudes
+relative to the linear solution, order by order:
+
+==============  ============  ==========================================
+:math:`a`       contraction   successive term magnitudes
+==============  ============  ==========================================
+0.044           0.045         1.1e-2, 6.6e-4, 1.4e-5, 8.7e-7 …
+0.221           0.247         6.0e-2, 1.8e-2, 2.2e-3, 6.0e-4 …
+0.663           0.940         2.3e-1, 1.9e-1, 8.8e-2, 6.3e-2 …
+1.325           2.763         6.6e-1, 8.4e-1, 8.9e-1, 9.9e-1, 1.18 …
+==============  ============  ==========================================
+
+Below :math:`\ln 2` the terms fall geometrically and extra orders buy a great
+deal — at :math:`a = 0.044` each term is some twenty times smaller than the
+last.  Approaching :math:`\ln 2` they barely fall and extra orders buy little.
+Above it **the terms grow**: the series diverges, and no number of additional
+terms recovers anything.  A prediction that is 50% wrong there cannot be
+repaired by working harder at it.
+
+For a junction at room temperature :math:`a < \ln 2` means a signal swing
+below roughly 17 mV.
+
+Two practical consequences.  Increasing the *harmonic* order is a different
+axis — it is ordinary Fourier truncation and always converges — but it is
+subordinate to this bound, since more harmonics of a diverging series are
+still diverging.  And when a prediction is poor, the question to ask first is
+which truncation is responsible: approximating an exponential device by a
+cubic is a separate error from truncating the perturbation series, and
+:class:`~pycircuit.circuit.distortion.ExponentialNonlinearity` removes the
+former exactly while leaving the latter untouched.
+
+.. note::
+
+   None of the source papers gives a quantitative validity bound; the 2005
+   one states only that the convergence radius is hard to predict.  The
+   threshold above is specific to an exponential device on a
+   junction-dominated node, derived and then measured here.  It is not a
+   general result, but it is a concrete one, and
+   :meth:`~pycircuit.circuit.distortion.DistortionSolution.perturbation_ratio`
+   reports a computable proxy for it on every solve.
+
+Past the bound, a better model can give a worse answer
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Comparing the two nonlinearity treatments against a transient simulation of
+the same diode makes the point sharply.  Relative error in HD2:
+
+==============  ===========  ==========  ==============
+:math:`a`       ratio        cubic fit   exact (Bessel)
+==============  ===========  ==========  ==============
+0.044           0.010        0.04%       0.02%
+0.221           0.052        0.96%       0.55%
+0.883           0.208        21%         13%
+2.209           0.521        9%          **26%**
+==============  ===========  ==========  ==============
+
+Inside the convergent region the exact treatment is two to four times more
+accurate, as one would expect — the cubic fit is a real source of error and
+removing it removes that error.
+
+The last row is the instructive one.  Well past :math:`\ln 2` the *exact*
+device model is markedly **worse** than the crude one.  Nothing is wrong with
+it: an exactly-represented nonlinearity feeds a diverging iteration exactly,
+while the cubic fit happens to under-represent the device in a direction that
+partly offsets the divergence.  Its 9% is coincidence, not accuracy, and it
+would not survive a change of operating point.
+
+The lesson is worth stating because it inverts the usual intuition: outside
+the convergence bound, improving an input can degrade the output, and
+apparent agreement carries no information.  This is exactly why
+:meth:`~pycircuit.circuit.distortion.DistortionSolution.perturbation_ratio`
+is reported alongside every result rather than left for the caller to
+wonder about.

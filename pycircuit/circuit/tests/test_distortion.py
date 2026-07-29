@@ -829,3 +829,97 @@ def test_composite_sums_its_parts():
     assert np.allclose(np.array(both_F2, dtype=complex),
                        np.array(solo_F2, dtype=complex)
                        + np.array(e_F2, dtype=complex))
+
+
+## --------------------------------------- operating point: a separate trap
+
+"""The linearisation point must be solved for the whole circuit, not one device.
+
+The Taylor coefficients b and c are taken *about the operating point*, so
+getting that point wrong scales every distortion figure -- and it is easy to
+get wrong in a way that looks reasonable.
+
+For a diode biased by a current source with a resistor in parallel, the bias
+splits between the two.  Solving the diode alone puts the junction ~20 mV too
+high, which sounds negligible until you remember the exponential: it inflates
+the small-signal conductance by 2.25x and the Taylor coefficients with it.
+Nothing about the resulting numbers looks wrong.
+
+This is *not* the defect that produced the disagreement it was found chasing
+-- that turned out to be a phantom DC offset in ISin, fixed separately in
+test_source_dc_offset.py -- but it is a real trap and worth its own guard.
+"""
+
+_OP_IS, _OP_VT = 1e-13, 25e-3
+_OP_IBIAS, _OP_R = 1e-3, 1e3
+
+
+def _diode_operating_point(include_resistor):
+    """Junction voltage, solving either the whole circuit or just the diode."""
+    from scipy.optimize import brentq
+    if include_resistor:
+        residual = lambda v: v / _OP_R + _OP_IS * np.expm1(v / _OP_VT) - _OP_IBIAS
+    else:
+        residual = lambda v: _OP_IS * np.expm1(v / _OP_VT) - _OP_IBIAS
+    return brentq(residual, 0.0, 1.0)
+
+
+def test_ignoring_a_parallel_path_moves_the_operating_point():
+    """Quantify the trap, so its size is on record rather than assumed."""
+    v_correct = _diode_operating_point(include_resistor=True)
+    v_naive = _diode_operating_point(include_resistor=False)
+
+    assert v_naive > v_correct, 'the naive point should be too high'
+    assert 0.015 < v_naive - v_correct < 0.030, (
+        'expected roughly 20 mV of error, got %.1f mV'
+        % ((v_naive - v_correct) * 1e3))
+
+
+def test_operating_point_error_inflates_the_taylor_coefficients():
+    """A 20 mV error is not a 20 mV effect -- the exponential magnifies it.
+
+    Both coefficients scale as exp(v0/VT), so a small voltage error becomes a
+    large coefficient error, and every distortion figure inherits it.
+    """
+    v_correct = _diode_operating_point(include_resistor=True)
+    v_naive = _diode_operating_point(include_resistor=False)
+
+    ratio = np.exp((v_naive - v_correct) / _OP_VT)
+    assert ratio > 2.0, (
+        'a %.1f mV operating-point error should inflate the coefficients by '
+        'more than 2x, got %.2fx' % ((v_naive - v_correct) * 1e3, ratio))
+
+    ## And it is the *whole* error: b and c share the same exponential factor.
+    b_correct = (_OP_IS / (2 * _OP_VT ** 2)) * np.exp(v_correct / _OP_VT)
+    b_naive = (_OP_IS / (2 * _OP_VT ** 2)) * np.exp(v_naive / _OP_VT)
+    assert abs(b_naive / b_correct - ratio) < 1e-9
+
+
+def test_taylor_coefficients_track_the_operating_point():
+    """``taylor_coefficients`` must linearise where it is told to.
+
+    The module cannot know what the surrounding circuit does; it takes the
+    operating point as an argument.  This pins that it actually uses it -- a
+    version that ignored ``x0`` would silently linearise at zero bias and
+    return coefficients too small by many orders of magnitude.
+
+    Note the thermal voltage: the ``Diode`` model builds it from the toolkit's
+    own constants (``k*T/q``, giving 25.84 mV at 300 K), not from the round
+    25 mV used elsewhere in this file.  Using the round number here predicts a
+    ratio 2.2x too large and looks exactly like a code defect -- the same trap
+    recorded for the CODATA constants in ``test_semiconductor_jacobians``.
+    """
+    from pycircuit.circuit.elements import Diode
+
+    d = Diode(1, 2, toolkit=numeric, IS=_OP_IS)
+    VT_model = numeric.kboltzmann * 300 / numeric.qelectron
+    v_correct = _diode_operating_point(include_resistor=True)
+
+    b_biased, c_biased = taylor_coefficients(d, [v_correct, 0.0])
+    b_zero, c_zero = taylor_coefficients(d, [0.0, 0.0])
+
+    expected = np.exp(v_correct / VT_model)
+    assert abs(b_biased / b_zero / expected - 1) < 0.05, (
+        'b did not track the operating point: ratio %.3e, expected %.3e'
+        % (b_biased / b_zero, expected))
+    assert abs(c_biased / c_zero / expected - 1) < 0.05

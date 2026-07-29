@@ -571,6 +571,59 @@ class DistortionSolution:
         """Third-harmonic distortion at ``node``."""
         return self.ratio((3,), node)
 
+    def perturbation_ratio(self, node):
+        """How hard the perturbation is working -- a validity diagnostic.
+
+        The method assumes the nonlinear term is small beside the linear
+        drive.  **No paper in this line quantifies "small"**, and only the
+        2005 one acknowledges that the convergence radius is hard to predict
+        at all.  Without something reported alongside the answer, the failure
+        mode is silent: a circuit outside the valid range returns a confident,
+        plausible, wrong number.
+
+        This returns the largest correction relative to the fundamental,
+        ``max_m>=2 |X_m| / |X_1|``.  It is not a proof of validity -- there
+        isn't one available -- but it is measured on the same solve and it
+        tracks the true error closely.  Against a transient simulation of a
+        biased diode:
+
+        ==========  ==============  ==============
+        ratio       HD2 error       HD3 error
+        ==========  ==============  ==============
+        0.01        0.04%           0.07%
+        0.05        1.0%            1.9%
+        0.21        21%             44%
+        1.04        51%             93%
+        ==========  ==============  ==============
+
+        So the relative error is of the same order as this ratio.  Treat
+        anything above a few percent as a warning and anything approaching 1
+        as meaningless -- at that point the "correction" is the size of the
+        thing it corrects, and the series is not converging.
+
+        **Above the convergence bound, more terms do not help.**  The
+        perturbation series is the fixed-point iteration
+        ``x <- G(u - f(x))``, whose terms shrink only while ``|G f'(x)| < 1``.
+        For an exponential device on a junction-dominated node that factor is
+        ``exp(a) - 1`` with ``a = |X_1|/V_T``, so it crosses 1 at
+        ``a = ln 2 ~ 0.693`` -- a swing of about 17 mV at room temperature.
+        Below it the terms fall geometrically and a higher-order
+        implementation would pay off; above it they *grow*, and no number of
+        additional orders recovers anything.  Two further consequences, both
+        measured: raising the *harmonic* order is a separate axis that always
+        converges but is subordinate to this bound, and past the bound a more
+        exact device model can give a *worse* answer than a crude one, so
+        apparent agreement there carries no information.  See
+        ``doc/src/circuit/distortion.rst``, "When more terms stop helping".
+        """
+        fundamental = abs(self.fundamental(node))
+        corrections = [abs(vec[node]) for index, vec in self.harmonics.items()
+                       if all(isinstance(m, int) for m in index)
+                       and sum(abs(m) for m in index) >= 2]
+        if not corrections or fundamental == 0:
+            return 0.0
+        return max(corrections) / fundamental
+
     def __repr__(self):
         return 'DistortionSolution(%d harmonics, %d tone(s))' % (
             len(self.harmonics), len(self.tones))

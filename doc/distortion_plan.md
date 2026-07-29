@@ -1,7 +1,7 @@
 # Perturbation distortion analysis — implementation plan
 
-**Status: stages 1-4 done, all gates passed. Stage 5 and the deferred item in
-§7 remain. Gates were declared in advance of each stage; outcomes are in §5.**
+**Status: stages 1-5 done, all gates passed. The deferred item in §7 remains.
+Gates were declared in advance of each stage; outcomes are in §5.**
 
 Companion documents:
 
@@ -252,7 +252,7 @@ not omitted.
 | 2 — several nonlinearities | **Gate passed, by a wide margin.** HD2 −31.78 dB @ 100 Hz (target −31.8, tolerance ±1); HD2 minimum −105.32 dB (target −105.3); HD3 −65.53 dB @ 631 Hz (target −65.5, tolerance ±2). Agreement is ~0.03 dB where ±1/±2 dB was allowed — **the wide tolerance stays as declared**, since it reflects the reference being graph-read, not the arithmetic being loose. Added: matrix `b`/`c` per eq. (6), optional input nonlinearity `f_h`, `scalar_nonlinearity` helper. Three structural tests beyond the curve match — that every device reaches the answer, and that HD2 scales as `X_in` and HD3 as `X_in²` |
 | 3 — exponential | **Gate passed exactly.** The cubic path on the 2005 paper's common-emitter BJT matches its closed-form eqs. 48a–b to **within 1e-4 relative** at 1 kHz, 100 kHz, 1 MHz and 10 MHz — the one gate in the plan whose reference is an algebraic expression rather than a graph read, so it is checked to five significant figures rather than to a decibel. Exponential path added via modified Bessel functions, exact at every harmonic order; it predicts ~30% more HD2 than its own cubic fit at the paper's drive, and converges to the cubic result at small signal (which is what would catch a wrong Bessel argument scaling). **Refactor:** the recurrence now takes a nonlinearity object supplying `(F2, F3, B1)`, so cubic and exponential share one code path and stage 1's Volterra gate still passes untouched. **Two bugs found:** `ExponentialNonlinearity` built its harmonic vectors with `toolkit.zeros()`, which is real-dtype and silently discarded the imaginary part off DC; and my first gate harness measured HD at the *controlling node* rather than the output, giving a plausible answer wrong by exactly 10× — now pinned by its own test |
 | 4 — two tones | **Gate passed to three decimals** at the low-frequency asymptote: first-order **−41.652 dB** (target −41.65), second-order **−40.917** (−40.92), total **−62.732** (−62.73). The stage-1 decision paid off — `Harmonic` was already a tuple, so this was an extension, not a rewrite. **The gate is the most sensitive in the plan by construction:** the two contributions differ by 0.74 dB and nearly cancel, leaving the total 21.8 dB below the larger, so both are asserted separately *and* their cancellation is pinned — checking only the total would admit compensating errors, checking only the terms would miss a sign error in how they combine. **Worth knowing:** 100 Hz is not yet on the plateau (−62.21 vs −62.73) even though the individual terms are within 0.07 dB there — the cancellation amplifies small errors, which is the point. Two-tone on an *exponential* device raises `NotImplementedError`: no reference derives it, and it would need a two-argument Bessel expansion, so guessing was declined |
-| 5 — cross-check + diagnostic | not started |
+| 5 — cross-check + diagnostic | **Gate passed, both halves.** Against pycircuit's own transient engine + FFT on a biased diode — a path sharing no code with the analysis: DC 573.04 mV vs 573.06 predicted, fundamental 1.1420 vs 1.1415 mV, **HD2 to 0.04% and HD3 to 0.07%**. Driven 100× harder the prediction fails by 51%, as it must, or the diagnostic would be unfalsifiable. `perturbation_ratio` shipped and **calibrated against measured error** (0.01→0.04%, 0.05→1%, 0.21→21%, 1.04→51%). Test runtime cut 355s→91s by memoising the transient runs. **Two bugs found by this gate refusing to agree**, both returning plausible wrong numbers rather than errors: the `ISin` phantom DC and the whole-circuit operating point |
 
 ## 6. Errata in the sources — implement around these
 
@@ -330,3 +330,43 @@ a 2-D numerical Fourier extraction to ~1e-10 across a range of drive
 amplitudes, *and* the end-to-end IM3 must converge to the cubic result at
 small signal — the same small-signal convergence check that guards the
 single-tone Bessel path in stage 3.
+
+## 8. Result: a quantitative validity bound, where the sources give none
+
+Every paper in this set says only that the nonlinear term must be "small";
+the 2005 one adds that the convergence radius is hard to predict. For an
+exponential device on a junction-dominated node that gap can be closed.
+
+The perturbation series is the fixed-point iteration `x <- G(u - f(x))`, so
+its terms shrink only while `|G f'(x)| < 1`. With `G ~ 1/(I_S/V_T)` and
+`f'(v) = (I_S/V_T)(exp(v/V_T) - 1)`, the contraction factor at drive
+`a = |X_1|/V_T` is `exp(a) - 1`, crossing 1 at **`a = ln 2 ~ 0.693`** — a
+signal swing of about 17 mV at room temperature.
+
+Measured, by running the iteration and watching successive term magnitudes
+relative to the linear solution:
+
+| `a` | contraction | successive terms |
+|---|---|---|
+| 0.044 | 0.045 | 1.1e-2, 6.6e-4, 1.4e-5, 8.7e-7 — falls ~20x per order |
+| 0.221 | 0.247 | 6.0e-2, 1.8e-2, 2.2e-3, 6.0e-4 — falls ~4x |
+| 0.663 | 0.940 | 2.3e-1, 1.9e-1, 8.8e-2, 6.3e-2 — barely falls |
+| 1.325 | 2.763 | 6.6e-1, 8.4e-1, 8.9e-1, 9.9e-1, 1.18 — **grows** |
+
+**Consequences for anyone tempted to add orders.** Below `ln 2`, extra
+perturbation orders buy a great deal and are worth implementing if accuracy
+there matters. Above it the series diverges and no number of terms helps —
+a 50% error cannot be worked harder. Harmonic order is a separate axis that
+always converges, but it is subordinate to this bound: more harmonics of a
+diverging series still diverge.
+
+**And separate the two truncations before blaming order.** Approximating an
+exponential device by a cubic is a different error from truncating the
+perturbation series; `ExponentialNonlinearity` removes the first exactly and
+leaves the second untouched, so comparing the two isolates which is binding.
+
+Caveat, stated plainly: this threshold is derived for one nonlinearity shape
+on one circuit topology. It is not general. What *is* general is the method —
+the contraction factor of the fixed-point iteration is what decides, and it
+can be computed for any case. `perturbation_ratio` reports a computable proxy
+on every solve.
