@@ -1840,3 +1840,28 @@ def test_unmet_tolerance_is_warned_about_not_only_returned():
     D = ddd_of_matrix(system.A)
     with pytest.warns(RuntimeWarning, match='above the requested tol'):
         D.approximate(env, tol=0.05, max_terms=50)
+
+
+def test_with_value_returns_what_the_search_already_computed():
+    """`with_value` exists because recomputing the value is the expensive part.
+
+    Measured while composing a nested approximation: substituting into the
+    returned expression took 33 s against 0.95 s for the ranking, because the
+    expression has ~1e5 operations where the diagram has ~1e3 vertices.  The
+    value must agree with evaluating the expression, which is what makes it a
+    shortcut rather than a different answer.
+    """
+    system = bc.rc_ladder(7)
+    env = _spread_env(system, 4.0)
+    env[system.s] = 1j * 2 * np.pi * 1e4
+    D = ddd_of_matrix(system.A)
+
+    three = D.approximate_groups(env, tol=1e-3)
+    four = D.approximate_groups(env, tol=1e-3, with_value=True)
+    assert len(three) == 3 and len(four) == 4
+    assert three == four[:3]                       # additive, not a change
+
+    expr, _n, err, value = four
+    assert complex(expr.xreplace(env)) == pytest.approx(value, rel=1e-9)
+    exact = complex(D.eval(env))
+    assert abs(value - exact) / abs(exact) == pytest.approx(err, rel=1e-9)

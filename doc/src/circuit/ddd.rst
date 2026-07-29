@@ -906,14 +906,34 @@ The trade is monotone and worth having: a few hundred items over small
 determinants of named entries, instead of several times as many fully expanded
 products, at the same accuracy.
 
-**What this does not yet solve.** On a hierarchically reduced circuit the top
-diagram's entries are the reduction's stamp symbols, so group ranking there
-produces compact expressions over placeholders — measured on the five-amplifier
-leapfrog in ``benchmarks/cancellation_leapfrog.py``, where 181 groups reach
-:math:`10^{-3}` and not one of them names a device. The cancellation lives
-*inside* the blocks, which is exactly where this ranking would pay; reaching it
-means ranking a block's own cofactor diagrams, and that is not implemented.
-See ``doc/cancellation_ranking_plan.md``.
+**On a hierarchically reduced circuit, and the limit that is now understood.**
+The top diagram's entries are the reduction's stamp symbols, so group ranking
+there produces compact expressions over *placeholders* — measured on the
+five-amplifier leapfrog in ``benchmarks/cancellation_leapfrog.py``, where 181
+groups reach :math:`10^{-3}` and not one of them names a device. The
+cancellation lives *inside* the blocks, which is where the devices are.
+
+Ranking inside the blocks does recover them. Suppressing each amplifier as one
+block and eliminating the five **in parallel against the original matrix**
+(``benchmarks/cancellation_parallel.py``) keeps every cofactor over device
+entries, and the resulting expressions name ``gm_s0_q2``, ``gm_s0_q17`` and so
+on — identified transistors in identified stages.
+
+But the composition of those pieces is **not error-controlled**, and that is the
+substantive limit. Each reduced entry is a weighted sum of 25 cofactors that
+cancel heavily against one another, so truncating each to a relative error
+:math:`\delta` leaves 25 residuals that need not cancel the way their values do.
+Measured at the degraded operating point: tightening every per-piece tolerance
+by :math:`4\times` moved the composed error from
+:math:`1.5\times10^{-2}` to :math:`1.1\times10^{-1}` — **ten times worse** — and
+tightening again brought it back. **Approximating the parts independently gives
+no guarantee about the whole, exactly when the parts cancel.**
+
+The cure is this section's own argument applied once more: rank the *combination*
+as a single object, seeding the frontier with all 25 cofactor roots at once, so
+the inter-cofactor cancellation sits inside the ranked object with an exact
+contribution. That is not implemented. See ``doc/cancellation_ranking_plan.md``
+and ``doc/cancellation_ranking_conclusions.md`` §11.
 
 Dominant poles without root-finding
 -----------------------------------

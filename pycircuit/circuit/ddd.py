@@ -648,7 +648,7 @@ class DDD:
         return pos
 
     def approximate_groups(self, env=None, tol=0.01, max_minor=0,
-                           max_splits=200000):
+                           max_splits=200000, with_value=False):
         """Approximate by ranking *groups* of terms, not individual terms.
 
         Magnitude ranking (:meth:`approximate`) sees only ``|prod entries|``, an
@@ -682,10 +682,22 @@ class DDD:
                 determinants of named entries, which is smaller than the fully
                 expanded one.  ``0`` expands every group to a product term.
             max_splits: Give up after this many splits.
+            with_value: Also return the kept expression's numeric value, which
+                the search already has and a caller would otherwise recompute.
+                That recomputation is not a minor cost: substituting into the
+                returned expression was measured at **33 s against the 0.95 s**
+                the whole ranking took, because the expression has ~10**5
+                operations while the diagram has ~10**3 vertices.  A nested
+                approximation -- ranking blocks, then ranking a reduced system
+                built from them -- needs each piece's value at every level, so
+                without this it spends all its time re-evaluating what it just
+                computed.
 
         Returns:
             ``(expression, n_terms, relative_error)``, the error measured
-            against the exact determinant at ``env``.
+            against the exact determinant at ``env``; or
+            ``(expression, n_terms, relative_error, value)`` when
+            ``with_value``.
 
         Raises:
             ValueError: If any entry stays symbolic, or the determinant is zero.
@@ -757,6 +769,8 @@ class DDD:
                 'group-ranked approximation stopped at relative error %.3g, '
                 'above the requested tol=%.3g, after %d groups and %d splits'
                 % (err, tol, len(kept), splits), RuntimeWarning, stacklevel=2)
+        if with_value:
+            return sympy.Add(*kept), len(kept), err, kept_sum
         return sympy.Add(*kept), len(kept), err
 
     ## -- rendering -------------------------------------------------------

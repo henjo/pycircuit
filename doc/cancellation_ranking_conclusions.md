@@ -238,3 +238,174 @@ out to be readable at 6×6 and cut the item count 4-5×, so the factored form
 earns its place. But 182 items is still not an expression a designer reads at a
 glance, and no stage of this plan claimed it would be. The gap between
 "converges" and "readable" is now the whole remaining distance.
+
+## 9. Why the obvious recursion is hopeless, and what replaces it
+
+Written before stage 5 runs, so the reasoning can be checked against it.
+
+Stage 3's failure is precise: the leapfrog's groups name `_lvl110_*` stamps, not
+devices. The plan's stated next step was "rank inside a suppressed block", and
+the naive reading of that does not work.
+
+**Why.** `suppression_order` chose **111 levels, one node each**. Level `k`'s
+matrix entries are level `k-1`'s stamp symbols, so a `_lvl110_*` symbol is a
+combination of cofactors of a matrix made of `_lvl109_*` symbols, and so on down.
+Reaching a device parameter means unwinding all 111 levels — which is exactly the
+unfolding the previous round measured at `count_ops = 2 256 398`. Recursing to
+device symbols through single-node levels rebuilds the explosion that hierarchy
+was introduced to avoid.
+
+**What replaces it: choose blocks the size of the thing you want to name.**
+Suppress each amplifier as *one* block of 22 internal nodes — five blocks, not
+111 levels. Then the structure is two-deep instead of 111-deep, and the crucial
+property is this:
+
+> Amplifier 1's internal nodes do not couple to amplifier 0's internal nodes;
+> they couple only through terminals. So block 0's elimination stamps **only**
+> into terminal rows and columns, and block 1's `A_ii` is untouched — still
+> device entries.
+
+Every block's cofactor family is therefore over **device parameters directly**,
+and only the top matrix carries stamp symbols. `det(A) = (∏ D_l)·det(reduced)`
+where each `D_l = det(A_ii,l)` is a diagram over device entries, and each stamp
+is a cofactor combination of the same. Three kinds of object, all
+device-symbolic, all separately group-rankable.
+
+**This is a hierarchy-design choice, not an algorithm change**, and it is the
+one thing stage 3 got wrong. `suppression_order` optimises for *diagram size*,
+which is the right objective for evaluation and the wrong one for
+interpretability: it will happily choose a decomposition whose intermediate
+quantities correspond to nothing a designer can name. **Interpretability
+constrains the partition, not the ranking.**
+
+**The output will be nested, and that has to be stated up front rather than
+discovered.** Substituting the stamp expressions into the top-level groups would
+multiply out to something astronomical — 17 factors each a sum of ~100 terms.
+So the deliverable is a *factored, few-level* expression: a sum of products of
+named sub-expressions, each itself a small sum of device-parameter products.
+Whether that counts as readable is a fair question, and the honest answer is that
+it is how a designer already reasons about a hierarchical circuit — "the gain is
+set by this stage's transconductance through that stage's output conductance" —
+whereas a flat sum of a million products is not.
+
+**Reconsider-if:** if a block's own `κ` turns out near 1, group ranking buys
+nothing *inside* the block either, and the honest conclusion is that the
+compact-but-anonymous form was the best this representation offers. `κ` per block
+is therefore the first thing stage 5 measures, before any composition.
+
+## 10. Section 9's claim was refuted, and the refutation is narrow
+
+Measured `benchmarks/cancellation_blocks.py`, first run. **Gate 2 failed:**
+block 1's internal matrix came back carrying `_lvl0_*` stamp symbols, so the
+five-block partition did *not* give device-level cofactors.
+
+**The mathematics in §9 was right; the claim about the code was wrong.** Checked
+separately: the number of matrix entries coupling one amplifier's internal nodes
+to another's is **0**, so `A_ii` over the union of internal nodes really is block
+diagonal, and the Schur complement really does factorise per amplifier.
+
+What breaks it is `HierarchicalDDD._suppress`: it creates a fresh stamp symbol
+for **every nonzero entry of the reduced matrix**, not only for the entries the
+elimination modified. So after block 0 is suppressed, amplifier 1's internal
+entries have been renamed too — multiplied by `det(A_ii,0)` and hidden behind
+`_lvl0_*` — even though the elimination never touched them. Sequential
+suppression therefore launders device entries into stamps regardless of
+topology.
+
+**So §9's conclusion survives and its route does not.** The fix is not to change
+`_suppress` — that would alter every existing hierarchical result — but to stop
+suppressing *sequentially*. Because the blocks are provably independent, all five
+can be eliminated **in parallel** against the original matrix:
+
+    det(A) = (∏_l D_l) · det( A_tt − Σ_l A_ti,l · adj(A_ii,l)/D_l · A_it,l )
+
+Every `A_ii,l` is taken from `A` itself, so every cofactor is over device
+entries by construction, and there is no sequence to launder them. This is a
+*construction* in the benchmark script rather than a library change.
+
+**The cost of interpretability, now quantified.** The five-block hierarchy is
+**22 163 vertices** against 1 958 for the 111 single-node levels, and its top
+diagram stands for 1 076 448 terms against 374 608 — an order of magnitude
+larger. That is exactly the trade §9 predicted: `suppression_order` optimises
+diagram size, and choosing blocks a designer can name costs about 11× in
+representation. Worth paying, and worth stating rather than discovering.
+
+**Kept as a negative result:** *a partition that is mathematically independent is
+not automatically independent in the implementation.* The topology argument was
+correct and still produced a false prediction, because the renaming step sits
+between the topology and the result. Check what the code does to the symbols, not
+only what the circuit does to the currents.
+
+## 11. Stage 5's result: the cancellation problem is not compositional
+
+Measured `benchmarks/cancellation_compose.py`. The parallel construction of §10
+worked exactly as designed, and it produced a result that is more interesting
+than a clean pass.
+
+**What was won.** Gate 5 passes: the expressions name `gm_s0_q2`, `gm_s0_q17`,
+`gm_s1_q2`, … — **device parameters of identified transistors in identified
+stages**. That is the clause stage 3 failed, and it is a real advance. Gate 3
+also confirmed the diagnosis that motivated the stage: `κ = 1.1e3` inside each
+block against `13.8` at the top, so the cancellation really is where the devices
+are.
+
+**What was lost, and it is the finding.** Gate 4 asked for composed relative
+error ≤ 1e-2 at *both* operating points. At nominal `gm` it is met. At degraded
+`gm` it is met at **none** of three tolerance settings — and the failure is
+**non-monotone**:
+
+| per-piece tol (top/block/cofactor) | composed error, degraded | nested ops |
+|---|---|---|
+| 5e-2 / 2e-2 / 2e-2 | **1.47e-2** | 1 605 524 |
+| 2e-2 / 5e-3 / 5e-3 | **1.13e-1** | 3 180 366 |
+| 1e-2 / 1e-3 / 1e-3 | **1.48e-2** | 5 518 235 |
+
+Tightening every piece by 4× made the composed answer **ten times worse**, and
+tightening again brought it back. Meanwhile the operation count more than
+tripled. **Per-piece tolerances do not control the composed error at all.**
+
+**Why, and it is the same mechanism one level up.** Each reduced entry is a
+weighted sum of 25 cofactors, and those cofactors cancel heavily against each
+other — that is what `κ = 1.1e3` inside the block *means*. Truncating each
+cofactor to a relative error δ leaves 25 residuals that are individually small
+but need not cancel the way the values they came from do. So the composed error
+is set by how the residuals happen to align, not by δ; and changing δ reshuffles
+that alignment. This is precisely the failure §1 describes for magnitude
+ranking — an error bounded per-part while the parts cancel — reappearing at the
+block interface.
+
+**So the honest statement is: hierarchical symbolic approximation is not
+compositional.** Approximating the parts independently and assembling them gives
+no guarantee about the whole, exactly when the parts cancel — which is exactly
+when approximation is needed. Everything measured here is consistent with that,
+and it explains why the published hierarchical-DDD literature reports
+uninterpretable results rather than bad ones: the compositional route does not
+carry an error bound to hand to a designer.
+
+**The cure is the one this whole document argues for, applied once more.** Rank
+the *combination* as a single object, with a frontier seeded by all 25 cofactor
+roots at once, so the inter-cofactor cancellation lives **inside** the ranked
+object and its contribution is exact. Then per-piece tolerances are not needed:
+there is one ranking with one exact error. `group_rank` currently accepts a
+single root; the multi-root frontier is the missing machinery, and it is now the
+third time the same gap has been the answer.
+
+**Two smaller results, both negative, both kept.**
+
+- **Pruning cofactors by what the top ranking uses buys almost nothing.** The
+  kept top groups touch only 42-43 of 96 reduced entries, which sounded
+  promising, but those entries still reach **123-125 of the 125 cofactors**. The
+  interface is too well connected for that kind of pruning. Implemented,
+  measured, retained because it costs nothing — but it is not the lever.
+- **Gate 6 was a badly designed gate and is worth flagging as such.** As first
+  written it compared the nested form against the exact form's 4.11e+34 terms.
+  Nothing could fail that. Restated against the meaningful reference — the
+  2 256 398 operations the previous round spent unfolding a *single* µA741 — the
+  nested form sits at 1.6M to 5.5M and straddles it. A gate whose bar cannot be
+  missed measures nothing, and this one was set by reaching for whatever number
+  was to hand.
+
+**And the thing not to lose sight of:** even at the settings where gate 4 passes,
+the answer is ~2 000 000 operations. It names devices, it is verified against
+`slogdet` to 3e-3, and **no human will read it.** Converging and being readable
+remain different problems, and only the first is solved.

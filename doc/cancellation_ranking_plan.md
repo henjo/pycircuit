@@ -8,10 +8,17 @@ result makes each stage a success.
 Predecessor: `doc/hierarchical_approximation_plan.md`. Its §5 records the
 negative result this plan responds to.
 
-**Status: stages 0-4 run. Stage 1's tolerance is met at both operating points
+**Status: stages 0-5 run. Stage 1's tolerance is met at both operating points
 and its term-count budget at one; stage 3 meets its count and accuracy gates
-and fails its interpretability gate. See §"Outcomes" — every number there comes
-from a logged run of the three scripts named in it.**
+and fails its interpretability gate; stage 5 recovers device parameters but
+shows the composition is not error-controlled. See §"Outcomes" — every number
+there comes from a logged run of the scripts named in it.**
+
+**The next lever, named three times over and still not built:** a `group_rank`
+that accepts a frontier of **several roots** rather than one. It is what stage 5
+needs to rank a cofactor combination as one object, and it is the only thing
+standing between the current result and an error-controlled hierarchical
+approximation.
 
 ## Fixture, fixed in advance for every stage
 
@@ -137,6 +144,42 @@ Only after stage 3. `DDD.approximate_groups` (name provisional), tests, and a
 section in `doc/src/circuit/ddd.rst` with every number generated at build time.
 The explanation ships in the same commit as the code.
 
+## Stage 5 — device parameters back in the answer (declared 2026-07-30)
+
+Stage 3's gate failed on one clause: the leapfrog's groups name level stamps, not
+devices. Reasoning for the approach, including why the naive recursion through
+111 single-node levels is hopeless: `cancellation_ranking_conclusions.md` §9.
+
+**The change is to the partition, not the ranking.** Suppress each amplifier as
+one block of 22 internal nodes — five blocks instead of 111 levels — so that
+every block's cofactor family is over device entries and only the top matrix
+carries stamps. Then group-rank three kinds of object separately: each block
+determinant `D_l`, each stamp's cofactor combination, and the top diagram.
+
+**Gate, declared before running.**
+
+1. The five-block hierarchy builds in under 5 minutes, and its determinant
+   agrees with `numpy.linalg.det` of the resolved reduced matrix to better than
+   `1e-10` relative. Carried as a log magnitude — stage 3 established that the
+   product underflows.
+2. **No block's `A_ii` contains a `_lvl` symbol.** Asserted in code, not assumed:
+   this is the structural claim the whole stage rests on, and if it is false the
+   stage is over.
+3. `κ` reported **per block** before any composition. If a block's `κ` is near 1
+   there is nothing inside for group ranking to fix, and that is the stage's
+   answer (§9's reconsider-if).
+4. A composed approximation reaches relative error **≤ 1e-2** against the numeric
+   oracle at **both** operating points, and the two are visibly different.
+5. The composed expression **names device parameters** (`gm_s*_q*`) — the clause
+   stage 3 failed.
+6. The nested form's total operation count is reported and is **far below** the
+   2 256 398 that plain unfolding costs. FAIL if it is not: an approximation that
+   costs as much as the exact answer bought nothing.
+
+**Declared in advance about the output shape:** it will be *nested*, not a flat
+sum, because substituting stamps into top-level groups multiplies out. A flat
+expression is not a goal of this stage and its absence is not a failure.
+
 ## What would make this whole plan fail
 
 - Stage 0 finds uniform cancellation. Most likely single outcome, and the
@@ -165,6 +208,8 @@ Scripts: `benchmarks/cancellation_profile.py` (stage 0),
 | baseline check | **The previous round's numbers reproduce exactly.** `DDD.approximate` at 500 terms: err **9.938** (994%) nominal, **1.728e+02** (17 280%) degraded — the recorded figures, re-measured rather than quoted. At *equal* term count the comparison is 11.86 vs 0.041 (nominal, 734 terms) and 13.78 vs 0.037 (degraded, 2401 terms): **289× and 372× lower error for the same expression size.** |
 | 2 — retained form readable | **PASS, and the trade is monotone.** At `tol=0.05`, retaining minors instead of expanding them: 2×2 → 516 / 1669 items, 3×3 → 353 / 1007, **6×6 → 182 / 503** (err 3.3e-02 / 8.5e-03). So the 6×6 form is **4.0× and 4.8× smaller** than the fully expanded one, names `gm_q1`, `gm_q2`, `gm_q17`, `s` throughout, and brings the degraded point **inside** stage 1's 1000-item budget that expansion missed. |
 | 3 — the leapfrog | **Count and accuracy gates PASS; the interpretability gate FAILS, as predicted.** 127 unknowns, 16 symbols, 536 nonzeros; 111 levels, top diagram 16×16 / 1847 vertices / **374 608 terms**. `κ` of the *top* diagram is only **13.8** nominal and **160** degraded. `tol=1e-3` reached with **181 groups** (0.07 s) and **221** at degraded; `tol=1e-8` with 821 / 1248. Verified against `DDD.eval` (1.3e-15) and against `numpy.linalg.det` of the reduced matrix (4.1e-15). **But every symbol in every group is a level stamp (`_lvl110_*`); not one device parameter appears.** |
+| 5 — device parameters back in | **Gate 5 PASSED, gate 4 FAILED, and the failure is the result.** Device parameters are back: the expressions name `gm_s0_q2`, `gm_s0_q17`, `gm_s1_q2`, … — identified transistors in identified stages, which is the clause stage 3 failed. Gate 3 confirmed the motivating diagnosis (`κ = 1.1e3` per block vs `13.8` at the top). **But the composed error is not controlled by the per-piece tolerances.** At degraded `gm` it never reaches 1e-2 and moves *non-monotonically*: 1.47e-2 → **1.13e-1** → 1.48e-2 as every tolerance is tightened 4× then 5×, while the operation count runs 1.6M → 3.2M → 5.5M. Cause: each reduced entry sums 25 heavily-cancelling cofactors, so 25 individually-small residuals combine unpredictably. **Hierarchical symbolic approximation is not compositional.** Verified throughout against `numpy.linalg.slogdet` of the full 127×127 matrix. Details: `cancellation_ranking_conclusions.md` §11. |
+| 5 — first attempt | **Gate 2 FAILED, and the failure was narrow.** Sequential five-block suppression does *not* give device-level cofactors: `_suppress` renames **every** nonzero of the reduced matrix, so block 1's `A_ii` came back over `_lvl0_*` stamps. The topology claim it rested on is nonetheless **verified** — 0 entries couple one amplifier's internals to another's — so the blocks are genuinely independent and can be eliminated **in parallel against the original matrix** instead of in sequence. Also measured: the five-block hierarchy is **22 163 vertices / 1 076 448 top terms** against 1 958 / 374 608 for 111 single-node levels, so naming the blocks costs ~11× in representation. Retried with the parallel construction, which worked — see the row above and `cancellation_ranking_conclusions.md` §10. |
 | 4 — library API | **Done.** `DDD.cancellation`, `DDD.subdiagram_values`, `DDD.minor_positions`, `DDD.approximate_groups` in `ddd.py`; twelve tests in `test_ddd.py`; three new subsections of `doc/src/circuit/ddd.rst` with every number generated at build time. `DDD.approximate` now **warns** when it returns without meeting `tol`. |
 
 ### Three results worth carrying forward
