@@ -1,6 +1,8 @@
 # Term-ranked approximation on hierarchical diagrams — implementation plan
 
-**Status: planned, not started.**
+**Status: stage A gate formally met but SUBSTANTIVELY A FAILURE. Stage B's gate
+is unreachable as written, because the flat ranking it uses as oracle does not
+converge. See section 5 before doing anything.**
 
 **Goal, stated by the maintainer:** *full symbolic extraction of a 5th-order
 leapfrog filter built from five µA741 amplifiers, with no numeric substitution
@@ -221,11 +223,48 @@ output._
 
 | Stage | Outcome |
 |---|---|
-| A — approximate the reduced network | not started |
-| B — magnitude propagation | not started |
-| C — hierarchical `approximate` | not started |
+| A — approximate the reduced network | **Gate met on its letter, failed on its purpose.** 30 146 terms to **2** at nominal `gm` and **32** at degraded, 4.5 s and 4.9 s, errors 3.0e-2 and 4.6e-2 inside `tol=0.05`. Operating points give wildly different expressions, as the gate demanded. **But the terms are products of anonymous level placeholders** (`_lvl109_16_0`), not device parameters, so a designer learns nothing. Maintainer's verdict: "this was not a win." |
+| B — magnitude propagation | **Blocked: its gate is unreachable as written.** The gate requires hierarchical ranking to match *flat* ranking on the µA741. Flat ranking **does not converge**: 500 terms of 2 773 885 gives **994%** error at nominal `gm` and **17 300%** at degraded, never reaching `tol=0.05`. There is no usable oracle to match. |
+| C — hierarchical `approximate` | not started; depends on B |
 | D — the leapfrog | not started |
 | E — worth it? | not started |
+
+### The negative result that changes the plan
+
+**Term-ranked approximation does not converge on a real operational amplifier.**
+Measured on the µA741 (1040 vertices, 2 773 885 terms, three symbolic
+transconductances, 1 kHz):
+
+| terms kept | achieved error |
+|---|---|
+| 500 at nominal `gm` | 9.94e+00 |
+| 500 at degraded `gm` | 1.73e+02 |
+
+**Why**, and it is the hazard section 2 attributes to Schur complements: with
+millions of terms there is massive cancellation, so individual dominant terms
+are far larger than their sum. Magnitude ranking assumes the sum is dominated
+by its largest parts. Here it is not, so keeping the biggest few hundred leaves
+an error hundreds of times the answer.
+
+**This was misreported once and the mechanism is worth remembering.** An
+earlier run with `max_terms=40` was written up as "260 terms, symbols survive"
+and presented as the workflow working. Two errors: 260 was the *expanded
+sympy* term count rather than diagrams kept, and **the error column was never
+printed at all**, though `approximate` returns it as its third value. An
+approximation was reported as good without checking whether it was accurate.
+
+**Consequence for section 2b's table.** Route 1 was described there as the one
+that "keeps symbols intact". It does keep them, and it **does not converge** on
+a real amplifier at tractable term counts. So:
+
+| route | device symbols | converges on a real op-amp |
+|---|---|---|
+| term-ranked approximation | **yes** | **no** (measured above) |
+| moment matching / MOR | no — numbers | presumed yes, unmeasured here |
+| direct truncation (DTT) | no — numbers | passive RLC trees only |
+
+**No route is known to give both.** That is the state of the art as this
+project has measured it, and it is where the next attempt has to start.
 
 ## 6. Facts carried in
 
