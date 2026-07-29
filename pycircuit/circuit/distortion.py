@@ -677,6 +677,128 @@ def graded_response(response, drive, coefficients, tones, max_power):
     return x
 
 
+class GradedVector:
+    """One :class:`GradedSpectrum` per node -- the multi-node graded signal.
+
+    The scalar class carries a circuit with a single nonlinear port.  Every
+    worked example in the primary reference (Buonomo & Lo Schiavo, AICSP 2013)
+    has several nodes and several nonlinearities, so the analysis has to carry
+    a *vector* of spectra and push it through a matrix rather than a scalar
+    response.
+
+    Only :meth:`through` is structurally interesting; addition, scaling and
+    truncation are componentwise, and the consistency filter therefore stays
+    exactly the single uniform filter it was in the scalar case.
+    """
+
+    __slots__ = ('components',)
+
+    def __init__(self, components):
+        self.components = tuple(components)
+
+    @classmethod
+    def zeros(cls, n):
+        return cls([GradedSpectrum() for _ in range(n)])
+
+    def __len__(self):
+        return len(self.components)
+
+    def __getitem__(self, i):
+        return self.components[i]
+
+    def __add__(self, other):
+        return GradedVector([a + b for a, b in
+                             zip(self.components, other.components)])
+
+    def scaled(self, factor):
+        return GradedVector([c.scaled(factor) for c in self.components])
+
+    def truncated(self, max_power):
+        return GradedVector([c.truncated(max_power) for c in self.components])
+
+    def __eq__(self, other):
+        return (isinstance(other, GradedVector) and
+                len(self) == len(other) and
+                all(a.terms == b.terms
+                    for a, b in zip(self.components, other.components)))
+
+    def through(self, solve, tones):
+        """Push every component back through the matrix at its own frequency.
+
+        ``solve(s, rhs) -> x`` applies ``M(s) = (A + sC)^-1`` to a vector.
+        This is where the scalar version multiplied by ``response(1j*m*w)``;
+        the structural claim of the method is unchanged, in that each step is
+        still one linear solve against the same pencil evaluated at a harmonic
+        frequency.
+        """
+        ## One solve per (harmonic, power) key rather than per harmonic: the
+        ## matrix depends only on m, but the right-hand sides differ by p and
+        ## must not be summed before solving or the grading is destroyed.
+        keys = set()
+        for c in self.components:
+            keys.update(c.terms)
+
+        out = [{} for _ in self.components]
+        for key in keys:
+            m = key[0]
+            rhs = [c.terms.get(key, 0) for c in self.components]
+            for i, v in enumerate(solve(1j * m * tones[0], rhs)):
+                if v != 0:
+                    out[i][key] = v
+        return GradedVector([GradedSpectrum(d) for d in out])
+
+    def __repr__(self):
+        return 'GradedVector(%d nodes, %s)' % (
+            len(self.components), [len(c.terms) for c in self.components])
+
+
+def graded_response_mimo(solve, source, nonlinearity, tones, max_power):
+    """Consistent perturbation truncation for a multi-node circuit.
+
+    Solves, in the graded ring of :class:`GradedVector`,
+
+    .. code-block:: text
+
+        (A + sC) x = G_h x_in + f_h(x_in) - f(x)
+        x = M(s) [ source - f(x) ],    M(s) = (A + sC)^-1
+
+    The sign convention is the one under which the hand-eliminated scalar
+    reduction of the 2013 paper's biquad reproduces its published eq. (47)
+    exactly and eq. (48) to floating point.  It was established by
+    measurement; the opposite sign does not reproduce them.
+
+    Termination is by the same argument as :func:`graded_response`: ``f`` is
+    strictly nonlinear, so each pass raises the lowest new power of the drive
+    by at least one and the filter discards the rest.  The iteration therefore
+    *terminates exactly* on the consistent truncation rather than converging
+    toward it.
+
+    Args:
+        solve: ``solve(s, rhs) -> sequence``, applying ``(A + sC)^-1``.
+        source: :class:`GradedVector` of drive terms, ``G_h x_in`` plus any
+            input nonlinearity ``f_h(x_in)``.  Building it in the graded ring
+            means an input cubic contributes its third harmonic automatically.
+        nonlinearity: ``f(x) -> GradedVector``, written with the ring's
+            ``+``, ``*`` and ``scaled``.  Cross terms such as ``x1*x2`` need
+            no special support.
+        tones: Angular frequencies; single tone.
+        max_power: Highest power of the drive to keep.
+
+    Returns:
+        :class:`GradedVector` truncated at ``max_power``.
+    """
+    x0 = source.through(solve, tones).truncated(max_power)
+    x = x0
+
+    for _ in range(max_power):
+        f = nonlinearity(x).truncated(max_power)
+        nxt = (x0 + f.scaled(-1).through(solve, tones)).truncated(max_power)
+        if nxt == x:
+            break
+        x = nxt
+    return x
+
+
 def harmonic_response(apply_G, U, nonlinearity, tones, toolkit):
     """Harmonics of a weakly nonlinear circuit, to second perturbation order.
 

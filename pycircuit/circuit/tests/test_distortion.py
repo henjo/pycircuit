@@ -1575,3 +1575,186 @@ def test_symbolic_growth_stays_polynomial_with_order():
 
     assert counts[0] < counts[1] < 4 * counts[0], (
         'third-harmonic term count should grow polynomially, got %s' % counts)
+
+
+# ---------------------------------------------------------------------------
+# Multi-node graded response.  Gates declared in doc/distortion_mimo_plan.md.
+# ---------------------------------------------------------------------------
+
+import math
+from scipy.optimize import brentq
+from pycircuit.circuit.distortion import GradedVector, graded_response_mimo
+
+## The 2013 paper's worked example 2: Tow-Thomas gm-C biquad, eq. (46).
+## Centre 10.6931 MHz, Q = 20, unity gain at centre.
+_BQ_G1 = _BQ_G2 = 31.26e-6
+_BQ_G3, _BQ_G4 = 625.2e-6, -625.2e-6
+_BQ_C1 = _BQ_C2 = 9.3054e-12
+_BQ_ALPHA = -0.0535                    # every cubic tied to its linear
+_BQ_G1C, _BQ_G2C, _BQ_G3C, _BQ_G4C = (
+    _BQ_ALPHA * g for g in (_BQ_G1, _BQ_G2, _BQ_G3, _BQ_G4))
+
+
+def _bq_q(w):
+    return _BQ_G3*_BQ_G4 + _BQ_C1*_BQ_C2*w**2 + _BQ_G2*_BQ_C2*1j*w
+
+
+def _bq_solve(s, rhs):
+    M = np.array([[-_BQ_G2 + s*_BQ_C1, -_BQ_G4],
+                  [-_BQ_G3, s*_BQ_C2]], dtype=complex)
+    return np.linalg.solve(M, np.asarray(rhs, dtype=complex))
+
+
+def _cube(sp, maxp):
+    return ((sp * sp).truncated(maxp) * sp).truncated(maxp)
+
+
+def _bq_run(Xin, w, maxp, with_g4c=True, with_g1c=True):
+    src = GradedSpectrum.from_phasor(1, 1, _BQ_G1*Xin)
+    if with_g1c:
+        src = src + _cube(GradedSpectrum.from_phasor(1, 1, Xin),
+                          maxp).scaled(_BQ_G1C)
+
+    def f(x):
+        f1 = _cube(x[0], maxp).scaled(-_BQ_G2C)
+        if with_g4c:
+            f1 = f1 + _cube(x[1], maxp).scaled(-_BQ_G4C)
+        return GradedVector([f1, _cube(x[0], maxp).scaled(-_BQ_G3C)])
+
+    return graded_response_mimo(_bq_solve,
+                                GradedVector([src, GradedSpectrum()]),
+                                f, (w,), max_power=maxp)
+
+
+def _bq_eq48(w, Xin, full):
+    """The paper's published third harmonic, eq. (48).
+
+    ``full=False`` keeps only the second fraction -- the ``g_3c``/``g_2c``
+    part, which is what a hand elimination of node 2 can reach.  The first
+    fraction carries ``g_4c`` and ``g_1c`` and is unreachable scalar-wise.
+    """
+    second = -Xin**3*_BQ_C2*1j*w*(
+        _BQ_G1**3*_BQ_C2**2*w**2*(_BQ_G3C*_BQ_G4 + 3*_BQ_G2C*_BQ_C2*1j*w)
+        ) / (4*_bq_q(3*w)*_bq_q(w)**3)
+    if not full:
+        return second
+    first = 3*(_BQ_G4C*_BQ_G1**3*_BQ_G3**3 - _BQ_G1C*_bq_q(w)**3)
+    return Xin**3*_BQ_C2*1j*w*first/(4*_bq_q(3*w)*_bq_q(w)**3) + second
+
+
+def _scalar_poly(spec, coeffs, maxp):
+    f = GradedSpectrum()
+    power = spec
+    for c in coeffs:
+        power = (power * spec).truncated(maxp)
+        if c != 0:
+            f = f + power.scaled(c)
+    return f
+
+
+def test_mimo_contains_scalar_exactly():
+    """Stage A gate: a 1x1 system must reproduce ``graded_response``.
+
+    Not an approximation -- the multi-node path has to *contain* the scalar
+    one, or no result computed through it can be trusted.  Checked across
+    drives, truncation orders and harmonics rather than at one point, because
+    the grading is what is under test and it is indexed by both.
+    """
+    IS_D = 1e-13
+    VT = numeric.kboltzmann*300/numeric.qelectron
+    Ib, Rl, Cl, f0 = 1e-3, 1e3, 1e-9, 1e4
+    v0 = brentq(lambda v: v/Rl + IS_D*np.expm1(v/VT) - Ib, 0, 1)
+    ISe = IS_D*np.exp(v0/VT)
+    w0 = 2*np.pi*f0
+    resp = lambda s: 1.0/(1/Rl + s*Cl + ISe/VT)
+    taylor = [ISe/(math.factorial(n)*VT**n) for n in range(2, 14)]
+
+    for A in (1e-4, 4e-4, 6e-4):
+        for power in (3, 5, 7, 9, 11):
+            coeffs = taylor[:power-1]
+            want = graded_response(resp, A, coeffs, (w0,), max_power=power)
+            got = graded_response_mimo(
+                lambda s, rhs: [resp(s)*rhs[0]],
+                GradedVector([GradedSpectrum.from_phasor(1, 1, A)]),
+                lambda x: GradedVector([_scalar_poly(x[0], coeffs, power)]),
+                (w0,), max_power=power)
+            for m in (1, 2, 3, 5):
+                a, b = want.phasor(m), got[0].phasor(m)
+                assert abs(a - b) <= 1e-13*abs(a) + 1e-300, (
+                    'MIMO != scalar at A=%g U^%d harmonic %d' % (A, power, m))
+
+
+def test_mimo_carries_independent_problems_side_by_side():
+    """Stage A gate, second half: a block-diagonal system must not mix nodes.
+
+    A 1x1 check cannot catch a driver that accidentally sums right-hand sides
+    across nodes before solving, because there is only one.
+    """
+    VT = numeric.kboltzmann*300/numeric.qelectron
+    w0 = 2*np.pi*1e4
+    r1 = lambda s: 1.0/(1e-3 + s*1e-9 + 0.016)
+    r2 = lambda s: 1.0/(5e-4 + s*1e-9 + 0.016)
+    c1, c2 = [0.3/VT**2, 0.2/VT**3], [0.15/VT**2, 0.1/VT**3]
+
+    want1 = graded_response(r1, 3e-4, c1, (w0,), max_power=5)
+    want2 = graded_response(r2, 5e-4, c2, (w0,), max_power=5)
+    got = graded_response_mimo(
+        lambda s, rhs: [r1(s)*rhs[0], r2(s)*rhs[1]],
+        GradedVector([GradedSpectrum.from_phasor(1, 1, 3e-4),
+                      GradedSpectrum.from_phasor(1, 1, 5e-4)]),
+        lambda x: GradedVector([_scalar_poly(x[0], c1, 5),
+                                _scalar_poly(x[1], c2, 5)]),
+        (w0,), max_power=5)
+
+    for i, want in enumerate((want1, want2)):
+        for m in (1, 2, 3):
+            a, b = want.phasor(m), got[i].phasor(m)
+            assert abs(a - b) <= 1e-13*abs(a) + 1e-300
+
+
+@pytest.mark.parametrize('freq', [1e5, 1e6, 5e6, 1.06931e7, 2e7])
+def test_biquad_reachable_part_matches_published_eq48(freq):
+    """Stage B gate: the matrix path must reproduce the scalar-reachable part.
+
+    Isolates the matrix plumbing from the new nonlinearities: with ``g_4c``
+    and ``g_1c`` switched off, the answer is one a hand elimination of node 2
+    already reproduces, so any discrepancy is in the plumbing.
+    """
+    w = 2*np.pi*freq
+    got = _bq_run(1e-3, w, 3, with_g4c=False, with_g1c=False)[0].phasor(3)
+    want = _bq_eq48(w, 1e-3, full=False)
+    assert abs(got - want) <= 1e-12*abs(want)
+
+
+@pytest.mark.parametrize('freq', [1e5, 1e6, 5e6, 1.06931e7, 2e7])
+def test_biquad_full_matches_published_eq48(freq):
+    """Stage C gate: the complete published closed form, all four cubics.
+
+    ``g_4c`` acts on node 2 and ``g_1c`` on the input, and neither is
+    reachable by eliminating node 2 by hand: ``x2 = L(s) x1`` with ``L``
+    frequency-dependent, so ``(L x1)**3 != L**3 x1**3`` once ``x1`` carries
+    more than one harmonic.  This is new capability rather than a regression,
+    and the gate is a formula the authors printed.
+    """
+    w = 2*np.pi*freq
+    got = _bq_run(1e-3, w, 3)[0].phasor(3)
+    want = _bq_eq48(w, 1e-3, full=True)
+    assert abs(got - want) <= 1e-12*abs(want)
+
+
+def test_biquad_omitted_nonlinearities_are_not_negligible():
+    """Guards the *point* of the multi-node work, not just its arithmetic.
+
+    If the terms only reachable through the matrix path were small, stage C
+    would be a curiosity.  At 100 kHz they dominate by four orders of
+    magnitude, so a scalar reduction is not a mild approximation there -- it
+    misses essentially the whole answer.  A refactor that quietly dropped
+    them would still pass a loose comparison; this fails.
+    """
+    w = 2*np.pi*1e5
+    partial = abs(_bq_run(1e-3, w, 3, with_g4c=False,
+                          with_g1c=False)[0].phasor(3))
+    full = abs(_bq_run(1e-3, w, 3)[0].phasor(3))
+    assert full > 1e3*partial, (
+        'expected the node-2 and input cubics to dominate at low frequency, '
+        'got full=%g partial=%g' % (full, partial))
