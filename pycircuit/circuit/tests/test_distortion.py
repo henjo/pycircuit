@@ -2447,3 +2447,119 @@ def test_cross_term_agrees_with_its_polarisation_identity():
     for m in (1, 2, 3):
         a, b = direct[0].phasor(m), factored[0].phasor(m)
         assert abs(a - b) <= 1e-14*abs(b), 'harmonic %d' % m
+
+
+# ---------------------------------------------------------------------------
+# A reachable 1 dB compression point.  Plan section 8.4.
+# ---------------------------------------------------------------------------
+
+## Soft-limiting transconductor cell:
+##     v_in --Rs-- node v --+-- C to ground
+##                          +-- i(v) = g*(v + alpha*v**3) to ground
+## Output is the TRANSCONDUCTOR CURRENT, not the node voltage.  The
+## nonlinearity loads the node through Y(s), so the perturbation machinery
+## does real work; a purely feedforward cell would not exercise it at all.
+##
+## The topology is ours, not a reference's, so this DEMONSTRATES the method
+## rather than validating it.  The validation is the ODE comparison below.
+_GM_G, _GM_ALPHA = 625.2e-6, -0.0535      # alpha from the 2013 paper
+_GM_RS, _GM_C, _GM_F0 = 1.0/_GM_G, 1e-12, 1e6
+
+
+def _gm_w0():
+    return 2*np.pi*_GM_F0
+
+
+def _gm_resp(s):
+    return 1.0/(1/_GM_RS + _GM_G + s*_GM_C)
+
+
+def _gm_node(Vin, power):
+    return graded_response(_gm_resp, Vin/_GM_RS, [0.0, _GM_G*_GM_ALPHA],
+                           (_gm_w0(),), max_power=power)
+
+
+def _gm_dev_db(Vin, power):
+    """Deviation of the output current's fundamental from small-signal."""
+    v = _gm_node(Vin, power)
+    cube = ((v*v).truncated(power) * v).truncated(power)
+    iout = (v + cube.scaled(_GM_ALPHA)).scaled(_GM_G)
+    small = _GM_G*abs(_gm_resp(1j*_gm_w0()))/_GM_RS
+    return 20*np.log10(abs(iout.phasor(1))/(small*Vin))
+
+
+def test_cubic_model_barely_reaches_1dB_compression():
+    """A general property of cubic soft-limiting, independent of the circuit.
+
+    ``i = g(v + a v**3)`` with ``a < 0`` turns over at
+    ``v_turn = 1/sqrt(3|a|)``; beyond that it has negative differential
+    conductance and is no longer a physical device.  The fundamental of the
+    current is ``g(v + (3/4) a v**3)``, so 1 dB compression needs
+    ``(3/4)|a| v**2 = 1 - 10**(-1/20)``.
+
+    The ratio of the two is **independent of** ``a``::
+
+        v_turn / v_1dB = sqrt( (1/3) / ((1 - 10**(-1/20))/0.75) ) = 1.5162
+
+    So 1 dB always lands at 66% of the amplitude where the model breaks
+    down.  This is why a cubic can only just represent 1 dB compression, and
+    a plausible reason no paper in this line demonstrates one.
+    """
+    expected = np.sqrt((1/3.)/((1 - 10**(-1/20.))/0.75))
+    for a in (0.0535, 0.01, 0.1, 0.5, 2.0):
+        v_turn = np.sqrt(1.0/(3*a))
+        v_1db = np.sqrt((1 - 10**(-1/20.))/(0.75*a))
+        assert abs(v_turn/v_1db - expected) < 1e-9, a
+    assert abs(expected - 1.516203) < 1e-6
+
+
+def test_gm_cell_reaches_1dB_inside_the_convergence_bound():
+    """Plan 8.4: the compression point the published circuits cannot reach.
+
+    Two things have to hold together for this to be a real demonstration:
+    the cell must actually reach 1 dB, and the perturbation series must
+    still be converging where it does.  It does -- contraction factor about
+    0.38 against a bound of 1.
+
+    **But the margin is in the device model, not the method.**  At the
+    compression point the node fundamental sits at 87% of the cubic's
+    turning point.  That is *worse* than the 66% the isolated device gives,
+    because the same negative ``alpha`` that compresses the output current
+    also reduces the node's loading, so the node voltage expands toward the
+    breakdown.  Worth knowing before treating the number as a design figure.
+    """
+    from scipy.optimize import brentq
+
+    power = 11
+    p1 = brentq(lambda V: _gm_dev_db(V, power) + 1.0, 1.0, 4.5, xtol=1e-8)
+    v1 = abs(_gm_node(p1, power).phasor(1))
+
+    contraction = abs(3*_GM_G*_GM_ALPHA*v1**2*_gm_resp(1j*_gm_w0()))
+    assert contraction < 0.5, 'expected to be well inside the bound'
+
+    v_turn = np.sqrt(1.0/(3*abs(_GM_ALPHA)))
+    assert v1 < v_turn, 'node must stay below the cubic turning point'
+    assert v1/v_turn > 0.8, (
+        'the loaded cell should sit closer to breakdown than the isolated '
+        'device, got %.3f' % (v1/v_turn))
+
+
+def test_gm_cell_p1db_converges_with_truncation_order():
+    """The sharper test: each order must place the threshold, not just a value.
+
+    ``U**3`` misplaces the compression point by about 19%; the estimate then
+    converges geometrically.  This is the same construction used for the
+    diode cell on the limits page, and it is a stricter check than comparing
+    an amplitude at a drive chosen for the method.
+    """
+    from scipy.optimize import brentq
+
+    points = [brentq(lambda V: _gm_dev_db(V, n) + 1.0, 1.0, 5.0, xtol=1e-8)
+              for n in (3, 5, 7, 9, 11)]
+
+    shifts = [abs(b - a) for a, b in zip(points, points[1:])]
+    for coarse, fine in zip(shifts, shifts[1:]):
+        assert fine < coarse, 'shifts should shrink: %s' % shifts
+    assert shifts[-1] < 0.05, 'expected convergence, got %s' % shifts
+    assert abs(points[0] - points[-1])/points[-1] > 0.1, (
+        'U^3 should be visibly off, else the test proves nothing')

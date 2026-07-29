@@ -441,19 +441,62 @@ fix is a different representation (rational functions kept factored, or
 per-harmonic numeric evaluation) rather than anything about the perturbation
 method.
 
-### 8.4 A usable 1 dB compression example
+### 8.4 A usable 1 dB compression example — **DONE**
 
-The question that prompted the multi-node work, still unanswered, and **not
-answerable from either published circuit** — see §2. The route that would work:
-a minimal single-node transconductor cell using this paper's cubic model and
-`alpha = -0.0535 V^-2`, with the output taken as the **transconductor current**
-rather than a node voltage. 1 dB of cubic compression corresponds to a
-contraction factor of about 0.44, comfortably inside the bound, so unlike the
-published circuits it is reachable.
+A soft-limiting transconductor cell using the 2013 paper's `alpha = -0.0535
+V^-2`, driven through a source resistance, **output taken as the
+transconductor current** rather than a node voltage. The nonlinearity loads
+the node through `Y(s)`, so the perturbation machinery does real work; a
+purely feedforward cell would not exercise it at all.
 
-The topology would be ours rather than a reference's, so the result is a
-demonstration of the method, **not** a validation of it. It should be labelled
-that way wherever it lands.
+| | |
+|---|---|
+| 1 dB compression | `Vin = 3.9241 V` |
+| node fundamental | `2.1754 V` |
+| cubic turning point | `2.4961 V` (15% headroom) |
+| contraction factor | **0.3798**, bound is 1 |
+
+**Against a time-domain integration:** 0.0000 dB at `Vin = 1` and `2`,
+0.0004 at `3`, and **0.0152 dB at the compression point**.
+
+**P1dB converges geometrically with order** — 4.656, 4.112, 3.986, 3.943,
+3.924 for `U^3`..`U^11`. `U^3` misplaces the compression point by **19%**.
+This is the sharper test: each order must place a threshold on the drive
+axis, not merely produce an amplitude at a drive chosen for it.
+
+**The topology is ours, so this DEMONSTRATES the method rather than
+validating it.** The validation is the ODE comparison. Labelled as such in
+the tests.
+
+#### The finding that outlasts the example
+
+**A purely cubic soft-limiting model can only just represent 1 dB
+compression, and the ratio is a constant of the model.** `i = g(v + a v^3)`
+with `a < 0` turns over at `v_turn = 1/sqrt(3|a|)`, beyond which it has
+negative differential conductance and is not a physical device. Setting the
+fundamental `g(v + (3/4) a v^3)` to -1 dB gives
+
+```
+v_turn / v_1dB = sqrt( (1/3) / ((1 - 10^(-1/20))/0.75) ) = 1.516203
+```
+
+**independent of `a`** — verified to six digits across `|a|` from 0.01 to 2.0.
+So 1 dB always lands at **66% of the amplitude where the model breaks down**.
+
+That is a better answer to "why does no circuit here reach 1 dB" than the one
+in section 2. The obstacle is not the perturbation method, nor the choice of
+published circuit: **a cubic is a weakly-nonlinear model, and 1 dB compression
+is roughly where weak nonlinearity stops describing the device.**
+
+**And the loaded cell is worse than the isolated device**, at 87% of the
+turning point rather than 66%: the same negative `alpha` that compresses the
+output current also reduces the node's loading, so the node voltage *expands*
+toward the breakdown. Worth knowing before treating any such number as a
+design figure.
+
+This also explains an integration failure met on the way: a step-response
+start overshoots past `v_turn` and the cubic runs away to overflow. The
+reference drive is ramped over 60 cycles for that reason.
 
 ### 8.5 CLOSED — there was no eq. (46) instability
 

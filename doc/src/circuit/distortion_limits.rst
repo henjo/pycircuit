@@ -778,3 +778,124 @@ figure of merit is computable by the method almost exactly up to the point
 where the method stops being valid, and not beyond.  A circuit whose 1 dB
 point lay well above the bound could not be characterised this way at any
 order.
+
+A genuine 1 dB compression point
+---------------------------------
+
+The diode cell above *expands*, and neither published circuit in
+:doc:`distortion` reaches 1 dB of compression anywhere the series converges.
+A cell that does is easy to build once the requirement is stated properly:
+the nonlinearity must **load the node** through :math:`Y(s)` — otherwise the
+perturbation machinery does no work — and the output must be taken as the
+**transconductor current** rather than a node voltage.
+
+.. code-block:: text
+
+    v_in --Rs-- node v --+-- C to ground
+                         +-- i(v) = g*(v + alpha*v**3) to ground
+
+with :math:`\alpha = -0.0535\,\mathrm{V}^{-2}` from the 2013 paper.  The
+topology is ours rather than a reference's, so what follows **demonstrates**
+the method; the validation is the time-domain comparison in the last column.
+Regenerated on every build:
+
+.. exec-rst::
+
+    import numpy as np
+    from scipy.optimize import brentq
+    from scipy.integrate import solve_ivp
+    from pycircuit.circuit.distortion import graded_response
+
+    g, alpha = 625.2e-6, -0.0535
+    Rs, C, f0 = 1.0/g, 1e-12, 1e6
+    w0 = 2*np.pi*f0
+    resp = lambda s: 1.0/(1/Rs + g + s*C)
+    small = g*abs(resp(1j*w0))/Rs
+
+    def node(Vin, n):
+        return graded_response(resp, Vin/Rs, [0.0, g*alpha], (w0,),
+                               max_power=n)
+
+    def dev_db(Vin, n):
+        v = node(Vin, n)
+        cube = ((v*v).truncated(n)*v).truncated(n)
+        iout = (v + cube.scaled(alpha)).scaled(g)
+        return 20*np.log10(abs(iout.phasor(1))/(small*Vin))
+
+    def ode_db(Vin, cycles=120, ramp=50, keep=16):
+        ## Ramped drive: a step start overshoots the cubic's turning point
+        ## and the model runs away.  See the note below.
+        T = 2*np.pi/w0
+        def rhs(t, y):
+            v = y[0]
+            u = Vin*min(1.0, t/(ramp*T))*np.cos(w0*t)
+            return [((u - v)/Rs - g*(v + alpha*v**3))/C]
+        tend = cycles*T
+        ts = np.linspace(tend-keep*T, tend, keep*512, endpoint=False)
+        s = solve_ivp(rhs, (0, tend), [0.], t_eval=ts, method='DOP853',
+                      rtol=1e-11, atol=1e-16, max_step=T/50)
+        i = g*(s.y[0] + alpha*s.y[0]**3)
+        S = np.fft.rfft(i)/len(i)
+        return 20*np.log10(2*abs(S[keep])/(small*Vin))
+
+    ORDERS = (3, 5, 7, 9, 11)
+    head = ['order', 'P1dB (V)', 'shift from previous']
+    rows = []
+    previous = None
+    for n in ORDERS:
+        p = brentq(lambda V: dev_db(V, n) + 1.0, 1.0, 5.0, xtol=1e-8)
+        rows.append(['U^%d' % n, '%.4f' % p,
+                     '--' if previous is None else '%+.4f' % (p - previous)])
+        previous = p
+
+    widths = [max(len(r[i]) for r in rows + [head]) for i in range(len(head))]
+    sep = ' '.join('=' * w for w in widths)
+    print(sep)
+    print(' '.join('%-*s' % (w, h) for w, h in zip(widths, head)))
+    print(sep)
+    for r in rows:
+        print(' '.join('%-*s' % (w, c) for w, c in zip(widths, r)))
+    print(sep)
+    print('')
+
+    p1 = previous
+    v1 = abs(node(p1, 11).phasor(1))
+    v_turn = np.sqrt(1.0/(3*abs(alpha)))
+    print('At ``Vin = %.4f V`` the node fundamental is ``%.4f V`` and the'
+          % (p1, v1))
+    print('contraction factor is ``%.4f`` against a bound of 1, so the series'
+          % abs(3*g*alpha*v1**2*resp(1j*w0)))
+    print('is still converging comfortably where the cell compresses by 1 dB.')
+    print('')
+    print('Against the integration: ``%+.4f dB`` at ``Vin = 2 V`` and'
+          % (dev_db(2.0, 11) - ode_db(2.0)))
+    print('``%+.4f dB`` at the compression point.'
+          % (dev_db(p1, 11) - ode_db(p1)))
+    print('')
+    print('The cubic turns over at ``%.4f V``, so the node sits at ``%.0f%%``'
+          % (v_turn, 100*v1/v_turn))
+    print('of the amplitude where the device model stops being physical.')
+
+**A cubic model can only just represent 1 dB compression, and the margin is a
+constant of the model.**  A device :math:`i = g(v + \alpha v^3)` with
+:math:`\alpha < 0` turns over at :math:`v_{\mathrm{turn}} = 1/\sqrt{3|\alpha|}`;
+past that its differential conductance is negative and it is not a physical
+device.  Setting the fundamental to :math:`-1` dB gives
+
+.. math::
+
+   \frac{v_{\mathrm{turn}}}{v_{1\mathrm{dB}}}
+     = \sqrt{\frac{1/3}{\left(1 - 10^{-1/20}\right)/0.75}} = 1.5162
+
+**independent of** :math:`\alpha` — so 1 dB always falls at 66% of the
+amplitude where the model breaks down.  That is the real reason none of the
+published circuits reaches 1 dB: not the perturbation method, and not the
+choice of circuit, but that **a cubic is a weakly nonlinear model and 1 dB
+compression is about where weak nonlinearity stops describing the device.**
+
+The loaded cell is worse than the isolated device, sitting nearer that limit
+than 66% suggests, because the same negative :math:`\alpha` that compresses
+the output current also reduces the node's loading — so the node voltage
+*expands* toward the breakdown even as the output compresses.  It is also why
+the reference integration ramps its drive: started as a step, the transient
+overshoots :math:`v_{\mathrm{turn}}` and the cubic diverges to overflow.
