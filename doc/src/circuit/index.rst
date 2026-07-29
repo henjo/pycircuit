@@ -14,6 +14,7 @@ Circuit analyzer
     ddd
     distortion
     distortion_limits
+    distortion_ddd
     theory
     modules
     elements

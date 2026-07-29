@@ -1,6 +1,8 @@
 # Symbolic distortion on decision diagrams — implementation plan
 
-**Status: planned, not started.**
+**Status: stage A complete and its gate met. Stages B–E are therefore NOT
+being built — the plan's own stop condition fired.** Outcomes in section 5;
+the live measurements are `doc/src/circuit/distortion_ddd.rst`.
 
 **Goal, stated by the maintainer: run distortion analysis on bigger circuits.**
 That is the objective the stages are ordered against; reducing `sympy.cancel`
@@ -217,12 +219,12 @@ output._
 
 | Stage | Outcome |
 |---|---|
-| A — factored ring, no DDD, swept `U^7`..`U^13` | not started |
-| B — DDD-backed solve | not started |
-| C — `s_expand` across harmonics | not started |
-| C2 — hierarchy, for bigger circuits | not started |
-| D — worth it? | not started |
-| E — a graded multiroot diagram | not started, and optional |
+| A — factored ring, no DDD, swept `U^7`..`U^13` | **Gate met, and the plan stops here.** Reached `U^13`: build 0.25 s, 434 graph nodes, evaluate 4.5 ms, agreeing with the numeric path to **3.6e-16**. `sympy.cancel` could not finish `U^7` in 900 s. Growth 89 → 434 nodes over the sweep is polynomial, not geometric. **Also measured on the circuit-size axis**, which stage A was not asked for but the stated goal needs: on a *dense* matrix (worst-case fill-in) graph size scales as `n**1.90` — roughly quadratic — with 12 circuit nodes building in 0.6 s. So the representation is polynomial on **both** axes. The cost recorded in §8.3 was **simplification, not the method** |
+| B — DDD-backed solve | **not built.** Stage A's gate says so explicitly: if a plain factored ring makes `U^13` tractable, the diagram stages are an optimisation of a solved problem |
+| C — `s_expand` across harmonics | **not built**, same reason |
+| C2 — hierarchy, for bigger circuits | **not built, and this is the one worth reopening.** Stage A's circuit-size result is on a *synthetic dense matrix*, not a real transistor-level circuit where parameters are shared across entries. Hierarchy's measured wins on the µA741 (1040 → 156 vertices) were on a real one |
+| D — worth it? | **answered without building B–E.** Neither criterion can be met: stage A already reaches the truncation order, so there is no order it 'cannot reach at all', and a 3x size reduction against a representation this small is not worth new machinery |
+| E — a graded multiroot diagram | **not built.** Was gated on C2 reporting first, and C2 was not run |
 
 ## 6. Carried-over facts that bear on this
 
