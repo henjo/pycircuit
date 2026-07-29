@@ -1587,7 +1587,13 @@ from pycircuit.circuit.distortion import GradedVector, graded_response_mimo
 
 ## The 2013 paper's worked example 2: Tow-Thomas gm-C biquad, eq. (46).
 ## Centre 10.6931 MHz, Q = 20, unity gain at centre.
-_BQ_G1 = _BQ_G2 = 31.26e-6
+_BQ_G1 = 31.26e-6
+## g_2 is NEGATIVE in the paper (p. 492: "g_2 = -31.26 uA/V"), verified at
+## 600 dpi.  An earlier version of this file had it positive, which made the
+## pencil come out with right-half-plane poles and produced a "defect in the
+## published circuit" that did not exist.  The sign is load-bearing: it is
+## the damping term of a Q = 20 resonator.
+_BQ_G2 = -31.26e-6
 _BQ_G3, _BQ_G4 = 625.2e-6, -625.2e-6
 _BQ_C1 = _BQ_C2 = 9.3054e-12
 _BQ_ALPHA = -0.0535                    # every cubic tied to its linear
@@ -1902,20 +1908,6 @@ def test_amplifier_fundamental_correction_scales_as_drive_squared():
 # Stage E: higher order on a multi-node circuit.
 # ---------------------------------------------------------------------------
 
-def _bq_solve_stable(s, rhs):
-    """The biquad pencil with the damping sign flipped.
-
-    **The pencil as printed in eq. (46) has right-half-plane poles**
-    (``Re s = +1.68e6``); see the test below.  Every published result for
-    this circuit is a modulus, and ``|q(w)|`` is conjugation-invariant, so
-    the sign is invisible in the paper's figures.  A time-domain reference
-    needs a stable system, so it uses this variant.
-    """
-    M = np.array([[_BQ_G2 + s*_BQ_C1, -_BQ_G4],
-                  [-_BQ_G3, s*_BQ_C2]], dtype=complex)
-    return np.linalg.solve(M, np.asarray(rhs, dtype=complex))
-
-
 def _bq_run_with(solve, Xin, w, maxp):
     src = (GradedSpectrum.from_phasor(1, 1, _BQ_G1*Xin)
            + _cube(GradedSpectrum.from_phasor(1, 1, Xin), maxp).scaled(_BQ_G1C))
@@ -1933,37 +1925,59 @@ def _bq_centre():
     return np.sqrt(-_BQ_G3*_BQ_G4/(_BQ_C1*_BQ_C2))
 
 
-def test_printed_biquad_pencil_has_right_half_plane_poles():
-    """Records a property of the *reference*, not of our code.
+def test_biquad_pencil_as_published_is_stable():
+    """The published circuit is stable, and this pins the sign that makes it so.
 
-    Kept as a test because it is the reason the convergence check below uses
-    a modified pencil, and without it that modification looks like fudging
-    the circuit until the numbers agree.
+    **This test replaces one that asserted the opposite.**  An earlier version
+    of this file took ``g_2 = +31.26 uA/V``; the paper gives ``-31.26 uA/V``
+    (p. 492, verified at 600 dpi).  With the wrong sign the pencil has
+    right-half-plane poles, and that artifact was written up as a defect in
+    the published circuit.  It was a defect in the transcription.
+
+    Retained as a test because the sign is easy to lose again -- it is the
+    damping term of a ``Q = 20`` resonator, and every magnitude comparison in
+    this file passes either way, since those compare our arithmetic against
+    the paper's formula evaluated with *the same* constants.  Nothing except
+    a stability check or a time-domain integration notices.
     """
+    assert _BQ_G2 < 0, 'g_2 is negative in the source'
     roots = np.roots([_BQ_C1*_BQ_C2, -_BQ_G2*_BQ_C2, -_BQ_G3*_BQ_G4])
-    assert all(r.real > 0 for r in roots), roots
-    flipped = np.roots([_BQ_C1*_BQ_C2, _BQ_G2*_BQ_C2, -_BQ_G3*_BQ_G4])
-    assert all(r.real < 0 for r in flipped), flipped
+    assert all(r.real < 0 for r in roots), roots
+
+    ## Centre frequency and Q are unaffected by the sign, which is part of
+    ## why it survived: the circuit looks entirely reasonable either way.
+    w0 = _bq_centre()
+    assert abs(w0/(2*np.pi)/1e6 - 10.6931) < 1e-3
+    assert abs(w0*_BQ_C1/abs(_BQ_G2) - 20.0) < 1e-2
 
 
-def test_conjugate_pencils_agree_on_q_but_not_on_the_nonlinear_result():
-    """Guards against an over-generalisation that was actually made here.
+def test_magnitude_gates_cannot_see_the_damping_sign():
+    """Why the wrong sign survived four gates at 1e-14.
 
-    ``|q(w)|`` is identical for the printed and stable pencils, which invites
-    the conclusion that the damping sign cannot affect any magnitude.  It
-    does: the graded computation *adds* complex quantities across harmonics,
-    and addition is not invariant under conjugation.  Only products and
-    ratios of ``q`` are, which is why the published closed forms survive it.
+    Every published comparison here evaluates the paper's formula with the
+    same constants our code uses, so a wrong constant cancels out and the
+    gate passes regardless.  That is worth a test of its own, because it
+    bounds what those gates establish: they check the *machinery* against the
+    *algebra*, and say nothing about whether the constants are the paper's.
     """
     w = _bq_centre()
-    qp = abs(_bq_q(w))
-    qs = abs(np.conj(_bq_q(w)))
-    assert abs(qp - qs) <= 1e-15*qs, 'moduli of q should be identical'
+    ours = abs(_bq_run(1e-3, w, 3)[0].phasor(3))
+    theirs = abs(_bq_eq48(w, 1e-3, full=True))
+    assert abs(ours - theirs) <= 1e-12*theirs
 
-    a = abs(_bq_run_with(_bq_solve, 0.3, w, 7)[0].phasor(3))
-    b = abs(_bq_run_with(_bq_solve_stable, 0.3, w, 7)[0].phasor(3))
-    assert abs(a - b) > 1e-3*b, (
-        'the nonlinear results should NOT coincide, got %g vs %g' % (a, b))
+    ## Flip the damping sign in *both* and the agreement is untouched.
+    global _BQ_G2
+    saved = _BQ_G2
+    try:
+        _BQ_G2 = -saved
+        flipped_ours = abs(_bq_run(1e-3, w, 3)[0].phasor(3))
+        flipped_theirs = abs(_bq_eq48(w, 1e-3, full=True))
+        assert abs(flipped_ours - flipped_theirs) <= 1e-12*flipped_theirs
+    finally:
+        _BQ_G2 = saved
+
+    ## ...even though the circuit is a different one.
+    assert abs(flipped_ours - ours) > 1e-6*ours
 
 
 def test_multinode_symbolic_growth_stays_polynomial():
@@ -2030,7 +2044,7 @@ def test_biquad_converges_monotonically_below_the_bound(Xin):
     def rhs(t, y):
         x1, x2 = y
         u = Xin*np.cos(w*t)
-        return [(-_BQ_G2*x1 + _BQ_G4*x2 + _BQ_G1*u + _BQ_G1C*u**3
+        return [(_BQ_G2*x1 + _BQ_G4*x2 + _BQ_G1*u + _BQ_G1C*u**3
                  + _BQ_G2C*x1**3 + _BQ_G4C*x2**3)/_BQ_C1,
                 (_BQ_G3*x1 + _BQ_G3C*x1**3)/_BQ_C2]
 
@@ -2043,7 +2057,7 @@ def test_biquad_converges_monotonically_below_the_bound(Xin):
     spectrum = np.fft.rfft(sol.y[0])/len(sol.y[0])
     want = 2*abs(spectrum[3*keep])
 
-    errors = [abs(abs(_bq_run_with(_bq_solve_stable, Xin, w, n)[0].phasor(3))
+    errors = [abs(abs(_bq_run_with(_bq_solve, Xin, w, n)[0].phasor(3))
                   - want)/want
               for n in (3, 5, 7, 9, 11)]
 
@@ -2184,7 +2198,7 @@ def test_biquad_phase_and_waveform_match_the_ode_integration():
     def rhs(t, y):
         x1, x2 = y
         u = Xin*np.cos(w*t)
-        return [(-_BQ_G2*x1 + _BQ_G4*x2 + _BQ_G1*u + _BQ_G1C*u**3
+        return [(_BQ_G2*x1 + _BQ_G4*x2 + _BQ_G1*u + _BQ_G1C*u**3
                  + _BQ_G2C*x1**3 + _BQ_G4C*x2**3)/_BQ_C1,
                 (_BQ_G3*x1 + _BQ_G3C*x1**3)/_BQ_C2]
 
@@ -2197,7 +2211,7 @@ def test_biquad_phase_and_waveform_match_the_ode_integration():
     spectrum = np.fft.rfft(sol.y[0])/len(sol.y[0])
     want = {m: 2*spectrum[m*keep] for m in (1, 3, 5)}
 
-    got = _bq_run_with(_bq_solve_stable, Xin, w, 11)
+    got = _bq_run_with(_bq_solve, Xin, w, 11)
 
     ## 1 -- phase, harmonic by harmonic.
     for m in (1, 3, 5):

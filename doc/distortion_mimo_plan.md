@@ -46,17 +46,32 @@ exactly and eq. (48) to floating point. The opposite sign does not.
 
 ## 2. What this is *not* for
 
-**Not** an attempt to obtain a 1 dB compression point. That question prompted
-this work and the answer is already recorded: neither published example
-compresses by 1 dB anywhere the series converges. The biquad reaches 0.0086 dB
-at `X_in = 0.3 V` and its truncations disagree by 0.5 V; 1 dB would need about
-3.2 V, roughly 8x beyond the convergence limit. The RNMC amplifier's cubic
-coefficients are positive (`g_m2c = +60 mA/V^3`, `g_m3c = +3 mA/V^3`) so it
-expands. **Reconsider if** a reference circuit turns up whose compression is
-in-phase and whose output is a transconductor current rather than a node
-voltage — 1 dB of cubic compression corresponds to a contraction factor of only
-~0.44, which is well inside the bound, so the obstacle is the available
-circuits, not the method.
+**Not** an attempt to obtain a 1 dB compression point. Neither published
+example reaches 1 dB anywhere the series converges.
+
+**These figures were re-measured after the `g_2` sign correction (section 6)
+and the earlier ones were wrong.** With the published `g_2` the biquad
+**compresses** — it was previously recorded as expanding. Verified against the
+ODE integration: `-0.0011 dB` at `X_in = 0.1 V`, `-0.0177` at 0.2,
+`-0.0866` at 0.3. Scaling as `X_in^2`, 1 dB needs about 1.0 V while the
+truncations start disagreeing by 0.5 V — so roughly 2x beyond the limit, not
+the 8x recorded before. Still out of reach, but much less comfortably.
+
+**A finding that only appeared once the sign was right: at `U^3` the
+truncation gets the *sign* of the gain deviation wrong.** Against the ODE at
+all three drives, `U^3` reports expansion of almost exactly the magnitude by
+which the circuit actually compresses (`+0.0897` against `-0.0866` at 0.3 V),
+while `U^11` tracks the ODE to about 1%. The published second-order form is
+therefore not merely imprecise about compression on this circuit — it points
+the wrong way. Worth following up; it is the sort of thing a designer would
+act on.
+
+The RNMC amplifier's cubic coefficients are positive (`g_m2c = +60 mA/V^3`,
+`g_m3c = +3 mA/V^3`) so it expands. **Reconsider if** a reference circuit
+turns up whose compression is in-phase and whose output is a transconductor
+current rather than a node voltage — 1 dB of cubic compression corresponds to
+a contraction factor of only ~0.44, well inside the bound, so the obstacle is
+the available circuits, not the method.
 
 **Not** general cross-term nonlinearities in the first instance — but see §4;
 the chosen representation gets them for free, so this is a non-restriction.
@@ -191,16 +206,33 @@ upper bound on the true size. The practical limit for symbolic use may be
 simplification *cost* rather than expression size, which is a different claim
 from the one the theory page makes and is **not** established here.
 
-**The pencil printed in eq. (46) has right-half-plane poles**
-(`Re s = +1.68e6`). Every published result for this circuit is a modulus and
-`|q|` is conjugation-invariant, so the sign is invisible in the paper's
-figures — and all our stage B/C gates passed with it. It matters anyway: a
-time-domain reference needs a stable system. **And the natural
-over-generalisation is false** — identical `|q|` does *not* mean identical
-magnitudes for the nonlinear result, which differs by 1-2%, because the graded
-computation adds complex quantities across harmonics and addition is not
-conjugation-invariant. Only products and ratios of `q` are, which is why the
-published closed forms survive. Both facts are pinned by tests.
+**RETRACTED — "the pencil printed in eq. (46) has right-half-plane poles".**
+
+This was recorded here as a defect in the source. **It was a defect in the
+transcription.** The paper gives `g_2 = -31.26 uA/V` (p. 492, verified at
+600 dpi); it had been entered as `+31.26`, which inverts the damping term of a
+`Q = 20` resonator and moves the poles into the right half plane. With the
+published value the circuit is stable, as a bandpass filter must be.
+
+Everything built on the false finding is gone: the "stable variant" pencil was
+**bit-identical to eq. (46) with the correct `g_2`**, so the stage E
+convergence and phase results used the right circuit throughout — they were
+merely described as working around a defect that did not exist.
+
+**The reason to keep this written down is how long it survived.** Stages B, C,
+D and 8.1 all passed to 1e-14 *with the wrong sign*, because each gate
+evaluates the paper's formula using the same constants the code uses, so a
+wrong constant cancels on both sides. Centre frequency and `Q` are unchanged
+by it as well, so the circuit looked entirely reasonable. Only reading the
+parameter line at 600 dpi caught it, and only a stability check or a
+time-domain integration could have.
+
+**This widens the limit stated under 8.1.** Those gates check the *machinery*
+against the *algebra*. They cannot check that the constants are the paper's,
+and no amount of agreement with a published closed form is evidence that they
+are. Two tests now hold the line: one asserts the pencil is stable and pins
+the sign, the other demonstrates that flipping it leaves the published
+comparison passing.
 
 **A finding from stage D worth keeping: the published ratio uses the
 *linearised* fundamental.** Dividing by the graded fundamental instead
@@ -270,7 +302,8 @@ private helper needs a `grep` first.
 **And a claim that turned out false:** the conjugates in eq. (43) (`p~`, `q~`)
 make no difference to the comparison. The factor is a pure product and ratio
 inside `|.|`, and conjugation leaves a modulus unchanged. This is the *same*
-blindness that hides the eq. (46) instability, and it generalises: **these
+blindness that also hid a wrong `g_2` sign for four gates (see the retraction
+in section 6), and it generalises: **these
 published closed forms are moduli of products, so agreement with them is
 strong evidence about magnitudes and none at all about phase.** Worth stating
 plainly, because four gates in this plan rest on them.
@@ -306,7 +339,7 @@ for two tones rather than assumed to carry over.
 Every gate in sections 5 and 8.1 compares moduli of products, so all of them
 are blind to sign and phase. That was not a suspicion: it was demonstrated
 twice, by the eq. (43) conjugates making no difference and by the eq. (46)
-pencil's right-half-plane poles passing unnoticed. **The method was therefore
+wrong `g_2` sign passing four gates unnoticed. **The method was therefore
 very well validated in magnitude and entirely unvalidated in phase.**
 
 A time-domain integration has no such blindness, and stage E had already built
@@ -371,14 +404,18 @@ The topology would be ours rather than a reference's, so the result is a
 demonstration of the method, **not** a validation of it. It should be labelled
 that way wherever it lands.
 
-### 8.5 A decision, not a task: the eq. (46) instability
+### 8.5 CLOSED — there was no eq. (46) instability
 
-The pencil as printed has right-half-plane poles. That is a defect in the
-source, alongside the four errata already recorded for the same paper in
-`distrortion_pertybation_reference.md`. Nothing in our code depends on
-resolving it — the gates pass with the matrix as printed, and stage E
-documents the flip. Whether it goes any further than our notes is a call for
-the maintainer.
+This entry previously read "the pencil as printed has right-half-plane poles;
+that is a defect in the source, alongside the four errata already recorded for
+the same paper". **It was our transcription error, not the paper's** — see the
+retraction in section 6. The paper is correct here and the entry is closed
+with nothing to report to anyone.
+
+Worth keeping as an entry rather than deleting, because the failure mode is
+the one this whole plan is most exposed to: a confident finding *against a
+source*, produced by our own input error, that four independent published
+gates were structurally unable to contradict.
 
 ### 8.6 Open elsewhere, recorded here only as pointers
 

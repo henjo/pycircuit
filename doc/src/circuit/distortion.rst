@@ -350,7 +350,8 @@ harmonic at the output node:
     from pycircuit.circuit.distortion import (graded_response_mimo,
                                               GradedSpectrum, GradedVector)
 
-    g1 = g2 = 31.26e-6; g3 = 625.2e-6; g4 = -625.2e-6
+    g1, g2 = 31.26e-6, -31.26e-6      # g2 is negative in the source
+    g3, g4 = 625.2e-6, -625.2e-6
     C1 = C2 = 9.3054e-12
     alpha = -0.0535                      # every cubic tied to its linear
     g1c, g2c, g3c, g4c = (alpha*g for g in (g1, g2, g3, g4))
@@ -567,11 +568,21 @@ against an :math:`O(U)` fundamental; see `The fundamental is not corrected`_.
    :math:`\left|\,\cdot\,\right|` around a product and ratio of transfer
    functions, and conjugating any factor leaves a modulus unchanged.
 
-   Two consequences, both observed here rather than supposed.  The conjugates
-   the paper writes as :math:`\tilde p`, :math:`\tilde q` make **no
-   difference** to the comparison — dropping them changes nothing.  And the
-   pencil printed as eq. (46) has right-half-plane poles without any of these
-   comparisons noticing.
+   Observed here rather than supposed: the conjugates the paper writes as
+   :math:`\tilde p`, :math:`\tilde q` make **no difference** to the
+   comparison — dropping them changes nothing.
+
+   The sharper demonstration is a transcription error this page carried for a
+   while.  The biquad's :math:`g_2` is :math:`-31.26\,\mu\mathrm{A/V}`, and it
+   was entered here as :math:`+31.26`.  That inverts the damping of a
+   :math:`Q = 20` resonator — the poles move into the right half plane, and
+   the circuit is no longer even stable.  **Every comparison on this page
+   passed anyway, to** :math:`10^{-14}`, because each evaluates the paper's
+   formula with the same constants the code uses, so a wrong constant cancels.
+   Nothing but a stability check or a time-domain integration noticed.
+
+   So these gates check the *machinery* against the *algebra*.  They do not
+   check that the constants are the paper's, and they cannot.
 
    So agreement to :math:`10^{-15}` against these formulas is strong evidence
    about **magnitudes** and no evidence at all about **phase**.  Anything that
@@ -596,14 +607,15 @@ every build:
     from pycircuit.circuit.distortion import (graded_response_mimo,
                                               GradedSpectrum, GradedVector)
 
-    g1 = g2 = 31.26e-6; g3 = 625.2e-6; g4 = -625.2e-6
+    g1, g2 = 31.26e-6, -31.26e-6      # g2 is negative in the source
+    g3, g4 = 625.2e-6, -625.2e-6
     C1 = C2 = 9.3054e-12
     alpha = -0.0535
     g1c, g2c, g3c, g4c = (alpha*g for g in (g1, g2, g3, g4))
     w0 = np.sqrt(-g3*g4/(C1*C2))
 
     def solve(s, rhs):
-        M = np.array([[g2 + s*C1, -g4], [-g3, s*C2]], dtype=complex)
+        M = np.array([[-g2 + s*C1, -g4], [-g3, s*C2]], dtype=complex)
         return np.linalg.solve(M, np.asarray(rhs, dtype=complex))
 
     def cube(sp, n):
@@ -621,7 +633,7 @@ every build:
     def rhs(t, y):
         x1, x2 = y
         u = Xin*np.cos(w0*t)
-        return [(-g2*x1 + g4*x2 + g1*u + g1c*u**3
+        return [(g2*x1 + g4*x2 + g1*u + g1c*u**3
                  + g2c*x1**3 + g4c*x2**3)/C1,
                 (g3*x1 + g3c*x1**3)/C2]
 
@@ -698,17 +710,17 @@ the resonant node:
     from pycircuit.circuit.distortion import (graded_response_mimo,
                                               GradedSpectrum, GradedVector)
 
-    g1 = g2 = 31.26e-6; g3 = 625.2e-6; g4 = -625.2e-6
+    g1, g2 = 31.26e-6, -31.26e-6      # g2 is negative in the source
+    g3, g4 = 625.2e-6, -625.2e-6
     C1 = C2 = 9.3054e-12
     alpha = -0.0535
     g1c, g2c, g3c, g4c = (alpha*g for g in (g1, g2, g3, g4))
     w0 = np.sqrt(-g3*g4/(C1*C2))
 
     def solve(s, rhs):
-        ## Damping sign flipped from eq. (46): as printed the pencil has
-        ## right-half-plane poles, so it has no periodic steady state to
-        ## integrate toward.  See the note below the table.
-        M = np.array([[g2 + s*C1, -g4], [-g3, s*C2]], dtype=complex)
+        ## eq. (46) exactly as printed.  g2 is negative in the source, which
+        ## is what makes this a stable Q = 20 resonator; see the note below.
+        M = np.array([[-g2 + s*C1, -g4], [-g3, s*C2]], dtype=complex)
         return np.linalg.solve(M, np.asarray(rhs, dtype=complex))
 
     def cube(sp, n):
@@ -727,7 +739,7 @@ the resonant node:
         def rhs(t, y):
             x1, x2 = y
             u = Xin*np.cos(w0*t)
-            return [(-g2*x1 + g4*x2 + g1*u + g1c*u**3
+            return [(g2*x1 + g4*x2 + g1*u + g1c*u**3
                      + g2c*x1**3 + g4c*x2**3)/C1,
                     (g3*x1 + g3c*x1**3)/C2]
         T = 2*np.pi/w0
@@ -776,21 +788,20 @@ integrator's floor.
 
 .. note::
 
-   **The pencil printed as eq. (46) has right-half-plane poles**,
-   :math:`\mathrm{Re}\,s = +1.68\times10^{6}`.  The table above therefore
-   flips the sign of the damping term, because an unstable system has no
-   periodic steady state for the reference to integrate toward.
+   **A correction, kept visible.**  An earlier version of this page asserted
+   that the pencil printed as eq. (46) has right-half-plane poles, and the
+   table above was described as flipping the damping sign to work around
+   that.  Both statements were wrong.  The paper's :math:`g_2` is
+   :math:`-31.26\,\mu\mathrm{A/V}`; it had been transcribed here as
+   :math:`+31.26`.  With the published value the circuit is stable, as a
+   :math:`Q = 20` bandpass filter had better be, and the matrix used above is
+   simply eq. (46) as printed.
 
-   This is invisible in the source: every published result for this circuit
-   is a modulus, and :math:`|q(j\omega)|` is unchanged by conjugating the
-   pencil — which is why the comparisons against eqs. (47) and (48) above
-   pass using the matrix exactly as printed.
-
-   It does **not** follow that the sign never affects a magnitude.  It
-   affects this one by 1–2%: the graded computation *adds* complex quantities
-   across harmonics, and addition is not invariant under conjugation.  Only
-   products and ratios of :math:`q` are, which is precisely the form the
-   published closed forms take.
+   The episode is left on the page because of *how long it survived*.  Every
+   comparison against eqs. (47), (48) and (52) passed to :math:`10^{-14}`
+   with the wrong sign, since each evaluates the paper's formula using the
+   same constants the code uses.  The centre frequency and :math:`Q` are also
+   unchanged by it.  Only integrating the circuit in time exposed it.
 
 Limitations of the present implementation
 -----------------------------------------
