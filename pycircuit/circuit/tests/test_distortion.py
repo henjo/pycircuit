@@ -29,7 +29,9 @@ import pytest
 import sympy
 
 from pycircuit.circuit import numeric, symbolic
-from pycircuit.circuit.distortion import (Harmonic, harmonic_response,
+from pycircuit.circuit.distortion import (CubicNonlinearity,
+                                          ExponentialNonlinearity, Harmonic,
+                                          harmonic_response,
                                           scalar_nonlinearity,
                                           taylor_coefficients)
 
@@ -51,7 +53,8 @@ G0, C0, B, C3, A = sympy.symbols('g C b c A', real=True)
 def _perturbation_hd(Y):
     """HD2/HD3 from the module under test."""
     bm, cm = scalar_nonlinearity(0, B, C3, 1, symbolic)
-    sol = harmonic_response(_single_node_apply_G(Y), [A], bm, cm,
+    sol = harmonic_response(_single_node_apply_G(Y), [A],
+                            CubicNonlinearity(bm, cm),
                             tones=(W,), toolkit=symbolic)
     return (sol.amplitude((2,), 0), sol.amplitude((3,), 0),
             sol.amplitude((1,), 0))
@@ -265,7 +268,8 @@ def _rnmc_hd(f, coefficients=None):
         return np.linalg.solve(_rnmc_admittance(s),
                                np.asarray(rhs, dtype=complex))
 
-    sol = harmonic_response(apply_G, U, b, c, tones=(w,), toolkit=numeric)
+    sol = harmonic_response(apply_G, U, CubicNonlinearity(b, c),
+                            tones=(w,), toolkit=numeric)
     return 20 * np.log10(sol.HD2(_OUT)), 20 * np.log10(sol.HD3(_OUT))
 
 
@@ -328,3 +332,156 @@ def test_rnmc_hd_scales_with_input_amplitude():
 
     assert abs((hd2_b - hd2_a) - 20 * np.log10(2)) < 0.01, 'HD2 is not ~X_in'
     assert abs((hd3_b - hd3_a) - 40 * np.log10(2)) < 0.01, 'HD3 is not ~X_in**2'
+
+
+## ------------------------------------- stage 3: exponential nonlinearity
+
+"""Stage 3 gate: the common-emitter bipolar amplifier of the 2005 paper.
+
+This is the only worked example in the whole source set whose expected answer
+is a *closed-form expression* rather than a curve to read off a plot, so it is
+the one gate with no graph-reading error at all.  Every parameter is printed
+in the paper (its Fig. 3): I_BQ = 10 uA, V_T = 25 mV, beta_F = 180,
+R = 250 Ohm, C = 37 pF, U = 50 mV.
+
+Its eqs. 48a-b give HD2 and HD3 in closed form under a *cubic* approximation
+of the exponential, so they gate the cubic path on this topology.  The
+exponential path is then checked against them the other way round -- it must
+*differ*, in the direction and by roughly the margin the paper measures, which
+is the entire reason stage 3 exists.
+
+**The trap this test also pins:** distortion at the nonlinearity's controlling
+node is not distortion at the circuit output.  The paper refers HD to the
+output current via y = E*u + N*x (its eqs. 45c-d), and that mapping carries
+both a feedforward term and a frequency-dependent factor.  Measuring at v_be
+instead of at i_o gives an answer wrong by a constant factor -- exactly 10 for
+these component values -- which looks like a plausible result and is not one.
+"""
+
+_IBQ, _VT, _BF = 10e-6, 25e-3, 180.0
+_R, _C, _U = 250.0, 37e-12, 50e-3
+_ALPHA = _IBQ / _VT                 # junction conductance: the linear part
+
+
+def _bjt_solution(f, nonlinearity):
+    w = 2 * np.pi * f
+
+    def apply_G(harmonic, rhs):
+        s = 1j * harmonic.frequency((w,))
+        return np.array(rhs, dtype=complex) / (1.0 / _R + s * _C + _ALPHA)
+
+    sol = harmonic_response(apply_G, [_U / _R], nonlinearity,
+                            tones=(w,), toolkit=numeric)
+    return sol, w
+
+
+def _bjt_output_hd(f, nonlinearity):
+    """HD2/HD3 of the *output current*, per the paper's y = E u + N x."""
+    sol, w = _bjt_solution(f, nonlinearity)
+    E = -_BF / _R
+    N = lambda m: (_BF / _R) * (1 + 1j * m * w * _R * _C)
+
+    Y1 = E * _U + N(1) * sol.amplitude((1,), 0)
+    Y2 = N(2) * sol.amplitude((2,), 0)
+    Y3 = N(3) * sol.amplitude((3,), 0)
+    return abs(Y2) / abs(Y1), abs(Y3) / abs(Y1)
+
+
+def _bjt_cubic():
+    """Cubic truncation of the exponential -- the Taylor coefficients."""
+    return CubicNonlinearity(np.array([[_IBQ / (2 * _VT ** 2)]]),
+                             np.array([[_IBQ / (6 * _VT ** 3)]]))
+
+
+def _paper_eq48(f):
+    """The 2005 paper's closed forms, eqs. 48a-b."""
+    w = 2 * np.pi * f
+    Re = _R / (1 + _R * _ALPHA)
+    Rk = _R / (1 - 2 * _R * _ALPHA)
+    hd2 = (_U / (4 * _VT)) * (1 / (1 + _R * _ALPHA) ** 2) * abs(
+        (1 + 2j * w * _R * _C)
+        / ((1 + 2j * w * Re * _C) * (1 + 1j * w * Re * _C)))
+    hd3 = (_U ** 2 / (24 * _VT ** 2)) * abs(
+        (1 - 2 * _R * _ALPHA) / (1 + _R * _ALPHA) ** 4) * abs(
+        ((1 + 2j * w * Rk * _C) * (1 + 3j * w * _R * _C))
+        / ((1 + 1j * w * Re * _C) ** 2 * (1 + 2j * w * Re * _C)
+           * (1 + 3j * w * Re * _C)))
+    return hd2, hd3
+
+
+@pytest.mark.parametrize('f', [1e3, 1e5, 1e6, 1e7])
+def test_bjt_cubic_matches_paper_closed_form(f):
+    """The gate: agreement with eqs. 48a-b, which are exact expressions.
+
+    No tolerance argument from graph reading is needed here -- the reference
+    is an algebraic formula, so this is checked to five significant figures
+    rather than to a decibel.
+    """
+    hd2, hd3 = _bjt_output_hd(f, _bjt_cubic())
+    ref2, ref3 = _paper_eq48(f)
+
+    assert abs(hd2 / ref2 - 1) < 1e-4, (
+        'HD2 at %g Hz: got %.6e, eq. 48a gives %.6e' % (f, hd2, ref2))
+    assert abs(hd3 / ref3 - 1) < 1e-4, (
+        'HD3 at %g Hz: got %.6e, eq. 48b gives %.6e' % (f, hd3, ref3))
+
+
+def test_output_referred_hd_differs_from_node_hd():
+    """Distortion at the controlling node is not distortion at the output.
+
+    Pinned because getting this wrong produces a plausible number, not an
+    error: for these values the two differ by a constant factor of ten.
+    """
+    sol, _ = _bjt_solution(1e3, _bjt_cubic())
+    node_hd2 = sol.HD2(0)
+    output_hd2, _ = _bjt_output_hd(1e3, _bjt_cubic())
+
+    assert abs(output_hd2 / node_hd2 - 10.0) < 0.1, (
+        'expected the output/node ratio to be ~10 for this circuit, got %.3f'
+        % (output_hd2 / node_hd2))
+
+
+@pytest.mark.parametrize('f', [1e3, 1e6])
+def test_exponential_exceeds_its_cubic_approximation(f):
+    """The reason stage 3 exists: a cubic fit to an exponential is not enough.
+
+    The 2005 paper measures a cubic-truncated exponential converging to a
+    second harmonic materially below the true value -- around 20% on its
+    Fig. 3.  The exact Bessel-function treatment must therefore predict
+    *more* distortion than the cubic, by a comparable margin.  Bounds are
+    deliberately loose: the paper's figure compares absolute harmonic
+    amplitudes on a different quantity, so this checks the effect is real and
+    of the right size, not that two differently-defined numbers coincide.
+    """
+    exact = ExponentialNonlinearity(_IBQ, _VT, port=0, n=1)
+    hd2_exact, _ = _bjt_output_hd(f, exact)
+    hd2_cubic, _ = _bjt_output_hd(f, _bjt_cubic())
+
+    ratio = hd2_exact / hd2_cubic
+    assert ratio > 1.05, (
+        'exact exponential should predict more HD2 than its cubic fit, '
+        'got ratio %.4f' % ratio)
+    assert ratio < 1.6, 'ratio %.4f is implausibly large' % ratio
+
+
+def test_exponential_reduces_to_cubic_for_small_signals():
+    """As the drive vanishes the two treatments must converge.
+
+    The cubic fit *is* the exponential's Taylor expansion, so at small
+    amplitude they cannot disagree.  A Bessel implementation with a wrong
+    argument scaling would still show a plausible ratio at the working
+    amplitude but would fail to converge here.
+    """
+    global _U
+    original = _U
+    try:
+        _U = 1e-4                      # ~250x smaller than the paper's drive
+        exact = ExponentialNonlinearity(_IBQ, _VT, port=0, n=1)
+        hd2_exact, _ = _bjt_output_hd(1e3, exact)
+        hd2_cubic, _ = _bjt_output_hd(1e3, _bjt_cubic())
+    finally:
+        _U = original
+
+    assert abs(hd2_exact / hd2_cubic - 1) < 0.02, (
+        'exponential and cubic must agree at small signal, ratio %.4f'
+        % (hd2_exact / hd2_cubic))

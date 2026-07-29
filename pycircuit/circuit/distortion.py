@@ -20,12 +20,19 @@ the *same* linear operator ``Y(s) = G + sC``, evaluated at a different
 frequency.  Nothing here needs a nonlinear solve, a new matrix structure, or
 a change to ``circuit.py`` -- ``Y`` is what AC analysis already assembles.
 
-Scope of this module today (stages 1-2 of the plan): cubic polynomial
-nonlinearities, single tone, any number of nonlinear devices, plus an
-optional nonlinearity acting on the input.  Exponential devices and two-tone
-intermodulation are later stages.  The frequency index is deliberately kept
-general (a tuple, not an integer) so that two-tone is an extension rather
-than a rewrite -- see :class:`Harmonic`.
+Scope of this module today (stages 1-3 of the plan): single tone, any number
+of nonlinear devices, with either cubic-polynomial or exponential
+(diode/bipolar) nonlinearities.  Two-tone intermodulation is a later stage;
+the frequency index is deliberately kept general (a tuple, not an integer) so
+that it is an extension rather than a rewrite -- see :class:`Harmonic`.
+
+**The harmonics returned are node quantities.**  Distortion at the
+nonlinearity's controlling node is *not* distortion at the circuit output:
+mapping to an output generally carries both a feedforward path and a
+frequency-dependent factor.  For the bipolar example in ``test_distortion``
+the two differ by a factor of ten -- a plausible-looking number, not an
+error.  Referring the harmonics to whatever the caller means by "output" is
+the caller's job.
 """
 
 from . import circuit as circuit_module
@@ -130,36 +137,139 @@ def scalar_nonlinearity(port, b, c, n, toolkit):
     return B, C
 
 
-def harmonic_response(apply_G, U, b, c, tones, toolkit,
-                      b_h=None, c_h=None, X_in=None):
+class CubicNonlinearity:
+    """A polynomial nonlinearity ``f_s = sum_k b_sk x_k**2 + c_sk x_k**3``.
+
+    The matrices follow the 2013 paper's eq. (6): entry ``[s, k]`` is the
+    coefficient of the current injected at node ``s`` and controlled by node
+    ``k``.  Note the restriction that comes with that form -- **self-terms
+    only**.  A device whose current depends on the product of two *different*
+    controlling voltages is outside this formulation.
+    """
+
+    def __init__(self, b, c):
+        self.b = b
+        self.c = c
+
+    def harmonic_sources(self, X1, toolkit):
+        """Fourier coefficients of the nonlinearity driven by ``X1``.
+
+        For ``x = Re[V e^{j0}]``, ``x**2`` has second-harmonic coefficient
+        ``V**2/2`` and ``x**3`` has third-harmonic coefficient ``V**3/4``;
+        the derivative ``df/dx = 2b x + 3c x**2`` has fundamental coefficient
+        ``2 b V``.  Those three are all the recurrence needs.
+        """
+        dot = toolkit.dot
+        F2 = _scale(dot(self.b, _elementwise_pow(X1, 2)), _reciprocal(toolkit, 2))
+        F3 = _scale(dot(self.c, _elementwise_pow(X1, 3)), _reciprocal(toolkit, 4))
+        ## B1[s,k] = 2 b[s,k] X1[k]; folded into the mixing term below as a
+        ## plain elementwise product, which is what it reduces to.
+        B1_apply = lambda vec: _scale(
+            dot(self.b, _elementwise_mul(X1, vec)), 2)
+        return F2, F3, B1_apply
+
+
+class ExponentialNonlinearity:
+    r"""A junction nonlinearity ``f(v) = I_S (e^{v/V_T} - 1 - v/V_T)``.
+
+    This is the diode and bipolar shape, and it is where the cubic
+    approximation stops being adequate: the 2005 paper measures a
+    cubic-truncated exponential converging to a second harmonic roughly 20%
+    away from the true value.  Handled here **exactly at every harmonic
+    order**, because the Fourier coefficients of ``exp(a cos t)`` are modified
+    Bessel functions:
+
+    .. math::
+
+        F_{m} = 2 I_S\, I_m(|X_1| / V_T), \quad m > 1
+
+    (2005 paper eqs. 46-47).  No truncation, no polynomial fit.
+
+    The linear and constant terms are subtracted so that ``f(0) = 0`` and
+    ``f'(0) = 0`` -- the formulation requires the nonlinearity to be strictly
+    nonlinear, with any linear part already absorbed into the circuit's
+    admittance as the junction conductance ``I_S / V_T``.
+
+    .. note::
+
+       The Bessel form assumes the drive is a *real* cosine, i.e. that the
+       phase of ``X1`` has been absorbed into the time origin.  That is the
+       convention the source uses (it chooses the input phase to make the
+       controlling voltage real), and it is exact for a single tone.
+    """
+
+    def __init__(self, I_S, V_T, port, n):
+        self.I_S = I_S
+        self.V_T = V_T
+        self.port = port
+        self.n = n
+
+    def _bessel(self, order, arg, toolkit):
+        try:
+            return toolkit.besseli(order, arg)
+        except AttributeError:
+            from scipy.special import iv
+            return iv(order, arg)
+
+    def harmonic_sources(self, X1, toolkit):
+        amplitude = abs(X1[self.port]) / self.V_T
+        I2 = self._bessel(2, amplitude, toolkit)
+        I3 = self._bessel(3, amplitude, toolkit)
+        I1 = self._bessel(1, amplitude, toolkit)
+
+        ## Built as lists, not toolkit.zeros(): that returns a *real* array,
+        ## and assigning a complex harmonic into it silently discards the
+        ## imaginary part -- a phase error that only shows up off DC.
+        F2 = [0] * self.n
+        F3 = [0] * self.n
+        F2[self.port] = 2 * self.I_S * I2
+        F3[self.port] = 2 * self.I_S * I3
+
+        ## B1 is the fundamental Fourier coefficient of df/dv, which for the
+        ## exponential is (I_S/V_T)*exp(v/V_T) -- again a Bessel coefficient.
+        b1 = 2 * (self.I_S / self.V_T) * I1
+
+        def B1_apply(vec):
+            out = [0] * self.n
+            out[self.port] = b1 * vec[self.port]
+            return out
+
+        return F2, F3, B1_apply
+
+
+def harmonic_response(apply_G, U, nonlinearity, tones, toolkit):
     """Harmonics of a weakly nonlinear circuit, to second perturbation order.
 
-    Implements the 2013 paper's eqs. (18)-(20) in their general matrix form:
-    any number of nonlinear devices, plus an optional nonlinearity acting on
-    the *input* itself.
+    Implements the 2013 paper's eqs. (18)-(20), written in the form that holds
+    for *any* analytic nonlinearity rather than only a polynomial one:
 
-    Every line below is a solve against the *same* linear operator at a
-    different frequency -- ``apply_G`` is called at the fundamental, at twice
-    it and at three times it, and nothing else about the circuit changes.
-    That is the property that makes this an analysis rather than a solver.
+    .. code-block:: text
 
-    The coefficient matrices follow the paper's eq. (6): entry ``b[s, k]`` is
-    the quadratic coefficient of the nonlinear current injected at node ``s``
-    and controlled by node ``k``.  Note the model restriction that comes with
-    it -- **self-terms only**.  A device whose current depends on the product
-    of two *different* controlling voltages is outside this formulation.
+        X1 =  G(w)  U
+        X2 = -G(2w) F2
+        X3 = -G(3w) [ F3 + (1/2) B1 . X2 ]
+
+    where ``F2``, ``F3`` are the second- and third-harmonic Fourier
+    coefficients of the nonlinearity evaluated on the *known* linear solution,
+    and ``B1`` is the fundamental coefficient of its derivative.  A
+    :class:`CubicNonlinearity` supplies those from polynomial coefficients; an
+    :class:`ExponentialNonlinearity` supplies them in closed form from
+    modified Bessel functions.  The recurrence does not care which.
+
+    Every line is a solve against the *same* linear operator at a different
+    frequency -- ``apply_G`` is called at the fundamental, at twice it and at
+    three times it, and nothing else about the circuit changes.  That is the
+    property that makes this an analysis rather than a solver.
 
     Args:
         apply_G: ``apply_G(harmonic, rhs) -> vector``, solving ``Y(s) x = rhs``
             with ``s`` the frequency of ``harmonic``.  The caller's single
             point of contact with the circuit.
-        U: Source vector driving the fundamental (the paper's ``G_h X_in``).
-        b, c: ``n x n`` quadratic and cubic coefficient matrices.
+        U: Source vector driving the fundamental.
+        nonlinearity: An object with ``harmonic_sources(X1, toolkit)``
+            returning ``(F2, F3, B1_apply)``.
         tones: Angular frequencies of the input tones.
         toolkit: The active toolkit.
-        b_h, c_h: Optional coefficient matrices for a nonlinearity acting on
-            the input vector rather than on the solution.
-        X_in: The raw input vector, required if ``b_h``/``c_h`` are given.
 
     Returns:
         :class:`DistortionSolution` holding the full harmonic *vectors*.
@@ -167,53 +277,37 @@ def harmonic_response(apply_G, U, b, c, tones, toolkit,
     pad = (0,) * (len(tones) - 1)
     one, two, three = (Harmonic((m,) + pad) for m in (1, 2, 3))
 
-    dot = toolkit.dot
-
     ## Order 0 (eq. 18): the plain linear response.  This is also the final
     ## answer for the fundamental -- the perturbation never corrects it at
     ## this truncation, so no gain compression is predicted.
     X1 = apply_G(one, U)
 
-    ## The input nonlinearity contributes only here: it does not depend on the
-    ## solution, so it never re-enters at a later order.
-    def input_drive(coeffs, power):
-        if coeffs is None:
-            return None
-        if X_in is None:
-            raise ValueError('b_h/c_h given without X_in')
-        return dot(coeffs, _elementwise_pow(X_in, power))
+    F2, F3, B1_apply = nonlinearity.harmonic_sources(X1, toolkit)
 
-    ## Order 1 (eq. 19).  The nonlinearity is evaluated on the *known* linear
-    ## solution, so its harmonics follow in closed form: for x = Re[V e^jt],
-    ## the second-harmonic coefficient of x**2 is V**2/2.  That Fourier step
-    ## is where harmonic balance enters -- and each harmonic is then pushed
-    ## back through G at *its own* frequency, not at the fundamental.
-    drive2 = -dot(b, _elementwise_pow(X1, 2))
-    h2 = input_drive(b_h, 2)
-    if h2 is not None:
-        drive2 = drive2 + h2
-    ## G is linear, so halving the drive is the same as halving the answer --
-    ## and keeps the arithmetic elementwise rather than on the solve result.
-    X2 = apply_G(two, _scale(drive2, _reciprocal(toolkit, 2)))
+    ## Order 1 (eq. 19).  The nonlinearity is evaluated on a solution that is
+    ## already known, so its harmonics follow in closed form.  That Fourier
+    ## step is where harmonic balance enters -- and each harmonic is then
+    ## pushed back through G at *its own* frequency, not at the fundamental.
+    X2 = apply_G(two, _negate(F2))
 
-    ## Order 2 (eq. 20).  Two contributions at the third harmonic: the cubic
-    ## coefficient acting on the fundamental directly, and -- through the
-    ## second perturbation order -- the *quadratic* coefficient mixing the
-    ## fundamental with the second harmonic it produced.  Dropping the second
-    ## term is the classic way to under-predict HD3 in a circuit whose
-    ## dominant nonlinearity is quadratic.
-    ##
-    ## The paper writes that mixing term as
-    ##   -2 b diag(X1) G(j2w) (b_h Xin^2 - b X1^2),
-    ## and the inner factor is exactly 2*X2 by eq. (19), so it collapses to
-    ## -4 b (X1 elementwise* X2).
-    drive3 = -dot(c, _elementwise_pow(X1, 3)) - 4 * dot(b, _elementwise_mul(X1, X2))
-    h3 = input_drive(c_h, 3)
-    if h3 is not None:
-        drive3 = drive3 + h3
-    X3 = apply_G(three, _scale(drive3, _reciprocal(toolkit, 4)))
+    ## Order 2 (eq. 20).  Two contributions at the third harmonic: the
+    ## nonlinearity's own third-harmonic content, and -- through the second
+    ## perturbation order -- its *derivative* mixing the fundamental with the
+    ## second harmonic it just produced.  For a cubic that second term carries
+    ## no cubic coefficient at all: it is the quadratic nonlinearity acting
+    ## twice.  Dropping it is the classic way to under-predict HD3.
+    mixing = _scale(B1_apply(X2), _reciprocal(toolkit, 2))
+    X3 = apply_G(three, _negate(_add(F3, mixing)))
 
     return DistortionSolution({one: X1, two: X2, three: X3}, tones, toolkit)
+
+
+def _negate(vec):
+    return [-v for v in vec]
+
+
+def _add(a, b):
+    return [x + y for x, y in zip(a, b)]
 
 
 def _scale(vec, factor):

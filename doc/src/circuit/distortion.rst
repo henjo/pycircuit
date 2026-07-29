@@ -16,10 +16,10 @@ vol. 52, no. 8, pp. 1620–1631 (2005).
 
 .. note::
 
-   This covers stages 1–2 of the plan in ``doc/distortion_plan.md``: cubic
-   nonlinearities driven by a single tone, with any number of nonlinear
-   devices.  Exponential devices and two-tone intermodulation are later
-   stages.
+   This covers stages 1–3 of the plan in ``doc/distortion_plan.md``: a single
+   tone, any number of nonlinear devices, with either cubic-polynomial or
+   exponential (diode/bipolar) nonlinearities.  Two-tone intermodulation is a
+   later stage.
 
 The idea
 --------
@@ -253,3 +253,64 @@ Limitations of the present implementation
   covered — the source formulation assumes self-terms only.
 * The fundamental is uncorrected, so gain compression and AM-AM effects are
   outside the model.
+
+Devices that are not polynomials
+--------------------------------
+
+A diode or bipolar junction is exponential, not cubic:
+
+.. math::
+
+   f(v) = I_S\left(e^{v/V_T} - 1 - v/V_T\right)
+
+with the constant and linear terms subtracted so that the nonlinearity is
+strictly nonlinear, its linear part having been absorbed into the circuit's
+admittance as the junction conductance :math:`I_S/V_T`.
+
+The usual move is to fit a cubic and reuse the machinery above.  That is what
+the Volterra literature generally does, and it is **not adequate here**: the
+2005 reference measures a cubic-truncated exponential converging to a second
+harmonic materially below the true value — around 20% on its Fig. 3 — while
+still looking entirely reasonable.
+
+It is also unnecessary, because the exponential case has an exact closed form
+at *every* harmonic order.  The Fourier coefficients of
+:math:`\exp(a\cos\theta)` are modified Bessel functions of the first kind,
+so
+
+.. math::
+
+   F_m = 2 I_S\, I_m\!\left(|X_1|/V_T\right), \qquad m > 1
+
+with no truncation and no fitting.  The recurrence is untouched — only the
+supplier of :math:`F_2`, :math:`F_3` and :math:`B_1` changes, which is why
+those three quantities are the interface between the nonlinearity and the
+method.
+
+Two consequences worth stating.  At small drive the exponential and cubic
+treatments must converge, since the cubic fit *is* the exponential's Taylor
+expansion; ``test_distortion`` pins that, and it is the check that would catch
+a wrong argument scaling in the Bessel functions, which a working-amplitude
+comparison alone would not.  At working drive they must diverge, in the
+direction of the exact treatment predicting *more* distortion.
+
+Node quantities are not output quantities
+------------------------------------------
+
+The harmonics this analysis produces are node voltages.  Distortion measured
+at the node controlling a nonlinearity is generally **not** the distortion at
+the circuit's output: the mapping from one to the other carries a feedforward
+path and a frequency-dependent factor of its own.
+
+For the bipolar amplifier of the 2005 reference the output current is
+
+.. math::
+
+   y = \mathcal{E}u + \mathcal{N}x, \qquad
+   \mathcal{E} = -\beta_F/R, \qquad
+   \mathcal{N} = (\beta_F/R)(1 + j\omega RC)
+
+and referring HD to :math:`y` rather than to :math:`v_{be}` changes it by a
+factor of ten for the published component values.  Ten is a plausible number
+to see and no error is raised, which is why ``test_distortion`` pins the
+distinction explicitly.
