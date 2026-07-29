@@ -65,21 +65,51 @@ argument.**
 
 ## 3. Stages
 
-### Stage A — the cheap alternative, measured first
+### Stage A — the cheap alternative, measured first, and pushed to `U^13`
 
 **Not a DDD stage.** Represent each graded coefficient as a sum of products of
 *unevaluated* factors — no `cancel`, no `expand`, no premultiplication — and
 evaluate through a single memo, exactly the discipline that gave 1000x in the
 feasibility spike.
 
-**Gate.** On the two-node symbolic system that defeated `cancel`: produce the
-`U^7` third-harmonic coefficient and evaluate it, in **under 60 s**, agreeing
-with the current numeric path to 1e-12.
+**Gate — a sweep, not a single point.** On the two-node symbolic system that
+defeated `cancel`, produce the third-harmonic coefficient and evaluate it at
 
-**This stage can end the plan.** If a plain factored ring makes `U^7`
-tractable, DDD is an optimisation of a solved problem. **Record that as the
-answer to §8.3 and stop** — it is a result, not a failure, and it is the
-outcome that costs least to discover.
+```
+U^7  ->  U^9  ->  U^11  ->  U^13
+```
+
+starting at `U^7` (the order `sympy.cancel` could not finish in 900 s) and
+**increasing until it either fails or reaches `U^13`**. At each order record
+
+- wall time to build and to evaluate,
+- representation size (distinct factors, and nodes in the factored form),
+- agreement with the existing numeric path, required at **1e-12**.
+
+**Stop at `U^13`.** Not a budget compromise: the fifth harmonic first appears
+at `U^5` and receives corrections at `U^7`, `U^9`, `U^11`, `U^13`, so 13 is
+four corrections deep on a harmonic the method actually reports, and past that
+the numeric path is already known to be reference-limited rather than
+method-limited (`distortion_mimo_plan.md` stage E). Going further would measure
+the representation against nothing.
+
+**The scaling across the sweep is the real deliverable, not the pass mark.**
+A single order tells you whether it fits in memory; four orders tell you
+whether *cost* is polynomial in the truncation order — which is the question
+§8.3 actually asks, and the one stage E of the previous plan answered only for
+*size*.
+
+**Reporting is defined in advance so a partial result is still a result:**
+
+- reaches `U^13` — record the sweep and **stop the plan**; DDD would be an
+  optimisation of a solved problem, and that is the cheapest possible answer
+  to §8.3.
+- fails at some order — record **which order and how** (time, memory, or a
+  size explosion; they are different diagnoses), and carry that order forward
+  as the number stages B–E have to beat.
+
+Either way the sweep is the baseline every later stage is measured against, so
+it is worth recording even if it is the last thing this plan does.
 
 ### Stage B — a DDD-backed solve
 
@@ -187,7 +217,7 @@ output._
 
 | Stage | Outcome |
 |---|---|
-| A — factored ring, no DDD | not started |
+| A — factored ring, no DDD, swept `U^7`..`U^13` | not started |
 | B — DDD-backed solve | not started |
 | C — `s_expand` across harmonics | not started |
 | C2 — hierarchy, for bigger circuits | not started |
@@ -205,4 +235,9 @@ output._
 - **Keep factors unmultiplied as tuples**, as `DDDCombination` does: a
   premultiplied product is a sympy expression and costs a full substitution.
 - **`sympy.cancel` does not finish in 900 s at `U^7`** on a two-node system.
-  That is the number stage A has to beat, and the reason this plan exists.
+  That is where stage A's sweep *starts*, and the reason this plan exists.
+  The sweep runs `U^7`, `U^9`, `U^11`, `U^13` and stops at 13.
+- **`U^13` is four corrections deep on the fifth harmonic**, which first
+  appears at `U^5` and is corrected at every odd order above it. Past 13 the
+  numeric reference is itself the limiting factor, so there would be nothing to
+  measure against.
