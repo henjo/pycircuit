@@ -576,8 +576,111 @@ against an :math:`O(U)` fundamental; see `The fundamental is not corrected`_.
    So agreement to :math:`10^{-15}` against these formulas is strong evidence
    about **magnitudes** and no evidence at all about **phase**.  Anything that
    depends on phase — cancellation between contributions, stability, a
-   time-domain waveform — needs a different check, which is why the
-   convergence table below uses a time-domain integration instead.
+   time-domain waveform — needs a different check.
+
+   That check exists and is described under `Phase`_ below, against a
+   time-domain integration.  The gap is closed; this warning stands because
+   it explains *why* a second kind of check was needed.
+
+Phase
+-----
+
+A waveform is not a modulus, so integrating the circuit's own differential
+equations tests what none of the published closed forms can.  Regenerated on
+every build:
+
+.. exec-rst::
+
+    import numpy as np
+    from scipy.integrate import solve_ivp
+    from pycircuit.circuit.distortion import (graded_response_mimo,
+                                              GradedSpectrum, GradedVector)
+
+    g1 = g2 = 31.26e-6; g3 = 625.2e-6; g4 = -625.2e-6
+    C1 = C2 = 9.3054e-12
+    alpha = -0.0535
+    g1c, g2c, g3c, g4c = (alpha*g for g in (g1, g2, g3, g4))
+    w0 = np.sqrt(-g3*g4/(C1*C2))
+
+    def solve(s, rhs):
+        M = np.array([[g2 + s*C1, -g4], [-g3, s*C2]], dtype=complex)
+        return np.linalg.solve(M, np.asarray(rhs, dtype=complex))
+
+    def cube(sp, n):
+        return ((sp*sp).truncated(n) * sp).truncated(n)
+
+    Xin = 0.10
+    src = (GradedSpectrum.from_phasor(1, 1, g1*Xin)
+           + cube(GradedSpectrum.from_phasor(1, 1, Xin), 11).scaled(g1c))
+    f = lambda x: GradedVector([cube(x[0], 11).scaled(-g2c)
+                                + cube(x[1], 11).scaled(-g4c),
+                                cube(x[0], 11).scaled(-g3c)])
+    got = graded_response_mimo(solve, GradedVector([src, GradedSpectrum()]),
+                               f, (w0,), 11)
+
+    def rhs(t, y):
+        x1, x2 = y
+        u = Xin*np.cos(w0*t)
+        return [(-g2*x1 + g4*x2 + g1*u + g1c*u**3
+                 + g2c*x1**3 + g4c*x2**3)/C1,
+                (g3*x1 + g3c*x1**3)/C2]
+
+    T = 2*np.pi/w0
+    tend, keep = 200*T, 32
+    ## Window starts at a whole number of drive periods, so the FFT's phase
+    ## reference is cos(w0 t) -- the same one the phasors use.
+    ts = np.linspace(tend - keep*T, tend, keep*256, endpoint=False)
+    sol = solve_ivp(rhs, (0, tend), [0.0, 0.0], t_eval=ts, method='DOP853',
+                    rtol=1e-12, atol=1e-18, max_step=T/60)
+    S = np.fft.rfft(sol.y[0])/len(sol.y[0])
+
+    head = ['harmonic', 'magnitude error', 'phase error (deg)']
+    rows = []
+    for m in (1, 3, 5):
+        a, b = got[0].phasor(m), 2*S[m*keep]
+        rows.append(['%d' % m, '%.1e' % (abs(abs(a)-abs(b))/abs(b)),
+                     '%.4f' % np.angle(a/b, deg=True)])
+
+    widths = [max(len(r[i]) for r in rows + [head]) for i in range(len(head))]
+    sep = ' '.join('=' * w for w in widths)
+    print(sep)
+    print(' '.join('%-*s' % (w, h) for w, h in zip(widths, head)))
+    print(sep)
+    for r in rows:
+        print(' '.join('%-*s' % (w, c) for w, c in zip(widths, r)))
+    print(sep)
+    print('')
+
+    rebuilt = np.full_like(ts, float(np.real(got[0].phasor(0))))
+    for m in range(1, 12):
+        X = got[0].phasor(m)
+        if X != 0:
+            rebuilt = rebuilt + np.real(X*np.exp(1j*m*w0*ts))
+    err = np.max(np.abs(rebuilt - sol.y[0]))/np.max(np.abs(sol.y[0]))
+    print('Waveform rebuilt from the phasors, against the integrated one:')
+    print('peak error ``%.2e`` of peak amplitude -- every harmonic\'s'
+          % err)
+    print('magnitude *and* phase at once.')
+    print('')
+
+    ## The criterion has to be shown capable of failing.  These leave |X|
+    ## bit-identical, so a magnitude-only comparison accepts all of them.
+    ref = got[0].phasor(3)
+    b = 2*S[3*keep]
+    muts = [('sign flip', -ref), ('90 degree rotation', 1j*ref),
+            ('conjugation', np.conj(ref))]
+    print('Mutations that preserve ``|X|`` exactly:')
+    print('')
+    for name, z in muts:
+        print('* %s -- magnitude error ``%.1e``, phase error ``%+.1f`` deg'
+              % (name, abs(abs(z)-abs(b))/abs(b), np.angle(z/b, deg=True)))
+
+Every mutation above leaves the magnitude error unchanged to the digit shown,
+so a magnitude-only comparison accepts all three.  That is the point of
+including them: it distinguishes "the phases agree" from "the phases agree up
+to an offset nobody checked".
+
+The test is ``test_biquad_phase_and_waveform_match_the_ode_integration``.
 
 Higher order on a multi-node circuit
 ------------------------------------

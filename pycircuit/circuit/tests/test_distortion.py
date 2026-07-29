@@ -2145,3 +2145,81 @@ def test_amplifier_im3_matches_published_eq43(f1):
     want = first*second
 
     assert abs(got - want) <= 1e-11*want
+
+
+# ---------------------------------------------------------------------------
+# Phase.  Every published gate in this module compares moduli; this does not.
+# ---------------------------------------------------------------------------
+
+def test_biquad_phase_and_waveform_match_the_ode_integration():
+    """Validates what the published closed forms structurally cannot.
+
+    Every gate against Buonomo & Lo Schiavo compares ``|.|`` of a product and
+    ratio of transfer functions.  Conjugating any factor leaves such a
+    modulus unchanged, so those comparisons are blind to sign and phase --
+    demonstrated twice in this file: the ``p~``/``q~`` conjugates in eq. (43)
+    make no difference to the result, and the eq. (46) pencil has
+    right-half-plane poles that eqs. (47)/(48) do not notice.
+
+    A time-domain integration has no such blindness, because a waveform is
+    not a modulus.  Three checks here, in increasing strength:
+
+    1. per-harmonic phase against the integration,
+    2. mutations that preserve ``|X|`` exactly, to show the phase criterion
+       can actually fail,
+    3. the reconstructed waveform against the integrated one, which tests
+       every harmonic's magnitude *and* phase at once.
+
+    The FFT window starts at an exact multiple of the drive period, so its
+    phase reference is ``cos(w0 t)`` -- the same one the phasors use.  Get
+    that wrong and every phase is offset by a constant, which is why check 2
+    matters: it distinguishes "phases agree" from "phases agree up to an
+    offset nobody checked".
+    """
+    from scipy.integrate import solve_ivp
+
+    Xin = 0.10
+    w = _bq_centre()
+
+    def rhs(t, y):
+        x1, x2 = y
+        u = Xin*np.cos(w*t)
+        return [(-_BQ_G2*x1 + _BQ_G4*x2 + _BQ_G1*u + _BQ_G1C*u**3
+                 + _BQ_G2C*x1**3 + _BQ_G4C*x2**3)/_BQ_C1,
+                (_BQ_G3*x1 + _BQ_G3C*x1**3)/_BQ_C2]
+
+    period = 2*np.pi/w
+    tend = 200*period
+    keep = 32
+    ts = np.linspace(tend - keep*period, tend, keep*256, endpoint=False)
+    sol = solve_ivp(rhs, (0, tend), [0.0, 0.0], t_eval=ts, method='DOP853',
+                    rtol=1e-12, atol=1e-18, max_step=period/60)
+    spectrum = np.fft.rfft(sol.y[0])/len(sol.y[0])
+    want = {m: 2*spectrum[m*keep] for m in (1, 3, 5)}
+
+    got = _bq_run_with(_bq_solve_stable, Xin, w, 11)
+
+    ## 1 -- phase, harmonic by harmonic.
+    for m in (1, 3, 5):
+        offset = np.angle(got[0].phasor(m)/want[m], deg=True)
+        assert abs(offset) < 0.01, 'harmonic %d off by %.4f deg' % (m, offset)
+
+    ## 2 -- the criterion must be able to fail.  Each of these leaves the
+    ## magnitude bit-identical, so a magnitude-only gate accepts all three.
+    reference = got[0].phasor(3)
+    for mutate, expected in ((lambda z: -z, 180.0),
+                             (lambda z: 1j*z, 90.0)):
+        mutated = mutate(reference)
+        assert abs(mutated) == abs(reference), 'mutation changed |X|'
+        offset = abs(np.angle(mutated/want[3], deg=True))
+        assert abs(offset - expected) < 0.1, (
+            'expected %g deg, got %g' % (expected, offset))
+
+    ## 3 -- the whole waveform, which folds in every harmonic at once.
+    rebuilt = np.full_like(ts, float(np.real(got[0].phasor(0))))
+    for m in range(1, 12):
+        phasor = got[0].phasor(m)
+        if phasor != 0:
+            rebuilt = rebuilt + np.real(phasor*np.exp(1j*m*w*ts))
+    peak = np.max(np.abs(sol.y[0]))
+    assert np.max(np.abs(rebuilt - sol.y[0]))/peak < 1e-8

@@ -301,6 +301,38 @@ single-tone. This is the natural completion of the work and unusually cheap:
 faster than the single-tone case did; stage E's measurement should be repeated
 for two tones rather than assumed to carry over.
 
+### 8.1b Phase — **DONE**, and it was not on this list until 8.1 exposed the gap
+
+Every gate in sections 5 and 8.1 compares moduli of products, so all of them
+are blind to sign and phase. That was not a suspicion: it was demonstrated
+twice, by the eq. (43) conjugates making no difference and by the eq. (46)
+pencil's right-half-plane poles passing unnoticed. **The method was therefore
+very well validated in magnitude and entirely unvalidated in phase.**
+
+A time-domain integration has no such blindness, and stage E had already built
+one — it was simply discarding the phase and comparing `|X3|`.
+
+**Gate passed.** Against the biquad's own ODEs at `Xin = 0.10`:
+
+- per-harmonic phase error **0.0000 deg** at harmonics 1 and 3, 0.0001 deg at
+  5 (0.0355 deg at 7, where the amplitude is 1e-14 and the integrator's floor
+  dominates);
+- the reconstructed waveform matches the integrated one to **2.2e-10** of peak
+  amplitude — every harmonic's magnitude *and* phase at once.
+
+**The criterion has teeth,** which had to be shown rather than assumed: three
+mutations that leave `|X|` bit-identical (sign flip, 90 deg rotation,
+conjugation) give phase errors of −180, +90 and −13.8 deg while producing
+*exactly* the same magnitude error, 3.14e-08. A magnitude-only gate accepts
+all three.
+
+**A no-op mutation, recorded because it looked like a real one.** The first
+attempt "conjugated the pencil" as `conj(solve(conj(s), conj(rhs)))`. For a
+real-coefficient matrix `M(conj s) = conj M(s)`, so that expression is the
+**identity** — it produced bit-identical output and briefly looked like
+evidence that phase could not discriminate. A mutation that changes nothing is
+worse than no mutation, because it reads as a passing result.
+
 ### 8.2 Cross-terms `x_j x_k` are permitted but unverified
 
 `graded_response_mimo` takes the nonlinearity as a callable in the graded ring,
