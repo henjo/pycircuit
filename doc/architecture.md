@@ -1038,12 +1038,21 @@ two tolerances fixed it. **Writing the lesson down did not prevent repeating it;
 number that could not be true is what caught it.** **Not** achieved: the leapfrog, where
 stage 5 showed the composition is not error-controlled.
 
-**A separate capability, and it works comfortably (stage 14).** Fully symbolic
-*nonlinear* analysis of the 127-unknown leapfrog, evaluated numerically: at `U^5` the
+**A separate capability, and it works comfortably.** Recorded in
+`doc/distortion_ddd_plan.md` §7 and `doc/distortion_ddd_conclusions.md` §10, not
+with the term-ranking work above — different subject. Fully symbolic *nonlinear*
+analysis of the 127-unknown leapfrog, evaluated numerically: at `U^5` the
 `distortion_ddd` expression graph is 20 992 nodes, builds in 3.7 s, evaluates in
 0.32 s, and matches an independent fully-numeric graded solve to **4.6e-13** — **60×
 faster than the numeric path**, which re-solves a 127×127 matrix per
 `(harmonic, power)` key. Growth from `U^3` is 1.76× in nodes.
+
+**Extended since:** the order sweep now runs to `U^17` (84 427 graph nodes, 123.5 s
+to build, 3.50 s to evaluate six amplitudes), with the convergence order tracking how
+close the node sits to the cubic's turning point `v_turn` rather than the drive level,
+and a usable rule — the per-two-order ratio is about `1.6*(v/v_turn)^2`, so the order
+needed for a target accuracy is predictable before any expansion is built. A live
+version of the table is in `doc/src/circuit/distortion_ddd.rst`.
 
 **The lesson that ties the two halves of P16 together: the readable goal and the
 scalable goal want opposite representations.** An expanded, rankable form can be read

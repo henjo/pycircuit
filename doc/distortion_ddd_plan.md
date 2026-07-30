@@ -244,3 +244,73 @@ output._
   appears at `U^5` and is corrected at every odd order above it. Past 13 the
   numeric reference is itself the limiting factor, so there would be nothing to
   measure against.
+
+## 7. The circuit axis, at op-amp scale (added 2026-07-30)
+
+§4 of `doc/distortion_ddd_conclusions.md` recorded the *circuit* axis as the open
+one: this representation had been pushed hard on perturbation *order* and never
+tried on anything resembling an op-amp. These stages close that, and they were
+originally written in `doc/cancellation_ranking_plan.md` — the wrong document,
+since that plan is about term ranking. Moved here with their outcomes intact.
+
+### 7.1 The circuit axis: a 127-unknown leapfrog (declared 2026-07-30)
+
+A different question from the rest of this plan, asked by the maintainer: nonlinear
+analysis of the 127-unknown leapfrog, fully symbolic, then evaluated numerically.
+
+**One fact shapes it.** `leapfrog_5th_order` is built from `add_small_signal_bjt`,
+which stamps only `R`, `VCCS` and `C` — **the fixture is entirely linear and contains
+no nonlinearity to analyse.** That is not a blocker: `graded_response_mimo` *attaches*
+nonlinearities at chosen ports, which is exactly how the existing µA741 distortion
+test works. But where to attach them is a **modelling choice**, and it is made
+explicitly here rather than buried: the nonlinearity goes on one amplifier's input
+differential pair, because that is where an op-amp's distortion originates.
+
+**And "fully symbolic" means the expression-graph sense, not the expanded sense.**
+`distortion_ddd`'s `Expr` is a straight-line program over the device symbols — it
+evaluates fast and, as `doc/src/circuit/distortion_ddd.rst` already records, cannot
+rank terms or be read. That is exactly right for this request (symbolic form, numeric
+evaluation) and exactly wrong for the readability goal stages 1-13 pursued. Worth
+stating so the two are not conflated.
+
+**Gate, declared before running.**
+
+1. The graded perturbation completes on the 127-unknown leapfrog at `U^3`, and the
+   graph size and build time are reported.
+2. **Its numerical evaluation matches an independent fully-numeric graded solve to
+   ≤ 1e-10 relative** — the same oracle the µA741 test uses. Without this the size
+   numbers mean nothing, which that test's docstring records learning the hard way.
+3. The third harmonic at the output must be **non-zero**; a size measurement against
+   an identically-zero harmonic says nothing, which is the same trap.
+4. Report the growth from `U^3` to `U^5` if `U^3` passes.
+5. **FAIL if it does not complete or does not match.**
+
+**Declared in advance:** the µA741 (26 unknowns) gave a few thousand graph nodes, and
+the cascaded-op-amp test found size growing linearly in circuit size, so tens of
+thousands is the expectation at 127 unknowns. Much worse than linear would be the
+interesting negative result.
+
+### 7.2 Order versus amplitude — the table (declared 2026-07-30)
+
+Same circuit and nonlinearity, but sweeping the drive amplitude and the truncation
+order together, and asking **at which order successive truncations stop differing**.
+No external oracle is needed for that, which matters because the obvious one is
+unaffordable — see the outcome below.
+
+Two requirements carried over from hard-won lessons elsewhere in this project:
+the drive amplitude and the nonlinear coefficient stay **symbolic**, so one build
+per order serves the whole sweep; and the cubic's **turning point**
+`v_turn = 1/sqrt(3|a|)`, beyond which the model is not a physical device, is
+computed and printed beside every row.
+
+**Gate.** Report graph size, build time and evaluation time per order; report the
+convergence order per amplitude; and report each row's percentage of `v_turn`.
+A row beyond 100% of `v_turn` is not a result and must be marked as such.
+
+### 7.3 Outcomes
+
+| Stage | Outcome |
+|---|---|
+| 14 — nonlinear leapfrog, symbolic then numeric | **PASS on every gate.** 127 unknowns, nonlinearity attached to stage 0's input pair. `U^3`: **11 945 graph nodes, 1.4 s build, 0.20 s evaluate**, third harmonic 8.193583e-26 matching an independent numeric graded solve to **4.63e-13**. `U^5`: 20 992 nodes, 3.7 s, 0.32 s, same agreement. **The symbolic route is 60× faster than the numeric one** (4.0 s against 238.5 s at `U^5`), because the graph is built once and evaluated by a memoised walk while the numeric path re-solves a 127×127 matrix per `(harmonic, power)` key. Growth `U^3 → U^5` is 1.76× in nodes. **Caveats stated:** the fixture is linear so the nonlinearity's placement is a modelling choice; "symbolic" is the straight-line-program sense and **cannot be read**; and `U^5` shows cost growth, not better accuracy (the third harmonic is unchanged at this drive level). Details: `cancellation_ranking_conclusions.md` §27. |
+| 15 — nonlinear order vs amplitude | **Delivered, symbolically.** 127 unknowns, cubic on stage 0's input pair, 100 kHz. **One symbolic build per order** (`U^13` = 54 079 nodes, 51.7 s) then every amplitude is a graph walk (2.11 s for six). Required order climbs with amplitude: **`U^5`** to 100 mV, **`U^7`** at 300 mV, **`U^9`** at 1 V, **not settled by `U^13`** at 3 V (corrections falling only 1.7e-01 → 1.7e-04). **The frequency mattered as much as the amplitude:** at 1 kHz the loop gain holds the input pair at a virtual ground (2.5 µV at 10 mV) and everything converged at `U^3` with HD3 ~ 1e-14; at 100 kHz, where this µA741's open-loop gain is ~8 dB, the same drive gives 6.33e-05 — **25× larger** — and the orders come alive. Because `kk` is also a symbol, a second sweep over nonlinearity strength cost **no rebuild**. **Transient comparison dropped on a measured cost wall** (2 ms did not finish in 6 min; the circuit is stiff over ~4 decades of time constant). Details: `cancellation_ranking_conclusions.md` §28. |
+

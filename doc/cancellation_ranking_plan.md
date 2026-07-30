@@ -8,11 +8,26 @@ result makes each stage a success.
 Predecessor: `doc/hierarchical_approximation_plan.md`. Its §5 records the
 negative result this plan responds to.
 
-**Status: stages 0-5 run. Stage 1's tolerance is met at both operating points
-and its term-count budget at one; stage 3 meets its count and accuracy gates
-and fails its interpretability gate; stage 5 recovers device parameters but
-shows the composition is not error-controlled. See §"Outcomes" — every number
-there comes from a logged run of the scripts named in it.**
+**Status: COMPLETE — every declared stage has a recorded outcome. Read
+§"Outcomes" first; every number there comes from a logged run of the script named
+beside it.**
+
+**The headline, in one paragraph.** Convergent device-symbolic approximation works
+and is shipped (`DDD.approximate_groups`), with two cheap diagnostics
+(`DDD.cancellation`, `DDD.concentration`) and their measured limits. A *readable*
+result was reached for one coefficient (11 operations at 26% error) and for a
+transfer function over two decades at one operating point (177 operations at 7.9%).
+It was **not** reached over the amplifier's real band, where the best is ~4 000
+operations — roughly 20× too large. Stage 13 explains why no listed lever closes
+that gap: `Short`, element pruning, de-cancellation and GPDD all attack *term
+supply*, and supply is not the binding constraint — the accuracy demanded across
+the frequency band is.
+
+**Scope note.** The *nonlinear* work on the leapfrog that this document briefly
+carried has been moved to where it belongs — `doc/distortion_ddd_plan.md` §7 and
+`doc/distortion_ddd_conclusions.md` §10, with the live table in
+`doc/src/circuit/distortion_ddd.rst`. It was never this plan's subject, which is
+term ranking.
 
 **The next lever, named three times over and still not built:** a `group_rank`
 that accepts a frontier of **several roots** rather than one. It is what stage 5
@@ -498,43 +513,6 @@ had to relearn.
 potentials, so few merges should be expected. A result of two or three merges would
 be unsurprising and would not by itself close a 36× gap.
 
-## Stage 14 — fully symbolic NONLINEAR analysis of the leapfrog (declared 2026-07-30)
-
-A different question from the rest of this plan, asked by the maintainer: nonlinear
-analysis of the 127-unknown leapfrog, fully symbolic, then evaluated numerically.
-
-**One fact shapes it.** `leapfrog_5th_order` is built from `add_small_signal_bjt`,
-which stamps only `R`, `VCCS` and `C` — **the fixture is entirely linear and contains
-no nonlinearity to analyse.** That is not a blocker: `graded_response_mimo` *attaches*
-nonlinearities at chosen ports, which is exactly how the existing µA741 distortion
-test works. But where to attach them is a **modelling choice**, and it is made
-explicitly here rather than buried: the nonlinearity goes on one amplifier's input
-differential pair, because that is where an op-amp's distortion originates.
-
-**And "fully symbolic" means the expression-graph sense, not the expanded sense.**
-`distortion_ddd`'s `Expr` is a straight-line program over the device symbols — it
-evaluates fast and, as `doc/src/circuit/distortion_ddd.rst` already records, cannot
-rank terms or be read. That is exactly right for this request (symbolic form, numeric
-evaluation) and exactly wrong for the readability goal stages 1-13 pursued. Worth
-stating so the two are not conflated.
-
-**Gate, declared before running.**
-
-1. The graded perturbation completes on the 127-unknown leapfrog at `U^3`, and the
-   graph size and build time are reported.
-2. **Its numerical evaluation matches an independent fully-numeric graded solve to
-   ≤ 1e-10 relative** — the same oracle the µA741 test uses. Without this the size
-   numbers mean nothing, which that test's docstring records learning the hard way.
-3. The third harmonic at the output must be **non-zero**; a size measurement against
-   an identically-zero harmonic says nothing, which is the same trap.
-4. Report the growth from `U^3` to `U^5` if `U^3` passes.
-5. **FAIL if it does not complete or does not match.**
-
-**Declared in advance:** the µA741 (26 unknowns) gave a few thousand graph nodes, and
-the cascaded-op-amp test found size growing linearly in circuit size, so tens of
-thousands is the expectation at 127 unknowns. Much worse than linear would be the
-interesting negative result.
-
 ## What would make this whole plan fail
 
 - Stage 0 finds uniform cancellation. Most likely single outcome, and the
@@ -579,8 +557,6 @@ Scripts: `benchmarks/cancellation_profile.py` (stage 0),
 | 11 — transfer function, in operations, over a sweep | **Part 1 CORRECTS §23; part 2 PARTIAL — a 177-operation `H(s)` at one operating point.** Part 1: the terms-to-operations ratio is a property of the diagram, not a constant — 2.2 ops/group for an s-expanded coefficient but **69 ops/group for the compact whole determinant** (734 groups → **50 377 operations**), and 16 for the leapfrog top (181 → 2 895). So §23's "term count overstates 4-8×" is withdrawn: for the whole determinant the earlier verdicts were too *kind*. Part 2: exact `N/D` verified against the solve over the sweep (3.4e-15), then greedy coefficient choice with exact global re-evaluation. **Degraded: N `[0]`, D `[0,1]`, 177 operations, 7.9% error across two decades, device symbols intact — GATE 11-2 PASS.** Nominal fails: 119 ops at 26.7%, or 439 ops at 6.5%. The kept coefficient sets *differ* between operating points, which is the "different expressions for different symbol values" of the original brief. Details: `cancellation_ranking_conclusions.md` §24. |
 | 12 — does 177 ops survive a real band? | **Gate 12-3 FAIL, gate 12-4 PARTIAL — it scopes stage 11's headline.** The µA741 falls at −20 dB/decade from below 100 Hz, so stage 11's window sat entirely on the single-pole rolloff. Over 10 Hz–10 MHz the error *does* hold but costs **6 439 operations against 177 — a 36× increase** (9 228 for 13.8%). My own advance estimate of "300-600 operations" was an order of magnitude optimistic. **The failure was mine and it is the fifth repeat:** the first wide run showed 101% error while keeping 27 of 46 coefficients — impossible if the subset were the problem — because the subset was chosen against the *global* error but each coefficient was then approximated at a **per-coefficient tolerance**, the exact per-piece budget §11 measured as unsound and §14c records being rejected in 2000. Separating the two tolerances fixes it. Details: `cancellation_ranking_conclusions.md` §25. |
 | 13 — the `Short` operation | **13-1 PASS, 13-3 FAIL, 13-4 PARTIAL.** Calibrated against a hand-computable divider first (merged node at exactly `I·R2`). Greedy node merging with exact global re-evaluation accepts **8 merges** at 20% — more than the two or three predicted — taking the matrix **26 → 18**, terms **2 773 885 → 84 100 (33×)** and `N_eff` **151 → 41.9**. But the transfer function over the wide band goes only **6 439 → 4 081 operations (1.6×)** at the same 16.6% error. **A 33× smaller term pool buys 1.6× in expression size: the binding constraint is the accuracy demanded across the band, not term supply.** Every remaining lever of this kind attacks supply. **And I defeated my own safeguard:** tightening the coefficient tolerance made the error *worse* (16.6% → 145%) because three of sixteen coefficients hit `max_splits` and returned 58-87% error — each raising the `RuntimeWarning` built for exactly that, which a `simplefilter('ignore')` in the benchmark threw away. Fixed to record and report. Details: `cancellation_ranking_conclusions.md` §26. |
-| 14 — nonlinear leapfrog, symbolic then numeric | **PASS on every gate.** 127 unknowns, nonlinearity attached to stage 0's input pair. `U^3`: **11 945 graph nodes, 1.4 s build, 0.20 s evaluate**, third harmonic 8.193583e-26 matching an independent numeric graded solve to **4.63e-13**. `U^5`: 20 992 nodes, 3.7 s, 0.32 s, same agreement. **The symbolic route is 60× faster than the numeric one** (4.0 s against 238.5 s at `U^5`), because the graph is built once and evaluated by a memoised walk while the numeric path re-solves a 127×127 matrix per `(harmonic, power)` key. Growth `U^3 → U^5` is 1.76× in nodes. **Caveats stated:** the fixture is linear so the nonlinearity's placement is a modelling choice; "symbolic" is the straight-line-program sense and **cannot be read**; and `U^5` shows cost growth, not better accuracy (the third harmonic is unchanged at this drive level). Details: `cancellation_ranking_conclusions.md` §27. |
-| 15 — nonlinear order vs amplitude | **Delivered, symbolically.** 127 unknowns, cubic on stage 0's input pair, 100 kHz. **One symbolic build per order** (`U^13` = 54 079 nodes, 51.7 s) then every amplitude is a graph walk (2.11 s for six). Required order climbs with amplitude: **`U^5`** to 100 mV, **`U^7`** at 300 mV, **`U^9`** at 1 V, **not settled by `U^13`** at 3 V (corrections falling only 1.7e-01 → 1.7e-04). **The frequency mattered as much as the amplitude:** at 1 kHz the loop gain holds the input pair at a virtual ground (2.5 µV at 10 mV) and everything converged at `U^3` with HD3 ~ 1e-14; at 100 kHz, where this µA741's open-loop gain is ~8 dB, the same drive gives 6.33e-05 — **25× larger** — and the orders come alive. Because `kk` is also a symbol, a second sweep over nonlinearity strength cost **no rebuild**. **Transient comparison dropped on a measured cost wall** (2 ms did not finish in 6 min; the circuit is stiff over ~4 decades of time constant). Details: `cancellation_ranking_conclusions.md` §28. |
 | 4 — library API | **Done.** `DDD.cancellation`, `DDD.subdiagram_values`, `DDD.minor_positions`, `DDD.approximate_groups` in `ddd.py`; twelve tests in `test_ddd.py`; three new subsections of `doc/src/circuit/ddd.rst` with every number generated at build time. `DDD.approximate` now **warns** when it returns without meeting `tol`. |
 
 ### Three results worth carrying forward
