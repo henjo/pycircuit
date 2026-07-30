@@ -595,7 +595,38 @@ _UA741_NODE_NAMES = (
 )
 
 
-def leapfrog_5th_order(symbolic_devices=(), miller=True):
+## GBW phase-lead compensation for the leapfrog's integrators, in ohms.
+##
+## WHY THIS IS ON BY DEFAULT.  Without it the filter realises **Q = 16.76** where its
+## own ideal LC ladder prototype has Q = 5.9, and shows a **+8.8 dB passband peak at
+## 25.7 kHz**.  That is not a design -- it is uncompensated finite gain-bandwidth.  A
+## real op-amp integrator lags by roughly ``w/w_t`` beyond the ideal -90 degrees, and in
+## a two-integrator loop those lags subtract from the damping term
+## (``1/Q_eff ~ 1/Q_ideal - 2*w0/w_t``), so Q is *enhanced*.  The uA741 model here has
+## f_t ~ 248 kHz, giving ~5.9 degrees of excess lag per integrator at 25.7 kHz.  Nobody
+## would ship the peaked version; compensating it is ordinary active-filter practice.
+##
+## THE VALUE IS MEASURED, NOT COMPUTED.  The textbook choice ``1/(w_t*C)`` = 642 ohm is
+## derived for a BIQUAD, and this is a 5th-order ladder: it predicts instability for a
+## circuit that is demonstrably stable, and in the sweep it overshoots to Q = 3.85.  So
+## `rc` was swept and read off the generalized eigenvalues:
+##
+##     rc      Q       tau       peak      f_-3dB
+##     0       16.76   208 us    +8.79 dB  27.93 kHz
+##     320     6.28    77.8 us   +0.23 dB  27.30 kHz
+##     350     5.93    73.5 us    0.00 dB  27.30 kHz   <- this
+##     450     5.01    62.1 us    0.00 dB  26.67 kHz
+##
+## 350 ohm lands Q = 5.93 against the ladder's own 5.9, removes the peak entirely, and
+## costs 2.3% of cutoff.  Damping further would be *detuning* the filter rather than
+## compensating the amplifier, and buys little: past ~1500 ohm a different pole pair
+## becomes dominant and the settling constant floors out near 18 us.
+##
+## Pass ``rc=0`` to any of the builders to recover the uncompensated circuit.
+_LEAPFROG_RC = 350.0
+
+
+def leapfrog_5th_order(symbolic_devices=(), miller=True, rc=_LEAPFROG_RC):
     """A 5th-order leapfrog filter built from five µA741 amplifiers.
 
     Leapfrog (ladder-simulation) filters realise an LC ladder as a chain of
@@ -659,12 +690,13 @@ def leapfrog_5th_order(symbolic_devices=(), miller=True):
     saved = _circuit_module.default_toolkit
     _circuit_module.default_toolkit = symbolic
     try:
-        return _build_leapfrog(symbolic_devices, miller)
+        return _build_leapfrog(symbolic_devices, miller, rc)
     finally:
         _circuit_module.default_toolkit = saved
 
 
-def wire_leapfrog_couplings(cir, amp, in_node, stages=5, r=10e3, c=1e-9):
+def wire_leapfrog_couplings(cir, amp, in_node, stages=5, r=10e3, c=1e-9,
+                            rc=_LEAPFROG_RC):
     """Wire the leapfrog coupling network around already-stamped amplifiers.
 
     Shared so that the symbolic fixture and any numeric replica cannot disagree
@@ -701,10 +733,30 @@ def wire_leapfrog_couplings(cir, amp, in_node, stages=5, r=10e3, c=1e-9):
             ## of its two neighbours.  Integrating the *sum* instead makes each
             ## two-integrator loop positive feedback and puts poles in the right
             ## half plane -- which is exactly what this fixture used to do.
-            cir['cp%d' % k] = C(amp[k]['inp'], gnd, c=c)
+            if rc:
+                pmid = cir.add_node('s%d_cpm' % k)
+                cir['cp%d' % k] = C(amp[k]['inp'], pmid, c=c)
+                cir['rcp%d' % k] = R(pmid, gnd, r=rc)
+            else:
+                cir['cp%d' % k] = C(amp[k]['inp'], gnd, c=c)
 
+    ## Integrating capacitor around each amplifier.  ``rc`` is GBW phase-lead
+    ## compensation and defaults to 0, i.e. OFF and structurally identical to no
+    ## parameter at all -- with rc=0 not one node or element differs.
+    ##
+    ## When set, a resistor in series with each integrating capacitor plants a zero at
+    ## 1/(rc*c) and returns arctan(w*rc*c) of phase LEAD, against the arctan of excess
+    ## LAG that the amplifier's finite gain-bandwidth costs each integrator.  Finite GBW
+    ## subtracts damping (1/Q_eff ~ 1/Q_ideal - 2*w0/w_t), which is why this circuit
+    ## realises Q = 16.76 where its ideal ladder has 5.9.  The mirror capacitor `cp`
+    ## gets the same treatment or the difference integrator stops matching.
     for k in range(stages):
-        cir['ci%d' % k] = C(amp[k]['out'], amp[k]['inn'], c=c)
+        if rc:
+            nmid = cir.add_node('s%d_cim' % k)
+            cir['ci%d' % k] = C(amp[k]['out'], nmid, c=c)
+            cir['rci%d' % k] = R(nmid, amp[k]['inn'], r=rc)
+        else:
+            cir['ci%d' % k] = C(amp[k]['out'], amp[k]['inn'], c=c)
 
     ## The terminating stages are LOSSY integrators, damped by a resistor across
     ## the capacitor: they simulate the ladder's source and load resistances.
@@ -737,7 +789,7 @@ def wire_leapfrog_couplings(cir, amp, in_node, stages=5, r=10e3, c=1e-9):
 
 def build_leapfrog_network(cir, stages=5, symbolic_devices=(), params=None,
                            miller=True, r=10e3, c=1e-9, toolkit=None,
-                           tones=None, vin_symbol=None):
+                           tones=None, vin_symbol=None, rc=_LEAPFROG_RC):
     """Build the ENTIRE leapfrog circuit, source included, dispatching on toolkit.
 
     Nothing about this circuit is duplicated anywhere: node creation, all five
@@ -832,11 +884,11 @@ def build_leapfrog_network(cir, stages=5, symbolic_devices=(), params=None,
     for k in range(stages):
         _stamp_ua741_devices(cir, amp[k], bjt_for(k), miller, pfx='s%d_' % k)
 
-    wire_leapfrog_couplings(cir, amp, node['in'], stages=stages, r=r, c=c)
+    wire_leapfrog_couplings(cir, amp, node['in'], stages=stages, r=r, c=c, rc=rc)
     return node, amp, names
 
 
-def _build_leapfrog(symbolic_devices, miller):
+def _build_leapfrog(symbolic_devices, miller, rc=_LEAPFROG_RC):
     cir = SubCircuit(toolkit=symbolic)
     vin = sympy.Symbol('vin')
     params = {vin: 1.0}
@@ -852,7 +904,7 @@ def _build_leapfrog(symbolic_devices, miller):
     ## right-half-plane sign error came to survive in a hand-carried copy.
     _node, amp, names = build_leapfrog_network(
         cir, stages=STAGES, symbolic_devices=symbolic_devices,
-        params=params, miller=miller, vin_symbol=vin)
+        params=params, miller=miller, vin_symbol=vin, rc=rc)
 
     return system_from_circuit(cir, 'leapfrog_5th_order', params,
                                out_index=names.index('s%d_out'

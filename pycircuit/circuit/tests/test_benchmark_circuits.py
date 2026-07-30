@@ -226,10 +226,24 @@ def test_leapfrog_has_no_right_half_plane_poles():
             else:
                 G[i, j] = float(coeffs[0])
 
-    assert np.linalg.matrix_rank(Cm) == 125
+    ## Stated structurally rather than as a literal.  What matters is only that
+    ## ``C`` is singular -- so infinite eigenvalues exist and have to be discarded
+    ## rather than the pencil being reduced to a standard problem -- and that the
+    ## finite poles number exactly rank(C).  Pinning "125" instead broke the moment
+    ## GBW compensation added nine mid-nodes, for no reason connected to what this
+    ## test checks.
+    rank = np.linalg.matrix_rank(Cm)
+    assert rank < n, 'C is expected to be singular; got full rank %d' % rank
     poles = scipy.linalg.eig(G, -Cm, right=False)
+    ## `isfinite` is NOT enough to drop the infinite eigenvalues of a singular
+    ## pencil: QZ returns them as enormous finite numbers rather than as inf, and
+    ## one shows up here at -3.6e+23.  The fastest genuine pole in this circuit is
+    ## ~1e12 rad/s (a 27 ohm output resistance into 20 pF), so 1e15 separates the
+    ## two populations by three orders of magnitude at either side.
     poles = poles[np.isfinite(poles)]
-    assert len(poles) == 125, 'expected 125 finite poles, got %d' % len(poles)
+    poles = poles[np.abs(poles) < 1e15]
+    assert len(poles) == rank, ('expected rank(C) = %d finite poles, got %d'
+                                % (rank, len(poles)))
     worst = poles.real.max()
     assert worst < 0, ('%d poles in the right half plane, worst Re = %+.5e'
                        % ((poles.real > 0).sum(), worst))
@@ -255,10 +269,15 @@ def test_leapfrog_reuses_the_calibration_amplifier_unchanged():
     assert sum(1 for e in single.A if e != 0) == 103
 
     filt = bc.leapfrog_5th_order()
-    ## 5 amplifiers of 25 nodes each, the input node, and one more unknown:
-    ## MNA carries a branch current for the voltage source.
-    assert filt.dim == 5*len(bc._UA741_NODE_NAMES) + 2
-    assert filt.dim == 127
+    ## 5 amplifiers of 25 nodes each, the input node, one more unknown because MNA
+    ## carries a branch current for the voltage source, and NINE mid-nodes from the
+    ## GBW phase-lead compensation -- one per integrating capacitor `ci0..ci4` and
+    ## one per mirror capacitor `cp0..cp3` (stage 4 has no `cp`).
+    assert filt.dim == 5*len(bc._UA741_NODE_NAMES) + 2 + 9
+    ## And the uncompensated circuit is still reachable, at its original size --
+    ## which is what makes the 9 above attributable to compensation alone.
+    assert bc.leapfrog_5th_order(rc=0).dim == 5*len(bc._UA741_NODE_NAMES) + 2
+    assert filt.dim == 136
     assert single.dim == len(bc._UA741_NODE_NAMES) + 1, (
         'the single amplifier is its own nodes plus the source branch')
 
