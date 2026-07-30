@@ -962,13 +962,65 @@ line-coverage gap on `circuit.py`/`elements.py` (83%/86%, measured) and the
 test-count shape (DDD still 35% of the suite) remain exactly as open as
 before, for whoever wants to extend it next.
 
-**Nothing is open.** Every other item in this list (P1-P14) is now fixed or
-explicitly resolved — P13's residual scope is the one exception, by its own
+**P16 is open** (symbolic approximation — see below). Every other item in this
+list (P1-P14) is fixed or explicitly resolved — P13's residual scope is the one exception, by its own
 nature (see above), and P5's `soe` integration question is likewise
 deliberately left as an open architecture question rather than a queued
 task. If this document is being read to decide what to work on next, there
 isn't a next item here; it means either picking up one of those two open
 questions, or something not yet surveyed at all.
+
+### P16 — symbolic approximation: converges, still not readable *(open, 2026-07-30)*
+
+Registered here so the next person does not re-run the investigation. **Full
+write-up and the status of every claim: `doc/cancellation_ranking_conclusions.md`
+— read its "READ THIS FIRST" table, not the body.** Gates and outcomes:
+`doc/cancellation_ranking_plan.md`. Papers: `doc/ddd_references.md` §§D2, F, G.
+
+**What is solved.** `DDD.approximate` (magnitude-ranked) leaves 994% error at 500
+of 2 773 885 terms on the µA741. `DDD.approximate_groups` reaches 4.1% with the
+*same* 734-term budget, by ranking *groups* — a prefix plus a node — whose
+contribution is exact rather than bounded. `DDD.cancellation` reports
+`κ = Σ|term| / |Σ term|`, one pass over the diagram, and forecasts whether
+magnitude ranking can work at all. Both shipped, tested, documented in
+`doc/src/circuit/ddd.rst`.
+
+**What is not.** Converging and being readable are different problems and only
+the first is solved. The leapfrog's answer names devices but runs to ~2·10⁶
+operations. Three specific findings bound the next attempt:
+
+1. **Hierarchical approximation is not compositional.** Per-block error
+   tolerances give no control over the composed error — tightening every one by 4×
+   made it 10× *worse*. Guerra et al. (DATE 2000) rejected per-block budgets in
+   advance for this reason; their fix is to score candidates against a **global
+   numerical reference**, which is the design to adopt.
+2. **`κ` measures the formulation, not the circuit.** A compact-symbol MNA
+   determinant manufactures its own cancellation; the same circuit expanded over
+   per-device symbols and de-cancelled has `κ = 1` in the textbook example.
+3. **Full symbols, de-cancellation and element pruning are a package.** Each was
+   measured alone and each fails alone: per-device symbols make `κ` worse
+   (provably, since `|a+b| ≤ |a|+|b|`); element pruning deletes no vertex from a
+   composite-entry diagram; de-cancellation removes the mass the other two need
+   removing. Tan & Shi's published pipeline contains all three.
+
+**Next step, if anyone takes this up:** full-symbol construction *together with*
+de-cancellation — the smallest self-consistent subset. Tan/Qi/Li (DATE 2004)
+Theorem 2 gives a purely combinatorial test for cancelling terms (two first-order
+cofactors sharing a row or column index), so it needs no numerics. Then the
+`Short` element operation, which unlike `Open` collapses nodes and so can actually
+shrink the matrix. GPDD last: it is cancellation-free by construction but needs a
+circuit graph model pycircuit lacks, and Kolka et al. record that VCCS-heavy
+circuits make the two-graph intersection reject an exponentially growing fraction
+of candidates.
+
+**Do not repeat these, they are measured and recorded:** flat DDD on the leapfrog
+(killed at 15 min / 2.7 GB); `suppression_order`'s 111 single-node levels for
+interpretability (level `k` is built over level `k-1`'s stamps, so reaching a
+device unwinds all 111); sequential multi-block suppression (`_suppress` renames
+every nonzero, laundering device symbols into `_lvl*`); s-expansion as a route to
+cancellation-freedom (it makes per-coefficient `κ` worse, 1.5e3-3.1e6 against
+9.4e3); and pruning cofactors by which ones the kept top-level groups use (the
+groups touch 42 of 96 reduced entries but still 123 of 125 cofactors).
 
 **P15 (slow transient tests dominate the suite) is partly addressed**, added
 2026-07-29 while working on the distortion analysis. The transient-heavy tests

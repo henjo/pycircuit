@@ -1,5 +1,56 @@
 # Cancellation-aware ranking — the reasoning
 
+> ## READ THIS FIRST
+>
+> **This document grew by accretion over one session: §§1-13 were written as the
+> work proceeded, and §§14-16 correct several of them.** Sections are never
+> deleted, because a refuted premise is a result — but that means **an early
+> section can state a claim this document no longer holds.** Every superseded
+> section now carries a banner pointing forward. If you are here to find out what
+> is true, use this table and do not read linearly.
+>
+> ### Status of every substantive claim
+>
+> | claim | where | status |
+> |---|---|---|
+> | `κ = Σ\|term\| / \|Σ term\|` forecasts whether magnitude ranking converges | §1 | **holds**, as a *sufficient* condition only |
+> | "a ranking **must** capture `1 − tol/κ` of the absolute mass" | §1 | **CORRECTED** — sufficiency, not necessity (§14a) |
+> | "the approximation is impossible as posed" | §1 | **WITHDRAWN** (§14a, §15b) |
+> | `κ` is a novel diagnostic | §1 implied | **CORRECTED** — it is Higham's summation condition number (§14b) |
+> | term-ranked approximation fails on a real op-amp | §1 | **SCOPED** — true of *our* pipeline; refuted on the same circuit by Tan & Shi 2004 (§15b) |
+> | group ranking converges where magnitude ranking does not | §2 | **holds, measured** (734 terms at 4.1% vs 1186%) |
+> | a retained group is a named minor, unlike a placeholder | §3 | **holds** |
+> | cancellation is concentrated, not uniform | §4 | **holds, measured** |
+> | extended precision will be needed | §5 | **did not materialise** (§8) |
+> | the leapfrog needs amplifier-sized blocks | §9 | **holds** |
+> | sequential block suppression keeps device symbols | §9 | **REFUTED** (§10) |
+> | hierarchical approximation is not compositional | §11 | **holds, measured** — and was published in 2000 (§14c) |
+> | s-expansion buys cancellation-freedom | §13 implied | **REFUTED** (§13's own measurement, §15c) |
+> | de-cancellation caps the `κ` gain at 3-10× | §14e | **WITHDRAWN** — conflates term count with mass (§15c) |
+> | de-cancellation is the load-bearing step | §15c | **holds, provable** |
+> | element pruning shrinks a compact-symbol diagram | §16 hypothesis | **REFUTED, measured** (§16) |
+>
+> ### The three things worth carrying away
+>
+> 1. **`κ` is cheap and worth reporting**, and it measures the *formulation* at
+>    least as much as the circuit (§12). Nothing in symbolic circuit analysis
+>    appears to report it.
+> 2. **Do not account error per term or per block. Evaluate the candidate
+>    answer.** Both literature sweeps converge on this (§14c, §15d), and it is what
+>    made stage 6's greedy selection monotone where stage 5's per-piece tolerances
+>    were non-monotone.
+> 3. **Full symbols, de-cancellation and element pruning are a package** — each
+>    one measured alone here, each failing or backfiring alone (§16). Tan & Shi's
+>    pipeline has all three for that reason.
+>
+> ### Where the code is
+>
+> `DDD.cancellation`, `DDD.approximate_groups`, `DDD.subdiagram_values`,
+> `DDD.minor_positions` in `pycircuit/circuit/ddd.py`; user-facing write-up in
+> `doc/src/circuit/ddd.rst` (already carries the corrected claims); gates and
+> outcomes in `doc/cancellation_ranking_plan.md`; five benchmark scripts
+> `benchmarks/cancellation_*.py` and `benchmarks/element_ranking.py`.
+
 Why this document exists: `doc/hierarchical_approximation_plan.md` §5 records a
 negative result that stopped the previous round — **term-ranked approximation
 does not converge on a real operational amplifier** — and lists three ways
@@ -12,6 +63,13 @@ The plan and its gates are in `doc/cancellation_ranking_plan.md`. This document
 says why, and is meant to survive being argued with.
 
 ## 1. The measured failure, and what it is actually about
+
+> **CORRECTED BY §14a, §14b AND §15b — do not quote this section alone.** The
+> inequality below is *sufficient*, not necessary: dropped terms may cancel among
+> themselves. "Impossible" is withdrawn. `κ` is Higham's summation condition
+> number, not a new quantity. And "does not converge on a real operational
+> amplifier" is true of *this pipeline* only — Tan & Shi (TCAD 2004) report the
+> opposite on the same µA741.
 
 µA741, flat diagram, 1040 vertices standing for 2 773 885 product terms, three
 symbolic transconductances, 1 kHz. Keeping the 500 largest terms leaves
@@ -130,6 +188,11 @@ stage 0, and its gate is declared in the plan.
 
 ## 5. A precision hazard, up front
 
+> **DID NOT MATERIALISE — see §8.** `κ·2^-53 = 1.6e-11` on the µA741, so double
+> precision was ample and mpmath was never needed. The hazard that actually bit
+> was the *dynamic range of the product* (the leapfrog determinant underflows),
+> which is not on this list.
+
 `V[v]` computed in double precision carries relative error about `κ[v] · 2^-53`.
 So the scheme's "exact" group values are only exact where `κ` is moderate: at
 `κ ≥ 10^14` they are noise, and a measurement taken there means nothing.
@@ -241,6 +304,11 @@ glance, and no stage of this plan claimed it would be. The gap between
 
 ## 9. Why the obvious recursion is hopeless, and what replaces it
 
+> **PARTLY REFUTED BY §10.** The topology argument is correct — 0 entries couple
+> one amplifier's internals to another's — but the claim that *sequential*
+> five-block suppression preserves device symbols is false: `_suppress` renames
+> every nonzero of the reduced matrix. The fix is parallel elimination, in §10.
+
 Written before stage 5 runs, so the reasoning can be checked against it.
 
 Stage 3's failure is precise: the leapfrog's groups name `_lvl110_*` stamps, not
@@ -337,6 +405,10 @@ between the topology and the result. Check what the code does to the symbols, no
 only what the circuit does to the currents.
 
 ## 11. Stage 5's result: the cancellation problem is not compositional
+
+> **STILL HOLDS, BUT IT IS NOT NEW — see §14c.** Guerra et al. (DATE 2000)
+> rejected per-block error budgets in advance for this reason, and their fix
+> (score against a global numerical reference) is the one to adopt.
 
 Measured `benchmarks/cancellation_compose.py`. The parallel construction of §10
 worked exactly as designed, and it produced a result that is more interesting
@@ -471,6 +543,13 @@ that circuit's module *partition*, not its connectivity, and Fig. 4 still draws
 no junction dots.
 
 ## 13. A cheaper route than GPDD, and a measurement that locates the target
+
+> **ITS RECOMMENDATION IS SUPERSEDED BY §14e, §15c AND §16.** The measurement in
+> this section stands and is important (all cancellation is intra-coefficient,
+> `κ` between powers of `s` is 1.03). The conclusion drawn from it — that
+> de-cancellation alone is the cheap win — was too kind: de-cancellation is
+> necessary but not sufficient, and it only pays together with full symbols and
+> element pruning (§16).
 
 Searching the local paper set turned up **Tan & Shi, "Parametric Analog
 Behavioral Modeling Based on Cancellation-Free DDDs" (BMAS 2002)** — held here
