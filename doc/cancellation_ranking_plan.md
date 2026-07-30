@@ -225,6 +225,41 @@ literature is unanimous that a single frequency is not enough):
 symbol count drops a lot. That would still be a useful circuit-reduction result
 and a *failure* of gate 3, and it must be reported as both.
 
+## Stage 7b — is determinant-side de-cancellation polynomial? (declared 2026-07-30)
+
+§17 measured a path-predicate de-cancellation losing sharing at 1.7-1.8× per
+circuit section. Tan & Shi's construction instead removes cancelling terms by
+**set operations between sub-diagrams** (`REMAINDER(P, L_y)` inside a modified
+coefficient-multiply), which forms no path-dependent state. Before building that
+machinery, test *why* it should work, because the reason is checkable in one
+function.
+
+**The hypothesis.** The naive predicate carries the whole set of devices used so
+far. Most of that is irrelevant: once a device has been used at position `(p,p)`,
+its other stamp positions `(p,q)` and `(q,p)` need row or column `p`, which the
+minor no longer has — so **exactly one partner position can remain reachable**, and
+it stops mattering once the minor drops its row or column. So the state that
+actually matters is not "devices used" but "**still-reachable forbidden
+positions**", and that set should stay small because a minor only borders a few
+devices.
+
+**Gate, declared before running.** Re-count the memo states with the key
+canonicalised to the still-reachable forbidden positions only, on RC ladders
+`N = 3..10`:
+
+1. **Correctness first:** the canonicalised count must yield the **same number of
+   surviving terms** as the naive predicate. If it does not, the canonicalisation
+   is wrong and nothing else in this stage means anything.
+2. **PASS if the ratio to the plain (un-de-cancelled) state count stays below ~3×
+   and is flat or near-flat in `N`**, against the naive key's 2.6→23.4×.
+3. **FAIL if the ratio still grows geometrically.** That would mean
+   determinant-side de-cancellation is inherently exponential, Tan & Shi's
+   `REMAINDER` construction cannot rescue it either, and the topological route is
+   the answer rather than one option among three.
+
+Declared in advance: a pass justifies building the diagram machinery; a fail
+**settles the architecture question** in favour of GPDD and saves that work.
+
 ## What would make this whole plan fail
 
 - Stage 0 finds uniform cancellation. Most likely single outcome, and the
@@ -257,6 +292,9 @@ Scripts: `benchmarks/cancellation_profile.py` (stage 0),
 | 5 — first attempt | **Gate 2 FAILED, and the failure was narrow.** Sequential five-block suppression does *not* give device-level cofactors: `_suppress` renames **every** nonzero of the reduced matrix, so block 1's `A_ii` came back over `_lvl0_*` stamps. The topology claim it rested on is nonetheless **verified** — 0 entries couple one amplifier's internals to another's — so the blocks are genuinely independent and can be eliminated **in parallel against the original matrix** instead of in sequence. Also measured: the five-block hierarchy is **22 163 vertices / 1 076 448 top terms** against 1 958 / 374 608 for 111 single-node levels, so naming the blocks costs ~11× in representation. Retried with the parallel construction, which worked — see the row above and `cancellation_ranking_conclusions.md` §10. |
 | 6 — rank elements, not terms | **Gates 1, 2, 5 pass; gate 3 FAILS and gate 4 fails informatively.** 5 of 24 `gm` symbols drop at 1% joint error, 7 at 5%, in 0.3-0.5 s, greedy order monotone, survivors named, bias devices leaving first exactly as a designer would expect. **But the diagram is bit-for-bit unchanged** — 1040 vertices, 2 773 885 terms — and `κ` moves 1.00× / **0.61×** (worse). Cause: a compact-symbol DDD has one vertex per matrix *entry*, and zeroing a device removes an *addend inside* an entry, so no vertex disappears. **Element pruning and the compact-symbol representation do not compose.** Useful as circuit reduction and design insight; not a route to a smaller symbolic expression. Details: `cancellation_ranking_conclusions.md` §16. |
 | 7a — de-cancellation, calibrated | **Both gates PASS on the theory; the naive route is measured dead.** On Song & Shi's ladder (target re-derived here from the matrix *and* from the spanning trees) de-cancellation takes `κ` from **40.61 to exactly 1.000000** with the determinant preserved. But a de-cancelled expansion cannot key its memo on the minor alone, and the sharing loss grows geometrically: **2.6× → 4.3× → 7.3× → 12.8× → 23.4×** for RC ladders N=3..7, ~1.7-1.8× per section. Hopeless at 26×26. Meanwhile the *answer* shrinks (29%→72% of terms removed) and the survivors are the spanning-tree counts 5, 13, 34, 89, 233 — so **the cancellation-free answer is the spanning-tree set**, which strengthens the topological route this plan had put last. Next, if staying determinant-side: Tan & Shi's `CL`/set-operation construction during s-expansion, which forms no path-dependent state. Details: `cancellation_ranking_conclusions.md` §17. |
+| 7b — is it polynomial? | **PASS, decisively, and §17's verdict is overturned for the correct construction.** Re-keying the memo on the *still-reachable forbidden labels* instead of the path gives a **flat ~1.2× overhead** (1.20× at N=3, 1.19× at N=10) where the naive predicate ran to **170.5×**. Surviving-term counts identical at every N (asserted). 86% of terms removed at N=10 — Tan & Shi's 70-90%, reproduced. **Gate 7b-1 caught a real bug:** the first version forbade matrix *positions*, but one position carries several devices' addends (`C2*s + 1/R1`), so it silently lost a term — the state must be a set of **labels**, i.e. (device, position) pairs. |
+| 7c — does it move `κ`? | **No, and the reason is instructive.** Determinant preserved against `numpy.linalg.det` at every size (1e-15). But `κ` goes 3.08→1.48 at N=4 and **1.11→1.97 (worse) at N=9**. An RC ladder has `κ ≈ 1` already, so it is the wrong test; and the residue is **phase**, not sign — at fixed complex `s`, conductance terms are real and `C·s` terms imaginary. |
+| 7d — with s-expansion | **PASS, exactly.** 7c's diagnosis predicted `κ = 1` per coefficient; measured **1.000000000000** on every coefficient of `rc_ladder(4)`, `(6)`, `(8)`. So the pipeline order is explained from our own numbers: s-expansion alone makes `κ` worse (§13), de-cancellation alone does nothing at fixed `s` (7c), **together they give `κ = 1`**. §16's "package" claim is now a positive demonstration rather than an inference from failures. |
 | 4 — library API | **Done.** `DDD.cancellation`, `DDD.subdiagram_values`, `DDD.minor_positions`, `DDD.approximate_groups` in `ddd.py`; twelve tests in `test_ddd.py`; three new subsections of `doc/src/circuit/ddd.rst` with every number generated at build time. `DDD.approximate` now **warns** when it returns without meeting `tol`. |
 
 ### Three results worth carrying forward

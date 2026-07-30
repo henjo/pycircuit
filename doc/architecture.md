@@ -1018,25 +1018,47 @@ spanning-tree set.** Filtering a determinant expansion down to it does exponenti
 work to throw exponentially much away, which is precisely the argument for
 topological methods.
 
-**Next step, if anyone takes this up — revised after 7a, in this order:**
+**7b-7d then overturned 7a's verdict for the *correct* construction.** Re-keying
+the memo on the still-reachable forbidden **labels** — (device, position) pairs —
+rather than on the path gives a **flat ~1.2× state overhead** where the path
+predicate ran to 170×, with identical surviving-term counts and 86% of terms
+removed at N=10. De-cancellation alone does not reduce `κ` at a fixed complex `s`
+(the residue is *phase*: real conductances against imaginary `C·s`), but
+**de-cancellation together with s-expansion gives `κ = 1.000000000000` in every
+coefficient**. So the order in Tan & Shi's pipeline is explained from our own
+measurements, and the determinant side is viable — §17's "dead" applied only to the
+naive predicate.
 
-1. **Tan & Shi's actual construction**, not the naive one: a *canceling label
-   list* `CL(L_x)` per symbol with a modified coefficient-multiply that removes
-   cancelling terms by **set operations between sub-diagrams** during the
-   s-expansion. It forms no path-dependent state, so it does not pay the ratio
-   above. This is a different algorithm from the one already measured, and §17 is
-   the evidence for why the difference is the whole point.
-2. **The topological route (GPDD / two-graph)**, promoted from last place by 7a's
-   spanning-tree finding — it enumerates exactly the objects that survive. Needs a
+**THE BLOCKER IS NOW INFRASTRUCTURE, NOT THEORY.** De-cancellation needs **one
+symbol per device**: a numeric device contribution merges into its matrix entry and
+its cancellation becomes invisible. No fixture provides that — `ua741` with all
+`gm` symbolic still has **159 of 215 addends numeric** (`rpi`, `ro`, `cpi`, `cmu`,
+every resistor). **The next step is a fully-symbolic µA741 fixture**, which is
+plumbing: `add_small_signal_bjt` already takes each parameter, so it means passing
+symbols instead of floats and threading them into `BenchSystem.params`.
+
+**Then, in this order:**
+
+1. **A fully-symbolic µA741**, then re-measure the 1.2× state overhead on it —
+   ladders are a benign topology for that measurement and a denser matrix may
+   accumulate more live labels per minor. Check before building on it.
+2. **The de-cancelled s-expanded construction as a real diagram** rather than the
+   recursion used for measurement, i.e. Tan & Shi's `CL`/`REMAINDER` set operations
+   over sub-diagrams. The measurements say what it should cost.
+3. **The topological route (GPDD / two-graph)**, still worth knowing about after
+   7a's spanning-tree finding — it enumerates exactly the objects that survive. Needs a
    circuit graph model pycircuit lacks; and Kolka et al. record that VCCS-heavy
    circuits make the two-graph intersection reject an exponentially growing
    fraction of candidates, so the cost is real for transistor circuits.
-3. **The `Short` element operation**, which unlike `Open` collapses nodes and so
+4. **The `Short` element operation**, which unlike `Open` collapses nodes and so
    can actually delete vertices — the cheap unfinished half of stage 6.
 
-**Do not repeat these, they are measured and recorded:** de-cancellation via a
-path predicate ("each device once") — correct, gives `κ = 1` exactly, and its
-sharing loss grows 1.7-1.8× per circuit section; flat DDD on the leapfrog
+**Do not repeat these, they are measured and recorded:** de-cancellation keyed on
+the *path* ("every device used so far") — correct but its sharing loss grows
+1.7-1.8× per circuit section, where keying on reachable **labels** costs a flat
+1.2×; de-cancellation *without* s-expansion (no `κ` benefit at a fixed frequency,
+and worse above N=6); forbidding matrix *positions* rather than labels (silently
+drops terms, because one entry carries several devices); flat DDD on the leapfrog
 (killed at 15 min / 2.7 GB); `suppression_order`'s 111 single-node levels for
 interpretability (level `k` is built over level `k-1`'s stamps, so reaching a
 device unwinds all 111); sequential multi-block suppression (`_suppress` renames

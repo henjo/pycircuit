@@ -29,6 +29,10 @@
 > | de-cancellation caps the `κ` gain at 3-10× | §14e | **WITHDRAWN** — conflates term count with mass (§15c) |
 > | de-cancellation is the load-bearing step | §15c | **holds, provable** |
 > | element pruning shrinks a compact-symbol diagram | §16 hypothesis | **REFUTED, measured** (§16) |
+> | de-cancellation gives `κ = 1` on a calibration circuit | §17 | **holds, exactly** |
+> | determinant-side de-cancellation is not a compact representation | §17 | **CORRECTED** — true of a *path*-keyed state, false for a label-keyed one, which costs a flat 1.2× (§18) |
+> | de-cancellation alone reduces `κ` | §17 implied | **REFUTED** — no benefit at a fixed frequency, worse above N=6; the residue is phase (§18) |
+> | de-cancellation **plus s-expansion** gives `κ = 1` per coefficient | §18 | **holds, measured to 12 figures** |
 >
 > ### The three things worth carrying away
 >
@@ -40,8 +44,11 @@
 >    made stage 6's greedy selection monotone where stage 5's per-piece tolerances
 >    were non-monotone.
 > 3. **Full symbols, de-cancellation and element pruning are a package** — each
->    one measured alone here, each failing or backfiring alone (§16). Tan & Shi's
->    pipeline has all three for that reason.
+>    one measured alone here, each failing or backfiring alone (§16), and §18 then
+>    demonstrated the combination *positively*: de-cancellation with s-expansion
+>    gives `κ = 1.000000000000` per coefficient. The remaining blocker is a
+>    **fully-symbolic fixture** (the µA741 bakes 159 of 215 addends into numbers),
+>    which is plumbing rather than research.
 >
 > ### Where the code is
 >
@@ -961,6 +968,11 @@ remaining test of this route and it was left undone.
 
 ## 17. Stage 7a: the theory is confirmed exactly, and the naive route is dead
 
+> **THE SECOND HALF OF THIS SECTION IS SUPERSEDED BY §18.** The path-keyed state
+> really does blow up, but that is a property of *that* key, not of the
+> determinant side: keying on reachable **labels** costs a flat 1.2×. Read §18
+> before concluding anything about the route from this section's numbers.
+
 Measured `benchmarks/decancellation_calibration.py`.
 
 ### The calibration passes, and it identifies the mechanism
@@ -1044,3 +1056,109 @@ why the difference matters.
 — ladders maximise the number of distinct device subsets a path can accumulate.
 A denser matrix might share better. Untested, and cheap to test with the same
 script.
+
+## 18. Stages 7b-7d: the determinant side is viable after all, and why
+
+§17 concluded that determinant-side de-cancellation was dead. **That conclusion
+was about the naive implementation, and it is now overturned for the correct one.**
+Three measurements, `benchmarks/decancellation_calibration.py`.
+
+### 7b — it is polynomial, once the state is the reachable remainder
+
+§17's path predicate carried every device used so far. Most of that is dead
+information: once a device is consumed at `(p,p)`, its partners at `(p,q)` and
+`(q,p)` need row or column `p`, which the minor no longer has, so **at most one
+partner label stays reachable** — and it stops mattering as soon as the minor drops
+its row or column. Re-keying the memo on the *still-reachable forbidden labels*:
+
+| RC ladder `N` | plain states | naive key | label-canonical key | naive | canonical | terms kept |
+|---|---|---|---|---|---|---|
+| 3 | 15 | 39 | 18 | 2.6× | **1.20×** | 5 / 7 |
+| 5 | 42 | 305 | 52 | 7.3× | **1.24×** | 34 / 76 |
+| 7 | 93 | 2 177 | 114 | 23.4× | **1.23×** | 233 / 829 |
+| 10 | 232 | 39 546 | 277 | **170.5×** | **1.19×** | 4 181 / 29 867 |
+
+**The overhead is flat at about 1.2×** where the naive key runs to 170×, and the
+surviving-term count is identical at every `N` (asserted, not assumed).
+De-cancellation removes 29% of terms at `N=3` rising to **86% at `N=10`** — Tan &
+Shi's reported 70-90%, reproduced independently.
+
+**A bug worth recording, caught by the gate that was there to catch it.** The first
+canonicalisation forbade matrix *positions* and silently lost a term. One position
+can carry several devices' addends — entry `(2,2)` of an RC ladder is
+`C2*s + 1/R1` — so banning the position to keep `R1` out also banned `C2`. **The
+state must be a set of labels, a label being one (device, position) pair.** This is
+exactly why the literature says "canceling label list per label", a phrase that
+read as pedantry until it cost a wrong answer. Gate 7b-1 required the term count to
+match the naive predicate and failed loudly; without it the error would have looked
+like a *better* result, because it made the state smaller.
+
+### 7c — de-cancellation alone does not reduce `κ`, and the residue is phase
+
+On RC ladders at a fixed complex `s`, with the determinant verified against
+`numpy.linalg.det` at every size (2.4e-15 to 1.1e-15, so the rule preserves the
+determinant — including across MNA's voltage-source row, which had been a worry):
+
+| `N` | `κ` compact | `κ` de-cancelled | change |
+|---|---|---|---|
+| 4 | 3.08 | 1.48 | 2.08× better |
+| 6 | 1.95 | 2.17 | 0.90× — worse |
+| 9 | 1.11 | 1.97 | **0.56× — worse** |
+
+Two things to take from this. First, **an RC ladder is the wrong test**: its
+compact `κ` is already 1-3, so there is nothing to fix, and a method that cannot
+improve on 1.1 has not been tested. Second, and more useful: the residual `κ ≈ 2`
+is **not sign cancellation at all — it is phase.** At a fixed complex `s` a
+conductance term is real and a `C·s` term is imaginary, so their moduli cannot sum
+to the modulus of their sum, however cancellation-free the term set is.
+
+### 7d — with s-expansion, `κ` is exactly 1
+
+That diagnosis makes a prediction: separate the powers of `s`, and within one
+coefficient of a passive network every surviving spanning-tree product is positive,
+so `κ` should be **exactly** 1. Measured, on every coefficient of `rc_ladder(4)`,
+`(6)` and `(8)`:
+
+```
+worst kappa over coefficients: 1.000000000000   -> PASS (== 1)
+```
+
+All eight coefficients at `N=8`, twelve significant figures, no exceptions.
+
+**So the order in Tan & Shi's pipeline is not arbitrary, and this project can now
+say why from its own measurements:** s-expansion alone makes `κ` worse (§13),
+de-cancellation alone does not help at a fixed frequency (7c), and the two
+together give `κ = 1` (7d). §16's "the ingredients are a package" is no longer an
+inference from three separate failures — it is a positive demonstration.
+
+### What this changes, and the one thing now blocking it
+
+§17's "the naive route is dead" stands; **its implied conclusion that the
+determinant side is dead does not.** Determinant-side de-cancellation is
+polynomial (1.2×), preserves the determinant, and combined with s-expansion
+achieves `κ = 1` exactly. The topological route is no longer the only one that
+gets there.
+
+**The blocker is now infrastructure, not theory.** De-cancellation needs
+**one symbol per device**, because a numeric device contribution merges into its
+entry and its cancellation becomes invisible. No pycircuit fixture provides that:
+
+| fixture | dim | device symbols | addends | numeric-only addends |
+|---|---|---|---|---|
+| `rc_ladder(6)` | 7 | 11 | 28 | 2 (the source's ±1 incidence) |
+| `cauer_lowpass(3)` | 7 | 9 | 28 | 10 |
+| `mfb_filter()` | 4 | 5 | 16 | 2 |
+| **`ua741`, all `gm` symbolic** | 26 | 24 | 215 | **159** |
+
+The µA741 bakes 159 of its 215 addends into numbers — `rpi`, `ro`, `cpi`, `cmu`
+and every resistor — so de-cancellation there would catch only the `gm` pairs, a
+small minority. **The next step is therefore a fully-symbolic µA741 fixture**, not
+more algorithm work: `add_small_signal_bjt` already accepts each parameter, so it
+is a matter of passing symbols instead of floats and threading them into
+`BenchSystem.params`.
+
+*Reconsider-if:* the state count on a 26×26 with ~200 device symbols turns out not
+to follow the ladder trend. Ladders are a benign topology for this measurement —
+every minor borders few devices. A denser matrix could accumulate more live labels
+per minor, and the 1.2× could grow. Cheap to check the moment a fully-symbolic
+fixture exists, and it should be checked before anything is built on top.
