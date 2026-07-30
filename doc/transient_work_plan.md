@@ -708,6 +708,23 @@ things, and only the second is in dispute:
 So stage 1 is unaffected by the change and stage 4 loses a work item rather than gaining
 one.
 
+**A further argument for deciding this explicitly, found while writing the above.**
+`stepcontroller.py:59-62` is
+
+    try:
+        lte_reduced = toolkit.linearsolver(J_reduced, Eg_reduced)
+    except Exception:
+        lte_reduced = Eg_reduced
+
+On any solve failure it **silently falls back to the raw charge-domain `Eg`** and then
+compares it against `etol`, which is a *voltage* tolerance. So the CPU controller is
+currently neither (A) nor (B): it is (A) with an unlogged (B) fallback carrying exactly the
+units mismatch that makes JAX's `lte_error_ratio` never reject a step. Whichever option is
+chosen, this `except` must go — under (A) a singular `J` is a diagnosable condition for
+stage 6, not a reason to switch error criteria without saying so. It also means the two
+formulations are already tangled in one code path, which is the strongest practical reason
+not to leave 0.3d open.
+
 **Reconsider (B) if** either: a measurement shows the solution-domain criterion
 mis-controlling a circuit where `J` is near-singular, since `J^{-1}` then amplifies the
 charge residual unboundedly and the mapped LTE becomes noise — a floating or
