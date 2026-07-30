@@ -5,8 +5,10 @@
 this document exists to make the leapfrog thread resumable after it, not to be read during
 it.
 
-Everything below is committed. 70 commits are unpushed on `cna-jax-vectorization`;
-**pushing is the maintainer's call and has not been done.**
+Everything below is committed. A substantial backlog is **unpushed** on
+`cna-jax-vectorization` — `git log --oneline origin/cna-jax-vectorization..HEAD | wc -l`
+for the current count, deliberately not pasted here because it goes stale on the next
+commit. **Pushing is the maintainer's call and has not been done.**
 
 ---
 
@@ -95,14 +97,11 @@ longer identical — record it as a rescale, not a survival.
 - `benchmarks/order_convergence.py` (was running when the session ended; may have
   completed — check, and re-run if its log is absent or truncated)
 
-It is the important one: it regenerates §10.2/10.3 of `doc/distortion_ddd_conclusions.md`
-and recomputes `v_turn`.
-
-`order_convergence` is the important one: it regenerates the §10.2/10.3 tables in
+It is the important one: it regenerates the §10.2/10.3 tables in
 `doc/distortion_ddd_conclusions.md` and recomputes `v_turn`, which moves whenever the
 driving-point conductance at `s0_e1` moves — and the compensation moved it.
 
-Run them as: `cd benchmarks && PYTHONPATH=<repo>:<repo>/benchmarks MPLBACKEND=Agg python3 -u <script>.py > log 2>&1`
+Run it as: `cd benchmarks && PYTHONPATH=<repo>:<repo>/benchmarks MPLBACKEND=Agg python3 -u <script>.py > log 2>&1`
 
 ### 4.2 T3 — the doc rewrite for the 136-unknown fixture, NOT STARTED
 
