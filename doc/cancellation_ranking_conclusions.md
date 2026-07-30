@@ -1694,3 +1694,78 @@ here.
 The remaining gap is a factor of ~30 in expression size, and nothing measured here
 suggests which lever closes it. The two unmeasured ones stay unmeasured: the `Short`
 element operation, and the topological (GPDD) route.
+
+## 26. Stage 13: `Short` shrinks the matrix 33× and the answer 1.6×
+
+Stage 6's unfinished half. `Open` left the compact diagram structurally identical;
+`Short` identifies two nodes, deleting a row and a column, so it is the only lever in
+this plan that makes the determinant genuinely smaller.
+
+**Calibrated first, and the calibration mattered.** A node merge is easy to get
+subtly wrong — double-counting the merged diagonal, or forgetting that deleting a row
+shifts the output index — and a wrong merge produces a smaller matrix *for a different
+circuit*, which looks like a good result. Checked against a hand-computable divider:
+`V1/V0 = 0.750000` against `R2/(R1+R2)`, and after shorting the upper leg the merged
+node sits at exactly `I·R2 = 300.000000`. Gate 13-1 PASS.
+
+### It reduces the matrix far more than expected
+
+Greedy merging with exact re-evaluation of `H` over 10 Hz–10 MHz after every merge:
+
+| | nominal | degraded |
+|---|---|---|
+| merges accepted at 20% | **8** | **8** |
+| dimension | 26 → **18** | 26 → **18** |
+| terms | 2 773 885 → **84 100** (**33×**) | → 93 229 |
+| `N_eff` | 151 → **41.9** (3.6×) | → 41.2 |
+| sweep error from merging alone | 16.0% | 11.7% |
+
+My advance estimate said "two or three merges would be unsurprising" — eight were
+accepted, so the lever is stronger on the matrix than predicted.
+
+### But the answer barely shrinks, and that is the finding
+
+Running the full transfer-function pipeline on the reduced 18×18 circuit, over the
+wide band, against the **original** response:
+
+| circuit | operations | error over 6 decades |
+|---|---|---|
+| full, 26×26 (§25) | 6 439 | 16.5% |
+| **reduced, 18×18** | **4 081** | 16.6% |
+
+**Gate 13-3 FAILS** (nothing near 200 operations). **Gate 13-4, PARTIAL:** a 1.6×
+reduction.
+
+**So a 33× smaller term pool buys 1.6× in expression size.** The binding constraint is
+not how many terms are available — it is the accuracy demanded across the band. Once
+the coefficient tolerance has to be ~2.5e-3 to hold 20% over six decades, the
+approximation keeps whatever it needs, and shrinking the pool it draws from barely
+matters. That is a useful thing to know about every remaining lever of this kind: they
+attack term supply, and supply is not the constraint.
+
+### And I defeated my own safeguard
+
+Tightening the coefficient tolerance from 2.5e-3 to 1e-4 made the composed error
+**worse** — 16.6% → **145%**. That is impossible if each coefficient really got more
+accurate, so it was investigated rather than reported.
+
+Cause: at 1e-4, **three of sixteen denominator coefficients hit `max_splits` and
+returned errors of 58%, 87% and 60%** instead of 1e-4. Each raised the
+`RuntimeWarning` that `approximate_groups` emits precisely so an unconverged
+approximation cannot be mistaken for a converged one — the mechanism added in
+`4226a06` with the note *"returning it is evidently not enough, so say so out loud"*.
+
+**And a two-line convenience wrapper in the benchmark suppressed it:**
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)   # <- this
+
+**The safeguard worked; I silenced it.** Fixed: the helper now records missed
+tolerances and the report says so beside the number, so a composed error computed from
+unconverged pieces is labelled untrustworthy instead of printed as a measurement.
+
+That is the sixth self-correction in this thread and the first of a new kind. The
+others were reasoning that over-reached its measurement. This one is a *guard rail
+disabled for convenience* — which is worse, because the guard rail existed, fired
+correctly, and was built by me for exactly this situation two weeks of commits
+earlier.

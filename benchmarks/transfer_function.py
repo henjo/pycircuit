@@ -54,10 +54,28 @@ def ops(expr):
     return 0 if expr == 0 else int(sympy.count_ops(expr))
 
 
+## Coefficients that fail their tolerance, recorded by `rank` for the caller to
+## report.  This exists because blanket-suppressing the warning cost a whole
+## measurement: at a tight tolerance three coefficients hit `max_splits` and came
+## back with 58-87% error instead of 1e-4, the composed error went to 145%, and the
+## RuntimeWarning that says exactly that was being thrown away.
+UNCONVERGED = []
+
+
 def rank(diagram, env, tol):
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', RuntimeWarning)
-        return diagram.approximate_groups(env, tol=tol)
+    """Group-rank, recording rather than discarding a missed tolerance.
+
+    `approximate_groups` warns when it returns above `tol`.  Suppressing that
+    warning -- which an earlier version of this helper did with a bare
+    ``simplefilter('ignore')`` -- defeats the mechanism added precisely so an
+    unconverged approximation cannot be mistaken for a converged one.
+    """
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always', RuntimeWarning)
+        expr, n, err = diagram.approximate_groups(env, tol=tol)
+    if err > tol:
+        UNCONVERGED.append((tol, n, err, len(caught)))
+    return expr, n, err
 
 
 ## ---------------------------------------------------------------- part 1 --

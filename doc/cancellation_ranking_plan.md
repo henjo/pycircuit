@@ -466,6 +466,38 @@ the count is *expected* to rise. A result of 300-600 operations holding 20% over
 decades would be a good outcome and should be reported as one, not dressed up as a
 pass.
 
+## Stage 13 — the `Short` operation (declared 2026-07-30)
+
+Stage 6's unfinished half, and the last cheap lever. `Open` (parameter to zero) left
+the compact diagram structurally identical, because zeroing one addend inside a
+composite entry removes no vertex. **`Short` collapses two nodes into one, so the
+matrix loses a row and a column** — the only operation measured so far that makes the
+determinant genuinely smaller.
+
+Implemented as a node merge on the matrix: `V_a = V_b` means adding column `b` into
+column `a` and row `b` into row `a`, then deleting `b`. Chosen greedily with **exact
+re-evaluation of `H` over the wide sweep after each merge** — the discipline stage 12
+had to relearn.
+
+**Gate, declared before running.**
+
+1. **Calibration first.** The merge must reproduce a hand-computable case exactly: a
+   resistive divider whose upper leg is shorted has `H = 1`. A node merge is easy to
+   get subtly wrong — double-counting the diagonal, or shifting the output index —
+   and a wrong merge would silently produce a smaller matrix for the wrong circuit.
+   **If the calibration fails, nothing else in this stage means anything.**
+2. Report merges accepted at 20% sweep error over **10 Hz–10 MHz**, the resulting
+   matrix dimension, and the reduced circuit's term count and `N_eff`.
+3. **PASS if the reduced circuit's `H(s)` comes under 200 operations at ≤ 20% over
+   the wide band** — i.e. if `Short` closes stage 12's 36× gap.
+4. **PARTIAL if it cuts the operation count materially without reaching 200.**
+5. **FAIL if no merge is acceptable**, which would say the µA741 has no two nodes
+   that can be identified within 20% and the lever is empty on this circuit.
+
+**Declared in advance:** an amplifier's nodes are mostly at genuinely different
+potentials, so few merges should be expected. A result of two or three merges would
+be unsurprising and would not by itself close a 36× gap.
+
 ## What would make this whole plan fail
 
 - Stage 0 finds uniform cancellation. Most likely single outcome, and the
@@ -509,6 +541,7 @@ Scripts: `benchmarks/cancellation_profile.py` (stage 0),
 | 10 — the tolerance curve | **Gate 10-2 FAILS on its threshold; the substance is the best result of the plan.** On the dominant `s^1` coefficient (97.3% of the response), varying `tol`: **5 groups / 11 operations / 26.3% error**, then 43 / 57 / 6.0%, 155 / 91 / 3.2%, 164 / 91 / **0.79%**. The gate wanted ≤30 terms at ≤20% and the table straddles it. **The eleven-operation expression, printed:** `5.9997e-70·gm_q17·(gm_q1 + 4.09e-4)·(−gm_q17 − 1.0023e-2)·(gm_q2 + 4.09e-4)` — four factors, three device symbols, and it reads as a circuit statement. **And the metric was wrong all along:** term count overstates the answer's size 4-8× because sympy collects shared factors — terms grow 33× across the curve while operations grow 8×. Every earlier "not readable" verdict in this plan was reached on term counts. Details: `cancellation_ranking_conclusions.md` §23. |
 | 11 — transfer function, in operations, over a sweep | **Part 1 CORRECTS §23; part 2 PARTIAL — a 177-operation `H(s)` at one operating point.** Part 1: the terms-to-operations ratio is a property of the diagram, not a constant — 2.2 ops/group for an s-expanded coefficient but **69 ops/group for the compact whole determinant** (734 groups → **50 377 operations**), and 16 for the leapfrog top (181 → 2 895). So §23's "term count overstates 4-8×" is withdrawn: for the whole determinant the earlier verdicts were too *kind*. Part 2: exact `N/D` verified against the solve over the sweep (3.4e-15), then greedy coefficient choice with exact global re-evaluation. **Degraded: N `[0]`, D `[0,1]`, 177 operations, 7.9% error across two decades, device symbols intact — GATE 11-2 PASS.** Nominal fails: 119 ops at 26.7%, or 439 ops at 6.5%. The kept coefficient sets *differ* between operating points, which is the "different expressions for different symbol values" of the original brief. Details: `cancellation_ranking_conclusions.md` §24. |
 | 12 — does 177 ops survive a real band? | **Gate 12-3 FAIL, gate 12-4 PARTIAL — it scopes stage 11's headline.** The µA741 falls at −20 dB/decade from below 100 Hz, so stage 11's window sat entirely on the single-pole rolloff. Over 10 Hz–10 MHz the error *does* hold but costs **6 439 operations against 177 — a 36× increase** (9 228 for 13.8%). My own advance estimate of "300-600 operations" was an order of magnitude optimistic. **The failure was mine and it is the fifth repeat:** the first wide run showed 101% error while keeping 27 of 46 coefficients — impossible if the subset were the problem — because the subset was chosen against the *global* error but each coefficient was then approximated at a **per-coefficient tolerance**, the exact per-piece budget §11 measured as unsound and §14c records being rejected in 2000. Separating the two tolerances fixes it. Details: `cancellation_ranking_conclusions.md` §25. |
+| 13 — the `Short` operation | **13-1 PASS, 13-3 FAIL, 13-4 PARTIAL.** Calibrated against a hand-computable divider first (merged node at exactly `I·R2`). Greedy node merging with exact global re-evaluation accepts **8 merges** at 20% — more than the two or three predicted — taking the matrix **26 → 18**, terms **2 773 885 → 84 100 (33×)** and `N_eff` **151 → 41.9**. But the transfer function over the wide band goes only **6 439 → 4 081 operations (1.6×)** at the same 16.6% error. **A 33× smaller term pool buys 1.6× in expression size: the binding constraint is the accuracy demanded across the band, not term supply.** Every remaining lever of this kind attacks supply. **And I defeated my own safeguard:** tightening the coefficient tolerance made the error *worse* (16.6% → 145%) because three of sixteen coefficients hit `max_splits` and returned 58-87% error — each raising the `RuntimeWarning` built for exactly that, which a `simplefilter('ignore')` in the benchmark threw away. Fixed to record and report. Details: `cancellation_ranking_conclusions.md` §26. |
 | 4 — library API | **Done.** `DDD.cancellation`, `DDD.subdiagram_values`, `DDD.minor_positions`, `DDD.approximate_groups` in `ddd.py`; twelve tests in `test_ddd.py`; three new subsections of `doc/src/circuit/ddd.rst` with every number generated at build time. `DDD.approximate` now **warns** when it returns without meeting `tol`. |
 
 ### Three results worth carrying forward

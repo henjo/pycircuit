@@ -1018,6 +1018,17 @@ function covers two decades of one amplifier at one operating point; covering it
 actual dynamics is not readable.** The remaining gap is a factor of ~30 in expression
 size and nothing measured says which lever closes it.
 
+**Stage 13 tried the last cheap lever, `Short`.** Identifying two nodes deletes a row
+and a column, so unlike `Open` it genuinely shrinks the determinant. Calibrated
+against a hand-computable divider, then greedy node merging with exact global
+re-evaluation accepts **8 merges** at 20% error: matrix **26 → 18**, terms
+**2 773 885 → 84 100 (33×)**, `N_eff` **151 → 41.9**. The transfer function over the
+wide band improves only **6 439 → 4 081 operations (1.6×)**.
+
+**So a 33× smaller term pool buys 1.6× in expression size.** The binding constraint is
+the accuracy demanded across the band, not term supply — which is what every remaining
+lever of this kind attacks. That is the most useful thing this stage established.
+
 A methodological note worth more than the numbers: the first wide-band run reported
 101% error while keeping 27 of 46 coefficients, which is impossible if the subset were
 at fault. The subset *was* chosen against the global sweep error, but each kept
