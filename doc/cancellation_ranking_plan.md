@@ -439,6 +439,33 @@ operation count should be expected to be several times stage 10's eleven, and a
 result of 100-200 operations would still be a good outcome rather than a
 disappointment.
 
+## Stage 12 — does 177 operations survive a real band? (declared 2026-07-30)
+
+Stage 11's reconsider-if, taken up immediately because it is the one claim in that
+result most likely to be wrong. The sweep was 100 Hz-10 kHz, **below the µA741's
+compensation pole and its unity-gain frequency**, so the coefficients that shape the
+rolloff were never exercised. A symbolic transfer function that holds only below the
+dominant pole is not a transfer function a designer would use.
+
+**Gate, declared before running.** Same greedy selection against a global sweep
+error, same two operating points, but over bands that actually contain the amplifier's
+dynamics — up to 10 MHz, six decades:
+
+1. Report `|H|` across the wide sweep, so the band being claimed is visible and the
+   pole locations are evident rather than assumed.
+2. Report kept coefficients, operations and sweep error for the narrow band
+   (100 Hz-10 kHz) and the wide one side by side, at both operating points.
+3. **PASS if the wide band still holds ≤ 20% under 200 operations.**
+4. **PARTIAL if the error holds but the operation count grows** — report by how
+   much, since that is the real price of covering the band.
+5. **FAIL if no coefficient subset holds ≤ 20% across the wide band**, which would
+   confine stage 11's result to a narrow band and should be said plainly.
+
+**Declared in advance:** more coefficients matter over six decades than over two, so
+the count is *expected* to rise. A result of 300-600 operations holding 20% over six
+decades would be a good outcome and should be reported as one, not dressed up as a
+pass.
+
 ## What would make this whole plan fail
 
 - Stage 0 finds uniform cancellation. Most likely single outcome, and the
@@ -481,6 +508,7 @@ Scripts: `benchmarks/cancellation_profile.py` (stage 0),
 | 9 — what reduces `N_eff`? | **Gate 9-2 FAIL, gate 9-3 PARTIAL — a real 5-12× gain, short of readable.** Ranking per coefficient of `s` instead of the whole determinant: nominal **`s^1`, 155 terms** against 734 (4.7×), carrying **97.3%** of the response; degraded **`s^2`, 206 terms** against 2 401 (11.7×). Device symbols intact throughout. Target was `N_eff ≤ 20` and ≤30 terms; best is 74.5 and 155. **And `N_eff` earned a caveat:** within one circuit its ordering across coefficients is *inverted* (126.8/341.2/709.2 → 950/275/206 terms), so it is a coarse screen for "is this representation hopeless", not a fine predictor. **Bug found and fixed:** `concentration` reported `N_eff = 0` above `s^12` because `Σ|term|²` underflows; rewritten scale-free on the weights, low-order values unchanged, test added. Details: `cancellation_ranking_conclusions.md` §22. |
 | 10 — the tolerance curve | **Gate 10-2 FAILS on its threshold; the substance is the best result of the plan.** On the dominant `s^1` coefficient (97.3% of the response), varying `tol`: **5 groups / 11 operations / 26.3% error**, then 43 / 57 / 6.0%, 155 / 91 / 3.2%, 164 / 91 / **0.79%**. The gate wanted ≤30 terms at ≤20% and the table straddles it. **The eleven-operation expression, printed:** `5.9997e-70·gm_q17·(gm_q1 + 4.09e-4)·(−gm_q17 − 1.0023e-2)·(gm_q2 + 4.09e-4)` — four factors, three device symbols, and it reads as a circuit statement. **And the metric was wrong all along:** term count overstates the answer's size 4-8× because sympy collects shared factors — terms grow 33× across the curve while operations grow 8×. Every earlier "not readable" verdict in this plan was reached on term counts. Details: `cancellation_ranking_conclusions.md` §23. |
 | 11 — transfer function, in operations, over a sweep | **Part 1 CORRECTS §23; part 2 PARTIAL — a 177-operation `H(s)` at one operating point.** Part 1: the terms-to-operations ratio is a property of the diagram, not a constant — 2.2 ops/group for an s-expanded coefficient but **69 ops/group for the compact whole determinant** (734 groups → **50 377 operations**), and 16 for the leapfrog top (181 → 2 895). So §23's "term count overstates 4-8×" is withdrawn: for the whole determinant the earlier verdicts were too *kind*. Part 2: exact `N/D` verified against the solve over the sweep (3.4e-15), then greedy coefficient choice with exact global re-evaluation. **Degraded: N `[0]`, D `[0,1]`, 177 operations, 7.9% error across two decades, device symbols intact — GATE 11-2 PASS.** Nominal fails: 119 ops at 26.7%, or 439 ops at 6.5%. The kept coefficient sets *differ* between operating points, which is the "different expressions for different symbol values" of the original brief. Details: `cancellation_ranking_conclusions.md` §24. |
+| 12 — does 177 ops survive a real band? | **Gate 12-3 FAIL, gate 12-4 PARTIAL — it scopes stage 11's headline.** The µA741 falls at −20 dB/decade from below 100 Hz, so stage 11's window sat entirely on the single-pole rolloff. Over 10 Hz–10 MHz the error *does* hold but costs **6 439 operations against 177 — a 36× increase** (9 228 for 13.8%). My own advance estimate of "300-600 operations" was an order of magnitude optimistic. **The failure was mine and it is the fifth repeat:** the first wide run showed 101% error while keeping 27 of 46 coefficients — impossible if the subset were the problem — because the subset was chosen against the *global* error but each coefficient was then approximated at a **per-coefficient tolerance**, the exact per-piece budget §11 measured as unsound and §14c records being rejected in 2000. Separating the two tolerances fixes it. Details: `cancellation_ranking_conclusions.md` §25. |
 | 4 — library API | **Done.** `DDD.cancellation`, `DDD.subdiagram_values`, `DDD.minor_positions`, `DDD.approximate_groups` in `ddd.py`; twelve tests in `test_ddd.py`; three new subsections of `doc/src/circuit/ddd.rst` with every number generated at build time. `DDD.approximate` now **warns** when it returns without meeting `tol`. |
 
 ### Three results worth carrying forward

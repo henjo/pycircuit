@@ -40,7 +40,13 @@ from pycircuit.circuit.ddd import (HierarchicalDDD, ddd_of_matrix, s_expand,
 from cancellation_profile import NOMINAL, DEGRADED, environment
 
 
-SWEEP = np.logspace(2, 4, 13)          # two decades, 100 Hz .. 100 kHz
+## Stage 11 used only the narrow band, which sits BELOW the uA741's compensation
+## pole and unity-gain frequency, so the coefficients shaping the rolloff were never
+## exercised.  Stage 12 adds the wide one; a symbolic transfer function that holds
+## only below the dominant pole is not one a designer would use.
+SWEEPS = (('narrow 100 Hz-10 kHz', np.logspace(2, 4, 13)),
+          ('wide 10 Hz-10 MHz', np.logspace(1, 7, 25)))
+SWEEP = SWEEPS[0][1]                   # rebound per band by `transfer_function`
 DEVICES = {'gm_q1', 'gm_q2', 'gm_q17'}
 
 
@@ -121,6 +127,31 @@ def coefficients(expanded, env):
     return out
 
 
+def show_response(system, cenv, sweep):
+    """Print |H| across the band, so the claimed band and its poles are visible."""
+    print('    |H| across the band:')
+    prev = None
+    for freq in sweep[::4]:
+        env = dict(cenv)
+        env[system.s] = 2j * math.pi * freq
+        M = np.array([[complex(_resolve(system.A[i, j], env))
+                       for j in range(system.dim)] for i in range(system.dim)],
+                     dtype=complex)
+        rhs = np.array([complex(_resolve(system.b[i], {**env, **{
+            s: 1 for s in system.b.free_symbols if str(s) == 'vin'}}))
+            for i in range(system.dim)], dtype=complex)
+        h = abs(np.linalg.solve(M, rhs)[system.out_index])
+        slope = ''
+        if prev is not None:
+            f0, h0 = prev
+            if h > 0 and h0 > 0:
+                slope = '  %+.0f dB/dec' % (20 * math.log10(h / h0)
+                                            / math.log10(freq / f0))
+        print('      %10.3g Hz  |H| %11.4e  (%+6.1f dB)%s'
+              % (freq, h, 20 * math.log10(h) if h > 0 else float('-inf'), slope))
+        prev = (freq, h)
+
+
 def h_from(num_vals, den_vals, freq):
     s = 2j * math.pi * freq
     n = sum(v * s ** k for k, v in num_vals.items())
@@ -128,9 +159,10 @@ def h_from(num_vals, den_vals, freq):
     return None if d == 0 else n / d
 
 
-def sweep_error(num_vals, den_vals, reference):
+def sweep_error(num_vals, den_vals, reference, sweep=None):
+    sweep = SWEEP if sweep is None else sweep
     worst = 0.0
-    for freq, ref in zip(SWEEP, reference):
+    for freq, ref in zip(sweep, reference):
         got = h_from(num_vals, den_vals, freq)
         if got is None:
             return math.inf
@@ -138,7 +170,7 @@ def sweep_error(num_vals, den_vals, reference):
     return worst
 
 
-def choose_coefficients(num, den, reference, tol):
+def choose_coefficients(num, den, reference, tol, sweep=None):
     """Drop coefficients greedily, re-evaluating H over the whole sweep each time.
 
     Never a per-coefficient budget -- that is what stage 5 measured going
@@ -154,7 +186,7 @@ def choose_coefficients(num, den, reference, tol):
                 if len(table) == 1:
                     break
                 saved = table.pop(k)
-                if sweep_error(nv, dv, reference) <= tol:
+                if sweep_error(nv, dv, reference, sweep) <= tol:
                     changed = True
                     break
                 table[k] = saved
@@ -163,8 +195,6 @@ def choose_coefficients(num, den, reference, tol):
 
 def transfer_function():
     print('== PART 2: the transfer function H(s) = N(s)/D(s) ==')
-    print('   sweep: %d points, %g Hz to %g Hz (SAMPLED)'
-          % (len(SWEEP), SWEEP[0], SWEEP[-1]))
     system = bc.ua741(symbolic_devices=('q1', 'q2', 'q17'))
     Anum = numerator_matrix(system)
 
@@ -178,66 +208,62 @@ def transfer_function():
     for label, gms in (('nominal', NOMINAL), ('degraded', DEGRADED)):
         full = environment(system, gms)
         cenv = {k: v for k, v in full.items() if k != system.s}
-
-        ## The oracle: solve the real system at each frequency.
-        reference = []
-        for freq in SWEEP:
-            env = dict(cenv)
-            env[system.s] = 2j * math.pi * freq
-            M = np.array([[complex(_resolve(system.A[i, j], env))
-                           for j in range(system.dim)]
-                          for i in range(system.dim)], dtype=complex)
-            rhs = np.array([complex(_resolve(system.b[i], {**env, **{
-                s: 1 for s in system.b.free_symbols if str(s) == 'vin'}}))
-                for i in range(system.dim)], dtype=complex)
-            reference.append(np.linalg.solve(M, rhs)[system.out_index])
-        reference = np.array(reference)
-
         num = coefficients(num_exp, cenv)
         den = coefficients(den_exp, cenv)
-        exact_err = sweep_error({k: v for k, (_c, v) in num.items()},
-                                {k: v for k, (_c, v) in den.items()}, reference)
-        print('  == %s gm ==' % label)
-        print('    exact N/D against the solve, over the sweep: %.2e' % exact_err)
+        print('  ================ %s gm ================' % label)
+        show_response(system, cenv, SWEEPS[1][1])
 
-        for tol in (0.2, 0.05):
-            keep_n, keep_d = choose_coefficients(num, den, reference, tol)
-            ## Now approximate each surviving coefficient symbolically, at the
-            ## same tolerance, and re-check the sweep with the approximated values.
-            nsym, nval, nops = {}, {}, 0
-            for k in keep_n:
-                expr, _n, _e = rank(num[k][0], cenv, tol)
-                nsym[k] = expr
-                nval[k] = complex(expr.xreplace(cenv)) if expr != 0 else 0j
-                nops += ops(expr)
-            dsym, dval, dops = {}, {}, 0
-            for k in keep_d:
-                expr, _n, _e = rank(den[k][0], cenv, tol)
-                dsym[k] = expr
-                dval[k] = complex(expr.xreplace(cenv)) if expr != 0 else 0j
-                dops += ops(expr)
-            err = sweep_error(nval, dval, reference)
-            names = set()
-            for e in list(nsym.values()) + list(dsym.values()):
-                names |= {str(x) for x in e.free_symbols}
-            present = sorted(names & DEVICES)
-            total = nops + dops + 2 * (len(keep_n) + len(keep_d))
-            print('    tol=%-6g N keeps %s, D keeps %s' % (tol, keep_n, keep_d))
-            print('             operations: N %d + D %d + assembly = %d,'
-                  ' sweep err %.3e' % (nops, dops, total, err))
-            print('             device symbols: %s'
-                  % (', '.join(present) if present else 'NONE'))
-            print('             GATE 11-2 (<200 ops at <=20%% over the sweep): %s'
-                  % ('PASS' if total < 200 and err <= 0.20 and present
-                     else 'FAIL'))
-            if tol == 0.2 and label == 'nominal':
-                print()
-                print('    H(s) at tol=0.2, so it can be read:')
-                for k in sorted(dsym, reverse=True):
-                    print('      D s^%-2d = %s' % (k, dsym[k]))
-                for k in sorted(nsym, reverse=True):
-                    print('      N s^%-2d = %s' % (k, nsym[k]))
-                print()
+        for band, sweep in SWEEPS:
+            reference = []
+            for freq in sweep:
+                env = dict(cenv)
+                env[system.s] = 2j * math.pi * freq
+                M = np.array([[complex(_resolve(system.A[i, j], env))
+                               for j in range(system.dim)]
+                              for i in range(system.dim)], dtype=complex)
+                rhs = np.array([complex(_resolve(system.b[i], {**env, **{
+                    s: 1 for s in system.b.free_symbols if str(s) == 'vin'}}))
+                    for i in range(system.dim)], dtype=complex)
+                reference.append(np.linalg.solve(M, rhs)[system.out_index])
+            reference = np.array(reference)
+            exact = sweep_error({k: v for k, (_c, v) in num.items()},
+                                {k: v for k, (_c, v) in den.items()},
+                                reference, sweep)
+            print('    -- %s (%d points): exact N/D vs the solve %.2e --'
+                  % (band, len(sweep), exact))
+
+            ## The subset is chosen against the GLOBAL sweep error, but each kept
+            ## coefficient was then approximated at its own tolerance -- a
+            ## per-piece budget, which is exactly what stage 5 measured as
+            ## unsound and what blew the wide band to 100% error.  So the
+            ## coefficient tolerance is now swept separately from the subset
+            ## tolerance, and the composed error is measured for each.
+            for tol in (0.2, 0.05):
+                keep_n, keep_d = choose_coefficients(num, den, reference, tol,
+                                                     sweep)
+                for ctol in (tol, tol / 20.0, tol / 400.0):
+                    nsym, nval, nops = {}, {}, 0
+                    for k in keep_n:
+                        expr, _n, _e = rank(num[k][0], cenv, ctol)
+                        nsym[k] = expr
+                        nval[k] = (complex(expr.xreplace(cenv))
+                                   if expr != 0 else 0j)
+                        nops += ops(expr)
+                    dsym, dval, dops = {}, {}, 0
+                    for k in keep_d:
+                        expr, _n, _e = rank(den[k][0], cenv, ctol)
+                        dsym[k] = expr
+                        dval[k] = (complex(expr.xreplace(cenv))
+                                   if expr != 0 else 0j)
+                        dops += ops(expr)
+                    e2 = sweep_error(nval, dval, reference, sweep)
+                    tot = nops + dops + 2 * (len(keep_n) + len(keep_d))
+                    print('       subset tol=%-5g coeff tol=%-8.3g -> %5d ops,'
+                          ' err %.3e  %s'
+                          % (tol, ctol, tot, e2,
+                             'PASS' if tot < 200 and e2 <= 0.20 else
+                             'holds' if e2 <= 0.20 else 'fail'))
+        print()
     return 0
 
 

@@ -1010,8 +1010,21 @@ solve over the sweep at 3.4e-15 first. The kept coefficient sets *differ* betwee
 operating points, which is the "different expressions for different symbol values" of
 the brief.
 
-So what remains is a size/accuracy trade a designer would choose — 177 operations at
-8%, 362-439 at 1-6% — not a missing capability. **Not** achieved: the leapfrog, where
+**Stage 12 then scoped that result, and the scope is narrow.** The µA741 falls at
+−20 dB/decade from below 100 Hz, so stage 11's 100 Hz–10 kHz window sat entirely on
+the single-pole rolloff. Over 10 Hz–10 MHz the error still holds but costs **6 439
+operations against 177 — 36× more** (9 228 for 13.8%). **So the readable transfer
+function covers two decades of one amplifier at one operating point; covering its
+actual dynamics is not readable.** The remaining gap is a factor of ~30 in expression
+size and nothing measured says which lever closes it.
+
+A methodological note worth more than the numbers: the first wide-band run reported
+101% error while keeping 27 of 46 coefficients, which is impossible if the subset were
+at fault. The subset *was* chosen against the global sweep error, but each kept
+coefficient was then approximated at its own **per-coefficient tolerance** — the same
+per-piece budget that P16 already records as unsound, committed again. Separating the
+two tolerances fixed it. **Writing the lesson down did not prevent repeating it; a
+number that could not be true is what caught it.** **Not** achieved: the leapfrog, where
 stage 5 showed the composition is not error-controlled.
 
 **What is not.** Converging and being readable are different problems and only

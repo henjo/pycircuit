@@ -1629,3 +1629,68 @@ produced.
 unity-gain frequency lie above it, so a wider sweep would bring more coefficients
 into play and the operation count with them. Widening it is one line and the honest
 next check on this result.
+
+## 25. Stage 12: stage 11's result is confined to two decades below the pole
+
+The reconsider-if from §24, taken up immediately. The µA741's measured response
+(printed by the script, so the band is visible rather than assumed): **+87.9 dB at
+10 Hz falling at −20 dB/decade** through 1 MHz, so the compensation pole is below
+100 Hz and stage 11's 100 Hz–10 kHz window sat entirely on the single-pole rolloff.
+
+### The wide band is reachable — at 36× the operations
+
+| point | band | subset tol | coeff tol | **operations** | sweep error |
+|---|---|---|---|---|---|
+| nominal | narrow, 2 decades | 0.2 | 0.2 | 119 | 26.7% |
+| nominal | narrow | 0.2 | 0.01 | **232** | **15.5%** |
+| nominal | **wide, 6 decades** | 0.2 | 0.2 | 2 555 | **101%** |
+| nominal | wide | 0.2 | 0.01 | 5 314 | 61% |
+| nominal | wide | 0.2 | 5e-4 | **9 228** | **13.8%** |
+| nominal | wide | 0.05 | 2.5e-3 | **6 439** | **16.5%** |
+
+**Gate 12-3 FAILS** (nothing under 200 operations holds the wide band).
+**Gate 12-4 is what this is — PARTIAL:** the error does hold, at **6 439 operations
+against 177**, a **36× increase**. And my own advance estimate was wrong in the
+optimistic direction: the gate text said "300-600 operations holding 20% over six
+decades would be a good outcome", and the answer is an order of magnitude above that.
+
+**So stage 11's headline is now properly scoped: 177 operations covers two decades on
+the single-pole rolloff of one amplifier at one operating point.** Covering the
+amplifier's actual dynamics costs thousands of operations. That is not readable, and
+saying so is the point of having run this.
+
+### The failure was mine, and it is the fifth time
+
+The first wide-band run reported **101% error while keeping 27 of 46 coefficients** —
+which made no sense, since keeping nearly everything should approach the exact
+`1.1e-13`. The cause: the coefficient *subset* was chosen against the global sweep
+error (correct), and then **each kept coefficient was approximated at its own
+per-coefficient tolerance** (wrong). That is precisely the per-piece budget §11
+measured going non-monotone and §14c records Guerra et al. rejecting in 2000 —
+committed again, in a document that describes the mistake twice.
+
+Separating the two tolerances fixes it: the subset tolerance and the coefficient
+tolerance are different knobs, and the composed error is controlled only by the
+second. Tightening it 400× (0.2 → 5e-4) took the wide band from 101% to 13.8%.
+
+**Five self-corrections now, and the shape is consistent:** the measurement was right
+each time; what failed was the reasoning wrapped around it — generalising past what
+was measured (§§14a, 15b, 22, 24), or re-applying a method already recorded as
+unsound (§11, and now here). **Writing a lesson down did not prevent repeating it.**
+What caught it both times was a number that could not be true: 6.7e+55 in §20, 101%
+here.
+
+### Final position of this thread
+
+| | achieved |
+|---|---|
+| convergent approximation, device-symbolic | **yes** — `approximate_groups`, shipped, tested |
+| two cheap diagnostics (`κ`, `N_eff`) | **yes** — shipped, tested, with their limits recorded |
+| a readable expression for one coefficient | **yes** — 11 operations, 26% error (§23) |
+| a readable transfer function, narrow band | **yes at one operating point** — 177 ops, 7.9%, 2 decades (§24) |
+| a readable transfer function over the real band | **no** — 6 439 operations minimum at 16.5% |
+| the 5th-order leapfrog | **no** — composition not error-controlled (§11) |
+
+The remaining gap is a factor of ~30 in expression size, and nothing measured here
+suggests which lever closes it. The two unmeasured ones stay unmeasured: the `Short`
+element operation, and the topological (GPDD) route.
