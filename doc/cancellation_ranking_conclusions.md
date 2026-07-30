@@ -1925,3 +1925,78 @@ that is the obvious way to revive it.
 representation itself *was* validated independently — stage 14 matched a fully numeric
 graded solve to 4.6e-13 on this circuit — so what is unverified here is the perturbation
 series' own truncation, which is exactly what the table measures.
+
+## 29. §28 corrected: one row was past the cubic's turning point
+
+The maintainer pointed at a finding already recorded in `doc/distortion_mimo_plan.md`
+§8.3 and not applied in §28:
+
+> `i = g(v + a*v^3)` with `a < 0` turns over at `v_turn = 1/sqrt(3|a|)`, beyond which it
+> has negative differential conductance and **is not a physical device**. And the
+> *loaded* cell is worse than the isolated device, at 87% of the turning point rather
+> than 66%: the same negative `alpha` that compresses the output current also reduces
+> the node's loading, so the node voltage **expands** toward the breakdown.
+
+§28 reported convergence orders without ever asking where its amplitudes sat relative
+to that limit. Measured now: at 100 kHz the driving-point conductance at `s0_e1` is
+`g = 4.46e-04 S` (`|Z_ii| = 2.24 kohm`), so with `a = kk/g`:
+
+| case | `a` | `v_turn` | node voltage | % of `v_turn` |
+|---|---|---|---|---|
+| `kk` = 0.05, 3 V drive | 1.12e+02 | 5.45e-02 | 1.85e-02 | **34%** |
+| `kk` = 0.05, 1 V drive | 1.12e+02 | 5.45e-02 | 6.31e-03 | 12% |
+| `kk` = 0.5, 1 V drive | 1.12e+03 | 1.72e-02 | ~6.3e-03 | **37%** |
+| **`kk` = 50, 1 V drive** | 1.12e+05 | **1.72e-03** | ~6.3e-03 | **~370%** |
+
+**The `kk = 50` row of §28's second table is withdrawn.** Its node voltage is several
+times `v_turn`, so the element has negative differential conductance there and is not a
+device; "not settled by `U^13`" describes a model that has already stopped meaning
+anything. A series cannot converge outside the region where its model is physical, and
+reporting the non-convergence as a property of the *series* mistakes an artefact for a
+result.
+
+**The amplitude table stands, with its scale now stated.** The 3 V row sits at 34% of
+`v_turn` — inside the physical region, and consistent with the recorded rule that 1 dB
+compression lands at 66% and a loaded node breaks down at 87%. So "approaching the
+radius of convergence" was right in direction; what §28 lacked was the number that makes
+it checkable. Every row should carry its fraction of `v_turn`, and the script now
+computes it.
+
+**One thing to state that §28 left implicit: the sign.** `kk` here is **positive**, and
+with the recorded convention `(A + sC)x = G_h x_in + f_h(x_in) - f(x)` that makes the
+cubic **compressive** — confirmed in the data, since scaling the 0.01 V node voltage of
+6.33e-05 linearly to 3 V predicts 1.90e-02 against the 1.85e-02 measured, a 2.6%
+compression. So this run is not in the expansive regime the recorded finding warns
+about; it is the compressive one, and it still loses convergence at a third of
+`v_turn`.
+
+**The transferable lesson, which cost a wrong table row:** a truncated polynomial
+nonlinearity has a validity limit of its own, independent of the perturbation order, and
+an order-convergence study is only meaningful inside it. `v_turn` should be computed and
+printed beside any such sweep — it is two lines given the driving-point impedance, and
+without it a divergence caused by the *model* is indistinguishable from one caused by
+the *series*.
+
+### The corrected table, with the scale on every row
+
+```
+amp (V)   |v| s0_e1    %v_turn   HD3          d(U^5)   d(U^7)   d(U^9)   d(U^11)  d(U^13)  agrees from
+0.01      6.3290e-05   0%        5.9193e-11   1.6e-06  2.9e-12  0        0        0        U^5
+0.03      1.8987e-04   0%        5.3273e-10   1.4e-05  2.3e-10  4.2e-15  0        0        U^5
+0.1       6.3287e-04   1%        5.9184e-09   1.6e-04  2.9e-08  5.7e-12  1.2e-15  0        U^5
+0.3       1.8981e-03   3%        5.3197e-08   1.4e-03  2.3e-06  4.1e-09  7.7e-12  1.5e-14  U^7
+1         6.3080e-03   12%       5.8261e-07   1.6e-02  2.9e-04  5.8e-06  1.2e-07  2.6e-09  U^9
+3         1.8465e-02   34%       4.6643e-06   1.7e-01  2.7e-02  4.7e-03  8.8e-04  1.7e-04  not by U^13
+
+kk        HD3          %v_turn   agrees from
+0.005     5.9098e-08   4%        U^7
+0.5       5.1128e-06   37%       not by U^13
+50        7.6201e-03   366%!     UNPHYSICAL -- past v_turn
+```
+
+**And the pattern is cleaner stated against `v_turn` than against amplitude.** The
+required order tracks *how close the node is to the cubic's turning point*, not the
+drive level as such: `U^5` below a few percent, `U^7` at 3-4%, `U^9` at 12%, and no
+settling by `U^13` from about 34% onward — which the two independent sweeps agree on
+(34% by amplitude, 37% by `kk`). That is one curve in one variable, and §28 had it
+spread across two.

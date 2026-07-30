@@ -34,6 +34,7 @@ from pycircuit.circuit import benchmark_circuits as bc
 from pycircuit.circuit.benchmark_circuits import _UA741_NODE_NAMES
 from pycircuit.circuit.distortion import (GradedSpectrum, GradedVector,
                                           graded_response_mimo)
+from pycircuit.circuit.ddd import _resolve
 from pycircuit.circuit.distortion_ddd import Expr, evaluate_one, nodes_of
 
 from nonlinear_leapfrog import expr_solver
@@ -60,6 +61,28 @@ NODE_NAME = 's0_e1'
 ## "how does order matter with amplitude" and "how does it matter with strength".
 KK_VALUES = (5e-3, 5e-1, 5e+1)
 G3_VALUE = 5.0e-2
+
+
+def turning_point(system, node_row, kk, freq):
+    """``v_turn = 1/sqrt(3|a|)`` with ``a = kk/g``, the cubic's validity limit.
+
+    A truncated cubic ``i = g(v + a v^3)`` has negative differential conductance beyond
+    this and **is not a physical device** (see `doc/distortion_mimo_plan.md` 8.3).  An
+    order-convergence study is only meaningful inside it: without this number a
+    divergence caused by the *model* looks exactly like one caused by the *series*,
+    which cost a withdrawn table row.
+    """
+    env = {}
+    for sym in system.A.free_symbols:
+        if sym is not system.s:
+            env[sym] = complex(system.params[sym])
+    env[system.s] = 2j * np.pi * freq
+    n = system.dim
+    M = np.array([[complex(_resolve(system.A[i, j], env)) for j in range(n)]
+                  for i in range(n)], dtype=complex)
+    g = 1.0 / abs(np.linalg.inv(M)[node_row, node_row])
+    a = kk / g
+    return 1.0 / np.sqrt(3 * abs(a)), g
 
 
 def build_symbolic(system, node_row, out_row, drive_row, order):
@@ -154,7 +177,13 @@ def main():
     print('Third harmonic at the output; one symbolic build per order, evaluated')
     print('at each amplitude.  d(U^k) = |H3(U^k) - H3(U^k-2)| / |H3(U^k)|.')
     print()
-    head = ('%-9s %-12s %-12s' % ('amp (V)', '|v| %s' % NODE_NAME, 'HD3')
+    vturn, gnode = turning_point(system, node_row, G3_VALUE, F0)
+    print('cubic validity limit: g at %s = %.4e S, a = kk/g = %.4e,'
+          ' v_turn = %.4e V' % (NODE_NAME, gnode, G3_VALUE / gnode, vturn))
+    print('rows beyond 100% of v_turn are NOT a physical device and are marked.')
+    print()
+    head = ('%-9s %-12s %-9s %-12s' % ('amp (V)', '|v| %s' % NODE_NAME,
+                                       '%v_turn', 'HD3')
             + ''.join('%-11s' % ('d(U^%d)' % o) for o in done[1:])
             + ' agrees from')
     print(head)
@@ -162,7 +191,10 @@ def main():
     for amp in AMPLITUDES:
         top = built[done[-1]]['vals'][amp]
         hd3 = abs(top[1]) / abs(top[0]) if abs(top[0]) else float('nan')
-        row = '%-9.3g %-12.4e %-12.4e' % (amp, abs(top[2]), hd3)
+        frac = 100.0 * abs(top[2]) / vturn
+        row = '%-9.3g %-12.4e %-9s %-12.4e' % (
+            amp, abs(top[2]),
+            ('%.0f%%' % frac) + ('!' if frac > 100 else ''), hd3)
         agrees = None
         for prev, order in zip(done, done[1:]):
             a = built[prev]['vals'][amp][1]
@@ -181,7 +213,7 @@ def main():
     print()
     print('== and because kk is symbolic, sweeping the nonlinearity is free ==')
     print('Convergence order at a 1 V drive, as the cubic coefficient grows:')
-    print('%-12s %-13s %s' % ('kk', 'HD3', 'agrees from'))
+    print('%-12s %-11s %-9s %s' % ('kk', 'HD3', '%v_turn', 'agrees from'))
     print('-' * 40)
     for kk in KK_VALUES:
         env = dict(base)
@@ -195,15 +227,21 @@ def main():
                            evaluate_one(built[order]['third'], e))
         top = vals[done[-1]]
         hd3 = abs(top[1]) / abs(top[0]) if abs(top[0]) else float('nan')
+        vt, _g = turning_point(system, node_row, kk, F0)
         agrees = None
         for prev, order in zip(done, done[1:]):
             a, c = vals[prev][1], vals[order][1]
             rel = abs(c - a) / abs(c) if abs(c) else float('nan')
             if agrees is None and rel < 1e-6:
                 agrees = prev
-        print('%-12.3g %-13.4e %s'
-              % (kk, hd3, 'U^%d' % agrees if agrees else
-                 'not by U^%d' % done[-1]))
+        ## The node voltage barely moves with kk at fixed drive, so the 1 V
+        ## amplitude row's value is a fair stand-in for the fraction.
+        nodev = abs(built[done[-1]]['vals'][1.0][2])
+        frac = 100.0 * nodev / vt
+        print('%-12.3g %-11.4e %-9s %s'
+              % (kk, hd3, ('%.0f%%' % frac) + ('!' if frac > 100 else ''),
+                 ('UNPHYSICAL -- past v_turn' if frac > 100 else
+                  ('U^%d' % agrees if agrees else 'not by U^%d' % done[-1]))))
     return 0
 
 
