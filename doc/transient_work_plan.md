@@ -728,6 +728,25 @@ suspect, not a run that was rescued.
 2. Does the amplification ratio actually separate the two regimes cleanly, or is there a
    continuum where neither criterion is trustworthy? That is the assumption (D) rests on.
 
+### Implementation note: `Eg` is a current, not a charge
+
+This will bite otherwise. pycircuit's `Eg` is **not** the paper's numerator. YWR's Table I
+numerator is `(second difference of g) · h`, which has units A·s = **coulombs**, divided by
+`(C + β₀h·G)` in farads to give volts. pycircuit absorbs that `h` into `J` instead — because
+`J = G + β₀'C/h` and `β₀h·J = C + β₀h·G` — so `integrator.py`'s `lte` return
+(`-0.5*(gn - gn_1)`, `-(1/6)*(gn - 2gn_1 + gn_2)`) is a **current**, and `J^{-1}Eg` is volts
+only because `J` carries the `1/h`. Both are self-consistent; they are not interchangeable.
+
+**Consequence for the guard:** `chgtol` is a *charge* tolerance, so it cannot be applied to
+`Eg` as returned. The guard's quantity must be rescaled to charge —
+`Eg_charge = β₀ · h_curr · Eg` with the same `β₀` the integrator used (`1` for Euler,
+`0.5` for trapezoidal, `alpha0`-derived for Gear2) — or, equivalently and more safely, have
+`compute_lte` return the charge-flavoured numerator alongside the current-flavoured one so
+the scaling lives with the integrator that knows its own `β₀` rather than in the controller.
+**Prefer the second.** Getting this wrong yields a guard whose threshold is off by a factor
+of `h`, which on this codebase means a guard that either never fires or always does — and
+either way looks like it is working.
+
 ~~**Recommendation: (B).**~~ ~~**(A).**~~ **RECOMMENDATION IS NOW (D)** — YWR as the
 criterion, with the charge check as a step-collapse guard. This item has moved twice in one
 day, both times on evidence rather than reflection: (B) → (A) on reading the YWR paper, then
@@ -818,7 +837,36 @@ with SPICE tolerances becomes a requirement, in which case `chgtol` is needed fo
 compatibility whatever its merits. Note the honest limit of the evidence: ICECS 2014 is a
 4-page paper and `chgtol` is what every production simulator ships, so this is an argument
 from derivation, not from an industry track record.
-DECISION:
+DECISION: **(D), decided by the maintainer 2026-07-30.** YWR's solution-domain criterion is
+the accuracy test; the charge check is retained as a step-collapse guard for the
+near-singular case; `chgtol` is added to serve the guard. **Stage 0 is now fully exited.**
+
+**Work this creates, by stage:**
+
+- **Stage 1** — 0.3a's separation, as originally decided: `vabstol` reverts to Newton's
+  x-tolerance only and is shared by `DC` and `Transient` (removing the 10^6 asymmetry);
+  the controller gets its own `lte_vabstol`. No charge anything in stage 1.
+- **Stage 4** — add `chgtol` (SPICE's default is 1e-14 C); have `compute_lte` return the
+  charge-flavoured numerator alongside the current-flavoured `Eg`, per the units note above;
+  implement the guard; **delete the bare `except` at `stepcontroller.py:59-62`**, which is
+  the unlogged half-(B) fallback this decision replaces.
+- **Stage 6** — the guard's diagnostic (amplification ratio, worst row, node name via
+  `cir.get_node_name`) and its firing count in the statistics object. **The guard is not
+  done until it is visible**; an invisible guard is the defect it was introduced to fix.
+- **Stage 9** — unchanged from 0.2b's rule: **`estimate_lte` still goes.** (D) does *not*
+  resurrect it. The guard needs the charge-domain residual that `ywr_error_ratio` already
+  forms as an intermediate before its solve, not `estimate_lte`'s separate q-history
+  algebra. `lte_error_ratio`'s misapplied `lte_abs = 1e-6` becomes the properly-named
+  `chgtol` in the guard. So `_lte_kernels.py` factors the YWR algebra and exposes both
+  flavours of its numerator.
+
+**Gate 4-D (new).** The guard must be shown to fire on a circuit that needs it and to stay
+silent on one that does not. Declared success: on a floating-node circuit the guard fires,
+the step size does **not** collapse, and the diagnostic names the offending node; on the
+review's benchmark circuit it fires **zero** times and the waveform is unchanged from the
+pure-(A) path. **If it fires on the benchmark circuit, `etol_q` is too tight and the result
+is not trustworthy** — that is a failure of the gate, not a tuning note.
+OUTCOME:
 
 **Stage 0 exit criterion:** every OUTCOME above filled, every DECISION answered. Stages
 1-3 may start before 0.1a-d land (they touch none of that code); **stage 4 is blocked on
@@ -826,8 +874,13 @@ DECISION:
 
 ## Stage 0 status, 2026-07-30
 
-**Filled: 0.1a, 0.1b, 0.1c, 0.1d, 0.2a, 0.2b, 0.2c. Answered: 0.3a, 0.3b, 0.3c.
-Outstanding: 0.3d, which stage 0 raised itself.**
+**STAGE 0 IS EXITED. Filled: 0.1a, 0.1b, 0.1c, 0.1d, 0.2a, 0.2b, 0.2c. Answered: 0.3a,
+0.3b, 0.3c, and 0.3d — the item stage 0 raised itself — decided (D) on 2026-07-30.**
+
+**Every stage is now unblocked.** Stage 4's blocker was 0.3d and it is closed; 0.2a passed,
+so stage 4 does not re-measure the integrator choice either. Recommended order remains
+1 → 2 → 3 → 4 → 5 → 6 with 7 in parallel, per the plan's own advice that stages 1-3 are the
+ones to do if only one thread is available.
 
 **Updated later the same day, after the source papers were located** at
 `/home/andreas/pycircuit_agy/papers/`. Three items changed on evidence rather than on
@@ -1397,10 +1450,10 @@ Blocked on 0.1c. Repair, rewrite against the seams stage 7 creates, or withdraw.
 0.2a ──────────► 4                                  [DONE — passed, 4 unblocked on this]
 0.2b ──────────► 0.3d                               [DONE — under threshold]
 0.2c ─► (all suite gates)                    [DONE 2026-07-30: 734/6/0, 497.69 s]
-0.3a ──► 1 (separation), 4 (chgtol + charge-referenced LTE)  [ANSWERED (iii)]
+0.3a ──► 1 (Newton/LTE tolerance separation)        [ANSWERED (iii), split by 0.3d]
 0.3b ──► 4f only (default deferred to a post-repair measurement)  [ANSWERED]
 0.3c ──► 10                                         [ANSWERED]
-0.3d ──► 4                                          [OPEN — the only thing blocking 4]
+0.3d ──► 4 (chgtol + the guard), 6 (its diagnostic) [ANSWERED (D) — STAGE 0 EXITED]
 
 1 ─► 2 ─► 3 ─► 4 ─► 5 ─► 6          (7 in parallel throughout)
                               8, 10.1-10.3 after 6;  10.4 after 5
@@ -1413,9 +1466,11 @@ into stage 4 and partly absorbs 0.2b. 0.3b declined the `'classic'` flip, which 
 gate 4f from a formality to the measurement that sets the default. 0.3c put a
 large-signal MOSFET in scope but sequenced it behind 0.1b and stage 5, and dropped the
 netlist reader and waveform export. 0.2b's measurement plus 0.3a's answer produced the new
-decision 0.3d, which is now the only thing blocking stage 4. 0.1c added stage 5 as a
-prerequisite of stage 11. 0.1a and 0.1d each added a silent-wrong-answer defect to
-stage 1's scope.
+decision 0.3d, **answered (D)**: YWR's solution-domain criterion with a charge-domain
+step-collapse guard, which splits 0.3a(iii) — the tolerance separation goes to stage 1, and
+`chgtol` survives to serve the guard in stage 4 rather than as the accuracy test. 0.1c added
+stage 5 as a prerequisite of stage 11. 0.1a and 0.1d each added a silent-wrong-answer defect
+to stage 1's scope.
 
 **Stages 1-3 are the ones to do if only one thread is available**: they stop the silent
 failures, give 10.5x, and make `reltol` mean something. Roughly a week including gates and
