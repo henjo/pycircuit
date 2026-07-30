@@ -591,10 +591,12 @@ parameters exist. So group ranking is aimed at the right target and applied at
 the wrong level.
 
 > **WITHDRAWN 2026-07-30 — measured on an unstable fixture.** `leapfrog_5th_order`
-> had two right-half-plane poles when this was written (`ff5c6e6` repaired it). On
-> the repaired circuit the leapfrog's top diagram has **`κ = 1.153e+12` and needs
-> 5 997 groups**, not 13.8 and 181 — so "barely cancels" is wrong and the leapfrog
-> *is* the hard case. The µA741's `κ = 9.4e3` is unaffected and re-measures identically.
+> had two right-half-plane poles when this was written (`ff5c6e6` repaired it), and was
+> also uncompensated (`95545e5`). On the current 136-unknown circuit the leapfrog's top
+> diagram has **`κ = 1.153e+12` and needs 7 913 groups**, not 13.8 and 181 — so "barely
+> cancels" is wrong and the leapfrog *is* the hard case. `κ` is identical to four figures
+> on the repaired and compensated fixtures, so it does **not** track the circuit's Q. The
+> µA741's `κ = 9.4e3` is unaffected and re-measures identically.
 >
 > What survives is narrower and still useful: the blocks themselves remain benign
 > (`D_k` has `κ = 1.147e+03`, cofactors median `2.827e+02`), so the cancellation the

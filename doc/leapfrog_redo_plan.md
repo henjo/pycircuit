@@ -1,9 +1,10 @@
 # Fixing the leapfrog topology and redoing every experiment
 
-**Status, 2026-07-30: T0 RUN and passed (all five gates) — the topology fix is landed and
-the fixture is stable. T1 settled by decision. T2 RUN — all seven consumers re-executed,
-two failures recorded (one pre-existing). T3 RUN — tables regenerated, stale-number sweep
-clean, forced clean doc rebuild verified. T4 remains BLOCKED and unattempted: it needs the
+**Status, 2026-07-30: T0 RUN and passed (all five gates). T1 settled by decision. T2 RUN
+TWICE — once against the repaired 127-unknown fixture and again against the COMPENSATED
+136-unknown one after `95545e5`; all seven consumers each time, two failures recorded (one
+pre-existing). T3 RUN TWICE, the second pass covering the compensated numbers. T4 remains
+BLOCKED and unattempted: it needs the
 transient engine repair, which is complete (`transient_repair_plan.md` stages 1-5), so it
 is now unblocked on both counts but has not been run.**
 
@@ -380,6 +381,37 @@ barely cancels (`kappa = 13.8`) and needs only 181 groups", now marked WITHDRAWN
 repaired figures. That is precisely what this gate exists to catch: the rewrite worked
 from the sections I remembered, and the grep found the one I did not.
 
+### Second pass, 2026-07-30 — the compensated 136-unknown fixture
+
+**PASSED, and the sweep earned its place a second time — differently.**
+
+The obvious hits (`5 997`, `95 951`, `2 264 448`, `16.0 ops`, `374.3`, `7.1404e-05`,
+`5.3656e-02`, `419%`) all resolved to **deliberate** occurrences: the middle column of
+the new three-generation comparison tables, and this plan's own first-pass OUTCOME
+records. `2.0668e-02` came back clean.
+
+**But assuming that was the whole story would have been wrong.** Checking each hit's
+context rather than trusting the classification found **two genuinely stale passages**,
+both of them PROSE I wrote during the first pass:
+
+- `cancellation_ranking_conclusions.md` — the verdict table still read *"rescaled 33x —
+  5 997 groups / 95 951 ops"* and *"16 ops/group **holds** — 16.0"*. Now 46x /
+  7 913 / 134 520, with ops/group recorded as a **rescale** (16 -> 16.0 -> 17.0), not a
+  survival.
+- `doc/distortion_ddd_conclusions.md` — a paragraph asserting the result *"survived the
+  fixture repair"* (singular) with `v_turn` at 5.3656e-02 and node voltages "rose ~12%".
+  Now covers both changes.
+
+**The transferable lesson: the stale text is not in the tables, it is in the sentences
+that interpret them.** A numeric sweep finds tables reliably; it finds prose only where
+the prose happens to quote a number. "Survived the fixture repair" is stale in a way no
+grep detects, and it was wrong in a document whose subject is what survived.
+
+Also confirmed as *correctly* untouched: `transient_repair_plan.md`'s copies of
+`7.1404e-05` and `6.2704e-11`, which are historical evidence of the stale-doctree trap —
+they record what the built page showed at that moment, and updating them would destroy
+the evidence.
+
 **Gate T3-2 (doc build).** "build succeeded, 2 warnings", and `grep -cE 'ERROR'` checked
 separately. Then verify the live `distortion_ddd.rst` block actually executed by grepping
 the built HTML for a computed digit string that appears nowhere in the source — a failed
@@ -407,6 +439,25 @@ string with no %-formatting, so the escape survives literally; the neighbouring 
 are %-formatted, which is how it was copied in. Fixed to `percent of v_turn`. Cosmetic,
 but it is only visible in the rendered output -- a grep for computed values would never
 have found it.
+
+### Second pass, 2026-07-30 — the compensated 136-unknown fixture
+
+**PASSED.** `rm -rf build/doctrees` + `sphinx -E`: **build succeeded, 2 warnings**,
+`grep -cE 'ERROR'` = **0**.
+
+The live block regenerated against the compensated fixture, and the check was made in
+**both directions** — new values present AND both older generations absent, which is the
+form that cannot be satisfied by a stale page:
+
+| value (block's own 3-decimal format) | hits |
+|---|---|
+| `5.774e-05`, `5.756e-11`, `1.691e-02` (compensated 136) | **1 each** |
+| `7.140e-05` (repaired 127) | **0** |
+| `6.329e-05` (unstable 127) | **0** |
+
+Checking only for the new values would have been weaker: zero hits for *both* old and new
+is a real state (it happened on the first pass, from a decimal-format mismatch) and reads
+exactly like staleness. Requiring the old ones to be gone distinguishes them.
 
 ### Stage T4 — the transient IM3 comparison
 

@@ -8,32 +8,40 @@ Written before any code, as the reasoning behind
 `doc/distortion_ddd_plan.md`. Everything numeric here was measured, not
 argued; the spikes are reproducible from the snippets quoted.
 
-> ## SUPERSEDED, AND NOT REPRODUCIBLE AT THIS HEAD — leapfrog numbers only
+> ## THE LEAPFROG FIXTURE CHANGED TWICE — read §10.3, not the older tables
 >
-> **Every number in this document measured on `leapfrog_5th_order` was measured on an
-> UNSTABLE circuit, and the fixture has since been replaced.** That is sections 10.1-10.3
-> in particular, including the corrected amplitude/`v_turn` table and the `kk` sweep table.
+> **Sections 10.1-10.2 were measured on circuits that no longer exist.** `§10.3` has been
+> regenerated and is the current one.
 >
 > The fixture had **two right-half-plane poles, s = +1.4491e+05 and +5.6716e+04**: the
 > backward coupling resistors entered the same summing node as the forward ones, so every
 > stage integrated the *sum* of its neighbours where a ladder simulation integrates their
 > *difference*, making each two-integrator loop positive feedback. Confirmed on four
-> independent routes; see `doc/leapfrog_redo_plan.md`, Gate T0-1.
+> independent routes; `doc/leapfrog_redo_plan.md` Gate T0-1. It was then found to be
+> *uncompensated* as well — realising Q = 16.76 with a +8.8 dB passband peak where its own
+> ideal ladder has Q = 5.9, from finite-GBW Q enhancement.
+>
+> | | dim | Q | peak | commit |
+> |---|---|---|---|---|
+> | unstable original | 127 | — | — | before `ff5c6e6` |
+> | sign-repaired | 127 | 16.76 | +8.79 dB | `ff5c6e6` |
+> | **+ GBW compensation (current)** | **136** | **5.93** | **+0.000 dB** | `95545e5` |
 >
 > **What this does and does not invalidate.** `H(s)` on the jw axis is well defined for a
-> divergent circuit — the analysis just solves a linear system at `s = jw` — so these
-> numbers are *arithmetically correct*. What is void is the physical claim: they describe a
-> circuit that has no steady state, so any statement of the form "a designer could read
-> this and understand the filter" is about a filter that does not exist.
+> divergent circuit — the analysis just solves a linear system at `s = jw` — so the older
+> numbers are *arithmetically correct*. What was void is the physical claim: they described
+> a circuit with no steady state, so "a designer could read this and understand the filter"
+> was about a filter that did not exist.
 >
-> The topology fix landed in `pycircuit/circuit/benchmark_circuits.py` on 2026-07-30
-> (`_build_leapfrog`: the four `rb` resistors moved to the non-inverting input, matched
-> `cp0..cp3` capacitors and `rp0` added, `sg0..sg3` removed). By the maintainer's Stage T1
-> decision the unstable variant was **replaced outright with no flag**, so the tables below
-> cannot be regenerated at this HEAD — the old poles above are their only explanation.
-> Regenerating them is Stage T2/T3 of `doc/leapfrog_redo_plan.md` and **has not run.**
-> Do not compare any new leapfrog number against a table here as though both came from the
-> same circuit. They did not.
+> By the maintainer's Stage T1 decision the unstable variant was **replaced outright with
+> no flag**, so the older tables cannot be regenerated at this HEAD; the poles above are
+> their only remaining explanation. **Do not compare a new leapfrog number against an older
+> table as though both came from the same circuit.**
+>
+> **Regeneration is COMPLETE** (Stage T2/T3, `doc/leapfrog_redo_plan.md`). And the result
+> worth carrying away: **what was refuted measured the determinant's *conditioning*; what
+> survived measured the *method*.** `kappa`, group counts and term counts moved; the
+> order-convergence pattern in §10.3 is byte-identical across all three circuits.
 
 ## 1. Where this came from
 
@@ -469,47 +477,70 @@ the *series*.
 
 ### The corrected table, with the scale on every row
 
-**Regenerated 2026-07-30 against the REPAIRED fixture** (`ff5c6e6` gave the leapfrog its
-ladder sign back; `0c17d99` made the builder shared). The numbers below are the only ones
-on this page that describe a circuit which actually works — see the banner in §10 and
-`doc/leapfrog_redo_plan.md`. Extended to `U^17` at the same time, so the 3 V row's
-non-settling is now stated against a much later truncation.
+**Regenerated 2026-07-30 against the COMPENSATED fixture — the third and final
+generation of these numbers.** The fixture changed twice in one day: `ff5c6e6` gave the
+leapfrog its ladder sign back (it had two right-half-plane poles), and `95545e5` added
+GBW phase-lead compensation, taking it from 127 to **136 unknowns** and from a +8.8 dB
+passband peak at Q = 16.76 to a flat response at Q = 5.93. `rc=0` recovers the
+uncompensated circuit exactly.
+
+Earlier generations are **superseded and not reproducible at this HEAD** (maintainer's
+Stage T1 decision: the unstable fixture was replaced outright, with no flag). They are in
+git history at `2d109c5` (repaired 127) and before `ff5c6e6` (unstable 127); the old pole
+locations `s = +1.4491e+05` and `+5.6716e+04` are the only remaining explanation for the
+oldest set. **Do not compare a row here against one of those as though both came from the
+same circuit.**
 
 ```
 amp (V)   |v| s0_e1    %v_turn   HD3         d(U^5)     d(U^7)     d(U^9)     d(U^11)    d(U^13)    d(U^15)    d(U^17)     agrees from
-0.01      7.1404e-05   0%        6.2704e-11  2.1e-06    4.9e-12    0.0e+00    0.0e+00    0.0e+00    0.0e+00    0.0e+00     U^5
-0.03      2.1421e-04   0%        5.6432e-10  1.9e-05    4.0e-10    9.1e-15    0.0e+00    0.0e+00    0.0e+00    0.0e+00     U^5
-0.1       7.1401e-04   1%        6.2691e-09  2.1e-04    4.9e-08    1.3e-11    3.4e-15    0.0e+00    0.0e+00    0.0e+00     U^5
-0.3       2.1413e-03   4%        5.6328e-08  1.9e-03    4.0e-06    9.2e-09    2.2e-11    5.6e-14    1.9e-16    0.0e+00     U^7
-1         7.1095e-03   13%       6.1434e-07  2.1e-02    5.0e-04    1.3e-05    3.5e-07    9.7e-09    2.8e-10    8.4e-12     U^9
-3         2.0668e-02   39%       4.7705e-06  2.3e-01    4.7e-02    1.1e-02    2.6e-03    6.7e-04    1.7e-04    4.7e-05     not by U^17
+0.01      5.7742e-05   0%        5.7561e-11  1.4e-06    2.1e-12    0.0e+00    0.0e+00    0.0e+00    0.0e+00    0.0e+00     U^5
+0.03      1.7323e-04   0%        5.1804e-10  1.2e-05    1.7e-10    2.6e-15    0.0e+00    0.0e+00    0.0e+00    0.0e+00     U^5
+0.1       5.7741e-04   1%        5.7553e-09  1.4e-04    2.1e-08    3.5e-12    6.8e-16    0.0e+00    0.0e+00    0.0e+00     U^5
+0.3       1.7318e-03   3%        5.1741e-08  1.2e-03    1.7e-06    2.6e-09    4.1e-12    6.8e-15    1.4e-16    0.0e+00     U^7
+1         5.7578e-03   11%       5.6791e-07  1.4e-02    2.1e-04    3.6e-06    6.3e-08    1.2e-09    2.2e-11    4.3e-13     U^9
+3         1.6908e-02   32%       4.6233e-06  1.4e-01    1.9e-02    2.9e-03    4.6e-04    7.6e-05    1.3e-05    2.3e-06     not by U^17
 
-cubic validity limit: g at s0_e1 = 4.3184e-04 S, a = kk/g = 1.1578e+02, v_turn = 5.3656e-02 V
+cubic validity limit: g at s0_e1 = 4.3128e-04 S, a = kk/g = 1.1593e+02, v_turn = 5.3621e-02 V
 
 kk        HD3         %v_turn   agrees from
-0.005     6.2574e-08  4%        U^7
-0.5       5.2126e-06  42%       not by U^17
-50        6.2399e-03  419%!     UNPHYSICAL -- past v_turn
+0.005     5.7483e-08  3%        U^7
+0.5       5.0771e-06  34%       not by U^17
+50        1.0369e-02  340%!     UNPHYSICAL -- past v_turn
 ```
 
 **And the pattern is cleaner stated against `v_turn` than against amplitude.** The
 required order tracks *how close the node is to the cubic's turning point*, not the
 drive level as such: `U^5` below a few percent, `U^7` at 3-4%, `U^9` at ~13%, and no
-settling from about 39% onward — which the two independent sweeps agree on (39% by
-amplitude, 42% by `kk`). That is one curve in one variable, and §10.2 had it spread
+settling from about 32% onward — which the two independent sweeps agree on (32% by
+amplitude, 34% by `kk`). That is one curve in one variable, and §10.2 had it spread
 across two.
 
-**This conclusion survived the fixture repair unchanged, and that is worth stating
-explicitly** because most of the leapfrog results did not. The `agrees from` column is
-**identical at every one of the six amplitudes** before and after, and the `kk` sweep
-keeps its shape too. What moved is only the scale: the node voltage rose ~12% (the
-repaired circuit couples its stages differently), `v_turn` shifted from ~5.43e-02 to
-5.3656e-02 V because the driving-point conductance at `s0_e1` moved, and every row's
-`% of v_turn` rose a point or two with it. The thresholds are unchanged.
+**THE `agrees from` COLUMN IS NOW IDENTICAL ACROSS THREE STRUCTURALLY DIFFERENT
+CIRCUITS** — the unstable original, the sign-repaired one, and the compensated one:
+`U^5, U^5, U^5, U^7, U^9, not by U^17` at the six amplitudes, every time. The
+side-by-side comparison is in `doc/HANDOVER.md` §4.1 and is not duplicated here.
 
-The contrast with §10.1's cancellation results is the useful part. Those were *refuted*
-by the repair — the top diagram's `kappa` went from 13.8 to 1.15e+12 — because they
-measure the determinant's conditioning, which is exactly what a topology change alters.
+That is the strongest form this document's central claim has taken. What moved between
+generations is the *scale* — `v_turn` 5.3656e-02 -> 5.3621e-02 V as the driving-point
+conductance at `s0_e1` shifted, node voltages down ~19%, `% of v_turn` from 0/0/1/4/13/39
+to 0/0/1/3/11/32. What did not move is the *pattern*. A result that survives two
+independent perturbations of the circuit beneath it was measuring what it claimed to
+measure.
+
+**This conclusion survived BOTH fixture changes unchanged, and that is worth stating
+explicitly** because most of the leapfrog results did not. The `agrees from` column is
+**identical at every one of the six amplitudes across all three circuits**, and the `kk`
+sweep keeps its shape each time. What moved is only the scale: `v_turn` went ~5.43e-02 →
+5.3656e-02 → **5.3621e-02 V** as the driving-point conductance at `s0_e1` moved, node
+voltages rose ~12% at the repair and fell ~19% at the compensation, and `% of v_turn`
+tracked them. The thresholds are unchanged.
+
+The contrast with §10.1's cancellation results is the useful part. Those were *refuted* by
+the repair — the top diagram's `kappa` went from 13.8 to 1.15e+12 — because they measure
+the determinant's conditioning, which is what a topology change alters. **And `kappa` then
+did NOT move under compensation** (1.153e+12 both times, four significant figures), which
+refutes a follow-up guess that it tracked the circuit's Q: it tracks the determinant
+representation instead.
 The order-convergence result measures a property of the *series* against the cubic's own
 validity limit, and that is invariant to the circuit underneath. A conclusion that
 survives a change this large was measuring what it claimed to measure.

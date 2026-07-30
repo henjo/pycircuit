@@ -60,17 +60,18 @@
 > remaining explanation. Do not compare a new leapfrog number against a row here as
 > though both came from the same circuit.
 >
-> **Stage T2 HAS NOW RUN (2026-07-30)** — every leapfrog consumer was re-executed against
-> the repaired fixture. Regenerated numbers appear beside the originals at each affected
+> **Stage T2 HAS NOW RUN TWICE (2026-07-30)** — every leapfrog consumer was re-executed
+> against the repaired fixture, and again against the COMPENSATED one (dim 136, Q 5.93).
+> The verdicts below are unchanged by the second pass; only the magnitudes moved. Regenerated numbers appear beside the originals at each affected
 > section; the headline is that the results split cleanly in two:
 >
-> | conclusion | verdict after repair |
+> | conclusion | verdict after BOTH fixture changes (current = compensated, dim 136) |
 > |---|---|
-> | leapfrog top diagram is benign, `κ = 13.8` | **REFUTED** — `κ = 1.153e+12` |
-> | 181 groups / 2 895 ops | **rescaled 33×** — 5 997 groups / 95 951 ops |
-> | 16 ops/group is a property of the diagram | **holds** — 16.0 |
+> | leapfrog top diagram is benign, `κ = 13.8` | **REFUTED** — `κ = 1.153e+12`, and **unchanged by compensation** |
+> | 181 groups / 2 895 ops | **rescaled 46×** — 7 913 groups / 134 520 ops |
+> | 16 ops/group is a property of the diagram | **rescaled** — 16 → 16.0 → **17.0** |
 > | composition not error-controlled | **holds**, refined (2 of 6 settings do hold) |
-> | symbolic nonlinear analysis matches its oracle | **holds** — rel 6.52e-13 |
+> | symbolic nonlinear analysis matches its oracle | **holds** — rel 2.60e-13 |
 > | ~60× faster than numerics | **holds** — 61–68× |
 > | required order tracks `% of v_turn` | **holds** — thresholds unchanged |
 > | readable `H(s)` over 2 decades only | **holds** — 177 ops narrow, wide band fails |
@@ -382,13 +383,23 @@ that did not.
 > Everything in the paragraph above was measured on the **unstable** fixture. Against
 > the repaired one (`ff5c6e6`), the expectation it dismissed was right after all:
 >
-> | | unstable fixture | repaired fixture |
-> |---|---|---|
-> | `κ[root]`, top diagram | **13.8** | **1.153e+12** |
-> | groups at `tol = 1e-3` | 181 | **5 997** |
-> | operations | 2 895 | **95 951** |
-> | ops/group | 16 | **16.0** |
-> | `log10\|det(A)\|` | −358.6 | −374.3 |
+> | | unstable | repaired | **compensated (current)** |
+> |---|---|---|---|
+> | dim | 127 | 127 | **136** |
+> | `κ[root]`, top diagram | **13.8** | **1.153e+12** | **1.153e+12** |
+> | groups at `tol = 1e-3` | 181 | 5 997 | **7 913** |
+> | operations | 2 895 | 95 951 | **134 520** |
+> | ops/group | 16 | 16.0 | **17.0** |
+> | `log10\|det(A)\|` | −358.6 | −374.3 | **−397.2** |
+> | top diagram terms | — | 2 264 448 | **14 409 600** |
+>
+> **`κ` is IDENTICAL to four significant figures across the repaired and compensated
+> circuits**, despite Q falling 16.76 -> 5.93 and the dimension rising 127 -> 136. An
+> earlier draft of this section attributed the `κ` blow-up to the high-Q resonance — a
+> near-cancellation between stages. **That attribution is refuted by this column.** The
+> numerical review independently explains why: `log10|det|` is a *unit-scale* artefact,
+> moving +365 decades as `h` goes 1e-9 -> 1e-12, which is 3 decades × ≈122 ≈ `rank(C)`.
+> `κ` here is a property of the determinant representation, not of the circuit.
 >
 > **The leapfrog *is* the hard case.** Its top diagram carries catastrophic
 > cancellation — eleven orders of magnitude more than was recorded — so "the
@@ -1665,7 +1676,8 @@ on the whole determinant, that is false and the error goes the other way:**
 | whole determinant, 0.5 | 5 | **338** | 68 ops/group |
 | whole determinant, 0.05 | 734 | **50 377** | 69 ops/group |
 | leapfrog top diagram, 1e-3 | 181 | **2 895** | 16 ops/group |
-| leapfrog top diagram, 1e-3, **repaired fixture** | 5 997 | **95 951** | **16.0 ops/group** |
+| leapfrog top diagram, 1e-3, repaired fixture | 5 997 | 95 951 | 16.0 ops/group |
+| leapfrog top diagram, 1e-3, **compensated fixture (current)** | 7 913 | **134 520** | **17.0 ops/group** |
 
 **So the terms-to-operations ratio is a property of the diagram, not a constant.**
 In an s-expanded *coefficient* diagram each vertex payload is a bare number or
