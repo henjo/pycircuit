@@ -985,19 +985,34 @@ contribution is exact rather than bounded. `DDD.cancellation` reports
 magnitude ranking can work at all. Both shipped, tested, documented in
 `doc/src/circuit/ddd.rst`.
 
-**Readability, revised 2026-07-30 (stage 10).** It was judged throughout on *term
-counts*, which overstate the answer's size by 4-8× because sympy collects shared
-factors. Measured on the µA741's dominant `s^1` coefficient (97.3% of the response at
+**Readability, revised twice on 2026-07-30 (stages 10 and 11).** It was judged
+throughout on *term counts*. Stage 10 found those understate an s-expanded
+coefficient's compactness; stage 11 found the ratio is a **property of the diagram,
+not a constant** — about 2 operations per group for a coefficient diagram but **~69
+for the compact whole determinant**, where 734 groups are 50 377 operations. So for
+the whole determinant the earlier verdicts were too *kind*. Report operations, never
+a ratio. Measured on the µA741's dominant `s^1` coefficient (97.3% of the response at
 1 kHz), varying the tolerance: **5 groups collect to 11 operations at 26% error**, and
 **91 operations reach 0.79%**. The eleven-operation form is
 
     5.9997e-70 * gm_q17 * (gm_q1 + 4.09e-4) * (-gm_q17 - 1.0023e-2) * (gm_q2 + 4.09e-4)
 
-four factors, three device symbols, reading as a circuit statement. **So for one
-coefficient of one amplifier the original brief is met** — device-symbolic, readable,
-with a stated error, and different at different operating points. What is *not* met is
-the complete transfer function (24 coefficients plus a numerator) or the leapfrog,
-where stage 5 showed the composition is not error-controlled.
+four factors, three device symbols, reading as a circuit statement. **So for one coefficient of one amplifier the original brief is met** —
+device-symbolic, readable, with a stated error, and different at different operating
+points.
+
+**And stage 11 got the whole transfer function**, at one of two operating points:
+`H(s) = N(s)/D(s)` with coefficients chosen greedily against a **global** sweep error,
+at the **degraded** point keeping `N [0]`, `D [0,1]` for **177 operations holding 7.9%
+across two decades**, device symbols intact. Nominal fails the same gate — 119
+operations at 26.7%, or 439 at 6.5%. The exact `N/D` was verified against the linear
+solve over the sweep at 3.4e-15 first. The kept coefficient sets *differ* between
+operating points, which is the "different expressions for different symbol values" of
+the brief.
+
+So what remains is a size/accuracy trade a designer would choose — 177 operations at
+8%, 362-439 at 1-6% — not a missing capability. **Not** achieved: the leapfrog, where
+stage 5 showed the composition is not error-controlled.
 
 **What is not.** Converging and being readable are different problems and only
 the first is solved. The leapfrog's answer names devices but runs to ~2·10⁶

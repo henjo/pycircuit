@@ -392,6 +392,53 @@ twenty products of six factors each then the gate is met on its letter and faile
 its purpose — which has happened once already in this project's history (stage A of
 the predecessor plan) and must be called the same way if it happens again.
 
+## Stage 11 — the transfer function, in operations, over a sweep (declared 2026-07-30)
+
+Two things at once, because both are operation counts and stating either honestly
+needs the other.
+
+**Part 1 — re-read the existing verdicts with the corrected metric.** §23 found term
+count overstates the answer 4-8×. Several "not readable" verdicts were reached on
+term counts and never re-measured: the whole determinant's 870-term ranking, and
+**the leapfrog's 181 groups** from stage 3. If those collect to a few hundred
+operations, the verdicts change.
+
+**Part 2 — the deliverable.** Everything so far approximates `det(A)`, the
+*denominator*. A designer wants `H(s) = N(s)/D(s)`. Both are determinants, so
+`s_expand` applies to each; the numerator is `A` with the output column replaced by
+`b`.
+
+**Two methodological requirements, from lessons already recorded in this plan.**
+
+* **Verify over a frequency sweep, not at one point.** Every measurement in this
+  plan bar stage 6 has been at 1 kHz, and the literature is unanimous that
+  single-frequency error control guarantees nothing between samples
+  (Rodríguez-García et al., DATE 1999). Stated as sampled either way.
+* **Choose which coefficients to keep greedily, with exact re-evaluation of `H` over
+  the sweep after each drop** — never by a per-coefficient budget. That is §14c's
+  global-reference lesson and §11's non-monotonicity, and stage 6 showed exact
+  re-evaluation removes it.
+
+**Gate, declared before running.**
+
+1. Part 1 reported: operations for the whole-determinant ranking and for the
+   leapfrog's 181 groups, beside their term counts.
+2. **PASS if `H(s)` is under 200 operations while holding ≤ 20% error across two
+   decades**, with device symbols intact and visibly different at a second operating
+   point.
+3. **PARTIAL if it holds the error but costs more than 200 operations** — report the
+   count, since it is the first honest measure of what a readable transfer function
+   would cost.
+4. **FAIL if no coefficient subset holds the error across the sweep**, which would
+   mean stage 10's single-frequency result does not extend and the reconsider-if
+   recorded there was right.
+
+**Declared in advance:** stage 10 succeeded partly because `s^1` carries 97.3% of the
+response *at 1 kHz*. Across two decades several coefficients will share it, so the
+operation count should be expected to be several times stage 10's eleven, and a
+result of 100-200 operations would still be a good outcome rather than a
+disappointment.
+
 ## What would make this whole plan fail
 
 - Stage 0 finds uniform cancellation. Most likely single outcome, and the
@@ -433,6 +480,7 @@ Scripts: `benchmarks/cancellation_profile.py` (stage 0),
 | 8 — the concentration diagnostic | **PASS on all four gates, and it settles §20.** `DDD.concentration(env)` returns the participation ratio `N_eff = A²/S2` in **one traversal**, the same cost as `cancellation`. Sanity: exactly the term count for equal-magnitude terms, 1.0 for a dominated one, within `[1, N]`, and within an order of magnitude of the *enumerated* 99%-mass count. **The discriminating test:** compact `N_eff = 194` (ranking took 870 terms, converged) against de-cancelled `N_eff = 11 565` (>72 724, did not converge) — correctly ordered and predictive to a factor of ~5, where `κ` ordered them backwards (6 659 against 99). Five tests; doc section with build-time numbers. |
 | 9 — what reduces `N_eff`? | **Gate 9-2 FAIL, gate 9-3 PARTIAL — a real 5-12× gain, short of readable.** Ranking per coefficient of `s` instead of the whole determinant: nominal **`s^1`, 155 terms** against 734 (4.7×), carrying **97.3%** of the response; degraded **`s^2`, 206 terms** against 2 401 (11.7×). Device symbols intact throughout. Target was `N_eff ≤ 20` and ≤30 terms; best is 74.5 and 155. **And `N_eff` earned a caveat:** within one circuit its ordering across coefficients is *inverted* (126.8/341.2/709.2 → 950/275/206 terms), so it is a coarse screen for "is this representation hopeless", not a fine predictor. **Bug found and fixed:** `concentration` reported `N_eff = 0` above `s^12` because `Σ|term|²` underflows; rewritten scale-free on the weights, low-order values unchanged, test added. Details: `cancellation_ranking_conclusions.md` §22. |
 | 10 — the tolerance curve | **Gate 10-2 FAILS on its threshold; the substance is the best result of the plan.** On the dominant `s^1` coefficient (97.3% of the response), varying `tol`: **5 groups / 11 operations / 26.3% error**, then 43 / 57 / 6.0%, 155 / 91 / 3.2%, 164 / 91 / **0.79%**. The gate wanted ≤30 terms at ≤20% and the table straddles it. **The eleven-operation expression, printed:** `5.9997e-70·gm_q17·(gm_q1 + 4.09e-4)·(−gm_q17 − 1.0023e-2)·(gm_q2 + 4.09e-4)` — four factors, three device symbols, and it reads as a circuit statement. **And the metric was wrong all along:** term count overstates the answer's size 4-8× because sympy collects shared factors — terms grow 33× across the curve while operations grow 8×. Every earlier "not readable" verdict in this plan was reached on term counts. Details: `cancellation_ranking_conclusions.md` §23. |
+| 11 — transfer function, in operations, over a sweep | **Part 1 CORRECTS §23; part 2 PARTIAL — a 177-operation `H(s)` at one operating point.** Part 1: the terms-to-operations ratio is a property of the diagram, not a constant — 2.2 ops/group for an s-expanded coefficient but **69 ops/group for the compact whole determinant** (734 groups → **50 377 operations**), and 16 for the leapfrog top (181 → 2 895). So §23's "term count overstates 4-8×" is withdrawn: for the whole determinant the earlier verdicts were too *kind*. Part 2: exact `N/D` verified against the solve over the sweep (3.4e-15), then greedy coefficient choice with exact global re-evaluation. **Degraded: N `[0]`, D `[0,1]`, 177 operations, 7.9% error across two decades, device symbols intact — GATE 11-2 PASS.** Nominal fails: 119 ops at 26.7%, or 439 ops at 6.5%. The kept coefficient sets *differ* between operating points, which is the "different expressions for different symbol values" of the original brief. Details: `cancellation_ranking_conclusions.md` §24. |
 | 4 — library API | **Done.** `DDD.cancellation`, `DDD.subdiagram_values`, `DDD.minor_positions`, `DDD.approximate_groups` in `ddd.py`; twelve tests in `test_ddd.py`; three new subsections of `doc/src/circuit/ddd.rst` with every number generated at build time. `DDD.approximate` now **warns** when it returns without meeting `tol`. |
 
 ### Three results worth carrying forward

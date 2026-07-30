@@ -54,12 +54,15 @@
 >    **fully-symbolic fixture** (the µA741 bakes 159 of 215 addends into numbers),
 >    which is plumbing rather than research.
 >
-> ### The metric caveat that changes how to read §§16-22
+> ### The metric caveat, and its own correction
 >
-> Those sections judge readability by **term count**. Stage 10 (§23) shows that
-> overstates the answer's size by **4-8×**, because sympy collects shared factors:
-> five kept groups become **11 operations**, 155 become 91. Their measurements stand;
-> their readability verdicts were reached against the wrong yardstick.
+> §§16-22 judge readability by **term count**. §23 found that understates the answer
+> for an s-expanded coefficient (5 groups → 11 operations) and generalised the claim;
+> **§24 withdrew the generalisation.** The ratio is a property of the diagram: ~2
+> operations per group for a coefficient diagram, **~69 for the compact whole
+> determinant** (734 groups → 50 377 operations). So the earlier verdicts on the
+> whole determinant were too *kind*, not too harsh. Report operations, and do not
+> assume a ratio.
 >
 > ### The state of the goal, in one line
 >
@@ -1478,6 +1481,11 @@ range a number must lie in is worth as much as computing it.
 
 ## 23. Stage 10: an eleven-operation expression, and the metric was wrong all along
 
+> **ITS GENERALISATION IS WITHDRAWN BY §24.** The eleven-operation measurement stands.
+> The claim that term count overstates the answer 4-8× *in general* does not: that
+> ratio holds for an s-expanded coefficient diagram and inverts for the compact
+> whole-determinant one, where 734 groups are 50 377 operations.
+
 Every stage in this plan used `tol = 0.05`, inherited from the first round and never
 questioned. Stage 10 varied it. `benchmarks/tolerance_curve.py`, µA741's dominant
 coefficient (`s^1`, which carries 97.3% of the response at 1 kHz, 51 054 561 terms):
@@ -1544,3 +1552,80 @@ component of the problem and not on the whole of it.
 coefficient nearly sufficient here. At a frequency where two or three coefficients
 share the response, the readable object is their combination, and nothing measured
 here says that stays at tens of operations.
+
+## 24. Stage 11: a transfer function at 177 operations — and §23 over-generalised
+
+### Part 1 corrects §23, and the correction matters
+
+§23 concluded that "term count overstates the answer's size 4-8×" and that every
+earlier readability verdict was therefore reached on the wrong yardstick. **Measured
+on the whole determinant, that is false and the error goes the other way:**
+
+| object, at `tol` | groups | **operations** | ratio |
+|---|---|---|---|
+| `s^1` coefficient, 0.5 | 5 | **11** | 2.2 ops/group |
+| whole determinant, 0.5 | 5 | **338** | 68 ops/group |
+| whole determinant, 0.05 | 734 | **50 377** | 69 ops/group |
+| leapfrog top diagram, 1e-3 | 181 | **2 895** | 16 ops/group |
+
+**So the terms-to-operations ratio is a property of the diagram, not a constant.**
+In an s-expanded *coefficient* diagram each vertex payload is a bare number or
+symbol, so collection is effective and five groups really do become eleven
+operations. In the *compact whole-determinant* diagram each payload is a polynomial
+like `gm_q1 + 6e-12*s + 4.09e-4`, so every group is a product of 26 binomials and the
+operation count is ~69× the group count.
+
+**§23's generalisation is withdrawn.** Its specific measurement stands — the `s^1`
+coefficient really is 11 operations — but "every earlier not-readable verdict was
+reached on the wrong yardstick" is wrong. For the whole determinant those verdicts
+were, if anything, **too kind**: 734 groups is 50 377 operations. The leapfrog's 181
+groups are 2 895 operations over placeholders, so that verdict is unchanged too.
+
+That is the fourth self-correction in this thread and they share a shape:
+**generalising from one measurement to a class.** §14a (sufficiency as necessity),
+§15b (scope), §22 (`N_eff` as a fine predictor), and now this. The measurement was
+right each time; the sentence around it reached further than the measurement did.
+
+### Part 2: the deliverable, and it passes at one operating point
+
+`H(s) = N(s)/D(s)` with the numerator being `A` with the output column replaced by
+`b`. Both s-expanded, coefficients chosen greedily with **exact re-evaluation of `H`
+over the whole sweep after every drop** — never a per-coefficient budget. Verified
+first that the exact `N/D` reproduces the linear solve across the sweep:
+**3.4e-15** at nominal, **1.4e-14** at degraded.
+
+Sweep: 13 points, 100 Hz to 10 kHz, two decades, sampled and stated as sampled.
+
+| point | `tol` | kept | **operations** | sweep error | gate |
+|---|---|---|---|---|---|
+| nominal | 0.2 | N `[0]`, D `[1]` | 119 | 26.7% | fail (error) |
+| nominal | 0.05 | N `[0,1]`, D `[0,1,2]` | 439 | 6.5% | fail (size) |
+| **degraded** | **0.2** | **N `[0]`, D `[0,1]`** | **177** | **7.9%** | **PASS** |
+| degraded | 0.05 | N `[0,1]`, D `[0,1,2]` | 362 | 1.3% | fail (size) |
+
+**Gate 11-2 passes at the degraded operating point and fails at nominal** — 177
+operations holding 7.9% relative error across two decades, device symbols intact.
+That is the first *transfer function* this project has produced at a readable size
+with an error verified over a band rather than at a point.
+
+At nominal the same tolerance keeps a different coefficient set and lands at 26.7%,
+which is over the gate; buying 6.5% costs 439 operations. So the honest verdict is
+**PARTIAL: it works at one of the two operating points and not the other.**
+
+**Worth noting for the original brief:** the kept coefficient sets *differ* between
+operating points — `D [1]` at nominal against `D [0,1]` at degraded. That is
+"different expressions for different symbol values", which the maintainer asked for
+and which no amount of numeric substitution provides.
+
+### Where this leaves the plan
+
+The gap between 177 and 439 operations is the gap between 8% and 1.3% error. Nothing
+here is blocked; what remains is a size/accuracy trade that a designer would choose
+rather than a missing capability. The unmeasured levers are unchanged — the `Short`
+operation, and the topological route — and neither is needed for what this stage
+produced.
+
+*Reconsider-if:* the sweep is 100 Hz-10 kHz. The µA741's compensation pole and the
+unity-gain frequency lie above it, so a wider sweep would bring more coefficients
+into play and the operation count with them. Widening it is one line and the honest
+next check on this result.
