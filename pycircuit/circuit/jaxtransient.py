@@ -6,6 +6,17 @@ import jax.numpy as jnp
 from pycircuit.circuit.analysis import Analysis
 from pycircuit.circuit.analysis import CircuitResult as Result
 
+## Depth of the per-TLine delay-line ring buffer, in accepted steps.  It was the
+## bare literal `10000` in seven places, three of them inside modulo arithmetic,
+## which made it impossible to see that the buffer is a RING: past this many
+## accepted steps `tline_head` wraps and `interp_tlines` starts interpolating
+## against entries from a previous lap.  `cond_fun` stops at the end of the buffer
+## and returns whatever is there, so the result is a plausible wrong waveform with
+## no error and no warning.  `JAXTransient.solve` now checks for the wrap and
+## raises; sizing the buffer from the run instead of fixing it belongs to stage 9.
+TLINE_HISTORY_DEPTH = 10000
+
+
 class NewtonState(NamedTuple):
     x: Any
     xdiff: Any
@@ -104,15 +115,15 @@ def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tl
     def interp_tlines(t_target, params, history, head):
         # t_target is scalar, history is (10000, 5)
         def find_idx(idx, _):
-            curr_t = history[(head - idx) % 10000, 0]
+            curr_t = history[(head - idx) % TLINE_HISTORY_DEPTH, 0]
             return jax.lax.cond(curr_t <= t_target, lambda: idx, lambda: idx + 1)
     
         # Simple while loop to find the interval
         def cond_fun(val):
             idx = val
-            curr_t = history[(head - idx) % 10000, 0]
+            curr_t = history[(head - idx) % TLINE_HISTORY_DEPTH, 0]
             # stop if curr_t <= t_target or we hit max history (10000)
-            return jnp.logical_and(curr_t > t_target, idx < 9999)
+            return jnp.logical_and(curr_t > t_target, idx < TLINE_HISTORY_DEPTH - 1)
         
         def body_fun(val):
             return val + 1
@@ -120,8 +131,8 @@ def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tl
         idx1 = jax.lax.while_loop(cond_fun, body_fun, 0)
         idx0 = jnp.maximum(0, idx1 - 1)
     
-        idx1_mapped = (head - idx1) % 10000
-        idx0_mapped = (head - idx0) % 10000
+        idx1_mapped = (head - idx1) % TLINE_HISTORY_DEPTH
+        idx0_mapped = (head - idx0) % TLINE_HISTORY_DEPTH
     
         val1 = history[idx1_mapped]
         val0 = history[idx0_mapped]
@@ -403,7 +414,7 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 i1 = x_curr[tline_indices[:, 4]]
                 i2 = x_curr[tline_indices[:, 5]]
                 tline_data = jnp.stack([jnp.full(n_tlines, state.t + state.dt), v1, v2, i1, i2], axis=1)
-                new_head = (state.tline_head + 1) % 10000
+                new_head = (state.tline_head + 1) % TLINE_HISTORY_DEPTH
                 new_history = state.tline_history.at[:, new_head, :].set(tline_data)
                 return new_history, new_head
 
@@ -465,11 +476,21 @@ class JAXTransient(Analysis):
             break
             
         n = self.cir.n
-        x0 = jnp.zeros(n)
         if not uic:
-            # We would normally solve DC here. For now, use 0 or user-provided x0.
-            pass
-            
+            ## This used to be `pass`, under a comment saying a DC solve belonged
+            ## here -- so every batched run silently started from zeros, whatever
+            ## the circuit's bias point was.  That is the same defect `Transient`
+            ## had, and worse: `Transient` at least attempted the solve before
+            ## falling back.  Raising is the honest option until a batched DC
+            ## exists, because a batched run seeded from zeros is not an
+            ## approximation of the right answer, it is a different problem.
+            raise NotImplementedError(
+                "solve_batched has no DC operating-point solve, so it cannot start "
+                "from a bias point. Pass uic=True to start from zeros deliberately. "
+                "(The unbatched JAXTransient.solve() does solve a DC operating "
+                "point; only the batched path lacks one.)")
+
+
         if dt_max is None:
             dt_max = tend / 10.0
             
@@ -507,7 +528,7 @@ class JAXTransient(Analysis):
         tline_params = jnp.zeros((n_tlines, 2))
         tline_indices = jnp.zeros((n_tlines, 6), dtype=jnp.int32)
         if n_tlines > 0:
-            tline_history = jnp.zeros((batch_size, n_tlines, 10000, 5))
+            tline_history = jnp.zeros((batch_size, n_tlines, TLINE_HISTORY_DEPTH, 5))
             for i, (name, tline) in enumerate(tlines):
                 nodemap = self.cir.elementnodemap[name]
                 tline_indices = tline_indices.at[i].set(nodemap)
@@ -515,7 +536,7 @@ class JAXTransient(Analysis):
                 tline_params = tline_params.at[i, 1].set(tline.iparv.Z0)
                 # Init with zero for now
         else:
-            tline_history = jnp.zeros((batch_size, 0, 10000, 5))
+            tline_history = jnp.zeros((batch_size, 0, TLINE_HISTORY_DEPTH, 5))
             
         tline_head = jnp.zeros(batch_size, dtype=jnp.int32)
         
@@ -641,7 +662,7 @@ class JAXTransient(Analysis):
         # Shape: (N_tlines, 10000, 5) => (t, v1, v2, i1, i2)
         n_tlines = len(tlines)
         if n_tlines > 0:
-            tline_history = jnp.zeros((n_tlines, 10000, 5))
+            tline_history = jnp.zeros((n_tlines, TLINE_HISTORY_DEPTH, 5))
             # Initialize with DC values for all history!
             for i, (name, tline) in enumerate(tlines):
                 # evaluate tline DC state from x0
@@ -656,7 +677,7 @@ class JAXTransient(Analysis):
                 # Ensure t=0 is at head 0
                 tline_history = tline_history.at[i, 0].set(jnp.array([0.0, v1, v2, i1, i2]))
         else:
-            tline_history = jnp.zeros((0, 10000, 5))
+            tline_history = jnp.zeros((0, TLINE_HISTORY_DEPTH, 5))
         
         tline_head = jnp.array(0, dtype=jnp.int32)
     
@@ -678,7 +699,13 @@ class JAXTransient(Analysis):
     
         current_t = 0.0
         current_dt = timestep
-    
+        ## Accepted steps so far, tracked only to detect the TLine ring wrapping.
+        ## The check cannot live inside the compiled loop -- it cannot raise there --
+        ## so it is done here, per chunk, which is soon enough: the wrap corrupts the
+        ## interpolation from the step after it happens, and a chunk boundary is at
+        ## most CHUNK_SIZE steps later.
+        total_steps = 0
+
         while current_t < tend:
             res_buf = jnp.zeros((CHUNK_SIZE, n))
             time_buf = jnp.zeros(CHUNK_SIZE)
@@ -699,9 +726,20 @@ class JAXTransient(Analysis):
             if valid_idx == 0:
                 break
             
+            total_steps += valid_idx
+            if n_tlines > 0 and total_steps >= TLINE_HISTORY_DEPTH:
+                raise RuntimeError(
+                    "TLine delay-line history overflowed: %d accepted steps against a "
+                    "ring buffer of %d (TLINE_HISTORY_DEPTH). Past this point the "
+                    "buffer wraps and the delay interpolation silently reads entries "
+                    "from a previous lap, so the waveform would be wrong with no "
+                    "other symptom. Shorten tend, use a larger timestep, or raise "
+                    "TLINE_HISTORY_DEPTH."
+                    % (total_steps, TLINE_HISTORY_DEPTH))
+
             x_chunk = np.array(final_state.results_buffer[:valid_idx])
             t_chunk = np.array(final_state.time_buffer[:valid_idx])
-        
+
             results_list.append(x_chunk)
             times_list.append(t_chunk)
         

@@ -2,6 +2,8 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
+from numpy.linalg import LinAlgError
+
 from pycircuit.circuit.analysis import *
 from pycircuit.circuit.dcanalysis import DC
 from pycircuit.circuit.dcanalysis import refnode_removed
@@ -80,17 +82,41 @@ class Transient(Analysis):
          Parameter(name='iabstol', 
                    desc='Absolute current error tolerance', unit='A', 
                    default=1e-12),
-         ## 1 uV, which is Spectre's `vabstol` default and SPICE's VNTOL.  It was
-         ## 1e-12 V -- a million times tighter than either, and tighter than double
-         ## precision can resolve against a 1 V signal.  On the 127-unknown leapfrog
-         ## that alone collapsed the timestep to 5 ns against a 39 ns cap, because
-         ## the step controller accepts on max(|lte|/etol) over ALL unknowns and most
-         ## of that circuit's nodes carry no signal, so etol degenerated to
-         ## TRTOL*abstol on numerical noise.  Relaxing it to Spectre's value cut the
-         ## step count 5.4x with the waveform unchanged to 0.5%.
+         ## NEWTON's x-tolerance on node rows, and nothing else.  Shared with `DC`,
+         ## which uses the same 1e-12, so the operating point and the steps after it
+         ## are solved to the same accuracy.
+         ##
+         ## This used to be 1e-6 and used for BOTH roles.  The 1e-12 -> 1e-6 change
+         ## was reasoned about purely as a step-control knob (see `lte_vabstol`
+         ## below) and its effect on Newton was never measured -- it loosened node
+         ## convergence by 10^6 as a side effect, while `DC.vabstol` stayed at 1e-12,
+         ## so every transient was seeded by an operating point solved a million
+         ## times tighter than any step that followed it.  Decision 0.3a/0.3d in
+         ## `doc/transient_work_plan.md` split the two roles; this is the Newton one.
          Parameter(name='vabstol',
-                   desc='Absolute voltage error tolerance', unit='V',
+                   desc='Absolute voltage error tolerance for the Newton solve',
+                   unit='V',
+                   default=1e-12),
+         ## THE STEP CONTROLLER's tolerances, which are a different quantity: they
+         ## apply to `lte = J^-1 Eg`, not to Newton's residual or its x-update.
+         ##
+         ## 1 uV is Spectre's `vabstol` default and SPICE's VNTOL.  The controller's
+         ## value was 1e-12 V -- a million times tighter than either, and tighter
+         ## than double precision can resolve against a 1 V signal.  On the
+         ## 127-unknown leapfrog that alone collapsed the timestep to 5 ns against a
+         ## 39 ns cap, because the controller accepts on max(|lte|/etol) over ALL
+         ## unknowns and most of that circuit's nodes carry no signal, so etol
+         ## degenerated to TRTOL*abstol on numerical noise.  Relaxing it to Spectre's
+         ## value cut the step count 5.4x with the waveform unchanged to 0.5%.  That
+         ## result belongs to THIS parameter, not to `vabstol`.
+         Parameter(name='lte_vabstol',
+                   desc='Absolute voltage tolerance for the local truncation error',
+                   unit='V',
                    default=1e-6),
+         Parameter(name='lte_iabstol',
+                   desc='Absolute current tolerance for the local truncation error',
+                   unit='A',
+                   default=1e-12),
          Parameter(name='maxiter', 
                    desc='Maximum number of iterations', unit='', 
                    default=100),
@@ -117,8 +143,12 @@ class Transient(Analysis):
                    default=None)]
 
     def __init__(self, cir, toolkit=None, irefnode=None, **kvargs):
-        self.parameters = super(Transient, self).parameters + self.parameters            
-        super(Transient, self).__init__(cir, **kvargs)
+        self.parameters = super(Transient, self).parameters + self.parameters
+        ## `toolkit` was accepted and then DROPPED -- it was never forwarded, so
+        ## `Transient(cir, toolkit=X)` silently ran on `cir.toolkit` instead.  It
+        ## went unnoticed because callers pass the toolkit the circuit already has,
+        ## which makes the two agree by coincidence rather than by construction.
+        super(Transient, self).__init__(cir, toolkit=toolkit, **kvargs)
     
         self._qlast  = None #q history
         self._iqlast = None #dq/dt history
@@ -166,10 +196,29 @@ class Transient(Analysis):
                 limiter=limiter_func,
                 scaler=scaler
             )
-        except Exception as e:
-            if "Singular" in str(e) or "linearsolver" in str(e).lower() or "LinAlgError" in str(e):
-                raise SingularMatrix(str(e))
-            raise NoConvergenceError(str(e))
+        ## NARROW, deliberately.  This used to be `except Exception`, which turned
+        ## every failure inside a device model into "the circuit did not converge" --
+        ## a `ZeroDivisionError` from a source with `tr=0`, a `TypeError` from a
+        ## mis-specified parameter, an `AttributeError` from a typo in a subclass.
+        ## All of them were reported as a convergence failure, which sends the reader
+        ## to look at the bias point of a circuit whose real problem is a bug three
+        ## frames down.  The solvers already classify what they mean, so only their
+        ## own exceptions and genuine linear-algebra failures are translated here;
+        ## everything else propagates with its original type and traceback.
+        except SingularMatrix:
+            raise
+        except NoConvergenceError as e:
+            ## The solvers wrap a singular factorisation as NoConvergenceError
+            ## ("Singular Jacobian: ..."); promote that to SingularMatrix so callers
+            ## can tell "no solution here" from "could not get there".  Matching on
+            ## the message is weak and stage 6 replaces it with a real classification
+            ## off the zero pivot -- but it is what the previous code did, and
+            ## changing the taxonomy is not this stage's job.
+            if 'Singular' in str(e) or 'linalgerror' in str(e).lower():
+                raise SingularMatrix(str(e)) from e
+            raise
+        except LinAlgError as e:
+            raise SingularMatrix(str(e)) from e
         
         x = x_res
         
@@ -203,23 +252,79 @@ class Transient(Analysis):
 
     
     
+    def _solve_operating_point(self, refnode):
+        """Solve the DC operating point that seeds the transient.
+
+        A failure here **raises**.  It used to substitute a vector of zeros, so a
+        circuit that had no operating point at all -- or one whose solve hit a bug in
+        a device model -- returned a complete, plausible-looking waveform computed
+        from a bias point that was never found.  Nothing in the result distinguished
+        that from a successful run, which makes it the most expensive class of defect
+        this module had: it does not fail, it lies.
+
+        The inner `DC` is constructed from *this* analysis's configuration rather
+        than from `DC`'s defaults.  Before, `DC(self.cir)` inherited none of the
+        transient's toolkit, environment parameters, tolerances, solver or scaler, so
+        the operating point could be solved at a different temperature, to a
+        different accuracy, and with a different Newton strategy than every step that
+        followed it -- and the mismatch was invisible.
+        """
+        from pycircuit.circuit.dcanalysis import DC
+
+        ## Only forward what DC actually declares, so a parameter that exists on
+        ## Transient but not on DC (e.g. `integrator`) does not raise a KeyError,
+        ## and so this keeps working if either parameter list changes.
+        dc_par_names = {p.name for p in DC.parameters}
+        shared = {}
+        for name in ('reltol', 'iabstol', 'vabstol', 'maxiter',
+                     'bypass', 'bypasstol', 'epar', 'nrsolver', 'scaler'):
+            if name not in dc_par_names:
+                continue
+            try:
+                value = getattr(self.par, name)
+            except (AttributeError, KeyError):
+                continue
+            if value is not None:
+                shared[name] = value
+
+        dc = DC(self.cir, toolkit=self.toolkit, refnode=refnode, **shared)
+        try:
+            return dc.solve().x
+        except (NoConvergenceError, SingularMatrix) as exc:
+            raise NoConvergenceError(
+                "Transient could not find a DC operating point to start from: %s\n"
+                "The transient has NOT been run.  Either fix the bias condition, or "
+                "start deliberately from a known state:\n"
+                "  * uic=True            -- start from zeros (SPICE's 'use initial "
+                "conditions'), or\n"
+                "  * x0=<vector>         -- start from an operating point you supply.\n"
+                "Both are explicit choices; substituting zeros silently is what this "
+                "error replaced." % (exc,)) from exc
+
     def solve_timestep(self, x0, t, refnode=gnd, provided_function=None):
         n=self.cir.n
         dt = self._dt
         
         def func(x):
-            C = self.cir.C(x)
-            q=self.cir.q(x)
-            iq,Geq = self.get_diff(q,C)
-            f =self.cir.i(x) + iq + self.cir.u(t, analysis=self.par.analysis)
-            J = self.cir.G(x) + Geq
+            ## `self.epar`, not the module-level `defaultepar`.  Omitting it meant
+            ## every device in a transient was evaluated at defaultepar's T = 300 K
+            ## whatever the caller asked for, and -- because `Analysis.__init__`
+            ## attaches `bypasstol` to the analysis's own epar and nowhere else --
+            ## every device took its `except AttributeError` branch and the `bypass`
+            ## parameter did nothing at all.
+            C = self.cir.C(x, self.epar)
+            q = self.cir.q(x, self.epar)
+            iq, Geq = self.get_diff(q, C)
+            f = (self.cir.i(x, self.epar) + iq
+                 + self.cir.u(t, self.epar, analysis=self.par.analysis))
+            J = self.cir.G(x, self.epar) + Geq
             return self.toolkit.array(f, dtype=float), self.toolkit.array(J, dtype=float)
         
         x=self._newton(func,x0)
         f, J = func(x)
         
         if provided_function is not None:
-            result=x,provided_function(f,J,self.cir.C(x)), J, f
+            result=x,provided_function(f,J,self.cir.C(x, self.epar)), J, f
         else:
             result=x,None, J, f
         return result
@@ -242,21 +347,14 @@ class Transient(Analysis):
                 # Use Initial Conditions = skip DC operating point, start at zero
                 x0 = self.toolkit.zeros(n)
             else:
-                # Use DC operating point if x0 is not provided
-                from pycircuit.circuit.dcanalysis import DC
-                dc = DC(self.cir)
-                try:
-                    dc_res = dc.solve()
-                    x0 = dc_res.x
-                except Exception:
-                    x0 = self.toolkit.zeros(n)
+                x0 = self._solve_operating_point(refnode)
             x = x0
         else:
-            x = x0 
+            x = x0
         
         self.base_integrator = self._get_integrator()
         hist_len = max(2, self.base_integrator.get_required_history())
-        q0 = self.cir.q(x)
+        q0 = self.cir.q(x, self.epar)
         self._qlast = self.toolkit.array([q0 for _ in range(hist_len)])
         self._iqlast = self.toolkit.zeros((hist_len, n))
         
@@ -291,8 +389,13 @@ class Transient(Analysis):
         ## `abstol`/`xtol`.  This is the `xtol` one; using `_newton`'s `abstol` here
         ## silently applied iabstol (1 pA) as a *voltage* tolerance to every node,
         ## which is what made a larger `vabstol` have no effect on node rows at all.
-        abstol = self.toolkit.concatenate((self.par.vabstol * ones_nodes,
-                                          self.par.iabstol * ones_branches))
+        ##
+        ## It reads `lte_vabstol`/`lte_iabstol`, NOT `vabstol`/`iabstol`.  Sharing
+        ## the Newton parameters was decision 0.3a's defect: one knob could not be
+        ## moved for the controller without silently moving Newton's convergence
+        ## criterion with it.
+        abstol = self.toolkit.concatenate((self.par.lte_vabstol * ones_nodes,
+                                          self.par.lte_iabstol * ones_branches))
 
         was_break_step = False
         while t < tend:
@@ -361,7 +464,7 @@ class Transient(Analysis):
                 accept, dt_next = self.step_controller.evaluate_step(
                     x_curr=x,
                     x_last=X[-1],
-                    q_curr=self.cir.q(x),
+                    q_curr=self.cir.q(x, self.epar),
                     q_last_hist=self._qlast,
                     iq_last_hist=self._iqlast,
                     h_curr=dt,
@@ -406,7 +509,7 @@ class Transient(Analysis):
             # maintain a constant buffer size (e.g. size 2 for Gear2).
             # This acts as a mathematical sliding window across the simulation time.
             self._iqlast = self.toolkit.concatenate((self.toolkit.array([self._iq]), self._iqlast))[:-1]
-            self._qlast = self.toolkit.concatenate((self.toolkit.array([self.cir.q(x)]), self._qlast))[:-1]
+            self._qlast = self.toolkit.concatenate((self.toolkit.array([self.cir.q(x, self.epar)]), self._qlast))[:-1]
             self._dt_last = dt
             
             self._is_first_step = False
@@ -435,18 +538,23 @@ class Transient(Analysis):
         self.irefnode = self.cir.get_node_index(refnode)
         n = self.cir.n
         if x0 is None:
-            from pycircuit.circuit.dcanalysis import DC
-            dc = DC(self.cir)
-            try:
-                dc_res = dc.solve()
-                x0 = dc_res.x
-            except Exception:
+            ## Same fix as `solve()`: a failed operating point raises rather than
+            ## silently becoming a vector of zeros.  This path had the defect too.
+            ##
+            ## And it must honour `uic`, which it previously ignored -- one of the
+            ## four inputs 0.1d found this path silently dropping.  That went
+            ## unnoticed because ignoring `uic` and failing the DC produced the same
+            ## zeros the caller wanted; with the silent fallback gone, `uic=True`
+            ## would have raised on a circuit that has no operating point by design.
+            if self.par.uic:
                 x0 = self.toolkit.zeros(n)
-        
+            else:
+                x0 = self._solve_operating_point(refnode)
+
         x = x0
         self.base_integrator = self._get_integrator()
         hist_len = max(2, self.base_integrator.get_required_history())
-        q0 = self.cir.q(x)
+        q0 = self.cir.q(x, self.epar)
         self._qlast = self.toolkit.array([q0 for _ in range(hist_len)])
         self._iqlast = self.toolkit.zeros((hist_len, n))
         
@@ -466,9 +574,10 @@ class Transient(Analysis):
         ones_nodes = self.toolkit.ones(len(self.cir.nodes))
         ones_branches = self.toolkit.ones(len(self.cir.branches))
         ## Solution-flavoured, for the same reason as in `solve` above: the coupled
-        ## controller also applies this to `lte`, not to the residual.
-        abstol = self.toolkit.concatenate((self.par.vabstol * ones_nodes,
-                                          self.par.iabstol * ones_branches))
+        ## controller also applies this to `lte`, not to the residual -- so it takes
+        ## the `lte_*` tolerances, not Newton's.
+        abstol = self.toolkit.concatenate((self.par.lte_vabstol * ones_nodes,
+                                          self.par.lte_iabstol * ones_branches))
         reltol = self.par.reltol
 
         ## Coupled adaptive time-stepping, Fang, "A New Time-Stepping Method for
@@ -496,6 +605,18 @@ class Transient(Analysis):
             h_curr = h
             x_curr = copy(X[-1])
             h_next = h
+            ## Whether any solve at this time point actually succeeded.  Without
+            ## this the loop could exhaust its retries and fall through to the
+            ## accept block below, which advanced `t` by the collapsed `h_curr` and
+            ## appended the PREVIOUS solution as if it were a new one -- while `h`
+            ## was restored to full size for the next outer iteration.  The result
+            ## was a livelock: 10 Newton solves bought `h*0.25^10` of simulated time,
+            ## measured at 9.5367e-13 s per iteration against a predicted 9.5367e-13,
+            ## i.e. ~2.1e7 further Newton attempts to finish a 5 us run.  It neither
+            ## raised nor returned.  (On a FIRST-step failure it instead died with
+            ## `AttributeError: _iq`, because `_iq` is set inside `solve_timestep`.)
+            ## See `benchmarks/transient_review/stage0_1d_coupled_livelock.py`.
+            converged = False
             for lte_iter in range(MAX_LTE_ITERS):
                 self._dt = h_curr
                 try:
@@ -507,10 +628,11 @@ class Transient(Analysis):
                     if h_curr < minstep:
                         raise RuntimeError(f"Coupled transient: timestep shrank below {minstep:g}s at t={t}")
                     continue
+                converged = True
 
                 accept, h_next = controller.evaluate_step(
                     x_curr=x_new, x_last=X[-1],
-                    q_curr=self.cir.q(x_new),
+                    q_curr=self.cir.q(x_new, self.epar),
                     q_last_hist=self._qlast, iq_last_hist=self._iqlast,
                     h_curr=h_curr, h_last=getattr(self, '_dt_last', h_curr),
                     no_history=self._no_history, J=J,
@@ -525,6 +647,15 @@ class Transient(Analysis):
                     raise RuntimeError(f"Coupled transient: timestep shrank below {minstep:g}s at t={t}")
                 h_curr = h_next
 
+            if not converged:
+                raise NoConvergenceError(
+                    "Coupled transient: Newton failed to converge at t=%g after %d "
+                    "step reductions (h fell from %g to %g s). The run is "
+                    "abandoned rather than advanced -- continuing here would repeat "
+                    "the same %d solves per outer iteration while advancing time by "
+                    "h*0.25^%d, which neither converges nor terminates."
+                    % (t, MAX_LTE_ITERS, h, h_curr, MAX_LTE_ITERS, MAX_LTE_ITERS))
+
             t += h_curr
             timelist.append(t)
             X.append(copy(x_curr))
@@ -537,7 +668,7 @@ class Transient(Analysis):
             self._is_first_step = False
             self._no_history = False
             self._iqlast = self.toolkit.concatenate((self.toolkit.array([self._iq]), self._iqlast))[:-1]
-            self._qlast = self.toolkit.concatenate((self.toolkit.array([self.cir.q(x_curr)]), self._qlast))[:-1]
+            self._qlast = self.toolkit.concatenate((self.toolkit.array([self.cir.q(x_curr, self.epar)]), self._qlast))[:-1]
 
             ## Next step: Gear-predicted size (already bounded by max_step).
             h = min(max_step, max(h_next, minstep))

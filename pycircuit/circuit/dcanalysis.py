@@ -1,6 +1,7 @@
 import logging
 
 import numpy as np
+from numpy.linalg import LinAlgError
 
 from pycircuit.circuit.analysis import *
 
@@ -127,10 +128,19 @@ class DC(Analysis):
                 limiter=limiter_func,
                 scaler=scaler
             )
-        except Exception as e:
-            if "Singular" in str(e) or "linearsolver" in str(e).lower():
-                raise SingularMatrix(str(e))
-            raise NoConvergenceError(str(e))
+        ## NARROW, deliberately -- see the matching note in `transient.py:_newton`.
+        ## `except Exception` here reported every device-model bug as a convergence
+        ## failure, which is the wrong diagnosis and points the reader at the bias
+        ## point instead of at the traceback.  Only the solvers' own exceptions and
+        ## genuine linear-algebra failures are translated; the rest propagate intact.
+        except SingularMatrix:
+            raise
+        except NoConvergenceError as e:
+            if 'Singular' in str(e) or 'linearsolver' in str(e).lower():
+                raise SingularMatrix(str(e)) from e
+            raise
+        except LinAlgError as e:
+            raise SingularMatrix(str(e)) from e
 
         # Insert reference node voltage
         return self.toolkit.concatenate((x_res[:self.irefnode], self.toolkit.array([0.0]), x_res[self.irefnode:]))

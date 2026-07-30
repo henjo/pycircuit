@@ -10,8 +10,15 @@ import warnings
 ## via pytest.ini; run them with `-m slow` or `-m ""`.  See architecture P15.
 pytestmark = pytest.mark.slow
 
-def _compare_methods(c, tend, timestep, test_name):
-    tran = Transient(c)
+def _compare_methods(c, tend, timestep, test_name, uic=False):
+    ## `uic=True` is for circuits that genuinely have no DC operating point -- an
+    ## ideal integrator, or a charge pump whose nodes reach ground only through
+    ## reverse-biased diodes.  Those runs used to start from zeros because a failed
+    ## DC was silently replaced by a zero vector; now the start has to be asked for.
+    ## Zeros is the physically right initial state in both cases (an integrator
+    ## starts at zero, a charge pump starts discharged), so nothing about the tests'
+    ## intent changes -- only that the intent is now stated.
+    tran = Transient(c, uic=uic)
     
     # 1. Option B (Standard Adaptive LTE)
     res_adapt = tran.solve(tend=tend, timestep=timestep, coupled_lte=False)
@@ -84,7 +91,7 @@ def test_stress_charge_pump():
     c['D2'] = Diode(2, 3)
     c['C2'] = C(3, gnd, c=1e-6)
     
-    res_adapt, res_coupled = _compare_methods(c, 50e-6, 1e-7, "Charge Pump")
+    res_adapt, res_coupled = _compare_methods(c, 50e-6, 1e-7, "Charge Pump", uic=True)
     # Output should pump up towards ~10V
     assert res_adapt.v(3, gnd)[-1] > 7.0
     assert abs(res_adapt.v(3, gnd)[-1] - res_coupled.v(3, gnd)[-1]) < 0.5
@@ -152,5 +159,5 @@ def test_stress_delayed_stiff_avalanche():
     # Ideal integrator
     c['Idt'] = Idtmod(2, gnd, 3, gnd) 
     
-    res_adapt, res_coupled = _compare_methods(c, 6e-3, 1e-5, "Delayed Avalanche")
+    res_adapt, res_coupled = _compare_methods(c, 6e-3, 1e-5, "Delayed Avalanche", uic=True)
     assert abs(res_adapt.v(3, gnd)[-1] - res_coupled.v(3, gnd)[-1]) < 0.5

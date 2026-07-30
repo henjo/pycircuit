@@ -50,15 +50,108 @@ This is the traditional "trial and error" approach used by SPICE:
 
 **Drawbacks**: For highly stiff circuits, the predicted :math:`h` is often overly optimistic, leading to frequent backups and wasted matrix inversions.
 
-Option A: Coupled Schur Complement Time-Stepping (New)
-------------------------------------------------------
+Option A: ``coupled_lte=True`` — what it actually is
+----------------------------------------------------
 
-This method (based on G. Peter Fang's "A New Time-Stepping Method for Circuit Simulation") eliminates rejected time steps entirely by treating the timestep :math:`h` as an independent variable to be solved *simultaneously* with the circuit state :math:`x`.
+.. warning::
 
-The solver couples the LTE error equation :math:`E(x_n, h) = 0` directly into the DAE system, forming an augmented :math:`(N+1) \times (N+1)` system:
+   **This section previously described a method that is not implemented.** It
+   claimed an augmented :math:`(N+1)` system, an analytical gradient
+   :math:`E_h = p(E + TRTOL)/h`, and a "golden window"
+   :math:`0.7\tau \le \epsilon \le 3.0\tau` following Fang §3.3. A review against
+   the source paper in 2026-07 found **none of those three in the code**. The
+   description below is what ``_solve_coupled`` does. The discrepancy is recorded
+   rather than quietly deleted, because a documented-but-absent feature is the
+   same class of defect as a silent wrong answer: both make a claim the software
+   does not honour.
 
-1. **Approximate Newton Update**: To avoid solving a massive :math:`(N+1)` matrix, PyCircuit exploits the analytical relationship between LTE and :math:`h` (where LTE :math:`\propto h^3` for Trapezoidal). 
-2. **Analytical Gradient** (:math:`E_h`): The sensitivity of the error to the timestep is calculated analytically as :math:`E_h = \frac{p \cdot (E + TRTOL)}{h}`, which provides a perfectly smooth, mathematically stable Newton update for :math:`h`.
-3. **Golden Window** (:math:`\gamma` bounds): Following Section 3.3 of Fang's paper, the solver defines an acceptable error window (:math:`0.7\tau \le \epsilon \le 3.0\tau`). If the current error falls inside this window, the solver accepts the step without trying to over-optimize :math:`h`, saving thousands of redundant iterations.
+What Fang's paper proposes (DAC 2013, §3.1–3.4) is genuinely a co-determination
+method: the step size :math:`h_m` is an **unknown**, solved together with the
+circuit equations as :math:`N+1` nonlinear equations via a bordered system
 
-This approach guarantees that the solver scales :math:`h` aggressively upward when the circuit is quiet, and shrinks :math:`h` stably without getting trapped by numerical noise during severe stiffness.
+.. math::
+    \begin{pmatrix} J & p \\ q^T & d \end{pmatrix}
+    \begin{pmatrix} \Delta v \\ \Delta h \end{pmatrix} =
+    \begin{pmatrix} -f_{ckt} \\ -f_{lte} \end{pmatrix}
+
+with :math:`p = \partial f_{ckt}/\partial h_m`, :math:`q^T = \partial f_{lte}/\partial v_m`
+and :math:`d = \partial f_{lte}/\partial h_m`. Its §3.4 "approximate Newton"
+variant avoids re-solving by *correcting* the solution already computed,
+:math:`\Delta v^{k+1} = \Delta v^{k+1/2} - J^{-1} p (h^{k+1} - h^{k})`.
+
+``_solve_coupled`` implements neither. It converges the circuit at :math:`h`,
+evaluates the LTE, and if the LTE is over tolerance it shrinks :math:`h` and
+**re-solves from scratch**, up to ``MAX_LTE_ITERS = 10`` times. That is a
+rejection loop — structurally the same scheme as Option B, with a different retry
+limit. There is no :math:`p`, no bordered system, and no error window; the
+``analytical_eh`` argument that survives in the signature is a vestige of the
+:math:`E_h` gradient described above, and is never read.
+
+Consequently ``coupled_lte=True`` does **not** eliminate rejected steps, and the
+two options are not the algorithmic contrast this page once claimed. Prefer the
+default (``coupled_lte=False``).
+
+
+Starting point: what happens when the operating point fails
+============================================================
+
+A transient needs an initial state. Unless you supply one, it is the DC operating
+point, solved by an inner :class:`~pycircuit.circuit.dcanalysis.DC` constructed
+from the transient's own toolkit, environment parameters, tolerances, solver and
+scaler — so the bias point is found under the same conditions as every step that
+follows it.
+
+**If that solve fails, the transient raises.** It does not substitute zeros.
+
+This matters more than it sounds. Until 2026-07 a failed operating point was
+silently replaced by a vector of zeros, and the run continued to completion:
+a circuit that had never been biased produced a full, plausible-looking waveform,
+and nothing in the result distinguished it from a correct one. That is the most
+expensive kind of defect a simulator can have — it does not fail, it lies.
+
+Two circuits legitimately have no operating point, and both are common:
+
+* an **ideal integrator** (``Idt``, ``Idtmod``) — its output is the unbounded
+  integral of a constant input, so no steady state exists;
+* a **charge pump** or any topology whose nodes reach ground only through
+  reverse-biased junctions or capacitors — structurally singular at DC.
+
+For these, say so:
+
+.. code-block:: python
+
+    # start from zeros, deliberately (SPICE's "use initial conditions")
+    tran = Transient(cir, uic=True)
+
+    # or start from a state you computed yourself
+    res = tran.solve(x0=my_operating_point, tend=..., timestep=...)
+
+Both are explicit choices. The error raised when the DC fails names them.
+
+Tolerances: which knob does what
+=================================
+
+Two distinct roles, and until 2026-07 they shared one parameter:
+
+``vabstol``, ``iabstol``, ``reltol``
+    **Newton's** convergence criteria, shared with :class:`DC` so the operating
+    point and the steps after it are solved to the same accuracy.
+
+``lte_vabstol``, ``lte_iabstol``
+    The **step controller's** tolerances, applied to the local truncation error
+    :math:`J^{-1}E_g`, which carries the units of the solution vector.
+
+Changing ``lte_vabstol`` moves the step count; changing ``vabstol`` does not.
+They were one parameter, which meant relaxing the step controller silently
+loosened Newton's node convergence by a factor of :math:`10^6` — while ``DC``
+kept the tighter value, so the operating point was solved a million times more
+precisely than any step that followed it.
+
+.. note::
+
+   ``lte_vabstol`` is an interim measure. Spectre carries a single tolerance set
+   and derives the LTE bound by multiplying it by ``lteratio``; what pycircuit is
+   missing is ``relref``, the choice of *reference* for the relative term. Under
+   pycircuit's fixed per-node reference, a node carrying no signal has its
+   tolerance collapse to the absolute floor, which is what forced the absolute
+   floor upward in the first place. See ``doc/transient_work_plan.md``.

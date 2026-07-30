@@ -278,7 +278,12 @@ def test_Idt_tran():
     c['R1'] = R(nout, gnd, r=1e3)
     c['Idt'] = Idt(nin, gnd, nout, gnd)
 
-    tran = Transient(c, toolkit=numeric)
+    ## uic=True, deliberately: an ideal integrator has NO DC operating point --
+    ## its output is the unbounded integral of a constant input, and with all
+    ## sources zeroed the matrix is structurally singular.  This ran before only
+    ## because a failed DC was silently replaced by zeros; zeros happens to be
+    ## the right initial state for an integrator, so the fix is to ask for it.
+    tran = Transient(c, toolkit=numeric, uic=True)
     result = tran.solve(tend=0.5,timestep=1e-2, fixed_timestep=True)
     y = result.v(nout).y
     x = result.v(nout).x[0]
@@ -320,7 +325,12 @@ def test_Idtmod_tran():
     c['R1'] = R(nout, gnd, r=1e3)
     c['Idtmod'] = Idtmod(nin, gnd, nout, gnd, modulus = 1., offset = -0.)
     
-    tran = Transient(c, toolkit=numeric)
+    ## uic=True, deliberately: an ideal integrator has NO DC operating point --
+    ## its output is the unbounded integral of a constant input, and with all
+    ## sources zeroed the matrix is structurally singular.  This ran before only
+    ## because a failed DC was silently replaced by zeros; zeros happens to be
+    ## the right initial state for an integrator, so the fix is to ask for it.
+    tran = Transient(c, toolkit=numeric, uic=True)
     result = tran.solve(tend=0.5,timestep=1e-2, fixed_timestep=True)
     y = result.v(nout).y
     x = result.v(nout).x[0]
@@ -340,7 +350,12 @@ def test_Idtmod_modulo():
     c['R1'] = R(nout, gnd, r=1e3)
     c['Idtmod'] = Idtmod(nin, gnd, nout, gnd, modulus = 1., offset = -0.)
     
-    tran = Transient(c, toolkit=numeric)
+    ## uic=True, deliberately: an ideal integrator has NO DC operating point --
+    ## its output is the unbounded integral of a constant input, and with all
+    ## sources zeroed the matrix is structurally singular.  This ran before only
+    ## because a failed DC was silently replaced by zeros; zeros happens to be
+    ## the right initial state for an integrator, so the fix is to ask for it.
+    tran = Transient(c, toolkit=numeric, uic=True)
     result = tran.solve(tend=2.0,timestep=1e-2, fixed_timestep=True)
     y = result.v(nout).y
     x = result.v(nout).x[0]

@@ -139,7 +139,19 @@ class Branch():
 gnd = Node("gnd", isglobal=True)
 
 defaultepar = ParameterDict(
-    Parameter("T", "Temperature", unit="K", default = 300))
+    Parameter("T", "Temperature", unit="K", default = 300),
+    ## Present so devices have a defined value even when evaluated outside an
+    ## analysis.  `Analysis.__init__` overwrites it on its own epar copy; devices
+    ## previously fell through to a hard-coded 1e-12 in each of three places when
+    ## the attribute was missing, which is how `bypass=True` came to do nothing at
+    ## all in a transient (the transient never passed its epar, so every device saw
+    ## this dict and took the missing-attribute branch).
+    ##
+    ## -1.0 means "never bypass", matching the `bypass=False` default: the device
+    ## test is `abs(vnew - vold) < bypasstol`, which no non-negative difference can
+    ## satisfy against a negative tolerance.  The old implicit 1e-12 meant a small
+    ## amount of bypassing always happened, unasked.
+    Parameter("bypasstol", "Device bypass tolerance", unit="V", default = -1.0))
 
 class Circuit():
     """Basic circuit class 

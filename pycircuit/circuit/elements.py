@@ -1108,7 +1108,12 @@ class Idtmod(Circuit):
     >>> c['vin'] = VS(nin, gnd, v=1.0)
     >>> c['R'] = R(nout, gnd, r=1e3)
     >>> c['Idtmod'] = Idtmod(nin, gnd, nout, gnd, modulus=1.0)
-    >>> tran = Transient(c, toolkit=numeric)
+
+    ``uic=True`` is required, not incidental: an ideal integrator has no DC
+    operating point -- its output is the unbounded integral of a constant input --
+    so the bias solve is singular and the run must be told to start from zeros.
+
+    >>> tran = Transient(c, toolkit=numeric, uic=True)
     >>> result = tran.solve(tend=1.5, timestep=0.5)
     >>> result.v(nout).y
     array([0.5, 0. , 0.5])

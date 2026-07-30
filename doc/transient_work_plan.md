@@ -381,11 +381,21 @@ has only an upper bound. §3.3 also requires `|Δh^{k+1}| ≤ η·h^k` (eq 16, t
 to damp step-size change; the code has no such limit, which is a plausible contributor to
 the collapse documented above.
 
-**So the citation should be removed regardless of what happens to the code**, and one
-detail suggests the divergence was not intended: the dead `analytical_eh` parameter is
-plausibly a vestige of `d = ∂f_lte/∂h_m` (eq 12) — an interface hook for the real method,
-left in the signature after the method it served was never written. *(That reading of the
-name is informed speculation, not established.)*
+**So the citation should be removed regardless of what happens to the code**, and the
+divergence was not intended: the dead `analytical_eh` parameter is a vestige of the
+`E_h` gradient. **This is now established rather than speculated** — `doc/src/circuit/
+time_stepping.rst` documented, in prose, an "Analytical Gradient (`E_h`)" computed as
+`E_h = p(E + TRTOL)/h`, an augmented `(N+1)` system, and a "golden window"
+`0.7*tau <= eps <= 3.0*tau` attributed to Fang §3.3. **None of the three is in the code.**
+So the method was described before it was written, the description was published, and the
+parameter is the last surviving connection to it.
+
+That page is itself a stage-1 defect of the same family — a documented feature that does
+not exist makes a claim the software does not honour — and it is corrected in the same
+commit, with the discrepancy recorded rather than quietly deleted. It is also a clean
+instance of the standing rule working in reverse: the prose was written but never checked
+against the code, so instead of the explanation catching a defect in the implementation,
+the implementation's absence sat undetected behind the explanation.
 
 *It contains a livelock that the standard path does not.* When Newton fails to converge,
 `:504-509` shrinks `h_curr` by 0.25 and `continue`s. After `MAX_LTE_ITERS` failures the loop
@@ -728,6 +738,64 @@ suspect, not a run that was rescued.
 2. Does the amplification ratio actually separate the two regimes cleanly, or is there a
    continuum where neither criterion is trustworthy? That is the assumption (D) rests on.
 
+### What Spectre actually does — and the root cause it exposes
+
+Checked 2026-07-30 against the *Spectre Circuit Simulator Reference*, Product Version
+19.1 (January 2020), transient analysis parameter list, read from a **rendered page 419**
+rather than text extraction. Two entries settle it:
+
+> **38 `relref`** — "Reference used for the relative convergence criteria. The default is
+> derived from `errpreset`. Possible values are `pointlocal`, `alllocal`, `sigglobal`, and
+> `allglobal`."
+>
+> **39 `lteratio`** — "**Ratio used to compute LTE tolerances from Newton tolerance.** The
+> default is derived from `errpreset`."
+
+So Spectre has **one** tolerance set — `reltol`, `vabstol`, `iabstol` — and derives the LTE
+tolerance by *multiplying the Newton tolerance by `lteratio`*. It does **not** carry a
+separate absolute tolerance for the step controller. `lteratio` defaults to **3.5**
+(liberal and moderate `errpreset`) and **10.0** (conservative). pycircuit's `TRTOL = 7.0`
+is structurally the same knob — `etol = TRTOL*(reltol*ref + abstol)` — sitting at an
+unexplained value between Spectre's two.
+
+**`relref` is the parameter pycircuit does not have, and its absence is why `vabstol` was
+raised in the first place.** The four modes differ in what the *relative* term is measured
+against (§"Analysis Statements", PSS discussion, same manual):
+
+- `pointlocal` — each node against that node alone;
+- `alllocal` — each node against the largest value **that node** has taken over all past time;
+- `sigglobal` — each signal against the maximum over **all signals at any previous time**;
+- `allglobal` — as `sigglobal`, and also references each node's KCL residue to its own history.
+
+pycircuit hard-codes `reltol * max(|x_curr|, |x_last|)` — a two-point `pointlocal`. That is
+the mode in which a node carrying no signal has `reltol*ref -> 0`, so its tolerance
+collapses to `abstol` and the controller ends up chasing numerical noise on idle nodes.
+**That is exactly the failure recorded in the `vabstol` comment** ("most of that circuit's
+nodes carry no signal, so etol degenerated to TRTOL*abstol on numerical noise"), and it is
+what raising the absolute tolerance a millionfold was working around. Spectre's default for
+every `errpreset` in the shooting table is `sigglobal` — the mode that cannot degenerate
+that way, because a quiet node is referenced to the largest signal in the circuit.
+
+**Consequence for decision 0.3a, stated plainly: the options it offered missed the axis
+that matters.** (i), (ii) and (iii) all argued about *which absolute tolerances exist*; the
+actual defect is *what the relative term is referenced to*. `lte_vabstol` is therefore a
+parameterisation of a workaround, not a fix — it makes the workaround explicit and
+separates it from Newton, which is real progress and fixes a real regression, but it is not
+where this should end up.
+
+**Amendment to stage 4: add `relref`.** Implement at least `pointlocal` (current behaviour)
+and `sigglobal` (Spectre's default), defaulting to `sigglobal`. **Gate:** with
+`relref='sigglobal'`, `lte_vabstol` must be returnable to 1e-12 without the step-count
+collapse that motivated 1e-6 — measured on the leapfrog, which is the circuit that produced
+the original 5.4x. **If that gate passes, delete `lte_vabstol` and `lte_iabstol`** and let
+`lteratio` derive the LTE tolerance from `vabstol`/`iabstol` as Spectre does; the two-set
+design then has no remaining justification. **Reconsider if** the gate fails, in which case
+the separate set is doing work that `relref` alone cannot, and it stays.
+
+Also worth aligning while there: `TRTOL = 7.0` should be renamed `lteratio`, exposed as a
+Parameter rather than a local, and its value chosen against Spectre's 3.5/10.0 rather than
+left at a number with no recorded derivation.
+
 ### Implementation note: `Eg` is a current, not a charge
 
 This will bite otherwise. pycircuit's `Eg` is **not** the paper's numerator. YWR's Table I
@@ -1016,23 +1084,116 @@ zero start deliberately.
 **Gate 1-1 (the failure is visible).** A circuit with no DC solution must raise, with a
 message that names the circuit condition. Declared success: it raises; the message
 contains the word `uic`; and no waveform is returned.
-OUTCOME:
+OUTCOME: **PASSED.** `test_transient_stage1.py::test_gate_1_1_failed_operating_point_raises_and_names_uic`
+— two opposing current sources into a node with no DC path raise `NoConvergenceError`, the
+message contains `uic`, and `tran.result` is `None`. A companion test
+(`..._uic_is_a_working_escape`) checks the escape actually works. Implemented as
+`Transient._solve_operating_point`, which also covers item (d): the inner `DC` is built
+with the transient's toolkit, epar, tolerances, solver and scaler, forwarding only the
+parameters `DC` declares so a future divergence in either parameter list cannot raise.
 
 **Gate 1-2 (epar actually arrives).** Instrument a device's `i()` during a transient with
 `epar.T = 400`. Declared success: the device sees T = 400 in **both** the inner DC and
 every transient step. Currently it sees 300 in both.
-OUTCOME:
+OUTCOME: **PASSED.** `test_gate_1_2_epar_reaches_devices_in_dc_and_every_step` — a
+`R` subclass recording `epar.T` on every `i()` call sees **400 K on every evaluation**,
+with no 300 K left. `self.epar` is now threaded through all eleven `cir.C/q/i/G/u` call
+sites in `transient.py` (both `solve` and `_solve_coupled`).
 
 **Gate 1-3 (bypass is connected).** `bypass=True, bypasstol=1e-2` and `bypass=False` must
 produce *different* step/evaluation counts. Currently they are identical because
 `bypasstol` is missing from `defaultepar` and every device takes its `except
 AttributeError` branch.
-OUTCOME:
+OUTCOME: **PASSED, with two corrections to the gate as written.**
+
+*First correction: the gate's observable was wrong.* Counting `Diode.i()` **calls** cannot
+detect bypassing, because the bypass test lives *inside* `i()` and skips the exponential,
+not the call. Measured that way the counts are identical whether or not bypass works, so
+the gate as specified would have passed vacuously before the fix and after it. The working
+observable is `toolkit.exp` evaluations, which in the test circuit only the diode uses.
+Measured: **165 model evaluations with `bypass=False`, 42 with `bypass=True,
+bypasstol=1e-5`** — a 3.9x reduction, with the step count identical (21) and the endpoint
+moved 1.7e-8 V, well inside the 1e-5 V tolerance that licensed it.
+
+*Second correction: `bypasstol=1e-2`, the value the gate specifies, does not work.* With
+bypass genuinely connected, **1e-2 and 1e-3 both prevent the inner DC from converging** on
+a plain diode circuit — the model is frozen across voltage steps far larger than a
+junction's own scale, so Newton works from a stale Jacobian. 1e-4 and below converge. This
+is correct behaviour for an absurd tolerance and is now pinned by
+`test_gate_1_3_a_loose_bypasstol_is_not_silently_tolerated`, which asserts it *raises*
+rather than returning a waveform. **A negative result worth keeping: `bypass` has been
+dead for long enough that no value of `bypasstol` was ever validated, and the plan's
+suggested value is outside the working range.**
+
+`bypasstol` is also added to `defaultepar` with default **-1.0** ("never bypass"), which
+is what `bypass=False` should mean; the three devices previously fell through to a
+hard-coded 1e-12, so a little unrequested bypassing always happened.
 
 **Gate 1-4 (blast radius).** Full suite `-m ""`. Declared success: 734/6/0, **or** a list
 of failures each individually explained as a test that depended on the silent fallback —
 which is information worth having, not a reason to restore it.
-OUTCOME:
+OUTCOME: **PASSED via the second branch, and the list is the interesting part.** The first
+full run after the code change gave **738 passed, 6 failed, 6 skipped** (586 s). With 10
+new gate tests added to a 734-test baseline the expected total is 744, and 738 + 6 = 744 —
+so every new test passed and exactly **six pre-existing tests** broke.
+
+**All six were consuming the silent fallback, and all six are the same defect.** Five
+report `Source Stepping failed at lambda=0.0` — failure at the *first* continuation rung,
+with every source zeroed, which means structurally singular rather than merely hard:
+
+| test | circuit | why there is no operating point |
+|---|---|---|
+| `test_elements.py::test_Idt_tran` | `Idt` | ideal integrator: output is the unbounded integral of a constant input |
+| `test_elements.py::test_Idtmod_tran` | `Idtmod` | as above |
+| `test_elements.py::test_Idtmod_modulo` | `Idtmod` | as above |
+| `test_doctests.py::test_elements_module_doctests` | `Idtmod` docstring, 2 of 92 | as above |
+| `test_stress_delayed_stiff_avalanche` | `Idtmod`, node 3 driven only by the integrator | no DC path to ground at all |
+| `test_stress_charge_pump` | `C1`/`C2` open at DC, nodes reach ground only through diodes | numerically singular |
+
+**Resolution: `uic=True` at each of the six sites, not a code change.** Zeros is the
+physically correct initial state in every case — an integrator starts at zero, a charge
+pump starts discharged — so no test's intent changed; what changed is that the intent is
+now stated instead of arriving via a failure path. This is the outcome the gate anticipated
+and it is recorded rather than smoothed over: **six tests in this suite have been
+exercising a fallback rather than the behaviour they appear to test.**
+
+**One further defect fell out of the fix**, which is why the second run was needed:
+`_solve_coupled` **ignores `uic`** (one of the four inputs 0.1d found it dropping). That was
+invisible while a failed DC silently produced zeros — ignoring `uic` and failing the DC gave
+the same answer. With the fallback gone, `uic=True` raised on exactly the circuits that
+need it. Fixed by honouring `self.par.uic` there too.
+
+**Final tally: 744 passed, 6 skipped, 0 failed** (673.80 s) — 734 baseline + 10 new gates,
+nothing else changed.
+
+### Runtime, and a caution about measuring it on this box
+
+The suite ran **497.69 s at baseline and 673.80 s after**, which reads as **+35%** and would
+trip the standing 20% rule. **It is not a regression, and chasing it is the more useful
+result.** What the investigation found:
+
+1. Tests that touch **no transient code** moved just as much between runs —
+   `test_SVCVS_laplace_d3_n1` went 19.52 s (baseline suite) -> 30.67 s (post-change suite)
+   -> **21.59 s** when re-run on a quiet machine. Nothing in stage 1 can affect that test.
+2. The one change that could plausibly cost time, `vabstol` 1e-6 -> 1e-12, is **free**:
+   same circuit, **4094 steps both ways and an endpoint identical to every digit
+   (delta exactly 0.000e+00)**. Newton converges quadratically, so the node x-tolerance was
+   never the binding constraint. *This is the measurement decision 0.3a asked for and never
+   had — the 10^6 loosening bought nothing, so reverting it costs nothing.*
+3. Against a worktree at `8ce58c2`, the stress circuit gives **25095 steps and
+   v(3) = 5.048556078 on both sides** — bit-identical.
+4. cProfile on both: **4,880,532 calls (after) against 4,880,547 (before)** — fifteen calls
+   apart out of 4.88 million, with the same hot spots in the same order. There is no extra
+   per-step work.
+5. Interleaved timing, three alternating repetitions: min **12.70 s vs 12.30 s (+3.3%)**,
+   with a within-configuration spread of 24%.
+
+**Conclusion: roughly 2-4% overhead, well inside the threshold**, and the honest reading of
+the +35% is that a single-sample suite comparison is not a usable measurement on this
+machine. **Recorded as a caution for every later stage's suite gate:** this box has shown up
+to ±57% run-to-run variation on individual tests, so a runtime change of less than about
+50% between two single suite runs means nothing. Attribute with interleaved repeats, step
+counts, and call counts — not with one number against another.
 
 ---
 
@@ -1480,3 +1641,60 @@ Each stage commits with its explanation and its measured gate outcomes in the me
 Negative results are recorded in the same voice as positive ones.
 
 **Do not `git push`.**
+
+---
+
+## STAGE 1 — completed 2026-07-30
+
+All four declared gates passed (1-1, 1-2, 1-3, 1-4), plus a fifth added for the tolerance
+separation that decision 0.3a/0.3d required. Suite **744 passed, 6 skipped, 0 failed**.
+Tests: `pycircuit/circuit/tests/test_transient_stage1.py`, one per gate.
+
+**Gate 1-5 (the tolerance roles are separate knobs)** — not in the original plan; added
+because 0.3a's separation landed here and an unmeasured split is what created the problem
+in the first place. Declared success: `lte_vabstol` moves the step count, `vabstol` does
+not, and `Transient.vabstol == DC.vabstol`.
+OUTCOME: **PASSED.** On a `VPulse`-driven RC whose stepping is genuinely LTE-bound (~1150
+steps against a `tend/timestep` of 30), `lte_vabstol` gives **942 / 1155 / 1265 steps** at
+1e-3 / 1e-6 / 1e-9 — monotonic — while `vabstol` at 1e-9, 1e-14 and 1e-6 all give **1155
+steps and a waveform identical to eight decimals**. The two roles are now independently
+observable, which they could not be before.
+
+*A note on the test circuit, since it cost a false start:* a plain RC run at a `timestep`
+near its own time constant is bound by `max_step` from end to end, so the controller never
+decides anything and no tolerance can be seen to act. The first version of this gate used
+one and read 20 steps for every setting — which would have "passed" a weaker assertion
+while measuring nothing. This is stage 3's finding (`reltol` does not control accuracy
+because the run opens at `max_step`) showing up as a testing hazard.
+
+**Items completed:** (a) failed DC raises, (b) both `except Exception` clauses narrowed,
+(c) `self.epar` threaded to all eleven `cir.C/q/i/G/u` sites plus `bypasstol` in
+`defaultepar`, (d) inner `DC` built from the transient's own configuration, (e)
+`solve_batched` raises instead of silently starting from zeros, (f) the JAX TLine ring
+overflow is detected and raised (`TLINE_HISTORY_DEPTH`, replacing seven bare literals), (g)
+`_solve_coupled` raises on retry exhaustion instead of livelocking.
+
+**Three defects found while implementing, none of which were in the plan:**
+
+1. **`Transient.__init__` accepted `toolkit=` and dropped it** — never forwarded to
+   `Analysis.__init__`, so `Transient(cir, toolkit=X)` silently ran on `cir.toolkit`. It
+   hid because callers pass the toolkit the circuit already has, making the two agree by
+   coincidence. Fixed; item (d) depends on it.
+2. **`_solve_coupled` ignores `uic`** — one of the four inputs 0.1d found it dropping, and
+   invisible until now because ignoring `uic` and failing the DC produced the same zeros.
+   Fixed.
+3. **`doc/src/circuit/time_stepping.rst` documented a method that does not exist** — an
+   augmented `(N+1)` system, an "Analytical Gradient" `E_h = p(E + TRTOL)/h`, and a "golden
+   window" `0.7*tau <= eps <= 3.0*tau` attributed to Fang §3.3. **None of the three is in
+   the code.** This also settles what the dead `analytical_eh` parameter was for. Corrected
+   in the same commit, with the discrepancy recorded rather than deleted — a documented
+   feature that does not exist is the same class of defect as a silent wrong answer.
+
+**Negative result:** the plan's suggested `bypasstol=1e-2` for gate 1-3 is outside the
+working range — with `bypass` genuinely connected, 1e-2 and 1e-3 both stop the inner DC
+converging on a plain diode circuit. `bypass` had been dead long enough that no value was
+ever validated. 1e-4 and below work; 1e-5 gives a 3.9x reduction in model evaluations.
+
+**Not done, and deliberately:** `_solve_coupled` is repaired, not deleted. Deletion is
+recommended by 0.1d and remains **an open maintainer decision** (12 tests, enumerated
+above), so taking it here would have pre-empted a call that is not the implementer's.
