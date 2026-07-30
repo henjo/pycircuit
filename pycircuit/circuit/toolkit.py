@@ -57,7 +57,7 @@ class Toolkit:
         if name.startswith('_'):
             raise AttributeError(name)
         try:
-            return getattr(self._backend, name)
+            value = getattr(self._backend, name)
         except AttributeError:
             ## Plain delegation would raise here naming the *backend module*
             ## (e.g. "module 'pycircuit.circuit._numeric' has no attribute
@@ -66,6 +66,29 @@ class Toolkit:
             raise AttributeError(
                 "%r toolkit (backend %r) has no attribute %r"
                 % (type(self).__name__, self._backend.__name__, name)) from None
+        else:
+            ## MEMOISE.  `__getattr__` is only consulted when normal attribute
+            ## lookup fails, so writing the resolved value into the instance
+            ## __dict__ means every later access resolves directly and never
+            ## enters this method.  Measured 3.77 million calls in one transient
+            ## benchmark run before this line existed.
+            ##
+            ## Only SUCCESSES are cached.  Caching failures would be the larger
+            ## win -- `hasattr(toolkit, 'add_at')` on a toolkit without it is the
+            ## expensive path, since it formats the message below and raises --
+            ## but a negative cache would also make an attribute that appears
+            ## later permanently invisible.  The hot negative probes were hoisted
+            ## out of the assembly loops in stage 2b instead, which is the fix
+            ## that carries no such risk.
+            ##
+            ## Safe against runtime mutation of the *toolkit*: assigning
+            ## `toolkit.foo = ...` writes the instance __dict__ directly and so
+            ## overrides any memo.  It would NOT be safe against mutating the
+            ## backend module after first access; nothing in the tree does that,
+            ## and it is checked rather than assumed (see the note in
+            ## doc/transient_work_plan.md, item 2+.1).
+            object.__setattr__(self, name, value)
+            return value
 
     def supports(self, capability):
         """Return True if this toolkit implements an optional capability.

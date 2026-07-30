@@ -1895,15 +1895,29 @@ toolkit instance* (`numeric.exp = ...` in two test/benchmark files), which shado
 failures are not, so an attribute that appears later is still found.
 
 **Gate 2+.1a (correctness).** Full suite `-m ""`. Declared success: 744/6/0.
-OUTCOME:
+OUTCOME: **PASSED. 744 passed, 6 skipped, 0 failed** (796 s).
 **Gate 2+.1b (behaviour).** Leapfrog benchmark. Declared success: drift **exactly
 `0.00e+00`** and step count 324.
-OUTCOME:
+OUTCOME: **PASSED. Drift exactly `0.00e+00` on both `t` and `v`, 324 steps.**
 **Gate 2+.1c (it did what it claims).** `Toolkit.__getattr__` call count must fall by at
 least 10x on the benchmark, and end-to-end speedup recorded. Declared success: >= 1.05x
 end-to-end — small, because the profiler says ~5% and the profiler exaggerates pure-Python
 frames.
-OUTCOME:
+OUTCOME: **PASSED on both counts, and the call-count reduction is far larger than asked.**
+`Toolkit.__getattr__` calls on one benchmark run: **3,774,764 -> 6,952, a 543x reduction**
+against a declared 10x. The residue is first-access resolutions plus the probes that
+legitimately miss (failures are deliberately not cached).
+
+End-to-end, measured **interleaved against stage 2 at `2d7a2e7`** because the machine was
+too noisy for a direct comparison -- min of 4, BLAS single-threaded: **13.128 s against
+14.081 s, i.e. 1.073x**, 324 steps on both sides. Clears the 1.05x bar.
+
+Note the gap between the profiler's verdict and reality: profiled total time fell
+**171.9 s -> 74.2 s (2.3x)** while true runtime moved 1.07x. `__getattr__` is a
+pure-Python frame, which cProfile charges far more heavily than the interpreter does. **The
+profile was right about where the calls were and badly wrong about what they cost** -- a
+reminder to confirm a profiler-driven optimisation against the clock before believing its
+magnitude.
 
 ## 2+.2 — let the Newton solver return `(F, J)` at the converged point
 
@@ -1918,6 +1932,34 @@ across a Newton iteration.
 and the per-step assembly counts unchanged from stage 2's (`G`/`C`/`i`/`u` 3.06, `q` 3.06).
 **An assembly count that *falls* here is a failure, not a bonus** — it would mean the
 returned `(F, J)` is from the wrong state, which is exactly the defect gate 2c refused.
+OUTCOME: **VOID — the gate was written for a design that investigation replaced. Superseded
+by 2+.2a', declared below and before implementation.**
+
+### 2+.2 REVISED, 2026-07-31, before any code was written
+
+Reading the call sites to build the seam turned up something the proposal missed:
+**`solve_timestep` returns `(x, feval, J, f)` and `f` is never used.** Verified in both
+callers — `solve()` at `:536` and `_solve_coupled` at `:703` unpack it and the name never
+appears again (the only later matches are f-strings). Only `J` is consumed, by the step
+controller.
+
+`func(x)` at the converged point computes `C`, `q`, `i`, `u` and `G`. The controller needs
+`J = G + Geq`, which needs `G` and `C`; the charge cache needs `q`. **`i` and `u` are
+computed and thrown away** on every accepted step, unless `provided_function` is set — that
+is the one caller that consumes `f`.
+
+So item 2 is not the contract-honesty refactor it was proposed as; there is a real saving,
+and it is in the opposite direction from the original gate. **The seam idea is also weaker
+than claimed**: the solver is handed `refnode_removed(func, ...)`, so any `(F, J)` it could
+return is the *reduced* pair, while the caller needs the full `J` — reconciling those is
+stage 7a's work (taking the reference node out of the matrix), not this item's. The seam is
+therefore deferred to 7a, where it belongs.
+
+**Gate 2+.2a' (REVISED).** Skip the discarded stamps at the converged point. Declared
+success: drift **exactly `0.00e+00`** and step count 324 — this is still behaviour
+preserving, because nothing computed changes, two things merely stop being computed. `i`
+and `u` fall to **~2.06** per accepted step while `G`, `C` and `q` stay at **3.06**. With
+`provided_function` set, all five stay at 3.06, because `f` is then genuinely needed.
 OUTCOME:
 **Gate 2+.2b (correctness).** Full suite `-m ""` at 744/6/0, and every `NonLinearSolver`
 subclass still satisfying the interface.
