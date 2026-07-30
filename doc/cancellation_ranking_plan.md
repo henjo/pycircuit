@@ -290,6 +290,40 @@ low-order coefficients, so this tests the weaker of the two available settings. 
 it passes here it will do better per coefficient; if it fails here that does not
 condemn the per-coefficient route.
 
+## Stage 8 — the concentration diagnostic (declared 2026-07-30)
+
+§20's conclusion: `κ` measures *conditioning* and says nothing about term counts,
+which depend on *concentration*. This builds the missing quantity.
+
+**The cheap form.** Alongside `A[v] = Σ|term|`, the sum of squared magnitudes
+`S2[v] = Σ|term|²` is computable in the same shaped single pass, because
+`|Π|² = Π|·|²`. Their ratio is the standard participation ratio, an **effective
+number of terms**:
+
+    N_eff = A[root]² / S2[root]
+
+`N_eff = N` when all terms are equal; `N_eff → 1` when one dominates. It is `O(|V|)`,
+exactly like `cancellation`, so it is a genuine peer diagnostic rather than a
+disguised enumeration.
+
+**Gate, declared before running.**
+
+1. **Sanity, against cases with known answers:** `N_eff = N` to within a few
+   percent for a diagram whose terms are equal in magnitude, and `N_eff ≈ 1` for one
+   with a single dominant term.
+2. **Validation against the exact quantity** on circuits small enough to enumerate:
+   `N_eff` must track the measured number of terms needed to reach 99% of the
+   absolute mass — same order of magnitude, monotone in the same direction.
+3. **The decisive one — it must predict what `κ` could not.** §20 measured compact
+   ranking converging in 870 terms and de-cancelled ranking failing past 72 724.
+   **PASS if `N_eff(compact) ≪ N_eff(de-cancelled)`**, i.e. if the diagnostic orders
+   the two representations the way their ranking costs actually came out. `κ` ordered
+   them backwards (99 against 6 659), so this is the discriminating test.
+4. **FAIL if `N_eff` also ranks them backwards**, or if it disagrees with the
+   enumerated 99%-mass count by more than an order of magnitude. Either would mean
+   the participation ratio is the wrong concentration measure and the right one is
+   still missing.
+
 ## What would make this whole plan fail
 
 - Stage 0 finds uniform cancellation. Most likely single outcome, and the
@@ -328,6 +362,7 @@ Scripts: `benchmarks/cancellation_profile.py` (stage 0),
 | 7e — de-cancellation on a real amplifier | **7e-2 PASS, 7e-1 FAIL, and the FAIL is on my threshold rather than on feasibility.** `ua741(fully_symbolic=True)` added (132 device symbols, 343 addends, only 2 numeric; back-substitution matches the numeric fixture to 2.2e-16; two tests). States 27 577 → **204 679**, an overhead of **7.42×** against ladders' flat 1.20× — the declared reconsider-if was right that ladders are benign. But it is a *constant* factor, 204 679 states is small, and it runs in 14 s. Determinant preserved to **2.9e-14** on an active circuit. `κ` at fixed `s`: **6.66e3 → 99.05 (67×)**. |
 | 7f — per coefficient, vs the right control | **The payoff.** Against the like-for-like control (same matrix, same point, s-expanded, *not* de-cancelled) **every one of 24 coefficients improves, by 60× to 394 367×**; the low-order ones land at **`κ ≈ 14-17`** (s^1: 1.85e3 → 17.3). First time in this thread that `κ` is in a range where magnitude ranking is plausible — 99.67% of the mass needed at `tol=0.05`, against 99.99947% at `κ=9.4e3`. `κ = 1` does not hold and was predicted not to: an amplifier is not passive. **Recorded self-correction:** the first reading used the compact *whole determinant* as the control and nearly wrote this up as a failure. |
 | 7g — the payoff test | **FAIL, and it corrects 7f's reading.** At `tol=0.05`, control measured at the same point: compact group ranking **870 terms / 3.75e-02, converged**; compact magnitude **1 690 / 3.78e-02, converged**. De-cancelled: group **72 724 terms / 1.40e-01, NOT converged**; magnitude **68 310 / 1.59e-01, NOT converged**. So despite `κ` being 67× better, the de-cancelled expansion needs ≥80× more terms and does not converge. Cause: `κ` measures *conditioning*, term count depends on *concentration*, and de-cancellation spreads the same value from 2.77e6 terms over 1.1e21. **Low `κ` is necessary, not sufficient.** A bug found by gate 7g-4 on the way: a dead-end state (rows remaining, all children pruned) was counted as a completed term, giving an impossible error of 6.7e+55; caught by reasoning from the bound `Σ\|term\| = 99·\|det\|`, fixed, and re-verified against brute-force enumeration. Details: `cancellation_ranking_conclusions.md` §20. |
+| 8 — the concentration diagnostic | **PASS on all four gates, and it settles §20.** `DDD.concentration(env)` returns the participation ratio `N_eff = A²/S2` in **one traversal**, the same cost as `cancellation`. Sanity: exactly the term count for equal-magnitude terms, 1.0 for a dominated one, within `[1, N]`, and within an order of magnitude of the *enumerated* 99%-mass count. **The discriminating test:** compact `N_eff = 194` (ranking took 870 terms, converged) against de-cancelled `N_eff = 11 565` (>72 724, did not converge) — correctly ordered and predictive to a factor of ~5, where `κ` ordered them backwards (6 659 against 99). Five tests; doc section with build-time numbers. |
 | 4 — library API | **Done.** `DDD.cancellation`, `DDD.subdiagram_values`, `DDD.minor_positions`, `DDD.approximate_groups` in `ddd.py`; twelve tests in `test_ddd.py`; three new subsections of `doc/src/circuit/ddd.rst` with every number generated at build time. `DDD.approximate` now **warns** when it returns without meeting `tol`. |
 
 ### Three results worth carrying forward

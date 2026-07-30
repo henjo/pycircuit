@@ -78,6 +78,7 @@ class Graph:
         self.children = {}          # state -> [(sign*coeff, label, child), ...]
         self.value = {}
         self.mass = {}
+        self.square = {}            # sum of |term|**2, for the effective count
         self._build(tuple(range(self.n)), tuple(range(self.n)), frozenset())
 
     def _canon(self, rows, cols, forbidden):
@@ -94,6 +95,7 @@ class Graph:
             self.children[key] = []
             self.value[key] = 1.0 + 0j
             self.mass[key] = 1.0
+            self.square[key] = 1.0
             return key
         ## Reserve the slot before recursing so a cycle would be visible; the
         ## expansion is acyclic (each step removes a row) but the guard is cheap.
@@ -115,13 +117,15 @@ class Graph:
                         if (i, j) != (r, c))
                 child = self._build(rows[1:], cols[:q] + cols[q + 1:], nxt)
                 kids.append((sign * coeff, sym, child))
-        val, mass = 0.0 + 0j, 0.0
+        val, mass, square = 0.0 + 0j, 0.0, 0.0
         for coeff, _sym, child in kids:
             val += coeff * self.value[child]
             mass += abs(coeff) * self.mass[child]
+            square += abs(coeff) ** 2 * self.square[child]
         self.children[key] = kids
         self.value[key] = val
         self.mass[key] = mass
+        self.square[key] = square
         return key
 
     @property
@@ -130,6 +134,24 @@ class Graph:
 
     def size(self):
         return len(self.value)
+
+    def concentration(self):
+        """Effective number of terms, the same participation ratio
+        `DDD.concentration` computes on a diagram."""
+        m, sq = self.mass[self.root], self.square[self.root]
+        return float('inf') if sq == 0 else m * m / sq
+
+    def term_count(self):
+        memo = {}
+
+        def rec(state):
+            if state in memo:
+                return memo[state]
+            kids = self.children[state]
+            memo[state] = (1 if _is_complete(state) else 0) if not kids else \
+                sum(rec(ch) for _c, _s, ch in kids)
+            return memo[state]
+        return rec(self.root)
 
 
 def rank_groups(graph, tol, cap=400000):
@@ -265,6 +287,16 @@ def main():
           % (rel, 'OK' if rel < 1e-9 else 'MISMATCH'))
     print('  kappa %.4e   (compact %.4e, %.1fx better)'
           % (k_dec, k_compact, k_compact / k_dec))
+    ## Stage 8: the diagnostic kappa is missing.  A ranking is cheap only when
+    ## BOTH are small, and these two representations differ oppositely in them.
+    n_dec = graph.concentration()
+    n_com = D.concentration(env)
+    print('  terms: compact %d, de-cancelled %d'
+          % (D.term_count(), graph.term_count()))
+    print('  N_eff (effective term count): compact %.4e, de-cancelled %.4e'
+          % (n_com, n_dec))
+    print('  GATE 8-3 (N_eff orders them as the ranking cost did): %s'
+          % ('PASS' if n_com < n_dec else 'FAIL'))
 
     t0 = time.time()
     d_grp, d_grp_err, splits = rank_groups(graph, tol)

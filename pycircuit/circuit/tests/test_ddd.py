@@ -1865,3 +1865,76 @@ def test_with_value_returns_what_the_search_already_computed():
     assert complex(expr.xreplace(env)) == pytest.approx(value, rel=1e-9)
     exact = complex(D.eval(env))
     assert abs(value - exact) / abs(exact) == pytest.approx(err, rel=1e-9)
+
+
+## -- concentration: the half of the story `cancellation` does not tell --------
+
+
+def test_concentration_counts_equal_terms():
+    """With every term the same magnitude, the effective count is the real one."""
+    a, b, c, d = sympy.symbols('a b c d')
+    D = ddd_of_matrix(sympy.Matrix([[a, b], [c, d]]))
+    ## det = a*d - b*c: two terms, made equal in magnitude.
+    n = D.concentration({a: 2.0, b: 2.0, c: 2.0, d: 2.0})
+    assert D.term_count() == 2
+    assert n == pytest.approx(2.0)
+
+
+def test_concentration_falls_to_one_when_a_term_dominates():
+    a, b, c, d = sympy.symbols('a b c d')
+    D = ddd_of_matrix(sympy.Matrix([[a, b], [c, d]]))
+    ## a*d enormous against b*c, so one term carries everything.
+    n = D.concentration({a: 1e6, b: 1e-6, c: 1e-6, d: 1e6})
+    assert n == pytest.approx(1.0, abs=1e-6)
+
+
+def test_concentration_is_bounded_by_the_term_count():
+    system = bc.rc_ladder(6)
+    env = _spread_env(system, 3.0)
+    env[system.s] = 1j * 2 * np.pi * 1e4
+    D = ddd_of_matrix(system.A)
+    n = D.concentration(env)
+    assert 1.0 <= n <= D.term_count()
+
+
+def test_concentration_tracks_the_enumerated_mass_profile():
+    """Validated against the quantity it stands in for.
+
+    The thing that actually matters is how many terms are needed to reach most of
+    the absolute mass.  On a circuit small enough to enumerate, the effective count
+    must be the same order of magnitude as that number -- otherwise the
+    participation ratio is the wrong proxy.
+    """
+    system = bc.rc_ladder(6)
+    env = _spread_env(system, 3.0)
+    env[system.s] = 1j * 2 * np.pi * 1e4
+    D = ddd_of_matrix(system.A)
+
+    _values, absolutes = D.subdiagram_values(env)
+    target = 0.99 * absolutes[id(D.root)]
+    got, needed = 0.0, 0
+    for _expr, vals in D.iter_terms(env):
+        got += abs(vals[0])
+        needed += 1
+        if got >= target:
+            break
+
+    n_eff = D.concentration(env)
+    ## Same order of magnitude, in either direction.
+    assert 0.1 * needed <= n_eff <= 10.0 * needed, (n_eff, needed)
+
+
+def test_concentration_and_cancellation_are_independent():
+    """The point of having both: neither implies the other.
+
+    A matrix can be badly conditioned for summation while its magnitude sits in a
+    couple of terms, so a diagnostic that reports only `cancellation` cannot say
+    whether a ranking will be cheap.
+    """
+    a, b, c, d = sympy.symbols('a b c d')
+    D = ddd_of_matrix(sympy.Matrix([[a, b], [c, d]]))
+    ## a*d and b*c nearly cancel, so cancellation is huge -- but there are only
+    ## two terms, so concentration is about 2.  Large kappa, tiny N_eff.
+    env = {a: 1.0, b: 1.0, c: 1.0, d: 1.0 + 1e-9}
+    assert D.cancellation(env) > 1e8
+    assert D.concentration(env) == pytest.approx(2.0, rel=1e-6)

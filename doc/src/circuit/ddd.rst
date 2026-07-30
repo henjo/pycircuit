@@ -834,6 +834,78 @@ what would have flagged it.
    (Shi, TCAD 2013, Table VIII). Everything below is what can be done *within*
    the determinant formulation, which is the one pycircuit has.
 
+The other half: how *few* terms carry the magnitude
+---------------------------------------------------
+
+:math:`\kappa` answers *how much* of the absolute mass a truncation must capture.
+It says nothing about **how many terms that takes**, and the two are independent —
+a distinction that cost this project an entire route before it was measured.
+
+The companion quantity is as cheap. With :math:`S_2[v] = \sum |term|^2`, computed
+in the same shaped single pass because :math:`|\prod|^2` is the product of the
+squares, the ratio
+
+.. math::
+
+   N_{\mathrm{eff}} = \frac{A[\mathrm{root}]^2}{S_2[\mathrm{root}]}
+
+is the standard participation ratio — an **effective number of terms**. It equals
+the true term count when every term has the same magnitude and falls to 1 when one
+dominates. :meth:`~pycircuit.circuit.ddd.DDD.concentration` returns it.
+
+**Why both are needed, and neither alone.** A ranking is cheap when
+:math:`\kappa` is small *and* :math:`N_{\mathrm{eff}}` is small:
+
+.. exec-rst::
+
+    import numpy as np
+    import warnings
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.ddd import ddd_of_matrix
+
+    system = bc.ua741(symbolic_devices=('q1', 'q2', 'q17'))
+    D = ddd_of_matrix(system.A)
+
+    def env_for(gm, freq=1e3):
+        env = {system.s: 2j * np.pi * freq}
+        for sym in system.A.free_symbols - {system.s}:
+            env[sym] = gm if str(sym).startswith('gm_') else complex(
+                system.params[sym])
+        return env
+
+    print(".. list-table:: uA741, %d terms: the two diagnostics and what ranking cost"
+          % D.term_count())
+    print("   :header-rows: 1")
+    print("   :widths: 16 14 16 20")
+    print("")
+    print("   * - operating point")
+    print("     - kappa")
+    print("     - N_eff")
+    print("     - terms to reach 5%")
+    for label, gm in (("nominal gm", 1.0e-3), ("degraded gm", 0.1e-3)):
+        env = env_for(gm)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            _e, n, _err = D.approximate_groups(env, tol=0.05)
+        print("   * - %s" % label)
+        print("     - %.2e" % D.cancellation(env))
+        print("     - %.0f" % D.concentration(env))
+        print("     - %d" % n)
+
+:math:`N_{\mathrm{eff}}` is a few hundred and the ranking needs a few hundred to a
+few thousand terms — the same order. :math:`\kappa`, meanwhile, is four to five
+digits and predicts nothing about the count.
+
+The case that settles it, measured in
+``benchmarks/decancellation_ranking.py``: a *de-cancelled* expansion of the same
+amplifier has :math:`\kappa = 99` against the compact form's 6 659 — 67× better
+conditioning — and its ranking needs **more than 72 000 terms without converging**
+where the compact form converges in 870. :math:`N_{\mathrm{eff}}` orders them
+correctly (194 against 11 565) because de-cancellation spreads the determinant from
+2.8 million terms over :math:`1.1 \times 10^{21}`. **Better conditioning, far worse
+concentration.** Report both, or the number you have will mislead you about the one
+you need.
+
 Ranking groups instead of terms
 -------------------------------
 

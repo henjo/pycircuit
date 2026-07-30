@@ -1072,11 +1072,18 @@ So: **group ranking on the compact diagram remains the best available route** �
 terms at 3.7%, already shipped and tested. De-cancellation is correct, affordable and
 the wrong lever for readability.
 
-**The diagnostic this work should have had from the start:** a *concentration*
-measure beside `κ` — how many terms carry 99% of `Σ|term|`. It is what a ranking's
-term count actually depends on, it is as cheap to compute on a diagram as `κ` is, and
-it would have redirected the de-cancellation effort earlier. **That is the next thing
-to build.**
+**That diagnostic is now built.** `DDD.concentration(env)` returns the participation
+ratio `N_eff = A[root]²/S2[root]` in one traversal — the same cost as `cancellation`
+— and it is the *effective number of terms*. It passes the discriminating test that
+`κ` fails: compact `N_eff = 194` where ranking took 870 terms, de-cancelled
+`N_eff = 11 565` where ranking needed over 72 724 and did not converge. Correctly
+ordered, and predictive to a factor of about five, where `κ` ordered them backwards.
+
+**So the standing advice is: report both.** `cancellation` says whether a truncation
+can be accurate and what fraction of the absolute mass it needs; `concentration` says
+how many terms that will take. A ranking is cheap only when both are small, and
+reporting one without the other is what made the de-cancellation route look promising
+for four stages.
 
 **Scope of the failure:** measured at fixed `s` (`κ = 99`), not per coefficient
 (`κ ≈ 15`); the gate said in advance that this would not condemn the per-coefficient

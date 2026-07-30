@@ -643,6 +643,62 @@ class DDD:
             return 1.0
         return float('inf') if total == 0 else mass / abs(total)
 
+    def concentration(self, env=None):
+        """Effective number of terms: how few of them carry the magnitude.
+
+        :meth:`cancellation` answers *how much* of the absolute mass a truncation
+        must capture.  It says nothing about **how many terms that takes**, and the
+        two are independent -- which cost this project a whole route before the
+        distinction was measured.  De-cancelling a µA741 improved ``cancellation``
+        67-fold and made ranking *worse*, needing 80 times more terms, because it
+        spread the same determinant over 10**21 terms instead of 2.8 million.
+
+        This is the missing half.  With ``A[v] = sum |term|`` and
+        ``S2[v] = sum |term|**2`` -- both single passes, since ``|prod|**2`` is the
+        product of the squares -- their ratio is the standard participation ratio
+
+            N_eff = A[root]**2 / S2[root]
+
+        the **effective number of terms**.  It equals the true term count when every
+        term has the same magnitude, and falls to 1 when a single term dominates.
+        Cost is one traversal, the same as :meth:`cancellation`, so the two belong
+        together: a ranking is cheap when ``cancellation`` is small **and**
+        ``concentration`` is small, and neither alone is enough.
+
+        Args:
+            env: Substitution giving every symbol a numeric value.
+
+        Returns:
+            float: the effective term count, between 1 and
+            :meth:`term_count`.
+        """
+        entry = self._entry_values(env or {})
+        mass, square = {}, {}
+        stack = [(self.root, False)]
+        while stack:
+            node, expanded = stack.pop()
+            if node.is_terminal:
+                val = abs(complex(_resolve(node.value, env or {})))
+                mass.setdefault(id(node), val)
+                square.setdefault(id(node), val * val)
+                continue
+            if id(node) in mass:
+                continue
+            if not expanded:
+                stack.append((node, True))
+                stack.append((node.one_edge, False))
+                stack.append((node.zero_edge, False))
+                continue
+            e = abs(entry[id(node.entry)])
+            mass[id(node)] = (e * mass[id(node.one_edge)]
+                              + mass[id(node.zero_edge)])
+            square[id(node)] = (e * e * square[id(node.one_edge)]
+                                + square[id(node.zero_edge)])
+        total, sq = mass[id(self.root)], square[id(self.root)]
+        if sq == 0.0:
+            return 0.0
+        return float(total * total / sq)
+
     def minor_positions(self):
         """``id(node) -> (rows, cols)``: the minor each subdiagram expands.
 

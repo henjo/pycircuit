@@ -1347,3 +1347,61 @@ circuit both ways — 13 paths, 13 brute-force terms, both rankings agreeing exa
 Gate 7g-4 existed because a ranking that converges to the wrong value is not a
 result, and it is the only reason this was caught rather than written up as a
 property of the method.
+
+## 21. Stage 8: the missing diagnostic, and it predicts what `κ` could not
+
+§20 identified the gap: `κ` measures conditioning, term count depends on
+concentration, and only the first was being measured. This builds the second.
+
+**`DDD.concentration(env)`** returns the participation ratio
+
+    N_eff = A[root]**2 / S2[root]     with  S2[v] = Σ |term|**2
+
+computed in **one traversal**, the same cost as `cancellation`, because `|Π|²` is the
+product of the squares. It is the *effective number of terms*: equal to the true term
+count when all terms have the same magnitude, falling to 1 when one dominates.
+
+### It passes the discriminating test
+
+| | terms | `κ` | `N_eff` | terms a ranking needed |
+|---|---|---|---|---|
+| compact-symbol | 2.77e+06 | 6 659 | **194** | **870**, converged |
+| de-cancelled full-symbol | 1.10e+21 | **99** | **11 565** | >72 724, did not converge |
+
+**`N_eff` orders the two representations the way their ranking costs actually came
+out; `κ` orders them backwards.** And it does not merely order them — it predicts
+the magnitude: 870 against `N_eff = 194`, and >72 724 against 11 565, both within a
+factor of about five.
+
+Gates 8-1 and 8-2 pass too: `N_eff` equals the term count exactly for a diagram of
+equal-magnitude terms, falls to 1.0 for a dominated one, stays within `[1, N]`, and
+tracks the *enumerated* count of terms needed for 99% of the absolute mass to within
+an order of magnitude on a circuit small enough to check. Five tests, including one
+that pins the independence directly: a 2×2 matrix can have `κ > 10^8` and
+`N_eff = 2`.
+
+### What this means for the thread
+
+The two diagnostics are now both cheap, both shipped, and they say different things:
+
+* **`cancellation`** — can a truncation of this expansion be accurate at all, and
+  what fraction of the absolute mass must it capture?
+* **`concentration`** — how many terms is that likely to take?
+
+**A ranking is cheap only when both are small.** Reporting one without the other is
+what made the de-cancellation route look promising for four stages: its `κ` was 67×
+better while its `N_eff` was 60× worse, and only the first was on the page.
+
+**The retrospective judgement, stated plainly:** had `concentration` existed at §1 it
+would have been visible immediately that the compact-symbol µA741 has `N_eff = 194`
+— i.e. that a few hundred terms should suffice — which is exactly what group ranking
+then achieved. The whole excursion through full symbols, de-cancellation and
+spanning-tree theory (§§13-20) was chasing a quantity that was never the binding
+one. That excursion produced real results, several of them published-and-confirmed,
+and it was avoidable.
+
+*Reconsider-if:* `N_eff` is a second moment, so it is blind to distribution shape
+beyond the first two moments — a heavy tail with the same variance reports the same
+number. If a case appears where `N_eff` is small and ranking is still expensive, the
+next refinement is the enumerated mass profile itself (terms to reach 90/99/99.9% of
+`A`), which `iter_terms` already provides at the cost of running the ranking.
