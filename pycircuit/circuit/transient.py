@@ -126,6 +126,10 @@ class Transient(Analysis):
         self._dt = None
         self._dt_last = None
         self._is_first_step = True
+        ## Distinct from _is_first_step, which is re-armed at every breakpoint to
+        ## force an order drop.  This one is true only until the first step of a
+        ## run has been accepted, and it is what the step controller is given.
+        self._no_history = True
     ## import it from there instead.
     ## But it's an object method requiring a DC as self
     ## so using DC._newton doesn't work
@@ -262,6 +266,7 @@ class Transient(Analysis):
         
         timelist = []
         self._is_first_step = True
+        self._no_history = True
         t = 0.0
         max_step = timestep
         dt = timestep
@@ -300,16 +305,29 @@ class Transient(Analysis):
             # 1. Truncates Step (dt): If normal step size overshoots the breakpoint, 
             #    it forces dt to land *exactly* on the breakpoint timestamp.
             # 2. Flags the Breakpoint: was_break_step is set to True.
-            # 3. Resets Integrator History: Immediately after crossing the breakpoint 
-            #    (was_break_step == True in the next iteration), it sets 
-            #    `self._is_first_step = True`. 
-            #    
-            # Why reset the history? Integrators (like Gear2 or Trapezoidal) use 
-            # past state history to fit a smooth mathematical polynomial. If they 
-            # tried to fit a polynomial across a sharp discontinuous edge, the 
+            # 3. Drops the Integration Order: Immediately after crossing the
+            #    breakpoint (was_break_step == True in the next iteration), it
+            #    sets `self._is_first_step = True`.
+            #
+            # Why? Integrators (like Gear2 or Trapezoidal) use past state history
+            # to fit a smooth mathematical polynomial. If they
+            # tried to fit a polynomial across a sharp discontinuous edge, the
             # simulation would suffer from massive artificial ringing and overshoot.
-            # Resetting the history forces a drop to a safer 1st-order method 
+            # So the method drops to a safer 1st-order one
             # (like Backward Euler) to gracefully navigate the corner and rebuild.
+            #
+            # `_is_first_step` does NOT mean "there is no history": the q and iq
+            # ring buffers keep rolling across a breakpoint, and the step just
+            # taken is perfectly good data.  It means "do not trust a 2nd-order
+            # polynomial through this point".  Those are different claims, and
+            # conflating them is what made `max_step` a correctness knob rather
+            # than a cost knob: the step controller used this same flag to skip
+            # the error check entirely, and `Sin.next_event` fires every quarter
+            # period, so a VSin drive produced a periodic, drive-synchronous,
+            # full-`max_step` step that was never checked at all.  The controller
+            # is therefore handed `_no_history` instead, which is true only at
+            # the genuine start of a run -- where the LTE really cannot be
+            # estimated and accepting is the only option.
             if was_break_step:
                 self._is_first_step = True
             
@@ -348,7 +366,7 @@ class Transient(Analysis):
                     iq_last_hist=self._iqlast,
                     h_curr=dt,
                     h_last=getattr(self, '_dt_last', dt),
-                    is_first_step=self._is_first_step,
+                    no_history=self._no_history,
                     J=J,
                     active_integrator=self.active_integrator,
                     irefnode=self.irefnode,
@@ -392,6 +410,7 @@ class Transient(Analysis):
             self._dt_last = dt
             
             self._is_first_step = False
+            self._no_history = False
             
             if not fixed_timestep:
                 dt = next_dt
@@ -437,6 +456,7 @@ class Transient(Analysis):
         timelist = []
         
         self._is_first_step = True
+        self._no_history = True
         t = 0.0
         h = timestep
         max_step = timestep
@@ -493,7 +513,7 @@ class Transient(Analysis):
                     q_curr=self.cir.q(x_new),
                     q_last_hist=self._qlast, iq_last_hist=self._iqlast,
                     h_curr=h_curr, h_last=getattr(self, '_dt_last', h_curr),
-                    is_first_step=self._is_first_step, J=J,
+                    no_history=self._no_history, J=J,
                     active_integrator=self.active_integrator,
                     irefnode=self.irefnode, reltol=reltol, abstol=abstol,
                     toolkit=self.toolkit, max_step=max_step, TRTOL=TRTOL)
@@ -515,6 +535,7 @@ class Transient(Analysis):
             self._dt = h_curr
             self._dt_last = h_curr
             self._is_first_step = False
+            self._no_history = False
             self._iqlast = self.toolkit.concatenate((self.toolkit.array([self._iq]), self._iqlast))[:-1]
             self._qlast = self.toolkit.concatenate((self.toolkit.array([self.cir.q(x_curr)]), self._qlast))[:-1]
 

@@ -284,16 +284,50 @@ Gear2 *and* this, and doing them together makes the attribution unrecoverable.
 **Gate 3-1 (the hole is closed).** On a `VSin`-driven stiff circuit, count steps
 accepted without an LTE evaluation. Declared success: exactly 1 for the whole run
 (the genuine first step), against one per quarter period now.
-OUTCOME:
+OUTCOME: **PASSED.** `VSin(va=1, freq=1e4)` -> `R 1k` -> `C 1uF` with `L 1uH` and
+`R 1` to ground; `tend` 200 us, `max_step` 5 us, so `Sin.next_event` fires 8 times
+in the run.
+
+| unchecked accepts | before | after |
+|---|---|---|
+| gear2 | 11 | **1** |
+| trap | 8 | **1** |
+| euler | 9 | **1** |
+
+Exactly one, for every integrator — the genuine first step. Note the before-counts
+exceed the 8 breakpoints: rejected steps re-enter the loop with the flag still
+armed, so the hole was slightly wider than "one per quarter period".
 
 **Gate 3-2 (discontinuities still work).** A `VPulse` edge must still be integrated
 without a rejection loop — the breakpoint is there because the discontinuity is real,
 and a small step is genuinely wanted. Declared success: `test_breakpoints.py` passes and
 the pulse edge takes no more than 3 rejections.
-OUTCOME:
+OUTCOME: **PASSED.** `test_breakpoints.py` passes (and so do
+`test_analysis_transient.py`, `test_minstep.py`, `test_uic.py`: 15 passed). On its
+`VPulse` circuit (1 us edges, `max_step` 10 us):
+
+| | steps | total rejections | max rejections at a pulse edge |
+|---|---|---|---|
+| gear2 before | 347 | 6 | 3 |
+| gear2 after | 366 (+5.5%) | 16 | **3** |
+| euler before | 1217 | 7 | 3 |
+| euler after | 1347 (+10.7%) | 13 | **3** |
+
+No rejection loop: 3 is the `MAX_REJECT` cap and it is reached at an edge both
+before and after, so the discontinuity is being handled the same way — the edge
+step is simply now *checked* before being taken. The 5-11% step-count cost is the
+price of closing the hole, and it is paid where a discontinuity actually is.
+
+**Recorded because it is counter-intuitive:** on the `VSin` case rejections went
+*down*, 98 -> 47 for gear2. Checking the post-breakpoint step means the controller
+enters the next step with a sane `h` instead of a full `max_step` one it then has
+to fight back down.
 
 **Gate 3-3.** Full suite `-m ""` at 715/6/0, runtime within 20% of baseline.
-OUTCOME:
+OUTCOME: **PASSED — 716 passed, 6 skipped, 0 failed in 453.01 s** (-21.7% against
+the 578.49 s baseline; `test_stress_stiff_rlc_pulse` 70.78 s against 91.35 s).
+Closing the hole costs nothing at suite level: no test anywhere depended on a
+post-breakpoint step being accepted unevaluated.
 
 ---
 

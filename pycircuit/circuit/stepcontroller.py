@@ -7,8 +7,15 @@ class StepController(ABC):
     """
     
     @abstractmethod
-    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, is_first_step, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0):
+    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0):
         """Evaluate the Local Truncation Error (LTE) for the current step.
+
+        ``no_history`` means there is genuinely no past point to difference
+        against -- the first step of a run -- so the LTE cannot be estimated and
+        the step has to be accepted unevaluated.  It is deliberately *not* the
+        transient's ``_is_first_step``, which is re-armed at every breakpoint to
+        force an order drop: history still exists there, and a step that can be
+        bounded should be.
 
         Returns:
             tuple: ``(accept_step, h_next)`` -- whether the step is accepted and
@@ -22,9 +29,13 @@ class IntegralController(StepController):
     Rejects steps with LTE > 1.0, and predicts the next step size.
     """
     
-    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, is_first_step, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0):
-        if is_first_step:
-            err = 0.5
+    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0):
+        ## No past point exists yet, so there is nothing to difference and the
+        ## step is accepted unevaluated.  This is the only place in a run where
+        ## that is correct, and it costs one uncontrolled step of O(h^2) Euler
+        ## error at max_step -- which is why it used to dominate every accuracy
+        ## measurement when breakpoints re-armed it periodically.
+        if no_history:
             return True, h_curr
         
         # --- LOCAL TRUNCATION ERROR (LTE) CALCULATION ---
@@ -36,7 +47,7 @@ class IntegralController(StepController):
             q_last=q_last_hist,
             iq_last=iq_last_hist,
             h_last=h_last,
-            is_first_step=is_first_step,
+            is_first_step=no_history,
             toolkit=toolkit
         )
         
@@ -91,10 +102,12 @@ class PIController(StepController):
         self.k_p = k_p
         self.last_err = None
         
-    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, is_first_step, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0):
-        if is_first_step:
-            err = 0.5
-            self.last_err = err
+    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0):
+        ## As in IntegralController: nothing to difference on the first step of a
+        ## run.  Unlike there, the 0.5 is not dead -- it seeds the PI history so
+        ## the first real update has a previous error to work from.
+        if no_history:
+            self.last_err = 0.5
             return True, h_curr
         
         Eg, p = active_integrator.compute_lte(
@@ -103,7 +116,7 @@ class PIController(StepController):
             q_last=q_last_hist,
             iq_last=iq_last_hist,
             h_last=h_last,
-            is_first_step=is_first_step,
+            is_first_step=no_history,
             toolkit=toolkit
         )
         
