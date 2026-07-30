@@ -1842,3 +1842,86 @@ numerics.
 carry away. An expanded, rankable form can be read and cannot scale; a hash-consed
 straight-line program scales beautifully and cannot be read. Every stage of §§1-26 was
 spent trying to make the first behave like the second.
+
+## 28. Fully symbolic nonlinear analysis of the leapfrog: order vs amplitude
+
+`benchmarks/order_convergence.py`. 127 unknowns, cubic `i = kk*v^3` on stage 0's
+input differential pair, drive at **100 kHz**, third harmonic at the output.
+
+**Everything stays symbolic and numbers go in last** — including the drive amplitude
+`Adrv` and the nonlinear coefficient `kk`. That is not a constraint but the economy of
+the method: **one symbolic build per order serves the whole sweep.**
+
+| order | graph nodes | build | evaluate (6 amplitudes) |
+|---|---|---|---|
+| `U^3` | 6 415 | 1.8 s | 0.13 s |
+| `U^7` | 22 461 | 9.9 s | 0.69 s |
+| `U^13` | **54 079** | **51.7 s** | **2.11 s** |
+
+121 s of builds in total, then every amplitude and every `kk` is a graph walk.
+
+### The table
+
+| amp (V) | \|v\| at s0_e1 | HD3 | d(U^5) | d(U^7) | d(U^9) | d(U^11) | d(U^13) | **agrees from** |
+|---|---|---|---|---|---|---|---|---|
+| 0.01 | 6.33e-05 | 5.92e-11 | 1.6e-06 | 2.9e-12 | 0 | 0 | 0 | **U^5** |
+| 0.03 | 1.90e-04 | 5.33e-10 | 1.4e-05 | 2.3e-10 | 4.2e-15 | 0 | 0 | **U^5** |
+| 0.1 | 6.33e-04 | 5.92e-09 | 1.6e-04 | 2.9e-08 | 5.7e-12 | 1.2e-15 | 0 | **U^5** |
+| 0.3 | 1.90e-03 | 5.32e-08 | 1.4e-03 | 2.3e-06 | 4.1e-09 | 7.7e-12 | 1.5e-14 | **U^7** |
+| 1 | 6.31e-03 | 5.83e-07 | 1.6e-02 | 2.9e-04 | 5.8e-06 | 1.2e-07 | 2.6e-09 | **U^9** |
+| 3 | 1.85e-02 | 4.66e-06 | 1.7e-01 | 2.7e-02 | 4.7e-03 | 8.8e-04 | 1.7e-04 | **not by U^13** |
+
+`d(U^k) = |H3(U^k) − H3(U^k−2)| / |H3(U^k)|`. The required order climbs monotonically
+with amplitude — `U^5` up to 100 mV, `U^7` at 300 mV, `U^9` at 1 V, and at 3 V the
+series has not settled by `U^13`, its successive corrections falling only from 1.7e-01
+to 1.7e-04. That is the textbook signature of approaching the radius of convergence,
+and it is the answer to "up to what amplitude may I trust third-order theory?"
+
+### The frequency mattered as much as the amplitude
+
+A first run at **1 kHz** produced a useless table: every amplitude converged at `U^3`
+with HD3 ~ 1e-14. Physically correct, and the reason is instructive — at 1 kHz the
+amplifier's loop gain is high, so the input pair is held at a **virtual ground**
+(2.5 µV at a 10 mV drive) and the cubic barely acts. **Distortion rises where loop gain
+falls.** This µA741 measures +87.9 dB at 10 Hz falling at −20 dB/decade, so at 100 kHz
+its open-loop gain is down to roughly 8 dB.
+
+The evidence that the loop gain really has reduced is in the table: at the same 10 mV
+drive the input-pair voltage is **6.33e-05 against 2.5e-06 — 25× larger.** The virtual
+ground no longer holds, and the higher orders come alive.
+
+An intermediate attempt moved the nonlinearity to the amplifier's *output* to find
+signal swing. That works but is the wrong physics: an op-amp's distortion originates in
+the input pair, and the right fix was the frequency, not the node.
+
+### The free second sweep, which is the point of substituting last
+
+`kk` is a symbol, so sweeping the nonlinearity's strength needs **no rebuild at all**:
+
+| `kk` | HD3 at 1 V | agrees from |
+|---|---|---|
+| 0.005 | 5.91e-08 | `U^7` |
+| 0.5 | 5.11e-06 | not by `U^13` |
+| 50 | 7.62e-03 | not by `U^13` |
+
+Two independent parameter sweeps, one build. Substituting numbers into the circuit
+first would have cost a full rebuild per point — 121 s each rather than milliseconds.
+
+### What was dropped, and why
+
+The original request was to compare against **transient** simulation. That was
+abandoned on a measured cost wall, not a guess: the leapfrog is stiff — time constants
+from ~0.5 ns (the µA741's 27 Ω output degeneration into 20 pF) to 10 µs (10 kΩ × 1 nF
+integrators), with 1 Ω input tie-downs — and **2 ms of simulated time did not complete
+in 6 minutes**, while the table needed hundreds of times more. A contributing cost:
+`BSource`'s Jacobian is a central-difference numerical derivative, two extra evaluations
+per Newton iteration per step. The harness for it exists in
+`benchmarks/nonlinear_leapfrog_sweep.py` — correct, with a real `BSource` cubic the
+transient engine would see, and unaffordable at 1 kHz. Raising the drive frequency, as
+was done here for a different reason, would also shrink that integration by ~100×;
+that is the obvious way to revive it.
+
+**So this table is self-convergence, not validation against an independent solver.** The
+representation itself *was* validated independently — stage 14 matched a fully numeric
+graded solve to 4.6e-13 on this circuit — so what is unverified here is the perturbation
+series' own truncation, which is exactly what the table measures.
