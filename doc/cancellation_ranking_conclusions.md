@@ -34,7 +34,9 @@
 > | de-cancellation alone reduces `κ` | §17 implied | **REFUTED** — no benefit at a fixed frequency, worse above N=6; the residue is phase (§18) |
 > | de-cancellation **plus s-expansion** gives `κ = 1` per coefficient | §18 | **holds for PASSIVE networks**, measured to 12 figures; **not** for an amplifier (§19) |
 > | the 1.2× state overhead carries to a real amplifier | §18 reconsider-if | **REFUTED** — 7.42× on the µA741, though still a constant factor (§19) |
-> | de-cancellation brings `κ` into a workable range on a real amplifier | §19 | **holds** — low-order coefficients at `κ ≈ 14-17`, from 1.5-1.9e3 |
+> | de-cancellation brings `κ` into a workable range on a real amplifier | §19 | `κ` figures **hold**; the inference that ranking would therefore work is **REFUTED** (§20) |
+> | low `κ` means a ranking will converge in few terms | §19 inference | **REFUTED, measured** — `κ` is conditioning, term count is *concentration*; de-cancellation dilutes 2.77e6 terms into 1.1e21 (§20) |
+> | de-cancellation is the route to a readable expression | §13, §18, §19 | **REFUTED** (§20). The compact diagram with group ranking remains the best route: 870 terms at 3.7% |
 >
 > ### The three things worth carrying away
 >
@@ -54,12 +56,14 @@
 >
 > ### The state of the goal, in one line
 >
-> Converging is solved twice over — by group ranking within the existing
-> representation (§2), and now by de-cancellation bringing `κ` from ~10^3-10^6 down
-> to ~15 per coefficient (§19). **Readability is not solved**, and the one
-> experiment that would test it — rank a de-cancelled coefficient at `κ ≈ 17` and
-> see whether tens of terms suffice — needs a *rankable diagram*, which is the
-> single remaining implementation.
+> **Converging is solved: group ranking on the compact diagram, 870 terms at 3.7%
+> error on the µA741, shipped and tested.** Readability is not, and §20 closes the
+> de-cancellation route to it — de-cancellation improves conditioning (`κ` 6 659 →
+> 99) while destroying concentration (2.77e6 terms → 1.1e21), so its ranking needs
+> ≥80× *more* terms and does not converge. The missing diagnostic, which this
+> thread should have had in §1, is a **concentration** measure beside `κ`: how many
+> terms carry 99% of `Σ|term|`. That is what term count depends on, it is as cheap
+> as `κ`, and it is the obvious next thing to build.
 >
 > ### Where the code is
 >
@@ -1176,6 +1180,12 @@ fixture exists, and it should be checked before anything is built on top.
 
 ## 19. Stages 7e-7f: on a real amplifier, `κ` finally lands in a usable range
 
+> **ITS CONCLUSION IS REFUTED BY §20.** The `κ` measurements below stand and were
+> verified; the inference drawn from them — that `κ ≈ 15` makes ranking plausible —
+> does not. Ranking the de-cancelled expansion needs ≥80× *more* terms than the
+> compact one and does not converge, because `κ` says nothing about term counts.
+> Read §20 before acting on this section.
+
 The prerequisite §18 identified — one symbol per device — is now built:
 `ua741(fully_symbolic=True)` gives every transistor's `gm`, `rpi`, `ro`, `cpi`,
 `cmu` and every resistor and capacitor its own symbol. **132 device symbols, 343
@@ -1258,3 +1268,82 @@ plain full-symbol diagram on an amplifier, 204 679 states for the µA741.
 `κ ≈ 17` and see whether it converges in tens of terms rather than thousands. That
 is the experiment this entire thread has been trying to reach, and it is now one
 implementation away rather than blocked on a premise.
+
+## 20. Stage 7g: the payoff test FAILS, and it corrects §19
+
+The experiment this whole plan was built toward. `benchmarks/decancellation_ranking.py`,
+µA741 at 1 kHz, `tol = 0.05`, control measured at the same operating point rather
+than quoted:
+
+| | terms | error | converged |
+|---|---|---|---|
+| compact, group ranking | **870** | 3.75e-02 | **yes** |
+| compact, magnitude ranking | **1 690** | 3.78e-02 | **yes** |
+| de-cancelled, group ranking | 72 724 | 1.40e-01 | **no** (hit the 400 000-split cap) |
+| de-cancelled, magnitude ranking | 68 310 | 1.59e-01 | **no** |
+
+**Gate 7g-2 FAILS, and not narrowly: the de-cancelled expansion needs at least 80×
+*more* terms and still does not converge**, despite `κ` being 67× better (99.05
+against 6 659).
+
+### Why, and this is the correction to §19
+
+§19 concluded that `κ ≈ 15` per coefficient was "the first time in this thread that
+`κ` has been in a range where magnitude ranking is plausible". **That inference was
+wrong, and this measurement is what refutes it.**
+
+`κ = Σ|term| / |Σ term|` is a statement about the *aggregate*. The sufficient
+condition it supports — capture `1 − tol/κ` of the absolute mass — says how much
+mass is needed and **nothing whatever about how many terms that takes.** Those are
+independent:
+
+* the compact form packs the determinant into **2.77e+06** terms;
+* the de-cancelled full-symbol form spreads the same value over **1.1e+21** — fifteen
+  orders of magnitude more, each correspondingly smaller.
+
+So de-cancellation improves the *conditioning* and destroys the *concentration*.
+Needing 99.95% of the mass is easy when 870 terms carry it and hopeless when it is
+diluted across 10^21. **Low `κ` is necessary, not sufficient.**
+
+That is the third time in this thread a claim about `κ` has had to be narrowed —
+first sufficiency stated as necessity (§14a), then scope (§15b), now this — and the
+pattern is the finding: **`κ` bounds the error achievable from a given fraction of
+the mass; it predicts nothing about term counts, which is what "readable" actually
+depends on.**
+
+### What the thread therefore concludes
+
+For *this* representation and this circuit, the compact-symbol diagram with group
+ranking remains the best route to a converged approximation: **870 terms at 3.7%**,
+and it is shipped and tested. De-cancellation is a real and correct transformation
+with a measured, affordable cost, and it is the wrong lever for readability, because
+readability is a term-count property and de-cancellation moves term count in the
+wrong direction by fifteen orders of magnitude.
+
+**The missing diagnostic, which this thread should have had from the start:** a
+*concentration* measure alongside `κ` — how many terms carry (say) 99% of `Σ|term|`.
+That is the quantity a ranking's term count depends on, it is as cheap to compute on
+a diagram as `κ` is, and had it been measured in §1 the de-cancellation route would
+have been assessed differently. It is the obvious next thing to build.
+
+**Scope, stated:** this was measured at fixed `s`, where the de-cancelled `κ` is 99
+rather than the 14-17 of the low-order coefficients, and the gate said in advance
+that a failure here would not condemn the per-coefficient route. It does not — but
+the *dilution* argument applies there too and more strongly, since the coefficient
+expansions have astronomically many terms as well. Per-coefficient ranking was not
+measured, and that is the one remaining way this conclusion could be wrong.
+
+### A bug the gate caught, worth keeping
+
+The first run reported a magnitude-ranking error of **6.7e+55**. That is
+*impossible*: with `Σ|term| = 99·|det|`, no partial sum can be more than about 100
+relative units away. Reasoning from that bound rather than accepting the number
+found the cause: a state with rows still remaining but **every child pruned** is a
+*dead end* contributing zero, and the code was treating it as a completed term and
+adding its whole prefix product. Verified after the fix by enumerating a small
+circuit both ways — 13 paths, 13 brute-force terms, both rankings agreeing exactly.
+
+**The general lesson: know the bound your number must satisfy before you read it.**
+Gate 7g-4 existed because a ranking that converges to the wrong value is not a
+result, and it is the only reason this was caught rather than written up as a
+property of the method.

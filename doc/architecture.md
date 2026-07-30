@@ -1055,7 +1055,36 @@ s-expanded but not de-cancelled), **every one of 24 coefficients improves by 60�
 99.99947% at `κ = 9.4e3`. `κ = 1` does not hold and was predicted not to — an
 amplifier is not passive.
 
-**So the remaining work is one implementation, not a premise.** Everything measured
+**7g then ran the payoff test, and it FAILED — which closes this route.** At
+`tol = 0.05` on the µA741, with the control measured at the same operating point:
+compact group ranking converges in **870 terms** (3.75e-02) and compact magnitude
+ranking in **1 690**; the de-cancelled expansion needs **72 724** and **68 310** and
+**does not converge** (1.4e-01, 1.6e-01) at a 400 000-split cap.
+
+**The reason corrects the inference above.** `κ` measures *conditioning* — how much
+of the absolute mass you must capture. Term count depends on *concentration* — how
+few terms carry it. They are independent, and de-cancellation improves the first
+while destroying the second: the compact form packs the determinant into 2.77e+06
+terms, the de-cancelled full-symbol form spreads the same value over **1.1e+21**.
+**Low `κ` is necessary, not sufficient.**
+
+So: **group ranking on the compact diagram remains the best available route** — 870
+terms at 3.7%, already shipped and tested. De-cancellation is correct, affordable and
+the wrong lever for readability.
+
+**The diagnostic this work should have had from the start:** a *concentration*
+measure beside `κ` — how many terms carry 99% of `Σ|term|`. It is what a ranking's
+term count actually depends on, it is as cheap to compute on a diagram as `κ` is, and
+it would have redirected the de-cancellation effort earlier. **That is the next thing
+to build.**
+
+**Scope of the failure:** measured at fixed `s` (`κ = 99`), not per coefficient
+(`κ ≈ 15`); the gate said in advance that this would not condemn the per-coefficient
+route, and it does not. But the dilution argument applies there too and more
+strongly. Per-coefficient ranking is unmeasured and is the one way this conclusion
+could be wrong.
+
+**Superseded — the previous framing of the remaining work:** Everything measured
 so far is a memoised recursion that computes values and counts; what does not exist
 is a **rankable diagram** — Tan & Shi's `CL`/`REMAINDER` construction over
 sub-diagrams. The measurements say what it should cost (~7× the plain full-symbol
@@ -1079,7 +1108,11 @@ is the experiment this whole thread has been trying to reach.
 4. **The `Short` element operation**, which unlike `Open` collapses nodes and so
    can actually delete vertices — the cheap unfinished half of stage 6.
 
-**Do not repeat these, they are measured and recorded:** de-cancellation keyed on
+**Do not repeat these, they are measured and recorded:** ranking the de-cancelled
+full-symbol expansion (needs >=80x more terms than the compact one and does not
+converge -- it dilutes 2.77e6 terms into 1.1e21); treating a low `κ` as evidence that
+a ranking will converge (it bounds the error from a given mass fraction and says
+nothing about term counts); de-cancellation keyed on
 the *path* ("every device used so far") — correct but its sharing loss grows
 1.7-1.8× per circuit section, where keying on reachable **labels** costs a flat
 1.2×; de-cancellation *without* s-expansion (no `κ` benefit at a fixed frequency,

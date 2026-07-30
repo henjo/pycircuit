@@ -260,6 +260,36 @@ canonicalised to the still-reachable forbidden positions only, on RC ladders
 Declared in advance: a pass justifies building the diagram machinery; a fail
 **settles the architecture question** in favour of GPDD and saves that work.
 
+## Stage 7g — the payoff test (declared 2026-07-30)
+
+Everything up to 7f measured *properties* of the de-cancelled expansion. This
+ranks it, which is the experiment the whole plan exists for.
+
+Ranking runs over the de-cancelled state graph directly rather than over a
+materialised `DDD`. That is a deliberate scope cut: a per-coefficient diagram would
+be roughly 5 million vertices with first-row pivoting, and the question here is
+whether the *algorithm* converges, not whether the object can be built. Stated as a
+limitation, not skipped.
+
+**Gate, declared before running**, at `tol = 0.05` on the µA741 at 1 kHz:
+
+1. **The control is measured at the same operating point**, not quoted from
+   earlier runs at a different one. 7f's near-miss came from a convenient control.
+2. **PASS if group ranking on the de-cancelled expansion needs at least 5× fewer
+   terms than group ranking on the compact diagram** at the same tolerance and
+   point.
+3. Report **magnitude** ranking on both as well. Tan & Shi's pipeline is
+   magnitude-ranked; if de-cancellation makes plain magnitude ranking converge, that
+   reproduces their result and closes the loop on §15b.
+4. The kept sum must be verified against the exact de-cancelled value, which is
+   itself already verified against `numpy.linalg.det`. A ranking that converges to
+   the wrong number is not a result.
+
+**Declared in advance:** the fixed-`s` de-cancelled `κ` is 99, not the 14-17 of the
+low-order coefficients, so this tests the weaker of the two available settings. If
+it passes here it will do better per coefficient; if it fails here that does not
+condemn the per-coefficient route.
+
 ## What would make this whole plan fail
 
 - Stage 0 finds uniform cancellation. Most likely single outcome, and the
@@ -297,6 +327,7 @@ Scripts: `benchmarks/cancellation_profile.py` (stage 0),
 | 7d — with s-expansion | **PASS, exactly.** 7c's diagnosis predicted `κ = 1` per coefficient; measured **1.000000000000** on every coefficient of `rc_ladder(4)`, `(6)`, `(8)`. So the pipeline order is explained from our own numbers: s-expansion alone makes `κ` worse (§13), de-cancellation alone does nothing at fixed `s` (7c), **together they give `κ = 1`**. §16's "package" claim is now a positive demonstration rather than an inference from failures. |
 | 7e — de-cancellation on a real amplifier | **7e-2 PASS, 7e-1 FAIL, and the FAIL is on my threshold rather than on feasibility.** `ua741(fully_symbolic=True)` added (132 device symbols, 343 addends, only 2 numeric; back-substitution matches the numeric fixture to 2.2e-16; two tests). States 27 577 → **204 679**, an overhead of **7.42×** against ladders' flat 1.20× — the declared reconsider-if was right that ladders are benign. But it is a *constant* factor, 204 679 states is small, and it runs in 14 s. Determinant preserved to **2.9e-14** on an active circuit. `κ` at fixed `s`: **6.66e3 → 99.05 (67×)**. |
 | 7f — per coefficient, vs the right control | **The payoff.** Against the like-for-like control (same matrix, same point, s-expanded, *not* de-cancelled) **every one of 24 coefficients improves, by 60× to 394 367×**; the low-order ones land at **`κ ≈ 14-17`** (s^1: 1.85e3 → 17.3). First time in this thread that `κ` is in a range where magnitude ranking is plausible — 99.67% of the mass needed at `tol=0.05`, against 99.99947% at `κ=9.4e3`. `κ = 1` does not hold and was predicted not to: an amplifier is not passive. **Recorded self-correction:** the first reading used the compact *whole determinant* as the control and nearly wrote this up as a failure. |
+| 7g — the payoff test | **FAIL, and it corrects 7f's reading.** At `tol=0.05`, control measured at the same point: compact group ranking **870 terms / 3.75e-02, converged**; compact magnitude **1 690 / 3.78e-02, converged**. De-cancelled: group **72 724 terms / 1.40e-01, NOT converged**; magnitude **68 310 / 1.59e-01, NOT converged**. So despite `κ` being 67× better, the de-cancelled expansion needs ≥80× more terms and does not converge. Cause: `κ` measures *conditioning*, term count depends on *concentration*, and de-cancellation spreads the same value from 2.77e6 terms over 1.1e21. **Low `κ` is necessary, not sufficient.** A bug found by gate 7g-4 on the way: a dead-end state (rows remaining, all children pruned) was counted as a completed term, giving an impossible error of 6.7e+55; caught by reasoning from the bound `Σ\|term\| = 99·\|det\|`, fixed, and re-verified against brute-force enumeration. Details: `cancellation_ranking_conclusions.md` §20. |
 | 4 — library API | **Done.** `DDD.cancellation`, `DDD.subdiagram_values`, `DDD.minor_positions`, `DDD.approximate_groups` in `ddd.py`; twelve tests in `test_ddd.py`; three new subsections of `doc/src/circuit/ddd.rst` with every number generated at build time. `DDD.approximate` now **warns** when it returns without meeting `tol`. |
 
 ### Three results worth carrying forward
