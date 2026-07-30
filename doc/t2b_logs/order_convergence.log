@@ -1,0 +1,41 @@
+leapfrog: 136 unknowns, built in 8.3 s
+nonlinearity i = kk*v^3 at s0_e1 (row 3), drive Adrv at row 135, output row 125, f0 = 100000 Hz
+Adrv and kk stay SYMBOLIC: one build per order, then substitution.
+
+order  graph nodes  build s     evaluate s (6 amplitudes)
+--------------------------------------------------------------
+U^3    12884        3.9         0.32
+U^5    24328        9.8         0.93
+U^7    44419        21.9        1.62
+U^9    59103        51.2        2.64
+U^11   85116        68.2        3.48
+U^13   105751       106.7       4.65
+U^15   137749       158.5       6.03
+U^17   164407       233.8       7.10
+
+== Fully symbolic nonlinear analysis of the leapfrog, 136 unknowns ==   [header corrected by hand; the script hardcoded 127, fixed in the same commit]
+Third harmonic at the output; one symbolic build per order, evaluated
+at each amplitude.  d(U^k) = |H3(U^k) - H3(U^k-2)| / |H3(U^k)|.
+
+cubic validity limit: g at s0_e1 = 4.3128e-04 S, a = kk/g = 1.1593e+02, v_turn = 5.3621e-02 V
+rows beyond 100% of v_turn are NOT a physical device and are marked.
+
+amp (V)   |v| s0_e1    %v_turn   HD3         d(U^5)     d(U^7)     d(U^9)     d(U^11)    d(U^13)    d(U^15)    d(U^17)     agrees from
+--------------------------------------------------------------------------------------------------------------------------------------
+0.01      5.7742e-05   0%        5.7561e-11  1.4e-06    2.1e-12    0.0e+00    0.0e+00    0.0e+00    0.0e+00    0.0e+00     U^5
+0.03      1.7323e-04   0%        5.1804e-10  1.2e-05    1.7e-10    2.6e-15    0.0e+00    0.0e+00    0.0e+00    0.0e+00     U^5
+0.1       5.7741e-04   1%        5.7553e-09  1.4e-04    2.1e-08    3.5e-12    6.8e-16    0.0e+00    0.0e+00    0.0e+00     U^5
+0.3       1.7318e-03   3%        5.1741e-08  1.2e-03    1.7e-06    2.6e-09    4.1e-12    6.8e-15    1.4e-16    0.0e+00     U^7
+1         5.7578e-03   11%       5.6791e-07  1.4e-02    2.1e-04    3.6e-06    6.3e-08    1.2e-09    2.2e-11    4.3e-13     U^9
+3         1.6908e-02   32%       4.6233e-06  1.4e-01    1.9e-02    2.9e-03    4.6e-04    7.6e-05    1.3e-05    2.3e-06     not by U^17
+
+One symbolic build per order serves every amplitude: the build column
+is paid once, the evaluate column covers all six substitutions.
+
+== and because kk is symbolic, sweeping the nonlinearity is free ==
+Convergence order at a 1 V drive, as the cubic coefficient grows:
+kk           HD3         %v_turn   agrees from
+----------------------------------------
+0.005        5.7483e-08  3%        U^7
+0.5          5.0771e-06  34%       not by U^17
+50           1.0369e-02  340%!     UNPHYSICAL -- past v_turn

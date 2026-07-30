@@ -68,12 +68,10 @@ against which version produced it.
 
 ## 4. What is IN FLIGHT and must be finished
 
-### 4.1 T2b — the third regeneration, PARTIAL
+### 4.1 T2b — the third regeneration, COMPLETE
 
-The fixture changed again (compensation), so every leapfrog number needs regenerating a
-**third** time. The run was interrupted by the session ending.
-
-**Completed, logs preserved in `doc/t2b_logs/`:**
+The fixture changed again (compensation), so every leapfrog number needed regenerating a
+**third** time. **All seven scripts have now run; logs are in `doc/t2b_logs/`.**
 
 | script | result on the 136-unknown fixture |
 |---|---|
@@ -83,6 +81,7 @@ The fixture changed again (compensation), so every leapfrog number needs regener
 | `cancellation_compose` | GATE 5 6/6 PASS, GATE 4 2/6 PASS — verdict unchanged |
 | `nonlinear_leapfrog` | GATE 14-2 PASS rel **2.60e-13**, GATE 14-3 PASS; speedup **27-29x** (was 61-68x) |
 | `transfer_function` | leapfrog tol=1e-3: 7 913 groups -> **134 520 ops = 17.0 ops/group**; uA741 control **bit-identical** |
+| `order_convergence` | **`agrees from` IDENTICAL for the third time**; `v_turn` = 5.3621e-02 V |
 
 The `transfer_function` control is worth keeping in view: its uA741 half is untouched by
 every fixture change and has now re-measured **734 groups -> 50 377 operations across all
@@ -93,15 +92,31 @@ One recorded claim shifted: **"16 ops/group is a property of the diagram" now re
 (it was 16 on the unstable fixture and 16.0 on the repaired one). Still structural, but no
 longer identical — record it as a rescale, not a survival.
 
-**NOT RUN — do this first when resuming:**
-- `benchmarks/order_convergence.py` (was running when the session ended; may have
-  completed — check, and re-run if its log is absent or truncated)
+**THE RESULT WORTH HAVING.** `order_convergence` is the script whose output feeds the
+pasted §10.2/10.3 tables, and it is the sharpest test of the campaign's one durable
+finding. The `agrees from` column is **identical for the third time**, across three
+structurally different circuits:
 
-It is the important one: it regenerates the §10.2/10.3 tables in
-`doc/distortion_ddd_conclusions.md` and recomputes `v_turn`, which moves whenever the
-driving-point conductance at `s0_e1` moves — and the compensation moved it.
+| amp (V) | unstable 127 | repaired 127 | **compensated 136** |
+|---|---|---|---|
+| 0.01 | U^5 | U^5 | **U^5** |
+| 0.03 | U^5 | U^5 | **U^5** |
+| 0.1 | U^5 | U^5 | **U^5** |
+| 0.3 | U^7 | U^7 | **U^7** |
+| 1 | U^9 | U^9 | **U^9** |
+| 3 | not by U^13 | not by U^17 | **not by U^17** |
 
-Run it as: `cd benchmarks && PYTHONPATH=<repo>:<repo>/benchmarks MPLBACKEND=Agg python3 -u <script>.py > log 2>&1`
+The scale moved, as it must: `v_turn` 5.3656e-02 -> **5.3621e-02 V** (`g` at `s0_e1`
+4.3184e-04 -> 4.3128e-04 S), node voltages down ~19%, and `% of v_turn` now 0/0/1/3/11/32
+against 0/0/1/4/13/39. The `kk` sweep holds its shape too: U^7 at 3%, none by U^17 at 34%,
+and `kk = 50` still correctly flagged **UNPHYSICAL at 340% of v_turn**.
+
+**So the claim has now survived two independent perturbations of the circuit underneath
+it** — which is the strongest form the section-7 finding has taken: it measures the series
+against the cubic's own validity limit, and is invariant to what the matrix does.
+
+Run any of these as:
+`cd benchmarks && PYTHONPATH=<repo>:<repo>/benchmarks MPLBACKEND=Agg python3 -u <script>.py > log 2>&1`
 
 ### 4.2 T3 — the doc rewrite for the 136-unknown fixture, NOT STARTED
 

@@ -173,7 +173,12 @@ def main():
 
     done = sorted(built)
     print()
-    print('== Fully symbolic nonlinear analysis of the leapfrog, 127 unknowns ==')
+    ## system.dim, NOT a literal.  This header read "127 unknowns" while printing a
+    ## 136-unknown run, because the fixture gained nine nodes from GBW compensation and
+    ## a pasted number is correct exactly once -- in the script whose output is pasted
+    ## into doc/distortion_ddd_conclusions.md, which is the worst place for it.
+    print('== Fully symbolic nonlinear analysis of the leapfrog, %d unknowns =='
+          % system.dim)
     print('Third harmonic at the output; one symbolic build per order, evaluated')
     print('at each amplitude.  d(U^k) = |H3(U^k) - H3(U^k-2)| / |H3(U^k)|.')
     print()
