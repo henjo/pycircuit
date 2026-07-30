@@ -180,6 +180,51 @@ determinant `D_l`, each stamp's cofactor combination, and the top diagram.
 sum, because substituting stamps into top-level groups multiplies out. A flat
 expression is not a goal of this stage and its absence is not a failure.
 
+## Stage 6 — rank elements, not terms (declared 2026-07-30)
+
+From §15d/§14c of the reasoning document: both literature sweeps converge on
+*stop accounting error per term; evaluate the candidate answer*. Hu, Shi, Tai &
+Lee (ISCAS 2015) rank circuit **elements** by the exact error their removal
+causes, and their output matched textbook hand-derived formulas. Guerra et al.
+(DATE 2000) score against a global numerical reference for the same reason.
+
+`κ` cannot enter such a ranking: nothing sums term magnitudes, so the wall this
+plan has been climbing is simply not in the path. And it is *simplification
+before generation* — fewer symbols means a smaller diagram for everything
+downstream.
+
+**Adapted to an MNA matrix rather than a graph.** Their Short/Open pair are GPDD
+edge operations. Here "Open" is setting a parameter to zero, which is immediate;
+"Short" (parameter to infinity, i.e. node merging) is **not implemented** and is
+stated as a limitation rather than skipped silently. So this is the weaker half of
+their method, deliberately.
+
+**The composition trap is designed out.** Individual removal errors must not be
+added — §11 measured what that does. Selection is greedy with **exact joint
+re-evaluation** after every accepted removal, which is the whole point.
+
+**Gate, declared before running.** On `ua741` with all 24 transistor `gm`
+symbolic, error measured as the **worst relative error of the transfer function
+over a logarithmic frequency sweep** (sampled, and stated as sampled — the
+literature is unanimous that a single frequency is not enough):
+
+1. The ranking completes in under 5 minutes.
+2. Report how many of the 24 symbols can be dropped at joint error ≤ 1% and
+   ≤ 5%, with the joint error measured exactly at every step, never summed.
+3. **The decisive one:** report `κ` of the simplified circuit's determinant
+   against the full one. **PASS if `κ` falls by ≥ 10×** — that would mean element
+   pruning helps the downstream term ranking, which is why it is being tried here
+   and not merely as a circuit-reduction tool.
+4. Report the surviving symbols **by name**, and report the diagram size and term
+   count of the simplified circuit. A designer-readable answer is the deliverable.
+5. Report whether the greedy order's joint error is monotone. Non-monotonicity is
+   informative, not a failure — but it must be looked at, because it is the
+   signature §11 found.
+
+**Declared in advance:** it is entirely possible that `κ` barely moves while the
+symbol count drops a lot. That would still be a useful circuit-reduction result
+and a *failure* of gate 3, and it must be reported as both.
+
 ## What would make this whole plan fail
 
 - Stage 0 finds uniform cancellation. Most likely single outcome, and the
@@ -210,6 +255,7 @@ Scripts: `benchmarks/cancellation_profile.py` (stage 0),
 | 3 — the leapfrog | **Count and accuracy gates PASS; the interpretability gate FAILS, as predicted.** 127 unknowns, 16 symbols, 536 nonzeros; 111 levels, top diagram 16×16 / 1847 vertices / **374 608 terms**. `κ` of the *top* diagram is only **13.8** nominal and **160** degraded. `tol=1e-3` reached with **181 groups** (0.07 s) and **221** at degraded; `tol=1e-8` with 821 / 1248. Verified against `DDD.eval` (1.3e-15) and against `numpy.linalg.det` of the reduced matrix (4.1e-15). **But every symbol in every group is a level stamp (`_lvl110_*`); not one device parameter appears.** |
 | 5 — device parameters back in | **Gate 5 PASSED, gate 4 FAILED, and the failure is the result.** Device parameters are back: the expressions name `gm_s0_q2`, `gm_s0_q17`, `gm_s1_q2`, … — identified transistors in identified stages, which is the clause stage 3 failed. Gate 3 confirmed the motivating diagnosis (`κ = 1.1e3` per block vs `13.8` at the top). **But the composed error is not controlled by the per-piece tolerances.** At degraded `gm` it never reaches 1e-2 and moves *non-monotonically*: 1.47e-2 → **1.13e-1** → 1.48e-2 as every tolerance is tightened 4× then 5×, while the operation count runs 1.6M → 3.2M → 5.5M. Cause: each reduced entry sums 25 heavily-cancelling cofactors, so 25 individually-small residuals combine unpredictably. **Hierarchical symbolic approximation is not compositional.** Verified throughout against `numpy.linalg.slogdet` of the full 127×127 matrix. Details: `cancellation_ranking_conclusions.md` §11. |
 | 5 — first attempt | **Gate 2 FAILED, and the failure was narrow.** Sequential five-block suppression does *not* give device-level cofactors: `_suppress` renames **every** nonzero of the reduced matrix, so block 1's `A_ii` came back over `_lvl0_*` stamps. The topology claim it rested on is nonetheless **verified** — 0 entries couple one amplifier's internals to another's — so the blocks are genuinely independent and can be eliminated **in parallel against the original matrix** instead of in sequence. Also measured: the five-block hierarchy is **22 163 vertices / 1 076 448 top terms** against 1 958 / 374 608 for 111 single-node levels, so naming the blocks costs ~11× in representation. Retried with the parallel construction, which worked — see the row above and `cancellation_ranking_conclusions.md` §10. |
+| 6 — rank elements, not terms | **Gates 1, 2, 5 pass; gate 3 FAILS and gate 4 fails informatively.** 5 of 24 `gm` symbols drop at 1% joint error, 7 at 5%, in 0.3-0.5 s, greedy order monotone, survivors named, bias devices leaving first exactly as a designer would expect. **But the diagram is bit-for-bit unchanged** — 1040 vertices, 2 773 885 terms — and `κ` moves 1.00× / **0.61×** (worse). Cause: a compact-symbol DDD has one vertex per matrix *entry*, and zeroing a device removes an *addend inside* an entry, so no vertex disappears. **Element pruning and the compact-symbol representation do not compose.** Useful as circuit reduction and design insight; not a route to a smaller symbolic expression. Details: `cancellation_ranking_conclusions.md` §16. |
 | 4 — library API | **Done.** `DDD.cancellation`, `DDD.subdiagram_values`, `DDD.minor_positions`, `DDD.approximate_groups` in `ddd.py`; twelve tests in `test_ddd.py`; three new subsections of `doc/src/circuit/ddd.rst` with every number generated at build time. `DDD.approximate` now **warns** when it returns without meeting `tol`. |
 
 ### Three results worth carrying forward

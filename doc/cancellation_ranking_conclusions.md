@@ -812,3 +812,70 @@ in either sweep did. "Cancellation-free" guarantees no identical-opposite pairs;
 it does not guarantee `κ ≈ 1` once controlled sources make tree-pair products
 signed. **That single number would settle the architecture question**, and it is
 currently unknown.
+
+## 16. Stage 6: element ranking works, and does nothing for term ranking
+
+Measured `benchmarks/element_ranking.py`, µA741 with all 24 transistor `gm`
+symbolic, worst relative error of the transfer function over 21 points from 10 Hz
+to 1 MHz, greedy with exact joint re-evaluation at every step.
+
+| gate | result |
+|---|---|
+| 1 — under 5 min | **PASS** — 71 s to split the matrix, 0.3-0.5 s to rank |
+| 2 — how many symbols drop | **5 of 24** at 1% joint error, **7 of 24** at 5% |
+| 3 — `κ` falls by ≥ 10× | **FAIL** — 1.00× at 1%, and **0.61×** at 5%, i.e. `κ` got *worse* |
+| 4 — named survivors, smaller diagram | names yes; **diagram identical**: 1040 vertices and 2 773 885 terms in both cases |
+| 5 — monotone joint error | **yes**, in both runs |
+
+The order is exactly what a designer would expect — `gm_q22`, `gm_q24`, `gm_q21`,
+`gm_q15`, `gm_q13` go first, at costs from 1.7e-08 to 2.0e-03, and they are bias
+devices. The method is fast, the answer is readable, and the greedy joint error is
+monotone, so the §11 composition trap really is designed out by re-evaluating
+exactly.
+
+**But gate 3 failed, and gate 4 failed in a way that explains why.** The diagram
+of the "simplified" circuit is *bit-for-bit the same size* as the full one. The
+reason is structural and it generalises:
+
+> A compact-symbol DDD has one vertex per **matrix entry**, and an entry is a sum
+> like `gm_q22 + g_o + s*c`. Setting one device's parameter to zero removes an
+> *addend inside* an entry; the entry stays nonzero. So the matrix's sparsity
+> pattern, the diagram, and the term count are all untouched.
+
+**Element pruning and the compact-symbol representation do not compose.** Dropping
+seven devices changed the term count by nothing at all and moved `κ` in the wrong
+direction. This was declared as a possible outcome before the run — *"it is
+entirely possible that `κ` barely moves while the symbol count drops a lot"* — and
+it is what happened.
+
+### What this means, and it ties the whole document together
+
+Three ingredients have now each been measured in isolation, and **each one fails
+or backfires alone**:
+
+| ingredient | alone | why |
+|---|---|---|
+| one symbol per device (full symbols) | `κ` **worse** | §15c: `|a+b| <= |a|+|b|`, so expanding entries only adds absolute mass |
+| de-cancellation | untested here | removes the mass that expansion added; §15a |
+| element pruning | diagram **unchanged** | §16: zeroing an addend inside a composite entry removes no vertex |
+
+They are a **package**, and Tan & Shi's pipeline contains all three for that
+reason: per-device symbols make elements individually addressable *and* inflate
+the term count, de-cancellation removes the inflation, and element pruning then
+actually deletes vertices. Adopting any one of them piecemeal — which is what this
+project did three times over — cannot work, and now there is a measurement for
+each.
+
+**So the revised order of work in §15e is itself revised.** Element ranking is
+worth keeping as a *circuit-reduction and design-insight* tool: 5-7 devices
+identified as irrelevant, with an exact error, in under a second. It is **not** a
+route to a smaller symbolic expression in this representation, and it should not
+be sold as one. The next step that could actually pay is the full-symbol
+construction *with* de-cancellation — items 2 of §15e — because that is the
+smallest subset of the package that is self-consistent.
+
+*Reconsider-if:* the `Short` operation (parameter to infinity / node merging),
+which was not implemented here, does collapse nodes and therefore *does* shrink
+the matrix. Hu et al. use Short and Open together, and it is plausible that the
+diagram reduction they report comes mostly from Short. That is the cheapest
+remaining test of this route and it was left undone.
