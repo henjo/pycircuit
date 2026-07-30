@@ -155,3 +155,69 @@ precisely than any step that followed it.
    pycircuit's fixed per-node reference, a node carrying no signal has its
    tolerance collapse to the absolute floor, which is what forced the absolute
    floor upward in the first place. See ``doc/transient_work_plan.md``.
+
+Performance notes: where the time actually goes
+================================================
+
+This section exists so the next person does not re-derive it. The measurements are
+from the 139-unknown leapfrog benchmark
+(``benchmarks/transient_stage2.py``); reproduce with ``--reps N`` rather than
+trusting the numbers, and see the caution about timing on a loaded machine below.
+
+**Assembly dominates, not the linear solve.** Before the stage-2 work, building
+:math:`i`, :math:`q`, :math:`u`, :math:`G` and :math:`C` was about **96%** of a
+transient's runtime and the linear solve about **2%**. This is the opposite of the
+intuition carried over from large sparse simulators, and it has a consequence worth
+stating plainly: **optimising the matrix solver first would have been wasted work.**
+At :math:`n \sim 10^2` the solve is already negligible.
+
+Three changes, each behaviour-preserving:
+
+**Hoisting the per-element probes.** ``hasattr(self.toolkit, 'add_at')`` was
+evaluated once per element per stamp. ``NumericToolkit`` has no ``add_at``, so each
+of those went through ``Toolkit.__getattr__``, which *formats an error message and
+raises* — hundreds of thousands of exceptions per run to answer a question whose
+answer cannot change during a solve. Attribute-lookup machinery was about **34%** of
+total runtime; it is now under **5%**.
+
+**Scattering once instead of per element.** ``np.add.at`` is numpy's unbuffered
+scatter and is slow by design (it exists to handle duplicate indices correctly).
+Calling it once per element pays that cost per element. Collecting the indices and
+values and accumulating once with ``np.bincount`` is the *same sum in the same
+order* — both walk the index array in sequence and add duplicates as they are met —
+so the result is bit-identical, not merely equal to rounding. ``bincount`` is
+real-only, so complex and object dtypes keep the ``np.add.at`` path.
+
+**Not recomputing the charge vector.** The step controller and the history roll each
+called ``cir.q(x)`` at a state the assembly had *just* evaluated. Measured 5.08
+:math:`q` assemblies per accepted step against 3.06 for every other stamp; the
+difference was exactly those two redundant calls. They are now served from a
+value cached against the state that produced it.
+
+**BLAS threads.** Circuit matrices are small enough that a threaded LAPACK spends
+more time on thread overhead than on arithmetic — and the cost is not confined to
+the solve, it is spread across the many small array operations in assembly. Limiting
+BLAS to one thread measured **1.72x** on the whole transient. pycircuit will do this
+itself if :mod:`threadpoolctl` is importable (see
+:func:`~pycircuit.circuit.transient.blas_single_thread_available`); it is an optional
+dependency, and without it the same win is available from the environment::
+
+    OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 python your_script.py
+
+.. warning::
+
+   **Timing on this class of machine is unreliable at the single-sample level.**
+   Individual tests have been observed to vary by up to :math:`\pm 57\%` between
+   runs, and a suite comparison once read as a 35% regression that controlled
+   measurement showed to be 3%. Take the **minimum of several repetitions**, and
+   check any claimed speedup against something that does not depend on the clock —
+   step count, assembly count, or profile call count — before believing it.
+
+.. note::
+
+   One consequence of the BLAS thread limit: a threaded LAPACK reduces in a
+   different order, so results differ in the last bits between one and many threads
+   (measured: identical step count, :math:`\max|\Delta v| = 2.16 \times 10^{-15}` V).
+   That is floating-point non-associativity in the BLAS, not a change of method, but
+   it does mean a run is only bit-reproducible against another run with the same
+   thread count.

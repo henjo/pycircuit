@@ -1300,22 +1300,31 @@ class SubCircuit(Circuit):
             element.update_iparv(self.iparv, ignore_errors=True)
         
     def _add_element_submatrices(self, methodname, x, args, params_tree=None):
+        ## STAGE 2b -- see the note on `_add_element_subvectors`.  Same two changes:
+        ## the per-element `hasattr`/`getattr` probes are hoisted, and the scatter is
+        ## done once at the end instead of once per element.
+        import numpy as np
+
         n = self.n
-        
+        toolkit = self.toolkit
+
         # Check if toolkit prefers sparse assembly directly
-        build_sparse = hasattr(self.toolkit, 'build_sparse')
-        
+        build_sparse = hasattr(toolkit, 'build_sparse')
+        has_add_at = hasattr(toolkit, 'add_at')
+        groups = getattr(self, '_eval_groups', None)
+        idxmap = self._map_indices_2d
+        elementnodemap = self.elementnodemap
+
         if build_sparse:
             all_data, all_rows, all_cols = [], [], []
         else:
-            lhs = self.toolkit.zeros((n,n))
+            lhs = toolkit.zeros((n,n))
 
         ## Elements the toolkit can evaluate in bulk are stamped in one go; the
         ## loop below then skips them.  A toolkit that cannot batch returns
         ## None and everything goes through the loop.
-        batched = self.toolkit.batched_contributions(
-            self, getattr(self, '_eval_groups', None), methodname, x, args,
-            params_tree, ndim=2)
+        batched = toolkit.batched_contributions(
+            self, groups, methodname, x, args, params_tree, ndim=2)
         if batched is not None:
             values, (rows, cols) = batched
             if build_sparse:
@@ -1323,45 +1332,45 @@ class SubCircuit(Circuit):
                 all_rows.append(rows)
                 all_cols.append(cols)
             else:
-                lhs = self.toolkit.add_at(lhs, (rows, cols), values)
+                lhs = toolkit.add_at(lhs, (rows, cols), values)
+
+        pending_rc = []
+        pending_val = []
 
         for instance, element in self.elements.items():
-            if getattr(self, '_eval_groups', None) and element.__class__ in self._eval_groups:
+            if groups and element.__class__ in groups:
                 continue # Handled by vectorization above
-                
-            nodemap = self.elementnodemap[instance]
+
+            nodemap = elementnodemap[instance]
 
             if x is not None:
                 subx = x[nodemap]
                 try:
                     rhs = getattr(element, methodname)(subx, *args)
                 except Exception as e:
-                    raise e.__class__(str(e) + ' at element ' + str(element) 
+                    raise e.__class__(str(e) + ' at element ' + str(element)
                                       + ', args='+str(args))
             else:
                 rhs = getattr(element, methodname)(*((None,) + tuple(args)))
-                
-            if instance in self._map_indices_2d:
-                rows, cols = self._map_indices_2d[instance]
-                
-                if build_sparse:
-                    import numpy as np
-                    rhs_flat = np.asarray(rhs).flatten()
-                    all_data.append(rhs_flat)
-                    all_rows.append(rows)
-                    all_cols.append(cols)
-                elif hasattr(self.toolkit, 'add_at'):
-                    rhs_flat = self.toolkit.reshape(rhs, (-1,)).flatten()
-                    lhs = self.toolkit.add_at(lhs, (rows, cols), rhs_flat)
-                else:
-                    import numpy as np
-                    rhs_flat = np.asarray(rhs).flatten()
-                    try:
-                        np.add.at(lhs, (rows, cols), rhs_flat)
-                    except TypeError:
-                        # Fallback for symbolic expressions into numeric lhs
-                        lhs = lhs.astype(object)
-                        np.add.at(lhs, (rows, cols), rhs_flat)
+
+            rc = idxmap.get(instance)
+            if rc is None:
+                continue
+            rows, cols = rc
+
+            if build_sparse:
+                all_data.append(np.asarray(rhs).flatten())
+                all_rows.append(rows)
+                all_cols.append(cols)
+            elif has_add_at:
+                rhs_flat = toolkit.reshape(rhs, (-1,)).flatten()
+                lhs = toolkit.add_at(lhs, (rows, cols), rhs_flat)
+            else:
+                pending_rc.append((rows, cols))
+                pending_val.append(np.asarray(rhs).flatten())
+
+        if pending_rc:
+            lhs = self._scatter_2d(lhs, pending_rc, pending_val, n)
 
         if build_sparse:
             import numpy as np
@@ -1376,41 +1385,126 @@ class SubCircuit(Circuit):
         return lhs
 
     def _add_element_subvectors(self, methodname, x, args, dtype=None, params_tree=None):
-        n = self.n
-        lhs = self.toolkit.zeros(n, dtype=dtype)
+        ## STAGE 2b.  Two changes, both mechanical, neither touching the arithmetic:
+        ##
+        ## 1. HOIST THE PER-ELEMENT PROBES.  `hasattr(self.toolkit, 'add_at')` and
+        ##    `getattr(self, '_eval_groups', None)` were evaluated once per element
+        ##    per stamp.  `NumericToolkit` has no `add_at`, so every one of those
+        ##    `hasattr` calls went through `Toolkit.__getattr__`, which formats an
+        ##    error message and raises -- hundreds of thousands of times per run,
+        ##    purely to answer a question whose answer cannot change during a solve.
+        ##
+        ## 2. SCATTER ONCE.  `np.add.at` is a slow unbuffered ufunc path; calling it
+        ##    per element repeats that cost per element.  Collecting the indices and
+        ##    values and accumulating once with `np.bincount` is the same sum in the
+        ##    same order (bincount accumulates in index order, and duplicate indices
+        ##    are summed identically), and it is a single pass in C.
+        ##
+        ## `bincount` only handles real floating point, so complex and object dtypes
+        ## keep the `np.add.at` path.  That is not a fallback for correctness -- both
+        ## paths are exact -- it is a dtype restriction of `bincount`.
+        import numpy as np
 
-        batched = self.toolkit.batched_contributions(
-            self, getattr(self, '_eval_groups', None), methodname, x, args,
-            params_tree, ndim=1)
+        n = self.n
+        toolkit = self.toolkit
+        lhs = toolkit.zeros(n, dtype=dtype)
+        has_add_at = hasattr(toolkit, 'add_at')
+        groups = getattr(self, '_eval_groups', None)
+        idxmap = self._map_indices_1d
+        elementnodemap = self.elementnodemap
+
+        batched = toolkit.batched_contributions(
+            self, groups, methodname, x, args, params_tree, ndim=1)
         if batched is not None:
             values, indices = batched
-            lhs = self.toolkit.add_at(lhs, indices, values)
+            lhs = toolkit.add_at(lhs, indices, values)
+
+        pending_idx = []
+        pending_val = []
 
         for instance, element in self.elements.items():
-            if getattr(self, '_eval_groups', None) and element.__class__ in self._eval_groups and x is not None:
+            if groups and element.__class__ in groups and x is not None:
                 continue # Handled by vectorization above
-                
+
             if x is not None:
-                subx = x[self.elementnodemap[instance]]
+                subx = x[elementnodemap[instance]]
                 rhs = getattr(element, methodname)(subx, *args)
             else:
                 rhs = getattr(element, methodname)(*args)
 
-            if instance in self._map_indices_1d:
-                indices = self._map_indices_1d[instance]
-                
-                if hasattr(self.toolkit, 'add_at'):
-                    rhs_flat = self.toolkit.reshape(rhs, (-1,)).flatten()
-                    lhs = self.toolkit.add_at(lhs, indices, rhs_flat)
-                else:
-                    import numpy as np
-                    rhs_flat = np.asarray(rhs).flatten()
-                    try:
-                        np.add.at(lhs, indices, rhs_flat)
-                    except TypeError:
-                        lhs = lhs.astype(object)
-                        np.add.at(lhs, indices, rhs_flat)
+            indices = idxmap.get(instance)
+            if indices is None:
+                continue
 
+            if has_add_at:
+                rhs_flat = toolkit.reshape(rhs, (-1,)).flatten()
+                lhs = toolkit.add_at(lhs, indices, rhs_flat)
+            else:
+                pending_idx.append(indices)
+                pending_val.append(np.asarray(rhs).flatten())
+
+        if pending_idx:
+            lhs = self._scatter_1d(lhs, pending_idx, pending_val, n)
+
+        return lhs
+
+    @staticmethod
+    def _scatter_2d(lhs, pending_rc, pending_val, n):
+        """Accumulate collected ((rows, cols), value) pairs into ``lhs`` in one pass.
+
+        ``np.add.at(lhs, (rows, cols), v)`` on a 2-D array is exactly
+        ``bincount(rows*n + cols, weights=v)`` reshaped: both walk the index array
+        in order and sum duplicates as they are met, so the floating-point result is
+        identical, not merely equal to within rounding.
+
+        This is only reached when the toolkit has no ``add_at``, and such a toolkit
+        also returns ``None`` from ``batched_contributions`` -- so ``lhs`` is still
+        the zero matrix here.  That is what makes the single ``lhs +=`` at the end
+        exact rather than an accumulation in a different order.
+        """
+        import numpy as np
+
+        rows = np.concatenate([rc[0] for rc in pending_rc])
+        cols = np.concatenate([rc[1] for rc in pending_rc])
+        val = np.concatenate(pending_val)
+
+        if val.dtype == object or lhs.dtype == object:
+            if lhs.dtype != object:
+                lhs = lhs.astype(object)
+            np.add.at(lhs, (rows, cols), val)
+            return lhs
+        if np.iscomplexobj(val) or np.iscomplexobj(lhs):
+            if not np.iscomplexobj(lhs):
+                lhs = lhs.astype(complex)
+            np.add.at(lhs, (rows, cols), val)
+            return lhs
+
+        flat = np.asarray(rows, dtype=np.intp) * n + np.asarray(cols, dtype=np.intp)
+        lhs += np.bincount(flat, weights=val, minlength=n * n)[:n * n].reshape(n, n)
+        return lhs
+
+    @staticmethod
+    def _scatter_1d(lhs, pending_idx, pending_val, n):
+        """Accumulate collected (index, value) pairs into ``lhs`` in one pass."""
+        import numpy as np
+
+        idx = np.concatenate(pending_idx)
+        val = np.concatenate(pending_val)
+
+        ## `bincount` is real-only.  Object dtype additionally has to widen `lhs`,
+        ## exactly as the per-element path did.
+        if val.dtype == object or lhs.dtype == object:
+            if lhs.dtype != object:
+                lhs = lhs.astype(object)
+            np.add.at(lhs, idx, val)
+            return lhs
+        if np.iscomplexobj(val) or np.iscomplexobj(lhs):
+            if not np.iscomplexobj(lhs):
+                lhs = lhs.astype(complex)
+            np.add.at(lhs, idx, val)
+            return lhs
+
+        lhs += np.bincount(idx, weights=val, minlength=n)[:n]
         return lhs
 
     def find_class_instances(self, instance_class):

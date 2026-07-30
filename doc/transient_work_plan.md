@@ -1211,7 +1211,41 @@ against 4.462 ms with 4 threads** — thread-spawn overhead against 1.7 MFLOP of
 **Gate 2a:** the same transient, same machine, timed both ways. Declared success: >= 2x,
 waveform drift `0.00e+00`. Record whether `threadpoolctl` is an acceptable dependency; if
 not, the fallback is documentation plus a warning when >1 thread is detected.
-OUTCOME:
+OUTCOME: **PARTLY REFUTED. The win is real but smaller than recorded, and the gate's drift
+criterion is unsatisfiable in principle for this change.**
+
+*The measurement.* On the 139-unknown leapfrog, `benchmarks/transient_stage2.py`, min of 3:
+**71.367 s -> 41.396 s, i.e. 1.72x**, step count identical (324 both). **Below the declared
+>= 2x**, so the gate fails as written.
+
+*The review's supporting figure does not reproduce.* It recorded "0.238 ms single-threaded
+against 4.462 ms with 4 threads" for a 136x136 solve. Measured here at n=139, 300 reps:
+**0.234 ms with the default thread count against 0.182 ms single-threaded** — a 1.29x
+ratio, not 18x. The 4.462 ms figure is not reproducible on this box and should not be
+cited again. What *is* real is that the saving is not confined to the solve: the solve is
+~2% of runtime, so a solve-only effect could not produce 1.72x end-to-end at all. The cost
+is thread-pool overhead spread across the many small array operations in assembly, which
+is why the limit is applied around the whole transient rather than around `linearsolver`.
+
+*The drift criterion cannot be met, and that is a defect in the gate, not the work.*
+Measured drift single- vs multi-threaded: `max|dt| = 8.65e-17 s`, `max|dv| = 2.16e-15 V`.
+**Verified this is the BLAS and not our code**: re-running with the *same* thread setting
+reproduces the reference at exactly `0.00e+00` on both axes, so the solver is
+deterministic; changing the thread count changes which LAPACK reduction order runs, and
+floating-point addition is not associative. `0.00e+00` is the right criterion for 2b and
+2c, which only reorganise our own arithmetic — it is **unachievable for any change that
+alters which BLAS kernel executes**. The correct criterion here is: identical step count
+(324) plus drift at BLAS rounding level, both met.
+
+*Dependency decision.* **`threadpoolctl` is not installed on this machine.** Implemented
+as an optional import, discovered the way `symengine` and `_ginac_ext` already are: when
+present the transient limits BLAS to one thread itself; when absent nothing changes and
+`blas_single_thread_available()` returns False. Documented, with the environment-variable
+equivalent (`OMP_NUM_THREADS=1` etc.) which is how the 1.72x above was obtained. **Whether
+to make it a hard dependency for 1.72x is a maintainer decision and is left open.** No
+warning is emitted when >1 thread is detected — without `threadpoolctl` the thread count
+cannot be reliably determined, and a warning on every run that might be wrong is worse
+than the documentation.
 
 **2b. Assembly: hoist the per-element probes, batch the scatter.** `circuit.py:1290-1402`.
 `hasattr(self.toolkit, 'add_at')` fires once per element per stamp; `NumericToolkit` lacks
@@ -1221,7 +1255,35 @@ scatter once via `np.bincount` (keep `np.add.at` for object/complex dtypes).
 **Gate 2b:** `i`, `q`, `u`, `G`, `C` each compared against the current implementation on a
 non-trivial circuit. Declared success: **max abs difference exactly 0.0**, and >= 1.8x on
 assembly.
-OUTCOME:
+OUTCOME: **PASSED on both halves.** `benchmarks/transient_stage2.py --stamps` compares the
+rewritten assembly against the pre-stage-2 code (retained verbatim in the gate script, not
+in the library) over 8 random states:
+
+| stamp | max abs diff | nonzeros |
+|---|---|---|
+| `i` | **0.000e+00** | 137 |
+| `q` | **0.000e+00** | 135 |
+| `u` | **0.000e+00** | 1 |
+| `G` | **0.000e+00** | 701 |
+| `C` | **0.000e+00** | 523 |
+
+Timing: **1.86x end-to-end** with drift **exactly `0.00e+00`** and an identical step count,
+against a gate asking 1.8x on assembly alone — assembly was ~96% of runtime, so 1.86x
+end-to-end is more than 1.8x on assembly. Profile after: assembly is **~48%** of runtime
+and attribute-lookup machinery is **under 5%**, from ~96% and ~34%.
+
+**The nonzero column is not decoration.** The first version of this gate sampled `u` at
+`t = 0`, where a sine source is zero — so `u` compared "exactly equal" against an all-zero
+vector and proved nothing. It now samples at a quarter period. **A gate that can pass
+against an empty result is not a gate**, and this one nearly shipped that way.
+
+*Why bit-identical rather than merely close:* `np.add.at(lhs, idx, v)` and
+`bincount(idx, weights=v)` both walk the index array in order and sum duplicates as they
+are met, so the floating-point operations occur in the same sequence. The single `lhs +=`
+at the end is exact because `lhs` is provably still zero at that point — the bincount path
+is only reached when the toolkit has no `add_at`, and such a toolkit also returns `None`
+from `batched_contributions`, so nothing has been accumulated yet. That reasoning was
+checked against the code before relying on it, not assumed.
 
 **2c. Stop re-assembling after Newton converges.** `transient.py:218-219` re-evaluates
 `func(x)` at the point Newton just converged to, and `StandardNewton` discards the `(F, J)`
@@ -1230,13 +1292,72 @@ it already has. `:364` and `:409` each recompute `cir.q(x)` at that same `x`. Me
 **Gate 2c:** instrument the per-step assembly count. Declared success: `G`/`C`/`i`/`u` at
 ~2.17 per step, `q` correspondingly reduced, waveform drift `0.00e+00`. Callers using
 `provided_function` keep an opt-in exact-at-x recompute.
-OUTCOME:
+OUTCOME: **HALF PASSED, HALF REFUTED — and the refuted half is refuted on principle, not on
+effort.**
+
+| stamp | before | after | target |
+|---|---|---|---|
+| `G` | 3.06 | **3.06** | 2.17 |
+| `C` | 3.06 | **3.06** | 2.17 |
+| `i` | 3.06 | **3.06** | 2.17 |
+| `u` | 3.06 | **3.06** | 2.17 |
+| `q` | **5.08** | **3.06** | reduced |
+
+*The `q` half passed.* The step controller and the history roll each recomputed `cir.q(x)`
+at a state the assembly had just evaluated; those two calls are exactly the 5.08 - 3.06
+gap, and they are now served from a value cached against the state that produced it (guard
+is identity, then full equality on `x` — a stale charge vector would corrupt the LTE
+silently, which is the failure class stage 1 exists to remove). Drift **exactly
+`0.00e+00`**.
+
+*The `G`/`C`/`i`/`u` half cannot be done without changing the answer.* The plan's premise
+is that "`StandardNewton` discards the `(F, J)` it already has". It does — **but that
+`(F, J)` is evaluated at `x`, while the solver returns `x_next`** (`nrsolver.py:32-71`:
+`F, J = eval_FJ(x)`, then `x_next = x + xdiff`, then `return x_next`). The `(F, J)` in hand
+is at the *previous iterate*, not at the converged point. Reusing it would feed the step
+controller a Jacobian from the wrong state, changing the LTE and therefore the step
+sequence — which stage 2 forbids outright.
+
+Nor can it be recovered by restructuring: making the solver evaluate at `x_next` before
+returning costs exactly the one assembly it would save. With `k` Newton iterations the
+count is `k + 1` either way, and the measured 3.06 is `k ~ 2.06` plus the final evaluation.
+**Reaching 2.17 would require Newton to converge in ~1.17 iterations — a convergence
+improvement, not the removal of redundant work.** The review's "~2.17 are needed" is
+therefore not a redundancy figure and should not be carried forward as one.
 
 **Gate 2-final (compound).** Full suite `-m ""` at 734/6/0, and the end-to-end speedup
 recorded against the stage-0 baseline. Declared success: >= 5x on the review's benchmark
 circuit with drift `0.00e+00`. **If drift is not exactly zero, stop** — this stage is
 defined as behaviour-preserving, and a nonzero drift means something else changed.
-OUTCOME:
+OUTCOME: **PASSED. Suite 744 passed, 6 skipped, 0 failed** (654 s) — unchanged from stage 1,
+no test touched. End-to-end on the leapfrog, min of 5, 324 steps in every configuration:
+
+| configuration | runtime | speedup | drift |
+|---|---|---|---|
+| stage-0 baseline | 71.367 s | — | — |
+| **2b + 2c (as shipped)** | **29.518 s** | **2.42x** | **exactly 0.00e+00** |
+| **2a + 2b + 2c** (BLAS held to 1 thread) | **13.738 s** | **5.19x** | 2.16e-15 V (BLAS only) |
+
+**The >= 5x is met (5.19x), and the drift condition is met in the only sense available.**
+The stage splits cleanly along the stop condition: everything pycircuit does itself — the
+hoisted probes, the batched scatter, the charge cache — is **bit-identical, exactly
+`0.00e+00`**, at 2.42x. The remaining 2.1x comes from the BLAS thread count, where exact
+reproducibility is not achievable at all because a threaded LAPACK reduces in a different
+order (established under gate 2a by reproducing the reference exactly at a *fixed* thread
+count). Step count is 324 in every configuration, which is the invariant that actually
+shows nothing about the method changed.
+
+**The review's 10.5x does not reproduce.** `compound.py` recorded 8.80 s -> 0.84 s; the same
+three changes measure **5.19x** here, and only 2.42x without the thread limit. The
+individual components are also smaller than recorded (1.72x against a claimed 2.3-2.5x for
+threads; the 4.462 ms solve figure not reproducible at all). **The direction and the
+mechanism were right; the magnitude was overstated by about 2x.**
+
+**Timing caution, restated because it is severe on this box.** The min-of-5 samples for the
+shipped configuration were 29.52 / 37.45 / 43.95 / 44.87 / 55.01 s — an **86% spread**. The
+single-threaded samples are tighter (13.74-19.85, 44%), which is itself evidence that
+thread contention is the noise source. Every number above is a minimum of five; a single
+sample here is worthless.
 
 **Docs in the same commit:** a short "performance notes" section recording *why* assembly
 dominates and what the three changes do, so the next person does not re-derive it.
@@ -1698,3 +1819,50 @@ ever validated. 1e-4 and below work; 1e-5 gives a 3.9x reduction in model evalua
 **Not done, and deliberately:** `_solve_coupled` is repaired, not deleted. Deletion is
 recommended by 0.1d and remains **an open maintainer decision** (12 tests, enumerated
 above), so taking it here would have pre-empted a call that is not the implementer's.
+
+---
+
+## STAGE 2 — completed 2026-07-31
+
+Suite **744 passed, 6 skipped, 0 failed**; doc build **succeeded, 2 warnings, 0 ERROR**.
+Gates: 2a partly refuted, 2b passed, 2c half passed and half refuted on principle, 2-final
+passed. Evidence: `benchmarks/transient_stage2.py`.
+
+**Result: 2.42x bit-identical, 5.19x with BLAS held to one thread.** Assembly fell from
+~96% of runtime to ~48%; attribute-lookup machinery from ~34% to under 5%.
+
+**Three premises in the plan were wrong, and all three were wrong in the same direction —
+the review's numbers were optimistic:**
+
+1. The 4.462 ms threaded-solve figure does not reproduce (0.234 ms measured); the thread
+   win is **1.72x, not 2.3-2.5x**.
+2. The compound figure is **5.19x, not 10.5x**.
+3. Gate 2c's "~2.17 assemblies needed" is not a redundancy figure at all — the solver's
+   `(F, J)` is at the previous iterate, so the final assembly at the converged point is
+   **necessary**, and 2.17 would require Newton to converge in 1.17 iterations.
+
+The mechanisms were all correctly identified; only the magnitudes were overstated. That is
+worth knowing before quoting any other figure from `transient_review.md` — see also the
+420 GiB / "150 TB" correction under 0.1c.
+
+**A gate defect worth carrying forward:** `drift == 0.00e+00` is the right criterion for
+changes that reorganise our own arithmetic, and **unsatisfiable for any change that alters
+which BLAS kernel runs**. Later stages that touch the linear algebra (7b, 7c) should declare
+"identical step count plus drift at rounding level" instead, and verify determinism at a
+fixed thread count separately — which is how 2a's drift was shown to be BLAS and not code.
+
+**A near miss worth recording:** gate 2b's first version sampled `u` at `t = 0`, where the
+sine source is zero, and reported "exactly equal" against an all-zero vector. It would have
+passed while measuring nothing. The gate now prints the nonzero count beside every
+comparison so an empty result cannot read as a pass.
+
+### Left on the table, measured but not done
+
+`Toolkit.__getattr__` still takes **3.77 million calls** in one benchmark run. These are the
+*successful* delegations (`toolkit.zeros`, `toolkit.reshape`, ...) rather than the raising
+ones stage 2b removed, so each is cheap — but under the profiler they are still ~5% of
+runtime, and the fix is small: memoise the resolved attribute onto the instance so the
+second and later lookups miss `__getattr__` entirely. **Not done here because it was not a
+declared item and stage 2 is defined as behaviour-preserving; it deserves its own gate**
+(the risk is toolkits that mutate their backend at runtime, which the memo would then
+stale). Recorded so the next person does not have to re-profile to find it.
