@@ -680,7 +680,21 @@ genuinely better than SPICE3, which has nothing), SymbolicDC, the DDD family, Vo
 timestep only; its `method` Parameter is **never read** (backward Euler is hardcoded and
 the `Integrator` abstraction is not used); no limiter, so any real junction overflows;
 `np.linalg.inv` of a dense n x n **per timestep** inside the shooting Newton; and PAC
-allocates a dense `(N*M) x (N*M)` complex matrix — **at N=137, M=1000 that is ~150 TB.**
+allocates a dense `(N*M) x (N*M)` complex matrix — **at N=137, M=1000 that is 280 GiB for
+`L`, plus 140 GiB for `B`, 420 GiB in all.**
+
+> **CORRECTED 2026-07-30 (stage 0.1c).** This sentence originally read "**~150 TB**",
+> which is wrong by about 365x. `(137*1000)^2 = 1.8769e10` elements; at complex128 that is
+> 3.0030e11 bytes = 280 GiB. The `150` is `B`'s 1.5015e11 bytes read as 150 **GB** and
+> written as 150 **TB** — a unit slip on the smaller of the two arrays. (`B` really is the
+> smaller: `shooting.py:195` is `tk.zeros(L.shape)` with **no dtype**, so it is float64
+> while `L` is complex.) **The conclusion is unaffected** — 420 GiB is as unallocatable as
+> 150 TB — and that is precisely why the error survived: nothing downstream depended on
+> the magnitude. Recorded rather than silently fixed. The mechanism that let it hide is
+> the one the standing rules already name: the figure was typed into prose instead of
+> being generated, and `benchmarks/transient_review/` carried no script for it. It now
+> does — `benchmarks/transient_review/stage0_1c_pac_memory.py` reads both dtypes off
+> `shooting.py` and prints the table. Regenerate rather than retype if this is ever edited.
 
 **Absent:** DC sweep (`.dc`) — the most conspicuous gap, no `DCSweep` class exists;
 `.tran` output/strobe interval (`timestep` is *both* the initial step and `max_step`, and

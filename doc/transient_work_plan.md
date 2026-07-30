@@ -70,7 +70,84 @@ repeated six times including in modulo arithmetic. Stage 9 proposes consolidatin
 file; that cannot be planned without knowing what is in it. Ask specifically: what
 genuinely requires static shapes and traceable control flow, and what is duplicated only
 because nobody factored it?
-OUTCOME:
+OUTCOME: **Done 2026-07-30. The answer to the stage-9 question is: almost nothing in the
+chunking machinery needs to be duplicated, and the duplication has already produced four
+divergences, three of which are defects.**
+
+*What genuinely requires static shapes.* Three, and all are legitimate: `CHUNK_SIZE` (the
+results/time buffers must be allocated before the `while_loop` traces), the `10000` TLine
+ring depth, and the history depth `3`. Two pieces of genuinely traceable control flow are
+also legitimate and well done: the Newton `lax.while_loop` and the outer time
+`lax.while_loop` with its `lax.cond` accept/reject. **The LTE algebra needs none of it** —
+`compute_integration`, `estimate_lte` and `ywr_error_ratio` are pure elementwise arithmetic
+on `(g_n, g_nm1, g_nm2, h1, h2)` with no data-dependent control flow, which confirms stage
+9(a)'s premise that a shared `_lte_kernels.py` is traceable as-is.
+
+*What is duplicated only because nobody factored it.* `solve` (`:589-728`) and
+`solve_batched` (`:449-587`) are the same ~140-line function twice, differing only in a
+leading batch axis: breakpoint enumeration, TLine extraction, history initialisation, the
+chunk loop, and result assembly are transcribed in both. `jax.vmap` over the whole body is
+what `solve_batched` is trying to be. The cost of not doing that is not hypothetical — the
+two copies have **drifted apart in four places**, and the drift is invisible because
+nothing compares them:
+
+1. **`solve` finds zero breakpoints, always.** `:610` iterates `for elem in
+   self.cir.elements` — a dict, so it yields **string keys**, and `hasattr(str,
+   'next_event')` is False for every one. `solve_batched` `:476` iterates `.items()` and is
+   correct. Verified directly: `[type(e).__name__ for e in cir.elements]` gives
+   `['str', 'str', 'str']`. This is plan item 9(d), and the sharp version is that the two
+   transcriptions disagree and one of them is right.
+2. **`solve_batched` never solves a DC operating point.** `:466-469` is `if not uic: pass`,
+   under the comment "We would normally solve DC here." `solve` does the real thing
+   (`DC(self.cir).solve().x`). So the batched path silently starts every run from zeros —
+   **the stage-1 silent-DC defect, in a second location, and worse, because it does not
+   even attempt the solve.** The `x0 = jnp.zeros(n)` it computes at `:467` is then dead:
+   `x0_batch` is built separately at `:490`.
+3. **`solve_batched` does not initialise TLine history from the operating point.** `solve`
+   `:645-657` seeds every ring entry with the DC terminal state; `solve_batched` `:517`
+   leaves it at zero under `# Init with zero for now`.
+4. `find_idx` (`:106-109`) is defined and never called — dead, and a distraction when
+   reading the ring-buffer logic that follows it.
+
+*The `10000` literal.* Seven occurrences: four allocations and, more seriously, three in
+modulo arithmetic (`:107`, `:123-124`, `:406`). The comment at `:639-640` says it "covers a
+10ns simulation with 1ps steps". Beyond 10 000 accepted steps the ring wraps and
+`interp_tlines` interpolates against entries from a previous lap with **no error and no
+warning** — `cond_fun` stops at `idx < 9999` and returns whatever is there. A transient with
+a `TLine` and more than 10 000 steps therefore returns a plausible wrong waveform. Same
+failure class as the two stage 1 exists to remove, so it belongs on that list.
+
+*Tolerances are unreachable by two independent mechanisms, not one.* `JAXTransient`
+declares no `parameters`, so it inherits only `Analysis`'s four. Verified:
+
+    JAXTransient(cir, reltol=1e-6)  -> KeyError: 'parameter reltol not in parameter dictionary'
+    JAXTransient(cir, iabstol=...)  -> KeyError    JAXTransient(cir, vabstol=...) -> KeyError
+    JAXTransient(cir, maxiter=...)  -> KeyError
+    JAXTransient(cir, nrsolver='bogus') -> ACCEPTED     JAXTransient(cir, scaler='bogus') -> ACCEPTED
+
+So 9(b) is confirmed exactly, including that `nrsolver` and `scaler` are accepted and
+ignored. **But adding the `parameters` list is not sufficient**, which the plan does not
+say: `outer_time_loop` declares `reltol=1e-3, abstol=1e-6, maxiter=50` and **neither
+`run_chunk` passes them** (`:522-523` and `:672-674`), so the defaults are frozen at the
+call site too. `eval_method='gear'` is hard-coded at both of those sites in the same way.
+Fixing 9(b) without 9(c) would produce a `reltol` that is accepted and still ignored —
+which is worse than the `KeyError`, because the `KeyError` at least tells the truth.
+
+*9(d)'s "fixing either alone converts a silent wrong answer into a hang" — confirmed, with
+the mechanism.* `Pulse.next_event` (`func.py:58-82`) opens with `if tmod == 0: return t`, a
+fixed point at t=0 and at every multiple of `per`. Verified: for a `VPulse(td=1e-6,
+per=3e-6)`, `next_event(0.0)` returns `0.0`. The CPU transient survives this because it
+calls `next_event` once per step to decide where to truncate; the JAX paths **enumerate**
+in a `while t_event < tend` loop, so the fixed point never terminates. Which path you are
+on decides which failure you get: `solve` (broken iteration) finds no breakpoints and
+returns a wrong answer; `solve_batched` (correct iteration) reaches the loop and hangs.
+Note this also makes `Pulse.next_event` a stage-8 item, not only a stage-9 one.
+
+**Recommendation for stage 9**, in this order: (i) fix `Pulse.next_event`'s fixed point
+first, since both other fixes depend on it not hanging; (ii) merge `solve` and
+`solve_batched` rather than repairing both — repairing both is how a fifth divergence gets
+added; (iii) `_lte_kernels.py` as planned; (iv) `parameters` **and** the call-site
+threading together. Add the `10000` overflow to stage 1's list of silent failures.
 
 **0.1b — `semiconductors.py` and `mos.py`, as a device-modelling expert.** Stage 5 adds
 junction limiting to `BJT`/`JFET`/`ZenerDiode` on the strength of a proposed diff that was
@@ -79,7 +156,75 @@ never tested. Also open: no charge model on any semiconductor (`BJT.C(x) == 0`),
 `MOS_ACM.__init__` calling a class not in its MRO, and the absence of any large-signal
 MOSFET. Ask: what is the minimum device set that makes CMOS and bipolar transients
 expressible, and is the `Semiconductor` base the right seam?
-OUTCOME:
+OUTCOME: **Done 2026-07-30. `Semiconductor` is the right seam and should carry the
+limiter; the charge gap is the thing that actually blocks CMOS, not the limiter.**
+
+*Is `Semiconductor` the right seam? Yes, and for a reason worth stating.* The base already
+enforces the invariant that matters: devices write no `G`/`C` of their own, the model lives
+once in `eval_i_pure`/`eval_q_pure`, and the Jacobian is differentiated from it (`:27-37`).
+That is exactly the property a limiter needs in order to be safe — a limiter perturbs the
+point at which the model is linearised, and a hand-written stamp that disagrees with `i()`
+would let Newton converge to a slightly wrong answer *and* hide the disagreement. So
+stage 5(a)'s `junctions` class attribute plus a shared `limit()` on `Semiconductor` is the
+right shape. **One correction to the plan's framing:** `ZenerDiode` should not get a plain
+`pnjlim`. Its reverse breakdown term `-IBV*(exp((-v-BV)/VT) - 1)` is a second exponential
+in the *opposite* direction, and a limiter that only knows about the forward junction will
+step straight through the breakdown knee. It needs the junction list to carry a direction,
+or an explicit breakdown limiter. Reconsider if a measurement shows plain `pnjlim`
+converging on a Zener in breakdown — but that should be measured, not assumed.
+
+*The minimum device set for CMOS and bipolar transients.* Ranked by what blocks what:
+
+1. **A charge model on `BJT`.** `BJT` defines no `q`, so `Semiconductor.C` returns a zero
+   matrix (`:33-34`) — no depletion capacitance, no diffusion capacitance, no `TF`. A
+   bipolar circuit with `C(x) == 0` has no charge storage anywhere in the transistor, so
+   its transient is a sequence of DC solves with the wrong dynamics, and every switching
+   time it produces is wrong. This is a **bigger obstacle to a credible bipolar transient
+   than the missing limiter is**, and the plan does not rank it. The limiter decides
+   whether the run converges; the charge model decides whether a converged run means
+   anything.
+2. **A large-signal MOSFET.** Confirmed absent — `mos.py` contains only small-signal
+   subcircuits. Per decision 0.3c this is in scope for stage 10 and sequenced after this
+   review and stage 5.
+3. Junction limiting on `BJT`/`JFET` (stage 5a) — needed for (1) and (2) to converge.
+4. `_expl()` clamping (stage 5b). Note where the overflow actually reaches: these models
+   are differentiated by `toolkit.jacobian`, so under a toolkit without autodiff an
+   `exp()` overflow in `eval_i_pure` reaches a *central difference* and becomes `nan` in
+   the Jacobian rather than merely a large number in `i()`. That is why 5(b) belongs to
+   this base class and not to individual devices.
+
+*Confirmed defects, each verified rather than read.*
+
+- **`MOS_ACM` cannot be constructed at all.** `mos.py:104` calls `super(MOS, self)` from a
+  class whose MRO is `[MOS_ACM, SubCircuit, Circuit, object]` — `MOS` is not in it.
+  Verified: `TypeError: super(type, obj): obj (instance of MOS_ACM) is not an instance or
+  subtype of type (MOS)`. **And it is not an ACM model.** Its body is a verbatim copy of
+  `MOS` with one difference: `Symbol('kT')` in the noise PSD where `MOS` uses
+  `toolkit.kboltzmann * Symbol('T')`. So the class advertising a different model is a copy
+  of the one it sits next to, with a worse noise expression, and has never run.
+  **Recommendation: delete it.** A thin advertised feature is worse than an absent one, and
+  this one is not thin, it is empty. Reconsider if someone actually wants ACM — in which
+  case it is written from the paper, not recovered from this.
+- **`Varactor`'s clamp.** `v_eff = minimum(v, 0.99*VJ)` (`:208`) freezes the charge above
+  the knee, so `C = dq/dv` falls to **exactly zero** in forward bias rather than
+  extrapolating. SPICE's treatment linearises the junction charge above `FC*VJ` and keeps a
+  finite, growing capacitance. Zero is the worst available answer: it is not merely
+  inaccurate, it removes the state variable, and a Newton step that sees `C = 0` on a node
+  that physically has the largest capacitance in the circuit will take a wildly wrong step.
+- **`SubCircuit.limit` discards its work** (`circuit.py:1194-1200`), as the plan says, and
+  the reason it survived is confirmed: `subx = x[self.elementnodemap[instance]]` is fancy
+  indexing and therefore a copy, `element.limit(subx, subx0, epar)`'s return value is
+  dropped, and the method returns the **unmodified** `x`. `Diode` does not notice because
+  it keeps `_vlim` privately (`elements.py:869-905`) and linearises `G` around it
+  (`:907-914`) — so the only limiter in the tree is the one that cannot expose the bug.
+  Gate 5-3 is therefore correctly specified and is the important one in stage 5.
+
+*On stage 5(d), whether `limit` should return the limited `x`.* **Recommendation: yes, and
+survey it before stage 5 rather than after.** The state-free form is the prerequisite for
+the JAX path ever having limiting (device-private `_vlim` cannot be traced), and it is what
+makes gate 5-3 expressible at all. But the blast radius is real and the plan is right to
+want it surveyed separately. Reconsider if the survey finds a device whose limiter
+genuinely needs cross-iteration memory that cannot be carried in `x`.
 
 **0.1c — `shooting.py`, as an RF/steady-state expert.** PSS/PAC are advertised in the
 analysis inventory and the review found them unusable beyond toys: `method` Parameter
@@ -87,14 +232,139 @@ never read, no limiter, a dense `np.linalg.inv` per timestep inside the shooting
 and a PAC matrix that is ~150 TB at N=137/M=1000. Ask: repair, rewrite against the
 `Integrator`/`LinearSolver` seams stage 7 creates, or withdraw and document as
 unimplemented? A thin advertised feature is worse than an absent one.
-OUTCOME:
+OUTCOME: **Done 2026-07-30. Recommendation: WITHDRAW PAC and document it as
+unimplemented; KEEP PSS but rewrite it against the stage-7 seams. They are not in the
+same condition and the plan's three options should be applied to them separately.**
+
+*First, a correction to the review's evidence, because the plan cites the number.* The
+review says the PAC matrix is "**~150 TB** at N=137, M=1000". **That is wrong by about
+365x.** Generated by `benchmarks/transient_review/stage0_1c_pac_memory.py`, not quoted:
+
+    N*M            = 137 000
+    (N*M)^2        = 1.8769e10 elements
+    L, complex128  = 3.0030e11 bytes = 279.7 GiB
+    B, float64     = 1.5015e11 bytes = 139.8 GiB
+    total          = 419.5 GiB = 0.410 TiB
+
+The `150` is recognisable: it is `B`'s 1.5015e11 bytes read as 150 **GB** and written as
+150 **TB** — a unit slip on the smaller of the two arrays. **The conclusion is completely
+unaffected** — 420 GiB is as unallocatable as 150 TB — which is exactly why the error
+survived: nothing downstream depended on the magnitude. Recorded here rather than quietly
+fixed, per rule 1. It is also a live instance of the standing rule against typing a
+measured number into prose; `benchmarks/transient_review/` should have carried a script.
+(Incidentally `B = tk.zeros(L.shape)` at `shooting.py:195` passes **no dtype**, so B really
+is float64 while L is complex — half the memory, and a real-typed matrix added to a complex
+one. It works by promotion, but it is not deliberate.)
+
+*PSS — repairable, and worth repairing.* The core is sound: a shooting Newton on the
+monodromy matrix, which is the right algorithm. Three defects, in order of how much they
+cost:
+
+1. **`method` is dead and PSS is backward-Euler only.** The Parameter is declared at
+   `:63-65` with `default="euler"` and is never read anywhere in the file; `solve_timestep`
+   hard-codes `C/dt` and `q(xlast)/dt`. For a *periodic steady-state* solver this is the
+   worst possible fixed choice: BE's numerical damping attenuates exactly the limit cycle
+   PSS exists to find. An oscillator's amplitude comes out low and a resonator's Q comes
+   out understated, both silently and both worse as the step coarsens. Stage 7's
+   `Integrator` seam fixes this by construction.
+2. **No limiting** (`analysis.fsolve` at `:94` and `:141`, `limiter=None` by default). PSS
+   on a *linear* circuit is pointless — the whole point is a nonlinear periodic steady
+   state — so "no limiting" means "fails on every circuit it exists for". This is the same
+   dependency stage 5 creates, which is why stage 11 should follow stage 5 as well as
+   stage 7.
+3. **A dense `np.linalg.inv` per timestep inside the shooting Newton** (`:132`,
+   `Jshoot = inv(Jf) @ C @ Jshoot`). An explicit inverse is never needed here: the standard
+   result in the field (Telichevesky, Kundert & White, DAC 1995, matrix-free Krylov
+   shooting) is that only matrix-vector products with the monodromy matrix are required,
+   i.e. a sequence of solves. At N=137, M=1000 with 20 shooting iterations this is 20 000
+   dense inversions plus 40 000 dense matmuls. Stage 7b's `factor`/`solve` split is the
+   seam that makes the correct version cheap to write.
+
+*PAC — withdraw.* Beyond the 420 GiB allocation, which is not a tuning problem but a
+consequence of forming the whole `(N*M)x(N*M)` operator densely, **it has never been
+validated against anything.** `test_PAC` is `@unittest.skip("Skip failing test")` *and* its
+last line is `assert False, "Test should compare with spectre simulation"` — so it is not a
+test that broke, it is a test that was never finished. There is no evidence PAC has ever
+produced a correct number. Shipping it in the analysis inventory is the "thin advertised
+feature" the plan warns about in its purest form.
+
+*What the test suite actually covers, since this is what "unusable beyond toys" rests on.*
+Three tests: `test_shooting` compares a **linear** RC against the AC steady state and is
+the only one that asserts anything meaningful; `test_PSS_nonlinear_C` calls `pss.solve()`
+and **asserts nothing at all** — a smoke test that checks only that it does not raise; and
+`test_PAC` is skipped and unfinished. The PSS test runs at M=20 timesteps per period, which
+is why the per-timestep `inv` has never been felt.
+
+**Sequencing consequence:** stage 11 is blocked on **stage 5 as well as stage 7**, because
+a PSS without a limiter cannot be tested on the nonlinear circuits it exists for. The plan's
+dependency graph shows only `0.1c -> 11`; that is not sufficient.
 
 **0.1d — `_solve_coupled`, as a numerical analyst.** The third transcription of the time
 loop (`transient.py:429-551`). Read for consistency but its Fang-2013 co-determination
 loop and `MAX_LTE_ITERS = 10` were never analysed. It ignores breakpoints, `uic`,
 `fixed_timestep` and any injected step controller. Ask: is this worth keeping at all, or
 is it a research prototype that should be deleted or moved behind an explicit flag?
-OUTCOME:
+OUTCOME: **Done 2026-07-30. Recommendation: DELETE it. It is a research prototype, it is
+not the algorithm its comment claims, it buys nothing over `solve()`, and it contains a
+livelock that `solve()` does not.** Evidence:
+`benchmarks/transient_review/stage0_1d_coupled_livelock.py`.
+
+*It is not a co-determination method.* The comment at `:474-483` cites Fang (DAC 2013) and
+says the circuit solution and step size are "co-determined at each time point", with the
+paper's approximate Newton replacing an exact Schur update. What the code does (`:499-526`)
+is: converge the circuit at `h_curr`; evaluate the LTE; if it is over tolerance, shrink and
+re-solve; repeat up to `MAX_LTE_ITERS`. **That is a plain reject-and-retry loop** — the same
+scheme `solve()` runs, with `MAX_LTE_ITERS = 10` where `solve()` has `MAX_REJECT = 3`. The
+step size is not an unknown in any solve; there is no augmented system and no coupling.
+Per the standing rule on external facts, I am **not** asserting what Fang §3.4 actually
+says — the paper is not in `doc/` and I have not read it, so the claim "this implements
+Fang" can be neither confirmed nor refuted here. What can be said from the code alone is
+that the loop is structurally a rejection loop, and that is enough for the decision.
+
+*It contains a livelock that the standard path does not.* When Newton fails to converge,
+`:504-509` shrinks `h_curr` by 0.25 and `continue`s. After `MAX_LTE_ITERS` failures the loop
+simply **exits**, and `:528-530` then advance time by the collapsed `h_curr` and append the
+previous solution as if it were a new one. Because `h` is restored from `h_next` at `:543`
+— which the failure path never updates — the next outer iteration starts again at full step
+size. Measured on an RC forced to fail from step 4 onward:
+
+- each outer iteration costs **10 Newton solves** and advances simulated time by
+  `h * 0.25^10`;
+- predicted `1.0e-6 * 9.5367e-7 = 9.5367e-13 s` per outer iteration, **measured
+  9.5367e-13 s, ratio to prediction 1.0000** — the mechanism is confirmed exactly, not
+  inferred;
+- from the stall point, finishing the run needs **2.10e6 further outer iterations, i.e.
+  2.10e7 further Newton attempts**.
+
+It does not raise and does not return; it grinds. On a first-step failure it behaves
+differently and no better: it falls through to `:539` and dies with `AttributeError:
+'Transient' object has no attribute '_iq'`, because `_iq` is a hidden side channel set
+inside `solve_timestep`, which never ran. So the two failure modes are an obscure
+`AttributeError` before any step succeeds, and a livelock after one does. **Neither is the
+`RuntimeError` at `:508` that was meant to catch this** — that guard only fires if `h_curr`
+drops below `minstep = 1e-18`, and `0.25^10` of a microsecond is 9.5e-13, nowhere near it.
+
+*Confirmed dead or ignored inputs.* `analytical_eh` is in the signature (`:429`), forwarded
+from `solve()` (`:229`), and **never used in the body**. `fixed_timestep` and `uic` are not
+consulted. `next_event` is never called, so breakpoints are ignored entirely. The step
+controller is hard-coded to `IntegralController()` at `:486`, so an injected `PIController`
+— which `solve()` respects at `:232-235` — is silently discarded. The plan's list is
+accurate on every count.
+
+*Why deletion rather than a flag.* It is already behind a flag (`coupled_lte=False`), and
+that has not helped: it is a third transcription of the time loop, and the cost of the
+second transcription is documented in stage 9 — the Gear2 LTE defect had to be found and
+fixed twice. A third copy that is algorithmically identical to the first, is missing four
+of its features, and adds a livelock, is a liability with no compensating benefit. Test
+coverage is thin enough that removal is cheap: `test_transient_coupled_lte` and
+`test_transient_adaptive_vs_coupled` (`test_analysis_transient.py:260,282`) are the only
+users besides an untracked scratch file.
+
+**Reconsider if** someone intends to implement genuine co-determination — in which case it
+is written against the stage-7 `Integrator`/`LinearSolver` seams from the paper, not
+recovered from this. **If deletion is declined**, the minimum is: fix the livelock by
+raising on exhaustion instead of falling through, and delete the Fang citation, which the
+code does not support.
 
 ## 0.2 Measurements that gate later stages
 
@@ -108,7 +378,40 @@ could have produced.
 counts agree within 20% and the waveform within the IM3 measurement's own tolerance. If
 they do not, **the recorded 10x integrator speedup is void** and must be re-measured after
 stage 4.
-OUTCOME:
+OUTCOME: **GATE PASSED — the premise is refuted, and stage 4 is unblocked.** Measured
+2026-07-30 by `benchmarks/transient_review/stage0_2a_integrator_choice.py` on the
+leapfrog transient fixture (`cir.n` = 139; the 136 recorded elsewhere is the *symbolic*
+build, which has one `VS` where this has two `VSin` and a `BSource`) over the same 2.5 us
+window the original comparison used, at the
+harness's own tolerances (`vabstol` 1e-9, `reltol` 1e-6, `max_step` 19.53 ns):
+
+| config | steps | wall |
+|---|---|---|
+| A trapezoidal, breakpoints as shipped | 282 | 63.5 s |
+| B Gear2 `'ywr'`, as shipped | 338 | 78.7 s |
+| C Gear2 `'classic'`, as shipped | 368 | 76.1 s |
+| D trapezoidal, `Sin.next_event` suppressed | 277 | 87.2 s |
+| E Gear2 `'ywr'`, suppressed | 334 | 100.3 s |
+
+Breakpoint removal moves the trapezoidal step count by **1.8%** (D/A = 0.982) and Gear2's
+by **1.2%** (E/B = 0.988), both far inside the declared 20% band. The ranking that chose
+the integrator is **1.199 with breakpoints and 1.206 without** — unchanged. **The recorded
+10x stands and does not need re-measuring after stage 4.**
+
+Two things make this a result rather than an absence of one. First, A and B reproduce the
+recorded 282-vs-288 and 338-vs-347 from the harness comment, so the probe is measuring the
+same thing that comment measured. Second, **the intervention demonstrably did something**:
+D is not bit-identical to A (5 fewer steps, waveform differing by 5.4e-10, 2.9e-4 relative),
+so a null result here is a measured null and not a monkeypatch that silently failed to
+apply — which is the way this gate could most easily have lied.
+
+**What this does NOT clear, stated so it is not over-read.** The gate asked only whether
+the *integrator choice* is contaminated. It is not. The trapezoidal `(-1)^n` contamination
+itself is untouched by this result: gates 4g-1 (Newton evaluations forced to order 1) and
+4g-2 (est/true must stop scaling as 1/h) are separate measurements and remain to be taken
+in stage 4. And the window spans roughly one breakpoint interval per tone, so it bounds a
+*per-breakpoint* effect and understates a cumulative one; the full IM3 figure is only
+re-validated by rerunning the harness, which gate 4g-3 requires anyway.
 
 **0.2b — What does the JAX charge-domain LTE path cost, and should it exist?**
 `estimate_lte` + `lte_error_ratio` avoid a per-step `G` evaluation and linear solve, which
@@ -118,11 +421,65 @@ tolerance applied to a **charge**, so that path currently never rejects a step.
 step, on a circuit of realistic size. Declared decision rule: **if under 10%, delete
 `estimate_lte` and make `lte_formula` select an algebra only** (as it does on the CPU);
 if over, fix its tolerance to a charge-referenced one and keep both.
-OUTCOME:
+OUTCOME: **UNDER the threshold, by a wide margin. Measured 2026-07-30 by
+`benchmarks/transient_review/stage0_2b_lte_solve_cost.py` on the leapfrog transient
+fixture (n = 139), 2.5 us window.**
+
+| | trapezoidal | Gear2 `'ywr'` |
+|---|---|---|
+| steps | 282 | 338 |
+| `evaluate_step`, all of it | 3.13% | 1.04% |
+| **LTE `J^-1` solve** | **2.77%** | **0.89%** |
+| LTE `remove_row_col` copies | 0.05% | 0.06% |
+| **total avoidable** | **2.82%** | **0.95%** |
+| still paid either way | 0.32% | 0.09% |
+
+The wrapper overhead measured +10.5% on one configuration and -1.2% on the other, so
+run-to-run noise here is of order 10% — which is worth stating, and which does not
+threaten the conclusion: the largest avoidable share is **2.82% against a 10% threshold**,
+and the timing method is biased *towards* overstating it (Python call overhead lands on
+the measured side). The decision rule fires cleanly.
+
+**A correction to the gate's own premise, and it halves the case before any timing.**
+There is **no extra `G` evaluation to avoid.** Both estimators receive the Jacobian as an
+argument from the Newton solve that just converged — CPU `IntegralController.evaluate_step(
+..., J, ...)` (`stepcontroller.py:32`) and JAX `ywr_error_ratio(i_curr, x_curr, x_last, J,
+...)` (`jaxtransient.py:287`) — and neither calls `cir.G`. The charge-domain path's
+advantage was never "a `G` evaluation and a linear solve"; it is a linear solve and two
+`np.delete` copies. So the premise recorded in the plan was half wrong, and what remained
+of it measures at 1-3%.
+
+Also confirmed by inspection: `lte_error_ratio` (`jaxtransient.py:327`) applies
+`lte_abs = 1e-6` to a **charge**. With picofarad-scale devices `q ~ 1e-12 C`, so the
+tolerance is ~7e-6 against an error of ~1e-15 — a ratio of ~1e-10, and the path never
+rejects a step. The plan's claim stands.
+
+**BUT THIS NOW CONFLICTS WITH DECISION 0.3a, AND THE CONFLICT IS REAL — see 0.3d below.**
+The decision rule says delete the charge-domain estimator; 0.3a(iii) says make the
+criterion charge-referenced. Those pull in opposite directions and the plan did not
+anticipate it, because 0.3a was expected to be option (i). Resolving it is a maintainer
+decision, not an implementer one, so it is recorded as a new item rather than settled here.
 
 **0.2c — Re-measure the suite baseline on the executing machine.** Both tallies and both
 runtimes, `-m ""`, before any change.
-OUTCOME:
+OUTCOME: **Measured 2026-07-30 at `d44ab46`. Suite `-m "" --timeout=400`: 734 passed,
+6 skipped, 0 failed, 497.69 s.** The tally matches the recorded baseline exactly; the
+runtime does not carry the review's ~17% warning, because 497.69 s *is* this box. Every
+commit between `e9dd894` and `d44ab46` is doc or benchmark work, which is consistent with
+an unchanged tally. Notable in the durations: `test_stress_stiff_rlc_pulse` is **73.14 s**,
+not the ~266 s recorded in `architecture.md` P15 — the step-control fix (`e37ddad`, 19x
+fewer steps) already took that cost out, so P15's premise is stale and the 20%-regression
+rule now has a much smaller worst offender to protect.
+
+Doc build at the same commit: **`build succeeded, 2 warnings.`, 0 `ERROR` lines** — the two
+warnings are the pre-existing `pycircuit.post.cds` / `cds.skill` autodoc import failures.
+Verified per rule 3 rather than from the exit code: no `exec-rst` block fell back to
+rendering its own source (the block source appears **0** times in the built HTML across
+`symbolic_poly`, `soe_symbolic`, `lte_dae` and `distortion_limits`) and every page's tables
+carry computed cells. A note for later gates: grepping the HTML for `\d+\.\d{4,}` finds
+nothing on `symbolic_poly`/`soe_symbolic`, because their generated cells are 3-decimal
+timings and integer term counts — the absence of a long decimal is **not** evidence a block
+died, so check for the block's own source text instead.
 
 ## 0.3 Decisions for the maintainer
 
@@ -138,7 +495,26 @@ made explicit rather than coincidental; (iii) adopt SPICE's split properly, addi
 `chgtol` and making the LTE criterion charge-flavoured, which is the largest change and
 the most standard.
 **Recommendation: (i) now, (iii) as a later stage if `chgtol` is wanted.**
-DECISION:
+DECISION: **(iii) — adopt SPICE's split properly.** The maintainer took the largest option
+over the recommendation, on 2026-07-30. Consequences, so this is not re-litigated:
+
+- `vabstol` reverts to being **Newton's x-tolerance only**, shared by `DC` and `Transient`,
+  which removes the 10^6 asymmetry between the operating point and the steps after it.
+- A `chgtol` Parameter is added (SPICE's default is 1e-14 C) and the LTE criterion on
+  charge-carrying rows becomes charge-referenced: `chgtol + reltol*max|q|` rather than a
+  voltage tolerance applied to a charge.
+- **This absorbs 0.2b's decision rule.** 0.2b asks whether the JAX `estimate_lte` charge
+  path should be deleted or have its tolerance fixed; under (iii) the charge flavour is the
+  *intended* one on both backends, so the two paths converge rather than diverge. 0.2b's
+  measurement is still worth taking — it decides whether the extra `G`+solve is affordable —
+  but its "delete `estimate_lte`" branch is now much less attractive, because that path
+  becomes the one that matches the criterion instead of the one that violates it.
+- **Cost, stated plainly:** this is no longer a stage-1 one-liner. Stage 1 does the
+  *separation* (Newton keeps `vabstol`, the controller stops borrowing it); the
+  charge-referenced criterion and `chgtol` land in **stage 4**, next to 4c/4d/4g which are
+  already rewriting the estimators. Splitting it this way keeps stage 1 behaviour-bounded.
+  **Reconsider if** stage 4 slips: option (i) remains a valid intermediate state and is a
+  strict subset of (iii), so nothing done for (i) is wasted.
 
 **0.3b — Does `Gear2` keep `'ywr'` as its default?** It was set to `'ywr'` belt-and-braces
 when `'classic'` was repaired. The evidence now runs the other way: `'classic'` measures
@@ -147,16 +523,124 @@ dependent (swinging 16x across ratios against classic's 4x), and end-to-end `'yw
 57 rejections and 4 force-accepts where `'classic'` needed 29 and 0.
 **Recommendation: flip the default to `'classic'` in stage 4**, and delete the "5/6"
 claim in the `integrator.py` comment, which is measurably wrong.
-DECISION:
+DECISION: **Keep `'ywr'` for now; re-decide at gate 4f.** The maintainer declined the flip
+on 2026-07-30, on the grounds that the evidence against `'ywr'` was gathered *with the
+controller defects still in place* — 4a's unstable PI gains, 4b's 10x force-accept growth
+and 4e's inverted order-drop guard all inflate rejection counts, and `'ywr'` being
+step-ratio dependent is exactly the property that a cycling step size punishes hardest. The
+57-vs-29 rejection comparison therefore cannot separate "the estimator is worse" from "the
+estimator is more exposed to a controller that is misbehaving".
+
+**What this changes:** 4f stops being a formality. Gate 4f must be run *after* 4a-4e land
+and must record rejections and force-accepts for all four integrator/formula combinations
+on the same circuit; the default is then set from that table, not from the pre-repair
+numbers. The `'classic'` asymptotic-exactness measurement (1.000282 against 2/9) is not in
+dispute and is not what was declined.
+
+**Not deferred:** the `"5/6"` claim in the `integrator.py` comment is measurably wrong
+regardless of which default wins, so it is deleted in stage 4 either way.
 
 **0.3c — Scope of stage 10.** The missing-analyses list (DC sweep, `.ic`/`.nodeset`,
 netlist import, large-signal MOSFET) is weeks of work and is a product decision, not an
 engineering one.
+DECISION: **In scope: DC sweep, `.tran` output control, `.ic`/`.nodeset`, and a
+large-signal MOSFET.** Out of scope for stage 10: the SPICE-subset netlist reader and
+waveform export (raw/PSF/CSV) — both are interop rather than analysis, and neither blocks a
+circuit being simulated from Python. **Reconsider if** the MOSFET work creates a demand for
+model cards, since a `.model` parser is most of a netlist reader's value at a fraction of
+its scope.
+
+**Ordering consequence, and it is not the plan's original order.** The large-signal MOSFET
+is a *device* item sitting in an *analysis* stage, and it overlaps review **0.1b**
+directly — 0.1b asks what the minimum device set is that makes CMOS and bipolar transients
+expressible, and whether `Semiconductor` is the right seam. Adding a MOSFET before that
+review answers is how a device gets bolted to the wrong base class. **The MOSFET is
+therefore sequenced after 0.1b and after stage 5**, which is where the limiting and
+`_expl()` clamp it will depend on actually land; a large-signal MOSFET without junction
+limiting would not converge and would produce exactly the class of silent failure stage 1
+exists to remove. The other three stage-10 items have no such dependency.
+
+Ranked within the stage: (1) DC sweep, (2) `.tran` output control, (3) `.ic`/`.nodeset`,
+(4) large-signal MOSFET — 1 and 2 are the cheapest and most visible, 3 is what makes
+oscillators and latches startable, 4 is the largest and the most gated.
+
+**0.3d — NEW, raised by stage 0 itself on 2026-07-30: decisions 0.3a and 0.2b now
+contradict each other.** This item did not exist when the plan was written; it appeared
+because 0.3a was answered (iii) where the plan expected (i).
+
+**The contradiction.** 0.2b measured the `J^-1` mapping at 1-3% of a step, so its declared
+rule fires: delete the charge-domain estimator and always map the truncation error into
+the solution domain, where it is compared against a **voltage/current** tolerance. 0.3a(iii)
+adopts SPICE's split, whose whole point is that the truncation error on charge-storing rows
+is compared against a **charge** tolerance (`chgtol + reltol*max|q|`) — and SPICE does that
+*without* a `J^-1` solve, because once the criterion is charge-referenced the mapping into
+volts is not merely unnecessary, it is incoherent: you would map to volts and then apply a
+tolerance in coulombs.
+
+So these are not two independent knobs. **Mapping through `J^-1` and a charge-referenced
+tolerance are alternative formulations of the same criterion**, and stage 4 must pick one:
+
+- **(A) YWR, solution-domain.** Keep `J^-1`, keep `reltol`/`vabstol`/`iabstol` as the LTE
+  tolerances, delete the charge estimator on both backends. 0.2b says it is affordable. It
+  is the more principled choice for a DAE, where a charge error on one node shows up as a
+  voltage error on another. It does **not** need `chgtol`, so 0.3a collapses back to option
+  (i) — which the maintainer explicitly did not choose.
+- **(B) SPICE, charge-domain.** Drop the `J^-1` mapping, add `chgtol`, compare the charge
+  LTE directly. This is 0.3a(iii) as chosen, it is the standard every other simulator
+  implements, and it makes the JAX `estimate_lte` path the *correct* one rather than the
+  one to delete — reversing 0.2b's rule rather than contradicting it, since 0.2b's rule was
+  written on the assumption that the charge path's only justification was cost.
+- **(C) Both, selected by `lte_formula`,** with each given the tolerance flavour it
+  requires. Honest, and it is roughly where the code already is — but it means maintaining
+  two criteria and two tolerance sets, which is what stage 9 is trying to reduce.
+
+**Recommendation: (B).** It is what 0.3a already chose, it is the standard, and 0.2b's
+measurement does not argue against it — 0.2b established that the mapping is *affordable*,
+not that it is *right*, and affordability was only ever the charge path's weakest defence.
+Note that (B) makes `estimate_lte` the survivor, so stage 9(a)'s `_lte_kernels.py` should
+factor the charge algebra rather than the YWR algebra.
+
+**Reconsider (A) if** a measurement shows the charge-referenced criterion mis-controlling a
+circuit where charge and voltage errors decouple badly — a high-impedance node with tiny
+charge and large voltage swing is the case to try. That is a real risk of (B) and it should
+be measured in stage 4, not assumed away.
 DECISION:
 
 **Stage 0 exit criterion:** every OUTCOME above filled, every DECISION answered. Stages
 1-3 may start before 0.1a-d land (they touch none of that code); **stage 4 is blocked on
 0.2a, stage 5 on 0.1b, stage 7 on nothing, stage 9 on 0.1a, and stage 11 on 0.1c.**
+
+## Stage 0 status, 2026-07-30
+
+**Filled: 0.1a, 0.1b, 0.1c, 0.1d, 0.2a, 0.2b, 0.2c. Answered: 0.3a, 0.3b, 0.3c.
+Outstanding: 0.3d, which stage 0 raised itself.**
+
+Stage 0 is therefore *not* exited, and the one thing left is a maintainer decision that
+did not exist when the plan was written. **Stages 1, 2, 3 and 7 are unblocked and may
+start now** — none of them depends on 0.3d. **Stage 4 is blocked on 0.3d**, not on 0.2a,
+which passed.
+
+What stage 0 changed about the plan, beyond filling blanks:
+
+1. **0.2a's premise was refuted** — the integrator choice is not contaminated, the 10x
+   stands, and stage 4 does not have to re-measure it. This is the largest single saving
+   stage 0 produced.
+2. **0.2b's premise was half wrong** — there is no `G` evaluation to avoid, only a solve,
+   and the solve costs 1-3%.
+3. **0.3a's answer created 0.3d**, a contradiction between two items the plan treated as
+   independent.
+4. **Three new defects were found that the four-lens review did not have**, all in the
+   silent-wrong-answer class stage 1 exists for: `solve_batched` never solves a DC
+   operating point at all (0.1a); the JAX TLine ring wraps past 10 000 steps and
+   interpolates against a previous lap without complaint (0.1a); and `_solve_coupled`
+   livelocks on non-convergence at a measured `h*0.25^10` per 10 Newton solves (0.1d).
+   **The first two belong on stage 1's list.**
+5. **The review's "~150 TB" PAC figure is wrong by ~365x** (0.1c); the real number is
+   420 GiB. The conclusion it supported is unchanged.
+6. **Two deletions are recommended** rather than repairs: `_solve_coupled` (0.1d) and
+   `MOS_ACM`, which has never been constructable and is not an ACM model (0.1b).
+7. **Stage 11 is blocked on stage 5 as well as stage 7** (0.1c) — a PSS with no limiter
+   cannot be tested on the nonlinear circuits it exists for.
 
 ---
 
@@ -173,6 +657,37 @@ both `except Exception` clauses (`dcanalysis.py:130-133`, `transient.py:169-172`
 equivalents in `_solve_coupled`); add `bypasstol` to `defaultepar`. (d) Construct the inner
 `DC` with the transient's own toolkit, epar, tolerances, maxiter, nrsolver, scaler and
 refnode.
+
+**Added by stage 0, 2026-07-30.** Three more members of the same class, found by the
+0.1a and 0.1d reviews. They are here rather than in stages 9 and 4 because this is the
+stage defined by "a run can quietly report a circuit that was never biased", and each of
+them does exactly that.
+
+(e) **`JAXTransient.solve_batched` never solves a DC operating point.**
+`jaxtransient.py:466-469` is `if not uic: pass` under the comment "We would normally solve
+DC here", so every batched run silently starts from zeros. This is defect (a) again in a
+second file, and worse: (a) at least attempts the solve before substituting zeros. Same
+fix, same message, same `uic` escape. The `x0 = jnp.zeros(n)` at `:467` is dead and goes
+with it.
+
+(f) **The JAX TLine ring buffer wraps silently past 10 000 steps.** The `10000` literal
+(`jaxtransient.py`, seven occurrences, three of them in modulo arithmetic) is a fixed ring
+depth; `interp_tlines`' `cond_fun` stops at `idx < 9999` and interpolates against whatever
+entry is there, which beyond 10 000 accepted steps is from a previous lap. A transient with
+a `TLine` and more than 10 000 steps returns a plausible wrong waveform with no error and no
+warning. **Minimum fix for this stage: detect the wrap and raise.** Sizing the buffer
+properly, or replacing it, belongs to stage 9.
+
+(g) **`_solve_coupled` livelocks instead of failing.** Measured: 10 Newton solves buy
+`h*0.25^10` of simulated time, forever, because `h` is restored to full size each outer
+iteration (`transient.py:543`) while the failure path never updates it. See 0.1d.
+**Recommendation: delete `_solve_coupled` and the `coupled_lte` flag entirely**, per 0.1d's
+outcome — it is a third transcription of the time loop that is algorithmically identical to
+`solve()`, is missing four of its features, and adds this. If deletion is declined, the
+minimum is to raise on loop exhaustion rather than fall through. Deleting it removes
+`test_transient_coupled_lte` and `test_transient_adaptive_vs_coupled`
+(`test_analysis_transient.py:260,282`), which gate 1-4 will show as a tally change — that
+is a deliberate removal, not a regression, and the gate's outcome should say so.
 
 **Docs in the same commit:** a section in `doc/transient.rst` (or the transient module
 docstring) stating what happens when the operating point fails and how to ask for a
@@ -569,17 +1084,32 @@ Blocked on 0.1c. Repair, rewrite against the seams stage 7 creates, or withdraw.
 ## Order and dependencies
 
 ```
-0.1a ────────────────────────────────────► 9
-0.1b ──────────────────► 5
-0.1c ──────────────────────────────────────────► 11
-0.2a ──────────► 4
-0.2c ─► (all suite gates)
-0.3a ──► 1, 4
-0.3b ──► 4
+0.1a ────────────────────────────────────► 9        [DONE]
+0.1b ──────────────────► 5 ──────────────────────► 10.4 (large-signal MOSFET)  [DONE]
+0.1c ──────────► 5 ────────────────────────────► 11 [DONE; 11 also needs 5]
+0.1d ──────────► (delete _solve_coupled, in 1)      [DONE]
+0.2a ──────────► 4                                  [DONE — passed, 4 unblocked on this]
+0.2b ──────────► 0.3d                               [DONE — under threshold]
+0.2c ─► (all suite gates)                    [DONE 2026-07-30: 734/6/0, 497.69 s]
+0.3a ──► 1 (separation), 4 (chgtol + charge-referenced LTE)  [ANSWERED (iii)]
+0.3b ──► 4f only (default deferred to a post-repair measurement)  [ANSWERED]
+0.3c ──► 10                                         [ANSWERED]
+0.3d ──► 4                                          [OPEN — the only thing blocking 4]
 
 1 ─► 2 ─► 3 ─► 4 ─► 5 ─► 6          (7 in parallel throughout)
-                              8, 10 after 6
+                              8, 10.1-10.3 after 6;  10.4 after 5
+                              11 after 5 AND 7
 ```
+
+**Amendments from the 0.3 decisions (2026-07-30), all recorded above:**
+0.3a took option (iii), which moves the charge-referenced LTE criterion out of stage 1 and
+into stage 4 and partly absorbs 0.2b. 0.3b declined the `'classic'` flip, which promotes
+gate 4f from a formality to the measurement that sets the default. 0.3c put a
+large-signal MOSFET in scope but sequenced it behind 0.1b and stage 5, and dropped the
+netlist reader and waveform export. 0.2b's measurement plus 0.3a's answer produced the new
+decision 0.3d, which is now the only thing blocking stage 4. 0.1c added stage 5 as a
+prerequisite of stage 11. 0.1a and 0.1d each added a silent-wrong-answer defect to
+stage 1's scope.
 
 **Stages 1-3 are the ones to do if only one thread is available**: they stop the silent
 failures, give 10.5x, and make `reltol` mean something. Roughly a week including gates and
