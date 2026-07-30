@@ -203,8 +203,17 @@ converging on a Zener in breakdown — but that should be measured, not assumed.
   `toolkit.kboltzmann * Symbol('T')`. So the class advertising a different model is a copy
   of the one it sits next to, with a worse noise expression, and has never run.
   **Recommendation: delete it.** A thin advertised feature is worse than an absent one, and
-  this one is not thin, it is empty. Reconsider if someone actually wants ACM — in which
-  case it is written from the paper, not recovered from this.
+  this one is not thin, it is empty. Blast radius, enumerated: **zero references anywhere**
+  outside `mos.py` itself and the review documents — no test, no example, no doc page, and
+  it is not exported from `pycircuit/circuit/__init__.py`. Deleting it converts a
+  `TypeError` at construction into an `ImportError` at import, which is earlier and
+  clearer. **The mechanism that let it survive is worth naming:** the only thing that would
+  ever have caught it is the doctest in its own docstring (`mos.py:80`), and `pytest.ini`
+  configures no doctest collection, so `if __name__ == "__main__": doctest.testmod()` at
+  `:131-133` runs only if someone executes the module directly. The test existed and was
+  never run — which is a worse state than having no test, because it reads as coverage.
+  Reconsider if someone actually wants ACM — in which case it is written from the paper,
+  not recovered from this.
 - **`Varactor`'s clamp.** `v_eff = minimum(v, 0.99*VJ)` (`:208`) freezes the charge above
   the knee, so `C = dq/dv` falls to **exactly zero** in forward bias rather than
   extrapolating. SPICE's treatment linearises the junction charge above `FC*VJ` and keeps a
@@ -684,10 +693,40 @@ iteration (`transient.py:543`) while the failure path never updates it. See 0.1d
 **Recommendation: delete `_solve_coupled` and the `coupled_lte` flag entirely**, per 0.1d's
 outcome — it is a third transcription of the time loop that is algorithmically identical to
 `solve()`, is missing four of its features, and adds this. If deletion is declined, the
-minimum is to raise on loop exhaustion rather than fall through. Deleting it removes
-`test_transient_coupled_lte` and `test_transient_adaptive_vs_coupled`
-(`test_analysis_transient.py:260,282`), which gate 1-4 will show as a tally change — that
-is a deliberate removal, not a regression, and the gate's outcome should say so.
+minimum is to raise on loop exhaustion rather than fall through.
+
+**CORRECTION, 2026-07-30.** An earlier version of this paragraph said deletion removes two
+tests. **That undercounted by a factor of six.** The real blast radius, enumerated:
+
+- `test_analysis_transient.py::test_transient_coupled_lte` and
+  `::test_transient_adaptive_vs_coupled` — 2 tests, deleted outright.
+- **`test_analysis_transient_stress.py` — all 10 tests**, every one of which calls
+  `_compare_methods` (`:13-29`), which runs the circuit *twice*, once per path. This is the
+  whole `slow`-marked block.
+- `doc/src/circuit/lte_dae.rst:80` and `doc/architecture.md:717` both document the flag.
+
+So 12 tests, not 2. **This changes the shape of the decision and it is recorded here rather
+than absorbed**, because the undercount would have turned up as an unexplained tally drop at
+gate 1-4 — which is exactly the kind of surprise the gate exists to prevent.
+
+**It does not change the recommendation, and arguably strengthens it.** Two observations:
+
+1. What `_compare_methods` actually asserts is weak. It runs both paths, `warnings.warn`s
+   (does not fail) if the step counts differ by more than 3x, and returns both results; the
+   tests then assert on each path *independently* — final voltage within tolerance. There is
+   almost no differential content. Drop the coupled run and `_compare_methods` becomes a
+   one-line `_run`, every existing assertion on `res_adapt` survives verbatim, and the only
+   thing lost is a warning nobody reads.
+2. If 0.1d is right that the coupled path is algorithmically a rejection loop like
+   `solve()`, then this file has been comparing the standard controller against a near-copy
+   of itself with different constants — which is a weak test *and* a misleading one, since
+   `architecture.md:717` records "comparing the two step controllers is the point of the
+   file."
+
+**And it makes P15 partly moot:** the slow block runs every stiff circuit twice, so deleting
+the second run roughly halves it. `test_stress_stiff_rlc_pulse` is the largest single test
+in the suite at 73 s (0.2c); this is the cheapest available route to that cost, and it does
+not weaken a single assertion — which is the objection P15 raises against marking it slow.
 
 **Docs in the same commit:** a section in `doc/transient.rst` (or the transient module
 docstring) stating what happens when the operating point fails and how to ask for a
