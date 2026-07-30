@@ -65,10 +65,8 @@ from pycircuit.circuit import SubCircuit, gnd, numeric
 from pycircuit.circuit import circuit as circuit_module
 from pycircuit.circuit import benchmark_circuits as bc
 from pycircuit.circuit.benchmark_circuits import (_UA741_NODE_NAMES,
-                                                 _UA741_ROLES,
-                                                 _stamp_ua741_devices,
-                                                 add_small_signal_bjt)
-from pycircuit.circuit.elements import BSource, C, R, VSin
+                                                 build_leapfrog_network)
+from pycircuit.circuit.elements import BSource
 from pycircuit.circuit.distortion import (GradedSpectrum, GradedVector,
                                           graded_response_mimo)
 from pycircuit.circuit.transient import Transient
@@ -124,11 +122,17 @@ POINTS = 512
 def build_transient_leapfrog(amplitude):
     """The same topology as `leapfrog_5th_order`, numeric, driven by TWO tones.
 
-    Replicated rather than reused because the fixture builds with the *symbolic*
-    toolkit and forces a symbolic `VS`; a transient needs numeric elements and a
-    time-domain source.  The device stamping itself is shared, via
-    `_stamp_ua741_devices`, so the transistor network cannot drift from the
-    fixture's.
+    The *build* is separate from the fixture's because the fixture uses the symbolic
+    toolkit and forces a symbolic `VS`, while a transient needs numeric elements and
+    a time-domain source.  But nothing about the circuit is replicated: the devices
+    come from `_stamp_ua741_devices` and the coupling network from
+    `wire_leapfrog_couplings`, both shared with the fixture.
+
+    An earlier version of this docstring claimed the circuit "cannot drift from the
+    fixture's" on the strength of sharing `_stamp_ua741_devices` alone.  That was
+    true of the transistors and false of everything connecting them, and the
+    difference mattered: when the sign error that put two poles in the right half
+    plane was fixed in the fixture, the copy here kept the broken wiring.
 
     The two tones are two sources in series, so the input node carries their sum.
     """
@@ -136,37 +140,12 @@ def build_transient_leapfrog(amplitude):
     circuit_module.default_toolkit = numeric
     try:
         cir = SubCircuit(toolkit=numeric)
-        node = {'in': cir.add_node('in'), 'mid': cir.add_node('mid')}
-        cir['vs1'] = VSin(node['in'], node['mid'], va=amplitude, freq=F1)
-        cir['vs2'] = VSin(node['mid'], gnd, va=amplitude, freq=F2)
-
-        amp = []
-        for k in range(STAGES):
-            local = {}
-            for base in _UA741_NODE_NAMES:
-                local[base] = cir.add_node('s%d_%s' % (k, base))
-            amp.append(local)
-
-        def bjt_for(stage):
-            def bjt(dev, role, b, c, e):
-                gm, rpi, ro, cpi, cmu = _UA741_ROLES[role]
-                add_small_signal_bjt(cir, 's%d_%s' % (stage, dev), b, c, e,
-                                     gm, rpi, ro, cpi, cmu)
-            return bjt
-
-        for k in range(STAGES):
-            _stamp_ua741_devices(cir, amp[k], bjt_for(k), True, pfx='s%d_' % k)
-            cir['sg%d' % k] = R(amp[k]['inp'], gnd, r=1.0)
-        for k in range(STAGES):
-            cir['ci%d' % k] = C(amp[k]['out'], amp[k]['inn'], c=1e-9)
-        cir['rd0'] = R(amp[0]['out'], amp[0]['inn'], r=10e3)
-        cir['rd%d' % (STAGES - 1)] = R(amp[STAGES - 1]['out'],
-                                       amp[STAGES - 1]['inn'], r=10e3)
-        cir['rin'] = R(node['in'], amp[0]['inn'], r=10e3)
-        for k in range(1, STAGES):
-            cir['rf%d' % k] = R(amp[k - 1]['out'], amp[k]['inn'], r=10e3)
-        for k in range(STAGES - 1):
-            cir['rb%d' % k] = R(amp[k + 1]['out'], amp[k]['inn'], r=10e3)
+        ## The ENTIRE circuit, from the same builder the fixture uses -- including
+        ## the source.  The builder dispatches on the toolkit: numeric here, so it
+        ## injects one `VSin` per tone in series rather than the symbolic `VS` the
+        ## fixture gets.  There is nothing left for this function to get wrong.
+        node, amp, _names = build_leapfrog_network(
+            cir, stages=STAGES, tones=((amplitude, F1), (amplitude, F2)))
 
         ## THE nonlinearity, and the only nonlinear element in the circuit: a
         ## cubic conductance to ground on stage 0's input-pair emitter.

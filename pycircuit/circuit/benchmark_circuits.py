@@ -22,6 +22,7 @@ import numpy as np
 import sympy
 
 from pycircuit.circuit import SubCircuit, R, C, VS, IS, VCCS, Nullor, gnd
+from pycircuit.circuit.elements import VSin
 from pycircuit.circuit.toolkit import symbolic
 from pycircuit.circuit.analysis import remove_row_col
 from pycircuit.circuit.analysis_ss import dc_steady_state
@@ -663,90 +664,195 @@ def leapfrog_5th_order(symbolic_devices=(), miller=True):
         _circuit_module.default_toolkit = saved
 
 
-def _build_leapfrog(symbolic_devices, miller):
-    cir = SubCircuit(toolkit=symbolic)
-    vin = sympy.Symbol('vin')
-    params = {vin: 1.0}
+def wire_leapfrog_couplings(cir, amp, in_node, stages=5, r=10e3, c=1e-9):
+    """Wire the leapfrog coupling network around already-stamped amplifiers.
 
-    STAGES = 5
-    names = ['in']
+    Shared so that the symbolic fixture and any numeric replica cannot disagree
+    about the topology.  They already did: `benchmarks/nonlinear_leapfrog_sweep.py`
+    hand-carried a copy of this wiring in order to build with the *numeric*
+    toolkit, and when the sign error that put two poles in the right half plane was
+    fixed here, the copy silently kept the broken topology.  The docstring of that
+    replica claimed the device network "cannot drift from the fixture's" because
+    `_stamp_ua741_devices` is shared -- which was true of the transistors and false
+    of everything connecting them.
+
+    Only R and C are added, and neither contributes a branch row to the MNA
+    system, so the order of these calls does not affect node or branch indexing.
+    That is what makes it safe to lift them out of the stamping loop they were
+    interleaved with.
+
+    Args:
+        cir: the circuit to add elements to.
+        amp: list of per-stage node dicts, keyed by `_UA741_NODE_NAMES` entries.
+        in_node: the driven input node, fed through ``rin`` into stage 0.
+        stages: number of amplifier stages.
+        r, c: the ladder's resistance and capacitance.
+    """
+    for k in range(stages):
+        if k == stages - 1:
+            ## The last stage has no backward coupling, so nothing needs to enter
+            ## its non-inverting input: it is a plain inverting integrator and
+            ## that input is grounded.
+            cir['sg%d' % k] = R(amp[k]['inp'], gnd, r=1.0)
+        else:
+            ## Every other stage is a DIFFERENCE integrator.  `cp` matches `ci`
+            ## below; with an ideal amplifier the pole it forms with the backward
+            ## resistor cancels exactly, and the stage integrates the difference
+            ## of its two neighbours.  Integrating the *sum* instead makes each
+            ## two-integrator loop positive feedback and puts poles in the right
+            ## half plane -- which is exactly what this fixture used to do.
+            cir['cp%d' % k] = C(amp[k]['inp'], gnd, c=c)
+
+    for k in range(stages):
+        cir['ci%d' % k] = C(amp[k]['out'], amp[k]['inn'], c=c)
+
+    ## The terminating stages are LOSSY integrators, damped by a resistor across
+    ## the capacitor: they simulate the ladder's source and load resistances.
+    ## Without them the chain integrates at DC and the passband never flattens.
+    ##
+    ## `rd0` needs its mirror image `rp0` on the non-inverting side, for the same
+    ## reason `cp0` mirrors `ci0`: only with both does stage 0 realise
+    ## ``(s*T + 1)*y0 = y1 - vin``, the ladder's source-terminated first equation.
+    ## Omitting `rp0` is not a small error -- it drops the DC gain from 1/2 to 1/3
+    ## and puts a real pole pair back at s = +334.
+    cir['rd0'] = R(amp[0]['out'], amp[0]['inn'], r=r)
+    cir['rp0'] = R(amp[0]['inp'], gnd, r=r)
+    cir['rd%d' % (stages - 1)] = R(amp[stages - 1]['out'],
+                                   amp[stages - 1]['inn'], r=r)
+
+    ## Forward path: input, then each stage into the next.  Into the INVERTING
+    ## input, the one carrying the integrating capacitor.
+    cir['rin'] = R(in_node, amp[0]['inn'], r=r)
+    for k in range(1, stages):
+        cir['rf%d' % k] = R(amp[k - 1]['out'], amp[k]['inn'], r=r)
+
+    ## THE LEAPFROG FEEDBACK: each stage but the last is also driven from the
+    ## stage *after* it.  Without these the circuit is an integrator chain, not a
+    ## ladder simulation.  These enter the NON-INVERTING input, and that is where
+    ## the ladder's sign alternation comes from: forward and backward couplings
+    ## must reach a stage with opposite signs.
+    for k in range(stages - 1):
+        cir['rb%d' % k] = R(amp[k + 1]['out'], amp[k]['inp'], r=r)
+
+
+def build_leapfrog_network(cir, stages=5, symbolic_devices=(), params=None,
+                           miller=True, r=10e3, c=1e-9, toolkit=None,
+                           tones=None, vin_symbol=None):
+    """Build the ENTIRE leapfrog circuit, source included, dispatching on toolkit.
+
+    Nothing about this circuit is duplicated anywhere: node creation, all five
+    amplifiers, the coupling network *and* the source all come from here.  Which
+    source is injected depends on the toolkit, because that is the only thing the
+    symbolic fixture and a time-domain run genuinely disagree about:
+
+    * **symbolic** -- one `VS(in, gnd, vac=vin)` with ``vin`` a symbol, which is what
+      the DDD/perturbation analyses need in order to carry the drive symbolically.
+    * **numeric** -- one `VSin` per entry of `tones`, wired in **series** so the input
+      node carries their sum.  Two tones is what a two-tone IM3 measurement needs.
+
+    Sharing this far is a direct response to how the fixture's right-half-plane sign
+    error survived: the previous split shared only `_stamp_ua741_devices`, on the
+    strength of which a replica in `benchmarks/nonlinear_leapfrog_sweep.py` claimed
+    its circuit "cannot drift from the fixture's".  That was true of the transistors
+    and false of everything connecting them, so when the sign error was fixed here
+    the replica silently kept integrating the *sum* of its neighbours instead of the
+    difference.  A shared builder makes that class of drift impossible rather than
+    merely unlikely.
+
+    Args:
+        cir: circuit to build into.
+        stages: number of amplifier stages.
+        symbolic_devices: device names (e.g. ``'s0_q1'``) whose ``gm`` becomes a
+            symbol instead of a number.
+        params: dict to receive ``{symbol: nominal}`` for those symbols; may be None.
+        miller: passed to `_stamp_ua741_devices`.
+        r, c: the ladder's resistance and capacitance.
+        toolkit: defaults to ``cir.toolkit``.  Selects the source form.
+        tones: numeric toolkit only -- a sequence of ``(amplitude, freq)``, one
+            `VSin` each, in series.  Required for the numeric toolkit.
+        vin_symbol: symbolic toolkit only -- the drive symbol; defaults to ``vin``.
+
+    Returns:
+        ``(node, amp, names)`` -- the non-stage node dict (``'in'`` plus any series
+        mid-nodes), the per-stage node dicts, and ALL node names in creation order.
+    """
+    toolkit = cir.toolkit if toolkit is None else toolkit
+    is_symbolic = toolkit is symbolic
+
     node = {'in': cir.add_node('in')}
-    cir['vs'] = VS(node['in'], gnd, vac=vin)
+    names = ['in']
 
-    ## One amplifier per reactive element of the LC prototype.  Nodes are
-    ## created stage by stage in the µA741's own order, so each block of the
-    ## matrix has the structure the single-amplifier fixture has.
+    if is_symbolic:
+        if tones:
+            raise ValueError('tones are meaningless for the symbolic toolkit: the '
+                             'drive is carried as a symbol, not a frequency')
+        sym = sympy.Symbol('vin') if vin_symbol is None else vin_symbol
+        cir['vs'] = VS(node['in'], gnd, vac=sym)
+        if params is not None:
+            params.setdefault(sym, 1.0)
+    else:
+        if not tones:
+            raise ValueError('the numeric toolkit needs at least one (amplitude, '
+                             'freq) tone; a symbolic VS cannot be integrated')
+        ## Series chain: in -> mid0 -> ... -> gnd, so the input node carries the sum.
+        prev = node['in']
+        for i, (va, freq) in enumerate(tones):
+            last = i == len(tones) - 1
+            if last:
+                nxt = gnd
+            else:
+                nm = 'mid%d' % i
+                node[nm] = cir.add_node(nm)
+                names.append(nm)
+                nxt = node[nm]
+            cir['vs%d' % i] = VSin(prev, nxt, va=va, freq=freq)
+            prev = nxt
+
     amp = []
-    for k in range(STAGES):
+    for k in range(stages):
         local = {}
         for base in _UA741_NODE_NAMES:
-            name = 's%d_%s' % (k, base)
-            local[base] = cir.add_node(name)
-            names.append(name)
+            nm = 's%d_%s' % (k, base)
+            local[base] = cir.add_node(nm)
+            names.append(nm)
         amp.append(local)
 
     def bjt_for(stage):
-        def bjt(dev, role, b, c, e):
+        def bjt(dev, role, b, col, e):
             gm, rpi, ro, cpi, cmu = _UA741_ROLES[role]
             full = 's%d_%s' % (stage, dev)
             if full in symbolic_devices:
                 sym = sympy.Symbol('gm_%s' % full, positive=True)
-                params[sym] = gm
+                if params is not None:
+                    params[sym] = gm
                 gm = sym
-            add_small_signal_bjt(cir, full, b, c, e, gm, rpi, ro, cpi, cmu)
+            add_small_signal_bjt(cir, full, b, col, e, gm, rpi, ro, cpi, cmu)
         return bjt
 
-    for k in range(STAGES):
-        _stamp_ua741_devices(cir, amp[k], bjt_for(k), miller,
-                             pfx='s%d_' % k)
-        if k == STAGES - 1:
-            ## The last stage has no backward coupling, so nothing needs to
-            ## enter its non-inverting input: it is a plain inverting
-            ## integrator and that input is grounded.
-            cir['sg%d' % k] = R(amp[k]['inp'], gnd, r=1.0)
-        else:
-            ## Every other stage is a DIFFERENCE integrator.  ``cp`` is the
-            ## capacitor that matches ``ci`` below; with an ideal amplifier the
-            ## pole it forms with the backward resistor cancels exactly, and
-            ## the stage integrates the difference of its two neighbours.  That
-            ## difference is the whole point -- see the docstring: integrating
-            ## the *sum* makes each two-integrator loop positive feedback and
-            ## puts poles in the right half plane.
-            cir['cp%d' % k] = C(amp[k]['inp'], gnd, c=1e-9)
+    for k in range(stages):
+        _stamp_ua741_devices(cir, amp[k], bjt_for(k), miller, pfx='s%d_' % k)
 
-    ## Integrating capacitor around each amplifier.
-    for k in range(STAGES):
-        cir['ci%d' % k] = C(amp[k]['out'], amp[k]['inn'], c=1e-9)
+    wire_leapfrog_couplings(cir, amp, node['in'], stages=stages, r=r, c=c)
+    return node, amp, names
 
-    ## The terminating stages are LOSSY integrators, damped by a resistor
-    ## across the capacitor: they simulate the ladder's source and load
-    ## resistances.  Without them the chain integrates at DC, the passband
-    ## never flattens, and the result is not a filter at all -- which is
-    ## exactly what the first version of this fixture did.
+
+def _build_leapfrog(symbolic_devices, miller):
+    cir = SubCircuit(toolkit=symbolic)
+    vin = sympy.Symbol('vin')
+    params = {vin: 1.0}
+    STAGES = 5
+
+    ## The WHOLE circuit, source included, from the shared builder -- which picks a
+    ## symbolic `VS` here because the toolkit is symbolic, and `VSin` tones for a
+    ## transient.  One amplifier per reactive element of the LC prototype; nodes are
+    ## created stage by stage in the µA741's own order, so each block of the matrix
+    ## has the structure the single-amplifier fixture has.
     ##
-    ## ``rd0`` needs its mirror image ``rp0`` on the non-inverting side, for
-    ## the same reason ``cp0`` mirrors ``ci0``: only with both does stage 0
-    ## realise ``(s*T + 1)*y0 = y1 - vin``, the ladder's source-terminated
-    ## first equation.  Omitting ``rp0`` is not a small error -- it drops the
-    ## DC gain from 1/2 to 1/3 and puts a real pole pair back at s = +334.
-    cir['rd0'] = R(amp[0]['out'], amp[0]['inn'], r=10e3)
-    cir['rp0'] = R(amp[0]['inp'], gnd, r=10e3)
-    cir['rd%d' % (STAGES - 1)] = R(amp[STAGES-1]['out'],
-                                   amp[STAGES-1]['inn'], r=10e3)
-
-    ## Forward path: input, then each stage into the next.  Into the INVERTING
-    ## input, the one carrying the integrating capacitor.
-    cir['rin'] = R(node['in'], amp[0]['inn'], r=10e3)
-    for k in range(1, STAGES):
-        cir['rf%d' % k] = R(amp[k-1]['out'], amp[k]['inn'], r=10e3)
-
-    ## THE LEAPFROG FEEDBACK: each stage but the last is also driven from the
-    ## stage *after* it.  Without these the circuit is an integrator chain,
-    ## not a ladder simulation.  These enter the NON-INVERTING input, and that
-    ## is where the ladder's sign alternation comes from: forward and backward
-    ## couplings must reach a stage with opposite signs.
-    for k in range(STAGES - 1):
-        cir['rb%d' % k] = R(amp[k+1]['out'], amp[k]['inp'], r=10e3)
+    ## Nothing here is replicated in the benchmarks, which is how the
+    ## right-half-plane sign error came to survive in a hand-carried copy.
+    _node, amp, names = build_leapfrog_network(
+        cir, stages=STAGES, symbolic_devices=symbolic_devices,
+        params=params, miller=miller, vin_symbol=vin)
 
     return system_from_circuit(cir, 'leapfrog_5th_order', params,
                                out_index=names.index('s%d_out'
