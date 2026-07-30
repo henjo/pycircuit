@@ -207,3 +207,63 @@ def test_leapfrog_reuses_the_calibration_amplifier_unchanged():
     assert filt.dim == 127
     assert single.dim == len(bc._UA741_NODE_NAMES) + 1, (
         'the single amplifier is its own nodes plus the source branch')
+
+
+def test_fully_symbolic_ua741_substitutes_back_to_the_numeric_one():
+    """``fully_symbolic=True`` must change the symbols and nothing else.
+
+    The option exists for cancellation work: a device parameter left numeric
+    merges into its matrix entry's arithmetic, so its cancelling partner at the
+    mirrored position becomes undetectable.  With the default fixture every one of
+    the matrix's additive contributions is a pure number, which is why a
+    de-cancelling expansion has nothing to see there.
+
+    The property that makes it trustworthy is that it is the *same circuit*:
+    substituting the recorded nominal values must reproduce the numeric fixture
+    entry for entry.
+    """
+    import numpy as np
+    import sympy
+    from pycircuit.circuit import benchmark_circuits as bc
+
+    num = bc.ua741()
+    sym = bc.ua741(fully_symbolic=True)
+
+    assert sym.dim == num.dim
+    assert sum(1 for e in sym.A if e != 0) == sum(1 for e in num.A if e != 0)
+    ## Every transistor parameter plus every passive, against gm alone.
+    assert len(sym.A.free_symbols) > 100
+    assert len(num.A.free_symbols) == 1              # only s
+
+    probe = {num.s: 2j * np.pi * 1e3}
+    back = sym.A.subs({k: v for k, v in sym.params.items()})
+    for i in range(num.dim):
+        for j in range(num.dim):
+            a, b = num.A[i, j], back[i, j]
+            va = complex(a.subs(probe)) if getattr(a, 'free_symbols', None) else complex(a)
+            vb = complex(b.subs({sym.s: probe[num.s]})) if getattr(b, 'free_symbols', None) else complex(b)
+            scale = max(abs(va), abs(vb), 1e-30)
+            assert abs(va - vb) / scale < 1e-12, (i, j, va, vb)
+
+
+def test_fully_symbolic_ua741_leaves_only_structural_numbers():
+    """Only the source's incidence entries may stay numeric.
+
+    That is the measurable statement of "one symbol per device": after the
+    change, the sole additive contributions without a device symbol should be the
+    voltage source's +-1 incidence pair, which is topology rather than a device.
+    """
+    import sympy
+    from pycircuit.circuit import benchmark_circuits as bc
+
+    sym = bc.ua741(fully_symbolic=True)
+    devices = {s for s in sym.A.free_symbols if s is not sym.s}
+    numeric_only = 0
+    for i in range(sym.dim):
+        for j in range(sym.dim):
+            if sym.A[i, j] == 0:
+                continue
+            for term in sympy.Add.make_args(sympy.expand(sym.A[i, j])):
+                if not (term.free_symbols & devices):
+                    numeric_only += 1
+    assert numeric_only == 2, numeric_only

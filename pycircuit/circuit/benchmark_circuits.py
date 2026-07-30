@@ -378,7 +378,7 @@ _UA741_ROLES = {
 }
 
 
-def ua741(symbolic_devices=(), miller=True):
+def ua741(symbolic_devices=(), miller=True, fully_symbolic=False):
     """The µA741 operational amplifier, small-signal -- the calibration circuit.
 
     Transcribed from Fig. 15 of Tan & Shi, *Hierarchical Symbolic Analysis of
@@ -396,6 +396,22 @@ def ua741(symbolic_devices=(), miller=True):
         symbolic_devices: Device names (``'q1'`` ... ``'q24'``) whose ``gm``
             stays symbolic.  Empty gives a numeric circuit plus ``s``.
         miller: Include the 30 pF compensation capacitor.
+        fully_symbolic: Give **every** device parameter its own symbol -- each
+            transistor's ``gm``, ``rpi``, ``ro``, ``cpi``, ``cmu`` and every
+            resistor and capacitor -- rather than only the named
+            transconductances.  Overrides ``symbolic_devices``.
+
+            This is what a *cancellation-free* expansion needs, and the reason is
+            not aesthetic: term cancellation in an MNA determinant is a device
+            appearing at two matrix positions with opposite signs, so a parameter
+            left numeric merges into its entry's arithmetic and its cancelling
+            partner becomes undetectable.  With the default fixture 159 of the
+            matrix's 215 additive contributions are pure numbers.  See
+            ``doc/cancellation_ranking_conclusions.md`` §18.
+
+            The cost is a far larger symbol set (roughly 130 symbols against 24),
+            so a fully symbolic diagram is much bigger; this is for cancellation
+            work, not for the calibration sizes.
 
     Returns:
         BenchSystem.
@@ -404,12 +420,12 @@ def ua741(symbolic_devices=(), miller=True):
     saved = _circuit_module.default_toolkit
     _circuit_module.default_toolkit = symbolic
     try:
-        return _build_ua741(symbolic_devices, miller)
+        return _build_ua741(symbolic_devices, miller, fully_symbolic)
     finally:
         _circuit_module.default_toolkit = saved
 
 
-def _stamp_ua741_devices(cir, n, bjt, miller, pfx=''):
+def _stamp_ua741_devices(cir, n, bjt, miller, pfx='', res=None, cap=None):
     """Stamp the µA741's devices, given nodes already created.
 
     Split out of :func:`_build_ua741` so the amplifier can be
@@ -425,7 +441,21 @@ def _stamp_ua741_devices(cir, n, bjt, miller, pfx=''):
             it decides which transconductances stay symbolic.
         miller: Include the 30 pF compensation capacitor.
         pfx: Element-name prefix, so instances do not collide.
+        res, cap: ``res(name, a, b, value)`` / ``cap(name, a, b, value)``, the
+            same hook idea as ``bjt`` extended to the passives.  Default to
+            stamping the numeric value.  A caller that wants *every* device
+            parameter symbolic -- which is what de-cancellation needs, since a
+            numeric contribution merges into its matrix entry and its
+            cancellation becomes invisible -- supplies all three.
     """
+    def _numeric_res(name, a, b, value):
+        cir[name] = R(a, b, r=value)
+
+    def _numeric_cap(name, a, b, value):
+        cir[name] = C(a, b, c=value)
+
+    res = res if res is not None else _numeric_res
+    cap = cap if cap is not None else _numeric_cap
     ## -- input stage: emitter followers Q1/Q2 into common-base Q3/Q4 --------
     ## Q1/Q2 are followers whose emitters drive the common-base pair Q3/Q4 --
     ## two separate signal paths, not a shared tail node.
@@ -440,44 +470,44 @@ def _stamp_ua741_devices(cir, n, bjt, miller, pfx=''):
     ## Q8/Q9 mirror loading the input pair collectors.
     bjt('q8', 'mirror', n['nq9'], n['c12'], gnd)
     bjt('q9', 'mirror', n['nq9'], n['nq9'], gnd)
-    cir[pfx + 'rq9'] = R(n['c12'], n['nq9'], r=1e3)
+    res(pfx + 'rq9', n['c12'], n['nq9'], 1e3)
 
     ## -- Q5/Q6 active load with Q7 buffering the mirror base ----------------
     bjt('q5', 'mirror', n['nb56'], n['c3'], n['e5'])
     bjt('q6', 'mirror', n['nb56'], n['c4'], n['e6'])
     bjt('q7', 'mirror', n['c3'], gnd, n['nb56'])
-    cir[pfx + 'R1'] = R(n['e5'], gnd, r=1e3)
-    cir[pfx + 'R2'] = R(n['nb56'], gnd, r=50e3)
-    cir[pfx + 'R3'] = R(n['e6'], gnd, r=1e3)
+    res(pfx + 'R1', n['e5'], gnd, 1e3)
+    res(pfx + 'R2', n['nb56'], gnd, 50e3)
+    res(pfx + 'R3', n['e6'], gnd, 1e3)
 
     ## -- Widlar bias chain: Q10/Q11 with R4, mirrored by Q12 into Q13 -------
     bjt('q10', 'bias', n['nb1011'], n['nb34'], n['e10'])
     bjt('q11', 'bias', n['nb1011'], n['nb1011'], gnd)
     bjt('q12', 'bias', n['nr5'], n['nr5'], gnd)
-    cir[pfx + 'R4'] = R(n['e10'], gnd, r=5e3)
-    cir[pfx + 'R5'] = R(n['nr5'], n['nb1011'], r=39e3)
+    res(pfx + 'R4', n['e10'], gnd, 5e3)
+    res(pfx + 'R5', n['nr5'], n['nb1011'], 39e3)
 
     ## -- second stage: Q16 follower into Q17, Miller compensated ------------
     bjt('q16', 'gain', n['c4'], gnd, n['e16'])
     bjt('q17', 'gain', n['e16'], n['c17'], n['e17'])
-    cir[pfx + 'R9'] = R(n['e16'], gnd, r=50e3)
-    cir[pfx + 'R8'] = R(n['e17'], gnd, r=100)
+    res(pfx + 'R9', n['e16'], gnd, 50e3)
+    res(pfx + 'R8', n['e17'], gnd, 100)
     bjt('q13', 'bias', n['nr5'], n['c17'], gnd)    # current-source load
     if miller:
-        cir[pfx + 'cc'] = C(n['c4'], n['c17'], c=30e-12)
+        cap(pfx + 'cc', n['c4'], n['c17'], 30e-12)
 
     ## -- output stage: Q23 driver, Q18/Q19 Vbe multiplier, Q14/Q20 pair -----
     bjt('q23', 'gain', n['c17'], gnd, n['e23'])
-    cir[pfx + 'R11'] = R(n['e23'], gnd, r=50e3)
+    res(pfx + 'R11', n['e23'], gnd, 50e3)
     bjt('q18', 'bias', n['n19'], n['nb14'], n['nb20'])
     bjt('q19', 'bias', n['nb20'], n['n19'], gnd)
-    cir[pfx + 'R10'] = R(n['n19'], n['nb20'], r=40e3)
-    cir[pfx + 'rdrv'] = R(n['e23'], n['nb14'], r=1e3)
+    res(pfx + 'R10', n['n19'], n['nb20'], 40e3)
+    res(pfx + 'rdrv', n['e23'], n['nb14'], 1e3)
 
     bjt('q14', 'output', n['nb14'], gnd, n['nr6'])
     bjt('q20', 'output', n['nb20'], gnd, n['nr7'])
-    cir[pfx + 'R6'] = R(n['nr6'], n['out'], r=27)
-    cir[pfx + 'R7'] = R(n['nr7'], n['out'], r=22)
+    res(pfx + 'R6', n['nr6'], n['out'], 27)
+    res(pfx + 'R7', n['nr7'], n['out'], 22)
 
     ## -- short-circuit protection and remaining bias devices ----------------
     bjt('q15', 'off', n['nr6'], n['nb14'], gnd)
@@ -485,10 +515,10 @@ def _stamp_ua741_devices(cir, n, bjt, miller, pfx=''):
     bjt('q22', 'off', n['e17'], n['c17'], gnd)
     bjt('q24', 'off', n['nb1011'], n['nb1011'], gnd)
 
-    cir[pfx + 'rload'] = R(n['out'], gnd, r=2e3)
+    res(pfx + 'rload', n['out'], gnd, 2e3)
 
 
-def _build_ua741(symbolic_devices, miller):
+def _build_ua741(symbolic_devices, miller, fully_symbolic=False):
     cir = SubCircuit(toolkit=symbolic)
     names = (
         'inp', 'inn',            # inputs
@@ -507,17 +537,40 @@ def _build_ua741(symbolic_devices, miller):
     vin = sympy.Symbol('vin')
     params = {vin: 1.0}
     cir['vs'] = VS(n['inp'], gnd, vac=vin)
-    cir['rinn'] = R(n['inn'], gnd, r=1e6)          # inverting input tied down
+    ## Stamped here rather than in the helper, so it needs the same treatment.
+    cir['rinn'] = R(n['inn'], gnd,
+                    r=sympy.Symbol('r_rinn', positive=True)
+                    if fully_symbolic else 1e6)
+    if fully_symbolic:
+        params[sympy.Symbol('r_rinn', positive=True)] = 1e6
+
+    def symbolise(value, kind, dev):
+        """One symbol per device parameter, with its nominal value in params."""
+        sym = sympy.Symbol('%s_%s' % (kind, dev), positive=True)
+        params[sym] = value
+        return sym
 
     def bjt(dev, role, b, c, e):
         gm, rpi, ro, cpi, cmu = _UA741_ROLES[role]
-        if dev in symbolic_devices:
-            sym = sympy.Symbol('gm_%s' % dev, positive=True)
-            params[sym] = gm
-            gm = sym
+        if fully_symbolic:
+            gm = symbolise(gm, 'gm', dev)
+            rpi = symbolise(rpi, 'rpi', dev)
+            ro = symbolise(ro, 'ro', dev)
+            cpi = None if cpi is None else symbolise(cpi, 'cpi', dev)
+            cmu = None if cmu is None else symbolise(cmu, 'cmu', dev)
+        elif dev in symbolic_devices:
+            gm = symbolise(gm, 'gm', dev)
         add_small_signal_bjt(cir, dev, b, c, e, gm, rpi, ro, cpi, cmu)
 
-    _stamp_ua741_devices(cir, n, bjt, miller)
+    def res(name, a, b, value):
+        cir[name] = R(a, b, r=symbolise(value, 'r', name)
+                      if fully_symbolic else value)
+
+    def cap(name, a, b, value):
+        cir[name] = C(a, b, c=symbolise(value, 'c', name)
+                      if fully_symbolic else value)
+
+    _stamp_ua741_devices(cir, n, bjt, miller, res=res, cap=cap)
 
     return system_from_circuit(cir, 'ua741', params,
                                out_index=names.index('out'),

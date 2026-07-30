@@ -1037,14 +1037,40 @@ every resistor). **The next step is a fully-symbolic µA741 fixture**, which is
 plumbing: `add_small_signal_bjt` already takes each parameter, so it means passing
 symbols instead of floats and threading them into `BenchSystem.params`.
 
+**7e-7f then built the fixture and measured it, and the route works.**
+`ua741(fully_symbolic=True)` gives every device parameter its own symbol — 132
+symbols, 343 addends, only 2 numeric (the source's incidence) against 168 of 168
+before; back-substitution reproduces the numeric fixture to 2.2e-16, with two
+tests. On it, de-cancellation preserves the determinant to **2.9e-14** (so the rule
+is sound with controlled sources, not just on passive ladders), costs **7.42×** in
+memo states rather than the ladders' 1.2× — the declared reconsider-if was right,
+though 204 679 states in 14 s is a constant factor and perfectly affordable — and
+brings `κ` from **6.66e3 to 99.05** at a fixed frequency.
+
+Per coefficient of `s`, against a like-for-like control (same matrix, same point,
+s-expanded but not de-cancelled), **every one of 24 coefficients improves by 60× to
+394 000×**, and the low-order ones land at **`κ ≈ 14-17`**. That is the first time
+`κ` has been in a range where magnitude ranking is plausible: at `κ = 15` and
+`tol = 0.05` the sufficient condition wants 99.67% of the absolute mass, against
+99.99947% at `κ = 9.4e3`. `κ = 1` does not hold and was predicted not to — an
+amplifier is not passive.
+
+**So the remaining work is one implementation, not a premise.** Everything measured
+so far is a memoised recursion that computes values and counts; what does not exist
+is a **rankable diagram** — Tan & Shi's `CL`/`REMAINDER` construction over
+sub-diagrams. The measurements say what it should cost (~7× the plain full-symbol
+diagram, 204 679 states for the µA741).
+
+**The payoff test, once that exists:** rank a de-cancelled `s^1` coefficient at
+`κ ≈ 17` and see whether it converges in tens of terms instead of thousands. That
+is the experiment this whole thread has been trying to reach.
+
 **Then, in this order:**
 
-1. **A fully-symbolic µA741**, then re-measure the 1.2× state overhead on it —
-   ladders are a benign topology for that measurement and a denser matrix may
-   accumulate more live labels per minor. Check before building on it.
-2. **The de-cancelled s-expanded construction as a real diagram** rather than the
+1. **The de-cancelled s-expanded construction as a real diagram** rather than the
    recursion used for measurement, i.e. Tan & Shi's `CL`/`REMAINDER` set operations
-   over sub-diagrams. The measurements say what it should cost.
+   over sub-diagrams, so that `approximate_groups` can walk it. Then run the payoff
+   test above.
 3. **The topological route (GPDD / two-graph)**, still worth knowing about after
    7a's spanning-tree finding — it enumerates exactly the objects that survive. Needs a
    circuit graph model pycircuit lacks; and Kolka et al. record that VCCS-heavy
@@ -1058,7 +1084,11 @@ the *path* ("every device used so far") — correct but its sharing loss grows
 1.7-1.8× per circuit section, where keying on reachable **labels** costs a flat
 1.2×; de-cancellation *without* s-expansion (no `κ` benefit at a fixed frequency,
 and worse above N=6); forbidding matrix *positions* rather than labels (silently
-drops terms, because one entry carries several devices); flat DDD on the leapfrog
+drops terms, because one entry carries several devices); expecting `κ = 1` on an
+*active* circuit (it holds for passive networks only — an amplifier's controlled
+sources make the surviving terms signed); and comparing a per-coefficient `κ`
+against the *whole* determinant's, which is the wrong control and makes a 60×
+improvement look like a regression; flat DDD on the leapfrog
 (killed at 15 min / 2.7 GB); `suppression_order`'s 111 single-node levels for
 interpretability (level `k` is built over level `k-1`'s stamps, so reaching a
 device unwinds all 111); sequential multi-block suppression (`_suppress` renames

@@ -32,7 +32,9 @@
 > | de-cancellation gives `κ = 1` on a calibration circuit | §17 | **holds, exactly** |
 > | determinant-side de-cancellation is not a compact representation | §17 | **CORRECTED** — true of a *path*-keyed state, false for a label-keyed one, which costs a flat 1.2× (§18) |
 > | de-cancellation alone reduces `κ` | §17 implied | **REFUTED** — no benefit at a fixed frequency, worse above N=6; the residue is phase (§18) |
-> | de-cancellation **plus s-expansion** gives `κ = 1` per coefficient | §18 | **holds, measured to 12 figures** |
+> | de-cancellation **plus s-expansion** gives `κ = 1` per coefficient | §18 | **holds for PASSIVE networks**, measured to 12 figures; **not** for an amplifier (§19) |
+> | the 1.2× state overhead carries to a real amplifier | §18 reconsider-if | **REFUTED** — 7.42× on the µA741, though still a constant factor (§19) |
+> | de-cancellation brings `κ` into a workable range on a real amplifier | §19 | **holds** — low-order coefficients at `κ ≈ 14-17`, from 1.5-1.9e3 |
 >
 > ### The three things worth carrying away
 >
@@ -49,6 +51,15 @@
 >    gives `κ = 1.000000000000` per coefficient. The remaining blocker is a
 >    **fully-symbolic fixture** (the µA741 bakes 159 of 215 addends into numbers),
 >    which is plumbing rather than research.
+>
+> ### The state of the goal, in one line
+>
+> Converging is solved twice over — by group ranking within the existing
+> representation (§2), and now by de-cancellation bringing `κ` from ~10^3-10^6 down
+> to ~15 per coefficient (§19). **Readability is not solved**, and the one
+> experiment that would test it — rank a de-cancelled coefficient at `κ ≈ 17` and
+> see whether tens of terms suffice — needs a *rankable diagram*, which is the
+> single remaining implementation.
 >
 > ### Where the code is
 >
@@ -1162,3 +1173,88 @@ to follow the ladder trend. Ladders are a benign topology for this measurement �
 every minor borders few devices. A denser matrix could accumulate more live labels
 per minor, and the 1.2× could grow. Cheap to check the moment a fully-symbolic
 fixture exists, and it should be checked before anything is built on top.
+
+## 19. Stages 7e-7f: on a real amplifier, `κ` finally lands in a usable range
+
+The prerequisite §18 identified — one symbol per device — is now built:
+`ua741(fully_symbolic=True)` gives every transistor's `gm`, `rpi`, `ro`, `cpi`,
+`cmu` and every resistor and capacitor its own symbol. **132 device symbols, 343
+additive contributions, of which only 2 are numeric** (the source's ±1 incidence,
+which is topology rather than a device) against 168 of 168 numeric before.
+Substituting the recorded nominals reproduces the numeric fixture entry for entry
+to **2.2e-16**, and two tests pin both properties.
+
+### The declared reconsider-if was right: the ladder overhead does not transfer
+
+| | states | terms |
+|---|---|---|
+| plain full-symbol | 27 577 | 5.03e+21 |
+| label-keyed de-cancelled | **204 679** | 1.10e+21 |
+
+**Overhead 7.42×, against the flat 1.20× ladders gave — gate 7e-1 (≤3×) FAILS.**
+Ladders are a benign topology, exactly as flagged: each minor borders few devices,
+so few labels stay live. An amplifier is denser and keeps more.
+
+But read the absolute numbers before writing the route off: 204 679 states is
+small, it took 14 s, and the overhead is a *constant factor*, not the geometric
+growth §17 measured for the path-keyed state. 78% of terms are removed —
+consistent with the 70-90% the literature reports. Determinant preserved against
+`numpy.linalg.det` to **2.9e-14** (gate 7e-2 PASS), which is the important
+correctness statement: the rule is sound on an active circuit with controlled
+sources, not only on a passive ladder.
+
+### And the payoff, once compared against the right control
+
+At a fixed complex `s`, `κ` goes **6.66e+03 → 99.05**, a 67× improvement.
+Per coefficient of `s` it is much better, but only against a **like-for-like
+control** — the same matrix at the same operating point, s-expanded but *not*
+de-cancelled:
+
+| `s^k` | compact | de-cancelled | improvement |
+|---|---|---|---|
+| 0 | 7.63e+05 | 1.26e+04 | 60.5× |
+| 1 | 1.85e+03 | **1.73e+01** | 107× |
+| 2 | 1.50e+03 | **1.42e+01** | 106× |
+| 3 | 1.45e+03 | **1.43e+01** | 101× |
+| 12 | 3.70e+04 | 3.31e+02 | 112× |
+| 23 | 3.09e+06 | **7.84e+00** | 394 367× |
+
+**Every one of the 24 coefficients improves, by 60× to 394 000×**, and the
+low-order coefficients — the ones that carry the response at practical
+frequencies — land at `κ ≈ 14-17`.
+
+**That is the first time in this whole thread that `κ` has been in a range where
+magnitude ranking is plausible.** At `κ = 15` and `tol = 0.05` the sufficient
+condition of §1/§14a asks for `1 - 0.05/15 = 99.67%` of the absolute mass, against
+99.99947% at `κ = 9.4e3`. The difference between those two numbers is the
+difference between a hard approximation and an impossible one.
+
+`κ = 1` does **not** hold, and was predicted not to: an amplifier is not passive,
+so its controlled sources make the surviving terms signed rather than all-positive.
+The `s^0` (DC) coefficient stays hard at 1.26e4.
+
+### A mistake I made reading my own numbers, recorded because it nearly stuck
+
+The first reading of the per-coefficient table compared the de-cancelled `κ`
+against the **compact whole determinant** (6.66e3) and concluded that
+de-cancellation had made the `s^0` coefficient *worse*. That is the wrong control:
+the whole determinant and a single coefficient are different quantities. Against
+the compact *per-coefficient* value at the same operating point, `s^0` improves
+60×. **The comparison was nearly written up as a failure because the control was
+convenient rather than matched** — the same error as §14a's, in a different guise,
+and the reason the script now computes the control itself instead of reaching for a
+number already on the page.
+
+### Where this leaves it
+
+The route works and is affordable. What is *not* built is the thing that would
+turn it into an answer: a **rankable diagram**. Everything above is a memoised
+recursion that computes values and counts, not a data structure
+`approximate_groups` can walk. Turning it into one is Tan & Shi's `CL`/`REMAINDER`
+construction, and the measurements now say what it should cost — about 7× the
+plain full-symbol diagram on an amplifier, 204 679 states for the µA741.
+
+**The payoff test, once that exists:** rank a de-cancelled `s^1` coefficient at
+`κ ≈ 17` and see whether it converges in tens of terms rather than thousands. That
+is the experiment this entire thread has been trying to reach, and it is now one
+implementation away rather than blocked on a premise.
