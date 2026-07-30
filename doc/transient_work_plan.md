@@ -1866,3 +1866,90 @@ second and later lookups miss `__getattr__` entirely. **Not done here because it
 declared item and stage 2 is defined as behaviour-preserving; it deserves its own gate**
 (the risk is toolkits that mutate their backend at runtime, which the memo would then
 stale). Recorded so the next person does not have to re-profile to find it.
+
+---
+
+# STAGE 2+ — three improvements outside the original plan
+
+Proposed after stage 2 and authorised by the maintainer on 2026-07-31, in this order.
+They are numbered 2+.1 .. 2+.3 rather than folded into stage 2, because stage 2's gates
+were declared before it ran and are closed; these get their own, declared here **before
+any of the three is implemented**.
+
+Items 1 and 2 are behaviour-preserving and inherit stage 2's stop condition: **waveform
+drift exactly `0.00e+00` and an identical step count, or stop.** Item 3 deliberately
+changes behaviour and is gated differently.
+
+## 2+.1 — memoise `Toolkit.__getattr__`
+
+Every `toolkit.zeros`, `toolkit.reshape`, `toolkit.dot` goes through `__getattr__` and
+delegates to the backend module. Measured **3.77 million calls** in one benchmark run.
+Resolve once, then cache on the instance so later lookups hit the instance `__dict__` and
+never enter `__getattr__` at all.
+
+*Risk assessment done before writing code:* a memo goes stale if the backend is mutated
+after first access. Checked — **nothing assigns to `_backend` or to a backend module
+attribute anywhere in the tree**; the only runtime mutations are assignments *onto the
+toolkit instance* (`numeric.exp = ...` in two test/benchmark files), which shadow
+`__getattr__` regardless and are therefore unaffected. Only successful lookups are cached;
+failures are not, so an attribute that appears later is still found.
+
+**Gate 2+.1a (correctness).** Full suite `-m ""`. Declared success: 744/6/0.
+OUTCOME:
+**Gate 2+.1b (behaviour).** Leapfrog benchmark. Declared success: drift **exactly
+`0.00e+00`** and step count 324.
+OUTCOME:
+**Gate 2+.1c (it did what it claims).** `Toolkit.__getattr__` call count must fall by at
+least 10x on the benchmark, and end-to-end speedup recorded. Declared success: >= 1.05x
+end-to-end — small, because the profiler says ~5% and the profiler exaggerates pure-Python
+frames.
+OUTCOME:
+
+## 2+.2 — let the Newton solver return `(F, J)` at the converged point
+
+`StandardNewton` evaluates `(F, J)` at `x` and returns `x_next`, so the caller must
+re-assemble at the converged point (gate 2c established this is necessary, not wasteful).
+Move that final evaluation *inside* the solver and return it. **The assembly count is
+unchanged** — this buys no speed by itself. It exists because it makes the solver's
+contract honest, and because it is the seam stage 7b needs in order to reuse LU factors
+across a Newton iteration.
+
+**Gate 2+.2a (behaviour).** Declared success: drift **exactly `0.00e+00`**, step count 324,
+and the per-step assembly counts unchanged from stage 2's (`G`/`C`/`i`/`u` 3.06, `q` 3.06).
+**An assembly count that *falls* here is a failure, not a bonus** — it would mean the
+returned `(F, J)` is from the wrong state, which is exactly the defect gate 2c refused.
+OUTCOME:
+**Gate 2+.2b (correctness).** Full suite `-m ""` at 744/6/0, and every `NonLinearSolver`
+subclass still satisfying the interface.
+OUTCOME:
+
+## 2+.3 — `relref`, the reference for the relative tolerance
+
+The highest-value item of the three and the only one that changes results. Spectre's
+`relref` selects what the relative term is measured against; pycircuit hard-codes a
+two-point `pointlocal`, which is why a node carrying no signal has its tolerance collapse
+to the absolute floor — and why `lte_vabstol` had to be raised to 1e-6. See the Spectre
+section under 0.3d.
+
+Implement `pointlocal` (current behaviour, for exact backward compatibility) and
+`sigglobal` (Spectre's default: each signal referenced to the maximum over all signals and
+all past time). Default stays `pointlocal` in this item; **changing the default is a
+separate decision** and belongs with stage 4's `lteratio` work.
+
+**Gate 2+.3a (no silent change).** With `relref='pointlocal'`, drift **exactly `0.00e+00`**
+and step count 324 against the stage-2 reference. The new code path must be provably
+inert when not selected.
+OUTCOME:
+**Gate 2+.3b (it addresses the actual defect).** With `relref='sigglobal'`, `lte_vabstol`
+returned to **1e-12**, on the leapfrog. Declared success: the step count is within 2x of
+the current default configuration — i.e. the 5.4x collapse that forced `lte_vabstol` to
+1e-6 does **not** recur. **This is the whole point of the item; if it fails, `relref` does
+not fix what it was proposed to fix and the result must be recorded as such.**
+OUTCOME:
+**Gate 2+.3c (accuracy is not silently traded away).** `sigglobal` loosens the tolerance on
+quiet nodes by construction. Declared success: on a circuit with an analytic solution, the
+error under `sigglobal` at `lte_vabstol=1e-12` is no worse than under `pointlocal` at
+`lte_vabstol=1e-6` — the configuration it is proposed to replace.
+OUTCOME:
+**Gate 2+.3d (correctness).** Full suite `-m ""` at 744/6/0 with the default unchanged.
+OUTCOME:
