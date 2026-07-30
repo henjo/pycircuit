@@ -17,7 +17,7 @@
 > | "a ranking **must** capture `1 − tol/κ` of the absolute mass" | §1 | **CORRECTED** — sufficiency, not necessity (§14a) |
 > | "the approximation is impossible as posed" | §1 | **WITHDRAWN** (§14a, §15b) |
 > | `κ` is a novel diagnostic | §1 implied | **CORRECTED** — it is Higham's summation condition number (§14b) |
-> | term-ranked approximation fails on a real op-amp | §1 | **SCOPED** — true of *our* pipeline; refuted on the same circuit by Tan & Shi 2004 (§15b) |
+> | term-ranked approximation fails on a real op-amp | §1 | **SCOPED** — true of *our* pipeline *and our netlist*; Tan & Shi 2004 report otherwise for a µA741 built differently (§15b + its scope correction) |
 > | group ranking converges where magnitude ranking does not | §2 | **holds, measured** (734 terms at 4.1% vs 1186%) |
 > | a retained group is a named minor, unlike a placeholder | §3 | **holds** |
 > | cancellation is concentrated, not uniform | §4 | **holds, measured** |
@@ -835,10 +835,24 @@ bounds how much weight either claim can carry.
 `doc/hierarchical_approximation_plan.md` §5 records, and this document repeats:
 *"term-ranked approximation does not converge on a real operational amplifier."*
 
-**Tan & Shi (TCAD 23(6), 2004) report the opposite, on the µA741.** For the `s^1`
+**Tan & Shi (TCAD 23(6), 2004) report the opposite for a µA741.** For the `s^1`
 denominator coefficient of a two-stage op-amp: *"the first product term amounts
 to 86% of the total magnitude of the coefficient and the first two terms amount
-to 97%."* Their pipeline differs from ours in three ways at once:
+to 97%."*
+
+> **SCOPE CORRECTED (asked 2026-07-30: "is this the same µA741 as Shi?").** Same
+> *named* amplifier and same *schematic* — our fixture is transcribed from Fig. 15 of
+> Tan & Shi, TCAD 19(4), 2000 — but **not the same netlist.** Ours is 26x26 with 103
+> nonzeros, 1 040 vertices, 2 773 885 terms; theirs is 23x23 / 89 / 6 654 / 119 011,
+> while the *same group* reports 25x25 / 13 722 / 4 203 232 for the same circuit in
+> ICCAD 2010 — a 35x disagreement with itself. Our device values are also
+> "representative rather than taken from a DC operating point". So this is **not a
+> like-for-like comparison and cannot be made into one**;
+> `doc/ddd_references.md` already records that a published `|DDD|` for a named circuit
+> pins an order of magnitude, not a number. The *pipeline* difference below is the
+> useful part and stands; the percentages are not ours to reproduce.
+
+Their pipeline differs from ours in three ways at once:
 
 * they **de-cancel** first (*"70-90% terms are canceling terms"*);
 * they rank **within each coefficient of `s^k`** on a multi-root DDD, never over

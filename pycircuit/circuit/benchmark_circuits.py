@@ -392,6 +392,16 @@ def ua741(symbolic_devices=(), miller=True, fully_symbolic=False):
     while the device values are representative rather than taken from a DC
     operating point.  Q13's split collector is modelled as a single collector.
 
+    **It is the same schematic, not the same netlist, and the difference matters
+    whenever a published number is quoted beside one measured here.**  This gives
+    26x26 with 103 nonzeros, 1040 vertices and 2 773 885 terms, against the 23x23 /
+    89 / 6654 / 119 011 above -- and the *same group* reports 25x25 / 13 722 /
+    4 203 232 for the same circuit in ICCAD 2010, a 35x disagreement with itself.
+    Ours has an extra row for the source branch current and its own device values.
+    So published sizes for this amplifier calibrate an **order of magnitude, not a
+    number**, and any percentage or term count measured on this fixture belongs to
+    this fixture.  See ``doc/ddd_references.md``.
+
     Args:
         symbolic_devices: Device names (``'q1'`` ... ``'q24'``) whose ``gm``
             stays symbolic.  Empty gives a numeric circuit plus ``s``.
