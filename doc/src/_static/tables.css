@@ -1,0 +1,79 @@
+/* Bordered tables, applied site-wide rather than per table.
+ *
+ * Registered from conf.py via html_static_path + html_css_files, so every
+ * table on every page gets the same treatment -- including the ones generated
+ * at build time by exec-rst blocks, which cannot carry their own markup.
+ *
+ * docutils emits `table.docutils`; some Sphinx versions and themes emit a bare
+ * `table` with an `align-*` class instead, so both are targeted. */
+
+table.docutils,
+div.body table,
+div.document table {
+    border-collapse: collapse;
+    border: 2px solid #8a8a8a;
+    margin: 1em 0;
+}
+
+table.docutils th,
+table.docutils td,
+div.body table th,
+div.body table td,
+div.document table th,
+div.document table td {
+    /* The rule between cells, which is the point of the exercise. */
+    border: 1px solid #a8a8a8;
+    padding: 0.35em 0.65em;
+    vertical-align: top;
+}
+
+table.docutils thead th,
+div.body table thead th,
+div.document table thead th {
+    background: #eef0f2;
+    border-bottom: 2px solid #8a8a8a;
+    text-align: left;
+}
+
+/* Zebra striping makes wide numeric tables -- and this project has several
+ * fifteen columns across -- readable along a row. */
+table.docutils tbody tr:nth-child(even),
+div.body table tbody tr:nth-child(even),
+div.document table tbody tr:nth-child(even) {
+    background: #f7f8f9;
+}
+
+/* A wide table should scroll inside itself rather than push the page sideways. */
+div.body table,
+div.document table,
+table.docutils {
+    display: table;
+    max-width: 100%;
+}
+
+@media (prefers-color-scheme: dark) {
+    table.docutils,
+    div.body table,
+    div.document table {
+        border-color: #5a5f66;
+    }
+    table.docutils th,
+    table.docutils td,
+    div.body table th,
+    div.body table td,
+    div.document table th,
+    div.document table td {
+        border-color: #4a4f56;
+    }
+    table.docutils thead th,
+    div.body table thead th,
+    div.document table thead th {
+        background: #2b2f34;
+        border-bottom-color: #5a5f66;
+    }
+    table.docutils tbody tr:nth-child(even),
+    div.body table tbody tr:nth-child(even),
+    div.document table tbody tr:nth-child(even) {
+        background: #22262a;
+    }
+}

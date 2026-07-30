@@ -50,7 +50,7 @@ from nonlinear_leapfrog import expr_solver
 ## higher orders are actually exercised.
 F0 = 1.0e5
 STAGES = 5
-ORDERS = (3, 5, 7, 9, 11, 13)
+ORDERS = (3, 5, 7, 9, 11, 13, 15, 17)
 AMPLITUDES = (1e-2, 3e-2, 1e-1, 3e-1, 1.0, 3.0)
 ## Back on the input differential pair, which is where an op-amp's distortion
 ## physically originates.  It was useless at 1 kHz only because the loop gain held it

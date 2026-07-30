@@ -492,3 +492,180 @@ determinant diagram's own strength — compact representation of a large
 determinant and its cofactors, and hierarchical suppression of internal nodes
 — has not been tested against this representation on anything resembling an
 op-amp.
+
+The circuit axis, at op-amp scale
+---------------------------------
+
+The paragraph above records the circuit axis as open: this representation had never
+been tried on anything resembling an op-amp.  It has now, on the 5th-order leapfrog
+filter of :func:`~pycircuit.circuit.benchmark_circuits.leapfrog_5th_order` — five
+µA741s, **127 unknowns** — with a cubic ``i = kk*v**3`` on the first amplifier's input
+differential pair.
+
+Two things make the measurement worth having. The **drive amplitude and the
+nonlinearity strength both stay symbolic**, so one build per order serves an entire
+sweep: the expensive step happens once and every amplitude is a walk over the same
+graph. And the question asked is *self-convergence* — at which truncation order does
+the third harmonic stop moving — which needs no external oracle.
+
+.. exec-rst::
+
+    import numpy as np
+    from order_convergence import (AMPLITUDES, F0, G3_VALUE, NODE_NAME,
+                                   build_symbolic, turning_point)
+    from pycircuit.circuit import benchmark_circuits as bc
+    from pycircuit.circuit.benchmark_circuits import _UA741_NODE_NAMES
+    from pycircuit.circuit.distortion_ddd import evaluate_one
+
+    ## Three well-separated orders rather than every one: the build cost is
+    ## cumulative and this page's timeout has to clear the worst case, not the
+    ## typical one.  The full sweep to U^17 is tabulated below.
+    orders = (3, 7, 11)
+
+    system = bc.leapfrog_5th_order()
+    names = ['in'] + ['s%d_%s' % (k, b) for k in range(5)
+                      for b in _UA741_NODE_NAMES]
+    node_row = names.index(NODE_NAME)
+    drive_row = [i for i in range(system.dim) if system.b[i] != 0][0]
+    base = {s: complex(system.params[s]) for s in system.A.free_symbols
+            if s is not system.s}
+    vturn, gnode = turning_point(system, node_row, G3_VALUE, F0)
+
+    built = {}
+    for order in orders:
+        b = build_symbolic(system, node_row, system.out_index, drive_row, order)
+        b['vals'] = {}
+        for amp in AMPLITUDES:
+            env = dict(base)
+            env[b['drive']] = complex(amp)
+            env[b['kk']] = complex(G3_VALUE)
+            b['vals'][amp] = (evaluate_one(b['fund'], env),
+                              evaluate_one(b['third'], env),
+                              evaluate_one(b['nodev'], env))
+        built[order] = b
+
+    print(".. list-table:: Leapfrog, %d unknowns: third harmonic by truncation order"
+          % system.dim)
+    print("   :header-rows: 1")
+    print("   :widths: 12 14 10 14 14 14")
+    print("")
+    print("   * - drive (V)")
+    ## NOT "|v|": reST reads |...| as a substitution reference and errors, and it
+    ## reports the error at the top of the page rather than at the block.
+    print("     - node volts")
+    print("     - %% of v_turn")
+    print("     - HD3")
+    for prev, order in zip(orders, orders[1:]):
+        print("     - change at U^%d" % order)
+    for amp in AMPLITUDES:
+        top = built[orders[-1]]['vals'][amp]
+        hd3 = abs(top[1]) / abs(top[0])
+        print("   * - %g" % amp)
+        print("     - %.3e" % abs(top[2]))
+        print("     - %.0f%%" % (100.0 * abs(top[2]) / vturn))
+        print("     - %.3e" % hd3)
+        for prev, order in zip(orders, orders[1:]):
+            a = built[prev]['vals'][amp][1]
+            c = built[order]['vals'][amp][1]
+            print("     - %.1e" % (abs(c - a) / abs(c) if abs(c) else float('nan')))
+    print("")
+    print("Built live: %d graph nodes at U^%d, and the cubic's validity limit is"
+          " v_turn = %.3e V (g = %.3e S at %s)."
+          % (built[orders[-1]]['nodes'], orders[-1], vturn, gnode, NODE_NAME))
+
+**The order needed tracks how close the node is to the cubic's turning point**, not the
+drive level as such.  That limit matters and is easy to forget: a truncated cubic
+``i = g(v + a*v**3)`` has negative differential conductance beyond
+:math:`v_{\mathrm{turn}} = 1/\sqrt{3|a|}` and **is not a physical device** there, so an
+order-convergence study only means something inside it.  An earlier version of this
+table reported a non-convergence at 366% of :math:`v_{\mathrm{turn}}` as if it were a
+property of the series; it was a property of a model that had stopped being a circuit.
+
+Frequency matters as much as amplitude, for a reason worth stating: at 1 kHz the
+amplifier's loop gain holds that input pair at a virtual ground — 2.5 µV for a 10 mV
+drive — and every amplitude converges at :math:`U^3` with HD3 near
+:math:`10^{-14}`.  Distortion rises where loop gain falls.  The table above is taken at
+100 kHz, where this µA741's open-loop gain is down to roughly 8 dB and the same drive
+gives 6.3e-05 at that node, **25× larger**.
+
+Extending to :math:`U^{17}`
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The numbers below are **not** built on this page.  The full sweep costs about 330 s of
+symbolic builds, and this page's ``exec_rst_timeout`` is 300 s — a block that overruns
+renders its own source instead of a table, so the live example above stops at
+:math:`U^{11}`.  Reproduce these with
+``PYTHONPATH=<repo>:<repo>/benchmarks python3 benchmarks/order_convergence.py``.
+
+.. list-table:: Build cost per order (127 unknowns, one build serves every amplitude)
+   :header-rows: 1
+   :widths: 12 16 14 22
+
+   * - order
+     - graph nodes
+     - build
+     - evaluate, 6 amplitudes
+   * - :math:`U^3`
+     - 6 415
+     - 1.7 s
+     - 0.13 s
+   * - :math:`U^9`
+     - 30 075
+     - 20.1 s
+     - 1.09 s
+   * - :math:`U^{13}`
+     - 54 079
+     - 53.0 s
+     - 2.09 s
+   * - :math:`U^{15}`
+     - 70 495
+     - 79.7 s
+     - 2.77 s
+   * - :math:`U^{17}`
+     - 84 427
+     - 123.5 s
+     - 3.50 s
+
+Successive corrections to the third harmonic, at 12% and 34% of
+:math:`v_{\mathrm{turn}}`:
+
+.. list-table:: Convergence to :math:`U^{17}`
+   :header-rows: 1
+   :widths: 14 12 12 12 12 12 12 12
+
+   * - drive
+     - :math:`U^5`
+     - :math:`U^7`
+     - :math:`U^9`
+     - :math:`U^{11}`
+     - :math:`U^{13}`
+     - :math:`U^{15}`
+     - :math:`U^{17}`
+   * - 1 V (12%)
+     - 1.6e-02
+     - 2.9e-04
+     - 5.8e-06
+     - 1.2e-07
+     - 2.6e-09
+     - 5.8e-11
+     - 1.3e-12
+   * - 3 V (34%)
+     - 1.7e-01
+     - 2.7e-02
+     - 4.7e-03
+     - 8.8e-04
+     - 1.7e-04
+     - 3.4e-05
+     - 7.1e-06
+
+**Both rows are converging geometrically; the 3 V row simply needs more orders than
+17.**  Its successive ratios are 0.16, 0.17, 0.19, 0.19, 0.20, 0.21 — a convergent
+series creeping toward its radius, not a divergent one.  At 12% the ratio is a steady
+0.022.
+
+That gives a usable rule.  The per-two-order ratio scales close to the square of the
+distance to the turning point: :math:`0.022` at 12% and :math:`0.20` at 34% are
+:math:`1.5(v/v_{\mathrm{turn}})^2` and :math:`1.7(v/v_{\mathrm{turn}})^2`.  So the
+order needed for a target accuracy can be estimated from the node voltage alone, before
+any expansion is built — and at a third of the turning point, six-figure accuracy in the
+third harmonic wants roughly :math:`U^{25}`.
