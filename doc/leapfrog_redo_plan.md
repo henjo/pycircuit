@@ -98,14 +98,29 @@ document. Historical numbers in git history need to remain *explainable*, and
 "the circuit had RHP poles at +1.4491e+05 and +5.6716e+04" is what explains them.
 OUTCOME:
 
-### Stage T1 — decide the fate of the old fixture
+### Stage T1 — the fate of the old fixture: SETTLED
 
-**Decision needed from the maintainer, not to be guessed.** Options: replace the fixture
-outright; or keep the unstable variant reachable behind a flag for reproducing historical
-numbers. Recommendation: **replace outright**, and rely on T0-4 plus git history for
-explicability — a fixture with a "deliberately broken" mode invites accidental use, and
-nothing in the project needs to reproduce a divergent circuit.
-OUTCOME:
+**Maintainer's decision, 2026-07-30: replace the fixture outright. Historical tables do
+not need to be re-runnable.**
+
+So there is no flag, no `unstable=True` keyword, and no preserved variant. A fixture with a
+"deliberately broken" mode invites accidental use, and nothing in the project needs to
+reproduce a divergent circuit.
+
+What this obliges instead, since reproducibility is being given up deliberately rather than
+by oversight:
+
+- **Gate T0-4 is now load-bearing, not a nicety.** The old pole locations
+  (+1.4491e+05, +5.6716e+04) are the only remaining explanation for every historical number,
+  so they must be recorded in the conclusions document, not just in a commit message.
+- Historical tables get marked as **superseded and not reproducible at this HEAD**, with the
+  commit that changed the fixture named. "Superseded" without a pointer is how a stale table
+  gets quietly re-cited.
+- No stage below may compare a new number against a historical one as though both came from
+  the same circuit. They did not. Where a before/after comparison is genuinely wanted, it
+  has to be framed as "the unstable fixture gave X" — a statement about a different circuit.
+
+OUTCOME: settled by decision, no measurement required.
 
 ### Stage T2 — the cheap experiments (symbolic and frequency-domain)
 
