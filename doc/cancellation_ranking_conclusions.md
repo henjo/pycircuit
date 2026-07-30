@@ -958,3 +958,89 @@ which was not implemented here, does collapse nodes and therefore *does* shrink
 the matrix. Hu et al. use Short and Open together, and it is plausible that the
 diagram reduction they report comes mostly from Short. That is the cheapest
 remaining test of this route and it was left undone.
+
+## 17. Stage 7a: the theory is confirmed exactly, and the naive route is dead
+
+Measured `benchmarks/decancellation_calibration.py`.
+
+### The calibration passes, and it identifies the mechanism
+
+Song & Shi's four-conductance ladder, with the target re-derived here rather than
+taken on trust — from the matrix, and independently as the circuit's **spanning
+trees**, which agree with the paper term for term (`G1G2G3`, `G1G2G4`, `G1G3G4`).
+
+| form | terms | `Σ\|term\|` | `\|Σ\|` | `κ` |
+|---|---|---|---|---|
+| compact-symbol DDD (what we build) | 3 | 6.172e-08 | 1.520e-09 | **40.61** |
+| full symbols, no de-cancellation | 9 | 6.172e-08 | 1.520e-09 | **40.61** |
+| full symbols, **de-cancelled** | **3** | 1.520e-09 | 1.520e-09 | **1.000000** |
+
+Both gates pass: the determinant is preserved exactly, and `κ` is **1 to ten
+decimal places**. So the mechanism §12 attributed to the formulation is confirmed
+end to end on a case with a published answer.
+
+Two details worth keeping. The compact form and the un-de-cancelled full-symbol
+form have *identical* absolute mass — necessarily so, because with all
+conductances positive every composite entry's addends share a sign, so expanding
+them redistributes the mass without changing it. That is §15c's inequality
+holding with equality, and it is a useful consistency check on the code. And the
+surviving terms are exactly the spanning trees, which is *why* they are all
+positive: Kirchhoff's expansion has no signs to cancel.
+
+The de-cancellation rule that achieves this is simply **each device symbol at most
+once along a term** — a floating device stamps `+g` at (i,i),(j,j) and `-g` at
+(i,j),(j,i), so a term using it twice pairs with one of equal magnitude and
+opposite permutation sign.
+
+### And the naive implementation is not a representation
+
+The hazard predicted before the run — Tan & Shi's *"cancellation-free s-expanded
+DDDs do not satisfy Theorem 1"*, i.e. de-cancellation destroys canonicity — is
+now quantified. A de-cancelled expansion cannot key its memo on the minor alone,
+because what lies below a minor depends on which devices the path already spent:
+
+| RC ladder `N` | dim | memo states, plain | memo states, de-cancelled | ratio | terms kept |
+|---|---|---|---|---|---|
+| 3 | 4 | 15 | 39 | 2.6× | 5 / 7 |
+| 4 | 5 | 26 | 111 | 4.3× | 13 / 23 |
+| 5 | 6 | 42 | 305 | 7.3× | 34 / 76 |
+| 6 | 7 | 64 | 820 | 12.8× | 89 / 251 |
+| 7 | 8 | 93 | 2177 | **23.4×** | 233 / 829 |
+
+**The sharing loss grows geometrically** — about 1.7-1.8× per added section, with
+no sign of levelling. On a 26×26 µA741 that is hopeless: the compact diagram is
+1040 vertices, and this construction would need a state count larger by a factor
+that is itself exponential in the circuit size. **De-cancelling by a path
+predicate is correct and useless.**
+
+### The distinction that matters, and where it points
+
+Notice what the last two columns say together: the **answer** gets *smaller* —
+de-cancellation removes 29% of terms at `N=3` rising to 72% at `N=7`, heading for
+Tan & Shi's reported 70-90% — while the **search for it** blows up. The
+de-cancelled answer is compact; filtering a determinant expansion down to it is
+not.
+
+And the kept counts are 5, 13, 34, 89, 233: the spanning-tree counts of a ladder.
+**The cancellation-free answer *is* the spanning-tree set.** Which reframes the
+whole architecture question: enumerating spanning trees directly is the natural
+algorithm for that answer, and filtering a determinant expansion to recover them
+is doing exponential work to discard exponentially much of it.
+
+**So this measurement strengthens the case for the topological route, which §15e
+had put last.** Two-graph / GPDD methods enumerate exactly the surviving objects.
+The reason they exist is now visible from our own numbers rather than taken from
+their abstracts.
+
+**What to implement instead, if the determinant side is still preferred:** not a
+path predicate but Tan & Shi's construction — a *canceling label list* `CL(L_x)`
+per symbol, with a modified coefficient-multiply that removes cancelling terms by
+**set operations between sub-diagrams** during the s-expansion. That never forms a
+path-dependent state, so it does not pay the ratio above. It is a genuinely
+different algorithm from the one measured here, and this stage is the evidence for
+why the difference matters.
+
+*Reconsider-if:* the ratio column flattens for circuits with a different topology
+— ladders maximise the number of distinct device subsets a path can accumulate.
+A denser matrix might share better. Untested, and cheap to test with the same
+script.

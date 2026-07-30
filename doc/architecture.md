@@ -1003,17 +1003,40 @@ operations. Three specific findings bound the next attempt:
    composite-entry diagram; de-cancellation removes the mass the other two need
    removing. Tan & Shi's published pipeline contains all three.
 
-**Next step, if anyone takes this up:** full-symbol construction *together with*
-de-cancellation — the smallest self-consistent subset. Tan/Qi/Li (DATE 2004)
-Theorem 2 gives a purely combinatorial test for cancelling terms (two first-order
-cofactors sharing a row or column index), so it needs no numerics. Then the
-`Short` element operation, which unlike `Open` collapses nodes and so can actually
-shrink the matrix. GPDD last: it is cancellation-free by construction but needs a
-circuit graph model pycircuit lacks, and Kolka et al. record that VCCS-heavy
-circuits make the two-graph intersection reject an exponentially growing fraction
-of candidates.
+**De-cancellation was then calibrated, and the result moved the recommendation.**
+On Song & Shi's four-conductance ladder (target re-derived independently, from the
+matrix and from the circuit's spanning trees) full symbols plus de-cancellation
+take `κ` from **40.61 to exactly 1.000000**, determinant preserved. So the theory
+is confirmed. But de-cancelling by a *path predicate* cannot key its memo on the
+minor alone, and the sharing loss grows geometrically — 2.6×, 4.3×, 7.3×, 12.8×,
+23.4× for RC ladders N=3..7, about 1.7-1.8× per section. That is hopeless at
+26×26, and it is the canonicity loss Tan & Shi record.
 
-**Do not repeat these, they are measured and recorded:** flat DDD on the leapfrog
+The same measurement shows *why*: the surviving terms number 5, 13, 34, 89, 233 —
+the spanning-tree counts of a ladder. **The cancellation-free answer is the
+spanning-tree set.** Filtering a determinant expansion down to it does exponential
+work to throw exponentially much away, which is precisely the argument for
+topological methods.
+
+**Next step, if anyone takes this up — revised after 7a, in this order:**
+
+1. **Tan & Shi's actual construction**, not the naive one: a *canceling label
+   list* `CL(L_x)` per symbol with a modified coefficient-multiply that removes
+   cancelling terms by **set operations between sub-diagrams** during the
+   s-expansion. It forms no path-dependent state, so it does not pay the ratio
+   above. This is a different algorithm from the one already measured, and §17 is
+   the evidence for why the difference is the whole point.
+2. **The topological route (GPDD / two-graph)**, promoted from last place by 7a's
+   spanning-tree finding — it enumerates exactly the objects that survive. Needs a
+   circuit graph model pycircuit lacks; and Kolka et al. record that VCCS-heavy
+   circuits make the two-graph intersection reject an exponentially growing
+   fraction of candidates, so the cost is real for transistor circuits.
+3. **The `Short` element operation**, which unlike `Open` collapses nodes and so
+   can actually delete vertices — the cheap unfinished half of stage 6.
+
+**Do not repeat these, they are measured and recorded:** de-cancellation via a
+path predicate ("each device once") — correct, gives `κ = 1` exactly, and its
+sharing loss grows 1.7-1.8× per circuit section; flat DDD on the leapfrog
 (killed at 15 min / 2.7 GB); `suppression_order`'s 111 single-node levels for
 interpretability (level `k` is built over level `k-1`'s stamps, so reaching a
 device unwinds all 111); sequential multi-block suppression (`_suppress` renames
