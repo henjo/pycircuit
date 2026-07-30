@@ -553,7 +553,10 @@ the third harmonic stop moving — which needs no external oracle.
     ## NOT "|v|": reST reads |...| as a substitution reference and errors, and it
     ## reports the error at the top of the page rather than at the block.
     print("     - node volts")
-    print("     - %% of v_turn")
+    ## A plain string, not a %-format, so "%%" would render literally as "%%" --
+    ## which is exactly what the built page showed until 2026-07-30.  Neighbouring
+    ## lines here ARE %-formatted, which is how the escape got copied in.
+    print("     - percent of v_turn")
     print("     - HD3")
     for prev, order in zip(orders, orders[1:]):
         print("     - change at U^%d" % order)

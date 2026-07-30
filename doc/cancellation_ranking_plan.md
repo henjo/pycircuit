@@ -590,6 +590,21 @@ is entirely **inside the blocks** — which is also the only place device
 parameters exist. So group ranking is aimed at the right target and applied at
 the wrong level.
 
+> **WITHDRAWN 2026-07-30 — measured on an unstable fixture.** `leapfrog_5th_order`
+> had two right-half-plane poles when this was written (`ff5c6e6` repaired it). On
+> the repaired circuit the leapfrog's top diagram has **`κ = 1.153e+12` and needs
+> 5 997 groups**, not 13.8 and 181 — so "barely cancels" is wrong and the leapfrog
+> *is* the hard case. The µA741's `κ = 9.4e3` is unaffected and re-measures identically.
+>
+> What survives is narrower and still useful: the blocks themselves remain benign
+> (`D_k` has `κ = 1.147e+03`, cofactors median `2.827e+02`), so the cancellation the
+> repair introduced sits **between** the amplifiers rather than inside them — the
+> arithmetic signature of the `Q ≈ 16.8` pole pair the repair disclosed and could not
+> remove. "Device parameters live only inside the blocks" is unchanged, so the
+> conclusion about *where group ranking can name real symbols* still holds; the
+> conclusion about *where the cancellation is* does not.
+> See `doc/cancellation_ranking_conclusions.md` §6 and `doc/leapfrog_redo_plan.md`.
+
 ### The next stage, named rather than left implicit
 
 **Rank inside a suppressed block.** Each stamp symbol `_lvlN_a_b` is a

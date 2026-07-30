@@ -1,9 +1,16 @@
 # Fixing the leapfrog topology and redoing every experiment
 
-**Status: written 2026-07-30. T0 has RUN and passed (all five gates, 2026-07-30) — the
-topology fix is landed and the fixture is stable. T1 settled by decision. T2, T3 and T4
-have NOT run; their OUTCOME lines are deliberately blank and must be filled from a real
-run. Every number recorded downstream of this point still describes the unstable circuit.**
+**Status, 2026-07-30: T0 RUN and passed (all five gates) — the topology fix is landed and
+the fixture is stable. T1 settled by decision. T2 RUN — all seven consumers re-executed,
+two failures recorded (one pre-existing). T3 RUN — tables regenerated, stale-number sweep
+clean, forced clean doc rebuild verified. T4 remains BLOCKED and unattempted: it needs the
+transient engine repair, which is complete (`transient_repair_plan.md` stages 1-5), so it
+is now unblocked on both counts but has not been run.**
+
+**The one-line summary of T2, because it is the reusable part:** what was refuted measured
+the determinant's *conditioning*; what survived measured the *method*. A topology change
+alters matrix conditioning and leaves the properties of the series and of the diagram
+representation alone.
 
 Maintainer's instruction, 2026-07-30: *"We have to fix the topology and redo every
 experiment."* This plan is the enumeration of "every experiment", because a redo campaign
@@ -270,7 +277,35 @@ assertions — `nonlinear_leapfrog.py` has GATE 14-2 (symbolic matches numeric o
 especially: the µA741 version of that test once recorded driving the wrong node and reading
 an identically-zero harmonic, which produced entirely plausible sizes and timings for an
 analysis that did nothing.
-OUTCOME:
+OUTCOME: **PASSED with two recorded failures, one of them pre-existing.** All seven
+scripts re-run sequentially 2026-07-30.
+
+| script | s | result |
+|---|---|---|
+| `cancellation_leapfrog` | 172 | ran clean |
+| `cancellation_blocks` | 11 | **rc=1**, GATE 2 assertion — see below |
+| `cancellation_parallel` | 58 | ran; **GATE 1b FAILS at nominal gm** (rel 6.52e-10 vs 1e-10); degraded passes at 5.40e-12 |
+| `cancellation_compose` | 607 | ran; GATE 5 PASS 6/6, GATE 4 FAIL 4/6, GATE 6 FAIL 3/6 |
+| `nonlinear_leapfrog` | 277 | **GATE 14-2 PASS (rel 6.52e-13), GATE 14-3 PASS** |
+| `transfer_function` | 882 | ran clean |
+| `order_convergence` | 327 | ran clean, extended to U^17 |
+
+`nonlinear_leapfrog`'s two gates are the ones this stage most needed, and both hold —
+the harmonic is 3.903694e-18, not the identically-zero trap. The symbolic build is also
+still ~60x faster than the numeric oracle (1.2 s vs 73.4 s at U^3, 2.8 s vs 190.2 s at
+U^5, i.e. **61-68x**).
+
+**`cancellation_blocks` is NOT a regression, and checking that mattered.** It fails
+`assert not stamps` -- block 1 picks up `_lvl0_*` symbols. It fails **identically against
+the pre-repair fixture** (same assertion, same five symbols), verified by checking out
+`ff5c6e6^`'s `benchmark_circuits.py` and re-running. It is the known `_suppress`
+symbol-laundering defect that `cancellation_parallel.py` was written to avoid -- which is
+why the parallel script's equivalent gate passes on the same partition. It was very
+nearly reported here as caused by the repair.
+
+`cancellation_parallel`'s GATE 1b failure IS attributable to the repair: precision loss
+that tracks the `kappa` blow-up recorded under T2-2, and it appears only at nominal gm
+where `kappa` is largest.
 
 **Gate T2-2 (qualitative conclusions, held or refuted).** For each, state explicitly
 whether the *conclusion* survives, not merely what the new number is. The ones at risk:
@@ -280,14 +315,49 @@ whether the *conclusion* survives, not merely what the new number is. The ones a
 - the cancellation `kappa` measurements and the `N_eff` concentration profile
 - the "readable H(s) over 2 decades only" limit
 A refuted conclusion is a result and gets recorded as one.
-OUTCOME:
+OUTCOME: **DONE. The results split cleanly along one line.**
+
+| conclusion | verdict |
+|---|---|
+| leapfrog top diagram benign, `kappa = 13.8` | **REFUTED** -- `kappa = 1.153e+12` |
+| the 181-group result | **rescaled 33x** -- 5 997 groups, 95 951 ops |
+| "uninterpretable" verdict on those groups | **holds** (more so) |
+| 16 ops/group is a property of the diagram | **holds** -- 16.0 |
+| `N_eff` / concentration profile | superseded with `kappa`; same cause |
+| composition not error-controlled | **holds**, refined: 2 of 6 settings do hold |
+| symbolic nonlinear analysis matches its oracle | **holds** -- rel 6.52e-13 |
+| ~60x faster than numerics | **holds** -- 61-68x |
+| required order tracks `% of v_turn`, not drive | **holds** -- thresholds unchanged |
+| readable `H(s)` over 2 decades only | **holds** -- 177 ops narrow, wide band fails |
+
+**What was refuted is what measured the DETERMINANT'S CONDITIONING; what survived is
+what measured the METHOD.** A topology change alters the conditioning of the matrix and
+leaves the properties of the series, and of the diagram representation, alone. That is
+the cut to read any future claim in these documents against.
+
+The refutation has a physical cause rather than being a bare number change: the repaired
+circuit has a **`Q ~ 16.8` pole pair (+8.8 dB at 25.7 kHz)**, disclosed when the topology
+was fixed and not removable without a faster amplifier than `ua741()` or a lower cutoff.
+A high-Q resonance is a near-cancellation between stages, so a large `kappa` is that
+non-ideality's arithmetic signature. `cancellation_parallel` localises it: every block is
+still benign (`D_k` `kappa = 1.147e+03`, cofactors median `2.827e+02`), so the added
+cancellation is **entirely in the coupling between amplifiers**.
+
+**Control that makes the deltas trustworthy:** `transfer_function`'s µA741 half is
+untouched by the repair and re-measures **bit-identical** -- 734 groups -> 50 377
+operations, and the 177-op two-decade `H(s)` at err 7.903e-02. Numbers that should not
+have moved did not.
 
 **Gate T2-3 (v_turn is recomputed, not carried over).** `v_turn = 1/sqrt(3|a|)` with
 `a = kk/g`, and `g` is the driving-point conductance at the nonlinear node — which the
 topology change moves. Every table row must carry its recomputed `% of v_turn`. A stale
 `v_turn` is exactly how a model-caused divergence gets misread as a series-caused one,
 which already cost a withdrawn table row once.
-OUTCOME:
+OUTCOME: **PASSED.** Recomputed, not carried over: `g` at `s0_e1` = **4.3184e-04 S**,
+`a = kk/g` = 1.1578e+02, **`v_turn` = 5.3656e-02 V** (was ~5.43e-02 -- the driving-point
+conductance moved, as predicted). Every row of the regenerated table carries its own
+recomputed `% of v_turn`, and the `kk` sweep still flags `kk = 50` as **419% -- UNPHYSICAL,
+past v_turn**, so the guard that cost a withdrawn row is still doing its job.
 
 ### Stage T3 — rewrite the pasted tables
 
@@ -298,14 +368,45 @@ after the topology fix, with the date.
 **Gate T3-1 (no stale numbers survive).** Grep the conclusions documents for the
 distinctive old values (e.g. `5.9193e-11`, `4.6643e-06`, `1.8465e-02`, `366%`) and confirm
 zero hits outside explicitly-historical passages.
-OUTCOME:
+OUTCOME: **PASSED.** `5.9193e-11`, `4.6643e-06`, `1.8465e-02`, `6.3290e-05`,
+`5.8261e-07`, `7.6201e-03`, `5.1128e-06` -- all **CLEAN** outside this plan's own
+deliberate historical references.
+
+`2 895` and `= 13.8` still appear, in two places and both intentionally: the before/after
+comparison tables written into `cancellation_ranking_conclusions.md`, where the old value
+is the point. **The sweep did find one document I had not touched** --
+`doc/cancellation_ranking_plan.md` carried an un-annotated "the leapfrog's top diagram
+barely cancels (`kappa = 13.8`) and needs only 181 groups", now marked WITHDRAWN with the
+repaired figures. That is precisely what this gate exists to catch: the rewrite worked
+from the sections I remembered, and the grep found the one I did not.
 
 **Gate T3-2 (doc build).** "build succeeded, 2 warnings", and `grep -cE 'ERROR'` checked
 separately. Then verify the live `distortion_ddd.rst` block actually executed by grepping
 the built HTML for a computed digit string that appears nowhere in the source — a failed
 block renders its own source, and every heading and identifier is then present whether it
 ran or not.
-OUTCOME:
+OUTCOME: **PASSED, and only because the rebuild was forced.** `rm -rf build/doctrees`
+plus `sphinx -E`: **build succeeded, 2 warnings**, `grep -cE 'ERROR'` = **0**.
+
+The live block regenerated against the repaired fixture, verified by computed digit
+strings that appear nowhere in the source: `7.140e-05`, `6.270e-11` and `2.067e-02` are
+each present exactly once, and the pre-repair `6.329e-05` is **gone**. An ordinary
+`sphinx -b html` earlier that same day had left every one of the old values in place
+while still reporting "build succeeded, 2 warnings" -- see the trap recorded under
+"Documents that LOOK self-updating but are NOT".
+
+**A first-decimal mismatch nearly hid this.** The block prints 3 decimals where
+`order_convergence.py` prints 4, so grepping the built page for `7.1404e-05` returned
+zero hits -- as did the old `6.3290e-05`. Zero hits for both old and new reads exactly
+like "the page is stale in some third way". The check has to be done in the *block's own*
+output format, which means reading the rendered table rather than guessing at it.
+
+**One real defect found by reading it rather than grepping it:** the header column
+rendered as `%% of v_turn`. The block emits `print("     - %% of v_turn")`, a plain
+string with no %-formatting, so the escape survives literally; the neighbouring lines
+are %-formatted, which is how it was copied in. Fixed to `percent of v_turn`. Cosmetic,
+but it is only visible in the rendered output -- a grep for computed values would never
+have found it.
 
 ### Stage T4 — the transient IM3 comparison
 

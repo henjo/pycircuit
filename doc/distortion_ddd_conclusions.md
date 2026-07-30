@@ -469,24 +469,47 @@ the *series*.
 
 ### The corrected table, with the scale on every row
 
-```
-amp (V)   |v| s0_e1    %v_turn   HD3          d(U^5)   d(U^7)   d(U^9)   d(U^11)  d(U^13)  agrees from
-0.01      6.3290e-05   0%        5.9193e-11   1.6e-06  2.9e-12  0        0        0        U^5
-0.03      1.8987e-04   0%        5.3273e-10   1.4e-05  2.3e-10  4.2e-15  0        0        U^5
-0.1       6.3287e-04   1%        5.9184e-09   1.6e-04  2.9e-08  5.7e-12  1.2e-15  0        U^5
-0.3       1.8981e-03   3%        5.3197e-08   1.4e-03  2.3e-06  4.1e-09  7.7e-12  1.5e-14  U^7
-1         6.3080e-03   12%       5.8261e-07   1.6e-02  2.9e-04  5.8e-06  1.2e-07  2.6e-09  U^9
-3         1.8465e-02   34%       4.6643e-06   1.7e-01  2.7e-02  4.7e-03  8.8e-04  1.7e-04  not by U^13
+**Regenerated 2026-07-30 against the REPAIRED fixture** (`ff5c6e6` gave the leapfrog its
+ladder sign back; `0c17d99` made the builder shared). The numbers below are the only ones
+on this page that describe a circuit which actually works — see the banner in §10 and
+`doc/leapfrog_redo_plan.md`. Extended to `U^17` at the same time, so the 3 V row's
+non-settling is now stated against a much later truncation.
 
-kk        HD3          %v_turn   agrees from
-0.005     5.9098e-08   4%        U^7
-0.5       5.1128e-06   37%       not by U^13
-50        7.6201e-03   366%!     UNPHYSICAL -- past v_turn
+```
+amp (V)   |v| s0_e1    %v_turn   HD3         d(U^5)     d(U^7)     d(U^9)     d(U^11)    d(U^13)    d(U^15)    d(U^17)     agrees from
+0.01      7.1404e-05   0%        6.2704e-11  2.1e-06    4.9e-12    0.0e+00    0.0e+00    0.0e+00    0.0e+00    0.0e+00     U^5
+0.03      2.1421e-04   0%        5.6432e-10  1.9e-05    4.0e-10    9.1e-15    0.0e+00    0.0e+00    0.0e+00    0.0e+00     U^5
+0.1       7.1401e-04   1%        6.2691e-09  2.1e-04    4.9e-08    1.3e-11    3.4e-15    0.0e+00    0.0e+00    0.0e+00     U^5
+0.3       2.1413e-03   4%        5.6328e-08  1.9e-03    4.0e-06    9.2e-09    2.2e-11    5.6e-14    1.9e-16    0.0e+00     U^7
+1         7.1095e-03   13%       6.1434e-07  2.1e-02    5.0e-04    1.3e-05    3.5e-07    9.7e-09    2.8e-10    8.4e-12     U^9
+3         2.0668e-02   39%       4.7705e-06  2.3e-01    4.7e-02    1.1e-02    2.6e-03    6.7e-04    1.7e-04    4.7e-05     not by U^17
+
+cubic validity limit: g at s0_e1 = 4.3184e-04 S, a = kk/g = 1.1578e+02, v_turn = 5.3656e-02 V
+
+kk        HD3         %v_turn   agrees from
+0.005     6.2574e-08  4%        U^7
+0.5       5.2126e-06  42%       not by U^17
+50        6.2399e-03  419%!     UNPHYSICAL -- past v_turn
 ```
 
 **And the pattern is cleaner stated against `v_turn` than against amplitude.** The
 required order tracks *how close the node is to the cubic's turning point*, not the
-drive level as such: `U^5` below a few percent, `U^7` at 3-4%, `U^9` at 12%, and no
-settling by `U^13` from about 34% onward — which the two independent sweeps agree on
-(34% by amplitude, 37% by `kk`). That is one curve in one variable, and §10.2 had it
-spread across two.
+drive level as such: `U^5` below a few percent, `U^7` at 3-4%, `U^9` at ~13%, and no
+settling from about 39% onward — which the two independent sweeps agree on (39% by
+amplitude, 42% by `kk`). That is one curve in one variable, and §10.2 had it spread
+across two.
+
+**This conclusion survived the fixture repair unchanged, and that is worth stating
+explicitly** because most of the leapfrog results did not. The `agrees from` column is
+**identical at every one of the six amplitudes** before and after, and the `kk` sweep
+keeps its shape too. What moved is only the scale: the node voltage rose ~12% (the
+repaired circuit couples its stages differently), `v_turn` shifted from ~5.43e-02 to
+5.3656e-02 V because the driving-point conductance at `s0_e1` moved, and every row's
+`% of v_turn` rose a point or two with it. The thresholds are unchanged.
+
+The contrast with §10.1's cancellation results is the useful part. Those were *refuted*
+by the repair — the top diagram's `kappa` went from 13.8 to 1.15e+12 — because they
+measure the determinant's conditioning, which is exactly what a topology change alters.
+The order-convergence result measures a property of the *series* against the cubic's own
+validity limit, and that is invariant to the circuit underneath. A conclusion that
+survives a change this large was measuring what it claimed to measure.

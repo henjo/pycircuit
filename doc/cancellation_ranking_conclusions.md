@@ -57,9 +57,29 @@
 > The fix landed in `pycircuit/circuit/benchmark_circuits.py` on 2026-07-30 and, by the
 > maintainer's Stage T1 decision, **replaced the unstable variant outright with no flag** —
 > so these rows are **not reproducible at this HEAD**, and the old poles are their only
-> remaining explanation. Regeneration is Stage T2/T3 of `doc/leapfrog_redo_plan.md` and
-> **has not run.** Do not compare a new leapfrog number against a row here as though both
-> came from the same circuit.
+> remaining explanation. Do not compare a new leapfrog number against a row here as
+> though both came from the same circuit.
+>
+> **Stage T2 HAS NOW RUN (2026-07-30)** — every leapfrog consumer was re-executed against
+> the repaired fixture. Regenerated numbers appear beside the originals at each affected
+> section; the headline is that the results split cleanly in two:
+>
+> | conclusion | verdict after repair |
+> |---|---|
+> | leapfrog top diagram is benign, `κ = 13.8` | **REFUTED** — `κ = 1.153e+12` |
+> | 181 groups / 2 895 ops | **rescaled 33×** — 5 997 groups / 95 951 ops |
+> | 16 ops/group is a property of the diagram | **holds** — 16.0 |
+> | composition not error-controlled | **holds**, refined (2 of 6 settings do hold) |
+> | symbolic nonlinear analysis matches its oracle | **holds** — rel 6.52e-13 |
+> | ~60× faster than numerics | **holds** — 61–68× |
+> | required order tracks `% of v_turn` | **holds** — thresholds unchanged |
+> | readable `H(s)` over 2 decades only | **holds** — 177 ops narrow, wide band fails |
+>
+> **What was refuted is what measured the determinant's conditioning; what survived is
+> what measured the method.** That is the useful cut: a topology change alters the
+> conditioning of the matrix and leaves the properties of the series and of the diagram
+> representation alone. Any future claim in this document should be read against which
+> of those two it depends on.
 >
 > ### The three things worth carrying away
 >
@@ -342,7 +362,8 @@ materialised: `κ·2^-53 = 1.6e-11`, so double precision was ample and mpmath wa
 not needed. The care was cheap and the reasoning was sound — a `κ` two orders of
 magnitude larger would have needed it — but the hazard was over-weighted
 relative to the one that actually bit, which was not on the list at all: **on the
-leapfrog the determinant itself underflows** (`log10|det| = -358.6`), so
+leapfrog the determinant itself underflows** (`log10|det| = -358.6`; **-374.3 on the
+repaired fixture, 2026-07-30** — the underflow is worse, not better), so
 `HierarchicalDDD.eval` returns `0.0` and every relative error is undefined. The
 conditioning of the *sum* was analysed; the dynamic range of the *product* was
 not.
@@ -355,6 +376,46 @@ and needs 181 groups. The cancellation is inside the blocks, which is also the
 only place device parameters live. So the honest statement is that group ranking
 was demonstrated on the circuit that needed it and then applied at the level
 that did not.
+
+> ### THE REFUTATION IS ITSELF REFUTED — regenerated 2026-07-30
+>
+> Everything in the paragraph above was measured on the **unstable** fixture. Against
+> the repaired one (`ff5c6e6`), the expectation it dismissed was right after all:
+>
+> | | unstable fixture | repaired fixture |
+> |---|---|---|
+> | `κ[root]`, top diagram | **13.8** | **1.153e+12** |
+> | groups at `tol = 1e-3` | 181 | **5 997** |
+> | operations | 2 895 | **95 951** |
+> | ops/group | 16 | **16.0** |
+> | `log10\|det(A)\|` | −358.6 | −374.3 |
+>
+> **The leapfrog *is* the hard case.** Its top diagram carries catastrophic
+> cancellation — eleven orders of magnitude more than was recorded — so "the
+> cancellation is inside the blocks" is wrong as a general statement about this
+> circuit. What survives is the *localisation*: `cancellation_parallel.py` shows every
+> block is still benign (`D_k` has `κ = 1.147e+03`, block cofactors median
+> `2.827e+02`), so the cancellation added by the repair lives **entirely in the coupling
+> between amplifiers**, not inside them.
+>
+> That is not a surprise once the repair is understood. The fixed circuit has a
+> **Q ≈ 16.8 pole pair (+8.8 dB at 25.7 kHz)**, disclosed as a negative result when the
+> topology was corrected and not removable without a faster amplifier than `ua741()` or
+> a lower cutoff. A high-Q resonance *is* a near-cancellation between stages, so a large
+> `κ` is the arithmetic signature of the very non-ideality that was already reported.
+>
+> Two knock-on effects, both measured rather than inferred:
+>
+> - `cancellation_parallel.py`'s **GATE 1b now FAILS at nominal gm** (top value rel
+>   6.52e-10 against a 1e-10 requirement) while degraded gm still passes at 5.40e-12.
+>   The precision loss tracks `κ`, which is what a conditioning argument predicts.
+> - The **16 ops/group** ratio in §24's table is untouched. The groups have the same
+>   shape; there are 33× more of them.
+>
+> `cancellation_blocks.py` also fails its GATE 2 — but it fails **identically against
+> the pre-repair fixture**, so that is a pre-existing defect (the known `_suppress`
+> symbol-laundering that `cancellation_parallel.py` was written to avoid) and **not** a
+> consequence of the topology change. Checked by actually running it against both.
 
 **Unresolved, and §3's reconsider-if is what to watch.** Retained minors turned
 out to be readable at 6×6 and cut the item count 4-5×, so the factored form
@@ -1604,6 +1665,7 @@ on the whole determinant, that is false and the error goes the other way:**
 | whole determinant, 0.5 | 5 | **338** | 68 ops/group |
 | whole determinant, 0.05 | 734 | **50 377** | 69 ops/group |
 | leapfrog top diagram, 1e-3 | 181 | **2 895** | 16 ops/group |
+| leapfrog top diagram, 1e-3, **repaired fixture** | 5 997 | **95 951** | **16.0 ops/group** |
 
 **So the terms-to-operations ratio is a property of the diagram, not a constant.**
 In an s-expanded *coefficient* diagram each vertex payload is a bare number or
@@ -1617,6 +1679,14 @@ coefficient really is 11 operations — but "every earlier not-readable verdict 
 reached on the wrong yardstick" is wrong. For the whole determinant those verdicts
 were, if anything, **too kind**: 734 groups is 50 377 operations. The leapfrog's 181
 groups are 2 895 operations over placeholders, so that verdict is unchanged too.
+
+**Regenerated 2026-07-30.** On the repaired fixture the leapfrog row becomes 5 997
+groups and 95 951 operations — 33× larger, and still all placeholders. The ratio is
+**16.0 ops/group against the recorded 16**, i.e. the structural claim this section
+makes is exactly the one that survived a change that moved everything else. The µA741
+rows are untouched by the repair and re-measured **bit-identical** (734 groups → 50 377
+operations; the 177-op two-decade H(s) → 177 ops, err 7.903e-02), which is the control
+that makes the leapfrog deltas trustworthy rather than merely different.
 
 That is the fourth self-correction in this thread and they share a shape:
 **generalising from one measurement to a class.** §14a (sufficiency as necessity),
