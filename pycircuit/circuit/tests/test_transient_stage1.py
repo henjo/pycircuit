@@ -304,3 +304,128 @@ def test_coupled_non_convergence_raises_instead_of_livelocking():
         'took %d solves before failing; the exhaustion path is not bounded' \
         % state['n']
     assert 'converge' in str(excinfo.value).lower()
+
+
+# ---------------------------------------------------------------------------
+# Post-stage-2 improvements (doc/transient_work_plan.md items 2+.1 .. 2+.3)
+# ---------------------------------------------------------------------------
+
+def test_toolkit_getattr_is_memoised():
+    """2+.1 -- a resolved backend attribute lands in the instance __dict__.
+
+    The point is that the SECOND access never enters ``__getattr__`` at all.
+    Instance assignment must still win, because two test/benchmark files rely on
+    monkeypatching a toolkit primitive.
+    """
+    ## A fresh instance, so the memo state is known.  `zeros` is used because it
+    ## genuinely exists on the numeric backend -- `reshape` does not, which is
+    ## itself why the hoisted probes in stage 2b mattered.
+    fresh = type(numeric)(numeric._backend)
+    assert 'zeros' not in fresh.__dict__
+    first = fresh.zeros
+    assert 'zeros' in fresh.__dict__, 'lookup was not memoised'
+    assert fresh.zeros is first
+
+    ## A missing attribute still raises, still names the toolkit, and is NOT
+    ## cached -- so an attribute that appears later would be found.
+    with pytest.raises(AttributeError) as excinfo:
+        fresh.definitely_not_an_attribute
+    assert 'toolkit' in str(excinfo.value)
+    assert 'definitely_not_an_attribute' not in fresh.__dict__
+
+    ## Assignment onto the instance overrides any memo.
+    saved = fresh.zeros
+    fresh.zeros = 'patched'
+    assert fresh.zeros == 'patched'
+    fresh.zeros = saved
+
+
+def test_converged_step_skips_the_residual_nobody_reads():
+    """2+.2 -- `i` and `u` are not assembled at the converged point.
+
+    `solve_timestep` returns `(x, feval, J, f)` and `f` is never read on the
+    standard path, so assembling it was pure waste. With `provided_function` set
+    -- the one caller that does read `f` -- the full evaluation must come back.
+    """
+    def counts(provided_function):
+        cir = _rc()
+        seen = {}
+
+        for name in ('i', 'u', 'G'):
+            real = getattr(cir, name)
+
+            def make(nm, fn):
+                def counting(*a, **kw):
+                    seen[nm] = seen.get(nm, 0) + 1
+                    return fn(*a, **kw)
+                return counting
+            setattr(cir, name, make(name, real))
+
+        tran = Transient(cir, toolkit=numeric)
+        res = tran.solve(refnode=gnd, tend=20e-6, timestep=1e-6,
+                         provided_function=provided_function)
+        steps = len(np.asarray(res.sweep_values))
+        return {k: v / steps for k, v in seen.items()}
+
+    lean = counts(None)
+    full = counts(lambda f, J, C: None)
+
+    ## G is needed either way and is the control: if it moves, something other
+    ## than the residual changed.
+    assert abs(lean['G'] - full['G']) < 0.05
+    assert lean['i'] < full['i'] - 0.5, \
+        'i should be assembled once less per step without provided_function ' \
+        '(%.2f vs %.2f)' % (lean['i'], full['i'])
+    assert lean['u'] < full['u'] - 0.5
+
+
+@pytest.mark.parametrize('relref', ['pointlocal', 'alllocal', 'sigglobal'])
+def test_relref_modes_all_run_and_agree(relref):
+    """2+.3 -- every relref mode produces the same answer, at its own cost.
+
+    `relref` changes what the tolerance is measured against, not what is being
+    solved, so the waveform must agree; only the step count may differ.
+    """
+    tran = Transient(_rc(), toolkit=numeric, relref=relref)
+    res = tran.solve(refnode=gnd, tend=20e-6, timestep=1e-6)
+    v = float(np.asarray(res.v('n2'))[-1])
+    ## 20 us is 20 tau, so the RC has settled to the source voltage.
+    assert abs(v - 1.0) < 1e-3, '%s gave v(n2)=%g' % (relref, v)
+
+
+def test_relref_rejects_an_unknown_mode():
+    tran = Transient(_rc(), toolkit=numeric, relref='nonsense')
+    with pytest.raises(ValueError) as excinfo:
+        tran.solve(refnode=gnd, tend=1e-6, timestep=1e-7)
+    assert 'relref' in str(excinfo.value)
+
+
+def test_sigglobal_does_not_collapse_on_a_quiet_node():
+    """2+.3b, the point of the item, pinned as a test.
+
+    A node carrying no signal makes `pointlocal`'s reference tend to zero, so its
+    tolerance collapses to the absolute floor and the controller starts chasing
+    numerical noise. `sigglobal` references it to the largest signal in the
+    circuit instead. Measured on the leapfrog: 3.53x more steps under
+    `pointlocal` at `lte_vabstol=1e-12`, against 1.49x under `sigglobal`.
+    """
+    def steps(relref):
+        cir = _rc()
+        ## The quiet node: driven only through 1 G-ohm, so |x| there is ~0.
+        cir['Rq'] = R('n3', gnd, r=1e9)
+        cir['Rq2'] = R('n3', 'n2', r=1e9)
+        ## uic=True matters: started from the DC point the RC is ALREADY settled,
+        ## so there is no truncation error, the run sits at max_step throughout and
+        ## no tolerance can be observed to act.  Starting from zero forces the
+        ## controller to actually control something.  (Third time this trap has
+        ## been hit in this file -- see the note on `_pulsed_rc`.)
+        tran = Transient(cir, toolkit=numeric, relref=relref,
+                         lte_vabstol=1e-12, reltol=1e-6, uic=True)
+        res = tran.solve(refnode=gnd, tend=20e-6, timestep=4e-6)
+        return len(np.asarray(res.sweep_values))
+
+    local = steps('pointlocal')
+    glob = steps('sigglobal')
+    assert glob < local, \
+        'sigglobal (%d steps) should need no more steps than pointlocal (%d) ' \
+        'when a quiet node is present' % (glob, local)

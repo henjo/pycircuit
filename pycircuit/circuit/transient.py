@@ -155,6 +155,19 @@ class Transient(Analysis):
                    desc='Absolute current tolerance for the local truncation error',
                    unit='A',
                    default=1e-12),
+         ## What the RELATIVE part of the LTE tolerance is measured against --
+         ## Spectre's parameter of the same name.  `pointlocal` is the behaviour
+         ## pycircuit has always had; `sigglobal` is Spectre's default and is the
+         ## mode that removes the reason `lte_vabstol` had to be raised to 1e-6.
+         ## Default kept at `pointlocal` so nothing changes until it is asked for.
+         ## See `doc/transient_work_plan.md` item 2+.3.
+         Parameter(name='relref',
+                   desc="Reference for the relative LTE tolerance: 'pointlocal' "
+                        "(each unknown against itself, the default), 'alllocal' "
+                        "(against its own past maximum), or 'sigglobal' "
+                        "(against the largest signal anywhere, Spectre's default)",
+                   unit='',
+                   default='pointlocal'),
          Parameter(name='maxiter', 
                    desc='Maximum number of iterations', unit='', 
                    default=100),
@@ -388,10 +401,41 @@ class Transient(Analysis):
                  + self.cir.u(t, self.epar, analysis=self.par.analysis))
             J = self.cir.G(x, self.epar) + Geq
             return self.toolkit.array(f, dtype=float), self.toolkit.array(J, dtype=float)
-        
+
+        def jacobian_only(x):
+            """The converged-point evaluation, without the residual nobody reads.
+
+            ITEM 2+.2.  Newton needs `f` on every iteration -- it is what drives the
+            update.  The *final* evaluation at the converged point is different: its
+            `f` is unpacked by both callers and then never referenced again (`solve`
+            at the `x, feval, J, f = ...` site, and `_solve_coupled` likewise). Only
+            `J` is consumed, by the step controller.
+
+            So `cir.i(x)` and `cir.u(t)` were assembled once per accepted step and
+            discarded.  `C`, `q` and `G` are all still needed -- `C` and `G` build
+            `J`, and `q` feeds the charge cache and the history roll -- so this is
+            not a cheaper approximation of the same work, it is the same work minus
+            two vectors that had no consumer.
+
+            `f` is returned as None rather than a zero vector, so any future caller
+            that starts reading it fails loudly instead of silently using zeros --
+            which is the whole lesson of stage 1.
+            """
+            C = self.cir.C(x, self.epar)
+            q = self.cir.q(x, self.epar)
+            self._q_cache = (x, q)
+            iq, Geq = self.get_diff(q, C)
+            J = self.cir.G(x, self.epar) + Geq
+            return None, self.toolkit.array(J, dtype=float)
+
         x=self._newton(func,x0)
-        f, J = func(x)
-        
+        ## `provided_function` is the one caller that consumes `f`, so it gets the
+        ## full evaluation; everything else takes the reduced one.
+        if provided_function is not None:
+            f, J = func(x)
+        else:
+            f, J = jacobian_only(x)
+
         if provided_function is not None:
             result=x,provided_function(f,J,self.cir.C(x, self.epar)), J, f
         else:
@@ -418,6 +462,10 @@ class Transient(Analysis):
         if getattr(self, 'step_controller', None) is None:
             from pycircuit.circuit.stepcontroller import IntegralController
             self.step_controller = IntegralController()
+        ## ITEM 2+.3.  Applied to whichever controller is in use, including one
+        ## the caller injected, and re-applied every run so the running maximum
+        ## a global mode keeps cannot leak from a previous solve.
+        self.step_controller.set_relref(self.par.relref)
 
         X = []
         self.irefnode=self.cir.get_node_index(refnode)
@@ -557,7 +605,9 @@ class Transient(Analysis):
                     abstol=abstol,
                     toolkit=self.toolkit,
                     max_step=max_step,
-                    TRTOL=TRTOL
+                    TRTOL=TRTOL,
+                    ## `relref`'s global modes must not mix volts with amps.
+                    n_nodes=len(self.cir.nodes),
                 )
                 
                 if not accept and reject_count < MAX_REJECT:
@@ -718,7 +768,8 @@ class Transient(Analysis):
                     no_history=self._no_history, J=J,
                     active_integrator=self.active_integrator,
                     irefnode=self.irefnode, reltol=reltol, abstol=abstol,
-                    toolkit=self.toolkit, max_step=max_step, TRTOL=TRTOL)
+                    toolkit=self.toolkit, max_step=max_step, TRTOL=TRTOL,
+                    n_nodes=len(self.cir.nodes))
 
                 x_curr = x_new
                 if accept or lte_iter == MAX_LTE_ITERS - 1:

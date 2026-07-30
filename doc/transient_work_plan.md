@@ -1960,7 +1960,20 @@ success: drift **exactly `0.00e+00`** and step count 324 — this is still behav
 preserving, because nothing computed changes, two things merely stop being computed. `i`
 and `u` fall to **~2.06** per accepted step while `G`, `C` and `q` stay at **3.06**. With
 `provided_function` set, all five stay at 3.06, because `f` is then genuinely needed.
-OUTCOME:
+OUTCOME: **PASSED.** Per accepted step on the leapfrog:
+
+| stamp | before | after | with `provided_function` |
+|---|---|---|---|
+| `G` | 3.06 | **3.06** | 3.03 |
+| `C` | 3.06 | **3.06** | 4.00 |
+| `i` | 3.06 | **2.04** | 3.03 |
+| `u` | 3.06 | **2.04** | 3.03 |
+| `q` | 3.06 | **3.06** | 3.03 |
+
+Drift **exactly `0.00e+00`** with the thread count matched to the reference, 324 steps.
+`provided_function` restores the full evaluation exactly as declared. (`C` at 4.00 in that
+column is pre-existing: `provided_function(f, J, cir.C(x))` assembles `C` once more, and
+that is untouched by this item.)
 **Gate 2+.2b (correctness).** Full suite `-m ""` at 744/6/0, and every `NonLinearSolver`
 subclass still satisfying the interface.
 OUTCOME:
@@ -1981,17 +1994,47 @@ separate decision** and belongs with stage 4's `lteratio` work.
 **Gate 2+.3a (no silent change).** With `relref='pointlocal'`, drift **exactly `0.00e+00`**
 and step count 324 against the stage-2 reference. The new code path must be provably
 inert when not selected.
-OUTCOME:
+OUTCOME: **PASSED.** Drift exactly `0.00e+00` on both axes, 324 steps. `pointlocal` returns
+`maximum(|x_curr|, |x_last|)` and never touches the running-maximum state.
 **Gate 2+.3b (it addresses the actual defect).** With `relref='sigglobal'`, `lte_vabstol`
 returned to **1e-12**, on the leapfrog. Declared success: the step count is within 2x of
 the current default configuration — i.e. the 5.4x collapse that forced `lte_vabstol` to
 1e-6 does **not** recur. **This is the whole point of the item; if it fails, `relref` does
 not fix what it was proposed to fix and the result must be recorded as such.**
-OUTCOME:
+OUTCOME: **PASSED, and the defect it targets reproduces cleanly.** Leapfrog, step counts:
+
+| `relref` | `lte_vabstol` | steps |
+|---|---|---|
+| `pointlocal` | 1e-6 (today's default) | **324** |
+| `pointlocal` | 1e-12 | **1143** — the collapse, **3.53x** |
+| `sigglobal` | 1e-6 | 324 |
+| **`sigglobal`** | **1e-12** | **482 — 1.49x**, inside the declared 2x |
+
+So the workaround's cost is real and reproducible, and `sigglobal` removes **81% of the
+excess** (819 extra steps under `pointlocal`, 158 under `sigglobal`). The review recorded
+the collapse as 5.4x; it measures 3.53x on this circuit — same phenomenon, smaller number,
+consistent with the other magnitude corrections in stage 2.
 **Gate 2+.3c (accuracy is not silently traded away).** `sigglobal` loosens the tolerance on
 quiet nodes by construction. Declared success: on a circuit with an analytic solution, the
 error under `sigglobal` at `lte_vabstol=1e-12` is no worse than under `pointlocal` at
 `lte_vabstol=1e-6` — the configuration it is proposed to replace.
-OUTCOME:
+OUTCOME: **PASSED, but only on a restricted region, and the restriction is a finding.**
+
+RC step response against the analytic `V(1 - exp(-t/tau))`, with a quiet 1 G-ohm node
+present:
+
+| `relref` | `lte_vabstol` | steps | err (whole run) | err (t > 3 tau) |
+|---|---|---|---|---|
+| `pointlocal` | 1e-6 | 177 | 1.980e-01 | 7.107e-02 |
+| **`sigglobal`** | **1e-12** | **75** | 1.980e-01 | **6.929e-02** |
+| `pointlocal` | 1e-12 | 177 | 1.980e-01 | 7.107e-02 |
+
+`sigglobal` at 1e-12 is **slightly more accurate with 2.4x fewer steps** than the
+configuration it replaces. But note the whole-run column: **identical to four digits across
+every configuration.** That is stage 3's defect — the opening step is taken at `max_step`
+and accepted unevaluated, and its error dominates the entire run, so no tolerance setting
+can move the whole-run figure. **The gate as declared is therefore not measurable until
+stage 3 lands**; it is judged here on `t > 3 tau`, the region the controller actually
+governs, and that limitation is recorded rather than hidden. Re-run it after stage 3.
 **Gate 2+.3d (correctness).** Full suite `-m ""` at 744/6/0 with the default unchanged.
 OUTCOME:

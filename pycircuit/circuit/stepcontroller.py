@@ -1,13 +1,82 @@
 from abc import ABC, abstractmethod
 import numpy as np
 
+## Valid values for `relref`, matching Spectre's parameter of the same name.
+RELREF_MODES = ('pointlocal', 'alllocal', 'sigglobal')
+
+
 class StepController(ABC):
     """
     Abstract Strategy Interface for deciding and predicting time steps.
     """
-    
+
+    ## ITEM 2+.3 -- what the RELATIVE part of the LTE tolerance is measured against.
+    ##
+    ## The tolerance is `lteratio * (reltol*ref + abstol)`.  Until now `ref` was
+    ## hard-coded to `max(|x_curr|, |x_last|)` -- each unknown against itself, at
+    ## this instant.  That is Spectre's `pointlocal`, and it has a failure mode that
+    ## is easy to miss: on a node carrying no signal `ref -> 0`, so the tolerance
+    ## collapses to `abstol` and the controller starts chasing numerical noise on a
+    ## quiet node.  On the leapfrog that alone cut the step size 5.4x, and the fix
+    ## applied at the time was to raise the absolute floor a millionfold
+    ## (`lte_vabstol` 1e-12 -> 1e-6), which treats the symptom.
+    ##
+    ## Spectre's answer is `relref`, and its default is `sigglobal`: measure each
+    ## signal against the largest signal anywhere in the circuit, over all past
+    ## time, so a quiet node inherits a sane reference instead of degenerating.
+    ##
+    ##   pointlocal  each unknown against itself, now.  (Previous behaviour.)
+    ##   alllocal    each unknown against its OWN largest value so far.
+    ##   sigglobal   each unknown against the largest value of ANY unknown so far.
+    ##
+    ## Default stays `pointlocal` here so this change is inert until asked for;
+    ## whether to adopt Spectre's default belongs with stage 4's `lteratio` work.
+    relref = 'pointlocal'
+
+    def set_relref(self, relref):
+        if relref not in RELREF_MODES:
+            raise ValueError(
+                "relref must be one of %r, not %r" % (RELREF_MODES, relref))
+        self.relref = relref
+        self._ref_running = None
+        return self
+
+    def _reference(self, x_curr, x_last, no_history, n_nodes, toolkit):
+        """The `ref` in `reltol*ref + abstol`, per the selected `relref`.
+
+        `n_nodes` splits node voltages from branch currents.  The global modes
+        must NOT mix them: a circuit with amperes of branch current and millivolts
+        of node signal would otherwise reference every node to a current, which is
+        dimensional nonsense and would silently disable node error control.  When
+        `n_nodes` is None the vector is treated as one group, which is correct only
+        if every entry shares a unit -- callers that know better should say so.
+        """
+        local = toolkit.maximum(abs(x_curr), abs(x_last))
+        if self.relref == 'pointlocal':
+            return local
+
+        if no_history or getattr(self, '_ref_running', None) is None:
+            ## First step of a run: nothing is remembered yet, so the running
+            ## reference starts from what is in front of us.
+            self._ref_running = local
+        else:
+            self._ref_running = toolkit.maximum(self._ref_running, local)
+
+        if self.relref == 'alllocal':
+            return self._ref_running
+
+        ## sigglobal: collapse each unit group to its maximum and broadcast back.
+        running = self._ref_running
+        out = np.array(running, dtype=float, copy=True)
+        if n_nodes is None or n_nodes <= 0 or n_nodes >= len(out):
+            out[:] = np.max(out) if len(out) else 0.0
+            return out
+        out[:n_nodes] = np.max(running[:n_nodes])
+        out[n_nodes:] = np.max(running[n_nodes:])
+        return out
+
     @abstractmethod
-    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0):
+    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None):
         """Evaluate the Local Truncation Error (LTE) for the current step.
 
         ``no_history`` means there is genuinely no past point to difference
@@ -29,7 +98,7 @@ class IntegralController(StepController):
     Rejects steps with LTE > 1.0, and predicts the next step size.
     """
     
-    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0):
+    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None):
         ## No past point exists yet, so there is nothing to difference and the
         ## step is accepted unevaluated.  This is the only place in a run where
         ## that is correct, and it costs one uncontrolled step of O(h^2) Euler
@@ -69,7 +138,8 @@ class IntegralController(StepController):
         #    allowed truncation error is TRTOL times the Newton-solve tolerance.
         #    Folding TRTOL into etol makes the accept threshold (err<=1) and the
         #    step-size prediction aim at the same target instead of oscillating.
-        etol = TRTOL * (reltol * toolkit.maximum(abs(x_curr), abs(x_last)) + abstol)
+        ref = self._reference(x_curr, x_last, no_history, n_nodes, toolkit)
+        etol = TRTOL * (reltol * ref + abstol)
 
         # 4. Normalize the error
         err_array = abs(lte) / etol
@@ -102,7 +172,7 @@ class PIController(StepController):
         self.k_p = k_p
         self.last_err = None
         
-    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0):
+    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None):
         ## As in IntegralController: nothing to difference on the first step of a
         ## run.  Unlike there, the 0.5 is not dead -- it seeds the PI history so
         ## the first real update has a previous error to work from.
@@ -132,7 +202,8 @@ class PIController(StepController):
 
         # Relax the LTE tolerance by TRTOL (see IntegralController) so the accept
         # threshold matches the target the PI update drives toward.
-        etol = TRTOL * (reltol * toolkit.maximum(abs(x_curr), abs(x_last)) + abstol)
+        ref = self._reference(x_curr, x_last, no_history, n_nodes, toolkit)
+        etol = TRTOL * (reltol * ref + abstol)
         err_array = abs(lte) / etol
 
         err = float(np.max(err_array))
