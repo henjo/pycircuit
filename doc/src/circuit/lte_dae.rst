@@ -151,18 +151,45 @@ The comparison isolates exactly where the DAE formula matters:
   :math:`-\tfrac{1}{2}(g_n - g_{n-1})` the classic path already used.
 * **Trapezoidal** differs only in the variable-step bookkeeping; the two agree
   at uniform steps and stay very close in practice.
-* **Gear2** is the substantive case.  The classic estimate used a second
-  divided difference of the *charge* :math:`q` (effectively a :math:`q''`
-  term), which **under-estimates** the true truncation error.  The controller
-  is then fooled into taking too few steps, so accuracy suffers.  The YWR form
-  uses the second difference of :math:`g = \dot q` -- the correct third-order
-  DAE quantity -- and controls the real error.
+* **Gear2** is the substantive case.  Until 2026-07 the classic estimate used a
+  second divided difference of the *charge* :math:`q` -- which is a
+  :math:`q''` term -- scaled by :math:`h^3`, where BDF-2 requires
+  :math:`q'''` scaled by :math:`h^2`.  The YWR form uses the second difference
+  of :math:`g = \dot q`, the correct third-order DAE quantity.
 
-On the RC transient above this shows up as Gear2 under ``ywr`` taking
-appropriately more steps and reaching an error roughly an order of magnitude
-smaller than under ``classic`` -- turning Gear2 from the least accurate of the
-three methods into the most accurate, as a properly-controlled second-order
-method should be.
+.. warning::
+
+   **This page previously understated that defect, and the understatement was
+   the more dangerous half.**  It described the consequence as the controller
+   being "fooled into taking too few steps, so accuracy suffers", and quantified
+   it as "roughly an order of magnitude" of error.  The controller was not
+   taking *too few* steps; it was **not controlling the step at all**.
+
+   The mismatched estimate is not a constant factor -- it is wrong by a factor of
+   order :math:`h\omega`, which on a 1 MHz signal at nanosecond steps is
+   :math:`\sim 10^{-15}`.  With ``err`` that small against an accept threshold of
+   1, the growth limiter :math:`\min(2,\,0.9\,(1/\mathrm{err})^{1/3})` saturates
+   at 2 on *every* step, so :math:`h` doubles until it reaches ``max_step`` and
+   pins there.  Measured consequences: **zero step rejections ever**, and results
+   *bit-identical* across a :math:`10^3` change in ``abstol`` and ``reltol``.
+   Tolerances would have to be some :math:`3\times10^{10}` times tighter to
+   provoke a single rejection.
+
+   A blind controller silently delivers whatever accuracy ``timestep`` happens to
+   buy, and tightening tolerances buys nothing.  That is a different failure from
+   "less accurate", and describing it as the latter is why the defect survived
+   being documented.
+
+   **Fixed 2026-07-30.**  ``'classic'`` now estimates :math:`q'''` as twice the
+   second divided difference of :math:`g`, taken from the companion-current
+   history -- the same information YWR uses, since Gear-2 keeps only two past
+   charges and a third divided difference of :math:`q` is therefore unavailable.
+   The estimate is asymptotically exact (ratio to the true truncation error
+   :math:`0.9795 \to 0.9988` as :math:`h` halves, against a flat
+   :math:`\sim\!10^{-16}` before), and on a stiff reference case the controller
+   went from 0 rejections and 0.0% step-count response to ``reltol``, to 4
+   rejections and +327.5%.  ``Gear2Integrator`` now also *defaults* to ``'ywr'``.
+   See ``doc/transient_repair_plan.md`` for the full gate outcomes.
 
 Conclusion
 ==========

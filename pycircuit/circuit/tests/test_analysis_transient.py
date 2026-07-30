@@ -483,3 +483,162 @@ def test_lte_formula_ywr():
         "gear2-ywr estimates %.4g of the one-step LTE, expected 1/2" % r_gy
     assert abs(r_gc / r_gy - 4.0 / 3.0) < 0.03, \
         "classic/ywr = %.4g, expected 4/3" % (r_gc / r_gy)
+
+
+## ---------------------------------------------------------------------------
+## The three checks the suite lacked, for every integrator.
+##
+## Gear2Integrator.compute_lte's 'classic' branch estimated q'' scaled by h**3
+## where BDF-2 needs q''' scaled by h**2 -- about 1e-15 of the true truncation
+## error -- so the step controller never rejected a step and results were
+## bit-identical across a 1e3 change in reltol.  Twelve tests touched Gear2 and
+## none could see it: none called compute_lte at all, none asserted that a step
+## is ever rejected, and none asserted that anything responds to a tolerance.
+## test_transient_adaptive_efficiency's `adapt_steps < fixed_steps` is satisfied
+## most emphatically of all by a *blind* controller, which takes the fewest
+## steps physically possible, so it could not serve.
+##
+## Each of the three runs for every integrator and every LTE formula, because
+## the defect lived in one of three near-identical branches.
+## See doc/transient_repair_reasoning.md (E) and plan stage 4.
+## ---------------------------------------------------------------------------
+
+## (name, class name, formula, expected order in h, expected estimate/true).
+## The ratios are against the one-step LTE and every one of them is derived on
+## paper, not read off the code: expanding each companion formula with exact
+## past derivatives gives 1/2 for Backward Euler, 5/6 for Trapezoidal (either
+## formula), 2/3 for Gear2 'classic' and 1/2 for Gear2 'ywr'.  Four independent
+## constants hitting at once is what makes this a check rather than a snapshot.
+_LTE_CASES = [
+    ('euler-classic', 'EulerIntegrator', 'classic', 1.0, 0.5),
+    ('euler-ywr', 'EulerIntegrator', 'ywr', 1.0, 0.5),
+    ('trap-classic', 'TrapezoidalIntegrator', 'classic', 2.0, 5.0 / 6.0),
+    ('trap-ywr', 'TrapezoidalIntegrator', 'ywr', 2.0, 5.0 / 6.0),
+    ('gear2-classic', 'Gear2Integrator', 'classic', 2.0, 2.0 / 3.0),
+    ('gear2-ywr', 'Gear2Integrator', 'ywr', 2.0, 0.5),
+]
+
+
+@pytest.mark.parametrize('name,cls_name,formula,order,ratio', _LTE_CASES)
+def test_compute_lte_order_and_scale(name, cls_name, formula, order, ratio):
+    """compute_lte must estimate the truncation error, to the right power of h.
+
+    This is the cheap one -- an analytic q(t), no circuit -- and it is the one
+    that would have caught the original defect on its own: the pre-repair Gear2
+    'classic' branch scaled as h**3.001 instead of h**2, and its ratio to the
+    true error was ~1e-15 instead of 2/3.
+    """
+    import pycircuit.circuit.integrator as integrator_mod
+    cls = getattr(integrator_mod, cls_name)
+
+    hs = [4e-9 / 2 ** i for i in range(4)]
+    mags, ratios = [], []
+    for h in hs:
+        est, true = _lte_vs_onestep_true(cls(formula), h)
+        i = int(np.argmax(np.abs(true)))
+        mags.append(abs(est[i]))
+        ratios.append(est[i] / true[i])
+
+    observed = np.log2(mags[-2] / mags[-1])
+    assert abs(observed - order) < 0.1, \
+        '%s: LTE scales as h**%.3f, expected h**%.1f' % (name, observed, order)
+    assert abs(ratios[-1] - ratio) < 0.02 * ratio, \
+        '%s: estimate/true = %.6g at h=%.3g, expected %.4g' \
+        % (name, ratios[-1], hs[-1], ratio)
+
+
+## Series RLC loop released from an initial condition:
+##     C(1,gnd) -- R(1,2) -- L(2,gnd)
+## with i_L and v1 as states,
+##     di/dt = (v1 - R i)/L,   dv1/dt = -i/C
+##     A = [[-R/L, 1/L], [-1/C, 0]],   y(t) = expm(A t) y0   exactly.
+## R=1k, L=1uH, C=1uF puts the poles at -1.000e+03 and -1.000e+09: a stiffness
+## ratio of 1e6, and the reference is a matrix exponential rather than another
+## integration, so it cannot flatter the method under test.
+_STIFF_R, _STIFF_L, _STIFF_C = 1e3, 1e-6, 1e-6
+_STIFF_A = np.array([[-_STIFF_R / _STIFF_L, 1.0 / _STIFF_L],
+                     [-1.0 / _STIFF_C, 0.0]])
+
+
+def _make_integrator(name):
+    import pycircuit.circuit.integrator as integrator_mod
+    base, formula = name.split('-')
+    cls = {'euler': 'EulerIntegrator', 'trap': 'TrapezoidalIntegrator',
+           'gear2': 'Gear2Integrator'}[base]
+    return getattr(integrator_mod, cls)(formula)
+
+
+def _stiff_run(name, reltol, tend=5e-3, timestep=2e-4):
+    """Run the stiff case; return (steps, rejections, error after start-up)."""
+    from scipy.linalg import expm
+    c = SubCircuit()
+    c['C1'] = C(1, gnd, c=_STIFF_C)
+    c['R1'] = R(1, 2, r=_STIFF_R)
+    c['L1'] = L(2, gnd, L=_STIFF_L)
+    tran = Transient(c, integrator=_make_integrator(name), reltol=reltol)
+    tran.step_controller = _CountingController()
+    x0 = np.zeros(c.n)
+    x0[c.get_node_index('1')] = 1.0
+    x0[c.get_node_index('2')] = 1.0
+    res = tran.solve(tend=tend, timestep=timestep, x0=x0, coupled_lte=False)
+
+    t = np.asarray(res.sweep_values, dtype=float)
+    v1 = np.asarray(res.v(1, gnd), dtype=float)
+    v2 = np.asarray(res.v(2, gnd), dtype=float)
+
+    ## The genuine first step of a run has no history, so its LTE cannot be
+    ## estimated and it is accepted unevaluated at max_step.  The O(h^2) Euler
+    ## error it commits is identical for every method and no later step undoes
+    ## it, so a plain max-error-over-the-run measures the start-up and nothing
+    ## else.  Measure instead the error accumulated *after* start-up: propagate
+    ## the exact solution from the simulated state at the third point.  i_L is
+    ## recovered from the resistor as (v1 - v2)/R.
+    k = 2
+    y_k = np.array([(v1[k] - v2[k]) / _STIFF_R, v1[k]])
+    err = max(abs(v1[j] - (expm(_STIFF_A * float(t[j] - t[k])) @ y_k)[1])
+              for j in range(k, len(t)))
+    return len(t), tran.step_controller.rejections, float(err)
+
+
+_INTEGRATORS = [c[0] for c in _LTE_CASES]
+
+
+@pytest.mark.parametrize('name', _INTEGRATORS)
+def test_step_is_actually_rejected_on_stiff_case(name):
+    """A step must actually be rejected somewhere on a stiff run.
+
+    This is the assertion a blind controller cannot satisfy by being blind.
+    """
+    steps, rejections, _err = _stiff_run(name, 1e-4)
+    assert rejections >= 1, \
+        '%s: %d steps and not one rejected -- the LTE estimate is not ' \
+        'controlling the step size' % (name, steps)
+
+
+@pytest.mark.parametrize('name', _INTEGRATORS)
+def test_step_count_and_error_respond_to_reltol(name):
+    """Tightening reltol must cost steps and buy accuracy, monotonically.
+
+    Monotonicity alone would not be enough: the pre-repair Gear2 'classic'
+    branch produced bit-identical results across a 1e3 change in reltol, and a
+    constant is monotone.  So the response is also required to be real.
+    """
+    reltols = [1e-3, 1e-4, 1e-5, 1e-6]
+    steps, errs = [], []
+    for reltol in reltols:
+        n, _rej, err = _stiff_run(name, reltol)
+        steps.append(n)
+        errs.append(err)
+
+    for i in range(len(reltols) - 1):
+        assert steps[i + 1] >= steps[i], \
+            '%s: step count fell when reltol tightened: %s' % (name, steps)
+        ## 5% slack for platform float variation only; measured behaviour is a
+        ## strict decrease at every step of the sweep.
+        assert errs[i + 1] <= errs[i] * 1.05, \
+            '%s: error grew when reltol tightened: %s' % (name, errs)
+    assert steps[-1] > 1.2 * steps[0], \
+        '%s: step count barely moves across a 1e3 tolerance change (%s) -- ' \
+        'the controller is not reacting' % (name, steps)
+    assert errs[-1] < 0.2 * errs[0], \
+        '%s: less than 5x accuracy from a 1e3 tolerance change: %s' % (name, errs)

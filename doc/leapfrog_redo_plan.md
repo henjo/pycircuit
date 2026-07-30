@@ -60,13 +60,26 @@ Grepped, not remembered (`grep -rln leapfrog_5th_order --include=*.py`).
   `doc/hierarchical_approximation_plan.md` — stage outcomes referencing the leapfrog
 - `doc/ddd_references.md` — if it quotes leapfrog figures
 
-### Documents that DO self-update
+### Documents that LOOK self-updating but are NOT
 
-- `doc/src/circuit/distortion_ddd.rst:500-525` — a live `exec-rst` block calling
-  `bc.leapfrog_5th_order()`. It regenerates on every build, which is the
-  "never type a measured number into prose" rule paying for itself. **But** a live block
-  that raises renders its own source and the build still says "succeeded", so it must be
-  verified by grepping the built HTML for a *computed* value, not for a heading.
+- `doc/src/circuit/distortion_ddd.rst:500-560` — a live `exec-rst` block calling
+  `bc.leapfrog_5th_order()`. This was listed here as self-updating. **It is not, and
+  that was measured on 2026-07-30, not argued.** A build after the topology fix
+  succeeded with the clean 2 warnings and 0 ERRORs, the block genuinely executed (the
+  HTML holds a rendered table, and it did not fall back to echoing its source) — and
+  the table still showed the numbers from the **unstable** fixture: 6.329e-05 /
+  5.919e-11 where recomputing gives 7.1404e-05 / 6.2704e-11.
+
+  The cause is sphinx's doctree cache: a source file that has not itself changed is not
+  reprocessed, so its live block does not re-run. **A live block is self-updating with
+  respect to its own source only, never with respect to the code it calls.** Stage T3
+  must therefore force a clean rebuild (`sphinx -E`, or delete `doc/build/doctrees`)
+  and then *diff the rendered numbers*, because "build succeeded, 2 warnings" is
+  emitted identically whether the block re-ran or not.
+
+  The separate, previously-known failure mode still applies too: a block that raises
+  renders its own source while the build still reports success, so verification must
+  grep the built HTML for a *computed* value, never for a heading or an identifier.
 - `doc/src/circuit/ddd.rst:1020` — prose referencing the 181-group figure; check whether
   the number is pasted or computed.
 

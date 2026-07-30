@@ -237,27 +237,52 @@ def estimate_lte(q_curr, state: TransientState, method='trap'):
     q_prev = state.q_history[0]
     dt_prev = jnp.where(state.h_history[0] == 0.0, dt, state.h_history[0])
 
+    q_prev2 = state.q_history[1]
+
     if method == 'euler':
-        # Backward Euler: LTE ~ 0.5 h^2 q'' .
-        dd1_n = (q_curr - q_prev) / dt
-        dd1_nm1 = (q_prev - state.q_history[1]) / dt_prev
-        q_double_prime = (dd1_n - dd1_nm1) / dt
-        return 0.5 * (dt**2) * jnp.abs(q_double_prime), 2.0
-    elif method in ('gear', 'gear2'):
-        # Gear2 / BDF2: 2nd-order, LTE ~ h^3 q''' via a second divided
-        # difference of the charge (previously this fell through to the Euler
-        # estimate, under-controlling the step for the 2nd-order method).
-        q_prev2 = state.q_history[1]
+        # Backward Euler: LTE ~ 0.5 h^2 q''.  A second divided difference of the
+        # charge IS q'', so this branch was always right, and it sets the
+        # convention the two below must follow: return the absolute LTE in charge
+        # units, with the method's own error constant.
         dd1_n = (q_curr - q_prev) / dt
         dd1_nm1 = (q_prev - q_prev2) / dt_prev
-        dd2_n = (dd1_n - dd1_nm1) / (dt + dt_prev)
-        return (dt**2) * (dt + dt_prev) / 3.0 * jnp.abs(dd2_n), 3.0
+        q_double_prime = (dd1_n - dd1_nm1) / dt
+        return 0.5 * (dt**2) * jnp.abs(q_double_prime), 2.0
+
+    # --- BOTH 2ND-ORDER METHODS NEED q''', NOT q'' ---
+    #
+    # Until 2026-07 both branches below estimated a second divided difference of
+    # the charge -- which is q'' -- and scaled it by h^3.  That is the same defect
+    # the CPU `Gear2Integrator`'s 'classic' branch had (fixed in `integrator.py`,
+    # see its comment): dimensionally it is not a charge-error at all, and it
+    # undershoots the truncation error by a factor of order h*omega.  The old
+    # comment here even asserted "h^3 q''' via a second divided difference of the
+    # charge", which is self-contradictory -- that difference is q''.
+    #
+    # A third divided difference of q is unavailable (only two past charges are
+    # kept), so q''' is taken as twice the SECOND divided difference of the
+    # companion current g = dq/dt, read off `iq_history` -- exactly what the CPU
+    # implementation and the YWR estimator both do.
+    if method in ('gear', 'gear2'):
+        # VSS BDF-2 companion current at t_n; the alpha coefficients annihilate
+        # the q' and q'' terms by construction.
+        h1, h2 = dt, dt_prev
+        alpha0 = (2 * h1 + h2) / (h1 * (h1 + h2))
+        alpha1 = -(h1 + h2) / (h1 * h2)
+        alpha2 = h1 / (h2 * (h1 + h2))
+        g_n = alpha0 * q_curr + alpha1 * q_prev + alpha2 * q_prev2
+        error_constant = 2.0 / 9.0          # BDF-2: LTE = (2/9) h^3 q'''
     else:
-        # Trapezoidal.
-        iq_prev = state.iq_history[0]
-        dd2 = (q_curr - q_prev) / dt - iq_prev
-        dd2 = dd2 * 2.0 / dt
-        return (1.0 / 12.0) * (dt**3) * jnp.abs(dd2), 3.0
+        # Trapezoidal companion current at t_n.
+        g_n = 2.0 * (q_curr - q_prev) / dt - state.iq_history[0]
+        error_constant = 1.0 / 12.0         # TRAP: LTE = (1/12) h^3 q'''
+
+    g_nm1 = state.iq_history[0]
+    g_nm2 = state.iq_history[1]
+    # Second divided difference of g over t_n, t_{n-1}, t_{n-2} is q'''/2.
+    dd2_g = ((g_n - g_nm1) / dt - (g_nm1 - g_nm2) / dt_prev) / (dt + dt_prev)
+    q_triple_prime = 2.0 * dd2_g
+    return error_constant * (dt**3) * jnp.abs(q_triple_prime), 3.0
 
 def ywr_error_ratio(i_curr, x_curr, x_last, J, state: TransientState, irefnode,
                     method='trap', trtol=7.0, lte_rel=1e-3, lte_abs=1e-6):

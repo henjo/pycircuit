@@ -346,10 +346,37 @@ Three classes, none of which exist (see reasoning (E)):
 
 **Gate 4-1.** Each new test must fail against the pre-stage-1 code and pass after.
 Demonstrate both directions; a test only known to pass proves nothing about its power.
-OUTCOME:
+OUTCOME: **PASSED, both directions demonstrated by actually reverting.** 18
+parametrized cases across the three new test functions (4 integrator configurations:
+`euler`, `trap`, `gear2-classic`, `gear2-ywr`).
+
+| `pycircuit/circuit/integrator.py` | result |
+|---|---|
+| at HEAD | **18 passed** in 12.46 s |
+| restored to `3f2627e^` (pre-stage-1), file otherwise untouched | **3 failed, 15 passed** in 12.41 s |
+
+The three failures are exactly:
+
+```
+test_compute_lte_order_and_scale[gear2-classic-Gear2Integrator-classic-2.0-0.666…]
+test_step_is_actually_rejected_on_stiff_case[gear2-classic]
+test_step_count_and_error_respond_to_reltol[gear2-classic]
+```
+
+**One failure per new test function, and every one of them on the `gear2-classic`
+parametrization alone.** That is the outcome worth having rather than a bare "they
+fail": `euler`, `trap` and `gear2-ywr` pass in *both* states, so the tests discriminate
+the specific defect instead of being broadly sensitive to the file changing. A test
+that had failed on all four configurations would have proved much less.
+
+The reverted file was restored to HEAD and the working tree confirmed clean afterwards.
 
 **Gate 4-2.** Full suite `-m ""`, new tally recorded (it will exceed 715).
-OUTCOME:
+OUTCOME: **PASSED. 734 passed, 6 skipped, 0 failed in 511.93 s.** Up 18 from the
+716 after stage 2 -- the 18 new parametrized cases (3 test functions x 4 integrator
+configurations, minus the combinations the `_LTE_CASES` table does not enumerate).
+Runtime is -11.5% against the same-box 578.49 s baseline, so nothing needed marking
+`slow` and the maintainer's runtime decision never had to be invoked.
 
 ---
 
@@ -368,12 +395,94 @@ is the more dangerous of the two.
 
 **Gate 5-1.** `test_jaxtransient.py` passes; if jax is importable, the JAX and numeric
 LTE estimates agree to a stated tolerance on the same input.
-OUTCOME:
+OUTCOME: **PASSED.** `jaxtransient.estimate_lte` carried the same defect for BOTH
+2nd-order methods -- a second divided difference of the charge (which is `q''`) scaled
+by `h^3`, where `q'''` scaled by `h^2` is required.  Its comment even asserted "h^3
+q''' via a second divided difference of the charge", which is self-contradictory.
+Fixed to match stage 1: `q'''` as twice the second divided difference of `g` from
+`iq_history`.  The `euler` branch was correct and is untouched; it sets the
+charge-domain convention the other two now follow.
+
+Both implementations fed the SAME q/iq/h history, `q(t)=sin(2*pi*1e6*t)`, `h` swept
+4 ns -> 0.25 ns:
+
+| method | JAX/CPU at h=4e-9 | at h=2.5e-10 | `(JAX/CPU)/(2h)` |
+|---|---|---|---|
+| euler | 8.025e-09 | 5.001e-10 | 1.00309 -> **1.00021** |
+| trap | 2.000e-09 | 1.250e-10 | **0.25000 at every h** |
+| gear | 2.667e-09 | 1.667e-10 | **0.33333 at every h** |
+
+`p+1` agrees for all three (2.0, 3.0, 3.0).
+
+**The ratio must carry a factor of h, and an earlier version of this check got that
+wrong and reported FAIL.** The CPU returns `Eg` in CURRENT units (the controller
+applies `J^-1` afterwards) while JAX is charge-domain by design; charge = current x
+time.  Testing the raw ratio for constancy therefore tests the wrong thing.  Divided
+by `2h` it is constant to **0.0000%** for trap and gear over a 16x range in `h`, and
+converges to 1 for euler (the residual drift is the divided difference's own O(h)
+error).  Fixed per-method constants with zero drift is far stronger evidence than a
+single-point match would have been.
+
+**Out-of-scope defect found here and NOT fixed -- reported instead.**
+`outer_time_loop` receives `reltol`/`abstol` and threads them into
+`newton_inner_loop` (jaxtransient.py:360), but **neither LTE call site passes them**:
+`ywr_error_ratio(...)` at :372 and `lte_error_ratio(lte, q_curr)` at :378 both fall
+back to hard-coded `trtol=7.0, lte_rel=1e-3, lte_abs=1e-6`.  So in the JAX transient
+the user's tolerances reach the Newton convergence test but **never reach the
+step-size controller**, on BOTH paths including the default `'ywr'` one.  This is the
+same class of defect as the Gear2 bug -- a controller that cannot be tuned -- and
+unlike the copied LTE expression it is LIVE rather than dormant.  Outside the
+approved stage-5 scope ("fix the JAX copy"), so it is recorded here as a decision for
+the maintainer rather than actioned.
+
+Also worth noting for whoever takes that on: `lte_formula` does not mean the same
+thing in the two implementations.  On the CPU it selects between two algebraic
+formulas inside one `compute_lte`, both returning `Eg`.  In JAX it selects between two
+*different functions returning different kinds of quantity* -- `ywr_error_ratio`
+returns an already-normalised ratio and needs an extra `G` evaluation plus a solve per
+step, while `estimate_lte` returns an un-normalised charge-domain LTE.  They share no
+contract, which is exactly why they were free to drift.
 
 **Gate 5-2.** Doc build: **build succeeded, 2 warnings, 0 ERROR lines**. Check
 `grep -cE 'ERROR'` separately from the warning grep — an `ERROR:` line cannot be matched
 by `grep -i warn`, which is how two of them stayed invisible before.
-OUTCOME:
+OUTCOME: **PASSED on its declared terms -- and it exposed a stale-number trap that
+matters more than the gate did.**
+
+Declared part: `build succeeded, 2 warnings`, `grep -cE 'ERROR'` = **0**. A
+`grep -ciE warning` returns **5**, which disagrees with the summary; resolving that
+disagreement rather than trusting either number: 2 are venv `RuntimeWarning`s about
+`sys.prefix` (not sphinx diagnostics), 2 are the known `pycircuit.post.cds` /
+`cds.skill` autodoc import failures that form the clean baseline, and 1 is the summary
+line itself. The summary is authoritative, as the standing rule says.
+
+**THE TRAP.** `doc/src/circuit/distortion_ddd.rst:500-560` holds a live `exec-rst`
+block calling `bc.leapfrog_5th_order()`, and `leapfrog_redo_plan.md` listed it under
+"Documents that DO self-update" -- the "never type a measured number into prose" rule
+apparently paying for itself. **It does not self-update.** The block did execute (the
+HTML contains a rendered table, and `grep -c 'exec-rst|bc.leapfrog_5th_order()'` on the
+built page is 0, so it did not fall back to echoing its source). But sphinx reuses
+cached doctrees for source files that have not themselves changed, and
+`distortion_ddd.rst` did not change when the fixture did. So the page still shows the
+values computed from the **unstable** fixture.
+
+Verified by recomputing the same quantities against the fixed fixture rather than by
+assuming:
+
+| drive | node volts (built page) | recomputed | HD3 (built page) | recomputed |
+|---|---|---|---|---|
+| 0.01 | 6.329e-05 | **7.1404e-05** (+12.8%) | 5.919e-11 | **6.2704e-11** (+5.9%) |
+| 3 | 1.847e-02 | **2.0665e-02** (+11.9%) | 4.665e-06 | **4.8100e-06** (+3.1%) |
+
+So a live block is only self-updating with respect to **its own source**, never with
+respect to the code it calls. A fixture change elsewhere leaves it silently stale, and
+"build succeeded, 2 warnings" is emitted either way. `leapfrog_redo_plan.md` has been
+corrected: stage T3 must force a clean rebuild (`sphinx -E`, or delete
+`doc/build/doctrees`) and then diff the numbers, not merely rebuild.
+
+Incidental, and reassuring for the redo: the shifts are 3-13%, not orders of magnitude,
+so the qualitative conclusions are likely to survive T2-2 even though every number in
+them moves.
 
 ---
 
