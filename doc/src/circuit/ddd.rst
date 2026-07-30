@@ -747,10 +747,11 @@ value distributes over a product:
    \kappa = \frac{A[\mathrm{root}]}{|\det|}
 
 :math:`\kappa` — :meth:`~pycircuit.circuit.ddd.DDD.cancellation` — is the
-condition number of the summation. Dropping a set of terms leaves an error
-bounded only by their absolute mass, so to reach a relative error ``tol`` a
-magnitude ranking must capture a fraction :math:`1 - \mathrm{tol}/\kappa` of
-that mass. That is a hard requirement, not a tuning parameter:
+standard condition number of a summation (Higham 1993), here applied to the
+expanded determinant. Dropping a set of terms leaves an error of
+:math:`|\sum \text{dropped}|`, which their absolute mass bounds, so capturing a
+fraction :math:`1 - \mathrm{tol}/\kappa` of that mass is **sufficient** for
+relative error :math:`\mathrm{tol}`:
 
 .. exec-rst::
 
@@ -789,14 +790,49 @@ that mass. That is a hard requirement, not a tuning parameter:
         print("     - %.6f%%" % (100.0 * (1.0 - 0.05 / k)))
         print("     - %.0f%%" % (100.0 * err))
 
-Those last two columns are the same fact twice. Recovering all but a
-hundred-thousandth of the absolute mass is not achievable at any tractable term
-count, and the error column is what happens instead. **This is not a bug in the
-ranking; it is the ranking being asked to do something impossible.** The
-diagnostic costs one pass over the diagram, so it is worth computing before
-trusting any dominant-term result — an earlier round of this work reported a
-994% error as a working simplification, and :math:`\kappa` is what would have
-said so in advance.
+The middle column is what the *sufficient* condition demands; the last is what
+actually happened. The diagnostic costs one pass over the diagram, so it is worth
+computing before trusting any dominant-term result — an earlier round of this
+work reported a 994% error as a working simplification, and :math:`\kappa` is
+what would have flagged it.
+
+.. warning::
+
+   **Sufficient is not necessary, and the difference is easy to overstate.** The
+   dropped terms may cancel *among themselves*, in which case the true error is
+   far below their absolute mass and a ranking can converge even at large
+   :math:`\kappa`. The classical stopping rule is the exact **signed** one,
+   :math:`|\sum_{\text{dropped}}| / |\sum_{\text{all}}|` — criterion (8) of
+   Fernández et al., *Approximation Techniques in Symbolic Circuit Analysis*
+   (2012) — and :meth:`~pycircuit.circuit.ddd.DDD.approximate` already returns
+   exactly that as its error. Magnitude ranking decides only the *order* of
+   deletion, never the stopping test.
+
+   So a large :math:`\kappa` does not prove the approximation impossible. It
+   says the absolute-mass argument offers no comfort, and convergence has to be
+   checked. The measured 994% below shows the pessimism was justified **for this
+   pipeline** — the whole determinant, composite entries, one frequency. Tan &
+   Shi (TCAD 23(6), 2004) report the opposite on the same amplifier after
+   de-cancelling and ranking within each coefficient of :math:`s`, so it is not a
+   property of the µA741. See ``doc/cancellation_ranking_conclusions.md`` §15b.
+
+.. important::
+
+   :math:`\kappa` measures the **formulation** at least as much as the circuit.
+   A DDD is built over *composite* entries such as ``g1 + g2 + s*c1``, and an
+   MNA matrix places the same conductance in several entries with opposite
+   signs; expanding those composites is what manufactures the cancelling terms.
+   Song & Shi (ASP-DAC 2012) give the minimal example — a two-stage ladder whose
+   determinant is :math:`adg - aef - bcg` over composite symbols becomes
+   :math:`G_1G_2G_3 + G_1G_2G_4 + G_1G_3G_4` over the actual parameters: three
+   terms, all positive, :math:`\kappa = 1`.
+
+   So a large :math:`\kappa` does not mean the amplifier is intrinsically hard
+   to approximate. **Topological methods form the product terms directly from
+   the circuit elements and are cancellation-free by construction**, at a cost
+   of roughly :math:`3\times` in diagram size and comparable runtime
+   (Shi, TCAD 2013, Table VIII). Everything below is what can be done *within*
+   the determinant formulation, which is the one pycircuit has.
 
 Ranking groups instead of terms
 -------------------------------
@@ -929,11 +965,21 @@ by :math:`4\times` moved the composed error from
 tightening again brought it back. **Approximating the parts independently gives
 no guarantee about the whole, exactly when the parts cancel.**
 
-The cure is this section's own argument applied once more: rank the *combination*
-as a single object, seeding the frontier with all 25 cofactor roots at once, so
-the inter-cofactor cancellation sits inside the ranked object with an exact
-contribution. That is not implemented. See ``doc/cancellation_ranking_plan.md``
-and ``doc/cancellation_ranking_conclusions.md`` §11.
+Two cures, and they are not equivalent. *Within* this formulation: rank the
+**combination** as a single object, seeding the frontier with all 25 cofactor
+roots at once, so the inter-cofactor cancellation sits inside the ranked object
+with an exact contribution. Not implemented.
+
+Outside it: **do not create the cancellation.** Song & Shi (ASP-DAC 2012) state
+the same limit — *"since DDD is not cancellation-free, every layer of the
+hierarchy has the term cancellation problem"* — and their §III compares
+precisely the Schur decomposition used above against the symbolic-stamp
+alternative, recommending hierarchical GPDD whenever cancellation-freedom
+matters. The measurements on this page were made independently and then found to
+reproduce a result published in 2012; what they add is the quantification.
+See ``doc/cancellation_ranking_plan.md``,
+``doc/cancellation_ranking_conclusions.md`` §11–12, and
+``doc/ddd_references.md`` D2.
 
 Dominant poles without root-finding
 -----------------------------------

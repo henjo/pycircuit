@@ -577,20 +577,53 @@ class DDD:
     def cancellation(self, env=None):
         """How much the determinant's terms cancel: ``sum|term| / |sum term|``.
 
-        This one number decides in advance whether **magnitude-ranked**
-        approximation can converge on a given circuit, and it costs one pass
-        over the diagram.  Keeping a set of terms and dropping the rest leaves
-        an error bounded only by the dropped terms' absolute mass, so to reach a
-        relative error ``tol`` a magnitude ranking must capture a fraction
+        This is the standard **condition number of a summation**
+        (Higham, *The Accuracy of Floating Point Summation*, SIAM J. Sci.
+        Comput. 14(4), 1993) applied to the expanded determinant, and it is a
+        cheap forecast of how hard magnitude-ranked approximation will be: one
+        pass over the diagram.
 
-            1 - tol / cancellation
+        Dropping a set of terms leaves an error of ``|sum of dropped|``, which
+        is bounded by their absolute mass.  So
 
-        of the total absolute mass.  At ``cancellation = 1`` (a positive matrix,
-        nothing cancels) that is ``1 - tol`` and approximation is easy.  On a
-        real operational amplifier it runs to ``10**4`` and beyond, where
-        99.999% of the mass must be recovered and no tractable number of terms
-        will do it -- not a tuning problem but an impossibility, and the reason
-        :meth:`approximate_groups` exists.
+            capturing a fraction ``1 - tol / cancellation`` of the total
+            absolute mass is **sufficient** for relative error ``tol``.
+
+        At ``cancellation = 1`` (nothing cancels) that is ``1 - tol`` and
+        approximation is easy; on a real operational amplifier it runs to
+        ``10**4`` and beyond, where the sufficient condition demands 99.999% of
+        the mass.
+
+        **It is sufficient, not necessary, and the distinction matters.** The
+        dropped terms may cancel *among themselves*, in which case the true
+        error is far below their absolute mass and a ranking can succeed where
+        this forecast says it should struggle.  The classical stopping rule in
+        the literature is the exact signed one -- ``|sum dropped| / |sum all|``
+        (Fernandez et al., *Approximation Techniques in Symbolic Circuit
+        Analysis*, 2012, criterion 8) -- and :meth:`approximate` already uses
+        precisely that as its returned error.  So a large value here does not
+        prove approximation impossible; it says the absolute-mass argument gives
+        no comfort, so convergence must be checked rather than assumed.  On the
+        uA741 the measured error at 500 terms (994%) shows the pessimism was
+        warranted *for this pipeline* -- ranking the whole determinant over
+        composite entries at one frequency.  Tan & Shi (TCAD 23(6), 2004) report
+        the opposite on the same amplifier after de-cancelling and ranking within
+        each coefficient of ``s``, so the failure is not a property of the
+        circuit.
+
+        **It measures the formulation at least as much as the circuit**, which
+        is easy to forget.  A DDD is built over *composite* matrix entries such
+        as ``g1 + g2 + s*c1`` (the compact-symbol convention -- see the module
+        docstring), and an MNA matrix puts the same conductance into several
+        entries with opposite signs.  Expanding those composites is what creates
+        the cancelling terms.  Song & Shi (ASP-DAC 2012) give the minimal
+        example: a two-stage ladder whose ``det = adg - aef - bcg`` over
+        composites becomes ``G1*G2*G3 + G1*G2*G4 + G1*G3*G4`` over the actual
+        parameters -- three terms, all positive, ``cancellation == 1``.  So a
+        large value here does **not** say the circuit is intrinsically hard to
+        approximate; it says this representation of it is.  Topological methods
+        (GPDD) form product terms directly from the elements and are
+        cancellation-free by construction.  See ``doc/ddd_references.md`` D2.
 
         It is also the condition number of the summation, so the value returned
         carries a relative error of about ``cancellation * 2**-53``; above

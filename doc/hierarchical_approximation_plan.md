@@ -232,6 +232,16 @@ output._
 ### The negative result that changes the plan
 
 **Term-ranked approximation does not converge on a real operational amplifier.**
+
+**SCOPE CORRECTED 2026-07-30 — read this before quoting the sentence above.**
+The claim holds for *this pipeline*: ranking the whole determinant, over
+composite matrix entries, at one frequency, with no de-cancellation. It is **not**
+a property of the µA741. Tan & Shi (IEEE TCAD 23(6), 2004) report the opposite on
+the same amplifier — 86% of a coefficient's magnitude in the first term, 97% in
+the first two — after de-cancelling, ranking within each coefficient of `s`, and
+using one symbol per device rather than composite entries. See
+`doc/cancellation_ranking_conclusions.md` §15b and `doc/ddd_references.md` §G.
+
 Measured on the µA741 (1040 vertices, 2 773 885 terms, three symbolic
 transconductances, 1 kHz):
 

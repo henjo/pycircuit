@@ -409,3 +409,406 @@ third time the same gap has been the answer.
 the answer is ~2 000 000 operations. It names devices, it is verified against
 `slogdet` to 3e-3, and **no human will read it.** Converging and being readable
 remain different problems, and only the first is solved.
+
+## 12. This was published in 2012, and the paper was already on the shelf
+
+The maintainer asked whether I had read Song & Shi, *Hierarchical Graph
+Reduction Approach to Symbolic Circuit Analysis with Data Sharing and
+Cancellation-Free Properties* (ASP-DAC 2012). I had not. It is in
+`doc/ddd_references.md`, the PDF is local, and this session opened that very
+file — for its µA725 schematic — without reading its cancellation content.
+
+**What it says, and it is the diagnosis of everything above.**
+
+1. **§II shows the cancellation is a property of the formulation, not of the
+   circuit.** Its example is our own compact-symbol MNA convention. With
+   `a = G1`, `b = c = -G1`, `d = G1+G2+G3`, `e = f = -G3`, `g = G3+G4`, the
+   determinant reads `adg - aef - bcg`; substituting the composites gives
+
+       G1(G1+G2+G3)(G3+G4) - G1*G3² - G1²(G3+G4)  =  G1G2G3 + G1G2G4 + G1G3G4
+
+   Three terms, **all positive**: `κ = 1` exactly. The cancelling terms are
+   manufactured by expanding composite entries that share conductances with
+   opposite signs. **So §1's `κ = 9.4e3` characterises MNA-with-composite-symbols
+   applied to a µA741, not a µA741.** Everything measured here remains true of
+   the representation pycircuit has; the claim that had to be withdrawn is the
+   stronger framing that the approximation was "impossible as posed".
+
+2. **§III is titled "Schur Decomposition versus Symbolic Stamp"** — precisely the
+   choice §9 made — and states the result of §11 directly: *"Since DDD is not
+   cancellation-free, every layer of the hierarchy has the term cancellation
+   problem."* §11's "hierarchical symbolic approximation is not compositional" is
+   a **rediscovery**. What this work adds is quantification: `κ` as a
+   one-pass predictor, and the non-monotone composition
+   (1.47e-2 → 1.13e-1 → 1.48e-2) that shows per-piece tolerances are not merely
+   loose but *unsound*.
+
+3. **GPDD gets the interpretability property for free.** Its expressions are
+   "directly composed of the circuit parameters, rather than intermediate
+   symbols" — which is exactly what stages 3–5 chased through `_lvl110_*` and
+   `T_a_b` placeholders and never obtained.
+
+**Why it was skipped, which is the part worth keeping.** The reference entry
+said: *"Relevant only if we take the graph route; listed for completeness."* The
+GPDD entry said its comparable runtime was *"a real argument for staying with
+DDD."* Both judgements were made while choosing a data structure, against a
+speed-and-memory criterion, and both are defensible **for that question**. They
+were then carried forward unexamined into a different question — whether
+approximation can converge — where cancellation-freedom is not a nice-to-have but
+the whole issue. **The failure was not in reading the papers wrongly; it was in
+trusting a filed conclusion after the question changed.** A reference note should
+record what a paper *says* separately from what we *decided*, because the
+decision expires and the facts do not.
+
+**The cost of the property, measured** (Shi, TCAD 2013, Table VIII): GPDD sizes
+10 432 / 17 488 / 197 274 against DDD's 3 579 / 11 506 / 62 794 — about 3× — with
+runtimes 0.682 / 0.793 / 6.771 against 0.586 / 2.042 / 10.359, so comparable and
+sometimes faster. Three times the diagram for a guarantee that decides whether
+dominant-term extraction works at all is cheap.
+
+**What does not change:** the µA725 decline stands. Song & Shi's Tables I–II give
+that circuit's module *partition*, not its connectivity, and Fig. 4 still draws
+no junction dots.
+
+## 13. A cheaper route than GPDD, and a measurement that locates the target
+
+Searching the local paper set turned up **Tan & Shi, "Parametric Analog
+Behavioral Modeling Based on Cancellation-Free DDDs" (BMAS 2002)** — held here
+since before this work started, unread. It matters because it obtains
+cancellation-freedom **inside the determinant framework**, with no graph model,
+which is the expensive part of the GPDD route.
+
+**Its distinction, which this project had been eliding.**
+
+* **Symbolic cancellation** — terms that cancel *as symbols*, "aris[ing] from the
+  use of the MNA formulation and device matching in analog circuits". Their
+  example: with `g = k = 1/R3` and `i = j = -1/R3`, the term `agks^0` cancels
+  `-ajis^0`. These are detectable from **local 2x2 matrix patterns** (their
+  Fig. 5 — e.g. `[[p,-p],[-p,p]]`, which "may come from the rectangular
+  appearance of a floating resistor in the nodal admittance formulation").
+* **Numerical cancellation** — terms that cancel only once numbers are supplied.
+  They explicitly defer this "to the dominant term generation step".
+
+**`DDD.cancellation` measures the numerical kind.** So the two are not
+interchangeable, and the question that decides whether de-cancellation is worth
+building is how much of `κ` is the symbolic part.
+
+**Their method, and the two costs they state.** De-cancelling *after* building
+the s-expanded DDD "may take a huge amount of temporary memory ... and is
+typically the most time consuming step in the whole approximation operation".
+Better is to remove the terms *during* construction, via a "canceling label list"
+`CL(L_x)` per label and a modified coefficient-multiply that never generates them.
+Two honest caveats from the paper: "up to 70-90 percent product terms can be
+canceling terms for a typical analog circuit" (the prize), and "the
+cancellation-free s-expanded DDDs **can be larger** than the normal s-expanded
+DDDs" (the price).
+
+### The measurement: where the cancellation actually sits
+
+`benchmarks/cancellation_symbolic_vs_numeric.py`, µA741 at 1 kHz. Reassembly of
+the s-expanded form against the complex DDD checks out at 2.3e-15, so the
+comparison is sound.
+
+| representation | `κ` (nominal) | `κ` (degraded) |
+|---|---|---|
+| compact-symbol complex DDD | 9.38e+03 | 1.40e+05 |
+| **between powers of `s` only** | **1.028** | **1.116** |
+| s-expanded coefficients, best | 1.57e+03 (k=1) | 4.45e+03 (k=2) |
+| s-expanded coefficients, worst | 3.09e+06 (k=23) | 3.09e+06 (k=23) |
+
+**Two results, one encouraging and one not.**
+
+1. **Essentially none of the cancellation is between powers of `s`** (`κ = 1.03`).
+   All of it lives *within* a single coefficient — which is precisely the
+   MNA-and-device-matching kind Tan & Shi remove by construction. So the
+   cancellation this project has been fighting is, by their taxonomy, the
+   **removable** kind. That is the strongest argument yet for the de-cancellation
+   route.
+2. **s-expansion alone does not deliver it, and mostly makes `κ` worse.**
+   Per-coefficient `κ` runs from 1.5e3 to 3.1e6 against the compact form's
+   9.4e3. The dominant coefficient at this frequency (k=1) is 6× better than the
+   compact determinant, which is a real but modest gain; the high-order
+   coefficients are far worse, though they carry negligible magnitude at 1 kHz.
+   **Having `s_expand` is therefore not the same as having the property** — the
+   de-cancellation step is the substance, not the s-expansion.
+
+### What this does to the route comparison
+
+| route | cancellation removed | needs | size cost | reuses pycircuit |
+|---|---|---|---|---|
+| group ranking (built) | none — works around it | nothing | none | yes |
+| **de-cancelled sDDD** | **symbolic only** | modified coefficient construction in `_SBuilder` | "can be larger" | **yes — `s_expand` is the hook** |
+| GPDD | symbolic and numerical, by construction | a circuit **graph model** | ~3× | no |
+
+**Recommendation, revised from "prototype GPDD".** De-cancellation is the cheaper
+experiment and the measurement above says its target is the right one. It also
+has a natural gate: apply it and re-measure `κ` per coefficient. If `κ` drops to
+O(1), the whole approximation problem changes character and group ranking becomes
+unnecessary. If it barely moves, the residue is numerical cancellation, GPDD's
+extra guarantee is what is actually needed, and the graph model has to be paid
+for. **Either outcome is worth having, and the de-cancellation experiment is the
+one that distinguishes them.**
+
+*Reconsider-if:* the `CL` construction turns out to need the full-symbol
+(one-vertex-per-device) representation rather than pycircuit's compact-symbol
+entries. Their Fig. 5 patterns are stated over matrix entries, and their sDDD
+introduces "a unique symbol for each circuit parameter", so this is a live risk
+and is the first thing to check when implementing.
+
+## 14. A literature sweep, and it corrects §1's logic
+
+A search of the approximation literature outside Shi's own corpus returned four
+things that change what is written above. Sources and quotations:
+`doc/ddd_references.md` §F.
+
+### 14a. §1's inequality was stated as a necessity. It is only a sufficiency.
+
+§1 says a magnitude ranking "**must** capture a fraction `1 - tol/κ` of the
+total absolute mass". That is wrong as stated. The error of a truncation is
+`|Σ dropped|`, and absolute mass only *bounds* it — the dropped terms may cancel
+**among themselves**, in which case the true error is far below their mass and a
+ranking can converge at large `κ`.
+
+The classical stopping rule makes this explicit. Fernández, Sánchez-López,
+Castro-López & Roca-Moreno, *Approximation Techniques in Symbolic Circuit
+Analysis* (Bentham, 2012), give three successive criteria; the standard one,
+their (8), is
+
+    |Σ_{l=1..P} h_kl(x_o)| / |Σ_{l=1..T} h_kl(x_o)|  <  ε_M
+
+a **signed** partial sum of the deleted terms over the signed total. Their own
+note on it: *"Mutually canceling terms do not contribute to (8) because they are
+added with their respective signs."* Their (9), which normalises by
+`Σ|h_kl|`, is a robustness-to-parameter-variation criterion and **not** a
+relative-error bound — satisfying it at 5% permits an actual error up to `0.05κ`.
+
+**`DDD.approximate` already implements criterion (8)**: its returned `err` is
+`|Σ kept − exact| / |exact|`. So pycircuit's stopping test was never the problem,
+and the field does not rank by absolute mass either — magnitude ranking decides
+only the *order* of deletion. Corrected in the `cancellation` docstring and in
+`ddd.rst`.
+
+**What survives.** `κ` remains a cheap and useful forecast, and the measured 994%
+at 500 terms still stands — but it is a *measurement*, not a consequence of `κ`.
+The honest claim is: a large `κ` means the absolute-mass argument gives no
+comfort, so convergence has to be checked rather than assumed. The word
+"impossible" was too strong and is withdrawn.
+
+### 14b. `κ` is not a new quantity
+
+It is the textbook condition number of a summation, `Σ|x_i| / |Σ x_i|`, around
+which the whole compensated-summation literature is organised (Higham, *The
+Accuracy of Floating Point Summation*, SIAM J. Sci. Comput. 14(4), 1993; Ogita,
+Rump & Oishi 2005). Now cited. The contribution here is the *application* — using
+it as an a-priori forecast for symbolic term ranking, and computing it on a
+diagram in one pass — not the quantity.
+
+Practical corollary: compensated summation would fix *evaluation* of a term list
+at `κ = 9.4e3` (naive summation loses ~4 digits), and does nothing for
+*truncation*. Two separate problems; only the first has an off-the-shelf fix.
+
+### 14c. Someone already rejected per-piece error budgets, for our reason
+
+§11 concluded that hierarchical approximation is not compositional. Guerra, Roca,
+Fernández & Rodríguez-Vázquez, *A Hierarchical Approach for the Symbolic Analysis
+of Large Analog Integrated Circuits* (DATE 2000), considered exactly that design
+and rejected it in advance:
+
+> *"a separate application to each block would require an error propagation
+> mechanism at this early stage of the analysis process. This necessarily yields
+> more conservative results (less reduced circuits) and, consequently, has a
+> negative impact on the global performance of the analysis methodology."*
+
+**And their alternative is directly implementable here.** They use hierarchy for
+*generation only*, and control error against a **global numerical reference for
+the whole circuit** — never as a per-block budget:
+
+> *"The introduced errors are a combination of the error in each
+> (trans)admittance (only part of it has been generated) and the contribution of
+> such (trans)admittance to the global behavior."*
+
+That is the fix for stage 5's non-monotonicity: stop assigning tolerances per
+piece, approximate greedily, and accept or reject each candidate truncation by
+its effect on the *global* answer. Their stated limitation is the familiar one:
+*"this is guaranteed only at the selected frequency sample."*
+
+The 2012 survey (14a) contains **no hierarchical section at all**, and the one
+paper claiming a hierarchical formula-approximation algorithm — Fernández,
+Rodríguez-Vázquez, Martín & Huertas, AICSP 3(1), 1993 — could not be obtained.
+That is the outstanding gap.
+
+### 14d. The one positive composition result is in model order reduction
+
+Reis & Stykel, *Stability analysis and model order reduction of coupled systems*
+(MCMDS 13(5), 2007), reduce subsystems and recouple them through the original
+interconnection and *"obtain error bounds for the reduced-order closed-loop
+system in terms of the errors in the reduced-order subsystems"* — the shape of
+theorem §11 wants. Abstract only; the hypotheses are unverified. Such bounds are
+norm-based with a stability side condition, so a per-block *term tolerance* is not
+the input they take — which is a plausible explanation for why tightening term
+tolerances uniformly made things worse.
+
+### 14e. And a correction to §13's optimism — ITSELF SUPERSEDED BY §15c
+
+**The 3-10× estimate below is withdrawn.** It converts a term-*count* fraction
+into a *mass* fraction, and those are different quantities: an exactly-cancelling
+pair adds `2|t|` to the mass and `0` to the value, so if the cancelling pairs are
+the large terms, removing them collapses `κ` by far more than their count share.
+See §15c. The rest of the subsection — the exact/near distinction — stands.
+
+§13 said the µA741's cancellation is "by their taxonomy, the **removable** kind".
+That needs qualifying. Every "cancellation-free" result in this literature —
+Tan & Shi's patterns, Tan/Guo/Qi's hierarchical de-cancellation, Filaretov's
+nullor determinants — concerns **exact** cancellation: term pairs that sum to
+identically zero and can be removed structurally. `κ = 9.4e3` is **near**-
+cancellation among the terms that survive that removal.
+
+Quantitatively: if 70-90% of terms are exactly cancelling (Tan & Shi's figure),
+removing them cuts the absolute mass by that factor while leaving the value
+unchanged, so `κ` would fall by roughly 3-10× — from 9.4e3 to order 10**3, not to
+order 1. **So de-cancellation alone would not deliver the property, and §13's
+route comparison was too kind to it.** Worth doing for the size reduction; not a
+solution to the ranking problem.
+
+Also recorded: the sweep found **nobody who treats near-cancellation as such** in
+symbolic circuit analysis. That makes `κ` more useful than §14b's deflation
+suggests — the quantity is standard, but nothing in this field appears to measure
+or report it.
+
+## 15. The Shi/Tan sweep: a published counter-example, and §14e was also wrong
+
+A second sweep, over Guoyong Shi's and Sheldon Tan's corpora. Sources in
+`doc/ddd_references.md` §G. Note there are **three** researchers routinely
+conflated: Guoyong Shi (SJTU, GPDD), C.-J. Richard Shi (UW, original DDD), and
+Sheldon X.-D. Tan (UCR). The cancellation-free-DDD thread is Tan's.
+
+### 15a. Cancellation-free DDD is established, and stays in the determinant model
+
+Three mechanisms, all determinant-side, none needing a graph model:
+
+1. **An index predicate — no numerics at all.** Tan, Qi & Li (DATE 2004),
+   Theorem 2: *"For a given product term from a determinant, which consists k
+   first-order cofactor ... k ≥ 2, if there are two first-order cofactors that
+   share the same row index or column index, then there exists another product
+   term which will cancel with this product term."* Root cause named in the same
+   paper: *"Term cancellation ... will happen when MNA formulation is used where
+   each device admittance may appear more than once."* This is a combinatorial
+   test on index sets, implementable against our matrix directly.
+2. **Hierarchical Schur, made cancellation-free.** Tan, Guo & Qi (DAC 2004),
+   Theorem 1, with partial DDDs plus a complementary DDD per subcircuit,
+   producing a **flat** cancellation-free DDD. Their stated cost: *"the new
+   construction method will lead to larger DDD size than non-hierarchical method
+   in general."*
+3. **De-cancellation on the s-expanded multi-root DDD.** Tan & Shi (TCAD 2004).
+   Stated cost, and it is a real one for us: *"cancellation-free s-expanded DDDs
+   do not satisfy Theorem 1"* — de-cancellation **destroys DDD canonicity**, on
+   which the efficient graph operations depend. Their own workaround is to run
+   term generation *before* de-cancelling.
+
+**A contradiction in the literature, flagged rather than resolved.** Song & Shi
+(ASP-DAC 2012) motivate hierarchical GPDD by asserting that the DDD-based
+hierarchical method *"does not have the cancellation-free property"* — while
+Tan, Guo & Qi (DAC 2004) prove that hierarchical DDD **is** cancellation-free
+once de-cancellation is applied, and Guoyong Shi's own survey lists
+"DDD → De-cancellation, Exact" as a peer method citing that paper. Song & Shi do
+not cite or rebut it. Per the standing rule about sources disagreeing, this
+bounds how much weight either claim can carry.
+
+### 15b. A published counter-example to this project's headline claim
+
+`doc/hierarchical_approximation_plan.md` §5 records, and this document repeats:
+*"term-ranked approximation does not converge on a real operational amplifier."*
+
+**Tan & Shi (TCAD 23(6), 2004) report the opposite, on the µA741.** For the `s^1`
+denominator coefficient of a two-stage op-amp: *"the first product term amounts
+to 86% of the total magnitude of the coefficient and the first two terms amount
+to 97%."* Their pipeline differs from ours in three ways at once:
+
+* they **de-cancel** first (*"70-90% terms are canceling terms"*);
+* they rank **within each coefficient of `s^k`** on a multi-root DDD, never over
+  the whole determinant;
+* their symbols are **individual circuit parameters**, not composite matrix
+  entries.
+
+So our negative result is **scoped to our pipeline** — compact composite symbols,
+no de-cancellation, ranking the whole determinant at one frequency — and is not a
+property of the µA741. That is the second time this claim has had to be narrowed;
+it should not be restated without the scope attached.
+
+Also relevant: Guoyong Shi's survey defines the term as *"the existence of
+identical product terms with opposite term signs"* and judges that
+*"numerically speaking, term cancellation might not be a very serious problem"* —
+consistent with §14e's point that his "cancellation" and our `κ` are different
+quantities.
+
+### 15c. §14e's estimate was unsound, and the correct statement is provable
+
+§14e argued that since 70-90% of *terms* cancel exactly, removing them cuts `κ`
+by only 3-10×. **That converts a term-count fraction into a mass fraction, and
+those are not the same quantity.** An exactly-cancelling pair contributes
+`2|t|` to the absolute mass and exactly `0` to the value, so if the cancelling
+pairs are the *large* terms, removing them collapses `A` and hence `κ` by far
+more than their count share. The number 3-10× is withdrawn; the effect's size is
+not predictable from a term count and has to be measured.
+
+What *is* provable, and worth stating because it settles a question §13 left
+open: since `|a + b| <= |a| + |b|`, expanding composite entries into sums of
+device symbols can only **increase** the absolute mass while leaving the
+determinant unchanged. So
+
+    κ(full symbols, no de-cancellation)  >=  κ(composite entries)
+
+**Expanding to one-symbol-per-device makes `κ` worse, not better, on its own.**
+This is consistent with §13's measurement (s-expansion alone raised per-coefficient
+`κ` to 1.5e3-3.1e6) and it explains it. The gain in Song & Shi's ladder example —
+`adg - aef - bcg` becoming three positive terms — comes entirely from the
+**de-cancellation**, not from the change of symbol. Therefore: **de-cancellation
+is the load-bearing step, and full symbols without it are strictly worse.** Any
+attempt at this must do both.
+
+### 15d. The idea that sidesteps `κ` entirely
+
+Hu, Shi, Tai & Lee, *Topological Symbolic Simplification for Analog Design*
+(ISCAS 2015) — open access — **ranks circuit elements rather than product
+terms.** Each symbol is tried under two GPDD edge operations, Short and Open; the
+reduced transfer function is evaluated **exactly**; the candidate is scored by RMS
+relative error on dc gain and phase margin; symbols are sorted by that error and
+the worst-scoring `K` removed. A folded-cascode op-amp goes from 123 symbols to
+18 in 3.9 s, and the reduced dc-gain expressions **match the textbook
+hand-derived formulas**.
+
+**This is immune to `κ` by construction**, because nothing ever sums term
+magnitudes — every candidate is judged by an exact evaluation of a reduced
+network. It is also the only method found anywhere whose output was checked
+against a formula a human wrote. Their exclusivity claim, which would have to be
+tested rather than believed: *"The property described so far for element
+operation is a unique property owned by GPDD only; DDD does not have an analogous
+property."*
+
+Note the convergence with §14c: Guerra et al. score candidates against a global
+numerical reference; Hu et al. score element removals against an exact evaluation.
+**Both abandon per-term error accounting in favour of evaluating the candidate
+answer.** That is the consistent lesson of both sweeps.
+
+### 15e. What to do, revised again
+
+In cost order, cheapest first:
+
+1. **Element-level ranking scored by exact evaluation** (§15d, §14c). Needs no new
+   representation: pycircuit can already evaluate a modified circuit exactly. This
+   is the highest value per unit of work and it is representation-agnostic — the
+   GPDD-exclusivity claim applies to the *edge operations*, not to the idea of
+   scoring an element's removal by an exact solve.
+2. **Reproduce Tan & Shi's pipeline** (§15b): de-cancel, then rank per `s^k`
+   coefficient. Either it fixes our case or it refutes a published result, and
+   both outcomes are worth having. Note the canonicity cost in §15a(3).
+3. **GPDD**, only if 1 and 2 both fail. And note the cost is not free for our
+   circuit class: Kolka et al. record that for VCCS-heavy circuits — i.e.
+   transistor circuits — the two-graph intersection rejects an exponentially
+   growing fraction of candidates.
+
+*Reconsider-if:* someone measures `κ` for a GPDD expansion of an op-amp. Nobody
+in either sweep did. "Cancellation-free" guarantees no identical-opposite pairs;
+it does not guarantee `κ ≈ 1` once controlled sources make tree-pair products
+signed. **That single number would settle the architecture question**, and it is
+currently unknown.

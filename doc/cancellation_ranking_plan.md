@@ -214,13 +214,21 @@ Scripts: `benchmarks/cancellation_profile.py` (stage 0),
 
 ### Three results worth carrying forward
 
-**1. `κ = Σ|term| / |Σ term|` decides in advance whether term-ranked
-approximation can converge**, and costs one pass over the diagram. To reach
-relative error `tol` a magnitude ranking must capture a `1 − tol/κ` fraction of
-the absolute mass; the µA741's `κ = 9.4e3` at `tol = 0.05` demands 99.99947% of
-it, which is why 500 of 2.77M terms left 994% error. This is the difference
-between "the approximation is hard" and "the approximation is impossible as
-posed", and nothing in the code measured it before.
+**1. `κ = Σ|term| / |Σ term|` is a cheap forecast of whether term-ranked
+approximation will converge**, and costs one pass over the diagram. Capturing a
+`1 − tol/κ` fraction of the absolute mass is *sufficient* for error `tol`; the
+µA741's `κ = 9.4e3` at `tol = 0.05` makes that demand 99.99947%, and 500 of 2.77M
+terms did leave 994% error.
+
+**Corrected 2026-07-30 after reading the approximation literature:** the
+condition is **sufficient, not necessary** — dropped terms may cancel among
+themselves, so a large `κ` does not prove convergence impossible. The classical
+stopping rule is the exact *signed* partial sum (Fernández et al. 2012,
+criterion 8), which `DDD.approximate` already returns as its error; ranking by
+magnitude only fixes the *order* of deletion. `κ` is also the textbook condition
+number of a summation (Higham 1993), not a new quantity. See
+`cancellation_ranking_conclusions.md` §14. The 994% remains a measurement; the
+word "impossible" is withdrawn.
 
 **2. The cancellation is concentrated near the root, not uniform.** Median `κ`
 runs 9.4e3 at depth 0 down to 1.0 by depth 27. Term ranking fails on the whole

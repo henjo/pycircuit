@@ -215,9 +215,35 @@ Circuits by Symbolic Stamps," ASP-DAC 2011.**
 with Data Sharing and Cancellation-Free Properties," ASP-DAC 2012.**
 - (open, Wayback) https://web.archive.org/web/20240415085657if_/https://aice.sjtu.edu.cn/msda/data/publication/songyang_aspdac12.pdf
 - local: `~/pycircuit_agy/papers/ddd/songyang_aspdac12.pdf`
-- Why: the hierarchical counterpart on the GPDD side (see D2), keeping the
-  cancellation-free property at every level of hierarchy. Relevant only if we take
-  the graph route; listed for completeness.
+- **RE-READ 2026-07-30 and PROMOTED. The old note said "relevant only if we take
+  the graph route; listed for completeness" — that was wrong, and it cost a
+  session.** This paper contains the diagnosis of the central obstacle in
+  `doc/cancellation_ranking_conclusions.md`, and it was on the shelf the whole
+  time.
+- Why, in three parts:
+  1. **§II identifies our cancellation as a formulation artifact.** Its worked
+     example is our own compact-symbol MNA convention: with `a=G1, b=c=-G1,
+     d=G1+G2+G3, e=f=-G3, g=G3+G4`, `det = adg - aef - bcg`, and expanding the
+     composites gives `G1*G2*G3 + G1*G2*G4 + G1*G3*G4` — three terms, **all
+     positive**, so the cancellation-free form has `kappa = 1`. Our measured
+     `kappa = 9.4e3` on the µA741 therefore describes MNA-plus-composite-symbols,
+     not the amplifier.
+  2. **It states our stage-5 result five years earlier:** *"since DDD is not
+     cancellation-free, every layer of the hierarchy has the term cancellation
+     problem."* Our "hierarchical approximation is not compositional" is a
+     rediscovery; the quantification (non-monotone 1.47e-2 → 1.13e-1) is what we
+     added.
+  3. **§III is "Schur Decomposition versus Symbolic Stamp"** — the exact choice
+     stage 5 made — and it prefers the stamp as more partition-friendly, then
+     recommends hierarchical GPDD *"whenever the property of cancellation-free is
+     required"*.
+- Also useful: their Tables I–II give the **module partition** of the µA725 (which
+  devices in which block) but **not its connectivity**, so the µA725 decline
+  recorded below still stands.
+- Caveat they state and we confirmed: in plain double-precision *evaluation*
+  cancellation is not an accuracy problem (we measured `kappa * 2**-53 = 1.6e-11`).
+  It bites in *variational* analysis, sensitivity, and — our addition —
+  **approximation**.
 
 ## D. Foundational data structure
 
@@ -241,10 +267,22 @@ Analysis," IEEE TCAD 32(2), 2013, pp. 275–288.**
 - local: `~/pycircuit_agy/papers/ddd/2013_TCAD_GPDD.pdf`
 - Why: the mature statement of GPDD — build a pair of graphs from the small-signal
   circuit and reduce them successively into a BDD. **Cancellation-free**, unlike
-  DDD. The paper's own conclusion is the useful part for us: GPDD runtime/memory
-  is only *comparable* to DDD despite generating many more terms. That is a real
-  argument for staying with DDD (which also fits pycircuit better, since we
-  already have an MNA matrix and no graph model of the circuit).
+  DDD, and its terms are composed *directly of circuit parameters rather than
+  intermediate symbols*, which is the interpretability property stages 3–5 of the
+  approximation work chased and never got.
+- **The old note's conclusion is WITHDRAWN.** It read: "GPDD runtime/memory is
+  only *comparable* to DDD despite generating many more terms. That is a real
+  argument for staying with DDD." The *facts* are right — Table VIII gives
+  |GPDD| 10 432 / 17 488 / 197 274 against |DDD| 3 579 / 11 506 / 62 794, so ~3×
+  the size, with times 0.682/0.793/6.771 against 0.586/2.042/10.359, i.e.
+  comparable and sometimes faster. But the conclusion weighed only speed and
+  memory and treated cancellation-freedom as optional. **We then measured
+  cancellation to be the binding constraint on approximation**, which inverts the
+  trade: ~3× size is cheap for the property that decides whether dominant-term
+  extraction converges at all.
+- What is still true from the old note, and is the real cost: GPDD needs a
+  **circuit graph**, and pycircuit has an MNA matrix and no graph model. That is
+  the work item, not the runtime.
 
 **Shi & Chen, "A Graph Reduction Approach to Symbolic Circuit Analysis,"
 ASP-DAC 2007.**
@@ -500,3 +538,250 @@ form: an expression symbolic *in the device parameters* for a 127-unknown
 circuit. Poles and residues are numbers. Term-ranked approximation keeps
 symbols but needs a flat diagram. That tension is the real content of
 `doc/hierarchical_approximation_plan.md`.
+
+## F. Approximation and term cancellation outside Shi's corpus (added 2026-07-30)
+
+Found while answering "is the cancellation we measured already solved?". Every
+entry here was read at least to abstract level; anything not characterised is
+marked. Bearing on our work: `doc/cancellation_ranking_conclusions.md` §14.
+
+**Fernández, Sánchez-López, Castro-López & Roca-Moreno, "Approximation Techniques
+in Symbolic Circuit Analysis," ch. 7 of *Design of Analog Circuits through
+Symbolic Analysis*, Bentham, 2012, pp. 193-226.**
+- (open, Wayback) https://web.archive.org/web/2019id_/https://digital.csic.es/bitstream/10261/83058/4/approximation_techniques.pdf
+- **The most important item here — it corrected a logical error of ours.** The
+  definitive SAG/SBG/SDG survey. Its three simplification criteria, per
+  coefficient of `s^k`:
+  - (7) ISAAC's, term-vs-largest-term. Their drawback: *"lack of control on the
+    accumulated error for each coefficient"*.
+  - (8) the standard one, `|Σ deleted| / |Σ all| < ε_M` — a **signed** partial
+    sum. *"Mutually canceling terms do not contribute to (8) because they are
+    added with their respective signs."* Its limitation, also theirs: *"the
+    resulting error at other points may be well beyond ε_M"* — it holds at the
+    nominal point only. **`DDD.approximate` already implements exactly this.**
+  - (9) `Σ|deleted| / Σ|all| < ε_M`, both sums of moduli — a *robustness* test,
+    **not** a relative-error bound; satisfying it at 5% permits real error `0.05κ`.
+- So our claim that a ranking "must" capture `1 - tol/κ` of the absolute mass was
+  a sufficiency stated as a necessity. Also useful on determinant methods:
+  simplification heuristics *"partially palliate the cancellation problem of
+  determinant-based approaches"*.
+- **Contains no hierarchical section at all** — a meaningful absence.
+
+**Guerra, Roca, Fernández & Rodríguez-Vázquez, "A Hierarchical Approach for the
+Symbolic Analysis of Large Analog Integrated Circuits," DATE 2000, pp. 148-152.**
+- (open) https://past.date-conference.com/proceedings-archive/2000/DATE00/PDFFILES/01C_2.PDF
+- **They considered per-block error budgets and rejected them, for our reason:**
+  *"a separate application to each block would require an error propagation
+  mechanism at this early stage of the analysis process. This necessarily yields
+  more conservative results ... and, consequently, has a negative impact on the
+  global performance."* Their alternative — hierarchy for *generation* only, with
+  error controlled against a **global numerical reference** — is directly
+  implementable for us and is the fix for stage 5's non-monotonicity. Stated
+  limitation: *"guaranteed only at the selected frequency sample."*
+
+**Rodríguez-García et al., "An accurate error control mechanism for
+simplification before generation algorithms," DATE 1999, pp. 412-416.**
+- (open, Wayback) https://web.archive.org/web/2020id_/https://digital.csic.es/bitstream/10261/84968/1/accurate%20error.pdf
+- The only genuinely *guaranteed* (non-sampled) error control found, via interval
+  extension of the derivatives of the error function — but over **frequency at a
+  fixed parameter point**, bounding where the error peaks, not the truncation
+  error of a term set. Records the sampling failure honestly: *"the error specs
+  are met at the sampling frequencies, but exceeded at intermediate ones."*
+
+**Tan & Shi (C.-J. Richard Shi, U. Washington — NOT Guoyong Shi), "Efficient
+Approximation of Symbolic Expressions for Analog Behavioral Modeling and
+Analysis," IEEE TCAD 23(4):907-918, 2004.**
+- (open) https://escholarship.org/content/qt3pb396zz/qt3pb396zz.pdf
+- Same circuit, same compact-entry MNA setup, same magnitude ranking (k-shortest
+  path with weight `-log|a_i|`) as ours. Source of the *"70-90% terms are
+  canceling terms"* figure. Error control is monitoring, not bounding: *"we
+  monitor both magnitudes and phases ... until errors are within the
+  user-specified error bounds"*.
+
+**Tan, Guo & Qi, "Hierarchical Approach to Exact Symbolic Analysis of Large Analog
+Circuits," DAC 2004, pp. 860-863 (ext. IEEE TCAD 24(8), 2005).**
+- (open) https://intra.engr.ucr.edu/~stan/papers/dac04_1.pdf
+- *"exact symbolic expressions of a circuit are cancellation-free expressions when
+  the circuit is analyzed hierarchically"*, via a *"symbolic decancellation
+  process"*. **Scope caveat that matters: this is cancellation-freeness for EXACT
+  hierarchical analysis, not for approximation** — it removes exactly-cancelling
+  pairs and says nothing about composing truncations.
+
+**Yu & Sechen, "A unified approach to the approximate symbolic analysis of large
+analog integrated circuits," IEEE TCAS-I 43(8):656-669, 1996.** Abstract verified.
+- Generates common trees of the two-graph *"in the decreasing order of
+  magnitude"*. Because two-graph enumeration is cancellation-free, magnitude order
+  equals contribution order there — the structural reason this branch never hit
+  our wall. Their own limit: *"the limit is imposed mainly by the interpretability
+  of the generated symbolic network function."*
+
+**Kolka, Vlk & Horák, "Topology Reduction for Approximate Symbolic Analysis,"
+Radioengineering 20(1):252-257, 2011.**
+- (open) https://dspace.vut.cz/bitstreams/dedfaf2f-1d6a-40db-88ab-90e6ff1ccf5b/download
+- Cleanest statement of why two-graph is cancellation-free: *"If all edges
+  represent a unique symbol, there are no two identical tree admittance products
+  ... that would cancel each other."* And the honest admission that the guarantee
+  is sampled in practice, not proved.
+- **The cost of cancellation-freeness, which we must not ignore:** *"for circuits
+  with many voltage-controlled current sources (i.e. those circuits composed of
+  transistors), the number of terms that are valid for the intersection problem
+  but are not spanning trees of the current graph grows exponentially with the
+  circuit size."* Transistor circuits are the bad case for the cheap matroid.
+
+**Reis & Stykel, "Stability analysis and model order reduction of coupled
+systems," MCMDS 13(5):413-436, 2007.** Abstract only.
+- The **only positive composition result found anywhere**: reduce subsystems,
+  recouple through the original interconnection, and *"obtain error bounds for the
+  reduced-order closed-loop system in terms of the errors in the reduced-order
+  subsystems."* Norm-based with a stability side condition, so a per-block *term
+  tolerance* is not the input it takes. Hypotheses unverified.
+
+**Higham, "The Accuracy of Floating Point Summation," SIAM J. Sci. Comput.
+14(4):783-799, 1993**; **Ogita, Rump & Oishi, "Accurate Sum and Dot Product,"
+SIAM J. Sci. Comput. 26(6):1955-1988, 2005.** Abstracts verified.
+- Our `κ` is the standard summation condition number `Σ|x_i| / |Σ x_i|`. Fixes
+  *evaluation* (compensated summation buys back the ~4 digits lost at
+  `κ = 9.4e3`); does nothing for *truncation*. Two separate problems.
+
+**Filaretov, Gorshkov & Kurganov, "A Cancellation-Free Symbolic Sensitivity
+Technique Based on Network Determinant Expansion," Advances in Electrical
+Engineering 2015:328517.**
+- (open) http://downloads.hindawi.com/archive/2015/328517.pdf
+- A non-DDD, non-two-graph route to cancellation-freeness via *"high order
+  summative cofactors and the generalized parameter extraction method"*. Their
+  2018 companion identifies cancelling terms with *"determinants of the circuit
+  with singular network elements - norator or nullator"* — a structural
+  characterisation testable against our composite MNA entries.
+
+**Not characterised, listed so they are not re-derived from titles:** Daems,
+Verhaegen, Wambacq, Gielen & Sansen, TCAS-I 46(5):594-606, 1999 (abstract only;
+the field's central error-control comparison, scoped to *flat* analysis);
+**Fernández, Rodríguez-Vázquez, Martín & Huertas, AICSP 3(1):43-58, 1993**
+(abstract only — **the one paper claiming an algorithm for approximating
+*hierarchical* formulae; highest-value gap**); Guerra et al., AICSP 31:131-145,
+2002 (abstract only, journal version of the DATE 2000 entry); Sommer, Hennig,
+Dröge & Horneber, *Alta Frequenza* 5(6), 1993 (**TITLE ONLY**, not digitised);
+Verhaegen & Gielen, AICSP 31:119-130, 2002 (**TITLE ONLY**); Lasota, ICSES 2012
+(abstract only — independent claim that a multilevel decomposition stays
+cancellation-free *and* that this makes term elimination sound); Hashemian,
+IEEE TCAS-I 69(7), 2022 (abstract only — claims the determinant's *magnitude*
+factors into an all-passive spanning-tree product with signs isolated in a nullor
+part, which would give a `κ ≈ 1` expansion if it applies to VCCS-heavy models).
+
+## G. Cancellation-free DDD and topological simplification (added 2026-07-30)
+
+The determinant-side answers to term cancellation. **The thread is Sheldon X.-D.
+Tan's (UCR), not Guoyong Shi's** — three researchers are routinely conflated:
+Guoyong Shi (SJTU, GPDD), C.-J. Richard Shi (UW, original DDD), Sheldon X.-D. Tan
+(UCR). Bearing on our work: `doc/cancellation_ranking_conclusions.md` §15.
+
+**Tan, Qi & Li, "Hierarchical Modeling and Simulation of Large Analog Circuits,"
+DATE 2004.**
+- (open) https://intra.ece.ucr.edu/~stan/papers/date04.pdf
+- **Theorem 2 gives a purely combinatorial test for cancelling terms** — no
+  numerics: *"For a given product term from a determinant, which consists k
+  first-order cofactor ... k >= 2, if there are two first-order cofactors that
+  share the same row index or column index, then there exists another product
+  term which will cancel with this product term."* Root cause: *"Term cancellation
+  ... will happen when MNA formulation is used where each device admittance may
+  appear more than once."* Directly implementable against our matrix.
+
+**Tan, Guo & Qi, "Hierarchical Approach to Exact Symbolic Analysis of Large Analog
+Circuits," DAC 2004, pp. 860-863.**
+- (open) https://intra.engr.ucr.edu/~stan/papers/dac04_1.pdf
+- Theorem 1 + partial-DDD/complementary-DDD construction gives a **flat**
+  cancellation-free DDD from a hierarchical Schur decomposition. µA741 and µA725
+  (the latter exactly, for the first time). Their stated cost: *"the new
+  construction method will lead to larger DDD size than non-hierarchical method in
+  general."*
+- **Contradicts Song & Shi (ASP-DAC 2012)**, who motivate hierarchical GPDD by
+  asserting hierarchical DDD lacks the cancellation-free property, without citing
+  this. Guoyong Shi's own survey lists "DDD -> De-cancellation, Exact" citing this
+  paper. Unresolved; treat both claims with the corresponding caution.
+
+**Tan & Shi (C.-J. Richard), "Efficient Approximation of Symbolic Expressions...,"
+IEEE TCAD 23(6), 2004** — also listed in §F.
+- (open) https://intra.engr.ucr.edu/~stan/papers/tcad04a.pdf
+- **Contains a counter-example to our headline claim.** For a two-stage op-amp's
+  `s^1` denominator coefficient: *"the first product term amounts to 86% of the
+  total magnitude of the coefficient and the first two terms amount to 97%."*
+  Their pipeline de-cancels first, ranks **per `s^k` coefficient** on a multi-root
+  DDD, and uses **individual circuit parameters** rather than composite entries.
+- The price of de-cancellation, stated: *"cancellation-free s-expanded DDDs do not
+  satisfy Theorem 1"* — it **destroys DDD canonicity**, which the efficient graph
+  operations rely on. They therefore generate terms *before* de-cancelling.
+
+**Hu, Shi, Tai & Lee, "Topological Symbolic Simplification for Analog Design,"
+ISCAS 2015.**
+- (open) http://hanbinhu.github.io/data/paper/2015_ISCAS_TopoSimp.pdf
+- **The idea that sidesteps `κ` completely: rank circuit *elements*, not terms.**
+  Each symbol is tried Short and Open on the GPDD, the reduced transfer function
+  is evaluated **exactly**, scored by RMS relative error on dc gain and phase
+  margin, and the worst-scoring K symbols removed. Folded-cascode op-amp: 123
+  symbols to 18 in 3.9 s, and the reduced dc-gain expressions **match the textbook
+  hand-derived formulas**. Their claim, to be tested not believed: *"The property
+  described so far for element operation is a unique property owned by GPDD only;
+  DDD does not have an analogous property."*
+
+**Hao, Tan, Shen & Shi, "Performance bound analysis of analog circuits considering
+process variations," DAC 2011, pp. 310-315.** Abstract only.
+- *"We show that symbolic de-cancellation is critical for the affine interval
+  analysis."* Confirms that when cancellation genuinely must go, this group used
+  the **determinant-side** fix rather than switching to a graph model. Their own
+  caveat: the Kharitonov bounds *"are conservative given the correlations among
+  coefficient intervals"*.
+
+**Guoyong Shi, AICSP survey (already held) — the passage that matters.**
+- (open, Wayback) https://web.archive.org/web/2024id_/https://aice.sjtu.edu.cn/msda/data/publication/AICSP_survey_2011_gshi.pdf
+- Defines the term narrowly: *"the problem of term cancellation, i.e., the
+  existence of identical product terms with opposite term signs."* And judges:
+  *"Numerically speaking, term cancellation might not be a very serious problem.
+  But some applications do require the elimination of term cancellation, such as
+  in the application of variational analysis based on interval algebra."* So his
+  "cancellation" is **exact** cancellation, a different quantity from our `κ`.
+
+**Shi & Meng, "Variational Analog IC Design via Symbolic Sensitivity Analysis,"
+ISCAS 2009.**
+- (open, Wayback) https://web.archive.org/web/2024id_/https://aice.sjtu.edu.cn/msda/data/publication/ISCAS2009_shi_meng.pdf
+- The cleanest statement of *which* property buys cancellation-freeness:
+  *"matrix-free computation, cancellation-free sum-of-product terms, maintaining
+  one-to-one correspondence from the circuit parameters to the simulator symbols,
+  and direct circuit-topology based construction."* The third clause — no
+  composite symbols — is the load-bearing one. But see §15c: one-symbol-per-device
+  *without* de-cancellation provably makes `κ` worse.
+
+**Filaretov & Gorshkov, "Efficient generation of compact symbolic network
+functions in a nested rational form," Int. J. Circuit Theory Appl. 48(7), 2020.**
+Abstract only. DOI 10.1002/cta.2789
+- Cancellation-free **determinant** expansion via generalized parameter extraction,
+  output as *"a fully symbolic form of rational expressions or a nested s-expanded
+  polynomial"*. A nested form is the other structural answer: never form the
+  expanded sum whose terms cancel. Claim: *"CirSym is the only available program
+  that provides the exact calculation of the symbolic function of large circuits
+  in the s-expanded form with every coefficient being a compact-nested
+  expression."*
+
+**Shi, Tan & Tlelo-Cuautle, *Advanced Symbolic Analysis for VLSI Systems*,
+Springer, 2014.** DOI 10.1007/978-1-4939-1103-5
+- The authoritative monograph; Shi's papers cite it for GPDD implementation
+  details. Chapters 6 (Generalized Two-Graph Theory) and 8 (Hierarchical Analysis
+  Methods) are the likely home of an explicit hierarchical-cancellation treatment.
+  **Only the chapter list and ch. 7's abstract were obtained — highest-value gap.**
+- Observation worth recording: **there is no chapter on approximation,
+  simplification or term ranking.** For the definitive 2014 treatment of this
+  family that absence is itself informative — the approximation work postdates it
+  or sits outside it.
+
+**Not characterised, listed so they are not re-derived from titles:** Yang, Ranjan,
+Verhaegen, Ding, Vemuri & Gielen, "Efficient symbolic sensitivity analysis ...
+using **element-coefficient diagrams**," ASP-DAC 2005 (**TITLE ONLY** — but by its
+name a DDD variant whose symbols are circuit *elements* rather than matrix
+entries, which per §15c is exactly the missing half of the de-cancellation story;
+**highest-value unverified lead**); Verhaegen & Gielen, TCAS-II 49(7), 2002
+(**TITLE ONLY** — their rival DDD de-cancellation by vertex duplication is known
+to us only through Tan & Shi's description of it); Tan, ICCAD 2003 and IEEE TCAD
+24(3), 2005 (**TITLE ONLY**); Filaretov & Korotkov, "Generalized Parameter
+Extraction Method," 2003 (**TITLE ONLY**, founding paper of the CirSym method);
+Guoyong Shi, "Toward automated reasoning for analog IC design by symbolic
+computation - A survey," Integration 60, 2018 (abstract not retrieved; supersedes
+the AICSP survey we hold and is worth acquiring).
