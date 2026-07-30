@@ -1938,3 +1938,30 @@ def test_concentration_and_cancellation_are_independent():
     env = {a: 1.0, b: 1.0, c: 1.0, d: 1.0 + 1e-9}
     assert D.cancellation(env) > 1e8
     assert D.concentration(env) == pytest.approx(2.0, rel=1e-6)
+
+
+def test_concentration_survives_magnitudes_too_small_to_square():
+    """N_eff must stay >= 1 where the squared terms underflow.
+
+    A high-order coefficient of an s-expansion has terms around 1e-124; their
+    squares are 1e-248, and the partial products reached while accumulating them
+    underflow to zero long before the ratio does.  A first version accumulated the
+    sum of squares directly and reported N_eff = 0 for every coefficient above
+    s**12 -- impossible, since N_eff is at least 1 by construction.
+    """
+    system = bc.ua741(symbolic_devices=('q1', 'q2', 'q17'))
+    expanded = s_expand(system.A, system.s)
+    env = {}
+    for sym in system.A.free_symbols - {system.s}:
+        env[sym] = complex(system.params[sym])
+
+    checked = 0
+    for k in (13, 18, 23):
+        coeff = expanded.coefficient(k)
+        if coeff.root is None or coeff.term_count() == 0:
+            continue
+        n = coeff.concentration(env)
+        assert n >= 1.0, (k, n)
+        assert n <= coeff.term_count(), (k, n)
+        checked += 1
+    assert checked == 3, 'expected three high-order coefficients to test'

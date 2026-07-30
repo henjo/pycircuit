@@ -1405,3 +1405,61 @@ beyond the first two moments — a heavy tail with the same variance reports the
 number. If a case appears where `N_eff` is small and ranking is still expensive, the
 next refinement is the enumerated mass profile itself (terms to reach 90/99/99.9% of
 `A`), which `iter_terms` already provides at the cost of running the ranking.
+
+## 22. Stage 9: per-coefficient ranking helps 5-12×, and `N_eff` has a resolution limit
+
+Stage 8 made the readability question answerable: the compact µA741 has
+`N_eff ≈ 151` and group ranking needs 734 terms, so a *readable* answer needs
+`N_eff` of order ten. Stage 9 asks which available lever lowers it. Measured
+`benchmarks/concentration_profile.py`.
+
+### The result: a real gain, short of the gate
+
+| | whole determinant | best coefficient | gain |
+|---|---|---|---|
+| nominal | 734 terms, `N_eff` 151 | **`s^1`: 155 terms**, `N_eff` 74.5, carries **97.3%** of the response | **4.7×** |
+| degraded | 2 401 terms, `N_eff` 133 | **`s^2`: 206 terms**, `N_eff` 709 | **11.7×** |
+
+Device symbols (`gm_q1`, `gm_q2`, `gm_q17`) survive in every case, and the
+contribution share is printed beside each coefficient so a concentrated-but-
+irrelevant one cannot be claimed as a win.
+
+**Gate 9-2 FAILS** — the target was `N_eff ≤ 20` and ≤30 terms, and the best is 74.5
+and 155. **Gate 9-3, PARTIAL, is what this is:** per-coefficient ranking is a genuine
+5-12× reduction with symbols intact, and it is the first lever measured that moves
+term count in the right direction at all. 155 terms is still not readable.
+
+### And `N_eff` does not survive the run unqualified
+
+Look at the degraded row by row: `N_eff` of 126.8, 341.2, 709.2 for `s^0`, `s^1`,
+`s^2` — and the ranking costs are **950, 275, 206 terms**. That is *inverted*: the
+coefficient with the largest `N_eff` was the cheapest to rank.
+
+So the enthusiasm of §21 needs a bound put on it. `N_eff` correctly ordered the two
+*representations* in stage 8, where they differed 60-fold (194 against 11 565) and
+their ranking costs differed 80-fold. **It does not reliably order quantities whose
+`N_eff` differs by only a factor of a few.** It is a coarse screen — good for "is
+this representation hopeless?", not for "which of these coefficients should I rank?".
+
+That is exactly the limitation §21 declared in advance — a second moment is blind to
+tail shape — arriving sooner than expected. The refinement named there, the
+enumerated mass profile, is now the thing to build if this ordering matters.
+
+### A bug in the diagnostic, caught by a bound
+
+The first run reported `N_eff = 0.0` for every coefficient above `s^12`. **Impossible:
+`N_eff ≥ 1` by construction.** Cause: accumulating `S2 = Σ|term|²` directly underflows
+— a product of 26 squared entries of order `1e-12` is `1e-624`, which is zero in
+double precision long before the *ratio* is. Rewritten scale-free, carrying the
+inverse participation ratio `r = S2/A²` on the weights:
+
+    w1 = e*A[one]/A[v],  w0 = A[zero]/A[v],   r[v] = w1²*r[one] + w0²*r[zero]
+
+every quantity bounded in `(0, 1]`. The low-order values are unchanged by the fix
+(117.3, 74.5, 187.2 before and after), which is the check that it altered only the
+underflowing cases. A test now pins `1 ≤ N_eff ≤ term_count` on the high-order
+coefficients specifically.
+
+**Second time in three stages that a known bound on a quantity caught a bug its
+value alone would not have.** The other was the 6.7e+55 error in §20. Knowing what
+range a number must lie in is worth as much as computing it.

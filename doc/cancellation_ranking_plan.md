@@ -324,6 +324,44 @@ disguised enumeration.
    the participation ratio is the wrong concentration measure and the right one is
    still missing.
 
+## Stage 9 — what reduces N_eff? (declared 2026-07-30)
+
+Stage 8 made the readability question answerable for the first time. The compact
+µA741 has `N_eff ≈ 194`, and group ranking duly needs 870 terms. **A readable
+expression means tens of terms, so it means `N_eff` of order ten.** The question is
+therefore no longer "how do we approximate better" but **"what transformation
+lowers `N_eff` while keeping device symbols?"**
+
+Three levers are available and none has been measured with this diagnostic:
+
+1. **s-expansion.** §13 measured per-coefficient `κ` (worse than the whole
+   determinant) and never per-coefficient `N_eff`. Ranking per coefficient is what
+   Tan & Shi do, and a coefficient may be far more concentrated than the frequency-
+   weighted whole.
+2. **Element pruning** (stage 6). It left the compact diagram structurally
+   identical and `κ` unchanged, so it was written off — but `N_eff` was never looked
+   at, and zeroing devices changes the term *magnitudes* even when it changes no
+   vertex.
+3. **The `Short` operation**, stage 6's unfinished half, which collapses nodes and
+   so genuinely shrinks the matrix.
+
+**Gate, declared before running.** On the µA741 at 1 kHz, both operating points:
+
+1. Report `N_eff`, `κ`, term count and contribution magnitude **per coefficient of
+   `s`**, alongside the whole-determinant baseline of ~194.
+2. **PASS if some coefficient that materially carries the response has
+   `N_eff <= 20`** — an order of magnitude below the whole determinant — **and
+   ranking it to 5% then needs at most ~30 terms with device symbols intact.** That
+   would be a readable symbolic result and the goal of this entire plan.
+3. **PARTIAL if `N_eff` drops usefully but not to ~10**: record the profile, since
+   it says which lever to pull next.
+4. **FAIL if per-coefficient `N_eff` is no better than the whole determinant's.**
+   Then s-expansion is not the lever either, and levers 2 and 3 are what remain.
+
+Declared in advance: the low-order coefficients dominate the response at 1 kHz, so a
+small `N_eff` in a coefficient that contributes nothing is not a pass — the
+contribution magnitude is reported next to it precisely so that cannot be claimed.
+
 ## What would make this whole plan fail
 
 - Stage 0 finds uniform cancellation. Most likely single outcome, and the
@@ -363,6 +401,7 @@ Scripts: `benchmarks/cancellation_profile.py` (stage 0),
 | 7f — per coefficient, vs the right control | **The payoff.** Against the like-for-like control (same matrix, same point, s-expanded, *not* de-cancelled) **every one of 24 coefficients improves, by 60× to 394 367×**; the low-order ones land at **`κ ≈ 14-17`** (s^1: 1.85e3 → 17.3). First time in this thread that `κ` is in a range where magnitude ranking is plausible — 99.67% of the mass needed at `tol=0.05`, against 99.99947% at `κ=9.4e3`. `κ = 1` does not hold and was predicted not to: an amplifier is not passive. **Recorded self-correction:** the first reading used the compact *whole determinant* as the control and nearly wrote this up as a failure. |
 | 7g — the payoff test | **FAIL, and it corrects 7f's reading.** At `tol=0.05`, control measured at the same point: compact group ranking **870 terms / 3.75e-02, converged**; compact magnitude **1 690 / 3.78e-02, converged**. De-cancelled: group **72 724 terms / 1.40e-01, NOT converged**; magnitude **68 310 / 1.59e-01, NOT converged**. So despite `κ` being 67× better, the de-cancelled expansion needs ≥80× more terms and does not converge. Cause: `κ` measures *conditioning*, term count depends on *concentration*, and de-cancellation spreads the same value from 2.77e6 terms over 1.1e21. **Low `κ` is necessary, not sufficient.** A bug found by gate 7g-4 on the way: a dead-end state (rows remaining, all children pruned) was counted as a completed term, giving an impossible error of 6.7e+55; caught by reasoning from the bound `Σ\|term\| = 99·\|det\|`, fixed, and re-verified against brute-force enumeration. Details: `cancellation_ranking_conclusions.md` §20. |
 | 8 — the concentration diagnostic | **PASS on all four gates, and it settles §20.** `DDD.concentration(env)` returns the participation ratio `N_eff = A²/S2` in **one traversal**, the same cost as `cancellation`. Sanity: exactly the term count for equal-magnitude terms, 1.0 for a dominated one, within `[1, N]`, and within an order of magnitude of the *enumerated* 99%-mass count. **The discriminating test:** compact `N_eff = 194` (ranking took 870 terms, converged) against de-cancelled `N_eff = 11 565` (>72 724, did not converge) — correctly ordered and predictive to a factor of ~5, where `κ` ordered them backwards (6 659 against 99). Five tests; doc section with build-time numbers. |
+| 9 — what reduces `N_eff`? | **Gate 9-2 FAIL, gate 9-3 PARTIAL — a real 5-12× gain, short of readable.** Ranking per coefficient of `s` instead of the whole determinant: nominal **`s^1`, 155 terms** against 734 (4.7×), carrying **97.3%** of the response; degraded **`s^2`, 206 terms** against 2 401 (11.7×). Device symbols intact throughout. Target was `N_eff ≤ 20` and ≤30 terms; best is 74.5 and 155. **And `N_eff` earned a caveat:** within one circuit its ordering across coefficients is *inverted* (126.8/341.2/709.2 → 950/275/206 terms), so it is a coarse screen for "is this representation hopeless", not a fine predictor. **Bug found and fixed:** `concentration` reported `N_eff = 0` above `s^12` because `Σ|term|²` underflows; rewritten scale-free on the weights, low-order values unchanged, test added. Details: `cancellation_ranking_conclusions.md` §22. |
 | 4 — library API | **Done.** `DDD.cancellation`, `DDD.subdiagram_values`, `DDD.minor_positions`, `DDD.approximate_groups` in `ddd.py`; twelve tests in `test_ddd.py`; three new subsections of `doc/src/circuit/ddd.rst` with every number generated at build time. `DDD.approximate` now **warns** when it returns without meeting `tol`. |
 
 ### Three results worth carrying forward

@@ -670,17 +670,29 @@ class DDD:
 
         Returns:
             float: the effective term count, between 1 and
-            :meth:`term_count`.
+            :meth:`term_count`.  Computed scale-free, so it stays meaningful on
+            diagrams whose terms are far too small to square -- a high-order
+            coefficient of an s-expansion, for instance.
         """
         entry = self._entry_values(env or {})
-        mass, square = {}, {}
+        ## Carried scale-free, as the *inverse* participation ratio
+        ## ``r[v] = S2[v] / A[v]**2``, which lives in ``(0, 1]``.  Accumulating
+        ## ``S2`` directly underflows: a product of 26 squared entries of order
+        ## 1e-12 is 1e-624, which is zero in double precision long before the
+        ## ratio is, and the symptom is a reported N_eff of 0 -- impossible, since
+        ## N_eff >= 1 by construction.  Writing the recurrence on the weights
+        ## instead keeps every quantity bounded:
+        ##
+        ##     w1 = e*A[one]/A[v],  w0 = A[zero]/A[v],  w1 + w0 = 1
+        ##     r[v] = w1**2 * r[one] + w0**2 * r[zero]
+        mass, ratio = {}, {}
         stack = [(self.root, False)]
         while stack:
             node, expanded = stack.pop()
             if node.is_terminal:
-                val = abs(complex(_resolve(node.value, env or {})))
-                mass.setdefault(id(node), val)
-                square.setdefault(id(node), val * val)
+                mass.setdefault(id(node),
+                                abs(complex(_resolve(node.value, env or {}))))
+                ratio.setdefault(id(node), 1.0)
                 continue
             if id(node) in mass:
                 continue
@@ -690,14 +702,18 @@ class DDD:
                 stack.append((node.zero_edge, False))
                 continue
             e = abs(entry[id(node.entry)])
-            mass[id(node)] = (e * mass[id(node.one_edge)]
-                              + mass[id(node.zero_edge)])
-            square[id(node)] = (e * e * square[id(node.one_edge)]
-                                + square[id(node.zero_edge)])
-        total, sq = mass[id(self.root)], square[id(self.root)]
-        if sq == 0.0:
-            return 0.0
-        return float(total * total / sq)
+            take = e * mass[id(node.one_edge)]
+            skip = mass[id(node.zero_edge)]
+            total = take + skip
+            mass[id(node)] = total
+            if total == 0.0:
+                ratio[id(node)] = 1.0
+                continue
+            w1, w0 = take / total, skip / total
+            ratio[id(node)] = (w1 * w1 * ratio[id(node.one_edge)]
+                               + w0 * w0 * ratio[id(node.zero_edge)])
+        r = ratio[id(self.root)]
+        return float('inf') if r == 0.0 else float(1.0 / r)
 
     def minor_positions(self):
         """``id(node) -> (rows, cols)``: the minor each subdiagram expands.

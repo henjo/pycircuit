@@ -1079,6 +1079,18 @@ ratio `N_eff = A[root]²/S2[root]` in one traversal — the same cost as `cancel
 `N_eff = 11 565` where ranking needed over 72 724 and did not converge. Correctly
 ordered, and predictive to a factor of about five, where `κ` ordered them backwards.
 
+**With a resolution limit found in stage 9:** `N_eff` correctly ordered the compact
+and de-cancelled representations, which differed 60-fold, but *inverts* the ordering
+of coefficients within one circuit whose `N_eff` differ only a few-fold (126.8, 341.2,
+709.2 → 950, 275, 206 terms). It is a coarse screen for "is this representation
+hopeless", not a fine predictor of which quantity to rank. The refinement, if that
+ordering matters, is the enumerated mass profile, which `iter_terms` already provides.
+
+**Best lever measured so far: rank per coefficient of `s`, not the whole
+determinant** — 155 terms against 734 at nominal (the `s^1` coefficient carries 97.3%
+of the response), 206 against 2 401 at degraded, device symbols intact. A 5-12× gain,
+and still not the tens of terms "readable" needs.
+
 **So the standing advice is: report both.** `cancellation` says whether a truncation
 can be accurate and what fraction of the absolute mass it needs; `concentration` says
 how many terms that will take. A ranking is cheap only when both are small, and
