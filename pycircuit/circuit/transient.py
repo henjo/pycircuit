@@ -80,9 +80,17 @@ class Transient(Analysis):
          Parameter(name='iabstol', 
                    desc='Absolute current error tolerance', unit='A', 
                    default=1e-12),
-         Parameter(name='vabstol', 
-                   desc='Absolute voltage error tolerance', unit='V', 
-                   default=1e-12),
+         ## 1 uV, which is Spectre's `vabstol` default and SPICE's VNTOL.  It was
+         ## 1e-12 V -- a million times tighter than either, and tighter than double
+         ## precision can resolve against a 1 V signal.  On the 127-unknown leapfrog
+         ## that alone collapsed the timestep to 5 ns against a 39 ns cap, because
+         ## the step controller accepts on max(|lte|/etol) over ALL unknowns and most
+         ## of that circuit's nodes carry no signal, so etol degenerated to
+         ## TRTOL*abstol on numerical noise.  Relaxing it to Spectre's value cut the
+         ## step count 5.4x with the waveform unchanged to 0.5%.
+         Parameter(name='vabstol',
+                   desc='Absolute voltage error tolerance', unit='V',
+                   default=1e-6),
          Parameter(name='maxiter', 
                    desc='Maximum number of iterations', unit='', 
                    default=100),
@@ -270,8 +278,16 @@ class Transient(Analysis):
         
         ones_nodes = self.toolkit.ones(len(self.cir.nodes))
         ones_branches = self.toolkit.ones(len(self.cir.branches))
-        abstol = self.toolkit.concatenate((self.par.iabstol * ones_nodes,
-                                         self.par.vabstol * ones_branches))
+        ## SOLUTION-flavoured, not residual-flavoured.  This vector is used by the
+        ## step controller as a tolerance on `lte = J^-1 * Eg`, which carries the
+        ## units of the solution vector x -- volts on node rows, amps on branch rows.
+        ## `_newton` needs the other flavour, because there the tolerance applies to
+        ## the residual f (KCL currents at nodes), and it builds both separately as
+        ## `abstol`/`xtol`.  This is the `xtol` one; using `_newton`'s `abstol` here
+        ## silently applied iabstol (1 pA) as a *voltage* tolerance to every node,
+        ## which is what made a larger `vabstol` have no effect on node rows at all.
+        abstol = self.toolkit.concatenate((self.par.vabstol * ones_nodes,
+                                          self.par.iabstol * ones_branches))
 
         was_break_step = False
         while t < tend:
@@ -429,8 +445,10 @@ class Transient(Analysis):
 
         ones_nodes = self.toolkit.ones(len(self.cir.nodes))
         ones_branches = self.toolkit.ones(len(self.cir.branches))
-        abstol = self.toolkit.concatenate((self.par.iabstol * ones_nodes,
-                                         self.par.vabstol * ones_branches))
+        ## Solution-flavoured, for the same reason as in `solve` above: the coupled
+        ## controller also applies this to `lte`, not to the residual.
+        abstol = self.toolkit.concatenate((self.par.vabstol * ones_nodes,
+                                          self.par.iabstol * ones_branches))
         reltol = self.par.reltol
 
         ## Coupled adaptive time-stepping, Fang, "A New Time-Stepping Method for
