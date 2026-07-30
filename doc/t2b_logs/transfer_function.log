@@ -1,0 +1,60 @@
+== PART 1: verdicts reached on term counts, re-read in operations ==
+  uA741 whole determinant (2773885 terms):
+    tol=0.5         5 groups ->   338 operations, err 2.635e-01
+    tol=0.2       337 groups -> 23281 operations, err 1.735e-01
+    tol=0.05      734 groups -> 50377 operations, err 4.113e-02
+  leapfrog top diagram (14409600 terms), built in 12.3 s:
+    tol=0.01     4390 groups -> 74629 operations, err 6.864e-03, all placeholders: True
+    tol=0.001    7913 groups -> 134520 operations, err 9.172e-04, all placeholders: True
+
+== PART 2: the transfer function H(s) = N(s)/D(s) ==
+   s-expanded: denominator degree 23, numerator degree 22  (6.0 s)
+
+  ================ nominal gm ================
+    |H| across the band:
+              10 Hz  |H|  2.4737e+04  ( +87.9 dB)
+             100 Hz  |H|  4.5453e+03  ( +73.2 dB)  -15 dB/dec
+           1e+03 Hz  |H|  4.6003e+02  ( +53.3 dB)  -20 dB/dec
+           1e+04 Hz  |H|  4.6019e+01  ( +33.3 dB)  -20 dB/dec
+           1e+05 Hz  |H|  4.6988e+00  ( +13.4 dB)  -20 dB/dec
+           1e+06 Hz  |H|  5.4475e-01  (  -5.3 dB)  -19 dB/dec
+           1e+07 Hz  |H|  2.3688e-01  ( -12.5 dB)  -7 dB/dec
+    -- narrow 100 Hz-10 kHz (13 points): exact N/D vs the solve 3.44e-15 --
+       subset tol=0.2   coeff tol=0.2      ->   119 ops, err 2.670e-01  fail
+       subset tol=0.2   coeff tol=0.01     ->   232 ops, err 1.553e-01  holds
+       subset tol=0.2   coeff tol=0.0005   ->   322 ops, err 1.568e-01  holds
+       subset tol=0.05  coeff tol=0.05     ->   439 ops, err 6.516e-02  holds
+       subset tol=0.05  coeff tol=0.0025   ->   784 ops, err 3.940e-03  holds
+       subset tol=0.05  coeff tol=0.000125 ->  1248 ops, err 3.040e-04  holds
+    -- wide 10 Hz-10 MHz (25 points): exact N/D vs the solve 1.12e-13 --
+       subset tol=0.2   coeff tol=0.2      ->  2555 ops, err 1.011e+00  fail
+       subset tol=0.2   coeff tol=0.01     ->  5314 ops, err 6.120e-01  fail
+       subset tol=0.2   coeff tol=0.0005   ->  9228 ops, err 1.377e-01  holds
+       subset tol=0.05  coeff tol=0.05     ->  3233 ops, err 1.055e+00  fail
+       subset tol=0.05  coeff tol=0.0025   ->  6439 ops, err 1.654e-01  holds
+       subset tol=0.05  coeff tol=0.000125 -> 12313 ops, err 9.244e-01  fail
+
+  ================ degraded gm ================
+    |H| across the band:
+              10 Hz  |H|  9.3746e+02  ( +59.4 dB)
+             100 Hz  |H|  6.7609e+02  ( +56.6 dB)  -3 dB/dec
+           1e+03 Hz  |H|  9.6610e+01  ( +39.7 dB)  -17 dB/dec
+           1e+04 Hz  |H|  9.8450e+00  ( +19.9 dB)  -20 dB/dec
+           1e+05 Hz  |H|  1.4644e+00  (  +3.3 dB)  -17 dB/dec
+           1e+06 Hz  |H|  3.9392e-01  (  -8.1 dB)  -11 dB/dec
+           1e+07 Hz  |H|  1.4128e-01  ( -17.0 dB)  -9 dB/dec
+    -- narrow 100 Hz-10 kHz (13 points): exact N/D vs the solve 1.41e-14 --
+       subset tol=0.2   coeff tol=0.2      ->   177 ops, err 7.903e-02  PASS
+       subset tol=0.2   coeff tol=0.01     ->   255 ops, err 6.333e-02  holds
+       subset tol=0.2   coeff tol=0.0005   ->   361 ops, err 6.363e-02  holds
+       subset tol=0.05  coeff tol=0.05     ->   362 ops, err 1.299e-02  holds
+       subset tol=0.05  coeff tol=0.0025   ->   473 ops, err 1.254e-03  holds
+       subset tol=0.05  coeff tol=0.000125 ->   860 ops, err 1.283e-03  holds
+    -- wide 10 Hz-10 MHz (25 points): exact N/D vs the solve 2.65e-14 --
+       subset tol=0.2   coeff tol=0.2      ->  1934 ops, err 1.589e+00  fail
+       subset tol=0.2   coeff tol=0.01     ->  2904 ops, err 2.853e+00  fail
+       subset tol=0.2   coeff tol=0.0005   ->  5271 ops, err 9.975e-01  fail
+       subset tol=0.05  coeff tol=0.05     ->  2500 ops, err 4.743e+00  fail
+       subset tol=0.05  coeff tol=0.0025   ->  4038 ops, err 3.969e+00  fail
+       subset tol=0.05  coeff tol=0.000125 ->  6389 ops, err 9.906e-01  fail
+

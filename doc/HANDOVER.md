@@ -80,10 +80,23 @@ The fixture changed again (compensation), so every leapfrog number needs regener
 | `cancellation_parallel` | top kappa 1.194e+12; **blocks bit-identical** (D_k 1.147e+03) |
 | `cancellation_compose` | GATE 5 6/6 PASS, GATE 4 2/6 PASS — verdict unchanged |
 | `nonlinear_leapfrog` | GATE 14-2 PASS rel **2.60e-13**, GATE 14-3 PASS; speedup **27-29x** (was 61-68x) |
+| `transfer_function` | leapfrog tol=1e-3: 7 913 groups -> **134 520 ops = 17.0 ops/group**; uA741 control **bit-identical** |
 
-**NOT RUN — do these first when resuming:**
-- `benchmarks/transfer_function.py` (was mid-run)
-- `benchmarks/order_convergence.py` (queued, never started)
+The `transfer_function` control is worth keeping in view: its uA741 half is untouched by
+every fixture change and has now re-measured **734 groups -> 50 377 operations across all
+three versions**. Numbers that should not move have not moved, which is what makes the
+leapfrog deltas trustworthy rather than merely different.
+
+One recorded claim shifted: **"16 ops/group is a property of the diagram" now reads 17.0**
+(it was 16 on the unstable fixture and 16.0 on the repaired one). Still structural, but no
+longer identical — record it as a rescale, not a survival.
+
+**NOT RUN — do this first when resuming:**
+- `benchmarks/order_convergence.py` (was running when the session ended; may have
+  completed — check, and re-run if its log is absent or truncated)
+
+It is the important one: it regenerates §10.2/10.3 of `doc/distortion_ddd_conclusions.md`
+and recomputes `v_turn`.
 
 `order_convergence` is the important one: it regenerates the §10.2/10.3 tables in
 `doc/distortion_ddd_conclusions.md` and recomputes `v_turn`, which moves whenever the
