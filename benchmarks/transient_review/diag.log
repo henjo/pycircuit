@@ -1,0 +1,49 @@
+WARNING:root:Problems encountered: Source Stepping failed at lambda=0.0
+=== 1. non-convergent DC: what is reported? ===
+  converged (no failure to show)
+
+=== 2. singular matrix (floating node): what is reported? ===
+  NoConvergenceError: Source Stepping failed at lambda=0.0
+
+=== 3. Newton iteration count vs vabstol on the leapfrog DC ===
+  vabstol=1e-12: ok, newton iters [1], 0.017 s
+  vabstol=1e-06: ok, newton iters [1], 0.016 s
+
+=== 4. is there any run statistic on the result object? ===
+  result attrs: ['build_waveform', 'i', 'keys', 'table', 'v', 'values']
+  analysis attrs: ['_dt', '_dt_last', '_effective_method', '_iq', '_iqlast', '_is_first_step', '_no_history', '_qlast', 'active_integrator', 'base_integrator', 'cir', 'epar', 'irefnode', 'par', 'parameters', 'result', 'sim', 'step_controller', 'toolkit']
+  n accepted steps: 100
+
+=== 5. Transient parameter surface ===
+   analysis     default=None                     Analysis name
+   epar         default=<pycircuit.utilities.param.ParameterDict object at 0x722e1c641be0> Environment parameters
+   nrsolver     default=None                     Newton-Raphson solver strategy (a NonLinearSolver instance, e.g. StandardNewton(), DampedNewton(), JAXNewtonSolver()); default StandardNewton()
+   scaler       default=None                     Jacobian scaling strategy (a Scaler instance, e.g. NoneScaler(), RowMaxScaler(), RowL2Scaler(), SinkhornKnoppScaler()); default NoneScaler()
+   analysis     default=None                     Analysis name
+   epar         default=<pycircuit.utilities.param.ParameterDict object at 0x722e1c641be0> Environment parameters
+   nrsolver     default=None                     Newton-Raphson solver strategy (a NonLinearSolver instance, e.g. StandardNewton(), DampedNewton(), JAXNewtonSolver()); default StandardNewton()
+   scaler       default=None                     Jacobian scaling strategy (a Scaler instance, e.g. NoneScaler(), RowMaxScaler(), RowL2Scaler(), SinkhornKnoppScaler()); default NoneScaler()
+   analysis     default='tran'                   Analysis name
+   reltol       default=0.0001                   Relative tolerance
+   iabstol      default=1e-12                    Absolute current error tolerance
+   vabstol      default=1e-06                    Absolute voltage error tolerance
+   maxiter      default=100                      Maximum number of iterations
+   integrator   default=None                     Integration strategy (an Integrator instance, e.g. EulerIntegrator(), TrapezoidalIntegrator(), Gear2Integrator(lte_formula='ywr')); default EulerIntegrator()
+   uic          default=False                    Use initial conditions (skip DC OP computation)
+   minbreak     default=1e-14                    Minimum time difference for breakpoint events
+   bypass       default=False                    Enable device model bypassing
+   minstep      default=1e-18                    Minimum timestep to prevent infinite loops
+   bypasstol    default=None                     Bypass tolerance for device models
+
+=== 6. DC parameter surface ===
+   analysis     default=None                     Analysis name
+   epar         default=<pycircuit.utilities.param.ParameterDict object at 0x722e1c641be0> Environment parameters
+   nrsolver     default=None                     Newton-Raphson solver strategy (a NonLinearSolver instance, e.g. StandardNewton(), DampedNewton(), JAXNewtonSolver()); default StandardNewton()
+   scaler       default=None                     Jacobian scaling strategy (a Scaler instance, e.g. NoneScaler(), RowMaxScaler(), RowL2Scaler(), SinkhornKnoppScaler()); default NoneScaler()
+   reltol       default=0.0001                   Relative tolerance
+   iabstol      default=1e-12                    Absolute current eror tolerance
+   vabstol      default=1e-12                    Absolute voltage error tolerance
+   maxiter      default=100                      Maximum number of iterations
+   bypass       default=False                    Enable device model bypassing
+   bypasstol    default=None                     Bypass tolerance for device models
+   epar         default=<pycircuit.utilities.param.ParameterDict object at 0x722e1c641be0> Environment parameters

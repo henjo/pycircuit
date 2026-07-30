@@ -1,0 +1,104 @@
+WARNING:root:Problems encountered: axis 0 is out of bounds for array of dimension 0
+Traceback (most recent call last):
+  File "/home/andreas/sources/pycircuit/pycircuit/circuit/dcanalysis.py", line 119, in _newton
+    x_res, _ = solver.solve_system(
+               ~~~~~~~~~~~~~~~~~~~^
+        x0,
+        ^^^
+    ...<7 lines>...
+        scaler=scaler
+        ^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/andreas/sources/pycircuit/pycircuit/circuit/nrsolver.py", line 181, in solve_system
+    return self.base_solver.solve_system(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/andreas/sources/pycircuit/pycircuit/circuit/nrsolver.py", line 142, in solve_system
+    return self.base_solver.solve_system(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/andreas/sources/pycircuit/pycircuit/circuit/nrsolver.py", line 33, in solve_system
+    F, J = eval_FJ(x)
+           ~~~~~~~^^^
+  File "/home/andreas/sources/pycircuit/pycircuit/circuit/dcanalysis.py", line 142, in new
+    return remove_row_col((f, J), irefnode, toolkit)
+  File "/home/andreas/sources/pycircuit/pycircuit/circuit/analysis.py", line 67, in remove_row_col
+    A=toolkit.delete(A, [n], axis=axis)
+  File "/usr/lib/python3/dist-packages/numpy/lib/_function_base_impl.py", line 5367, in delete
+    axis = normalize_axis_index(axis, ndim)
+numpy.exceptions.AxisError: axis 0 is out of bounds for array of dimension 0
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/tmp/claude-1000/-home-andreas-pycircuit-claude/e98a2fae-be82-4481-bb9a-0deaaae9b6e6/scratchpad/probe_sparse.py", line 40, in <module>
+    r = DC(rc_chain(4, sparse_numeric), toolkit=sparse_numeric).solve()
+  File "/home/andreas/sources/pycircuit/pycircuit/circuit/dcanalysis.py", line 94, in solve
+    raise last_e
+  File "/home/andreas/sources/pycircuit/pycircuit/circuit/dcanalysis.py", line 91, in solve
+    x = self._newton(func, x0, solver_chain)
+  File "/home/andreas/sources/pycircuit/pycircuit/circuit/dcanalysis.py", line 133, in _newton
+    raise NoConvergenceError(str(e))
+pycircuit.circuit.analysis.NoConvergenceError: axis 0 is out of bounds for array of dimension 0
+WARNING:root:Problems encountered: axis 0 is out of bounds for array of dimension 0
+TypeError: float() argument must be a string or a real number, not 'csr_matrix'
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/andreas/sources/pycircuit/pycircuit/circuit/transient.py", line 158, in _newton
+    x_res, _ = solver.solve_system(
+               ~~~~~~~~~~~~~~~~~~~^
+        x0,
+        ^^^
+    ...<7 lines>...
+        scaler=scaler
+        ^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/andreas/sources/pycircuit/pycircuit/circuit/nrsolver.py", line 33, in solve_system
+    F, J = eval_FJ(x)
+           ~~~~~~~^^^
+  File "/home/andreas/sources/pycircuit/pycircuit/circuit/dcanalysis.py", line 141, in new
+    f, J = func(newx, *args, **kvargs)
+           ~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/andreas/sources/pycircuit/pycircuit/circuit/transient.py", line 216, in func
+    return self.toolkit.array(f, dtype=float), self.toolkit.array(J, dtype=float)
+                                               ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "/home/andreas/sources/pycircuit/pycircuit/circuit/_numeric.py", line 46, in array
+    return np.array(*args, **kvargs)
+           ~~~~~~~~^^^^^^^^^^^^^^^^^
+ValueError: setting an array element with a sequence.
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/andreas/sources/pycircuit/pycircuit/circuit/transient.py", line 353, in solve
+    x, feval, J, f = self.solve_timestep(X[-1], next_t, provided_function=provided_function)
+                     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/andreas/sources/pycircuit/pycircuit/circuit/transient.py", line 218, in solve_timestep
+    x=self._newton(func,x0)
+  File "/home/andreas/sources/pycircuit/pycircuit/circuit/transient.py", line 172, in _newton
+    raise NoConvergenceError(str(e))
+pycircuit.circuit.analysis.NoConvergenceError: setting an array element with a sequence.
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/tmp/claude-1000/-home-andreas-pycircuit-claude/e98a2fae-be82-4481-bb9a-0deaaae9b6e6/scratchpad/probe_sparse.py", line 47, in <module>
+    r = Transient(rc_chain(4, sparse_numeric), toolkit=sparse_numeric).solve(
+        tend=1e-6, timestep=1e-7)
+  File "/home/andreas/sources/pycircuit/pycircuit/circuit/transient.py", line 357, in solve
+    raise RuntimeError(f"Transient solver failed to converge: timestep shrank below {getattr(self.par, 'minstep', 1e-18):g}s at t={t}")
+RuntimeError: Transient solver failed to converge: timestep shrank below 1e-18s at t=0.0
+WARNING:root:Problems encountered: axis 0 is out of bounds for array of dimension 0
+=== what type does G() return under sparse_numeric? ===
+type(G) = <class 'scipy.sparse._coo.coo_matrix'>
+has build_sparse: True
+
+=== DC with sparse_numeric on RC chain ===
+
+=== Transient with sparse_numeric on RC chain ===
+
+=== is the reduced J passed to linearsolver dense or sparse? ===
+err axis 0 is out of bounds for array of dimension 0
+linearsolver saw: []

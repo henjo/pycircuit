@@ -1,0 +1,15 @@
+checking correctness...
+  i max abs diff 0.000e+00
+  q max abs diff 0.000e+00
+  G max abs diff 0.000e+00
+  C max abs diff 0.000e+00
+  u max abs diff 0.000e+00
+
+per-call assembly time (s):
+  i: orig 0.00662  fast 0.00226  speedup 2.5x
+  q: orig 0.00690  fast 0.00277  speedup 2.4x
+  G: orig 0.00572  fast 0.00143  speedup 4.0x
+  C: orig 0.00616  fast 0.00221  speedup 2.8x
+
+full transient: orig 4.13 s, fast 2.06 s -> 2.00x
+waveform max abs diff: 0.000e+00

@@ -1,0 +1,109 @@
+n unknowns = 137 nodes = 136 branches = 1
+n elements (top level) = 708
+J shape (137, 137) nnz 784 density 4.177%
+assembly times: G=0.0054 C=0.0057 i=0.0063 q=0.0069 u=0.0044  total=0.0288 s
+dense np.linalg.solve: 0.00024 s
+scipy spsolve (rebuild csc each time): 0.00083 s
+scipy splu factor+solve (csc prebuilt): 0.00045 s
+scipy splu solve only (reuse factors): 0.00004 s
+splu L nnz 1044 U nnz 2077 (total 3121 vs A nnz 779)
+
+transient: 21 steps in 6.44 s = 0.3068 s/step
+         5263825 function calls (5263818 primitive calls) in 6.443 seconds
+
+   Ordered by: cumulative time
+   List reduced from 269 to 45 due to restriction <45>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.001    0.001    6.443    6.443 /home/andreas/sources/pycircuit/pycircuit/circuit/transient.py:227(solve)
+       21    0.000    0.000    5.471    0.261 /home/andreas/sources/pycircuit/pycircuit/circuit/transient.py:206(solve_timestep)
+       63    0.005    0.000    5.317    0.084 /home/andreas/sources/pycircuit/pycircuit/circuit/transient.py:210(func)
+      234    0.780    0.003    4.208    0.018 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:1366(_add_element_subvectors)
+       22    0.003    0.000    3.691    0.168 /home/andreas/sources/pycircuit/pycircuit/circuit/nrsolver.py:27(solve_system)
+       21    0.001    0.000    3.654    0.174 /home/andreas/sources/pycircuit/pycircuit/circuit/transient.py:136(_newton)
+       43    0.001    0.000    3.547    0.082 /home/andreas/sources/pycircuit/pycircuit/circuit/dcanalysis.py:139(new)
+      106    0.000    0.000    2.098    0.020 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:1191(q)
+      127    0.445    0.004    1.977    0.016 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:1290(_add_element_submatrices)
+   547119    0.895    0.000    1.818    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/toolkit.py:53(__getattr__)
+   360392    0.317    0.000    1.758    0.000 {built-in method builtins.hasattr}
+       64    0.000    0.000    1.156    0.018 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:1187(i)
+       63    0.000    0.000    1.103    0.018 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:1176(C)
+       64    0.000    0.000    0.954    0.015 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:1179(u)
+  1059088    0.893    0.000    0.941    0.000 {built-in method builtins.getattr}
+   255588    0.917    0.000    0.917    0.000 {method 'at' of 'numpy.ufunc' objects}
+       64    0.000    0.000    0.875    0.014 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:1173(G)
+    74942    0.275    0.000    0.797    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:516(q)
+    76557    0.148    0.000    0.528    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:505(C)
+    45248    0.167    0.000    0.355    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:512(i)
+   255588    0.330    0.000    0.330    0.000 {method 'flatten' of 'numpy.ndarray' objects}
+   263770    0.210    0.000    0.311    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:474(n)
+    45248    0.072    0.000    0.242    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:509(u)
+    32512    0.057    0.000    0.212    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:501(G)
+   154913    0.099    0.000    0.201    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/_numeric.py:42(zeros)
+   547127    0.138    0.000    0.138    0.000 {method 'startswith' of 'str' objects}
+       63    0.000    0.000    0.133    0.002 /home/andreas/sources/pycircuit/pycircuit/circuit/_numeric.py:28(linearsolver)
+       63    0.131    0.002    0.133    0.002 /usr/lib/python3/dist-packages/numpy/linalg/_linalg.py:382(solve)
+    42926    0.068    0.000    0.129    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/elements.py:143(C)
+   154913    0.102    0.000    0.102    0.000 {built-in method numpy.zeros}
+   528322    0.101    0.000    0.101    0.000 {built-in method builtins.len}
+   255969    0.064    0.000    0.064    0.000 {built-in method numpy.asarray}
+    43709    0.040    0.000    0.055    0.000 /home/andreas/sources/pycircuit/pycircuit/utilities/param.py:154(__getattr__)
+   255720    0.049    0.000    0.049    0.000 <frozen importlib._bootstrap>:656(has_location)
+        1    0.000    0.000    0.043    0.043 /home/andreas/sources/pycircuit/pycircuit/circuit/dcanalysis.py:70(solve)
+        1    0.000    0.000    0.042    0.042 /home/andreas/sources/pycircuit/pycircuit/circuit/dcanalysis.py:99(_newton)
+        1    0.000    0.000    0.042    0.042 /home/andreas/sources/pycircuit/pycircuit/circuit/nrsolver.py:178(solve_system)
+        1    0.000    0.000    0.042    0.042 /home/andreas/sources/pycircuit/pycircuit/circuit/nrsolver.py:139(solve_system)
+        1    0.000    0.000    0.040    0.040 /home/andreas/sources/pycircuit/pycircuit/circuit/dcanalysis.py:76(func)
+       21    0.010    0.000    0.040    0.002 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:1210(next_event)
+       22    0.021    0.001    0.027    0.001 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:1278(accept_step)
+   120233    0.025    0.000    0.025    0.000 /usr/lib/python3/dist-packages/numpy/_core/multiarray.py:769(dot)
+    14847    0.008    0.000    0.024    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:532(next_event)
+       21    0.001    0.000    0.021    0.001 /home/andreas/sources/pycircuit/pycircuit/circuit/stepcontroller.py:32(evaluate_step)
+       42    0.001    0.000    0.021    0.001 /home/andreas/sources/pycircuit/pycircuit/circuit/transient.py:147(limiter_func)
+
+
+
+         5263825 function calls (5263818 primitive calls) in 6.443 seconds
+
+   Ordered by: internal time
+   List reduced from 269 to 35 due to restriction <35>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+   255588    0.917    0.000    0.917    0.000 {method 'at' of 'numpy.ufunc' objects}
+   547119    0.895    0.000    1.818    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/toolkit.py:53(__getattr__)
+  1059088    0.893    0.000    0.941    0.000 {built-in method builtins.getattr}
+      234    0.780    0.003    4.208    0.018 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:1366(_add_element_subvectors)
+      127    0.445    0.004    1.977    0.016 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:1290(_add_element_submatrices)
+   255588    0.330    0.000    0.330    0.000 {method 'flatten' of 'numpy.ndarray' objects}
+   360392    0.317    0.000    1.758    0.000 {built-in method builtins.hasattr}
+    74942    0.275    0.000    0.797    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:516(q)
+   263770    0.210    0.000    0.311    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:474(n)
+    45248    0.167    0.000    0.355    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:512(i)
+    76557    0.148    0.000    0.528    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:505(C)
+   547127    0.138    0.000    0.138    0.000 {method 'startswith' of 'str' objects}
+       63    0.131    0.002    0.133    0.002 /usr/lib/python3/dist-packages/numpy/linalg/_linalg.py:382(solve)
+   154913    0.102    0.000    0.102    0.000 {built-in method numpy.zeros}
+   528322    0.101    0.000    0.101    0.000 {built-in method builtins.len}
+   154913    0.099    0.000    0.201    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/_numeric.py:42(zeros)
+    45248    0.072    0.000    0.242    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:509(u)
+    42926    0.068    0.000    0.129    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/elements.py:143(C)
+   255969    0.064    0.000    0.064    0.000 {built-in method numpy.asarray}
+    32512    0.057    0.000    0.212    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:501(G)
+   255720    0.049    0.000    0.049    0.000 <frozen importlib._bootstrap>:656(has_location)
+    43709    0.040    0.000    0.055    0.000 /home/andreas/sources/pycircuit/pycircuit/utilities/param.py:154(__getattr__)
+   120233    0.025    0.000    0.025    0.000 /usr/lib/python3/dist-packages/numpy/_core/multiarray.py:769(dot)
+       22    0.021    0.001    0.027    0.001 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:1278(accept_step)
+       21    0.010    0.000    0.040    0.002 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:1210(next_event)
+    42496    0.009    0.000    0.009    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/elements.py:41(G)
+       43    0.009    0.000    0.015    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:1194(limit)
+    42926    0.008    0.000    0.008    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/toolkit.py:223(jacobian)
+    14847    0.008    0.000    0.024    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/circuit.py:532(next_event)
+      255    0.006    0.000    0.008    0.000 /usr/lib/python3/dist-packages/numpy/lib/_function_base_impl.py:5289(delete)
+       63    0.005    0.000    5.317    0.084 /home/andreas/sources/pycircuit/pycircuit/circuit/transient.py:210(func)
+    15360    0.003    0.000    0.003    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/elements.py:716(G)
+       22    0.003    0.000    3.691    0.168 /home/andreas/sources/pycircuit/pycircuit/circuit/nrsolver.py:27(solve_system)
+       63    0.003    0.000    0.003    0.000 /home/andreas/sources/pycircuit/pycircuit/circuit/integrator.py:71(compute_derivatives)
+      556    0.002    0.000    0.002    0.000 {built-in method numpy.array}
+
+
+
