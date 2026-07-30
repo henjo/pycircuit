@@ -54,16 +54,28 @@
 >    **fully-symbolic fixture** (the µA741 bakes 159 of 215 addends into numbers),
 >    which is plumbing rather than research.
 >
+> ### The metric caveat that changes how to read §§16-22
+>
+> Those sections judge readability by **term count**. Stage 10 (§23) shows that
+> overstates the answer's size by **4-8×**, because sympy collects shared factors:
+> five kept groups become **11 operations**, 155 become 91. Their measurements stand;
+> their readability verdicts were reached against the wrong yardstick.
+>
 > ### The state of the goal, in one line
 >
-> **Converging is solved: group ranking on the compact diagram, 870 terms at 3.7%
-> error on the µA741, shipped and tested.** Readability is not, and §20 closes the
-> de-cancellation route to it — de-cancellation improves conditioning (`κ` 6 659 →
-> 99) while destroying concentration (2.77e6 terms → 1.1e21), so its ranking needs
-> ≥80× *more* terms and does not converge. The missing diagnostic, which this
-> thread should have had in §1, is a **concentration** measure beside `κ`: how many
-> terms carry 99% of `Σ|term|`. That is what term count depends on, it is as cheap
-> as `κ`, and it is the obvious next thing to build.
+> **Converging is solved** — group ranking on the compact diagram, shipped and
+> tested. **And for one coefficient, so is readability:** the µA741's dominant `s^1`
+> coefficient reduces to **11 operations in three device symbols at 26% error**, or
+> **91 operations at 0.79%** (§23). That is the original brief — device-symbolic,
+> readable, stated error, different at different operating points — met on a
+> component of the problem.
+>
+> **Not met:** the complete transfer function (24 coefficients plus a numerator), and
+> the leapfrog, where §11 showed the composition is not error-controlled. Two routes
+> are closed by measurement: de-cancellation (§20 — improves `κ` 67× while diluting
+> 2.77e6 terms into 1.1e21) and element pruning of a compact-entry diagram (§16).
+> Both `κ` (`cancellation`) and `N_eff` (`concentration`) are shipped; `N_eff` is a
+> coarse screen only (§22).
 >
 > ### Where the code is
 >
@@ -1463,3 +1475,72 @@ coefficients specifically.
 **Second time in three stages that a known bound on a quantity caught a bug its
 value alone would not have.** The other was the 6.7e+55 error in §20. Knowing what
 range a number must lie in is worth as much as computing it.
+
+## 23. Stage 10: an eleven-operation expression, and the metric was wrong all along
+
+Every stage in this plan used `tol = 0.05`, inherited from the first round and never
+questioned. Stage 10 varied it. `benchmarks/tolerance_curve.py`, µA741's dominant
+coefficient (`s^1`, which carries 97.3% of the response at 1 kHz, 51 054 561 terms):
+
+| `tol` | groups kept | **operations** | achieved error |
+|---|---|---|---|
+| 0.5 | 5 | **11** | 26.3% |
+| 0.2 | 43 | 57 | 6.0% |
+| 0.05 | 155 | 91 | 3.2% |
+| 0.01 | 164 | 91 | **0.79%** |
+
+Degraded `gm`: 5 / 11 / 24.9%, then 103 / 67 / 7.5%, 275 / 86 / 2.6%, 577 / 108 /
+0.002%.
+
+### The expression
+
+At `tol = 0.5`, five kept groups collect into a single product:
+
+```
+5.9996902350538e-70 * gm_q17 * (gm_q1 + 4.09e-4) * (-gm_q17 - 1.0022501e-2)
+                             * (gm_q2 + 4.09e-4)
+```
+
+**Eleven operations, four factors, three device symbols, 26% error.** And it reads
+as a circuit statement: the coefficient goes as the gain stage's `gm_q17`, times each
+input transistor's transconductance in parallel with a conductance, times the gain
+stage's own loading. That is the shape a designer would write by hand.
+
+**Gate 10-2 FAILS as declared** — 26.3% exceeds the 20% threshold, and the setting
+that does meet 20% costs 43 groups, above the 30 allowed. The gate falls in the gap
+between two rows of the table. Recording it as a fail because that is what it is;
+the 20% figure was my own choice and the substance is not in doubt.
+
+### The metric was wrong, and that is the transferable finding
+
+**Term count is a poor proxy for readability.** Five groups collect to 11
+operations; 155 groups collect to 91. Across the whole curve the terms grow 33-fold
+(5 → 164) while the operations grow 8-fold (11 → 91), because sympy collects shared
+factors that the term count counts separately.
+
+This plan has measured term counts throughout — 870, 734, 155, 72 724 — and
+**operations are what a reader actually faces.** By that measure the position is far
+better than any previous section suggested: **91 operations for 0.79% error** on a
+real amplifier's dominant coefficient, with device parameters intact.
+
+Every earlier "not readable" verdict in this document was reached on term counts. It
+was the wrong yardstick, and §§16, 19, 20, 22 should be read with that in mind: their
+*measurements* stand, their readability judgements were made against a quantity that
+overstates the size of the answer by roughly 4-8×.
+
+### What is and is not achieved
+
+**Achieved:** for one coefficient of one amplifier, a symbolic expression in device
+parameters, readable by inspection, with a stated error, and *different at different
+operating points* — which is the whole of the maintainer's original brief applied to
+a coefficient.
+
+**Not achieved:** the same for the *complete* transfer function, which needs every
+coefficient (24 of them) and a numerator; and the leapfrog, where stage 5 showed the
+composition is not error-controlled. The honest summary is that the goal is met on a
+component of the problem and not on the whole of it.
+
+*Reconsider-if:* the `s^1` coefficient dominating at 1 kHz is what makes one
+coefficient nearly sufficient here. At a frequency where two or three coefficients
+share the response, the readable object is their combination, and nothing measured
+here says that stays at tens of operations.

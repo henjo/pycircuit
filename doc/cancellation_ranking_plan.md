@@ -362,6 +362,36 @@ Declared in advance: the low-order coefficients dominate the response at 1 kHz, 
 small `N_eff` in a coefficient that contributes nothing is not a pass — the
 contribution magnitude is reported next to it precisely so that cannot be claimed.
 
+## Stage 10 — how few terms at a tolerance a designer would accept? (declared 2026-07-30)
+
+Every measurement in this plan has used `tol = 0.05`, inherited from the first
+round and never questioned. Stage 9 got the dominant coefficient to 155 terms
+there. **But a designer reading a hand analysis routinely accepts 20-30%** — the
+textbook expressions symbolic analysis is compared against are order-of-magnitude
+arguments, not 5% models.
+
+So before reaching for another transformation, measure the trade the existing
+machinery already offers: **terms against tolerance, on the coefficient that carries
+the response.** This is nearly free and nobody has looked at it.
+
+**Gate, declared before running.** On the µA741's dominant coefficient, both
+operating points:
+
+1. Report the full curve — terms and achieved error at `tol` = 0.5, 0.3, 0.2, 0.1,
+   0.05, 0.01 — with the device symbols present at each.
+2. **PASS if some setting gives ≤ 30 terms at ≤ 20% error with device symbols
+   intact**, and **the expression is printed** so the claim "readable" can be
+   judged rather than asserted.
+3. **FAIL if 20% still costs hundreds of terms**, which would mean the term count is
+   insensitive to tolerance and only a change of representation can help.
+
+**Declared in advance, because this gate is the easiest in the plan to fool:** a
+small term count at a loose tolerance is only a result if the *expression* is
+something a person can read. The printed expression is the evidence, and if it is
+twenty products of six factors each then the gate is met on its letter and failed on
+its purpose — which has happened once already in this project's history (stage A of
+the predecessor plan) and must be called the same way if it happens again.
+
 ## What would make this whole plan fail
 
 - Stage 0 finds uniform cancellation. Most likely single outcome, and the
@@ -402,6 +432,7 @@ Scripts: `benchmarks/cancellation_profile.py` (stage 0),
 | 7g — the payoff test | **FAIL, and it corrects 7f's reading.** At `tol=0.05`, control measured at the same point: compact group ranking **870 terms / 3.75e-02, converged**; compact magnitude **1 690 / 3.78e-02, converged**. De-cancelled: group **72 724 terms / 1.40e-01, NOT converged**; magnitude **68 310 / 1.59e-01, NOT converged**. So despite `κ` being 67× better, the de-cancelled expansion needs ≥80× more terms and does not converge. Cause: `κ` measures *conditioning*, term count depends on *concentration*, and de-cancellation spreads the same value from 2.77e6 terms over 1.1e21. **Low `κ` is necessary, not sufficient.** A bug found by gate 7g-4 on the way: a dead-end state (rows remaining, all children pruned) was counted as a completed term, giving an impossible error of 6.7e+55; caught by reasoning from the bound `Σ\|term\| = 99·\|det\|`, fixed, and re-verified against brute-force enumeration. Details: `cancellation_ranking_conclusions.md` §20. |
 | 8 — the concentration diagnostic | **PASS on all four gates, and it settles §20.** `DDD.concentration(env)` returns the participation ratio `N_eff = A²/S2` in **one traversal**, the same cost as `cancellation`. Sanity: exactly the term count for equal-magnitude terms, 1.0 for a dominated one, within `[1, N]`, and within an order of magnitude of the *enumerated* 99%-mass count. **The discriminating test:** compact `N_eff = 194` (ranking took 870 terms, converged) against de-cancelled `N_eff = 11 565` (>72 724, did not converge) — correctly ordered and predictive to a factor of ~5, where `κ` ordered them backwards (6 659 against 99). Five tests; doc section with build-time numbers. |
 | 9 — what reduces `N_eff`? | **Gate 9-2 FAIL, gate 9-3 PARTIAL — a real 5-12× gain, short of readable.** Ranking per coefficient of `s` instead of the whole determinant: nominal **`s^1`, 155 terms** against 734 (4.7×), carrying **97.3%** of the response; degraded **`s^2`, 206 terms** against 2 401 (11.7×). Device symbols intact throughout. Target was `N_eff ≤ 20` and ≤30 terms; best is 74.5 and 155. **And `N_eff` earned a caveat:** within one circuit its ordering across coefficients is *inverted* (126.8/341.2/709.2 → 950/275/206 terms), so it is a coarse screen for "is this representation hopeless", not a fine predictor. **Bug found and fixed:** `concentration` reported `N_eff = 0` above `s^12` because `Σ|term|²` underflows; rewritten scale-free on the weights, low-order values unchanged, test added. Details: `cancellation_ranking_conclusions.md` §22. |
+| 10 — the tolerance curve | **Gate 10-2 FAILS on its threshold; the substance is the best result of the plan.** On the dominant `s^1` coefficient (97.3% of the response), varying `tol`: **5 groups / 11 operations / 26.3% error**, then 43 / 57 / 6.0%, 155 / 91 / 3.2%, 164 / 91 / **0.79%**. The gate wanted ≤30 terms at ≤20% and the table straddles it. **The eleven-operation expression, printed:** `5.9997e-70·gm_q17·(gm_q1 + 4.09e-4)·(−gm_q17 − 1.0023e-2)·(gm_q2 + 4.09e-4)` — four factors, three device symbols, and it reads as a circuit statement. **And the metric was wrong all along:** term count overstates the answer's size 4-8× because sympy collects shared factors — terms grow 33× across the curve while operations grow 8×. Every earlier "not readable" verdict in this plan was reached on term counts. Details: `cancellation_ranking_conclusions.md` §23. |
 | 4 — library API | **Done.** `DDD.cancellation`, `DDD.subdiagram_values`, `DDD.minor_positions`, `DDD.approximate_groups` in `ddd.py`; twelve tests in `test_ddd.py`; three new subsections of `doc/src/circuit/ddd.rst` with every number generated at build time. `DDD.approximate` now **warns** when it returns without meeting `tol`. |
 
 ### Three results worth carrying forward

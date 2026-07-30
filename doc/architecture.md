@@ -985,6 +985,20 @@ contribution is exact rather than bounded. `DDD.cancellation` reports
 magnitude ranking can work at all. Both shipped, tested, documented in
 `doc/src/circuit/ddd.rst`.
 
+**Readability, revised 2026-07-30 (stage 10).** It was judged throughout on *term
+counts*, which overstate the answer's size by 4-8× because sympy collects shared
+factors. Measured on the µA741's dominant `s^1` coefficient (97.3% of the response at
+1 kHz), varying the tolerance: **5 groups collect to 11 operations at 26% error**, and
+**91 operations reach 0.79%**. The eleven-operation form is
+
+    5.9997e-70 * gm_q17 * (gm_q1 + 4.09e-4) * (-gm_q17 - 1.0023e-2) * (gm_q2 + 4.09e-4)
+
+four factors, three device symbols, reading as a circuit statement. **So for one
+coefficient of one amplifier the original brief is met** — device-symbolic, readable,
+with a stated error, and different at different operating points. What is *not* met is
+the complete transfer function (24 coefficients plus a numerator) or the leapfrog,
+where stage 5 showed the composition is not error-controlled.
+
 **What is not.** Converging and being readable are different problems and only
 the first is solved. The leapfrog's answer names devices but runs to ~2·10⁶
 operations. Three specific findings bound the next attempt:
