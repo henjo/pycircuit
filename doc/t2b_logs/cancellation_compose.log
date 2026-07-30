@@ -1,0 +1,68 @@
+leapfrog, parallel 5-block reduction: 32844 vertices, set up in 24.6 s
+the exact form, for scale: top 5312441376 terms, each D_l 520435 terms, one block's 25 cofactors 1757946 terms
+  so the exact nested product stands for >2.03e+38 terms in total
+
+== nominal gm (x1): numpy slogdet log10|det| = -397.228794 ==
+  tol top/block/cof = 5e-02/2e-02/2e-02   rank 120.7 s, count_ops 18.9 s
+    log10|det| = -397.259344   off by 3.06e-02 dex   implied rel 7.29e-02
+    kept: top 9595 groups (err 4.1e-02) touching 116 of 159 reduced entries and 123 of 125 cofactors
+          D_l [134, 134, 134, 134, 134] (err<=1.4e-02), cofactors 15510 groups (err<=2.0e-02)
+    nested ops: top 249469 + blocks 41940 + cofactors 903151 + reduced entries 767 = 1195327
+    device symbols in block/cofactor expressions: 11 -- gm_s0_q17, gm_s0_q2, gm_s1_q17, gm_s1_q2, gm_s2_q17, gm_s2_q2, gm_s3_q17, gm_s3_q2
+    GATE 4 (implied rel <= 1e-2): FAIL
+    GATE 5 (names device parameters): PASS
+    ops vs references: 1195327 nested  |  2256398 = one uA741 unfolded (previous round)  |  2.03e+38 = exact terms here
+    GATE 6 (nested form smaller than unfolding one uA741): PASS
+  tol top/block/cof = 2e-02/5e-03/5e-03   rank 139.0 s, count_ops 43.1 s
+    log10|det| = -397.231958   off by 3.16e-03 dex   implied rel 7.31e-03
+    kept: top 11098 groups (err 2.0e-02) touching 117 of 159 reduced entries and 123 of 125 cofactors
+          D_l [1107, 1107, 1107, 1107, 1107] (err<=4.3e-03), cofactors 28594 groups (err<=4.9e-03)
+    nested ops: top 288547 + blocks 337610 + cofactors 1655566 + reduced entries 773 = 2282496
+    device symbols in block/cofactor expressions: 11 -- gm_s0_q17, gm_s0_q2, gm_s1_q17, gm_s1_q2, gm_s2_q17, gm_s2_q2, gm_s3_q17, gm_s3_q2
+    GATE 4 (implied rel <= 1e-2): PASS
+    GATE 5 (names device parameters): PASS
+    ops vs references: 2282496 nested  |  2256398 = one uA741 unfolded (previous round)  |  2.03e+38 = exact terms here
+    GATE 6 (nested form smaller than unfolding one uA741): FAIL
+  tol top/block/cof = 1e-02/1e-03/1e-03   rank 245.1 s, count_ops 71.4 s
+    log10|det| = -397.233167   off by 4.37e-03 dex   implied rel 1.01e-02
+    kept: top 13725 groups (err 8.5e-03) touching 119 of 159 reduced entries and 123 of 125 cofactors
+          D_l [2152, 2152, 2152, 2152, 2152] (err<=1.6e-04), cofactors 56276 groups (err<=1.0e-03)
+    nested ops: top 356849 + blocks 653350 + cofactors 3247345 + reduced entries 781 = 4258325
+    device symbols in block/cofactor expressions: 11 -- gm_s0_q17, gm_s0_q2, gm_s1_q17, gm_s1_q2, gm_s2_q17, gm_s2_q2, gm_s3_q17, gm_s3_q2
+    GATE 4 (implied rel <= 1e-2): FAIL
+    GATE 5 (names device parameters): PASS
+    ops vs references: 4258325 nested  |  2256398 = one uA741 unfolded (previous round)  |  2.03e+38 = exact terms here
+    GATE 6 (nested form smaller than unfolding one uA741): FAIL
+
+== degraded gm (x0.1): numpy slogdet log10|det| = -411.474704 ==
+  tol top/block/cof = 5e-02/2e-02/2e-02   rank 76.7 s, count_ops 31.6 s
+    log10|det| = -411.563455   off by 8.88e-02 dex   implied rel 2.27e-01
+    kept: top 4413 groups (err 3.4e-02) touching 92 of 159 reduced entries and 108 of 125 cofactors
+          D_l [1255, 1255, 1255, 1255, 1255] (err<=1.4e-02), cofactors 17927 groups (err<=1.9e-02)
+    nested ops: top 114737 + blocks 382435 + cofactors 1037157 + reduced entries 632 = 1534961
+    device symbols in block/cofactor expressions: 11 -- gm_s0_q17, gm_s0_q2, gm_s1_q17, gm_s1_q2, gm_s2_q17, gm_s2_q2, gm_s3_q17, gm_s3_q2
+    GATE 4 (implied rel <= 1e-2): FAIL
+    GATE 5 (names device parameters): PASS
+    ops vs references: 1534961 nested  |  2256398 = one uA741 unfolded (previous round)  |  2.03e+38 = exact terms here
+    GATE 6 (nested form smaller than unfolding one uA741): PASS
+  tol top/block/cof = 2e-02/5e-03/5e-03   rank 201.7 s, count_ops 55.5 s
+    log10|det| = -411.470540   off by 4.16e-03 dex   implied rel 9.63e-03
+    kept: top 15514 groups (err 1.3e-02) touching 120 of 159 reduced entries and 125 of 125 cofactors
+          D_l [2521, 2521, 2521, 2521, 2521] (err<=3.9e-03), cofactors 41940 groups (err<=4.8e-03)
+    nested ops: top 403363 + blocks 763900 + cofactors 2413845 + reduced entries 789 = 3581897
+    device symbols in block/cofactor expressions: 11 -- gm_s0_q17, gm_s0_q2, gm_s1_q17, gm_s1_q2, gm_s2_q17, gm_s2_q2, gm_s3_q17, gm_s3_q2
+    GATE 4 (implied rel <= 1e-2): PASS
+    GATE 5 (names device parameters): PASS
+    ops vs references: 3581897 nested  |  2256398 = one uA741 unfolded (previous round)  |  2.03e+38 = exact terms here
+    GATE 6 (nested form smaller than unfolding one uA741): FAIL
+  tol top/block/cof = 1e-02/1e-03/1e-03   rank 216.7 s, count_ops 80.1 s
+    log10|det| = -411.482130   off by 7.43e-03 dex   implied rel 1.72e-02
+    kept: top 18027 groups (err 9.7e-03) touching 121 of 159 reduced entries and 125 of 125 cofactors
+          D_l [3214, 3214, 3214, 3214, 3214] (err<=9.6e-04), cofactors 78765 groups (err<=1.0e-03)
+    nested ops: top 468701 + blocks 969155 + cofactors 4546425 + reduced entries 795 = 5985076
+    device symbols in block/cofactor expressions: 11 -- gm_s0_q17, gm_s0_q2, gm_s1_q17, gm_s1_q2, gm_s2_q17, gm_s2_q2, gm_s3_q17, gm_s3_q2
+    GATE 4 (implied rel <= 1e-2): FAIL
+    GATE 5 (names device parameters): PASS
+    ops vs references: 5985076 nested  |  2256398 = one uA741 unfolded (previous round)  |  2.03e+38 = exact terms here
+    GATE 6 (nested form smaller than unfolding one uA741): FAIL
+

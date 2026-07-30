@@ -1,0 +1,43 @@
+leapfrog: 136 unknowns, 16 symbols, 567 nonzeros, built in 11.4 s
+keeping 16 terminals: in, s0_inp, s0_inn, s0_out, s1_inp, s1_inn, s1_out, s2_inp, s2_inn, s2_out, s3_inp, s3_inn, s3_out, s4_inp, s4_inn, s4_out
+hierarchical diagram: 119 levels, top 17x17, 779 vertices, 4.9 s
+top diagram: 660 vertices, 14409600 terms
+
+  nominal gm (x1): level walk 1.83 s
+    log10|det(A)| = -397.2   (underflows double precision; hier.eval returns (-0-0j))
+    top diagram value  = -2.993361e-38+7.065291e-38j
+      vs DDD.eval      rel 4.56e-16
+      vs numpy.linalg.det of the reduced matrix  rel 1.03e-10
+    k[root] of the TOP diagram = 1.153e+12
+    tol=0.001   kept 7913 err 9.172e-04  CONVERGED  3.62 s
+               symbols: 79, all level stamps: True, device symbols: NONE
+    tol=1e-08   kept 163917 err 9.976e-07  not converged 78.90 s
+               symbols: 103, all level stamps: True, device symbols: NONE
+    tol=1e-16   kept 163917 err 9.976e-07  not converged 65.79 s
+               symbols: 103, all level stamps: True, device symbols: NONE
+
+  degraded gm (x0.1): level walk 1.70 s
+    log10|det(A)| = -411.5   (underflows double precision; hier.eval returns (-0-0j))
+    top diagram value  = -2.335945e-45+3.100349e-45j
+      vs DDD.eval      rel 6.80e-16
+      vs numpy.linalg.det of the reduced matrix  rel 3.37e-12
+    k[root] of the TOP diagram = 9.467e+09
+    tol=0.001   kept 5408 err 6.749e-04  CONVERGED  5.18 s
+               symbols: 77, all level stamps: True, device symbols: NONE
+    tol=1e-08   kept 31241 err 3.459e-09  CONVERGED  14.54 s
+               symbols: 95, all level stamps: True, device symbols: NONE
+    tol=1e-16   kept 158847 err 2.858e-07  not converged 56.63 s
+               symbols: 102, all level stamps: True, device symbols: NONE
+
+what a kept group looks like (nominal, tol=1e-8):
+   + _lvl118_0_16*_lvl118_10_8*_lvl118_11_9*_lvl118_12_12*_lvl118_13_10*_lvl118_14_14*_lvl118_15_15*_lvl118_16_0*_lvl118_1_1*_lvl118_2_5*_lvl118_3_7*_lvl118_4_2*_lvl118_5_3*_lvl118_6_11*_lvl118_7_4*_lvl118_8_6*_lvl118_9_13
+   + -_lvl118_0_16*_lvl118_10_8*_lvl118_11_9*_lvl118_12_12*_lvl118_13_10*_lvl118_14_14*_lvl118_15_15*_lvl118_16_0*_lvl118_1_2*_lvl118_2_5*_lvl118_3_7*_lvl118_4_1*_lvl118_5_3*_lvl118_6_11*_lvl118_7_4*_lvl118_8_6*_lvl118_9_13
+   + -_lvl118_0_16*_lvl118_10_8*_lvl118_11_9*_lvl118_12_12*_lvl118_13_10*_lvl118_14_14*_lvl118_15_15*_lvl118_16_0*_lvl118_1_1*_lvl118_2_4*_lvl118_3_7*_lvl118_4_2*_lvl118_5_3*_lvl118_6_11*_lvl118_7_5*_lvl118_8_6*_lvl118_9_13
+   + _lvl118_0_16*_lvl118_10_8*_lvl118_11_9*_lvl118_12_12*_lvl118_13_10*_lvl118_14_14*_lvl118_15_15*_lvl118_16_0*_lvl118_1_2*_lvl118_2_4*_lvl118_3_7*_lvl118_4_1*_lvl118_5_3*_lvl118_6_11*_lvl118_7_5*_lvl118_8_6*_lvl118_9_13
+   + -_lvl118_0_16*_lvl118_10_8*_lvl118_11_9*_lvl118_12_12*_lvl118_13_10*_lvl118_14_14*_lvl118_15_15*_lvl118_16_0*_lvl118_1_4*_lvl118_2_2*_lvl118_3_7*_lvl118_4_1*_lvl118_5_3*_lvl118_6_11*_lvl118_7_5*_lvl118_8_6*_lvl118_9_13
+   + _lvl118_0_16*_lvl118_10_8*_lvl118_11_9*_lvl118_12_12*_lvl118_13_10*_lvl118_14_14*_lvl118_15_15*_lvl118_16_0*_lvl118_1_5*_lvl118_2_2*_lvl118_3_7*_lvl118_4_1*_lvl118_5_3*_lvl118_6_11*_lvl118_7_4*_lvl118_8_6*_lvl118_9_13
+   ... 163911 more
+
+and one stamp symbol resolved back to what it stands for:
+   _lvl118_0_0 = a DDDCombination of 1 parts over the block cofactors;
+   its own diagram stands for 1 product terms of device entries.

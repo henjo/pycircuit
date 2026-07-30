@@ -1,0 +1,47 @@
+leapfrog: 136 unknowns, 16 symbols, built in 16.6 s
+parallel reduction: 5 blocks x 22 internal, 26 terminals left
+  built in 2.7 s: 32844 vertices total, 125 distinct cofactors
+  top diagram 26x26: 12549 vertices, 5312441376 terms
+  GATE 1a (under 5 min): PASS
+  GATE 2 (no stamp symbol in any block, no cross-block coupling): PASS -- both are constructor assertions
+
+== nominal gm (x1) ==
+  log10|det(A)| = -397.2288   vs numpy slogdet -397.2288   diff 5.37e-10
+  top value -3.009726e-62+6.240625e-62j  vs numpy.linalg.det  rel 1.28e-09  (19.32 s)
+  GATE 1b (top rel < 1e-10): FAIL
+  GATE 1c (log10 det within 1e-6 of slogdet): PASS
+  GATE 3: kappa per object, all over device entries
+    object                     vertices  terms        kappa
+    top diagram (T symbols)    12549     5312441376   1.194e+12
+    D_0 = det(A_ii,0)          661       520435       1.147e+03
+    D_1 = det(A_ii,1)          661       520435       1.147e+03
+    D_2 = det(A_ii,2)          661       520435       1.147e+03
+    D_3 = det(A_ii,3)          661       520435       1.147e+03
+    D_4 = det(A_ii,4)          661       520435       1.147e+03
+    block 0 cofactors (25)     -         1757946      median 2.827e+02  max 1.466e+03
+    block 1 cofactors (25)     -         1757946      median 2.827e+02  max 1.466e+03
+    block 2 cofactors (25)     -         1757946      median 2.827e+02  max 1.466e+03
+    block 3 cofactors (25)     -         1757946      median 2.827e+02  max 1.466e+03
+    block 4 cofactors (25)     -         1757946      median 2.827e+02  max 1.466e+03
+
+== degraded gm (x0.1) ==
+  log10|det(A)| = -411.4747   vs numpy slogdet -411.4747   diff 1.59e-12
+  top value -2.242837e-69+2.693581e-69j  vs numpy.linalg.det  rel 3.74e-12  (10.49 s)
+  GATE 1b (top rel < 1e-10): PASS
+  GATE 1c (log10 det within 1e-6 of slogdet): PASS
+  GATE 3: kappa per object, all over device entries
+    object                     vertices  terms        kappa
+    top diagram (T symbols)    12549     5312441376   1.036e+10
+    D_0 = det(A_ii,0)          661       520435       1.162e+04
+    D_1 = det(A_ii,1)          661       520435       1.162e+04
+    D_2 = det(A_ii,2)          661       520435       1.162e+04
+    D_3 = det(A_ii,3)          661       520435       1.162e+04
+    D_4 = det(A_ii,4)          661       520435       1.162e+04
+    block 0 cofactors (25)     -         1757946      median 1.430e+03  max 6.180e+03
+    block 1 cofactors (25)     -         1757946      median 1.430e+03  max 6.180e+03
+    block 2 cofactors (25)     -         1757946      median 1.430e+03  max 6.180e+03
+    block 3 cofactors (25)     -         1757946      median 1.430e+03  max 6.180e+03
+    block 4 cofactors (25)     -         1757946      median 1.430e+03  max 6.180e+03
+
+gate items 4-6 (composition, device symbols, op count) follow in
+cancellation_compose.py once these pass.

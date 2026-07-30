@@ -1,0 +1,18 @@
+leapfrog: 136 unknowns, 16 symbols, built in 20.7 s
+blocks: 5 amplifiers x 22 internal nodes = 110 suppressed, 26 left
+hierarchy: 5 levels, top 26x26, 32844 vertices total, built in 4.3 s
+top diagram: 12549 vertices, 5312441376 terms
+GATE 1a (build under 5 min): PASS  (4.3 s)
+
+== GATE 2: every block internal matrix is over device entries ==
+Traceback (most recent call last):
+  File "/home/andreas/sources/pycircuit/benchmarks/cancellation_blocks.py", line 170, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/home/andreas/sources/pycircuit/benchmarks/cancellation_blocks.py", line 110, in main
+    for i, dim, nsym, stamps, devices in assert_blocks_are_device_level(hier):
+                                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/andreas/sources/pycircuit/benchmarks/cancellation_blocks.py", line 68, in assert_blocks_are_device_level
+    assert not stamps, (
+           ^^^^^^^^^^
+AssertionError: block 1 picked up stamp symbols ['_lvl0_10_10', '_lvl0_10_8', '_lvl0_11_11', '_lvl0_11_13', '_lvl0_11_14'] -- the partition does not give device-level cofactors and stage 5 cannot proceed

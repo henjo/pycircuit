@@ -1,0 +1,13 @@
+leapfrog: 136 unknowns, 16 symbols, built in 8.3 s
+nonlinearity on stage 0 input pair, rows [4, 5]; driven at row 135, read at row 125
+
+== U^3 ==
+  graph 39367 nodes, symbolic build 3.6 s, evaluate 0.27 s, numeric oracle 97.9 s
+  third harmonic: symbolic 3.892362e-18, numeric 3.892362e-18
+  GATE 14-3 (harmonic is non-zero): PASS
+  GATE 14-2 (matches the oracle to 1e-10): PASS  (rel 2.60e-13)
+== U^5 ==
+  graph 64914 nodes, symbolic build 8.6 s, evaluate 0.42 s, numeric oracle 247.6 s
+  third harmonic: symbolic 3.892362e-18, numeric 3.892362e-18
+  GATE 14-3 (harmonic is non-zero): PASS
+  GATE 14-2 (matches the oracle to 1e-10): PASS  (rel 2.60e-13)
