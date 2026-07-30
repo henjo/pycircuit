@@ -69,6 +69,7 @@ from pycircuit.circuit.benchmark_circuits import (_UA741_NODE_NAMES,
 from pycircuit.circuit.elements import BSource
 from pycircuit.circuit.distortion import (GradedSpectrum, GradedVector,
                                           graded_response_mimo)
+from pycircuit.circuit.integrator import TrapezoidalIntegrator
 from pycircuit.circuit.transient import Transient
 
 
@@ -89,9 +90,16 @@ NODE_NAME = 's0_e1'
 AMPLITUDES = (3.0, 1.0)
 ORDERS = (3, 5, 7, 9, 11, 13)
 
-## Settle for ~20 of the 10 us integrator time constants, then measure exactly one
-## 1/FB window so the bins land.
-SETTLE = 200e-6
+## SETTLING, NOT STEPPING, IS THE COST DRIVER -- and the figure it is set from is a
+## property of the repaired circuit, not a round number.
+##
+## The slowest pole is Re = -4.815e+03, so tau = 208 us.  That is NOT the 10 us
+## integrator time constant an earlier version of this file assumed: the slowest mode
+## is the Q ~ 16.8 resonance at 25.7 kHz that the topology repair disclosed and could
+## not remove (omega0/(2Q) = 2*pi*25700/(2*16.8) = 4806, which is that pole).  Settling
+## to 5 tau is ~1.04 ms, an order of magnitude more simulated time than the 200 us
+## previously used -- and at ~9 ns steps that is hours per amplitude.
+SETTLE = 5 * 208e-6
 MEASURE = 1.0 / FB
 ## vabstol comes back DOWN here, well below the library default of 1e-6 (Spectre's
 ## value, right for general use).  This measurement needs the integrator's residual
@@ -100,7 +108,27 @@ MEASURE = 1.0 / FB
 ## precision requirement.  Measured on a fixed 2.5 us window, |vout| error against a
 ## tight reference: defaults +2.03%, vabstol 1e-9 +0.45%, vabstol 1e-9 + reltol 1e-6
 ## -0.02%.  The last is what IM3 needs and what it costs.
-TRAN_OPTS = {'vabstol': 1e-9, 'reltol': 1e-6}
+## THE INTEGRATOR IS AN EXPLICIT CHOICE, and it is worth 10x.  This harness never
+## passed one, so it inherited `EulerIntegrator()` -- 1st order, LTE ~ h^2.  On the
+## repaired circuit at these tolerances, over a fixed 2.5 us window:
+##
+##     euler (the inherited default)   2896 steps   482.5 s
+##     trapezoidal                      288 steps    53.6 s   <- 10x fewer
+##     gear2 (ywr)                      347 steps    60.7 s
+##     gear2 (classic)                  376 steps    67.3 s
+##
+## The three 2nd-order methods agree within 30% of each other; Trapezoidal wins by
+## roughly the ratio of its error constant to Gear-2's (1/12 against 2/9).  The gap to
+## Euler is this large *because* the cost here is resolving a lightly-damped Q ~ 16.8
+## resonance -- a smooth oscillation, which is precisely what a 2nd-order method
+## integrates well and backward Euler does not.
+##
+## This only became a safe choice once the LTE work landed: before it,
+## `Gear2Integrator`'s estimate returned ~1e-15 of the true error, so it ran at
+## `max_step` with zero rejections and produced numbers that looked fine and controlled
+## nothing.  See `doc/transient_repair_plan.md`.
+TRAN_OPTS = {'vabstol': 1e-9, 'reltol': 1e-6,
+             'integrator': TrapezoidalIntegrator()}
 ## Samples per 1/F1 period.  This is NOT just an output grid -- `timestep` also sets
 ## `max_step`, which here is a CORRECTNESS knob, not only a cost knob.
 ##
