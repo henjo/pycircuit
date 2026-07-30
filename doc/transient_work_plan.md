@@ -9,6 +9,21 @@ order of work and the gates.
 
 Evidence scripts: `benchmarks/transient_review/` (probes, not gates — see its README).
 
+**Source papers: `/home/andreas/pycircuit_agy/papers/`.** The two that this plan turns on:
+
+- `2014-12--ICECS-Yao-Wang-Roychowdhury-LTE-for-DAEs.pdf` — the source of every `'ywr'`
+  formula in `integrator.py` and of `IntegralController`. Table I is the LTE table, eq (22)
+  the general form it is derived from, eq (4) the definition of the LTE as a *solution*
+  error, Fig. 1 the control flow.
+- `2463209.2488904.pdf` — Fang, DAC 2013, cited by `_solve_coupled`. §3.1 is the coupled
+  N+1 system, §3.2 the bordered solve, §3.3 the two-sided LTE band, §3.4 the approximate
+  Newton method.
+
+**Read them from rendered pages, not `pdftotext`.** Both are formula-dense and text
+extraction drops superscripts and table structure; every citation in this document was
+taken from 200-dpi renders. The standing rule exists because that failure has produced a
+fabricated exponent before.
+
 Prior work this builds on, all complete: `doc/transient_repair_plan.md` (the Gear2 LTE
 repair, stages 1-5, gates recorded).
 
@@ -318,17 +333,59 @@ not the algorithm its comment claims, it buys nothing over `solve()`, and it con
 livelock that `solve()` does not.** Evidence:
 `benchmarks/transient_review/stage0_1d_coupled_livelock.py`.
 
-*It is not a co-determination method.* The comment at `:474-483` cites Fang (DAC 2013) and
-says the circuit solution and step size are "co-determined at each time point", with the
-paper's approximate Newton replacing an exact Schur update. What the code does (`:499-526`)
-is: converge the circuit at `h_curr`; evaluate the LTE; if it is over tolerance, shrink and
-re-solve; repeat up to `MAX_LTE_ITERS`. **That is a plain reject-and-retry loop** — the same
-scheme `solve()` runs, with `MAX_LTE_ITERS = 10` where `solve()` has `MAX_REJECT = 3`. The
-step size is not an unknown in any solve; there is no augmented system and no coupling.
-Per the standing rule on external facts, I am **not** asserting what Fang §3.4 actually
-says — the paper is not in `doc/` and I have not read it, so the claim "this implements
-Fang" can be neither confirmed nor refuted here. What can be said from the code alone is
-that the loop is structurally a rejection loop, and that is enough for the decision.
+*It is not a co-determination method, and it is not Fang's approximate Newton either.*
+**Updated 2026-07-30 after reading the paper** (`/home/andreas/pycircuit_agy/papers/`
+`2463209.2488904.pdf`, G. Peter Fang, "A new time-stepping method for circuit simulation",
+DAC 2013; read from 200-dpi renders, not text extraction). An earlier version of this
+outcome declined to assert what §3.4 says because the paper was not available. It is
+available, and it refutes the comment on both counts.
+
+**What §3.1 actually proposes.** The step size `h_m` is treated as *an independent variable
+— an unknown*. The LTE condition `f_lte(v_m, h_m) = ε_m(v_m,h_m) − τ_m = 0` (eq 10) is
+solved *together with* the circuit equations as one coupled system of **N+1 nonlinear
+equations in N+1 unknowns** (eq 11), via the bordered linear system (eq 12)
+
+    [ J   p ] [ Δv ]   [ −f_ckt ]
+    [ q^T d ] [ Δh ] = [ −f_lte ]
+
+with `p = ∂f_ckt/∂h_m`, `q^T = ∂f_lte/∂v_m`, `d = ∂f_lte/∂h_m`. **`_solve_coupled` contains
+no `p`, no `q`, no `d`, and no bordered system.** `h` is never an unknown in any solve.
+
+**What §3.4 actually proposes.** The approximate Newton method exists because the coupled
+system is sensitive to step-size change during fast transitions. It does two things: (i)
+predict the new step from Gear's formula using the LTE from the first stage,
+`h^{k+1} = (τ_m / ε_m^{k+1/2})^{1/(n+1)} · h^k` (eq 17); and (ii) — the part that makes it
+a *Newton* method rather than a retry — **correct the existing solution instead of
+re-solving it**:
+
+    Δv^{k+1} = Δv^{k+1/2} − J^{-1} p (h^{k+1} − h^k)          (eq 18)
+
+a single back-solve against the already-factored `J` and the sensitivity vector `p`. The
+paper's own summary: "Without the need to modify the matrix solver of the simulator, the
+approximate Newton method is straightforward to implement and carries very little
+overhead."
+
+**What the code does.** `:511-526` calls `controller.evaluate_step(...)`, whose
+`IntegralController` law `h*safety*(1/err)^(1/p)` is *structurally* eq (17) — and then
+`h_curr = h_next; continue`, which **re-solves the whole circuit from scratch**
+(`solve_timestep` at `:502`). Equation (18), the entire computational content of §3.4, is
+absent: there is no `p`, no sensitivity, no correction. So the one thing borrowed from the
+paper is eq (17) — a standard Gear step predictor that is **not distinctive to the paper
+and that `solve()`'s controller already applies identically**.
+
+**Two further omissions, both load-bearing in the paper.** §3.3 requires a *two-sided* LTE
+band `γ_min·τ_m ≤ ε_m ≤ γ_max·τ_m` (eq 15); the lower bound is what "prevents step sizes
+from being unnecessarily small", and §4.1 attributes the paper's headline result — 39%
+fewer time points on a Class-D amplifier — to bounding LTE between 0.7 and 3.0. The code
+has only an upper bound. §3.3 also requires `|Δh^{k+1}| ≤ η·h^k` (eq 16, typical η = 15%)
+to damp step-size change; the code has no such limit, which is a plausible contributor to
+the collapse documented above.
+
+**So the citation should be removed regardless of what happens to the code**, and one
+detail suggests the divergence was not intended: the dead `analytical_eh` parameter is
+plausibly a vestige of `d = ∂f_lte/∂h_m` (eq 12) — an interface hook for the real method,
+left in the signature after the method it served was never written. *(That reading of the
+name is informed speculation, not established.)*
 
 *It contains a livelock that the standard path does not.* When Newton fails to converge,
 `:504-509` shrinks `h_curr` by 0.25 and `continue`s. After `MAX_LTE_ITERS` failures the loop
@@ -603,16 +660,62 @@ tolerance are alternative formulations of the same criterion**, and stage 4 must
   requires. Honest, and it is roughly where the code already is — but it means maintaining
   two criteria and two tolerance sets, which is what stage 9 is trying to reduce.
 
-**Recommendation: (B).** It is what 0.3a already chose, it is the standard, and 0.2b's
-measurement does not argue against it — 0.2b established that the mapping is *affordable*,
-not that it is *right*, and affordability was only ever the charge path's weakest defence.
-Note that (B) makes `estimate_lte` the survivor, so stage 9(a)'s `_lte_kernels.py` should
-factor the charge algebra rather than the YWR algebra.
+~~**Recommendation: (B).**~~ **RECOMMENDATION CHANGED TO (A) on 2026-07-30, after reading
+the YWR paper.** The original recommendation of (B) was made without it and should not be
+relied on. What changed:
 
-**Reconsider (A) if** a measurement shows the charge-referenced criterion mis-controlling a
-circuit where charge and voltage errors decouple badly — a high-impedance node with tiny
-charge and large voltage swing is the case to try. That is a real risk of (B) and it should
-be measured in stage 4, not assumed away.
+The `'ywr'` formulas pycircuit implements come from Yao, Ye, Wang, Wang & Roychowdhury,
+*"An Efficient Time Step Control Method in Transient Simulation for DAE System"*, ICECS
+2014 (`/home/andreas/pycircuit_agy/papers/2014-12--ICECS-Yao-Wang-Roychowdhury-LTE-for-DAEs.pdf`;
+read from 200-dpi renders). **That paper exists specifically to argue against option (B).**
+Its abstract: existing methods are based on the LTE for ODEs, "**which is an approximation**
+for the circuit simulator solving a system of nonlinear differential algebraic equations
+(DAEs)". §II-C makes it explicit — the ODE form `dx/dt + f(x) + b = 0` "is without the
+`q()` term. Therefore, the traditional time step control methods are just an approximation
+for the circuit simulator and there are problems in certain cases."
+
+And the paper's LTE is unambiguously **solution-domain**: eq (4) defines
+`ε_T(t_n) = x_n − x*_n`, the error in the vector of **node voltages and branch currents** —
+not in charge. The `(q̇_x − β0 ġ_x)^{-1}` factor in Table I is precisely what converts the
+charge-domain residual into that solution error. So a voltage/current tolerance is the
+*correct* companion to these formulas, and applying a charge tolerance to them — which is
+what JAX's `lte_error_ratio` does with `lte_abs = 1e-6` — is not merely a units slip; it is
+the approach this paper was written to replace.
+
+**Verified, not assumed: pycircuit's `'ywr'` implementation is faithful to Table I.** The
+paper gives TRAP as `ε = −(1/12)(q̇_x + 0.5h ḟ_x)^{-1}(g_n − 2g_{n−1} + g_{n−2})h`. With
+`(q̇_x + 0.5h ḟ_x) = C + 0.5hG = 0.5h(G + 2C/h) = 0.5h·J` — and `J = G + 2C/h` is exactly
+what `TrapezoidalIntegrator.compute_derivatives` builds (`geq = C/h/0.5`) — the `h`
+cancels and leaves `Eg = −(1/6)(second difference)` with the controller applying `J^{-1}`.
+That is `integrator.py:123` verbatim. The same check passes for Euler/GEAR1. The
+implementation is sound; the question is only which criterion it should be judged against.
+
+**Therefore: (A).** Keep the `J^{-1}` mapping, keep `reltol`/`vabstol`/`iabstol` as the LTE
+tolerances, delete the charge-domain estimator on both backends. 0.2b already established
+that the mapping costs 1-3%, so the only argument that ever favoured the charge path — cost
+— is measured and does not hold.
+
+**This does not discard 0.3a(iii); it splits it.** Option (iii) bundles two separable
+things, and only the second is in dispute:
+
+1. **Separate Newton's x-tolerance from the LTE tolerance.** Uncontroversial, independent
+   of this argument, and the actual defect 0.3a was raised to fix — Newton's node
+   convergence was loosened 10^6 unmeasured and `DC.vabstol` still disagrees with
+   `Transient.vabstol` by the same factor. **Keep this, in stage 1, exactly as decided.**
+2. **Make the LTE criterion charge-referenced and add `chgtol`.** This is what YWR argues
+   is an approximation. **Drop this**, and with it `chgtol`.
+
+So stage 1 is unaffected by the change and stage 4 loses a work item rather than gaining
+one.
+
+**Reconsider (B) if** either: a measurement shows the solution-domain criterion
+mis-controlling a circuit where `J` is near-singular, since `J^{-1}` then amplifies the
+charge residual unboundedly and the mapped LTE becomes noise — a floating or
+weakly-grounded node is the case to try, and it is the real risk of (A); or interoperating
+with SPICE tolerances becomes a requirement, in which case `chgtol` is needed for
+compatibility whatever its merits. Note the honest limit of the evidence: ICECS 2014 is a
+4-page paper and `chgtol` is what every production simulator ships, so this is an argument
+from derivation, not from an industry track record.
 DECISION:
 
 **Stage 0 exit criterion:** every OUTCOME above filled, every DECISION answered. Stages
@@ -623,6 +726,29 @@ DECISION:
 
 **Filled: 0.1a, 0.1b, 0.1c, 0.1d, 0.2a, 0.2b, 0.2c. Answered: 0.3a, 0.3b, 0.3c.
 Outstanding: 0.3d, which stage 0 raised itself.**
+
+**Updated later the same day, after the source papers were located** at
+`/home/andreas/pycircuit_agy/papers/`. Three items changed on evidence rather than on
+reflection, and the changes go in both directions:
+
+- **0.1d hardened.** The Fang citation can now be checked, and the code implements neither
+  §3.1's coupled N+1 system nor §3.4's approximate Newton — eq (18), the whole
+  computational content of §3.4, is absent. The earlier outcome declined to assert this;
+  that hedge is withdrawn.
+- **0.3d's recommendation REVERSED, (B) → (A).** The YWR paper exists to argue that the
+  charge/ODE-flavoured criterion is "an approximation", and its eq (4) defines the LTE as a
+  *solution* error. Recommending (B) was a recommendation made in ignorance of the paper
+  the code's own formulas come from. 0.3a(iii) splits cleanly: keep the Newton/LTE
+  tolerance separation, drop `chgtol`.
+- **4d confirmed and 4a-bis added.** YWR's Table I TRAP entry is a uniform-grid formula,
+  which is exactly the defect 4d describes; and both papers use a two-threshold controller
+  where pycircuit has one, which is a new candidate explanation for 0.3b's rejection counts.
+
+Also verified in the same pass, and worth recording as a positive: **the `'ywr'`
+implementation is faithful to Table I.** The `−(1/6)` in `integrator.py:123` follows from
+the paper's `−(1/12)` once `(q̇_x + 0.5h ḟ_x) = 0.5h·J` is substituted, and `J = G + 2C/h`
+is what the trapezoidal companion actually builds. The formulas are right; only the
+criterion they are judged against is in question.
 
 Stage 0 is therefore *not* exited, and the one thing left is a maintainer decision that
 did not exist when the plan was written. **Stages 1, 2, 3 and 7 are unblocked and may
@@ -847,6 +973,29 @@ or fall back to pure-I for the step after a rejection.
 a smooth problem, h settles to within 5% of a fixed point instead of alternating 2:1.
 OUTCOME:
 
+**4a-bis. NEW, from the source papers (2026-07-30): the controller has one threshold where
+both papers have two.** `IntegralController` rejects whenever `err > 1.0`
+(`stepcontroller.py:84`) — a single test that decides *both* "shrink the next step" and
+"redo this one". Both papers separate those:
+
+- **YWR Fig. 1** shrinks the next step when `ε_T > ε_spec`, but only **redoes** the current
+  step when `ε_T ≥ F_redo · ε_spec`, with a distinct `F_RedoCut`.
+- **Fang §4** describes the same structure in the method he compares against: "if the
+  normalized local truncation error is greater than a given value (**we used 4.63**), the
+  current time point will be recomputed with a smaller time step."
+
+pycircuit folds `TRTOL = 7.0` into `etol`, which scales the single threshold but does not
+*separate* the two decisions: the accept test and the predictor deliberately aim at the
+same target (`stepcontroller.py:66-72`). So a step whose LTE is 1.01x over tolerance is
+re-solved from scratch, where both papers would accept it and take a smaller next step.
+
+**Hypothesis, to be measured and not assumed:** this is a candidate explanation for the
+rejection counts in 0.3b — 57 rejections for `Gear2('ywr')` against 29 for `'classic'`. If
+the single threshold is what drives rejection count, the estimator comparison in gate 4f is
+confounded by it, which is a second reason 0.3b was right to defer the default. **Measure
+this before 4f**, by adding an `F_redo` band and re-running the four-way comparison; if
+rejection counts converge, the `'ywr'`-vs-`'classic'` gap was mostly the controller.
+
 **4b. `MAX_REJECT` force-accept.** `transient.py:390` grows `dt` **10x** after accepting an
 over-tolerance step. Variable-step BDF-2 is zero-stable only for ratio < 1+sqrt(2) =
 2.414214; at 10x the parasitic root is 4.76. `Gear2(ywr)`, the shipped default, is the
@@ -868,6 +1017,22 @@ error is O(h^2); measured 112x too large at ratio 0.25, -436x at 4.0, scaling as
 correct divided-difference generalisation is algebraically identical to the `classic`
 branch, so **delete the branch and keep `'ywr'` as an alias** rather than creating a
 duplicate.
+
+**CONFIRMED BY THE SOURCE PAPER, 2026-07-30.** YWR Table I gives TRAP as
+`ε = −(1/12)(q̇_x + 0.5h ḟ_x)^{-1}(g_n − 2g_{n−1} + g_{n−2})h` — **a single `h` and an
+unweighted second difference, i.e. a uniform-grid formula.** Its GEAR2 entry, by contrast,
+carries `h1` and `h2` explicitly and weights the differences
+(`h2·g_n − (h1+h2)·g_{n−1} + h1·g_{n−2}`). So the paper itself is non-uniform for GEAR2 and
+uniform-only for TRAP, and pycircuit copied the TRAP entry verbatim **including its
+uniform-grid assumption**. This is not a transcription error — it is a correct
+transcription of a formula whose domain of validity was not stated in the table.
+
+This also supplies the fix and a check on the plan's proposal: the paper's **eq (22) is the
+general form** from which Table I's entries are derived by finite-difference approximation,
+so the non-uniform TRAP formula can be derived rather than guessed. **Do that derivation
+before deleting the branch** — the plan asserts the generalisation is algebraically
+identical to `classic`, and eq (22) is how to confirm or refute that claim instead of
+assuming it.
 **Gate 4d:** est/true within 5% of the `classic` column across ratio 0.25..4.
 OUTCOME:
 
