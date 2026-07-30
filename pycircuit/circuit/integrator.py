@@ -190,17 +190,38 @@ class Gear2Integrator(Integrator):
             return lte, 3.0
 
         # --- CLASSIC GEAR-2 LOCAL TRUNCATION ERROR ---
-        # The truncation error for a 2nd-order method is proportional to the 3rd derivative
-        # of the charge with respect to time. We approximate this 3rd derivative using
-        # divided differences (dd).
-        # 1st divided difference at n (velocity)
-        dd1_n = (q_curr - q_last[0]) / h_curr
-        # 1st divided difference at n-1 (past velocity)
-        dd1_nm1 = (q_last[0] - q_last[1]) / h_last
-        # 2nd divided difference (acceleration/curvature)
-        dd2_n = (dd1_n - dd1_nm1) / (h_curr + h_last)
+        # Taylor-expanding the VSS companion current above about t_n (the alpha
+        # coefficients kill the q' and q'' terms by construction) leaves
+        #
+        #     iq - q'(t_n) = -(1/6) h1 (h1 + h2) q'''(t_n) + O(h^3)
+        #
+        # -- equal steps: -(1/3) h^2 q''', the textbook BDF-2 result.  So what
+        # has to be estimated here is the THIRD derivative of the charge, scaled
+        # by h^2.
+        #
+        # A second divided difference of q yields only q'', and Gear-2 keeps just
+        # two past charges (get_required_history() == 2), so a third divided
+        # difference of q is not available at all.  The third derivative is
+        # therefore taken as the second divided difference of g = dq/dt, read off
+        # the companion-current history -- the same information the YWR branch
+        # above uses.  Estimating q'' here and multiplying by h^3 (as this branch
+        # did until 2026-07) is dimensionally not a current: it undershoots the
+        # truncation error by a factor of order h*omega, which on a 1 MHz signal
+        # at nanosecond steps is ~1e-15.  The controller then never rejects a
+        # step, saturates the growth limiter every step, pins h at max_step and
+        # stops responding to reltol/abstol altogether.
+        h1, h2 = h_curr, h_last
+        alpha0 = (2 * h1 + h2) / (h1 * (h1 + h2))
+        alpha1 = -(h1 + h2) / (h1 * h2)
+        alpha2 = h1 / (h2 * (h1 + h2))
+        g_n = alpha0 * q_curr + alpha1 * q_last[0] + alpha2 * q_last[1]
+        g_nm1 = iq_last[0]
+        g_nm2 = iq_last[1] if len(iq_last) > 1 else iq_last[0]
 
-        # The final LTE is scaled by the step sizes based on the Taylor series remainder.
-        lte = (h_curr**2) * (h_curr + h_last) / 3.0 * dd2_n
+        # Second divided difference of g at t_n, t_{n-1}, t_{n-2}, which is
+        # q'''/2, so the -(1/6) above becomes -(1/3) here.
+        dd2_g = ((g_n - g_nm1) / h1 - (g_nm1 - g_nm2) / h2) / (h1 + h2)
 
-        return lte, 3.0  # p=3.0 (LTE scales with h^3 for 2nd order methods)
+        lte = -(1.0 / 3.0) * h1 * (h1 + h2) * dd2_g
+
+        return lte, 3.0  # p=3.0 is order+1 (the estimate itself scales with h^2)

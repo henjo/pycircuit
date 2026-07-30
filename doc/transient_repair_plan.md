@@ -1,7 +1,14 @@
 # Repairing the transient analysis — the plan
 
-**Status: written 2026-07-30. No stage has run. Every OUTCOME line below is
-deliberately blank and must be filled in from a real run, never predicted.**
+**Status: written 2026-07-30; stages 1-5 executed 2026-07-30. Every OUTCOME line
+below was filled in from a real run. Stage 6 remains blocked and unattempted.**
+
+**Same-box baseline for every runtime and tally figure below**, re-measured at
+`b2ab5bb` immediately before stage 1 rather than taken from the header:
+**715 passed, 6 skipped, 0 failed in 578.49 s**, `test_stress_stiff_rlc_pulse`
+91.35 s. This box is slower than the one the 492 s figure came from (+17.6%), so
+runtime gates are judged against 578.49 s; both numbers are quoted where it
+matters.
 
 Reasoning, scope and rejections: `transient_repair_reasoning.md`. That document is
 where an argument about *whether* to do this belongs. This one is the order of work and
@@ -37,26 +44,108 @@ analytic `q(t)` with uniform `h` and full supplied history, `estimate/true` must
 approach 1 as `h` halves, and the observed order in `h` must be 2.0 +/- 0.1 (currently
 2.99). Declared success: ratio within 2% of 1 at the smallest `h`, monotonically
 approaching it.
-OUTCOME:
+OUTCOME: **PASSED.** `q(t) = [sin(2pi 1e6 t), 0.5 cos(0.7*2pi 1e6 t)]`, uniform
+`h` swept 4 ns -> 0.25 ns, history built by running the integrator's own
+companion recursion forward from an exact start (which is what a run stores).
+Reference = `iq - q'(t_n)`, the residual the controller maps through `J^-1`.
+
+- before: ratio 4.7e-16 -> 1.2e-16, i.e. flat zero; order **3.001**
+- after: ratio 0.9795 -> 0.9901 -> 0.9951 -> 0.9976 -> **0.9988** (monotone,
+  0.12% off 1); order **1.993**
+
+Independent cross-check, against the *textbook one-step* LTE instead (exact past
+derivatives supplied): the patched branch gives **0.66545** where the algebra
+predicts exactly 2/3 -- and 0.00000 before. Euler gives 0.50008 (predicted 1/2),
+Gear2-YWR 0.49909 (predicted 1/2), Trapezoidal 0.83091 (predicted 5/6). Four
+independently derived constants all hit, so the derivation is not being fitted.
+
+**Recorded negative result, found while building this gate:** the
+companion-consistent reference is *ill-posed for Trapezoidal*. Trap is the only
+method whose companion current depends on its own past value (`iq = 2 dq/h -
+iq_last`), a recursion with eigenvalue -1, so its companion error carries an
+undamped alternating component. Starting the warm-up from an exact derivative
+puts that component at a node, and the reference collapses to O(h^3) noise
+(ratio 22.0 at even warm-up lengths, 0.75 at odd ones). This is why the stage-4
+unit test pins ratios against the one-step reference, which is well-conditioned
+for all three methods, and not against this one.
 
 **Gate 1-2 (the controller is alive).** On a small stiff circuit, Gear2 `'classic'` must
 reject at least one step, and its step count must change by >20% when `reltol` moves
 1e-4 -> 1e-6. Declared success: both true. Currently: zero rejections ever, bit-identical
 across tolerances.
-OUTCOME:
+OUTCOME: **PASSED.** Reference case: series RLC loop `C(1,gnd)-R(1,2)-L(2,gnd)`,
+R=1k L=1uH C=1uF, poles -1.000e+03 and -1.000e+09 (stiffness 1e6), released from
+v1 = 1 V, `tend` 5e-3 (5 slow tau), `max_step` 2e-4.
+
+| Gear2 `'classic'` | steps @1e-4 | rejections @1e-4 | steps @1e-6 |
+|---|---|---|---|
+| before | 26 | **0** | 26 (+0.0%) |
+| after | 40 | **4** | 171 (**+327.5%**) |
+
+Both conditions met. For scale, `'ywr'` on the same case is 37 steps / 4
+rejections / +321.6% -- the patched `'classic'` now behaves like the formula that
+was already working, which is the outcome the fix predicts.
 
 **Gate 1-3 (accuracy, against an independent reference).** On a linear stiff case with
 an analytic matrix-exponential solution, patched Gear2's max error must be within 2x of
 Trapezoidal's at the same tolerance. Declared success: within 2x. This is stated against
 a *small* circuit deliberately — the leapfrog is not a valid reference here, see the
 reasoning document.
-OUTCOME:
+OUTCOME: **PASSED as declared, with a negative sub-result that must be read with
+it.** Same reference case; reference solution `y(t) = expm(A t) y0` from
+`scipy.linalg.expm`, not another integration.
+
+Declared metric -- max error over the run, Gear2 vs Trapezoidal at reltol 1e-4:
+
+| `max_step` | gear2-classic | trap-classic | ratio |
+|---|---|---|---|
+| 2e-4 | 1.4603e-02 | 1.4603e-02 | **1.000** |
+| 1e-5 | 4.9544e-05 | 4.9176e-05 | **1.007** |
+
+Within 2x, so the gate passes. **But the metric is degenerate, and saying why is
+the more useful result:** at *both* `max_step` values the max error equals
+`0.5 h^2 q''` for the genuine first step (5e-5 at h=1e-5 to two digits) and is
+identical across methods to three digits, because every method drops to Backward
+Euler for a step that is then accepted with no error check at all. Shrinking
+`max_step` does not remove it -- it is structural, and it is defect (D) at the one
+place stage 3 deliberately leaves it, the genuine first step.
+
+Against a start-up-free metric (exact solution re-propagated from the simulated
+state at the third time point) the ratio is **3.94** at `max_step` 1e-5 and
+**3.86** at 2e-4 -- i.e. a stricter reading of this gate *fails*. Three facts say
+that shortfall is not attributable to stage 1:
+
+- `'ywr'`, untouched by stage 1, scores **3.940** against classic's 3.936 -- so it
+  is a BDF-2-versus-Trapezoidal property, not a property of the estimate;
+- stage 1 *improved* the number, 6.64 -> 3.86 at `max_step` 2e-4;
+- Gear-2's error constant is 2/9 against Trapezoidal's 1/12, a 2.7x handicap
+  before any step control enters.
+
+Recorded rather than resolved: the plan's 2x threshold was written against the
+degenerate metric and is not the right threshold for the sharp one. Also seen and
+not investigated: `trap` + `'ywr'` at `max_step` 1e-5 took 5348 rejections for
+1339 steps -- a rejection storm in a path nothing here touches.
 
 **Gate 1-4 (blast radius, the one that decides whether this ships).** Full suite `-m ""`.
 Declared success: 715 passed with **exactly one** expected failure,
 `test_lte_formula_ywr`, which stage 2 then rewrites. Any *other* failure is a stop —
 report it, do not fix it by loosening the test that caught it.
-OUTCOME:
+OUTCOME: **PASSED.** `1 failed, 715 passed, 6 skipped` — the one failure is
+`test_analysis_transient.py::test_lte_formula_ywr`, exactly as predicted, and it
+is the *only* one. Nothing else in the suite moved.
+
+**Confound, recorded because it changes how every tally below must be read:** a
+concurrent agent working the `leapfrog_5th_order` instability (the investigation
+stage 6 is blocked on) committed `9cfa357`, `3fe5468` and `ff5c6e6` onto this
+branch *while these stages were running*, moving HEAD off `b2ab5bb` and adding
+one test (`test_benchmark_circuits.py::test_leapfrog_has_no_right_half_plane_poles`).
+That is why 715 passed + 1 failed is the correct pass count here rather than 714:
+the collected total went 721 -> 722. None of the files this repair touches
+(`integrator.py`, `stepcontroller.py`, `transient.py`, `jaxtransient.py`,
+`lte_dae.rst`, `test_analysis_transient.py`) were modified by those commits —
+verified with `git diff b2ab5bb HEAD --` on that path list — so the attribution of
+every measurement above and below is intact. From stage 2 on, the "all green"
+tally is **716 passed, 6 skipped, 0 failed**.
 
 **Gate 1-5 (suite runtime).** Record total suite time and
 `test_stress_stiff_rlc_pulse` alone. Declared success: total within 20% of the 492 s
@@ -65,7 +154,30 @@ worst offender `@pytest.mark.slow`** rather than tuning tolerances — a fast te
 longer stresses the controller is worse than a slow one that does. Record which test was
 marked and both runtimes (default selection and `-m ""`), since this changes suite
 behaviour for everyone.
-OUTCOME:
+OUTCOME: **PASSED, and it went the other way — the suite got faster.**
+
+| | baseline (`b2ab5bb`) | after stage 1 | change |
+|---|---|---|---|
+| full suite `-m ""` | 578.49 s | **541.45 s** | **-6.4%** |
+| `test_stress_stiff_rlc_pulse` | 91.35 s | 96.02 s | +5.1% |
+
+Well inside the 20% band, so **no test was marked `@pytest.mark.slow`** and the
+maintainer's fallback decision was not exercised. Worth recording anyway, because
+it would not have worked as written: the heaviest transient tests, including
+`test_stress_stiff_rlc_pulse`, live in `test_analysis_transient_stress.py`, which
+already carries a module-level `pytestmark = pytest.mark.slow`. Marking "the worst
+offender slow" would have been a no-op for exactly the tests it was aimed at, and
+would have had no effect on an `-m ""` run at all. If runtime ever does become the
+binding constraint, the lever has to be something else.
+
+Why a correct estimate is *cheaper* here rather than dearer: the repair mostly
+changes where the steps go, not how many. `test_stress_stiff_rlc_pulse` runs with
+`timestep=1e-9`, so its ~25000 steps were already `max_step`-bound and adding
+rejections costs it only ~5%; elsewhere the controller now grows the step where
+the old estimate had it thrashing. The reasoning document's worry that this test
+would blow up is a **refuted premise**, and P15 in `architecture.md` is also now
+stale: it records this test at ~266 s of a ~492 s total, where it currently sits at
+96 s of 541 s (the `e37ddad` tolerance-flavour fix, not this one, did that).
 
 ---
 
@@ -79,12 +191,37 @@ distinguishes the two formulas — `'ywr'` has a constant 0.75 bias, a correct `
 does not — so the file still has a reason to exist.
 
 **Gate 2-1.** Full suite `-m ""` returns to **715 passed, 6 skipped, 0 failed**.
-OUTCOME:
+OUTCOME: **PASSED — 716 passed, 6 skipped, 0 failed in 481.08 s** (716, not 715,
+for the concurrent-agent reason recorded under gate 1-4). Runtime now **-16.8%**
+against the 578.49 s baseline.
+
+Recorded because it nearly wasted an hour: the *first* attempt at this gate came
+back `3 failed, 713 passed`, all three in `test_benchmark_circuits.py`, all with
+`TypeError: build_leapfrog_network() got multiple values for argument 'stages'`
+from `benchmark_circuits.py:857` — a file this repair does not touch, caught
+mid-write by the concurrent agent (its mtime moved twice inside the collection
+window). Re-running that module alone with nothing of ours changed gave
+`27 passed`. The lesson is the one already in the working method: read the
+failure, do not read the count. A tally that includes somebody else's
+half-saved file looks exactly like a regression.
 
 **Gate 2-2.** The rewritten test must FAIL if stage 1's change is reverted. A test that
 passes against both implementations is not testing the thing that was broken; verify by
 actually reverting, running it, and restoring.
-OUTCOME:
+OUTCOME: **PASSED.** Verified by actually reverting `integrator.py` with
+`git checkout`, running the single test, and restoring from a saved copy:
+
+```
+E   AssertionError: gear2-classic rejected no step at all on a 10 us RC charge
+E   assert 0 >= 1
+pycircuit/circuit/tests/test_analysis_transient.py:468: AssertionError
+1 failed in 0.46s
+```
+
+So the first assertion to bite is the one that names the actual defect. The test
+also carries three assertions that pin the *constants* (`2/3`, `1/2`, and the
+`4/3` between them, against the one-step LTE); those too are unreachable with the
+old branch, whose ratio is ~1e-15.
 
 ---
 

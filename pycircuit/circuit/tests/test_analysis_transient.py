@@ -6,9 +6,11 @@
 
 from pycircuit.circuit.elements import VSin, ISin, IS, R, L, C, SubCircuit, gnd
 from pycircuit.circuit.transient import Transient
+from pycircuit.circuit.stepcontroller import IntegralController
 from pycircuit.circuit import circuit #new
 from math import floor
 import numpy as np
+import pytest
 import unittest
 
 from pycircuit.circuit import Circuit, defaultepar
@@ -337,37 +339,147 @@ def test_transient_pi_controller():
     assert abs(res.sweep_values[-1] - 40e-6) < 1e-6, "PIController did not reach tend"
 
 
-def test_lte_formula_ywr():
-    """Yao-Wang-Roychowdhury DAE LTE (ICECS 2014) as a step-control option.
+## ---------------------------------------------------------------------------
+## LTE-estimate helpers, shared by the tests below.
+##
+## `compute_lte` is required to estimate the error in the *companion current*,
+## `iq - q'(t_n)` -- the residual the step controller then maps to solution
+## units with `J^-1`.  These helpers evaluate that at unit level from an
+## analytic q(t), with no circuit, which is the cheap check that was missing
+## when Gear2's 'classic' branch estimated the wrong derivative for years.
+## ---------------------------------------------------------------------------
 
-    For Backward Euler the YWR and classic formulas coincide.  For Gear2 the
-    classic q'' divided-difference estimate under-resolves, while the YWR
-    g-difference formula controls the true truncation error and is more
-    accurate on this RC charging transient (tau = 10 us).
+_LTE_W = 2 * np.pi * 1e6
+
+
+def _lte_q(t):
+    """Analytic charge vector, two independent smooth components."""
+    return np.array([np.sin(_LTE_W * t), 0.5 * np.cos(0.7 * _LTE_W * t)])
+
+
+def _lte_dq(t):
+    """Exact dq/dt of _lte_q."""
+    return np.array([_LTE_W * np.cos(_LTE_W * t),
+                     -0.35 * _LTE_W * np.sin(0.7 * _LTE_W * t)])
+
+
+def _lte_vs_onestep_true(integ, h, t_n=3.0e-7):
+    """(estimate, true) for one uniform step, against the one-step LTE.
+
+    "One-step" is the textbook local truncation error: exact charge history
+    *and* exact past derivatives, so the value measured is the error this single
+    step commits and nothing accumulated.  Each formula then has an exactly
+    derivable ratio to it -- 1/2 for Backward Euler, 5/6 for Trapezoidal, 2/3
+    for Gear2 'classic', 1/2 for Gear2 'ywr' -- which makes these numbers pins
+    rather than fitted constants.
+
+    Deliberately *not* the alternative reference, in which the companion
+    history is built by running the integrator's own recursion forward: that one
+    is ill-posed for Trapezoidal, whose companion current depends on its own
+    past value through a recursion with eigenvalue -1, so its error carries an
+    undamped alternating component whose size depends on how the history was
+    seeded.  See doc/transient_repair_plan.md, gate 1-1.
+    """
+    from pycircuit.circuit.toolkit import numeric
+    nhist = max(2, integ.get_required_history())
+    ts = [t_n - k * h for k in range(nhist + 2)]
+    qs = [_lte_q(t) for t in ts]
+    iq_hist = [_lte_dq(ts[1 + j]) for j in range(nhist)]
+    q_last = [qs[1 + j] for j in range(nhist)]
+    ident = np.eye(len(qs[0]))
+    iq, _geq = integ.compute_derivatives(qs[0], ident, h, q_last, iq_hist, h,
+                                         False, numeric)
+    est, _p = integ.compute_lte(qs[0], h, q_last, iq_hist, h, False, numeric)
+    return np.asarray(est, dtype=float), np.asarray(iq, dtype=float) - _lte_dq(t_n)
+
+
+def _lte_ratio(integ, h=2.5e-10):
+    """estimate/true at the largest-magnitude component."""
+    est, true = _lte_vs_onestep_true(integ, h)
+    i = int(np.argmax(np.abs(true)))
+    return est[i] / true[i]
+
+
+class _CountingController(IntegralController):
+    """IntegralController that records rejections and unchecked accepts."""
+
+    def __init__(self):
+        self.rejections = 0
+        self.unchecked = 0
+
+    def evaluate_step(self, *args, **kwargs):
+        ## The flag is named `no_history` from stage 3 of the transient repair
+        ## on; before that it was `is_first_step`, re-armed at every breakpoint.
+        if kwargs.get('no_history', kwargs.get('is_first_step', False)):
+            self.unchecked += 1
+        accept, h_next = super().evaluate_step(*args, **kwargs)
+        if not accept:
+            self.rejections += 1
+        return accept, h_next
+
+
+def test_lte_formula_ywr():
+    """The two LTE formulas as step-control options, and what separates them.
+
+    This test used to assert, for Gear2, that ``'ywr'`` takes *more* steps than
+    ``'classic'`` and reaches a smaller error.  Both held -- but only because
+    ``'classic'`` estimated q'' scaled by h**3 where BDF-2 needs q''' scaled by
+    h**2, an estimate ~1e-15 of the true truncation error.  The controller then
+    never rejected a step and took the fewest steps physically possible, so the
+    old assertions were satisfied *by* the defect and had to fail once it was
+    repaired.  Rewritten in stage 2 of doc/transient_repair_plan.md.
+
+    What is asserted instead is true of a correct implementation and false of
+    the old one: both formulas actually control the step (they reject steps and
+    they respond to ``reltol``), both track the analytic solution, and the one
+    thing that still separates them is a constant -- the YWR GEAR2 residual
+    estimates (1/4) h^2 q''' against a true (1/3) h^2 q''', so it reports 3/4 of
+    the truncation error where the corrected classic form is asymptotically
+    exact.  That 4/3 ratio between the two formulas is the assertion that keeps
+    this file distinguishing them.
     """
     from pycircuit.circuit.elements import VS
     from pycircuit.circuit.integrator import EulerIntegrator, Gear2Integrator
 
-    def run(integrator_cls, lte):
+    def run(integrator_cls, lte, reltol=1e-4):
         c = SubCircuit()
         c['VS'] = VS(1, gnd, v=10)
         c['R1'] = R(1, 2, r=10)
         c['C1'] = C(2, gnd, c=1e-6)
-        tran = Transient(c, integrator=integrator_cls(lte), uic=True)
+        tran = Transient(c, integrator=integrator_cls(lte), uic=True,
+                         reltol=reltol)
+        tran.step_controller = _CountingController()
         res = tran.solve(tend=50e-6, timestep=5e-6, coupled_lte=False)
         t = np.asarray(res.sweep_values, dtype=float)
         v_analytic = 10 * (1 - np.exp(-t[-1] / 10e-6))
-        return len(t), abs(res.v(2, gnd)[-1] - v_analytic)
+        return (len(t), abs(res.v(2, gnd)[-1] - v_analytic),
+                tran.step_controller.rejections)
 
     # Backward Euler: the two formulas are mathematically identical.
-    n_ec, e_ec = run(EulerIntegrator, 'classic')
-    n_ey, e_ey = run(EulerIntegrator, 'ywr')
+    n_ec, e_ec, _r_ec = run(EulerIntegrator, 'classic')
+    n_ey, e_ey, _r_ey = run(EulerIntegrator, 'ywr')
     assert n_ec == n_ey
     assert abs(e_ec - e_ey) < 1e-9
 
-    # Gear2: YWR controls the error properly -> more (appropriate) steps and a
-    # smaller error than the classic estimate, which under-resolves.
-    n_gc, e_gc = run(Gear2Integrator, 'classic')
-    n_gy, e_gy = run(Gear2Integrator, 'ywr')
-    assert n_gy > n_gc
-    assert e_gy < e_gc
+    # Gear2 under *both* formulas: the controller is alive and controlling.
+    for lte in ('classic', 'ywr'):
+        n4, e4, rej4 = run(Gear2Integrator, lte, reltol=1e-4)
+        n6, _e6, _rej6 = run(Gear2Integrator, lte, reltol=1e-6)
+        assert rej4 >= 1, \
+            "gear2-%s rejected no step at all on a 10 us RC charge" % lte
+        assert n6 > 1.2 * n4, \
+            "gear2-%s barely responds to reltol: %d -> %d steps" % (lte, n4, n6)
+        assert e4 < 2e-2, \
+            "gear2-%s off the analytic RC solution by %.3g V of 10 V" % (lte, e4)
+
+    # What still separates the formulas: a constant 4/3, from 2/3 against 1/2
+    # relative to the one-step LTE.  Not a step count -- that was the mistake
+    # this test used to make.
+    r_gc = _lte_ratio(Gear2Integrator('classic'))
+    r_gy = _lte_ratio(Gear2Integrator('ywr'))
+    assert abs(r_gc - 2.0 / 3.0) < 0.02 * (2.0 / 3.0), \
+        "gear2-classic estimates %.4g of the one-step LTE, expected 2/3" % r_gc
+    assert abs(r_gy - 0.5) < 0.02 * 0.5, \
+        "gear2-ywr estimates %.4g of the one-step LTE, expected 1/2" % r_gy
+    assert abs(r_gc / r_gy - 4.0 / 3.0) < 0.03, \
+        "classic/ywr = %.4g, expected 4/3" % (r_gc / r_gy)
