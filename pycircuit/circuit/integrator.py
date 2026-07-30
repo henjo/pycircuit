@@ -132,7 +132,18 @@ class TrapezoidalIntegrator(Integrator):
 class Gear2Integrator(Integrator):
     """Gear-2 / BDF-2 (2nd order) Variable Step Size Integration Method"""
 
-    def __init__(self, lte_formula='classic'):
+    def __init__(self, lte_formula='ywr'):
+        ## Defaults to 'ywr' (Yao-Wang-Roychowdhury, ICECS 2014) rather than
+        ## 'classic', belt and braces: 'classic' is now mathematically correct
+        ## (see compute_lte below) but 'ywr' has the longer track record here.
+        ## The price is that the YWR GEAR2 residual estimates (1/4) h^2 q'''
+        ## against a true (1/3) h^2 q''', so the default reports 3/4 of the
+        ## truncation error at every step where a corrected 'classic' is
+        ## asymptotically exact -- mild optimism about the solver's own error,
+        ## and TRTOL = 7.0 already absorbs more than that factor.
+        ## Euler and Trapezoidal keep 'classic': for Euler the two formulas are
+        ## identical, and for Trapezoidal they agree to the same 5/6 of the
+        ## one-step LTE.
         self.lte_formula = lte_formula
 
     def get_required_history(self) -> int:

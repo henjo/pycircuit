@@ -55,6 +55,11 @@ still defaults to it`, which is why it was hit at all; and the docs frame the im
 disabled. A known defect left as the default is a worse failure mode than an unknown
 one, because the documentation reads as though someone decided it was acceptable.
 
+> **Fixed 2026-07-30.** Stage 1 replaced the estimate; stage 2b moved
+> `Gear2Integrator`'s default to `'ywr'`, so the sentence above about the default
+> no longer describes the tree. Stage 5 corrected the `lte_dae.rst` claim.
+> Measurements: `transient_repair_plan.md`.
+
 **(B) A test asserts the bug.** `test_analysis_transient.py::test_lte_formula_ywr`
 asserts `n_gy > n_gc` — that `'ywr'` takes more steps than `'classic'`. That is true
 only because `'classic'` takes the fewest steps physically possible. With a correct

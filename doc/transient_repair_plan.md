@@ -241,11 +241,32 @@ not be attributed to either. `Gear2Integrator.__init__`, `integrator.py:135`.
 reference case for all four combinations: `'classic'` and `'ywr'`, before and after this
 change. Declared success: post-change default behaviour is *identical* to explicitly
 passing `lte_formula='ywr'`, and the corrected `'classic'` remains reachable and correct.
-OUTCOME:
+OUTCOME: **PASSED.** Stage 1-3's reference case, reltol 1e-4. `err` is the
+start-up-free error against `expm`.
+
+| | steps | rejections | err |
+|---|---|---|---|
+| explicit `'classic'`, before 2b | 40 | 4 | 1.6115e-03 |
+| explicit `'classic'`, after 2b | 40 | 4 | 1.6115e-03 |
+| explicit `'ywr'`, before 2b | 37 | 4 | 2.0018e-03 |
+| explicit `'ywr'`, after 2b | 37 | 4 | 2.0018e-03 |
+| `Gear2Integrator()`, before 2b | 40 | 4 | 1.6115e-03 |
+| `Gear2Integrator()`, after 2b | **37** | 4 | **2.0018e-03** |
+
+Both explicit forms are bit-identical across the change, so the *only* thing that
+moved is which estimate the default selects — the attribution stage 2b was split
+out to protect. The default is now bit-identical to explicit `'ywr'`, and
+corrected `'classic'` remains reachable and, on this case, slightly *more*
+accurate for slightly more steps (1.61e-03 in 40 against 2.00e-03 in 37) — which
+is the accepted cost of the decision, visible in the measurement.
 
 **Gate 2b-2.** Full suite `-m ""` at 715 passed, 6 skipped, 0 failed. Anything that moves
 here is a test that was implicitly depending on the default, which is worth naming.
-OUTCOME:
+OUTCOME: **PASSED — 716 passed, 6 skipped, 0 failed in 450.78 s** (-22.1% against
+the 578.49 s baseline). **Nothing moved**, so there is nothing to name: no test in
+the suite was depending on `Gear2Integrator()`'s default LTE formula. Which is
+itself worth recording, since it means the suite would not have caught the switch
+either way.
 
 ---
 
