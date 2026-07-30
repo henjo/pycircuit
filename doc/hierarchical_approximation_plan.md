@@ -28,6 +28,18 @@ doubly-terminated ladder) and `-100 dB/decade` in the stopband, which is
 passband at all, and would have been a convincing-looking fixture for
 something that was not a fifth-order filter.
 
+> **CORRECTED, 2026-07-30. "and is correct" was false, and this paragraph is why it went
+> unnoticed for so long.** The fixture had two right-half-plane poles
+> (s = +1.4491e+05, +5.6716e+04) from a coupling-sign error, and it produced *every*
+> number quoted above while unstable. The passband and stopband checks are not sensitive
+> to it: the sign error rotates the pole set by roughly 90 degrees, which leaves the DC
+> gain and the asymptotic slope alone. **A magnitude response is not a stability test.**
+> Note that the paragraph congratulates itself on verifying "as a filter, not merely as a
+> matrix" using exactly the two checks that could not see the defect — and the shapes it
+> pins, 127 unknowns and 536 nonzeros, are unchanged by the fix, so they were never
+> discriminating either. Fixed and now guarded by a pole-sign test; see
+> `doc/leapfrog_redo_plan.md` Gate T0-5.
+
 **Flat diagrams do not reach it.** Fully symbolic (121 symbols, `s` symbolic),
 `ddd_of_matrix` on the leapfrog was killed at **15 min 16 s and 2.7 GB**,
 unfinished.

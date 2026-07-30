@@ -38,6 +38,29 @@
 > | low `κ` means a ranking will converge in few terms | §19 inference | **REFUTED, measured** — `κ` is conditioning, term count is *concentration*; de-cancellation dilutes 2.77e6 terms into 1.1e21 (§20) |
 > | de-cancellation is the route to a readable expression | §13, §18, §19 | **REFUTED** (§20). The compact diagram with group ranking remains the best route: 870 terms at 3.7% |
 >
+> ### SUPERSEDED FIXTURE — every leapfrog row above and below
+>
+> **`leapfrog_5th_order` was an UNSTABLE circuit when all of these were measured, and it
+> has since been replaced.** It had two right-half-plane poles, **s = +1.4491e+05 and
+> +5.6716e+04**: the backward coupling resistors entered the same summing node as the
+> forward ones, so each stage integrated the *sum* of its neighbours where a ladder
+> simulation integrates their *difference* — positive feedback in every two-integrator
+> loop. Confirmed on four independent routes; `doc/leapfrog_redo_plan.md` Gate T0-1.
+>
+> The `κ` and ranking numbers are **arithmetically correct**: they are properties of a
+> matrix and its determinant, and `H(s)` on the jw axis is perfectly well defined for a
+> divergent circuit. What is void is the reading of them as statements about a filter a
+> designer could build. Affected: the 181-group hierarchical result and its
+> "uninterpretable" verdict, the leapfrog `κ` measurements, the `N_eff` concentration
+> profile, and every leapfrog row in the tables above.
+>
+> The fix landed in `pycircuit/circuit/benchmark_circuits.py` on 2026-07-30 and, by the
+> maintainer's Stage T1 decision, **replaced the unstable variant outright with no flag** —
+> so these rows are **not reproducible at this HEAD**, and the old poles are their only
+> remaining explanation. Regeneration is Stage T2/T3 of `doc/leapfrog_redo_plan.md` and
+> **has not run.** Do not compare a new leapfrog number against a row here as though both
+> came from the same circuit.
+>
 > ### The three things worth carrying away
 >
 > 1. **`κ` is cheap and worth reporting**, and it measures the *formulation* at

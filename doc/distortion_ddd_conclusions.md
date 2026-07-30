@@ -8,6 +8,33 @@ Written before any code, as the reasoning behind
 `doc/distortion_ddd_plan.md`. Everything numeric here was measured, not
 argued; the spikes are reproducible from the snippets quoted.
 
+> ## SUPERSEDED, AND NOT REPRODUCIBLE AT THIS HEAD — leapfrog numbers only
+>
+> **Every number in this document measured on `leapfrog_5th_order` was measured on an
+> UNSTABLE circuit, and the fixture has since been replaced.** That is sections 10.1-10.3
+> in particular, including the corrected amplitude/`v_turn` table and the `kk` sweep table.
+>
+> The fixture had **two right-half-plane poles, s = +1.4491e+05 and +5.6716e+04**: the
+> backward coupling resistors entered the same summing node as the forward ones, so every
+> stage integrated the *sum* of its neighbours where a ladder simulation integrates their
+> *difference*, making each two-integrator loop positive feedback. Confirmed on four
+> independent routes; see `doc/leapfrog_redo_plan.md`, Gate T0-1.
+>
+> **What this does and does not invalidate.** `H(s)` on the jw axis is well defined for a
+> divergent circuit — the analysis just solves a linear system at `s = jw` — so these
+> numbers are *arithmetically correct*. What is void is the physical claim: they describe a
+> circuit that has no steady state, so any statement of the form "a designer could read
+> this and understand the filter" is about a filter that does not exist.
+>
+> The topology fix landed in `pycircuit/circuit/benchmark_circuits.py` on 2026-07-30
+> (`_build_leapfrog`: the four `rb` resistors moved to the non-inverting input, matched
+> `cp0..cp3` capacitors and `rp0` added, `sg0..sg3` removed). By the maintainer's Stage T1
+> decision the unstable variant was **replaced outright with no flag**, so the tables below
+> cannot be regenerated at this HEAD — the old poles above are their only explanation.
+> Regenerating them is Stage T2/T3 of `doc/leapfrog_redo_plan.md` and **has not run.**
+> Do not compare any new leapfrog number against a table here as though both came from the
+> same circuit. They did not.
+
 ## 1. Where this came from
 
 `doc/distortion_mimo_plan.md` §8.3 records an open question. Stage E measured

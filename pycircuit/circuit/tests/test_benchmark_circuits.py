@@ -185,6 +185,60 @@ def test_leapfrog_is_a_fifth_order_lowpass():
     assert -110 < decade < -90, 'expected ~-100 dB/decade, got %.1f' % decade
 
 
+def test_leapfrog_has_no_right_half_plane_poles():
+    """The fixture must be a circuit that could actually operate.
+
+    This test exists because the one above is **not sensitive to it**.  For two
+    versions the fixture had two right-half-plane poles, at s = +1.4491e+05 and
+    +5.6716e+04, and it passed the passband and stopband checks the whole time:
+    the coupling-sign error rotated the pole set by 90 degrees, which leaves
+    both the DC gain and the asymptotic slope alone, and the passband points
+    sampled at 10 Hz and 1 kHz sit two decades below where the difference shows.
+    A magnitude response is simply not a stability test -- |H(jw)| is perfectly
+    well defined for a divergent circuit -- so the poles have to be looked at
+    directly.
+
+    The poles are the finite generalized eigenvalues of the pencil
+    ``det(G + s*C) = 0``.  ``C`` is singular (rank 125 of 127, since only 125
+    unknowns have a capacitive path), which is why the infinite eigenvalues are
+    discarded rather than the problem being reduced to a standard one.
+    """
+    import numpy as np
+    import scipy.linalg
+    import sympy
+    from pycircuit.circuit import benchmark_circuits as bc
+
+    system = bc.leapfrog_5th_order()
+    n = system.dim
+    s = system.s
+    G = np.zeros((n, n))
+    Cm = np.zeros((n, n))
+    for i in range(n):
+        for j in range(n):
+            entry = system.A[i, j]
+            if entry == 0:
+                continue
+            poly = sympy.Poly(sympy.expand(entry), s)
+            assert poly.degree() <= 1, 'the fixture must stay affine in s'
+            coeffs = poly.all_coeffs()
+            if poly.degree() == 1:
+                Cm[i, j], G[i, j] = float(coeffs[0]), float(coeffs[1])
+            else:
+                G[i, j] = float(coeffs[0])
+
+    assert np.linalg.matrix_rank(Cm) == 125
+    poles = scipy.linalg.eig(G, -Cm, right=False)
+    poles = poles[np.isfinite(poles)]
+    assert len(poles) == 125, 'expected 125 finite poles, got %d' % len(poles)
+    worst = poles.real.max()
+    assert worst < 0, ('%d poles in the right half plane, worst Re = %+.5e'
+                       % ((poles.real > 0).sum(), worst))
+    ## Not merely negative: comfortably so, in units of the 1/RC = 1e5 rad/s
+    ## the filter is built around.  A pole at Re = -1 would pass "< 0" and
+    ## still be a circuit that rings for a second.
+    assert worst < -1e3, 'worst pole only Re = %+.5e' % worst
+
+
 def test_leapfrog_reuses_the_calibration_amplifier_unchanged():
     """Five µA741s, and the single-amplifier fixture must be untouched.
 

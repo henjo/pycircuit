@@ -603,14 +603,48 @@ def leapfrog_5th_order(symbolic_devices=(), miller=True):
     test than a cascade: the matrix does not decompose into independent blocks
     and every stage's response depends on its neighbours in both directions.
 
-    Five inverting integrators simulate the ``L1 C2 L3 C4 L5`` prototype.  Each
-    stage's summing junction takes a resistor from the previous stage, a
-    resistor back from the *next* stage, and an integrating capacitor from its
-    own output.
+    Five integrators simulate the ``L1 C2 L3 C4 L5`` prototype.  The ladder's
+    equations are
+
+    .. code-block:: text
+
+        s*T*x0 = vin - x1 - x0        (L1 with the source resistance)
+        s*T*xk = x(k-1) - x(k+1)      (k = 1, 2, 3)
+        s*T*x4 = x3 - x4              (L5 with the load resistance)
+
+    and the sign pattern in them is not decoration: **every stage integrates a
+    difference, one neighbour with a plus and the other with a minus.**  A stage
+    that integrates the *sum* of its two neighbours makes each two-integrator
+    loop positive feedback -- loop gain ``+1/(s*T)**2``, so ``1 - L = 0`` at
+    ``s = +1/T``, a right-half-plane pole.  Poles are invariant under relabelling
+    the stage variables, so no choice of sign convention can repair it; the
+    inversion has to be physically present in the network.  It was not, in the
+    first two versions of this fixture, which had two RHP poles at
+    ``s = +1.4491e+05`` and ``+5.6716e+04`` -- see ``doc/leapfrog_redo_plan.md``.
+
+    So each of the first four stages is a **difference integrator**: the forward
+    resistor from the previous stage enters the inverting input, which carries
+    the integrating capacitor, while the backward resistor from the *next* stage
+    enters the non-inverting input through a matched ``R``-``C`` to ground.  With
+    an ideal amplifier the non-inverting network's pole cancels exactly and the
+    stage realises ``s*T*y = y_next - y_prev``, which maps onto the ladder with
+    ``x_k = (-1)**(k+1) * y_k``.  The last stage has no backward coupling, so it
+    stays a plain inverting integrator with its non-inverting input grounded.
 
     Each amplifier is the full µA741 of :func:`ua741` -- 24 transistors -- so
     this is around 120 unknowns, an order of magnitude beyond the single
     amplifier and well beyond the cascade fixtures.
+
+    **Known non-ideality, and it is not a sign error.**  All five time constants
+    are the same ``10 kOhm``/``1 nF``, so the prototype is the all-equal-element
+    ladder rather than a designed approximation, and that ladder already carries
+    a ``Q = 5.9`` pole pair at 26.6 kHz.  The µA741 model's gain has fallen to
+    about 31 by 16 kHz, and the excess phase that leaves in each integrator
+    raises that pair to ``Q = 17``, which puts a ``+8.9 dB`` bump at 25.6 kHz on
+    an otherwise correct response.  The poles stay in the left half plane; the
+    same enhancement appears in *any* correct-sign realisation at this cutoff,
+    and removing it would mean either a faster amplifier -- and :func:`ua741` is
+    the calibration fixture, which must not move -- or a lower cutoff.
 
     Args:
         symbolic_devices: Device names whose ``gm`` stays symbolic.  Names are
@@ -665,8 +699,20 @@ def _build_leapfrog(symbolic_devices, miller):
     for k in range(STAGES):
         _stamp_ua741_devices(cir, amp[k], bjt_for(k), miller,
                              pfx='s%d_' % k)
-        ## Non-inverting input grounded: these are inverting integrators.
-        cir['sg%d' % k] = R(amp[k]['inp'], gnd, r=1.0)
+        if k == STAGES - 1:
+            ## The last stage has no backward coupling, so nothing needs to
+            ## enter its non-inverting input: it is a plain inverting
+            ## integrator and that input is grounded.
+            cir['sg%d' % k] = R(amp[k]['inp'], gnd, r=1.0)
+        else:
+            ## Every other stage is a DIFFERENCE integrator.  ``cp`` is the
+            ## capacitor that matches ``ci`` below; with an ideal amplifier the
+            ## pole it forms with the backward resistor cancels exactly, and
+            ## the stage integrates the difference of its two neighbours.  That
+            ## difference is the whole point -- see the docstring: integrating
+            ## the *sum* makes each two-integrator loop positive feedback and
+            ## puts poles in the right half plane.
+            cir['cp%d' % k] = C(amp[k]['inp'], gnd, c=1e-9)
 
     ## Integrating capacitor around each amplifier.
     for k in range(STAGES):
@@ -677,20 +723,30 @@ def _build_leapfrog(symbolic_devices, miller):
     ## resistances.  Without them the chain integrates at DC, the passband
     ## never flattens, and the result is not a filter at all -- which is
     ## exactly what the first version of this fixture did.
+    ##
+    ## ``rd0`` needs its mirror image ``rp0`` on the non-inverting side, for
+    ## the same reason ``cp0`` mirrors ``ci0``: only with both does stage 0
+    ## realise ``(s*T + 1)*y0 = y1 - vin``, the ladder's source-terminated
+    ## first equation.  Omitting ``rp0`` is not a small error -- it drops the
+    ## DC gain from 1/2 to 1/3 and puts a real pole pair back at s = +334.
     cir['rd0'] = R(amp[0]['out'], amp[0]['inn'], r=10e3)
+    cir['rp0'] = R(amp[0]['inp'], gnd, r=10e3)
     cir['rd%d' % (STAGES - 1)] = R(amp[STAGES-1]['out'],
                                    amp[STAGES-1]['inn'], r=10e3)
 
-    ## Forward path: input, then each stage into the next.
+    ## Forward path: input, then each stage into the next.  Into the INVERTING
+    ## input, the one carrying the integrating capacitor.
     cir['rin'] = R(node['in'], amp[0]['inn'], r=10e3)
     for k in range(1, STAGES):
         cir['rf%d' % k] = R(amp[k-1]['out'], amp[k]['inn'], r=10e3)
 
     ## THE LEAPFROG FEEDBACK: each stage but the last is also driven from the
     ## stage *after* it.  Without these the circuit is an integrator chain,
-    ## not a ladder simulation.
+    ## not a ladder simulation.  These enter the NON-INVERTING input, and that
+    ## is where the ladder's sign alternation comes from: forward and backward
+    ## couplings must reach a stage with opposite signs.
     for k in range(STAGES - 1):
-        cir['rb%d' % k] = R(amp[k+1]['out'], amp[k]['inn'], r=10e3)
+        cir['rb%d' % k] = R(amp[k+1]['out'], amp[k]['inp'], r=10e3)
 
     return system_from_circuit(cir, 'leapfrog_5th_order', params,
                                out_index=names.index('s%d_out'
