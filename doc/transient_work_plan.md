@@ -659,20 +659,102 @@ tolerance are alternative formulations of the same criterion**, and stage 4 must
 - **(C) Both, selected by `lte_formula`,** with each given the tolerance flavour it
   requires. Honest, and it is roughly where the code already is — but it means maintaining
   two criteria and two tolerance sets, which is what stage 9 is trying to reduce.
+- **(D) YWR as the criterion, with the charge check as a guard.** Added 2026-07-30 at the
+  maintainer's suggestion, and it is now the recommendation — see below. Not the same as
+  (C): there is one criterion, not a choice of two, and the charge quantity is used to
+  bound how far the step may collapse rather than to decide accuracy.
 
-~~**Recommendation: (B).**~~ **RECOMMENDATION CHANGED TO (A) on 2026-07-30, after reading
-the YWR paper.** The original recommendation of (B) was made without it and should not be
-relied on. What changed:
+### Why (D), and why the two criteria fail in *complementary* regimes
+
+This is the part that makes (D) principled rather than belt-and-braces.
+
+**What the conversion factor physically is.** YWR's Table I inverts
+`(q̇_x + β₀h·ḟ_x) = C + β₀h·G`. As `h → 0` that tends to **`C`, the capacitance matrix**, so
+the mapping is precisely "charge error → voltage error, via the local capacitance". SPICE's
+charge criterion omits it, which amounts to assuming the charge-to-voltage conversion is
+uniform across nodes. It is not: the same charge error is a far larger voltage error on a
+1 fF node than on a 1 nF node. That mis-weighting is a plausible reading of the "problems in
+certain cases" YWR allude to without enumerating.
+
+**Where YWR fails instead.** `C + β₀h·G` is near-singular exactly when some direction has
+neither appreciable capacitance nor conductance — a floating or weakly-grounded node. There
+the conversion is unbounded, the mapped LTE is dominated by the null direction, and since
+`h` does not appear in that direction's error, **shrinking the step cannot reduce it**. The
+failure mode is step-size collapse chasing an error the controller cannot fix — a livelock,
+not a wrong answer.
+
+So: the charge criterion is wrong when node capacitances are badly spread; the voltage
+criterion is wrong when the circuit is near-singular. Neither dominates, and each is
+diagnostic of the other's failure.
+
+**The mechanism, and it needs no condition estimator.** Both quantities are already in hand:
+`Eg` is computed before the solve and `lte = J⁻¹Eg` after it. Their ratio
+`‖lte‖/‖Eg‖` is a *lower bound on* `‖J⁻¹‖` **along the direction that actually matters** —
+better for this purpose than a `gecon` estimate, which gives a worst case over all
+directions. Measured for reference: `dgecon` off existing factors is ~38% of a
+factor-plus-solve at n=139, i.e. affordable but unnecessary. The ratio is free.
+
+**Proposed rule:**
+
+    err_v = max|lte| / etol_v      # YWR, etol_v = TRTOL*(reltol*max|x| + vabstol/iabstol)
+    err_q = max|Eg|  / etol_q      # charge, etol_q = TRTOL*(reltol*max|q| + chgtol)
+
+    accept if err_v <= 1                                  # the normal path, unchanged
+    if err_v > 1 and err_q <= 1:                          # the guard
+        accept, and EMIT a diagnostic naming the amplification ratio,
+        the worst row, and its node name via cir.get_node_name
+
+The guard is a floor on step collapse, not a second accuracy test — it fires only when the
+charge error says the step is fine and the mapping disagrees, which is the signature of the
+near-singular case and of nothing else. **It must be logged, not silent**, or it becomes
+the same failure as the `except` at `stepcontroller.py:59-62`: a mode switch nobody can see.
+Routing it through stage 6's statistics object is the natural home, and a near-singular `J`
+during a transient is a reportable circuit condition in its own right.
+
+**This partly rehabilitates 0.3a(iii):** `chgtol` comes back, because `etol_q` needs an
+absolute charge floor. What does *not* come back is the charge criterion as the primary
+accuracy test. So the maintainer's original instinct survives in the guard.
+
+**The cost, stated plainly.** Two tolerance sets to document and tune, which is what stage 9
+is trying to reduce, and a second way to be wrong: if `etol_q` is set too loose the guard
+becomes an escape hatch that accepts genuinely bad steps. **Gate this** — the guard's firing
+count must appear in the statistics, and a run where it fires often is a run whose result is
+suspect, not a run that was rescued.
+
+**What to measure before committing to (D)** — it is a design, not yet a result:
+1. Does the near-singular case actually arise in pycircuit's circuits? Stage 6's floating-node
+   work will produce the test cases; if the guard never fires on any real circuit, (D)
+   collapses to (A) and the charge path should go after all.
+2. Does the amplification ratio actually separate the two regimes cleanly, or is there a
+   continuum where neither criterion is trustworthy? That is the assumption (D) rests on.
+
+~~**Recommendation: (B).**~~ ~~**(A).**~~ **RECOMMENDATION IS NOW (D)** — YWR as the
+criterion, with the charge check as a step-collapse guard. This item has moved twice in one
+day, both times on evidence rather than reflection: (B) → (A) on reading the YWR paper, then
+(A) → (D) on the maintainer's observation that the two checks could both be kept to cover
+the near-singular case. **(D) is a superset of (A)**, so nothing about the (A) argument
+below is withdrawn; the guard is added on top of it. The reasoning for preferring the
+solution-domain criterion follows, and the guard is specified above under "Why (D)".
 
 The `'ywr'` formulas pycircuit implements come from Yao, Ye, Wang, Wang & Roychowdhury,
 *"An Efficient Time Step Control Method in Transient Simulation for DAE System"*, ICECS
 2014 (`/home/andreas/pycircuit_agy/papers/2014-12--ICECS-Yao-Wang-Roychowdhury-LTE-for-DAEs.pdf`;
-read from 200-dpi renders). **That paper exists specifically to argue against option (B).**
-Its abstract: existing methods are based on the LTE for ODEs, "**which is an approximation**
-for the circuit simulator solving a system of nonlinear differential algebraic equations
-(DAEs)". §II-C makes it explicit — the ODE form `dx/dt + f(x) + b = 0` "is without the
-`q()` term. Therefore, the traditional time step control methods are just an approximation
-for the circuit simulator and there are problems in certain cases."
+read from 200-dpi renders).
+
+**Precisely what the paper argues, because an earlier draft of this section overstated it.**
+It does **not** mention `chgtol`, and it is not an argument against charge tolerances as
+such. Its target is the *estimator*: existing methods derive the LTE for an ODE
+`dx/dt + f(x) + b = 0`, which (§II-C) "is without the `q()` term", so "the traditional time
+step control methods are just an approximation for the circuit simulator and there are
+problems in certain cases". The contribution is the missing conversion — a charge-domain
+divided difference is **not** the LTE, it is the LTE pre-multiplied by `(q̇_x + β₀h·ḟ_x)`.
+
+So SPICE's scheme is **internally consistent** — a charge error against a charge tolerance
+is dimensionally fine — and YWR's claim is that it is an *approximation* of the DAE LTE,
+not that it is incoherent. The argument lands on the tolerance flavour only by implication,
+because a charge tolerance is the natural companion of the estimator being criticised. That
+is a weaker claim than "the paper is against `chgtol`" and it is the one the evidence
+supports.
 
 And the paper's LTE is unambiguously **solution-domain**: eq (4) defines
 `ε_T(t_n) = x_n − x*_n`, the error in the vector of **node voltages and branch currents** —
@@ -690,23 +772,26 @@ cancels and leaves `Eg = −(1/6)(second difference)` with the controller applyi
 That is `integrator.py:123` verbatim. The same check passes for Euler/GEAR1. The
 implementation is sound; the question is only which criterion it should be judged against.
 
-**Therefore: (A).** Keep the `J^{-1}` mapping, keep `reltol`/`vabstol`/`iabstol` as the LTE
-tolerances, delete the charge-domain estimator on both backends. 0.2b already established
-that the mapping costs 1-3%, so the only argument that ever favoured the charge path — cost
-— is measured and does not hold.
+**Therefore the criterion is YWR's.** Keep the `J^{-1}` mapping and keep
+`reltol`/`vabstol`/`iabstol` as the LTE tolerances. 0.2b already established that the
+mapping costs 1-3%, so the only argument that ever favoured the charge path as the *primary*
+criterion — cost — is measured and does not hold. Under (D) the charge quantity is retained,
+but as the guard described above, not as the accuracy test.
 
 **This does not discard 0.3a(iii); it splits it.** Option (iii) bundles two separable
-things, and only the second is in dispute:
+things, and under (D) both survive in modified form:
 
 1. **Separate Newton's x-tolerance from the LTE tolerance.** Uncontroversial, independent
    of this argument, and the actual defect 0.3a was raised to fix — Newton's node
    convergence was loosened 10^6 unmeasured and `DC.vabstol` still disagrees with
    `Transient.vabstol` by the same factor. **Keep this, in stage 1, exactly as decided.**
-2. **Make the LTE criterion charge-referenced and add `chgtol`.** This is what YWR argues
-   is an approximation. **Drop this**, and with it `chgtol`.
+2. **Make the LTE criterion charge-referenced and add `chgtol`.** The charge-referenced
+   *criterion* is what YWR argues is an approximation, so it does not become the accuracy
+   test — but **`chgtol` is still needed**, because (D)'s guard requires an absolute charge
+   floor for `etol_q`. So the parameter lands as decided; what changes is its role.
 
-So stage 1 is unaffected by the change and stage 4 loses a work item rather than gaining
-one.
+So stage 1 is unaffected by the change, and stage 4 gains the guard and its diagnostic
+rather than a second accuracy criterion.
 
 **A further argument for deciding this explicitly, found while writing the above.**
 `stepcontroller.py:59-62` is
