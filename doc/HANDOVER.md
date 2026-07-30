@@ -19,9 +19,10 @@ amplifiers, then approximation to expressions a designer can read. Numerics may 
 terms; they must not replace them. Chasing a transient cross-check for that work uncovered
 that the benchmark fixture was an **unstable circuit**, then that it was an **uncompensated
 one**, and separately that the transient engine had four defects. The fixture is now
-repaired and compensated; the transient engine is partly repaired and fully reviewed. What
-remains on the symbolic side is finishing the third regeneration of the tables and then the
-transient-vs-perturbation comparison that started all of it.
+repaired and compensated; the transient engine is partly repaired and fully reviewed. The third
+regeneration of the tables is **done**; what remains on the symbolic side is **only T4**,
+the transient-vs-perturbation comparison that started all of it — and that is blocked on
+transient work, not on anything here.
 
 ---
 
@@ -118,11 +119,14 @@ against the cubic's own validity limit, and is invariant to what the matrix does
 Run any of these as:
 `cd benchmarks && PYTHONPATH=<repo>:<repo>/benchmarks MPLBACKEND=Agg python3 -u <script>.py > log 2>&1`
 
-### 4.2 T3 — the doc rewrite for the 136-unknown fixture, NOT STARTED
+### 4.2 T3 — the doc rewrite for the 136-unknown fixture, COMPLETE (`83c8c22`)
 
-The tables in `doc/distortion_ddd_conclusions.md` §10.2/10.3 and
-`doc/cancellation_ranking_conclusions.md` currently hold **127-unknown** numbers, correctly
-labelled as such. They need the 136-unknown regeneration once 4.1 completes.
+All tables regenerated; gate T3-1 (stale sweep) and T3-2 (forced clean rebuild, checked in
+both directions) passed. `benchmarks/order_convergence.py` also had a hardcoded
+`127 unknowns` in the header of the very table that gets pasted — now `% system.dim`.
+
+**The two traps below are kept because they will apply to the NEXT rewrite too**, not
+because this one still needs doing.
 
 **Two traps, both hit before and both recorded in `doc/leapfrog_redo_plan.md`:**
 - **A normal `sphinx -b html` does NOT re-run live `exec-rst` blocks** when only the *code*
