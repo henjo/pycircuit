@@ -1038,6 +1038,18 @@ two tolerances fixed it. **Writing the lesson down did not prevent repeating it;
 number that could not be true is what caught it.** **Not** achieved: the leapfrog, where
 stage 5 showed the composition is not error-controlled.
 
+**A separate capability, and it works comfortably (stage 14).** Fully symbolic
+*nonlinear* analysis of the 127-unknown leapfrog, evaluated numerically: at `U^5` the
+`distortion_ddd` expression graph is 20 992 nodes, builds in 3.7 s, evaluates in
+0.32 s, and matches an independent fully-numeric graded solve to **4.6e-13** — **60×
+faster than the numeric path**, which re-solves a 127×127 matrix per
+`(harmonic, power)` key. Growth from `U^3` is 1.76× in nodes.
+
+**The lesson that ties the two halves of P16 together: the readable goal and the
+scalable goal want opposite representations.** An expanded, rankable form can be read
+and cannot scale; a hash-consed straight-line program scales beautifully and cannot be
+read. Everything above was spent trying to make the first behave like the second.
+
 **What is not.** Converging and being readable are different problems and only
 the first is solved. The leapfrog's answer names devices but runs to ~2·10⁶
 operations. Three specific findings bound the next attempt:

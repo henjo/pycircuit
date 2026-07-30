@@ -1769,3 +1769,62 @@ others were reasoning that over-reached its measurement. This one is a *guard ra
 disabled for convenience* — which is worse, because the guard rail existed, fired
 correctly, and was built by me for exactly this situation two weeks of commits
 earlier.
+
+## 27. Stage 14: fully symbolic nonlinear analysis of the leapfrog — it works
+
+A different question from §§1-26, asked by the maintainer: nonlinear analysis of the
+127-unknown leapfrog, fully symbolic, then evaluated numerically.
+`benchmarks/nonlinear_leapfrog.py`.
+
+**Measured, both orders passing every gate:**
+
+| order | graph nodes | symbolic build | evaluate | **numeric oracle** | vs oracle |
+|---|---|---|---|---|---|
+| `U^3` | 11 945 | 1.4 s | 0.20 s | **87.1 s** | 4.63e-13 |
+| `U^5` | 20 992 | 3.7 s | 0.32 s | **238.5 s** | 4.63e-13 |
+
+Third harmonic `8.193583e-26`, non-zero (gate 14-3) and matching an independent
+fully-numeric graded solve to **4.6e-13** (gate 14-2, which asked for 1e-10).
+
+**The symbolic route is 60× faster than the numeric one.** At `U^5`, 4.0 s to build and
+evaluate the graph against 238.5 s for the numeric path — because the graph is built
+once and evaluated by a memoised walk, while the numeric path re-solves a 127×127
+matrix for every `(harmonic, power)` key. That inverts the usual expectation that
+symbolic costs more, and it is the strongest argument for this representation.
+
+**Growth is mild.** `U^3 → U^5`: nodes 1.76×, build time 2.6×. Not the exponential the
+determinant work fought throughout §§1-26.
+
+### Three things stated so the result is not over-read
+
+**The leapfrog fixture is linear.** It is built from `add_small_signal_bjt`, which
+stamps only `R`, `VCCS` and `C`, so it contains no nonlinearity of its own.
+`graded_response_mimo` *attaches* one, and where it attaches is a modelling choice.
+Made explicitly: stage 0's input differential pair (rows 4 and 5), because that is
+where an op-amp's distortion originates. A different placement is a different circuit
+and would give different numbers.
+
+**"Fully symbolic" here means the expression-graph sense**, not the expanded sense.
+`distortion_ddd.Expr` is a straight-line program over the device symbols — 20 992
+nodes, hash-consed, never expanded. It evaluates fast and, as the `distortion_ddd`
+documentation already records, **cannot rank terms or be read.** That is exactly right
+for "symbolic form, numeric evaluation" and exactly wrong for the readability goal
+§§1-26 pursued. The two must not be conflated: this stage does *not* deliver a
+readable nonlinear expression, and nothing here suggests one is available.
+
+**`U^5` demonstrates scaling, not extra accuracy.** The third harmonic is identical at
+both orders to every printed digit, because at a 1 mV drive and `k = 1e-9` the `U^5`
+correction to the third harmonic is far below double precision. The `U^5` run is
+evidence about *cost growth*; it is not evidence that the answer improved.
+
+### What this says about the session as a whole
+
+§§1-26 asked for a *readable* symbolic expression and got 4 081 operations at best —
+20× short. This stage asked for a *fast, exact* symbolic representation of a harder
+(nonlinear) problem on a bigger circuit and got it comfortably, 60× faster than
+numerics.
+
+**The two goals want opposite representations**, which is the most useful thing to
+carry away. An expanded, rankable form can be read and cannot scale; a hash-consed
+straight-line program scales beautifully and cannot be read. Every stage of §§1-26 was
+spent trying to make the first behave like the second.
