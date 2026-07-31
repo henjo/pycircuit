@@ -1933,6 +1933,21 @@ or the reduction to an `N`-system `(J − p q^T / d) Δv = −f_ckt + f_lte p / 
 (eq 17) and **correct** the solution already computed,
 `Δv^{k+1} = Δv^{k+1/2} − J^{-1} p (h^{k+1} − h^k)` (eq 18).
 
+**ENTRY CONDITION — a measurement, not a date. Do not start this stage until it is met.**
+Fang's benefit is the elimination of *rejected* steps. Stage 4 already attacks rejections
+from four directions (4a's unstable PI gains, 4b's 10x force-accept growth, 4e's inverted
+order-drop guard) and **4a-bis is nearly the same benefit for a fraction of the cost**:
+both source papers use a *two-threshold* controller that only redoes a step when
+`ε >= F_redo * ε_spec` — Fang's own comparison method used **4.63** — where pycircuit
+re-solves whenever `err > 1.0`. A step 1.01x over tolerance is currently recomputed from
+scratch.
+
+So: **run gate 4f, and read the rejection counts.** If stage 4 leaves rejections near zero,
+this stage has almost nothing left to buy and D1's cheap resolution is the honest one. If
+rejections are still material — say above 10% of accepted steps on the stress circuits —
+then the bordered system is buying something a threshold cannot, and this stage is
+justified. **That number does not exist yet; it is what gate 4f produces.**
+
 **Dependencies, and they are real:**
 
 - **Stage 4 must be complete.** The method's entire premise is that the LTE is a quantity
@@ -2017,6 +2032,14 @@ quantity to solve *for* rather than to test against, and on 7b because its claim
 little overhead" depends on reusing the factorisation. It is the expensive resolution of
 decision D1; the cheap one — drop the citation and fix the four ignored inputs — needs
 neither, and one of the two should be chosen before either is started.
+
+It is placed **last among the stages** deliberately. Its dependencies only require it after
+4 and 7b; putting it after 5, 6, 8, 9, 10 and 11 as well is a value judgement, and the
+judgement is that those are capability and correctness items — 5 makes bipolar circuits
+converge at all, 8 fixes sources that crash on their own class defaults, 10 adds a DC sweep
+that does not exist — while stage 12 is efficiency on a path that is off by default. **The
+one thing that would move it earlier** is a workload where step count dominates and none of
+the correctness items block it; nobody has one on record.
 
 **Amendments from the 0.3 decisions (2026-07-30), all recorded above:**
 0.3a took option (iii), which moves the charge-referenced LTE criterion out of stage 1 and
