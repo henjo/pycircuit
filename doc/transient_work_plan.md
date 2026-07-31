@@ -8,7 +8,7 @@
 > `git log --oneline f454a73..HEAD -- pycircuit/`. Branch `cna-jax-vectorization`,
 > **pushed to `origin`** (`git@github.com:henjo/pycircuit.git`).
 >
-> **Suite: 770 passed, 6 skipped, 0 failed, 722.89 s** (`-m "" --timeout=400`). Nominal
+> **Suite: 778 passed, 6 skipped, 0 failed, 722.88 s** (`-m "" --timeout=400`). Nominal
 > ~8-13 min, but one run of the identical tree took **31m41s** purely from machine load —
 > see trap 2. **Doc build: succeeded, 2 warnings, 0 ERROR.** Working tree clean.
 >
@@ -17,35 +17,30 @@
 >
 > ### The next action, concretely
 >
-> **The `Gear2` estimator's step-ratio bias — now the largest known estimator defect in
-> the tree, and it is on the shipped default.** 4g(b)'s sweep extended the ratio range to
-> the *reachable* shrink end for the first time and found `gear2-classic` overestimating
-> its own truncation error by **83x at ratio 0.008** (reachable after three consecutive
-> rejections), against the **3.97x over 0.25..4** recorded under 4d. Over the reachable
-> range the spread is **119x**. An estimator that inflates 83x when the step has just
-> collapsed will demand a further collapse, which is a candidate mechanism for the
-> rejection cascades 4b's escape hatch exists to break.
->
-> It is the same *shape* as the two defects already fixed — Euler's (4c, 4.03x) and
-> trapezoidal's (4g(b), 4.0x) — so the method is known: derive the correct
-> divided-difference form, check it against YWR eq (22) rather than guessing, and gate it
-> on `est/true` across the reachable ratio range with the **local** reference. Note that
-> Gear2's companion current is a pure function of the charge history, so unlike
-> trapezoidal it has no parasitic mode and needs no extra history — this should be a
-> formula fix, not an interface change.
+> **`relref='sigglobal'` — decided, reverted by its own gate, and the blocker is now
+> gone.** Gate D3-a failed because the trapezoidal estimator was mode-contaminated and
+> accuracy stopped falling monotonically as `reltol` tightened. Both second-order
+> estimators are now flat to within 1.3% across the whole reachable step-ratio range
+> (4g(b), 4i), so the premise of that failure no longer holds. This is a one-line default
+> change with its gate already written — re-run D3-a and D3-b as they stand.
 >
 > ### After that, in order
 >
-> 1. **`relref='sigglobal'`.** Decided, then reverted by gate D3-a *only* because the
->    trapezoidal estimator was contaminated. It is not any more. Re-run gate D3-a: this is
->    now a one-line default change with its gate already written.
-> 2. **`lte_vabstol` back to 1e-12**, and rewrite gate 1-5, which asserts a property only
->    true under `pointlocal`. Follows from 1.
-> 3. **4d's remaining half.** Resolved for trapezoidal by construction (gate 4g-b3); what
->    is left is the `gear2` item above plus deleting the now-vestigial `'ywr'`/`'classic'`
->    trapezoidal fallback branches once one of them is chosen.
-> 4. **4a, 4a-bis, 4f, 4h**, 0.3d's `chgtol` guard, and the rest of
+> 1. **`lte_vabstol` back to 1e-12**, and rewrite gate 1-5, which asserts a property only
+>    true under `pointlocal`. Follows directly from `sigglobal` landing.
+> 2. **Decide what `lte_formula` is for.** After 4i it selects nothing for either
+>    second-order method except on the single fallback step of a run. That makes gate 4f
+>    ("record rejections and force-accepts for all four integrator/formula combinations,
+>    so the choice is evidenced") a question about whether the knob should exist at all
+>    rather than about which default to pick — there are no longer four distinct
+>    combinations to compare. **Maintainer's call**, and 0.3b's deferred decision is
+>    subsumed by it.
+> 3. **4a, 4a-bis, 4h**, 0.3d's `chgtol` guard, and the rest of
 >    `doc/src/circuit/lte_dae.rst`'s variable-step story.
+> 4. **The `iq` seed.** `transient.py` starts every run with `_iqlast = zeros` against a
+>    true `q'(t_0)` that is generally nonzero. Measured under 4g(b) as an O(h^3) effect,
+>    one order below the local truncation error, so it is not blocking — but it is wrong
+>    in principle and cheap to fix when something else touches that code.
 >
 > **Note for 4d.** `Trapezoidal('ywr')` is by far the heaviest user of the rejection cap
 > (25 force-accepts on the stiff RLC at reltol 1e-4, against 1 for either `Gear2`), so
@@ -65,7 +60,11 @@
 > warning immediately corrected a conclusion this work had already written down) ·
 > **4g(b)** (the trapezoidal estimator differences a mode-free quantity: asymptotically
 > exact where it held a 33% bias, 1540x -> 1.26x step-ratio spread, 757 -> 23 rejections on
-> the stiff case — and its first gate refuted the "1/h law" the work was premised on).
+> the stiff case — and its first gate refuted the "1/h law" the work was premised on) ·
+> **4i** (one `q'''` estimator for both second-order methods, taken from a third divided
+> difference of the charge: Gear2's step-ratio spread **119x -> 1.0041x**, trapezoidal's
+> 1.26x -> 1.0084x, and the shipped default gains 1.22x accuracy — but gate 4i-4's own
+> "clause that matters" failed and is recorded as a failure).
 > Every gate outcome is recorded in place below; the completion records are appended at the
 > end of this file.
 >
@@ -98,7 +97,11 @@
 >    explains a second number**: fed exact derivatives, the trapezoidal estimator reads a
 >    flat **5/6 = 0.8333** — which is exactly the "5/6" `integrator.py` claimed for it and
 >    decision 0.3b called measurably wrong. The claim was not invented; it was measured with
->    this harness's own first defect.
+>    this harness's own first defect. **A third variant, 2026-07-31:** the generated
+>    comparison table in `lte_dae.rst` fed **Gear-2 a trapezoidal companion history** --
+>    the two recursions are different functions -- and reported 41.4 where the truth is
+>    83.06. Each method must be fed its own. A generated number is only as good as the
+>    history it is built from, and all three of these read as plausible.
 > 4. **A gate that can pass against an empty result is not a gate.** Gate 2b's first version
 >    compared `u` at t=0, where a sine is zero, and reported "exactly equal" against an
 >    all-zero vector.
@@ -757,7 +760,17 @@ estimator is more exposed to a controller that is misbehaving".
 **What this changes:** 4f stops being a formality. Gate 4f must be run *after* 4a-4e land
 and must record rejections and force-accepts for all four integrator/formula combinations
 on the same circuit; the default is then set from that table, not from the pre-repair
-numbers. The `'classic'` asymptotic-exactness measurement (1.000282 against 2/9) is not in
+numbers.
+
+**SUPERSEDED 2026-07-31 by 4g(b) and 4i, and the question has changed shape.** There are no
+longer four distinct integrator/formula combinations to compare: both second-order
+estimators now take their `q'''` from a shared helper that does not read `lte_formula`, so
+`Trapezoidal('ywr')` and `Trapezoidal('classic')` are identical, and so are the two Gear2
+variants — except on the single fallback step of a run, where four charges do not yet
+exist. The decision this item deferred ("which `lte_formula` should be the default")
+therefore has no measurable content left. **The live question is whether the parameter
+should exist at all**, which is a maintainer's decision about a public knob rather than an
+implementer's about a default, and it is recorded as such in the resume block. The `'classic'` asymptotic-exactness measurement (1.000282 against 2/9) is not in
 dispute and is not what was declined.
 
 **Not deferred:** the `"5/6"` claim in the `integrator.py` comment is measurably wrong
@@ -2222,6 +2235,13 @@ midpoint-frame term: `d_n` carries `(h_n^2/24) q'''`, which cancels exactly on a
 grid and not otherwise. The prediction written before the measurement was 3.7% at r=2; the
 measurement is **5.8%**, same term, same order, larger coefficient.
 
+> **RETIRED 2026-07-31 by gate 4i-3.** The midpoint-frame term is gone: 4i differences the
+> charge itself, which carries no `h`-dependent term at all, and trapezoidal now measures
+> **within 1.3% across the whole reachable range** (spread 1.0084x against the 1.26x this
+> gate recorded). The partial failure above is no longer a live limitation, and the
+> measurement of it is what motivated 4i to supersede the estimator this gate was written
+> for — one commit later.
+
 **A finding about the SHIPPED DEFAULT that this sweep turned up and 4g does not fix.**
 Extending the ratio sweep to the deep-shrink end, which no previous gate did:
 
@@ -2320,6 +2340,234 @@ exact derivative rather than recursing it, and produced a flat **0.8354 / 0.8334
 0.8333** — i.e. 5/6, the artefact — instead of the real 1.0920 / 1.3130 / 1.3314. It was
 caught only because 5/6 was recognisable from the `integrator.py` comment. A generated
 table is not automatically a trustworthy one; it is only as good as the history it builds.
+
+---
+
+---
+
+# 4i — the Gear2 estimator's step-ratio bias
+
+**NEW ITEM, raised by 4g(b)'s sweep on 2026-07-31 and written before any code.** The plan
+carried this as "the new `gear2-classic` ratio dependence", recorded under 4d's OUTCOME as
+a **3.97x spread over ratio 0.25..4**. Extending the sweep to the *reachable* shrink end
+shows it is far larger than that, and it is on the **shipped default integrator**:
+
+| `gear2-classic` est/true | r=0.008 | r=0.05 | r=0.1 | r=0.25 | r=1 | r=2 | r=4 |
+|---|---|---|---|---|---|---|---|
+| measured | **83.06** | 13.32 | 6.71 | 2.79 | 0.998 | 0.775 | 0.695 |
+
+Ratio 0.008 is reachable: three consecutive rejections shrink by `0.2^3`. So on the step
+where the controller has just collapsed the step size, the estimator tells it the error is
+**83x worse than it is**, and it collapses further.
+
+## The mechanism, predicted before it was measured
+
+Gear2's exact local truncation error is obtained from the interpolation-error form: the
+quadratic through `t_n, t_{n-1}, t_{n-2}` differentiated at `t_n` leaves
+
+    iq_n - q'(t_n) = -(1/6) h1 (h1 + h2) q'''(t_n)
+
+(equal steps: `-(1/3) h^2 q'''`, the textbook BDF-2 constant). So **every companion current
+in the history carries an error of that shape**, `e_k = -(1/6) h_k (h_k + h_{k-1}) q'''`,
+and the estimator — which takes a second divided difference of `g` at the nodes —
+differences those errors along with the signal. Computing `DD2(e)` by hand against a target
+of `q'''/2`:
+
+| h1/h2 | 0.008 | 0.05 | 0.1 | 0.25 | 1 | 2 | 4 |
+|---|---|---|---|---|---|---|---|
+| **predicted** est/true | **83.34** | 13.365 | 6.727 | 2.800 | 1.0000 | 0.778 | 0.700 |
+| **measured** est/true | **83.06** | 13.32 | 6.71 | 2.79 | 0.998 | 0.775 | 0.695 |
+
+**Agreement to 0.3% at every ratio.** The defect is explained, not merely observed, and the
+prediction is what makes the fix's target unambiguous. It also explains the shape: `DD2(e)`
+is exactly zero when `h1 = h2 = h3`, which is why the estimator measures asymptotically
+exact on a uniform grid (1.000282 against 2/9, recorded under 0.3b) and is wrong everywhere
+else. **That measurement was never wrong; it was taken at the one ratio where the defect
+vanishes.**
+
+This is the same family as Euler's (4c, 4.03x, fixed by a rescale) and trapezoidal's
+(4g(b), 4.0x, fixed by differencing something else) — the third instance of "the estimator
+differences a quantity that carries the method's own error".
+
+## The fix, derived rather than guessed
+
+The obstacle was stated in `integrator.py` itself: *"Gear-2 keeps just two past charges
+(`get_required_history() == 2`), so a third divided difference of q is not available at
+all."* **4g(b) lifted exactly that constraint** — it added `h_last2` and a third past charge
+for trapezoidal, and the plumbing is already threaded through `compute_lte`, both
+`StepController` subclasses and both of the transient's history transcriptions. Gear2 needs
+no new interface, only `get_required_history() -> 3` and a different formula.
+
+With four charges, `q'''` is available directly and **exactly**: the third divided
+difference of the charge is, by the mean-value form of the interpolation error,
+
+    q[t_n, t_{n-1}, t_{n-2}, t_{n-3}] = q'''(zeta) / 6      for some zeta in the span
+
+with **no coefficient that depends on the step ratios** — which is precisely what both
+previous formulations lacked. Substituting:
+
+    Gear2:        Eg = -(1/6) h1 (h1+h2) q'''  =  -h1 (h1+h2) * DD3
+    Trapezoidal:  Eg = -(1/6) h1^2       q'''  =  -h1^2       * DD3
+
+so **one shared `q'''` estimator serves both**, each scaled by its own error constant, and
+the constants come straight from YWR eq (22) rather than from a difference formula.
+
+## Scope: this also supersedes the estimator 4g(b) landed one commit ago
+
+**Stated plainly because it widens what was asked for.** Prototyped against the exact local
+truncation error, over the ratios the controller can actually produce:
+
+| | current | with shared DD3 |
+|---|---|---|
+| `gear2` spread over 0.008..2.414 | **119x** | **1.004x** |
+| `trapezoidal` spread over 0.008..2.414 | 1.26x | **1.008x** |
+
+The DD3 form is better for trapezoidal too, and by enough to matter: it removes the ±12%
+residual at the extremes that gate 4g-b2 had to report as a partial failure. Leaving
+trapezoidal on the midpoint-`d` form would mean keeping a measurably worse formula *and* a
+second `q'''` estimator in the same file, for no reason other than that it shipped first.
+So both are moved onto the shared helper, **with separate gates** so the two changes stay
+attributable.
+
+The reason DD3 wins is worth stating: the midpoint form differences
+`d_k = q'(m_k) + (h_k^2/24) q'''(m_k)`, whose second term depends on `h_k` and therefore
+does not cancel off a uniform grid — the same *kind* of contamination as the `g`-based
+forms, one order smaller. DD3 differences the charge itself, which carries no method error
+at all.
+
+**Out of scope, with the fact that would change it:** the `lte_formula` parameter. Once both
+integrators use DD3, `'ywr'` and `'classic'` select nothing except on the single fallback
+step, for Gear2 as well as trapezoidal. **Reconsider — and this is now a live question for
+gate 4f** — whether the parameter should be removed outright; it is currently a knob that
+advertises a choice it no longer makes. Not done here because deleting a public parameter is
+a maintainer's call, not an implementer's.
+
+## Gates, declared before implementation
+
+**Gate 4i-1 (Gear2 is flat across the reachable ratio range).** `est/true` against the
+exact local truncation error, at ratios 0.008 .. 2.414 — 0.008 because three consecutive
+rejections reach it, 2.414 because `ZERO_STABILITY_RATIO` is the largest ratio the
+integrator will run at second order. Declared success: **within 5% of 1 at every ratio**,
+against the measured 83.06 .. 0.695.
+OUTCOME: **PASSED, with 7x more margin than declared.** Measured 2026-07-31 by
+`benchmarks/transient_stage4.py --ratios` extended to the reachable range:
+
+| est/true | r=0.008 | r=0.05 | r=0.1 | r=0.25 | r=0.5 | r=1 | r=2 | r=2.414 |
+|---|---|---|---|---|---|---|---|---|
+| **gear2, before** | **83.06** | 13.32 | 6.71 | 2.79 | 1.55 | 0.998 | 0.775 | 0.745 |
+| **gear2, after** | **0.9966** | 0.9966 | 0.9965 | 0.9963 | 0.9958 | 0.9950 | 0.9933 | 0.9925 |
+
+Worst deviation **0.7%** against the declared 5%. Spread over the range falls from
+**119x to 1.0041x**. `gear2-classic` and `gear2-ywr` are now identical, exactly as
+trapezoidal's two became under 4g-b3 — the shared helper does not read `lte_formula`.
+
+**Gate 4i-2 (it is consistent).** `est/true` for Gear2 at ratio 1 as h falls
+1e-8 -> 1e-11. Declared success: converges toward 1 and is within 2% at h = 1e-10.
+OUTCOME: **PASSED.** 0.9442 / 0.9950 / **0.9995** / 1.0031 at h = 1e-8/1e-9/1e-10/1e-11 —
+within **0.05%** at 1e-10, against the declared 2%.
+
+**Gate 4i-3 (trapezoidal does not regress).** The same sweep for Trapezoidal. Declared
+success: spread over 0.008..2.414 **no worse than the 1.26x it has today**, and within 5%
+of 1 at every ratio — i.e. strictly better than gate 4g-b2, which had to report +12.9% at
+r=4 and -12.2% at r=0.008.
+OUTCOME: **PASSED, and it retires gate 4g-b2's partial failure.** Trapezoidal now measures
+0.9867 / 0.9949 / 0.9949 / 0.9946 / 0.9942 / 0.9933 / 0.9916 / 0.9909 across
+0.008..2.414 — spread **1.0084x** against the 1.26x it had one commit ago, worst deviation
+**1.3%** against 4g-b2's -12.2%. The `(h_k^2/24) q'''` term that 4g(b) had to declare as a
+known residual is gone, because the charge carries no such term.
+
+**Gate 4i-4 (end to end).** The gate-4b sweep, all three circuits, four tolerances, five
+configurations. Declared success: **no accepted step ratio outside the zero-stability
+bound**; **no configuration regresses in step count by more than 20%**; and Gear2's
+rejection and force-accept counts do not rise. The last clause is the one that matters —
+an estimator that no longer inflates 83x on a collapsed step should reject *less*, and if it
+rejects more the fix has done something other than what this section claims.
+OUTCOME: **TWO CLAUSES PASSED, THE THIRD FAILED — and the clause was mis-specified, which
+is a different thing from the fix being wrong.** Recorded in full because the failing clause
+was declared as "the one that matters".
+
+*What passed.* `worst accepted step ratio 2.0000, ratios outside the bound 0` across the
+whole sweep. Step counts rise **2-9%** for Gear2 (largest: rc-pulse at reltol 1e-3,
+808 -> 880), well inside the declared 20%. Euler is bit-identical everywhere; trapezoidal
+moves by at most 1 step.
+
+*What failed.* Gear2's rejection counts **rose** on 5 of 9 configurations — rc-pulse 1e-3
+36 -> 53, 1e-4 42 -> 60, 1e-5 43 -> 72; stiff-rlc 1e-3 19 -> 20, 1e-4 15 -> 17.
+
+*Why, and why the clause was wrong rather than the code.* The clause assumed the defect was
+one-directional — that the estimator only ever *over*-reported. It does not. From the table
+under 4i-1, the old estimator over-reports on **shrink** (83x at 0.008) and **under-reports
+on growth** (0.775 at r=2, 0.695 at r=4). A controller spends most of a run growing toward
+`max_step`, so it was being told the error was ~22% smaller than it is, and **it rarely
+rejected because it was under-reporting, not because its steps were good.** An honest
+estimator runs closer to the true tolerance boundary and therefore crosses it more often.
+More rejections is what correct error control looks like here.
+
+*The compensating measurement, taken because the assertion above is not self-evidently
+true.* Global error on the stiff RLC against the analytic solution, before -> after:
+
+| config | reltol | steps | rejections | global error |
+|---|---|---|---|---|
+| **gear2-ywr** (the default) | 1e-4 | 63 -> 69 | 7 -> 7 | 2.4325e-03 -> **2.0090e-03**, 1.21x better |
+| **gear2-ywr** | 1e-5 | 102 -> 112 | 7 -> 7 | 5.4326e-04 -> **4.4443e-04**, 1.22x better |
+| **gear2-ywr** | 1e-6 | 185 -> 204 | 7 -> 7 | 1.1917e-04 -> **9.7563e-05**, 1.22x better |
+| gear2-classic | 1e-5 | 111 -> 112 | 7 -> 7 | 4.4660e-04 -> 4.4443e-04, 1.00x |
+| euler | all | unchanged | unchanged | **bit-identical** |
+
+The shipped default gains **1.22x accuracy for ~10% more steps**. `gear2-classic` is
+neutral, and the reason the two differ is that they now *agree*: YWR's GEAR2 residual
+estimates `(1/4) h^2 q'''` against a true `(1/3)`, so `'ywr'` was optimistic by a further
+3/4 on top of the ratio bias and had more to gain. Both rows now read identically.
+
+**STATED PLAINLY, BECAUSE IT IS THE LESS FLATTERING READING: this is not a speedup.**
+Interpolating the `gear2-ywr` rows, reaching the *old* error of 1.1917e-04 now costs about
+195 steps against the old 185 — so at matched accuracy the new estimator is marginally more
+expensive on this circuit. What it buys is that **`reltol` now means what it says**, which
+is the same value proposition as 4c and stage 3, plus robustness in the regime the 83x
+lives in: a step that has just collapsed after three rejections is no longer told its error
+is 83x worse than it is. The sweep circuits reach ratios below 0.1 only 3-6 times per run,
+so the sweep understates that benefit rather than demonstrating it.
+
+**Gate 4i-5 (the fallback still cannot go blind).** With `h_last2 is None` — the one step of
+a run that has fewer than four charges — both integrators must return a non-zero, finite
+estimate rather than zeros. Zeros would make that step unchecked, which is the defect stage
+3 removed from the first step.
+OUTCOME: **PASSED.** All four configurations return finite, non-zero estimates on the
+fallback path: trap `-2.356777e+01` (both formulas), gear2-classic `-3.770212e+01`,
+gear2-ywr `-2.827659e+01`. Note the two Gear2 fallbacks still differ, which is the only
+place `lte_formula` now has any effect at all for either second-order method.
+
+**Gate 4i-6.** Full suite `-m ""`, runtime recorded; doc build verified by content, not by
+exit code.
+OUTCOME: **PASSED. 778 passed, 6 skipped, 0 failed, 722.88 s** (`-m "" --timeout=400`),
+against 770 before 4i plus the 8 tests added here. **Exactly one existing test needed
+changing** — `get_required_history()` for Gear2, 2 -> 3 — which is the churn 4i was
+expected to cause and is the very constraint `integrator.py` used to record as the reason
+the g-based form had to be used. Runtime is unchanged from the 4g(b) run to within a
+second (722.89 -> 722.88 s), which is coincidence rather than a measurement: this box
+varies far more than that between runs (trap 2).
+
+Doc build: **build succeeded, 2 warnings, 0 ERROR**, verified per rule 3 — no `exec-rst`
+block fell back to rendering its own source, and the regenerated tables reproduce the
+benchmark numbers exactly (`GEAR2, g` at ratio 0.008 reads **83.0625**, matching both the
+sweep and the hand calculation).
+
+**A defect in the generated documentation, caught before commit and recorded because it
+is trap 3 for the third time.** The new comparison table fed **Gear-2 a trapezoidal
+companion history** — the two recursions are different functions — and reported **41.4**
+where the truth is 83.06. It was caught only by noticing the number disagreed with the
+benchmark. Each method now builds its own companion history: trapezoidal by recursion
+over a prefix, Gear-2 evaluated directly at each past node, since its companion is a pure
+function of three charges.
+
+**A second doc-build gotcha, new and worth recording.** The first attempt to regenerate
+this page produced *stale* tables and still reported "build succeeded": the `.rst` edit
+had failed silently (an `index()` anchor matched an earlier prose mention of the same
+heading inside a code comment), so sphinx saw an unchanged source and skipped the page.
+**A doc build that reports success proves nothing about a page whose source it did not
+read.** Forcing a full rebuild with `-E` re-runs every `exec-rst` block in the project and
+exceeded ten minutes, so the workable check is to confirm the source actually changed and
+then read the regenerated values.
 
 ---
 

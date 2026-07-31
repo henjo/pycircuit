@@ -987,17 +987,24 @@ def test_gate_4g_b_the_fallback_is_used_for_exactly_one_step():
     assert np.isfinite(float(est[0]))
 
 
-def test_gate_4g_b_trapezoidal_asks_for_three_past_charges():
+def test_both_second_order_methods_ask_for_three_past_charges():
     """The ring buffer must be sized for the ESTIMATOR, not just the method.
 
-    `compute_derivatives` still looks back one step; the estimator differences `d`
-    at three points and so needs `q_{n-3}`. If this returns to 1 the estimator
-    silently reads a seeded initial charge as if it were history.
+    Trapezoidal's `compute_derivatives` looks back one step and Gear-2's looks back
+    two, but since 4i both estimate `q3` from a third divided difference of the
+    charge, which needs `q_{n-3}`. If either of these drops back to the method's own
+    depth the estimator silently reads a seeded initial charge as if it were
+    history -- and produces a plausible wrong number rather than an error.
+
+    Gear-2 was 2 until 4i. That is the churn 4i was expected to cause, and it is the
+    whole reason the fix was available: `integrator.py` used to record "Gear-2 keeps
+    just two past charges, so a third divided difference of q is not available at
+    all" as the reason it had to difference the companion currents instead.
     """
     from pycircuit.circuit.integrator import (TrapezoidalIntegrator,
                                               Gear2Integrator, EulerIntegrator)
     assert TrapezoidalIntegrator().get_required_history() == 3
-    assert Gear2Integrator().get_required_history() == 2
+    assert Gear2Integrator().get_required_history() == 3
     assert EulerIntegrator().get_required_history() == 1
 
 
@@ -1074,3 +1081,159 @@ def test_gate_4g_b_a_second_solve_is_identical_to_the_first():
     assert np.array_equal(v1, v2), \
         're-solving the same circuit gave a different waveform; max delta %g' \
         % np.max(np.abs(v1 - v2))
+
+
+# ---------------------------------------------------------------------------
+# 4i -- one q3 estimator for both second-order methods
+#
+# Gear-2's LTE is -(1/6) h1 (h1+h2) q3 and trapezoidal's is -(1/6) h1^2 q3, so
+# both need the same quantity and only the constant differs.  Estimating it from a
+# third divided difference of the CHARGE is exact up to where the mean-value point
+# sits, with no coefficient that depends on the step ratios -- which every earlier
+# formulation in this file lacked.
+# ---------------------------------------------------------------------------
+
+def _gear2_true_lte(h_curr, h_last, t_n=0.371e-6):
+    """The exact local truncation error: companion from exact charges, minus q'."""
+    t1, t2 = t_n - h_curr, t_n - h_curr - h_last
+    a0 = (2 * h_curr + h_last) / (h_curr * (h_curr + h_last))
+    a1 = -(h_curr + h_last) / (h_curr * h_last)
+    a2 = h_curr / (h_last * (h_curr + h_last))
+    return (a0 * _4g_q(t_n) + a1 * _4g_q(t1) + a2 * _4g_q(t2)) - _4g_dq(t_n)
+
+
+def _gear2_est_over_true(h_curr, h_last, h_last2, t_n=0.371e-6, formula='classic'):
+    from pycircuit.circuit.integrator import Gear2Integrator
+    t1, t2, t3 = t_n - h_curr, t_n - h_curr - h_last, t_n - h_curr - h_last - h_last2
+    est, _p = Gear2Integrator(formula).compute_lte(
+        q_curr=np.array([_4g_q(t_n)]), h_curr=h_curr,
+        q_last=np.array([[_4g_q(t1)], [_4g_q(t2)], [_4g_q(t3)]]),
+        ## Deliberately poisoned: the estimator must not read the companion
+        ## currents at all once four charges exist.
+        iq_last=np.array([[np.nan], [np.nan]]),
+        h_last=h_last, is_first_step=False, toolkit=numeric, h_last2=h_last2)
+    return float(est[0]) / _gear2_true_lte(h_curr, h_last, t_n)
+
+
+## The ratios the controller can actually produce.  0.008 is three consecutive
+## rejections (0.2**3); 2.414 is ZERO_STABILITY_RATIO, above which the integrator
+## drops to order 1 and this estimator is not used.
+_4I_RATIOS = (0.008, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 2.414)
+
+
+def test_gate_4i1_gear2_is_flat_across_the_reachable_step_ratios():
+    """Measured before 4i: 83.06 at ratio 0.008, falling to 0.695 at 4 -- a 119x
+    spread on the SHIPPED DEFAULT integrator.
+
+    The 83x is not hypothetical: ratio 0.008 is the step after three consecutive
+    rejections, i.e. exactly when the controller has already collapsed the step and
+    is deciding whether to collapse it further.
+    """
+    h = 1e-9
+    for ratio in _4I_RATIOS:
+        r = _gear2_est_over_true(h * ratio, h, h)
+        assert abs(r - 1.0) < 0.05, \
+            'gear2 est/true = %.4f at step ratio %g, outside 5%%' % (r, ratio)
+
+
+def test_gate_4i3_trapezoidal_is_flat_across_the_reachable_step_ratios():
+    """4g(b) got trapezoidal to a 1.26x spread by differencing `d`; 4i gets it to
+    1.008x by differencing the charge.
+
+    The residual 4g(b) had to declare -- `d_k` carries `(h_k^2/24) q3`, which
+    cancels only on a uniform grid -- is gone, so the -12.2%/+12.9% that gate 4g-b2
+    had to report as a partial failure is gone with it.
+    """
+    h = 1e-9
+    for ratio in _4I_RATIOS:
+        r = _trap_est_over_true(h * ratio, h, h)
+        assert abs(r - 1.0) < 0.05, \
+            'trap est/true = %.4f at step ratio %g, outside 5%%' % (r, ratio)
+
+
+def test_gate_4i_the_estimator_never_reads_the_companion_currents():
+    """Both second-order estimators, with `iq_last` poisoned to NaN.
+
+    A finite result is proof that neither the parasitic mode (trapezoidal) nor the
+    method's own truncation error (Gear-2) can reach the estimate -- which is the
+    entire content of 4g(b) and 4i respectively.
+    """
+    h = 1e-9
+    assert np.isfinite(_gear2_est_over_true(h, h, h)), \
+        'the Gear2 estimator still reads iq_last'
+    assert np.isfinite(_trap_est_over_true(h, h, h)), \
+        'the trapezoidal estimator still reads iq_last'
+
+
+def test_gate_4i2_gear2_is_consistent():
+    """est/true must converge to 1 as h falls: 0.9442 / 0.9950 / 0.9995."""
+    ratios = [_gear2_est_over_true(h, h, h) for h in (1e-8, 1e-9, 1e-10)]
+    assert abs(ratios[2] - 1.0) < 0.02, \
+        'gear2 est/true = %.4f at h=1e-10' % ratios[2]
+    assert abs(ratios[2] - 1.0) < abs(ratios[0] - 1.0), \
+        'gear2 est/true does not converge to 1 as h falls: %s' % ratios
+
+
+@pytest.mark.parametrize('formula', ['classic', 'ywr'])
+def test_gate_4i_lte_formula_no_longer_selects_anything(formula):
+    """`lte_formula` is now vestigial for both second-order methods.
+
+    The shared helper does not read it, so the two selections agree bit for bit
+    once four charges exist. They still differ on the single fallback step, which
+    is the only remaining effect the parameter has -- recorded rather than removed,
+    because deleting a public parameter is the maintainer's call.
+    """
+    h = 1e-9
+    for ratio in (0.05, 1.0, 2.0):
+        a = _gear2_est_over_true(h * ratio, h, h, formula='classic')
+        b = _gear2_est_over_true(h * ratio, h, h, formula='ywr')
+        assert a == b, \
+            'lte_formula still changes the Gear2 estimate at ratio %g: %r vs %r' \
+            % (ratio, a, b)
+
+
+def test_gate_4i5_the_fallback_is_finite_and_non_zero_for_both_methods():
+    """`h_last2 is None` -- the one step of a run with fewer than four charges.
+
+    Returning zeros there would make that step unchecked, which is the defect stage
+    3 removed from the first step.
+    """
+    from pycircuit.circuit.integrator import (TrapezoidalIntegrator,
+                                              Gear2Integrator)
+    h = 1e-9
+    t_n = 0.371e-6
+    q_last = np.array([[_4g_q(t_n - h)], [_4g_q(t_n - 2 * h)], [0.0]])
+    iq_last = np.array([[_4g_dq(t_n - h)], [_4g_dq(t_n - 2 * h)]])
+    for integ in (TrapezoidalIntegrator('classic'), TrapezoidalIntegrator('ywr'),
+                  Gear2Integrator('classic'), Gear2Integrator('ywr')):
+        est, _p = integ.compute_lte(
+            q_curr=np.array([_4g_q(t_n)]), h_curr=h, q_last=q_last,
+            iq_last=iq_last, h_last=h, is_first_step=False, toolkit=numeric,
+            h_last2=None)
+        v = float(est[0])
+        assert v != 0.0 and np.isfinite(v), \
+            '%s fallback returned %r' % (type(integ).__name__, v)
+
+
+def test_gate_4i_the_error_constants_come_from_the_derivation():
+    """The two constants are the whole difference between the integrators.
+
+    Gear-2: -(1/6) h1 (h1+h2) q3.  Trapezoidal: -(1/6) h1^2 q3.  On a uniform grid
+    that makes Gear-2's estimate exactly twice trapezoidal's, and getting either
+    constant wrong would bias every step of every run by a fixed factor while still
+    looking perfectly flat in the ratio sweeps above.
+    """
+    h = 1e-9
+    t_n = 0.371e-6
+    from pycircuit.circuit.integrator import (TrapezoidalIntegrator,
+                                              Gear2Integrator)
+    kw = dict(q_curr=np.array([_4g_q(t_n)]), h_curr=h,
+              q_last=np.array([[_4g_q(t_n - h)], [_4g_q(t_n - 2 * h)],
+                               [_4g_q(t_n - 3 * h)]]),
+              iq_last=np.array([[np.nan], [np.nan]]),
+              h_last=h, is_first_step=False, toolkit=numeric, h_last2=h)
+    g = float(Gear2Integrator('classic').compute_lte(**kw)[0][0])
+    t = float(TrapezoidalIntegrator('classic').compute_lte(**kw)[0][0])
+    assert g / t == pytest.approx(2.0, rel=1e-12), \
+        'on a uniform grid Gear-2 must estimate exactly 2x trapezoidal, got %.9f' \
+        % (g / t)

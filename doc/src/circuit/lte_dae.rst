@@ -169,11 +169,11 @@ The comparison isolates exactly where the DAE formula matters:
 * **Backward Euler** is *identical* under both formulas -- the derivation above
   shows the YWR GEAR1 residual reduces to the same
   :math:`-\tfrac{1}{2}(g_n - g_{n-1})` the classic path already used.
-* **Trapezoidal** no longer distinguishes the two at all -- see
-  :ref:`trap-mode-free` below.  Its estimator differences a quantity that neither
-  Table I entry uses, and that branch ignores ``lte_formula``.  The ``'classic'``
-  and ``'ywr'`` bodies survive only for the one step at the start of a run that
-  does not yet have three past charges.
+* **Trapezoidal and Gear2** no longer distinguish the two at all -- see
+  :ref:`trap-mode-free` below.  Both estimators difference a quantity that neither
+  Table I entry uses, and the shared code ignores ``lte_formula``.  The
+  ``'classic'`` and ``'ywr'`` bodies survive only for the one step at the start of
+  a run that does not yet have four charges.
 * **Gear2** is the substantive case.  Until 2026-07 the classic estimate used a
   second divided difference of the *charge* :math:`q` -- which is a
   :math:`q''` term -- scaled by :math:`h^3`, where BDF-2 requires
@@ -216,140 +216,186 @@ The comparison isolates exactly where the DAE formula matters:
 
 .. _trap-mode-free:
 
-Trapezoidal: why its estimator differences something else
-==========================================================
+What the estimators difference, and why it is not ``g``
+=======================================================
 
 Table I gives every LTE as a difference of :math:`g = \dot q`, the companion
-current.  For TRAP that choice is unfortunate, and the reason is visible in the
-companion formula itself:
+current.  Both second-order methods here have been moved off that, for two
+different reasons that turn out to have one answer.
+
+**Trapezoidal carries a parasitic mode.**  Its companion formula
 
 .. math::
 
    iq_n = \frac{2(q_n - q_{n-1})}{h} - iq_{n-1}
 
-The homogeneous part of that recursion is :math:`iq_n = -iq_{n-1}`, i.e.
-:math:`(-1)^n`, and **nothing damps it**.  Backward Euler and Gear-2 have no such
-term -- their companion currents are functions of the charge history alone and do
-not feed back on themselves -- so trapezoidal is the only method here that carries
-a parasitic mode into whatever differences its own estimator takes.
+has homogeneous part :math:`iq_n = -iq_{n-1}`, i.e. :math:`(-1)^n`, and nothing
+damps it.  Differencing :math:`g` differences that mode: measured against the
+local truncation error, the same estimator on the same problem returned 1.3176 on
+one step history and 0.6780 on another.
 
-The paper leaves room for a different choice.  Its own wording is that Table I
+**Gear-2 differences its own truncation error.**  Its LTE is
+
+.. math::
+
+   iq_n - q'(t_n) = -\tfrac{1}{6}\,h_1 (h_1 + h_2)\, q'''
+
+so *every* companion current in the history carries an error of that shape, and a
+second difference of :math:`g` differences those errors along with the signal.
+The damage was computed by hand before it was measured, and the two agree to 0.3%:
+at a step ratio of :math:`h_1/h_2 = 0.008` --- which three consecutive rejections
+reach --- the estimate is **83x** the true error.  It vanishes exactly when
+:math:`h_1 = h_2 = h_3`, which is why the estimator had always measured
+asymptotically exact on a uniform grid: that measurement was taken at the one
+ratio where the defect is zero.
+
+**The paper leaves room for a different choice.**  Its own wording is that Table I
 follows from "Equation (22) **and finite difference approximation**": eq (22) fixes
 *which* derivative appears and with what coefficient, but not *how* it is
-approximated.  Evaluating it for TRAP gives
+approximated.  Evaluating it gives
 
 .. math::
 
-   \varepsilon_T = -\frac{h^2}{6}\, J^{-1} q'''
+   \text{Gear-2:}\quad \varepsilon = -\tfrac{1}{6} h_1 (h_1+h_2)\, q''' ,
+   \qquad
+   \text{TRAP:}\quad \varepsilon = -\tfrac{1}{6} h_1^2\, q'''
 
-so any consistent estimate of :math:`q'''` will do.  Take
-
-.. math::
-
-   d_n = \frac{q_n - q_{n-1}}{h_n}
-
-The trapezoidal relation gives :math:`(iq_n + iq_{n-1})/2 = d_n`, and a component
-that flips sign every step **cancels exactly in that sum** -- so :math:`d` is
-mode-free by construction.  Expanding about the interval *midpoint*
-:math:`m_n = (t_n + t_{n-1})/2`,
+so both need the same quantity, :math:`q'''`, and differ only in a constant.  Any
+consistent estimate of it will do -- and the *charge* supplies one directly.  By
+the mean-value form of the polynomial interpolation error,
 
 .. math::
 
-   d_n = q'(m_n) + \frac{h_n^2}{24} q'''(m_n) + O(h^4)
+   q[t_n, t_{n-1}, t_{n-2}, t_{n-3}] = \frac{q'''(\zeta)}{6}
 
-so :math:`d` samples :math:`q'` at midpoints, and a second divided difference of
-:math:`d` **over the midpoint spacings** estimates :math:`q'''/2`.  Using the node
-spacings instead would be the same class of error as the backward-Euler defect
-described above.
+for some :math:`\zeta` in the span, **with no coefficient that depends on the step
+ratios**.  That is the property every earlier formulation lacked.  The charge
+carries no method error at all, so differencing it imports neither the parasitic
+mode nor the truncation error.
 
-The table below is measured when this page is built.  ``est/true`` compares the
-estimate against the *local* truncation error -- the residual when exact values are
-substituted for the history, which is the part the step size actually controls:
+Both integrators therefore call one shared helper,
+:func:`~pycircuit.circuit.integrator.third_divided_difference`, and scale it by
+their own constant.  The table below is measured when this page is built;
+``est/true`` compares the estimate against the *local* truncation error, the
+residual when exact values are substituted for the history, which is the part the
+step size actually controls:
 
 .. exec-rst::
 
     import numpy as np
-    from pycircuit.circuit.integrator import TrapezoidalIntegrator
+    from pycircuit.circuit.integrator import (TrapezoidalIntegrator,
+                                              Gear2Integrator)
 
     OMEGA = 2 * np.pi * 1e6
     T_N = 0.371e-6
     q = lambda t: np.sin(OMEGA * t)
     dq = lambda t: OMEGA * np.cos(OMEGA * t)
 
-    def ratio(h_curr, h_last, h_last2, mode_free):
-        ## The companion currents must come from the RECURSION, over a prefix long
-        ## enough to build the parasitic mode a real run would carry.  Seeding
-        ## either of them with an exact derivative instead makes the g-based form
-        ## read a flat 5/6 -- which is where the old "5/6" claim in integrator.py
-        ## came from, and it is an artefact of the wrong input.
+    def ratios(h_curr, h_last, h_last2):
+        t1 = T_N - h_curr
+        t2 = t1 - h_last
+        t3 = t2 - h_last2
+        q_last = np.array([[q(t1)], [q(t2)], [q(t3)]])
+
+        ## EACH METHOD MUST BE FED ITS OWN COMPANION HISTORY.  The two recursions
+        ## are different functions, so handing Gear-2 a trapezoidal iq history
+        ## measures nothing -- the first version of this block did that and
+        ## reported 41.4 where the truth is 81.3.  Same failure class as seeding
+        ## an iq entry with an exact derivative, which makes the g-based
+        ## trapezoidal form read a flat 5/6 and is where that long-standing "5/6"
+        ## claim in integrator.py came from.
+        ##
+        ## Trapezoidal's companion FEEDS BACK on itself, so it has to be recursed
+        ## over a prefix long enough to build the parasitic mode a real run
+        ## carries.
         n_prefix = 5
-        times = [T_N - h_curr - h_last - h_last2 - (n_prefix - i) * h_last2
-                 for i in range(n_prefix)]
-        times += [T_N - h_curr - h_last - h_last2, T_N - h_curr - h_last,
-                  T_N - h_curr, T_N]
-        iq = [dq(times[0])]
+        times = [t3 - (n_prefix - i) * h_last2 for i in range(n_prefix)]
+        times += [t3, t2, t1, T_N]
+        iq_t = [dq(times[0])]
         for i in range(1, len(times)):
-            iq.append(2 * (q(times[i]) - q(times[i - 1]))
-                      / (times[i] - times[i - 1]) - iq[-1])
-        t1, t2, t3 = times[-2], times[-3], times[-4]
-        est, _ = TrapezoidalIntegrator('classic').compute_lte(
-            q_curr=np.array([q(T_N)]), h_curr=h_curr,
-            q_last=np.array([[q(t1)], [q(t2)], [q(t3)]]),
-            iq_last=np.array([[iq[-2]], [iq[-3]]]), h_last=h_last,
-            is_first_step=False, toolkit=None,
-            h_last2=(h_last2 if mode_free else None))
-        true_local = (2 * (q(T_N) - q(t1)) / h_curr - dq(t1)) - dq(T_N)
-        return float(est[0]) / true_local
+            iq_t.append(2 * (q(times[i]) - q(times[i - 1]))
+                        / (times[i] - times[i - 1]) - iq_t[-1])
+
+        ## Gear-2's companion is a pure function of three charges, so it is
+        ## evaluated directly at each past node with that node's own step sizes.
+        def gear2_iq(ta, tb, tc):
+            ha, hb = ta - tb, tb - tc
+            a0 = (2 * ha + hb) / (ha * (ha + hb))
+            a1 = -(ha + hb) / (ha * hb)
+            a2 = ha / (hb * (ha + hb))
+            return a0 * q(ta) + a1 * q(tb) + a2 * q(tc)
+
+        t4 = t3 - h_last2
+        iq_g = [gear2_iq(t1, t2, t3), gear2_iq(t2, t3, t4)]
+
+        kw = dict(q_curr=np.array([q(T_N)]), h_curr=h_curr, q_last=q_last,
+                  h_last=h_last, is_first_step=False, toolkit=None)
+        ## h_last2=None selects the older g-based fallback, which is what the
+        ## "differencing g" columns measure.
+        old_t = TrapezoidalIntegrator('classic').compute_lte(
+            iq_last=np.array([[iq_t[-2]], [iq_t[-3]]]), h_last2=None, **kw)[0][0]
+        new_t = TrapezoidalIntegrator('classic').compute_lte(
+            iq_last=np.array([[np.nan], [np.nan]]), h_last2=h_last2, **kw)[0][0]
+        old_g = Gear2Integrator('classic').compute_lte(
+            iq_last=np.array([[iq_g[0]], [iq_g[1]]]), h_last2=None, **kw)[0][0]
+        new_g = Gear2Integrator('classic').compute_lte(
+            iq_last=np.array([[np.nan], [np.nan]]), h_last2=h_last2, **kw)[0][0]
+
+        true_t = (2 * (q(T_N) - q(t1)) / h_curr - dq(t1)) - dq(T_N)
+        a0 = (2 * h_curr + h_last) / (h_curr * (h_curr + h_last))
+        a1 = -(h_curr + h_last) / (h_curr * h_last)
+        a2 = h_curr / (h_last * (h_curr + h_last))
+        true_g = (a0 * q(T_N) + a1 * q(t1) + a2 * q(t2)) - dq(T_N)
+        return (float(old_t) / true_t, float(new_t) / true_t,
+                float(old_g) / true_g, float(new_g) / true_g)
 
     h = 1e-9
-    rows = [(0.25, 'a shrink'), (0.5, ''), (1.0, 'uniform grid'),
-            (2.0, 'the growth clamp')]
+    rows = [(0.008, 'three rejections'), (0.1, ''), (0.5, ''),
+            (1.0, 'uniform grid'), (2.0, 'the growth clamp')]
 
-    print(".. list-table:: est/true for the trapezoidal estimator, against the"
-          " LOCAL truncation error")
+    print(".. list-table:: est/true against the LOCAL truncation error, by what is"
+          " differenced")
     print("   :header-rows: 1")
-    print("   :widths: 14 22 22 22")
+    print("   :widths: 12 15 15 15 15 20")
     print("")
     print("   * - step ratio")
-    print("     - differencing g")
-    print("     - differencing d")
+    print("     - TRAP, g")
+    print("     - TRAP, charge")
+    print("     - GEAR2, g")
+    print("     - GEAR2, charge")
     print("     - ")
     for r, note in rows:
-        print("   * - %.2f" % r)
-        print("     - %.4f" % ratio(h * r, h, h, False))
-        print("     - %.4f" % ratio(h * r, h, h, True))
+        ot, nt, og, ng = ratios(h * r, h, h)
+        print("   * - %.3f" % r)
+        print("     - %.4f" % ot)
+        print("     - %.4f" % nt)
+        print("     - %.4f" % og)
+        print("     - %.4f" % ng)
         print("     - %s" % (note or "-"))
 
-    print("")
-    print(".. list-table:: and as the step size falls, at a uniform grid")
-    print("   :header-rows: 1")
-    print("   :widths: 16 24 24")
-    print("")
-    print("   * - h")
-    print("     - differencing g")
-    print("     - differencing d")
-    for hh in (1e-8, 1e-9, 1e-10):
-        print("   * - %.0e" % hh)
-        print("     - %.4f" % ratio(hh, hh, hh, False))
-        print("     - %.4f" % ratio(hh, hh, hh, True))
-
-An exact estimator reads 1.000 everywhere.  The second table is the one that
-matters: differencing :math:`d` is **asymptotically exact**, while differencing
-:math:`g` holds a bias that does not improve as the step shrinks.
+An exact estimator reads 1.000 in every row.  The first ratio is the one that
+matters most: it is the step *after* three consecutive rejections, where the
+controller has already collapsed the step size and is deciding whether to collapse
+it further.
 
 .. note::
 
-   **What this cost, and one thing it did not fix.**  The estimator needs a third
-   past charge, so ``TrapezoidalIntegrator.get_required_history()`` returns 3 even
-   though the *method* still looks back a single step, and the step before last
-   (``h_last2``) had to be threaded from the transient through the step controller
-   to ``compute_lte``.  It is ``None`` for exactly one step of a run -- the second,
-   where the ring buffer still holds the initial charge twice -- and that step
-   falls back to the older g-based form rather than going unchecked.
+   **What this cost, and two things it did not fix.**  Both estimators need a
+   fourth charge, so ``get_required_history()`` returns 3 for *both* second-order
+   methods even though the trapezoidal rule looks back one step and Gear-2 two, and
+   the step before last (``h_last2``) is threaded from the transient through the
+   step controller to ``compute_lte``.  It is ``None`` for exactly one step of a
+   run -- the second -- and that step falls back to the older g-based form rather
+   than going unchecked.
 
-   Tier (b) makes the *estimator* immune to the parasitic mode.  It does not remove
-   the mode from the *solution*: trapezoidal still rings on stiff modes, which is a
-   property of the method and is what a TR-BDF2 integrator would address.
+   ``lte_formula`` now selects nothing except on that fallback step: the shared
+   helper does not read it, so ``'ywr'`` and ``'classic'`` return identical values
+   for both methods.  The parameter is kept for now because removing a public knob
+   is a larger decision than fixing an estimator.
+
+   And this corrects the *estimate*, not the *method*: trapezoidal still rings on
+   stiff modes, which is a property of the rule itself and is what a TR-BDF2
+   integrator would address.
 
 The step-size ratio, and what bounds it
 =======================================
