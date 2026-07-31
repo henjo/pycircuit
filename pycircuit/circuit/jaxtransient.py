@@ -6,6 +6,7 @@ import warnings
 import jax.numpy as jnp
 
 from pycircuit.circuit.analysis import Analysis
+from pycircuit.circuit.nrsolver import NoConvergenceError
 from pycircuit.utilities.param import Parameter
 from pycircuit.circuit.analysis import CircuitResult as Result
 
@@ -25,6 +26,13 @@ class NewtonState(NamedTuple):
     xdiff: Any
     F_norm: Any
     iters: Any
+
+    ## STAGE 9(e).  The loop exits on `F_norm <= conv_tol` OR `iters >= maxiter`
+    ## and the caller took `x` either way, so an unconverged iterate was committed
+    ## as the step's solution and its LTE computed from it.  Measured on a LINEAR
+    ## RC at maxiter=1: 4.97e-2 max error against 4.28e-3, reported as nothing at
+    ## all.  A traced loop cannot raise, so the fact travels out as a flag.
+    converged: Any = True
 
 class TransientState(NamedTuple):
     t: Any
@@ -59,6 +67,14 @@ class TransientState(NamedTuple):
     ## rejected step advances neither `t` nor `step_idx`, so it leaves no trace in
     ## the output buffers; it has to be counted where it happens.
     n_rejected: Any = 0
+
+    ## Steps rejected because the Newton solve did not converge, and steps
+    ## ACCEPTED anyway because `dt` was already at the floor.  The second is the
+    ## one to read: it counts places where the returned waveform is not a solution
+    ## of the circuit equations, which is exactly what 9(e) found happening
+    ## silently.
+    n_nonconverged: Any = 0
+    n_forced_nonconverged: Any = 0
 
 # ---------------------------------------------------------------------------
 # Phase 1: Pure Functional Integrators
@@ -251,7 +267,26 @@ def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tl
 
     ## Relative + absolute residual test on the L1 residual norm.
     conv_tol = abstol + reltol * F_norm0
-    return jax.lax.while_loop(make_cond(conv_tol), body_fun, initial_nr_state)
+    final = jax.lax.while_loop(make_cond(conv_tol), body_fun, initial_nr_state)
+
+    ## THE RESIDUAL IS RE-EVALUATED AT THE RETURNED x, and that is not fussiness.
+    ## `NewtonState.F_norm` is the residual at the iterate BEFORE the update that
+    ## produced `final.x`, so the loop always does one update beyond the one its
+    ## test approved.  Reading `final.F_norm <= conv_tol` as "converged" therefore
+    ## reports failure whenever the iteration cap is hit, even when the returned
+    ## point is perfectly good: measured at maxiter=2 on a linear RC, which had
+    ## been giving the exact same answer as maxiter=100 and would have started
+    ## raising.  One extra residual is the price of a flag that means what it says,
+    ## and it is cheaper than an iteration -- no `G`, no linear solve.
+    q_f = circuit.q(final.x, params_tree=params_tree)
+    C_f = circuit.C(final.x, params_tree=params_tree)
+    i_Cf, _ = compute_integration(q_f, C_f, state, method=eval_method)
+    F_final = (circuit.i(final.x, params_tree=params_tree) + i_Cf
+               + apply_tlines(circuit.u(state.t + state.dt, analysis='tran',
+                                        params_tree=params_tree),
+                              state.t + state.dt))
+    return final._replace(
+        converged=jnp.sum(jnp.abs(F_final)) <= conv_tol)
 
 # ---------------------------------------------------------------------------
 # Phase 3: Outer Time Loop & Adaptive Control
@@ -431,7 +466,25 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
         ## latter guarantees forward progress so a rejection loop cannot deadlock.
         at_floor = state.dt <= dt_min * (1.0 + 1e-9)
         first = state.step_idx < 1
-        accept = jnp.logical_or(jnp.logical_or(error_ratio <= 1.0, at_floor), first)
+
+        ## STAGE 9(e) -- A NON-CONVERGED NEWTON IS NOT A SOLUTION.
+        ##
+        ## `error_ratio` is computed from `x_curr`; if Newton did not converge,
+        ## `x_curr` does not satisfy the circuit equations and its truncation error
+        ## is meaningless, so accepting on a small ratio accepts a number about a
+        ## point the circuit never occupied.  SPICE's answer to a failed Newton is
+        ## a SMALLER STEP, not a committed non-solution.
+        ##
+        ## `at_floor` still forces progress -- otherwise a circuit that cannot
+        ## converge at any step size hangs instead of finishing -- but that path is
+        ## counted and warned about after the run, exactly as the CPU's force-accept
+        ## is.  The `first` step is no longer exempt: a first step that did not
+        ## converge is the worst one to commit, since every later step extrapolates
+        ## from it.
+        lte_ok = jnp.logical_or(error_ratio <= 1.0, first)
+        accept = jnp.logical_or(
+            jnp.logical_and(nr_state.converged, lte_ok), at_floor)
+        forced = jnp.logical_and(at_floor, jnp.logical_not(nr_state.converged))
 
         def do_accept(_):
             ## `state.t + state.dt`, NOT `state.t`.  This step has been accepted, so
@@ -476,15 +529,25 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 ## Updated only on ACCEPT: a rejected step's x is not a signal the
                 ## circuit ever had, and letting it raise the reference would loosen
                 ## every later tolerance on the strength of a discarded iterate.
-                sig_max=jnp.maximum(state.sig_max, jnp.max(jnp.abs(x_curr))))
+                sig_max=jnp.maximum(state.sig_max, jnp.max(jnp.abs(x_curr))),
+                n_forced_nonconverged=state.n_forced_nonconverged
+                + jnp.where(forced, 1, 0))
 
         def do_reject(_):
             ## LTE above tolerance: shrink the step (bounded below by dt_min) and
             ## retry the same time point without committing anything.
-            shrink = jnp.clip(error_ratio ** (-1.0 / order_p1), 0.1, 0.9)
+            ## Two different reasons to shrink, and they need different factors.
+            ## The predictor's `ratio^(-1/p)` is only meaningful when `x_curr` IS a
+            ## solution; after a failed Newton the ratio describes a point the
+            ## circuit never occupied, so a fixed cut is used instead.
+            lte_shrink = jnp.clip(error_ratio ** (-1.0 / order_p1), 0.1, 0.9)
+            shrink = jnp.where(nr_state.converged, lte_shrink, 0.25)
             retry_dt = jnp.maximum(state.dt * shrink, dt_min)
-            return state._replace(dt=retry_dt,
-                                  n_rejected=state.n_rejected + 1)
+            return state._replace(
+                dt=retry_dt,
+                n_rejected=state.n_rejected + 1,
+                n_nonconverged=state.n_nonconverged
+                + jnp.where(nr_state.converged, 0, 1))
 
         return jax.lax.cond(accept, do_accept, do_reject, None)
 
@@ -505,16 +568,22 @@ class JAXTransientStatistics(object):
     copied LTE defect had to be found and fixed twice.
     """
 
-    __slots__ = ('accepted_steps', 'rejected_steps', 'signal_max')
+    __slots__ = ('accepted_steps', 'rejected_steps', 'signal_max',
+                 'nonconverged_steps', 'forced_nonconverged_steps')
 
     def __init__(self):
         self.accepted_steps = 0
         self.rejected_steps = 0
         self.signal_max = 0.0
+        self.nonconverged_steps = 0
+        self.forced_nonconverged_steps = 0
 
     def __repr__(self):
-        return ('<JAXTransientStatistics accepted=%d rejected=%d signal_max=%.4g>'
-                % (self.accepted_steps, self.rejected_steps, self.signal_max))
+        return ('<JAXTransientStatistics accepted=%d rejected=%d '
+                'nonconverged=%d forced=%d signal_max=%.4g>'
+                % (self.accepted_steps, self.rejected_steps,
+                   self.nonconverged_steps, self.forced_nonconverged_steps,
+                   self.signal_max))
 
 
 class JAXTransient(Analysis):
@@ -833,6 +902,8 @@ class JAXTransient(Analysis):
         total_steps = 0
         sig_max = jnp.array(0.0)
         n_rejected = jnp.array(0)
+        n_nonconverged = jnp.array(0)
+        n_forced_nc = jnp.array(0)
 
         while current_t < tend:
             res_buf = jnp.zeros((CHUNK_SIZE, n))
@@ -849,7 +920,9 @@ class JAXTransient(Analysis):
                 x_history=x_hist, q_history=q_hist, iq_history=iq_hist, h_history=h_hist,
                 results_buffer=res_buf, time_buffer=time_buf,
                 tline_history=tline_history, tline_head=tline_head,
-                sig_max=sig_max, n_rejected=n_rejected
+                sig_max=sig_max, n_rejected=n_rejected,
+                n_nonconverged=n_nonconverged,
+                n_forced_nonconverged=n_forced_nc
             )
         
             final_state = run_chunk(state)
@@ -889,6 +962,28 @@ class JAXTransient(Analysis):
             tline_head = final_state.tline_head
             sig_max = final_state.sig_max
             n_rejected = final_state.n_rejected
+            n_nonconverged = final_state.n_nonconverged
+            n_forced_nc = final_state.n_forced_nonconverged
+
+            ## STAGE 9(e) -- CHECKED PER CHUNK, NOT AT THE END, BECAUSE THE END MAY
+            ## NEVER ARRIVE.  Rejecting a non-converged step shrinks `dt`; a circuit
+            ## that cannot converge at any step size drives `dt` to `dt_min` and then
+            ## advances by `dt_min` forever.  Measured while writing this: a linear RC
+            ## at maxiter=1 needs ~5e12 steps to reach tend that way, so warning
+            ## "after the run" is a warning that never prints.  That is the trade the
+            ## plan flags for 9(d) -- turning a silent wrong answer into a hang -- and
+            ## it is avoided by raising here, where the loop is bounded by CHUNK_SIZE.
+            if int(n_forced_nc) > 0:
+                raise NoConvergenceError(
+                    "jaxtransient: the Newton solve failed to converge at t=%g s "
+                    "even at the minimum step dt_min=%g, so %d step(s) would have "
+                    "been committed without solving the circuit equations. The "
+                    "transient is NOT complete. Raise maxiter (currently %d), "
+                    "loosen reltol (currently %g), or lower dt_min. Previously "
+                    "these points were committed silently -- measured at 11.6x the "
+                    "error on a linear RC, reported as nothing."
+                    % (float(final_state.t), dt_min, int(n_forced_nc),
+                       int(self.par.maxiter), float(self.par.reltol)))
         
         ## STAGE 9 -- what the run actually did, as opposed to what it returned.
         ## The CPU's `TransientStatistics` exists for the same reason; this is the
@@ -898,6 +993,20 @@ class JAXTransient(Analysis):
         self.statistics.accepted_steps = int(total_steps)
         self.statistics.rejected_steps = int(n_rejected)
         self.statistics.signal_max = float(sig_max)
+        self.statistics.nonconverged_steps = int(n_nonconverged)
+        self.statistics.forced_nonconverged_steps = int(n_forced_nc)
+
+        ## Steps REJECTED for non-convergence are recoverable -- the controller
+        ## shrank and retried -- but a run full of them is one to look at, so it is
+        ## surfaced rather than left in the statistics object alone.  The
+        ## unrecoverable case raises inside the chunk loop above.
+        if int(n_nonconverged) > 0:
+            warnings.warn(
+                'jaxtransient: the Newton solve failed to converge on %d step '
+                'attempt(s); each was rejected and retried at a smaller dt, so the '
+                'result is still error-controlled, but the circuit is hard for the '
+                'solver at this tolerance.' % int(n_nonconverged),
+                RuntimeWarning)
 
         # Concatenate
         all_results = np.vstack(results_list)

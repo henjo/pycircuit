@@ -528,3 +528,95 @@ def test_gate_9_1b_sigglobal_reference_survives_a_chunk_boundary():
     assert many_chunks.accepted_steps == one_chunk.accepted_steps, \
         'chunking changed the step count: %d vs %d' \
         % (many_chunks.accepted_steps, one_chunk.accepted_steps)
+
+
+def test_gate_9e_nonconverged_newton_is_not_committed():
+    """Stage 9(e): an unconverged iterate used to be committed, silently.
+
+    `newton_inner_loop`'s while_loop exits on `F_norm <= conv_tol` OR
+    `iters >= maxiter`, and the caller took `x` either way -- so the step's
+    "solution" need not solve the circuit equations, and its LTE was computed from
+    it.  Measured on a LINEAR RC, where the exact answer is known: maxiter=1 gave
+    4.97e-2 max error against 4.28e-3, and reported nothing at all.
+
+    A traced loop cannot raise, so the check is per chunk in Python -- deliberately
+    not at the end of the run, because rejecting non-converged steps drives dt to
+    dt_min and the end may never arrive (~5e12 steps on this circuit).
+    """
+    import warnings
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.nrsolver import NoConvergenceError
+    from pycircuit.circuit import gnd
+
+    def go(maxiter):
+        cir = _rc_circuit()
+        tran = JAXTransient(cir, maxiter=maxiter)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(gnd, tend=5e-3, timestep=1e-4, uic=True)
+        return tran, res, cir.get_node_index('out')
+
+    with pytest.raises(NoConvergenceError, match='failed to converge'):
+        _with_jax_toolkit(lambda: go(1))
+
+    ## And a solve that DOES converge is untouched, including at a maxiter low
+    ## enough that the old stale-by-one convergence flag would have failed it.
+    tau = 1e-3
+    errs = []
+    for maxiter in (2, 3, 100):
+        tran, res, idx = _with_jax_toolkit(lambda m=maxiter: go(m))
+        t = np.asarray(res.sweep_values, dtype=float).reshape(-1)
+        v = np.asarray(res.x[idx], dtype=float).reshape(-1)
+        errs.append(float(np.abs(v - (1.0 - np.exp(-t / tau))).max()))
+        assert tran.statistics.forced_nonconverged_steps == 0
+    assert errs[0] == pytest.approx(errs[-1], rel=1e-12, abs=0.0), \
+        'maxiter changed a converged answer: %r' % errs
+
+
+def test_gate_9e_converged_flag_is_evaluated_at_the_returned_point():
+    """The flag must describe the x that is returned, not the one before it.
+
+    `NewtonState.F_norm` is the residual at the iterate BEFORE the update that
+    produced `final.x`, so the loop always does one update beyond the one its test
+    approved.  Reading `F_norm <= conv_tol` as "converged" reports failure whenever
+    the iteration cap is hit even when the returned point is good -- caught here at
+    maxiter=2, which had been giving exactly the maxiter=100 answer and would have
+    started raising.
+    """
+    import warnings
+    from pycircuit.circuit.jaxtransient import newton_inner_loop, TransientState
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit import circuit as circuit_mod
+
+    saved = circuit_mod.default_toolkit
+    circuit_mod.default_toolkit = jaxtoolkit
+    try:
+        cir = _rc_circuit()
+        cir.update_iparv()
+        n = cir.n
+        x0 = jnp.zeros(n)
+        q0 = cir.q(x0)
+        st = TransientState(
+            t=jnp.array(0.0), dt=jnp.array(1e-5), step_idx=jnp.array(1),
+            x_history=jnp.array([x0, x0, x0]), q_history=jnp.array([q0, q0, q0]),
+            iq_history=jnp.zeros((3, n)), h_history=jnp.array([1e-5, 1e-5, 0.0]),
+            results_buffer=None, time_buffer=None,
+            tline_history=jnp.zeros((0, 10000, 5)),
+            tline_head=jnp.array(0, dtype=jnp.int32))
+        irefnode = cir.get_node_index(gnd_node())
+        out = newton_inner_loop(
+            st, cir, irefnode, jnp.zeros((0, 4)),
+            jnp.zeros((0, 6), dtype=jnp.int32), eval_method='gear',
+            reltol=1e-4, abstol=1e-12, maxiter=40)
+    finally:
+        circuit_mod.default_toolkit = saved
+
+    ## A linear RC converges in a couple of iterations, so a flag computed at the
+    ## returned point must say so.
+    assert bool(out.converged), \
+        'a converged linear solve reported non-convergence (F_norm=%r)' % out.F_norm
+
+
+def gnd_node():
+    from pycircuit.circuit import gnd
+    return gnd

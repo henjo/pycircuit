@@ -3838,6 +3838,67 @@ on node rows and `vabstol` on branch rows. `reltol`/`vabstol` are now threaded t
 is settable, but the *flavour* split is done only for the LTE. Recorded so the remaining
 asymmetry is not mistaken for finished work.
 
+## 9(e) — the JAX Newton commits non-converged points, silently
+
+**Entry measurement (gate 9e-0), 2026-08-01. CONFIRMED.** `newton_inner_loop`'s
+`while_loop` exits on `F_norm <= conv_tol` **or** `iters >= maxiter`, and `time_body` takes
+`nr_state.x` either way — so an unconverged iterate is committed as the step's solution and
+its LTE is computed from it. On a **linear RC**, where the exact answer is known, squeezing
+`maxiter` (settable since 9(b)):
+
+| maxiter | steps | max err | diagnostic |
+|---|---|---|---|
+| 100 | 54 | 4.2835e-3 | none |
+| 3 | 54 | 4.2835e-3 | none |
+| 2 | 54 | 4.2835e-3 | none |
+| **1** | 57 | **4.9708e-2** | **none — silent** |
+
+**An 11.6x worse answer with nothing reported.** The run completes, lands exactly on
+`tend`, and returns a plausible-looking waveform.
+
+**Gate 9e-1 (non-convergence is detected at all).** The statistics must report it when
+`maxiter` is squeezed. Declared: `maxiter=1` on this circuit must produce a non-zero count
+where `maxiter=100` produces zero.
+OUTCOME: **PASS.** `NewtonState` carries a `converged` flag out of the traced loop, and
+`JAXTransientStatistics` reports `nonconverged_steps` (rejected and retried) and
+`forced_nonconverged_steps` (accepted at the floor anyway).
+
+**Gate 9e-2 (the response is to shrink the step, not to commit it).** SPICE's answer to a
+failed Newton is a smaller step, not a committed non-solution. Declared: with `maxiter`
+squeezed, the run must either recover by stepping smaller or say plainly that it could
+not — **the silent 11.6x error must not survive**.
+OUTCOME: **PASS**, after the first attempt traded one failure mode for another. A non-converged
+step is now rejected and retried at `0.25x` — a fixed cut, because the LTE ratio that
+normally sizes the shrink is computed from a point the circuit never occupied and means
+nothing. `maxiter=1` now **raises `NoConvergenceError`** naming the time, the counts and
+the three knobs, against silently returning a 4.97e-2 answer before.
+
+**The first version turned the silent wrong answer into a hang** — exactly the trade the
+plan flags under 9(d). Rejecting drives `dt` to `dt_min`, and a circuit that cannot
+converge at any step size then advances by `dt_min` forever: the linear RC needed ~5e12
+steps to reach `tend`, so a warning "after the run" is a warning that never prints. Fixed
+by checking **per chunk**, where the loop is bounded by `CHUNK_SIZE`, and raising there.
+
+**Gate 9e-3 (converged runs do not move).** A run whose Newton converges must be
+**bit-identical** to before. Declared at bit-identical: this changes the accept predicate,
+and anything else means it changed steps that were already fine.
+OUTCOME: **PASS. All 17 baseline runs bit-identical**, `max|diff| = 0.000e+00` — 9 CPU, 6 CPU
+pulse, 2 JAX.
+
+**This gate caught a real regression in the first implementation.** Reading
+`final.F_norm <= conv_tol` as "converged" is wrong: `F_norm` is the residual at the
+iterate *before* the update that produced `final.x`, so the loop always does one update
+beyond the one its test approved, and hitting the iteration cap reported failure even when
+the returned point was good. Measured at `maxiter=2` on the linear RC, which had been
+giving exactly the `maxiter=100` answer and started raising. The residual is now
+re-evaluated at the returned `x` — one extra residual per step, cheaper than an iteration
+since it needs no `G` and no linear solve — so the flag describes the point that is
+actually returned.
+
+**Gate 9e-4.** Full suite.
+OUTCOME: **PASS. Suite 814 passed, 6 skipped, 0 failed**, against 812 before plus
+the two tests added here.
+
 ## Gates 9-1, 9-2, 9-3 — the CPU's step-control gates, ported
 
 **Done 2026-07-31.** The plan says of gate 9-1: *"None of these is currently expressible,
