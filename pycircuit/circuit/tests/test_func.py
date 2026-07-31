@@ -28,24 +28,43 @@ def test_sin():
         sympy.sin(2*sympy.pi*freq*(t-td)+phase*sympy.pi/180)
     assert sin.f(t) == v
 
-    ## Test next event, phase = 0
-    sin = func.Sin(toolkit = symbolic,
-                   offset=vo, amplitude=va, freq=freq, td=td, 
-                   theta=theta, phase=0)
-    period = 1/freq
-    assert sin.next_event(period+td) == period+td + period/4
-    assert sin.next_event(period+td + period / 8) == period+td + period/4
-    assert sin.next_event(period+td - period / 16) == period+td
+    ## NEXT EVENT.  A sine has no discontinuity after `td`, so it contributes no
+    ## breakpoints there.  This test used to require an event every quarter period
+    ## -- at the peaks and zero crossings -- i.e. it encoded the defect stage 4g(a)
+    ## removes.  A breakpoint makes the transient truncate the step to land on it
+    ## and then re-arm an order drop across it; for the trapezoidal rule each such
+    ## restart re-seeds the alternating (-1)^n mode in the companion current.
+    ##
+    ## Measured effect of removing them, on a VSin-driven RC over five periods:
+    ## evaluations forced to order 1 fell from 120 of 1236 to 3 of 1596, and the
+    ## three that remain are evaluations 1, 2 and 3 -- the genuine opening of the
+    ## run, which has no history and therefore cannot be higher order.
+    ## See doc/transient_work_plan.md stage 4g.
+    numeric_sin = func.Sin(offset=0.0, amplitude=1.0, freq=1e6, td=1e-6,
+                           theta=0.0, phase=0)
 
-    ## Test next event, phase = phase
-    phase = 1
-    sin = func.Sin(toolkit = symbolic,
-                   offset=vo, amplitude=va, freq=freq, td=td, 
-                   theta=theta, phase=phase)
-    period = 1/freq
-    t_nextevent = sin.next_event(period+td + period / 8 - phase*period/360)
-    assert t_nextevent.expand() == (period+td + period/4 - phase*period/360).expand()
-    
+    ## `td` IS a real event: the waveform is only smooth *after* the source starts,
+    ## and the derivative is generally discontinuous there.  So it is reported once.
+    assert numeric_sin.next_event(0.0) == 1e-6
+    assert numeric_sin.next_event(0.5e-6) == 1e-6
+
+    ## After the source has started, nothing -- at a peak, at a zero crossing, and
+    ## in between alike.
+    assert numeric_sin.next_event(1e-6) == float('inf')
+    assert numeric_sin.next_event(1.25e-6) == float('inf')   # peak
+    assert numeric_sin.next_event(1.5e-6) == float('inf')    # zero crossing
+    assert numeric_sin.next_event(5e-6) == float('inf')
+
+    ## A source with no delay has no events at all.
+    undelayed = func.Sin(offset=0.0, amplitude=1.0, freq=1e6, td=0.0,
+                         theta=0.0, phase=0)
+    assert undelayed.next_event(0.0) == float('inf')
+
+    ## Under a symbolic toolkit `t < td` is a relational rather than a bool, so
+    ## asking for its truth value raises.  There is no meaningful breakpoint
+    ## schedule for a symbolic time; it must degrade to "no events", not blow up.
+    assert sin.next_event(t) == symbolic.inf
+
 def test_pulse():
     t = sympy.Symbol('t')
 

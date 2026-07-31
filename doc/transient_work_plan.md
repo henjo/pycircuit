@@ -1610,13 +1610,83 @@ before doing (b)**:
     docstring already names it.
 **Gate 4g-1:** with (a) alone, count Newton evaluations forced to order 1 on a plain
 `VSin`-driven RC. Declared success: **0**, against the measured 120 of 1236.
-OUTCOME:
+OUTCOME: **PASSED in substance; the literal "0" was unachievable and the gate was
+mis-specified.** `VSin`-driven RC, trapezoidal, five periods: **3 order-1 evaluations out
+of 1596**, against the recorded 120 of 1236 — a 40x reduction.
+
+The three remaining are evaluations **1, 2 and 3** — the genuine opening of the run, and
+**zero** after it. The first step of a run has no history to difference, so it *must* run
+at order 1; that is correct behaviour and the same fact stage 1 recorded in the
+`_no_history` comment. **Declaring 0 was an error in the gate, not a target that was
+missed**: no configuration of any correct integrator can achieve it. The measurable claim
+is "no drive-synchronous order drops", and that is met exactly.
 **Gate 4g-2:** est/true for Trapezoidal must not scale as 1/h. Declared success: ratio
 bounded within 2x of 1 as h falls 1e-2 -> 1e-4. Currently -10 -> -2976.
-OUTCOME:
+OUTCOME: **FAILED — tier (a) is necessary but NOT sufficient, which is the measurement the
+plan asked for before committing to (b).** est/true at a fixed step ratio of 1.0:
+
+| | h=1e-8 | h=1e-9 | h=1e-10 |
+|---|---|---|---|
+| euler | 1.0371 | 1.0040 | 1.0004 |
+| gear2-classic | 0.9829 | 0.9983 | 0.9998 |
+| **trapezoidal** | **4.8652** | **65.1020** | **681.3979** |
+
+Euler and Gear2 converge to 1 as the step shrinks, which is what a consistent estimator
+does. Trapezoidal grows by **exactly 10x for every 10x reduction in h** — the 1/h law the
+plan recorded as "-10 -> -2976", reproduced.
+
+**Why tier (a) cannot fix it, stated so (b) is not attempted twice:** the harness that
+produces the table above contains **no sources, no breakpoints and no order drops at all**
+— it is the bare companion recursion driven by an analytic charge. The alternating mode is
+*intrinsic* to the trapezoidal companion `iq_n = 2(q_n - q_{n-1})/h - iq_{n-1}`, whose
+homogeneous solution is `iq_n = -iq_{n-1}`, i.e. `(-1)^n`, undamped. Breakpoints **re-seed**
+it — which is why tier (a) is still worth having, and why gate 4g-1 improved 40x — but
+removing every breakpoint leaves the mode running from whatever seeds it at t=0.
+
+**Tier (b) is therefore required, and its design is settled by the same algebra.** The
+trapezoidal relation gives `(iq_n + iq_{n-1})/2 = (q_n - q_{n-1})/h = d_n`, and the
+alternating component **cancels exactly in that sum** because it flips sign each step. So
+`d` is mode-free and the estimator should difference `d`, not `g`:
+
+    LTE ~ -(1/6) (d_n - 2 d_{n-1} + d_{n-2})      [uniform grid; the divided-difference
+                                                   generalisation is needed off it]
+
+with `d_n = (q_n - q_{n-1})/h_curr`, `d_{n-1} = (q_{n-1} - q_{n-2})/h_last`,
+`d_{n-2} = (q_{n-2} - q_{n-3})/h_last2`.
+
+**The cost is the interface, exactly as the plan warned.** It needs a third past charge
+(`get_required_history()` 1 -> 3 for Trapezoidal) and `h_last2` threaded through
+`Integrator.compute_lte`, its three implementations, both `StepController` subclasses and
+the transient's history bookkeeping. **Not attempted at the end of a long session**: stage
+3 has already shown once that a hasty change to this code path breaks the two QUCS
+reference tests, and an invasive interface change deserves a fresh start rather than a
+tired one. The measurement that decides it is done and recorded; the change itself is next.
 **Gate 4g-3:** re-run 0.2a. Declared success: the harness's integrator choice is either
 confirmed or corrected, and the recorded 10x is either upheld or replaced.
-OUTCOME:
+OUTCOME: **Choice CONFIRMED. The 10x is REPLACED by 2.17x — and the difference was Euler's
+broken estimator, not the trapezoidal rule's merit.** Same window, same tolerances:
+
+| integrator | recorded | now | change |
+|---|---|---|---|
+| euler (the inherited default) | 2896 | **341** | **8.5x fewer steps** |
+| trapezoidal | 288 | **157** | 1.8x |
+| gear2 `'ywr'` | 347 | **163** | 2.1x |
+| gear2 `'classic'` | 376 | **167** | 2.3x |
+| **euler / trapezoidal** | **10.1x** | **2.17x** | |
+
+Trapezoidal is still the fastest, so the harness's choice stands. But **the 10x that
+justified it was mostly Euler's variable-step LTE bias** — gate 4c — which made Euler
+demand roughly eight times more steps than its own accuracy required. Once the estimator is
+correct the honest margin is 2.17x. This is a fourth review magnitude that shrank on
+measurement, and unlike the others it shrank because a *defect elsewhere* was inflating it.
+
+Re-running 0.2a itself: **D/A = E/B = 1.000 exactly**, because the probe's
+"suppress breakpoints" monkeypatch is now a **no-op** — `Sin.next_event` already returns
+`inf`. The ranking is 1.038 with and without, so 0.2a's original conclusion (breakpoints do
+not decide the integrator choice) is upheld, now trivially. Note the gear2-vs-trapezoidal
+gap has narrowed from 1.205x to **1.038x**: the three second-order methods are now within
+4% of each other, which makes gate 4f's choice of default a much finer decision than the
+pre-repair numbers suggested.
 
 **4h. `fixed_timestep=True` does not fix the timestep.** `transient.py:415-416` restores
 `dt` only when *not* fixed-step, so breakpoint truncation is permanent. Measured: expected
@@ -2209,3 +2279,52 @@ appears where it does. Recorded so the question is closed rather than left open.
 1e-3 gives 90.8x, smaller only costs steps), but it is still a *ratio to `timestep`* rather
 than anything the circuit told us. A step derived from the circuit's own time constants
 would be better and is the same work as the Hairer estimate.
+
+---
+
+## STAGE 4 (part 2) — 4g tier (a), 2026-07-31
+
+Suite **755 passed, 6 skipped, 0 failed**.
+
+**Tier (a) done: `Sin.next_event` returns `td` once, then `inf`.** A sine is C-infinity
+after `td`; peaks and zero crossings are not discontinuities, and a breakpoint is for a
+discontinuity. Order-1 evaluations on a `VSin`-driven RC: **120 of 1236 -> 3 of 1596**, and
+the three are evaluations 1/2/3, the genuine opening of the run.
+
+**Tier (a) is NOT sufficient, which is what the plan asked to be measured.** est/true for
+trapezoidal still scales as 1/h (4.87 / 65.1 / 681.4 at h = 1e-8 / 1e-9 / 1e-10), because
+the harness that measures it has **no breakpoints at all** — the alternating mode is
+intrinsic to the companion recursion `iq_n = 2(q_n - q_{n-1})/h - iq_{n-1}`, whose
+homogeneous solution is `(-1)^n`. Breakpoints re-seed it; removing them does not remove it.
+
+**Tier (b) is required and its design is settled** — difference `d_n = (q_n - q_{n-1})/h`,
+in which the alternating component cancels exactly because
+`(iq_n + iq_{n-1})/2 = d_n`. Cost: a third past charge and `h_last2` threaded through
+`compute_lte`, its three implementations, both controllers and the transient's history.
+**Deliberately not started at the end of a long session** — stage 3 already demonstrated
+that a hasty change here breaks the two QUCS reference tests, which are the only external
+check in the suite.
+
+**One test was updated because it encoded the defect.** `test_func.py::test_sin` required
+an event every quarter period. It now asserts the opposite contract, with the measurement
+that justifies it. A real bug surfaced while doing so: the new `t < td` comparison is a
+sympy relational under the symbolic toolkit and raised `TypeError`; it now degrades to "no
+events", which is the only meaningful answer for a symbolic time.
+
+### Stage 4 status
+
+| item | state |
+|---|---|
+| 4a PI gains | not started |
+| 4a-bis two-threshold controller | not started (hypothesis, from the papers) |
+| 4b MAX_REJECT force-accept | not started |
+| 4c Euler variable-step bias | **DONE** — spread 4.03x -> 1.01x |
+| 4d trapezoidal `'ywr'` | **blocked on 4g(b)** |
+| 4e `check_order_drop` direction | not started |
+| 4f default `lte_formula` | last — needs 4a-4e; the margin is now only 1.038x |
+| 4g(a) breakpoints | **DONE** — 120/1236 -> 3/1596 |
+| 4g(b) mode-free estimator | **required, designed, not started** |
+| 4h `fixed_timestep` | not started |
+| gear2-classic ratio dependence | **NEW**, measurable now, not started |
+| 0.3d `chgtol` guard | not started |
+| `relref` default / `lteratio` | not started |

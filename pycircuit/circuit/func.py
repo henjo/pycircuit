@@ -28,12 +28,36 @@ class Sin(TimeFunction):
         self.toolkit = toolkit
     
     def next_event(self, t):
-        """Return events at peaks and zero-crossings"""
-        
-#        phase = self.toolkit.simplify(self.omega * (t - self.td) + self.phase)
-        phase = self.omega * (t - self.td) + self.phase
-        nextevent_phase = (self.toolkit.floor(phase / (self.toolkit.pi / 2)) + 1) * self.toolkit.pi / 2
-        return t + (nextevent_phase - phase) / self.omega
+        """The start of the source, and nothing after it.
+
+        STAGE 4g(a).  This used to return an event at every peak and every zero
+        crossing -- one per quarter period, forever.  **A breakpoint means a
+        discontinuity**, and a sine has none: it is C-infinity everywhere after
+        ``td``.  Peaks and zero crossings are not discontinuities, they are just
+        places where a derivative happens to vanish.
+
+        The cost of pretending otherwise was not cosmetic.  The transient truncates
+        the step to land exactly on each breakpoint and then re-arms an order drop
+        across it, so a plain sine drive produced a periodic, drive-synchronous
+        order drop -- and for the trapezoidal rule each restart re-seeds the
+        alternating `(-1)^n` mode in the companion current.  It also forced a
+        step-size truncation four times per period regardless of what the error
+        estimate wanted.
+
+        ``td`` IS a real event: the waveform is only C-infinity *after* the source
+        starts, and at ``td`` the derivative is generally discontinuous.  So return
+        it once, then nothing.
+        """
+        ## Under a symbolic toolkit `t` is a sympy symbol and `t < td` is a
+        ## relational, not a bool -- asking for its truth value raises.  There is
+        ## no meaningful breakpoint schedule for a symbolic time anyway, so fall
+        ## through to "no further events".
+        try:
+            if bool(t < self.td):
+                return self.td
+        except TypeError:
+            pass
+        return self.toolkit.inf
         
     def f(self, t):
         # --- DAMPED SINE WAVE EQUATION ---
