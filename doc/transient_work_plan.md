@@ -8,7 +8,8 @@
 > `git log --oneline 1be99da..HEAD -- pycircuit/`. Branch `cna-jax-vectorization`,
 > **pushed to `origin`** (`git@github.com:henjo/pycircuit.git`).
 >
-> **Suite: 788 passed, 6 skipped, 0 failed, 676.30 s** (`-m "" --timeout=400`). Nominal
+> **Suite: 788 passed, 6 skipped, 0 failed** (`-m "" --timeout=400`; 676 s and 1373 s on
+> two runs of near-identical source — see trap 2 before reading anything into a runtime). Nominal
 > ~8-13 min, but one run of the identical tree took **31m41s** purely from machine load —
 > see trap 2. **Doc build: succeeded, 2 warnings, 0 ERROR.** Working tree clean.
 >
@@ -2030,7 +2031,131 @@ it belongs with 9(a)'s shared kernels.
 **4f. Default `lte_formula`.** Per decision 0.3b.
 **Gate 4f:** whichever default is chosen, record rejections and force-accepts for all four
 integrator/formula combinations on the same circuit, so the choice is evidenced.
-OUTCOME:
+OUTCOME: **CLOSED AS NOT ANSWERABLE AS POSED — there are no longer four combinations.**
+4g(b) and 4i moved both second-order estimators onto a shared `q'''` helper that does not
+read `lte_formula`, so `Trapezoidal('ywr')` and `Trapezoidal('classic')` return bit-identical
+values, and so do the two `Gear2` variants. A four-way comparison has two distinct members.
+
+Measured, CPU path, with the four charges a normal step has:
+
+| integrator | `classic` vs `ywr` |
+|---|---|
+| Euler | bit-identical (the two formulas coincide, and always did) |
+| Trapezoidal | bit-identical |
+| Gear2 | bit-identical |
+
+**The question this gate existed to settle — which `lte_formula` should be the default —
+therefore has no measurable content left.** 0.3b's deferred decision is subsumed. What
+replaced it is a different question, recorded below and staged.
+
+### The `lte_formula` decision, 2026-07-31
+
+**Where it still had an effect before this change.** Exactly one place on the CPU: the
+single fallback step of a run, before the ring buffer holds four charges. There Euler is
+identical, Trapezoidal differs only in the low bits (same formula, different operation
+order), and **Gear2 differs by exactly 4/3** — the recorded YWR optimism, its GEAR2 residual
+estimating `(1/4) h^2 q'''` against a true `(1/3)`.
+
+**And a second consumer that none of this work touched.** `jaxtransient.py` carries its own
+`lte_formula`, and there it still selects a genuinely different algorithm: `'ywr'` maps a
+g-difference through `J^-1`, `'classic'` takes a charge-domain estimate with no `J^-1`.
+Gate 0.2b established that the charge path applies `lte_abs = 1e-6` — a **voltage**
+tolerance — to a **charge**, so it never rejects a step. **On the JAX backend
+`lte_formula='classic'` selects a broken estimator.** Verified 2026-07-31 that no commit in
+this session modified that file.
+
+So one parameter name meant a real choice with a known defect on one backend and almost
+nothing on the other. Staged rather than settled in one move:
+
+**(D) NOW — remove the last place the choice bites on the CPU, and finish 4d.** Both
+second-order fallbacks take the divided-difference form unconditionally, and the dead `ywr`
+fallback branches go. For Gear2 because `ywr` is 3/4 optimistic there; for Trapezoidal
+because YWR's TRAP entry is a **uniform-grid** formula (established from the paper under 4d)
+being used on a grid the opening ramp makes non-uniform. This is exactly 4d's stated fix —
+*"delete the branch and keep `'ywr'` as an alias"* — so **4d is closed by it**.
+
+**(B) NOW — keep the parameter, and say what it is.** It stays accepted, so nothing breaks,
+and the docstrings state plainly that it selects nothing on the CPU path and why. A knob
+that advertises a choice it does not make is the "thin advertised feature" 0.1c warns
+about; documenting it is the honest interim, and removing public API for a knob with no
+remaining CPU effect is not worth a breaking change on its own.
+
+**(C) WITH STAGE 9 — remove it from both backends.** Stage 9 already owns merging the two
+transient paths, 0.2b's decision rule already says `lte_formula` should "select an algebra
+only", and the JAX charge path's tolerance defect belongs to the same work. Doing it there
+is one change instead of two, and avoids leaving the name meaning different things on the
+two backends in the interim. **Recorded as a stage-9 item so it is not lost.**
+
+**Gate 4f-D1 (the parameter is inert on the CPU, end to end).** Not at the estimator —
+end to end. Two full transient runs differing only in `lte_formula` must produce
+**bit-identical** waveforms and step counts, for every integrator, on a circuit whose
+opening ramp makes the early grid non-uniform. Declared at bit-identical rather than "close"
+because anything else means a branch is still live somewhere.
+OUTCOME: **PASSED — bit-identical, not merely close.** Two full runs differing only in `lte_formula`, on a `VPulse` circuit whose opening ramp makes the early grid non-uniform: euler 403/403 steps, trapezoidal 153/153, gear2 183/183, and `max |dv| = 0.000e+00` for all three.
+
+**Gate 4f-D2 (the fallback got the better formula, not just a consistent one).** Gear2's
+fallback estimate must change from the `ywr` value to the `classic` one — a factor 4/3 —
+rather than the two merely being made to agree on whichever was there.
+OUTCOME: **PASSED.** The Gear2 fallback estimate is now **-3.770212e+01**, the divided-difference value, where `'ywr'` gave **-2.827659e+01** — the 4/3 the YWR GEAR2 residual is short by. The two were made to agree on the *accurate* one.
+
+**Gate 4f-D3 (no regression).** Full suite `-m ""`, and
+`benchmarks/transient_stage4.py --forceaccept` unchanged except where the fallback step
+moves a run.
+OUTCOME: **PASSED. 788 passed, 6 skipped, 0 failed, 1372.99 s** (`-m "" --timeout=400`)
+— the same tally as before, with three tests rewritten rather than added. The 1373 s is
+machine load, not this change (trap 2 records a 31m41s run of an identical tree); the
+previous run of nearly the same source took 676 s. Doc build: **build succeeded, 2
+warnings, 0 ERROR**, and the generated `classic`/`ywr` columns are now identical, which is
+the page demonstrating gate 4f-D1 rather than asserting it.
+
+**And it did far more than "move a run" — see below.**
+
+### THE FORCE-ACCEPT PATH IS NOW UNREACHABLE
+
+`--forceaccept` after this change records **zero force-accepts across all 45
+configurations** — 3 circuits x 3 tolerances x 5 integrator/formula combinations — where
+before this session it was reached up to 159 times in a single run. The progression, all
+measured on the same sweep:
+
+| after | worst force-accepts in one run | accepted ratios outside the bound |
+|---|---|---|
+| (before this session) | 159 | **61** |
+| 4b + 4e | 121 | 0 |
+| 4g(b) | 26 | 0 |
+| 4i | 1 | 0 |
+| **4d / 4f-D** | **0** | **0** |
+
+**One step per run was seeding the rest.** The fallback estimate ran once, before the ring
+buffer held four charges — and under `'ywr'` it reported 3/4 of the truncation error. An
+under-report there lets the controller grow the step further than the tolerance allows, and
+the run then spends rejections climbing back out. Correcting that single step removed the
+last configuration that reached the rejection cap at all.
+
+**This is the more useful reading of 4b.** Its escape hatch was never the disease: it was
+the visible symptom of estimators that under-reported, and it fired progressively less as
+each of them was corrected — 4c, 4g(b), 4i, and now 4d. The hatch stays, and its warning
+stays, because an estimator can always be wrong on a circuit nobody has run yet; but on
+everything measured here it is now dead code, which is what a correct error controller
+should make it.
+
+**Consequence for the 4b regression test**, whose `n_forced > 0` precondition existed so it
+would fail loudly rather than pass against an empty result: it did exactly that, and there
+is no configuration left to re-point it at. The precondition is **inverted** — it now
+asserts `n_forced == 0` and says what to do if that ever stops being true. The mechanism
+itself is still tested deterministically through `_RejectionInjector`, which was built for
+this eventuality.
+
+**Test churn, three tests, all pinning the removed distinction:**
+
+1. `test_compute_lte_order_and_scale[gear2-ywr]` pinned the ratio at **1/2**; it is now 2/3,
+   the same as `gear2-classic`, because the fallback both selections reach is the same code.
+2. `test_lte_formula_ywr` asserted `classic/ywr = 4/3` as *"what still separates the
+   formulas"*. Nothing separates them now, and that is the assertion instead.
+3. `test_gate_4b_no_accepted_step_ratio_leaves_the_stability_bound` — the precondition
+   above.
+
+None was adjusted to make a number fit: each pinned a real property that this change
+deliberately removed, and each now pins what replaced it.
 
 **4g. The trapezoidal `(-1)^n` contamination.** The largest item in this stage and the one
 that blocks the IM3 harness. Three tiers, and **tier (a) alone may suffice — measure

@@ -826,6 +826,21 @@ def test_gate_4b_no_accepted_step_ratio_leaves_the_stability_bound():
     would make a louder test. It is deliberately not used here: stage 4d deletes
     that branch as an alias of `'classic'`, so a test built on it would quietly
     stop testing anything the day 4d lands.
+
+    **AND THE CAP IS NOW UNREACHABLE, WHICH IS WHY THE PRECONDITION IS GONE.**
+    This test used to assert `n_forced > 0` so that it would fail loudly rather
+    than pass against an empty result, with a message telling the next person to
+    re-measure. That happened: after 4d/4f-D the sweep records **zero
+    force-accepts across all 45 configurations** -- 3 circuits x 3 tolerances x 5
+    integrator/formula combinations. There is no configuration left to re-point it
+    at, so the precondition is replaced by a recorded observation.
+
+    That is not the invariant going untested. The *mechanism* -- the warning, the
+    order drop, the bounded growth -- is exercised deterministically by
+    `_RejectionInjector` in the three tests above, which was built for exactly this
+    eventuality. What this test still contributes is the end-to-end ratio bound on
+    a real run of the shipped default, which remains meaningful whether or not the
+    escape hatch fires.
     """
     import warnings as _w
     from pycircuit.circuit.integrator import (Gear2Integrator,
@@ -878,11 +893,15 @@ def test_gate_4b_no_accepted_step_ratio_leaves_the_stability_bound():
         _w.simplefilter('ignore', RuntimeWarning)
         tran.solve(refnode=gnd, tend=5e-3, timestep=2e-4, x0=x0)
 
-    assert spy.n_forced > 0, \
-        'this run no longer reaches the rejection cap, so it no longer tests 4b. ' \
-        'That is worth knowing either way -- re-measure with ' \
-        'benchmarks/transient_stage4.py --forceaccept and re-point this test at a ' \
-        'configuration that does, rather than deleting it'
+    ## No `n_forced > 0` precondition: see the docstring.  Recorded instead, so a
+    ## future change that makes the cap reachable again is visible rather than
+    ## silent -- reaching it is not a failure, but it is a fact worth surfacing.
+    assert spy.n_forced == 0, \
+        'the rejection cap is reachable again (%d force-accepts). That is not ' \
+        'necessarily wrong, but it was unreachable across all 45 swept ' \
+        'configurations after 4f-D, so something has changed the step trajectory ' \
+        '-- re-run benchmarks/transient_stage4.py --forceaccept and say what' \
+        % spy.n_forced
 
     ratios = [spy.h_accepted[i + 1] / spy.h_accepted[i]
               for i in range(len(spy.h_accepted) - 1)]

@@ -55,6 +55,36 @@ def third_divided_difference(q_curr, q_last, h_curr, h_last, h_last2):
     return (dd_a - dd_b) / (h_curr + h_last + h_last2)
 
 
+## WHY `lte_formula` NO LONGER SELECTS ANYTHING ON THIS BACKEND.
+##
+## It chose between the classic divided-difference estimates and the
+## Yao-Wang-Roychowdhury Table I residuals.  Three changes removed its effect:
+##
+##   4g(b)  the trapezoidal estimator stopped differencing `g` (the companion
+##          current), which carries an undamped (-1)^n mode;
+##   4i     both second-order estimators moved onto a shared third-derivative
+##          estimate taken from a divided difference of the CHARGE, which reads
+##          neither formula;
+##   4d     the one-step fallback -- the last place either branch ran -- now takes
+##          the divided-difference form unconditionally, because YWR's TRAP entry
+##          is a uniform-grid formula and its GEAR2 residual is 3/4 of the true
+##          truncation error.
+##
+## So `'ywr'` and `'classic'` now produce bit-identical runs for every integrator.
+## The argument is kept, and accepted, so callers that pass it do not break; it is
+## documented rather than removed because removing public API for a knob with no
+## remaining effect is not worth a breaking change on its own.
+##
+## **IT IS NOT INERT ON THE JAX BACKEND.**  `jaxtransient.py` carries its own
+## `lte_formula` and there it still selects a genuinely different algorithm --
+## `'ywr'` maps a g-difference through J^-1, `'classic'` takes a charge-domain
+## estimate with no J^-1 whose tolerance (gate 0.2b) applies a VOLTAGE bound to a
+## CHARGE and therefore never rejects a step.  Removing the parameter from both
+## backends belongs with stage 9, which already owns merging the two transient
+## paths; doing it here alone would leave one name meaning two things.
+LTE_FORMULA_IS_VESTIGIAL = True
+
+
 class Integrator(ABC):
     """
     Abstract Base Class for Transient Numerical Integration Strategies.
@@ -177,6 +207,8 @@ class TrapezoidalIntegrator(Integrator):
     """Trapezoidal (2nd order) Integration Method"""
 
     def __init__(self, lte_formula='classic'):
+        ## ACCEPTED AND INERT ON THIS BACKEND since 4g(b)/4i/4d -- see the note on
+        ## `LTE_FORMULA_IS_VESTIGIAL` at the top of this module.
         self.lte_formula = lte_formula
 
     def get_required_history(self) -> int:
@@ -261,27 +293,20 @@ class TrapezoidalIntegrator(Integrator):
         ## still holds the initial charge twice.  Falling back to the g-based form
         ## for that single step is better than returning zeros, which would make it
         ## an unchecked step of the kind stage 3 exists to remove.
+        ## THE DIVIDED-DIFFERENCE FORM, AND `lte_formula` DOES NOT SELECT HERE.
+        ## YWR's Table I TRAP entry -- `Eg = -(1/6)(g_n - 2 g_{n-1} + g_{n-2})` --
+        ## carries a single `h` and an UNWEIGHTED second difference, i.e. it is a
+        ## uniform-grid formula, where the same table's GEAR2 entry carries h1 and
+        ## h2 explicitly.  Off a uniform grid it is wrong by O(1/h), and the grid is
+        ## not uniform here: stage 3's opening ramp is still growing the step at the
+        ## one point this fallback runs.  Taking the divided-difference form
+        ## unconditionally is stage 4d's stated fix.
         gn = 2 * (q_curr - q_last[0]) / h_curr - iq_last[0]
         gn_1 = iq_last[0]
         gn_2 = iq_last[1] if len(iq_last) > 1 else iq_last[0]
-
-        if self.lte_formula == 'ywr':
-            # Yao-Wang-Roychowdhury DAE LTE (ICECS 2014, Table I, TRAP):
-            #   eps = -(1/12)(q_x + 0.5 h f_x)^-1 (g_n - 2 g_{n-1} + g_{n-2}) h
-            # With (q_x + 0.5 h f_x) = 0.5 h (G + 2C/h) = 0.5 h J, the h cancels
-            # and, since the controller applies J^-1, Eg = -(1/6)(2nd diff of g).
-            #
-            # NOTE: this is a UNIFORM-GRID formula -- Table I gives TRAP with a
-            # single h and an unweighted second difference, while its GEAR2 entry
-            # carries h1/h2 explicitly.  It is wrong off a uniform grid by O(1/h)
-            # and is stage 4d's subject.  It survives here only on the one
-            # fallback step, where it is bounded by the run's opening ramp.
-            lte = -(1.0/6.0) * (gn - 2 * gn_1 + gn_2)
-        else:
-            # Classic divided-difference form, at the NODES.
-            dd1 = (gn - gn_1) / h_curr
-            dd2 = (gn_1 - gn_2) / h_last
-            lte = -(1.0/3.0) * h_curr**2 * (dd1 - dd2) / (h_curr + h_last)
+        dd1 = (gn - gn_1) / h_curr
+        dd2 = (gn_1 - gn_2) / h_last
+        lte = -(1.0/3.0) * h_curr**2 * (dd1 - dd2) / (h_curr + h_last)
         return lte, 3.0  # p=3.0 for Trapezoidal
 
 
@@ -289,9 +314,14 @@ class Gear2Integrator(Integrator):
     """Gear-2 / BDF-2 (2nd order) Variable Step Size Integration Method"""
 
     def __init__(self, lte_formula='ywr'):
-        ## Defaults to 'ywr' (Yao-Wang-Roychowdhury, ICECS 2014) rather than
-        ## 'classic', belt and braces: 'classic' is now mathematically correct
-        ## (see compute_lte below) but 'ywr' has the longer track record here.
+        ## ACCEPTED AND INERT ON THIS BACKEND since 4i and 4d -- see the note on
+        ## `LTE_FORMULA_IS_VESTIGIAL` at the top of this module.  The default stays
+        ## `'ywr'` because changing it would change nothing and break callers who
+        ## pass it explicitly.
+        ##
+        ## The rationale that used to sit here is kept because it records how the
+        ## default was chosen: 'ywr' was picked belt-and-braces when 'classic' was
+        ## repaired, on the grounds that it had the longer track record.
         ## The price is that the YWR GEAR2 residual estimates (1/4) h^2 q'''
         ## against a true (1/3) h^2 q''', so the default reports 3/4 of the
         ## truncation error at every step where a corrected 'classic' is
@@ -430,27 +460,22 @@ class Gear2Integrator(Integrator):
                 q_curr, q_last, h_curr, h_last, h_last2), 3.0
 
         ## `h_last2 is None` for exactly one step of a run -- the second, before the
-        ## ring buffer holds four real charges.  The g-based forms below serve that
+        ## ring buffer holds four real charges.  The g-based form below serves that
         ## step; returning zeros would make it unchecked, which is the defect stage
         ## 3 removed from the first step.
-        if self.lte_formula == 'ywr':
-            # Yao-Wang-Roychowdhury DAE LTE (ICECS 2014, Table I, GEAR2).  Uses the
-            # 2nd difference of g = dq/dt (not a q'' divided difference).  h1=h_curr,
-            # h2=h_last; g_n is the Gear2 companion current reconstructed from the
-            # charge history, g_{n-1}, g_{n-2} come from the iq history.  The paper's
-            # (q_x + [h1(h1+h2)/(2h1+h2)] f_x)^-1 factor equals alpha0*J^-1, and since
-            # the controller applies J^-1, the residual reduces to:
-            #   Eg = -(1/8) ((h1+h2)/(h1 h2)) (h2 g_n - (h1+h2) g_{n-1} + h1 g_{n-2})
-            h1, h2 = h_curr, h_last
-            alpha0 = (2 * h1 + h2) / (h1 * (h1 + h2))
-            alpha1 = -(h1 + h2) / (h1 * h2)
-            alpha2 = h1 / (h2 * (h1 + h2))
-            g_n = alpha0 * q_curr + alpha1 * q_last[0] + alpha2 * q_last[1]
-            g_nm1 = iq_last[0]
-            g_nm2 = iq_last[1] if len(iq_last) > 1 else iq_last[0]
-            lte = -(1.0/8.0) * ((h1 + h2) / (h1 * h2)) * \
-                (h2 * g_n - (h1 + h2) * g_nm1 + h1 * g_nm2)
-            return lte, 3.0
+        ##
+        ## IT IS THE DIVIDED-DIFFERENCE FORM, NOT YWR's, AND `lte_formula` DOES NOT
+        ## SELECT HERE.  YWR's Table I GEAR2 residual estimates `(1/4) h^2 q'''`
+        ## against a true `(1/3)`, so it reports 3/4 of the truncation error --
+        ## measured on this exact fallback as -2.827659e+01 where the correct value
+        ## is -3.770212e+01.  After 4i this was the ONLY step of a run where the
+        ## choice still had any effect on the CPU path, so taking the accurate one
+        ## unconditionally is what finishes 4d: "delete the branch and keep 'ywr' as
+        ## an alias".
+        ## (The YWR Table I GEAR2 residual that used to be selectable here,
+        ##  `Eg = -(1/8)((h1+h2)/(h1 h2))(h2 g_n - (h1+h2) g_{n-1} + h1 g_{n-2})`,
+        ##  is derived and compared against this one in doc/src/circuit/lte_dae.rst;
+        ##  it is not kept as dead code.)
 
         # --- CLASSIC GEAR-2 LOCAL TRUNCATION ERROR ---
         # Taylor-expanding the VSS companion current above about t_n (the alpha

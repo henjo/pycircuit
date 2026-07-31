@@ -489,17 +489,24 @@ def test_lte_formula_ywr():
         assert e4 < 2e-2, \
             "gear2-%s off the analytic RC solution by %.3g V of 10 V" % (lte, e4)
 
-    # What still separates the formulas: a constant 4/3, from 2/3 against 1/2
-    # relative to the one-step LTE.  Not a step count -- that was the mistake
-    # this test used to make.
+    # NOTHING SEPARATES THE FORMULAS ANY MORE, and that is now the assertion.
+    #
+    # This block used to pin a constant 4/3 between them -- 2/3 against 1/2 of the
+    # one-step LTE -- as "what still separates the formulas".  4d/4f-D removed the
+    # separation deliberately: the YWR Table I GEAR2 residual estimates
+    # (1/4) h^2 q''' against a true (1/3), so it reports 3/4 of the truncation
+    # error, and the fallback these helpers exercise was the last place it ran.
+    # Both selections now take the divided-difference form.
+    #
+    # The 2/3 is still a pin rather than a fitted constant: it is the derivable
+    # ratio of the g-based divided-difference estimate to the one-step LTE when
+    # the history is exact, which is what `_lte_vs_onestep_true` supplies.
     r_gc = _lte_ratio(Gear2Integrator('classic'))
     r_gy = _lte_ratio(Gear2Integrator('ywr'))
     assert abs(r_gc - 2.0 / 3.0) < 0.02 * (2.0 / 3.0), \
         "gear2-classic estimates %.4g of the one-step LTE, expected 2/3" % r_gc
-    assert abs(r_gy - 0.5) < 0.02 * 0.5, \
-        "gear2-ywr estimates %.4g of the one-step LTE, expected 1/2" % r_gy
-    assert abs(r_gc / r_gy - 4.0 / 3.0) < 0.03, \
-        "classic/ywr = %.4g, expected 4/3" % (r_gc / r_gy)
+    assert r_gy == r_gc, \
+        "lte_formula still changes the Gear2 estimate: %r vs %r" % (r_gy, r_gc)
 
 
 ## ---------------------------------------------------------------------------
@@ -532,7 +539,13 @@ _LTE_CASES = [
     ('trap-classic', 'TrapezoidalIntegrator', 'classic', 2.0, 5.0 / 6.0),
     ('trap-ywr', 'TrapezoidalIntegrator', 'ywr', 2.0, 5.0 / 6.0),
     ('gear2-classic', 'Gear2Integrator', 'classic', 2.0, 2.0 / 3.0),
-    ('gear2-ywr', 'Gear2Integrator', 'ywr', 2.0, 0.5),
+    ## 2/3, NOT 1/2, SINCE 4d/4f-D.  This row used to pin 0.5 -- the YWR Table I
+    ## GEAR2 residual estimates (1/4) h^2 q''' against a true (1/3), i.e. 3/4 of
+    ## the truncation error.  That formula is gone: the one-step fallback these
+    ## helpers exercise now takes the divided-difference form unconditionally for
+    ## both second-order methods, so `lte_formula` selects nothing here and this
+    ## row must match `gear2-classic` exactly.
+    ('gear2-ywr', 'Gear2Integrator', 'ywr', 2.0, 2.0 / 3.0),
 ]
 
 

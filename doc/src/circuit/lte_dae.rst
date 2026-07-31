@@ -171,9 +171,12 @@ The comparison isolates exactly where the DAE formula matters:
   :math:`-\tfrac{1}{2}(g_n - g_{n-1})` the classic path already used.
 * **Trapezoidal and Gear2** no longer distinguish the two at all -- see
   :ref:`trap-mode-free` below.  Both estimators difference a quantity that neither
-  Table I entry uses, and the shared code ignores ``lte_formula``.  The
-  ``'classic'`` and ``'ywr'`` bodies survive only for the one step at the start of
-  a run that does not yet have four charges.
+  Table I entry uses, and the shared code ignores ``lte_formula``.  The one step of
+  a run that predates the fourth charge falls back to the divided-difference form
+  for both methods, so **``'ywr'`` and ``'classic'`` now produce bit-identical
+  runs** -- the ``ywr`` column of the table above is not a second measurement, it
+  is the same one.  The argument is still accepted so callers do not break; it is
+  not inert on the JAX backend, which keeps its own and is stage 9's business.
 * **Gear2** is the substantive case.  Until 2026-07 the classic estimate used a
   second divided difference of the *charge* :math:`q` -- which is a
   :math:`q''` term -- scaled by :math:`h^3`, where BDF-2 requires
