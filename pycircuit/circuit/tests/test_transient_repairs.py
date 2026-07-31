@@ -1305,3 +1305,139 @@ def test_gate_4i_the_error_constants_come_from_the_derivation():
     assert g / t == pytest.approx(2.0, rel=1e-12), \
         'on a uniform grid Gear-2 must estimate exactly 2x trapezoidal, got %.9f' \
         % (g / t)
+
+
+# ---------------------------------------------------------------------------
+# 4h -- `fixed_timestep=True` must actually fix the timestep
+#
+# `dt` is loop-carried and breakpoint truncation overwrote it, while the restore
+# at the bottom of the loop was guarded by `if not fixed_timestep`. Each later
+# breakpoint then truncated the already-shrunken step again, so it collapsed
+# geometrically.
+# ---------------------------------------------------------------------------
+
+def _fixed_run(tend=3e-6, timestep=1e-7, **kwargs):
+    """A VPulse-driven fixed-step run; returns the time vector."""
+    import warnings as _w
+    tran = Transient(_pulsed_rc(), toolkit=numeric, **kwargs)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore', RuntimeWarning)
+        res = tran.solve(refnode=gnd, tend=tend, timestep=timestep,
+                         fixed_timestep=True)
+    return np.asarray(res.sweep_values, dtype=float)
+
+
+def test_gate_4h1_fixed_timestep_takes_the_requested_number_of_steps():
+    """Measured before: 292 steps against an expected 30, ending at dt=1.24e-19.
+
+    The plan recorded 19 002 steps on a different circuit; the mechanism is the
+    same and the magnitude depends only on how many breakpoints the drive has.
+    """
+    tend, timestep = 3e-6, 1e-7
+    t = _fixed_run(tend, timestep)
+    expected = round(tend / timestep)
+    assert abs(len(t) - expected) <= 1, \
+        'fixed_timestep took %d steps for tend/timestep = %d' % (len(t), expected)
+
+
+def test_gate_4h2_the_fixed_grid_is_actually_uniform():
+    """A step count can be right while the spacing is not.
+
+    Declared separately for that reason: the `VSin` case that motivated this had a
+    step count inside +-1 *and* a final step of 2.033e-20 s, because a uniform grid
+    divides `tend` exactly and `dt = tend - t` turns the floating-point residue
+    into a step. Every step must be `timestep`, and the last must be a real step
+    rather than rounding noise.
+    """
+    timestep = 1e-7
+    t = _fixed_run(3e-6, timestep)
+    dt = np.diff(t)
+    assert np.allclose(dt, timestep, rtol=1e-9, atol=1e-9 * timestep), \
+        'fixed grid is not uniform: dt ranges %.6g .. %.6g against timestep %g' \
+        % (dt.min(), dt.max(), timestep)
+    assert dt.min() > 0.5 * timestep, \
+        'a degenerate step of %.4g s survived in a %g s grid' % (dt.min(), timestep)
+
+
+def test_gate_4h3_a_breakpoint_inside_a_fixed_step_still_drops_the_order():
+    """Uniformity must not cost the discontinuity handling.
+
+    The grid no longer moves for a breakpoint, but crossing one must still drop to
+    order 1 for the next step so no 2nd-order polynomial is fitted across the
+    corner. Instrumented rather than inspected: `_effective_method` is derived from
+    the live integrator object, so this sees what actually ran.
+    """
+    import warnings as _w
+    from pycircuit.circuit.integrator import Gear2Integrator
+    tran = Transient(_pulsed_rc(), toolkit=numeric, integrator=Gear2Integrator())
+    seen = []
+    real = tran.get_diff
+
+    def spy(q, C_, method=None):
+        out = real(q, C_, method)
+        seen.append(tran._effective_method)
+        return out
+
+    tran.get_diff = spy
+    with _w.catch_warnings():
+        _w.simplefilter('ignore', RuntimeWarning)
+        tran.solve(refnode=gnd, tend=3e-6, timestep=1e-7, fixed_timestep=True)
+
+    drops = sum(1 for m in seen if m == 'EulerIntegrator')
+    assert drops > 0, \
+        'no order drop in a fixed run over a VPulse: breakpoints have stopped ' \
+        'being noticed entirely'
+    assert drops < len(seen), \
+        'every evaluation dropped order; the run is first-order throughout'
+
+
+def test_gate_4h4_a_fixed_grid_that_cannot_be_honoured_warns():
+    """Shrinking on non-convergence is the only way to make progress -- but under
+    `fixed_timestep` it silently abandons the grid the caller asked for.
+
+    Same failure class as 4b's force-accept, and the same treatment: the result is
+    still returned, and without the warning the caller has no way to learn that
+    part of their uniform grid is not uniform.
+    """
+    import warnings as _w
+    tran = Transient(_pulsed_rc(), toolkit=numeric)
+    real = tran.solve_timestep
+    calls = {'n': 0}
+
+    def flaky(*args, **kwargs):
+        calls['n'] += 1
+        if calls['n'] == 5:
+            raise NoConvergenceError('injected')
+        return real(*args, **kwargs)
+
+    tran.solve_timestep = flaky
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter('always')
+        tran.solve(refnode=gnd, tend=3e-6, timestep=1e-7, fixed_timestep=True)
+
+    hits = [c for c in caught
+            if issubclass(c.category, RuntimeWarning)
+            and 'no longer uniform' in str(c.message)]
+    assert len(hits) == 1, \
+        'expected one fixed-grid fallback warning, got %d' % len(hits)
+    msg = str(hits[0].message)
+    assert 't=' in msg and 'falling back to' in msg, \
+        'the warning must name the time and the step it fell back to: %s' % msg
+
+
+def test_gate_4h_the_adaptive_path_is_untouched():
+    """The degenerate-final-step guard is scoped to fixed-step, deliberately.
+
+    Measured before the change: zero degenerate steps on the adaptive path for both
+    circuits, because a controller-chosen `dt` does not land on `tend` to within
+    1e-20. Scoping the guard keeps 4h attributable -- if the adaptive step count
+    moves, something other than 4h did it.
+    """
+    import warnings as _w
+    tran = Transient(_pulsed_rc(), toolkit=numeric)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore', RuntimeWarning)
+        res = tran.solve(refnode=gnd, tend=3e-6, timestep=1e-7)
+    dt = np.diff(np.asarray(res.sweep_values, dtype=float))
+    assert (dt < 1e-6 * np.median(dt)).sum() == 0, \
+        'the adaptive path grew a degenerate step; 4h should not have touched it'

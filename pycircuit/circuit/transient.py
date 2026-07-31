@@ -691,14 +691,53 @@ class Transient(Analysis):
             if next_t_break <= t + self.par.minbreak * max(abs(t), 1.0):
                 next_t_break = self.cir.next_event(t + (self.par.minbreak * 1e3) * max(abs(t), 1.0))
             
-            if t + dt > next_t_break:
+            ## STAGE 4h -- UNDER `fixed_timestep` THE GRID WINS.
+            ##
+            ## `dt` is loop-carried and truncation OVERWRITES it, while the restore
+            ## at the bottom of this loop is guarded by `if not fixed_timestep`.  So
+            ## a truncation used to be permanent, and because each later breakpoint
+            ## truncated the already-shrunken `dt` again the step collapsed
+            ## geometrically: a `VPulse` run that should take 30 steps took **292**,
+            ## ending at `dt = 1.241e-19 s`.
+            ##
+            ## Restoring `dt` afterwards would fix the collapse but not the count --
+            ## a `VPulse` at `per=1e-6` over `tend=3e-6` has ~12 edges, so the run
+            ## would take `tend/timestep + 12` steps.  `fixed_timestep` exists so a
+            ## caller can ask for exactly these output points, so the grid is what
+            ## must be preserved: breakpoints no longer move it.
+            ##
+            ## What IS kept is the part that protects the integrator: crossing a
+            ## breakpoint inside a step still drops the order for the next step, so
+            ## no 2nd-order polynomial is fitted across a discontinuity.  It just
+            ## costs no grid change.  A caller who needs edges resolved exactly
+            ## wants the adaptive path with `max_step`, not a fixed grid.
+            if fixed_timestep:
+                ## `<=`, not `<`.  A breakpoint landing exactly ON a grid point is
+                ## not a rounding curiosity here: with `td=1e-7` against a `1e-7`
+                ## grid, 2 of the 9 edges in a 30-step VPulse run land exactly on
+                ## one.  With a strict `<` those two produce no order drop at all --
+                ## the step that ends on the edge does not see it, and the next
+                ## iteration asks `next_event(t)` from the edge itself, whose
+                ## fixed-point guard skips past it.
+                was_break_step = next_t_break <= t + dt
+            elif t + dt > next_t_break:
                 dt = float(next_t_break - t)
                 was_break_step = True
             else:
                 was_break_step = False
-                
+
             if t + dt > tend:
                 dt = tend - t
+                ## A uniform grid divides `tend` exactly, so what is left at the end
+                ## is floating-point residue rather than a step.  Turning it into
+                ## one produced a final `dt` of 2.033e-20 s on a run whose other
+                ## steps were 1e-6 -- 14 orders of magnitude down, and a step-size
+                ## ratio no integrator should be asked to swallow.  Measured on the
+                ## adaptive path for comparison: zero such steps, because a
+                ## controller-chosen `dt` does not land on `tend` to within 1e-20.
+                ## Hence the guard is scoped to fixed-step.
+                if fixed_timestep and dt <= 1e-9 * timestep:
+                    break
             
             self._dt = dt
             next_t = t + dt
@@ -706,6 +745,20 @@ class Transient(Analysis):
             try:
                 x, feval, J, f = self.solve_timestep(X[-1], next_t, provided_function=provided_function)
             except NoConvergenceError:
+                ## STAGE 4h -- A FIXED GRID THAT CANNOT BE HONOURED MUST SAY SO.
+                ## Shrinking is the only way to make progress, so it stays -- but
+                ## under `fixed_timestep` the caller asked for exactly these output
+                ## points and is no longer getting them.  Same failure class as 4b's
+                ## force-accept: the result is still returned, and without this the
+                ## caller has no way to learn that the grid they specified was
+                ## abandoned partway through.
+                if fixed_timestep:
+                    warnings.warn(
+                        'transient: Newton did not converge at t=%.6g s with the '
+                        'requested fixed timestep %.6g s; falling back to %.6g s for '
+                        'this step. The output grid is no longer uniform.'
+                        % (t, timestep, dt * 0.25),
+                        RuntimeWarning, stacklevel=3)
                 dt = dt * 0.25
                 if dt < getattr(self.par, 'minstep', 1e-18):
                     raise RuntimeError(f"Transient solver failed to converge: timestep shrank below {getattr(self.par, 'minstep', 1e-18):g}s at t={t}")

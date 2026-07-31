@@ -8,7 +8,7 @@
 > `git log --oneline 2a8e0c7..HEAD -- pycircuit/`. Branch `cna-jax-vectorization`,
 > **pushed to `origin`** (`git@github.com:henjo/pycircuit.git`).
 >
-> **Suite: 779 passed, 6 skipped, 0 failed, 670.77 s** (`-m "" --timeout=400`). Nominal
+> **Suite: 784 passed, 6 skipped, 0 failed, 805.34 s** (`-m "" --timeout=400`). Nominal
 > ~8-13 min, but one run of the identical tree took **31m41s** purely from machine load —
 > see trap 2. **Doc build: succeeded, 2 warnings, 0 ERROR.** Working tree clean.
 >
@@ -17,29 +17,35 @@
 >
 > ### The next action, concretely
 >
-> **4h — `fixed_timestep=True` does not fix the timestep.** The cheapest remaining defect
-> and the most visibly wrong: `transient.py` restores `dt` only when *not* fixed-step, so
-> a breakpoint truncation is permanent and the step never recovers. Measured: a
-> `VPulse`-driven run that should take ~20 steps takes **19 002**, with `dt` collapsing to
-> 3.276e-22 s. Gate 4h is one line — `tend/timestep` +- 1 steps — and already declared.
+> **4a and 4a-bis — the PI step controller.** `PIController` uses Gustafsson's numerators
+> undivided; they must be `0.3/k` and `0.4/k`. Measured spectral radius **1.12 at k=2 and
+> 1.78 at k=3**, so the step-size recursion is unstable and the `min(2, max(0.2, .))` clamp
+> converts that into a permanent period-2 limit cycle rather than a divergence — which is
+> why it has never been noticed: the only test asserts `len(steps) > 10`. The gate already
+> runs (`transient_stage4.py --pi`) and currently reports the cycle. Also update
+> `last_err` on the rejection path, or fall back to pure-I for the step after a rejection.
+>
+> 4a-bis is the same area: both source papers separate "shrink the next step" from "redo
+> this one" with a distinct `F_redo` threshold, and pycircuit has a single test at
+> `err > 1.0` that decides both. Worth measuring together, since 4a changes the same
+> recursion.
+>
+> **Note:** `PIController` is not the default — `IntegralController` is — so this is a
+> latent defect in an opt-in path, not a live one. That is a reason to sequence it here
+> rather than earlier, not a reason to skip it.
 >
 > ### After that, in order
 >
-> 1. **4a and 4a-bis.** `PIController` uses Gustafsson's numerators undivided (they must
->    be `0.3/k` and `0.4/k`); measured spectral radius 1.12 at k=2 and 1.78 at k=3, so the
->    recursion is unstable and the clamp turns it into a permanent period-2 limit cycle.
->    The gate already runs (`transient_stage4.py --pi`). 4a-bis adds the `F_redo` band both
->    source papers have and pycircuit does not.
-> 2. **Decide what `lte_formula` is for.** After 4i it selects nothing for either
+> 1. **Decide what `lte_formula` is for.** After 4i it selects nothing for either
 >    second-order method except on the single fallback step of a run. That makes gate 4f
 >    ("record rejections and force-accepts for all four integrator/formula combinations,
 >    so the choice is evidenced") a question about whether the knob should exist at all
 >    rather than about which default to pick — there are no longer four distinct
 >    combinations to compare. **Maintainer's call**, and 0.3b's deferred decision is
 >    subsumed by it.
-> 3. **0.3d's `chgtol` guard**, and the rest of `doc/src/circuit/lte_dae.rst`'s
+> 2. **0.3d's `chgtol` guard**, and the rest of `doc/src/circuit/lte_dae.rst`'s
 >    variable-step story.
-> 4. **The `iq` seed.** `transient.py` starts every run with `_iqlast = zeros` against a
+> 3. **The `iq` seed.** `transient.py` starts every run with `_iqlast = zeros` against a
 >    true `q'(t_0)` that is generally nonzero. Measured under 4g(b) as an O(h^3) effect,
 >    one order below the local truncation error, so it is not blocking — but it is wrong
 >    in principle and cheap to fix when something else touches that code.
@@ -69,7 +75,9 @@
 > "clause that matters" failed and is recorded as a failure) · **D3** (`relref='sigglobal'`
 > is the default, on its second attempt; `lte_vabstol` back to 1e-12 at measured zero cost;
 > 1.31-2.06x fewer steps at matched accuracy — and the injection check for gate 1-5 found a
-> guard that `sigglobal` had silently blinded).
+> guard that `sigglobal` had silently blinded) · **4h** (`fixed_timestep` produces a uniform
+> grid again: 292 -> 30 steps, and a second defect found while reproducing the first — a
+> 2e-20 s final step that a step count alone called correct).
 > Every gate outcome is recorded in place below; the completion records are appended at the
 > end of this file.
 >
@@ -2578,7 +2586,74 @@ then read the regenerated values.
 `dt` only when *not* fixed-step, so breakpoint truncation is permanent. Measured: expected
 ~20 steps, got **19 002**, dt collapsing to 3.276e-22 s.
 **Gate 4h:** a `VPulse`-driven fixed-step run takes `tend/timestep` +- 1 steps.
-OUTCOME:
+
+### 4h scope and gates, written 2026-07-31 before the fix
+
+**The mechanism, and it is one line.** `dt` is a loop-carried variable that breakpoint
+truncation *overwrites* (`dt = float(next_t_break - t)`), and the restore at the bottom of
+the loop is guarded by `if not fixed_timestep`. So under fixed-step a truncation is
+permanent, and because each subsequent breakpoint truncates the already-shrunken `dt`
+again, the step collapses geometrically. Reproduced on a `VPulse` at `tend=3e-6`,
+`timestep=1e-7`: **292 steps against an expected 30**, final `dt` **1.241e-19 s**.
+
+**A second defect, found while reproducing the first and NOT in the plan.** With no
+breakpoints at all — a `VSin` drive, whose `next_event` returns `inf` since 4g(a) — a fixed
+run still ends with a degenerate step: `41` steps for an expected 40, final `dt`
+**2.033e-20 s**. A uniform grid divides `tend` exactly, so `tend - t` at the end is pure
+floating-point residue, and `if t + dt > tend: dt = tend - t` turns that residue into a
+step. Measured on the adaptive path for comparison: **0 degenerate steps** on both
+circuits, because a controller-chosen `dt` does not land on `tend` to within 1e-20. So this
+one is specific to fixed-step and the fix does not touch the adaptive path.
+
+**The design question the declared gate settles.** `tend/timestep +- 1` cannot be met while
+still truncating at breakpoints: a `VPulse` at `per=1e-6` over `tend=3e-6` has ~12 edges, so
+truncate-and-restore would give `tend/timestep + 12`. **So under `fixed_timestep` the grid
+wins and breakpoints do not move it.** That is the right reading of the flag — it exists so
+a caller can ask for exactly these output points (an FFT-friendly grid, or comparison
+against a reference at known times), and a grid that is silently not uniform is the defect,
+not the feature.
+
+**What is kept.** Crossing a breakpoint *inside* a step still drops the integration order
+for the following step. That costs nothing, needs no grid change, and is the part of
+breakpoint handling that protects against fitting a polynomial across a discontinuity.
+**Reconsider if** someone needs edges resolved exactly under a fixed step — the answer then
+is the adaptive path with `max_step`, not a fixed grid that quietly is not one.
+
+**Gate 4h-1 (the declared one).** A `VPulse`-driven fixed-step run takes `tend/timestep`
++- 1 steps. Recorded before: 292 against 30.
+OUTCOME: **PASSED. 292 -> 30 steps against an expected 30 (`tend=3e-6`, `timestep=1e-7`), i.e. exact rather than within the declared +-1.** The `VSin` control, which has no breakpoints at all since 4g(a), goes 41 -> 40.
+
+**Gate 4h-2 (the grid is actually uniform).** Every step of a fixed run equals `timestep`
+to within rounding, except at most the last, which must be in `(0, timestep]`. Declared
+because 4h-1 counts steps and a step count can be right while the spacing is not — the
+`VSin` case above had a step count inside +-1 *and* a 2e-20 s step.
+OUTCOME: **PASSED.** Max deviation from `timestep` across the whole VPulse run is **1.06e-22 s** on a 1e-7 s grid, and the smallest step is a full `timestep` rather than the 1.241e-19 s the run used to end on. The `VSin` control is uniform to 2.75e-21 s and its 2.033e-20 s final step is gone. **This gate earned its separate existence**: the `VSin` case passed 4h-1 before the fix (41 steps against 40, inside +-1) while ending on a step 14 orders of magnitude below the others.
+
+**Gate 4h-3 (the discontinuity is still handled).** A breakpoint crossed within a fixed step
+must still force the order drop on the next step. Verified by instrumenting the effective
+integrator, not by inspection.
+OUTCOME: **PASSED — 29 order drops in 89 Newton evaluations** on the fixed VPulse run, against 0 if breakpoints had stopped being noticed and 89 if the run had gone first-order throughout. Both bounds are asserted, because either would be a way for this to look fine while being wrong.
+
+**Running this gate changed the code, which is the point of running it.** The first version tested `next_t_break < t + dt` and scored 23. A breakpoint landing *exactly* on a grid point is not a rounding curiosity when the grid is uniform: with `td = 1e-7` against a `1e-7` grid, **2 of the 9 edges in a 30-step run land exactly on one**, and a strict `<` gives them no order drop at all — the step ending on the edge does not see it, and the next iteration asks `next_event(t)` from the edge itself, whose fixed-point guard skips past it. `<=` catches both; the count goes 23 -> 29 and the step count is unchanged at 30.
+
+**Gate 4h-4 (a fixed grid that cannot be honoured says so).** `transient.py` shrinks `dt` by
+0.25 on a `NoConvergenceError` and retries — which is the only way to make progress, but
+under `fixed_timestep` it silently abandons the grid the caller asked for. Declared: that
+path emits a `RuntimeWarning` under fixed-step naming `t` and the step it fell back to.
+Same failure class as 4b's force-accept, and the same treatment.
+OUTCOME: **PASSED.** With a `NoConvergenceError` injected at the fifth step, exactly one `RuntimeWarning` is raised, naming the time and the step fallen back to: *"Newton did not converge at t=4e-07 s with the requested fixed timestep 1e-07 s; falling back to 2.5e-08 s for this step. The output grid is no longer uniform."* The shrink itself is kept -- it is the only way to make progress -- but it is no longer silent.
+
+**Gate 4h-5.** Full suite `-m ""`; doc build verified by content.
+OUTCOME: **PASSED. 784 passed, 6 skipped, 0 failed, 805.34 s** (`-m "" --timeout=400`),
+against 779 before plus the 5 tests added here — **no existing test needed changing**,
+which is worth noting for a change that alters the step sequence of every fixed-step run.
+The reason is that the two QUCS reference tests use `fixed_timestep=True` with a `VSin`
+drive, whose `next_event` has returned `inf` since 4g(a), so they never had a breakpoint
+to truncate on — only the degenerate final step, whose removal changes no sample they
+assert against. Runtime 670 -> 805 s is machine load, not this change (trap 2): the
+fixed-step runs in the suite got *shorter*.
+
+Doc build: **build succeeded, 2 warnings, 0 ERROR**, verified by content.
 
 **Gate 4-final.** Full suite `-m ""`, runtime recorded. **Expect test churn here** — this
 stage changes step counts by design, and any test asserting a step count is exposed.
