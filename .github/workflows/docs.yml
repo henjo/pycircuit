@@ -20,13 +20,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build docs image
-        run: docker build -f Dockerfile.docs -t pycircuit-docs .
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-      - name: Generate HTML
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libginac-dev pkg-config
+
+      - name: Install dependencies
         run: |
-          mkdir -p doc/build/html
-          docker run --rm -v "$PWD/doc/build:/src/doc/build" pycircuit-docs
+          pip install -e ".[dev]" pexpect pybind11
+          pip install -r doc/requirements.txt
+
+      - name: Build docs
+        run: make -C doc html
 
       - name: Upload pages artifact
         uses: actions/upload-pages-artifact@v3
