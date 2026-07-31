@@ -89,7 +89,11 @@
 > `PYTHONPATH` is mandatory — a stale root-owned egg shadows the source otherwise.
 > Benchmarks: `benchmarks/transient_stage2.py` (perf + drift),
 > `benchmarks/transient_stage3.py` (first step), `benchmarks/transient_stage4.py`
-> (estimators: `--ratios`, `--hscaling`, `--pi`), `benchmarks/transient_review/` (stage 0).
+> (estimators: `--ratios`, `--hscaling`, `--pi`), `benchmarks/transient_review/` (stage 0),
+> and **`benchmarks/transient_decisions.py`** — the three measurements that *changed a
+> decision or reordered the plan* (`--parity` why 4d is blocked on 4g, `--relref` why D3
+> was reverted, `--vabstol` why 0.3a's split was free). Those are the ones worth being able
+> to re-run when someone disputes a conclusion.
 > Source papers: `/home/andreas/pycircuit_agy/papers/` — **read them from rendered pages**,
 > `pdftotext` drops the formulas.
 
