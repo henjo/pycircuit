@@ -97,7 +97,7 @@ class StepController(ABC):
         return out
 
     @abstractmethod
-    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None):
+    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None, h_last2=None):
         """Evaluate the Local Truncation Error (LTE) for the current step.
 
         ``no_history`` means there is genuinely no past point to difference
@@ -119,7 +119,7 @@ class IntegralController(StepController):
     Rejects steps with LTE > 1.0, and predicts the next step size.
     """
     
-    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None):
+    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None, h_last2=None):
         ## No past point exists yet, so there is nothing to difference and the
         ## step is accepted unevaluated.  This is the only place in a run where
         ## that is correct, and it costs one uncontrolled step of O(h^2) Euler
@@ -138,7 +138,9 @@ class IntegralController(StepController):
             iq_last=iq_last_hist,
             h_last=h_last,
             is_first_step=no_history,
-            toolkit=toolkit
+            toolkit=toolkit,
+            ## None until the run has three real past charges; see the ABC.
+            h_last2=h_last2,
         )
         
         # 2. Convert charge error into voltage error by multiplying by the 
@@ -194,7 +196,7 @@ class PIController(StepController):
         self.k_p = k_p
         self.last_err = None
         
-    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None):
+    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None, h_last2=None):
         ## As in IntegralController: nothing to difference on the first step of a
         ## run.  Unlike there, the 0.5 is not dead -- it seeds the PI history so
         ## the first real update has a previous error to work from.
@@ -209,7 +211,9 @@ class PIController(StepController):
             iq_last=iq_last_hist,
             h_last=h_last,
             is_first_step=no_history,
-            toolkit=toolkit
+            toolkit=toolkit,
+            ## None until the run has three real past charges; see the ABC.
+            h_last2=h_last2,
         )
         
         from pycircuit.circuit.analysis import remove_row_col

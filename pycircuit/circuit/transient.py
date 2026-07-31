@@ -243,6 +243,12 @@ class Transient(Analysis):
         
         self._dt = None
         self._dt_last = None
+        ## STAGE 4g(b).  The step before `_dt_last`.  It stays None until the run
+        ## has taken two steps, which is exactly when `_qlast[2]` stops being the
+        ## seeded initial charge and becomes a real past point -- so a single
+        ## `None` tells an estimator both that the step and the charge are
+        ## missing, and there is no second flag to keep in sync.
+        self._dt_last2 = None
         self._is_first_step = True
         ## Distinct from _is_first_step, which is re-armed at every breakpoint to
         ## force an order drop.  This one is true only until the first step of a
@@ -559,6 +565,15 @@ class Transient(Analysis):
         q0 = self.cir.q(x, self.epar)
         self._qlast = self.toolkit.array([q0 for _ in range(hist_len)])
         self._iqlast = self.toolkit.zeros((hist_len, n))
+        ## The charge history is rebuilt per RUN, so the step history must be too.
+        ## Without this a second `solve()` on the same object starts with a stale
+        ## `_dt_last2` from the previous run while `_qlast[2]` is the freshly
+        ## seeded initial charge -- breaking the one invariant 4g(b) relies on,
+        ## that `h_last2 is not None` exactly when `q_last[2]` is a real past
+        ## point.  `_dt_last` had the same staleness before 4g(b); nothing read it
+        ## in a way that showed.
+        self._dt_last = None
+        self._dt_last2 = None
         
         X.append(copy(x))
         if hasattr(self.cir, 'accept_step'):
@@ -684,6 +699,7 @@ class Transient(Analysis):
                     iq_last_hist=self._iqlast,
                     h_curr=dt,
                     h_last=getattr(self, '_dt_last', dt),
+                    h_last2=getattr(self, '_dt_last2', None),
                     no_history=self._no_history,
                     J=J,
                     active_integrator=self.active_integrator,
@@ -772,6 +788,10 @@ class Transient(Analysis):
             # This acts as a mathematical sliding window across the simulation time.
             self._iqlast = self.toolkit.concatenate((self.toolkit.array([self._iq]), self._iqlast))[:-1]
             self._qlast = self.toolkit.concatenate((self.toolkit.array([self._q_at(x)]), self._qlast))[:-1]
+            ## Roll before overwriting: _dt_last2 takes the value _dt_last is
+            ## about to lose.  Reversing these two lines makes _dt_last2 equal
+            ## _dt_last and the estimator silently differences the wrong grid.
+            self._dt_last2 = self._dt_last
             self._dt_last = dt
             
             self._is_first_step = False
@@ -819,6 +839,15 @@ class Transient(Analysis):
         q0 = self.cir.q(x, self.epar)
         self._qlast = self.toolkit.array([q0 for _ in range(hist_len)])
         self._iqlast = self.toolkit.zeros((hist_len, n))
+        ## The charge history is rebuilt per RUN, so the step history must be too.
+        ## Without this a second `solve()` on the same object starts with a stale
+        ## `_dt_last2` from the previous run while `_qlast[2]` is the freshly
+        ## seeded initial charge -- breaking the one invariant 4g(b) relies on,
+        ## that `h_last2 is not None` exactly when `q_last[2]` is a real past
+        ## point.  `_dt_last` had the same staleness before 4g(b); nothing read it
+        ## in a way that showed.
+        self._dt_last = None
+        self._dt_last2 = None
         
         X.append(copy(x))
         if hasattr(self.cir, 'accept_step'):
@@ -898,6 +927,7 @@ class Transient(Analysis):
                     q_curr=self._q_at(x_new),
                     q_last_hist=self._qlast, iq_last_hist=self._iqlast,
                     h_curr=h_curr, h_last=getattr(self, '_dt_last', h_curr),
+                    h_last2=getattr(self, '_dt_last2', None),
                     no_history=self._no_history, J=J,
                     active_integrator=self.active_integrator,
                     irefnode=self.irefnode, reltol=reltol, abstol=abstol,
@@ -928,6 +958,7 @@ class Transient(Analysis):
                 self.cir.accept_step(t, X[-1], self.epar)
 
             self._dt = h_curr
+            self._dt_last2 = self._dt_last
             self._dt_last = h_curr
             self._is_first_step = False
             self._no_history = False

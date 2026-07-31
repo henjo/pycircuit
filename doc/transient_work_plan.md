@@ -8,7 +8,7 @@
 > `git log --oneline abf4db8..HEAD -- pycircuit/`. Branch `cna-jax-vectorization`,
 > **pushed to `origin`** (`git@github.com:henjo/pycircuit.git`).
 >
-> **Suite: 761 passed, 6 skipped, 0 failed, 670.26 s** (`-m "" --timeout=400`). Nominal
+> **Suite: 770 passed, 6 skipped, 0 failed, 722.89 s** (`-m "" --timeout=400`). Nominal
 > ~8-13 min, but one run of the identical tree took **31m41s** purely from machine load —
 > see trap 2. **Doc build: succeeded, 2 warnings, 0 ERROR.** Working tree clean.
 >
@@ -17,21 +17,35 @@
 >
 > ### The next action, concretely
 >
-> **4g(b)** — the mode-free trapezoidal estimator. **Start this fresh, not at the end of
-> a session.** It needs a third past charge and `h_last2` threaded through
-> `Integrator.compute_lte`, its three implementations, both `StepController` subclasses
-> and the transient's history. Design is settled and recorded under gate 4g-2. Stage 3
-> already showed once that a hasty change to this path breaks both QUCS reference tests.
+> **The `Gear2` estimator's step-ratio bias — now the largest known estimator defect in
+> the tree, and it is on the shipped default.** 4g(b)'s sweep extended the ratio range to
+> the *reachable* shrink end for the first time and found `gear2-classic` overestimating
+> its own truncation error by **83x at ratio 0.008** (reachable after three consecutive
+> rejections), against the **3.97x over 0.25..4** recorded under 4d. Over the reachable
+> range the spread is **119x**. An estimator that inflates 83x when the step has just
+> collapsed will demand a further collapse, which is a candidate mechanism for the
+> rejection cascades 4b's escape hatch exists to break.
+>
+> It is the same *shape* as the two defects already fixed — Euler's (4c, 4.03x) and
+> trapezoidal's (4g(b), 4.0x) — so the method is known: derive the correct
+> divided-difference form, check it against YWR eq (22) rather than guessing, and gate it
+> on `est/true` across the reachable ratio range with the **local** reference. Note that
+> Gear2's companion current is a pure function of the charge history, so unlike
+> trapezoidal it has no parasitic mode and needs no extra history — this should be a
+> formula fix, not an interface change.
 >
 > ### After that, in order
 >
-> 1. **Three things fall out of 4g(b) immediately**: unblock **4d**; flip `relref` to
->    `sigglobal` (reverted by gate D3-a only because trapezoidal was contaminated); return
->    `lte_vabstol` to 1e-12 and rewrite gate 1-5, which asserts a property only true under
->    `pointlocal`.
-> 2. **4a, 4a-bis, 4f, 4h**, the new `gear2-classic` ratio dependence, 0.3d's `chgtol`
->    guard, and the rest of `doc/src/circuit/lte_dae.rst`'s variable-step story (the
->    step-ratio half of it landed with 4b).
+> 1. **`relref='sigglobal'`.** Decided, then reverted by gate D3-a *only* because the
+>    trapezoidal estimator was contaminated. It is not any more. Re-run gate D3-a: this is
+>    now a one-line default change with its gate already written.
+> 2. **`lte_vabstol` back to 1e-12**, and rewrite gate 1-5, which asserts a property only
+>    true under `pointlocal`. Follows from 1.
+> 3. **4d's remaining half.** Resolved for trapezoidal by construction (gate 4g-b3); what
+>    is left is the `gear2` item above plus deleting the now-vestigial `'ywr'`/`'classic'`
+>    trapezoidal fallback branches once one of them is chosen.
+> 4. **4a, 4a-bis, 4f, 4h**, 0.3d's `chgtol` guard, and the rest of
+>    `doc/src/circuit/lte_dae.rst`'s variable-step story.
 >
 > **Note for 4d.** `Trapezoidal('ywr')` is by far the heaviest user of the rejection cap
 > (25 force-accepts on the stiff RLC at reltol 1e-4, against 1 for either `Gear2`), so
@@ -45,10 +59,13 @@
 > Stage 0 (all reviews, measurements, decisions 0.3a-d) · Stage 1 (silent failures) ·
 > Stage 2 (2.42x bit-identical, 5.19x with single-threaded BLAS) · three post-stage-2
 > improvements (2+.1 `__getattr__` memo, 2+.2 skip the unread residual, 2+.3 `relref`) ·
-> Stage 3 (`firststep`; `reltol` controls accuracy, 90.8x) · Stage 4 parts 1-3 (4c, 4g(a),
-> and **4e + 4b**: 61 accepted step ratios outside BDF-2's zero-stability bound across the
+> Stage 3 (`firststep`; `reltol` controls accuracy, 90.8x) · Stage 4 parts 1-4: 4c · 4g(a) ·
+> **4e + 4b** (61 accepted step ratios outside BDF-2's zero-stability bound across the
 > measured grid become 0, worst ratio 10.000 -> 2.000, force-accepts now warn — and the
-> warning immediately corrected a conclusion this work had already written down).
+> warning immediately corrected a conclusion this work had already written down) ·
+> **4g(b)** (the trapezoidal estimator differences a mode-free quantity: asymptotically
+> exact where it held a 33% bias, 1540x -> 1.26x step-ratio spread, 757 -> 23 rejections on
+> the stiff case — and its first gate refuted the "1/h law" the work was premised on).
 > Every gate outcome is recorded in place below; the completion records are appended at the
 > end of this file.
 >
@@ -59,8 +76,10 @@
 >   flag to the rejection loop it is, fix the four ignored inputs) or **stage 12**
 >   (implement the paper). Stage 12's entry condition is a *measurement* — gate 4f's
 >   rejection counts — not a date.
-> * **`relref='sigglobal'` as default**: decided yes, reverted by its own gate, lands with
->   4g(b).
+> * **`relref='sigglobal'` as default**: decided yes, reverted by its own gate. **The
+>   blocker is gone as of 4g(b)** — gate D3-a failed because trapezoidal's estimator was
+>   mode-contaminated and it no longer is, so this is now a one-line change with its gate
+>   already written.
 >
 > ### Traps that have already cost time — check these before believing a result
 >
@@ -75,25 +94,35 @@
 >    cProfile call count).
 > 3. **An estimator harness must feed the previous *companion currents*, not exact
 >    derivatives** — the estimator never receives the latter. Doing so made Euler look flat
->    at 0.501 at every step ratio, pure artefact.
+>    at 0.501 at every step ratio, pure artefact. **Confirmed again 2026-07-31, and it
+>    explains a second number**: fed exact derivatives, the trapezoidal estimator reads a
+>    flat **5/6 = 0.8333** — which is exactly the "5/6" `integrator.py` claimed for it and
+>    decision 0.3b called measurably wrong. The claim was not invented; it was measured with
+>    this harness's own first defect.
 > 4. **A gate that can pass against an empty result is not a gate.** Gate 2b's first version
 >    compared `u` at t=0, where a sine is zero, and reported "exactly equal" against an
 >    all-zero vector.
 > 5. **`drift == 0.00e+00` is unsatisfiable for anything that changes which BLAS kernel
 >    runs.** Declare "identical step count + drift at rounding level" for stages 7b/7c.
-> 6. **A tolerance sweep that only goes tighter is not a sweep.** Gate 4b's grid ran
+> 6. **Before believing a ratio, look at the numerator and denominator separately.**
+>    Stage 4g recorded a "1/h law" and a "48x parity swing" for the trapezoidal
+>    estimator. Both were one quantity divided by another that was **an order of h
+>    smaller and passing through a zero crossing** — the giveaway was a sign change at
+>    h=1e-11, which no diverging estimator produces. Neither finding was evidence of
+>    anything, and one of them ("4d is blocked on 4g") reordered the whole stage.
+> 7. **A tolerance sweep that only goes tighter is not a sweep.** Gate 4b's grid ran
 >    reltol 1e-4/1e-5/1e-6 across three circuits and five configurations — 45 runs, which
 >    looked comprehensive — and concluded in writing that the shipped default no longer
 >    reaches the force-accept path. At **1e-3** it does, and it was taking a step ratio of
 >    exactly 10.0 when it did. Loose tolerances are where a step grows into trouble;
 >    include at least one.
-> 7. **A force-accepted step is an accepted step.** It enters the integrator history like
+> 8. **A force-accepted step is an accepted step.** It enters the integrator history like
 >    any other, so it belongs in any step-ratio sequence. The first version of gate 4b's
 >    probe filtered on the controller's `accept` return and therefore dropped exactly the
 >    steps the gate is about — reporting a worst ratio of **97.7** where the truth was
 >    **10.0**, and **2.000** ("no violation") on a run that had three. Both errors read as
 >    plausible.
-> 8. **The review's magnitudes run ~2x optimistic.** Five have now shrunk on measurement
+> 9. **The review's magnitudes run ~2x optimistic.** Five have now shrunk on measurement
 >    (150 TB → 420 GiB; 10.5x → 5.19x; 4.462 ms → 0.234 ms; "2.17 assemblies needed" was not
 >    a redundancy figure; the IM3 harness's 10x → 2.17x). Re-measure before quoting
 >    `transient_review.md`.
@@ -1776,6 +1805,17 @@ est/true figure for trapezoidal — including the plan's recorded "112x too larg
 **Consequence: 4g must be done before 4d**, which the plan does not say; it lists 4d first
 and treats the two as independent. 4d's gate should be re-run only once 4g-1 and 4g-2 pass.
 
+> **CORRECTED 2026-07-31 by gate 4g-b0.** The parity table above is measured against the
+> *propagated* companion-current error. Against the **local** truncation error --
+> the quantity a step controller must estimate -- trapezoidal reads **-2.8395e+01 at
+> every prefix length from 3 to 7**, i.e. no parity dependence at all. The 48x swing was
+> the O(h^3) propagated mode passing near its own cancellation.
+>
+> **So 4d was never blocked on 4g.** It was blocked on a contaminated reference, and it
+> measures cleanly the moment the reference is fixed. 4g(b) then resolved it for
+> trapezoidal by construction anyway -- see gate 4g-b3 -- but that is a coincidence of
+> sequencing, not a dependency. **The ordering claim in this OUTCOME is withdrawn.**
+
 **Also observed, and NOT in the plan:** `gear2-classic` has its own step-ratio dependence —
 2.7751 / 1.5504 / 0.9983 / 0.7766 / 0.6988 across ratios 0.25..4, a 3.97x spread, exact at
 ratio 1 and biased off it, i.e. the same *shape* as the Euler defect 4c just fixed. It is
@@ -1888,7 +1928,20 @@ homogeneous solution is `iq_n = -iq_{n-1}`, i.e. `(-1)^n`, undamped. Breakpoints
 it — which is why tier (a) is still worth having, and why gate 4g-1 improved 40x — but
 removing every breakpoint leaves the mode running from whatever seeds it at t=0.
 
-**Tier (b) is therefore required, and its design is settled by the same algebra.** The
+**Tier (b) is therefore required, and its design is settled by the same algebra.**
+
+> **CORRECTED 2026-07-31 by gate 4g-b0, before tier (b) was built.** The table above is
+> `est / true_propagated`, and `true_propagated` is **O(h^3)** where `est` is O(h^2) --
+> so the ratio grows as 1/h whatever the estimator does. It also changes sign at
+> h=1e-11, which a diverging estimator cannot. **There was no 1/h divergence; the
+> denominator was vanishing.** Against the local truncation error the same estimator
+> reads 0.8067 / 0.6780 / 0.6678 -- a bounded ~33% underestimate.
+>
+> The conclusion "tier (b) is required" happens to survive, but **not for this reason**:
+> the real defect is a 4x step-ratio spread and a 1.9x dependence on step history, not a
+> divergence. See the 4g(b) section below for what was actually measured, and note that
+> the reasoning quoted here -- the algebra of `d` -- was correct even though the
+> measurement motivating it was not. The
 trapezoidal relation gives `(iq_n + iq_{n-1})/2 = (q_n - q_{n-1})/h = d_n`, and the
 alternating component **cancels exactly in that sum** because it flips sign each step. So
 `d` is mode-free and the estimator should difference `d`, not `g`:
@@ -1932,6 +1985,343 @@ not decide the integrator choice) is upheld, now trivially. Note the gear2-vs-tr
 gap has narrowed from 1.205x to **1.038x**: the three second-order methods are now within
 4% of each other, which makes gate 4f's choice of default a much finer decision than the
 pre-repair numbers suggested.
+
+### 4g(b) — the mode-free estimator: derivation, scope and gates
+
+**Written 2026-07-31, before any code.** Gate 4g-2 established that tier (a) is necessary
+and not sufficient and that tier (b) is required; this section is the design it needs, and
+its gates are declared here so they cannot be fitted afterwards.
+
+#### The derivation, checked against the paper rather than guessed
+
+The plan says to derive the non-uniform form from YWR eq (22) instead of assuming it is
+"algebraically identical to `classic`". Read from a 200-dpi render of page 3:
+
+    eps_T = SUM_i [ alpha_i (t_{n-i} - t_{n-p})^{k+1}
+                    - beta_i (k+1)(t_{n-i} - t_{n-p})^k ]
+            (qdot_x - beta_0 gdot_x)^-1  q*^{(k+1)}(zeta) / (k+1)!     (22)
+
+and Table I's entries are stated to follow from "(22) **and finite difference
+approximation**". **That phrase is the whole opening.** Eq (22) fixes the coefficient and
+the quantity — `q'''` for a 2nd-order method — but the *choice of finite difference used to
+approximate `q'''`* is free. The paper approximates it by a second difference of
+`g = dq/dt`; nothing in eq (22) requires that, and for TRAP it is the choice that imports
+the parasitic mode.
+
+Evaluating (22) for TRAP (p=1, k=2, alpha = [1/h, -1/h], beta = [1/2, 1/2]) gives
+`SUM = -h^2/2`, hence
+
+    eps_T = -(h^2/6) (qdot_x + 0.5 h fdot_x)^-1 q'''(zeta)
+
+and since `(qdot_x + 0.5 h fdot_x) = 0.5 h J`, the controller's own `J^-1` absorbs the
+factor and the residual the integrator must return is **`Eg = -(h^2/6) q'''`**. Two
+independent checks that this is right: it reproduces the paper's Table I TRAP entry exactly
+once `(g_n - 2g_{n-1} + g_{n-2}) -> h^2 q'''` on a uniform grid, and it reproduces the
+one-step companion error derived directly from `iq_n = 2(q_n - q_{n-1})/h - iq_{n-1}` with
+exact history, which is `-(h^2/6) q'''` as well.
+
+**So the task is to estimate `q'''` without touching `iq`.** Let
+
+    d_n = (q_n - q_{n-1}) / h_n
+
+Two facts make `d` the right quantity. The trapezoidal relation gives
+`(iq_n + iq_{n-1})/2 = d_n`, and the parasitic component flips sign every step, so it
+**cancels exactly in that sum** — `d` is mode-free by construction. And Taylor-expanding
+about the interval **midpoint** `m_n = (t_n + t_{n-1})/2` gives
+
+    d_n = q'(m_n) + (h_n^2/24) q'''(m_n) + O(h^4)
+
+i.e. `d` samples `q'` at midpoints, second-order accurate. A second divided difference of
+`d` **over the midpoints** therefore estimates `q'''/2`:
+
+    delta1 = (h_curr + h_last)/2          delta2 = (h_last + h_last2)/2
+    DD2    = [ (d_n - d_{n-1})/delta1 - (d_{n-1} - d_{n-2})/delta2 ] / (delta1 + delta2)
+    Eg     = -(h_curr^2/3) * DD2
+
+On a uniform grid this collapses to `Eg = -(1/6)(d_n - 2 d_{n-1} + d_{n-2})`, which is
+**exactly the form recorded under gate 4g-2** — the derivation was done independently and
+lands on the recorded design, which is the check that it is the right one.
+
+**A known, quantified imperfection, stated in advance so it is not discovered as a
+surprise.** The `(h_n^2/24) q'''` term in `d_n` depends on `h_n`, which is *not* a smooth
+function of `t`. On a uniform grid it is identical at all three points and cancels from
+`DD2` exactly. Off it, hand-calculation at a sustained growth ratio of 2 gives a
+contribution of `q'''/54` against a target of `q'''/2` — a **3.7% bias**. That is why gate
+4g-b2 below declares 10% rather than the 5% used for 4c, and the number to check against is
+3.7%, not zero.
+
+#### Scope
+
+**In:** `TrapezoidalIntegrator.compute_lte` rewritten on `d`; `get_required_history()`
+1 -> 3; `h_last2` threaded through `Integrator.compute_lte`, its three implementations, both
+`StepController.evaluate_step` subclasses, and the transient's history bookkeeping in
+**both** transcriptions (`transient.py` `solve()` and `_solve_coupled()`); a fallback for
+the one step of a run that has only two genuine `d` values.
+
+**Out, each with the fact that would change it:**
+
+* **Tier (c), `TRBDF2Integrator`.** Still the structurally cleanest answer — L-stable, no
+  parasitic mode at all, embedded `q'''` estimator. **Reconsider if** 4g-b2 or 4g-b4 fails,
+  or if trapezoidal ringing on stiff modes (review 4.6) turns out to matter for a real
+  circuit; tier (b) fixes the *estimator*, not the method's ringing.
+* **Seeding `iq` history from the operating point instead of zeros.** `transient.py:561`
+  sets `_iqlast = zeros`, so the run starts with `iq_0 = 0` against a true `q'(t_0)` that
+  is generally nonzero — a direct excitation of the parasitic mode. This is a real and
+  separate defect, and tier (b) makes the *estimator* immune to it but does not remove the
+  mode from the *solution*. **Reconsider if** the parity swing in the true error survives
+  4g-b4; then the seed is the next thing to fix, and it is cheap.
+  **RESOLVED, and the reconsider-if did not fire.** The parity swing was itself an artefact
+  of the propagated reference (gate 4g-b0): the *local* error shows no parity dependence at
+  all, and the propagated mode measures O(h^3), one order below the local truncation error.
+  So the zero seed excites a mode that is real but an order smaller than the error the
+  controller is already bounding. It remains wrong in principle and is worth fixing when
+  something else touches that code, but it is not blocking anything and 4g(b) does not need
+  it.
+* Changing `Gear2`/`Euler` estimators. They measure correct already (4c, and 4g-2's own
+  table), and touching them would make any change here unattributable.
+
+#### Gates, declared before implementation
+
+**Gate 4g-b0 (the reference is not fitted).** This is the gate that has to come first,
+because 4g-b1 needs a reference and the obvious one is contaminated. The harness's `true`
+is `iq_computed - q'(t_n)`, which contains error *propagated* from earlier steps as well as
+the error committed at this one. A per-step estimator cannot and must not track the
+propagated part — the parasitic mode is undamped and step-ratio independent, so shrinking
+`h` does not reduce it, and a controller chasing it collapses the step for no accuracy.
+The reference must therefore be the **local** truncation error, `-(h^2/6) q'''(t_n)`,
+computed analytically.
+
+**Changing the reference to make a number look better is exactly what rule 8 forbids**, so
+this gate is what makes the change legitimate rather than convenient. Declared success:
+for `euler`, `gear2-classic` and `gear2-ywr` — the estimators already known good — the
+`est/true` figures under the analytic local reference agree with those under the existing
+propagated reference to **within 5%** at h = 1e-8/1e-9/1e-10. If they agree, the new
+reference is not fitted: it reproduces the old wherever the old was trustworthy and differs
+only where the old was measuring accumulation. **If they disagree, tier (b) does not
+proceed on this reference** and the disagreement is the finding.
+OUTCOME: **PASSED, in the strongest available form — the disagreement is not "within 5%",
+it is exactly zero.** Measured 2026-07-31:
+
+| config | h=1e-8 | h=1e-9 | h=1e-10 | relative difference |
+|---|---|---|---|---|
+| euler | 1.03708 | 1.00396 | 1.00040 | **0.00e+00** |
+| gear2-classic | 0.982878 | 0.998344 | 0.999840 | **0.00e+00** |
+| gear2-ywr | 0.737159 | 0.748758 | 0.749880 | **0.00e+00** |
+
+**And the reason is structural, not lucky.** `EulerIntegrator.compute_derivatives` and
+`Gear2Integrator.compute_derivatives` are **pure functions of the charge history** — neither
+reads `iq_last`. So for those methods "the error standing in the companion current" and "the
+residual when exact history is substituted" are *the same expression*, and no choice of
+reference can separate them. **Trapezoidal is the only method in the tree whose companion
+current feeds back on itself** (`iq_n = 2(q_n - q_{n-1})/h - iq_{n-1}`), and it is therefore
+the only one for which the distinction exists at all. That is the cleanest possible answer
+to "is the new reference fitted?": it cannot be, because it is identical to the old one
+everywhere except the single method under investigation.
+
+Cross-check of the derivation while here: the numerically-computed local error agrees with
+the analytic `-(h^2/6) q'''` to ratio **0.96638 / 0.99669 / 0.999669** as h falls
+1e-8 -> 1e-10, converging to 1 as a leading-order term must.
+
+### THE PREMISE OF GATE 4g-2 IS REFUTED: there was never a 1/h divergence
+
+**This is the most important result in 4g(b), and it arrived before a line of estimator
+code was written.** Gate 4g-2 recorded trapezoidal `est/true` as
+**4.8652 / 65.1020 / 681.3979** at h = 1e-8/1e-9/1e-10 and concluded "trapezoidal grows by
+**exactly 10x for every 10x reduction in h** — the 1/h law". Taking the three quantities
+separately instead of as a ratio:
+
+| h | est | true_local | true_propagated |
+|---|---|---|---|
+| 1e-8 | -3.17072e+03 | -2.75313e+03 | -6.51709e+02 |
+| 1e-9 | -3.74136e+01 | -2.83949e+01 | -5.74693e-01 |
+| 1e-10 | -3.79295e-01 | -2.84797e-01 | -5.56643e-04 |
+| 1e-11 | -3.84566e-03 | -2.86982e-03 | **+5.98188e-05** |
+
+Per-decade scaling: `est` **98.6x**, `true_local` **99.7x** — both O(h^2), as they must be.
+`true_propagated` scales **1032x**, i.e. **O(h^3)**, and at h=1e-11 it **changes sign**.
+
+**So the estimator never diverged. The denominator vanished.** `est/true_prop` is
+O(h^2)/O(h^3) = O(1/h) — the recorded law, produced entirely by dividing by a quantity one
+order smaller that was on its way through a zero crossing. The sign flip at 1e-11 is the
+tell: a diverging estimator does not change sign.
+
+The same correction applies to the **parity table** recorded under gate 4d, which showed
+trapezoidal's true error swinging 48x on the parity of the step count while Euler and Gear2
+were flat. Re-measured against the local reference, trapezoidal's local truncation error is
+**-2.8395e+01 at every prefix length from 3 to 7** — no swing at all. The 48x was the
+propagated O(h^3) mode passing near its own cancellation, not the method's error.
+
+**What this means for the plan, stated plainly.** Two of stage 4's recorded findings were
+artefacts of dividing by a small number: the "1/h law" and the "48x parity swing". Neither
+is evidence of anything. **4d was never blocked on 4g** — it was blocked on a contaminated
+reference, and with the local reference it measures cleanly and immediately (see 4g-b3).
+
+### What IS real, and why tier (b) was still built
+
+Having refuted the stated premise, the honest next question was whether to build tier (b) at
+all. The measurement that decided it: `est/true_local` across step ratio, with the estimator
+fed the real companion currents, versus the same estimator fed exact derivatives as a
+*diagnostic*:
+
+| trap-classic | r=0.25 | r=0.5 | r=1 | r=2 | r=4 | spread |
+|---|---|---|---|---|---|---|
+| fed real companion currents | 3.2850 | 1.9737 | 1.3176 | 0.9887 | 0.8225 | **4.0x** |
+| fed exact derivatives (diagnostic) | 0.9308 | 0.8861 | 0.8300 | 0.7733 | 0.7265 | **1.3x** |
+
+The spread collapses from 4.0x to 1.3x when the mode is removed from what is differenced.
+**So the contamination is real — it just shows up as a 4x step-ratio spread, not a 1/h
+divergence.** That is the same magnitude, and the same shape, as the backward-Euler defect
+gate 4c fixed (4.03x), which was judged worth fixing. Two further symptoms confirm it: the
+same estimator on the same problem returns **1.3176 on one prefix and 0.6780 on another** —
+a 1.9x swing from step history alone — and it does not converge to 1 as h falls, sitting at
+**0.8067 / 0.6780 / 0.6678**, a persistent ~33% underestimate.
+
+(The diagnostic column's *absolute* values are not meaningful — feeding exact derivatives is
+the artefact recorded as trap 3, and it reproduces that trap exactly: Euler reads 0.5010.
+Only the *spread* is being read from it.)
+
+**Gate 4g-b1 (the 1/h law is gone).** `est/true` for Trapezoidal at fixed step ratio 1.0,
+against the 4g-b0 reference. Recorded before: **4.8652 / 65.1020 / 681.3979** at
+h = 1e-8/1e-9/1e-10, growing exactly 10x per decade. Declared success: bounded within
+**2x of 1** across the same three h, and not monotone in h.
+OUTCOME: **PASSED.** est/true at step ratio 1.0, under the 4g-b0 reference:
+
+| | h=1e-8 | h=1e-9 | h=1e-10 | h=1e-11 |
+|---|---|---|---|---|
+| euler | 1.0371 | 1.0040 | 1.0004 | 1.0000 |
+| gear2-classic | 0.9829 | 0.9983 | 0.9998 | 1.0054 |
+| **trapezoidal, before** | 0.8067 | 0.6780 | 0.6678 | 0.6904 |
+| **trapezoidal, after** | **0.9273** | **0.9933** | **0.9993** | **0.9952** |
+
+The d-based estimator is **asymptotically exact**, converging to 1 like Euler and Gear2 do.
+The g-based one it replaces sits at a persistent ~33% underestimate that does *not* improve
+with h — which is the real defect, and is not the defect the gate was declared against.
+Note the "before" row is itself prefix-dependent (it reads 1.3176 rather than 0.6780 on the
+other prefix layout used earlier in this section); the "after" row is not.
+
+**Gate 4g-b2 (it is correct off a uniform grid too).** `est/true` across step ratio
+0.25..4, as for 4c and 4d. Declared success: within **10%** of 1 across the range — 10 and
+not 5 because the midpoint-frame term above contributes a calculated 3.7% at ratio 2.
+OUTCOME: **PASSED over the range the controller can reach; FAILED at r=4 as declared, by
+12.9%.** Both halves are reported because the gate was declared 0.25..4:
+
+| trap (d-based) | r=0.008 | r=0.05 | r=0.1 | r=0.25 | r=0.5 | r=1 | r=2 | r=2.414 | r=4 |
+|---|---|---|---|---|---|---|---|---|---|
+| est/true | 0.8782 | 0.8916 | 0.8986 | 0.9181 | 0.9468 | 0.9933 | 1.0577 | 1.0771 | 1.1292 |
+
+Spread over 0.25..4 is **1.26x**, against **1540x** for the g-based `'ywr'` form and 4.0x
+for the g-based `'classic'` form. Within 10% of 1 at r = 0.25, 0.5, 1, 2 and 2.414; outside
+it at r=4 (**+12.9%**) and at deep shrinks below ~0.1 (**-12.2%** at r=0.008).
+
+**Why the r=4 failure is reported rather than the gate widened.** `MAX_GROWTH_RATIO` is 2.0
+and 4b removed the only path that bypassed it, so **no accepted step ratio above 2.0 can
+occur**; r=4 is unreachable by construction and r=2.414 is the outermost value the bound
+itself permits. The deep-shrink end *is* reachable — three consecutive rejections give
+0.2^3 = 0.008 — and -12.2% there is a real, if mild, over-optimism. Both are the predicted
+midpoint-frame term: `d_n` carries `(h_n^2/24) q'''`, which cancels exactly on a uniform
+grid and not otherwise. The prediction written before the measurement was 3.7% at r=2; the
+measurement is **5.8%**, same term, same order, larger coefficient.
+
+**A finding about the SHIPPED DEFAULT that this sweep turned up and 4g does not fix.**
+Extending the ratio sweep to the deep-shrink end, which no previous gate did:
+
+| | r=0.008 | r=0.05 | r=0.1 | r=0.25 | r=1 | r=4 |
+|---|---|---|---|---|---|---|
+| euler | 1.0020 | 1.0021 | 1.0022 | 1.0025 | 1.0040 | 1.0097 |
+| trapezoidal (after 4g-b) | 0.8782 | 0.8916 | 0.8986 | 0.9181 | 0.9933 | 1.1292 |
+| **gear2-classic** | **83.06** | **13.32** | **6.71** | **2.79** | 0.9983 | 0.6952 |
+
+`Gear2` — the default integrator — **overestimates its own truncation error by 83x at a step
+ratio of 0.008**, which is reachable after three consecutive rejections. An estimator that
+inflates by 83x when the step has just collapsed will demand a further collapse, which is a
+plausible mechanism for the rejection cascades 4b's escape hatch exists to break. This is
+the "`gear2-classic` has its own step-ratio dependence" item already recorded under 4d, but
+recorded there as a **3.97x** spread over 0.25..4; over the *reachable* range it is **119x**.
+Not fixed here — touching Gear2 in the same change would make 4g unattributable — but it is
+now the largest known estimator defect in the tree.
+
+**Gate 4g-b3 (4d becomes measurable, and is then answered).** With 4g-b1 passing, re-run
+gate 4d: `Trapezoidal('ywr')` est/true within 5% of the `classic` column across ratio
+0.25..4. This gate exists to be *run*, not to be assumed — 4d's own OUTCOME records that it
+was blocked precisely because the ratio measured 4g. Note this may now compare *three*
+formulas rather than two.
+OUTCOME: **PASSED, trivially and by construction — and 4d is thereby resolved for
+trapezoidal rather than merely unblocked.** The d-based branch does not read
+`lte_formula` at all, so `Trapezoidal('ywr')` and `Trapezoidal('classic')` now return
+**identical** values at every step ratio: 0.9029 / 0.9412 / 0.9933 / 1.0622 / 1.1395. The
+difference between them is 0 by construction, not within 5%.
+
+The `'ywr'` and `'classic'` branches survive only on the single fallback step at the start
+of a run, where three past charges do not yet exist. That is visible end to end: in gate
+4g-b4's sweep `trap-classic` and `trap-ywr` are bit-identical on every circuit except the
+stiff RLC, where they differ by 2-3 steps out of 150-460 — the one step of divergence,
+propagated.
+
+**What this means for 4d as a plan item.** Its stated fix was "delete the `'ywr'` branch and
+keep it as an alias of `'classic'`". For **trapezoidal** that is now nearly true already and
+the remaining work is cosmetic: make the fallback use one formula instead of two, and the
+distinction disappears entirely. 4d's *other* half — the `gear2-classic` step-ratio
+dependence recorded under its OUTCOME — is untouched and, per 4g-b2 above, is much larger
+than recorded.
+
+**Gate 4g-b4 (end to end, on the circuits that were suffering).** `Trapezoidal('ywr')` and
+`Trapezoidal('classic')` on the gate-4b sweep. Declared success: rejection counts fall by
+at least **2x** on the stiff RLC at reltol 1e-5 (recorded: 757 rejections and 26
+force-accepts for `trap-ywr`, 18 and 0 for `trap-classic`), **no** accepted step ratio
+leaves the zero-stability bound, and no configuration regresses in step count by more than
+20%.
+OUTCOME: **PASSED on all three clauses, and the rejection fall is 33x, not the 2x
+declared.** `Trapezoidal('ywr')`, before -> after:
+
+| circuit, reltol | steps | rejections | force-accepts |
+|---|---|---|---|
+| rc-vsin 1e-4 | 212 -> 212 | 3 -> **0** | 0 -> 0 |
+| rc-vsin 1e-5 | 298 -> 223 | 108 -> **1** | 6 -> **0** |
+| stiff-rlc 1e-3 | 159 -> 155 | 73 -> **16** | 9 -> **1** |
+| stiff-rlc 1e-4 | 393 -> 262 | 209 -> **19** | 25 -> **1** |
+| stiff-rlc 1e-5 | 923 -> 464 | 757 -> **23** | 26 -> **1** |
+| rc-pulse 1e-3 | 1419 -> 712 | 875 -> **40** | 121 -> **0** |
+| rc-pulse 1e-4 | 1419 -> 1178 | 875 -> **43** | 121 -> **0** |
+| rc-pulse 1e-5 | 2757 -> 1942 | 1868 -> **76** | 101 -> **0** |
+
+**33x fewer rejections on the stiff RLC at 1e-5 against a declared 2x, and the step count
+HALVES** (923 -> 464) rather than regressing — the run was spending its rejections on an
+estimator that could not settle. `worst accepted ratio 2.0000, ratios outside the bound 0`
+across the whole sweep, so 4b's invariant survives. `trap-classic` moves by at most +6.9%
+(rc-pulse 1e-3, 666 -> 712), well inside the declared 20%.
+
+**Blast radius: exactly zero outside trapezoidal.** Every `euler`, `gear2-classic` and
+`gear2-ywr` row in the 45-configuration sweep is **identical** to the gate-4b run, because
+neither reads `h_last2`.
+
+**Gate 4g-b5 (the two QUCS reference tests still hold).** Named explicitly because stage 3
+broke exactly these with a hasty change to this code path, and because they are the only
+tests comparing a transient against an external simulator.
+OUTCOME: **PASSED.** `test_transient_RC`, `test_transient_RLC` and
+`test_transient_nonlinear_C` all pass (29 passed in the selected subset). Worth noting why
+they were never at much risk this time: all three run `fixed_timestep=True` or a step the
+controller does not bind, so they exercise `compute_derivatives` — which 4g(b) does not
+touch — rather than `compute_lte`. Stage 3's change touched the former; this one does not.
+
+**Gate 4g-b6.** Full suite `-m ""`, runtime recorded; doc build verified by content.
+OUTCOME: **PASSED. 770 passed, 6 skipped, 0 failed, 722.89 s** (`-m "" --timeout=400`),
+against 761 before 4g(b) plus the 9 tests added here — **no existing test needed
+changing**, on a change that moves trapezoidal step counts by up to 2x. Runtime 670 -> 723 s
+is +7.9%, inside the standing 20% rule and inside this box's own run-to-run variation
+(trap 2).
+
+Doc build: **build succeeded, 2 warnings, 0 ERROR**, verified per rule 3 rather than from
+the exit code — no `exec-rst` block fell back to rendering its own source (searched for
+each block's own function definitions: 0 occurrences) and every table cell is computed.
+
+**One defect the doc build caught, worth recording because it is trap 3 for the third
+time.** The first version of the new page's comparison block seeded the g-history with an
+exact derivative rather than recursing it, and produced a flat **0.8354 / 0.8334 /
+0.8333** — i.e. 5/6, the artefact — instead of the real 1.0920 / 1.3130 / 1.3314. It was
+caught only because 5/6 was recognisable from the `integrator.py` comment. A generated
+table is not automatically a trustworthy one; it is only as good as the history it builds.
+
+---
 
 **4h. `fixed_timestep=True` does not fix the timestep.** `transient.py:415-416` restores
 `dt` only when *not* fixed-step, so breakpoint truncation is permanent. Measured: expected

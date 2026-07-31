@@ -58,11 +58,19 @@ class Integrator(ABC):
         pass
         
     @abstractmethod
-    def compute_lte(self, q_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit) -> tuple:
+    def compute_lte(self, q_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit,
+                    h_last2=None) -> tuple:
         """
-        Computes the Local Truncation Error vector for the current step, 
+        Computes the Local Truncation Error vector for the current step,
         along with the order 'p' of the LTE formula (used for step size prediction).
-        
+
+        ``h_last2`` is the step BEFORE ``h_last``, added by stage 4g(b) for the
+        trapezoidal estimator.  It is ``None`` exactly when ``q_last[2]`` is not yet
+        a real past point -- the two become available on the same step, so one
+        optional argument carries both facts and an estimator that needs three past
+        charges can test ``h_last2 is None`` and fall back.  Estimators that need
+        only two past points ignore it.
+
         Returns:
             Tuple[lte_vector, p]
         """
@@ -90,10 +98,13 @@ class EulerIntegrator(Integrator):
         geq = C_curr / h_curr
         return iq, geq
         
-    def compute_lte(self, q_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit):
+    def compute_lte(self, q_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit,
+                    h_last2=None):
+        ## `h_last2` is unused: Euler differences one past point.  Accepted so every
+        ## implementation shares one signature -- see the ABC.
         if is_first_step:
             return toolkit.zeros(len(q_curr)), 1.0
-            
+
         gn = (q_curr - q_last[0]) / h_curr
         gn_1 = iq_last[0]
 
@@ -131,7 +142,12 @@ class TrapezoidalIntegrator(Integrator):
         self.lte_formula = lte_formula
 
     def get_required_history(self) -> int:
-        return 1
+        ## THREE, not one, since stage 4g(b).  The *method* still looks back one
+        ## step -- `compute_derivatives` uses q_last[0] and iq_last[0] only -- but
+        ## the ESTIMATOR differences `d_k = (q_k - q_{k-1})/h_k` at three points,
+        ## and d_{n-2} needs q_{n-3}.  The two requirements are different and this
+        ## returns the larger, because it is what sizes the ring buffer.
+        return 3
 
     def check_order_drop(self, h_curr: float, h_last: float, is_first_step: bool) -> Integrator:
         # Trapezoidal rule only looks back 1 step, so its polynomial isn't
@@ -146,12 +162,63 @@ class TrapezoidalIntegrator(Integrator):
         geq = C_curr / h_curr / 0.5
         return iq, geq
         
-    def compute_lte(self, q_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit):
+    def compute_lte(self, q_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit,
+                    h_last2=None):
         if is_first_step:
             return toolkit.zeros(len(q_curr)), 1.0
-            
-        # g = dq/dt companion current at the last three points (g_n reconstructed
-        # from the trapezoidal companion formula, g_{n-1}, g_{n-2} from history).
+
+        ## STAGE 4g(b) -- DIFFERENCE A MODE-FREE QUANTITY.
+        ##
+        ## What the estimator must produce, from YWR eq (22) with p=1, k=2 and the
+        ## trapezoidal coefficients (alpha = [1/h, -1/h], beta = [1/2, 1/2]), is
+        ##
+        ##     Eg = -(h^2/6) q'''
+        ##
+        ## once the controller's own J^-1 has absorbed the (q_x + 0.5 h f_x)^-1
+        ## factor.  Table I approximates q''' by a second difference of the
+        ## companion current g; eq (22) does not require that, and the paper's own
+        ## wording is "(22) AND FINITE DIFFERENCE APPROXIMATION" -- the choice of
+        ## difference is free, and for TRAP the g-based choice is what goes wrong.
+        ##
+        ## g carries an undamped parasitic mode.  The trapezoidal companion
+        ## `iq_n = 2(q_n - q_{n-1})/h - iq_{n-1}` has homogeneous solution
+        ## `iq_n = -iq_{n-1}`, i.e. `(-1)^n`, and nothing damps it.  Differencing g
+        ## therefore differences that mode, and the estimate depends on the step
+        ## history that preceded it: measured est/true_local at h=1e-9, ratio 1, on
+        ## two different prefixes of the SAME problem, 1.3176 and 0.6780 -- a 1.9x
+        ## swing from history alone.
+        ##
+        ## `d` has no such component.  The trapezoidal relation gives
+        ## `(iq_n + iq_{n-1})/2 = (q_n - q_{n-1})/h = d_n`, and the mode flips sign
+        ## every step, so it CANCELS EXACTLY in that sum.  Expanding about the
+        ## interval midpoint `m_n = (t_n + t_{n-1})/2`,
+        ##
+        ##     d_n = q'(m_n) + (h_n^2/24) q'''(m_n) + O(h^4)
+        ##
+        ## so d samples q' at midpoints and a second divided difference of d OVER
+        ## THE MIDPOINTS estimates q'''/2.  Measured against the local truncation
+        ## error, est/true at ratio 1: 0.9273 / 0.9933 / 0.9993 as h falls
+        ## 1e-8 -> 1e-10, against the g-based form's 0.8067 / 0.6780 / 0.6678 --
+        ## asymptotically exact where the old one holds a 33% underestimate.
+        ##
+        ## The midpoint spacings are the part that must not be got wrong; using
+        ## h_curr/h_last (the NODE spacings) is the same class of error as the
+        ## backward-Euler defect stage 4c fixed.
+        if h_last2 is not None:
+            d_n = (q_curr - q_last[0]) / h_curr
+            d_n1 = (q_last[0] - q_last[1]) / h_last
+            d_n2 = (q_last[1] - q_last[2]) / h_last2
+            delta1 = 0.5 * (h_curr + h_last)
+            delta2 = 0.5 * (h_last + h_last2)
+            dd2 = ((d_n - d_n1) / delta1 - (d_n1 - d_n2) / delta2) / (delta1 + delta2)
+            ## -(h^2/6) q''' with q''' = 2 * dd2.
+            return -(1.0/3.0) * h_curr**2 * dd2, 3.0
+
+        ## `h_last2 is None` means q_last[2] is not yet a real past point, which is
+        ## true for exactly ONE step of a run -- the second, where the ring buffer
+        ## still holds the initial charge twice.  Falling back to the g-based form
+        ## for that single step is better than returning zeros, which would make it
+        ## an unchecked step of the kind stage 3 exists to remove.
         gn = 2 * (q_curr - q_last[0]) / h_curr - iq_last[0]
         gn_1 = iq_last[0]
         gn_2 = iq_last[1] if len(iq_last) > 1 else iq_last[0]
@@ -161,9 +228,15 @@ class TrapezoidalIntegrator(Integrator):
             #   eps = -(1/12)(q_x + 0.5 h f_x)^-1 (g_n - 2 g_{n-1} + g_{n-2}) h
             # With (q_x + 0.5 h f_x) = 0.5 h (G + 2C/h) = 0.5 h J, the h cancels
             # and, since the controller applies J^-1, Eg = -(1/6)(2nd diff of g).
+            #
+            # NOTE: this is a UNIFORM-GRID formula -- Table I gives TRAP with a
+            # single h and an unweighted second difference, while its GEAR2 entry
+            # carries h1/h2 explicitly.  It is wrong off a uniform grid by O(1/h)
+            # and is stage 4d's subject.  It survives here only on the one
+            # fallback step, where it is bounded by the run's opening ramp.
             lte = -(1.0/6.0) * (gn - 2 * gn_1 + gn_2)
         else:
-            # Classic divided-difference form.
+            # Classic divided-difference form, at the NODES.
             dd1 = (gn - gn_1) / h_curr
             dd2 = (gn_1 - gn_2) / h_last
             lte = -(1.0/3.0) * h_curr**2 * (dd1 - dd2) / (h_curr + h_last)
@@ -182,9 +255,19 @@ class Gear2Integrator(Integrator):
         ## truncation error at every step where a corrected 'classic' is
         ## asymptotically exact -- mild optimism about the solver's own error,
         ## and TRTOL = 7.0 already absorbs more than that factor.
-        ## Euler and Trapezoidal keep 'classic': for Euler the two formulas are
-        ## identical, and for Trapezoidal they agree to the same 5/6 of the
-        ## one-step LTE.
+        ## Euler and Trapezoidal keep 'classic'.  For Euler the two formulas are
+        ## identical.  For Trapezoidal the choice no longer has any effect once
+        ## three past charges exist -- stage 4g(b)'s estimator ignores it -- so it
+        ## only selects the one-step fallback formula.
+        ##
+        ## THE "5/6" THIS COMMENT USED TO CLAIM WAS AN ARTEFACT, and it is worth
+        ## recording where it came from because the number is so clean.  5/6 =
+        ## 0.8333 is what the trapezoidal estimator reads when it is handed EXACT
+        ## derivatives as its `g` history instead of the companion currents a real
+        ## run produces.  Measured against the local truncation error with the real
+        ## history it reads 1.09 / 1.31 / 1.33 as h falls 1e-8 -> 1e-10 -- it does
+        ## not converge at all, let alone to 5/6.  Decision 0.3b called the claim
+        ## measurably wrong; this is the measurement, and the mechanism.
         self.lte_formula = lte_formula
 
     def get_required_history(self) -> int:
@@ -263,10 +346,12 @@ class Gear2Integrator(Integrator):
         iq = alpha0 * q_curr + alpha1 * q_last[0] + alpha2 * q_last[1]
         return iq, geq
         
-    def compute_lte(self, q_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit):
+    def compute_lte(self, q_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit,
+                    h_last2=None):
+        ## `h_last2` is unused: Gear2 differences two past points.
         if is_first_step:
             return toolkit.zeros(len(q_curr)), 1.0
-            
+
         if self.lte_formula == 'ywr':
             # Yao-Wang-Roychowdhury DAE LTE (ICECS 2014, Table I, GEAR2).  Uses the
             # 2nd difference of g = dq/dt (not a q'' divided difference).  h1=h_curr,

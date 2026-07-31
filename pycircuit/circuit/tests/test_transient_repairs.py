@@ -823,3 +823,254 @@ def test_gate_4b_no_accepted_step_ratio_leaves_the_stability_bound():
         '%d of %d accepted step ratios exceed the zero-stability bound %.6f, ' \
         'worst %.4f' % (sum(1 for r in ratios if r > ZERO_STABILITY_RATIO),
                         len(ratios), ZERO_STABILITY_RATIO, worst)
+
+
+# ---------------------------------------------------------------------------
+# 4g(b) -- the trapezoidal estimator differences a mode-free quantity
+#
+# The trapezoidal companion `iq_n = 2(q_n - q_{n-1})/h - iq_{n-1}` has homogeneous
+# solution `(-1)^n`, undamped.  Differencing `g = iq` therefore differences that
+# mode.  `d_n = (q_n - q_{n-1})/h_n` does not: the trapezoidal relation gives
+# `(iq_n + iq_{n-1})/2 = d_n`, and a component that flips sign each step cancels
+# exactly in that sum.
+# ---------------------------------------------------------------------------
+
+## An analytic charge, so the local truncation error is exactly computable.
+_4G_OMEGA = 2 * np.pi * 1e6
+
+
+def _4g_q(t):
+    return np.sin(_4G_OMEGA * t)
+
+
+def _4g_dq(t):
+    return _4G_OMEGA * np.cos(_4G_OMEGA * t)
+
+
+def _4g_d3q(t):
+    return -(_4G_OMEGA ** 3) * np.cos(_4G_OMEGA * t)
+
+
+def _trap_est_over_true(h_curr, h_last, h_last2, t_n=0.371e-6, formula='classic'):
+    """est / (local truncation error), for the trapezoidal estimator.
+
+    The reference is the LOCAL truncation error `-(h^2/6) q'''`, not
+    `iq_n - q'(t_n)`.  Gate 4g-b0 is why: the latter contains error propagated from
+    earlier steps, which is O(h^3) here -- one order SMALLER than the local error --
+    so dividing by it produced the "1/h law" that stage 4g was originally chasing.
+    A per-step estimator cannot track the propagated part and must not try: the
+    parasitic mode is undamped, so shrinking h does not reduce it.
+    """
+    from pycircuit.circuit.integrator import TrapezoidalIntegrator
+    t_1 = t_n - h_curr
+    t_2 = t_1 - h_last
+    t_3 = t_2 - h_last2
+    est, _p = TrapezoidalIntegrator(formula).compute_lte(
+        q_curr=np.array([_4g_q(t_n)]), h_curr=h_curr,
+        q_last=np.array([[_4g_q(t_1)], [_4g_q(t_2)], [_4g_q(t_3)]]),
+        ## The estimator must never need these once h_last2 is available; passing
+        ## deliberately wrong values is how this test proves it.
+        iq_last=np.array([[np.nan], [np.nan]]),
+        h_last=h_last, is_first_step=False, toolkit=numeric, h_last2=h_last2)
+    ## The local truncation error is the EXACT residual when exact values are
+    ## substituted for the history -- here, the trapezoidal companion built from
+    ## exact charges and an exact `iq_{n-1}`, minus the exact derivative.
+    ## `-(h^2/6) q3` is only its leading term and differs by 3.4% at h=1e-8, which
+    ## is enough to fail a 10% gate for a reason that has nothing to do with the
+    ## estimator.  The two are checked against each other in
+    ## `test_gate_4g_b_local_error_matches_the_derivation`.
+    true_local = (2.0 * (_4g_q(t_n) - _4g_q(t_1)) / h_curr - _4g_dq(t_1)) - _4g_dq(t_n)
+    return float(est[0]) / true_local
+
+
+def test_gate_4g_b_local_error_matches_the_derivation():
+    """The derivation gives the trapezoidal LTE as -(h^2/6) times the third
+    derivative of the charge.  Checked against the exact residual, which must
+    approach it as h falls.
+
+    This is the check that YWR eq (22) was evaluated correctly for TRAP: the
+    coefficient is what the whole estimator is scaled by, and getting it wrong
+    would bias every step of every trapezoidal run by a constant factor.
+    """
+    t_n = 0.371e-6
+    prev = None
+    for h in (1e-8, 1e-9, 1e-10):
+        exact = (2.0 * (_4g_q(t_n) - _4g_q(t_n - h)) / h
+                 - _4g_dq(t_n - h)) - _4g_dq(t_n)
+        leading = -(h ** 2 / 6.0) * _4g_d3q(t_n)
+        ratio = exact / leading
+        assert abs(ratio - 1.0) < 0.05, \
+            'exact LTE / leading term = %.6f at h=%g' % (ratio, h)
+        if prev is not None:
+            assert abs(ratio - 1.0) < abs(prev - 1.0), \
+                'the leading term is not the limit: %s' % [prev, ratio]
+        prev = ratio
+
+
+def test_gate_4g_b_estimator_does_not_touch_the_companion_currents():
+    """The whole point, expressed as an assertion.
+
+    `iq_last` is passed as NaN. If the estimator reads it at all the result is NaN,
+    so a finite answer is proof that the parasitic mode cannot reach the estimate.
+    """
+    r = _trap_est_over_true(1e-9, 1e-9, 1e-9)
+    assert np.isfinite(r), \
+        'the estimator still reads iq_last; the (-1)^n mode can reach the estimate'
+
+
+def test_gate_4g_b1_estimator_is_asymptotically_exact():
+    """Measured before: 0.8067 / 0.6780 / 0.6678 -- a ~33% underestimate that does
+    not improve with h. After: 0.9273 / 0.9933 / 0.9993."""
+    ratios = [_trap_est_over_true(h, h, h) for h in (1e-8, 1e-9, 1e-10)]
+    for h, r in zip((1e-8, 1e-9, 1e-10), ratios):
+        assert abs(r - 1.0) < 0.1, \
+            'est/true = %.4f at h=%g; the estimator is not consistent' % (r, h)
+    ## Consistency means it gets BETTER with h, which the g-based form did not.
+    assert abs(ratios[2] - 1.0) < abs(ratios[0] - 1.0), \
+        'est/true does not converge to 1 as h falls: %s' % ratios
+
+
+def test_gate_4g_b2_estimator_is_flat_across_the_reachable_step_ratios():
+    """Recorded spread: 1540x for the g-based 'ywr' form, 4.0x for 'classic'.
+
+    The range asserted is the range the controller can actually produce.
+    `MAX_GROWTH_RATIO` caps growth at 2.0 and 4b removed the only path that
+    bypassed it, so ratios above 2.0 cannot occur; the shrink end is reachable
+    (three consecutive rejections give 0.2**3) and is asserted more loosely,
+    because the `(h^2/24) q'''` midpoint term does not cancel off a uniform grid --
+    measured -12.2% at r=0.008.
+    """
+    h = 1e-9
+    for ratio in (0.25, 0.5, 1.0, 2.0):
+        r = _trap_est_over_true(h * ratio, h, h)
+        assert abs(r - 1.0) < 0.10, \
+            'est/true = %.4f at step ratio %g, outside 10%%' % (r, ratio)
+    for ratio in (0.008, 0.05, 0.1):
+        r = _trap_est_over_true(h * ratio, h, h)
+        assert abs(r - 1.0) < 0.15, \
+            'est/true = %.4f at deep-shrink ratio %g' % (r, ratio)
+
+
+def test_gate_4g_b3_ywr_and_classic_now_coincide_for_trapezoidal():
+    """4d resolved for trapezoidal by construction rather than by deletion.
+
+    The mode-free branch does not read `lte_formula`, so the two selections return
+    the same value bit for bit. The branches survive only on the one step of a run
+    that has fewer than three past charges.
+    """
+    h = 1e-9
+    for ratio in (0.25, 1.0, 2.0):
+        a = _trap_est_over_true(h * ratio, h, h, formula='classic')
+        b = _trap_est_over_true(h * ratio, h, h, formula='ywr')
+        assert a == b, \
+            "lte_formula still changes the trapezoidal estimate at ratio %g: %r vs %r" \
+            % (ratio, a, b)
+
+
+def test_gate_4g_b_the_fallback_is_used_for_exactly_one_step():
+    """`h_last2 is None` must select the old two-past-point formula, not zeros.
+
+    Returning zeros would make the second step of every run unchecked -- the defect
+    stage 3 removed from the first step. And the fallback must be reachable: it is
+    what runs before the ring buffer has three real charges.
+    """
+    from pycircuit.circuit.integrator import TrapezoidalIntegrator
+    h = 1e-9
+    t_n = 0.371e-6
+    est, _p = TrapezoidalIntegrator('classic').compute_lte(
+        q_curr=np.array([_4g_q(t_n)]), h_curr=h,
+        q_last=np.array([[_4g_q(t_n - h)], [_4g_q(t_n - 2 * h)], [0.0]]),
+        iq_last=np.array([[_4g_dq(t_n - h)], [_4g_dq(t_n - 2 * h)]]),
+        h_last=h, is_first_step=False, toolkit=numeric, h_last2=None)
+    assert float(est[0]) != 0.0, \
+        'the h_last2=None fallback returns zero, making that step unchecked'
+    assert np.isfinite(float(est[0]))
+
+
+def test_gate_4g_b_trapezoidal_asks_for_three_past_charges():
+    """The ring buffer must be sized for the ESTIMATOR, not just the method.
+
+    `compute_derivatives` still looks back one step; the estimator differences `d`
+    at three points and so needs `q_{n-3}`. If this returns to 1 the estimator
+    silently reads a seeded initial charge as if it were history.
+    """
+    from pycircuit.circuit.integrator import (TrapezoidalIntegrator,
+                                              Gear2Integrator, EulerIntegrator)
+    assert TrapezoidalIntegrator().get_required_history() == 3
+    assert Gear2Integrator().get_required_history() == 2
+    assert EulerIntegrator().get_required_history() == 1
+
+
+def test_gate_4g_b4_rejections_collapse_on_the_stiff_case():
+    """End to end. Recorded before 4g(b): 757 rejections, 26 force-accepts, 923
+    accepted steps. After: 23, 1 and 464.
+
+    This is the test that would catch `_dt_last2` being rolled in the wrong order,
+    which produces a plausible-looking but wrong grid rather than an error.
+    """
+    import warnings as _w
+    from pycircuit.circuit.integrator import TrapezoidalIntegrator
+    from pycircuit.circuit.stepcontroller import IntegralController
+    from pycircuit.circuit.elements import L
+
+    class _Counter(IntegralController):
+        def __init__(self):
+            super().__init__()
+            self.rejections = 0
+
+        def evaluate_step(self, *args, **kwargs):
+            accept, h_next = super().evaluate_step(*args, **kwargs)
+            if not accept:
+                self.rejections += 1
+            return accept, h_next
+
+    cir = SubCircuit(toolkit=numeric)
+    cir['C1'] = C(1, gnd, c=1e-6)
+    cir['R1'] = R(1, 2, r=1.0)
+    cir['L1'] = L(2, gnd, L=1e-6)
+    x0 = np.zeros(cir.n)
+    x0[cir.get_node_index('1')] = 1.0
+    x0[cir.get_node_index('2')] = 1.0
+
+    tran = Transient(cir, toolkit=numeric,
+                     integrator=TrapezoidalIntegrator('ywr'), reltol=1e-5)
+    ctrl = _Counter()
+    tran.step_controller = ctrl
+    with _w.catch_warnings():
+        _w.simplefilter('ignore', RuntimeWarning)
+        res = tran.solve(refnode=gnd, tend=5e-3, timestep=2e-4, x0=x0)
+
+    ## 757 before; a 10x margin on the measured 23 leaves room for platform drift
+    ## while still failing loudly if the mode comes back.
+    assert ctrl.rejections < 230, \
+        'trapezoidal rejected %d steps; it was 757 with the g-based estimator and ' \
+        '23 with the mode-free one' % ctrl.rejections
+    assert len(np.asarray(res.sweep_values)) < 700, \
+        'step count %d; it was 923 before 4g(b) and 464 after' \
+        % len(np.asarray(res.sweep_values))
+
+
+def test_gate_4g_b_a_second_solve_is_identical_to_the_first():
+    """The step history must be rebuilt per run, like the charge history.
+
+    `_qlast` is re-seeded at the top of every `solve()`, so `_dt_last2` must be
+    too. Otherwise a second run starts with a leftover step size from the first
+    while `q_last[2]` is the freshly seeded initial charge, and the estimator
+    differences a grid that never existed -- silently, and only on re-use.
+    """
+    import warnings as _w
+    from pycircuit.circuit.integrator import TrapezoidalIntegrator
+    tran = Transient(_pulsed_rc(), toolkit=numeric,
+                     integrator=TrapezoidalIntegrator('classic'))
+    with _w.catch_warnings():
+        _w.simplefilter('ignore', RuntimeWarning)
+        first = tran.solve(refnode=gnd, tend=3e-6, timestep=1e-7)
+        v1 = np.asarray(first.v('n2'), dtype=float).copy()
+        second = tran.solve(refnode=gnd, tend=3e-6, timestep=1e-7)
+        v2 = np.asarray(second.v('n2'), dtype=float)
+
+    assert len(v1) == len(v2), \
+        'a re-solve took a different number of steps: %d then %d' % (len(v1), len(v2))
+    assert np.array_equal(v1, v2), \
+        're-solving the same circuit gave a different waveform; max delta %g' \
+        % np.max(np.abs(v1 - v2))

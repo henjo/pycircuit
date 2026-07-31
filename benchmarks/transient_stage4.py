@@ -60,8 +60,41 @@ def dq(t):
     return OMEGA * np.cos(OMEGA * t)
 
 
-def est_over_true(integrator, h_curr, h_last):
+def d3q(t):
+    """Third derivative of the analytic charge, for the LOCAL reference (4g-b0)."""
+    return -(OMEGA ** 3) * np.cos(OMEGA * t)
+
+
+def est_over_true(integrator, h_curr, h_last, reference='local'):
     """(estimate, true, ratio) for one integrator at one pair of step sizes.
+
+    `reference` selects what `true` means, and the distinction is the whole of
+    gate 4g-b0.
+
+      'propagated'  `iq_n - q'(t_n)` with `iq_{n-1}` taken from the recursion,
+                    i.e. the error actually standing in the companion current.
+                    For Euler and Gear2 this IS the local error, because their
+                    `compute_derivatives` is a pure function of the charge
+                    history and nothing propagates.  Trapezoidal is the only
+                    method here whose companion current feeds back on itself.
+      'local'       the classical local truncation error: the residual when
+                    EXACT values are substituted for the history.  This is what
+                    a step controller must estimate, because it is the part `h`
+                    controls; the propagated part of trapezoidal error is an
+                    undamped (-1)^n mode that shrinking `h` does not reduce.
+
+    **The estimator is fed the real companion currents in both modes.**  Only
+    the reference changes.  Feeding exact derivatives to the ESTIMATOR is the
+    artefact recorded in this function's own note below and must not come back.
+
+    The default is 'local', changed by gate 4g-b0.  That gate exists because
+    changing a reference to make a number look better is exactly what the standing
+    rule forbids, so it was measured first: for euler, gear2-classic and gear2-ywr
+    the two references give **bit-identical** est/true at every h tested, because
+    those methods' `compute_derivatives` is a pure function of the charge history
+    and nothing propagates.  The default therefore changes no number that was
+    previously trustworthy, and differs only for trapezoidal -- the one method with
+    feedback in its companion current, and the one the distinction is about.
 
     THE HISTORY MUST BE THE HISTORY THE ESTIMATOR ACTUALLY GETS.  `iq_last` holds
     the *companion currents* produced by previous steps, not exact derivatives --
@@ -103,21 +136,31 @@ def est_over_true(integrator, h_curr, h_last):
             is_first_step=False, toolkit=numeric)
         iq_hist.append(float(iq_i[0]))
 
-    tn, t1, t2 = times[-1], times[-2], times[-3]
+    tn, t1, t2, t3 = times[-1], times[-2], times[-3], times[-4]
     q_curr = np.array([q(tn)])
-    q_last = np.array([[q(t1)], [q(t2)]])
+    ## THREE past charges, matching what the transient's ring buffer now holds:
+    ## stage 4g(b) raised Trapezoidal's `get_required_history()` to 3 and the
+    ## harness must hand over the same history a real run would, or the estimator
+    ## silently takes its two-past-point fallback and the gate measures the wrong
+    ## branch.  It did exactly that once.
+    q_last = np.array([[q(t1)], [q(t2)], [q(t3)]])
     ## The companion currents at t_{n-1} and t_{n-2}, as produced above.
     iq_last = np.array([[iq_hist[-2]], [iq_hist[-3]]])
+    h_last2 = steps[-3]
 
+    ## `true` -- see the `reference` note in the docstring.  In 'local' mode the
+    ## history handed to compute_derivatives is exact; the ESTIMATOR below still
+    ## receives `iq_last`, the real companion currents, in both modes.
+    iq_ref = (np.array([[dq(t1)], [dq(t2)]]) if reference == 'local' else iq_last)
     iq, _geq = integrator.compute_derivatives(
         q_curr=q_curr, C_curr=np.array([[1.0]]), h_curr=h_curr,
-        q_last=q_last, iq_last=iq_last, h_last=h_last,
+        q_last=q_last, iq_last=iq_ref, h_last=h_last,
         is_first_step=False, toolkit=numeric)
     true = float(iq[0] - dq(tn))
 
     est, _p = integrator.compute_lte(
         q_curr=q_curr, h_curr=h_curr, q_last=q_last, iq_last=iq_last,
-        h_last=h_last, is_first_step=False, toolkit=numeric)
+        h_last=h_last, is_first_step=False, toolkit=numeric, h_last2=h_last2)
     est = float(est[0])
     return est, true, (est / true if true != 0 else float('nan'))
 
