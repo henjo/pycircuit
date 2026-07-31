@@ -1903,6 +1903,94 @@ Blocked on 0.1c. Repair, rewrite against the seams stage 7 creates, or withdraw.
 
 ---
 
+# STAGE 12 — implement Fang's method for real
+
+Added 2026-07-31, after decision **D1** chose "keep and fix" for `_solve_coupled`. That
+decision leaves a module whose comment cites a paper it does not implement; this stage is
+the option that resolves it by making the citation true. **The alternative remains open and
+is cheaper** — drop the citation, rename the flag to describe the rejection loop it
+actually is, and fix the four ignored inputs. Do not start this stage without deciding
+which of the two is wanted, because doing the cheap one first is wasted if this lands.
+
+**Source:** G. Peter Fang, *"A new time-stepping method for circuit simulation"*, DAC 2013 —
+`/home/andreas/pycircuit_agy/papers/2463209.2488904.pdf`. Read it from rendered pages; the
+formulas do not survive text extraction. What 0.1d established, so it is not re-derived:
+the code implements **neither** §3.1 nor §3.4, and `analytical_eh` is a vestige of the
+`E_h` gradient that `doc/src/circuit/time_stepping.rst` once documented but that was never
+written.
+
+**What the method actually is.** The step size `h_m` becomes an **unknown**, solved together
+with the circuit equations as `N+1` nonlinear equations (eq 11), through the bordered system
+
+    [ J    p ] [ Δv ]   [ −f_ckt ]
+    [ q^T  d ] [ Δh ] = [ −f_lte ]                                    (eq 12)
+
+with `p = ∂f_ckt/∂h_m`, `q^T = ∂f_lte/∂v_m`, `d = ∂f_lte/∂h_m`. §3.2 gives two ways to
+solve it without a full `(N+1)` factorisation: partial LU keeping the last row undetermined,
+or the reduction to an `N`-system `(J − p q^T / d) Δv = −f_ckt + f_lte p / d` (eq 13) with
+`Δh` recovered from eq (14) — a rank-one update, so the existing factors can be reused.
+§3.4's approximate Newton avoids re-solving altogether: predict `h` from Gear's formula
+(eq 17) and **correct** the solution already computed,
+`Δv^{k+1} = Δv^{k+1/2} − J^{-1} p (h^{k+1} − h^k)` (eq 18).
+
+**Dependencies, and they are real:**
+
+- **Stage 4 must be complete.** The method's entire premise is that the LTE is a quantity
+  worth solving *for*. Making `h` an unknown driven by an estimator that is 681x wrong at
+  small `h` (4g-2) would be worse than the rejection loop it replaces, not better.
+- **Stage 7b** gives the `factor`/`solve` split that eq (13)'s rank-one update and §3.2's
+  factor reuse both need. Without it the "very little overhead" the paper claims is not
+  available and the method is a pessimisation.
+- **Item 2+.2's seam** — the solver returning `(F, J)` at the converged point — was deferred
+  to stage 7a for the reduced/full reconciliation. It is a prerequisite here too.
+
+**Work.** (a) `p`, `q^T`, `d`: `p = ∂f_ckt/∂h` is analytic given the integration formula
+(`f_ckt` contains `q/h` terms), and `d = ∂f_lte/∂h` follows from the LTE formula's own
+`h`-dependence — this is what `analytical_eh` was named for. (b) The reduced `N`-system of
+eq (13) rather than a literal `(N+1)` factorisation. (c) §3.3's **two-sided** band
+`γ_min τ ≤ ε ≤ γ_max τ` (eq 15) plus the step-change damper `|Δh| ≤ η h` (eq 16, typical
+η = 15%) — note the lower bound is not decoration, §4.1 attributes the paper's headline
+result to it. (d) §3.4's approximate Newton as the default, with the exact solve behind a
+flag.
+
+**Gate 12-1 (it is the method, not a rejection loop).** With the coupled path selected, a
+run must contain **zero** discarded time points from LTE rejection — the step size is
+solved, not retried. Declared success: the rejection counter is 0 where the standard path
+records a nonzero count on the same circuit.
+OUTCOME:
+
+**Gate 12-2 (the paper's own result, on our circuits).** §4.1 reports **39% fewer time
+points and 17% less runtime** on a Class-D amplifier with the LTE bounded between 0.7 and
+3.0. Declared success: on the leapfrog and on `test_analysis_transient_stress.py`'s stiff
+RLC, **at least 20% fewer accepted steps** than the standard controller at matched accuracy.
+**A step reduction bought by a looser effective tolerance does not count** — accuracy is
+measured against the analytic reference of stage 3's RC and must not degrade.
+OUTCOME:
+
+**Gate 12-3 (the overhead claim).** The paper's case rests on "very little overhead". With
+stage 7b's factors reused, declared success: the per-step cost of the coupled path is
+within **15%** of the standard path's. If it is not, the method is losing in wall time what
+it wins in step count, and that is the number that decides whether it ships.
+OUTCOME:
+
+**Gate 12-4 (the four ignored inputs).** Whatever else changes, the coupled path must
+honour `fixed_timestep`, breakpoints, an injected step controller, and `uic` — the list
+from 0.1d, of which only `uic` is currently fixed.
+OUTCOME:
+
+**Gate 12-5.** Full suite `-m ""`, and the citation in `time_stepping.rst` becomes true —
+the page's `.. warning::` recording that the method was documented but absent is removed
+only when the code matches it.
+OUTCOME:
+
+**Reconsider the whole stage if** gate 12-3 fails, or if stage 4 shows the LTE estimate is
+still not trustworthy enough to solve against. **A negative result here is a good outcome**:
+it would justify deleting `_solve_coupled` after all, which is what 0.1d recommended and D1
+declined, and it would do so on evidence rather than on the code-reading that D1 found
+unpersuasive.
+
+---
+
 ## Order and dependencies
 
 ```
@@ -1921,7 +2009,14 @@ Blocked on 0.1c. Repair, rewrite against the seams stage 7 creates, or withdraw.
 1 ─► 2 ─► 3 ─► 4 ─► 5 ─► 6          (7 in parallel throughout)
                               8, 10.1-10.3 after 6;  10.4 after 5
                               11 after 5 AND 7
+                              12 after 4 AND 7b   [added 2026-07-31, from D1]
 ```
+
+**Stage 12** (implement Fang's method) is gated on stage 4 because it makes the LTE a
+quantity to solve *for* rather than to test against, and on 7b because its claimed "very
+little overhead" depends on reusing the factorisation. It is the expensive resolution of
+decision D1; the cheap one — drop the citation and fix the four ignored inputs — needs
+neither, and one of the two should be chosen before either is started.
 
 **Amendments from the 0.3 decisions (2026-07-30), all recorded above:**
 0.3a took option (iii), which moves the charge-referenced LTE criterion out of stage 1 and
