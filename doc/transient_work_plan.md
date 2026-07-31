@@ -2,11 +2,12 @@
 
 > ## RESUME HERE — state as of 2026-07-31
 >
-> Last commit changing **simulator behaviour**: `1be99da` (stage 4a -- the PI gains).
+> Last commit changing **simulator behaviour**: `2c78690` (stage 4d/4f -- the fallback formula).
 > Anything after it is a benchmark or documentation unless it says otherwise — so a newer
 > HEAD does not by itself mean the code has moved underneath this block; check
-> `git log --oneline 1be99da..HEAD -- pycircuit/`. Branch `cna-jax-vectorization`,
-> **pushed to `origin`** (`git@github.com:henjo/pycircuit.git`).
+> `git log --oneline 2c78690..HEAD -- pycircuit/`. Branch `cna-jax-vectorization`
+> (`git@github.com:henjo/pycircuit.git`) — **check `git status -sb` before assuming it is
+> pushed**; several commits have sat unpushed at a time in this work.
 >
 > **Suite: 788 passed, 6 skipped, 0 failed** (`-m "" --timeout=400`; 676 s and 1373 s on
 > two runs of near-identical source — see trap 2 before reading anything into a runtime). Nominal
@@ -31,7 +32,12 @@
 >
 > 1. **0.3d's `chgtol` guard**, and the rest of `doc/src/circuit/lte_dae.rst`'s
 >    variable-step story.
-> 2. **The `iq` seed.** `transient.py` starts every run with `_iqlast = zeros` against a
+> 2. **Remove `lte_formula` from both backends — WITH STAGE 9, not before.** It is inert on
+>    the CPU path and documented as such, but `jaxtransient.py` keeps its own, where
+>    `'classic'` selects a charge-domain estimator whose tolerance applies a *voltage* bound
+>    to a *charge* (gate 0.2b) and so never rejects a step. Stage 9 already owns merging the
+>    two paths; doing it there is one change instead of two.
+> 3. **The `iq` seed.** `transient.py` starts every run with `_iqlast = zeros` against a
 >    true `q'(t_0)` that is generally nonzero. Measured under 4g(b) as an O(h^3) effect,
 >    one order below the local truncation error, so it is not blocking — but it is wrong
 >    in principle and cheap to fix when something else touches that code.
