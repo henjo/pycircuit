@@ -2328,3 +2328,91 @@ events", which is the only meaningful answer for a symbolic time.
 | gear2-classic ratio dependence | **NEW**, measurable now, not started |
 | 0.3d `chgtol` guard | not started |
 | `relref` default / `lteratio` | not started |
+
+---
+
+# MAINTAINER DECISIONS, 2026-07-31
+
+Three items that had been left open across several tranches, answered together.
+
+**D1 — `_solve_coupled`: KEEP AND FIX.** Deletion (recommended by 0.1d) is declined. The
+livelock is already gone — stage 1 made it raise on retry exhaustion instead of advancing
+time by `h*0.25^10` forever — so what "fix" now means is the rest of 0.1d's list, and it is
+worth writing down so the scope is not rediscovered:
+
+- it **ignores four inputs**: `fixed_timestep`, breakpoints (`next_event` is never called),
+  and any injected step controller (`IntegralController()` is hard-coded at `:486`). `uic`
+  was the fourth and is now honoured.
+- `analytical_eh` is accepted and never read — a vestige of an `E_h` gradient that was
+  documented but never written.
+- the **Fang citation does not describe the code** (0.1d): there is no `p`, no bordered
+  `(N+1)` system, no `J^{-1}p` correction and no two-sided LTE band. Either the citation
+  goes or the method gets written.
+
+**Reconsider-if:** if nobody intends to implement genuine co-determination, the honest
+version of "keep" is to drop the Fang citation, rename the flag to describe what it does (a
+rejection loop with a larger retry budget), and fix the four ignored inputs. That is much
+less work than implementing the paper and leaves no false claim behind.
+
+**D2 — `MOS_ACM`: KEEP, out of scope for now.** It remains unconstructable
+(`super(MOS, self)` from a class whose MRO lacks `MOS`) and is a copy of `MOS` rather than
+an ACM model. Nothing depends on it. **The risk of keeping it is that it reads as coverage
+it does not provide** — its own docstring doctest would have caught the defect, and
+`pytest.ini` configures no doctest collection, so it has never run. If it stays, that
+doctest should either be collected or removed, so the file does not advertise a test that
+cannot fail.
+
+**D3 — `relref` default: `sigglobal`.** Adopted, per the measurements already recorded
+under gate 2+.3b/c. This is the only one of the three that changes behaviour, so it is
+gated below.
+
+## D3 gates
+
+**Gate D3-a (the default actually changed and nothing else did).** Full suite `-m ""`.
+Expect churn in step counts; every failure explained individually.
+OUTCOME: **FAILED, and the gate did its job. The default is reverted to `pointlocal`
+pending 4g(b).** Suite: 4 failed, 751 passed. Three of the four are trapezoidal.
+
+Under `sigglobal` the tolerance is referenced to the largest signal in the circuit, so
+steps grow larger. On an estimator that is still contaminated by the `(-1)^n` mode, that
+is enough to break the controller's response to `reltol` — **accuracy stops falling
+monotonically as the tolerance tightens**:
+
+| relref | integrator | steps | error |
+|---|---|---|---|
+| pointlocal | trap-classic | 51 / 54 / 83 / 149 | 1.01e-3 / 9.07e-4 / 2.10e-4 / 4.64e-5 |
+| **sigglobal** | **trap-classic** | 69 / 66 / 53 / 87 | 4.89e-4 / **2.23e-4 → 3.14e-4** / 7.14e-5 |
+| **sigglobal** | **trap-ywr** | 60 / 176 / 71 / 131 | 5.94e-4 / **3.82e-5 → 2.65e-4** / 3.18e-5 |
+
+**Euler and both Gear2 variants are fine under `sigglobal`** — monotone in both columns,
+and needing **1.7-2.5x fewer steps** for comparable accuracy. So the mode is right and the
+*timing* is wrong: it must not ship while the default integrator's estimator is still
+mode-contaminated.
+
+**The decision is not overturned, it is sequenced.** `relref='sigglobal'` remains the
+intended default; it lands with 4g(b), which is a one-line change once the trapezoidal
+estimator is mode-free, with this gate already written to check it.
+
+**Reconsider immediately if** 4g(b) is deferred indefinitely — in that case `sigglobal`
+should still be adopted for Euler and Gear2 and the trapezoidal exposure documented,
+because a 1.7-2.5x step reduction on two of three integrators is not worth withholding for
+long.
+
+**Gate D3-b (the workaround is no longer load-bearing).** With `sigglobal` as the default,
+record what `lte_vabstol` is still worth. **This does not change `lte_vabstol` — that is a
+separate decision**, and the point of the gate is to produce the number that decision needs.
+OUTCOME: **Answered, and the answer is "nothing, on a circuit with a healthy signal."**
+`test_gate_1_5_lte_vabstol_moves_the_step_count` failed under `sigglobal` with **403 steps
+at 1e-3, 1e-6 and 1e-9 alike** — the absolute floor stops mattering entirely, because
+`reltol*ref` dominates once `ref` is the largest signal rather than a possibly-zero local
+one.
+
+**That is the intended behaviour, not a defect**: an absolute tolerance exists to stop the
+relative one degenerating, and under `sigglobal` it cannot degenerate. It does mean that
+when `sigglobal` becomes the default, `lte_vabstol` can go back to something defensible
+(1e-12, matching `vabstol`) at little cost, and that gate 1-5 will need rewriting — it
+currently asserts a property that is only true under `pointlocal`. Both belong with 4g(b).
+
+On the leapfrog, partial figures before the run was cut short by machine contention:
+`pointlocal` 318 / 422 / 1206 steps at `lte_vabstol` 1e-6 / 1e-9 / 1e-12; `sigglobal` 318
+at 1e-6. The `sigglobal` 1e-12 figure was 482 when measured at gate 2+.3b.

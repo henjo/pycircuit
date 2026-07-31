@@ -156,16 +156,37 @@ class Transient(Analysis):
                    unit='A',
                    default=1e-12),
          ## What the RELATIVE part of the LTE tolerance is measured against --
-         ## Spectre's parameter of the same name.  `pointlocal` is the behaviour
-         ## pycircuit has always had; `sigglobal` is Spectre's default and is the
-         ## mode that removes the reason `lte_vabstol` had to be raised to 1e-6.
-         ## Default kept at `pointlocal` so nothing changes until it is asked for.
-         ## See `doc/transient_work_plan.md` item 2+.3.
+         ## Spectre's parameter of the same name, and Spectre's default.
+         ##
+         ## `pointlocal` is what pycircuit did for its whole history: each unknown
+         ## referenced to itself, at this instant.  On a node carrying no signal
+         ## that reference tends to zero, so the tolerance collapses to the absolute
+         ## floor and the controller chases numerical noise on an idle node -- which
+         ## is the defect `lte_vabstol` was raised a millionfold to work around.
+         ## Measured on the leapfrog: at `lte_vabstol = 1e-12`, `pointlocal` needs
+         ## 3.53x the steps of the shipped configuration where `sigglobal` needs
+         ## 1.49x, i.e. it removes 81% of the excess.
+         ##
+         ## DECISION D3 ADOPTED `sigglobal` AND GATE D3-a SENT IT BACK.  Under
+         ## `sigglobal` the tolerance is referenced to the largest signal, so steps
+         ## grow larger -- and on TRAPEZOIDAL that amplifies the `(-1)^n` mode 4g(b)
+         ## has not yet removed, to the point where accuracy stops responding
+         ## monotonically to `reltol`:
+         ##
+         ##   trap-classic  err 4.89e-4  2.23e-4  3.14e-4  7.14e-5   <- rises
+         ##   trap-ywr      err 5.94e-4  3.82e-5  2.65e-4  3.18e-5   <- rises
+         ##
+         ## Euler and both Gear2 variants are monotone under `sigglobal` and need
+         ## 1.7-2.5x FEWER steps, so the mode is right and only the timing is wrong.
+         ## Default stays `pointlocal` until 4g(b) makes the trapezoidal estimator
+         ## mode-free; flipping it is then a one-line change with the gate already
+         ## written.  See the D3 gates in `doc/transient_work_plan.md`.
          Parameter(name='relref',
                    desc="Reference for the relative LTE tolerance: 'pointlocal' "
-                        "(each unknown against itself, the default), 'alllocal' "
-                        "(against its own past maximum), or 'sigglobal' "
-                        "(against the largest signal anywhere, Spectre's default)",
+                        "(each unknown against itself, the default for now), "
+                        "'alllocal' (against its own past maximum), or 'sigglobal' "
+                        "(against the largest signal anywhere -- Spectre's default, "
+                        "and pycircuit's once 4g(b) lands)",
                    unit='',
                    default='pointlocal'),
          Parameter(name='maxiter', 
