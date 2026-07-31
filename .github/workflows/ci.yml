@@ -3,7 +3,17 @@ name: CI
 on:
   push:
     branches: [master]
+    paths-ignore:
+      - 'doc/**'
+      - 'docker/**'
+      - '**.md'
+      - '.github/workflows/docs.yml'
   pull_request:
+    paths-ignore:
+      - 'doc/**'
+      - 'docker/**'
+      - '**.md'
+      - '.github/workflows/docs.yml'
 
 permissions:
   contents: read

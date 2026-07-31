@@ -3,6 +3,11 @@ name: Build and deploy docs
 on:
   push:
     branches: [master]
+    paths:
+      - 'doc/**'
+      - 'pycircuit/**'
+      - 'pyproject.toml'
+      - '.github/workflows/docs.yml'
   workflow_dispatch:
 
 permissions:
