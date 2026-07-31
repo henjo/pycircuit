@@ -1,7 +1,98 @@
 # Transient subsystem — the work plan
 
-**Status: written 2026-07-30. NOTHING HAS RUN. Every OUTCOME line is deliberately blank
-and must be filled in from a real run, never predicted.**
+> ## RESUME HERE — state as of 2026-07-31, HEAD `8c8c1e4`
+>
+> **Suite: 755 passed, 6 skipped, 0 failed** (`-m "" --timeout=400`, ~8-13 min).
+> **Doc build: succeeded, 2 warnings, 0 ERROR.** Working tree clean.
+>
+> ### The next action, concretely
+>
+> **Stage 4, items 4e + 4b, as one piece of work.** They are the same defect from two
+> sides and the plan says so: 4e's missing guard "is how 4b slipped through".
+>
+> * **4e** — `Gear2.check_order_drop` (`integrator.py`) fires on step *shrink*, which is
+>   unconditionally zero-stable, and has **no guard on growth**, which is the unstable one.
+> * **4b** — `transient.py` grows `dt` **10x** after force-accepting an over-tolerance step.
+>   Variable-step BDF-2 is zero-stable only for ratio < 1+sqrt(2) = 2.414; at 10x the
+>   parasitic root is 4.76.
+>
+> **First step before writing code:** measure whether the `MAX_REJECT` force-accept path is
+> still reached at all, now that stages 3 and 4c have changed the step trajectory. It may
+> have become rare — that is a finding either way, and it sizes the work.
+>
+> ### After that, in order
+>
+> 1. **4g(b)** — the mode-free trapezoidal estimator. **Start this fresh, not at the end of
+>    a session.** It needs a third past charge and `h_last2` threaded through
+>    `Integrator.compute_lte`, its three implementations, both `StepController` subclasses
+>    and the transient's history. Design is settled and recorded under gate 4g-2. Stage 3
+>    already showed once that a hasty change to this path breaks both QUCS reference tests.
+> 2. **Three things fall out of 4g(b) immediately**: unblock **4d**; flip `relref` to
+>    `sigglobal` (reverted by gate D3-a only because trapezoidal was contaminated); return
+>    `lte_vabstol` to 1e-12 and rewrite gate 1-5, which asserts a property only true under
+>    `pointlocal`.
+> 3. **4a, 4a-bis, 4f, 4h**, the new `gear2-classic` ratio dependence, 0.3d's `chgtol`
+>    guard, and `doc/src/circuit/lte_dae.rst`.
+>
+> ### Done
+>
+> Stage 0 (all reviews, measurements, decisions 0.3a-d) · Stage 1 (silent failures) ·
+> Stage 2 (2.42x bit-identical, 5.19x with single-threaded BLAS) · three post-stage-2
+> improvements (2+.1 `__getattr__` memo, 2+.2 skip the unread residual, 2+.3 `relref`) ·
+> Stage 3 (`firststep`; `reltol` controls accuracy, 90.8x) · Stage 4 parts 1-2 (4c, 4g(a)).
+> Every gate outcome is recorded in place below; the completion records are appended at the
+> end of this file.
+>
+> ### Open decisions
+>
+> * **D1 said keep-and-fix `_solve_coupled`.** Two ways to honour that, and **one must be
+>   chosen before either is started**: the cheap one (drop the Fang citation, rename the
+>   flag to the rejection loop it is, fix the four ignored inputs) or **stage 12**
+>   (implement the paper). Stage 12's entry condition is a *measurement* — gate 4f's
+>   rejection counts — not a date.
+> * **`relref='sigglobal'` as default**: decided yes, reverted by its own gate, lands with
+>   4g(b).
+>
+> ### Traps that have already cost time — check these before believing a result
+>
+> 1. **A transient whose `timestep` is near the circuit's own time constant runs at
+>    `max_step` end to end**, so the controller decides nothing and **no tolerance can be
+>    observed to act.** Three draft gates "passed" that way while measuring nothing. Use
+>    `uic=True`, a `timestep` well above the LTE-chosen step, and check step count >>
+>    `tend/timestep` first.
+> 2. **A single-sample suite runtime on this box is worthless.** One read as a 35%
+>    regression that controlled measurement showed to be 3%; individual tests vary ±57%.
+>    Use min-of-N interleaved, and check a non-clock invariant (step count, assembly count,
+>    cProfile call count).
+> 3. **An estimator harness must feed the previous *companion currents*, not exact
+>    derivatives** — the estimator never receives the latter. Doing so made Euler look flat
+>    at 0.501 at every step ratio, pure artefact.
+> 4. **A gate that can pass against an empty result is not a gate.** Gate 2b's first version
+>    compared `u` at t=0, where a sine is zero, and reported "exactly equal" against an
+>    all-zero vector.
+> 5. **`drift == 0.00e+00` is unsatisfiable for anything that changes which BLAS kernel
+>    runs.** Declare "identical step count + drift at rounding level" for stages 7b/7c.
+> 6. **The review's magnitudes run ~2x optimistic.** Five have now shrunk on measurement
+>    (150 TB → 420 GiB; 10.5x → 5.19x; 4.462 ms → 0.234 ms; "2.17 assemblies needed" was not
+>    a redundancy figure; the IM3 harness's 10x → 2.17x). Re-measure before quoting
+>    `transient_review.md`.
+>
+> ### Environment
+>
+> See the `running-tests` memory for the full recipe. Short form: scratch venv with
+> `pytest pynose pytest-timeout`, then
+> `PYTHONPATH=<repo> MPLBACKEND=Agg <venv>/bin/python -m pytest pycircuit -q -m "" --timeout=400`.
+> `PYTHONPATH` is mandatory — a stale root-owned egg shadows the source otherwise.
+> Benchmarks: `benchmarks/transient_stage2.py` (perf + drift),
+> `benchmarks/transient_stage3.py` (first step), `benchmarks/transient_stage4.py`
+> (estimators: `--ratios`, `--hscaling`, `--pi`), `benchmarks/transient_review/` (stage 0).
+> Source papers: `/home/andreas/pycircuit_agy/papers/` — **read them from rendered pages**,
+> `pdftotext` drops the formulas.
+
+**Status: the plan below was written 2026-07-30, when nothing had run. Stages 0-3 and part
+of 4 have since been executed; their `OUTCOME:` lines are filled in from real runs. The
+remaining blank `OUTCOME:` lines are work not yet done, and must be filled from a real run,
+never predicted.**
 
 Findings and evidence: `doc/transient_review.md`. That document is where an argument about
 *whether* something is broken belongs, and it carries the measurements. This one is the
