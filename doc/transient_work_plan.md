@@ -1,6 +1,10 @@
 # Transient subsystem — the work plan
 
-> ## RESUME HERE — state as of 2026-07-31, HEAD `8c8c1e4`
+> ## RESUME HERE — state as of 2026-07-31
+>
+> Last commit touching **code**: `6bc6fcc`. Everything after it is documentation, so a
+> newer HEAD does not mean the tree has moved underneath this block. Branch
+> `cna-jax-vectorization`; nothing has been pushed, per the standing rule.
 >
 > **Suite: 755 passed, 6 skipped, 0 failed** (`-m "" --timeout=400`, ~8-13 min).
 > **Doc build: succeeded, 2 warnings, 0 ERROR.** Working tree clean.
