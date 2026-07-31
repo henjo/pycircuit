@@ -3573,6 +3573,107 @@ OUTCOME:
 **Gate 9-3:** a `VPulse` transient under JAX hits the pulse edges.
 OUTCOME:
 
+## 9(f) — remove `lte_formula` from both backends
+
+**Started 2026-07-31.** This is 4f's option (C), scheduled here when the staged approach
+was approved, and it executes **0.2b's already-measured decision rule** rather than making
+a new decision: 0.2b asked what the `J^-1` mapping costs per step, said "under 10%, delete
+the JAX `estimate_lte` charge path", and measured **1-3%**. It does not depend on 9(a)'s
+`_lte_kernels.py`, so it is takeable now.
+
+**Entry measurement, taken before any code (gate 9f-0).** Declared: the JAX `'classic'`
+path's tolerance should prove unreachable, it should never reject, and `dt` should run away
+to `dt_max`.
+
+OUTCOME: **The tolerance is confirmed inert; the runaway clause is REFUTED, and the
+difference matters.** `lte_error_ratio` computes
+`tol = trtol*(lte_rel*max(|q|,1e-12) + lte_abs)` with `lte_abs = 1e-6` — a **voltage**
+floor used as a **charge** floor, i.e. one microcoulomb. Against physical node charges it
+dominates completely, so the ratio cannot approach 1:
+
+| `\|q\|` | tol | lte | ratio |
+|---|---|---|---|
+| 1e-6 C | 7.007e-6 | 1e-9 | 1.4e-4 |
+| 1e-12 C | 7e-6 | 1e-15 | 1.4e-10 |
+| 1e-15 C | 7e-6 | 1e-18 | 1.4e-13 |
+
+But `dt` does **not** run away under `JAXTransient.solve()`, because line 628 sets
+`dt_max = timestep`. So an open-loop controller there does not diverge — **it degenerates
+to a fixed-step run at the user's timestep**, which on a smooth circuit gives a perfectly
+plausible answer. *That is why the defect survived.* The runaway is real only in
+`solve_batched`, where `dt_max = tend/10`.
+
+**And the harm is modest on benign circuits, which is worth saying plainly.** On the RC
+test, `solve()` at coarse timesteps gives `'classic'` a *smaller* final-point error than
+`'ywr'` at two of three step sizes, and identical whole-waveform maxima at two of three —
+the error there is dominated by the first step, which `dt_max` stops either formula from
+refining. Only `solve_batched` separates them:
+
+| formula | timestep | steps | max dt | max err | RMS err |
+|---|---|---|---|---|---|
+| ywr | 1e-5 | 23 | 5.0e-4 | 1.457e-2 | 6.486e-3 |
+| classic | 1e-5 | 16 | 5.0e-4 | 1.724e-2 | 8.856e-3 |
+| ywr | 1e-4 | 19 | 5.0e-4 | 1.397e-2 | 7.052e-3 |
+| classic | 1e-4 | 13 | 5.0e-4 | 1.676e-2 | 8.890e-3 |
+
+~20% worse error, and `'classic'`'s result barely responds to the requested timestep —
+the open-loop signature. **So the case for removal is that the safety net is disconnected,
+not that the answers are visibly wrong.** A reviewer who expects a dramatic waveform will
+not find one, and should not go looking.
+
+**Gate 9f-1 (the charge path is gone, not merely unselected).** `lte_error_ratio` and
+`estimate_lte` deleted; zero references anywhere outside the plan.
+OUTCOME: **PASS, but only after a second sweep.** `estimate_lte` and `lte_error_ratio` are
+deleted and both raise `ImportError`. The first grep looked clean and was not: it matched
+only `Integrator(lte_formula=...)`, and **five live call sites passed the argument
+positionally** — `benchmarks/transient_decisions.py`, `stage0_2a_integrator_choice.py`,
+`stage0_2b_lte_solve_cost.py`'s label, `transient.py`'s own `Parameter` help text (which
+was advertising the removed knob to users), and four constructions inside `lte_dae.rst`'s
+`exec-rst` blocks. Only comments and docstrings mention the name now.
+
+**Gate 9f-2 (the JAX default is untouched).** A JAX transient that previously ran
+`lte_formula='ywr'` must produce **bit-identical** step counts and waveforms after the
+removal. Declared at bit-identical: anything else means the default path was disturbed.
+OUTCOME: **PASS.** Both JAX runs bit-identical, `max|diff| = 0.000e+00`.
+
+**Gate 9f-3 (the CPU is untouched).** 4f-D1 established the parameter is inert end to end,
+so removal must be a no-op numerically. Same declaration: bit-identical waveforms and step
+counts on a circuit whose opening ramp makes the grid non-uniform.
+OUTCOME: **PASS.** All nine CPU runs — three circuits x three integrators, including `rc-pulse`
+whose opening ramp makes the grid non-uniform — bit-identical, `max|diff| = 0.000e+00`.
+Baseline captured before the first edit and compared after the last.
+
+**Gate 9f-4 (the removal is loud).** `lte_formula=` must raise `TypeError`, not be
+silently swallowed. A kwarg accepted and ignored is the "thin advertised feature" 0.1c
+warns about, and this whole item exists because one of those hid a broken estimator.
+**Reconsider if** anyone is importing pycircuit as a dependency — then this wants a
+release with a deprecation shim instead, and the shim must warn rather than accept
+silently. Nothing in this tree imports it that way.
+OUTCOME: **PASS.** All three integrators raise `TypeError`, and `lte_formula` is absent from
+`JAXTransient.solve` and `.solve_batched` signatures.
+
+**Gate 9f-5.** Full suite `-m ""`; doc build verified by content. The tests that exist to
+pin "`lte_formula` selects nothing" become unstatable and go with it — that is expected
+churn, not a regression, and the invariant they protected is now structural.
+OUTCOME: **PASS, and the churn is fully accounted.** Suite **797 passed, 6 skipped, 0 failed**
+against 810 before. Every one of the 13 is attributable: `_LTE_CASES` went from six rows
+(one per method x formula) to three, across three parametrized tests (-9); the two tests
+whose whole subject was "the two selections agree" are deleted (-3); and the JAX
+end-to-end test is no longer parametrized over the formula (-1). No test changed its
+assertions.
+
+**An intermediate run failed 20 tests, all the same cause**, and it is the reason gate
+9f-1 got a second sweep: the positional call sites. `TypeError: takes 1 positional
+argument but 2 were given` is at least loud, which is the argument for 9f-4's choice.
+
+Doc build: `lte_dae.rst`'s "Selecting the formula" section is replaced by "One estimator,
+not a choice", and its build-time table is now per-integrator rather than per-formula —
+still generated at build time, so the numbers are re-measured rather than transcribed.
+**The doc build exposed the failure mode rule 11 exists for**: `exec-rst` catches an
+exception, renders the block's *source* instead, and the build still exits 0. Two blocks
+had been silently degraded that way. The directive does emit a WARNING, which is the only
+reason it was caught — and the warning count is why it was looked at at all.
+
 ---
 
 # STAGE 10 — missing analyses

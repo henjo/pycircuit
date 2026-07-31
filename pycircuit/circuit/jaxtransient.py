@@ -236,70 +236,11 @@ def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tl
 # Phase 3: Outer Time Loop & Adaptive Control
 # ---------------------------------------------------------------------------
 
-def estimate_lte(q_curr, state: TransientState, method='trap'):
-    """Charge-domain LTE estimate and the method order+1.
-
-    Returns ``(lte_vector, order_plus_one)``.  ``order_plus_one`` is the step
-    predictor exponent denominator (2 for 1st-order Euler, 3 for the 2nd-order
-    methods).  Unlike the CPU transient this estimator is charge-domain (it does
-    not apply ``J^-1``), matching the existing JAX design.
-    """
-    dt = state.dt
-    q_prev = state.q_history[0]
-    dt_prev = jnp.where(state.h_history[0] == 0.0, dt, state.h_history[0])
-
-    q_prev2 = state.q_history[1]
-
-    if method == 'euler':
-        # Backward Euler: LTE ~ 0.5 h^2 q''.  A second divided difference of the
-        # charge IS q'', so this branch was always right, and it sets the
-        # convention the two below must follow: return the absolute LTE in charge
-        # units, with the method's own error constant.
-        dd1_n = (q_curr - q_prev) / dt
-        dd1_nm1 = (q_prev - q_prev2) / dt_prev
-        q_double_prime = (dd1_n - dd1_nm1) / dt
-        return 0.5 * (dt**2) * jnp.abs(q_double_prime), 2.0
-
-    # --- BOTH 2ND-ORDER METHODS NEED q''', NOT q'' ---
-    #
-    # Until 2026-07 both branches below estimated a second divided difference of
-    # the charge -- which is q'' -- and scaled it by h^3.  That is the same defect
-    # the CPU `Gear2Integrator`'s 'classic' branch had (fixed in `integrator.py`,
-    # see its comment): dimensionally it is not a charge-error at all, and it
-    # undershoots the truncation error by a factor of order h*omega.  The old
-    # comment here even asserted "h^3 q''' via a second divided difference of the
-    # charge", which is self-contradictory -- that difference is q''.
-    #
-    # A third divided difference of q is unavailable (only two past charges are
-    # kept), so q''' is taken as twice the SECOND divided difference of the
-    # companion current g = dq/dt, read off `iq_history` -- exactly what the CPU
-    # implementation and the YWR estimator both do.
-    if method in ('gear', 'gear2'):
-        # VSS BDF-2 companion current at t_n; the alpha coefficients annihilate
-        # the q' and q'' terms by construction.
-        h1, h2 = dt, dt_prev
-        alpha0 = (2 * h1 + h2) / (h1 * (h1 + h2))
-        alpha1 = -(h1 + h2) / (h1 * h2)
-        alpha2 = h1 / (h2 * (h1 + h2))
-        g_n = alpha0 * q_curr + alpha1 * q_prev + alpha2 * q_prev2
-        error_constant = 2.0 / 9.0          # BDF-2: LTE = (2/9) h^3 q'''
-    else:
-        # Trapezoidal companion current at t_n.
-        g_n = 2.0 * (q_curr - q_prev) / dt - state.iq_history[0]
-        error_constant = 1.0 / 12.0         # TRAP: LTE = (1/12) h^3 q'''
-
-    g_nm1 = state.iq_history[0]
-    g_nm2 = state.iq_history[1]
-    # Second divided difference of g over t_n, t_{n-1}, t_{n-2} is q'''/2.
-    dd2_g = ((g_n - g_nm1) / dt - (g_nm1 - g_nm2) / dt_prev) / (dt + dt_prev)
-    q_triple_prime = 2.0 * dd2_g
-    return error_constant * (dt**3) * jnp.abs(q_triple_prime), 3.0
-
 def ywr_error_ratio(i_curr, x_curr, x_last, J, state: TransientState, irefnode,
                     method='trap', trtol=7.0, lte_rel=1e-3, lte_abs=1e-6):
     """Yao-Wang-Roychowdhury DAE LTE, returned as a normalized error ratio.
 
-    Mirrors the CPU transient's ``lte_formula='ywr'``: forms the residual as a
+    Mirrors the CPU transient's estimator: forms the residual as a
     difference of the charge derivative ``g = dq/dt`` (the companion current),
     maps it to the solution space with ``J^-1`` (the DAE Jacobian factor), and
     normalizes by a voltage-domain tolerance.  ``g_n`` is the just-computed
@@ -335,16 +276,6 @@ def ywr_error_ratio(i_curr, x_curr, x_last, J, state: TransientState, irefnode,
     return jnp.max(jnp.abs(lte) / etol), order_p1
 
 
-def lte_error_ratio(lte, q_curr, trtol=7.0, lte_rel=1e-3, lte_abs=1e-6):
-    """Normalized LTE: <=1 means the step is within tolerance.
-
-    ``trtol`` is folded into the tolerance so the accept test and the step-size
-    predictor share the same target (the CPU transient had these disagree,
-    causing an accept/reject oscillation)."""
-    tol = trtol * (lte_rel * jnp.maximum(jnp.abs(q_curr), 1e-12) + lte_abs)
-    return jnp.max(lte / tol)
-
-
 def calculate_next_dt(dt, error_ratio, dt_min, dt_max, t_breaks_array, current_t, order_p1=2.0):
     # Predictor exponent 1/(order+1): sqrt for 1st order, cube root for 2nd.
     factor = jnp.where(error_ratio <= 0.0, 2.0, error_ratio ** (-1.0 / order_p1))
@@ -359,7 +290,7 @@ def calculate_next_dt(dt, error_ratio, dt_min, dt_max, t_breaks_array, current_t
     dt_new = jnp.maximum(dt_new, dt_min)
     return dt_new
 
-def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-3, abstol=1e-6, maxiter=50, lte_formula='ywr'):
+def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-3, abstol=1e-6, maxiter=50):
 
     def time_cond(state: TransientState):
         under_time = state.t < tend
@@ -375,18 +306,20 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
         C_curr = circuit.C(x_curr, params_tree=params_tree)
         i_curr, Geq = compute_integration(q_curr, C_curr, state, method=eval_method)
 
-        ## lte_formula is a Python-static string, so this branch is resolved at
-        ## trace time (no jax.lax.cond needed).
-        if lte_formula == 'ywr':
-            # DAE LTE: g-difference mapped through J^-1 (one extra G eval + solve).
-            J = circuit.G(x_curr, params_tree=params_tree) + Geq
-            error_ratio, order_p1 = ywr_error_ratio(
-                i_curr, x_curr, state.x_history[0], J, state, irefnode,
-                method=eval_method)
-        else:
-            # Charge-domain estimate (no J^-1).
-            lte, order_p1 = estimate_lte(q_curr, state, method=eval_method)
-            error_ratio = lte_error_ratio(lte, q_curr)
+        ## STAGE 9(f) -- ONE ESTIMATOR.  There used to be a charge-domain branch
+        ## here, selected by `lte_formula='classic'`.  It was deleted rather than
+        ## repaired: its tolerance applied `lte_abs = 1e-6`, a VOLTAGE floor, to a
+        ## CHARGE -- one microcoulomb, against node charges of pico- to
+        ## femtocoulombs -- so the normalized error could not reach 1 and no step
+        ## was ever rejected.  The controller ran open-loop.  Under `solve()` that
+        ## degenerates to a fixed-step run (`dt_max = timestep`), which is why it
+        ## looked plausible; under `solve_batched` (`dt_max = tend/10`) it also
+        ## costs accuracy.  0.2b measured the `J^-1` mapping this branch avoided at
+        ## 1-3% of a step, well under its own 10% keep-it threshold.
+        J = circuit.G(x_curr, params_tree=params_tree) + Geq
+        error_ratio, order_p1 = ywr_error_ratio(
+            i_curr, x_curr, state.x_history[0], J, state, irefnode,
+            method=eval_method)
 
         ## Accept when the LTE is within tolerance.  Always accept the first step
         ## (no history for the estimate) and when dt has reached the floor -- the
@@ -457,7 +390,7 @@ class JAXTransient(Analysis):
             raise ValueError("JAXTransient requires the circuit to use _jaxtoolkit.py.")
         
 
-    def solve_batched(self, irefnode, override_params_tree, tend, timestep=1e-12, CHUNK_SIZE=5000, dt_min=1e-15, dt_max=None, uic=False, lte_formula='ywr'):
+    def solve_batched(self, irefnode, override_params_tree, tend, timestep=1e-12, CHUNK_SIZE=5000, dt_min=1e-15, dt_max=None, uic=False):
         import jax
         
         self.cir.update_iparv()
@@ -541,7 +474,7 @@ class JAXTransient(Analysis):
         tline_head = jnp.zeros(batch_size, dtype=jnp.int32)
         
         def run_chunk(s, p_tree):
-            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear', params_tree=p_tree, lte_formula=lte_formula)
+            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear', params_tree=p_tree)
             
         # JIT the vmapped run_chunk
         batched_run_chunk = jax.jit(jax.vmap(run_chunk))
@@ -607,7 +540,7 @@ class JAXTransient(Analysis):
             res.append(r)
         return res
 
-    def solve(self, refnode=0, tend=1e-3, x0=None, timestep=1e-6, CHUNK_SIZE=5000, lte_formula='ywr', **kwargs):
+    def solve(self, refnode=0, tend=1e-3, x0=None, timestep=1e-6, CHUNK_SIZE=5000, **kwargs):
         n = self.cir.n
         irefnode = self.cir.get_node_index(refnode)
     
@@ -692,7 +625,7 @@ class JAXTransient(Analysis):
         # but tend is a runtime parameter.
         @jax.jit
         def run_chunk(s):
-            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear', lte_formula=lte_formula)
+            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear')
         
         results_list = [np.array([x0])]
         times_list = [np.array([0.0])]

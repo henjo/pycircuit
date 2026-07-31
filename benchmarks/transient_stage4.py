@@ -171,10 +171,8 @@ def cmd_ratios(args):
     ratios = (0.25, 0.5, 1.0, 2.0, 4.0)
     configs = [
         ('euler', EulerIntegrator()),
-        ('trap-classic', TrapezoidalIntegrator(lte_formula='classic')),
-        ('trap-ywr', TrapezoidalIntegrator(lte_formula='ywr')),
-        ('gear2-classic', Gear2Integrator(lte_formula='classic')),
-        ('gear2-ywr', Gear2Integrator(lte_formula='ywr')),
+        ('trap', TrapezoidalIntegrator()),
+        ('gear2', Gear2Integrator()),
     ]
 
     print('EST/TRUE vs STEP RATIO  (h_curr/h_last; h_curr = %.0e s)' % h_base)
@@ -211,10 +209,8 @@ def cmd_hscaling(args):
     print('%-16s %s' % ('', ''.join('%12s' % ('h=%.0e' % h)
                                     for h in (1e-8, 1e-9, 1e-10))))
     for name, integ in (('euler', EulerIntegrator()),
-                        ('trap-classic', TrapezoidalIntegrator(lte_formula='classic')),
-                        ('trap-ywr', TrapezoidalIntegrator(lte_formula='ywr')),
-                        ('gear2-classic', Gear2Integrator(lte_formula='classic')),
-                        ('gear2-ywr', Gear2Integrator(lte_formula='ywr'))):
+                        ('trap', TrapezoidalIntegrator()),
+                        ('gear2', Gear2Integrator())):
         row = [est_over_true(integ, h, h)[2] for h in (1e-8, 1e-9, 1e-10)]
         print('%-16s %s' % (name, ''.join('%12.4f' % v for v in row)))
     return 0

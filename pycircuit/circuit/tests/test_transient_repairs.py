@@ -886,7 +886,7 @@ def test_gate_4b_no_accepted_step_ratio_leaves_the_stability_bound():
     x0[cir.get_node_index('2')] = 1.0
 
     tran = Transient(cir, toolkit=numeric,
-                     integrator=Gear2Integrator('ywr'), reltol=1e-3)
+                     integrator=Gear2Integrator(), reltol=1e-3)
     spy = _Spy()
     tran.step_controller = spy
     with _w.catch_warnings():
@@ -938,7 +938,7 @@ def _4g_d3q(t):
     return -(_4G_OMEGA ** 3) * np.cos(_4G_OMEGA * t)
 
 
-def _trap_est_over_true(h_curr, h_last, h_last2, t_n=0.371e-6, formula='classic'):
+def _trap_est_over_true(h_curr, h_last, h_last2, t_n=0.371e-6):
     """est / (local truncation error), for the trapezoidal estimator.
 
     The reference is the LOCAL truncation error `-(h^2/6) q'''`, not
@@ -952,7 +952,7 @@ def _trap_est_over_true(h_curr, h_last, h_last2, t_n=0.371e-6, formula='classic'
     t_1 = t_n - h_curr
     t_2 = t_1 - h_last
     t_3 = t_2 - h_last2
-    est, _p = TrapezoidalIntegrator(formula).compute_lte(
+    est, _p = TrapezoidalIntegrator().compute_lte(
         q_curr=np.array([_4g_q(t_n)]), h_curr=h_curr,
         q_last=np.array([[_4g_q(t_1)], [_4g_q(t_2)], [_4g_q(t_3)]]),
         ## The estimator must never need these once h_last2 is available; passing
@@ -1038,22 +1038,6 @@ def test_gate_4g_b2_estimator_is_flat_across_the_reachable_step_ratios():
             'est/true = %.4f at deep-shrink ratio %g' % (r, ratio)
 
 
-def test_gate_4g_b3_ywr_and_classic_now_coincide_for_trapezoidal():
-    """4d resolved for trapezoidal by construction rather than by deletion.
-
-    The mode-free branch does not read `lte_formula`, so the two selections return
-    the same value bit for bit. The branches survive only on the one step of a run
-    that has fewer than three past charges.
-    """
-    h = 1e-9
-    for ratio in (0.25, 1.0, 2.0):
-        a = _trap_est_over_true(h * ratio, h, h, formula='classic')
-        b = _trap_est_over_true(h * ratio, h, h, formula='ywr')
-        assert a == b, \
-            "lte_formula still changes the trapezoidal estimate at ratio %g: %r vs %r" \
-            % (ratio, a, b)
-
-
 def test_gate_4g_b_the_fallback_is_used_for_exactly_one_step():
     """`h_last2 is None` must select the old two-past-point formula, not zeros.
 
@@ -1064,7 +1048,7 @@ def test_gate_4g_b_the_fallback_is_used_for_exactly_one_step():
     from pycircuit.circuit.integrator import TrapezoidalIntegrator
     h = 1e-9
     t_n = 0.371e-6
-    est, _p = TrapezoidalIntegrator('classic').compute_lte(
+    est, _p = TrapezoidalIntegrator().compute_lte(
         q_curr=np.array([_4g_q(t_n)]), h_curr=h,
         q_last=np.array([[_4g_q(t_n - h)], [_4g_q(t_n - 2 * h)], [0.0]]),
         iq_last=np.array([[_4g_dq(t_n - h)], [_4g_dq(t_n - 2 * h)]]),
@@ -1127,7 +1111,7 @@ def test_gate_4g_b4_rejections_collapse_on_the_stiff_case():
     x0[cir.get_node_index('2')] = 1.0
 
     tran = Transient(cir, toolkit=numeric,
-                     integrator=TrapezoidalIntegrator('ywr'), reltol=1e-5)
+                     integrator=TrapezoidalIntegrator(), reltol=1e-5)
     ctrl = _Counter()
     tran.step_controller = ctrl
     with _w.catch_warnings():
@@ -1155,7 +1139,7 @@ def test_gate_4g_b_a_second_solve_is_identical_to_the_first():
     import warnings as _w
     from pycircuit.circuit.integrator import TrapezoidalIntegrator
     tran = Transient(_pulsed_rc(), toolkit=numeric,
-                     integrator=TrapezoidalIntegrator('classic'))
+                     integrator=TrapezoidalIntegrator())
     with _w.catch_warnings():
         _w.simplefilter('ignore', RuntimeWarning)
         first = tran.solve(refnode=gnd, tend=3e-6, timestep=1e-7)
@@ -1189,10 +1173,10 @@ def _gear2_true_lte(h_curr, h_last, t_n=0.371e-6):
     return (a0 * _4g_q(t_n) + a1 * _4g_q(t1) + a2 * _4g_q(t2)) - _4g_dq(t_n)
 
 
-def _gear2_est_over_true(h_curr, h_last, h_last2, t_n=0.371e-6, formula='classic'):
+def _gear2_est_over_true(h_curr, h_last, h_last2, t_n=0.371e-6):
     from pycircuit.circuit.integrator import Gear2Integrator
     t1, t2, t3 = t_n - h_curr, t_n - h_curr - h_last, t_n - h_curr - h_last - h_last2
-    est, _p = Gear2Integrator(formula).compute_lte(
+    est, _p = Gear2Integrator().compute_lte(
         q_curr=np.array([_4g_q(t_n)]), h_curr=h_curr,
         q_last=np.array([[_4g_q(t1)], [_4g_q(t2)], [_4g_q(t3)]]),
         ## Deliberately poisoned: the estimator must not read the companion
@@ -1261,24 +1245,6 @@ def test_gate_4i2_gear2_is_consistent():
         'gear2 est/true does not converge to 1 as h falls: %s' % ratios
 
 
-@pytest.mark.parametrize('formula', ['classic', 'ywr'])
-def test_gate_4i_lte_formula_no_longer_selects_anything(formula):
-    """`lte_formula` is now vestigial for both second-order methods.
-
-    The shared helper does not read it, so the two selections agree bit for bit
-    once four charges exist. They still differ on the single fallback step, which
-    is the only remaining effect the parameter has -- recorded rather than removed,
-    because deleting a public parameter is the maintainer's call.
-    """
-    h = 1e-9
-    for ratio in (0.05, 1.0, 2.0):
-        a = _gear2_est_over_true(h * ratio, h, h, formula='classic')
-        b = _gear2_est_over_true(h * ratio, h, h, formula='ywr')
-        assert a == b, \
-            'lte_formula still changes the Gear2 estimate at ratio %g: %r vs %r' \
-            % (ratio, a, b)
-
-
 def test_gate_4i5_the_fallback_is_finite_and_non_zero_for_both_methods():
     """`h_last2 is None` -- the one step of a run with fewer than four charges.
 
@@ -1291,8 +1257,8 @@ def test_gate_4i5_the_fallback_is_finite_and_non_zero_for_both_methods():
     t_n = 0.371e-6
     q_last = np.array([[_4g_q(t_n - h)], [_4g_q(t_n - 2 * h)], [0.0]])
     iq_last = np.array([[_4g_dq(t_n - h)], [_4g_dq(t_n - 2 * h)]])
-    for integ in (TrapezoidalIntegrator('classic'), TrapezoidalIntegrator('ywr'),
-                  Gear2Integrator('classic'), Gear2Integrator('ywr')):
+    for integ in (TrapezoidalIntegrator(), TrapezoidalIntegrator(),
+                  Gear2Integrator(), Gear2Integrator()):
         est, _p = integ.compute_lte(
             q_curr=np.array([_4g_q(t_n)]), h_curr=h, q_last=q_last,
             iq_last=iq_last, h_last=h, is_first_step=False, toolkit=numeric,
@@ -1319,8 +1285,8 @@ def test_gate_4i_the_error_constants_come_from_the_derivation():
                                [_4g_q(t_n - 3 * h)]]),
               iq_last=np.array([[np.nan], [np.nan]]),
               h_last=h, is_first_step=False, toolkit=numeric, h_last2=h)
-    g = float(Gear2Integrator('classic').compute_lte(**kw)[0][0])
-    t = float(TrapezoidalIntegrator('classic').compute_lte(**kw)[0][0])
+    g = float(Gear2Integrator().compute_lte(**kw)[0][0])
+    t = float(TrapezoidalIntegrator().compute_lte(**kw)[0][0])
     assert g / t == pytest.approx(2.0, rel=1e-12), \
         'on a uniform grid Gear-2 must estimate exactly 2x trapezoidal, got %.9f' \
         % (g / t)

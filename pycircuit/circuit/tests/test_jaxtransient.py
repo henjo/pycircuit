@@ -6,7 +6,7 @@ jax = pytest.importorskip("jax")
 import jax.numpy as jnp
 
 from pycircuit.circuit.jaxtransient import (TransientState, compute_integration,
-                                            estimate_lte)
+                                            ywr_error_ratio)
 
 
 def _state(dt, q_hist, iq_hist, h_hist, step_idx):
@@ -37,25 +37,42 @@ def test_jax_integration_dispatch_gear2():
     assert float(i_gear[0]) == pytest.approx(0.5)
 
 
-def test_jax_estimate_lte_order():
-    """estimate_lte returns the method's (order+1); Gear2 is 2nd order, not 1st."""
-    q_curr = jnp.array([3.0])
-    st = _state(1.0, [[2.0], [0.0], [0.0]], [[0.5], [0.0], [0.0]], [1.0, 1.0, 0.0], 5)
+def test_jax_lte_order_per_method():
+    """The estimator returns the method's (order+1); Gear2 is 2nd order, not 1st.
 
-    _, p_euler = estimate_lte(q_curr, st, method='euler')
-    _, p_gear = estimate_lte(q_curr, st, method='gear')
-    _, p_trap = estimate_lte(q_curr, st, method='trap')
+    This used to test `estimate_lte`, the charge-domain path deleted in 9(f).  The
+    order it returns drives `calculate_next_dt`'s exponent, so the coverage is kept
+    and re-pointed at the surviving estimator rather than dropped with the old one.
+    """
+    n = 2
+    x_curr = jnp.array([1.0, 0.5])
+    x_last = jnp.array([0.9, 0.4])
+    i_curr = jnp.array([1.0, 0.0])
+    J = jnp.eye(n)
+    st = TransientState(
+        t=0.0, dt=1.0, step_idx=5, x_history=None,
+        q_history=jnp.zeros((3, n)),
+        iq_history=jnp.array([[0.5, 0.0], [0.25, 0.0], [0.0, 0.0]]),
+        h_history=jnp.array([1.0, 1.0, 0.0]),
+        results_buffer=None, time_buffer=None,
+        tline_history=None, tline_head=None)
 
-    assert p_euler == 2.0
-    assert p_gear == 3.0
-    assert p_trap == 3.0
+    orders = {}
+    for method in ('euler', 'gear', 'trap'):
+        _, p = ywr_error_ratio(i_curr, x_curr, x_last, J, st, irefnode=1,
+                               method=method)
+        orders[method] = float(p)
+
+    assert orders['euler'] == 2.0
+    assert orders['gear'] == 3.0
+    assert orders['trap'] == 3.0
 
 
-@pytest.mark.parametrize("lte_formula", ["ywr", "classic"])
-def test_jaxtransient_rc_charging(lte_formula):
+def test_jaxtransient_rc_charging():
     """End-to-end JAXTransient: RC charging from 0 matches the analytic curve.
 
-    Runs under both the YWR (J^-1) DAE LTE and the charge-domain estimate.
+    One estimator since 9(f): the charge-domain path was deleted, not defaulted
+    away, so there is nothing left to parametrize over.
     """
     from pycircuit.circuit import circuit as circuit_mod
     from pycircuit.circuit.toolkit import jaxtoolkit
@@ -76,8 +93,7 @@ def test_jaxtransient_rc_charging(lte_formula):
         cir['V1'] = VS('in', gnd, v=1.0)
         cir['R1'] = R('in', 'out', r=1e3)      # tau = R*C = 1e-3
         cir['C1'] = C('out', gnd, c=1e-6)
-        res = JAXTransient(cir).solve(gnd, tend=5e-3, timestep=1e-4, uic=True,
-                                      lte_formula=lte_formula)
+        res = JAXTransient(cir).solve(gnd, tend=5e-3, timestep=1e-4, uic=True)
         out_idx = cir.get_node_index('out')
     finally:
         circuit_mod.default_toolkit = saved_toolkit

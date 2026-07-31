@@ -42,7 +42,7 @@ def test_transient_defaults_to_euler_integrator():
 
 
 def test_transient_accepts_an_integrator_instance():
-    tran = Transient(_rc_circuit(), integrator=Gear2Integrator(lte_formula='ywr'))
+    tran = Transient(_rc_circuit(), integrator=Gear2Integrator())
     integrator = tran._get_integrator()
     assert isinstance(integrator, Gear2Integrator)
 

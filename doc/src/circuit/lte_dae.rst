@@ -65,33 +65,45 @@ derivative :math:`g`:
 
 with :math:`h_1 = t_n - t_{n-1}` and :math:`h_2 = t_{n-1} - t_{n-2}`.
 
-Selecting the formula
-=====================
+One estimator, not a choice
+===========================
 
-The formula is chosen with the ``lte_formula`` argument of the
-:class:`~pycircuit.circuit.integrator.Integrator` strategy passed to
-:class:`~pycircuit.circuit.transient.Transient` as ``integrator=``:
+There is no ``lte_formula`` argument.  Each backend has exactly one estimator,
+and passing ``lte_formula=`` raises :exc:`TypeError`.
 
-* ``lte_formula='ywr'`` (default) -- the Yao--Wang--Roychowdhury DAE formulas
-  above;
-* ``lte_formula='classic'`` -- the historical divided-difference estimates.
+It used to select between the YWR residuals above and the classic
+divided-difference estimates.  Three changes removed the difference on the CPU
+path -- the trapezoidal estimator stopped differencing the companion current,
+both second-order estimators moved onto a shared third-derivative estimate
+taken from a divided difference of the *charge*, and the one-step fallback took
+the divided-difference form unconditionally -- after which the two selections
+produced bit-identical runs.
 
-It applies to both the standard adaptive path and the coupled solver
-(``coupled_lte=True``), which share the same LTE estimate.
+What settled the removal was the JAX backend, where the same name selected a
+genuinely different algorithm and the charge-domain one was broken: its
+tolerance applied a **voltage** floor of :math:`10^{-6}` to a **charge**, i.e.
+one microcoulomb, against node charges of pico- to femtocoulombs.  The
+normalised error could not reach 1, so no step was ever rejected and the
+controller ran open-loop.  One parameter name meaning "selects nothing" on one
+backend and "selects a broken estimator" on the other is worse than either
+alone, so both are gone.
 
 .. code-block:: python
 
     from pycircuit.circuit.integrator import Gear2Integrator
 
-    tran = Transient(cir, integrator=Gear2Integrator(lte_formula='ywr'))
+    tran = Transient(cir, integrator=Gear2Integrator())
 
-Classic vs. YWR: a live comparison
-==================================
+The estimate applies to both the standard adaptive path and the coupled solver
+(``coupled_lte=True``), which share it.
+
+What the estimator costs and buys
+=================================
 
 The table below is **generated when this page is built** by charging an RC
-circuit (:math:`\tau = 10\,\mu s`) from zero with each integration method under
-both LTE formulas, and comparing the final node voltage against the analytic
-solution :math:`v(t) = V\,(1 - e^{-t/\tau})`.
+circuit (:math:`\tau = 10\,\mu s`) from zero with each integration method, and
+comparing the final node voltage against the analytic solution
+:math:`v(t) = V\,(1 - e^{-t/\tau})`.
 
 .. exec-rst::
 
@@ -106,12 +118,12 @@ solution :math:`v(t) = V\,(1 - e^{-t/\tau})`.
 
     TAU = 10e-6
 
-    def run(integrator_cls, lte):
+    def run(integrator_cls):
         c = SubCircuit()
         c['VS'] = VS(1, gnd, v=10)
         c['R1'] = R(1, 2, r=10)
         c['C1'] = C(2, gnd, c=1e-6)
-        tran = Transient(c, integrator=integrator_cls(lte), uic=True)
+        tran = Transient(c, integrator=integrator_cls(), uic=True)
         ## Counted rather than printed: a force-accept is an accepted step whose
         ## truncation error nothing bounds, so it belongs in the table next to the
         ## error it explains -- not in the build log, where it reads as a defect
@@ -130,35 +142,26 @@ solution :math:`v(t) = V\,(1 - e^{-t/\tau})`.
     for name, integrator_cls in (('euler', EulerIntegrator),
                                  ('trap', TrapezoidalIntegrator),
                                  ('gear2', Gear2Integrator)):
-        nc, ec, fc = run(integrator_cls, 'classic')
-        ny, ey, fy = run(integrator_cls, 'ywr')
-        rows.append((name, nc, ec, fc, ny, ey, fy))
+        rows.append((name,) + run(integrator_cls))
 
     print(".. list-table:: RC charging (uic, tau = 10 us, max step 5 us):"
           " steps, absolute error vs analytic, and force-accepts")
     print("   :header-rows: 1")
-    print("   :widths: 12 11 14 11 11 14 11")
+    print("   :widths: 20 20 26 20")
     print("")
     print("   * - Method")
-    print("     - classic steps")
-    print("     - classic error")
-    print("     - classic forced")
-    print("     - ywr steps")
-    print("     - ywr error")
-    print("     - ywr forced")
-    for name, nc, ec, fc, ny, ey, fy in rows:
+    print("     - steps")
+    print("     - error vs analytic")
+    print("     - force-accepts")
+    for name, n, e, f in rows:
         print("   * - %s" % name)
-        print("     - %d" % nc)
-        print("     - %.2e" % ec)
-        print("     - %d" % fc)
-        print("     - %d" % ny)
-        print("     - %.2e" % ey)
-        print("     - %d" % fy)
+        print("     - %d" % n)
+        print("     - %.2e" % e)
+        print("     - %d" % f)
 
 The last column counts steps the solver accepted with an unbounded truncation
-error, having rejected them three times first.  On this circuit only one
-configuration reaches that path, and it is the one whose LTE formula is a
-uniform-grid formula being used on a non-uniform grid -- see the discussion of
+error, having rejected them three times first.  A non-zero entry there is the
+signal to distrust the waveform near that time -- see the discussion of
 Trapezoidal below, and the section on the step-size ratio that follows it.
 
 Discussion
@@ -166,17 +169,15 @@ Discussion
 
 The comparison isolates exactly where the DAE formula matters:
 
-* **Backward Euler** is *identical* under both formulas -- the derivation above
-  shows the YWR GEAR1 residual reduces to the same
-  :math:`-\tfrac{1}{2}(g_n - g_{n-1})` the classic path already used.
-* **Trapezoidal and Gear2** no longer distinguish the two at all -- see
+* **Backward Euler** was *identical* under the two formulas that used to be
+  selectable -- the derivation above shows the YWR GEAR1 residual reduces to the
+  same :math:`-\tfrac{1}{2}(g_n - g_{n-1})` the classic path already used.
+* **Trapezoidal and Gear2** do not distinguish them either -- see
   :ref:`trap-mode-free` below.  Both estimators difference a quantity that neither
-  Table I entry uses, and the shared code ignores ``lte_formula``.  The one step of
-  a run that predates the fourth charge falls back to the divided-difference form
-  for both methods, so **``'ywr'`` and ``'classic'`` now produce bit-identical
-  runs** -- the ``ywr`` column of the table above is not a second measurement, it
-  is the same one.  The argument is still accepted so callers do not break; it is
-  not inert on the JAX backend, which keeps its own and is stage 9's business.
+  Table I entry uses.  The one step of a run that predates the fourth charge falls
+  back to the divided-difference form for both methods.  Since every selection
+  produced bit-identical runs, the parameter was removed outright rather than
+  documented as inert; see "One estimator, not a choice" above.
 * **Gear2** is the substantive case.  Until 2026-07 the classic estimate used a
   second divided difference of the *charge* :math:`q` -- which is a
   :math:`q''` term -- scaled by :math:`h^3`, where BDF-2 requires
@@ -214,7 +215,8 @@ The comparison isolates exactly where the DAE formula matters:
    :math:`0.9795 \to 0.9988` as :math:`h` halves, against a flat
    :math:`\sim\!10^{-16}` before), and on a stiff reference case the controller
    went from 0 rejections and 0.0% step-count response to ``reltol``, to 4
-   rejections and +327.5%.  ``Gear2Integrator`` now also *defaults* to ``'ywr'``.
+   rejections and +327.5%.  (``Gear2Integrator`` then *defaulted* to ``'ywr'``;
+   the parameter has since been removed -- see "One estimator, not a choice".)
    See ``doc/transient_repair_plan.md`` for the full gate outcomes.
 
 .. _trap-mode-free:
@@ -335,13 +337,13 @@ step size actually controls:
                   h_last=h_last, is_first_step=False, toolkit=None)
         ## h_last2=None selects the older g-based fallback, which is what the
         ## "differencing g" columns measure.
-        old_t = TrapezoidalIntegrator('classic').compute_lte(
+        old_t = TrapezoidalIntegrator().compute_lte(
             iq_last=np.array([[iq_t[-2]], [iq_t[-3]]]), h_last2=None, **kw)[0][0]
-        new_t = TrapezoidalIntegrator('classic').compute_lte(
+        new_t = TrapezoidalIntegrator().compute_lte(
             iq_last=np.array([[np.nan], [np.nan]]), h_last2=h_last2, **kw)[0][0]
-        old_g = Gear2Integrator('classic').compute_lte(
+        old_g = Gear2Integrator().compute_lte(
             iq_last=np.array([[iq_g[0]], [iq_g[1]]]), h_last2=None, **kw)[0][0]
-        new_g = Gear2Integrator('classic').compute_lte(
+        new_g = Gear2Integrator().compute_lte(
             iq_last=np.array([[np.nan], [np.nan]]), h_last2=h_last2, **kw)[0][0]
 
         true_t = (2 * (q(T_N) - q(t1)) / h_curr - dq(t1)) - dq(T_N)
@@ -391,10 +393,9 @@ it further.
    run -- the second -- and that step falls back to the older g-based form rather
    than going unchecked.
 
-   ``lte_formula`` now selects nothing except on that fallback step: the shared
-   helper does not read it, so ``'ywr'`` and ``'classic'`` return identical values
-   for both methods.  The parameter is kept for now because removing a public knob
-   is a larger decision than fixing an estimator.
+   The shared helper made every ``lte_formula`` selection return identical values
+   for both methods, including on that fallback step.  The parameter has since been
+   removed from both backends.
 
    And this corrects the *estimate*, not the *method*: trapezoidal still rings on
    stiff modes, which is a property of the rule itself and is what a TR-BDF2
@@ -544,11 +545,12 @@ The table below is measured when this page is built, on a run chosen because it
     ## hatch at the LOOSER one, which is where a step is free to grow into
     ## trouble; a sweep of tight tolerances alone would show it never getting
     ## there, and once did.
-    cases = [('gear2, ywr (default)', Gear2Integrator, 'ywr', 1e-3),
-             ('gear2, ywr (default)', Gear2Integrator, 'ywr', 1e-4),
-             ('gear2, classic', Gear2Integrator, 'classic', 1e-3),
-             ('trapezoidal, ywr', TrapezoidalIntegrator, 'ywr', 1e-3),
-             ('trapezoidal, ywr', TrapezoidalIntegrator, 'ywr', 1e-4)]
+    ## The `gear2, classic` row is gone with `lte_formula`: it had already become
+    ## a duplicate of the row above it once 4i made the two selections identical.
+    cases = [('gear2 (default)', Gear2Integrator, 1e-3),
+             ('gear2 (default)', Gear2Integrator, 1e-4),
+             ('trapezoidal', TrapezoidalIntegrator, 1e-3),
+             ('trapezoidal', TrapezoidalIntegrator, 1e-4)]
 
     print(".. list-table:: Stiff RLC from a charged initial state: accepted step"
           " ratios against the bound %.6f" % ZERO_STABILITY_RATIO)
@@ -561,8 +563,8 @@ The table below is measured when this page is built, on a run chosen because it
     print("     - force-accepts")
     print("     - worst ratio")
     print("     - ratios over bound")
-    for label, cls, lte, reltol in cases:
-        n, forced, worst, over = run(cls(lte), reltol)
+    for label, cls, reltol in cases:
+        n, forced, worst, over = run(cls(), reltol)
         print("   * - %s" % label)
         print("     - %.0e" % reltol)
         print("     - %d" % n)

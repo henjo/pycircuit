@@ -281,7 +281,7 @@ class Transient(Analysis):
          Parameter(name='integrator',
                    desc='Integration strategy (an Integrator instance, e.g. '
                         "EulerIntegrator(), TrapezoidalIntegrator(), "
-                        "Gear2Integrator(lte_formula='ywr')); default EulerIntegrator()",
+                        "Gear2Integrator()); default EulerIntegrator()",
                    unit='',
                    default=None),
          Parameter(name='uic',

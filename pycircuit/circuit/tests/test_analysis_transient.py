@@ -370,8 +370,9 @@ def _lte_vs_onestep_true(integ, h, t_n=3.0e-7):
     *and* exact past derivatives, so the value measured is the error this single
     step commits and nothing accumulated.  Each formula then has an exactly
     derivable ratio to it -- 1/2 for Backward Euler, 5/6 for Trapezoidal, 2/3
-    for Gear2 'classic', 1/2 for Gear2 'ywr' -- which makes these numbers pins
-    rather than fitted constants.
+    for Gear2 -- which makes these numbers pins rather than fitted constants.
+    (There used to be a fourth, 1/2 for Gear2 under `lte_formula='ywr'`; 4d
+    corrected that row to 2/3 and 9(f) removed the parameter.)
 
     Deliberately *not* the alternative reference, in which the companion
     history is built by running the integrator's own recursion forward: that one
@@ -418,8 +419,10 @@ class _CountingController(IntegralController):
         return accept, h_next
 
 
-def test_lte_formula_ywr():
-    """The two LTE formulas as step-control options, and what separates them.
+def test_gear2_step_control_is_alive():
+    """The Gear2 controller rejects steps and responds to reltol.
+
+    Named `test_lte_formula_ywr` until 9(f) removed the parameter it compared.
 
     This test used to assert, for Gear2, that ``'ywr'`` takes *more* steps than
     ``'classic'`` and reaches a smaller error.  Both held -- but only because
@@ -441,12 +444,12 @@ def test_lte_formula_ywr():
     from pycircuit.circuit.elements import VS
     from pycircuit.circuit.integrator import EulerIntegrator, Gear2Integrator
 
-    def run(integrator_cls, lte, reltol=1e-4):
+    def run(integrator_cls, reltol=1e-4):
         c = SubCircuit()
         c['VS'] = VS(1, gnd, v=10)
         c['R1'] = R(1, 2, r=10)
         c['C1'] = C(2, gnd, c=1e-6)
-        tran = Transient(c, integrator=integrator_cls(lte), uic=True,
+        tran = Transient(c, integrator=integrator_cls(), uic=True,
                          reltol=reltol)
         tran.step_controller = _CountingController()
         res = tran.solve(tend=50e-6, timestep=5e-6, coupled_lte=False)
@@ -455,16 +458,12 @@ def test_lte_formula_ywr():
         return (len(t), abs(res.v(2, gnd)[-1] - v_analytic),
                 tran.step_controller.rejections)
 
-    # Backward Euler: the two formulas are mathematically identical.
-    n_ec, e_ec, _r_ec = run(EulerIntegrator, 'classic')
-    n_ey, e_ey, _r_ey = run(EulerIntegrator, 'ywr')
-    assert n_ec == n_ey
-    assert abs(e_ec - e_ey) < 1e-9
-
-    # Gear2 under *both* formulas: the controller is alive and controlling.
-    for lte in ('classic', 'ywr'):
-        n4, e4, rej4 = run(Gear2Integrator, lte, reltol=1e-4)
-        n6, _e6, _rej6 = run(Gear2Integrator, lte, reltol=1e-6)
+    ## The Euler cross-formula equality and the loop over ('classic', 'ywr')
+    ## went with `lte_formula` in 9(f).  What is left is the part that was doing
+    ## the work: the controller rejects steps, and step count responds to reltol.
+    for _ in (None,):
+        n4, e4, rej4 = run(Gear2Integrator, reltol=1e-4)
+        n6, _e6, _rej6 = run(Gear2Integrator, reltol=1e-6)
         ## REJECTIONS ANYWHERE IN THE SWEEP, not at one fixed tolerance.
         ##
         ## This asserted `rej4 >= 1` -- rejections at reltol 1e-4 specifically --
@@ -501,12 +500,12 @@ def test_lte_formula_ywr():
     # The 2/3 is still a pin rather than a fitted constant: it is the derivable
     # ratio of the g-based divided-difference estimate to the one-step LTE when
     # the history is exact, which is what `_lte_vs_onestep_true` supplies.
-    r_gc = _lte_ratio(Gear2Integrator('classic'))
-    r_gy = _lte_ratio(Gear2Integrator('ywr'))
+    ## The two-formula comparison that used to live here went with `lte_formula`
+    ## in 9(f); there is one estimator now, so the equality is structural.  The
+    ## 2/3 pin is kept -- it is a derivable ratio, not a fitted constant.
+    r_gc = _lte_ratio(Gear2Integrator())
     assert abs(r_gc - 2.0 / 3.0) < 0.02 * (2.0 / 3.0), \
-        "gear2-classic estimates %.4g of the one-step LTE, expected 2/3" % r_gc
-    assert r_gy == r_gc, \
-        "lte_formula still changes the Gear2 estimate: %r vs %r" % (r_gy, r_gc)
+        "gear2 estimates %.4g of the one-step LTE, expected 2/3" % r_gc
 
 
 ## ---------------------------------------------------------------------------
@@ -527,30 +526,26 @@ def test_lte_formula_ywr():
 ## See doc/transient_repair_reasoning.md (E) and plan stage 4.
 ## ---------------------------------------------------------------------------
 
-## (name, class name, formula, expected order in h, expected estimate/true).
+## (name, class name, expected order in h, expected estimate/true).
 ## The ratios are against the one-step LTE and every one of them is derived on
 ## paper, not read off the code: expanding each companion formula with exact
-## past derivatives gives 1/2 for Backward Euler, 5/6 for Trapezoidal (either
-## formula), 2/3 for Gear2 'classic' and 1/2 for Gear2 'ywr'.  Four independent
-## constants hitting at once is what makes this a check rather than a snapshot.
+## past derivatives gives 1/2 for Backward Euler, 5/6 for Trapezoidal and 2/3
+## for Gear2.  Three independent constants hitting at once is what makes this a
+## check rather than a snapshot.
+##
+## THERE USED TO BE SIX ROWS, one per (method, lte_formula) pair.  9(f) removed
+## `lte_formula`, and the three pairs had already been made bit-identical by
+## 4g(b)/4i/4d -- the gear2-ywr row's expectation had been corrected from 1/2 to
+## 2/3 for exactly that reason.  Collapsing them loses no coverage.
 _LTE_CASES = [
-    ('euler-classic', 'EulerIntegrator', 'classic', 1.0, 0.5),
-    ('euler-ywr', 'EulerIntegrator', 'ywr', 1.0, 0.5),
-    ('trap-classic', 'TrapezoidalIntegrator', 'classic', 2.0, 5.0 / 6.0),
-    ('trap-ywr', 'TrapezoidalIntegrator', 'ywr', 2.0, 5.0 / 6.0),
-    ('gear2-classic', 'Gear2Integrator', 'classic', 2.0, 2.0 / 3.0),
-    ## 2/3, NOT 1/2, SINCE 4d/4f-D.  This row used to pin 0.5 -- the YWR Table I
-    ## GEAR2 residual estimates (1/4) h^2 q''' against a true (1/3), i.e. 3/4 of
-    ## the truncation error.  That formula is gone: the one-step fallback these
-    ## helpers exercise now takes the divided-difference form unconditionally for
-    ## both second-order methods, so `lte_formula` selects nothing here and this
-    ## row must match `gear2-classic` exactly.
-    ('gear2-ywr', 'Gear2Integrator', 'ywr', 2.0, 2.0 / 3.0),
+    ('euler', 'EulerIntegrator', 1.0, 0.5),
+    ('trap', 'TrapezoidalIntegrator', 2.0, 5.0 / 6.0),
+    ('gear2', 'Gear2Integrator', 2.0, 2.0 / 3.0),
 ]
 
 
-@pytest.mark.parametrize('name,cls_name,formula,order,ratio', _LTE_CASES)
-def test_compute_lte_order_and_scale(name, cls_name, formula, order, ratio):
+@pytest.mark.parametrize('name,cls_name,order,ratio', _LTE_CASES)
+def test_compute_lte_order_and_scale(name, cls_name, order, ratio):
     """compute_lte must estimate the truncation error, to the right power of h.
 
     This is the cheap one -- an analytic q(t), no circuit -- and it is the one
@@ -564,7 +559,7 @@ def test_compute_lte_order_and_scale(name, cls_name, formula, order, ratio):
     hs = [4e-9 / 2 ** i for i in range(4)]
     mags, ratios = [], []
     for h in hs:
-        est, true = _lte_vs_onestep_true(cls(formula), h)
+        est, true = _lte_vs_onestep_true(cls(), h)
         i = int(np.argmax(np.abs(true)))
         mags.append(abs(est[i]))
         ratios.append(est[i] / true[i])
@@ -592,10 +587,9 @@ _STIFF_A = np.array([[-_STIFF_R / _STIFF_L, 1.0 / _STIFF_L],
 
 def _make_integrator(name):
     import pycircuit.circuit.integrator as integrator_mod
-    base, formula = name.split('-')
     cls = {'euler': 'EulerIntegrator', 'trap': 'TrapezoidalIntegrator',
-           'gear2': 'Gear2Integrator'}[base]
-    return getattr(integrator_mod, cls)(formula)
+           'gear2': 'Gear2Integrator'}[name]
+    return getattr(integrator_mod, cls)()
 
 
 def _stiff_run(name, reltol, tend=5e-3, timestep=2e-4):

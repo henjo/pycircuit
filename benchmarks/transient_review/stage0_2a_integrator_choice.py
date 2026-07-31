@@ -133,11 +133,12 @@ def compare(ref, other, npt=2001):
 def main():
     configs = [
         ('A  trapezoidal      bp on ', lambda: TrapezoidalIntegrator(), False),
-        ('B  gear2 ywr        bp on ', lambda: Gear2Integrator(), False),
-        ('C  gear2 classic    bp on ',
-         lambda: Gear2Integrator(lte_formula='classic'), False),
+        ('B  gear2           bp on ', lambda: Gear2Integrator(), False),
+        ## Row C compared the two `lte_formula` selections; 4i made them
+        ## bit-identical and 9(f) removed the parameter, so it is gone rather
+        ## than duplicated.
         ('D  trapezoidal      bp OFF', lambda: TrapezoidalIntegrator(), True),
-        ('E  gear2 ywr        bp OFF', lambda: Gear2Integrator(), True),
+        ('E  gear2           bp OFF', lambda: Gear2Integrator(), True),
     ]
 
     print('STAGE 0.2a -- does breakpoint seeding decide the integrator choice?')

@@ -179,7 +179,7 @@ def main():
     shares = []
     for label, factory in (
             ('TRAPEZOIDAL (the harness default)', lambda: TrapezoidalIntegrator()),
-            ("GEAR2 lte_formula='ywr' (the shipped default)", lambda: Gear2Integrator()),
+            ('GEAR2 (the shipped default)', lambda: Gear2Integrator()),
     ):
         shares.append(measure(label, factory))
 

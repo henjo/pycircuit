@@ -64,8 +64,8 @@ def parity():
     print('TRUE error at a fixed step and ratio, vs the number of PRECEDING steps')
     print('%-16s %s' % ('', ''.join('%14s' % ('prefix=%d' % n) for n in (3, 4, 5, 6, 7))))
     for name, integ in (('euler', EulerIntegrator()),
-                        ('trap-classic', TrapezoidalIntegrator(lte_formula='classic')),
-                        ('gear2-classic', Gear2Integrator(lte_formula='classic'))):
+                        ('trap', TrapezoidalIntegrator()),
+                        ('gear2', Gear2Integrator())):
         row = []
         for n in (3, 4, 5, 6, 7):
             times = [S.T_N - 2 * h - (n - i) * h for i in range(n)]

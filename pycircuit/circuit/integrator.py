@@ -55,10 +55,11 @@ def third_divided_difference(q_curr, q_last, h_curr, h_last, h_last2):
     return (dd_a - dd_b) / (h_curr + h_last + h_last2)
 
 
-## WHY `lte_formula` NO LONGER SELECTS ANYTHING ON THIS BACKEND.
+## WHY THERE IS NO `lte_formula` PARAMETER.  Removed in stage 9(f), 2026-07-31.
 ##
 ## It chose between the classic divided-difference estimates and the
-## Yao-Wang-Roychowdhury Table I residuals.  Three changes removed its effect:
+## Yao-Wang-Roychowdhury Table I residuals.  Three changes removed its effect on
+## this backend before it was removed as API:
 ##
 ##   4g(b)  the trapezoidal estimator stopped differencing `g` (the companion
 ##          current), which carries an undamped (-1)^n mode;
@@ -70,19 +71,19 @@ def third_divided_difference(q_curr, q_last, h_curr, h_last, h_last2):
 ##          is a uniform-grid formula and its GEAR2 residual is 3/4 of the true
 ##          truncation error.
 ##
-## So `'ywr'` and `'classic'` now produce bit-identical runs for every integrator.
-## The argument is kept, and accepted, so callers that pass it do not break; it is
-## documented rather than removed because removing public API for a knob with no
-## remaining effect is not worth a breaking change on its own.
+## So `'ywr'` and `'classic'` produced bit-identical runs for every integrator, and
+## the parameter was kept for a while, accepted and documented as inert.  What
+## settled its removal was the OTHER backend: `jaxtransient.py` carried its own
+## `lte_formula`, where `'classic'` selected a charge-domain estimator whose
+## tolerance applied `lte_abs = 1e-6` -- a VOLTAGE floor -- to a CHARGE.  One
+## microcoulomb, against node charges of pico- to femtocoulombs, so the normalized
+## error could never reach 1 and no step was ever rejected: the controller ran
+## open-loop.  One parameter name meant "selects nothing" here and "selects a
+## broken estimator" there, which is worse than either alone.
 ##
-## **IT IS NOT INERT ON THE JAX BACKEND.**  `jaxtransient.py` carries its own
-## `lte_formula` and there it still selects a genuinely different algorithm --
-## `'ywr'` maps a g-difference through J^-1, `'classic'` takes a charge-domain
-## estimate with no J^-1 whose tolerance (gate 0.2b) applies a VOLTAGE bound to a
-## CHARGE and therefore never rejects a step.  Removing the parameter from both
-## backends belongs with stage 9, which already owns merging the two transient
-## paths; doing it here alone would leave one name meaning two things.
-LTE_FORMULA_IS_VESTIGIAL = True
+## Both are gone.  Each backend now has exactly one estimator, and passing
+## `lte_formula=` raises TypeError rather than being silently ignored -- a kwarg
+## accepted and discarded is how the JAX defect stayed invisible.
 
 
 class Integrator(ABC):
@@ -161,11 +162,11 @@ class Integrator(ABC):
 class EulerIntegrator(Integrator):
     """Backward Euler (1st order) Integration Method"""
 
-    def __init__(self, lte_formula='classic'):
-        ## 'classic' or 'ywr' (Yao-Wang-Roychowdhury DAE LTE, ICECS 2014).  For
-        ## Backward Euler the two coincide, so this is only carried through so an
-        ## order-drop from Gear2/Trap preserves the chosen formula.
-        self.lte_formula = lte_formula
+    def __init__(self):
+        ## No `lte_formula`: see the module note above.  For
+        ## Backward Euler the two formulas always coincided, so this class never
+        ## had a choice to preserve across an order drop in the first place.
+        pass
 
     def get_required_history(self) -> int:
         return 1
@@ -220,10 +221,9 @@ class EulerIntegrator(Integrator):
 class TrapezoidalIntegrator(Integrator):
     """Trapezoidal (2nd order) Integration Method"""
 
-    def __init__(self, lte_formula='classic'):
-        ## ACCEPTED AND INERT ON THIS BACKEND since 4g(b)/4i/4d -- see the note on
-        ## `LTE_FORMULA_IS_VESTIGIAL` at the top of this module.
-        self.lte_formula = lte_formula
+    def __init__(self):
+        ## No `lte_formula`: removed in 9(f) -- see the module note above.
+        pass
 
     def get_required_history(self) -> int:
         ## THREE, not one, since stage 4g(b).  The *method* still looks back one
@@ -237,7 +237,7 @@ class TrapezoidalIntegrator(Integrator):
         # Trapezoidal rule only looks back 1 step, so its polynomial isn't
         # distorted by past step sizes. No drop needed.
         if is_first_step:
-            return EulerIntegrator(self.lte_formula)
+            return EulerIntegrator()
         return self
         
     def compute_derivatives(self, q_curr, C_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit):
@@ -327,34 +327,28 @@ class TrapezoidalIntegrator(Integrator):
 class Gear2Integrator(Integrator):
     """Gear-2 / BDF-2 (2nd order) Variable Step Size Integration Method"""
 
-    def __init__(self, lte_formula='ywr'):
-        ## ACCEPTED AND INERT ON THIS BACKEND since 4i and 4d -- see the note on
-        ## `LTE_FORMULA_IS_VESTIGIAL` at the top of this module.  The default stays
-        ## `'ywr'` because changing it would change nothing and break callers who
-        ## pass it explicitly.
+    def __init__(self):
+        ## No `lte_formula`: removed in 9(f) -- see the module note above.
+        ## The history is kept because both entries are recorded results, and both
+        ## are about a choice that no longer exists rather than about this class.
         ##
-        ## The rationale that used to sit here is kept because it records how the
-        ## default was chosen: 'ywr' was picked belt-and-braces when 'classic' was
-        ## repaired, on the grounds that it had the longer track record.
-        ## The price is that the YWR GEAR2 residual estimates (1/4) h^2 q'''
-        ## against a true (1/3) h^2 q''', so the default reports 3/4 of the
-        ## truncation error at every step where a corrected 'classic' is
-        ## asymptotically exact -- mild optimism about the solver's own error,
-        ## and TRTOL = 7.0 already absorbs more than that factor.
-        ## Euler and Trapezoidal keep 'classic'.  For Euler the two formulas are
-        ## identical.  For Trapezoidal the choice no longer has any effect once
-        ## three past charges exist -- stage 4g(b)'s estimator ignores it -- so it
-        ## only selects the one-step fallback formula.
+        ## THE DEFAULT USED TO BE 'ywr', chosen belt-and-braces when 'classic' was
+        ## repaired, on the grounds that it had the longer track record.  The price
+        ## was that the YWR GEAR2 residual estimates (1/4) h^2 q''' against a true
+        ## (1/3) h^2 q''', so it reported 3/4 of the truncation error at every step
+        ## where a corrected 'classic' is asymptotically exact.  Stage 4i moved both
+        ## variants onto the divided-difference form, which is the 'classic' one, so
+        ## that optimism is gone rather than merely defaulted around.
         ##
-        ## THE "5/6" THIS COMMENT USED TO CLAIM WAS AN ARTEFACT, and it is worth
-        ## recording where it came from because the number is so clean.  5/6 =
-        ## 0.8333 is what the trapezoidal estimator reads when it is handed EXACT
-        ## derivatives as its `g` history instead of the companion currents a real
-        ## run produces.  Measured against the local truncation error with the real
-        ## history it reads 1.09 / 1.31 / 1.33 as h falls 1e-8 -> 1e-10 -- it does
-        ## not converge at all, let alone to 5/6.  Decision 0.3b called the claim
-        ## measurably wrong; this is the measurement, and the mechanism.
-        self.lte_formula = lte_formula
+        ## THE "5/6" AN EARLIER COMMENT CLAIMED WAS AN ARTEFACT, worth keeping
+        ## because the number is so clean.  5/6 = 0.8333 is what the trapezoidal
+        ## estimator reads when it is handed EXACT derivatives as its `g` history
+        ## instead of the companion currents a real run produces.  Measured against
+        ## the local truncation error with the real history it reads 1.09 / 1.31 /
+        ## 1.33 as h falls 1e-8 -> 1e-10 -- it does not converge at all, let alone
+        ## to 5/6.  Decision 0.3b called the claim measurably wrong; this is the
+        ## measurement, and the mechanism.
+        pass
 
     def get_required_history(self) -> int:
         ## THREE since stage 4i, for the same reason trapezoidal needs three: the
@@ -367,7 +361,7 @@ class Gear2Integrator(Integrator):
 
     def check_order_drop(self, h_curr: float, h_last: float, is_first_step: bool) -> Integrator:
         if is_first_step:
-            return EulerIntegrator(self.lte_formula)
+            return EulerIntegrator()
 
         ## STAGE 4e -- THE GUARD USED TO WATCH THE WRONG DIRECTION.
         ##
@@ -390,7 +384,7 @@ class Gear2Integrator(Integrator):
         ## right response rather than refusing the step: order 1 has no parasitic
         ## root to amplify, so the ratio becomes harmless instead of forbidden.
         if h_curr / h_last > ZERO_STABILITY_RATIO:
-            return EulerIntegrator(self.lte_formula)
+            return EulerIntegrator()
 
         ## THE SHRINK BRANCH IS KEPT, AND RE-LABELLED.  The plan said replace; the
         ## measurement said add, so it is added and the reason is written down.
@@ -417,7 +411,7 @@ class Gear2Integrator(Integrator):
         ## the thing it is a proxy for is known exactly one level up in
         ## `transient.py`, where it would not need a threshold at all.
         if h_curr / h_last < 0.1:
-            return EulerIntegrator(self.lte_formula)
+            return EulerIntegrator()
 
         return self
         
