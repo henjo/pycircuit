@@ -9,7 +9,7 @@
 > (`git@github.com:henjo/pycircuit.git`) — **check `git status -sb` before assuming it is
 > pushed**; several commits have sat unpushed at a time in this work.
 >
-> **Suite: 810 passed, 6 skipped, 0 failed** (`-m "" --timeout=400`). Runtimes this session
+> **Suite: 797 passed, 6 skipped, 0 failed** (`-m "" --timeout=400`). Runtimes this session
 > ranged 676 s to 1941 s on near-identical source, entirely from other jobs on the box —
 > see trap 2 before reading anything into one. Nominal
 > ~8-13 min, but one run of the identical tree took **31m41s** purely from machine load —
@@ -32,7 +32,24 @@
 > list alone** — 0.3d's (D) bullet and the stage-0 summary look like they disagree; both
 > are now annotated with why they do not.
 >
-> So the next transient work is a **stage 7–12 item, none of which is started.**
+> **Stage 9(f) is done (`d060b13`): `lte_formula` is removed from both backends**, and
+> with it the JAX charge-domain estimator whose tolerance applied a voltage floor to a
+> charge and therefore never rejected a step. Passing `lte_formula=` now raises
+> `TypeError`. Note the entry measurement corrected the plan's own characterisation: the
+> broken path did **not** make `dt` run away under `solve()` (`dt_max = timestep` caps it)
+> — it degenerated to a fixed-step run, which is why it looked plausible for so long.
+>
+> **Watch out for `exec-rst` in `doc/src`.** It catches exceptions, renders the block's
+> *source* instead of its output, and the build still exits 0. Three blocks were silently
+> degraded that way and were only caught by reading the warning lines. A doc build that
+> gets suddenly *faster* is a symptom, not a win.
+>
+> The remaining transient work is **stages 7, 8, 10, 11, 12, and the rest of stage 9**
+> (items (a)-(e): the shared `_lte_kernels.py`, `JAXTransient`'s missing `parameters` list,
+> threading tolerances, the breakpoint loop that finds 0 breakpoints always, and making the
+> JAX Newton report non-convergence). Stage 9's own gates 9-1..9-3 are still open — they
+> ask for the CPU's three step-control gates ported to JAX, which is the asymmetry that let
+> the copied LTE defect survive in the first place.
 >
 > **Stage 5+ is complete except 5+.4** (the large-signal MOSFET), which stays sequenced into
 > stage 10 by decision 0.3c and is the largest of the four by a wide margin.
