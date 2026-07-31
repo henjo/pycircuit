@@ -2,10 +2,10 @@
 
 > ## RESUME HERE — state as of 2026-07-31
 >
-> Last commit changing **simulator behaviour**: `<this commit>` (stage 5+.5 -- the nport frequency check).
+> Last commit changing **simulator behaviour**: `a610102` (stage 5+.5 -- the nport frequency check).
 > Anything after it is a benchmark or documentation unless it says otherwise — so a newer
 > HEAD does not by itself mean the code has moved underneath this block; check
-> `git log --oneline ceb8cf5..HEAD -- pycircuit/`. Branch `cna-jax-vectorization`
+> `git log --oneline a610102..HEAD -- pycircuit/`. Branch `cna-jax-vectorization`
 > (`git@github.com:henjo/pycircuit.git`) — **check `git status -sb` before assuming it is
 > pushed**; several commits have sat unpushed at a time in this work.
 >
@@ -74,8 +74,9 @@
 > Stage 2 (2.42x bit-identical, 5.19x with single-threaded BLAS) · three post-stage-2
 > improvements (2+.1 `__getattr__` memo, 2+.2 skip the unread residual, 2+.3 `relref`) ·
 > **Stage 5** (junction limiting, the exp clamp, and the `SubCircuit.limit` write-back) ·
-> **Stage 5+.2/5+.3** (`MOS_ACM` deleted; `Varactor`'s `C` no longer falls to exactly zero
-> in forward bias) ·
+> **Stage 5+.2/5+.3/5+.5** (`MOS_ACM` deleted; `Varactor`'s `C` no longer falls to exactly
+> zero in forward bias; `mos.py`'s doctests run for the first time, which took fixing an
+> `nportanalysis` check that rejected its own documented usage) ·
 > **Stage 5+.1** (a charge model for the `BJT`; the device had none, and a transient
 > through it had no time constant at all) ·
 > Stage 3 (`firststep`; `reltol` controls accuracy, 90.8x) · Stage 4 parts 1-4: 4c · 4g(a) ·
