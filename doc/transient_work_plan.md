@@ -2,10 +2,11 @@
 
 > ## RESUME HERE — state as of 2026-07-31
 >
-> Last commit changing **simulator behaviour**: `6bc6fcc`. Everything after it is a
-> benchmark, a test rename, or documentation — so a newer HEAD does not mean the code has
-> moved underneath this block. Branch `cna-jax-vectorization`, **pushed to `origin`**
-> (`git@github.com:henjo/pycircuit.git`).
+> Last commit changing **simulator behaviour**: `abf4db8` (stage 4 part 3, 4e + 4b).
+> Anything after it is a benchmark or documentation unless it says otherwise — so a newer
+> HEAD does not by itself mean the code has moved underneath this block; check
+> `git log --oneline abf4db8..HEAD -- pycircuit/`. Branch `cna-jax-vectorization`,
+> **pushed to `origin`** (`git@github.com:henjo/pycircuit.git`).
 >
 > **Suite: 761 passed, 6 skipped, 0 failed, 670.26 s** (`-m "" --timeout=400`). Nominal
 > ~8-13 min, but one run of the identical tree took **31m41s** purely from machine load —
