@@ -13,7 +13,7 @@ pip install -e ".[dev]"
 Built with Sphinx. To build locally:
 
 ```bash
-pip install -r doc/requirements.txt
+pip install -e ".[docs]"
 make -C doc html
 # output in doc/build/html/
 
