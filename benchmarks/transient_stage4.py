@@ -239,11 +239,12 @@ def cmd_pi(args):
     hs = []
     for i in range(40):
         err = (h / h_target) ** p
-        ## Mirror the controller's accepted-step update.
-        err_norm = max(err, 1e-12)
-        err_last = max(ctrl.last_err if ctrl.last_err is not None else err, 1e-12)
-        factor = (err_norm ** (-ctrl.k_i)) * ((err_last / err_norm) ** ctrl.k_p)
-        factor = min(2.0, max(0.2, factor))
+        ## THE REAL UPDATE LAW, not a transcription of it.  This block used to
+        ## mirror the controller's arithmetic, which meant the gate could pass
+        ## against a formula the simulator no longer used -- and it very nearly
+        ## did: stage 4a's fix divides both gains by the order, and a mirrored
+        ## copy would have gone on reporting the old limit cycle.
+        factor = ctrl.pi_factor(err, ctrl.last_err, p)
         ctrl.last_err = err
         h = h * factor
         hs.append(h)

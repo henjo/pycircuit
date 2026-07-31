@@ -199,11 +199,52 @@ class PIController(StepController):
     Proportional-Integral Step Controller.
     Uses history of truncation error to provide smoother step size changes.
     """
+    ## STAGE 4a -- THE GAINS ARE PER UNIT ORDER, AND THAT DIVISION WAS MISSING.
+    ##
+    ## Gustafsson's classic values are `k_I = 0.3/k` and `k_P = 0.4/k` where `k` is
+    ## the order the error estimate follows (`err ~ h^k`).  They were used here
+    ## undivided.  Linearising the update about the fixed point with
+    ## `x_n = ln(h_n/h*)` and `err_n = (h_n/h*)^p` gives
+    ##
+    ##     x_{n+1} = x_n (1 - p(k_I + k_P)) + x_{n-1} (p k_P)
+    ##     char:    z^2 - (1 - p(k_I + k_P)) z - p k_P = 0
+    ##
+    ##     gains              p=2 roots            p=3 roots           radius
+    ##     0.3, 0.4     -1.1165, +0.7165     -1.7758, +0.6758     1.117 / 1.776
+    ##     0.3/p, 0.4/p +0.8000, -0.5000     +0.8000, -0.5000     0.800 / 0.800
+    ##
+    ## So the loop was unstable at both orders.  It never looked like a divergence
+    ## because `min(2, max(0.2, .))` clamps the factor, which converts the growing
+    ## oscillation into a PERMANENT period-2 limit cycle: measured h alternating
+    ## 0.8572 / 0.4286, i.e. running against the growth clamp every other step, for
+    ## as long as the run lasts.  The only test asserted `len(steps) > 10`.
+    ##
+    ## Note the corrected radius is the SAME at both orders.  That is the point of
+    ## dividing by `k` rather than choosing two smaller constants: it makes the
+    ## closed loop order-independent, so the controller behaves the same behind
+    ## Euler as behind Gear-2.  Gains that were merely smaller would be tuned to
+    ## whichever order they were measured on.
     def __init__(self, k_i=0.3, k_p=0.4):
         self.k_i = k_i
         self.k_p = k_p
         self.last_err = None
         
+    def pi_factor(self, err, last_err, p):
+        """The step-size factor for one accepted step, clamped.
+
+        Public and separate so the gate-4a harness can drive the REAL update law
+        instead of transcribing it.  `benchmarks/transient_stage4.py --pi` used to
+        keep its own copy, which meant the gate could pass against a formula the
+        simulator no longer used -- the same two-transcriptions failure this plan
+        has already paid for twice elsewhere.
+        """
+        err_norm = max(err, 1e-12)
+        err_last_norm = max(last_err if last_err is not None else err, 1e-12)
+        ## `/p` on both gains -- see the derivation on __init__.
+        factor = ((err_norm ** (-self.k_i / p))
+                  * ((err_last_norm / err_norm) ** (self.k_p / p)))
+        return min(MAX_GROWTH_RATIO, max(MIN_SHRINK_RATIO, factor))
+
     def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None, h_last2=None):
         ## As in IntegralController: nothing to difference on the first step of a
         ## run.  Unlike there, the 0.5 is not dead -- it seeds the PI history so
@@ -245,7 +286,20 @@ class PIController(StepController):
 
         if err > 1.0:
             # Step rejected: standard backoff using the method order.
+            ## STAGE 4a -- AND THE HISTORY IS DROPPED, DELIBERATELY.
+            ##
+            ## This used to return without touching `last_err`, so the next accepted
+            ## step differenced against an error two steps stale -- and one measured
+            ## at a DIFFERENT step size at the same time point, which is not a
+            ## sequence the P term is meaningful over.
+            ##
+            ## Setting it to None makes the next accepted step take the elementary
+            ## (pure-I) update, because `if self.last_err is None: self.last_err =
+            ## err` below drives the P factor `(err_last/err)^k_P` to exactly 1.
+            ## That is the textbook response to a rejection (Hairer & Wanner II.4),
+            ## and it needs no new mode -- the machinery was already here.
             h_next = h_curr * max(MIN_SHRINK_RATIO, 0.9 * (1.0 / err)**exponent)
+            self.last_err = None
             return False, h_next
             
         # Step accepted: use PI update
@@ -254,13 +308,7 @@ class PIController(StepController):
             
         # Standard PI formula for step size control.  err is already normalized so
         # that err==1 is the target (TRTOL is folded into etol above).
-        err_norm = max(err, 1e-12)
-        err_last_norm = max(self.last_err, 1e-12)
-
-        factor = (err_norm ** (-self.k_i)) * ((err_last_norm / err_norm) ** self.k_p)
-        
-        # Limit the step size change
-        factor = min(MAX_GROWTH_RATIO, max(MIN_SHRINK_RATIO, factor))
+        factor = self.pi_factor(err, self.last_err, p)
         
         h_next = h_curr * factor
         h_next = min(h_next, max_step)

@@ -1441,3 +1441,130 @@ def test_gate_4h_the_adaptive_path_is_untouched():
     dt = np.diff(np.asarray(res.sweep_values, dtype=float))
     assert (dt < 1e-6 * np.median(dt)).sum() == 0, \
         'the adaptive path grew a degenerate step; 4h should not have touched it'
+
+
+# ---------------------------------------------------------------------------
+# 4a -- the PI step controller's gains are per unit order
+#
+# Gustafsson's values are k_I = 0.3/k and k_P = 0.4/k where k is the order the
+# error estimate follows. They were used undivided, which puts the closed loop
+# outside the unit circle at every order; the growth clamp then turns the
+# divergence into a permanent period-2 limit cycle rather than a blow-up, which
+# is why it was never noticed.
+# ---------------------------------------------------------------------------
+
+def _pi_spectral_radius(p, n=60):
+    """Drive the REAL update law and measure how fast ln(h/h*) decays.
+
+    Not a transcription of the formula: `pi_factor` is the same method the
+    controller uses, for the same reason the benchmark now calls it -- a mirrored
+    copy lets the gate pass against arithmetic the simulator no longer runs.
+    """
+    from pycircuit.circuit.stepcontroller import PIController
+    ctrl = PIController()
+    h, hs = 0.3, []
+    for _ in range(n):
+        err = h ** p          # h* = 1, so err = (h/h*)**p
+        h = h * ctrl.pi_factor(err, ctrl.last_err, p)
+        ctrl.last_err = err
+        hs.append(h)
+    e = np.abs(np.log(np.array(hs[20:])))
+    e = e[e > 1e-14]
+    return hs, float(np.exp(np.mean(np.diff(np.log(e)))))
+
+
+def test_gate_4a1_the_step_size_recursion_settles_instead_of_cycling():
+    """Measured before: a permanent period-2 cycle, h = 0.8572 / 0.4286.
+
+    The ratio was exactly 2.0000 -- the controller running against its own growth
+    clamp every other step, for as long as the run lasted.
+    """
+    hs, _rate = _pi_spectral_radius(3.0)
+    tail = hs[-8:]
+    spread = max(tail) / min(tail)
+    assert spread < 1.05, \
+        'the PI recursion still cycles: tail spread %.4f (2.0 is the period-2 ' \
+        'limit cycle this gate exists for)' % spread
+    assert abs(tail[-1] - 1.0) < 0.05, \
+        'h settled at %.4f rather than the fixed point 1.0' % tail[-1]
+
+
+def test_gate_4a2_the_closed_loop_is_order_independent():
+    """The point of dividing by the order, and what distinguishes this fix from
+    picking two smaller constants.
+
+    Analytic roots with k_I = 0.3/p, k_P = 0.4/p are +0.8 and -0.5 for *every* p.
+    Gains that were merely smaller would give a different radius at each order and
+    so would be tuned to whichever one they were measured on -- passing gate 4a-1
+    behind Gear2 and failing it behind Euler.
+    """
+    rates = [_pi_spectral_radius(p)[1] for p in (2.0, 3.0, 4.0)]
+    for p, r in zip((2.0, 3.0, 4.0), rates):
+        assert r < 1.0, 'closed loop is unstable at p=%g: radius %.4f' % (p, r)
+        assert abs(r - 0.8) < 0.02, \
+            'radius %.4f at p=%g, expected the analytic 0.8' % (r, p)
+    assert max(rates) / min(rates) < 1.02, \
+        'the closed loop is not order-independent: radii %s' % rates
+
+
+def test_gate_4a3_a_rejection_drops_the_stale_error():
+    """After a rejected step the next accepted one must take the elementary update.
+
+    Otherwise the P term differences against an error two steps stale, measured at
+    a *different* step size at the same time point -- not a sequence the term is
+    meaningful over.
+    """
+    from pycircuit.circuit.stepcontroller import PIController
+    ctrl = PIController()
+    p, err = 3.0, 0.5
+
+    ctrl.last_err = 0.9
+    with_history = ctrl.pi_factor(err, ctrl.last_err, p)
+    ctrl.last_err = None
+    after_rejection = ctrl.pi_factor(err, ctrl.last_err, p)
+
+    elementary = err ** (-ctrl.k_i / p)
+    assert after_rejection == pytest.approx(elementary, rel=1e-12), \
+        'the post-rejection update is not the elementary one: %.6f vs %.6f' \
+        % (after_rejection, elementary)
+    assert abs(with_history - after_rejection) > 1e-6, \
+        'the P term has no effect at all; this test is not measuring anything'
+
+
+def test_gate_4a_the_rejection_path_still_returns_a_smaller_step():
+    """The history reset must not cost the shrink.
+
+    Pinned because it very nearly did: the edit that added `last_err = None`
+    removed the line computing `h_next`, and the first end-to-end run raised
+    `UnboundLocalError`. A unit test would have caught it before the sweep did.
+    """
+    from pycircuit.circuit.stepcontroller import PIController
+    from pycircuit.circuit.integrator import EulerIntegrator
+
+    class _Over(EulerIntegrator):
+        """An estimator that always reports an over-tolerance error."""
+        def compute_lte(self, q_curr, h_curr, q_last, iq_last, h_last,
+                        is_first_step, toolkit, h_last2=None):
+            return numeric.array([1e6, 1e6]), 2.0
+
+    ## TWO unknowns, not one: the controller strips the reference row and column
+    ## before solving, so a 1x1 system leaves nothing behind, `lte` comes back as
+    ## a single zero and the step is accepted no matter what the estimator said.
+    ## The first version of this test did exactly that and asserted against it.
+    ctrl = PIController()
+    ctrl.last_err = 0.5
+    accept, h_next = ctrl.evaluate_step(
+        x_curr=numeric.array([1.0, 1.0]), x_last=numeric.array([1.0, 1.0]),
+        q_curr=numeric.array([1.0, 1.0]),
+        q_last_hist=numeric.array([[1.0, 1.0]] * 3),
+        iq_last_hist=numeric.array([[0.0, 0.0]] * 2),
+        h_curr=1e-6, h_last=1e-6, no_history=False,
+        J=numeric.array([[1.0, 0.0], [0.0, 1.0]]), active_integrator=_Over(),
+        irefnode=0, reltol=1e-6, abstol=numeric.array([1e-12, 1e-12]),
+        toolkit=numeric, max_step=1e-5, n_nodes=2, h_last2=1e-6)
+
+    assert accept is False, 'an error of 1e6 must be rejected'
+    assert 0 < h_next < 1e-6, \
+        'a rejection must return a smaller step, got %r' % (h_next,)
+    assert ctrl.last_err is None, \
+        'the rejection path must drop the stale error'

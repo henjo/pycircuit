@@ -8,7 +8,7 @@
 > `git log --oneline b392ad1..HEAD -- pycircuit/`. Branch `cna-jax-vectorization`,
 > **pushed to `origin`** (`git@github.com:henjo/pycircuit.git`).
 >
-> **Suite: 784 passed, 6 skipped, 0 failed, 805.34 s** (`-m "" --timeout=400`). Nominal
+> **Suite: 788 passed, 6 skipped, 0 failed, 676.30 s** (`-m "" --timeout=400`). Nominal
 > ~8-13 min, but one run of the identical tree took **31m41s** purely from machine load —
 > see trap 2. **Doc build: succeeded, 2 warnings, 0 ERROR.** Working tree clean.
 >
@@ -17,35 +17,20 @@
 >
 > ### The next action, concretely
 >
-> **4a and 4a-bis — the PI step controller.** `PIController` uses Gustafsson's numerators
-> undivided; they must be `0.3/k` and `0.4/k`. Measured spectral radius **1.12 at k=2 and
-> 1.78 at k=3**, so the step-size recursion is unstable and the `min(2, max(0.2, .))` clamp
-> converts that into a permanent period-2 limit cycle rather than a divergence — which is
-> why it has never been noticed: the only test asserts `len(steps) > 10`. The gate already
-> runs (`transient_stage4.py --pi`) and currently reports the cycle. Also update
-> `last_err` on the rejection path, or fall back to pure-I for the step after a rejection.
->
-> 4a-bis is the same area: both source papers separate "shrink the next step" from "redo
-> this one" with a distinct `F_redo` threshold, and pycircuit has a single test at
-> `err > 1.0` that decides both. Worth measuring together, since 4a changes the same
-> recursion.
->
-> **Note:** `PIController` is not the default — `IntegralController` is — so this is a
-> latent defect in an opt-in path, not a live one. That is a reason to sequence it here
-> rather than earlier, not a reason to skip it.
+> **Decide what `lte_formula` is for — a maintainer's call, and the last thing blocking
+> gate 4f.** After 4i it selects nothing for either second-order method except on the
+> single fallback step of a run: `Trapezoidal('ywr')` and `Trapezoidal('classic')` return
+> identical values, and so do the two `Gear2` variants. Gate 4f asks for "rejections and
+> force-accepts for all four integrator/formula combinations, so the choice is evidenced" —
+> **there are no longer four distinct combinations to compare.** So the question is not
+> which default to pick but whether the parameter should exist, and 0.3b's deferred
+> decision is subsumed by it. Removing a public knob is not an implementer's call.
 >
 > ### After that, in order
 >
-> 1. **Decide what `lte_formula` is for.** After 4i it selects nothing for either
->    second-order method except on the single fallback step of a run. That makes gate 4f
->    ("record rejections and force-accepts for all four integrator/formula combinations,
->    so the choice is evidenced") a question about whether the knob should exist at all
->    rather than about which default to pick — there are no longer four distinct
->    combinations to compare. **Maintainer's call**, and 0.3b's deferred decision is
->    subsumed by it.
-> 2. **0.3d's `chgtol` guard**, and the rest of `doc/src/circuit/lte_dae.rst`'s
+> 1. **0.3d's `chgtol` guard**, and the rest of `doc/src/circuit/lte_dae.rst`'s
 >    variable-step story.
-> 3. **The `iq` seed.** `transient.py` starts every run with `_iqlast = zeros` against a
+> 2. **The `iq` seed.** `transient.py` starts every run with `_iqlast = zeros` against a
 >    true `q'(t_0)` that is generally nonzero. Measured under 4g(b) as an O(h^3) effect,
 >    one order below the local truncation error, so it is not blocking — but it is wrong
 >    in principle and cheap to fix when something else touches that code.
@@ -72,7 +57,11 @@
 > **4i** (one `q'''` estimator for both second-order methods, taken from a third divided
 > difference of the charge: Gear2's step-ratio spread **119x -> 1.0041x**, trapezoidal's
 > 1.26x -> 1.0084x, and the shipped default gains 1.22x accuracy — but gate 4i-4's own
-> "clause that matters" failed and is recorded as a failure) · **D3** (`relref='sigglobal'`
+> "clause that matters" failed and is recorded as a failure) · **4a** (the PI controller's
+> Gustafsson gains divided by the order at last: a permanent period-2 limit cycle becomes a
+> closed loop of radius 0.8 at every order, and PI's own rejections fall up to 9.7x — but
+> gate 4a-4's rejections clause failed, and PI is measurably **not** better than the
+> default, so it is not promoted) · **D3** (`relref='sigglobal'`
 > is the default, on its second attempt; `lte_vabstol` back to 1e-12 at measured zero cost;
 > 1.31-2.06x fewer steps at matched accuracy — and the injection check for gate 1-5 found a
 > guard that `sigglobal` had silently blinded) · **4h** (`fixed_timestep` produces a uniform
@@ -1646,7 +1635,127 @@ unstable, converted by the clamp into a permanent period-2 limit cycle. The comp
 or fall back to pure-I for the step after a rejection.
 **Gate 4a:** the step-size recursion must converge rather than cycle. Declared success: on
 a smooth problem, h settles to within 5% of a fixed point instead of alternating 2:1.
-OUTCOME:
+
+### 4a scope and gates, written 2026-07-31 before the fix
+
+**The plan's spectral radii are confirmed by derivation, not just reproduced.** Taking
+`x_n = ln(h_n/h*)` and `err_n = (h_n/h*)^p` — which is what the harness drives — the PI
+update `h_{n+1} = h_n · err_n^{-k_I} · (err_{n-1}/err_n)^{k_P}` linearises to
+
+    x_{n+1} = x_n (1 - p(k_I + k_P)) + x_{n-1} (p k_P)
+    char:    z^2 - (1 - p(k_I + k_P)) z - p k_P = 0
+
+| gains | p | roots | radius |
+|---|---|---|---|
+| shipped (0.3, 0.4) | 2 | -1.1165, +0.7165 | **1.1165** |
+| shipped (0.3, 0.4) | 3 | -1.7758, +0.6758 | **1.7758** |
+| corrected (0.3/p, 0.4/p) | 2 | +0.8000, -0.5000 | **0.8000** |
+| corrected (0.3/p, 0.4/p) | 3 | +0.8000, -0.5000 | **0.8000** |
+
+matching the recorded 1.12 and 1.78. **The corrected radius is identical for both p**, which
+is the entire reason the gains are written `0.3/k` and `0.4/k` rather than as two smaller
+constants: dividing by the order makes the closed loop order-independent. A fix that merely
+picked smaller numbers would pass gate 4a at one order and fail at another, so that is
+gated separately below.
+
+**A claim in the plan that is REFUTED.** 4a states "The computed `exponent = 1.0/p` at
+`:139` is dead code." In the current file it is line 244 and it **is used**, at line 248, on
+the rejection branch — and the same is true of `IntegralController`'s copy, used on both
+branches. Either the claim was true of an older revision or it was mistaken; it is not true
+now, and nothing is deleted on its account.
+
+**The rejection path, and why the fix is one line.** After a rejection the controller
+returns without touching `self.last_err`, so the next accepted step differences against an
+error two steps stale — and worse, one measured at a *different* step size at the same time
+point. Textbook practice (Hairer & Wanner II.4, Gustafsson) is to take the step after a
+rejection with the elementary (pure-I) controller and resume PI afterwards. That behaviour
+already exists here: `if self.last_err is None: self.last_err = err` makes the P factor
+`(err_last/err)^{k_P}` exactly 1. So setting `last_err = None` on the rejection path *is*
+the pure-I fallback, using machinery already present rather than adding a mode.
+
+**Gate 4a-1 (the declared one).** On a smooth problem h settles to within 5% of a fixed
+point instead of alternating 2:1. Recorded before: a permanent period-2 cycle,
+h = 0.8572 / 0.4286, spread exactly 2.0000 — i.e. running against the growth clamp every
+other step.
+OUTCOME: **PASSED.** h converges to the fixed point: last eight values 0.9993 .. 0.9999, tail spread **1.0006** against the declared 5% and against the previous permanent 2.0000.
+
+**Gate 4a-2 (the fix is order-independent, not just smaller).** The closed-loop spectral
+radius must be **identical for p = 2 and p = 3** and below 1 for both. This distinguishes
+dividing by the order from picking two smaller constants, which would pass 4a-1 at whichever
+order it was tuned on.
+OUTCOME: **PASSED, exactly.** Driving the real update law from the same start, the observed convergence rate is **0.8000 at p = 2, 3 and 4** — identical to four figures and matching the analytic root. A fix that had merely chosen smaller constants would have shown three different rates.
+
+**Gate 4a-3 (a rejection does not leave a stale error behind).** After a rejected step, the
+next accepted step must use the elementary update rather than differencing against an error
+measured at a different step size. Verified by instrumenting the factor actually applied,
+not by reading the code.
+OUTCOME: **PASSED.** With `last_err = 0.9` and `err = 0.5` at p=3 the factor is **1.159149**; after a rejection it is **1.071773**, which equals `err^(-k_I/p)` to machine precision — the P term is exactly 1, i.e. the elementary update.
+
+**Gate 4a-4 (end to end, and it must not be worse than the default controller).**
+`PIController` on the gate-4b sweep. Declared success: no accepted step ratio outside the
+zero-stability bound; and against `IntegralController` on the same circuits, **rejections no
+more than 1.5x and step counts no more than 1.2x**. A PI controller that is stable but
+needs half again as many steps is not obviously an improvement, and if that is what it does
+the honest outcome is to say so rather than to ship it as a win.
+OUTCOME: **The stability clause PASSED; the rejections clause FAILED at 5.00x against a
+declared 1.5x — and the clause was measuring the wrong comparison, which is a criticism of
+how it was declared, not a reason to move it.** Both readings are below.
+
+*What passed.* `worst accepted step ratio 2.0000, ratios outside the bound 0` across all
+nine configurations, so `PIController` respects 4b's invariant. Step counts are **1.00-1.13x**
+those of `IntegralController`, inside the declared 1.2x.
+
+*What failed, with the raw numbers rather than the ratio.* `PIController` vs
+`IntegralController`, rejections:
+
+| circuit, reltol | integral | PI |
+|---|---|---|
+| rc-vsin 1e-3 / 1e-4 | 0 / 0 | 0 / 0 |
+| **rc-vsin 1e-5** | **0** | **4** |
+| stiff-rlc 1e-3 / 1e-4 / 1e-5 | 4 / 2 / 2 | 4 / 2 / 3 |
+| rc-pulse 1e-3 | 9 | 8 |
+| **rc-pulse 1e-4** | **36** | **24** |
+| **rc-pulse 1e-5** | **48** | **61** |
+
+The 5.00x is the `rc-vsin 1e-5` row under the declared `(n+1)` smoothing: 0 -> 4 rejections
+in a **238-step** run, i.e. 1.7% of steps. The smoothing does not rescue a ratio when the
+baseline is zero, and the gate should have used an absolute floor. PI is better on one row
+(36 -> 24), worse on two, and identical on the rest.
+
+**The substantive finding, which the clause obscured: `PIController` is not an improvement
+over the default `IntegralController` on these circuits.** It is comparable, at 0-13% more
+steps. So 4a fixes a defect in an opt-in path and **does not** justify promoting PI to the
+default — and no such promotion is made.
+
+*The comparison that actually judges 4a*, taken because the declared one answers a
+different question — PI **before vs after** the gains fix, same circuits, same integrator:
+
+| circuit, reltol | steps | rejections |
+|---|---|---|
+| rc-vsin 1e-3 | 214 -> 214 | 0 -> 0 |
+| rc-vsin 1e-4 | 215 -> 218 | 0 -> 0 |
+| **rc-vsin 1e-5** | 237 -> 238 | **34 -> 4** |
+| stiff-rlc 1e-3 | 61 -> 66 | 5 -> 4 |
+| **stiff-rlc 1e-4** | 87 -> 94 | **13 -> 2** |
+| **stiff-rlc 1e-5** | 142 -> 150 | **29 -> 3** |
+| rc-pulse 1e-3 | 493 -> 475 | 11 -> 8 |
+| **rc-pulse 1e-4** | 691 -> 650 | **35 -> 24** |
+| **rc-pulse 1e-5** | 979 -> 975 | **132 -> 61** |
+
+**Up to 9.7x fewer rejections at essentially unchanged step counts.** That is the limit
+cycle being paid for: a controller alternating against its growth clamp every other step
+overshoots the tolerance half the time, and each overshoot is a rejected step and a wasted
+Newton solve. The fix removes the oscillation and the rejections go with it.
+
+**Gate 4a-5.** Full suite `-m ""`; doc build verified by content.
+OUTCOME: **PASSED. 788 passed, 6 skipped, 0 failed, 676.30 s** (`-m "" --timeout=400`),
+against 784 before plus the 4 tests added here — no existing test needed changing, which
+is expected rather than reassuring: `PIController` is opt-in and the suite exercises it in
+one place. Doc build: **build succeeded, 2 warnings, 0 ERROR**, verified by content.
+
+**That is also the honest limit of this gate.** A full suite is weak evidence for a change
+to a controller almost nothing uses; the load-bearing measurements for 4a are the harness
+(4a-1, 4a-2), the unit checks (4a-3), and the before/after sweep under 4a-4.
 
 **4a-bis. NEW, from the source papers (2026-07-30): the controller has one threshold where
 both papers have two.** `IntegralController` rejects whenever `err > 1.0`
@@ -1670,6 +1779,25 @@ the single threshold is what drives rejection count, the estimator comparison in
 confounded by it, which is a second reason 0.3b was right to defer the default. **Measure
 this before 4f**, by adding an `F_redo` band and re-running the four-way comparison; if
 rejection counts converge, the `'ywr'`-vs-`'classic'` gap was mostly the controller.
+
+**THE HYPOTHESIS IS NOW UNTESTABLE AS STATED, and answered another way (2026-07-31).** The
+57-vs-29 gap it exists to explain was between `Gear2('ywr')` and `Gear2('classic')`, and
+after 4i those two are the *same code* — `lte_formula` selects nothing for either
+second-order method except on one fallback step. There is no gap left to attribute. The
+four-way comparison gate 4f asked for has no four distinct configurations to run.
+
+What the intervening work says about the underlying question — *is the single accept
+threshold driving rejection counts?* — is that it was not the dominant term. Rejections fell
+by 33x on the stiff case from fixing the trapezoidal **estimator** (4g(b)), by up to 9.7x on
+`PIController` from fixing its **gains** (4a), and Gear2's rejections *rose* slightly when
+its estimator was made honest (4i) because the old one under-reported. Three separate causes,
+none of them the threshold.
+
+**Reconsider if** a circuit is found where rejections stay high with every estimator now
+correct — `F_redo` is still a real feature both papers have and pycircuit does not, and the
+argument for it (a step 1.01x over tolerance is re-solved from scratch where both papers
+would accept it and shorten the next step) is untouched by any of the above. It is simply no
+longer justified by the 57-vs-29 evidence, because that evidence has evaporated.
 
 **4b. `MAX_REJECT` force-accept.** `transient.py:390` grows `dt` **10x** after accepting an
 over-tolerance step. Variable-step BDF-2 is zero-stable only for ratio < 1+sqrt(2) =
