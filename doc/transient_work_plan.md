@@ -3770,6 +3770,75 @@ through without anyone establishing which version was right.
 OUTCOME: **PASS. Suite 799 passed, 6 skipped, 0 failed**, against 797 before plus the two JAX
 tests added here.
 
+## 9(b) + 9(c) — tolerances exist, are settable, and are the CPU's
+
+**Done 2026-07-31.** Entry measurements confirmed every claim: `JAXTransient(cir,
+reltol=1e-6)` raised `KeyError: 'parameter reltol not in parameter dictionary'`, and
+`nrsolver`/`scaler` were accepted in silence.
+
+**What shipped.** A `parameters` list carrying `reltol`, `iabstol`, `vabstol`,
+`lte_vabstol`, `lte_iabstol`, `TRTOL`, `maxiter` — **the CPU's names and defaults**, so
+the two backends stop presenting as one analysis while solving to different accuracies
+(the kernel's hard-coded `reltol=1e-3, abstol=1e-6` disagreed with `Transient`'s shipped
+`1e-4 / 1e-12`). `nrsolver` and `scaler` now raise `NotImplementedError` naming why: the
+Newton loop is a traced `while_loop` with a fixed algorithm and no scaling step.
+
+**The absolute LTE tolerance is a per-row VECTOR**, `lte_vabstol` on node rows and
+`lte_iabstol` on branch rows, built exactly as `Transient._solve` builds its own. 9(c)
+warns in as many words that a scalar re-creates 0.3a's residual-vs-solution defect.
+
+**AND THREADING IT ALONE INTRODUCED THE DEFECT THE PLAN WARNS ABOUT — caught by gate
+9-1(c), not by review.** The floor `lte_vabstol = 1e-12` is only safe *because the CPU
+ships `relref='sigglobal'`*; the JAX estimator measured `pointlocal` (each unknown against
+itself, now). Threading the tight floor into a pointlocal reference is precisely the
+combination `stepcontroller.py` records as pathological, and the measurement showed it
+immediately — `min dt` collapsing 1000x as `reltol` tightened, for a **worse** answer:
+
+| reltol | steps | min dt | late max err |
+|---|---|---|---|
+| 1e-3 | 56 | 4.76e-6 | 2.145e-3 |
+| 1e-6 | 164 | **5.06e-9** | **2.802e-3** |
+
+I had written in the same commit that `sigglobal` "needs a reduction over the whole vector
+inside the traced loop, and that is 9(c)'s remaining work". **That was wrong** — a running
+maximum is a scalar carried in `TransientState` and a `jnp.max`, both trivially traceable.
+It is now implemented, and updated **only on accept**, since a rejected iterate is not a
+signal the circuit ever had. With it, `min dt` holds at 5.5e-8 and step growth falls from
+2.93x to 1.60x.
+
+**Gate 9-1(c) (step count and error respond to `reltol`): PASSES ONLY ONCE `dt_max` IS
+UNBOUND, and that is the finding.** `JAXTransient.solve` sets `dt_max = timestep`, so on a
+run where the requested timestep is already fine enough the controller is subordinate to
+the clamp and the whole-waveform error is pinned by the **first** step — `max err` sat at
+4.2535e-3 to five figures across four decades of `reltol`, always at index 1. Unbind the
+clamp and it responds properly:
+
+| timestep | reltol | steps | max err | max dt |
+|---|---|---|---|---|
+| 1e-4 | 1e-3 | 53 | 4.792e-3 | 1.000e-4 (clamped) |
+| 1e-4 | 1e-5 | 60 | 4.254e-3 | 1.000e-4 (clamped) |
+| 1e-5 | 1e-3 | 502 | 1.169e-4 | 1.000e-5 (clamped) |
+| 1e-5 | 1e-5 | 506 | **4.930e-5** | 1.000e-5 (clamped) |
+
+**2.4x less error for a 100x tighter tolerance** — the controller works; it is just not
+what is choosing the step. `max dt == timestep` on every row: the JAX transient is
+effectively a fixed-step run with occasional trimming, and **cannot grow its step at all**.
+That is a design property of `dt_max = timestep`, not a bug introduced here, and it is the
+same clamp that made 9(f)'s broken estimator look plausible. **Whether `dt_max` should
+default to `tend/10` as `solve_batched` uses is a real decision and is NOT taken here.**
+
+**NEW FINDING, not previously recorded: the JAX transient overshoots `tend`.** Measured
+`t[-1]` of 5.0559e-3, 5.0286e-3, 5.0702e-3, 5.0351e-3 against `tend = 5e-3` — up to 1.4%
+past the requested end, where `Transient` lands on it exactly. The final step is not
+clamped. Left open with its measurement rather than fixed inside this item.
+
+**Still open in 9(c):** the Newton loop's convergence test is a scalar norm
+(`conv_tol = abstol + reltol*F_norm0`), not the CPU's per-row residual test with `iabstol`
+on node rows and `vabstol` on branch rows. `reltol`/`vabstol` are now threaded to it, so it
+is settable, but the *flavour* split is done only for the LTE. Recorded so the remaining
+asymmetry is not mistaken for finished work.
+
+
 **One existing test had to change, and it was pinning the bug:** `test_func.py::test_pulse`
 asserted `next_event(0) == 0` — precisely the non-advancing return that caused the hang.
 Every other assertion in that same block already reads "strictly the next edge after `t`"

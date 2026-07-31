@@ -179,3 +179,114 @@ def test_jax_breakpoint_scan_cannot_hang():
 
     ## It returns, and returns something usable: tend is always present.
     assert bps == [3e-3]
+
+
+def _rc_circuit():
+    from pycircuit.circuit.elements import SubCircuit, R, C, VS
+    from pycircuit.circuit import gnd
+    cir = SubCircuit()
+    cir.add_node('in'); cir.add_node('out')
+    cir['V1'] = VS('in', gnd, v=1.0)
+    cir['R1'] = R('in', 'out', r=1e3)
+    cir['C1'] = C('out', gnd, c=1e-6)
+    return cir
+
+
+def _with_jax_toolkit(fn):
+    from pycircuit.circuit import circuit as circuit_mod
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    saved = circuit_mod.default_toolkit
+    circuit_mod.default_toolkit = jaxtoolkit
+    try:
+        return fn()
+    finally:
+        circuit_mod.default_toolkit = saved
+
+
+def test_jax_tolerances_are_settable():
+    """Stage 9(b): `JAXTransient(cir, reltol=...)` raised KeyError.
+
+    There was no supported way to ask for a tighter run, and the kernel's
+    hard-coded reltol=1e-3/abstol=1e-6 disagreed with Transient's 1e-4/1e-12, so
+    the two backends solved to different accuracies while presenting as one
+    analysis.  The names and defaults here are Transient's deliberately.
+    """
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.transient import Transient
+
+    tran = _with_jax_toolkit(lambda: JAXTransient(_rc_circuit(), reltol=1e-6))
+    assert float(tran.par.reltol) == 1e-6
+
+    dflt = _with_jax_toolkit(lambda: JAXTransient(_rc_circuit()))
+    cpu = {p.name: p.default for p in Transient.parameters}
+    for name in ('reltol', 'iabstol', 'vabstol', 'lte_vabstol', 'lte_iabstol'):
+        assert float(getattr(dflt.par, name)) == float(cpu[name]), \
+            '%s defaults differ between backends: JAX %r vs CPU %r' \
+            % (name, getattr(dflt.par, name), cpu[name])
+
+
+@pytest.mark.parametrize('unsupported', ['nrsolver', 'scaler'])
+def test_jax_rejects_strategies_it_cannot_honour(unsupported):
+    """Stage 9(b): both were accepted and silently ignored.
+
+    The Newton loop is a traced while_loop with a fixed algorithm and no scaling
+    step, so honouring them is not a matter of wiring.  Silent acceptance is the
+    same shape of defect as the `lte_formula` knob removed in 9(f).
+    """
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    with pytest.raises(NotImplementedError, match=unsupported):
+        _with_jax_toolkit(
+            lambda: JAXTransient(_rc_circuit(), **{unsupported: object()}))
+
+
+def test_jax_lte_abstol_is_per_row_not_scalar():
+    """Stage 9(c): volts on node rows, amps on branch rows.
+
+    A single scalar applies one physical kind of tolerance to rows of another --
+    0.3a's residual-vs-solution defect, which 9(c) exists to not repeat.  Asserted
+    by setting the two to different values so a scalar cannot pass.
+    """
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    tran = _with_jax_toolkit(
+        lambda: JAXTransient(_rc_circuit(), lte_vabstol=1e-9, lte_iabstol=1e-15))
+    v = np.asarray(tran._lte_abstol(tran.cir.n))
+    n_nodes = len(tran.cir.nodes)
+
+    assert v.shape == (tran.cir.n,)
+    assert np.all(v[:n_nodes] == 1e-9), 'node rows must carry lte_vabstol'
+    assert np.all(v[n_nodes:] == 1e-15), 'branch rows must carry lte_iabstol'
+
+
+def test_jax_error_responds_to_reltol():
+    """Stage 9, gate 9-1(c): the CPU gate that 'is not currently expressible'.
+
+    It is expressible now that tolerances are settable.  Measured with a timestep
+    fine enough that `dt_max = timestep` is not the binding constraint -- with the
+    clamp binding, the whole-waveform error is pinned by the FIRST step and does
+    not move with reltol at all, which is a property of the clamp rather than of
+    the controller.  See 9(b)/(c) in the plan.
+    """
+    import warnings
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit import gnd
+    tau, tend = 1e-3, 5e-3
+
+    def run(reltol):
+        def go():
+            cir = _rc_circuit()
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                res = JAXTransient(cir, reltol=reltol).solve(
+                    gnd, tend=tend, timestep=1e-5, uic=True)
+            return res, cir.get_node_index('out')
+        res, idx = _with_jax_toolkit(go)
+        t = np.asarray(res.sweep_values, dtype=float).reshape(-1)
+        v = np.asarray(res.x[idx], dtype=float).reshape(-1)
+        return float(np.abs(v - (1.0 - np.exp(-t / tau))).max())
+
+    loose, tight = run(1e-3), run(1e-5)
+    assert tight < loose, \
+        'tightening reltol did not reduce the error: %.4e -> %.4e' % (loose, tight)
+    assert loose / tight > 1.5, \
+        'reltol barely moves the error: %.4e -> %.4e (%.2fx)' \
+        % (loose, tight, loose / tight)

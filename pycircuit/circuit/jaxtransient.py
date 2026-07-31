@@ -6,6 +6,7 @@ import warnings
 import jax.numpy as jnp
 
 from pycircuit.circuit.analysis import Analysis
+from pycircuit.utilities.param import Parameter
 from pycircuit.circuit.analysis import CircuitResult as Result
 
 ## Depth of the per-TLine delay-line ring buffer, in accepted steps.  It was the
@@ -39,7 +40,17 @@ class TransientState(NamedTuple):
     time_buffer: Any   
     
     tline_history: Any  # (N_tlines, buf_size, 5) -> t, v1, v2, i1, i2
-    tline_head: Any     # int32 scalar   
+    tline_head: Any     # int32 scalar
+
+    ## STAGE 9(c) -- the running maximum of |x| over ALL past steps and ALL
+    ## unknowns.  This is Spectre's `sigglobal`, which `Transient` already ships as
+    ## its default `relref`, and it is what makes an absolute LTE floor of 1e-12
+    ## safe: under `pointlocal` -- each unknown against itself, now -- a node
+    ## carrying no signal drives `ref -> 0`, the tolerance collapses to the floor,
+    ## and the controller chases numerical noise on a quiet node.  The CPU hid that
+    ## for a while by raising the floor a millionfold; `sigglobal` is the fix, and
+    ## this field is what carries it through a traced loop.
+    sig_max: Any = 0.0
 
 # ---------------------------------------------------------------------------
 # Phase 1: Pure Functional Integrators
@@ -239,7 +250,7 @@ def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tl
 # ---------------------------------------------------------------------------
 
 def ywr_error_ratio(i_curr, x_curr, x_last, J, state: TransientState, irefnode,
-                    method='trap', trtol=7.0, lte_rel=1e-3, lte_abs=1e-6):
+                    method='trap', trtol=7.0, lte_rel=1e-4, lte_abstol=1e-12):
     """Yao-Wang-Roychowdhury DAE LTE, returned as a normalized error ratio.
 
     Mirrors the CPU transient's estimator: forms the residual as a
@@ -274,7 +285,17 @@ def ywr_error_ratio(i_curr, x_curr, x_last, J, state: TransientState, irefnode,
     lte_r = jnp.linalg.solve(J_r, Eg_r)
     lte = jnp.insert(lte_r, irefnode, 0.0)
 
-    etol = trtol * (lte_rel * jnp.maximum(jnp.abs(x_curr), jnp.abs(x_last)) + lte_abs)
+    ## `sigglobal`: the reference is the largest signal ANY unknown has reached so
+    ## far, not this unknown right now.  `state.sig_max` carries it; the
+    ## `maximum(..., |x_curr|)` keeps the very first step -- where sig_max is still
+    ## the seed -- from measuring against zero.
+    ref = jnp.maximum(state.sig_max, jnp.max(jnp.abs(x_curr)))
+    ## `lte_abstol` is a per-row VECTOR (volts on node rows, amps on branch rows),
+    ## built by `JAXTransient._lte_abstol`.  A scalar here applies one physical
+    ## kind of tolerance to rows of another -- 0.3a's residual-vs-solution defect,
+    ## which 9(c) exists to avoid repeating.  A scalar still broadcasts, so a
+    ## direct caller that passes one gets the old behaviour rather than an error.
+    etol = trtol * (lte_rel * ref + lte_abstol)
     return jnp.max(jnp.abs(lte) / etol), order_p1
 
 
@@ -339,7 +360,7 @@ def calculate_next_dt(dt, error_ratio, dt_min, dt_max, t_breaks_array, current_t
     dt_new = jnp.maximum(dt_new, dt_min)
     return dt_new
 
-def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-3, abstol=1e-6, maxiter=50):
+def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12):
 
     def time_cond(state: TransientState):
         under_time = state.t < tend
@@ -368,7 +389,8 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
         J = circuit.G(x_curr, params_tree=params_tree) + Geq
         error_ratio, order_p1 = ywr_error_ratio(
             i_curr, x_curr, state.x_history[0], J, state, irefnode,
-            method=eval_method)
+            method=eval_method, trtol=trtol, lte_rel=lte_reltol,
+            lte_abstol=lte_abstol)
 
         ## Accept when the LTE is within tolerance.  Always accept the first step
         ## (no history for the estimate) and when dt has reached the floor -- the
@@ -409,7 +431,11 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 x_history=x_hist_new, q_history=q_hist_new,
                 iq_history=iq_hist_new, h_history=h_hist_new,
                 results_buffer=res_buf, time_buffer=time_buf,
-                tline_history=tline_history_new, tline_head=tline_head_new)
+                tline_history=tline_history_new, tline_head=tline_head_new,
+                ## Updated only on ACCEPT: a rejected step's x is not a signal the
+                ## circuit ever had, and letting it raise the reference would loosen
+                ## every later tolerance on the strength of a discarded iterate.
+                sig_max=jnp.maximum(state.sig_max, jnp.max(jnp.abs(x_curr))))
 
         def do_reject(_):
             ## LTE above tolerance: shrink the step (bounded below by dt_min) and
@@ -432,12 +458,83 @@ class JAXTransient(Analysis):
     Implements adaptive LTE and Predictor-Corrector implicitly in the JAX kernel.
     """
 
+    ## STAGE 9(b)/(c) -- TOLERANCES ARE SETTABLE, AND THEY ARE THE CPU'S.
+    ##
+    ## This class declared no tolerances at all, so `JAXTransient(cir, reltol=1e-6)`
+    ## raised `KeyError: 'parameter reltol not in parameter dictionary'` and there
+    ## was no supported way to ask for a tighter run.  The values were hard-coded
+    ## at the kernel's own defaults (`reltol=1e-3, abstol=1e-6` for Newton;
+    ## `trtol=7.0, lte_rel=1e-3, lte_abs=1e-6` for the LTE, never threaded from
+    ## the caller at all).  Two of those disagreed with `Transient`'s shipped
+    ## defaults, so the two backends were solving to different accuracies while
+    ## presenting as the same analysis.
+    ##
+    ## THE NAMES AND FLAVOURS ARE `Transient`'s DELIBERATELY.  0.3a's residual-vs-
+    ## solution defect on the CPU came from applying one scalar absolute tolerance
+    ## to rows of different physical kinds; the plan's 9(c) warns in as many words
+    ## that threading a scalar here would re-create it.  So the absolute
+    ## tolerances are VECTORS built the same way `Transient` builds them --
+    ## `lte_vabstol` on node rows, `lte_iabstol` on branch rows, because the LTE
+    ## lives in the SOLUTION domain where nodes carry volts and branches carry
+    ## amps.  `relref` is not offered yet: the CPU's `sigglobal` needs a reduction
+    ## over the whole vector inside the traced loop, and that is 9(c)'s remaining
+    ## work rather than something to fake with a scalar.
+    parameters = Analysis.parameters + [
+        Parameter(name='reltol', desc='Relative tolerance', unit='',
+                  default=1e-4),
+        Parameter(name='iabstol',
+                  desc='Absolute current error tolerance', unit='A',
+                  default=1e-12),
+        Parameter(name='vabstol',
+                  desc='Absolute voltage error tolerance for the Newton solve',
+                  unit='V', default=1e-12),
+        Parameter(name='lte_vabstol',
+                  desc='Absolute voltage tolerance for the local truncation error',
+                  unit='V', default=1e-12),
+        Parameter(name='lte_iabstol',
+                  desc='Absolute current tolerance for the local truncation error',
+                  unit='A', default=1e-12),
+        Parameter(name='TRTOL',
+                  desc='Ratio used to compute LTE tolerances from the Newton '
+                       'tolerance (Spectre calls this lteratio)',
+                  unit='', default=7.0),
+        Parameter(name='maxiter', desc='Maximum number of iterations', unit='',
+                  default=100),
+    ]
+
     def __init__(self, cir, **kwargs):
         super().__init__(cir, **kwargs)
         self.toolkit = getattr(self.cir, 'toolkit', None)
         if not (self.toolkit and self.toolkit.supports('autodiff')):
             raise ValueError("JAXTransient requires the circuit to use _jaxtoolkit.py.")
-        
+
+        ## `nrsolver` and `scaler` are inherited from `Analysis` and this backend
+        ## honours NEITHER -- the Newton loop is a `jax.lax.while_loop` with its own
+        ## fixed algorithm, and there is no scaling step.  They used to be accepted
+        ## in silence, which is the "thin advertised feature" 0.1c warns about and
+        ## the same shape of defect as the `lte_formula` knob removed in 9(f).
+        ## Rejecting them loudly is the honest option until the loop can dispatch.
+        for unsupported in ('nrsolver', 'scaler'):
+            if kwargs.get(unsupported) is not None:
+                raise NotImplementedError(
+                    "JAXTransient does not support %r: its Newton loop is a "
+                    "traced jax.lax.while_loop with a fixed algorithm and no "
+                    "scaling step. It was previously accepted and ignored. Use "
+                    "Transient for a circuit that needs %r."
+                    % (unsupported, unsupported))
+
+    def _lte_abstol(self, n):
+        """Per-row absolute LTE tolerance, in the SOLUTION domain.
+
+        Volts on node rows, amps on branch rows -- the same split
+        `Transient._solve` makes.  A single scalar here is the residual-vs-solution
+        flavour bug 0.3a fixed on the CPU, and 9(c) exists to not repeat it.
+        """
+        import jax.numpy as jnp
+        n_nodes = len(self.cir.nodes)
+        return jnp.concatenate((
+            self.par.lte_vabstol * jnp.ones(n_nodes),
+            self.par.lte_iabstol * jnp.ones(n - n_nodes)))
 
     def solve_batched(self, irefnode, override_params_tree, tend, timestep=1e-12, CHUNK_SIZE=5000, dt_min=1e-15, dt_max=None, uic=False):
         import jax
@@ -511,7 +608,10 @@ class JAXTransient(Analysis):
         tline_head = jnp.zeros(batch_size, dtype=jnp.int32)
         
         def run_chunk(s, p_tree):
-            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear', params_tree=p_tree)
+            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear', params_tree=p_tree, reltol=self.par.reltol, abstol=self.par.vabstol,
+                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL,
+                                   lte_reltol=self.par.reltol,
+                                   lte_abstol=self._lte_abstol(n))
             
         # JIT the vmapped run_chunk
         batched_run_chunk = jax.jit(jax.vmap(run_chunk))
@@ -650,7 +750,10 @@ class JAXTransient(Analysis):
         # but tend is a runtime parameter.
         @jax.jit
         def run_chunk(s):
-            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear')
+            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear', reltol=self.par.reltol, abstol=self.par.vabstol,
+                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL,
+                                   lte_reltol=self.par.reltol,
+                                   lte_abstol=self._lte_abstol(n))
         
         results_list = [np.array([x0])]
         times_list = [np.array([0.0])]
