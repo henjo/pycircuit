@@ -1513,7 +1513,23 @@ OUTCOME:
 `((h1+h2)/2) q''`, not `h1 q''`. Rescale by `2*h_curr/(h_curr+h_last)`.
 **Gate 4c:** est/true flat across step ratio 0.25..4. Declared success: within 5% of 1
 across the range. Currently 0.62..2.47.
-OUTCOME:
+OUTCOME: **PASSED, and the plan's diagnosis was exactly right.** Measured by
+`benchmarks/transient_stage4.py --ratios`, which drives the estimator directly with an
+analytic charge so that `true = iq - q'(t_n)` is exactly computable:
+
+| ratio `h_curr/h_last` | 0.25 | 0.5 | 1.0 | 2.0 | 4.0 |
+|---|---|---|---|---|---|
+| before | 2.5246 | 1.5089 | 1.0040 | 0.7522 | 0.6265 |
+| **after** | **1.0098** | **1.0059** | **1.0040** | **1.0030** | **1.0025** |
+
+The recorded range was 0.62..2.47 and it measures **0.6265..2.5246** — the plan's number
+reproduces. Spread falls from 4.03x to **1.01x**. The rescaling by `2*h1/(h1+h2)` is
+exactly the right correction, as proposed.
+
+**The bias runs the wrong way twice**, which is worth stating because it explains the
+symptom: on a *shrinking* step the error was overstated, so the controller shrank further
+than it needed to; on a *growing* step it was understated, so the controller grew past what
+the tolerance allowed. Both push toward the ratio extremes rather than damping them.
 
 **4d. `Trapezoidal(lte_formula='ywr')` is order-inconsistent on non-uniform grids.**
 `integrator.py:123` — the plain second difference leaves an O(h) term where the truncation
@@ -1538,7 +1554,35 @@ before deleting the branch** — the plan asserts the generalisation is algebrai
 identical to `classic`, and eq (22) is how to confirm or refute that claim instead of
 assuming it.
 **Gate 4d:** est/true within 5% of the `classic` column across ratio 0.25..4.
-OUTCOME:
+OUTCOME: **BLOCKED ON 4g — and this reorders the stage.** The gate divides by the true
+truncation error of the trapezoidal rule. On trapezoidal that quantity is **dominated by
+the alternating mode 4g exists to remove**, so the ratio measures 4g and not 4d.
+
+Demonstrated directly: holding the step size and ratio fixed at 1.0 and varying only the
+number of steps taken beforehand, the *true* error at the final step is
+
+| prefix length | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|
+| euler | 1.4333e+04 | 1.4333e+04 | 1.4333e+04 | 1.4333e+04 | 1.4333e+04 |
+| **trap-classic** | **-2.8012e+01** | **-5.7469e-01** | **-2.7817e+01** | **-7.7062e-01** | **-2.7620e+01** |
+| gear2-classic | -5.6695e+01 | -5.6695e+01 | -5.6695e+01 | -5.6695e+01 | -5.6695e+01 |
+
+Euler and Gear2 are identical to five digits regardless of history; **trapezoidal swings
+48x on the parity of the step count alone.** That is the `(-1)^n` mode, and it is ~48x
+larger than the smooth truncation error it is supposed to be measured against. Any
+est/true figure for trapezoidal — including the plan's recorded "112x too large at ratio
+0.25, -436x at 4.0" — is therefore a measurement of the contamination.
+
+**Consequence: 4g must be done before 4d**, which the plan does not say; it lists 4d first
+and treats the two as independent. 4d's gate should be re-run only once 4g-1 and 4g-2 pass.
+
+**Also observed, and NOT in the plan:** `gear2-classic` has its own step-ratio dependence —
+2.7751 / 1.5504 / 0.9983 / 0.7766 / 0.6988 across ratios 0.25..4, a 3.97x spread, exact at
+ratio 1 and biased off it, i.e. the same *shape* as the Euler defect 4c just fixed. It is
+free of the parity contamination (see the table above), so unlike trapezoidal it **can** be
+measured now. Recorded as a new item rather than folded silently into 4d; the `2*h1/(h1+h2)`
+rescaling does not fix it (it leaves 1.110 / 1.118 at the extremes), so it needs its own
+derivation.
 
 **4e. `Gear2.check_order_drop` guards the wrong direction.** `integrator.py:158` fires on
 *shrink*, which is unconditionally zero-stable; there is no guard on *growth*, which is
