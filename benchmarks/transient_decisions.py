@@ -99,6 +99,12 @@ def relref():
     print()
     print('Look at the ERROR column for trap-*: under sigglobal it RISES when reltol')
     print('tightens.  That is why the default stayed pointlocal until 4g(b).')
+    print()
+    print('RESOLVED 2026-07-31: re-run after 4g(b) and 4i, every configuration is')
+    print('monotone in BOTH columns and `sigglobal` is now the default.  This script')
+    print('is kept as the record of why it was reverted once -- and note that the')
+    print('step counts here are at equal reltol, which is NOT equal accuracy;')
+    print('the matched-accuracy gain is 1.31-2.06x, not the 1.7-2.5x once claimed.')
 
 
 def vabstol():

@@ -465,8 +465,25 @@ def test_lte_formula_ywr():
     for lte in ('classic', 'ywr'):
         n4, e4, rej4 = run(Gear2Integrator, lte, reltol=1e-4)
         n6, _e6, _rej6 = run(Gear2Integrator, lte, reltol=1e-6)
-        assert rej4 >= 1, \
-            "gear2-%s rejected no step at all on a 10 us RC charge" % lte
+        ## REJECTIONS ANYWHERE IN THE SWEEP, not at one fixed tolerance.
+        ##
+        ## This asserted `rej4 >= 1` -- rejections at reltol 1e-4 specifically --
+        ## and that is a proxy for "the controller is alive" which depends on which
+        ## `relref` mode is in force.  Under `sigglobal` (the default since decision
+        ## D3) the tolerance is referenced to the largest signal rather than to the
+        ## local one, so it does not collapse early in the charge where the node
+        ## voltage is still small, and this circuit needs no rejection at all until
+        ## reltol 1e-5.  Measured, gear2-classic on this exact circuit:
+        ##
+        ##   pointlocal  reltol 1e-3..1e-7  rejections 3 / 3 / 2 / 2 / 2
+        ##   sigglobal   reltol 1e-3..1e-7  rejections 0 / 0 / 1 / 3 / 2
+        ##
+        ## The controller is demonstrably not blind in either mode -- step count
+        ## 21/29/50/97/195 and error 3.08e-2 down to 1.53e-4 under `sigglobal`, both
+        ## monotone.  So the property is kept and the proxy is widened to the sweep,
+        ## which a blind controller still cannot satisfy.
+        assert rej4 + _rej6 >= 1, \
+            "gear2-%s rejected no step at either tolerance on a 10 us RC charge" % lte
         assert n6 > 1.2 * n4, \
             "gear2-%s barely responds to reltol: %d -> %d steps" % (lte, n4, n6)
         assert e4 < 2e-2, \

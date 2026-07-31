@@ -239,7 +239,20 @@ def test_gate_1_3_defaultepar_carries_bypasstol():
 # ---------------------------------------------------------------------------
 
 def test_gate_1_5_newton_and_lte_tolerances_are_separate():
-    """`vabstol` is Newton's; `lte_vabstol` is the step controller's."""
+    """`vabstol` is Newton's; `lte_vabstol` is the step controller's.
+
+    **The two defaults are equal again** since gate D3-e returned `lte_vabstol` to
+    1e-12, so the values no longer demonstrate anything about separateness -- they
+    coincided before the split too, which is how one knob ended up serving both
+    roles. What proves they are separate is behavioural and lives in the two tests
+    below: `vabstol` must not move the step count, and `lte_vabstol` must (under
+    `pointlocal`, where the absolute floor is load-bearing). Both are verified by
+    injecting the defect, not by assertion alone.
+
+    This test pins the *values*, which is still worth doing: a default that drifts
+    silently is how the 10^6 asymmetry between the operating point and the steps
+    after it arose in the first place.
+    """
     tran = Transient(_rc(), toolkit=numeric)
 
     ## Newton's, and it agrees with DC's rather than being 10^6 looser.
@@ -249,9 +262,11 @@ def test_gate_1_5_newton_and_lte_tolerances_are_separate():
         'the operating point and the steps after it must be solved to the same ' \
         'tolerance; got transient %g vs DC %g' % (tran.par.vabstol, dc.par.vabstol)
 
-    ## The controller's, which is the one the step-count result belongs to.
-    assert tran.par.lte_vabstol == 1e-6
+    ## The controller's.  1e-12 since gate D3-e -- measured bit-identical to 1e-6
+    ## under the shipped `sigglobal`, so the principled value costs nothing.
+    assert tran.par.lte_vabstol == 1e-12
     assert tran.par.lte_iabstol == 1e-12
+    assert tran.par.relref == 'sigglobal'  
 
 
 def _pulsed_rc():
@@ -277,15 +292,56 @@ def _pulsed_run(**kwargs):
             float(np.asarray(res.v('n2'))[-1]))
 
 
-def test_gate_1_5_lte_vabstol_moves_the_step_count():
-    """The controller's tolerance must control the controller."""
-    loose, _ = _pulsed_run(lte_vabstol=1e-3)
-    base, _ = _pulsed_run()
-    tight, _ = _pulsed_run(lte_vabstol=1e-9)
+def test_gate_1_5_lte_vabstol_moves_the_step_count_under_pointlocal():
+    """The controller's tolerance must control the controller.
 
-    assert loose < base < tight, \
+    **Pinned to `relref='pointlocal'` since decision D3.** The absolute floor is
+    load-bearing only in that mode: `pointlocal` references the relative tolerance
+    to each unknown's own present value, which goes to zero on a quiet node, so
+    `abstol` is what stops the tolerance degenerating there. Under the shipped
+    default `sigglobal` the reference is the largest signal in the circuit and
+    cannot degenerate, so the floor is never reached on a healthy circuit and
+    moving it changes nothing -- measured at gate D3-b as 403 steps at
+    `lte_vabstol` 1e-3, 1e-6 and 1e-9 alike.
+
+    That is the intended behaviour, not a regression, so this test keeps the
+    `pointlocal` property (that mode still exists and is still selectable) and
+    `test_gate_1_5_lte_vabstol_is_not_load_bearing_under_sigglobal` asserts the
+    default's. Deleting this one would have dropped the only check that the
+    controller's absolute tolerance reaches the controller at all.
+    """
+    ## Explicit values, not "the default" as the middle point: gate D3-e moved the
+    ## default to 1e-12, which is at the tight END of any sweep rather than in the
+    ## middle of one.  A test that assumes where the default sits breaks whenever
+    ## the default moves, and says nothing useful when it does.
+    loose, _ = _pulsed_run(lte_vabstol=1e-3, relref='pointlocal')
+    mid, _ = _pulsed_run(lte_vabstol=1e-6, relref='pointlocal')
+    tight, _ = _pulsed_run(lte_vabstol=1e-9, relref='pointlocal')
+
+    assert loose < mid < tight, \
         'step count must fall monotonically as the LTE tolerance loosens; ' \
-        'got %d (1e-3) / %d (default 1e-6) / %d (1e-9)' % (loose, base, tight)
+        'got %d (1e-3) / %d (1e-6) / %d (1e-9)' % (loose, mid, tight)
+
+
+def test_gate_1_5_lte_vabstol_is_not_load_bearing_under_sigglobal():
+    """And under the SHIPPED DEFAULT, the absolute floor stops mattering.
+
+    This is the property that makes `sigglobal` worth having: an absolute tolerance
+    exists to stop the relative one degenerating, and under `sigglobal` it cannot
+    degenerate, so the floor is never reached. Asserted rather than assumed because
+    it is what licenses `lte_vabstol` to hold any defensible value -- and because if
+    it ever stops being true, the reference has started collapsing somewhere and
+    that is worth knowing.
+    """
+    base, v_base = _pulsed_run()
+    for value in (1e-3, 1e-9, 1e-12):
+        steps, v = _pulsed_run(lte_vabstol=value)
+        assert steps == base, \
+            'lte_vabstol=%g moved the step count %d -> %d under sigglobal; the ' \
+            'relative reference must be collapsing somewhere' % (value, base, steps)
+        assert abs(v - v_base) < 1e-12 * max(abs(v_base), 1.0), \
+            'lte_vabstol=%g moved the waveform under sigglobal (%g -> %g)' \
+            % (value, v_base, v)
 
 
 def test_gate_1_5_vabstol_does_not_move_the_step_count():
@@ -294,10 +350,22 @@ def test_gate_1_5_vabstol_does_not_move_the_step_count():
     This is the property the shared parameter made impossible: there was no way to
     change one role without silently changing the other. A failure here means
     `vabstol` is feeding the step controller again.
+
+    **RUN UNDER `pointlocal`, DELIBERATELY, AND THE REASON MATTERS.** This test was
+    blind under the shipped default. Verified by injection: point the controller's
+    `abstol` at `self.par.vabstol` -- i.e. reintroduce exactly the defect gate 1-5
+    exists to catch -- and under `sigglobal` this test still **passes**, because the
+    same property that makes the absolute floor non-load-bearing under `sigglobal`
+    (the relative reference cannot degenerate, so `reltol*ref` dominates) also stops
+    the injected `vabstol` from moving anything.
+
+    A guard that cannot see the defect it guards is worse than no guard, because it
+    reads as coverage. `pointlocal` is where an absolute floor is load-bearing, so
+    that is where this has to run. Under injection it then fails as it should.
     """
-    base_steps, base_v = _pulsed_run()
+    base_steps, base_v = _pulsed_run(relref='pointlocal')
     for value in (1e-9, 1e-14):
-        steps, v = _pulsed_run(vabstol=value)
+        steps, v = _pulsed_run(vabstol=value, relref='pointlocal')
         assert steps == base_steps, \
             'vabstol=%g moved the step count %d -> %d; it is still reaching the ' \
             'step controller' % (value, base_steps, steps)

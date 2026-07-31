@@ -46,13 +46,21 @@ class StepController(ABC):
     ## signal against the largest signal anywhere in the circuit, over all past
     ## time, so a quiet node inherits a sane reference instead of degenerating.
     ##
-    ##   pointlocal  each unknown against itself, now.  (Previous behaviour.)
+    ##   pointlocal  each unknown against itself, now.  (pycircuit's historical
+    ##               behaviour, and still selectable.)
     ##   alllocal    each unknown against its OWN largest value so far.
     ##   sigglobal   each unknown against the largest value of ANY unknown so far.
     ##
-    ## Default stays `pointlocal` here so this change is inert until asked for;
-    ## whether to adopt Spectre's default belongs with stage 4's `lteratio` work.
-    relref = 'pointlocal'
+    ## THE WORKAROUND ABOVE IS NOW GONE.  With `sigglobal` shipped, `lte_vabstol` is
+    ## back to 1e-12: measured at gate D3-e, 1e-6 / 1e-9 / 1e-12 give bit-identical
+    ## runs under `sigglobal` (403 steps on a pulsed RC, 601 with a quiet node, at
+    ## every value), where under `pointlocal` the same change costs 8.5-9.2%.  That
+    ## difference IS the symptom, and it is what the floor was raised to hide.
+    ##
+    ## DEFAULT IS `sigglobal` SINCE DECISION D3's SECOND ATTEMPT, matching Spectre.
+    ## It was adopted, sent back by its own gate, and re-run once the reason for the
+    ## failure was removed -- see the D3 gates in `doc/transient_work_plan.md`.
+    relref = 'sigglobal'
 
     def set_relref(self, relref):
         if relref not in RELREF_MODES:

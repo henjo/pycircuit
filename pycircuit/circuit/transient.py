@@ -144,19 +144,33 @@ class Transient(Analysis):
          ## THE STEP CONTROLLER's tolerances, which are a different quantity: they
          ## apply to `lte = J^-1 Eg`, not to Newton's residual or its x-update.
          ##
-         ## 1 uV is Spectre's `vabstol` default and SPICE's VNTOL.  The controller's
-         ## value was 1e-12 V -- a million times tighter than either, and tighter
-         ## than double precision can resolve against a 1 V signal.  On the
-         ## 127-unknown leapfrog that alone collapsed the timestep to 5 ns against a
-         ## 39 ns cap, because the controller accepts on max(|lte|/etol) over ALL
-         ## unknowns and most of that circuit's nodes carry no signal, so etol
-         ## degenerated to TRTOL*abstol on numerical noise.  Relaxing it to Spectre's
-         ## value cut the step count 5.4x with the waveform unchanged to 0.5%.  That
-         ## result belongs to THIS parameter, not to `vabstol`.
+         ## BACK TO 1e-12, matching `vabstol`, at gate D3-e.  The history is worth
+         ## keeping because it is a clean example of a workaround outliving its
+         ## defect.  This was 1e-12; it was raised to 1e-6 (Spectre's `vabstol`,
+         ## SPICE's VNTOL) because on the 127-unknown leapfrog the timestep
+         ## collapsed to 5 ns against a 39 ns cap -- the controller accepts on
+         ## max(|lte|/etol) over ALL unknowns, most of that circuit's nodes carry no
+         ## signal, and under `pointlocal` the relative reference on a quiet node
+         ## tends to zero, so `etol` degenerated to TRTOL*abstol on numerical noise.
+         ## Raising the floor cut the step count 5.4x.
+         ##
+         ## **That was treating the symptom.**  The cause was `pointlocal`, and
+         ## `sigglobal` -- the default since decision D3 -- references every unknown
+         ## to the largest signal in the circuit, so the reference cannot degenerate
+         ## and the floor is never reached.  Measured at gate D3-e, `lte_vabstol` at
+         ## 1e-6, 1e-9 and 1e-12 give **bit-identical** results under `sigglobal`:
+         ## 403 steps on a pulsed RC and 601 on a circuit with a quiet node, at every
+         ## one of the three values.  Under `pointlocal` the same change costs
+         ## +8.5% and +9.2% -- which is what "load-bearing" looks like, and why the
+         ## workaround was needed then and is not now.
+         ##
+         ## So the principled value returns at measured zero cost.  **If you select
+         ## `relref='pointlocal'`, this floor becomes load-bearing again** and 1e-6
+         ## may be the better choice for your circuit.
          Parameter(name='lte_vabstol',
                    desc='Absolute voltage tolerance for the local truncation error',
                    unit='V',
-                   default=1e-6),
+                   default=1e-12),
          Parameter(name='lte_iabstol',
                    desc='Absolute current tolerance for the local truncation error',
                    unit='A',
@@ -173,28 +187,35 @@ class Transient(Analysis):
          ## 3.53x the steps of the shipped configuration where `sigglobal` needs
          ## 1.49x, i.e. it removes 81% of the excess.
          ##
-         ## DECISION D3 ADOPTED `sigglobal` AND GATE D3-a SENT IT BACK.  Under
-         ## `sigglobal` the tolerance is referenced to the largest signal, so steps
-         ## grow larger -- and on TRAPEZOIDAL that amplifies the `(-1)^n` mode 4g(b)
-         ## has not yet removed, to the point where accuracy stops responding
-         ## monotonically to `reltol`:
+         ## DECISION D3, SECOND ATTEMPT -- `sigglobal` IS NOW THE DEFAULT, as in
+         ## Spectre.  It was adopted, sent back by gate D3-a, and re-run.
          ##
-         ##   trap-classic  err 4.89e-4  2.23e-4  3.14e-4  7.14e-5   <- rises
-         ##   trap-ywr      err 5.94e-4  3.82e-5  2.65e-4  3.18e-5   <- rises
+         ## What sent it back: referencing the tolerance to the largest signal lets
+         ## steps grow, and on an estimator carrying the trapezoidal `(-1)^n` mode
+         ## that was enough to break the controller's response to `reltol` --
+         ## accuracy stopped falling monotonically as the tolerance tightened.
+         ## 4g(b) and 4i removed that contamination, and on re-run **all six
+         ## integrator/formula combinations are monotone in both step count and
+         ## error**.
          ##
-         ## Euler and both Gear2 variants are monotone under `sigglobal` and need
-         ## 1.7-2.5x FEWER steps, so the mode is right and only the timing is wrong.
-         ## Default stays `pointlocal` until 4g(b) makes the trapezoidal estimator
-         ## mode-free; flipping it is then a one-line change with the gate already
-         ## written.  See the D3 gates in `doc/transient_work_plan.md`.
+         ## What it buys, measured at MATCHED ACCURACY rather than at matched
+         ## `reltol` -- the two are not the same thing, and comparing step counts at
+         ## equal `reltol` overstates the win because `sigglobal`'s error at a given
+         ## `reltol` is ~1.5x larger:
+         ##
+         ##   euler 1.48-2.06x fewer steps, gear2 1.44-1.60x, trapezoidal 1.31-1.47x
+         ##
+         ## The figure previously recorded here was "1.7-2.5x fewer steps", taken at
+         ## equal `reltol`.  That was a relabelling of the tolerance as much as a
+         ## speedup; the honest worst case is 1.31x.
          Parameter(name='relref',
-                   desc="Reference for the relative LTE tolerance: 'pointlocal' "
-                        "(each unknown against itself, the default for now), "
-                        "'alllocal' (against its own past maximum), or 'sigglobal' "
-                        "(against the largest signal anywhere -- Spectre's default, "
-                        "and pycircuit's once 4g(b) lands)",
+                   desc="Reference for the relative LTE tolerance: 'sigglobal' "
+                        "(against the largest signal anywhere -- the default, as in "
+                        "Spectre), 'pointlocal' (each unknown against itself, "
+                        "pycircuit's historical behaviour), or 'alllocal' (against "
+                        "its own past maximum)",
                    unit='',
-                   default='pointlocal'),
+                   default='sigglobal'),
          Parameter(name='maxiter', 
                    desc='Maximum number of iterations', unit='', 
                    default=100),

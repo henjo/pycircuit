@@ -8,7 +8,7 @@
 > `git log --oneline 1122c31..HEAD -- pycircuit/`. Branch `cna-jax-vectorization`,
 > **pushed to `origin`** (`git@github.com:henjo/pycircuit.git`).
 >
-> **Suite: 778 passed, 6 skipped, 0 failed, 722.88 s** (`-m "" --timeout=400`). Nominal
+> **Suite: 779 passed, 6 skipped, 0 failed, 670.77 s** (`-m "" --timeout=400`). Nominal
 > ~8-13 min, but one run of the identical tree took **31m41s** purely from machine load —
 > see trap 2. **Doc build: succeeded, 2 warnings, 0 ERROR.** Working tree clean.
 >
@@ -17,17 +17,19 @@
 >
 > ### The next action, concretely
 >
-> **`relref='sigglobal'` — decided, reverted by its own gate, and the blocker is now
-> gone.** Gate D3-a failed because the trapezoidal estimator was mode-contaminated and
-> accuracy stopped falling monotonically as `reltol` tightened. Both second-order
-> estimators are now flat to within 1.3% across the whole reachable step-ratio range
-> (4g(b), 4i), so the premise of that failure no longer holds. This is a one-line default
-> change with its gate already written — re-run D3-a and D3-b as they stand.
+> **4h — `fixed_timestep=True` does not fix the timestep.** The cheapest remaining defect
+> and the most visibly wrong: `transient.py` restores `dt` only when *not* fixed-step, so
+> a breakpoint truncation is permanent and the step never recovers. Measured: a
+> `VPulse`-driven run that should take ~20 steps takes **19 002**, with `dt` collapsing to
+> 3.276e-22 s. Gate 4h is one line — `tend/timestep` +- 1 steps — and already declared.
 >
 > ### After that, in order
 >
-> 1. **`lte_vabstol` back to 1e-12**, and rewrite gate 1-5, which asserts a property only
->    true under `pointlocal`. Follows directly from `sigglobal` landing.
+> 1. **4a and 4a-bis.** `PIController` uses Gustafsson's numerators undivided (they must
+>    be `0.3/k` and `0.4/k`); measured spectral radius 1.12 at k=2 and 1.78 at k=3, so the
+>    recursion is unstable and the clamp turns it into a permanent period-2 limit cycle.
+>    The gate already runs (`transient_stage4.py --pi`). 4a-bis adds the `F_redo` band both
+>    source papers have and pycircuit does not.
 > 2. **Decide what `lte_formula` is for.** After 4i it selects nothing for either
 >    second-order method except on the single fallback step of a run. That makes gate 4f
 >    ("record rejections and force-accepts for all four integrator/formula combinations,
@@ -35,8 +37,8 @@
 >    rather than about which default to pick — there are no longer four distinct
 >    combinations to compare. **Maintainer's call**, and 0.3b's deferred decision is
 >    subsumed by it.
-> 3. **4a, 4a-bis, 4h**, 0.3d's `chgtol` guard, and the rest of
->    `doc/src/circuit/lte_dae.rst`'s variable-step story.
+> 3. **0.3d's `chgtol` guard**, and the rest of `doc/src/circuit/lte_dae.rst`'s
+>    variable-step story.
 > 4. **The `iq` seed.** `transient.py` starts every run with `_iqlast = zeros` against a
 >    true `q'(t_0)` that is generally nonzero. Measured under 4g(b) as an O(h^3) effect,
 >    one order below the local truncation error, so it is not blocking — but it is wrong
@@ -64,7 +66,10 @@
 > **4i** (one `q'''` estimator for both second-order methods, taken from a third divided
 > difference of the charge: Gear2's step-ratio spread **119x -> 1.0041x**, trapezoidal's
 > 1.26x -> 1.0084x, and the shipped default gains 1.22x accuracy — but gate 4i-4's own
-> "clause that matters" failed and is recorded as a failure).
+> "clause that matters" failed and is recorded as a failure) · **D3** (`relref='sigglobal'`
+> is the default, on its second attempt; `lte_vabstol` back to 1e-12 at measured zero cost;
+> 1.31-2.06x fewer steps at matched accuracy — and the injection check for gate 1-5 found a
+> guard that `sigglobal` had silently blinded).
 > Every gate outcome is recorded in place below; the completion records are appended at the
 > end of this file.
 >
@@ -75,10 +80,8 @@
 >   flag to the rejection loop it is, fix the four ignored inputs) or **stage 12**
 >   (implement the paper). Stage 12's entry condition is a *measurement* — gate 4f's
 >   rejection counts — not a date.
-> * **`relref='sigglobal'` as default**: decided yes, reverted by its own gate. **The
->   blocker is gone as of 4g(b)** — gate D3-a failed because trapezoidal's estimator was
->   mode-contaminated and it no longer is, so this is now a one-line change with its gate
->   already written.
+> * ~~**`relref='sigglobal'` as default**~~ — **SHIPPED 2026-07-31** on its second attempt,
+>   with `lte_vabstol` returned to 1e-12 alongside it. See the D3 gates.
 >
 > ### Traps that have already cost time — check these before believing a result
 >
@@ -3418,3 +3421,164 @@ currently asserts a property that is only true under `pointlocal`. Both belong w
 On the leapfrog, partial figures before the run was cut short by machine contention:
 `pointlocal` 318 / 422 / 1206 steps at `lte_vabstol` 1e-6 / 1e-9 / 1e-12; `sigglobal` 318
 at 1e-6. The `sigglobal` 1e-12 figure was 482 when measured at gate 2+.3b.
+
+## D3, second attempt — 2026-07-31, after 4g(b) and 4i
+
+**Entry condition, checked before any change.** Gate D3-a failed on one property: under
+`sigglobal` the trapezoidal error stopped falling monotonically as `reltol` tightened. That
+was attributed to the `(-1)^n` mode in the trapezoidal estimator. Re-measured with
+`benchmarks/transient_decisions.py --relref` on the current estimators:
+
+| relref | integrator | steps (reltol 1e-3 .. 1e-6) | error |
+|---|---|---|---|
+| pointlocal | trap-classic | 54 / 56 / 86 / 152 | 1.03e-3 / 8.70e-4 / 2.05e-4 / 4.59e-5 |
+| pointlocal | gear2-classic | 53 / 69 / 112 / 204 | 4.02e-3 / 2.01e-3 / 4.44e-4 / 9.76e-5 |
+| **sigglobal** | **trap-classic** | 36 / 40 / 56 / 90 | 1.03e-3 / 1.01e-3 / 3.03e-4 / **7.02e-5** |
+| **sigglobal** | **trap-ywr** | 36 / 41 / 56 / 89 | 1.03e-3 / 9.94e-4 / 3.03e-4 / **7.03e-5** |
+| **sigglobal** | **gear2-classic** | 37 / 40 / 62 / 117 | 3.94e-3 / 2.91e-3 / 6.76e-4 / **1.51e-4** |
+| **sigglobal** | euler | 38 / 68 / 190 / 584 | 2.35e-2 / 8.12e-3 / 2.63e-3 / 8.39e-4 |
+
+**Every one of the six configurations is now monotone in both columns.** The blocker is
+gone, and it is gone for the stated reason — the two trapezoidal rows are the ones that
+used to rise (`2.23e-4 -> 3.14e-4` and `3.82e-5 -> 2.65e-4`) and now fall cleanly.
+
+### A claim in this plan that the re-run does NOT support, and a gate to settle it
+
+The recorded justification for `sigglobal` is "**1.7-2.5x fewer steps**". That comparison is
+taken at equal `reltol`, and the table above shows the two modes do not deliver equal
+accuracy at equal `reltol` — `sigglobal`'s error at 1e-6 is 1.5x larger for both trapezoidal
+and Gear2. **A step count taken at a looser effective tolerance is not a speedup**, it is a
+relabelling, and 4i has just produced one instance of exactly that mistake being avoided
+only because it was checked. So the claim is not carried forward untested.
+
+**Gate D3-c (NEW — the efficiency is real, not a relabelling).** Compare the steps each
+mode needs to reach the **same global error**, not the same `reltol`. Declared success:
+`sigglobal` needs at least **1.2x fewer steps at matched accuracy** for every integrator.
+**If it does not, `sigglobal` is a change in what `reltol` means and must be described that
+way in the parameter documentation**, and the "1.7-2.5x" figure is struck from this plan.
+OUTCOME: **PASSED — the efficiency is real — and the recorded 1.7-2.5x is struck as an
+overstatement.** Measured by sweeping `reltol` over nine values per mode and interpolating
+the steps each needs to reach the *same* global error, inside the error range both modes
+cover so neither is extrapolated:
+
+| integrator | matched-accuracy step ratio (pointlocal / sigglobal) | worst |
+|---|---|---|
+| euler | 1.89x, 1.95x, 2.06x, 2.06x, 1.48x | **1.48x** |
+| trap-classic | 1.47x, 1.42x, 1.38x, 1.31x, 1.35x | **1.31x** |
+| gear2-classic | 1.44x, 1.47x, 1.54x, 1.60x, 1.55x | **1.44x** |
+| gear2-ywr | 1.44x, 1.47x, 1.54x, 1.57x, 1.55x | **1.44x** |
+
+Worst case **1.31x** against the declared 1.2x, so the gate passes and `sigglobal` is a
+genuine efficiency gain rather than a relabelling of the tolerance. **But the honest figure
+is 1.31-2.06x, not the "1.7-2.5x" recorded under gate D3-a.** That number was taken at equal
+`reltol`, and the two modes do not deliver equal accuracy at equal `reltol` — `sigglobal`'s
+error is ~1.5x larger there. **This is the fifth magnitude in this plan to shrink on
+measurement**, and the first one this work produced itself; the comment in `transient.py`
+carries the corrected range.
+
+**Gate D3-a (re-run).** Full suite `-m ""`. Expect churn in step counts; every failure
+explained individually and either fixed or justified. Declared success: no failure that is
+not explained, and specifically **no recurrence of the non-monotone accuracy** that failed
+this gate the first time.
+OUTCOME: **PASSED. 779 passed, 6 skipped, 0 failed, 670.77 s** (`-m "" --timeout=400`),
+against 778 before — the one addition is the new `sigglobal` half of gate 1-5. The
+non-monotone accuracy is gone: all six integrator/formula combinations fall monotonically
+in both step count and error across reltol 1e-3..1e-6 (the table in the entry condition
+above). Runtime 722.88 -> 670.77 s, a 7% fall, which is consistent with `sigglobal` needing
+fewer steps but is **not** offered as a measurement of it — this box varies more than that
+between runs (trap 2).
+
+Doc build: **build succeeded, 2 warnings, 0 ERROR**, verified by content. The regenerated
+tables move as expected under the new default (the stiff RLC at reltol 1e-3 goes 199 -> 60
+steps for `gear2-ywr`) and **`ratios over bound` is still 0 on every row**, so 4b's
+zero-stability invariant survives the change.
+
+Three test failures during the work, each explained and each a stale assertion rather than
+a regression:
+
+1. **`test_gate_1_5_lte_vabstol_moves_the_step_count`** — predicted by gate D3-b. Rewritten;
+   see gate D3-d.
+2. **`test_lte_formula_ywr`** — asserted `rejections >= 1` at reltol 1e-4 as a proxy for
+   "the controller is alive". Under `sigglobal` the tolerance does not collapse early in an
+   RC charge where the node voltage is still small, so this circuit needs no rejection until
+   1e-5. Measured, `gear2-classic` on that exact circuit:
+
+   | relref | reltol 1e-3 .. 1e-7 | rejections | steps | error |
+   |---|---|---|---|---|
+   | pointlocal | | 3 / 3 / 2 / 2 / 2 | 31 / 52 / 97 / 192 / 387 | 9.75e-3 .. 1.97e-5 |
+   | **sigglobal** | | **0 / 0 / 1 / 3 / 2** | 21 / 29 / 50 / 97 / 195 | 3.08e-2 .. 1.53e-4 |
+
+   **The controller is demonstrably not blind** — step count and error are both monotone
+   over five decades. The proxy was widened to "rejects somewhere in the sweep", which a
+   blind controller still cannot satisfy and which does not depend on which mode ships.
+3. **`test_gate_1_5_newton_and_lte_tolerances_are_separate`** — pinned `lte_vabstol == 1e-6`,
+   which gate D3-e moved. Updated, and its docstring now says what actually proves
+   separateness (see D3-d).
+
+**Gate D3-d (NEW — gate 1-5 is rewritten, not deleted).** `sigglobal` makes the absolute
+LTE floor non-load-bearing on a circuit with a healthy signal, which is the intended
+behaviour and was measured under gate D3-b (403 steps at `lte_vabstol` 1e-3, 1e-6 and 1e-9
+alike). `test_gate_1_5_lte_vabstol_moves_the_step_count` asserts the opposite and will fail.
+
+**Deleting it is not acceptable**: gate 1-5 exists because `vabstol` used to serve two roles
+at once, and the property that matters — *Newton's tolerance must not be a step-control
+knob* — is still true and still worth pinning. Declared success: the rewritten test (i)
+still fails if `vabstol` reaches the step controller, verified by injection rather than by
+assertion alone; (ii) asserts a property that is true under the **shipped default**; and
+(iii) the `pointlocal` behaviour it used to assert is kept as its own test, since that mode
+still exists and is still selectable.
+OUTCOME: **PASSED on all three clauses — and clause (i) caught something that would
+otherwise have shipped.**
+
+**The finding.** Clause (i) was written as a formality. Run properly — point the
+controller's `abstol` at `self.par.vabstol`, i.e. reintroduce exactly the defect gate 1-5
+exists to catch, and run the tests — and under `sigglobal`
+**`test_gate_1_5_vabstol_does_not_move_the_step_count` still PASSES.** The guard is blind.
+
+The mechanism is the same one that makes this whole item work: under `sigglobal` the
+relative reference cannot degenerate, so `reltol*ref` dominates and *no* absolute term moves
+anything — including an injected wrong one. **A guard that cannot see the defect it guards
+is worse than no guard, because it reads as coverage.** It now runs under `pointlocal`,
+where an absolute floor is load-bearing, and under injection it fails as it should. Verified
+both ways: 4 passed clean, 2 failed under injection.
+
+This is the second time in three commits that a test kept passing for a reason unrelated to
+the property it names — the first was `test_lte_formula_ywr`'s rejection proxy above. Both
+were found by asking "what would make this fail?" rather than by the suite.
+
+Resulting shape, all four passing: `..._newton_and_lte_tolerances_are_separate` pins the
+values; `..._lte_vabstol_moves_the_step_count_under_pointlocal` keeps the old property in
+the mode where it holds; `..._lte_vabstol_is_not_load_bearing_under_sigglobal` asserts the
+default's behaviour, which is what licenses D3-e; and `..._vabstol_does_not_move_the_step_count`
+is the guard, now able to see.
+
+**Gate D3-e (NEW — `lte_vabstol` is decided by measurement, not by tidiness).** With
+`sigglobal` shipped, D3-b's finding says the absolute floor can return to 1e-12 "at little
+cost". *Little* is not a number. Declared: measure step count and global error at
+`lte_vabstol` 1e-6 (current) and 1e-12 (the defensible value matching `vabstol`), under
+`sigglobal`, on both a healthy-signal circuit and the quiet-node circuit that motivated the
+floor in the first place. Change the default **only if** the cost is under 10% of step count
+on both; otherwise record the number and leave it, because a floor that is never reached is
+harmless and one that collapses the step size is not.
+OUTCOME: **PASSED, and the cost is not "little" — it is exactly zero.** `lte_vabstol` is
+returned to **1e-12**.
+
+| circuit | relref | 1e-6 | 1e-9 | 1e-12 |
+|---|---|---|---|---|
+| pulsed RC | **sigglobal** | 403 steps | **403** | **403** |
+| quiet node | **sigglobal** | 601 steps | **601** | **601** |
+| pulsed RC | pointlocal | 1164 steps | 1260 (+8.2%) | 1263 (**+8.5%**) |
+| quiet node | pointlocal | 2463 steps | 2685 (+9.0%) | 2689 (**+9.2%**) |
+
+Bit-identical under `sigglobal` — same step count and same endpoint voltage to six figures
+at all three values — against a declared 10% threshold. The `pointlocal` rows are the
+control: they show the floor *is* load-bearing there, at 8.5-9.2%, which is what the 1e-6
+workaround was buying and why it was needed then.
+
+**What this actually retires.** The 1e-6 value was introduced to stop the timestep
+collapsing on the leapfrog's quiet nodes — treating the symptom of `pointlocal`'s
+degenerating reference. `sigglobal` removes the cause, so the workaround can go and the
+principled value (matching `vabstol`, so the operating point and every step after it use the
+same absolute floor) returns at measured zero cost. **The parameter comment states plainly
+that selecting `relref='pointlocal'` makes the floor load-bearing again**, so anyone who
+does is not left with a value tuned for a different mode.
