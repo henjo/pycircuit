@@ -16,8 +16,9 @@ on:
       - '.github/workflows/docs.yml'
 
 permissions:
-  contents: read
+  contents: write
   checks: write
+  pull-requests: write
 
 jobs:
   test:
@@ -50,3 +51,5 @@ jobs:
         uses: EnricoMi/publish-unit-test-result-action@v2
         with:
           files: results.xml
+          comment_mode: always
+          commit: ${{ github.sha }}
