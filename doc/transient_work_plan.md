@@ -3679,6 +3679,19 @@ error is ~1.5x larger there. **This is the fifth magnitude in this plan to shrin
 measurement**, and the first one this work produced itself; the comment in `transient.py`
 carries the corrected range.
 
+**Preserved as `benchmarks/transient_decisions.py --matched-accuracy`**, and preserving it
+turned up one more thing. The script must **pin `lte_vabstol`**: this gate ran while the
+floor was 1e-6, and D3-e then moved the shipped default to 1e-12. The floor is load-bearing
+under `pointlocal` and inert under `sigglobal` — that is D3-e's whole finding — so leaving
+it at the default penalises the `pointlocal` arm and inflates the very ratio this gate
+reports. At the gate's own floor the range is **1.31x .. 2.06x** as recorded; at the shipped
+floor it reads **1.70x .. 5.97x**.
+
+That second number is not a better version of the first: **it is `relref` and `lte_vabstol`
+together**, and it is reported separately for that reason. It does say that D3's two changes
+compound rather than overlap — which was not measured at the time and is worth knowing if
+anyone is deciding whether `pointlocal` is still worth offering.
+
 **Gate D3-a (re-run).** Full suite `-m ""`. Expect churn in step counts; every failure
 explained individually and either fixed or justified. Declared success: no failure that is
 not explained, and specifically **no recurrence of the non-monotone accuracy** that failed
