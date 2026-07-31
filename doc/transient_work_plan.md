@@ -2,12 +2,17 @@
 
 > ## RESUME HERE — state as of 2026-07-31
 >
-> Last commit touching **code**: `6bc6fcc`. Everything after it is documentation, so a
-> newer HEAD does not mean the tree has moved underneath this block. Branch
-> `cna-jax-vectorization`; nothing has been pushed, per the standing rule.
+> Last commit changing **simulator behaviour**: `6bc6fcc`. Everything after it is a
+> benchmark, a test rename, or documentation — so a newer HEAD does not mean the code has
+> moved underneath this block. Branch `cna-jax-vectorization`, **pushed to `origin`**
+> (`git@github.com:henjo/pycircuit.git`).
 >
-> **Suite: 755 passed, 6 skipped, 0 failed** (`-m "" --timeout=400`, ~8-13 min).
+> **Suite: 755 passed, 6 skipped, 0 failed** (`-m "" --timeout=400`). Nominal ~8-13 min,
+> but one run of the identical tree took **31m41s** purely from machine load — see trap 2.
 > **Doc build: succeeded, 2 warnings, 0 ERROR.** Working tree clean.
+>
+> Transient regression tests live in `pycircuit/circuit/tests/test_transient_repairs.py`
+> (renamed from `test_transient_stage1.py`); its docstring maps sections to plan stages.
 >
 > ### The next action, concretely
 >
