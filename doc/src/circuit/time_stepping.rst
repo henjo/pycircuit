@@ -128,6 +128,67 @@ For these, say so:
 
 Both are explicit choices. The error raised when the DC fails names them.
 
+The first step, and why ``reltol`` used to do nothing
+======================================================
+
+A run opens at ``firststep``. That step is the only one in the whole run whose error
+**cannot be checked**: the truncation-error estimate is a difference against previous
+points, and at the start there are none, so the controller has to accept it
+unevaluated.
+
+Until 2026-07 the opening step was ``timestep`` — which is also ``max_step``, the
+largest step the controller is ever allowed to take. So the one step nobody could
+check was also the biggest one, and its error dominated everything after it.
+
+The symptom was that ``reltol`` did not control accuracy at all. On an RC step
+response measured against its analytic solution, the global error was
+:math:`1.3212 \times 10^{-1}` at ``reltol`` of 1e-3, 1e-4, 1e-5 **and** 1e-6 —
+identical to five digits — while the step count went from 24 to 195. Eight times the
+work for the same answer. Backward Euler and the two second-order methods likewise
+agreed to five digits, which is why the choice of integrator appeared not to matter.
+
+Opening at ``timestep * 1e-3`` instead costs one cheap step and lets the controller
+grow from there. The same sweep now gives 3.13e-3 down to 3.44e-5, a **90.8x**
+reduction, falling monotonically; and trapezoidal becomes 9.5x more accurate than
+backward Euler while using 7.5x fewer steps.
+
+The default is the knee of a measured curve, not a guess:
+
+.. list-table::
+   :header-rows: 1
+
+   * - ``firststep``
+     - steps
+     - how much ``reltol`` can move the error
+   * - ``timestep``
+     - 50
+     - **1.0x** — nothing
+   * - ``timestep*1e-1``
+     - 58
+     - **1.0x** — still nothing
+   * - ``timestep*1e-2``
+     - 62
+     - 63.9x
+   * - ``timestep*1e-3`` (default)
+     - 66
+     - **90.8x**
+   * - ``timestep*1e-6``
+     - 75
+     - 91.7x
+
+Set it yourself if you need to::
+
+    tran = Transient(cir, firststep=1e-12)   # explicit
+    tran = Transient(cir)                    # None -> timestep*1e-3
+
+.. note::
+
+   The ramp is a **fixed** cost of roughly 15 steps — the geometric climb back to
+   ``max_step`` — not a proportional one. On a long run that is negligible (+3.1% on
+   the leapfrog benchmark, +4.2% over 300 time constants); on a run of only ten time
+   constants it is +32%. Short runs pay proportionally more, and they are also the
+   runs where the unchecked opening step did the most damage.
+
 Tolerances: which knob does what
 =================================
 

@@ -429,3 +429,97 @@ def test_sigglobal_does_not_collapse_on_a_quiet_node():
     assert glob < local, \
         'sigglobal (%d steps) should need no more steps than pointlocal (%d) ' \
         'when a quiet node is present' % (glob, local)
+
+
+# ---------------------------------------------------------------------------
+# Stage 3 -- the first step (doc/transient_work_plan.md)
+# ---------------------------------------------------------------------------
+
+def _rc_analytic(reltol, firststep='unset', integrator=None, tend_tau=10):
+    """RC step response and its exact global error.
+
+    Started from `uic=True` and with `timestep` deliberately far above the step
+    the controller would pick, so the controller -- not `max_step` -- is what
+    limits the run. Both are required for any tolerance to be observable.
+    """
+    from pycircuit.circuit.integrator import TrapezoidalIntegrator
+    V, Rv, Cv = 1.0, 1e3, 1e-9
+    tau = Rv * Cv
+    cir = SubCircuit(toolkit=numeric)
+    cir['VS'] = VS('n1', gnd, v=V)
+    cir['R'] = R('n1', 'n2', r=Rv)
+    cir['C'] = C('n2', gnd, c=Cv)
+
+    opts = dict(reltol=reltol, vabstol=1e-12, lte_vabstol=1e-9, uic=True,
+                integrator=integrator or TrapezoidalIntegrator())
+    if firststep != 'unset':
+        opts['firststep'] = firststep
+    res = Transient(cir, toolkit=numeric, **opts).solve(
+        refnode=gnd, tend=tend_tau * tau, timestep=tau)
+    t = np.asarray(res.v('n2').x[0])
+    v = np.asarray(res.v('n2').y)
+    exact = V * (1.0 - np.exp(-t / tau))
+    return len(t), float(np.max(np.abs(v - exact)))
+
+
+def test_gate_3_1_reltol_controls_the_global_error():
+    """Stage 3 -- the defect this stage exists to remove.
+
+    Before the opening step was ramped, the global error was **1.3212e-01 at
+    reltol 1e-3, 1e-4, 1e-5 and 1e-6 alike** -- identical to five digits -- while
+    the step count went 24 -> 195. Eight times the work for the same answer,
+    because the one step the controller cannot check was also the largest.
+    """
+    errors = [_rc_analytic(tol)[1] for tol in (1e-3, 1e-4, 1e-5, 1e-6)]
+
+    assert all(errors[i] >= errors[i + 1] for i in range(len(errors) - 1)), \
+        'global error must fall monotonically with reltol, got %r' % errors
+    reduction = errors[0] / errors[-1]
+    assert reduction >= 20, \
+        'reltol 1e-3 -> 1e-6 reduced the error only %.1fx (%r)' % (reduction, errors)
+
+
+def test_gate_3_3_second_order_beats_first_order():
+    """A 2nd-order method must be more accurate than backward Euler.
+
+    They used to agree to five digits, which is the clearest single symptom that
+    the error was set by the opening step and not by the integration method.
+    """
+    from pycircuit.circuit.integrator import EulerIntegrator, TrapezoidalIntegrator
+
+    _, err_euler = _rc_analytic(1e-5, integrator=EulerIntegrator())
+    _, err_trap = _rc_analytic(1e-5, integrator=TrapezoidalIntegrator())
+    assert err_trap < err_euler / 2.0, \
+        'trapezoidal (%.4e) should be clearly better than euler (%.4e)' \
+        % (err_trap, err_euler)
+
+
+def test_opening_at_max_step_still_destroys_reltol():
+    """The defect, pinned deliberately, so a regression is unmistakable.
+
+    Asking for `firststep=timestep` restores the old behaviour exactly, and with
+    it the symptom: reltol stops mattering. If this test ever starts failing,
+    either the ramp has been made unconditional or something else now bounds the
+    first step -- both worth knowing.
+    """
+    from pycircuit.circuit.integrator import TrapezoidalIntegrator
+    tau = 1e-6
+    hi = _rc_analytic(1e-3, firststep=tau)[1]
+    lo = _rc_analytic(1e-6, firststep=tau)[1]
+    assert abs(hi - lo) < 1e-9 * max(hi, 1.0), \
+        'opening at max_step should make reltol irrelevant, got %.6e vs %.6e' \
+        % (hi, lo)
+
+
+def test_firststep_is_validated_and_capped():
+    tran = Transient(_rc(), toolkit=numeric, firststep=-1.0)
+    with pytest.raises(ValueError) as excinfo:
+        tran.solve(refnode=gnd, tend=1e-6, timestep=1e-7)
+    assert 'firststep' in str(excinfo.value)
+
+    ## Larger than max_step is capped rather than honoured: the controller would
+    ## clamp it on the next step anyway.
+    tran = Transient(_rc(), toolkit=numeric)
+    assert tran._opening_step(1e-6) == pytest.approx(1e-9)
+    tran = Transient(_rc(), toolkit=numeric, firststep=1.0)
+    assert tran._opening_step(1e-6) == 1e-6

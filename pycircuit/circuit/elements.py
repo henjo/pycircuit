@@ -1113,8 +1113,13 @@ class Idtmod(Circuit):
     operating point -- its output is the unbounded integral of a constant input --
     so the bias solve is singular and the run must be told to start from zeros.
 
+    ``fixed_timestep=True`` is also deliberate: this example is documenting the
+    modulo wrap, so it wants output on the uniform grid it asks for. An adaptive
+    run opens at ``timestep*1e-3`` and grows from there (see ``firststep``), which
+    is right for accuracy and wrong for a doctest about output values.
+
     >>> tran = Transient(c, toolkit=numeric, uic=True)
-    >>> result = tran.solve(tend=1.5, timestep=0.5)
+    >>> result = tran.solve(tend=1.5, timestep=0.5, fixed_timestep=True)
     >>> result.v(nout).y
     array([0.5, 0. , 0.5])
     """

@@ -189,6 +189,16 @@ class Transient(Analysis):
          Parameter(name='minstep',
                    desc='Minimum timestep to prevent infinite loops', unit='s',
                    default=1e-18),
+         ## STAGE 3.  The opening step, which the controller must accept
+         ## unevaluated because there is no history to difference against.  `None`
+         ## means `timestep * 1e-3`; see `Transient._opening_step` for why opening
+         ## at `timestep` made `reltol` unable to influence the answer at all.
+         Parameter(name='firststep',
+                   desc='Size of the first timestep; None means timestep*1e-3. '
+                        'The first step cannot be error-checked, so taking it at '
+                        'max_step lets its error dominate the whole run.',
+                   unit='s',
+                   default=None),
          Parameter(name='bypasstol',
                    desc='Bypass tolerance for device models', unit='V',
                    default=None)]
@@ -303,6 +313,43 @@ class Transient(Analysis):
 
     
     
+    def _opening_step(self, timestep):
+        """The size of the first step of a run.
+
+        STAGE 3.  A run used to open at `timestep`, which is also `max_step` -- the
+        largest step the controller is ever allowed to take.  The step controller
+        accepts the first step unevaluated, because with no history there is nothing
+        to difference and no truncation error can be estimated, so that opening step
+        was both the **largest** and the **only unchecked** step in the run.
+
+        Its error then dominated everything after it.  Measured on an RC step
+        response against the analytic solution, trapezoidal, before this method
+        existed: the global error was **1.3212e-01 at reltol 1e-3, 1e-4, 1e-5 AND
+        1e-6** -- identical to five digits -- while the step count went from 24 to
+        195.  Eight times the work for the same answer.  Backward Euler and the
+        two second-order methods also agreed to five digits, which is why the
+        integrator choice appeared not to matter.
+
+        Opening at `timestep * 1e-3` costs one cheap step and leaves the controller
+        to grow the step from there, which it does geometrically, so the ramp is
+        paid off within a handful of steps.
+
+        The principled alternative is a Hairer-style estimate from `q'`/`q''` at the
+        operating point.  The plan asks for the ramp first and a *measurement* of
+        whether the estimate is worth the complexity, rather than an assumption --
+        see the outcome recorded under gate 3-1.
+        """
+        firststep = getattr(self.par, 'firststep', None)
+        if firststep is None:
+            return timestep * 1e-3
+        if firststep <= 0:
+            raise ValueError(
+                "firststep must be positive, not %r; pass None to use the default "
+                "ramp of timestep*1e-3" % (firststep,))
+        ## An opening step larger than max_step would be capped on the very next
+        ## step anyway, and asking for one is more likely a mistake than an intent.
+        return min(firststep, timestep)
+
     def _q_at(self, x):
         """``cir.q(x)``, reusing the value computed during the last assembly.
 
@@ -495,7 +542,13 @@ class Transient(Analysis):
         self._no_history = True
         t = 0.0
         max_step = timestep
-        dt = timestep
+        ## The opening ramp exists to stop the ONE step the controller cannot check
+        ## from dominating the run.  Under `fixed_timestep` there is no controller
+        ## and `dt` is never updated, so ramping would not open small and grow -- it
+        ## would run the ENTIRE simulation at `timestep*1e-3`, a thousand times more
+        ## steps for a result the caller explicitly asked to be uniform.  Caught by
+        ## `test_transient_RLC` and three others, which is what the suite gate is for.
+        dt = timestep if fixed_timestep else self._opening_step(timestep)
         TRTOL = 7.0
         ## Bound the number of consecutive LTE rejections at a single time point.
         ## Near a source discontinuity (e.g. a VPulse corner) the truncation-error
@@ -696,7 +749,8 @@ class Transient(Analysis):
         self._is_first_step = True
         self._no_history = True
         t = 0.0
-        h = timestep
+        ## Same opening ramp as `solve()` -- this path had the same defect.
+        h = self._opening_step(timestep)
         max_step = timestep
         TRTOL = 7.0
         minstep = getattr(self.par, 'minstep', 1e-18)
