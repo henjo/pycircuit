@@ -2,10 +2,10 @@
 
 > ## RESUME HERE — state as of 2026-07-31
 >
-> Last commit changing **simulator behaviour**: `a610102` (stage 5+.5 -- the nport frequency check).
+> Last commit changing **simulator behaviour**: `41471f1` (stage 6 -- diagnostics and statistics).
 > Anything after it is a benchmark or documentation unless it says otherwise — so a newer
 > HEAD does not by itself mean the code has moved underneath this block; check
-> `git log --oneline a610102..HEAD -- pycircuit/`. Branch `cna-jax-vectorization`
+> `git log --oneline 41471f1..HEAD -- pycircuit/`. Branch `cna-jax-vectorization`
 > (`git@github.com:henjo/pycircuit.git`) — **check `git status -sb` before assuming it is
 > pushed**; several commits have sat unpushed at a time in this work.
 >
@@ -19,6 +19,12 @@
 > (renamed from `test_transient_stage1.py`); its docstring maps sections to plan stages.
 >
 > ### The next action, concretely
+>
+> **Stage 6 is done**, so 0.3d's `chgtol` guard is now unblocked: it wanted a statistics
+> object to report its firing count through, and there is one. That guard is the natural
+> next piece of transient work — it is the last undone item from decision 0.3d, and its
+> design is already written up there in full (the `err_v`/`err_q` pair, the amplification
+> ratio, and the requirement that it be logged rather than silent).
 >
 > **Stage 5+ is complete except 5+.4** (the large-signal MOSFET), which stays sequenced into
 > stage 10 by decision 0.3c and is the largest of the four by a wide margin.
@@ -74,6 +80,8 @@
 > Stage 2 (2.42x bit-identical, 5.19x with single-threaded BLAS) · three post-stage-2
 > improvements (2+.1 `__getattr__` memo, 2+.2 skip the unread residual, 2+.3 `relref`) ·
 > **Stage 5** (junction limiting, the exp clamp, and the `SubCircuit.limit` write-back) ·
+> **Stage 6** (a floating node names the node; a convergence failure names the worst
+> unknown, its residual and its tolerance; a run reports what it did) ·
 > **Stage 5+.2/5+.3/5+.5** (`MOS_ACM` deleted; `Varactor`'s `C` no longer falls to exactly
 > zero in forward bias; `mos.py`'s doctests run for the first time, which took fixing an
 > `nportanalysis` check that rejected its own documented usage) ·
