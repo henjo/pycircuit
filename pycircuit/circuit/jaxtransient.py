@@ -530,6 +530,14 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 ## circuit ever had, and letting it raise the reference would loosen
                 ## every later tolerance on the strength of a discarded iterate.
                 sig_max=jnp.maximum(state.sig_max, jnp.max(jnp.abs(x_curr))),
+                ## CARRIED, not defaulted.  `do_accept` builds a fresh
+                ## TransientState rather than `_replace`-ing, so every field it
+                ## omits silently reverts to the NamedTuple default -- and these are
+                ## cumulative counters.  Omitting them reset the rejection count to
+                ## zero on each accepted step, which made "16 configurations, zero
+                ## rejections" a measurement of the bug rather than of the solver.
+                n_rejected=state.n_rejected,
+                n_nonconverged=state.n_nonconverged,
                 n_forced_nonconverged=state.n_forced_nonconverged
                 + jnp.where(forced, 1, 0))
 
@@ -634,6 +642,12 @@ class JAXTransient(Analysis):
                   unit='', default=7.0),
         Parameter(name='maxiter', desc='Maximum number of iterations', unit='',
                   default=100),
+        ## STAGE 9(g).  Ported from `Transient`, same name, default and validation.
+        Parameter(name='firststep',
+                  desc='Size of the first timestep; None means timestep*1e-3. '
+                       'The first step cannot be error-checked, so taking it at '
+                       'dt_max lets its error dominate the whole run.',
+                  unit='s', default=None),
     ]
 
     def __init__(self, cir, **kwargs):
@@ -656,6 +670,37 @@ class JAXTransient(Analysis):
                     "scaling step. It was previously accepted and ignored. Use "
                     "Transient for a circuit that needs %r."
                     % (unsupported, unsupported))
+
+    def _opening_step(self, timestep):
+        """The size of the first step of a run.
+
+        STAGE 9(g), ported from `Transient._opening_step`, which records the
+        measurement: a run opening at `timestep` -- which is also `dt_max`, the
+        largest step the controller may ever take -- makes the first step both the
+        **largest** and the **only unchecked** one, because with no history there is
+        nothing to difference and no truncation error can be estimated.  Its error
+        then dominates everything after it.
+
+        On the CPU that showed up as a global error of 1.3212e-01 at reltol 1e-3,
+        1e-4, 1e-5 AND 1e-6 -- identical to five digits -- while the step count went
+        from 24 to 195.  **Gate 9-1(c) measured the identical signature here**:
+        4.2535e-3 across the same four decades, always at index 1, step count 53 to
+        85.  Eight times the work, or 1.6x, for the same answer.
+
+        Opening at `timestep * 1e-3` costs one cheap step and leaves the controller
+        to grow from there, which it does geometrically, so the ramp is paid off
+        within a handful of steps.
+        """
+        firststep = getattr(self.par, 'firststep', None)
+        if firststep is None:
+            return timestep * 1e-3
+        if firststep <= 0:
+            raise ValueError(
+                "firststep must be positive, not %r; pass None to use the default "
+                "ramp of timestep*1e-3" % (firststep,))
+        ## Larger than dt_max would be capped on the very next step anyway, and
+        ## asking for one is more likely a mistake than an intent.
+        return min(float(firststep), float(timestep))
 
     def _lte_abstol(self, n):
         """Per-row absolute LTE tolerance, in the SOLUTION domain.
@@ -705,7 +750,12 @@ class JAXTransient(Analysis):
 
 
         if dt_max is None:
-            dt_max = tend / 10.0
+            ## STAGE 9(g) -- `timestep`, not `tend/10`.  `solve` and `solve_batched`
+            ## are two entry points of one class and disagreed about this by ~50x,
+            ## so the same circuit at the same requested timestep was error-
+            ## controlled to two different standards depending on which was called.
+            ## `timestep` matches `solve` and matches `Transient.max_step`.
+            dt_max = timestep
             
         t_breaks_array = jnp.array(collect_breakpoints(self.cir, tend))
         
@@ -754,17 +804,36 @@ class JAXTransient(Analysis):
         times_list = [np.zeros((batch_size, 1))]
         
         current_t = jnp.zeros(batch_size)
-        current_dt = jnp.full(batch_size, timestep)
+        ## Same ramp as `solve` -- see `_opening_step`.
+        current_dt = jnp.full(batch_size, self._opening_step(timestep))
+        b_sig_max = jnp.zeros(batch_size)
+        ## dtype follows `jnp.array(0)` exactly, as the unbatched path uses:
+        ## `lax.cond` requires both branches to agree, and a mismatched
+        ## int32/int64 here fails at trace time rather than at the call.
+        b_n_rejected = jnp.full(batch_size, 0)
+        b_n_nonconverged = jnp.full(batch_size, 0)
+        b_n_forced_nc = jnp.full(batch_size, 0)
         
         while np.any(current_t < tend):
             res_buf = jnp.zeros((batch_size, CHUNK_SIZE, n))
             time_buf = jnp.zeros((batch_size, CHUNK_SIZE))
             
+            ## Every field of the batched state must carry a leading batch axis:
+            ## `batched_run_chunk` is a `jax.vmap` over axis 0, and a field left at
+            ## its scalar default fails with "rank should be at least 1".  The
+            ## counters added by 9(c)/9(e) -- sig_max, n_rejected, n_nonconverged,
+            ## n_forced_nonconverged -- default to scalars for the unbatched path
+            ## and so must be widened here explicitly.  They are also RUNNING
+            ## TOTALS, carried across chunks for the same reason `solve` carries
+            ## them: rebuilding them per chunk resets the sigglobal reference.
             state = TransientState(
                 t=current_t, dt=current_dt, step_idx=jnp.zeros(batch_size, dtype=jnp.int32),
                 x_history=x_hist, q_history=q_hist, iq_history=iq_hist, h_history=h_hist,
                 results_buffer=res_buf, time_buffer=time_buf,
-                tline_history=tline_history, tline_head=tline_head
+                tline_history=tline_history, tline_head=tline_head,
+                sig_max=b_sig_max, n_rejected=b_n_rejected,
+                n_nonconverged=b_n_nonconverged,
+                n_forced_nonconverged=b_n_forced_nc
             )
             
             final_state = batched_run_chunk(state, override_params_tree)
@@ -791,6 +860,10 @@ class JAXTransient(Analysis):
             
             current_t = final_state.t
             current_dt = final_state.dt
+            b_sig_max = final_state.sig_max
+            b_n_rejected = final_state.n_rejected
+            b_n_nonconverged = final_state.n_nonconverged
+            b_n_forced_nc = final_state.n_forced_nonconverged
             x_hist = final_state.x_history
             q_hist = final_state.q_history
             iq_hist = final_state.iq_history
@@ -893,7 +966,7 @@ class JAXTransient(Analysis):
         times_list = [np.array([0.0])]
     
         current_t = 0.0
-        current_dt = timestep
+        current_dt = self._opening_step(timestep)
         ## Accepted steps so far, tracked only to detect the TLine ring wrapping.
         ## The check cannot live inside the compiled loop -- it cannot raise there --
         ## so it is done here, per chunk, which is soon enough: the wrap corrupts the

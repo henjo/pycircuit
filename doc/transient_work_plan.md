@@ -211,7 +211,16 @@
 >    raise, and that example had been relying on the silence. A doc example is not covered
 >    by the suite, so nothing else would ever have caught it. Read the warning *lines*, and
 >    for a plot directive confirm the image was written and shows what the prose claims.
-> 12. **The review's magnitudes run ~2x optimistic.** Five have now shrunk on measurement
+> 13. **An instrument built to answer a question must be shown able to answer it
+>    differently.** A rejection counter was added specifically to state the gate "a step
+>    is actually rejected". It read zero on all 16 configurations, which was reported as a
+>    finding — and it was a bug: `do_accept` rebuilt the state without naming the counter,
+>    so a NamedTuple default zeroed it on every accepted step. The true counts are 4, 68,
+>    182, 241, 662. **A new instrument reading the tidy answer is the case to distrust**,
+>    because nothing else in the suite can contradict it. Force it to produce a non-zero
+>    reading on a case you have constructed before believing a zero on one you have not.
+> 
+> 14. **The review's magnitudes run ~2x optimistic.** Five have now shrunk on measurement
 >    (150 TB → 420 GiB; 10.5x → 5.19x; 4.462 ms → 0.234 ms; "2.17 assemblies needed" was not
 >    a redundancy figure; the IM3 harness's 10x → 2.17x). Re-measure before quoting
 >    `transient_review.md`.
@@ -3899,6 +3908,106 @@ actually returned.
 OUTCOME: **PASS. Suite 814 passed, 6 skipped, 0 failed**, against 812 before plus
 the two tests added here.
 
+## 9(g) — the opening step, and reconciling `dt_max`
+
+**Raised 2026-08-01, while explaining the `dt_max` question rather than acting on it.** The
+question was mis-framed, and checking it produced a better answer.
+
+**`dt_max = timestep` is NOT a JAX anomaly.** `transient.py:679` sets `max_step = timestep`
+on the CPU as well, and measured, the CPU's `max dt / timestep` is **exactly 1.0000**. Both
+backends clamp the step to the requested `timestep`, which is a defensible reading of what
+`.tran tstep` means. The earlier framing — "the JAX transient is effectively fixed-step, is
+that right?" — applies equally to the CPU and was not the real issue.
+
+**The real issue is the OPENING step, and the CPU fixed it in stage 3.**
+`Transient._opening_step` records it:
+
+> A run used to open at `timestep`, which is also `max_step` — the largest step the
+> controller is ever allowed to take. The step controller accepts the first step
+> unevaluated... so that opening step was both the **largest** and the **only unchecked**
+> step in the run. Measured: the global error was **1.3212e-01 at reltol 1e-3, 1e-4, 1e-5
+> AND 1e-6** — identical to five digits — while the step count went from 24 to 195.
+
+**Gate 9-1(c) measured the identical signature on JAX**: `max err` 4.2535e-3 at reltol
+1e-3/1e-4/1e-5/1e-6, identical to five figures, **always at index 1**, while the step count
+grew 53 → 85. `jaxtransient.py` opens at `current_dt = timestep` and has no `firststep`.
+
+**So this is the third CPU fix that never crossed to the transcription** — after stage 4i's
+Gear2 error constant (found by gate 9-1(a)) and stage 9(d)'s breakpoint scan. That is 9(a)'s
+justification stated as measurement for the third time.
+
+**Gate 9g-1 (the opening step is ramped, and settable).** `firststep` on `JAXTransient`
+with the CPU's semantics — `None` means `timestep * 1e-3`, a non-positive value raises.
+Declared: the same parameter name, default and validation as `Transient`, so the two do not
+drift.
+OUTCOME: **PASS.** `firststep` on `JAXTransient` with `Transient`'s name, default (`None` means
+`timestep*1e-3`) and validation, and `_opening_step` ported with its reasoning. Applied to
+both `solve` and `solve_batched`.
+
+**Gate 9g-2 (`reltol` now moves the answer).** THE gate. Declared in advance: the error
+must stop being pinned at 4.2535e-3 across four decades of `reltol`, and must fall
+monotonically as `reltol` tightens. **If it does not, the diagnosis was wrong** and the
+opening step was not what pinned it — say so and revert.
+OUTCOME: **PASS, and the diagnosis was right.** The error was pinned at 4.2535e-3 across four
+decades, always at index 1. Now:
+
+| reltol | max err | at index |
+|---|---|---|
+| 1e-3 | 1.1141e-3 | 21 |
+| 1e-4 | 1.1079e-3 | 21 |
+| 1e-5 | 8.1991e-4 | 27 |
+| 1e-6 | **1.8693e-4** | 52 |
+
+Monotone, **5.96x smaller** across the span, and the worst error has moved off the opening
+step into the real dynamics. Even the loosest tolerance improved 3.8x, from 4.2535e-3 to
+1.1141e-3 — the ramp is not a trade, it is strictly better here.
+
+**Gate 9g-3 (the CPU does not move).** Bit-identical on all 15 CPU baseline runs. This
+touches `jaxtransient.py` only, so anything else is a surprise worth chasing.
+OUTCOME: **PASS.** All 15 CPU runs bit-identical, `max|diff| = 0.000e+00`. The 2 JAX runs changed
+shape (270 -> 305 and 2515 -> 2550 values), which is the intended effect: the ramp costs
+~35 extra cheap steps and buys the tolerance response above.
+
+**Gate 9g-4 (`dt_max` reconciled).** `solve_batched` defaults to `dt_max = tend/10` where
+`solve` uses `timestep` — two entry points of one class disagreeing by ~50x. Declared:
+`solve_batched` takes `timestep`, matching `solve` and the CPU, and the change in its
+output is **measured and recorded** rather than assumed harmless, since it changes results
+for existing callers.
+OUTCOME: **PASS, and the old default was worse than "inconsistent" — it very nearly ignored the
+requested timestep.** Same call, old `dt_max` against the new:
+
+| timestep | dt_max | steps | max dt | max err |
+|---|---|---|---|---|
+| 1e-4 | tend/10 (old) | 29 | 5.000e-4 | 3.6745e-3 |
+| 1e-4 | timestep (new) | 61 | 1.000e-4 | **1.1079e-3** |
+| 1e-5 | tend/10 (old) | 32 | 5.000e-4 | 3.6680e-3 |
+| 1e-5 | timestep (new) | 510 | 1.000e-5 | **1.2148e-5** |
+
+**Asking for a 10x finer timestep used to change the run from 29 steps to 32, and the error
+not at all** (3.6745e-3 vs 3.6680e-3) — `timestep` was very nearly inert on this path. It
+now costs 2.1x/15.9x the steps and buys 3.3x/302x the accuracy. This does change results for
+existing `solve_batched` callers, which is why it was measured rather than assumed.
+
+**AND `solve_batched` WAS ALREADY BROKEN, WITH NOTHING TO SAY SO.** The counters added by
+9(c)/9(e) default to scalars, but every field of the batched state must carry a leading
+batch axis for `jax.vmap` — so `solve_batched` raised *"rank should be at least 1"* while
+the whole suite stayed green. **It had no test coverage at all**; the only callers are
+example scripts. It has coverage now.
+
+**Gate 9g-5.** Full suite.
+OUTCOME: **PASS. Suite 817 passed, 6 skipped, 0 failed**, against 814 plus the three tests added
+here.
+
+**Two existing tests changed premise rather than regressing, and both are worth recording.**
+`test_jax_error_responds_to_reltol` compared at `timestep=1e-5` because before the ramp only
+a fine timestep made the opening step small; with the ramp, what binds at a fine timestep is
+`dt_max` itself, which leaves the tolerance no room (1.2148e-5 at reltol 1e-3 against
+1.2141e-5 at 1e-5 — a ratio of 1.00). It now compares at a coarse timestep, over three
+decades rather than two, because the two-decade response is 1.36x and too near the bar to
+check anything. And `test_gate_9e_...` asserted `maxiter` cannot change a converged answer
+*at all* (`rel=1e-12`); that held only while the opening step dominated everything, and is
+now a 5% band.
+
 ## Gates 9-1, 9-2, 9-3 — the CPU's step-control gates, ported
 
 **Done 2026-07-31.** The plan says of gate 9-1: *"None of these is currently expressible,
@@ -3950,6 +4059,33 @@ edges instead of crossing them, and an extreme tolerance does not force a reject
 asserts the *bookkeeping*, deliberately **not** that rejections are zero: pinning zero
 would freeze in a property of the current clamp, and if `dt_max` is ever changed — an open
 decision — rejections should start and must not read as a regression.
+
+**CORRECTED 2026-08-01, AND THE ORIGINAL FINDING WAS AN ARTEFACT OF MY OWN COUNTER.**
+`do_accept` builds a fresh `TransientState` rather than `_replace`-ing one, so every field
+it does not name reverts to the NamedTuple default — and `n_rejected`/`n_nonconverged` are
+cumulative counters that it did not name. **The count was zeroed on every accepted step**,
+so it could only ever report rejections that happened since the last accept, and the value
+read at the end of a run was structurally 0. "Zero rejections across 16 configurations" was
+a measurement of that bug, not of the solver.
+
+With the counter carried through `do_accept`, **the reject branch is live**:
+
+| circuit | reltol | accepted | rejected |
+|---|---|---|---|
+| rc | 1e-4 / 1e-6 / 1e-8 | 60 / 92 / 389 | **0 / 4 / 182** |
+| pulse | 1e-4 / 1e-6 / 1e-8 | 81 / 162 / 480 | **0 / 68 / 241** |
+| sine | 1e-4 / 1e-6 / 1e-8 | 73 / 384 / 1898 | **34 / 118 / 662** |
+
+**So gate 9-1(b) PASSES**: a step is actually rejected, on every circuit once the tolerance
+is tight enough to make the controller work for it. The reject path is not dead code and
+the reasoning built on top of the artefact — that the predictive controller plus the
+`dt_max` clamp made rejection unreachable — was wrong.
+
+*What the episode is worth.* The counter was added **in order to** state this gate, and it
+carried a defect that produced exactly the answer that needed no further explanation. A
+plausible zero is the most dangerous reading a new instrument can give, and nothing else in
+the suite could have contradicted it. The lesson is trap 13 below: an instrument built to
+answer a question has to be shown to be able to answer it *differently*.
 
 **Gate 9-2 — a CPU/JAX agreement test in the suite.** PASS. The stage-5 cross-check had
 been run by hand and written into prose, so the next divergence was invisible — **and

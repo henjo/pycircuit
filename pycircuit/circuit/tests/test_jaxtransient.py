@@ -260,11 +260,16 @@ def test_jax_lte_abstol_is_per_row_not_scalar():
 def test_jax_error_responds_to_reltol():
     """Stage 9, gate 9-1(c): the CPU gate that 'is not currently expressible'.
 
-    It is expressible now that tolerances are settable.  Measured with a timestep
-    fine enough that `dt_max = timestep` is not the binding constraint -- with the
-    clamp binding, the whole-waveform error is pinned by the FIRST step and does
-    not move with reltol at all, which is a property of the clamp rather than of
-    the controller.  See 9(b)/(c) in the plan.
+    It is expressible now that tolerances are settable.
+
+    THE TIMESTEP HERE IS COARSE, AND THAT INVERTED WITH 9(g).  Before the opening
+    step was ramped, the whole-waveform error was pinned by the FIRST step -- the
+    largest and only unchecked one -- so the response only showed at a timestep
+    fine enough to make that first step small.  With the ramp, the first step is
+    `timestep*1e-3` and no longer dominates; what binds at a FINE timestep is now
+    `dt_max = timestep` itself, which leaves the tolerance no room (measured:
+    1.2148e-5 at reltol 1e-3 and 1.2141e-5 at 1e-5, a ratio of 1.00). At a coarse
+    timestep the controller has room and `reltol` is what decides.
     """
     import warnings
     from pycircuit.circuit.jaxtransient import JAXTransient
@@ -277,19 +282,23 @@ def test_jax_error_responds_to_reltol():
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
                 res = JAXTransient(cir, reltol=reltol).solve(
-                    gnd, tend=tend, timestep=1e-5, uic=True)
+                    gnd, tend=tend, timestep=1e-4, uic=True)
             return res, cir.get_node_index('out')
         res, idx = _with_jax_toolkit(go)
         t = np.asarray(res.sweep_values, dtype=float).reshape(-1)
         v = np.asarray(res.x[idx], dtype=float).reshape(-1)
         return float(np.abs(v - (1.0 - np.exp(-t / tau))).max())
 
-    loose, tight = run(1e-3), run(1e-5)
+    ## THREE decades, not two.  Over 1e-3 -> 1e-5 the response on this circuit is
+    ## 1.36x, which is real but too close to the bar to be a useful check; over
+    ## 1e-3 -> 1e-6 it is 5.96x.  The span is part of the assertion, so it is stated
+    ## rather than left to whichever pair happened to be picked.
+    loose, tight = run(1e-3), run(1e-6)
     assert tight < loose, \
         'tightening reltol did not reduce the error: %.4e -> %.4e' % (loose, tight)
-    assert loose / tight > 1.5, \
-        'reltol barely moves the error: %.4e -> %.4e (%.2fx)' \
-        % (loose, tight, loose / tight)
+    assert loose / tight > 2.0, \
+        'reltol barely moves the error: %.4e -> %.4e (%.2fx); measured 5.96x when ' \
+        'this was written' % (loose, tight, loose / tight)
 
 
 ## ---------------------------------------------------------------------------
@@ -569,8 +578,13 @@ def test_gate_9e_nonconverged_newton_is_not_committed():
         v = np.asarray(res.x[idx], dtype=float).reshape(-1)
         errs.append(float(np.abs(v - (1.0 - np.exp(-t / tau))).max()))
         assert tran.statistics.forced_nonconverged_steps == 0
-    assert errs[0] == pytest.approx(errs[-1], rel=1e-12, abs=0.0), \
-        'maxiter changed a converged answer: %r' % errs
+    ## Close, not bit-identical.  Both solves converge by the flag's own test, but
+    ## a lower cap can stop an iteration earlier within the tolerance band, and with
+    ## 9(g)'s ramp the step sequences then diverge slightly.  A 1e-12 equality was
+    ## asserting that `maxiter` cannot influence a converged answer AT ALL, which was
+    ## true only while the opening step dominated everything.
+    assert errs[0] == pytest.approx(errs[-1], rel=0.05), \
+        'maxiter materially changed a converged answer: %r' % errs
 
 
 def test_gate_9e_converged_flag_is_evaluated_at_the_returned_point():
@@ -620,3 +634,121 @@ def test_gate_9e_converged_flag_is_evaluated_at_the_returned_point():
 def gnd_node():
     from pycircuit.circuit import gnd
     return gnd
+
+
+def test_gate_9_1b_the_reject_path_actually_fires():
+    """Gate 9-1(b): a step is actually rejected -- a NON-ZERO reading.
+
+    The counter added to state this gate carried a defect that produced exactly
+    the answer needing no explanation: `do_accept` rebuilt TransientState without
+    naming `n_rejected`, so the NamedTuple default zeroed it on every accepted
+    step and the end-of-run value was structurally 0.  "Zero rejections across 16
+    configurations" was reported as a finding.  It was a measurement of the bug.
+
+    This test therefore demands a NON-ZERO count on a case chosen to produce one.
+    A test asserting `>= 0` -- which is what was written first -- passes against
+    the defect and is worth nothing here.
+    """
+    import warnings
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit import gnd
+
+    def go():
+        cir = _rc_circuit()
+        tran = JAXTransient(cir, reltol=1e-8)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            tran.solve(gnd, tend=5e-3, timestep=1e-4, uic=True)
+        return tran.statistics
+
+    st = _with_jax_toolkit(go)
+    assert st.rejected_steps > 0, \
+        'the reject branch never fired at reltol=1e-8 (%r) -- either step control ' \
+        'is not working or the counter is being reset again' % st
+    assert st.accepted_steps > 0
+
+
+def test_gate_9g_opening_step_is_ramped():
+    """Stage 9(g): a run opening at `timestep` -- which is also dt_max -- makes the
+    first step both the largest and the only unchecked one, and its error then
+    dominates.  Ported from Transient._opening_step (stage 3).
+
+    Pinned by the consequence rather than the value: with the ramp, `reltol` must
+    move the answer.  Before it, the error sat at 4.2535e-3 across FOUR DECADES of
+    reltol, identical to five figures, always at the first step.
+    """
+    import warnings
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit import gnd
+    tau, tend = 1e-3, 5e-3
+
+    def run(reltol):
+        def go():
+            cir = _rc_circuit()
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                res = JAXTransient(cir, reltol=reltol).solve(
+                    gnd, tend=tend, timestep=1e-4, uic=True)
+            return res, cir.get_node_index('out')
+        res, idx = _with_jax_toolkit(go)
+        t = np.asarray(res.sweep_values, dtype=float).reshape(-1)
+        v = np.asarray(res.x[idx], dtype=float).reshape(-1)
+        return float(np.abs(v - (1.0 - np.exp(-t / tau))).max())
+
+    loose, tight = run(1e-3), run(1e-6)
+    assert tight < loose / 2.0, \
+        'reltol still barely moves the answer: %.4e -> %.4e; the opening step is ' \
+        'probably dominating again' % (loose, tight)
+
+    ## The ramp itself, and its validation, follow Transient's.
+    tran = _with_jax_toolkit(lambda: JAXTransient(_rc_circuit()))
+    assert tran._opening_step(1e-4) == pytest.approx(1e-7, rel=1e-12)
+    tran2 = _with_jax_toolkit(lambda: JAXTransient(_rc_circuit(), firststep=1e-9))
+    assert tran2._opening_step(1e-4) == pytest.approx(1e-9, rel=1e-12)
+    with pytest.raises(ValueError, match='must be positive'):
+        _with_jax_toolkit(
+            lambda: JAXTransient(_rc_circuit(), firststep=-1.0))._opening_step(1e-4)
+
+
+def test_solve_batched_runs_and_honours_timestep():
+    """`solve_batched` had NO test coverage at all, and it was broken.
+
+    The counters added by 9(c)/9(e) default to scalars; every field of the batched
+    state must carry a leading batch axis for `jax.vmap`, so `solve_batched` raised
+    "rank should be at least 1" while the whole suite stayed green.  It also used
+    `dt_max = tend/10` where `solve` uses `timestep`, so the requested timestep was
+    very nearly ignored -- 29 vs 32 steps and the same 3.67e-3 error whether 1e-4
+    or 1e-5 was asked for.
+    """
+    import warnings
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit import gnd
+    tau, tend = 1e-3, 5e-3
+
+    def run(timestep):
+        def go():
+            cir = _rc_circuit()
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                res = JAXTransient(cir).solve_batched(
+                    gnd, override_params_tree={'R': {'r': jnp.array([[1e3], [1e3]])}},
+                    tend=tend, timestep=timestep, uic=True)
+            return res
+        res = _with_jax_toolkit(go)
+        r0 = res[0] if isinstance(res, (list, tuple)) else res
+        t = np.asarray(r0.sweep_values, dtype=float).reshape(-1)
+        v = np.asarray(r0.v('out'), dtype=float).reshape(-1)
+        return len(t), float(np.diff(t).max()), \
+            float(np.abs(v - (1.0 - np.exp(-t / tau))).max())
+
+    n_coarse, dt_coarse, e_coarse = run(1e-4)
+    n_fine, dt_fine, e_fine = run(1e-5)
+
+    assert dt_coarse <= 1e-4 * 1.0001, 'dt_max is not the requested timestep'
+    assert dt_fine <= 1e-5 * 1.0001, 'dt_max is not the requested timestep'
+    assert n_fine > 3 * n_coarse, \
+        'a 10x finer timestep barely changed the run: %d -> %d steps' \
+        % (n_coarse, n_fine)
+    assert e_fine < e_coarse, \
+        'a finer timestep did not improve the answer: %.3e -> %.3e' \
+        % (e_coarse, e_fine)
