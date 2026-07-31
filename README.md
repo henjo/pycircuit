@@ -13,8 +13,8 @@ pip install -e ".[dev]"
 Built with Sphinx. To build locally:
 
 ```bash
-docker build -f Dockerfile.docs -t pycircuit-docs .
-docker run --rm -v "$PWD/doc/build:/src/doc/build" pycircuit-docs
+pip install -r doc/requirements.txt
+make -C doc html
 # output in doc/build/html/
 ```
 
