@@ -347,6 +347,10 @@ converging on a Zener in breakdown — but that should be measured, not assumed.
 
 *The minimum device set for CMOS and bipolar transients.* Ranked by what blocks what:
 
+**These four are now WORK ITEMS WITH GATES, in `STAGE 5+` below.** They spent from
+2026-07-30 to 2026-07-31 as prose inside this outcome — findings that nothing scheduled and
+nothing checked — and stage 5 changed which of them binds. See there.
+
 1. **A charge model on `BJT`.** `BJT` defines no `q`, so `Semiconductor.C` returns a zero
    matrix (`:33-34`) — no depletion capacitance, no diffusion capacitance, no `TF`. A
    bipolar circuit with `C(x) == 0` has no charge storage anywhere in the transistor, so
@@ -3053,6 +3057,139 @@ without wild excursions the limiter is a no-op on nearly every iteration. It cha
 path Newton takes, not the equations — which `test_gate_5_the_limiter_only_moves_the_
 linearisation_point` asserts directly by substituting the answer back into the unlimited
 residual.
+
+---
+
+# STAGE 5+ — the device-model findings 0.1b ranked and the plan never listed
+
+**Raised 2026-07-31, immediately after stage 5 landed.** Review 0.1b answered "what is the
+minimum device set that makes CMOS and bipolar transients expressible" with a ranked list of
+four items. **Only one of them — the limiter — was ever written into a Work list or given a
+gate.** The other three have existed since 0.1b as prose inside a review outcome, which
+means they are findings rather than plans: nothing schedules them and nothing checks them.
+
+**Stage 5 has changed which of them is binding, and made one of them worse.** 0.1b said of
+the charge model: *"This is a bigger obstacle to a credible bipolar transient than the
+missing limiter is, and the plan does not rank it."* That was true when the limiter was
+missing and bipolar circuits simply failed. **Now they converge** — so a `BJT` transient will
+run to completion and return a plausible waveform whose switching times are meaningless,
+because `C(x) == 0` means the transistor has no charge storage at all. Stage 5 removed one
+confidently-wrong-answer defect and made another one reachable. That is the reason this
+section exists rather than waiting for stage 10.
+
+## 5+.1 A charge model on `BJT` — the binding constraint
+
+`BJT` defines no `q`, so `Semiconductor.C` takes its zero-matrix branch: no depletion
+capacitance, no diffusion capacitance, no `TF`. A bipolar transient is then a sequence of DC
+solves with the wrong dynamics.
+
+**Gate 5+.1a (the defect is real and reachable, not theoretical).** Show `C(x)` is
+identically zero for a biased `BJT`, and that a transient through it therefore has no
+frequency dependence — the same circuit at two very different drive frequencies must
+currently give the same switching behaviour. Declared: record both. **If the transient
+already shows frequency dependence from elsewhere in the circuit, say so** — that would mean
+the missing charge is masked and this item is less urgent than 0.1b ranked it.
+OUTCOME: **PASSED — the defect is real, reachable, and not masked. 0.1b's ranking is confirmed.**
+
+`C(x)` for a `BJT` biased in forward-active is the **exact zero matrix**. And the same switching stage — whose only capacitance is inside the transistor — driven with its period changed by **1000x** produced a **bit-identical** waveform: `v(c)` min 0.0915287 and max 5 at both 1 us and 1 ns. There is no time constant in the device to respond with.
+
+After the charge model: at 1 us the stage switches (`v(c)` min 0.0915), at 1 ns it does **not switch at all** (`v(c)` min 5.0) because the charge cannot arrive in time. That is the physical behaviour that was absent.
+
+**Gate 5+.1b (the charge model is the standard one, not an invention).** Depletion charge on
+both junctions plus diffusion charge via `TF`/`TR`, i.e. the Gummel-Poon charge terms that
+Ebers-Moll Level 1 is normally paired with. Parameters `CJE`, `CJC`, `VJE`, `VJC`, `MJE`,
+`MJC`, `TF`, `TR` with SPICE's defaults. Declared: the depletion term uses the same
+`FC`-style linearisation above the knee that `Varactor` gets in 5+.3 — **not** the clamp that
+makes `C` fall to zero, which is the defect 5+.3 exists to fix and must not be copied into a
+new device.
+OUTCOME: **PASSED.** Depletion charge uses a shared `_depletion_charge` helper implementing SPICE's F1/F2/F3 linearisation above `FC*VJ`, and diffusion charge is `TF`/`TR` times the junction current. Measured `C = dq/dv` for CJ=3.5pF, VJ=0.75, M=0.33, FC=0.5:
+
+| v (V) | -4.0 | -1.0 | 0.0 | 0.374 | 0.376 | 0.7 | 0.9 |
+|---|---|---|---|---|---|---|---|
+| C (pF) | 1.903 | 2.646 | 3.500 | 4.396 | 4.403 | 5.658 | 6.432 |
+
+Positive and monotonically increasing throughout, with the charge continuous across the knee (1.451080e-12 at 0.374 V against 1.459879e-12 at 0.376 V). **The helper is shared rather than copied** so that 5+.3 fixes `Varactor` by pointing it at the same code, and a new device cannot inherit the clamp that zeroes `C`.
+
+**On the defaults, stated because they are a choice and not a measurement.** SPICE defaults CJE/CJC/TF/TR to zero and expects a model card; these do not. The reason is consistency with this class rather than with SPICE — `BJT` already invents IS=1e-14, BF=100, VA=100, so it is a usable default transistor rather than a bare template, and zero-charge defaults would leave the 5+.1a defect fully in place for anyone who did not know to set CJE and TF. The values are the round numbers of a generic small-signal NPN and are documented as such in the source; any comparison against silicon must supply its own.
+
+**Gate 5+.1c (it is differentiated, not stamped).** `C(x)` must come from
+`toolkit.jacobian(eval_q_pure, ...)` like every other `Semiconductor`, so the charge model
+lives once and the capacitance matrix cannot silently disagree with it. That is the
+invariant the base class exists to protect.
+OUTCOME: **PASSED.** `C(x)` comes from `toolkit.jacobian(eval_q_pure, ...)` like every other `Semiconductor`, so the capacitance cannot disagree with the charge it is differentiated from. Two properties a plausible-looking wrong charge model usually fails are asserted with it: terminal charges **sum to exactly 0** (the device stores no net charge) and `C` is **symmetric to machine zero** (it is a reciprocal capacitance).
+
+**Gate 5+.1d (a switching time that responds).** With charge storage present, a
+`BJT` switching transient must show a storage-time dependence on `TF` — declared: doubling
+`TF` measurably lengthens the turn-off. **This is the gate that distinguishes "a charge
+model exists" from "a charge model does something"**, and it is the one worth writing first.
+OUTCOME: **PASSED. Storage time 13.63 ps -> 14.98 ps -> 16.83 ps** as `TF` doubles twice (3e-10, 6e-10, 1.2e-9 s), measured as the time for `v(c)` to recover past half-scale after the base drive falls. Monotone, and responding to the parameter that physically controls it — minority carriers in transit through the base.
+
+**Gate 5+.1e** Full suite, and the stage-5 convergence gates re-run: adding charge changes
+the Jacobian, so gate 5-1's operating points must still be reached.
+OUTCOME: **PASSED. 799 passed, 6 skipped, 0 failed** (`-m "" --timeout=400`), against 795
+before plus the 4 tests added here. **No existing test needed changing**, and gate 5-1's
+three operating points are among those still passing — adding charge changes `C`, not `G`,
+so the DC solve is untouched by construction, but it was worth checking rather than
+asserting.
+
+Runtime 1103.95 s at load average 4.6-7.1 from unrelated jobs on the box; not a measurement
+(trap 2).
+
+## 5+.2 `MOS_ACM` — delete
+
+0.1b verified it **cannot be constructed at all**: `mos.py:104` calls `super(MOS, self)` from
+a class whose MRO is `[MOS_ACM, SubCircuit, Circuit, object]`, raising `TypeError`. And it is
+not an ACM model — its body is a verbatim copy of `MOS` with one difference, `Symbol('kT')`
+in the noise PSD where `MOS` uses `toolkit.kboltzmann * Symbol('T')`. So a class advertising
+a different model is a copy of its neighbour with a worse noise expression, and has never
+run. Blast radius enumerated at 0.1b: **zero references anywhere** outside `mos.py` and the
+review documents — no test, no example, no doc page, not exported from `__init__.py`.
+
+**The mechanism that let it survive is the point:** the only thing that would ever have
+caught it is the doctest in its own docstring, and `pytest.ini` configures no doctest
+collection, so `if __name__ == "__main__": doctest.testmod()` runs only if someone executes
+the module directly. **The test existed and was never run** — which is worse than having no
+test, because it reads as coverage.
+
+**Gate 5+.2a.** Deletion converts a `TypeError` at construction into an `ImportError` at
+import — earlier and clearer. Declared: the suite is unchanged, confirming the zero-reference
+claim was right.
+OUTCOME:
+
+**Gate 5+.2b (fix the mechanism, not just the instance).** Per the standing preference for
+fixing what let an error hide: either collect doctests in `pytest.ini` or delete the
+unreachable `doctest.testmod()` blocks. Declared: whichever is chosen, no module may keep a
+docstring test that nothing runs. **Measure first** — collecting doctests repo-wide may fail
+on modules whose docstrings were never checked, and that count is the finding.
+OUTCOME:
+
+**Reconsider if** someone actually wants ACM — in which case it is written from the paper,
+not recovered from this.
+
+## 5+.3 `Varactor`'s clamp makes C fall to zero where it should be largest
+
+`v_eff = minimum(v, 0.99*VJ)` freezes the junction charge above the knee, so `C = dq/dv` goes
+to **exactly zero** in forward bias. SPICE linearises the charge above `FC*VJ` and keeps a
+finite, growing capacitance. Zero is the worst available answer: it does not merely
+mis-estimate, it removes the state variable, and a Newton step that sees `C = 0` on the node
+with the largest physical capacitance takes a wildly wrong step.
+
+**Gate 5+.3a.** `C(v)` must be positive and increasing through `FC*VJ` and above it.
+Declared: measure `C` across the knee before and after; the "before" curve going to zero is
+the defect reproduced.
+OUTCOME:
+
+**Gate 5+.3b.** The linearisation is SPICE's, and the same one 5+.1b uses for the `BJT`
+depletion terms — one treatment, not two.
+OUTCOME:
+
+## 5+.4 A large-signal MOSFET — stays in stage 10
+
+Confirmed absent; `mos.py` holds only small-signal subcircuits. Decision 0.3c put it in
+stage 10 and sequenced it after 0.1b and stage 5, both of which are now done. **It is not
+pulled forward**: it is the largest of the four by a wide margin, it depends on 5+.3's
+depletion treatment being settled, and unlike the charge model it blocks nothing that
+currently runs. Recorded here only so the ranked list is complete in one place.
 
 ---
 

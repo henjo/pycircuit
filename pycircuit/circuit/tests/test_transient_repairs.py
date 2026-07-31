@@ -1752,3 +1752,125 @@ def test_gate_5_the_limiter_only_moves_the_linearisation_point():
     assert np.max(np.abs(f)) < 1e-9, \
         'the returned point does not satisfy the unlimited equations: max |f| = %.3g' \
         % np.max(np.abs(f))
+
+
+# ---------------------------------------------------------------------------
+# 5+.1 -- the BJT charge model
+#
+# `BJT` defined no `q`, so `Semiconductor.C` took its zero-matrix branch: no
+# depletion capacitance, no diffusion capacitance, no TF. A bipolar transient was
+# a sequence of DC solves and every switching time it produced was wrong.
+# ---------------------------------------------------------------------------
+
+def _switching_stage(per, tf=None):
+    """An NPN switching stage whose ONLY capacitance is inside the transistor."""
+    from pycircuit.circuit.elements import VS, VPulse
+    from pycircuit.circuit.semiconductors import BJT
+    kw = {} if tf is None else {'TF': tf}
+    cir = SubCircuit(toolkit=numeric)
+    cir['VCC'] = VS('vcc', gnd, v=5.0)
+    cir['VB'] = VPulse('vb', gnd, v1=0.0, v2=0.9, td=per / 10, tr=per / 1000,
+                       tf=per / 1000, pw=per / 2, per=per)
+    cir['RB'] = R('vb', 'b', r=1e3)
+    cir['RC'] = R('vcc', 'c', r=1e3)
+    cir['Q1'] = BJT('c', 'b', gnd, **kw)
+    return cir
+
+
+def _switch_run(per, tf=None):
+    import warnings as _w
+    tran = Transient(_switching_stage(per, tf), toolkit=numeric)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore', RuntimeWarning)
+        res = tran.solve(refnode=gnd, tend=per * 1.6, timestep=per / 400)
+    return (np.asarray(res.sweep_values, dtype=float),
+            np.asarray(res.v('c'), dtype=float))
+
+
+def test_gate_5p1c_the_bjt_has_a_capacitance_matrix():
+    """It was the zero matrix, exactly.
+
+    Also checks the two properties a terminal charge model must have and which a
+    plausible-looking wrong one usually fails: the charges sum to zero (the device
+    stores no NET charge) and `C` is symmetric (it is a reciprocal capacitance).
+    """
+    from pycircuit.circuit.semiconductors import BJT
+    q1 = BJT(1, 2, 3, toolkit=numeric)
+    x = np.array([5.0, 0.7, 0.0])
+
+    Cm = np.asarray(q1.C(x), dtype=float)
+    assert np.max(np.abs(Cm)) > 1e-15, \
+        'C(x) is still the zero matrix; the transistor has no charge storage'
+    assert np.allclose(Cm, Cm.T, atol=1e-24), \
+        'C is not symmetric, so it is not a reciprocal capacitance matrix'
+
+    qv = np.asarray(q1.q(x), dtype=float)
+    assert abs(qv.sum()) < 1e-24, \
+        'terminal charges sum to %.3e; the device is storing net charge' % qv.sum()
+
+
+def test_gate_5p1a_the_device_now_has_a_time_constant():
+    """Measured before: the same stage driven 1000x faster gave a BIT-IDENTICAL
+    waveform, because there was no time constant in the device to respond with.
+
+    Now the fast drive cannot switch it at all -- the charge has nowhere near
+    enough time to arrive -- which is the physical behaviour that was missing.
+    """
+    _t_slow, v_slow = _switch_run(1e-6)
+    _t_fast, v_fast = _switch_run(1e-9)
+    assert v_slow.min() < 1.0, \
+        'the slow drive should switch the transistor on; v(c) min = %.4g' % v_slow.min()
+    assert v_fast.min() > 2.0, \
+        'the 1000x faster drive still switches it fully (v(c) min = %.4g), so the ' \
+        'device is not limited by its own charge' % v_fast.min()
+
+
+def test_gate_5p1d_transit_time_lengthens_the_turn_off():
+    """The gate that separates "a charge model exists" from "it does something".
+
+    `TF` is the forward transit time -- minority carriers in transit through the
+    base -- so it must show up as storage time when the drive is removed.
+    Measured: 13.63 ps / 14.98 ps / 16.83 ps as TF doubles twice.
+    """
+    per = 2e-8
+    t_fall = per / 10 + per / 1000 + per / 2
+
+    def recovery(tf):
+        tv, vc = _switch_run(per, tf)
+        after = tv > t_fall
+        hi = vc.max()
+        return tv[after][np.asarray(vc[after] > 0.5 * hi).argmax()] - t_fall
+
+    r1, r2, r3 = recovery(3e-10), recovery(6e-10), recovery(1.2e-9)
+    assert r2 > r1 and r3 > r2, \
+        'turn-off does not lengthen with TF: %.4g / %.4g / %.4g' % (r1, r2, r3)
+
+
+def test_gate_5p1b_depletion_capacitance_survives_the_knee():
+    """SPICE's `FC` linearisation, and the defect it must not reproduce.
+
+    `Varactor` freezes its charge with `min(v, 0.99*VJ)`, so `C = dq/dv` falls to
+    *exactly zero* in forward bias -- on the node with the largest physical
+    capacitance in the circuit. This helper is shared precisely so a new device
+    cannot inherit that: `C` must stay positive and non-decreasing through and
+    above the knee, and the charge must be continuous across it.
+    """
+    from pycircuit.circuit.semiconductors import _depletion_charge
+    CJ, VJ, M, FC = 3.5e-12, 0.75, 0.33, 0.5
+    h = 1e-7
+
+    def cap(v):
+        return (_depletion_charge(numeric, v + h, CJ, VJ, M, FC)
+                - _depletion_charge(numeric, v - h, CJ, VJ, M, FC)) / (2 * h)
+
+    vs = [-4.0, -1.0, 0.0, 0.2, 0.374, 0.376, 0.5, 0.7, 0.9]
+    caps = [cap(v) for v in vs]
+    assert all(c > 0 for c in caps), 'C goes non-positive: %s' % caps
+    for a, b in zip(caps, caps[1:]):
+        assert b >= a - 1e-15, 'C decreases with forward bias: %s' % caps
+
+    knee = FC * VJ
+    lo = _depletion_charge(numeric, knee - 1e-6, CJ, VJ, M, FC)
+    hi = _depletion_charge(numeric, knee + 1e-6, CJ, VJ, M, FC)
+    assert abs(hi - lo) < 1e-17, \
+        'the charge is discontinuous at the knee: %.6e vs %.6e' % (lo, hi)

@@ -49,6 +49,38 @@ def _expl(toolkit, arg):
         return toolkit.exp(arg)
 
 
+def _depletion_charge(toolkit, v, CJ, VJ, M, FC=0.5):
+    """SPICE's junction depletion charge, linearised above the `FC*VJ` knee.
+
+    Below the knee this is the textbook expression; above it, SPICE continues
+    with a quadratic whose value AND first derivative match at `v = FC*VJ`, so
+    `C = dq/dv` stays finite, positive and increasing.
+
+    **The alternative in this file is what stage 5+.3 exists to fix.**  `Varactor`
+    freezes the charge with `min(v, 0.99*VJ)`, which makes `C = dq/dv` fall to
+    EXACTLY ZERO in forward bias -- on the node with the largest physical
+    capacitance in the circuit.  That is worse than inaccurate: it removes the
+    state variable, and a Newton step that sees `C = 0` there takes a wildly wrong
+    step.  One treatment, shared, so a new device cannot inherit the old defect.
+    """
+    knee = FC * VJ
+    below = CJ * VJ / (1.0 - M) * (1.0 - (1.0 - v / VJ) ** (1.0 - M))
+    try:
+        if v <= knee:
+            return below
+    except (TypeError, ValueError):
+        ## Symbolic or array-valued: no branch is possible, so use the smooth
+        ## expression.  The knee only matters to the numeric Newton path.
+        return below
+
+    ## F1/F2/F3 are SPICE's constants; F1 is the charge AT the knee, so the two
+    ## pieces meet there by construction rather than by choosing a scale factor.
+    F1 = VJ / (1.0 - M) * (1.0 - (1.0 - FC) ** (1.0 - M))
+    F2 = (1.0 - FC) ** (1.0 + M)
+    F3 = 1.0 - FC * (1.0 + M)
+    return CJ * (F1 + (1.0 / F2) * (F3 * (v - knee)
+                                    + (M / (2.0 * VJ)) * (v * v - knee * knee)))
+
 def _pnjlim(vnew, vold, VT, IS, toolkit):
     """SPICE's `pnjlim`: bound the per-iteration excursion of a junction voltage.
 
@@ -222,6 +254,78 @@ class BJT(Semiconductor):
 
     def i(self, x, epar=defaultepar):
         return self.eval_i_pure(x, self._model_params(), epar, self.toolkit)
+
+    ## STAGE 5+.1 -- THE CHARGE MODEL, and where these defaults come from.
+    ##
+    ## Review 0.1b ranked this above the missing limiter: `BJT` defined no `q`, so
+    ## `Semiconductor.C` took its zero-matrix branch and the transistor had NO
+    ## charge storage at all.  Measured before this: `C(x)` identically zero, and
+    ## the same switching stage driven 1000x faster produced a **bit-identical**
+    ## waveform -- there was no time constant in the device to respond with.  A
+    ## bipolar transient was a sequence of DC solves, and every switching time it
+    ## produced was wrong.
+    ##
+    ## SPICE defaults CJE/CJC/TF/TR to ZERO and expects a model card.  These do
+    ## not, and the reason is consistency with this class rather than with SPICE:
+    ## `BJT` already invents IS=1e-14, BF=100, VA=100 -- it is a usable default
+    ## transistor, not a bare template.  Defaulting the charge to zero would leave
+    ## the defect above fully in place for anyone who did not know to set CJE and
+    ## TF, which is the confidently-wrong-answer class this work exists to remove.
+    ##
+    ## **These are a default model card, not a measurement.**  They are the round
+    ## numbers of a generic small-signal NPN and are documented as such; any real
+    ## comparison against silicon must supply its own.
+    instparams = instparams + [
+        Parameter('CJE', 'B-E zero-bias depletion capacitance', default=4.5e-12, unit='F'),
+        Parameter('VJE', 'B-E junction potential', default=0.75, unit='V'),
+        Parameter('MJE', 'B-E grading coefficient', default=0.33),
+        Parameter('CJC', 'B-C zero-bias depletion capacitance', default=3.5e-12, unit='F'),
+        Parameter('VJC', 'B-C junction potential', default=0.75, unit='V'),
+        Parameter('MJC', 'B-C grading coefficient', default=0.33),
+        Parameter('TF', 'Forward transit time', default=3e-10, unit='s'),
+        Parameter('TR', 'Reverse transit time', default=4e-9, unit='s'),
+        Parameter('FC', 'Forward-bias depletion coefficient', default=0.5),
+    ]
+
+    @staticmethod
+    def eval_q_pure(x, params, epar, toolkit):
+        """Terminal charges: depletion on both junctions plus diffusion via TF/TR.
+
+        The two junctions both connect to the base, so the base carries the sum
+        and each of the collector and emitter carries the negative of its own --
+        which is what makes `sum(q) == 0`, i.e. the device stores no net charge.
+        """
+        v_c, v_b, v_e = x[0], x[1], x[2]
+        v_be = v_b - v_e
+        v_bc = v_b - v_c
+
+        VT = toolkit.kboltzmann * epar.T / toolkit.qelectron
+        IS = params.get('IS', 1e-14)
+        FC = params.get('FC', 0.5)
+
+        ## Depletion charge -- the same helper `Varactor` uses, so the FC
+        ## linearisation exists once.
+        q_dep_be = _depletion_charge(toolkit, v_be, params.get('CJE', 0.0),
+                                     params.get('VJE', 0.75),
+                                     params.get('MJE', 0.33), FC)
+        q_dep_bc = _depletion_charge(toolkit, v_bc, params.get('CJC', 0.0),
+                                     params.get('VJC', 0.75),
+                                     params.get('MJC', 0.33), FC)
+
+        ## Diffusion charge: minority carriers in transit, proportional to the
+        ## junction current.  `_expl` for the same reason `eval_i_pure` uses it --
+        ## this is differentiated by a central difference under a toolkit without
+        ## autodiff, so an overflow here becomes `nan` in C, not a large entry.
+        q_dif_be = params.get('TF', 0.0) * IS * (_expl(toolkit, v_be / VT) - 1.0)
+        q_dif_bc = params.get('TR', 0.0) * IS * (_expl(toolkit, v_bc / VT) - 1.0)
+
+        q_be = q_dep_be + q_dif_be
+        q_bc = q_dep_bc + q_dif_bc
+
+        return toolkit.array([-q_bc, q_be + q_bc, -q_be])
+
+    def q(self, x, epar=defaultepar):
+        return self.eval_q_pure(x, self._model_params(), epar, self.toolkit)
 
 
 class JFET(Semiconductor):
