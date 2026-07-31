@@ -2,14 +2,14 @@
 
 > ## RESUME HERE — state as of 2026-07-31
 >
-> Last commit changing **simulator behaviour**: `7adcf59` (stage 5+.1 -- the BJT charge model).
+> Last commit changing **simulator behaviour**: `ceb8cf5` (stage 5+.2/5+.3 -- MOS_ACM, Varactor).
 > Anything after it is a benchmark or documentation unless it says otherwise — so a newer
 > HEAD does not by itself mean the code has moved underneath this block; check
-> `git log --oneline 7adcf59..HEAD -- pycircuit/`. Branch `cna-jax-vectorization`
+> `git log --oneline ceb8cf5..HEAD -- pycircuit/`. Branch `cna-jax-vectorization`
 > (`git@github.com:henjo/pycircuit.git`) — **check `git status -sb` before assuming it is
 > pushed**; several commits have sat unpushed at a time in this work.
 >
-> **Suite: 799 passed, 6 skipped, 0 failed** (`-m "" --timeout=400`). Runtimes this session
+> **Suite: 803 passed, 6 skipped, 0 failed** (`-m "" --timeout=400`). Runtimes this session
 > ranged 676 s to 1941 s on near-identical source, entirely from other jobs on the box —
 > see trap 2 before reading anything into one. Nominal
 > ~8-13 min, but one run of the identical tree took **31m41s** purely from machine load —
@@ -20,16 +20,18 @@
 >
 > ### The next action, concretely
 >
-> **STAGE 5+ items 2 and 3, in that order** — `MOS_ACM` and `Varactor`. Both are small, both
-> are 0.1b findings now carrying gates, and 5+.3 is the one that matters: `Varactor`'s
-> `min(v, 0.99*VJ)` clamp makes `C = dq/dv` fall to **exactly zero** in forward bias, on the
-> node with the largest physical capacitance in the circuit. 5+.1 already built the shared
-> `_depletion_charge` helper it needs, so the fix is to point it at that and delete the
-> clamp. `MOS_ACM` is a deletion plus the *mechanism* question — `pytest.ini` collects no
-> doctests, so that class's own docstring test never ran; gate 5+.2b says measure the
-> repo-wide doctest failure count before deciding what to do about it.
+> **5+.5 — `MOS`'s own doctest, found while fixing 5+.2 and not yet repaired.** Two
+> independent defects in a seven-line example: `SubCircuit()` takes the numeric toolkit
+> while the parameters are `Symbol(...)`, and `freqs=array([Symbol('s')])` trips
+> `nportanalysis`'s `assert not isiterable(freqs)`. Until they are fixed, `mos.py` cannot
+> join `tests/test_doctests.py` — and that file is the mechanism which would have caught
+> `MOS_ACM`, so leaving `mos.py` off it leaves the same hole open one class away.
 >
-> After those, stage 5+ is complete except 5+.4 (the large-signal MOSFET), which stays
+> **Gate 5+.5b matters more than the fix**: decide by looking whether the *example* drifted
+> or the *assertion* did. The example is the older artefact. Do not assume it is wrong
+> merely because changing it is smaller.
+>
+> After that, stage 5+ is complete except 5+.4 (the large-signal MOSFET), which stays
 > sequenced into stage 10 by decision 0.3c.
 >
 > **Decide what `lte_formula` is for — a maintainer's call, and the last thing blocking
@@ -68,6 +70,8 @@
 > Stage 2 (2.42x bit-identical, 5.19x with single-threaded BLAS) · three post-stage-2
 > improvements (2+.1 `__getattr__` memo, 2+.2 skip the unread residual, 2+.3 `relref`) ·
 > **Stage 5** (junction limiting, the exp clamp, and the `SubCircuit.limit` write-back) ·
+> **Stage 5+.2/5+.3** (`MOS_ACM` deleted; `Varactor`'s `C` no longer falls to exactly zero
+> in forward bias) ·
 > **Stage 5+.1** (a charge model for the `BJT`; the device had none, and a transient
 > through it had no time constant at all) ·
 > Stage 3 (`firststep`; `reltol` controls accuracy, 90.8x) · Stage 4 parts 1-4: 4c · 4g(a) ·
