@@ -20,11 +20,16 @@ The driving function is a sinusoid, so every derivative is available in closed f
 and `q'''` is nonzero (a polynomial of low degree would make the leading error term
 vanish and every estimator would look perfect).
 
+`--forceaccept` is the exception and measures a whole transient on purpose: gates 4b
+and 4e are about what the CONTROLLER does with an estimate, not about the estimate,
+and neither is observable from the estimator in isolation.
+
 Usage::
 
-    python -u benchmarks/transient_stage4.py --ratios     # 4c, 4d, 4e
-    python -u benchmarks/transient_stage4.py --hscaling   # 4g-2
-    python -u benchmarks/transient_stage4.py --pi         # 4a
+    python -u benchmarks/transient_stage4.py --ratios       # 4c, 4d
+    python -u benchmarks/transient_stage4.py --hscaling     # 4g-2
+    python -u benchmarks/transient_stage4.py --pi           # 4a
+    python -u benchmarks/transient_stage4.py --forceaccept  # 4b, 4e
 """
 
 import argparse
@@ -210,16 +215,178 @@ def cmd_pi(args):
     return 0
 
 
+## ---------------------------------------------------------------------------
+## GATES 4b and 4e -- the force-accept path and the order-drop guard
+## ---------------------------------------------------------------------------
+
+MAX_REJECT = 3          # must track `transient.py`'s own constant
+
+
+class _Spy:
+    """Replays `transient.py`'s reject_count bookkeeping from outside it.
+
+    The force-accept branch is inline in `_solve` and has no hook, so the count
+    is reconstructed from the (accept, h) sequence the controller returns: four
+    consecutive rejections at one time point is one force-accept.  Verified
+    against direct instrumentation of that branch -- 78/78, 6/6 and 0/0 on three
+    configurations -- before any of the numbers below were believed.
+
+    **A force-accepted step is an accepted step.**  It enters the integrator
+    history like any other, so it belongs in the ratio sequence.  The first
+    version of this filtered on `accept` alone, dropped exactly the steps the
+    gate is about, and reported a worst ratio of 97.7 where the truth was 10.0.
+    """
+
+    def __init__(self):
+        from pycircuit.circuit.stepcontroller import IntegralController
+        self.inner = IntegralController()
+        self.h_accepted = []
+        self.n_rejected = 0
+        self.n_forced = 0
+        self._consec = 0
+
+    def set_relref(self, relref):
+        self.inner.set_relref(relref)
+        return self
+
+    def evaluate_step(self, *args, **kwargs):
+        accept, h_next = self.inner.evaluate_step(*args, **kwargs)
+        forced = False
+        if not accept:
+            self.n_rejected += 1
+            self._consec += 1
+            if self._consec > MAX_REJECT:
+                forced = True
+                self.n_forced += 1
+                self._consec = 0
+        else:
+            self._consec = 0
+        if accept or forced:
+            self.h_accepted.append(kwargs['h_curr'])
+        return accept, h_next
+
+    def ratios(self):
+        h = self.h_accepted
+        return [h[i + 1] / h[i] for i in range(len(h) - 1)]
+
+
+def _fa_circuits():
+    """A smooth drive, a stiff ringdown, and a drive with real discontinuities."""
+    from pycircuit.circuit import SubCircuit, gnd
+    from pycircuit.circuit.elements import R, C, L, VSin, VPulse
+
+    def rc_vsin():
+        c = SubCircuit()
+        c['vs'] = VSin('a', gnd, va=1.0, freq=1e3)
+        c['R'] = R('a', 'b', r=1e3)
+        c['C'] = C('b', gnd, c=1e-7)
+        return c, dict(tend=2e-3, timestep=1e-5)
+
+    def stiff_rlc():
+        c = SubCircuit()
+        c['C1'] = C(1, gnd, c=1e-6)
+        c['R1'] = R(1, 2, r=1.0)
+        c['L1'] = L(2, gnd, L=1e-6)
+        x0 = np.zeros(c.n)
+        x0[c.get_node_index('1')] = 1.0
+        x0[c.get_node_index('2')] = 1.0
+        return c, dict(tend=5e-3, timestep=2e-4, x0=x0)
+
+    def rc_pulse():
+        c = SubCircuit()
+        c['vs'] = VPulse('a', gnd, v1=0.0, v2=1.0, td=1e-5, tr=1e-7, tf=1e-7,
+                         pw=2e-5, per=5e-5)
+        c['R'] = R('a', 'b', r=1e3)
+        c['C'] = C('b', gnd, c=1e-9)
+        return c, dict(tend=3e-4, timestep=1e-6)
+
+    return [('rc-vsin', rc_vsin), ('stiff-rlc', stiff_rlc), ('rc-pulse', rc_pulse)]
+
+
+def cmd_forceaccept(args):
+    """GATES 4b and 4e.  Does the escape hatch fire, and does it leave the bound?
+
+    Reported per configuration: accepted steps, rejections, force-accepts, the
+    worst ratio between consecutive ACCEPTED steps, and how many ratios sit
+    outside variable-step BDF-2's zero-stability bound.
+
+    Gate 4b's declared success is that no step ratio exceeds 2.414214 and that
+    every force-accept warns.  The warning is asserted in the suite
+    (`test_transient_repairs.py`); the ratio is the last column here.
+
+    The `before` column is not reproducible from this file -- it needs the source
+    as it stood at 3416492 (`git stash`, re-run, `git stash pop`), because the
+    10x growth is inline in `_solve` with no hook.  What is reproducible, and what
+    matters for a regression, is that the last column stays zero.
+    """
+    import warnings
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.integrator import ZERO_STABILITY_RATIO
+
+    names = [('euler', lambda: EulerIntegrator()),
+             ('trap-classic', lambda: TrapezoidalIntegrator('classic')),
+             ('trap-ywr', lambda: TrapezoidalIntegrator('ywr')),
+             ('gear2-classic', lambda: Gear2Integrator('classic')),
+             ('gear2-ywr', lambda: Gear2Integrator('ywr'))]
+    ## 1e-3 IS NOT OPTIONAL and must stay first.  The original sweep for this
+    ## gate ran 1e-4/1e-5/1e-6 only, concluded in writing that the shipped default
+    ## no longer reaches the force-accept path, and was wrong: `Gear2('ywr')`
+    ## reaches it at 1e-3 and was taking a step ratio of exactly 10.0 there.  A
+    ## loose tolerance is what lets a step grow into trouble, so a sweep that only
+    ## tightens cannot see this defect at all.
+    reltols = [float(x) for x in (args.reltols or '1e-3,1e-4,1e-5').split(',')]
+
+    print('Zero-stability bound on the step ratio: %.6f' % ZERO_STABILITY_RATIO)
+    worst_overall = 0.0
+    n_outside = 0
+    for cname, builder in _fa_circuits():
+        for reltol in reltols:
+            print()
+            print('=== %s, reltol=%g' % (cname, reltol))
+            print('%-15s %8s %8s %8s %10s %10s'
+                  % ('integrator', 'steps', 'reject', 'forced', 'worst', 'outside'))
+            for name, make in names:
+                cir, kw = builder()
+                tran = Transient(cir, integrator=make(), reltol=reltol)
+                spy = _Spy()
+                tran.step_controller = spy
+                with warnings.catch_warnings():
+                    ## The force-accept warning is the subject of the `forced`
+                    ## column; printing it 159 times would bury the table.
+                    warnings.simplefilter('ignore', RuntimeWarning)
+                    tran.solve(coupled_lte=False, **kw)
+                rr = spy.ratios()
+                outside = sum(1 for r in rr if r > ZERO_STABILITY_RATIO)
+                worst_overall = max(worst_overall, max(rr))
+                n_outside += outside
+                print('%-15s %8d %8d %8d %10.4f %10d'
+                      % (name, len(spy.h_accepted), spy.n_rejected, spy.n_forced,
+                         max(rr), outside))
+    print()
+    print('worst accepted-step ratio anywhere: %.4f   ratios outside the bound: %d'
+          % (worst_overall, n_outside))
+    print('GATE 4b (no step ratio exceeds %.6f): %s'
+          % (ZERO_STABILITY_RATIO, 'PASS' if n_outside == 0 else 'FAIL'))
+    return 0 if n_outside == 0 else 1
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--ratios', action='store_true')
     p.add_argument('--hscaling', action='store_true')
     p.add_argument('--pi', action='store_true')
+    p.add_argument('--forceaccept', action='store_true')
+    p.add_argument('--reltols', default=None,
+                   help='comma-separated, for --forceaccept '
+                        '(default 1e-3,1e-4,1e-5 -- keep a LOOSE one, see the note '
+                        'in cmd_forceaccept)')
     args = p.parse_args()
     if args.hscaling:
         return cmd_hscaling(args)
     if args.pi:
         return cmd_pi(args)
+    if args.forceaccept:
+        return cmd_forceaccept(args)
     return cmd_ratios(args)
 
 

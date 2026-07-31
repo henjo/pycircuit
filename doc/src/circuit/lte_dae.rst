@@ -95,6 +95,7 @@ solution :math:`v(t) = V\,(1 - e^{-t/\tau})`.
 
 .. exec-rst::
 
+    import warnings
     import numpy as np
     from pycircuit.circuit.elements import VS, R, C
     from pycircuit.circuit.circuit import SubCircuit, gnd
@@ -111,35 +112,54 @@ solution :math:`v(t) = V\,(1 - e^{-t/\tau})`.
         c['R1'] = R(1, 2, r=10)
         c['C1'] = C(2, gnd, c=1e-6)
         tran = Transient(c, integrator=integrator_cls(lte), uic=True)
-        res = tran.solve(tend=50e-6, timestep=5e-6, coupled_lte=False)
+        ## Counted rather than printed: a force-accept is an accepted step whose
+        ## truncation error nothing bounds, so it belongs in the table next to the
+        ## error it explains -- not in the build log, where it reads as a defect
+        ## in the build.  See "The step-size ratio, and what bounds it" below.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            res = tran.solve(tend=50e-6, timestep=5e-6, coupled_lte=False)
+        forced = sum(1 for w in caught
+                     if issubclass(w.category, RuntimeWarning)
+                     and 'truncation error' in str(w.message))
         t = np.asarray(res.sweep_values, dtype=float)
         v_analytic = 10.0 * (1.0 - np.exp(-t[-1] / TAU))
-        return len(t), abs(res.v(2, gnd)[-1] - v_analytic)
+        return len(t), abs(res.v(2, gnd)[-1] - v_analytic), forced
 
     rows = []
     for name, integrator_cls in (('euler', EulerIntegrator),
                                  ('trap', TrapezoidalIntegrator),
                                  ('gear2', Gear2Integrator)):
-        nc, ec = run(integrator_cls, 'classic')
-        ny, ey = run(integrator_cls, 'ywr')
-        rows.append((name, nc, ec, ny, ey))
+        nc, ec, fc = run(integrator_cls, 'classic')
+        ny, ey, fy = run(integrator_cls, 'ywr')
+        rows.append((name, nc, ec, fc, ny, ey, fy))
 
     print(".. list-table:: RC charging (uic, tau = 10 us, max step 5 us):"
-          " steps and absolute error vs analytic")
+          " steps, absolute error vs analytic, and force-accepts")
     print("   :header-rows: 1")
-    print("   :widths: 14 12 16 12 16")
+    print("   :widths: 12 11 14 11 11 14 11")
     print("")
     print("   * - Method")
     print("     - classic steps")
     print("     - classic error")
+    print("     - classic forced")
     print("     - ywr steps")
     print("     - ywr error")
-    for name, nc, ec, ny, ey in rows:
+    print("     - ywr forced")
+    for name, nc, ec, fc, ny, ey, fy in rows:
         print("   * - %s" % name)
         print("     - %d" % nc)
         print("     - %.2e" % ec)
+        print("     - %d" % fc)
         print("     - %d" % ny)
         print("     - %.2e" % ey)
+        print("     - %d" % fy)
+
+The last column counts steps the solver accepted with an unbounded truncation
+error, having rejected them three times first.  On this circuit only one
+configuration reaches that path, and it is the one whose LTE formula is a
+uniform-grid formula being used on a non-uniform grid -- see the discussion of
+Trapezoidal below, and the section on the step-size ratio that follows it.
 
 Discussion
 ==========
@@ -190,6 +210,181 @@ The comparison isolates exactly where the DAE formula matters:
    went from 0 rejections and 0.0% step-count response to ``reltol``, to 4
    rejections and +327.5%.  ``Gear2Integrator`` now also *defaults* to ``'ywr'``.
    See ``doc/transient_repair_plan.md`` for the full gate outcomes.
+
+The step-size ratio, and what bounds it
+=======================================
+
+Everything above is about *how large* the truncation error is.  There is a second
+constraint that has nothing to do with accuracy: how fast the step size may
+**change**.
+
+Variable-step BDF-2 fits a quadratic through :math:`t_n`, :math:`t_{n-1}` and
+:math:`t_{n-2}`, and the homogeneous part of that recursion has two roots.  One is
+:math:`z = 1`, which is what consistency requires.  The other is *parasitic*, and
+its magnitude depends only on the ratio :math:`r = h_n/h_{n-1}`:
+
+.. math::
+
+   z_{\text{parasitic}} = \frac{r^2}{2r + 1}
+
+The method is zero-stable only while that root stays inside the unit disc, i.e.
+while :math:`r^2 < 2r+1`, i.e. :math:`r < 1 + \sqrt{2} \approx 2.414214`
+(Grigorieff).  Above it, an error already present in the solution is *amplified*
+by every subsequent step instead of being forgotten:
+
+.. exec-rst::
+
+    import math
+
+    def parasitic(r):
+        return r * r / (2.0 * r + 1.0)
+
+    bound = 1.0 + math.sqrt(2.0)
+    rows = [(bound, 'the bound itself'),
+            (2.5, 'just past it'),
+            (3.0, ''),
+            (10.0, 'the escape hatch, before 4b')]
+
+    print(".. list-table:: Parasitic root of variable-step BDF-2, and what it does"
+          " over 20 steps")
+    print("   :header-rows: 1")
+    print("   :widths: 14 18 20 24")
+    print("")
+    print("   * - ratio r")
+    print("     - parasitic root")
+    print("     - growth over 20 steps")
+    print("     - where this ratio comes from")
+    for r, note in rows:
+        z = parasitic(r)
+        print("   * - %.4f" % r)
+        print("     - %.6f" % z)
+        print("     - %.3g" % (z ** 20))
+        print("     - %s" % (note or "-"))
+
+Two clamps keep a run inside that bound, and they are deliberately different
+things:
+
+* ``stepcontroller.MAX_GROWTH_RATIO`` (2.0) is the factor the step controller
+  will never exceed when predicting the next step.  It sits *inside* the
+  stability bound rather than on it: at exactly :math:`1+\sqrt 2` the parasitic
+  root is 1.000000, and a method running permanently at its own stability
+  boundary has no margin for the rounding that put it there.
+* ``integrator.ZERO_STABILITY_RATIO`` (:math:`1+\sqrt 2`) is a backstop inside
+  ``Gear2Integrator.check_order_drop``.  If a ratio above the bound ever reaches
+  the integrator, it drops to backward Euler for that step -- order 1 has no
+  parasitic root to amplify, so the ratio becomes harmless rather than forbidden.
+
+The backstop is expected to be idle.  Its value is that it makes the bound a
+property the integrator enforces for itself, rather than one that happens to hold
+because the controller's clamp is smaller.
+
+.. note::
+
+   **The one path that used to bypass both.**  When the truncation error stays
+   above tolerance for several successively smaller steps -- which happens near a
+   source discontinuity, where the estimate is built on differences of something
+   that is not differentiable -- the solver gives up rejecting, accepts the
+   converged solution, and moves on.  That escape hatch used to set the next step
+   to :math:`10\times` the current one: growing tenfold in answer to an error that
+   was already too large, at a parasitic root of 4.76, and silently.
+
+   It now drops the order instead, grows by ``MAX_GROWTH_RATIO`` like every other
+   accepted step, and raises a ``RuntimeWarning`` naming the time and the step
+   size.  An accepted truncation error that nothing bounds must not be invisible.
+
+The table below is measured when this page is built, on a run chosen because it
+*does* reach that escape hatch:
+
+.. exec-rst::
+
+    import warnings
+    import numpy as np
+    from pycircuit.circuit.elements import R, C, L
+    from pycircuit.circuit.circuit import SubCircuit, gnd
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.integrator import (TrapezoidalIntegrator,
+                                              Gear2Integrator,
+                                              ZERO_STABILITY_RATIO)
+    from pycircuit.circuit.stepcontroller import IntegralController
+
+    class Spy(IntegralController):
+        """Records the ACCEPTED step sequence, force-accepted steps included.
+
+        A force-accepted step enters the integrator history like any other, so it
+        belongs in the ratio sequence.
+        """
+        def __init__(self):
+            super().__init__()
+            self.h = []
+            self.forced = 0
+            self._consec = 0
+
+        def evaluate_step(self, *args, **kwargs):
+            accept, h_next = super().evaluate_step(*args, **kwargs)
+            forced = False
+            if not accept:
+                self._consec += 1
+                if self._consec > 3:          # transient.py's MAX_REJECT
+                    forced, self._consec = True, 0
+                    self.forced += 1
+            else:
+                self._consec = 0
+            if accept or forced:
+                self.h.append(kwargs['h_curr'])
+            return accept, h_next
+
+    def run(integrator, reltol):
+        c = SubCircuit()
+        c['C1'] = C(1, gnd, c=1e-6)
+        c['R1'] = R(1, 2, r=1.0)
+        c['L1'] = L(2, gnd, L=1e-6)
+        x0 = np.zeros(c.n)
+        x0[c.get_node_index('1')] = 1.0
+        x0[c.get_node_index('2')] = 1.0
+        tran = Transient(c, integrator=integrator, reltol=reltol)
+        spy = Spy()
+        tran.step_controller = spy
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            tran.solve(tend=5e-3, timestep=2e-4, x0=x0, coupled_lte=False)
+        ratios = [spy.h[i + 1] / spy.h[i] for i in range(len(spy.h) - 1)]
+        return len(spy.h), spy.forced, max(ratios), \
+            sum(1 for r in ratios if r > ZERO_STABILITY_RATIO)
+
+    ## Both tolerances matter.  Gear2 -- the default -- only reaches the escape
+    ## hatch at the LOOSER one, which is where a step is free to grow into
+    ## trouble; a sweep of tight tolerances alone would show it never getting
+    ## there, and once did.
+    cases = [('gear2, ywr (default)', Gear2Integrator, 'ywr', 1e-3),
+             ('gear2, ywr (default)', Gear2Integrator, 'ywr', 1e-4),
+             ('gear2, classic', Gear2Integrator, 'classic', 1e-3),
+             ('trapezoidal, ywr', TrapezoidalIntegrator, 'ywr', 1e-3),
+             ('trapezoidal, ywr', TrapezoidalIntegrator, 'ywr', 1e-4)]
+
+    print(".. list-table:: Stiff RLC from a charged initial state: accepted step"
+          " ratios against the bound %.6f" % ZERO_STABILITY_RATIO)
+    print("   :header-rows: 1")
+    print("   :widths: 22 10 10 14 14 16")
+    print("")
+    print("   * - configuration")
+    print("     - reltol")
+    print("     - steps")
+    print("     - force-accepts")
+    print("     - worst ratio")
+    print("     - ratios over bound")
+    for label, cls, lte, reltol in cases:
+        n, forced, worst, over = run(cls(lte), reltol)
+        print("   * - %s" % label)
+        print("     - %.0e" % reltol)
+        print("     - %d" % n)
+        print("     - %d" % forced)
+        print("     - %.4f" % worst)
+        print("     - %d" % over)
+
+The last column is the gate: it must be zero on every row.  The rows that reach
+the escape hatch at all are the ones to read -- before the repair, the default at
+reltol 1e-3 produced one accepted step ratio of exactly 10.0, and the trapezoidal
+row at 1e-4 produced eight above :math:`1+\sqrt 2`, the largest 6.4669.
 
 Conclusion
 ==========

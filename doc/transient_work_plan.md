@@ -7,48 +7,47 @@
 > moved underneath this block. Branch `cna-jax-vectorization`, **pushed to `origin`**
 > (`git@github.com:henjo/pycircuit.git`).
 >
-> **Suite: 755 passed, 6 skipped, 0 failed** (`-m "" --timeout=400`). Nominal ~8-13 min,
-> but one run of the identical tree took **31m41s** purely from machine load — see trap 2.
-> **Doc build: succeeded, 2 warnings, 0 ERROR.** Working tree clean.
+> **Suite: 761 passed, 6 skipped, 0 failed, 670.26 s** (`-m "" --timeout=400`). Nominal
+> ~8-13 min, but one run of the identical tree took **31m41s** purely from machine load —
+> see trap 2. **Doc build: succeeded, 2 warnings, 0 ERROR.** Working tree clean.
 >
 > Transient regression tests live in `pycircuit/circuit/tests/test_transient_repairs.py`
 > (renamed from `test_transient_stage1.py`); its docstring maps sections to plan stages.
 >
 > ### The next action, concretely
 >
-> **Stage 4, items 4e + 4b, as one piece of work.** They are the same defect from two
-> sides and the plan says so: 4e's missing guard "is how 4b slipped through".
->
-> * **4e** — `Gear2.check_order_drop` (`integrator.py`) fires on step *shrink*, which is
->   unconditionally zero-stable, and has **no guard on growth**, which is the unstable one.
-> * **4b** — `transient.py` grows `dt` **10x** after force-accepting an over-tolerance step.
->   Variable-step BDF-2 is zero-stable only for ratio < 1+sqrt(2) = 2.414; at 10x the
->   parasitic root is 4.76.
->
-> **First step before writing code:** measure whether the `MAX_REJECT` force-accept path is
-> still reached at all, now that stages 3 and 4c have changed the step trajectory. It may
-> have become rare — that is a finding either way, and it sizes the work.
+> **4g(b)** — the mode-free trapezoidal estimator. **Start this fresh, not at the end of
+> a session.** It needs a third past charge and `h_last2` threaded through
+> `Integrator.compute_lte`, its three implementations, both `StepController` subclasses
+> and the transient's history. Design is settled and recorded under gate 4g-2. Stage 3
+> already showed once that a hasty change to this path breaks both QUCS reference tests.
 >
 > ### After that, in order
 >
-> 1. **4g(b)** — the mode-free trapezoidal estimator. **Start this fresh, not at the end of
->    a session.** It needs a third past charge and `h_last2` threaded through
->    `Integrator.compute_lte`, its three implementations, both `StepController` subclasses
->    and the transient's history. Design is settled and recorded under gate 4g-2. Stage 3
->    already showed once that a hasty change to this path breaks both QUCS reference tests.
-> 2. **Three things fall out of 4g(b) immediately**: unblock **4d**; flip `relref` to
+> 1. **Three things fall out of 4g(b) immediately**: unblock **4d**; flip `relref` to
 >    `sigglobal` (reverted by gate D3-a only because trapezoidal was contaminated); return
 >    `lte_vabstol` to 1e-12 and rewrite gate 1-5, which asserts a property only true under
 >    `pointlocal`.
-> 3. **4a, 4a-bis, 4f, 4h**, the new `gear2-classic` ratio dependence, 0.3d's `chgtol`
->    guard, and `doc/src/circuit/lte_dae.rst`.
+> 2. **4a, 4a-bis, 4f, 4h**, the new `gear2-classic` ratio dependence, 0.3d's `chgtol`
+>    guard, and the rest of `doc/src/circuit/lte_dae.rst`'s variable-step story (the
+>    step-ratio half of it landed with 4b).
+>
+> **Note for 4d.** `Trapezoidal('ywr')` is by far the heaviest user of the rejection cap
+> (25 force-accepts on the stiff RLC at reltol 1e-4, against 1 for either `Gear2`), so
+> deleting that branch will move the force-accept counts a lot. 4b's end-to-end regression
+> test deliberately does **not** depend on it — it is pointed at the shipped default at
+> reltol 1e-3 — but re-run `benchmarks/transient_stage4.py --forceaccept` after 4d rather
+> than assuming the counts carry over.
 >
 > ### Done
 >
 > Stage 0 (all reviews, measurements, decisions 0.3a-d) · Stage 1 (silent failures) ·
 > Stage 2 (2.42x bit-identical, 5.19x with single-threaded BLAS) · three post-stage-2
 > improvements (2+.1 `__getattr__` memo, 2+.2 skip the unread residual, 2+.3 `relref`) ·
-> Stage 3 (`firststep`; `reltol` controls accuracy, 90.8x) · Stage 4 parts 1-2 (4c, 4g(a)).
+> Stage 3 (`firststep`; `reltol` controls accuracy, 90.8x) · Stage 4 parts 1-3 (4c, 4g(a),
+> and **4e + 4b**: 61 accepted step ratios outside BDF-2's zero-stability bound across the
+> measured grid become 0, worst ratio 10.000 -> 2.000, force-accepts now warn — and the
+> warning immediately corrected a conclusion this work had already written down).
 > Every gate outcome is recorded in place below; the completion records are appended at the
 > end of this file.
 >
@@ -81,7 +80,19 @@
 >    all-zero vector.
 > 5. **`drift == 0.00e+00` is unsatisfiable for anything that changes which BLAS kernel
 >    runs.** Declare "identical step count + drift at rounding level" for stages 7b/7c.
-> 6. **The review's magnitudes run ~2x optimistic.** Five have now shrunk on measurement
+> 6. **A tolerance sweep that only goes tighter is not a sweep.** Gate 4b's grid ran
+>    reltol 1e-4/1e-5/1e-6 across three circuits and five configurations — 45 runs, which
+>    looked comprehensive — and concluded in writing that the shipped default no longer
+>    reaches the force-accept path. At **1e-3** it does, and it was taking a step ratio of
+>    exactly 10.0 when it did. Loose tolerances are where a step grows into trouble;
+>    include at least one.
+> 7. **A force-accepted step is an accepted step.** It enters the integrator history like
+>    any other, so it belongs in any step-ratio sequence. The first version of gate 4b's
+>    probe filtered on the controller's `accept` return and therefore dropped exactly the
+>    steps the gate is about — reporting a worst ratio of **97.7** where the truth was
+>    **10.0**, and **2.000** ("no violation") on a run that had three. Both errors read as
+>    plausible.
+> 8. **The review's magnitudes run ~2x optimistic.** Five have now shrunk on measurement
 >    (150 TB → 420 GiB; 10.5x → 5.19x; 4.462 ms → 0.234 ms; "2.17 assemblies needed" was not
 >    a redundancy figure; the IM3 harness's 10x → 2.17x). Re-measure before quoting
 >    `transient_review.md`.
@@ -94,7 +105,9 @@
 > `PYTHONPATH` is mandatory — a stale root-owned egg shadows the source otherwise.
 > Benchmarks: `benchmarks/transient_stage2.py` (perf + drift),
 > `benchmarks/transient_stage3.py` (first step), `benchmarks/transient_stage4.py`
-> (estimators: `--ratios`, `--hscaling`, `--pi`), `benchmarks/transient_review/` (stage 0),
+> (estimators: `--ratios`, `--hscaling`, `--pi`; and `--forceaccept`, which is the
+> gate-4b/4e sweep and **exits non-zero if any accepted step ratio leaves the bound**),
+> `benchmarks/transient_review/` (stage 0),
 > and **`benchmarks/transient_decisions.py`** — the three measurements that *changed a
 > decision or reordered the plan* (`--parity` why 4d is blocked on 4g, `--relref` why D3
 > was reverted, `--vabstol` why 0.3a's split was free). Those are the ones worth being able
@@ -1611,7 +1624,89 @@ only configuration measured reaching this path. Replace growth with an order dro
 **warn** — an unbounded accepted truncation error must not be invisible.
 **Gate 4b:** on the review's circuit, no step ratio exceeds 2.414, and any force-accept
 emits a `RuntimeWarning` naming `t` and `h`.
-OUTCOME:
+OUTCOME: **PASSED on both halves.** Measured 2026-07-31 by
+`benchmarks/transient_stage4.py --forceaccept`. The answer to the question the resume block
+said to ask first is **yes — the path is still reached, by the shipped default among
+others, and it was taking a ratio of exactly 10.0 when it did.**
+
+**A CONCLUSION THIS GATE GOT WRONG FIRST, AND WHAT CORRECTED IT.** The initial sweep
+covered reltol 1e-4/1e-5/1e-6 across 3 circuits and 5 integrator/formula combinations. In
+all 9 of those runs `Gear2('ywr')` reaches the cap **zero** times and only
+`Trapezoidal('ywr')` reaches it, 5-159 times per run — so this section was first written to
+say the review's "`Gear2(ywr)` is the only configuration reaching the force-accept path"
+had been *refuted*, and that stages 3 and 4c had moved the default off the path entirely.
+
+**That was wrong, and the thing that refuted it was the warning added by 4b itself, on its
+first full-suite run.** It fired in five places the sweep never looked, including
+`test_step_count_and_error_respond_to_reltol` for **both** `Gear2('classic')` and
+`Gear2('ywr')`. Re-measuring at **reltol 1e-3** — a looser tolerance than the sweep
+covered — on the stiff RLC:
+
+| config, stiff RLC @ 1e-3 | steps | force-accepts | worst ratio | ratios > 2.414 |
+|---|---|---|---|---|
+| **gear2-ywr (the default)** | 179 -> 181 | 1 -> 1 | **10.0000 -> 2.0000** | **1 -> 0** |
+| gear2-classic | 193 -> 195 | 1 -> 1 | **10.0000 -> 2.0000** | **1 -> 0** |
+| trap-ywr | 147 -> 159 | 41 -> 9 | 5.8987 -> 2.000 | 12 -> 0 |
+
+So the review's §4.4 was **not** stale: the shipped default does reach the path and did
+take the 10x. What is true is only the weaker claim that it is not the *only* configuration
+and no longer the most frequent one — `Trapezoidal('ywr')` reaches it one to two orders of
+magnitude more often. **The lesson is about the measurement, not the code:** a sweep of
+three tight tolerances looked comprehensive and missed the regime where the default
+misbehaves, because a loose tolerance is what lets the step grow into trouble. This is
+recorded rather than quietly fixed because the corrected conclusion is the *less*
+convenient one, and because the mechanism that caught it is the one 4b was adding anyway.
+
+**The defect is confirmed live and is not an edge case.** On the stiff RLC at reltol 1e-5,
+`Trapezoidal('ywr')` force-accepted **78 times in 873 accepted steps**, and the accepted-step
+sequence contained **9 ratios above 2.414, the largest exactly 10.0** — all nine sitting
+*immediately after* a force-accept. Nothing anywhere in any run produced a ratio above 2.0
+by any other route, because the controller's own clamp is 2.0; the escape hatch was the
+sole source.
+
+Before and after, obtained by re-running the same script against the stashed source:
+
+| circuit, reltol | steps | force-accepts | worst ratio | ratios > 2.414 |
+|---|---|---|---|---|
+| rc-vsin 1e-6 | 1419 -> 1423 | 5 -> 4 | 5.308 -> **2.000** | 3 -> **0** |
+| stiff-rlc 1e-4 | 344 -> 393 | 36 -> 25 | 6.467 -> **2.000** | 8 -> **0** |
+| stiff-rlc 1e-5 | 873 -> 923 | 78 -> 26 | 10.000 -> **2.000** | 9 -> **0** |
+| stiff-rlc 1e-6 | 2301 -> 2322 | 20 -> 15 | 5.916 -> **2.000** | 9 -> **0** |
+| rc-pulse 1e-4 | 1165 -> 1419 | 159 -> 121 | 3.878 -> **2.000** | 13 -> **0** |
+| rc-pulse 1e-5 | 2484 -> 2757 | 113 -> 101 | 2.885 -> **2.000** | 2 -> **0** |
+| rc-pulse 1e-6 | 6643 -> 6730 | 35 -> 35 | 2.945 -> **2.000** | 3 -> **0** |
+
+(all `Trapezoidal('ywr')`; the Gear2 rows are in the 1e-3 table above.) Over the full
+4-tolerance x 3-circuit x 5-configuration grid, **61 accepted step ratios outside the bound
+become 0**, and the worst ratio anywhere in any run is now exactly the controller's own
+clamp.
+
+**The force-accept count falls as well, which was not predicted.** 78 -> 26, 159 -> 121,
+36 -> 25. The order drop actually escapes the stalled regime; the 10x jump did not — it was
+simply rejected again on the next step, so the old code paid four Newton solves to leave a
+collapsed step size and then collapsed straight back. The step count rises 2-22% in
+exchange, which is the honest cost of no longer taking illegal jumps.
+
+**Blast radius: small, and confined to runs that were reaching the escape hatch.** Of the
+45 configurations at the three tight tolerances, **36 are bit-identical in step count** —
+every Euler run, every `trap-classic` run and every `Gear2` run. At 1e-3 the two Gear2 runs
+that do reach the cap move by 2 steps each (179 -> 181, 193 -> 195). Full suite:
+**761 passed, 6 skipped, 0 failed, 670.26 s** (`-m "" --timeout=400`), against a 755-passed
+baseline plus the 6 tests added here — no test needed changing.
+
+**The warning.** 26 `RuntimeWarning`s from the 26 force-accepts of the stiff 1e-5 run, each
+naming `t` and `h`, and attributed to the caller's `solve()` line (`stacklevel=3`, not 2 —
+the loop lives in `_solve`, so 2 blames `solve`'s own body and tells the caller nothing).
+Asserted in `test_transient_repairs.py`. **It earned its place immediately**: see the
+correction above, and note that it also located the path in `test_stress_charge_pump`,
+`test_distortion_vs_transient` and gate 1-5's pulsed RC — three more places nobody had
+looked.
+
+**Where the end-to-end regression test points, and why.** At the shipped default
+`Gear2('ywr')`, reltol 1e-3, not at `Trapezoidal('ywr')` — even though the latter is a much
+louder case. 4d deletes the `'ywr'` trapezoidal branch as an alias of `'classic'`, so a
+test built on it would quietly stop testing anything the day 4d lands. The default
+configuration will still be there.
 
 **4c. Backward Euler's variable-step bias.** `integrator.py:83` — `gn - gn_1` approximates
 `((h1+h2)/2) q''`, not `h1 q''`. Rescale by `2*h_curr/(h_curr+h_last)`.
@@ -1692,7 +1787,52 @@ derivation.
 *shrink*, which is unconditionally zero-stable; there is no guard on *growth*, which is
 the unstable one — which is how 4b slipped through. Replace with an upper-ratio guard.
 **Gate 4e:** a growth ratio above 2.414 triggers the order drop; a shrink does not.
-OUTCOME:
+OUTCOME: **First half PASSED. Second half REFUTED by measurement, and deliberately not
+implemented.** The growth guard is added; the shrink guard is **kept**, against the plan's
+"replace", and re-labelled for what it actually does.
+
+*The growth guard, and the honest thing about it.* `Gear2.check_order_drop` now drops to
+Euler above `ZERO_STABILITY_RATIO = 1 + sqrt(2)`. Measured over the same runs, **it fires
+zero times** — because the controller's own clamp (`MAX_GROWTH_RATIO = 2.0`) keeps every
+normal accepted step inside the bound, and 4b has stopped the one path that bypassed it.
+The maximum ratio reaching the guard in any Gear2 run is exactly 2.000. **A backstop that
+never fires in a healthy run is the point of it**: it converts "no accepted step ratio
+exceeds the bound" from an accident of two clamps happening to agree into something the
+integrator enforces for itself. It is asserted as a unit test rather than end to end,
+because there is no longer any end-to-end path that reaches it.
+
+*Why the shrink half was refuted.* The old guard is not idle: on the stiff RLC it fires
+**3-6 times per run** (0.16-0.31% of Newton evaluations); on the RC + `VSin` it fires 0
+times. Deleting it, as the plan specified, took `Gear2('ywr')` and `Gear2('classic')` from
+**0 force-accepts to 1 each** on the stiff RLC at reltol 1e-5 — i.e. it converted a
+controlled Euler step into a force-accepted over-tolerance one. Keeping it returns both to
+0 and to bit-identical step counts (565 and 619, unchanged from before any of this work).
+
+*What it is actually doing, which is why the plan's diagnosis was half right.* It is not a
+stability guard and the comment claiming it was is deleted. It is a **stalled-estimate
+heuristic**: a step only shrinks 10x below the last accepted one after several consecutive
+rejections, and what rejects repeatedly is a 2nd-order estimate built on a third difference
+of something that is not three times differentiable. Dropping to order 1 there is the same
+medicine 4b now administers at the rejection cap, one retry earlier and without having to
+accept an over-tolerance step to get there. **So 4e's defect was never that this branch
+existed — it was that this branch was all there was, and was labelled as protecting a
+stability property it has nothing to do with.**
+
+**Reconsider if** the rejection cap ever becomes rejection-count-aware: `h_curr/h_last <
+0.1` is a proxy for "we have rejected three times at this time point", and the thing it is
+a proxy for is known exactly one level up in `transient.py`, where it would need no
+threshold at all.
+
+**Also landed here:** `MAX_GROWTH_RATIO` and `MIN_SHRINK_RATIO` in `stepcontroller.py`. The
+2.0 and 0.2 were unexplained literals repeated across both controllers, and the force-accept
+path's 10x was invisible precisely because there was no named bound for it to be compared
+against. One bound, named once, imported by `transient.py`.
+
+**A note for stage 9, checked while here.** `jaxtransient.calculate_next_dt` (`:351`)
+clamps to `(0.1, 2.0)` — a **third** copy of the same two numbers, and its lower bound
+disagrees with the CPU path's 0.2. The JAX path has no rejection cap and therefore does
+**not** carry 4b's defect, so this is a consolidation item rather than a correctness one;
+it belongs with 9(a)'s shared kernels.
 
 **4f. Default `lte_formula`.** Per decision 0.3b.
 **Gate 4f:** whichever default is chosen, record rejections and force-accepts for all four

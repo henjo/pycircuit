@@ -28,6 +28,12 @@ Sections, in file order:
               3-3  a 2nd-order method beats backward Euler
                    plus the defect pinned deliberately, and `firststep` validation
 
+    stage 4   step-control correctness
+              4e   the order-drop guard watches growth, not shrink
+                   plus the half of the gate that measurement refuted, pinned
+              4b   the force-accept path warns, drops order, and stays inside
+                   BDF-2's zero-stability bound
+
 **A trap this file has fallen into three times** -- see `_pulsed_rc` and the note in
 `test_sigglobal_does_not_collapse_on_a_quiet_node`: a transient whose `timestep` is
 near the circuit's own time constant runs at `max_step` from end to end, so the
@@ -551,3 +557,269 @@ def test_firststep_is_validated_and_capped():
     assert tran._opening_step(1e-6) == pytest.approx(1e-9)
     tran = Transient(_rc(), toolkit=numeric, firststep=1.0)
     assert tran._opening_step(1e-6) == 1e-6
+
+
+# ---------------------------------------------------------------------------
+# stage 4 -- step-control correctness
+#
+# 4e (the order-drop guard watched the wrong direction) and 4b (the force-accept
+# path grew 10x, outside BDF-2's zero-stability bound) are the same defect from
+# two sides: 4e's missing upper guard is why 4b's 10x had nothing to catch it.
+# ---------------------------------------------------------------------------
+
+def test_gate_4e_growth_past_the_stability_bound_drops_order():
+    """The guard that was missing entirely.
+
+    Variable-step BDF-2 is zero-stable only below `1 + sqrt(2)`. Before this,
+    `Gear2.check_order_drop` tested the *shrink* direction and nothing else, so a
+    ratio of 10 -- which `transient.py`'s force-accept path handed it -- passed
+    through to a second-order method whose parasitic root is 4.76.
+    """
+    from pycircuit.circuit.integrator import (Gear2Integrator, EulerIntegrator,
+                                              ZERO_STABILITY_RATIO)
+    g = Gear2Integrator()
+
+    just_over = ZERO_STABILITY_RATIO * 1.0001
+    assert isinstance(g.check_order_drop(just_over, 1.0, False), EulerIntegrator), \
+        'a growth ratio above the zero-stability bound must drop order'
+    ## The 10x the old force-accept path took, which is what 4b removed.
+    assert isinstance(g.check_order_drop(10.0, 1.0, False), EulerIntegrator)
+
+    just_under = ZERO_STABILITY_RATIO * 0.9999
+    assert g.check_order_drop(just_under, 1.0, False) is g, \
+        'a growth ratio inside the bound must keep the 2nd-order method'
+    ## The controller's own clamp: every normal accepted step lands here, so the
+    ## guard above must be inert in a healthy run or it would cost an order of
+    ## accuracy on every step that grows at all.
+    from pycircuit.circuit.stepcontroller import MAX_GROWTH_RATIO
+    assert MAX_GROWTH_RATIO < ZERO_STABILITY_RATIO
+    assert g.check_order_drop(MAX_GROWTH_RATIO, 1.0, False) is g
+
+
+def test_gate_4e_a_moderate_shrink_does_not_drop_order():
+    """Half of gate 4e as declared: shrinking is not a stability problem."""
+    from pycircuit.circuit.integrator import Gear2Integrator
+    g = Gear2Integrator()
+    for ratio in (0.9, 0.5, 0.2, 0.11):
+        assert g.check_order_drop(ratio, 1.0, False) is g, \
+            'ratio %g is a shrink and unconditionally zero-stable for BDF-2' % ratio
+
+
+def test_gate_4e_deep_shrink_still_drops_order_deliberately():
+    """The other half of gate 4e as declared was REFUTED, and this pins it.
+
+    The gate said "a shrink does not" trigger the drop, and the plan said replace
+    the shrink test with the growth test. Measurement disagreed: deleting the
+    shrink branch took `Gear2('ywr')` and `Gear2('classic')` from 0 force-accepts
+    to 1 each on the stiff RLC at reltol 1e-5, because that branch is not idle --
+    it fires 3-6 times a run there and each firing is a step that then passes its
+    Euler error test instead of being force-accepted over tolerance.
+
+    So it is kept, and re-labelled: it is a stalled-estimate heuristic, not a
+    stability guard. A step only shrinks 10x below the last accepted one after
+    several consecutive rejections, and what rejects repeatedly is a 2nd-order
+    estimate built on a third difference of something that is not three times
+    differentiable. **If this test is ever deliberately inverted**, re-run the
+    force-accept counts before believing the shrink branch is free to remove.
+    """
+    from pycircuit.circuit.integrator import Gear2Integrator, EulerIntegrator
+    g = Gear2Integrator()
+    assert isinstance(g.check_order_drop(0.05, 1.0, False), EulerIntegrator)
+
+
+class _RejectionInjector:
+    """A step controller that forces the rejection cap to be reached, once.
+
+    Reaching the cap on a real circuit needs a configuration that is itself
+    defective (see the end-to-end test below). This drives the mechanism
+    directly instead, so the test survives the estimators being repaired.
+    """
+
+    def __init__(self, after=4, n_reject=4):
+        from pycircuit.circuit.stepcontroller import IntegralController
+        self.inner = IntegralController()
+        self.after = after
+        self.n_reject = n_reject
+        self.accepted = 0
+        self.injected = 0
+        self.seen = []          # (h_curr, accepted, effective_method)
+        self.force_idx = None   # index in `seen` of the force-accepted step
+        self.transient = None
+
+    def set_relref(self, relref):
+        self.inner.set_relref(relref)
+        return self
+
+    def evaluate_step(self, *args, **kwargs):
+        accept, h_next = self.inner.evaluate_step(*args, **kwargs)
+        h = kwargs['h_curr']
+        method = getattr(self.transient, '_effective_method', None)
+        if self.accepted >= self.after and self.injected < self.n_reject:
+            self.injected += 1
+            ## The n_reject'th consecutive rejection is the one `transient.py`
+            ## force-accepts.  Recording the index here rather than searching for
+            ## it afterwards: a search for "the 4th rejection in the run" would
+            ## silently pick the wrong step if the circuit rejects one of its own
+            ## before the injection point.
+            if self.injected == self.n_reject:
+                self.force_idx = len(self.seen)
+            self.seen.append((h, False, method))
+            return False, h * 0.5
+        if accept:
+            self.accepted += 1
+        self.seen.append((h, bool(accept), method))
+        return accept, h_next
+
+
+def _run_with_injected_rejections():
+    import warnings as _w
+    from pycircuit.circuit.integrator import Gear2Integrator
+    tran = Transient(_pulsed_rc(), toolkit=numeric, integrator=Gear2Integrator())
+    ctrl = _RejectionInjector()
+    ctrl.transient = tran
+    tran.step_controller = ctrl
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter('always')
+        tran.solve(refnode=gnd, tend=3e-6, timestep=1e-7)
+    forced = [c for c in caught
+              if issubclass(c.category, RuntimeWarning)
+              and 'truncation error' in str(c.message)]
+    return ctrl, forced
+
+
+def test_gate_4b_force_accept_warns_and_names_t_and_h():
+    """An unbounded accepted truncation error must not be invisible.
+
+    Same failure class as the silent operating point stage 1 removed: the result
+    is still returned, and without the warning the caller has no way to learn
+    that part of it was never error-controlled.
+    """
+    ctrl, forced = _run_with_injected_rejections()
+    assert ctrl.injected == ctrl.n_reject, \
+        'the injector did not reach the rejection cap -- MAX_REJECT may have moved'
+    assert len(forced) == 1, \
+        'expected exactly one force-accept warning, got %d' % len(forced)
+    message = str(forced[0].message)
+    assert 't=' in message and 'h=' in message, \
+        'the warning must name the time and the step size, got: %s' % message
+
+
+def test_gate_4b_force_accept_growth_stays_inside_the_stability_bound():
+    """It grew 10x. BDF-2 is zero-stable only below 2.414214.
+
+    Growing tenfold in answer to an error that was already too large is the wrong
+    sign; what a stalled high-order estimate is asking for is a lower order. Both
+    halves are asserted here: the growth is bounded, and the step that follows
+    actually runs at order 1.
+    """
+    from pycircuit.circuit.stepcontroller import MAX_GROWTH_RATIO
+    ctrl, forced = _run_with_injected_rejections()
+
+    ## The force-accepted step is the last injected rejection; the accepted step
+    ## after it is the one whose ratio used to be 10.
+    idx = ctrl.force_idx
+    assert idx is not None, 'the rejection cap was never reached'
+    h_forced = ctrl.seen[idx][0]
+    h_after, accepted_after, method_after = ctrl.seen[idx + 1]
+
+    assert accepted_after, 'the step after a force-accept was itself rejected'
+    assert h_after / h_forced <= MAX_GROWTH_RATIO * (1 + 1e-12), \
+        'the step after a force-accept grew %.4gx, outside the %.4gx clamp every ' \
+        'other accepted step obeys' % (h_after / h_forced, MAX_GROWTH_RATIO)
+    assert h_after > h_forced, \
+        'the escape hatch must still escape the collapsed regime'
+    assert method_after == 'EulerIntegrator', \
+        'the step after a force-accept must run at order 1, not %s' % method_after
+
+
+def test_gate_4b_no_accepted_step_ratio_leaves_the_stability_bound():
+    """End to end, in the SHIPPED DEFAULT configuration.
+
+    `Gear2('ywr')` at reltol 1e-3 on this stiff RLC reaches the rejection cap
+    once, and before the repair that one force-accept took a step ratio of
+    **exactly 10.0** -- a single accepted step outside the zero-stability bound,
+    in the configuration every caller gets by default. Measured before and after
+    by re-running against the stashed source:
+
+        before   179 accepted steps, 1 force-accept, 1 ratio above 2.414,
+                 worst 10.0000
+        after    181 accepted steps, 1 force-accept, 0 above the bound,
+                 worst 2.0000
+
+    **How this case was found is the point.** The first sweep for gate 4b covered
+    reltol 1e-4/1e-5/1e-6, where `Gear2` never reaches the cap and only
+    `Trapezoidal('ywr')` does -- which produced a written conclusion that the
+    default no longer reached it at all. The warning added by 4b refuted that on
+    its own first full-suite run, by firing here. It takes a *loose* tolerance,
+    and 1e-3 was outside the swept range.
+
+    `Trapezoidal('ywr')` reaches the cap far more often -- 25 times on this same
+    circuit at reltol 1e-4, with 8 ratios above the bound, worst 6.4669 -- and
+    would make a louder test. It is deliberately not used here: stage 4d deletes
+    that branch as an alias of `'classic'`, so a test built on it would quietly
+    stop testing anything the day 4d lands.
+    """
+    import warnings as _w
+    from pycircuit.circuit.integrator import (Gear2Integrator,
+                                              ZERO_STABILITY_RATIO)
+    from pycircuit.circuit.stepcontroller import IntegralController
+    from pycircuit.circuit.elements import L
+
+    class _Spy(IntegralController):
+        """Records the ACCEPTED step sequence, force-accepts included.
+
+        A force-accepted step is an accepted step -- it enters the integrator
+        history like any other, so it belongs in the ratio sequence. Filtering on
+        `accept` alone drops exactly the steps this gate is about.
+        """
+
+        def __init__(self):
+            super().__init__()
+            self.h_accepted = []
+            self.n_forced = 0
+            self._consec = 0
+
+        def evaluate_step(self, *args, **kwargs):
+            accept, h_next = super().evaluate_step(*args, **kwargs)
+            forced = False
+            if not accept:
+                self._consec += 1
+                if self._consec > 3:        # MAX_REJECT
+                    forced = True
+                    self.n_forced += 1
+                    self._consec = 0
+            else:
+                self._consec = 0
+            if accept or forced:
+                self.h_accepted.append(kwargs['h_curr'])
+            return accept, h_next
+
+    cir = SubCircuit(toolkit=numeric)
+    cir['C1'] = C(1, gnd, c=1e-6)
+    cir['R1'] = R(1, 2, r=1.0)
+    cir['L1'] = L(2, gnd, L=1e-6)
+    x0 = np.zeros(cir.n)
+    x0[cir.get_node_index('1')] = 1.0
+    x0[cir.get_node_index('2')] = 1.0
+
+    tran = Transient(cir, toolkit=numeric,
+                     integrator=Gear2Integrator('ywr'), reltol=1e-3)
+    spy = _Spy()
+    tran.step_controller = spy
+    with _w.catch_warnings():
+        _w.simplefilter('ignore', RuntimeWarning)
+        tran.solve(refnode=gnd, tend=5e-3, timestep=2e-4, x0=x0)
+
+    assert spy.n_forced > 0, \
+        'this run no longer reaches the rejection cap, so it no longer tests 4b. ' \
+        'That is worth knowing either way -- re-measure with ' \
+        'benchmarks/transient_stage4.py --forceaccept and re-point this test at a ' \
+        'configuration that does, rather than deleting it'
+
+    ratios = [spy.h_accepted[i + 1] / spy.h_accepted[i]
+              for i in range(len(spy.h_accepted) - 1)]
+    worst = max(ratios)
+    assert worst <= ZERO_STABILITY_RATIO, \
+        '%d of %d accepted step ratios exceed the zero-stability bound %.6f, ' \
+        'worst %.4f' % (sum(1 for r in ratios if r > ZERO_STABILITY_RATIO),
+                        len(ratios), ZERO_STABILITY_RATIO, worst)

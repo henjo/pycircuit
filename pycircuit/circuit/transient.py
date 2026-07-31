@@ -3,12 +3,18 @@
 # See LICENSE for details.
 
 import contextlib
+import warnings
 
 from numpy.linalg import LinAlgError
 
 from pycircuit.circuit.analysis import *
 from pycircuit.circuit.dcanalysis import DC
 from pycircuit.circuit.dcanalysis import refnode_removed
+## The clamp the step controller applies to every accepted step.  The force-accept
+## path in `solve()` is the one place that used to bypass it, and 4b's whole point
+## is that it must not: one bound, named once.  `stepcontroller` imports nothing
+## from this package, so this is import-safe at module level.
+from pycircuit.circuit.stepcontroller import MAX_GROWTH_RATIO
 
 ## STAGE 2a -- BLAS thread control, discovered rather than required.
 ##
@@ -580,7 +586,13 @@ class Transient(Analysis):
         ## advances and the integrator history refreshes.
         reject_count = 0
         MAX_REJECT = 3
-        
+        ## Set by the force-accept path below and consumed at the top of the next
+        ## iteration, exactly like `was_break_step`.  Both mean the same thing to
+        ## the integrator -- "do not trust a 2nd-order polynomial through this
+        ## point" -- and they arrive from opposite ends: a breakpoint knows the
+        ## history is about to be discontinuous, a force-accept has just found out.
+        force_order_drop = False
+
         ones_nodes = self.toolkit.ones(len(self.cir.nodes))
         ones_branches = self.toolkit.ones(len(self.cir.branches))
         ## SOLUTION-flavoured, not residual-flavoured.  This vector is used by the
@@ -633,9 +645,10 @@ class Transient(Analysis):
             # is therefore handed `_no_history` instead, which is true only at
             # the genuine start of a run -- where the LTE really cannot be
             # estimated and accepting is the only option.
-            if was_break_step:
+            if was_break_step or force_order_drop:
                 self._is_first_step = True
-            
+            force_order_drop = False
+
             next_t_break = self.cir.next_event(t)
             
             # Ensure next_t_break strictly advances time to avoid infinite dt=0 loops
@@ -691,10 +704,55 @@ class Transient(Analysis):
                         raise RuntimeError(f"Transient solver integration error: timestep shrank below {getattr(self.par, 'minstep', 1e-18):g}s at t={t}")
                     continue
                 elif not accept:
-                    ## Rejection cap reached: accept the converged solution at the
-                    ## current (small) step, but grow dt back toward max_step so we
-                    ## escape the collapsed regime instead of crawling step by step.
-                    next_dt = min(max_step, dt * 10.0)
+                    ## STAGE 4b -- THE ESCAPE HATCH USED TO GROW 10x, WHICH IS THE
+                    ## WRONG SIGN AND OUTSIDE BDF-2'S STABILITY BOUND.
+                    ##
+                    ## Reaching here means the LTE estimate stayed over tolerance
+                    ## for MAX_REJECT successively smaller steps.  The old response
+                    ## was `next_dt = min(max_step, dt * 10.0)`: grow tenfold in
+                    ## answer to an error that was already too large.  Variable-step
+                    ## BDF-2 is zero-stable only below `ZERO_STABILITY_RATIO`
+                    ## (2.414214); at 10x the parasitic root is 4.76, so the step
+                    ## that follows a force-accept amplified the previous solution
+                    ## instead of forgetting it -- and nothing warned.
+                    ##
+                    ## Measured before the change (stiff RLC, reltol 1e-5,
+                    ## `Trapezoidal('ywr')`): 78 force-accepts in 873 accepted steps,
+                    ## and every one of the 9 accepted-step ratios above 2.414
+                    ## across the whole run sat immediately after one, the largest
+                    ## being exactly 10.0.  **The shipped default is not exempt**:
+                    ## the same circuit at reltol 1e-3 under `Gear2('ywr')` reached
+                    ## here once and took the 10x once.  That case was found by
+                    ## this warning, after a sweep of three tighter tolerances had
+                    ## concluded the default no longer reached the path at all.
+                    ##
+                    ## What a stalled high-order estimate is actually asking for is
+                    ## a LOWER ORDER, not a bigger step: order 1 differences one
+                    ## past point instead of two, so it is far less sensitive to the
+                    ## stale history that a discontinuity leaves behind, and it
+                    ## still gets a real error estimate -- the controller is handed
+                    ## `_no_history`, not `_is_first_step`, so an order-dropped step
+                    ## is error-controlled rather than accepted blind.  Growth is
+                    ## then bounded by the same clamp every other accepted step
+                    ## obeys, which is what makes "no accepted ratio exceeds 2.414"
+                    ## true of the run as a whole rather than of its quiet parts.
+                    force_order_drop = True
+                    next_dt = min(max_step, dt * MAX_GROWTH_RATIO)
+                    ## An unbounded accepted truncation error must not be invisible.
+                    ## This is the same failure class stage 1 exists to remove: the
+                    ## result is still returned, and without this the caller has no
+                    ## way to learn that part of it was not error-controlled.
+                    warnings.warn(
+                        'transient: local truncation error still above tolerance '
+                        'after %d rejections at t=%.6g s; accepting the step at '
+                        'h=%.6g s with an order drop. The accepted error is '
+                        'unbounded -- treat the waveform near this time with '
+                        'suspicion.' % (MAX_REJECT, t, dt),
+                        ## 3, not 2: the loop lives in `_solve`, which `solve`
+                        ## calls, so 2 attributes the warning to `solve`'s own body
+                        ## and tells the caller nothing about which simulation
+                        ## produced it.  Verified by reading the reported filename.
+                        RuntimeWarning, stacklevel=3)
                 else:
                     next_dt = dt_next
                 reject_count = 0

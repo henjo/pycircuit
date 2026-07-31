@@ -1,5 +1,21 @@
 from abc import ABC, abstractmethod
+import math
 import warnings
+
+## STAGE 4e -- the zero-stability bound on the step-size ratio for variable-step
+## BDF-2.  Grigorieff's result is that the homogeneous recursion's parasitic root
+## stays inside the unit disc only while `h_n/h_{n-1} < 1 + sqrt(2)`:
+##
+##     ratio    parasitic root   growth over 20 steps
+##     2.414214       1.000000                      1     <- the bound
+##     2.5            1.041667                  2.262
+##     3.0            1.285714                  152.4
+##     10.0           4.761905               3.59e+13
+##
+## It bounds *growth* only.  Shrinking is unconditionally zero-stable, which is
+## the whole content of 4e: the guard this constant now protects used to fire on
+## the shrink and leave the growth unwatched.
+ZERO_STABILITY_RATIO = 1.0 + math.sqrt(2.0)
 
 class Integrator(ABC):
     """
@@ -178,8 +194,53 @@ class Gear2Integrator(Integrator):
         if is_first_step:
             return EulerIntegrator(self.lte_formula)
 
-        # Bizzarri & Brambilla Order Drop Protection
-        # If the step shrinks by more than 10x, high-order polynomials become invalid.
+        ## STAGE 4e -- THE GUARD USED TO WATCH THE WRONG DIRECTION.
+        ##
+        ## The only test here was `if h_curr / h_last < 0.1`, and it was labelled
+        ## as protecting the validity of the high-order polynomial.  It does not:
+        ## variable-step BDF-2's parasitic root leaves the unit disc only on
+        ## *growth*, past `ZERO_STABILITY_RATIO`, and any ratio below 1 is
+        ## unconditionally zero-stable.  So the one ratio that can actually
+        ## destabilise the recursion was unwatched -- which is how the 10x growth
+        ## on `transient.py`'s force-accept path (4b) survived: nothing downstream
+        ## would have caught it.  (The shrink test itself is kept, for a different
+        ## and measured reason; see below.)  Measured on the stiff RLC, this new
+        ## branch fires 0 times, because the controller's own clamp
+        ## (`MAX_GROWTH_RATIO` = 2.0) keeps every normal step inside the bound.
+        ##
+        ## **That makes this a backstop, and a backstop that never fires in a
+        ## healthy run is the point of it** -- it is what turns "no accepted step
+        ## ratio exceeds the bound" from an accident of two clamps agreeing into
+        ## something the integrator enforces for itself.  Dropping to Euler is the
+        ## right response rather than refusing the step: order 1 has no parasitic
+        ## root to amplify, so the ratio becomes harmless instead of forbidden.
+        if h_curr / h_last > ZERO_STABILITY_RATIO:
+            return EulerIntegrator(self.lte_formula)
+
+        ## THE SHRINK BRANCH IS KEPT, AND RE-LABELLED.  The plan said replace; the
+        ## measurement said add, so it is added and the reason is written down.
+        ##
+        ## Removing it outright took `Gear2('ywr')` and `Gear2('classic')` from 0
+        ## force-accepts to 1 each on the stiff RLC at reltol 1e-5, because it is
+        ## not idle: it fires 3-6 times a run there.  What it is doing is nothing
+        ## to do with zero-stability -- it is a STALLED-ESTIMATE heuristic.  A step
+        ## only shrinks 10x below the last accepted one after several consecutive
+        ## rejections, and what rejects repeatedly is a 2nd-order estimate built on
+        ## a third difference of a solution that is not three times differentiable
+        ## -- i.e. a discontinuity.  Dropping to order 1 there is what every
+        ## simulator does across a corner, and it is the same medicine 4b now
+        ## administers at the rejection cap, one retry later and after having
+        ## accepted an over-tolerance step to get there.  Deleting it would have
+        ## traded a controlled Euler step for a force-accepted 2nd-order one.
+        ##
+        ## So: the guard above is the stability bound, this one is economics, and
+        ## the defect 4e names was never that this branch existed -- it was that
+        ## this branch was ALL there was, and it was labelled as protecting a
+        ## stability property it has nothing to do with.  **Reconsider if** the
+        ## rejection cap ever becomes rejection-count-aware: `h_curr/h_last < 0.1`
+        ## is a proxy for "we have rejected three times at this time point", and
+        ## the thing it is a proxy for is known exactly one level up in
+        ## `transient.py`, where it would not need a threshold at all.
         if h_curr / h_last < 0.1:
             return EulerIntegrator(self.lte_formula)
 

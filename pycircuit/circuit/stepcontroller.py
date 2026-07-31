@@ -4,6 +4,27 @@ import numpy as np
 ## Valid values for `relref`, matching Spectre's parameter of the same name.
 RELREF_MODES = ('pointlocal', 'alllocal', 'sigglobal')
 
+## STAGE 4b -- the largest factor by which one ACCEPTED step may exceed the one
+## before it.  This is a stability bound, not a taste parameter.  Variable-step
+## BDF-2 is zero-stable only for `h_n/h_{n-1} < 1 + sqrt(2) = 2.414214`
+## (Grigorieff); above it the parasitic root of the homogeneous recursion leaves
+## the unit disc and the previous solution is amplified rather than forgotten.
+##
+## The value below sits *inside* that bound rather than on it: at exactly
+## 2.414214 the parasitic root is 1.000000, i.e. marginal, and a method that runs
+## permanently at its own stability boundary has no margin for the rounding that
+## put it there.  2.0 is what both controllers already used as an unexplained
+## literal; naming it is what lets `transient.py`'s force-accept path honour the
+## same bound instead of quietly taking 10x -- see `ZERO_STABILITY_RATIO` in
+## `integrator.py`, which is the backstop for anything that still gets past this.
+MAX_GROWTH_RATIO = 2.0
+
+## The matching floor on shrink, applied on the rejection path.  Unlike the
+## growth bound this one is pure economics -- shrinking is unconditionally
+## zero-stable for BDF-2 -- and it exists so a single over-tolerance estimate
+## cannot collapse the step by orders of magnitude in one move.
+MIN_SHRINK_RATIO = 0.2
+
 
 class StepController(ABC):
     """
@@ -153,11 +174,12 @@ class IntegralController(StepController):
         # --- STEP REJECTION / ACCEPTANCE ---
         if err > 1.0:
             # Step rejected: shrink and recalculate.
-            h_next = h_curr * max(0.2, safety * (1.0 / err)**exponent)
+            h_next = h_curr * max(MIN_SHRINK_RATIO, safety * (1.0 / err)**exponent)
             return False, h_next
 
         # Step accepted: predict next size with the same controller law.
-        h_next = h_curr * min(2.0, safety * (1.0 / max(err, 1e-12))**exponent)
+        h_next = h_curr * min(MAX_GROWTH_RATIO,
+                              safety * (1.0 / max(err, 1e-12))**exponent)
         h_next = min(h_next, max_step)
 
         return True, h_next
@@ -211,7 +233,7 @@ class PIController(StepController):
 
         if err > 1.0:
             # Step rejected: standard backoff using the method order.
-            h_next = h_curr * max(0.2, 0.9 * (1.0 / err)**exponent)
+            h_next = h_curr * max(MIN_SHRINK_RATIO, 0.9 * (1.0 / err)**exponent)
             return False, h_next
             
         # Step accepted: use PI update
@@ -226,7 +248,7 @@ class PIController(StepController):
         factor = (err_norm ** (-self.k_i)) * ((err_last_norm / err_norm) ** self.k_p)
         
         # Limit the step size change
-        factor = min(2.0, max(0.2, factor))
+        factor = min(MAX_GROWTH_RATIO, max(MIN_SHRINK_RATIO, factor))
         
         h_next = h_curr * factor
         h_next = min(h_next, max_step)
