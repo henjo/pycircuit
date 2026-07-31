@@ -12,8 +12,9 @@ from sympy import Symbol
 class MOS(SubCircuit):
     """Small-signal MOS model
 
-    >>> from sympy import Symbol
-    >>> c = SubCircuit()
+    >>> from pycircuit.circuit import circuit
+    >>> circuit.default_toolkit = symbolic
+    >>> c = SubCircuit(toolkit=symbolic)
     >>> inp = c.add_node('inp')
     >>> out = c.add_node('outp')
     >>> c['q1'] = MOS(inp, out, gnd, gnd, \

@@ -231,8 +231,34 @@ class TwoPortAnalysis(Analysis):
             circuit['_rl%d'%n] = G(sourceport[1], sourceport[0], g = g0, noisy=False, toolkit=toolkit)
             
         if toolkit.symbolic:
-            ## For now just one frequency is allowed
-            assert not isiterable(freqs)
+            ## STAGE 5+.5 -- ONE FREQUENCY, COUNTED RATHER THAN TYPE-CHECKED.
+            ##
+            ## This was `assert not isiterable(freqs)`, which rejects
+            ## `array([Symbol('s')])` -- one frequency, expressed as a length-1
+            ## array.  Two independent doctests written years apart pass exactly
+            ## that (this class's own symbolic example, and `mos.MOS`'s), and both
+            ## had been failing since.  The assertion's INTENT was right and its
+            ## FORM had drifted: it tested the container, not the count.
+            ##
+            ## Measured on an RC low-pass with the assertion removed, so the
+            ## restriction is kept for a reason rather than by inheritance:
+            ##
+            ##     scalar s        ->  A11 = C1*R1*s + 1
+            ##     array([s])      ->  A11 = C1*R1*s + 1     (identical, correct)
+            ##     array([s, w])   ->  A11 = C1*R1*w + 1     (SILENTLY drops `s`)
+            ##
+            ## So more than one frequency is genuinely unsupported -- and the old
+            ## bare `assert` said nothing about why, which is the other half of
+            ## what made this hard to read.
+            if isiterable(freqs):
+                nfreq = len(freqs)
+                if nfreq != 1:
+                    raise ValueError(
+                        'the symbolic path supports exactly one frequency, got '
+                        '%d. More than one is silently reduced to the last, so '
+                        'it is refused rather than approximated. Solve once per '
+                        'frequency, or pass a scalar.' % nfreq)
+                freqs = freqs[0]
 
             Gmat, C, CY, u, x, ss = dc_steady_state(circuit, freqs, 
                                              refnode,

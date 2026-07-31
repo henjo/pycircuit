@@ -2,14 +2,14 @@
 
 > ## RESUME HERE — state as of 2026-07-31
 >
-> Last commit changing **simulator behaviour**: `ceb8cf5` (stage 5+.2/5+.3 -- MOS_ACM, Varactor).
+> Last commit changing **simulator behaviour**: `<this commit>` (stage 5+.5 -- the nport frequency check).
 > Anything after it is a benchmark or documentation unless it says otherwise — so a newer
 > HEAD does not by itself mean the code has moved underneath this block; check
 > `git log --oneline ceb8cf5..HEAD -- pycircuit/`. Branch `cna-jax-vectorization`
 > (`git@github.com:henjo/pycircuit.git`) — **check `git status -sb` before assuming it is
 > pushed**; several commits have sat unpushed at a time in this work.
 >
-> **Suite: 803 passed, 6 skipped, 0 failed** (`-m "" --timeout=400`). Runtimes this session
+> **Suite: 804 passed, 6 skipped, 0 failed** (`-m "" --timeout=400`). Runtimes this session
 > ranged 676 s to 1941 s on near-identical source, entirely from other jobs on the box —
 > see trap 2 before reading anything into one. Nominal
 > ~8-13 min, but one run of the identical tree took **31m41s** purely from machine load —
@@ -20,19 +20,23 @@
 >
 > ### The next action, concretely
 >
-> **5+.5 — `MOS`'s own doctest, found while fixing 5+.2 and not yet repaired.** Two
-> independent defects in a seven-line example: `SubCircuit()` takes the numeric toolkit
-> while the parameters are `Symbol(...)`, and `freqs=array([Symbol('s')])` trips
-> `nportanalysis`'s `assert not isiterable(freqs)`. Until they are fixed, `mos.py` cannot
-> join `tests/test_doctests.py` — and that file is the mechanism which would have caught
-> `MOS_ACM`, so leaving `mos.py` off it leaves the same hole open one class away.
+> **Stage 5+ is complete except 5+.4** (the large-signal MOSFET), which stays sequenced into
+> stage 10 by decision 0.3c and is the largest of the four by a wide margin.
 >
-> **Gate 5+.5b matters more than the fix**: decide by looking whether the *example* drifted
-> or the *assertion* did. The example is the older artefact. Do not assume it is wrong
-> merely because changing it is smaller.
+> So the transient engine's declared work is done through stage 5. The open stages are **6**
+> (diagnostics and statistics — 0.3d's `chgtol` guard wants its statistics object, and it
+> produces the floating-node cases that guard was declared against), **7** (the linear
+> solver), **8** (source models and `TLine`), **9** (consolidate `jaxtransient` — which now
+> also owns removing `lte_formula`, inert on the CPU since 4i but still selecting a broken
+> charge-domain estimator on the JAX path), **10**, **11** and **12**.
 >
-> After that, stage 5+ is complete except 5+.4 (the large-signal MOSFET), which stays
-> sequenced into stage 10 by decision 0.3c.
+> **Recommended: stage 6.** It is what 0.3d is waiting on, and it is the stage that makes
+> the other diagnostics in this plan visible rather than inferred.
+>
+> **Also outstanding and not a stage:** `nportanalysis.py`'s own doctests report **17 of 33
+> failing** — including a Python-2-era bare `import symbolic`. `mos.py` joining
+> `test_doctests.py` at 5+.5 makes that module the obvious next candidate, and the same
+> gap has now produced three defects in two modules.
 >
 > **Decide what `lte_formula` is for — a maintainer's call, and the last thing blocking
 > gate 4f.** After 4i it selects nothing for either second-order method except on the
@@ -3249,14 +3253,30 @@ that hid `MOS_ACM` and found the same mechanism hiding two more defects one clas
 
 **Gate 5+.5a.** `doctest.testmod(mos)` reports 0 failures, and `mos.py` is added to
 `test_doctests.py` so it stays that way.
-OUTCOME:
+OUTCOME: **PASSED. `mos.py`: 8 attempted, 0 failed**; suite 804 passed, 6 skipped, 0 failed in 590 s — the fastest run of the session, on a box that had been running two of the user's jobs at 90% and 45% CPU and was now down to one. Same source class, runtimes 676-1941 s elsewhere in the session: trap 2, again., and it is now in `test_doctests.py` as `test_mos_module_doctests`. The hole that produced `MOS_ACM` is closed for that module.
 
 **Gate 5+.5b (fix the example, or fix the code — decide which by looking).** Declared: if
 `nportanalysis`'s symbolic path *should* accept a one-element array, the assertion is the
 defect and the example is right; if it should not, the example is wrong. **Do not assume the
 example is wrong just because it is the smaller change** — it is the older artefact, and the
 assertion may be the thing that drifted.
-OUTCOME:
+OUTCOME: **ANSWERED BY MEASUREMENT, AND THE ANSWER IS NEITHER — the assertion's INTENT was right and its FORM had drifted.**
+
+*The evidence that the example was not simply wrong.* **Two independent doctests, written years apart, pass a length-1 array to the symbolic path**: `mos.MOS`'s, and `nportanalysis.TwoPortAnalysis`'s own symbolic example at line 65. Both had been failing. Two artefacts agreeing is weak evidence on its own, so it was measured.
+
+*The measurement.* With the assertion patched out, on an RC low-pass whose `A11` must depend on the frequency variable:
+
+| input | A11 |
+|---|---|
+| scalar `s` | `C1*R1*s + 1` |
+| `array([s])` | `C1*R1*s + 1` — **identical, correct** |
+| `array([s, w])` | `C1*R1*w + 1` — **silently drops `s`** |
+
+(The first attempt used a resistive divider, whose answer is frequency-independent and so cannot distinguish the three cases at all. Recorded because it looked like a clean result and was worthless.)
+
+So more than one frequency is **genuinely unsupported** and the restriction is kept — but a length-1 array *is* one frequency and gives the identical answer, and rejecting it was the assertion testing the container rather than the count. It now counts, unwraps the single element, and raises a `ValueError` **saying why** for anything longer; the bare `assert` explained nothing, which is the other half of what made this hard to read.
+
+**Had the gate not forbidden assuming the example was wrong, the smaller change — editing two doctests to pass scalars — would have left a working API rejecting its own documented usage.**
 
 ## 5+.4 A large-signal MOSFET — stays in stage 10
 

@@ -58,6 +58,7 @@ from pycircuit.circuit import circuit as circuit_module
 from pycircuit.circuit import elements as elements_module
 from pycircuit.circuit import volterra as volterra_module
 from pycircuit.circuit import symbolicapprox as symbolicapprox_module
+from pycircuit.circuit import mos as mos_module
 
 
 def test_circuit_module_doctests():
@@ -78,6 +79,37 @@ def test_volterra_module_doctests():
     results = doctest.testmod(volterra_module, verbose=False)
     assert results.failed == 0, (
         '%d of %d doctests in volterra.py failed' %
+        (results.failed, results.attempted))
+
+
+def test_mos_module_doctests():
+    """``mos.py`` joined this file at stage 5+.5, and the route it took is the
+    argument for the file existing.
+
+    ``MOS_ACM`` sat in that module for years: unconstructable (``super(MOS, self)``
+    from a class with ``MOS`` not in its MRO), a verbatim copy of ``MOS`` with a
+    mis-described parameter and a noise PSD referring to a symbol nothing binds.
+    The only thing that would ever have caught it was the doctest in its own
+    docstring, gated behind ``if __name__ == "__main__"``. It was deleted at 5+.2.
+
+    Adding the module here then surfaced two more defects of the same shape in
+    ``MOS``'s own example, neither related to the deleted class:
+
+    * ``c = SubCircuit()`` took the *numeric* default toolkit while the parameters
+      were ``Symbol(...)``, so construction died in ``elements.update``. The
+      example predates the toolkit split and never ran after it.
+    * ``freqs=array([Symbol('s')])`` tripped ``nportanalysis``'s
+      ``assert not isiterable(freqs)``. That assertion was right in intent -- more
+      than one symbolic frequency is silently reduced to the last -- and wrong in
+      form, testing the container rather than the count. A length-1 array is one
+      frequency and gives the identical answer, so it is now accepted and a longer
+      one raises a ``ValueError`` that says why.
+
+    Three defects, one module, all invisible for the same reason.
+    """
+    results = doctest.testmod(mos_module, verbose=False)
+    assert results.failed == 0, (
+        '%d of %d doctests in mos.py failed' %
         (results.failed, results.attempted))
 
 
