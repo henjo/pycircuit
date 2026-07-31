@@ -3838,6 +3838,87 @@ on node rows and `vabstol` on branch rows. `reltol`/`vabstol` are now threaded t
 is settable, but the *flavour* split is done only for the LTE. Recorded so the remaining
 asymmetry is not mistaken for finished work.
 
+## Gates 9-1, 9-2, 9-3 — the CPU's step-control gates, ported
+
+**Done 2026-07-31.** The plan says of gate 9-1: *"None of these is currently expressible,
+which is the asymmetry that let the copied LTE survive."* All three are expressible now
+that tolerances are settable (9(b)/(c)), rejections are counted, and breakpoints work
+(9(d)). **Porting them found the 3/4 Gear2 optimism for the THIRD time.**
+
+**Gate 9-1(a) — the LTE scales with the right power of `h`.** PASS, and it is the gate
+that paid for itself. Synthetic companion-current history, `J = I`, `x` fixed so `etol` is
+constant, each method fed a `g` of **its own degree**:
+
+| method | expected | estimate/h^order | observed exponent |
+|---|---|---|---|
+| euler | h¹ | 5.0000e5 constant | 1.000 |
+| trap | h² | 1.6667e5 constant | 2.000 |
+| gear | h² | 3.3333e5 constant | 2.000 |
+
+*The first run of this gate got Euler wrong* — one quadratic `g` for all three makes
+`g'(0) = 0`, killing Euler's leading term so it reads as second order. **The identical
+degeneracy the CPU units test hit under 0.3d, walked into again a day later.** Trap 9 in
+the plan is about units; this is its sibling and the harness now takes the degree per
+method.
+
+**AND IT FOUND THE REAL DEFECT.** `gear` read **2.5e5 = q'''/4** against the CPU's
+**3.3333e5 = q'''/3**. That is YWR's Table I GEAR2 residual, which estimates
+`(1/4) h² q'''` against a true `(1/3) h² q'''` — **the solver reported 3/4 of its own
+truncation error at every step**, on the only `eval_method` either entry point uses.
+The CPU found and fixed this in **stage 4i**; the fix never crossed to `jaxtransient.py`.
+So the same defect has now been found three times in two transcriptions, which is the
+argument for 9(a) stated as a measurement rather than a preference. Fixed with 4i's form —
+`q'''` from a second divided difference of `g`, times the method's own error constant, so
+the coefficient is derived rather than transcribed — and pinned against the derived
+constant, not a recorded number.
+
+**Gate 9-1(b) — a step is actually rejected. THE COUNTER NOW EXISTS; THE ANSWER IS STILL
+NO.** A rejected step advances neither `t` nor `step_idx`, so it leaves no trace in the
+output buffers and the gate could not be *stated* before, let alone passed. With
+`JAXTransientStatistics.rejected_steps`, the answer across **16 configurations** — RC,
+pulse with 1 ns edges, a stiff two-pole circuit, an oversized initial step up to
+`timestep = tend`, and a sine at two frequencies, tolerances to 1e-8 — is **zero
+rejections, everywhere**. The controller shrinks *predictively* on the accept path and
+`dt_max = timestep` caps growth, so the error ratio does not exceed 1 in practice; the
+opening step is force-accepted by `first = step_idx < 1` regardless of error. Two
+contributing facts: 9(d) *removed* a likely source, since steps now land **on** pulse
+edges instead of crossing them, and an extreme tolerance does not force a rejection either
+— it collapses `dt` toward `dt_min` and makes the run effectively non-terminating.
+
+**So the reject branch is untested code that no measured circuit reaches.** The test added
+asserts the *bookkeeping*, deliberately **not** that rejections are zero: pinning zero
+would freeze in a property of the current clamp, and if `dt_max` is ever changed — an open
+decision — rejections should start and must not read as a regression.
+
+**Gate 9-2 — a CPU/JAX agreement test in the suite.** PASS. The stage-5 cross-check had
+been run by hand and written into prose, so the next divergence was invisible — **and
+there was one the whole time**, the Gear2 constant above. The test compares both backends
+against the analytic solution *and* against each other on a shared grid; agreement alone
+would be satisfied by two backends wrong in the same way, which is exactly what a copied
+transcription produces.
+
+**Gate 9-3 — a `VPulse` under JAX hits the pulse edges.** PASS: every analytic edge in
+`(0, tend]` has a time point within 1e-12. Blocked until 9(d), which is why it had never
+been run.
+
+**Also fixed here: the `tend` overshoot, in two parts.** `calculate_next_dt` was passed
+`state.t` — the time the accepted step *started* — so the breakpoint clamp sized the next
+step from the previous position and overshot by about one step. And after that, a residual
+one-timestep overshoot remained because `time_cond` used `t < tend` while the breakpoint
+filter treated `t` within 1e-12 of `tend` as already reached: the two disagreed, so the
+loop took one more full step. Both now use the same epsilon. Measured `t[-1]` = exactly
+`tend` on every configuration, against 5.0559e-3 / 5.0286e-3 / 5.0702e-3 / 5.0351e-3 for a
+requested 5e-3 before.
+
+**And a chunk-boundary defect found while wiring the counters:** `sig_max` and
+`n_rejected` are running totals, but `TransientState` was rebuilt per chunk without them —
+so the `sigglobal` reference reset to zero every `CHUNK_SIZE` steps and a long run
+silently reverted to a `pointlocal`-like tolerance at each boundary. **Same shape as the
+CPU's `_dt_last2` reset**: a per-run quantity re-seeded by a per-call constructor. Pinned
+with a test that runs the same transient at `CHUNK_SIZE=7` and `5000` and requires the
+same reference and step count.
+
+
 
 **One existing test had to change, and it was pinning the bug:** `test_func.py::test_pulse`
 asserted `next_event(0) == 0` — precisely the non-advancing return that caused the hang.

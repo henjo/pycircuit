@@ -52,6 +52,14 @@ class TransientState(NamedTuple):
     ## this field is what carries it through a traced loop.
     sig_max: Any = 0.0
 
+    ## STAGE 9, gate 9-1(b) -- how many steps the controller REJECTED.  Nothing
+    ## reported this, so "a step is actually rejected" -- one of the three CPU
+    ## step-control gates -- was not expressible on this backend, which is the
+    ## asymmetry that let a copied LTE defect survive being fixed twice.  A
+    ## rejected step advances neither `t` nor `step_idx`, so it leaves no trace in
+    ## the output buffers; it has to be counted where it happens.
+    n_rejected: Any = 0
+
 # ---------------------------------------------------------------------------
 # Phase 1: Pure Functional Integrators
 # ---------------------------------------------------------------------------
@@ -271,9 +279,27 @@ def ywr_error_ratio(i_curr, x_curr, x_last, J, state: TransientState, irefnode,
         Eg = -0.5 * (g_n - g_nm1)
         order_p1 = 2.0
     elif method in ('gear', 'gear2'):
+        ## STAGE 9, gate 9-1(a) -- THE 3/4 OPTIMISM, FOUND A THIRD TIME.
+        ##
+        ## This was YWR's Table I GEAR2 residual,
+        ##     -(1/8) ((h1+h2)/(h1 h2)) (h2 g_n - (h1+h2) g_{n-1} + h1 g_{n-2}),
+        ## which on a uniform grid reduces to -(1/4) h^2 q''' against a true BDF-2
+        ## local truncation error of -(1/3) h^2 q'''.  So it reported 3/4 of the
+        ## error at every step -- the solver was 25% optimistic about its own
+        ## accuracy, on the ONLY eval_method either entry point uses.
+        ##
+        ## The CPU found and fixed this in stage 4i and the fix never crossed to
+        ## this file, which is precisely the divergence stage 9 exists to close:
+        ## the same defect has now been found three times in two transcriptions.
+        ## Measured here at 2.5e5 against the CPU's 3.333e5 for q''' = 1e6.
+        ##
+        ## The form below is 4i's: estimate q''' from the second divided difference
+        ## of the companion current and multiply by the method's own error
+        ## constant, so the coefficient is derived rather than transcribed.
         h1, h2 = dt, dt_prev
-        Eg = -(1.0 / 8.0) * ((h1 + h2) / (h1 * h2)) * \
-            (h2 * g_n - (h1 + h2) * g_nm1 + h1 * g_nm2)
+        dd2_g = ((g_n - g_nm1) / h1 - (g_nm1 - g_nm2) / h2) / (h1 + h2)
+        q_triple_prime = 2.0 * dd2_g
+        Eg = -(1.0 / 6.0) * h1 * (h1 + h2) * q_triple_prime
         order_p1 = 3.0
     else:  # trapezoidal
         Eg = -(1.0 / 6.0) * (g_n - 2.0 * g_nm1 + g_nm2)
@@ -362,8 +388,16 @@ def calculate_next_dt(dt, error_ratio, dt_min, dt_max, t_breaks_array, current_t
 
 def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12):
 
+    ## The same epsilon `calculate_next_dt` uses to decide a breakpoint is "already
+    ## reached".  They disagreed: after 500 steps of 1e-5 the accumulated `t` sits
+    ## ~1e-18 short of `tend`, which the breakpoint filter treats as arrived (so it
+    ## drops the clamp) while `t < tend` treats as not arrived (so it takes another
+    ## FULL step).  That is the residual overshoot -- exactly one timestep, measured
+    ## at t[-1] = 5.010e-3 for a requested 5e-3.
+    t_eps = 1e-12 * max(abs(float(tend)), 1.0)
+
     def time_cond(state: TransientState):
-        under_time = state.t < tend
+        under_time = state.t < tend - t_eps
         under_chunk = state.step_idx < chunk_size
         return jnp.logical_and(under_time, under_chunk)
 
@@ -400,8 +434,15 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
         accept = jnp.logical_or(jnp.logical_or(error_ratio <= 1.0, at_floor), first)
 
         def do_accept(_):
+            ## `state.t + state.dt`, NOT `state.t`.  This step has been accepted, so
+            ## the next one starts where this one ENDS; passing the old time sized the
+            ## next step to reach the breakpoint from the PREVIOUS position and so
+            ## overshot it by about one step.  Measured before the fix: t[-1] of
+            ## 5.0559e-3 against a requested tend of 5e-3, where `Transient` lands on
+            ## it exactly.  `tend` is itself in `t_breaks_array`, which is why the
+            ## overshoot showed up at the end of every run.
             next_dt = calculate_next_dt(state.dt, error_ratio, dt_min, dt_max,
-                                        t_breaks_array, state.t, order_p1)
+                                        t_breaks_array, state.t + state.dt, order_p1)
 
             x_hist_new = jnp.roll(state.x_history, shift=1, axis=0).at[0].set(x_curr)
             q_hist_new = jnp.roll(state.q_history, shift=1, axis=0).at[0].set(q_curr)
@@ -442,7 +483,8 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
             ## retry the same time point without committing anything.
             shrink = jnp.clip(error_ratio ** (-1.0 / order_p1), 0.1, 0.9)
             retry_dt = jnp.maximum(state.dt * shrink, dt_min)
-            return state._replace(dt=retry_dt)
+            return state._replace(dt=retry_dt,
+                                  n_rejected=state.n_rejected + 1)
 
         return jax.lax.cond(accept, do_accept, do_reject, None)
 
@@ -451,6 +493,29 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
 # ---------------------------------------------------------------------------
 # Phase 4: Class Wrapper & Chunking Engine
 # ---------------------------------------------------------------------------
+
+class JAXTransientStatistics(object):
+    """What a JAX transient run did, as opposed to what it returned.
+
+    The subset of `transient.TransientStatistics` a traced `while_loop` can count.
+    `rejected_steps` is the load-bearing one: a rejected step advances neither `t`
+    nor `step_idx`, so it leaves no trace in the output buffers, and without this
+    counter the CPU gate "a step is actually rejected" could not be stated on this
+    backend at all.  That is the asymmetry stage 9 exists to remove -- it is why a
+    copied LTE defect had to be found and fixed twice.
+    """
+
+    __slots__ = ('accepted_steps', 'rejected_steps', 'signal_max')
+
+    def __init__(self):
+        self.accepted_steps = 0
+        self.rejected_steps = 0
+        self.signal_max = 0.0
+
+    def __repr__(self):
+        return ('<JAXTransientStatistics accepted=%d rejected=%d signal_max=%.4g>'
+                % (self.accepted_steps, self.rejected_steps, self.signal_max))
+
 
 class JAXTransient(Analysis):
     """
@@ -766,16 +831,25 @@ class JAXTransient(Analysis):
         ## interpolation from the step after it happens, and a chunk boundary is at
         ## most CHUNK_SIZE steps later.
         total_steps = 0
+        sig_max = jnp.array(0.0)
+        n_rejected = jnp.array(0)
 
         while current_t < tend:
             res_buf = jnp.zeros((CHUNK_SIZE, n))
             time_buf = jnp.zeros(CHUNK_SIZE)
         
+            ## `sig_max` and `n_rejected` are RUNNING TOTALS and must cross the chunk
+            ## boundary.  Rebuilding the state without them reset the `sigglobal`
+            ## reference to zero every CHUNK_SIZE steps -- so a long run silently
+            ## reverted to a `pointlocal`-like tolerance at each boundary -- and threw
+            ## the rejection count away.  Same shape as the `_dt_last2` reset the CPU
+            ## side had: a per-run quantity re-seeded by a per-call constructor.
             state = TransientState(
                 t=jnp.array(current_t), dt=jnp.array(current_dt), step_idx=jnp.array(0),
                 x_history=x_hist, q_history=q_hist, iq_history=iq_hist, h_history=h_hist,
                 results_buffer=res_buf, time_buffer=time_buf,
-                tline_history=tline_history, tline_head=tline_head
+                tline_history=tline_history, tline_head=tline_head,
+                sig_max=sig_max, n_rejected=n_rejected
             )
         
             final_state = run_chunk(state)
@@ -813,7 +887,18 @@ class JAXTransient(Analysis):
             h_hist = final_state.h_history
             tline_history = final_state.tline_history
             tline_head = final_state.tline_head
+            sig_max = final_state.sig_max
+            n_rejected = final_state.n_rejected
         
+        ## STAGE 9 -- what the run actually did, as opposed to what it returned.
+        ## The CPU's `TransientStatistics` exists for the same reason; this is the
+        ## subset a traced loop can count.  `rejected_steps` is what makes gate
+        ## 9-1(b) -- "a step is actually rejected" -- expressible on this backend.
+        self.statistics = JAXTransientStatistics()
+        self.statistics.accepted_steps = int(total_steps)
+        self.statistics.rejected_steps = int(n_rejected)
+        self.statistics.signal_max = float(sig_max)
+
         # Concatenate
         all_results = np.vstack(results_list)
         all_times = np.concatenate(times_list)
