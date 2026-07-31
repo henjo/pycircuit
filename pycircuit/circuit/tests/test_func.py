@@ -92,7 +92,13 @@ def test_pulse():
             vref = np.interp(t,tpoints,vpoints)
             assert_almost_equal(pulse.f(t + tstart), vref)
 
-    assert_almost_equal(pulse.next_event(0), 0)
+    ## `next_event(0)` IS `td`, NOT 0.  This line asserted 0 and so pinned the
+    ## defect in place: a caller enumerating events by feeding the result back in
+    ## never advanced, which hung `jaxtransient.solve_batched` and left
+    ## `transient.py:762` re-calling at a nudged `t` to work around it.  Every
+    ## other assertion in this block already reads "strictly the next edge after
+    ## t" -- this one was the odd one out.  Stage 9(d).
+    assert_almost_equal(pulse.next_event(0), td)
     assert_almost_equal(pulse.next_event(td/2), td)
     assert_almost_equal(pulse.next_event(td), td+tr)
     assert_almost_equal(pulse.next_event(td+tr/2), td+tr)
@@ -101,3 +107,14 @@ def test_pulse():
     assert_almost_equal(pulse.next_event(td+tr+pw+tf), per)
     assert_almost_equal(pulse.next_event(td+tr+pw+tf-eps), td+tr+pw+tf)
     assert_almost_equal(pulse.next_event(per+td/2), per+td)
+
+    ## The invariant itself, not just the table above: every TimeFunction must
+    ## return strictly more than its argument, or an enumerating caller stalls.
+    ## Walked rather than sampled, because the failure showed up only after the
+    ## accumulated value drifted off the edge grid -- see Pulse.next_event.
+    t_walk = 0.0
+    for _ in range(40):
+        nxt = float(pulse.next_event(t_walk))
+        assert nxt > t_walk, \
+            'next_event(%r) returned %r, which does not advance' % (t_walk, nxt)
+        t_walk = nxt

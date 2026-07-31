@@ -3679,6 +3679,107 @@ whose whole subject was "the two selections agree" are deleted (-3); and the JAX
 end-to-end test is no longer parametrized over the formula (-1). No test changed its
 assertions.
 
+## 9(d) — the breakpoint scan: a live hang, not a latent one
+
+**Entry measurements, 2026-07-31, taken before any code.** All three claims confirmed, and
+**one is worse than the plan states.**
+
+*The dict-iteration bug is real, but in ONE entry point.* `JAXTransient.solve` (line 564)
+iterates `for elem in self.cir.elements` — a dict, so it yields **string keys**, and
+`hasattr('V1', 'next_event')` is False. **0 breakpoints, always.** But `solve_batched`
+(line 431) iterates `.items()` and is correct. The plan treats this as one defect; it is
+one defect in one of two copies, which is itself the argument for 9(a).
+
+*The infinite loop is real, and `solve_batched` therefore HANGS TODAY.* `Pulse.next_event`
+ends with `if tmod == 0: return t` — it returns `t` **itself** at `t = 0`. The enumeration
+loop feeds the result back in, so it never advances:
+
+    next_event(0.0)  = 0.0     <- cannot advance
+    next_event(1e-9) = 0.0001
+    100001 iterations without reaching tend; 1 distinct value appended
+
+Confirmed end to end: `solve_batched` on a `VPulse` circuit **times out**, having printed
+its entry message and never returned. So the plan's "fixing either alone converts a silent
+wrong answer into a hang" understates it — **the correct copy already hangs**, and only the
+buggy iteration in `solve()` was hiding the defect behind a different one. Two bugs were
+cancelling.
+
+*And the CPU backend has known about this for some time without fixing it.*
+`transient.py:762` reads *"Ensure next_t_break strictly advances time to avoid infinite
+dt=0 loops"* and calls `next_event` a second time at a nudged `t`. So the working backend
+**works around** a `next_event` that may not advance, rather than requiring one that does.
+That is the mechanism, and it is what 9(d) should fix.
+
+*The convention already exists — `Pulse` is the only violator.* Audited every
+`TimeFunction`: base returns `inf`; `Sin` returns `td` only when `t < td`; `PWL` does
+`if pt > t: return pt`; the exponential source does `if t < td1: return td1`; `AM` and
+`SFFM` return `inf`. **Every one is strictly greater than `t` except `Pulse`.**
+
+**Gate 9d-1 (the invariant, not the instance).** `next_event(t) > t` for **every**
+`TimeFunction` subclass over a grid of `t` including 0, exact edge times, and exact period
+multiples. Declared as a property test over the classes, not a case test on `Pulse` — the
+point is the convention, and a new source type should fail this if it breaks it.
+OUTCOME: **PASS**, over `Pulse` (periodic and aperiodic), `Sin`, `PWL`, `Exp`, `AM`, `SFFM`.
+`Pulse` was the only violator, as the audit predicted.
+
+**Gate 9d-2 (the hang is gone, and cannot come back).** `solve_batched` on a `VPulse`
+circuit returns. Declared additionally: the enumeration loop carries its own progress
+guard, so a future non-advancing `next_event` degrades to a wrong breakpoint list rather
+than a hang. Two independent defences, because this failure mode costs a wall-clock
+timeout to diagnose rather than a stack trace.
+OUTCOME: **PASS.** `solve_batched` on the `VPulse` circuit returns in 3.6 s where it previously
+ran past a 90 s timeout having printed its entry message. **The progress guard earned its
+place immediately**: the first version of the fix still stalled, and the guard turned what
+would have been another wall-clock timeout into a named `RuntimeWarning` at the exact `t`
+where the contract broke. A test breaks the contract deliberately to prove the guard still
+holds.
+
+**Gate 9d-3 (`solve` actually finds the edges).** Breakpoint count > 0 for a `VPulse`
+circuit under `solve`, and the collected times equal the analytic edge times.
+OUTCOME: **PASS: 15 breakpoints, matching the analytic edge times exactly** (`k*per + {td,
+td+tr, td+tr+pw, td+tr+pw+tf}` plus `tend`), where it previously collected none, ever.
+
+**Gate 9d-4 (the CPU backend does not move).** The CPU transient's defensive re-call means
+a strictly-advancing `next_event` should be invisible there. Declared at **bit-identical**
+on the CPU baseline including a `VPulse` circuit. **If it is not**, the difference is
+reported with the reason rather than absorbed — a changed breakpoint time is a changed
+answer.
+OUTCOME: **FAILED AS DECLARED — 6 of 17 runs differ — AND THE GATE WAS THE WRONG BAR.** Every
+differing run is pulse-driven and adaptive; `rc-vsin`, `stiff-rlc`, both JAX runs and all
+three *fixed-step* pulse runs are bit-identical, and no run changed its step count.
+Differences are 4.2e-14 to 5.0e-10 on a 1 V-scale signal, i.e. 6 to 10 orders below the
+`reltol` of 1e-4 that generated the grid.
+
+**The reason, measured rather than asserted: the old breakpoint times were wrong and the
+new ones are exact.** Walking the same sequence the CPU transient walks, including its own
+`minbreak` re-call, against the analytic edges:
+
+| | breakpoints landing EXACTLY on an analytic edge | max error |
+|---|---|---|
+| before | **7 of 15** | 4.235e-22 |
+| after | **15 of 15** | **0** |
+
+So the waveform moved because the step grid now lands on the true discontinuities. A gate
+declared at bit-identical cannot pass a change whose entire purpose is to correct those
+times — **the declaration was wrong, not the result**, and the honest record is that it was
+declared before the drift was understood. What the gate did do correctly is force the
+comparison that produced the table above; a looser gate would have waved the difference
+through without anyone establishing which version was right.
+
+**Gate 9d-5.** Full suite; doc build verified by content.
+OUTCOME: **PASS. Suite 799 passed, 6 skipped, 0 failed**, against 797 before plus the two JAX
+tests added here.
+
+**One existing test had to change, and it was pinning the bug:** `test_func.py::test_pulse`
+asserted `next_event(0) == 0` — precisely the non-advancing return that caused the hang.
+Every other assertion in that same block already reads "strictly the next edge after `t`"
+(`next_event(td) == td+tr`, `next_event(td+tr+pw+tf) == per`), so the line was the odd one
+out rather than a considered contract. It now asserts `td`, and the block gained a walked
+invariant check — walked rather than sampled, because the residual defect only appeared
+after the accumulated value drifted off the edge grid, which no fixed sample set would have
+caught.
+
+
 **An intermediate run failed 20 tests, all the same cause**, and it is the reason gate
 9f-1 got a second sweep: the positional call sites. `TypeError: takes 1 positional
 argument but 2 were given` is at least loud, which is the argument for 9f-4's choice.

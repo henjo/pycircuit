@@ -80,29 +80,52 @@ class Pulse(TimeFunction):
         self.toolkit = toolkit
 
     def next_event(self, t):
+        """The next discontinuity STRICTLY AFTER ``t``.
+
+        Strictly: ``next_event(t) > t`` for every ``t``.  That is the invariant
+        every other ``TimeFunction`` here already keeps -- ``Sin`` returns ``td``
+        only while ``t < td``, ``PWL`` does ``if pt > t``, ``Exp`` does
+        ``if t < td1`` -- and ``Pulse`` was the one violator: it ended with
+        ``if tmod == 0: return t``, handing back ``t`` itself at ``t = 0`` and at
+        every exact period boundary.
+
+        A caller that enumerates events by feeding the result back in then never
+        advances.  ``jaxtransient.solve_batched`` does exactly that and **hung**;
+        ``JAXTransient.solve`` escaped only because a second bug meant it never
+        reached this method.  ``transient.py:762`` avoids both by re-calling at a
+        nudged ``t`` -- a workaround for this defect, not a fix for it.
+
+        EVENT TIMES ARE BUILT ABSOLUTELY, from the period index, rather than as
+        ``t + (edge - t % per)``.  The offset form looks equivalent and is not: the
+        enumeration feeds each result back in, so ``t % per`` drifts off the edge
+        values, and once an edge sits less than one ULP of ``t`` above ``t % per``
+        the sum rounds back to ``t`` and the loop stalls.  Measured: at
+        ``t = 1.60999999999999989e-3`` the increment came to **1.08e-19** against a
+        ULP of ~2.2e-19.  Anchoring to ``k*per + edge`` keeps every returned value
+        on the same grid however many times it is fed back.
         """
-        Dynamically calculates the very next breakpoint after time t.
-        Because Pulse is periodic, this avoids pre-allocating an infinite 
-        number of breakpoints. The modulo arithmetic ensures that only the
-        immediate next edge is returned.
-        """
-        if self.per != 0:
-            tmod = t % self.per
-        else:
-            tmod = t
-        
-        if tmod == 0:
-            return t
-        elif tmod < self.td:
-            return t + self.td - tmod
-        elif tmod < self.td + self.tr:
-            return t + self.td + self.tr - tmod
-        elif tmod < self.td + self.tr + self.pw:
-            return t + self.td + self.tr + self.pw - tmod
-        elif tmod < self.td + self.tr + self.pw + self.tf:
-            return t + self.td + self.tr + self.pw + self.tf - tmod
-        else:
-            return self.toolkit.ceil(t / self.per) * self.per
+        edges = (self.td,
+                 self.td + self.tr,
+                 self.td + self.tr + self.pw,
+                 self.td + self.tr + self.pw + self.tf)
+
+        ## Under a symbolic toolkit `t` is a sympy symbol and these comparisons are
+        ## relationals, not bools.  There is no breakpoint schedule for symbolic
+        ## time; fall through to "no further events", as `Sin` does.
+        try:
+            if self.per != 0:
+                k = int(t // self.per)
+                ## One period back as well as forward: `t` may sit a hair below a
+                ## boundary that floor() has already rounded past.
+                cands = [j * self.per + e
+                         for j in (k - 1, k, k + 1)
+                         for e in edges + (self.per,)]
+            else:
+                cands = list(edges)
+            later = [c for c in cands if bool(c > t)]
+            return min(later) if later else self.toolkit.inf
+        except TypeError:
+            return self.toolkit.inf
 
     def f(self, t):
         # --- PERIODIC PULSE WAVEFORM EVALUATION ---

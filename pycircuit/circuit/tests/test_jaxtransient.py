@@ -106,3 +106,76 @@ def test_jaxtransient_rc_charging():
     assert abs(t[-1] - 5e-3) < 1e-4               # reached tend
     assert len(t) > 10                            # actually took steps
     assert abs(vout[-1] - v_analytic) < 5e-3      # correct within tolerance
+
+
+def _pulse_circuit():
+    from pycircuit.circuit.elements import SubCircuit, R, C, VPulse
+    from pycircuit.circuit import gnd
+    cir = SubCircuit()
+    cir.add_node('in'); cir.add_node('out')
+    cir['V1'] = VPulse('in', gnd, v1=0, v2=1, td=1e-4, tr=1e-5, tf=1e-5,
+                       pw=5e-4, per=1e-3)
+    cir['R1'] = R('in', 'out', r=1e3)
+    cir['C1'] = C('out', gnd, c=1e-6)
+    return cir
+
+
+def test_jax_breakpoints_are_found_and_exact():
+    """Stage 9(d): the scan used to find ZERO breakpoints, always.
+
+    `JAXTransient.solve` iterated `for elem in self.cir.elements` -- a dict, so it
+    yielded string keys and `hasattr('V1', 'next_event')` was False.  Nothing in
+    the suite noticed because a transient with no breakpoints still runs; it just
+    steps straight through every source discontinuity.
+
+    Asserted against the analytic edge times rather than a recorded count, so the
+    test says what a breakpoint IS rather than how many there were on the day.
+    """
+    from pycircuit.circuit import circuit as circuit_mod
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import collect_breakpoints
+
+    saved = circuit_mod.default_toolkit
+    circuit_mod.default_toolkit = jaxtoolkit
+    try:
+        bps = collect_breakpoints(_pulse_circuit(), 3e-3)
+    finally:
+        circuit_mod.default_toolkit = saved
+
+    td, tr, pw, tf, per = 1e-4, 1e-5, 5e-4, 1e-5, 1e-3
+    expected = sorted({k * per + e
+                       for k in range(4)
+                       for e in (td, td + tr, td + tr + pw, td + tr + pw + tf, per)
+                       if 0 < k * per + e <= 3e-3} | {3e-3})
+
+    assert len(bps) == len(expected), \
+        'got %d breakpoints, expected %d: %r' % (len(bps), len(expected), bps)
+    for got, want in zip(bps, expected):
+        assert got == pytest.approx(want, rel=1e-12, abs=0.0), \
+            'breakpoint %r != analytic edge %r' % (got, want)
+
+
+def test_jax_breakpoint_scan_cannot_hang():
+    """Stage 9(d): a non-advancing next_event must not spin forever.
+
+    `Pulse.next_event` returned `t` itself at t=0, so the enumeration never
+    advanced and `solve_batched` HUNG -- a wall-clock timeout rather than a stack
+    trace.  That is fixed at the source, so this test breaks the contract on
+    purpose to prove the second line of defence still holds.
+    """
+    from pycircuit.circuit import circuit as circuit_mod
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import collect_breakpoints
+
+    saved = circuit_mod.default_toolkit
+    circuit_mod.default_toolkit = jaxtoolkit
+    try:
+        cir = _pulse_circuit()
+        cir.elements['V1'].next_event = lambda t: t      # never advances
+        with pytest.warns(RuntimeWarning, match='does not advance'):
+            bps = collect_breakpoints(cir, 3e-3)
+    finally:
+        circuit_mod.default_toolkit = saved
+
+    ## It returns, and returns something usable: tend is always present.
+    assert bps == [3e-3]

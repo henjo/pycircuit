@@ -1,6 +1,8 @@
 from typing import NamedTuple, Any
 import numpy as np
 import jax
+import warnings
+
 import jax.numpy as jnp
 
 from pycircuit.circuit.analysis import Analysis
@@ -276,6 +278,53 @@ def ywr_error_ratio(i_curr, x_curr, x_last, J, state: TransientState, irefnode,
     return jnp.max(jnp.abs(lte) / etol), order_p1
 
 
+def collect_breakpoints(cir, tend):
+    """Every source discontinuity in ``(0, tend]``, plus ``tend`` itself.
+
+    STAGE 9(d).  This replaces two copies that disagreed.  ``solve`` iterated
+    ``for elem in cir.elements`` -- a **dict**, so it yielded string keys and
+    ``hasattr('V1', 'next_event')`` was False, giving **0 breakpoints, always**.
+    ``solve_batched`` iterated ``.items()`` and was correct, and therefore hit the
+    second bug instead: ``Pulse.next_event`` returned ``t`` itself at ``t = 0``, so
+    the enumeration never advanced and the call **hung**.  Two bugs cancelling, one
+    per copy, which is the argument for having one copy.
+
+    ``Pulse.next_event`` is fixed at the source, but the progress guard below stays:
+    it is the difference between a wrong breakpoint list and a wall-clock hang, and
+    only one of those is diagnosable from a stack trace.
+    """
+    breakpoints = []
+    for _inst_name, elem in cir.elements.items():
+        if not hasattr(elem, 'next_event'):
+            continue
+        t_event = 0.0
+        while t_event < tend:
+            nxt = elem.next_event(t_event)
+            if nxt is None:
+                break
+            nxt = float(nxt)
+            ## The guard.  `next_event` is contracted to return strictly more than
+            ## its argument (see `pycircuit.circuit.func`); an implementation that
+            ## breaks that contract stops this element's enumeration instead of
+            ## spinning.  Warn rather than raise: one bad source should not take
+            ## down a run whose other sources are fine.
+            if not nxt > t_event:
+                warnings.warn(
+                    'transient: %r.next_event(%g) returned %g, which does not '
+                    'advance; breakpoints for this element are incomplete. Its '
+                    'next_event violates the strictly-increasing contract.'
+                    % (type(elem).__name__, t_event, nxt),
+                    RuntimeWarning)
+                break
+            t_event = nxt
+            if t_event <= tend:
+                breakpoints.append(t_event)
+            else:
+                break
+    breakpoints.append(tend)
+    return sorted(set(breakpoints))
+
+
 def calculate_next_dt(dt, error_ratio, dt_min, dt_max, t_breaks_array, current_t, order_p1=2.0):
     # Predictor exponent 1/(order+1): sqrt for 1st order, cube root for 2nd.
     factor = jnp.where(error_ratio <= 0.0, 2.0, error_ratio ** (-1.0 / order_p1))
@@ -427,19 +476,7 @@ class JAXTransient(Analysis):
         if dt_max is None:
             dt_max = tend / 10.0
             
-        breakpoints = []
-        for inst_name, elem in self.cir.elements.items():
-            if hasattr(elem, 'next_event'):
-                t_event = 0.0
-                while t_event < tend:
-                    t_event = elem.next_event(t_event)
-                    if t_event is not None and t_event <= tend:
-                        breakpoints.append(t_event)
-                    else:
-                        break
-        breakpoints.append(tend)
-        breakpoints = sorted(list(set(breakpoints)))
-        t_breaks_array = jnp.array(breakpoints)
+        t_breaks_array = jnp.array(collect_breakpoints(self.cir, tend))
         
         # Setup batched initial state
         x0_batch = jnp.zeros((batch_size, n))
@@ -560,19 +597,7 @@ class JAXTransient(Analysis):
         dt_min = kwargs.get('minstep', 1e-18)
         dt_max = timestep # Legacy transient limits dt_max to tstep by default
     
-        breakpoints = []
-        for elem in self.cir.elements:
-            if hasattr(elem, 'next_event'):
-                t_event = 0.0
-                while t_event < tend:
-                    t_event = elem.next_event(t_event)
-                    if t_event is not None and t_event <= tend:
-                        breakpoints.append(t_event)
-                    else:
-                        break
-        breakpoints.append(tend)
-        breakpoints = sorted(list(set(breakpoints)))
-        t_breaks_array = jnp.array(breakpoints)
+        t_breaks_array = jnp.array(collect_breakpoints(self.cir, tend))
     
         # Extract TLines
         from pycircuit.circuit.elements import TLine
