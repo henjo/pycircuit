@@ -3170,14 +3170,29 @@ test, because it reads as coverage.
 **Gate 5+.2a.** Deletion converts a `TypeError` at construction into an `ImportError` at
 import — earlier and clearer. Declared: the suite is unchanged, confirming the zero-reference
 claim was right.
-OUTCOME:
+OUTCOME: **PASSED — suite 803 passed, 6 skipped, 0 failed, unchanged in character; and 0.1b's claims were verified rather than trusted.** MRO is `[MOS_ACM, SubCircuit, Circuit, object]`, `TypeError` on construction, zero references outside `mos.py` itself, not exported from `circuit/__init__.py`. Deleted; the import now raises `ImportError`.
+
+**The diff against `MOS` is sharper than 0.1b recorded — two copy-paste defects, not one.** Beyond the noise PSD using `Symbol('kT')` (a free symbol nothing in the package binds) where `MOS` uses `toolkit.kboltzmann * Symbol('T')`, its `gds` parameter is described as **"Gate transconductance"** — `gds` is the output conductance. Everything else in the 50-line body is identical.
 
 **Gate 5+.2b (fix the mechanism, not just the instance).** Per the standing preference for
 fixing what let an error hide: either collect doctests in `pytest.ini` or delete the
 unreachable `doctest.testmod()` blocks. Declared: whichever is chosen, no module may keep a
 docstring test that nothing runs. **Measure first** — collecting doctests repo-wide may fail
 on modules whose docstrings were never checked, and that count is the finding.
-OUTCOME:
+OUTCOME: **MEASURED, AND BOTH DECLARED OPTIONS WERE WRONG — there is a third, and it is blocked on a defect this measurement found.**
+
+*Option 1, collect doctests in `pytest.ini`: not viable.* Repo-wide `--doctest-modules` gives **7 collection errors** (`post/cds`, `post/jwdb`). Scoped to `pycircuit/circuit` it gives 1 (`xdot.py`), and excluding that the run **did not complete in 10 minutes**.
+
+*Option 2, delete the unreachable blocks: wrong target.* 31 modules carry `if __name__ == "__main__": doctest.testmod()`. Deleting them removes the only hint the doctests exist without making any of them run.
+
+*The third option, which this project already chose:* `pycircuit/circuit/tests/test_doctests.py` runs `doctest.testmod` on named modules as ordinary tests. It already covers `circuit.py`, `elements.py`, `volterra.py` and `symbolicapprox.py`, and its docstring records that this exact gap had been hiding real bugs — `Quantity.__repr__` raising unconditionally since 2010, `Circuit.name_state_vector` double-indexing. **This gate was declared without knowing that file existed**, which is why it offered two options and neither is the answer.
+
+**So the fix for `mos.py` is to add it to that list — and it cannot be, yet.** `MOS`'s own doctest fails for two further independent reasons, neither involving `MOS_ACM`:
+
+1. `c = SubCircuit()` takes the **numeric** default toolkit while the parameters are `Symbol(...)`, so construction dies with `TypeError: Cannot convert expression to float` at `elements.py:709`.
+2. `twoport.solve(freqs=array([Symbol('s')]), ...)` trips `nportanalysis.py:235: assert not isiterable(freqs)` — the symbolic path takes a scalar.
+
+Both are the same never-run-so-never-noticed pattern as `MOS_ACM` itself. **Recorded as its own item rather than fixed here**: repairing `MOS`'s documented example is not the same change as deleting a dead class, and bundling them would make neither attributable. The unreachable `doctest.testmod()` in `mos.py` is deliberately left in place — it is the only marker that those doctests exist and are unverified.
 
 **Reconsider if** someone actually wants ACM — in which case it is written from the paper,
 not recovered from this.
@@ -3193,10 +3208,50 @@ with the largest physical capacitance takes a wildly wrong step.
 **Gate 5+.3a.** `C(v)` must be positive and increasing through `FC*VJ` and above it.
 Declared: measure `C` across the knee before and after; the "before" curve going to zero is
 the defect reproduced.
-OUTCOME:
+OUTCOME: **PASSED, and the defect reproduced exactly.** `C = dq/dv` for the default Varactor (CJ0=1pF, VJ=1.0, M=0.5):
+
+| v (V) | 0.90 | 0.98 | 0.99 | **1.00** | **1.50** | **2.00** |
+|---|---|---|---|---|---|---|
+| before (F) | 3.162e-12 | 7.071e-12 | 4.999e-12 | **0** | **0** | **0** |
+| after (F) | 1.980e-12 | 2.093e-12 | 2.107e-12 | **2.121e-12** | **2.828e-12** | **3.536e-12** |
+
+Before, the charge freezes at 1.8e-12 C and its derivative with it — **exactly 0.000000e+00** — after a spurious 7.07 pF peak as the clamp is approached. After, `C` is positive and monotonically increasing across the whole range.
 
 **Gate 5+.3b.** The linearisation is SPICE's, and the same one 5+.1b uses for the `BJT`
 depletion terms — one treatment, not two.
+OUTCOME: **PASSED.** `Varactor.eval_q_pure` calls the same `_depletion_charge` helper the `BJT` depletion terms use, asserted by comparing against the helper directly rather than against remembered numbers.
+
+**Two defects in the tests written for this item, both found by checking that they fail against the pre-fix source, and both worth recording because they are general:**
+
+1. `assert got == pytest.approx(want, rel=1e-12)` **passed against the old clamped Varactor.** `pytest.approx` defaults to `abs=1e-12`, and these are picofarad-scale charges — so the default absolute tolerance is the same size as the quantities and the assertion accepted 1.367544e-12 as equal to 1.264609e-12, an 8% difference. `abs=0.0` is now passed explicitly. **Any `pytest.approx` on a quantity near 1e-12 is vacuous by default.**
+2. The no-warning test passed against the eager version it was written to reject, because it passed a **Python** float: `(-1.0) ** 0.5` returns a complex number silently, where the real call site passes a numpy scalar and gets `nan` plus a RuntimeWarning. It now uses `np.float64`, matching `v = x[0] - x[1]` on a numpy array.
+
+## 5+.5 `MOS`'s own doctest is broken — NEW, found by 5+.2b on 2026-07-31
+
+Not a stage-5 item by origin; it exists because gate 5+.2b went looking for the mechanism
+that hid `MOS_ACM` and found the same mechanism hiding two more defects one class away.
+
+`mos.py` cannot join `tests/test_doctests.py` until these are fixed, and until it joins,
+`MOS`'s documented example is still unverified — which is the condition that produced
+`MOS_ACM` in the first place.
+
+1. **The toolkit.** `c = SubCircuit()` takes the numeric default while the parameters are
+   `Symbol(...)`, so construction dies at `elements.py:709` with `TypeError: Cannot convert
+   expression to float`. The doctest presumably predates the toolkit split and never ran
+   after it.
+2. **The frequency argument.** `twoport.solve(freqs=array([Symbol('s')]), complexfreq=True)`
+   trips `nportanalysis.py:235: assert not isiterable(freqs)`. The symbolic path takes a
+   scalar; the example passes a one-element array.
+
+**Gate 5+.5a.** `doctest.testmod(mos)` reports 0 failures, and `mos.py` is added to
+`test_doctests.py` so it stays that way.
+OUTCOME:
+
+**Gate 5+.5b (fix the example, or fix the code — decide which by looking).** Declared: if
+`nportanalysis`'s symbolic path *should* accept a one-element array, the assertion is the
+defect and the example is right; if it should not, the example is wrong. **Do not assume the
+example is wrong just because it is the smaller change** — it is the older artefact, and the
+assertion may be the thing that drifted.
 OUTCOME:
 
 ## 5+.4 A large-signal MOSFET — stays in stage 10

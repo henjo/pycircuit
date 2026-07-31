@@ -64,14 +64,26 @@ def _depletion_charge(toolkit, v, CJ, VJ, M, FC=0.5):
     step.  One treatment, shared, so a new device cannot inherit the old defect.
     """
     knee = FC * VJ
-    below = CJ * VJ / (1.0 - M) * (1.0 - (1.0 - v / VJ) ** (1.0 - M))
+
+    ## The two branches are evaluated LAZILY, and that is not a micro-optimisation.
+    ## Above the knee `1 - v/VJ` is negative, and a negative base to the fractional
+    ## power `1 - M` is `nan` -- so computing the smooth expression unconditionally
+    ## produced a `nan` on every forward-biased call.  It was discarded by the
+    ## branch, but it emitted a RuntimeWarning each time, and the symbolic fallback
+    ## below returned it.
+    def _smooth():
+        return CJ * VJ / (1.0 - M) * (1.0 - (1.0 - v / VJ) ** (1.0 - M))
+
     try:
-        if v <= knee:
-            return below
+        below_knee = bool(v <= knee)
     except (TypeError, ValueError):
-        ## Symbolic or array-valued: no branch is possible, so use the smooth
-        ## expression.  The knee only matters to the numeric Newton path.
-        return below
+        ## Symbolic: there is no branch to take, and the smooth expression IS the
+        ## right answer -- a symbolic bias is not a point on one side of the knee.
+        ## (An array-valued `v` would need `where`, but nothing calls it that way:
+        ## `v` here is `x[0] - x[1]`, a scalar per evaluation.)
+        return _smooth()
+    if below_knee:
+        return _smooth()
 
     ## F1/F2/F3 are SPICE's constants; F1 is the charge AT the knee, so the two
     ## pieces meet there by construction rather than by choosing a scale factor.
@@ -432,6 +444,7 @@ class Varactor(Semiconductor):
         Parameter('CJ0', 'Zero-bias junction capacitance', default=1e-12, unit='F'),
         Parameter('VJ', 'Junction potential', default=1.0, unit='V'),
         Parameter('M', 'Grading coefficient', default=0.5),
+        Parameter('FC', 'Forward-bias depletion coefficient', default=0.5),
     ]
 
     @staticmethod
@@ -440,15 +453,29 @@ class Varactor(Semiconductor):
 
     @staticmethod
     def eval_q_pure(x, params, epar, toolkit):
+        ## STAGE 5+.3 -- THE CLAMP THAT MADE C FALL TO ZERO IS GONE.
+        ##
+        ## This was `v_eff = min(v, 0.99*VJ)` followed by the textbook expression.
+        ## Freezing the charge freezes its derivative too, so `C = dq/dv` was
+        ## **exactly zero** at and above `VJ` -- measured 7.071e-12 F at 0.98 V,
+        ## 4.999e-12 at 0.99 V, then 0.000000e+00 at 1.0 V and everywhere above.
+        ##
+        ## Zero is the worst available answer, and worse than merely inaccurate: it
+        ## removes the state variable.  A Newton step that sees `C = 0` on the node
+        ## with the largest physical capacitance in the circuit takes a wildly wrong
+        ## step, and a transient through it has no time constant there at all --
+        ## the same class of defect as the `BJT` having no charge model (5+.1).
+        ##
+        ## The replacement is the shared helper, which is SPICE's `FC`
+        ## linearisation: above `FC*VJ` the charge continues with a quadratic whose
+        ## value and first derivative both match at the knee, so C stays finite,
+        ## positive and INCREASING, which is what a forward-biased junction does.
         v = x[0] - x[1]
-        CJ0 = params.get('CJ0', 1e-12)
-        VJ = params.get('VJ', 1.0)
-        M = params.get('M', 0.5)
-        
-        minimum = toolkit.minimum
-
-        v_eff = minimum(v, 0.99 * VJ)
-        q_val = CJ0 * VJ / (1.0 - M) * (1.0 - (1.0 - v_eff / VJ)**(1.0 - M))
+        q_val = _depletion_charge(toolkit, v,
+                                  params.get('CJ0', 1e-12),
+                                  params.get('VJ', 1.0),
+                                  params.get('M', 0.5),
+                                  params.get('FC', 0.5))
         return toolkit.array([q_val, -q_val])
 
     def i(self, x, epar=defaultepar):

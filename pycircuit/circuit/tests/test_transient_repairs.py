@@ -1874,3 +1874,93 @@ def test_gate_5p1b_depletion_capacitance_survives_the_knee():
     hi = _depletion_charge(numeric, knee + 1e-6, CJ, VJ, M, FC)
     assert abs(hi - lo) < 1e-17, \
         'the charge is discontinuous at the knee: %.6e vs %.6e' % (lo, hi)
+
+
+# ---------------------------------------------------------------------------
+# 5+.3 -- Varactor's clamp made C fall to exactly zero in forward bias
+# ---------------------------------------------------------------------------
+
+def test_gate_5p3a_varactor_capacitance_never_reaches_zero():
+    """Measured before: 7.071e-12 F at 0.98 V, then **0.000000e+00** at 1.0 V.
+
+    `v_eff = min(v, 0.99*VJ)` froze the charge, and freezing a charge freezes its
+    derivative. Zero is worse than inaccurate: it removes the state variable, so a
+    Newton step sees no capacitance on the node that physically has the most, and a
+    transient has no time constant there at all -- the same defect class as the
+    `BJT` having no charge model.
+    """
+    from pycircuit.circuit.semiconductors import Varactor
+    var = Varactor(1, 2, toolkit=numeric)
+    caps = []
+    for v in (-2.0, 0.0, 0.5, 0.9, 0.99, 1.0, 1.5, 2.0):
+        C = float(np.asarray(var.C(np.array([v, 0.0])), dtype=float)[0, 0])
+        caps.append(C)
+        assert C > 1e-15, \
+            'C = %.6e F at v = %.2f V; the clamp is back' % (C, v)
+    for a, b in zip(caps, caps[1:]):
+        assert b >= a - 1e-18, \
+            'C decreases with forward bias, which a junction does not do: %s' % caps
+
+
+def test_gate_5p3b_varactor_and_bjt_share_one_depletion_treatment():
+    """One treatment, not two -- so a new device cannot inherit the old clamp.
+
+    Asserted by construction rather than by comparing numbers: the `Varactor`
+    charge must equal the shared helper evaluated with its own parameters.
+    """
+    from pycircuit.circuit.semiconductors import Varactor, _depletion_charge
+    var = Varactor(1, 2, toolkit=numeric)
+    for v in (-1.0, 0.3, 0.9, 1.4):
+        got = float(np.asarray(var.q(np.array([v, 0.0])), dtype=float)[0])
+        want = _depletion_charge(numeric, v, 1e-12, 1.0, 0.5, 0.5)
+        ## `abs=0` IS LOAD-BEARING.  `pytest.approx` defaults to `abs=1e-12`, and
+        ## these are picofarad-scale charges -- so the default absolute tolerance
+        ## is the same size as the quantities being compared and the assertion
+        ## passes against anything.  The first version of this test used
+        ## `rel=1e-12` alone and accepted 1.367544e-12 as equal to 1.264609e-12, an
+        ## 8% difference, which meant it passed against the OLD clamped Varactor
+        ## it was written to reject.
+        assert got == pytest.approx(want, rel=1e-12, abs=0.0), \
+            'Varactor is not using the shared depletion charge at v=%g: %.6e vs %.6e' \
+            % (v, got, want)
+
+
+def test_gate_5p3_the_depletion_helper_emits_no_warning_in_forward_bias():
+    """The smooth branch is `nan` above the knee, so it must not be evaluated.
+
+    `(1 - v/VJ)` goes negative there and a negative base to the fractional power
+    `1 - M` is `nan`. Computing both branches eagerly produced that `nan` on every
+    forward-biased call -- discarded by the branch, but emitting a RuntimeWarning
+    each time, and *returned* by the symbolic fallback.
+    """
+    import warnings as _w
+    from pycircuit.circuit.semiconductors import _depletion_charge
+
+    ## np.float64, NOT a Python float, and that is the whole test.  For a Python
+    ## float `(-1.0) ** 0.5` returns a COMPLEX number silently and warns about
+    ## nothing, so a test written with plain floats passes against the eager
+    ## version it was meant to reject.  The real call site is `v = x[0] - x[1]`
+    ## on a numpy array, which gives a numpy scalar, and numpy's power returns
+    ## `nan` with a RuntimeWarning.  Reproduce the actual conditions or measure
+    ## nothing.
+    with _w.catch_warnings():
+        _w.simplefilter('error', RuntimeWarning)
+        for v in (0.6, 1.0, 2.0, 10.0):
+            q = _depletion_charge(numeric, np.float64(v), 1e-12, 1.0, 0.5, 0.5)
+            assert np.isfinite(q), 'q is %r at v=%g' % (q, v)
+            assert not isinstance(q, complex), \
+                'q is complex at v=%g; the smooth branch was evaluated above ' \
+                'the knee' % v
+
+
+def test_gate_5p2a_mos_acm_is_gone():
+    """It could not be constructed at all, and nothing referenced it.
+
+    `__init__` called `super(MOS, self)` from a class whose MRO is
+    [MOS_ACM, SubCircuit, Circuit, object]. Deleting it turns a `TypeError` at
+    construction into an `ImportError` at import -- earlier, and clearer.
+    """
+    import pycircuit.circuit.mos as mos_module
+    assert not hasattr(mos_module, 'MOS_ACM'), \
+        'MOS_ACM is back; it is a verbatim copy of MOS that cannot be constructed'
+    assert hasattr(mos_module, 'MOS'), 'MOS itself must survive the deletion'
