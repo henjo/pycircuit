@@ -23,7 +23,10 @@ With a constant input of 1V and a modulus of 1.0, the output will ramp up to 1.0
     c['R'] = R(nout, gnd, r=1e3)
     c['Idtmod'] = Idtmod(nin, gnd, nout, gnd, modulus=1.0)
 
-    tran = Transient(c, toolkit=numeric)
+    ## An ideal integrator has no DC operating point -- there is no resistive path
+    ## setting the output -- so the bias solve is skipped deliberately.  `uic` is a
+    ## Transient() argument, not a solve() one.
+    tran = Transient(c, toolkit=numeric, uic=True)
     result = tran.solve(tend=3.0, timestep=0.01)
 
     t = result.v(nout).x[0]

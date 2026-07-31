@@ -436,10 +436,118 @@ def pi_gains():
     print('it is comparable, at 0-13% MORE steps.  4a fixes an opt-in path.')
 
 
+def chgtol_guard():
+    """Decision 0.3d: the charge-domain guard, option (D), and why it is not built.
+
+    Two independent refutations, both reproduced here:
+
+      1. `Eg` is a CURRENT, so (D)'s `err_q = |Eg|/etol_q` divides amperes by
+         coulombs.  Settled by scaling: `Eg/h^2` is constant, `Eg/h^3` is not.
+      2. Repairing the units -- comparing `h*Eg`, a genuine charge, against
+         `etol_q` -- makes the guard fire on most REJECTED steps, i.e. it
+         disables step control.  That is gate 0.2b's JAX failure mode.
+    """
+    import warnings
+    from pycircuit.circuit import numeric
+    from pycircuit.circuit.integrator import (TrapezoidalIntegrator,
+                                              Gear2Integrator)
+    from pycircuit.circuit.stepcontroller import IntegralController
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.analysis import remove_row_col
+    import transient_stage4 as S
+
+    CHGTOL = 1e-14                      # SPICE's default
+
+    print('0.3d -- the charge guard, option (D): REFUTED, resolved to (A)')
+    print()
+    print('(1) Eg is a current, not a charge.  A cubic charge history q = q3 t^3/6,')
+    print('    uniform grid, halving h.  Whichever column is CONSTANT gives the units.')
+    print()
+    q3 = 1.0e6
+    print('    %-22s %10s %14s %14s' % ('integrator', 'h', 'Eg/h^2', 'Eg/h^3'))
+    for cls in (TrapezoidalIntegrator, Gear2Integrator):
+        integ = cls()
+        for h in (1e-6, 5e-7, 2.5e-7):
+            ts = [0.0, -h, -2 * h, -3 * h]
+            qs = [q3 * t ** 3 / 6.0 for t in ts]
+            Eg, _ = integ.compute_lte(
+                q_curr=np.array([qs[0]]),
+                q_last=[np.array([qs[1]]), np.array([qs[2]]), np.array([qs[3]])],
+                iq_last=[np.array([0.0]), np.array([0.0])],
+                h_curr=h, h_last=h, h_last2=h,
+                is_first_step=False, toolkit=numeric)
+            e = abs(float(np.asarray(Eg)[0]))
+            print('    %-22s %10.3g %14.6g %14.6g'
+                  % (cls.__name__, h, e / h ** 2, e / h ** 3))
+    print()
+    print('    Eg/h^2 constant => Eg ~ h^2 q\'\'\' => C/s^3 * s^2 = C/s = AMPERES.')
+    print('    So (D)\'s err_q = |Eg| / (TRTOL*(reltol*|q| + chgtol)) has units 1/s.')
+    print()
+
+    class _Probe(IntegralController):
+        """Computes both criteria alongside the real one; changes no behaviour."""
+
+        def __init__(self):
+            super().__init__()
+            self.rejects = self.fire_D = self.fire_repaired = 0
+
+        def evaluate_step(self, *a, **kw):
+            accept, h_next = super().evaluate_step(*a, **kw)
+            if kw['no_history']:
+                return accept, h_next
+            tk, integ = kw['toolkit'], kw['active_integrator']
+            Eg, _ = integ.compute_lte(
+                q_curr=kw['q_curr'], h_curr=kw['h_curr'], q_last=kw['q_last_hist'],
+                iq_last=kw['iq_last_hist'], h_last=kw['h_last'],
+                is_first_step=False, toolkit=tk, h_last2=kw.get('h_last2'))
+            Jr, Egr = remove_row_col((kw['J'], Eg), kw['irefnode'], tk)
+            try:
+                lte = np.abs(np.asarray(tk.linearsolver(Jr, Egr), dtype=float))
+            except Exception:
+                return accept, h_next
+            Egv = np.abs(np.delete(np.asarray(Eg, dtype=float), kw['irefnode']))
+            q = np.abs(np.asarray(kw['q_curr'], dtype=float))
+            ab = np.delete(np.asarray(kw['abstol'], dtype=float), kw['irefnode'])
+            x = np.abs(np.asarray(kw['x_curr'], dtype=float))
+            etol_v = kw['TRTOL'] * (kw['reltol'] * np.delete(x, kw['irefnode']) + ab)
+            etol_q = kw['TRTOL'] * (kw['reltol'] * q.max() + CHGTOL)
+            err_v = float(np.max(lte / etol_v)) if etol_v.size else 0.0
+            if err_v > 1.0:
+                self.rejects += 1
+                if float(np.max(Egv)) / etol_q <= 1.0:
+                    self.fire_D += 1
+                if float(kw['h_curr'] * np.max(Egv)) / etol_q <= 1.0:
+                    self.fire_repaired += 1
+            return accept, h_next
+
+    print('(2) What each version of the guard would do, over real runs.')
+    print()
+    print('    %-12s %8s %9s %10s %20s'
+          % ('circuit', 'reltol', 'rejects', '(D) fires', 'repaired fires'))
+    for name, builder in S._fa_circuits():
+        for reltol in (1e-4,):
+            cir, kwargs = builder()
+            tran = Transient(cir, toolkit=numeric, reltol=reltol)
+            pr = _Probe()
+            tran.step_controller = pr
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                tran.solve(coupled_lte=False, **kwargs)
+            frac = (100.0 * pr.fire_repaired / pr.rejects) if pr.rejects else 0.0
+            print('    %-12s %8.0e %9d %10d %13d (%4.1f%%)'
+                  % (name, reltol, pr.rejects, pr.fire_D, pr.fire_repaired, frac))
+    print()
+    print('    (D) as specified is inert by accident -- it fires only where BOTH')
+    print('    tolerances sit on their absolute floors, so its threshold is the ratio')
+    print('    chgtol/vabstol rather than anything about the circuit.  The repaired')
+    print('    version overrides the controller on most rejections, which IS gate')
+    print('    0.2b\'s "never rejects a step".  Neither is a guard.  Resolution: (A).')
+
+
 def main():
     p = argparse.ArgumentParser()
     names = ('parity', 'relref', 'vabstol', 'matched_accuracy', 'lte_floor',
-             'gear2_accuracy', 'pi_gains')
+             'gear2_accuracy', 'pi_gains', 'chgtol_guard')
     for name in names + ('all',):
         p.add_argument('--' + name.replace('_', '-'), dest=name,
                        action='store_true')

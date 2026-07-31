@@ -2075,3 +2075,59 @@ def test_gate_6_3_statistics_are_per_run_not_cumulative():
         n2 = second.statistics.accepted_steps
     assert n1 == n2, \
         'statistics accumulate across runs: %d then %d' % (n1, n2)
+
+
+def test_lte_vector_is_a_current_not_a_charge():
+    """Decision 0.3d: every estimator's return value is a CURRENT, not a charge.
+
+    This is the fact option (D) got wrong -- it compared this vector against a
+    CHARGE tolerance, which is the units defect gate 0.2b recorded on the JAX
+    backend.  The docstring on Integrator.compute_lte now states the units; this
+    test is what keeps the statement true, because a future estimator returning a
+    charge would be caught here rather than by whoever next writes a tolerance
+    against it.
+
+    Each method is fed a polynomial charge history of its OWN order+1, so that the
+    derivative its formula differences is constant and non-zero.  A single cubic
+    history does not work: it makes q''(0) = 0, which kills Euler's leading h*q''
+    term and lets its h^2 remainder through, so Euler appears second-order.  That
+    misreading is why this test exists in this shape.
+
+    Then Eg / h^order must be constant in h.  With q^(order+1) in C/s^(order+1),
+    that constant carries C/s -- amperes -- for every method.
+    """
+    from pycircuit.circuit.integrator import (EulerIntegrator,
+                                              TrapezoidalIntegrator,
+                                              Gear2Integrator)
+
+    def history(deg, coeff, h):
+        """q(t) = coeff * t^deg / deg!, sampled backwards on a uniform grid."""
+        fact = float(np.math.factorial(deg)) if hasattr(np, 'math') else \
+            float(__import__('math').factorial(deg))
+        return [coeff * t ** deg / fact for t in (0.0, -h, -2 * h, -3 * h)]
+
+    for cls, order in ((EulerIntegrator, 1),
+                       (TrapezoidalIntegrator, 2),
+                       (Gear2Integrator, 2)):
+        integ = cls()
+        scaled = []
+        for h in (1e-6, 5e-7, 2.5e-7):
+            qs = history(order + 1, 1.0e6, h)
+            # Euler differences the previous COMPANION CURRENT, so seed it with the
+            # backward difference the previous step would really have produced --
+            # trap 3: feeding an exact derivative here fakes the result.
+            iq_prev = (qs[1] - qs[2]) / h
+            Eg, p = integ.compute_lte(
+                q_curr=np.array([qs[0]]),
+                q_last=[np.array([qs[1]]), np.array([qs[2]]), np.array([qs[3]])],
+                iq_last=[np.array([iq_prev]), np.array([iq_prev])],
+                h_curr=h, h_last=h, h_last2=h,
+                is_first_step=False, toolkit=numeric)
+            scaled.append(abs(float(np.asarray(Eg)[0])) / h ** order)
+
+        assert scaled[0] > 0.0, '%s produced an identically zero estimate' % cls.__name__
+        assert scaled[0] == pytest.approx(scaled[1], rel=1e-9, abs=0.0), (
+            '%s: Eg/h^%d is not constant (%r) -- the units convention changed'
+            % (cls.__name__, order, scaled))
+        assert scaled[1] == pytest.approx(scaled[2], rel=1e-9, abs=0.0), (
+            '%s: Eg/h^%d is not constant (%r)' % (cls.__name__, order, scaled))

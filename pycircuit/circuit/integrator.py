@@ -139,8 +139,22 @@ class Integrator(ABC):
         charges can test ``h_last2 is None`` and fall back.  Estimators that need
         only two past points ignore it.
 
+        UNITS -- read this before comparing the return value to any tolerance.
+        The vector is named for the local truncation error and written ``Eg``, but it
+        is a **current**, not a charge and not a voltage.  Every second-order estimator
+        here returns a multiple of ``h^2 q'''``, and with ``q'''`` in C/s^3 that is C/s.
+        Backward Euler's ``(q_n - q_{n-1})/h - iq_{n-1}`` is a difference of companion
+        currents, likewise amperes.
+
+        The controller consumes it by mapping it through ``J^-1`` into the solution
+        domain and comparing *that* against ``reltol``/``vabstol``/``iabstol``, which is
+        dimensionally sound.  Comparing the raw return value against a charge tolerance
+        is not: decision 0.3d's option (D) was designed around exactly that and was
+        refuted on it, having reproduced the units defect gate 0.2b recorded on the JAX
+        backend.  If a future estimator needs a charge, it is ``h`` times this.
+
         Returns:
-            Tuple[lte_vector, p]
+            Tuple[lte_vector, p] -- lte_vector in AMPERES, p the order
         """
         pass
 

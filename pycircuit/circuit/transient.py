@@ -534,9 +534,11 @@ class Transient(Analysis):
                 "Transient could not find a DC operating point to start from: %s\n"
                 "The transient has NOT been run.  Either fix the bias condition, or "
                 "start deliberately from a known state:\n"
-                "  * uic=True            -- start from zeros (SPICE's 'use initial "
-                "conditions'), or\n"
-                "  * x0=<vector>         -- start from an operating point you supply.\n"
+                "  * Transient(..., uic=True)  -- start from zeros (SPICE's 'use "
+                "initial conditions'); note this is a Transient() argument, NOT a "
+                "solve() one, or\n"
+                "  * solve(x0=<vector>)        -- start from an operating point you "
+                "supply.\n"
                 "Both are explicit choices; substituting zeros silently is what this "
                 "error replaced." % (exc,)) from exc
 

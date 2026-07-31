@@ -9,22 +9,30 @@
 > (`git@github.com:henjo/pycircuit.git`) — **check `git status -sb` before assuming it is
 > pushed**; several commits have sat unpushed at a time in this work.
 >
-> **Suite: 809 passed, 6 skipped, 0 failed** (`-m "" --timeout=400`). Runtimes this session
+> **Suite: 810 passed, 6 skipped, 0 failed** (`-m "" --timeout=400`). Runtimes this session
 > ranged 676 s to 1941 s on near-identical source, entirely from other jobs on the box —
 > see trap 2 before reading anything into one. Nominal
 > ~8-13 min, but one run of the identical tree took **31m41s** purely from machine load —
-> see trap 2. **Doc build: succeeded, 2 warnings, 0 ERROR.** Working tree clean.
+> see trap 2. **Doc build: succeeded, 2 warnings, 0 ERROR** — and the two warning *lines*
+> have been read, not just counted: both are pre-existing autodoc failures importing
+> `pycircuit.post.cds`. It was 3 warnings until 0.3d, when `example6.rst` was found broken
+> by an earlier change in this session; see trap 11. Working tree clean.
 >
 > Transient regression tests live in `pycircuit/circuit/tests/test_transient_repairs.py`
 > (renamed from `test_transient_stage1.py`); its docstring maps sections to plan stages.
 >
 > ### The next action, concretely
 >
-> **Stage 6 is done**, so 0.3d's `chgtol` guard is now unblocked: it wanted a statistics
-> object to report its firing count through, and there is one. That guard is the natural
-> next piece of transient work — it is the last undone item from decision 0.3d, and its
-> design is already written up there in full (the `err_v`/`err_q` pair, the amplification
-> ratio, and the requirement that it be logged rather than silent).
+> **0.3d is CLOSED, resolved to (A) — there is no `chgtol` guard and none should be
+> written.** Its own declared entry measurements refuted option (D) on 2026-07-31: the
+> vector it wanted to threshold is a **current**, not a charge, so (D) compared amperes to
+> coulombs; and the dimensionally repaired form fires on 28–99.7% of rejected steps, which
+> is gate 0.2b's "never rejects a step" failure mode. Reproduce with
+> `benchmarks/transient_decisions.py --chgtol-guard`. **Do not reopen it from the option
+> list alone** — 0.3d's (D) bullet and the stage-0 summary look like they disagree; both
+> are now annotated with why they do not.
+>
+> So the next transient work is a **stage 7–12 item, none of which is started.**
 >
 > **Stage 5+ is complete except 5+.4** (the large-signal MOSFET), which stays sequenced into
 > stage 10 by decision 0.3c and is the largest of the four by a wide margin.
@@ -55,8 +63,9 @@
 >
 > ### After that, in order
 >
-> 1. **0.3d's `chgtol` guard**, and the rest of `doc/src/circuit/lte_dae.rst`'s
->    variable-step story.
+> 1. ~~**0.3d's `chgtol` guard**~~ — **DONE, as a decision not to build it (2026-07-31).**
+>    What remains of this item is the rest of `doc/src/circuit/lte_dae.rst`'s variable-step
+>    story, which is documentation and not blocked by anything.
 > 2. **Remove `lte_formula` from both backends — WITH STAGE 9, not before.** It is inert on
 >    the CPU path and documented as such, but `jaxtransient.py` keeps its own, where
 >    `'classic'` selects a charge-domain estimator whose tolerance applies a *voltage* bound
@@ -165,7 +174,27 @@
 >    steps the gate is about — reporting a worst ratio of **97.7** where the truth was
 >    **10.0**, and **2.000** ("no violation") on a run that had three. Both errors read as
 >    plausible.
-> 9. **The review's magnitudes run ~2x optimistic.** Five have now shrunk on measurement
+> 9. **Check a residual's units before thresholding it — the name will not tell you.**
+>    `compute_lte` returns a vector called the "LTE" and written `Eg`; it is a **current**,
+>    a multiple of `h^2 q'''`. Decision 0.3d's option (D) was designed around comparing it
+>    against a *charge* tolerance, which would have put amperes over coulombs into the CPU
+>    backend deliberately — the same units defect gate 0.2b had already recorded on the JAX
+>    backend. Settle it by scaling, not by reading: halve `h` and see which power stays
+>    constant. Two minutes, and it decided a whole item.
+> 10. **A test circuit built to exhibit a pathology has to be shown to exhibit it.** Two
+>    circuits written to create a near-singular direction — a node grounded only through
+>    1 GOhm, and a node held only by a 1 aF capacitor — reproduced the *unmodified*
+>    circuit's step count and worst ratio to four significant figures. They perturbed
+>    nothing, and a measurement over them would have reported a clean negative that meant
+>    only that the probe had been shown an unmodified circuit.
+> 11. **A doc-build warning COUNT is not a doc-build check.** "Doc build: succeeded, 2
+>    warnings, 0 ERROR" was carried forward in the resume block across several commits. It
+>    was 3 by the time anyone read the list, and the extra one was `example6.rst` failing
+>    outright — an earlier change this session replaced a silent zeros-substitution with a
+>    raise, and that example had been relying on the silence. A doc example is not covered
+>    by the suite, so nothing else would ever have caught it. Read the warning *lines*, and
+>    for a plot directive confirm the image was written and shows what the prose claims.
+> 12. **The review's magnitudes run ~2x optimistic.** Five have now shrunk on measurement
 >    (150 TB → 420 GiB; 10.5x → 5.19x; 4.462 ms → 0.234 ms; "2.17 assemblies needed" was not
 >    a redundancy figure; the IM3 harness's 10x → 2.17x). Re-measure before quoting
 >    `transient_review.md`.
@@ -874,7 +903,9 @@ tolerance are alternative formulations of the same criterion**, and stage 4 must
   requires. Honest, and it is roughly where the code already is — but it means maintaining
   two criteria and two tolerance sets, which is what stage 9 is trying to reduce.
 - **(D) YWR as the criterion, with the charge check as a guard.** Added 2026-07-30 at the
-  maintainer's suggestion, and it is now the recommendation — see below. Not the same as
+  maintainer's suggestion. **It was the recommendation from 2026-07-30 22:07 until its own
+  entry measurements refuted it on 2026-07-31 — see the OUTCOME below. The standing
+  resolution is (A).** Not the same as
   (C): there is one criterion, not a choice of two, and the charge quantity is used to
   bound how far the step may collapse rather than to decide accuracy.
 
@@ -941,6 +972,80 @@ suspect, not a run that was rescued.
    collapses to (A) and the charge path should go after all.
 2. Does the amplification ratio actually separate the two regimes cleanly, or is there a
    continuum where neither criterion is trustworthy? That is the assumption (D) rests on.
+
+**OUTCOME, 2026-07-31 — BOTH MEASUREMENTS TAKEN, AND (D) IS REFUTED. 0.3d RESOLVES TO
+(A): NO CHARGE CRITERION, NO GUARD, NO `chgtol`.** The maintainer's suggestion is not
+overruled by argument; it is refuted by its own entry measurements, which is why they were
+declared. `chgtol` was never implemented, so this resolution is a decision not to write
+code rather than a change to any.
+
+*Measurement 1 — does the near-singular case arise?* Instrumented probe over five circuits
+× two tolerances, 9510 accepted steps, computing both criteria without changing behaviour.
+The guard fires **15 times**, all on `rc-pulse`. Taken alone this reads as a pass — and it
+was recorded as one for about ten minutes. **It is not**, for the reason trap 6 exists:
+
+- The two circuits built *specifically* to create the near-singular direction — a node
+  grounded only through 1 GΩ, and a node held only by a 1 aF capacitor — **never fire it
+  once**. The 1 GΩ appendage reproduced the unmodified circuit's step count and worst ratio
+  to four significant figures, i.e. it perturbed nothing. A resistive appendage carries no
+  charge, so `Eg` is zero on those rows and the guard cannot see them.
+- The firings are on an ordinary RC pulse circuit, at the margin (`err_v` 1.49–4.16 against
+  `err_q` 0.41–0.83), not in a distinguished regime.
+
+*Measurement 2 — does the amplification separate the regimes cleanly?* **No. It is a
+continuum spanning five orders of magnitude with no gap**, which is the assumption (D)
+rests on, stated as such when (D) was written:
+
+| circuit | median ‖lte‖/‖Eg‖ | max ‖lte‖/‖Eg‖ |
+|---|---|---|
+| stiff-rlc | 0.0064 – 0.066 | 1.4 – 2.0 |
+| rc-vsin | 4.5 – 43.7 | 62 – 91 |
+| weak-node | 5.7 – 53.5 | 91 – 247 |
+| rc-pulse | 5.9 – 70.4 | 500 |
+
+*Why it fired at all, which is the finding.* `err_v/err_q` is **not** the amplification.
+It factors exactly as `(‖lte‖/‖Eg‖) × (etol_q/etol_v)`, and on **every one of the 15
+firing steps `etol_q/etol_v` is exactly 0.01** — both tolerances sitting on their absolute
+floors, where the ratio degenerates to `chgtol/vabstol = 1e-14/1e-12`. So the guard's
+threshold is not a property of the circuit: it fires when `‖lte‖/‖Eg‖ > vabstol/chgtol`,
+a number chosen by whoever last set the two floors. **pycircuit's `lte_vabstol = 1e-12` —
+set by this plan — makes that threshold 10⁶ times more permissive than SPICE's `VNTOL =
+1e-6` would.** A guard whose sensitivity moves by six orders of magnitude when an unrelated
+tolerance is retuned is not a guard.
+
+*And the criterion is dimensionally unsound.* `compute_lte` returns `Eg = -(h²/6)·q'''`.
+With `q'''` in C/s³ that is **C/s — a current**, verified by scaling rather than by
+derivation: halving `h` holds `Eg/h²` exactly constant (166667 = q'''/6 trapezoidal,
+333333 = q'''/3 Gear-2) while `Eg/h³` doubles. (D)'s `err_q = max|Eg| / (TRTOL(reltol·max|q|
++ chgtol))` therefore **divides amperes by coulombs**; `err_q ≤ 1` is a test on a quantity
+with units of 1/s. This is the same defect gate 0.2b recorded on the JAX backend — a
+tolerance applied to a quantity of different units — arriving through a different door,
+and it was about to be written into the CPU backend deliberately.
+
+*The repair does not survive either, and this is what closes the question.* Comparing
+`h·Eg` — a genuine charge — against `etol_q` is dimensionally correct and **fires on
+28–99.7% of all rejected steps**:
+
+| circuit | rejected steps | (D) fires | repaired guard fires |
+|---|---|---|---|
+| rc-vsin 1e-4 / 1e-6 | 376 / 3668 | 0 / 0 | 254 (67.6%) / 3069 (83.7%) |
+| stiff-rlc 1e-4 / 1e-6 | 125 / 1235 | 0 / 0 | 36 (28.8%) / 351 (28.4%) |
+| rc-pulse 1e-4 / 1e-6 | 1020 / 7992 | 5 / 10 | 463 (45.4%) / 7961 (99.6%) |
+| weak-node 1e-4 / 1e-6 | 406 / 3853 | 0 / 0 | 190 (46.8%) / 3843 (99.7%) |
+
+A guard that overrides the step controller on 99.6% of its rejections **is** the "never
+rejects a step" failure mode 0.2b found on the JAX charge path. So the dimensionally wrong
+version is inert-by-accident and the dimensionally right version is catastrophic; there is
+no `chgtol` in between, because the quantity being thresholded is a continuum and the
+scale separating the regimes was never physical.
+
+**Resolution: (A).** One criterion — YWR, in the solution domain, which is what the paper
+argues for. `chgtol` does not come back. The near-singular case is real but is not
+detectable this way; it is already handled where it belongs, by stage 6's structural
+singularity classification, which names the offending row instead of silently accepting a
+step. **Reconsider if** someone exhibits a circuit where a step is rejected forever with a
+well-conditioned charge residual *and* stage 6's diagnostic does not identify it — that is
+the observation (D) was reaching for, and none of the five circuits here produces it.
 
 ### What Spectre actually does — and the root cause it exposes
 
@@ -1162,7 +1267,11 @@ reflection, and the changes go in both directions:
   §3.1's coupled N+1 system nor §3.4's approximate Newton — eq (18), the whole
   computational content of §3.4, is absent. The earlier outcome declined to assert this;
   that hedge is withdrawn.
-- **0.3d's recommendation REVERSED, (B) → (A).** The YWR paper exists to argue that the
+- **0.3d's recommendation REVERSED, (B) → (A).** *(Option (D) was added 31 minutes after
+  this paragraph and superseded it for a day, so a reader arriving here between
+  2026-07-30 22:07 and 2026-07-31 finds the plan contradicting itself. It no longer does:
+  (D) was refuted by its own entry measurements and 0.3d is back at (A), for a stronger
+  reason than this paragraph gives.)* The YWR paper exists to argue that the
   charge/ODE-flavoured criterion is "an approximation", and its eq (4) defines the LTE as a
   *solution* error. Recommending (B) was a recommendation made in ignorance of the paper
   the code's own formulas come from. 0.3a(iii) splits cleanly: keep the Newton/LTE
