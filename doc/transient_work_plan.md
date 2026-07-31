@@ -2,10 +2,10 @@
 
 > ## RESUME HERE — state as of 2026-07-31
 >
-> Last commit changing **simulator behaviour**: `f454a73` (stage 4g(b)).
+> Last commit changing **simulator behaviour**: `1122c31` (stage 4i).
 > Anything after it is a benchmark or documentation unless it says otherwise — so a newer
 > HEAD does not by itself mean the code has moved underneath this block; check
-> `git log --oneline f454a73..HEAD -- pycircuit/`. Branch `cna-jax-vectorization`,
+> `git log --oneline 1122c31..HEAD -- pycircuit/`. Branch `cna-jax-vectorization`,
 > **pushed to `origin`** (`git@github.com:henjo/pycircuit.git`).
 >
 > **Suite: 778 passed, 6 skipped, 0 failed, 722.88 s** (`-m "" --timeout=400`). Nominal
