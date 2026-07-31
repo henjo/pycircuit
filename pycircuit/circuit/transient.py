@@ -3,6 +3,7 @@
 # See LICENSE for details.
 
 import contextlib
+import time
 import warnings
 
 from numpy.linalg import LinAlgError
@@ -51,6 +52,64 @@ def _single_threaded_blas():
     if _threadpool_limits is None:
         return contextlib.nullcontext()
     return _threadpool_limits(limits=1, user_api='blas')
+
+class TransientStatistics(object):
+    """What a transient run actually did, as opposed to what it returned.
+
+    STAGE 6(c).  Every number here was already being computed and thrown away --
+    `solve_system` returns its iteration count and the call site bound it to `_`;
+    the step controller knows what it rejected; the force-accept path from 4b
+    counts nothing.  A run that takes 40x more steps than expected is currently
+    indistinguishable, from the outside, from one that does not.
+
+    The force-accept counter is the one to read first.  It counts steps accepted
+    with an unbounded truncation error, and after 4d it should be zero on every
+    circuit measured -- so a non-zero value is the run telling you that part of
+    its own result is not error-controlled.
+    """
+
+    __slots__ = ('accepted_steps', 'rejected_steps', 'newton_iterations',
+                 'force_accepts', 'order_drops', 'breakpoints_hit',
+                 'min_step', 'max_step', 'solve_seconds', 'total_seconds')
+
+    def __init__(self):
+        self.accepted_steps = 0
+        self.rejected_steps = 0
+        self.newton_iterations = 0
+        self.force_accepts = 0
+        self.order_drops = 0
+        self.breakpoints_hit = 0
+        self.min_step = None
+        self.max_step = None
+        self.solve_seconds = 0.0
+        self.total_seconds = 0.0
+
+    def _note_step(self, dt):
+        self.min_step = dt if self.min_step is None else min(self.min_step, dt)
+        self.max_step = dt if self.max_step is None else max(self.max_step, dt)
+
+    def as_dict(self):
+        return {k: getattr(self, k) for k in self.__slots__}
+
+    def __repr__(self):
+        pct = (100.0 * self.solve_seconds / self.total_seconds
+               if self.total_seconds else float('nan'))
+        return (
+            'accepted %d, rejected %d (%.1f%% of attempts), Newton iterations %d '
+            '(%.1f per accepted step)\n'
+            'force-accepts %d, order drops %d, breakpoints hit %d\n'
+            'step %.4g .. %.4g s\n'
+            'time %.3f s total, %.3f s in the Newton solve (%.1f%%)'
+            % (self.accepted_steps, self.rejected_steps,
+               100.0 * self.rejected_steps
+               / max(1, self.accepted_steps + self.rejected_steps),
+               self.newton_iterations,
+               self.newton_iterations / max(1, self.accepted_steps),
+               self.force_accepts, self.order_drops, self.breakpoints_hit,
+               self.min_step if self.min_step is not None else float('nan'),
+               self.max_step if self.max_step is not None else float('nan'),
+               self.total_seconds, self.solve_seconds, pct))
+
 
 class Transient(Analysis):
     """Simple transient analysis class.
@@ -300,7 +359,7 @@ class Transient(Analysis):
         solver = self._get_nrsolver()
         scaler = self._get_scaler()
         try:
-            x_res, _ = solver.solve_system(
+            x_res, _iters = solver.solve_system(
                 x0,
                 refnode_removed(func, self.irefnode, self.toolkit),
                 self.toolkit,
@@ -309,7 +368,9 @@ class Transient(Analysis):
                 xtol,
                 self.par.maxiter,
                 limiter=limiter_func,
-                scaler=scaler
+                scaler=scaler,
+                ## Stage 6: lets the solver name a node instead of a row index.
+                row_names=reduced_row_names(self.cir, self.irefnode),
             )
         ## NARROW, deliberately.  This used to be `except Exception`, which turned
         ## every failure inside a device model into "the circuit did not converge" --
@@ -335,6 +396,11 @@ class Transient(Analysis):
         except LinAlgError as e:
             raise SingularMatrix(str(e)) from e
         
+        ## Stage 6(c): this count was bound to `_` and discarded.
+        stats = getattr(self, 'statistics', None)
+        if stats is not None:
+            stats.newton_iterations += int(_iters)
+
         x = x_res
         
         # Insert reference node voltage
@@ -601,6 +667,10 @@ class Transient(Analysis):
             self.cir.accept_step(0.0, X[-1], self.epar)
         
         timelist = []
+        ## Stage 6(c).  Created per run, so a second `solve()` reports its own
+        ## numbers rather than the sum of every run on this object.
+        self.statistics = TransientStatistics()
+        _t_run_start = time.perf_counter()
         self._is_first_step = True
         self._no_history = True
         t = 0.0
@@ -742,8 +812,12 @@ class Transient(Analysis):
             self._dt = dt
             next_t = t + dt
             
+            if was_break_step:
+                self.statistics.breakpoints_hit += 1
             try:
+                _t0 = time.perf_counter()
                 x, feval, J, f = self.solve_timestep(X[-1], next_t, provided_function=provided_function)
+                self.statistics.solve_seconds += time.perf_counter() - _t0
             except NoConvergenceError:
                 ## STAGE 4h -- A FIXED GRID THAT CANNOT BE HONOURED MUST SAY SO.
                 ## Shrinking is the only way to make progress, so it stays -- but
@@ -788,6 +862,7 @@ class Transient(Analysis):
                 )
                 
                 if not accept and reject_count < MAX_REJECT:
+                    self.statistics.rejected_steps += 1
                     reject_count += 1
                     dt = dt_next
                     if dt < getattr(self.par, 'minstep', 1e-18):
@@ -827,6 +902,7 @@ class Transient(Analysis):
                     ## obeys, which is what makes "no accepted ratio exceeds 2.414"
                     ## true of the run as a whole rather than of its quiet parts.
                     force_order_drop = True
+                    self.statistics.force_accepts += 1
                     next_dt = min(max_step, dt * MAX_GROWTH_RATIO)
                     ## An unbounded accepted truncation error must not be invisible.
                     ## This is the same failure class stage 1 exists to remove: the
@@ -848,6 +924,11 @@ class Transient(Analysis):
                 reject_count = 0
 
             t = next_t
+            self.statistics.accepted_steps += 1
+            self.statistics._note_step(dt)
+            if self._effective_method == 'EulerIntegrator' and \
+                    type(self.base_integrator).__name__ != 'EulerIntegrator':
+                self.statistics.order_drops += 1
             timelist.append(t)
             X.append(copy(x))
             
@@ -877,11 +958,16 @@ class Transient(Analysis):
         X = self.toolkit.array(X[1:]).T
         timelist = self.toolkit.array(timelist)
         
+        self.statistics.total_seconds = time.perf_counter() - _t_run_start
+
         self.result = CircuitResult(self.cir, x=X, xdot=None,
                                     sweep_values=timelist, 
                                     sweep_label='time', 
                                     sweep_unit='s')
-        
+        ## Stage 6(c): reachable from the result, not only from the analysis, so a
+        ## caller who kept only the waveform can still ask what produced it.
+        self.result.statistics = self.statistics
+
         return self.result
 
 

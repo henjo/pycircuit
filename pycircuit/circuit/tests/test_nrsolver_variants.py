@@ -13,10 +13,15 @@ class MockFailingSolver(NonLinearSolver):
         raise NoConvergenceError("Mock failure")
 
 class MockSourceSteppingBaseSolver(NonLinearSolver):
+    ## `**kwargs` since stage 6, which added `row_names` to the `NonLinearSolver`
+    ## contract so a diagnostic can say "'net3'" instead of "row 4".  Absorbing
+    ## unknown keywords is what any out-of-tree solver should do; the decorators
+    ## pass the new argument by NAME, so a subclass that does neither fails loudly
+    ## with a TypeError rather than silently binding it to the wrong parameter.
     def __init__(self):
         self.call_count = 0
         
-    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None):
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, **kwargs):
         self.call_count += 1
         # The first call is the direct solve (no source stepping), we want it to fail
         if self.call_count == 1:
@@ -53,7 +58,7 @@ def test_gmin_stepping_trigger():
         return x, np.eye(len(x))
 
     class MockFailingGmin(NonLinearSolver):
-        def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None):
+        def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, **kwargs):
             try:
                 F, J = eval_FJ(x0)
                 gmin = J[0,0] - 1.0

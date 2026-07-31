@@ -59,6 +59,7 @@ from pycircuit.circuit import elements as elements_module
 from pycircuit.circuit import volterra as volterra_module
 from pycircuit.circuit import symbolicapprox as symbolicapprox_module
 from pycircuit.circuit import mos as mos_module
+from pycircuit.circuit import nportanalysis as nportanalysis_module
 
 
 def test_circuit_module_doctests():
@@ -110,6 +111,35 @@ def test_mos_module_doctests():
     results = doctest.testmod(mos_module, verbose=False)
     assert results.failed == 0, (
         '%d of %d doctests in mos.py failed' %
+        (results.failed, results.attempted))
+
+
+def test_nportanalysis_module_doctests():
+    """17 of 33 failing when this module was first measured, from four causes.
+
+    * ``import symbolic`` -- a Python-2 implicit relative import. One line, and
+      because every later example in that block referred to names it was meant to
+      bind, it cascaded into ten ``NameError`` failures.
+    * ``res['mu'].y[0]`` -- results are no longer wrapped in a ``Waveform``. In the
+      *numeric* path they are plain arrays, so it is ``res['mu'][0]``; in the
+      *symbolic* path they are scalars, so it is ``res['mu']``. That asymmetry is
+      the current API, documented here rather than quietly changed.
+    * ``Symbol('R1', real=True)`` -- real is not enough for sympy to discharge the
+      ``Abs`` in the noise expression, so ``Svn`` could not reduce. Resistances are
+      positive, and saying so lets it.
+    * ``print(mu)`` against a pasted ``(0.1+0j)`` -- the value is 0.1 to within
+      7e-15 and the literal was never going to survive a change of BLAS or
+      platform. Formatted to 4 significant figures instead.
+
+    **The physics documented here was correct throughout.** ``simplify(old - new)``
+    is 0 for the noise expression: the old expected ``(4*R1*R2*kT + 4*kT*R1**2)/R2``
+    and the current ``4*R1*T*k*(R1 + R2)/R2`` are the same quantity, differing only
+    in how ``kT`` is now composed and in what sympy could reduce. Only the
+    plumbing had drifted.
+    """
+    results = doctest.testmod(nportanalysis_module, verbose=False)
+    assert results.failed == 0, (
+        '%d of %d doctests in nportanalysis.py failed' %
         (results.failed, results.attempted))
 
 

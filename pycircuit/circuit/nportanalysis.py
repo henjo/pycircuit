@@ -39,14 +39,14 @@ class TwoPortAnalysis(Analysis):
     >>> c['R1'] = R(n1, n2, r=9e3)
     >>> c['R2'] = R(n2, gnd, r=1e3)
     >>> res = TwoPortAnalysis(c, n1, gnd, n2, gnd).solve(freqs = np.array([0]))
-    >>> print(res['mu'].y[0])
-    (0.1+0j)
-    >>> print(res['gamma'].y[0])
-    (0.000111111111111+0j)
-    >>> print(res['zeta'].y[0])
-    (1000+0j)
-    >>> print(res['beta'].y[0])
-    (1+0j)
+    >>> print('%.4g' % res['mu'][0].real)
+    0.1
+    >>> print('%.4g' % res['gamma'][0].real)
+    0.0001111
+    >>> print('%.4g' % res['zeta'][0].real)
+    1000
+    >>> print('%.4g' % res['beta'][0].real)
+    1
 
     The transmission parameters are found as:
 
@@ -55,26 +55,28 @@ class TwoPortAnalysis(Analysis):
     C = i(inp, inn)/v(outp, outn) | io = 0
     D = i(inp, inn)/i(outp, outn) | vo = 0
 
-    >>> import symbolic; from sympy import simplify, Symbol
+    >>> from pycircuit.circuit import symbolic, numeric
+    >>> from sympy import simplify, Symbol
     >>> circuit.default_toolkit = symbolic
     >>> c = SubCircuit()
     >>> n1, n2 = c.add_nodes('net1', 'net2')
-    >>> c['R1'] = R(n1, n2, r=Symbol('R1',real=True))
-    >>> c['R2'] = R(n2, gnd, r=Symbol('R2',real=True))
+    >>> c['R1'] = R(n1, n2, r=Symbol('R1', positive=True))
+    >>> c['R2'] = R(n2, gnd, r=Symbol('R2', positive=True))
     >>> symnoise = TwoPortAnalysis(c, n1, gnd, n2, gnd, noise=True, toolkit=symbolic)
     >>> res = symnoise.solve(freqs = np.array([Symbol('s')]), complexfreq=True)
-    >>> simplify(res['mu'].y[0])
+    >>> simplify(res['mu'])
     R2/(R1 + R2)
-    >>> simplify(res['gamma'].y[0])
+    >>> simplify(res['gamma'])
     1/R1
-    >>> simplify(res['zeta'].y[0])
+    >>> simplify(res['zeta'])
     R2
-    >>> simplify(res['beta'].y[0])
+    >>> simplify(res['beta'])
     1
-    >>> simplify(res['Svn'])
-    (4*R1*R2*kT + 4*kT*R1**2)/R2
-    >>> simplify(res['Sin'])
-    4*kT/R2
+    >>> simplify(res['Svn'][0])
+    4*R1*T*k*(R1 + R2)/R2
+    >>> simplify(res['Sin'][0])
+    4*T*k/R2
+    >>> circuit.default_toolkit = numeric
 
     
     """
@@ -174,8 +176,8 @@ class TwoPortAnalysis(Analysis):
         >>> an = TwoPortAnalysis(c, n1, gnd, n2, gnd)
         >>> twoport = an.solve_s(freqs = 0)
         >>> mu = 1/twoport.A[0,0]
-        >>> print(mu)
-        (0.1+0j)
+        >>> print('%.4g' % mu.real)
+        0.1
 
         """
 

@@ -9,7 +9,7 @@
 > (`git@github.com:henjo/pycircuit.git`) — **check `git status -sb` before assuming it is
 > pushed**; several commits have sat unpushed at a time in this work.
 >
-> **Suite: 804 passed, 6 skipped, 0 failed** (`-m "" --timeout=400`). Runtimes this session
+> **Suite: 809 passed, 6 skipped, 0 failed** (`-m "" --timeout=400`). Runtimes this session
 > ranged 676 s to 1941 s on near-identical source, entirely from other jobs on the box —
 > see trap 2 before reading anything into one. Nominal
 > ~8-13 min, but one run of the identical tree took **31m41s** purely from machine load —
@@ -3305,18 +3305,51 @@ min/max step, breakpoints hit, and time in load vs solve. `solve_system` already
 the iteration count and `transient.py:158` discards it.
 
 **Gate 6-1.** A floating node produces a message naming the node and the condition.
-OUTCOME:
+OUTCOME: **PASSED.** Before: `NoConvergenceError: Source Stepping failed at lambda=0.0`. After:
+
+> `SingularMatrix: singular Jacobian: 'floaty' appears in no equation, so nothing determines it — for a node that means no DC path to ground (add a resistor, or use uic=True to skip the operating point)`
+
+**The classification is structural, not a pivot inspection.** An all-zero *column* means the unknown appears in no equation — the floating-node case; an all-zero *row* means the equation constrains nothing. Read off the assembled Jacobian, so it is exact, needs no factorisation, and cannot be confused with mere ill-conditioning — which continuation genuinely can help with and which therefore keeps its existing path.
+
+**Why it reaches the caller at all:** `SingularMatrix` is a sibling of `NoConvergenceError`, not a subclass, so it passes straight through both stepping decorators. That is what "classify **before** continuation is attempted" means in practice — continuation cannot add a missing equation, so it should not be given the chance to report on one.
 
 **Gate 6-2.** A non-convergent circuit produces a message naming the worst node, its
 residual, and the tolerance it missed.
-OUTCOME:
+OUTCOME: **PASSED.** Before: `Source Stepping failed at lambda=0.01`. After:
+
+> `Source Stepping failed at lambda=1.0: Gmin Stepping failed at gmin=0.001: StandardNewton failed to converge after 2 iterations; residual worst at 'c': |f| = 0.01709 against a tolerance of 1.709e-06 (1e+04x over); update worst at 'c': |dx| = 1.907 against a tolerance of 5.933e-05 (3.21e+04x over)`
+
+Everything after the first colon was already in scope when the old message threw it away. The misses are reported **normalised** as well as raw: "1e+04x over" says how far off, where "4.7e-9 A" does not.
+
+**Two things had to change, and the second was not in the plan.** Naming the row needed `row_names` threaded through `NonLinearSolver.solve_system` — the solver works on a system with the reference row removed, so its indices are *reduced* and cannot be looked up in the circuit directly. But that alone changed nothing visible, because the continuation decorators **discarded the inner message**: they raised a fresh `NoConvergenceError` carrying only the rung. They now keep both. The rung is useful context; it is not a substitute for the cause, and for however long this code has existed it has been served instead of one.
+
+**API note, stated because it is a break.** `NonLinearSolver.solve_system` gained a defaulted `row_names` argument, and the decorators pass it **by name** so an out-of-tree solver that does not accept it fails with a `TypeError` rather than silently binding it to `scaler`. Two in-tree mocks needed `**kwargs`, which is what any such subclass should do.
 
 **Gate 6-3.** Statistics are populated and non-zero on a run that rejects steps, and the
 force-accept counter from 4b appears there.
-OUTCOME:
+OUTCOME: **PASSED.** On a `VPulse`-driven RC with the trapezoidal integrator:
+
+```
+accepted 153, rejected 18 (10.5% of attempts), Newton iterations 331 (2.2 per accepted step)
+force-accepts 0, order drops 20, breakpoints hit 26
+step 1e-10 .. 6.009e-08 s
+time 0.225 s total, 0.196 s in the Newton solve (87.2%)
+```
+
+Every counter populated; rejections, order drops and breakpoints all non-zero. **4b's force-accept counter is there and reads 0** — which is now the expected value everywhere, since 4d made that path unreachable on every circuit measured, so a non-zero reading is the run reporting that part of its own result is not error-controlled.
+
+`solve_system` was already returning its iteration count and the call site was binding it to `_`. The object is created **per run** rather than in `__init__`, and that is pinned by its own test: the natural implementation accumulates across `solve()` calls, and the failure is invisible unless something solves twice.
 
 **Docs in the same commit:** a "diagnosing a failed run" section — this is the
 documentation with the highest ratio of user value to effort in the whole plan.
+DONE: `doc/src/circuit/diagnosing.rst`, wired into the toctree. It is organised around
+*telling the three failure modes apart* rather than around the code, and it tells the
+reader to read `force-accepts` first and why a non-zero value means part of the result is
+not error-controlled.
+
+**Stage 6 suite: 809 passed, 6 skipped, 0 failed, 445.19 s** — the two in-tree solver mocks
+needed `**kwargs` for the new `row_names` argument and nothing else changed. Doc build:
+build succeeded, 2 warnings, 0 ERROR, and the new page renders.
 
 ---
 

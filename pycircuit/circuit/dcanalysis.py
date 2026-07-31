@@ -126,7 +126,9 @@ class DC(Analysis):
                 xtol,
                 self.par.maxiter,
                 limiter=limiter_func,
-                scaler=scaler
+                scaler=scaler,
+                ## Stage 6: lets the solver name a node instead of a row index.
+                row_names=reduced_row_names(self.cir, self.irefnode),
             )
         ## NARROW, deliberately -- see the matching note in `transient.py:_newton`.
         ## `except Exception` here reported every device-model bug as a convergence

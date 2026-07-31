@@ -21,6 +21,29 @@ class NoConvergenceError(Exception):
 class SingularMatrix(Exception):
     pass
 
+def reduced_row_names(cir, irefnode):
+    """Names for the solver's rows, with the reference row removed.
+
+    STAGE 6.  The solver works on a system with the reference node eliminated, so
+    a row index it reports is a *reduced* index and cannot be looked up in the
+    circuit directly.  This produces the matching name list once, so a diagnostic
+    can say "'net3'" instead of "row 4".
+
+    Returns None if the names cannot be built, which keeps every diagnostic that
+    uses it optional -- a solver on a system with no circuit behind it (the
+    nrsolver unit tests do exactly that) still works, it just reports indices.
+    """
+    try:
+        names = [str(n.name) for n in cir.nodes]
+        names += ['branch %s' % getattr(b, 'name', i)
+                  for i, b in enumerate(cir.branches)]
+    except Exception:
+        return None
+    if 0 <= irefnode < len(names):
+        del names[irefnode]
+    return names
+
+
 class CircuitResult(IVResultDict, InternalResultDict):
     """Result class for analyses that returns voltages and currents"""
     def __init__(self, circuit, x, xdot = None, 

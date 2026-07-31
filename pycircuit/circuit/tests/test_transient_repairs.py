@@ -1964,3 +1964,114 @@ def test_gate_5p2a_mos_acm_is_gone():
     assert not hasattr(mos_module, 'MOS_ACM'), \
         'MOS_ACM is back; it is a verbatim copy of MOS that cannot be constructed'
     assert hasattr(mos_module, 'MOS'), 'MOS itself must survive the deletion'
+
+
+# ---------------------------------------------------------------------------
+# Stage 6 -- diagnostics and statistics
+#
+# Before this, a floating node and a genuinely non-convergent circuit produced
+# the same message -- "Source Stepping failed at lambda=0.0" -- which names the
+# last thing that was tried rather than the first thing that was wrong.
+# ---------------------------------------------------------------------------
+
+def test_gate_6_1_a_floating_node_is_named():
+    """Measured before: `NoConvergenceError: Source Stepping failed at lambda=0.0`.
+
+    A structural singularity is not something continuation can repair, so it is
+    raised as `SingularMatrix` -- which is not a `NoConvergenceError` and so passes
+    through both stepping decorators instead of being re-wrapped by them.
+    """
+    from pycircuit.circuit.elements import VS
+    cir = SubCircuit(toolkit=numeric)
+    cir['VS'] = VS('n1', gnd, v=1.0)
+    cir['R1'] = R('n1', 'n2', r=1e3)
+    ## Reachable only through a capacitor: no DC path to ground.
+    cir['Cfl'] = C('floaty', gnd, c=1e-9)
+
+    with pytest.raises(SingularMatrix) as excinfo:
+        _dc_solve(cir)
+    msg = str(excinfo.value)
+    assert 'floaty' in msg, 'the message does not name the floating node: %s' % msg
+    assert 'no DC path to ground' in msg, \
+        'the message does not say what the condition is: %s' % msg
+
+
+def test_gate_6_2_a_non_convergent_circuit_names_the_worst_node():
+    """The circuit must be non-singular, or it takes gate 6-1's path instead.
+
+    `maxiter` is cut rather than inventing a pathological circuit: the point is
+    the *message*, and a genuine non-convergence and a truncated one reach the
+    same code with the same information in scope.
+    """
+    import warnings as _w
+    from pycircuit.circuit.dcanalysis import DC
+    cir = _ce_stage(100.0)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        with pytest.raises(NoConvergenceError) as excinfo:
+            DC(cir, toolkit=numeric, maxiter=2).solve()
+
+    msg = str(excinfo.value)
+    assert any("'%s'" % n.name in msg for n in cir.nodes), \
+        'no node is named: %s' % msg
+    assert '|f|' in msg or '|dx|' in msg, 'no residual or update is given: %s' % msg
+    assert 'tolerance' in msg, 'the tolerance it missed is not given: %s' % msg
+    ## The continuation context is kept as well as the cause -- both are useful,
+    ## and it used to be only the former.
+    assert 'Stepping failed' in msg, \
+        'the continuation context was dropped: %s' % msg
+
+
+def test_gate_6_3_statistics_are_populated_and_include_the_force_accept_counter():
+    """`solve_system` returns its iteration count and the call site bound it to `_`.
+
+    The force-accept counter is the one that matters: it counts steps accepted
+    with an unbounded truncation error, and after 4d it is zero on every circuit
+    measured -- so a non-zero value is the run reporting that part of its own
+    result is not error-controlled.
+    """
+    import warnings as _w
+    from pycircuit.circuit.integrator import TrapezoidalIntegrator
+    tran = Transient(_pulsed_rc(), toolkit=numeric,
+                     integrator=TrapezoidalIntegrator())
+    with _w.catch_warnings():
+        _w.simplefilter('ignore', RuntimeWarning)
+        res = tran.solve(refnode=gnd, tend=3e-6, timestep=1e-7)
+
+    st = res.statistics
+    d = st.as_dict()
+    for key in ('accepted_steps', 'rejected_steps', 'newton_iterations',
+                'force_accepts', 'order_drops', 'breakpoints_hit',
+                'min_step', 'max_step', 'solve_seconds', 'total_seconds'):
+        assert key in d, 'statistics is missing %r' % key
+        assert d[key] is not None, '%s is None' % key
+
+    assert st.accepted_steps == len(np.asarray(res.sweep_values)), \
+        'accepted_steps (%d) disagrees with the number of points returned (%d)' \
+        % (st.accepted_steps, len(np.asarray(res.sweep_values)))
+    assert st.newton_iterations > st.accepted_steps, \
+        'fewer Newton iterations (%d) than steps (%d) is not possible' \
+        % (st.newton_iterations, st.accepted_steps)
+    assert st.rejected_steps > 0, 'this circuit is chosen because it rejects steps'
+    assert st.breakpoints_hit > 0, 'a VPulse drive must hit breakpoints'
+    assert 0 < st.min_step <= st.max_step
+    assert 0 < st.solve_seconds <= st.total_seconds
+
+
+def test_gate_6_3_statistics_are_per_run_not_cumulative():
+    """A second `solve()` must report its own numbers, not the running total.
+
+    Pinned because the natural implementation -- an attribute created in
+    `__init__` -- gets this wrong, and the failure is invisible unless something
+    solves twice.
+    """
+    import warnings as _w
+    tran = Transient(_pulsed_rc(), toolkit=numeric)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore', RuntimeWarning)
+        first = tran.solve(refnode=gnd, tend=3e-6, timestep=1e-7)
+        n1 = first.statistics.accepted_steps
+        second = tran.solve(refnode=gnd, tend=3e-6, timestep=1e-7)
+        n2 = second.statistics.accepted_steps
+    assert n1 == n2, \
+        'statistics accumulate across runs: %d then %d' % (n1, n2)

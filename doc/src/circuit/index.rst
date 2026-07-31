@@ -21,5 +21,6 @@ Circuit analyzer
     modular_engine
     time_stepping
     lte_dae
+    diagnosing
     pcnr_limiting
     examples/index.rst

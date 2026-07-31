@@ -1,8 +1,99 @@
 from abc import ABC, abstractmethod
 import numpy as np
 
-from pycircuit.circuit.analysis import NoConvergenceError
+from pycircuit.circuit.analysis import NoConvergenceError, SingularMatrix
 from pycircuit.circuit.scaler import NoneScaler
+
+def _structural_singularity(J, row_names, toolkit):
+    """Name a structurally singular row or column, or return None.
+
+    STAGE 6(a).  A structurally singular matrix is not something continuation can
+    repair: gmin-stepping and source-stepping both perturb a system that has a
+    solution, and neither adds the missing equation.  Reporting it as
+    "Source Stepping failed at lambda=0.0" -- which is what three layers of
+    re-wrapping used to produce -- tells the user about the last thing that was
+    tried rather than the first thing that was wrong.
+
+    Two shapes, and they mean different things to the person reading the message:
+
+      * an all-zero COLUMN means the unknown appears in no equation.  For a node
+        that is "nothing constrains this voltage" -- the floating-node case.
+      * an all-zero ROW means the equation constrains nothing.
+
+    Detected on the assembled Jacobian rather than from an LU pivot because it is
+    exact, needs no factorisation, and cannot be confused with a merely
+    ill-conditioned matrix -- which continuation genuinely can help with and which
+    must therefore keep its existing path.
+    """
+    try:
+        A = abs(np.asarray(J, dtype=float))
+    except (TypeError, ValueError):
+        return None            # symbolic: no numeric structure to inspect
+    if A.ndim != 2 or A.shape[0] != A.shape[1]:
+        return None
+
+    def _name(i):
+        if row_names is not None and 0 <= i < len(row_names):
+            return "'%s'" % row_names[i]
+        return 'row %d' % i
+
+    col_dead = np.flatnonzero(A.sum(axis=0) == 0.0)
+    if len(col_dead):
+        i = int(col_dead[0])
+        return ('%s appears in no equation, so nothing determines it -- for a node '
+                'that means no DC path to ground (add a resistor, or use uic=True '
+                'to skip the operating point)' % _name(i))
+
+    row_dead = np.flatnonzero(A.sum(axis=1) == 0.0)
+    if len(row_dead):
+        i = int(row_dead[0])
+        return ('the equation at %s constrains nothing -- every entry in its row '
+                'is zero' % _name(i))
+    return None
+
+
+def _worst_row_report(F, xdiff, x_next, x, reltol, abstol, xtol, row_names, toolkit):
+    """Which unknown failed to converge, by how much, and against what tolerance.
+
+    STAGE 6(b).  Everything here was already in scope at the point the old message
+    was raised; it said "DampedNewton failed to converge after N iterations" and
+    threw all of it away.
+    """
+    def _name(i):
+        if row_names is not None and 0 <= i < len(row_names):
+            return "'%s'" % row_names[i]
+        return 'row %d' % i
+
+    try:
+        F = np.asarray(F, dtype=float)
+        xd = abs(np.asarray(xdiff, dtype=float))
+        xn = np.asarray(x_next, dtype=float)
+        xo = np.asarray(x, dtype=float)
+        ab = np.broadcast_to(np.asarray(abstol, dtype=float), F.shape)
+        xt = np.broadcast_to(np.asarray(xtol, dtype=float), F.shape)
+    except (TypeError, ValueError):
+        return ''
+
+    ## Normalised misses: >1 means that row failed its test.  Reporting the
+    ## normalised value rather than the raw residual is what makes the number
+    ## actionable -- "2.3x its tolerance" says how far off, "4.7e-9 A" does not.
+    f_tol = reltol * abs(F) + ab
+    x_tol = reltol * np.maximum(abs(xn), abs(xo)) + xt
+    with np.errstate(divide='ignore', invalid='ignore'):
+        f_miss = np.where(f_tol > 0, abs(F) / f_tol, 0.0)
+        x_miss = np.where(x_tol > 0, xd / x_tol, 0.0)
+
+    parts = []
+    if f_miss.size and np.nanmax(f_miss) > 1.0:
+        i = int(np.nanargmax(f_miss))
+        parts.append('residual worst at %s: |f| = %.4g against a tolerance of '
+                     '%.4g (%.3gx over)' % (_name(i), abs(F[i]), f_tol[i], f_miss[i]))
+    if x_miss.size and np.nanmax(x_miss) > 1.0:
+        i = int(np.nanargmax(x_miss))
+        parts.append('update worst at %s: |dx| = %.4g against a tolerance of '
+                     '%.4g (%.3gx over)' % (_name(i), xd[i], x_tol[i], x_miss[i]))
+    return '; '.join(parts)
+
 
 class NonLinearSolver(ABC):
     """
@@ -14,7 +105,7 @@ class NonLinearSolver(ABC):
     """
     
     @abstractmethod
-    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None):
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None):
         pass
 
 
@@ -24,7 +115,7 @@ class StandardNewton(NonLinearSolver):
     Used natively by DCAnalysis and standard adaptive Transient simulations.
     """
     
-    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None):
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None):
         x = x0
         if scaler is None:
             scaler = NoneScaler()
@@ -39,6 +130,12 @@ class StandardNewton(NonLinearSolver):
                 xdiff = toolkit.linearsolver(J_s, -F_s)
                 xdiff = scaler.unscale_solution(xdiff, s_vec, toolkit)
             except Exception as e:
+                ## STAGE 6(a).  See the matching note in DampedNewton -- and note
+                ## that THIS is the default solver, so this is the copy that
+                ## actually runs unless a caller asks for another.
+                why = _structural_singularity(J, row_names, toolkit)
+                if why is not None:
+                    raise SingularMatrix('singular Jacobian: %s' % why) from e
                 raise NoConvergenceError(f"Singular Jacobian: {str(e)}")
             
             x_next = x + xdiff
@@ -68,7 +165,12 @@ class StandardNewton(NonLinearSolver):
                 
             x = x_next
             
-        raise NoConvergenceError(f"StandardNewton failed to converge after {maxiter} iterations.")
+        ## STAGE 6(b).
+        detail = _worst_row_report(F, xdiff, x_next, x, reltol, abstol, xtol,
+                                   row_names, toolkit)
+        raise NoConvergenceError(
+            'StandardNewton failed to converge after %d iterations%s'
+            % (maxiter, ('; ' + detail) if detail else ''))
 
 
 class DampedNewton(NonLinearSolver):
@@ -77,7 +179,7 @@ class DampedNewton(NonLinearSolver):
     If a full step causes the residual to increase, the step size (alpha) is halved.
     """
     
-    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None):
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None):
         x = x0
         if scaler is None:
             scaler = NoneScaler()
@@ -92,6 +194,15 @@ class DampedNewton(NonLinearSolver):
                 xdiff = toolkit.linearsolver(J_s, -F_s)
                 xdiff = scaler.unscale_solution(xdiff, s_vec, toolkit)
             except Exception as e:
+                ## STAGE 6(a) -- CLASSIFY BEFORE THE CONTINUATION LAYERS SEE IT.
+                ## A structural singularity is not something gmin- or
+                ## source-stepping can repair, so it is raised as SingularMatrix,
+                ## which is NOT a NoConvergenceError and therefore passes straight
+                ## through both decorators instead of being re-wrapped into
+                ## "Source Stepping failed at lambda=0.0".
+                why = _structural_singularity(J, row_names, toolkit)
+                if why is not None:
+                    raise SingularMatrix('singular Jacobian: %s' % why) from e
                 raise NoConvergenceError(f"Singular Jacobian: {str(e)}")
             
             alpha = 1.0
@@ -121,7 +232,13 @@ class DampedNewton(NonLinearSolver):
                 
             x = x_next
             
-        raise NoConvergenceError(f"DampedNewton failed to converge after {maxiter} iterations.")
+        ## STAGE 6(b) -- SAY WHICH UNKNOWN FAILED, BY HOW MUCH, AND AGAINST WHAT.
+        ## All of this was already in scope when the old message threw it away.
+        detail = _worst_row_report(F, xdiff, x_next, x, reltol, abstol, xtol,
+                                   row_names, toolkit)
+        raise NoConvergenceError(
+            'DampedNewton failed to converge after %d iterations%s'
+            % (maxiter, ('; ' + detail) if detail else ''))
 
 
 class GminSteppingNewton(NonLinearSolver):
@@ -136,10 +253,10 @@ class GminSteppingNewton(NonLinearSolver):
     def __init__(self, base_solver: NonLinearSolver):
         self.base_solver = base_solver
         
-    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None):
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None):
         try:
             # First, attempt to solve the pure system without Gmin injection
-            return self.base_solver.solve_system(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler)
+            return self.base_solver.solve_system(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names)
         except NoConvergenceError:
             pass # Proceed to Gmin stepping
             
@@ -157,12 +274,17 @@ class GminSteppingNewton(NonLinearSolver):
                 return F_gmin, J_gmin
                 
             try:
-                x_curr, _ = self.base_solver.solve_system(x_curr, eval_FJ_with_gmin, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler)
-            except NoConvergenceError:
-                raise NoConvergenceError(f"Gmin Stepping failed at gmin={gmin}")
+                x_curr, _ = self.base_solver.solve_system(x_curr, eval_FJ_with_gmin, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names)
+            except NoConvergenceError as e:
+                ## STAGE 6 -- KEEP THE INNER DIAGNOSIS.  This used to discard it,
+                ## so the caller was told which continuation rung was last tried
+                ## and nothing about what actually failed.  The rung is useful
+                ## context; it is not a substitute for the cause.
+                raise NoConvergenceError(
+                    'Gmin Stepping failed at gmin=%s: %s' % (gmin, e)) from e
                 
         # Finally, solve the exact pure system using the guided initial guess
-        return self.base_solver.solve_system(x_curr, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler)
+        return self.base_solver.solve_system(x_curr, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names)
 
 class SourceSteppingNewton(NonLinearSolver):
     """
@@ -175,10 +297,10 @@ class SourceSteppingNewton(NonLinearSolver):
         self.base_solver = base_solver
         self.source_callback = source_callback
         
-    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None):
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None):
         try:
             # Note: eval_FJ natively evaluates sources at 1.0
-            return self.base_solver.solve_system(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler)
+            return self.base_solver.solve_system(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names)
         except NoConvergenceError:
             pass # Proceed to source stepping
             
@@ -193,11 +315,13 @@ class SourceSteppingNewton(NonLinearSolver):
                 return self.source_callback(x, lambda_)
                 
             try:
-                x_curr, _ = self.base_solver.solve_system(x_curr, eval_FJ_with_source, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler)
-            except NoConvergenceError:
-                raise NoConvergenceError(f"Source Stepping failed at lambda={lambda_}")
+                x_curr, _ = self.base_solver.solve_system(x_curr, eval_FJ_with_source, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names)
+            except NoConvergenceError as e:
+                ## STAGE 6 -- keep the inner diagnosis; see the Gmin note above.
+                raise NoConvergenceError(
+                    'Source Stepping failed at lambda=%s: %s' % (lambda_, e)) from e
                 
-        return self.base_solver.solve_system(x_curr, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler)
+        return self.base_solver.solve_system(x_curr, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names)
 
 class SchurCoupledNewton(NonLinearSolver):
     """
@@ -208,7 +332,7 @@ class SchurCoupledNewton(NonLinearSolver):
     (F, J_x, J_h, E, E_x, E_h)
     """
     
-    def solve_system(self, S0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None):
+    def solve_system(self, S0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None):
         x_curr, h_curr = S0
         
         for i in range(maxiter):
@@ -264,7 +388,7 @@ class JAXNewtonSolver(NonLinearSolver):
     Only supports Dense matrices and full-JAX compatible circuits (no Python fallback elements).
     """
     
-    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None):
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None):
         if not toolkit.supports('autodiff'):
             raise ValueError("JAXNewtonSolver requires the JAX toolkit (_jaxtoolkit.py).")
             
