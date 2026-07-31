@@ -1,13 +1,41 @@
-"""Stage 1 of `doc/transient_work_plan.md`: the silent failures.
+"""Regression tests for the transient repair work (`doc/transient_work_plan.md`).
 
-Every test here corresponds to a declared gate. They exist because each defect
-they cover produced a **confident wrong answer** rather than an error, which is
-the one class of failure a test suite cannot be trusted to catch by accident.
+Every test here corresponds to a **declared gate**. They exist because each defect
+they cover produced a *confident wrong answer* rather than an error, which is the one
+class of failure a test suite cannot be trusted to catch by accident.
 
-Gate 1-1  a failed operating point raises, and names the escape
-Gate 1-2  epar reaches the devices, in the inner DC and in every transient step
-Gate 1-3  `bypass` is connected to something
-Gate 1-5  Newton's tolerance and the controller's are separate knobs
+The file was originally `test_transient_stage1.py` and outgrew that name as later
+stages landed. It is named for the work rather than for a stage number, so it stays
+true as stages 4-12 add to it; the plan's stage numbering is provenance, and it is
+recorded per-section below rather than in the filename.
+
+Sections, in file order:
+
+    stage 1   the silent failures
+              1-1  a failed operating point raises, and names the escape
+              1-2  epar reaches the devices, in the inner DC and every step
+              1-3  `bypass` is connected to something
+              1-5  Newton's tolerance and the controller's are separate knobs
+              0.1d the coupled path raises instead of livelocking
+
+    stage 2+  the three improvements made after stage 2
+              2+.1 `Toolkit.__getattr__` is memoised
+              2+.2 the converged step skips the residual nobody reads
+              2+.3 `relref` modes, and `sigglobal` on a quiet node
+
+    stage 3   the first step
+              3-1  `reltol` controls the global error
+              3-3  a 2nd-order method beats backward Euler
+                   plus the defect pinned deliberately, and `firststep` validation
+
+**A trap this file has fallen into three times** -- see `_pulsed_rc` and the note in
+`test_sigglobal_does_not_collapse_on_a_quiet_node`: a transient whose `timestep` is
+near the circuit's own time constant runs at `max_step` from end to end, so the
+controller decides nothing and **no tolerance can be observed to act**. Two draft
+gates "passed" that way while measuring nothing. Any new test of a step-control knob
+must first establish that the controller is what binds -- start from `uic=True`, use a
+`timestep` well above the step the controller would choose, and check that the step
+count is well above `tend/timestep`.
 """
 
 import numpy as np

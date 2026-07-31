@@ -1183,7 +1183,7 @@ zero start deliberately.
 **Gate 1-1 (the failure is visible).** A circuit with no DC solution must raise, with a
 message that names the circuit condition. Declared success: it raises; the message
 contains the word `uic`; and no waveform is returned.
-OUTCOME: **PASSED.** `test_transient_stage1.py::test_gate_1_1_failed_operating_point_raises_and_names_uic`
+OUTCOME: **PASSED.** `test_transient_repairs.py::test_gate_1_1_failed_operating_point_raises_and_names_uic`
 — two opposing current sources into a node with no DC path raise `NoConvergenceError`, the
 message contains `uic`, and `tran.result` is `None`. A companion test
 (`..._uic_is_a_working_escape`) checks the escape actually works. Implemented as
@@ -2167,7 +2167,8 @@ Negative results are recorded in the same voice as positive ones.
 
 All four declared gates passed (1-1, 1-2, 1-3, 1-4), plus a fifth added for the tolerance
 separation that decision 0.3a/0.3d required. Suite **744 passed, 6 skipped, 0 failed**.
-Tests: `pycircuit/circuit/tests/test_transient_stage1.py`, one per gate.
+Tests: `pycircuit/circuit/tests/test_transient_repairs.py`, one per gate. (Renamed
+from `test_transient_stage1.py` once stages 2+ and 3 added to it.)
 
 **Gate 1-5 (the tolerance roles are separate knobs)** — not in the original plan; added
 because 0.3a's separation landed here and an unmeasured split is what created the problem
