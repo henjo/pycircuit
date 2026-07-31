@@ -1,5 +1,82 @@
 # -*- coding: utf-8 -*-
+import numpy as np
+
 from pycircuit.circuit import Circuit, Parameter, defaultepar
+
+## STAGE 5(b) -- SPICE's EXPMAX treatment, and why it belongs in this module.
+##
+## The Ebers-Moll and Shockley expressions below all evaluate `exp(v/VT)`, and a
+## Newton step can ask for a `v` these devices will never see in operation.  At
+## T=300K, VT is 25.85 mV, so `exp()` overflows to `inf` above about 18.3 V --
+## while the supply in the failing common-emitter case is 5 V and `exp(5/VT)` is
+## perfectly finite.  **The excursion comes from the iteration, not the bias.**
+##
+## What overflow costs here is worse than a large number.  `inf - inf` in the
+## transport current gives `nan`; `nan` reaches `x`; every later evaluation is
+## `nan`.  Measured on that circuit: 12 of 405 model evaluations returned
+## non-finite `i()` AND non-finite `G()`.
+##
+## It belongs on this base class rather than in each device because these models
+## are differentiated by `toolkit.jacobian`.  Under a toolkit without autodiff
+## that is a CENTRAL DIFFERENCE, so an overflow in `eval_i_pure` does not merely
+## produce a large entry in `G` -- it produces `nan`, from `(inf - inf)/2h`.  One
+## clamp at the source covers both the residual and the Jacobian.
+##
+## The linear extrapolation above the knee is deliberate, and is what SPICE does:
+## clamping `exp` to a constant would zero the derivative and leave Newton with no
+## gradient to descend, which trades a `nan` for a stall.  Continuing linearly
+## keeps the function monotone and its derivative positive and finite.
+EXP_ARG_MAX = 80.0
+
+
+def _expl(toolkit, arg):
+    """`exp(arg)`, extrapolated linearly above `EXP_ARG_MAX` instead of overflowing.
+
+    Above the knee, `exp(a) ~ exp(m)(1 + (a - m))` -- value and first derivative
+    both continuous at `a = m`, so Newton sees no discontinuity and still has a
+    finite positive slope to work with.
+    """
+    lim = EXP_ARG_MAX
+    e_lim = toolkit.exp(lim)
+    try:
+        if arg > lim:
+            return e_lim * (1.0 + (arg - lim))
+        return toolkit.exp(arg)
+    except (TypeError, ValueError):
+        ## Symbolic or array-valued argument: no comparison is possible, so hand
+        ## back the plain exponential rather than guessing.  The clamp exists for
+        ## the numeric Newton path, which is where the overflow happens.
+        return toolkit.exp(arg)
+
+
+def _pnjlim(vnew, vold, VT, IS, toolkit):
+    """SPICE's `pnjlim`: bound the per-iteration excursion of a junction voltage.
+
+    Newton linearises an exponential, so a step taken from a lightly-biased point
+    overshoots enormously -- and the model is then evaluated somewhere it has no
+    business being.  `_expl` stops that becoming `nan`, but it does not stop the
+    iteration wandering: with the clamp alone and no limiting, the common-emitter
+    stage converges to a GENUINE but spurious operating point 200 V below the
+    rails, with the base-collector junction forward biased at 0.91 V carrying the
+    20 A the base resistor delivers.  That is a solution of the circuit equations;
+    it is simply not the one anyone wants, and only limiting keeps Newton out of
+    it.
+
+    `vc` is the voltage at which the exponential's curvature starts to dominate.
+    Above it the update is compressed logarithmically, which is what bounds the
+    step without changing where the solution is -- the limiter only moves the
+    point the next Jacobian is taken at, never the equations.
+    """
+    if IS <= 0.0:
+        return vnew
+    vc = VT * toolkit.log(VT / (IS * 1.414213562))
+    if vnew > vc and vnew > 0.0:
+        if vold > 0.0:
+            arg = 1.0 + (vnew - vold) / VT
+            return vold + VT * toolkit.log(arg) if arg > 0.0 else vc
+        return VT * toolkit.log(vnew / VT)
+    return vnew
+
 
 class Semiconductor(Circuit):
     """Base class for non-linear semiconductors with automatic Jacobians.
@@ -24,6 +101,57 @@ class Semiconductor(Circuit):
         """Instance parameters as a plain dict, for the pure model functions."""
         return {p.name: getattr(self.iparv, p.name) for p in self.instparams}
 
+    ## STAGE 5(a) -- WHICH JUNCTIONS THIS DEVICE HAS, AND WHICH TERMINAL MOVES.
+    ##
+    ## Each entry is `(anode, cathode, move)` as indices into `terminals`.  The
+    ## third field is not redundant: a BJT's two junctions SHARE the base as anode,
+    ## so limiting both by adjusting the anode would have the second undo the first.
+    ## Moving the base for B-E and the collector for B-C keeps the two independent,
+    ## which is the same decomposition the Ebers-Moll model itself uses.
+    ##
+    ## Empty by default: a device with no junction list gets no limiting, which is
+    ## the right answer for anything whose i(v) is not an exponential.
+    junctions = ()
+
+    def limit(self, x, x0, epar=defaultepar):
+        """Return a limited copy of `x` -- STATE-FREE, and that is the point.
+
+        The convention here is that `limit` RETURNS the limited vector rather than
+        mutating device state.  `Diode` does the opposite: it stores `_vlim` and
+        linearises `G` around it, which works but hid a real bug for a long time --
+        `SubCircuit.limit` passes a fancy-indexed COPY of `x` and discards the
+        result, so a limiter that writes its argument has no effect at all, and the
+        only limiter in the tree was the one that could not expose that.
+
+        Returning the vector also makes limiting expressible on a traced backend,
+        where device-private Python state cannot go.  Both `None` (the `Diode`
+        convention) and a returned array are accepted by `SubCircuit.limit` during
+        the transition.
+        """
+        if not self.junctions:
+            return x
+
+        VT = self.toolkit.kboltzmann * epar.T / self.toolkit.qelectron
+        IS = getattr(self.iparv, 'IS', 0.0)
+        try:
+            out = np.array(x, dtype=float, copy=True)
+        except (TypeError, ValueError):
+            ## Symbolic x: limiting is a numeric Newton aid and has nothing to
+            ## contribute here.  Returning it untouched is correct, not a fallback.
+            return x
+
+        x0a = np.asarray(x0, dtype=float)
+        for anode, cathode, move in self.junctions:
+            vnew = float(out[anode] - out[cathode])
+            vold = float(x0a[anode] - x0a[cathode])
+            vlim = _pnjlim(vnew, vold, VT, IS, self.toolkit)
+            ## Reassign the moving terminal so the junction carries `vlim` exactly.
+            if move == anode:
+                out[anode] = out[cathode] + vlim
+            else:
+                out[cathode] = out[anode] - vlim
+        return out
+
     def G(self, x, epar=defaultepar):
         return self.toolkit.jacobian(self.eval_i_pure, x,
                                      self._model_params(), epar)
@@ -39,6 +167,9 @@ class Semiconductor(Circuit):
 class BJT(Semiconductor):
     """NPN Bipolar Junction Transistor (Ebers-Moll Level 1)"""
     terminals = ('c', 'b', 'e')
+    ## B-E moves the base; B-C moves the collector.  See `junctions` on the base
+    ## class for why the two must not both move the base.
+    junctions = ((1, 2, 1), (1, 0, 0))
     instparams = [
         Parameter('IS', 'Saturation current', default=1e-14, unit='A'),
         Parameter('BF', 'Forward beta', default=100.0),
@@ -65,8 +196,10 @@ class BJT(Semiconductor):
         # --- EBERS-MOLL (LEVEL 1) BJT MODEL ---
         # The BJT is modeled as two coupled diodes (Base-Emitter and Base-Collector).
         # These diodes share the base region and create transistor action.
-        i_be_diode = IS * (toolkit.exp(v_be / VT) - 1.0)
-        i_bc_diode = IS * (toolkit.exp(v_bc / VT) - 1.0)
+        ## `_expl`, not `exp` -- see EXP_ARG_MAX.  `inf - inf` here is what put
+        ## `nan` into 12 of 405 evaluations on the failing common-emitter stage.
+        i_be_diode = IS * (_expl(toolkit, v_be / VT) - 1.0)
+        i_bc_diode = IS * (_expl(toolkit, v_bc / VT) - 1.0)
         
         # Early effect: models the modulation of the effective base width by the
         # collector-emitter voltage, which causes output conductance to increase.
@@ -94,6 +227,8 @@ class BJT(Semiconductor):
 class JFET(Semiconductor):
     """N-Channel JFET (Shichman-Hodges)"""
     terminals = ('d', 'g', 's')
+    ## terminals ('d', 'g', 's'): G-S moves the gate, G-D moves the drain.
+    junctions = ((1, 2, 1), (1, 0, 0))
     instparams = [
         Parameter('VTO', 'Threshold voltage', default=-2.0, unit='V'),
         Parameter('BETA', 'Transconductance parameter', default=1e-4, unit='A/V^2'),
@@ -144,8 +279,8 @@ class JFET(Semiconductor):
         i_d = where(is_reverse, -i_d_fwd, i_d_fwd)
         
         VT = toolkit.kboltzmann * epar.T / toolkit.qelectron
-        i_gs = IS * (toolkit.exp(v_gs / VT) - 1.0)
-        i_gd = IS * (toolkit.exp(v_gd / VT) - 1.0)
+        i_gs = IS * (_expl(toolkit, v_gs / VT) - 1.0)
+        i_gd = IS * (_expl(toolkit, v_gd / VT) - 1.0)
         
         i_g = i_gs + i_gd
         i_drain = i_d - i_gd
@@ -173,9 +308,12 @@ class ZenerDiode(Semiconductor):
         BV = params.get('BV', 5.0)
         IBV = params.get('IBV', 1e-10)
         
-        i_fwd = IS * (toolkit.exp(v / VT) - 1.0)
+        i_fwd = IS * (_expl(toolkit, v / VT) - 1.0)
         v_zener = -v - BV
-        i_zener = -IBV * (toolkit.exp(v_zener / VT) - 1.0)
+        ## The clamp is direction-agnostic, which is why the Zener gets it even
+        ## though review 0.1b withheld `pnjlim` from it: this term is a second
+        ## exponential running the OTHER way, and overflow there is just as fatal.
+        i_zener = -IBV * (_expl(toolkit, v_zener / VT) - 1.0)
         
         i_tot = i_fwd + i_zener
         return toolkit.array([i_tot, -i_tot])

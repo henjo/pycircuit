@@ -2940,24 +2940,119 @@ limited `x` (state-free) rather than mutating device state — **survey this sep
 has a wide blast radius into `elements.py` and is the prerequisite for the JAX path ever
 having limiting.
 
+### Stage 5 entry measurement and sub-gates, written 2026-07-31 before any code
+
+**The entry condition holds exactly as recorded.** A common-emitter NPN stage — `VCC` 5 V
+through 1 k to the collector, `VIN` 0.8 V through `RB` to the base, emitter grounded — fails
+to reach a DC operating point at **all three** base resistances:
+
+| RB | result |
+|---|---|
+| 10 | `NoConvergenceError`: Source Stepping failed at lambda=1.0 |
+| 100 | `NoConvergenceError`: Source Stepping failed at lambda=1.0 |
+| 1000 | `NoConvergenceError`: Source Stepping failed at lambda=1.0 |
+
+**And the mechanism is the one the plan assumes, verified rather than inferred.**
+Instrumenting the model over the failing solve at RB = 100:
+
+    model evaluations           405
+    non-finite i() returns       12
+    non-finite G() returns       12
+    evaluations with v_be/VT > 709 (exp overflow)   2 of 405
+
+`exp()` overflows to `inf`, the Ebers-Moll expression then computes `inf - inf` = `nan`, and
+once `nan` reaches `x` every subsequent evaluation is `nan` — which is why the recorded
+`v_be` range degenerates entirely. **Note the operating voltages themselves never overflow**:
+`exp(5.0/VT) = exp(193)` is finite. The excursion comes from Newton steps, not from the
+supply, which is why a clamp on the *model* is needed and not merely a sensible bias point.
+
+**Two fixes are indicated and they are measured separately**, because applying both at once
+would make neither attributable — the discipline this plan applies everywhere else:
+
+**Gate 5-0a (the clamp alone: what does removing `nan` buy?).** Apply only the `_expl()`
+clamp — SPICE's `EXPMAX` treatment — and re-run the three-resistance sweep. Declared: record
+convergence and iteration counts. **No pass/fail**: this exists to attribute the two fixes,
+and either answer is informative. If the clamp alone converges, the limiter's justification
+changes from "makes it work" to "makes it converge faster", and that should be said.
+OUTCOME: **ANSWERED, and the answer is worse than either branch the gate anticipated.** With `_expl` alone and no limiting:
+
+| RB | result | v(c) | v(b) |
+|---|---|---|---|
+| 10 | **CONVERGED** | **-201.0 V** | **-200.1 V** |
+| 100 | `NoConvergenceError` | - | - |
+| 1000 | `NoConvergenceError` | - | - |
+
+Non-finite `i()` and `G()` returns fall from 12 to **0** on all three, so the clamp does exactly what it claims. But it does not fix convergence, and at RB=10 it produces something worse than a failure: a **converged answer 200 V below the rails**.
+
+**That answer is not a solver bug — it is a genuine solution**, and checking this mattered. The base-collector junction sits forward-biased at 0.91 V passing `IS*exp(0.91/VT) = 19.8 A`, against the `20.09 A` the base resistor delivers; the residual is 4.7e-12. It satisfies the circuit equations. It is simply a spurious operating point that no physical stage would occupy, and **only limiting keeps Newton out of it**. (An intermediate reading here claimed the solver had returned a non-solution; that was wrong — it checked only the base-emitter junction and missed the 20 A flowing in the base-collector one.)
+
+So the limiter's justification is neither of the two the gate offered: it is not that the clamp is sufficient, nor that limiting merely speeds things up. **The clamp removes `nan`; limiting is what keeps the answer physical.** Both are needed and they do different jobs.
+
+**Gate 5-0b (`limit` must return the limited vector).** `SubCircuit.limit` does
+`subx = x[self.elementnodemap[instance]]`, which is fancy indexing and therefore **a copy**;
+it calls `element.limit(subx, ...)` and discards the result, then returns the unmodified
+`x`. So a limiter that writes its argument has no effect whatsoever. `Diode` does not notice
+because it keeps `_vlim` privately and linearises `G` around it — the only limiter in the
+tree is the one that cannot expose the bug.
+
+Item 5(d) asked whether `limit` should become state-free. **It is not optional: gate 5-3
+cannot be satisfied without it**, because "a test that fails if the return value is
+discarded" presupposes there is a return value. Declared: `Semiconductor.limit` returns the
+limited sub-vector, `SubCircuit.limit` writes it back, and `Diode`'s existing `None`-returning
+form keeps working unchanged during the transition. Migrating `Diode` is a separate decision
+with its own measurement — it is the only device whose `G` reads `_vlim`, so moving it
+changes numbers on circuits that already converge.
+OUTCOME: **IMPLEMENTED AS DECLARED.** `Semiconductor.limit` returns a limited copy; `SubCircuit.limit` writes it back with `x[nodemap] = limited`, which reaches `x` where the fancy-indexed *read* did not. `Diode`'s `None`-returning form is accepted unchanged and has its own test, so the transition breaks nothing. Migrating `Diode` off `_vlim` stays a separate decision — it is the only device whose `G` reads that state, so moving it changes numbers on circuits that already converge, and there is no reason to spend that in the same change.
+
+**On `ZenerDiode`, per review 0.1b:** it does **not** get a plain `pnjlim`. Its reverse
+breakdown term `-IBV*(exp((-v-BV)/VT) - 1)` is a second exponential in the opposite
+direction, and a limiter that only knows about the forward junction steps straight through
+the breakdown knee. It gets the `_expl()` clamp, which is direction-agnostic, and its
+junction list stays empty until someone measures a breakdown limiter.
+OUTCOME: **HONOURED.** `ZenerDiode.junctions` is left empty, so it gets the direction-agnostic `_expl` clamp and no `pnjlim`. `BJT` and `JFET` get junction lists. Recorded because it is a deliberate omission rather than an oversight: a forward-junction limiter would step straight through the breakdown knee, which is a second exponential running the other way.
+
 **Gate 5-1 (the failing case converges).** A common-emitter BJT stage with a
 voltage-driven base must reach a DC operating point at base resistances 10, 100 and 1000
 ohm. Currently all three fail.
-OUTCOME:
+OUTCOME: **PASSED.** All three converge, in **17 model evaluations** against 405 and 421 spent failing:
+
+| RB | v(b) | v(c) |
+|---|---|---|
+| 10 | 0.7301 | 0.0260 |
+| 100 | 0.7038 | 0.0522 |
+| 1000 | 0.6961 | 0.1169 |
+
+`v_be` of 0.70-0.73 V is a forward-biased silicon junction and the collector sits in saturation, which is what 0.8 V of drive through these resistances should give. **The test asserts the bias point, not just convergence** — gate 5-0a showed that "it converged" is satisfied by an operating point 200 V below the rails.
 
 **Gate 5-2 (no `nan` reaches the Jacobian).** Instrument for non-finite entries during the
 continuation. Declared success: none, at any gmin or source-stepping rung.
-OUTCOME:
+OUTCOME: **PASSED. Zero non-finite `i()` or `G()` returns**, across the whole continuation, against 12 of 405 before. The instrumentation covers the source-stepping rungs because it wraps the model rather than the analysis.
 
 **Gate 5-3 (the limiter is actually applied).** A test that fails if `SubCircuit.limit`'s
 return value is discarded — i.e. a device whose limiter clamps `x` rather than keeping
 private state.
-OUTCOME:
+OUTCOME: **PASSED, and it is the test the tree could not previously have had.** A two-terminal element whose limiter clamps its own node to 0.1 V: with the write-back removed the clamp never reaches the caller and the assertion fails. Verified against the pre-stage-5 source, where it does fail. The point 0.1b made — *"the only limiter in the tree is the one that cannot expose the bug"* — is why this had to be a purpose-built device rather than `Diode`.
 
 **Gate 5-4 (no regression on circuits that already converge).** Iteration counts on the
 existing nonlinear tests must not increase by more than 20%. **This is the gate the
 review explicitly did not measure**, so it is the one most likely to bite.
-OUTCOME:
+OUTCOME: **PASSED — it did not bite. 795 passed, 6 skipped, 0 failed** (`-m ""
+--timeout=400`), against 788 before plus the 7 tests added here. **No existing test needed
+changing**, on a change that puts a limiter in front of every `BJT` and `JFET` and alters
+what `SubCircuit.limit` returns for every device in the tree.
+
+**The runtime — 1940.76 s — is not a measurement and must not be read as one.** The box was
+running two unrelated jobs at ~80% CPU throughout (load average 7.04), so this says nothing
+about the change. Trap 2 exists for exactly this; the pass/fail is unaffected. A clean
+timing needs a quiet box.
+
+**Why the regression risk was lower than the gate feared, stated so the gate's own worry is
+answered rather than forgotten:** limiting only engages above `vc = VT*log(VT/(IS*sqrt(2)))`
+and only when the junction is being driven forward, so on a circuit that already converges
+without wild excursions the limiter is a no-op on nearly every iteration. It changes the
+path Newton takes, not the equations — which `test_gate_5_the_limiter_only_moves_the_
+linearisation_point` asserts directly by substituting the answer back into the unlimited
+residual.
 
 ---
 

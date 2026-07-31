@@ -1204,11 +1204,34 @@ class SubCircuit(Circuit):
         return self._add_element_subvectors('q', x, (epar,), params_tree=params_tree)
 
     def limit(self, x, x0, epar=defaultepar):
+        """Apply each element's Newton limiter and WRITE THE RESULT BACK.
+
+        STAGE 5(c).  This used to read
+
+            subx = x[self.elementnodemap[instance]]
+            element.limit(subx, subx0, epar)
+
+        and return `x` unmodified.  `subx` is fancy indexing, therefore a **copy**,
+        so a limiter that writes its argument wrote into a temporary that was then
+        discarded -- limiting was a no-op for any device that did not keep private
+        state.  `Diode` kept `_vlim` and linearised `G` around it, so the one
+        limiter in the tree was the one that could not expose the bug.
+
+        Both conventions are accepted while the tree has both: a limiter may return
+        the limited sub-vector (the state-free form, which is what stage 5 adds to
+        `Semiconductor` and what a traced backend could ever support), or return
+        `None` and keep its own state (`Diode`).
+        """
         for instance, element in self.elements.items():
             if hasattr(element, 'limit'):
-                subx = x[self.elementnodemap[instance]]
-                subx0 = x0[self.elementnodemap[instance]]
-                element.limit(subx, subx0, epar)
+                nodemap = self.elementnodemap[instance]
+                subx = x[nodemap]
+                subx0 = x0[nodemap]
+                limited = element.limit(subx, subx0, epar)
+                if limited is not None:
+                    ## The write-back the old code was missing.  Fancy-index
+                    ## assignment does reach `x`, unlike the read above.
+                    x[nodemap] = limited
         return x
 
     def CY(self, x, w, epar=defaultepar):

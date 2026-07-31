@@ -1587,3 +1587,168 @@ def test_gate_4a_the_rejection_path_still_returns_a_smaller_step():
         'a rejection must return a smaller step, got %r' % (h_next,)
     assert ctrl.last_err is None, \
         'the rejection path must drop the stale error'
+
+
+# ---------------------------------------------------------------------------
+# Stage 5 -- convergence: the exp clamp, junction limiting, and the write-back
+#
+# The failing case is a common-emitter NPN stage. Before stage 5 it failed at
+# every base resistance with `NoConvergenceError`, because `exp()` overflowed
+# during Newton and `inf - inf` in the Ebers-Moll transport current put `nan`
+# into 12 of 405 model evaluations.
+# ---------------------------------------------------------------------------
+
+def _ce_stage(rb, toolkit=numeric):
+    """Common-emitter NPN: 5 V through 1k to the collector, 0.8 V through rb."""
+    from pycircuit.circuit.elements import VS
+    from pycircuit.circuit.semiconductors import BJT
+    cir = SubCircuit(toolkit=toolkit)
+    cir['VCC'] = VS('vcc', gnd, v=5.0)
+    cir['VIN'] = VS('vin', gnd, v=0.8)
+    cir['RB'] = R('vin', 'b', r=rb)
+    cir['RC'] = R('vcc', 'c', r=1e3)
+    cir['Q1'] = BJT('c', 'b', gnd)
+    return cir
+
+
+def _dc_solve(cir):
+    import warnings as _w
+    from pycircuit.circuit.dcanalysis import DC
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        return DC(cir, toolkit=numeric).solve()
+
+
+@pytest.mark.parametrize('rb', [10.0, 100.0, 1000.0])
+def test_gate_5_1_common_emitter_stage_reaches_an_operating_point(rb):
+    """All three base resistances failed before stage 5.
+
+    The bias point is asserted, not just convergence: with the exp clamp alone
+    and no limiting this circuit converges to a GENUINE but spurious operating
+    point 200 V below the rails, with the base-collector junction forward biased
+    at 0.91 V carrying the 20 A the base resistor delivers. That satisfies the
+    circuit equations, so "it converged" is not evidence of anything on its own.
+    """
+    res = _dc_solve(_ce_stage(rb))
+    vb, vc = float(res.v('b')), float(res.v('c'))
+    assert 0.4 < vb < 0.9, \
+        'v_be = %.4g V is not a forward-biased silicon junction' % vb
+    assert -0.1 < vc < 5.1, \
+        'v(c) = %.4g V is outside the supply rails' % vc
+
+
+def test_gate_5_2_no_nonfinite_value_reaches_the_jacobian():
+    """`exp()` overflow used to reach a CENTRAL DIFFERENCE and become `nan`.
+
+    That is why the clamp belongs on the model rather than on the stamp: under a
+    toolkit without autodiff the Jacobian is `(i(x+h) - i(x-h))/2h`, so an
+    overflow in `eval_i_pure` produces `nan` in `G`, not merely a large entry.
+    Measured before: 12 of 405 evaluations returned non-finite `i()` *and* `G()`.
+    """
+    from pycircuit.circuit.semiconductors import BJT
+    seen = {'i': 0, 'G': 0, 'n': 0}
+    real_i, real_G = BJT.i, BJT.G
+
+    def spy_i(self, x, epar=None, **kw):
+        out = real_i(self, x, epar) if epar is not None else real_i(self, x)
+        seen['n'] += 1
+        if not np.all(np.isfinite(np.asarray(out, dtype=float))):
+            seen['i'] += 1
+        return out
+
+    def spy_G(self, x, epar=None, **kw):
+        out = real_G(self, x, epar) if epar is not None else real_G(self, x)
+        if not np.all(np.isfinite(np.asarray(out, dtype=float))):
+            seen['G'] += 1
+        return out
+
+    BJT.i, BJT.G = spy_i, spy_G
+    try:
+        _dc_solve(_ce_stage(100.0))
+    finally:
+        BJT.i, BJT.G = real_i, real_G
+
+    assert seen['n'] > 0, 'the probe never saw the model'
+    assert seen['i'] == 0, '%d of %d i() returns were non-finite' % (seen['i'], seen['n'])
+    assert seen['G'] == 0, '%d of %d G() returns were non-finite' % (seen['G'], seen['n'])
+
+
+def test_gate_5_3_subcircuit_limit_writes_the_result_back():
+    """The bug this gate exists for: `subx = x[nodemap]` is a COPY.
+
+    `SubCircuit.limit` read a fancy-indexed copy, called the element's limiter on
+    it, discarded the return value and returned `x` unmodified -- so a limiter that
+    writes its argument had no effect at all. The only limiter in the tree kept
+    private state (`Diode._vlim`) and so could not expose it.
+
+    A device whose limiter clamps `x` is the test: if the write-back is removed,
+    the clamp never reaches the caller.
+    """
+    from pycircuit.circuit.elements import VS
+
+    class _Clamping(R):
+        """A two-terminal element that limits its own terminal to at most 0.1 V."""
+        def limit(self, x, x0, epar=defaultepar):
+            out = np.array(x, dtype=float, copy=True)
+            out[0] = min(float(out[0]), 0.1)
+            return out
+
+    cir = SubCircuit(toolkit=numeric)
+    cir['VS'] = VS('n1', gnd, v=1.0)
+    cir['RL'] = _Clamping('n1', gnd, r=1e3)
+
+    x = np.array([2.0] + [0.0] * (cir.n - 1))
+    x0 = np.zeros(cir.n)
+    out = cir.limit(x.copy(), x0)
+
+    i = cir.get_node_index('n1')
+    assert float(out[i]) == pytest.approx(0.1), \
+        "SubCircuit.limit returned %r for the clamped node; the element's return " \
+        "value is being discarded again" % float(out[i])
+
+
+def test_gate_5_3_a_none_returning_limiter_still_works():
+    """`Diode` keeps `_vlim` and returns None. That convention must keep working.
+
+    Both are accepted while the tree has both -- returning the limited vector is
+    what stage 5 adds and what a traced backend could support, but breaking the
+    existing one to get there would be gratuitous.
+    """
+    from pycircuit.circuit.elements import VS, Diode
+    cir = SubCircuit(toolkit=numeric)
+    cir['VS'] = VS('n1', gnd, v=0.7)
+    cir['D'] = Diode('n1', gnd)
+    x = np.zeros(cir.n)
+    x[cir.get_node_index('n1')] = 0.7
+    out = cir.limit(x.copy(), np.zeros(cir.n))
+    assert out is not None and np.all(np.isfinite(out))
+
+
+def test_gate_5_the_limiter_only_moves_the_linearisation_point():
+    """Limiting must not change WHERE the solution is, only how it is reached.
+
+    Checked against the equations themselves rather than against another run: the
+    returned bias point is substituted back into the circuit's own residual, with
+    no limiter anywhere in sight. If limiting had altered the model rather than
+    the linearisation point, the answer would not satisfy it.
+
+    This is the assertion the spurious 200 V operating point could not have
+    passed by luck -- that one satisfied the residual too, which is precisely why
+    gate 5-1 checks the bias point and this one checks the residual. Neither alone
+    is sufficient.
+    """
+    from pycircuit.circuit.dcanalysis import DC
+    import warnings as _w
+    cir = _ce_stage(1000.0)
+    dc = DC(cir, toolkit=numeric)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        res = dc.solve()
+
+    x = np.asarray(res.x, dtype=float)
+    f = (np.asarray(cir.i(x, dc.epar), dtype=float)
+         + np.asarray(cir.u(0, analysis='dc', epar=dc.epar), dtype=float))
+    f = np.delete(f, cir.get_node_index(gnd))
+    assert np.max(np.abs(f)) < 1e-9, \
+        'the returned point does not satisfy the unlimited equations: max |f| = %.3g' \
+        % np.max(np.abs(f))
