@@ -3747,6 +3747,85 @@ transient ran first (`v(b) = 1` before, `0` after); history is never reset betwe
 there is no `next_event` and no `max_step` cap at TD, so the delay is measured as **4x too
 long at dt=2e-9 and 10x at dt=5e-9**, silently.
 
+### 8(a)/8(b) entry measurements, 2026-08-01 — taken before any code
+
+**8(a): PARTLY REFUTED.** The plan says *"`per=0` (SPICE's one shot) and `tr=0`/`tf=0`
+(SPICE substitutes TSTEP) both divide by zero"*. Measured on `Pulse.f` directly:
+
+| case | result |
+|---|---|
+| `per=0`, `tr`/`tf` > 0 | **OK — `f(2e-6) = 1.0`**, no crash |
+| `tr=0` | `ZeroDivisionError` |
+| `tf=0` | `ZeroDivisionError` |
+
+**`per=0` is already guarded** by `if self.per != 0` at the top of `f`. Only `tr`/`tf` divide
+by zero, and the mechanism is as recorded: `Pulse.f` builds every `where()` branch eagerly,
+so `(v2 - v1) / tr` is evaluated even when the branch is not selected. Also `Pulse` itself
+has **no class defaults** — it takes seven required arguments; it is `VPulse`, the element,
+that supplies `tr=0, tf=0, per=0`.
+
+*The branches whose denominators vanish are unreachable anyway*, which is what makes a safe
+denominator a correct fix rather than a papering-over: with `tr=0` the rise branch's
+condition is `t < td + 0`, and the branch after it re-selects `v1` on exactly that interval,
+so its value can never survive. The same holds for `tf=0`.
+
+**8(b): CONFIRMED, and the mechanism is worse than "ignores `td`".** `Sin.f` computes
+`exp(-theta*(t - td)) * sin(omega*(t - td) + phase)` with no gate on `t < td`. Two
+consequences:
+
+1. The sine runs from `t = 0` rather than from `td` — measured **0.9511 of full amplitude at
+   `t = 0.2 td`**, where SPICE holds the source at its offset.
+2. **For `t < td` the exponent is POSITIVE**, so the "damping" term grows backwards in time.
+   Measured with `theta = 5000`, `amplitude = 1 V`: **`f(2e-4) = 51.93 V`**. Larger `theta`
+   reaches the plan's recorded 2835 V. The growth is unbounded in `theta*td`.
+
+SPICE's definition holds `V = VO + VA*sin(phase)` for `t < td`, which falls out of clamping
+`t - td` at zero rather than needing a separate branch.
+
+**Gate 8a-1 (the class defaults run).** A `VPulse` on its element defaults must complete a
+transient. Declared: no exception, and the waveform is `v1` before `td` and `v2` after.
+OUTCOME: **PASS.** A `VPulse` on its element defaults completes a 168-step transient reaching
+`tend` exactly. Asserted that the pulse **fires**, not merely that the run finished: drive
+reaches 1.000 and the RC charges to 0.9911 by t=5.999e-6, with the fall at 6e-6 as the
+parameters say. "0 before, 0 after" is equally true of a source that never moved.
+
+**Gate 8a-2 (non-zero `tr`/`tf` do not move).** Bit-identical on the 17-run baseline, which
+contains three `VPulse` circuits with `tr = tf = 1e-8`. The fix substitutes a denominator
+only where the branch is unreachable, so anything else means the substitution leaked.
+OUTCOME: **PASS.** All 17 baseline runs `max|diff| = 0.000e+00`, and a test checks the substituted
+denominator mid-ramp — where a wrong one shows up directly — rather than only at endpoints
+where every candidate agrees.
+
+**Gate 8b-1 (`VSin` holds before `td`).** `f(t) == offset + amplitude*sin(phase)` for every
+`t < td`, which is SPICE's rule and is what clamping gives.
+OUTCOME: **PASS.** `f(t) = 0.2500` at t = 0, 2e-4, 9.99e-4 for `offset=0.25, phase=0, td=1e-3` —
+exactly `offset + amplitude*sin(phase)`, SPICE's rule.
+
+**Gate 8b-2 (no growth, at any `theta`).** Declared as a bound rather than a value:
+`|f(t)| <= |offset| + |amplitude|` for **all** `t` and all `theta >= 0`. A test that checked
+one `theta` would pass against a fix that merely reduced the overshoot.
+OUTCOME: **PASS.** Worst `|f|` over `theta` in {0, 1e2, 5e3, 1e5, 1e6} is **1.000000** against an
+amplitude of 1.0 — the declared bound. Before the fix, `theta=5000` alone reached
+**51.93 V**.
+
+**Gate 8b-3 (`td = 0` is unchanged).** The overwhelmingly common case must be bit-identical;
+`td = 0` makes the clamp a no-op, so anything else means the rewrite changed the formula.
+OUTCOME: **PASS**, to `rel=1e-12` against the formula written out independently, with `theta=250`
+and `phase=30` so the check is not degenerate.
+
+**Gate 8ab-4.** Full suite.
+OUTCOME: **PASS. Suite 854 passed, 6 skipped, 3 xfailed, 0 failed**, against 848 plus the six tests
+added here.
+
+**AN INTERMEDIATE RUN FAILED TWO EXISTING TESTS, AND THEY WERE RIGHT.**
+`test_func.test_sin` and `test_elements.test_vsin` assert the SMOOTH symbolic form of the
+source. Applying the clamp unconditionally made `Sin.f` return
+`Piecewise((t - td, t > td), (0.0, True))` under the symbolic toolkit, which would have
+broken every symbolic consumer — AC, transfer functions, the DDD machinery — for which a
+time-domain start delay is meaningless in the first place. **Unlike `test_pulse` in 9(d),
+these were not pinning the defect; they were protecting a path the fix had no business
+touching.** The clamp is now gated on `toolkit.symbolic`.
+
 **Gate 8-1:** `VPulse()` and `VSin()` with class defaults run to completion.
 OUTCOME:
 **Gate 8-2:** `VSin(td=...)` holds at the offset for `t < td`.

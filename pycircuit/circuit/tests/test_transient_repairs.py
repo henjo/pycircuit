@@ -2186,3 +2186,107 @@ def test_both_backends_agree_on_the_parameter():
     assert 'max_step' in jax_pars, 'JAXTransient is missing max_step'
     assert jax_pars['max_step'] == cpu['max_step'], \
         'the two backends default max_step differently'
+
+
+## ---------------------------------------------------------------------------
+## STAGE 8(a)/8(b) -- source models that produced wrong answers silently.
+## ---------------------------------------------------------------------------
+
+def test_pulse_accepts_zero_rise_and_fall():
+    """8(a): VPulse's own element defaults are tr=tf=0, and they raised.
+
+    `Pulse.f` builds every `where()` branch eagerly, so `(v2 - v1)/tr` was
+    evaluated even where the branch is not selected.  A plain `VPulse()` could not
+    be evaluated at all.
+    """
+    from pycircuit.circuit.func import Pulse
+    p = Pulse(v1=0.0, v2=1.0, td=1e-6, tr=0.0, tf=0.0, pw=5e-6, per=0.0)
+    assert float(p.f(5e-7)) == pytest.approx(0.0)     # before td
+    assert float(p.f(3e-6)) == pytest.approx(1.0)     # during the pulse
+    assert float(p.f(1e-5)) == pytest.approx(0.0)     # after it falls
+
+
+def test_pulse_zero_edges_do_not_disturb_normal_edges():
+    """The substituted denominator must not leak into a ramp that IS selected.
+
+    Checked mid-ramp, where a wrong denominator would show up directly, rather
+    than only at the endpoints where every candidate agrees.
+    """
+    from pycircuit.circuit.func import Pulse
+    p = Pulse(v1=0.0, v2=2.0, td=1e-6, tr=1e-7, tf=1e-7, pw=5e-6, per=1e-5)
+    ## Halfway up the rising edge: td + tr/2 -> half of (v2 - v1).
+    assert float(p.f(1e-6 + 5e-8)) == pytest.approx(1.0, rel=1e-12)
+    ## Halfway down the falling edge.
+    assert float(p.f(1e-6 + 1e-7 + 5e-6 + 5e-8)) == pytest.approx(1.0, rel=1e-12)
+
+
+def test_vpulse_on_element_defaults_runs_a_transient():
+    """End to end: the element's own defaults must not crash the analysis."""
+    import warnings
+    from pycircuit.circuit import numeric, gnd
+    from pycircuit.circuit.elements import SubCircuit, R, C, VPulse
+    from pycircuit.circuit.transient import Transient
+
+    cir = SubCircuit(toolkit=numeric)
+    cir.add_node('in'); cir.add_node('out')
+    cir['V1'] = VPulse('in', gnd, v1=0, v2=1, td=1e-6, pw=5e-6)   # tr/tf/per default
+    cir['R1'] = R('in', 'out', r=1e3)
+    cir['C1'] = C('out', gnd, c=1e-9)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = Transient(cir, toolkit=numeric, uic=True).solve(
+            refnode=gnd, tend=2e-5, timestep=5e-7)
+
+    vin = np.asarray(res.v('in', gnd), dtype=float)
+    vout = np.asarray(res.v('out', gnd), dtype=float)
+    ## Not just "it ran": the pulse must actually fire.  "0 before, 0 after" is
+    ## equally true of a source that never moved.
+    assert vin.max() == pytest.approx(1.0, rel=1e-9)
+    assert vout.max() > 0.9, 'the RC never charged: peak %.4f' % vout.max()
+
+
+def test_sin_holds_at_the_offset_before_td():
+    """8(b): the sine ran from t=0 instead of from td.
+
+    SPICE holds the source at `offset + amplitude*sin(phase)` until `td`.
+    """
+    from pycircuit.circuit.func import Sin
+    s = Sin(offset=0.25, amplitude=1.0, freq=1e3, td=1e-3, theta=0.0)
+    expected = 0.25 + 1.0 * np.sin(0.0)
+    for t in (0.0, 2e-4, 5e-4, 9.99e-4):
+        assert float(s.f(t)) == pytest.approx(expected, abs=1e-12), \
+            'source is live at t=%g, before td' % t
+
+
+def test_damped_sin_does_not_grow_before_td_at_any_theta():
+    """The one that produced 2835 V from a 1 V source.
+
+    For t < td the exponent -theta*(t - td) is POSITIVE, so the damping term grew
+    backwards in time -- measured f(2e-4) = 51.93 V at theta=5000, and unbounded
+    in theta*td.
+
+    Asserted as a BOUND over a sweep of theta, not as a value at one theta: a fix
+    that merely reduced the overshoot would pass a single-theta check.
+    """
+    from pycircuit.circuit.func import Sin
+    offset, amplitude = 0.0, 1.0
+    bound = abs(offset) + abs(amplitude)
+    for theta in (0.0, 1e2, 5e3, 1e5, 1e6):
+        s = Sin(offset=offset, amplitude=amplitude, freq=1e3, td=1e-3, theta=theta)
+        worst = max(abs(float(s.f(t))) for t in np.linspace(0.0, 5e-3, 401))
+        assert worst <= bound * (1 + 1e-9), \
+            'theta=%g grows to %.4f from an amplitude of %g' % (theta, worst, amplitude)
+
+
+def test_sin_with_zero_td_is_unchanged():
+    """td=0 is the common case and must be exactly the old formula.
+
+    The clamp is a no-op there, so any difference would mean the rewrite changed
+    the expression rather than gating it.
+    """
+    from pycircuit.circuit.func import Sin
+    s = Sin(offset=0.3, amplitude=2.0, freq=1e3, td=0.0, theta=250.0, phase=30.0)
+    for t in (0.0, 1e-4, 5e-4, 1e-3, 3e-3):
+        expected = 0.3 + 2.0 * np.exp(-250.0 * t) * np.sin(
+            2 * np.pi * 1e3 * t + 30.0 * np.pi / 180.0)
+        assert float(s.f(t)) == pytest.approx(expected, rel=1e-12, abs=0.0)

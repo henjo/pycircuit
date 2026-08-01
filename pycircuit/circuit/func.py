@@ -61,17 +61,41 @@ class Sin(TimeFunction):
         
     def f(self, t):
         # --- DAMPED SINE WAVE EQUATION ---
-        # The SPICE sine wave is defined as a decaying/growing sinusoid:
-        # V(t) = V_offset + V_amplitude * exp(-theta * (t - td)) * sin(2*pi*freq*(t - td) + phase)
-        # 
-        # Parameters:
-        # - theta: The damping factor (1/seconds). If theta > 0, the sine wave exponentially decays.
-        # - td: Time delay before the sine wave begins.
-        # - omega: Angular frequency (2 * pi * freq).
+        # V(t) = VO + VA * exp(-theta * (t - td)) * sin(omega * (t - td) + phase)
+        #
+        # STAGE 8(b) -- CLAMPED AT td, AND THAT IS A CORRECTNESS FIX, NOT A TIDY-UP.
+        #
+        # This used to evaluate `t - td` unclamped, which is wrong twice over:
+        #
+        #   * the sine ran from t = 0 instead of from `td` -- measured at 0.9511 of
+        #     full amplitude at t = 0.2*td, where SPICE holds the source at its
+        #     offset;
+        #   * and for t < td the exponent `-theta*(t - td)` is POSITIVE, so the
+        #     "damping" term GREW backwards in time.  Measured with theta = 5000 and
+        #     a 1 V amplitude: **f(2e-4) = 51.93 V**, and it is unbounded in
+        #     theta*td -- the review recorded 2835 V from a 1 V source.
+        #
+        # Clamping `t - td` at zero gives SPICE's rule for free: at dt = 0 the
+        # expression collapses to `VO + VA*sin(phase)`, which is exactly what SPICE
+        # specifies before the source starts.  No second branch is needed, so there
+        # is no eager-evaluation hazard of the kind 8(a) has.
+        # THE CLAMP IS TIME-DOMAIN ONLY, and that distinction is not cosmetic.
+        # Under a symbolic toolkit `toolkit.where` produces
+        # `Piecewise((t - td, t > td), (0.0, True))`, and the symbolic consumers of
+        # this expression -- AC, transfer functions, the DDD machinery -- need a
+        # SMOOTH function of `t`; a start delay has no meaning there in the first
+        # place.  Two existing tests (`test_func.test_sin`, `test_elements.test_vsin`)
+        # assert the smooth form, and they caught this when the clamp was applied
+        # unconditionally.  They were protecting the symbolic path, not pinning the
+        # defect above.
         toolkit = self.toolkit
+        if getattr(toolkit, 'symbolic', False):
+            dt = t - self.td
+        else:
+            dt = toolkit.where(t > self.td, t - self.td, 0.0)
         return self.offset + \
-            self.amplitude * toolkit.exp(-self.theta*(t-self.td)) * \
-            toolkit.sin(self.omega * (t - self.td) + self.phase)
+            self.amplitude * toolkit.exp(-self.theta * dt) * \
+            toolkit.sin(self.omega * dt + self.phase)
 
 class Pulse(TimeFunction):
     def __init__(self, v1, v2, td, tr, tf, pw, per, toolkit=numeric):
@@ -135,16 +159,34 @@ class Pulse(TimeFunction):
         if self.per != 0:
             t = t % self.per
         
+        ## STAGE 8(a) -- tr/tf OF ZERO ARE SPICE'S OWN DEFAULTS, and `where()` builds
+        ## every branch EAGERLY, so `(v2 - v1)/tr` was evaluated even where the branch
+        ## is not selected: a plain `VPulse()` raised ZeroDivisionError.
+        ##
+        ## The substituted denominator cannot leak, and that is why this is a fix
+        ## rather than a mask: with `tr == 0` the rise branch's condition is
+        ## `t < td + 0`, and the branch AFTER it re-selects `v1` on exactly that
+        ## interval, so the ramp's value can never survive.  Same for `tf == 0`
+        ## against the `v2` branch.  The edge becomes a step, which is the limit of
+        ## the ramp; SPICE instead substitutes TSTEP, which is not reachable from
+        ## here -- and since 9(d) the breakpoint machinery lands a step exactly on
+        ## the edge either way.
+        ##
+        ## `per == 0` needs no such care: it is already guarded above, and the
+        ## review's claim that it divides by zero does not reproduce.
+        tr = self.tr if self.tr != 0 else 1.0
+        tf = self.tf if self.tf != 0 else 1.0
+
         # Phase 1: Initial Delay (td)
         v_out = self.v1
         v_out = self.toolkit.where(t < self.td + self.tr + self.pw + self.tf,
-                                   self.v2 + (self.v1 - self.v2) / self.tf * (t - (self.td+self.tr+self.pw)),
+                                   self.v2 + (self.v1 - self.v2) / tf * (t - (self.td+self.tr+self.pw)),
                                    v_out)
         v_out = self.toolkit.where(t < self.td + self.tr + self.pw,
                                    self.v2,
                                    v_out)
         v_out = self.toolkit.where(t < self.td + self.tr,
-                                   self.v1 + ((self.v2 - self.v1) / self.tr) * (t - self.td),
+                                   self.v1 + ((self.v2 - self.v1) / tr) * (t - self.td),
                                    v_out)
         v_out = self.toolkit.where(t < self.td,
                                    self.v1,
