@@ -291,6 +291,13 @@ MIN_N_FOR_SPARSE = 100
 ## a number.
 MAX_FILL_FOR_SPARSE = 0.20
 
+## Above this many unknowns KLU's reused ordering repays its per-call cost and it
+## overtakes SuperLU; below it, SuperLU's lighter setup wins.  Measured (see
+## `AutoSolver._select`): KLU is 0.52x the dense path at n=152, 1.00x at n=402,
+## **1.53x at n=1002** and 1.47x at n=2002.  1000 is where the tables cross, not a
+## round number chosen for looks.
+MIN_N_FOR_KLU = 1000
+
 
 class AutoSolver(LinearSolver):
     """Pick dense or sparse per matrix, on measured fill rather than on ``n``.
@@ -318,21 +325,30 @@ class AutoSolver(LinearSolver):
         if fill > self.max_fill:
             self._choice = self._dense
             return self._choice
-        ## SuperLU, NOT KLU -- and that is a measurement, not an oversight.
+        n_unknowns = arr.shape[0]
+        ## WHICH sparse solver depends on `n`, and the crossover is measured.
         ##
-        ## KLU wins 3.5x-10x on the isolated factor+solve, which is what 7c's gate
-        ## asks for and what it passes.  END TO END IT DOES NOT: best-of-3 on a
-        ## transient, KLU came in at **0.52x** the shipped dense path at n=152 and
-        ## 1.31x at n=402, where SuperLU managed 1.36x with far less setup.  The
-        ## refactor works exactly as intended (1 analyze, 1 factor, 227 refactors
-        ## over a run) -- the loss is Python overhead per call against a solve that
-        ## is only ~8% of a transient.  Selecting KLU automatically would make a
-        ## 152-unknown circuit twice as slow.
+        ## KLU wins the isolated factor+solve 3.5x-10x, but end to end it is a
+        ## different story, because the solve is only a fraction of a transient and
+        ## KLU pays a fixed per-call cost.  Measured on a transient, best-of-2,
+        ## against the shipped dense path:
         ##
-        ## `KLUSolver` therefore stays explicit: `linearsolver=KLUSolver()`.  It is
-        ## the right tool once assembly stops dominating -- see 2+.5 -- and the
-        ## measurement should be redone then rather than assumed to still hold.
-        for cls in (SuperLUSolver,):
+        ##      n     dense    SuperLU        KLU   SuperLU   KLU
+        ##    152    3.581 s    4.378 s    6.832 s     0.82x  0.52x
+        ##    402   12.413 s    9.524 s   12.444 s     1.30x  1.00x
+        ##   1002   53.872 s   43.462 s   35.263 s     1.24x  1.53x
+        ##   2002  161.484 s  117.111 s  110.143 s     1.38x  1.47x
+        ##
+        ## So KLU LOSES below ~400, ties there, and wins from ~1000 -- where it also
+        ## beats SuperLU.  Selecting it everywhere would make a 152-unknown circuit
+        ## twice as slow; never selecting it leaves 1.5x on the table at n >= 1000.
+        ##
+        ## The n >= 1002 rows could not be measured until stage 2+.5 made circuits
+        ## that size buildable: construction was O(N^2.23) and a 1600-section ladder
+        ## exceeded a ten-minute budget.  The earlier reading -- "KLU loses end to
+        ## end" -- was correct for the sizes then reachable, and this supersedes it.
+        for cls in ((KLUSolver, SuperLUSolver) if n_unknowns >= MIN_N_FOR_KLU
+                    else (SuperLUSolver, KLUSolver)):
             try:
                 self._sparse = cls()
                 self._choice = self._sparse

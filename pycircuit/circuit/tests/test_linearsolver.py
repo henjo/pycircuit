@@ -256,8 +256,18 @@ def test_klu_raises_on_a_singular_matrix():
         k.solve(A, np.ones(2), numeric)
 
 
-def test_autosolver_prefers_superlu_not_klu():
-    """AutoSolver picks by MEASURED end-to-end win, not by isolated benchmark."""
+def test_autosolver_picks_by_size_measured_end_to_end():
+    """AutoSolver picks by MEASURED end-to-end win, not by isolated benchmark.
+
+    KLU wins the isolated factor+solve 3.5x-10x but LOSES end to end at small n
+    (0.52x the dense path at n=152), because the solve is only a fraction of a
+    transient and KLU pays a fixed per-call cost.  It ties around n~400 and wins
+    from n~1000 -- 1.53x at n=1002, where it also beats SuperLU.  Those rows only
+    became measurable once 2+.5 made circuits that size buildable.
+
+    Both directions are pinned, so neither can be "fixed" into a single always-
+    answer.
+    """
     from pycircuit.circuit.linearsolver import (AutoSolver, KLUSolver,
                                                 SuperLUSolver, MIN_N_FOR_SPARSE)
     _klu_or_skip()
@@ -265,9 +275,15 @@ def test_autosolver_prefers_superlu_not_klu():
     A = np.eye(n) + np.diag(np.ones(n - 1), 1)
     s = AutoSolver()
     s.solve(A, np.ones(n), numeric)
-    ## AutoSolver deliberately picks SuperLU even when KLU is present: KLU wins
-    ## the isolated factor+solve 3.5x-10x but LOSES end to end at reachable sizes
-    ## (0.52x at n=152), because the solve is only ~8%% of a transient and the
-    ## per-call overhead outweighs it.  Pinned so the choice is not "fixed" back.
+    ## Small: SuperLU, because KLU's setup does not repay itself at this size.
     assert isinstance(s._choice, SuperLUSolver), \
-        'AutoSolver should prefer SuperLU at these sizes, chose %r' % s._choice
+        'AutoSolver should prefer SuperLU at n=%d, chose %r' % (n, s._choice)
+
+    ## Large: KLU, because there it does -- measured 1.53x at n=1002.
+    from pycircuit.circuit.linearsolver import MIN_N_FOR_KLU
+    big = MIN_N_FOR_KLU + 200
+    big_A = np.eye(big) + np.diag(np.ones(big - 1), 1)
+    s_big = AutoSolver()
+    s_big.solve(big_A, np.ones(big), numeric)
+    assert isinstance(s_big._choice, KLUSolver), \
+        'AutoSolver should prefer KLU at n=%d, chose %r' % (big, s_big._choice)

@@ -3666,6 +3666,46 @@ survived precisely because nothing ever checked the thing itself.
 step. Once construction is not O(N^2.27) and n >= 5000 is reachable, LU is 60% of the step
 rather than 8% — **redo this measurement then rather than assuming it still holds.**
 
+### 7c AND D1 RE-MEASURED, 2026-08-01, after 2+.5 — and 7c's conclusion REVERSES
+
+Both were deferred to exactly this point. 7c's outcome said *"every conclusion here is
+bounded by assembly dominating the step... redo this measurement rather than assuming it
+still holds"*, and D1's reconsider-if was literally *"when 2+.5 lands"*. 2+.5 has landed, so
+the rows that could not be built before are now measurable — the n=1002 and n=2002 circuits
+build in **0.58 s and 1.90 s**, where 1600 sections previously exceeded a ten-minute budget.
+
+**End to end on a transient, best of 2, circuits built once and reused:**
+
+| n | dense | SuperLU | KLU | SuperLU win | **KLU win** |
+|---|---|---|---|---|---|
+| 152 | 3.581 s | 4.378 s | 6.832 s | 0.82x | **0.52x** |
+| 402 | 12.413 s | 9.524 s | 12.444 s | 1.30x | 1.00x |
+| 1002 | 53.872 s | 43.462 s | **35.263 s** | 1.24x | **1.53x** |
+| 2002 | 161.484 s | 117.111 s | **110.143 s** | 1.38x | **1.47x** |
+
+`max|dv|` is 1.11e-15 on every row — all three solvers agree to round-off.
+
+**KLU crosses over around n~400 and wins from n~1000, where it also beats SuperLU.** The
+earlier reading — "KLU loses end to end, so `AutoSolver` selects SuperLU" — was correct for
+the sizes then reachable and is now superseded. **This is the same shape of error the plan
+keeps producing: a measurement taken at one convenient size, generalised into a rule.** It
+was labelled as bounded at the time, which is the only reason it got revisited.
+
+**`AutoSolver` is now size-aware**: dense below 100 unknowns, SuperLU from 100, KLU from
+**1000** (`MIN_N_FOR_KLU`, set where the tables cross rather than at a round number). Tests
+pin **both** directions so neither can be collapsed back into a single always-answer.
+
+**D1 (reuse Newton's factors for the step controller) — STILL NOT TAKEN, and the case for
+it has WEAKENED rather than strengthened.** The reasoning that deferred it was "33% of
+solves removed buys ~2.7% of runtime at n~300, but ~20% at n=5000". The first half holds;
+the second no longer follows, because **KLU's refactor has already taken most of what D1
+was going to take.** D1 saves one factor+solve in three; with the ordering reused and a
+refactor costing a quarter of a factorisation, the marginal saving is a quarter of what it
+would have been against a dense LU. Against that it still costs bit-identity — the property
+that made every safe refactor of this session possible. **Left unimplemented, now for a
+measured reason rather than a provisional one.**
+
+
 
 
 **7d. Delete `pybsmatrix.py`** (340 unreferenced lines, no pivoting, and a `fbsub` whose
