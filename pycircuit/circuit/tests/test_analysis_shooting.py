@@ -4,6 +4,7 @@ from pycircuit.post import Waveform, average
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 import unittest
+import pytest
 
 class myC(Circuit):
     """Capacitor
@@ -113,7 +114,27 @@ def test_PSS_nonlinear_C():
     res = pss.solve(period=1/50e3,timestep=1/50e3/20)
 
 
-@unittest.skip("Skip failing test")
+def test_PAC_is_withdrawn():
+    """Stage 11: PAC says it is unimplemented instead of allocating 420 GiB.
+
+    It was `@unittest.skip("Skip failing test")` -- advertised in the analysis
+    inventory, never validated, and forming the whole (N*M)x(N*M) operator densely.
+    An analysis that announces its absence is strictly better than one that fails
+    somewhere deep in an allocation.
+    """
+    circuit.default_toolkit = circuit.numeric
+    cir = SubCircuit()
+    cir['vs'] = VSin(1, gnd, vac=2.0, va=2.0, freq=1e6, phase=20)
+    cir['R'] = R(1, 2, r=1e6)
+    cir['D'] = Diode(2, gnd)
+    cir['C'] = C(2, gnd, c=1e-12)
+    pss = PSS(cir)
+    res = pss.solve(period=1e-6, timestep=1e-6/10)
+    with pytest.raises(NotImplementedError, match='withdrawn as unimplemented'):
+        PAC(cir).solve(pss, np.array([1e6]))
+
+
+@unittest.skip("Superseded by test_PAC_is_withdrawn; kept for the rewrite")
 def test_PAC():
     circuit.default_toolkit = circuit.numeric
     N = 10
@@ -133,3 +154,121 @@ def test_PAC():
     res = pac.solve(pss, freqs = fc + np.array([1e3, 2e3, 4e3]))
     
     assert False, "Test should compare with spectre simulation"
+
+
+## ---------------------------------------------------------------------------
+## STAGE 11 -- PSS: `method` now selects something, and the inverse is a solve.
+## ---------------------------------------------------------------------------
+
+def _series_rlc(Lv=1e-3, Cv=1e-9, Rv=50.0, va=1.0):
+    """Series RLC driven AT resonance, where |v(C)| = Q * va analytically."""
+    import numpy as _np
+    circuit.default_toolkit = circuit.numeric
+    f0 = 1.0 / (2 * _np.pi * _np.sqrt(Lv * Cv))
+    c = SubCircuit()
+    c['vs'] = VSin(1, gnd, va=va, freq=f0)
+    c['R'] = R(1, 2, r=Rv)
+    c['L'] = L(2, 3, L=Lv)
+    c['C'] = C(3, gnd, c=Cv)
+    return c, f0, (1.0 / Rv) * _np.sqrt(Lv / Cv)
+
+
+def _pss_peak(method, steps=20):
+    import warnings
+    cir, f0, Q = _series_rlc()
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = PSS(cir, method=method).solve(period=1.0 / f0,
+                                            timestep=1.0 / (f0 * steps))
+    v = np.asarray(res['tpss'].v(3, gnd), dtype=float)
+    return 0.5 * (v.max() - v.min()), Q
+
+
+def test_pss_method_parameter_is_actually_read():
+    """It was declared with default='euler' and never read anywhere in the file.
+
+    A knob that advertises a choice it does not make is the "thin advertised
+    feature" 0.1c warns about -- the same defect `lte_formula` was removed for in
+    9(f).  Here the choice is worth having, so it is wired rather than deleted.
+    """
+    euler_peak, _Q = _pss_peak('euler')
+    trap_peak, _Q = _pss_peak('trap')
+    assert abs(trap_peak - euler_peak) > 0.1 * euler_peak, \
+        'method= changes nothing: euler %.4f, trap %.4f' % (euler_peak, trap_peak)
+
+    with pytest.raises(ValueError, match='method must be'):
+        _pss_peak('bogus')
+
+
+def test_backward_euler_damps_the_limit_cycle_and_trapezoidal_does_not():
+    """The defect 0.1c names, measured against an ANALYTIC answer.
+
+    Backward Euler's numerical damping attenuates exactly the limit cycle PSS
+    exists to find.  On a Q=20 resonator driven at resonance, where the analytic
+    peak is Q*va = 20 V:
+
+        steps/period   euler          trapezoidal
+                  20   2.63 V (13%)   19.32 V (97%)
+                 200  12.20 V (61%)   19.23 V (96%)
+
+    Euler is not merely less accurate, it is WRONG BY A FACTOR and gets worse as
+    the step coarsens -- silently.
+    """
+    trap_peak, Q = _pss_peak('trap', steps=20)
+    euler_peak, _ = _pss_peak('euler', steps=20)
+    assert trap_peak > 0.9 * Q, \
+        'trapezoidal recovers only %.1f%% of the analytic amplitude' % (100 * trap_peak / Q)
+    assert euler_peak < 0.5 * Q, \
+        'the euler damping this test documents has gone: %.1f%%' % (100 * euler_peak / Q)
+
+
+def test_pss_uses_a_solve_not_an_explicit_inverse():
+    """`inv(Jf) @ C @ Jshoot` formed a dense inverse per timestep per iteration.
+
+    Asserted structurally: the quantity wanted is the solution of
+    `Jf X = C @ Jshoot`, and at N=137/M=1000 with 20 shooting iterations the old
+    form was 20,000 dense inversions.  A timing test would be a flake; the source
+    check says exactly what changed.
+    """
+    import inspect
+    from pycircuit.circuit import shooting
+    src = inspect.getsource(shooting.PSS.solve)
+    assert 'linalg.inv' not in src, 'the explicit inverse is back'
+    assert 'linearsolver' in src
+
+
+def test_pss_still_matches_the_ac_reference_with_a_fine_step():
+    """Both methods must converge to the same, correct answer.
+
+    At a coarse step neither is reliable and Euler's closeness is coincidence --
+    measured, it is 0.9886 of the AC answer at dt = RC but 1.3283 at dt = RC/4.
+    With a fine enough step both land on 1.0000, which is what makes the
+    resonator comparison above a statement about damping rather than about luck.
+    """
+    import warnings
+    from pycircuit.circuit.analysis_ss import AC
+    circuit.default_toolkit = circuit.numeric
+
+    def build():
+        c = SubCircuit()
+        c['VSin'] = VSin(gnd, 1, va=10, freq=50e3, vac=10)
+        c['R1'] = R(1, 2, r=1e6)
+        c['C'] = C(2, gnd, c=1e-12)
+        c['L'] = L(2, gnd, L=1e-3)
+        return c
+
+    f = 50e3
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        ac = AC(build()).solve(freqs=np.array([f]))
+    ref = abs(complex(np.asarray(ac.v(2, gnd)).ravel()[0]))
+
+    for method in ('euler', 'trap'):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = PSS(build(), method=method).solve(period=1 / f,
+                                                    timestep=1 / f / 1280)
+        v = np.asarray(res['tpss'].v(2, gnd), dtype=float)
+        amp = 0.5 * (v.max() - v.min())
+        assert amp == pytest.approx(ref, rel=0.02), \
+            '%s gives %.6f against the AC reference %.6f' % (method, amp, ref)

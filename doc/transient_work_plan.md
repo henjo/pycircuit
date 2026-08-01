@@ -4581,6 +4581,78 @@ Scope per decision 0.3c. Ranked by the review's assessment of value:
 
 Blocked on 0.1c. Repair, rewrite against the seams stage 7 creates, or withdraw.
 
+**OUTCOME, 2026-08-01. 0.1c's split recommendation applied: PAC WITHDRAWN, PSS REPAIRED.**
+Both of stage 11's prerequisites had landed — stage 5 for limiting, stage 7 for the solver
+seams — and each of 0.1c's four defects was re-checked before being acted on. **Two of the
+four no longer reproduce**, and the one it ranked *first* turned out to be far worse than
+recorded.
+
+**Defect 1 — `method` is dead and PSS is backward-Euler only. CONFIRMED, AND THE COST IS
+LARGE.** The Parameter appears only in its own declaration; `solve_timestep` hard-coded
+`C/dt`. Measured on a series RLC driven **at resonance**, Q = 20, where the analytic peak is
+`Q*va = 20 V`:
+
+| steps/period | Euler | Euler % | trapezoidal | trap % |
+|---|---|---|---|---|
+| 20 | 2.63 V | **13.2%** | 19.32 V | **96.6%** |
+| 50 | 5.61 V | 28.1% | 19.26 V | 96.3% |
+| 100 | 8.81 V | 44.1% | 19.24 V | 96.2% |
+| 200 | 12.20 V | 61.0% | 19.23 V | 96.2% |
+
+**Euler understates the resonant amplitude by a factor, silently, and is still 39% low at
+200 steps per period** — while trapezoidal is accurate and step-independent. Exactly 0.1c's
+prediction. `method` now selects, validates its argument, and carries the companion current
+through both sweeps; the first step of a sweep falls back to Euler because there is nothing
+to average against.
+
+**A CONTRADICTION APPEARED AND WAS CHASED DOWN RATHER THAN AVERAGED OVER.** On the low-Q RLC
+of the existing test, Euler matched an AC reference at 0.9886 while trapezoidal read 1.3419
+— the opposite verdict. That circuit has `R*C = 1 us` and the test steps at `dt = 1 us`:
+**the step equals the time constant.** Refining it:
+
+| dt/RC | Euler | trapezoidal |
+|---|---|---|
+| 1.000 | 0.9886 | 1.3419 |
+| 0.250 | **1.3283** | 1.2121 |
+| 0.063 | 1.0452 | 1.0461 |
+| 0.016 | **1.0000** | **1.0000** |
+
+Both converge. **Euler's agreement at `dt = RC` was coincidence** — at `dt = RC/4` it is
+1.3283, *worse* than trapezoidal. So the resonator table is a statement about damping, not
+about luck, and neither method is trustworthy at a step that coarse.
+
+**The default stays `euler`**, so no existing result moves (measured: unchanged to 1.1e-16
+relative — not bit-identical only because `(q - qlast)/dt` replaces `q/dt - qlast/dt`, one
+fewer rounding). **Whether it should become `trap` is a maintainer's decision**, and the
+evidence above is what it should be decided on.
+
+**Defect 2 — no limiting, "fails on every circuit it exists for". DOES NOT REPRODUCE.**
+Tested a diode driven to 25 V and the common-emitter BJT that stage 5 was written for: all
+converge, and the BJT's PSS collector voltage matches its DC operating point to four
+decimals (0.7244-0.7275 against 0.7260) with a small swing about it. **Stage 5 overtook
+this**: the `_expl()` clamp lives in the *model*, so PSS gets it without calling
+`cir.limit()`. The claim was true when written on 2026-07-30 and is not now.
+
+**Defect 3 — a dense `np.linalg.inv` per timestep. CONFIRMED AND FIXED.** `inv(Jf) @ C @
+Jshoot` is the solution of `Jf X = C @ Jshoot`; asking for it directly is faster and better
+conditioned, since forming an inverse squares the condition number you then multiply
+through. **Bit-identical** on both PSS cases. Matrix-free shooting (Telichevesky, Kundert &
+White, DAC 1995) needs only products with the monodromy matrix and would be better still;
+that is a rewrite, and this is the same computation correctly expressed.
+
+**PAC — WITHDRAWN.** `solve` raises `NotImplementedError` naming the reason: it forms the
+whole `(N*M)x(N*M)` operator densely — **419.5 GiB** at N=137, M=1000 — and had never been
+validated, its only test being `@unittest.skip("Skip failing test")`. The body is kept,
+unreachable, as the starting point for a matrix-free rewrite, with 0.1c's `dtype` slip
+(`B = tk.zeros(L.shape)` giving float64 against a complex `L`) corrected so that starting
+point is not itself wrong. A test now asserts the withdrawal.
+
+**Also found: `test_PSS_nonlinear_C` asserts nothing at all** — it calls `pss.solve(...)`
+and checks no property of the result. It passes whatever PSS returns. Recorded rather than
+fixed here, because giving it a real assertion needs a reference to assert against and that
+is its own small piece of work.
+
+
 ---
 
 # STAGE 12 — implement Fang's method for real
