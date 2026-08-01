@@ -318,8 +318,23 @@ bound at certain time points."*
 | Fig. 4 two-stage Newton | **absent** |
 | eq (12)/(13)/(14) bordered solve | `SchurCoupledNewton` exists and implements eq (12) via Schur; not wired to a correct `ε_m` |
 | eq (17)/(18) approximate Newton | **absent** — `_solve_coupled` re-solves from scratch instead of correcting |
-| `p̄ = ∂f̄_ckt/∂h` | **absent**; needs `du/dt` on the six `TimeFunction` subclasses, and `Pulse`/`PWL` have no derivative at their breakpoints |
+| `p̄ = ∂f̄_ckt/∂h` | source half **done** (`TimeFunction.dfdt`, all six subclasses); integrator half `∂iq/∂h` and the circuit-level assembly still absent |
 | `q̄ᵀ`, `d` | **absent**; both become cheap once `ε_m` is eq (6) |
 
 **The first row is the one to fix first.** Every other gap is mechanical; that one changes
 what is being solved.
+
+### A note on the piecewise sources, since it looked like a blocker
+
+An earlier version of this document listed `Pulse`/`PWL` having no derivative at their
+corners as a real obstacle to forming `p̄`. **It is not.** Every kink in `du/dt` is already
+reported by `next_event`, so the step is truncated to land exactly on it and the breakpoint
+re-arms `_is_first_step`, dropping the next step to backward Euler. A step always *starts*
+at a corner and moves forward, so the right-hand limit is the only value `p̄` ever needs —
+not a one-sided approximation to a missing quantity. The same holds for the delays: `Sin`
+reports `td`, `Exp` reports `td1` and `td2`, and `AM`/`SFFM` are analytic everywhere and
+correctly report none.
+
+That makes `p̄` conditional on breakpoint coverage being complete, which is asserted in
+`test_source_derivatives.py` in both directions — every kink is a reported breakpoint, and
+every reported breakpoint is a genuine jump in `du/dt`.

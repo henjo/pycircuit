@@ -30,11 +30,21 @@ class TimeFunction():
         is meaningless across the kinks of a piecewise source -- which is exactly
         where the step size is under the most pressure.
 
-        **`Pulse` and `PWL` are piecewise linear, so `du/dt` does not exist at
-        their breakpoints.**  Both return the derivative of the segment they are
-        currently inside, taking the RIGHT-hand limit at a corner: a step
-        starting at ``t`` moves forward, so the segment being entered is the one
-        that governs it.
+        **The right-hand limit at a corner is not a compromise, it is the only
+        value ever asked for.**  `Pulse` and `PWL` are piecewise linear, so
+        `du/dt` genuinely does not exist at their corners -- but every one of
+        those corners is reported by :meth:`next_event`, so the step is truncated
+        to land exactly on it and the breakpoint re-arms `_is_first_step`, which
+        drops the following step to backward Euler.  A step therefore always
+        STARTS at a corner and moves forward into the segment ahead.  That is the
+        segment these derivatives report.
+
+        The invariant this depends on -- every discontinuity in `du/dt` is a
+        reported breakpoint -- is asserted in
+        `test_source_derivatives.py::test_every_kink_is_reported_as_a_breakpoint`
+        rather than assumed, because a source that grew a new kink without
+        reporting it would hand `p` a derivative from the wrong segment and
+        nothing else would notice.
         """
         eps = 1e-9 * max(abs(t), 1.0)
         return (self.f(t + eps) - self.f(t - eps)) / (2.0 * eps)
@@ -144,9 +154,28 @@ class Sin(TimeFunction):
 
 
 class Pulse(TimeFunction):
+    ## STAGE 12B -- the floor on the rise and fall times.
+    ##
+    ## SPICE's own default for `tr`/`tf` is zero, which makes the edge a true
+    ## discontinuity: `f` jumps, and `du/dt` does not exist there at all.  That is
+    ## awkward for Fang's `p = df_ckt/dh`, which needs a source derivative.
+    ## Clamping the edge to the smallest step the analysis would ever take keeps
+    ## the waveform a function rather than a jump, so the derivative is finite --
+    ## very large, but finite and correct for the ramp actually being integrated.
+    ##
+    ## The value matches `Transient`'s `minstep` default.  It is a class
+    ## attribute rather than a constructor argument because the sensible floor is
+    ## a property of the analysis, not of the waveform, and a caller who wants a
+    ## different one is usually setting it for every source at once.
+    MIN_EDGE = 1e-18
+
     def __init__(self, v1, v2, td, tr, tf, pw, per, toolkit=numeric):
-        self.v1, self.v2, self.td, self.tr, self.tf, self.pw, self.per = \
-            v1, v2, td, tr, tf, pw, per
+        self.v1, self.v2, self.td, self.pw, self.per = v1, v2, td, pw, per
+        ## Clamped here rather than at each use, so `f`, `dfdt` and `next_event`
+        ## cannot disagree about where the edges are -- which is exactly the class
+        ## of defect that made `f` and `next_event` diverge before stage 8(a).
+        self.tr = max(tr, self.MIN_EDGE)
+        self.tf = max(tf, self.MIN_EDGE)
         self.toolkit = toolkit
 
     def next_event(self, t):
@@ -220,8 +249,13 @@ class Pulse(TimeFunction):
         ##
         ## `per == 0` needs no such care: it is already guarded above, and the
         ## review's claim that it divides by zero does not reproduce.
-        tr = self.tr if self.tr != 0 else 1.0
-        tf = self.tf if self.tf != 0 else 1.0
+        ## No zero guard needed any more: `__init__` floors both at MIN_EDGE, so
+        ## these denominators are always positive.  The guard that used to live
+        ## here substituted 1.0 for a zero `tr` while the branch CONDITION still
+        ## used the real zero, so the rise branch was never selected -- correct,
+        ## but only because two places agreed to disagree.
+        tr = self.tr
+        tf = self.tf
 
         # Phase 1: Initial Delay (td)
         v_out = self.v1
@@ -246,20 +280,21 @@ class Pulse(TimeFunction):
         `tr`/`tf` zero guards -- a derivative that disagrees with its own function
         about which segment `t` is in is worse than no derivative at all.
 
-        Piecewise linear, so `du/dt` does not exist at the corners; the branches
-        below take the RIGHT-hand limit, the segment a growing step moves into.
-        With `tr` or `tf` zero the edge is a true discontinuity and no finite
-        derivative exists at all -- the slope is reported as zero there rather
-        than as the enormous value a finite difference would invent, because the
-        edge is a breakpoint and breakpoint-clamped steps are excluded from the
-        coupled solve anyway.
+        The branches take the right-hand limit at each corner, which is the
+        segment a step starting there moves into -- and since all four edges are
+        reported by `next_event`, a step always does start there.
+
+        With `tr` or `tf` zero the edge is an instantaneous jump, so the rise (or
+        fall) segment has zero duration and the segment actually ahead is the
+        flat one.  Reporting zero is therefore the correct right-hand limit, not
+        a guard against a large number.
         """
         toolkit = self.toolkit
         if self.per != 0:
             t = t % self.per
 
-        rise = (self.v2 - self.v1) / self.tr if self.tr != 0 else 0.0
-        fall = (self.v1 - self.v2) / self.tf if self.tf != 0 else 0.0
+        rise = (self.v2 - self.v1) / self.tr
+        fall = (self.v1 - self.v2) / self.tf
 
         d = 0.0 * t
         d = toolkit.where(t < self.td + self.tr + self.pw + self.tf, fall, d)
@@ -302,11 +337,10 @@ class PWL(TimeFunction):
     def dfdt(self, t):
         """Slope of the segment being ENTERED at ``t``.
 
-        Piecewise linear, so the derivative does not exist at the corners. The
-        right-hand limit is the correct one-sided choice here: `p` exists to say
-        how the residual moves when the step GROWS from `t`, so the segment that
-        governs is the one ahead. Outside the table the source is held flat and
-        the derivative is zero.
+        The right-hand limit, which is the only one the solver needs: every
+        table point is reported by `next_event`, so a step lands on the corner
+        and moves forward into the segment ahead.  Outside the table the source
+        is held flat and the derivative is zero.
         """
         if t < self.times[0] or t >= self.times[-1]:
             return 0.0
