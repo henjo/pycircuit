@@ -2438,3 +2438,108 @@ def test_fixed_timestep_too_coarse_for_a_delay_line_warns():
             refnode=gnd, tend=2e-8, timestep=4e-10, fixed_timestep=True)
     assert not [w for w in caught if 'delay element' in str(w.message)], \
         'warned about a timestep that is within the cap'
+
+
+## ---------------------------------------------------------------------------
+## STAGE 10.2 -- uniform output, so callers stop resampling by hand.
+## ---------------------------------------------------------------------------
+
+def _driven_rc(f=1e3):
+    from pycircuit.circuit import numeric, gnd
+    from pycircuit.circuit.elements import SubCircuit, R, C, VSin
+    cir = SubCircuit(toolkit=numeric)
+    cir['vs'] = VSin(1, gnd, va=1.0, freq=f)
+    cir['R'] = R(1, 2, r=1e4)
+    cir['C'] = C(2, gnd, c=1e-8)
+    return cir
+
+
+def _run(f=1e3, **kw):
+    import warnings
+    from pycircuit.circuit import numeric, gnd
+    from pycircuit.circuit.transient import Transient
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        return Transient(_driven_rc(f), toolkit=numeric, reltol=1e-4,
+                         uic=True, **kw).solve(refnode=gnd, tend=5 / f,
+                                               timestep=1 / (f * 50))
+
+
+def test_default_output_is_still_the_adaptive_grid():
+    """`outputstep=None` must change nothing -- this is opt-in."""
+    t = np.asarray(_run().sweep_values, dtype=float)
+    d = np.diff(t)
+    assert d.max() / d.min() > 10.0, \
+        'the default grid is suspiciously uniform (%.1fx spread)' % (d.max() / d.min())
+
+
+def test_outputstep_gives_a_uniform_grid():
+    """The point of 10.2: an FFT needs uniform samples and had to make its own."""
+    t = np.asarray(_run(outputstep=1e-6).sweep_values, dtype=float)
+    d = np.diff(t)
+    assert d.max() / d.min() == pytest.approx(1.0, rel=1e-9), \
+        'grid is not uniform: spread %.6f' % (d.max() / d.min())
+    assert d[0] == pytest.approx(1e-6, rel=1e-9)
+
+
+def test_resample_is_quadratic_not_linear():
+    """A first-order interpolant feeding a second-order method throws away an
+    order of accuracy -- the same argument TLine makes for its own history.
+
+    Measured against `np.interp` (what callers write today) on the solver's real
+    non-uniform grid, interpolating a KNOWN signal so only interpolation error is
+    present: 13.8x better on the fundamental, 40.8x on a decaying exponential.
+    Asserted here as "materially better", not at a pinned ratio, because the
+    ratio depends on the grid the controller happened to choose.
+    """
+    from pycircuit.circuit.transient import resample_uniform
+    t = np.asarray(_run().sweep_values, dtype=float)
+    f = 1e3
+    y = np.sin(2 * np.pi * f * t)
+    grid = np.linspace(t[2], t[-2], 512)
+    exact = np.sin(2 * np.pi * f * grid)
+
+    _g, quad = resample_uniform(t, y, npoints=512)
+    quad = np.interp(grid, _g, quad) if not np.allclose(_g, grid) else quad
+    err_lin = np.abs(np.interp(grid, t, y) - exact).max()
+    _g2, q2 = resample_uniform(t, y, step=(t[-2] - t[2]) / 511)
+    err_quad = np.abs(q2 - np.sin(2 * np.pi * f * _g2)).max()
+
+    assert err_quad < err_lin / 3.0, \
+        'quadratic %.3e is not materially better than linear %.3e' % (err_quad, err_lin)
+
+
+def test_resample_preserves_shape_and_rejects_bad_arguments():
+    from pycircuit.circuit.transient import resample_uniform
+    t = np.array([0.0, 0.1, 0.35, 0.4, 0.8, 1.0])
+    y = np.sin(2 * np.pi * t)
+    X = np.vstack([y, 2 * y])
+
+    g, v = resample_uniform(t, y, npoints=11)
+    assert v.shape == (11,) and g[0] == t[0] and g[-1] == pytest.approx(t[-1])
+
+    g2, V = resample_uniform(t, X, npoints=11)
+    assert V.shape == (2, 11)
+    ## Linearity: a row that is twice another must stay twice it.
+    assert np.allclose(V[1], 2 * V[0])
+
+    with pytest.raises(ValueError, match='exactly one'):
+        resample_uniform(t, y)
+    with pytest.raises(ValueError, match='exactly one'):
+        resample_uniform(t, y, npoints=5, step=0.1)
+    with pytest.raises(ValueError, match='at least 3'):
+        resample_uniform(t[:2], y[:2], npoints=5)
+
+
+def test_resample_reproduces_a_quadratic_exactly():
+    """Three-point Lagrange is exact for quadratics; that is the whole claim.
+
+    A test that only checked "close to a sine" would pass for a linear
+    interpolant too on a fine enough grid.
+    """
+    from pycircuit.circuit.transient import resample_uniform
+    t = np.array([0.0, 0.13, 0.4, 0.55, 0.9, 1.3, 1.7, 2.0])
+    quad = lambda x: 3.0 - 2.0 * x + 0.5 * x ** 2
+    g, v = resample_uniform(t, quad(t), npoints=37)
+    assert np.abs(v - quad(g)).max() < 1e-12, \
+        'not exact for a quadratic: max err %.3e' % np.abs(v - quad(g)).max()

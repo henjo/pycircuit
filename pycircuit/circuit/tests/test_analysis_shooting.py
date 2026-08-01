@@ -100,8 +100,22 @@ def test_shooting():
 
  
 def test_PSS_nonlinear_C():
-    """Test of PSS simulation of RLC-circuit,
-    with nonlinear capacitor.
+    """PSS with a tanh-nonlinear capacitor: the result must be PERIODIC.
+
+    STAGE 10.2.  This test asserted NOTHING -- it called `pss.solve(...)` and
+    checked no property of the result, so it passed whatever PSS returned,
+    including nothing sensible.  It is the same class of defect as
+    `test_sparse_toolkit` (passed while never exercising the sparse path) and
+    `test_PAC` (skipped): a test that reads as coverage and is not.
+
+    Periodicity is the right assertion because it is exactly what PSS claims to
+    deliver -- x(0) = x(T) -- and it needs no external reference to check
+    against, so it cannot be fitted. Measured at 2.2e-05 relative; asserted at
+    1e-3, which is ~45x margin.
+
+    The second assertion matters as much: without it the test would also pass on
+    a degenerate solution that never leaves the capacitor's linear region, where
+    `myC` is just a capacitor and the nonlinearity under test is not exercised.
     """
     circuit.default_toolkit = circuit.numeric
     c = SubCircuit()
@@ -112,6 +126,21 @@ def test_PSS_nonlinear_C():
     #c['L'] = L(2,gnd, L=1e-3)
     pss = PSS(c)
     res = pss.solve(period=1/50e3,timestep=1/50e3/20)
+
+    X = np.asarray(res['tpss'].x, dtype=float)
+    assert np.isfinite(X).all(), 'PSS returned non-finite values'
+
+    scale = np.abs(X).max()
+    periodicity = np.abs(X[:, 0] - X[:, -1]).max() / scale
+    assert periodicity < 1e-3, \
+        'the steady state is not periodic: |x(0)-x(T)|/|x| = %.3e' % periodicity
+
+    ## The nonlinearity must actually be traversed: myC's capacitance is
+    ## c0 + c1*tanh((v - v0)/v1) with v0 = 1 V, so a solution confined near v0
+    ## would exercise a plain capacitor and prove nothing about this circuit.
+    v = X[c.get_node_index(2)]
+    assert v.max() - v.min() > 2.0, \
+        'v(C) spans only %.3f V -- the tanh knee is not being crossed' % (v.max() - v.min())
 
 
 def test_PAC_is_withdrawn():

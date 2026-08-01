@@ -4566,6 +4566,57 @@ Scope per decision 0.3c. Ranked by the review's assessment of value:
    and output points are the solver's own non-uniform steps, so every FFT needs hand
    resampling. `nonlinear_leapfrog_sweep.py` does exactly this, and interpolating
    non-uniform data before an FFT is a real accuracy hazard the user is forced to own.
+
+### 10.2 OUTCOME, 2026-08-01 — output control, and two of three problems already gone
+
+**Two of 10.2's three stated problems had been fixed by earlier work**, so what remained was
+smaller than the item reads. It says *"`timestep` is currently **both** the initial step and
+`max_step`"* — `firststep` (stage 3, and 9(g) for JAX) and `max_step` (decision D2) both
+exist and default to `None`. Only output control was left.
+
+**The hazard is real and the plan names the victim correctly.**
+`benchmarks/nonlinear_leapfrog_sweep.py` contains
+
+    spec = np.fft.rfft(np.interp(grid, t, v)) / npt
+
+— `np.interp` is **linear**, applied to a solution the integrator computed to second order.
+Measured on the solver's own grid (a **1000x** spread in `dt` on an ordinary driven RC),
+interpolating a *known* signal so only interpolation error is present:
+
+| signal | linear | quadratic | ratio |
+|---|---|---|---|
+| fundamental | 1.12e-3 | 8.11e-5 | **13.8x** |
+| 5th harmonic | 1.55e-2 | 1.20e-2 | 1.3x |
+| decaying exponential | 2.00e-4 | 4.90e-6 | **40.8x** |
+
+**The 5th-harmonic row is the honest one.** Where the adaptive grid barely resolves the
+signal, no interpolant recovers what was not sampled — the fix there is a smaller
+`max_step`, not a cleverer resample, and the docstring says so.
+
+**What shipped.** `resample_uniform(t, x, npoints=|step=)` — three-point Lagrange, matching
+the integrator's order, the same reasoning `TLine._interpolate_history` already gives for
+its own lookup — and an `outputstep` Parameter on `Transient`. `None` keeps the solver's own
+points, so **nothing existing moves**; measured, the default grid still has its 1000x spread
+and `outputstep=1e-6` gives 5000 exactly-uniform points.
+
+**Resampling happens after the run, deliberately.** The adaptive grid is what the error
+control is defined on, so the solver goes on choosing its own steps and only the *reported*
+points change. Landing the solver exactly on output points would be more accurate still and
+is what SPICE does, but it changes the step sequence and therefore every existing result.
+
+**A test asserts exactness for a quadratic**, not merely closeness to a sine: a linear
+interpolant is arbitrarily close to a smooth signal on a fine enough grid, so "close to a
+sine" would pass for the thing being replaced.
+
+**Also fixed: `test_PSS_nonlinear_C` asserted nothing.** It called `pss.solve(...)` and
+checked no property of the result — the same class of defect as `test_sparse_toolkit`
+(passed while never exercising the sparse path) and `test_PAC` (skipped). It now asserts
+**periodicity**, which is exactly what PSS claims to deliver and needs no external reference
+so cannot be fitted: measured 2.2e-05 relative, asserted at 1e-3. A second assertion
+requires the tanh knee to be crossed (v spans 18.8 V about a 1 V knee), because without it
+the test would also pass on a degenerate solution that never leaves the capacitor's linear
+region.
+
 3. `.ic` / `.nodeset` — `uic=True` currently means "start from zeros", not SPICE's
    per-element initial conditions; oscillators and latches are unstartable.
 4. A SPICE-subset netlist reader — everything else in interop is downstream of getting a
