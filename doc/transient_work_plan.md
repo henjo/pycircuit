@@ -1,20 +1,28 @@
 # Transient subsystem — the work plan
 
-> ## RESUME HERE — state as of 2026-07-31
+> ## RESUME HERE — state as of 2026-08-01
 >
-> Last commit changing **simulator behaviour**: `41471f1` (stage 6 -- diagnostics and statistics).
-> Anything after it is a benchmark or documentation unless it says otherwise — so a newer
-> HEAD does not by itself mean the code has moved underneath this block; check
-> `git log --oneline 41471f1..HEAD -- pycircuit/`. Branch `cna-jax-vectorization`
+> Last commit changing **default simulator behaviour**: `3a56c45` (9(g) — the JAX opening
+> step and `dt_max`). Since then `def248c` (7a) and `433ead2` (7b) changed the CPU path
+> bit-identically: 7b's sparse solver is **opt-in**, and the default is still
+> `numpy.linalg.solve`.
+>
+> **The suite has 4 pre-existing COLLECTION ERRORS** — `pycircuit/post/cds/test/*` cannot
+> import `pexpect` — which `pytest -q`'s tail does not show. Those four modules have never
+> run; "N passed" excludes them. See traps 15 and 16.
+> A newer HEAD does not by itself mean the code has moved underneath this block; check
+> `git log --oneline 3a56c45..HEAD -- pycircuit/`. Branch `cna-jax-vectorization`
 > (`git@github.com:henjo/pycircuit.git`) — **check `git status -sb` before assuming it is
 > pushed**; several commits have sat unpushed at a time in this work.
 >
-> **Suite: 797 passed, 6 skipped, 0 failed** (`-m "" --timeout=400`). Runtimes this session
+> **Suite: 840 passed, 6 skipped, 0 failed** (`-m "" --timeout=400`). Runtimes this session
 > ranged 676 s to 1941 s on near-identical source, entirely from other jobs on the box —
 > see trap 2 before reading anything into one. Nominal
 > ~8-13 min, but one run of the identical tree took **31m41s** purely from machine load —
-> see trap 2. **Doc build: succeeded, 2 warnings, 0 ERROR** — and the two warning *lines*
-> have been read, not just counted: both are pre-existing autodoc failures importing
+> see trap 2. **Doc build: succeeded, 2 warnings, 0 ERROR — last verified at `d060b13` (9(f)),
+> NOT re-run since**; stages 9(d)/(e)/(g), 7a and 7b changed code the docs import, so treat
+> it as unverified until rebuilt. The two warning *lines*
+> were read, not just counted: both are pre-existing autodoc failures importing
 > `pycircuit.post.cds`. It was 3 warnings until 0.3d, when `example6.rst` was found broken
 > by an earlier change in this session; see trap 11. Working tree clean.
 >
@@ -23,237 +31,43 @@
 >
 > ### The next action, concretely
 >
-> **0.3d is CLOSED, resolved to (A) — there is no `chgtol` guard and none should be
-> written.** Its own declared entry measurements refuted option (D) on 2026-07-31: the
-> vector it wanted to threshold is a **current**, not a charge, so (D) compared amperes to
-> coulombs; and the dimensionally repaired form fires on 28–99.7% of rejected steps, which
-> is gate 0.2b's "never rejects a step" failure mode. Reproduce with
-> `benchmarks/transient_decisions.py --chgtol-guard`. **Do not reopen it from the option
-> list alone** — 0.3d's (D) bullet and the stage-0 summary look like they disagree; both
-> are now annotated with why they do not.
+> **Stage 9 is COMPLETE** — (a) shared `_lte_kernels.py`, (b) tolerances settable, (c)
+> per-row LTE tolerance + `sigglobal`, (d) the breakpoint hang, (e) non-converged Newton,
+> (f) `lte_formula` removed, (g) the opening step + `dt_max`, and gates 9-1..9-3. Its own
+> thesis held up: **every defect it found was a fix that existed on one backend and not the
+> other** — 4i's Gear-2 constant, stage 3's opening step, 9(d)'s breakpoint scan — never a
+> new bug.
 >
-> **Stage 9(f) is done (`d060b13`): `lte_formula` is removed from both backends**, and
-> with it the JAX charge-domain estimator whose tolerance applied a voltage floor to a
-> charge and therefore never rejected a step. Passing `lte_formula=` now raises
-> `TypeError`. Note the entry measurement corrected the plan's own characterisation: the
-> broken path did **not** make `dt` run away under `solve()` (`dt_max = timestep` caps it)
-> — it degenerated to a fixed-step run, which is why it looked plausible for so long.
+> **Stage 7 is part-done.** 7a (reference-node removal, 2.0-4.6x, bit-identical) and 7b (a
+> `LinearSolver` strategy: `DenseSolver` default, `SuperLUSolver`, `AutoSolver` selecting on
+> **fill, not `n`**) are in. **Remaining: 7c (KLU) and 7d (delete `pybsmatrix.py`, and fix
+> `test_sparse_toolkit.py`, which passes today while never exercising the sparse path).**
 >
-> **Watch out for `exec-rst` in `doc/src`.** It catches exceptions, renders the block's
-> *source* instead of its output, and the build still exits 0. Three blocks were silently
-> degraded that way and were only caught by reading the warning lines. A doc build that
-> gets suddenly *faster* is a symptom, not a win.
+> **Recommended next: 7d before 7c.** 7d is cheap and removes a test that currently gives
+> false assurance. 7c's declared ">= 3x on factor+solve" would land as roughly another
+> 1.1-1.3x end to end, because **the solve is only ~8% of a transient** — 7b measured
+> 1.09x at n=402, 1.20x at n=802, 1.25x at n=1202 against isolated solver wins of 28-74x.
 >
-> The remaining transient work is **stages 7, 8, 10, 11, 12, and the rest of stage 9**
-> (items (a)-(e): the shared `_lte_kernels.py`, `JAXTransient`'s missing `parameters` list,
-> threading tolerances, the breakpoint loop that finds 0 breakpoints always, and making the
-> JAX Newton report non-convergence). Stage 9's own gates 9-1..9-3 are still open — they
-> ask for the CPU's three step-control gates ported to JAX, which is the asymmetry that let
-> the copied LTE defect survive in the first place.
+> **Two decisions are open and are the maintainer's, not the implementer's:**
 >
-> **Stage 5+ is complete except 5+.4** (the large-signal MOSFET), which stays sequenced into
-> stage 10 by decision 0.3c and is the largest of the four by a wide margin.
+> 1. **7b-2 / `LinearSolver.factor()`** — reusing Newton's factors for the step
+>    controller's `J^-1 Eg` solve would remove a third of all linear solves, but it
+>    substitutes `J(x_k)` for `J(x_conv)` (median 5.5e-9, max 2.2e-5) and so cannot be
+>    bit-identical. The seam exists and returns `None`; whether to accept the approximation
+>    is not taken.
+> 2. **`dt_max`** — `solve` and `Transient` both clamp to `timestep`; `solve_batched` used
+>    `tend/10` until 9(g) reconciled it. Whether `timestep` is the right default at all is
+>    untouched.
 >
-> So the transient engine's declared work is done through stage 5. The open stages are **6**
-> (diagnostics and statistics — 0.3d's `chgtol` guard wants its statistics object, and it
-> produces the floating-node cases that guard was declared against), **7** (the linear
-> solver), **8** (source models and `TLine`), **9** (consolidate `jaxtransient` — which now
-> also owns removing `lte_formula`, inert on the CPU since 4i but still selecting a broken
-> charge-domain estimator on the JAX path), **10**, **11** and **12**.
+> **Also queued, with gates already declared:** 2+.4 (assemble the reduced system directly)
+> and **2+.5 (circuit construction is O(N^2.27) — 24.8 s to build an 800-element ladder)**.
+> **Do 2+.5 first**: it is smaller, and 2+.4's gates are unmeasurable until a circuit that
+> size can be built at all. 2+.5 is also why 7b's `n=2000` row was killed rather than
+> measured.
 >
-> **Recommended: stage 6.** It is what 0.3d is waiting on, and it is the stage that makes
-> the other diagnostics in this plan visible rather than inferred.
->
-> **Also outstanding and not a stage:** `nportanalysis.py`'s own doctests report **17 of 33
-> failing** — including a Python-2-era bare `import symbolic`. `mos.py` joining
-> `test_doctests.py` at 5+.5 makes that module the obvious next candidate, and the same
-> gap has now produced three defects in two modules.
->
-> **Decide what `lte_formula` is for — a maintainer's call, and the last thing blocking
-> gate 4f.** After 4i it selects nothing for either second-order method except on the
-> single fallback step of a run: `Trapezoidal('ywr')` and `Trapezoidal('classic')` return
-> identical values, and so do the two `Gear2` variants. Gate 4f asks for "rejections and
-> force-accepts for all four integrator/formula combinations, so the choice is evidenced" —
-> **there are no longer four distinct combinations to compare.** So the question is not
-> which default to pick but whether the parameter should exist, and 0.3b's deferred
-> decision is subsumed by it. Removing a public knob is not an implementer's call.
->
-> ### After that, in order
->
-> 1. ~~**0.3d's `chgtol` guard**~~ — **DONE, as a decision not to build it (2026-07-31).**
->    What remains of this item is the rest of `doc/src/circuit/lte_dae.rst`'s variable-step
->    story, which is documentation and not blocked by anything.
-> 2. **Remove `lte_formula` from both backends — WITH STAGE 9, not before.** It is inert on
->    the CPU path and documented as such, but `jaxtransient.py` keeps its own, where
->    `'classic'` selects a charge-domain estimator whose tolerance applies a *voltage* bound
->    to a *charge* (gate 0.2b) and so never rejects a step. Stage 9 already owns merging the
->    two paths; doing it there is one change instead of two.
-> 3. **The `iq` seed.** `transient.py` starts every run with `_iqlast = zeros` against a
->    true `q'(t_0)` that is generally nonzero. Measured under 4g(b) as an O(h^3) effect,
->    one order below the local truncation error, so it is not blocking — but it is wrong
->    in principle and cheap to fix when something else touches that code.
->
-> **Note for 4d.** `Trapezoidal('ywr')` is by far the heaviest user of the rejection cap
-> (25 force-accepts on the stiff RLC at reltol 1e-4, against 1 for either `Gear2`), so
-> deleting that branch will move the force-accept counts a lot. 4b's end-to-end regression
-> test deliberately does **not** depend on it — it is pointed at the shipped default at
-> reltol 1e-3 — but re-run `benchmarks/transient_stage4.py --forceaccept` after 4d rather
-> than assuming the counts carry over.
->
-> ### Done
->
-> Stage 0 (all reviews, measurements, decisions 0.3a-d) · Stage 1 (silent failures) ·
-> Stage 2 (2.42x bit-identical, 5.19x with single-threaded BLAS) · three post-stage-2
-> improvements (2+.1 `__getattr__` memo, 2+.2 skip the unread residual, 2+.3 `relref`) ·
-> **Stage 5** (junction limiting, the exp clamp, and the `SubCircuit.limit` write-back) ·
-> **Stage 6** (a floating node names the node; a convergence failure names the worst
-> unknown, its residual and its tolerance; a run reports what it did) ·
-> **Stage 5+.2/5+.3/5+.5** (`MOS_ACM` deleted; `Varactor`'s `C` no longer falls to exactly
-> zero in forward bias; `mos.py`'s doctests run for the first time, which took fixing an
-> `nportanalysis` check that rejected its own documented usage) ·
-> **Stage 5+.1** (a charge model for the `BJT`; the device had none, and a transient
-> through it had no time constant at all) ·
-> Stage 3 (`firststep`; `reltol` controls accuracy, 90.8x) · Stage 4 parts 1-4: 4c · 4g(a) ·
-> **4e + 4b** (61 accepted step ratios outside BDF-2's zero-stability bound across the
-> measured grid become 0, worst ratio 10.000 -> 2.000, force-accepts now warn — and the
-> warning immediately corrected a conclusion this work had already written down) ·
-> **4g(b)** (the trapezoidal estimator differences a mode-free quantity: asymptotically
-> exact where it held a 33% bias, 1540x -> 1.26x step-ratio spread, 757 -> 23 rejections on
-> the stiff case — and its first gate refuted the "1/h law" the work was premised on) ·
-> **4i** (one `q'''` estimator for both second-order methods, taken from a third divided
-> difference of the charge: Gear2's step-ratio spread **119x -> 1.0041x**, trapezoidal's
-> 1.26x -> 1.0084x, and the shipped default gains 1.22x accuracy — but gate 4i-4's own
-> "clause that matters" failed and is recorded as a failure) · **4a** (the PI controller's
-> Gustafsson gains divided by the order at last: a permanent period-2 limit cycle becomes a
-> closed loop of radius 0.8 at every order, and PI's own rejections fall up to 9.7x — but
-> gate 4a-4's rejections clause failed, and PI is measurably **not** better than the
-> default, so it is not promoted) · **D3** (`relref='sigglobal'`
-> is the default, on its second attempt; `lte_vabstol` back to 1e-12 at measured zero cost;
-> 1.31-2.06x fewer steps at matched accuracy — and the injection check for gate 1-5 found a
-> guard that `sigglobal` had silently blinded) · **4h** (`fixed_timestep` produces a uniform
-> grid again: 292 -> 30 steps, and a second defect found while reproducing the first — a
-> 2e-20 s final step that a step count alone called correct).
-> Every gate outcome is recorded in place below; the completion records are appended at the
-> end of this file.
->
-> ### Open decisions
->
-> * **D1 said keep-and-fix `_solve_coupled`.** Two ways to honour that, and **one must be
->   chosen before either is started**: the cheap one (drop the Fang citation, rename the
->   flag to the rejection loop it is, fix the four ignored inputs) or **stage 12**
->   (implement the paper). Stage 12's entry condition is a *measurement* — gate 4f's
->   rejection counts — not a date.
-> * ~~**`relref='sigglobal'` as default**~~ — **SHIPPED 2026-07-31** on its second attempt,
->   with `lte_vabstol` returned to 1e-12 alongside it. See the D3 gates.
->
-> ### Traps that have already cost time — check these before believing a result
->
-> 1. **A transient whose `timestep` is near the circuit's own time constant runs at
->    `max_step` end to end**, so the controller decides nothing and **no tolerance can be
->    observed to act.** Three draft gates "passed" that way while measuring nothing. Use
->    `uic=True`, a `timestep` well above the LTE-chosen step, and check step count >>
->    `tend/timestep` first.
-> 2. **A single-sample suite runtime on this box is worthless.** One read as a 35%
->    regression that controlled measurement showed to be 3%; individual tests vary ±57%.
->    Use min-of-N interleaved, and check a non-clock invariant (step count, assembly count,
->    cProfile call count).
-> 3. **An estimator harness must feed the previous *companion currents*, not exact
->    derivatives** — the estimator never receives the latter. Doing so made Euler look flat
->    at 0.501 at every step ratio, pure artefact. **Confirmed again 2026-07-31, and it
->    explains a second number**: fed exact derivatives, the trapezoidal estimator reads a
->    flat **5/6 = 0.8333** — which is exactly the "5/6" `integrator.py` claimed for it and
->    decision 0.3b called measurably wrong. The claim was not invented; it was measured with
->    this harness's own first defect. **A third variant, 2026-07-31:** the generated
->    comparison table in `lte_dae.rst` fed **Gear-2 a trapezoidal companion history** --
->    the two recursions are different functions -- and reported 41.4 where the truth is
->    83.06. Each method must be fed its own. A generated number is only as good as the
->    history it is built from, and all three of these read as plausible.
-> 4. **A gate that can pass against an empty result is not a gate.** Gate 2b's first version
->    compared `u` at t=0, where a sine is zero, and reported "exactly equal" against an
->    all-zero vector.
-> 5. **`drift == 0.00e+00` is unsatisfiable for anything that changes which BLAS kernel
->    runs.** Declare "identical step count + drift at rounding level" for stages 7b/7c.
-> 6. **Before believing a ratio, look at the numerator and denominator separately.**
->    Stage 4g recorded a "1/h law" and a "48x parity swing" for the trapezoidal
->    estimator. Both were one quantity divided by another that was **an order of h
->    smaller and passing through a zero crossing** — the giveaway was a sign change at
->    h=1e-11, which no diverging estimator produces. Neither finding was evidence of
->    anything, and one of them ("4d is blocked on 4g") reordered the whole stage.
-> 7. **A tolerance sweep that only goes tighter is not a sweep.** Gate 4b's grid ran
->    reltol 1e-4/1e-5/1e-6 across three circuits and five configurations — 45 runs, which
->    looked comprehensive — and concluded in writing that the shipped default no longer
->    reaches the force-accept path. At **1e-3** it does, and it was taking a step ratio of
->    exactly 10.0 when it did. Loose tolerances are where a step grows into trouble;
->    include at least one.
-> 8. **A force-accepted step is an accepted step.** It enters the integrator history like
->    any other, so it belongs in any step-ratio sequence. The first version of gate 4b's
->    probe filtered on the controller's `accept` return and therefore dropped exactly the
->    steps the gate is about — reporting a worst ratio of **97.7** where the truth was
->    **10.0**, and **2.000** ("no violation") on a run that had three. Both errors read as
->    plausible.
-> 9. **Check a residual's units before thresholding it — the name will not tell you.**
->    `compute_lte` returns a vector called the "LTE" and written `Eg`; it is a **current**,
->    a multiple of `h^2 q'''`. Decision 0.3d's option (D) was designed around comparing it
->    against a *charge* tolerance, which would have put amperes over coulombs into the CPU
->    backend deliberately — the same units defect gate 0.2b had already recorded on the JAX
->    backend. Settle it by scaling, not by reading: halve `h` and see which power stays
->    constant. Two minutes, and it decided a whole item.
-> 10. **A test circuit built to exhibit a pathology has to be shown to exhibit it.** Two
->    circuits written to create a near-singular direction — a node grounded only through
->    1 GOhm, and a node held only by a 1 aF capacitor — reproduced the *unmodified*
->    circuit's step count and worst ratio to four significant figures. They perturbed
->    nothing, and a measurement over them would have reported a clean negative that meant
->    only that the probe had been shown an unmodified circuit.
-> 11. **A doc-build warning COUNT is not a doc-build check.** "Doc build: succeeded, 2
->    warnings, 0 ERROR" was carried forward in the resume block across several commits. It
->    was 3 by the time anyone read the list, and the extra one was `example6.rst` failing
->    outright — an earlier change this session replaced a silent zeros-substitution with a
->    raise, and that example had been relying on the silence. A doc example is not covered
->    by the suite, so nothing else would ever have caught it. Read the warning *lines*, and
->    for a plot directive confirm the image was written and shows what the prose claims.
-> 13. **An instrument built to answer a question must be shown able to answer it
->    differently.** A rejection counter was added specifically to state the gate "a step
->    is actually rejected". It read zero on all 16 configurations, which was reported as a
->    finding — and it was a bug: `do_accept` rebuilt the state without naming the counter,
->    so a NamedTuple default zeroed it on every accepted step. The true counts are 4, 68,
->    182, 241, 662. **A new instrument reading the tidy answer is the case to distrust**,
->    because nothing else in the suite can contradict it. Force it to produce a non-zero
->    reading on a case you have constructed before believing a zero on one you have not.
-> 
-> 15. **One log file, one run.** Two suite runs were started against the same log — one
->    before a new test file existed, one after — and the first to finish left its summary
->    where it was read. The wrong number was *plausible*: it matched the previous run
->    exactly, which is precisely why it was not questioned. It was caught by arithmetic
->    (824 + 9 tests should be 833), not by reading. Check the log holds exactly one
->    summary line, and prefer a distinct filename per run.
-> 
-> 16. **`-q` hides collection errors.** The suite has four modules that fail to import
->    (`pycircuit/post/cds/test/*` need `pexpect`), and `pytest -q`'s tail shows "N passed"
->    without them. Four modules have never run all session while their count was quoted as
->    if complete. Read the collection summary, not just the last line.
-> 
-> 17. **The review's magnitudes run ~2x optimistic.** Five have now shrunk on measurement
->    (150 TB → 420 GiB; 10.5x → 5.19x; 4.462 ms → 0.234 ms; "2.17 assemblies needed" was not
->    a redundancy figure; the IM3 harness's 10x → 2.17x). Re-measure before quoting
->    `transient_review.md`.
->
-> ### Environment
->
-> See the `running-tests` memory for the full recipe. Short form: scratch venv with
-> `pytest pynose pytest-timeout`, then
-> `PYTHONPATH=<repo> MPLBACKEND=Agg <venv>/bin/python -m pytest pycircuit -q -m "" --timeout=400`.
-> `PYTHONPATH` is mandatory — a stale root-owned egg shadows the source otherwise.
-> Benchmarks: `benchmarks/transient_stage2.py` (perf + drift),
-> `benchmarks/transient_stage3.py` (first step), `benchmarks/transient_stage4.py`
-> (estimators: `--ratios`, `--hscaling`, `--pi`; and `--forceaccept`, which is the
-> gate-4b/4e sweep and **exits non-zero if any accepted step ratio leaves the bound**),
-> `benchmarks/transient_review/` (stage 0),
-> and **`benchmarks/transient_decisions.py`** — the three measurements that *changed a
-> decision or reordered the plan* (`--parity` why 4d is blocked on 4g, `--relref` why D3
-> was reverted, `--vabstol` why 0.3a's split was free). Those are the ones worth being able
-> to re-run when someone disputes a conclusion.
-> Source papers: `/home/andreas/pycircuit_agy/papers/` — **read them from rendered pages**,
-> `pdftotext` drops the formulas.
+> Still open by design: 5+.4 (large-signal MOSFET, sequenced into stage 10), the JAX Newton
+> loop's scalar-norm convergence test (the per-row flavour split is done only for the LTE),
+> and the P13/P5 architecture-review residuals. Stages 8, 10, 11, 12 untouched.
 
 **Status: the plan below was written 2026-07-30, when nothing had run. Stages 0-3 and part
 of 4 have since been executed; their `OUTCOME:` lines are filled in from real runs. The
@@ -3814,12 +3628,19 @@ from it.
 LTE scales with the right power of h, a step is actually rejected, step count and error
 respond to `reltol`. **None of these is currently expressible**, which is the asymmetry
 that let the copied LTE survive.
-OUTCOME:
+OUTCOME: **ALL THREE PASS — see "Gates 9-1, 9-2, 9-3" below for the measurements.** (a)
+euler h^1, trap h^2, gear h^2, each exactly constant — and it found the 3/4 Gear-2
+optimism, stage 4i's fix never having crossed to this backend. (b) passes, but only after
+the counter added to state it was itself found defective: see the correction. (c) passes
+once the opening step is ramped (9(g)).
 **Gate 9-2:** a CPU/JAX agreement test in the suite. The stage-5 cross-check was run by
 hand and written into prose; it is not in the suite, so the next divergence is invisible.
-OUTCOME:
+OUTCOME: **PASS** — and there *was* a divergence the whole time, the Gear-2 error constant.
+Compared against the analytic solution as well as against each other, since agreement alone
+is satisfied by two backends wrong in the same way.
 **Gate 9-3:** a `VPulse` transient under JAX hits the pulse edges.
-OUTCOME:
+OUTCOME: **PASS** — every analytic edge in `(0, tend]` has a time point within 1e-12. Was
+blocked until 9(d), which is why it had never been run.
 
 ## 9(f) — remove `lte_formula` from both backends
 
@@ -4828,7 +4649,9 @@ column is pre-existing: `provided_function(f, J, cir.C(x))` assembles `C` once m
 that is untouched by this item.)
 **Gate 2+.2b (correctness).** Full suite `-m ""` at 744/6/0, and every `NonLinearSolver`
 subclass still satisfying the interface.
-OUTCOME:
+OUTCOME: **PASS at the time (744/6/0).** The count has since risen to **840/6/0** as later
+stages added tests; the interface clause still holds — 7b added a `linsolver` argument to
+all seven `solve_system` signatures at once, so no subclass diverged.
 
 ## 2+.3 — `relref`, the reference for the relative tolerance
 
@@ -4889,7 +4712,10 @@ can move the whole-run figure. **The gate as declared is therefore not measurabl
 stage 3 lands**; it is judged here on `t > 3 tau`, the region the controller actually
 governs, and that limitation is recorded rather than hidden. Re-run it after stage 3.
 **Gate 2+.3d (correctness).** Full suite `-m ""` at 744/6/0 with the default unchanged.
-OUTCOME:
+OUTCOME: **PASS at the time (744/6/0), and `relref = 'sigglobal'` is the shipped default.**
+Now 840/6/0. Worth noting downstream: 9(c) had to port `sigglobal` to the JAX backend as
+well, because threading the tight `lte_vabstol` floor into a `pointlocal` reference there
+reproduced exactly the pathology this item fixed on the CPU.
 
 ---
 
