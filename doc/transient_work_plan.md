@@ -4817,6 +4817,51 @@ rejections are still material — say above 10% of accepted steps on the stress 
 then the bordered system is buying something a threshold cannot, and this stage is
 justified. **That number does not exist yet; it is what gate 4f produces.**
 
+**OUTCOME (2026-08-01): NOT MET, and the condition above was measuring the wrong thing.**
+`benchmarks/transient_review/stage12_entry.py`, three stress circuits × two tolerances.
+
+*Rejections* — 1.9 / 0.5 / 2.3 / 0.3 / 3.2 / 0.7 %, worst **3.2%** against the stage's own
+10% threshold, and falling as tolerance tightens. By the condition as written, the stage
+does not start.
+
+But re-reading the paper rather than this stub's summary of it shows the condition was
+aimed at the smaller of Fang's two mechanisms. §4.1 attributes the headline result — 39%
+fewer time points, 17% wall clock — to the **lower** bound of eq (15): *"The introduction
+of the lower bound γ<sub>min</sub> prevents step sizes from being unnecessarily small."*
+Rejection elimination is the secondary effect. The stub half-knew this (see item (c) in
+**Work** below, which says the lower bound "is not decoration") and still set the entry
+condition on rejections. So the honest entry measurement is **how many accepted steps are
+wastefully small**, and that was measured too.
+
+*Wastefully small steps* — **there are essentially none, for a structural reason.**
+`IntegralController` predicts `h_next = h · safety · (1/err)^(1/p)`, which is a deadbeat
+law: it drives the next step's normalised error to the fixed point `safety^p` exactly. With
+`safety = 0.9` and `p` **recovered from the realised step ratios as 2.00** (not assumed —
+the benchmark derives it from the running code), that fixed point is 0.81. Measured median
+accepted error at `reltol = 1e-6`: **0.8096 / 0.8071 / 0.8050**, IQR **0.0054 / 0.0034 /
+0.0076**, with **96.4% / 94.9% / 91.2%** of accepted steps within 5% of the target.
+
+At `reltol = 1e-4` the clustering loosens (61.6 / 55.6 / 24.6%), but the off-target
+population sits at `err < 0.01`, not spread between — those are steps clamped by
+breakpoints and `max_step`, which are **not LTE-limited and which Fang's method cannot
+enlarge either**: a step that ends on a breakpoint ends there whether its size was tested
+or solved for.
+
+**So both of Fang's mechanisms are already exhausted on these circuits.** The band's lower
+bound exists to move steps up onto the tolerance; pycircuit's steps are already sitting on
+it to within half a percent. This is not an argument that the paper is wrong — it is that
+TISpice's baseline controller accepted anything under a threshold (§4.1 records the
+comparison method redoing a step only above a normalised LTE of **4.63**) without resizing
+toward it, and pycircuit's baseline does resize. **The 39% was available there and is not
+available here.**
+
+**This is a negative result about the payoff, not about the method**, and it does not by
+itself decide the stage — the user has asked for the full algorithm, and the plan below
+delivers it. It sets the expectation the gates must be read against: the honest predicted
+gain on the measured circuits is **at most the ~3% of steps currently rejected**, and gate
+12-2's "at least 20% fewer accepted steps" is, on this evidence, **not reachable** — see
+the revised gates.
+
 **Dependencies, and they are real:**
 
 - **Stage 4 must be complete.** The method's entire premise is that the LTE is a quantity
@@ -4837,7 +4882,189 @@ eq (13) rather than a literal `(N+1)` factorisation. (c) §3.3's **two-sided** b
 result to it. (d) §3.4's approximate Newton as the default, with the exact solve behind a
 flag.
 
-**Gate 12-1 (it is the method, not a rejection loop).** With the coupled path selected, a
+---
+
+## 12.0 What is already there — surveyed 2026-08-01, before planning
+
+The stub says the code "implements **neither** §3.1 nor §3.4" (from 0.1d). That is no
+longer accurate, and the difference matters for sizing the work. `_solve_coupled`'s own
+comment now reads:
+
+> This is the paper's robust "approximate Newton" (sec. 3.4); it replaces the exact (N+1)
+> Schur update, **which is very sensitive to step changes and collapses the step size**.
+
+So a previous attempt at the exact bordered solve exists and was abandoned on evidence.
+**That is a recorded negative result about eq (12)/(13) and it must not be re-attempted
+blind** — rule 7, a fix reused from a previous failure needs its failure mode checked
+first. Whoever starts 12B reproduces the collapse before trying to fix it.
+
+What `_solve_coupled` actually does today: converge the circuit at `h`, evaluate the LTE via
+the shared `IntegralController`, and if rejected, shrink and **re-solve from scratch**, up
+to `MAX_LTE_ITERS`. That is a rejection loop with the retries hidden inside the time point
+rather than exposed as rejected steps. It is *not* §3.4: §3.4's whole point is eq (18),
+correcting the solution already computed using the existing factors instead of re-solving.
+
+Measured against the paper, the gap is:
+
+| Fang | present in pycircuit | |
+|---|---|---|
+| eq (17) Gear step prediction | **yes** — `IntegralController`'s law | |
+| eq (15) two-sided band `γ_min τ ≤ ε ≤ γ_max τ` | **no** — one-sided `err ≤ 1` | 12A |
+| eq (16) step-change damper `\|Δh\| ≤ η h` | **no** | 12A |
+| eq (18) approximate-Newton correction (§3.4) | **no** — full re-solve instead | 12C |
+| eq (12) bordered `(N+1)` system | **tried, collapsed** | 12B |
+| eq (13) reduced `N`-system + rank-one update | **no** | 12B |
+| Fig. 4 two-stage Newton (bordered only when LTE unsatisfied) | **no** | 12B |
+| `p = ∂f_ckt/∂h`, `q^T = ∂f_lte/∂v`, `d = ∂f_lte/∂h` | **no** — nothing forms these | 12B |
+
+## The plan — four stages, each gated against the one before
+
+Sequenced cheapest-and-most-likely-to-pay first, so that if the entry measurement's verdict
+holds the work stops at a natural boundary instead of mid-way through a bordered solver.
+**Every stage is behind the existing `coupled_lte` flag; the default path is untouched
+until 12D.**
+
+### 12A — the two-sided band and the step damper (eqs 15, 16). *Least invasive, do first.*
+
+Fang's headline mechanism, and the only part that is nearly free. Add `γ_min`, `γ_max`, `η`
+as `Parameter`s (the paper's `ltemin`/`ltemax`) and change the accept test from `err ≤ 1` to
+the band, with `|Δh| ≤ η·h` limiting the predicted change.
+
+Touches: `stepcontroller.py` only — the accept branch of `IntegralController.evaluate_step`
+and three new parameters. `transient.py` passes them through. **No new derivatives, no
+solver changes, no new state.** Roughly 40 lines.
+
+**Gate 12A-1 (the band changes step placement at all).** With `γ_max` at the paper's ratio
+to `γ_min`, the distribution of accepted `last_err` must widen measurably from the deadbeat
+cluster the entry measurement found. Declared: if it does not move, the band is inert here
+and 12B/12C cannot help either — **stop and report that**.
+OUTCOME:
+
+**Gate 12A-2 (it does not buy steps with accuracy).** Step count against stage 3's analytic
+RC at matched final error. Declared: any step-count reduction must come with error no worse
+than the standard path's. Given the entry measurement, **the expected honest result is "no
+significant change", and that is a pass, not a failure** — it confirms the deadbeat
+controller already occupies the band.
+OUTCOME:
+
+### 12B — the bordered system (eqs 12, 13, 14 and Fig. 4). *The invasive one.*
+
+Make `h` a genuine unknown. Needs three objects nothing currently forms:
+
+- **`q^T = ∂f_lte/∂v`** — tractable; `f_lte` is the divided-difference LTE in
+  `_lte_kernels.py`, linear in the charges, so `q^T` is `∂lte/∂q · C`. **But the paper warns
+  the controlling node changes:** *"the controlling LTE node can change from iteration to
+  iteration"*, so `q^T` is re-formed each iteration, not cached.
+- **`d = ∂f_lte/∂h`** — analytic from `gear2_lte`/`trapezoidal_lte`'s explicit `h`
+  dependence, plus the implicit dependence through the divided differences. This is what
+  the vestigial `analytical_eh` flag was named for.
+- **`p = ∂f_ckt/∂h`** — **this is the expensive one, see the invasiveness section.**
+
+Then Fig. 4's structure: solve the regular `N` system; estimate the LTE; **only if the band
+is not satisfied** form and solve the bordered system. The `(N+1)` solve is not per
+iteration, which is what makes the paper's overhead claim plausible.
+
+**Gate 12B-0 (reproduce the recorded collapse first).** Before writing eq (13), restore the
+exact `(N+1)` update and reproduce "collapses the step size" as a number — which circuit,
+what `h` sequence. Declared: a described failure mode becomes a measured one, or the note
+is wrong and that is the finding. **Do not skip this to save time; it is the cheapest step
+in 12B and it decides whether the rest is repair or re-derivation.**
+OUTCOME:
+
+**Gate 12B-1 (the derivatives are right).** `p`, `q^T`, `d` each checked against a central
+finite difference of the same residual — `p` by perturbing `h` and re-stamping. Declared:
+agreement to the finite-difference floor on a nonlinear circuit, not just the RC. **This is
+the gate that catches a sign error**, which in a bordered system shows up as a step size
+that walks the wrong way rather than as an exception.
+OUTCOME:
+
+**Gate 12B-2 (eq 13 equals eq 12).** The reduced `N`-system with `Δh` recovered from eq (14)
+must give the same `(Δv, Δh)` as a literal dense `(N+1)` factorisation, to solver tolerance.
+Declared: measured on a circuit where `d` is small, since that is where the `1/d` division
+in both eq (13) and eq (14) is worst conditioned. **`d → 0` is a real case** — it is an LTE
+insensitive to the step, i.e. exactly the smooth region where steps grow.
+OUTCOME:
+
+**Gate 12B-3 (zero discarded time points).** With the bordered path selected, the rejection
+counter must be 0 where the standard path records nonzero on the same circuit. This is the
+stub's original gate 12-1 and it is the one claim of the method that the entry measurement
+does **not** undercut.
+OUTCOME:
+
+### 12C — §3.4's approximate Newton as the default (eqs 17, 18)
+
+Replace the current re-solve-from-scratch retry with eq (18)'s correction
+`Δv^{k+1} = Δv^{k+1/2} − J^{-1} p (h^{k+1} − h^k)`, reusing the factors from 7b. The paper:
+*"Without the need to modify the matrix solver of the simulator, the approximate Newton
+method is straightforward to implement and carries very little overhead."* It needs `p`
+from 12B but **no** `q^T`, `d`, or bordered solve.
+
+**Gate 12C-1 (the correction is cheaper than the re-solve and no less accurate).** Declared:
+per-time-point Newton iteration count drops, with the final solution matching the
+re-solve's to Newton tolerance. If the correction needs a re-solve afterwards anyway to
+converge, it has bought nothing — record that.
+OUTCOME:
+
+### 12D — defaults, docs, and the four ignored inputs
+
+Only reached if 12A–12C pass. Covers the stub's gates 12-4 (`fixed_timestep`, breakpoints,
+injected controller, `uic` on the coupled path) and 12-5 (suite, and `time_stepping.rst`'s
+warning removed only when the code matches the page).
+
+## Invasiveness — the honest assessment
+
+**Contained, except for one thing.**
+
+Low risk, additive, behind `coupled_lte`:
+
+- `stepcontroller.py` — band + damper (12A). Self-contained.
+- `_lte_kernels.py` — new `bdf2_alphas_dh`, `gear2_lte_dh` alongside the existing kernels.
+  The module imports nothing and that constraint holds for derivatives too.
+- `transient.py::_solve_coupled` — the loop is rewritten, but it is one function that the
+  default path does not call.
+- `linearsolver.py` — eq (13)'s rank-one update wants a `solve`-with-existing-factors entry
+  point. 7b already split `factor`/`solve`, so this is a use of the seam, not a change to it.
+
+**The expensive part: `p = ∂f_ckt/∂h` requires a time derivative on every independent
+source, and pycircuit's sources do not have one.**
+
+`f_ckt` at `t + h` depends on `h` through two routes. The companion/integrator route is
+analytic and cheap — `bdf2_alphas` is a closed form in `h1`, so `∂/∂h` of the Gear-2 stamp
+is a few lines. The other route is the **sources**: `u(t + h)`, so `∂f_ckt/∂h ⊃ du/dt`.
+`func.py`'s `TimeFunction` defines exactly `f(t)` and `next_event(t)` — **no derivative on
+any of the six subclasses** (`Sin`, `Pulse`, `PWL`, `Exp`, `AM`, `SFFM`).
+
+That is not merely six methods to write. **`Pulse` and `PWL` are piecewise linear: `du/dt`
+is discontinuous precisely at the breakpoints, which are precisely the time points where
+the step size is under the most pressure.** A bordered system whose `p` is evaluated at a
+kink is solving for `h` against a derivative that does not exist there. Fang does not
+discuss this because a breakpoint-clamped step is not LTE-controlled in the first place —
+which is consistent with what the entry measurement found (the `err < 0.01` population at
+loose tolerance is breakpoints), and it means the honest design is **`p` from the
+integrator terms only, with the source route handled by leaving breakpoint-clamped steps
+outside the coupled solve entirely.** That decision belongs in 12B and should be made
+before any `du/dt` is written; a finite-difference `p` across a kink would be silently
+wrong rather than loudly wrong.
+
+**Blast radius on the default path: none until 12D**, and the two `stepcontroller.py`
+changes already made for the entry measurement (`last_err` exposed and cleared on entry) are
+the only edits outside the flag so far.
+
+**Size estimate:** 12A ~40 lines and low risk. 12C ~60 lines, contingent on 12B's `p`.
+12B is the bulk — new derivative kernels, the reduced solve, Fig. 4's restructuring, and a
+recorded prior failure to reproduce first — call it the same order as stage 7b, and the
+only stage here with a real chance of not working.
+
+**Reconsider the whole stage if** 12A-1 shows the band inert (the entry measurement predicts
+it will), or if 12B-0 reproduces the step-size collapse and the cause is the LTE estimate
+rather than the solve. **A negative result remains a good outcome here**, for the reason the
+stub already gives: it converts D1's declined "delete `_solve_coupled`" into an
+evidence-backed decision.
+
+---
+
+**Gate 12-1 (it is the method, not a rejection loop).** *Superseded by gate 12B-3.*
+With the coupled path selected, a
 run must contain **zero** discarded time points from LTE rejection — the step size is
 solved, not retried. Declared success: the rejection counter is 0 where the standard path
 records a nonzero count on the same circuit.
@@ -4849,6 +5076,16 @@ points and 17% less runtime** on a Class-D amplifier with the LTE bounded betwee
 RLC, **at least 20% fewer accepted steps** than the standard controller at matched accuracy.
 **A step reduction bought by a looser effective tolerance does not count** — accuracy is
 measured against the analytic reference of stage 3's RC and must not degrade.
+
+**REVISED 2026-08-01, before any code is written.** The entry measurement says 20% is not
+reachable on these circuits and explains why: the paper's 39% comes from moving steps up
+onto the tolerance, and pycircuit's steps already sit within half a percent of it. Leaving
+the target at 20% would mean declaring a failure for a reason known in advance, which is
+not what a gate is for. **The declared success is now: the step count does not get
+*worse*, and the rejected steps — measured at 3.2% worst — go to zero (gate 12B-3).** If a
+20%+ reduction does appear, the first suspicion is a loosened effective tolerance and the
+accuracy check above decides it. **The original 20% target is kept in the record rather
+than deleted, because the reason it was wrong is the useful part.**
 OUTCOME:
 
 **Gate 12-3 (the overhead claim).** The paper's case rests on "very little overhead". With

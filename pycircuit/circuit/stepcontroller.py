@@ -133,9 +133,15 @@ class IntegralController(StepController):
         ## that is correct, and it costs one uncontrolled step of O(h^2) Euler
         ## error at max_step -- which is why it used to dominate every accuracy
         ## measurement when breakpoints re-armed it periodically.
+        ## Cleared on entry so `last_err` is None wherever no error was computed,
+        ## rather than silently holding the previous step's value -- a stale
+        ## reading is worse than a missing one for anything measuring the
+        ## distribution of accepted-step errors.
+        self.last_err = None
+
         if no_history:
             return True, h_curr
-        
+
         # --- LOCAL TRUNCATION ERROR (LTE) CALCULATION ---
         # 1. Ask the active integrator (e.g. Gear2, Trapezoidal) to calculate the 
         #    raw unscaled truncation error vector (Eg) based on charge curvature.
@@ -175,6 +181,12 @@ class IntegralController(StepController):
         # 4. Normalize the error
         err_array = abs(lte) / etol
         err = float(np.max(err_array))
+        ## Exposed under the same name `PIController` uses, so the normalised
+        ## error of whichever controller is running can be read from outside.
+        ## Not used by this controller's own law -- it is pure integral -- but a
+        ## step-size band (Fang's gamma_min, stage 12) is a statement about this
+        ## number, and it was otherwise a local that nothing could observe.
+        self.last_err = err
 
         # Step-size prediction exponent is 1/(order+1); compute_lte returns that
         # (order+1) as ``p`` (2 for Euler, 3 for the 2nd-order methods).
