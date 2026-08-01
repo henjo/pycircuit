@@ -105,7 +105,7 @@ class NonLinearSolver(ABC):
     """
     
     @abstractmethod
-    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None):
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None, linsolver=None):
         pass
 
 
@@ -115,7 +115,7 @@ class StandardNewton(NonLinearSolver):
     Used natively by DCAnalysis and standard adaptive Transient simulations.
     """
     
-    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None):
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None, linsolver=None):
         x = x0
         if scaler is None:
             scaler = NoneScaler()
@@ -127,7 +127,12 @@ class StandardNewton(NonLinearSolver):
             J_s, F_s, s_vec = scaler.scale(J, F, toolkit)
             
             try:
-                xdiff = toolkit.linearsolver(J_s, -F_s)
+                ## STAGE 7b.  `linsolver is None` keeps the exact call this made
+                ## before, so nothing moves unless a caller asks for a strategy.
+                if linsolver is None:
+                    xdiff = toolkit.linearsolver(J_s, -F_s)
+                else:
+                    xdiff = linsolver.solve(J_s, -F_s, toolkit)
                 xdiff = scaler.unscale_solution(xdiff, s_vec, toolkit)
             except Exception as e:
                 ## STAGE 6(a).  See the matching note in DampedNewton -- and note
@@ -179,7 +184,7 @@ class DampedNewton(NonLinearSolver):
     If a full step causes the residual to increase, the step size (alpha) is halved.
     """
     
-    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None):
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None, linsolver=None):
         x = x0
         if scaler is None:
             scaler = NoneScaler()
@@ -191,7 +196,12 @@ class DampedNewton(NonLinearSolver):
             J_s, F_s, s_vec = scaler.scale(J, F, toolkit)
             
             try:
-                xdiff = toolkit.linearsolver(J_s, -F_s)
+                ## STAGE 7b.  `linsolver is None` keeps the exact call this made
+                ## before, so nothing moves unless a caller asks for a strategy.
+                if linsolver is None:
+                    xdiff = toolkit.linearsolver(J_s, -F_s)
+                else:
+                    xdiff = linsolver.solve(J_s, -F_s, toolkit)
                 xdiff = scaler.unscale_solution(xdiff, s_vec, toolkit)
             except Exception as e:
                 ## STAGE 6(a) -- CLASSIFY BEFORE THE CONTINUATION LAYERS SEE IT.
@@ -253,7 +263,7 @@ class GminSteppingNewton(NonLinearSolver):
     def __init__(self, base_solver: NonLinearSolver):
         self.base_solver = base_solver
         
-    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None):
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None, linsolver=None):
         try:
             # First, attempt to solve the pure system without Gmin injection
             return self.base_solver.solve_system(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names)
@@ -297,7 +307,7 @@ class SourceSteppingNewton(NonLinearSolver):
         self.base_solver = base_solver
         self.source_callback = source_callback
         
-    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None):
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None, linsolver=None):
         try:
             # Note: eval_FJ natively evaluates sources at 1.0
             return self.base_solver.solve_system(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names)
@@ -332,7 +342,7 @@ class SchurCoupledNewton(NonLinearSolver):
     (F, J_x, J_h, E, E_x, E_h)
     """
     
-    def solve_system(self, S0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None):
+    def solve_system(self, S0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None, linsolver=None):
         x_curr, h_curr = S0
         
         for i in range(maxiter):
@@ -388,7 +398,7 @@ class JAXNewtonSolver(NonLinearSolver):
     Only supports Dense matrices and full-JAX compatible circuits (no Python fallback elements).
     """
     
-    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None):
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None, linsolver=None):
         if not toolkit.supports('autodiff'):
             raise ValueError("JAXNewtonSolver requires the JAX toolkit (_jaxtoolkit.py).")
             

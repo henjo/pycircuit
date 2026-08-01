@@ -3678,7 +3678,63 @@ will be marked passed by a run that was never going to fail.
 **Gate 7b-2:** the step controller's `J^-1 Eg` solve (`stepcontroller.py:60`) reuses the
 factors — a third of all linear solves are currently redundant re-factorisations.
 **Gate 7b-3:** a circuit at n ~ 2000 that currently exhausts memory now runs.
-OUTCOME:
+OUTCOME: **PARTLY DONE. The strategy object ships; 7b-2 is NOT built, on
+evidence; 7b-3 is restated because its premise was wrong.**
+
+**Gate 7b-1: PASS.** All 17 baseline runs bit-identical, `max|diff| = 0.000e+00`, and a
+test asserts `DenseSolver()` reproduces passing nothing at all. **The default had to stay
+the old path to achieve this**: `numpy.linalg.solve` and SuperLU round differently, so an
+`AutoSolver` default would move the last bits of every circuit large and sparse enough to
+qualify. Sparse is opt-in via `linearsolver=`, typed like `nrsolver`/`scaler`.
+
+**What shipped.** `pycircuit/circuit/linearsolver.py`: `LinearSolver` ABC, `DenseSolver`
+(the historical `toolkit.linearsolver` call, and the only toolkit-agnostic one),
+`SuperLUSolver` (discovered, not required — raises on construction if SciPy is absent so
+`AutoSolver` never picks it), and `AutoSolver`. Threaded through all seven `solve_system`
+signatures and the transient; `linsolver is None` keeps the exact previous call.
+
+**`AutoSolver` selects on FILL, not on `n` — a deliberate departure from 7b's text.**
+"DenseLU below ~200 unknowns, SuperLU above" keys on the wrong variable: the measured
+crossover follows the sparsity *pattern*, and a dense 300x300 would be mis-served. `n` is
+kept only as a cheap floor (100) below which measuring the fill is not worth the pass. A
+test asserts a large **dense** matrix stays on the dense path, which a size-only rule
+would fail.
+
+**Gate 7b-2: NOT BUILT, and the gate is refuted as written.** The 33.1% is real, but those
+solves are not re-factorisations — see the entry measurements above. Reuse means
+substituting `J(x_k)` for `J(x_conv)`, which is an approximation (median 5.5e-9, max
+2.2e-5) and cannot hold under 7b-1's bit-identical bar. `LinearSolver.factor()` exists as
+the seam with that reasoning recorded on it, returning `None`. **Whether to accept the
+approximation for a third fewer solves is a decision, not an implementation detail, and it
+is left open rather than taken quietly.**
+
+**Gate 7b-3: PREMISE WRONG, restated.** A dense `n=2000` Jacobian is **32 MB** and n=5000
+is 200 MB; nothing is exhausted. What fails at those sizes is time. The gate as written
+would be marked passed by a run that was never going to fail.
+
+**AND THE END-TO-END WIN IS SMALL AT THESE SIZES, WHICH IS THE HONEST HEADLINE.** The
+isolated solve is 28-74x faster from n=301 upward, but a transient is not a solve:
+
+| n | default | AutoSolver | speedup | steps | max\|dv\| |
+|---|---|---|---|---|---|
+| 62 | 0.727 s | 0.754 s | **0.96x** | 111 | 0 |
+| 152 | 3.894 s | 3.527 s | 1.10x | 111 | 1.0e-15 |
+| 402 | 11.368 s | 10.386 s | 1.09x | 111 | 1.0e-15 |
+| 802 | 28.274 s | 23.635 s | 1.20x | 111 | 1.0e-15 |
+
+**1.1-1.2x, because the solve is ~8% of runtime and assembly is the rest** — precisely what
+stage 2's header says ("replacing the solver first would optimise the wrong thing"). The
+step count never moves and the waveform moves only in the last bits. **At n=62 it is 4%
+SLOWER**: `AutoSolver` correctly picks dense there, so that is pure dispatch overhead, and
+it is why the default is `DenseSolver` rather than `AutoSolver`.
+
+**NOT MEASURED: n >= 1200.** The run did not complete in the session — circuit
+*construction* at that size is itself very slow, which is its own finding and is not the
+solver's. The claim that the win grows with `n` rests on 7a's scaling table (LU's share
+35% at n=802, 60% at n=5000), not on an end-to-end measurement, and is labelled as such.
+
+**Still open: 7c (KLU), 7d (`pybsmatrix` deletion and the sparse-toolkit test), and the
+`factor()` decision above.**
 
 **7c. KLU with `klu_refactor`, behind an optional import.** scipy's `splu` recomputes
 COLAMD on every call — **94% of its cost**. Reusing the symbolic phase needs KLU's

@@ -358,6 +358,7 @@ class Transient(Analysis):
         from pycircuit.circuit.nrsolver import NoConvergenceError
         solver = self._get_nrsolver()
         scaler = self._get_scaler()
+        linsolver = self._get_linearsolver()
         try:
             x_res, _iters = solver.solve_system(
                 x0,
@@ -369,6 +370,7 @@ class Transient(Analysis):
                 self.par.maxiter,
                 limiter=limiter_func,
                 scaler=scaler,
+                linsolver=linsolver,
                 ## Stage 6: lets the solver name a node instead of a row index.
                 row_names=reduced_row_names(self.cir, self.irefnode),
             )

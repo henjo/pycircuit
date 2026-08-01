@@ -150,6 +150,12 @@ class Analysis(sim.Analysis):
                                  'instance, e.g. StandardNewton(), DampedNewton(), '
                                  'JAXNewtonSolver()); default StandardNewton()',
                             default=None),
+                  Parameter(name='linearsolver',
+                            desc='Linear solver strategy (a LinearSolver instance, '
+                                 'e.g. DenseSolver(), SuperLUSolver(), AutoSolver()); '
+                                 'default DenseSolver(), which is the historical '
+                                 'numpy.linalg.solve path',
+                            default=None),
                   Parameter(name='scaler',
                             desc='Jacobian scaling strategy (a Scaler instance, e.g. '
                                  'NoneScaler(), RowMaxScaler(), RowL2Scaler(), '
@@ -212,6 +218,22 @@ class Analysis(sim.Analysis):
             raise TypeError(
                 "nrsolver must be a NonLinearSolver instance (e.g. StandardNewton(), "
                 "DampedNewton(), JAXNewtonSolver()), not %r" % (solver,))
+        return solver
+
+    def _get_linearsolver(self):
+        from pycircuit.circuit.linearsolver import LinearSolver, DenseSolver
+        solver = getattr(self.par, 'linearsolver', None)
+        if solver is None:
+            ## DenseSolver, not AutoSolver: the default must not change any
+            ## existing result.  `numpy.linalg.solve` and SuperLU round
+            ## differently, so selecting sparse automatically would move the last
+            ## bits of every circuit large and sparse enough to qualify.  Opting
+            ## in is the caller's decision -- see stage 7b.
+            return DenseSolver()
+        if not isinstance(solver, LinearSolver):
+            raise TypeError(
+                "linearsolver must be a LinearSolver instance (e.g. DenseSolver(), "
+                "SuperLUSolver(), AutoSolver()), not %r" % (solver,))
         return solver
 
     def _get_scaler(self):
