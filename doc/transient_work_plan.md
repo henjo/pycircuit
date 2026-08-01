@@ -4562,6 +4562,48 @@ reason it was caught — and the warning count is why it was looked at at all.
 Scope per decision 0.3c. Ranked by the review's assessment of value:
 
 1. DC sweep (`.dc`) — the most conspicuous absence; no `DCSweep` class exists.
+
+**OUTCOME 10.1, 2026-08-01. `DCSweep` implemented.** SPICE's `.dc`, and the review is right
+that it was the most conspicuous absence: there was no way to ask for a transfer curve, an
+I-V characteristic or a bias sweep without writing the loop by hand.
+
+**`DC.solve` gained an optional `x0`**, because it had none and a hand-written loop
+therefore restarted every point from zeros. `None` is exactly the old behaviour, asserted
+bit-identical by test.
+
+**Continuation is the substance, and it took a detour to prove.** Seeding each point with
+the previous solution is what makes a sweep across a nonlinearity cheap. The first
+measurement said it bought **nothing** — a diode sweep took 232 Newton calls with and
+without. That was the circuit being too easy. On a 4-diode chain, 0-5 V in 101 points:
+
+| continuation | time | residual evaluations |
+|---|---|---|
+| on | 0.114 s | **250** |
+| off | 0.378 s | **1052** |
+
+**4.2x less work, same curve to 3.7e-07.** `continuation=False` is kept so the difference
+can be measured rather than asserted.
+
+**AND THE DETOUR FOUND A REAL DEFECT.** While checking whether `x0` reached the solver at
+all, three DC solves on one circuit gave **15, then 2, then 2** residual evaluations. `None`
+and an explicit `zeros` must be identical, so the difference was state: `Diode.limit` stores
+`_vlim` on the instance and `G` linearises around it, so **the limiter's remembered junction
+voltage outlived its analysis**. That is precisely the defect stage 8(d) found in
+`TLine.history` — and `reset_state()`, made general there rather than a `TLine` method, is
+the hook that fixes it. Now 15, 15, 15. **It was also masking the continuation measurement**,
+which is why the first attempt read as no benefit.
+
+**The sweep restores the swept parameter in a `finally`**, so a sweep leaves the circuit as
+it found it; a test forces a mid-sweep failure to prove the restore actually runs. Without
+it every later analysis would silently inherit the last swept value — the same shape of
+defect again.
+
+**A flaky test of my own was replaced.** 2+.5's `test_construction_is_no_longer_quadratic`
+asserted a fitted timing exponent; it passed alone and failed inside the full suite at low
+load. A flaky test is worse than none, because the next person learns to re-run it rather
+than read it. The mechanism 2+.5 fixed is countable, so it now counts `update_node_map`
+rebuilds (which must not grow with circuit size) instead of timing anything.
+
 2. `.tran` output control — `timestep` is currently *both* the initial step and `max_step`,
    and output points are the solver's own non-uniform steps, so every FFT needs hand
    resampling. `nonlinear_leapfrog_sweep.py` does exactly this, and interpolating

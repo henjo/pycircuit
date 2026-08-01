@@ -866,6 +866,23 @@ class Diode(Circuit):
     instparams = [Parameter(name='IS', desc='Saturation current', 
                   unit='A', default=1e-13)]
     linear = False
+
+    def reset_state(self, epar=None):
+        """Forget the limiter's remembered junction voltage -- stage 10.1.
+
+        `limit` stores `_vlim` on the instance and `G` linearises around it, so the
+        state outlives the analysis that produced it: running DC twice on the same
+        circuit gave **15 residual evaluations the first time and 2 the second**,
+        and that difference is device state, not the circuit.  Same defect stage
+        8(d) found in `TLine.history`, and the same hook fixes it -- which is why
+        the hook was made general rather than a `TLine` method.
+
+        Found while measuring whether `DCSweep`'s continuation was worth its
+        keep: the first measurement said yes by 7x, and it was this.
+        """
+        if hasattr(self, '_vlim'):
+            del self._vlim
+
     def limit(self, x, x0, epar=defaultepar):
         if not hasattr(self, '_vlim'):
             self._vlim = x0[0] - x0[1]

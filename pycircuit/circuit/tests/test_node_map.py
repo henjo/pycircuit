@@ -91,28 +91,43 @@ def test_map_is_rebuilt_after_an_element_is_deleted():
     assert 'R2' in before and 'R2' not in after
 
 
-def test_construction_is_no_longer_quadratic():
-    """Gate 2+.5-3: the EXPONENT, not a speedup ratio.
+def test_construction_does_not_rebuild_the_map_per_element():
+    """Gate 2+.5-3, counted rather than timed.
 
-    A constant-factor win would leave the wall in the same place.  Measured
-    before this change: N^2.23, 18.9 s for a 400-section ladder and a 1600-section
-    one unbuildable inside ten minutes -- which is what stopped stage 7b measuring
-    its n=2000 case.
+    This was a timing test asserting a fitted exponent below 1.5.  It passed
+    alone and FAILED inside the full suite on a box at load -- a flake, and a
+    flaky test is worse than none because the next person learns to re-run it
+    rather than read it.  The mechanism 2+.5 fixed is countable, so count it.
 
-    The bar is deliberately loose (1.5, against a measured 1.15) because this is a
-    timing test on a shared box; it is here to catch a return to quadratic, not to
-    police a few percent.
+    `add_instance` used to call `update_node_map()`, which rebuilds EVERY
+    element's entry: N insertions did O(N^2) element-work before any analysis
+    ran.  It now marks the map dirty and one rebuild happens on first read, so
+    the rebuild count must not grow with the circuit.
     """
-    sizes = (50, 100, 200, 400)
-    times = []
-    for N in sizes:
-        t0 = time.perf_counter()
-        _ladder(N)
-        times.append(max(time.perf_counter() - t0, 1e-6))
-    exponent = np.polyfit(np.log(np.array(sizes, dtype=float)),
-                          np.log(np.array(times)), 1)[0]
-    assert exponent < 1.5, \
-        'construction is scaling as N^%.2f; it was N^2.23 before 2+.5' % exponent
+    from pycircuit.circuit import circuit as circuit_mod
+
+    calls = {'n': 0}
+    real = circuit_mod.SubCircuit.update_node_map
+
+    def counting(self, *a, **k):
+        calls['n'] += 1
+        return real(self, *a, **k)
+
+    circuit_mod.SubCircuit.update_node_map = counting
+    try:
+        counts = []
+        for N in (10, 40, 160):
+            calls['n'] = 0
+            cir = _ladder(N)
+            cir.elementnodemap          # force the one lazy rebuild
+            counts.append(calls['n'])
+    finally:
+        circuit_mod.SubCircuit.update_node_map = real
+
+    assert counts[0] == counts[-1], \
+        'rebuilds grow with circuit size: %r for N = 10, 40, 160' % counts
+    assert counts[-1] <= 2, \
+        'expected one rebuild on first read, got %d' % counts[-1]
 
 
 def test_a_large_circuit_can_be_built_at_all():

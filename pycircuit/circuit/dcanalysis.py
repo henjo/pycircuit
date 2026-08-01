@@ -68,7 +68,15 @@ class DC(Analysis):
         
         self.irefnode = self.cir.get_node_index(refnode)
         
-    def solve(self):
+    def solve(self, x0=None):
+        """Solve the DC operating point.
+
+        ``x0`` is an optional starting guess.  STAGE 10.1 added it: a DC sweep
+        needs to seed each point with the previous solution (continuation), and
+        without a way in, every point of a sweep restarts from zeros and has to
+        re-traverse the whole nonlinearity.  ``None`` keeps the historical
+        behaviour exactly.
+        """
         ## STAGE 8(d) -- see Circuit.reset_state.  A DC solve must not inherit a
         ## previous transient's history: it selected the wrong stamp and returned
         ## v(b) = 0.0 where 0.5 is correct.
@@ -77,7 +85,14 @@ class DC(Analysis):
         ## Refer the voltages to the reference node by removing
         ## the rows and columns that corresponds to this node
 
-        x0 = self.toolkit.zeros(self.cir.n) # Would be good with a better initial guess
+        if x0 is None:
+            x0 = self.toolkit.zeros(self.cir.n)
+        else:
+            x0 = self.toolkit.array(x0, dtype=float)
+            if len(x0) != self.cir.n:
+                raise ValueError(
+                    'x0 has %d entries but the circuit has %d unknowns'
+                    % (len(x0), self.cir.n))
 
         def func(x):
             return self.cir.i(x, self.epar) + self.cir.u(0, analysis='dc', epar=self.epar), self.cir.G(x, self.epar)
@@ -162,3 +177,93 @@ def refnode_removed(func, irefnode,toolkit):
 if __name__ == "__main__":
     import doctest
     doctest.testmod()
+
+
+class DCSweep(Analysis):
+    """Sweep an instance parameter and solve the DC operating point at each value.
+
+    STAGE 10.1.  This is SPICE's `.dc`, and it was the most conspicuous absence in
+    the analysis inventory: there was no way to ask for a transfer curve, an I-V
+    characteristic or a bias sweep without writing the loop by hand -- and a
+    hand-written loop almost always restarts every point from zeros, because
+    `DC.solve()` had no way to accept a starting guess until this item added one.
+
+    CONTINUATION IS THE POINT, not a refinement.  Each solve is seeded with the
+    previous point's solution, which is what makes a sweep across a nonlinearity
+    converge at all: the step between adjacent points is small, so the previous
+    answer is an excellent guess, whereas zeros is a cold start into the same
+    exponential every time.  `continuation=False` is offered so the difference can
+    be measured rather than asserted.
+
+    >>> from pycircuit.circuit import numeric, gnd, SubCircuit
+    >>> from pycircuit.circuit.elements import R, VS
+    >>> import numpy as np
+    >>> cir = SubCircuit(toolkit=numeric)
+    >>> n = cir.add_node('a')
+    >>> cir['V1'] = VS('a', gnd, v=0.0)
+    >>> cir['R1'] = R('a', gnd, r=1e3)
+    >>> res = DCSweep(cir, toolkit=numeric).solve('V1', 'v', np.linspace(0, 2, 3))
+    >>> ['%.2f' % v for v in np.asarray(res.v('a', gnd), dtype=float)]
+    ['0.00', '1.00', '2.00']
+    """
+
+    parameters = [Parameter(name='analysis', desc='Analysis name', default='dc')]
+
+    def __init__(self, cir, toolkit=None, refnode=gnd, **kvargs):
+        self.parameters = super(DCSweep, self).parameters + self.parameters
+        super(DCSweep, self).__init__(cir, toolkit=toolkit, **kvargs)
+        self.refnode = refnode
+        self.irefnode = self.cir.get_node_index(refnode)
+
+    def solve(self, instance, param, values, refnode=None, continuation=True):
+        """Sweep ``cir[instance].ipar.<param>`` over ``values``.
+
+        Returns a :class:`CircuitResult` whose sweep axis is ``values``, so
+        ``res.v('out')`` is the swept curve.
+        """
+        import numpy
+
+        if instance not in self.cir.elements:
+            raise ValueError(
+                '%r is not an instance in this circuit; have %s'
+                % (instance, sorted(self.cir.elements)))
+        element = self.cir[instance]
+        if not hasattr(element.ipar, param):
+            raise ValueError(
+                '%r has no parameter %r; have %s'
+                % (instance, param, sorted(p.name for p in element.instparams)))
+
+        values = numpy.asarray(values, dtype=float)
+        if values.size == 0:
+            raise ValueError('values is empty; nothing to sweep')
+
+        original = getattr(element.ipar, param)
+        dc = DC(self.cir, toolkit=self.toolkit,
+                refnode=self.refnode if refnode is None else refnode)
+
+        columns = []
+        x0 = None
+        self.failures = []
+        try:
+            for value in values:
+                setattr(element.ipar, param, float(value))
+                self.cir.update_iparv()
+                ## The previous solution, not zeros -- see the class docstring.
+                res = dc.solve(x0=x0 if continuation else None)
+                x = self.toolkit.array(res.x, dtype=float).reshape(-1)
+                columns.append(x)
+                x0 = x
+        finally:
+            ## Leave the circuit as it was found, whatever happened.  A sweep that
+            ## silently leaves the last swept value behind would make every
+            ## subsequent analysis on the same circuit depend on it -- exactly the
+            ## defect stage 8(d) found in TLine.
+            setattr(element.ipar, param, original)
+            self.cir.update_iparv()
+
+        X = numpy.array(columns).T
+        self.result = CircuitResult(self.cir, x=X, xdot=None,
+                                    sweep_values=values,
+                                    sweep_label='%s.%s' % (instance, param),
+                                    sweep_unit='')
+        return self.result
