@@ -862,15 +862,64 @@ class SubCircuit(Circuit):
 
     """
     elements = {}
-    elementnodemap = {}
     term_node_map = {}
 
     def __init__(self, *args, **kvargs):
         super().__init__(*args, **kvargs)
         self.elements = {}
-        self.elementnodemap = {}
+        self._elementnodemap = {}
+        self._rep_nodemap_list = {}
+        self._map_indices_1d = {}
+        self._map_indices_2d = {}
+        ## STAGE 2+.5 -- rebuild the node map LAZILY.
+        ##
+        ## `add_instance` used to call `update_node_map()`, which rebuilds the map
+        ## for EVERY element.  N insertions therefore did O(N^2) element-work
+        ## before a single analysis ran: building an 800-element ladder took 24.8 s,
+        ## and a 1600-element one could not be built inside a ten-minute budget --
+        ## which is what stopped stage 7b measuring its n=2000 case at all.
+        ##
+        ## Deferring is safe in a way that incremental appending is NOT: a branch
+        ## index is `branch_offset + len(self.nodes)`, so adding any node later
+        ## shifts every branch index already computed.  Appending one element's
+        ## entry would silently leave the earlier ones stale; rebuilding once, when
+        ## the map is first read, cannot.
+        self._nodemap_dirty = True
         self.term_node_map = {}
         self._mapmatrix = {}
+
+    def _ensure_node_map(self):
+        if self._nodemap_dirty:
+            self.update_node_map()
+
+    @property
+    def _map_indices_1d(self):
+        self._ensure_node_map()
+        return self.__map_indices_1d
+
+    @_map_indices_1d.setter
+    def _map_indices_1d(self, value):
+        self.__map_indices_1d = value
+
+    @property
+    def _map_indices_2d(self):
+        self._ensure_node_map()
+        return self.__map_indices_2d
+
+    @_map_indices_2d.setter
+    def _map_indices_2d(self, value):
+        self.__map_indices_2d = value
+
+    @property
+    def elementnodemap(self):
+        self._ensure_node_map()
+        return self._elementnodemap
+
+    @elementnodemap.setter
+    def elementnodemap(self, value):
+        ## An explicit assignment is taken as authoritative -- `__copy__` does this.
+        self._elementnodemap = value
+        self._nodemap_dirty = False
 
     def __eq__(self, a):
         ## elementnodemap values are numpy arrays, so a plain dict ``==``
@@ -985,8 +1034,9 @@ class SubCircuit(Circuit):
         newbranches = self._instance_branches(instance, instancename)
         self.append_branches(*newbranches)
 
-        ## Update circuit node - instance map
-        self.update_node_map()
+        ## Update circuit node - instance map.  STAGE 2+.5: mark, do not rebuild --
+        ## the rebuild happens once, when the map is first read.
+        self._nodemap_dirty = True
 
         ## update iparv
         instance.update_iparv(self.iparv, ignore_errors=True)
@@ -1149,10 +1199,32 @@ class SubCircuit(Circuit):
     def update_node_map(self):
         """Update the elementnodemap attribute"""
 
-        self.elementnodemap = {}
+        ## STAGE 2+.5 -- ONE DICT INSTEAD OF A LINEAR SCAN PER NODE PER ELEMENT.
+        ##
+        ## This method looked every node up with `self.nodes.index(node)`, an O(n)
+        ## scan whose every step calls `Node.__eq__`.  Building an 800-element
+        ## ladder ran `list.index` 642,400 times and `Node.__eq__` **129,042,200**
+        ## times, for 27.6 s and 17.1 s respectively.  `Node` already defines
+        ## `__hash__` as `hash(self.name)`, consistent with its name-based
+        ## `__eq__`, so the nodes were hashable the whole time.
+        ##
+        ## FIRST OCCURRENCE WINS, deliberately: `list.index` returns the first
+        ## match, and a dict comprehension would keep the LAST.  If two `Node`
+        ## objects in `self.nodes` ever compare equal, the naive comprehension
+        ## would silently renumber matrix rows -- which is exactly what gate
+        ## 2+.5-1 exists to catch.
+        node_index = {}
+        for _i, _node in enumerate(self.nodes):
+            if _node not in node_index:
+                node_index[_node] = _i
+
+        self._elementnodemap = {}
         self._rep_nodemap_list = {}
         self._map_indices_1d = {}
         self._map_indices_2d = {}
+        ## Cleared FIRST: the rebuild below reads `self.nodes`, not the map, so
+        ## nothing here can re-enter `_ensure_node_map`.
+        self._nodemap_dirty = False
         
         branch_offset = 0
         
@@ -1171,11 +1243,11 @@ class SubCircuit(Circuit):
                 branch_offset += 1
 
             nodemap = \
-                [self.nodes.index(node) for node in element_nodes] + branch_indices
+                [node_index[node] for node in element_nodes] + branch_indices
 
             import numpy as np
             nodemap = np.array(nodemap, dtype=int)
-            self.elementnodemap[instance_name] = nodemap
+            self._elementnodemap[instance_name] = nodemap
 
             ## Create mapping coordinates instead of dense matrices
             if len(nodemap) > 0:
@@ -1252,9 +1324,14 @@ class SubCircuit(Circuit):
         `Semiconductor` and what a traced backend could ever support), or return
         `None` and keep its own state (`Diode`).
         """
+        ## HOISTED -- `elementnodemap` is a property since 2+.5, so reading it
+        ## inside the loop is a Python call per element per Newton iteration.  The
+        ## stamping paths below already hoist; these two did not, and the suite
+        ## went from ~8 to ~16 minutes until they did.
+        elementnodemap = self.elementnodemap
         for instance, element in self.elements.items():
             if hasattr(element, 'limit'):
-                nodemap = self.elementnodemap[instance]
+                nodemap = elementnodemap[instance]
                 subx = x[nodemap]
                 subx0 = x0[nodemap]
                 limited = element.limit(subx, subx0, epar)
@@ -1342,9 +1419,11 @@ class SubCircuit(Circuit):
         
     def accept_step(self, t, x, epar):
         """Propagate accept_step to all child elements"""
+        ## Hoisted for the same reason as in `limit` -- see the note there.
+        elementnodemap = self.elementnodemap
         for instance, element in self.elements.items():
             if hasattr(element, 'accept_step'):
-                subx = x[self.elementnodemap[instance]]
+                subx = x[elementnodemap[instance]]
                 element.accept_step(t, subx, epar)
 
     def reset_state(self, epar=None):

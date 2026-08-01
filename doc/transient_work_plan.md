@@ -5192,23 +5192,59 @@ reordering silently permutes every `G`, `C` and `J` in the package. Declared: fo
 circuits including one with global nodes and one with subcircuit hierarchy, the full
 `elementnodemap` must be **equal element-by-element** to today's. A dict built by insertion
 order preserves this in Python 3.7+, but that must be asserted, not assumed.
-OUTCOME:
+OUTCOME: **PASS.** Identical `elementnodemap` on four shapes — an 8- and a 40-section ladder, a
+mixed circuit with global nodes / inductor / diode / `TLine` / current source, and a nested
+subcircuit. The suite test asserts the **invariant** (an element's rows are its nodes'
+positions in `cir.nodes`, then its branch rows) rather than a recorded snapshot, and a
+separate test pins **first-occurrence-wins**: `list.index` returns the first match while a
+dict comprehension keeps the last, so two equal-named nodes would silently renumber matrix
+rows.
 
 **Gate 2+.5-2 (bit-identical results).** Stage 2's inherited stop condition: waveform drift
 exactly `0.00e+00` and identical step counts on the full baseline, or stop. Construction
 feeds indices only — nothing numerical should move, so unlike 2+.4 this bar is expected to
 be reachable and a failure means the indices moved.
-OUTCOME:
+OUTCOME: **PASS.** All 17 baseline runs `max|diff| = 0.000e+00`.
 
 **Gate 2+.5-3 (the scaling is actually fixed).** Declared *before* implementation: fitted
 exponent **<= 1.3** over N = 25..400, and N=800 built in **under 5 s** — a case that is
 untestable today at ~100 s. A speedup ratio alone is not the gate; the exponent is, because
 a constant-factor win would leave the wall in the same place.
-OUTCOME:
+OUTCOME: **PASS on both clauses. N^1.15 against the declared <= 1.30**, and N=800 built in
+**0.345 s** against a declared 5 s:
+
+| N | before | after |
+|---|---|---|
+| 400 | 18.887 s | **0.174 s** (108x) |
+| 800 | ~100 s | **0.345 s** |
+| 1600 | *unbuildable in 10 min* | **1.25 s** |
+| 3200 | — | 4.45 s (6400 elements) |
+
+Two changes, both needed: the dict lookup alone took N^2.23 to N^1.97 (the per-insertion
+full rebuild is what remained); deferring the rebuild took it to N^1.15.
+
+**THE ITEM'S OWN RECONSIDER-IF WAS WRONG, and testing it was worth it.** It proposed fixing
+`Node.__eq__` alone first — dropping the `try`/bare-`except`. Measured on its own that is a
+**2x REGRESSION**: 18.9 s to 40.8 s at N=400, because `getattr(a, 'name', default)` is
+*slower* than `try: a.name` when the attribute normally exists. Python's `try` costs almost
+nothing unless it fires. Reverted.
 
 **Gate 2+.5-4.** Full suite, and `test_circuit.py` in particular — the node map is what
 everything else indexes through.
-OUTCOME:
+OUTCOME: **PASS. 865 passed, 6 skipped, 3 xfailed, 0 failed**, against 859 plus the six tests added
+here.
+
+**A PERFORMANCE REGRESSION WAS INTRODUCED AND CAUGHT.** Making `elementnodemap` a property
+put a Python call in two per-element loops — `limit` (every Newton iteration) and
+`accept_step` (every accepted step) — where the stamping paths already hoist. The first
+suite run took **16m31s against a ~8m17s baseline**. Hoisting both restored it: a
+representative transient measures **1.256 s against 1.287 s pre-change**.
+
+**And the second slow run was NOT the same thing.** It came in at 14m42s with the hoist in
+place, which contradicted the transient measurement. Rather than assume load, the two
+versions were run back to back on the same box: **52.98 / 54.27 s against 52.80 / 53.86 s**
+— identical. Load average was 5.27 from unrelated processes. Trap 2, established by
+controlled comparison instead of asserted.
 
 **Note for whoever takes 2+.4:** that item wants assembly to write into a reduced matrix
 directly, which also touches `update_node_map`'s index arithmetic. **Do 2+.5 first** — it
