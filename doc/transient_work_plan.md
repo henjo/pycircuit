@@ -3617,6 +3617,63 @@ read as closed.
 split so the factorisation survives the Newton iteration. `DenseLU` (scipy
 `lu_factor`/`lu_solve`) below ~200 unknowns, `SuperLU` above; measure the crossover rather
 than guessing it (dense wins at n=29, sparse wins 5x at n=137, 15x at n=542).
+### 7b entry measurements, 2026-08-01 — taken before any code
+
+**Gate 7b-0a: is the step controller really a third of all linear solves?** **CONFIRMED
+EXACTLY, 33.1%.** Counted by origin on a numeric RC ladder: 228 Newton solves against 113
+step-controller solves over 111 accepted steps, independent of `n`. Roughly two Newton
+iterations plus one controller solve per step.
+
+**But "redundant re-factorisations" is the wrong description, and it changes the design.**
+Newton's last factorisation is of `J(x_k)`; `solve_timestep` then rebuilds `J` at the
+**converged** `x_{k+1}` and the controller factors *that*. Nothing else factors it, so
+those 33% are not duplicates — reusing Newton's factors means **substituting a different
+matrix**. Measured within a step on a nonlinear (diode) circuit:
+
+| `\|J(x_k) - J(x_conv)\|` / `\|J(x_conv)\|` | value |
+|---|---|
+| median | 5.455e-09 |
+| mean | 1.779e-06 |
+| max | 2.152e-05 |
+| exactly zero | 11 of 50 steps |
+
+Sound as an approximation — it feeds an error *estimate* with `TRTOL = 7` of slack — but
+**not bit-identical**. **So gates 7b-1 ("results identical to the dense path") and 7b-2
+("reuses the factors") cannot both hold as written.** That is a conflict in the plan, not a
+detail of implementation, and it is recorded here rather than silently resolved. (The
+re-assembly at the converged point is *not* recent: it dates to `18931ae`, 2026-07-22, and
+gate 2c established it as necessary. 2+.2 only stopped it computing the discarded `i`/`u`.)
+
+**Gate 7b-0b: the dense/sparse crossover.** The plan says *"dense wins at n=29, sparse wins
+5x at n=137, 15x at n=542"*. Measured on the RC ladder:
+
+| n | fill | dense LU | SuperLU | sparse win |
+|---|---|---|---|---|
+| 31 | 9.37% | 0.00032 | 0.00013 | 2.47x |
+| 61 | 4.84% | 0.00008 | 0.00007 | 1.16x |
+| 141 | 2.11% | 0.00042 | 0.00015 | 2.76x |
+| 301 | 0.99% | 0.00683 | 0.00024 | 28.7x |
+| 551 | 0.54% | 0.02715 | 0.00039 | **69.6x** |
+| 1101 | 0.27% | 0.05099 | 0.00068 | 74.5x |
+
+**Sparse wins everywhere here, and by far more than recorded at large `n`.** Two caveats
+that matter more than the numbers:
+
+1. **This is an RC ladder at 0.27% fill — maximally favourable to sparse.** The crossover
+   is a function of the sparsity *pattern*, not of `n`. **7b's "DenseLU below ~200
+   unknowns, SuperLU above" keys on the wrong variable**, and a dense-ish circuit at n=300
+   would be mis-served by it. The strategy should choose on fill, measured per circuit.
+2. **`np.linalg.solve` beats scipy's `lu_factor` + `lu_solve` at small `n`** — 2e-5 against
+   3.2e-4 at n=31, on Python call overhead alone. So a naive `DenseLU` strategy object is a
+   **regression** for the small circuits it is meant to protect, and the factor/solve split
+   only pays once the factors are reused.
+
+**Gate 7b-0c: does a circuit at n ~ 2000 exhaust memory, as 7b-3 asserts?** **NO.** A dense
+`n=2000` Jacobian is **32 MB**, and n=5000 is 200 MB — large but nowhere near exhausting.
+7b-3's premise is wrong as stated; what fails at those sizes is *time*, and 7a's scaling
+table says where it comes from. **Gate 7b-3 needs restating around a time budget**, or it
+will be marked passed by a run that was never going to fail.
+
 **Gate 7b-1:** results identical to the dense path on every existing transient test.
 **Gate 7b-2:** the step controller's `J^-1 Eg` solve (`stepcontroller.py:60`) reuses the
 factors — a third of all linear solves are currently redundant re-factorisations.
