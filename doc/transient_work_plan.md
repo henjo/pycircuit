@@ -4626,6 +4626,30 @@ relative — not bit-identical only because `(q - qlast)/dt` replaces `q/dt - ql
 fewer rounding). **Whether it should become `trap` is a maintainer's decision**, and the
 evidence above is what it should be decided on.
 
+**DEFAULT CHANGED TO `trap`, 2026-08-01, on the maintainer's decision.** The evidence above
+is what it was decided on, and one further measurement was taken first — **on the existing
+test's own circuit**, so the change is judged where the suite already looks rather than only
+on the resonator that motivated it. `test_shooting` drives an RC at `dt/RC = 0.1`, and
+against the analytic steady state:
+
+| method | amplitude | relative error |
+|---|---|---|
+| euler | 1.669512 V | 1.4145e-02 |
+| **trap** | **1.693006 V** | **2.7151e-04** |
+
+**52x more accurate**, on a circuit chosen by someone else for a different purpose.
+
+**No test needed changing.** `test_shooting`'s docstring records that `N` was chosen so the
+discretisation error is a few per-mille with "a comfortable margin" — it was already
+stepping finely enough for the method to matter, which is why it passes either way and why
+its error simply falls.
+
+**This is a deliberate behaviour change and existing PSS results will move.** They move
+*towards* the analytic answer in every case measured: 13.2% -> 96.6% of a Q=20 resonator's
+amplitude, and 1.41e-2 -> 2.72e-4 relative error on the RC above. `method='euler'` remains
+available for anyone who needs the old numbers.
+
+
 **Defect 2 — no limiting, "fails on every circuit it exists for". DOES NOT REPRODUCE.**
 Tested a diode driven to 25 V and the common-emitter BJT that stage 5 was written for: all
 converge, and the BJT's PSS collector voltage matches its DC operating point to four

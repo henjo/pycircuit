@@ -60,9 +60,11 @@ class PSS(Analysis):
          Parameter(name='maxiter', 
                    desc='Maximum number of iterations', unit='', 
                    default=100),
-         Parameter(name='method', 
-                   desc='Differentiation method', unit='', 
-                   default="euler")]        
+         Parameter(name='method',
+                   desc="Integration method for the inner transient: 'trap' "
+                        "(default) or 'euler'",
+                   unit='',
+                   default="trap")]        
 
     
     def __init__(self, cir, toolkit=None, irefnode=None, **kvargs):
