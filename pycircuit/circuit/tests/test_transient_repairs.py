@@ -718,6 +718,14 @@ class _RejectionInjector:
         self.inner.set_relref(relref)
         return self
 
+    def set_lte_band(self, *args, **kwargs):
+        ## STAGE 12A.  Forwarded like `set_relref`, because this double stands in
+        ## for a whole controller and `transient.py` deliberately calls the setter
+        ## unguarded: an injected controller that cannot honour the band should
+        ## fail here rather than silently ignore it mid-run.
+        self.inner.set_lte_band(*args, **kwargs)
+        return self
+
     def evaluate_step(self, *args, **kwargs):
         accept, h_next = self.inner.evaluate_step(*args, **kwargs)
         h = kwargs['h_curr']

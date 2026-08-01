@@ -343,8 +343,31 @@ class Transient(Analysis):
                         "its own past maximum)",
                    unit='',
                    default='sigglobal'),
-         Parameter(name='maxiter', 
-                   desc='Maximum number of iterations', unit='', 
+         ## STAGE 12A -- Fang's acceptance band (DAC 2013 eq 15) and step-change
+         ## damper (eq 16).  The defaults are the historical one-sided test, so
+         ## nothing changes until a caller asks; see `StepController.set_lte_band`
+         ## for why the paper's own 0.7/3.0 are not adopted as defaults.
+         Parameter(name='lte_gamma_min',
+                   desc="Lower edge of the LTE acceptance band, as a fraction of "
+                        "the LTE tolerance. A step whose normalised error falls "
+                        "below this is redone LARGER, rather than accepted as "
+                        "wasted work. 0 disables the lower bound (default).",
+                   unit='',
+                   default=0.0),
+         Parameter(name='lte_gamma_max',
+                   desc="Upper edge of the LTE acceptance band, as a fraction of "
+                        "the LTE tolerance. 1.0 is the historical rejection "
+                        "threshold; above 1 fewer steps are redone.",
+                   unit='',
+                   default=1.0),
+         Parameter(name='lte_eta',
+                   desc="Relative limit on the change in step size between "
+                        "consecutive steps, |dh| <= eta*h (Fang eq 16, ~0.15). "
+                        "None leaves the change bounded only by zero stability.",
+                   unit='',
+                   default=None),
+         Parameter(name='maxiter',
+                   desc='Maximum number of iterations', unit='',
                    default=100),
          Parameter(name='integrator',
                    desc='Integration strategy (an Integrator instance, e.g. '
@@ -731,6 +754,12 @@ class Transient(Analysis):
         ## the caller injected, and re-applied every run so the running maximum
         ## a global mode keeps cannot leak from a previous solve.
         self.step_controller.set_relref(self.par.relref)
+        ## STAGE 12A -- same treatment, and for the same reason: applied to
+        ## whichever controller is in use and re-applied every run, so a band set
+        ## for one solve cannot leak into the next.
+        self.step_controller.set_lte_band(self.par.lte_gamma_min,
+                                          self.par.lte_gamma_max,
+                                          self.par.lte_eta)
 
         X = []
         self.irefnode=self.cir.get_node_index(refnode)
@@ -946,8 +975,15 @@ class Transient(Analysis):
             else:
                 was_break_step = False
 
+            ## STAGE 12A -- was this step's size chosen by the controller, or
+            ## imposed on it?  A truncated step is not LTE-limited, so its error
+            ## says nothing about the integrator and Fang's lower bound must not
+            ## try to grow it; see the guard in `IntegralController`.
+            dt_clamped = was_break_step and not fixed_timestep
+
             if t + dt > tend:
                 dt = tend - t
+                dt_clamped = True
                 ## A uniform grid divides `tend` exactly, so what is left at the end
                 ## is floating-point residue rather than a step.  Turning it into
                 ## one produced a final `dt` of 2.033e-20 s on a run whose other
@@ -1009,8 +1045,9 @@ class Transient(Analysis):
                     TRTOL=TRTOL,
                     ## `relref`'s global modes must not mix volts with amps.
                     n_nodes=len(self.cir.nodes),
+                    h_clamped=dt_clamped,
                 )
-                
+
                 if not accept and reject_count < MAX_REJECT:
                     self.statistics.rejected_steps += 1
                     reject_count += 1

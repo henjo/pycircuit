@@ -70,6 +70,93 @@ class StepController(ABC):
         self._ref_running = None
         return self
 
+    ## STAGE 12A -- Fang's two-sided acceptance band, eq (15), and the step-change
+    ## damper, eq (16).  (DAC 2013; see doc/transient_work_plan.md STAGE 12.)
+    ##
+    ## The classical test is one-sided: accept whatever falls under tolerance.
+    ## Fang accepts only inside a BAND, `gamma_min*tau <= eps <= gamma_max*tau`,
+    ## and sec. 4.1 attributes the paper's headline result to the LOWER bound:
+    ## "the lower bound gamma_min prevents step sizes from being unnecessarily
+    ## small."  A step far under tolerance is not free -- it is a step that could
+    ## have covered more time for the same work.
+    ##
+    ## In this module's normalisation `err = eps/tau` (the tolerance already folds
+    ## in TRTOL), so the band is simply `gamma_min <= err <= gamma_max`.
+    ##
+    ## THE DEFAULTS BELOW REPRODUCE THE PREVIOUS BEHAVIOUR EXACTLY: `gamma_min=0`
+    ## makes the lower test vacuous and `gamma_max=1` is the historical `err > 1`
+    ## rejection.  That is deliberate -- stage 12 is behind a flag until 12D, and
+    ## a band that changed the default path would make its own gate unreadable.
+    ##
+    ## The paper's own values (`ltemin=0.7`, `ltemax=3.0` in sec. 4.1) are NOT
+    ## adopted as defaults, and not because they are unattractive: they are quoted
+    ## against a comparison method that redid a step above a normalised LTE of
+    ## 4.63, so "1.0" there is not "1.0" here.  Copying them would be using an
+    ## external number whose normalisation is not established -- so they are
+    ## available to a caller and not baked in.
+    lte_gamma_min = 0.0
+    lte_gamma_max = 1.0
+    lte_eta = None
+
+    def set_lte_band(self, gamma_min=0.0, gamma_max=1.0, eta=None):
+        """Select Fang's acceptance band and step-change damper.
+
+        ``eta`` is eq (16)'s relative limit on how far one step may move from the
+        one before it, ``|dh| <= eta*h`` (the paper suggests ~15%); ``None``
+        leaves the step change limited only by the zero-stability bound.
+        """
+        if not (0.0 <= gamma_min < gamma_max):
+            raise ValueError(
+                "LTE band requires 0 <= gamma_min < gamma_max, got %r, %r"
+                % (gamma_min, gamma_max))
+        if eta is not None and not eta > 0.0:
+            raise ValueError("LTE band damper eta must be positive, got %r" % (eta,))
+        self.lte_gamma_min = float(gamma_min)
+        self.lte_gamma_max = float(gamma_max)
+        self.lte_eta = None if eta is None else float(eta)
+        return self
+
+    def _band_target(self, safety, p):
+        """The normalised error the step prediction aims at.
+
+        Without a band this is ``safety**p`` -- which is not a new choice, it is
+        what the existing law ``h*safety*(1/err)**(1/p)`` already converges to,
+        and the stage-12 entry measurement found the accepted steps sitting on it
+        to within half a percent.
+
+        With a band, the aim only moves if the band actually excludes where the
+        controller was already going -- a band containing the natural aim point is
+        inert by construction, which is the honest behaviour and must not be
+        disguised by silently re-aiming at the band centre.
+
+        WHEN the aim does have to move it goes to the band's geometric centre,
+        NOT to the edge that excluded it.  Clipping to the edge was the first
+        implementation and gate 12A-1 measured what it costs: aiming exactly at
+        `gamma_min` makes every undershoot a rejection, so `gamma_min=0.95` took
+        3172 rejections to accept 1187 steps -- more than two redos per step, to
+        save 7.8%.  The geometric mean is the point furthest from both edges in
+        the ratio sense, which is the sense the step-size law works in.
+
+        Fang does not need this because there `h` is an unknown solved to satisfy
+        the band, not a prediction tested against it; a predict-then-test scheme
+        must aim strictly inside or it rejects on its own rounding.
+        """
+        lo, hi = self.lte_gamma_min, self.lte_gamma_max
+        target = safety ** p
+        if lo > 0.0 or hi != 1.0:
+            if not (lo <= target <= hi):
+                ## `lo == 0` is an upper bound only; there is no lower edge to be
+                ## centred against, so keep the usual safety margin under `hi`.
+                target = (lo * hi) ** 0.5 if lo > 0.0 else hi * safety
+        return target
+
+    def _damp(self, h_next, h_curr):
+        """Eq (16): limit the step change to ``eta`` of the current step."""
+        if self.lte_eta is None:
+            return h_next
+        return min(max(h_next, h_curr * (1.0 - self.lte_eta)),
+                   h_curr * (1.0 + self.lte_eta))
+
     def _reference(self, x_curr, x_last, no_history, n_nodes, toolkit):
         """The `ref` in `reltol*ref + abstol`, per the selected `relref`.
 
@@ -105,7 +192,7 @@ class StepController(ABC):
         return out
 
     @abstractmethod
-    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None, h_last2=None):
+    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None, h_last2=None, h_clamped=False):
         """Evaluate the Local Truncation Error (LTE) for the current step.
 
         ``no_history`` means there is genuinely no past point to difference
@@ -127,18 +214,21 @@ class IntegralController(StepController):
     Rejects steps with LTE > 1.0, and predicts the next step size.
     """
     
-    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None, h_last2=None):
-        ## No past point exists yet, so there is nothing to difference and the
-        ## step is accepted unevaluated.  This is the only place in a run where
-        ## that is correct, and it costs one uncontrolled step of O(h^2) Euler
-        ## error at max_step -- which is why it used to dominate every accuracy
-        ## measurement when breakpoints re-armed it periodically.
+    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None, h_last2=None, h_clamped=False):
         ## Cleared on entry so `last_err` is None wherever no error was computed,
         ## rather than silently holding the previous step's value -- a stale
         ## reading is worse than a missing one for anything measuring the
         ## distribution of accepted-step errors.
         self.last_err = None
 
+        ## No past point exists yet, so there is nothing to difference and the
+        ## step is accepted unevaluated.  This is the only place in a run where
+        ## that is correct, and it costs one uncontrolled step of O(h^2) Euler
+        ## error at max_step -- which is why it used to dominate every accuracy
+        ## measurement when breakpoints re-armed it periodically.  It still does
+        ## on the stiff ringdown: gate 12A-2 measured the total error there
+        ## saturating at 1.3589e-02 from this one step, unchanged across four
+        ## decades of `reltol`.
         if no_history:
             return True, h_curr
 
@@ -193,16 +283,58 @@ class IntegralController(StepController):
         exponent = 1.0 / p
         safety = 0.9
 
+        ## STAGE 12A.  `target` is the normalised error the prediction aims at.
+        ## With no band it is `safety**p`, so `(target/err)**(1/p)` is identically
+        ## the old `safety*(1/err)**(1/p)` -- the rewrite below changes no
+        ## arithmetic on the default path, it only names the aim point so a band
+        ## can move it.
+        target = self._band_target(safety, p)
+
         # --- STEP REJECTION / ACCEPTANCE ---
-        if err > 1.0:
+        if err > self.lte_gamma_max:
             # Step rejected: shrink and recalculate.
-            h_next = h_curr * max(MIN_SHRINK_RATIO, safety * (1.0 / err)**exponent)
+            ##
+            ## THE DAMPER IS DELIBERATELY NOT APPLIED HERE.  Eq (16) bounds how
+            ## far one accepted step may sit from the one before it; it is not a
+            ## limit on how fast a step that failed its error test may retreat.
+            ## Applying it to the rejection path was measured on the stiff RLC
+            ## ringdown: with eta=0.15 the step could only shrink 15% per retry,
+            ## so it exhausted MAX_REJECT, force-accepted, and crossed the whole
+            ## ringing transient in 62 steps against the baseline's 490 -- with a
+            ## reported LTE of exactly zero, because by then it was integrating a
+            ## signal that had already decayed.  A limiter that makes the error
+            ## control unable to respond is not a damper, it is a muzzle.
+            h_next = h_curr * max(MIN_SHRINK_RATIO, (target / err) ** exponent)
             return False, h_next
+
+        ## Eq (15)'s LOWER bound: the step landed so far under tolerance that it
+        ## was wasted work, so it is redone LARGER at the same time point.  This
+        ## is the one place in the controller that rejects a step for being too
+        ## ACCURATE, and it is the mechanism sec. 4.1 credits for the paper's 39%.
+        ##
+        ## `h_clamped` suppresses it, and that suppression is not a detail: a step
+        ## truncated onto a breakpoint or onto `tend` is not LTE-limited, so its
+        ## small error says nothing about the integrator and growing it is either
+        ## impossible or wrong.  The stage-12 entry measurement found exactly this
+        ## population -- at loose tolerance the steps sitting far below target were
+        ## breakpoint-clamped, not controller-chosen.  Without this guard the band
+        ## would spend its retries re-solving steps whose size was never its to
+        ## choose.  Likewise a step already at `max_step` has nowhere to grow.
+        if (err < self.lte_gamma_min and not h_clamped
+                and h_curr < max_step * (1.0 - 1e-12)):
+            h_next = h_curr * min(MAX_GROWTH_RATIO,
+                                  (target / max(err, 1e-12)) ** exponent)
+            h_next = min(self._damp(h_next, h_curr), max_step)
+            ## Never report a "grow" that does not actually grow: with the damper
+            ## or `max_step` binding, the retry would re-solve the same step and
+            ## reject it again, which is a livelock with extra steps.
+            if h_next > h_curr * (1.0 + 1e-9):
+                return False, h_next
 
         # Step accepted: predict next size with the same controller law.
         h_next = h_curr * min(MAX_GROWTH_RATIO,
-                              safety * (1.0 / max(err, 1e-12))**exponent)
-        h_next = min(h_next, max_step)
+                              (target / max(err, 1e-12)) ** exponent)
+        h_next = min(self._damp(h_next, h_curr), max_step)
 
         return True, h_next
 
@@ -257,7 +389,7 @@ class PIController(StepController):
                   * ((err_last_norm / err_norm) ** (self.k_p / p)))
         return min(MAX_GROWTH_RATIO, max(MIN_SHRINK_RATIO, factor))
 
-    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None, h_last2=None):
+    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None, h_last2=None, h_clamped=False):
         ## As in IntegralController: nothing to difference on the first step of a
         ## run.  Unlike there, the 0.5 is not dead -- it seeds the PI history so
         ## the first real update has a previous error to work from.

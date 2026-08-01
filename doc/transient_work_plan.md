@@ -4938,14 +4938,79 @@ solver changes, no new state.** Roughly 40 lines.
 to `γ_min`, the distribution of accepted `last_err` must widen measurably from the deadbeat
 cluster the entry measurement found. Declared: if it does not move, the band is inert here
 and 12B/12C cannot help either — **stop and report that**.
-OUTCOME:
+
+**OUTCOME (2026-08-01): PASS — it moves, but only the lower bound moves it.**
+`benchmarks/transient_review/stage12a_band.py`, `reltol=1e-5`, three circuits.
+
+| config | rc-vsin | stiff-rlc | rc-pulse | median err | note |
+|---|---|---|---|---|---|
+| baseline | 1288 / 19 rej | 490 / 4 | 2823 / 48 | 0.79–0.81 | aims at 0.81 |
+| paper 0.7/3.0 | −1.1% / 34 | −1.8% / 25 | −3.4% / 251 | unchanged | 0.81 is *inside* the band |
+| γ_max=3 only | −0.5% / **1** | 0.0% / **3** | −0.4% / **33** | unchanged | rejections down, steps flat |
+| γ_min=0.95 | −9.6% / 471 | −10.6% / 114 | −11.4% / 1198 | **0.96–0.98** | aim forced up |
+| η=0.15 | +0.2% / 17 | +5.3% / 4 | +5.1% / 48 | unchanged | costs steps, changes nothing |
+
+The paper's own `0.7/3.0` is **inert on the aim point** exactly as the entry measurement
+predicted — 0.81 lies inside it — and its only effect is *more* rejections, because steps
+that drift under 0.7 now get redone. The distribution moves only when `γ_min` is pushed
+above the deadbeat fixed point, which is what 12A-2 then has to price.
 
 **Gate 12A-2 (it does not buy steps with accuracy).** Step count against stage 3's analytic
 RC at matched final error. Declared: any step-count reduction must come with error no worse
 than the standard path's. Given the entry measurement, **the expected honest result is "no
 significant change", and that is a pass, not a failure** — it confirms the deadbeat
 controller already occupies the band.
-OUTCOME:
+
+**OUTCOME (2026-08-01): the lower bound is a re-parameterisation of the tolerance — and the
+more expensive one.** Measured against closed forms, not a fine-mesh run, so the integrator
+is never compared with itself: `rc-vsin` has `v_b = A[sin(ωt−φ) + sin(φ)e^{−t/τ}]`, and
+`stiff-rlc` satisfies `LC v'' + RC v' + v = 0` with `v(0)=1, v'(0)=0`.
+
+| config on rc-vsin | steps | rejections | max abs error |
+|---|---|---|---|
+| baseline | 1288 | 19 | 2.014e-03 (1.00×) |
+| **γ_min=0.95** | **1164 (−9.6%)** | **471** | **2.208e-03 (1.10×)** |
+| **reltol × 1.173** | **1190 (−7.6%)** | **20** | **2.182e-03 (1.08×)** |
+
+Those last two rows are the finding. `γ_min/0.81 = 1.173` was chosen *in advance* as the
+tolerance scaling that moves the aim point by the same factor, and the two configurations
+land on the same trade — within 2% on step count and within 2% on error — while `γ_min`
+pays **24× the rejected steps** to get there. On a controller already sitting on its aim
+point, raising `γ_min` does not recover waste, because there is none; it just moves the aim,
+which is arithmetically a tolerance change, and doing it by rejection is the costlier way to
+express the same thing.
+
+**The one part that pays for itself is `γ_max > 1`**, which is not the mechanism the paper
+credits: at zero accuracy cost (1.00×) and no measurable step change it cuts rejections
+19→1, 4→3, 48→33. That is the two-threshold controller item 4a-bis already proposed, and it
+is cheap — but it is worth at most the ~3% of steps the entry measurement found being
+rejected.
+
+**Two defects, both found by these gates, both invisible as exceptions:**
+
+1. **Aiming at `γ_min` put the aim on the rejection edge.** The first implementation clipped
+   the target *to* the excluded edge, so every undershoot rejected: **3172 rejections to
+   accept 1187 steps**, to save 7.8%. Fixed by aiming at the band's geometric centre. Fang
+   does not hit this because there `h` is *solved* to satisfy the band, not predicted and
+   then tested — a predict-then-test scheme must aim strictly inside or it rejects on its
+   own rounding. Pinned by `test_aim_point_moves_inside_the_band_not_onto_its_edge`.
+2. **The damper was throttling the rejection path.** Eq (16) bounds the change between
+   *accepted* steps; applied to error-driven shrinking it capped the retreat at 15% per
+   retry, so the stiff ringdown exhausted `MAX_REJECT`, force-accepted, and crossed the
+   whole ringing transient in **62 steps against the baseline's 490** — reporting an LTE of
+   exactly zero, because by then it was integrating a signal that had already decayed.
+   **The broken version's step count went DOWN, so a step-count-only gate would have read it
+   as the stage's biggest win.** Pinned end-to-end by
+   `test_damper_does_not_muzzle_the_rejection_path`, verified to fail against the defect.
+
+**And the mechanism that let (2) hide is fixed, not just the instance:** accuracy was being
+measured on `rc-vsin` alone, so a configuration that wrecked the stiff ringdown showed up
+only as a step count. `stiff-rlc` now has its own closed form in the gate. Doing that
+exposed a second thing worth recording: on that circuit the **total** error is dominated by
+the opening step — which is accepted unevaluated by design, so no tolerance governs it — and
+saturates at 1.3589e-02 across four decades of `reltol` (1e-5 … 1e-8, unchanged in every
+digit). The benchmark now reports the error with and without it, because the all-points
+maximum there is blind to everything step control does.
 
 ### 12B — the bordered system (eqs 12, 13, 14 and Fig. 4). *The invasive one.*
 
