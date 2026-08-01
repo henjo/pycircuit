@@ -380,22 +380,28 @@ def test_gate_1_5_vabstol_does_not_move_the_step_count():
 def test_coupled_non_convergence_raises_instead_of_livelocking():
     """`_solve_coupled` must not advance time on an unconverged step.
 
-    Measured before the fix: each outer iteration cost 10 Newton solves and
-    advanced simulated time by h*0.25^10, neither raising nor returning -- about
-    2.1e7 further Newton attempts to finish a 5 us run.
+    Measured before the original fix: each outer iteration cost 10 Newton solves
+    and advanced simulated time by h*0.25^10, neither raising nor returning --
+    about 2.1e7 further Newton attempts to finish a 5 us run.
+
+    STAGE 12B moved the injection point, not the requirement.  The coupled path
+    now solves through `fang_timestep`, which assembles residuals directly and
+    never calls `solve_timestep`, so patching that seam silently exercised
+    nothing and the run completed.  The behaviour under test is unchanged: a
+    circuit that cannot be solved must fail in bounded work rather than crawl.
     """
     cir = _rc()
     tran = Transient(cir, toolkit=numeric)
-    real = tran.solve_timestep
+    real = tran._residual_and_jacobian
     state = {'n': 0}
 
-    def flaky(xlast, tnext, **kwargs):
+    def flaky(x, t, provided_function=None):
         state['n'] += 1
         if state['n'] > 3:
             raise NoConvergenceError('forced, to exercise the exhaustion path')
-        return real(xlast, tnext, **kwargs)
+        return real(x, t, provided_function)
 
-    tran.solve_timestep = flaky
+    tran._residual_and_jacobian = flaky
 
     with pytest.raises(NoConvergenceError) as excinfo:
         tran.solve(refnode=gnd, tend=5e-6, timestep=1e-6, coupled_lte=True)

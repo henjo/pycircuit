@@ -651,6 +651,251 @@ class Transient(Analysis):
                 "Both are explicit choices; substituting zeros silently is what this "
                 "error replaced." % (exc,)) from exc
 
+    ## STAGE 12B -- small helpers the coupled path needs, factored out of `_solve`
+    ## rather than re-derived, so the two paths cannot drift apart on tolerances.
+
+    ## The LTE tolerance multiplier.  `TRTOL` in this module, `lteratio` in
+    ## Spectre: the LTE estimate is deliberately conservative, so the allowed
+    ## truncation error is this many times the Newton-solve tolerance.
+    LTERATIO = 7.0
+
+    def _lte_abstol_vector(self):
+        """The absolute floor of the LTE tolerance, per unknown.
+
+        Note this is the `lte_*` pair, NOT the Newton `abstol` -- the two were
+        split by stage 0.3d precisely because they are different quantities, and
+        the coupled path must take the step-control flavour like every other
+        controller here.
+        """
+        ones_nodes = self.toolkit.ones(len(self.cir.nodes))
+        ones_branches = self.toolkit.ones(len(self.cir.branches))
+        return self.toolkit.concatenate(
+            (self.par.lte_vabstol * ones_nodes,
+             self.par.lte_iabstol * ones_branches))
+
+    def _newton_abstol_vector(self):
+        """The Newton residual tolerance, per unknown."""
+        ones_nodes = self.toolkit.ones(len(self.cir.nodes))
+        ones_branches = self.toolkit.ones(len(self.cir.branches))
+        return self.toolkit.concatenate(
+            (self.par.iabstol * ones_nodes,
+             self.par.vabstol * ones_branches))
+
+    def _residual_and_jacobian(self, x, t, provided_function=None):
+        """``(f, J)`` at ``(x, t)`` using the current ``self._dt``.
+
+        The same assembly `solve_timestep`'s inner function performs, reachable
+        without running a Newton solve -- the coupled method needs one residual
+        per iteration of its OWN loop.
+        """
+        C = self.cir.C(x, self.epar)
+        q = self.cir.q(x, self.epar)
+        self._q_cache = (x, q)
+        iq, Geq = self.get_diff(q, C)
+        u = self.cir.u(t, self.epar, analysis=self.par.analysis)
+        if provided_function is not None:
+            u = u + provided_function(t)
+        f = self.cir.i(x, self.epar) + iq + u
+        J = self.cir.G(x, self.epar) + Geq
+        return (self.toolkit.array(f, dtype=float),
+                self.toolkit.array(J, dtype=float))
+
+    def fang_timestep(self, x_prev, t_prev, h, x_hist, refnode=gnd,
+                      provided_function=None, gamma_min=0.7, gamma_max=3.0,
+                      eta=0.15, maxiter=None, hmin=None, max_step=None):
+        """One time point of Fang's coupled method: solve for ``(x, h)`` together.
+
+        STAGE 12B.  Figure 4 of DAC 2013, and the structure is the substance:
+
+          1. Solve the ordinary ``N`` circuit system at the current ``h`` and
+             update the solution.  This is the existing Newton step, untouched.
+          2. Estimate the LTE (eq 6) and find the controlling node.
+          3. **If the LTE condition holds**, the step size needs no attention --
+             check ordinary convergence and either finish or iterate again.
+          4. **Only if it does not**, form the combined ``(N+1)`` system (eq 12)
+             and solve for a solution update AND a step-size update at once.
+
+        The (N+1) system is therefore NOT formed on every iteration, which is
+        what makes the paper's overhead claim plausible.  There is no rejection
+        path: Figure 3 has none, and the predicted ``h`` is only an initial
+        guess.
+
+        Eq (12) is solved by its Schur complement rather than by factorising an
+        ``(N+1)`` matrix::
+
+            dx0 = -J^-1 f_ckt          dxh = -J^-1 p
+            dh  = -(f_lte + q^T dx0) / (q^T dxh + d)
+            dx  = dx0 + dxh dh
+
+        which needs two solves against the SAME ``J`` -- so with a factor/solve
+        split the second is nearly free.  ``q^T`` has a single nonzero, so the
+        two inner products are one multiply each.
+
+        Returns ``(x, h, iterations, converged)``.
+        """
+        from pycircuit.circuit.stepcontroller import SolutionLTEController
+
+        toolkit = self.toolkit
+        n = self.cir.n
+        irefnode = self.irefnode
+        maxiter = self.par.maxiter if maxiter is None else maxiter
+        hmin = getattr(self.par, 'minstep', 1e-18) if hmin is None else hmin
+        if max_step is None:
+            max_step = self.par.max_step
+            if max_step is None or max_step <= 0:
+                max_step = float('inf')
+
+        ctrl = getattr(self, '_fang_controller', None)
+        if ctrl is None:
+            ctrl = self._fang_controller = SolutionLTEController()
+            ctrl.set_relref(self.par.relref)
+
+        x = toolkit.array(x_prev, dtype=float).copy()
+        abstol = self._newton_abstol_vector()
+        reltol = self.par.reltol
+
+        ## Eq (16) bounds the step change BETWEEN ITERATIONS, and iterating it is
+        ## how the step size collapses inside a single time point: 0.85 per
+        ## iteration over `maxiter` iterations is seven decades.  Measured on the
+        ## charge pump, `h` reached 8.75e-15 s at t=1.1e-5 before the solve gave
+        ## up.  So the TOTAL excursion within one time point is bounded too, by
+        ## the same window the standard controller allows for one step.
+        from pycircuit.circuit.stepcontroller import (MIN_SHRINK_RATIO,
+                                                      MAX_GROWTH_RATIO)
+        h_entry = h
+        h_floor = max(hmin, h_entry * MIN_SHRINK_RATIO)
+        h_ceil = min(max_step, h_entry * MAX_GROWTH_RATIO)
+
+        for it in range(maxiter):
+            ## --- STAGE 1: the ordinary N system, at the current step size.
+            self._dt = h
+            t = t_prev + h
+            f, J = self._residual_and_jacobian(x, t, provided_function)
+
+            f_r = toolkit.delete(f, irefnode)
+            J_r = toolkit.delete(toolkit.delete(J, irefnode, axis=0),
+                                 irefnode, axis=1)
+            dx0_r = toolkit.linearsolver(J_r, -f_r)
+            dx0 = toolkit.insert(dx0_r, irefnode, 0.0)
+
+            ## DEVICE LIMITING, the same the standard Newton applies.  Without
+            ## it an undamped step across a diode's exponential is meaningless:
+            ## the six nonlinear stress circuits all returned ~0 V where the
+            ## standard path gives 8.9 V, and they did it silently -- the solve
+            ## "converged", to the wrong thing.
+            x_stage1 = self.cir.limit(x + dx0, x, self.epar)
+            ## The limiter may shorten the step, so the convergence test must use
+            ## what was actually taken, not what was asked for.
+            dx0 = x_stage1 - x
+
+            ## --- STAGE 2: has the step size earned any attention?
+            h_hist = [hh for hh in (getattr(self, '_dt_last', None),
+                                    getattr(self, '_dt_last2', None))
+                      if hh is not None]
+            etol = self._lte_tolerance(ctrl, x_stage1, x_prev, h_hist)
+
+            eps_ok, err = self._lte_in_band(ctrl, x_stage1, x_hist, h_hist, h,
+                                            etol, gamma_min, gamma_max)
+
+            converged_x = bool(toolkit.alltrue(
+                abs(dx0) < reltol * abs(x_stage1) + abstol))
+
+            if eps_ok or not h_hist or len(x_hist) < 2:
+                ## The LTE condition holds (or cannot be evaluated yet, on the
+                ## opening steps).  Nothing to solve for `h`; finish on the
+                ## circuit equations alone.
+                x = x_stage1
+                if converged_x:
+                    return x, h, it + 1, True
+                continue
+
+            ## --- The LTE condition failed, so the step size must move too.
+            ##
+            ## SEC. 3.4's APPROXIMATE NEWTON, NOT EQ (12), AND THE REASON IS
+            ## MEASURED.  Eq (12) recovers `dh` from eq (14), whose denominator
+            ## is `q^T dxh + d`.  Those two terms are the solution's sensitivity
+            ## to the step size and the extrapolation's slope, and BOTH are
+            ## approximately `dv/dt`: their difference is the truncation error's
+            ## derivative, which is tiny by construction.  Measured on a driven
+            ## RC at h = 1.6e-7: `q^T dxh = +1.818e9`, `d = -1.820e9`, denominator
+            ## -2e6.  Three digits lost, and the SIGN of the denominator decided
+            ## by the cancellation -- so `dh` saturated at the eta limit with an
+            ## essentially arbitrary sign and the step drifted down four decades
+            ## while `err` sat at 0.2, far BELOW the band that should have grown
+            ## it.  Eq (12) computes a small quantity as the difference of two
+            ## large ones; this is very likely what sec. 3.4 means by "the
+            ## coupled nonlinear system sometimes is very sensitive to the change
+            ## of step size".
+            ##
+            ## Eq (17) gets the new step from the error RATIO instead, which
+            ## involves no cancellation at all.  `step_for_error_ratio` inverts
+            ## the node polynomial rather than applying the (tau/eps)^(1/(n+1))
+            ## power law, because that law only holds while h >> h_last -- see
+            ## `extrapolation_error_weight`.
+            from pycircuit.circuit._lte_kernels import step_for_error_ratio
+
+            target = self._band_centre(ctrl, gamma_min, gamma_max)
+            h_new = step_for_error_ratio(h, h_hist, target / max(err, 1e-300),
+                                         1.0 - eta, 1.0 + eta)
+            h_new = min(max(h_new, h_floor), h_ceil)
+            dh = h_new - h
+
+            ## Eq (18): correct the solution already computed rather than
+            ## re-solving at the new step size.  `dxh = -J^-1 p` reuses the
+            ## factors from the stage-1 solve, which is the whole of sec. 3.4's
+            ## "carries very little overhead".
+            if dh != 0.0:
+                p = self.residual_dh(x_stage1, t, h)
+                p_r = toolkit.delete(p, irefnode)
+                dxh_r = toolkit.linearsolver(J_r, -p_r)
+                dxh = toolkit.insert(dxh_r, irefnode, 0.0)
+                x = x_stage1 + dxh * dh
+            else:
+                x = x_stage1
+            h = h_new
+
+            if converged_x and abs(dh) <= eta * h:
+                return x, h, it + 1, True
+
+        return x, h, maxiter, False
+
+    def _band_centre(self, ctrl, gamma_min, gamma_max):
+        """The normalised error eq (10) drives towards.
+
+        Fang writes ``f_lte = eps_m - tau_m``, i.e. a target of exactly the
+        tolerance.  With a BAND the sensible target is inside it rather than on
+        either edge -- aiming at an edge makes every undershoot a violation, the
+        defect gate 12A-1 measured as 3172 rejections against 1187 accepted
+        steps.  The geometric centre is the point furthest from both edges in the
+        ratio sense, which is the sense the step-size law works in.
+        """
+        return (gamma_min * gamma_max) ** 0.5
+
+    def _lte_tolerance(self, ctrl, x_curr, x_last, h_hist):
+        """``tau_m``, per unknown.  The paper does not specify it; this reuses
+        the one every other controller here uses, so the coupled and standard
+        paths are scored on the same scale."""
+        ref = ctrl._reference(x_curr, x_last, not h_hist,
+                              len(self.cir.nodes), self.toolkit)
+        return self.LTERATIO * (self.par.reltol * ref + self._lte_abstol_vector())
+
+    def _lte_in_band(self, ctrl, x_curr, x_hist, h_hist, h, etol,
+                     gamma_min, gamma_max):
+        """``(condition_holds, normalised_error)`` for eq (15)."""
+        from pycircuit.circuit._lte_kernels import solution_lte
+
+        if not h_hist or len(x_hist) < 2:
+            return True, 0.0
+        order = getattr(self.active_integrator, 'ORDER', 1)
+        degree = min(order, len(x_hist) - 1, len(h_hist))
+        if degree < 1:
+            return True, 0.0
+        lte = solution_lte(x_curr, list(x_hist[:degree + 1]),
+                           list(h_hist[:degree]), h)
+        import numpy as _np
+        err = float(_np.max(abs(lte) / etol))
+        return (gamma_min <= err <= gamma_max), err
+
     def residual_dh(self, x, t, h=None):
         """Fang's ``p = df_ckt/dh_m``, at fixed solution ``x``.
 
@@ -1283,6 +1528,10 @@ class Transient(Analysis):
         element_cap = self.cir.max_timestep() if hasattr(self.cir, 'max_timestep') else None
         if element_cap is not None and element_cap < max_step:
             max_step = element_cap
+        ## STAGE 12B -- the coupled path never created a statistics object, so
+        ## `tran.statistics` raised AttributeError after any `coupled_lte=True`
+        ## run and the two paths could not be compared on step counts at all.
+        self.statistics = TransientStatistics()
         TRTOL = 7.0
         minstep = getattr(self.par, 'minstep', 1e-18)
 
@@ -1319,7 +1568,6 @@ class Transient(Analysis):
             ## by the controller) and re-solve.
             h_curr = h
             x_curr = copy(X[-1])
-            h_next = h
             ## Whether any solve at this time point actually succeeded.  Without
             ## this the loop could exhaust its retries and fall through to the
             ## accept block below, which advanced `t` by the collapsed `h_curr` and
@@ -1331,49 +1579,59 @@ class Transient(Analysis):
             ## raised nor returned.  (On a FIRST-step failure it instead died with
             ## `AttributeError: _iq`, because `_iq` is set inside `solve_timestep`.)
             ## See `benchmarks/transient_review/stage0_1d_coupled_livelock.py`.
+            ## STAGE 12B -- Fang's method, at last, replacing the rejection loop
+            ## that used to live here.  `fang_timestep` solves for the solution
+            ## and the step size together (Figures 3 and 4): there is no backup
+            ## due to LTE, and `h_curr` is only the initial guess.
+            ##
+            ## The old loop is gone rather than kept behind a flag.  It re-solved
+            ## the circuit from scratch whenever the LTE was over tolerance,
+            ## which is a rejection loop with the retries hidden inside the time
+            ## point -- the thing the citation in this module claimed not to be.
+            ## A CONVERGENCE backup, which is NOT the thing Figure 3 forbids.
+            ## The paper says "There is no backup due to LTE" -- the step size is
+            ## solved rather than retried.  A Newton that fails to converge at
+            ## all is a different failure, orthogonal to the LTE, and every
+            ## production simulator retries it at a smaller step.  Removing this
+            ## along with the LTE rejection loop is what broke the charge pump,
+            ## the transformer inrush and the delayed avalanche.
             converged = False
-            for lte_iter in range(MAX_LTE_ITERS):
-                self._dt = h_curr
+            for _retry in range(MAX_LTE_ITERS):
                 try:
-                    x_new, feval, J, f = self.solve_timestep(
-                        X[-1], t + h_curr, provided_function=provided_function)
+                    x_curr, h_solved, _iters, converged = self.fang_timestep(
+                        X[-1], t, h_curr, X[-1:-4:-1],
+                        refnode=refnode, provided_function=provided_function,
+                        gamma_min=self.par.lte_gamma_min or 0.7,
+                        gamma_max=(self.par.lte_gamma_max
+                                   if self.par.lte_gamma_max != 1.0 else 3.0),
+                        eta=self.par.lte_eta or 0.15,
+                        hmin=minstep, max_step=max_step)
                 except NoConvergenceError:
-                    ## Circuit did not converge at this step -> shrink and retry.
-                    h_curr *= 0.25
-                    if h_curr < minstep:
-                        raise RuntimeError(f"Coupled transient: timestep shrank below {minstep:g}s at t={t}")
-                    continue
-                converged = True
-
-                accept, h_next = controller.evaluate_step(
-                    x_curr=x_new, x_last=X[-1],
-                    q_curr=self._q_at(x_new),
-                    q_last_hist=self._qlast, iq_last_hist=self._iqlast,
-                    h_curr=h_curr, h_last=getattr(self, '_dt_last', h_curr),
-                    h_last2=getattr(self, '_dt_last2', None),
-                    no_history=self._no_history, J=J,
-                    active_integrator=self.active_integrator,
-                    irefnode=self.irefnode, reltol=reltol, abstol=abstol,
-                    toolkit=self.toolkit, max_step=max_step, TRTOL=TRTOL,
-                    n_nodes=len(self.cir.nodes))
-
-                x_curr = x_new
-                if accept or lte_iter == MAX_LTE_ITERS - 1:
+                    ## A device that cannot be evaluated at this step is the same
+                    ## situation as a Newton that will not converge, and gets the
+                    ## same response: shrink and try again, bounded.  Letting it
+                    ## escape here would skip the backup entirely and abandon a
+                    ## run that a smaller step would have completed.
+                    converged = False
+                if converged:
+                    h_curr = h_solved
                     break
-                if h_next < minstep:
-                    raise RuntimeError(f"Coupled transient: timestep shrank below {minstep:g}s at t={t}")
-                h_curr = h_next
+                h_curr *= 0.25
+                if h_curr < minstep:
+                    break
 
             if not converged:
                 raise NoConvergenceError(
-                    "Coupled transient: Newton failed to converge at t=%g after %d "
-                    "step reductions (h fell from %g to %g s). The run is "
-                    "abandoned rather than advanced -- continuing here would repeat "
-                    "the same %d solves per outer iteration while advancing time by "
-                    "h*0.25^%d, which neither converges nor terminates."
-                    % (t, MAX_LTE_ITERS, h, h_curr, MAX_LTE_ITERS, MAX_LTE_ITERS))
+                    "Coupled transient: the coupled (x, h) Newton failed to "
+                    "converge at t=%g s, with h reduced to %g s over %d "
+                    "attempts. This is a convergence failure, not an LTE "
+                    "rejection -- run with coupled_lte=False to use the "
+                    "standard adaptive controller on this circuit."
+                    % (t, h_curr, MAX_LTE_ITERS))
 
             t += h_curr
+            self.statistics.accepted_steps += 1
+            self.statistics._note_step(h_curr)
             timelist.append(t)
             X.append(copy(x_curr))
 
@@ -1388,8 +1646,21 @@ class Transient(Analysis):
             self._iqlast = self.toolkit.concatenate((self.toolkit.array([self._iq]), self._iqlast))[:-1]
             self._qlast = self.toolkit.concatenate((self.toolkit.array([self._q_at(x_curr)]), self._qlast))[:-1]
 
-            ## Next step: Gear-predicted size (already bounded by max_step).
-            h = min(max_step, max(h_next, minstep))
+            ## THE SOLVED STEP CARRIES FORWARD.  This is the whole point of the
+            ## method -- `fang_timestep` returned the step size it solved for, and
+            ## it becomes the initial guess for the next time point (Figure 3:
+            ## "predict a step size", where the prediction is the previous
+            ## answer).
+            ##
+            ## Writing anything else here is the defect gate 12B-0 found in the
+            ## 2026-07 implementation, where `h = h_next` was followed two lines
+            ## later by `h = h_curr` and the coupled system's answer was thrown
+            ## away every step.  It came back the moment the old inner loop was
+            ## deleted, because `h_next` was assigned inside it: the run then
+            ## stayed at the opening step for its whole length, taking 151,176
+            ## steps where the standard path takes 4,067, and -- the tell -- the
+            ## step count did not move when `reltol` changed by two decades.
+            h = min(max_step, max(h_curr, minstep))
             
         X = self.toolkit.array(X[1:]).T
         timelist = self.toolkit.array(timelist)
