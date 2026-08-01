@@ -342,9 +342,25 @@ class SchurCoupledNewton(NonLinearSolver):
     (F, J_x, J_h, E, E_x, E_h)
     """
     
-    def solve_system(self, S0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None, linsolver=None):
+    def solve_system(self, S0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None, linsolver=None, hmin=0.0):
+        """``hmin`` floors the solved step size.
+
+        STAGE 12B-0.  Without it this iteration has no globalisation at all: `dh`
+        is clamped per iteration to ``[-h/2, 2h]``, so a step that keeps failing
+        its LTE test simply halves for every one of ``maxiter`` iterations and
+        arrives at ``h * 2**-maxiter``.  Measured on the stress circuits, that is
+        exactly what happens -- the solved step reached 1.6e-25, 4.5e-38 and
+        2.5e-45 s inside a single time point, and the run then made no progress.
+
+        The floor matters more than a step-size guess would suggest, because the
+        LTE estimate itself stops being meaningful first: the divided differences
+        that produce it carry a ``1/h`` factor, so as ``h`` shrinks they amplify
+        rounding in the charges until the "error" being solved against is
+        cancellation noise.  Newton is then chasing a quantity that grows as the
+        step shrinks, which is a runaway rather than a convergence.
+        """
         x_curr, h_curr = S0
-        
+
         for i in range(maxiter):
             F, J_x, J_h, E, E_x, E_h = eval_FJ(x_curr, h_curr)
             
@@ -367,10 +383,15 @@ class SchurCoupledNewton(NonLinearSolver):
                 dh = (-E - toolkit.dot(E_x, dx_0)) / denom
                 
             dh = max(-0.5 * h_curr, min(2.0 * h_curr, dh))
+            ## Floor the SOLVED step, and take `dh` from the floored result so the
+            ## solution update `dx` stays consistent with the step it belongs to.
+            ## Clamping `h_next` afterwards while leaving `dh` alone would apply a
+            ## correction for a step that was not taken.
+            h_next = max(h_curr + dh, hmin)
+            dh = h_next - h_curr
             dx = dx_0 + dx_h * dh
-            
+
             x_next = x_curr + dx
-            h_next = h_curr + dh
             
             if limiter is not None:
                 x_next = limiter(x_next, x_curr)
