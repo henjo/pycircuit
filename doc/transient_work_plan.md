@@ -5231,7 +5231,7 @@ events", which is the only meaningful answer for a symbolic time.
 
 ---
 
-## 2+.4 — assemble the reduced system directly, never stamping the reference node
+## 2+.4 — assemble the reduced system directly, never stamping the reference node  **[WITHDRAWN]**
 
 **Raised 2026-08-01 by stage 7a, and scheduled here rather than left in 7a's prose.**
 7a made the reference-node *removal* cheap (2.0-4.6x); it did not remove the need for it.
@@ -5276,6 +5276,41 @@ OUTCOME:
 never materialises the dense matrix makes this moot by construction, and doing both is
 wasted work. **That is the more likely outcome and this item should be checked against
 7b's design before anyone starts it.**
+
+### 2+.4 WITHDRAWN, 2026-08-01 — on the maintainer's decision, and for a reason the item's own reconsider-if got wrong
+
+**The recorded reconsider-if was NOT met, and saying so matters more than the outcome.** It
+reads: *"if 7b/7c land a sparse solver first: a sparse ASSEMBLY that never materialises the
+dense matrix makes this moot by construction."* What 7b actually shipped is a sparse
+**solver** operating on a densely-assembled matrix — `AutoSolver` picks dense / SuperLU /
+KLU *after* `G` and `C` have been built and reduced. **The reference row and column are
+still stamped and still copied away.** Withdrawing on that clause would have been citing a
+condition that never came true.
+
+**The real case is arithmetic, and it is stronger.** After 7a replaced the two `np.delete`
+passes with one blocked copy (2.0-4.6x), `remove_row_col`'s share of a transient — measured
+at sizes 2+.5 has only now made reachable:
+
+| n | transient | `remove_row_col` | share |
+|---|---|---|---|
+| 202 | 7.58 s | 0.0198 s | **0.26%** |
+| 802 | 32.79 s | 0.2427 s | **0.74%** |
+| 1602 | 73.16 s | 0.7280 s | **1.00%** |
+
+The share does grow — it is still the worst-scaling component in isolation — but the growth
+is *decelerating* across these points (2.8x per 4x in `n`, then 1.35x per 2x), so even at
+n=5000 it is a low single-digit percentage. **Perfect elimination buys about 1%.**
+
+**Against that, the cost is high and was known in advance.** Gate 2+.4-2 says in its own
+text that never stamping a row changes the order of the summation, so bit-identity "may
+prove **unachievable**". The item would therefore move every waveform in the package for
+~1% — and bit-identity is the property that made 7a, 7b, 9(a) and 2+.5 safe to do at all.
+
+**Withdrawn.** The gates stay recorded rather than deleted. **Reconsider if** an assembly
+path is ever written that produces the reduced system *directly* — sparse or dense — because
+then the copy disappears as a side effect of work being done for another reason, and the
+1% is free rather than bought.
+
 
 ---
 
