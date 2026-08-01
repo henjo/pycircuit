@@ -3571,6 +3571,61 @@ division sits inside the wrong loop so it cannot be correct), and **fix
 currently passes while never exercising the sparse path. Fix the test first, then decide
 whether `_sparse_numeric` is worth keeping given it is 4x slower than dense.
 OUTCOME:
+### 7d OUTCOME, 2026-08-01 — the test was hiding a dead backend
+
+**Done in the plan's own order: fix the test first, then delete, then decide.** Fixing the
+test answered the decision outright.
+
+**`pybsmatrix.py` DELETED.** 340 lines, **zero references** anywhere outside itself,
+verified by grep across the tree. And the `fbsub` defect is exactly as recorded, now
+located: `vec[i] /= self[i,i]` sits **inside** the `for k` loop, so it divides once per
+off-diagonal term instead of once per row — and the back-substitution loop runs *forward*
+rather than in reverse. `fbsub_transpose` repeats the same misplaced division. It could not
+have produced a correct solve.
+
+**`test_sparse_toolkit.py` FIXED — AND IT IMMEDIATELY FAILED.** The tests built
+`SubCircuit()` with **no toolkit**, so every circuit was assembled by the *default*
+(numeric) backend and only the analysis object was handed `sparse_numeric`. The matrices
+reaching the solver were dense numpy either way: **the tests compared `numeric` against
+`numeric` with a different solve call bolted on.**
+
+**Built with the toolkit under test, `sparse_numeric` does not work at all:**
+
+| analysis | numeric | sparse_numeric |
+|---|---|---|
+| DC | OK | `AxisError: axis 0 is out of bounds for array of dimension 0` |
+| Transient | OK | `ValueError: setting an array element with a sequence` |
+| AC | OK | `AxisError: ...` |
+
+**Root cause:** `SparseNumericToolkit` makes `cir.G(x)` a `coo_matrix`, and
+`analysis.remove_row_col` calls `numpy.delete` on it, which sees a 0-d object. Every
+analysis removes the reference node, so nothing can complete. **Verified pre-existing** —
+it fails identically at `def248c~1`, before 7a touched `remove_row_col`, so this is not a
+regression from that work.
+
+The three tests are now `xfail(strict=True)`, so the defect is **pinned and visible**, and
+a future repair turns them red rather than passing unnoticed — the opposite of how it
+survived the first time.
+
+**So 7d's question is answered more strongly than it was posed.** It asks "whether
+`_sparse_numeric` is worth keeping given it is 4x slower than dense". Two corrections:
+
+1. **The 4x is not a constant.** Measured against `numeric` on a tridiagonal system:
+   **9.36x slower at n=50**, 1.34x at n=150, then **7.7x FASTER at n=400** (0.13x) and 3.7x
+   faster at n=800. It is the same fill-dependent crossover 7b measured, not a fixed
+   penalty.
+2. **It does not work**, which settles the matter ahead of any timing.
+
+**RECOMMENDATION, NOT TAKEN HERE BECAUSE IT IS PUBLIC API: remove `sparse_numeric`.** It is
+46 lines overriding only `linearsolver` — a sparse *solve* on dense-assembled matrices,
+which is precisely what **7b's `SuperLUSolver` now does correctly**, and within noise of it
+at n>=400 (0.00225 vs 0.00217 at n=400). The difference is that `AutoSolver` selects on
+fill and stays dense where sparse would lose, while `sparse_numeric` applied
+unconditionally. Removing it touches `toolkit.py` (2 sites), `circuit/__init__.py`,
+`test_toolkit.py` and `test_sparse_toolkit.py`. **Nobody can be depending on it, because it
+completes no analysis** — but deleting an exported name is the maintainer's call, so it is
+left standing and marked.
+
 
 **Docs in the same commit:** the sparsity and ordering story, including the measured fill
 table, and an explicit note that `ddd.py` has had Markowitz all along.
