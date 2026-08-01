@@ -116,3 +116,45 @@ def test_the_coupled_path_records_the_breakpoints_it_hits():
     assert tran.statistics.breakpoints_hit >= len(_edges()), \
         'recorded %d breakpoints across %d pulse edges' \
         % (tran.statistics.breakpoints_hit, len(_edges()))
+
+
+## ---------------------------------------------------------------------------
+## GATE 12-4, second input: `fixed_timestep` on the coupled path.
+
+def test_fixed_timestep_keeps_the_grid_on_the_coupled_path():
+    """The caller's grid wins over the method's step-size solve.
+
+    `fixed_timestep` and Fang's method are not really in conflict -- one exists
+    to CHOOSE the step size and the other says the caller already has. So the
+    grid is kept and the LTE equation is dropped on every step, exactly as for a
+    breakpoint-truncated one: the circuit is still solved coupled, it just has
+    nothing left to solve for.
+
+    Silently adapting anyway would return output points the caller did not ask
+    for, which is the defect stage 4h fixed on the standard path.
+    """
+    step = 1e-6
+    tend = 2e-5
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = Transient(_pulsed_rc(), toolkit=numeric, reltol=1e-5).solve(
+            tend=tend, timestep=step, coupled_lte=True, fixed_timestep=True)
+
+    t = np.asarray(res.v('b').x, dtype=float).ravel()
+    dt = np.diff(t)
+    assert np.allclose(dt, step, rtol=1e-9), \
+        'grid was not uniform: steps ranged %g .. %g' % (dt.min(), dt.max())
+
+
+def test_fixed_timestep_and_adaptive_differ_on_the_coupled_path():
+    """Guard against the test above passing because nothing adapts anyway."""
+    step = 1e-6
+    tend = 2e-5
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        adaptive = Transient(_pulsed_rc(), toolkit=numeric, reltol=1e-5).solve(
+            tend=tend, timestep=step, coupled_lte=True)
+    dt = np.diff(np.asarray(adaptive.v('b').x, dtype=float).ravel())
+    assert not np.allclose(dt, step, rtol=1e-9), \
+        'the adaptive coupled path produced a uniform grid, so the fixed-step ' \
+        'test above proves nothing'

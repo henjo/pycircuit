@@ -5216,9 +5216,20 @@ lower — so the extra steps are buying accuracy rather than being wasted.
 stage 7b's factors reused, declared success: the per-step cost of the coupled path is
 within **15%** of the standard path's. If it is not, the method is losing in wall time what
 it wins in step count, and that is the number that decides whether it ships.
-**OUTCOME: NOT MEASURED.** Every number in this stage counts Newton solves. §4.1's 17% is
-wall clock and has no counterpart here. This is the largest open measurement gap and is
-listed in `doc/fang_stage12_conclusions.md` §8.
+**OUTCOME (2026-08-02): PASSES on smooth circuits, FAILS on the breakpoint circuit.**
+Declared: per-step cost within 15% of the standard path.
+
+Per time point: `rc-vsin` **2135 µs against 2473**, i.e. the coupled path is 14% *cheaper*;
+`stiff-rlc` 2169 against 2152, +0.8%; `rc-pulse` **2400 against 2039, +18%** at reltol 1e-6,
+and +127% at 1e-4. Total wall clock: +8% / +31% / +70%.
+
+**The metric is weaker than the gate assumed, and that is worth more than the verdict.**
+`solves` counts TIME POINTS, not Newton iterations, and the coupled path runs several inner
+iterations per point — 12 measured at a pulse edge. So this is not a per-iteration cost and
+the two paths are not doing the same unit of work per row; the coupled path coming out
+*cheaper per point* on `rc-vsin` reflects a different step distribution, not a faster
+Newton. A like-for-like comparison needs a Newton-iteration counter on both paths, which
+does not exist.
 
 **Gate 12-4 (the four ignored inputs).** Whatever else changes, the coupled path must
 honour `fixed_timestep`, breakpoints, an injected step controller, and `uic` — the list
@@ -5240,8 +5251,18 @@ Also fixed: the coupled path recorded only `accepted_steps`, so `breakpoints_hit
 `order_drops` read as zero on a circuit hitting ten edges, and `tran.statistics` raised
 `AttributeError` outright before that.
 
-**STILL OPEN: `fixed_timestep` and an injected step controller are not honoured on the
-coupled path.** `uic` is (fixed earlier).
+**`fixed_timestep` is now honoured too** (2026-08-02) — it was never even passed to
+`_solve_coupled`. The grid is kept and the LTE equation is dropped on every step, the same
+treatment a breakpoint-truncated step gets.
+
+That needed one further distinction: a held step whose error is over the band is normally
+reported so the caller can shrink and retry, but on a LOCKED grid shrinking is not an option
+the caller has left available, so the step is taken and the accuracy is what was asked for.
+Conflating the two broke `test_fixed_timestep_keeps_the_grid_on_the_coupled_path` — the
+retry shrank `h` and the uniform grid disappeared.
+
+**STILL OPEN: a caller-injected step controller is ignored on the coupled path**, which
+necessarily builds its own `SolutionLTEController`. `uic` and breakpoints are honoured.
 
 **Gate 12-5.** Full suite `-m ""`, and the citation in `time_stepping.rst` becomes true —
 the page's `.. warning::` recording that the method was documented but absent is removed

@@ -50,46 +50,86 @@ This is the traditional "trial and error" approach used by SPICE:
 
 **Drawbacks**: For highly stiff circuits, the predicted :math:`h` is often overly optimistic, leading to frequent backups and wasted matrix inversions.
 
-Option A: ``coupled_lte=True`` — what it actually is
-----------------------------------------------------
+Option A: ``coupled_lte=True`` — Fang's coupled time-stepping
+-------------------------------------------------------------
 
-.. warning::
+.. note::
 
-   **This section previously described a method that is not implemented.** It
-   claimed an augmented :math:`(N+1)` system, an analytical gradient
-   :math:`E_h = p(E + TRTOL)/h`, and a "golden window"
-   :math:`0.7\tau \le \epsilon \le 3.0\tau` following Fang §3.3. A review against
-   the source paper in 2026-07 found **none of those three in the code**. The
-   description below is what ``_solve_coupled`` does. The discrepancy is recorded
-   rather than quietly deleted, because a documented-but-absent feature is the
-   same class of defect as a silent wrong answer: both make a claim the software
-   does not honour.
+   **This section described an absent feature for a long time, then described
+   its absence.** It first claimed an augmented :math:`(N+1)` system, an
+   analytical gradient and a "golden window" following Fang §3.3; a review in
+   2026-07 found none of the three in the code and the page was rewritten to say
+   so. As of stage 12B (2026-08-01) the method is implemented, and this section
+   describes what runs. The history is kept because a documented-but-absent
+   feature is the same class of defect as a silent wrong answer.
 
-What Fang's paper proposes (DAC 2013, §3.1–3.4) is genuinely a co-determination
-method: the step size :math:`h_m` is an **unknown**, solved together with the
-circuit equations as :math:`N+1` nonlinear equations via a bordered system
+Fang's method (DAC 2013) makes the step size :math:`h_m` an **unknown**, solved
+together with the circuit equations as :math:`N+1` nonlinear equations. Its
+Figure 3 has no rejection branch at all: the predicted step is only an initial
+guess, and *"there is no backup due to LTE"*.
+
+The local truncation error is eq (6),
 
 .. math::
-    \begin{pmatrix} J & p \\ q^T & d \end{pmatrix}
-    \begin{pmatrix} \Delta v \\ \Delta h \end{pmatrix} =
-    \begin{pmatrix} -f_{ckt} \\ -f_{lte} \end{pmatrix}
+    \epsilon_m = \left| v_i(t_m) - v_{i,\mathrm{extrapolated}} \right|
 
-with :math:`p = \partial f_{ckt}/\partial h_m`, :math:`q^T = \partial f_{lte}/\partial v_m`
-and :math:`d = \partial f_{lte}/\partial h_m`. Its §3.4 "approximate Newton"
-variant avoids re-solving by *correcting* the solution already computed,
-:math:`\Delta v^{k+1} = \Delta v^{k+1/2} - J^{-1} p (h^{k+1} - h^{k})`.
+— a **solution-space** quantity: the computed solution minus a polynomial
+extrapolation from previous time points, maximised over the unknowns, with
+:math:`i` the *controlling LTE node*. This is **not** the charge divided
+difference the standard path uses. The distinction is the whole reason the
+method works: a charge divided difference carries repeated :math:`1/h` factors,
+so it *grows* as the step shrinks and cannot be solved for :math:`h` — Newton
+runs away from the root. See ``pycircuit/circuit/stepcontroller.py``'s
+``SolutionLTEController`` and ``doc/fang_stage12_conclusions.md`` §3.
 
-``_solve_coupled`` implements neither. It converges the circuit at :math:`h`,
-evaluates the LTE, and if the LTE is over tolerance it shrinks :math:`h` and
-**re-solves from scratch**, up to ``MAX_LTE_ITERS = 10`` times. That is a
-rejection loop — structurally the same scheme as Option B, with a different retry
-limit. There is no :math:`p`, no bordered system, and no error window; the
-``analytical_eh`` argument that survives in the signature is a vestige of the
-:math:`E_h` gradient described above, and is never read.
+``Transient.fang_timestep`` implements Figure 4's two-stage Newton: solve the
+ordinary :math:`N` system, estimate the LTE, and adjust the step **only if the
+LTE condition fails**. The step correction is §3.4's approximate Newton, eqs (17)
+and (18), which takes the new step from the error ratio and corrects the solution
+already computed using the factors from the first stage.
 
-Consequently ``coupled_lte=True`` does **not** eliminate rejected steps, and the
-two options are not the algorithmic contrast this page once claimed. Prefer the
-default (``coupled_lte=False``).
+**The bordered system of eq (12) is deliberately not used.** Its eq (14)
+denominator :math:`q^T \Delta v_h + d` is the solution's sensitivity to the step
+size minus the extrapolation's slope; both are approximately :math:`dv/dt`, so
+the difference is the truncation error's derivative and is tiny by construction.
+Measured at :math:`h = 1.6\times10^{-7}`: :math:`+1.818\times10^{9}` against
+:math:`-1.820\times10^{9}`, a denominator of :math:`-2\times10^{6}` — three
+digits lost, with the *sign* decided by the cancellation. This is very likely
+what §3.4 means by the coupled system being "very sensitive to the change of step
+size".
+
+What it delivers, measured against closed-form solutions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+* **Zero LTE rejections**, at every tolerance tried, on every circuit tried.
+  That is Figure 3's central claim and it transfers intact.
+* **Mean and median waveform error 10–20% lower** than the standard controller at
+  matched ``reltol``. The *maximum* is a wash, so a comparison reporting only a
+  maximum would miss this.
+* **25–28% more Newton solves.** More accurate per unit tolerance, less accurate
+  per unit work.
+
+The paper's headline — 39% fewer time points — does **not** appear here, and the
+reason is understood rather than mysterious: it comes from moving steps *up* onto
+the tolerance, and ``IntegralController``'s prediction law is already deadbeat,
+placing 91–96% of accepted steps within 5% of its target. The comparison method
+in §4.1 redid a step only above a normalised LTE of 4.63 without resizing toward
+it; pycircuit's baseline resizes.
+
+Limitations
+~~~~~~~~~~~
+
+* ``TLine`` cannot be used with ``coupled_lte=True``. Its source vector comes
+  from history interpolated at :math:`t - T_D`, so :math:`\partial u/\partial t`
+  is the derivative of that interpolation and is unwritten; it raises rather than
+  contributing a silent zero to :math:`p`.
+* ``fixed_timestep`` and a caller-injected step controller are not honoured on
+  this path. Breakpoints and ``uic`` are.
+* No wall-clock comparison has been made; the figures above count Newton solves.
+
+``coupled_lte=False`` remains the default. On this evidence it should be: the
+coupled path buys zero rejections and slightly better average accuracy for
+roughly a quarter more work.
 
 
 Starting point: what happens when the operating point fails

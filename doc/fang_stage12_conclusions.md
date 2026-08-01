@@ -21,39 +21,51 @@ tolerance governs it.
 
 **rc-vsin** (RC driven by a sine):
 
-| reltol | path | steps | reject | solves | min err | mean err | median err | max err |
+| reltol | path | steps | reject | wall (s) | µs/point | mean err | median err | max err |
 |---|---|---|---|---|---|---|---|---|
-| 1e-4 | standard | 412 | 8 | 420 | 1.88e-08 | 3.910e-03 | 4.547e-03 | 6.435e-03 |
-| 1e-4 | **coupled** | 520 | **0** | 520 | 6.59e-08 | **3.269e-03** | **3.304e-03** | 6.488e-03 |
-| 1e-5 | standard | 1288 | 19 | 1307 | 1.34e-08 | 1.219e-03 | 1.423e-03 | 2.014e-03 |
-| 1e-5 | **coupled** | 1591 | **0** | 1591 | 1.18e-08 | **1.062e-03** | **1.034e-03** | 2.168e-03 |
-| 1e-6 | standard | 4067 | 22 | 4089 | 4.53e-09 | 3.830e-04 | 4.464e-04 | 6.350e-04 |
-| 1e-6 | **coupled** | 5136 | **0** | 5136 | 5.51e-09 | **3.298e-04** | **3.289e-04** | 6.626e-04 |
+| 1e-5 | standard | 1288 | 19 | 2.750 | 2104 | 1.219e-03 | 1.423e-03 | 2.014e-03 |
+| 1e-5 | **coupled** | 1591 | **0** | 2.828 | **1778** | **1.062e-03** | **1.034e-03** | 2.168e-03 |
+| 1e-6 | standard | 4067 | 22 | 10.113 | 2473 | 3.830e-04 | 4.464e-04 | 6.350e-04 |
+| 1e-6 | **coupled** | 5136 | **0** | 10.966 | **2135** | **3.298e-04** | **3.289e-04** | 6.626e-04 |
 
 **stiff-rlc** (ringdown, `LC v'' + RC v' + v = 0`):
 
-| reltol | path | steps | reject | solves | mean err | median err | max err |
-|---|---|---|---|---|---|---|---|
-| 1e-4 | standard | 172 | 4 | 176 | 7.044e-03 | 6.106e-03 | 1.968e-02 |
-| 1e-4 | **coupled** | 213 | **0** | 213 | **6.234e-03** | **5.259e-03** | **1.646e-02** |
-| 1e-5 | standard | 490 | 4 | 494 | 4.750e-03 | 3.869e-03 | 1.335e-02 |
-| 1e-5 | **coupled** | 634 | **0** | 634 | **4.147e-03** | **3.109e-03** | **1.331e-02** |
-| 1e-6 | standard | 1499 | 5 | 1504 | 3.844e-03 | 2.948e-03 | 1.345e-02 |
-| 1e-6 | **coupled** | 1924 | **0** | 1924 | **3.426e-03** | **2.420e-03** | **1.331e-02** |
+| reltol | path | steps | reject | wall (s) | µs/point | mean err | median err | max err |
+|---|---|---|---|---|---|---|---|---|
+| 1e-5 | standard | 490 | 4 | 1.168 | 2364 | 4.750e-03 | 3.869e-03 | 1.335e-02 |
+| 1e-5 | **coupled** | 619 | **0** | 1.477 | 2386 | **4.134e-03** | **3.102e-03** | 1.335e-02 |
+| 1e-6 | standard | 1499 | 5 | 3.237 | 2152 | 3.844e-03 | 2.948e-03 | 1.345e-02 |
+| 1e-6 | **coupled** | 1954 | **0** | 4.238 | 2169 | **3.384e-03** | **2.419e-03** | 1.351e-02 |
+
+**rc-pulse** (RC driven by a trapezoidal pulse — the only circuit here with real
+breakpoints, and the one that found the defect in §5 item 9):
+
+| reltol | path | steps | reject | wall (s) | µs/point | mean err | median err | max err |
+|---|---|---|---|---|---|---|---|---|
+| 1e-5 | standard | 1498 | 27 | 3.922 | 2572 | 9.577e-04 | 1.015e-03 | 2.063e-03 |
+| 1e-5 | **coupled** | 2222 | **0** | 7.524 | 3386 | **6.607e-04** | **7.034e-04** | **1.414e-03** |
+| 1e-6 | standard | 4537 | 29 | 9.311 | 2039 | 3.138e-04 | 3.303e-04 | 6.508e-04 |
+| 1e-6 | **coupled** | 6584 | **0** | 15.804 | 2400 | **2.167e-04** | **2.297e-04** | **4.517e-04** |
 
 **Conclusions.**
 
-1. **Zero LTE rejections, at every tolerance, on both circuits.** Figure 3 has no rejection
-   branch and the implementation now has none either. This is the one claim of the paper
-   that transfers here intact.
-2. **Mean and median error are consistently LOWER for the coupled path** — 10–20% lower at
-   matched tolerance. The maximum is a wash (slightly higher on rc-vsin, slightly lower on
-   stiff-rlc), which is why reporting only a maximum would have hidden the effect.
-3. **It costs 25–28% more Newton solves.** Counting rejections, at `reltol=1e-6`: 5136
-   against 4089 on rc-vsin, 1924 against 1504 on stiff-rlc.
-4. So the honest summary is **more accurate per unit tolerance, less accurate per unit
-   work**. The step-count saving the paper reports does not appear here, for the reason in
-   §2.
+1. **Zero LTE rejections everywhere.** Figure 3 has no rejection branch and the
+   implementation has none either. This is the claim of the paper that transfers intact.
+2. **Better mean and median error at matched tolerance on all three circuits**, by 10–30%.
+   On `rc-pulse` the *maximum* is better too, by 31%; on the two smooth circuits the maximum
+   is a wash. Reporting only a maximum would have hidden this.
+3. **It costs 23–45% more time points**, and **8–70% more wall clock**: +8% on `rc-vsin`,
+   +31% on `stiff-rlc`, +70% on `rc-pulse`.
+4. Net: **more accurate per unit tolerance, less accurate per unit work** — but the margin
+   is circuit-dependent, and on the smooth sine drive the coupled path is within 8% of the
+   standard path's runtime while eliminating its rejections.
+
+> **How to read `µs/point`, because it is not what it looks like.** The `steps`/`solves`
+> columns count TIME POINTS, not Newton iterations, and the coupled path runs several inner
+> iterations per point — 12 were measured at a pulse edge. So `µs/point` is not a
+> per-Newton-iteration cost and the two paths are not doing the same unit of work per row.
+> That the coupled path is *cheaper* per point on `rc-vsin` (2135 against 2473 µs) reflects
+> its steps being differently distributed, not its Newton being faster.
 
 > **`med/max` is reported but does not test §4.1's claim.** The paper says the new method
 > distributes the *local truncation error* more evenly along the grid. The table above
@@ -186,6 +198,9 @@ returned a waveform.
 | 6 | no device limiting in the coupled Newton | six diode circuits returned ~0 V where the standard path gives 8.9 V — the solve "converged", to the wrong thing |
 | 7 | η iterated per Newton iteration, unbounded within a time point | 0.85 per iteration over `maxiter` is seven decades; `h` reached 8.75e-15 s before giving up |
 | 8 | convergence backup removed along with the LTE rejection loop | three nonlinear stress circuits failed outright |
+| 9 | saturation measured on the CLAMPED step change, so a step pinned at the shrink floor reported `dh == 0.0` — indistinguishable from "stopped moving", eq (16)'s definition of converged | the first step after a pulse edge was accepted **56× too large** (2.0e-7 s where 3.55e-9 s was needed), committing a **78% single-step error**; the resulting 1.465e-2 was *identical* at reltol 1e-5 and 1e-6 |
+| 10 | held steps were accepted with no error check at all — `hold_h` dropped the LTE equation *and* the test | subsumed by 9; found while chasing it |
+| 11 | `dx` convergence tested against the RESIDUAL tolerance vector (`iabstol` on nodes) instead of the SOLUTION one | invisible at defaults, where `iabstol == vabstol == 1e-12`; would surface only when one is changed |
 
 Defect 5 is worth singling out: **it is the same defect gate 12B-0 identified in the 2026-07
 code**, reintroduced by me while deleting that code. The comment in `_solve_coupled` now
@@ -193,6 +208,25 @@ records both occurrences.
 
 Note also that fixing defect 3 alone made things *worse* (2049 → 2911 rejections). Defects 3
 and 4 were independent, and the first diagnosis was incomplete.
+
+**Defect 9 is the one worth studying**, for two reasons. First, it was invisible on every
+smooth circuit: `rc-vsin` and `stiff-rlc` have no discontinuity, so nothing ever asked the
+step size to fall by a factor of 56 in one time point. It took a circuit with real edges to
+expose it, which is the argument for `rc-pulse` carrying a closed form.
+
+Second, three earlier attempts at it were correct fixes to real defects and changed the
+numbers *not at all* — byte-identical output across all six rows. That identity was the
+signal: three different edits cannot produce the same six numbers by chance. What it meant
+was that the fixed branches were not where the error came from, and only then was it worth
+dumping the step sequence across the edge. The dump showed the error appearing entirely in
+the *first step after* the edge and the shrink sequence pinned at exactly 0.2× — the
+`MIN_SHRINK_RATIO` floor — which named the mechanism directly.
+
+The general lesson is the one about clamps: **a clamped value must never be read as a
+settled one.** Eq (16) asks whether the step size has stopped moving; a step held against a
+wall has stopped moving in exactly the way that test measures, and in no other sense.
+Saturation has to be measured against what the step *wants* (`h_want`, computed with the
+clamps removed), not against what it got.
 
 ## 6. Design decisions that are ours, not the paper's
 
@@ -209,6 +243,12 @@ Recorded so they are not mistaken for transcription.
 - **A convergence backup exists.** Figure 3 forbids a backup *due to LTE*; a Newton that will
   not converge is a different failure, orthogonal to the LTE, and is retried at a smaller
   step as every production simulator does. Removing it broke three circuits.
+- **`fixed_timestep` overrides the method.** The two are not really in conflict: Fang's
+  method exists to *choose* the step size and `fixed_timestep` says the caller already has.
+  So the grid is kept and the LTE equation is dropped on every step — the circuit is still
+  solved coupled, it just has nothing left to solve for. Silently adapting anyway would
+  return output points the caller did not ask for, the defect stage 4h fixed on the standard
+  path.
 - **`h` is floored at `minstep`** inside the coupled solve (`SchurCoupledNewton` gained an
   `hmin` argument), and the total excursion within one time point is bounded by the same
   window the standard controller allows for one step.
@@ -252,9 +292,16 @@ notice.
   `hmin` floor, but the shipped path is §3.4 for the conditioning reason in 4.4. The rank-one
   LU update of §3.2 is therefore also unused.
 - **`TLine` cannot be used with `coupled_lte=True`** (see §6).
-- **Only two circuits carry closed-form references.** `rc-pulse` is in the entry benchmark
-  but has no analytic solution here, so the coupled path's accuracy on a circuit with real
-  breakpoints is unmeasured.
+- **A caller-injected step controller is ignored** on the coupled path, which builds its own
+  `SolutionLTEController`. The other three inputs of gate 12-4 — breakpoints, `uic` and
+  `fixed_timestep` — are now honoured.
+- **`rc-pulse` now carries a closed form** (segment-by-segment integration of the RC against
+  the trapezoidal drive), so accuracy on a circuit with real edges is measurable. The first
+  version of that reference was **wrong and said so loudly**: it skipped the `td` lead-in
+  after the first period, where `Pulse.f` folds with `t % per` and repeats the whole shape,
+  and it disagreed with a `reltol=1e-8` run by 1.0 V — full scale. Validated after the fix:
+  error falls 8.1× for 9.1× more steps, i.e. `∝1/steps`, which is what a first-order method
+  must give.
 - **No wall-clock comparison.** Everything above counts Newton solves. §4.1's 17% is a
   runtime number and has no counterpart here.
 - **The default is unchanged.** `coupled_lte` remains opt-in, and on this evidence should:

@@ -674,12 +674,34 @@ class Transient(Analysis):
              self.par.lte_iabstol * ones_branches))
 
     def _newton_abstol_vector(self):
-        """The Newton residual tolerance, per unknown."""
+        """The Newton RESIDUAL tolerance, per unknown.
+
+        A node row of the residual is a current and a branch row is a voltage,
+        hence `iabstol` on nodes and `vabstol` on branches.  This is the flavour
+        for testing ``f``, not for testing an increment ``dx`` -- see
+        :meth:`_newton_xtol_vector`, and `_newton` which builds both.
+        """
         ones_nodes = self.toolkit.ones(len(self.cir.nodes))
         ones_branches = self.toolkit.ones(len(self.cir.branches))
         return self.toolkit.concatenate(
             (self.par.iabstol * ones_nodes,
              self.par.vabstol * ones_branches))
+
+    def _newton_xtol_vector(self):
+        """The Newton SOLUTION tolerance, per unknown -- the other flavour.
+
+        An increment on a node is a voltage and on a branch is a current, so the
+        two vectors are transposed with respect to each other.  Getting this
+        backwards is the same class of error stage 0.3d separated for the LTE
+        tolerances: the numbers are dimensionally different quantities that
+        happen to share default values (`iabstol` and `vabstol` are both 1e-12),
+        so a swap is invisible until someone changes one of them.
+        """
+        ones_nodes = self.toolkit.ones(len(self.cir.nodes))
+        ones_branches = self.toolkit.ones(len(self.cir.branches))
+        return self.toolkit.concatenate(
+            (self.par.vabstol * ones_nodes,
+             self.par.iabstol * ones_branches))
 
     def _residual_and_jacobian(self, x, t, provided_function=None):
         """``(f, J)`` at ``(x, t)`` using the current ``self._dt``.
@@ -703,7 +725,7 @@ class Transient(Analysis):
     def fang_timestep(self, x_prev, t_prev, h, x_hist, refnode=gnd,
                       provided_function=None, gamma_min=0.7, gamma_max=3.0,
                       eta=0.15, maxiter=None, hmin=None, max_step=None,
-                      hold_h=False):
+                      hold_h=False, grid_locked=False):
         """One time point of Fang's coupled method: solve for ``(x, h)`` together.
 
         STAGE 12B.  Figure 4 of DAC 2013, and the structure is the substance:
@@ -752,7 +774,8 @@ class Transient(Analysis):
             ctrl.set_relref(self.par.relref)
 
         x = toolkit.array(x_prev, dtype=float).copy()
-        abstol = self._newton_abstol_vector()
+        ## The increment flavour: `dx0` is a solution update, not a residual.
+        xtol = self._newton_xtol_vector()
         reltol = self.par.reltol
 
         ## Eq (16) bounds the step change BETWEEN ITERATIONS, and iterating it is
@@ -799,18 +822,44 @@ class Transient(Analysis):
                                             etol, gamma_min, gamma_max)
 
             converged_x = bool(toolkit.alltrue(
-                abs(dx0) < reltol * abs(x_stage1) + abstol))
+                abs(dx0) < reltol * abs(x_stage1) + xtol))
 
             ## `hold_h` -- the step size is IMPOSED, not free.  A step truncated
             ## onto a breakpoint or onto `tend` has its size decided by where it
-            ## must land, so there is nothing for the coupled system to solve:
-            ## the LTE equation is dropped and only the circuit is solved, which
-            ## is the same treatment `h_clamped` gets on the standard path.
+            ## must land, so there is nothing for the coupled system to SOLVE.
             ##
-            ## Without this the truncation was pointless -- `fang_timestep`
-            ## solved for its own `h` and walked straight off the edge again.
-            ## Measured on a pulsed RC: 0 of 10 pulse edges landed on, worst miss
-            ## 1.24e-7 s, which is the whole rise time.
+            ## Without it the truncation was pointless -- `fang_timestep` solved
+            ## for its own `h` and walked straight off the edge again: 0 of 10
+            ## pulse edges landed on, worst miss 1.24e-7 s, the whole rise time.
+            ##
+            ## BUT "DO NOT SOLVE FOR h" IS NOT "DO NOT CHECK THE ERROR", and
+            ## conflating the two was a defect worth the same scrutiny as the one
+            ## it replaced.  A held step was accepted blind, so its truncation
+            ## error was governed by nothing: on the pulsed RC the maximum error
+            ## sat at 1.465e-2 at BOTH reltol 1e-5 and 1e-6 -- identical across a
+            ## decade of tolerance, the signature of a quantity no tolerance
+            ## controls -- and the mean was 5.9x the standard path's at 1e-6,
+            ## getting worse as the tolerance tightened.
+            ##
+            ## A held step whose error is over the band is reported to the caller,
+            ## which shrinks and retries, exactly as the standard path does with a
+            ## breakpoint-clamped step.  That is not the backup Figure 3 forbids:
+            ## the paper's "no backup due to LTE" is about the step it SOLVES for,
+            ## and this step's size was never its to choose.
+            ## A held step whose error is over the band is reported so the
+            ## caller can shrink and retry -- UNLESS the grid is locked.
+            ##
+            ## `fixed_timestep` is the caller stating that the output points are
+            ## theirs, so shrinking is not an option available to us: the honest
+            ## response to an over-tolerance step on a locked grid is to take it
+            ## and let the run's accuracy be what the caller asked for, exactly
+            ## as the standard path does. Conflating "truncated onto a
+            ## breakpoint" with "grid imposed by the caller" broke
+            ## `test_fixed_timestep_keeps_the_grid_on_the_coupled_path`: the
+            ## retry shrank `h` and the uniform grid disappeared.
+            if hold_h and not grid_locked and not eps_ok and err > gamma_max:
+                return x_stage1, h, it + 1, False
+
             if hold_h or eps_ok or not h_hist or len(x_hist) < 2:
                 ## The LTE condition holds (or cannot be evaluated yet, on the
                 ## opening steps).  Nothing to solve for `h`; finish on the
@@ -846,10 +895,52 @@ class Transient(Analysis):
             from pycircuit.circuit._lte_kernels import step_for_error_ratio
 
             target = self._band_centre(ctrl, gamma_min, gamma_max)
-            h_new = step_for_error_ratio(h, h_hist, target / max(err, 1e-300),
-                                         1.0 - eta, 1.0 + eta)
+            ratio = target / max(err, 1e-300)
+            h_new = step_for_error_ratio(h, h_hist, ratio, 1.0 - eta, 1.0 + eta)
+
+            ## WHAT THE STEP WANTS, ignoring every clamp.  Saturation has to be
+            ## measured against this, not against the clamped result: once `h` is
+            ## pinned at a bound the clamped `dh` is exactly 0.0, which is
+            ## indistinguishable from "the step size has stopped moving" -- the
+            ## definition of converged in eq (16) -- when in fact it stopped
+            ## because it hit a wall.
+            ##
+            ## That hole is what let the first step after a pulse edge be
+            ## accepted at 2.0e-7 s when it needed 3.55e-9 s, a factor of 56.
+            ## The step came out of `fang_timestep` at exactly 0.2x its entry
+            ## value -- MIN_SHRINK_RATIO, the within-time-point floor -- after 12
+            ## iterations, reporting converged. It produced v = 0.033333 against
+            ## an analytic 0.018731, a 78% single-step error, and the resulting
+            ## 1.465e-2 was IDENTICAL at reltol 1e-5 and 1e-6 because nothing
+            ## about it was tolerance-controlled.
+            h_want = step_for_error_ratio(h, h_hist, ratio, 1e-6, 1e6)
             h_new = min(max(h_new, h_floor), h_ceil)
             dh = h_new - h
+
+            ## DID THE CORRECTION SATURATE?  Eq (16), `|dh| <= eta*h`, is a
+            ## convergence criterion meaning "the step size has stopped moving".
+            ## A correction pinned AT the limiter has not stopped moving -- it
+            ## was cut off -- and testing it with `<=` makes the two
+            ## indistinguishable, because a clamped `dh` equals `eta*h` exactly.
+            ##
+            ## Measured on the pulsed RC: a step that needed to shrink tenfold
+            ## just after a rising edge declared itself converged after a single
+            ## 15% shrink, ran at h = 4.0e-8 s where the standard path used
+            ## 4.4e-9 s, and left a maximum error of 1.465e-2 that was IDENTICAL
+            ## at reltol 1e-5 and 1e-6 -- the signature of an error no tolerance
+            ## governs.
+            ## Only a clamped SHRINK counts.  A step that wants to grow and is
+            ## held at the cap is in the normal state of every adaptive
+            ## controller -- growth is bounded by zero stability, not by the
+            ## error -- and treating that as unconverged made the run fail at
+            ## t=1e-9 s with h driven to 9.5e-16, since the opening steps always
+            ## want to grow faster than the cap allows.
+            ## Only a thwarted SHRINK counts. A step that wants to grow and is
+            ## held at the cap is the normal state of every adaptive controller
+            ## -- growth is bounded by zero stability, not by the error -- and
+            ## treating that as unconverged drove `h` to 9.5e-16 at t = 1e-9,
+            ## because the opening steps always want to grow faster than allowed.
+            saturated = h_want < h_floor * (1.0 - 1e-9)
 
             ## Eq (18): correct the solution already computed rather than
             ## re-solving at the new step size.  `dxh = -J^-1 p` reuses the
@@ -865,7 +956,10 @@ class Transient(Analysis):
                 x = x_stage1
             h = h_new
 
-            if converged_x and abs(dh) <= eta * h:
+            ## `not saturated`, and a strict test: a step still moving at the
+            ## limiter must keep iterating, and if the time point's own bound
+            ## (`h_floor`) is what stopped it, the caller shrinks and retries.
+            if converged_x and not saturated and abs(dh) < eta * h:
                 return x, h, it + 1, True
 
         return x, h, maxiter, False
@@ -1033,7 +1127,9 @@ class Transient(Analysis):
             self.cir.reset_state(self.epar)
 
         if coupled_lte:
-            return self._solve_coupled(refnode, tend, x0, timestep, provided_function, analytical_eh)
+            return self._solve_coupled(refnode, tend, x0, timestep,
+                                       provided_function, analytical_eh,
+                                       fixed_timestep=fixed_timestep)
 
         ## Respect a step controller injected by the caller (e.g. PIController);
         ## only fall back to the default IntegralController when none was set.
@@ -1469,7 +1565,7 @@ class Transient(Analysis):
         return self.result
 
 
-    def _solve_coupled(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, analytical_eh=True):
+    def _solve_coupled(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, analytical_eh=True, fixed_timestep=False):
         ## STAGE 8(d) -- clear per-analysis element state BEFORE anything seeds it.
         ##
         ## Position matters and cost a test to learn: placed after the initial
@@ -1593,7 +1689,20 @@ class Transient(Analysis):
                 next_t_break = self.cir.next_event(
                     t + (self.par.minbreak * 1e3) * max(abs(t), 1.0))
 
-            if t + h > next_t_break:
+            ## GATE 12-4 -- `fixed_timestep` on the coupled path.
+            ##
+            ## The two are not in conflict so much as one simply wins: Fang's
+            ## method exists to CHOOSE the step size, and `fixed_timestep` exists
+            ## to say the caller has already chosen it.  So the grid is kept and
+            ## the LTE equation is dropped on every step, exactly as it is for a
+            ## breakpoint-truncated one -- the circuit is still solved coupled,
+            ## it just has nothing to solve for.  Silently adapting anyway would
+            ## return output points the caller did not ask for, which is what
+            ## stage 4h fixed on the standard path.
+            if fixed_timestep:
+                h = timestep
+                was_break_step = next_t_break <= t + h
+            elif t + h > next_t_break:
                 h = float(next_t_break - t)
                 was_break_step = True
             else:
@@ -1640,7 +1749,8 @@ class Transient(Analysis):
                     x_curr, h_solved, _iters, converged = self.fang_timestep(
                         X[-1], t, h_curr, X[-1:-4:-1],
                         refnode=refnode, provided_function=provided_function,
-                        hold_h=was_break_step,
+                        hold_h=was_break_step or fixed_timestep,
+                        grid_locked=fixed_timestep,
                         gamma_min=self.par.lte_gamma_min or 0.7,
                         gamma_max=(self.par.lte_gamma_max
                                    if self.par.lte_gamma_max != 1.0 else 3.0),
