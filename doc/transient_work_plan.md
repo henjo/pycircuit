@@ -3728,10 +3728,16 @@ step count never moves and the waveform moves only in the last bits. **At n=62 i
 SLOWER**: `AutoSolver` correctly picks dense there, so that is pure dispatch overhead, and
 it is why the default is `DenseSolver` rather than `AutoSolver`.
 
-**NOT MEASURED: n >= 1200.** The run did not complete in the session — circuit
-*construction* at that size is itself very slow, which is its own finding and is not the
-solver's. The claim that the win grows with `n` rests on 7a's scaling table (LU's share
-35% at n=802, 60% at n=5000), not on an end-to-end measurement, and is labelled as such.
+**n=1202 MEASURED AFTER THE FACT, and it closes this gap partway.** The run finished
+after the 7b commit was written: **33.201 s -> 26.619 s, 1.25x**, 80 steps, `max|dv|`
+9.992e-16. So the win does grow with `n` — 1.09x at 402, 1.20x at 802, **1.25x at 1202** —
+but *slowly*, which is the same conclusion by measurement rather than by extrapolation:
+assembly, not the solve, sets the pace.
+
+**n=2000 remains unmeasured.** That row was killed rather than completed (one row printed,
+no traceback), so nothing is claimed for it. Circuit *construction* at these sizes is
+itself very slow — element insertion looks O(n^2) — which is its own finding and is not
+the solver's.
 
 **Still open: 7c (KLU), 7d (`pybsmatrix` deletion and the sparse-toolkit test), and the
 `factor()` decision above.**
