@@ -3608,7 +3608,8 @@ modules never ran at all.
 reference node out of the matrix"; what this does is make the *removal* cheap, not remove
 the need for it. Any approach that copies is O(n^2); eliminating the copy entirely means
 never stamping the reference row and column, which is an assembly-level change touching
-every element's stamp and belongs with stage 2's assembly work. Recorded so the item is not
+every element's stamp and belongs with stage 2's assembly work. **Scheduled as 2+.4**,
+with its own gates, rather than left as prose here. Recorded so the item is not
 read as closed.
 
 **7b. A `LinearSolver` strategy object**, in the shape the codebase already uses for
@@ -4878,6 +4879,54 @@ events", which is the only meaningful answer for a symbolic time.
 | gear2-classic ratio dependence | **NEW**, measurable now, not started |
 | 0.3d `chgtol` guard | not started |
 | `relref` default / `lteratio` | not started |
+
+---
+
+## 2+.4 — assemble the reduced system directly, never stamping the reference node
+
+**Raised 2026-08-01 by stage 7a, and scheduled here rather than left in 7a's prose.**
+7a made the reference-node *removal* cheap (2.0-4.6x); it did not remove the need for it.
+Any approach that copies is O(n^2). Eliminating the copy means the reference row and
+column are never assembled, which is an assembly-level change touching every element's
+stamp — stage 2's territory, not the linear solver's.
+
+**Why it is worth doing, in numbers 7a measured.** Per Newton iteration, on a numeric RC
+ladder: assembly scales **n^1.26**, dense LU **n^1.83**, and the reduction **n^2.53** —
+the worst of the three even after 7a. At n=20000 the *reduced* form still costs ~2.5 s per
+iteration and copies 3.2 GB per call.
+
+**This resolves an apparent contradiction between stage 2 and stage 7, worth stating
+because both are right.** Stage 2 opens with *"at n=137 the solve is 2.1% of runtime and
+assembly is 96%, so replacing the solver first would optimise the wrong thing"* — correct,
+and 7a's profile reproduces it (LU 8% at n=302). Stage 7 opens with the memory wall at
+n=5000. **The orderings differ because the exponents differ**: assembly dominates below
+n~2000 and the solver above it, with LU's share running 35% at n=802, 60% at n=5000 and
+77% at n=20000. Neither stage is wrong; each is stating the binding constraint at the size
+it cares about. **Reconsider if** anyone quotes either percentage without its `n`.
+
+**Gate 2+.4-1 (the reference row and column are never built).** Declared as an allocation
+check, not a timing one: the assembled `G`/`C`/`J` must have shape `(n-1, n-1)` at the
+point of assembly, so `remove_row_col` is not called on the Newton path at all. A timing
+gate would pass on a version that still builds and discards them.
+OUTCOME:
+
+**Gate 2+.4-2 (bit-identical).** Stage 2's stop condition, inherited: waveform drift
+exactly `0.00e+00` and an identical step count on the full baseline, or stop. Note the
+ordering of the sum changes when a row is never stamped rather than stamped-and-dropped,
+so this may prove *unachievable* — **if so, say that and stop**, rather than relaxing the
+bar to fit. A reduced-assembly path that changes the last bits is a different decision and
+needs its own justification.
+OUTCOME:
+
+**Gate 2+.4-3 (the symbolic and sparse toolkits still work).** `remove_row_col` has 20+
+call sites and several toolkits reach it. Declared: the reduced-assembly path is opt-in
+per analysis, and anything that has not been converted keeps today's behaviour.
+OUTCOME:
+
+**Reconsider the whole item if** 7b/7c land a sparse solver first: a sparse assembly that
+never materialises the dense matrix makes this moot by construction, and doing both is
+wasted work. **That is the more likely outcome and this item should be checked against
+7b's design before anyone starts it.**
 
 ---
 
