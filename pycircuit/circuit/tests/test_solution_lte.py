@@ -287,3 +287,48 @@ def test_gradients_are_nonzero_when_the_deviation_is_exactly_zero():
     i, q_val, d = ctrl.lte_gradients(x_on_curve, x_hist, h_hist, h, etol)
     assert q_val != 0.0
     assert 0 <= i < len(x_on_curve)
+
+
+def test_lte_identity_holds_but_is_not_better_conditioned():
+    """`v_m - P(t_m)` == top divided difference x node polynomial.
+
+    The identity is exact and worth having written down -- it is where the
+    predictor and the BDF coefficients meet, both being Newton interpolation on
+    the same grid. It is NOT what `solution_lte` computes, and this test records
+    why: the reason to prefer it would have been conditioning, and that turns out
+    to be false.
+    """
+    def by_identity(v_curr, v_hist, h_hist, h):
+        times = [h] + K.extrapolation_times(h_hist)[:len(v_hist)]
+        top = K.divided_differences([v_curr] + list(v_hist), times)[-1]
+        return top * K.extrapolation_error_weight(h, h_hist)
+
+    for degree in (1, 2, 3):
+        h_hist = [1.3e-6, 8.0e-7, 2.2e-6][:degree]
+        times = K.extrapolation_times(h_hist)[:degree + 1]
+        h = 9.0e-7
+        for f in (lambda t: np.sin(3e5 * t), lambda t: np.exp(-t / 3e-7)):
+            v_hist = [f(t) for t in times]
+            assert by_identity(f(h), v_hist, h_hist, h) == \
+                pytest.approx(K.solution_lte(f(h), v_hist, h_hist, h), rel=1e-11)
+
+    ## And the disproved claim, kept as a test so it cannot be re-adopted on the
+    ## strength of the argument that sounds right. Shifting the whole signal by a
+    ## large constant cannot change the truncation error -- a constant is
+    ## reproduced exactly by any degree >= 0 -- so all movement is cancellation.
+    ## The identity relocates that cancellation into the divided-difference
+    ## table rather than removing it, and came out WORSE here.
+    h_hist = [1.3e-6, 8.0e-7]
+    times = K.extrapolation_times(h_hist)[:3]
+    h = 9.0e-7
+    base = lambda t: np.sin(3e5 * t)
+    offset = 1e3
+
+    truth = K.solution_lte(base(h), [base(t) for t in times], h_hist, h)
+    shifted = [base(t) + offset for t in times]
+    id_err = abs(by_identity(base(h) + offset, shifted, h_hist, h) - truth)
+    lit_err = abs(K.solution_lte(base(h) + offset, shifted, h_hist, h) - truth)
+
+    assert id_err > lit_err, \
+        'the identity is now the better-conditioned form (identity %.3e, ' \
+        'literal %.3e); if so, reconsider using it in solution_lte' % (id_err, lit_err)

@@ -325,6 +325,34 @@ def solution_lte(v_curr, v_hist, h_hist, h_curr):
     per-unknown tolerance before a maximum means anything, and the paper does not
     specify ``tau_m``.  That choice is recorded in `doc/fang_dac2013_math.md`
     sec. 6 as ours rather than Fang's.
+
+    **An equivalent divided-difference form exists, and is NOT used.** Adding the
+    current point to the interpolant that produced ``P`` extends the Newton form
+    by exactly one term, giving the identity
+
+        v_m - P(t_m) = v[t_m, t_{m-1}, ..., t_{m-k-1}] * PROD_j (t_m - t_j)
+
+    -- the top divided difference of the solution INCLUDING the current point,
+    times the node polynomial, which is :func:`extrapolation_error_weight`. It
+    holds to machine precision (checked in ``test_solution_lte.py``).
+
+    It was implemented and reverted. The expectation was that it would avoid the
+    cancellation in ``v_m - P``, which on a node sitting at 1e3 with a truncation
+    error of 3.5e-3 costs about six digits. **It does not: it relocates the
+    cancellation into the divided-difference table, which differences the same
+    nearly-equal values.** Measured on a signal shifted by a constant, the
+    literal form was the more accurate of the two (9.5e-15 against 2.5e-14 of
+    error relative to the unshifted answer), so the change bought nothing and the
+    direct statement of eq (6) is kept.
+
+    The identity is still worth knowing, because it answers whether the predictor
+    can be derived from the integrator's coefficients: not from ``alpha_i`` /
+    ``beta_i`` directly, since the corrector interpolates the CHARGE through a
+    node set that includes ``t_m`` while the predictor interpolates the SOLUTION
+    through one that excludes it. But both are Newton interpolation on the same
+    grid, and this identity is where they meet -- for BDF, :func:`bdf2_alphas` is
+    the derivative at ``t_m`` of the interpolant through the same nodes whose top
+    divided difference appears here.
     """
     return v_curr - extrapolate(v_hist, h_hist, h_curr)
 
