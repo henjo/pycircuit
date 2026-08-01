@@ -254,6 +254,12 @@ class VS(Circuit):
         else:
             return self.toolkit.array([0, 0, 0])
 
+    def dudt(self, t=0.0, epar=defaultepar, analysis=None):
+        """STAGE 12B -- ``du/dt`` for Fang's ``p``. The DC offset drops out."""
+        if analysis in timedomain_analyses:
+            return self.toolkit.array([0, 0, -self.function.dfdt(t)])
+        return self.toolkit.array([0, 0, 0])
+
     def next_event(self, t):
         if hasattr(self, 'function') and hasattr(self.function, 'next_event'):
             return self.function.next_event(t)
@@ -332,6 +338,13 @@ class IS(Circuit):
             return self.toolkit.array([i, -i])
         else:
             return self.toolkit.array([0, 0])
+
+    def dudt(self, t=0.0, epar=defaultepar, analysis=None):
+        """STAGE 12B -- ``du/dt`` for Fang's ``p``. The DC offset drops out."""
+        if analysis in timedomain_analyses:
+            di = self.function.dfdt(t)
+            return self.toolkit.array([di, -di])
+        return self.toolkit.array([0, 0])
 
     def next_event(self, t):
         if hasattr(self, 'function') and hasattr(self.function, 'next_event'):
@@ -1753,6 +1766,26 @@ class TLine(Circuit):
         return self.toolkit.array(G)
 
         
+    def dudt(self, t=0.0, epar=None, analysis=None):
+        """STAGE 12B -- deliberately NOT implemented.
+
+        `TLine`'s source vector is built from the stored history interpolated at
+        ``t - TD``, so ``du/dt`` is the derivative of that interpolation and is a
+        real term, not a zero.  Inheriting `Circuit.dudt`'s zero would silently
+        drop it from ``p`` and leave the coupled solve working on a subtly wrong
+        problem -- the failure mode this whole stage has been chasing.
+
+        Raising instead means a coupled run on a circuit containing a delay line
+        stops and says why.  The standard adaptive path is unaffected.
+        """
+        if analysis not in ('tran', 'transient', 'time'):
+            return self.toolkit.zeros(6)
+        raise NotImplementedError(
+            'TLine does not provide du/dt: its source vector comes from the '
+            'delayed history, so the derivative is that of the history '
+            'interpolation. The coupled (Fang) time-stepping method cannot be '
+            'used on a circuit containing a delay line until this is written.')
+
     def u(self, t=0.0, epar=None, analysis=None):
         if len(self.history) == 0 or analysis not in ('tran', 'transient', 'time'):
             return self.toolkit.zeros(6)

@@ -66,6 +66,62 @@ def bdf2_companion(q_curr, C_curr, q_prev1, q_prev2, h1, h2):
     return (bdf2_derivative(q_curr, q_prev1, q_prev2, h1, h2), a0 * C_curr)
 
 
+## ---------------------------------------------------------------------------
+## STAGE 12B -- derivatives of the companion current with respect to the STEP
+## SIZE, which is the integrator half of Fang's ``p = df_ckt/dh_m``.
+##
+## Once ``h`` is an unknown (DAC 2013 eq 11) the residual has to be
+## differentiated with respect to it, and the residual depends on ``h`` through
+## two routes: the sources, evaluated at ``t_{m-1}+h`` (that is
+## ``TimeFunction.dfdt``), and these companion terms.  The paper writes the
+## integration coefficients as explicit functions of ``h_m`` in eq (4) for
+## exactly this reason.
+##
+## All of these hold the SOLUTION fixed, so ``q_curr`` is a constant here.  The
+## coupling of the solution to the step size is what ``J`` carries in eq (12) --
+## putting it in ``p`` as well would count it twice.
+
+
+def euler_companion_dh(q_curr, q_prev, h):
+    """``d/dh`` of Backward Euler's ``(q_n - q_{n-1})/h``."""
+    return -(q_curr - q_prev) / (h * h)
+
+
+def trapezoidal_companion_dh(q_curr, q_prev, h):
+    """``d/dh`` of the trapezoidal ``2(q_n - q_{n-1})/h - iq_{n-1}``.
+
+    ``iq_{n-1}`` is a stored past value and carries no ``h`` dependence.
+    """
+    return -2.0 * (q_curr - q_prev) / (h * h)
+
+
+def bdf2_alphas_dh(h1, h2):
+    """``d/dh1`` of :func:`bdf2_alphas`, derived rather than differenced.
+
+    With ``a0 = (2h1+h2)/(h1(h1+h2))``, ``a1 = -(h1+h2)/(h1 h2)`` and
+    ``a2 = h1/(h2(h1+h2))``:
+
+      * ``a1`` separates as ``-1/h2 - 1/h1``, so ``da1/dh1 = 1/h1^2``;
+      * ``a2 = (1/h2) * h1/(h1+h2)``, and ``d/dh1 [h1/(h1+h2)] = h2/(h1+h2)^2``,
+        so ``da2/dh1 = 1/(h1+h2)^2``;
+      * ``a0`` by the quotient rule on ``N = 2h1+h2``, ``D = h1(h1+h2)``:
+        ``2D - N(2h1+h2) = 2h1^2 + 2h1h2 - (2h1+h2)^2 = -(2h1^2 + 2h1h2 + h2^2)``.
+
+    ``h2`` is a past step and is held fixed -- only the step being solved for is
+    a variable.
+    """
+    s = h1 + h2
+    return (-(2.0 * h1 * h1 + 2.0 * h1 * h2 + h2 * h2) / (h1 * s) ** 2,
+            1.0 / (h1 * h1),
+            1.0 / (s * s))
+
+
+def bdf2_companion_dh(q_curr, q_prev1, q_prev2, h1, h2):
+    """``d/dh1`` of the Gear-2 companion current, at fixed solution."""
+    d0, d1, d2 = bdf2_alphas_dh(h1, h2)
+    return d0 * q_curr + d1 * q_prev1 + d2 * q_prev2
+
+
 def euler_companion(q_curr, C_curr, q_prev, h):
     """Backward Euler companion current and equivalent conductance."""
     return (q_curr - q_prev) / h, C_curr / h

@@ -651,6 +651,40 @@ class Transient(Analysis):
                 "Both are explicit choices; substituting zeros silently is what this "
                 "error replaced." % (exc,)) from exc
 
+    def residual_dh(self, x, t, h=None):
+        """Fang's ``p = df_ckt/dh_m``, at fixed solution ``x``.
+
+        STAGE 12B.  The residual assembled in :meth:`solve_timestep` is
+
+            f = i(x) + iq(x, h) + u(t_{m-1} + h)
+
+        so with ``x`` held fixed it depends on the step size through exactly two
+        terms, and ``p`` is their sum:
+
+          * ``d(iq)/dh`` from the integration coefficients, which eq (4) writes
+            as explicit functions of ``h_m`` for this reason -- delegated to the
+            ACTIVE integrator, so an order drop to Euler takes its derivative
+            with it;
+          * ``du/dt`` from the independent sources, since they are evaluated at
+            ``t_{m-1} + h``.  On a driven circuit this is usually the larger of
+            the two, and dropping it does not make the coupled system slightly
+            wrong -- it makes it solve a different problem.
+
+        ``i(x)`` is resistive and carries no ``h`` dependence at all.
+
+        The solution's own dependence on ``h`` is deliberately absent: eq (12) is
+        a block system of PARTIAL derivatives, and that coupling is what ``J``
+        carries. Including it here would count it twice.
+        """
+        if h is None:
+            h = self._dt
+        q = self._q_at(x)
+        h_last = getattr(self, '_dt_last', h)
+        d_iq = self.active_integrator.companion_dh(q, self._qlast, h, h_last)
+        d_u = self.cir.dudt(t, self.epar, analysis=self.par.analysis)
+        return self.toolkit.array(d_iq, dtype=float) + \
+            self.toolkit.array(d_u, dtype=float)
+
     def solve_timestep(self, x0, t, refnode=gnd, provided_function=None):
         n=self.cir.n
         dt = self._dt

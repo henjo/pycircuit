@@ -551,6 +551,22 @@ class Circuit():
     def u(self, t=0.0, epar=defaultepar, analysis=None, params_tree=None):
         return self.toolkit.zeros(self.n)
 
+    def dudt(self, t=0.0, epar=defaultepar, analysis=None, params_tree=None):
+        """Time derivative of the source vector, for Fang's ``p = df_ckt/dh``.
+
+        STAGE 12B.  With the step size an unknown (DAC 2013 eq 11) the residual
+        is differentiated with respect to it, and the sources are evaluated at
+        ``t_{m-1} + h`` -- so ``du/dt`` enters ``p`` directly, and on a driven
+        circuit it is usually the larger of the two contributions.
+
+        Zero here is not a placeholder: it is correct for every element whose
+        contribution does not depend on time, which is most of them. Elements
+        carrying a `TimeFunction` override it; an element whose time dependence
+        cannot be differentiated should RAISE rather than inherit this, so a
+        coupled run fails loudly instead of solving a subtly different problem.
+        """
+        return self.toolkit.zeros(self.n)
+
     def i(self, x, epar=defaultepar, params_tree=None):
         """Calculate the i vector as a function of the x-vector"""
         return self.toolkit.dot(self.G(x), x)
@@ -1297,6 +1313,12 @@ class SubCircuit(Circuit):
 
         return self._add_element_subvectors('u', None, (t,epar,analysis), params_tree=params_tree, 
                                             dtype=dtype)
+
+    def dudt(self, t=0.0, epar=defaultepar, analysis=None, params_tree=None):
+        ## No `ac` dtype branch: this exists for the transient coupled solve, and
+        ## a complex `du/dt` would be meaningless there.
+        return self._add_element_subvectors('dudt', None, (t, epar, analysis),
+                                            params_tree=params_tree)
 
     def i(self, x, epar=defaultepar, params_tree=None):
         return self._add_element_subvectors('i', x, (epar,), params_tree=params_tree)

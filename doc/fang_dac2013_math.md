@@ -316,10 +316,10 @@ bound at certain time points."*
 | eq (15) two-sided band | present since stage 12A (`lte_gamma_min`/`lte_gamma_max`), default inert |
 | eq (16) `\|Δh\| ≤ η h` | present as `lte_eta`, applied to accepted steps only |
 | Fig. 4 two-stage Newton | **absent** |
-| eq (12)/(13)/(14) bordered solve | `SchurCoupledNewton` exists and implements eq (12) via Schur; not wired to a correct `ε_m` |
+| eq (12)/(13)/(14) bordered solve | `SchurCoupledNewton` implements eq (12) via Schur and has an `hmin` floor; **not yet wired** to the eq (6) estimator or to `residual_dh` |
 | eq (17)/(18) approximate Newton | **absent** — `_solve_coupled` re-solves from scratch instead of correcting |
-| `p̄ = ∂f̄_ckt/∂h` | source half **done** (`TimeFunction.dfdt`, all six subclasses); integrator half `∂iq/∂h` and the circuit-level assembly still absent |
-| `q̄ᵀ`, `d` | **absent**; both become cheap once `ε_m` is eq (6) |
+| `p̄ = ∂f̄_ckt/∂h` | **done** — `Transient.residual_dh`, from `Integrator.companion_dh` + `Circuit.dudt`, gated against a finite difference of the whole residual |
+| `q̄ᵀ`, `d` | **done** — `SolutionLTEController.lte_gradients`, closed form, gated against finite differences |
 
 **The first row is the one to fix first.** Every other gap is mechanical; that one changes
 what is being solved.

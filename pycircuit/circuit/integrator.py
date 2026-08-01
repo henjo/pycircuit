@@ -5,7 +5,12 @@ from pycircuit.circuit._lte_kernels import (bdf2_alphas, bdf2_companion,
                                             euler_companion,
                                             trapezoidal_companion,
                                             second_divided_difference,
-                                            third_divided_difference as _tdd)
+                                            third_divided_difference as _tdd,
+                                            ## STAGE 12B -- d(iq)/dh, the
+                                            ## integrator half of Fang's `p`.
+                                            euler_companion_dh,
+                                            trapezoidal_companion_dh,
+                                            bdf2_companion_dh)
 import math
 import warnings
 
@@ -91,6 +96,18 @@ class Integrator(ABC):
         """
         pass
         
+    def companion_dh(self, q_curr, q_last, h_curr, h_last):
+        """``d(iq)/dh`` at fixed solution -- the integrator half of Fang's ``p``.
+
+        STAGE 12B.  Not abstract: an integrator that does not implement it simply
+        cannot be used with the coupled time-stepping method, and raising here
+        says so at the point of use rather than silently contributing zero to
+        ``p``, which would look like a converged solve of the wrong problem.
+        """
+        raise NotImplementedError(
+            '%s does not provide d(iq)/dh, so it cannot be used with the '
+            'coupled (Fang) time-stepping method' % type(self).__name__)
+
     @abstractmethod
     def compute_derivatives(self, q_curr, C_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit):
         """
@@ -162,6 +179,9 @@ class EulerIntegrator(Integrator):
         
     def compute_derivatives(self, q_curr, C_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit):
         return euler_companion(q_curr, C_curr, q_last[0], h_curr)
+
+    def companion_dh(self, q_curr, q_last, h_curr, h_last):
+        return euler_companion_dh(q_curr, q_last[0], h_curr)
         
     def compute_lte(self, q_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit,
                     h_last2=None):
@@ -228,6 +248,9 @@ class TrapezoidalIntegrator(Integrator):
         ## `2*C/h`, which is what `C/h/0.5` computed -- both are exact scalings by
         ## two in binary floating point, so this is bit-identical, not merely equal.
         return trapezoidal_companion(q_curr, C_curr, q_last[0], iq_last[0], h_curr)
+
+    def companion_dh(self, q_curr, q_last, h_curr, h_last):
+        return trapezoidal_companion_dh(q_curr, q_last[0], h_curr)
         
     def compute_lte(self, q_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit,
                     h_last2=None):
@@ -411,6 +434,9 @@ class Gear2Integrator(Integrator):
         ## coefficients had three copies in source and two in tests.
         return bdf2_companion(q_curr, C_curr, q_last[0], q_last[1],
                               h_curr, h_last)
+
+    def companion_dh(self, q_curr, q_last, h_curr, h_last):
+        return bdf2_companion_dh(q_curr, q_last[0], q_last[1], h_curr, h_last)
         
     def compute_lte(self, q_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit,
                     h_last2=None):
