@@ -220,7 +220,19 @@
 >    because nothing else in the suite can contradict it. Force it to produce a non-zero
 >    reading on a case you have constructed before believing a zero on one you have not.
 > 
-> 14. **The review's magnitudes run ~2x optimistic.** Five have now shrunk on measurement
+> 15. **One log file, one run.** Two suite runs were started against the same log — one
+>    before a new test file existed, one after — and the first to finish left its summary
+>    where it was read. The wrong number was *plausible*: it matched the previous run
+>    exactly, which is precisely why it was not questioned. It was caught by arithmetic
+>    (824 + 9 tests should be 833), not by reading. Check the log holds exactly one
+>    summary line, and prefer a distinct filename per run.
+> 
+> 16. **`-q` hides collection errors.** The suite has four modules that fail to import
+>    (`pycircuit/post/cds/test/*` need `pexpect`), and `pytest -q`'s tail shows "N passed"
+>    without them. Four modules have never run all session while their count was quoted as
+>    if complete. Read the collection summary, not just the last line.
+> 
+> 17. **The review's magnitudes run ~2x optimistic.** Five have now shrunk on measurement
 >    (150 TB → 420 GiB; 10.5x → 5.19x; 4.462 ms → 0.234 ms; "2.17 assemblies needed" was not
 >    a redundancy figure; the IM3 harness's 10x → 2.17x). Re-measure before quoting
 >    `transient_review.md`.
@@ -3509,6 +3521,95 @@ so it comes first, before any solver work.
 **Gate 7a:** identical results on the transient tests; `np.delete` absent from the
 profile.
 OUTCOME:
+
+## 7a entry measurements, 2026-08-01 — the stated case is wrong, the item is right
+
+**Gate 7a-0 (declared before any code): measure `np.delete`'s share of a transient.**
+
+OUTCOME: **THE SPEED FRAMING IS REFUTED, AND THE ITEM SURVIVES ON A BETTER ARGUMENT.**
+Profiled on a numeric RC ladder, whole transient:
+
+| n | total | `np.delete` | `remove_row_col` |
+|---|---|---|---|
+| 22 | 0.75 s | 0.017 s (2.3%) | 0.9% |
+| 102 | 6.9 s | 0.037 s (0.5%) | 0.1% |
+| 302 | 39.5 s | 0.080 s (0.2%) | 0.0% |
+
+It is not a hot spot and it gets *relatively cheaper* as `n` grows. **Gate 7a as written —
+"`np.delete` absent from the profile" — was measuring something never meaningfully
+present.**
+
+**What justifies 7a is scaling, not share.** Timed in isolation, per Newton iteration:
+
+| component | measured exponent |
+|---|---|
+| assembly (`G(x)` + `C(x)`) | **n^1.26** |
+| dense LU | **n^1.83** |
+| **`remove_row_col`** | **n^2.53** |
+
+It is the worst-scaling component of the three. Extrapolated to a 1000-step run at three
+Newton iterations per step: at n=5000, 0.37 s per iteration (0.3 h per run, copying 200 MB
+each time); at n=20000, **12.4 s per iteration = 10.3 h, which exceeds the dense LU's
+3.2 h**. So it does come first, and for a reason the plan did not give.
+
+**A CORRECTION TO MY OWN FIRST READING.** From the n=302 profile — assembly ~13.3 s of
+15.5 s, LU 8% — I concluded "the wall is assembly, not the solver". **That was wrong**, and
+only the scaling table shows why: LU's share runs 35% at n=802, 60% at n=5000, 77% at
+n=20000, and the measured n^1.83 is *below* the asymptotic n^3, so it understates the
+trend. **Stage 7's premise holds at the sizes it names.** A profile at one convenient size
+is not a scaling law.
+
+**Gate 7a-1 (bit-identical).** The reduction is a pure data movement, so every existing
+result must be unchanged. Declared at bit-identical on the full 17-run baseline and the
+suite.
+OUTCOME: **PASS.** All 17 baseline runs `max|diff| = 0.000e+00`, and separately every removable
+index swept on random matrices at n = 5/17/64 in float and complex, against the two-delete
+form.
+
+**Gate 7a-2 (the win is real and measured across n).** Declared: >= 2x on the reduction
+itself at every size from n=200 to n=3200, with allocation included — not measured against
+a reused buffer, because a cached buffer would alias results between callers and `J` is
+kept for the LTE after the solve.
+OUTCOME: **PASS**, allocation included: 3.54x / 3.69x / 4.36x / 4.63x / **2.03x** at n = 200 /
+400 / 800 / 1600 / 3200 — every size above the declared 2x. The fall-off at n=3200 is
+memory bandwidth: at that size the copy is 82 MB and both forms are bandwidth-bound, which
+is the honest reading rather than a defect in the new form.
+
+**Gate 7a-3 (every caller still works).** `remove_row_col` has 20+ call sites across
+`analysis_ss`, `nportanalysis`, `feedback`, `volterra`, `shooting`, `dcanalysis` and the
+step controller, taking 1-D and 2-D arrays, real and complex, under numeric AND symbolic
+toolkits. Declared: the fast path is guarded and symbolic toolkits keep the existing
+`toolkit.delete` path, verified by test rather than by inspection.
+OUTCOME: **PASS.** The fast path is guarded on `isinstance(A, numpy.ndarray) and A.dtype !=
+object`; symbolic toolkits hand over object arrays and keep `toolkit.delete`, verified by a
+test that reduces a sympy matrix rather than by inspecting the guard. Non-square and
+higher-rank arrays fall through. **Every index is swept, not a middle one** — two of the
+four blocks are EMPTY when the removed index is first or last, which is exactly where an
+off-by-one survives a spot check.
+
+**Gate 7a-4.** Full suite.
+OUTCOME: **PASS. Suite 833 passed, 6 skipped, 0 failed**, against 824 plus the nine tests added
+here.
+
+**I nearly recorded 824 for this, and the way it happened is worth keeping.** Two suite
+runs were started against the same log file — one before the new test file existed, one
+after — and the first to finish left its summary where I read it. The count looked
+*plausible* (it matched the previous run exactly), which is what made it dangerous. Caught
+only because 824 + 9 should have been 833. Re-run clean: one summary line, 833. Trap 15
+below.
+
+**Also found while checking: the suite has 4 pre-existing collection ERRORS** —
+`pycircuit/post/cds/test/*` cannot import `pexpect` — and a plain `-q` tail does not show
+them. They are the same modules behind the doc build's two autodoc warnings, so they are
+not new, but "N passed" had been quoted all session without anyone noticing that four
+modules never ran at all.
+
+**NOT DONE, and this is the honest boundary of 7a as implemented.** The plan says "take the
+reference node out of the matrix"; what this does is make the *removal* cheap, not remove
+the need for it. Any approach that copies is O(n^2); eliminating the copy entirely means
+never stamping the reference row and column, which is an assembly-level change touching
+every element's stamp and belongs with stage 2's assembly work. Recorded so the item is not
+read as closed.
 
 **7b. A `LinearSolver` strategy object**, in the shape the codebase already uses for
 `Integrator`/`StepController`/`Scaler`/`NonLinearSolver` — `analyze` / `factor` / `solve`
