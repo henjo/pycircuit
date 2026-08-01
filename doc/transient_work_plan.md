@@ -3827,12 +3827,46 @@ these were not pinning the defect; they were protecting a path the fix had no bu
 touching.** The clamp is now gated on `toolkit.symbolic`.
 
 **Gate 8-1:** `VPulse()` and `VSin()` with class defaults run to completion.
-OUTCOME:
+OUTCOME: **PASS** — see 8(a)/8(b) above.
 **Gate 8-2:** `VSin(td=...)` holds at the offset for `t < td`.
-OUTCOME:
+OUTCOME: **PASS** — see 8(b) above.
 **Gate 8-3:** a `TLine` DC solve gives the same answer before and after a transient, and
 `max_step <= TD/2` is enforced per line.
-OUTCOME:
+OUTCOME: **PASS on both clauses, and one of the three entry claims was wrong.**
+
+*Entry measurements.* DC gave **v(b) = 0.500000 before** a transient and **0.000000 after**
+on a matched line where 0.5 is correct — `TLine.G` selects the DC stamp on
+`len(self.history) == 0`, and the history was never cleared. History **accumulated across
+runs**: 12 entries after run 1, **73** after run 2.
+
+**REFUTED: "there is no `next_event`".** `TLine` *has* one, inherited from `Circuit`, and it
+returns `inf` — so it contributes no breakpoints, which is the same substance stated
+wrongly.
+
+**NARROWER THAN RECORDED: the 4x/10x delay error needs `fixed_timestep`.** Under the
+adaptive default the controller rescues it — measured **1.01-1.05x TD** at every timestep
+from 5e-11 to 5e-9. Under `fixed_timestep` the claim reproduces almost exactly: **2.00x at
+dt=1e-9, 4.00x at 2e-9, 8.00x at 5e-9** (recorded as 4x and 10x). *The defect only bites the
+configuration nobody checks*, which is why it survived.
+
+*What shipped.* Two hooks on `Circuit`, mirroring the existing `accept_step` idiom — base
+no-op, `SubCircuit` propagates, `TLine` overrides:
+
+* `reset_state()`, called at the start of every analysis, so which analysis ran before
+  cannot change this one's answer. DC now returns 0.500000 both before and after a
+  transient, and history is 12 after both runs.
+* `max_timestep()`, returning `TD/2`, with `SubCircuit` taking the **minimum** over children
+  — two lines with different `TD` both have to be resolved and the shorter governs. Measured:
+  `max dt` pinned at exactly 5.0e-10 whatever timestep is requested, delay 1.01x.
+
+Under `fixed_timestep` the cap **warns and obeys** rather than overriding: the caller has
+taken the grid into their own hands, but a silently wrong delay is worse than a warning.
+
+**AND THE POSITION OF `reset_state` COST A TEST TO LEARN.** Placed after the initial
+`accept_step(0.0, ...)`, it wiped the history that call had just seeded, so `TLine.G` saw an
+empty buffer and stamped the line as a **DC short** — `v(p1)` came out 1.0 where 0.5 is
+correct. `test_tline.test_tline_transient_reflection` caught it; verified it passed before
+the change, so it was my regression and not a pre-existing one.
 
 ---
 

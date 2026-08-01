@@ -2290,3 +2290,151 @@ def test_sin_with_zero_td_is_unchanged():
         expected = 0.3 + 2.0 * np.exp(-250.0 * t) * np.sin(
             2 * np.pi * 1e3 * t + 30.0 * np.pi / 180.0)
         assert float(s.f(t)) == pytest.approx(expected, rel=1e-12, abs=0.0)
+
+
+## ---------------------------------------------------------------------------
+## STAGE 8(d) -- TLine: state that outlived its analysis, and an unresolved delay.
+## ---------------------------------------------------------------------------
+
+_TD, _Z0 = 1e-9, 50.0
+
+
+def _tline_circuit(pulse=False):
+    from pycircuit.circuit import numeric, gnd
+    from pycircuit.circuit.elements import SubCircuit, R, VS, VPulse, TLine
+    cir = SubCircuit(toolkit=numeric)
+    for nd in ('src', 'a', 'b'):
+        cir.add_node(nd)
+    if pulse:
+        cir['V1'] = VPulse('src', gnd, v1=0, v2=1, td=2e-9, tr=1e-12, tf=1e-12,
+                           pw=50e-9, per=0)
+    else:
+        cir['V1'] = VS('src', gnd, v=1.0)
+    cir['Rs'] = R('src', 'a', r=_Z0)
+    cir['T1'] = TLine('a', gnd, 'b', gnd, Z0=_Z0, TD=_TD)
+    cir['Rl'] = R('b', gnd, r=_Z0)
+    return cir
+
+
+def test_tline_dc_is_the_same_before_and_after_a_transient():
+    """Gate 8-3: the DC answer must not depend on what ran before it.
+
+    `TLine.G` selects the DC stamp on `len(self.history) == 0`, and the history
+    was never cleared -- so a DC solve after a transient used the transient stamp
+    and returned **0.0** where **0.5** is correct for this matched line.
+    """
+    import warnings
+    from pycircuit.circuit import numeric, gnd
+    from pycircuit.circuit.dcanalysis import DC
+    from pycircuit.circuit.transient import Transient
+
+    cir = _tline_circuit()
+    before = float(DC(cir, toolkit=numeric).solve().v('b', gnd))
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        Transient(cir, toolkit=numeric, uic=True).solve(
+            refnode=gnd, tend=5e-9, timestep=1e-10)
+    after = float(DC(cir, toolkit=numeric).solve().v('b', gnd))
+
+    ## The value too, not just the agreement: two equal wrong answers would pass
+    ## an agreement-only check, and 0.0 == 0.0 was exactly the failure mode.
+    assert before == pytest.approx(0.5, rel=1e-9), \
+        'a matched line should divide to 0.5, got %r' % before
+    assert after == pytest.approx(before, rel=1e-12), \
+        'DC changed from %r to %r because a transient ran' % (before, after)
+
+
+def test_tline_history_does_not_accumulate_across_runs():
+    """Two identical transients must leave identical state.
+
+    Measured before the fix: 12 history entries after run 1, **73** after run 2.
+    """
+    import warnings
+    from pycircuit.circuit import numeric, gnd
+    from pycircuit.circuit.transient import Transient
+
+    cir = _tline_circuit()
+    lens = []
+    for _ in range(2):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            Transient(cir, toolkit=numeric, uic=True).solve(
+                refnode=gnd, tend=5e-9, timestep=1e-10)
+        lens.append(len(cir['T1'].history))
+    assert lens[0] == lens[1], 'history accumulated across runs: %r' % lens
+
+
+def test_tline_caps_the_adaptive_step_at_half_the_delay():
+    """Gate 8-3: `max_step <= TD/2`, enforced per line.
+
+    The cap is asked of the elements, so this checks the circuit reports it AND
+    that the solver honours it whatever timestep was requested.
+    """
+    import warnings
+    from pycircuit.circuit import numeric, gnd
+    from pycircuit.circuit.transient import Transient
+
+    cir = _tline_circuit(pulse=True)
+    assert cir.max_timestep() == pytest.approx(_TD / 2.0, rel=1e-12)
+
+    for timestep in (5e-9, 2e-9):
+        c = _tline_circuit(pulse=True)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = Transient(c, toolkit=numeric, uic=True).solve(
+                refnode=gnd, tend=3e-8, timestep=timestep)
+        t = np.asarray(res.sweep_values, dtype=float)
+        assert np.diff(t).max() <= _TD / 2.0 * (1 + 1e-9), \
+            'step %g exceeded TD/2 with timestep=%g' % (np.diff(t).max(), timestep)
+
+
+def test_tline_propagation_delay_is_right_when_resolved():
+    """The delay itself, which is what the cap exists to protect.
+
+    Measured before the cap, under fixed_timestep: 2.00x TD at dt=1e-9, 4.00x at
+    2e-9, 8.00x at 5e-9 -- silently.
+    """
+    import warnings
+    from pycircuit.circuit import numeric, gnd
+    from pycircuit.circuit.transient import Transient
+
+    cir = _tline_circuit(pulse=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = Transient(cir, toolkit=numeric, uic=True).solve(
+            refnode=gnd, tend=3e-8, timestep=5e-9)
+    t = np.asarray(res.sweep_values, dtype=float)
+    vb = np.asarray(res.v('b', gnd), dtype=float)
+    final = vb[-1] if abs(vb[-1]) > 1e-12 else vb.max()
+    rising = vb > 0.1 * final
+    assert rising.any(), 'the line never delivered anything'
+    delay = t[int(np.argmax(rising))] - 2e-9
+    assert delay == pytest.approx(_TD, rel=0.15), \
+        'propagation delay %.4e against TD %.4e' % (delay, _TD)
+
+
+def test_fixed_timestep_too_coarse_for_a_delay_line_warns():
+    """`fixed_timestep` is the caller's grid, so it is obeyed -- and reported.
+
+    Silently substituting a finer grid would override an explicit request;
+    running on without a word would report a 4x delay as fact.  The warning is
+    the only honest option, and it is what the force-accept and non-convergence
+    paths already do.
+    """
+    import warnings
+    from pycircuit.circuit import numeric, gnd
+    from pycircuit.circuit.transient import Transient
+
+    cir = _tline_circuit(pulse=True)
+    with pytest.warns(RuntimeWarning, match='delay element'):
+        Transient(cir, toolkit=numeric, uic=True).solve(
+            refnode=gnd, tend=2e-8, timestep=2e-9, fixed_timestep=True)
+
+    ## And a fixed step INSIDE the cap must not warn.
+    c2 = _tline_circuit(pulse=True)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        Transient(c2, toolkit=numeric, uic=True).solve(
+            refnode=gnd, tend=2e-8, timestep=4e-10, fixed_timestep=True)
+    assert not [w for w in caught if 'delay element' in str(w.message)], \
+        'warned about a timestep that is within the cap'

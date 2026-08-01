@@ -1606,6 +1606,27 @@ class TLine(Circuit):
         super().__init__(*args, **kwargs)
         self.history = []  # List of (t, V1, V2, I1, I2) tuples
         
+    def reset_state(self, epar=None):
+        """Drop the history from any previous analysis -- stage 8(d).
+
+        `G()` selects the DC stamp on `len(self.history) == 0`, so leftover history
+        made a DC solve return a transient-flavoured answer: **v(b) = 0.500000
+        before** a transient and **0.000000 after**, on a matched line where 0.5 is
+        correct.  Resetting per analysis makes the stamp depend on the analysis
+        being run rather than on what happened to run before it.
+        """
+        self.history = []
+
+    def max_timestep(self):
+        """``TD/2`` -- the line cannot be resolved by steps as long as its delay.
+
+        Measured under `fixed_timestep` with TD = 1e-9, the observed delay was
+        2.00x TD at dt = 1e-9, 4.00x at 2e-9 and 8.00x at 5e-9, with no warning.
+        Half the delay is the coarsest sampling that leaves the interpolation two
+        points to work with; the plan asks for exactly this bound.
+        """
+        return float(self.iparv.TD) / 2.0
+
     def accept_step(self, t, x, epar):
         # Extract voltages and currents from x
         # x is [Vp1, Vm1, Vp2, Vm2, I1, I2]

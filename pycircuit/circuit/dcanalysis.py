@@ -69,6 +69,11 @@ class DC(Analysis):
         self.irefnode = self.cir.get_node_index(refnode)
         
     def solve(self):
+        ## STAGE 8(d) -- see Circuit.reset_state.  A DC solve must not inherit a
+        ## previous transient's history: it selected the wrong stamp and returned
+        ## v(b) = 0.0 where 0.5 is correct.
+        if hasattr(self.cir, 'reset_state'):
+            self.cir.reset_state(self.epar)
         ## Refer the voltages to the reference node by removing
         ## the rows and columns that corresponds to this node
 

@@ -631,6 +631,16 @@ class Transient(Analysis):
                                fixed_timestep, coupled_lte, analytical_eh)
 
     def _solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False, coupled_lte=False, analytical_eh=True):
+        ## STAGE 8(d) -- clear per-analysis element state BEFORE anything seeds it.
+        ##
+        ## Position matters and cost a test to learn: placed after the initial
+        ## `accept_step(0.0, ...)` this wiped the very history that call had just
+        ## seeded, so `TLine.G` saw an empty buffer and stamped the line as a DC
+        ## SHORT -- v(p1) came out 1.0 where 0.5 is correct.  Elements that carry
+        ## state must be reset before the run seeds them, not after.
+        if hasattr(self.cir, 'reset_state'):
+            self.cir.reset_state(self.epar)
+
         if coupled_lte:
             return self._solve_coupled(refnode, tend, x0, timestep, provided_function, analytical_eh)
 
@@ -709,6 +719,34 @@ class Transient(Analysis):
                 "exceed max_step, so this silently overrides the timestep you "
                 "asked for; pass a smaller timestep instead, or max_step=None to "
                 "use timestep as the clamp." % (max_step, timestep))
+
+        ## STAGE 8(d) -- a delay element caps the step, per line.
+        ##
+        ## `TLine` interpolates its history at `t - TD`; with `dt` comparable to
+        ## `TD` there is nothing to interpolate between, and the delay simply comes
+        ## out wrong -- measured 2.00x TD at dt = 1e-9, 4.00x at 2e-9 and 8.00x at
+        ## 5e-9 under `fixed_timestep`, with no warning of any kind.  The adaptive
+        ## controller usually rescues it (1.01-1.05x), which is exactly why it went
+        ## unnoticed: the defect only bites the configuration nobody checks.
+        ##
+        ## The cap is asked of the ELEMENTS rather than hard-coded here, so a future
+        ## delay element gets it by implementing one method.
+        element_cap = self.cir.max_timestep() if hasattr(self.cir, 'max_timestep') else None
+        if element_cap is not None and element_cap < max_step:
+            ## Under `fixed_timestep` the caller has taken the grid into their own
+            ## hands, so silently substituting a finer one would be the wrong kind
+            ## of help -- but running on regardless is worse, because the error is a
+            ## WRONG DELAY and nothing else reports it.  Warn and obey, which is what
+            ## the force-accept and non-convergence paths already do.
+            if fixed_timestep:
+                warnings.warn(
+                    'transient: fixed_timestep=%g exceeds the %g s cap a delay '
+                    'element needs (TD/2). The propagation delay will come out too '
+                    'long -- measured 4x at twice the cap -- and nothing else will '
+                    'report it. Use a timestep <= %g, or drop fixed_timestep.'
+                    % (timestep, element_cap, element_cap), RuntimeWarning)
+            else:
+                max_step = element_cap
         ## The opening ramp exists to stop the ONE step the controller cannot check
         ## from dominating the run.  Under `fixed_timestep` there is no controller
         ## and `dt` is never updated, so ramping would not open small and grow -- it
@@ -1006,6 +1044,16 @@ class Transient(Analysis):
 
 
     def _solve_coupled(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, analytical_eh=True):
+        ## STAGE 8(d) -- clear per-analysis element state BEFORE anything seeds it.
+        ##
+        ## Position matters and cost a test to learn: placed after the initial
+        ## `accept_step(0.0, ...)` this wiped the very history that call had just
+        ## seeded, so `TLine.G` saw an empty buffer and stamped the line as a DC
+        ## SHORT -- v(p1) came out 1.0 where 0.5 is correct.  Elements that carry
+        ## state must be reset before the run seeds them, not after.
+        if hasattr(self.cir, 'reset_state'):
+            self.cir.reset_state(self.epar)
+
         import numpy as np
         from copy import copy
         from pycircuit.circuit.analysis import CircuitResult
@@ -1061,6 +1109,12 @@ class Transient(Analysis):
             raise ValueError(
                 "max_step (%g) is smaller than timestep (%g); pass a smaller "
                 "timestep instead, or max_step=None." % (max_step, timestep))
+
+        ## STAGE 8(d) -- a delay element caps the step; see `_solve` for why.
+        ## The coupled path is always adaptive, so the cap simply applies.
+        element_cap = self.cir.max_timestep() if hasattr(self.cir, 'max_timestep') else None
+        if element_cap is not None and element_cap < max_step:
+            max_step = element_cap
         TRTOL = 7.0
         minstep = getattr(self.par, 'minstep', 1e-18)
 

@@ -439,6 +439,36 @@ class Circuit():
         This allows elements with state history (e.g. T-Lines) to update their internal history buffers.
         """
         pass
+
+    def reset_state(self, epar=None):
+        """Discard any state carried over from a previous analysis.
+
+        STAGE 8(d).  Elements that accumulate history across a run -- `TLine` is
+        the only one today -- kept it forever, so a second analysis on the same
+        circuit object started from the first one's leftovers.  Measured: a `TLine`
+        DC solve gave **v(b) = 0.500000 before** a transient and **0.000000 after**,
+        and a second transient began with 12 stale history points and ended with
+        73.
+
+        Called at the start of every analysis, so which analysis ran previously
+        cannot change the answer.  A no-op for stateless elements, which is all of
+        them but one.
+        """
+        pass
+
+    def max_timestep(self):
+        """The largest timestep this element can be integrated with, or ``None``.
+
+        STAGE 8(d).  A delay element is only meaningful if the solver samples
+        finely enough to resolve its delay: `TLine` interpolates its history at
+        ``t - TD``, and with ``dt`` comparable to ``TD`` there is nothing to
+        interpolate between.  Measured under `fixed_timestep`, TD = 1e-9: the
+        observed propagation delay came out **2.00x TD at dt = 1e-9, 4.00x at
+        2e-9 and 8.00x at 5e-9** -- silently.
+
+        ``None`` means "no opinion", which is every element except `TLine`.
+        """
+        return None
   
     def connect_terminals(self, **kvargs):
         """Connect nodes to terminals by using keyword arguments
@@ -1316,6 +1346,24 @@ class SubCircuit(Circuit):
             if hasattr(element, 'accept_step'):
                 subx = x[self.elementnodemap[instance]]
                 element.accept_step(t, subx, epar)
+
+    def reset_state(self, epar=None):
+        """Propagate reset_state to all child elements -- see Circuit.reset_state."""
+        for element in self.elements.values():
+            if hasattr(element, 'reset_state'):
+                element.reset_state(epar)
+
+    def max_timestep(self):
+        """The tightest cap any child element asks for, or ``None``.
+
+        The MINIMUM, not the first found: two delay lines with different ``TD``
+        both have to be resolved, and the shorter one governs.
+        """
+        caps = [c for c in (element.max_timestep()
+                            for element in self.elements.values()
+                            if hasattr(element, 'max_timestep'))
+                if c is not None]
+        return min(caps) if caps else None
             
     def update(self, subject):
         """This is called when an instance parameter is updated"""
