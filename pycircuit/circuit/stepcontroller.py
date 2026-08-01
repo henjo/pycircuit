@@ -192,7 +192,7 @@ class StepController(ABC):
         return out
 
     @abstractmethod
-    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None, h_last2=None, h_clamped=False):
+    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None, h_last2=None, h_clamped=False, x_hist=None):
         """Evaluate the Local Truncation Error (LTE) for the current step.
 
         ``no_history`` means there is genuinely no past point to difference
@@ -214,7 +214,7 @@ class IntegralController(StepController):
     Rejects steps with LTE > 1.0, and predicts the next step size.
     """
     
-    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None, h_last2=None, h_clamped=False):
+    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None, h_last2=None, h_clamped=False, x_hist=None):
         ## Cleared on entry so `last_err` is None wherever no error was computed,
         ## rather than silently holding the previous step's value -- a stale
         ## reading is worse than a missing one for anything measuring the
@@ -389,7 +389,7 @@ class PIController(StepController):
                   * ((err_last_norm / err_norm) ** (self.k_p / p)))
         return min(MAX_GROWTH_RATIO, max(MIN_SHRINK_RATIO, factor))
 
-    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None, h_last2=None, h_clamped=False):
+    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None, h_last2=None, h_clamped=False, x_hist=None):
         ## As in IntegralController: nothing to difference on the first step of a
         ## run.  Unlike there, the 0.5 is not dead -- it seeds the PI history so
         ## the first real update has a previous error to work from.
@@ -459,4 +459,132 @@ class PIController(StepController):
         
         self.last_err = err
         
+        return True, h_next
+
+
+class SolutionLTEController(StepController):
+    """Fang's LTE (DAC 2013 eq 6): computed solution minus polynomial extrapolation.
+
+    STAGE 12B.  Every other controller here estimates the truncation error from
+    divided differences of the CHARGE vector and converts to solution units by
+    solving against ``J``.  Fang's is a different estimator: extrapolate the
+    accepted solution history to the new time point with a polynomial, and take
+    the largest deviation of the computed solution from it.
+
+        eps_m = | v_i(t_m) - v_{i,extrapolated} |
+
+    ``i`` is the *controlling LTE node*, and the paper is explicit that it "may
+    vary from time point to time point" -- so it is recorded on the controller
+    after every evaluation rather than assumed fixed.
+
+    **Why the estimator was changed rather than reformulated.** The charge form
+    divides by ``h`` repeatedly, so as the step shrinks it amplifies rounding in
+    ``q`` and the estimate GROWS.  That is harmless when the error is only tested
+    against a threshold, and disqualifying when it is the equation being solved
+    for ``h``: Newton walks the step size down until it underflows, measured at
+    gate 12B-0.  This form differences two solution values and falls as the step
+    falls.  See ``doc/fang_dac2013_math.md`` sec. 3 and
+    ``test_solution_lte.py::test_it_does_not_blow_up_as_the_step_shrinks``.
+
+    **Two things here are ours, not the paper's** (it does not specify either;
+    see the extraction doc sec. 6):
+
+      * ``tau_m``.  Reused from the rest of this module -- ``TRTOL * (reltol*ref
+        + abstol)`` with ``relref`` choosing ``ref`` -- so this controller is
+        comparable with `IntegralController` at the same settings rather than
+        being scored on a different tolerance.
+      * the extrapolation degree, taken as ``len(x_hist)-1`` capped at 2, which
+        leaves an ``O(h^3)`` deviation to match the second-order integrators.
+    """
+
+    ## The controlling LTE node of the most recent evaluation, or None.  Public
+    ## because Fang's `q^T = df_lte/dv` is a signed unit vector on exactly this
+    ## index -- which is what makes the coupled system cheap to form.
+    controlling_index = None
+
+    ## Degree cap: a degree-2 polynomial through three accepted points leaves an
+    ## O(h^3) deviation, the order of the trapezoidal and Gear-2 LTE.  Raising it
+    ## without also raising the integrator order would measure a truncation the
+    ## method does not commit.
+    MAX_DEGREE = 2
+
+    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None, h_last2=None, h_clamped=False, x_hist=None):
+        from pycircuit.circuit._lte_kernels import (solution_lte,
+                                                    step_for_error_ratio)
+
+        self.last_err = None
+        self.controlling_index = None
+
+        ## Needs at least two past points to extrapolate with, i.e. a degree-1
+        ## line.  With fewer there is nothing to compare against and the step is
+        ## accepted unevaluated, exactly as the charge-based controllers do on
+        ## their opening step.
+        hs = [h for h in (h_last, h_last2) if h is not None]
+        if no_history or not x_hist or len(x_hist) < 2 or not hs:
+            return True, h_curr
+
+        ## THE DEGREE MUST EQUAL THE METHOD ORDER.  Fang's eq (6) is the Milne
+        ## device: the difference between the corrector's solution and an
+        ## explicit predictor of the SAME order is a truncation-error estimate
+        ## with a known constant.  A predictor that is more accurate than the
+        ## corrector does not give a smaller estimate, it gives an erratic one --
+        ## the deviation becomes the corrector's own error minus a much smaller
+        ## number, and the two stop cancelling in any controlled way.  Measured
+        ## with a fixed degree of 2 against the default order-1 backward Euler:
+        ## the normalised error moved 600x for a 2x step change (0.005 -> 2.86)
+        ## where the node-polynomial model says 4x, and the controller then
+        ## oscillated accept/reject on alternate steps -- 2911 rejections against
+        ## 3004 accepted on `rc-vsin` at reltol 1e-6.
+        ##
+        ## `active_integrator` is the one actually running this step, so an
+        ## order drop to Euler drops the predictor degree with it.
+        order = getattr(active_integrator, 'ORDER', None)
+        if order is None:
+            return True, h_curr
+        degree = min(order, len(x_hist) - 1, len(hs), self.MAX_DEGREE)
+        if degree < 1:
+            return True, h_curr
+        v_hist = list(x_hist[:degree + 1])
+        h_hist = list(hs[:degree])
+
+        lte = solution_lte(x_curr, v_hist, h_hist, h_curr)
+
+        ref = self._reference(x_curr, x_last, no_history, n_nodes, toolkit)
+        etol = TRTOL * (reltol * ref + abstol)
+
+        err_array = abs(lte) / etol
+        ## The reference node is held at zero by construction, so its deviation
+        ## is identically zero and cannot be the controlling one; taking the
+        ## argmax over the full vector is safe and keeps the index in the
+        ## caller's numbering rather than a reduced one.
+        self.controlling_index = int(np.argmax(err_array))
+        err = float(err_array[self.controlling_index])
+        self.last_err = err
+
+        safety = 0.9
+        target = self._band_target(safety, degree + 1)
+
+        ## THE PREDICTION IS AN INVERSION, NOT A POWER LAW.  The deviation scales
+        ## with h(h+h1)(h+h1+h2), which is ~h^(k+1) only while h >> h1 and goes
+        ## LINEAR in h once h << h1.  Using (target/err)**(1/(k+1)) everywhere --
+        ## the law the charge estimators use -- mis-predicts by orders of
+        ## magnitude on the shrinking side: measured at 2049 rejections against
+        ## 2143 accepted steps on rc-vsin at reltol 1e-6, the controller
+        ## oscillating between a step far under tolerance and one far over.
+        def predict(ratio):
+            return step_for_error_ratio(h_curr, h_hist, ratio,
+                                        MIN_SHRINK_RATIO, MAX_GROWTH_RATIO)
+
+        if err > self.lte_gamma_max:
+            return False, predict(target / err)
+
+        if (err < self.lte_gamma_min and not h_clamped
+                and h_curr < max_step * (1.0 - 1e-12)):
+            h_next = min(self._damp(predict(target / max(err, 1e-12)), h_curr),
+                         max_step)
+            if h_next > h_curr * (1.0 + 1e-9):
+                return False, h_next
+
+        h_next = min(self._damp(predict(target / max(err, 1e-12)), h_curr),
+                     max_step)
         return True, h_next

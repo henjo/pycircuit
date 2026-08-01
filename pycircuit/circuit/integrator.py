@@ -138,6 +138,15 @@ class Integrator(ABC):
 class EulerIntegrator(Integrator):
     """Backward Euler (1st order) Integration Method"""
 
+    ## STAGE 12B.  The order of the method, needed by `SolutionLTEController`:
+    ## Fang's eq (6) compares the solution against a polynomial extrapolation,
+    ## and that difference is only a truncation-error estimate when the
+    ## extrapolation degree EQUALS the method order (the Milne device).  Get it
+    ## wrong and the two errors no longer cancel in a controlled way -- measured
+    ## with a degree-2 predictor against this order-1 corrector as an error that
+    ## moved 600x for a 2x step change, where the model says 4x.
+    ORDER = 1
+
     def __init__(self):
         ## No `lte_formula`: see the module note above.  For
         ## Backward Euler the two formulas always coincided, so this class never
@@ -193,6 +202,8 @@ class EulerIntegrator(Integrator):
 
 class TrapezoidalIntegrator(Integrator):
     """Trapezoidal (2nd order) Integration Method"""
+
+    ORDER = 2
 
     def __init__(self):
         ## No `lte_formula`: removed in 9(f) -- see the module note above.
@@ -298,6 +309,8 @@ class TrapezoidalIntegrator(Integrator):
 
 class Gear2Integrator(Integrator):
     """Gear-2 / BDF-2 (2nd order) Variable Step Size Integration Method"""
+
+    ORDER = 2
 
     def __init__(self):
         ## No `lte_formula`: removed in 9(f) -- see the module note above.

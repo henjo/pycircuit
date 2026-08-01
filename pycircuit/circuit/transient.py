@@ -1046,6 +1046,13 @@ class Transient(Analysis):
                     ## `relref`'s global modes must not mix volts with amps.
                     n_nodes=len(self.cir.nodes),
                     h_clamped=dt_clamped,
+                    ## STAGE 12B -- accepted SOLUTION history, most recent first,
+                    ## for Fang's eq (6) estimator.  The charge-based controllers
+                    ## ignore it; `SolutionLTEController` extrapolates it to the
+                    ## new time point and measures the deviation there.  Sliced
+                    ## rather than passed whole so the controller cannot come to
+                    ## depend on the full run being retained.
+                    x_hist=X[-1:-4:-1],
                 )
 
                 if not accept and reject_count < MAX_REJECT:

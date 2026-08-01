@@ -133,6 +133,157 @@ def trapezoidal_lte(h1, q_triple_prime_over_6):
     return -(h1 ** 2) * q_triple_prime_over_6
 
 
+## ---------------------------------------------------------------------------
+## STAGE 12B -- the SOLUTION-SPACE truncation error, Fang DAC 2013 eq (6).
+##
+##     eps_m = | v_i(t_m) - v_{i,extrapolated} |
+##
+## "a typical industrial circuit simulator calculates the difference between the
+## computed solution and the polynomial extrapolation from previous time steps,
+## and considers the maximum value a good estimate for the local truncation
+## error [...] the corresponding node is often referred to as controlling LTE
+## node, which may vary from time point to time point."
+##
+## This is a DIFFERENT ESTIMATOR from the charge-based ones above, not a
+## reformulation of them, and the difference is the point.  The charge divided
+## differences carry repeated `1/h` factors, so as the step shrinks they amplify
+## rounding in `q` and the estimate GROWS -- usable as a test, useless as an
+## equation to solve for `h`, because Newton then runs away from the root.  The
+## form below differences two solution values and has no such amplification,
+## which is what makes Fang's coupled system solvable at all.
+##
+## See `doc/fang_dac2013_math.md` sec. 3.
+
+
+def extrapolation_times(h_hist):
+    """Times of the stored past points, relative to the most recent one.
+
+    ``h_hist[j]`` is the step that ENDED at past point ``j``, so ``h_hist[0]`` is
+    the step from point 1 to point 0.  Returns ``[0, -h_hist[0],
+    -(h_hist[0]+h_hist[1]), ...]`` -- the most recent accepted point is the
+    origin and the past runs backwards, which keeps the target time ``+h_curr``
+    a small positive number rather than a difference of large absolutes.
+    """
+    times = [0.0]
+    acc = 0.0
+    for h in h_hist:
+        acc = acc - h
+        times.append(acc)
+    return times
+
+
+def extrapolate(v_hist, h_hist, h_curr):
+    """Polynomial extrapolation of the solution to ``t_{m-1} + h_curr``.
+
+    ``v_hist`` is the accepted solution history, most recent first; ``k+1``
+    entries give a degree-``k`` polynomial.  Newton's divided-difference form is
+    used rather than a fitted Vandermonde system because the past points are
+    NOT equally spaced -- an adaptive run never produces a uniform grid, and a
+    fixed-step formula is wrong the moment the step changes.
+
+    Elementwise, so ``v_hist`` may be scalars or whole state vectors.
+    """
+    n = len(v_hist)
+    if n == 0:
+        raise ValueError('extrapolate needs at least one past point')
+
+    times = extrapolation_times(h_hist)[:n]
+    if len(times) < n:
+        raise ValueError('need %d step sizes for %d points, got %d'
+                         % (n - 1, n, len(h_hist)))
+
+    ## Divided-difference table, built on a copy so the caller's history is not
+    ## consumed.  `dd[i]` descends to the i-th order difference in place.
+    dd = list(v_hist)
+    coeffs = [dd[0]]
+    for j in range(1, n):
+        for i in range(n - 1, j - 1, -1):
+            dd[i] = (dd[i] - dd[i - 1]) / (times[i] - times[i - j])
+        coeffs.append(dd[j])
+
+    ## Horner-like accumulation of c0 + c1 (t-t0) + c2 (t-t0)(t-t1) + ...
+    out = coeffs[0]
+    basis = 1.0
+    for j in range(1, n):
+        basis = basis * (h_curr - times[j - 1])
+        out = out + coeffs[j] * basis
+    return out
+
+
+def extrapolation_error_weight(h_curr, h_hist):
+    """The node polynomial that scales the extrapolation deviation.
+
+    For a degree-``k`` polynomial through the accepted points, the interpolation
+    error at ``t = h_curr`` is
+
+        E(h) = (v^(k+1)(xi) / (k+1)!) * h (h+h1) (h+h1+h2) ... (h+h1+..+hk)
+
+    so this returns the product, which is everything in the deviation that
+    depends on the step size.
+
+    **It is NOT proportional to h^(k+1) except in one limit.**  When
+    ``h >> h1`` the product behaves like ``h^(k+1)``; when ``h << h1`` every
+    factor but the first is roughly constant and the deviation is LINEAR in
+    ``h``.  A controller that assumes the ``h^(k+1)`` law everywhere therefore
+    mis-predicts by orders of magnitude on the shrinking side -- measured on
+    `rc-vsin` at reltol 1e-6 as 2049 rejections against 2143 accepted steps,
+    oscillating between a step far under tolerance and one far over.
+
+    This is also Fang's ``d = df_lte/dh_m`` up to the constant: differentiating
+    the product is closed form, which is what lets sec. 3.2 claim ``p, q^T`` and
+    ``d`` cost next to nothing.
+    """
+    weight = h_curr
+    acc = 0.0
+    for h in h_hist:
+        acc = acc + h
+        weight = weight * (h_curr + acc)
+    return weight
+
+
+def step_for_error_ratio(h_curr, h_hist, ratio, lo_factor, hi_factor, iters=40):
+    """Step size whose extrapolation weight is ``ratio`` times the current one.
+
+    Inverts :func:`extrapolation_error_weight`, which is strictly increasing in
+    ``h_curr`` for positive steps, so a bisection on ``[lo_factor*h_curr,
+    hi_factor*h_curr]`` is monotone and always terminates.  The bracket is the
+    controller's own growth/shrink clamp, so the search never proposes a step it
+    would have rejected anyway, and no separate clamp is needed afterwards.
+
+    A closed-form cubic root would be marginally cheaper for degree 2 and would
+    not generalise to another order; this costs a few dozen scalar operations
+    once per step, against a Newton solve of the whole circuit.
+    """
+    target = extrapolation_error_weight(h_curr, h_hist) * ratio
+
+    lo, hi = h_curr * lo_factor, h_curr * hi_factor
+    if extrapolation_error_weight(lo, h_hist) >= target:
+        return lo
+    if extrapolation_error_weight(hi, h_hist) <= target:
+        return hi
+
+    for _ in range(iters):
+        mid = 0.5 * (lo + hi)
+        if extrapolation_error_weight(mid, h_hist) < target:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def solution_lte(v_curr, v_hist, h_hist, h_curr):
+    """Fang eq (6) before the max: the per-unknown extrapolation deviation.
+
+    Returns ``v_curr - P(t_m)`` elementwise.  Taking the maximum, and deciding
+    what to normalise by first, is the caller's business -- eq (6) maximises the
+    raw difference, but a vector mixing volts and amps has to be normalised by a
+    per-unknown tolerance before a maximum means anything, and the paper does not
+    specify ``tau_m``.  That choice is recorded in `doc/fang_dac2013_math.md`
+    sec. 6 as ours rather than Fang's.
+    """
+    return v_curr - extrapolate(v_hist, h_hist, h_curr)
+
+
 def gear2_lte(h1, h2, q_triple_prime_over_6):
     """Gear-2: ``-(1/6) h1 (h1 + h2) q'''``.
 
