@@ -3564,6 +3564,48 @@ the ordering machinery already exists in `ddd.py:1023-1196`, but a Python LU ove
 nonzeros will lose to compiled SuperLU. *Reconsider if* a Cython/numba build step becomes
 acceptable anyway for stage 2's assembly work.
 OUTCOME:
+### 7c OUTCOME, 2026-08-01 — BLOCKED on an absent dependency, and NOT worth forcing
+
+**No KLU binding exists on this machine.** Checked: `scikits.umfpack`, `sksparse.cholmod`,
+`klu`, `pyklu` — none importable; only `scipy.sparse.linalg`. So the item cannot be
+implemented *or* measured here.
+
+**It was not written blind.** Shipping a KLU path that never executes would be the fourth
+instance in this session of exactly that failure — the JAX backend's copied estimator
+(9(f), 9-1(a)), `pybsmatrix`'s `fbsub` (7d), and `sparse_numeric` (7d), each of which was
+wrong precisely because nothing ever ran it. An optional import that nobody can exercise is
+how the next one gets written.
+
+**The premise IS confirmed, with a correction to what it measures.** 7c says *"scipy's
+`splu` recomputes COLAMD on every call — 94% of its cost"*. Measured on tridiagonal systems:
+
+| n | fill | `splu()` | `.solve()` | factor share |
+|---|---|---|---|---|
+| 150 | 1.99% | 0.000259 | 0.000017 | **93.9%** |
+| 400 | 0.75% | 0.000348 | 0.000023 | **93.7%** |
+| 800 | 0.37% | 0.000482 | 0.000028 | **94.4%** |
+| 1600 | 0.19% | 0.000724 | 0.000047 | **93.9%** |
+
+The 94% reproduces almost exactly. **But it is the FACTORISATION share of factor+solve, not
+the ORDERING share within factorisation** — and KLU's `klu_refactor` keeps the ordering
+while redoing the numeric factorisation, so its saving is a fraction *of* that 94%, not the
+whole of it. Separating the two needs instrumentation inside SuiteSparse, which is not
+available here either. **7c's declared success — ">= 3x on the factor+solve" — therefore
+requires ordering to be >= 67% of the factorisation, which is plausible and unmeasured.**
+
+**And the end-to-end value would still be small at present sizes.** The solve is ~8% of a
+transient (7a), so even meeting the 3x gate exactly yields **~1.06x overall** — against 7b's
+measured 1.09x/1.20x/1.25x at n=402/802/1202 for a 28-74x solver win. The pattern is
+consistent and by now well established: **the solver is not where a pycircuit transient
+spends its time at the sizes pycircuit can currently reach.**
+
+**RECOMMENDATION: leave 7c unimplemented, and do 2+.5 instead.** Circuit *construction* is
+O(N^2.27) — 24.8 s for an 800-element ladder — which is what stopped 7b's n=2000 row from
+being measured at all. Until that is fixed, no solver work can be evaluated at the sizes
+where solver work would pay. **Reconsider 7c when** (a) a KLU binding is installed, and
+(b) 2+.5 has landed so that n >= 5000 circuits can be built — at which point 7a's scaling
+table puts LU at 60% of the step and the arithmetic changes completely.
+
 
 **7d. Delete `pybsmatrix.py`** (340 unreferenced lines, no pivoting, and a `fbsub` whose
 division sits inside the wrong loop so it cannot be correct), and **fix
