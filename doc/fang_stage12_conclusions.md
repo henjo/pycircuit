@@ -226,6 +226,20 @@ approximate **only because every kink is a reported breakpoint**: the step is tr
 land on it and `_is_first_step` re-arms, dropping the next step to backward Euler, so a step
 always *starts* at a corner and moves forward into the segment ahead.
 
+> **This was FALSE on the coupled path when first written, and is now true.** `_solve_coupled`
+> had no breakpoint handling at all — no `next_event`, no truncation, no order drop — so a
+> coupled step could start mid-segment and straddle a kink, which is exactly the case the
+> right-hand limit assumes cannot arise. It was invisible because the only two circuits with
+> closed-form references, `rc-vsin` and `stiff-rlc`, have no breakpoints.
+>
+> Fixing it needed two changes, not one. Truncating to the breakpoint is useless on its own,
+> because `fang_timestep` *solves* for `h` and promptly replaced the truncated step: measured
+> at **0 of 10 pulse edges landed on, worst miss 1.24e-7 s — the entire rise time**. A
+> truncated step's size is imposed rather than free, so the LTE equation is dropped for it
+> and only the circuit is solved (`hold_h`), which is the same treatment `h_clamped` gets on
+> the standard path. Both paths now land on 10/10 edges to 2.7e-20 s.
+> Pinned by `test_coupled_breakpoints.py`.
+
 Because `p`'s correctness depends on that coverage being complete, it is asserted in both
 directions in `test_source_derivatives.py` — every kink is reported by `next_event`, and
 every reported breakpoint is a genuine jump in `du/dt`. A source that grew a new kink without

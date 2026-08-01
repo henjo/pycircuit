@@ -31,6 +31,7 @@ integrating less accurately.
 Run:
     MPLBACKEND=Agg PYTHONPATH=.:benchmarks python benchmarks/transient_review/stage12b_coupled.py
 """
+import time
 import warnings
 
 import numpy as np
@@ -76,16 +77,106 @@ def stiff_rlc_analytic(t, r=1.0, l=1e-6, c=1e-6):
     return np.exp(-alpha * t) * (np.cos(wd * t) + (alpha / wd) * np.sin(wd * t))
 
 
+## A circuit with REAL breakpoints, and the reason it is here: the coupled path
+## had no breakpoint handling at all until gate 12-4, and the omission was
+## invisible because neither circuit above has an edge.  An RC driven by a
+## trapezoidal pulse has a closed form -- each segment is either an exponential
+## relaxation toward a constant or toward a ramp -- so it can be measured the
+## same way as the others rather than against a fine-mesh proxy.
+PULSE = dict(td=1e-5, tr=1e-6, pw=2e-5, tf=1e-6, per=5e-5, v1=0.0, v2=1.0)
+PULSE_TAU = 1e3 * 1e-9          # R*C below
+
+
+def rc_pulse():
+    from pycircuit.circuit.elements import VPulse
+    c = SubCircuit()
+    c['vs'] = VPulse('a', gnd, **PULSE)
+    c['R'] = R('a', 'b', r=1e3)
+    c['C'] = C('b', gnd, c=1e-9)
+    return c, dict(tend=1.2e-4, timestep=1e-6), 'b'
+
+
+def rc_pulse_analytic(t):
+    """Exact response of an RC low-pass to the trapezoidal drive.
+
+    Integrated segment by segment.  On a segment where the source is the ramp
+    ``u = a + b(t-t0)`` the solution of ``tau v' + v = u`` is
+
+        v(t) = a + b(s - tau) + (v0 - a + b tau) exp(-s/tau),   s = t - t0
+
+    which covers the flat segments too (b = 0).  Marching the segments rather
+    than writing one formula keeps each piece checkable against that identity.
+    """
+    tau = PULSE_TAU
+    td, tr, pw, tf, per = (PULSE['td'], PULSE['tr'], PULSE['pw'],
+                           PULSE['tf'], PULSE['per'])
+    v1, v2 = PULSE['v1'], PULSE['v2']
+
+    t = np.atleast_1d(np.asarray(t, dtype=float))
+    out = np.empty_like(t)
+
+    ## Segment table for one period: (duration, start value, slope).
+    segs = [(td, v1, 0.0),
+            (tr, v1, (v2 - v1) / tr),
+            (pw, v2, 0.0),
+            (tf, v2, (v1 - v2) / tf),
+            (per - td - tr - pw - tf, v1, 0.0)]
+
+    for i, ti in enumerate(t):
+        v = v1                      # the source starts at v1 and so does the RC
+        base = 0.0
+        k = 0
+        done = False
+        while not done:
+            for j, (dur, a, b) in enumerate(segs):
+                ## EVERY period repeats the `td` lead-in.  `Pulse.f` folds time
+                ## with `t % per` and then applies td/tr/pw/tf inside the folded
+                ## period, so the shape is identical each time round -- skipping
+                ## `td` after the first period put every later edge 10 us early
+                ## and gave a "closed form" that disagreed with a reltol=1e-8 run
+                ## by 1.0 V, i.e. full scale.
+                if dur <= 0.0:
+                    continue
+                seg_end = base + dur
+                s = min(ti, seg_end) - base
+                if s > 0.0:
+                    v = a + b * (s - tau) + (v - a + b * tau) * np.exp(-s / tau)
+                if ti <= seg_end:
+                    done = True
+                    break
+                base = seg_end
+            k += 1
+            if k > 100:
+                done = True
+        out[i] = v
+    return out
+
+
 CIRCUITS = [('rc-vsin', rc_vsin, rc_vsin_analytic),
-            ('stiff-rlc', stiff_rlc, stiff_rlc_analytic)]
+            ('stiff-rlc', stiff_rlc, stiff_rlc_analytic),
+            ('rc-pulse', rc_pulse, rc_pulse_analytic)]
 
 
-def run(builder, analytic, reltol, coupled):
-    cir, kw, node = builder()
-    tran = Transient(cir, toolkit=numeric, reltol=reltol)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
-        res = tran.solve(coupled_lte=coupled, **kw)
+def run(builder, analytic, reltol, coupled, repeats=3):
+    ## GATE 12-3, the overhead claim.  Wall clock is the only thing that can
+    ## answer it: sec. 3.4 says the approximate Newton "carries very little
+    ## overhead", and a solve count cannot see the extra `J^-1 p` solve, the
+    ## extrapolation, or the gradient assembly.
+    ##
+    ## Best-of-N, not mean: the minimum is the run least disturbed by whatever
+    ## else the machine was doing, and scheduling noise only ever adds time.
+    best = None
+    for _ in range(repeats):
+        cir, kw, node = builder()
+        tran = Transient(cir, toolkit=numeric, reltol=reltol)
+        t0 = time.perf_counter()
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(coupled_lte=coupled, **kw)
+        wall = time.perf_counter() - t0
+        if best is None or wall < best:
+            best, best_res, best_tran = wall, res, tran
+    res, tran, wall = best_res, best_tran, best
 
     w = res.v(node)
     t = np.asarray(w.x, dtype=float).ravel()
@@ -98,7 +189,7 @@ def run(builder, analytic, reltol, coupled):
     d = d[2:] if len(d) > 2 else d
 
     st = tran.statistics
-    return dict(steps=st.accepted_steps, rejected=st.rejected_steps,
+    return dict(wall=wall, steps=st.accepted_steps, rejected=st.rejected_steps,
                 solves=st.accepted_steps + st.rejected_steps,
                 min_err=float(np.min(d)), max_err=float(np.max(d)),
                 med_err=float(np.median(d)), avg_err=float(np.mean(d)),
@@ -111,10 +202,9 @@ def main():
     print()
     for name, builder, analytic in CIRCUITS:
         print('--- %s' % name)
-        print('%-8s %-9s %7s %7s %7s %11s %11s %11s %11s %7s'
+        print('%-8s %-9s %7s %7s %7s %9s %9s %11s %11s %11s'
               % ('reltol', 'path', 'steps', 'reject', 'solves',
-                 'min|err|', 'mean|err|', 'median|err|', 'max|err|',
-                 'med/max'))
+                 'wall (s)', 'us/solve', 'mean|err|', 'median|err|', 'max|err|'))
         for reltol in RELTOLS:
             base = None
             for label, coupled in (('standard', False), ('coupled', True)):
@@ -127,16 +217,17 @@ def main():
                 if base is None:
                     base = r
                 done = '' if r['t_end'] >= r['tend'] * (1 - 1e-6) else '  RUN INCOMPLETE'
-                print('%-8.0e %-9s %7d %7d %7d %11.3e %11.3e %11.3e %11.3e %7.3f%s'
+                print('%-8.0e %-9s %7d %7d %7d %9.3f %9.1f %11.3e %11.3e %11.3e%s'
                       % (reltol, label, r['steps'], r['rejected'], r['solves'],
-                         r['min_err'], r['avg_err'], r['med_err'], r['max_err'],
-                         r['med_err'] / r['max_err'], done))
+                         r['wall'], 1e6 * r['wall'] / max(r['solves'], 1),
+                         r['avg_err'], r['med_err'], r['max_err'], done))
         print()
 
-    print('`med/max` is the shape of the error distribution, not its size.')
-    print('Sec. 4.1 claims the coupled method spreads the LTE more evenly along')
-    print('the non-uniform grid; a HIGHER ratio is a flatter distribution, and a')
-    print('maximum on its own cannot show that in either direction.')
+    print('`us/solve` is what gate 12-3 turns on: the coupled path does more')
+    print('work per Newton solve (an extra J^-1 p, the extrapolation, the')
+    print('gradients), and the gate declared that per-step cost must stay within')
+    print('15% of the standard path. Total wall clock also carries the step')
+    print('count, so the two columns say different things.')
 
 
 if __name__ == '__main__':

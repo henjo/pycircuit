@@ -702,7 +702,8 @@ class Transient(Analysis):
 
     def fang_timestep(self, x_prev, t_prev, h, x_hist, refnode=gnd,
                       provided_function=None, gamma_min=0.7, gamma_max=3.0,
-                      eta=0.15, maxiter=None, hmin=None, max_step=None):
+                      eta=0.15, maxiter=None, hmin=None, max_step=None,
+                      hold_h=False):
         """One time point of Fang's coupled method: solve for ``(x, h)`` together.
 
         STAGE 12B.  Figure 4 of DAC 2013, and the structure is the substance:
@@ -800,7 +801,17 @@ class Transient(Analysis):
             converged_x = bool(toolkit.alltrue(
                 abs(dx0) < reltol * abs(x_stage1) + abstol))
 
-            if eps_ok or not h_hist or len(x_hist) < 2:
+            ## `hold_h` -- the step size is IMPOSED, not free.  A step truncated
+            ## onto a breakpoint or onto `tend` has its size decided by where it
+            ## must land, so there is nothing for the coupled system to solve:
+            ## the LTE equation is dropped and only the circuit is solved, which
+            ## is the same treatment `h_clamped` gets on the standard path.
+            ##
+            ## Without this the truncation was pointless -- `fang_timestep`
+            ## solved for its own `h` and walked straight off the edge again.
+            ## Measured on a pulsed RC: 0 of 10 pulse edges landed on, worst miss
+            ## 1.24e-7 s, which is the whole rise time.
+            if hold_h or eps_ok or not h_hist or len(x_hist) < 2:
                 ## The LTE condition holds (or cannot be evaluated yet, on the
                 ## opening steps).  Nothing to solve for `h`; finish on the
                 ## circuit equations alone.
@@ -1076,6 +1087,8 @@ class Transient(Analysis):
         ## Stage 6(c).  Created per run, so a second `solve()` reports its own
         ## numbers rather than the sum of every run on this object.
         self.statistics = TransientStatistics()
+        was_break_step = False
+        force_order_drop = False
         _t_run_start = time.perf_counter()
         self._is_first_step = True
         self._no_history = True
@@ -1532,6 +1545,8 @@ class Transient(Analysis):
         ## `tran.statistics` raised AttributeError after any `coupled_lte=True`
         ## run and the two paths could not be compared on step counts at all.
         self.statistics = TransientStatistics()
+        was_break_step = False
+        force_order_drop = False
         TRTOL = 7.0
         minstep = getattr(self.par, 'minstep', 1e-18)
 
@@ -1544,22 +1559,46 @@ class Transient(Analysis):
                                           self.par.lte_iabstol * ones_branches))
         reltol = self.par.reltol
 
-        ## Coupled adaptive time-stepping, Fang, "A New Time-Stepping Method for
-        ## Circuit Simulation" (DAC 2013).  The circuit solution and the step size
-        ## are co-determined at each time point: converge the circuit at a fixed
-        ## step (stage 1), then bring the local truncation error into the accept
-        ## band by driving the step with Gear's formula and re-solving.  This is
-        ## the paper's robust "approximate Newton" (sec. 3.4); it replaces the
-        ## exact (N+1) Schur update, which is very sensitive to step changes and
-        ## collapses the step size.  The LTE evaluation and Gear prediction are
-        ## shared with the standard adaptive controller (IntegralController) so
-        ## the coupled and adaptive paths stay consistent.
-        from pycircuit.circuit.stepcontroller import IntegralController
+        ## Coupled time-stepping, Fang, "A New Time-Stepping Method for Circuit
+        ## Simulation" (DAC 2013).  The solution and the step size are solved
+        ## TOGETHER at each time point -- see `fang_timestep` for Figure 4's
+        ## two-stage Newton and for why sec. 3.4's approximate step correction is
+        ## used in place of eq (12).  The LTE is eq (6)'s solution-space estimate
+        ## (`SolutionLTEController`), not the charge divided difference the rest
+        ## of this module uses; `doc/fang_stage12_conclusions.md` sec. 3 has the
+        ## reason, and it is the whole reason this path works at all.
         from pycircuit.circuit.nrsolver import NoConvergenceError
-        controller = IntegralController()
         MAX_LTE_ITERS = 10
 
         while t < tend:
+            ## BREAKPOINTS, which this path did not have at all until now.
+            ##
+            ## The omission was worse here than it would be on the standard path,
+            ## because Figure 3 has no rejection branch: a coupled step that runs
+            ## past a pulse edge cannot back up from it.  It also quietly broke
+            ## the invariant `p` depends on -- `TimeFunction.dfdt` takes the
+            ## right-hand limit at a corner, which is exact ONLY because a step
+            ## always starts on the corner rather than straddling it, and that is
+            ## true only if the solver truncates to breakpoints.  It does now.
+            if was_break_step or force_order_drop:
+                ## Not "there is no history" -- the ring buffers keep rolling
+                ## across a breakpoint.  It means "do not fit a 2nd-order
+                ## polynomial through this point", which also drops the eq (6)
+                ## predictor's degree, since that follows the active integrator.
+                self._is_first_step = True
+            force_order_drop = False
+
+            next_t_break = self.cir.next_event(t)
+            if next_t_break <= t + self.par.minbreak * max(abs(t), 1.0):
+                next_t_break = self.cir.next_event(
+                    t + (self.par.minbreak * 1e3) * max(abs(t), 1.0))
+
+            if t + h > next_t_break:
+                h = float(next_t_break - t)
+                was_break_step = True
+            else:
+                was_break_step = False
+
             if t + h > tend:
                 h = tend - t
 
@@ -1601,6 +1640,7 @@ class Transient(Analysis):
                     x_curr, h_solved, _iters, converged = self.fang_timestep(
                         X[-1], t, h_curr, X[-1:-4:-1],
                         refnode=refnode, provided_function=provided_function,
+                        hold_h=was_break_step,
                         gamma_min=self.par.lte_gamma_min or 0.7,
                         gamma_max=(self.par.lte_gamma_max
                                    if self.par.lte_gamma_max != 1.0 else 3.0),
@@ -1632,6 +1672,15 @@ class Transient(Analysis):
             t += h_curr
             self.statistics.accepted_steps += 1
             self.statistics._note_step(h_curr)
+            ## The coupled path recorded only `accepted_steps`, so `order_drops`
+            ## and `breakpoints_hit` read as zero on a circuit that was hitting
+            ## ten pulse edges and dropping order at each -- a statistic that is
+            ## silently always zero is worse than one that is absent.
+            if was_break_step:
+                self.statistics.breakpoints_hit += 1
+            if self._effective_method == 'EulerIntegrator' and \
+                    type(self.base_integrator).__name__ != 'EulerIntegrator':
+                self.statistics.order_drops += 1
             timelist.append(t)
             X.append(copy(x_curr))
 

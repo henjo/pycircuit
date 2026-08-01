@@ -5034,27 +5034,72 @@ exact `(N+1)` update and reproduce "collapses the step size" as a number — whi
 what `h` sequence. Declared: a described failure mode becomes a measured one, or the note
 is wrong and that is the finding. **Do not skip this to save time; it is the cheapest step
 in 12B and it decides whether the rest is repair or re-derivation.**
-OUTCOME:
+**OUTCOME (2026-08-01): the note was unsupported by the evidence available to it.**
+`benchmarks/transient_review/stage12b0_collapse.py` reconstructed the 2026-07 loop from
+`git show 9e8fb74^`. `dh` is **identically zero in every run using the estimator of the
+time** — `E + TRTOL ~ 0` makes `E_h ~ 0` and `SchurCoupledNewton`'s `if abs(denom) < 1e-20:
+dh = 0` guard fires. The code that carries the comment never moved the step at all and
+cannot have observed the collapse it records.
+
+**My own first reproduction is WITHDRAWN**: it paired the stage-4 LTE formula with the
+pre-stage-4 charge-flavoured tolerance, a combination that never shipped, so the runaway it
+measured says nothing about Fang's method. Restoring the band short-circuit verbatim
+changed 54 steps to 56 — also not the cause. The real cause was found later and is
+different from all of these: pycircuit was solving against the WRONG `f_lte` entirely
+(gate 12B-1's outcome, and `doc/fang_stage12_conclusions.md` §3).
 
 **Gate 12B-1 (the derivatives are right).** `p`, `q^T`, `d` each checked against a central
 finite difference of the same residual — `p` by perturbing `h` and re-stamping. Declared:
 agreement to the finite-difference floor on a nonlinear circuit, not just the RC. **This is
 the gate that catches a sign error**, which in a bordered system shows up as a step size
 that walks the wrong way rather than as an exception.
-OUTCOME:
+**OUTCOME (2026-08-01): PASS, all three, and finding the right `f_lte` first is what made
+them cheap.** Eq (6) is a SOLUTION-space quantity, `eps_m = |v_i - v_i,extrapolated|`, not
+the charge divided difference this module had been using. With that fixed:
+
+- `q^T` is a signed unit vector on the controlling node — checked column by column against
+  a central difference, including that every other column is zero;
+- `d` is the extrapolation polynomial's derivative, shared with its value off one
+  divided-difference table, checked against a central difference in `h`, sign included;
+- `p` is `companion_dh + dudt`, checked by perturbing `h` and re-forming the WHOLE residual
+  for all three integrators, plus two further tests that the source term is present and
+  not at rounding level, since a `p` missing a term still passes a bare gradient check.
+
+The degenerate case where the solution lands exactly on the extrapolation is pinned too: a
+naive `sign(0)` zeroes the whole LTE row of eq (12) and makes the solve singular.
 
 **Gate 12B-2 (eq 13 equals eq 12).** The reduced `N`-system with `Δh` recovered from eq (14)
 must give the same `(Δv, Δh)` as a literal dense `(N+1)` factorisation, to solver tolerance.
 Declared: measured on a circuit where `d` is small, since that is where the `1/d` division
 in both eq (13) and eq (14) is worst conditioned. **`d → 0` is a real case** — it is an LTE
 insensitive to the step, i.e. exactly the smooth region where steps grow.
-OUTCOME:
+**OUTCOME (2026-08-01): WITHDRAWN — eq (13) is not implemented, because eq (12) is not
+used.** Eq (14)'s denominator `q^T dxh + d` is the solution's sensitivity to the step size
+minus the extrapolation's slope; both are approximately `dv/dt`, so their difference is the
+truncation error's derivative and is tiny by construction. Measured at `h = 1.6e-7`:
+`q^T dxh = +1.818e9`, `d = -1.820e9`, denominator **-2e6**. Three digits lost and the SIGN
+decided by the cancellation, so `dh` saturated at the eta limit with an arbitrary sign and
+the step drifted down four decades while `err` sat at 0.2 — far BELOW the band that should
+have grown it.
+
+Eq (12) computes a small quantity as the difference of two large ones. Sec. 3.4's
+approximate Newton takes the step from the error RATIO instead and has no cancellation, so
+that is what ships. **Reconsider if** an LTE is adopted whose `d` is not nearly equal and
+opposite to `q^T dxh` — the cancellation is a property of this estimator, not of eq (12) in
+general.
 
 **Gate 12B-3 (zero discarded time points).** With the bordered path selected, the rejection
 counter must be 0 where the standard path records nonzero on the same circuit. This is the
 stub's original gate 12-1 and it is the one claim of the method that the entry measurement
 does **not** undercut.
-OUTCOME:
+**OUTCOME (2026-08-01): PASS.** `benchmarks/transient_review/stage12b_coupled.py`: the
+rejection counter is **0** on both circuits at all three tolerances, where the standard path
+records 8/19/22 and 4/4/5. Figure 3 has no rejection branch and the implementation now has
+none either.
+
+Worth separating: **the eq (6) estimator alone already removes most rejections**, before any
+coupling — measured at 0/0/2 and 3/3/5 with `SolutionLTEController` driving the ordinary
+adaptive loop. The coupled solve takes the remainder to zero.
 
 ### 12C — §3.4's approximate Newton as the default (eqs 17, 18)
 
@@ -5068,7 +5113,11 @@ from 12B but **no** `q^T`, `d`, or bordered solve.
 per-time-point Newton iteration count drops, with the final solution matching the
 re-solve's to Newton tolerance. If the correction needs a re-solve afterwards anyway to
 converge, it has bought nothing — record that.
-OUTCOME:
+**OUTCOME (2026-08-01): PASS on accuracy, NOT MEASURED on cost.** Eq (18)'s correction
+`dx = dxh * dh` reuses the stage-1 factors and replaced the old re-solve-from-scratch, and
+the accuracy is better rather than worse (mean and median waveform error 10-20% below the
+standard path at matched tolerance). **The per-iteration cost claim is gate 12-3 and is
+still unmeasured** — everything here counts Newton solves, not wall clock.
 
 ### 12D — defaults, docs, and the four ignored inputs
 
@@ -5133,7 +5182,7 @@ With the coupled path selected, a
 run must contain **zero** discarded time points from LTE rejection — the step size is
 solved, not retried. Declared success: the rejection counter is 0 where the standard path
 records a nonzero count on the same circuit.
-OUTCOME:
+**OUTCOME: see gate 12B-3 — PASS, zero discarded time points on both circuits.**
 
 **Gate 12-2 (the paper's own result, on our circuits).** §4.1 reports **39% fewer time
 points and 17% less runtime** on a Class-D amplifier with the LTE bounded between 0.7 and
@@ -5151,23 +5200,55 @@ not what a gate is for. **The declared success is now: the step count does not g
 20%+ reduction does appear, the first suspicion is a loosened effective tolerance and the
 accuracy check above decides it. **The original 20% target is kept in the record rather
 than deleted, because the reason it was wrong is the useful part.**
-OUTCOME:
+**OUTCOME (2026-08-01): the step count goes UP by 25-28%, and the revised target above is
+what it is measured against.** At `reltol=1e-6`, counting rejections: 5136 solves against
+4089 on rc-vsin, 1924 against 1504 on stiff-rlc. The declared success after revision was
+"the step count does not get worse, and the rejected steps go to zero" — **the second half
+passes and the first half fails.**
+
+The reason is §2 of `doc/fang_stage12_conclusions.md` and was predicted before the code was
+written: the paper's 39% comes from moving steps up onto the tolerance, and this
+controller's steps already sit on it to within half a percent. What was NOT predicted is
+that the coupled path is more accurate per unit tolerance — mean and median error 10-20%
+lower — so the extra steps are buying accuracy rather than being wasted.
 
 **Gate 12-3 (the overhead claim).** The paper's case rests on "very little overhead". With
 stage 7b's factors reused, declared success: the per-step cost of the coupled path is
 within **15%** of the standard path's. If it is not, the method is losing in wall time what
 it wins in step count, and that is the number that decides whether it ships.
-OUTCOME:
+**OUTCOME: NOT MEASURED.** Every number in this stage counts Newton solves. §4.1's 17% is
+wall clock and has no counterpart here. This is the largest open measurement gap and is
+listed in `doc/fang_stage12_conclusions.md` §8.
 
 **Gate 12-4 (the four ignored inputs).** Whatever else changes, the coupled path must
 honour `fixed_timestep`, breakpoints, an injected step controller, and `uic` — the list
 from 0.1d, of which only `uic` is currently fixed.
-OUTCOME:
+**OUTCOME (2026-08-01): PARTIAL — breakpoints fixed, and they were worse than "ignored".**
+`_solve_coupled` had NO breakpoint handling at all: no `next_event`, no truncation, no order
+drop. That matters more on this path than on the standard one, because Figure 3 has no
+rejection branch — a coupled step that runs past a pulse edge cannot back up from it. It
+also broke the invariant `p` depends on, since `dfdt`'s right-hand limit at a corner is
+exact only if a step STARTS on the corner.
+
+It took two changes. Truncating alone is useless: `fang_timestep` solves for `h` and
+promptly replaced the truncated step, measured at **0 of 10 pulse edges hit, worst miss
+1.24e-7 s — the whole rise time**. A truncated step's size is imposed, so the LTE equation
+is dropped for it (`hold_h`) and only the circuit is solved. Both paths now land 10/10 to
+2.7e-20 s. Pinned by `test_coupled_breakpoints.py`.
+
+Also fixed: the coupled path recorded only `accepted_steps`, so `breakpoints_hit` and
+`order_drops` read as zero on a circuit hitting ten edges, and `tran.statistics` raised
+`AttributeError` outright before that.
+
+**STILL OPEN: `fixed_timestep` and an injected step controller are not honoured on the
+coupled path.** `uic` is (fixed earlier).
 
 **Gate 12-5.** Full suite `-m ""`, and the citation in `time_stepping.rst` becomes true —
 the page's `.. warning::` recording that the method was documented but absent is removed
 only when the code matches it.
-OUTCOME:
+**OUTCOME (2026-08-01): suite PASSES, doc NOT done.** 927 passed, 6 skipped, 3 xfailed, 0
+failed. `time_stepping.rst` still carries the warning saying the method was documented but
+absent, which is now false and must be rewritten before this gate closes.
 
 **Reconsider the whole stage if** gate 12-3 fails, or if stage 4 shows the LTE estimate is
 still not trustworthy enough to solve against. **A negative result here is a good outcome**:
