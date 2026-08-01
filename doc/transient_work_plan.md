@@ -3606,6 +3606,67 @@ where solver work would pay. **Reconsider 7c when** (a) a KLU binding is install
 (b) 2+.5 has landed so that n >= 5000 circuits can be built — at which point 7a's scaling
 table puts LU at 60% of the step and the arithmetic changes completely.
 
+### 7c REOPENED AND DONE, 2026-08-01 — SuiteSparse was installed
+
+**The "BLOCKED" outcome above stands as written but is superseded.** With `libklu.so.2`
+present, KLU is reachable **with no Python binding at all**: a small `ctypes` binding, which
+is what 7c asked for ("discover it the way `_ginac_ext` and `symengine` already are"). No
+pip dependency added. `scikit-umfpack` would have given UMFPACK rather than KLU, and
+`libcholmod` — also now present — is for **symmetric positive-definite** systems, which
+circuit MNA Jacobians are not.
+
+**Gate 7c (">= 3x on the factor+solve at n >= 500"): PASSES comfortably.** Against
+`scipy.splu`, which recomputes the ordering every call:
+
+| n | splu | KLU refactor+solve | speedup |
+|---|---|---|---|
+| 150 | 0.000163 | 0.000046 | 3.51x |
+| 400 | 0.000463 | 0.000060 | **7.75x** |
+| 800 | 0.000541 | 0.000061 | 8.85x |
+| 1600 | 0.000907 | 0.000097 | 9.31x |
+| 3200 | 0.001714 | 0.000172 | **9.97x** |
+
+The split confirms 7c's premise directly: at n=3200 `klu_analyze` costs 0.000441 against
+`klu_factor`'s 0.000378 — the **ordering is about half a full factorisation** — and
+`klu_refactor` at 0.000099 is 4x cheaper than factoring again. Over a transient the reuse is
+total: **1 analyze, 1 factor, 227 refactors**.
+
+**AND END TO END IT LOSES, WHICH IS THE FINDING THAT MATTERS.** Best-of-3, circuit object
+reused so construction is out of the timing:
+
+| n | default (dense) | SuperLU | KLU | KLU vs default |
+|---|---|---|---|---|
+| 152 | **3.581 s** | 4.378 s | 6.832 s | **0.52x** |
+| 402 | 31.961 s | **23.511 s** | 24.418 s | 1.31x |
+
+**KLU is nearly 2x SLOWER than the shipped path at n=152, and SuperLU beats it at n=402.**
+The refactor is not at fault; it works exactly as designed. The loss is per-call Python
+overhead — CSC conversion, the pattern key, the residual validation — against a solve that
+is only **~8% of a transient**. A 10x win on 8% cannot repay a fixed per-call cost here.
+
+**So `AutoSolver` selects SuperLU, not KLU, and a test pins it.** Wiring KLU in
+automatically would have made a 152-unknown circuit twice as slow — a defect introduced and
+caught inside the same item, by measuring end to end after measuring in isolation. KLU
+remains available explicitly as `linearsolver=KLUSolver()`.
+
+**The first end-to-end numbers were discarded, and why is worth recording:** they showed the
+*smaller* circuit taking longer than the larger one (15.44 s at n=152 against 13.27 s at
+n=402), which is machine load, not solver behaviour — the suite was running concurrently.
+Trap 2 again, in a new place.
+
+**The refactor path is VALIDATED, not trusted.** `klu_refactor` reuses the pivot ORDER from
+the first factorisation, and if the values move far enough those pivots stop being sound.
+Production tools read KLU's reciprocal pivot growth; doing that here would mean hard-coding
+`klu_common` struct offsets this binding cannot verify. Instead the **residual is checked on
+every reuse** and a full `klu_factor` redone if it fails — one sparse mat-vec, and it cannot
+be wrong about a struct layout. Stage 9 and 7d between them turned up three defects that
+survived precisely because nothing ever checked the thing itself.
+
+**Reconsider when 2+.5 lands.** Every conclusion here is bounded by assembly dominating the
+step. Once construction is not O(N^2.27) and n >= 5000 is reachable, LU is 60% of the step
+rather than 8% — **redo this measurement then rather than assuming it still holds.**
+
+
 
 **7d. Delete `pybsmatrix.py`** (340 unreferenced lines, no pivoting, and a `fbsub` whose
 division sits inside the wrong loop so it cannot be correct), and **fix

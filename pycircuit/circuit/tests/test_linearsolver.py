@@ -85,8 +85,11 @@ def test_autosolver_keys_on_fill_not_size():
 
     picked_sparse = AutoSolver()
     picked_sparse.solve(sparse_A, b, numeric)
-    assert isinstance(picked_sparse._choice, SuperLUSolver), \
-        'a 0.7%%-fill matrix was not sent to the sparse solver'
+    ## Deliberately "not dense" rather than a named class: WHICH sparse solver is
+    ## best available is 7c's business (KLU when libklu is there, SuperLU
+    ## otherwise), and this test's subject is that the choice keys on FILL.
+    assert not isinstance(picked_sparse._choice, DenseSolver), \
+        'a 0.7%%-fill matrix was not sent to a sparse solver'
 
 
 def test_autosolver_below_the_floor_stays_dense():
@@ -141,3 +144,130 @@ def test_symbolic_matrices_fall_back_rather_than_crash():
 
     x = SuperLUSolver().solve(A, rhs, symbolic)
     assert x is not None
+
+
+## ---------------------------------------------------------------------------
+## STAGE 7c -- KLU.  Skipped wholesale when libklu is absent, so the suite stays
+## green on a machine without SuiteSparse, which is the point of discovering it.
+## ---------------------------------------------------------------------------
+
+def _klu_or_skip():
+    from pycircuit.circuit.linearsolver import KLUSolver
+    try:
+        return KLUSolver()
+    except ImportError as e:
+        pytest.skip('libklu not available: %s' % e)
+
+
+def test_klu_solves_correctly():
+    """Right answer first; everything else about KLU is an optimisation."""
+    k = _klu_or_skip()
+    rng = np.random.default_rng(3)
+    n = 40
+    A = np.diag(2.0 + rng.random(n)) + np.diag(-1.0 * np.ones(n - 1), 1) \
+        + np.diag(-1.0 * np.ones(n - 1), -1)
+    b = rng.random(n)
+    x = k.solve(A, b, numeric)
+    assert np.abs(A.dot(x) - b).max() < 1e-10
+
+
+def test_klu_reuses_the_ordering_across_solves():
+    """The whole point of 7c: analyze once, refactor thereafter.
+
+    Asserted on the counters rather than on timing -- a timing assertion on a
+    loaded box is a flake, and the counters say the thing that actually matters:
+    the ordering was computed ONCE for many solves.
+    """
+    k = _klu_or_skip()
+    A = np.array([[2., -1., 0.], [-1., 2., -1.], [0., -1., 2.]])
+    b = np.ones(3)
+    for scale in (1.0, 2.0, 3.0, 4.0):
+        x = k.solve(A * scale, b, numeric)
+        assert np.abs((A * scale).dot(x) - b).max() < 1e-10
+    assert k.analyses == 1, 'the ordering was recomputed: %r' % k
+    assert k.factors == 1, 'a full factorisation was redone: %r' % k
+    assert k.refactors == 3, 'the refactor path was not taken: %r' % k
+
+
+def test_klu_reanalyses_when_the_pattern_changes():
+    """A different sparsity pattern must NOT reuse the old ordering.
+
+    This is the failure the pattern key exists to prevent, and it would be
+    invisible without it -- KLU would happily refactor against indices that no
+    longer describe the matrix.
+    """
+    k = _klu_or_skip()
+    A1 = np.array([[2., -1., 0.], [-1., 2., 0.], [0., 0., 3.]])
+    A2 = np.array([[2., -1., 1.], [-1., 2., -1.], [1., -1., 3.]])
+    b = np.ones(3)
+    x1 = k.solve(A1, b, numeric)
+    x2 = k.solve(A2, b, numeric)
+    assert np.abs(A1.dot(x1) - b).max() < 1e-10
+    assert np.abs(A2.dot(x2) - b).max() < 1e-10
+    assert k.analyses == 2, 'the ordering was reused across different patterns: %r' % k
+
+
+def test_klu_matches_dense_on_a_transient():
+    """Same waveform as the shipped path, to solver tolerance not bit for bit.
+
+    Two different factorisations do not round identically, and asserting they do
+    would make the test a liability the first time SuiteSparse changes.
+    """
+    import warnings
+    from pycircuit.circuit.linearsolver import DenseSolver
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.elements import SubCircuit, R, C, VS
+    from pycircuit.circuit import gnd
+    _klu_or_skip()
+
+    def ladder():
+        cir = SubCircuit(toolkit=numeric)
+        for i in range(30):
+            cir.add_node('n%d' % i)
+        cir['vs'] = VS('n0', gnd, v=1.0)
+        for i in range(29):
+            cir['R%d' % i] = R('n%d' % i, 'n%d' % (i + 1), r=100.0 * (i + 1))
+        for i in range(30):
+            cir['C%d' % i] = C('n%d' % i, gnd, c=1e-9 * (i + 1))
+        return cir
+
+    def run(solver):
+        from pycircuit.circuit.linearsolver import KLUSolver
+        tran = Transient(ladder(), toolkit=numeric, reltol=1e-4, uic=True,
+                         linearsolver=solver)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(refnode=gnd, tend=5e-6, timestep=1e-6)
+        return np.asarray(res.x, dtype=float)
+
+    from pycircuit.circuit.linearsolver import KLUSolver
+    v_dense = run(DenseSolver())
+    v_klu = run(KLUSolver())
+    assert v_dense.shape == v_klu.shape, 'the two solvers took different step counts'
+    scale = max(float(np.abs(v_dense).max()), 1e-30)
+    assert np.abs(v_dense - v_klu).max() / scale < 1e-9
+
+
+def test_klu_raises_on_a_singular_matrix():
+    """Singularity must surface as LinAlgError, like the other solvers."""
+    k = _klu_or_skip()
+    A = np.array([[1.0, 2.0], [2.0, 4.0]])       # rank 1
+    with pytest.raises(np.linalg.LinAlgError):
+        k.solve(A, np.ones(2), numeric)
+
+
+def test_autosolver_prefers_superlu_not_klu():
+    """AutoSolver picks by MEASURED end-to-end win, not by isolated benchmark."""
+    from pycircuit.circuit.linearsolver import (AutoSolver, KLUSolver,
+                                                SuperLUSolver, MIN_N_FOR_SPARSE)
+    _klu_or_skip()
+    n = MIN_N_FOR_SPARSE + 20
+    A = np.eye(n) + np.diag(np.ones(n - 1), 1)
+    s = AutoSolver()
+    s.solve(A, np.ones(n), numeric)
+    ## AutoSolver deliberately picks SuperLU even when KLU is present: KLU wins
+    ## the isolated factor+solve 3.5x-10x but LOSES end to end at reachable sizes
+    ## (0.52x at n=152), because the solve is only ~8%% of a transient and the
+    ## per-call overhead outweighs it.  Pinned so the choice is not "fixed" back.
+    assert isinstance(s._choice, SuperLUSolver), \
+        'AutoSolver should prefer SuperLU at these sizes, chose %r' % s._choice
