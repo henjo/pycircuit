@@ -13,7 +13,33 @@ class TimeFunction():
     def next_event(self, t):
         """Returns the time of the next event given the current time t"""
         return self.toolkit.inf
-    
+
+    def dfdt(self, t):
+        """Time derivative of the source, for Fang's ``p = df_ckt/dh``.
+
+        STAGE 12B.  The circuit residual is evaluated at ``t_{m-1} + h``, so
+        differentiating it with respect to the step size needs ``du/dt``.  With
+        the LTE made an unknown (DAC 2013 eq 11) this is no longer optional --
+        the source term is often the LARGEST part of ``p`` on a driven circuit,
+        and dropping it does not make the coupled system slightly wrong, it makes
+        it solve a different problem.
+
+        The default is a central finite difference, so a source that does not
+        override this still works.  Subclasses with a closed form override it:
+        a finite difference costs two extra evaluations and, more importantly,
+        is meaningless across the kinks of a piecewise source -- which is exactly
+        where the step size is under the most pressure.
+
+        **`Pulse` and `PWL` are piecewise linear, so `du/dt` does not exist at
+        their breakpoints.**  Both return the derivative of the segment they are
+        currently inside, taking the RIGHT-hand limit at a corner: a step
+        starting at ``t`` moves forward, so the segment being entered is the one
+        that governs it.
+        """
+        eps = 1e-9 * max(abs(t), 1.0)
+        return (self.f(t + eps) - self.f(t - eps)) / (2.0 * eps)
+
+
 class Sin(TimeFunction):
     def __init__(self, offset=0, amplitude=0, 
                  freq=0, td=0, 
@@ -96,6 +122,26 @@ class Sin(TimeFunction):
         return self.offset + \
             self.amplitude * toolkit.exp(-self.theta * dt) * \
             toolkit.sin(self.omega * dt + self.phase)
+
+    def dfdt(self, t):
+        """Derivative of the damped sine, zero before ``td``.
+
+        Follows `f`'s own clamping exactly: for ``t <= td`` the source is held at
+        its offset, so the derivative is zero, and applying the chain rule to the
+        unclamped expression there would report a slope the source does not have.
+        """
+        toolkit = self.toolkit
+        if getattr(toolkit, 'symbolic', False):
+            dt = t - self.td
+            gate = 1.0
+        else:
+            dt = toolkit.where(t > self.td, t - self.td, 0.0)
+            gate = toolkit.where(t > self.td, 1.0, 0.0)
+        env = self.amplitude * toolkit.exp(-self.theta * dt)
+        ph = self.omega * dt + self.phase
+        return gate * env * (self.omega * toolkit.cos(ph)
+                             - self.theta * toolkit.sin(ph))
+
 
 class Pulse(TimeFunction):
     def __init__(self, v1, v2, td, tr, tf, pw, per, toolkit=numeric):
@@ -193,6 +239,36 @@ class Pulse(TimeFunction):
                                    v_out)
         return v_out
 
+    def dfdt(self, t):
+        """Slope of the segment being entered at ``t``: 0, rise, 0, fall, 0.
+
+        Mirrors `f`'s branch structure exactly, including the period fold and the
+        `tr`/`tf` zero guards -- a derivative that disagrees with its own function
+        about which segment `t` is in is worse than no derivative at all.
+
+        Piecewise linear, so `du/dt` does not exist at the corners; the branches
+        below take the RIGHT-hand limit, the segment a growing step moves into.
+        With `tr` or `tf` zero the edge is a true discontinuity and no finite
+        derivative exists at all -- the slope is reported as zero there rather
+        than as the enormous value a finite difference would invent, because the
+        edge is a breakpoint and breakpoint-clamped steps are excluded from the
+        coupled solve anyway.
+        """
+        toolkit = self.toolkit
+        if self.per != 0:
+            t = t % self.per
+
+        rise = (self.v2 - self.v1) / self.tr if self.tr != 0 else 0.0
+        fall = (self.v1 - self.v2) / self.tf if self.tf != 0 else 0.0
+
+        d = 0.0 * t
+        d = toolkit.where(t < self.td + self.tr + self.pw + self.tf, fall, d)
+        d = toolkit.where(t < self.td + self.tr + self.pw, 0.0 * t, d)
+        d = toolkit.where(t < self.td + self.tr, rise, d)
+        d = toolkit.where(t < self.td, 0.0 * t, d)
+        return d
+
+
 class PWL(TimeFunction):
     def __init__(self, t_v_pairs, toolkit=numeric):
         """t_v_pairs is a flat list/array of alternating time and voltage/current: [t0, v0, t1, v1, ...]"""
@@ -222,6 +298,25 @@ class PWL(TimeFunction):
                 if t1 == t0:
                     return v1
                 return v0 + (v1 - v0) * (t - t0) / (t1 - t0)
+
+    def dfdt(self, t):
+        """Slope of the segment being ENTERED at ``t``.
+
+        Piecewise linear, so the derivative does not exist at the corners. The
+        right-hand limit is the correct one-sided choice here: `p` exists to say
+        how the residual moves when the step GROWS from `t`, so the segment that
+        governs is the one ahead. Outside the table the source is held flat and
+        the derivative is zero.
+        """
+        if t < self.times[0] or t >= self.times[-1]:
+            return 0.0
+        for i in range(len(self.times) - 1):
+            t0, t1 = self.times[i], self.times[i + 1]
+            if t0 <= t < t1:
+                if t1 == t0:
+                    return 0.0
+                return (self.values[i + 1] - self.values[i]) / (t1 - t0)
+        return 0.0
         return self.values[-1]
 
 class Exp(TimeFunction):
@@ -245,6 +340,15 @@ class Exp(TimeFunction):
             v_at_td2 = self.v1 + (self.v2 - self.v1) * (1 - self.toolkit.exp(-(self.td2 - self.td1) / self.tau1))
             return v_at_td2 + (self.v1 - v_at_td2) * (1 - self.toolkit.exp(-(t - self.td2) / self.tau2))
 
+    def dfdt(self, t):
+        exp = self.toolkit.exp
+        if t <= self.td1:
+            return 0.0 * t
+        if t <= self.td2:
+            return (self.v2 - self.v1) / self.tau1 * exp(-(t - self.td1) / self.tau1)
+        v_at_td2 = self.v1 + (self.v2 - self.v1) * (1 - exp(-(self.td2 - self.td1) / self.tau1))
+        return (self.v1 - v_at_td2) / self.tau2 * exp(-(t - self.td2) / self.tau2)
+
 class AM(TimeFunction):
     def __init__(self, vo, va, fc, fm, m, toolkit=numeric):
         self.vo, self.va = vo, va
@@ -262,6 +366,14 @@ class AM(TimeFunction):
         mod = 1.0 + self.m * sin(2.0 * pi * self.fm * t)
         return self.vo + self.va * mod * sin(2.0 * pi * self.fc * t)
 
+    def dfdt(self, t):
+        pi = self.toolkit.pi
+        sin, cos = self.toolkit.sin, self.toolkit.cos
+        wm, wc = 2.0 * pi * self.fm, 2.0 * pi * self.fc
+        mod = 1.0 + self.m * sin(wm * t)
+        dmod = self.m * wm * cos(wm * t)
+        return self.va * (dmod * sin(wc * t) + mod * wc * cos(wc * t))
+
 class SFFM(TimeFunction):
     def __init__(self, vo, va, fc, mdi, fm, toolkit=numeric):
         self.vo, self.va = vo, va
@@ -277,6 +389,13 @@ class SFFM(TimeFunction):
         pi = self.toolkit.pi
         sin = self.toolkit.sin
         return self.vo + self.va * sin(2.0 * pi * self.fc * t + self.mdi * sin(2.0 * pi * self.fm * t))
+
+    def dfdt(self, t):
+        pi = self.toolkit.pi
+        sin, cos = self.toolkit.sin, self.toolkit.cos
+        wm, wc = 2.0 * pi * self.fm, 2.0 * pi * self.fc
+        phase = wc * t + self.mdi * sin(wm * t)
+        return self.va * cos(phase) * (wc + self.mdi * wm * cos(wm * t))
 
 class ScalarFunction():
     """Scalar function"""
