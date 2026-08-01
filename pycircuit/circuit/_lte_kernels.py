@@ -192,14 +192,7 @@ def extrapolate(v_hist, h_hist, h_curr):
         raise ValueError('need %d step sizes for %d points, got %d'
                          % (n - 1, n, len(h_hist)))
 
-    ## Divided-difference table, built on a copy so the caller's history is not
-    ## consumed.  `dd[i]` descends to the i-th order difference in place.
-    dd = list(v_hist)
-    coeffs = [dd[0]]
-    for j in range(1, n):
-        for i in range(n - 1, j - 1, -1):
-            dd[i] = (dd[i] - dd[i - 1]) / (times[i] - times[i - j])
-        coeffs.append(dd[j])
+    coeffs = divided_differences(v_hist, times)
 
     ## Horner-like accumulation of c0 + c1 (t-t0) + c2 (t-t0)(t-t1) + ...
     out = coeffs[0]
@@ -208,6 +201,58 @@ def extrapolate(v_hist, h_hist, h_curr):
         basis = basis * (h_curr - times[j - 1])
         out = out + coeffs[j] * basis
     return out
+
+
+def divided_differences(v_hist, times):
+    """Newton divided-difference coefficients for the given nodes.
+
+    Built on a copy so the caller's history is not consumed; ``dd[i]`` descends
+    to the i-th order difference in place.
+    """
+    n = len(v_hist)
+    dd = list(v_hist)
+    coeffs = [dd[0]]
+    for j in range(1, n):
+        for i in range(n - 1, j - 1, -1):
+            dd[i] = (dd[i] - dd[i - 1]) / (times[i] - times[i - j])
+        coeffs.append(dd[j])
+    return coeffs
+
+
+def extrapolate_with_derivative(v_hist, h_hist, h_curr):
+    """``(P(h_curr), dP/dt at h_curr)`` from one divided-difference table.
+
+    STAGE 12B.  The derivative is what makes Fang's ``d = df_lte/dh_m`` a closed
+    form: with ``eps = |v_m - P(h)|`` and ``v_m`` held fixed, the partial
+    derivative with respect to the step size is just ``-sign(v_m - P) P'(h)``.
+    Computing it alongside ``P`` shares the table, which is the expensive part.
+
+    The basis and its derivative are accumulated together:
+
+        b_0 = 1,            b_j = b_{j-1} (t - t_{j-1})
+        b'_0 = 0,           b'_j = b'_{j-1} (t - t_{j-1}) + b_{j-1}
+    """
+    n = len(v_hist)
+    if n == 0:
+        raise ValueError('extrapolate_with_derivative needs at least one point')
+
+    times = extrapolation_times(h_hist)[:n]
+    if len(times) < n:
+        raise ValueError('need %d step sizes for %d points, got %d'
+                         % (n - 1, n, len(h_hist)))
+
+    coeffs = divided_differences(v_hist, times)
+
+    value = coeffs[0]
+    deriv = coeffs[0] * 0.0
+    basis, dbasis = 1.0, 0.0
+    for j in range(1, n):
+        dt = h_curr - times[j - 1]
+        dbasis = dbasis * dt + basis
+        basis = basis * dt
+        value = value + coeffs[j] * basis
+        deriv = deriv + coeffs[j] * dbasis
+    return value, deriv
 
 
 def extrapolation_error_weight(h_curr, h_hist):

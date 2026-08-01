@@ -588,3 +588,57 @@ class SolutionLTEController(StepController):
         h_next = min(self._damp(predict(target / max(err, 1e-12)), h_curr),
                      max_step)
         return True, h_next
+
+    def lte_gradients(self, x_curr, x_hist, h_hist, h_curr, etol):
+        """Fang's ``q^T`` and ``d`` for the LTE equation, both in closed form.
+
+        Returns ``(index, q_value, d)`` for
+
+            f_lte(v_m, h_m) = |v_i - P_i(h_m)| / etol_i - target
+
+        where ``i`` is the controlling LTE node and ``P`` is the extrapolation
+        from the accepted history.
+
+        **``q^T`` is a single nonzero.**  ``P`` is built from PAST solutions
+        only, so it does not depend on ``v_m`` at all, and
+
+            q^T = d f_lte / d v_m = sign(v_i - P_i) / etol_i  on column ``i``,
+                                    zero everywhere else.
+
+        Returned as ``(index, value)`` rather than a dense row because a dense
+        ``R^{1xN}`` of zeros is a poor way to say "one entry", and the bordered
+        solve wants the index anyway.
+
+        **``d`` is the derivative of the extrapolation.**  Holding ``v_m`` fixed,
+
+            d = d f_lte / d h_m = -sign(v_i - P_i) P'_i(h_m) / etol_i.
+
+        Together these are what section 3.2's "p, q^T and d can be computed
+        explicitly with negligible computational costs" actually refers to; the
+        claim is only true for an LTE in solution space, which is why it was a
+        useful signal that the charge-based estimator was the wrong quantity.
+
+        TWO APPROXIMATIONS, both deliberate and both ours rather than the
+        paper's:
+
+          * ``etol`` is treated as constant.  Under `relref='pointlocal'` it
+            depends on ``|x_curr|`` and so contributes a second term; under the
+            default `sigglobal` it is a running maximum over the whole run and
+            is genuinely constant with respect to this time point's unknowns.
+          * the coupling of ``v_m`` to ``h_m`` through the circuit equations is
+            NOT in ``d``.  That is correct: eq (12) is a partial-derivative
+            block system, and that coupling is exactly what ``p`` and ``J``
+            carry.
+        """
+        from pycircuit.circuit._lte_kernels import extrapolate_with_derivative
+
+        P, dP = extrapolate_with_derivative(x_hist, h_hist, h_curr)
+        dev = x_curr - P
+        scaled = abs(dev) / etol
+        i = int(np.argmax(scaled))
+
+        ## `sign` of exactly zero would make both gradients vanish and the
+        ## bordered row degenerate; +1 is the correct one-sided choice because
+        ## the quantity being differentiated is an absolute value at its minimum.
+        s = 1.0 if dev[i] >= 0.0 else -1.0
+        return i, s / etol[i], -s * dP[i] / etol[i]

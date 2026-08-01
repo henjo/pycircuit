@@ -155,3 +155,135 @@ def test_it_does_not_blow_up_as_the_step_shrinks():
     ## measurement is fitted rather than derived.  The two directional assertions
     ## above are the property; the sweep is printed by the 12B benchmark for
     ## anyone who wants the magnitudes.
+
+
+## ---------------------------------------------------------------------------
+## GATE 12B-1 -- the derivatives, against central finite differences of the same
+## residual.  This is the gate that catches a sign error: in a bordered system a
+## wrong sign does not raise, it makes the step size walk the wrong way, which
+## looks like a tuning problem for a long time.
+
+def _f_lte(ctrl, x, x_hist, h_hist, h, etol, target=0.0):
+    """The scalar residual the gradients are supposed to differentiate."""
+    P = K.extrapolate(x_hist, h_hist, h)
+    return float(np.max(np.abs(x - P) / etol)) - target
+
+
+def _setup():
+    from pycircuit.circuit.stepcontroller import SolutionLTEController
+    rng = np.random.default_rng(20260801)
+    h_hist = [1.3e-6, 8.0e-7]
+    times = K.extrapolation_times(h_hist)[:3]
+    ## A smooth vector history with different curvature per unknown, so the
+    ## controlling index is not trivially the same entry every time.
+    fns = (lambda t: np.sin(3e5 * t),
+           lambda t: 0.4 * np.cos(1.1e5 * t),
+           lambda t: 2.0 + 1e4 * t ** 2)
+    x_hist = [np.array([f(t) for f in fns]) for t in times]
+    h = 9.0e-7
+    x_curr = np.array([f(h) for f in fns]) + 1e-4 * rng.standard_normal(3)
+    etol = np.array([1e-3, 2e-3, 5e-4])
+    return SolutionLTEController(), x_curr, x_hist, h_hist, h, etol
+
+
+def test_extrapolation_derivative_is_exact_on_polynomials():
+    """`dP/dt` against a CLOSED FORM, not a finite difference.
+
+    A degree-`k` extrapolation reproduces a degree-`k` polynomial exactly, so its
+    derivative is known exactly too -- and comparing against that is strictly
+    better than a central difference here. The finite-difference version of this
+    test failed on a component of size 2.0 with `eps=1e-11`: the difference of
+    two nearly-equal values divided by 2e-11 has a relative noise floor around
+    1e-5, and the *analytic* value was the correct one. Checking against
+    arithmetic rather than against a differencing scheme avoids arguing with the
+    noise floor of the test itself.
+    """
+    h_hist = [1.3e-6, 8.0e-7]
+    times = K.extrapolation_times(h_hist)[:3]
+    ## Distinct quadratics, including one with a large constant term -- that is
+    ## the component the finite-difference form could not resolve.
+    coefs = [(0.0, 1.0, 0.0), (2.0, 0.0, 1e4), (-1.0, 3e5, -2e10)]
+    poly = lambda c, t: c[0] + c[1] * t + c[2] * t ** 2
+    dpoly = lambda c, t: c[1] + 2.0 * c[2] * t
+
+    v_hist = [np.array([poly(c, t) for c in coefs]) for t in times]
+    h = 9.0e-7
+    P, dP = K.extrapolate_with_derivative(v_hist, h_hist, h)
+
+    ## TOLERANCE, DERIVED RATHER THAN FITTED.  The divided-difference table
+    ## divides by the time gaps twice, so a component carrying a constant offset
+    ## of ~2 over times of ~1e-6 loses about 2*eps_mach/(1.3e-6 * 2.1e-6) ~ 7e-5
+    ## absolute on the second coefficient -- roughly 7e-9 relative to c2 = 1e4,
+    ## and the derivative inherits it. Measured: 3.9e-9. So 1e-7 is a few times
+    ## the conditioning limit of the algorithm, not a number chosen to pass.
+    for i, c in enumerate(coefs):
+        assert P[i] == pytest.approx(poly(c, h), rel=1e-9, abs=1e-15)
+        assert dP[i] == pytest.approx(dpoly(c, h), rel=1e-7, abs=1e-15)
+
+    ## One table, two answers: the value must match the standalone call exactly.
+    assert np.allclose(P, K.extrapolate(v_hist, h_hist, h), rtol=1e-14)
+
+
+def test_extrapolation_derivative_matches_a_finite_difference():
+    """The same derivative on a non-polynomial history, where no closed form
+    exists -- so a finite difference is the only check available.
+
+    `eps` is scaled to the step size and the comparison is made where the
+    difference is well conditioned; the quadratic case above carries the exact
+    check.
+    """
+    h_hist = [1.3e-6, 8.0e-7]
+    times = K.extrapolation_times(h_hist)[:3]
+    v_hist = [np.array([np.sin(3e5 * t), 0.4 * np.cos(1.1e5 * t)])
+              for t in times]
+    h = 9.0e-7
+
+    _P, dP = K.extrapolate_with_derivative(v_hist, h_hist, h)
+    eps = 1e-4 * h
+    fd = (K.extrapolate(v_hist, h_hist, h + eps)
+          - K.extrapolate(v_hist, h_hist, h - eps)) / (2 * eps)
+    assert np.allclose(dP, fd, rtol=1e-6), '%r vs %r' % (dP, fd)
+
+
+def test_q_row_matches_a_finite_difference_in_the_solution():
+    """`q^T = df_lte/dv`, and that it really is a single nonzero column."""
+    ctrl, x, x_hist, h_hist, h, etol = _setup()
+    i, q_val, _d = ctrl.lte_gradients(x, x_hist, h_hist, h, etol)
+
+    eps = 1e-9
+    for j in range(len(x)):
+        xp, xm = x.copy(), x.copy()
+        xp[j] += eps
+        xm[j] -= eps
+        fd = (_f_lte(ctrl, xp, x_hist, h_hist, h, etol)
+              - _f_lte(ctrl, xm, x_hist, h_hist, h, etol)) / (2 * eps)
+        expected = q_val if j == i else 0.0
+        assert fd == pytest.approx(expected, abs=1e-4), \
+            'column %d: finite difference %g, analytic %g' % (j, fd, expected)
+
+
+def test_d_matches_a_finite_difference_in_the_step_size():
+    """`d = df_lte/dh` with the solution held fixed -- sign included."""
+    ctrl, x, x_hist, h_hist, h, etol = _setup()
+    _i, _q, d = ctrl.lte_gradients(x, x_hist, h_hist, h, etol)
+
+    eps = 1e-12
+    fd = (_f_lte(ctrl, x, x_hist, h_hist, h + eps, etol)
+          - _f_lte(ctrl, x, x_hist, h_hist, h - eps, etol)) / (2 * eps)
+    assert d == pytest.approx(fd, rel=1e-4), 'analytic %g, finite diff %g' % (d, fd)
+    ## Not vacuously zero -- a gradient test that passes on 0 == 0 checks nothing.
+    assert abs(d) > 1e-3
+
+
+def test_gradients_are_nonzero_when_the_deviation_is_exactly_zero():
+    """The degenerate case, which must not produce an all-zero bordered row.
+
+    If the computed solution lands exactly on the extrapolation, `sign(0)` taken
+    naively is 0 and both gradients vanish -- the LTE row of eq (12) becomes
+    `0 = 0` and the solve is singular. The one-sided choice keeps the row alive.
+    """
+    ctrl, _x, x_hist, h_hist, h, etol = _setup()
+    x_on_curve = K.extrapolate(x_hist, h_hist, h)
+    i, q_val, d = ctrl.lte_gradients(x_on_curve, x_hist, h_hist, h, etol)
+    assert q_val != 0.0
+    assert 0 <= i < len(x_on_curve)
