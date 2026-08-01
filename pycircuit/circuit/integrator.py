@@ -1,4 +1,11 @@
 from abc import ABC, abstractmethod
+
+from pycircuit.circuit._lte_kernels import (bdf2_alphas, bdf2_companion,
+                                            bdf2_derivative,
+                                            euler_companion,
+                                            trapezoidal_companion,
+                                            second_divided_difference,
+                                            third_divided_difference as _tdd)
 import math
 import warnings
 
@@ -17,42 +24,11 @@ import warnings
 ## the shrink and leave the growth unwatched.
 ZERO_STABILITY_RATIO = 1.0 + math.sqrt(2.0)
 
-def third_divided_difference(q_curr, q_last, h_curr, h_last, h_last2):
-    """Estimate `q'''/6` from four charges, exactly and without a ratio-dependent bias.
+## STAGE 9(a).  The definition moved to `_lte_kernels` so the JAX backend can
+## reach the same one; re-exported here because this is where callers and tests
+## have always imported it from, and moving a name is not this change's job.
+third_divided_difference = _tdd
 
-    STAGE 4i.  Both second-order methods here need the same quantity: their local
-    truncation errors are `-(1/6) h1 (h1+h2) q3` for Gear-2 and `-(1/6) h1^2 q3` for
-    trapezoidal, where `q3` is the third derivative of the charge.  Only the
-    constant differs, so only the constant belongs in the integrators.
-
-    THE POINT IS WHAT IS DIFFERENCED.  By the mean-value form of the polynomial
-    interpolation error,
-
-        q[t_n, t_{n-1}, t_{n-2}, t_{n-3}] = q3(zeta) / 6
-
-    for some `zeta` in the span, **with no coefficient that depends on the step
-    ratios**.  Every previous formulation in this file lacked that property and was
-    wrong off a uniform grid in consequence:
-
-      * differencing `g` (the companion currents) differences the method's OWN
-        truncation error along with the signal, because each `g_k` carries
-        `-(1/6) h_k (h_k + h_{k-1}) q3`.  Predicted and measured at 83x for Gear-2
-        at a step ratio of 0.008, which three consecutive rejections reach.
-      * differencing `d_k = (q_k - q_{k-1})/h_k` -- what trapezoidal used between
-        4g(b) and 4i -- is far better, because `d` carries no parasitic mode, but
-        `d_k = q'(m_k) + (h_k^2/24) q3(m_k)` still has a term that depends on
-        `h_k` and so does not cancel off a uniform grid.  Worth +-12% at the
-        extremes.
-
-    The charge itself carries no method error at all, which is why this form
-    measures flat to 1.004x across the whole reachable ratio range.
-    """
-    d1 = (q_curr - q_last[0]) / h_curr
-    d2 = (q_last[0] - q_last[1]) / h_last
-    d3 = (q_last[1] - q_last[2]) / h_last2
-    dd_a = (d1 - d2) / (h_curr + h_last)
-    dd_b = (d2 - d3) / (h_last + h_last2)
-    return (dd_a - dd_b) / (h_curr + h_last + h_last2)
 
 
 ## WHY THERE IS NO `lte_formula` PARAMETER.  Removed in stage 9(f), 2026-07-31.
@@ -176,10 +152,7 @@ class EulerIntegrator(Integrator):
         return self
         
     def compute_derivatives(self, q_curr, C_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit):
-        resultEuler = (q_curr - q_last[0]) / h_curr
-        iq = resultEuler
-        geq = C_curr / h_curr
-        return iq, geq
+        return euler_companion(q_curr, C_curr, q_last[0], h_curr)
         
     def compute_lte(self, q_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit,
                     h_last2=None):
@@ -241,10 +214,9 @@ class TrapezoidalIntegrator(Integrator):
         return self
         
     def compute_derivatives(self, q_curr, C_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit):
-        resultTrap = 2 * (q_curr - q_last[0]) / h_curr - iq_last[0]
-        iq = resultTrap
-        geq = C_curr / h_curr / 0.5
-        return iq, geq
+        ## `2*C/h`, which is what `C/h/0.5` computed -- both are exact scalings by
+        ## two in binary floating point, so this is bit-identical, not merely equal.
+        return trapezoidal_companion(q_curr, C_curr, q_last[0], iq_last[0], h_curr)
         
     def compute_lte(self, q_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit,
                     h_last2=None):
@@ -422,15 +394,10 @@ class Gear2Integrator(Integrator):
         # polynomial fit through the current point (n) and two previous points (n-1, n-2).
         # These coefficients mathematically convert the continuous time derivative dq/dt 
         # into a discrete algebraic equivalent.
-        alpha0 = (2 * h_curr + h_last) / (h_curr * (h_curr + h_last))
-        alpha1 = -(h_curr + h_last) / (h_curr * h_last)
-        alpha2 = h_curr / (h_last * (h_curr + h_last))
-        
-        # Equivalent conductance represents the 'algorithmic resistance' introduced by the timestep
-        geq = C_curr * alpha0
-        # The numerical derivative of charge
-        iq = alpha0 * q_curr + alpha1 * q_last[0] + alpha2 * q_last[1]
-        return iq, geq
+        ## STAGE 9(a) -- one definition, shared with jaxtransient.  These three
+        ## coefficients had three copies in source and two in tests.
+        return bdf2_companion(q_curr, C_curr, q_last[0], q_last[1],
+                              h_curr, h_last)
         
     def compute_lte(self, q_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit,
                     h_last2=None):
@@ -507,10 +474,7 @@ class Gear2Integrator(Integrator):
         # step, saturates the growth limiter every step, pins h at max_step and
         # stops responding to reltol/abstol altogether.
         h1, h2 = h_curr, h_last
-        alpha0 = (2 * h1 + h2) / (h1 * (h1 + h2))
-        alpha1 = -(h1 + h2) / (h1 * h2)
-        alpha2 = h1 / (h2 * (h1 + h2))
-        g_n = alpha0 * q_curr + alpha1 * q_last[0] + alpha2 * q_last[1]
+        g_n = bdf2_derivative(q_curr, q_last[0], q_last[1], h1, h2)
         g_nm1 = iq_last[0]
         g_nm2 = iq_last[1] if len(iq_last) > 1 else iq_last[0]
 

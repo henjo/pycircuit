@@ -3908,6 +3908,72 @@ actually returned.
 OUTCOME: **PASS. Suite 814 passed, 6 skipped, 0 failed**, against 812 before plus
 the two tests added here.
 
+## 9(a) — `_lte_kernels.py`, the shared scalar algebra
+
+**Started 2026-08-01, last of stage 9 and deliberately so:** it is a pure refactor, and the
+gates that make it safe (9-1..9-3, 9d, 9e, 9g) did not exist until this session. Doing a
+deduplication with no JAX step-control coverage is how the two backends diverged in the
+first place.
+
+**The plan's count is off, and in the right direction.** It says *"five copies of the same
+three VSS alpha coefficients"*. Measured: **three in source** —
+`integrator.py:425` (Gear2 companion current), `integrator.py:510` (Gear2's LTE fallback,
+reconstructing `g_n`), `jaxtransient.py:95` (`gear2_step`) — plus two in tests. One source
+copy was already removed by 9(f) when `estimate_lte` was deleted. Recorded because a
+duplication count is exactly the kind of number that gets quoted without recounting.
+
+**Why this stage earned itself three times over.** Every defect stage 9 found was a fix that
+existed on one backend and not the other: 4i's Gear2 error constant (gate 9-1(a)), stage 3's
+opening step (9(g)), and 9(d)'s breakpoint scan. None was a new bug; each was a repair that
+did not cross the copy.
+
+**Gate 9a-1 (genuinely backend-agnostic).** The module must import neither `numpy` nor
+`jax` — the formulas are elementwise arithmetic on `(q, C, g, h)` and need only operators.
+Declared: an import check, plus the same kernel called with numpy and JAX inputs agreeing to
+float tolerance.
+OUTCOME: **PASS.** `_lte_kernels.py` imports nothing at all — asserted structurally, by reading its
+own source, so the test fails for the right reason on a machine without JAX rather than by
+failing to trace. Verified to trace under `jax.jit`, and the same kernel called with numpy
+and JAX inputs agrees to float64 round-off (`bdf2_companion` exactly 0.000e+00;
+euler/trapezoidal 3.6e-12 and 7.3e-12 on values of order 1e5, i.e. ~1e-16 relative).
+
+**Gate 9a-2 (nothing moves).** **Bit-identical** on the full baseline — 15 CPU runs and the
+JAX runs. Declared at bit-identical rather than "close": a refactor that changes a number is
+not a refactor, and this is precisely the gate the rest of stage 9 was built to make
+possible.
+OUTCOME: **PASS. All 17 baseline runs bit-identical**, `max|diff| = 0.000e+00` — 9 CPU, 6 CPU
+pulse, **and both JAX runs**. This is the gate the rest of stage 9 existed to make
+possible: a refactor of the shared numerics, checked against a recorded baseline on both
+backends at once, which was not expressible at the start of this stage.
+
+**One expression did have to move, and it is recorded rather than absorbed.**
+`jaxtransient.trap_step` computed `(2/dt) * (q_n - q_{n-1})` where `integrator.py` computes
+`2 * (q_n - q_{n-1}) / dt` — algebraically equal, **two roundings against one**, so the two
+backends already disagreed in the last bits. Unifying necessarily moves one; it moves the
+JAX one, onto the form with fewer roundings. No production path reaches it today
+(`eval_method` is hard-coded to `'gear'` at both call sites), which is why the baseline is
+still bit-identical.
+
+**Gate 9a-3 (the duplication is actually gone).** One definition of the VSS alphas in
+source, reached by both backends. Declared as a grep, because "shared" is easy to claim and
+easy to half-do — a kernel module that one backend quietly does not call is worse than two
+honest copies.
+OUTCOME: **PASS: one definition in source**, `_lte_kernels.py:42`, reached by both backends.
+Asserted by *identity* rather than by value in the test —
+`integrator.third_divided_difference is _lte_kernels.third_divided_difference`, and
+`gear2_step` returns exactly `bdf2_companion` — because two copies that happen to agree
+today is precisely the state this replaced, and a value check passes against it.
+
+**One copy remains in the tests, deliberately.** `test_transient_repairs._gear2_true_lte`
+derives the coefficients independently to compute the *exact* truncation error the
+estimator is checked against. Pointing it at the kernel would make the estimator its own
+reference, which is the one thing a test of numerics must not do.
+
+**Gate 9a-4.** Full suite.
+OUTCOME: **PASS. Suite 824 passed, 6 skipped, 0 failed**, against 817 before plus
+the seven kernel tests added here. No existing test needed changing, which for a pure
+refactor is the expected result rather than a reassuring one.
+
 ## 9(g) — the opening step, and reconciling `dt_max`
 
 **Raised 2026-08-01, while explaining the `dt_max` question rather than acting on it.** The

@@ -5,6 +5,10 @@ import warnings
 
 import jax.numpy as jnp
 
+from pycircuit.circuit._lte_kernels import (bdf2_companion, euler_companion,
+                                            trapezoidal_companion,
+                                            second_divided_difference,
+                                            euler_lte, gear2_lte)
 from pycircuit.circuit.analysis import Analysis
 from pycircuit.circuit.nrsolver import NoConvergenceError
 from pycircuit.utilities.param import Parameter
@@ -80,25 +84,28 @@ class TransientState(NamedTuple):
 # Phase 1: Pure Functional Integrators
 # ---------------------------------------------------------------------------
 
+## STAGE 9(a) -- these three were transcriptions of `integrator.py`'s.  They now
+## call the one definition in `_lte_kernels`, which is plain arithmetic and so
+## traces under `jax.jit` unchanged.
+##
+## Euler and Gear-2 were already bit-for-bit the same expression, so those runs do
+## not move.  TRAPEZOIDAL DID DIFFER: this file computed `(2/dt) * (q_n - q_{n-1})`
+## where `integrator.py` computes `2 * (q_n - q_{n-1}) / dt` -- algebraically equal,
+## but two roundings against one, so the last bits differed between the backends.
+## Unifying necessarily moves one of them; it moves this one, onto the form with the
+## fewer roundings.  `eval_method` is hard-coded to 'gear' at both call sites, so no
+## production path reaches `trap_step` today.
+
 def backward_euler_step(q_curr, C_curr, q_prev, dt):
-    i_curr = (q_curr - q_prev) / dt
-    g_curr = C_curr / dt
-    return i_curr, g_curr
+    return euler_companion(q_curr, C_curr, q_prev, dt)
+
 
 def trap_step(q_curr, C_curr, q_prev, iq_prev, dt):
-    i_curr = (2.0 / dt) * (q_curr - q_prev) - iq_prev
-    g_curr = (2.0 / dt) * C_curr
-    return i_curr, g_curr
+    return trapezoidal_companion(q_curr, C_curr, q_prev, iq_prev, dt)
 
 
 def gear2_step(q_curr, C_curr, q_prev1, q_prev2, dt_curr, dt_prev):
-    alpha0 = (2.0 * dt_curr + dt_prev) / (dt_curr * (dt_curr + dt_prev))
-    alpha1 = -(dt_curr + dt_prev) / (dt_curr * dt_prev)
-    alpha2 = dt_curr / (dt_prev * (dt_curr + dt_prev))
-    
-    i_curr = alpha0 * q_curr + alpha1 * q_prev1 + alpha2 * q_prev2
-    g_curr = alpha0 * C_curr
-    return i_curr, g_curr
+    return bdf2_companion(q_curr, C_curr, q_prev1, q_prev2, dt_curr, dt_prev)
 
 def compute_integration(q_curr, C_curr, state: TransientState, method='trap'):
 
@@ -311,7 +318,7 @@ def ywr_error_ratio(i_curr, x_curr, x_last, J, state: TransientState, irefnode,
     g_nm2 = state.iq_history[1]
 
     if method == 'euler':
-        Eg = -0.5 * (g_n - g_nm1)
+        Eg = euler_lte(g_n, g_nm1)
         order_p1 = 2.0
     elif method in ('gear', 'gear2'):
         ## STAGE 9, gate 9-1(a) -- THE 3/4 OPTIMISM, FOUND A THIRD TIME.
@@ -332,9 +339,12 @@ def ywr_error_ratio(i_curr, x_curr, x_last, J, state: TransientState, irefnode,
         ## of the companion current and multiply by the method's own error
         ## constant, so the coefficient is derived rather than transcribed.
         h1, h2 = dt, dt_prev
-        dd2_g = ((g_n - g_nm1) / h1 - (g_nm1 - g_nm2) / h2) / (h1 + h2)
-        q_triple_prime = 2.0 * dd2_g
-        Eg = -(1.0 / 6.0) * h1 * (h1 + h2) * q_triple_prime
+        ## `second_divided_difference` returns q'''/2 and `gear2_lte` wants q'''/6,
+        ## hence the /3.  Both live in `_lte_kernels` so the normalisation is stated
+        ## once -- pairing an estimate with a differently-normalised constant is
+        ## exactly how the 3/4 optimism survived in two places.
+        q3_over_6 = second_divided_difference(g_n, g_nm1, g_nm2, h1, h2) / 3.0
+        Eg = gear2_lte(h1, h2, q3_over_6)
         order_p1 = 3.0
     else:  # trapezoidal
         Eg = -(1.0 / 6.0) * (g_n - 2.0 * g_nm1 + g_nm2)
