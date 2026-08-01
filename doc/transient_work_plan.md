@@ -3735,9 +3735,10 @@ but *slowly*, which is the same conclusion by measurement rather than by extrapo
 assembly, not the solve, sets the pace.
 
 **n=2000 remains unmeasured.** That row was killed rather than completed (one row printed,
-no traceback), so nothing is claimed for it. Circuit *construction* at these sizes is
-itself very slow — element insertion looks O(n^2) — which is its own finding and is not
-the solver's.
+no traceback), so nothing is claimed for it. **The cause is now measured and scheduled as
+2+.5**: circuit *construction* is O(N^2.27) — 24.8 s to build an 800-element ladder — so
+the solver work this row was meant to measure never got the chance to run. 2+.5 is a
+prerequisite for measuring anything at n >= 1000.
 
 **Still open: 7c (KLU), 7d (`pybsmatrix` deletion and the sparse-toolkit test), and the
 `factor()` decision above.**
@@ -5046,6 +5047,85 @@ OUTCOME:
 never materialises the dense matrix makes this moot by construction, and doing both is
 wasted work. **That is the more likely outcome and this item should be checked against
 7b's design before anyone starts it.**
+
+---
+
+## 2+.5 — circuit CONSTRUCTION is O(N^2.27): 25 s to build an 800-element ladder
+
+**Raised 2026-08-01 by stage 7b, where an `n=2000` measurement had to be abandoned.**
+Written up as an item rather than left in a commit message, per the lesson of 2+.4.
+
+**This is construction, not assembly, and the two must not be conflated.** Assembly —
+`cir.G(x)`, `cir.C(x)`, run every Newton iteration — measures **N^1.26** and is fine.
+Construction is `cir['R1'] = R(...)`, run once, and it is the one that is quadratic.
+Measured on a numeric RC ladder:
+
+| N | elements | construct | per element | vs linear |
+|---|---|---|---|---|
+| 25 | 50 | 0.049 s | 982 us | 1.00x |
+| 50 | 100 | 0.163 s | 1631 us | 1.66x |
+| 100 | 200 | 0.707 s | 3536 us | 3.60x |
+| 200 | 400 | 4.449 s | 11123 us | 11.33x |
+| 400 | 800 | **24.765 s** | 30956 us | **31.53x** |
+
+**Fitted N^2.27.** Per element it is 31x worse at N=400 than at N=25. A 1600-node circuit
+could not be built inside a ten-minute budget at all, which is why 7b's `n=2000` row was
+killed rather than completed — **the solver work it was meant to measure never ran**.
+
+**Two independent mechanisms, both named by the profile at N=400:**
+
+| cost | calls | time |
+|---|---|---|
+| `list.index` | 642,400 | 27.6 s |
+| `circuit.py:70 Node.__eq__` | **129,042,200** | 17.1 s |
+| `update_node_map` | 800 | 3.9 s |
+
+1. **`circuit.py:1144` does `self.nodes.index(node)`** — a linear scan of the node list per
+   node per element, each step calling `Node.__eq__`. **`Node` already defines `__hash__`
+   (`hash(self.name)`)**, so the nodes are hashable and a dict would make this O(1). The
+   129 million `__eq__` calls are that scan; `__eq__` is a `try` / bare `except` around a
+   name comparison, so each one also pays exception-handler setup.
+2. **`update_node_map()` rebuilds the entire map from scratch**, and is called **once per
+   element insertion** — 800 rebuilds for 800 elements. Inserting one element adds one
+   entry; it should not re-derive the other 799.
+
+Either fix alone helps; together they should make construction linear. They are listed
+separately because they are separately testable and a combined change would not be
+attributable.
+
+**Gate 2+.5-1 (node indices are UNCHANGED).** The most important gate, and the reason this
+is not a trivial change: `self.nodes.index(node)` produces the **matrix row index**, so any
+reordering silently permutes every `G`, `C` and `J` in the package. Declared: for a set of
+circuits including one with global nodes and one with subcircuit hierarchy, the full
+`elementnodemap` must be **equal element-by-element** to today's. A dict built by insertion
+order preserves this in Python 3.7+, but that must be asserted, not assumed.
+OUTCOME:
+
+**Gate 2+.5-2 (bit-identical results).** Stage 2's inherited stop condition: waveform drift
+exactly `0.00e+00` and identical step counts on the full baseline, or stop. Construction
+feeds indices only — nothing numerical should move, so unlike 2+.4 this bar is expected to
+be reachable and a failure means the indices moved.
+OUTCOME:
+
+**Gate 2+.5-3 (the scaling is actually fixed).** Declared *before* implementation: fitted
+exponent **<= 1.3** over N = 25..400, and N=800 built in **under 5 s** — a case that is
+untestable today at ~100 s. A speedup ratio alone is not the gate; the exponent is, because
+a constant-factor win would leave the wall in the same place.
+OUTCOME:
+
+**Gate 2+.5-4.** Full suite, and `test_circuit.py` in particular — the node map is what
+everything else indexes through.
+OUTCOME:
+
+**Note for whoever takes 2+.4:** that item wants assembly to write into a reduced matrix
+directly, which also touches `update_node_map`'s index arithmetic. **Do 2+.5 first** — it
+is smaller, it is a strict prerequisite for measuring anything at n >= 1000, and 2+.4's
+gates are unmeasurable until a circuit that size can be built.
+
+**Reconsider if** profiling shows the `__eq__` cost dominates the `index` cost rather than
+being caused by it — then the cheaper first move is `Node.__eq__` alone (drop the bare
+`except`, compare `type` then `name`), which is a two-line change and would be worth
+measuring before the dict work.
 
 ---
 
