@@ -15,13 +15,13 @@
 > (`git@github.com:henjo/pycircuit.git`) — **check `git status -sb` before assuming it is
 > pushed**; several commits have sat unpushed at a time in this work.
 >
-> **Suite: 840 passed, 6 skipped, 0 failed** (`-m "" --timeout=400`). Runtimes this session
+> **Suite: 844 passed, 6 skipped, 0 failed** (`-m "" --timeout=400`). Runtimes this session
 > ranged 676 s to 1941 s on near-identical source, entirely from other jobs on the box —
 > see trap 2 before reading anything into one. Nominal
 > ~8-13 min, but one run of the identical tree took **31m41s** purely from machine load —
-> see trap 2. **Doc build: succeeded, 2 warnings, 0 ERROR — last verified at `d060b13` (9(f)),
-> NOT re-run since**; stages 9(d)/(e)/(g), 7a and 7b changed code the docs import, so treat
-> it as unverified until rebuilt. The two warning *lines*
+> see trap 2. **Doc build: succeeded, 2 warnings, 0 ERROR, 0 degraded `exec-rst` blocks** —
+> re-verified 2026-08-01 after D2, by reading the built page rather than the exit code: both
+> generated tables in `lte_dae.html` hold live numbers. The two warning *lines*
 > were read, not just counted: both are pre-existing autodoc failures importing
 > `pycircuit.post.cds`. It was 3 warnings until 0.3d, when `example6.rst` was found broken
 > by an earlier change in this session; see trap 11. Working tree clean.
@@ -48,16 +48,12 @@
 > 1.1-1.3x end to end, because **the solve is only ~8% of a transient** — 7b measured
 > 1.09x at n=402, 1.20x at n=802, 1.25x at n=1202 against isolated solver wins of 28-74x.
 >
-> **Two decisions are open and are the maintainer's, not the implementer's:**
->
-> 1. **7b-2 / `LinearSolver.factor()`** — reusing Newton's factors for the step
->    controller's `J^-1 Eg` solve would remove a third of all linear solves, but it
->    substitutes `J(x_k)` for `J(x_conv)` (median 5.5e-9, max 2.2e-5) and so cannot be
->    bit-identical. The seam exists and returns `None`; whether to accept the approximation
->    is not taken.
-> 2. **`dt_max`** — `solve` and `Transient` both clamp to `timestep`; `solve_batched` used
->    `tend/10` until 9(g) reconciled it. Whether `timestep` is the right default at all is
->    untouched.
+> **Both open decisions are now TAKEN — see "DECISIONS TAKEN, 2026-08-01".** D1: factor
+> reuse is **deferred**, not rejected — it saves ~2.7%% of runtime at today's sizes and costs
+> bit-identity, and becomes worth ~20%% only once 2+.5 makes n=5000 circuits buildable. D2:
+> `max_step` is now a parameter on both backends, defaulting to `None` (= `timestep`), so
+> the default moves nothing while a quiescent run can ask for SPICE's `tend/50` and get
+> **8.9x fewer steps at equal accuracy**.
 >
 > **Also queued, with gates already declared:** 2+.4 (assemble the reduced system directly)
 > and **2+.5 (circuit construction is O(N^2.27) — 24.8 s to build an 800-element ladder)**.
@@ -4953,6 +4949,99 @@ being caused by it — then the cheaper first move is `Node.__eq__` alone (drop 
 `except`, compare `type` then `name`), which is a two-line change and would be worth
 measuring before the dict work.
 
+---
+
+
+## DECISIONS TAKEN, 2026-08-01
+
+### D1 — `LinearSolver.factor()` / 7b-2 factor reuse: **DEFERRED, not rejected**
+
+Reusing Newton's last factorisation for the step controller's `J^-1 Eg` solve would remove
+**33.1%** of all linear solves (measured: 228 Newton against 113 controller over 111
+steps). It is deferred on arithmetic, not on principle:
+
+- The solve is **~8% of a transient** at n~300, so removing a third of them saves
+  **~2.7% of runtime**.
+- It costs **bit-identity**, because it substitutes `J(x_k)` for `J(x_conv)` — median
+  5.5e-9, max 2.2e-5, exactly zero on linear circuits where `J` depends only on `dt`.
+- Bit-identity is what made every safe refactor of this session possible: 7a, 7b and 9(a)
+  each passed on `max|diff| = 0.000e+00`, and 9(a) was a five-copy deduplication that
+  nobody would have dared without it.
+
+**2.7% is a poor price for that.** The seam exists and returns `None`, with the reasoning
+on it.
+
+**Reconsider when 2+.5 lands.** At n=5000, 7a's scaling table puts LU at **60%** of the
+step rather than 8%, so the same change becomes **~20%** and the trade flips. It cannot be
+evaluated before then, because circuits that size cannot currently be *built* — which is
+2+.5.
+
+### D2 — `dt_max`: keep `timestep`, add an explicit `max_step`
+
+**Measured both ways before deciding.** On a run of `5 tau` the clamp is mostly irrelevant:
+above `timestep ~ 3e-4` the **error controller** becomes binding and `max dt` stalls at
+2.97e-4 however much slack the clamp is given. There the clamp only bites when a finer grid
+was explicitly requested, which is the caller getting what they asked for.
+
+On a run of `100 tau` — ~99% quiescent — it is clamped at **every** setting:
+
+| timestep | steps | max dt | final err | |
+|---|---|---|---|---|
+| 1e-4 | **1027** | 1.000e-4 | 4.4e-16 | clamped |
+| 1e-3 | 158 | 1.000e-3 | 0.0 | clamped |
+| 1e-2 | 75 | 1.000e-2 | 2.6e-14 | clamped |
+
+**1027 steps across a dead-flat solution whose error is 4e-16.** That is the real cost, and
+it is paid by exactly the circuits that idle.
+
+**Decision: `max_step` becomes a parameter defaulting to `None`, meaning `timestep`.**
+Changing the *default* would move every waveform in the package for a benefit only
+idle-heavy circuits see; making it *reachable* costs nothing and lets a caller ask for
+SPICE's own `TMAX` behaviour.
+
+**Gate D2-1 (nothing moves by default).** `max_step=None` must be bit-identical on the full
+17-run baseline. Declared at bit-identical because this is a pure plumbing change when the
+parameter is not set.
+OUTCOME: **PASS.** All 17 baseline runs `max|diff| = 0.000e+00`, and a test asserts `max_step=None`
+and `max_step=timestep` give the identical step count and identical `max dt`.
+
+**Gate D2-2 (it actually frees the step).** On the `100 tau` quiescent run, `max_step`
+larger than `timestep` must cut the step count substantially while the final error stays at
+the same order. Declared: **>= 3x fewer steps at `max_step = tend/50`**, and final error no
+worse than 10x. A change that frees the clamp without reducing steps would mean the
+controller was never the thing being held back.
+OUTCOME: **PASS, comfortably past the declared 3x.** On the `100 tau` quiescent run at
+`timestep = 1e-4`:
+
+| max_step | steps | max dt | final err | |
+|---|---|---|---|---|
+| None (= 1e-4) | 1027 | 1.000e-4 | 4.441e-16 | |
+| 1e-3 | 161 | 1.000e-3 | **0.0** | 6.4x fewer |
+| 2e-3 (SPICE's `tend/50`) | 116 | 2.000e-3 | **0.0** | **8.9x fewer** |
+
+The error does not degrade — it *improves* to exactly zero, because the settled solution is
+flat and fewer steps accumulate less round-off. The test asserts the step-count **ratio**
+with the error held, not an absolute count, so it says "the clamp was what held it back"
+rather than pinning today's number.
+
+**Gate D2-3 (both backends, one meaning).** `Transient` and `JAXTransient` must take the
+same parameter with the same default, since 9(d)/(g) exist because the two drifted. A
+`max_step` below `timestep` is a caller error, not a silent clamp — declared to raise.
+OUTCOME: **PASS.** `max_step` on `Transient` and `JAXTransient` with the same name and the same
+`None` default, asserted by a test that compares the two parameter lists rather than
+trusting that both were edited. Wired at all four clamp sites — `_solve`, `_solve_coupled`,
+`JAXTransient.solve`, `solve_batched`. `max_step < timestep` raises on both, naming both
+values: the step can never exceed `max_step`, so accepting one silently discards the
+`timestep` the caller asked for.
+
+**Gate D2-4.** Full suite.
+OUTCOME: **PASS. Suite 844 passed, 6 skipped, 0 failed**, one summary line per trap 15, against 840
+plus the four tests added here.
+
+**Doc build re-run and verified by content:** `build succeeded, 2 warnings, 0 ERROR`, **0
+degraded `exec-rst` blocks**, and both generated tables in `lte_dae.html` hold live numbers
+rather than rendered source. This retires the "unverified since `d060b13`" label the resume
+block was carrying.
 ---
 
 # MAINTAINER DECISIONS, 2026-07-31

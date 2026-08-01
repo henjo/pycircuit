@@ -300,6 +300,12 @@ class Transient(Analysis):
          ## unevaluated because there is no history to difference against.  `None`
          ## means `timestep * 1e-3`; see `Transient._opening_step` for why opening
          ## at `timestep` made `reltol` unable to influence the answer at all.
+         Parameter(name='max_step',
+                   desc='Largest accepted timestep; None means timestep. Raise it '
+                        'to let the controller coast through quiescent intervals '
+                        '(SPICE calls this TMAX and defaults it to tend/50)',
+                   unit='s',
+                   default=None),
          Parameter(name='firststep',
                    desc='Size of the first timestep; None means timestep*1e-3. '
                         'The first step cannot be error-checked, so taking it at '
@@ -678,7 +684,31 @@ class Transient(Analysis):
         self._is_first_step = True
         self._no_history = True
         t = 0.0
-        max_step = timestep
+        ## DECISION D2, 2026-08-01.  The clamp on how large an ACCEPTED step may
+        ## grow.  It defaults to `timestep` -- the historical behaviour, and what
+        ## `.tran tstep` means to most callers -- but it is now reachable.
+        ##
+        ## Measured before deciding.  On a run of ~5 tau the clamp is mostly
+        ## irrelevant: above `timestep ~ 3e-4` the ERROR CONTROLLER becomes binding
+        ## and `max dt` stalls at 2.97e-4 however much slack the clamp is given.
+        ## But on a run of 100 tau, ~99% of it quiescent, it is clamped at every
+        ## setting -- **1027 steps to traverse a dead-flat solution whose error is
+        ## 4.4e-16**.  That cost is paid by exactly the circuits that idle, which is
+        ## most mixed-signal ones.
+        ##
+        ## The DEFAULT is not changed: doing so would move every waveform in the
+        ## package for a benefit only idle-heavy runs see.  SPICE's own default for
+        ## the equivalent knob (`TMAX`) is `(tstop - tstart)/50`, which a caller can
+        ## now ask for directly.
+        max_step = self.par.max_step
+        if max_step is None:
+            max_step = timestep
+        elif max_step < timestep:
+            raise ValueError(
+                "max_step (%g) is smaller than timestep (%g). The step can never "
+                "exceed max_step, so this silently overrides the timestep you "
+                "asked for; pass a smaller timestep instead, or max_step=None to "
+                "use timestep as the clamp." % (max_step, timestep))
         ## The opening ramp exists to stop the ONE step the controller cannot check
         ## from dominating the run.  Under `fixed_timestep` there is no controller
         ## and `dt` is never updated, so ramping would not open small and grow -- it
@@ -1023,7 +1053,14 @@ class Transient(Analysis):
         t = 0.0
         ## Same opening ramp as `solve()` -- this path had the same defect.
         h = self._opening_step(timestep)
-        max_step = timestep
+        ## DECISION D2 -- same clamp as `_solve`; see the note there.
+        max_step = self.par.max_step
+        if max_step is None:
+            max_step = timestep
+        elif max_step < timestep:
+            raise ValueError(
+                "max_step (%g) is smaller than timestep (%g); pass a smaller "
+                "timestep instead, or max_step=None." % (max_step, timestep))
         TRTOL = 7.0
         minstep = getattr(self.par, 'minstep', 1e-18)
 

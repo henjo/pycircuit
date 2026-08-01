@@ -2097,3 +2097,92 @@ def test_lte_vector_is_a_current_not_a_charge():
             % (cls.__name__, order, scaled))
         assert scaled[1] == pytest.approx(scaled[2], rel=1e-9, abs=0.0), (
             '%s: Eg/h^%d is not constant (%r)' % (cls.__name__, order, scaled))
+
+
+## ---------------------------------------------------------------------------
+## DECISION D2: max_step, the clamp on how large an accepted step may grow.
+## ---------------------------------------------------------------------------
+
+def _settling_rc():
+    from pycircuit.circuit.elements import SubCircuit, R, C, VS
+    from pycircuit.circuit import numeric, gnd
+    cir = SubCircuit(toolkit=numeric)
+    cir['V1'] = VS(1, gnd, v=1.0)
+    cir['R1'] = R(1, 2, r=1e3)
+    cir['C1'] = C(2, gnd, c=1e-6)
+    return cir
+
+
+def _quiescent_run(max_step, timestep=1e-4, tau=1e-3):
+    """100*tau, so ~99% of the run is a dead-flat settled solution."""
+    import warnings
+    import numpy as np
+    from pycircuit.circuit import numeric, gnd
+    from pycircuit.circuit.transient import Transient
+    kw = {} if max_step is None else {'max_step': max_step}
+    tran = Transient(_settling_rc(), toolkit=numeric, reltol=1e-4, uic=True, **kw)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = tran.solve(refnode=gnd, tend=100 * tau, timestep=timestep)
+    t = np.asarray(res.sweep_values, dtype=float)
+    v = np.asarray(res.v(2, gnd), dtype=float)
+    return len(t), float(np.diff(t).max()), abs(v[-1] - (1.0 - np.exp(-t[-1] / tau)))
+
+
+def test_max_step_default_is_timestep():
+    """The default must not move anything: None means timestep, as before.
+
+    Changing the default would move every waveform in the package for a benefit
+    only idle-heavy runs see, which is why D2 made the knob reachable rather than
+    changing what it reaches by default.
+    """
+    n_none, dt_none, _e = _quiescent_run(None)
+    n_explicit, dt_explicit, _e2 = _quiescent_run(1e-4)   # == timestep
+    assert n_none == n_explicit
+    assert dt_none == dt_explicit == pytest.approx(1e-4, rel=1e-12)
+
+
+def test_max_step_frees_the_controller_on_a_quiescent_run():
+    """The case D2 exists for: 1027 steps across a dead-flat solution.
+
+    Asserted as a step-count RATIO with the error held, not as an absolute count,
+    so the test says "the clamp was what held it back" rather than pinning today's
+    number.  A change that frees the clamp without reducing steps would mean the
+    controller was never the thing being limited.
+    """
+    n_clamped, _dt, e_clamped = _quiescent_run(None)
+    n_free, dt_free, e_free = _quiescent_run(100 * 1e-3 / 50.0)   # SPICE's TMAX
+
+    assert n_free * 3 <= n_clamped, \
+        'freeing max_step cut steps only %d -> %d' % (n_clamped, n_free)
+    assert dt_free > 1e-4, 'the step never grew past the old clamp'
+    assert e_free <= max(e_clamped, 1e-12) * 10, \
+        'accuracy fell off a cliff: %.3e -> %.3e' % (e_clamped, e_free)
+
+
+def test_max_step_below_timestep_raises():
+    """A caller error, not a silent override.
+
+    The step can never exceed max_step, so accepting one smaller than `timestep`
+    would quietly discard the timestep that was asked for.
+    """
+    with pytest.raises(ValueError, match='smaller than timestep'):
+        _quiescent_run(1e-6)
+
+
+def test_both_backends_agree_on_the_parameter():
+    """D2-3: same name, same default, on Transient and JAXTransient.
+
+    9(d) and 9(g) both exist because these two drifted apart on exactly this kind
+    of detail, so the agreement is asserted rather than assumed.
+    """
+    from pycircuit.circuit.transient import Transient
+    cpu = {p.name: p.default for p in Transient.parameters}
+    assert 'max_step' in cpu and cpu['max_step'] is None
+
+    pytest.importorskip('jax')
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    jax_pars = {p.name: p.default for p in JAXTransient.parameters}
+    assert 'max_step' in jax_pars, 'JAXTransient is missing max_step'
+    assert jax_pars['max_step'] == cpu['max_step'], \
+        'the two backends default max_step differently'

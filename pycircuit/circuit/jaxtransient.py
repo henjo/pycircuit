@@ -653,6 +653,14 @@ class JAXTransient(Analysis):
         Parameter(name='maxiter', desc='Maximum number of iterations', unit='',
                   default=100),
         ## STAGE 9(g).  Ported from `Transient`, same name, default and validation.
+        ## DECISION D2 -- the same knob as `Transient.max_step`, same name and same
+        ## default, because 9(d) and 9(g) both exist because these two backends had
+        ## drifted apart on exactly this kind of detail.
+        Parameter(name='max_step',
+                  desc='Largest accepted timestep; None means timestep. Raise it to '
+                       'let the controller coast through quiescent intervals (SPICE '
+                       'calls this TMAX and defaults it to tend/50)',
+                  unit='s', default=None),
         Parameter(name='firststep',
                   desc='Size of the first timestep; None means timestep*1e-3. '
                        'The first step cannot be error-checked, so taking it at '
@@ -680,6 +688,22 @@ class JAXTransient(Analysis):
                     "scaling step. It was previously accepted and ignored. Use "
                     "Transient for a circuit that needs %r."
                     % (unsupported, unsupported))
+
+    def _max_step(self, timestep):
+        """The clamp on how large an accepted step may grow -- decision D2.
+
+        `Transient` has the identical method; a `max_step` below `timestep` is a
+        caller error rather than a silent override, because the step can never
+        exceed it and accepting one quietly would discard the timestep asked for.
+        """
+        max_step = getattr(self.par, 'max_step', None)
+        if max_step is None:
+            return timestep
+        if max_step < timestep:
+            raise ValueError(
+                "max_step (%g) is smaller than timestep (%g); pass a smaller "
+                "timestep instead, or max_step=None." % (max_step, timestep))
+        return float(max_step)
 
     def _opening_step(self, timestep):
         """The size of the first step of a run.
@@ -765,7 +789,7 @@ class JAXTransient(Analysis):
             ## so the same circuit at the same requested timestep was error-
             ## controlled to two different standards depending on which was called.
             ## `timestep` matches `solve` and matches `Transient.max_step`.
-            dt_max = timestep
+            dt_max = self._max_step(timestep)
             
         t_breaks_array = jnp.array(collect_breakpoints(self.cir, tend))
         
@@ -912,7 +936,7 @@ class JAXTransient(Analysis):
                 x0 = DC(self.cir).solve().x
             
         dt_min = kwargs.get('minstep', 1e-18)
-        dt_max = timestep # Legacy transient limits dt_max to tstep by default
+        dt_max = self._max_step(timestep)
     
         t_breaks_array = jnp.array(collect_breakpoints(self.cir, tend))
     
