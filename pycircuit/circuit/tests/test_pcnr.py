@@ -187,34 +187,22 @@ def test_pcnr_and_limiting_agree_on_a_rectifier_waveform():
         'waveforms differ, median %g V' % float(np.median(d))
 
 
-def test_pcnr_reaches_the_same_accuracy_in_far_fewer_steps():
-    """MEASURED, and it is the opposite of what the DC gates suggested.
-
-    At matched tolerance PCNR lands within 1% of limiting's error against a
-    tight reference while using several times fewer time steps. The likely
-    mechanism -- not yet confirmed -- is that limiting leaves `G` linearised
-    around `_vlim` while `i` uses the node voltage, so the Jacobian is not the
-    derivative of the residual, and the LTE estimate built from that solve is
-    corrupted into forcing small steps.
-
-    Gate 13-4 measured cost per iteration on DC, which has no step controller,
-    so it structurally could not see this.
-    """
-    tref, vref, _ = _run_tran(False, reltol=1e-7)
-
-    def err(t, v):
-        return float(np.max(np.abs(np.interp(tref, t, v) - vref)))
-
-    tl, vl, sl = _run_tran(False, reltol=1e-5)
-    tp, vp, sp = _run_tran(True, reltol=1e-5)
-
-    assert sp < sl / 2.0, \
-        'PCNR used %d steps against limiting\'s %d -- the step reduction is gone' \
-        % (sp, sl)
-    assert err(tp, vp) < 1.2 * err(tl, vl), \
-        'PCNR bought its steps with accuracy: %g against %g' \
-        % (err(tp, vp), err(tl, vl))
-
+## RETIRED 2026-08-02 -- `test_pcnr_reaches_the_same_accuracy_in_far_fewer_steps`
+## asserted `steps_pcnr < steps_limiting / 2`, which was TRUE ONLY BECAUSE OF A
+## DEFECT.  `_solve_timestep_pcnr` handed the step controller `cir.G(x) + Geq`,
+## and on the PCNR path `Diode.G` linearises around a `_vlim` that nothing
+## updates, so that matrix had no diode conductance in it.  The controller formed
+## `J^-1 Eg` from it and took steps 6.6x too large.
+##
+## The test therefore encoded the bug as a requirement, and would have blocked the
+## fix.  Its replacement asserts the opposite and correct property -- that the two
+## paths agree step for step, since they differ only in the iteration path and a
+## converged Newton solution does not depend on the route taken to it.  See
+## `test_gate_13_6_pcnr_and_limiting_take_the_same_steps` below.
+##
+## Kept as a comment rather than deleted because "PCNR is several times faster in
+## transient" was a documented headline result, and a silent deletion leaves no
+## trace of why it stopped being one.
 
 def test_a_circuit_with_no_pcnr_device_falls_through():
     """`pcnr=True` on a linear circuit must solve it, not refuse it."""
@@ -253,3 +241,134 @@ def test_a_charge_storing_pcnr_device_is_refused():
         P.augmented_system(c, x, np.zeros(len(js)), js,
                            J_extra=np.zeros((c.n, c.n)))
     assert 'charge storage' in str(exc.value)
+
+
+## ---------------------------------------------------------------------------
+## GATE 13-6.  The Jacobian `_solve_timestep_pcnr` hands to the step controller
+## must be the one it actually solved.
+##
+## `Diode.G` linearises around `self._vlim`, written only by `Diode.limit` --
+## which PCNR never calls, because limiting is what PCNR replaces.  `_vlim`
+## therefore froze at its initial value (measured: 0.0 V across 2283 `G`
+## evaluations while the junction swung -18.47 to 0.75 V), so `cir.G(x)` carried
+## no diode conductance at all.
+##
+## It cancelled inside `augmented_system` -- added by `cir.G` and subtracted
+## again by the per-device loop -- so the solved system and every converged
+## voltage were right, and every DC test passed.  It escaped through exactly one
+## door: the matrix returned to the step controller, which forms `J^-1 Eg`.
+## These two tests watch that door from both sides.
+## ---------------------------------------------------------------------------
+
+def _mains_rectifier():
+    """NOT `_rectifier` above: a 50 Hz 10 V mains rectifier with a 100 uF
+    reservoir, whose diode swings -18.5 to +0.75 V. The wide reverse excursion is
+    what makes a frozen `_vlim` show up as a 18.5 V discrepancy rather than a
+    rounding difference."""
+    from pycircuit.circuit.circuit import SubCircuit
+    from pycircuit.circuit import gnd
+    from pycircuit.circuit.elements import R, C, VSin, Diode
+    c = SubCircuit()
+    c['VS'] = VSin(1, gnd, va=10.0, freq=50.0)
+    c['D1'] = Diode(1, 2)
+    c['C1'] = C(2, gnd, c=100e-6)
+    c['R1'] = R(2, gnd, r=1e3)
+    return c
+
+
+def test_gate_13_6_controller_jacobian_carries_live_diode_conductance():
+    """The returned J must hold IS/VT exp(v/VT) at the CONVERGED junction voltage.
+
+    Fails against the defect by 12 orders of magnitude: frozen at v=0 the entry
+    is IS/VT ~ 4e-12 S, while forward-biased it is ~1e-2 S.  Asserting a ratio
+    rather than an absolute value keeps the test independent of `IS` and `VT`.
+    """
+    import warnings
+    import numpy as np
+    from pycircuit.circuit import gnd, numeric
+    from pycircuit.circuit.transient import Transient
+
+    cir = _mains_rectifier()
+    tran = Transient(cir, toolkit=numeric, reltol=1e-5, pcnr=True)
+
+    ia = cir.get_node_index('1')
+    ib = cir.get_node_index('2')
+    seen = []
+
+    real = Transient._solve_timestep_pcnr
+
+    def spy(self, *a, **k):
+        x, feval, J, f = real(self, *a, **k)
+        v = float(x[ia] - x[ib])
+        ## The diode's own contribution to the node-2 diagonal.  Node 2 also
+        ## carries R1 and C1's companion, so compare the OFF-DIAGONAL entry,
+        ## which only the diode writes.
+        seen.append((v, -float(J[ib, ia])))
+        return x, feval, J, f
+
+    Transient._solve_timestep_pcnr = spy
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            tran.solve(tend=0.01, timestep=1e-4)
+    finally:
+        Transient._solve_timestep_pcnr = real
+
+    assert seen, 'the PCNR timestep path never ran'
+
+    ## VT is k*T/q at the *analysis* temperature, so recompute it exactly as
+    ## `pcnr_didv` does rather than hardcoding a value -- a constant here was
+    ## wrong by 2.2% in `g`, which at this v is a 0.5 mV error in VT.
+    from pycircuit.circuit.circuit import defaultepar
+    epar = tran.epar if hasattr(tran, 'epar') else defaultepar
+    VT = numeric.kboltzmann * epar.T / numeric.qelectron
+    IS = cir['D1'].iparv.IS
+
+    ## Check where the conductance is large enough to be unambiguous; near
+    ## reverse bias every model agrees on "approximately zero".
+    checked = 0
+    for v, g in seen:
+        g_exact = IS * np.exp(v / VT) / VT
+        if g_exact < 1e-6:
+            continue
+        assert g == pytest.approx(g_exact, rel=1e-6), (
+            'J[2,1] = %.6e but the diode at v=%.6f V has g=%.6e; the Jacobian '
+            'given to the step controller is not the one that was solved' %
+            (g, v, g_exact))
+        checked += 1
+    assert checked > 20, 'only %d forward-biased points -- test is not exercising it' % checked
+
+
+def test_gate_13_6_pcnr_and_limiting_take_the_same_steps():
+    """PCNR and classic limiting must agree -- step for step, not merely closely.
+
+    They differ only in the ITERATION PATH; a converged Newton solution is
+    whatever the residual says it is, independent of the route.  Equal solutions
+    give equal LTE and hence equal step sequences, so any divergence in step
+    count is a defect signature.  Against the gate 13-6 defect this reported
+    4.1-6.8x fewer steps for PCNR.
+    """
+    import warnings
+    import numpy as np
+    from pycircuit.circuit import gnd, numeric
+    from pycircuit.circuit.transient import Transient
+
+    out = {}
+    for pcnr in (False, True):
+        tran = Transient(_mains_rectifier(), toolkit=numeric, reltol=1e-5, pcnr=pcnr)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(tend=0.01, timestep=1e-4)
+        w = res.v(2, gnd)
+        out[pcnr] = (tran.statistics.accepted_steps,
+                     np.asarray(w.x, dtype=float).ravel(),
+                     np.asarray(w.y, dtype=float).ravel())
+
+    n_lim, t_lim, v_lim = out[False]
+    n_pc, t_pc, v_pc = out[True]
+
+    assert n_pc == n_lim, ('PCNR took %d steps, limiting %d -- the two paths '
+                           'solve the same equations and must agree' % (n_pc, n_lim))
+    assert len(t_pc) == len(t_lim)
+    assert np.allclose(t_pc, t_lim, rtol=1e-9, atol=0.0), 'step sequences differ'
+    assert np.max(np.abs(v_pc - v_lim)) < 1e-9 * max(1.0, np.max(np.abs(v_lim)))

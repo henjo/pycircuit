@@ -5656,6 +5656,71 @@ per-iteration work, not more iterations. The existing limiting tests pass unchan
 shows convergence degrading — in which case the honest result is to keep classic limiting,
 fix gates 13-1 and 13-2, and record why PCNR was not adopted.
 
+**Gate 13-6 (NEW — the Jacobian handed to the step controller is the one that was solved).**
+Added 2026-08-02, prompted by the question *"is the ordinary device limiting active when PCNR
+is used? I guess it should not be."* It should not be, and it is not — but asking exposed a
+**remnant** of it that invalidated gate 13-5's headline transient measurement.
+
+**The defect.** `Diode.G` linearises around `self._vlim`, which only `Diode.limit` writes.
+PCNR never calls `limit`, because limiting is the thing PCNR replaces. So `_vlim` keeps
+whatever value it was first given and the diode's conductance is frozen there. Instrumented
+on a half-wave rectifier:
+
+| path | `limit()` calls | `G()` calls | distinct `_vlim` | `_vlim` range | true junction range | max abs error |
+|---|---|---|---|---|---|---|
+| limiting | 4112 | 5978 | 3607 | −18.4731 .. 0.7435 | −18.4731 .. 0.7499 | 3.10e-01 |
+| **PCNR** | **1** | **2283** | **1** | **0.0000 .. 0.0000** | −18.4712 .. 0.7498 | **1.85e+01** |
+
+`cir.G(x)` therefore carried **no diode conductance at all** for the entire run.
+
+**Why every test passed anyway.** Inside `augmented_system` the stale value is added by
+`cir.G(x)` and subtracted again by the per-device loop, so it cancels exactly — the solved
+system was always right, which is why gates 13-3 and 13-5 and every DC test were clean and
+the converged answers agreed to 1e-6. The corruption escaped through one door only:
+`_solve_timestep_pcnr` returned `J = cir.G(x) + Geq` to the **step controller**, which
+computes `lte = J^-1 Eg`. That mapped the truncation error through a Jacobian missing the
+nonlinearity. **The bug was unreachable from DC and invisible to every assertion that looked
+at a voltage.**
+
+**What it invalidates.** Gate 13-5's transient table reported PCNR taking 4.1-6.8x fewer
+steps. That number was the defect. Corrected, with the Schur matrix — which `predict` already
+factorises, and which at convergence (`v_lim == e_a − e_b`) *is* the Jacobian of the residual
+— returned instead:
+
+| circuit | limiting steps | PCNR steps | limiting max err | PCNR max err |
+|---|---|---|---|---|
+| half wave | 3314 | **3314** | 1.2456e-03 | **1.2456e-03** |
+| full wave | 3418 | **3418** | 1.2735e-02 | **1.2735e-02** |
+| charge pump | 1095 | **1095** | 4.5138e-03 | **4.5138e-03** |
+| clipper | 693 | **693** | 1.3604e-01 | **1.3604e-01** |
+
+Identical in every column, and the accepted-error distributions (median/p10/p90) match to
+four figures on all four. Verified the PCNR path really runs rather than silently falling
+back: 1766 PCNR timesteps vs 1 classic solve with `pcnr=True`, 0 vs 1767 with `pcnr=False`,
+both giving `v(2) max = 9.335271001`.
+
+**And identity is the correct answer.** The limiter and PCNR's `refine` change only the
+*iteration path*; the converged solution of a Newton method is whatever the residual says it
+is, independent of the route taken. Equal solutions give equal LTE, hence equal steps. **A
+measured difference in step count between the two paths is now a defect signature, not a
+feature** — which is what the regression test asserts.
+
+OUTCOME: **PASS, and it retracts the stage's headline claim.** Three earlier conclusions fall
+with it, all recorded rather than edited away:
+  - the 4.1-6.8x step reduction — **withdrawn**, it was this bug;
+  - "the DC gates structurally could not see this effect" — **wrong**, and itself derived
+    from the buggy measurement; gate 13-4's off-by-default conclusion stands on its original
+    evidence;
+  - "limiting's LTE estimate is inflated by 25-30% at matched `h`" (0.8091 vs 0.6397 in the
+    `1.58e-6 – 6.31e-6` bin) — **withdrawn**, the same artefact seen from another angle.
+
+**The residual hazard, recorded and not fixed.** `cir.G(x)` returns a *wrong Jacobian* during
+a PCNR run, for any caller. One consumer existed and is fixed; nothing prevents the next one.
+The clean fix is for devices to stop stamping their nonlinear part into `G` at all — which is
+exactly the assembly change gate 13-4 declined in order to keep PCNR a layer. **Reconsider
+if** a second consumer of `cir.G` appears on the PCNR path, or if PCNR is ever made default;
+either turns this from a latent trap into an active one.
+
 ---
 
 ## Order and dependencies

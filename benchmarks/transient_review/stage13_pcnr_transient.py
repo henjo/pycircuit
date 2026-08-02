@@ -1,23 +1,34 @@
 """STAGE 13 -- does PCNR's step reduction survive beyond one circuit?
 
-On a half-wave rectifier, PCNR reached the same accuracy as classic limiting
-using 4.1x to 6.8x FEWER time steps.  One circuit is not evidence about a method,
-and gate 13-4's "off by default" was decided on DC measurements, where there is
-no step controller and the effect could not appear at all.
-
-This runs the diode-bearing stress circuits both ways and asks two questions
-separately:
+IT DOES NOT, BECAUSE THERE WAS NEVER ONE.  This script was written to generalise
+a result -- "on a half-wave rectifier PCNR reached the same accuracy using 4.1x
+to 6.8x fewer time steps" -- and instead it is what localised the defect that
+produced that number.  The header is kept in its original interrogative form,
+with the answers recorded, because the questions were the right ones.
 
   1. Does the step reduction hold, at matched accuracy?  Accuracy is measured
      against a TIGHT run of the classic path, so a method cannot win by being
      fast and wrong.
-  2. Is the mechanism the one claimed?  The hypothesis is that limiting leaves
+     ANSWER: NO.  The two paths are now IDENTICAL on all four circuits -- same
+     step count, same accepted-error distribution to four figures.  Identity is
+     the correct answer: the limiter and PCNR's `refine` change only the
+     iteration path, and a converged Newton solution is whatever the residual
+     says it is, independent of the route to it.
+
+  2. Is the mechanism the one claimed?  The hypothesis was that limiting leaves
      `G` linearised around `_vlim` while `i` is evaluated at the node voltage, so
-     the Jacobian is not the derivative of the residual and the LTE estimate
-     built from that solve is corrupted into forcing small steps.  If that is
-     right, the ACCEPTED-STEP ERROR distribution should differ: limiting should
-     sit well below its target, having been scared into small steps, where PCNR
-     should sit on it.
+     limiting's LTE estimate is corrupted into forcing small steps -- predicting
+     that limiting should sit well below its error target and PCNR on it.
+     ANSWER: NO, and it was backwards.  The inconsistency is real, but the
+     corrupted estimate was PCNR'S.  `Diode.G` linearises around `_vlim`, which
+     only `Diode.limit` writes -- and PCNR never calls it.  `_vlim` froze at
+     0.0 V while the junction swung -18.47 to 0.75 V, so the matrix returned to
+     the step controller held no diode conductance and it took steps 6.6x too
+     large.  It cancelled inside `augmented_system`, which is why DC saw nothing.
+
+Both answers were reached by measurement refuting a plausible mechanism, which is
+the only reason the defect surfaced at all.  Keep the two questions separate when
+re-running: a step count that moves is now a DEFECT SIGNATURE, not a result.
 
 Run:
     MPLBACKEND=Agg PYTHONPATH=. python benchmarks/transient_review/stage13_pcnr_transient.py
@@ -39,7 +50,7 @@ def half_wave():
     c['D1'] = Diode(1, 2)
     c['C1'] = C(2, gnd, c=100e-6)
     c['R1'] = R(2, gnd, r=1e3)
-    return c, dict(tend=0.05, timestep=1e-4), (2, gnd)
+    return c, dict(tend=0.05, timestep=1e-4), (2, gnd), False
 
 
 def full_wave():
@@ -50,7 +61,7 @@ def full_wave():
     c['D3'] = Diode(2, 3); c['D4'] = Diode(gnd, 2)
     c['C1'] = C(3, gnd, c=10e-6)
     c['R1'] = R(3, gnd, r=100)
-    return c, dict(tend=0.04, timestep=1e-4), (3, gnd)
+    return c, dict(tend=0.04, timestep=1e-4), (3, gnd), False
 
 
 def charge_pump():
@@ -59,7 +70,9 @@ def charge_pump():
     c['C1'] = C(1, 2, c=1e-6)
     c['D1'] = Diode(gnd, 2); c['D2'] = Diode(2, 3)
     c['C2'] = C(3, gnd, c=1e-6)
-    return c, dict(tend=50e-6, timestep=1e-7, uic=True), (3, gnd)
+    ## `uic` is a constructor parameter, not a `solve()` kwarg -- passing it
+    ## through `**kw` raised TypeError and lost this circuit entirely.
+    return c, dict(tend=50e-6, timestep=1e-7), (3, gnd), True
 
 
 def clipper():
@@ -68,7 +81,7 @@ def clipper():
     c['R'] = R(1, 2, r=100.0)
     c['D1'] = Diode(2, gnd); c['D2'] = Diode(gnd, 2)
     c['C'] = C(2, gnd, c=1e-9)
-    return c, dict(tend=2e-3, timestep=1e-5), (2, gnd)
+    return c, dict(tend=2e-3, timestep=1e-5), (2, gnd), False
 
 
 CASES = [('half wave', half_wave), ('full wave', full_wave),
@@ -76,8 +89,8 @@ CASES = [('half wave', half_wave), ('full wave', full_wave),
 
 
 def run(build, pcnr, reltol, collect_err=False):
-    c, kw, probe = build()
-    tran = Transient(c, toolkit=numeric, reltol=reltol, pcnr=pcnr)
+    c, kw, probe, uic = build()
+    tran = Transient(c, toolkit=numeric, reltol=reltol, pcnr=pcnr, uic=uic)
     errs = []
     if collect_err:
         real = sc.IntegralController.evaluate_step

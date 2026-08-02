@@ -52,11 +52,13 @@ deliberate rather than an omission: a forward-junction limiter would step
 straight through the breakdown knee, which is a second exponential running the
 other way. It gets the direction-agnostic exponent clamp instead.
 
-What PCNR would change, and why it is not this
-==============================================
+What PCNR changes, and what it is worth
+=======================================
 
 The paper — Aadithya, Keiter & Mei, *"Predictor/Corrector Newton-Raphson
-(PCNR)"*, Sandia — makes three changes, none of which is present here:
+(PCNR)"*, Sandia — makes three changes. All three are now implemented in
+``pycircuit/circuit/pcnr.py``, selectable with ``pcnr=True`` and **off by
+default**:
 
 1. **Every limited quantity becomes an MNA unknown.** The vector grows to
    ``x = [x_MNA; x_lim]``, with a residual row ``v_Dk − (e_a − e_b) = 0`` tying
@@ -69,13 +71,54 @@ The paper — Aadithya, Keiter & Mei, *"Predictor/Corrector Newton-Raphson
    because the ``lim/lim`` block is the identity, so the linear system actually
    solved stays the size of the original MNA system.
 
-The inconsistency PCNR removes is real and is present here. On a toolkit without
-automatic differentiation, ``Diode.G`` linearises around the *limited* voltage
-while ``Diode.i`` evaluates at the *node* voltage — the Jacobian and the residual
-are taken at different points. ``Semiconductor`` avoids it differently, by moving
-the evaluation point itself so that everything is evaluated consistently.
+The inconsistency PCNR removes is real. On a toolkit without automatic
+differentiation, ``Diode.G`` linearises around the *limited* voltage while
+``Diode.i`` evaluates at the *node* voltage — the Jacobian and the residual are
+taken at different points. ``Semiconductor`` avoids it differently, by moving the
+evaluation point itself so that everything is evaluated consistently.
 
-Whether PCNR is adopted depends on two measurements that have not been made:
-whether the Schur elimination is genuinely free, and whether the method converges
-at least as often as limiting does on the nonlinear stress circuits. **A method
-that is more consistent and converges less often is not an improvement.**
+What it costs, and what it does not buy
+=======================================
+
+PCNR converges everywhere classic limiting does, including six circuits chosen to
+make limiting matter, and agrees with it to 1e-6 relative. Iteration counts are
+within one throughout, so the extra consistency buys no extra iterations. The
+cost is per-iteration assembly work, and it is not free: devices still stamp
+their nonlinear part into ``G`` and it has to be subtracted again. Reaching the
+paper's cost would mean devices not stamping that part at all — an assembly
+change, and the one this implementation deliberately avoided in order to remain a
+layer.
+
+**In transient, PCNR and classic limiting produce identical results** — the same
+step count, the same step times, and the same waveform to nine figures on a
+half-wave rectifier, a full-wave rectifier, a charge pump and a clipper.
+
+That identity is not a disappointment; it is the correct answer, and worth stating
+plainly because an earlier version of this page claimed otherwise. The limiter and
+PCNR's ``refine`` change only the *iteration path*. A converged Newton solution is
+whatever the residual says it is, independent of the route taken to it, so equal
+solutions give equal truncation error and hence equal steps. **A measured
+difference in transient step count between the two paths is a defect signature,
+not a feature.** It is asserted as such by
+``test_gate_13_6_pcnr_and_limiting_take_the_same_steps``.
+
+A trap for anyone extending this
+================================
+
+``Diode.G`` linearises around ``self._vlim``, which only ``Diode.limit`` writes —
+and PCNR never calls ``limit``, since limiting is what it replaces. During a PCNR
+run ``_vlim`` therefore holds a stale value and **``cir.G(x)`` returns a Jacobian
+with no diode conductance in it**.
+
+Inside ``augmented_system`` this cancels exactly: the same wrong value is added by
+``cir.G(x)`` and subtracted again by the per-device loop, so the system that gets
+solved is correct and every converged voltage is right. That is why the defect
+survived every DC test. It escaped through one door only — the matrix handed to
+the transient step controller, which forms ``lte = J⁻¹ Eg`` — and there it changed
+the step count by 6.6x.
+
+So: **do not call ``cir.G(x)`` on the PCNR path and expect a usable Jacobian.**
+The matrix to use is the Schur matrix that ``predict`` already factorises; at
+convergence ``v_lim == e_a − e_b``, so it *is* the Jacobian of the residual with
+respect to ``x``. The underlying hazard is only contained, not removed — the clean
+fix is the assembly change described above.

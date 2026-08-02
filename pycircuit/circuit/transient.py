@@ -1456,7 +1456,22 @@ class Transient(Analysis):
             x_new[irefnode] = 0.0
             v_new = _pcnr.refine(junctions, v_lim, v_lim + dx_lim, self.epar)
 
-            done = bool(self.toolkit.alltrue(
+            ## BOTH residuals, not just the MNA one.
+            ##
+            ## `solve_dc` checks `g_lim` and this path did not, which means it
+            ## could return with `v_lim != e_a - e_b` -- the diode evaluated at a
+            ## voltage that is not the node voltage, so the returned vector is
+            ## not a solution of the circuit at all.  Everything downstream then
+            ## inherits it: the charge history is wrong, and the LTE estimate
+            ## built from that history reads low, so the step controller takes
+            ## large steps believing they are accurate.  Measured on a half-wave
+            ## rectifier as a median accepted error of 0.0066 against a target of
+            ## 0.81, while the actual waveform error was 2.5x worse than the
+            ## classic path's.
+            lim_ok = bool(np.max(np.abs(g_lim))
+                          < reltol * max(float(np.max(np.abs(v_new))), 1.0)
+                          + self.par.vabstol)
+            done = lim_ok and bool(self.toolkit.alltrue(
                 abs(dx_mna) < reltol * abs(x_new) + xtol))
             x, v_lim = x_new, v_new
             if done:
@@ -1464,8 +1479,40 @@ class Transient(Analysis):
                 q = self.cir.q(x, self.epar)
                 self._q_cache = (x, q)
                 iq, Geq = self.get_diff(q, C)
-                J = self.toolkit.array(self.cir.G(x, self.epar) + Geq,
-                                       dtype=float)
+
+                ## THE JACOBIAN HANDED TO THE STEP CONTROLLER MUST BE THE ONE
+                ## THIS PATH ACTUALLY SOLVED, and `cir.G(x) + Geq` is not it.
+                ##
+                ## `Diode.G` linearises around `_vlim`, which only `Diode.limit`
+                ## updates -- and PCNR never calls it, because limiting is the
+                ## thing PCNR replaces.  So `_vlim` stays at whatever it was
+                ## first set to and the diode's conductance is frozen there:
+                ## measured on a half-wave rectifier as `_vlim` stuck at 0.0 V
+                ## across 2283 `G` evaluations while the junction actually swung
+                ## -18.47 to 0.75 V.  `cir.G(x)` therefore carries NO diode
+                ## conductance at all.
+                ##
+                ## Inside `augmented_system` that cancels -- the same wrong value
+                ## is added by `cir.G` and subtracted again -- but the controller
+                ## computes `lte = J^-1 Eg`, so handing it that matrix maps the
+                ## truncation error through a Jacobian missing the diode.
+                ##
+                ## The right matrix is the one `predict` factorises: the non-PCNR
+                ## part plus each junction's `didv` as a rank-one update.  At
+                ## convergence `v_lim == e_a - e_b`, so it is exactly the
+                ## Jacobian of the residual with respect to `x`.
+                _g2, _gl2, J_mm2, _Jml2, _Jlm2, didv2 = _pcnr.augmented_system(
+                    self.cir, x, v_lim, junctions, self.epar,
+                    u_extra=np.asarray(iq, dtype=float),
+                    dense_blocks=False, J_extra=Geq)
+                J = np.array(J_mm2, dtype=float)
+                for idx, (_inst, _el, ra, rb) in enumerate(junctions):
+                    dia, dib = didv2[idx]
+                    J[ra, ra] += dia
+                    J[ra, rb] -= dia
+                    J[rb, ra] += dib
+                    J[rb, rb] -= dib
+                J = self.toolkit.array(J, dtype=float)
                 f = self.toolkit.array(
                     self.cir.i(x, self.epar) + iq
                     + self.cir.u(t, self.epar, analysis=self.par.analysis),
