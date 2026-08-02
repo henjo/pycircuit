@@ -5457,6 +5457,141 @@ unpersuasive.
 
 ---
 
+# STAGE 13 — PCNR: the limiting replacement the docs already claim
+
+**Added 2026-08-02, on the maintainer's request to review the paper and fix the
+implementation if it is not a proper one.** Reviewed first; the review changed what "fix"
+means, so it is recorded before any code.
+
+**Source.** K. V. Aadithya, E. R. Keiter, T. Mei (Sandia National Laboratories),
+*"Predictor/Corrector Newton-Raphson (PCNR): A Simple, Flexible, Scalable, Modular, and
+Consistent Replacement for Limiting in Circuit Simulation"* —
+`/home/andreas/pycircuit_agy/papers/aadithya.pdf`, 8 pages, read from 150/200-dpi renders.
+
+## What the paper actually specifies (Fig. 2)
+
+The solution vector gains a block: `x = [x_MNA ; x_lim]`, where **every limited quantity is
+an unknown in its own right**. For the paper's two-parallel-diode example,
+`x_lim = [v_D1, v_D2]` and the residual gains
+
+    g_lim = [ v_D1 − (e1 − e2) ; v_D2 − (e1 − e2) ]
+
+The Jacobian becomes four blocks, and the one that matters is `J_lim/lim = I` — the paper
+marks it "identity sub-matrix", and it is what makes the elimination cheap. Devices evaluate
+their currents at **their own `v_Dk`**, never at `e1 − e2`, which is what makes `g` and its
+Jacobian consistent.
+
+Each NR iteration is then two phases:
+
+    (i)   Δx_MNA = −(J_MNA/MNA − J_MNA/lim·J_lim/MNA)⁻¹ (g_MNA − J_MNA/lim·g_lim)
+    (ii)  Δx_lim = −(g_lim + J_lim/MNA·Δx_MNA)
+    (iii) x_{i+1} = x_i + [Δx_MNA ; Δx_lim]                      ← "Predict"
+          x_{i+1,lim} = refine(x_i, x_{i+1})                      ← "Correct"
+
+`refine` is each device limiting **only the variables it owns**, which is why devices cannot
+clash. (i) is the Schur complement of the bordered system, so the `Ax=b` solved is the same
+size as the original MNA system.
+
+## What is implemented — measured, not read off the docs
+
+**`doc/src/circuit/pcnr_limiting.rst` states that pycircuit implements PCNR. It does not.**
+The page makes three specific claims and none of them holds:
+
+| claim on that page | actual |
+|---|---|
+| "elevates every limited quantity to a formal, explicit unknown" | no such unknown exists anywhere |
+| "Predictor Phase … Corrector Phase" | one NR loop with a limiter callback |
+| "uses a Schur Complement reduction … the block is strictly the Identity" | the only Schur code is `SchurCoupledNewton`, which is Fang's step-size coupling and unrelated |
+
+What exists is classic SPICE limiting — the thing the paper is a replacement *for* —
+implemented **twice, in two incompatible conventions**:
+
+* `elements.Diode.limit` keeps private `_vlim` state and returns `None`, so
+  `SubCircuit.limit` writes nothing back. This is the stateful form §2 criticises.
+* `Semiconductor.limit` is state-free: it returns a limited vector, driven by a `junctions`
+  table of `(anode, cathode, move)`.
+
+**A third finding, WITHDRAWN on checking the record.** `ZenerDiode` declares
+`junctions = ()`, so its inherited `limit` is a no-op, and that looked like a limiter which
+exists and does nothing. It is a **deliberate decision**, recorded at gate 5(a) and honoured:
+*"a forward-junction limiter would step straight through the breakdown knee, which is a
+second exponential running the other way."* The device gets the direction-agnostic `_expl`
+clamp instead. Withdrawn before it reached any code — but it is the third time in this
+review that something reading as a defect turned out to be a decision already taken, which is
+an argument for grepping the plan before writing a finding down.
+
+**A hypothesis I tested and had to withdraw.** `SubCircuit.limit` applies limiters in
+sequence, each writing back into `x`, so it looked as though two devices sharing a node
+would clash with the last one winning — §2's complaint exactly. **Measured on two parallel
+BJTs with saturation currents four decades apart, and it does not happen**: both insertion
+orders give v(b) = 0.136066066, because the second limiter reads the *already-limited* value
+and composes with it rather than overwriting. The structural concern is real; the
+consequence I predicted from it is not, on this circuit.
+
+## Gates
+
+**Gate 13-1 (the claim is retired before anything else).** `pcnr_limiting.rst` must stop
+asserting an implementation that does not exist, whatever else happens in this stage. A
+documented-but-absent feature is the same class of defect as a silent wrong answer — this is
+the second one found in this project, after the Fang citation in `_solve_coupled`.
+OUTCOME:
+
+**Gate 13-2 (one convention, not two).** `Diode` and `Semiconductor` must limit through the
+same mechanism. Declared: the state-free form, because private per-device state cannot cross
+a traced backend and because it is what PCNR's `refine` needs.
+
+`ZenerDiode` is explicitly **out of scope**: its empty `junctions` is the recorded decision
+above, not a gap.
+
+OUTCOME (2026-08-02): **PARTIALLY MET, and the declared choice is REFUTED BY MEASUREMENT.**
+
+*What was achieved.* There is now one implementation of `pnjlim`, in the new
+`pycircuit/circuit/_limiting.py`, which imports nothing from the package so both `elements`
+and `semiconductors` can use it without a cycle. Two copies of a numeric formula is how the
+two conventions drifted apart in the first place.
+
+*What was refuted.* The gate declared the state-free form — return a limited vector, let
+`SubCircuit.limit` write it back, take `G` at the same point `i` is evaluated at. It was
+implemented in full and **reverted**: `test_dc_pcnr_diode`, a 1 A source into a diode, stops
+converging. Not diverging — **crawling**. After 100 iterations the update is 3.5x over
+tolerance and the residual 1e4x over. The limiter is not at fault: traced separately, it
+advances the junction 0.136 V per iteration exactly as `pnjlim` should. What changed is that
+a consistent `G` taken at a limited point is a much smaller conductance than the residual
+implies, so each Newton step buys back less than the limiter gives away.
+
+*And the reason this matters more than the revert.* **Limiting cannot be made consistent by
+moving a shared node voltage**, because the node is not the device's to move — everything
+else attached to it sees the change. That is precisely the argument for PCNR's first key
+idea, that each device gets its own unknown for the quantity it limits. So gate 13-2's
+failure is evidence FOR stage 13's remaining gates rather than against them, and the
+inconsistency it tried to remove (on a non-autodiff toolkit `Diode.G` linearises around
+`_vlim` while `Diode.i` uses the node voltage) stays until 13-3 provides the variable that
+can hold it.
+
+**Gate 13-3 (the extra unknowns exist and are consistent).** With `x_lim` in the vector,
+`g_lim = 0` must hold at convergence to solver tolerance, and every device must evaluate its
+current at its own `v_Dk`. Declared: on the paper's own two-parallel-diode circuit, the
+converged `v_D1` and `v_D2` agree with `e1 − e2` and with each other.
+OUTCOME:
+
+**Gate 13-4 (the Schur elimination costs nothing).** The `Ax=b` actually solved must stay
+the size of the original MNA system. Declared: matrix dimension unchanged from the
+non-PCNR path, and the per-iteration cost within 15% — measured per Newton iteration, not
+per time point, which is the unit gate 12-3 had to be corrected to use.
+OUTCOME:
+
+**Gate 13-5 (it converges where limiting does).** The existing limiting tests
+(`test_dc_pcnr.py`, `test_analysis_transient.py`'s diode step) must pass unchanged, and the
+six nonlinear stress circuits must still converge. **A method that is more consistent and
+converges less often is not an improvement**, and that is the outcome to watch for.
+OUTCOME:
+
+**Reconsider the whole stage if** gate 13-4 shows the elimination is not free, or if 13-5
+shows convergence degrading — in which case the honest result is to keep classic limiting,
+fix gates 13-1 and 13-2, and record why PCNR was not adopted.
+
+---
+
 ## Order and dependencies
 
 ```

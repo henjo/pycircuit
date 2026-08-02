@@ -5,6 +5,7 @@
 from __future__ import division
 from .circuit import *
 from . import func as func
+from ._limiting import _pnjlim
 
 class R(Circuit):
     """Resistor element
@@ -908,23 +909,45 @@ class Diode(Circuit):
                   unit='A', default=1e-13)]
     linear = False
 
+    ## STAGE 13(13-2) -- ONE `_pnjlim`, TWO CONVENTIONS, AND THAT IS THE RESULT.
+    ##
+    ## The declared plan was to move `Diode` onto `Semiconductor`'s state-free
+    ## form: return a limited vector, let `SubCircuit.limit` write it back, and
+    ## take `G` at the same point `i` is evaluated at.  That removes a real
+    ## inconsistency -- on a toolkit without automatic differentiation the old
+    ## `G` linearised around `_vlim` while `i` used the node voltage, so the
+    ## Jacobian was not the derivative of the residual being solved.
+    ##
+    ## IT WAS IMPLEMENTED AND REVERTED, because it fails gate 13-5 on the first
+    ## test it meets: `test_dc_pcnr_diode`, a 1 A source into a diode, stops
+    ## converging.  Not diverging -- CRAWLING.  After 100 iterations the update
+    ## is 3.5x over tolerance and the residual 1e4x over.  The limiter itself is
+    ## fine, advancing the junction 0.136 V per iteration exactly as `pnjlim`
+    ## should; what changed is that a consistent `G` at a limited point is a much
+    ## smaller conductance than the residual implies, so each Newton step buys
+    ## less than the limiter gives back.
+    ##
+    ## THE INTERESTING PART IS THAT THIS IS AN ARGUMENT *FOR* PCNR, not against
+    ## the unification.  Limiting cannot be made consistent by moving a shared
+    ## node voltage, because the node is not the device's to move -- everything
+    ## else attached to it sees the change too.  PCNR's first key idea is exactly
+    ## that each device gets its OWN unknown for the quantity it limits.  Until
+    ## that exists, the stateful form stays.
+    ##
+    ## What is kept: both devices now call one `_pnjlim`, in `_limiting.py`.
     def reset_state(self, epar=None):
         """Forget the limiter's remembered junction voltage -- stage 10.1.
 
-        `limit` stores `_vlim` on the instance and `G` linearises around it, so the
-        state outlives the analysis that produced it: running DC twice on the same
-        circuit gave **15 residual evaluations the first time and 2 the second**,
-        and that difference is device state, not the circuit.  Same defect stage
-        8(d) found in `TLine.history`, and the same hook fixes it -- which is why
-        the hook was made general rather than a `TLine` method.
-
-        Found while measuring whether `DCSweep`'s continuation was worth its
-        keep: the first measurement said yes by 7x, and it was this.
+        `limit` stores `_vlim` on the instance and `G` linearises around it, so
+        the state outlives the analysis that produced it: running DC twice on the
+        same circuit gave **15 residual evaluations the first time and 2 the
+        second**, and that difference is device state, not the circuit.
         """
         if hasattr(self, '_vlim'):
             del self._vlim
 
     def limit(self, x, x0, epar=defaultepar):
+        """Stateful: remembers `_vlim` and returns None. See the note above."""
         if not hasattr(self, '_vlim'):
             self._vlim = x0[0] - x0[1]
 
@@ -940,34 +963,17 @@ class Diode(Circuit):
                 return
         except TypeError:
             pass
-            
+
         VT = self.toolkit.kboltzmann * epar.T / self.toolkit.qelectron
-        IS = self.iparv.IS
-        
-        # Critical voltage for pnjlim
-        if IS > 0.0:
-            vc = VT * self.toolkit.log(VT / (IS * 1.414))
-        else:
-            vc = 0.0
-
-        if vnew > vc and vnew > 0.0:
-            if vold > 0.0:
-                arg = 1.0 + (vnew - vold) / VT
-                if arg > 0.0:
-                    vnew = vold + VT * self.toolkit.log(arg)
-                else:
-                    vnew = vc
-            else:
-                vnew = VT * self.toolkit.log(vnew / VT)
-
-        self._vlim = vnew
+        ## The one shared implementation -- this is what 13-2 actually achieved.
+        self._vlim = _pnjlim(vnew, vold, VT, self.iparv.IS, self.toolkit)
 
     def G(self, x, epar=defaultepar):
         if self.toolkit.supports('autodiff'):
             return self.toolkit.jacobian(self.eval_i_pure, x,
                                          {'IS': self.iparv.IS}, epar)
         if not hasattr(self, '_vlim'):
-            self._vlim = x[0]-x[1]
+            self._vlim = x[0] - x[1]
 
         VD = self._vlim
         try:
@@ -979,10 +985,10 @@ class Diode(Circuit):
                 return self._G_cached
         except TypeError:
             pass
-            
+
         VT = self.toolkit.kboltzmann * epar.T / self.toolkit.qelectron
-        g = self.iparv.IS * self.toolkit.exp(VD/VT) / VT
-        
+        g = self.iparv.IS * self.toolkit.exp(VD / VT) / VT
+
         self._G_cached = self.toolkit.array([[g, -g], [-g, g]])
         self._vlim_cached_G = VD
         return self._G_cached

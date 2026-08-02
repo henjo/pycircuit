@@ -2,6 +2,7 @@
 import numpy as np
 
 from pycircuit.circuit import Circuit, Parameter, defaultepar
+from pycircuit.circuit._limiting import _pnjlim, limit_junctions
 
 ## STAGE 5(b) -- SPICE's EXPMAX treatment, and why it belongs in this module.
 ##
@@ -93,34 +94,6 @@ def _depletion_charge(toolkit, v, CJ, VJ, M, FC=0.5):
     return CJ * (F1 + (1.0 / F2) * (F3 * (v - knee)
                                     + (M / (2.0 * VJ)) * (v * v - knee * knee)))
 
-def _pnjlim(vnew, vold, VT, IS, toolkit):
-    """SPICE's `pnjlim`: bound the per-iteration excursion of a junction voltage.
-
-    Newton linearises an exponential, so a step taken from a lightly-biased point
-    overshoots enormously -- and the model is then evaluated somewhere it has no
-    business being.  `_expl` stops that becoming `nan`, but it does not stop the
-    iteration wandering: with the clamp alone and no limiting, the common-emitter
-    stage converges to a GENUINE but spurious operating point 200 V below the
-    rails, with the base-collector junction forward biased at 0.91 V carrying the
-    20 A the base resistor delivers.  That is a solution of the circuit equations;
-    it is simply not the one anyone wants, and only limiting keeps Newton out of
-    it.
-
-    `vc` is the voltage at which the exponential's curvature starts to dominate.
-    Above it the update is compressed logarithmically, which is what bounds the
-    step without changing where the solution is -- the limiter only moves the
-    point the next Jacobian is taken at, never the equations.
-    """
-    if IS <= 0.0:
-        return vnew
-    vc = VT * toolkit.log(VT / (IS * 1.414213562))
-    if vnew > vc and vnew > 0.0:
-        if vold > 0.0:
-            arg = 1.0 + (vnew - vold) / VT
-            return vold + VT * toolkit.log(arg) if arg > 0.0 else vc
-        return VT * toolkit.log(vnew / VT)
-    return vnew
-
 
 class Semiconductor(Circuit):
     """Base class for non-linear semiconductors with automatic Jacobians.
@@ -160,41 +133,15 @@ class Semiconductor(Circuit):
     def limit(self, x, x0, epar=defaultepar):
         """Return a limited copy of `x` -- STATE-FREE, and that is the point.
 
-        The convention here is that `limit` RETURNS the limited vector rather than
-        mutating device state.  `Diode` does the opposite: it stores `_vlim` and
-        linearises `G` around it, which works but hid a real bug for a long time --
-        `SubCircuit.limit` passes a fancy-indexed COPY of `x` and discards the
-        result, so a limiter that writes its argument has no effect at all, and the
-        only limiter in the tree was the one that could not expose that.
-
-        Returning the vector also makes limiting expressible on a traced backend,
-        where device-private Python state cannot go.  Both `None` (the `Diode`
-        convention) and a returned array are accepted by `SubCircuit.limit` during
-        the transition.
+        The convention is that `limit` RETURNS the limited vector rather than
+        mutating device state.  `elements.Diode` used to do the opposite; both
+        are now this one -- see `_limiting.py` for why two conventions for one
+        concept was itself the problem.
         """
-        if not self.junctions:
-            return x
-
         VT = self.toolkit.kboltzmann * epar.T / self.toolkit.qelectron
         IS = getattr(self.iparv, 'IS', 0.0)
-        try:
-            out = np.array(x, dtype=float, copy=True)
-        except (TypeError, ValueError):
-            ## Symbolic x: limiting is a numeric Newton aid and has nothing to
-            ## contribute here.  Returning it untouched is correct, not a fallback.
-            return x
-
-        x0a = np.asarray(x0, dtype=float)
-        for anode, cathode, move in self.junctions:
-            vnew = float(out[anode] - out[cathode])
-            vold = float(x0a[anode] - x0a[cathode])
-            vlim = _pnjlim(vnew, vold, VT, IS, self.toolkit)
-            ## Reassign the moving terminal so the junction carries `vlim` exactly.
-            if move == anode:
-                out[anode] = out[cathode] + vlim
-            else:
-                out[cathode] = out[anode] - vlim
-        return out
+        return limit_junctions(x, x0, self.junctions, VT,
+                               lambda _i: IS, self.toolkit)
 
     def G(self, x, epar=defaultepar):
         return self.toolkit.jacobian(self.eval_i_pure, x,
