@@ -155,9 +155,28 @@ decades while `err` sat at 0.2 — far *below* the band that should have grown i
 computes a small quantity as the difference of two large ones.
 
 **This is very likely what §3.4 means by "the coupled nonlinear system sometimes is very
-sensitive to the change of step size."** The shipped implementation therefore uses §3.4's
-approximate Newton (eqs 17 and 18), where the step comes from the error *ratio* and no
-cancellation occurs.
+sensitive to the change of step size."**
+
+**RESOLVED 2026-08-02 — the denominator has a closed form, and eq (12) works with it.**
+Since `ε ≈ C·w(h)` with `w(h) = h(h+h₁)(h+h₁+h₂)`, the same total derivative is
+`dε/dh = ε·w′(h)/w(h)`, and `w′/w` is a sum of positive reciprocals — no cancellation
+anywhere. Measured against a ground truth obtained by **re-solving the circuit** at
+perturbed `h` (`benchmarks/transient_review/stage12b_eq12_denominator.py`):
+
+| | value | ratio to truth |
+|---|---|---|
+| ground truth | +4.678e6 | — |
+| analytic `ε·w′/w` | +4.392e6 | **0.939** |
+| eq (12)'s `q̄ᵀΔv_h + d` | −9.680e5 | **−0.207** |
+
+Eq (12) is now selectable as `coupled_method='bordered'`. It is **not** the default: on the
+smooth circuits it is indistinguishable from §3.4 (1592 points against 1591, errors equal to
+three digits), and on the breakpoint circuit it trades 5.4% more time points for 1.6% fewer
+Newton iterations. Its extra content over §3.4 — the `q̄ᵀΔv` term, accounting for the LTE
+moving as the solution converges — turns out to matter little once the solution is close,
+which on a smooth drive it already is.
+
+§3.4 remains the default and carries every measured number in this document.
 
 **4.5 The divided-difference identity is exact but buys nothing.**
 
@@ -291,7 +310,11 @@ notice.
   `hmin` floor, but the shipped path is §3.4 for the conditioning reason in 4.4. The rank-one
   LU update of §3.2 is therefore also unused.
 - **`TLine` cannot be used with `coupled_lte=True`** (see §6).
-- **`q̄ᵀ` and `d` are implemented, gated against finite differences, and NOT CALLED.** They
+- **Eq (12) is now implemented and selectable** (`coupled_method='bordered'`), and the thing
+  that made it unusable is fixed: its eq (14) denominator is computed **analytically** rather
+  than as `q̄ᵀΔv_h + d`. See §4.4 — the subtraction gets the *sign* wrong. `q̄ᵀ` is live again
+  on that path; `d` remains unused, since the analytic form replaces exactly it.
+- **`d` is implemented, gated against finite differences, and NOT CALLED.** They
   exist for eq (12), which §3.4 replaced for the conditioning reason in 4.4; the shipped path
   needs only `p̄`, through eq (18). This is worth knowing before anyone concludes the bordered
   system is "nearly wired up" — it is, but its two cheap blocks are the only part in place and

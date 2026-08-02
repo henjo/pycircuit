@@ -5120,8 +5120,24 @@ must give the same `(Δv, Δh)` as a literal dense `(N+1)` factorisation, to sol
 Declared: measured on a circuit where `d` is small, since that is where the `1/d` division
 in both eq (13) and eq (14) is worst conditioned. **`d → 0` is a real case** — it is an LTE
 insensitive to the step, i.e. exactly the smooth region where steps grow.
-**OUTCOME (2026-08-01): WITHDRAWN — eq (13) is not implemented, because eq (12) is not
-used.** Eq (14)'s denominator `q^T dxh + d` is the solution's sensitivity to the step size
+**OUTCOME (2026-08-01): WITHDRAWN, then PARTLY REOPENED 2026-08-02 — eq (12) now works and
+is selectable; eq (13)'s reduced form is still not implemented.**
+
+The withdrawal below stands as written, and its reconsider-if turned out to name only one of
+two routes. It said to reconsider "if an LTE is adopted whose `d` is not nearly equal and
+opposite to `q^T dxh`". The second route is to keep this LTE and **not compute the
+denominator by subtraction at all**: `d(eps)/dh = eps w'(h)/w(h)` in closed form, `w'/w`
+being a sum of positive reciprocals. Measured against a ground truth from re-solving the
+circuit at perturbed `h`: analytic +4.392e6 against a truth of +4.678e6 (ratio 0.939), where
+the subtraction gives -9.680e5 — **the wrong sign**.
+
+Eq (12) with that denominator is `coupled_method='bordered'`. Eq (13)'s rank-one reduced
+system is still unimplemented and unneeded: the Schur form costs one extra solve against the
+same `J`, which the factor/solve split from 7b already makes cheap.
+
+---
+
+*Original outcome, unchanged:* Eq (14)'s denominator `q^T dxh + d` is the solution's sensitivity to the step size
 minus the extrapolation's slope; both are approximately `dv/dt`, so their difference is the
 truncation error's derivative and is tiny by construction. Measured at `h = 1.6e-7`:
 `q^T dxh = +1.818e9`, `d = -1.820e9`, denominator **-2e6**. Three digits lost and the SIGN

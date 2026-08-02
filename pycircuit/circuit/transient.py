@@ -366,6 +366,21 @@ class Transient(Analysis):
                         "None leaves the change bounded only by zero stability.",
                    unit='',
                    default=None),
+         ## STAGE 12B -- how the coupled path corrects the step size.
+         ##
+         ## 'approx'   Fang sec. 3.4: the new step comes from the error RATIO
+         ##            (eq 17) and the solution is corrected by eq (18).  The
+         ##            default, and the one with the measured record.
+         ## 'bordered' Fang eq (12)/(14): a linearised Newton step on the LTE
+         ##            equation, which additionally accounts for the pending
+         ##            solution update through `q^T dv`.  Its denominator is
+         ##            computed ANALYTICALLY -- see `fang_timestep` for why the
+         ##            paper's `q^T dxh + d` cannot be used as written.
+         Parameter(name='coupled_method',
+                   desc="Step-size correction for coupled_lte=True: 'approx' "
+                        "(Fang sec 3.4, default) or 'bordered' (eq 12/14)",
+                   unit='',
+                   default='approx'),
          Parameter(name='maxiter',
                    desc='Maximum number of iterations', unit='',
                    default=100),
@@ -725,7 +740,7 @@ class Transient(Analysis):
     def fang_timestep(self, x_prev, t_prev, h, x_hist, refnode=gnd,
                       provided_function=None, gamma_min=0.7, gamma_max=3.0,
                       eta=0.15, maxiter=None, hmin=None, max_step=None,
-                      hold_h=False, grid_locked=False):
+                      hold_h=False, grid_locked=False, method='approx'):
         """One time point of Fang's coupled method: solve for ``(x, h)`` together.
 
         STAGE 12B.  Figure 4 of DAC 2013, and the structure is the substance:
@@ -822,6 +837,11 @@ class Transient(Analysis):
         ## the same window the standard controller allows for one step.
         from pycircuit.circuit.stepcontroller import (MIN_SHRINK_RATIO,
                                                       MAX_GROWTH_RATIO)
+        if method not in ('approx', 'bordered'):
+            raise ValueError(
+                "coupled_method must be 'approx' (Fang sec 3.4) or 'bordered' "
+                "(eq 12/14), not %r" % (method,))
+
         h_entry = h
         h_floor = max(hmin, h_entry * MIN_SHRINK_RATIO)
         h_ceil = min(max_step, h_entry * MAX_GROWTH_RATIO)
@@ -931,8 +951,83 @@ class Transient(Analysis):
             from pycircuit.circuit._lte_kernels import step_for_error_ratio
 
             target = self._band_centre(ctrl, gamma_min, gamma_max)
-            ratio = target / max(err, 1e-300)
-            h_new = step_for_error_ratio(h, h_hist, ratio, 1.0 - eta, 1.0 + eta)
+
+            if method == 'bordered':
+                ## EQ (12)/(14), with the denominator computed ANALYTICALLY.
+                ##
+                ## The paper forms eq (14)'s denominator as `q^T dxh + d`, where
+                ## `q^T dxh` is how the SOLUTION moves with the step size and `d`
+                ## is how the EXTRAPOLATION moves.  Both are approximately dv/dt,
+                ## so their difference is the derivative of the truncation error
+                ## -- tiny by construction, and computed as a difference of two
+                ## large numbers.  Measured at h = 3.48e-7 on a driven RC:
+                ##
+                ##     q^T dxh = -1.310e8      d = +1.301e8
+                ##     difference = -9.68e5, which is 0.74% of the larger term
+                ##     ground truth (re-solved finite difference) = +4.678e6
+                ##
+                ## The subtraction gets the SIGN WRONG and is 5x too small, which
+                ## is why an earlier attempt at eq (12) drove the step size down
+                ## four decades while the error sat far below its band.
+                ##
+                ## The same quantity has a closed form.  `eps ~ C w(h)` with
+                ## `w(h) = h(h+h1)(h+h1+h2)`, so `d(eps)/dh = eps w'(h)/w(h)` and
+                ## `w'/w` is a sum of positive reciprocals -- no cancellation
+                ## anywhere.  Measured against the same ground truth: +4.392e6,
+                ## a ratio of 0.939.
+                ##
+                ## What this branch still takes from eq (12), and the reason it
+                ## is not merely sec. 3.4 in disguise, is the `q^T dv0` term: the
+                ## LTE is evaluated at an iterate that has not converged, and
+                ## that term accounts for how it will move as the solution does.
+                acc, wp_over_w = 0.0, 1.0 / h
+                for hh in h_hist:
+                    acc = acc + hh
+                    wp_over_w = wp_over_w + 1.0 / (h + acc)
+
+                ## `max(err, tiny)`, and it is not defensive clutter -- it is the
+                ## difference between this branch working and crawling.
+                ##
+                ## `denom = err * w'/w` vanishes when the error does, and on a
+                ## pulsed circuit the error IS zero over the flat regions, where
+                ## the solution is constant and the extrapolation reproduces it
+                ## exactly.  Measured on rc-pulse: 76.1% of all step adjustments
+                ## happen at err = 0.  Guarding the degenerate denominator by
+                ## leaving `h` alone -- the obvious reading -- meant the step
+                ## never grew back after an edge had forced it down: 11831 of
+                ## 12382 time points took the SAME step as the one before, the
+                ## median step came out 10x smaller than the 'approx' branch's,
+                ## and the run took 5.6x the time points for the same waveform.
+                ##
+                ## Zero error does not mean "leave the step alone", it means "the
+                ## step is far too small".  A tiny positive denominator makes the
+                ## Newton step enormous, which the eta limiter then caps at the
+                ## same +15% growth `step_for_error_ratio` would have produced --
+                ## so the two branches agree in the limit instead of diverging.
+                denom = max(err, 1e-300) * wp_over_w
+
+                if denom <= 0.0 or denom != denom or denom == float('inf'):
+                    h_new = h_want = h
+                else:
+                    i_ctrl, q_val, _d_unused = ctrl.lte_gradients(
+                        x_stage1, x_hist, h_hist, h, etol)
+                    f_lte = err - target
+                    dh_raw = -(f_lte + q_val * dx0[i_ctrl]) / denom
+                    ## `h_want` is the UNCLAMPED Newton step, kept before the eta
+                    ## limiter for the same reason the 'approx' branch keeps it:
+                    ## saturation has to be measured against what the step wants,
+                    ## not against what it got.  Setting `h_want = h_new` after
+                    ## clamping silently disabled the check that fixed the 56x
+                    ## post-breakpoint step -- the bordered branch would have
+                    ## inherited that defect with no test able to see it.
+                    h_want = h + dh_raw
+                    dh_raw = max(-eta * h, min(eta * h, dh_raw))
+                    h_new = h + dh_raw
+                ratio = target / max(err, 1e-300)
+            else:
+                ratio = target / max(err, 1e-300)
+                h_new = step_for_error_ratio(h, h_hist, ratio,
+                                             1.0 - eta, 1.0 + eta)
 
             ## WHAT THE STEP WANTS, ignoring every clamp.  Saturation has to be
             ## measured against this, not against the clamped result: once `h` is
@@ -949,7 +1044,8 @@ class Transient(Analysis):
             ## an analytic 0.018731, a 78% single-step error, and the resulting
             ## 1.465e-2 was IDENTICAL at reltol 1e-5 and 1e-6 because nothing
             ## about it was tolerance-controlled.
-            h_want = step_for_error_ratio(h, h_hist, ratio, 1e-6, 1e6)
+            if method != 'bordered':
+                h_want = step_for_error_ratio(h, h_hist, ratio, 1e-6, 1e6)
             h_new = min(max(h_new, h_floor), h_ceil)
             dh = h_new - h
 
@@ -1793,6 +1889,7 @@ class Transient(Analysis):
                         refnode=refnode, provided_function=provided_function,
                         hold_h=was_break_step or fixed_timestep,
                         grid_locked=fixed_timestep,
+                        method=self.par.coupled_method,
                         gamma_min=self.par.lte_gamma_min or 0.7,
                         gamma_max=(self.par.lte_gamma_max
                                    if self.par.lte_gamma_max != 1.0 else 3.0),
