@@ -1,4 +1,6 @@
 from abc import ABC, abstractmethod
+import warnings
+
 import numpy as np
 
 ## Valid values for `relref`, matching Spectre's parameter of the same name.
@@ -254,7 +256,28 @@ class IntegralController(StepController):
         
         try:
             lte_reduced = toolkit.linearsolver(J_reduced, Eg_reduced)
-        except Exception:
+        except Exception as exc:
+            ## DECISION 0.3d called this "the unlogged half-(B) fallback" and said
+            ## to delete it.  What made it a defect is not the fallback but the
+            ## SILENCE: `Eg` is a current and `J^-1 Eg` is a voltage (see the
+            ## units note in the plan), so this substitutes one flavour for the
+            ## other and then compares the result against a voltage tolerance.
+            ## An error that is wrong by a factor of `h` either never fires or
+            ## always does, and either way looks like it is working.
+            ##
+            ## Kept rather than removed, because removing it would turn a
+            ## degenerate Jacobian into an exception from inside step control
+            ## rather than from the operating point, where the diagnostic is much
+            ## better.  Made loud instead: gate 4-D measured this firing ZERO
+            ## times on a circuit with cond(J) = 1.0e12, so if it ever does fire
+            ## that is news.
+            warnings.warn(
+                'transient step control: the LTE solve failed (%s), so the '
+                'charge-domain residual is being used in place of the '
+                'solution-domain error. These are different quantities -- the '
+                'first is a current, the second a voltage -- so the step size '
+                'from this point is not error-controlled in the usual sense.'
+                % exc, RuntimeWarning, stacklevel=2)
             lte_reduced = Eg_reduced
             
         lte = toolkit.concatenate((lte_reduced[:irefnode], toolkit.array([0.0]), lte_reduced[irefnode:]))
@@ -414,7 +437,28 @@ class PIController(StepController):
         
         try:
             lte_reduced = toolkit.linearsolver(J_reduced, Eg_reduced)
-        except Exception:
+        except Exception as exc:
+            ## DECISION 0.3d called this "the unlogged half-(B) fallback" and said
+            ## to delete it.  What made it a defect is not the fallback but the
+            ## SILENCE: `Eg` is a current and `J^-1 Eg` is a voltage (see the
+            ## units note in the plan), so this substitutes one flavour for the
+            ## other and then compares the result against a voltage tolerance.
+            ## An error that is wrong by a factor of `h` either never fires or
+            ## always does, and either way looks like it is working.
+            ##
+            ## Kept rather than removed, because removing it would turn a
+            ## degenerate Jacobian into an exception from inside step control
+            ## rather than from the operating point, where the diagnostic is much
+            ## better.  Made loud instead: gate 4-D measured this firing ZERO
+            ## times on a circuit with cond(J) = 1.0e12, so if it ever does fire
+            ## that is news.
+            warnings.warn(
+                'transient step control: the LTE solve failed (%s), so the '
+                'charge-domain residual is being used in place of the '
+                'solution-domain error. These are different quantities -- the '
+                'first is a current, the second a voltage -- so the step size '
+                'from this point is not error-controlled in the usual sense.'
+                % exc, RuntimeWarning, stacklevel=2)
             lte_reduced = Eg_reduced
             
         lte = toolkit.concatenate((lte_reduced[:irefnode], toolkit.array([0.0]), lte_reduced[irefnode:]))

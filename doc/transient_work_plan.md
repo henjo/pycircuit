@@ -1091,7 +1091,47 @@ the step size does **not** collapse, and the diagnostic names the offending node
 review's benchmark circuit it fires **zero** times and the waveform is unchanged from the
 pure-(A) path. **If it fires on the benchmark circuit, `etol_q` is too tight and the result
 is not trustworthy** — that is a failure of the gate, not a tuning note.
-OUTCOME:
+
+OUTCOME (2026-08-02): **THE GUARD IS WITHDRAWN — its premise does not reproduce.**
+`benchmarks/transient_review/stage0_3d_guard.py`.
+
+The gate asks for "a circuit that needs it". There is not one. The premise was that a
+near-singular `J` makes `J^{-1}` amplify the charge residual unboundedly, so the
+solution-domain LTE becomes noise and the step collapses. Measured on four circuits:
+
+| circuit | steps | fallback fired | max cond(J) | max abs lte | outcome |
+|---|---|---|---|---|---|
+| healthy RC | 212 | 0 | 1.00e+03 | 3.91e-02 | completes |
+| series caps (no DC path) | — | 1 | — | — | **fails at the operating point** |
+| dangling cap | — | 1 | — | — | **fails at the operating point** |
+| weak ground (1 Tohm) | 30 | **0** | **1.00e+12** | 6.25e-02 | completes |
+
+Two things fall out. **The truly degenerate cases never reach step control**: they fail at
+the DC operating point, with the diagnostic stage 1 added — *"singular Jacobian: 'm' appears
+in no equation, so nothing determines it — for a node that means no DC path to ground"*.
+That is a better place to catch it and a better message than a step-control guard could give.
+
+**And the genuinely near-singular case is handled.** At `cond(J) = 1.0e12` the run completes,
+the LTE stays the same order of magnitude as the healthy circuit's, and the fallback fires
+zero times. The step does not collapse.
+
+So the work this decision created for stages 4, 6 and 9 — `chgtol`, the charge-flavoured
+numerator from `compute_lte`, the guard, its diagnostic and its statistics counter — is
+**not done and should not be done**. Option (A) alone is what shipped, and it is sufficient
+on the evidence.
+
+**Reconsider if** a circuit is found where the LTE solve genuinely fails or the step
+collapses on a near-singular `J`. That is now detectable rather than silent: the fallback
+warns (see below), so such a circuit will announce itself instead of quietly producing a
+step size that is not error-controlled.
+
+**One part of the decision IS done, and it was the part that mattered.** 0.3d also said to
+"delete the bare `except` at `stepcontroller.py:59-62`, the unlogged half-(B) fallback".
+The defect there was never the fallback — it is that `Eg` is a *current* and `J^{-1}Eg` a
+*voltage*, so it silently substitutes one flavour for the other and then compares the result
+against a voltage tolerance. It is now loud. It is not removed, because removing it would
+turn a degenerate Jacobian into an exception raised from inside step control instead of from
+the operating point, where the diagnostic is far better.
 
 **Stage 0 exit criterion:** every OUTCOME above filled, every DECISION answered. Stages
 1-3 may start before 0.1a-d land (they touch none of that code); **stage 4 is blocked on
