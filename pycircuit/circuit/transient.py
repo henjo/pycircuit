@@ -6,6 +6,8 @@ import contextlib
 import time
 import warnings
 
+import numpy as np
+
 from numpy.linalg import LinAlgError
 
 from pycircuit.circuit.analysis import *
@@ -381,6 +383,14 @@ class Transient(Analysis):
                         "(Fang sec 3.4, default) or 'bordered' (eq 12/14)",
                    unit='',
                    default='approx'),
+         ## STAGE 13 -- PCNR instead of limiting, on the transient path too.
+         ## Off by default for the same measured reason as on DC: gate 13-4 puts
+         ## it at +60-80% per Newton iteration, for a consistency these circuits
+         ## do not currently need.
+         Parameter(name='pcnr',
+                   desc='Use Predictor/Corrector Newton-Raphson instead of '
+                        'limiting (Aadithya et al.); off by default',
+                   unit='', default=False),
          Parameter(name='maxiter',
                    desc='Maximum number of iterations', unit='',
                    default=100),
@@ -1402,7 +1412,81 @@ class Transient(Analysis):
         return self.toolkit.array(d_iq, dtype=float) + \
             self.toolkit.array(d_u, dtype=float)
 
+    def _solve_timestep_pcnr(self, x0, t, refnode=gnd, provided_function=None):
+        """One time point by PCNR rather than by limiting -- STAGE 13.
+
+        The transient residual is ``f = i(x) + iq + u(t)`` with ``J = G + Geq``,
+        so the companion terms enter the coupled system as the extra blocks
+        `augmented_system` takes; everything else is the DC flow unchanged.
+
+        Returns the same 4-tuple `solve_timestep` does, so the caller cannot tell
+        which produced it -- the step controller and history roll are downstream
+        of both and must stay so.
+        """
+        from pycircuit.circuit import pcnr as _pcnr
+
+        junctions = _pcnr.pcnr_junctions(self.cir)
+        irefnode = self.cir.get_node_index(refnode)
+        x = self.toolkit.array(x0, dtype=float).copy()
+        v_lim = np.array([float(x[ra] - x[rb]) for _i, _e, ra, rb in junctions])
+
+        xtol = self._newton_xtol_vector()
+        reltol = self.par.reltol
+        feval = 0
+
+        for _it in range(self.par.maxiter):
+            C = self.cir.C(x, self.epar)
+            q = self.cir.q(x, self.epar)
+            self._q_cache = (x, q)
+            iq, Geq = self.get_diff(q, C)
+            u = self.cir.u(t, self.epar, analysis=self.par.analysis)
+            if provided_function is not None:
+                u = u + provided_function(t)
+
+            g_mna, g_lim, J_mm, J_ml, J_lm, didv = _pcnr.augmented_system(
+                self.cir, x, v_lim, junctions, self.epar,
+                u_extra=np.asarray(iq, dtype=float) + np.asarray(u, dtype=float),
+                dense_blocks=False, J_extra=Geq)
+            feval += 1
+
+            dx_mna, dx_lim = _pcnr.predict(g_mna, g_lim, J_mm, J_ml, J_lm,
+                                           irefnode, junctions=junctions,
+                                           didv=didv)
+            x_new = x + dx_mna
+            x_new[irefnode] = 0.0
+            v_new = _pcnr.refine(junctions, v_lim, v_lim + dx_lim, self.epar)
+
+            done = bool(self.toolkit.alltrue(
+                abs(dx_mna) < reltol * abs(x_new) + xtol))
+            x, v_lim = x_new, v_new
+            if done:
+                C = self.cir.C(x, self.epar)
+                q = self.cir.q(x, self.epar)
+                self._q_cache = (x, q)
+                iq, Geq = self.get_diff(q, C)
+                J = self.toolkit.array(self.cir.G(x, self.epar) + Geq,
+                                       dtype=float)
+                f = self.toolkit.array(
+                    self.cir.i(x, self.epar) + iq
+                    + self.cir.u(t, self.epar, analysis=self.par.analysis),
+                    dtype=float)
+                return x, feval, J, f
+
+        raise NoConvergenceError(
+            'PCNR did not converge at t=%g after %d iterations'
+            % (t, self.par.maxiter))
+
     def solve_timestep(self, x0, t, refnode=gnd, provided_function=None):
+        ## STAGE 13 -- the PCNR path, when asked for and when the circuit has a
+        ## device that participates.  A circuit with no PCNR junction falls
+        ## through: there is nothing for the method to do, and refusing would be
+        ## a worse answer than solving it the ordinary way.
+        if self.par.pcnr:
+            from pycircuit.circuit import pcnr as _pcnr
+            if _pcnr.pcnr_junctions(self.cir):
+                return self._solve_timestep_pcnr(x0, t, refnode,
+                                                 provided_function)
+
         n=self.cir.n
         dt = self._dt
         

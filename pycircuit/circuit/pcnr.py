@@ -51,7 +51,7 @@ def pcnr_junctions(circuit):
 
 
 def augmented_system(circuit, x, v_lim, junctions, epar=defaultepar,
-                     u_extra=None):
+                     u_extra=None, dense_blocks=True, J_extra=None):
     """Residual and Jacobian blocks of the coupled ``[x_MNA ; x_lim]`` system.
 
     Returns ``(g_mna, g_lim, J_mm, J_ml, J_lm)``.  ``J_ll`` is not returned: it
@@ -68,6 +68,11 @@ def augmented_system(circuit, x, v_lim, junctions, epar=defaultepar,
     J_mm = np.array(circuit.G(x, epar), dtype=float)
     if u_extra is not None:
         g_mna = g_mna + np.asarray(u_extra, dtype=float)
+    if J_extra is not None:
+        ## The transient's companion terms: `f = i(x) + iq + u`, `J = G + Geq`.
+        ## They are passed in rather than recomputed because `solve_timestep`
+        ## already has them and `get_diff` is not free.
+        J_mm = J_mm + np.asarray(J_extra, dtype=float)
 
     nodemap = circuit.elementnodemap
     seen = set()
@@ -77,17 +82,41 @@ def augmented_system(circuit, x, v_lim, junctions, epar=defaultepar,
         seen.add(instance)
         rows = nodemap[instance]
         sub = x[rows]
+        ## A participating device with charge storage would also contribute to
+        ## `iq`/`Geq`, and that contribution would have to move to its own
+        ## unknown too -- which is not implemented.  Refused rather than silently
+        ## left in the MNA block, where it would be evaluated at the node voltage
+        ## while the current is evaluated at `v_lim`: the exact inconsistency
+        ## PCNR exists to remove, reintroduced through the charge.
+        if J_extra is not None:
+            Csub = np.asarray(element.C(sub, epar), dtype=float)
+            if np.any(np.abs(Csub) > 0.0):
+                raise NotImplementedError(
+                    '%r has charge storage and a PCNR junction; the charge term '
+                    'would also have to move to the limited unknown, which is '
+                    'not implemented' % instance)
         g_mna[rows] -= np.asarray(element.i(sub, epar), dtype=float)
         J_mm[np.ix_(rows, rows)] -= np.asarray(element.G(sub, epar), dtype=float)
 
-    J_ml = np.zeros((n, k))
-    J_lm = np.zeros((k, n))
+    ## `dense_blocks=False` skips the (n,k) and (k,n) allocations entirely.
+    ## `predict`'s sparse path never reads them -- each column of J_ml has two
+    ## nonzeros and each row of J_lm has two, so the rank-one form carries the
+    ## same information in `didv` plus the junction rows.  Allocating and filling
+    ## them anyway was 2 x n x k doubles per Newton iteration for nothing.
+    J_ml = np.zeros((n, k)) if dense_blocks else None
+    J_lm = np.zeros((k, n)) if dense_blocks else None
     g_lim = np.zeros(k)
+    didv_list = []
 
     for idx, (instance, element, ra, rb) in enumerate(junctions):
         v = float(v_lim[idx])
-        params = {p.name: getattr(element.iparv, p.name)
-                  for p in element.instparams}
+        ## Cached: rebuilding this per junction per Newton iteration is 60 dict
+        ## comprehensions over `getattr` on a 60-device circuit, every iteration.
+        params = getattr(element, '_pcnr_params', None)
+        if params is None:
+            params = {p.name: getattr(element.iparv, p.name)
+                      for p in element.instparams}
+            element._pcnr_params = params
         i_terms = element.pcnr_i(v, params, epar, element.toolkit)
         di_terms = element.pcnr_didv(v, params, epar, element.toolkit)
 
@@ -95,35 +124,67 @@ def augmented_system(circuit, x, v_lim, junctions, epar=defaultepar,
         ## contribution to J_MNA/MNA is zero and all of it lands in J_MNA/lim.
         g_mna[ra] += float(i_terms[0])
         g_mna[rb] += float(i_terms[1])
-        J_ml[ra, idx] += float(di_terms[0])
-        J_ml[rb, idx] += float(di_terms[1])
+        if dense_blocks:
+            J_ml[ra, idx] += float(di_terms[0])
+            J_ml[rb, idx] += float(di_terms[1])
+        didv_list.append((float(di_terms[0]), float(di_terms[1])))
 
         ## g_lim = v - (e_a - e_b)
         g_lim[idx] = v - (float(x[ra]) - float(x[rb]))
-        J_lm[idx, ra] = -1.0
-        J_lm[idx, rb] = +1.0
+        if dense_blocks:
+            J_lm[idx, ra] = -1.0
+            J_lm[idx, rb] = +1.0
 
-    return g_mna, g_lim, J_mm, J_ml, J_lm
+    return g_mna, g_lim, J_mm, J_ml, J_lm, didv_list
 
 
-def predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode):
+def predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode, junctions=None,
+            didv=None):
     """One Newton step on the coupled system, by Schur complement.
 
         dx_MNA = -(J_mm - J_ml J_lm)^-1 (g_mna - J_ml g_lim)
         dx_lim = -(g_lim + J_lm dx_MNA)
 
-    The matrix inverted is the size of the ORIGINAL MNA system: the ``lim/lim``
+    The matrix factorised is the size of the ORIGINAL MNA system: the ``lim/lim``
     block being the identity is what collapses the border into a rank-k update.
+
+    **That collapse has to be exploited, not merely stated.** Forming
+    ``J_ml @ J_lm`` as a dense ``(n,k)·(k,n)`` product costs ``O(n^2 k)`` and
+    measured **+62% per iteration** against classic limiting on 60 diodes -- a
+    gate-13-4 failure that was entirely the implementation's. Each column of
+    ``J_ml`` has two nonzeros and each row of ``J_lm`` has two, so the product is
+    a sum of ``k`` rank-one terms touching four entries each: ``O(k)`` work, not
+    ``O(n^2 k)``. Pass ``junctions``/``didv`` to take that path.
     """
-    schur = J_mm - J_ml @ J_lm
-    rhs = -(g_mna - J_ml @ g_lim)
+    if junctions is not None and didv is not None:
+        schur = np.array(J_mm, copy=True)
+        rhs_corr = np.zeros(len(g_mna))
+        for idx, (_inst, _el, ra, rb) in enumerate(junctions):
+            dia, dib = didv[idx]
+            ## column k of J_ml is (dia at ra, dib at rb); row k of J_lm is
+            ## (-1 at ra, +1 at rb).  Their outer product is these four entries.
+            schur[ra, ra] += dia
+            schur[ra, rb] -= dia
+            schur[rb, ra] += dib
+            schur[rb, rb] -= dib
+            rhs_corr[ra] += dia * g_lim[idx]
+            rhs_corr[rb] += dib * g_lim[idx]
+        rhs = -(g_mna - rhs_corr)
+    else:
+        schur = J_mm - J_ml @ J_lm
+        rhs = -(g_mna - J_ml @ g_lim)
 
     keep = [i for i in range(len(g_mna)) if i != irefnode]
     dx_r = np.linalg.solve(schur[np.ix_(keep, keep)], rhs[keep])
     dx_mna = np.zeros(len(g_mna))
     dx_mna[keep] = dx_r
 
-    dx_lim = -(g_lim + J_lm @ dx_mna)
+    if junctions is not None:
+        dx_lim = np.empty(len(g_lim))
+        for idx, (_inst, _el, ra, rb) in enumerate(junctions):
+            dx_lim[idx] = -(g_lim[idx] + (-dx_mna[ra] + dx_mna[rb]))
+    else:
+        dx_lim = -(g_lim + J_lm @ dx_mna)
     return dx_mna, dx_lim
 
 
@@ -168,10 +229,11 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     u = np.asarray(circuit.u(0.0, epar, analysis='dc'), dtype=float)
 
     for it in range(maxiter):
-        g_mna, g_lim, J_mm, J_ml, J_lm = augmented_system(
-            circuit, x, v_lim, junctions, epar, u_extra=u)
+        g_mna, g_lim, J_mm, J_ml, J_lm, didv = augmented_system(
+            circuit, x, v_lim, junctions, epar, u_extra=u, dense_blocks=False)
 
-        dx_mna, dx_lim = predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode)
+        dx_mna, dx_lim = predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode,
+                                 junctions=junctions, didv=didv)
 
         x_new = x + dx_mna
         x_new[irefnode] = 0.0

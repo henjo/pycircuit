@@ -84,7 +84,7 @@ def test_the_solved_matrix_stays_the_size_of_the_original_mna_system():
     js = P.pcnr_junctions(c)
     x = np.zeros(c.n)
     v_lim = np.zeros(len(js))
-    g_mna, g_lim, J_mm, J_ml, J_lm = P.augmented_system(c, x, v_lim, js)
+    g_mna, g_lim, J_mm, J_ml, J_lm, _didv = P.augmented_system(c, x, v_lim, js)
 
     n = c.n
     assert J_mm.shape == (n, n)
@@ -108,7 +108,7 @@ def test_a_device_contributes_nothing_to_the_mna_jacobian_block():
     x = np.zeros(c.n)
     x[c.get_node_index('e2')] = 0.4
     v_lim = np.array([0.4, 0.4])
-    _g, _gl, J_mm, J_ml, _J_lm = P.augmented_system(c, x, v_lim, js)
+    _g, _gl, J_mm, J_ml, _J_lm, _dd = P.augmented_system(c, x, v_lim, js)
 
     ## The resistor and source still stamp; the diodes must not.
     e2 = c.get_node_index('e2')
@@ -144,3 +144,112 @@ def test_refine_limits_each_device_independently():
         'IS=1e-9 has vc=0.432 V, so 0.6 V should be limited'
     assert out[0] != out[1], \
         'the two devices produced the same value, so they are not independent'
+
+
+## ---------------------------------------------------------------------------
+## STAGE 13 -- PCNR on the transient path.
+##
+## The transient residual is `f = i(x) + iq + u(t)` with `J = G + Geq`, so the
+## companion terms enter the coupled system as extra blocks. Everything else is
+## the DC flow unchanged.
+
+import warnings
+
+from pycircuit.circuit.elements import C, VSin
+from pycircuit.circuit.transient import Transient
+
+
+def _rectifier():
+    c = SubCircuit()
+    c['vs'] = VSin('a', gnd, va=5.0, freq=1e3)
+    c['D'] = Diode('a', 'b', IS=1e-15)
+    c['R'] = R('b', gnd, r=1e3)
+    c['C'] = C('b', gnd, c=1e-7)
+    return c
+
+
+def _run_tran(pcnr, reltol=1e-5, tend=2e-3):
+    tran = Transient(_rectifier(), toolkit=numeric, reltol=reltol, pcnr=pcnr)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = tran.solve(tend=tend, timestep=1e-5)
+    t = np.asarray(res.v('b').x, dtype=float).ravel()
+    v = np.asarray(res.v('b').y, dtype=float).ravel()
+    return t, v, tran.statistics.accepted_steps
+
+
+def test_pcnr_and_limiting_agree_on_a_rectifier_waveform():
+    """Consistency must not move the answer, on the transient path either."""
+    ts, vs, _ = _run_tran(False)
+    tp, vp, _ = _run_tran(True)
+    d = np.abs(np.interp(ts, tp, vp) - vs)
+    assert float(np.median(d)) < 1e-3, \
+        'waveforms differ, median %g V' % float(np.median(d))
+
+
+def test_pcnr_reaches_the_same_accuracy_in_far_fewer_steps():
+    """MEASURED, and it is the opposite of what the DC gates suggested.
+
+    At matched tolerance PCNR lands within 1% of limiting's error against a
+    tight reference while using several times fewer time steps. The likely
+    mechanism -- not yet confirmed -- is that limiting leaves `G` linearised
+    around `_vlim` while `i` uses the node voltage, so the Jacobian is not the
+    derivative of the residual, and the LTE estimate built from that solve is
+    corrupted into forcing small steps.
+
+    Gate 13-4 measured cost per iteration on DC, which has no step controller,
+    so it structurally could not see this.
+    """
+    tref, vref, _ = _run_tran(False, reltol=1e-7)
+
+    def err(t, v):
+        return float(np.max(np.abs(np.interp(tref, t, v) - vref)))
+
+    tl, vl, sl = _run_tran(False, reltol=1e-5)
+    tp, vp, sp = _run_tran(True, reltol=1e-5)
+
+    assert sp < sl / 2.0, \
+        'PCNR used %d steps against limiting\'s %d -- the step reduction is gone' \
+        % (sp, sl)
+    assert err(tp, vp) < 1.2 * err(tl, vl), \
+        'PCNR bought its steps with accuracy: %g against %g' \
+        % (err(tp, vp), err(tl, vl))
+
+
+def test_a_circuit_with_no_pcnr_device_falls_through():
+    """`pcnr=True` on a linear circuit must solve it, not refuse it."""
+    c = SubCircuit()
+    c['vs'] = VSin('a', gnd, va=1.0, freq=1e3)
+    c['R'] = R('a', 'b', r=1e3)
+    c['C'] = C('b', gnd, c=1e-7)
+    tran = Transient(c, toolkit=numeric, reltol=1e-5, pcnr=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = tran.solve(tend=2e-4, timestep=1e-5)
+    assert tran.statistics.accepted_steps > 5
+    assert np.max(np.abs(np.asarray(res.v('b').y, dtype=float))) > 0.1
+
+
+def test_a_charge_storing_pcnr_device_is_refused():
+    """A participating device with charge storage would contribute to `iq`/`Geq`
+    too, and that term would have to move to the limited unknown as well.
+
+    Left in the MNA block it would be evaluated at the NODE voltage while the
+    current is evaluated at `v_lim` -- exactly the inconsistency PCNR exists to
+    remove, reintroduced through the charge. Refused rather than silently wrong.
+    """
+    c = SubCircuit()
+    c['vs'] = VSin('a', gnd, va=1.0, freq=1e3)
+    c['D'] = Diode('a', 'b', IS=1e-15)
+    c['R'] = R('b', gnd, r=1e3)
+
+    js = P.pcnr_junctions(c)
+    d = c.elements['D']
+    ## Give the diode a non-zero capacitance stamp, which it does not have by
+    ## default, and check the guard fires rather than quietly proceeding.
+    d.C = lambda x, epar=None: np.array([[1e-12, -1e-12], [-1e-12, 1e-12]])
+    x = np.zeros(c.n)
+    with pytest.raises(NotImplementedError) as exc:
+        P.augmented_system(c, x, np.zeros(len(js)), js,
+                           J_extra=np.zeros((c.n, c.n)))
+    assert 'charge storage' in str(exc.value)

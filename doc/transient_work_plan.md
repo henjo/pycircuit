@@ -5606,13 +5606,51 @@ one passes through.
 the size of the original MNA system. Declared: matrix dimension unchanged from the
 non-PCNR path, and the per-iteration cost within 15% — measured per Newton iteration, not
 per time point, which is the unit gate 12-3 had to be corrected to use.
-OUTCOME:
+
+OUTCOME (2026-08-02): **STRUCTURAL HALF PASSES, COST HALF FAILS — and the cause is this
+implementation, not the method.** `benchmarks/transient_review/stage13_pcnr.py`.
+
+*Structure: PASS.* The matrix actually factorised is `n × n`, unchanged from the classic
+path, asserted on the object `predict` factorises rather than on a timing.
+
+*Cost: FAIL.* On 60 diodes, **+60% to +80% per Newton iteration** across repeated runs. (Only
+the ratio is meaningful: the absolute figures moved from 2044 to 4463 µs/iter for the classic
+path alone between runs, so the machine load varies more than the effect being measured.)
+
+*Attributed, not guessed.* Two rounds of optimisation were tried and neither closed it:
+
+- **The dense Schur product was the obvious suspect and was not the cause.** Forming
+  `J_ml @ J_lm` as an `(n,k)·(k,n)` product is `O(n²k)`, where each column of `J_ml` has two
+  nonzeros and each row of `J_lm` has two — so it collapses to `k` rank-one updates touching
+  four entries each. Implemented; the ratio did not improve.
+- **Nor were the allocations.** Skipping the `(n,k)` and `(k,n)` blocks entirely on the sparse
+  path, and caching the per-device parameter dict, also did not close it.
+
+Profiling then gave the answer: classic assembly (`circuit.i` + `circuit.G`) is 1115 µs and
+`augmented_system` is 2965 µs, of which the per-device subtract loop is only **14%**. **PCNR
+here runs the full ordinary assembly and then does more work on top** — subtract each
+participating device's node-voltage stamp, then re-stamp it at the device's own unknown.
+
+That is inherent to building this as a *layer*. The paper's design does not pay it: a device
+is asked for its PCNR contribution directly and never stamps the node-voltage form that would
+have to be subtracted. Reaching the paper's cost means devices not stamping their nonlinear
+part at all — an assembly change, and precisely the one this implementation avoided in order
+to be a layer. **Reconsider if** PCNR is ever wanted as a default; the layer is then the wrong
+shape and the assembly change is the work.
 
 **Gate 13-5 (it converges where limiting does).** The existing limiting tests
 (`test_dc_pcnr.py`, `test_analysis_transient.py`'s diode step) must pass unchanged, and the
 six nonlinear stress circuits must still converge. **A method that is more consistent and
 converges less often is not an improvement**, and that is the outcome to watch for.
-OUTCOME:
+
+OUTCOME (2026-08-02): **PASS.** Six circuits chosen to make limiting matter — the paper's two
+parallel diodes, a 1 A current drive, a 20 V hard forward drive, a four-diode series chain,
+six parallel diodes spanning six decades of `IS`, and sixty diodes. **PCNR converges on all
+six, and all six answers agree with the classic path** to within 1e-6 relative.
+
+Iteration counts are within one of each other throughout (8/8, 3/4, 8/8, 12/13, 12/13,
+13/14), so the extra consistency costs essentially no extra iterations — the cost in 13-4 is
+per-iteration work, not more iterations. The existing limiting tests pass unchanged.
 
 **Reconsider the whole stage if** gate 13-4 shows the elimination is not free, or if 13-5
 shows convergence degrading — in which case the honest result is to keep classic limiting,

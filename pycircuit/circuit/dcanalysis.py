@@ -46,6 +46,17 @@ class DC(Analysis):
                   Parameter(name='iabstol', 
                             desc='Absolute current eror tolerance', unit='A', 
                             default=1e-12),
+                  ## STAGE 13 -- solve with PCNR instead of limiting.
+                  ##
+                  ## Not the default, and that is a measured decision rather than
+                  ## caution: see gates 13-4 and 13-5 in the transient work plan.
+                  ## PCNR gives every limited quantity its own unknown, so devices
+                  ## cannot interfere through a shared node; classic limiting is
+                  ## what every existing test and circuit is tuned against.
+                  Parameter(name='pcnr',
+                            desc='Use Predictor/Corrector Newton-Raphson instead '
+                                 'of limiting (Aadithya et al.); off by default',
+                            unit='', default=False),
                   Parameter(name='vabstol', 
                             desc='Absolute voltage error tolerance', unit='V', 
                             default=1e-12),
@@ -93,6 +104,19 @@ class DC(Analysis):
                 raise ValueError(
                     'x0 has %d entries but the circuit has %d unknowns'
                     % (len(x0), self.cir.n))
+
+        if self.par.pcnr:
+            from pycircuit.circuit import pcnr as _pcnr
+            if _pcnr.pcnr_junctions(self.cir):
+                x, _v_lim, _its = _pcnr.solve_dc(
+                    self.cir, self.cir.nodes[self.irefnode], x0=x0,
+                    epar=self.epar, maxiter=self.par.maxiter,
+                    reltol=self.par.reltol, abstol=self.par.vabstol)
+                self.result = CircuitResult(self.cir, x)
+                return self.result
+            ## No participating device: PCNR has nothing to do, and falling
+            ## through to the ordinary solver is the honest answer rather than
+            ## raising -- the circuit simply has no limited quantities.
 
         def func(x):
             return self.cir.i(x, self.epar) + self.cir.u(0, analysis='dc', epar=self.epar), self.cir.G(x, self.epar)
