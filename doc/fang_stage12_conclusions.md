@@ -60,18 +60,16 @@ breakpoints, and the one that found the defect in §5 item 9):
    is circuit-dependent, and on the smooth sine drive the coupled path is within 8% of the
    standard path's runtime while eliminating its rejections.
 
-> **How to read `µs/point`, because it is not what it looks like.** The `steps`/`solves`
-> columns count TIME POINTS, not Newton iterations, and the coupled path runs several inner
-> iterations per point — 12 were measured at a pulse edge. So `µs/point` is not a
-> per-Newton-iteration cost and the two paths are not doing the same unit of work per row.
-> That the coupled path is *cheaper* per point on `rc-vsin` (2135 against 2473 µs) reflects
-> its steps being differently distributed, not its Newton being faster.
-
-> **`med/max` is reported but does not test §4.1's claim.** The paper says the new method
-> distributes the *local truncation error* more evenly along the grid. The table above
-> measures *global waveform error against a closed form*, which is a different quantity —
-> accumulated, not local. The ratios (standard ≈ 0.70, coupled ≈ 0.48–0.51 on rc-vsin) are
-> recorded because the shape is interesting, **not** as evidence for or against §4.1.
+> **Cost is measured per NEWTON ITERATION, not per time point.** An earlier version of this
+> document divided wall clock by time points, because `newton_iterations` was flat zero on
+> the coupled path — `fang_timestep` runs its own loop and never calls `_newton`, where the
+> counter lives. That unit mixes two different things and cannot separate them.
+>
+> Measured properly: **the coupled path is 9–24% cheaper per Newton iteration on every
+> circuit** (709 vs 781 µs on rc-vsin, 595 vs 786 on stiff-rlc, 694 vs 852 on rc-pulse). Its
+> entire cost is doing more iterations — and on the smooth circuits it does the *same number
+> per point* (2.00 vs 2.01), so the extra is purely the extra time points. Only `rc-pulse`
+> needs more per point, 3.74 against 2.02.
 
 ## 2. Why the paper's 39% does not appear here
 
@@ -201,6 +199,7 @@ returned a waveform.
 | 9 | saturation measured on the CLAMPED step change, so a step pinned at the shrink floor reported `dh == 0.0` — indistinguishable from "stopped moving", eq (16)'s definition of converged | the first step after a pulse edge was accepted **56× too large** (2.0e-7 s where 3.55e-9 s was needed), committing a **78% single-step error**; the resulting 1.465e-2 was *identical* at reltol 1e-5 and 1e-6 |
 | 10 | held steps were accepted with no error check at all — `hold_h` dropped the LTE equation *and* the test | subsumed by 9; found while chasing it |
 | 11 | `dx` convergence tested against the RESIDUAL tolerance vector (`iabstol` on nodes) instead of the SOLUTION one | invisible at defaults, where `iabstol == vabstol == 1e-12`; would surface only when one is changed |
+| 12 | a caller-injected step controller was silently replaced by the path's own | `tran.step_controller = X` looked honoured and did nothing — the same class as a documented feature that does not exist. Now refused with the reason |
 
 Defect 5 is worth singling out: **it is the same defect gate 12B-0 identified in the 2026-07
 code**, reintroduced by me while deleting that code. The comment in `_solve_coupled` now
@@ -292,9 +291,13 @@ notice.
   `hmin` floor, but the shipped path is §3.4 for the conditioning reason in 4.4. The rank-one
   LU update of §3.2 is therefore also unused.
 - **`TLine` cannot be used with `coupled_lte=True`** (see §6).
-- **A caller-injected step controller is ignored** on the coupled path, which builds its own
-  `SolutionLTEController`. The other three inputs of gate 12-4 — breakpoints, `uic` and
-  `fixed_timestep` — are now honoured.
+- **`q̄ᵀ` and `d` are implemented, gated against finite differences, and NOT CALLED.** They
+  exist for eq (12), which §3.4 replaced for the conditioning reason in 4.4; the shipped path
+  needs only `p̄`, through eq (18). This is worth knowing before anyone concludes the bordered
+  system is "nearly wired up" — it is, but its two cheap blocks are the only part in place and
+  the expensive question (4.4) is unresolved. Found while implementing the injected-controller
+  check, whose first version keyed on `lte_gradients` and would therefore have tested for a
+  method nothing calls.
 - **`rc-pulse` now carries a closed form** (segment-by-segment integration of the RC against
   the trapezoidal drive), so accuracy on a circuit with real edges is measurable. The first
   version of that reference was **wrong and said so loudly**: it skipped the `td` lead-in

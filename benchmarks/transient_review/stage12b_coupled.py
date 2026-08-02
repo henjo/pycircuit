@@ -189,7 +189,8 @@ def run(builder, analytic, reltol, coupled, repeats=3):
     d = d[2:] if len(d) > 2 else d
 
     st = tran.statistics
-    return dict(wall=wall, steps=st.accepted_steps, rejected=st.rejected_steps,
+    return dict(wall=wall, iters=st.newton_iterations,
+                steps=st.accepted_steps, rejected=st.rejected_steps,
                 solves=st.accepted_steps + st.rejected_steps,
                 min_err=float(np.min(d)), max_err=float(np.max(d)),
                 med_err=float(np.median(d)), avg_err=float(np.mean(d)),
@@ -202,9 +203,9 @@ def main():
     print()
     for name, builder, analytic in CIRCUITS:
         print('--- %s' % name)
-        print('%-8s %-9s %7s %7s %7s %9s %9s %11s %11s %11s'
-              % ('reltol', 'path', 'steps', 'reject', 'solves',
-                 'wall (s)', 'us/solve', 'mean|err|', 'median|err|', 'max|err|'))
+        print('%-8s %-9s %7s %7s %7s %8s %8s %9s %11s %11s'
+              % ('reltol', 'path', 'points', 'reject', 'NRiter',
+                 'wall (s)', 'us/iter', 'iter/pt', 'mean|err|', 'max|err|'))
         for reltol in RELTOLS:
             base = None
             for label, coupled in (('standard', False), ('coupled', True)):
@@ -217,17 +218,21 @@ def main():
                 if base is None:
                     base = r
                 done = '' if r['t_end'] >= r['tend'] * (1 - 1e-6) else '  RUN INCOMPLETE'
-                print('%-8.0e %-9s %7d %7d %7d %9.3f %9.1f %11.3e %11.3e %11.3e%s'
-                      % (reltol, label, r['steps'], r['rejected'], r['solves'],
-                         r['wall'], 1e6 * r['wall'] / max(r['solves'], 1),
-                         r['avg_err'], r['med_err'], r['max_err'], done))
+                print('%-8.0e %-9s %7d %7d %7d %8.3f %8.1f %9.2f %11.3e %11.3e%s'
+                      % (reltol, label, r['steps'], r['rejected'], r['iters'],
+                         r['wall'], 1e6 * r['wall'] / max(r['iters'], 1),
+                         r['iters'] / max(r['steps'], 1),
+                         r['avg_err'], r['max_err'], done))
         print()
 
-    print('`us/solve` is what gate 12-3 turns on: the coupled path does more')
-    print('work per Newton solve (an extra J^-1 p, the extrapolation, the')
-    print('gradients), and the gate declared that per-step cost must stay within')
-    print('15% of the standard path. Total wall clock also carries the step')
-    print('count, so the two columns say different things.')
+    print('`us/iter` is gate 12-3\'s real question: cost per unit of the SAME')
+    print('work. An earlier version of this table divided by time points instead,')
+    print('which is not the same unit on the two paths -- the coupled one can run')
+    print('several inner iterations per point. `iter/pt` shows how far apart the')
+    print('two units actually are on each circuit.')
+    print()
+    print('Total wall clock carries the point count as well, so it answers a')
+    print('different question: what the run costs, not what the method costs.')
 
 
 if __name__ == '__main__':

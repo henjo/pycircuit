@@ -158,3 +158,67 @@ def test_fixed_timestep_and_adaptive_differ_on_the_coupled_path():
     assert not np.allclose(dt, step, rtol=1e-9), \
         'the adaptive coupled path produced a uniform grid, so the fixed-step ' \
         'test above proves nothing'
+
+
+## ---------------------------------------------------------------------------
+## GATE 12-4, fourth input: a caller-injected step controller.
+
+def _rc():
+    from pycircuit.circuit.elements import VSin
+    c = SubCircuit()
+    c['vs'] = VSin('a', gnd, va=1.0, freq=1e3)
+    c['R'] = R('a', 'b', r=1e3)
+    c['C'] = C('b', gnd, c=1e-7)
+    return c
+
+
+def test_an_injected_solution_controller_is_the_one_used():
+    """Not silently replaced by the path's own.
+
+    Before this, `tran.step_controller = X` looked honoured on the coupled path
+    and did nothing -- the same class of defect as a documented feature that does
+    not exist.
+    """
+    from pycircuit.circuit.stepcontroller import SolutionLTEController
+    tran = Transient(_rc(), toolkit=numeric, reltol=1e-5)
+    ctrl = SolutionLTEController()
+    tran.step_controller = ctrl
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        tran.solve(tend=2e-4, timestep=1e-5, coupled_lte=True)
+    ## The private fallback must never have been built.
+    assert getattr(tran, '_fang_controller', None) is None
+
+
+def test_an_incompatible_controller_is_refused_with_the_reason():
+    """On this path the step law is Fang's, so another controller's cannot run.
+
+    Accepting one and quietly using it only for `relref` would be the same silent
+    no-op in a different costume, so it raises and says why.
+    """
+    from pycircuit.circuit.stepcontroller import IntegralController
+    tran = Transient(_rc(), toolkit=numeric, reltol=1e-5)
+    tran.step_controller = IntegralController()
+    with pytest.raises(ValueError) as exc:
+        tran.solve(tend=2e-4, timestep=1e-5, coupled_lte=True)
+    assert 'IntegralController' in str(exc.value)
+    assert 'coupled_lte=False' in str(exc.value)
+
+
+def test_the_standard_paths_own_controller_is_not_mistaken_for_an_injection():
+    """THE REGRESSION THAT BROKE ELEVEN TESTS.
+
+    `_solve` auto-creates `self.step_controller = IntegralController()` when the
+    caller supplied none. Any object that ran the adaptive path first then
+    presents that to the coupled path -- and the first version of the check above
+    refused it, rejecting a controller nobody had asked for.
+    """
+    tran = Transient(_rc(), toolkit=numeric, reltol=1e-5)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        tran.solve(tend=2e-4, timestep=1e-5, coupled_lte=False)
+    assert tran.step_controller is not None      # auto-created by _solve
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = tran.solve(tend=2e-4, timestep=1e-5, coupled_lte=True)
+    assert len(np.asarray(res.v('b').x, dtype=float).ravel()) > 10

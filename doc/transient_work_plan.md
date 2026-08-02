@@ -5216,20 +5216,34 @@ lower — so the extra steps are buying accuracy rather than being wasted.
 stage 7b's factors reused, declared success: the per-step cost of the coupled path is
 within **15%** of the standard path's. If it is not, the method is losing in wall time what
 it wins in step count, and that is the number that decides whether it ships.
-**OUTCOME (2026-08-02): PASSES on smooth circuits, FAILS on the breakpoint circuit.**
-Declared: per-step cost within 15% of the standard path.
+**OUTCOME (2026-08-02): PASSES everywhere, once measured in the right unit.** Declared:
+per-step cost within 15% of the standard path.
 
-Per time point: `rc-vsin` **2135 µs against 2473**, i.e. the coupled path is 14% *cheaper*;
-`stiff-rlc` 2169 against 2152, +0.8%; `rc-pulse` **2400 against 2039, +18%** at reltol 1e-6,
-and +127% at 1e-4. Total wall clock: +8% / +31% / +70%.
+**Per Newton iteration the coupled path is CHEAPER on every circuit** -- 709 us against 781
+on rc-vsin, 595 against 786 on stiff-rlc, 694 against 852 on rc-pulse: 9%, 24% and 18% less.
 
-**The metric is weaker than the gate assumed, and that is worth more than the verdict.**
-`solves` counts TIME POINTS, not Newton iterations, and the coupled path runs several inner
-iterations per point — 12 measured at a pulse edge. So this is not a per-iteration cost and
-the two paths are not doing the same unit of work per row; the coupled path coming out
-*cheaper per point* on `rc-vsin` reflects a different step distribution, not a faster
-Newton. A like-for-like comparison needs a Newton-iteration counter on both paths, which
-does not exist.
+Its whole cost is doing MORE iterations, and the two reasons separate cleanly:
+
+| | iter/point | total NR iterations | wall clock |
+|---|---|---|---|
+| rc-vsin  | 2.00 vs 2.01 | 10295 vs 8178 (+26%) | +14% |
+| stiff-rlc| 2.17 vs 1.99 | 4241 vs 2983 (+42%) | +8% |
+| rc-pulse | 3.74 vs 2.02 | 8310 vs 3030 (+174%) | +124% |
+
+On the smooth circuits the iteration count per point is unchanged, so the extra work is
+purely the extra time points. Only the breakpoint circuit needs materially more iterations
+per point.
+
+**THE FIRST VERSION OF THIS MEASUREMENT WAS IN THE WRONG UNIT AND IS WITHDRAWN.** It divided
+wall clock by TIME POINTS, because `newton_iterations` was flat zero on the coupled path --
+`fang_timestep` runs its own loop and never calls `_newton`, where the counter lives. That
+gave "2135 us against 2473, the coupled path is 14% cheaper per point", which mixed a
+genuine per-iteration saving with a difference in iterations per point and could not tell
+them apart. The counter is now wired on both paths.
+
+I also drew the wrong general conclusion from it: that the coupled path "runs several inner
+iterations per point" was true of rc-pulse and false of the other two, where the counts are
+2.00 against 2.01.
 
 **Gate 12-4 (the four ignored inputs).** Whatever else changes, the coupled path must
 honour `fixed_timestep`, breakpoints, an injected step controller, and `uic` — the list
@@ -5261,15 +5275,36 @@ the caller has left available, so the step is taken and the accuracy is what was
 Conflating the two broke `test_fixed_timestep_keeps_the_grid_on_the_coupled_path` — the
 retry shrank `h` and the uniform grid disappeared.
 
-**STILL OPEN: a caller-injected step controller is ignored on the coupled path**, which
-necessarily builds its own `SolutionLTEController`. `uic` and breakpoints are honoured.
+**All four inputs are now honoured** (2026-08-02). The injected step controller was the
+last: it was silently replaced by the path's own, so `tran.step_controller = X` looked
+honoured and did nothing.
+
+It is now **used** when it is a `SolutionLTEController` and **refused with the reason**
+otherwise, because on this path the step-size law is Fang's and an injected controller's own
+accept/predict logic is never consulted — accepting one and using it only for `relref` would
+be the same silent no-op in a different costume.
+
+The obvious test, `hasattr(injected, 'lte_gradients')`, is deliberately NOT used: `q^T` and
+`d` are implemented and gated but are not called on the shipped path, since sec. 3.4 replaced
+the eq (12) branch that used them. Keying on a method nothing calls would pass controllers
+that cannot work and fail ones that can.
 
 **Gate 12-5.** Full suite `-m ""`, and the citation in `time_stepping.rst` becomes true —
 the page's `.. warning::` recording that the method was documented but absent is removed
 only when the code matches it.
-**OUTCOME (2026-08-01): suite PASSES, doc NOT done.** 927 passed, 6 skipped, 3 xfailed, 0
-failed. `time_stepping.rst` still carries the warning saying the method was documented but
-absent, which is now false and must be rewritten before this gate closes.
+**OUTCOME (2026-08-02): PASS.** Suite **934 passed, 6 skipped, 3 xfailed, 0 failed**.
+
+`time_stepping.rst` is rewritten. The page had gone from describing a feature that did not
+exist, to describing its absence; it now describes what runs — eq (6) as a solution-space
+quantity and why that distinction is load-bearing, Figure 4's two-stage structure, sec. 3.4
+in place of eq (12) with the cancellation that forced it, the measured results, and the
+limitations. The history is kept in a note rather than deleted, because a
+documented-but-absent feature is the same class of defect as a silent wrong answer.
+
+Two companion documents carry what the page cannot: `doc/fang_dac2013_math.md` (the paper's
+math, extracted from rendered pages) and `doc/fang_stage12_conclusions.md` (the measurements,
+the eleven defects and how each presented, the six negative results, and what is still
+undone).
 
 **Reconsider the whole stage if** gate 12-3 fails, or if stage 4 shows the LTE estimate is
 still not trustworthy enough to solve against. **A negative result here is a good outcome**:

@@ -768,9 +768,45 @@ class Transient(Analysis):
             if max_step is None or max_step <= 0:
                 max_step = float('inf')
 
-        ctrl = getattr(self, '_fang_controller', None)
+        ## GATE 12-4, last of the four inputs: honour a caller-injected step
+        ## controller.
+        ##
+        ## A caller injects a step controller in order to control the steps.  On
+        ## this path they cannot: the step-size law is Fang's, and the injected
+        ## controller's own accept/predict logic is never consulted.  All the
+        ## coupled path takes from it is `_reference`, the `relref` machinery,
+        ## which every `StepController` has.
+        ##
+        ## So an injected controller is REFUSED unless it is one whose law this
+        ## path actually implements.  Accepting it and using it only for
+        ## `relref` would make `tran.step_controller = IntegralController()` look
+        ## honoured while doing nothing -- the same class of defect as a
+        ## documented feature that does not exist, which is what this path was
+        ## until now (it silently built its own and ignored the caller's).
+        ##
+        ## NOT keyed on `lte_gradients`, which would be the obvious test and is
+        ## wrong: `q^T` and `d` are implemented and gated but are NOT called on
+        ## the shipped path, because sec. 3.4 replaced the eq (12) branch that
+        ## used them.  Testing for a method nothing calls would pass controllers
+        ## that cannot work and fail ones that can.
+        injected = getattr(self, 'step_controller', None)
+        if getattr(self, '_step_controller_is_auto', False):
+            ## Auto-created by `_solve` on an earlier run of this object, not a
+            ## caller's choice.  Nothing to honour and nothing to refuse.
+            injected = None
+        if injected is not None and not isinstance(injected, SolutionLTEController):
+            raise ValueError(
+                "the coupled (Fang) path cannot honour an injected %s: on this "
+                "path the step size is solved from eq (6), so a controller's "
+                "own accept/predict law is never used. Either drop the injected "
+                "controller, pass a SolutionLTEController, or run with "
+                "coupled_lte=False." % type(injected).__name__)
+
+        ctrl = injected if injected is not None else \
+            getattr(self, '_fang_controller', None)
         if ctrl is None:
             ctrl = self._fang_controller = SolutionLTEController()
+        if getattr(ctrl, 'relref', None) != self.par.relref:
             ctrl.set_relref(self.par.relref)
 
         x = toolkit.array(x_prev, dtype=float).copy()
@@ -1136,6 +1172,12 @@ class Transient(Analysis):
         if getattr(self, 'step_controller', None) is None:
             from pycircuit.circuit.stepcontroller import IntegralController
             self.step_controller = IntegralController()
+            ## Marked so the coupled path can tell this apart from a controller
+            ## the CALLER injected.  Without the distinction, any object that ran
+            ## the standard path first presents this auto-created controller to
+            ## the coupled path, which then refuses a controller nobody asked
+            ## for -- 11 tests failed exactly that way.
+            self._step_controller_is_auto = True
         ## ITEM 2+.3.  Applied to whichever controller is in use, including one
         ## the caller injected, and re-applied every run so the running maximum
         ## a global mode keeps cannot leak from a previous solve.
@@ -1763,6 +1805,15 @@ class Transient(Analysis):
                     ## escape here would skip the backup entirely and abandon a
                     ## run that a smaller step would have completed.
                     converged = False
+                ## STAGE 12-3.  Count the inner Newton iterations, including
+                ## those of an attempt that then failed -- they are real work.
+                ## Without this `newton_iterations` was flat zero on this path,
+                ## so the only available cost comparison was per TIME POINT, and
+                ## the coupled path runs several iterations per point (12 were
+                ## measured at a pulse edge).  That made it look 14% cheaper per
+                ## point than the standard path on rc-vsin, which was an artefact
+                ## of the unit, not a property of the method.
+                self.statistics.newton_iterations += int(_iters)
                 if converged:
                     h_curr = h_solved
                     break
