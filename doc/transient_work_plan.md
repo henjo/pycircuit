@@ -5572,7 +5572,35 @@ can hold it.
 `g_lim = 0` must hold at convergence to solver tolerance, and every device must evaluate its
 current at its own `v_Dk`. Declared: on the paper's own two-parallel-diode circuit, the
 converged `v_D1` and `v_D2` agree with `e1 − e2` and with each other.
-OUTCOME:
+
+OUTCOME (2026-08-02): **PASS.** On the paper's own Fig. 1 — two parallel diodes with
+saturation currents six decades apart, fed through 1 kΩ from a 1 V source — PCNR converges in
+**8 iterations** with
+
+    e2 = 0.346053885    v_D1 = 0.346053885    v_D2 = 0.346053885
+
+agreeing to nine decimals with each other and with the branch voltage, and matching the
+classic solver's operating point exactly. Consistency that changed the answer would be
+worthless, so that second check matters as much as the first.
+
+`pycircuit/circuit/pcnr.py` implements it, and **it needed no change to MNA assembly**.
+Element stamps are additive, so the "everything except the PCNR devices" part of the residual
+and Jacobian is the ordinary assembly minus each participating device's own stamp — measured
+before writing the module, and it is why this is a layer rather than a rewrite. A device opts
+in by declaring `pcnr_junctions` plus `pcnr_i(v)` and `pcnr_didv(v)`; `Diode` does.
+
+Two properties are asserted beyond the residual, because a residual can be satisfied by a
+system that is quietly double-counting: the diode contributes **nothing** to `J_MNA/MNA`
+(its whole conductance moves to `J_MNA/lim`, since its current depends on its own unknown
+and not on the node voltages), and the two currents divide in the ratio of their `IS`.
+
+**A test of mine was wrong before the code was.** The independence test first drove `refine`
+from `vold = 0`, where `pnjlim` takes its `VT·log(vnew/VT)` branch and does not depend on
+`IS` at all — so two devices four decades apart limited to the same value and the assertion
+was testing something the algorithm does not do. `IS` enters only through
+`vc = VT·log(VT/(1.414·IS))`, and only when `vold > 0`. The test now steps to 0.6 V, which is
+above `vc` for one device (0.432 V) and below it for the other (0.788 V), so one limits and
+one passes through.
 
 **Gate 13-4 (the Schur elimination costs nothing).** The `Ax=b` actually solved must stay
 the size of the original MNA system. Declared: matrix dimension unchanged from the
