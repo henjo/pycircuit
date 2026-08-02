@@ -393,6 +393,21 @@ class Transient(Analysis):
          Parameter(name='uic',
                    desc='Use initial conditions (skip DC OP computation)', unit='',
                    default=False),
+         ## STAGE 10.3 -- SPICE's `.ic`, for `uic=True`.
+         ##
+         ## `uic=True` used to mean "start from a vector of zeros", which is not
+         ## what SPICE means by it and leaves a whole class of circuit
+         ## unstartable: an LC tank at zero is AT an equilibrium and stays there,
+         ## and a latch at zero sits on its metastable point.  Neither can be
+         ## simulated at all without a way to say where it starts.
+         ##
+         ## Node voltages only, and that is a scope decision rather than an
+         ## oversight -- see `_initial_state` for what is deferred and why.
+         Parameter(name='ic',
+                   desc="Initial node voltages for uic=True, as {node: volts}. "
+                        "Node may be a name or a Node instance.",
+                   unit='V',
+                   default=None),
          Parameter(name='minbreak',
                    desc='Minimum time difference for breakpoint events', unit='s',
                    default=1e-14),
@@ -614,6 +629,64 @@ class Transient(Analysis):
                     and bool(self.toolkit.alltrue(x_cached == x))):
                 return q_cached
         return self.cir.q(x, self.epar)
+
+    def _initial_state(self, refnode):
+        """The `uic=True` starting vector: zeros, plus whatever `ic` names.
+
+        STAGE 10.3.  `uic=True` previously meant a vector of zeros, which is not
+        SPICE's meaning and makes a class of circuit unsimulable rather than
+        merely inconvenient: **an LC tank at zero is at an equilibrium** and will
+        sit there forever, and a latch at zero is on its metastable point. There
+        was no way to start either.
+
+        **Node voltages only.** Element-level initial conditions -- SPICE's
+        ``C ... IC=v`` and ``L ... IC=i`` -- are NOT implemented here, and the two
+        are deferred for different reasons:
+
+        * ``L``'s is a branch current, and its unknown exists in the MNA vector,
+          so it needs only a reliable element-to-branch-index mapping. That is
+          mechanical but not free: `SubCircuit.branches` is a flattened list and
+          the element that owns each entry is not recorded.
+        * ``C``'s is a branch *voltage*, which constrains a DIFFERENCE of two
+          node unknowns rather than either of them. A set of such constraints is
+          a spanning-tree problem, not an assignment, and a floating capacitor
+          chain has no unique node-voltage solution without one.
+
+        **Reconsider if** a circuit needs a floating capacitor's initial voltage
+        or a nonzero starting inductor current -- both are real requirements that
+        this does not cover, and neither is expressible by naming node voltages.
+
+        The starting vector is deliberately NOT made consistent with the circuit
+        equations. Under `uic` there is no operating point by definition; the
+        first Newton solve at `t = h` sees these values as history and produces a
+        consistent solution from them, which is what SPICE does too.
+        """
+        n = self.cir.n
+        x0 = self.toolkit.zeros(n)
+
+        ic = self.par.ic
+        if not ic:
+            return x0
+
+        irefnode = self.cir.get_node_index(refnode)
+        for node, value in dict(ic).items():
+            try:
+                idx = self.cir.get_node_index(node)
+            except ValueError:
+                raise ValueError(
+                    "ic names node %r, which is not in the circuit. Nodes are: "
+                    "%s" % (node, ', '.join(str(nd) for nd in self.cir.nodes)))
+            ## Naming the reference node is not a harmless no-op -- it is a
+            ## statement the solver cannot honour, since that node is held at
+            ## zero by construction, so silently dropping it would leave the
+            ## caller believing an initial condition was applied.
+            if idx == irefnode:
+                raise ValueError(
+                    "ic sets node %r, which is the reference node and is held "
+                    "at 0 V by construction" % (node,))
+            x0[idx] = value
+
+        return x0
 
     def _solve_operating_point(self, refnode):
         """Solve the DC operating point that seeds the transient.
@@ -1290,14 +1363,28 @@ class Transient(Analysis):
         n = self.cir.n
         if x0 is None:
             if self.par.uic:
-                # Use Initial Conditions = skip DC operating point, start at zero
-                x0 = self.toolkit.zeros(n)
+                ## Skip the operating point and start from the stated initial
+                ## conditions -- zeros for anything `ic` does not name.
+                x0 = self._initial_state(refnode)
             else:
                 x0 = self._solve_operating_point(refnode)
             x = x0
         else:
             x = x0
         
+        ## `ic` without `uic` is a request the operating point overwrites, so
+        ## honouring it silently would be a lie in either direction: SPICE uses
+        ## `.ic` to CONSTRAIN the operating point and then releases it, which is
+        ## a different feature from the one implemented here. Raising says which
+        ## one is missing rather than quietly doing neither.
+        if self.par.ic and not self.par.uic:
+            raise ValueError(
+                "ic was given without uic=True. This implements SPICE's initial "
+                "conditions for the uic case only -- starting values for the "
+                "transient. Constraining the operating point with .ic and then "
+                "releasing it is a separate feature and is not implemented. "
+                "Pass uic=True, or drop ic.")
+
         self.base_integrator = self._get_integrator()
         hist_len = max(2, self.base_integrator.get_required_history())
         q0 = self.cir.q(x, self.epar)
@@ -1731,7 +1818,7 @@ class Transient(Analysis):
             ## zeros the caller wanted; with the silent fallback gone, `uic=True`
             ## would have raised on a circuit that has no operating point by design.
             if self.par.uic:
-                x0 = self.toolkit.zeros(n)
+                x0 = self._initial_state(refnode)
             else:
                 x0 = self._solve_operating_point(refnode)
 

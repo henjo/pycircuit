@@ -4734,6 +4734,35 @@ region.
 
 3. `.ic` / `.nodeset` — `uic=True` currently means "start from zeros", not SPICE's
    per-element initial conditions; oscillators and latches are unstartable.
+   **PARTLY DONE 2026-08-02: node initial conditions ship as `Transient(..., uic=True,
+   ic={node: volts})`.**
+
+   The defect was not an inconvenience. `uic=True` meaning a vector of zeros leaves a class
+   of circuit **unsimulable**: an LC tank at zero is *at* an equilibrium and stays there,
+   and a latch at zero sits on its metastable point. There was no argument to `solve()` that
+   started either. `test_initial_conditions.py` asserts the tank stays dead without `ic`,
+   then oscillates at `1/(2π√LC)` with it — frequency measured from zero crossings against
+   the analytic value, so it cannot pass on a circuit that merely wobbles.
+
+   Three things raise rather than silently doing nothing: an unknown node name, naming the
+   reference node (held at 0 V by construction), and `ic` without `uic=True`.
+
+   **DEFERRED, and for two different reasons.** Element-level ICs — SPICE's `C ... IC=v` and
+   `L ... IC=i` — are not implemented. `L`'s is a branch *current* whose unknown already
+   exists in the MNA vector, so it needs only a reliable element-to-branch-index mapping;
+   that is mechanical but not free, since `SubCircuit.branches` is flattened and does not
+   record which element owns each entry. `C`'s is a branch *voltage*, constraining a
+   **difference** of two node unknowns rather than either of them, and a set of such
+   constraints is a spanning-tree problem rather than an assignment — a floating capacitor
+   chain has no unique node-voltage solution without one.
+
+   **`.nodeset` is not implemented either**, and is a genuinely different feature: a *hint*
+   that seeds the DC solve and is then released, where `.ic` under UIC is a *starting value*
+   that is never released. Stage 5's convergence-aid ladder is the place it belongs.
+
+   **Reconsider if** a circuit needs a floating capacitor's initial voltage, a nonzero
+   starting inductor current, or a DC-convergence hint — none is expressible by naming node
+   voltages.
 4. A SPICE-subset netlist reader — everything else in interop is downstream of getting a
    circuit *in*.
 5. Large-signal MOSFET — no CMOS transient is expressible today.
