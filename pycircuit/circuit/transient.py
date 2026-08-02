@@ -982,6 +982,35 @@ class Transient(Analysis):
         return (self.toolkit.array(f, dtype=float),
                 self.toolkit.array(J, dtype=float))
 
+    def _residual_and_jacobian_pcnr(self, x, v_lim, t, junctions,
+                                    provided_function=None):
+        """``(f_eff, J_eff, g_lim)`` -- the PCNR system reduced to MNA size.
+
+        The coupled path writes its Newton out by hand rather than delegating to
+        `_newton`, so PCNR cannot attach to it the way `_solve_timestep_pcnr`
+        attaches to `solve_timestep`.  It does not need to: the Schur-reduced
+        system IS an n-sized system whose Newton step equals `predict`'s
+        ``dx_mna``, so handing `fang_timestep` ``(f_eff, J_eff)`` in place of
+        ``(f, J)`` makes its existing solve work unchanged -- **and its bordered
+        (N+1) extension too**, which reuses the same factors for ``dxh``.
+        """
+        from pycircuit.circuit import pcnr as _pcnr
+        C = self.cir.C(x, self.epar)
+        q = self.cir.q(x, self.epar)
+        self._q_cache = (x, q)
+        iq, Geq = self.get_diff(q, C)
+        u = self.cir.u(t, self.epar, analysis=self.par.analysis)
+        if provided_function is not None:
+            u = u + provided_function(t)
+        g_mna, g_lim, J_mm, J_ml, J_lm, didv = _pcnr.augmented_system(
+            self.cir, x, v_lim, junctions, self.epar,
+            u_extra=np.asarray(iq, dtype=float) + np.asarray(u, dtype=float),
+            dense_blocks=False, J_extra=Geq)
+        f_eff, J_eff = _pcnr.schur_reduce(g_mna, g_lim, J_mm, J_ml, J_lm,
+                                          junctions, didv)
+        return (self.toolkit.array(f_eff, dtype=float),
+                self.toolkit.array(J_eff, dtype=float), g_lim)
+
     def fang_timestep(self, x_prev, t_prev, h, x_hist, refnode=gnd,
                       provided_function=None, gamma_min=0.7, gamma_max=3.0,
                       eta=0.15, maxiter=None, hmin=None, max_step=None,
@@ -1070,6 +1099,19 @@ class Transient(Analysis):
             ctrl.set_relref(self.par.relref)
 
         x = toolkit.array(x_prev, dtype=float).copy()
+
+        ## PCNR ON THE COUPLED PATH.  `pcnr=True` was SILENTLY IGNORED here:
+        ## `_solve` dispatches on `coupled_lte` before it ever looks at `pcnr`,
+        ## so the run took the classic limiter and the parameter did nothing --
+        ## measured as 0 PCNR steps against 4869 `Diode.limit` calls, and results
+        ## bit-identical to `pcnr=False`.
+        from pycircuit.circuit import pcnr as _pcnr
+        junctions = _pcnr.pcnr_junctions(self.cir) if self.par.pcnr else []
+        ## `v_lim` is per-time-point state, seeded from the incoming solution and
+        ## carried across the iterations below.
+        v_lim = np.array([float(x[ra] - x[rb])
+                          for _i, _e, ra, rb in junctions])
+
         ## The increment flavour: `dx0` is a solution update, not a residual.
         xtol = self._newton_xtol_vector()
         reltol = self.par.reltol
@@ -1095,7 +1137,11 @@ class Transient(Analysis):
             ## --- STAGE 1: the ordinary N system, at the current step size.
             self._dt = h
             t = t_prev + h
-            f, J = self._residual_and_jacobian(x, t, provided_function)
+            if junctions:
+                f, J, g_lim = self._residual_and_jacobian_pcnr(
+                    x, v_lim, t, junctions, provided_function)
+            else:
+                f, J = self._residual_and_jacobian(x, t, provided_function)
 
             f_r = toolkit.delete(f, irefnode)
             J_r = toolkit.delete(toolkit.delete(J, irefnode, axis=0),
@@ -1108,10 +1154,24 @@ class Transient(Analysis):
             ## the six nonlinear stress circuits all returned ~0 V where the
             ## standard path gives 8.9 V, and they did it silently -- the solve
             ## "converged", to the wrong thing.
-            x_stage1 = self.cir.limit(x + dx0, x, self.epar)
-            ## The limiter may shorten the step, so the convergence test must use
-            ## what was actually taken, not what was asked for.
-            dx0 = x_stage1 - x
+            if junctions:
+                ## PCNR's CORRECT phase.  No `cir.limit` anywhere: each device
+                ## limits ONLY the unknown it owns, so one device's limiter
+                ## cannot disturb another's.  `dx0` is deliberately NOT shortened
+                ## -- the MNA update is taken in full, which is the whole point.
+                x_stage1 = x + dx0
+                x_stage1[irefnode] = 0.0
+                dx_lim = np.array(
+                    [-(g_lim[k] + (-dx0[ra] + dx0[rb]))
+                     for k, (_i, _e, ra, rb) in enumerate(junctions)])
+                v_stage1 = _pcnr.refine(junctions, v_lim, v_lim + dx_lim,
+                                        self.epar)
+            else:
+                x_stage1 = self.cir.limit(x + dx0, x, self.epar)
+                ## The limiter may shorten the step, so the convergence test must
+                ## use what was actually taken, not what was asked for.
+                dx0 = x_stage1 - x
+                v_stage1 = v_lim
 
             ## --- STAGE 2: has the step size earned any attention?
             h_hist = [hh for hh in (getattr(self, '_dt_last', None),
@@ -1124,6 +1184,16 @@ class Transient(Analysis):
 
             converged_x = bool(toolkit.alltrue(
                 abs(dx0) < reltol * abs(x_stage1) + xtol))
+            if junctions:
+                ## BOTH residuals, for the reason recorded in
+                ## `_solve_timestep_pcnr`: converging on `dx_mna` alone can return
+                ## with `v_lim != e_a - e_b`, i.e. the diode evaluated at a voltage
+                ## that is not the node voltage, so the vector is not a solution of
+                ## the circuit at all -- and the LTE built from it then reads low.
+                converged_x = converged_x and bool(
+                    np.max(np.abs(g_lim))
+                    < reltol * max(float(np.max(np.abs(v_stage1))), 1.0)
+                    + self.par.vabstol)
 
             ## `hold_h` -- the step size is IMPOSED, not free.  A step truncated
             ## onto a breakpoint or onto `tend` has its size decided by where it
@@ -1165,7 +1235,7 @@ class Transient(Analysis):
                 ## The LTE condition holds (or cannot be evaluated yet, on the
                 ## opening steps).  Nothing to solve for `h`; finish on the
                 ## circuit equations alone.
-                x = x_stage1
+                x, v_lim = x_stage1, v_stage1
                 if converged_x:
                     return x, h, it + 1, True
                 continue
@@ -1329,8 +1399,16 @@ class Transient(Analysis):
                 dxh_r = toolkit.linearsolver(J_r, -p_r)
                 dxh = toolkit.insert(dxh_r, irefnode, 0.0)
                 x = x_stage1 + dxh * dh
+                ## `v_lim` tracks the branch voltage, so the stage-4 correction
+                ## has to move it too -- the loop can return immediately after
+                ## this, and a `v_lim` left at its stage-1 value would be exactly
+                ## the `v_lim != e_a - e_b` inconsistency the check above exists
+                ## to catch.
+                v_lim = np.array(
+                    [v_stage1[k] + (dxh[ra] - dxh[rb]) * dh
+                     for k, (_i, _e, ra, rb) in enumerate(junctions)])
             else:
-                x = x_stage1
+                x, v_lim = x_stage1, v_stage1
             h = h_new
 
             ## `not saturated`, and a strict test: a step still moving at the

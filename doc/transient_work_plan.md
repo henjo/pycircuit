@@ -5714,6 +5714,57 @@ with it, all recorded rather than edited away:
   - "limiting's LTE estimate is inflated by 25-30% at matched `h`" (0.8091 vs 0.6397 in the
     `1.58e-6 – 6.31e-6` bin) — **withdrawn**, the same artefact seen from another angle.
 
+**Gate 13-7 (NEW — `pcnr=True` is honoured on the coupled path).** Found while tracing the
+callers of `cir.G` for gate 13-6's residual hazard. `_solve` dispatches
+`if coupled_lte: return self._solve_coupled(...)` **before** it ever looks at `pcnr`, so the
+combination silently ran the classic limiter:
+
+| pcnr | coupled | PCNR timesteps | `Diode.limit` calls | v(2) max |
+|---|---|---|---|---|
+| True | False | 1766 | 1 | 9.335271 |
+| True | **True** | **0** | **4869** | 9.334558 |
+| False | True | 0 | 4869 | 9.334558 |
+
+Bit-identical to not asking for it. **A parameter that silently does nothing** — the same
+class as the orphaned `h_next` and the blind `vabstol` guard.
+
+**The wiring, and why it is small.** The coupled path writes its Newton out by hand, so PCNR
+cannot attach the way it does to `solve_timestep`. It does not need to: the Schur-reduced
+system is an `n`-sized system whose Newton step **is** `predict`'s `dx_mna`, and
+`fang_timestep` already deletes the refnode and solves exactly that shape. Handing it
+`(f_eff, J_eff)` makes its existing solve work unchanged — **and its bordered (N+1)
+extension too**, since `dxh = -J^-1 p` reuses the same factors. The Schur reduction was
+factored into `pcnr.schur_reduce` so the formula has one home; gate 13-6 happened precisely
+because a second consumer open-coded it.
+
+- **13-7a (PCNR actually runs).** PASS: 4880 augmented assemblies, `Diode.limit` down to 1
+  (the DC operating point, which still uses the classic path).
+- **13-7b (agreement with the classic coupled path).** **FAILED AS DECLARED — and the
+  declared threshold was the wrong instrument.** Measured 5.58e-6 relative against a declared
+  <1e-6. The threshold was imported from the non-coupled case, where the two paths are
+  step-for-step identical (gate 13-6). On the coupled path they are not, and *should not be*:
+  the step size is solved **inside** the Newton loop from the mid-iteration iterate
+  `x_stage1`, which is the limited point under limiting and the full update under PCNR, so
+  the grids legitimately diverge. `max|dv|` is then a grid-sampling artefact, and it is not
+  even monotonic in `reltol` (1.10e-3, 5.21e-5, 2.64e-4, 6.65e-7 at 1e-4…1e-7) — which is the
+  signature of an instrument measuring the wrong thing.
+
+  **Restated and passed on the right instrument:** neither path is systematically less
+  accurate, measured against an independent tight reference rather than against each other.
+  Both give the *identical* maximum error, to six figures and at the same time point —
+  `fig1` 7.98231e-05, `hard-drive` 4.37299e-03. This is rule 8 biting: comparing the
+  integrator with itself could not answer the question, and an independent reference did.
+- **13-7c (the stress circuits still converge).** PASS: all six converge both ways on the
+  coupled path. Two showed a large direct `max|dv|` (`fig1` 4.67e-3, `hard-drive` 9.17e-3
+  relative) — **and that was the same flawed instrument**, interpolation across a steep
+  waveform, refuted by the reference measurement above.
+- **13-7d (suite).** PASS: 973 passed, 6 skipped, 3 xfailed, 0 failed.
+
+Pinned by `test_gate_13_7_pcnr_is_honoured_on_the_coupled_path`, which counts calls rather
+than comparing waveforms — the two paths agree to within their own truncation error, so a
+waveform comparison **cannot** tell "PCNR ran" from "PCNR was ignored". Verified to fail
+against the defect reinstated by injection (`assert 0 > 10`).
+
 **The residual hazard, recorded and not fixed.** `cir.G(x)` returns a *wrong Jacobian* during
 a PCNR run, for any caller. One consumer existed and is fixed; nothing prevents the next one.
 The clean fix is for devices to stop stamping their nonlinear part into `G` at all — which is

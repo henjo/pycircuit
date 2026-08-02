@@ -138,6 +138,43 @@ def augmented_system(circuit, x, v_lim, junctions, epar=defaultepar,
     return g_mna, g_lim, J_mm, J_ml, J_lm, didv_list
 
 
+def schur_reduce(g_mna, g_lim, J_mm, J_ml=None, J_lm=None, junctions=None,
+                 didv=None):
+    """The augmented system collapsed onto the original MNA size.
+
+    Returns ``(f_eff, J_eff)`` such that ``J_eff dx = -f_eff`` is the MNA part of
+    one Newton step on ``[x_MNA ; x_lim]``::
+
+        J_eff = J_mm - J_ml J_lm        f_eff = g_mna - J_ml g_lim
+
+    **This is the only place that formula is written.** It has two consumers with
+    different needs -- :func:`predict`, which solves with it, and the transient
+    step controller, which only wants the matrix -- and when the second one
+    open-coded it instead, it got `cir.G(x)` and a step count 6.6x too large.
+    A shared definition is the mechanism that stops that recurring, which matters
+    more here than the handful of lines it saves.
+
+    ``J_ll`` being the identity is what makes the border collapse to a rank-k
+    update; with ``junctions``/``didv`` that is exploited directly, at ``O(k)``
+    rather than the ``O(n^2 k)`` of a dense ``J_ml @ J_lm``.
+    """
+    if junctions is not None and didv is not None:
+        schur = np.array(J_mm, copy=True)
+        rhs_corr = np.zeros(len(g_mna))
+        for idx, (_inst, _el, ra, rb) in enumerate(junctions):
+            dia, dib = didv[idx]
+            ## column k of J_ml is (dia at ra, dib at rb); row k of J_lm is
+            ## (-1 at ra, +1 at rb).  Their outer product is these four entries.
+            schur[ra, ra] += dia
+            schur[ra, rb] -= dia
+            schur[rb, ra] += dib
+            schur[rb, rb] -= dib
+            rhs_corr[ra] += dia * g_lim[idx]
+            rhs_corr[rb] += dib * g_lim[idx]
+        return g_mna - rhs_corr, schur
+    return g_mna - J_ml @ g_lim, J_mm - J_ml @ J_lm
+
+
 def predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode, junctions=None,
             didv=None):
     """One Newton step on the coupled system, by Schur complement.
@@ -156,23 +193,8 @@ def predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode, junctions=None,
     a sum of ``k`` rank-one terms touching four entries each: ``O(k)`` work, not
     ``O(n^2 k)``. Pass ``junctions``/``didv`` to take that path.
     """
-    if junctions is not None and didv is not None:
-        schur = np.array(J_mm, copy=True)
-        rhs_corr = np.zeros(len(g_mna))
-        for idx, (_inst, _el, ra, rb) in enumerate(junctions):
-            dia, dib = didv[idx]
-            ## column k of J_ml is (dia at ra, dib at rb); row k of J_lm is
-            ## (-1 at ra, +1 at rb).  Their outer product is these four entries.
-            schur[ra, ra] += dia
-            schur[ra, rb] -= dia
-            schur[rb, ra] += dib
-            schur[rb, rb] -= dib
-            rhs_corr[ra] += dia * g_lim[idx]
-            rhs_corr[rb] += dib * g_lim[idx]
-        rhs = -(g_mna - rhs_corr)
-    else:
-        schur = J_mm - J_ml @ J_lm
-        rhs = -(g_mna - J_ml @ g_lim)
+    f_eff, schur = schur_reduce(g_mna, g_lim, J_mm, J_ml, J_lm, junctions, didv)
+    rhs = -f_eff
 
     keep = [i for i in range(len(g_mna)) if i != irefnode]
     dx_r = np.linalg.solve(schur[np.ix_(keep, keep)], rhs[keep])

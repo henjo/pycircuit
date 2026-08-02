@@ -372,3 +372,63 @@ def test_gate_13_6_pcnr_and_limiting_take_the_same_steps():
     assert len(t_pc) == len(t_lim)
     assert np.allclose(t_pc, t_lim, rtol=1e-9, atol=0.0), 'step sequences differ'
     assert np.max(np.abs(v_pc - v_lim)) < 1e-9 * max(1.0, np.max(np.abs(v_lim)))
+
+
+def test_gate_13_7_pcnr_is_honoured_on_the_coupled_path():
+    """`pcnr=True` must not be silently ignored when `coupled_lte=True`.
+
+    `_solve` dispatches on `coupled_lte` before it looks at `pcnr`, so the
+    coupled path used to run the classic limiter whatever `pcnr` said -- 0 PCNR
+    steps against 4869 `Diode.limit` calls, and results bit-identical to
+    `pcnr=False`. A parameter that silently does nothing is the same class of
+    defect as an orphaned `h_next`: nothing fails, the run is simply not the one
+    that was asked for.
+
+    Asserted by counting CALLS rather than by comparing waveforms, because the
+    two paths agree to within their own truncation error -- which is the correct
+    outcome, and therefore cannot distinguish "PCNR ran" from "PCNR was ignored".
+    """
+    import warnings
+    from pycircuit.circuit import numeric
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.elements import Diode
+    import pycircuit.circuit.pcnr as _pcnr
+
+    counts = {}
+    for pcnr in (False, True):
+        hits = {'limit': 0, 'aug': 0}
+        real_limit, real_aug = Diode.limit, _pcnr.augmented_system
+
+        def spy_limit(self, *a, **k):
+            hits['limit'] += 1
+            return real_limit(self, *a, **k)
+
+        def spy_aug(*a, **k):
+            hits['aug'] += 1
+            return real_aug(*a, **k)
+
+        Diode.limit, _pcnr.augmented_system = spy_limit, spy_aug
+        try:
+            tran = Transient(_mains_rectifier(), toolkit=numeric,
+                             reltol=1e-5, pcnr=pcnr)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                tran.solve(tend=2e-3, timestep=1e-4, coupled_lte=True)
+        finally:
+            Diode.limit, _pcnr.augmented_system = real_limit, real_aug
+        counts[pcnr] = hits
+
+    assert counts[False]['aug'] == 0, \
+        'pcnr=False assembled the PCNR system %d times' % counts[False]['aug']
+    assert counts[False]['limit'] > 10, \
+        'pcnr=False did not use the classic limiter at all'
+
+    assert counts[True]['aug'] > 10, \
+        'pcnr=True on the coupled path assembled the PCNR system only %d times ' \
+        '-- the parameter is being ignored' % counts[True]['aug']
+    ## The DC operating point still runs the classic path, so this is "no
+    ## limiting in the transient loop", not "never called".
+    assert counts[True]['limit'] < counts[False]['limit'] / 100, \
+        'pcnr=True still called the classic limiter %d times against %d ' \
+        '-- device limiting is active under PCNR' \
+        % (counts[True]['limit'], counts[False]['limit'])

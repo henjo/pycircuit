@@ -117,6 +117,14 @@ survived every DC test. It escaped through one door only — the matrix handed t
 the transient step controller, which forms ``lte = J⁻¹ Eg`` — and there it changed
 the step count by 6.6x.
 
+It applies on the coupled (Fang) path too, where ``pcnr=True`` is now honoured
+rather than silently ignored. That path solves for the step size *inside* the
+Newton loop, so unlike the standard path it does **not** reproduce classic
+limiting step for step — the LTE is evaluated at a mid-iteration iterate, which is
+the limited point under limiting and the full update under PCNR. The two grids
+diverge slightly and legitimately. What must hold, and is measured, is that
+neither is less accurate against an independent reference.
+
 So: **do not call ``cir.G(x)`` on the PCNR path and expect a usable Jacobian.**
 The matrix to use is the Schur matrix that ``predict`` already factorises; at
 convergence ``v_lim == e_a − e_b``, so it *is* the Jacobian of the residual with
