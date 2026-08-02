@@ -71,11 +71,39 @@ default**:
    because the ``lim/lim`` block is the identity, so the linear system actually
    solved stays the size of the original MNA system.
 
-The inconsistency PCNR removes is real. On a toolkit without automatic
-differentiation, ``Diode.G`` linearises around the *limited* voltage while
-``Diode.i`` evaluates at the *node* voltage — the Jacobian and the residual are
-taken at different points. ``Semiconductor`` avoids it differently, by moving the
-evaluation point itself so that everything is evaluated consistently.
+What PCNR removes, stated correctly
+===================================
+
+**This page previously claimed that ``Diode.G`` linearises around the limited
+voltage while ``Diode.i`` evaluates at the node voltage, so that "the Jacobian and
+the residual are taken at different points". That is false**, and it mattered:
+it made PCNR look like a correctness fix when it is not.
+
+``Diode.i`` ends with ``I_eff = I - g * (VD - v_nodes)`` — the companion form
+``i(x) = I(VD) + g(VD)(v(x) − VD)``, which is affine in ``x`` with slope exactly
+``g(VD)``; and ``G`` returns ``g(VD)``. So ``G`` *is* ``di/dx``, measured by
+central difference to a worst relative disagreement of 5.045e-10 across node
+voltages from −2 V to +0.7 V. Re-measure with
+``benchmarks/transient_review/companion_consistency.py``.
+
+The residual and the Jacobian are consistent **within one linear solve**. What
+PCNR actually removes is the *hidden* status of the linearisation point ``VD``:
+it depends on the previous iterate and on the order devices are visited, and two
+devices sharing a branch can undo each other's adjustment. Across iterations
+``VD`` moves, so limiting is a modified Newton on a sequence of tangent points
+rather than Newton's method on the original system.
+
+**PCNR does not change the equations; it changes what is allowed to be
+implicit** — the tangent point is promoted from a per-device side effect to an
+unknown the solver carries and converges. Its benefit is convergence robustness,
+not a different answer. ``Semiconductor`` addresses the same hidden-state problem
+differently, by moving the evaluation point so everything is evaluated
+consistently.
+
+A companion far from the operating point is *valid*, not broken: at −2 V the
+tangent above presents 6.77e-04 S where the device has 9.49e-47 S. That is why a
+**stale** ``VD`` is silently a plausible matrix, and how the defect described
+below survived three gates.
 
 What it costs, and what it does not buy
 =======================================
