@@ -328,6 +328,23 @@ class JAXToolkit(Toolkit):
             group['1d_indices'].append(circuit._map_indices_1d[instance_name])
             values = getattr(getattr(element, 'iparv', None), '_values', {}) or {}
             for key, value in values.items():
+                ## STAGE 10.3 -- a parameter that is not a number cannot be
+                ## batched, and is not a model parameter either.
+                ##
+                ## `ic` (initial conditions, added for uic=True) defaults to
+                ## None, which no `eval_*_pure` reads and which `self.array`
+                ## cannot build: JAX raises "None is not a valid value for
+                ## jnp.array" and takes three vectorised-stamping tests with it.
+                ## Skipping the KEY rather than the value keeps the batch
+                ## rectangular -- dropping only the None entries would leave a
+                ## column shorter than the instance list and misalign every
+                ## parameter after it.
+                if value is None:
+                    group['params'].pop(key, None)
+                    group.setdefault('_unbatchable', set()).add(key)
+                    continue
+                if key in group.get('_unbatchable', ()):
+                    continue
                 group['params'].setdefault(key, []).append(value)
 
         for group in groups.values():

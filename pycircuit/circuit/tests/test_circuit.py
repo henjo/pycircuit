@@ -59,7 +59,11 @@ def test_parallel():
 def test_print_element():
     pycircuit.circuit.circuit.default_toolkit = symbolic
 
-    assert str(C(1, 0, gnd, c=sympy.Symbol('c'))) == "C('plus','minus',c=c)"
+    ## STAGE 10.3 added `ic` to C, so the repr carries it. Kept as an
+    ## explicit expectation rather than made pattern-tolerant: the repr is
+    ## meant to reconstruct the element, so a new parameter appearing in it is
+    ## correct and worth pinning.
+    assert str(C(1, 0, gnd, c=sympy.Symbol('c'))) == "C('plus','minus',c=c,ic=None)"
 
 def test_print_netlist():
     """Test printing of netlist"""

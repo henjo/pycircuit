@@ -118,7 +118,19 @@ class C(Circuit):
 
     terminals = ('plus', 'minus')
     instparams = [Parameter(name='c', desc='Capacitance', 
-                            unit='F', default=1e-12)]
+                            unit='F', default=1e-12),
+                  ## STAGE 10.3 -- SPICE's `C ... IC=`, honoured only under
+                  ## `uic=True`.  Unlike `L`'s, this is NOT an assignment: a
+                  ## capacitor has no state variable of its own -- `q` is derived
+                  ## from the node voltages -- so an initial voltage constrains a
+                  ## DIFFERENCE of two unknowns and a set of them is solved as a
+                  ## spanning tree.  See `doc/initial_conditions.md`.
+                  Parameter(name='ic',
+                            desc='Initial voltage for uic=True (V); None means '
+                                 'unconstrained',
+                            unit='V', default=None)]
+
+    IC_KIND = 'voltage'
 
     def update(self, subject):
         # --- CAPACITOR MNA STAMP ---
@@ -175,6 +187,11 @@ class L(Circuit):
                   Parameter(name='ic',
                             desc='Initial current for uic=True (A); None means 0',
                             unit='A', default=None)]
+
+    ## STAGE 10.3 -- what an `ic` on this element MEANS.  Declared rather than
+    ## inferred from "does it own a branch": that correlation holds for every
+    ## element today and would silently mis-handle the first one that breaks it.
+    IC_KIND = 'current'
 
     def update(self, subject):
         # --- INDUCTOR MNA STAMP (EXTRA BRANCH EQUATION) ---

@@ -250,3 +250,134 @@ def test_a_tank_started_by_inductor_current_has_the_analytic_amplitude():
         'v should start near zero, got %g against a %g swing' % (v[0], expected)
     assert np.max(np.abs(v)) == pytest.approx(expected, rel=0.03), \
         'amplitude %.4g against an analytic %.4g' % (np.max(np.abs(v)), expected)
+
+
+## ---------------------------------------------------------------------------
+## STAGE 10.3, capacitor initial voltages: `C(..., ic=...)`.
+##
+## Not an assignment. A capacitor has NO state variable of its own -- `q` is
+## derived from the node voltages -- so `ic` constrains a DIFFERENCE of two
+## unknowns and a set of them is solved as a spanning tree. See
+## doc/initial_conditions.md sec. 4a.
+
+def test_a_grounded_capacitor_chain_propagates_from_ground():
+    ck = SubCircuit()
+    ck['C1'] = C('a', 'b', c=1e-9, ic=2.0)
+    ck['C2'] = C('b', gnd, c=1e-9, ic=3.0)
+    ck['R'] = R('a', gnd, r=1e9)
+    tran = Transient(ck, toolkit=numeric, uic=True)
+    x0 = tran._initial_state(gnd)
+    assert x0[ck.get_node_index('b')] == pytest.approx(3.0)
+    assert x0[ck.get_node_index('a')] == pytest.approx(5.0)
+
+
+def test_a_floating_group_raises_rather_than_choosing_a_reference():
+    """DECISION (a). The differences asked for are satisfied by infinitely many
+    assignments, and the absolute values reach the output waveform -- so picking
+    one silently is the quiet-wrong-answer shape this stage exists to avoid."""
+    ck = SubCircuit()
+    ck['Ca'] = C('p', 'q', c=1e-9, ic=1.5)   # touches neither ground nor an ic
+    ck['C0'] = C(1, gnd, c=1e-9)
+    tran = Transient(ck, toolkit=numeric, uic=True)
+    with pytest.raises(ValueError) as exc:
+        tran._initial_state(gnd)
+    assert 'up to a constant' in str(exc.value)
+    assert 'Ca' in str(exc.value)
+
+
+def test_a_node_ic_can_anchor_an_otherwise_floating_group():
+    """And it is the documented way out of the error above."""
+    ck = SubCircuit()
+    ck['Ca'] = C('p', 'q', c=1e-9, ic=1.5)
+    ck['C0'] = C(1, gnd, c=1e-9)
+    tran = Transient(ck, toolkit=numeric, uic=True, ic={'q': 0.5})
+    x0 = tran._initial_state(gnd)
+    assert x0[ck.get_node_index('q')] == pytest.approx(0.5)
+    assert x0[ck.get_node_index('p')] == pytest.approx(2.0)
+
+
+def test_a_consistent_loop_is_accepted():
+    """v(a)-v(b) = 1, v(b)-v(c) = 2, v(a)-v(c) = 3 -- the loop sums to zero."""
+    ck = SubCircuit()
+    ck['Cab'] = C('a', 'b', c=1e-9, ic=1.0)
+    ck['Cbc'] = C('b', 'c', c=1e-9, ic=2.0)
+    ck['Cac'] = C('a', 'c', c=1e-9, ic=3.0)
+    ck['Cg'] = C('c', gnd, c=1e-9, ic=0.0)
+    tran = Transient(ck, toolkit=numeric, uic=True)
+    x0 = tran._initial_state(gnd)
+    assert x0[ck.get_node_index('c')] == pytest.approx(0.0)
+    assert x0[ck.get_node_index('b')] == pytest.approx(2.0)
+    assert x0[ck.get_node_index('a')] == pytest.approx(3.0)
+
+
+def test_an_inconsistent_loop_raises():
+    """The same loop with 3.5 instead of 3.0 is a contradiction the caller
+    cannot have meant, and resolving it by insertion order would make the answer
+    depend on the order elements were added."""
+    ck = SubCircuit()
+    ck['Cab'] = C('a', 'b', c=1e-9, ic=1.0)
+    ck['Cbc'] = C('b', 'c', c=1e-9, ic=2.0)
+    ck['Cac'] = C('a', 'c', c=1e-9, ic=3.5)
+    ck['Cg'] = C('c', gnd, c=1e-9, ic=0.0)
+    tran = Transient(ck, toolkit=numeric, uic=True)
+    with pytest.raises(ValueError) as exc:
+        tran._initial_state(gnd)
+    assert 'contradictory' in str(exc.value)
+
+
+def test_parallel_capacitors_that_disagree_raise():
+    ck = SubCircuit()
+    ck['C1'] = C('a', gnd, c=1e-9, ic=1.0)
+    ck['C2'] = C('a', gnd, c=2e-9, ic=1.5)
+    tran = Transient(ck, toolkit=numeric, uic=True)
+    with pytest.raises(ValueError) as exc:
+        tran._initial_state(gnd)
+    assert 'contradictory' in str(exc.value)
+
+
+def test_a_capacitor_ic_disagreeing_with_a_node_ic_raises():
+    ck = SubCircuit()
+    ck['C1'] = C('a', gnd, c=1e-9, ic=1.0)
+    tran = Transient(ck, toolkit=numeric, uic=True, ic={'a': 2.0})
+    with pytest.raises(ValueError) as exc:
+        tran._initial_state(gnd)
+    assert 'contradictory' in str(exc.value)
+
+
+def test_both_terminals_on_one_node_must_have_a_zero_ic():
+    ck = SubCircuit()
+    ck['C1'] = C('a', 'a', c=1e-9, ic=1.0)
+    ck['C2'] = C('a', gnd, c=1e-9)
+    tran = Transient(ck, toolkit=numeric, uic=True)
+    with pytest.raises(ValueError) as exc:
+        tran._initial_state(gnd)
+    assert '0 ==' in str(exc.value)
+
+
+def test_inductor_and_capacitor_ics_coexist():
+    """The two are solved by different mechanisms -- an assignment and a tree
+    walk -- and must not disturb each other."""
+    ck = SubCircuit()
+    ck['L'] = L(1, gnd, L=1e-6, ic=0.25)
+    ck['C'] = C(1, gnd, c=1e-9, ic=3.0)
+    tran = Transient(ck, toolkit=numeric, uic=True)
+    x0 = tran._initial_state(gnd)
+    assert x0[ck.get_node_index(1)] == pytest.approx(3.0)
+    assert x0[ck.instance_branch_indices('L')[0]] == pytest.approx(0.25)
+
+
+def test_a_precharged_capacitor_discharges_with_the_analytic_time_constant():
+    """End to end, against `v0*exp(-t/RC)` -- so a wrong sign or a dropped ic
+    shows up in the waveform rather than only in `x0`."""
+    R_, C_, V0 = 1e3, 1e-9, 2.0
+    tau = R_ * C_
+    ck = SubCircuit()
+    ck['C'] = C(1, gnd, c=C_, ic=V0)
+    ck['R'] = R(1, gnd, r=R_)
+    tran = Transient(ck, toolkit=numeric, reltol=1e-7, uic=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = tran.solve(tend=4 * tau, timestep=tau / 50)
+    t = np.asarray(res.v(1, gnd).x, dtype=float).ravel()
+    v = np.asarray(res.v(1, gnd).y, dtype=float).ravel()
+    assert np.max(np.abs(v - V0 * np.exp(-t / tau))) < 2e-3 * V0

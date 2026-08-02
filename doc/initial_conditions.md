@@ -12,6 +12,7 @@ was available.
 ```python
 tran = Transient(circuit, uic=True, ic={'out': 1.2})   # node voltages
 circuit['L1'] = L('a', 'b', L=1e-6, ic=0.5)            # inductor current, amperes
+circuit['C1'] = C('a', 'b', c=1e-9, ic=2.5)            # capacitor voltage, volts
 ```
 
 `uic=True` means "do not solve an operating point; start from these values". Anything not
@@ -38,6 +39,9 @@ accepting it quietly would leave the caller believing an initial condition had b
 |---|---|
 | `ic` names a node that does not exist | `ValueError`, listing the circuit's nodes |
 | `ic` names the reference node | `ValueError` — it is held at 0 V by construction |
+| capacitor `ic`s form a group touching neither ground nor a node `ic` | `ValueError` — they fix the nodes only up to a constant |
+| capacitor `ic`s contradict each other, or a node `ic` | `ValueError` naming the element and both values |
+| a capacitor with both terminals on one node and `ic ≠ 0` | `ValueError` — it constrains `0 == ic` |
 | `ic` or an element `ic` given without `uic=True` | `ValueError` naming both forms |
 | an element `ic` inside a nested subcircuit | `NotImplementedError` naming the instance |
 | an element declares `ic` but owns ≠ 1 branch row | `ValueError` |
@@ -46,7 +50,7 @@ The `uic` guard is worth singling out. SPICE's `.ic` **without** UIC constrains 
 point and then releases it — a genuinely different feature, and one that is *not* implemented
 here. Raising says which of the two is missing; ignoring would do neither and report neither.
 
-## 3. The boundary: why `L` works and `C` does not
+## 3. The boundary: why `L` is an assignment and `C` is a solve
 
 This is the substance of the page.
 
@@ -71,8 +75,8 @@ propagate voltages along a tree. Components not touching ground need a reference
 error raised; cycles need consistency checked, because `v_ab + v_bc ≠ v_ac` is a contradiction
 a user can easily write.
 
-**That is the deferred work**, and it is a self-contained piece: a graph traversal plus a
-consistency check, with a decision to make about ungrounded components.
+**That is what §4a implements**: a graph traversal plus a consistency check, with the
+ungrounded-component question answered by raising.
 
 ## 4. How an element's branch row is found
 
@@ -95,9 +99,78 @@ The span is stored in **branch-list coordinates, not solution-vector rows**. A b
 is `len(nodes) + offset`, and nodes are still being added while elements are, so a stored row
 would go stale. `instance_branch_indices(name)` adds the offset at lookup time.
 
+## 4a. `C ... IC=` — investigated 2026-08-02, then implemented as designed
+
+### What the investigation established
+
+**The graph is directly constructible.** `term_node_map[instance]['plus'|'minus']` gives the
+parent node and `get_node_index` gives its row, so no new plumbing is needed to know which
+two unknowns a capacitor's `ic` constrains.
+
+**There are no graph helpers anywhere in the package.** No traversal utilities, no networkx
+dependency. The component search and the tree walk are new code, with no existing pattern in
+the codebase to follow.
+
+**A capacitor has no independent state, and this is the real reason.** `C.q(x)` is computed
+purely from node voltages — `C·(v_plus − v_minus)`. So the obstacle is not merely that an
+`ic` constrains a *difference*: even if one wanted to store an initial charge on the device,
+**there is nowhere to put it.** SPICE can implement `C ... IC=` as a direct assignment
+because its transient state for a capacitor *is* the branch voltage. pycircuit's MNA carries
+no such variable. That is a structural difference between the two simulators rather than a
+gap in effort, and it is why this feature is a solve rather than an assignment.
+
+**And it unblocks nothing.** Measured on a series-capacitor circuit whose midpoint has no DC
+path to ground:
+
+| | result |
+|---|---|
+| `uic=False` | fails — singular Jacobian, *"'m' appears in no equation"* |
+| `uic=True` | runs, 230 points, `v(m)` starting at 0 |
+
+Unlike the node initial conditions, which made oscillators and latches simulable *at all*,
+`C.ic` chooses a different starting state for a circuit that already runs. The need is real
+— pre-charged capacitors, bootstrap capacitors, switched-capacitor circuits — but it is
+expressiveness rather than capability, and the priority argument should say so.
+
+### The algorithm
+
+1. Collect capacitors carrying an `ic`; each is an edge between two node rows with a required
+   difference.
+2. Seed the known voltages: the reference node at 0, plus anything the analysis-level `ic`
+   dict names.
+3. Find connected components of that edge set.
+4. Root each component at a seeded node and breadth-first assign
+   `v(neighbour) = v(current) ± ic`.
+5. On reaching an already-assigned node by a second edge, check the implied value agrees.
+
+### Decisions, recorded because they are choices rather than derivations
+
+**A component containing no seeded node raises.** Its voltages are determined only up to a
+constant — the differences the user asked for are satisfied by infinitely many assignments.
+Two alternatives were considered and rejected: silently choosing a reference, which is the
+quiet-wrong-answer shape this project keeps finding, since the absolute node voltages appear
+in the output waveform; and choosing one with a warning, which is the same thing with a line
+of text. SPICE effectively does choose silently, and can afford to because its per-capacitor
+state makes the question moot. **Reconsider if** a real circuit turns up whose floating
+component genuinely has no natural reference and the error is merely obstructive — the fix
+would be an explicit opt-in, not a change of default.
+
+**The `ic` flavour is declared, not inferred.** `L`'s `ic` is a current and `C`'s is a
+voltage, and they are handled by completely different mechanisms. Inferring from "does the
+element own a branch" would work today and silently mis-handle the first element that breaks
+the correlation, so each element states its own: `IC_KIND = 'current'` or `'voltage'`.
+
+**Contradictions raise rather than being resolved by ordering.** A cycle whose `ic` values do
+not sum to zero, two parallel capacitors disagreeing, a capacitor `ic` disagreeing with a
+node `ic`, and a capacitor whose terminals are the same node with a nonzero `ic` are all
+statements the caller cannot have meant. Silently taking the last one written would make the
+result depend on element insertion order.
+
+**Node ICs are applied first** and act as seeds, so a capacitor chain anchored by an explicit
+node voltage propagates from it.
+
 ## 5. Not implemented
 
-* **`C ... IC=`** — §3. The spanning-tree solve, plus the ungrounded-component decision.
 * **`.nodeset`** — a genuinely different feature: a *hint* that seeds the DC solve and is then
   released, where `.ic` under UIC is a *starting value* that never is. It belongs with stage
   5's convergence-aid ladder, not here.

@@ -666,7 +666,7 @@ class Transient(Analysis):
 
         ic = self.par.ic
         if not ic:
-            return self._apply_element_ics(x0)
+            return self._apply_element_ics(x0, refnode)
 
         irefnode = self.cir.get_node_index(refnode)
         for node, value in dict(ic).items():
@@ -686,9 +686,9 @@ class Transient(Analysis):
                     "at 0 V by construction" % (node,))
             x0[idx] = value
 
-        return self._apply_element_ics(x0)
+        return self._apply_element_ics(x0, refnode)
 
-    def _apply_element_ics(self, x0):
+    def _apply_element_ics(self, x0, refnode):
         """Write each element's ``ic`` instparam into its own branch rows.
 
         STAGE 10.3.  Only elements whose initial condition is a branch CURRENT
@@ -723,6 +723,11 @@ class Transient(Analysis):
             if ic is None:
                 continue
 
+            ## Voltage-flavoured ICs constrain a difference of two node unknowns
+            ## and are solved together, after this loop.
+            if getattr(element, 'IC_KIND', 'current') != 'current':
+                continue
+
             rows = cir.instance_branch_indices(name)
             if len(rows) != 1:
                 raise ValueError(
@@ -730,6 +735,109 @@ class Transient(Analysis):
                     "condition is only meaningful for an element with exactly "
                     "one branch current" % (name, len(rows)))
             x0[rows[0]] = ic
+
+        return self._apply_voltage_ics(x0, refnode)
+
+    def _apply_voltage_ics(self, x0, refnode):
+        """Solve the capacitor initial voltages as a spanning tree.
+
+        STAGE 10.3.  A capacitor has no state variable of its own -- `q` is
+        derived from the node voltages -- so `C ... IC=v` cannot be assigned
+        anywhere. It constrains ``v(plus) - v(minus) = v``, a DIFFERENCE of two
+        unknowns, and a set of such constraints is a system rather than a list of
+        assignments. See `doc/initial_conditions.md` sec. 4a.
+
+        Each constraint is an edge; the reference node and anything the
+        analysis-level `ic` named are seeds; each connected component is walked
+        breadth-first from a seed, and a node reached twice must agree both times.
+
+        **A component with no seed raises.** Its voltages are determined only up
+        to a constant, so infinitely many assignments satisfy what was asked for,
+        and the absolute values reach the output waveform. Choosing one silently
+        is the defect shape this stage exists to avoid.
+        """
+        cir = self.cir
+        elements = getattr(cir, 'elements', None)
+        if not elements:
+            return x0
+
+        edges = {}
+        for name, element in elements.items():
+            if getattr(element, 'elements', None):
+                continue
+            ic = getattr(getattr(element, 'iparv', None), 'ic', None)
+            if ic is None or getattr(element, 'IC_KIND', 'current') != 'voltage':
+                continue
+            terms = cir.term_node_map[name]
+            p = cir.get_node_index(terms['plus'])
+            m = cir.get_node_index(terms['minus'])
+            if p == m:
+                if ic != 0.0:
+                    raise ValueError(
+                        "%r has both terminals on the same node but ic=%g; that "
+                        "constrains 0 == %g" % (name, ic, ic))
+                continue
+            edges.setdefault(p, []).append((m, +float(ic), name))
+            edges.setdefault(m, []).append((p, -float(ic), name))
+
+        if not edges:
+            return x0
+
+        ## Seeds: the reference node, plus whatever the node-level `ic` fixed.
+        ## `refnode` is passed rather than read from `self.irefnode`, which is
+        ## set by the caller a few lines earlier -- a hidden ordering dependency
+        ## that would break silently if this were ever called first.
+        seeded = {cir.get_node_index(refnode)}
+        for node in dict(self.par.ic or {}):
+            seeded.add(self.cir.get_node_index(node))
+
+        ## Tolerance for the consistency check: relative to the largest voltage
+        ## involved, so a chain at kilovolts is not judged by the same absolute
+        ## slack as one at millivolts.
+        scale = max([abs(v) for row in edges.values() for _, v, _ in row] + [1.0])
+        tol = 1e-9 * scale
+
+        assigned = set(seeded)
+        for start in sorted(edges):
+            if start in assigned:
+                continue
+            ## Walk this component to see whether it contains any seed at all.
+            comp, stack = set(), [start]
+            while stack:
+                cur = stack.pop()
+                if cur in comp:
+                    continue
+                comp.add(cur)
+                stack.extend(nb for nb, _, _ in edges.get(cur, ()))
+            if not (comp & assigned):
+                names = sorted({nm for nd in comp
+                                for _, _, nm in edges.get(nd, ())})
+                raise ValueError(
+                    "the initial voltages on %s form a group with no connection "
+                    "to ground or to any node given in `ic`, so they fix the node "
+                    "voltages only up to a constant. Ground one node of the "
+                    "group, or name one in the analysis's `ic`."
+                    % ', '.join(repr(n) for n in names))
+
+        ## Breadth-first assignment from every seed.
+        from collections import deque
+        queue = deque(sorted(assigned & set(edges)))
+        while queue:
+            cur = queue.popleft()
+            for nb, dv, name in edges.get(cur, ()):
+                value = x0[cur] - dv
+                if nb in assigned:
+                    if abs(x0[nb] - value) > tol:
+                        raise ValueError(
+                            "initial voltages are contradictory at node index %d: "
+                            "%r implies %g V, but %g V was already established. "
+                            "Check for a loop of capacitor ics that does not sum "
+                            "to zero, or an ic that disagrees with the analysis's "
+                            "`ic`." % (nb, name, value, x0[nb]))
+                    continue
+                x0[nb] = value
+                assigned.add(nb)
+                queue.append(nb)
 
         return x0
 
