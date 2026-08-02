@@ -3166,7 +3166,14 @@ OUTCOME: **MEASURED, AND BOTH DECLARED OPTIONS WERE WRONG — there is a third, 
 1. `c = SubCircuit()` takes the **numeric** default toolkit while the parameters are `Symbol(...)`, so construction dies with `TypeError: Cannot convert expression to float` at `elements.py:709`.
 2. `twoport.solve(freqs=array([Symbol('s')]), ...)` trips `nportanalysis.py:235: assert not isiterable(freqs)` — the symbolic path takes a scalar.
 
-Both are the same never-run-so-never-noticed pattern as `MOS_ACM` itself. **Recorded as its own item rather than fixed here**: repairing `MOS`'s documented example is not the same change as deleting a dead class, and bundling them would make neither attributable. The unreachable `doctest.testmod()` in `mos.py` is deliberately left in place — it is the only marker that those doctests exist and are unverified.
+Both are the same never-run-so-never-noticed pattern as `MOS_ACM` itself. **RESOLVED at 5+.5 (2026-07-31), which this gate spawned — see below.** Both defects were
+fixed, `mos.py` is in `test_doctests.py` as `test_mos_module_doctests`, and the
+`nportanalysis` assertion turned out to be right in intent and wrong in form. This sentence
+is left in place because it was true when written; the forward pointer is added because
+without it the gate reads as an open item, and on 2026-08-02 it was picked as the next
+thing to work on before anyone checked whether it had already been done.
+
+**Recorded as its own item rather than fixed here**: repairing `MOS`'s documented example is not the same change as deleting a dead class, and bundling them would make neither attributable. The unreachable `doctest.testmod()` in `mos.py` is deliberately left in place — it is the only marker that those doctests exist and are unverified.
 
 **Reconsider if** someone actually wants ACM — in which case it is written from the paper,
 not recovered from this.
@@ -5789,7 +5796,7 @@ it cares about. **Reconsider if** anyone quotes either percentage without its `n
 check, not a timing one: the assembled `G`/`C`/`J` must have shape `(n-1, n-1)` at the
 point of assembly, so `remove_row_col` is not called on the Newton path at all. A timing
 gate would pass on a version that still builds and discards them.
-OUTCOME:
+OUTCOME: **NOT RUN — 2+.4 was withdrawn before this gate was reached; see the withdrawal note below for why, and for the reconsider-if that turned out to be the wrong one.**
 
 **Gate 2+.4-2 (bit-identical).** Stage 2's stop condition, inherited: waveform drift
 exactly `0.00e+00` and an identical step count on the full baseline, or stop. Note the
@@ -5797,12 +5804,12 @@ ordering of the sum changes when a row is never stamped rather than stamped-and-
 so this may prove *unachievable* — **if so, say that and stop**, rather than relaxing the
 bar to fit. A reduced-assembly path that changes the last bits is a different decision and
 needs its own justification.
-OUTCOME:
+OUTCOME: **NOT RUN — 2+.4 was withdrawn before this gate was reached; see the withdrawal note below for why, and for the reconsider-if that turned out to be the wrong one.**
 
 **Gate 2+.4-3 (the symbolic and sparse toolkits still work).** `remove_row_col` has 20+
 call sites and several toolkits reach it. Declared: the reduced-assembly path is opt-in
 per analysis, and anything that has not been converted keeps today's behaviour.
-OUTCOME:
+OUTCOME: **NOT RUN — 2+.4 was withdrawn before this gate was reached; see the withdrawal note below for why, and for the reconsider-if that turned out to be the wrong one.**
 
 **Reconsider the whole item if** 7b/7c land a sparse solver first: a sparse assembly that
 never materialises the dense matrix makes this moot by construction, and doing both is
