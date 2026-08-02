@@ -163,7 +163,18 @@ class L(Circuit):
     branches = (Branch(Node('plus'), Node('minus')),)
 
     instparams = [Parameter(name='L', desc='Inductance', 
-                            unit='H', default=1e-9)]
+                            unit='H', default=1e-9),
+                  ## STAGE 10.3 -- SPICE's `L ... IC=`, honoured only under
+                  ## `uic=True`, like the node `ic` on the analysis.
+                  ##
+                  ## An inductor's initial condition is a branch CURRENT, and its
+                  ## unknown already exists in the MNA vector -- so unlike a
+                  ## capacitor's initial voltage, which constrains a difference of
+                  ## two node unknowns and needs a spanning-tree solve, this is a
+                  ## direct assignment once the row is known.
+                  Parameter(name='ic',
+                            desc='Initial current for uic=True (A); None means 0',
+                            unit='A', default=None)]
 
     def update(self, subject):
         # --- INDUCTOR MNA STAMP (EXTRA BRANCH EQUATION) ---

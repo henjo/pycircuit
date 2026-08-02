@@ -137,3 +137,116 @@ def test_ic_without_uic_raises():
     with pytest.raises(ValueError) as exc:
         tran.solve(tend=1e-9, timestep=1e-10)
     assert 'uic=True' in str(exc.value)
+
+
+## ---------------------------------------------------------------------------
+## STAGE 10.3, element initial conditions: `L(..., ic=...)`.
+##
+## Unlike a capacitor's initial voltage -- which constrains a DIFFERENCE of two
+## node unknowns and needs a spanning-tree solve -- an inductor's is a branch
+## CURRENT whose unknown already exists in the MNA vector. It is an assignment
+## once the row is known, and finding the row is the whole of the work.
+
+def test_an_inductor_ic_lands_on_its_own_branch_row():
+    ck = SubCircuit()
+    ck['L'] = L(1, gnd, L=1e-6, ic=0.5)
+    ck['C'] = C(1, gnd, c=1e-9)
+    tran = Transient(ck, toolkit=numeric, uic=True)
+    x0 = tran._initial_state(gnd)
+    row = ck.instance_branch_indices('L')[0]
+    assert x0[row] == pytest.approx(0.5)
+    ## and nothing else was touched
+    assert np.count_nonzero(x0) == 1
+
+
+def test_parallel_inductors_get_their_own_rows():
+    """THE REASON THE SPAN MAP IS RECORDED RATHER THAN RECONSTRUCTED.
+
+    `Branch.__eq__` compares node pairs, so two inductors between the same two
+    nodes produce EQUAL branches and `branches.index()` returns the first for
+    both -- measured, before the map existed, as `get_branch_index` giving row 2
+    for each. An initial current given to the second would have landed on the
+    first one's unknown with nothing to indicate it.
+    """
+    ck = SubCircuit()
+    ck['L1'] = L(1, gnd, L=1e-6, ic=0.25)
+    ck['L2'] = L(1, gnd, L=2e-6, ic=-0.75)
+    ck['C'] = C(1, gnd, c=1e-9)
+
+    r1 = ck.instance_branch_indices('L1')[0]
+    r2 = ck.instance_branch_indices('L2')[0]
+    assert r1 != r2, 'parallel inductors share a row'
+
+    tran = Transient(ck, toolkit=numeric, uic=True)
+    x0 = tran._initial_state(gnd)
+    assert x0[r1] == pytest.approx(0.25)
+    assert x0[r2] == pytest.approx(-0.75)
+
+
+def test_an_element_ic_without_uic_raises():
+    """Same rule as the analysis-level `ic`: a starting value that the operating
+    point would overwrite must not be silently accepted."""
+    ck = SubCircuit()
+    ck['L'] = L(1, gnd, L=1e-6, ic=0.5)
+    ck['C'] = C(1, gnd, c=1e-9)
+    tran = Transient(ck, toolkit=numeric)
+    with pytest.raises(ValueError) as exc:
+        tran.solve(tend=1e-9, timestep=1e-10)
+    assert 'uic=True' in str(exc.value)
+
+
+def test_an_ic_inside_a_subcircuit_is_refused_not_ignored():
+    """A nested instance owns a span covering all its children's branches, so a
+    flat walk cannot place an ic inside one. Refused with the reason, because
+    accepting the parameter and ignoring it is the defect this stage exists to
+    stop repeating."""
+    ## A SubCircuit used as an element must be a class with `terminals`,
+    ## instantiated with the nodes it connects to -- assigning a bare
+    ## `SubCircuit()` raises KeyError from `_instance_nodes`, because nothing
+    ## maps its terminal names onto parent nodes.
+    class Inner(SubCircuit):
+        terminals = ('p', 'n')
+
+        def __init__(self, *args, **kvargs):
+            super().__init__(*args, **kvargs)
+            self['L'] = L('p', 'n', L=1e-6, ic=0.5)
+
+    ck = SubCircuit()
+    ck['X1'] = Inner(1, gnd)
+    ck['C'] = C(1, gnd, c=1e-9)
+
+    tran = Transient(ck, toolkit=numeric, uic=True)
+    with pytest.raises(NotImplementedError) as exc:
+        tran._initial_state(gnd)
+    assert 'subcircuit' in str(exc.value).lower()
+
+
+def test_a_tank_started_by_inductor_current_has_the_analytic_amplitude():
+    """All the energy in L, so v starts at ZERO and swings to I*sqrt(L/C).
+
+    Distinguishable from the voltage-started tank by both initial value and
+    amplitude, and the amplitude is analytic -- a misassigned branch row or a
+    dropped ic shows up immediately and cannot be fitted away.
+    """
+    L_, C_, I0 = 1e-6, 1e-9, 0.5
+    f0 = 1.0 / (2 * np.pi * np.sqrt(L_ * C_))
+    expected = I0 * np.sqrt(L_ / C_)
+
+    ck = SubCircuit()
+    ck['L'] = L(1, gnd, L=L_, ic=I0)
+    ck['C'] = C(1, gnd, c=C_)
+
+    tran = Transient(ck, toolkit=numeric, reltol=1e-7, uic=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = tran.solve(tend=3.0 / f0, timestep=1e-10)
+    v = np.asarray(res.v(1, gnd).y, dtype=float).ravel()
+
+    ## The result excludes x0 -- its first sample is the first STEPPED point, at
+    ## t = timestep*1e-3 -- so this is `small relative to the swing`, not zero.
+    ## At 1e-13 s with 0.5 A into 1 nF the exact value is 5e-5 V, and asserting
+    ## `< 1e-9` failed on the correct answer.
+    assert abs(v[0]) < 1e-3 * expected, \
+        'v should start near zero, got %g against a %g swing' % (v[0], expected)
+    assert np.max(np.abs(v)) == pytest.approx(expected, rel=0.03), \
+        'amplitude %.4g against an analytic %.4g' % (np.max(np.abs(v)), expected)

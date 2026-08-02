@@ -4760,9 +4760,21 @@ region.
    that seeds the DC solve and is then released, where `.ic` under UIC is a *starting value*
    that is never released. Stage 5's convergence-aid ladder is the place it belongs.
 
-   **Reconsider if** a circuit needs a floating capacitor's initial voltage, a nonzero
-   starting inductor current, or a DC-convergence hint — none is expressible by naming node
-   voltages.
+   **Inductor currents now ship too** (`L(..., ic=)`), via a recorded instance-to-branch
+   span rather than a search — `Branch.__eq__` compares node pairs, so two parallel inductors
+   produce equal branches and a search returns the first for both.
+
+   **`C ... IC=` REMAINS, and it is the interesting half.** Full write-up in
+   `doc/initial_conditions.md`: an inductor's IC is a branch *current* whose unknown already
+   exists, so setting it is an assignment; a capacitor's is a branch *voltage*, constraining a
+   **difference** of two node unknowns, so a set of them defines a system rather than assigning
+   values. It is a spanning-tree problem — root each connected component at ground, propagate
+   along a tree, check cycles for consistency — with a real decision to make about components
+   that never touch ground, where the node voltages are determined only up to a constant.
+
+   **Reconsider if** a circuit needs a floating capacitor's initial voltage, a starting
+   current on an inductor inside a subcircuit, or a DC-convergence hint (`.nodeset`). None of
+   the three is expressible by naming node voltages, and none is a workaround away.
 4. A SPICE-subset netlist reader — everything else in interop is downstream of getting a
    circuit *in*.
 5. Large-signal MOSFET — no CMOS transient is expressible today.

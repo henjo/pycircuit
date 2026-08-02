@@ -375,6 +375,22 @@ class Circuit():
             raise ValueError('Node %s is not in circuit node list (%s)'%
                              (str(node), str(self.nodes)))
 
+    def instance_branch_indices(self, instancename):
+        """Rows of the solution vector holding ``instancename``'s branch currents.
+
+        STAGE 10.3.  Returns a list, empty for an element that declares no
+        branches.  Raises ``KeyError`` for an unknown instance rather than
+        returning an empty list, because "this element has no branches" and "there
+        is no such element" are different answers and only one of them is a typo.
+
+        Resolved through the recorded span rather than by searching
+        ``self.branches``: that search is ambiguous for parallel elements, whose
+        branches compare equal.
+        """
+        start, stop = self._instance_branch_span[instancename]
+        offset = len(self.nodes)
+        return [offset + i for i in range(start, stop)]
+
     def get_branch_index(self, branch):
         """Get row in the x vector of a branch instance"""
         if branch in self.branches:
@@ -883,6 +899,21 @@ class SubCircuit(Circuit):
     def __init__(self, *args, **kvargs):
         super().__init__(*args, **kvargs)
         self.elements = {}
+        ## STAGE 10.3 -- which slice of `self.branches` each instance owns.
+        ##
+        ## `add_instance` appends an element's branches contiguously, so the span
+        ## is exact and O(1) to look up.  Recorded rather than reconstructed
+        ## because reconstruction is silently WRONG for parallel elements:
+        ## `Branch.__eq__` compares node pairs, so two inductors between the same
+        ## two nodes produce EQUAL branches and `branches.index()` returns the
+        ## first for both.  Measured -- an initial current given to the second of
+        ## two parallel inductors landed on the first one's unknown, with nothing
+        ## to indicate it.
+        ##
+        ## The span is in BRANCH-LIST coordinates, not solution-vector ones: a
+        ## branch's row is `len(self.nodes) + offset`, and nodes are still being
+        ## added while elements are, so storing the row directly would go stale.
+        self._instance_branch_span = {}
         self._elementnodemap = {}
         self._rep_nodemap_list = {}
         self._map_indices_1d = {}
@@ -1047,8 +1078,11 @@ class SubCircuit(Circuit):
             term_node_map[terminal] = node            
 
         ## Add branches
+        branch_start = len(self.branches)
         newbranches = self._instance_branches(instance, instancename)
         self.append_branches(*newbranches)
+        self._instance_branch_span[instancename] = (branch_start,
+                                                    len(self.branches))
 
         ## Update circuit node - instance map.  STAGE 2+.5: mark, do not rebuild --
         ## the rebuild happens once, when the map is first read.

@@ -666,7 +666,7 @@ class Transient(Analysis):
 
         ic = self.par.ic
         if not ic:
-            return x0
+            return self._apply_element_ics(x0)
 
         irefnode = self.cir.get_node_index(refnode)
         for node, value in dict(ic).items():
@@ -686,7 +686,61 @@ class Transient(Analysis):
                     "at 0 V by construction" % (node,))
             x0[idx] = value
 
+        return self._apply_element_ics(x0)
+
+    def _apply_element_ics(self, x0):
+        """Write each element's ``ic`` instparam into its own branch rows.
+
+        STAGE 10.3.  Only elements whose initial condition is a branch CURRENT
+        can be handled this way -- `L` today. The row is found through the
+        circuit's recorded instance-to-branch span, NOT by searching
+        `self.branches` for a matching `Branch`: that search is ambiguous for
+        parallel elements, whose branches compare equal, so an initial current
+        given to the second of two parallel inductors would land on the first
+        one's unknown with nothing to indicate it.
+        """
+        cir = self.cir
+        elements = getattr(cir, 'elements', None)
+        if not elements:
+            return x0
+
+        for name, element in elements.items():
+            ## A nested subcircuit owns a span covering its children's branches,
+            ## so an `ic` inside one cannot be placed by this flat walk. Detected
+            ## and refused rather than skipped: skipping would accept the
+            ## parameter and ignore it.
+            if getattr(element, 'elements', None):
+                if self._descendant_has_ic(element):
+                    raise NotImplementedError(
+                        "element initial conditions inside a subcircuit (%r) are "
+                        "not supported: the branch rows of a nested instance are "
+                        "not individually resolvable yet. Move the element to the "
+                        "top level, or set the node voltage with the analysis's "
+                        "`ic` instead." % name)
+                continue
+
+            ic = getattr(getattr(element, 'iparv', None), 'ic', None)
+            if ic is None:
+                continue
+
+            rows = cir.instance_branch_indices(name)
+            if len(rows) != 1:
+                raise ValueError(
+                    "%r declares an ic but owns %d branch rows; an initial "
+                    "condition is only meaningful for an element with exactly "
+                    "one branch current" % (name, len(rows)))
+            x0[rows[0]] = ic
+
         return x0
+
+    def _descendant_has_ic(self, circuit):
+        """Does anything below this instance carry a set ``ic``?"""
+        for element in getattr(circuit, 'elements', {}).values():
+            if getattr(getattr(element, 'iparv', None), 'ic', None) is not None:
+                return True
+            if self._descendant_has_ic(element):
+                return True
+        return False
 
     def _solve_operating_point(self, refnode):
         """Solve the DC operating point that seeds the transient.
@@ -1377,13 +1431,16 @@ class Transient(Analysis):
         ## `.ic` to CONSTRAIN the operating point and then releases it, which is
         ## a different feature from the one implemented here. Raising says which
         ## one is missing rather than quietly doing neither.
-        if self.par.ic and not self.par.uic:
+        if (self.par.ic or self._descendant_has_ic(self.cir)) and not self.par.uic:
             raise ValueError(
                 "ic was given without uic=True. This implements SPICE's initial "
                 "conditions for the uic case only -- starting values for the "
                 "transient. Constraining the operating point with .ic and then "
                 "releasing it is a separate feature and is not implemented. "
-                "Pass uic=True, or drop ic.")
+                "Pass uic=True, or drop ic.\n"
+                "(This covers element initial conditions such as L(..., ic=...) "
+                "as well as the analysis-level ic dict -- both are starting "
+                "values, and both are ignored without uic.)")
 
         self.base_integrator = self._get_integrator()
         hist_len = max(2, self.base_integrator.get_required_history())
