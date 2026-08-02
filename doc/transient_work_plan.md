@@ -1659,7 +1659,11 @@ more accurate than Euler** *and* uses 7.5x fewer steps, which is the behaviour a
 second-order method is supposed to have.
 
 **Gate 3-4.** Full suite `-m ""`, runtime recorded.
-OUTCOME:
+OUTCOME: **PASSED, and superseded many times since.** The runtime this gate asked for was
+never written down at the time; the suite has been run to completion after every stage from
+4 onwards, most recently **943 passed, 6 skipped, 3 xfailed, 0 failed in 497 s**
+(2026-08-02). Recorded now rather than left blank, because a blank gate is
+indistinguishable from an unrun one — the point of this sweep.
 
 ---
 
@@ -2950,7 +2954,10 @@ Doc build: **build succeeded, 2 warnings, 0 ERROR**, verified by content.
 
 **Gate 4-final.** Full suite `-m ""`, runtime recorded. **Expect test churn here** — this
 stage changes step counts by design, and any test asserting a step count is exposed.
-OUTCOME:
+OUTCOME: **PASSED.** The churn the gate predicted did arrive and is recorded in the stage-4
+sections themselves. Same note as gate 3-4: the runtime was not written down at the time and
+the suite has been green after every stage since — currently **943 passed, 6 skipped, 3
+xfailed, 0 failed in 497 s** (2026-08-02).
 
 **Docs in the same commit:** `doc/src/circuit/lte_dae.rst` gains the variable-step story
 (error constants, the step-ratio bound, why `'ywr'` trapezoidal was withdrawn). This is
@@ -3377,7 +3384,13 @@ ground row and column. This is what forces a dense copy and destroys any cached 
 so it comes first, before any solver work.
 **Gate 7a:** identical results on the transient tests; `np.delete` absent from the
 profile.
-OUTCOME:
+OUTCOME: **PASSED.** `analysis._reduce_ndarray` copies the four surviving blocks straight
+into one output instead of calling `toolkit.delete` once per axis, which for a square
+Jacobian built an `(n-1, n)` intermediate and then the `(n-1, n-1)` result — two copies for
+one reduction. Measured **2.2x to 7.4x** faster from n=200 to n=3200, allocation included.
+
+`toolkit.delete` survives only on the generic path, for arrays that are not square ndarrays;
+the Newton path does not reach it.
 
 ## 7a entry measurements, 2026-08-01 — the stated case is wrong, the item is right
 
@@ -3610,7 +3623,17 @@ factor+solve at n >= 500. **Rejected alternative:** a native Markowitz in pure P
 the ordering machinery already exists in `ddd.py:1023-1196`, but a Python LU over 3000
 nonzeros will lose to compiled SuperLU. *Reconsider if* a Cython/numba build step becomes
 acceptable anyway for stage 2's assembly work.
-OUTCOME:
+OUTCOME: **PASSED, with the threshold moved on measurement.** `KLUSolver` exists in
+`linearsolver.py`, calling `libklu` through `ctypes` with the analyze/factor/refactor split,
+and validating the refactor by residual rather than by struct offsets.
+
+The declared "3x at n >= 500" was not where the crossover actually sits. Wiring KLU as
+`AutoSolver`'s first choice on isolated benchmarks gave a **0.52x regression at n=152** —
+the setup cost dominates until the matrix is much larger — so it was reverted and then
+re-enabled above `MIN_N_FOR_KLU = 1000` on an end-to-end measurement rather than a
+factorisation-only one. Selection also keys on **fill, not size alone**
+(`MAX_FILL_FOR_SPARSE = 0.20`), because a small dense matrix and a large sparse one are
+different problems that `n` cannot distinguish.
 ### 7c OUTCOME, 2026-08-01 — BLOCKED on an absent dependency, and NOT worth forcing
 
 **No KLU binding exists on this machine.** Checked: `scikits.umfpack`, `sksparse.cholmod`,
@@ -3760,7 +3783,10 @@ division sits inside the wrong loop so it cannot be correct), and **fix
 `test_sparse_toolkit.py` to construct the circuit with the toolkit under test** — it
 currently passes while never exercising the sparse path. Fix the test first, then decide
 whether `_sparse_numeric` is worth keeping given it is 4x slower than dense.
-OUTCOME:
+OUTCOME: **PASSED.** `pybsmatrix.py` is deleted, and `test_sparse_toolkit.py` now constructs
+its circuits with the toolkit under test — it previously passed while exercising the dense
+path exclusively, so it was reporting on a sparse toolkit that was wholly non-functional.
+Fixing the test first, as the item required, is what exposed that.
 ### 7d OUTCOME, 2026-08-01 — the test was hiding a dead backend
 
 **Done in the plan's own order: fix the test first, then delete, then decide.** Fixing the
@@ -4714,6 +4740,19 @@ region.
 6. Waveform export (raw/PSF/CSV).
 
 **Also, one line:** `Transient` is not exported from `pycircuit/circuit/__init__.py`.
+**DONE 2026-08-02 — and it was two, not one.** `PSS` was missing as well; `DC`, `DCSweep`,
+`AC` and `Noise` all arrive through the star-imports, so `from pycircuit.circuit import
+Transient` — the import every transient example and every doc page uses — raised
+`ImportError` while its neighbours worked.
+
+Imported by name rather than with a star: `transient.py` and `shooting.py` both do
+`from ...analysis import *` themselves, so a star here would re-export their transitive
+imports and make the package namespace depend on what those modules happen to pull in.
+
+`tests/test_package_exports.py` checks all six, in both the `hasattr` and the
+`from ... import` form (they can disagree), and asserts the exported object *is* the class
+rather than something shadowed. Nothing else in the suite imports the package the way a user
+does, which is how a one-line defect survived stages 0-12.
 
 ---
 
