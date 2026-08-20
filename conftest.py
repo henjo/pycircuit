@@ -19,3 +19,13 @@ import os
 #
 # ``setdefault`` so an explicit setting in the environment still wins.
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+
+# Some example tests call ``pylab.show()``.  On a developer machine with DISPLAY
+# set, matplotlib picks an interactive backend (tkagg) and show() opens a window
+# and blocks until something closes it -- so the suite appears to hang, for
+# minutes at a time, and nondeterministically depending on the window manager.
+# test_my_elements.py::test_transient_plot took 148 s this way against 0.96 s
+# headless.  Tests should never open a window; force the non-interactive
+# backend.  Again setdefault, so running with MPLBACKEND=tkagg to eyeball a
+# plot still works.
+os.environ.setdefault("MPLBACKEND", "Agg")
