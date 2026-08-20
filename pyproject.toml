@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61", "wheel", "pybind11>=2.11"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pycircuit"
+version = "0.0"
+description = "Python circuit design tools"
+authors = [
+    {name = "Henrik Johansson", email = "henjo2006@gmail.com"},
+    {name = "Joacim Olsson"},
+    {name = "Andreas Drejfert"},
+]
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "scipy",
+    "sympy",
+    "jax",
+    "pydot",
+    "pytest-xdist>=3.8.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "matplotlib", "pexpect"]
+ginac = ["pybind11>=2.11"]
+docs = ["sphinx", "matplotlib", "pexpect"]
+
+[project.scripts]
+cdsnetlist = "pycircuit.post.cds.cdsnetlist:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pycircuit*"]

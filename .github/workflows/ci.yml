@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    paths-ignore:
+      - 'doc/**'
+      - 'docker/**'
+      - '**.md'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    paths-ignore:
+      - 'doc/**'
+      - 'docker/**'
+      - '**.md'
+      - '.github/workflows/docs.yml'
+
+permissions:
+  contents: write
+  checks: write
+  pull-requests: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libginac-dev pkg-config
+
+      - name: Install dependencies
+        run: pip install -e ".[dev,ginac]"
+
+      - name: Run tests
+        run: python -m pytest --tb=short -q --junitxml=results.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: results.xml
+
+      - name: Publish test results
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files: results.xml
+          comment_mode: always
+          commit: ${{ github.sha }}
