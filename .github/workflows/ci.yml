@@ -36,7 +36,7 @@ jobs:
         run: pip install -e ".[dev,ginac]"
 
       - name: Run tests
-        run: python -m pytest --tb=short -q -m "" -n auto --junitxml=results.xml pycircuit
+        run: python -m pytest --tb=short -q -m "" -n auto --timeout=300 --timeout-method=thread --junitxml=results.xml pycircuit
 
       - name: Upload test results
         if: always()

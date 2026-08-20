@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "matplotlib", "pexpect"]
+dev = ["pytest", "pytest-timeout", "matplotlib", "pexpect"]
 ginac = ["pybind11>=2.11"]
 docs = ["sphinx", "matplotlib", "pexpect"]
 
