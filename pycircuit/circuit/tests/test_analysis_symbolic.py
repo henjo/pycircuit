@@ -44,12 +44,13 @@ def check_symbolic_noise_vin_vout(toolkit):
     c = SubCircuit()
 
     var('R1 R2 V', real=True, positive=True)
+    var('s')
 
     c['vs'] = VS(1, gnd, vac=V)
     c['R1'] = R(1, 2, r=R1)
     c['R2'] = R(2, gnd, r=R2)
 
-    noise = Noise(c, inputsrc='vs', outputnodes=('2', gnd), 
+    noise = Noise(c, inputsrc='vs', outputnodes=('2', gnd),
                   toolkit= toolkit)
     res = noise.solve(s, complexfreq=True)
 
@@ -62,6 +63,7 @@ def check_symbolic_noise_vin_iout(toolkit):
     c = SubCircuit()
     
     var('R1 R2 R3 V', real=True, positive=True)
+    var('s')
 
     c['vs'] = VS(1, gnd, vac=V)
     c['R1'] = R(1, 2, r=R1)
@@ -81,7 +83,7 @@ def check_symbolic_noise_iin_vout(toolkit):
     c = SubCircuit()
     
     var('R1 R2', real=True)
-    var('Iin')
+    var('Iin s')
 
     c['is'] = IS(1, gnd, iac=Iin)
     c['R1'] = R(1, 2, r=R1)
