@@ -44,7 +44,7 @@ Parameters and options, from the mechanical diff:
 | **P16** TLine delay interpolation | quadratic (3-point Lagrange) | linear + ring-cap raise | align later (M) |
 | **P17** solver strategy objects (`nrsolver`/`scaler`/`linearsolver`) | ✓, injectable | refused loudly | **document — permanent** (traced loop cannot dispatch) |
 | **P18** continuation (gmin/source stepping) | DC path; transient retries dt | dt retries only | roadmap, both sides |
-| **P19** `coupled_lte` (Fang), `pcnr`, `coupled_method` | ✓ — research paths with measured records | absent | **amended: portable — Fang then PCNR scheduled** (see P19 note) |
+| **P19** `coupled_lte` (Fang), `pcnr` | ✓ | ✓ **PORTED** — 'approx' Fang + PCNR (`bordered`, PCNR-in-Fang, coupled+TLine stay CPU-only, refused loudly) | closed (see P19 note) |
 | **P20** `solve_batched` per-lane sweeps | — | ✓ — the backend's reason to exist | one-sided by design |
 | **P21** batched DC operating point | n/a | missing (`uic=True` required, refused loudly) | roadmap |
 
@@ -239,6 +239,17 @@ existing TLine tests before/after, per house rules.
   nor PCNR today).  The CPU's +60–80 %/iteration PCNR cost figure does NOT transfer to
   vmapped execution and is re-measured, not assumed.  `bordered` and PCNR-inside-Fang
   stay CPU-only until separately justified.
+
+  **Executed same day** (commits `df28b7c`, `a9a0082`, `e591bca`): branchless
+  bisection kernel; Fang 'approx' traced — rc step parity 127/127 CPU/JAX,
+  JAX-coupled *more accurate* than CPU-coupled at every tolerance probed, batched
+  per-lane coupled (x, h) landing both lanes on their analytic curves; PCNR traced —
+  the cold-start junction probe fails outright on plain Newton and completes under
+  PCNR (35 steps, 4.367 V), JAX-PCNR tracks CPU-PCNR to 1.1e-2, cost **+29 % wall**
+  against the CPU's +60–80 %/iteration (the figure indeed did not transfer).  The
+  dead-knob scan caught the Fang draft's unread TLine buffers mid-port (coupled+TLine
+  now refused loudly), and the traced `pnjlim` is bit-exact against the branching
+  original across a 48-case warnings-as-errors sweep.
 - **P20 `solve_batched`:** JAX-only by design — it is the branch's purpose. The CPU
   gets no imitation API; a Python loop over `Transient` is already expressible and
   honest about its cost.
