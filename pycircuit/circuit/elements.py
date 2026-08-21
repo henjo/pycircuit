@@ -38,11 +38,24 @@ class R(Circuit):
         self._G = self.toolkit.array([[g, -g],
                                       [-g, g]])
 
+    @staticmethod
+    def eval_i_pure(x, params, epar, toolkit):
+        ## F2(b) (doc/transient_review_260820.md): the pure current equation,
+        ## which is what admits R to the vmap evaluation groups -- without it,
+        ## a batched per-lane override {'R': {'r': ...}} was SILENTLY IGNORED
+        ## and every lane returned the same waveform (F2(a) turned that into
+        ## a loud refusal; this makes the feature real).  i = g*(V+ - V-),
+        ## with the stamp recovered by autodiff exactly as C's is.
+        g = 1.0 / params.get('r', 1e3)
+        i = g * (x[0] - x[1])
+        return toolkit.array([i, -i])
 
     def G(self, x, epar=defaultepar):
         ## Linear element: the Jacobian *is* this stored matrix, so there
         ## is nothing to differentiate and no second form to keep in step
         ## with it.  The base class derives i(x) as dot(G(x), x).
+        ## (On the JAX batched path the same stamp comes from autodiff of
+        ## eval_i_pure above; this stored form serves every other toolkit.)
         return self._G
 
     def CY(self, x, w, epar=defaultepar):

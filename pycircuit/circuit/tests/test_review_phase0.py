@@ -71,9 +71,10 @@ def test_f9_continuation_forwards_linsolver():
     assert ls.calls > 0          # was 0: linsolver dropped at every call site
 
 
-## F2(a) -- an override for a class outside the vmap evaluation groups was
-## silently ignored (N bit-identical lanes presented as N samples); it must
-## refuse loudly until the class is batchable.
+## F2 -- an override for a class outside the vmap evaluation groups must
+## refuse loudly (F2(a)); and for batchable classes the override must
+## actually differentiate the lanes (F2(b) -- R was the headline offender:
+## its override was silently ignored and every lane returned one waveform).
 
 def test_f2a_batched_override_of_unbatchable_class_raises():
     jax = pytest.importorskip('jax')
@@ -92,10 +93,45 @@ def test_f2a_batched_override_of_unbatchable_class_raises():
         cir['R1'] = R('in', 'out', r=1e3)
         cir['C1'] = C('out', gnd, c=1e-6)
         tran = JAXTransient(cir)
-        with pytest.raises(NotImplementedError, match="'R'"):
+        ## VS carries a branch unknown and no eval_*_pure -- still honestly
+        ## unbatchable.  (R moved to the behavioral test below when F2(b)
+        ## made it batchable.)
+        with pytest.raises(NotImplementedError, match="'VS'"):
             tran.solve_batched(
-                gnd, override_params_tree={'R': {'r': jnp.array([[1.0], [1e3]])}},
+                gnd, override_params_tree={'VS': {'v': jnp.array([[1.0], [2.0]])}},
                 tend=1e-5, timestep=1e-6, CHUNK_SIZE=50, uic=True)
+    finally:
+        circuit_mod.default_toolkit = saved
+
+
+def test_f2b_batched_r_override_differentiates_lanes():
+    jax = pytest.importorskip('jax')
+    import warnings
+    import jax.numpy as jnp
+    from pycircuit.circuit import circuit as circuit_mod
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.elements import VS
+
+    saved = circuit_mod.default_toolkit
+    circuit_mod.default_toolkit = jaxtoolkit
+    try:
+        cir = SubCircuit()
+        cir.add_node('in'); cir.add_node('out')
+        cir['V1'] = VS('in', gnd, v=1.0)
+        cir['R1'] = R('in', 'out', r=1e3)
+        cir['C1'] = C('out', gnd, c=1e-6)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = JAXTransient(cir, reltol=1e-6).solve_batched(
+                gnd, override_params_tree={'R': {'r': jnp.array([[1e2], [1e4]])}},
+                tend=5e-3, timestep=1e-4, uic=True)
+        v_fast = np.asarray(res[0].v('out'), float).reshape(-1)
+        v_slow = np.asarray(res[1].v('out'), float).reshape(-1)
+        ## tau = 1e-4 settles inside tend; tau = 1e-2 cannot: the lanes must
+        ## end far apart, at their analytic levels.
+        assert abs(v_fast[-1] - 1.0) < 1e-3
+        assert abs(v_slow[-1] - (1.0 - np.exp(-0.5))) < 1e-2
     finally:
         circuit_mod.default_toolkit = saved
 
