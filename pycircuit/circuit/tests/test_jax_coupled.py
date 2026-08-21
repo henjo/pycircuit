@@ -126,24 +126,73 @@ def test_jax_coupled_band_sentinel():
         circuit_mod.default_toolkit = saved
 
 
-def test_jax_coupled_refuses_tline():
-    """The coupled assembly does not apply the delay-line history; running a
-    TLine circuit would silently drop the reflections -- refused instead.
-    (The dead-knob scan caught the original port accepting the TLine buffers
-    and reading neither: this is that finding, resolved honestly.)"""
+def test_jax_coupled_tline_matches_cpu_standard():
+    """RE-DERIVED from a refusal test (this used to expect
+    NotImplementedError).  The refusal's cause was a livelock, and the fix
+    took three composed pieces, each earned by a traced measurement:
+
+    - a from-zero kink makes every signal scale together, so the coupled
+      LTE's dev is proportional to its ref and h CANCELS -- err =
+      1/(TRTOL*reltol) = 1428.6 measured, constant from h=4.4e-11 down to
+      the excursion floor.  No step size can satisfy the band; the outer
+      retry collapses dt to dt_min.
+    - one graced step is not enough: the NEXT step extrapolates degree-2
+      through a PRE-kink history point, and a quadratic through two flat
+      points and one ramp point misses a line by err = 139.2e11*h --
+      in-band only below the within-point floor.  Hence the coupled accept
+      path ZEROES h_history on a breakpoint landing (band skipped one step,
+      degree held at 1 for two, cold-start semantics).
+    - the far-end wavefront onset is the same kink NOT at any element-
+      reported breakpoint, so collect_breakpoints registers source corners
+      + k*TD arrivals.  (Arrivals alone were tried first and falsified --
+      a registered kink without the history reset still livelocks.)
+
+    The gate: the pulsed matched line that livelocked at every tend past
+    the first arrival now lands on tend and matches the CPU standard path
+    to 5e-16 (measured 4.996e-16 at tend=8e-9, 112 points)."""
     from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.transient import Transient
     from pycircuit.circuit.toolkit import jaxtoolkit
-    from pycircuit.circuit.elements import TLine
+    from pycircuit.circuit.integrator import Gear2Integrator
+    from pycircuit.circuit.elements import TLine, VPulse
+
+    def line():
+        c = SubCircuit()
+        c.add_node('a'); c.add_node('b')
+        c['V1'] = VPulse('s', gnd, v1=0.0, v2=1.0, td=1e-9, tr=2e-10,
+                         tf=2e-10, pw=1e-8, per=1e-7)
+        c['Rs'] = R('s', 'a', r=50.0)
+        c['T1'] = TLine('a', gnd, 'b', gnd, Z0=50.0, TD=1e-9)
+        c['Rl'] = R('b', gnd, r=50.0)
+        return c
+
+    cpu = Transient(line(), toolkit=numeric, reltol=1e-4,
+                    integrator=Gear2Integrator(), uic=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res_c = cpu.solve(gnd, tend=8e-9, timestep=2e-10)
+    tc = np.asarray(res_c.sweep_values, float)
+    vc = np.asarray(res_c.v('b'), float).reshape(-1)
+
     saved = circuit_mod.default_toolkit
     circuit_mod.default_toolkit = jaxtoolkit
     try:
-        c = SubCircuit()
-        c.add_node('a'); c.add_node('b')
-        c['V1'] = VS('a', gnd, v=1.0)
-        c['T1'] = TLine('a', gnd, 'b', gnd, Z0=50.0, TD=1e-9)
-        c['R1'] = R('b', gnd, r=50.0)
-        tran = JAXTransient(c, coupled_lte=True)
-        with pytest.raises(NotImplementedError, match='TLine'):
-            tran.solve(gnd, tend=1e-8, timestep=1e-10, uic=True)
+        tran = JAXTransient(line(), reltol=1e-4, coupled_lte=True)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(gnd, tend=8e-9, timestep=2e-10, uic=True)
+        tj = np.asarray(res.sweep_values, float)
+        vj = np.asarray(res.v('b'), float).reshape(-1)
     finally:
         circuit_mod.default_toolkit = saved
+
+    ## The run must reach tend (the livelock died mid-ramp at ~1.05e-9)...
+    assert tj[-1] > 8e-9 * (1.0 - 1e-6)
+    ## ...must carry the delayed wavefront (the DC-stamp defect gave 24.5 V
+    ## garbage; a dropped history gives vb == 0 on a matched line)...
+    vb_delay = tj[np.argmax(vj > 0.25)]
+    assert 1.0e-9 < vb_delay < 2.5e-9
+    ## ...and must match the CPU standard path.  5e-13 leaves three orders
+    ## over the measured 5e-16 without letting a controller regression hide.
+    dev = float(np.max(np.abs(vc - np.interp(tc, tj, vj))))
+    assert dev < 5e-13, 'coupled+TLine drifted from CPU: %.3e' % dev

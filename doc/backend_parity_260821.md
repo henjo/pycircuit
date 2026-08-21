@@ -254,10 +254,20 @@ existing TLine tests before/after, per house rules.
   9.7e-3 at 7.4× fewer steps.  **The TLine follow-up** then found and fixed the
   standard path's DC-stamp defect (a matched 1 V line had returned 24.5 V since the
   JAX TLine landed, untested), wired the never-applied TD/2 step cap, and enabled
-  TLine on the standard (5e-16 vs CPU) and PCNR (4.4e-10) paths.  coupled+TLine
-  remains refused on BOTH backends: the JAX coupled band livelocks past the first
-  wavefront arrival (wavefront-breakpoint fix falsified by measurement; investigation
-  recorded at the raise), and the CPU's TLine.dudt raises outright.
+  TLine on the standard (5e-16 vs CPU) and PCNR (4.4e-10) paths.  **coupled+TLine
+  landed last**, after a per-iteration trace pinned the livelock: at a from-zero
+  kink every signal scales together, so the coupled LTE's dev ∝ ref and h cancels —
+  err = 1/(TRTOL·reltol) = 1428.6 measured, h-independent — and the step after that
+  extrapolates degree-2 through a pre-kink point (err = 139.2e11·h, in-band only
+  below the within-point floor).  The failure point was the SOURCE EDGE, not the
+  wavefront as first recorded.  Fix, three composed pieces: the coupled accept path
+  zeroes `h_history` on a breakpoint landing (cold-start semantics: band skipped
+  one step, degree held at 1 for two), `no_hist` also honours `force_first_order`,
+  and `collect_breakpoints` registers source-corner + k·TD wavefront arrivals — the
+  arrivals fix that was falsified alone works with the history reset, which is why
+  it was reinstated.  Result: the pulsed matched line lands on every tend probed
+  (1.5/2.5/8 ns) at 5e-16 vs the CPU standard path; an RC-loaded line at 2.6e-2 vs
+  CPU-Gear2 (cross-method).  CPU coupled+TLine stays refused (TLine.dudt raises).
 - **P20 `solve_batched`:** JAX-only by design — it is the branch's purpose. The CPU
   gets no imitation API; a Python loop over `Transient` is already expressible and
   honest about its cost.

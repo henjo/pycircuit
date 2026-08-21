@@ -533,6 +533,25 @@ def collect_breakpoints(cir, tend):
                 n_events += 1
             else:
                 break
+    ## TLINE WAVEFRONT ARRIVALS: a source corner reaching a delay line
+    ## re-emerges at the far end TD later -- a from-zero kink in an ALGEBRAIC
+    ## variable that no element reports.  Registering {corner + TD, corner +
+    ## 2*TD} makes those steps breakpoint-landings, which the coupled path's
+    ## post-breakpoint grace (see fang_inner_loop) can then absorb -- the two
+    ## mechanisms only work TOGETHER: arrivals-as-breakpoints alone was tried
+    ## first and falsified, because a registered kink without the grace still
+    ## livelocks on the h-independent relative LTE.  Deeper bounce ancestry
+    ## is truncated, as every SPICE truncates it.
+    tline_tds = sorted({float(elem.iparv.TD)
+                        for _n, elem in cir.elements.items()
+                        if type(elem).__name__ == 'TLine'})
+    if tline_tds and breakpoints:
+        base = sorted(set(breakpoints))
+        arrivals = []
+        for td_ in tline_tds:
+            arrivals += [b + td_ for b in base if b + td_ < tend]
+            arrivals += [b + 2.0 * td_ for b in base if b + 2.0 * td_ < tend]
+        breakpoints += arrivals
     breakpoints.append(tend)
     return sorted(set(breakpoints))
 
@@ -627,8 +646,21 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
     h_ceil = jnp.minimum(dt_max, h_entry * MAX_GROWTH)
     target = (gamma_min * gamma_max) ** 0.5
     first_order = effective_first_order(state)
-    ## The band cannot be evaluated before two accepted points exist.
-    no_hist = state.h_history[0] == 0.0
+    ## The band cannot be evaluated before two accepted points exist -- NOR on
+    ## the step after a breakpoint landing (force_first_order).  The probe
+    ## that earned this line: at a FROM-ZERO kink every signal scales
+    ## together, dev is proportional to ref, and h cancels out of the
+    ## relative LTE -- measured as err = 1/(TRTOL*reltol) = 1428.6 EXACTLY,
+    ## h-independent from 4.4e-11 down to the excursion floor, livelocking
+    ## the retry to dt_min.  Capacitive rows escape (the integrator makes
+    ## dev ~ h*ref); algebraic rows -- resistive nodes, TLine ports -- are
+    ## trapped at any h.  Gracing the marked step admits two on-kink points
+    ## into the history, after which degree-1 extrapolation of a piecewise-
+    ## linear signal is exact and the band anchors again.  Kinks that are
+    ## NOT registered breakpoints get the same treatment via the wavefront
+    ## arrivals collect_breakpoints now emits.
+    no_hist = jnp.logical_or(state.h_history[0] == 0.0,
+                             state.force_first_order)
 
     def assemble(x, h, v_lim):
         st_h = state._replace(dt=h)
@@ -1145,6 +1177,30 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
             q_hist_new = jnp.roll(state.q_history, shift=1, axis=0).at[0].set(q_curr)
             iq_hist_new = jnp.roll(state.iq_history, shift=1, axis=0).at[0].set(i_curr)
             h_hist_new = jnp.roll(state.h_history, shift=1, axis=0).at[0].set(state.dt)
+            landed = jnp.any(
+                jnp.abs((state.t + state.dt) - t_breaks_array) <= t_eps)
+            if coupled:
+                ## COUPLED ONLY: a landing zeroes the step ring, restarting the
+                ## history as a cold start does.  WHY: history that STRADDLES a
+                ## kink poisons the coupled LTE two distinct ways, both traced
+                ## on the TLine pulse probe -- (1) the step AFTER the landing
+                ## needs its band skipped, because at a from-zero kink dev is
+                ## proportional to ref and h cancels (err = 1/(TRTOL*reltol) =
+                ## 1428.6 measured, h-independent); (2) the step after THAT
+                ## extrapolates degree-2 through a pre-kink point, and a
+                ## quadratic through two flat points and one ramp point misses
+                ## a line by err = 139.2/1e-11 * h -- in-band only at h ~
+                ## 2e-13, unreachable above the within-point floor 0.2*h_entry.
+                ## Zeroed history makes no_hist skip the band for one step and
+                ## effective_first_order hold degree 1 for two (the F19
+                ## run-global facts), after which every history point is
+                ## post-kink.  The standard path keeps its measured one-step
+                ## force_first_order (F11) -- its integrator-side LTE decays
+                ## with h, so it never livelocks; a two-step reset would
+                ## change its recorded step counts for no defect.
+                h_hist_new = jnp.where(landed,
+                                       jnp.zeros_like(h_hist_new),
+                                       h_hist_new)
 
             res_buf = state.results_buffer.at[state.step_idx].set(x_curr)
             time_buf = state.time_buffer.at[state.step_idx].set(state.t + state.dt)
@@ -1196,8 +1252,7 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 ## which cost a rejection burst at every edge (measured on a
                 ## VPulse RC before this line: 38 rejections in 183 accepted
                 ## steps, edge-synchronous).
-                force_first_order=jnp.any(
-                    jnp.abs((state.t + state.dt) - t_breaks_array) <= t_eps))
+                force_first_order=landed)
 
         def do_reject(_):
             ## LTE above tolerance: shrink the step (bounded below by dt_min) and
@@ -1607,25 +1662,6 @@ class JAXTransient(Analysis):
         
         _gm, _gx, _eta = self._coupled_band()
         _pcnr_meta, _pcnr_VT = self._pcnr_setup()
-        if self.par.coupled_lte and n_tlines > 0:
-            ## TLine now works on the STANDARD and PCNR paths (the DC-stamp
-            ## defect fixed by tline_stamp_correction; pcnr+TLine matches the
-            ## CPU to 4.4e-10).  The COUPLED path remains refused: past the
-            ## first wavefront epoch (t > first source corner + TD) its
-            ## acceptance band livelocks and the step collapses to dt_min --
-            ## measured on every tend past that point, on resistive and RC
-            ## loads alike.  Registering wavefront arrivals (corner + k*TD)
-            ## as breakpoints was tried and did NOT fix it, so the mechanism
-            ## is not yet understood; the CPU never solved this either (its
-            ## TLine.dudt raises, refusing the coupled path outright).
-            ## Reconsider with a reproducer under a small ring depth and a
-            ## per-iteration trace of (err, band verdict, h) at the first
-            ## post-wavefront point.
-            raise NotImplementedError(
-                'coupled_lte does not support TLine on this backend: the '
-                'coupled acceptance band livelocks past the first wavefront '
-                'arrival (see the note at this raise). The standard and pcnr '
-                'paths fully support TLine.')
 
         def run_chunk(s, p_tree):
             return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear', params_tree=p_tree, reltol=self.par.reltol, abstol=self._newton_abstol(n),
@@ -1822,25 +1858,6 @@ class JAXTransient(Analysis):
         # but tend is a runtime parameter.
         _gm, _gx, _eta = self._coupled_band()
         _pcnr_meta, _pcnr_VT = self._pcnr_setup()
-        if self.par.coupled_lte and n_tlines > 0:
-            ## TLine now works on the STANDARD and PCNR paths (the DC-stamp
-            ## defect fixed by tline_stamp_correction; pcnr+TLine matches the
-            ## CPU to 4.4e-10).  The COUPLED path remains refused: past the
-            ## first wavefront epoch (t > first source corner + TD) its
-            ## acceptance band livelocks and the step collapses to dt_min --
-            ## measured on every tend past that point, on resistive and RC
-            ## loads alike.  Registering wavefront arrivals (corner + k*TD)
-            ## as breakpoints was tried and did NOT fix it, so the mechanism
-            ## is not yet understood; the CPU never solved this either (its
-            ## TLine.dudt raises, refusing the coupled path outright).
-            ## Reconsider with a reproducer under a small ring depth and a
-            ## per-iteration trace of (err, band verdict, h) at the first
-            ## post-wavefront point.
-            raise NotImplementedError(
-                'coupled_lte does not support TLine on this backend: the '
-                'coupled acceptance band livelocks past the first wavefront '
-                'arrival (see the note at this raise). The standard and pcnr '
-                'paths fully support TLine.')
 
         @jax.jit
         def run_chunk(s):
