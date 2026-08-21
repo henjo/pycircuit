@@ -216,6 +216,37 @@ def test_junction_gmin_stepping_is_the_primary_ladder():
     ## Early rungs were genuinely dominated by the injection.
     assert max(seen_J00) >= 1e-2
 
+    ## ADAPTIVE REFINEMENT (owner request): at an iteration budget of 20,
+    ## a fixed decade gap's ~55-iteration walk-back cannot fit in any
+    ## single rung -- the halving driver inserts intermediate rungs and
+    ## still lands at machine precision (measured err 1.1e-16, ~165 base
+    ## calls of refinement work at landing).
+    tight = []
+
+    class TightNewton(NonLinearSolver):
+        def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol,
+                         maxiter, limiter=None, scaler=None, row_names=None,
+                         linsolver=None):
+            x = np.asarray(x0, float).copy()
+            for _ in range(20):
+                F, J = eval_FJ(x)
+                tight.append(1)
+                dx = np.linalg.solve(J, -F)
+                x = x + dx
+                if np.max(np.abs(x)) > 1e3:
+                    raise NoConvergenceError('diverged')
+                if np.max(np.abs(dx)) < 1e-9:
+                    return x, 1
+            raise NoConvergenceError('maxiter')
+
+    xa, _ = JunctionGminSteppingNewton(TightNewton(), [(0, 1)]).solve_system(
+        np.zeros(2), eval_FJ, None, 1e-4, np.full(2, 1e-12),
+        np.full(2, 1e-12), 20)
+    assert abs(xa[0] - x_star) < 1e-6
+    ## More base work than any fixed 7-rung schedule could spend within
+    ## the budget -- the signature of inserted rungs.
+    assert len(tight) > 7 * 20 * 0.7
+
     ## No junctions -> pure passthrough: the base fails, the ladder must
     ## re-raise without attempting rungs.
     n_before = len(seen_J00)

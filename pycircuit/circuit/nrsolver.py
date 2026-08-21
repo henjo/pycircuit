@@ -266,6 +266,62 @@ class DampedNewton(NonLinearSolver):
 ## this file's lineage, after `row_names` was retrofitted the same way
 ## (doc/transient_review_260820.md, F9).  If `solve_system` grows another
 ## option, bundle them into one object rather than extending this list again.
+def _adaptive_conductance_ladder(solve_rung, solve_pure, x0,
+                                 e_start=-2.0, e_end=-12.0, e_max=0.0,
+                                 min_step=0.25, max_rungs=60,
+                                 label='continuation'):
+    """The adaptive rung driver both ladders share (owner request).
+
+    Works in EXPONENT space, SPICE3-style: march g = 10**e from e_start
+    down to e_end in steps of `step` decades, then finish with the PURE
+    solve.  On a failed rung the step HALVES and the march resumes from
+    the last converged exponent -- the fixed-decade schedule was measured
+    stranding a rung whose solution sat too far from its predecessor's
+    (the P18 unit-mock needed a 55-iteration walk across one decade gap).
+    If the FIRST rung fails, escalate upward (more conductance, toward
+    e_max) before refining.  A step below `min_step` decades or more than
+    `max_rungs` rungs gives up honestly with the last failure chained.
+    """
+    x_curr = x0
+    step = 2.0
+    e = e_start
+    last_e = None          # last converged exponent
+    rungs = 0
+    while True:
+        if rungs >= max_rungs:
+            raise NoConvergenceError(
+                '%s: gave up after %d adaptive rungs' % (label, max_rungs))
+        rungs += 1
+        try:
+            x_curr = solve_rung(x_curr, 10.0 ** e)
+            last_e = e
+            if e <= e_end:
+                break
+            e = max(e - step, e_end)
+        except NoConvergenceError as exc:
+            if last_e is None:
+                ## Nothing has converged yet: escalate to a LARGER
+                ## conductance first (an easier problem exists upward).
+                if e < e_max:
+                    e = min(e + step, e_max)
+                    continue
+                step = step / 2.0
+                if step < min_step:
+                    raise NoConvergenceError(
+                        '%s failed even at g=10**%g with step refinement '
+                        'exhausted: %s' % (label, e_max, exc)) from exc
+                e = e_start
+                continue
+            step = step / 2.0
+            if step < min_step:
+                raise NoConvergenceError(
+                    '%s: refinement exhausted below 10**%g (step < %g '
+                    'decades): %s' % (label, last_e, min_step, exc)) from exc
+            e = max(last_e - step, e_end)
+    ## The zero rung: ONLY a pure converged solution may be returned.
+    return solve_pure(x_curr)
+
+
 class JunctionGminSteppingNewton(NonLinearSolver):
     """Continuation: junction-parallel gmin stepping -- P18's PRIMARY ladder.
 
@@ -293,34 +349,32 @@ class JunctionGminSteppingNewton(NonLinearSolver):
                 raise
 
         import numpy as _np
-        x_curr = x0
-        for gmin in (1e-2, 1e-4, 1e-6, 1e-8, 1e-10, 1e-12):
-            def eval_FJ_with_gmin(x, _g=gmin):
+
+        def solve_rung(x_seed, g):
+            def eval_FJ_with_gmin(x):
                 F, J = eval_FJ(x)
                 F = _np.array(F, dtype=float, copy=True)
                 J = _np.array(J, dtype=float, copy=True)
                 for ra, rb in self.junction_rows:
                     vj = x[ra] - x[rb]
-                    F[ra] += _g * vj
-                    F[rb] -= _g * vj
-                    J[ra, ra] += _g; J[ra, rb] -= _g
-                    J[rb, ra] -= _g; J[rb, rb] += _g
+                    F[ra] += g * vj
+                    F[rb] -= g * vj
+                    J[ra, ra] += g; J[ra, rb] -= g
+                    J[rb, ra] -= g; J[rb, rb] += g
                 return F, J
-            try:
-                x_curr, _ = self.base_solver.solve_system(
-                    x_curr, eval_FJ_with_gmin, toolkit, reltol, abstol,
-                    xtol, maxiter, limiter, scaler, row_names=row_names,
-                    linsolver=linsolver)
-            except NoConvergenceError as e:
-                raise NoConvergenceError(
-                    'junction-gmin stepping failed at gmin=%s: %s'
-                    % (gmin, e)) from e
-        ## The zero rung: ONLY a pure converged solution may be returned --
-        ## gmin residue in an accepted operating point is the measured
-        ## P22 inconsistency-floor trap.
-        return self.base_solver.solve_system(
-            x_curr, eval_FJ, toolkit, reltol, abstol, xtol, maxiter,
-            limiter, scaler, row_names=row_names, linsolver=linsolver)
+            x, _ = self.base_solver.solve_system(
+                x_seed, eval_FJ_with_gmin, toolkit, reltol, abstol,
+                xtol, maxiter, limiter, scaler, row_names=row_names,
+                linsolver=linsolver)
+            return x
+
+        def solve_pure(x_seed):
+            return self.base_solver.solve_system(
+                x_seed, eval_FJ, toolkit, reltol, abstol, xtol, maxiter,
+                limiter, scaler, row_names=row_names, linsolver=linsolver)
+
+        return _adaptive_conductance_ladder(
+            solve_rung, solve_pure, x0, label='junction-gmin stepping')
 
 
 class GminSteppingNewton(NonLinearSolver):
@@ -349,31 +403,26 @@ class GminSteppingNewton(NonLinearSolver):
         except NoConvergenceError:
             pass # Proceed to Gmin stepping
             
-        x_curr = x0
-        gmin_steps = [1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9, 1e-10, 1e-11, 1e-12]
-        
-        for gmin in gmin_steps:
-            def eval_FJ_with_gmin(x):
+        def solve_rung(x_seed, g):
+            def eval_FJ_with_gshunt(x):
                 F, J = eval_FJ(x)
-                # Inject Gmin into the diagonal of the Jacobian
-                J_gmin = J + toolkit.eye(len(J)) * gmin
-                # Add the leakage current to the RHS vector
+                return F + x * g, J + toolkit.eye(len(J)) * g
+            ## STAGE 6's keep-the-inner-diagnosis rule now lives in the
+            ## adaptive driver's chained raises.
+            x, _ = self.base_solver.solve_system(
+                x_seed, eval_FJ_with_gshunt, toolkit, reltol, abstol,
+                xtol, maxiter, limiter, scaler, row_names=row_names,
+                linsolver=linsolver)
+            return x
 
-                F_gmin = F + x * gmin
-                return F_gmin, J_gmin
-                
-            try:
-                x_curr, _ = self.base_solver.solve_system(x_curr, eval_FJ_with_gmin, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names, linsolver=linsolver)
-            except NoConvergenceError as e:
-                ## STAGE 6 -- KEEP THE INNER DIAGNOSIS.  This used to discard it,
-                ## so the caller was told which continuation rung was last tried
-                ## and nothing about what actually failed.  The rung is useful
-                ## context; it is not a substitute for the cause.
-                raise NoConvergenceError(
-                    'Gmin Stepping failed at gmin=%s: %s' % (gmin, e)) from e
-                
-        # Finally, solve the exact pure system using the guided initial guess
-        return self.base_solver.solve_system(x_curr, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names, linsolver=linsolver)
+        def solve_pure(x_seed):
+            return self.base_solver.solve_system(
+                x_seed, eval_FJ, toolkit, reltol, abstol, xtol, maxiter,
+                limiter, scaler, row_names=row_names, linsolver=linsolver)
+
+        return _adaptive_conductance_ladder(
+            solve_rung, solve_pure, x0, e_start=-3.0,
+            label='gshunt stepping')
 
 class SourceSteppingNewton(NonLinearSolver):
     """

@@ -349,11 +349,68 @@ def _gmin_junction_rows(circuit):
     return ra, rb
 
 
-## The continuation ladders -- static schedules, decades to EXACTLY zero.
-## Only the zero-rung solution may be accepted: residue in a committed
-## point is the P22 inconsistency-floor trap by its measured signature.
-GMIN_LADDER = (1e-2, 1e-4, 1e-6, 1e-8, 1e-10, 1e-12, 0.0)
-GSHUNT_LADDER = (1e-3, 1e-6, 1e-9, 1e-12, 0.0)
+## The continuation ladders are ADAPTIVE (owner request): exponent-space
+## marching with halving-on-failure, mirroring the CPU driver -- the fixed
+## decade schedule was measured stranding rungs whose solutions sat too
+## far apart.  They still end at EXACTLY zero: only the pure-rung solution
+## may be accepted (residue in a committed point is the P22
+## inconsistency-floor trap by its measured signature).
+
+
+def _adaptive_ladder_traced(rung_solve, x0, e_start, e_end, e_max=0.0,
+                            min_step=0.25, max_rungs=60):
+    """Traced twin of nrsolver._adaptive_conductance_ladder: one compiled
+    rung solver (g traced) inside a lax.while_loop carrying (seed,
+    exponent, step, last-converged exponent, phase flags).  Returns
+    (x, converged) where converged means the g = 0 rung landed."""
+    def cond(st):
+        (_x, _e, step, _le, _hl, _pure, done, fail, rungs) = st
+        return jnp.logical_and(
+            jnp.logical_not(jnp.logical_or(done, fail)),
+            rungs < max_rungs)
+
+    def body(st):
+        (x_seed, e, step, last_e, has_last, pure, done, fail, rungs) = st
+        g = jnp.where(pure, 0.0, 10.0 ** e)
+        x_try, conv = rung_solve(x_seed, g)
+
+        ## Success bookkeeping.
+        x_next = jnp.where(conv, x_try, x_seed)
+        done_n = jnp.logical_and(conv, pure)
+        pure_n = jnp.where(conv,
+                           jnp.logical_or(pure, e <= e_end + 1e-12),
+                           jnp.asarray(False))
+        last_e_n = jnp.where(jnp.logical_and(conv, jnp.logical_not(pure)),
+                             e, last_e)
+        has_last_n = jnp.logical_or(has_last,
+                                    jnp.logical_and(conv,
+                                                    jnp.logical_not(pure)))
+        e_march = jnp.maximum(e - step, e_end)
+
+        ## Failure bookkeeping: escalate before any rung has landed,
+        ## refine (halve the step from the last landing) afterwards.
+        step_f = step / 2.0
+        e_escalate = jnp.minimum(e + step, e_max)
+        can_escalate = jnp.logical_and(jnp.logical_not(has_last),
+                                       e < e_max - 1e-12)
+        e_refine = jnp.maximum(
+            jnp.where(has_last, last_e, e_start) - step_f, e_end)
+        e_fail = jnp.where(can_escalate, e_escalate, e_refine)
+        step_n_fail = jnp.where(can_escalate, step, step_f)
+        fail_n = jnp.logical_and(jnp.logical_not(can_escalate),
+                                 step_f < min_step)
+
+        e_n = jnp.where(conv, e_march, e_fail)
+        step_n = jnp.where(conv, step, step_n_fail)
+        return (x_next, e_n, step_n, last_e_n, has_last_n, pure_n,
+                done_n, jnp.where(conv, jnp.asarray(False), fail_n),
+                rungs + 1)
+
+    init = (x0, jnp.asarray(e_start), jnp.asarray(2.0),
+            jnp.asarray(e_start), jnp.asarray(False), jnp.asarray(False),
+            jnp.asarray(False), jnp.asarray(False), jnp.asarray(0))
+    final = jax.lax.while_loop(cond, body, init)
+    return final[0], final[6]
 
 
 def dc_operating_point(circuit, irefnode, n, params_tree=None,
@@ -389,14 +446,17 @@ def dc_operating_point(circuit, irefnode, n, params_tree=None,
         ## node-to-ground gshunt (SPICE3's diagonal stepping, the
         ## singular-G rescue).  Both are static per rung; gmin/gshunt = 0
         ## compiles them away.
-        if gmin_rows is not None and gmin > 0.0:
+        ## g operands are TRACED (adaptive rungs reuse ONE compiled rung
+        ## solver); the structural skip stays static, and g = 0.0 adds
+        ## exact zeros.
+        if gmin_rows is not None:
             ra, rb = gmin_rows
             vj = x[ra] - x[rb]
             F = F.at[ra].add(gmin * vj)
             F = F.at[rb].add(-gmin * vj)
             J = _scatter_junction_G(J, ra, rb,
-                                    jnp.full(ra.shape, gmin), 1.0)
-        if gshunt > 0.0 and gshunt_nodes > 0:
+                                    jnp.full(ra.shape, 1.0) * gmin, 1.0)
+        if gshunt_nodes > 0:
             idx = jnp.arange(gshunt_nodes)
             F = F.at[idx].add(gshunt * x[idx])
             J = J.at[idx, idx].add(gshunt)
@@ -439,22 +499,22 @@ def dc_with_continuation(circuit, irefnode, n, n_nodes, params_tree=None,
         x_in, conv_in = x_conv
 
         def gmin_ladder(x_seed):
-            xs, cs = x_seed, jnp.asarray(False)
-            for g in GMIN_LADDER:
-                xs, cs = dc_operating_point(
+            def rung(xs, g):
+                return dc_operating_point(
                     circuit, irefnode, n, params_tree=params_tree,
                     reltol=reltol, abstol=abstol, xtol=xtol,
                     maxiter=maxiter, x0=xs, gmin_rows=gmin_rows, gmin=g)
-            return xs, cs      # cs is the ZERO rung's verdict
+            return _adaptive_ladder_traced(rung, x_seed,
+                                           e_start=-2.0, e_end=-12.0)
 
         def gshunt_ladder(x_seed):
-            xs, cs = x_seed, jnp.asarray(False)
-            for g in GSHUNT_LADDER:
-                xs, cs = dc_operating_point(
+            def rung(xs, g):
+                return dc_operating_point(
                     circuit, irefnode, n, params_tree=params_tree,
                     reltol=reltol, abstol=abstol, xtol=xtol,
                     maxiter=maxiter, x0=xs, gshunt_nodes=n_nodes, gshunt=g)
-            return xs, cs
+            return _adaptive_ladder_traced(rung, x_seed,
+                                           e_start=-3.0, e_end=-12.0)
 
         if gmin_rows is not None:
             xg, cg = gmin_ladder(jnp.zeros(n))
