@@ -177,3 +177,21 @@ def test_f1_batched_lanes_finishing_in_different_chunks():
         assert lengths[0] != lengths[1]
     finally:
         circuit_mod.default_toolkit = saved
+
+
+## F12(a) -- the CPU result must include the t=0 point (SPICE convention,
+## JAX parity), on both the standard and the coupled path.
+
+def test_f12_cpu_result_includes_t0_standard_and_coupled():
+    import warnings
+    for coupled in (False, True):
+        tran = Transient(_rc())
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(tend=1e-6, timestep=1e-8, coupled_lte=coupled)
+        t = np.asarray(res.sweep_values, dtype=float).reshape(-1)
+        assert t[0] == 0.0, 'coupled=%s missing t=0' % coupled
+        assert np.all(np.diff(t) > 0)
+        ## and the t=0 state is the operating point, not garbage:
+        x0 = np.asarray(res.x)[:, 0]
+        assert np.all(np.isfinite(x0))

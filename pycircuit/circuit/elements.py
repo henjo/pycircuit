@@ -1204,7 +1204,7 @@ class Idtmod(Circuit):
     >>> tran = Transient(c, toolkit=numeric, uic=True)
     >>> result = tran.solve(tend=1.5, timestep=0.5, fixed_timestep=True)
     >>> result.v(nout).y
-    array([0.5, 0. , 0.5])
+    array([0. , 0.5, 0. , 0.5])
     """
     instparams = [Parameter(name='modulus', desc='Output modulus',unit='V/V',
                             default=1.),

@@ -2026,8 +2026,10 @@ def test_gate_6_3_statistics_are_populated_and_include_the_force_accept_counter(
         assert key in d, 'statistics is missing %r' % key
         assert d[key] is not None, '%s is None' % key
 
-    assert st.accepted_steps == len(np.asarray(res.sweep_values)), \
-        'accepted_steps (%d) disagrees with the number of points returned (%d)' \
+    ## `+ 1`: the result includes the t=0 point since F12
+    ## (doc/transient_review_260820.md), so points = accepted steps + the seed.
+    assert st.accepted_steps + 1 == len(np.asarray(res.sweep_values)), \
+        'accepted_steps (%d) + t=0 disagrees with the number of points (%d)' \
         % (st.accepted_steps, len(np.asarray(res.sweep_values)))
     assert st.newton_iterations > st.accepted_steps, \
         'fewer Newton iterations (%d) than steps (%d) is not possible' \

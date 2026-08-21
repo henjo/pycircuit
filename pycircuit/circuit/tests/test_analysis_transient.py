@@ -156,10 +156,12 @@ def test_transient_methods_step_response():
         'gear2': Gear2Integrator,
     }
     expected_results = {
-        'euler': [0.5, 0.75, 0.875],
-        'trapezoidal': [0.5, 5/6, 17/18],
-        'trap': [0.5, 5/6, 17/18],
-        'gear2': [0.5, 0.8, 0.94]
+        'euler': [0.0, 0.5, 0.75, 0.875],
+        ## Each series starts with the t=0 initial point (x0 = zeros here) --
+        ## included in the result since F12 (doc/transient_review_260820.md).
+        'trapezoidal': [0.0, 0.5, 5/6, 17/18],
+        'trap': [0.0, 0.5, 5/6, 17/18],
+        'gear2': [0.0, 0.5, 0.8, 0.94]
     }
 
     for method, expected in expected_results.items():

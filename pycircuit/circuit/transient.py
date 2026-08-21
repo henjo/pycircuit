@@ -2145,8 +2145,15 @@ class Transient(Analysis):
             if not fixed_timestep:
                 dt = next_dt
             
-        X = self.toolkit.array(X[1:]).T
-        timelist = self.toolkit.array(timelist)
+        ## The t=0 point IS part of the result -- SPICE convention, and what the
+        ## JAX backend already does.  `X[0]` is the operating point (or the uic
+        ## vector) the run worked to compute; dropping it made every index-aligned
+        ## backend comparison off by one and left resample_uniform unable to
+        ## reproduce the initial value (doc/transient_review_260820.md, F12(a);
+        ## fixed at BOTH CPU sites in one commit, standard and coupled, so the
+        ## divergence does not reappear inside one backend).
+        X = self.toolkit.array(X).T
+        timelist = self.toolkit.array([0.0] + timelist)
         
         self.statistics.total_seconds = time.perf_counter() - _t_run_start
 
@@ -2439,8 +2446,15 @@ class Transient(Analysis):
             ## step count did not move when `reltol` changed by two decades.
             h = min(max_step, max(h_curr, minstep))
             
-        X = self.toolkit.array(X[1:]).T
-        timelist = self.toolkit.array(timelist)
+        ## The t=0 point IS part of the result -- SPICE convention, and what the
+        ## JAX backend already does.  `X[0]` is the operating point (or the uic
+        ## vector) the run worked to compute; dropping it made every index-aligned
+        ## backend comparison off by one and left resample_uniform unable to
+        ## reproduce the initial value (doc/transient_review_260820.md, F12(a);
+        ## fixed at BOTH CPU sites in one commit, standard and coupled, so the
+        ## divergence does not reappear inside one backend).
+        X = self.toolkit.array(X).T
+        timelist = self.toolkit.array([0.0] + timelist)
         self.result = CircuitResult(self.cir, x=X, xdot=None,
                                     sweep_values=timelist, 
                                     sweep_label='time', 
