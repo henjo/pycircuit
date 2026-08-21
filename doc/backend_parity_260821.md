@@ -456,6 +456,22 @@ existing TLine tests before/after, per house rules.
   lists coerced through the toolkit's own array(); toolkits may override
   with native routes), and VCCS passes entries only.  The documented
   pattern for new elements.  Off by default: default runs are untouched.
+- **P24** *(added 2026-08-21, owner request)* — the **stamp-construction
+  hygiene sweep**: migrate every element that builds a stamp by mutating
+  ``toolkit.zeros(...)`` to ``Toolkit.matrix_from_entries``.  Surveyed at
+  entry: **18 zeros-then-mutate sites across 13 ``update()`` methods in
+  elements.py** (plus a handful in semiconductors.py), each a latent
+  VCCS-class defect — in-place assignment crashes on immutable JAX arrays,
+  and any numeric intermediate rejects symbolic values; VCCS broke both
+  ways in one day the first time it ran under the JAX toolkit.  One open
+  question belongs to the sweep, not ahead of it: several of these
+  elements DO run on the JAX path today without crashing, so their
+  construction-time arrays evidently are not jnp — establish which toolkit
+  each ``update()`` actually receives before rewriting, so the sweep fixes
+  the real exposure instead of churning working code.  Mechanical
+  otherwise; the stamp tests and the cross-backend suite are the gates,
+  and every migrated element should keep its stamp bit-identical on the
+  numeric toolkit (assert, don't assume).
 
 ---
 
