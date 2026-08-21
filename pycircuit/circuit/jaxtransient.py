@@ -855,8 +855,12 @@ class JAXTransient(Analysis):
         # JIT the vmapped run_chunk
         batched_run_chunk = jax.jit(jax.vmap(run_chunk))
         
-        results_list = [np.expand_dims(np.array(x0_batch), axis=1)]
-        times_list = [np.zeros((batch_size, 1))]
+        ## Per-lane accumulators, each seeded with the lane's t=0 point (F12's
+        ## guarantee on this path; see the collection note below for why the
+        ## lanes are not kept rectangular).
+        x0_np = np.array(x0_batch)
+        results_list = [[x0_np[b:b+1, :]] for b in range(batch_size)]
+        times_list = [[np.zeros(1)] for b in range(batch_size)]
         
         current_t = jnp.zeros(batch_size)
         ## Same ramp as `solve` -- see `_opening_step`.
@@ -892,27 +896,36 @@ class JAXTransient(Analysis):
             )
             
             final_state = batched_run_chunk(state, override_params_tree)
-            
-            # Since batching can lead to different step sizes, we just append the raw buffers for now
+
+            ## PER-LANE COLLECTION, NO PADDING.  The old code trimmed every lane
+            ## to the batch's rectangular [0, max_steps) window and FILLED
+            ## SHORTER LANES FORWARD -- duplicating both the state AND the
+            ## timestamp, so shorter lanes' results carried repeated abscissae
+            ## (which break interpolation downstream), and a lane that had
+            ## already reached tend in a previous chunk had b_len == 0, making
+            ## the fill source `x_chunk[b, -1:0, :]` an EMPTY slice: numpy
+            ## raised "could not broadcast (0,n) into (max_steps,n)" and any
+            ## heterogeneous sweep spanning more than one chunk crashed.
+            ##
+            ## Nothing needs the lanes to be rectangular: chunk-to-chunk state
+            ## flows through `final_state`, and the method returns a separate
+            ## Result per lane, each with its own time base.  So each lane
+            ## simply keeps its own valid slice and the padding -- the only
+            ## code that could crash or corrupt -- is deleted rather than
+            ## guarded (doc/transient_review_260820.md, F1(c); measured with
+            ## c = 1e-9 vs 1e-6 F, CHUNK_SIZE=10).
             valid_steps = np.array(final_state.step_idx)
-            max_steps = int(np.max(valid_steps))
-            
-            if max_steps == 0:
+            if int(np.max(valid_steps)) == 0:
                 break
-                
-            x_chunk = np.array(final_state.results_buffer)[:, :max_steps, :]
-            t_chunk = np.array(final_state.time_buffer)[:, :max_steps]
-            
-            # For sequences that ended early, fill their remaining chunk with their last valid value
+
+            res_buf = np.array(final_state.results_buffer)
+            time_buf = np.array(final_state.time_buffer)
             for b in range(batch_size):
-                b_len = valid_steps[b]
-                if b_len < max_steps:
-                    x_chunk[b, b_len:max_steps, :] = x_chunk[b, b_len-1:b_len, :]
-                    t_chunk[b, b_len:max_steps] = t_chunk[b, b_len-1]
-                    
-            results_list.append(x_chunk)
-            times_list.append(t_chunk)
-            
+                b_len = int(valid_steps[b])
+                if b_len > 0:
+                    results_list[b].append(res_buf[b, :b_len, :])
+                    times_list[b].append(time_buf[b, :b_len])
+
             current_t = final_state.t
             current_dt = final_state.dt
             b_sig_max = final_state.sig_max
@@ -926,17 +939,17 @@ class JAXTransient(Analysis):
             tline_history = final_state.tline_history
             tline_head = final_state.tline_head
             
-        # Concat along time axis (axis=1)
-        all_results = np.concatenate(results_list, axis=1)
-        all_times = np.concatenate(times_list, axis=1)
-        
+        ## Each lane concatenates its own slices -- lengths may differ, which
+        ## is the point.  The t=0 seed row (results_list[b][0]) is what keeps
+        ## F12's include-the-initial-point guarantee on this path.
         res = []
-        for i in range(batch_size):
-            r = Result(self.cir, x=all_results[i].T, xdot=None,
-                            sweep_values=all_times[i],
-                            sweep_label='time',
-                            sweep_unit='s')
-            res.append(r)
+        for b in range(batch_size):
+            xb = np.concatenate(results_list[b], axis=0)
+            tb = np.concatenate(times_list[b])
+            res.append(Result(self.cir, x=xb.T, xdot=None,
+                              sweep_values=tb,
+                              sweep_label='time',
+                              sweep_unit='s'))
         return res
 
     def solve(self, refnode=0, tend=1e-3, x0=None, timestep=1e-6, CHUNK_SIZE=5000, **kwargs):

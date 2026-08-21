@@ -138,3 +138,42 @@ def test_f6a_newton_residual_floor_is_current_flavoured():
     x_loose = _jax_rc_run(iabstol=1e6)
     assert x_default.shape != x_loose.shape or \
         float(np.max(np.abs(x_default - x_loose))) > 1e-3
+
+
+## F1(c) -- lanes finishing in different chunks used to crash the fill-forward
+## with an empty-slice broadcast; and even without the crash, padding
+## duplicated timestamps.  Per-lane collection must survive heterogeneous
+## lanes with strictly increasing time and a t=0 first point per lane.
+
+def test_f1_batched_lanes_finishing_in_different_chunks():
+    pytest.importorskip('jax')
+    import jax.numpy as jnp
+    from pycircuit.circuit import circuit as circuit_mod
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.elements import VS
+
+    saved = circuit_mod.default_toolkit
+    circuit_mod.default_toolkit = jaxtoolkit
+    try:
+        cir = SubCircuit()
+        cir.add_node('in'); cir.add_node('out')
+        cir['V1'] = VS('in', gnd, v=1.0)
+        cir['R1'] = R('in', 'out', r=1e3)
+        cir['C1'] = C('out', gnd, c=1e-6)
+        res = JAXTransient(cir, reltol=1e-6).solve_batched(
+            gnd, override_params_tree={'C': {'c': jnp.array([[1e-9], [1e-6]])}},
+            tend=5e-3, timestep=1e-3, CHUNK_SIZE=10, uic=True)
+        assert len(res) == 2
+        lengths = []
+        for r in res:
+            t = np.asarray(r.sweep_values, dtype=float).reshape(-1)
+            assert t[0] == 0.0                    # per-lane t=0 seed survives
+            assert np.all(np.diff(t) > 0)         # no duplicated timestamps
+            assert t[-1] <= 5e-3 * (1 + 1e-9)
+            lengths.append(len(t))
+        ## the 1nF and 1uF lanes must genuinely differ -- the heterogeneity
+        ## that used to trigger the crash
+        assert lengths[0] != lengths[1]
+    finally:
+        circuit_mod.default_toolkit = saved
