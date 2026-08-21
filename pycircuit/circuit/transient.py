@@ -2146,7 +2146,14 @@ class Transient(Analysis):
                 ## the step that ends on the edge does not see it, and the next
                 ## iteration asks `next_event(t)` from the edge itself, whose
                 ## fixed-point guard skips past it.
-                was_break_step = next_t_break <= t + dt
+                ## TOLERANCED, and the tolerance is a measured fix: `t` is
+                ## accumulated by repeated `+= dt`, so "the breakpoint lands
+                ## exactly on a grid point" is a float knife-edge -- spied on
+                ## the pulsed-RC fixed run, the order drop fired at the FIRST
+                ## edge (t accumulated over 10 steps) and silently missed
+                ## every later one (21+ accumulations flipped the <=).  The
+                ## JAX port's crossing test carries the same tolerance.
+                was_break_step = next_t_break <= t + dt * (1.0 + 1e-9)
             elif t + dt > next_t_break:
                 dt = float(next_t_break - t)
                 was_break_step = True

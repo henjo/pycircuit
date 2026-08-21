@@ -193,12 +193,34 @@ larger dt — the machinery exists: `do_reject` with `retry_dt` can grow) and th
 damper as a clamp on `factor`. Reuse the CPU's `'auto'` sentinel semantics from F5.
 Moderate; do after P6 so the band composes with a chosen integrator.
 
+> **EXECUTED 2026-08-21.**  `_standard_band()` mirrors set_lte_band's 'auto'
+> resolution (0, 1, None) and validation; the traced accept takes gamma_max,
+> the too-accurate growth-reject carries the CPU's three guards (breakpoint
+> landing, at-cap, would-not-actually-grow), and eta clamps the factor
+> branchlessly (inf when unset).  Measured: defaults bit-identical to the
+> pre-band loop; gamma_min=0.3 fires 10 growth-rejects (63 → 58 accepted);
+> eta=0.10 bounds the step ratio at exactly 1.100; invalid bands refused.
+
 ### P9 — `fixed_timestep` on JAX
 
 Semantics per the CPU: grid wins, breakpoints don't move it, order still drops when
 a step crosses an edge, non-uniform fallback warns. In the traced loop this is
 `dt_next = timestep` (skip `calculate_next_dt`) plus the accept test forced true
 except on Newton failure. Moderate, mostly tests.
+
+> **EXECUTED 2026-08-21**, and the port found a CPU defect: the fixed-grid
+> crossing test `next_t_break <= t + dt` is a float knife-edge under
+> accumulated `t += dt` — spied on the pulsed-RC run, the order drop fired at
+> the FIRST edge and silently missed every later one.  Toleranced on the CPU
+> (`dt·1e-9`), after which the two backends produce the SAME fixed-grid
+> waveform to 5.6e-17.  The traced side: grid pinned (breakpoints untouched,
+> tend landed exactly), LTE skipped, order drop by a toleranced crossing
+> test, non-uniform fallback warned once post-run with the count (a trace
+> cannot warn per event), element-cap warning mirrored, coupled+fixed refused
+> (the CPU's grid_locked wiring is not ported).  Two CPU behaviors recorded
+> as findings, not replicated: after a fixed-grid non-convergence shrink the
+> CPU keeps the shrunken step for the rest of the run (its own warn text says
+> "for this step"); JAX returns to the grid on the next accept.
 
 ### P11 — `provided_function` on JAX, with the honest constraint
 

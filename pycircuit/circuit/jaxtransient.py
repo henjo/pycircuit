@@ -574,7 +574,7 @@ def collect_breakpoints(cir, tend, minbreak=1e-14):
     return merged
 
 
-def calculate_next_dt(dt, error_ratio, dt_min, dt_max, t_breaks_array, current_t, order_p1=2.0):
+def calculate_next_dt(dt, error_ratio, dt_min, dt_max, t_breaks_array, current_t, order_p1=2.0, eta=jnp.inf):
     ## THE CPU'S LAW, F17 (doc/transient_review_260820.md): aim at
     ## target = safety**p, not at err = 1.0 -- the rejection threshold
     ## itself.  Aiming at the edge meant every successor step that landed a
@@ -593,6 +593,10 @@ def calculate_next_dt(dt, error_ratio, dt_min, dt_max, t_breaks_array, current_t
                        (target / jnp.maximum(error_ratio, 1e-12))
                        ** (1.0 / order_p1))
     factor = jnp.clip(factor, MIN_SHRINK_RATIO, MAX_GROWTH_RATIO)
+    ## P8: eq (16)'s damper, the CPU's `_damp` -- inert at the default
+    ## eta=inf, a clamp on the step CHANGE when the band sets one.
+    factor = jnp.clip(factor, jnp.maximum(MIN_SHRINK_RATIO, 1.0 - eta),
+                      jnp.minimum(MAX_GROWTH_RATIO, 1.0 + eta))
     dt_new = dt * factor
     dt_new = jnp.clip(dt_new, dt_min, dt_max)
 
@@ -1023,7 +1027,7 @@ def pcnr_controller_jacobian(circuit, state, x, v_lim, j_ra, j_rb, j_IS, VT,
     return _scatter_junction_G(J, j_ra, j_rb, g_l, +1.0)
 
 
-def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15, pcnr_meta=None, pcnr_VT=0.025, tline_dG=None, analysis='tran'):
+def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15, pcnr_meta=None, pcnr_VT=0.025, tline_dG=None, analysis='tran', s_gamma_min=0.0, s_gamma_max=1.0, s_eta=jnp.inf, fixed_timestep=False, grid_dt=None):
 
     ## The same epsilon `calculate_next_dt` uses to decide a breakpoint is "already
     ## reached".  They disagreed: after 500 steps of 1e-5 the accumulated `t` sits
@@ -1160,9 +1164,54 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
         ## is.  The `first` step is no longer exempt: a first step that did not
         ## converge is the worst one to commit, since every later step extrapolates
         ## from it.
-        lte_ok = jnp.logical_or(error_ratio <= 1.0, first)
+        ## P8: the CPU standard band, same semantics (stepcontroller
+        ## set_lte_band / IntegralController.evaluate_step).  At the shipped
+        ## defaults (s_gamma_min=0, s_gamma_max=1, s_eta=inf) every line
+        ## below reduces to the historical err<=1.0 accept -- default runs
+        ## are bit-identical, which the P8 gate pins.
+        landed = jnp.any(
+            jnp.abs((state.t + state.dt) - t_breaks_array) <= t_eps)
+        lte_ok = jnp.logical_or(error_ratio <= s_gamma_max, first)
+        ## Eq (15)'s LOWER bound, the CPU's too-accurate growth-reject: a
+        ## step far under tolerance is wasted work, redone LARGER at the
+        ## same time point -- UNLESS its size was never the controller's to
+        ## choose (breakpoint landing), it has nowhere to grow (at dt_max),
+        ## or the grow would not actually grow (damper/cap binding would
+        ## livelock the retry).
+        from pycircuit.circuit.stepcontroller import MAX_GROWTH_RATIO as _MG
+        _safety_target = 0.9 ** order_p1
+        _aim = jnp.where(
+            jnp.logical_and(s_gamma_min <= _safety_target,
+                            _safety_target <= s_gamma_max),
+            _safety_target, jnp.sqrt(jnp.maximum(s_gamma_min * s_gamma_max,
+                                                 1e-30)))
+        _gfac = jnp.minimum(_MG, (_aim / jnp.maximum(error_ratio, 1e-12))
+                            ** (1.0 / order_p1))
+        _gfac = jnp.minimum(_gfac, 1.0 + s_eta)
+        grow_dt = jnp.minimum(state.dt * _gfac, dt_max)
+        too_accurate = jnp.logical_and(
+            jnp.logical_and(nr_state.converged, error_ratio < s_gamma_min),
+            jnp.logical_and(
+                jnp.logical_not(jnp.logical_or(first, landed)),
+                jnp.logical_and(state.dt < dt_max * (1.0 - 1e-12),
+                                grow_dt > state.dt * (1.0 + 1e-9))))
+        if coupled:
+            ## Fang solved (x, h) against its own band; the sentinel
+            ## error_ratio=0.0 above must not trip the standard path's
+            ## too-accurate reject when the user set a nonzero gamma_min.
+            too_accurate = jnp.asarray(False)
+        if fixed_timestep:
+            ## P9, the CPU's stage 4h: under a fixed grid there is no
+            ## controller -- the LTE verdict is skipped entirely, and only a
+            ## failed Newton rejects (shrink-retry below; the next accepted
+            ## step returns to the grid).
+            too_accurate = jnp.asarray(False)
+            lte_ok = jnp.asarray(True)
         accept = jnp.logical_or(
-            jnp.logical_and(nr_state.converged, lte_ok), at_floor)
+            jnp.logical_and(
+                jnp.logical_and(nr_state.converged, lte_ok),
+                jnp.logical_not(too_accurate)),
+            at_floor)
         forced = jnp.logical_and(at_floor, jnp.logical_not(nr_state.converged))
         ## F19(c): converged Newton, failing LTE, at the floor -- accepted
         ## with an unbounded truncation error, which the CPU force-accept
@@ -1183,16 +1232,25 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 ## The solved step carries forward; breakpoint truncation for
                 ## the NEXT point happens at the next fang entry.
                 next_dt = jnp.clip(state.dt, dt_min, dt_max)
+            elif fixed_timestep:
+                ## P9: THE GRID WINS.  Breakpoints do not move it (the CPU's
+                ## stage 4h measured a VPulse run collapsing 30 -> 292 steps
+                ## when they did); only `tend` truncates, and a failed step's
+                ## shrunken retry returns to the grid here on its next accept
+                ## -- the CPU's own warn text ("for this step") states that
+                ## intent, though its loop today keeps the shrunken step;
+                ## recorded as a finding in the parity doc.
+                next_dt = jnp.maximum(
+                    jnp.minimum(grid_dt, tend - (state.t + state.dt)), dt_min)
             else:
                 next_dt = calculate_next_dt(state.dt, error_ratio, dt_min, dt_max,
-                                            t_breaks_array, state.t + state.dt, order_p1)
+                                            t_breaks_array, state.t + state.dt, order_p1,
+                                            eta=s_eta)
 
             x_hist_new = jnp.roll(state.x_history, shift=1, axis=0).at[0].set(x_curr)
             q_hist_new = jnp.roll(state.q_history, shift=1, axis=0).at[0].set(q_curr)
             iq_hist_new = jnp.roll(state.iq_history, shift=1, axis=0).at[0].set(i_curr)
             h_hist_new = jnp.roll(state.h_history, shift=1, axis=0).at[0].set(state.dt)
-            landed = jnp.any(
-                jnp.abs((state.t + state.dt) - t_breaks_array) <= t_eps)
             if coupled and tline_params.shape[0] > 0:
                 ## COUPLED ONLY: a landing zeroes the step ring, restarting the
                 ## history as a cold start does.  WHY: history that STRADDLES a
@@ -1271,7 +1329,10 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 ## which cost a rejection burst at every edge (measured on a
                 ## VPulse RC before this line: 38 rejections in 183 accepted
                 ## steps, edge-synchronous).
-                force_first_order=landed)
+                force_first_order=(jnp.any(jnp.logical_and(
+                    t_breaks_array > state.t + t_eps,
+                    t_breaks_array <= state.t + state.dt + t_eps))
+                    if fixed_timestep else landed))
 
         def do_reject(_):
             ## LTE above tolerance: shrink the step (bounded below by dt_min) and
@@ -1287,6 +1348,9 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 ## failure flavour (Newton or held-step LTE).
                 shrink = jnp.asarray(0.25)
             retry_dt = jnp.maximum(state.dt * shrink, dt_min)
+            ## P8: a too-accurate rejection retries LARGER (the CPU's eq (15)
+            ## lower bound); grow_dt's guards above ensure it genuinely grows.
+            retry_dt = jnp.where(too_accurate, grow_dt, retry_dt)
             return state._replace(
                 dt=retry_dt,
                 n_rejected=state.n_rejected + 1,
@@ -1403,8 +1467,9 @@ class JAXTransient(Analysis):
         ## path; explicit values pass through verbatim.  The standard JAX
         ## path does not read the band yet (parity item P8).
         Parameter(name='lte_gamma_min',
-                  desc="Lower edge of the LTE acceptance band (coupled path); "
-                       "'auto' means 0.7 (Fang).",
+                  desc="Lower edge of the LTE acceptance band; 'auto' means "
+                       "0.7 (Fang) on the coupled path and 0.0 (no lower "
+                       "test) on the standard path -- the CPU's F5 split.",
                   unit='', default='auto'),
         Parameter(name='lte_gamma_max',
                   desc="Upper edge of the LTE acceptance band (coupled path); "
@@ -1612,6 +1677,28 @@ class JAXTransient(Analysis):
             return None, VT
         return meta, VT
 
+    def _standard_band(self):
+        """The STANDARD path's (gamma_min, gamma_max, eta) -- P8.
+
+        Mirrors the CPU's set_lte_band resolution exactly (F5 semantics):
+        'auto' means (0.0, 1.0, None) here -- the historical err<=1.0 accept
+        -- while the coupled path's 'auto' means Fang's (0.7, 3.0, 0.15);
+        the same three Parameters serve both, resolved per path.  eta=None
+        becomes inf so the traced damper is branchless and inert."""
+        gm, gx, eta = (self.par.lte_gamma_min, self.par.lte_gamma_max,
+                       self.par.lte_eta)
+        gm = 0.0 if gm == 'auto' else float(gm)
+        gx = 1.0 if gx == 'auto' else float(gx)
+        eta = None if eta == 'auto' else eta
+        if not (0.0 <= gm < gx):
+            raise ValueError(
+                'LTE band requires 0 <= gamma_min < gamma_max, got %r, %r'
+                % (gm, gx))
+        if eta is not None and not eta > 0.0:
+            raise ValueError(
+                'LTE band damper eta must be positive, got %r' % (eta,))
+        return gm, gx, float('inf') if eta is None else float(eta)
+
     def _coupled_band(self):
         """The (gamma_min, gamma_max, eta) the coupled path runs with --
         Transient._coupled_band's exact mapping (F5): 'auto' resolves to
@@ -1775,12 +1862,13 @@ class JAXTransient(Analysis):
                 for name, t in tlines]) if n_tlines > 0 else None)
         
         _gm, _gx, _eta = self._coupled_band()
+        _sgm, _sgx, _seta = self._standard_band()
         _pcnr_meta, _pcnr_VT = self._pcnr_setup()
 
         def run_chunk(s, p_tree):
             return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method=self._eval_method(), params_tree=p_tree, reltol=self.par.reltol, abstol=self._newton_abstol(n),
                                    xtol=self._newton_xtol(n),
-                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis,
+                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis, s_gamma_min=_sgm, s_gamma_max=_sgx, s_eta=_seta,
                                    lte_reltol=self.par.reltol,
                                    lte_abstol=self._lte_abstol(n),
                                    max_dv=(jnp.inf if self.par.max_dv is None
@@ -1900,10 +1988,18 @@ class JAXTransient(Analysis):
     ## of running silently with defaults.  P4: `refnode=gnd`, the CPU's
     ## default object; `0` resolved gnd's index only by accident of ordering.
     def solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6,
-              CHUNK_SIZE=5000, uic=None, minstep=None):
+              CHUNK_SIZE=5000, uic=None, minstep=None, fixed_timestep=False):
         n = self.cir.n
         irefnode = self.cir.get_node_index(refnode)
         uic = bool(self.par.uic) if uic is None else uic
+        if fixed_timestep and self.par.coupled_lte:
+            ## The CPU's coupled path locks the grid via grid_locked; wiring
+            ## the same through fang's hold machinery is real work not yet
+            ## done on this backend.  Refused rather than approximated.
+            raise NotImplementedError(
+                'fixed_timestep with coupled_lte is not implemented on this '
+                'backend yet; the CPU path supports it (grid_locked). Use '
+                'coupled_lte=False for a fixed grid here.')
 
         ## Same contract as the CPU (P12): ic without uic is a different
         ## feature (constraining the operating point) and is refused, not
@@ -1923,6 +2019,14 @@ class JAXTransient(Analysis):
             
         dt_min = float(self.par.minstep) if minstep is None else minstep
         dt_max = self._element_cap(self._timestep_max(tend))
+        if fixed_timestep and timestep > dt_max * (1.0 + 1e-12):
+            ## The CPU's stage-8(d) warning, same trade: the caller owns the
+            ## grid, so obey it and say what it costs.
+            warnings.warn(
+                'jaxtransient: fixed_timestep=%g exceeds the %g s cap the '
+                'circuit needs (element TD/2 or timestep_max). The result on '
+                'this grid is degraded and nothing else will report it.'
+                % (timestep, float(dt_max)), RuntimeWarning)
     
         t_breaks_array = jnp.array(collect_breakpoints(
             self.cir, tend, float(self.par.minbreak)))
@@ -1980,13 +2084,15 @@ class JAXTransient(Analysis):
         # We need a JIT-able wrapper that burns the chunk_size and tend into static parameters if needed,
         # but tend is a runtime parameter.
         _gm, _gx, _eta = self._coupled_band()
+        _sgm, _sgx, _seta = self._standard_band()
         _pcnr_meta, _pcnr_VT = self._pcnr_setup()
 
         @jax.jit
         def run_chunk(s):
             return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method=self._eval_method(), reltol=self.par.reltol, abstol=self._newton_abstol(n),
+                                   fixed_timestep=fixed_timestep, grid_dt=timestep,
                                    xtol=self._newton_xtol(n),
-                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis,
+                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis, s_gamma_min=_sgm, s_gamma_max=_sgx, s_eta=_seta,
                                    lte_reltol=self.par.reltol,
                                    lte_abstol=self._lte_abstol(n),
                                    max_dv=(jnp.inf if self.par.max_dv is None
@@ -2000,7 +2106,7 @@ class JAXTransient(Analysis):
         times_list = [np.array([0.0])]
     
         current_t = 0.0
-        current_dt = self._opening_step(timestep)
+        current_dt = timestep if fixed_timestep else self._opening_step(timestep)
         ## Accepted steps so far, tracked only to detect the TLine ring wrapping.
         ## The check cannot live inside the compiled loop -- it cannot raise there --
         ## so it is done here, per chunk, which is soon enough: the wrap corrupts the
@@ -2125,12 +2231,21 @@ class JAXTransient(Analysis):
         ## surfaced rather than left in the statistics object alone.  The
         ## unrecoverable case raises inside the chunk loop above.
         if int(n_nonconverged) > 0:
-            warnings.warn(
-                'jaxtransient: the Newton solve failed to converge on %d step '
-                'attempt(s); each was rejected and retried at a smaller dt, so the '
-                'result is still error-controlled, but the circuit is hard for the '
-                'solver at this tolerance.' % int(n_nonconverged),
-                RuntimeWarning)
+            if fixed_timestep:
+                ## The CPU warns per event; a traced loop cannot, so the count
+                ## arrives once at the end -- same information, same class.
+                warnings.warn(
+                    'jaxtransient: Newton did not converge on %d step attempt(s) '
+                    'at the requested fixed timestep %g s; each fell back to a '
+                    'smaller step. The output grid is no longer uniform.'
+                    % (int(n_nonconverged), timestep), RuntimeWarning)
+            else:
+                warnings.warn(
+                    'jaxtransient: the Newton solve failed to converge on %d step '
+                    'attempt(s); each was rejected and retried at a smaller dt, so the '
+                    'result is still error-controlled, but the circuit is hard for the '
+                    'solver at this tolerance.' % int(n_nonconverged),
+                    RuntimeWarning)
 
         # Concatenate
         all_results = np.vstack(results_list)

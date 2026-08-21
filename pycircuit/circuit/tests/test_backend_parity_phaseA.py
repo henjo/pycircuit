@@ -290,3 +290,104 @@ def test_p6_integrator_defaults_agree_and_the_choice_is_live():
         with pytest.raises(ValueError, match='CPU-only'):
             JAXTransient(rc_step(), integrator='trap')._eval_method()
     _with_jax(go)
+
+
+def test_p8_standard_band_on_jax():
+    """P8 (Phase B): the CPU standard band's semantics on the traced loop.
+
+    Four facts, each measured at landing: (1) the shipped defaults reduce
+    every band line to the historical err<=1.0 accept -- a default run and
+    an explicit (0, 1) run are bit-identical; (2) gamma_min fires the
+    too-accurate growth-reject (10 rejections, 63 -> 58 accepted on the
+    step-response RC at reltol 1e-5); (3) eta clamps the step ratio at
+    exactly 1 + eta across the run; (4) an invalid band is refused with the
+    CPU's message."""
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.elements import VS
+
+    def rc_step():
+        c = SubCircuit()
+        c['V1'] = VS('in', gnd, v=1.0)
+        c['R1'] = R('in', 'out', r=1e3)
+        c['C1'] = C('out', gnd, c=1e-6)
+        return c
+
+    def run(**kw):
+        tran = JAXTransient(rc_step(), reltol=1e-5, **kw)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(gnd, tend=5e-3, timestep=1e-3, uic=True)
+        return (np.asarray(res.sweep_values, float),
+                np.asarray(res.v('out'), float).reshape(-1),
+                tran.statistics)
+
+    def go():
+        t0, v0, st0 = run()
+        _t, v0b, _s = run(lte_gamma_min=0.0, lte_gamma_max=1.0)
+        assert np.array_equal(v0, v0b), 'the default band is not inert'
+
+        _t, _v, st1 = run(lte_gamma_min=0.3)
+        assert st1.rejected_steps > 0, \
+            'gamma_min never fired the too-accurate reject'
+        assert st1.accepted_steps < st0.accepted_steps, \
+            'growth-rejects did not buy larger steps'
+
+        t3, _v, _s = run(lte_eta=0.10)
+        d = np.diff(t3)
+        ratio = float(np.max(d[1:] / d[:-1]))
+        assert ratio <= 1.10 * (1.0 + 1e-9), \
+            'eta damper violated: max step ratio %.4f' % ratio
+
+        with pytest.raises(ValueError, match='gamma_min < gamma_max'):
+            run(lte_gamma_min=2.0, lte_gamma_max=1.0)
+    _with_jax(go)
+
+
+def test_p9_fixed_timestep_on_jax():
+    """P9 (Phase B): the CPU's stage-4h fixed-grid semantics on the traced
+    loop -- the grid wins, breakpoints do not move it, crossing an edge
+    still drops the order for the next step, tend is landed on exactly, and
+    coupled+fixed is refused rather than approximated.
+
+    The cross-backend agreement here is the strongest gate this file has:
+    fixing a float knife-edge in the CPU's crossing test (found by this
+    port -- the order drop fired at the first pulse edge and silently
+    missed every later one once accumulated t flipped a <=), the two
+    backends produce the SAME fixed-grid waveform to 5.6e-17."""
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.integrator import Gear2Integrator
+    from pycircuit.circuit.elements import VPulse
+
+    def pc():
+        c = SubCircuit()
+        c['vs'] = VPulse('a', gnd, v1=0.0, v2=1.0, td=1e-6, tr=1e-7,
+                         tf=1e-7, pw=1e-6, per=3e-6)
+        c['R'] = R('a', 'b', r=1e3)
+        c['C'] = C('b', gnd, c=1e-10)
+        return c
+
+    cpu = Transient(pc(), toolkit=numeric, uic=True,
+                    integrator=Gear2Integrator())
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        rc_ = cpu.solve(gnd, tend=6e-6, timestep=1e-7, fixed_timestep=True)
+    vc = np.asarray(rc_.v('b'), float).reshape(-1)
+
+    def go():
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            rj = JAXTransient(pc()).solve(gnd, tend=6e-6, timestep=1e-7,
+                                          uic=True, fixed_timestep=True)
+        t = np.asarray(rj.sweep_values, float)
+        v = np.asarray(rj.v('b'), float).reshape(-1)
+        assert np.allclose(np.diff(t), 1e-7, rtol=1e-9), 'grid not uniform'
+        assert t[-1] == pytest.approx(6e-6, rel=1e-12)
+        m = min(len(vc), len(v))
+        dev = float(np.max(np.abs(vc[:m] - v[:m])))
+        assert dev < 1e-12, 'backends disagree on the fixed grid: %.3e' % dev
+
+        with pytest.raises(NotImplementedError, match='grid_locked'):
+            JAXTransient(pc(), coupled_lte=True).solve(
+                gnd, tend=1e-6, timestep=1e-7, uic=True, fixed_timestep=True)
+    _with_jax(go)
