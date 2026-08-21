@@ -60,11 +60,12 @@ UNUSED_ARG_ALLOWLIST = {
         'SolutionLTEController needs no J^-1 mapping',
     ('stepcontroller.py', 'evaluate_step', 'irefnode'):
         'SolutionLTEController takes the argmax over the full vector',
-    ## NonLinearSolver interface; SchurCoupledNewton and JAXNewtonSolver do
-    ## not dispatch on these (JAXNewtonSolver is F15 delete-or-port).
-    ('nrsolver.py', 'solve_system', 'scaler'): 'interface; see F15',
-    ('nrsolver.py', 'solve_system', 'row_names'): 'interface; see F15',
-    ('nrsolver.py', 'solve_system', 'linsolver'): 'interface; see F15',
+    ## NonLinearSolver interface; SchurCoupledNewton does not dispatch on
+    ## these.  (JAXNewtonSolver, the other holder of this entry, was deleted
+    ## by F15.)
+    ('nrsolver.py', 'solve_system', 'scaler'): 'interface (SchurCoupledNewton)',
+    ('nrsolver.py', 'solve_system', 'row_names'): 'interface (SchurCoupledNewton)',
+    ('nrsolver.py', 'solve_system', 'linsolver'): 'interface (SchurCoupledNewton)',
     ('nrsolver.py', '_structural_singularity', 'toolkit'):
         'signature uniformity with its sibling',
     ('nrsolver.py', '_worst_row_report', 'toolkit'):

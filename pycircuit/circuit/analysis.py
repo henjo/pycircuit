@@ -148,7 +148,7 @@ class Analysis(sim.Analysis):
                   Parameter(name='nrsolver',
                             desc='Newton-Raphson solver strategy (a NonLinearSolver '
                                  'instance, e.g. StandardNewton(), DampedNewton(), '
-                                 'JAXNewtonSolver()); default StandardNewton()',
+                                 'GminSteppingNewton(...)); default StandardNewton()',
                             default=None),
                   Parameter(name='linearsolver',
                             desc='Linear solver strategy (a LinearSolver instance, '
@@ -217,7 +217,7 @@ class Analysis(sim.Analysis):
         if not isinstance(solver, NonLinearSolver):
             raise TypeError(
                 "nrsolver must be a NonLinearSolver instance (e.g. StandardNewton(), "
-                "DampedNewton(), JAXNewtonSolver()), not %r" % (solver,))
+                "DampedNewton(), GminSteppingNewton(...)), not %r" % (solver,))
         return solver
 
     def _get_linearsolver(self):

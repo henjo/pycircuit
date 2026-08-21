@@ -641,3 +641,34 @@ def test_breakpoint_scan_is_bounded_per_element():
         assert any('breakpoints by t=' in str(x.message) for x in caught)
     finally:
         circuit_mod.default_toolkit = saved
+
+
+## F15 -- a failed backtracking search takes the LAST-TRIED (smallest) step
+## with its own residual, never the full step with a stale one.  Probe: a
+## residual landscape where every step from the minimum increases |F|, so the
+## search always fails; the solver must creep (least-bad damped steps), not
+## leap (full steps), and must report non-convergence honestly.
+
+def test_f15_damped_newton_failed_search_takes_smallest_step():
+    from pycircuit.circuit.nrsolver import DampedNewton
+    from pycircuit.circuit import numeric
+    from pycircuit.circuit.analysis import NoConvergenceError
+
+    evals = []
+
+    def eval_FJ(x):
+        evals.append(float(x[0]))
+        return np.array([1.0 + 100.0 * abs(x[0])]), np.array([[1.0]])
+
+    with pytest.raises(NoConvergenceError):
+        DampedNewton().solve_system(
+            np.zeros(1), eval_FJ, numeric, reltol=1e-3,
+            abstol=np.array([1e-12]), xtol=np.array([1e-6]), maxiter=5)
+
+    ## The Jacobian lies about the slope, so even damped iterates grow --
+    ## but the growth rate is the discriminator: full steps multiply |x| by
+    ## ~101 per outer iteration (|x| ~ 1e8 after 5), the least-bad 0.0625
+    ## step by ~6.3 (measured max ~2.8e3).  1e5 separates the regimes.
+    assert max(abs(v) for v in evals) < 1e5, \
+        'iterates ran away -- the failed search took full steps again: %r' \
+        % evals[-3:]

@@ -216,24 +216,32 @@ class DampedNewton(NonLinearSolver):
                 raise NoConvergenceError(f"Singular Jacobian: {str(e)}")
             
             alpha = 1.0
-            x_next = x + xdiff
+            x_full = x + xdiff
             if limiter is not None:
-                x_next = limiter(x_next, x)
-                xdiff = x_next - x
-                
-            # Backtracking line search
-            while alpha > 0.05:
-                x_test = x + alpha * xdiff
-                F_test, _ = eval_FJ(x_test)
-                if toolkit.sum(abs(F_test)) <= F_norm * (1.0 - 1e-4 * alpha):
-                    # Step accepted
-                    x_next = x_test
-                    F = F_test
-                    break
+                x_full = limiter(x_full, x)
+                xdiff = x_full - x
+
+            ## Backtracking line search -- F15 (doc/transient_review_260820.md).
+            ## On failure this used to take the FULL step (the candidate the
+            ## search had just proved worst), keep the residual of the PREVIOUS
+            ## iterate, and test convergence with |alpha*dx| at alpha ~ 0.031
+            ## against a step of |dx| -- a 32x-lenient test of a point whose
+            ## residual was never evaluated.  Now the step taken is always the
+            ## last one TRIED (the least-bad damped step on failure), its own
+            ## residual travels with it, and the convergence test measures the
+            ## step actually taken.
+            while True:
+                x_next = x + alpha * xdiff
+                F_next, _ = eval_FJ(x_next)
+                if toolkit.sum(abs(F_next)) <= F_norm * (1.0 - 1e-4 * alpha):
+                    break                      # Armijo satisfied
+                if alpha * 0.5 <= 0.05:
+                    break                      # floor: keep the smallest tried
                 alpha *= 0.5
-            
+            F = F_next
+
             I_scale = toolkit.dot(abs(J), abs(x_next)) + abs(F)
-            
+
             conv_x = toolkit.alltrue(abs(alpha * xdiff) < reltol * toolkit.maximum(abs(x_next), abs(x)) + xtol)
             conv_f = toolkit.alltrue(abs(F) < reltol * I_scale + abstol)
             
@@ -419,79 +427,10 @@ class SchurCoupledNewton(NonLinearSolver):
             
         raise NoConvergenceError(f"SchurCoupledNewton failed to converge after {maxiter} iterations.")
 
-class JAXNewtonSolver(NonLinearSolver):
-    """
-    A Pure JAX Newton-Raphson Solver.
-    Uses `jax.lax.while_loop` to compile the entire solution process into a single GPU kernel.
-    Only supports Dense matrices and full-JAX compatible circuits (no Python fallback elements).
-    """
-    
-    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None, linsolver=None):
-        if not toolkit.supports('autodiff'):
-            raise ValueError("JAXNewtonSolver requires the JAX toolkit (_jaxtoolkit.py).")
-            
-        import jax
-        import jax.numpy as jnp
-        
-        # We need a fallback or check to ensure eval_FJ is fully jittable.
-        # But we'll try to just JIT it and if it fails, it throws a Tracer error.
-        
-        def cond_fun(state):
-            x, xdiff, F_norm, iters = state
-            
-            # Convergence conditions
-            conv_f = F_norm < abstol
-            conv_x = jnp.all(jnp.abs(xdiff) < reltol * jnp.abs(x) + xtol)
-            
-            converged = jnp.logical_and(conv_f, conv_x)
-            not_converged = jnp.logical_not(converged)
-            under_max = iters < maxiter
-            
-            return jnp.logical_and(not_converged, under_max)
-            
-        def body_fun(state):
-            x, _, _, iters = state
-            
-            F, J = eval_FJ(x)
-            F_norm = jnp.sum(jnp.abs(F))
-            
-            # Simple dense linear solve (no scaler implementation for now)
-            xdiff = jnp.linalg.solve(J, -F)
-            
-            x_next = x + xdiff
-            if limiter is not None:
-                x_next = limiter(x_next, x)
-                xdiff = x_next - x
-                
-            return (x_next, xdiff, F_norm, iters + 1)
-            
-        # Compile the while loop
-        @jax.jit
-        def compiled_nr(x_init):
-            # Evaluate once to get initial F_norm and seed the loop state
-            F0, J0 = eval_FJ(x_init)
-            F_norm0 = jnp.sum(jnp.abs(F0))
-            xdiff0 = jnp.linalg.solve(J0, -F0)
-            
-            x_next = x_init + xdiff0
-            if limiter is not None:
-                x_next = limiter(x_next, x_init)
-                xdiff0 = x_next - x_init
-                
-            initial_state = (x_next, xdiff0, F_norm0, 1)
-            
-            # Run the compiled loop
-            final_state = jax.lax.while_loop(cond_fun, body_fun, initial_state)
-            return final_state
-            
-        final_x, final_xdiff, final_F_norm, final_iters = compiled_nr(x0)
-        
-        # In pure JAX, we can't raise Python exceptions inside the compiled loop easily.
-        # We check convergence after the loop finishes.
-        conv_f = final_F_norm < abstol
-        conv_x = jnp.all(jnp.abs(final_xdiff) < reltol * jnp.abs(final_x) + xtol)
-        if not (conv_f and conv_x):
-            raise NoConvergenceError(f"JAXNewtonSolver failed to converge after {maxiter} iterations.")
-            
-        return final_x, int(final_iters)
-
+## JAXNewtonSolver WAS DELETED HERE (F15, doc/transient_review_260820.md).
+## It was a second, unfixed copy of the stale-residual defect stage 9(e)
+## repaired in jaxtransient's own loop -- its converged test read the residual
+## of the iterate BEFORE the final update, so hitting maxiter raised even when
+## the returned point was converged -- and nothing in the package or the tests
+## ever constructed it.  The production JAX Newton is newton_inner_loop in
+## jaxtransient.py, which carries the per-row criteria (F6(b)).
