@@ -430,12 +430,30 @@ def collect_breakpoints(cir, tend):
     it is the difference between a wrong breakpoint list and a wall-clock hang, and
     only one of those is diagnosable from a stack trace.
     """
+    ## Bounded per element (review hygiene item, Phase 3): a periodic source
+    ## enumerates 4*f*tend events -- a 1 GHz sine over 1 ms is 4 million list
+    ## entries, materialised before the first step runs.  Past the cap the
+    ## element's later events are simply not breakpoints (the adaptive
+    ## controller still resolves them, at rejection cost), and the run says
+    ## so instead of silently thrashing.
+    MAX_EVENTS_PER_ELEMENT = 10000
     breakpoints = []
     for _inst_name, elem in cir.elements.items():
         if not hasattr(elem, 'next_event'):
             continue
+        n_events = 0
         t_event = 0.0
         while t_event < tend:
+            if n_events >= MAX_EVENTS_PER_ELEMENT:
+                warnings.warn(
+                    'transient: %r produced %d breakpoints by t=%g of tend=%g; '
+                    'later events from this element are not breakpoint-'
+                    'truncated (the step controller still resolves them, at '
+                    'extra rejections). A longer timestep or shorter tend '
+                    'avoids this.' % (type(elem).__name__,
+                                     MAX_EVENTS_PER_ELEMENT, t_event, tend),
+                    RuntimeWarning)
+                break
             nxt = elem.next_event(t_event)
             if nxt is None:
                 break
@@ -456,6 +474,7 @@ def collect_breakpoints(cir, tend):
             t_event = nxt
             if t_event <= tend:
                 breakpoints.append(t_event)
+                n_events += 1
             else:
                 break
     breakpoints.append(tend)

@@ -610,3 +610,30 @@ def test_f16_high_voltage_converges_with_clamp_off():
         assert abs(v[-1] - 400.0) < 1e-6      # the rail is actually reached
     finally:
         circuit_mod.default_toolkit = saved
+
+
+## Hygiene (Phase 3 item 22) -- collect_breakpoints is bounded per element:
+## a periodic source over a long tend used to materialise millions of list
+## entries before the first step ran.
+
+def test_breakpoint_scan_is_bounded_per_element():
+    pytest.importorskip('jax')
+    import warnings as w
+    from pycircuit.circuit import circuit as circuit_mod
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import collect_breakpoints
+    from pycircuit.circuit.elements import VSin
+    saved = circuit_mod.default_toolkit
+    circuit_mod.default_toolkit = jaxtoolkit
+    try:
+        c = SubCircuit()
+        c['vs'] = VSin('a', gnd, va=1.0, freq=1e6)   # 4M quarter-period events over 1s
+        c['R'] = R('a', gnd, r=1e3)
+        with w.catch_warnings(record=True) as caught:
+            w.simplefilter('always')
+            bps = collect_breakpoints(c, 1.0)
+        assert len(bps) <= 10001                     # cap + tend
+        assert bps[-1] == 1.0                        # tend always present
+        assert any('breakpoints by t=' in str(x.message) for x in caught)
+    finally:
+        circuit_mod.default_toolkit = saved
