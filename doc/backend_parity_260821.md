@@ -372,7 +372,10 @@ existing TLine tests before/after, per house rules.
   coupled + TLine now runs on BOTH backends.
 - **P20 `solve_batched`:** JAX-only by design — it is the branch's purpose. The CPU
   gets no imitation API; a Python loop over `Transient` is already expressible and
-  honest about its cost.
+  honest about its cost.  **Measured 2026-08-21** (doc/batched_sweep_260821.md):
+  on the rectifier corner sweep the crossover is ~16 lanes and the payoff 22.5×
+  at 512 lanes (54.7 s CPU loop vs 2.4 s warm batched), with the JAX wall nearly
+  flat in N — the purpose statement now carries its number.
 
 ## Roadmap items (neither backend has it; noting so silence isn't read as parity)
 
