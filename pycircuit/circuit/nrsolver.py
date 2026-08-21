@@ -251,6 +251,13 @@ class DampedNewton(NonLinearSolver):
             % (maxiter, ('; ' + detail) if detail else ''))
 
 
+## Both continuation wrappers below forward EVERY solver option, `linsolver`
+## included.  All six inner `solve_system` calls used to drop it, so a
+## caller-selected linear-solver strategy silently reverted to the default the
+## moment continuation engaged -- the third option-dropped-in-transit defect in
+## this file's lineage, after `row_names` was retrofitted the same way
+## (doc/transient_review_260820.md, F9).  If `solve_system` grows another
+## option, bundle them into one object rather than extending this list again.
 class GminSteppingNewton(NonLinearSolver):
     """
     Continuation Method: Gmin-Stepping Decorator.
@@ -266,7 +273,7 @@ class GminSteppingNewton(NonLinearSolver):
     def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None, linsolver=None):
         try:
             # First, attempt to solve the pure system without Gmin injection
-            return self.base_solver.solve_system(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names)
+            return self.base_solver.solve_system(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names, linsolver=linsolver)
         except NoConvergenceError:
             pass # Proceed to Gmin stepping
             
@@ -284,7 +291,7 @@ class GminSteppingNewton(NonLinearSolver):
                 return F_gmin, J_gmin
                 
             try:
-                x_curr, _ = self.base_solver.solve_system(x_curr, eval_FJ_with_gmin, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names)
+                x_curr, _ = self.base_solver.solve_system(x_curr, eval_FJ_with_gmin, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names, linsolver=linsolver)
             except NoConvergenceError as e:
                 ## STAGE 6 -- KEEP THE INNER DIAGNOSIS.  This used to discard it,
                 ## so the caller was told which continuation rung was last tried
@@ -294,7 +301,7 @@ class GminSteppingNewton(NonLinearSolver):
                     'Gmin Stepping failed at gmin=%s: %s' % (gmin, e)) from e
                 
         # Finally, solve the exact pure system using the guided initial guess
-        return self.base_solver.solve_system(x_curr, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names)
+        return self.base_solver.solve_system(x_curr, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names, linsolver=linsolver)
 
 class SourceSteppingNewton(NonLinearSolver):
     """
@@ -310,7 +317,7 @@ class SourceSteppingNewton(NonLinearSolver):
     def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None, linsolver=None):
         try:
             # Note: eval_FJ natively evaluates sources at 1.0
-            return self.base_solver.solve_system(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names)
+            return self.base_solver.solve_system(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names, linsolver=linsolver)
         except NoConvergenceError:
             pass # Proceed to source stepping
             
@@ -325,13 +332,13 @@ class SourceSteppingNewton(NonLinearSolver):
                 return self.source_callback(x, lambda_)
                 
             try:
-                x_curr, _ = self.base_solver.solve_system(x_curr, eval_FJ_with_source, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names)
+                x_curr, _ = self.base_solver.solve_system(x_curr, eval_FJ_with_source, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names, linsolver=linsolver)
             except NoConvergenceError as e:
                 ## STAGE 6 -- keep the inner diagnosis; see the Gmin note above.
                 raise NoConvergenceError(
                     'Source Stepping failed at lambda=%s: %s' % (lambda_, e)) from e
                 
-        return self.base_solver.solve_system(x_curr, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names)
+        return self.base_solver.solve_system(x_curr, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names, linsolver=linsolver)
 
 class SchurCoupledNewton(NonLinearSolver):
     """

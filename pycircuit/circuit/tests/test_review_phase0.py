@@ -40,3 +40,32 @@ def test_f18_get_diff_method_is_gone():
     tran = Transient(_rc())
     with pytest.raises(TypeError):
         tran.get_diff(np.zeros(2), np.zeros((2, 2)), method='euler')
+
+
+## F9 -- the continuation wrappers must forward a caller-selected linear
+## solver; all six inner call sites used to drop it silently.
+
+class _CountingLinsolver:
+    def __init__(self):
+        self.calls = 0
+
+    def solve(self, A, b, toolkit):
+        self.calls += 1
+        return toolkit.linearsolver(A, b)
+
+
+def test_f9_continuation_forwards_linsolver():
+    from pycircuit.circuit.nrsolver import GminSteppingNewton, StandardNewton
+    from pycircuit.circuit import numeric
+
+    ls = _CountingLinsolver()
+    ## A trivially convergent 1-unknown linear system: F(x) = x - 1.
+    def eval_FJ(x):
+        return np.asarray(x) - 1.0, np.eye(1)
+
+    x, _iters = GminSteppingNewton(StandardNewton()).solve_system(
+        np.zeros(1), eval_FJ, numeric, reltol=1e-6,
+        abstol=np.array([1e-12]), xtol=np.array([1e-12]), maxiter=20,
+        linsolver=ls)
+    assert abs(float(x[0]) - 1.0) < 1e-9
+    assert ls.calls > 0          # was 0: linsolver dropped at every call site
