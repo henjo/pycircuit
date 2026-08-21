@@ -816,7 +816,7 @@ class JAXTransient(Analysis):
         caller error rather than a silent override, because the step can never
         exceed it and accepting one quietly would discard the timestep asked for.
         """
-        max_step = getattr(self.par, 'max_step', None)
+        max_step = self.par.max_step
         if max_step is None:
             return timestep
         if max_step < timestep:
@@ -845,7 +845,7 @@ class JAXTransient(Analysis):
         to grow from there, which it does geometrically, so the ramp is paid off
         within a handful of steps.
         """
-        firststep = getattr(self.par, 'firststep', None)
+        firststep = self.par.firststep
         if firststep is None:
             return timestep * 1e-3
         if firststep <= 0:

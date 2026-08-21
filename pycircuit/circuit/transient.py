@@ -1,4 +1,3 @@
-# -*- coding: latin-1 -*-
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
@@ -89,7 +88,7 @@ def resample_uniform(t, x, npoints=None, step=None):
 
     Give exactly one of ``npoints`` or ``step``.
     """
-    import numpy
+    numpy = np
 
     t = numpy.asarray(t, dtype=float)
     x = numpy.asarray(x)
@@ -187,6 +186,14 @@ class TransientStatistics(object):
 
 class Transient(Analysis):
     """Simple transient analysis class.
+
+    NOT REENTRANT: one Transient object runs one solve at a time.  The run
+    threads state through the instance (_dt, _dt_last, _qlast, _iqlast,
+    _is_first_step, _q_cache, the cached controllers), and fang_timestep
+    communicates the trial step to get_diff via self._dt -- sharing an object
+    across threads or interleaving solves corrupts all of it silently.
+    (Review hygiene note; the fields are reset per run, so SEQUENTIAL solves
+    on one object are fine.)
 
     Time step is fixed.
 
@@ -480,7 +487,8 @@ class Transient(Analysis):
     ## `toolkit` defect recorded below, found by the dead-argument scan
     ## (doc/transient_review_260820.md, F18).  Passing it now fails loudly.
     def __init__(self, cir, toolkit=None, **kvargs):
-        self.parameters = super(Transient, self).parameters + self.parameters
+        ## (The class attribute already includes Analysis.parameters; the old
+        ## re-concatenation here double-included the base list -- hygiene.)
         ## `toolkit` was accepted and then DROPPED -- it was never forwarded, so
         ## `Transient(cir, toolkit=X)` silently ran on `cir.toolkit` instead.  It
         ## went unnoticed because callers pass the toolkit the circuit already has,
@@ -596,15 +604,15 @@ class Transient(Analysis):
     def get_diff(self, q, C):
         """Method used to calculate time derivative for charge storing elements (i_eq and g_eq)."""
         # Determine the active integrator based on step size variations
-        h_last = getattr(self, '_dt_last', self._dt)
+        h_last = self._dt_last if self._dt_last is not None else self._dt
         self.active_integrator = self.base_integrator.check_order_drop(
-            self._dt, h_last, getattr(self, '_is_first_step', False)
+            self._dt, h_last, self._is_first_step
         )
         
         iq, geq = self.active_integrator.compute_derivatives(
             q_curr=q, C_curr=C, h_curr=self._dt, 
             q_last=self._qlast, iq_last=self._iqlast, h_last=h_last,
-            is_first_step=getattr(self, '_is_first_step', False),
+            is_first_step=self._is_first_step,
             toolkit=self.toolkit
         )
         
@@ -644,7 +652,7 @@ class Transient(Analysis):
         whether the estimate is worth the complexity, rather than an assumption --
         see the outcome recorded under gate 3-1.
         """
-        firststep = getattr(self.par, 'firststep', None)
+        firststep = self.par.firststep
         if firststep is None:
             return timestep * 1e-3
         if firststep <= 0:
@@ -1119,7 +1127,7 @@ class Transient(Analysis):
         n = self.cir.n
         irefnode = self.irefnode
         maxiter = self.par.maxiter if maxiter is None else maxiter
-        hmin = getattr(self.par, 'minstep', 1e-18) if hmin is None else hmin
+        hmin = self.par.minstep if hmin is None else hmin
         if max_step is None:
             max_step = self.par.max_step
             if max_step is None or max_step <= 0:
@@ -1242,8 +1250,8 @@ class Transient(Analysis):
                 v_stage1 = v_lim
 
             ## --- STAGE 2: has the step size earned any attention?
-            h_hist = [hh for hh in (getattr(self, '_dt_last', None),
-                                    getattr(self, '_dt_last2', None))
+            h_hist = [hh for hh in (self._dt_last,
+                                    self._dt_last2)
                       if hh is not None]
             etol = self._lte_tolerance(ctrl, x_stage1, x_prev, h_hist)
 
@@ -1280,11 +1288,6 @@ class Transient(Analysis):
             ## controls -- and the mean was 5.9x the standard path's at 1e-6,
             ## getting worse as the tolerance tightened.
             ##
-            ## A held step whose error is over the band is reported to the caller,
-            ## which shrinks and retries, exactly as the standard path does with a
-            ## breakpoint-clamped step.  That is not the backup Figure 3 forbids:
-            ## the paper's "no backup due to LTE" is about the step it SOLVES for,
-            ## and this step's size was never its to choose.
             ## A held step whose error is over the band is reported so the
             ## caller can shrink and retry -- UNLESS the grid is locked.
             ##
@@ -1392,6 +1395,14 @@ class Transient(Analysis):
                 if denom <= 0.0 or denom != denom or denom == float('inf'):
                     h_new = h_want = h
                 else:
+                    ## TESTED AND REJECTED (rev-2 hygiene item): slicing
+                    ## these inputs to the integrator's degree -- to match
+                    ## `_lte_in_band`'s `err` -- collapsed the bordered method
+                    ## to 5x the steps (3117 vs 611 on the smooth agreement
+                    ## test).  The full-history gradient is self-consistent
+                    ## with `denom`'s full-history w'/w accumulation above,
+                    ## and that pairing, not degree-matching with `err`, is
+                    ## what the branch's measured record was tuned on.
                     i_ctrl, q_val, _d_unused = ctrl.lte_gradients(
                         x_stage1, x_hist, h_hist, h, etol)
                     f_lte = err - target
@@ -1444,12 +1455,6 @@ class Transient(Analysis):
             ## 4.4e-9 s, and left a maximum error of 1.465e-2 that was IDENTICAL
             ## at reltol 1e-5 and 1e-6 -- the signature of an error no tolerance
             ## governs.
-            ## Only a clamped SHRINK counts.  A step that wants to grow and is
-            ## held at the cap is in the normal state of every adaptive
-            ## controller -- growth is bounded by zero stability, not by the
-            ## error -- and treating that as unconverged made the run fail at
-            ## t=1e-9 s with h driven to 9.5e-16, since the opening steps always
-            ## want to grow faster than the cap allows.
             ## Only a thwarted SHRINK counts. A step that wants to grow and is
             ## held at the cap is the normal state of every adaptive controller
             ## -- growth is bounded by zero stability, not by the error -- and
@@ -1537,8 +1542,7 @@ class Transient(Analysis):
             return True, 0.0
         lte = solution_lte(x_curr, list(x_hist[:degree + 1]),
                            list(h_hist[:degree]), h)
-        import numpy as _np
-        err = float(_np.max(abs(lte) / etol))
+        err = float(np.max(abs(lte) / etol))
         return (gamma_min <= err <= gamma_max), err
 
     def residual_dh(self, x, t, h=None):
@@ -1569,7 +1573,7 @@ class Transient(Analysis):
         if h is None:
             h = self._dt
         q = self._q_at(x)
-        h_last = getattr(self, '_dt_last', h)
+        h_last = self._dt_last if self._dt_last is not None else h
         d_iq = self.active_integrator.companion_dh(q, self._qlast, h, h_last)
         d_u = self.cir.dudt(t, self.epar, analysis=self.par.analysis)
         return self.toolkit.array(d_iq, dtype=float) + \
@@ -1958,7 +1962,7 @@ class Transient(Analysis):
         ## steps for a result the caller explicitly asked to be uniform.  Caught by
         ## `test_transient_RLC` and three others, which is what the suite gate is for.
         dt = timestep if fixed_timestep else self._opening_step(timestep)
-        TRTOL = 7.0
+        TRTOL = self.LTERATIO   ## one bound, named once (hygiene)
         ## Bound the number of consecutive LTE rejections at a single time point.
         ## Near a source discontinuity (e.g. a VPulse corner) the truncation-error
         ## estimate can stay above tolerance for arbitrarily small steps while the
@@ -2133,8 +2137,8 @@ class Transient(Analysis):
                         % (t, timestep, dt * 0.25),
                         RuntimeWarning, stacklevel=3)
                 dt = dt * 0.25
-                if dt < getattr(self.par, 'minstep', 1e-18):
-                    raise RuntimeError(f"Transient solver failed to converge: timestep shrank below {getattr(self.par, 'minstep', 1e-18):g}s at t={t}")
+                if dt < self.par.minstep:
+                    raise RuntimeError(f"Transient solver failed to converge: timestep shrank below {self.par.minstep:g}s at t={t}")
                 continue
                 
             if not fixed_timestep:
@@ -2145,8 +2149,8 @@ class Transient(Analysis):
                     q_last_hist=self._qlast,
                     iq_last_hist=self._iqlast,
                     h_curr=dt,
-                    h_last=getattr(self, '_dt_last', dt),
-                    h_last2=getattr(self, '_dt_last2', None),
+                    h_last=self._dt_last if self._dt_last is not None else dt,
+                    h_last2=self._dt_last2,
                     no_history=self._no_history,
                     J=J,
                     active_integrator=self.active_integrator,
@@ -2189,8 +2193,8 @@ class Transient(Analysis):
                     reject_count += 1
                     point_retries += 1
                     dt = dt_next
-                    if dt < getattr(self.par, 'minstep', 1e-18):
-                        raise RuntimeError(f"Transient solver integration error: timestep shrank below {getattr(self.par, 'minstep', 1e-18):g}s at t={t}")
+                    if dt < self.par.minstep:
+                        raise RuntimeError(f"Transient solver integration error: timestep shrank below {self.par.minstep:g}s at t={t}")
                     continue
                 elif not accept:
                     ## STAGE 4b -- THE ESCAPE HATCH USED TO GROW 10x, WHICH IS THE
@@ -2301,7 +2305,7 @@ class Transient(Analysis):
         ## Done after the run rather than inside it, deliberately: the adaptive
         ## grid is what the error control is defined on, so the solver keeps
         ## choosing its own steps and only the REPORTED points change.
-        outputstep = getattr(self.par, 'outputstep', None)
+        outputstep = self.par.outputstep
         if outputstep is not None:
             _grid, _Xg = resample_uniform(self.result.sweep_values,
                                           self.result.x, step=outputstep)
@@ -2326,10 +2330,6 @@ class Transient(Analysis):
         if hasattr(self.cir, 'reset_state'):
             self.cir.reset_state(self.epar)
 
-        import numpy as np
-        from copy import copy
-        from pycircuit.circuit.analysis import CircuitResult
-        
         X = []
         self.irefnode = self.cir.get_node_index(refnode)
         n = self.cir.n
@@ -2410,8 +2410,8 @@ class Transient(Analysis):
                 _ctrl.set_relref(self.par.relref)
         was_break_step = False
         force_order_drop = False
-        TRTOL = 7.0
-        minstep = getattr(self.par, 'minstep', 1e-18)
+        TRTOL = self.LTERATIO   ## one bound, named once (hygiene)
+        minstep = self.par.minstep
         ## Resolve the 'auto' band sentinel ONCE, to Fang's values -- see
         ## _coupled_band and the Parameter declarations (F5).
         gamma_min, gamma_max, eta = self._coupled_band()
@@ -2643,7 +2643,7 @@ class Transient(Analysis):
         ## Done after the run rather than inside it, deliberately: the adaptive
         ## grid is what the error control is defined on, so the solver keeps
         ## choosing its own steps and only the REPORTED points change.
-        outputstep = getattr(self.par, 'outputstep', None)
+        outputstep = self.par.outputstep
         if outputstep is not None:
             _grid, _Xg = resample_uniform(self.result.sweep_values,
                                           self.result.x, step=outputstep)

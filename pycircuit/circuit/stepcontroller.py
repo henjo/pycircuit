@@ -198,6 +198,10 @@ class StepController(ABC):
             return self._ref_running
 
         ## sigglobal: collapse each unit group to its maximum and broadcast back.
+        ## NUMPY-ONLY ASSUMPTION (review hygiene): np.array on a traced value
+        ## raises TracerArrayConversionError -- loudly -- and no traced path
+        ## reaches this class (the JAX transient carries sig_max in its own
+        ## state instead), so the conversion is safe as long as that holds.
         running = self._ref_running
         out = np.array(running, dtype=float, copy=True)
         if n_nodes is None or n_nodes <= 0 or n_nodes >= len(out):
