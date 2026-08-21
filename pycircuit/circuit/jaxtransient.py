@@ -334,9 +334,32 @@ def tline_source_dudt(n, t_curr, tline_params, tline_indices,
     return out
 
 
+def _gmin_junction_rows(circuit):
+    """(ra[], rb[]) of every declared junction -- the P18 gmin ladder's
+    scatter targets.  No charge refusal here: that constraint is PCNR's
+    (its limited unknown must not split a charge evaluation); a parallel
+    conductance across a charge-storing junction is unconditionally fine,
+    and at DC the charge is inert anyway."""
+    from pycircuit.circuit.pcnr import pcnr_junctions
+    junctions = pcnr_junctions(circuit)
+    if not junctions:
+        return None
+    ra = jnp.asarray([r for _i, _e, r, _ in junctions], dtype=jnp.int32)
+    rb = jnp.asarray([r for _i, _e, _, r in junctions], dtype=jnp.int32)
+    return ra, rb
+
+
+## The continuation ladders -- static schedules, decades to EXACTLY zero.
+## Only the zero-rung solution may be accepted: residue in a committed
+## point is the P22 inconsistency-floor trap by its measured signature.
+GMIN_LADDER = (1e-2, 1e-4, 1e-6, 1e-8, 1e-10, 1e-12, 0.0)
+GSHUNT_LADDER = (1e-3, 1e-6, 1e-9, 1e-12, 0.0)
+
+
 def dc_operating_point(circuit, irefnode, n, params_tree=None,
                        reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100,
-                       analysis='dc'):
+                       analysis='dc', x0=None, gmin_rows=None, gmin=0.0,
+                       gshunt_nodes=0, gshunt=0.0):
     """The batched DC operating point -- P21, the roadmap's last refusal.
 
     ``F = i(x) + u(0, 'dc')``, ``J = G(x)``: exactly the CPU DC class's
@@ -349,7 +372,8 @@ def dc_operating_point(circuit, irefnode, n, params_tree=None,
     from ``uic=True`` (or wait for gmin continuation, P18); the raise at
     the call site says so.
     """
-    x0 = jnp.zeros(n)
+    if x0 is None:
+        x0 = jnp.zeros(n)
 
     def cond_fun(st):
         x, converged, iters = st
@@ -360,6 +384,22 @@ def dc_operating_point(circuit, irefnode, n, params_tree=None,
         F = circuit.i(x, params_tree=params_tree) \
             + circuit.u(0.0, analysis=analysis, params_tree=params_tree)
         J = circuit.G(x, params_tree=params_tree)
+        ## P18: junction-parallel gmin (the physical homotopy -- a leaky
+        ## diode; the linear subnetwork is untouched) and, separately, the
+        ## node-to-ground gshunt (SPICE3's diagonal stepping, the
+        ## singular-G rescue).  Both are static per rung; gmin/gshunt = 0
+        ## compiles them away.
+        if gmin_rows is not None and gmin > 0.0:
+            ra, rb = gmin_rows
+            vj = x[ra] - x[rb]
+            F = F.at[ra].add(gmin * vj)
+            F = F.at[rb].add(-gmin * vj)
+            J = _scatter_junction_G(J, ra, rb,
+                                    jnp.full(ra.shape, gmin), 1.0)
+        if gshunt > 0.0 and gshunt_nodes > 0:
+            idx = jnp.arange(gshunt_nodes)
+            F = F.at[idx].add(gshunt * x[idx])
+            J = J.at[idx, idx].add(gshunt)
         J_sub = jnp.delete(jnp.delete(J, irefnode, axis=0),
                            irefnode, axis=1)
         F_sub = jnp.delete(F, irefnode)
@@ -377,6 +417,54 @@ def dc_operating_point(circuit, irefnode, n, params_tree=None,
     x, converged, _iters = jax.lax.while_loop(
         cond_fun, body_fun, (x0, jnp.asarray(False), 0))
     return x, converged
+
+
+def dc_with_continuation(circuit, irefnode, n, n_nodes, params_tree=None,
+                         reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100,
+                         gmin_rows=None):
+    """P18: plain Newton, then the junction-gmin ladder, then the gshunt
+    ladder -- each rung seeded from the last, each ladder ending at
+    EXACTLY zero, and only a zero-rung converged solution reported as
+    converged.  All rungs are compiled unconditionally (small DC graphs);
+    `lax.cond` skips executing the ladders when the plain solve lands."""
+    def plain(x_seed):
+        return dc_operating_point(circuit, irefnode, n,
+                                  params_tree=params_tree, reltol=reltol,
+                                  abstol=abstol, xtol=xtol, maxiter=maxiter,
+                                  x0=x_seed)
+
+    x, conv = plain(None)
+
+    def run_ladder(x_conv):
+        x_in, conv_in = x_conv
+
+        def gmin_ladder(x_seed):
+            xs, cs = x_seed, jnp.asarray(False)
+            for g in GMIN_LADDER:
+                xs, cs = dc_operating_point(
+                    circuit, irefnode, n, params_tree=params_tree,
+                    reltol=reltol, abstol=abstol, xtol=xtol,
+                    maxiter=maxiter, x0=xs, gmin_rows=gmin_rows, gmin=g)
+            return xs, cs      # cs is the ZERO rung's verdict
+
+        def gshunt_ladder(x_seed):
+            xs, cs = x_seed, jnp.asarray(False)
+            for g in GSHUNT_LADDER:
+                xs, cs = dc_operating_point(
+                    circuit, irefnode, n, params_tree=params_tree,
+                    reltol=reltol, abstol=abstol, xtol=xtol,
+                    maxiter=maxiter, x0=xs, gshunt_nodes=n_nodes, gshunt=g)
+            return xs, cs
+
+        if gmin_rows is not None:
+            xg, cg = gmin_ladder(jnp.zeros(n))
+        else:
+            xg, cg = x_in, conv_in
+        ## gshunt only when everything else failed -- the crude rescue.
+        return jax.lax.cond(cg, lambda _: (xg, cg),
+                            lambda _: gshunt_ladder(jnp.zeros(n)), None)
+
+    return jax.lax.cond(conv, lambda xc: xc, run_ladder, (x, conv))
 
 
 def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tline_indices, eval_method='euler', reltol=1e-3, abstol=1e-6, xtol=1e-12, maxiter=50, params_tree=None, max_dv=jnp.inf, tline_dG=None, analysis='tran', provided_function=None):
@@ -2126,13 +2214,17 @@ class JAXTransient(Analysis):
             _iref = self.cir.get_node_index(refnode) \
                 if hasattr(self.cir, 'get_node_index') else refnode
 
+            _gmin_rows = _gmin_junction_rows(self.cir)
+
             def _lane_dc(p_tree):
-                return dc_operating_point(
-                    self.cir, _iref, _n, params_tree=p_tree,
+                return dc_with_continuation(
+                    self.cir, _iref, _n, len(self.cir.nodes),
+                    params_tree=p_tree,
                     reltol=self.par.reltol,
                     abstol=self._newton_abstol(_n),
                     xtol=self._newton_xtol(_n),
-                    maxiter=int(self.par.maxiter))
+                    maxiter=int(self.par.maxiter),
+                    gmin_rows=_gmin_rows)
 
             _dc_x0, _dc_conv = jax.jit(jax.vmap(_lane_dc))(
                 override_params_tree)
@@ -2140,9 +2232,11 @@ class JAXTransient(Analysis):
             if _bad.size:
                 raise NoConvergenceError(
                     'solve_batched: the DC operating point did not converge '
-                    'for lane(s) %s. The batched DC is a plain Newton with '
-                    'no limiting or PCNR; for a junction circuit start from '
-                    'uic=True, or wait for gmin continuation (P18).'
+                    'for lane(s) %s, even through the gmin and gshunt '
+                    'continuation ladders (P18). The circuit likely has no '
+                    'DC solution on these lanes (a floating node with no DC '
+                    'path stays singular at gshunt=0). Start from uic=True '
+                    'with explicit ic if the start state is known.'
                     % _bad.tolist())
 
 

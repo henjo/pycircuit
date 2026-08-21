@@ -266,12 +266,76 @@ class DampedNewton(NonLinearSolver):
 ## this file's lineage, after `row_names` was retrofitted the same way
 ## (doc/transient_review_260820.md, F9).  If `solve_system` grows another
 ## option, bundle them into one object rather than extending this list again.
+class JunctionGminSteppingNewton(NonLinearSolver):
+    """Continuation: junction-parallel gmin stepping -- P18's PRIMARY ladder.
+
+    `gmin` proper (industry vocabulary): a conductance in parallel with each
+    pn junction, ramped in decades and finished with a PURE solve -- the
+    deformed circuit is a physical leaky diode, the linear subnetwork is
+    untouched, and the homotopy tracks the physical branch.  Junction row
+    pairs come from `pcnr_junctions`; a circuit without declared junctions
+    passes straight through to the base solver.
+    """
+
+    def __init__(self, base_solver: NonLinearSolver, junction_rows):
+        self.base_solver = base_solver
+        self.junction_rows = junction_rows   # [(ra, rb), ...] or empty
+
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol,
+                     maxiter, limiter=None, scaler=None, row_names=None,
+                     linsolver=None):
+        try:
+            return self.base_solver.solve_system(
+                x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter,
+                limiter, scaler, row_names=row_names, linsolver=linsolver)
+        except NoConvergenceError:
+            if not self.junction_rows:
+                raise
+
+        import numpy as _np
+        x_curr = x0
+        for gmin in (1e-2, 1e-4, 1e-6, 1e-8, 1e-10, 1e-12):
+            def eval_FJ_with_gmin(x, _g=gmin):
+                F, J = eval_FJ(x)
+                F = _np.array(F, dtype=float, copy=True)
+                J = _np.array(J, dtype=float, copy=True)
+                for ra, rb in self.junction_rows:
+                    vj = x[ra] - x[rb]
+                    F[ra] += _g * vj
+                    F[rb] -= _g * vj
+                    J[ra, ra] += _g; J[ra, rb] -= _g
+                    J[rb, ra] -= _g; J[rb, rb] += _g
+                return F, J
+            try:
+                x_curr, _ = self.base_solver.solve_system(
+                    x_curr, eval_FJ_with_gmin, toolkit, reltol, abstol,
+                    xtol, maxiter, limiter, scaler, row_names=row_names,
+                    linsolver=linsolver)
+            except NoConvergenceError as e:
+                raise NoConvergenceError(
+                    'junction-gmin stepping failed at gmin=%s: %s'
+                    % (gmin, e)) from e
+        ## The zero rung: ONLY a pure converged solution may be returned --
+        ## gmin residue in an accepted operating point is the measured
+        ## P22 inconsistency-floor trap.
+        return self.base_solver.solve_system(
+            x_curr, eval_FJ, toolkit, reltol, abstol, xtol, maxiter,
+            limiter, scaler, row_names=row_names, linsolver=linsolver)
+
+
 class GminSteppingNewton(NonLinearSolver):
     """
-    Continuation Method: Gmin-Stepping Decorator.
-    
+    Continuation Method: diagonal conductance stepping.
+
+    INDUSTRY VOCABULARY NOTE (owner correction, P18): what this class ramps
+    is **gshunt** -- a node-to-ground (here: full-diagonal) conductance --
+    not `gmin`, which properly names the junction-parallel conductance
+    (see JunctionGminSteppingNewton).  The class name is kept for
+    compatibility; it is the SINGULAR-MATRIX rescue of the chain, tried
+    after the physical junction ladder.
+
     If the base solver fails to converge, this wrapper iteratively injects
-    a diagonal Gmin conductivity into the Jacobian to guide the solver 
+    a diagonal conductivity into the Jacobian to guide the solver 
     through highly non-linear regions.
     """
     

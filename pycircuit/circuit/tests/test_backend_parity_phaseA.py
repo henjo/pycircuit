@@ -888,20 +888,40 @@ def test_p21_batched_dc_operating_point():
             assert v[0] == pytest.approx(exact, rel=1e-6), (lane, v[0])
             assert v[-1] == pytest.approx(exact, rel=1e-4), (lane, v[-1])
 
-        ## The failure contract: 5 V across a junction at DC, from zeros,
-        ## with no limiting -- must raise naming the lanes, not hang or
-        ## seed from a non-solution.
+        ## P18 RE-DERIVED this half: the junction lanes that raised at P21
+        ## now CONVERGE through the gmin continuation ladder -- each lane
+        ## to the CPU-DC-with-limiting bias for ITS resistor (measured
+        ## 4.366857 / 4.384664 vs 4.366854 / 4.384664 at landing).
         c2 = SubCircuit()
         c2['vs'] = VS('a', gnd, v=5.0)
         c2['D'] = Diode('a', 'b')
         c2['R'] = R('b', gnd, r=1e3)
         c2['C'] = C('b', gnd, c=1e-9)
         tran2 = JAXTransient(c2, reltol=1e-5)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res2 = tran2.solve_batched(
+                gnd,
+                override_params_tree={'R': {'r': jnp.asarray([[1e3], [2e3]])}},
+                tend=1e-7, timestep=1e-9)
+        for lane, bias in ((0, 4.366854), (1, 4.384664)):
+            v = np.asarray(res2[lane].v('b'), float).reshape(-1)
+            assert v[0] == pytest.approx(bias, abs=1e-4), (lane, v[0])
+
+        ## The failure contract survives where it should: a floating node
+        ## with NO dc path stays singular at gshunt = 0, so the ladder
+        ## cannot end pure and the lanes raise honestly.
+        c3 = SubCircuit()
+        c3['vs'] = VS('a', gnd, v=1.0)
+        c3['C1'] = C('a', 'mid', c=1e-9)
+        c3['C2'] = C('mid', 'b', c=1e-9)
+        c3['R'] = R('b', gnd, r=1e3)
+        tran3 = JAXTransient(c3, reltol=1e-5)
         with pytest.raises(NoConvergenceError, match='lane'):
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
-                tran2.solve_batched(
+                tran3.solve_batched(
                     gnd,
                     override_params_tree={'R': {'r': jnp.asarray([[1e3], [2e3]])}},
-                    tend=1e-6, timestep=1e-7)
+                    tend=1e-7, timestep=1e-9)
     _with_jax(go)

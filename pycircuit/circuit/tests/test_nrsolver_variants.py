@@ -152,3 +152,75 @@ def test_sinkhorn_knopp_matrix_stochasticity():
     
     assert np.allclose(row_sums, 1.0, atol=1e-2)
     assert np.allclose(col_sums, 1.0, atol=1e-2)
+
+
+def test_junction_gmin_stepping_is_the_primary_ladder():
+    """P18: junction-parallel gmin (the proper `gmin`, owner vocabulary)
+    rescues the classic junction slam -- an exponential whose pure Newton
+    step from a zero seed is ~2.5e7 (divergence) -- by dominating the
+    early rungs and walking the seed in; the final solve is PURE (the
+    zero-rung rule: ladder residue in a committed point is the P22
+    inconsistency-floor trap).  A circuit without junctions passes
+    straight through untouched."""
+    import numpy as np
+    from pycircuit.circuit.nrsolver import JunctionGminSteppingNewton
+
+    seen_J00 = []
+
+    class MiniNewton(NonLinearSolver):
+        def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol,
+                         maxiter, limiter=None, scaler=None, row_names=None,
+                         linsolver=None):
+            x = np.asarray(x0, float).copy()
+            ## 120 iterations: a Newton walk on exp(40 v) advances ~25 mV
+            ## per iteration, and a rung overshoot walks back from the limexp
+            ## region (~55 iterations) before descending.  The
+            ## divergence guard at 1e3 catches the PURE first step (2.5e7)
+            ## without tripping on the walk.
+            for _ in range(120):
+                F, J = eval_FJ(x)
+                seen_J00.append(float(J[0, 0]))
+                dx = np.linalg.solve(J, -F)
+                x = x + dx
+                if np.max(np.abs(x)) > 1e3:
+                    raise NoConvergenceError('diverged')
+                if np.max(np.abs(dx)) < 1e-9:
+                    return x, 1
+            raise NoConvergenceError('maxiter')
+
+    def eval_FJ(x):
+        ## The junction slam: i = IS*(limexp(40*v)-1) driven by 1 mA.
+        ## limexp (linearized above arg=80) is what real device models do
+        ## -- a RAW exp overflows to inf/NaN on a rung overshoot and
+        ## Newton loops on NaN; the clamp keeps the walk-back finite.
+        ## Pure Newton from v=0: dx = 1e-3/4e-11 = 2.5e7 -> diverges.
+        a = 40.0 * x[0]
+        if a > 80.0:
+            e = np.exp(80.0) * (1.0 + (a - 80.0))
+            de = np.exp(80.0) * 40.0
+        else:
+            e = np.exp(a)
+            de = 40.0 * e
+        F = np.array([1e-12 * (e - 1.0) - 1e-3, x[1]])
+        J = np.array([[1e-12 * de, 0.0], [0.0, 1.0]])
+        return F, J
+
+    x_star = np.log(1e9 + 1.0) / 40.0
+    solver = JunctionGminSteppingNewton(MiniNewton(), [(0, 1)])
+    x, _ = solver.solve_system(np.zeros(2), eval_FJ, None, 1e-4,
+                               np.full(2, 1e-12), np.full(2, 1e-12), 120)
+    assert abs(x[0] - x_star) < 1e-6, (x[0], x_star)
+    ## The FINAL solve saw the pure model Jacobian (no injected gmin).
+    assert seen_J00[-1] == pytest.approx(4e-11 * np.exp(40.0 * x[0]),
+                                         rel=1e-9)
+    ## Early rungs were genuinely dominated by the injection.
+    assert max(seen_J00) >= 1e-2
+
+    ## No junctions -> pure passthrough: the base fails, the ladder must
+    ## re-raise without attempting rungs.
+    n_before = len(seen_J00)
+    with pytest.raises(NoConvergenceError):
+        JunctionGminSteppingNewton(MiniNewton(), []).solve_system(
+            np.zeros(2), eval_FJ, None, 1e-4, np.full(2, 1e-12),
+            np.full(2, 1e-12), 8)
+    assert len(seen_J00) - n_before <= 120

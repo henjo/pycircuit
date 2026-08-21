@@ -126,11 +126,28 @@ class DC(Analysis):
             dFdx = self.cir.G(x, self.epar)
             return f, dFdx
             
-        from pycircuit.circuit.nrsolver import GminSteppingNewton, SourceSteppingNewton
-        
+        from pycircuit.circuit.nrsolver import (GminSteppingNewton,
+                                                 JunctionGminSteppingNewton,
+                                                 SourceSteppingNewton)
+        from pycircuit.circuit.pcnr import pcnr_junctions
+
+        ## P18 chain, physical-first: junction-gmin (the proper `gmin`,
+        ## tracking the physical branch), then the diagonal/gshunt rescue,
+        ## then source stepping.  Junction rows are reduced-system indices:
+        ## the solve runs with the reference row removed, so rows above
+        ## irefnode shift down by one (and the reference node itself cannot
+        ## be a junction row it makes sense to perturb).
+        _jrows = []
+        for _i, _e, _ra, _rb in pcnr_junctions(self.cir):
+            if self.irefnode in (_ra, _rb):
+                continue
+            _jrows.append((_ra - (_ra > self.irefnode),
+                           _rb - (_rb > self.irefnode)))
+
         base_solver = self._get_nrsolver()
-        gmin_solver = GminSteppingNewton(base_solver)
-        solver_chain = SourceSteppingNewton(gmin_solver, refnode_removed(source_callback, self.irefnode, self.toolkit))
+        jgmin_solver = JunctionGminSteppingNewton(base_solver, _jrows)
+        gshunt_solver = GminSteppingNewton(jgmin_solver)
+        solver_chain = SourceSteppingNewton(gshunt_solver, refnode_removed(source_callback, self.irefnode, self.toolkit))
 
         try:
             x = self._newton(func, x0, solver_chain)

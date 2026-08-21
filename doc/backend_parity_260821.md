@@ -397,6 +397,41 @@ existing TLine tests before/after, per house rules.
   existing traced Newton, vmapped per lane for free), CPU DC second, the
   failed-time-point variant last (history rings must never see ladder-era
   iterates).
+
+  > **EXECUTED 2026-08-21**, all three phases, with one scope finding:
+  >
+  > *Batched DC* — `dc_with_continuation`: plain Newton, then the
+  > junction-gmin ladder (decades 1e-2 → 1e-12 → **0**), then the gshunt
+  > ladder, `lax.cond`-skipped when plain lands; vmapped per lane.  The
+  > P21 junction-lane raise became a rescue: the rectifier lanes that
+  > raised yesterday now start at their true per-lane bias (4.366857 /
+  > 4.384664 vs CPU-DC-with-limiting 4.366854 / 4.384664) — and the raise
+  > survives where it must (a floating node with no DC path is singular at
+  > gshunt=0; gated).
+  >
+  > *CPU DC* — the chain already existed (`GminSteppingNewton` +
+  > `SourceSteppingNewton`, final pure solve and all); the P18 deltas were
+  > vocabulary (its "Gmin" is **gshunt** by the owner's correction —
+  > documented in the class, name kept for compatibility) and the missing
+  > PRIMARY stage: `JunctionGminSteppingNewton` (proper `gmin`, rows from
+  > `pcnr_junctions`, reduced-system indices) now runs before it.  The
+  > unit gate walks the classic junction slam (pure first step 2.5e7,
+  > limexp-clamped model) through the ladder to the exact solution with a
+  > pure final Jacobian asserted.
+  >
+  > *Transient failed point* — the standard CPU path's minstep exhaust now
+  > attempts ONE chain-wrapped re-solve (junction-gmin → gshunt, no source
+  > stepping: scaling u(t) mid-transient would scale the companion
+  > history too) before raising; only a pure converged point flows into
+  > the accept machinery, counted in `statistics.gmin_rescues`.  SCOPE
+  > FINDING, recorded honestly: no legitimate triggering circuit could be
+  > fabricated — the CPU's limiting + retry machinery genuinely covers the
+  > space (which is why the review left P18 unscheduled), and the one
+  > fabrication attempt (neutralizing `cir.limit`) invalidated itself by
+  > freezing `Diode._vlim`, which the model's evaluation depends on.  The
+  > mechanism is unit-gated; coupled-path and JAX-transient point rescues
+  > are recorded reconsider-ifs (the latter would put the ladder inside
+  > the traced step).
 - **P21** batched DC operating point, so `solve_batched` can start from bias. The
   loud `uic=True` refusal stays the contract until then.
 

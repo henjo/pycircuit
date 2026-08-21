@@ -144,6 +144,7 @@ class TransientStatistics(object):
 
     __slots__ = ('accepted_steps', 'rejected_steps', 'newton_iterations',
                  'force_accepts', 'order_drops', 'breakpoints_hit',
+                 'gmin_rescues',
                  'min_step', 'max_step', 'solve_seconds', 'total_seconds')
 
     def __init__(self):
@@ -153,6 +154,8 @@ class TransientStatistics(object):
         self.force_accepts = 0
         self.order_drops = 0
         self.breakpoints_hit = 0
+        ## P18: failed time points recovered by the continuation ladder.
+        self.gmin_rescues = 0
         self.min_step = None
         self.max_step = None
         self.solve_seconds = 0.0
@@ -650,6 +653,25 @@ class Transient(Analysis):
 
         from pycircuit.circuit.nrsolver import NoConvergenceError
         solver = self._get_nrsolver()
+        if getattr(self, '_continuation_rescue', False):
+            ## P18 phase 3: the failed-time-point rescue wraps the solver
+            ## in the junction-gmin -> gshunt chain for exactly one point.
+            ## No source stepping here: scaling u(t) mid-transient would
+            ## scale the integrator's companion history too -- ill-posed.
+            ## Both ladders end with a PURE solve, so an accepted rescued
+            ## point carries no residue (the P22 rule).  Junction rows are
+            ## reduced-system indices, as in DC.
+            from pycircuit.circuit.nrsolver import (
+                GminSteppingNewton, JunctionGminSteppingNewton)
+            from pycircuit.circuit.pcnr import pcnr_junctions
+            _jrows = []
+            for _i, _e, _ra, _rb in pcnr_junctions(self.cir):
+                if self.irefnode in (_ra, _rb):
+                    continue
+                _jrows.append((_ra - (_ra > self.irefnode),
+                               _rb - (_rb > self.irefnode)))
+            solver = GminSteppingNewton(
+                JunctionGminSteppingNewton(solver, _jrows))
         scaler = self._get_scaler()
         linsolver = self._get_linearsolver()
         try:
@@ -2363,8 +2385,33 @@ class Transient(Analysis):
                         RuntimeWarning, stacklevel=3)
                 dt = dt * 0.25
                 if dt < self.par.minstep:
-                    raise RuntimeError(f"Transient solver failed to converge: timestep shrank below {self.par.minstep:g}s at t={t}")
-                continue
+                    ## P18 phase 3: one continuation rescue before giving
+                    ## up -- the point is re-solved through the
+                    ## junction-gmin -> gshunt chain at minstep, and only
+                    ## a PURE converged solution flows on into the normal
+                    ## accept machinery below.
+                    dt = self.par.minstep
+                    self._dt = dt
+                    next_t = t + dt
+                    self._continuation_rescue = True
+                    try:
+                        _t0 = time.perf_counter()
+                        x, feval, J, f = self.solve_timestep(
+                            X[-1], next_t,
+                            provided_function=provided_function)
+                        self.statistics.solve_seconds += \
+                            time.perf_counter() - _t0
+                        self.statistics.gmin_rescues += 1
+                    except NoConvergenceError as e:
+                        raise RuntimeError(
+                            'Transient solver failed to converge: timestep '
+                            'shrank below %gs at t=%s, and the gmin/gshunt '
+                            'continuation could not rescue the point: %s'
+                            % (self.par.minstep, t, e))
+                    finally:
+                        self._continuation_rescue = False
+                else:
+                    continue
                 
             if not fixed_timestep:
                 accept, dt_next = self.step_controller.evaluate_step(
