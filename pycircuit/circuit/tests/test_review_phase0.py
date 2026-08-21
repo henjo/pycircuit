@@ -622,12 +622,16 @@ def test_breakpoint_scan_is_bounded_per_element():
     from pycircuit.circuit import circuit as circuit_mod
     from pycircuit.circuit.toolkit import jaxtoolkit
     from pycircuit.circuit.jaxtransient import collect_breakpoints
-    from pycircuit.circuit.elements import VSin
+    from pycircuit.circuit.elements import VPulse
     saved = circuit_mod.default_toolkit
     circuit_mod.default_toolkit = jaxtoolkit
     try:
         c = SubCircuit()
-        c['vs'] = VSin('a', gnd, va=1.0, freq=1e6)   # 4M quarter-period events over 1s
+        ## ~5 events/us over 1 s = ~5M events without the cap.  (VSin's
+        ## next_event returns inf on this path -- pulses are the event
+        ## generators here.)
+        c['vs'] = VPulse('a', gnd, v1=0, v2=1, td=1e-7, tr=1e-7, tf=1e-7,
+                         pw=4e-7, per=1e-6)
         c['R'] = R('a', gnd, r=1e3)
         with w.catch_warnings(record=True) as caught:
             w.simplefilter('always')
