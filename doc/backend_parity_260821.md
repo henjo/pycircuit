@@ -652,6 +652,48 @@ existing TLine tests before/after, per house rules.
   > dominated by refinement rungs after repeated maxiter failures);
   > the prototype lives in the session record, the numbers here.
 
+  **The still-open sibling: the JAX transient-point rescue** — recorded
+  here in full so the deferral is a decision, not an omission.
+
+  *Why the CPU rescue cannot be ported as-is.*  The CPU rescue is Python
+  control flow: Newton failure is an exception, caught per time point;
+  below `minstep` the loop swaps in a different solver object
+  (`_rescue_solver`) and runs the ladder — try/except, dynamic rung
+  counts, data-dependent branching, all decided at runtime in the
+  interpreter.  The JAX loop (`outer_time_loop`) is a `lax.while_loop`
+  traced ONCE into a single XLA program: no exceptions, no runtime
+  choice of code path.  "Newton failed" is a boolean in the traced
+  state; the compiled body reacts only through `jnp.where` (shrink dt)
+  and, at the dt floor, force-accepts and exits the chunk (the P22
+  early exit) — so failure is observable from Python only at CHUNK
+  granularity, after the compiled program has already given up.
+
+  *What a port would require.*  The ladder compiled INTO the step body:
+  behind a `lax.cond` on the failure flag, the adaptive rung driver (a
+  `lax.while_loop`) wrapping the per-rung Newton (another
+  `lax.while_loop`), with the gmin/gshunt/Ψtc deformation terms, nested
+  inside the outermost time loop and vmapped across lanes.  The DC side
+  already made this move (`dc_with_continuation` IS the ladder in
+  traced code) — but there it sits at top level and runs once per lane;
+  here it would be three loops deep and present in every compiled step
+  of every run.
+
+  *Why it stays deferred* — three costs against no demonstrated need:
+  (1) compile-time and graph size — the ladder traced into the hottest
+  kernel of the backend whether or not any point ever fails; (2) vmap
+  semantics — one lane entering a 60-rung rescue makes every lane pay
+  (vmapped `while_loop`s run until ALL lanes' conditions are false —
+  the death-march hazard the P22 chunk exit specifically engineered
+  around); (3) the P18 scope finding — no legitimate circuit reaching
+  the rescue could be fabricated even on the CPU, where experimenting
+  is cheap.
+
+  *The trigger that reopens it,* stated concretely: a real JAX
+  transient run hitting the forced-non-converged chunk exit on a
+  circuit the CPU path CAN complete via its rescue.  Until then the
+  honest contract is today's: the JAX run fails loudly at the chunk
+  boundary, and the CPU backend is the fallback for that circuit.
+
 ---
 
 ## Suggested order
