@@ -204,8 +204,9 @@ class Transient(Analysis):
     default step cap, the same tolerances, band, `relref` modes, `uic`/`ic`
     machinery (the JAX class binds these methods verbatim), `outputstep`,
     and `provided_function`.  The coupled research path (`coupled_lte=True`,
-    Fang DAC 2013) and PCNR run on both backends; the coupled path defaults
-    to Euler on purpose -- its step law and measured record are order-1.
+    Fang DAC 2013) and PCNR run on both backends, sharing the Gear-2
+    default since P22's state-row mask (eq (6) measured on state rows
+    only; algebraic rows are slaved through the Jacobian).
     CPU-only, with cause: trapezoidal integration (a correct VARIABLE-step
     trap estimator exists only here), the coupled 'bordered' branch, and the
     `nrsolver`/`scaler`/`linearsolver` strategy objects -- per-iteration
@@ -262,9 +263,8 @@ class Transient(Analysis):
     ## * Implement automatic timestep adjustment, using difference between
     ##   BE and trapezoidal as a measure of the error.
     ##   Reference: "Time Step Control in Transient Analysis", by SHUBHA VIJAYCHAND
-    def _get_integrator(self, coupled=False):
-        from pycircuit.circuit.integrator import (Integrator, EulerIntegrator,
-                                                  Gear2Integrator)
+    def _get_integrator(self):
+        from pycircuit.circuit.integrator import (Integrator, Gear2Integrator)
         integrator = getattr(self.par, 'integrator', None)
         if integrator is None:
             ## P6 OWNER DECISION (2026-08-21): Gear-2 is the shipped default,
@@ -275,18 +275,19 @@ class Transient(Analysis):
             ## estimator work of stages 4g/4i was built for it; the
             ## conformance harness pins the pair.
             ##
-            ## THE COUPLED PATH KEEPS EULER as its own default: Fang's step
-            ## law, its acceptance-band record, and the 127/127 cross-backend
-            ## step parity were all derived with order-1 companions.  Landing
-            ## Gear-2 underneath it was measured to livelock the coupled
-            ## rectifier (NoConvergenceError at t=1.25e-4, h collapsed to
-            ## 6.3e-12) and to break the step parity (96 vs 127).  An
-            ## EXPLICIT integrator is honoured on either path -- this guards
-            ## only what the default reaches.  Retiring this carve-out is
-            ## roadmap item P22 (doc/backend_parity_260821.md): re-derive
-            ## the coupled estimator at order 2, then flip both backends'
-            ## coupled default in one commit.
-            return EulerIntegrator() if coupled else Gear2Integrator()
+            ## P22 RETIRED THE COUPLED EULER CARVE-OUT (same day): the
+            ## Gear-2 coupled livelock traced to eq (6) being measured on
+            ## ALGEBRAIC rows -- the rectifier's source-current row carries
+            ## the diode's dq/dt through KCL, its accepted value holds the
+            ## OLD grid's derivative convention, and the deviation floor
+            ## (2.5e-6 A against etol 3.6e-7) was h-independent.  The
+            ## state-row mask (_state_row_mask) retires that whole class;
+            ## with it, coupled+Gear-2 completes the rectifier in 259
+            ## points against Euler's 769 at the same accuracy (9.7e-3 vs
+            ## 9.9e-3 against a fine reference).  The `coupled` parameter
+            ## the carve-out introduced is GONE -- the dead-knob scan
+            ## flagged it the moment it stopped being read.
+            return Gear2Integrator()
         if not isinstance(integrator, Integrator):
             raise TypeError(
                 "integrator must be an Integrator instance (e.g. EulerIntegrator(), "
@@ -1604,7 +1605,46 @@ class Transient(Analysis):
         paths are scored on the same scale."""
         ref = ctrl._reference(x_curr, x_last, not h_hist,
                               len(self.cir.nodes), self.toolkit)
-        return self.LTERATIO * (self.par.reltol * ref + self._lte_abstol_vector())
+        etol = self.LTERATIO * (self.par.reltol * ref
+                                + self._lte_abstol_vector())
+        ## P22: eq (6) over the STATE rows only -- an infinite tolerance on
+        ## algebraic rows removes them from the band test, the controlling-
+        ## node argmax, AND bordered's lte_gradients through this one
+        ## mechanism, so the two step-correction branches keep measuring the
+        ## same problem.  See _state_row_mask for the derivation and the
+        ## measured livelock this retires.
+        ## 1e30, not inf: lte_gradients differentiates 1/etol terms, and an
+        ## inf there turns a masked row's gradient into 0*inf = NaN.
+        mask = getattr(self, '_lte_state_mask', None)
+        if mask is not None:
+            etol = np.where(mask, etol, 1e30)
+        return etol
+
+    def _state_row_mask(self, x_ref):
+        """True where the unknown participates in ANY charge -- P22.
+
+        Fang's eq (6) is a truncation estimate for the DIFFERENTIATED
+        variables of the DAE; rows whose unknown appears in no charge (zero
+        row AND zero column of C) are algebraic -- Lagrange-multiplier
+        currents of voltage-defining branches, purely resistive node
+        voltages -- and are slaved to the states through the Jacobian, not
+        integrated.  Measuring eq (6) on them measures conventions, not
+        truncation: the rectifier's source-current row carries the diode's
+        dq/dt through KCL, its accepted value holds the OLD grid's
+        derivative convention, the re-solve computes the NEW grid's, and
+        the deviation floor (measured 2.5e-6 A against etol 3.6e-7) is
+        h-independent -- the band can never be satisfied and the coupled
+        run livelocks (the Gear-2 rectifier trace behind P22; the TLine
+        campaign's from-zero kinks were the same class on port rows).
+
+        Structural, from C at the seed point; a nonlinear charge whose C
+        row vanishes AT the seed but not elsewhere would be misclassified
+        -- accepted for now, recorded here, revisit if a circuit shows it.
+        """
+        C = self.toolkit.toMatrix(self.cir.C(x_ref, self.epar))
+        Ca = np.abs(np.asarray(C, dtype=float))
+        mask = (Ca.sum(axis=0) + Ca.sum(axis=1)) > 0.0
+        return mask
 
     def _lte_in_band(self, ctrl, x_curr, x_hist, h_hist, h, etol,
                      gamma_min, gamma_max):
@@ -2436,7 +2476,9 @@ class Transient(Analysis):
                 x0 = self._solve_operating_point(refnode)
 
         x = x0
-        self.base_integrator = self._get_integrator(coupled=True)
+        ## P22: the state-row mask for eq (6), built once at the seed.
+        self._lte_state_mask = self._state_row_mask(x0)
+        self.base_integrator = self._get_integrator()
         hist_len = max(2, self.base_integrator.get_required_history())
         q0 = self.cir.q(x, self.epar)
         self._qlast = self.toolkit.array([q0 for _ in range(hist_len)])

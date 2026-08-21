@@ -725,7 +725,7 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
                     params_tree=None, gamma_min=0.7, gamma_max=3.0, eta=0.15,
                     dt_min=1e-18, dt_max=jnp.inf, pcnr_meta=None,
                     pcnr_VT=0.025, tline_dG=None, analysis='tran',
-                    provided_function=None):
+                    provided_function=None, state_mask=None):
     from pycircuit.circuit._lte_kernels import (step_for_error_ratio,
                                                 euler_companion_dh,
                                                 bdf2_companion_dh)
@@ -811,7 +811,23 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
         ## coupled estimator, not before.
         ref = jnp.maximum(state.sig_max, jnp.max(jnp.abs(x1)))
         etol = trtol * (reltol * ref + lte_abstol)
+        ## P22: eq (6) over the STATE rows only, same mechanism as the CPU's
+        ## _lte_tolerance -- algebraic rows (zero row AND column of C) carry
+        ## grid-convention deviations with an h-independent floor, measured
+        ## as the Gear-2 rectifier livelock on the source-current row.  1e30
+        ## rather than inf keeps every downstream gradient finite.
+        if state_mask is not None:
+            etol = jnp.where(state_mask, etol, 1e30)
         err = jnp.max(jnp.abs(lte) / etol)
+        ## NaN -> inf, found by the P22 mask port: a diverging cold-start
+        ## Newton makes lte NaN on the state rows, and with the algebraic
+        ## rows masked to ~0 the max is NaN -- every band predicate then
+        ## reads False, fang's h-update propagates the NaN, and the outer
+        ## loop can neither accept nor reach the dt floor: an in-trace
+        ## livelock.  inf turns it into the unmasked path's deterministic
+        ## hard shrink toward the floor, where the forced-accept escape and
+        ## the post-chunk non-convergence raise take over.
+        err = jnp.where(jnp.isfinite(err), err, jnp.inf)
         eps_ok = jnp.logical_and(gamma_min <= err, err <= gamma_max)
 
         conv_x = jnp.all(jnp.abs(dx0)
@@ -1111,7 +1127,7 @@ def pcnr_controller_jacobian(circuit, state, x, v_lim, j_ra, j_rb, j_IS, VT,
     return _scatter_junction_G(J, j_ra, j_rb, g_l, +1.0)
 
 
-def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15, pcnr_meta=None, pcnr_VT=0.025, tline_dG=None, analysis='tran', s_gamma_min=0.0, s_gamma_max=1.0, s_eta=jnp.inf, fixed_timestep=False, grid_dt=None, relref='sigglobal', n_nodes=None, provided_function=None):
+def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15, pcnr_meta=None, pcnr_VT=0.025, tline_dG=None, analysis='tran', s_gamma_min=0.0, s_gamma_max=1.0, s_eta=jnp.inf, fixed_timestep=False, grid_dt=None, relref='sigglobal', n_nodes=None, provided_function=None, state_mask=None):
 
     ## The same epsilon `calculate_next_dt` uses to decide a breakpoint is "already
     ## reached".  They disagreed: after 500 steps of 1e-5 the accumulated `t` sits
@@ -1124,7 +1140,21 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
     def time_cond(state: TransientState):
         under_time = state.t < tend - t_eps
         under_chunk = state.step_idx < chunk_size
-        return jnp.logical_and(under_time, under_chunk)
+        ## A forced NON-converged accept is already an unconditional raise
+        ## after the chunk (stage 9(e)) -- no run continues past one -- so
+        ## the chunk exits the moment it happens instead of marching to
+        ## chunk_size at the dt floor first.  P22's mask port measured why
+        ## this matters: with the algebraic rows masked, a cold-start
+        ## circuit whose Newton fails at every h reached the floor honestly
+        ## and then ground out 500 forced steps at ~1 s each on GPU (the
+        ## coupled point is ~100 serial kernel launches per attempt) before
+        ## the raise -- an effective hang.  Pre-mask, the algebraic-row
+        ## error was ACCIDENTALLY load-bearing as a step governor that
+        ## rescued the Newton; the mask removed the accident, this exit
+        ## replaces it with the deliberate escape.
+        alive = state.n_forced_nonconverged == 0
+        return jnp.logical_and(jnp.logical_and(under_time, under_chunk),
+                               alive)
 
     def time_body(state: TransientState):
         if coupled:
@@ -1151,7 +1181,7 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 gamma_min=gamma_min, gamma_max=gamma_max, eta=eta,
                 dt_min=dt_min, dt_max=dt_max, pcnr_meta=pcnr_meta,
                 pcnr_VT=pcnr_VT, tline_dG=tline_dG, analysis=analysis,
-                provided_function=provided_function)
+                provided_function=provided_function, state_mask=state_mask)
             ## Re-enter the shared accept machinery with fang's verdict: the
             ## solved h is both the step taken and (clipped) the next guess --
             ## "the solved step carries forward" is the method's whole point.
@@ -1317,9 +1347,19 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
             ## it exactly.  `tend` is itself in `t_breaks_array`, which is why the
             ## overshoot showed up at the end of every run.
             if coupled:
-                ## The solved step carries forward; breakpoint truncation for
-                ## the NEXT point happens at the next fang entry.
-                next_dt = jnp.clip(state.dt, dt_min, dt_max)
+                ## The SOLVED step carries forward; breakpoint truncation for
+                ## the NEXT point happens at the next fang entry.  Solved is
+                ## the operative word (P22's mask port measured the hole): a
+                ## NON-converged fang's h is not a solved h -- with the band
+                ## below tolerance it GROWS within the point, so a forced
+                ## floor-accept came back at ~2x dt_min, the at_floor escape
+                ## went un-sticky, and the run crawled at ~100 fang
+                ## iterations per 1e-18 s -- an effective hang where the
+                ## unmasked path reached its post-chunk non-convergence
+                ## raise in seconds.  A forced accept keeps the floor.
+                next_dt = jnp.where(nr_state.converged,
+                                    jnp.clip(state.dt, dt_min, dt_max),
+                                    jnp.asarray(dt_min))
             elif fixed_timestep:
                 ## P9: THE GRID WINS.  Breakpoints do not move it (the CPU's
                 ## stage 4h measured a VPulse run collapsing 30 -> 292 steps
@@ -1437,11 +1477,21 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
             ## circuit never occupied, so a fixed cut is used instead.
             lte_shrink = jnp.clip(error_ratio ** (-1.0 / order_p1), 0.1, 0.9)
             shrink = jnp.where(nr_state.converged, lte_shrink, 0.25)
+            retry_dt = jnp.maximum(state.dt * shrink, dt_min)
             if coupled:
                 ## The CPU coupled path's outer retry: h *= 0.25 whatever the
-                ## failure flavour (Newton or held-step LTE).
-                shrink = jnp.asarray(0.25)
-            retry_dt = jnp.maximum(state.dt * shrink, dt_min)
+                ## failure flavour (Newton or held-step LTE) -- applied to
+                ## the ENTRY h, not to fang's returned h.  fang GROWS h
+                ## within the point when the (masked) band reads the error
+                ## as tiny, by up to MAX_GROWTH=5x; shrinking the grown h by
+                ## 4x nets a 1.25x GROWTH per reject cycle, so a cold-start
+                ## circuit whose Newton fails at every h never reached the
+                ## dt floor where the forced-accept escape lives -- an
+                ## in-trace livelock the CPU cannot express (its retry loop
+                ## is Python-bounded at 10 attempts).  Measured behind
+                ## P22's mask port; the mask only made it reachable.
+                retry_dt = jnp.maximum(
+                    jnp.minimum(state.dt, h_entry) * 0.25, dt_min)
             ## P8: a too-accurate rejection retries LARGER (the CPU's eq (15)
             ## lower bound); grow_dt's guards above ensure it genuinely grows.
             retry_dt = jnp.where(too_accurate, grow_dt, retry_dt)
@@ -1734,6 +1784,15 @@ class JAXTransient(Analysis):
     _descendant_has_ic = _CPU._descendant_has_ic
     del _CPU
 
+    def _jax_state_row_mask(self, x_ref):
+        """P22: the CPU's _state_row_mask, computed numpy-side at trace
+        prep -- True where the unknown participates in any charge; algebraic
+        rows get a 1e30 tolerance in fang's band so eq (6) measures states
+        only.  Structural at the seed point, same caveat as the CPU's."""
+        C = np.abs(np.asarray(self.cir.C(jnp.asarray(np.asarray(x_ref,
+                                                                dtype=float)))))
+        return jnp.asarray((C.sum(axis=0) + C.sum(axis=1)) > 0.0)
+
     def _relref(self):
         """Validated relref mode -- P7."""
         mode = self.par.relref
@@ -2015,12 +2074,14 @@ class JAXTransient(Analysis):
         
         _gm, _gx, _eta = self._coupled_band()
         _sgm, _sgx, _seta = self._standard_band()
+        _state_mask = (self._jax_state_row_mask(self._initial_state(refnode))
+                       if self.par.coupled_lte else None)
         _pcnr_meta, _pcnr_VT = self._pcnr_setup()
 
         def run_chunk(s, p_tree):
             return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method=self._eval_method(), params_tree=p_tree, reltol=self.par.reltol, abstol=self._newton_abstol(n),
                                    xtol=self._newton_xtol(n),
-                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis, s_gamma_min=_sgm, s_gamma_max=_sgx, s_eta=_seta, relref=self._relref(), n_nodes=len(self.cir.nodes),
+                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis, s_gamma_min=_sgm, s_gamma_max=_sgx, s_eta=_seta, relref=self._relref(), n_nodes=len(self.cir.nodes), state_mask=_state_mask,
                                    lte_reltol=self.par.reltol,
                                    lte_abstol=self._lte_abstol(n),
                                    max_dv=(jnp.inf if self.par.max_dv is None
@@ -2253,6 +2314,7 @@ class JAXTransient(Analysis):
         # but tend is a runtime parameter.
         _gm, _gx, _eta = self._coupled_band()
         _sgm, _sgx, _seta = self._standard_band()
+        _state_mask = self._jax_state_row_mask(x0) if self.par.coupled_lte else None
         _pcnr_meta, _pcnr_VT = self._pcnr_setup()
 
         @jax.jit
@@ -2261,7 +2323,7 @@ class JAXTransient(Analysis):
                                    fixed_timestep=fixed_timestep, grid_dt=timestep,
                                    provided_function=provided_function,
                                    xtol=self._newton_xtol(n),
-                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis, s_gamma_min=_sgm, s_gamma_max=_sgx, s_eta=_seta, relref=self._relref(), n_nodes=len(self.cir.nodes),
+                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis, s_gamma_min=_sgm, s_gamma_max=_sgx, s_eta=_seta, relref=self._relref(), n_nodes=len(self.cir.nodes), state_mask=_state_mask,
                                    lte_reltol=self.par.reltol,
                                    lte_abstol=self._lte_abstol(n),
                                    max_dv=(jnp.inf if self.par.max_dv is None

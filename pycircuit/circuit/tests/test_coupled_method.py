@@ -85,11 +85,21 @@ def test_the_two_methods_agree_on_a_smooth_circuit():
     the LTE moving as the solution converges, and on a smooth circuit the
     solution is already close when the LTE is evaluated. Pinned so that a future
     change making them diverge here is noticed.
+
+    RE-DERIVED at P22 (the state-row mask): the two branches used to agree
+    on max error to 5%, but part of that agreement came from BOTH branches
+    occasionally taking their controlling row from an ALGEBRAIC unknown
+    (the source current), whose eq (6) value measures grid conventions
+    rather than truncation -- the artifact the mask retires.  With the
+    mask, step counts still agree to 5% and the errors to ~11% (measured
+    3.138e-3 vs 3.489e-3); bound at 20%, with both pinned against the
+    analytic solution so neither can quietly degrade.
     """
     st_a, err_a = _run('approx')
     st_b, err_b = _run('bordered')
     assert abs(st_b.accepted_steps - st_a.accepted_steps) <= 0.05 * st_a.accepted_steps
-    assert err_b == pytest.approx(err_a, rel=0.05)
+    assert err_b == pytest.approx(err_a, rel=0.20)
+    assert err_a < 5e-3 and err_b < 5e-3, (err_a, err_b)
 
 
 def test_an_unknown_method_is_refused():

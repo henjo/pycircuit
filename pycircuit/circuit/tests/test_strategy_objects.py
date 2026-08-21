@@ -37,18 +37,15 @@ def _rc_circuit():
 
 
 def test_transient_default_integrators_by_path():
-    """RE-DERIVED at P6 (owner decision 2026-08-21): the standard path
-    ships Gear-2, matching the JAX backend at last.  The COUPLED path keeps
-    Euler as its own default -- Fang's step law and its measured record are
-    order-1-based, and Gear-2 underneath it livelocked the coupled
-    rectifier.  An explicit instance is honoured on both paths."""
+    """RE-DERIVED twice: at P6 (Gear-2 standard default) the coupled path
+    kept Euler because Gear-2 under it livelocked the rectifier; P22 traced
+    that livelock to eq (6) measured on algebraic rows, the state-row mask
+    retired the class, and BOTH paths now share the Gear-2 default.  An
+    explicit instance is still honoured everywhere."""
     tran = Transient(_rc_circuit())
     assert isinstance(tran._get_integrator(), Gear2Integrator)
-    assert isinstance(tran._get_integrator(coupled=True), EulerIntegrator)
     tran = Transient(_rc_circuit(), integrator=EulerIntegrator())
-    assert isinstance(tran._get_integrator(coupled=True), EulerIntegrator)
-    tran = Transient(_rc_circuit(), integrator=Gear2Integrator())
-    assert isinstance(tran._get_integrator(coupled=True), Gear2Integrator)
+    assert isinstance(tran._get_integrator(), EulerIntegrator)
 
 
 def test_transient_accepts_an_integrator_instance():

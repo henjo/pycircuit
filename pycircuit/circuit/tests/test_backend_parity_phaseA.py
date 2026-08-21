@@ -263,9 +263,9 @@ def test_p6_integrator_defaults_agree_and_the_choice_is_live():
     from pycircuit.circuit.elements import VS
 
     tran = Transient(_rc(), toolkit=numeric)
+    ## P22: one default for both paths since the state-row mask -- the
+    ## coupled= parameter itself is gone (dead-knob scan).
     assert isinstance(tran._get_integrator(), Gear2Integrator)
-    ## The coupled path keeps its own order-1 default -- Fang's record.
-    assert isinstance(tran._get_integrator(coupled=True), EulerIntegrator)
 
     def rc_step():
         c = SubCircuit()
@@ -586,3 +586,52 @@ def test_p17_strategy_objects_are_refused_permanently():
             with pytest.raises(NotImplementedError, match='permanently'):
                 JAXTransient(_rc(), **{knob: value})
     _with_jax(go)
+
+
+def test_p22_state_row_mask_and_shared_coupled_default():
+    """P22: eq (6) measured on STATE rows only, and the coupled Euler
+    carve-out retired.
+
+    The mask's proof is the rectifier that livelocked under coupled+Gear-2
+    (h collapsed to 6.3e-12 at t=1.25e-4; the source-current row's
+    deviation floor of 2.5e-6 A against etol 3.6e-7 was h-independent --
+    an ALGEBRAIC row carrying the diode's dq/dt through KCL measures grid
+    conventions, not truncation).  With the mask it completes in ~259
+    points against Euler's ~769 at the same accuracy (9.7e-3 vs 9.9e-3
+    against a fine reference), and the coupled default is Gear-2 on both
+    backends.  The cold-start contract survives: plain coupled still
+    RAISES (in seconds, not a dt-floor death march -- the forced-accept
+    early exit), which pins three in-trace livelock fixes at once."""
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.elements import VSin, Diode
+    from pycircuit.circuit.integrator import Gear2Integrator, EulerIntegrator
+
+    def rect():
+        c = SubCircuit()
+        c['vs'] = VSin('a', gnd, va=5.0, freq=1e3)
+        c['D'] = Diode('a', 'b')
+        c['R'] = R('b', gnd, r=1e3)
+        c['C'] = C('b', gnd, c=1e-7)
+        return c
+
+    counts = {}
+    for name, integ in (('gear2', Gear2Integrator()),
+                        ('euler', EulerIntegrator())):
+        tran = Transient(rect(), toolkit=numeric, pcnr=True, reltol=1e-5,
+                         uic=True, timestep_max=2e-5, integrator=integ)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(gnd, tend=2e-3, timestep=2e-5, coupled_lte=True)
+        t = np.asarray(res.sweep_values, float)
+        assert t[-1] == pytest.approx(2e-3, rel=1e-9), name
+        counts[name] = len(t)
+    ## The order-2 payoff the flip was made for: measured 259 vs 769.
+    assert counts['gear2'] < 0.6 * counts['euler'], counts
+
+    ## The mask itself, structurally: source current and source node are
+    ## algebraic on the rectifier; the capacitor node is a state.
+    tran = Transient(rect(), toolkit=numeric)
+    mask = tran._state_row_mask(np.zeros(rect().n))
+    c = rect()
+    assert bool(mask[c.get_node_index('b')])
+    assert not bool(mask[c.get_node_index('a')])

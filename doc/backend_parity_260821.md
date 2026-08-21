@@ -402,6 +402,35 @@ existing TLine tests before/after, per house rules.
   `integrator=Gear2Integrator()` on the coupled path is honoured today for
   anyone who wants to experiment ahead of it.
 
+  > **EXECUTED 2026-08-21, same day.**  The re-derivation turned out to be one
+  > insight, not new constants: the livelock traced to eq (6) being measured
+  > on ALGEBRAIC rows — the rectifier's source-current row carries the
+  > diode's dq/dt through KCL, so its accepted value holds the OLD grid's
+  > derivative convention and the deviation floor (2.5e-6 A vs etol 3.6e-7)
+  > is h-independent.  The **state-row mask** (zero row AND column of C ⇒
+  > algebraic ⇒ excluded from the coupled LTE via a 1e30 tolerance, one
+  > mechanism for the band, the controlling-node argmax, and bordered's
+  > gradients) retires the class on BOTH backends; the band constants and
+  > step law needed no change.  With it, coupled+Gear-2 completes the
+  > rectifier in 259 points vs Euler's 769 at equal accuracy, the coupled
+  > default is Gear-2 everywhere, the carve-out (and its then-dead `coupled`
+  > parameter — the scan flagged it) is gone, and the old 127/127 parity
+  > mystery is solved: it was BOTH backends' algebraic-row artifacts
+  > synchronizing order-1 and order-2 runs by accident; masked, CPU and JAX
+  > re-align through the shared default instead.  The JAX port surfaced
+  > three in-trace livelock hazards, each now fixed and load-bearing: a NaN
+  > band error freezing every predicate (→ inf, deterministic shrink), the
+  > rejection shrinking fang's within-point-GROWN h (×5 grow vs ×4 shrink
+  > never reaches the floor → shrink from the entry h), and the dt-floor
+  > death march (~1 s/step on GPU × chunk_size before the raise → the chunk
+  > exits on the first forced non-converged accept, which was already an
+  > unconditional post-chunk raise).  A pre-mask accident is recorded
+  > honestly: the algebraic-row error had been acting as a Newton-rescue
+  > governor on cold starts; the mask removed the accident and the early
+  > exit replaces it with the deliberate escape.  Bordered-vs-approx smooth
+  > agreement re-derived (the old 5% partly rode the artifact; now 11%
+  > measured, bounded 20% with both pinned to the analytic).
+
 ---
 
 ## Suggested order
