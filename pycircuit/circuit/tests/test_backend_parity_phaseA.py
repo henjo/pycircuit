@@ -853,3 +853,55 @@ def test_p24_stamps_build_identically_on_every_toolkit():
                 c['e']._G, dtype=object)).free_symbols
         finally:
             circuit_mod.default_toolkit = saved
+
+
+def test_p21_batched_dc_operating_point():
+    """P21: solve_batched starts from bias -- the roadmap's last refusal
+    retired.  Each lane's DC is solved with ITS OWN swept parameters (the
+    point of the feature: an R sweep moves the bias per lane).  Measured at
+    landing: a 2 V divider with R1 swept {1k, 3k} against Rg=1k starts its
+    lanes at exactly 1.0 V and 0.5 V (analytic) and holds them flat.  The
+    honest failure contract is gated too: a junction slammed at DC has no
+    limiting/PCNR on this path, so the per-lane Newton reports the failing
+    lanes and raises with the alternatives."""
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.nrsolver import NoConvergenceError
+    from pycircuit.circuit.elements import VS, Diode
+
+    def go():
+        import jax.numpy as jnp
+        c = SubCircuit()
+        c['V1'] = VS('in', gnd, v=2.0)
+        c['R1'] = R('in', 'out', r=1e3)
+        c['Rg'] = R('out', gnd, r=1e3)
+        c['C1'] = C('out', gnd, c=1e-9)
+        r_lanes = jnp.asarray([[1e3, 1e3], [3e3, 1e3]])  # (lane, instance)
+        tran = JAXTransient(c, reltol=1e-5)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve_batched(
+                gnd, override_params_tree={'R': {'r': r_lanes}},
+                tend=5e-6, timestep=1e-7)          # uic defaults False now
+        for lane, r1 in ((0, 1e3), (1, 3e3)):
+            v = np.asarray(res[lane].v('out'), float).reshape(-1)
+            exact = 2.0 * 1e3 / (r1 + 1e3)
+            assert v[0] == pytest.approx(exact, rel=1e-6), (lane, v[0])
+            assert v[-1] == pytest.approx(exact, rel=1e-4), (lane, v[-1])
+
+        ## The failure contract: 5 V across a junction at DC, from zeros,
+        ## with no limiting -- must raise naming the lanes, not hang or
+        ## seed from a non-solution.
+        c2 = SubCircuit()
+        c2['vs'] = VS('a', gnd, v=5.0)
+        c2['D'] = Diode('a', 'b')
+        c2['R'] = R('b', gnd, r=1e3)
+        c2['C'] = C('b', gnd, c=1e-9)
+        tran2 = JAXTransient(c2, reltol=1e-5)
+        with pytest.raises(NoConvergenceError, match='lane'):
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                tran2.solve_batched(
+                    gnd,
+                    override_params_tree={'R': {'r': jnp.asarray([[1e3], [2e3]])}},
+                    tend=1e-6, timestep=1e-7)
+    _with_jax(go)

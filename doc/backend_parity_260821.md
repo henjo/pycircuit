@@ -380,6 +380,19 @@ existing TLine tests before/after, per house rules.
   point) — the review's "deliberately unscheduled" gmin item, unchanged.
 - **P21** batched DC operating point, so `solve_batched` can start from bias. The
   loud `uic=True` refusal stays the contract until then.
+
+  > **EXECUTED 2026-08-21.**  `dc_operating_point` is the CPU DC class's
+  > assembly (`F = i(x) + u(0, 'dc')`, `J = G`) as a traced Newton on the
+  > reduced system (convergence scored on reduced rows — the P11 lesson),
+  > `jax.vmap`-ed so every lane's bias is solved with ITS OWN swept
+  > parameters.  Measured: a 2 V divider with R1 swept {1k, 3k} starts its
+  > lanes at exactly 1.0 V / 0.5 V (analytic) and holds them flat.  The
+  > honest failure contract replaces the old refusal: no limiting or PCNR
+  > at batched DC yet, so a junction lane whose plain Newton fails raises
+  > naming the lanes, pointing at `uic=True` or gmin continuation (P18) —
+  > gated alongside the bias case.  `solve_batched`'s `uic` now genuinely
+  > defaults to the Parameter (False) instead of being effectively
+  > mandatory.
 - **P22** *(added 2026-08-21, owner request)* — re-derive the coupled (Fang)
   estimator at order 2, so the coupled path can share the shipped Gear-2
   default instead of carving out its own Euler default.  Everything around

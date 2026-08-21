@@ -334,6 +334,51 @@ def tline_source_dudt(n, t_curr, tline_params, tline_indices,
     return out
 
 
+def dc_operating_point(circuit, irefnode, n, params_tree=None,
+                       reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100,
+                       analysis='dc'):
+    """The batched DC operating point -- P21, the roadmap's last refusal.
+
+    ``F = i(x) + u(0, 'dc')``, ``J = G(x)``: exactly the CPU DC class's
+    assembly, as a traced Newton on the reduced system so ``jax.vmap`` can
+    run every lane of a parameter sweep concurrently.  Convergence is
+    scored on the REDUCED rows (the P11 lesson: the reference row is not
+    an equation of the solved system).  Returns ``(x, converged)``; the
+    caller decides what a non-converged lane means.  No limiting and no
+    PCNR here yet -- a junction circuit that needs help at DC should start
+    from ``uic=True`` (or wait for gmin continuation, P18); the raise at
+    the call site says so.
+    """
+    x0 = jnp.zeros(n)
+
+    def cond_fun(st):
+        x, converged, iters = st
+        return jnp.logical_and(jnp.logical_not(converged), iters < maxiter)
+
+    def body_fun(st):
+        x, _converged, iters = st
+        F = circuit.i(x, params_tree=params_tree) \
+            + circuit.u(0.0, analysis=analysis, params_tree=params_tree)
+        J = circuit.G(x, params_tree=params_tree)
+        J_sub = jnp.delete(jnp.delete(J, irefnode, axis=0),
+                           irefnode, axis=1)
+        F_sub = jnp.delete(F, irefnode)
+        dx = jnp.insert(jnp.linalg.solve(J_sub, -F_sub), irefnode, 0.0)
+        x_next = x + dx
+        I_scale = jnp.abs(J) @ jnp.abs(x_next) + jnp.abs(F)
+        conv_f = jnp.all(jnp.delete(
+            jnp.abs(F) < reltol * I_scale
+            + jnp.broadcast_to(abstol, F.shape), irefnode))
+        conv_x = jnp.all(jnp.abs(dx)
+                         < reltol * jnp.maximum(jnp.abs(x_next), jnp.abs(x))
+                         + xtol)
+        return (x_next, jnp.logical_and(conv_f, conv_x), iters + 1)
+
+    x, converged, _iters = jax.lax.while_loop(
+        cond_fun, body_fun, (x0, jnp.asarray(False), 0))
+    return x, converged
+
+
 def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tline_indices, eval_method='euler', reltol=1e-3, abstol=1e-6, xtol=1e-12, maxiter=50, params_tree=None, max_dv=jnp.inf, tline_dG=None, analysis='tran', provided_function=None):
     x_init = extrapolate_predictor(state)
 
@@ -2068,19 +2113,37 @@ class JAXTransient(Analysis):
             break
             
         n = self.cir.n
+        ## P21: the batched DC operating point, retiring the roadmap's last
+        ## refusal.  Each lane's bias is solved with ITS OWN swept
+        ## parameters (that is the whole point -- an R sweep moves the bias
+        ## per lane); a lane whose plain Newton cannot converge at DC
+        ## raises with the honest alternatives, because a batched run
+        ## seeded from a non-solution is not an approximation of the right
+        ## answer, it is a different problem.
+        _dc_x0 = None
         if not uic:
-            ## This used to be `pass`, under a comment saying a DC solve belonged
-            ## here -- so every batched run silently started from zeros, whatever
-            ## the circuit's bias point was.  That is the same defect `Transient`
-            ## had, and worse: `Transient` at least attempted the solve before
-            ## falling back.  Raising is the honest option until a batched DC
-            ## exists, because a batched run seeded from zeros is not an
-            ## approximation of the right answer, it is a different problem.
-            raise NotImplementedError(
-                "solve_batched has no DC operating-point solve, so it cannot start "
-                "from a bias point. Pass uic=True to start from zeros deliberately. "
-                "(The unbatched JAXTransient.solve() does solve a DC operating "
-                "point; only the batched path lacks one.)")
+            _n = self.cir.n
+            _iref = self.cir.get_node_index(refnode) \
+                if hasattr(self.cir, 'get_node_index') else refnode
+
+            def _lane_dc(p_tree):
+                return dc_operating_point(
+                    self.cir, _iref, _n, params_tree=p_tree,
+                    reltol=self.par.reltol,
+                    abstol=self._newton_abstol(_n),
+                    xtol=self._newton_xtol(_n),
+                    maxiter=int(self.par.maxiter))
+
+            _dc_x0, _dc_conv = jax.jit(jax.vmap(_lane_dc))(
+                override_params_tree)
+            _bad = np.where(~np.asarray(_dc_conv))[0]
+            if _bad.size:
+                raise NoConvergenceError(
+                    'solve_batched: the DC operating point did not converge '
+                    'for lane(s) %s. The batched DC is a plain Newton with '
+                    'no limiting or PCNR; for a junction circuit start from '
+                    'uic=True, or wait for gmin continuation (P18).'
+                    % _bad.tolist())
 
 
         if dt_max is None:
@@ -2098,8 +2161,9 @@ class JAXTransient(Analysis):
         # Setup batched initial state -- the SAME shared machinery as solve
         # (P12): every lane starts from the ic-resolved vector, since the
         # overrides sweep element parameters, not starting states.
-        x0_batch = jnp.tile(jnp.asarray(self._initial_state(refnode),
-                                        dtype=jnp.float64), (batch_size, 1))
+        x0_batch = (_dc_x0 if _dc_x0 is not None else
+                    jnp.tile(jnp.asarray(self._initial_state(refnode),
+                                         dtype=jnp.float64), (batch_size, 1)))
         x_hist = jnp.stack([x0_batch, x0_batch, x0_batch], axis=1) # (batch_size, 3, n)
         
         # We need a batched q0
