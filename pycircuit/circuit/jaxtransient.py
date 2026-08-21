@@ -751,11 +751,32 @@ class JAXTransient(Analysis):
 
     def solve_batched(self, irefnode, override_params_tree, tend, timestep=1e-12, CHUNK_SIZE=5000, dt_min=1e-15, dt_max=None, uic=False):
         import jax
-        
+
         self.cir.update_iparv()
         import jax.numpy as jnp
         import numpy as np
-        
+
+        ## An override for a class that is not in the vmap evaluation groups was
+        ## SILENTLY IGNORED: `params_tree` is only consumed for classes with
+        ## `eval_i_pure`/`eval_q_pure`, so `{'R': {'r': ...}}` produced N
+        ## bit-identical lanes presented as N samples -- a parameter sweep that
+        ## sweeps nothing, with no symptom (doc/transient_review_260820.md, F2;
+        ## measured with r = 1 ohm vs 1 kohm).  Refuse loudly until the class is
+        ## made batchable.
+        batchable = {cls.__name__
+                     for cls in self.toolkit.evaluation_groups(self.cir)}
+        unbatchable = set(override_params_tree) - batchable
+        if unbatchable:
+            raise NotImplementedError(
+                "override_params_tree names %s, which cannot be batched: only "
+                "element classes providing eval_i_pure/eval_q_pure participate "
+                "in vmapped evaluation (currently: %s). An override for any "
+                "other class would be silently ignored and every lane would "
+                "return the same waveform. Make the class batchable, or drop "
+                "the override."
+                % (', '.join(sorted(repr(n) for n in unbatchable)),
+                   ', '.join(sorted(batchable)) or 'none'))
+
         if hasattr(self.cir, 'get_node_index'):
             irefnode = self.cir.get_node_index(irefnode)
             
@@ -826,7 +847,7 @@ class JAXTransient(Analysis):
         tline_head = jnp.zeros(batch_size, dtype=jnp.int32)
         
         def run_chunk(s, p_tree):
-            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear', params_tree=p_tree, reltol=self.par.reltol, abstol=self.par.vabstol,
+            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear', params_tree=p_tree, reltol=self.par.reltol, abstol=self.par.iabstol,
                                    maxiter=self.par.maxiter, trtol=self.par.TRTOL,
                                    lte_reltol=self.par.reltol,
                                    lte_abstol=self._lte_abstol(n))
@@ -991,7 +1012,7 @@ class JAXTransient(Analysis):
         # but tend is a runtime parameter.
         @jax.jit
         def run_chunk(s):
-            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear', reltol=self.par.reltol, abstol=self.par.vabstol,
+            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear', reltol=self.par.reltol, abstol=self.par.iabstol,
                                    maxiter=self.par.maxiter, trtol=self.par.TRTOL,
                                    lte_reltol=self.par.reltol,
                                    lte_abstol=self._lte_abstol(n))

@@ -69,3 +69,32 @@ def test_f9_continuation_forwards_linsolver():
         linsolver=ls)
     assert abs(float(x[0]) - 1.0) < 1e-9
     assert ls.calls > 0          # was 0: linsolver dropped at every call site
+
+
+## F2(a) -- an override for a class outside the vmap evaluation groups was
+## silently ignored (N bit-identical lanes presented as N samples); it must
+## refuse loudly until the class is batchable.
+
+def test_f2a_batched_override_of_unbatchable_class_raises():
+    jax = pytest.importorskip('jax')
+    import jax.numpy as jnp
+    from pycircuit.circuit import circuit as circuit_mod
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.elements import VS
+
+    saved = circuit_mod.default_toolkit
+    circuit_mod.default_toolkit = jaxtoolkit
+    try:
+        cir = SubCircuit()
+        cir.add_node('in'); cir.add_node('out')
+        cir['V1'] = VS('in', gnd, v=1.0)
+        cir['R1'] = R('in', 'out', r=1e3)
+        cir['C1'] = C('out', gnd, c=1e-6)
+        tran = JAXTransient(cir)
+        with pytest.raises(NotImplementedError, match="'R'"):
+            tran.solve_batched(
+                gnd, override_params_tree={'R': {'r': jnp.array([[1.0], [1e3]])}},
+                tend=1e-5, timestep=1e-6, CHUNK_SIZE=50, uic=True)
+    finally:
+        circuit_mod.default_toolkit = saved
