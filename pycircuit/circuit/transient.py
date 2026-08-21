@@ -1964,6 +1964,22 @@ class Transient(Analysis):
         ## advances and the integrator history refreshes.
         reject_count = 0
         MAX_REJECT = 3
+        ## F14 (doc/transient_review_260820.md): a lower-band GROWTH retry --
+        ## the controller redoing a too-ACCURATE step larger -- is a voluntary
+        ## redo, not a failure, and must not trip the force-accept above.
+        ## Before this split, three consecutive growth retries during the
+        ## opening ramp of a QUIESCENT circuit reached the force-accept path:
+        ## a step whose error was below the band got a warning claiming it
+        ## was "still above tolerance", a needless order drop, and a
+        ## force_accepts increment -- measured as 2 spurious warnings on a
+        ## settled RC with the band at (0.5, 3.0).  The discriminator is
+        ## dt_next > dt: over-tolerance rejections strictly shrink in every
+        ## controller, growth retries return only behind a strict-growth
+        ## guard, so the two populations cannot overlap.  MAX_POINT_RETRIES
+        ## preserves the anti-livelock guarantee MAX_REJECT alone used to
+        ## provide, against pathological over/under alternation.
+        point_retries = 0
+        MAX_POINT_RETRIES = 10
         ## Set by the force-accept path below and consumed at the top of the next
         ## iteration, exactly like `was_break_step`.  Both mean the same thing to
         ## the integrator -- "do not trust a 2nd-order polynomial through this
@@ -2148,9 +2164,26 @@ class Transient(Analysis):
                     x_hist=X[-1:-4:-1],
                 )
 
-                if not accept and reject_count < MAX_REJECT:
+                growth_retry = (not accept) and dt_next > dt
+                if growth_retry and point_retries < MAX_POINT_RETRIES:
+                    ## Too accurate, redone larger (Fang's lower bound).  A
+                    ## real re-solve, so it counts as rejected work -- but not
+                    ## toward MAX_REJECT, whose force-accept is for errors the
+                    ## shrinking side cannot bound.
+                    self.statistics.rejected_steps += 1
+                    point_retries += 1
+                    dt = dt_next
+                    continue
+                if growth_retry:
+                    ## Retry cap hit on a BELOW-band step: it is accurate --
+                    ## accept it as-is rather than force-accepting with a
+                    ## warning about an error it does not have.
+                    accept, next_dt = True, dt_next
+                if not accept and reject_count < MAX_REJECT \
+                        and point_retries < MAX_POINT_RETRIES:
                     self.statistics.rejected_steps += 1
                     reject_count += 1
+                    point_retries += 1
                     dt = dt_next
                     if dt < getattr(self.par, 'minstep', 1e-18):
                         raise RuntimeError(f"Transient solver integration error: timestep shrank below {getattr(self.par, 'minstep', 1e-18):g}s at t={t}")
@@ -2209,6 +2242,7 @@ class Transient(Analysis):
                 else:
                     next_dt = dt_next
                 reject_count = 0
+                point_retries = 0
 
             t = next_t
             self.statistics.accepted_steps += 1

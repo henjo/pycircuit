@@ -327,3 +327,25 @@ def test_f5_standard_band_defaults_when_unset():
     ctrl = tran.step_controller
     assert (ctrl.lte_gamma_min, ctrl.lte_gamma_max, ctrl.lte_eta) \
         == (0.0, 1.0, None)
+
+
+## F14 -- lower-band growth retries (a step redone LARGER because it was too
+## accurate) must not trip the force-accept escape hatch: a quiescent circuit
+## with a band used to emit "error still above tolerance" warnings during its
+## opening ramp, about steps whose error was below the band.
+
+def test_f14_growth_retries_do_not_force_accept():
+    import warnings as w
+    c = SubCircuit()
+    c['is'] = IS(gnd, 'a', i=1e-3)
+    c['R'] = R('a', gnd, r=1e3)
+    c['C'] = C('a', gnd, c=1e-8)
+    tran = Transient(c, lte_gamma_min=0.5, lte_gamma_max=3.0)
+    with w.catch_warnings(record=True) as caught:
+        w.simplefilter('always')
+        res = tran.solve(tend=1e-3, timestep=1e-5)
+    spurious = [x for x in caught if 'still above tolerance' in str(x.message)]
+    assert not spurious, [str(x.message) for x in spurious]
+    assert res.statistics.force_accepts == 0
+    ## the band's growth retries are real re-solves and stay in the accounting
+    assert res.statistics.rejected_steps > 0
