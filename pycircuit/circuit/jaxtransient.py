@@ -299,7 +299,7 @@ def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tl
 # Phase 3: Outer Time Loop & Adaptive Control
 # ---------------------------------------------------------------------------
 
-def ywr_error_ratio(i_curr, x_curr, x_last, J, state: TransientState, irefnode,
+def ywr_error_ratio(i_curr, x_curr, J, state: TransientState, irefnode,
                     method='trap', trtol=7.0, lte_rel=1e-4, lte_abstol=1e-12):
     """Yao-Wang-Roychowdhury DAE LTE, returned as a normalized error ratio.
 
@@ -467,7 +467,7 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
         ## 1-3% of a step, well under its own 10% keep-it threshold.
         J = circuit.G(x_curr, params_tree=params_tree) + Geq
         error_ratio, order_p1 = ywr_error_ratio(
-            i_curr, x_curr, state.x_history[0], J, state, irefnode,
+            i_curr, x_curr, J, state, irefnode,
             method=eval_method, trtol=trtol, lte_rel=lte_reltol,
             lte_abstol=lte_abstol)
 

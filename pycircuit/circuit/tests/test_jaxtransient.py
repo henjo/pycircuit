@@ -59,7 +59,7 @@ def test_jax_lte_order_per_method():
 
     orders = {}
     for method in ('euler', 'gear', 'trap'):
-        _, p = ywr_error_ratio(i_curr, x_curr, x_last, J, st, irefnode=1,
+        _, p = ywr_error_ratio(i_curr, x_curr, J, st, irefnode=1,
                                method=method)
         orders[method] = float(p)
 
@@ -331,7 +331,7 @@ def _lte_ratio(h, method, order, G=1.0e6):
         tline_history=None, tline_head=None,
         sig_max=jnp.array(1.0), n_rejected=0)
     r, _p = ywr_error_ratio(
-        jnp.array([g(0.0), 0.0]), jnp.array([1.0, 0.0]), jnp.array([1.0, 0.0]),
+        jnp.array([g(0.0), 0.0]), jnp.array([1.0, 0.0]),
         jnp.eye(n), st, irefnode=1, method=method,
         trtol=1.0, lte_rel=0.0, lte_abstol=1.0)
     return float(r) / h ** order
