@@ -409,6 +409,24 @@ class PIController(StepController):
         self.k_i = k_i
         self.k_p = k_p
         self.last_err = None
+
+    def set_lte_band(self, gamma_min=0.0, gamma_max=1.0, eta=None):
+        ## F10 (doc/transient_review_260820.md): gamma_max and eta are
+        ## honoured in evaluate_step below; the LOWER band is refused rather
+        ## than silently ignored -- a growth-retry redo interacts with the PI
+        ## history (last_err) in a way nobody has designed, and an
+        ## accepted-and-ignored option is this codebase's most-paid-for
+        ## defect class.  The check runs AFTER the base class resolves the
+        ## 'auto' sentinel, so the shipped default (gamma_min = 0) passes.
+        super().set_lte_band(gamma_min, gamma_max, eta)
+        if self.lte_gamma_min > 0.0:
+            raise NotImplementedError(
+                'PIController does not implement the lower LTE band '
+                '(gamma_min=%g): the growth-retry redo has undefined PI '
+                'history semantics. Use IntegralController or '
+                'SolutionLTEController for a two-sided band.'
+                % self.lte_gamma_min)
+        return self
         
     def pi_factor(self, err, last_err, p):
         """The step-size factor for one accepted step, clamped.
@@ -486,7 +504,9 @@ class PIController(StepController):
         err = float(np.max(err_array))
         exponent = 1.0 / p
 
-        if err > 1.0:
+        ## F10: the band's upper edge, not a hardcoded 1.0 -- set_lte_band
+        ## was accepted and silently ignored here.
+        if err > self.lte_gamma_max:
             # Step rejected: standard backoff using the method order.
             ## STAGE 4a -- AND THE HISTORY IS DROPPED, DELIBERATELY.
             ##
@@ -511,9 +531,11 @@ class PIController(StepController):
         # Standard PI formula for step size control.  err is already normalized so
         # that err==1 is the target (TRTOL is folded into etol above).
         factor = self.pi_factor(err, self.last_err, p)
-        
+
         h_next = h_curr * factor
-        h_next = min(h_next, max_step)
+        ## F10: eq (16)'s damper applies to accepted steps here exactly as in
+        ## IntegralController.
+        h_next = min(self._damp(h_next, h_curr), max_step)
         
         self.last_err = err
         

@@ -672,3 +672,53 @@ def test_f15_damped_newton_failed_search_takes_smallest_step():
     assert max(abs(v) for v in evals) < 1e5, \
         'iterates ran away -- the failed search took full steps again: %r' \
         % evals[-3:]
+
+
+## F10 -- PIController honours the band it accepts: gamma_max moves the
+## rejection threshold, eta damps, and the unimplemented lower band is
+## refused loudly instead of ignored.
+
+def _pi_evaluate(pi, err_value):
+    """Drive evaluate_step with a stub integrator so err comes out exactly
+    err_value (J = I, TRTOL = 1, reltol = 0, abstol = 1)."""
+    from pycircuit.circuit import numeric
+
+    class StubIntegrator:
+        ORDER = 1
+
+        def compute_lte(self, **kw):
+            return np.array([err_value, 0.0]), 2.0
+
+    return pi.evaluate_step(
+        x_curr=np.array([1.0, 0.0]), x_last=np.array([1.0, 0.0]),
+        q_curr=None, q_last_hist=None, iq_last_hist=None,
+        h_curr=1e-6, h_last=1e-6, no_history=False,
+        J=np.eye(2), active_integrator=StubIntegrator(), irefnode=1,
+        reltol=0.0, abstol=np.ones(2), toolkit=numeric,
+        max_step=1e-3, TRTOL=1.0)
+
+
+def test_f10_pi_honours_gamma_max():
+    from pycircuit.circuit.stepcontroller import PIController
+    ## err = 2.0: rejected at the historical threshold, accepted with the
+    ## band's upper edge at 3.0 -- which was silently ignored before.
+    accept, _ = _pi_evaluate(PIController(), 2.0)
+    assert not accept
+    accept, _ = _pi_evaluate(PIController().set_lte_band(gamma_max=3.0), 2.0)
+    assert accept
+
+
+def test_f10_pi_honours_eta_damper():
+    from pycircuit.circuit.stepcontroller import PIController
+    pi = PIController().set_lte_band(gamma_max=3.0, eta=0.1)
+    accept, h_next = _pi_evaluate(pi, 1e-6)   # tiny error wants huge growth
+    assert accept
+    assert h_next <= 1e-6 * 1.1 * (1 + 1e-12)   # damped to +10%
+
+
+def test_f10_pi_refuses_the_lower_band():
+    from pycircuit.circuit.stepcontroller import PIController
+    with pytest.raises(NotImplementedError, match='lower LTE band'):
+        PIController().set_lte_band(gamma_min=0.5, gamma_max=3.0)
+    ## the 'auto' sentinel (the shipped default) must pass untouched
+    PIController().set_lte_band('auto', 'auto', 'auto')
