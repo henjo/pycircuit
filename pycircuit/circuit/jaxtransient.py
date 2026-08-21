@@ -1127,7 +1127,7 @@ def pcnr_controller_jacobian(circuit, state, x, v_lim, j_ra, j_rb, j_IS, VT,
     return _scatter_junction_G(J, j_ra, j_rb, g_l, +1.0)
 
 
-def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15, pcnr_meta=None, pcnr_VT=0.025, tline_dG=None, analysis='tran', s_gamma_min=0.0, s_gamma_max=1.0, s_eta=jnp.inf, fixed_timestep=False, grid_dt=None, relref='sigglobal', n_nodes=None, provided_function=None, state_mask=None, max_dv_step=jnp.inf, max_di_step=jnp.inf):
+def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15, pcnr_meta=None, pcnr_VT=0.025, tline_dG=None, analysis='tran', s_gamma_min=0.0, s_gamma_max=1.0, s_eta=jnp.inf, fixed_timestep=False, grid_dt=None, relref='sigglobal', n_nodes=None, provided_function=None, state_mask=None, dv_bounds=((jnp.inf, 0.0), (jnp.inf, 0.0))):
 
     ## The same epsilon `calculate_next_dt` uses to decide a breakpoint is "already
     ## reached".  They disagreed: after 500 steps of 1e-5 the accumulated `t` sits
@@ -1331,10 +1331,20 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
         ## grid (the caller owns the resolution).
         _nn_dv = n_nodes if n_nodes is not None else x_curr.shape[0]
         _dstep = jnp.abs(x_curr - state.x_history[0])
-        dv_ratio = jnp.max(_dstep[:_nn_dv]) / max_dv_step
+        ## 'auto' (sampling theory): bound = max(static source anchor,
+        ## (2*pi/N) * running unit-group max).  ref_running is accepted-only
+        ## and so anchored BEFORE this candidate -- the relative term cannot
+        ## h-cancel at a signal birth.  Manual factors carry rel = 0.
+        (_bvs, _cvr), (_bis, _cir) = dv_bounds
+        _bv = jnp.maximum(_bvs, _cvr * jnp.max(state.ref_running[:_nn_dv])) \
+            if _cvr else _bvs
+        dv_ratio = jnp.max(_dstep[:_nn_dv]) / _bv
         if _nn_dv < _dstep.shape[0]:
+            _bi = jnp.maximum(
+                _bis, _cir * jnp.max(state.ref_running[_nn_dv:])) \
+                if _cir else _bis
             dv_ratio = jnp.maximum(dv_ratio,
-                                   jnp.max(_dstep[_nn_dv:]) / max_di_step)
+                                   jnp.max(_dstep[_nn_dv:]) / _bi)
         dv_ok = jnp.logical_or(dv_ratio <= 1.0,
                                jnp.asarray(fixed_timestep))
         accept = jnp.logical_or(
@@ -1707,8 +1717,15 @@ class JAXTransient(Analysis):
         Parameter(name='max_di_step',
                   desc='Per-step branch-current excursion bound, as a '
                        'FACTOR times lte_iabstol; same clamp-at-1 floor. '
-                       'None disables.',
+                       "'auto' derives it from sampling theory "
+                       '(points_per_period). None disables.',
                   unit='', default=None),
+        Parameter(name='points_per_period',
+                  desc="Sampling density behind max_dv_step/max_di_step = "
+                       "'auto': at least this many points per period of a "
+                       'full-swing sinusoid (per-step excursion '
+                       '2*pi*swing/N).',
+                  unit='', default=64),
         Parameter(name='timestep_max',
                   desc='Largest accepted timestep; None means tend/50, the '
                        'SPICE TMAX default. Decoupled from timestep, which '
@@ -1821,26 +1838,12 @@ class JAXTransient(Analysis):
     _descendant_has_ic = _CPU._descendant_has_ic
     del _CPU
 
-    def _dv_step_bounds(self):
-        """(voltage bound, current bound), inf when disabled -- floored at
-        vabstol/iabstol; see the CPU helper of the same name."""
-        ## FACTOR semantics (owner decision): the bound is
-        ## max(factor, 1) * abstol, so the resolution check is coupled to
-        ## the tolerance family exactly as the LTE is -- tighten vabstol
-        ## and the check tightens with it -- and a factor below 1 clamps
-        ## to the solver-noise floor.
-        ## The LTE family's abstols, not Newton's -- the owner's stated
-        ## rationale is that the LTE checks scale with these, so the
-        ## excursion check must scale with the SAME quantities.  With the
-        ## default lte_vabstol = 1e-12, a factor of 2e11 bounds steps to
-        ## 0.2 V; the clamp-at-1 floor is exactly the solver-noise scale.
-        bv = float('inf') if self.par.max_dv_step is None else \
-            max(float(self.par.max_dv_step), 1.0) \
-            * float(self.par.lte_vabstol)
-        bi = float('inf') if self.par.max_di_step is None else \
-            max(float(self.par.max_di_step), 1.0) \
-            * float(self.par.lte_iabstol)
-        return bv, bi
+    ## P23 sharing: the CPU's excursion-bound resolver and source-scale
+    ## walker run here verbatim (pre-loop Python; the loop takes floats).
+    from pycircuit.circuit.transient import Transient as _CPU2
+    _source_signal_scales = _CPU2._source_signal_scales
+    _dv_step_bounds = _CPU2._dv_step_bounds
+    del _CPU2
 
     def _jax_state_row_mask(self, x_ref):
         """P22: the CPU's _state_row_mask, computed numpy-side at trace
@@ -2139,7 +2142,7 @@ class JAXTransient(Analysis):
         def run_chunk(s, p_tree):
             return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method=self._eval_method(), params_tree=p_tree, reltol=self.par.reltol, abstol=self._newton_abstol(n),
                                    xtol=self._newton_xtol(n),
-                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis, s_gamma_min=_sgm, s_gamma_max=_sgx, s_eta=_seta, relref=self._relref(), n_nodes=len(self.cir.nodes), state_mask=_state_mask, max_dv_step=self._dv_step_bounds()[0], max_di_step=self._dv_step_bounds()[1],
+                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis, s_gamma_min=_sgm, s_gamma_max=_sgx, s_eta=_seta, relref=self._relref(), n_nodes=len(self.cir.nodes), state_mask=_state_mask, dv_bounds=self._dv_step_bounds(),
                                    lte_reltol=self.par.reltol,
                                    lte_abstol=self._lte_abstol(n),
                                    max_dv=(jnp.inf if self.par.max_dv is None
@@ -2381,7 +2384,7 @@ class JAXTransient(Analysis):
                                    fixed_timestep=fixed_timestep, grid_dt=timestep,
                                    provided_function=provided_function,
                                    xtol=self._newton_xtol(n),
-                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis, s_gamma_min=_sgm, s_gamma_max=_sgx, s_eta=_seta, relref=self._relref(), n_nodes=len(self.cir.nodes), state_mask=_state_mask, max_dv_step=self._dv_step_bounds()[0], max_di_step=self._dv_step_bounds()[1],
+                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis, s_gamma_min=_sgm, s_gamma_max=_sgx, s_eta=_seta, relref=self._relref(), n_nodes=len(self.cir.nodes), state_mask=_state_mask, dv_bounds=self._dv_step_bounds(),
                                    lte_reltol=self.par.reltol,
                                    lte_abstol=self._lte_abstol(n),
                                    max_dv=(jnp.inf if self.par.max_dv is None

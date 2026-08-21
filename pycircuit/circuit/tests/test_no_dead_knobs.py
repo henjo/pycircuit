@@ -159,4 +159,11 @@ def test_every_transient_parameter_is_read():
 
 def test_every_jaxtransient_parameter_is_read():
     from pycircuit.circuit.jaxtransient import JAXTransient
-    _assert_parameters_reachable(JAXTransient, ['jaxtransient.py', 'analysis.py'])
+    ## transient.py is genuinely part of JAXTransient's implementation now:
+    ## P12 bound the initial-state machinery and P23 the excursion-bound
+    ## resolver (_dv_step_bounds, _source_signal_scales) from Transient onto
+    ## this class, so parameters those methods read (max_dv_step,
+    ## max_di_step, points_per_period, ic) are read THERE on a JAXTransient
+    ## instance.  The scan walks files, not bound objects.
+    _assert_parameters_reachable(JAXTransient, ['jaxtransient.py', 'analysis.py',
+                                                'transient.py'])

@@ -262,6 +262,10 @@ class VS(Circuit):
     """
     terminals = ('plus', 'minus')
     branches = (Branch(Node('plus'), Node('minus')),)
+    def signal_scale(self):
+        ## A uic run steps this node from 0 to v at the start.
+        return (abs(self.iparv.v), 0.0)
+
     instparams = [Parameter(name='v', desc='Source DC voltage', 
                             unit='V', default=0),
                   Parameter(name='vac', desc='AC analysis amplitude', 
@@ -322,6 +326,11 @@ class VSin(VS):
 
     """
 
+    def signal_scale(self):
+        ## The 'auto' excursion bound's static anchor: amplitude plus
+        ## offset excursion from a uic start.
+        return (abs(self.iparv.va) + abs(self.iparv.vo), 0.0)
+
     instparams = VS.instparams + [
         Parameter(name='vo', desc='Offset voltage', 
                   unit='V', default=0),
@@ -358,6 +367,9 @@ class IS(Circuit):
     array([1., 0.])
 
     """
+    def signal_scale(self):
+        return (0.0, abs(self.iparv.i))
+
     instparams = [Parameter(name='i', desc='DC Current',
                             unit='A', default=0),
                   Parameter(name='iac', desc='AC analysis current amplitude', 
@@ -402,6 +414,9 @@ class ISin(IS):
 
     """
 
+    def signal_scale(self):
+        return (0.0, abs(self.iparv.ia) + abs(self.iparv.io))
+
     instparams = IS.instparams + [
         Parameter(name='io', desc='Offset current', 
                   unit='A', default=0),
@@ -430,6 +445,10 @@ class IPulse(IS):
     """Independent pulse current source
 
     """
+
+    def signal_scale(self):
+        i1, i2 = self.iparv.i1, self.iparv.i2
+        return (0.0, max(abs(i1), abs(i2), abs(i2 - i1)))
     instparams = IS.instparams + [
         Parameter(name='i1', desc='Initial current', 
                   unit='A', default=0),
@@ -462,6 +481,10 @@ class VPulse(VS):
     """Independent pulse voltage source
 
     """
+
+    def signal_scale(self):
+        v1, v2 = self.iparv.v1, self.iparv.v2
+        return (max(abs(v1), abs(v2), abs(v2 - v1)), 0.0)
     instparams = VS.instparams + [
         Parameter(name='v1', desc='Initial voltage', 
                   unit='V', default=0),

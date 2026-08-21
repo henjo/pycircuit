@@ -709,20 +709,43 @@ def test_max_dv_step_voltage_check_on_algebraic_networks():
     ## the LTE is, and a factor below 1 clamps to the solver-noise floor).
     tran = Transient(amp(), toolkit=numeric, max_dv_step=0.01,
                      max_di_step=0.5)
-    bv, bi = tran._dv_step_bounds()
-    assert bv == float(tran.par.lte_vabstol)
-    assert bi == float(tran.par.lte_iabstol)
+    (bv, cv), (bi, ci) = tran._dv_step_bounds()
+    assert bv == float(tran.par.lte_vabstol) and cv == 0.0
+    assert bi == float(tran.par.lte_iabstol) and ci == 0.0
     tran = Transient(amp(), toolkit=numeric, max_dv_step=2e11,
                      max_di_step=1e6, lte_vabstol=2e-12)
-    bv, bi = tran._dv_step_bounds()
+    (bv, _), (bi, _) = tran._dv_step_bounds()
     assert bv == pytest.approx(0.4)          # scales WITH lte_vabstol
     assert bi == pytest.approx(1e-6)
 
+    ## 'auto' (owner request, sampling theory): static anchor 2*pi/N times
+    ## the declared source swing, growing with the running unit-group max
+    ## -- measured 0.0982 V anchor (va=1, N=64), per-step max 0.847 <=
+    ## 2*pi/64 * 10 V once the output reveals the gain, 130/129 points
+    ## CPU/JAX.
+    import math
+    tran = Transient(amp(), toolkit=numeric, reltol=1e-4, uic=True,
+                     max_dv_step='auto')
+    (bvs, cvr), (_bis, _cir) = tran._dv_step_bounds()
+    assert cvr == pytest.approx(2 * math.pi / 64)
+    assert bvs == pytest.approx(2 * math.pi / 64 * 1.0)   # va = 1 V
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        ra = tran.solve(gnd, tend=2e-6, timestep=2e-8)
+    assert max_step_dv(ra) <= 2 * math.pi / 64 * 10.0 * (1.0 + 1e-9)
+    assert len(np.asarray(ra.sweep_values)) > 100
+
     def go2():
         tran = JAXTransient(amp(), max_dv_step=0.01, max_di_step=0.5)
-        bv, bi = tran._dv_step_bounds()
+        (bv, _), (bi, _) = tran._dv_step_bounds()
         assert bv == float(tran.par.lte_vabstol)
         assert bi == float(tran.par.lte_iabstol)
+        import math
+        tran = JAXTransient(amp(), reltol=1e-4, max_dv_step='auto')
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            ra = tran.solve(gnd, tend=2e-6, timestep=2e-8, uic=True)
+        assert max_step_dv(ra) <= 2 * math.pi / 64 * 10.0 * (1.0 + 1e-9)
 
         ## max_di_step is live: the circuit's one branch unknown is the
         ## source current (0.1 mA peak -- the 1k/9k divider leaves 0.1*vin

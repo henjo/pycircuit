@@ -537,7 +537,8 @@ class Transient(Analysis):
                    desc='Per-step node-voltage excursion bound (the Spectre/'
                         'Mica-style voltage check), as a FACTOR: the bound '
                         'is max_dv_step * lte_vabstol (e.g. 2e11 at the '
-                        'default 1e-12 bounds steps to 0.2 V), so it scales with the '
+                        "default 1e-12 bounds steps to 0.2 V); 'auto' "
+                        'derives it from sampling theory (points_per_period), so it scales with the '
                         'tolerance family exactly as the LTE does. Factors '
                         'below 1 clamp to 1 (a bound below the Newton '
                         'accuracy measures noise). None disables. Controls '
@@ -548,9 +549,27 @@ class Transient(Analysis):
          Parameter(name='max_di_step',
                    desc='Per-step branch-current excursion bound, as a '
                         'FACTOR times lte_iabstol; the current-row sibling of '
-                        'max_dv_step, same clamp-at-1 floor. None disables.',
+                        "max_dv_step, same clamp-at-1 floor. 'auto' derives "
+                        'the bound from sampling theory -- see '
+                        'points_per_period. None disables.',
                    unit='',
                    default=None),
+         ## THE SCIENTIFIC SETTING (owner request): N points per period of a
+         ## sinusoid is per-step excursion <= 2*pi*swing/N, so 'auto' bounds
+         ## the step to (2*pi/N) * max(static source swing, running signal
+         ## maximum).  The source term (the signal_scale element hook)
+         ## anchors the bound at signal BIRTH -- every running-reference
+         ## scheme h-cancels there, the trap this file now documents three
+         ## times -- and the running per-unit-group maximum grows the bound
+         ## as an amplifier's output reveals gain the sources cannot know.
+         Parameter(name='points_per_period',
+                   desc="Sampling density behind max_dv_step/max_di_step = "
+                        "'auto': at least this many points per period of a "
+                        'full-swing sinusoid (per-step excursion '
+                        '2*pi*swing/N). 64 resolves harmonics to ~20th '
+                        'order with Nyquist margin.',
+                   unit='',
+                   default=64),
          Parameter(name='timestep_max',
                    desc='Largest accepted timestep; None means tend/50, the '
                         'SPICE TMAX default. Decoupled from timestep, which '
@@ -1650,26 +1669,49 @@ class Transient(Analysis):
             etol = np.where(mask, etol, 1e30)
         return etol
 
+    def _source_signal_scales(self):
+        """(v_scale, i_scale): the largest swing any source declares, via
+        the signal_scale element hook, walked recursively."""
+        vs, is_ = 0.0, 0.0
+        def walk(circuit):
+            nonlocal vs, is_
+            for element in getattr(circuit, 'elements', {}).values():
+                hook = getattr(element, 'signal_scale', None)
+                if hook is not None:
+                    v, i = hook()
+                    vs, is_ = max(vs, float(v)), max(is_, float(i))
+                walk(element)
+        walk(self.cir)
+        return vs, is_
+
     def _dv_step_bounds(self):
-        """(voltage bound, current bound) for the per-step excursion check,
-        inf when disabled -- floored at vabstol/iabstol, because a bound
-        below the Newton solve's own accuracy measures noise."""
-        ## FACTOR semantics (owner decision): the bound is
-        ## max(factor, 1) * abstol, so the resolution check is coupled to
-        ## the tolerance family exactly as the LTE is -- tighten vabstol
-        ## and the check tightens with it -- and a factor below 1 clamps
-        ## to the solver-noise floor.
-        ## The LTE family's abstols, not Newton's -- the owner's stated
-        ## rationale is that the LTE checks scale with these, so the
-        ## excursion check must scale with the SAME quantities.  With the
-        ## default lte_vabstol = 1e-12, a factor of 2e11 bounds steps to
-        ## 0.2 V; the clamp-at-1 floor is exactly the solver-noise scale.
-        bv = float('inf') if self.par.max_dv_step is None else \
-            max(float(self.par.max_dv_step), 1.0) \
-            * float(self.par.lte_vabstol)
-        bi = float('inf') if self.par.max_di_step is None else \
-            max(float(self.par.max_di_step), 1.0) \
-            * float(self.par.lte_iabstol)
+        """((bv_static, cv_rel), (bi_static, ci_rel)) for the excursion
+        check: effective bound = max(static, rel * running unit-group max).
+
+        Manual factor f: static = max(f, 1) * lte_abstol (the LTE family's
+        abstols -- the owner's rationale is that the LTE scales with these,
+        so this check must too; clamp-at-1 = the solver-noise floor),
+        rel = 0.  'auto' (sampling theory, owner request): rel = 2*pi/N for
+        N = points_per_period, static = max(rel * source swing,
+        lte_abstol) -- source-anchored at signal birth, where a running
+        reference h-cancels.  None: (inf, 0), disabled."""
+        import math
+        c_rel = 2.0 * math.pi / float(self.par.points_per_period)
+        v_src, i_src = (self._source_signal_scales()
+                        if 'auto' in (self.par.max_dv_step,
+                                      self.par.max_di_step) else (0.0, 0.0))
+
+        def resolve(knob, abstol, src):
+            if knob is None:
+                return float('inf'), 0.0
+            if knob == 'auto':
+                return max(c_rel * src, abstol), c_rel
+            return max(float(knob), 1.0) * abstol, 0.0
+
+        bv = resolve(self.par.max_dv_step,
+                     float(self.par.lte_vabstol), v_src)
+        bi = resolve(self.par.max_di_step,
+                     float(self.par.lte_iabstol), i_src)
         return bv, bi
 
     def _state_row_mask(self, x_ref):
@@ -2056,6 +2098,9 @@ class Transient(Analysis):
         ## in a way that showed.
         self._dt_last = None
         self._dt_last2 = None
+        ## Excursion-check running maxima are per-run state too.
+        self._dv_run_v = 0.0
+        self._dv_run_i = 0.0
         
         X.append(copy(x))
         if hasattr(self.cir, 'accept_step'):
@@ -2358,8 +2403,19 @@ class Transient(Analysis):
                 ## currents are not bounded by it.
                 if (self.par.max_dv_step is not None
                         or self.par.max_di_step is not None) and accept:
-                    _bv, _bi = self._dv_step_bounds()
+                    (_bvs, _cvr), (_bis, _cir_) = self._dv_step_bounds()
                     _nn = len(self.cir.nodes)
+                    _xa = np.abs(np.asarray(X[-1], dtype=float))
+                    ## Running unit-group maxima, ACCEPTED history only --
+                    ## anchored before this candidate, so the relative term
+                    ## cannot h-cancel at a signal birth.
+                    self._dv_run_v = max(getattr(self, '_dv_run_v', 0.0),
+                                         float(np.max(_xa[:_nn])))
+                    self._dv_run_i = max(getattr(self, '_dv_run_i', 0.0),
+                                         float(np.max(_xa[_nn:]))
+                                         if _nn < len(_xa) else 0.0)
+                    _bv = max(_bvs, _cvr * self._dv_run_v)
+                    _bi = max(_bis, _cir_ * self._dv_run_i)
                     _d = np.abs(np.asarray(x, dtype=float)
                                 - np.asarray(X[-1], dtype=float))
                     _ratio = float(np.max(_d[:_nn])) / _bv
@@ -2561,6 +2617,9 @@ class Transient(Analysis):
         ## in a way that showed.
         self._dt_last = None
         self._dt_last2 = None
+        ## Excursion-check running maxima are per-run state too.
+        self._dv_run_v = 0.0
+        self._dv_run_i = 0.0
         
         X.append(copy(x))
         if hasattr(self.cir, 'accept_step'):
@@ -2813,8 +2872,18 @@ class Transient(Analysis):
                     ## only step-size control tracking the waveform.
                     if (self.par.max_dv_step is not None
                             or self.par.max_di_step is not None):
-                        _bv, _bi = self._dv_step_bounds()
+                        (_bvs, _cvr), (_bis, _cir_) = self._dv_step_bounds()
                         _nn = len(self.cir.nodes)
+                        _xa = np.abs(np.asarray(X[-1], dtype=float))
+                        self._dv_run_v = max(
+                            getattr(self, '_dv_run_v', 0.0),
+                            float(np.max(_xa[:_nn])))
+                        self._dv_run_i = max(
+                            getattr(self, '_dv_run_i', 0.0),
+                            float(np.max(_xa[_nn:]))
+                            if _nn < len(_xa) else 0.0)
+                        _bv = max(_bvs, _cvr * self._dv_run_v)
+                        _bi = max(_bis, _cir_ * self._dv_run_i)
                         _d = np.abs(np.asarray(x_curr, dtype=float)
                                     - np.asarray(X[-1], dtype=float))
                         _ratio = float(np.max(_d[:_nn])) / _bv

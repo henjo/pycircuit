@@ -455,7 +455,22 @@ existing TLine tests before/after, per house rules.
   corrected); (2) `max_di_step` is the current-row sibling — on an
   algebraic network a current waveform is otherwise bounded only through
   Δv times the conductances, with gm as an amplifier.  Worked example:
-  factor 2e11 at the default lte_vabstol=1e-12 bounds steps to 0.2 V.  The gate's first e2e
+  factor 2e11 at the default lte_vabstol=1e-12 bounds steps to 0.2 V.
+  **`'auto'` (owner request, the scientific setting)**: N points per period
+  of a sinusoid ⇔ per-step excursion ≤ 2π·swing/N, so the auto bound is
+  (2π/N)·max(declared source swing, running unit-group maximum), N =
+  `points_per_period` (default 64 — resolves harmonics to ~20th order with
+  Nyquist margin).  The source term comes from the new `signal_scale`
+  element hook (VS/VSin/VPulse/IS/ISin/IPulse) and anchors the bound at
+  signal BIRTH, where every running-reference scheme h-cancels (documented
+  three times over in this campaign); the running term (P7's `ref_running`
+  on JAX, accepted-only scalars on the CPU) grows the bound as an
+  amplifier's output reveals gain the sources cannot know.  Measured on the
+  amplifier: anchor 0.0982 V (va=1, N=64), per-step max 0.847 ≤ 2π/64·10 V
+  once the 10 V output emerges, 130/129 points CPU/JAX — no hand-computed
+  constant anywhere.  Curvature equidistribution (concentrating points at
+  peaks and corners by bounding the interpolation error itself) is the
+  recorded reconsider-if beyond this.  The gate's first e2e
   use of VCCS under the JAX toolkit also found and fixed that element's
   in-place mutation (immutable-array crash) — and the first fix attempt
   (numpy intermediate) broke the SYMBOLIC toolkit in turn (sympy gm cannot
