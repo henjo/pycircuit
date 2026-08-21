@@ -376,8 +376,27 @@ existing TLine tests before/after, per house rules.
 
 ## Roadmap items (neither backend has it; noting so silence isn't read as parity)
 
-- **P18** transient-level continuation on a hard step (gmin ramp at a failed time
-  point) — the review's "deliberately unscheduled" gmin item, unchanged.
+- **P18** continuation at a failed solve — the review's "deliberately
+  unscheduled" item, **re-scoped 2026-08-21 (owner discussion)** with the
+  industry vocabulary kept straight: **`gmin`** is the junction-parallel
+  conductance (across each pn junction, bounding its cutoff conductance —
+  the deformed circuit is a physical leaky diode, the linear subnetwork is
+  untouched, and the homotopy tracks the physical branch); **`gshunt`** is
+  node-to-ground (SPICE3's dynamic diagonal stepping), cruder but the only
+  one that rescues a singular G from floating nodes.  Design: a
+  junction-`gmin` ladder as the primary continuation, built on the
+  machinery that already exists — `pcnr_junctions(cir)` enumerates the
+  (node_a, node_b) pairs and PCNR's `_scatter_junction_G` scatters exactly
+  the needed 4-entry pattern; F-side term ±gmin·(v_a − v_b) — with a
+  `gshunt` rung reserved as the singular-matrix fallback.  Ramp in decades
+  to **exactly zero**, and only a gmin-free converged solution may be
+  accepted: residue in a committed point is the P22 inconsistency-floor
+  trap by its measured signature.  Branch-tracking caveat (bistable
+  circuits) recorded.  Order: batched DC first (converts the P21
+  junction-lane raise into a rescue; static ramp schedule around the
+  existing traced Newton, vmapped per lane for free), CPU DC second, the
+  failed-time-point variant last (history rings must never see ladder-era
+  iterates).
 - **P21** batched DC operating point, so `solve_batched` can start from bias. The
   loud `uic=True` refusal stays the contract until then.
 
