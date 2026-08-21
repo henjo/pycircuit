@@ -533,6 +533,9 @@ class FangState(NamedTuple):
     iters: Any
     done: Any
     converged: Any
+    ## PCNR-inside-Fang: the per-junction limited unknowns.  Zero-length when
+    ## PCNR is off, so the state shape stays static either way.
+    v_lim: Any = None
 
 
 def _fang_lte(x_new, state, h, first_order):
@@ -556,7 +559,8 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
                     hold_h, eval_method='gear', reltol=1e-4,
                     xtol=1e-12, lte_abstol=1e-12, trtol=7.0, maxiter=100,
                     params_tree=None, gamma_min=0.7, gamma_max=3.0, eta=0.15,
-                    dt_min=1e-18, dt_max=jnp.inf):
+                    dt_min=1e-18, dt_max=jnp.inf, pcnr_meta=None,
+                    pcnr_VT=0.025):
     from pycircuit.circuit._lte_kernels import (step_for_error_ratio,
                                                 euler_companion_dh,
                                                 bdf2_companion_dh)
@@ -570,7 +574,7 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
     ## The band cannot be evaluated before two accepted points exist.
     no_hist = state.h_history[0] == 0.0
 
-    def assemble(x, h):
+    def assemble(x, h, v_lim):
         st_h = state._replace(dt=h)
         I_G = circuit.i(x, params_tree=params_tree)
         G_G = circuit.G(x, params_tree=params_tree)
@@ -579,15 +583,43 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
         I_u = circuit.u(t_prev + h, analysis='tran', params_tree=params_tree)
         i_C, G_eq = compute_integration(q_C, C_C, st_h, method=eval_method,
                                         first_order=first_order)
-        return I_G + i_C + I_u, G_G + G_eq, q_C
+        F, J = I_G + i_C + I_u, G_G + G_eq
+        if pcnr_meta is None:
+            return F, J, q_C, None
+        ## PCNR-INSIDE-FANG: the CPU's design note is the whole argument --
+        ## the Schur-reduced (f_eff, J_eff) IS an n-sized system whose Newton
+        ## step equals predict's dx_mna, so fang's machinery works on it
+        ## unchanged, eq (18)'s second solve included (same factors).
+        j_ra, j_rb, j_IS = pcnr_meta
+        v_node = x[j_ra] - x[j_rb]
+        i_n, g_n = _junction_terms(v_node, j_IS, pcnr_VT)
+        i_l, g_l = _junction_terms(v_lim, j_IS, pcnr_VT)
+        F = F.at[j_ra].add(i_l - i_n)
+        F = F.at[j_rb].add(-(i_l - i_n))
+        J = _scatter_junction_G(J, j_ra, j_rb, g_n, -1.0)
+        g_lim = v_lim - v_node
+        J = _scatter_junction_G(J, j_ra, j_rb, g_l, +1.0)
+        F = F.at[j_ra].add(-g_l * g_lim)
+        F = F.at[j_rb].add(g_l * g_lim)
+        return F, J, q_C, g_lim
 
     def body(fs: FangState):
-        x, h = fs.x, fs.h
-        f, J, _q_x = assemble(x, h)
+        from pycircuit.circuit._limiting import _pnjlim_branchless
+        x, h, v_lim = fs.x, fs.h, fs.v_lim
+        f, J, _q_x, g_lim = assemble(x, h, v_lim)
         J_sub = jnp.delete(jnp.delete(J, irefnode, axis=0), irefnode, axis=1)
         dx0_sub = jnp.linalg.solve(J_sub, -jnp.delete(f, irefnode))
         dx0 = jnp.insert(dx0_sub, irefnode, 0.0)
         x1 = x + dx0
+        if pcnr_meta is not None:
+            ## PCNR's CORRECT phase: the MNA update is taken in FULL (that is
+            ## the method's point); only each device's own unknown is limited.
+            j_ra, j_rb, j_IS = pcnr_meta
+            dx_lim = -(g_lim + (-dx0[j_ra] + dx0[j_rb]))
+            v1 = _pnjlim_branchless(v_lim + dx_lim, v_lim, pcnr_VT, j_IS,
+                                    jnp.log)
+        else:
+            v1 = v_lim
 
         ## Stage 2: has the step size earned any attention?
         lte, h0, _h1 = _fang_lte(x1, state, h, first_order)
@@ -599,6 +631,13 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
         conv_x = jnp.all(jnp.abs(dx0)
                          < reltol * jnp.maximum(jnp.abs(x1), jnp.abs(x))
                          + xtol)
+        if pcnr_meta is not None:
+            ## BOTH residuals: converging on dx alone can return
+            ## v_lim != e_a - e_b -- a vector that is not a solution of the
+            ## circuit, whose LTE then reads low (the CPU's measured
+            ## half-wave lesson, applied to this path from the start).
+            conv_x = jnp.logical_and(conv_x, jnp.max(jnp.abs(g_lim)) < (
+                reltol * jnp.maximum(jnp.max(jnp.abs(v1)), 1.0) + 1e-12))
 
         ## A held step whose error is over the band is reported unconverged so
         ## the caller shrinks and retries -- exactly the CPU's hold_h return.
@@ -607,7 +646,7 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
 
         def plain(_):
             ## hold_h, in-band, or no history: nothing to solve for h.
-            return x1, h, conv_x, jnp.asarray(False)
+            return x1, h, v1, conv_x, jnp.asarray(False)
 
         def solve_h(_):
             ## Sec. 3.4: the new step from the error RATIO, eq (17) inverted
@@ -640,26 +679,42 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
             dxh_sub = jnp.linalg.solve(J_sub, -jnp.delete(p, irefnode))
             dxh = jnp.insert(dxh_sub, irefnode, 0.0)
             x_corr = x1 + dxh * dh
+            if pcnr_meta is not None:
+                ## v_lim tracks the branch voltage: the eq (18) correction
+                ## must move it too, or the loop can return with the exact
+                ## v_lim != e_a - e_b inconsistency the g_lim test guards
+                ## (the CPU learned this as a stage-4 defect).
+                j_ra2, j_rb2, _ = pcnr_meta
+                v_corr = v1 + (dxh[j_ra2] - dxh[j_rb2]) * dh
+            else:
+                v_corr = v1
 
             done = jnp.logical_and(conv_x,
                                    jnp.logical_and(~saturated,
                                                    jnp.abs(dh) < eta * h_new))
-            return x_corr, h_new, done, jnp.asarray(False)
+            return x_corr, h_new, v_corr, done, jnp.asarray(False)
 
         take_plain = jnp.logical_or(hold_h,
                                     jnp.logical_or(eps_ok, no_hist))
-        x_out, h_out, done, _ = jax.lax.cond(take_plain, plain, solve_h, None)
+        x_out, h_out, v_out, done, _ = jax.lax.cond(take_plain, plain,
+                                                    solve_h, None)
         done = jnp.logical_or(done, held_over)
         conv = jnp.logical_and(done, ~held_over)
         return FangState(x=x_out, h=h_out, iters=fs.iters + 1,
-                         done=done, converged=conv)
+                         done=done, converged=conv, v_lim=v_out)
 
     def cond(fs: FangState):
         return jnp.logical_and(~fs.done, fs.iters < maxiter)
 
-    init = FangState(x=extrapolate_predictor(state), h=h_entry,
+    x0 = extrapolate_predictor(state)
+    if pcnr_meta is not None:
+        _ra0, _rb0, _ = pcnr_meta
+        v0 = x0[_ra0] - x0[_rb0]
+    else:
+        v0 = jnp.zeros(0)
+    init = FangState(x=x0, h=h_entry,
                      iters=jnp.asarray(0), done=jnp.asarray(False),
-                     converged=jnp.asarray(False))
+                     converged=jnp.asarray(False), v_lim=v0)
     final = jax.lax.while_loop(cond, body, init)
     ## maxiter exhaustion without done: unconverged.
     return final
@@ -861,7 +916,8 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 xtol=xtol, lte_abstol=lte_abstol, trtol=trtol,
                 maxiter=maxiter, params_tree=params_tree,
                 gamma_min=gamma_min, gamma_max=gamma_max, eta=eta,
-                dt_min=dt_min, dt_max=dt_max)
+                dt_min=dt_min, dt_max=dt_max, pcnr_meta=pcnr_meta,
+                pcnr_VT=pcnr_VT)
             ## Re-enter the shared accept machinery with fang's verdict: the
             ## solved h is both the step taken and (clipped) the next guess --
             ## "the solved step carries forward" is the method's whole point.
@@ -1285,10 +1341,6 @@ class JAXTransient(Analysis):
             ## No participating device: fall through to the plain Newton,
             ## as the CPU's solve_timestep does.
             return None, VT
-        if self.par.coupled_lte:
-            raise NotImplementedError(
-                'pcnr inside the coupled (Fang) path is CPU-only for now '
-                '(doc/backend_parity_260821.md, P19 scoping).')
         return meta, VT
 
     def _coupled_band(self):
@@ -1432,12 +1484,12 @@ class JAXTransient(Analysis):
         
         _gm, _gx, _eta = self._coupled_band()
         _pcnr_meta, _pcnr_VT = self._pcnr_setup()
-        if self.par.coupled_lte and n_tlines > 0:
+        if (self.par.coupled_lte or _pcnr_meta is not None) and n_tlines > 0:
             raise NotImplementedError(
-                'coupled_lte does not support TLine on this backend yet: the '
-                'coupled assembly does not apply the delay-line history, and '
-                'running without it would silently drop the reflections. Use '
-                'coupled_lte=False, or the CPU coupled path.')
+                'coupled_lte/pcnr do not support TLine on this backend yet: '
+                'their traced assemblies do not apply the delay-line history, '
+                'and running without it would silently drop the reflections. '
+                'Use the standard path, or the CPU.')
 
         def run_chunk(s, p_tree):
             return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear', params_tree=p_tree, reltol=self.par.reltol, abstol=self._newton_abstol(n),
@@ -1630,12 +1682,12 @@ class JAXTransient(Analysis):
         # but tend is a runtime parameter.
         _gm, _gx, _eta = self._coupled_band()
         _pcnr_meta, _pcnr_VT = self._pcnr_setup()
-        if self.par.coupled_lte and n_tlines > 0:
+        if (self.par.coupled_lte or _pcnr_meta is not None) and n_tlines > 0:
             raise NotImplementedError(
-                'coupled_lte does not support TLine on this backend yet: the '
-                'coupled assembly does not apply the delay-line history, and '
-                'running without it would silently drop the reflections. Use '
-                'coupled_lte=False, or the CPU coupled path.')
+                'coupled_lte/pcnr do not support TLine on this backend yet: '
+                'their traced assemblies do not apply the delay-line history, '
+                'and running without it would silently drop the reflections. '
+                'Use the standard path, or the CPU.')
 
         @jax.jit
         def run_chunk(s):

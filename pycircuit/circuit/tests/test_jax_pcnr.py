@@ -126,13 +126,76 @@ def test_pcnr_without_junctions_falls_through():
     assert np.array_equal(a, b)
 
 
-def test_pcnr_inside_coupled_is_refused():
+def test_pcnr_inside_coupled_matches_cpu():
+    """RE-DERIVED: this began life as a refusal test; PCNR-inside-Fang is now
+    ported (the Schur-reduced pair IS an n-sized system, so fang's machinery
+    runs on it unchanged -- the CPU's own design note).  Measured at landing:
+    9.7e-3 peak deviation on a 5 V rectifier, with the CPU taking 7.4x the
+    steps (its quarter-period Sin breakpoints, not the method)."""
     from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.transient import Transient
+
+    tran_c = Transient(_rectifier(), toolkit=numeric, pcnr=True,
+                       reltol=1e-5, uic=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res_c = tran_c.solve(tend=2e-3, timestep=2e-5, coupled_lte=True)
+    tc = np.asarray(res_c.sweep_values, float)
+    vc = np.asarray(res_c.v('b'), float).reshape(-1)
 
     def run():
-        tran = JAXTransient(_rectifier(), pcnr=True, coupled_lte=True)
-        with pytest.raises(NotImplementedError, match='coupled'):
-            tran.solve(gnd, tend=1e-5, timestep=1e-6, uic=True)
+        tran = JAXTransient(_rectifier(), reltol=1e-5, pcnr=True,
+                            coupled_lte=True)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(gnd, tend=2e-3, timestep=2e-5, uic=True)
+        return (np.asarray(res.sweep_values, float),
+                np.asarray(res.v('b'), float).reshape(-1))
+
+    tj, vj = _with_jax(run)
+    assert tj[-1] == pytest.approx(2e-3, rel=1e-12)
+    dev = float(np.max(np.abs(vc - np.interp(tc, tj, vj))))
+    assert dev < 3e-2, 'coupled+pcnr drifted from CPU: %.3e' % dev
+
+
+def test_pcnr_inside_coupled_solves_the_cold_start():
+    """The composed value demonstration: the cold-start junction that kills
+    plain Newton ALSO kills plain coupled -- and coupled+PCNR completes."""
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.nrsolver import NoConvergenceError
+
+    def run(pcnr):
+        tran = JAXTransient(_cold_start(), reltol=1e-5, firststep=1e-6,
+                            coupled_lte=True, pcnr=pcnr)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(gnd, tend=2e-5, timestep=1e-6, uic=True)
+        return np.asarray(res.v('b'), float).reshape(-1)
+
+    with pytest.raises(NoConvergenceError):
+        _with_jax(lambda: run(False))
+    v = _with_jax(lambda: run(True))
+    assert np.all(np.isfinite(v))
+    assert v[-1] == pytest.approx(4.367, abs=0.01)
+
+
+def test_pcnr_refuses_tline():
+    """The traced PCNR assembly does not apply the delay-line history --
+    a stage-2 gap the coupled+pcnr work exposed, closed the same way as
+    the coupled TLine refusal: loudly."""
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.elements import TLine
+
+    def run():
+        c = SubCircuit()
+        c.add_node('a'); c.add_node('b')
+        c['V1'] = VS('a', gnd, v=1.0)
+        c['T1'] = TLine('a', gnd, 'b', gnd, Z0=50.0, TD=1e-9)
+        c['D'] = Diode('b', 'c')
+        c['R1'] = R('c', gnd, r=50.0)
+        tran = JAXTransient(c, pcnr=True)
+        with pytest.raises(NotImplementedError, match='TLine'):
+            tran.solve(gnd, tend=1e-8, timestep=1e-10, uic=True)
 
     _with_jax(run)
 
