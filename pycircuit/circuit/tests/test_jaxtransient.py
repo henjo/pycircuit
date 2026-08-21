@@ -730,8 +730,14 @@ def test_solve_batched_runs_and_honours_timestep():
             cir = _rc_circuit()
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
+                ## 'C', not 'R': R has no eval_*_pure, so an R override is not
+                ## batchable and now raises (doc/transient_review_260820.md,
+                ## F2(a)).  The old {'R': ...} here was a silent no-op -- equal
+                ## values in both lanes, ignored either way.  C is batchable and
+                ## the value matches the circuit's own, so this test keeps
+                ## measuring what it always measured: timestep honouring.
                 res = JAXTransient(cir).solve_batched(
-                    gnd, override_params_tree={'R': {'r': jnp.array([[1e3], [1e3]])}},
+                    gnd, override_params_tree={'C': {'c': jnp.array([[1e-6], [1e-6]])}},
                     tend=tend, timestep=timestep, uic=True)
             return res
         res = _with_jax_toolkit(go)

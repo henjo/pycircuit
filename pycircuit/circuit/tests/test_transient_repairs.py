@@ -1372,8 +1372,8 @@ def test_gate_4h3_a_breakpoint_inside_a_fixed_step_still_drops_the_order():
     seen = []
     real = tran.get_diff
 
-    def spy(q, C_, method=None):
-        out = real(q, C_, method)
+    def spy(q, C_):
+        out = real(q, C_)
         seen.append(tran._effective_method)
         return out
 
