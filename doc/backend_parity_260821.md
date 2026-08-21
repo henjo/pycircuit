@@ -380,6 +380,27 @@ existing TLine tests before/after, per house rules.
   point) — the review's "deliberately unscheduled" gmin item, unchanged.
 - **P21** batched DC operating point, so `solve_batched` can start from bias. The
   loud `uic=True` refusal stays the contract until then.
+- **P22** *(added 2026-08-21, owner request)* — re-derive the coupled (Fang)
+  estimator at order 2, so the coupled path can share the shipped Gear-2
+  default instead of carving out its own Euler default.  Everything around
+  eq (6) was derived and measured at order 1: the acceptance band
+  (0.7–3.0), the eta bracket, the sec. 3.4 step-correction law, and the
+  `bordered` branch's `w'/w` denominator with its measured record.  Landing
+  Gear-2 underneath the untouched machinery was measured to (a) livelock
+  the coupled rectifier — NoConvergenceError at t=1.25e-4, h collapsed to
+  6.3e-12, the starting evidence for this item — (b) mistune `bordered`'s
+  grow-back (1181 points where 'approx' took 350 on the pulsed RC), and
+  (c) break the 127/127 cross-backend step parity (96 vs 127).  Not
+  uniformly worse — 'approx'+Gear-2 completed the pulsed RC in 2.8× fewer
+  steps — which is exactly why the re-derivation is worth doing rather
+  than the combination being refused.  Scope: re-derive the band constants
+  and step law at degree 2, re-derive `bordered`'s denominator pairing,
+  fix whatever the rectifier livelock's per-iteration trace pins (the
+  TLine campaign's probe recipe applies verbatim), then flip the coupled
+  default on BOTH backends in one commit and retire the
+  `_get_integrator(coupled=True)` carve-out.  Explicit
+  `integrator=Gear2Integrator()` on the coupled path is honoured today for
+  anyone who wants to experiment ahead of it.
 
 ---
 

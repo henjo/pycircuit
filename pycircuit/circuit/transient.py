@@ -282,8 +282,10 @@ class Transient(Analysis):
             ## rectifier (NoConvergenceError at t=1.25e-4, h collapsed to
             ## 6.3e-12) and to break the step parity (96 vs 127).  An
             ## EXPLICIT integrator is honoured on either path -- this guards
-            ## only what the default reaches.  Reconsider if the coupled
-            ## method's estimator is ever re-derived at order 2.
+            ## only what the default reaches.  Retiring this carve-out is
+            ## roadmap item P22 (doc/backend_parity_260821.md): re-derive
+            ## the coupled estimator at order 2, then flip both backends'
+            ## coupled default in one commit.
             return EulerIntegrator() if coupled else Gear2Integrator()
         if not isinstance(integrator, Integrator):
             raise TypeError(
