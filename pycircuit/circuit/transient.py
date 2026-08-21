@@ -266,6 +266,12 @@ class Transient(Analysis):
          Parameter(name='iabstol', 
                    desc='Absolute current error tolerance', unit='A', 
                    default=1e-12),
+         ## P2: same name and default as the JAX backend's Parameter.
+         Parameter(name='TRTOL',
+                   desc='LTE tolerance multiplier (Spectre lteratio): the '
+                        'allowed truncation error is this many times the '
+                        'Newton-solve tolerance',
+                   unit='', default=7.0),
          ## NEWTON's x-tolerance on node rows, and nothing else.  Shared with `DC`,
          ## which uses the same 1e-12, so the operating point and the steps after it
          ## are solved to the same accuracy.
@@ -961,7 +967,15 @@ class Transient(Analysis):
     ## The LTE tolerance multiplier.  `TRTOL` in this module, `lteratio` in
     ## Spectre: the LTE estimate is deliberately conservative, so the allowed
     ## truncation error is this many times the Newton-solve tolerance.
-    LTERATIO = 7.0
+    ## P2 (doc/backend_parity_260821.md): settable at last -- the asymmetry
+    ## was REVERSED, JAX declaring `TRTOL` as a Parameter while this side
+    ## hardcoded a class constant, so a user tuning Spectre's `lteratio`
+    ## could do it on one backend only.  A property rather than the old
+    ## class attribute, so every existing `self.LTERATIO` read follows the
+    ## Parameter and the two cannot drift.
+    @property
+    def LTERATIO(self):
+        return float(self.par.TRTOL)
 
     def _lte_abstol_vector(self):
         """The absolute floor of the LTE tolerance, per unknown.

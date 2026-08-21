@@ -302,6 +302,24 @@ existing TLine tests before/after, per house rules.
 sitting; every item lands with its test; the dead-knob scan and parameter walk guard
 them afterward. P1 first: it is the safety item.
 
+> **EXECUTED 2026-08-21**, all eight, gated by
+> `test_backend_parity_phaseA.py` plus the dead-knob scan (P5's allowlist
+> entry deleted — the scan itself is that item's test).  Two findings made
+> during execution: threading `analysis` (P5) reached two inner loops the
+> item's text did not name (`newton_inner_loop`, `pcnr_inner_loop`), and the
+> item's "set the declared default" half is load-bearing — the inherited
+> `Analysis` default is None, so threading without re-declaring turned every
+> source's u() to zeros (caught by the rc-charging gate as an all-zero
+> waveform, 26 failures); and the
+> P2 behavioral assertion is CPU-only by measurement — on every probed
+> configuration the JAX gear-2 charge LTE sits so far under tolerance that
+> the run is step-cap-limited and NO tolerance knob moves the step count
+> (reltol 1e-4 vs 1e-6: identical 209-step runs), an order/headroom artifact
+> worth knowing when comparing shipped defaults (P6's territory), so the JAX
+> side pins the kernel contract instead (`ywr_error_ratio` scales exactly as
+> 1/TRTOL).  `solve_batched`'s floor default moved 1e-15 → 1e-18 (the shared
+> `minstep` Parameter), per this item's own text.
+
 **Phase B (schedule):** P6 (+ the default-order decision, which is the owner's) →
 P12 (delete dead code, share real machinery) → P8 → P9 → P7 → P11 → P16. P6 before
 P8/P9 because both compose with the integrator choice; P12 early because it removes

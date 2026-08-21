@@ -522,7 +522,7 @@ def test_f19_forced_lte_counter_exists_and_is_zero_on_clean_runs():
         cir['C1'] = C('out', gnd, c=1e-6)
         tran = JAXTransient(cir)
         tran.solve(gnd, tend=1e-4, timestep=1e-5, uic=True)
-        assert tran.statistics.forced_lte_steps == 0
+        assert tran.statistics.force_accepts == 0
     finally:
         circuit_mod.default_toolkit = saved
 
