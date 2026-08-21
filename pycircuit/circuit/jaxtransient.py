@@ -646,21 +646,16 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
     h_ceil = jnp.minimum(dt_max, h_entry * MAX_GROWTH)
     target = (gamma_min * gamma_max) ** 0.5
     first_order = effective_first_order(state)
-    ## The band cannot be evaluated before two accepted points exist -- NOR on
-    ## the step after a breakpoint landing (force_first_order).  The probe
-    ## that earned this line: at a FROM-ZERO kink every signal scales
-    ## together, dev is proportional to ref, and h cancels out of the
-    ## relative LTE -- measured as err = 1/(TRTOL*reltol) = 1428.6 EXACTLY,
-    ## h-independent from 4.4e-11 down to the excursion floor, livelocking
-    ## the retry to dt_min.  Capacitive rows escape (the integrator makes
-    ## dev ~ h*ref); algebraic rows -- resistive nodes, TLine ports -- are
-    ## trapped at any h.  Gracing the marked step admits two on-kink points
-    ## into the history, after which degree-1 extrapolation of a piecewise-
-    ## linear signal is exact and the band anchors again.  Kinks that are
-    ## NOT registered breakpoints get the same treatment via the wavefront
-    ## arrivals collect_breakpoints now emits.
-    no_hist = jnp.logical_or(state.h_history[0] == 0.0,
-                             state.force_first_order)
+    ## The band cannot be evaluated before two accepted points exist.  The
+    ## post-breakpoint grace on delay-line circuits arrives through this same
+    ## test: the accept path EMPTIES h_history on a breakpoint landing when
+    ## the circuit has TLines (see do_accept), so the next step reads as
+    ## history-free here.  An explicit `or force_first_order` term was tried
+    ## and reverted -- it duplicated the reset's effect on TLine circuits and
+    ## extended a band-blind step to every breakpoint on circuits that never
+    ## needed it, the exact accuracy cost the CPU measured at 9.8e-4 ->
+    ## 5.4e-3 median on the pulsed RC when its reset ran ungated.
+    no_hist = state.h_history[0] == 0.0
 
     def assemble(x, h, v_lim):
         st_h = state._replace(dt=h)
@@ -1179,7 +1174,7 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
             h_hist_new = jnp.roll(state.h_history, shift=1, axis=0).at[0].set(state.dt)
             landed = jnp.any(
                 jnp.abs((state.t + state.dt) - t_breaks_array) <= t_eps)
-            if coupled:
+            if coupled and tline_params.shape[0] > 0:
                 ## COUPLED ONLY: a landing zeroes the step ring, restarting the
                 ## history as a cold start does.  WHY: history that STRADDLES a
                 ## kink poisons the coupled LTE two distinct ways, both traced
@@ -1197,7 +1192,12 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 ## post-kink.  The standard path keeps its measured one-step
                 ## force_first_order (F11) -- its integrator-side LTE decays
                 ## with h, so it never livelocks; a two-step reset would
-                ## change its recorded step counts for no defect.
+                ## change its recorded step counts for no defect.  GATED ON
+                ## DELAY LINES for the same measured reason as the CPU site:
+                ## unconditional, the reset moved the pulsed-RC coupled-vs-
+                ## standard median from 9.8e-4 to 5.4e-3 V at reltol 1e-5 --
+                ## capacitive rows never needed the grace, and their kink-
+                ## spanning estimate is conservative rather than trapped.
                 h_hist_new = jnp.where(landed,
                                        jnp.zeros_like(h_hist_new),
                                        h_hist_new)

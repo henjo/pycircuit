@@ -171,3 +171,72 @@ def test_neither_method_rejects_a_step_on_a_pulsed_circuit():
             'should be a few percent at worst' \
             % (method, st.rejected_steps, st.accepted_steps)
         assert st.breakpoints_hit > 0, '%s never hit an edge' % method
+
+def test_coupled_tline_matches_standard_path():
+    """The CPU coupled path runs delay lines now -- three fixes, each traced:
+
+    - `TLine.dudt` written (derivative of the history interpolation), so the
+      coupled residual's `p` vector carries the source term it used to refuse.
+    - Kink discipline ported from the JAX fix: the step ring is emptied on a
+      breakpoint landing, source corners are echoed as wavefront arrivals
+      (corner + k*TD), and the solve's growth is capped at the breakpoint --
+      without the cap the entry-h truncation test cleared a corner that the
+      solved h then straddled (measured: entry 6.78e-11 under the 1.2e-9
+      corner, solved 8.97e-11, landing 8.9e-12 past it).
+    - The history interpolation is monotone-limited: a quadratic stencil
+      spanning a recorded kink overshot the reflected EMF to 1.009 against
+      samples bounded by 1.000, and a band-blind step accepted a solution
+      against that phantom, which no later step could reconcile (an
+      h-independent LTE floor of exactly the pollution).
+
+    Gate: the pulsed matched line livelocked at t=2.01e-9 before the fixes
+    (NoConvergenceError, h collapsed to 1e-16); it now lands on tend and
+    matches the standard Gear2 path to 5.6e-16.  The mismatched RC load
+    (its far-end reflection exercises the limiter) completes to the correct
+    steady level: Gamma = 1/3, so vb settles at 2/3 of the 1 V swing.
+    """
+    from pycircuit.circuit.elements import R as _R, C as _C, VPulse, TLine
+    from pycircuit.circuit.integrator import Gear2Integrator
+
+    def line(rc_load):
+        c = SubCircuit()
+        c.add_node('a'); c.add_node('b')
+        c['V1'] = VPulse('s', gnd, v1=0.0, v2=1.0, td=1e-9, tr=2e-10,
+                         tf=2e-10, pw=1e-8, per=1e-7)
+        c['Rs'] = _R('s', 'a', r=50.0)
+        c['T1'] = TLine('a', gnd, 'b', gnd, Z0=50.0, TD=1e-9)
+        c['Rl'] = _R('b', gnd, r=100.0 if rc_load else 50.0)
+        if rc_load:
+            c['Cl'] = _C('b', gnd, c=2e-12)
+        return c
+
+    ## Matched line: bit-close to the standard path.
+    ref = Transient(line(False), toolkit=numeric, reltol=1e-4,
+                    integrator=Gear2Integrator(), uic=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        rr = ref.solve(gnd, tend=8e-9, timestep=2e-10)
+    tr = np.asarray(rr.sweep_values, float)
+    vr = np.asarray(rr.v('b'), float).reshape(-1)
+
+    tran = Transient(line(False), toolkit=numeric, reltol=1e-4, uic=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = tran.solve(gnd, tend=8e-9, timestep=2e-10, coupled_lte=True)
+    t = np.asarray(res.sweep_values, float)
+    vb = np.asarray(res.v('b'), float).reshape(-1)
+    assert t[-1] >= 8e-9 * (1.0 - 1e-9)
+    dev = float(np.max(np.abs(np.interp(tr, t, vb) - vr)))
+    ## Measured 5.551e-16 at landing; 1e-12 leaves margin without letting a
+    ## controller regression hide.
+    assert dev < 1e-12, 'coupled+TLine drifted from standard: %.3e' % dev
+
+    ## Mismatched RC load: must complete and settle at (1 + Gamma)/2 = 2/3.
+    tran2 = Transient(line(True), toolkit=numeric, reltol=1e-4, uic=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res2 = tran2.solve(gnd, tend=8e-9, timestep=2e-10, coupled_lte=True)
+    t2 = np.asarray(res2.sweep_values, float)
+    vb2 = np.asarray(res2.v('b'), float).reshape(-1)
+    assert t2[-1] >= 8e-9 * (1.0 - 1e-9)
+    assert abs(vb2[-1] - 2.0 / 3.0) < 5e-3

@@ -1783,11 +1783,33 @@ class TLine(Circuit):
                     L1 = (t_target - t0) * (t_target - t2) / ((t1 - t0) * (t1 - t2))
                     L2 = (t_target - t0) * (t_target - t1) / ((t2 - t0) * (t2 - t1))
                     
-                    v1 = v1_0 * L0 + v1_1 * L1 + v1_2 * L2
-                    v2 = v2_0 * L0 + v2_1 * L1 + v2_2 * L2
-                    i1 = i1_0 * L0 + i1_1 * L1 + i1_2 * L2
-                    i2 = i2_0 * L0 + i2_1 * L1 + i2_2 * L2
-                    return v1, v2, i1, i2
+                    ## MONOTONE LIMITER, per channel.  A quadratic whose third
+                    ## point sits across a kink in the recorded waveform
+                    ## OVERSHOOTS inside the bracket: measured on a pulsed line
+                    ## (tr=2e-10, TD=1e-9), the stencil (ramp point, corner,
+                    ## flat point) put the reflected EMF at 1.009 where the
+                    ## recorded samples bound it by 1.000 -- and the coupled
+                    ## path accepted a solution against that phantom, which
+                    ## the NEXT solve (its stencil changed by accept_step's
+                    ## pruning) could never reconcile: the solution-LTE hit an
+                    ## h-independent floor of exactly the pollution, and the
+                    ## run livelocked.  A value the quadratic puts OUTSIDE the
+                    ## bracket's own [min, max] is evidence the stencil spans
+                    ## a kink, so that channel falls back to the linear value
+                    ## -- which also makes the result indifferent to whether
+                    ## the pre-bracket point has been pruned yet.  Smooth
+                    ## regions keep the quadratic and its accuracy argument
+                    ## (see the note at the top of this method).
+                    alpha = (t_target - t1) / (t2 - t1)
+                    out = []
+                    for y0, y1, y2 in ((v1_0, v1_1, v1_2), (v2_0, v2_1, v2_2),
+                                       (i1_0, i1_1, i1_2), (i2_0, i2_1, i2_2)):
+                        yq = y0 * L0 + y1 * L1 + y2 * L2
+                        lo, hi = (y1, y2) if y1 <= y2 else (y2, y1)
+                        if yq < lo or yq > hi:
+                            yq = y1 + alpha * (y2 - y1)
+                        out.append(yq)
+                    return tuple(out)
                 else:
                     # Linear interpolation (fallback)
                     t0, v1_0, v2_0, i1_0, i2_0 = self.history[i]
@@ -1832,25 +1854,76 @@ class TLine(Circuit):
         return self.toolkit.array(G)
 
         
+    def _interpolate_history_slope(self, t_target):
+        ## The DERIVATIVE of the polynomial `_interpolate_history` evaluates --
+        ## the same branch structure, differentiated, so `dudt` is exactly
+        ## d/dt of `u` and the coupled residual's `p` vector stays consistent
+        ## with the residual itself.  Outside the recorded span the value
+        ## interpolation clamps to a constant, so the slope there is zero.
+        if len(self.history) < 2:
+            return 0.0, 0.0, 0.0, 0.0
+        if t_target <= self.history[0][0] or t_target >= self.history[-1][0]:
+            return 0.0, 0.0, 0.0, 0.0
+        for i in range(len(self.history) - 1):
+            if self.history[i][0] <= t_target <= self.history[i+1][0]:
+                if i > 0:
+                    t0, v1_0, v2_0, i1_0, i2_0 = self.history[i-1]
+                    t1, v1_1, v2_1, i1_1, i2_1 = self.history[i]
+                    t2, v1_2, v2_2, i1_2, i2_2 = self.history[i+1]
+                    L0 = (t_target - t1) * (t_target - t2) / ((t0 - t1) * (t0 - t2))
+                    L1 = (t_target - t0) * (t_target - t2) / ((t1 - t0) * (t1 - t2))
+                    L2 = (t_target - t0) * (t_target - t1) / ((t2 - t0) * (t2 - t1))
+                    dL0 = (2.0*t_target - t1 - t2) / ((t0 - t1) * (t0 - t2))
+                    dL1 = (2.0*t_target - t0 - t2) / ((t1 - t0) * (t1 - t2))
+                    dL2 = (2.0*t_target - t0 - t1) / ((t2 - t0) * (t2 - t1))
+                    ## Same per-channel limiter as `_interpolate_history`:
+                    ## where the VALUE falls back to linear, the slope must
+                    ## too, or `dudt` stops being d/dt of `u`.
+                    inv = 1.0 / (t2 - t1)
+                    out = []
+                    for y0, y1, y2 in ((v1_0, v1_1, v1_2), (v2_0, v2_1, v2_2),
+                                       (i1_0, i1_1, i1_2), (i2_0, i2_1, i2_2)):
+                        yq = y0 * L0 + y1 * L1 + y2 * L2
+                        lo, hi = (y1, y2) if y1 <= y2 else (y2, y1)
+                        if yq < lo or yq > hi:
+                            out.append((y2 - y1) * inv)
+                        else:
+                            out.append(y0*dL0 + y1*dL1 + y2*dL2)
+                    return tuple(out)
+                else:
+                    t0, v1_0, v2_0, i1_0, i2_0 = self.history[i]
+                    t1, v1_1, v2_1, i1_1, i2_1 = self.history[i+1]
+                    inv = 1.0 / (t1 - t0)
+                    return ((v1_1 - v1_0) * inv, (v2_1 - v2_0) * inv,
+                            (i1_1 - i1_0) * inv, (i2_1 - i2_0) * inv)
+        return 0.0, 0.0, 0.0, 0.0
+
     def dudt(self, t=0.0, epar=None, analysis=None):
-        """STAGE 12B -- deliberately NOT implemented.
+        """d/dt of the delayed-history source vector -- STAGE 12B, at last.
 
-        `TLine`'s source vector is built from the stored history interpolated at
-        ``t - TD``, so ``du/dt`` is the derivative of that interpolation and is a
-        real term, not a zero.  Inheriting `Circuit.dudt`'s zero would silently
-        drop it from ``p`` and leave the coupled solve working on a subtly wrong
-        problem -- the failure mode this whole stage has been chasing.
-
-        Raising instead means a coupled run on a circuit containing a delay line
-        stops and says why.  The standard adaptive path is unaffected.
+        ``u`` builds the reflected EMFs from the history interpolated at
+        ``t - TD``; ``du/dt`` is the time derivative of that interpolation,
+        evaluated by differentiating the SAME polynomial the value uses
+        (`_interpolate_history_slope`), so the coupled path's ``p`` vector is
+        consistent with the residual to machine precision rather than to a
+        finite-difference step.  This used to raise: inheriting the base
+        class's zero would have dropped a real term from ``p`` silently, and
+        the raise stood until the term was written.  The refusal test in
+        test_residual_dh.py was re-derived into a slope-correctness test when
+        this landed.
         """
-        if analysis not in ('tran', 'transient', 'time'):
+        if len(self.history) == 0 or analysis not in ('tran', 'transient',
+                                                      'time'):
             return self.toolkit.zeros(6)
-        raise NotImplementedError(
-            'TLine does not provide du/dt: its source vector comes from the '
-            'delayed history, so the derivative is that of the history '
-            'interpolation. The coupled (Fang) time-stepping method cannot be '
-            'used on a circuit containing a delay line until this is written.')
+        td = self.iparv.TD
+        Z0 = self.iparv.Z0
+        dv1, dv2, di1, di2 = self._interpolate_history_slope(t - td)
+        de1 = dv2 + Z0 * di2
+        de2 = dv1 + Z0 * di1
+        out = [0.0]*6
+        out[4] = -de1
+        out[5] = -de2
+        return self.toolkit.array(out)
 
     def u(self, t=0.0, epar=None, analysis=None):
         if len(self.history) == 0 or analysis not in ('tran', 'transient', 'time'):

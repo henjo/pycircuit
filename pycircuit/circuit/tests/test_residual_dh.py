@@ -115,18 +115,36 @@ def test_a_time_invariant_circuit_has_no_source_term():
     assert np.all(tran.cir.dudt(1e-4, tran.epar, analysis='tran') == 0.0)
 
 
-def test_a_delay_line_refuses_rather_than_contributing_zero():
-    """`TLine`'s du/dt is a real term nobody has written.
-
-    Inheriting the base class's zero would drop it from `p` silently, which is
-    the exact failure mode stage 12B exists to stop repeating.
+def test_a_delay_line_dudt_is_the_derivative_of_its_u():
+    """RE-DERIVED from a refusal test: `TLine.dudt` used to raise because the
+    term was unwritten, and the raise was the honest alternative to inheriting
+    the base class's silent zero.  It is written now -- the derivative of the
+    SAME interpolation polynomial `u` evaluates (limiter included), so the two
+    must agree with a central finite difference of `u` to rounding.  Populated
+    history comes from a real standard-path run, not a synthetic ring.
     """
-    from pycircuit.circuit.elements import TLine
+    from pycircuit.circuit.elements import TLine, VPulse
+    import warnings
     c = SubCircuit()
-    c['vs'] = VSin('a', gnd, va=1.0, freq=1e6)
+    c.add_node('a'); c.add_node('b')
+    c['vs'] = VPulse('s', gnd, v1=0.0, v2=1.0, td=1e-9, tr=2e-10,
+                     tf=2e-10, pw=1e-8, per=1e-7)
+    c['Rs'] = R('s', 'a', r=50.0)
     c['T'] = TLine('a', gnd, 'b', gnd, Z0=50.0, TD=1e-9)
     c['R'] = R('b', gnd, r=50.0)
-    tran = Transient(c, toolkit=numeric)
-    with pytest.raises(NotImplementedError) as exc:
-        tran.cir.dudt(1e-9, tran.epar, analysis='tran')
-    assert 'delay line' in str(exc.value)
+    tran = Transient(c, toolkit=numeric, uic=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        tran.solve(gnd, tend=4e-9, timestep=2e-10)
+    tl = tran.cir['T']
+    assert len(tl.history) > 3
+    worst = 0.0
+    for t in (2.3e-9, 2.75e-9, 3.1e-9, 3.6e-9):
+        eps = 1e-14
+        fd = (np.asarray(tl.u(t + eps, analysis='tran'))
+              - np.asarray(tl.u(t - eps, analysis='tran'))) / (2 * eps)
+        an = np.asarray(tl.dudt(t, analysis='tran'))
+        scale = max(float(np.max(np.abs(fd))), 1.0)
+        worst = max(worst, float(np.max(np.abs(an - fd))) / scale)
+    ## Measured 0.0 at landing; 1e-6 absorbs the FD's own rounding.
+    assert worst < 1e-6, 'dudt drifted from d/dt of u: %.3e' % worst

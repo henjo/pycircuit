@@ -1403,8 +1403,19 @@ class Transient(Analysis):
                     ## with `denom`'s full-history w'/w accumulation above,
                     ## and that pairing, not degree-matching with `err`, is
                     ## what the branch's measured record was tuned on.
+                    ## `x_hist[:len(h_hist)+1]`: points beyond the step ring
+                    ## have no spacing recorded, so the gradient cannot use
+                    ## them -- with the ring full this slices nothing, and
+                    ## after a breakpoint landing empties the ring (the kink
+                    ## discipline below) it keeps PRE-kink points out of the
+                    ## divided differences, which is that discipline's whole
+                    ## point.  NOT the rejected degree-slice of the hygiene
+                    ## note above: that sliced a FULL ring down to the
+                    ## integrator's degree; this only drops points that have
+                    ## no step size to difference against.
                     i_ctrl, q_val, _d_unused = ctrl.lte_gradients(
-                        x_stage1, x_hist, h_hist, h, etol)
+                        x_stage1, list(x_hist)[:len(h_hist) + 1],
+                        h_hist, h, etol)
                     f_lte = err - target
                     dh_raw = -(f_lte + q_val * dx0[i_ctrl]) / denom
                     ## `h_want` is the UNCLAMPED Newton step, kept before the eta
@@ -2436,6 +2447,25 @@ class Transient(Analysis):
         from pycircuit.circuit.nrsolver import NoConvergenceError
         MAX_LTE_ITERS = 10
 
+        ## TLINE WAVEFRONT ARRIVALS -- same fix as the JAX backend's
+        ## collect_breakpoints, discovered there first: a source corner
+        ## reaching a delay line re-emerges at the far end TD later as a
+        ## from-zero kink in an ALGEBRAIC variable that no element reports.
+        ## next_event cannot know it (the TLine does not know the sources),
+        ## so corners are echoed here: each source corner next_event reveals
+        ## schedules {corner + TD, corner + 2*TD}.  Arrivals are breakpoints,
+        ## so landing on one holds the step AND resets the step ring below --
+        ## registering arrivals ALONE was falsified on the JAX side (a
+        ## registered kink without the ring reset still livelocks on the
+        ## h-independent relative LTE).  Deeper bounce ancestry is truncated,
+        ## as every SPICE truncates it; arrivals do not re-echo.
+        import heapq as _heapq
+        _tline_tds = sorted({float(e.iparv.TD)
+                             for _nm, e in self.cir.elements.items()
+                             if type(e).__name__ == 'TLine'})
+        _pending_arrivals = []
+        _seen_corners = set()
+
         while t < tend:
             ## BREAKPOINTS, which this path did not have at all until now.
             ##
@@ -2458,6 +2488,19 @@ class Transient(Analysis):
             if next_t_break <= t + self.par.minbreak * max(abs(t), 1.0):
                 next_t_break = self.cir.next_event(
                     t + (self.par.minbreak * 1e3) * max(abs(t), 1.0))
+            if _tline_tds:
+                if next_t_break < tend and next_t_break not in _seen_corners:
+                    _seen_corners.add(next_t_break)
+                    for _td in _tline_tds:
+                        for _k in (1, 2):
+                            _arr = next_t_break + _k * _td
+                            if _arr < tend:
+                                _heapq.heappush(_pending_arrivals, _arr)
+                _guard = t + self.par.minbreak * max(abs(t), 1.0)
+                while _pending_arrivals and _pending_arrivals[0] <= _guard:
+                    _heapq.heappop(_pending_arrivals)
+                if _pending_arrivals:
+                    next_t_break = min(next_t_break, _pending_arrivals[0])
 
             ## GATE 12-4 -- `fixed_timestep` on the coupled path.
             ##
@@ -2532,6 +2575,24 @@ class Transient(Analysis):
             for _retry in range(MAX_LTE_ITERS):
                 _t0 = time.perf_counter()
                 try:
+                    ## THE STEP MAY NOT GROW PAST THE BREAKPOINT.  The
+                    ## truncation above tests the ENTRY h, but fang solves for
+                    ## its own h and can grow across the corner the entry
+                    ## cleared: measured on the pulsed TLine, entry 6.78e-11
+                    ## from t=1.11918e-9 (under the 1.2e-9 corner), solved
+                    ## 8.97e-11, landing 8.9e-12 PAST it -- a straddled kink,
+                    ## which the kink discipline below then never fires on.
+                    ## The hole predates the discipline; it was masked because
+                    ## the pre-fix band trap kept h accidentally tiny near
+                    ## corners.  Capping max_step at the gap makes growth land
+                    ## exactly ON the corner instead; a growth-thwarted step
+                    ## is the normal saturated-at-ceiling exit, not a failure.
+                    ## `fixed_timestep` keeps the caller's grid uncapped.
+                    _cap = max_step
+                    if not fixed_timestep and next_t_break < float('inf'):
+                        _gap = next_t_break - t
+                        if _gap > 0.0:
+                            _cap = min(max_step, _gap)
                     x_curr, h_solved, _iters, converged = self.fang_timestep(
                         X[-1], t, h_curr, X[-1:-4:-1],
                         provided_function=provided_function,
@@ -2540,7 +2601,7 @@ class Transient(Analysis):
                         grid_locked=fixed_timestep,
                         method=self.par.coupled_method,
                         gamma_min=gamma_min, gamma_max=gamma_max, eta=eta,
-                        hmin=minstep, max_step=max_step)
+                        hmin=minstep, max_step=_cap)
                 except NoConvergenceError:
                     ## A device that cannot be evaluated at this step is the same
                     ## situation as a Newton that will not converge, and gets the
@@ -2583,6 +2644,14 @@ class Transient(Analysis):
                     "controller on this circuit."
                     % (t, h_curr, MAX_LTE_ITERS))
 
+            ## The landing is judged by where the step ENDED: a growth-
+            ## clamped step that reached the corner is a breakpoint landing
+            ## in every way that matters (statistics, _is_first_step, the
+            ## kink discipline below), even though the entry-h test above
+            ## said otherwise.
+            if (not was_break_step and next_t_break < float('inf')
+                    and t + h_curr >= next_t_break * (1.0 - 1e-12)):
+                was_break_step = True
             t += h_curr
             self.statistics.accepted_steps += 1
             self.statistics._note_step(h_curr)
@@ -2604,6 +2673,37 @@ class Transient(Analysis):
             self._dt = h_curr
             self._dt_last2 = self._dt_last
             self._dt_last = h_curr
+            if was_break_step and _tline_tds:
+                ## COUPLED KINK DISCIPLINE, ported from the JAX fix where the
+                ## mechanism was traced: history that STRADDLES a kink poisons
+                ## the solution-space LTE two ways -- (1) at a from-zero kink
+                ## every signal scales together, dev is proportional to ref
+                ## and h CANCELS (err = 1/(TRTOL*reltol) = 1428.6 measured on
+                ## the JAX probe, h-independent; on this backend the
+                ## lte_vabstol floor turns the same trap into a ~10 fs crawl,
+                ## 113 points to cross one pulse edge), and (2) the step
+                ## after that extrapolates degree-2 through a PRE-kink point,
+                ## and a quadratic through two flat points and one ramp point
+                ## misses a line at any reachable h.  Emptying the step ring
+                ## restores cold-start semantics: `not h_hist` skips the band
+                ## for one step, len(h_hist)==1 caps the eq (6) degree at 1
+                ## for the next, and after that every differenced point is
+                ## post-kink.  The STANDARD path is untouched -- its
+                ## integrator-side LTE decays with h, so it never livelocks,
+                ## and its one-step _is_first_step drop is measured (F11).
+                ## GATED ON DELAY LINES (`_tline_tds`), and the gate is a
+                ## measurement, not caution: applied unconditionally, the
+                ## two low-order band-relaxed steps at EVERY edge moved the
+                ## pulsed-RC coupled-vs-standard median from 9.8e-4 to
+                ## 5.4e-3 V at reltol 1e-5 (test_coupled_breakpoints) -- a
+                ## capacitive circuit's integrator-side LTE decays with h,
+                ## so its kink-spanning estimate is conservative and MORE
+                ## accurate than the reset.  Only algebraic rows (TLine
+                ## ports, resistive nodes fed by delayed kinks) need the
+                ## discipline, and only delay lines deliver kinks to them
+                ## mid-run.  The JAX backend gates identically.
+                self._dt_last = None
+                self._dt_last2 = None
             self._is_first_step = False
             self._no_history = False
             self._iqlast = self.toolkit.concatenate((self.toolkit.array([self._iq]), self._iqlast))[:-1]

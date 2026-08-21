@@ -267,7 +267,22 @@ existing TLine tests before/after, per house rules.
   arrivals fix that was falsified alone works with the history reset, which is why
   it was reinstated.  Result: the pulsed matched line lands on every tend probed
   (1.5/2.5/8 ns) at 5e-16 vs the CPU standard path; an RC-loaded line at 2.6e-2 vs
-  CPU-Gear2 (cross-method).  CPU coupled+TLine stays refused (TLine.dudt raises).
+  CPU-Gear2 (cross-method).  **CPU coupled+TLine landed the next day**, closing the
+  last hole: `TLine.dudt` written (derivative of the same interpolation polynomial
+  `u` evaluates, FD-verified to 0.0), the JAX kink discipline ported (step ring
+  emptied on breakpoint landings, source corners echoed as corner + k·TD wavefront
+  arrivals, and the coupled solve's growth capped at the breakpoint — the entry-h
+  truncation test cleared corners that the solved h then straddled), and a defect
+  the port EXPOSED fixed at its root: the quadratic history interpolation
+  overshoots across a recorded kink (reflected EMF read 1.009 against samples
+  bounded by 1.000), a band-blind step accepted a solution against the phantom,
+  and the LTE hit an h-independent floor of exactly the pollution.  The
+  interpolation is now monotone-limited per channel (quadratic outside the
+  bracket envelope falls back to linear), which also makes it indifferent to
+  accept_step's pruning.  Measured: matched line 5.6e-16 vs CPU-Gear2 and
+  **1.7e-16 vs JAX-coupled** (bit-identical waveforms across backends);
+  mismatched RC load completes to the correct Γ=1/3 steady level.  Fang
+  coupled + TLine now runs on BOTH backends.
 - **P20 `solve_batched`:** JAX-only by design — it is the branch's purpose. The CPU
   gets no imitation API; a Python loop over `Transient` is already expressible and
   honest about its cost.
