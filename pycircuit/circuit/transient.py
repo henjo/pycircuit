@@ -195,7 +195,25 @@ class Transient(Analysis):
     (Review hygiene note; the fields are reset per run, so SEQUENTIAL solves
     on one object are fine.)
 
-    Time step is fixed.
+    The time step is adaptive (LTE-controlled, capped by `timestep_max`);
+    `fixed_timestep=True` keeps the caller's uniform grid instead.
+
+    **Backend parity** (doc/backend_parity_260821.md is the ledger): this
+    class and `JAXTransient` share their parameter vocabulary and their
+    defaults -- Gear-2 integration on the standard path, tend/50 as the
+    default step cap, the same tolerances, band, `relref` modes, `uic`/`ic`
+    machinery (the JAX class binds these methods verbatim), `outputstep`,
+    and `provided_function`.  The coupled research path (`coupled_lte=True`,
+    Fang DAC 2013) and PCNR run on both backends; the coupled path defaults
+    to Euler on purpose -- its step law and measured record are order-1.
+    CPU-only, with cause: trapezoidal integration (a correct VARIABLE-step
+    trap estimator exists only here), the coupled 'bordered' branch, and the
+    `nrsolver`/`scaler`/`linearsolver` strategy objects -- per-iteration
+    Python dispatch that a traced loop cannot host, so `JAXTransient`
+    refuses them permanently (P17).  JAX-only by design: `solve_batched`
+    (P20) -- one compiled kernel integrating every lane of a parameter sweep
+    concurrently; this class gets no imitation of it, because a Python loop
+    over `Transient` is already expressible and honest about its cost.
 
     i(t) = c*dv/dt
     v(t) = L*di/dt

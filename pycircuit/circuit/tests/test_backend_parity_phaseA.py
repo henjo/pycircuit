@@ -570,3 +570,19 @@ def test_p16_tline_ring_interpolation_is_limited_quadratic():
         assert abs(float(e1)) < 1e-12, \
             'kink overshoot survived the limiter: %g' % float(e1)
     _with_jax(go)
+
+
+def test_p17_strategy_objects_are_refused_permanently():
+    """Phase C / P17: the traced loop cannot dispatch into per-iteration
+    Python strategy objects -- the __init__ refusal is the permanent
+    contract, and `linearsolver` (silently swallowed until Phase C) is
+    covered along with `nrsolver` and `scaler`."""
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.linearsolver import DenseSolver
+
+    def go():
+        for knob, value in (('nrsolver', object()), ('scaler', object()),
+                            ('linearsolver', DenseSolver())):
+            with pytest.raises(NotImplementedError, match='permanently'):
+                JAXTransient(_rc(), **{knob: value})
+    _with_jax(go)

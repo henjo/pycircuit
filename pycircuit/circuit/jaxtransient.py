@@ -1493,9 +1493,43 @@ class JAXTransientStatistics(object):
 
 
 class JAXTransient(Analysis):
-    """
-    Fully compiled GPU-native transient analysis.
-    Implements adaptive LTE and Predictor-Corrector implicitly in the JAX kernel.
+    """Fully compiled transient analysis: the whole time loop is one traced
+    ``jax.lax.while_loop``, jitted per chunk, with adaptive LTE control and
+    the same parameter vocabulary as `Transient`.
+
+    **Backend parity** (doc/backend_parity_260821.md is the ledger; the
+    conformance harness in test_backend_conformance.py pins the agreement):
+
+    * **Shared and aligned**: tolerances, `TRTOL`, `timestep_max` (None means
+      tend/50), `minstep`, `minbreak`, `outputstep`, `uic`/`ic` (the CPU's
+      initial-state machinery runs here verbatim, spanning-tree capacitor
+      solve included), `relref` with the unit-group split, the standard LTE
+      acceptance band (`lte_gamma_*`/`lte_eta`), `fixed_timestep` (bit-equal
+      fixed-grid waveforms across backends), `provided_function` (must be
+      jax-traceable; baked in at jit time), and the `integrator` choice --
+      'gear' (default, matching the CPU's Gear2 default) or 'euler'.
+      Research paths run on both backends too: `coupled_lte` (Fang),
+      `pcnr`, PCNR-inside-Fang, and TLine on every path.
+
+    * **P13, `bypass`**: a non-concept here, not a missing feature -- device
+      bypassing skips evaluating quiescent elements, and a vmapped
+      evaluation group computes all lanes of all instances in one kernel;
+      there is nothing to skip.
+
+    * **P17, strategy objects**: `nrsolver`/`scaler`/`linearsolver` are
+      refused in __init__, PERMANENTLY -- a traced while_loop cannot
+      dispatch into per-iteration Python objects.  Use `Transient` for a
+      circuit that needs them.
+
+    * **P20, `solve_batched`**: this backend's purpose -- one compiled
+      kernel integrating every parameter lane of a sweep concurrently, each
+      lane with its own adaptive (or coupled (x, h)) step sequence.  The
+      CPU deliberately has no imitation of it.
+
+    * **CPU-only, with cause**: trapezoidal integration (the uniform-grid
+      trap branch was deleted; a variable-step trap estimator has not been
+      written), the coupled 'bordered' branch, and coupled+fixed_timestep
+      (grid_locked is not wired here yet -- refused, not approximated).
     """
 
     ## STAGE 9(b)/(c) -- TOLERANCES ARE SETTABLE, AND THEY ARE THE CPU'S.
@@ -1668,19 +1702,22 @@ class JAXTransient(Analysis):
         if not (self.toolkit and self.toolkit.supports('autodiff')):
             raise ValueError("JAXTransient requires the circuit to use _jaxtoolkit.py.")
 
-        ## `nrsolver` and `scaler` are inherited from `Analysis` and this backend
-        ## honours NEITHER -- the Newton loop is a `jax.lax.while_loop` with its own
-        ## fixed algorithm, and there is no scaling step.  They used to be accepted
-        ## in silence, which is the "thin advertised feature" 0.1c warns about and
-        ## the same shape of defect as the `lte_formula` knob removed in 9(f).
-        ## Rejecting them loudly is the honest option until the loop can dispatch.
-        for unsupported in ('nrsolver', 'scaler'):
+        ## P17 -- and this refusal is the PERMANENT contract, not a "not
+        ## yet": `nrsolver`/`scaler`/`linearsolver` are Python strategy
+        ## objects dispatched per iteration, and a traced `jax.lax.while_loop`
+        ## cannot call into them -- ever; that is what tracing means.  They
+        ## used to be accepted in silence (the "thin advertised feature" 0.1c
+        ## warns about, the same defect shape as the `lte_formula` knob
+        ## removed in 9(f)); `linearsolver` joined the refusal at Phase C --
+        ## the traced loop solves with jnp.linalg.solve and a passed solver
+        ## object was still being swallowed.
+        for unsupported in ('nrsolver', 'scaler', 'linearsolver'):
             if kwargs.get(unsupported) is not None:
                 raise NotImplementedError(
-                    "JAXTransient does not support %r: its Newton loop is a "
-                    "traced jax.lax.while_loop with a fixed algorithm and no "
-                    "scaling step. It was previously accepted and ignored. Use "
-                    "Transient for a circuit that needs %r."
+                    "JAXTransient does not support %r, permanently: its Newton "
+                    "loop is a traced jax.lax.while_loop, and a traced loop "
+                    "cannot dispatch into per-iteration Python strategy "
+                    "objects. Use Transient for a circuit that needs %r."
                     % (unsupported, unsupported))
 
     ## P12: the CPU's initial-state machinery, SHARED rather than ported --

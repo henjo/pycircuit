@@ -296,6 +296,15 @@ existing TLine tests before/after, per house rules.
 
 ## Documented divergences (no code change; one paragraph each where users look)
 
+> **PHASE C EXECUTED 2026-08-21**: both class docstrings now carry the parity
+> story (`Transient` — shared vocabulary/defaults, CPU-only-with-cause list,
+> P20's why-no-imitation; `JAXTransient` — the aligned-parameter list, P13's
+> non-concept line, P17's permanent refusal, P20's purpose statement, the
+> CPU-only list).  P17's refusal is stated as PERMANENT in the code and now
+> covers `linearsolver` too — it was still being silently swallowed; gated in
+> test_backend_parity_phaseA.py.  A stale "Time step is fixed." line in the
+> Transient docstring fell to the same edit.
+
 - **P13 `bypass`:** device bypassing skips evaluating quiescent elements; a vmapped
   group evaluates all lanes of all instances in one kernel — there is nothing to
   skip. Not a missing feature; a non-concept on this execution model. One line in
