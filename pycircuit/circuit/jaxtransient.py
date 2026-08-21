@@ -665,7 +665,166 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
     return final
 
 
-def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15):
+
+## ---------------------------------------------------------------------------
+## PCNR on the traced loop -- P19 stage 2.
+##
+## Fang/Aadithya's replacement for limiting, and the ONLY junction-robustness
+## mechanism this backend has: classic limiting cannot run here at all, because
+## Diode.limit keeps per-device Python state (_vlim) that a lax.while_loop
+## cannot host.  PCNR's limited quantities are just more state vector -- a
+## per-junction v_lim array -- which is why the parity review reversed its
+## "one-sided by design" verdict.
+##
+## The junction set is static at trace time (row indices and IS gathered from
+## pcnr_junctions); everything per-iteration is pure array arithmetic: the
+## MNA assembly minus each junction's stamp at the NODE voltage plus its stamp
+## at its OWN unknown, the rank-k Schur update as four scatter-adds per
+## junction, and the CORRECT phase as the branchless pnjlim over the v_lim
+## vector.  Junction devices with charge storage are refused at setup, exactly
+## as the CPU's augmented_system refuses them.
+## ---------------------------------------------------------------------------
+
+class PcnrState(NamedTuple):
+    x: Any
+    v_lim: Any
+    iters: Any
+    converged: Any
+
+
+def _junction_arrays(circuit):
+    """Static junction metadata: (ra[], rb[], IS[]) -- or None if none."""
+    from pycircuit.circuit.pcnr import pcnr_junctions
+    junctions = pcnr_junctions(circuit)
+    if not junctions:
+        return None
+    for _inst, element, _ra, _rb in junctions:
+        if hasattr(element, 'eval_q_pure') or hasattr(type(element), 'q'):
+            ## Mirror of the CPU augmented_system refusal: a charge-storing
+            ## junction's iq would be evaluated at the node voltage while the
+            ## current moves to v_lim -- the exact inconsistency PCNR removes,
+            ## reintroduced through the charge.
+            if hasattr(element, 'eval_q_pure'):
+                raise NotImplementedError(
+                    '%r has charge storage and a PCNR junction; not '
+                    'implemented (same refusal as the CPU path).' % _inst)
+    ra = jnp.array([j[2] for j in junctions], dtype=jnp.int32)
+    rb = jnp.array([j[3] for j in junctions], dtype=jnp.int32)
+    IS = jnp.array([float(getattr(j[1].iparv, 'IS', 0.0)) for j in junctions])
+    return ra, rb, IS
+
+
+def _junction_terms(v, j_IS, VT):
+    """Per-junction diode current and conductance at voltage vector ``v``."""
+    i = j_IS * (jnp.exp(v / VT) - 1.0)
+    g = j_IS * jnp.exp(v / VT) / VT
+    return i, g
+
+
+def _scatter_junction_G(J, ra, rb, g, sign):
+    """The four-entry-per-junction conductance pattern, scattered."""
+    J = J.at[ra, ra].add(sign * g)
+    J = J.at[ra, rb].add(-sign * g)
+    J = J.at[rb, ra].add(-sign * g)
+    J = J.at[rb, rb].add(sign * g)
+    return J
+
+
+def pcnr_inner_loop(state: TransientState, circuit, irefnode, j_ra, j_rb,
+                    j_IS, VT, eval_method='gear', reltol=1e-4, abstol=1e-12,
+                    xtol=1e-12, maxiter=100, params_tree=None):
+    """One time point by PCNR: predict on the Schur-reduced system, correct
+    each junction's own unknown with pnjlim.  Returns PcnrState."""
+    from pycircuit.circuit._limiting import _pnjlim_branchless
+
+    t_new = state.t + state.dt
+    first_order = effective_first_order(state)
+
+    def assemble_base(x):
+        I_G = circuit.i(x, params_tree=params_tree)
+        G_G = circuit.G(x, params_tree=params_tree)
+        q_C = circuit.q(x, params_tree=params_tree)
+        C_C = circuit.C(x, params_tree=params_tree)
+        I_u = circuit.u(t_new, analysis='tran', params_tree=params_tree)
+        i_C, G_eq = compute_integration(q_C, C_C, state, method=eval_method,
+                                        first_order=first_order)
+        return I_G + i_C + I_u, G_G + G_eq
+
+    def body(ps: PcnrState):
+        x, v_lim = ps.x, ps.v_lim
+        F, J = assemble_base(x)
+
+        ## Remove each junction's stamp at the NODE voltage (it is inside the
+        ## base assembly) and re-enter its current through its OWN unknown.
+        v_node = x[j_ra] - x[j_rb]
+        i_n, g_n = _junction_terms(v_node, j_IS, VT)
+        i_l, g_l = _junction_terms(v_lim, j_IS, VT)
+        F = F.at[j_ra].add(i_l - i_n)
+        F = F.at[j_rb].add(-(i_l - i_n))
+        J = _scatter_junction_G(J, j_ra, j_rb, g_n, -1.0)
+
+        g_lim = v_lim - v_node
+
+        ## Schur: J_eff = J + rank-k(didv at v_lim); f_eff = F - J_ml g_lim.
+        J_eff = _scatter_junction_G(J, j_ra, j_rb, g_l, +1.0)
+        F_eff = F.at[j_ra].add(-g_l * g_lim)
+        F_eff = F_eff.at[j_rb].add(g_l * g_lim)
+
+        J_sub = jnp.delete(jnp.delete(J_eff, irefnode, axis=0),
+                           irefnode, axis=1)
+        dx_sub = jnp.linalg.solve(J_sub, -jnp.delete(F_eff, irefnode))
+        dx = jnp.insert(dx_sub, irefnode, 0.0)
+        x_new = x + dx
+
+        dx_lim = -(g_lim + (-dx[j_ra] + dx[j_rb]))
+        ## CORRECT: each device limits only the unknown it owns.
+        v_new = _pnjlim_branchless(v_lim + dx_lim, v_lim, VT, j_IS, jnp.log)
+
+        ## BOTH residuals, per the CPU's measured lesson: converging on dx
+        ## alone can return v_lim != e_a - e_b, a vector that is not a
+        ## solution of the circuit, whose LTE then reads low.
+        I_scale = jnp.abs(J_eff) @ jnp.abs(x_new) + jnp.abs(F_eff)
+        conv_f = jnp.all(jnp.abs(F_eff) < reltol * I_scale + abstol)
+        conv_x = jnp.all(jnp.abs(dx)
+                         < reltol * jnp.maximum(jnp.abs(x_new), jnp.abs(x))
+                         + xtol)
+        lim_ok = jnp.max(jnp.abs(g_lim)) < (
+            reltol * jnp.maximum(jnp.max(jnp.abs(v_new)), 1.0) + 1e-12)
+        conv = jnp.logical_and(jnp.logical_and(conv_x, conv_f), lim_ok)
+        return PcnrState(x=x_new, v_lim=v_new, iters=ps.iters + 1,
+                         converged=conv)
+
+    def cond(ps: PcnrState):
+        return jnp.logical_and(~ps.converged, ps.iters < maxiter)
+
+    x0 = extrapolate_predictor(state)
+    init = PcnrState(x=x0, v_lim=x0[j_ra] - x0[j_rb],
+                     iters=jnp.asarray(0), converged=jnp.asarray(False))
+    return jax.lax.while_loop(cond, body, init)
+
+
+def pcnr_controller_jacobian(circuit, state, x, v_lim, j_ra, j_rb, j_IS, VT,
+                             eval_method, first_order, params_tree=None):
+    """The Jacobian the step controller must see: the one PCNR SOLVED.
+
+    ``G(x) + Geq`` is not it -- the base G carries the junction stamp at the
+    node voltage; the solved matrix replaces it with didv at v_lim (the CPU
+    path re-learned this at a 6.6x step-count cost).
+    """
+    G_G = circuit.G(x, params_tree=params_tree)
+    q_C = circuit.q(x, params_tree=params_tree)
+    C_C = circuit.C(x, params_tree=params_tree)
+    _i_C, G_eq = compute_integration(q_C, C_C, state, method=eval_method,
+                                     first_order=first_order)
+    J = G_G + G_eq
+    v_node = x[j_ra] - x[j_rb]
+    _i_n, g_n = _junction_terms(v_node, j_IS, VT)
+    _i_l, g_l = _junction_terms(v_lim, j_IS, VT)
+    J = _scatter_junction_G(J, j_ra, j_rb, g_n, -1.0)
+    return _scatter_junction_G(J, j_ra, j_rb, g_l, +1.0)
+
+
+def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15, pcnr_meta=None, pcnr_VT=0.025):
 
     ## The same epsilon `calculate_next_dt` uses to decide a breakpoint is "already
     ## reached".  They disagreed: after 500 steps of 1e-5 the accumulated `t` sits
@@ -711,6 +870,21 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                                    F_norm=jnp.asarray(0.0),
                                    iters=fstate.iters,
                                    converged=fstate.converged)
+        elif pcnr_meta is not None:
+            ## PCNR (P19 stage 2): the standard path's Newton, with each
+            ## junction's limited quantity as its own unknown.  This backend's
+            ## ONLY junction-robustness mechanism -- classic limiting cannot
+            ## run in a traced loop.
+            j_ra, j_rb, j_IS = pcnr_meta
+            pstate = pcnr_inner_loop(
+                state, circuit, irefnode, j_ra, j_rb, j_IS, pcnr_VT,
+                eval_method=eval_method, reltol=reltol, abstol=abstol,
+                xtol=xtol, maxiter=maxiter, params_tree=params_tree)
+            nr_state = NewtonState(x=pstate.x, xdiff=jnp.zeros_like(pstate.x),
+                                   F_norm=jnp.asarray(0.0),
+                                   iters=pstate.iters,
+                                   converged=pstate.converged)
+            pcnr_v_lim = pstate.v_lim
         else:
             nr_state = newton_inner_loop(state, circuit, irefnode, tline_params, tline_indices,
                                          eval_method=eval_method, reltol=reltol, abstol=abstol,
@@ -736,7 +910,14 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
         ## looked plausible; under `solve_batched` (`dt_max = tend/10`) it also
         ## costs accuracy.  0.2b measured the `J^-1` mapping this branch avoided at
         ## 1-3% of a step, well under its own 10% keep-it threshold.
-        J = circuit.G(x_curr, params_tree=params_tree) + Geq
+        if pcnr_meta is not None and not coupled:
+            j_ra, j_rb, j_IS = pcnr_meta
+            J = pcnr_controller_jacobian(circuit, state, x_curr, pcnr_v_lim,
+                                         j_ra, j_rb, j_IS, pcnr_VT,
+                                         eval_method, first_order,
+                                         params_tree=params_tree)
+        else:
+            J = circuit.G(x_curr, params_tree=params_tree) + Geq
         if coupled:
             ## Fang solved (x, h) against its own solution-space LTE; a second
             ## verdict from the charge estimator would re-litigate it.
@@ -969,6 +1150,14 @@ class JAXTransient(Analysis):
         ## P19: Fang's coupled (x, h) stepping, 'approx' branch -- the same
         ## contract as Transient's coupled_lte solve argument, as a Parameter
         ## here because the traced loop is built per run.
+        ## P19 stage 2: PCNR instead of limiting -- and on this backend,
+        ## instead of NOTHING, since Python-stateful limiting cannot run in a
+        ## traced loop.  Off by default, matching the CPU.
+        Parameter(name='pcnr',
+                  desc='Use Predictor/Corrector Newton-Raphson for junction '
+                       'devices (Aadithya et al.); the only junction-'
+                       'robustness mechanism available on this backend.',
+                  unit='', default=False),
         Parameter(name='coupled_lte',
                   desc="Solve solution and step size together (Fang DAC 2013, "
                        "sec 3.4 'approx' correction). The 'bordered' branch "
@@ -1080,6 +1269,27 @@ class JAXTransient(Analysis):
         ## Larger than dt_max would be capped on the very next step anyway, and
         ## asking for one is more likely a mistake than an intent.
         return min(float(firststep), float(timestep))
+
+    def _pcnr_setup(self):
+        """(ra, rb, IS) arrays + VT, or (None, VT): static trace-time junction
+        metadata.  Charge-storing junction devices are refused inside."""
+        from pycircuit.circuit.circuit import defaultepar
+        epar = getattr(self, 'epar', defaultepar) or defaultepar
+        T = getattr(epar, 'T', 300.0)
+        VT = float(self.toolkit.kboltzmann) * float(T) \
+            / float(self.toolkit.qelectron)
+        if not self.par.pcnr:
+            return None, VT
+        meta = _junction_arrays(self.cir)
+        if meta is None:
+            ## No participating device: fall through to the plain Newton,
+            ## as the CPU's solve_timestep does.
+            return None, VT
+        if self.par.coupled_lte:
+            raise NotImplementedError(
+                'pcnr inside the coupled (Fang) path is CPU-only for now '
+                '(doc/backend_parity_260821.md, P19 scoping).')
+        return meta, VT
 
     def _coupled_band(self):
         """The (gamma_min, gamma_max, eta) the coupled path runs with --
@@ -1221,6 +1431,7 @@ class JAXTransient(Analysis):
         tline_head = jnp.zeros(batch_size, dtype=jnp.int32)
         
         _gm, _gx, _eta = self._coupled_band()
+        _pcnr_meta, _pcnr_VT = self._pcnr_setup()
         if self.par.coupled_lte and n_tlines > 0:
             raise NotImplementedError(
                 'coupled_lte does not support TLine on this backend yet: the '
@@ -1237,7 +1448,8 @@ class JAXTransient(Analysis):
                                    max_dv=(jnp.inf if self.par.max_dv is None
                                            else float(self.par.max_dv)),
                                    coupled=bool(self.par.coupled_lte),
-                                   gamma_min=_gm, gamma_max=_gx, eta=_eta)
+                                   gamma_min=_gm, gamma_max=_gx, eta=_eta,
+                                   pcnr_meta=_pcnr_meta, pcnr_VT=_pcnr_VT)
             
         # JIT the vmapped run_chunk
         batched_run_chunk = jax.jit(jax.vmap(run_chunk))
@@ -1417,6 +1629,7 @@ class JAXTransient(Analysis):
         # We need a JIT-able wrapper that burns the chunk_size and tend into static parameters if needed,
         # but tend is a runtime parameter.
         _gm, _gx, _eta = self._coupled_band()
+        _pcnr_meta, _pcnr_VT = self._pcnr_setup()
         if self.par.coupled_lte and n_tlines > 0:
             raise NotImplementedError(
                 'coupled_lte does not support TLine on this backend yet: the '
@@ -1434,7 +1647,8 @@ class JAXTransient(Analysis):
                                    max_dv=(jnp.inf if self.par.max_dv is None
                                            else float(self.par.max_dv)),
                                    coupled=bool(self.par.coupled_lte),
-                                   gamma_min=_gm, gamma_max=_gx, eta=_eta)
+                                   gamma_min=_gm, gamma_max=_gx, eta=_eta,
+                                   pcnr_meta=_pcnr_meta, pcnr_VT=_pcnr_VT)
         
         results_list = [np.array([x0])]
         times_list = [np.array([0.0])]

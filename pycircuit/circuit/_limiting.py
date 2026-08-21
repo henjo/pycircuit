@@ -43,6 +43,40 @@ def _pnjlim(vnew, vold, VT, IS, toolkit):
     return vnew
 
 
+def _pnjlim_branchless(vnew, vold, VT, IS, log):
+    """`_pnjlim`, as pure operators (P19 stage 2 -- the traced PCNR refine).
+
+    Same law, arithmetic selects instead of Python `if`s, so it runs on numpy
+    scalars/arrays and traced jax arrays alike.  `log` is passed in to keep
+    this module import-free, as its header requires.  Guards: every `log`
+    argument is floored to a tiny positive value BEFORE the call; the floored
+    branches are only ever SELECTED when their condition made the argument
+    positive, so the floor changes no selected value.  `IS <= 0` (no junction)
+    passes vnew through, as the branching original does.
+    """
+    tiny = 1e-300
+
+    def _floor(a):
+        ## Select-based positive floor.  NOT (a+b+|a-b|)/2: that identity
+        ## cancels to exactly 0.0 for large-negative `a`, and log(0) = -inf
+        ## then rides through the arithmetic selects as 0*inf = nan.
+        pos = a > tiny
+        return a * pos + tiny * (1 - pos)
+
+    is_pos = IS > 0.0
+    vc = VT * log(_floor(VT / (_floor(IS) * 1.414213562)))
+    active = (vnew > vc) * (vnew > 0.0)
+    pos_old = vold > 0.0
+    arg = 1.0 + (vnew - vold) / VT
+    arg_pos = arg > 0.0
+    r_old = vold + VT * log(_floor(arg))
+    r_old = arg_pos * r_old + (1 - arg_pos) * vc
+    r_new = VT * log(_floor(vnew / VT))
+    limited = pos_old * r_old + (1 - pos_old) * r_new
+    out = active * limited + (1 - active) * vnew
+    return is_pos * out + (1 - is_pos) * vnew
+
+
 def limit_junctions(x, x0, junctions, VT, IS_for, toolkit):
     """Apply `pnjlim` to each declared junction, returning a limited copy of `x`.
 
