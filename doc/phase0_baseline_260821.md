@@ -75,6 +75,51 @@ Reproduce: `XLA_PYTHON_CLIENT_PREALLOCATE=false .venv/bin/python -m coverage run
 --source=pycircuit/circuit -m pytest -q -m "" <the eleven files>` then
 `coverage report --show-missing`.
 
+### Coverage verification pass — 2026-08-21, post-campaign
+
+Re-measured under the FULL suite (1010 passed), so the numbers below are
+not directly comparable to the Phase-0 table's eleven-file basis — they
+are the campaign-exit state of the same modules:
+
+| module | Phase-0 | verified now |
+|---|---|---|
+| `stepcontroller.py` | 72% | **99%** (the ABC's `pass` only) |
+| `nrsolver.py` | 70% | **90%** |
+| `transient.py` | 85% | **96%** |
+| `jaxtransient.py` | 85% | **97%** |
+| `integrator.py` | 90% | 93% |
+| `_lte_kernels.py` | 92% | 96% |
+| six-module total | — | **96%** |
+
+Every named dark spot is confirmed addressed: the spanning-tree
+capacitor-IC solve and element-IC machinery (P12's binding + the IC
+suites), the `_newton` exception-classification branches (gates 6-1/6-2
+— one leg remains, see below), the DampedNewton backtracking paths
+(F15's fix and gate), and `JAXNewtonSolver` (DELETED per F15; a
+tombstone comment marks the site).  `stepcontroller.py`'s territory was
+retired separately (see the ADDRESSED note above).
+
+Residual dark territory, characterized so silence isn't read as
+clearance — all of it rare-guard code, none of it load-bearing logic:
+
+- `nrsolver.py`: parts of `_structural_singularity`'s diagnosis branches
+  (symbolic fall-through, dead-row messages), DampedNewton's
+  singular-classify twin of the StandardNewton branch that IS covered,
+  and `SchurCoupledNewton`'s linearsolver-failure / tiny-denominator
+  fallbacks.
+- `transient.py`: scattered single-line guards; the one named leg is
+  `_newton`'s raw-`LinAlgError` promotion (713) — rare because the
+  solvers wrap factorisation failures as `NoConvergenceError` first.
+- `jaxtransient.py`: the coupled path's FD du/dt fallback for circuits
+  whose `dudt` raises `NotImplementedError` (1115–1134; the analytic
+  branch is what production circuits hit), and `solve_batched`'s TLine
+  setup block (2372–2377) — batched TLine has no test, consistent with
+  TLine-under-batch never being claimed.
+
+Chasing these to 100% would mean fabricating failures inside guards that
+exist precisely because they are hard to reach; the honest disposition
+is this record.
+
 ## Phase-3 exit gate (same day)
 
 Recorded after the Phase-3 cluster (F19, F11, F17, F6(b)+F16(a), breakpoint cap) landed.
