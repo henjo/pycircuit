@@ -467,7 +467,19 @@ class Transient(Analysis):
         ## went unnoticed because callers pass the toolkit the circuit already has,
         ## which makes the two agree by coincidence rather than by construction.
         super(Transient, self).__init__(cir, toolkit=toolkit, **kvargs)
-    
+
+        ## THE REFERENCE NODE IS `self.irefnode`, SET HERE AND NOWHERE ELSE
+        ## SPONTANEOUSLY -- `solve()` overwrites it from its `refnode`
+        ## argument.  It used to be set only inside `_solve`, which is the
+        ## hidden-ordering hazard this file itself documents at
+        ## `_apply_voltage_ics`; and `solve_timestep`'s own `refnode=gnd`
+        ## default meant the PCNR path pinned gnd while step control stripped
+        ## the caller's row -- two reference nodes in one solve
+        ## (doc/transient_review_260820.md, F7; measured: pcnr=True with
+        ## refnode='b' held gnd at 0 and let 'b' swing 4 V).  One fact, one
+        ## home.
+        self.irefnode = self.cir.get_node_index(gnd)
+
         self._qlast  = None #q history
         self._iqlast = None #dq/dt history
         
@@ -1016,7 +1028,7 @@ class Transient(Analysis):
         return (self.toolkit.array(f_eff, dtype=float),
                 self.toolkit.array(J_eff, dtype=float), g_lim)
 
-    def fang_timestep(self, x_prev, t_prev, h, x_hist, refnode=gnd,
+    def fang_timestep(self, x_prev, t_prev, h, x_hist,
                       provided_function=None, gamma_min=0.7, gamma_max=3.0,
                       eta=0.15, maxiter=None, hmin=None, max_step=None,
                       hold_h=False, grid_locked=False, method='approx'):
@@ -1495,7 +1507,7 @@ class Transient(Analysis):
         return self.toolkit.array(d_iq, dtype=float) + \
             self.toolkit.array(d_u, dtype=float)
 
-    def _solve_timestep_pcnr(self, x0, t, refnode=gnd, provided_function=None):
+    def _solve_timestep_pcnr(self, x0, t, provided_function=None):
         """One time point by PCNR rather than by limiting -- STAGE 13.
 
         The transient residual is ``f = i(x) + iq + u(t)`` with ``J = G + Geq``,
@@ -1509,7 +1521,7 @@ class Transient(Analysis):
         from pycircuit.circuit import pcnr as _pcnr
 
         junctions = _pcnr.pcnr_junctions(self.cir)
-        irefnode = self.cir.get_node_index(refnode)
+        irefnode = self.irefnode
         x = self.toolkit.array(x0, dtype=float).copy()
         v_lim = np.array([float(x[ra] - x[rb]) for _i, _e, ra, rb in junctions])
 
@@ -1606,7 +1618,7 @@ class Transient(Analysis):
             'PCNR did not converge at t=%g after %d iterations'
             % (t, self.par.maxiter))
 
-    def solve_timestep(self, x0, t, refnode=gnd, provided_function=None):
+    def solve_timestep(self, x0, t, provided_function=None):
         ## STAGE 13 -- the PCNR path, when asked for and when the circuit has a
         ## device that participates.  A circuit with no PCNR junction falls
         ## through: there is nothing for the method to do, and refusing would be
@@ -1614,8 +1626,7 @@ class Transient(Analysis):
         if self.par.pcnr:
             from pycircuit.circuit import pcnr as _pcnr
             if _pcnr.pcnr_junctions(self.cir):
-                return self._solve_timestep_pcnr(x0, t, refnode,
-                                                 provided_function)
+                return self._solve_timestep_pcnr(x0, t, provided_function)
 
         n=self.cir.n
         dt = self._dt
@@ -2385,7 +2396,7 @@ class Transient(Analysis):
                 try:
                     x_curr, h_solved, _iters, converged = self.fang_timestep(
                         X[-1], t, h_curr, X[-1:-4:-1],
-                        refnode=refnode, provided_function=provided_function,
+                        provided_function=provided_function,
                         hold_h=was_break_step or fixed_timestep,
                         grid_locked=fixed_timestep,
                         method=self.par.coupled_method,

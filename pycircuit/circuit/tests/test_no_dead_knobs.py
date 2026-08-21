@@ -28,9 +28,6 @@ SCAN_MODULES = ['transient.py', 'jaxtransient.py', 'integrator.py',
 
 ## (module, function, argument) -> why it is allowed to ignore the argument.
 UNUSED_ARG_ALLOWLIST = {
-    ## Deleted by F7 (Phase 2); remove this entry with that fix.
-    ('transient.py', 'fang_timestep', 'refnode'):
-        'dead; scheduled for deletion by F7',
     ## Helper signatures kept uniform with their sibling that does use ctrl.
     ('transient.py', '_band_centre', 'ctrl'): 'signature uniformity',
     ('transient.py', '_lte_in_band', 'ctrl'): 'signature uniformity',

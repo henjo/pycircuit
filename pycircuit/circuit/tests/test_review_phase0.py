@@ -253,3 +253,32 @@ def test_f4_inconsistent_seed_warns():
         w.simplefilter('always')
         Transient(c).solve(tend=1e-7, timestep=1e-9, provided_function=pf)
     assert any('does not see' in str(x.message) for x in caught)
+
+
+## F7 -- the PCNR path must pin the CALLER'S reference node, not gnd.
+## Before: solve() never forwarded refnode to solve_timestep, whose gnd
+## default fed _solve_timestep_pcnr while step control stripped the caller's
+## row -- two reference nodes in one solve.
+
+def test_f7_pcnr_honours_refnode():
+    import warnings
+    from pycircuit.circuit.elements import Diode, VSin
+
+    def rectifier():
+        c = SubCircuit()
+        c['vs'] = VSin('a', gnd, va=5.0, freq=1e3)
+        c['D'] = Diode('a', 'b')
+        c['R'] = R('b', gnd, r=1e3)
+        c['C'] = C('b', gnd, c=1e-7)
+        return c
+
+    for pcnr in (False, True):
+        c = rectifier()
+        ib = c.get_node_index('b')
+        tran = Transient(c, pcnr=pcnr, reltol=1e-5)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(c.get_node('b'), tend=2e-4, timestep=1e-5)
+        xb = np.asarray(res.x)[ib]
+        assert float(np.max(np.abs(xb))) == 0.0, \
+            'pcnr=%s: requested reference node is not pinned' % pcnr
