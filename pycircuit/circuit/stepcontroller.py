@@ -106,7 +106,21 @@ class StepController(ABC):
         ``eta`` is eq (16)'s relative limit on how far one step may move from the
         one before it, ``|dh| <= eta*h`` (the paper suggests ~15%); ``None``
         leaves the step change limited only by the zero-stability bound.
+
+        ``'auto'`` -- the Transient parameters' unset sentinel (F5,
+        doc/transient_review_260820.md) -- resolves HERE to this method's own
+        defaults, which are the standard path's historical one-sided test.
+        The mapping lives inside set_lte_band so the stored band attributes
+        are always numeric (eta: float or None) and no controller ever sees
+        the sentinel; the coupled path resolves the same sentinel to Fang's
+        values in Transient._coupled_band, which bypasses this method.
         """
+        if gamma_min == 'auto':
+            gamma_min = 0.0
+        if gamma_max == 'auto':
+            gamma_max = 1.0
+        if eta == 'auto':
+            eta = None
         if not (0.0 <= gamma_min < gamma_max):
             raise ValueError(
                 "LTE band requires 0 <= gamma_min < gamma_max, got %r, %r"

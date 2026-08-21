@@ -302,3 +302,28 @@ def test_f3_coupled_lands_on_tend(tend, ts):
     t = np.asarray(res.sweep_values, dtype=float).reshape(-1)
     assert t[-1] <= tend * (1 + 1e-12)
     assert t[-1] >= tend * (1 - 1e-9)     # and it actually reaches tend
+
+
+## F5 -- the band parameters' 'auto' sentinel resolves per path, and every
+## DOCUMENTED explicit value (0.0 / 1.0 / None included) is honoured
+## verbatim.  Before: `par.lte_gamma_min or 0.7` silently replaced an
+## explicit 0.0 with 0.7 on the coupled path.
+
+def test_f5_coupled_band_honours_explicit_values():
+    tran = Transient(_rc(), lte_gamma_min=0.0, lte_gamma_max=1.0, lte_eta=None)
+    assert tran._coupled_band() == (0.0, 1.0, None)
+
+
+def test_f5_coupled_band_defaults_when_unset():
+    assert Transient(_rc())._coupled_band() == (0.7, 3.0, 0.15)
+
+
+def test_f5_standard_band_defaults_when_unset():
+    import warnings
+    tran = Transient(_rc())
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        tran.solve(tend=1e-7, timestep=1e-9)
+    ctrl = tran.step_controller
+    assert (ctrl.lte_gamma_min, ctrl.lte_gamma_max, ctrl.lte_eta) \
+        == (0.0, 1.0, None)

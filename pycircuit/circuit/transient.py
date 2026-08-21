@@ -349,25 +349,40 @@ class Transient(Analysis):
          ## damper (eq 16).  The defaults are the historical one-sided test, so
          ## nothing changes until a caller asks; see `StepController.set_lte_band`
          ## for why the paper's own 0.7/3.0 are not adopted as defaults.
+         ## THE DEFAULT IS THE STRING 'auto', NOT A NUMBER, AND NOT None --
+         ## F5's lesson (doc/transient_review_260820.md).  Every documented
+         ## value is meaningful (0.0 disables the lower bound, 1.0 is the
+         ## historical threshold, None disables the damper), so a numeric or
+         ## None default cannot be told apart from an explicit request for it:
+         ## the coupled path used `par.lte_gamma_min or 0.7`, which silently
+         ## replaced an explicit 0.0 with 0.7 and made the documented settings
+         ## unreachable there.  'auto' resolves per path: the standard
+         ## controller maps it to (0.0, 1.0, None) inside set_lte_band, the
+         ## coupled path maps it to Fang's (0.7, 3.0, 0.15) in _coupled_band.
+         ## Any explicit value is honoured verbatim on both paths.
          Parameter(name='lte_gamma_min',
                    desc="Lower edge of the LTE acceptance band, as a fraction of "
                         "the LTE tolerance. A step whose normalised error falls "
                         "below this is redone LARGER, rather than accepted as "
-                        "wasted work. 0 disables the lower bound (default).",
+                        "wasted work. 0 disables the lower bound. 'auto' (the "
+                        "default) means 0 on the standard path, 0.7 (Fang) on "
+                        "the coupled path.",
                    unit='',
-                   default=0.0),
+                   default='auto'),
          Parameter(name='lte_gamma_max',
                    desc="Upper edge of the LTE acceptance band, as a fraction of "
                         "the LTE tolerance. 1.0 is the historical rejection "
-                        "threshold; above 1 fewer steps are redone.",
+                        "threshold; above 1 fewer steps are redone. 'auto' (the "
+                        "default) means 1.0 standard, 3.0 (Fang) coupled.",
                    unit='',
-                   default=1.0),
+                   default='auto'),
          Parameter(name='lte_eta',
                    desc="Relative limit on the change in step size between "
                         "consecutive steps, |dh| <= eta*h (Fang eq 16, ~0.15). "
-                        "None leaves the change bounded only by zero stability.",
+                        "None leaves the change bounded only by zero stability. "
+                        "'auto' (the default) means None standard, 0.15 coupled.",
                    unit='',
-                   default=None),
+                   default='auto'),
          ## STAGE 12B -- how the coupled path corrects the step size.
          ##
          ## 'approx'   Fang sec. 3.4: the new step comes from the error RATIO
@@ -1032,6 +1047,38 @@ class Transient(Analysis):
                       provided_function=None, gamma_min=0.7, gamma_max=3.0,
                       eta=0.15, maxiter=None, hmin=None, max_step=None,
                       hold_h=False, grid_locked=False, method='approx'):
+        ## R2 HYGIENE (doc/transient_review_260820.md, refuted-but-latent):
+        ## the Newton loop below folds every UNCONVERGED iterate into the
+        ## sigglobal running maximum through _lte_tolerance -> _reference.
+        ## Measured pollution was <= 7.5e-6 relative across six circuits --
+        ## not a live bug -- but the JAX backend's accept-only update is the
+        ## right hygiene, so the running max is snapshotted here and, on
+        ## exit, rebuilt from the snapshot plus the solution actually
+        ## returned: iterates influence tolerances only within this time
+        ## point, never beyond it.
+        ctrl_probe = getattr(self, 'step_controller', None)
+        if getattr(self, '_step_controller_is_auto', False):
+            ctrl_probe = None
+        if ctrl_probe is None:
+            ctrl_probe = getattr(self, '_fang_controller', None)
+        snapshot = getattr(ctrl_probe, '_ref_running', None) \
+            if ctrl_probe is not None else None
+        result = self._fang_timestep_inner(
+            x_prev, t_prev, h, x_hist, provided_function, gamma_min,
+            gamma_max, eta, maxiter, hmin, max_step, hold_h, grid_locked,
+            method)
+        ## The inner call may have created the controller; re-resolve it.
+        ctrl = getattr(self, '_fang_controller', None) or ctrl_probe
+        if ctrl is not None and getattr(ctrl, 'relref', None) != 'pointlocal':
+            local = np.abs(np.asarray(result[0], dtype=float))
+            ctrl._ref_running = local if snapshot is None \
+                else np.maximum(np.asarray(snapshot, dtype=float), local)
+        return result
+
+    def _fang_timestep_inner(self, x_prev, t_prev, h, x_hist,
+                             provided_function, gamma_min, gamma_max,
+                             eta, maxiter, hmin, max_step,
+                             hold_h, grid_locked, method):
         """One time point of Fang's coupled method: solve for ``(x, h)`` together.
 
         STAGE 12B.  Figure 4 of DAC 2013, and the structure is the substance:
@@ -1435,6 +1482,23 @@ class Transient(Analysis):
                 return x, h, it + 1, True
 
         return x, h, maxiter, False
+
+    def _coupled_band(self):
+        """The (gamma_min, gamma_max, eta) the coupled path runs with.
+
+        Maps the 'auto' sentinel to Fang's sec. 4.1 values; any explicit
+        number (including the documented 0.0 / 1.0 / None) passes through
+        verbatim -- the property F5 exists to restore
+        (doc/transient_review_260820.md).  The standard path's mapping lives
+        in StepController.set_lte_band, whose own defaults ARE that path's
+        'auto' resolution; the two sites partition cleanly because
+        fang_timestep takes the band as kwargs and never calls set_lte_band.
+        """
+        gm, gx, eta = (self.par.lte_gamma_min, self.par.lte_gamma_max,
+                       self.par.lte_eta)
+        return (0.7 if gm == 'auto' else gm,
+                3.0 if gx == 'auto' else gx,
+                0.15 if eta == 'auto' else eta)
 
     def _band_centre(self, ctrl, gamma_min, gamma_max):
         """The normalised error eq (10) drives towards.
@@ -2293,6 +2357,9 @@ class Transient(Analysis):
         force_order_drop = False
         TRTOL = 7.0
         minstep = getattr(self.par, 'minstep', 1e-18)
+        ## Resolve the 'auto' band sentinel ONCE, to Fang's values -- see
+        ## _coupled_band and the Parameter declarations (F5).
+        gamma_min, gamma_max, eta = self._coupled_band()
 
         ones_nodes = self.toolkit.ones(len(self.cir.nodes))
         ones_branches = self.toolkit.ones(len(self.cir.branches))
@@ -2416,10 +2483,7 @@ class Transient(Analysis):
                                 or was_tend_truncated),
                         grid_locked=fixed_timestep,
                         method=self.par.coupled_method,
-                        gamma_min=self.par.lte_gamma_min or 0.7,
-                        gamma_max=(self.par.lte_gamma_max
-                                   if self.par.lte_gamma_max != 1.0 else 3.0),
-                        eta=self.par.lte_eta or 0.15,
+                        gamma_min=gamma_min, gamma_max=gamma_max, eta=eta,
                         hmin=minstep, max_step=max_step)
                 except NoConvergenceError:
                     ## A device that cannot be evaluated at this step is the same
