@@ -41,7 +41,7 @@ Parameters and options, from the mechanical diff:
 | **P13** `bypass`/`bypasstol` | ✓ | absent | document — meaningless under vmap |
 | **P14** `minbreak` | ✓ | progress guard only, no spacing merge | align now (S) |
 | **P15** statistics vocabulary | `force_accepts`, `order_drops`, `breakpoints_hit`, timing | `forced_lte_steps`, `nonconverged_steps`, `signal_max` | partial align (S) |
-| **P16** TLine delay interpolation | quadratic (3-point Lagrange) | linear + ring-cap raise | align later (M) |
+| **P16** TLine delay interpolation | quadratic (3-point Lagrange) | linear + ring-cap raise; **stamp defect fixed + step cap wired + std/pcnr paths verified to 5e-16 / 4.4e-10** (TLine port); quadratic upgrade still open | align later (M, interpolation order only) |
 | **P17** solver strategy objects (`nrsolver`/`scaler`/`linearsolver`) | ✓, injectable | refused loudly | **document — permanent** (traced loop cannot dispatch) |
 | **P18** continuation (gmin/source stepping) | DC path; transient retries dt | dt retries only | roadmap, both sides |
 | **P19** `coupled_lte` (Fang), `pcnr` | ✓ | ✓ **PORTED** — 'approx' Fang + PCNR + PCNR-inside-Fang (`bordered` and TLine-under-coupled/pcnr stay CPU-only, refused loudly) | closed (see P19 note) |
@@ -247,13 +247,17 @@ existing TLine tests before/after, per house rules.
   the cold-start junction probe fails outright on plain Newton and completes under
   PCNR (35 steps, 4.367 V), JAX-PCNR tracks CPU-PCNR to 1.1e-2, cost **+29 % wall**
   against the CPU's +60–80 %/iteration (the figure indeed did not transfer).  The
-  dead-knob scan caught the Fang draft's unread TLine buffers mid-port (coupled+TLine
-  now refused loudly), and the traced `pnjlim` is bit-exact against the branching
-  original across a 48-case warnings-as-errors sweep.  **PCNR-inside-Fang followed
-  the same day**: the cold-start probe that kills plain coupled completes under
+  dead-knob scan caught the Fang draft's unread TLine buffers mid-port, and the traced
+  `pnjlim` is bit-exact against the branching original across a 48-case
+  warnings-as-errors sweep.  **PCNR-inside-Fang followed the same day**: the cold-start probe that kills plain coupled completes under
   coupled+PCNR (56 steps, 4.367 V), and the rectifier tracks CPU coupled+PCNR to
-  9.7e-3 at 7.4× fewer steps; the standard PCNR path's silent TLine gap was closed
-  with the same loud refusal in the process.
+  9.7e-3 at 7.4× fewer steps.  **The TLine follow-up** then found and fixed the
+  standard path's DC-stamp defect (a matched 1 V line had returned 24.5 V since the
+  JAX TLine landed, untested), wired the never-applied TD/2 step cap, and enabled
+  TLine on the standard (5e-16 vs CPU) and PCNR (4.4e-10) paths.  coupled+TLine
+  remains refused on BOTH backends: the JAX coupled band livelocks past the first
+  wavefront arrival (wavefront-breakpoint fix falsified by measurement; investigation
+  recorded at the raise), and the CPU's TLine.dudt raises outright.
 - **P20 `solve_batched`:** JAX-only by design — it is the branch's purpose. The CPU
   gets no imitation API; a Python loop over `Transient` is already expressible and
   honest about its cost.
