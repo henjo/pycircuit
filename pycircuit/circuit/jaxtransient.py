@@ -195,61 +195,112 @@ def extrapolate_predictor(state: TransientState):
     x_pred = jnp.where(dt_old == 0.0, x1, x_pred)
     return x_pred
 
-def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tline_indices, eval_method='euler', reltol=1e-3, abstol=1e-6, xtol=1e-12, maxiter=50, params_tree=None, max_dv=jnp.inf):
+def _tline_emfs(t_target, params, history, head):
+    """One line's reflected-wave EMFs (e1, e2) AND their time derivatives.
+
+    Extracted from newton_inner_loop's closures (TLine-under-coupled/PCNR
+    port): the delay-line history lives in TransientState and is updated by
+    the shared accept machinery, so the only thing that kept the other
+    assemblies TLine-blind was this code being trapped in one function.  The
+    derivatives are the linear interpolant's segment slope -- free from the
+    same lookup -- and are what Fang's ``p = df/dh`` needs from a source
+    whose value depends on the step size through ``t - TD``.
+    """
+    def cond_fun(idx):
+        curr_t = history[(head - idx) % TLINE_HISTORY_DEPTH, 0]
+        return jnp.logical_and(curr_t > t_target, idx < TLINE_HISTORY_DEPTH - 1)
+
+    idx1 = jax.lax.while_loop(cond_fun, lambda idx: idx + 1, 0)
+    idx0 = jnp.maximum(0, idx1 - 1)
+
+    val1 = history[(head - idx1) % TLINE_HISTORY_DEPTH]
+    val0 = history[(head - idx0) % TLINE_HISTORY_DEPTH]
+    t1, t0 = val1[0], val0[0]
+
+    denom_ok = t0 != t1
+    inv_dt = jnp.where(denom_ok, 1.0 / jnp.where(denom_ok, t0 - t1, 1.0), 0.0)
+    frac = (t_target - t1) * inv_dt
+    interp_val = val1 + frac * (val0 - val1)
+    slope = (val0 - val1) * inv_dt
+
+    Z0 = params[1]
+    e1 = interp_val[2] + Z0 * interp_val[4]
+    e2 = interp_val[1] + Z0 * interp_val[3]
+    de1 = slope[2] + Z0 * slope[4]
+    de2 = slope[1] + Z0 * slope[3]
+    return e1, e2, de1, de2
+
+
+def tline_stamp_correction(n, tlines_meta):
+    """The constant (n, n) correction (transient stamp - DC stamp), per line.
+
+    THE STANDARD-PATH DEFECT THIS FIXES (found while porting TLine under the
+    coupled/PCNR paths, present since the JAX TLine landed): ``TLine.G``
+    selects its stamp on ``len(self.history) == 0`` -- Python state that only
+    the CPU's accept_step writes.  On this backend the traced ring buffer
+    replaced accept_step, the Python history stays empty forever, and every
+    assembly therefore stamped the DC form (the line as an ideal short:
+    v1 - v2 = 0, i1 + i2 = 0) while the injected EMFs assumed the transient
+    form (v - Z0*i = e).  Measured on a matched 1 V line: |v(far end)| =
+    24.5 V, delay 0 -- and NO e2e JAX TLine test existed to see it.
+
+    Both stamps are constants, so their difference is a constant matrix built
+    once at trace time; adding it to the assembled J (and dG @ x to the
+    residual) converts the DC-stamped rows to the transient form everywhere.
+
+    ``tlines_meta`` is [(nodemap6, Z0), ...].
+    """
+    dG = np.zeros((n, n))
+    for rows, Z0 in tlines_meta:
+        r4, r5 = rows[4], rows[5]
+        p1, m1, p2, m2 = rows[0], rows[1], rows[2], rows[3]
+        ## DC row 4: v1 - v2 = 0 ; transient row 4: v1 - Z0*i1 = e1
+        dG[r4, p2] += 1.0
+        dG[r4, m2] -= 1.0
+        dG[r4, r4] += -Z0
+        ## DC row 5: i1 + i2 = 0 ; transient row 5: v2 - Z0*i2 = e2
+        dG[r5, p2] += 1.0
+        dG[r5, m2] -= 1.0
+        dG[r5, r4] += -1.0
+        dG[r5, r5] += -Z0 - 1.0
+    return jnp.asarray(dG)
+
+
+def apply_tline_sources(I_u, t_curr, tline_params, tline_indices,
+                        tline_history, tline_head):
+    """Add every line's reflected-wave EMFs into the source vector."""
+    if tline_params.shape[0] == 0:
+        return I_u
+    t_targets = t_curr - tline_params[:, 0]
+    e1s, e2s, _d1, _d2 = jax.vmap(_tline_emfs, in_axes=(0, 0, 0, None))(
+        t_targets, tline_params, tline_history, tline_head)
+    I_u = I_u.at[tline_indices[:, 4]].add(-e1s)
+    I_u = I_u.at[tline_indices[:, 5]].add(-e2s)
+    return I_u
+
+
+def tline_source_dudt(n, t_curr, tline_params, tline_indices,
+                      tline_history, tline_head):
+    """d/dt of the TLine source contribution -- the piece of Fang's ``p``
+    a delay line owns."""
+    out = jnp.zeros(n)
+    if tline_params.shape[0] == 0:
+        return out
+    t_targets = t_curr - tline_params[:, 0]
+    _e1, _e2, d1s, d2s = jax.vmap(_tline_emfs, in_axes=(0, 0, 0, None))(
+        t_targets, tline_params, tline_history, tline_head)
+    out = out.at[tline_indices[:, 4]].add(-d1s)
+    out = out.at[tline_indices[:, 5]].add(-d2s)
+    return out
+
+
+def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tline_indices, eval_method='euler', reltol=1e-3, abstol=1e-6, xtol=1e-12, maxiter=50, params_tree=None, max_dv=jnp.inf, tline_dG=None):
     x_init = extrapolate_predictor(state)
-    def interp_tlines(t_target, params, history, head):
-        # t_target is scalar, history is (10000, 5)
-        def find_idx(idx, _):
-            curr_t = history[(head - idx) % TLINE_HISTORY_DEPTH, 0]
-            return jax.lax.cond(curr_t <= t_target, lambda: idx, lambda: idx + 1)
-    
-        # Simple while loop to find the interval
-        def cond_fun(val):
-            idx = val
-            curr_t = history[(head - idx) % TLINE_HISTORY_DEPTH, 0]
-            # stop if curr_t <= t_target or we hit max history (10000)
-            return jnp.logical_and(curr_t > t_target, idx < TLINE_HISTORY_DEPTH - 1)
-        
-        def body_fun(val):
-            return val + 1
-        
-        idx1 = jax.lax.while_loop(cond_fun, body_fun, 0)
-        idx0 = jnp.maximum(0, idx1 - 1)
-    
-        idx1_mapped = (head - idx1) % TLINE_HISTORY_DEPTH
-        idx0_mapped = (head - idx0) % TLINE_HISTORY_DEPTH
-    
-        val1 = history[idx1_mapped]
-        val0 = history[idx0_mapped]
-    
-        t1 = val1[0]
-        t0 = val0[0]
-    
-        # linear interpolation
-        frac = jnp.where(t0 != t1, (t_target - t1) / (t0 - t1), 0.0)
-        interp_val = val1 + frac * (val0 - val1)
-    
-        v1_past = interp_val[1]
-        v2_past = interp_val[2]
-        i1_past = interp_val[3]
-        i2_past = interp_val[4]
-    
-        Z0 = params[1]
-        e1 = v2_past + Z0 * i2_past
-        e2 = v1_past + Z0 * i1_past
-    
-        return e1, e2
 
     def apply_tlines(I_u, t_curr):
-        n_tlines = tline_params.shape[0]
-        if n_tlines == 0:
-            return I_u
-        t_targets = t_curr - tline_params[:, 0]
-        e1s, e2s = jax.vmap(interp_tlines, in_axes=(0, 0, 0, None))(t_targets, tline_params, state.tline_history, state.tline_head)
-    
-        I_u = I_u.at[tline_indices[:, 4]].add(-e1s)
-        I_u = I_u.at[tline_indices[:, 5]].add(-e2s)
-        return I_u
+        ## Extracted to module level so the fang and pcnr assemblies share it.
+        return apply_tline_sources(I_u, t_curr, tline_params, tline_indices,
+                                   state.tline_history, state.tline_head)
 
 
     ## F6(b) (doc/transient_review_260820.md): THE CPU'S PER-ROW CRITERIA,
@@ -286,6 +337,10 @@ def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tl
 
         F = I_G + i_C + I_u
         J = G_G + G_C_eq
+        if tline_dG is not None:
+            ## Stamp correction: see tline_stamp_correction.
+            F = F + tline_dG @ x
+            J = J + tline_dG
 
         J_sub = jnp.delete(jnp.delete(J, irefnode, axis=0), irefnode, axis=1)
         F_sub = jnp.delete(F, irefnode)
@@ -556,11 +611,12 @@ def _fang_lte(x_new, state, h, first_order):
 
 
 def fang_inner_loop(state: TransientState, circuit, irefnode,
-                    hold_h, eval_method='gear', reltol=1e-4,
+                    hold_h, tline_params, tline_indices,
+                    eval_method='gear', reltol=1e-4,
                     xtol=1e-12, lte_abstol=1e-12, trtol=7.0, maxiter=100,
                     params_tree=None, gamma_min=0.7, gamma_max=3.0, eta=0.15,
                     dt_min=1e-18, dt_max=jnp.inf, pcnr_meta=None,
-                    pcnr_VT=0.025):
+                    pcnr_VT=0.025, tline_dG=None):
     from pycircuit.circuit._lte_kernels import (step_for_error_ratio,
                                                 euler_companion_dh,
                                                 bdf2_companion_dh)
@@ -581,9 +637,15 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
         q_C = circuit.q(x, params_tree=params_tree)
         C_C = circuit.C(x, params_tree=params_tree)
         I_u = circuit.u(t_prev + h, analysis='tran', params_tree=params_tree)
+        I_u = apply_tline_sources(I_u, t_prev + h, tline_params,
+                                  tline_indices, state.tline_history,
+                                  state.tline_head)
         i_C, G_eq = compute_integration(q_C, C_C, st_h, method=eval_method,
                                         first_order=first_order)
         F, J = I_G + i_C + I_u, G_G + G_eq
+        if tline_dG is not None:
+            F = F + tline_dG @ x
+            J = J + tline_dG
         if pcnr_meta is None:
             return F, J, q_C, None
         ## PCNR-INSIDE-FANG: the CPU's design note is the whole argument --
@@ -673,9 +735,35 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
             q_prev2 = state.q_history[1]
             p_e = euler_companion_dh(q1, q_prev, h)
             p_g = bdf2_companion_dh(q1, q_prev, q_prev2, h, h0)
-            p = (jnp.where(first_order, p_e, p_g)
-                 + circuit.dudt(t_prev + h, analysis='tran',
-                                params_tree=params_tree))
+            ## Ordinary sources: analytic du/dt where the circuit provides
+            ## it.  A circuit containing a TLine cannot -- TLine.dudt raises
+            ## (on the CPU its u IS the delayed history, and the CPU coupled
+            ## path is therefore TLine-refused to this day) -- so fall back
+            ## to a central difference of u, which is exact off the kinks and
+            ## the kinks are breakpoint-held steps where p is never solved.
+            ## The TLine part of df/dh is added analytically below either
+            ## way: on this backend the delayed EMF is injected separately,
+            ## and its derivative is the interpolant's segment slope.
+            try:
+                du = circuit.dudt(t_prev + h, analysis='tran',
+                                  params_tree=params_tree)
+            except NotImplementedError:
+                t_c = t_prev + h
+                ## eps scales with the STEP, not with absolute time: an
+                ## absolute-scaled eps (1e-9 at t << 1) straddled the first
+                ## pulse edge from inside the opening ramp, so the derivative
+                ## saw the future corner and eq (18) corrupted the solve --
+                ## measured as the coupled path dying at t ~ 1e-12 on any
+                ## driven TLine circuit.
+                eps = 1e-3 * h
+                du = (circuit.u(t_c + eps, analysis='tran',
+                                params_tree=params_tree)
+                      - circuit.u(t_c - eps, analysis='tran',
+                                  params_tree=params_tree)) / (2.0 * eps)
+            p = (jnp.where(first_order, p_e, p_g) + du
+                 + tline_source_dudt(x.shape[0], t_prev + h, tline_params,
+                                     tline_indices, state.tline_history,
+                                     state.tline_head))
             dxh_sub = jnp.linalg.solve(J_sub, -jnp.delete(p, irefnode))
             dxh = jnp.insert(dxh_sub, irefnode, 0.0)
             x_corr = x1 + dxh * dh
@@ -786,8 +874,9 @@ def _scatter_junction_G(J, ra, rb, g, sign):
 
 
 def pcnr_inner_loop(state: TransientState, circuit, irefnode, j_ra, j_rb,
-                    j_IS, VT, eval_method='gear', reltol=1e-4, abstol=1e-12,
-                    xtol=1e-12, maxiter=100, params_tree=None):
+                    j_IS, VT, tline_params, tline_indices,
+                    eval_method='gear', reltol=1e-4, abstol=1e-12,
+                    xtol=1e-12, maxiter=100, params_tree=None, tline_dG=None):
     """One time point by PCNR: predict on the Schur-reduced system, correct
     each junction's own unknown with pnjlim.  Returns PcnrState."""
     from pycircuit.circuit._limiting import _pnjlim_branchless
@@ -801,9 +890,15 @@ def pcnr_inner_loop(state: TransientState, circuit, irefnode, j_ra, j_rb,
         q_C = circuit.q(x, params_tree=params_tree)
         C_C = circuit.C(x, params_tree=params_tree)
         I_u = circuit.u(t_new, analysis='tran', params_tree=params_tree)
+        I_u = apply_tline_sources(I_u, t_new, tline_params, tline_indices,
+                                  state.tline_history, state.tline_head)
         i_C, G_eq = compute_integration(q_C, C_C, state, method=eval_method,
                                         first_order=first_order)
-        return I_G + i_C + I_u, G_G + G_eq
+        F, J = I_G + i_C + I_u, G_G + G_eq
+        if tline_dG is not None:
+            F = F + tline_dG @ x
+            J = J + tline_dG
+        return F, J
 
     def body(ps: PcnrState):
         x, v_lim = ps.x, ps.v_lim
@@ -859,7 +954,8 @@ def pcnr_inner_loop(state: TransientState, circuit, irefnode, j_ra, j_rb,
 
 
 def pcnr_controller_jacobian(circuit, state, x, v_lim, j_ra, j_rb, j_IS, VT,
-                             eval_method, first_order, params_tree=None):
+                             eval_method, first_order, params_tree=None,
+                             tline_dG=None):
     """The Jacobian the step controller must see: the one PCNR SOLVED.
 
     ``G(x) + Geq`` is not it -- the base G carries the junction stamp at the
@@ -872,6 +968,8 @@ def pcnr_controller_jacobian(circuit, state, x, v_lim, j_ra, j_rb, j_IS, VT,
     _i_C, G_eq = compute_integration(q_C, C_C, state, method=eval_method,
                                      first_order=first_order)
     J = G_G + G_eq
+    if tline_dG is not None:
+        J = J + tline_dG
     v_node = x[j_ra] - x[j_rb]
     _i_n, g_n = _junction_terms(v_node, j_IS, VT)
     _i_l, g_l = _junction_terms(v_lim, j_IS, VT)
@@ -879,7 +977,7 @@ def pcnr_controller_jacobian(circuit, state, x, v_lim, j_ra, j_rb, j_IS, VT,
     return _scatter_junction_G(J, j_ra, j_rb, g_l, +1.0)
 
 
-def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15, pcnr_meta=None, pcnr_VT=0.025):
+def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15, pcnr_meta=None, pcnr_VT=0.025, tline_dG=None):
 
     ## The same epsilon `calculate_next_dt` uses to decide a breakpoint is "already
     ## reached".  They disagreed: after 500 steps of 1e-5 the accumulated `t` sits
@@ -912,12 +1010,13 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 jnp.abs((state.t + h_entry) - next_break) <= t_eps)
             fstate = fang_inner_loop(
                 state._replace(dt=h_entry), circuit, irefnode,
-                hold_h, eval_method=eval_method, reltol=reltol,
+                hold_h, tline_params, tline_indices,
+                eval_method=eval_method, reltol=reltol,
                 xtol=xtol, lte_abstol=lte_abstol, trtol=trtol,
                 maxiter=maxiter, params_tree=params_tree,
                 gamma_min=gamma_min, gamma_max=gamma_max, eta=eta,
                 dt_min=dt_min, dt_max=dt_max, pcnr_meta=pcnr_meta,
-                pcnr_VT=pcnr_VT)
+                pcnr_VT=pcnr_VT, tline_dG=tline_dG)
             ## Re-enter the shared accept machinery with fang's verdict: the
             ## solved h is both the step taken and (clipped) the next guess --
             ## "the solved step carries forward" is the method's whole point.
@@ -934,8 +1033,10 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
             j_ra, j_rb, j_IS = pcnr_meta
             pstate = pcnr_inner_loop(
                 state, circuit, irefnode, j_ra, j_rb, j_IS, pcnr_VT,
+                tline_params, tline_indices,
                 eval_method=eval_method, reltol=reltol, abstol=abstol,
-                xtol=xtol, maxiter=maxiter, params_tree=params_tree)
+                xtol=xtol, maxiter=maxiter, params_tree=params_tree,
+                tline_dG=tline_dG)
             nr_state = NewtonState(x=pstate.x, xdiff=jnp.zeros_like(pstate.x),
                                    F_norm=jnp.asarray(0.0),
                                    iters=pstate.iters,
@@ -945,7 +1046,8 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
             nr_state = newton_inner_loop(state, circuit, irefnode, tline_params, tline_indices,
                                          eval_method=eval_method, reltol=reltol, abstol=abstol,
                                          xtol=xtol, maxiter=maxiter,
-                                         params_tree=params_tree, max_dv=max_dv)
+                                         params_tree=params_tree, max_dv=max_dv,
+                                         tline_dG=tline_dG)
         x_curr = nr_state.x
         q_curr = circuit.q(x_curr, params_tree=params_tree)
         C_curr = circuit.C(x_curr, params_tree=params_tree)
@@ -971,9 +1073,12 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
             J = pcnr_controller_jacobian(circuit, state, x_curr, pcnr_v_lim,
                                          j_ra, j_rb, j_IS, pcnr_VT,
                                          eval_method, first_order,
-                                         params_tree=params_tree)
+                                         params_tree=params_tree,
+                                         tline_dG=tline_dG)
         else:
             J = circuit.G(x_curr, params_tree=params_tree) + Geq
+            if tline_dG is not None:
+                J = J + tline_dG
         if coupled:
             ## Fang solved (x, h) against its own solution-space LTE; a second
             ## verdict from the charge estimator would re-litigate it.
@@ -1295,6 +1400,20 @@ class JAXTransient(Analysis):
                 "timestep instead, or max_step=None." % (max_step, timestep))
         return float(max_step)
 
+    def _element_cap(self, dt_max):
+        """Clamp ``dt_max`` to the tightest element step cap (stage 8(d)
+        parity).  A TLine cannot be resolved by steps as long as its delay --
+        the CPU measured the observed delay at 2.00x TD when dt = TD, with no
+        warning -- and this backend never applied the cap at all: standard-path
+        runs were correct only because the adaptive controller happened to
+        keep steps small, and the coupled path solves h freely and would walk
+        straight past TD/2 on any quiet stretch."""
+        cap = self.cir.max_timestep() \
+            if hasattr(self.cir, 'max_timestep') else None
+        if cap is not None and cap < dt_max:
+            return float(cap)
+        return dt_max
+
     def _opening_step(self, timestep):
         """The size of the first step of a run.
 
@@ -1447,6 +1566,7 @@ class JAXTransient(Analysis):
             ## controlled to two different standards depending on which was called.
             ## `timestep` matches `solve` and matches `Transient.max_step`.
             dt_max = self._max_step(timestep)
+        dt_max = self._element_cap(dt_max)
             
         t_breaks_array = jnp.array(collect_breakpoints(self.cir, tend))
         
@@ -1481,15 +1601,31 @@ class JAXTransient(Analysis):
             tline_history = jnp.zeros((batch_size, 0, TLINE_HISTORY_DEPTH, 5))
             
         tline_head = jnp.zeros(batch_size, dtype=jnp.int32)
+        _tline_dG = (tline_stamp_correction(
+            n, [(self.cir.elementnodemap[name], float(t.iparv.Z0))
+                for name, t in tlines]) if n_tlines > 0 else None)
         
         _gm, _gx, _eta = self._coupled_band()
         _pcnr_meta, _pcnr_VT = self._pcnr_setup()
-        if (self.par.coupled_lte or _pcnr_meta is not None) and n_tlines > 0:
+        if self.par.coupled_lte and n_tlines > 0:
+            ## TLine now works on the STANDARD and PCNR paths (the DC-stamp
+            ## defect fixed by tline_stamp_correction; pcnr+TLine matches the
+            ## CPU to 4.4e-10).  The COUPLED path remains refused: past the
+            ## first wavefront epoch (t > first source corner + TD) its
+            ## acceptance band livelocks and the step collapses to dt_min --
+            ## measured on every tend past that point, on resistive and RC
+            ## loads alike.  Registering wavefront arrivals (corner + k*TD)
+            ## as breakpoints was tried and did NOT fix it, so the mechanism
+            ## is not yet understood; the CPU never solved this either (its
+            ## TLine.dudt raises, refusing the coupled path outright).
+            ## Reconsider with a reproducer under a small ring depth and a
+            ## per-iteration trace of (err, band verdict, h) at the first
+            ## post-wavefront point.
             raise NotImplementedError(
-                'coupled_lte/pcnr do not support TLine on this backend yet: '
-                'their traced assemblies do not apply the delay-line history, '
-                'and running without it would silently drop the reflections. '
-                'Use the standard path, or the CPU.')
+                'coupled_lte does not support TLine on this backend: the '
+                'coupled acceptance band livelocks past the first wavefront '
+                'arrival (see the note at this raise). The standard and pcnr '
+                'paths fully support TLine.')
 
         def run_chunk(s, p_tree):
             return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear', params_tree=p_tree, reltol=self.par.reltol, abstol=self._newton_abstol(n),
@@ -1501,7 +1637,8 @@ class JAXTransient(Analysis):
                                            else float(self.par.max_dv)),
                                    coupled=bool(self.par.coupled_lte),
                                    gamma_min=_gm, gamma_max=_gx, eta=_eta,
-                                   pcnr_meta=_pcnr_meta, pcnr_VT=_pcnr_VT)
+                                   pcnr_meta=_pcnr_meta, pcnr_VT=_pcnr_VT,
+                                   tline_dG=_tline_dG)
             
         # JIT the vmapped run_chunk
         batched_run_chunk = jax.jit(jax.vmap(run_chunk))
@@ -1627,7 +1764,7 @@ class JAXTransient(Analysis):
                 x0 = DC(self.cir).solve().x
             
         dt_min = kwargs.get('minstep', 1e-18)
-        dt_max = self._max_step(timestep)
+        dt_max = self._element_cap(self._max_step(timestep))
     
         t_breaks_array = jnp.array(collect_breakpoints(self.cir, tend))
     
@@ -1670,6 +1807,9 @@ class JAXTransient(Analysis):
             tline_history = jnp.zeros((0, TLINE_HISTORY_DEPTH, 5))
         
         tline_head = jnp.array(0, dtype=jnp.int32)
+        _tline_dG = (tline_stamp_correction(
+            n, [(self.cir.elementnodemap[name], float(t.iparv.Z0))
+                for name, t in tlines]) if n_tlines > 0 else None)
     
         # Setup initial state
         x_hist = jnp.array([x0, x0, x0])
@@ -1682,12 +1822,25 @@ class JAXTransient(Analysis):
         # but tend is a runtime parameter.
         _gm, _gx, _eta = self._coupled_band()
         _pcnr_meta, _pcnr_VT = self._pcnr_setup()
-        if (self.par.coupled_lte or _pcnr_meta is not None) and n_tlines > 0:
+        if self.par.coupled_lte and n_tlines > 0:
+            ## TLine now works on the STANDARD and PCNR paths (the DC-stamp
+            ## defect fixed by tline_stamp_correction; pcnr+TLine matches the
+            ## CPU to 4.4e-10).  The COUPLED path remains refused: past the
+            ## first wavefront epoch (t > first source corner + TD) its
+            ## acceptance band livelocks and the step collapses to dt_min --
+            ## measured on every tend past that point, on resistive and RC
+            ## loads alike.  Registering wavefront arrivals (corner + k*TD)
+            ## as breakpoints was tried and did NOT fix it, so the mechanism
+            ## is not yet understood; the CPU never solved this either (its
+            ## TLine.dudt raises, refusing the coupled path outright).
+            ## Reconsider with a reproducer under a small ring depth and a
+            ## per-iteration trace of (err, band verdict, h) at the first
+            ## post-wavefront point.
             raise NotImplementedError(
-                'coupled_lte/pcnr do not support TLine on this backend yet: '
-                'their traced assemblies do not apply the delay-line history, '
-                'and running without it would silently drop the reflections. '
-                'Use the standard path, or the CPU.')
+                'coupled_lte does not support TLine on this backend: the '
+                'coupled acceptance band livelocks past the first wavefront '
+                'arrival (see the note at this raise). The standard and pcnr '
+                'paths fully support TLine.')
 
         @jax.jit
         def run_chunk(s):
@@ -1700,7 +1853,8 @@ class JAXTransient(Analysis):
                                            else float(self.par.max_dv)),
                                    coupled=bool(self.par.coupled_lte),
                                    gamma_min=_gm, gamma_max=_gx, eta=_eta,
-                                   pcnr_meta=_pcnr_meta, pcnr_VT=_pcnr_VT)
+                                   pcnr_meta=_pcnr_meta, pcnr_VT=_pcnr_VT,
+                                   tline_dG=_tline_dG)
         
         results_list = [np.array([x0])]
         times_list = [np.array([0.0])]

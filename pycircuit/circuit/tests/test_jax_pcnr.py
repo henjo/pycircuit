@@ -179,25 +179,44 @@ def test_pcnr_inside_coupled_solves_the_cold_start():
     assert v[-1] == pytest.approx(4.367, abs=0.01)
 
 
-def test_pcnr_refuses_tline():
-    """The traced PCNR assembly does not apply the delay-line history --
-    a stage-2 gap the coupled+pcnr work exposed, closed the same way as
-    the coupled TLine refusal: loudly."""
+def test_pcnr_with_tline_matches_cpu():
+    """RE-DERIVED from a refusal test: the TLine port gave the PCNR assembly
+    the delay-line sources and the stamp correction, so pcnr+TLine now runs
+    -- and matches the CPU to 4.4e-10 at landing."""
     from pycircuit.circuit.jaxtransient import JAXTransient
-    from pycircuit.circuit.elements import TLine
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.elements import TLine, VPulse
 
-    def run():
+    def line_diode():
         c = SubCircuit()
         c.add_node('a'); c.add_node('b')
-        c['V1'] = VS('a', gnd, v=1.0)
+        c['V1'] = VPulse('s', gnd, v1=0.0, v2=1.0, td=1e-9, tr=2e-10,
+                         tf=2e-10, pw=1e-8, per=1e-7)
+        c['Rs'] = R('s', 'a', r=50.0)
         c['T1'] = TLine('a', gnd, 'b', gnd, Z0=50.0, TD=1e-9)
         c['D'] = Diode('b', 'c')
-        c['R1'] = R('c', gnd, r=50.0)
-        tran = JAXTransient(c, pcnr=True)
-        with pytest.raises(NotImplementedError, match='TLine'):
-            tran.solve(gnd, tend=1e-8, timestep=1e-10, uic=True)
+        c['Rl'] = R('c', gnd, r=50.0)
+        return c
 
-    _with_jax(run)
+    tran_c = Transient(line_diode(), toolkit=numeric, pcnr=True,
+                       reltol=1e-4, uic=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res_c = tran_c.solve(tend=8e-9, timestep=2e-10)
+    tc = np.asarray(res_c.sweep_values, float)
+    vc = np.asarray(res_c.v('c'), float).reshape(-1)
+
+    def run():
+        tran = JAXTransient(line_diode(), reltol=1e-4, pcnr=True)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(gnd, tend=8e-9, timestep=2e-10, uic=True)
+        return (np.asarray(res.sweep_values, float),
+                np.asarray(res.v('c'), float).reshape(-1))
+
+    tj, vj = _with_jax(run)
+    dev = float(np.max(np.abs(vc - np.interp(tc, tj, vj))))
+    assert dev < 1e-6, 'pcnr+TLine drifted from CPU: %.3e' % dev
 
 
 def test_pcnr_refuses_charge_storing_junctions():

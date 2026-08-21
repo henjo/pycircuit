@@ -769,3 +769,99 @@ def test_solve_batched_runs_and_honours_timestep():
     assert e_fine < e_coarse, \
         'a finer timestep did not improve the answer: %.3e -> %.3e' \
         % (e_coarse, e_fine)
+
+
+def test_tline_standard_path_matches_cpu_bit_close():
+    """THE STAMP DEFECT REGRESSION (doc/backend_parity_260821.md, TLine port):
+    TLine.G selects its stamp on len(self.history) == 0 -- Python state only
+    the CPU's accept_step writes -- so this backend stamped every transient
+    assembly with the DC form (line = ideal short) while injecting transient
+    EMFs: a matched 1 V line returned |v(far)| = 24.5 V with delay 0, and NO
+    e2e JAX TLine test existed to see it.  tline_stamp_correction fixes it;
+    measured at landing: 5e-16 deviation from the CPU, delay exactly TD."""
+    import warnings
+    from pycircuit.circuit import numeric
+    from pycircuit.circuit import circuit as circuit_mod
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.elements import SubCircuit, R, VPulse, TLine
+    from pycircuit.circuit import gnd
+
+    TD = 1e-9
+
+    def build():
+        c = SubCircuit()
+        c.add_node('a'); c.add_node('b')
+        c['V1'] = VPulse('s', gnd, v1=0.0, v2=1.0, td=1e-9, tr=2e-10,
+                         tf=2e-10, pw=1e-8, per=1e-7)
+        c['Rs'] = R('s', 'a', r=50.0)
+        c['T1'] = TLine('a', gnd, 'b', gnd, Z0=50.0, TD=TD)
+        c['Rl'] = R('b', gnd, r=50.0)
+        return c
+
+    tran_c = Transient(build(), toolkit=numeric, reltol=1e-4, uic=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res_c = tran_c.solve(tend=8e-9, timestep=2e-10)
+    tc = np.asarray(res_c.sweep_values, float)
+    vc = np.asarray(res_c.v('b'), float).reshape(-1)
+
+    saved = circuit_mod.default_toolkit
+    circuit_mod.default_toolkit = jaxtoolkit
+    try:
+        tran = JAXTransient(build(), reltol=1e-4)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(gnd, tend=8e-9, timestep=2e-10, uic=True)
+        t = np.asarray(res.sweep_values, float)
+        va = np.asarray(res.v('a'), float).reshape(-1)
+        vb = np.asarray(res.v('b'), float).reshape(-1)
+    finally:
+        circuit_mod.default_toolkit = saved
+
+    dev = float(np.max(np.abs(vc - np.interp(tc, t, vb))))
+    assert dev < 1e-9, 'stamp defect is back: %.3e (it produced 24.5 V)' % dev
+    delay = t[np.argmax(vb > 0.25)] - t[np.argmax(va > 0.25)]
+    assert delay == pytest.approx(TD, rel=0.15)
+
+
+def test_tline_element_step_cap_holds_the_delay():
+    """Stage 8(d) parity: dt_max is clamped to TD/2 (never applied on this
+    backend before the TLine port).  At timestep = 5*TD the uncapped run
+    reported a wrong delay; with the cap the wavefront arrives at TD."""
+    import warnings
+    from pycircuit.circuit import circuit as circuit_mod
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.elements import SubCircuit, R, VPulse, TLine
+    from pycircuit.circuit import gnd
+
+    TD = 1e-9
+    saved = circuit_mod.default_toolkit
+    circuit_mod.default_toolkit = jaxtoolkit
+    try:
+        c = SubCircuit()
+        c.add_node('a'); c.add_node('b')
+        c['V1'] = VPulse('s', gnd, v1=0.0, v2=1.0, td=1e-9, tr=2e-10,
+                         tf=2e-10, pw=1e-8, per=1e-7)
+        c['Rs'] = R('s', 'a', r=50.0)
+        c['T1'] = TLine('a', gnd, 'b', gnd, Z0=50.0, TD=TD)
+        c['Rl'] = R('b', gnd, r=50.0)
+        tran = JAXTransient(c, reltol=1e-4)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(gnd, tend=8e-9, timestep=5e-9, uic=True)
+        t = np.asarray(res.sweep_values, float)
+        va = np.asarray(res.v('a'), float).reshape(-1)
+        vb = np.asarray(res.v('b'), float).reshape(-1)
+    finally:
+        circuit_mod.default_toolkit = saved
+
+    assert np.max(np.diff(t)) <= TD / 2 * (1 + 1e-9)
+    delay = t[np.argmax(vb > 0.25)] - t[np.argmax(va > 0.25)]
+    ## At TD/2 sampling the threshold-crossing metric quantises to about one
+    ## step either side (measured 1.4e-9 here); the DEFECT regime this test
+    ## guards against is >= 2x TD, so the bound sits between the two.
+    assert TD * 0.5 <= delay <= TD * 1.75, \
+        'delay %.3e -- the uncapped regime measured >= 2x TD' % delay
