@@ -74,9 +74,6 @@ UNUSED_ARG_ALLOWLIST = {
 ## Parameters declared but not referenced in (module, base module) -- each with
 ## the reason.
 PARAMETER_ALLOWLIST = {
-    ('JAXTransient', 'vabstol'):
-        'F6(a) moved the Newton floor to iabstol; F6(b) re-threads vabstol '
-        'per-row (Phase 3) -- remove this entry with that fix',
     ('JAXTransient', 'analysis'):
         "inherited; the traced loop hardcodes analysis='tran' -- unify when "
         'the loop learns other analysis names',

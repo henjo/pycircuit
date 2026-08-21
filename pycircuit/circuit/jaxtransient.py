@@ -196,7 +196,7 @@ def extrapolate_predictor(state: TransientState):
     x_pred = jnp.where(dt_old == 0.0, x1, x_pred)
     return x_pred
 
-def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tline_indices, eval_method='euler', reltol=1e-3, abstol=1e-6, maxiter=50, params_tree=None):
+def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tline_indices, eval_method='euler', reltol=1e-3, abstol=1e-6, xtol=1e-12, maxiter=50, params_tree=None, max_dv=jnp.inf):
     x_init = extrapolate_predictor(state)
     def interp_tlines(t_target, params, history, head):
         # t_target is scalar, history is (10000, 5)
@@ -252,90 +252,76 @@ def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tl
         I_u = I_u.at[tline_indices[:, 5]].add(-e2s)
         return I_u
 
-    
-    ## Convergence uses the passed tolerances (previously hardcoded to
-    ## F_norm > 1e-6 and iters < 20, ignoring the reltol/abstol/maxiter args).
-    ## conv_tol is set below once the initial residual F_norm0 is known.
-    def make_cond(conv_tol):
-        def cond_fun(nr_state: NewtonState):
-            return jnp.logical_and(nr_state.F_norm > conv_tol, nr_state.iters < maxiter)
-        return cond_fun
-    
+
+    ## F6(b) (doc/transient_review_260820.md): THE CPU'S PER-ROW CRITERIA,
+    ## replacing `conv_tol = abstol + reltol * F_norm0` -- which was wrong
+    ## three ways at once.  Flavour: the scalar floor threaded here was
+    ## vabstol, a voltage, against a residual of KCL currents (F6(a) picked
+    ## the majority flavour; the per-row vectors finish the job -- iabstol on
+    ## node rows, vabstol on branch rows, and the transposed pair for the
+    ## update test).  Reference: relative to the INITIAL residual, so a bad
+    ## predictor loosened the target -- false convergence -- while a good
+    ## one collapsed it toward the absolute floor -- spurious
+    ## non-convergence.  Norm: a summed L1, so one badly-failed row diluted
+    ## with circuit size.  The body below mirrors StandardNewton: per-row
+    ## conv_f against reltol*I_scale + abstol, per-row conv_x against the
+    ## step actually taken, both computed on the consistent (F(x), dx) pair
+    ## -- which also retires stage 9(e)'s trailing re-evaluation, since the
+    ## converged flag now travels in state and refers to the pair that
+    ## produced the returned x, exactly as on the CPU.
+    def cond_fun(nr_state: NewtonState):
+        return jnp.logical_and(jnp.logical_not(nr_state.converged),
+                               nr_state.iters < maxiter)
+
     def body_fun(nr_state: NewtonState):
         x = nr_state.x
-    
+
         I_G = circuit.i(x, params_tree=params_tree)
         G_G = circuit.G(x, params_tree=params_tree)
         q_C = circuit.q(x, params_tree=params_tree)
         C_C = circuit.C(x, params_tree=params_tree)
         I_u = circuit.u(state.t + state.dt, analysis='tran', params_tree=params_tree)
         I_u = apply_tlines(I_u, state.t + state.dt)
-    
+
         i_C, G_C_eq = compute_integration(q_C, C_C, state, method=eval_method)
-    
+
         F = I_G + i_C + I_u
         J = G_G + G_C_eq
-    
-        F_norm = jnp.sum(jnp.abs(F))
-    
+
         J_sub = jnp.delete(jnp.delete(J, irefnode, axis=0), irefnode, axis=1)
         F_sub = jnp.delete(F, irefnode)
         xdiff_sub = jnp.linalg.solve(J_sub, -F_sub)
         xdiff = jnp.insert(xdiff_sub, irefnode, 0.0)
-    
-        max_dv = 0.5
+
+        ## F16 (doc/transient_review_260820.md): the update clamp is a
+        ## PARAMETER, default disabled (jnp.inf -> alpha 1.0).  The hardcoded
+        ## 0.5 V made any swing beyond ~maxiter*0.5 V non-convergent by
+        ## construction with a false "failed to converge" diagnosis -- a 48 V
+        ## rail was unreachable in 100 iterations -- and under the per-row
+        ## criteria (F6(b)) it even made a LINEAR 1 V step need multiple
+        ## clamped iterations.  A flat voltage clamp punishes the linear part
+        ## of the circuit for the nonlinear part's sins; per-junction
+        ## limiting (pnjlim's shape) is the eventual replacement if the JAX
+        ## element set grows junctions.
         max_diff = jnp.max(jnp.abs(xdiff))
         alpha = jnp.where(max_diff > max_dv, max_dv / max_diff, 1.0)
-        x_next = x + alpha * xdiff
-    
-        return NewtonState(x=x_next, xdiff=xdiff, F_norm=F_norm, iters=nr_state.iters + 1)
-    
-    I_G0 = circuit.i(x_init, params_tree=params_tree)
-    G_G0 = circuit.G(x_init, params_tree=params_tree)
-    q_C0 = circuit.q(x_init, params_tree=params_tree)
-    C_C0 = circuit.C(x_init, params_tree=params_tree)
-    I_u0 = circuit.u(state.t + state.dt, analysis='tran', params_tree=params_tree)
-    I_u0 = apply_tlines(I_u0, state.t + state.dt)
-    i_C0, G_C_eq0 = compute_integration(q_C0, C_C0, state, method=eval_method)
+        step = alpha * xdiff
+        x_next = x + step
 
-    F0 = I_G0 + i_C0 + I_u0
-    J0 = G_G0 + G_C_eq0
-    F_norm0 = jnp.sum(jnp.abs(F0))
+        I_scale = jnp.abs(J) @ jnp.abs(x_next) + jnp.abs(F)
+        conv_f = jnp.all(jnp.abs(F) < reltol * I_scale + abstol)
+        conv_x = jnp.all(jnp.abs(step)
+                         < reltol * jnp.maximum(jnp.abs(x_next), jnp.abs(x))
+                         + xtol)
 
-    J_sub0 = jnp.delete(jnp.delete(J0, irefnode, axis=0), irefnode, axis=1)
-    F_sub0 = jnp.delete(F0, irefnode)
-    xdiff_sub0 = jnp.linalg.solve(J_sub0, -F_sub0)
-    xdiff0 = jnp.insert(xdiff_sub0, irefnode, 0.0)
+        return NewtonState(x=x_next, xdiff=step, F_norm=jnp.sum(jnp.abs(F)),
+                           iters=nr_state.iters + 1,
+                           converged=jnp.logical_and(conv_f, conv_x))
 
-    max_dv = 0.5
-    max_diff = jnp.max(jnp.abs(xdiff0))
-    alpha = jnp.where(max_diff > max_dv, max_dv / max_diff, 1.0)
-    x_next0 = x_init + alpha * xdiff0
-
-    initial_nr_state = NewtonState(x=x_next0, xdiff=xdiff0, F_norm=F_norm0, iters=1)
-
-    ## Relative + absolute residual test on the L1 residual norm.
-    conv_tol = abstol + reltol * F_norm0
-    final = jax.lax.while_loop(make_cond(conv_tol), body_fun, initial_nr_state)
-
-    ## THE RESIDUAL IS RE-EVALUATED AT THE RETURNED x, and that is not fussiness.
-    ## `NewtonState.F_norm` is the residual at the iterate BEFORE the update that
-    ## produced `final.x`, so the loop always does one update beyond the one its
-    ## test approved.  Reading `final.F_norm <= conv_tol` as "converged" therefore
-    ## reports failure whenever the iteration cap is hit, even when the returned
-    ## point is perfectly good: measured at maxiter=2 on a linear RC, which had
-    ## been giving the exact same answer as maxiter=100 and would have started
-    ## raising.  One extra residual is the price of a flag that means what it says,
-    ## and it is cheaper than an iteration -- no `G`, no linear solve.
-    q_f = circuit.q(final.x, params_tree=params_tree)
-    C_f = circuit.C(final.x, params_tree=params_tree)
-    i_Cf, _ = compute_integration(q_f, C_f, state, method=eval_method)
-    F_final = (circuit.i(final.x, params_tree=params_tree) + i_Cf
-               + apply_tlines(circuit.u(state.t + state.dt, analysis='tran',
-                                        params_tree=params_tree),
-                              state.t + state.dt))
-    return final._replace(
-        converged=jnp.sum(jnp.abs(F_final)) <= conv_tol)
+    initial_nr_state = NewtonState(x=x_init, xdiff=jnp.zeros_like(x_init),
+                                   F_norm=jnp.asarray(jnp.inf), iters=0,
+                                   converged=jnp.asarray(False))
+    return jax.lax.while_loop(cond_fun, body_fun, initial_nr_state)
 
 # ---------------------------------------------------------------------------
 # Phase 3: Outer Time Loop & Adaptive Control
@@ -505,7 +491,7 @@ def calculate_next_dt(dt, error_ratio, dt_min, dt_max, t_breaks_array, current_t
     dt_new = jnp.maximum(dt_new, dt_min)
     return dt_new
 
-def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12):
+def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf):
 
     ## The same epsilon `calculate_next_dt` uses to decide a breakpoint is "already
     ## reached".  They disagreed: after 500 steps of 1e-5 the accumulated `t` sits
@@ -523,7 +509,8 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
     def time_body(state: TransientState):
         nr_state = newton_inner_loop(state, circuit, irefnode, tline_params, tline_indices,
                                      eval_method=eval_method, reltol=reltol, abstol=abstol,
-                                     maxiter=maxiter, params_tree=params_tree)
+                                     xtol=xtol, maxiter=maxiter,
+                                     params_tree=params_tree, max_dv=max_dv)
         x_curr = nr_state.x
         q_curr = circuit.q(x_curr, params_tree=params_tree)
         C_curr = circuit.C(x_curr, params_tree=params_tree)
@@ -759,6 +746,13 @@ class JAXTransient(Analysis):
                   unit='', default=7.0),
         Parameter(name='maxiter', desc='Maximum number of iterations', unit='',
                   default=100),
+        ## F16: opt-in, OFF by default -- the old hardcoded 0.5 V made any
+        ## swing beyond ~maxiter*0.5 V non-convergent by construction.
+        Parameter(name='max_dv',
+                  desc='Largest Newton update per iteration, as a voltage; a '
+                       'convergence aid for stiff nonlinear circuits. None '
+                       '(default) disables the clamp.',
+                  unit='V', default=None),
         ## STAGE 9(g).  Ported from `Transient`, same name, default and validation.
         ## DECISION D2 -- the same knob as `Transient.max_step`, same name and same
         ## default, because 9(d) and 9(g) both exist because these two backends had
@@ -842,6 +836,24 @@ class JAXTransient(Analysis):
         ## Larger than dt_max would be capped on the very next step anyway, and
         ## asking for one is more likely a mistake than an intent.
         return min(float(firststep), float(timestep))
+
+    def _newton_abstol(self, n):
+        """Per-row Newton RESIDUAL floor: currents on node rows, volts on
+        branch rows -- the same split Transient._newton builds (F6(b))."""
+        import jax.numpy as jnp
+        n_nodes = len(self.cir.nodes)
+        return jnp.concatenate((
+            self.par.iabstol * jnp.ones(n_nodes),
+            self.par.vabstol * jnp.ones(n - n_nodes)))
+
+    def _newton_xtol(self, n):
+        """Per-row Newton UPDATE floor -- the transposed flavour: volts on
+        node rows, amps on branch rows."""
+        import jax.numpy as jnp
+        n_nodes = len(self.cir.nodes)
+        return jnp.concatenate((
+            self.par.vabstol * jnp.ones(n_nodes),
+            self.par.iabstol * jnp.ones(n - n_nodes)))
 
     def _lte_abstol(self, n):
         """Per-row absolute LTE tolerance, in the SOLUTION domain.
@@ -954,10 +966,13 @@ class JAXTransient(Analysis):
         tline_head = jnp.zeros(batch_size, dtype=jnp.int32)
         
         def run_chunk(s, p_tree):
-            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear', params_tree=p_tree, reltol=self.par.reltol, abstol=self.par.iabstol,
+            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear', params_tree=p_tree, reltol=self.par.reltol, abstol=self._newton_abstol(n),
+                                   xtol=self._newton_xtol(n),
                                    maxiter=self.par.maxiter, trtol=self.par.TRTOL,
                                    lte_reltol=self.par.reltol,
-                                   lte_abstol=self._lte_abstol(n))
+                                   lte_abstol=self._lte_abstol(n),
+                                   max_dv=(jnp.inf if self.par.max_dv is None
+                                           else float(self.par.max_dv)))
             
         # JIT the vmapped run_chunk
         batched_run_chunk = jax.jit(jax.vmap(run_chunk))
@@ -1138,10 +1153,13 @@ class JAXTransient(Analysis):
         # but tend is a runtime parameter.
         @jax.jit
         def run_chunk(s):
-            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear', reltol=self.par.reltol, abstol=self.par.iabstol,
+            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear', reltol=self.par.reltol, abstol=self._newton_abstol(n),
+                                   xtol=self._newton_xtol(n),
                                    maxiter=self.par.maxiter, trtol=self.par.TRTOL,
                                    lte_reltol=self.par.reltol,
-                                   lte_abstol=self._lte_abstol(n))
+                                   lte_abstol=self._lte_abstol(n),
+                                   max_dv=(jnp.inf if self.par.max_dv is None
+                                           else float(self.par.max_dv)))
         
         results_list = [np.array([x0])]
         times_list = [np.array([0.0])]

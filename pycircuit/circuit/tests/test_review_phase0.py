@@ -129,15 +129,48 @@ def _jax_rc_run(**tol):
         circuit_mod.default_toolkit = saved
 
 
-def test_f6a_newton_residual_floor_is_current_flavoured():
+def test_f6_newton_tolerances_are_per_row_and_both_live():
+    ## RE-DERIVED at F6(b): with per-row criteria BOTH flavours are live --
+    ## iabstol floors the node (KCL) rows, vabstol the branch (KVL) rows --
+    ## so the interim F6(a) assertion (vabstol bit-identical) no longer
+    ## holds, correctly.  Loosening either flavour to absurdity must now
+    ## visibly degrade the run; the defaults must stay accurate.
+    ## Behavioral loosening probes are UNFALSIFIABLE here: with the clamp
+    ## off (F16), one full Newton step from any start lands exactly on a
+    ## linear circuit's solution, so even all-floors-huge commits the right
+    ## answer.  Enforcement is proven behaviorally elsewhere -- gate 9(e)
+    ## raises at maxiter=1 because the per-row pair genuinely fails, and the
+    ## F16 test reaches a 400 V rail to 1e-6 -- so what this test pins is
+    ## the flavour CONSTRUCTION, the thing F6 was actually about: currents
+    ## floor the node rows of the residual test, volts the branch rows, and
+    ## the update test is the transpose.
     x_default = _jax_rc_run()
-    ## vabstol no longer reaches the Newton criterion: bit-identical run.
-    assert np.array_equal(x_default, _jax_rc_run(vabstol=1e6))
-    ## iabstol does: a huge floor accepts the predictor and the waveform moves
-    ## (measured 4.48 V max deviation on this circuit when the test was written).
-    x_loose = _jax_rc_run(iabstol=1e6)
-    assert x_default.shape != x_loose.shape or \
-        float(np.max(np.abs(x_default - x_loose))) > 1e-3
+    assert np.all(np.isfinite(x_default))
+
+    from pycircuit.circuit import circuit as circuit_mod
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.elements import VS
+    saved = circuit_mod.default_toolkit
+    circuit_mod.default_toolkit = jaxtoolkit
+    try:
+        cir = SubCircuit()
+        cir.add_node('in'); cir.add_node('out')
+        cir['V1'] = VS('in', gnd, v=1.0)
+        cir['R1'] = R('in', 'out', r=1e3)
+        cir['C1'] = C('out', gnd, c=1e-6)
+        tran = JAXTransient(cir, iabstol=3.0, vabstol=7.0)
+        n = cir.n
+        n_nodes = len(cir.nodes)
+        ab = np.asarray(tran._newton_abstol(n))
+        xt = np.asarray(tran._newton_xtol(n))
+        assert np.all(ab[:n_nodes] == 3.0) and np.all(ab[n_nodes:] == 7.0), \
+            'residual floor: iabstol on node rows, vabstol on branch rows'
+        assert np.all(xt[:n_nodes] == 7.0) and np.all(xt[n_nodes:] == 3.0), \
+            'update floor is the transposed flavour'
+        assert n > n_nodes, 'circuit must actually have a branch row'
+    finally:
+        circuit_mod.default_toolkit = saved
 
 
 ## F1(c) -- lanes finishing in different chunks used to crash the fill-forward
@@ -544,5 +577,36 @@ def test_f17_safety_factor_tames_rejection_rate():
             assert ratio < bound, \
                 'reltol %g: rejection ratio %.3f (edge-aiming regime was ~0.4)' \
                 % (reltol, ratio)
+    finally:
+        circuit_mod.default_toolkit = saved
+
+
+## F16 -- the Newton update clamp is a parameter, default OFF.  The hardcoded
+## 0.5 V made any swing beyond ~maxiter*0.5 V non-convergent by construction:
+## a 400 V uic start needed 800 clamped iterations against maxiter=100.
+
+def test_f16_high_voltage_converges_with_clamp_off():
+    pytest.importorskip('jax')
+    import warnings
+    from pycircuit.circuit import circuit as circuit_mod
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.elements import VS
+    saved = circuit_mod.default_toolkit
+    circuit_mod.default_toolkit = jaxtoolkit
+    try:
+        cir = SubCircuit()
+        cir.add_node('in'); cir.add_node('out')
+        cir['V1'] = VS('in', gnd, v=400.0)
+        cir['R1'] = R('in', 'out', r=1e3)
+        cir['C1'] = C('out', gnd, c=1e-6)
+        tran = JAXTransient(cir)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(gnd, tend=1e-4, timestep=1e-5, uic=True)
+        assert tran.statistics.nonconverged_steps == 0
+        assert tran.statistics.forced_nonconverged_steps == 0
+        v = np.asarray(res.v('in'), float).reshape(-1)
+        assert abs(v[-1] - 400.0) < 1e-6      # the rail is actually reached
     finally:
         circuit_mod.default_toolkit = saved
