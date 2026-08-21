@@ -98,3 +98,43 @@ def test_f2a_batched_override_of_unbatchable_class_raises():
                 tend=1e-5, timestep=1e-6, CHUNK_SIZE=50, uic=True)
     finally:
         circuit_mod.default_toolkit = saved
+
+
+## F6(a) -- the JAX Newton residual is a vector of KCL currents, so its
+## absolute floor is iabstol.  vabstol was threaded instead, invisible while
+## both defaulted to 1e-12.  Pin the flavour by its observable asymmetry: a
+## huge vabstol must leave the waveform untouched, a huge iabstol must
+## loosen Newton visibly.  (Node rows only -- F6(b)'s per-row criterion is
+## the complete fix.)
+
+def _jax_rc_run(**tol):
+    pytest.importorskip('jax')
+    from pycircuit.circuit import circuit as circuit_mod
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.elements import VS
+
+    saved = circuit_mod.default_toolkit
+    circuit_mod.default_toolkit = jaxtoolkit
+    try:
+        cir = SubCircuit()
+        cir.add_node('in'); cir.add_node('out')
+        cir['V1'] = VS('in', gnd, v=1.0)
+        cir['R1'] = R('in', 'out', r=1e3)
+        cir['C1'] = C('out', gnd, c=1e-6)
+        res = JAXTransient(cir, **tol).solve(gnd, tend=2e-4, timestep=1e-5,
+                                             uic=True)
+        return np.asarray(res.x)
+    finally:
+        circuit_mod.default_toolkit = saved
+
+
+def test_f6a_newton_residual_floor_is_current_flavoured():
+    x_default = _jax_rc_run()
+    ## vabstol no longer reaches the Newton criterion: bit-identical run.
+    assert np.array_equal(x_default, _jax_rc_run(vabstol=1e6))
+    ## iabstol does: a huge floor accepts the predictor and the waveform moves
+    ## (measured 4.48 V max deviation on this circuit when the test was written).
+    x_loose = _jax_rc_run(iabstol=1e6)
+    assert x_default.shape != x_loose.shape or \
+        float(np.max(np.abs(x_default - x_loose))) > 1e-3
