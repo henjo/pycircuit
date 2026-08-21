@@ -55,6 +55,22 @@ Dark territory worth knowing before trusting a green suite (from `--show-missing
 - `stepcontroller.py` at 72% — the PI controller and parts of the band logic (the F10
   territory).
 
+  > **ADDRESSED 2026-08-21** (owner request).  Re-measured under the full
+  > post-campaign suite first: 78%, with the genuinely dark regions being
+  > both controllers' LTE-solve fallback (decision 0.3d's kept-but-loud
+  > units-violation warning — measured firing zero times in production,
+  > guarded by nothing) and the WHOLE of
+  > `SolutionLTEController.evaluate_step`, a selectable standard-path
+  > controller whose design record cites measurements no test pinned.
+  > `test_stepcontroller_units.py` now gates: the fallback warning + its
+  > stand-in verdict on both controllers, IntegralController's
+  > lower-band growth-retry with all three suppression guards
+  > (h_clamped, at-max_step, damper-would-not-grow), PIController's
+  > gamma_min refusal and sentinel pass-through, and the solution
+  > controller's full standard-path contract (accept-unevaluated
+  > openings, controlling-index record, both band edges).  **After:
+  > 99%** — the one uncovered line is the ABC's `pass`, left honestly.
+
 Reproduce: `XLA_PYTHON_CLIENT_PREALLOCATE=false .venv/bin/python -m coverage run
 --source=pycircuit/circuit -m pytest -q -m "" <the eleven files>` then
 `coverage report --show-missing`.
