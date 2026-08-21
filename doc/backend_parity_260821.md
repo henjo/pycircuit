@@ -44,7 +44,7 @@ Parameters and options, from the mechanical diff:
 | **P16** TLine delay interpolation | quadratic (3-point Lagrange) | linear + ring-cap raise | align later (M) |
 | **P17** solver strategy objects (`nrsolver`/`scaler`/`linearsolver`) | ✓, injectable | refused loudly | **document — permanent** (traced loop cannot dispatch) |
 | **P18** continuation (gmin/source stepping) | DC path; transient retries dt | dt retries only | roadmap, both sides |
-| **P19** `coupled_lte` (Fang), `pcnr` | ✓ | ✓ **PORTED** — 'approx' Fang + PCNR (`bordered`, PCNR-in-Fang, coupled+TLine stay CPU-only, refused loudly) | closed (see P19 note) |
+| **P19** `coupled_lte` (Fang), `pcnr` | ✓ | ✓ **PORTED** — 'approx' Fang + PCNR + PCNR-inside-Fang (`bordered` and TLine-under-coupled/pcnr stay CPU-only, refused loudly) | closed (see P19 note) |
 | **P20** `solve_batched` per-lane sweeps | — | ✓ — the backend's reason to exist | one-sided by design |
 | **P21** batched DC operating point | n/a | missing (`uic=True` required, refused loudly) | roadmap |
 
@@ -249,7 +249,11 @@ existing TLine tests before/after, per house rules.
   against the CPU's +60–80 %/iteration (the figure indeed did not transfer).  The
   dead-knob scan caught the Fang draft's unread TLine buffers mid-port (coupled+TLine
   now refused loudly), and the traced `pnjlim` is bit-exact against the branching
-  original across a 48-case warnings-as-errors sweep.
+  original across a 48-case warnings-as-errors sweep.  **PCNR-inside-Fang followed
+  the same day**: the cold-start probe that kills plain coupled completes under
+  coupled+PCNR (56 steps, 4.367 V), and the rectifier tracks CPU coupled+PCNR to
+  9.7e-3 at 7.4× fewer steps; the standard PCNR path's silent TLine gap was closed
+  with the same loud refusal in the process.
 - **P20 `solve_batched`:** JAX-only by design — it is the branch's purpose. The CPU
   gets no imitation API; a Python loop over `Transient` is already expressible and
   honest about its cost.
