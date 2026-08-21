@@ -11,7 +11,8 @@ from pycircuit.circuit.jaxtransient import (TransientState, compute_integration,
 
 def _state(dt, q_hist, iq_hist, h_hist, step_idx):
     return TransientState(
-        t=0.0, dt=dt, step_idx=step_idx, x_history=None,
+        t=0.0, dt=dt, step_idx=step_idx,
+        x_history=jnp.zeros_like(jnp.array(q_hist)),
         q_history=jnp.array(q_hist), iq_history=jnp.array(iq_hist),
         h_history=jnp.array(h_hist), results_buffer=None, time_buffer=None,
         tline_history=None, tline_head=None)
@@ -50,7 +51,7 @@ def test_jax_lte_order_per_method():
     i_curr = jnp.array([1.0, 0.0])
     J = jnp.eye(n)
     st = TransientState(
-        t=0.0, dt=1.0, step_idx=5, x_history=None,
+        t=0.0, dt=1.0, step_idx=5, x_history=jnp.zeros((3, n)),
         q_history=jnp.zeros((3, n)),
         iq_history=jnp.array([[0.5, 0.0], [0.25, 0.0], [0.0, 0.0]]),
         h_history=jnp.array([1.0, 1.0, 0.0]),
@@ -326,13 +327,13 @@ def _lte_ratio(h, method, order, G=1.0e6):
     n = 2
     g = (lambda t: G * t) if order == 1 else (lambda t: G * t ** 2 / 2.0)
     st = TransientState(
-        t=0.0, dt=h, step_idx=5, x_history=None,
+        t=0.0, dt=h, step_idx=5, x_history=jnp.zeros((3, n)),
         q_history=jnp.zeros((3, n)),
         iq_history=jnp.array([[g(-h), 0.0], [g(-2 * h), 0.0], [0.0, 0.0]]),
         h_history=jnp.array([h, h, 0.0]),
         results_buffer=None, time_buffer=None,
         tline_history=None, tline_head=None,
-        sig_max=jnp.array(1.0), n_rejected=0)
+        sig_max=jnp.array(1.0), ref_running=jnp.array(1.0), n_rejected=0)
     r, _p = ywr_error_ratio(
         jnp.array([g(0.0), 0.0]), jnp.array([1.0, 0.0]),
         jnp.eye(n), st, irefnode=1, method=method,

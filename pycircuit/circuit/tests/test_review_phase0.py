@@ -479,7 +479,7 @@ def test_f19_estimator_follows_effective_order():
     def state(h0, h1, forced=False):
         n = 2
         return TransientState(
-            t=0.0, dt=1.0, step_idx=5, x_history=None,
+            t=0.0, dt=1.0, step_idx=5, x_history=jnp.zeros((3, n)),
             q_history=jnp.zeros((3, n)),
             iq_history=jnp.array([[0.5, 0.0], [0.25, 0.0], [0.0, 0.0]]),
             h_history=jnp.array([h0, h1, 0.0]),

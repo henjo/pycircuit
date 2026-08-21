@@ -185,6 +185,17 @@ amps — check whether it already does (the CPU comment warns about exactly this
 JAX `ref` is a scalar max over everything, so **it does mix units today** — worth a
 line in the port, and until then a note in the code).
 
+
+> **EXECUTED 2026-08-21.**  All three modes on the traced standard estimator
+> (`ref_running` per-row vector in state, accepted-only updates; the mode is a
+> trace-static string like `eval_method`), WITH the unit-group split — the
+> kernel gate pins that a 1 A branch current no longer deadens millivolt node
+> control (ratio restored >100×).  Measured mode ordering on the step-response
+> RC at reltol 1e-5: pointlocal 95 steps / 3.4e-4, alllocal 72 / 4.9e-4,
+> sigglobal 63 / 6.9e-4.  The COUPLED path deliberately keeps its scalar
+> reference — its whole measured record (the TLine kink constants included) is
+> derived against it; noted at the site.
+
 ### P8 — the LTE acceptance band on JAX
 
 Post-F17 both backends share the prediction law, so the band port is the acceptance
@@ -229,6 +240,18 @@ be jax-traceable (pure, jnp-composable) and is baked in at jit time. That constr
 is acceptable — state it in the Parameter doc and raise a clear error if tracing
 fails. The DC-seed caveat from F4 applies verbatim (JAX's non-uic seed is a plain
 DC solve that won't see `pf`): same warning, same wording.
+
+
+> **EXECUTED 2026-08-21**, and the port found a latent JAX defect: the traced
+> Newton scored its residual test over ALL rows including the reference row,
+> which is not an equation of the solved system — an unbalanced pf put the
+> full injection there, and the run livelocked at maxiter on every step,
+> silently force-accepting at the dt floor (~1e14 steps to finish).  The
+> convergence test now scores the reduced rows, as the CPU's always has.  pf
+> folds in at every `circuit.u` site, so the coupled FD du/dt pair carries
+> pf' automatically; the analytic-dudt branch omits it exactly as the CPU's
+> residual_dh does (shared recorded gap).  DC-seed warning mirrored verbatim;
+> cross-backend pf waveforms agree within 2% of signal on the gate.
 
 ### P12 — real initial conditions on JAX; delete the dead `node.ic` path *(new finding)*
 

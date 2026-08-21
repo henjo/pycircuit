@@ -69,6 +69,11 @@ class TransientState(NamedTuple):
     ## for a while by raising the floor a millionfold; `sigglobal` is the fix, and
     ## this field is what carries it through a traced loop.
     sig_max: Any = 0.0
+    ## P7: the per-row running signal maximum, relref's 'alllocal' and the
+    ## unit-split 'sigglobal' reference.  Shape (n,), updated on ACCEPT only
+    ## (the same hygiene as sig_max -- a rejected iterate must not loosen
+    ## later tolerances).
+    ref_running: Any = 0.0
 
     ## STAGE 9, gate 9-1(b) -- how many steps the controller REJECTED.  Nothing
     ## reported this, so "a step is actually rejected" -- one of the three CPU
@@ -296,7 +301,7 @@ def tline_source_dudt(n, t_curr, tline_params, tline_indices,
     return out
 
 
-def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tline_indices, eval_method='euler', reltol=1e-3, abstol=1e-6, xtol=1e-12, maxiter=50, params_tree=None, max_dv=jnp.inf, tline_dG=None, analysis='tran'):
+def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tline_indices, eval_method='euler', reltol=1e-3, abstol=1e-6, xtol=1e-12, maxiter=50, params_tree=None, max_dv=jnp.inf, tline_dG=None, analysis='tran', provided_function=None):
     x_init = extrapolate_predictor(state)
 
     def apply_tlines(I_u, t_curr):
@@ -333,6 +338,9 @@ def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tl
         q_C = circuit.q(x, params_tree=params_tree)
         C_C = circuit.C(x, params_tree=params_tree)
         I_u = circuit.u(state.t + state.dt, analysis=analysis, params_tree=params_tree)
+        if provided_function is not None:
+            ## P11: the F4 contract -- an extra source, folded where u is.
+            I_u = I_u + provided_function(state.t + state.dt)
         I_u = apply_tlines(I_u, state.t + state.dt)
 
         i_C, G_C_eq = compute_integration(q_C, C_C, state, method=eval_method)
@@ -365,7 +373,16 @@ def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tl
         x_next = x + step
 
         I_scale = jnp.abs(J) @ jnp.abs(x_next) + jnp.abs(F)
-        conv_f = jnp.all(jnp.abs(F) < reltol * I_scale + abstol)
+        ## THE REDUCED ROWS, not all of them (P11's port found this): the
+        ## reference row is not an equation of the solved system -- its
+        ## residual is whatever KCL imbalance the source terms carry (an
+        ## unbalanced provided_function put the full injection there), and
+        ## scoring it can NEVER be satisfied by any x, which livelocked the
+        ## run at maxiter on every step, silently force-accepting at the dt
+        ## floor.  The CPU's Newton has always tested the reduced system.
+        conv_f = jnp.all(jnp.delete(
+            jnp.abs(F) < reltol * I_scale
+            + jnp.broadcast_to(abstol, F.shape), irefnode))
         conv_x = jnp.all(jnp.abs(step)
                          < reltol * jnp.maximum(jnp.abs(x_next), jnp.abs(x))
                          + xtol)
@@ -385,7 +402,7 @@ def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tl
 
 def ywr_error_ratio(i_curr, x_curr, J, state: TransientState, irefnode,
                     method='gear', trtol=7.0, lte_rel=1e-4, lte_abstol=1e-12,
-                    first_order=None):
+                    first_order=None, relref='sigglobal', n_nodes=None):
     """Yao-Wang-Roychowdhury DAE LTE, returned as a normalized error ratio.
 
     Mirrors the CPU transient's estimator: forms the residual as a
@@ -459,11 +476,28 @@ def ywr_error_ratio(i_curr, x_curr, J, state: TransientState, irefnode,
     lte_r = jnp.linalg.solve(J_r, Eg_r)
     lte = jnp.insert(lte_r, irefnode, 0.0)
 
-    ## `sigglobal`: the reference is the largest signal ANY unknown has reached so
-    ## far, not this unknown right now.  `state.sig_max` carries it; the
-    ## `maximum(..., |x_curr|)` keeps the very first step -- where sig_max is still
-    ## the seed -- from measuring against zero.
-    ref = jnp.maximum(state.sig_max, jnp.max(jnp.abs(x_curr)))
+    ## P7: the CPU's relref modes, selected by a trace-static string.  The
+    ## reference is a per-row VECTOR now; 'sigglobal' collapses each UNIT
+    ## GROUP (node voltages vs branch currents) to its own maximum -- the
+    ## old scalar max over everything mixed volts and amps, which the CPU
+    ## comment warns silently disables node error control on circuits with
+    ## large branch currents.  `local` includes the current iterate, exactly
+    ## as the CPU's `_reference` does.
+    local = jnp.maximum(jnp.abs(x_curr), jnp.abs(state.x_history[0]))
+    if relref == 'pointlocal':
+        ref = local
+    else:
+        run = jnp.maximum(state.ref_running, local)
+        if relref == 'alllocal':
+            ref = run
+        else:  ## sigglobal
+            n_all = x_curr.shape[0]
+            if n_nodes is None or n_nodes <= 0 or n_nodes >= n_all:
+                ref = jnp.full(n_all, jnp.max(run))
+            else:
+                ref = jnp.concatenate([
+                    jnp.full(n_nodes, jnp.max(run[:n_nodes])),
+                    jnp.full(n_all - n_nodes, jnp.max(run[n_nodes:]))])
     ## `lte_abstol` is a per-row VECTOR (volts on node rows, amps on branch rows),
     ## built by `JAXTransient._lte_abstol`.  A scalar here applies one physical
     ## kind of tolerance to rows of another -- 0.3a's residual-vs-solution defect,
@@ -657,7 +691,8 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
                     xtol=1e-12, lte_abstol=1e-12, trtol=7.0, maxiter=100,
                     params_tree=None, gamma_min=0.7, gamma_max=3.0, eta=0.15,
                     dt_min=1e-18, dt_max=jnp.inf, pcnr_meta=None,
-                    pcnr_VT=0.025, tline_dG=None, analysis='tran'):
+                    pcnr_VT=0.025, tline_dG=None, analysis='tran',
+                    provided_function=None):
     from pycircuit.circuit._lte_kernels import (step_for_error_ratio,
                                                 euler_companion_dh,
                                                 bdf2_companion_dh)
@@ -686,6 +721,8 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
         q_C = circuit.q(x, params_tree=params_tree)
         C_C = circuit.C(x, params_tree=params_tree)
         I_u = circuit.u(t_prev + h, analysis=analysis, params_tree=params_tree)
+        if provided_function is not None:
+            I_u = I_u + provided_function(t_prev + h)
         I_u = apply_tline_sources(I_u, t_prev + h, tline_params,
                                   tline_indices, state.tline_history,
                                   state.tline_head)
@@ -734,6 +771,11 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
 
         ## Stage 2: has the step size earned any attention?
         lte, h0, _h1 = _fang_lte(x1, state, h, first_order)
+        ## P7 deliberately does NOT reach this line: the coupled path keeps
+        ## the scalar sigglobal reference its whole measured record -- the
+        ## TLine kink analysis included (err = 1/(TRTOL*reltol) is derived
+        ## against exactly this ref) -- was built on.  Reconsider with the
+        ## coupled estimator, not before.
         ref = jnp.maximum(state.sig_max, jnp.max(jnp.abs(x1)))
         etol = trtol * (reltol * ref + lte_abstol)
         err = jnp.max(jnp.abs(lte) / etol)
@@ -805,10 +847,17 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
                 ## measured as the coupled path dying at t ~ 1e-12 on any
                 ## driven TLine circuit.
                 eps = 1e-3 * h
-                du = (circuit.u(t_c + eps, analysis=analysis,
-                                params_tree=params_tree)
-                      - circuit.u(t_c - eps, analysis=analysis,
-                                  params_tree=params_tree)) / (2.0 * eps)
+                u_hi = circuit.u(t_c + eps, analysis=analysis,
+                                 params_tree=params_tree)
+                u_lo = circuit.u(t_c - eps, analysis=analysis,
+                                 params_tree=params_tree)
+                if provided_function is not None:
+                    ## The FD pair carries pf' for free; the analytic-dudt
+                    ## branch above omits it, exactly as the CPU's
+                    ## residual_dh does (recorded F4 gap, both backends).
+                    u_hi = u_hi + provided_function(t_c + eps)
+                    u_lo = u_lo + provided_function(t_c - eps)
+                du = (u_hi - u_lo) / (2.0 * eps)
             p = (jnp.where(first_order, p_e, p_g) + du
                  + tline_source_dudt(x.shape[0], t_prev + h, tline_params,
                                      tline_indices, state.tline_history,
@@ -926,7 +975,7 @@ def pcnr_inner_loop(state: TransientState, circuit, irefnode, j_ra, j_rb,
                     j_IS, VT, tline_params, tline_indices,
                     eval_method='gear', reltol=1e-4, abstol=1e-12,
                     xtol=1e-12, maxiter=100, params_tree=None, tline_dG=None,
-                    analysis='tran'):
+                    analysis='tran', provided_function=None):
     """One time point by PCNR: predict on the Schur-reduced system, correct
     each junction's own unknown with pnjlim.  Returns PcnrState."""
     from pycircuit.circuit._limiting import _pnjlim_branchless
@@ -940,6 +989,8 @@ def pcnr_inner_loop(state: TransientState, circuit, irefnode, j_ra, j_rb,
         q_C = circuit.q(x, params_tree=params_tree)
         C_C = circuit.C(x, params_tree=params_tree)
         I_u = circuit.u(t_new, analysis=analysis, params_tree=params_tree)
+        if provided_function is not None:
+            I_u = I_u + provided_function(t_new)
         I_u = apply_tline_sources(I_u, t_new, tline_params, tline_indices,
                                   state.tline_history, state.tline_head)
         i_C, G_eq = compute_integration(q_C, C_C, state, method=eval_method,
@@ -1027,7 +1078,7 @@ def pcnr_controller_jacobian(circuit, state, x, v_lim, j_ra, j_rb, j_IS, VT,
     return _scatter_junction_G(J, j_ra, j_rb, g_l, +1.0)
 
 
-def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15, pcnr_meta=None, pcnr_VT=0.025, tline_dG=None, analysis='tran', s_gamma_min=0.0, s_gamma_max=1.0, s_eta=jnp.inf, fixed_timestep=False, grid_dt=None):
+def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15, pcnr_meta=None, pcnr_VT=0.025, tline_dG=None, analysis='tran', s_gamma_min=0.0, s_gamma_max=1.0, s_eta=jnp.inf, fixed_timestep=False, grid_dt=None, relref='sigglobal', n_nodes=None, provided_function=None):
 
     ## The same epsilon `calculate_next_dt` uses to decide a breakpoint is "already
     ## reached".  They disagreed: after 500 steps of 1e-5 the accumulated `t` sits
@@ -1066,7 +1117,8 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 maxiter=maxiter, params_tree=params_tree,
                 gamma_min=gamma_min, gamma_max=gamma_max, eta=eta,
                 dt_min=dt_min, dt_max=dt_max, pcnr_meta=pcnr_meta,
-                pcnr_VT=pcnr_VT, tline_dG=tline_dG, analysis=analysis)
+                pcnr_VT=pcnr_VT, tline_dG=tline_dG, analysis=analysis,
+                provided_function=provided_function)
             ## Re-enter the shared accept machinery with fang's verdict: the
             ## solved h is both the step taken and (clipped) the next guess --
             ## "the solved step carries forward" is the method's whole point.
@@ -1086,7 +1138,8 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 tline_params, tline_indices,
                 eval_method=eval_method, reltol=reltol, abstol=abstol,
                 xtol=xtol, maxiter=maxiter, params_tree=params_tree,
-                tline_dG=tline_dG, analysis=analysis)
+                tline_dG=tline_dG, analysis=analysis,
+                provided_function=provided_function)
             nr_state = NewtonState(x=pstate.x, xdiff=jnp.zeros_like(pstate.x),
                                    F_norm=jnp.asarray(0.0),
                                    iters=pstate.iters,
@@ -1097,7 +1150,8 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                                          eval_method=eval_method, reltol=reltol, abstol=abstol,
                                          xtol=xtol, maxiter=maxiter,
                                          params_tree=params_tree, max_dv=max_dv,
-                                         tline_dG=tline_dG, analysis=analysis)
+                                         tline_dG=tline_dG, analysis=analysis,
+                                         provided_function=provided_function)
         x_curr = nr_state.x
         q_curr = circuit.q(x_curr, params_tree=params_tree)
         C_curr = circuit.C(x_curr, params_tree=params_tree)
@@ -1138,7 +1192,8 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
             error_ratio, order_p1 = ywr_error_ratio(
                 i_curr, x_curr, J, state, irefnode,
                 method=eval_method, trtol=trtol, lte_rel=lte_reltol,
-                lte_abstol=lte_abstol, first_order=first_order)
+                lte_abstol=lte_abstol, first_order=first_order,
+                relref=relref, n_nodes=n_nodes)
 
         ## Accept when the LTE is within tolerance.  Always accept the first step
         ## (no history for the estimate) and when dt has reached the floor -- the
@@ -1307,6 +1362,12 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 ## circuit ever had, and letting it raise the reference would loosen
                 ## every later tolerance on the strength of a discarded iterate.
                 sig_max=jnp.maximum(state.sig_max, jnp.max(jnp.abs(x_curr))),
+                ## P7: accepted-only, like sig_max; `local` matches the
+                ## estimator's (current point vs the one before it).
+                ref_running=jnp.maximum(
+                    state.ref_running,
+                    jnp.maximum(jnp.abs(x_curr),
+                                jnp.abs(state.x_history[0]))),
                 ## CARRIED, not defaulted.  `do_accept` builds a fresh
                 ## TransientState rather than `_replace`-ing, so every field it
                 ## omits silently reverts to the NamedTuple default -- and these are
@@ -1529,6 +1590,18 @@ class JAXTransient(Analysis):
         ## initial-state machinery (ic dict -> element ICs -> spanning-tree
         ## capacitor solve) is pure pre-loop Python on names and indices, so
         ## the CPU's methods are bound below unchanged.
+        ## P7: the CPU's relref, same values, same default; 'sigglobal' on
+        ## this backend now splits unit groups (node voltages vs branch
+        ## currents) exactly as the CPU does -- the pre-P7 scalar reference
+        ## mixed volts and amps.  The COUPLED path keeps its scalar
+        ## reference (its measured record depends on it; see fang's note).
+        Parameter(name='relref',
+                  desc="Reference for the relative LTE tolerance: 'sigglobal' "
+                       "(against the largest signal in the unknown's unit "
+                       "group -- the default, as in Spectre), 'pointlocal' "
+                       "(each unknown against itself), or 'alllocal' "
+                       "(against its own past maximum)",
+                  unit='', default='sigglobal'),
         Parameter(name='ic',
                   desc="Initial node voltages for uic=True, as {node: volts}. "
                        "Node may be a name or a Node instance.",
@@ -1590,6 +1663,15 @@ class JAXTransient(Analysis):
     _apply_voltage_ics = _CPU._apply_voltage_ics
     _descendant_has_ic = _CPU._descendant_has_ic
     del _CPU
+
+    def _relref(self):
+        """Validated relref mode -- P7."""
+        mode = self.par.relref
+        if mode not in ('sigglobal', 'pointlocal', 'alllocal'):
+            raise ValueError(
+                "relref must be 'sigglobal', 'pointlocal' or 'alllocal', "
+                "not %r" % (mode,))
+        return mode
 
     def _eval_method(self):
         """The traced loop's method name, validated -- P6."""
@@ -1868,7 +1950,7 @@ class JAXTransient(Analysis):
         def run_chunk(s, p_tree):
             return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method=self._eval_method(), params_tree=p_tree, reltol=self.par.reltol, abstol=self._newton_abstol(n),
                                    xtol=self._newton_xtol(n),
-                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis, s_gamma_min=_sgm, s_gamma_max=_sgx, s_eta=_seta,
+                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis, s_gamma_min=_sgm, s_gamma_max=_sgx, s_eta=_seta, relref=self._relref(), n_nodes=len(self.cir.nodes),
                                    lte_reltol=self.par.reltol,
                                    lte_abstol=self._lte_abstol(n),
                                    max_dv=(jnp.inf if self.par.max_dv is None
@@ -1892,6 +1974,7 @@ class JAXTransient(Analysis):
         ## Same ramp as `solve` -- see `_opening_step`.
         current_dt = jnp.full(batch_size, self._opening_step(timestep))
         b_sig_max = jnp.zeros(batch_size)
+        b_ref_running = jnp.zeros((batch_size, n))
         ## dtype follows `jnp.array(0)` exactly, as the unbatched path uses:
         ## `lax.cond` requires both branches to agree, and a mismatched
         ## int32/int64 here fails at trace time rather than at the call.
@@ -1918,7 +2001,8 @@ class JAXTransient(Analysis):
                 x_history=x_hist, q_history=q_hist, iq_history=iq_hist, h_history=h_hist,
                 results_buffer=res_buf, time_buffer=time_buf,
                 tline_history=tline_history, tline_head=tline_head,
-                sig_max=b_sig_max, n_rejected=b_n_rejected,
+                sig_max=b_sig_max, ref_running=b_ref_running,
+                n_rejected=b_n_rejected,
                 n_nonconverged=b_n_nonconverged,
                 n_forced_nonconverged=b_n_forced_nc,
                 n_forced_lte=b_n_forced_lte,
@@ -1959,6 +2043,7 @@ class JAXTransient(Analysis):
             current_t = final_state.t
             current_dt = final_state.dt
             b_sig_max = final_state.sig_max
+            b_ref_running = final_state.ref_running
             b_n_rejected = final_state.n_rejected
             b_n_nonconverged = final_state.n_nonconverged
             b_n_forced_nc = final_state.n_forced_nonconverged
@@ -1988,10 +2073,23 @@ class JAXTransient(Analysis):
     ## of running silently with defaults.  P4: `refnode=gnd`, the CPU's
     ## default object; `0` resolved gnd's index only by accident of ordering.
     def solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6,
-              CHUNK_SIZE=5000, uic=None, minstep=None, fixed_timestep=False):
+              CHUNK_SIZE=5000, uic=None, minstep=None, fixed_timestep=False,
+              provided_function=None):
         n = self.cir.n
         irefnode = self.cir.get_node_index(refnode)
         uic = bool(self.par.uic) if uic is None else uic
+        ## P11: the CPU's F4 caveat, verbatim -- the seeding DC knows
+        ## nothing about the extra source, and a discontinuous pf gets
+        ## neither breakpoint truncation nor an order drop.  On THIS backend
+        ## pf must additionally be jax-traceable (pure, jnp-composable); it
+        ## is baked into the compiled chunk at trace time.
+        if provided_function is not None and x0 is None and not uic:
+            warnings.warn(
+                'jaxtransient: provided_function adds a source the DC '
+                'operating point does not see, so the run opens from an '
+                'inconsistent state and integrates a spurious startup '
+                'transient. Pass uic=True or an explicit x0.',
+                RuntimeWarning, stacklevel=2)
         if fixed_timestep and self.par.coupled_lte:
             ## The CPU's coupled path locks the grid via grid_locked; wiring
             ## the same through fang's hold machinery is real work not yet
@@ -2091,8 +2189,9 @@ class JAXTransient(Analysis):
         def run_chunk(s):
             return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method=self._eval_method(), reltol=self.par.reltol, abstol=self._newton_abstol(n),
                                    fixed_timestep=fixed_timestep, grid_dt=timestep,
+                                   provided_function=provided_function,
                                    xtol=self._newton_xtol(n),
-                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis, s_gamma_min=_sgm, s_gamma_max=_sgx, s_eta=_seta,
+                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis, s_gamma_min=_sgm, s_gamma_max=_sgx, s_eta=_seta, relref=self._relref(), n_nodes=len(self.cir.nodes),
                                    lte_reltol=self.par.reltol,
                                    lte_abstol=self._lte_abstol(n),
                                    max_dv=(jnp.inf if self.par.max_dv is None
@@ -2114,6 +2213,7 @@ class JAXTransient(Analysis):
         ## most CHUNK_SIZE steps later.
         total_steps = 0
         sig_max = jnp.array(0.0)
+        ref_running = jnp.zeros(n)
         n_rejected = jnp.array(0)
         n_nonconverged = jnp.array(0)
         n_forced_nc = jnp.array(0)
@@ -2135,7 +2235,8 @@ class JAXTransient(Analysis):
                 x_history=x_hist, q_history=q_hist, iq_history=iq_hist, h_history=h_hist,
                 results_buffer=res_buf, time_buffer=time_buf,
                 tline_history=tline_history, tline_head=tline_head,
-                sig_max=sig_max, n_rejected=n_rejected,
+                sig_max=sig_max, ref_running=ref_running,
+                n_rejected=n_rejected,
                 n_nonconverged=n_nonconverged,
                 n_forced_nonconverged=n_forced_nc,
                 n_forced_lte=n_forced_lte,
@@ -2178,6 +2279,7 @@ class JAXTransient(Analysis):
             tline_history = final_state.tline_history
             tline_head = final_state.tline_head
             sig_max = final_state.sig_max
+            ref_running = final_state.ref_running
             n_rejected = final_state.n_rejected
             n_nonconverged = final_state.n_nonconverged
             n_forced_nc = final_state.n_forced_nonconverged

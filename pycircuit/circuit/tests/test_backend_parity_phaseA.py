@@ -391,3 +391,139 @@ def test_p9_fixed_timestep_on_jax():
             JAXTransient(pc(), coupled_lte=True).solve(
                 gnd, tend=1e-6, timestep=1e-7, uic=True, fixed_timestep=True)
     _with_jax(go)
+
+
+def test_p7_relref_modes_on_jax():
+    """P7 (Phase B): the CPU's relref modes on the traced estimator.
+
+    Measured at landing on the step-response RC at reltol 1e-5: sigglobal
+    63 steps / 6.9e-4, alllocal 72 / 4.9e-4, pointlocal 95 / 3.4e-4 -- the
+    tighter the reference, the more steps and the better the answer, in the
+    CPU's ordering.  The kernel half pins the unit-group split: with a
+    branch current a thousand times the node signals, the mixed (pre-P7)
+    scalar reference deadens node error control; the split reference keeps
+    the node rows measured against node signals."""
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.elements import VS
+
+    def rc_step():
+        c = SubCircuit()
+        c['V1'] = VS('in', gnd, v=1.0)
+        c['R1'] = R('in', 'out', r=1e3)
+        c['C1'] = C('out', gnd, c=1e-6)
+        return c
+
+    def go():
+        from pycircuit.circuit.jaxtransient import (ywr_error_ratio,
+                                                    TransientState)
+        import jax.numpy as jnp
+        stats = {}
+        for mode in ('sigglobal', 'alllocal', 'pointlocal'):
+            tran = JAXTransient(rc_step(), reltol=1e-5, relref=mode)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                res = tran.solve(gnd, tend=5e-3, timestep=1e-3, uic=True)
+            t = np.asarray(res.sweep_values, float)
+            v = np.asarray(res.v('out'), float).reshape(-1)
+            stats[mode] = (len(t), float(np.max(np.abs(v - (1 - np.exp(-t / 1e-3))))))
+        assert stats['pointlocal'][0] > stats['alllocal'][0] > stats['sigglobal'][0], stats
+        assert stats['pointlocal'][1] < stats['sigglobal'][1], stats
+
+        with pytest.raises(ValueError, match='relref'):
+            JAXTransient(rc_step(), relref='bogus').solve(
+                gnd, tend=1e-4, timestep=1e-5, uic=True)
+
+        ## Unit-group split, kernel level: rows 0-1 are node voltages at
+        ## ~1e-3 V, row 2 a branch current at 1 A.
+        n, depth = 3, 3
+        rng = np.random.default_rng(7)
+        x = jnp.asarray([1e-3, -8e-4, 1.0])
+        st = TransientState(
+            t=jnp.asarray(1e-4), dt=jnp.asarray(1e-5), step_idx=5,
+            x_history=jnp.tile(x * 0.9, (depth, 1)),
+            q_history=jnp.asarray(rng.normal(size=(depth, n)) * 1e-9),
+            iq_history=jnp.asarray(rng.normal(size=(depth, n)) * 1e-6),
+            h_history=jnp.full((depth,), 1e-5),
+            results_buffer=jnp.zeros((1, n)), time_buffer=jnp.zeros(1),
+            tline_history=jnp.zeros((0, 1, 5)),
+            tline_head=jnp.asarray(0, dtype=jnp.int32),
+            sig_max=jnp.asarray(1.0), ref_running=jnp.abs(x))
+        kw = dict(method='gear', trtol=7.0, lte_rel=1e-4,
+                  lte_abstol=jnp.asarray([1e-12, 1e-12, 1e-12]),
+                  first_order=jnp.asarray(False), relref='sigglobal')
+        r_split, _ = ywr_error_ratio(jnp.zeros(n) + 1e-6, x, jnp.eye(n), st, 0,
+                                     n_nodes=2, **kw)
+        r_mixed, _ = ywr_error_ratio(jnp.zeros(n) + 1e-6, x, jnp.eye(n), st, 0,
+                                     n_nodes=None, **kw)
+        ## Mixed: node rows referenced to the 1 A branch -> etol inflated a
+        ## thousandfold -> the ratio collapses.  Split restores node control.
+        assert float(r_split) > 100.0 * float(r_mixed), (float(r_split),
+                                                        float(r_mixed))
+    _with_jax(go)
+
+
+def test_p11_provided_function_on_jax():
+    """P11 (Phase B): the F4 contract -- an extra source pf(t) -- on the
+    traced loop.  The same sinusoidal injection produces the same waveform
+    on both backends; the DC-seed caveat warns with the CPU's wording; and
+    a pf must actually change the answer (a gate against silently dropping
+    the term, the failure mode F4 exists to prevent)."""
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.integrator import Gear2Integrator
+
+    def rc():
+        c = SubCircuit()
+        c['R1'] = R('out', gnd, r=1e3)
+        c['C1'] = C('out', gnd, c=1e-6)
+        return c
+
+    import numpy as _np
+    def pf_cpu(t):
+        ## 1 mA * sin injected into the 'out' row; the vector is full-length
+        ## (n = 2 with gnd) with zero on the reference row.  DELIBERATELY
+        ## unbalanced (no return entry on gnd): the reference-row residual
+        ## then carries the full injection, which pinned a JAX defect -- its
+        ## Newton scored the UNSOLVED reference row and livelocked at
+        ## maxiter on every step.  The reduced-rows convergence test is what
+        ## this gate regresses.
+        return _np.array([-1e-3 * _np.sin(2 * _np.pi * 1e3 * t), 0.0])
+
+    cpu = Transient(rc(), toolkit=numeric, reltol=1e-5, uic=True,
+                    integrator=Gear2Integrator(), timestep_max=1e-5)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        rc_ = cpu.solve(gnd, tend=1e-3, timestep=1e-5,
+                        provided_function=pf_cpu)
+    tc = np.asarray(rc_.sweep_values, float)
+    vc = np.asarray(rc_.v('out'), float).reshape(-1)
+    assert np.max(np.abs(vc)) > 1e-2, 'the CPU pf did nothing'
+
+    def go():
+        import jax.numpy as jnp
+
+        def pf_jax(t):
+            return jnp.array([-1e-3 * jnp.sin(2 * jnp.pi * 1e3 * t), 0.0])
+
+        tran = JAXTransient(rc(), reltol=1e-5, timestep_max=1e-5)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            rj = tran.solve(gnd, tend=1e-3, timestep=1e-5, uic=True,
+                            provided_function=pf_jax)
+        tj = np.asarray(rj.sweep_values, float)
+        vj = np.asarray(rj.v('out'), float).reshape(-1)
+        dev = float(np.max(np.abs(np.interp(tc, tj, vj) - vc)))
+        scale = float(np.max(np.abs(vc)))
+        assert dev < 0.02 * scale, \
+            'pf waveforms disagree across backends: %.3e (scale %.3e)' % (
+                dev, scale)
+
+        ## The DC-seed caveat, CPU wording.
+        tran2 = JAXTransient(rc(), reltol=1e-4, timestep_max=1e-5)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter('always')
+            tran2.solve(gnd, tend=1e-4, timestep=1e-5,
+                        provided_function=pf_jax)
+        assert any('DC operating point does not see' in str(x.message)
+                   for x in w), 'the DC-seed warning did not fire'
+    _with_jax(go)
