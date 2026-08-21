@@ -85,3 +85,27 @@ Suite: 1001 passed, 12 skipped, 3 xfailed under `-n 8`.
 
 Per-fix deltas were recorded in each fix's commit message; suite expectations are
 pinned in the harness bounds above, per the gate's acceptance rule.
+
+## Execution record — all phases complete (2026-08-21)
+
+All 27 schedule items of `doc/transient_review_260820.md` executed, F1–F19 + R1/R2
+hardening + hygiene + F2(b) feature work. 24 commits (`f722372..56a143b`). Suite grew
+970 → **1005 passed** (12 skipped, 3 xfailed) under `-n 8`; the dead-knob scan and the
+cross-backend conformance harness (bounds tightened at the Phase-3 gate) now guard the
+two defect classes the review identified.
+
+Findings made during execution, recorded per the review's own conventions:
+
+- The dead-knob scan found a **fourth** dead knob on landing (`ywr_error_ratio`'s
+  `x_last`), beyond the meta-review's three.
+- F19's chunk-invariance issue was caught by an existing gate mid-landing: the estimator
+  predicate `step_idx < 2` was chunk-local; the run-global history facts replaced it,
+  fixing a pre-existing chunk-boundary artifact in the *integration* fallback too.
+- F17's before/after: 44.5%/40.1% → 20.1%/**4.0%** rejection ratio at reltol 1e-4/1e-6.
+- One hygiene row was **tested and rejected**: the bordered-branch degree slice collapsed
+  that method to 5× the steps — the full-history gradient pairs with the full-history
+  `w'/w` denominator, not with `err`'s degree. Reverted with the measurement recorded
+  at the site.
+- Three vacuously-green assertions were re-derived when their counters went live
+  (`test_coupled_method`'s pulse zeros, gate 9-1(b)'s reject case, gate 6-3's
+  point-count identity).
