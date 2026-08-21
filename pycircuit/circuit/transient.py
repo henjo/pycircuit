@@ -132,6 +132,10 @@ class TransientStatistics(object):
     counts nothing.  A run that takes 40x more steps than expected is currently
     indistinguishable, from the outside, from one that does not.
 
+    On the COUPLED path `force_accepts` is always zero BY DESIGN -- that
+    path has no force-accept: a persistently failing point raises instead
+    (F13 documents the always-zero rather than leaving it silent).
+
     The force-accept counter is the one to read first.  It counts steps accepted
     with an unbounded truncation error, and after 4d it should be zero on every
     circuit measured -- so a non-zero value is the run telling you that part of
@@ -2386,7 +2390,24 @@ class Transient(Analysis):
         ## STAGE 12B -- the coupled path never created a statistics object, so
         ## `tran.statistics` raised AttributeError after any `coupled_lte=True`
         ## run and the two paths could not be compared on step counts at all.
+        ## F13 completed it: timing, rejected_steps (the retry loop's failed
+        ## attempts ARE rejections), and the attach to the result -- "a
+        ## statistic that is silently always zero is worse than one that is
+        ## absent", this path's own words.  `force_accepts` stays 0 here BY
+        ## DESIGN, documented on TransientStatistics: the coupled path has no
+        ## force-accept -- persistent failure raises.
         self.statistics = TransientStatistics()
+        _t_run_start = time.perf_counter()
+        ## R1 HARDENING (doc/transient_review_260820.md, refuted-but-latent):
+        ## the sigglobal running maximum survives on the cached controllers
+        ## across runs of one object, masked only by the coincidence of the
+        ## _dt_last reset meeting _reference's no_history branch.  Reset it
+        ## deliberately, as _solve already does for the standard controller --
+        ## an accidental invariant becomes a stated one.
+        for _ctrl in (getattr(self, 'step_controller', None),
+                      getattr(self, '_fang_controller', None)):
+            if _ctrl is not None and hasattr(_ctrl, 'set_relref'):
+                _ctrl.set_relref(self.par.relref)
         was_break_step = False
         force_order_drop = False
         TRTOL = 7.0
@@ -2509,6 +2530,7 @@ class Transient(Analysis):
             ## the transformer inrush and the delayed avalanche.
             converged = False
             for _retry in range(MAX_LTE_ITERS):
+                _t0 = time.perf_counter()
                 try:
                     x_curr, h_solved, _iters, converged = self.fang_timestep(
                         X[-1], t, h_curr, X[-1:-4:-1],
@@ -2526,6 +2548,8 @@ class Transient(Analysis):
                     ## escape here would skip the backup entirely and abandon a
                     ## run that a smaller step would have completed.
                     converged = False
+                finally:
+                    self.statistics.solve_seconds += time.perf_counter() - _t0
                 ## STAGE 12-3.  Count the inner Newton iterations, including
                 ## those of an attempt that then failed -- they are real work.
                 ## Without this `newton_iterations` was flat zero on this path,
@@ -2538,6 +2562,9 @@ class Transient(Analysis):
                 if converged:
                     h_curr = h_solved
                     break
+                ## A failed attempt is retried smaller: a rejection in all but
+                ## name, and counted as one (F13).
+                self.statistics.rejected_steps += 1
                 h_curr *= 0.25
                 if h_curr < minstep:
                     break
@@ -2623,6 +2650,10 @@ class Transient(Analysis):
             self.result = CircuitResult(self.cir, x=_Xg, xdot=None,
                                         sweep_values=_grid,
                                         sweep_label='time', sweep_unit='s')
+        self.statistics.total_seconds = time.perf_counter() - _t_run_start
+        ## Reachable from the result, not only from the analysis -- same as
+        ## the standard path (F13).
+        self.result.statistics = self.statistics
         return self.result
 
 

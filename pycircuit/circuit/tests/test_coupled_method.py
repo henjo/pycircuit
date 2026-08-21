@@ -153,9 +153,21 @@ def test_bordered_grows_the_step_back_where_the_error_is_zero():
 
 def test_neither_method_rejects_a_step_on_a_pulsed_circuit():
     """Figure 3's promise has to survive real discontinuities, not just smooth
-    drives -- which is the whole reason a breakpoint circuit is in this file."""
+    drives -- which is the whole reason a breakpoint circuit is in this file.
+
+    RE-DERIVED at F13 (doc/transient_review_260820.md): the old `== 0`
+    passed vacuously -- the coupled path never counted rejections at all.
+    With the counter live, the honest statement of Figure 3 is narrower:
+    the steps the method SOLVES for take no rejections (the smooth test
+    above asserts exactly 0), while HELD steps -- breakpoint- or
+    tend-truncated, whose size was never the method's to choose -- may
+    retry when their imposed size fails the error test.  Measured at
+    re-derivation: 16/985 and 14/1035 rejections, all at edges.  Bound
+    them to a small fraction rather than pretending they are zero."""
     for method in ('approx', 'bordered'):
         st = _pulse_run(method)
-        assert st.rejected_steps == 0, \
-            '%s took %d rejections' % (method, st.rejected_steps)
+        assert st.rejected_steps <= 0.05 * st.accepted_steps, \
+            '%s: %d rejections against %d accepted -- held-step retries ' \
+            'should be a few percent at worst' \
+            % (method, st.rejected_steps, st.accepted_steps)
         assert st.breakpoints_hit > 0, '%s never hit an edge' % method

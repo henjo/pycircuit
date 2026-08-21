@@ -1159,4 +1159,7 @@ class JAXTransient(Analysis):
                             sweep_values=all_times,
                             sweep_label='time',
                             sweep_unit='s')
+        ## Reachable from the result, matching the CPU paths (F13): a caller
+        ## who kept only the waveform can still ask what produced it.
+        res.statistics = self.statistics
         return res

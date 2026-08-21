@@ -349,3 +349,48 @@ def test_f14_growth_retries_do_not_force_accept():
     assert res.statistics.force_accepts == 0
     ## the band's growth retries are real re-solves and stay in the accounting
     assert res.statistics.rejected_steps > 0
+
+
+## F13 -- the coupled path's statistics must be complete and attached to the
+## result; the JAX path attaches too (parity).
+
+def test_f13_coupled_statistics_complete_and_attached():
+    import warnings
+    from pycircuit.circuit.elements import VPulse
+    ## Same drive/timestep proportions as test_coupled_method's _pulse_run --
+    ## a pulse the coupled path is known to complete.
+    c = SubCircuit()
+    c['vs'] = VPulse('a', gnd, v1=0.0, v2=1.0, td=1e-5, tr=1e-6, tf=1e-6,
+                     pw=2e-5, per=4e-5)
+    c['R'] = R('a', 'b', r=1e3)
+    c['C'] = C('b', gnd, c=1e-9)
+    tran = Transient(c, reltol=1e-5)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = tran.solve(tend=6e-5, timestep=1e-6, coupled_lte=True)
+    st = res.statistics                      # attached to the RESULT
+    assert st.total_seconds > 0
+    assert st.solve_seconds > 0
+    assert st.accepted_steps > 0
+    assert st.breakpoints_hit > 0
+    assert st.force_accepts == 0             # by design on this path
+
+
+def test_f13_jax_statistics_attached_to_result():
+    pytest.importorskip('jax')
+    from pycircuit.circuit import circuit as circuit_mod
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.elements import VS
+    saved = circuit_mod.default_toolkit
+    circuit_mod.default_toolkit = jaxtoolkit
+    try:
+        cir = SubCircuit()
+        cir.add_node('in'); cir.add_node('out')
+        cir['V1'] = VS('in', gnd, v=1.0)
+        cir['R1'] = R('in', 'out', r=1e3)
+        cir['C1'] = C('out', gnd, c=1e-6)
+        res = JAXTransient(cir).solve(gnd, tend=1e-4, timestep=1e-5, uic=True)
+        assert res.statistics.accepted_steps > 0
+    finally:
+        circuit_mod.default_toolkit = saved
