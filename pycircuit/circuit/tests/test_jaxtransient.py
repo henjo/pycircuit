@@ -58,14 +58,17 @@ def test_jax_lte_order_per_method():
         tline_history=None, tline_head=None)
 
     orders = {}
-    for method in ('euler', 'gear', 'trap'):
+    for method in ('euler', 'gear'):
         _, p = ywr_error_ratio(i_curr, x_curr, J, st, irefnode=1,
                                method=method)
         orders[method] = float(p)
 
     assert orders['euler'] == 2.0
     assert orders['gear'] == 3.0
-    assert orders['trap'] == 3.0
+    ## 'trap' was deleted (review hygiene): unreachable in production, and
+    ## its formula was uniform-grid-only.
+    with pytest.raises(ValueError, match='trapezoidal branch was deleted'):
+        ywr_error_ratio(i_curr, x_curr, J, st, irefnode=1, method='trap')
 
 
 def test_jaxtransient_rc_charging():
@@ -337,7 +340,7 @@ def _lte_ratio(h, method, order, G=1.0e6):
     return float(r) / h ** order
 
 
-@pytest.mark.parametrize('method,order', [('euler', 1), ('trap', 2), ('gear', 2)])
+@pytest.mark.parametrize('method,order', [('euler', 1), ('gear', 2)])
 def test_gate_9_1a_jax_lte_scales_with_the_right_power_of_h(method, order):
     """Gate 9-1(a): the estimate must follow h^order, not merely be non-zero."""
     hs = (1e-4, 5e-5, 2.5e-5, 1.25e-5)
@@ -359,7 +362,6 @@ def test_gate_9_1a_jax_gear2_error_constant_matches_the_cpu():
     G = 1.0e6
     assert _lte_ratio(1e-4, 'gear', 2, G) == pytest.approx(G / 3.0, rel=1e-9), \
         'gear2 error constant is not q\'\'\'/3 -- the YWR 3/4 optimism is back'
-    assert _lte_ratio(1e-4, 'trap', 2, G) == pytest.approx(G / 6.0, rel=1e-9)
     assert _lte_ratio(1e-4, 'euler', 1, G) == pytest.approx(G / 2.0, rel=1e-9)
 
 

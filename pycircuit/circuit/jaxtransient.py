@@ -6,7 +6,6 @@ import warnings
 import jax.numpy as jnp
 
 from pycircuit.circuit._lte_kernels import (bdf2_companion, euler_companion,
-                                            trapezoidal_companion,
                                             second_divided_difference,
                                             euler_lte, gear2_lte)
 from pycircuit.circuit.analysis import Analysis
@@ -104,19 +103,18 @@ class TransientState(NamedTuple):
 ## traces under `jax.jit` unchanged.
 ##
 ## Euler and Gear-2 were already bit-for-bit the same expression, so those runs do
-## not move.  TRAPEZOIDAL DID DIFFER: this file computed `(2/dt) * (q_n - q_{n-1})`
-## where `integrator.py` computes `2 * (q_n - q_{n-1}) / dt` -- algebraically equal,
-## but two roundings against one, so the last bits differed between the backends.
-## Unifying necessarily moves one of them; it moves this one, onto the form with the
-## fewer roundings.  `eval_method` is hard-coded to 'gear' at both call sites, so no
-## production path reaches `trap_step` today.
+## not move.
+##
+## THE TRAPEZOIDAL BRANCH WAS DELETED (review hygiene): no production path
+## could reach it (`eval_method` is 'gear' at both call sites and not a
+## parameter), and its LTE formula was the uniform-grid one -- wrong the
+## moment the step changed, had anyone ever wired it up.  Dead-but-plausible
+## solver branches are exactly how the 3/4-optimism defect survived twice.
+## The CPU's trapezoidal integrator, with the correct variable-step
+## estimator, lives in integrator.py.
 
 def backward_euler_step(q_curr, C_curr, q_prev, dt):
     return euler_companion(q_curr, C_curr, q_prev, dt)
-
-
-def trap_step(q_curr, C_curr, q_prev, iq_prev, dt):
-    return trapezoidal_companion(q_curr, C_curr, q_prev, iq_prev, dt)
 
 
 def gear2_step(q_curr, C_curr, q_prev1, q_prev2, dt_curr, dt_prev):
@@ -147,18 +145,14 @@ def effective_first_order(state: TransientState):
     return jnp.logical_or(no_history, state.force_first_order)
 
 
-def compute_integration(q_curr, C_curr, state: TransientState, method='trap',
+def compute_integration(q_curr, C_curr, state: TransientState, method='gear',
                         first_order=None):
 
     q_prev = state.q_history[0]
-    iq_prev = state.iq_history[0]
     dt = state.dt
 
     def do_euler():
         return backward_euler_step(q_curr, C_curr, q_prev, dt)
-
-    def do_trap():
-        return trap_step(q_curr, C_curr, q_prev, iq_prev, dt)
 
     def do_gear2():
         q_prev2 = state.q_history[1]
@@ -178,8 +172,7 @@ def compute_integration(q_curr, C_curr, state: TransientState, method='trap',
         return do_euler()
     elif method in ('gear', 'gear2'):
         return do_gear2()
-    else:
-        return do_trap()
+    raise ValueError("eval_method must be 'euler' or 'gear', not %r" % (method,))
 
 # ---------------------------------------------------------------------------
 # Phase 2: Inner Newton Loop
@@ -328,7 +321,7 @@ def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tl
 # ---------------------------------------------------------------------------
 
 def ywr_error_ratio(i_curr, x_curr, J, state: TransientState, irefnode,
-                    method='trap', trtol=7.0, lte_rel=1e-4, lte_abstol=1e-12,
+                    method='gear', trtol=7.0, lte_rel=1e-4, lte_abstol=1e-12,
                     first_order=None):
     """Yao-Wang-Roychowdhury DAE LTE, returned as a normalized error ratio.
 
@@ -391,9 +384,11 @@ def ywr_error_ratio(i_curr, x_curr, J, state: TransientState, irefnode,
             return gear2_lte(h1, h2, q3_over_6), jnp.asarray(3.0)
 
         Eg, order_p1 = jax.lax.cond(first, _euler_branch, _gear_branch, None)
-    else:  # trapezoidal
-        Eg = -(1.0 / 6.0) * (g_n - 2.0 * g_nm1 + g_nm2)
-        order_p1 = 3.0
+    else:
+        raise ValueError(
+            "method must be 'euler' or 'gear', not %r (the trapezoidal "
+            "branch was deleted -- its formula was uniform-grid-only and no "
+            "production path could reach it)" % (method,))
 
     # lte = J^-1 Eg in the reduced (reference-node-removed) space.
     J_r = jnp.delete(jnp.delete(J, irefnode, axis=0), irefnode, axis=1)
