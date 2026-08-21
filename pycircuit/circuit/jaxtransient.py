@@ -113,8 +113,9 @@ class TransientState(NamedTuple):
 ## not move.
 ##
 ## THE TRAPEZOIDAL BRANCH WAS DELETED (review hygiene): no production path
-## could reach it (`eval_method` is 'gear' at both call sites and not a
-## parameter), and its LTE formula was the uniform-grid one -- wrong the
+## could reach it (at the time, `eval_method` was hardcoded 'gear' at both
+## call sites; P6 has since exposed the gear/euler choice as the
+## `integrator` Parameter), and its LTE formula was the uniform-grid one -- wrong the
 ## moment the step changed, had anyone ever wired it up.  Dead-but-plausible
 ## solver branches are exactly how the 3/4-optimism defect survived twice.
 ## The CPU's trapezoidal integrator, with the correct variable-step
@@ -426,7 +427,7 @@ def ywr_error_ratio(i_curr, x_curr, J, state: TransientState, irefnode,
         ## which on a uniform grid reduces to -(1/4) h^2 q''' against a true BDF-2
         ## local truncation error of -(1/3) h^2 q'''.  So it reported 3/4 of the
         ## error at every step -- the solver was 25% optimistic about its own
-        ## accuracy, on the ONLY eval_method either entry point uses.
+        ## accuracy, on the default eval_method of both entry points.
         ##
         ## The CPU found and fixed this in stage 4i and the fix never crossed to
         ## this file, which is precisely the divergence stage 9 exists to close:
@@ -1444,9 +1445,29 @@ class JAXTransient(Analysis):
         ## all-zero waveform the moment the hardcode was removed.  Same
         ## re-declaration the CPU Transient makes.
         Parameter(name='analysis', desc='Analysis name', default='tran'),
+        ## P6: the integrator choice, reachable at last -- the traced loop
+        ## implemented both methods all along, but eval_method was hardcoded
+        ## at both call sites.  String-valued on this backend (the traced
+        ## kernels select by name; there is no Integrator instance to hold
+        ## state).  Trapezoidal stays CPU-only until someone ports a
+        ## VARIABLE-STEP trap estimator: the uniform-grid trap branch was
+        ## deleted for cause (its LTE formula assumed equal steps).
+        Parameter(name='integrator',
+                  desc="Integration method: 'gear' (default, order 2, the "
+                       "CPU's default too) or 'euler' (order 1). "
+                       'Trapezoidal is CPU-only -- see the source note',
+                  unit='', default='gear'),
         Parameter(name='uic',
                   desc='Use initial conditions (skip DC OP computation)',
                   unit='', default=False),
+        ## P12: SPICE's .ic for the uic case, shared with the CPU -- the
+        ## initial-state machinery (ic dict -> element ICs -> spanning-tree
+        ## capacitor solve) is pure pre-loop Python on names and indices, so
+        ## the CPU's methods are bound below unchanged.
+        Parameter(name='ic',
+                  desc="Initial node voltages for uic=True, as {node: volts}. "
+                       "Node may be a name or a Node instance.",
+                  unit='V', default=None),
         Parameter(name='minstep',
                   desc='Minimum timestep to prevent infinite loops', unit='s',
                   default=1e-18),
@@ -1490,6 +1511,31 @@ class JAXTransient(Analysis):
                     "scaling step. It was previously accepted and ignored. Use "
                     "Transient for a circuit that needs %r."
                     % (unsupported, unsupported))
+
+    ## P12: the CPU's initial-state machinery, SHARED rather than ported --
+    ## `_initial_state` and its helpers are pre-loop Python over names and
+    ## indices (they build a numpy vector; the chunk loop converts), so the
+    ## bound functions run here unchanged, spanning-tree capacitor solve
+    ## included.  The old `node.ic` attribute walk this replaces was dead
+    ## code posing as a feature: nothing in the package or tests ever SET
+    ## node.ic, and a misspelled node name in it could not even be detected.
+    from pycircuit.circuit.transient import Transient as _CPU
+    _initial_state = _CPU._initial_state
+    _apply_element_ics = _CPU._apply_element_ics
+    _apply_voltage_ics = _CPU._apply_voltage_ics
+    _descendant_has_ic = _CPU._descendant_has_ic
+    del _CPU
+
+    def _eval_method(self):
+        """The traced loop's method name, validated -- P6."""
+        method = self.par.integrator
+        if method not in ('gear', 'euler'):
+            raise ValueError(
+                "integrator must be 'gear' or 'euler' on this backend, not %r. "
+                "Trapezoidal is CPU-only: the uniform-grid trap branch was "
+                "deleted for cause and a variable-step trap estimator has not "
+                "been written." % (method,))
+        return method
 
     def _timestep_max(self, tend):
         """The clamp on how large an accepted step may grow -- decision D2.
@@ -1690,8 +1736,11 @@ class JAXTransient(Analysis):
         t_breaks_array = jnp.array(collect_breakpoints(
             self.cir, tend, float(self.par.minbreak)))
         
-        # Setup batched initial state
-        x0_batch = jnp.zeros((batch_size, n))
+        # Setup batched initial state -- the SAME shared machinery as solve
+        # (P12): every lane starts from the ic-resolved vector, since the
+        # overrides sweep element parameters, not starting states.
+        x0_batch = jnp.tile(jnp.asarray(self._initial_state(refnode),
+                                        dtype=jnp.float64), (batch_size, 1))
         x_hist = jnp.stack([x0_batch, x0_batch, x0_batch], axis=1) # (batch_size, 3, n)
         
         # We need a batched q0
@@ -1729,7 +1778,7 @@ class JAXTransient(Analysis):
         _pcnr_meta, _pcnr_VT = self._pcnr_setup()
 
         def run_chunk(s, p_tree):
-            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear', params_tree=p_tree, reltol=self.par.reltol, abstol=self._newton_abstol(n),
+            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method=self._eval_method(), params_tree=p_tree, reltol=self.par.reltol, abstol=self._newton_abstol(n),
                                    xtol=self._newton_xtol(n),
                                    maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis,
                                    lte_reltol=self.par.reltol,
@@ -1856,14 +1905,17 @@ class JAXTransient(Analysis):
         irefnode = self.cir.get_node_index(refnode)
         uic = bool(self.par.uic) if uic is None else uic
 
+        ## Same contract as the CPU (P12): ic without uic is a different
+        ## feature (constraining the operating point) and is refused, not
+        ## silently ignored.
+        if (self.par.ic or self._descendant_has_ic(self.cir)) and not uic:
+            raise ValueError(
+                "ic was given without uic=True. This implements SPICE's "
+                "initial conditions for the uic case only -- starting values "
+                "for the transient. Pass uic=True, or drop ic.")
         if x0 is None:
             if uic:
-                x0 = np.zeros(n)
-                # Load node initial conditions if they exist (cir.nodes is a list).
-                for node in self.cir.nodes:
-                    if hasattr(node, 'ic'):
-                        idx = self.cir.get_node_index(node)
-                        x0[idx] = node.ic
+                x0 = self._initial_state(refnode)
             else:
                 # Run a fast DC operating point if none provided
                 from pycircuit.circuit.dcanalysis import DC
@@ -1932,7 +1984,7 @@ class JAXTransient(Analysis):
 
         @jax.jit
         def run_chunk(s):
-            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear', reltol=self.par.reltol, abstol=self._newton_abstol(n),
+            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method=self._eval_method(), reltol=self.par.reltol, abstol=self._newton_abstol(n),
                                    xtol=self._newton_xtol(n),
                                    maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis,
                                    lte_reltol=self.par.reltol,

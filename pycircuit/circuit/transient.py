@@ -244,11 +244,29 @@ class Transient(Analysis):
     ## * Implement automatic timestep adjustment, using difference between
     ##   BE and trapezoidal as a measure of the error.
     ##   Reference: "Time Step Control in Transient Analysis", by SHUBHA VIJAYCHAND
-    def _get_integrator(self):
-        from pycircuit.circuit.integrator import Integrator, EulerIntegrator
+    def _get_integrator(self, coupled=False):
+        from pycircuit.circuit.integrator import (Integrator, EulerIntegrator,
+                                                  Gear2Integrator)
         integrator = getattr(self.par, 'integrator', None)
         if integrator is None:
-            return EulerIntegrator()
+            ## P6 OWNER DECISION (2026-08-21): Gear-2 is the shipped default,
+            ## matching the JAX backend at last -- identical scripts used to
+            ## get different methods by backend.  Chosen on the phase-0
+            ## measurement (half the steps and half the wall-clock of Euler
+            ## on the same circuit at the same tolerance) and because the
+            ## estimator work of stages 4g/4i was built for it; the
+            ## conformance harness pins the pair.
+            ##
+            ## THE COUPLED PATH KEEPS EULER as its own default: Fang's step
+            ## law, its acceptance-band record, and the 127/127 cross-backend
+            ## step parity were all derived with order-1 companions.  Landing
+            ## Gear-2 underneath it was measured to livelock the coupled
+            ## rectifier (NoConvergenceError at t=1.25e-4, h collapsed to
+            ## 6.3e-12) and to break the step parity (96 vs 127).  An
+            ## EXPLICIT integrator is honoured on either path -- this guards
+            ## only what the default reaches.  Reconsider if the coupled
+            ## method's estimator is ever re-derived at order 2.
+            return EulerIntegrator() if coupled else Gear2Integrator()
         if not isinstance(integrator, Integrator):
             raise TypeError(
                 "integrator must be an Integrator instance (e.g. EulerIntegrator(), "
@@ -429,7 +447,8 @@ class Transient(Analysis):
          Parameter(name='integrator',
                    desc='Integration strategy (an Integrator instance, e.g. '
                         "EulerIntegrator(), TrapezoidalIntegrator(), "
-                        "Gear2Integrator()); default EulerIntegrator()",
+                        "Gear2Integrator()); default Gear2Integrator() -- "
+                        'the same method the JAX backend defaults to (P6)',
                    unit='',
                    default=None),
          Parameter(name='uic',
@@ -731,7 +750,11 @@ class Transient(Analysis):
         consistent solution from them, which is what SPICE does too.
         """
         n = self.cir.n
-        x0 = self.toolkit.zeros(n)
+        ## numpy, not self.toolkit: this vector is built and MUTATED before
+        ## the loop starts, and the JAX backend shares these methods verbatim
+        ## (P12) -- a traced array cannot take item assignment, and pre-loop
+        ## state is numpy on both backends anyway (the caller converts).
+        x0 = np.zeros(n)
 
         ic = self.par.ic
         if not ic:
@@ -2386,7 +2409,7 @@ class Transient(Analysis):
                 x0 = self._solve_operating_point(refnode)
 
         x = x0
-        self.base_integrator = self._get_integrator()
+        self.base_integrator = self._get_integrator(coupled=True)
         hist_len = max(2, self.base_integrator.get_required_history())
         q0 = self.cir.q(x, self.epar)
         self._qlast = self.toolkit.array([q0 for _ in range(hist_len)])

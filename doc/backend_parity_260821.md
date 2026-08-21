@@ -159,6 +159,20 @@ user-facing waveform change on the CPU path (every default run's step sequence
 moves), so it is an owner decision; the fallback is documenting the asymmetry in both
 `integrator` Parameter descriptions. Either way the harness pins whichever is chosen.
 
+> **EXECUTED 2026-08-21** (owner decision: Gear-2 on both).  The JAX
+> `integrator` Parameter ('gear'|'euler', trap refused with the reason) reaches
+> the traced loop; order is measurably live (euler 8.2e-3 vs gear 1.1e-3 on the
+> step-response RC).  One finding worth its own line: **the CPU coupled path
+> keeps Euler as its own default** — Fang's step law, the acceptance-band
+> record, and the 127/127 cross-backend step parity were all derived at
+> order 1, and Gear-2 underneath the coupled path was measured to livelock the
+> coupled rectifier (h collapsed to 6.3e-12 at t=1.25e-4) and break the parity
+> (96 vs 127).  Explicit integrators are honoured on either path; re-deriving
+> the coupled estimator at order 2 is the recorded reconsider-if.  Four
+> Euler-era method-calibrated records (two QUCS fixed-grid endpoints, the
+> Idtmod wrap sample, the BJT storage-time triple) now pin
+> `integrator=EulerIntegrator()` explicitly.
+
 ### P7 — `relref` modes on JAX
 
 `sigglobal` is carried in traced state (`sig_max`). `pointlocal` is stateless
@@ -205,6 +219,15 @@ shared as-is. Extract it (module function or mixin), give JAX the same `ic`
 Parameter, delete the `node.ic` walk.
 **Test:** the CPU's `test_initial_conditions.py` cases, run through `JAXTransient`
 — the spanning-tree tests included.
+
+> **EXECUTED 2026-08-21.**  Shared by BINDING rather than extraction: the four
+> CPU methods are pure pre-loop Python once `_initial_state` builds its vector
+> with numpy instead of `self.toolkit` (a traced array cannot take item
+> assignment), so `JAXTransient` assigns them as class attributes unchanged.
+> The `ic` Parameter, the ic-without-uic refusal, and the node.ic deletion all
+> landed; `solve_batched` seeds every lane from the same resolved vector.
+> Gates in `test_jax_initial_conditions.py` (spanning tree, floating-group
+> refusal, dead-walk regression included).
 
 ### P16 — TLine interpolation order
 

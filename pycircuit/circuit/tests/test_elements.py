@@ -355,7 +355,13 @@ def test_Idtmod_modulo():
     ## sources zeroed the matrix is structurally singular.  This ran before only
     ## because a failed DC was silently replaced by zeros; zeros happens to be
     ## the right initial state for an integrator, so the fix is to ask for it.
-    tran = Transient(c, toolkit=numeric, uic=True)
+    ## integrator pinned at P6: the sample AT the modulo wrap is a
+    ## left/right-limit convention, and this element's record (y(1.0) = 0.0,
+    ## the right limit) was written under Euler; Gear-2's two-point history
+    ## lands the left limit there instead.
+    from pycircuit.circuit.integrator import EulerIntegrator
+    tran = Transient(c, toolkit=numeric, uic=True,
+                     integrator=EulerIntegrator())
     result = tran.solve(tend=2.0,timestep=1e-2, fixed_timestep=True)
     y = result.v(nout).y
     x = result.v(nout).x[0]

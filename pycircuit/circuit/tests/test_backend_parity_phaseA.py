@@ -248,3 +248,45 @@ def test_p15_statistics_speak_the_cpu_name():
     st = JAXTransientStatistics()
     assert hasattr(st, 'force_accepts')
     assert not hasattr(st, 'forced_lte_steps')
+
+
+def test_p6_integrator_defaults_agree_and_the_choice_is_live():
+    """P6 (Phase B, recorded here with the other parity gates): the shipped
+    standard-path defaults agree at last -- Gear-2 on both -- and the JAX
+    `integrator` Parameter actually reaches the traced loop: euler and gear
+    produce measurably different runs (order-1 vs order-2 error at the same
+    config: measured 8.2e-3 vs 1.1e-3 on the step-response RC), and
+    trapezoidal is refused with the reason (the uniform-grid trap branch was
+    deleted for cause)."""
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.integrator import Gear2Integrator, EulerIntegrator
+    from pycircuit.circuit.elements import VS
+
+    tran = Transient(_rc(), toolkit=numeric)
+    assert isinstance(tran._get_integrator(), Gear2Integrator)
+    ## The coupled path keeps its own order-1 default -- Fang's record.
+    assert isinstance(tran._get_integrator(coupled=True), EulerIntegrator)
+
+    def rc_step():
+        c = SubCircuit()
+        c['V1'] = VS('in', gnd, v=1.0)
+        c['R1'] = R('in', 'out', r=1e3)
+        c['C1'] = C('out', gnd, c=1e-6)
+        return c
+
+    def go():
+        from pycircuit.circuit.jaxtransient import JAXTransient
+        assert JAXTransient(rc_step()).par.integrator == 'gear'
+        errs = {}
+        for m in ('gear', 'euler'):
+            tran = JAXTransient(rc_step(), reltol=1e-4, integrator=m)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                res = tran.solve(gnd, tend=5e-3, timestep=1e-4, uic=True)
+            t = np.asarray(res.sweep_values, float)
+            v = np.asarray(res.v('out'), float).reshape(-1)
+            errs[m] = float(np.max(np.abs(v - (1 - np.exp(-t / 1e-3)))))
+        assert errs['euler'] > 3.0 * errs['gear'], errs
+        with pytest.raises(ValueError, match='CPU-only'):
+            JAXTransient(rc_step(), integrator='trap')._eval_method()
+    _with_jax(go)

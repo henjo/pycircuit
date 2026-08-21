@@ -96,7 +96,12 @@ def test_transient_RLC():
     c['R1'] = R(1, 2, r=1e6)
     c['C'] = C(2, gnd, c=1e-12)
     #c['L'] = L(2,gnd, L=1e-3)
-    tran_imp = Transient(c)
+    from pycircuit.circuit.integrator import EulerIntegrator
+    ## integrator pinned at P6 (default moved Euler -> Gear-2): this is a
+    ## method-calibrated external regression record -- on this fixed
+    ## coarse grid every method carries O(%%) discretisation error, and
+    ## the QUCS-matched value was recorded under Euler's.
+    tran_imp = Transient(c, integrator=EulerIntegrator())
     res_imp = tran_imp.solve(tend=40e-6,timestep=1e-6, fixed_timestep=True)
     expected = 2.58
     assert  abs(res_imp.v(2,gnd)[-1] - expected) < 1e-2*expected,\
@@ -113,7 +118,12 @@ def test_transient_nonlinear_C():
     c['R1'] = R(1, 2, r=1e6)
     c['C'] = myC(2, gnd)
     #c['L'] = L(2,gnd, L=1e-3)
-    tran_imp = Transient(c)
+    from pycircuit.circuit.integrator import EulerIntegrator
+    ## integrator pinned at P6 (default moved Euler -> Gear-2): this is a
+    ## method-calibrated external regression record -- on this fixed
+    ## coarse grid every method carries O(%%) discretisation error, and
+    ## the QUCS-matched value was recorded under Euler's.
+    tran_imp = Transient(c, integrator=EulerIntegrator())
     res_imp = tran_imp.solve(tend=40e-6,timestep=1e-6, fixed_timestep=True)
     expected = 3.4
     assert  abs(res_imp.v(2,gnd)[-1] - expected) < 1e-2*expected,\

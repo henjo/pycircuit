@@ -1773,8 +1773,9 @@ def _switch_run(per, tf=None):
     ## timestep_max pins the old timestep-as-cap sampling density: the
     ## decoupled default (1.6*per/50) is 12.8x coarser and quantizes the
     ## storage-time measurement below its measured 13.6-16.8 ps resolution.
+    from pycircuit.circuit.integrator import EulerIntegrator
     tran = Transient(_switching_stage(per, tf), toolkit=numeric,
-                     timestep_max=per / 400)
+                     timestep_max=per / 400, integrator=EulerIntegrator())
     with _w.catch_warnings():
         _w.simplefilter('ignore', RuntimeWarning)
         res = tran.solve(refnode=gnd, tend=per * 1.6, timestep=per / 400)
