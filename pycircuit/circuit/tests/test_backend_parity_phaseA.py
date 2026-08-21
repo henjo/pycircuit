@@ -635,3 +635,62 @@ def test_p22_state_row_mask_and_shared_coupled_default():
     c = rect()
     assert bool(mask[c.get_node_index('b')])
     assert not bool(mask[c.get_node_index('a')])
+
+
+def test_max_dv_step_voltage_check_on_algebraic_networks():
+    """The Spectre/Mica-style voltage check (owner request, follow-on to
+    P22): on a purely resistive/algebraic amplifier network -- the topology-
+    exploration scenario, Rs + VCCS driven by a sine, no reactances -- NO
+    error estimator has anything to measure, and the default run samples at
+    the step cap: measured max per-step output change 2.256 V on a 10 V
+    swing.  max_dv_step bounds the per-step node-voltage change instead,
+    with a proportional retry; it is h-proportional by construction (|dv| ~
+    h*slew), so it cannot h-cancel like the solution-LTE did.  Measured at
+    landing: 0.2 V bound held at 0.199 on every path -- CPU 413 points, JAX
+    412, JAX-coupled 777, from a blind 61.  Off by default (None): default
+    runs are untouched, which the suite as a whole pins."""
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.elements import VCCS, VSin
+
+    def amp():
+        c = SubCircuit()
+        c['vs'] = VSin('in', gnd, va=1.0, freq=1e6)
+        c['Ri'] = R('in', 'x', r=1e3)
+        c['Rg'] = R('x', gnd, r=9e3)
+        c['gm'] = VCCS('x', gnd, 'out', gnd, gm=5e-3)
+        c['RL'] = R('out', gnd, r=2e3)
+        return c
+
+    def max_step_dv(res):
+        vo = np.asarray(res.v('out'), float).reshape(-1)
+        return float(np.max(np.abs(np.diff(vo))))
+
+    ## CPU: blind by default, bounded with the check.
+    tran = Transient(amp(), toolkit=numeric, reltol=1e-4, uic=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        r0 = tran.solve(gnd, tend=2e-6, timestep=2e-8)
+    assert max_step_dv(r0) > 1.0, 'premise gone: the default is not blind'
+
+    tran = Transient(amp(), toolkit=numeric, reltol=1e-4, uic=True,
+                     max_dv_step=0.2)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        r1 = tran.solve(gnd, tend=2e-6, timestep=2e-8)
+    assert max_step_dv(r1) <= 0.2 * (1.0 + 1e-9)
+    assert len(np.asarray(r1.sweep_values)) > 5 * len(np.asarray(r0.sweep_values))
+
+    def go():
+        for kw in ({'max_dv_step': 0.2},
+                   {'max_dv_step': 0.2, 'coupled_lte': True}):
+            tran = JAXTransient(amp(), reltol=1e-4, **kw)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                res = tran.solve(gnd, tend=2e-6, timestep=2e-8, uic=True)
+            assert max_step_dv(res) <= 0.2 * (1.0 + 1e-9), kw
+            t = np.asarray(res.sweep_values, float)
+            ## Reaches tend (the coupled path may overshoot by one dv-sized
+            ## step; landing exactness is F3's gate, not this one's).
+            assert t[-1] >= 2e-6 * (1.0 - 1e-9)
+    _with_jax(go)

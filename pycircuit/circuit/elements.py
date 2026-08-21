@@ -756,16 +756,20 @@ class VCCS(Circuit):
     
     def update(self, subject):
         n = self.n
-        G = self.toolkit.zeros((n,n))
+        ## Stamp construction is the TOOLKIT'S job (matrix_from_entries):
+        ## this element's stamp broke twice in one day when it assumed the
+        ## backend -- in-place assignment on the (immutable) JAX arrays,
+        ## then a float numpy intermediate that rejected symbolic gm.  Each
+        ## toolkit now builds its own matrix from the (row, col, value)
+        ## entries, which is the whole decision the element should make.
         gm=self.iparv.gm
         inpindex, innindex, outpindex, outnindex = \
             (self.nodes.index(self.nodenames[name]) 
              for name in ('inp', 'inn', 'outp', 'outn'))
-        G[outpindex, inpindex] += gm
-        G[outpindex, innindex] += -gm
-        G[outnindex, inpindex] += -gm
-        G[outnindex, innindex] += gm
-        self._G = G
+        self._G = self.toolkit.matrix_from_entries(
+            (n, n),
+            [(outpindex, inpindex, gm), (outpindex, innindex, -gm),
+             (outnindex, inpindex, -gm), (outnindex, innindex, gm)])
 
 
     def G(self, x, epar=defaultepar):

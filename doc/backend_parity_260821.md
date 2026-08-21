@@ -430,6 +430,32 @@ existing TLine tests before/after, per house rules.
   > exit replaces it with the deliberate escape.  Bordered-vs-approx smooth
   > agreement re-derived (the old 5% partly rode the artifact; now 11%
   > measured, bounded 20% with both pinned to the analytic).
+- **P23** *(added and executed 2026-08-21, owner request)* — the
+  Spectre/Mica-style **voltage check**, `max_dv_step` on both backends: the
+  largest allowed change of any node voltage in one accepted step, None
+  (default) disabling it.  The scenario it exists for is the P22 mask's
+  honest gap: a purely resistive/algebraic network (a designer exploring an
+  amplifier topology — Rs + controlled sources, no reactances yet) has NO
+  error estimator with anything to measure, so the run samples at the step
+  cap and nothing reports how coarse that is.  Bounding per-step Δv controls
+  output resolution directly and tracks the actual waveform; it is
+  h-proportional by construction (|Δv| ≈ h·slew), so it cannot h-cancel the
+  way solution-LTE did.  Node rows only; proportional retry (0.9·bound/Δv);
+  vetoes compose with the LTE accept on every path (CPU standard, CPU
+  coupled, JAX standard, JAX coupled).  Measured on the R+VCCS amplifier at
+  1 MHz: default max per-step output change 2.256 V on a 10 V swing (61
+  points, blind); with `max_dv_step=0.2` the bound holds at 0.199 on every
+  path — CPU 413 points, JAX 412, JAX-coupled 777.  The gate's first e2e
+  use of VCCS under the JAX toolkit also found and fixed that element's
+  in-place mutation (immutable-array crash) — and the first fix attempt
+  (numpy intermediate) broke the SYMBOLIC toolkit in turn (sympy gm cannot
+  enter a float array; 17 ddd/ua741 tests said so).  Owner call on the root
+  cause: stamp construction is the TOOLKIT's decision, not the element's —
+  `Toolkit.matrix_from_entries(shape, entries)` now builds each backend's
+  matrix from the element's (row, col, value) list (base: nested Python
+  lists coerced through the toolkit's own array(); toolkits may override
+  with native routes), and VCCS passes entries only.  The documented
+  pattern for new elements.  Off by default: default runs are untouched.
 
 ---
 

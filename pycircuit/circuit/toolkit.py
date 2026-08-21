@@ -239,6 +239,27 @@ class Toolkit:
         return zm, psd[0]
 
 
+    def matrix_from_entries(self, shape, entries):
+        """A matrix from sparse stamp entries: ``[(row, col, value), ...]``.
+
+        THE ELEMENT-STAMP CONSTRUCTOR (owner request, after the VCCS stamp
+        broke twice in one day): an element that builds its stamp by
+        mutating ``toolkit.zeros(...)`` embeds a backend assumption --
+        in-place assignment crashes on immutable JAX arrays, and a numpy
+        float intermediate rejects symbolic values -- so the construction
+        belongs to the TOOLKIT, which knows its own array semantics.  The
+        base implementation accumulates into nested Python lists (which
+        hold floats, sympy expressions, and tracers alike) and coerces once
+        through this toolkit's own ``array()``; a toolkit with a better
+        native route is free to override.
+        """
+        n_rows, n_cols = shape
+        rows = [[0] * n_cols for _ in range(n_rows)]
+        for r, c, v in entries:
+            rows[r][c] = rows[r][c] + v
+        return self.array(rows)
+
+
 class NumericToolkit(Toolkit):
     """Numeric toolkit backed by numpy."""
     symbolic = False

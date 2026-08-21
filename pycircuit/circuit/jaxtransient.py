@@ -1127,7 +1127,7 @@ def pcnr_controller_jacobian(circuit, state, x, v_lim, j_ra, j_rb, j_IS, VT,
     return _scatter_junction_G(J, j_ra, j_rb, g_l, +1.0)
 
 
-def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15, pcnr_meta=None, pcnr_VT=0.025, tline_dG=None, analysis='tran', s_gamma_min=0.0, s_gamma_max=1.0, s_eta=jnp.inf, fixed_timestep=False, grid_dt=None, relref='sigglobal', n_nodes=None, provided_function=None, state_mask=None):
+def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15, pcnr_meta=None, pcnr_VT=0.025, tline_dG=None, analysis='tran', s_gamma_min=0.0, s_gamma_max=1.0, s_eta=jnp.inf, fixed_timestep=False, grid_dt=None, relref='sigglobal', n_nodes=None, provided_function=None, state_mask=None, max_dv_step=jnp.inf):
 
     ## The same epsilon `calculate_next_dt` uses to decide a breakpoint is "already
     ## reached".  They disagreed: after 500 steps of 1e-5 the accumulated `t` sits
@@ -1325,9 +1325,18 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
             ## step returns to the grid).
             too_accurate = jnp.asarray(False)
             lte_ok = jnp.asarray(True)
+        ## VOLTAGE CHECK (max_dv_step, inf when disabled): node rows only,
+        ## proportional retry -- the industry semantics; see the Parameter.
+        ## Skipped at the dt floor (progress guarantee) and under a fixed
+        ## grid (the caller owns the resolution).
+        _nn_dv = n_nodes if n_nodes is not None else x_curr.shape[0]
+        dv = jnp.max(jnp.abs(x_curr[:_nn_dv] - state.x_history[0][:_nn_dv]))
+        dv_ok = jnp.logical_or(dv <= max_dv_step,
+                               jnp.asarray(fixed_timestep))
         accept = jnp.logical_or(
             jnp.logical_and(
-                jnp.logical_and(nr_state.converged, lte_ok),
+                jnp.logical_and(nr_state.converged,
+                                jnp.logical_and(lte_ok, dv_ok)),
                 jnp.logical_not(too_accurate)),
             at_floor)
         forced = jnp.logical_and(at_floor, jnp.logical_not(nr_state.converged))
@@ -1476,6 +1485,12 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
             ## solution; after a failed Newton the ratio describes a point the
             ## circuit never occupied, so a fixed cut is used instead.
             lte_shrink = jnp.clip(error_ratio ** (-1.0 / order_p1), 0.1, 0.9)
+            ## A dv-vetoed step retries at 0.9*bound/dv (industry semantics);
+            ## a converged-but-LTE-rejected one keeps the predictor's cut.
+            dv_shrink = jnp.clip(0.9 * max_dv_step / jnp.maximum(dv, 1e-300),
+                                 0.1, 0.9)
+            lte_shrink = jnp.where(jnp.logical_not(dv_ok), dv_shrink,
+                                   lte_shrink)
             shrink = jnp.where(nr_state.converged, lte_shrink, 0.25)
             retry_dt = jnp.maximum(state.dt * shrink, dt_min)
             if coupled:
@@ -1672,6 +1687,17 @@ class JAXTransient(Analysis):
         ## doubling as the cap made gentle circuits step-cap-limited, where no
         ## tolerance knob could move the run (measured: identical 209-step
         ## rc-vsin runs at reltol 1e-4 and 1e-6).
+        ## The Spectre/Mica-class VOLTAGE CHECK -- see the CPU's Parameter
+        ## note: on algebraic networks no LTE exists (the charge estimator
+        ## is identically zero; P22's mask excludes algebraic rows from the
+        ## coupled band), and this bounds the per-step node-voltage change
+        ## instead.  |dv| ~ h*slew is h-proportional, so it cannot h-cancel.
+        Parameter(name='max_dv_step',
+                  desc='Largest allowed change of any node voltage in one '
+                       'accepted step (the Spectre/Mica-style voltage '
+                       'check); None disables. Controls output resolution '
+                       'on circuits where no LTE exists.',
+                  unit='V', default=None),
         Parameter(name='timestep_max',
                   desc='Largest accepted timestep; None means tend/50, the '
                        'SPICE TMAX default. Decoupled from timestep, which '
@@ -2081,7 +2107,7 @@ class JAXTransient(Analysis):
         def run_chunk(s, p_tree):
             return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method=self._eval_method(), params_tree=p_tree, reltol=self.par.reltol, abstol=self._newton_abstol(n),
                                    xtol=self._newton_xtol(n),
-                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis, s_gamma_min=_sgm, s_gamma_max=_sgx, s_eta=_seta, relref=self._relref(), n_nodes=len(self.cir.nodes), state_mask=_state_mask,
+                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis, s_gamma_min=_sgm, s_gamma_max=_sgx, s_eta=_seta, relref=self._relref(), n_nodes=len(self.cir.nodes), state_mask=_state_mask, max_dv_step=(jnp.inf if self.par.max_dv_step is None else float(self.par.max_dv_step)),
                                    lte_reltol=self.par.reltol,
                                    lte_abstol=self._lte_abstol(n),
                                    max_dv=(jnp.inf if self.par.max_dv is None
@@ -2323,7 +2349,7 @@ class JAXTransient(Analysis):
                                    fixed_timestep=fixed_timestep, grid_dt=timestep,
                                    provided_function=provided_function,
                                    xtol=self._newton_xtol(n),
-                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis, s_gamma_min=_sgm, s_gamma_max=_sgx, s_eta=_seta, relref=self._relref(), n_nodes=len(self.cir.nodes), state_mask=_state_mask,
+                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis, s_gamma_min=_sgm, s_gamma_max=_sgx, s_eta=_seta, relref=self._relref(), n_nodes=len(self.cir.nodes), state_mask=_state_mask, max_dv_step=(jnp.inf if self.par.max_dv_step is None else float(self.par.max_dv_step)),
                                    lte_reltol=self.par.reltol,
                                    lte_abstol=self._lte_abstol(n),
                                    max_dv=(jnp.inf if self.par.max_dv is None

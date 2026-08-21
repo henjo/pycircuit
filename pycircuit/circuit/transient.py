@@ -16,7 +16,8 @@ from pycircuit.circuit.dcanalysis import refnode_removed
 ## path in `solve()` is the one place that used to bypass it, and 4b's whole point
 ## is that it must not: one bound, named once.  `stepcontroller` imports nothing
 ## from this package, so this is import-safe at module level.
-from pycircuit.circuit.stepcontroller import MAX_GROWTH_RATIO
+from pycircuit.circuit.stepcontroller import (MAX_GROWTH_RATIO,
+                                              MIN_SHRINK_RATIO)
 
 ## STAGE 2a -- BLAS thread control, discovered rather than required.
 ##
@@ -521,6 +522,25 @@ class Transient(Analysis):
          ## agreement (211 vs 210) was partly both backends sitting on the
          ## same cap.  `timestep` now only sets the opening-step scale and
          ## the fixed_timestep grid.
+         ## The Spectre/Mica-class VOLTAGE CHECK: on a purely resistive/
+         ## algebraic network (a designer exploring an amplifier topology
+         ## with Rs and controlled sources, no reactances yet) NO error
+         ## estimator has anything to measure -- the charge-based LTE is
+         ## identically zero and P22's mask excludes algebraic rows from the
+         ## coupled band -- so the run samples at the step cap and nothing
+         ## reports how coarse that is.  Bounding the PER-STEP node-voltage
+         ## change controls output resolution directly, tracks the actual
+         ## waveform (a slewing output gets dense points, a quiet one does
+         ## not), and is robust where solution-LTE was not: |dv| ~ h*slew is
+         ## h-proportional by construction, so it cannot h-cancel.
+         Parameter(name='max_dv_step',
+                   desc='Largest allowed change of any node voltage in one '
+                        'accepted step (the Spectre/Mica-style voltage '
+                        'check); None disables. Controls output resolution '
+                        'on circuits where no LTE exists (resistive/'
+                        'algebraic networks).',
+                   unit='V',
+                   default=None),
          Parameter(name='timestep_max',
                    desc='Largest accepted timestep; None means tend/50, the '
                         'SPICE TMAX default. Decoupled from timestep, which '
@@ -2300,6 +2320,21 @@ class Transient(Analysis):
                     x_hist=X[-1:-4:-1],
                 )
 
+                ## VOLTAGE CHECK (max_dv_step): an additional veto on an
+                ## accepted step, with a proportional retry -- the industry
+                ## semantics.  Node rows only ("voltage" check); branch
+                ## currents are not bounded by it.
+                if self.par.max_dv_step is not None and accept:
+                    _nn = len(self.cir.nodes)
+                    _dv = float(np.max(np.abs(
+                        np.asarray(x, dtype=float)[:_nn]
+                        - np.asarray(X[-1], dtype=float)[:_nn])))
+                    if _dv > self.par.max_dv_step:
+                        accept = False
+                        dt_next = dt * max(
+                            MIN_SHRINK_RATIO,
+                            0.9 * self.par.max_dv_step / _dv)
+
                 growth_retry = (not accept) and dt_next > dt
                 if growth_retry and point_retries < MAX_POINT_RETRIES:
                     ## Too accurate, redone larger (Fang's lower bound).  A
@@ -2738,6 +2773,22 @@ class Transient(Analysis):
                 ## of the unit, not a property of the method.
                 self.statistics.newton_iterations += int(_iters)
                 if converged:
+                    ## VOLTAGE CHECK (max_dv_step) on the coupled path too:
+                    ## the P22 mask deliberately blinds the band to algebraic
+                    ## rows, so on a resistive/algebraic network this is the
+                    ## only step-size control tracking the waveform.
+                    if self.par.max_dv_step is not None:
+                        _nn = len(self.cir.nodes)
+                        _dv = float(np.max(np.abs(
+                            np.asarray(x_curr, dtype=float)[:_nn]
+                            - np.asarray(X[-1], dtype=float)[:_nn])))
+                        if _dv > self.par.max_dv_step:
+                            self.statistics.rejected_steps += 1
+                            h_curr = max(minstep, h_curr * max(
+                                MIN_SHRINK_RATIO,
+                                0.9 * self.par.max_dv_step / _dv))
+                            converged = False
+                            continue
                     h_curr = h_solved
                     break
                 ## A failed attempt is retried smaller: a rejection in all but
