@@ -80,6 +80,21 @@ class TransientState(NamedTuple):
     n_nonconverged: Any = 0
     n_forced_nonconverged: Any = 0
 
+    ## F19(c) (doc/transient_review_260820.md): a step at the dt floor whose
+    ## Newton CONVERGED but whose LTE still failed used to be accepted with no
+    ## trace at all -- the CPU counts these as force_accepts and warns that
+    ## the accepted error is unbounded.  Counted here for the same reason.
+    n_forced_lte: Any = 0
+
+    ## F11/F19: "do not trust a 2nd-order polynomial through this point" --
+    ## set when the PREVIOUS accepted step landed on a breakpoint, consumed by
+    ## effective_first_order.  An explicit flag rather than an h_history
+    ## sentinel, per the review's revised recommendation: a sentinel in the
+    ## step history would also falsify the LTE-exemption and predictor guards
+    ## that key on "no history yet", which are different claims -- the same
+    ## conflation the CPU path documents having paid for.
+    force_first_order: Any = False
+
 # ---------------------------------------------------------------------------
 # Phase 1: Pure Functional Integrators
 # ---------------------------------------------------------------------------
@@ -107,31 +122,58 @@ def trap_step(q_curr, C_curr, q_prev, iq_prev, dt):
 def gear2_step(q_curr, C_curr, q_prev1, q_prev2, dt_curr, dt_prev):
     return bdf2_companion(q_curr, C_curr, q_prev1, q_prev2, dt_curr, dt_prev)
 
-def compute_integration(q_curr, C_curr, state: TransientState, method='trap'):
+def effective_first_order(state: TransientState):
+    """Is this step effectively integrated at order 1?
+
+    True while the run has fewer than two completed steps recorded
+    (``h_history[0] == 0`` or ``h_history[1] == 0`` -- RUN-global facts, the
+    buffers carry across chunk boundaries) and when the previous accepted
+    step landed on a breakpoint (``force_first_order``, F11).  ONE
+    definition, consumed by the integration dispatch, the LTE estimator, and
+    the step-size exponent alike -- F19's point
+    (doc/transient_review_260820.md): the integration used to fall back to
+    Euler dynamically while the estimator stayed statically Gear-2, so an
+    order-1 step was scored by the order-2 formula on a zero-seeded history
+    with the wrong exponent handed to the step controller.
+
+    Deliberately NOT ``step_idx < 2``: step_idx is CHUNK-local and resets at
+    every chunk boundary, so the old predicate re-dropped the order (and,
+    once the estimator followed it, re-scored steps) at each boundary --
+    measured as chunking changing a 59-step run to 61 steps.  The history
+    buffers are the run-global truth.
+    """
+    no_history = jnp.logical_or(state.h_history[0] == 0.0,
+                                state.h_history[1] == 0.0)
+    return jnp.logical_or(no_history, state.force_first_order)
+
+
+def compute_integration(q_curr, C_curr, state: TransientState, method='trap',
+                        first_order=None):
 
     q_prev = state.q_history[0]
     iq_prev = state.iq_history[0]
     dt = state.dt
-    
+
     def do_euler():
         return backward_euler_step(q_curr, C_curr, q_prev, dt)
-        
+
     def do_trap():
         return trap_step(q_curr, C_curr, q_prev, iq_prev, dt)
-        
+
     def do_gear2():
         q_prev2 = state.q_history[1]
         dt_prev = state.h_history[0]
-        fallback = jnp.logical_or(state.step_idx < 2, dt_prev == 0.0)
-        
+        fallback = (effective_first_order(state) if first_order is None
+                    else first_order)
+
         def _euler():
             return do_euler()
-            
+
         def _gear():
             return gear2_step(q_curr, C_curr, q_prev, q_prev2, dt, dt_prev)
-            
+
         return jax.lax.cond(fallback, _euler, _gear)
-    
+
     if method == 'euler':
         return do_euler()
     elif method in ('gear', 'gear2'):
@@ -300,7 +342,8 @@ def newton_inner_loop(state: TransientState, circuit, irefnode, tline_params, tl
 # ---------------------------------------------------------------------------
 
 def ywr_error_ratio(i_curr, x_curr, J, state: TransientState, irefnode,
-                    method='trap', trtol=7.0, lte_rel=1e-4, lte_abstol=1e-12):
+                    method='trap', trtol=7.0, lte_rel=1e-4, lte_abstol=1e-12,
+                    first_order=None):
     """Yao-Wang-Roychowdhury DAE LTE, returned as a normalized error ratio.
 
     Mirrors the CPU transient's estimator: forms the residual as a
@@ -321,6 +364,20 @@ def ywr_error_ratio(i_curr, x_curr, J, state: TransientState, irefnode,
         Eg = euler_lte(g_n, g_nm1)
         order_p1 = 2.0
     elif method in ('gear', 'gear2'):
+        ## F19: THE ESTIMATOR FOLLOWS THE EFFECTIVE ORDER.  `method` is a
+        ## static string, but the integration falls back to Euler dynamically
+        ## (opening steps; the F11 breakpoint sentinel), and an order-2
+        ## formula scoring an order-1 step differences a zero-seeded or
+        ## corner-straddling g-history with the wrong exponent downstream --
+        ## the CPU's estimator follows the dropped order, and now this one
+        ## does too.
+        first = (effective_first_order(state) if first_order is None
+                 else first_order)
+
+        def _euler_branch(_):
+            return euler_lte(g_n, g_nm1), jnp.asarray(2.0)
+
+        def _gear_branch(_):
         ## STAGE 9, gate 9-1(a) -- THE 3/4 OPTIMISM, FOUND A THIRD TIME.
         ##
         ## This was YWR's Table I GEAR2 residual,
@@ -338,14 +395,16 @@ def ywr_error_ratio(i_curr, x_curr, J, state: TransientState, irefnode,
         ## The form below is 4i's: estimate q''' from the second divided difference
         ## of the companion current and multiply by the method's own error
         ## constant, so the coefficient is derived rather than transcribed.
-        h1, h2 = dt, dt_prev
-        ## `second_divided_difference` returns q'''/2 and `gear2_lte` wants q'''/6,
-        ## hence the /3.  Both live in `_lte_kernels` so the normalisation is stated
-        ## once -- pairing an estimate with a differently-normalised constant is
-        ## exactly how the 3/4 optimism survived in two places.
-        q3_over_6 = second_divided_difference(g_n, g_nm1, g_nm2, h1, h2) / 3.0
-        Eg = gear2_lte(h1, h2, q3_over_6)
-        order_p1 = 3.0
+            h1, h2 = dt, dt_prev
+            ## `second_divided_difference` returns q'''/2 and `gear2_lte`
+            ## wants q'''/6, hence the /3.  Both live in `_lte_kernels` so the
+            ## normalisation is stated once -- pairing an estimate with a
+            ## differently-normalised constant is exactly how the 3/4 optimism
+            ## survived in two places.
+            q3_over_6 = second_divided_difference(g_n, g_nm1, g_nm2, h1, h2) / 3.0
+            return gear2_lte(h1, h2, q3_over_6), jnp.asarray(3.0)
+
+        Eg, order_p1 = jax.lax.cond(first, _euler_branch, _gear_branch, None)
     else:  # trapezoidal
         Eg = -(1.0 / 6.0) * (g_n - 2.0 * g_nm1 + g_nm2)
         order_p1 = 3.0
@@ -453,7 +512,12 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
         x_curr = nr_state.x
         q_curr = circuit.q(x_curr, params_tree=params_tree)
         C_curr = circuit.C(x_curr, params_tree=params_tree)
-        i_curr, Geq = compute_integration(q_curr, C_curr, state, method=eval_method)
+        ## F19: one effective-order flag for this step, consumed by the
+        ## integration AND the estimator so they cannot disagree.
+        first_order = effective_first_order(state)
+        i_curr, Geq = compute_integration(q_curr, C_curr, state,
+                                          method=eval_method,
+                                          first_order=first_order)
 
         ## STAGE 9(f) -- ONE ESTIMATOR.  There used to be a charge-domain branch
         ## here, selected by `lte_formula='classic'`.  It was deleted rather than
@@ -469,13 +533,17 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
         error_ratio, order_p1 = ywr_error_ratio(
             i_curr, x_curr, J, state, irefnode,
             method=eval_method, trtol=trtol, lte_rel=lte_reltol,
-            lte_abstol=lte_abstol)
+            lte_abstol=lte_abstol, first_order=first_order)
 
         ## Accept when the LTE is within tolerance.  Always accept the first step
         ## (no history for the estimate) and when dt has reached the floor -- the
         ## latter guarantees forward progress so a rejection loop cannot deadlock.
         at_floor = state.dt <= dt_min * (1.0 + 1e-9)
-        first = state.step_idx < 1
+        ## Run-global "genuinely nothing to difference against", NOT step_idx
+        ## (chunk-local) and NOT force_first_order (an order-dropped step is
+        ## error-controlled -- the CPU documents conflating those two as what
+        ## made max_step a correctness knob).
+        first = state.h_history[0] == 0.0
 
         ## STAGE 9(e) -- A NON-CONVERGED NEWTON IS NOT A SOLUTION.
         ##
@@ -495,6 +563,12 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
         accept = jnp.logical_or(
             jnp.logical_and(nr_state.converged, lte_ok), at_floor)
         forced = jnp.logical_and(at_floor, jnp.logical_not(nr_state.converged))
+        ## F19(c): converged Newton, failing LTE, at the floor -- accepted
+        ## with an unbounded truncation error, which the CPU force-accept
+        ## warns about and this path used to swallow silently.
+        forced_lte = jnp.logical_and(
+            at_floor, jnp.logical_and(nr_state.converged,
+                                      jnp.logical_not(lte_ok)))
 
         def do_accept(_):
             ## `state.t + state.dt`, NOT `state.t`.  This step has been accepted, so
@@ -549,7 +623,11 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 n_rejected=state.n_rejected,
                 n_nonconverged=state.n_nonconverged,
                 n_forced_nonconverged=state.n_forced_nonconverged
-                + jnp.where(forced, 1, 0))
+                + jnp.where(forced, 1, 0),
+                n_forced_lte=state.n_forced_lte
+                + jnp.where(forced_lte, 1, 0),
+                ## Filled with the breakpoint-landing condition by F11.
+                force_first_order=jnp.asarray(False))
 
         def do_reject(_):
             ## LTE above tolerance: shrink the step (bounded below by dt_min) and
@@ -587,7 +665,8 @@ class JAXTransientStatistics(object):
     """
 
     __slots__ = ('accepted_steps', 'rejected_steps', 'signal_max',
-                 'nonconverged_steps', 'forced_nonconverged_steps')
+                 'nonconverged_steps', 'forced_nonconverged_steps',
+                 'forced_lte_steps')
 
     def __init__(self):
         self.accepted_steps = 0
@@ -595,6 +674,9 @@ class JAXTransientStatistics(object):
         self.signal_max = 0.0
         self.nonconverged_steps = 0
         self.forced_nonconverged_steps = 0
+        ## F19(c): the JAX analogue of the CPU's force_accepts -- converged
+        ## Newton, failing LTE, accepted at the dt floor.
+        self.forced_lte_steps = 0
 
     def __repr__(self):
         return ('<JAXTransientStatistics accepted=%d rejected=%d '
@@ -872,6 +954,8 @@ class JAXTransient(Analysis):
         b_n_rejected = jnp.full(batch_size, 0)
         b_n_nonconverged = jnp.full(batch_size, 0)
         b_n_forced_nc = jnp.full(batch_size, 0)
+        b_n_forced_lte = jnp.full(batch_size, 0)
+        b_force_first = jnp.full(batch_size, False)
         
         while np.any(current_t < tend):
             res_buf = jnp.zeros((batch_size, CHUNK_SIZE, n))
@@ -892,7 +976,9 @@ class JAXTransient(Analysis):
                 tline_history=tline_history, tline_head=tline_head,
                 sig_max=b_sig_max, n_rejected=b_n_rejected,
                 n_nonconverged=b_n_nonconverged,
-                n_forced_nonconverged=b_n_forced_nc
+                n_forced_nonconverged=b_n_forced_nc,
+                n_forced_lte=b_n_forced_lte,
+                force_first_order=b_force_first
             )
             
             final_state = batched_run_chunk(state, override_params_tree)
@@ -932,6 +1018,8 @@ class JAXTransient(Analysis):
             b_n_rejected = final_state.n_rejected
             b_n_nonconverged = final_state.n_nonconverged
             b_n_forced_nc = final_state.n_forced_nonconverged
+            b_n_forced_lte = final_state.n_forced_lte
+            b_force_first = final_state.force_first_order
             x_hist = final_state.x_history
             q_hist = final_state.q_history
             iq_hist = final_state.iq_history
@@ -1045,6 +1133,8 @@ class JAXTransient(Analysis):
         n_rejected = jnp.array(0)
         n_nonconverged = jnp.array(0)
         n_forced_nc = jnp.array(0)
+        n_forced_lte = jnp.array(0)
+        force_first = jnp.array(False)
 
         while current_t < tend:
             res_buf = jnp.zeros((CHUNK_SIZE, n))
@@ -1063,7 +1153,9 @@ class JAXTransient(Analysis):
                 tline_history=tline_history, tline_head=tline_head,
                 sig_max=sig_max, n_rejected=n_rejected,
                 n_nonconverged=n_nonconverged,
-                n_forced_nonconverged=n_forced_nc
+                n_forced_nonconverged=n_forced_nc,
+                n_forced_lte=n_forced_lte,
+                force_first_order=force_first
             )
         
             final_state = run_chunk(state)
@@ -1105,6 +1197,8 @@ class JAXTransient(Analysis):
             n_rejected = final_state.n_rejected
             n_nonconverged = final_state.n_nonconverged
             n_forced_nc = final_state.n_forced_nonconverged
+            n_forced_lte = final_state.n_forced_lte
+            force_first = final_state.force_first_order
 
             ## STAGE 9(e) -- CHECKED PER CHUNK, NOT AT THE END, BECAUSE THE END MAY
             ## NEVER ARRIVE.  Rejecting a non-converged step shrinks `dt`; a circuit
@@ -1136,6 +1230,17 @@ class JAXTransient(Analysis):
         self.statistics.signal_max = float(sig_max)
         self.statistics.nonconverged_steps = int(n_nonconverged)
         self.statistics.forced_nonconverged_steps = int(n_forced_nc)
+        self.statistics.forced_lte_steps = int(n_forced_lte)
+
+        ## F19(c): mirror the CPU force-accept warning -- an unbounded
+        ## accepted truncation error must not be invisible.
+        if int(n_forced_lte) > 0:
+            warnings.warn(
+                'jaxtransient: %d step(s) were accepted at dt_min with the '
+                'local truncation error still above tolerance. The accepted '
+                'error there is unbounded -- treat the waveform near those '
+                'times with suspicion (the CPU path calls these '
+                'force_accepts).' % int(n_forced_lte), RuntimeWarning)
 
         ## Steps REJECTED for non-convergence are recoverable -- the controller
         ## shrank and retried -- but a run full of them is one to look at, so it is

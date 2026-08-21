@@ -394,3 +394,65 @@ def test_f13_jax_statistics_attached_to_result():
         assert res.statistics.accepted_steps > 0
     finally:
         circuit_mod.default_toolkit = saved
+
+
+## F19 -- the JAX error estimator follows the EFFECTIVE integration order:
+## a step integrated at order 1 (opening steps, breakpoint sentinel) must be
+## scored by the order-1 formula with the order-1 exponent, not Gear-2's.
+
+def test_f19_estimator_follows_effective_order():
+    pytest.importorskip('jax')
+    import jax.numpy as jnp
+    from pycircuit.circuit.jaxtransient import (TransientState,
+                                                ywr_error_ratio,
+                                                effective_first_order)
+
+    def state(h0, h1, forced=False):
+        n = 2
+        return TransientState(
+            t=0.0, dt=1.0, step_idx=5, x_history=None,
+            q_history=jnp.zeros((3, n)),
+            iq_history=jnp.array([[0.5, 0.0], [0.25, 0.0], [0.0, 0.0]]),
+            h_history=jnp.array([h0, h1, 0.0]),
+            results_buffer=None, time_buffer=None,
+            tline_history=None, tline_head=None,
+            force_first_order=jnp.asarray(forced))
+
+    i_curr = jnp.array([1.0, 0.0])
+    x_curr = jnp.array([1.0, 0.5])
+    J = jnp.eye(2)
+
+    ## Two completed steps recorded, no drop flag: gear scoring, order_p1 = 3.
+    _, p_gear = ywr_error_ratio(i_curr, x_curr, J, state(1.0, 1.0),
+                                irefnode=1, method='gear')
+    assert float(p_gear) == 3.0
+
+    ## Order-1 cases, all through the SAME 'gear' method string: fewer than
+    ## two completed steps (run-global h_history facts, chunk-independent),
+    ## and the F11 forced-drop flag.
+    for st in (state(0.0, 0.0), state(1.0, 0.0), state(1.0, 1.0, forced=True)):
+        assert bool(effective_first_order(st))
+        _, p = ywr_error_ratio(i_curr, x_curr, J, st, irefnode=1,
+                               method='gear')
+        assert float(p) == 2.0
+
+
+def test_f19_forced_lte_counter_exists_and_is_zero_on_clean_runs():
+    pytest.importorskip('jax')
+    from pycircuit.circuit import circuit as circuit_mod
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.elements import VS
+    saved = circuit_mod.default_toolkit
+    circuit_mod.default_toolkit = jaxtoolkit
+    try:
+        cir = SubCircuit()
+        cir.add_node('in'); cir.add_node('out')
+        cir['V1'] = VS('in', gnd, v=1.0)
+        cir['R1'] = R('in', 'out', r=1e3)
+        cir['C1'] = C('out', gnd, c=1e-6)
+        tran = JAXTransient(cir)
+        tran.solve(gnd, tend=1e-4, timestep=1e-5, uic=True)
+        assert tran.statistics.forced_lte_steps == 0
+    finally:
+        circuit_mod.default_toolkit = saved
