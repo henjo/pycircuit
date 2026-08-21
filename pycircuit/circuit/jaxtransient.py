@@ -477,9 +477,24 @@ def collect_breakpoints(cir, tend):
 
 
 def calculate_next_dt(dt, error_ratio, dt_min, dt_max, t_breaks_array, current_t, order_p1=2.0):
-    # Predictor exponent 1/(order+1): sqrt for 1st order, cube root for 2nd.
-    factor = jnp.where(error_ratio <= 0.0, 2.0, error_ratio ** (-1.0 / order_p1))
-    factor = jnp.clip(factor, 0.1, 2.0)
+    ## THE CPU'S LAW, F17 (doc/transient_review_260820.md): aim at
+    ## target = safety**p, not at err = 1.0 -- the rejection threshold
+    ## itself.  Aiming at the edge meant every successor step that landed a
+    ## hair over 1.0 was a rejected re-solve; measured on rc-vsin at
+    ## reltol 1e-4/1e-6 as a 44%/40% rejection rate, cut to a few percent by
+    ## the safety margin.  `(0.9**p / err)**(1/p) = 0.9 * err**(-1/p)` --
+    ## identical arithmetic to a bare safety multiplier, written in the CPU's
+    ## vocabulary (stepcontroller._band_target) so the backends read as one
+    ## law.  The clamps are the CPU's named constants rather than re-derived
+    ## literals: the shrink floor was 0.1 here against MIN_SHRINK_RATIO=0.2.
+    from pycircuit.circuit.stepcontroller import (MIN_SHRINK_RATIO,
+                                                  MAX_GROWTH_RATIO)
+    safety = 0.9
+    target = safety ** order_p1
+    factor = jnp.where(error_ratio <= 0.0, MAX_GROWTH_RATIO,
+                       (target / jnp.maximum(error_ratio, 1e-12))
+                       ** (1.0 / order_p1))
+    factor = jnp.clip(factor, MIN_SHRINK_RATIO, MAX_GROWTH_RATIO)
     dt_new = dt * factor
     dt_new = jnp.clip(dt_new, dt_min, dt_max)
 

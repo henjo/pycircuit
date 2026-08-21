@@ -513,3 +513,36 @@ def test_f11_breakpoint_order_drop_tames_edge_rejections():
     vc = np.asarray(res_c.v('out'), float).reshape(-1)
     dev = float(np.max(np.abs(vc - np.interp(tc, t, v))))
     assert dev < 0.012, 'JAX pulse waveform drifted from CPU: %.3e' % dev
+
+
+## F17 -- the JAX step prediction aims at safety**p, not at the rejection
+## edge.  Edge-aiming cost a 44%/40% rejection rate on rc-vsin at reltol
+## 1e-4/1e-6; the safety margin cuts it to 20%/4%.  Bounds sit between the
+## two regimes.
+
+def test_f17_safety_factor_tames_rejection_rate():
+    pytest.importorskip('jax')
+    import warnings
+    from pycircuit.circuit import circuit as circuit_mod
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.elements import VSin
+    saved = circuit_mod.default_toolkit
+    circuit_mod.default_toolkit = jaxtoolkit
+    try:
+        for reltol, bound in ((1e-4, 0.30), (1e-6, 0.10)):
+            c = SubCircuit()
+            c['vs'] = VSin('a', gnd, va=1.0, freq=1e3)
+            c['R'] = R('a', 'b', r=1e3)
+            c['C'] = C('b', gnd, c=1e-7)
+            tran = JAXTransient(c, reltol=reltol)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                tran.solve(gnd, tend=5e-3, timestep=1e-4, uic=True)
+            st = tran.statistics
+            ratio = st.rejected_steps / max(1, st.accepted_steps)
+            assert ratio < bound, \
+                'reltol %g: rejection ratio %.3f (edge-aiming regime was ~0.4)' \
+                % (reltol, ratio)
+    finally:
+        circuit_mod.default_toolkit = saved
