@@ -452,10 +452,13 @@ def test_converged_step_skips_the_residual_nobody_reads():
     """2+.2 -- `i` and `u` are not assembled at the converged point.
 
     `solve_timestep` returns `(x, feval, J, f)` and `f` is never read on the
-    standard path, so assembling it was pure waste. With `provided_function` set
-    -- the one caller that does read `f` -- the full evaluation must come back.
+    standard path, so assembling it was pure waste.  Since F4
+    (doc/transient_review_260820.md) unified `provided_function` as an extra
+    SOURCE folded into the Newton residual, there is no full-evaluation
+    exception left: the converged-point skip is unconditional, with or
+    without a provided_function.
     """
-    def counts(provided_function):
+    def counts(provided_function, uic=False):
         cir = _rc()
         seen = {}
 
@@ -469,22 +472,25 @@ def test_converged_step_skips_the_residual_nobody_reads():
                 return counting
             setattr(cir, name, make(name, real))
 
-        tran = Transient(cir, toolkit=numeric)
+        tran = Transient(cir, toolkit=numeric, uic=uic)
         res = tran.solve(refnode=gnd, tend=20e-6, timestep=1e-6,
                          provided_function=provided_function)
         steps = len(np.asarray(res.sweep_values))
         return {k: v / steps for k, v in seen.items()}
 
-    lean = counts(None)
-    full = counts(lambda f, J, C: None)
+    ## uic on BOTH runs, so the DC operating point's own assemblies do not
+    ## pollute the per-step normalisation, and only pf varies.
+    lean = counts(None, uic=True)
+    n = _rc().n
+    full = counts(lambda t: np.zeros(n), uic=True)
 
     ## G is needed either way and is the control: if it moves, something other
     ## than the residual changed.
-    assert abs(lean['G'] - full['G']) < 0.05
-    assert lean['i'] < full['i'] - 0.5, \
-        'i should be assembled once less per step without provided_function ' \
-        '(%.2f vs %.2f)' % (lean['i'], full['i'])
-    assert lean['u'] < full['u'] - 0.5
+    assert abs(lean['G'] - full['G']) < 0.1
+    assert abs(lean['i'] - full['i']) < 0.1, \
+        'the converged-point skip must be unconditional since F4 ' \
+        '(%.2f vs %.2f i-assemblies per step)' % (lean['i'], full['i'])
+    assert abs(lean['u'] - full['u']) < 0.1
 
 
 @pytest.mark.parametrize('relref', ['pointlocal', 'alllocal', 'sigglobal'])

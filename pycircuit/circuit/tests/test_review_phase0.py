@@ -195,3 +195,61 @@ def test_f12_cpu_result_includes_t0_standard_and_coupled():
         ## and the t=0 state is the operating point, not garbage:
         x0 = np.asarray(res.x)[:, 0]
         assert np.all(np.isfinite(x0))
+
+
+## F4 -- provided_function has ONE contract: an extra source term pf(t), on
+## every path.  The standard path used to call it post-solve as pf(f, J, C)
+## and discard the result.
+
+def test_f4_provided_function_is_an_extra_source_on_every_path():
+    import warnings
+
+    def run(coupled, pf):
+        c = SubCircuit()
+        c['is'] = IS(gnd, 'a', i=1e-3)
+        c['R'] = R('a', gnd, r=1e3)
+        c['C'] = C('a', gnd, c=1e-9)
+        tran = Transient(c, uic=True)      # uic: the seed knows nothing of pf
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(tend=2e-6, timestep=1e-8, coupled_lte=coupled,
+                             provided_function=pf)
+        return float(np.asarray(res.v('a'), dtype=float).reshape(-1)[-1])
+
+    n = 2  # one node + one branch? (sized below from the circuit)
+    ## pf injects a constant extra current into node 'a'; called with t only.
+    seen_arity = []
+
+    def make_pf(ncirc, idx):
+        def pf(*args):
+            seen_arity.append(len(args))
+            u = np.zeros(ncirc)
+            u[idx] = 1e-3          # doubles the source current
+            return u
+        return pf
+
+    probe = SubCircuit()
+    probe['is'] = IS(gnd, 'a', i=1e-3)
+    probe['R'] = R('a', gnd, r=1e3)
+    probe['C'] = C('a', gnd, c=1e-9)
+    idx_a = probe.get_node_index('a')
+    ncirc = probe.n
+
+    v_std = run(False, make_pf(ncirc, idx_a))
+    v_cpl = run(True, make_pf(ncirc, idx_a))
+    v_ref = run(False, None)
+
+    assert set(seen_arity) == {1}, 'pf must be called as pf(t) everywhere'
+    ## the extra source moves the settled level, identically on both paths
+    assert abs(v_std - v_ref) > 0.1
+    assert v_std == pytest.approx(v_cpl, rel=1e-3)
+
+
+def test_f4_inconsistent_seed_warns():
+    import warnings as w
+    c = _rc()
+    pf = lambda t: np.zeros(c.n)
+    with w.catch_warnings(record=True) as caught:
+        w.simplefilter('always')
+        Transient(c).solve(tend=1e-7, timestep=1e-9, provided_function=pf)
+    assert any('does not see' in str(x.message) for x in caught)

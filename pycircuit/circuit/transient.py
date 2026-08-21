@@ -1640,8 +1640,20 @@ class Transient(Analysis):
             ## below is identity-then-equality on x, not a bare "did we cache".
             self._q_cache = (x, q)
             iq, Geq = self.get_diff(q, C)
-            f = (self.cir.i(x, self.epar) + iq
-                 + self.cir.u(t, self.epar, analysis=self.par.analysis))
+            u = self.cir.u(t, self.epar, analysis=self.par.analysis)
+            ## ONE CONTRACT: `provided_function(t)` is an extra source term, on
+            ## every path.  The standard path used to treat it as a post-solve
+            ## callback `provided_function(f, J, C)` whose result was unpacked
+            ## and never read, while the coupled and PCNR paths added it to `u`
+            ## -- two contradictory meanings behind one parameter, flag-selected
+            ## (doc/transient_review_260820.md, F4).  The callback contract was
+            ## born dead: its introducing commit says "currently is calculated
+            ## but returns no value to solve method", and no consumer ever
+            ## appeared.  The live semantics wins; callback callers break
+            ## loudly on arity.
+            if provided_function is not None:
+                u = u + provided_function(t)
+            f = self.cir.i(x, self.epar) + iq + u
             J = self.cir.G(x, self.epar) + Geq
             return self.toolkit.array(f, dtype=float), self.toolkit.array(J, dtype=float)
 
@@ -1671,19 +1683,12 @@ class Transient(Analysis):
             J = self.cir.G(x, self.epar) + Geq
             return None, self.toolkit.array(J, dtype=float)
 
-        x=self._newton(func,x0)
-        ## `provided_function` is the one caller that consumes `f`, so it gets the
-        ## full evaluation; everything else takes the reduced one.
-        if provided_function is not None:
-            f, J = func(x)
-        else:
-            f, J = jacobian_only(x)
-
-        if provided_function is not None:
-            result=x,provided_function(f,J,self.cir.C(x, self.epar)), J, f
-        else:
-            result=x,None, J, f
-        return result
+        x = self._newton(func, x0)
+        ## The source term does not enter `J`, and `jacobian_only` returns
+        ## `f = None` by design, so the reduced evaluation stays correct with
+        ## `provided_function` folded into `func` above (F4).
+        f, J = jacobian_only(x)
+        return x, None, J, f
     
     ## `analytical_eh` was accepted through all three signatures and read by nothing
     ## (doc/transient_review_260820.md, F8) -- superseded by `coupled_method`,
@@ -1710,6 +1715,23 @@ class Transient(Analysis):
         ## state must be reset before the run seeds them, not after.
         if hasattr(self.cir, 'reset_state'):
             self.cir.reset_state(self.epar)
+
+        ## The DC operating point that seeds a non-uic run knows nothing about
+        ## `provided_function`, so with the extra source in the residual the
+        ## t=0 state does not satisfy the t->0+ equations and the opening
+        ## steps integrate a startup transient the fix itself manufactured
+        ## (F4, second-order effect (i)).  Start from uic=True or an explicit
+        ## x0 to avoid it -- or thread the term into the seeding DC, which is
+        ## the fuller fix if this warning is ever load-bearing.  The source is
+        ## also invisible to `next_event`, so a DISCONTINUOUS
+        ## provided_function gets neither breakpoint truncation nor an order
+        ## drop: it must be smooth.
+        if provided_function is not None and x0 is None and not self.par.uic:
+            warnings.warn(
+                'transient: provided_function adds a source the DC operating '
+                'point does not see, so the run opens from an inconsistent '
+                'state and integrates a spurious startup transient. Pass '
+                'uic=True or an explicit x0.', RuntimeWarning, stacklevel=3)
 
         if coupled_lte:
             return self._solve_coupled(refnode, tend, x0, timestep,
