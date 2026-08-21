@@ -416,7 +416,8 @@ def _adaptive_ladder_traced(rung_solve, x0, e_start, e_end, e_max=0.0,
 def dc_operating_point(circuit, irefnode, n, params_tree=None,
                        reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100,
                        analysis='dc', x0=None, gmin_rows=None, gmin=0.0,
-                       gshunt_nodes=0, gshunt=0.0):
+                       gshunt_nodes=0, gshunt=0.0, ptc_g=0.0,
+                       ptc_anchor=None):
     """The batched DC operating point -- P21, the roadmap's last refusal.
 
     ``F = i(x) + u(0, 'dc')``, ``J = G(x)``: exactly the CPU DC class's
@@ -460,6 +461,14 @@ def dc_operating_point(circuit, irefnode, n, params_tree=None,
             idx = jnp.arange(gshunt_nodes)
             F = F.at[idx].add(gshunt * x[idx])
             J = J.at[idx, idx].add(gshunt)
+        ## P25: the pseudo-transient (Psi-tc) term -- a backward-Euler step
+        ## of dx/dtau = -F(x) anchored at the previous pseudo iterate,
+        ## g = 1/delta on the full diagonal (the refnode row's share falls
+        ## out of the reduced solve).  g = 0 makes the term exact zeros,
+        ## so the pure rung IS the pure system.
+        if ptc_anchor is not None:
+            F = F + ptc_g * (x - ptc_anchor)
+            J = J + ptc_g * jnp.eye(n)
         J_sub = jnp.delete(jnp.delete(J, irefnode, axis=0),
                            irefnode, axis=1)
         F_sub = jnp.delete(F, irefnode)
@@ -482,11 +491,15 @@ def dc_operating_point(circuit, irefnode, n, params_tree=None,
 def dc_with_continuation(circuit, irefnode, n, n_nodes, params_tree=None,
                          reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100,
                          gmin_rows=None):
-    """P18: plain Newton, then the junction-gmin ladder, then the gshunt
-    ladder -- each rung seeded from the last, each ladder ending at
-    EXACTLY zero, and only a zero-rung converged solution reported as
-    converged.  All rungs are compiled unconditionally (small DC graphs);
-    `lax.cond` skips executing the ladders when the plain solve lands."""
+    """P18 + P25: plain Newton, then the junction-gmin ladder, then the
+    gshunt ladder, then pseudo-transient (Psi-tc) continuation -- each
+    rung seeded from the last, each ladder ending at EXACTLY zero, and
+    only a zero-rung converged solution reported as converged.  The
+    Psi-tc ladder anchors each rung at ITS OWN seed (the moving anchor:
+    a backward-Euler pseudo-time step), which is what rescues seeds the
+    zero-anchored deformations abandon.  All rungs are compiled
+    unconditionally (small DC graphs); `lax.cond` skips executing the
+    ladders when an earlier stage lands."""
     def plain(x_seed):
         return dc_operating_point(circuit, irefnode, n,
                                   params_tree=params_tree, reltol=reltol,
@@ -516,13 +529,32 @@ def dc_with_continuation(circuit, irefnode, n, n_nodes, params_tree=None,
             return _adaptive_ladder_traced(rung, x_seed,
                                            e_start=-3.0, e_end=-12.0)
 
+        def ptc_ladder(x_seed):
+            ## P25: each rung is anchored at ITS seed -- the traced driver
+            ## already reseeds every rung from the last converged iterate,
+            ## so passing the seed as the anchor IS the pseudo-transient
+            ## march.  delta = 1/g grows 1 s -> 1e12 s; heavier damping
+            ## (e_max = +6) is the escalation if even the first step fails.
+            def rung(xs, g):
+                return dc_operating_point(
+                    circuit, irefnode, n, params_tree=params_tree,
+                    reltol=reltol, abstol=abstol, xtol=xtol,
+                    maxiter=maxiter, x0=xs, ptc_g=g, ptc_anchor=xs)
+            return _adaptive_ladder_traced(rung, x_seed,
+                                           e_start=0.0, e_end=-12.0,
+                                           e_max=6.0)
+
         if gmin_rows is not None:
             xg, cg = gmin_ladder(jnp.zeros(n))
         else:
             xg, cg = x_in, conv_in
-        ## gshunt only when everything else failed -- the crude rescue.
-        return jax.lax.cond(cg, lambda _: (xg, cg),
-                            lambda _: gshunt_ladder(jnp.zeros(n)), None)
+        ## gshunt only when the physical ladder failed -- the crude
+        ## rescue -- and Psi-tc only when that failed too (P25, the
+        ## chain's last rung, mirroring the CPU order).
+        xs_, cs_ = jax.lax.cond(cg, lambda _: (xg, cg),
+                                lambda _: gshunt_ladder(jnp.zeros(n)), None)
+        return jax.lax.cond(cs_, lambda _: (xs_, cs_),
+                            lambda _: ptc_ladder(jnp.zeros(n)), None)
 
     return jax.lax.cond(conv, lambda xc: xc, run_ladder, (x, conv))
 
@@ -2292,11 +2324,12 @@ class JAXTransient(Analysis):
             if _bad.size:
                 raise NoConvergenceError(
                     'solve_batched: the DC operating point did not converge '
-                    'for lane(s) %s, even through the gmin and gshunt '
-                    'continuation ladders (P18). The circuit likely has no '
-                    'DC solution on these lanes (a floating node with no DC '
-                    'path stays singular at gshunt=0). Start from uic=True '
-                    'with explicit ic if the start state is known.'
+                    'for lane(s) %s, even through the gmin, gshunt and '
+                    'pseudo-transient continuation ladders (P18/P25). The '
+                    'circuit likely has no DC solution on these lanes (a '
+                    'floating node with no DC path stays singular at g=0). '
+                    'Start from uic=True with explicit ic if the start '
+                    'state is known.'
                     % _bad.tolist())
 
 

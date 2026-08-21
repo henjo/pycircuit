@@ -925,3 +925,48 @@ def test_p21_batched_dc_operating_point():
                     override_params_tree={'R': {'r': jnp.asarray([[1e3], [2e3]])}},
                     tend=1e-7, timestep=1e-9)
     _with_jax(go)
+
+
+def test_p25_traced_pseudo_transient_ladder():
+    """P25 on the traced path: the pseudo-transient (Psi-tc) ladder --
+    dc_operating_point's moving-anchor term composed with the shared
+    adaptive driver.  Gated on the classic Newton 2-cycle cubic
+    x^3 - 2x + 2 = 0 (as a mock reduced system): the plain traced Newton
+    cycles 0 -> 1 -> 0 to maxiter without converging, and the Psi-tc
+    ladder -- every rung a backward-Euler pseudo step anchored at ITS
+    seed, delta = 1/g marching 1 s -> 1e12 s, finishing at exactly
+    g = 0 -- lands on the real root to 1e-9.  Chain-level engagement
+    (gshunt fails -> Psi-tc runs) is exercised by the P21 floating-node
+    raise above, which now traverses all three ladders; a legitimate
+    CIRCUIT that defeats gmin+gshunt but yields to Psi-tc could not be
+    fabricated (the P18 transient-rescue scope finding applies
+    verbatim), so the mechanism is unit-gated here."""
+    def go():
+        import jax.numpy as jnp
+        from pycircuit.circuit.jaxtransient import (dc_operating_point,
+                                                    _adaptive_ladder_traced)
+
+        class MockCubic:
+            ## Row 0 the cubic, row 1 the reference row (deleted in the
+            ## reduced solve) -- the same shapes dc_operating_point sees
+            ## from a real circuit.
+            def i(self, x, params_tree=None):
+                return jnp.array([x[0]**3 - 2.0*x[0], x[1]])
+            def u(self, t, analysis='dc', params_tree=None):
+                return jnp.array([2.0, 0.0])
+            def G(self, x, params_tree=None):
+                return jnp.array([[3.0*x[0]**2 - 2.0, 0.0], [0.0, 1.0]])
+
+        cir = MockCubic()
+        _x, conv = dc_operating_point(cir, 1, 2, maxiter=60)
+        assert not bool(conv)          # the cycle: honest non-convergence
+
+        def rung(xs, g):
+            return dc_operating_point(cir, 1, 2, maxiter=60, x0=xs,
+                                      ptc_g=g, ptc_anchor=xs)
+
+        x, conv = _adaptive_ladder_traced(rung, jnp.zeros(2), e_start=0.0,
+                                          e_end=-12.0, e_max=6.0)
+        assert bool(conv)
+        assert float(x[0]) == pytest.approx(-1.7692923542386314, abs=1e-9)
+    _with_jax(go)

@@ -591,6 +591,41 @@ existing TLine tests before/after, per house rules.
   > for the two whose derivative METHOD legitimately differs per toolkit
   > (VCVS_limited: autodiff vs hand formula; BSource: autodiff vs
   > finite-difference `derivative`).
+- **P25** *(added and executed 2026-08-21, owner request)* — **pseudo-transient
+  continuation (Ψtc)**, the continuation chain's LAST rung on both backends.
+  Embeds F(x) = 0 in dx/dτ = −F(x) and takes backward-Euler pseudo-time
+  steps F + (1/δ)(x − x_k) = 0, J + I/δ — with g = 1/δ this is exactly a
+  conductance rung with a **moving anchor**, so the adaptive exponent-space
+  driver both P18 ladders share is reused verbatim (g marches 1 → 1e-12,
+  δ grows 1 s → 1e12 s, halving on failure, escalating to heavier damping
+  e_max = +6 if even the first step fails, finishing at exactly g = 0 —
+  the P22 zero-rung rule unchanged).  CPU: `PseudoTransientNewton`, wired
+  outermost in the DC chain (industry order: gmin → gshunt → source
+  stepping → Ψtc); its `rung_solver` parameter keeps deformed solves off
+  the failed chain, because SourceSteppingNewton's rungs rebuild F from
+  the callback WITHOUT the pseudo term (the option-dropped-in-transit
+  class, dodged by construction).  JAX: `ptc_g`/`ptc_anchor` on
+  `dc_operating_point` plus a third `lax.cond`-gated ladder in
+  `dc_with_continuation`; the traced driver's per-rung reseeding IS the
+  pseudo-transient march (anchor = each rung's own seed).  Measured at
+  landing: the classic Newton 2-cycle cubic x³ − 2x + 2 (plain Newton
+  cycles 0 → 1 → 0 forever) lands on the real root at machine precision
+  on both backends, in 3.4× fewer base calls than the zero-anchored
+  gshunt ladder (47 vs 158); on tristable x³ − x every seed lands in ITS
+  OWN basin (0.9 → +1, −0.9 → −1, 0.05 → 0) where a strong zero-anchored
+  deformation commits every seed to 0 (measured on a forced g = 1 start;
+  the shipped gshunt ladder's weak 1e-3 start does not exhibit the hazard
+  on this problem — recorded, not gated).  The P18 scope finding applies
+  verbatim: no legitimate CIRCUIT defeating gmin+gshunt but yielding to
+  Ψtc could be fabricated, so the mechanism is unit-gated (CPU:
+  `test_nrsolver_variants.py`; JAX: mock reduced system in
+  `test_backend_parity_phaseA.py`) and chain-level engagement is
+  exercised by the floating-node raise, which now traverses all three
+  ladders.  Reconsider-ifs recorded: Ψtc at a failed TRANSIENT point
+  (the anchor does not scale sources, so unlike source stepping it is
+  mid-transient-safe — add to the P18 rescue chain when a triggering
+  circuit exists), and SER (switched evolution relaxation) δ adaptation
+  if the decade march ever proves too coarse on a real circuit.
 
 ---
 

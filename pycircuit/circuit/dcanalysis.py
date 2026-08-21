@@ -128,6 +128,7 @@ class DC(Analysis):
             
         from pycircuit.circuit.nrsolver import (GminSteppingNewton,
                                                  JunctionGminSteppingNewton,
+                                                 PseudoTransientNewton,
                                                  SourceSteppingNewton)
         from pycircuit.circuit.pcnr import pcnr_junctions
 
@@ -147,7 +148,15 @@ class DC(Analysis):
         base_solver = self._get_nrsolver()
         jgmin_solver = JunctionGminSteppingNewton(base_solver, _jrows)
         gshunt_solver = GminSteppingNewton(jgmin_solver)
-        solver_chain = SourceSteppingNewton(gshunt_solver, refnode_removed(source_callback, self.irefnode, self.toolkit))
+        source_chain = SourceSteppingNewton(gshunt_solver, refnode_removed(source_callback, self.irefnode, self.toolkit))
+        ## P25: pseudo-transient continuation as the chain's LAST resort
+        ## (industry order: gmin -> gshunt -> source stepping -> Psi-tc).
+        ## Its pseudo steps are solved by the PLAIN base solver, never the
+        ## chain: SourceSteppingNewton's rungs rebuild F from the callback
+        ## WITHOUT the pseudo term, so handing the chain a deformed system
+        ## would solve the wrong problem mid-ladder.
+        solver_chain = PseudoTransientNewton(source_chain,
+                                             rung_solver=base_solver)
 
         try:
             x = self._newton(func, x0, solver_chain)

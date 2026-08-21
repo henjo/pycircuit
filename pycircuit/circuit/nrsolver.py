@@ -461,6 +461,75 @@ class SourceSteppingNewton(NonLinearSolver):
                 
         return self.base_solver.solve_system(x_curr, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names, linsolver=linsolver)
 
+
+class PseudoTransientNewton(NonLinearSolver):
+    """Continuation: pseudo-transient (Psi-tc) -- P25, the chain's LAST rung.
+
+    Embeds F(x) = 0 in the pseudo-ODE dx/dtau = -F(x) and takes
+    backward-Euler pseudo-time steps to steady state: each step solves
+    F(x) + (1/delta)*(x - x_k) = 0 with Jacobian J + I/delta, anchored at
+    the PREVIOUS iterate.  With g = 1/delta this is exactly a conductance
+    rung with a MOVING anchor, so the adaptive exponent-space driver is
+    reused verbatim: g marches 1 -> 1e-12 (delta grows 1 s -> 1e12 s, the
+    classical exponential pseudo-timestep growth), halving on failure,
+    escalating to heavier damping (e_max = +6) if even the first step
+    fails, and finishing PURE -- only a g = 0 converged solution may be
+    returned (the P22 rule).
+
+    What the moving anchor buys over the zero-anchored gshunt ladder,
+    both measured at landing (doc/backend_parity_260821.md, P25):
+    the homotopy follows the pseudo-transient trajectory FROM THE SEED,
+    so on a multi-stable system it lands in the caller's basin -- on
+    F = x^3 - x from x0 = 0.9 the gshunt path (x^3 + (g-1)x has only the
+    0 root for g > 1) commits to 0 while Psi-tc lands on +1 -- and on the
+    classic Newton 2-cycle cubic x^3 - 2x + 2 it converges in 3.4x fewer
+    base-solver calls (47 vs 158) because no rung has to walk back from
+    the alien zero-anchored deformation.
+
+    `rung_solver` (default: `base_solver`) solves the deformed pseudo
+    steps and the final pure solve.  Pass it when `base_solver` is a full
+    continuation chain: a chain's own ladders would otherwise re-engage
+    inside every pseudo step -- and SourceSteppingNewton's rungs rebuild
+    F from its callback WITHOUT the pseudo term (the option-dropped-in-
+    transit class), so the chain must never solve the deformed system.
+    """
+
+    def __init__(self, base_solver: NonLinearSolver, rung_solver=None):
+        self.base_solver = base_solver
+        self.rung_solver = rung_solver if rung_solver is not None \
+            else base_solver
+
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol,
+                     maxiter, limiter=None, scaler=None, row_names=None,
+                     linsolver=None):
+        try:
+            return self.base_solver.solve_system(
+                x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter,
+                limiter, scaler, row_names=row_names, linsolver=linsolver)
+        except NoConvergenceError:
+            pass  # proceed to pseudo-transient stepping
+
+        def solve_rung(x_seed, g):
+            def eval_FJ_ptc(x):
+                F, J = eval_FJ(x)
+                return (F + g * (x - x_seed),
+                        J + toolkit.eye(len(J)) * g)
+            x, _ = self.rung_solver.solve_system(
+                x_seed, eval_FJ_ptc, toolkit, reltol, abstol,
+                xtol, maxiter, limiter, scaler, row_names=row_names,
+                linsolver=linsolver)
+            return x
+
+        def solve_pure(x_seed):
+            return self.rung_solver.solve_system(
+                x_seed, eval_FJ, toolkit, reltol, abstol, xtol, maxiter,
+                limiter, scaler, row_names=row_names, linsolver=linsolver)
+
+        return _adaptive_conductance_ladder(
+            solve_rung, solve_pure, x0, e_start=0.0, e_end=-12.0,
+            e_max=6.0, label='pseudo-transient continuation')
+
+
 class SchurCoupledNewton(NonLinearSolver):
     """
     Coupled Newton-Raphson Solver using the Schur Complement.

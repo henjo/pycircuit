@@ -255,3 +255,118 @@ def test_junction_gmin_stepping_is_the_primary_ladder():
             np.zeros(2), eval_FJ, None, 1e-4, np.full(2, 1e-12),
             np.full(2, 1e-12), 8)
     assert len(seen_J00) - n_before <= 120
+
+
+def test_pseudo_transient_continuation_is_the_chains_last_rung():
+    """P25: pseudo-transient (Psi-tc) continuation -- backward-Euler
+    pseudo-time steps F + (1/delta)*(x - x_k) = 0 through the shared
+    adaptive driver, with the anchor MOVING to each rung's seed.  Gated
+    here, all measured at landing:
+
+    (1) it rescues the classic Newton 2-cycle cubic x^3 - 2x + 2 from
+        x0 = 0 (plain Newton cycles 0 -> 1 -> 0 forever), landing on the
+        real root at machine precision with a PURE final solve;
+    (2) it does so CHEAPER than the zero-anchored gshunt ladder measured
+        on the same problem (47 vs 158 base calls at landing) -- no rung
+        walks back from an alien deformation;
+    (3) the moving anchor is basin-respecting: on tristable F = x^3 - x
+        every seed lands on ITS OWN basin's root.  (The zero-anchor
+        hazard was measured but is NOT gated cross-solver: gshunt's
+        deformation x^3 + (g-1)x has only the 0 root for g > 1, and a
+        ladder FORCED to start at g = 1 commits every seed to 0 -- but
+        the shipped GminSteppingNewton starts at g = 1e-3, whose weak
+        rung already converges from these seeds, so the shipped class
+        does not exhibit the hazard on this problem);
+    (4) `rung_solver` keeps the deformed solves OFF a failed chain (whose
+        source-stepping rungs would rebuild F without the pseudo term)."""
+    from pycircuit.circuit.nrsolver import PseudoTransientNewton
+
+    calls = []
+
+    class MiniNewton(NonLinearSolver):
+        def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol,
+                         maxiter, limiter=None, scaler=None, row_names=None,
+                         linsolver=None):
+            x = np.asarray(x0, float).copy()
+            for _ in range(60):
+                F, J = eval_FJ(x)
+                calls.append(float(J[0, 0]))
+                dx = np.linalg.solve(J, -F)
+                x = x + dx
+                if np.max(np.abs(x)) > 1e6:
+                    raise NoConvergenceError('diverged')
+                if np.max(np.abs(dx)) < 1e-12:
+                    return x, 1
+            raise NoConvergenceError('maxiter (cycle)')
+
+    def eval_cubic(x):
+        ## Newton from 0 cycles: F(0)=2, J=-2 -> x=1; F(1)=1, J=1 -> x=0.
+        return (np.array([x[0]**3 - 2.0*x[0] + 2.0]),
+                np.array([[3.0*x[0]**2 - 2.0]]))
+
+    root = -1.7692923542386314
+    tols = (numeric, 1e-6, np.full(1, 1e-12), np.full(1, 1e-12), 60)
+
+    with pytest.raises(NoConvergenceError):
+        MiniNewton().solve_system(np.zeros(1), eval_cubic, *tols)
+
+    calls.clear()
+    x, _ = PseudoTransientNewton(MiniNewton()).solve_system(
+        np.zeros(1), eval_cubic, *tols)
+    assert x[0] == pytest.approx(root, abs=1e-12)
+    n_ptc = len(calls)
+    ## The FINAL solve saw the pure Jacobian: no pseudo conductance left.
+    assert calls[-1] == pytest.approx(3.0*x[0]**2 - 2.0, rel=1e-12)
+
+    calls.clear()
+    xg, _ = GminSteppingNewton(MiniNewton()).solve_system(
+        np.zeros(1), eval_cubic, *tols)
+    assert xg[0] == pytest.approx(root, abs=1e-12)
+    ## (2): both rescue this one, but the moving anchor pays measurably
+    ## less (47 vs 158 at landing; asserted loosely to survive tuning).
+    assert n_ptc < len(calls)
+
+    ## (3): the basin discriminator.  FailFirst makes the pure attempt
+    ## fail so both ladders genuinely engage from x0 = 0.9.
+    class FailFirst(NonLinearSolver):
+        def __init__(self, inner):
+            self.inner = inner
+            self.n = 0
+        def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol,
+                         maxiter, limiter=None, scaler=None, row_names=None,
+                         linsolver=None, **kw):
+            self.n += 1
+            if self.n == 1:
+                raise NoConvergenceError('forced first failure')
+            return self.inner.solve_system(
+                x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter,
+                limiter, scaler, row_names=row_names, linsolver=linsolver)
+
+    def eval_tri(x):
+        return (np.array([x[0]**3 - x[0]]),
+                np.array([[3.0*x[0]**2 - 1.0]]))
+
+    for seed, basin_root in ((0.9, 1.0), (-0.9, -1.0), (0.05, 0.0)):
+        x_pt, _ = PseudoTransientNewton(FailFirst(MiniNewton())).solve_system(
+            np.array([seed]), eval_tri, *tols)
+        assert x_pt[0] == pytest.approx(basin_root, abs=1e-9), seed
+
+    ## (4): a dead chain as base, a live plain solver for the rungs --
+    ## the dcanalysis wiring.  The chain fails once (the pure attempt);
+    ## every deformed solve goes to the rung solver.
+    class DeadChain(NonLinearSolver):
+        def solve_system(self, *a, **kw):
+            raise NoConvergenceError('whole chain failed')
+
+    x, _ = PseudoTransientNewton(DeadChain(),
+                                 rung_solver=MiniNewton()).solve_system(
+        np.zeros(1), eval_cubic, *tols)
+    assert x[0] == pytest.approx(root, abs=1e-12)
+
+    ## Passthrough: a base that succeeds is returned verbatim, no rungs.
+    class Instant(NonLinearSolver):
+        def solve_system(self, x0, *a, **kw):
+            return x0 + 1.0, 1
+    x, _ = PseudoTransientNewton(Instant()).solve_system(
+        np.zeros(1), eval_cubic, *tols)
+    assert x[0] == 1.0

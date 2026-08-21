@@ -2013,8 +2013,10 @@ def test_gate_6_2_a_non_convergent_circuit_names_the_worst_node():
     assert '|f|' in msg or '|dx|' in msg, 'no residual or update is given: %s' % msg
     assert 'tolerance' in msg, 'the tolerance it missed is not given: %s' % msg
     ## The continuation context is kept as well as the cause -- both are useful,
-    ## and it used to be only the former.
-    assert 'Stepping failed' in msg, \
+    ## and it used to be only the former.  The named stage is the chain's
+    ## OUTERMOST: source stepping until P25, pseudo-transient since.
+    assert ('Stepping failed' in msg
+            or 'pseudo-transient continuation' in msg), \
         'the continuation context was dropped: %s' % msg
 
 
