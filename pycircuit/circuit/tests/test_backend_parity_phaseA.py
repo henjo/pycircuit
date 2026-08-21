@@ -673,24 +673,71 @@ def test_max_dv_step_voltage_check_on_algebraic_networks():
         r0 = tran.solve(gnd, tend=2e-6, timestep=2e-8)
     assert max_step_dv(r0) > 1.0, 'premise gone: the default is not blind'
 
+    ## FACTOR semantics: 2e11 * lte_vabstol(1e-12) = the 0.2 V bound.
     tran = Transient(amp(), toolkit=numeric, reltol=1e-4, uic=True,
-                     max_dv_step=0.2)
+                     max_dv_step=2e11)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         r1 = tran.solve(gnd, tend=2e-6, timestep=2e-8)
     assert max_step_dv(r1) <= 0.2 * (1.0 + 1e-9)
     assert len(np.asarray(r1.sweep_values)) > 5 * len(np.asarray(r0.sweep_values))
 
+    ## The COUPLED veto is a genuinely separate code path only on the CPU
+    ## (its retry lives in the Python retry loop); the JAX coupled accept
+    ## shares the traced dv_ok expression with the standard path, and its
+    ## chunk costs ~110 s of XLA compile per bound constant -- so coupled
+    ## coverage runs here, on the CPU, in milliseconds.
+    tran = Transient(amp(), toolkit=numeric, reltol=1e-4, uic=True,
+                     max_dv_step=2e11)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        rc2 = tran.solve(gnd, tend=2e-6, timestep=2e-8, coupled_lte=True)
+    assert max_step_dv(rc2) <= 0.2 * (1.0 + 1e-9)
+
     def go():
-        for kw in ({'max_dv_step': 0.2},
-                   {'max_dv_step': 0.2, 'coupled_lte': True}):
-            tran = JAXTransient(amp(), reltol=1e-4, **kw)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
-                res = tran.solve(gnd, tend=2e-6, timestep=2e-8, uic=True)
-            assert max_step_dv(res) <= 0.2 * (1.0 + 1e-9), kw
-            t = np.asarray(res.sweep_values, float)
-            ## Reaches tend (the coupled path may overshoot by one dv-sized
-            ## step; landing exactness is F3's gate, not this one's).
-            assert t[-1] >= 2e-6 * (1.0 - 1e-9)
+        tran = JAXTransient(amp(), reltol=1e-4, max_dv_step=2e11)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(gnd, tend=2e-6, timestep=2e-8, uic=True)
+        assert max_step_dv(res) <= 0.2 * (1.0 + 1e-9)
+        t = np.asarray(res.sweep_values, float)
+        assert t[-1] >= 2e-6 * (1.0 - 1e-9)
     _with_jax(go)
+
+    ## FACTOR semantics with the clamp-at-1 floor (owner decision: the
+    ## bound is factor*abstol, coupled to the tolerance family exactly as
+    ## the LTE is, and a factor below 1 clamps to the solver-noise floor).
+    tran = Transient(amp(), toolkit=numeric, max_dv_step=0.01,
+                     max_di_step=0.5)
+    bv, bi = tran._dv_step_bounds()
+    assert bv == float(tran.par.lte_vabstol)
+    assert bi == float(tran.par.lte_iabstol)
+    tran = Transient(amp(), toolkit=numeric, max_dv_step=2e11,
+                     max_di_step=1e6, lte_vabstol=2e-12)
+    bv, bi = tran._dv_step_bounds()
+    assert bv == pytest.approx(0.4)          # scales WITH lte_vabstol
+    assert bi == pytest.approx(1e-6)
+
+    def go2():
+        tran = JAXTransient(amp(), max_dv_step=0.01, max_di_step=0.5)
+        bv, bi = tran._dv_step_bounds()
+        assert bv == float(tran.par.lte_vabstol)
+        assert bi == float(tran.par.lte_iabstol)
+
+        ## max_di_step is live: the circuit's one branch unknown is the
+        ## source current (0.1 mA peak -- the 1k/9k divider leaves 0.1*vin
+        ## across Ri; VCCS is G-only, no branch row), whose per-step change
+        ## at the dv-controlled resolution is ~3 uA -- a 1 uA bound
+        ## (factor 1e6 * lte_iabstol) must
+        ## force a visibly denser run than the voltage check alone.
+        import warnings as _w
+        def run(**kw):
+            tran = JAXTransient(amp(), reltol=1e-4, **kw)
+            with _w.catch_warnings():
+                _w.simplefilter('ignore')
+                res = tran.solve(gnd, tend=2e-6, timestep=2e-8, uic=True)
+            return len(np.asarray(res.sweep_values))
+        n_v = run(max_dv_step=2e11)
+        n_vi = run(max_dv_step=2e11, max_di_step=1e6)
+        assert n_vi > 1.5 * n_v, (n_v, n_vi)
+    _with_jax(go2)

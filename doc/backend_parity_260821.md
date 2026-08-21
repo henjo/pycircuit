@@ -445,7 +445,17 @@ existing TLine tests before/after, per house rules.
   coupled, JAX standard, JAX coupled).  Measured on the R+VCCS amplifier at
   1 MHz: default max per-step output change 2.256 V on a 10 V swing (61
   points, blind); with `max_dv_step=0.2` the bound holds at 0.199 on every
-  path — CPU 413 points, JAX 412, JAX-coupled 777.  The gate's first e2e
+  path — CPU 413 points, JAX 412, JAX-coupled 777.  **Amended same day
+  (owner corrections)**: (1) the bounds are FACTORS, not volts/amps —
+  effective bound = max(factor, 1) · lte_vabstol (resp. lte_iabstol), so
+  the check scales with the same abstols the LTE composes with, and the
+  clamp-at-1 floor is exactly the solver-noise scale (a first cut
+  multiplied Newton's vabstol=1e-12 with volt-scale factors and marched a
+  gate at 0.2 µV resolution — 7e8 steps — before the family was
+  corrected); (2) `max_di_step` is the current-row sibling — on an
+  algebraic network a current waveform is otherwise bounded only through
+  Δv times the conductances, with gm as an amplifier.  Worked example:
+  factor 2e11 at the default lte_vabstol=1e-12 bounds steps to 0.2 V.  The gate's first e2e
   use of VCCS under the JAX toolkit also found and fixed that element's
   in-place mutation (immutable-array crash) — and the first fix attempt
   (numpy intermediate) broke the SYMBOLIC toolkit in turn (sympy gm cannot

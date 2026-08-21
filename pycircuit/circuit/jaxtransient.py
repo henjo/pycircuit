@@ -1127,7 +1127,7 @@ def pcnr_controller_jacobian(circuit, state, x, v_lim, j_ra, j_rb, j_IS, VT,
     return _scatter_junction_G(J, j_ra, j_rb, g_l, +1.0)
 
 
-def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15, pcnr_meta=None, pcnr_VT=0.025, tline_dG=None, analysis='tran', s_gamma_min=0.0, s_gamma_max=1.0, s_eta=jnp.inf, fixed_timestep=False, grid_dt=None, relref='sigglobal', n_nodes=None, provided_function=None, state_mask=None, max_dv_step=jnp.inf):
+def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15, pcnr_meta=None, pcnr_VT=0.025, tline_dG=None, analysis='tran', s_gamma_min=0.0, s_gamma_max=1.0, s_eta=jnp.inf, fixed_timestep=False, grid_dt=None, relref='sigglobal', n_nodes=None, provided_function=None, state_mask=None, max_dv_step=jnp.inf, max_di_step=jnp.inf):
 
     ## The same epsilon `calculate_next_dt` uses to decide a breakpoint is "already
     ## reached".  They disagreed: after 500 steps of 1e-5 the accumulated `t` sits
@@ -1330,8 +1330,12 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
         ## Skipped at the dt floor (progress guarantee) and under a fixed
         ## grid (the caller owns the resolution).
         _nn_dv = n_nodes if n_nodes is not None else x_curr.shape[0]
-        dv = jnp.max(jnp.abs(x_curr[:_nn_dv] - state.x_history[0][:_nn_dv]))
-        dv_ok = jnp.logical_or(dv <= max_dv_step,
+        _dstep = jnp.abs(x_curr - state.x_history[0])
+        dv_ratio = jnp.max(_dstep[:_nn_dv]) / max_dv_step
+        if _nn_dv < _dstep.shape[0]:
+            dv_ratio = jnp.maximum(dv_ratio,
+                                   jnp.max(_dstep[_nn_dv:]) / max_di_step)
+        dv_ok = jnp.logical_or(dv_ratio <= 1.0,
                                jnp.asarray(fixed_timestep))
         accept = jnp.logical_or(
             jnp.logical_and(
@@ -1487,7 +1491,7 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
             lte_shrink = jnp.clip(error_ratio ** (-1.0 / order_p1), 0.1, 0.9)
             ## A dv-vetoed step retries at 0.9*bound/dv (industry semantics);
             ## a converged-but-LTE-rejected one keeps the predictor's cut.
-            dv_shrink = jnp.clip(0.9 * max_dv_step / jnp.maximum(dv, 1e-300),
+            dv_shrink = jnp.clip(0.9 / jnp.maximum(dv_ratio, 1e-300),
                                  0.1, 0.9)
             lte_shrink = jnp.where(jnp.logical_not(dv_ok), dv_shrink,
                                    lte_shrink)
@@ -1693,11 +1697,18 @@ class JAXTransient(Analysis):
         ## coupled band), and this bounds the per-step node-voltage change
         ## instead.  |dv| ~ h*slew is h-proportional, so it cannot h-cancel.
         Parameter(name='max_dv_step',
-                  desc='Largest allowed change of any node voltage in one '
-                       'accepted step (the Spectre/Mica-style voltage '
-                       'check); None disables. Controls output resolution '
-                       'on circuits where no LTE exists.',
-                  unit='V', default=None),
+                  desc='Per-step node-voltage excursion bound (the Spectre/'
+                       'Mica-style voltage check), as a FACTOR: the bound '
+                       'is max_dv_step * lte_vabstol (e.g. 2e11 at the '
+                       'default 1e-12 bounds steps to 0.2 V), scaling with the '
+                       'tolerance family as the LTE does; factors below 1 '
+                       'clamp to 1. None disables.',
+                  unit='', default=None),
+        Parameter(name='max_di_step',
+                  desc='Per-step branch-current excursion bound, as a '
+                       'FACTOR times lte_iabstol; same clamp-at-1 floor. '
+                       'None disables.',
+                  unit='', default=None),
         Parameter(name='timestep_max',
                   desc='Largest accepted timestep; None means tend/50, the '
                        'SPICE TMAX default. Decoupled from timestep, which '
@@ -1809,6 +1820,27 @@ class JAXTransient(Analysis):
     _apply_voltage_ics = _CPU._apply_voltage_ics
     _descendant_has_ic = _CPU._descendant_has_ic
     del _CPU
+
+    def _dv_step_bounds(self):
+        """(voltage bound, current bound), inf when disabled -- floored at
+        vabstol/iabstol; see the CPU helper of the same name."""
+        ## FACTOR semantics (owner decision): the bound is
+        ## max(factor, 1) * abstol, so the resolution check is coupled to
+        ## the tolerance family exactly as the LTE is -- tighten vabstol
+        ## and the check tightens with it -- and a factor below 1 clamps
+        ## to the solver-noise floor.
+        ## The LTE family's abstols, not Newton's -- the owner's stated
+        ## rationale is that the LTE checks scale with these, so the
+        ## excursion check must scale with the SAME quantities.  With the
+        ## default lte_vabstol = 1e-12, a factor of 2e11 bounds steps to
+        ## 0.2 V; the clamp-at-1 floor is exactly the solver-noise scale.
+        bv = float('inf') if self.par.max_dv_step is None else \
+            max(float(self.par.max_dv_step), 1.0) \
+            * float(self.par.lte_vabstol)
+        bi = float('inf') if self.par.max_di_step is None else \
+            max(float(self.par.max_di_step), 1.0) \
+            * float(self.par.lte_iabstol)
+        return bv, bi
 
     def _jax_state_row_mask(self, x_ref):
         """P22: the CPU's _state_row_mask, computed numpy-side at trace
@@ -2107,7 +2139,7 @@ class JAXTransient(Analysis):
         def run_chunk(s, p_tree):
             return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method=self._eval_method(), params_tree=p_tree, reltol=self.par.reltol, abstol=self._newton_abstol(n),
                                    xtol=self._newton_xtol(n),
-                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis, s_gamma_min=_sgm, s_gamma_max=_sgx, s_eta=_seta, relref=self._relref(), n_nodes=len(self.cir.nodes), state_mask=_state_mask, max_dv_step=(jnp.inf if self.par.max_dv_step is None else float(self.par.max_dv_step)),
+                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis, s_gamma_min=_sgm, s_gamma_max=_sgx, s_eta=_seta, relref=self._relref(), n_nodes=len(self.cir.nodes), state_mask=_state_mask, max_dv_step=self._dv_step_bounds()[0], max_di_step=self._dv_step_bounds()[1],
                                    lte_reltol=self.par.reltol,
                                    lte_abstol=self._lte_abstol(n),
                                    max_dv=(jnp.inf if self.par.max_dv is None
@@ -2349,7 +2381,7 @@ class JAXTransient(Analysis):
                                    fixed_timestep=fixed_timestep, grid_dt=timestep,
                                    provided_function=provided_function,
                                    xtol=self._newton_xtol(n),
-                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis, s_gamma_min=_sgm, s_gamma_max=_sgx, s_eta=_seta, relref=self._relref(), n_nodes=len(self.cir.nodes), state_mask=_state_mask, max_dv_step=(jnp.inf if self.par.max_dv_step is None else float(self.par.max_dv_step)),
+                                   maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis, s_gamma_min=_sgm, s_gamma_max=_sgx, s_eta=_seta, relref=self._relref(), n_nodes=len(self.cir.nodes), state_mask=_state_mask, max_dv_step=self._dv_step_bounds()[0], max_di_step=self._dv_step_bounds()[1],
                                    lte_reltol=self.par.reltol,
                                    lte_abstol=self._lte_abstol(n),
                                    max_dv=(jnp.inf if self.par.max_dv is None

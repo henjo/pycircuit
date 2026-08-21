@@ -534,12 +534,22 @@ class Transient(Analysis):
          ## not), and is robust where solution-LTE was not: |dv| ~ h*slew is
          ## h-proportional by construction, so it cannot h-cancel.
          Parameter(name='max_dv_step',
-                   desc='Largest allowed change of any node voltage in one '
-                        'accepted step (the Spectre/Mica-style voltage '
-                        'check); None disables. Controls output resolution '
-                        'on circuits where no LTE exists (resistive/'
-                        'algebraic networks).',
-                   unit='V',
+                   desc='Per-step node-voltage excursion bound (the Spectre/'
+                        'Mica-style voltage check), as a FACTOR: the bound '
+                        'is max_dv_step * lte_vabstol (e.g. 2e11 at the '
+                        'default 1e-12 bounds steps to 0.2 V), so it scales with the '
+                        'tolerance family exactly as the LTE does. Factors '
+                        'below 1 clamp to 1 (a bound below the Newton '
+                        'accuracy measures noise). None disables. Controls '
+                        'output resolution on circuits where no LTE exists '
+                        '(resistive/algebraic networks).',
+                   unit='',
+                   default=None),
+         Parameter(name='max_di_step',
+                   desc='Per-step branch-current excursion bound, as a '
+                        'FACTOR times lte_iabstol; the current-row sibling of '
+                        'max_dv_step, same clamp-at-1 floor. None disables.',
+                   unit='',
                    default=None),
          Parameter(name='timestep_max',
                    desc='Largest accepted timestep; None means tend/50, the '
@@ -1640,6 +1650,28 @@ class Transient(Analysis):
             etol = np.where(mask, etol, 1e30)
         return etol
 
+    def _dv_step_bounds(self):
+        """(voltage bound, current bound) for the per-step excursion check,
+        inf when disabled -- floored at vabstol/iabstol, because a bound
+        below the Newton solve's own accuracy measures noise."""
+        ## FACTOR semantics (owner decision): the bound is
+        ## max(factor, 1) * abstol, so the resolution check is coupled to
+        ## the tolerance family exactly as the LTE is -- tighten vabstol
+        ## and the check tightens with it -- and a factor below 1 clamps
+        ## to the solver-noise floor.
+        ## The LTE family's abstols, not Newton's -- the owner's stated
+        ## rationale is that the LTE checks scale with these, so the
+        ## excursion check must scale with the SAME quantities.  With the
+        ## default lte_vabstol = 1e-12, a factor of 2e11 bounds steps to
+        ## 0.2 V; the clamp-at-1 floor is exactly the solver-noise scale.
+        bv = float('inf') if self.par.max_dv_step is None else \
+            max(float(self.par.max_dv_step), 1.0) \
+            * float(self.par.lte_vabstol)
+        bi = float('inf') if self.par.max_di_step is None else \
+            max(float(self.par.max_di_step), 1.0) \
+            * float(self.par.lte_iabstol)
+        return bv, bi
+
     def _state_row_mask(self, x_ref):
         """True where the unknown participates in ANY charge -- P22.
 
@@ -2324,16 +2356,18 @@ class Transient(Analysis):
                 ## accepted step, with a proportional retry -- the industry
                 ## semantics.  Node rows only ("voltage" check); branch
                 ## currents are not bounded by it.
-                if self.par.max_dv_step is not None and accept:
+                if (self.par.max_dv_step is not None
+                        or self.par.max_di_step is not None) and accept:
+                    _bv, _bi = self._dv_step_bounds()
                     _nn = len(self.cir.nodes)
-                    _dv = float(np.max(np.abs(
-                        np.asarray(x, dtype=float)[:_nn]
-                        - np.asarray(X[-1], dtype=float)[:_nn])))
-                    if _dv > self.par.max_dv_step:
+                    _d = np.abs(np.asarray(x, dtype=float)
+                                - np.asarray(X[-1], dtype=float))
+                    _ratio = float(np.max(_d[:_nn])) / _bv
+                    if _nn < len(_d):
+                        _ratio = max(_ratio, float(np.max(_d[_nn:])) / _bi)
+                    if _ratio > 1.0:
                         accept = False
-                        dt_next = dt * max(
-                            MIN_SHRINK_RATIO,
-                            0.9 * self.par.max_dv_step / _dv)
+                        dt_next = dt * max(MIN_SHRINK_RATIO, 0.9 / _ratio)
 
                 growth_retry = (not accept) and dt_next > dt
                 if growth_retry and point_retries < MAX_POINT_RETRIES:
@@ -2777,16 +2811,20 @@ class Transient(Analysis):
                     ## the P22 mask deliberately blinds the band to algebraic
                     ## rows, so on a resistive/algebraic network this is the
                     ## only step-size control tracking the waveform.
-                    if self.par.max_dv_step is not None:
+                    if (self.par.max_dv_step is not None
+                            or self.par.max_di_step is not None):
+                        _bv, _bi = self._dv_step_bounds()
                         _nn = len(self.cir.nodes)
-                        _dv = float(np.max(np.abs(
-                            np.asarray(x_curr, dtype=float)[:_nn]
-                            - np.asarray(X[-1], dtype=float)[:_nn])))
-                        if _dv > self.par.max_dv_step:
+                        _d = np.abs(np.asarray(x_curr, dtype=float)
+                                    - np.asarray(X[-1], dtype=float))
+                        _ratio = float(np.max(_d[:_nn])) / _bv
+                        if _nn < len(_d):
+                            _ratio = max(_ratio,
+                                         float(np.max(_d[_nn:])) / _bi)
+                        if _ratio > 1.0:
                             self.statistics.rejected_steps += 1
                             h_curr = max(minstep, h_curr * max(
-                                MIN_SHRINK_RATIO,
-                                0.9 * self.par.max_dv_step / _dv))
+                                MIN_SHRINK_RATIO, 0.9 / _ratio))
                             converged = False
                             continue
                     h_curr = h_solved
