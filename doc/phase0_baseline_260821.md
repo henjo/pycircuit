@@ -58,3 +58,30 @@ Dark territory worth knowing before trusting a green suite (from `--show-missing
 Reproduce: `XLA_PYTHON_CLIENT_PREALLOCATE=false .venv/bin/python -m coverage run
 --source=pycircuit/circuit -m pytest -q -m "" <the eleven files>` then
 `coverage report --show-missing`.
+
+## Phase-3 exit gate (same day)
+
+Recorded after the Phase-3 cluster (F19, F11, F17, F6(b)+F16(a), breakpoint cap) landed.
+
+Performance (same benchmark, same machine):
+
+| configuration | Phase-0 | Phase-3 exit | delta |
+|---|---|---|---|
+| CPU Euler (default) | 150.1 ms / 412 steps | 150.9 ms / 412 | unchanged (untouched) |
+| CPU Gear2 | 78.7 ms / 211 | 78.2 ms / 211 | unchanged (untouched) |
+| JAX gear (default) | 612.5 ms / 210 | 544.7 ms / 210 | **−11% wall** (F17's rejection cut) |
+
+Conformance harness (matched order, reltol 1e-4):
+
+| pair | Phase-1 landing | Phase-3 exit | bound now |
+|---|---|---|---|
+| rc | 7.4e-4 | **4.3e-6** (173× better) | 2e-5 |
+| vsin | 3.5e-3 | 2.9e-3 | 1.5e-2 |
+
+Step counts at matched order: rc 61/60, vsin **120/120** (was 120/113).
+Rejection ratios (rc-vsin): 44.5%→20.1% at reltol 1e-4, 40.1%→**4.0%** at 1e-6.
+Pulse-edge rejections: 38→16 of ~190 accepted (F11).
+Suite: 1001 passed, 12 skipped, 3 xfailed under `-n 8`.
+
+Per-fix deltas were recorded in each fix's commit message; suite expectations are
+pinned in the harness bounds above, per the gate's acceptance rule.

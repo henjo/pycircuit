@@ -7,10 +7,13 @@ defaults differ (CPU order 1, JAX order 2; F19(b)) and a comparison across
 orders measures the method gap, not backend drift.
 
 Contract points asserted on every pair, plus a waveform-agreement bound.
-Bounds are ~5x the deviation measured when the harness landed (rc 7.4e-4,
-vsin 3.5e-3 at reltol 1e-4), so genuine drift trips them while Phase-3
-behavior changes have headroom; tighten at the Phase-3 exit gate if the
-measured deltas allow.  This harness is that gate's acceptance instrument.
+
+Bound history: at landing (pre-Phase-3) the measured deviations were
+rc 7.4e-4 / vsin 3.5e-3 at reltol 1e-4, bounds set ~5x.  At the Phase-3
+exit gate the cluster (F19, F11, F17, F6(b), F16) had IMPROVED them to
+rc 4.3e-6 / vsin 2.9e-3 -- the per-row Newton criterion accounts for most
+of the rc gain -- and step counts matched 120/120.  Bounds re-tightened
+per the gate's rule to ~5x the new measurements.
 """
 
 import warnings
@@ -67,8 +70,8 @@ def _jax(kind, uic):
         circuit_mod.default_toolkit = saved
 
 
-@pytest.mark.parametrize('kind,uic,bound', [('rc', True, 5e-3),
-                                            ('vsin', False, 2e-2)])
+@pytest.mark.parametrize('kind,uic,bound', [('rc', True, 2e-5),
+                                            ('vsin', False, 1.5e-2)])
 def test_backends_agree_at_matched_order(kind, uic, bound):
     tc, vc = _cpu(kind, uic)
     tj, vj = _jax(kind, uic)
