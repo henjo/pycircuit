@@ -240,3 +240,52 @@ def test_coupled_tline_matches_standard_path():
     vb2 = np.asarray(res2.v('b'), float).reshape(-1)
     assert t2[-1] >= 8e-9 * (1.0 - 1e-9)
     assert abs(vb2[-1] - 2.0 / 3.0) < 5e-3
+
+def test_bordered_survives_the_ring_reset_on_a_delay_line():
+    """PINS the lte_gradients slice in the bordered branch.
+
+    The kink discipline empties the step ring on a breakpoint landing (TLine
+    circuits only), so the next bordered step sees 3 history points with 0 or
+    1 recorded spacings -- and `lte_gradients` on the unsliced history raised
+    `ValueError: need 2 step sizes for 3 points, got 1` mid-run.  The fix
+    slices x_hist to len(h_hist)+1 (points beyond the ring have no spacing to
+    difference against).  No other test reaches this interaction: the pulsed
+    RC bordered tests no longer trigger the reset (it is gated on TLines),
+    and the TLine test above runs the default 'approx' branch, which never
+    calls lte_gradients.  Verified fail-first: reverting the slice makes this
+    test die with the ValueError above; with it, the run completes, lands on
+    tend, and stays close to the 'approx' branch on the same circuit.
+    """
+    from pycircuit.circuit.elements import R as _R, VPulse, TLine
+
+    def line():
+        c = SubCircuit()
+        c.add_node('a'); c.add_node('b')
+        c['V1'] = VPulse('s', gnd, v1=0.0, v2=1.0, td=1e-9, tr=2e-10,
+                         tf=2e-10, pw=1e-8, per=1e-7)
+        c['Rs'] = _R('s', 'a', r=50.0)
+        c['T1'] = TLine('a', gnd, 'b', gnd, Z0=50.0, TD=1e-9)
+        c['Rl'] = _R('b', gnd, r=50.0)
+        return c
+
+    results = {}
+    for method in ('approx', 'bordered'):
+        tran = Transient(line(), toolkit=numeric, reltol=1e-4, uic=True)
+        tran.par.coupled_method = method
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(gnd, tend=8e-9, timestep=2e-10, coupled_lte=True)
+        t = np.asarray(res.sweep_values, float)
+        vb = np.asarray(res.v('b'), float).reshape(-1)
+        assert t[-1] >= 8e-9 * (1.0 - 1e-9), \
+            '%s did not reach tend: %g' % (method, t[-1])
+        results[method] = (t, vb)
+
+    ta, va = results['approx']
+    tb, vb_ = results['bordered']
+    dev = float(np.max(np.abs(np.interp(ta, tb, vb_) - va)))
+    ## Same equations, same band -- only the h-correction law differs.
+    ## Measured 5.551e-16 at landing (99 vs 100 points); 1e-12 leaves margin
+    ## without letting a correction-law regression hide.
+    assert dev < 1e-12, 'bordered drifted from approx on the line: %.3e' % dev
+
