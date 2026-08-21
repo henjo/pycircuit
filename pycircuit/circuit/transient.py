@@ -2356,7 +2356,22 @@ class Transient(Analysis):
             else:
                 was_break_step = False
 
-            if t + h > tend:
+            ## A TEND-TRUNCATED STEP IS HELD, exactly like a breakpoint-
+            ## truncated one: its size was decided by where it must land, so
+            ## there is nothing for the coupled system to solve.  Without the
+            ## flag the LTE equation was free to GROW the final step past tend
+            ## -- on a quiet tail the error sits below the band, so the
+            ## step-size Newton grew it toward h_ceil: measured at t[-1]
+            ## exceeding tend in 5 of 6 configurations, by 13-24% of the final
+            ## step, while the standard path landed exactly in all 6
+            ## (doc/transient_review_260820.md, F3, Appendix A.1).  Clamping
+            ## h_ceil to tend - t instead would also work and shrinks over-band
+            ## final steps inside the solve rather than via the outer retry;
+            ## hold_h was chosen for symmetry with breakpoints, whose machinery
+            ## this path already tests.  Reconsider if profiling ever shows the
+            ## outer retry on final steps costing measurable time.
+            was_tend_truncated = t + h > tend
+            if was_tend_truncated:
                 h = tend - t
 
             ## Co-determine (x, h): converge the circuit at h_curr, evaluate the
@@ -2397,7 +2412,8 @@ class Transient(Analysis):
                     x_curr, h_solved, _iters, converged = self.fang_timestep(
                         X[-1], t, h_curr, X[-1:-4:-1],
                         provided_function=provided_function,
-                        hold_h=was_break_step or fixed_timestep,
+                        hold_h=(was_break_step or fixed_timestep
+                                or was_tend_truncated),
                         grid_locked=fixed_timestep,
                         method=self.par.coupled_method,
                         gamma_min=self.par.lte_gamma_min or 0.7,
@@ -2429,12 +2445,17 @@ class Transient(Analysis):
                     break
 
             if not converged:
+                ## Both failure kinds route through this loop: a Newton that
+                ## will not converge, and -- since tend-truncated steps are
+                ## held (F3) -- a held step whose LTE stays over the band at
+                ## every retry.  The message must not claim only one of them.
                 raise NoConvergenceError(
-                    "Coupled transient: the coupled (x, h) Newton failed to "
-                    "converge at t=%g s, with h reduced to %g s over %d "
-                    "attempts. This is a convergence failure, not an LTE "
-                    "rejection -- run with coupled_lte=False to use the "
-                    "standard adaptive controller on this circuit."
+                    "Coupled transient: could not complete the step at t=%g s, "
+                    "with h reduced to %g s over %d attempts. Either the "
+                    "(x, h) Newton failed to converge, or a held (breakpoint/"
+                    "tend-truncated) step kept failing its error test. Run "
+                    "with coupled_lte=False to use the standard adaptive "
+                    "controller on this circuit."
                     % (t, h_curr, MAX_LTE_ITERS))
 
             t += h_curr

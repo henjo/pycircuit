@@ -282,3 +282,23 @@ def test_f7_pcnr_honours_refnode():
         xb = np.asarray(res.x)[ib]
         assert float(np.max(np.abs(xb))) == 0.0, \
             'pcnr=%s: requested reference node is not pinned' % pcnr
+
+
+## F3 -- the coupled path must land on tend exactly; the LTE equation used to
+## grow the tend-truncated final step past it (13-24% of the last step on
+## quiet tails, 5 of 6 measured configurations).
+
+@pytest.mark.parametrize('tend,ts', [(1e-3, 1e-5), (5e-4, 1e-5), (1e-3, 1e-6)])
+def test_f3_coupled_lands_on_tend(tend, ts):
+    import warnings
+    c = SubCircuit()
+    c['is'] = IS(gnd, 'a', i=1e-3)
+    c['R'] = R('a', gnd, r=1e3)
+    c['C'] = C('a', gnd, c=1e-8)          # tau = 10us: quiet tail long before tend
+    tran = Transient(c)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = tran.solve(tend=tend, timestep=ts, coupled_lte=True)
+    t = np.asarray(res.sweep_values, dtype=float).reshape(-1)
+    assert t[-1] <= tend * (1 + 1e-12)
+    assert t[-1] >= tend * (1 - 1e-9)     # and it actually reaches tend
