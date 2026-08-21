@@ -653,9 +653,18 @@ def test_gate_9_1b_the_reject_path_actually_fires():
     from pycircuit.circuit.jaxtransient import JAXTransient
     from pycircuit.circuit import gnd
 
+    ## RE-DERIVED at F17 (doc/transient_review_260820.md): the safety
+    ## factor made the plain RC at reltol=1e-8 take ZERO rejections -- the
+    ## old case stopped producing the nonzero reading this gate exists for.
+    ## A sinusoidal drive still rejects (the error genuinely oscillates
+    ## against the tolerance), so the gate keeps its teeth there.
     def go():
-        cir = _rc_circuit()
-        tran = JAXTransient(cir, reltol=1e-8)
+        from pycircuit.circuit.elements import SubCircuit, R, C, VSin
+        cir = SubCircuit()
+        cir['vs'] = VSin('a', gnd, va=1.0, freq=1e3)
+        cir['R'] = R('a', 'b', r=1e3)
+        cir['C'] = C('b', gnd, c=1e-7)
+        tran = JAXTransient(cir, reltol=1e-6)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             tran.solve(gnd, tend=5e-3, timestep=1e-4, uic=True)
@@ -663,8 +672,8 @@ def test_gate_9_1b_the_reject_path_actually_fires():
 
     st = _with_jax_toolkit(go)
     assert st.rejected_steps > 0, \
-        'the reject branch never fired at reltol=1e-8 (%r) -- either step control ' \
-        'is not working or the counter is being reset again' % st
+        'the reject branch never fired on rc-vsin at reltol=1e-6 (%r) -- either ' \
+        'step control is not working or the counter is being reset again' % st
     assert st.accepted_steps > 0
 
 
