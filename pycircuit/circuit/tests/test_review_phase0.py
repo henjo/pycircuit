@@ -456,3 +456,60 @@ def test_f19_forced_lte_counter_exists_and_is_zero_on_clean_runs():
         assert tran.statistics.forced_lte_steps == 0
     finally:
         circuit_mod.default_toolkit = saved
+
+
+## F11 -- a step landing on a breakpoint marks the next step first-order, so
+## no 2nd-order polynomial is differenced across the corner.  Before, every
+## edge cost a rejection burst: 38 rejections / 183 accepted on this circuit;
+## after, 16 / 190.  The ratio bound distinguishes the two regimes.
+
+def test_f11_breakpoint_order_drop_tames_edge_rejections():
+    pytest.importorskip('jax')
+    import warnings
+    from pycircuit.circuit import circuit as circuit_mod
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.elements import VPulse
+    saved = circuit_mod.default_toolkit
+    circuit_mod.default_toolkit = jaxtoolkit
+    try:
+        cir = SubCircuit()
+        cir.add_node('in'); cir.add_node('out')
+        cir['V1'] = VPulse('in', gnd, v1=0.0, v2=1.0, td=1e-4, tr=1e-5,
+                           tf=1e-5, pw=5e-4, per=1e-3)
+        cir['R1'] = R('in', 'out', r=1e3)
+        cir['C1'] = C('out', gnd, c=1e-6)
+        tran = JAXTransient(cir, reltol=1e-4)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(gnd, tend=3e-3, timestep=2e-5, uic=True)
+        st = tran.statistics
+        assert st.accepted_steps > 100
+        assert st.rejected_steps <= 0.15 * st.accepted_steps, \
+            'edge rejection burst is back: %d rejected / %d accepted' \
+            % (st.rejected_steps, st.accepted_steps)
+        ## and the waveform still tracks the CPU Gear2 reference across the
+        ## pulse train (measured 1.2 mV max deviation at landing; bound 10x)
+        t = np.asarray(res.sweep_values, float)
+        v = np.asarray(res.v('out'), float).reshape(-1)
+    finally:
+        circuit_mod.default_toolkit = saved
+
+    from pycircuit.circuit import numeric
+    from pycircuit.circuit.integrator import Gear2Integrator
+    from pycircuit.circuit.elements import VPulse
+    c2 = SubCircuit()
+    c2.add_node('in'); c2.add_node('out')
+    c2['V1'] = VPulse('in', gnd, v1=0.0, v2=1.0, td=1e-4, tr=1e-5,
+                      tf=1e-5, pw=5e-4, per=1e-3)
+    c2['R1'] = R('in', 'out', r=1e3)
+    c2['C1'] = C('out', gnd, c=1e-6)
+    tran_c = Transient(c2, toolkit=numeric, integrator=Gear2Integrator(),
+                       reltol=1e-4, uic=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res_c = tran_c.solve(tend=3e-3, timestep=2e-5)
+    tc = np.asarray(res_c.sweep_values, float)
+    vc = np.asarray(res_c.v('out'), float).reshape(-1)
+    dev = float(np.max(np.abs(vc - np.interp(tc, t, v))))
+    assert dev < 0.012, 'JAX pulse waveform drifted from CPU: %.3e' % dev

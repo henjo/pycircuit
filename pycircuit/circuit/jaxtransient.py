@@ -626,8 +626,18 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 + jnp.where(forced, 1, 0),
                 n_forced_lte=state.n_forced_lte
                 + jnp.where(forced_lte, 1, 0),
-                ## Filled with the breakpoint-landing condition by F11.
-                force_first_order=jnp.asarray(False))
+                ## F11: the CPU's breakpoint discipline, ported.  A step that
+                ## LANDS on a breakpoint (calculate_next_dt truncates onto
+                ## them, so landing is exact to t_eps) marks the NEXT step
+                ## "do not trust a 2nd-order polynomial through this point":
+                ## effective_first_order then drops both the integration and
+                ## the error estimate to order 1 for exactly one step, instead
+                ## of differencing a g-history that straddles the corner --
+                ## which cost a rejection burst at every edge (measured on a
+                ## VPulse RC before this line: 38 rejections in 183 accepted
+                ## steps, edge-synchronous).
+                force_first_order=jnp.any(
+                    jnp.abs((state.t + state.dt) - t_breaks_array) <= t_eps))
 
         def do_reject(_):
             ## LTE above tolerance: shrink the step (bounded below by dt_min) and
