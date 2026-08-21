@@ -219,16 +219,49 @@ def _tline_emfs(t_target, params, history, head):
 
     idx1 = jax.lax.while_loop(cond_fun, lambda idx: idx + 1, 0)
     idx0 = jnp.maximum(0, idx1 - 1)
+    ## P16: the third stencil point, one OLDER than the bracket -- the CPU's
+    ## quadratic (its `i-1` point), so a first-order interpolant no longer
+    ## feeds a second-order method error the method never made.
+    idx2 = jnp.minimum(idx1 + 1, TLINE_HISTORY_DEPTH - 1)
 
     val1 = history[(head - idx1) % TLINE_HISTORY_DEPTH]
     val0 = history[(head - idx0) % TLINE_HISTORY_DEPTH]
-    t1, t0 = val1[0], val0[0]
+    val2 = history[(head - idx2) % TLINE_HISTORY_DEPTH]
+    t1, t0, t2 = val1[0], val0[0], val2[0]
 
     denom_ok = t0 != t1
     inv_dt = jnp.where(denom_ok, 1.0 / jnp.where(denom_ok, t0 - t1, 1.0), 0.0)
     frac = (t_target - t1) * inv_dt
-    interp_val = val1 + frac * (val0 - val1)
-    slope = (val0 - val1) * inv_dt
+    lin_val = val1 + frac * (val0 - val1)
+    lin_slope = (val0 - val1) * inv_dt
+
+    ## Quadratic Lagrange over (t2, t1, t0), value and d/dt, guarded so a
+    ## degenerate stencil (ring not yet filled: t2 == t1) falls back to the
+    ## linear form.  MONOTONE-LIMITED per channel exactly like the CPU's
+    ## `_interpolate_history`: a quadratic value outside the bracket's own
+    ## [min, max] is evidence the stencil spans a kink -- the phantom-EMF
+    ## defect the CPU limiter was measured against (reflected EMF read
+    ## 1.009 against samples bounded by 1.000) -- and that channel keeps
+    ## the linear value AND the linear slope, so du/dt stays d/dt of u.
+    quad_ok = jnp.logical_and(denom_ok, t2 != t1)
+    d20 = jnp.where(quad_ok, t2 - t0, 1.0)
+    d21 = jnp.where(quad_ok, t2 - t1, 1.0)
+    d10 = jnp.where(denom_ok, t1 - t0, 1.0)
+    L2 = (t_target - t1) * (t_target - t0) / (d21 * d20)
+    L1 = (t_target - t2) * (t_target - t0) / (-d21 * d10)
+    L0 = (t_target - t2) * (t_target - t1) / (d20 * d10)
+    q_val = val2 * L2 + val1 * L1 + val0 * L0
+    dL2 = (2.0 * t_target - t1 - t0) / (d21 * d20)
+    dL1 = (2.0 * t_target - t2 - t0) / (-d21 * d10)
+    dL0 = (2.0 * t_target - t2 - t1) / (d20 * d10)
+    q_slope = val2 * dL2 + val1 * dL1 + val0 * dL0
+
+    lo = jnp.minimum(val1, val0)
+    hi = jnp.maximum(val1, val0)
+    in_env = jnp.logical_and(q_val >= lo, q_val <= hi)
+    use_quad = jnp.logical_and(quad_ok, in_env)
+    interp_val = jnp.where(use_quad, q_val, lin_val)
+    slope = jnp.where(use_quad, q_slope, lin_slope)
 
     Z0 = params[1]
     e1 = interp_val[2] + Z0 * interp_val[4]

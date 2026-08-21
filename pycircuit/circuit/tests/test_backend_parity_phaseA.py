@@ -527,3 +527,46 @@ def test_p11_provided_function_on_jax():
         assert any('DC operating point does not see' in str(x.message)
                    for x in w), 'the DC-seed warning did not fire'
     _with_jax(go)
+
+
+def test_p16_tline_ring_interpolation_is_limited_quadratic():
+    """P16 (Phase B): the delay lookup is the CPU's 3-point limited
+    quadratic now.  Kernel-level: on a smoothly curved history the lookup
+    reproduces a parabola exactly (linear cannot); at a recorded kink the
+    limiter clamps to the bracket instead of overshooting -- the phantom-EMF
+    defect the CPU limiter was measured against.  Cross-backend note,
+    recorded per house rules: matching the order left the matched-line
+    coupled agreement bit-close (2.8e-16) and did NOT move the rc-load
+    corner gap (2.66e-2, before and after) -- that gap is controller step
+    placement, not interpolation."""
+    def go():
+        import jax.numpy as jnp
+        from pycircuit.circuit.jaxtransient import (_tline_emfs,
+                                                    TLINE_HISTORY_DEPTH)
+
+        params = jnp.asarray([1e-9, 50.0])  # TD, Z0
+
+        def hist(rows):
+            h = jnp.zeros((TLINE_HISTORY_DEPTH, 5))
+            for i, r in enumerate(rows):
+                h = h.at[i].set(jnp.asarray(r))
+            return h, len(rows) - 1
+
+        ## Parabolic v2(t) = t^2 (scaled), i2 = 0: quadratic recovery exact.
+        ts = [0.0, 1.0, 2.0, 3.0]
+        rows = [(t, 0.0, t * t, 0.0, 0.0) for t in ts]
+        h, head = hist(rows)
+        e1, _e2, de1, _de2 = _tline_emfs(2.5, params, h, head)
+        assert abs(float(e1) - 2.5 ** 2) < 1e-12, float(e1)
+        assert abs(float(de1) - 2 * 2.5) < 1e-12, float(de1)
+
+        ## Kink: flat 0 then ramp -- a quadratic through (ramp, corner,
+        ## flat) overshoots below zero at 0.5; the limiter must clamp into
+        ## the bracket [0, 0].
+        rows = [(0.0, 0.0, 2.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0, 0.0),
+                (2.0, 0.0, 0.0, 0.0, 0.0)]
+        h, head = hist(rows)
+        e1, _e2, _d, _d2 = _tline_emfs(1.5, params, h, head)
+        assert abs(float(e1)) < 1e-12, \
+            'kink overshoot survived the limiter: %g' % float(e1)
+    _with_jax(go)

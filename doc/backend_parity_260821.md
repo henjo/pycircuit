@@ -282,6 +282,16 @@ JAX's is linear. Port the quadratic stencil into `interp_tlines` (three gathered
 points instead of two; same modulo indexing). Measure the edge-accuracy delta on the
 existing TLine tests before/after, per house rules.
 
+> **EXECUTED 2026-08-21** — Phase B complete.  The ring lookup is the CPU's
+> 3-point stencil, monotone-limited per channel exactly like the CPU's
+> `_interpolate_history` (the phantom-EMF defect class), value and slope
+> selected together so `tline_source_dudt` stays d/dt of the source.
+> Measured per house rules: parabola recovered exactly (linear cannot), kink
+> clamped; matched-line coupled agreement stays bit-close (2.8e-16); the
+> rc-load corner gap did NOT move (2.66e-2 before and after) — that gap is
+> controller step placement at the τ=66 ps arrival corner, not interpolation
+> order, recorded so nobody re-chases it here.
+
 ---
 
 ## Documented divergences (no code change; one paragraph each where users look)
