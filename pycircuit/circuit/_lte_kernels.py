@@ -357,18 +357,21 @@ def step_for_error_ratio(h_curr, h_hist, ratio, lo_factor, hi_factor, iters=40):
     """
     target = extrapolation_error_weight(h_curr, h_hist) * ratio
 
+    ## BRANCHLESS, deliberately (Fang-on-JAX port): the old early returns and
+    ## the data-dependent bisection `if` broke tracing -- the one exception to
+    ## this module's operators-only rule.  The arithmetic select below is the
+    ## same bisection: when `target` lies outside [w(lo), w(hi)] every
+    ## iteration moves the same bound, so the loop converges to the clamp the
+    ## early returns used to take -- to within (hi-lo)/2**iters (~1e-12
+    ## relative at the default 40), which the CPU suite absorbs without a
+    ## step-count change.  `below` is a bool (or traced bool); bool arithmetic
+    ## is the toolkit-free select.
     lo, hi = h_curr * lo_factor, h_curr * hi_factor
-    if extrapolation_error_weight(lo, h_hist) >= target:
-        return lo
-    if extrapolation_error_weight(hi, h_hist) <= target:
-        return hi
-
     for _ in range(iters):
         mid = 0.5 * (lo + hi)
-        if extrapolation_error_weight(mid, h_hist) < target:
-            lo = mid
-        else:
-            hi = mid
+        below = extrapolation_error_weight(mid, h_hist) < target
+        lo = below * mid + (1 - below) * lo
+        hi = below * hi + (1 - below) * mid
     return 0.5 * (lo + hi)
 
 
