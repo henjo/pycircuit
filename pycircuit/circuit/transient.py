@@ -457,7 +457,10 @@ class Transient(Analysis):
                    desc='Bypass tolerance for device models', unit='V',
                    default=None)]
 
-    def __init__(self, cir, toolkit=None, irefnode=None, **kvargs):
+    ## `irefnode` was accepted here and never read -- the same shape as the dropped-
+    ## `toolkit` defect recorded below, found by the dead-argument scan
+    ## (doc/transient_review_260820.md, F18).  Passing it now fails loudly.
+    def __init__(self, cir, toolkit=None, **kvargs):
         self.parameters = super(Transient, self).parameters + self.parameters
         ## `toolkit` was accepted and then DROPPED -- it was never forwarded, so
         ## `Transient(cir, toolkit=X)` silently ran on `cir.toolkit` instead.  It
@@ -557,7 +560,9 @@ class Transient(Analysis):
     
 
     
-    def get_diff(self, q, C, method=None):
+    ## `method` was accepted and never read (doc/transient_review_260820.md, F18);
+    ## the integrator is selected by the `integrator` Parameter, not per call.
+    def get_diff(self, q, C):
         """Method used to calculate time derivative for charge storing elements (i_eq and g_eq)."""
         # Determine the active integrator based on step size variations
         h_last = getattr(self, '_dt_last', self._dt)
@@ -1680,7 +1685,11 @@ class Transient(Analysis):
             result=x,None, J, f
         return result
     
-    def solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False, coupled_lte=False, analytical_eh=True):
+    ## `analytical_eh` was accepted through all three signatures and read by nothing
+    ## (doc/transient_review_260820.md, F8) -- superseded by `coupled_method`,
+    ## which carries the measured record for both branches.  Deleted, so passing
+    ## it raises TypeError instead of being silently discarded.
+    def solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False, coupled_lte=False):
         ## Stage 2a: hold BLAS to one thread for the whole run.  It wraps the whole
         ## transient rather than just the linear solve because the win is not in the
         ## solve -- that is ~2% of runtime, so even an infinite speedup there could
@@ -1689,9 +1698,9 @@ class Transient(Analysis):
         ## avoided by setting the limit once, outside the loop.
         with _single_threaded_blas():
             return self._solve(refnode, tend, x0, timestep, provided_function,
-                               fixed_timestep, coupled_lte, analytical_eh)
+                               fixed_timestep, coupled_lte)
 
-    def _solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False, coupled_lte=False, analytical_eh=True):
+    def _solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False, coupled_lte=False):
         ## STAGE 8(d) -- clear per-analysis element state BEFORE anything seeds it.
         ##
         ## Position matters and cost a test to learn: placed after the initial
@@ -1704,7 +1713,7 @@ class Transient(Analysis):
 
         if coupled_lte:
             return self._solve_coupled(refnode, tend, x0, timestep,
-                                       provided_function, analytical_eh,
+                                       provided_function,
                                        fixed_timestep=fixed_timestep)
 
         ## Respect a step controller injected by the caller (e.g. PIController);
@@ -2164,7 +2173,7 @@ class Transient(Analysis):
         return self.result
 
 
-    def _solve_coupled(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, analytical_eh=True, fixed_timestep=False):
+    def _solve_coupled(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False):
         ## STAGE 8(d) -- clear per-analysis element state BEFORE anything seeds it.
         ##
         ## Position matters and cost a test to learn: placed after the initial
