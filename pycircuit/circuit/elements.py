@@ -543,18 +543,21 @@ class VCVS(Circuit):
                
     def update(self, subject):
         n = self.n
-        G = self.toolkit.zeros((n,n))
         branchindex = -1 ## add last in matrix
         inpindex, innindex, outpindex, outnindex = \
             (self.nodes.index(self.nodenames[name])
              for name in self.terminals)
 
-        G[outpindex, branchindex] += 1
-        G[outnindex, branchindex] += -1
-        G[branchindex, outpindex] += -1
-        G[branchindex, outnindex] += 1
-        G[branchindex, inpindex] += self.iparv.g
-        G[branchindex, innindex] += -self.iparv.g                       
+        G = self.toolkit.matrix_from_entries(
+            (n,n),
+            [
+             (outpindex, branchindex, 1),
+             (outnindex, branchindex, -1),
+             (branchindex, outpindex, -1),
+             (branchindex, outnindex, 1),
+             (branchindex, inpindex, self.iparv.g),
+             (branchindex, innindex, -self.iparv.g),
+            ])
         self._G = G
 
 
@@ -730,25 +733,28 @@ class CCVS(Circuit):
                
     def update(self, subject):
         n = self.n
-        G = self.toolkit.zeros((n,n))
         branchindexK = 5 ## add last in matrix
         branchindexJ = 4 ## add last in matrix
         inpindex, innindex, outpindex, outnindex = \
             (self.nodes.index(self.nodenames[name])
              for name in self.terminals)
 
-        G[outpindex, branchindexK] += 1
-        G[outnindex, branchindexK] += -1
-        G[branchindexK, outpindex] += 1
-        G[branchindexK, outnindex] += -1
-
-        G[inpindex, branchindexJ] += 1
-        G[innindex, branchindexJ] += -1
-        G[branchindexJ, inpindex] += 1
-        G[branchindexJ, innindex] += -1
 
 
-        G[branchindexJ, branchindexK] += -self.iparv.r
+
+        G = self.toolkit.matrix_from_entries(
+            (n,n),
+            [
+             (outpindex, branchindexK, 1),
+             (outnindex, branchindexK, -1),
+             (branchindexK, outpindex, 1),
+             (branchindexK, outnindex, -1),
+             (inpindex, branchindexJ, 1),
+             (innindex, branchindexJ, -1),
+             (branchindexJ, inpindex, 1),
+             (branchindexJ, innindex, -1),
+             (branchindexJ, branchindexK, -self.iparv.r),
+            ])
         self._G = G
 
 
@@ -828,16 +834,19 @@ class Nullor(Circuit):
 
     def update(self, subject):
         n = self.n
-        G = self.toolkit.zeros((n,n))
         branchindex = -1
         inpindex, innindex, outpindex, outnindex = \
             (self.nodes.index(self.nodenames[name]) 
              for name in ('inp', 'inn', 'outp', 'outn'))
 
-        G[outpindex, branchindex] += 1
-        G[outnindex, branchindex] += -1
-        G[branchindex, inpindex] += 1
-        G[branchindex, innindex] += -1
+        G = self.toolkit.matrix_from_entries(
+            (n,n),
+            [
+             (outpindex, branchindex, 1),
+             (outnindex, branchindex, -1),
+             (branchindex, inpindex, 1),
+             (branchindex, innindex, -1),
+            ])
         self._G = G
 
 
@@ -873,19 +882,22 @@ class Transformer(Circuit):
 
     def update(self, subject):
         n = self.n
-        G = self.toolkit.zeros((n,n))
         branchindex = -1
         inpindex, innindex, outpindex, outnindex = \
             (self.nodes.index(self.nodenames[name]) 
              for name in ('inp', 'inn', 'outp', 'outn'))
-        G[inpindex, branchindex] += self.iparv.n
-        G[innindex, branchindex] += -self.iparv.n
-        G[outpindex, branchindex] += 1
-        G[outnindex, branchindex] += -1
-        G[branchindex, outpindex] += self.iparv.n
-        G[branchindex, outnindex] += -self.iparv.n
-        G[branchindex, inpindex] += -1
-        G[branchindex, innindex] += 1
+        G = self.toolkit.matrix_from_entries(
+            (n,n),
+            [
+             (inpindex, branchindex, self.iparv.n),
+             (innindex, branchindex, -self.iparv.n),
+             (outpindex, branchindex, 1),
+             (outnindex, branchindex, -1),
+             (branchindex, outpindex, self.iparv.n),
+             (branchindex, outnindex, -self.iparv.n),
+             (branchindex, inpindex, -1),
+             (branchindex, innindex, 1),
+            ])
         self._G = G
 
 
@@ -917,21 +929,24 @@ class Gyrator(Circuit):
     
     def update(self, subject):
         n = self.n
-        G = self.toolkit.zeros((n,n))
         gm=self.iparv.gm
         inpindex, innindex, outpindex, outnindex = \
             (self.nodes.index(self.nodenames[name]) 
              for name in ('inp', 'inn', 'outp', 'outn'))
         # 
-        G[outpindex, inpindex] += -gm
-        G[outpindex, innindex] +=  gm
-        G[outnindex, inpindex] +=  gm
-        G[outnindex, innindex] += -gm
         #        
-        G[inpindex,  outpindex] +=  gm
-        G[inpindex,  outnindex] += -gm
-        G[innindex,  outpindex] += -gm
-        G[innindex,  outnindex] +=  gm
+        G = self.toolkit.matrix_from_entries(
+            (n,n),
+            [
+             (outpindex, inpindex, -gm),
+             (outpindex, innindex, gm),
+             (outnindex, inpindex, gm),
+             (outnindex, innindex, -gm),
+             (inpindex, outpindex, gm),
+             (inpindex, outnindex, -gm),
+             (innindex, outpindex, -gm),
+             (innindex, outnindex, gm),
+            ])
         self._G = G
         
 
@@ -1163,7 +1178,6 @@ class VCVS_limited(Circuit):
             return self.toolkit.jacobian(self.eval_i_pure, x,
                                          {'g': self.iparv.g, 'level': self.iparv.level, 'offset': self.iparv.offset}, epar)
         n = self.n
-        G = self.toolkit.zeros((n,n))
         ## f' is evaluated at the *amplified, offset-shifted* input, since that
         ## is what the limiter sees -- d/dv_inp [level*tanh(g*din/level)] is
         ## g*f'(g*din).  Evaluating it at the raw input instead would be right
@@ -1174,12 +1188,16 @@ class VCVS_limited(Circuit):
         inpindex, innindex, outpindex, outnindex = \
         (self.nodes.index(self.nodenames[name])
         for name in self.terminals)
-        G[outpindex,   branchindex] +=  1
-        G[outnindex,   branchindex] += -1
-        G[branchindex, outpindex]   += -1
-        G[branchindex, outnindex]   +=  1
-        G[branchindex, inpindex]    +=  g_limit*self.iparv.g
-        G[branchindex, innindex]    += -g_limit*self.iparv.g
+        G = self.toolkit.matrix_from_entries(
+            (n,n),
+            [
+             (outpindex, branchindex, 1),
+             (outnindex, branchindex, -1),
+             (branchindex, outpindex, -1),
+             (branchindex, outnindex, 1),
+             (branchindex, inpindex, g_limit*self.iparv.g),
+             (branchindex, innindex, -g_limit*self.iparv.g),
+            ])
         return G
 
 class Idt(Circuit):
@@ -1198,18 +1216,24 @@ class Idt(Circuit):
         idt_index = self.nodes.index(self.add_node('idt_node')) #note side effect
         inpindex, innindex, outpindex, outnindex = \
             (self.nodes.index(self.nodenames[name]) for name in self.terminals)
-        G = self.toolkit.zeros((self.n,self.n))
-        G[idt_index, inpindex] +=  1
-        G[idt_index, innindex] += -1
-        G[outpindex, branchindex] +=  1
-        G[outnindex, branchindex] += -1
-        G[branchindex, idt_index] += -1
-        G[branchindex, outpindex] += -1
-        G[branchindex, outnindex] +=  1
+        G = self.toolkit.matrix_from_entries(
+            (self.n,self.n),
+            [
+             (idt_index, inpindex, 1),
+             (idt_index, innindex, -1),
+             (outpindex, branchindex, 1),
+             (outnindex, branchindex, -1),
+             (branchindex, idt_index, -1),
+             (branchindex, outpindex, -1),
+             (branchindex, outnindex, 1),
+            ])
         self._G = G
         
-        C = self.toolkit.zeros((self.n,self.n))
-        C[idt_index, idt_index] +=  1
+        C = self.toolkit.matrix_from_entries(
+            (self.n,self.n),
+            [
+             (idt_index, idt_index, 1),
+            ])
         self._C = C
 
     def C(self, x, epar=defaultepar):
@@ -1261,18 +1285,24 @@ class Idtmod(Circuit):
         self._idt_index = self.nodes.index(self.add_node('idt_node')) #note side effect
         inpindex, innindex, outpindex, outnindex = \
             (self.nodes.index(self.nodenames[name]) for name in self.terminals)
-        G = self.toolkit.zeros((self.n,self.n))
-        G[self._idt_index, inpindex] +=  1
-        G[self._idt_index, innindex] += -1
-        G[outpindex, branchindex] +=  1
-        G[outnindex, branchindex] += -1
-        G[branchindex, self._idt_index] += -1
-        G[branchindex, outpindex] += -1
-        G[branchindex, outnindex] +=  1
+        G = self.toolkit.matrix_from_entries(
+            (self.n,self.n),
+            [
+             (self._idt_index, inpindex, 1),
+             (self._idt_index, innindex, -1),
+             (outpindex, branchindex, 1),
+             (outnindex, branchindex, -1),
+             (branchindex, self._idt_index, -1),
+             (branchindex, outpindex, -1),
+             (branchindex, outnindex, 1),
+            ])
         self._G = G
         
-        C = self.toolkit.zeros((self.n,self.n))
-        C[self._idt_index, self._idt_index] +=  1
+        C = self.toolkit.matrix_from_entries(
+            (self.n,self.n),
+            [
+             (self._idt_index, self._idt_index, 1),
+            ])
         self._C = C
         self.modulus = self.iparv.modulus
         self.offset = self.iparv.offset
@@ -1415,27 +1445,37 @@ class CoupledInductors(Circuit):
         n = self.n
         # Nodes: p1, m1, p2, m2, br1, br2
         # G matrix inserts 1, -1 for branch currents into node KCLs, and 1, -1 for node voltages into branch equations
-        G = self.toolkit.zeros((n, n))
         # Branch 1 KCL contributions
-        G[0, 4] = 1; G[1, 4] = -1
         # Branch 1 voltage equation
-        G[4, 0] = 1; G[4, 1] = -1
         
         # Branch 2 KCL contributions
-        G[2, 5] = 1; G[3, 5] = -1
         # Branch 2 voltage equation
-        G[5, 2] = 1; G[5, 3] = -1
         
+        G = self.toolkit.matrix_from_entries(
+            (n, n),
+            [
+             (0, 4, 1),
+             (1, 4, -1),
+             (4, 0, 1),
+             (4, 1, -1),
+             (2, 5, 1),
+             (3, 5, -1),
+             (5, 2, 1),
+             (5, 3, -1),
+            ])
         self._G = G
         
-        C = self.toolkit.zeros((n, n))
         L1, L2, K = self.iparv.L1, self.iparv.L2, self.iparv.K
         M = K * self.toolkit.sqrt(L1 * L2)
         
-        C[4, 4] = -L1
-        C[5, 5] = -L2
-        C[4, 5] = -M
-        C[5, 4] = -M
+        C = self.toolkit.matrix_from_entries(
+            (n, n),
+            [
+             (4, 4, -L1),
+             (5, 5, -L2),
+             (4, 5, -M),
+             (5, 4, -M),
+            ])
         self._C = C
 
 
@@ -1539,23 +1579,26 @@ class CCCS(Circuit):
     
     def update(self, subject):
         n = self.n
-        G = self.toolkit.zeros((n, n))
         inpindex, innindex, outpindex, outnindex = \
             (self.nodes.index(self.nodenames[name]) for name in self.terminals)
         branchindex = 4
         
         # Branch KCL (Input acts as short, measuring current)
-        G[inpindex, branchindex] += 1
-        G[innindex, branchindex] += -1
         
         # Branch equation: V_inp - V_inn = 0
-        G[branchindex, inpindex] += 1
-        G[branchindex, innindex] += -1
         
         # Output current injections
-        G[outpindex, branchindex] += self.iparv.F
-        G[outnindex, branchindex] += -self.iparv.F
         
+        G = self.toolkit.matrix_from_entries(
+            (n, n),
+            [
+             (inpindex, branchindex, 1),
+             (innindex, branchindex, -1),
+             (branchindex, inpindex, 1),
+             (branchindex, innindex, -1),
+             (outpindex, branchindex, self.iparv.F),
+             (outnindex, branchindex, -self.iparv.F),
+            ])
         self._G = G
 
 
@@ -1592,7 +1635,13 @@ class ISwitch(Circuit):
         factor = (toolkit.tanh(x_norm * 2.0) + 1.0) / 2.0
         g = Goff + (Gon - Goff) * factor
         i_val = v * g
-        return toolkit.array([i_val, -i_val, i_ctrl, -i_ctrl, 0.0])
+        ## Row 4 is the control branch's DEFINING equation, v_cp - v_cm = 0
+        ## -- it was returned as a constant 0.0, so on any autodiff toolkit
+        ## the KVL row vanished from the jacobian (measured: G[4,2]/G[4,3]
+        ## = 0 under JAX against the manual stamp's 1/-1), and the residual
+        ## never enforced the equation the manual G claims.  Found by the
+        ## P24 cross-toolkit stamp gate.
+        return toolkit.array([i_val, -i_val, i_ctrl, -i_ctrl, x[2] - x[3]])
 
     def i(self, x, epar=defaultepar):
         params = {'Ron': self.iparv.Ron, 'Roff': self.iparv.Roff, 'Ion': self.iparv.Ion, 'Ioff': self.iparv.Ioff}
@@ -1617,25 +1666,30 @@ class ISwitch(Circuit):
         d_factor = (1.0 - tanh_val**2) / Iscale
         dg_di = (Gon - Goff) * d_factor
         
-        G_mat = self.toolkit.zeros((5, 5))
         
         # d(i_val)/dv = g
-        G_mat[0, 0] = g; G_mat[0, 1] = -g
-        G_mat[1, 0] = -g; G_mat[1, 1] = g
         
         # d(i_val)/di_ctrl = v * dg_di
         g_i = v * dg_di
-        G_mat[0, 4] = g_i
-        G_mat[1, 4] = -g_i
         
         # cp/cm KCL contributions
-        G_mat[2, 4] = 1.0
-        G_mat[3, 4] = -1.0
         
         # Branch equation V_cp - V_cm = 0
-        G_mat[4, 2] = 1.0
-        G_mat[4, 3] = -1.0
         
+        G_mat = self.toolkit.matrix_from_entries(
+            (5, 5),
+            [
+             (0, 0, g),
+             (0, 1, -g),
+             (1, 0, -g),
+             (1, 1, g),
+             (0, 4, g_i),
+             (1, 4, -g_i),
+             (2, 4, 1.0),
+             (3, 4, -1.0),
+             (4, 2, 1.0),
+             (4, 3, -1.0),
+            ])
         return G_mat
 
 class BSource(Circuit):
@@ -1662,11 +1716,14 @@ class BSource(Circuit):
         
         di_dv = self.toolkit.derivative(self.iparv.i_func, v_ctrl)
 
-        G_mat = self.toolkit.zeros((4, 4))
-        G_mat[2, 0] = di_dv
-        G_mat[2, 1] = -di_dv
-        G_mat[3, 0] = -di_dv
-        G_mat[3, 1] = di_dv
+        G_mat = self.toolkit.matrix_from_entries(
+            (4, 4),
+            [
+             (2, 0, di_dv),
+             (2, 1, -di_dv),
+             (3, 0, -di_dv),
+             (3, 1, di_dv),
+            ])
         return G_mat
 
     def q(self, x, epar=defaultepar):
@@ -1683,11 +1740,14 @@ class BSource(Circuit):
         
         dq_dv = self.toolkit.derivative(self.iparv.q_func, v_ctrl)
 
-        C_mat = self.toolkit.zeros((4, 4))
-        C_mat[2, 0] = dq_dv
-        C_mat[2, 1] = -dq_dv
-        C_mat[3, 0] = -dq_dv
-        C_mat[3, 1] = dq_dv
+        C_mat = self.toolkit.matrix_from_entries(
+            (4, 4),
+            [
+             (2, 0, dq_dv),
+             (2, 1, -dq_dv),
+             (3, 0, -dq_dv),
+             (3, 1, dq_dv),
+            ])
         return C_mat
 
 NonLinearVCCS = BSource

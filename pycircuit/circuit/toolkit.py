@@ -261,6 +261,19 @@ class Toolkit:
 
 
 class NumericToolkit(Toolkit):
+    def matrix_from_entries(self, shape, entries):
+        ## dtype pinned to float: the base nested-list build lets all-integer
+        ## stamps (gm=1) come out int64, which changed doctest reprs and
+        ## invites integer-division surprises downstream.  The symbolic
+        ## toolkit keeps the base implementation -- exact integer zeros and
+        ## live sympy entries are exactly what it needs.
+        import numpy as _np
+        n_rows, n_cols = shape
+        M = _np.zeros((n_rows, n_cols))
+        for r, c, v in entries:
+            M[r, c] += v
+        return M
+
     """Numeric toolkit backed by numpy."""
     symbolic = False
 
@@ -302,6 +315,16 @@ class SparseNumericToolkit(NumericToolkit):
         return coo_matrix((data, (rows, cols)), shape=shape)
 
 class JAXToolkit(Toolkit):
+    def matrix_from_entries(self, shape, entries):
+        ## Same float-dtype pin as NumericToolkit, built immutably: entries
+        ## may be tracers, so accumulate in a Python grid and convert once.
+        import jax.numpy as _jnp
+        n_rows, n_cols = shape
+        rows = [[0.0] * n_cols for _ in range(n_rows)]
+        for r, c, v in entries:
+            rows[r][c] = rows[r][c] + v
+        return _jnp.asarray(rows, dtype=_jnp.float64)
+
     """Numeric toolkit backed by JAX for auto-differentiation."""
     symbolic = False
     poly = False

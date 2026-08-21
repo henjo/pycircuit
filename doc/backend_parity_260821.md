@@ -498,6 +498,33 @@ existing TLine tests before/after, per house rules.
   and every migrated element should keep its stamp bit-identical on the
   numeric toolkit (assert, don't assume).
 
+  > **EXECUTED 2026-08-21.**  The open question resolved decisively first:
+  > NONE of the 12 classes had ever been constructed under the JAX toolkit
+  > — every one crashed on immutable-array assignment at the probe (the
+  > fail-first record), so the sweep fixed uniform real exposure, not
+  > working code.  A mechanical transformer (semicolon-splitting
+  > preprocessor + strict block matcher) migrated all 16 mutate sites; the
+  > two remaining `toolkit.zeros` uses are pure early-returns.  Gates held:
+  > numeric stamps bit-identical 16/16 against pre-sweep captures; all 12
+  > classes construct AND evaluate under JAX; the enduring cross-toolkit
+  > gate compares numeric-vs-JAX stamps at near-machine tolerance
+  > (VCVS_limited's JAX G comes from autodiff of eval_i_pure — same
+  > derivative, different rounding) and symbolic construction keeps its
+  > symbols.  The gate immediately earned its keep: **ISwitch's
+  > `eval_i_pure` returned 0.0 for its control branch's defining equation**
+  > (v_cp − v_cm), so on any autodiff toolkit the KVL row vanished from the
+  > jacobian and the residual never enforced the equation the manual stamp
+  > claims — a latent correctness defect fixed with the sweep.  Two
+  > follow-on refinements, both owner-decided: NumericToolkit and
+  > JAXToolkit override `matrix_from_entries` to pin float dtype (the base
+  > nested-list build let all-integer stamps come out int64, which moved
+  > five doctest reprs; the symbolic toolkit keeps the base — exact zeros
+  > and live symbols are what it needs), and the cross-toolkit gate is
+  > BIT-EXACT for the ten same-construction classes with fp tolerance only
+  > for the two whose derivative METHOD legitimately differs per toolkit
+  > (VCVS_limited: autodiff vs hand formula; BSource: autodiff vs
+  > finite-difference `derivative`).
+
 ---
 
 ## Suggested order

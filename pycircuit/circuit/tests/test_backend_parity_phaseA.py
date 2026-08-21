@@ -764,3 +764,92 @@ def test_max_dv_step_voltage_check_on_algebraic_networks():
         n_vi = run(max_dv_step=2e11, max_di_step=1e6)
         assert n_vi > 1.5 * n_v, (n_v, n_vi)
     _with_jax(go2)
+
+
+def test_p24_stamps_build_identically_on_every_toolkit():
+    """P24 (owner request): the stamp-construction hygiene sweep.
+
+    16 zeros-then-mutate sites across 12 element classes were migrated to
+    Toolkit.matrix_from_entries by a mechanical transformer.  The roadmap's
+    open question resolved decisively first: NONE of these classes had ever
+    been constructed under the JAX toolkit -- every one crashed on
+    immutable-array assignment at the probe (the fail-first record).  The
+    migration gates: numeric stamps stayed bit-identical (asserted 16/16 at
+    landing against pre-sweep captures), and here, enduringly: each class
+    builds the SAME stamp under the numeric and JAX toolkits, and
+    constructs under the symbolic one."""
+    from pycircuit.circuit import elements as E
+    from pycircuit.circuit.toolkit import jaxtoolkit
+
+    probes = [
+        ('VCVS', lambda: E.VCVS(1, gnd, 2, gnd, g=2.0)),
+        ('CCVS', lambda: E.CCVS(1, gnd, 2, gnd, r=10.0)),
+        ('Nullor', lambda: E.Nullor(1, gnd, 2, gnd)),
+        ('Transformer', lambda: E.Transformer(1, gnd, 2, gnd, n=2.0)),
+        ('Gyrator', lambda: E.Gyrator(1, gnd, 2, gnd, gm=1e-3)),
+        ('CCCS', lambda: E.CCCS(1, gnd, 2, gnd, F=2.0)),
+        ('Idt', lambda: E.Idt(1, gnd, 2, gnd)),
+        ('Idtmod', lambda: E.Idtmod(1, gnd, 2, gnd)),
+        ('CoupledInductors', lambda: E.CoupledInductors(
+            1, gnd, 2, gnd, L1=1e-6, L2=2e-6, K=0.9)),
+        ('VCVS_limited', lambda: E.VCVS_limited(1, gnd, 2, gnd, g=3.0,
+                                                level=2.0, offset=0.1)),
+        ('ISwitch', lambda: E.ISwitch(1, gnd, 2, gnd, Ron=2.0, Roff=1e5,
+                                      Ion=1e-3)),
+        ('BSource', lambda: E.BSource(1, gnd, 2, gnd,
+                                      i_func=lambda v: 1e-3 * v ** 3)),
+    ]
+
+    def stamps(toolkit_):
+        saved = circuit_mod.default_toolkit
+        circuit_mod.default_toolkit = toolkit_
+        try:
+            out = {}
+            for name, factory in probes:
+                c = SubCircuit()
+                c.add_node('1'); c.add_node('2')
+                c['el'] = factory()
+                el = c['el']
+                x = np.linspace(0.1, 0.5, el.n)
+                out[name] = np.asarray(el.G(
+                    x if toolkit_ is numeric else
+                    __import__('jax.numpy', fromlist=['jnp']).asarray(x)),
+                    dtype=float)
+            return out
+        finally:
+            circuit_mod.default_toolkit = saved
+
+    ref = stamps(numeric)
+    jx = stamps(jaxtoolkit)
+    for name in ref:
+        if name in ('VCVS_limited', 'BSource'):
+            ## Owner decision (option 2): compared separately at fp
+            ## tolerance -- these two compute G by DIFFERENT methods per
+            ## toolkit (VCVS_limited: autodiff of eval_i_pure vs the
+            ## hand-derived formula; BSource: autodiff vs the numeric
+            ## toolkit's finite-difference `derivative`).  Same
+            ## derivative, different rounding.  Everything else is the
+            ## SAME construction on both toolkits and must be bit-exact.
+            np.testing.assert_allclose(jx[name], ref[name], rtol=1e-9,
+                                       atol=1e-15, err_msg=name)
+        else:
+            np.testing.assert_array_equal(jx[name], ref[name],
+                                          err_msg=name)
+
+    ## Symbolic: constructs with exact symbols intact (the failure mode the
+    ## first VCCS fix hit).
+    from pycircuit.circuit.toolkit import SymbolicToolkit
+    import pycircuit.circuit.toolkit as tk
+    sym = getattr(tk, 'symbolic', None)
+    if sym is not None:
+        saved = circuit_mod.default_toolkit
+        circuit_mod.default_toolkit = sym
+        try:
+            c = SubCircuit()
+            c.add_node('1'); c.add_node('2')
+            import sympy
+            c['e'] = E.VCVS(1, gnd, 2, gnd, g=sympy.Symbol('A'))
+            assert sympy.Symbol('A') in sympy.Matrix(np.asarray(
+                c['e']._G, dtype=object)).free_symbols
+        finally:
+            circuit_mod.default_toolkit = saved
