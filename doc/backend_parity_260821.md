@@ -44,7 +44,7 @@ Parameters and options, from the mechanical diff:
 | **P16** TLine delay interpolation | quadratic (3-point Lagrange) | linear + ring-cap raise | align later (M) |
 | **P17** solver strategy objects (`nrsolver`/`scaler`/`linearsolver`) | ✓, injectable | refused loudly | **document — permanent** (traced loop cannot dispatch) |
 | **P18** continuation (gmin/source stepping) | DC path; transient retries dt | dt retries only | roadmap, both sides |
-| **P19** `coupled_lte` (Fang), `pcnr`, `coupled_method` | ✓ — research paths with measured records | absent | one-sided by design |
+| **P19** `coupled_lte` (Fang), `pcnr`, `coupled_method` | ✓ — research paths with measured records | absent | **amended: portable — Fang then PCNR scheduled** (see P19 note) |
 | **P20** `solve_batched` per-lane sweeps | — | ✓ — the backend's reason to exist | one-sided by design |
 | **P21** batched DC operating point | n/a | missing (`uic=True` required, refused loudly) | roadmap |
 
@@ -226,10 +226,19 @@ existing TLine tests before/after, per house rules.
   dispatched per iteration; a traced `while_loop` cannot call into them. The loud
   refusal in `__init__` **is** the contract — permanent, and now stated as such
   rather than as "not yet".
-- **P19 research paths:** `coupled_lte` (Fang), `pcnr`, `coupled_method` are
-  CPU-side research instruments with heavy measured records; porting them into a
-  traced loop would mean re-deriving those records from scratch. One-sided until one
-  of them graduates to a default.
+- **P19 research paths — verdict AMENDED (owner decision, same day): portable, and
+  scheduled.** Feasibility review reversed the original call on three facts: Fang's
+  solution-space LTE kernels are trace-ready by the stage-9(a) charter (one bisection
+  helper needs a branchless rewrite); `Diode.eval_i_pure` already exists, so junction
+  devices already evaluate on the JAX path; and PCNR is architecturally a *better* fit
+  for a traced loop than the classic limiting it replaces — limiting mutates per-device
+  Python state (`_vlim`), which a `lax.while_loop` cannot host, while PCNR's junction
+  unknowns are just more state vector.  Plan: Fang's 'approx' branch first (M/L —
+  per-lane coupled (x,h) in `solve_batched` is the payoff), PCNR second (L — framed as
+  the JAX backend's nonlinear-robustness strategy, since that path has neither limiting
+  nor PCNR today).  The CPU's +60–80 %/iteration PCNR cost figure does NOT transfer to
+  vmapped execution and is re-measured, not assumed.  `bordered` and PCNR-inside-Fang
+  stay CPU-only until separately justified.
 - **P20 `solve_batched`:** JAX-only by design — it is the branch's purpose. The CPU
   gets no imitation API; a Python loop over `Transient` is already expressible and
   honest about its cost.
