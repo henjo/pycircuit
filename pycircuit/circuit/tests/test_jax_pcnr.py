@@ -83,7 +83,7 @@ def test_pcnr_matches_cpu_pcnr_on_the_rectifier():
     from pycircuit.circuit.transient import Transient
 
     tran_c = Transient(_rectifier(), toolkit=numeric, pcnr=True,
-                       reltol=1e-5, uic=True)
+                       reltol=1e-5, uic=True, timestep_max=2e-5)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         res_c = tran_c.solve(tend=2e-3, timestep=2e-5)
@@ -91,7 +91,8 @@ def test_pcnr_matches_cpu_pcnr_on_the_rectifier():
     vc = np.asarray(res_c.v('b'), float).reshape(-1)
 
     def run():
-        tran = JAXTransient(_rectifier(), reltol=1e-5, pcnr=True)
+        tran = JAXTransient(_rectifier(), reltol=1e-5, pcnr=True,
+                            timestep_max=2e-5)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             res = tran.solve(gnd, tend=2e-3, timestep=2e-5, uic=True)
@@ -136,7 +137,7 @@ def test_pcnr_inside_coupled_matches_cpu():
     from pycircuit.circuit.transient import Transient
 
     tran_c = Transient(_rectifier(), toolkit=numeric, pcnr=True,
-                       reltol=1e-5, uic=True)
+                       reltol=1e-5, uic=True, timestep_max=2e-5)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         res_c = tran_c.solve(tend=2e-3, timestep=2e-5, coupled_lte=True)
@@ -145,7 +146,7 @@ def test_pcnr_inside_coupled_matches_cpu():
 
     def run():
         tran = JAXTransient(_rectifier(), reltol=1e-5, pcnr=True,
-                            coupled_lte=True)
+                            coupled_lte=True, timestep_max=2e-5)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             res = tran.solve(gnd, tend=2e-3, timestep=2e-5, uic=True)
@@ -199,7 +200,7 @@ def test_pcnr_with_tline_matches_cpu():
         return c
 
     tran_c = Transient(line_diode(), toolkit=numeric, pcnr=True,
-                       reltol=1e-4, uic=True)
+                       reltol=1e-4, uic=True, timestep_max=2e-10)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         res_c = tran_c.solve(tend=8e-9, timestep=2e-10)
@@ -207,7 +208,8 @@ def test_pcnr_with_tline_matches_cpu():
     vc = np.asarray(res_c.v('c'), float).reshape(-1)
 
     def run():
-        tran = JAXTransient(line_diode(), reltol=1e-4, pcnr=True)
+        tran = JAXTransient(line_diode(), reltol=1e-4, pcnr=True,
+                            timestep_max=2e-10)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             res = tran.solve(gnd, tend=8e-9, timestep=2e-10, uic=True)

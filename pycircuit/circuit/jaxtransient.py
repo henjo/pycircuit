@@ -1421,13 +1421,17 @@ class JAXTransient(Analysis):
                        '(default) disables the clamp.',
                   unit='V', default=None),
         ## STAGE 9(g).  Ported from `Transient`, same name, default and validation.
-        ## DECISION D2 -- the same knob as `Transient.max_step`, same name and same
-        ## default, because 9(d) and 9(g) both exist because these two backends had
-        ## drifted apart on exactly this kind of detail.
-        Parameter(name='max_step',
-                  desc='Largest accepted timestep; None means timestep. Raise it to '
-                       'let the controller coast through quiescent intervals (SPICE '
-                       'calls this TMAX and defaults it to tend/50)',
+        ## DECISION D2 -- the same knob as the CPU's, same name and same
+        ## default, because 9(d) and 9(g) both exist because these two backends
+        ## had drifted apart on exactly this kind of detail.  OWNER DECISION
+        ## (2026-08-21): decoupled from `timestep` and renamed -- `timestep`
+        ## doubling as the cap made gentle circuits step-cap-limited, where no
+        ## tolerance knob could move the run (measured: identical 209-step
+        ## rc-vsin runs at reltol 1e-4 and 1e-6).
+        Parameter(name='timestep_max',
+                  desc='Largest accepted timestep; None means tend/50, the '
+                       'SPICE TMAX default. Decoupled from timestep, which '
+                       'only sets the opening-step scale',
                   unit='s', default=None),
         ## P1: `uic`/`minstep` were **kwargs reads -- `solve(uicc=True)` ran
         ## silently with defaults, the dead-knob defect class at the call
@@ -1487,21 +1491,18 @@ class JAXTransient(Analysis):
                     "Transient for a circuit that needs %r."
                     % (unsupported, unsupported))
 
-    def _max_step(self, timestep):
+    def _timestep_max(self, tend):
         """The clamp on how large an accepted step may grow -- decision D2.
 
-        `Transient` has the identical method; a `max_step` below `timestep` is a
-        caller error rather than a silent override, because the step can never
-        exceed it and accepting one quietly would discard the timestep asked for.
+        `Transient` resolves identically: None means tend/50, SPICE's TMAX
+        default.  Decoupled from `timestep` by owner decision -- the old
+        None-means-timestep coupling made gentle circuits step-cap-limited,
+        with no tolerance knob able to move the run.
         """
-        max_step = self.par.max_step
-        if max_step is None:
-            return timestep
-        if max_step < timestep:
-            raise ValueError(
-                "max_step (%g) is smaller than timestep (%g); pass a smaller "
-                "timestep instead, or max_step=None." % (max_step, timestep))
-        return float(max_step)
+        timestep_max = self.par.timestep_max
+        if timestep_max is None or timestep_max <= 0:
+            return float(tend) / 50.0
+        return float(timestep_max)
 
     def _element_cap(self, dt_max):
         """Clamp ``dt_max`` to the tightest element step cap (stage 8(d)
@@ -1544,8 +1545,8 @@ class JAXTransient(Analysis):
             raise ValueError(
                 "firststep must be positive, not %r; pass None to use the default "
                 "ramp of timestep*1e-3" % (firststep,))
-        ## Larger than dt_max would be capped on the very next step anyway, and
-        ## asking for one is more likely a mistake than an intent.
+        ## Opening above the suggested scale is more likely a mistake than
+        ## an intent; the controller grows geometrically from here anyway.
         return min(float(firststep), float(timestep))
 
     def _pcnr_setup(self):
@@ -1682,8 +1683,8 @@ class JAXTransient(Analysis):
             ## are two entry points of one class and disagreed about this by ~50x,
             ## so the same circuit at the same requested timestep was error-
             ## controlled to two different standards depending on which was called.
-            ## `timestep` matches `solve` and matches `Transient.max_step`.
-            dt_max = self._max_step(timestep)
+            ## `tend/50` matches `solve` and matches the CPU's resolution.
+            dt_max = self._timestep_max(tend)
         dt_max = self._element_cap(dt_max)
             
         t_breaks_array = jnp.array(collect_breakpoints(
@@ -1869,7 +1870,7 @@ class JAXTransient(Analysis):
                 x0 = DC(self.cir).solve().x
             
         dt_min = float(self.par.minstep) if minstep is None else minstep
-        dt_max = self._element_cap(self._max_step(timestep))
+        dt_max = self._element_cap(self._timestep_max(tend))
     
         t_breaks_array = jnp.array(collect_breakpoints(
             self.cir, tend, float(self.par.minbreak)))

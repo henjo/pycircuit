@@ -167,7 +167,8 @@ def test_jax_coupled_tline_matches_cpu_standard():
         return c
 
     cpu = Transient(line(), toolkit=numeric, reltol=1e-4,
-                    integrator=Gear2Integrator(), uic=True)
+                    integrator=Gear2Integrator(), uic=True,
+                    timestep_max=2e-10)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         res_c = cpu.solve(gnd, tend=8e-9, timestep=2e-10)
@@ -177,7 +178,8 @@ def test_jax_coupled_tline_matches_cpu_standard():
     saved = circuit_mod.default_toolkit
     circuit_mod.default_toolkit = jaxtoolkit
     try:
-        tran = JAXTransient(line(), reltol=1e-4, coupled_lte=True)
+        tran = JAXTransient(line(), reltol=1e-4, coupled_lte=True,
+                            timestep_max=2e-10)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             res = tran.solve(gnd, tend=8e-9, timestep=2e-10, uic=True)

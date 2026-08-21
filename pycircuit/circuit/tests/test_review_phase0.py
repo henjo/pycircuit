@@ -548,7 +548,9 @@ def test_f11_breakpoint_order_drop_tames_edge_rejections():
                            tf=1e-5, pw=5e-4, per=1e-3)
         cir['R1'] = R('in', 'out', r=1e3)
         cir['C1'] = C('out', gnd, c=1e-6)
-        tran = JAXTransient(cir, reltol=1e-4)
+        ## timestep_max pins the old timestep-as-cap configuration the
+        ## 16-rejections record was measured under (decoupled 2026-08-21).
+        tran = JAXTransient(cir, reltol=1e-4, timestep_max=2e-5)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             res = tran.solve(gnd, tend=3e-3, timestep=2e-5, uic=True)

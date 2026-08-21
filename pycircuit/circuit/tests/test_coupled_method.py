@@ -212,14 +212,16 @@ def test_coupled_tline_matches_standard_path():
 
     ## Matched line: bit-close to the standard path.
     ref = Transient(line(False), toolkit=numeric, reltol=1e-4,
-                    integrator=Gear2Integrator(), uic=True)
+                    integrator=Gear2Integrator(), uic=True,
+                    timestep_max=2e-10)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         rr = ref.solve(gnd, tend=8e-9, timestep=2e-10)
     tr = np.asarray(rr.sweep_values, float)
     vr = np.asarray(rr.v('b'), float).reshape(-1)
 
-    tran = Transient(line(False), toolkit=numeric, reltol=1e-4, uic=True)
+    tran = Transient(line(False), toolkit=numeric, reltol=1e-4,
+                     uic=True, timestep_max=2e-10)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         res = tran.solve(gnd, tend=8e-9, timestep=2e-10, coupled_lte=True)
@@ -232,7 +234,8 @@ def test_coupled_tline_matches_standard_path():
     assert dev < 1e-12, 'coupled+TLine drifted from standard: %.3e' % dev
 
     ## Mismatched RC load: must complete and settle at (1 + Gamma)/2 = 2/3.
-    tran2 = Transient(line(True), toolkit=numeric, reltol=1e-4, uic=True)
+    tran2 = Transient(line(True), toolkit=numeric, reltol=1e-4,
+                      uic=True, timestep_max=2e-10)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         res2 = tran2.solve(gnd, tend=8e-9, timestep=2e-10, coupled_lte=True)

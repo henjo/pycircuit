@@ -105,8 +105,11 @@ def _measure(signal_amplitude, periods=40, points=512, keep=16):
     c['C'] = C(n1, gnd, c=_CLOAD)
     c['D'] = Diode(n1, gnd, IS=_IS_D)
 
-    res = Transient(c, toolkit=numeric).solve(
-        refnode=gnd, tend=periods / _F0, timestep=1.0 / (_F0 * points))
+    ## timestep_max pins the old timestep-as-cap sampling density -- the
+    ## FFT-based harmonic floors here need it (cap decoupled 2026-08-21).
+    _ts = 1.0 / (_F0 * points)
+    res = Transient(c, toolkit=numeric, timestep_max=_ts).solve(
+        refnode=gnd, tend=periods / _F0, timestep=_ts)
     wave = res.v(n1)
     t = np.asarray(wave.x[0])
     v = np.asarray(wave.y)

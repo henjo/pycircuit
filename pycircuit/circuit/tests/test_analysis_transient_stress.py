@@ -18,7 +18,9 @@ def _compare_methods(c, tend, timestep, test_name, uic=False):
     ## Zeros is the physically right initial state in both cases (an integrator
     ## starts at zero, a charge pump starts discharged), so nothing about the tests'
     ## intent changes -- only that the intent is now stated.
-    tran = Transient(c, uic=uic)
+    ## timestep_max pins the old timestep-as-cap configuration these
+    ## stress records were measured under (decoupled 2026-08-21).
+    tran = Transient(c, uic=uic, timestep_max=timestep)
     
     # 1. Option B (Standard Adaptive LTE)
     res_adapt = tran.solve(tend=tend, timestep=timestep, coupled_lte=False)

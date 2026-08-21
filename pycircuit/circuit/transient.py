@@ -473,16 +473,25 @@ class Transient(Analysis):
                         'resample_uniform',
                    unit='s',
                    default=None),
-         Parameter(name='max_step',
-                   desc='Largest accepted timestep; None means timestep. Raise it '
-                        'to let the controller coast through quiescent intervals '
-                        '(SPICE calls this TMAX and defaults it to tend/50)',
+         ## OWNER DECISION (2026-08-21): the cap is DECOUPLED from
+         ## `timestep` and renamed.  `timestep` used to double as the largest
+         ## accepted step, which silently made the step count on gentle
+         ## circuits a property of the requested output density rather than
+         ## of the error control -- the phase-0 "matched order" step
+         ## agreement (211 vs 210) was partly both backends sitting on the
+         ## same cap.  `timestep` now only sets the opening-step scale and
+         ## the fixed_timestep grid.
+         Parameter(name='timestep_max',
+                   desc='Largest accepted timestep; None means tend/50, the '
+                        'SPICE TMAX default. Decoupled from timestep, which '
+                        'only sets the opening-step scale and the '
+                        'fixed_timestep grid',
                    unit='s',
                    default=None),
          Parameter(name='firststep',
                    desc='Size of the first timestep; None means timestep*1e-3. '
-                        'The first step cannot be error-checked, so taking it at '
-                        'max_step lets its error dominate the whole run.',
+                        'The first step cannot be error-checked, so taking it '
+                        'large lets its error dominate the whole run.',
                    unit='s',
                    default=None),
          Parameter(name='bypasstol',
@@ -1143,7 +1152,7 @@ class Transient(Analysis):
         maxiter = self.par.maxiter if maxiter is None else maxiter
         hmin = self.par.minstep if hmin is None else hmin
         if max_step is None:
-            max_step = self.par.max_step
+            max_step = self.par.timestep_max
             if max_step is None or max_step <= 0:
                 max_step = float('inf')
 
@@ -1943,15 +1952,14 @@ class Transient(Analysis):
         ## package for a benefit only idle-heavy runs see.  SPICE's own default for
         ## the equivalent knob (`TMAX`) is `(tstop - tstart)/50`, which a caller can
         ## now ask for directly.
-        max_step = self.par.max_step
-        if max_step is None:
-            max_step = timestep
-        elif max_step < timestep:
-            raise ValueError(
-                "max_step (%g) is smaller than timestep (%g). The step can never "
-                "exceed max_step, so this silently overrides the timestep you "
-                "asked for; pass a smaller timestep instead, or max_step=None to "
-                "use timestep as the clamp." % (max_step, timestep))
+        ## Decoupled from `timestep` by owner decision (see the Parameter):
+        ## None means SPICE's TMAX default, tend/50.  The old
+        ## max_step-below-timestep refusal is moot -- `timestep` no longer
+        ## promises an output density, so a cap below it just clamps the
+        ## opening step like any other.
+        max_step = self.par.timestep_max
+        if max_step is None or max_step <= 0:
+            max_step = tend / 50.0
 
         ## STAGE 8(d) -- a delay element caps the step, per line.
         ##
@@ -1965,20 +1973,24 @@ class Transient(Analysis):
         ## The cap is asked of the ELEMENTS rather than hard-coded here, so a future
         ## delay element gets it by implementing one method.
         element_cap = self.cir.max_timestep() if hasattr(self.cir, 'max_timestep') else None
-        if element_cap is not None and element_cap < max_step:
+        if element_cap is not None:
             ## Under `fixed_timestep` the caller has taken the grid into their own
             ## hands, so silently substituting a finer one would be the wrong kind
             ## of help -- but running on regardless is worse, because the error is a
             ## WRONG DELAY and nothing else reports it.  Warn and obey, which is what
-            ## the force-accept and non-convergence paths already do.
+            ## the force-accept and non-convergence paths already do.  The
+            ## comparison is against the GRID, not the cap: since timestep_max
+            ## decoupled from timestep, the cap says nothing about how coarse
+            ## the caller's fixed grid is.
             if fixed_timestep:
-                warnings.warn(
-                    'transient: fixed_timestep=%g exceeds the %g s cap a delay '
-                    'element needs (TD/2). The propagation delay will come out too '
-                    'long -- measured 4x at twice the cap -- and nothing else will '
-                    'report it. Use a timestep <= %g, or drop fixed_timestep.'
-                    % (timestep, element_cap, element_cap), RuntimeWarning)
-            else:
+                if timestep > element_cap:
+                    warnings.warn(
+                        'transient: fixed_timestep=%g exceeds the %g s cap a delay '
+                        'element needs (TD/2). The propagation delay will come out too '
+                        'long -- measured 4x at twice the cap -- and nothing else will '
+                        'report it. Use a timestep <= %g, or drop fixed_timestep.'
+                        % (timestep, element_cap, element_cap), RuntimeWarning)
+            elif element_cap < max_step:
                 max_step = element_cap
         ## The opening ramp exists to stop the ONE step the controller cannot check
         ## from dominating the run.  Under `fixed_timestep` there is no controller
@@ -1986,7 +1998,8 @@ class Transient(Analysis):
         ## would run the ENTIRE simulation at `timestep*1e-3`, a thousand times more
         ## steps for a result the caller explicitly asked to be uniform.  Caught by
         ## `test_transient_RLC` and three others, which is what the suite gate is for.
-        dt = timestep if fixed_timestep else self._opening_step(timestep)
+        dt = timestep if fixed_timestep else min(self._opening_step(timestep),
+                                                 max_step)
         TRTOL = self.LTERATIO   ## one bound, named once (hygiene)
         ## Bound the number of consecutive LTE rejections at a single time point.
         ## Near a source discontinuity (e.g. a VPulse corner) the truncation-error
@@ -2399,19 +2412,17 @@ class Transient(Analysis):
         ## Same opening ramp as `solve()` -- this path had the same defect.
         h = self._opening_step(timestep)
         ## DECISION D2 -- same clamp as `_solve`; see the note there.
-        max_step = self.par.max_step
-        if max_step is None:
-            max_step = timestep
-        elif max_step < timestep:
-            raise ValueError(
-                "max_step (%g) is smaller than timestep (%g); pass a smaller "
-                "timestep instead, or max_step=None." % (max_step, timestep))
+        ## Same decoupled resolution as the standard path: None -> tend/50.
+        max_step = self.par.timestep_max
+        if max_step is None or max_step <= 0:
+            max_step = tend / 50.0
 
         ## STAGE 8(d) -- a delay element caps the step; see `_solve` for why.
         ## The coupled path is always adaptive, so the cap simply applies.
         element_cap = self.cir.max_timestep() if hasattr(self.cir, 'max_timestep') else None
         if element_cap is not None and element_cap < max_step:
             max_step = element_cap
+        h = min(h, max_step)
         ## STAGE 12B -- the coupled path never created a statistics object, so
         ## `tran.statistics` raised AttributeError after any `coupled_lte=True`
         ## run and the two paths could not be compared on step counts at all.

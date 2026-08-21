@@ -564,7 +564,12 @@ def _rc_analytic(reltol, firststep='unset', integrator=None, tend_tau=10):
     cir['R'] = R('n1', 'n2', r=Rv)
     cir['C'] = C('n2', gnd, c=Cv)
 
+    ## timestep_max = tau keeps the helper's premise -- the old
+    ## timestep-as-cap made this exact value the cap, non-binding by design;
+    ## the decoupled default (tend/50 = tau/5) is TIGHTER here and would set
+    ## the loose-reltol error itself, hiding what this helper measures.
     opts = dict(reltol=reltol, vabstol=1e-12, lte_vabstol=1e-9, uic=True,
+                timestep_max=tau,
                 integrator=integrator or TrapezoidalIntegrator())
     if firststep != 'unset':
         opts['firststep'] = firststep
@@ -1765,7 +1770,11 @@ def _switching_stage(per, tf=None):
 
 def _switch_run(per, tf=None):
     import warnings as _w
-    tran = Transient(_switching_stage(per, tf), toolkit=numeric)
+    ## timestep_max pins the old timestep-as-cap sampling density: the
+    ## decoupled default (1.6*per/50) is 12.8x coarser and quantizes the
+    ## storage-time measurement below its measured 13.6-16.8 ps resolution.
+    tran = Transient(_switching_stage(per, tf), toolkit=numeric,
+                     timestep_max=per / 400)
     with _w.catch_warnings():
         _w.simplefilter('ignore', RuntimeWarning)
         res = tran.solve(refnode=gnd, tend=per * 1.6, timestep=per / 400)
@@ -2135,13 +2144,13 @@ def _settling_rc():
     return cir
 
 
-def _quiescent_run(max_step, timestep=1e-4, tau=1e-3):
+def _quiescent_run(timestep_max, timestep=1e-4, tau=1e-3):
     """100*tau, so ~99% of the run is a dead-flat settled solution."""
     import warnings
     import numpy as np
     from pycircuit.circuit import numeric, gnd
     from pycircuit.circuit.transient import Transient
-    kw = {} if max_step is None else {'max_step': max_step}
+    kw = {} if timestep_max is None else {'timestep_max': timestep_max}
     tran = Transient(_settling_rc(), toolkit=numeric, reltol=1e-4, uic=True, **kw)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
@@ -2151,45 +2160,42 @@ def _quiescent_run(max_step, timestep=1e-4, tau=1e-3):
     return len(t), float(np.diff(t).max()), abs(v[-1] - (1.0 - np.exp(-t[-1] / tau)))
 
 
-def test_max_step_default_is_timestep():
-    """The default must not move anything: None means timestep, as before.
-
-    Changing the default would move every waveform in the package for a benefit
-    only idle-heavy runs see, which is why D2 made the knob reachable rather than
-    changing what it reaches by default.
-    """
+def test_timestep_max_default_is_tend_over_50():
+    """RE-DERIVED at the owner decision (2026-08-21): None used to mean
+    `timestep`, which silently made gentle circuits step-cap-limited -- no
+    tolerance knob could move them (measured: identical 209-step JAX runs
+    at reltol 1e-4 and 1e-6).  None now means tend/50, SPICE's TMAX
+    default, and an explicit tend/50 must reproduce it exactly."""
     n_none, dt_none, _e = _quiescent_run(None)
-    n_explicit, dt_explicit, _e2 = _quiescent_run(1e-4)   # == timestep
+    n_explicit, dt_explicit, _e2 = _quiescent_run(100 * 1e-3 / 50.0)
     assert n_none == n_explicit
-    assert dt_none == dt_explicit == pytest.approx(1e-4, rel=1e-12)
+    assert dt_none == dt_explicit == pytest.approx(100 * 1e-3 / 50.0,
+                                                   rel=1e-12)
+    ## And the point of the decision: the default no longer clamps at
+    ## `timestep` -- steps grow well past it on the quiescent stretch.
+    assert dt_none > 1e-4
 
 
-def test_max_step_frees_the_controller_on_a_quiescent_run():
-    """The case D2 exists for: 1027 steps across a dead-flat solution.
+def test_timestep_max_still_clamps_when_asked():
+    """The knob's original purpose survives the rename: an explicit cap at
+    the old timestep-coupled value reproduces the clamped run, and it is
+    what holds the step count up on a dead-flat solution."""
+    n_clamped, dt_clamped, e_clamped = _quiescent_run(1e-4)  # old behaviour
+    n_free, dt_free, e_free = _quiescent_run(None)           # tend/50
 
-    Asserted as a step-count RATIO with the error held, not as an absolute count,
-    so the test says "the clamp was what held it back" rather than pinning today's
-    number.  A change that frees the clamp without reducing steps would mean the
-    controller was never the thing being limited.
-    """
-    n_clamped, _dt, e_clamped = _quiescent_run(None)
-    n_free, dt_free, e_free = _quiescent_run(100 * 1e-3 / 50.0)   # SPICE's TMAX
-
+    assert dt_clamped == pytest.approx(1e-4, rel=1e-12)
     assert n_free * 3 <= n_clamped, \
-        'freeing max_step cut steps only %d -> %d' % (n_clamped, n_free)
-    assert dt_free > 1e-4, 'the step never grew past the old clamp'
+        'freeing the cap cut steps only %d -> %d' % (n_clamped, n_free)
     assert e_free <= max(e_clamped, 1e-12) * 10, \
         'accuracy fell off a cliff: %.3e -> %.3e' % (e_clamped, e_free)
 
 
-def test_max_step_below_timestep_raises():
-    """A caller error, not a silent override.
-
-    The step can never exceed max_step, so accepting one smaller than `timestep`
-    would quietly discard the timestep that was asked for.
-    """
-    with pytest.raises(ValueError, match='smaller than timestep'):
-        _quiescent_run(1e-6)
+def test_timestep_max_below_timestep_just_clamps():
+    """RE-DERIVED: the old refusal guarded `timestep`'s role as promised
+    output density; decoupled, a cap below the suggested step is legitimate
+    configuration and simply clamps -- including the opening step."""
+    n, dt_max, _e = _quiescent_run(1e-6)
+    assert dt_max <= 1e-6 * (1.0 + 1e-9)
 
 
 def test_both_backends_agree_on_the_parameter():
@@ -2200,14 +2206,16 @@ def test_both_backends_agree_on_the_parameter():
     """
     from pycircuit.circuit.transient import Transient
     cpu = {p.name: p.default for p in Transient.parameters}
-    assert 'max_step' in cpu and cpu['max_step'] is None
+    assert 'timestep_max' in cpu and cpu['timestep_max'] is None
+    assert 'max_step' not in cpu
 
     pytest.importorskip('jax')
     from pycircuit.circuit.jaxtransient import JAXTransient
     jax_pars = {p.name: p.default for p in JAXTransient.parameters}
-    assert 'max_step' in jax_pars, 'JAXTransient is missing max_step'
-    assert jax_pars['max_step'] == cpu['max_step'], \
-        'the two backends default max_step differently'
+    assert 'timestep_max' in jax_pars, 'JAXTransient is missing timestep_max'
+    assert 'max_step' not in jax_pars
+    assert jax_pars['timestep_max'] == cpu['timestep_max'], \
+        'the two backends default timestep_max differently'
 
 
 ## ---------------------------------------------------------------------------

@@ -198,9 +198,13 @@ def test_p10_outputstep_resamples_the_jax_result():
     def go():
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            r_adaptive = JAXTransient(_rc(), reltol=1e-4).solve(
+            ## timestep_max pins the adaptive grid density the 1e-3 bound
+            ## was derived at (cap decoupled from timestep 2026-08-21) --
+            ## this test measures the resample, not the default cap.
+            r_adaptive = JAXTransient(_rc(), reltol=1e-4,
+                                      timestep_max=1e-5).solve(
                 gnd, tend=2e-3, timestep=1e-5, uic=True)
-            r_uniform = JAXTransient(_rc(), reltol=1e-4,
+            r_uniform = JAXTransient(_rc(), reltol=1e-4, timestep_max=1e-5,
                                      outputstep=5e-5).solve(
                 gnd, tend=2e-3, timestep=1e-5, uic=True)
         tu = np.asarray(r_uniform.sweep_values, float)

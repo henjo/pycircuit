@@ -601,7 +601,10 @@ def _stiff_run(name, reltol, tend=5e-3, timestep=2e-4):
     c['C1'] = C(1, gnd, c=_STIFF_C)
     c['R1'] = R(1, 2, r=_STIFF_R)
     c['L1'] = L(2, gnd, L=_STIFF_L)
-    tran = Transient(c, integrator=_make_integrator(name), reltol=reltol)
+    ## timestep_max pins the configuration this suite's records were
+    ## measured under -- the old timestep-as-cap (decoupled 2026-08-21).
+    tran = Transient(c, integrator=_make_integrator(name), reltol=reltol,
+                     timestep_max=timestep)
     tran.step_controller = _CountingController()
     x0 = np.zeros(c.n)
     x0[c.get_node_index('1')] = 1.0

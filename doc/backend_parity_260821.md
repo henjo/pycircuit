@@ -24,7 +24,7 @@ Parameters and options, from the mechanical diff:
 
 | Feature | CPU `Transient` | `JAXTransient` | Verdict |
 |---|---|---|---|
-| `reltol`, `iabstol`, `vabstol`, `lte_vabstol`, `lte_iabstol`, `maxiter`, `max_step`, `firststep`, `epar` | ✓ | ✓ | aligned (post-review) |
+| `reltol`, `iabstol`, `vabstol`, `lte_vabstol`, `lte_iabstol`, `maxiter`, `timestep_max`, `firststep`, `epar` | ✓ | ✓ | aligned (post-review; `max_step` renamed `timestep_max` and DECOUPLED from `timestep` by owner decision 2026-08-21 — None now means tend/50, SPICE's TMAX, so tolerance knobs are live on gentle circuits where the old timestep-as-cap froze the step count) |
 | t=0 point, tend landing, breakpoint order drop, force-accept accounting, per-row Newton, safety-factor law, statistics-on-result | ✓ | ✓ | aligned (Phases 1–3) |
 | **P1** `uic` / `minstep` / typo safety | Parameters | `**kwargs`, silently swallowed | **align now (S)** |
 | **P2** LTE-ratio knob | `LTERATIO = 7.0` class constant | `TRTOL` Parameter | **align now (S)** — reversed asymmetry |

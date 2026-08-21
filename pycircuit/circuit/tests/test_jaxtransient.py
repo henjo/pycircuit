@@ -431,7 +431,8 @@ def test_gate_9_2_cpu_and_jax_agree_on_an_rc_transient():
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         rc_cpu = Transient(cpu, toolkit=numeric, integrator=Gear2Integrator(),
-                           uic=True).solve(refnode=gnd, tend=tend, timestep=1e-5)
+                           uic=True, timestep_max=1e-5,
+                           ).solve(refnode=gnd, tend=tend, timestep=1e-5)
     t_cpu = np.asarray(rc_cpu.sweep_values, dtype=float)
     v_cpu = np.asarray(rc_cpu.v(2, gnd), dtype=float)
 
@@ -443,7 +444,8 @@ def test_gate_9_2_cpu_and_jax_agree_on_an_rc_transient():
         cir['C1'] = C('out', gnd, c=1e-6)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            res = JAXTransient(cir).solve(gnd, tend=tend, timestep=1e-5, uic=True)
+            res = JAXTransient(cir, timestep_max=1e-5).solve(
+                gnd, tend=tend, timestep=1e-5, uic=True)
         return res, cir.get_node_index('out')
 
     rj, idx = _with_jax_toolkit(go)
@@ -721,22 +723,27 @@ def test_gate_9g_opening_step_is_ramped():
             lambda: JAXTransient(_rc_circuit(), firststep=-1.0))._opening_step(1e-4)
 
 
-def test_solve_batched_runs_and_honours_timestep():
+def test_solve_batched_runs_and_honours_timestep_max():
     """`solve_batched` had NO test coverage at all, and it was broken.
 
     The counters added by 9(c)/9(e) default to scalars; every field of the batched
     state must carry a leading batch axis for `jax.vmap`, so `solve_batched` raised
     "rank should be at least 1" while the whole suite stayed green.  It also used
-    `dt_max = tend/10` where `solve` uses `timestep`, so the requested timestep was
-    very nearly ignored -- 29 vs 32 steps and the same 3.67e-3 error whether 1e-4
-    or 1e-5 was asked for.
+    `dt_max = tend/10` where `solve` used `timestep`, so the two entry points
+    error-controlled the same circuit to different standards -- stage 9(g).
+
+    RE-DERIVED at the timestep_max decoupling (owner decision 2026-08-21):
+    `timestep` no longer caps the step anywhere, so 9(g)'s honest statement
+    is that BOTH entry points honour the same `timestep_max` cap -- asserted
+    here through the batched entry, with the finer cap taking more steps to
+    a better answer, exactly what the old coupling used to show.
     """
     import warnings
     from pycircuit.circuit.jaxtransient import JAXTransient
     from pycircuit.circuit import gnd
     tau, tend = 1e-3, 5e-3
 
-    def run(timestep):
+    def run(cap):
         def go():
             cir = _rc_circuit()
             with warnings.catch_warnings():
@@ -746,10 +753,10 @@ def test_solve_batched_runs_and_honours_timestep():
                 ## F2(a)).  The old {'R': ...} here was a silent no-op -- equal
                 ## values in both lanes, ignored either way.  C is batchable and
                 ## the value matches the circuit's own, so this test keeps
-                ## measuring what it always measured: timestep honouring.
-                res = JAXTransient(cir).solve_batched(
+                ## measuring what it always measured: cap honouring.
+                res = JAXTransient(cir, timestep_max=cap).solve_batched(
                     gnd, override_params_tree={'C': {'c': jnp.array([[1e-6], [1e-6]])}},
-                    tend=tend, timestep=timestep, uic=True)
+                    tend=tend, timestep=cap, uic=True)
             return res
         res = _with_jax_toolkit(go)
         r0 = res[0] if isinstance(res, (list, tuple)) else res
@@ -761,8 +768,8 @@ def test_solve_batched_runs_and_honours_timestep():
     n_coarse, dt_coarse, e_coarse = run(1e-4)
     n_fine, dt_fine, e_fine = run(1e-5)
 
-    assert dt_coarse <= 1e-4 * 1.0001, 'dt_max is not the requested timestep'
-    assert dt_fine <= 1e-5 * 1.0001, 'dt_max is not the requested timestep'
+    assert dt_coarse <= 1e-4 * 1.0001, 'dt_max is not the requested cap'
+    assert dt_fine <= 1e-5 * 1.0001, 'dt_max is not the requested cap'
     assert n_fine > 3 * n_coarse, \
         'a 10x finer timestep barely changed the run: %d -> %d steps' \
         % (n_coarse, n_fine)
@@ -800,7 +807,9 @@ def test_tline_standard_path_matches_cpu_bit_close():
         c['Rl'] = R('b', gnd, r=50.0)
         return c
 
-    tran_c = Transient(build(), toolkit=numeric, reltol=1e-4, uic=True)
+    ## timestep_max pins the old timestep-as-cap configuration this record was measured under (decoupled 2026-08-21).
+    tran_c = Transient(build(), toolkit=numeric, reltol=1e-4, uic=True,
+                       timestep_max=2e-10)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         res_c = tran_c.solve(tend=8e-9, timestep=2e-10)
@@ -810,7 +819,7 @@ def test_tline_standard_path_matches_cpu_bit_close():
     saved = circuit_mod.default_toolkit
     circuit_mod.default_toolkit = jaxtoolkit
     try:
-        tran = JAXTransient(build(), reltol=1e-4)
+        tran = JAXTransient(build(), reltol=1e-4, timestep_max=2e-10)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             res = tran.solve(gnd, tend=8e-9, timestep=2e-10, uic=True)
