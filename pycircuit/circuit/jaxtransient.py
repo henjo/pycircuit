@@ -23,6 +23,12 @@ from pycircuit.circuit.analysis import CircuitResult as Result
 ## raises; sizing the buffer from the run instead of fixing it belongs to stage 9.
 TLINE_HISTORY_DEPTH = 10000
 
+## The CPU's within-time-point excursion clamps (stepcontroller
+## MIN_SHRINK_RATIO / MAX_GROWTH_RATIO), re-exported as plain floats for the
+## traced Fang loop.
+from pycircuit.circuit.stepcontroller import (MIN_SHRINK_RATIO as MIN_SHRINK,
+                                              MAX_GROWTH_RATIO as MAX_GROWTH)
+
 
 class NewtonState(NamedTuple):
     x: Any
@@ -505,7 +511,161 @@ def calculate_next_dt(dt, error_ratio, dt_min, dt_max, t_breaks_array, current_t
     dt_new = jnp.maximum(dt_new, dt_min)
     return dt_new
 
-def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf):
+
+## ---------------------------------------------------------------------------
+## Fang's coupled (x, h) time step -- the 'approx' branch, traced (P19).
+##
+## A faithful port of Transient._fang_timestep_inner's DEFAULT path, scoped the
+## way doc/backend_parity_260821.md P19 records: sec. 3.4's error-ratio step
+## correction with the eq (18) solution update, hold_h for imposed step sizes,
+## the within-point excursion clamps and the thwarted-shrink saturation test.
+## NOT ported (CPU-only until separately justified): the 'bordered' eq (12)
+## branch, PCNR-inside-Fang, grid_locked (no fixed_timestep on this backend
+## yet), and cir.limit (this element set has no limiter; nonlinear robustness
+## on this backend is PCNR's job, next stage).  The LTE degree follows the
+## effective order (F19): both degrees are computed and selected, which keeps
+## every shape static under the trace.
+## ---------------------------------------------------------------------------
+
+class FangState(NamedTuple):
+    x: Any
+    h: Any
+    iters: Any
+    done: Any
+    converged: Any
+
+
+def _fang_lte(x_new, state, h, first_order):
+    """Fang eq (6) deviation for degree 2 and 1, selected by effective order.
+
+    ``x_history``/``h_history`` are the accepted rings, most recent first;
+    zero step entries (run start) are guarded the way ``ywr_error_ratio``
+    guards ``dt_prev``.
+    """
+    from pycircuit.circuit._lte_kernels import solution_lte
+    h0 = jnp.where(state.h_history[0] == 0.0, h, state.h_history[0])
+    h1 = jnp.where(state.h_history[1] == 0.0, h0, state.h_history[1])
+    lte2 = solution_lte(x_new, [state.x_history[0], state.x_history[1],
+                                state.x_history[2]], [h0, h1], h)
+    lte1 = solution_lte(x_new, [state.x_history[0], state.x_history[1]],
+                        [h0], h)
+    return jnp.where(first_order, lte1, lte2), h0, h1
+
+
+def fang_inner_loop(state: TransientState, circuit, irefnode,
+                    hold_h, eval_method='gear', reltol=1e-4,
+                    xtol=1e-12, lte_abstol=1e-12, trtol=7.0, maxiter=100,
+                    params_tree=None, gamma_min=0.7, gamma_max=3.0, eta=0.15,
+                    dt_min=1e-18, dt_max=jnp.inf):
+    from pycircuit.circuit._lte_kernels import (step_for_error_ratio,
+                                                euler_companion_dh,
+                                                bdf2_companion_dh)
+
+    t_prev = state.t
+    h_entry = state.dt
+    h_floor = jnp.maximum(dt_min, h_entry * MIN_SHRINK)
+    h_ceil = jnp.minimum(dt_max, h_entry * MAX_GROWTH)
+    target = (gamma_min * gamma_max) ** 0.5
+    first_order = effective_first_order(state)
+    ## The band cannot be evaluated before two accepted points exist.
+    no_hist = state.h_history[0] == 0.0
+
+    def assemble(x, h):
+        st_h = state._replace(dt=h)
+        I_G = circuit.i(x, params_tree=params_tree)
+        G_G = circuit.G(x, params_tree=params_tree)
+        q_C = circuit.q(x, params_tree=params_tree)
+        C_C = circuit.C(x, params_tree=params_tree)
+        I_u = circuit.u(t_prev + h, analysis='tran', params_tree=params_tree)
+        i_C, G_eq = compute_integration(q_C, C_C, st_h, method=eval_method,
+                                        first_order=first_order)
+        return I_G + i_C + I_u, G_G + G_eq, q_C
+
+    def body(fs: FangState):
+        x, h = fs.x, fs.h
+        f, J, _q_x = assemble(x, h)
+        J_sub = jnp.delete(jnp.delete(J, irefnode, axis=0), irefnode, axis=1)
+        dx0_sub = jnp.linalg.solve(J_sub, -jnp.delete(f, irefnode))
+        dx0 = jnp.insert(dx0_sub, irefnode, 0.0)
+        x1 = x + dx0
+
+        ## Stage 2: has the step size earned any attention?
+        lte, h0, _h1 = _fang_lte(x1, state, h, first_order)
+        ref = jnp.maximum(state.sig_max, jnp.max(jnp.abs(x1)))
+        etol = trtol * (reltol * ref + lte_abstol)
+        err = jnp.max(jnp.abs(lte) / etol)
+        eps_ok = jnp.logical_and(gamma_min <= err, err <= gamma_max)
+
+        conv_x = jnp.all(jnp.abs(dx0)
+                         < reltol * jnp.maximum(jnp.abs(x1), jnp.abs(x))
+                         + xtol)
+
+        ## A held step whose error is over the band is reported unconverged so
+        ## the caller shrinks and retries -- exactly the CPU's hold_h return.
+        held_over = jnp.logical_and(hold_h,
+                                    jnp.logical_and(~eps_ok, err > gamma_max))
+
+        def plain(_):
+            ## hold_h, in-band, or no history: nothing to solve for h.
+            return x1, h, conv_x, jnp.asarray(False)
+
+        def solve_h(_):
+            ## Sec. 3.4: the new step from the error RATIO, eq (17) inverted
+            ## on the node polynomial; eq (18) corrects the solution with the
+            ## factors already in hand.
+            ratio = target / jnp.maximum(err, 1e-300)
+            args1, args2 = [h0], [h0, _h1]
+            h_new = jnp.where(
+                first_order,
+                step_for_error_ratio(h, args1, ratio, 1.0 - eta, 1.0 + eta),
+                step_for_error_ratio(h, args2, ratio, 1.0 - eta, 1.0 + eta))
+            h_want = jnp.where(
+                first_order,
+                step_for_error_ratio(h, args1, ratio, 1e-6, 1e6),
+                step_for_error_ratio(h, args2, ratio, 1e-6, 1e6))
+            h_new = jnp.clip(h_new, h_floor, h_ceil)
+            dh = h_new - h
+            ## Only a thwarted SHRINK counts (the CPU's saturation lesson).
+            saturated = h_want < h_floor * (1.0 - 1e-9)
+
+            ## eq (18): p = d(iq)/dh at fixed solution + du/dt.
+            q1 = circuit.q(x1, params_tree=params_tree)
+            q_prev = state.q_history[0]
+            q_prev2 = state.q_history[1]
+            p_e = euler_companion_dh(q1, q_prev, h)
+            p_g = bdf2_companion_dh(q1, q_prev, q_prev2, h, h0)
+            p = (jnp.where(first_order, p_e, p_g)
+                 + circuit.dudt(t_prev + h, analysis='tran',
+                                params_tree=params_tree))
+            dxh_sub = jnp.linalg.solve(J_sub, -jnp.delete(p, irefnode))
+            dxh = jnp.insert(dxh_sub, irefnode, 0.0)
+            x_corr = x1 + dxh * dh
+
+            done = jnp.logical_and(conv_x,
+                                   jnp.logical_and(~saturated,
+                                                   jnp.abs(dh) < eta * h_new))
+            return x_corr, h_new, done, jnp.asarray(False)
+
+        take_plain = jnp.logical_or(hold_h,
+                                    jnp.logical_or(eps_ok, no_hist))
+        x_out, h_out, done, _ = jax.lax.cond(take_plain, plain, solve_h, None)
+        done = jnp.logical_or(done, held_over)
+        conv = jnp.logical_and(done, ~held_over)
+        return FangState(x=x_out, h=h_out, iters=fs.iters + 1,
+                         done=done, converged=conv)
+
+    def cond(fs: FangState):
+        return jnp.logical_and(~fs.done, fs.iters < maxiter)
+
+    init = FangState(x=extrapolate_predictor(state), h=h_entry,
+                     iters=jnp.asarray(0), done=jnp.asarray(False),
+                     converged=jnp.asarray(False))
+    final = jax.lax.while_loop(cond, body, init)
+    ## maxiter exhaustion without done: unconverged.
+    return final
+
+
+def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15):
 
     ## The same epsilon `calculate_next_dt` uses to decide a breakpoint is "already
     ## reached".  They disagreed: after 500 steps of 1e-5 the accumulated `t` sits
@@ -521,10 +681,41 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
         return jnp.logical_and(under_time, under_chunk)
 
     def time_body(state: TransientState):
-        nr_state = newton_inner_loop(state, circuit, irefnode, tline_params, tline_indices,
-                                     eval_method=eval_method, reltol=reltol, abstol=abstol,
-                                     xtol=xtol, maxiter=maxiter,
-                                     params_tree=params_tree, max_dv=max_dv)
+        if coupled:
+            ## FANG'S COUPLED PATH (P19).  A step that must LAND somewhere --
+            ## the next breakpoint or tend (tend is in t_breaks_array) -- has
+            ## its size imposed, so it is HELD: fang solves x only, and an
+            ## over-band held step is reported for the shrink-and-retry below,
+            ## exactly the CPU's hold_h contract (F3 included: tend-truncated
+            ## steps cannot overshoot).
+            future = jnp.where(t_breaks_array > state.t + t_eps,
+                               t_breaks_array, jnp.inf)
+            next_break = jnp.min(future)
+            overshoots = state.t + state.dt > next_break
+            h_entry = jnp.where(overshoots, next_break - state.t, state.dt)
+            hold_h = jnp.logical_or(
+                overshoots,
+                jnp.abs((state.t + h_entry) - next_break) <= t_eps)
+            fstate = fang_inner_loop(
+                state._replace(dt=h_entry), circuit, irefnode,
+                hold_h, eval_method=eval_method, reltol=reltol,
+                xtol=xtol, lte_abstol=lte_abstol, trtol=trtol,
+                maxiter=maxiter, params_tree=params_tree,
+                gamma_min=gamma_min, gamma_max=gamma_max, eta=eta,
+                dt_min=dt_min, dt_max=dt_max)
+            ## Re-enter the shared accept machinery with fang's verdict: the
+            ## solved h is both the step taken and (clipped) the next guess --
+            ## "the solved step carries forward" is the method's whole point.
+            state = state._replace(dt=fstate.h)
+            nr_state = NewtonState(x=fstate.x, xdiff=jnp.zeros_like(fstate.x),
+                                   F_norm=jnp.asarray(0.0),
+                                   iters=fstate.iters,
+                                   converged=fstate.converged)
+        else:
+            nr_state = newton_inner_loop(state, circuit, irefnode, tline_params, tline_indices,
+                                         eval_method=eval_method, reltol=reltol, abstol=abstol,
+                                         xtol=xtol, maxiter=maxiter,
+                                         params_tree=params_tree, max_dv=max_dv)
         x_curr = nr_state.x
         q_curr = circuit.q(x_curr, params_tree=params_tree)
         C_curr = circuit.C(x_curr, params_tree=params_tree)
@@ -546,10 +737,16 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
         ## costs accuracy.  0.2b measured the `J^-1` mapping this branch avoided at
         ## 1-3% of a step, well under its own 10% keep-it threshold.
         J = circuit.G(x_curr, params_tree=params_tree) + Geq
-        error_ratio, order_p1 = ywr_error_ratio(
-            i_curr, x_curr, J, state, irefnode,
-            method=eval_method, trtol=trtol, lte_rel=lte_reltol,
-            lte_abstol=lte_abstol, first_order=first_order)
+        if coupled:
+            ## Fang solved (x, h) against its own solution-space LTE; a second
+            ## verdict from the charge estimator would re-litigate it.
+            error_ratio = jnp.where(nr_state.converged, 0.0, jnp.inf)
+            order_p1 = jnp.asarray(2.0)
+        else:
+            error_ratio, order_p1 = ywr_error_ratio(
+                i_curr, x_curr, J, state, irefnode,
+                method=eval_method, trtol=trtol, lte_rel=lte_reltol,
+                lte_abstol=lte_abstol, first_order=first_order)
 
         ## Accept when the LTE is within tolerance.  Always accept the first step
         ## (no history for the estimate) and when dt has reached the floor -- the
@@ -594,8 +791,13 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
             ## 5.0559e-3 against a requested tend of 5e-3, where `Transient` lands on
             ## it exactly.  `tend` is itself in `t_breaks_array`, which is why the
             ## overshoot showed up at the end of every run.
-            next_dt = calculate_next_dt(state.dt, error_ratio, dt_min, dt_max,
-                                        t_breaks_array, state.t + state.dt, order_p1)
+            if coupled:
+                ## The solved step carries forward; breakpoint truncation for
+                ## the NEXT point happens at the next fang entry.
+                next_dt = jnp.clip(state.dt, dt_min, dt_max)
+            else:
+                next_dt = calculate_next_dt(state.dt, error_ratio, dt_min, dt_max,
+                                            t_breaks_array, state.t + state.dt, order_p1)
 
             x_hist_new = jnp.roll(state.x_history, shift=1, axis=0).at[0].set(x_curr)
             q_hist_new = jnp.roll(state.q_history, shift=1, axis=0).at[0].set(q_curr)
@@ -664,6 +866,10 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
             ## circuit never occupied, so a fixed cut is used instead.
             lte_shrink = jnp.clip(error_ratio ** (-1.0 / order_p1), 0.1, 0.9)
             shrink = jnp.where(nr_state.converged, lte_shrink, 0.25)
+            if coupled:
+                ## The CPU coupled path's outer retry: h *= 0.25 whatever the
+                ## failure flavour (Newton or held-step LTE).
+                shrink = jnp.asarray(0.25)
             retry_dt = jnp.maximum(state.dt * shrink, dt_min)
             return state._replace(
                 dt=retry_dt,
@@ -760,6 +966,30 @@ class JAXTransient(Analysis):
                   unit='', default=7.0),
         Parameter(name='maxiter', desc='Maximum number of iterations', unit='',
                   default=100),
+        ## P19: Fang's coupled (x, h) stepping, 'approx' branch -- the same
+        ## contract as Transient's coupled_lte solve argument, as a Parameter
+        ## here because the traced loop is built per run.
+        Parameter(name='coupled_lte',
+                  desc="Solve solution and step size together (Fang DAC 2013, "
+                       "sec 3.4 'approx' correction). The 'bordered' branch "
+                       "and PCNR-inside-Fang remain CPU-only.",
+                  unit='', default=False),
+        ## The LTE acceptance band, with the CPU's 'auto' sentinel semantics
+        ## (F5): 'auto' resolves to Fang's (0.7, 3.0, 0.15) on the coupled
+        ## path; explicit values pass through verbatim.  The standard JAX
+        ## path does not read the band yet (parity item P8).
+        Parameter(name='lte_gamma_min',
+                  desc="Lower edge of the LTE acceptance band (coupled path); "
+                       "'auto' means 0.7 (Fang).",
+                  unit='', default='auto'),
+        Parameter(name='lte_gamma_max',
+                  desc="Upper edge of the LTE acceptance band (coupled path); "
+                       "'auto' means 3.0 (Fang).",
+                  unit='', default='auto'),
+        Parameter(name='lte_eta',
+                  desc="Relative per-iteration step-change limit, eq (16); "
+                       "'auto' means 0.15 (Fang).",
+                  unit='', default='auto'),
         ## F16: opt-in, OFF by default -- the old hardcoded 0.5 V made any
         ## swing beyond ~maxiter*0.5 V non-convergent by construction.
         Parameter(name='max_dv',
@@ -850,6 +1080,17 @@ class JAXTransient(Analysis):
         ## Larger than dt_max would be capped on the very next step anyway, and
         ## asking for one is more likely a mistake than an intent.
         return min(float(firststep), float(timestep))
+
+    def _coupled_band(self):
+        """The (gamma_min, gamma_max, eta) the coupled path runs with --
+        Transient._coupled_band's exact mapping (F5): 'auto' resolves to
+        Fang's values, explicit numbers (0.0 / 1.0 / None included) pass
+        through verbatim."""
+        gm, gx, eta = (self.par.lte_gamma_min, self.par.lte_gamma_max,
+                       self.par.lte_eta)
+        return (0.7 if gm == 'auto' else gm,
+                3.0 if gx == 'auto' else gx,
+                0.15 if eta == 'auto' else eta)
 
     def _newton_abstol(self, n):
         """Per-row Newton RESIDUAL floor: currents on node rows, volts on
@@ -979,6 +1220,14 @@ class JAXTransient(Analysis):
             
         tline_head = jnp.zeros(batch_size, dtype=jnp.int32)
         
+        _gm, _gx, _eta = self._coupled_band()
+        if self.par.coupled_lte and n_tlines > 0:
+            raise NotImplementedError(
+                'coupled_lte does not support TLine on this backend yet: the '
+                'coupled assembly does not apply the delay-line history, and '
+                'running without it would silently drop the reflections. Use '
+                'coupled_lte=False, or the CPU coupled path.')
+
         def run_chunk(s, p_tree):
             return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear', params_tree=p_tree, reltol=self.par.reltol, abstol=self._newton_abstol(n),
                                    xtol=self._newton_xtol(n),
@@ -986,7 +1235,9 @@ class JAXTransient(Analysis):
                                    lte_reltol=self.par.reltol,
                                    lte_abstol=self._lte_abstol(n),
                                    max_dv=(jnp.inf if self.par.max_dv is None
-                                           else float(self.par.max_dv)))
+                                           else float(self.par.max_dv)),
+                                   coupled=bool(self.par.coupled_lte),
+                                   gamma_min=_gm, gamma_max=_gx, eta=_eta)
             
         # JIT the vmapped run_chunk
         batched_run_chunk = jax.jit(jax.vmap(run_chunk))
@@ -1165,6 +1416,14 @@ class JAXTransient(Analysis):
     
         # We need a JIT-able wrapper that burns the chunk_size and tend into static parameters if needed,
         # but tend is a runtime parameter.
+        _gm, _gx, _eta = self._coupled_band()
+        if self.par.coupled_lte and n_tlines > 0:
+            raise NotImplementedError(
+                'coupled_lte does not support TLine on this backend yet: the '
+                'coupled assembly does not apply the delay-line history, and '
+                'running without it would silently drop the reflections. Use '
+                'coupled_lte=False, or the CPU coupled path.')
+
         @jax.jit
         def run_chunk(s):
             return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='gear', reltol=self.par.reltol, abstol=self._newton_abstol(n),
@@ -1173,7 +1432,9 @@ class JAXTransient(Analysis):
                                    lte_reltol=self.par.reltol,
                                    lte_abstol=self._lte_abstol(n),
                                    max_dv=(jnp.inf if self.par.max_dv is None
-                                           else float(self.par.max_dv)))
+                                           else float(self.par.max_dv)),
+                                   coupled=bool(self.par.coupled_lte),
+                                   gamma_min=_gm, gamma_max=_gx, eta=_eta)
         
         results_list = [np.array([x0])]
         times_list = [np.array([0.0])]

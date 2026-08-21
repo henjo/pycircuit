@@ -46,7 +46,13 @@ class TimeFunction():
         reporting it would hand `p` a derivative from the wrong segment and
         nothing else would notice.
         """
-        eps = 1e-9 * max(abs(t), 1.0)
+        ## Branchless max (P19): Python's max() on a traced t raised
+        ## TracerBoolConversionError the moment a constant source's
+        ## finite-difference fallback ran inside the coupled JAX loop.  The
+        ## identity max(a, b) = (a + b + |a - b|) / 2 is pure operators and
+        ## serves numpy and traced arrays alike.
+        at = abs(t)
+        eps = 1e-9 * ((at + 1.0 + abs(at - 1.0)) * 0.5)
         return (self.f(t + eps) - self.f(t - eps)) / (2.0 * eps)
 
 
