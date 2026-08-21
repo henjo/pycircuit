@@ -630,10 +630,38 @@ class Transient(Analysis):
         ## force an order drop.  This one is true only until the first step of a
         ## run has been accepted, and it is what the step controller is given.
         self._no_history = True
+    def _rescue_solver(self, base):
+        """P18 phase 3 + P25: the failed-time-point continuation chain --
+        junction-gmin -> gshunt -> pseudo-transient, for exactly one
+        point.  No source stepping here: scaling u(t) mid-transient would
+        scale the integrator's companion history too -- ill-posed.
+        Psi-tc IS mid-transient-safe: its anchor is the last accepted
+        state (physical continuity) and it scales nothing.  Every ladder
+        ends with a PURE solve, so an accepted rescued point carries no
+        residue (the P22 rule); Psi-tc's rungs are solved by the PLAIN
+        base, never the chain (the same reasoning as the DC wiring).
+        Junction rows are reduced-system indices, as in DC.  Extracted
+        so the wiring is testable -- the P18 scope finding stands: no
+        legitimate triggering circuit could be fabricated, so the chain's
+        behavior is gated at the nrsolver level and its topology here."""
+        from pycircuit.circuit.nrsolver import (
+            GminSteppingNewton, JunctionGminSteppingNewton,
+            PseudoTransientNewton)
+        from pycircuit.circuit.pcnr import pcnr_junctions
+        _jrows = []
+        for _i, _e, _ra, _rb in pcnr_junctions(self.cir):
+            if self.irefnode in (_ra, _rb):
+                continue
+            _jrows.append((_ra - (_ra > self.irefnode),
+                           _rb - (_rb > self.irefnode)))
+        chain = GminSteppingNewton(
+            JunctionGminSteppingNewton(base, _jrows))
+        return PseudoTransientNewton(chain, rung_solver=base)
+
     ## import it from there instead.
     ## But it's an object method requiring a DC as self
     ## so using DC._newton doesn't work
-    def _newton(self, func, x0): 
+    def _newton(self, func, x0):
         ones_nodes = self.toolkit.ones(len(self.cir.nodes))
         ones_branches = self.toolkit.ones(len(self.cir.branches))
         
@@ -654,24 +682,7 @@ class Transient(Analysis):
         from pycircuit.circuit.nrsolver import NoConvergenceError
         solver = self._get_nrsolver()
         if getattr(self, '_continuation_rescue', False):
-            ## P18 phase 3: the failed-time-point rescue wraps the solver
-            ## in the junction-gmin -> gshunt chain for exactly one point.
-            ## No source stepping here: scaling u(t) mid-transient would
-            ## scale the integrator's companion history too -- ill-posed.
-            ## Both ladders end with a PURE solve, so an accepted rescued
-            ## point carries no residue (the P22 rule).  Junction rows are
-            ## reduced-system indices, as in DC.
-            from pycircuit.circuit.nrsolver import (
-                GminSteppingNewton, JunctionGminSteppingNewton)
-            from pycircuit.circuit.pcnr import pcnr_junctions
-            _jrows = []
-            for _i, _e, _ra, _rb in pcnr_junctions(self.cir):
-                if self.irefnode in (_ra, _rb):
-                    continue
-                _jrows.append((_ra - (_ra > self.irefnode),
-                               _rb - (_rb > self.irefnode)))
-            solver = GminSteppingNewton(
-                JunctionGminSteppingNewton(solver, _jrows))
+            solver = self._rescue_solver(solver)
         scaler = self._get_scaler()
         linsolver = self._get_linearsolver()
         try:
@@ -2385,11 +2396,11 @@ class Transient(Analysis):
                         RuntimeWarning, stacklevel=3)
                 dt = dt * 0.25
                 if dt < self.par.minstep:
-                    ## P18 phase 3: one continuation rescue before giving
-                    ## up -- the point is re-solved through the
-                    ## junction-gmin -> gshunt chain at minstep, and only
-                    ## a PURE converged solution flows on into the normal
-                    ## accept machinery below.
+                    ## P18 phase 3 (+P25): one continuation rescue before
+                    ## giving up -- the point is re-solved through the
+                    ## junction-gmin -> gshunt -> pseudo-transient chain
+                    ## at minstep, and only a PURE converged solution
+                    ## flows on into the normal accept machinery below.
                     dt = self.par.minstep
                     self._dt = dt
                     next_t = t + dt
@@ -2405,8 +2416,9 @@ class Transient(Analysis):
                     except NoConvergenceError as e:
                         raise RuntimeError(
                             'Transient solver failed to converge: timestep '
-                            'shrank below %gs at t=%s, and the gmin/gshunt '
-                            'continuation could not rescue the point: %s'
+                            'shrank below %gs at t=%s, and the gmin/gshunt/'
+                            'pseudo-transient continuation could not rescue '
+                            'the point: %s'
                             % (self.par.minstep, t, e))
                     finally:
                         self._continuation_rescue = False

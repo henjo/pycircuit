@@ -621,11 +621,36 @@ existing TLine tests before/after, per house rules.
   `test_nrsolver_variants.py`; JAX: mock reduced system in
   `test_backend_parity_phaseA.py`) and chain-level engagement is
   exercised by the floating-node raise, which now traverses all three
-  ladders.  Reconsider-ifs recorded: Ψtc at a failed TRANSIENT point
-  (the anchor does not scale sources, so unlike source stepping it is
-  mid-transient-safe — add to the P18 rescue chain when a triggering
-  circuit exists), and SER (switched evolution relaxation) δ adaptation
-  if the decade march ever proves too coarse on a real circuit.
+  ladders.  Both reconsider-ifs were CONSIDERED same day (owner request),
+  with opposite outcomes:
+
+  > **Ψtc at a failed TRANSIENT point — EXECUTED.**  The P18 rescue chain
+  > (extracted to `Transient._rescue_solver` so its topology is testable)
+  > is now junction-gmin → gshunt → **Ψtc outermost**, rungs solved by the
+  > plain base solver exactly as in the DC wiring.  Ψtc is the one
+  > continuation that is mid-transient-safe beyond the conductance
+  > ladders: its anchor is the last accepted state (physical continuity)
+  > and it scales nothing — where source stepping would scale the
+  > companion history, which is why source stepping stays out.  The P18
+  > scope finding stands (no legitimate triggering circuit could be
+  > fabricated), so ladder behavior is gated at the nrsolver level and
+  > the wiring topology in `test_transient_repairs.py`.
+  >
+  > **SER δ-adaptation — TESTED AND REJECTED**, with the measurement
+  > recorded so nobody re-chases it: SER (δ_{k+1} = δ_k·‖F_k‖/‖F_{k+1}‖,
+  > one extra pure residual evaluation per rung, march clamped to
+  > [0.25, 4] decades) was prototyped against the fixed decade march on
+  > the P25 gate problems.  Measured base calls, fixed vs SER: cycle
+  > cubic 47 vs 57 (SER worse), junction slam at budget 120: 80 vs 71,
+  > junction slam at budget 20: 138 vs 71 (SER 1.9× better), tristable
+  > 19 vs 29 (SER worse).  SER wins only where the per-rung iteration
+  > budget is artificially tight — the regime the halving-on-failure
+  > driver already covers correctly, just paying refinement rungs — and
+  > regresses the easy majority while adding a SECOND marching law to a
+  > driver whose value is being one shared mechanism.  Reconsider only
+  > if a real circuit shows the tight-budget signature (rescue cost
+  > dominated by refinement rungs after repeated maxiter failures);
+  > the prototype lives in the session record, the numbers here.
 
 ---
 

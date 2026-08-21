@@ -2576,3 +2576,38 @@ def test_resample_reproduces_a_quadratic_exactly():
     g, v = resample_uniform(t, quad(t), npoints=37)
     assert np.abs(v - quad(g)).max() < 1e-12, \
         'not exact for a quadratic: max err %.3e' % np.abs(v - quad(g)).max()
+
+
+def test_p25_transient_rescue_chain_topology():
+    """P25 reconsider-if EXECUTED: the failed-time-point rescue chain is
+    junction-gmin -> gshunt -> pseudo-transient, with Psi-tc OUTERMOST
+    and its rungs solved by the PLAIN base solver (never the chain --
+    the DC wiring's reasoning applies verbatim).  Psi-tc is the one
+    continuation that is mid-transient-safe beyond the conductance
+    ladders: its anchor is the last accepted state and it scales
+    nothing, where source stepping would scale the companion history
+    (which is why source stepping stays OUT of this chain).  The P18
+    scope finding stands -- no legitimate triggering circuit could be
+    fabricated -- so the ladder behavior is gated at the nrsolver level
+    (test_nrsolver_variants) and the wiring topology here."""
+    from pycircuit.circuit.nrsolver import (
+        StandardNewton, GminSteppingNewton, JunctionGminSteppingNewton,
+        PseudoTransientNewton)
+
+    c = SubCircuit()
+    c['vs'] = VS('a', gnd, v=5.0)
+    c['D'] = Diode('a', 'b')
+    c['R'] = R('b', gnd, r=1e3)
+    c['C'] = C('b', gnd, c=1e-9)
+    tran = Transient(c, toolkit=numeric)
+
+    base = StandardNewton()
+    chain = tran._rescue_solver(base)
+    assert isinstance(chain, PseudoTransientNewton)
+    assert chain.rung_solver is base            # deformed solves bypass the chain
+    assert isinstance(chain.base_solver, GminSteppingNewton)
+    inner = chain.base_solver.base_solver
+    assert isinstance(inner, JunctionGminSteppingNewton)
+    assert inner.base_solver is base
+    ## The diode's junction rows made it in, in reduced indices.
+    assert inner.junction_rows, 'the diode junction was not enumerated'
