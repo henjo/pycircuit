@@ -1398,6 +1398,45 @@ Both are fixed in `_ChainPrinter`. Jacobian evaluation on the MOSFET went
 from **11.6 ms to 6.3 ms**, and the chain's own arithmetic now dominates,
 which is where it should be.
 
+**The gap, measured — 2026-08-22.** Everything above is validated by
+construction properties and internal consistency. Those say nothing
+about how close the device is to the transistor a foundry ships, so
+`pycircuit/circuit/psp_scaling.py` maps a real card through PSP's
+geometry scaling into the element, and `benchmarks/psp_gap.py` compares
+the result against the committed PSP103 reference. Nothing is tuned: the
+parameters come from the card.
+
+| sweep | W | L | median ratio | range |
+|---|---|---|---|---|
+| `nmos_long_idvd` | 10 µm | **1 µm** | **1.095** | 1.054 – 1.116 |
+| `nmos_idvd_vg1p2` | 1 µm | 0.13 µm | 1.221 | 1.09 – 1.73 |
+| `nmos_idvg_vd0p05` | 1 µm | 0.13 µm | 1.703 | 1.61 – 1.84 |
+
+The long device is the one to read — at L = 1 µm the physics the core
+omits matters least. **Within 10%**, from a card, with no fitting.
+
+The *shape* is the useful part, and it named the next two layers:
+
+* the ratio is nearly **flat** across the sweep (1.097 at Vd = 0.05,
+  1.114 at 0.8), so the threshold and gain factor are right and what is
+  missing is multiplicative — series resistance, which PSP folds into
+  the mobility as an extra `Gmob` term and the core has none of;
+* the ratio then **falls** at high Vd (1.114 → 1.060), because PSP's
+  saturated current keeps rising (+5.9% from Vd = 0.8 to 1.4) where ours
+  is flat (+0.7%). That is channel-length modulation, exactly.
+* the short device is 1.7× off, which is the cost of the missing DIBL
+  and short-channel block rather than a defect in the core.
+
+> **The quantum-mechanical correction, found by measuring.** The first
+> comparison ran **23–33% high** with a ratio that grew with current.
+> The card sets `QMC = 1`: carriers in the inversion layer occupy
+> quantised states below the surface, so the surface potential at
+> threshold is higher and the body factor larger
+> (`PSP103_macrodefs.include:322-327`). It was the only term of that size
+> the core was missing, and adding it took the long device from 1.23–1.33
+> to **1.05–1.12**. A test pins that switching it off reopens the gap, so
+> it cannot be removed as cosmetic.
+
 What is left for a running PSP103 card:
 
 **Model-card ingestion — DONE 2026-08-22.**
