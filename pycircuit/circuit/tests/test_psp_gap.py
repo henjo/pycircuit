@@ -80,20 +80,19 @@ def _compare(deck, sweep):
 @needs_pdk
 class TestAgainstTheRealDevice(object):
 
-    def test_the_long_device_agrees_within_fifteen_percent(self, deck, ref):
+    def test_the_long_device_agrees_within_eight_percent(self, deck, ref):
         """W = 10 um, L = 1 um -- where the core is meant to be right.
 
-        The core has no series resistance, no channel-length modulation
-        and no short-channel physics, so this is not expected to be
-        exact.  It IS expected to be close on a long device, and 15% is
-        a bound the measured 10% sits comfortably inside while still
-        catching any real break in the chain.
+        The core has no channel-length modulation and no short-channel
+        physics, so this is not expected to be exact.  Measured range is
+        1.020 - 1.074; the bound is set just outside it, tight enough to
+        catch a real break in the chain.
         """
         _, r, g, _ = _compare(deck, ref['nmos_long_idvd'])
         assert len(r) > 20
         ratio = g / r
-        assert 0.85 < ratio.min(), 'worst low %.3f' % ratio.min()
-        assert ratio.max() < 1.15, 'worst high %.3f' % ratio.max()
+        assert 0.92 < ratio.min(), 'worst low %.3f' % ratio.min()
+        assert ratio.max() < 1.08, 'worst high %.3f' % ratio.max()
 
     def test_the_agreement_is_flat_not_a_lucky_crossing(self, deck, ref):
         """A curve that crosses the reference could average out to 1.
@@ -105,7 +104,7 @@ class TestAgainstTheRealDevice(object):
         """
         _, r, g, _ = _compare(deck, ref['nmos_long_idvd'])
         ratio = g / r
-        assert ratio.max() - ratio.min() < 0.10
+        assert ratio.max() - ratio.min() < 0.08
 
     def test_the_scaled_parameters_are_physical(self, deck, ref):
         """A wrong scaling shows up here before it shows up in a curve."""
@@ -116,7 +115,8 @@ class TestAgainstTheRealDevice(object):
         assert 0.5 < kw['phib'] < 1.3
         assert 0.0 < kw['u0'] < 0.1
         assert all(v >= 0.0 for v in (kw['mue'], kw['themu'], kw['cs'],
-                                      kw['thecs'], kw['thesat']))
+                                      kw['thecs'], kw['thesat'],
+                                      kw['rs']))
 
     def test_the_quantum_correction_is_what_closed_the_gap(self, deck, ref):
         """Recorded because it is how the term was found.
@@ -142,13 +142,63 @@ class TestAgainstTheRealDevice(object):
         assert with_qm['nsub'] > without['nsub']
         assert with_qm['phib'] - without['phib'] > 0.01
 
+    def test_series_resistance_closed_the_next_slice(self, deck, ref):
+        """The second term the measurement named, and what it was worth.
+
+        With the threshold right, the residual on the long device was a
+        nearly FLAT ~10% -- the signature of something multiplicative.
+        PSP folds source/drain resistance into the mobility rather than
+        adding a network element, and switching it on took the long
+        device from a median 1.095 to 1.041.
+
+        Checked as a direction rather than a number: turning `rs` off
+        must raise the current, at every bias.
+        """
+        sweep = ref['nmos_long_idvd']
+        w, l = sweep['w'], sweep['l']
+        card = deck.model_params('sg13g2_lv_nmos_psp', w=w, l=l, ng=1,
+                                 m=1, pre_layout=1)
+        kw = psp_scaling.to_long_channel(card, w=w, l=l)
+        assert kw['rs'] > 0.0, 'the card does specify one'
+
+        cm.default_toolkit = numeric
+        on = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                               cm.Node('b'), **kw)
+        off = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                                cm.Node('b'), **dict(kw, rs=0.0))
+        on.update_iparv()
+        off.update_iparv()
+        for vd in (0.05, 0.4, 0.9, 1.5):
+            x = np.array([vd, 1.2, 0.0, 0.0])
+            assert (np.asarray(on.i(x), float)[0]
+                    < np.asarray(off.i(x), float)[0])
+
+    def test_channel_length_modulation_is_what_remains(self, deck, ref):
+        """The residual has a shape, and it names the next layer.
+
+        PSP's saturated current keeps rising with drain bias -- the
+        channel shortens -- where the core's is flat.  So the ratio
+        FALLS through saturation, and that fall is the size of the
+        missing CLM.  Pinned as a known gap rather than left to be
+        rediscovered.
+        """
+        v, r, g, _ = _compare(deck, ref['nmos_long_idvd'])
+        sat = v >= 0.8
+        assert sat.sum() > 5
+        ## PSP still climbs in saturation; we do not
+        assert r[sat][-1] / r[sat][0] > 1.03
+        assert g[sat][-1] / g[sat][0] < 1.02
+        ## so the ratio decreases across saturation
+        ratio = g / r
+        assert ratio[sat][-1] < ratio[sat][0]
+
     def test_the_short_device_is_measurably_worse(self, deck, ref):
         """The omissions have a size, and it is recorded rather than hidden.
 
-        At L = 0.13 um the missing DIBL, channel-length modulation and
-        series resistance dominate, and the ratio reaches ~1.7.  That is
-        not a defect in the core -- it is the cost of the layers not yet
-        built, and it is what says which to build next.
+        At L = 0.13 um the missing DIBL and channel-length modulation
+        dominate, and the ratio reaches ~1.29 even with series resistance
+        in.  That is not a defect in the core -- it is the cost of the
+        layers not yet built, and it is what says which to build next.
         """
         _, r_l, g_l, _ = _compare(deck, ref['nmos_long_idvd'])
         _, r_s, g_s, _ = _compare(deck, ref['nmos_idvg_vd0p05'])

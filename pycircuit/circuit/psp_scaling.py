@@ -194,8 +194,13 @@ def to_long_channel(card, w, l, T=300.0):
               * (1.0 + _g(card, 'thesatw') * iWE)
               * (1.0 + _g(card, 'thesatlw') * iLE * iWE))
 
+    ## Intrinsic series resistance (:304).  PSP applies it as a mobility
+    ## term rather than a network element; see `psp_kernel`.
+    rs = _g(card, 'rsw1') * iWE * (1.0 + _g(card, 'rsw2') * iWE)
+
     return dict(
         w=w, l=l, tox=tox, nsub=neff, vfb=vfb, phib=phib, u0=u0_eff,
+        rs=max(rs, 0.0), rsg=_g(card, 'rsgo'), rsb=_g(card, 'rsbo'),
         mue=max(mue, 0.0), themu=max(_g(card, 'themuo'), 0.0),
         cs=max(cs, 0.0), thecs=max(_g(card, 'thecso'), 0.0),
         feta=_g(card, 'fetao', 1.0), thesat=max(thesat, 0.0),

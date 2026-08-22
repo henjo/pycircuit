@@ -1406,26 +1406,31 @@ geometry scaling into the element, and `benchmarks/psp_gap.py` compares
 the result against the committed PSP103 reference. Nothing is tuned: the
 parameters come from the card.
 
-| sweep | W | L | median ratio | range |
-|---|---|---|---|---|
-| `nmos_long_idvd` | 10 µm | **1 µm** | **1.095** | 1.054 – 1.116 |
-| `nmos_idvd_vg1p2` | 1 µm | 0.13 µm | 1.221 | 1.09 – 1.73 |
-| `nmos_idvg_vd0p05` | 1 µm | 0.13 µm | 1.703 | 1.61 – 1.84 |
+| sweep | W | L | first pass | + QM | + series R |
+|---|---|---|---|---|---|
+| `nmos_long_idvd` | 10 µm | **1 µm** | 1.29 | 1.095 | **1.041** |
+| `nmos_idvd_vg1p2` | 1 µm | 0.13 µm | — | 1.221 | 1.115 |
+| `nmos_idvg_vd0p05` | 1 µm | 0.13 µm | — | 1.703 | 1.288 |
 
-The long device is the one to read — at L = 1 µm the physics the core
-omits matters least. **Within 10%**, from a card, with no fitting.
+(median ratio, ours / PSP103.) The long device is the one to read — at
+L = 1 µm the physics the core omits matters least. **Within 4%**, from a
+card, with no fitting anywhere.
 
-The *shape* is the useful part, and it named the next two layers:
+Each column is a term the *shape* of the previous residual named:
 
-* the ratio is nearly **flat** across the sweep (1.097 at Vd = 0.05,
-  1.114 at 0.8), so the threshold and gain factor are right and what is
-  missing is multiplicative — series resistance, which PSP folds into
-  the mobility as an extra `Gmob` term and the core has none of;
-* the ratio then **falls** at high Vd (1.114 → 1.060), because PSP's
-  saturated current keeps rising (+5.9% from Vd = 0.8 to 1.4) where ours
-  is flat (+0.7%). That is channel-length modulation, exactly.
-* the short device is 1.7× off, which is the cost of the missing DIBL
-  and short-channel block rather than a defect in the core.
+* the first pass was 23–33% high with a ratio that **grew with current**
+  → the quantum-mechanical correction (below);
+* what remained was a nearly **flat** ~10%, the signature of something
+  multiplicative → **series resistance**, which PSP folds into the
+  mobility as an extra `Gmob` term (`THER = 2·BET·RS`) rather than adding
+  a network element. That keeps the device four-terminal *and* symmetric,
+  since `qim` is a midpoint quantity. Worth 1.095 → 1.041;
+* what remains now **falls** through saturation (1.074 at Vd = 0.8 →
+  1.025 at 1.4), because PSP's saturated current keeps climbing (+5.9%)
+  where ours is flat (+0.7%) → **channel-length modulation**, the next
+  layer;
+* the short device is still 1.29× off, which is the cost of the missing
+  DIBL and short-channel block rather than a defect in the core.
 
 > **The quantum-mechanical correction, found by measuring.** The first
 > comparison ran **23–33% high** with a ratio that grew with current.

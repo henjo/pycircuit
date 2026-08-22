@@ -481,7 +481,34 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
                                           eps=1e-30), 1.0e-10),
                    'ids_ratio')
         coul = _v(mob['cs'] * ratio ** (0.5 * mob['thecs']), 'ids_coul')
-        Gmob = _v(1.0 + base ** mob['themu'] + coul, 'ids_Gmob')
+        ## SERIES RESISTANCE.  PSP does not put a resistor in the
+        ## network -- it folds the source/drain resistance into the
+        ## mobility as `GR = THER*rhob*temp*qim` with
+        ## `THER = 2*BET*RS` (`PSP103_macrodefs.include:381, 742`).  That
+        ## keeps the device four-terminal and, more to the point, keeps
+        ## it SYMMETRIC: `qim` is a midpoint quantity, so `GR` is even
+        ## under the source/drain swap like everything else in `Gmob`.
+        rs = mob.get('rs', 0.0)
+        rsg = mob.get('rsg', 0.0)
+        rsb = mob.get('rsb', 0.0)
+        vsb = mob.get('vsb', 0.0)
+        if rs == 0.0 and not isinstance(rs, sympy.Expr):
+            gr = _v(sympy.Integer(0), 'ids_GR')
+        else:
+            ther = _v(2.0 * beta * rs, 'ids_ther')
+            ## Body-bias dependence of the sheet resistance; the two
+            ## forms are PSP's, selected by the SIGN of a parameter, so
+            ## the condition is parameter-only and the topology is fixed.
+            rhob = _v(sympy.Piecewise(
+                (hdl.safe_div(1.0, 1.0 - rsb * vsb, eps=1e-30), rsb < 0),
+                (1.0 + rsb * vsb, True)), 'ids_rhob')
+            rsgf = _v(sympy.Piecewise(
+                (1.0 - rsg * qim, rsg < 0),
+                (hdl.safe_div(1.0, 1.0 + rsg * qim, eps=1e-30), True)),
+                'ids_rsgf')
+            gr = _v(ther * (rhob * rsgf * qim), 'ids_GR')
+
+        Gmob = _v(1.0 + base ** mob['themu'] + coul + gr, 'ids_Gmob')
 
         thesat1 = _v(mob['thesat']
                      * hdl.safe_div(1.0, Gmob, eps=1e-30), 'ids_ths')

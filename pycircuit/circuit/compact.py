@@ -286,6 +286,15 @@ class PspMosLongChannel(Behavioural):
                   default=1.0),
         Parameter(name='thesat', desc='Velocity saturation parameter',
                   unit='1/V', default=0.39843),
+        ## Series resistance.  PSP folds this into the mobility rather
+        ## than adding a network element, which keeps the device
+        ## four-terminal and symmetric; `rs = 0` disables it.
+        Parameter(name='rs', desc='Intrinsic series resistance', unit='ohm',
+                  default=0.0),
+        Parameter(name='rsg', desc='Gate-bias dependence of rs', unit='',
+                  default=0.0),
+        Parameter(name='rsb', desc='Body-bias dependence of rs', unit='',
+                  default=0.0),
     ]
 
     @staticmethod
@@ -315,6 +324,7 @@ class PspMosLongChannel(Behavioural):
             xg, xn_s, xn_d, Gf, xi, phit, beta,
             mob=dict(mue=mue, themu=themu, cs=cs,          # noqa: F821
                      thecs=thecs, feta=feta, thesat=thesat,  # noqa: F821
+                     rs=rs, rsg=rsg, rsb=rsb, vsb=bs.V,     # noqa: F821
                      cox_area=cox, eps_si=EPS_SI))
         cox_tot = var(cox * w * l, 'cox_tot')                 # noqa: F821
         Qg, Qd, Qb = psp_kernel.charges_long_channel(core, xg, phit,
