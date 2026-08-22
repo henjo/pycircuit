@@ -56,6 +56,15 @@ class Node(circuit.Node):
 
 
 class Branch(circuit.Branch):
+    """A branch between two terminals, optionally named.
+
+    ``Branch(a, b)`` is the usual anonymous branch.  ``Branch(a, b, 'ch')``
+    is Verilog-A's ``branch (a,b) ch;`` -- a DISTINCT branch across the
+    same node pair, with its own current unknown when it is
+    V-contributed or current-probed.  Two branches differing only in name
+    contribute to the same KCL rows but never share an unknown.
+    """
+
     @property
     def V(self):
         return Quantity('V', self)
@@ -63,6 +72,11 @@ class Branch(circuit.Branch):
     @property
     def I(self):
         return Quantity('I', self)
+
+    def __repr__(self):
+        return 'Branch(%s, %s%s)' % (
+            self.plus.name, self.minus.name,
+            '' if self.name is None else ', %r' % self.name)
 
 
 ## NOT a sympy.Symbol subclass, deliberately.  It used to be
@@ -336,6 +350,55 @@ def safe_div(a, b, eps=1e-30):
     return a * b / (b * b + eps * eps)
 
 
+#: What ``simparam`` can genuinely answer.  A name absent here is not a
+#: gap to be filled with a plausible number -- the LRM's contract is that
+#: the caller's default is used, and a model that supplied one has already
+#: said what it wants when the simulator has no opinion.
+_SIMPARAMS = {
+    ## pycircuit has no standing gmin.  Its gmin is a CONTINUATION
+    ## schedule inside the DC solver (`dcanalysis.GminSteppingNewton`,
+    ## `JunctionGminSteppingNewton`), ramped to zero before the answer is
+    ## returned -- not a conductance models should shunt themselves with.
+    ## Answering 0.0 is therefore the truth, and it is also what every
+    ## caller in PSP103 asks for as its default.
+    'gmin': 0.0,
+    ## No die shrink or layout scaling layer exists; 1.0 is not a
+    ## placeholder, it is the identity these would multiply by.
+    'scale': 1.0,
+    'shrink': 1.0,
+    'sourceScaleFactor': 1.0,
+}
+
+
+def simparam(name, default=None):
+    """Verilog-A's ``$simparam(name, default)`` -- ask the simulator.
+
+    Resolved at COMPILE time, because every parameter pycircuit can answer
+    is fixed for the run; nothing here varies per iteration. A name the
+    simulator has no opinion on returns ``default``, per the LRM. Asking
+    for an unknown name with no default is an error, not a silent zero --
+    the model would be reading something that does not exist.
+
+    ``$temperature`` is not routed through here: it is a separate LRM
+    construct and varies per analysis, so it stays the `TEMP` symbol that
+    `vt()` uses.
+
+    PSP103 calls this exactly once, ``$simparam("gmin", 0.0)``
+    (`PSP103_module.include:642`), which is the case this exists for.
+    """
+    if name in _SIMPARAMS:
+        return sympy.sympify(_SIMPARAMS[name])
+    if default is None:
+        raise ValueError(
+            'simparam(%r) is not a simulator parameter pycircuit supplies '
+            '(it knows %s) and no default was given. Verilog-A leaves an '
+            'unknown name with no default undefined; supply the value the '
+            'model should use when the simulator has no opinion, as '
+            'simparam(%r, <value>).'
+            % (name, ', '.join(sorted(_SIMPARAMS)), name))
+    return sympy.sympify(default)
+
+
 def discontinuity(degree=0):
     """Verilog-A's ``$discontinuity(degree)``: tell the solver the model
     has a discontinuity in its ``degree``-th derivative here.
@@ -581,8 +644,14 @@ class Quantity(sympy.AtomicExpr):
 
     def _hashable_content(self):
         if isinstance(self.branch_or_node, Branch):
+            ## The branch NAME is part of the identity.  Without it,
+            ## `I(Branch(p,m,'a'))` and `I(Branch(p,m,'b'))` are the same
+            ## sympy atom, so both resolve to whichever branch's current
+            ## symbol was substituted last -- a wrong stamp, not a
+            ## missing one.
             key = ('branch', self.branch_or_node.plus.name,
-                   self.branch_or_node.minus.name)
+                   self.branch_or_node.minus.name,
+                   getattr(self.branch_or_node, 'name', None))
         else:
             key = ('node', self.branch_or_node.name)
         return (self.quantity,) + key
@@ -605,8 +674,11 @@ class Quantity(sympy.AtomicExpr):
 
     def __repr__(self):
         if self.isbranch:
-            return '%s(%s,%s)' % (self.quantity, self.branch_or_node.plus.name,
-                                  self.branch_or_node.minus.name)
+            nm = getattr(self.branch_or_node, 'name', None)
+            return '%s(%s,%s%s)' % (
+                self.quantity, self.branch_or_node.plus.name,
+                self.branch_or_node.minus.name,
+                '' if nm is None else ':%s' % nm)
         return '%s(%s)' % (self.quantity, self.branch_or_node.name)
 
     __str__ = __repr__
@@ -843,7 +915,15 @@ def generate_code(cls):
     ibranch_keys = set()
 
     def branch_key(branch):
-        return (branch.plus.name, branch.minus.name)
+        ## The NAME is part of the identity.  Verilog-A's
+        ## `branch (a,b) br1, br2;` declares two DISTINCT branches across
+        ## one node pair, each with its own current, and PSP relies on
+        ## that.  Keying on the node pair alone silently merged them into
+        ## one unknown -- the second declaration's constitutive relation
+        ## simply vanished.  An unnamed branch keeps its old identity, so
+        ## nothing that worked before changes.
+        return (branch.plus.name, branch.minus.name,
+                getattr(branch, 'name', None))
 
     for st in crossings:
         nodes.update(st.nodes())
@@ -954,7 +1034,8 @@ def generate_code(cls):
             'with a conductance in parallel, which is not what the model '
             'says. Split the regions into separate elements, or use a '
             'Piecewise inside ONE contribution.'
-            % ', '.join('(%s,%s)' % k for k in sorted(_both)))
+            % ', '.join(_fmt_branch(k) for k in
+                        sorted(_both, key=lambda k: (k[0], k[1], k[2] or ''))))
 
     internalnodes = sorted(nodes - set(terminalnodes), key=lambda n: n.name)
 
@@ -1079,9 +1160,9 @@ def generate_code(cls):
             elif atom.isbranch and atom.quantity == 'I' and \
                     branch_key(atom.branch_or_node) not in ibranch_keys:
                 raise ValueError(
-                    'I(%s,%s) is probed but that branch has no current '
+                    'I%s is probed but that branch has no current '
                     'unknown; probe only V-contributed branches.'
-                    % branch_key(atom.branch_or_node))
+                    % _fmt_branch(branch_key(atom.branch_or_node)))
         expr = expr.subs(bsubs)
         return expr.subs(subst)
 
@@ -1483,6 +1564,13 @@ def generate_code(cls):
                 chained=bool(chain_defs))
 
 
+def _fmt_branch(key):
+    """Render a `(plus, minus, name)` branch key for a message."""
+    plus, minus, name = key
+    return '(%s,%s)' % (plus, minus) if name is None else \
+        '(%s,%s) named %r' % (plus, minus, name)
+
+
 def _leaves(o):
     """Free symbols of an expression, or of a nested list of them."""
     if isinstance(o, (list, tuple)):
@@ -1667,8 +1755,9 @@ class BehaviouralMeta(type):
         ## Circuit.__init__ counts them into n; plus/minus resolve through
         ## the terminal mapping when the branch spans terminals, and to
         ## internal nodes otherwise.
-        cls.branches = tuple(circuit.Branch(circuit.Node(p), circuit.Node(m))
-                             for p, m in info['branchpairs'])
+        cls.branches = tuple(
+            circuit.Branch(circuit.Node(p), circuit.Node(m), name=nm)
+            for p, m, nm in info['branchpairs'])
 
         state_meta = info['state_meta']
         if state_meta['dc_pins']:

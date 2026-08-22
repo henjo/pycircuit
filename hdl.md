@@ -206,7 +206,9 @@ recomputing per Newton iteration.
 | `Contribution(b.V, expr)` | `V(a,b) <+ expr` | creates a branch-current unknown |
 | `b.V`, `node.V` | `V(a,b)`, `V(a)` | potential probe |
 | `b.I` | `I(b)` | flow probe (branch must be V-contributed) |
-| `Branch(a, b)` | `branch (a,b)` | |
+| `Branch(a, b)` | `branch (a,b)` | anonymous |
+| `Branch(a, b, 'ch')` | `branch (a,b) ch;` | a **distinct** branch across the same pair, with its own current |
+| `simparam(name, default)` | `$simparam(name, default)` | resolved at compile time |
 | `Node('mid')` | internal node declaration | discovered from use |
 
 `analog()` returns one `Contribution` or a tuple of them.
@@ -1059,16 +1061,44 @@ clamped-`sqrt` *derivative* is genuinely `0/0`. §3.2c has the kernel
 earlier versions, and the `limexp`/PCNR trade;
 `pycircuit/circuit/tests/test_hdl_kernel.py` pins all of it.
 
-**E3. What PSP still needs.** In rough order of how much stands between
-here and a running model card:
+**E3. Language surface.** Found by reading the shipped PSP source rather
+than the LRM, which is why two of the three turned out different from the
+original estimate:
+
+**Named branches — DONE 2026-08-22.** `Branch(a, b, 'ch')` is
+Verilog-A's `branch (a,b) ch;`. The compiler keyed branches on the node
+pair alone, so `branch (a,b) br1, br2;` merged into one unknown and the
+second constitutive relation vanished. Worse, `Quantity`'s sympy
+identity dropped the name too, so `I(br1)` and `I(br2)` were the *same
+atom* and both resolved to whichever current was substituted last — a
+wrong stamp rather than a missing one. Both fixed; an unnamed branch
+keeps its old identity, so nothing that worked before changes.
+
+**`$simparam` — DONE 2026-08-22.** Resolved at compile time, since every
+parameter pycircuit can answer is fixed for the run. `gmin` answers
+`0.0`, which is the truth and not a placeholder: pycircuit's gmin is a
+*continuation schedule* inside the DC solver, ramped away before the
+answer is returned, not a standing conductance models should shunt
+themselves with — and `0.0` is exactly what PSP passes as its default.
+An unknown name with no default raises rather than returning zero.
+
+**`$mfactor` — not needed, measured.** PSP 103.8.2 references it at
+exactly two lines (`PSP103_module.include:2183-2184`), both inside the
+noise *operating-point output* block, and its own Changelog line 3 reads
+"Remove $mfactor from OP output variables calculation". Multiplicity in
+PSP flows through its own `MULT_i` model parameter, which is an ordinary
+parameter the DSL already handles. Auto-scaling every contribution by a
+multiplicity would change the meaning of every existing element to serve
+a construct the model does not use.
+
+What is left:
 
 | item | size | note |
 |---|---|---|
-| `$mfactor`, `$simparam` | small | PSP 103.8.2 reads both |
-| multiple named branches per node pair | small | PSP declares several |
-| node collapse driven by parameter *values* | medium | 7 `CollapsableR` instances; topology as a function of parameters, where §3 currently collapses only unconditionally (B2) |
+| node collapse driven by parameter *values* | medium | 7 `CollapsableR` instances; topology as a function of parameters, where B2 collapses only unconditionally |
 | model-card ingestion | medium | the cards are not standalone: they reference `.param` multipliers a corner section must define first, and are `.include`d *inside* the subckt so the `.model` can see `pre_layout`, `ng`, `m` |
 | geometry scaling layer | medium | `PSP103_scaling.include`, 849 lines, pure parameter arithmetic — no solver involvement, so it is bulk rather than difficulty |
+| the surface-potential core | large | `PSP103_module.include`, 2371 lines; the actual translation, and what E1/E2 exist to make possible |
 
 Deferred, unchanged from the original research verdict:
 
