@@ -305,6 +305,9 @@ class PspMosLongChannel(Behavioural):
                   unit='', default=0.0),
         Parameter(name='vp', desc='CLM logarithmic parameter', unit='V',
                   default=0.05),
+        ## Polysilicon depletion; `kp = 0` is an ideal (metal) gate.
+        Parameter(name='kp', desc='Polysilicon depletion factor', unit='',
+                  default=0.0),
     ]
 
     @staticmethod
@@ -336,12 +339,36 @@ class PspMosLongChannel(Behavioural):
 
         beta = var(u0 * cox * w / l, 'beta')                  # noqa: F821
 
+        ## SYMMETRISED BIAS VARIABLES.
+        ##
+        ## The intrinsic core is exactly antisymmetric under exchanging
+        ## source and drain because every quantity it uses is either a
+        ## midpoint one (even) or `dps` (odd).  The layers on top are not
+        ## automatically so: the series resistance reads a source-bulk
+        ## voltage and channel-length modulation reads `Vds`, and under
+        ## the exchange the first CHANGES and the second flips sign
+        ## through a function that is not odd.  Both broke the symmetry,
+        ## and neither was caught until a card supplied nonzero `rs` and
+        ## `alp` -- they default to zero, so every earlier symmetry test
+        ## had them switched off.
+        ##
+        ## PSP's answer is `Vsbx = Vsbstar + 0.5*(Vds - Vdsx)`
+        ## (`PSP103_macrodefs.include:472`), which evaluates to the
+        ## LOWER of the two junction voltages under either polarity, plus
+        ## a smoothed `|Vds|`.  Same construction here: `vdsx` is a
+        ## smooth `|Vds|` and `vsbx` follows PSP's formula, so both are
+        ## even and the antisymmetry survives.
+        vds = var(bd.V - bs.V, 'vds')
+        vdsx = var(2.0 * psp_kernel.hdl.hypsmooth(vds, 1e-4) - vds, 'vdsx')
+        vsbx = var(bs.V + 0.5 * (vds - vdsx), 'vsbx')
+
         core = psp_kernel.intrinsic(
             xg, xn_s, xn_d, Gf, xi, phit, beta,
             mob=dict(mue=mue, themu=themu, cs=cs,          # noqa: F821
                      thecs=thecs, feta=feta, thesat=thesat,  # noqa: F821
-                     rs=rs, rsg=rsg, rsb=rsb, vsb=bs.V,     # noqa: F821
-                     alp=alp, vp=vp, vds=bd.V - bs.V,       # noqa: F821
+                     rs=rs, rsg=rsg, rsb=rsb, vsb=vsbx,     # noqa: F821
+                     alp=alp, vp=vp, vds=vdsx,              # noqa: F821
+                     kp=kp,                                 # noqa: F821
                      cox_area=cox, eps_si=EPS_SI))
         cox_tot = var(cox * w * l, 'cox_tot')                 # noqa: F821
         Qg, Qd, Qb = psp_kernel.charges_long_channel(core, xg, phit,

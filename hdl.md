@@ -1523,6 +1523,38 @@ Each column is a term the *shape* of the previous residual named:
 > DIBL raises the drive, so its direction is now right — the term ruled
 > out earlier is worth revisiting, for the same reason CLM was.
 
+> **Polysilicon depletion, and a symmetry bug it exposed —
+> 2026-08-23.** The gate is not a perfect conductor: a depletion layer
+> forms on its silicon side and takes a share of the applied voltage.
+> PSP folds this in as `eta_p = 1/sqrt(1 + kp·xgm)` on the charge slope
+> *and* as a correction that shifts the midpoint potential itself
+> (`PSP103_macrodefs.include:697-724`). Implemented whole rather than as
+> the `eta_p` factor alone — half of a coupled correction is not a
+> smaller version of it, which is the CLM lesson applied in advance.
+>
+> Worth about 1% here, and it took the **long device to 0.998**
+> (0.979–1.025) with `nmos_idvg_vd0p05` to 1.010 and `nmos_idvg_vb_m1`
+> to 1.011.
+>
+> **It also broke source/drain symmetry — and revealed that two earlier
+> layers already had.** The intrinsic core is exactly antisymmetric
+> because every quantity it uses is either a midpoint one (even) or
+> `dps` (odd). The layers on top are not automatically so: series
+> resistance reads a source–bulk voltage, which *changes* under the
+> exchange, and channel-length modulation reads a signed `Vds` through a
+> function that is not odd. Both had been breaking symmetry since they
+> went in, **invisibly — because `rs` and `alp` default to zero and
+> every symmetry test built its element with defaults.** Only a test
+> using real card parameters could see it.
+>
+> Fixed the way PSP fixes it: `Vsbx = Vsbstar + 0.5·(Vds − Vdsx)`
+> (`macrodefs:472`), which evaluates to the *lower* of the two junction
+> voltages under either polarity, plus a smoothed `|Vds|`. Both are even,
+> so the antisymmetry survives — now 2.8 × 10⁻¹⁶ rather than bit-exact,
+> the smoothing costing an ulp. The guard now asserts the card actually
+> switches `rs`, `alp` and `kp` on, so it cannot silently test nothing
+> again.
+
 > **CLM was tried, measured, rejected, and then vindicated —
 > 2026-08-23.** The rejection stands as a record of the reasoning, and
 > the sequel is the point: with `CT` in place the same code helps. Read

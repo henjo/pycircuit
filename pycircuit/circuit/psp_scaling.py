@@ -202,6 +202,18 @@ def to_long_channel(card, w, l, T=300.0):
               * (1.0 + _g(card, 'thesatw') * iWE)
               * (1.0 + _g(card, 'thesatlw') * iLE * iWE))
 
+    ## POLYSILICON DEPLETION.  `kp = 2*Cox'^2*phit/(q*np*eps_si)`, with
+    ## `np` floored at both `8e7/tox^2` and 5e24
+    ## (`PSP103_macrodefs.include:315-319`).  The card's `NPO` is
+    ## 4.6e26 -- not the zero that would switch the effect off.
+    np_card = _g(card, 'npo')
+    if np_card > 0.0:
+        np_eff = max(max(np_card, 8.0e7 / (tox * tox)), 5.0e24)
+        kp = (2.0 * cox_prime * cox_prime * phit
+              / (qelectron * np_eff * epsRSi * eps0))
+    else:
+        kp = 0.0
+
     ## Channel-length modulation (:321, :327).  The geometry-scaled
     ## branch has NO geometry-independent term -- `ALP` is length
     ## dependence only.
@@ -233,6 +245,7 @@ def to_long_channel(card, w, l, T=300.0):
         w=w, l=l, tox=tox, nsub=neff, vfb=vfb, phib=phib, u0=u0_eff,
         rs=max(rs, 0.0), rsg=_g(card, 'rsgo'), rsb=_g(card, 'rsbo'),
         ct=max(ct, 0.0), alp=max(alp, 0.0), vp=max(vp, 1.0e-6),
+        kp=max(kp, 0.0),
         mue=max(mue, 0.0), themu=max(_g(card, 'themuo'), 0.0),
         cs=max(cs, 0.0), thecs=max(_g(card, 'thecso'), 0.0),
         feta=_g(card, 'fetao', 1.0), thesat=max(thesat, 0.0),

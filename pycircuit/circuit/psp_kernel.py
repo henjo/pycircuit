@@ -420,22 +420,87 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
     Pm_small = _v(0.5 * (xms * xms
                          * (1.0 - ONE_THIRD * (xms * (1.0 - 0.25 * xms)))),
                   'ids_Pms')
-    sqm_small = _v(INV_SQRT2 * (x_m * t_m), 'ids_sqms')
-    alpha_small = _v(1.0 + INV_SQRT2 * (Gf * (1.0 - 0.5 * x_m
-                                              + ONE_SIXTH * (x_m * x_m))
-                                        / t_m), 'ids_as')
+    Pm0 = _v(sympy.Piecewise((Pm_small, near_m), (xmb - 1.0 + Em, True)),
+             'ids_Pm0')
+    xgm0 = _v(Gf * hdl.safe_sqrt(Dm + Pm0), 'ids_xgm0')
 
-    Pm_big = _v(xmb - 1.0 + Em, 'ids_Pmb')
+    ## ---- polysilicon depletion --------------------------------------
+    ## The gate is not a perfect conductor: a depletion layer forms on
+    ## its silicon side, taking a share of the applied voltage.  PSP
+    ## folds this in as `eta_p = 1/sqrt(1 + kp*xgm)` on the charge slope
+    ## AND as a correction that shifts the midpoint potential itself
+    ## (`PSP103_macrodefs.include:697-724`).  Implemented whole rather
+    ## than as the `eta_p` factor alone -- half of a coupled correction
+    ## is not a smaller version of it.
+    ##
+    ## `kp = 2*Cox'^2*phit/(q*np*eps_si)`, with `np` floored at both
+    ## `8e7/tox^2` and 5e24 as PSP floors it (macrodefs:315-319).  For
+    ## the IHP card that is 1.6e-3, worth 1% of the charge slope at low
+    ## gate bias and 4.5% at high -- which is why it shows up as a
+    ## bias-dependent gain error rather than a constant one.
+    kp = 0.0 if mob is None else mob.get('kp', 0.0)
+    if kp == 0.0 and not isinstance(kp, sympy.Expr):
+        eta_p = _v(sympy.Integer(1), 'ids_etap')
+        x_mc, Em_c, Dm_c, x_dsc = x_m, Em, Dm, x_ds
+    else:
+        eta_p = _v(hdl.safe_div(1.0, sympy.sqrt(1.0 + kp * xgm0),
+                                eps=1e-30), 'ids_etap')
+        d0 = _v(1.0 - Em + 2.0 * (xgm0 * inv_Gf2), 'ids_d0')
+        te = _v(eta_p * hdl.safe_div(1.0, eta_p + 1.0, eps=1e-30),
+                'ids_te')
+        x_pm = _v(kp * (te * te * Gf2 * Dm), 'ids_xpm')
+        p_pd = _v(2.0 * (xgm0 - x_pm) + Gf2 * (1.0 - Em + Dm), 'ids_ppd')
+        q_pd = _v(x_pm * (x_pm - 2.0 * xgm0), 'ids_qpd')
+        xi_pd = _v(1.0 - 0.5 * (Gf2 * (Em + Dm)), 'ids_xipd')
+        u_pd = _v(q_pd * p_pd
+                  * hdl.safe_div(1.0, p_pd * p_pd - xi_pd * q_pd,
+                                 eps=1e-30), 'ids_upd')
+        km = _v(hdl.expl(u_pd), 'ids_km')
+        inv_km = _v(hdl.safe_div(1.0, km, eps=1e-30), 'ids_invkm')
+        ## The correction applies only where the midpoint is not at flat
+        ## band; near zero PSP takes the series branch and leaves the
+        ## potential alone, using `eta_p` in `alpha` only.
+        x_mc = _v(sympy.Piecewise((x_m, near_m), (x_m + u_pd, True)),
+                  'ids_xmc')
+        Em_c = _v(sympy.Piecewise((Em, near_m), (Em * inv_km, True)),
+                  'ids_Emc')
+        Dm_c = _v(sympy.Piecewise((Dm, near_m), (Dm * km, True)),
+                  'ids_Dmc')
+        Pm_b2 = _v(sympy.Max(x_mc, small) - 1.0 + Em_c, 'ids_Pmb2')
+        xgm_c = _v(Gf * hdl.safe_sqrt(Dm_c + Pm_b2), 'ids_xgmc')
+        km0 = _v(1.0 - Em_c + 2.0 * (xgm_c * eta_p * inv_Gf2), 'ids_km0')
+        x_dsc = _v(sympy.Piecewise(
+            (x_ds, near_m),
+            (x_ds * km * (d0 + D_bar)
+             * hdl.safe_div(1.0, km0 + km * D_bar, eps=1e-30), True)),
+            'ids_xdsc')
+
+    ## ---- midpoint charge quantities, after the correction ------------
+    xmb2 = _v(sympy.Max(x_mc, small), 'ids_xmb2')
+    xms2 = _v(sympy.Min(sympy.Abs(x_mc), small), 'ids_xms2')
+    t_m2 = _v(sympy.sqrt(1.0 - ONE_THIRD * (xms2 * (1.0 - 0.25 * xms2))),
+              'ids_tm2')
+    Pm_small2 = _v(0.5 * (xms2 * xms2
+                          * (1.0 - ONE_THIRD
+                             * (xms2 * (1.0 - 0.25 * xms2)))), 'ids_Pms2')
+    sqm_small = _v(INV_SQRT2 * (x_mc * t_m2), 'ids_sqms')
+    alpha_small = _v(eta_p + INV_SQRT2 * (Gf * (1.0 - 0.5 * x_mc
+                                                + ONE_SIXTH
+                                                * (x_mc * x_mc))
+                                          / t_m2), 'ids_as')
+    Pm_big = _v(xmb2 - 1.0 + Em_c, 'ids_Pmb')
     sqm_big = _v(hdl.safe_sqrt(Pm_big), 'ids_sqmb')
-    alpha_big = _v(1.0 + 0.5 * (Gf * (1.0 - Em)
-                                * hdl.safe_div(1.0, sqm_big, eps=1e-30)),
+    alpha_big = _v(eta_p + 0.5 * (Gf * (1.0 - Em_c)
+                                  * hdl.safe_div(1.0, sqm_big, eps=1e-30)),
                    'ids_ab')
 
-    Pm = _v(sympy.Piecewise((Pm_small, near_m), (Pm_big, True)), 'ids_Pm')
+    Pm = _v(sympy.Piecewise((Pm_small2, near_m), (Pm_big, True)), 'ids_Pm')
     sqm = _v(sympy.Piecewise((sqm_small, near_m), (sqm_big, True)),
              'ids_sqm')
     alpha = _v(sympy.Piecewise((alpha_small, near_m), (alpha_big, True)),
                'ids_alpha')
+    Dm = Dm_c
+    x_ds = x_dsc
 
     xgm = _v(Gf * hdl.safe_sqrt(Dm + Pm), 'ids_xgm')
     qim = _v(phit * Gf2 * Dm
@@ -532,7 +597,11 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
         if alp == 0.0 and not isinstance(alp, sympy.Expr):
             GdL = _v(sympy.Integer(1), 'ids_GdL')
         else:
-            excess = _v(hdl.hypsmooth(mob['vds'] - dps, 1e-3), 'ids_exc')
+            ## `vds` arrives already symmetrised to a smooth `|Vds|`, so
+            ## the excess must be measured against `|dps|` for the whole
+            ## factor to stay EVEN under the source/drain exchange.
+            adps = _v(2.0 * hdl.hypsmooth(dps, 1e-6) - dps, 'ids_adps')
+            excess = _v(hdl.hypsmooth(mob['vds'] - adps, 1e-3), 'ids_exc')
             s1 = _v(hdl.safe_ln(1.0 + excess
                                 * hdl.safe_div(1.0, mob['vp'], eps=1e-30)),
                     'ids_s1')

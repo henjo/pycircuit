@@ -467,3 +467,90 @@ class TestTheScalingTermByTerm(object):
         """
         for e in scaled.values():
             assert e.get('np', 0.0) > 1e26
+
+
+@needs_pdk
+class TestPolysiliconDepletion(object):
+    """The gate is not a perfect conductor.
+
+    A depletion layer forms on the gate's silicon side and takes a share
+    of the applied voltage, so the charge slope is reduced by
+    `eta_p = 1/sqrt(1 + kp*xgm)` and the midpoint potential itself is
+    shifted (`PSP103_macrodefs.include:697-724`).
+
+    The card's `NPO` is 4.6e26 -- not the zero that switches it off --
+    and it was found by the term-by-term scaling comparison rather than
+    by looking at currents, since `lp_np` is one of the values PSP
+    exposes.
+    """
+
+    def test_the_card_enables_it(self, deck):
+        card = deck.model_params('sg13g2_lv_nmos_psp', w=1e-6, l=0.13e-6,
+                                 ng=1, m=1, pre_layout=1)
+        kw = psp_scaling.to_long_channel(card, w=1e-6, l=0.13e-6)
+        assert kw['kp'] > 0.0
+        ## 1.6e-3 for this oxide -- 1% of the charge slope at low gate
+        ## bias, 4.5% at high, which is why it reads as a bias-dependent
+        ## gain error rather than a constant one.
+        assert 1e-4 < kw['kp'] < 1e-2
+
+    def test_it_reduces_the_current(self, deck):
+        """A gain reduction of about 1%, at every bias.
+
+        Checked as a direction and a magnitude, NOT as a monotone trend
+        in gate bias -- the first version of this test asserted that and
+        it is not true.  `eta_p` depends on the midpoint oxide voltage,
+        which does not track `Vg` monotonically once the correction also
+        shifts the midpoint potential, so the reduction is 0.8-1.0%
+        across the sweep without being ordered.
+        """
+        cm.default_toolkit = numeric
+        card = deck.model_params('sg13g2_lv_nmos_psp', w=10e-6, l=1e-6,
+                                 ng=1, m=1, pre_layout=1)
+        kw = psp_scaling.to_long_channel(card, w=10e-6, l=1e-6)
+        on = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                               cm.Node('b'), **kw)
+        off = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                                cm.Node('b'), **dict(kw, kp=0.0))
+        on.update_iparv()
+        off.update_iparv()
+        for vg in (0.6, 1.0, 1.4, 1.8):
+            x = np.array([0.05, vg, 0.0, 0.0])
+            r = (np.asarray(on.i(x), float)[0]
+                 / np.asarray(off.i(x), float)[0])
+            assert 0.95 < r < 1.0, 'Vg=%.1f ratio %.4f' % (vg, r)
+
+    def test_the_construction_survives_it(self, deck):
+        """Symmetry and charge conservation, with EVERY card layer on.
+
+        This is the test that caught a latent bug, and the reason it is
+        here rather than beside the other symmetry tests: those build
+        the element with DEFAULT parameters, where `rs`, `alp` and `kp`
+        are all zero.  With a real card they are not, and two of the
+        layers were reading bias variables that are not even under the
+        source/drain exchange -- the series resistance a source-bulk
+        voltage, channel-length modulation a signed `Vds`.  Symmetry had
+        been broken since series resistance went in, invisibly.
+
+        Fixed the way PSP fixes it, with symmetrised `vdsx`/`vsbx`
+        (`PSP103_macrodefs.include:472`).  Not bit-exact any more --
+        the smoothing costs an ulp -- so this asks for 1e-14 rather
+        than `==`.
+        """
+        cm.default_toolkit = numeric
+        card = deck.model_params('sg13g2_lv_nmos_psp', w=10e-6, l=1e-6,
+                                 ng=1, m=1, pre_layout=1)
+        kw = psp_scaling.to_long_channel(card, w=10e-6, l=1e-6)
+        e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                              cm.Node('b'), **kw)
+        e.update_iparv()
+        assert kw['rs'] > 0 and kw['alp'] > 0 and kw['kp'] > 0, \
+            'the card must actually switch these on for this to test '\
+            'anything'
+        for vg in (0.6, 1.2, 1.8):
+            for vd in (0.05, 0.3, 0.9, 1.5):
+                f = np.asarray(e.i(np.array([vd, vg, 0.0, 0.0])), float)
+                r = np.asarray(e.i(np.array([0.0, vg, vd, 0.0])), float)
+                assert f[0] == pytest.approx(-r[0], rel=1e-14), (vg, vd)
+            q = np.asarray(e.q(np.array([0.5, vg, 0.0, 0.0])), float)
+            assert abs(q.sum()) < 1e-16 * max(np.abs(q).max(), 1e-30)
