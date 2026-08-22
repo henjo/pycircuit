@@ -50,9 +50,16 @@ def test_capacitor():
 
     assert cap.i([v1,v2]) == [0, 0]
 
-    ## The model returns the charge terms in expanded form (its i/u/q term
-    ## splitting relies on Expr.expand), so compare against expanded values.
-    assert cap.q([v1,v2]) == [sympy.expand(C*(v1-v2)), sympy.expand(-C*(v1-v2))]
+    ## Compared MATHEMATICALLY, not structurally.  This used to assert
+    ## against `sympy.expand(...)` because the term splitter expanded
+    ## every right-hand side -- an implementation artifact that has since
+    ## been removed, because expansion distributes products of sums and a
+    ## real compact model is nothing but those: it multiplied the
+    ## operation count by ~6 per nesting level and no device model could
+    ## be compiled at all.  The charge is the same charge either way.
+    got = cap.q([v1, v2])
+    for g, want in zip(got, [C * (v1 - v2), -C * (v1 - v2)]):
+        assert sympy.simplify(g - want) == 0
 
     assert np.all(cap.C([v1,v2]) == 
                        np.array([[C, -C], [-C, C]]))

@@ -352,6 +352,171 @@ pins it. `limexp` is also still the aid for elements that do not qualify
 at all (a state-carrying model, a polynomial or multi-branch
 nonlinearity) and for every `pcnr=False` run, which is the default.
 
+### 3.2b The let-chain: `var()`, and why a compact model needs it
+
+Everything in §3.2 assembles one expression per contribution and hands it
+to `Matrix.jacobian`. That is the right thing for a diode, and it is
+structurally incapable of compiling a surface-potential model.
+
+The reason is not model size. It is **reuse**. A compact model computes a
+quantity once and mentions it several times:
+
+```
+u1 = sqrt(1 + u0*u0) + u0*tanh(u0)/2
+```
+
+`u0` appears three times. Substitute `u0`'s own definition in and you get
+three copies of it; substitute again and you get nine. After *d* levels
+the expression **tree** holds 3^d copies of the innermost subexpression,
+while the **DAG** has only *d* nodes. sympy works on the tree.
+
+Measured (`benchmarks/hdl_chain_scaling.py`, table 1) on exactly that
+shape:
+
+| depth | eager | growth vs previous | let-chain |
+|---|---|---|---|
+| 1 | 0.04 s | — | 0.05 s |
+| 2 | 0.08 s | 1.9× | 0.02 s |
+| 3 | 0.18 s | 2.4× | 0.02 s |
+| 4 | 0.58 s | 3.2× | 0.02 s |
+| 5 | 16.2 s | **27.9×** | 0.03 s |
+| 16 | *not run* | | 0.07 s |
+| 48 | *not run* | | 0.22 s |
+
+The growth ratio is itself growing, because sympy's operations are
+superlinear in tree size — so the wall arrives sooner than 3^d predicts.
+PSP103 carries roughly 1400 intermediates. There is no version of the
+eager path that reaches it.
+
+**`var(expr, name)`** names an intermediate and returns a symbol standing
+for it:
+
+```python
+from pycircuit.circuit.hdl import var
+
+def analog(d, g, s, b):
+    bds, bgs = Branch(d, s), Branch(g, s)
+    vg   = var(bgs.V / vt(), 'vg')
+    surf = var(sympy.sqrt(1e-9 + vg*vg), 'surf')
+    chan = var(surf * sympy.tanh(bds.V / (1 + surf)), 'chan')
+    return Contribution(bds.I, IS * chan)
+```
+
+Nothing is substituted. The compiler emits a topological **let-chain** —
+one assignment per intermediate, in dependency order — and obtains the
+Jacobian by **forward accumulation** over the chain: each definition's
+gradient is written in terms of the gradients of the definitions it
+actually mentions, so the work is proportional to the number of DAG
+*edges*. Definitions no output reaches are pruned, so `i`, `q`, `u` and
+the AC stamp each compile only their own part of the chain.
+
+At PSP scale (table 2 of the same benchmark — 4 terminals, 3
+contributions, and the sqrt/exp/ln/tanh kernel):
+
+| intermediates | compile | emitted lines | `i` eval | `G` eval | ‖J − FD‖ |
+|---|---|---|---|---|---|
+| 200 | 3.3 s | 934 | 59 µs | 0.64 ms | 1.0e-16 |
+| 600 | 11.6 s | 2932 | 180 µs | 2.2 ms | 2.9e-17 |
+| 1400 | 34.0 s | 6932 | 400 µs | 5.2 ms | 1.0e-19 |
+
+Compile time is paid once per model class. Every Jacobian is checked
+against finite differences.
+
+**Two things the classification has to get right.** `_split_terms` sorts
+a contribution's terms into `i`, `q` and `u` by asking which symbols they
+touch — and an intermediate is an *opaque symbol*. So the compiler tracks,
+transitively, which intermediates depend on the solution and which carry
+`TIME`, and feeds both sets into the split. Without the first, a
+conductance written through `var()` is filed as a constant source and the
+device has no conductance at all; without the second, a time-varying
+source behind a `var()` is filed as a static characteristic and the source
+is dead. `test_hdl_chain.py::TestTermClassification` pins both.
+
+**What the chain gives up, it gives up loudly.** A chained model reports
+`pure_spec = None` (no JAX `eval_*_pure`), `sym_spec = None` (no symbolic
+toolkit), `const_G = const_C = False` (no constant-stamp caching) and
+`pcnr_funcs = None`. That last one matters: PCNR's shape detector reads
+the exponential straight out of the expression to recover `IS` and `VT`,
+and behind a `var()` it would find none — which is indistinguishable from
+a linear device. The compiler declines PCNR explicitly rather than
+silently registering the device as having nothing to limit.
+`test_hdl_chain.py::TestCapabilityRefusals` pins each of these.
+
+The path is chosen per model: declare no intermediates and nothing
+changes. `_hdl_info['chained']` says which path a class took.
+
+### 3.2c The math kernel, and both-arms-safe conditionals
+
+A compiled conditional evaluates **both arms** — sympy's `Piecewise`
+becomes numpy's `select`, which picks afterwards. So the obvious guard
+
+```python
+sympy.Piecewise((sympy.sqrt(x), x > 0), (0.0, True))
+```
+
+still takes the square root of the negative number. The *value* survives
+(the bad arm is discarded), but two things do not:
+
+- the floating-point flag is raised on **every** evaluation, and under
+  `np.seterr(all='raise')` — which anyone debugging a convergence failure
+  will set — the model becomes unusable at ordinary biases;
+- the **derivative** frequently does not survive. sympy differentiates
+  the clamped form `sqrt(max(x,0))` to `d(max)/dx / (2*sqrt(max(x,0)))`,
+  which is `0/0` at every `x ≤ 0`. Measured: 2013 non-finite derivatives
+  over a 4001-point sweep. One NaN in the Jacobian loses the whole Newton
+  step, not one entry.
+
+PSP103 has roughly 70 bias-dependent conditionals of exactly this kind.
+`hdl.py` therefore ships the kernel PSP is written in, with every arm
+valid for every input:
+
+| function | what it is | note |
+|---|---|---|
+| `expl(x)` | two-sided clamped `exp` | hyperbolic below −80, linear above +80, C¹ at both seams |
+| `expl_low(x)` | lower tail only | stays **strictly positive**; plain `exp` underflows to exactly 0 below −745 |
+| `expl_high(x)` | upper tail only | same continuation as `limexp`, but clamped |
+| `hypsmooth(x, eps)` | smooth `max(x, 0)` | no branch at all — the right first thing to reach for |
+| `safe_sqrt(x)` | `sqrt(hypsmooth(x))` | finite derivative below zero |
+| `safe_ln(x)` | `ln(hypsmooth(x))` | no `−inf` at zero |
+| `safe_div(a, b)` | `a·b / (b² + ε²)` | finite at `b = 0` |
+
+Three findings from building these are worth stating, because each one
+broke a version that looked correct:
+
+**Floating point destroys `hypsmooth`'s whole point if you write it
+literally.** `0.5*(x + sqrt(x*x + 4ε²))` is strictly positive in exact
+arithmetic. At `x = −100`, `ε = 1e-12`, `sqrt(x*x + 4e-24)` rounds to
+exactly `100.0`, the sum cancels to exactly `0.0`, and every downstream
+consumer promised a positive number gets a zero — this is what turned
+`safe_ln` into 2012 infinities. The negative side is therefore evaluated
+through the conjugate form `2ε²/(sqrt(x*x + 4ε²) − x)`, algebraically
+identical but a sum of positives with nothing to cancel. Each arm is
+additionally clamped to *its own* side, or the conjugate arm evaluated at
+large positive `x` has `r − x` cancel to zero and divides by it — the
+mirror image of the bug it was written to avoid.
+
+**`sign` is not usable in a guard.** The natural regularisation
+`a/(b + ε·sign(b))` differentiates to a `DiracDelta`, which no numeric
+backend prints — so the model fails to *compile*, not to converge. Hence
+the `a·b/(b² + ε²)` form.
+
+**`limexp` is deliberately left unsafe.** Clamping its argument turns
+`exp(v/vt)` into `exp(min(v/vt, 80))`, and PCNR's shape detector no longer
+recognises a junction — the device silently loses its limiting. Since
+PCNR is exactly what bounds the argument, the overflow in the discarded
+arm is the better half of that trade. `expl_high` is the same
+continuation *with* the clamp, for models that are not junctions.
+`test_hdl_kernel.py::TestLimexpIsDeliberatelyNotSafe` pins the trade and
+checks the two agree numerically to 1e-15.
+
+Underflow is not guarded anywhere: `0.0` is the correctly-rounded answer
+for `exp(-1000)`, and it is the one benign IEEE condition. Overflow,
+invalid and divide-by-zero all mean an arm produced garbage, and those are
+what the kernel exists to stop. Above `|x| ≈ 1e154` the radicand of
+`hypsmooth` overflows; circuit quantities do not reach there, and buying
+that range back would cost a comparison on every evaluation of the most
+frequently called function in the kernel.
+
 ### 3.3 Parameters
 
 `instparams` uses the ordinary `pycircuit.utilities.param.Parameter`;
@@ -861,12 +1026,65 @@ intended order — no error, just the wrong answer. Use `.is_zero`.
 | conditional node collapse | changes the sparsity pattern per iteration; needs gnucap's whole per-iteration re-stamping machine | a model that genuinely needs it — until then the switch-branch refusal names it |
 | `@timer` | 0 sites; a source-side concept, and `VPulse`/`VSin` cover the waveforms | a model that schedules its own events |
 
+### Phase E — the PSP target
+
+Everything above was aimed at *behavioural* models. The target that
+decides whether this DSL is a production compact-model language is
+**PSP103** — the industry-standard surface-potential MOSFET, whose full
+Verilog-A source (7400 lines across 13 files, version 103.8.2) and
+359-parameter model cards ship in the IHP Open PDK at
+`~/source/IHP-Open-PDK/ihp-sg13g2/libs.tech/verilog-a/psp103/`. That PDK
+is the test basis: real extracted parameters, three simulator flavours,
+and no binning (PSP's own geometry scaling does the job), so one model
+card exercises the whole geometry range.
+
+The research ranked three blockers. Two are now cleared:
+
+**E1. Expression-graph blowup — DONE 2026-08-22.** The `#1 practical
+risk, ahead of any language feature`. Eager substitution is exponential
+in intermediate reuse; `var()` plus a forward-accumulated let-chain is
+linear. §3.2b has the theory and the measured tables;
+`benchmarks/hdl_chain_scaling.py` and
+`pycircuit/circuit/tests/test_hdl_chain.py` are the evidence. 1400
+intermediates across 4 terminals compile in 21 s with the Jacobian
+matching finite differences to 1e-19.
+
+**E2. Both-arms-safe conditionals — DONE 2026-08-22.** PSP's ~70
+bias-dependent guards, whose untaken arms overflow, divide by zero or
+take roots of negatives. Measured first: numpy's `select` discards the
+bad *value* correctly on both compile paths, so there is no wrong answer
+— but it raises a floating-point flag on every evaluation, and the
+clamped-`sqrt` *derivative* is genuinely `0/0`. §3.2c has the kernel
+(`expl` family, `hypsmooth`, `safe_*`), the three traps that broke
+earlier versions, and the `limexp`/PCNR trade;
+`pycircuit/circuit/tests/test_hdl_kernel.py` pins all of it.
+
+**E3. What PSP still needs.** In rough order of how much stands between
+here and a running model card:
+
+| item | size | note |
+|---|---|---|
+| `$mfactor`, `$simparam` | small | PSP 103.8.2 reads both |
+| multiple named branches per node pair | small | PSP declares several |
+| node collapse driven by parameter *values* | medium | 7 `CollapsableR` instances; topology as a function of parameters, where §3 currently collapses only unconditionally (B2) |
+| model-card ingestion | medium | the cards are not standalone: they reference `.param` multipliers a corner section must define first, and are `.include`d *inside* the subckt so the `.model` can see `pre_layout`, `ng`, `m` |
+| geometry scaling layer | medium | `PSP103_scaling.include`, 849 lines, pure parameter arithmetic — no solver involvement, so it is bulk rather than difficulty |
+
+Deferred, unchanged from the original research verdict:
+
+| item | why |
+|---|---|
+| NQS block (18 `V<+`, 9 `idt`, branch-current readback) | genuinely inexpressible today; **gnucap ships PSP without it**, and the IHP Xyce flavour has no NQS model cards at all |
+| self-heating (`psp103t.va`, thermal node + `Temp()`/`Pwr()` discipline) | needs a thermal discipline; **no IHP model card uses it** |
+
 ### Sequencing
 
-**The plan is complete** (2026-08-22): phases A, B, C and the actionable
+**Phases A–D are complete** (2026-08-22): phases A, B, C and the actionable
 part of D are all done,
 in the order given except that A1's two halves landed either side of B.
-What remains is phase D, which is deferred by design, plus `@timer`
+Phase E carries the work forward to a production compact model: E1 and
+E2 are done, E3 lists what a PSP103 card still needs.
+What else remains is phase D, which is deferred by design, plus `@timer`
 (zero call sites) and lifting the traced backend's PCNR restrictions —
 it rebuilds junctions itself rather than calling the device, so
 multi-junction and charge-storing participants are refused there and the

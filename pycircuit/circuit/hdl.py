@@ -160,10 +160,180 @@ def limexp(x, x0=80.0):
 
     C1-continuous at the seam, so Newton keeps a bounded derivative
     instead of overflowing -- the standard convergence aid.
+
+    Deliberately NOT both-arms-safe, unlike `expl`.  Both arms of a
+    compiled conditional are evaluated, so the discarded ``exp(x)`` does
+    overflow to ``inf`` above ``x0`` and raises a floating-point warning;
+    the returned value is unaffected.  Clamping the argument would fix
+    that, but it also hides the exponential: PCNR's shape detector reads
+    ``exp(arg)`` straight out of the expression to recover the device's
+    ``IS`` and ``VT`` (sec. "PCNR participation"), and an
+    ``exp(min(arg, 80))`` is not a junction it can recognise -- the
+    device silently loses its limiting.
+
+    That trade is worth taking here because PCNR is exactly what bounds
+    the argument: a limited junction voltage does not reach 80 thermal
+    voltages.  Models that are NOT junctions, and PSP-style models
+    generally, should use `expl`, which is safe in both arms and gives up
+    nothing because a chained model declines PCNR anyway.
     """
     x = sympy.sympify(x)
     return sympy.Piecewise((sympy.exp(x), x < x0),
                            (sympy.exp(x0) * (1 + x - x0), True))
+
+
+## ----------------------------------------------------------------------
+## The compact-model math kernel.
+##
+## These are the functions a surface-potential model is written in.  PSP103
+## reaches for `expl` 23 times and `hypsmooth` throughout; every one of
+## them exists to keep an expression finite where the physics would
+## otherwise divide by zero or overflow.  They are provided here rather
+## than left to each model because getting them both-arms-safe is fiddly
+## and the failure is silent (a warning, or a NaN under stricter error
+## settings), not a wrong answer.
+## ----------------------------------------------------------------------
+
+#: Argument magnitude beyond which `exp` is continued rather than evaluated.
+#: PSP's `EXPL_THRESHOLD`.  exp(80) ~ 5.5e34, comfortably inside double
+#: range, so the clamped arms cannot overflow.
+EXPL_THRESHOLD = 80.0
+
+
+def expl_high(x, x0=EXPL_THRESHOLD):
+    """``exp`` continued linearly ABOVE ``x0`` -- PSP's ``expl_high``.
+
+    Same continuation as `limexp`, but with the exponential's argument
+    clamped so the discarded arm cannot overflow.  Use this one unless
+    the device is a junction that wants PCNR to recognise it; see
+    `limexp` for why the two differ.
+    """
+    x = sympy.sympify(x)
+    return sympy.Piecewise((sympy.exp(sympy.Min(x, x0)), x < x0),
+                           (sympy.exp(x0) * (1 + x - x0), True))
+
+
+def expl_low(x, x0=EXPL_THRESHOLD):
+    """``exp`` continued hyperbolically BELOW ``-x0`` -- PSP's ``expl_low``.
+
+    The continuation is ``exp(-x0) / (1 - x - x0)``, which matches value
+    and slope at ``x = -x0`` and stays strictly POSITIVE as ``x -> -inf``.
+    That last property is the point: plain ``exp`` underflows to exactly
+    zero around -745, and a model that divides by the result gets an
+    infinity out of a perfectly ordinary reverse bias.
+    """
+    x = sympy.sympify(x)
+    ## Each arm is evaluated at an argument its own branch makes valid:
+    ## the tail sees `min(x, -x0)` so its denominator is >= 1, the
+    ## exponential sees `max(x, -x0)` so it cannot underflow.
+    tail = sympy.Min(x, -x0)
+    return sympy.Piecewise(
+        (sympy.exp(-x0) / (1 - tail - x0), x < -x0),
+        (sympy.exp(sympy.Max(x, -x0)), True))
+
+
+def expl(x, x0=EXPL_THRESHOLD):
+    """Two-sided clamped exponential -- PSP's ``expl``.
+
+    Hyperbolic below ``-x0``, linear above ``+x0``, ``exp`` between, C1
+    at both seams and finite for every double.  This is the workhorse:
+    it is what makes a surface-potential model evaluable at the
+    ridiculous biases Newton visits on its way to the solution.
+    """
+    x = sympy.sympify(x)
+    lo = sympy.Min(x, -x0)
+    hi = sympy.Max(x, x0)
+    mid = sympy.Max(sympy.Min(x, x0), -x0)
+    return sympy.Piecewise(
+        (sympy.exp(-x0) / (1 - lo - x0), x < -x0),
+        (sympy.exp(x0) * (1 + hi - x0), x > x0),
+        (sympy.exp(mid), True))
+
+
+def hypsmooth(x, eps):
+    """Smooth ``max(x, 0)`` -- PSP's ``hypsmooth``.
+
+    Mathematically ``0.5*(x + sqrt(x*x + 4*eps^2))``, which is strictly
+    positive for every real ``x`` and tends to ``eps^2/|x|`` as
+    ``x -> -inf``.  That positivity is the whole value of the function:
+    downstream code divides by it and takes its logarithm.
+
+    Written literally, floating point destroys it.  At ``x = -100`` with
+    ``eps = 1e-12``, ``sqrt(x*x + 4e-24)`` rounds to exactly ``100.0``,
+    the sum cancels to exactly ``0.0``, and every "guaranteed positive"
+    consumer downstream gets a zero.  (Measured: this is what turned
+    `safe_ln` into 2012 infinities over a 4001-point sweep.)
+
+    So the negative side is evaluated through the conjugate form
+    ``2*eps^2 / (sqrt(x*x + 4*eps^2) - x)``, algebraically identical but
+    a sum of positives in the denominator, with nothing to cancel.  Both
+    arms are valid for any input, so it does not matter that both are
+    evaluated.
+
+    Limit: the radicand overflows for ``|x| > ~1e154``.  Circuit
+    quantities do not reach there, and clamping the argument to buy that
+    range back would cost a comparison on every evaluation of the most
+    frequently called function in the kernel.
+    """
+    x, eps = sympy.sympify(x), sympy.sympify(eps)
+    ## Each arm sees an argument clamped to ITS OWN side.  Without that
+    ## the conjugate arm, evaluated at large POSITIVE x, has `r - x`
+    ## cancel to exactly zero and divides by it -- the mirror image of
+    ## the cancellation it was written to avoid.
+    xp, xn = sympy.Max(x, 0), sympy.Min(x, 0)
+    return sympy.Piecewise(
+        (0.5 * (xp + sympy.sqrt(xp * xp + 4 * eps * eps)), x >= 0),
+        (2 * eps * eps / (sympy.sqrt(xn * xn + 4 * eps * eps) - xn), True))
+
+
+def safe_sqrt(x, eps=1e-12):
+    """``sqrt(x)`` made finite and differentiable for every real ``x``.
+
+    Clamping the argument -- ``sqrt(max(x, 0))`` -- fixes the VALUE but
+    not the derivative: sympy differentiates it to
+    ``d(max)/dx / (2*sqrt(max(x, 0)))``, which at ``x <= 0`` is ``0/0``,
+    and a NaN in the Jacobian kills the whole Newton step rather than one
+    entry.  (Measured: 2013 non-finite derivatives over a 4001-point
+    sweep before this.)
+
+    So the argument is smoothed rather than clipped:
+    ``sqrt(hypsmooth(x, eps))``.  ``hypsmooth`` is strictly positive
+    everywhere -- it decays like ``eps^2/|x|`` as ``x -> -inf`` instead of
+    reaching zero -- so the square root and its derivative are finite for
+    every input, with no branch at all.  For ``x >> eps`` it agrees with
+    ``sqrt(x)`` to relative order ``(eps/x)^2``.
+    """
+    return sympy.sqrt(hypsmooth(x, eps))
+
+
+def safe_ln(x, eps=1e-30):
+    """``ln(x)`` made finite for every real ``x``, by the same smoothing.
+
+    ``ln(hypsmooth(x, eps))``: strictly positive argument, so no
+    ``-inf`` at zero and no NaN below it, and no branch.  Note the result
+    is genuinely large and negative for small ``x`` -- that is ``ln``
+    doing its job, not an overflow.
+    """
+    return sympy.log(hypsmooth(x, eps))
+
+
+def safe_div(a, b, eps=1e-30):
+    """``a/b`` regularised to ``a*b/(b^2 + eps^2)``.
+
+    The obvious guard -- shift the denominator by ``eps*sign(b)`` -- is
+    unusable: sympy differentiates ``sign`` to a ``DiracDelta`` that no
+    numeric backend can print, so the model fails to compile rather than
+    to converge.
+
+    This form has no ``sign`` and no branch.  It equals ``a/b`` to
+    relative order ``(eps/b)^2`` wherever ``|b| >> eps``, tends smoothly
+    to zero as ``b -> 0`` instead of blowing up, and its derivative is
+    finite everywhere.  The price is that it is NOT ``a/b`` when ``b`` is
+    genuinely of order ``eps`` -- pick ``eps`` below any denominator the
+    model can legitimately produce.
+    """
+    a, b = sympy.sympify(a), sympy.sympify(b)
+    return a * b / (b * b + eps * eps)
 
 
 def discontinuity(degree=0):
@@ -287,6 +457,55 @@ def limit_pnj(probe, IS, VT):
         raise ValueError('limit_pnj limits a branch potential (b.V); '
                          'got %r' % (probe,))
     return _Limit(probe, sympy.sympify(IS), sympy.sympify(VT))
+
+
+class _IntermediateSymbol(sympy.Symbol):
+    """A named intermediate; see :func:`var`."""
+
+    def __new__(cls, name):
+        return super().__new__(cls, name, real=True)
+
+
+#: Intermediates declared by the model body currently being compiled.
+#: Compilation happens once per class, at class-creation time, on one
+#: thread, so a module-level list is the whole mechanism.
+_VAR_STACK = []
+
+
+def var(expr, name=None):
+    """Name an intermediate quantity, and return a symbol standing for it.
+
+    **This is what makes a real compact model compilable.**  Without it,
+    every reference to an intermediate substitutes its whole definition,
+    so an expression that mentions a previous result twice doubles the
+    tree at each step: a model nested `n` deep has `2**n` tree
+    occurrences, and every sympy traversal -- `subs`, `diff`, printing --
+    walks all of them.  Measured on a MOSFET-shaped chain: depth 3
+    compiled in a second, depth 8 did not finish.
+
+    With `var`, the definition is recorded once and referenced by symbol,
+    so the compiler emits a **let-chain** -- assignments in dependency
+    order -- and differentiates it by forward accumulation, which is
+    linear in the number of definitions rather than exponential in their
+    depth.  The same chain at depth 256 compiles in seconds.
+
+    Use it for anything a Verilog-A model would have written to a local
+    variable::
+
+        sp = var(surface_potential(vgs, vsb), 'sp')
+        qi = var(inversion_charge(sp), 'qi')
+        return Contribution(b.I, W / L * mu * qi * ...)
+
+    Naming is optional and only affects generated-code readability.
+    """
+    if not _VAR_STACK:
+        raise RuntimeError(
+            'var() may only be called while an element is being compiled '
+            '(inside analog())')
+    reg = _VAR_STACK[-1]
+    sym = _IntermediateSymbol('_v%d_%s' % (len(reg), name or 'i'))
+    reg.append((sym, sympy.sympify(expr)))
+    return sym
 
 
 def param_given(name):
@@ -478,7 +697,7 @@ class _StateSymbol(sympy.Symbol):
         return super().__new__(cls, name, real=True)
 
 
-def _split_terms(rhs, xset):
+def _split_terms(rhs, xset, tset=frozenset()):
     """Route an expression's additive terms into (i, q, u) parts.
 
     Called AFTER ``resolve()``, so circuit quantities and states appear as
@@ -492,7 +711,20 @@ def _split_terms(rhs, xset):
     def xfree(e):
         return not (e.free_symbols & xset)
 
-    rhs = sympy.expand(rhs)
+    ## NOT `sympy.expand(rhs)`.  Expansion distributes every product of
+    ## sums, and a compact model is nothing but nested products of sums:
+    ## measured on a MOSFET-shaped expression, expansion multiplied the
+    ## operation count by ~6 PER NESTING LEVEL (12 -> 22 -> 109 -> 294 ->
+    ## 828 ...), so a real device model never finished compiling.
+    ##
+    ## Expansion was only ever needed to separate additive terms of
+    ## different KINDS (charge from current from source from noise), and
+    ## the top-level `Add` already does that: a model writes
+    ## `I <+ f(v) + ddt(q(v))`, not a product that has to be multiplied
+    ## out before the `ddt` becomes visible.  A `ddt` buried inside a
+    ## product is refused anyway (it is not the derivative of a charge),
+    ## so nothing is lost -- and the one thing expansion did buy, putting
+    ## `q` in a canonical form, was never required.
     terms = rhs.args if rhs.is_Add else (rhs,)
 
     iterms, qterms, uterms, nterms, acterms = [], [], [], [], []
@@ -544,14 +776,14 @@ def _split_terms(rhs, xset):
         ddts = term.atoms(ddt)
         if ddts:
             if isinstance(term, ddt):
-                qterms.append(sympy.expand(term.args[0]))
+                qterms.append(term.args[0])
                 continue
             if term.is_Mul:
                 dd = [f for f in term.args if isinstance(f, ddt)]
                 rest = [f for f in term.args if not isinstance(f, ddt)]
                 coeff = sympy.Mul(*rest)
                 if len(dd) == 1 and xfree(coeff) and not coeff.atoms(ddt):
-                    qterms.append(sympy.expand(coeff * dd[0].args[0]))
+                    qterms.append(coeff * dd[0].args[0])
                     continue
             raise NotImplementedError(
                 'ddt may appear as a term or scaled by an x-independent '
@@ -563,7 +795,12 @@ def _split_terms(rhs, xset):
             ## constant belongs to the device's static characteristic
             ## (a diode's -IS), which keeps generated stamps identical to
             ## the hand-written ones and keeps `u` meaning one thing.
-            (uterms if term.has(TIME) else iterms).append(term)
+            ## `tset` names the intermediates that carry time.  Without
+            ## it a source written through `var()` would be an opaque
+            ## symbol, `has(TIME)` would say no, and the drive would be
+            ## filed as a static characteristic -- a dead source.
+            timed = term.has(TIME) or bool(term.free_symbols & tset)
+            (uterms if timed else iterms).append(term)
         else:
             iterms.append(term)
     return (sympy.Add(*iterms), sympy.Add(*qterms), sympy.Add(*uterms),
@@ -588,7 +825,11 @@ def generate_code(cls):
     paramsyms = [sympy.Symbol(name) for name in paramnames]
     analogfunc.__globals__.update(dict(zip(paramnames, paramsyms)))
 
-    statements = analogfunc(*terminalnodes)
+    _VAR_STACK.append([])
+    try:
+        statements = analogfunc(*terminalnodes)
+    finally:
+        intermediates = _VAR_STACK.pop()
     if isinstance(statements, Statement):
         statements = (statements,)
     crossings = [st for st in statements if isinstance(st, Cross)]
@@ -862,6 +1103,26 @@ def generate_code(cls):
             st.rhs = st.rhs.subs(subs_l)
 
     ## ------------------------------------------------------------------
+    ## Intermediates (`var`): resolve each definition in order, and work
+    ## out which of them depend on the solution.  That second part is not
+    ## cosmetic -- `_split_terms` decides "is this a source?" by asking
+    ## whether a term touches an x-symbol, and an intermediate is an
+    ## opaque symbol, so without this every term mentioning one would be
+    ## routed into `u(t)` and the element would have no conductance at
+    ## all.
+    chain_defs = []
+    xdep_syms, tdep_syms = set(), set()
+    for sym, expr in intermediates:
+        rexpr = resolve(expr)
+        chain_defs.append((sym, rexpr))
+        fs = rexpr.free_symbols
+        if (fs & set(xsyms)) or (fs & xdep_syms):
+            xdep_syms.add(sym)
+        if rexpr.has(TIME) or (fs & tdep_syms):
+            tdep_syms.add(sym)
+    xset_split = set(xsyms) | xdep_syms
+
+    ## ------------------------------------------------------------------
     ## Pass 2 -- assemble the residual vectors.
     ivec = [sympy.Integer(0)] * n
     qvec = [sympy.Integer(0)] * n
@@ -875,7 +1136,7 @@ def generate_code(cls):
         m_ = index_of[('node', b.minus.name)]
         if st.lhs.quantity == 'I':
             ipart, qpart, upart, npart, acpart = _split_terms(
-                resolve(st.rhs), set(xsyms))
+                resolve(st.rhs), xset_split, tdep_syms)
             ivec[p] += ipart; ivec[m_] -= ipart
             qvec[p] += qpart; qvec[m_] -= qpart
             uvec[p] += upart; uvec[m_] -= upart
@@ -895,7 +1156,7 @@ def generate_code(cls):
             ivec[p] += xsyms[bi]
             ivec[m_] -= xsyms[bi]
             ipart, qpart, upart, npart, acpart = _split_terms(
-                resolve(st.rhs), set(xsyms))
+                resolve(st.rhs), xset_split, tdep_syms)
             if acpart != 0:
                 raise NotImplementedError(
                     'ac_stim on a V-contributed branch is not supported '
@@ -915,7 +1176,7 @@ def generate_code(cls):
     for sym, kind, args in states:
         k = index_of[('state', sym.name)]
         arg_i, arg_q, arg_u, arg_n, arg_ac = _split_terms(
-            resolve(args[0]), set(xsyms))
+            resolve(args[0]), xset_split, tdep_syms)
         if arg_ac != 0:
             raise NotImplementedError('ac_stim inside idt/idtmod is not '
                                       'supported')
@@ -969,9 +1230,18 @@ def generate_code(cls):
 
     ## ------------------------------------------------------------------
     ## Jacobians and compilation.
-    G = sympy.Matrix([ivec]).jacobian(xsyms)
-    C = sympy.Matrix([qvec]).jacobian(xsyms)
-    G_dc = sympy.Matrix([ivec_dc]).jacobian(xsyms)
+    ## `Matrix.jacobian` differentiates the assembled expression TREE.
+    ## For a model that reuses intermediates -- every surface-potential
+    ## model does -- that tree is exponential in nesting depth even though
+    ## the DAG is linear, so this line alone is the wall.  Models that
+    ## declare intermediates with `var()` take the let-chain path instead
+    ## and never build these.
+    if chain_defs:
+        G = C = G_dc = sympy.zeros(n)
+    else:
+        G = sympy.Matrix([ivec]).jacobian(xsyms)
+        C = sympy.Matrix([qvec]).jacobian(xsyms)
+        G_dc = sympy.Matrix([ivec_dc]).jacobian(xsyms)
     CY = sympy.zeros(n)
     for (r_, c_), psd in CYacc.items():
         CY[r_, c_] = psd
@@ -993,7 +1263,46 @@ def generate_code(cls):
         return sympy.lambdify([TIME] + paramsyms + [TEMP] + given_syms,
                               exprs, modules=NUMPY_MODULES, cse=True)
 
-    funcs = dict(
+    if chain_defs:
+        ## THE LET-CHAIN PATH.  Four chain compilations replace the eager
+        ## stamps; each walks the DAG once and accumulates derivatives
+        ## forward, so cost is linear in the number of intermediates
+        ## rather than exponential in their nesting.
+        chain_args = [x] + paramsyms + [TEMP] + given_syms
+        _mods = {'_wrapfloor': np.floor}
+        ## The compiled signature takes the solution VECTOR, while the
+        ## chain is written in terms of the scalar unknowns, so the body
+        ## opens by unpacking one into the other.
+        _unpack = [(xs.name, 'x[%d]' % k) for k, xs in enumerate(xsyms)]
+        cc = lambda out, jac: _chain_compile(
+            chain_defs, out, chain_args, want_jacobian_of=jac,
+            xsyms=xsyms, modules_map=_mods, unpack=_unpack)
+
+        ## The source vectors are x-free BY CONSTRUCTION -- that is what
+        ## made them sources -- so they compile against the x-free part
+        ## of the chain and take no `x` argument.  They still have to go
+        ## through the chain: an intermediate is an opaque symbol, and
+        ## lambdify handed one it cannot resolve produces a function that
+        ## quietly evaluates to nothing useful rather than complaining.
+        free_defs = [(sym, e_) for sym, e_ in chain_defs
+                     if sym not in xdep_syms]
+        cu = lambda out, extra=(): _chain_compile(
+            free_defs, out, list(extra) + paramsyms + [TEMP] + given_syms,
+            modules_map=_mods)
+        funcs = dict(i=cc(ivec, None), q=cc(qvec, None),
+                     G=cc(ivec, True), C=cc(qvec, True),
+                     CY=_chain_compile(
+                         chain_defs,
+                         [[CY[r_, c_] for c_ in range(n)]
+                          for r_ in range(n)],
+                         chain_args + [FREQ],
+                         modules_map=_mods, unpack=_unpack),
+                     u=cu(uvec, (TIME,)), u_dc=cu(uvec_dc, (TIME,)),
+                     dudt=cu(dudt, (TIME,)), uac=cu(acvec))
+        funcs['i_dc'] = cc(ivec_dc, None)
+        funcs['G_dc'] = cc(ivec_dc, True)
+    else:
+      funcs = dict(
         i=compile_x(ivec), i_dc=compile_x(ivec_dc),
         q=compile_x(qvec),
         G=compile_x(G), G_dc=compile_x(G_dc),
@@ -1006,7 +1315,8 @@ def generate_code(cls):
     ## Pure single-device forms for the JAX batched path (eval_i_pure /
     ## eval_q_pure) reuse the SAME symbolic vectors, compiled lazily with
     ## sympy's jax printer on first use (jax may not be installed).
-    pure_spec = dict(ivec=ivec, qvec=qvec, xsyms=xsyms, n=n)
+    pure_spec = None if chain_defs else \
+        dict(ivec=ivec, qvec=qvec, xsyms=xsyms, n=n)
 
     ## The SYMBOLIC forms, kept alongside the compiled ones.  A symbolic
     ## toolkit asked for `i(x)` with symbols in `x` was being served by a
@@ -1014,9 +1324,10 @@ def generate_code(cls):
     ## fails the moment the expression contains a `floor`, a `Piecewise`
     ## or anything else numpy evaluates eagerly.  Substituting into these
     ## is exact and cannot fail that way.
-    sym_spec = dict(i=ivec, q=qvec, G=list(G), C=list(C),
-                    xsyms=xsyms, paramsyms=paramsyms,
-                    given_syms=given_syms, shape=(n, n))
+    sym_spec = None if chain_defs else \
+        dict(i=ivec, q=qvec, G=list(G), C=list(C),
+             xsyms=xsyms, paramsyms=paramsyms,
+             given_syms=given_syms, shape=(n, n))
 
     ## ------------------------------------------------------------------
     ## PCNR participation (Aadithya/Keiter/Mei).  A device joins PCNR by
@@ -1051,8 +1362,13 @@ def generate_code(cls):
     ## PCNR is about.  Anything else (a V-contribution, a generated state,
     ## a current spanning two branch voltages) disqualifies the element:
     ## better to declare nothing than to claim a capability falsely.
+    ## PCNR shape detection reads the exponential out of the assembled
+    ## expression.  Behind a `var()` the exponential is an opaque symbol,
+    ## so the detector would silently see none -- refuse explicitly rather
+    ## than quietly declaring the device un-limitable.
     pcnr_spec = None
-    if not states and not vbranches and len(terminalnodes) >= 2:
+    if (not chain_defs and not states and not vbranches
+            and len(terminalnodes) >= 2):
         cands, ok = [], True
         for st in statements:
             if st.lhs.quantity != 'I':
@@ -1125,16 +1441,27 @@ def generate_code(cls):
     ## hdl_overhead.py: 28x on a resistor's G before this).  Recorded here,
     ## cached per parameter set in the metaclass.
     xset_ = set(xsyms)
-    const_G = not any((e.free_symbols & xset_) for e in G)
-    const_C = not any((e.free_symbols & xset_) for e in C)
+    const_G = (not chain_defs
+               and not any((e.free_symbols & xset_) for e in G))
+    const_C = (not chain_defs
+               and not any((e.free_symbols & xset_) for e in C))
 
     cross_spec = None
     if crossings:
-        cross_exprs = [resolve(st.expr).subs(xsubs) for st in crossings]
-        cross_spec = dict(
-            f=sympy.lambdify([x] + paramsyms + [TEMP] + given_syms,
-                             cross_exprs, modules=NUMPY_MODULES, cse=True),
-            directions=[st.direction for st in crossings])
+        if chain_defs:
+            cross_f = _chain_compile(
+                chain_defs, [resolve(st.expr) for st in crossings],
+                [x] + paramsyms + [TEMP] + given_syms,
+                modules_map={'_wrapfloor': np.floor},
+                unpack=[(xs.name, 'x[%d]' % k)
+                        for k, xs in enumerate(xsyms)])
+        else:
+            cross_exprs = [resolve(st.expr).subs(xsubs) for st in crossings]
+            cross_f = sympy.lambdify(
+                [x] + paramsyms + [TEMP] + given_syms, cross_exprs,
+                modules=NUMPY_MODULES, cse=True)
+        cross_spec = dict(f=cross_f,
+                          directions=[st.direction for st in crossings])
 
     limit_spec = [((int(k[0]), int(k[1])),
                    sympy.lambdify(paramsyms + [TEMP], IS_l,
@@ -1152,7 +1479,132 @@ def generate_code(cls):
                 const_G=const_G, const_C=const_C, pcnr_funcs=pcnr_funcs,
                 given_names=given_names, limit_spec=limit_spec,
                 cross_spec=cross_spec, sym_spec=sym_spec,
-                has_ac=any(e != 0 for e in acvec))
+                has_ac=any(e != 0 for e in acvec),
+                chained=bool(chain_defs))
+
+
+def _leaves(o):
+    """Free symbols of an expression, or of a nested list of them."""
+    if isinstance(o, (list, tuple)):
+        out = set()
+        for e_ in o:
+            out |= _leaves(e_)
+        return out
+    return set(getattr(o, 'free_symbols', ()))
+
+
+def _chain_compile(defs, outputs, args, want_jacobian_of=None, xsyms=None,
+                   modules_map=None, unpack=()):
+    """Compile a let-chain into one Python function.
+
+    `defs` is `[(symbol, expr)]` in dependency order; `outputs` the list
+    of expressions to return; `args` the function's parameters.  With
+    `want_jacobian_of` set, the returned function yields the Jacobian of
+    those outputs with respect to `xsyms`, obtained by **forward
+    accumulation over the chain**: each definition's gradient is
+    expressed in terms of the gradients of the definitions it actually
+    mentions, so the work is linear in the number of definitions rather
+    than exponential in their nesting depth.
+    """
+    from sympy.printing.numpy import NumPyPrinter
+    printer = NumPyPrinter()
+
+    ## PRUNE to what the outputs actually reach.  A model's chain is
+    ## shared by every compiled vector -- `i`, `q`, `u`, the AC stamp --
+    ## but each of those reads only part of it.  Emitting the whole chain
+    ## would put symbols in the body that this signature cannot supply
+    ## (the source sub-chain reads TIME, which `i` is not given), and
+    ## would differentiate definitions nothing downstream uses.
+    defmap = {sym: e_ for sym, e_ in defs}
+    wanted, stack = set(), []
+    for o in outputs:
+        stack.extend(_leaves(o))
+    while stack:
+        sym = stack.pop()
+        if sym in wanted or sym not in defmap:
+            continue
+        wanted.add(sym)
+        stack.extend(defmap[sym].free_symbols)
+    defs = [(sym, e_) for sym, e_ in defs if sym in wanted]
+
+    lines, body = [], []
+    for name, code in unpack:
+        body.append('    %s = %s' % (name, code))
+
+    def emit(sym, expr):
+        body.append('    %s = %s' % (sym.name, printer.doprint(expr)))
+
+    if want_jacobian_of is None:
+        for sym, expr in defs:
+            emit(sym, expr)
+
+        def render(o):
+            if isinstance(o, (list, tuple)):
+                return '[%s]' % ', '.join(render(e_) for e_ in o)
+            return printer.doprint(o)
+        ret = render(list(outputs))
+    else:
+        ## Values first -- the gradients reference them.
+        for sym, expr in defs:
+            emit(sym, expr)
+        ## Forward accumulation.  The chain rule is applied only along
+        ## the edges that exist: `expr.free_symbols` names exactly the
+        ## upstream definitions this one reads, so the total work is
+        ## proportional to the number of DAG EDGES, not to the number of
+        ## (definition, definition) pairs.
+        defset = {sym for sym, _ in defs}
+        dsym, dexpr = {}, {}
+        for sym, expr in defs:
+            parents = [d for d in expr.free_symbols if d in defset]
+            partials = {d: sympy.diff(expr, d) for d in parents}
+            for j, xj in enumerate(xsyms):
+                g = sympy.diff(expr, xj)
+                for d in parents:
+                    dj = dsym[(d, j)]
+                    if dexpr[(d, j)].is_zero:
+                        continue      # that path carries no sensitivity
+                    g = g + partials[d] * dj
+                gs = sympy.Symbol('_d_%s_%d' % (sym.name, j), real=True)
+                dsym[(sym, j)] = gs
+                dexpr[(sym, j)] = g
+                if not g.is_zero:
+                    emit(gs, g)
+        rows = []
+        for out in outputs:
+            parents = [d for d in out.free_symbols if d in defset]
+            partials = {d: sympy.diff(out, d) for d in parents}
+            row = []
+            for j, xj in enumerate(xsyms):
+                g = sympy.diff(out, xj)
+                for d in parents:
+                    if dexpr[(d, j)].is_zero:
+                        continue
+                    g = g + partials[d] * dsym[(d, j)]
+                row.append(printer.doprint(g))
+            rows.append('[%s]' % ', '.join(row))
+        ret = '[%s]' % ', '.join(rows)
+
+    lines.append('def _f(%s):' % ', '.join(a.name if hasattr(a, 'name')
+                                           else str(a) for a in args))
+    lines.extend(body)
+    lines.append('    return %s' % ret)
+    src = '\n'.join(lines)
+    ns = dict(modules_map or {})
+    import functools
+    import numpy
+    ## NumPyPrinter prints Min/Max as `functools.reduce(numpy.minimum, ...)`,
+    ## so both names have to be in the namespace, not just numpy's.
+    ns.setdefault('numpy', numpy)
+    ns.setdefault('functools', functools)
+    for k in ('sqrt', 'exp', 'log', 'sin', 'cos', 'tan', 'sinh', 'cosh',
+              'tanh', 'floor', 'ceil', 'abs', 'sign', 'pi', 'select',
+              'less', 'greater', 'logical_and', 'logical_or', 'nan',
+              'inf', 'amin', 'amax', 'minimum', 'maximum', 'where'):
+        ns.setdefault(k, getattr(numpy, k, None))
+    exec(compile(src, '<hdl-chain>', 'exec'), ns)
+    fn = ns['_f']
+    fn._src = src
+    return fn
 
 
 def _params_of(self):
@@ -1223,6 +1675,9 @@ class BehaviouralMeta(type):
             cls.IC_KIND = 'state'
 
         def i(self, x, epar=defaultepar, params_tree=None):
+            if info['chained']:
+                return np.asarray(funcs['i'](x, *_args_of(self, epar)),
+                                  dtype=float)
             if getattr(self.toolkit, 'symbolic', False):
                 return _symbolic_eval(self, 'i', x, epar)
             f = funcs['i_dc'] if _dc(epar) and state_meta['dc_pins'] \
@@ -1243,6 +1698,9 @@ class BehaviouralMeta(type):
             self.__dict__.pop('_hdl_Cc', None)
 
         def G(self, x, epar=defaultepar, params_tree=None):
+            if info['chained']:
+                return np.asarray(funcs['G'](x, *_args_of(self, epar)),
+                                  dtype=float)
             if getattr(self.toolkit, 'symbolic', False):
                 return _symbolic_eval(self, 'G', x, epar)
             dc = _dc(epar) and state_meta['dc_pins']
@@ -1260,11 +1718,17 @@ class BehaviouralMeta(type):
             return np.asarray(f(x, *_args_of(self, epar)))
 
         def q(self, x, epar=defaultepar, params_tree=None):
+            if info['chained']:
+                return np.asarray(funcs['q'](x, *_args_of(self, epar)),
+                                  dtype=float)
             if getattr(self.toolkit, 'symbolic', False):
                 return _symbolic_eval(self, 'q', x, epar)
             return funcs['q'](x, *_args_of(self, epar))
 
         def C(self, x, epar=defaultepar, params_tree=None):
+            if info['chained']:
+                return np.asarray(funcs['C'](x, *_args_of(self, epar)),
+                                  dtype=float)
             if getattr(self.toolkit, 'symbolic', False):
                 return _symbolic_eval(self, 'C', x, epar)
             if const_C:
@@ -1312,6 +1776,15 @@ class BehaviouralMeta(type):
                     out.append((k, m, float(of(*_params_of(self)))))
             return out
 
+        if info['pure_spec'] is None:
+            cls.linear = False
+            cls.i, cls.G, cls.q, cls.C, cls.CY = i, G, q, C, CY
+            cls.u, cls.dudt, cls.update = u, dudt, update
+            if state_meta['dc_pins']:
+                cls.state_ic = state_ic
+            if state_meta['periodic']:
+                cls.periodic_states = periodic_states
+            return
         xset2 = set(info['pure_spec']['xsyms'])
         Gmat = sympy.Matrix([info['pure_spec']['ivec']]).jacobian(
             info['pure_spec']['xsyms'])
@@ -1463,6 +1936,8 @@ class BehaviouralMeta(type):
         ## forms are real.  Params arrive as a dict on the batched path.
         cls._hdl_pure_cache = {}
         spec = info['pure_spec']
+        if spec is None:
+            return
         pnames = info['paramnames']
 
         def _compiled_pure(which):
