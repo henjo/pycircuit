@@ -318,54 +318,67 @@ def test_two_junction_device_solves_with_and_without_pcnr():
     assert float(off.v('c')) > 0.02
 
 
-def test_jax_pcnr_refuses_junctions_it_cannot_reproduce():
-    """The traced backend rebuilds every junction itself as
-    ``IS*(exp(v/VT)-1)`` with one global VT -- it does not call the
-    device.  So it must REFUSE any junction of a different shape.
+def test_jax_pcnr_calls_the_device_instead_of_rebuilding_it():
+    """The traced backend now ASKS each device for its junction.
 
-    It used to read ``getattr(element.iparv, 'IS', 0.0)``, which papered
-    over exactly this: a device whose saturation current is not named
-    ``IS`` -- the two-junction element above has ``ISE``/``ISC`` -- got
-    ``IS = 0``, i.e. a junction carrying NO CURRENT, and the run returned
-    a confident wrong answer.
+    It used to rebuild every junction itself as ``IS*(exp(v/VT)-1)`` with
+    one global VT, reading ``IS`` by name -- so a device whose saturation
+    current is ``ISE``/``ISC`` got ``IS = 0``, a junction carrying no
+    current, and a confident wrong answer; and multi-junction and
+    charge-storing participants were impossible here while the CPU
+    accepted them.  Calling the device removes all three limits at once.
     """
     pytest.importorskip('jax')
     from pycircuit.circuit.toolkit import jaxtoolkit
-    from pycircuit.circuit.jaxtransient import _junction_arrays
-    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.jaxtransient import _junction_arrays, JAXTransient
+    from pycircuit.circuit.transient import Transient as CpuTransient
 
     saved = pycircuit.circuit.circuit.default_toolkit
     try:
         pycircuit.circuit.circuit.default_toolkit = jaxtoolkit
 
-        ## The hand-written diode IS that shape, so it is accepted.
-        c = SubCircuit(toolkit=jaxtoolkit)
-        na, nb = c.add_node('a'), c.add_node('b')
-        c['vs'] = VS(na, gnd, v=1.0, toolkit=jaxtoolkit)
-        c['R'] = R(na, nb, r=1e3, toolkit=jaxtoolkit)
-        c['D'] = Diode(nb, gnd, IS=1e-13, toolkit=jaxtoolkit)
-        c.update_iparv()
-        assert _junction_arrays(c) is not None
+        def build(tk):
+            pycircuit.circuit.circuit.default_toolkit = tk
+            c = SubCircuit(toolkit=tk)
+            nb, ne, nc = (c.add_node('b'), c.add_node('e'), c.add_node('c'))
+            c['vb'] = VS(nb, gnd, v=0.75, toolkit=tk)
+            c['Re'] = R(ne, gnd, r=100.0, toolkit=tk)
+            c['Rc'] = R(nc, gnd, r=100.0, toolkit=tk)
+            c['Q'] = TwoJunction(nb, ne, nc, toolkit=tk)
+            c.update_iparv()
+            return c
 
-        ## The two-junction element is not, and says so instead of
-        ## silently computing zero junction current.
-        c2 = SubCircuit(toolkit=jaxtoolkit)
-        nb2, ne, nc = (c2.add_node('b'), c2.add_node('e'), c2.add_node('c'))
-        c2['vb'] = VS(nb2, gnd, v=0.75, toolkit=jaxtoolkit)
-        c2['Re'] = R(ne, gnd, r=100.0, toolkit=jaxtoolkit)
-        c2['Rc'] = R(nc, gnd, r=100.0, toolkit=jaxtoolkit)
-        c2['Q'] = TwoJunction(nb2, ne, nc, toolkit=jaxtoolkit)
-        c2.update_iparv()
-        with pytest.raises(NotImplementedError, match='cannot reproduce'):
-            _junction_arrays(c2)
+        cj = build(jaxtoolkit)
+        meta = _junction_arrays(cj)
+        assert meta is not None
+        assert len(meta[0]) == 2            # BOTH junctions, not one
+        assert meta[4] is not None          # device-supplied evaluation
+
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = JAXTransient(cj, pcnr=True, reltol=1e-5).solve(
+                gnd, tend=1e-6, timestep=2e-8, uic=True,
+                fixed_timestep=True)
+            y_jax = float(np.asarray(res.v('e'), float).reshape(-1)[-1])
+
+            cc = build(numeric)
+            y_cpu = float(np.asarray(CpuTransient(
+                cc, toolkit=numeric, pcnr=True).solve(
+                    tend=1e-6, timestep=2e-8,
+                    fixed_timestep=True).v('e').y, float)[-1])
+        ## The device is evaluated by the same code on both backends now,
+        ## so they must agree closely rather than merely both converge.
+        assert_allclose(y_jax, y_cpu, rtol=1e-5)
     finally:
         pycircuit.circuit.circuit.default_toolkit = saved
 
 
-def test_jax_charge_refusal_asks_the_C_matrix():
-    """The traced path's charge refusal must test whether the device
-    ACTUALLY stores charge, not whether it happens to have an
-    ``eval_q_pure`` method -- every generated element has one, charge or
+def test_jax_fallback_charge_check_asks_the_C_matrix():
+    """The FALLBACK path -- taken only when a device supplies no
+    ``pcnr_i`` for the traced backend to call -- must test whether the
+    device ACTUALLY stores charge, not whether it happens to have an
+    ``eval_q_pure`` method: every generated element has one, charge or
     not, so the method test refused charge-free devices and blamed a
     charge they did not have."""
     pytest.importorskip('jax')

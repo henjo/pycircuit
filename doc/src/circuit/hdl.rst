@@ -310,9 +310,12 @@ device protocol.
     print("current at 0.6 V is **%.6g A** -- the hand-written ``Diode``" % got[0])
     print("gives %.6g A, i.e. identical." % ref[0])
 
-An element that does *not* qualify — a polynomial nonlinearity, several
-branches, a generated state — simply declares nothing and is solved the
-ordinary way. The compiler never claims a capability it cannot honour.
+A device may own **several** junctions -- two sharing a base, the BJT
+shape -- and may store charge; both work on the CPU and traced backends,
+because the solver asks the device for its junction rather than assuming
+a textbook diode.  An element that does *not* qualify — a polynomial
+nonlinearity, several branches, a generated state — simply declares
+nothing and is solved the ordinary way. The compiler never claims a capability it cannot honour.
 
 .. admonition:: Use ``limexp`` in models you intend to run under PCNR
 

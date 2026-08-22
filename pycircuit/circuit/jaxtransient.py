@@ -996,10 +996,14 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
         ## the Schur-reduced (f_eff, J_eff) IS an n-sized system whose Newton
         ## step equals predict's dx_mna, so fang's machinery works on it
         ## unchanged, eq (18)'s second solve included (same factors).
-        j_ra, j_rb, j_IS = pcnr_meta
+        j_ra, j_rb, j_IS, j_VT, j_fns = pcnr_meta
         v_node = x[j_ra] - x[j_rb]
-        i_n, g_n = _junction_terms(v_node, j_IS, pcnr_VT)
-        i_l, g_l = _junction_terms(v_lim, j_IS, pcnr_VT)
+        if j_fns is not None:
+            i_n, g_n = _junction_terms_generic(v_node, j_fns)
+            i_l, g_l = _junction_terms_generic(v_lim, j_fns)
+        else:
+            i_n, g_n = _junction_terms(v_node, j_IS, pcnr_VT)
+            i_l, g_l = _junction_terms(v_lim, j_IS, pcnr_VT)
         F = F.at[j_ra].add(i_l - i_n)
         F = F.at[j_rb].add(-(i_l - i_n))
         J = _scatter_junction_G(J, j_ra, j_rb, g_n, -1.0)
@@ -1020,9 +1024,9 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
         if pcnr_meta is not None:
             ## PCNR's CORRECT phase: the MNA update is taken in FULL (that is
             ## the method's point); only each device's own unknown is limited.
-            j_ra, j_rb, j_IS = pcnr_meta
+            j_ra, j_rb, j_IS, j_VT, _fns = pcnr_meta
             dx_lim = -(g_lim + (-dx0[j_ra] + dx0[j_rb]))
-            v1 = _pnjlim_branchless(v_lim + dx_lim, v_lim, pcnr_VT, j_IS,
+            v1 = _pnjlim_branchless(v_lim + dx_lim, v_lim, j_VT, j_IS,
                                     jnp.log)
         else:
             v1 = v_lim
@@ -1144,7 +1148,7 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
                 ## must move it too, or the loop can return with the exact
                 ## v_lim != e_a - e_b inconsistency the g_lim test guards
                 ## (the CPU learned this as a stage-4 defect).
-                j_ra2, j_rb2, _ = pcnr_meta
+                j_ra2, j_rb2 = pcnr_meta[0], pcnr_meta[1]
                 v_corr = v1 + (dxh[j_ra2] - dxh[j_rb2]) * dh
             else:
                 v_corr = v1
@@ -1168,7 +1172,7 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
 
     x0 = extrapolate_predictor(state)
     if pcnr_meta is not None:
-        _ra0, _rb0, _ = pcnr_meta
+        _ra0, _rb0 = pcnr_meta[0], pcnr_meta[1]
         v0 = x0[_ra0] - x0[_rb0]
     else:
         v0 = jnp.zeros(0)
@@ -1208,120 +1212,134 @@ class PcnrState(NamedTuple):
 
 
 def _junction_arrays(circuit):
-    """Static junction metadata: (ra[], rb[], IS[]) -- or None if none."""
+    """Static junction metadata for the traced PCNR path.
+
+    Returns ``(ra, rb, IS, VT, funcs)``.  ``funcs`` is a list of
+    ``(i_fn, g_fn)`` pairs -- one per junction, each a traced callable of
+    the junction's own voltage -- or ``None`` when some device cannot
+    supply one, in which case the caller falls back to rebuilding the
+    textbook diode from ``IS`` and refuses anything that is not one.
+
+    The traced loop used to rebuild EVERY junction itself as
+    ``IS*(exp(v/VT)-1)`` with a single global VT, reading ``IS`` by name.
+    That silently gave a device whose saturation current is not called
+    ``IS`` a junction carrying no current, and it made multi-junction and
+    charge-storing participants impossible here while the CPU path
+    accepted them.  Asking the device instead removes all three limits at
+    once: any shape, any number of junctions, and charge simply stays in
+    the MNA block exactly as it does on the CPU (this assembly subtracts
+    the junction term at the node voltage and adds it at ``v_lim``; it
+    never touched the charge).
+    """
     from pycircuit.circuit.pcnr import pcnr_junctions
+    from pycircuit.circuit.circuit import defaultepar as _dp
     junctions = pcnr_junctions(circuit)
     if not junctions:
         return None
-    for _inst, element, _ra, _rb in junctions:
-        ## Does it ACTUALLY store charge?  `hasattr(element,
-        ## 'eval_q_pure')` is not that question -- every generated element
-        ## carries that method whether or not its charge vector is zero,
-        ## so testing for it refused perfectly good charge-free devices
-        ## (and blamed a charge they did not have).
-        ##
-        ## But neither is `element.C` alone: on THIS backend a batched
-        ## element's capacitance is the autodiff of `eval_q_pure`, and a
-        ## device may leave `C` at the base class's zeros while declaring
-        ## a real charge there.  So ask both, and probe rather than
-        ## inspect -- a nonlinear charge can vanish at one point.
+
+    VT_global = float(_dp.kboltzmann if hasattr(_dp, 'kboltzmann')
+                      else 1.38e-23) * float(getattr(_dp, 'T', 300.0)) \
+        / 1.602e-19
+
+    ra = jnp.array([j[2] for j in junctions], dtype=jnp.int32)
+    rb = jnp.array([j[3] for j in junctions], dtype=jnp.int32)
+
+    IS_list, VT_list, funcs, seen = [], [], [], {}
+    generic = True
+    for inst, element, _ra, _rb in junctions:
+        jn = seen.get(inst, 0)
+        seen[inst] = jn + 1
+        params = {q.name: getattr(element.iparv, q.name)
+                  for q in element.instparams}
+        ## Per-junction (VT, IS): what pnjlim needs.  A device that knows
+        ## its own scales says so; otherwise fall back to the `IS`
+        ## parameter and the global thermal voltage.
+        scales = getattr(element, 'pcnr_scales', None)
+        if scales is not None:
+            VT_j, IS_j = scales(params, _dp, jn=jn)
+        else:
+            VT_j, IS_j = VT_global, float(getattr(element.iparv, 'IS', 0.0))
+        VT_list.append(VT_j)
+        IS_list.append(IS_j)
+
+        pi = getattr(element, 'pcnr_i', None)
+        pg = getattr(element, 'pcnr_didv', None)
+        if pi is None or pg is None:
+            generic = False
+            continue
+        tk = element.toolkit
+
+        def _mk(pi=pi, pg=pg, params=params, tk=tk, jn=jn):
+            def i_fn(v):
+                return pi(v, params, _dp, tk, jn=jn)[0]
+
+            def g_fn(v):
+                return pg(v, params, _dp, tk, jn=jn)[0]
+            return i_fn, g_fn
+        funcs.append(_mk())
+
+    if generic and funcs:
+        ## Probe once, outside the trace, so a device that cannot be
+        ## evaluated at all fails here with its own name rather than
+        ## somewhere inside a jitted loop.
+        for k, (i_fn, _g) in enumerate(funcs):
+            try:
+                float(np.asarray(i_fn(0.3), dtype=float))
+            except Exception as exc:
+                raise NotImplementedError(
+                    'junction %d of %r could not be evaluated for the '
+                    'traced backend (%s); use the CPU backend or '
+                    'pcnr=False.' % (k, junctions[k][0], exc)) from exc
+        return (ra, rb, jnp.array(IS_list), jnp.array(VT_list), funcs)
+
+    ## FALLBACK: no device-supplied evaluation, so the traced loop must
+    ## rebuild the textbook diode -- and may only do so for devices that
+    ## really are one.  Everything else is refused rather than quietly
+    ## computed wrong.
+    for k, (inst, element, _ra, _rb) in enumerate(junctions):
         _has_charge = False
-        ## Probes must have DISTINCT entries: a charge that depends on a
-        ## voltage difference vanishes identically on a uniform vector,
-        ## so probing with `full(n, 0.3)` silently reported "no charge"
-        ## for exactly the devices this guard exists to catch.
         _probes = (np.linspace(0.1, 0.4, element.n),
                    np.linspace(-0.2, 0.5, element.n))
         try:
             for _xp in _probes:
-                _C = np.asarray(element.C(_xp), dtype=float)
-                if np.any(np.abs(_C) > 0.0):
+                if np.any(np.abs(np.asarray(element.C(_xp),
+                                            dtype=float)) > 0.0):
                     _has_charge = True
                     break
         except Exception:
-            _has_charge = True          # cannot tell: refuse, do not guess
-        _qp = getattr(element, 'eval_q_pure', None)
-        if not _has_charge and _qp is not None:
-            from pycircuit.circuit.circuit import defaultepar as _dp
-            try:
-                for _xp in _probes:
-                    _q = np.asarray(_qp(_xp, {p_.name: getattr(
-                        element.iparv, p_.name) for p_ in element.instparams},
-                        _dp, element.toolkit), dtype=float)
-                    if np.any(np.abs(_q) > 0.0):
-                        _has_charge = True
-                        break
-            except Exception:
-                _has_charge = True      # cannot tell: refuse, do not guess
+            _has_charge = True
         if _has_charge:
-            ## NOTE the asymmetry, which is deliberate: the CPU path now
-            ## ALLOWS a charge-storing participant (the Newton system is
-            ## consistent -- see pcnr.augmented_system and
-            ## tests/test_pcnr_charge.py).  The traced path keeps the
-            ## refusal because it rebuilds the junction itself from
-            ## (IS, VT) rather than calling the device, so it has no way
-            ## to leave that device's charge alone in the MNA block.
-            ## Lifting it here means teaching the traced loop to call the
-            ## device, which is the same work as the check below.
-            if hasattr(element, 'eval_q_pure'):
-                raise NotImplementedError(
-                    '%r has charge storage and a PCNR junction; not '
-                    'implemented (same refusal as the CPU path).' % _inst)
-    ## THE TRACED PATH REBUILDS THE JUNCTION FROM (IS, VT) -- see
-    ## `_junction_terms`, which computes `IS*(exp(v/VT)-1)` with a single
-    ## global VT.  That is the textbook diode and nothing else, while a
-    ## device may declare a PCNR junction of any shape: a generated
-    ## element with its own exponential scale, or with several junctions,
-    ## or with saturation currents not named `IS` at all.
-    ##
-    ## `getattr(..., 'IS', 0.0)` used to paper over that: a device without
-    ## an `IS` parameter silently got `IS = 0`, i.e. a junction carrying
-    ## NO CURRENT, and the run returned a confident wrong answer.  So the
-    ## device is now asked what its junction actually does and refused if
-    ## the traced form cannot reproduce it.
-    from pycircuit.circuit.circuit import defaultepar as _depar
-    VT_probe = float(_depar.kboltzmann if hasattr(_depar, 'kboltzmann')
-                     else 1.38e-23) * float(getattr(_depar, 'T', 300.0)) \
-        / 1.602e-19
-    IS_list, seen = [], {}
-    for inst, element, _ra, _rb in junctions:
-        jn = seen.get(inst, 0)
-        seen[inst] = jn + 1
-        IS_j = float(getattr(element.iparv, 'IS', 0.0))
-        IS_list.append(IS_j)
+            raise NotImplementedError(
+                '%r stores charge and declares a PCNR junction, and does '
+                'not supply pcnr_i/pcnr_didv for the traced backend, '
+                'which would have to rebuild the junction itself.' % inst)
         pcnr_i = getattr(element, 'pcnr_i', None)
         if pcnr_i is None:
             continue
         params = {q.name: getattr(element.iparv, q.name)
                   for q in element.instparams}
         for v_probe in (0.3, 0.6):
-            try:
-                got = float(np.asarray(
-                    pcnr_i(v_probe, params, _depar, element.toolkit,
-                           jn=jn), dtype=float)[0])
-            except Exception as exc:
-                raise NotImplementedError(
-                    '%r declares a PCNR junction whose pcnr_i could not be '
-                    'evaluated for the traced backend (%s); run this '
-                    'circuit on the CPU backend, or with pcnr=False.'
-                    % (inst, exc)) from exc
-            want = IS_j * (np.exp(v_probe / VT_probe) - 1.0)
+            got = float(np.asarray(pcnr_i(v_probe, params, _dp,
+                                          element.toolkit), dtype=float)[0])
+            want = IS_list[k] * (np.exp(v_probe / VT_global) - 1.0)
             if not np.isclose(got, want, rtol=1e-6,
                               atol=1e-30 + 1e-6 * abs(want)):
                 raise NotImplementedError(
-                    "%r declares a PCNR junction that the traced backend "
-                    "cannot reproduce: it rebuilds every junction as "
-                    "IS*(exp(v/VT)-1) with one global VT, and this device "
-                    "gives %.6g A at %.2f V where that form gives %.6g A "
-                    "(IS=%.6g). A device with its own exponential scale, "
-                    "with several junctions, or whose saturation current "
-                    "is not the `IS` parameter is not expressible there "
-                    "yet. Use the CPU backend, or pcnr=False."
-                    % (inst, got, v_probe, want, IS_j))
-    ra = jnp.array([j[2] for j in junctions], dtype=jnp.int32)
-    rb = jnp.array([j[3] for j in junctions], dtype=jnp.int32)
-    IS = jnp.array(IS_list)
-    return ra, rb, IS
+                    "%r declares a PCNR junction the traced backend cannot "
+                    "reproduce (it gives %.6g A at %.2f V where "
+                    "IS*(exp(v/VT)-1) gives %.6g A)." % (inst, got,
+                                                         v_probe, want))
+    return (ra, rb, jnp.array(IS_list), jnp.array(VT_list), None)
+
+
+def _junction_terms_generic(v, funcs):
+    """Ask each device for its own junction current and conductance.
+
+    A Python loop over a STATIC list, so `jit` unrolls it; the junction
+    set is fixed at trace time."""
+    i = jnp.stack([f_i(v[k]) for k, (f_i, _g) in enumerate(funcs)])
+    g = jnp.stack([f_g(v[k]) for k, (_i, f_g) in enumerate(funcs)])
+    return i, g
 
 
 def _junction_terms(v, j_IS, VT):
@@ -1341,7 +1359,8 @@ def _scatter_junction_G(J, ra, rb, g, sign):
 
 
 def pcnr_inner_loop(state: TransientState, circuit, irefnode, j_ra, j_rb,
-                    j_IS, VT, tline_params, tline_indices,
+                    j_IS, VT, tline_params, tline_indices, j_VT=None,
+                    j_fns=None,
                     eval_method='gear', reltol=1e-4, abstol=1e-12,
                     xtol=1e-12, maxiter=100, params_tree=None, tline_dG=None,
                     analysis='tran', provided_function=None):
@@ -1377,8 +1396,12 @@ def pcnr_inner_loop(state: TransientState, circuit, irefnode, j_ra, j_rb,
         ## Remove each junction's stamp at the NODE voltage (it is inside the
         ## base assembly) and re-enter its current through its OWN unknown.
         v_node = x[j_ra] - x[j_rb]
-        i_n, g_n = _junction_terms(v_node, j_IS, VT)
-        i_l, g_l = _junction_terms(v_lim, j_IS, VT)
+        if j_fns is not None:
+            i_n, g_n = _junction_terms_generic(v_node, j_fns)
+            i_l, g_l = _junction_terms_generic(v_lim, j_fns)
+        else:
+            i_n, g_n = _junction_terms(v_node, j_IS, VT)
+            i_l, g_l = _junction_terms(v_lim, j_IS, VT)
         F = F.at[j_ra].add(i_l - i_n)
         F = F.at[j_rb].add(-(i_l - i_n))
         J = _scatter_junction_G(J, j_ra, j_rb, g_n, -1.0)
@@ -1398,7 +1421,9 @@ def pcnr_inner_loop(state: TransientState, circuit, irefnode, j_ra, j_rb,
 
         dx_lim = -(g_lim + (-dx[j_ra] + dx[j_rb]))
         ## CORRECT: each device limits only the unknown it owns.
-        v_new = _pnjlim_branchless(v_lim + dx_lim, v_lim, VT, j_IS, jnp.log)
+        v_new = _pnjlim_branchless(v_lim + dx_lim, v_lim,
+                                   VT if j_VT is None else j_VT, j_IS,
+                                   jnp.log)
 
         ## BOTH residuals, per the CPU's measured lesson: converging on dx
         ## alone can return v_lim != e_a - e_b, a vector that is not a
@@ -1425,7 +1450,7 @@ def pcnr_inner_loop(state: TransientState, circuit, irefnode, j_ra, j_rb,
 
 def pcnr_controller_jacobian(circuit, state, x, v_lim, j_ra, j_rb, j_IS, VT,
                              eval_method, first_order, params_tree=None,
-                             tline_dG=None):
+                             tline_dG=None, j_fns=None):
     """The Jacobian the step controller must see: the one PCNR SOLVED.
 
     ``G(x) + Geq`` is not it -- the base G carries the junction stamp at the
@@ -1441,8 +1466,12 @@ def pcnr_controller_jacobian(circuit, state, x, v_lim, j_ra, j_rb, j_IS, VT,
     if tline_dG is not None:
         J = J + tline_dG
     v_node = x[j_ra] - x[j_rb]
-    _i_n, g_n = _junction_terms(v_node, j_IS, VT)
-    _i_l, g_l = _junction_terms(v_lim, j_IS, VT)
+    if j_fns is not None:
+        _i_n, g_n = _junction_terms_generic(v_node, j_fns)
+        _i_l, g_l = _junction_terms_generic(v_lim, j_fns)
+    else:
+        _i_n, g_n = _junction_terms(v_node, j_IS, VT)
+        _i_l, g_l = _junction_terms(v_lim, j_IS, VT)
     J = _scatter_junction_G(J, j_ra, j_rb, g_n, -1.0)
     return _scatter_junction_G(J, j_ra, j_rb, g_l, +1.0)
 
@@ -1515,10 +1544,10 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
             ## junction's limited quantity as its own unknown.  This backend's
             ## ONLY junction-robustness mechanism -- classic limiting cannot
             ## run in a traced loop.
-            j_ra, j_rb, j_IS = pcnr_meta
+            j_ra, j_rb, j_IS, j_VT, j_fns = pcnr_meta
             pstate = pcnr_inner_loop(
                 state, circuit, irefnode, j_ra, j_rb, j_IS, pcnr_VT,
-                tline_params, tline_indices,
+                tline_params, tline_indices, j_VT=j_VT, j_fns=j_fns,
                 eval_method=eval_method, reltol=reltol, abstol=abstol,
                 xtol=xtol, maxiter=maxiter, params_tree=params_tree,
                 tline_dG=tline_dG, analysis=analysis,
@@ -1556,12 +1585,12 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
         ## costs accuracy.  0.2b measured the `J^-1` mapping this branch avoided at
         ## 1-3% of a step, well under its own 10% keep-it threshold.
         if pcnr_meta is not None and not coupled:
-            j_ra, j_rb, j_IS = pcnr_meta
+            j_ra, j_rb, j_IS, j_VT, j_fns = pcnr_meta
             J = pcnr_controller_jacobian(circuit, state, x_curr, pcnr_v_lim,
                                          j_ra, j_rb, j_IS, pcnr_VT,
                                          eval_method, first_order,
                                          params_tree=params_tree,
-                                         tline_dG=tline_dG)
+                                         tline_dG=tline_dG, j_fns=j_fns)
         else:
             J = circuit.G(x_curr, params_tree=params_tree) + Geq
             if tline_dG is not None:

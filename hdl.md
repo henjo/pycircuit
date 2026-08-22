@@ -662,19 +662,27 @@ DSL:
   declared, per-junction currents differing exactly as their saturation
   currents do, and DC identical with PCNR on and off.
 
-  **A silent wrong answer found while doing it.** The traced JAX PCNR
-  path does not call the device at all — it rebuilds every junction as
-  `IS*(exp(v/VT)−1)` with one global VT, reading `IS` *by name* with
-  `getattr(element.iparv, 'IS', 0.0)`. A device whose saturation current
-  is not called `IS` (the two-junction element has `ISE`/`ISC`) got
-  `IS = 0`: a junction carrying **no current**, and a confident wrong
-  answer. It now evaluates the device's own `pcnr_i` at two probe
-  voltages and refuses with an explanatory message if the traced form
-  cannot reproduce it. The same pass fixed an over-broad refusal there:
-  the charge check asked `hasattr(element, 'eval_q_pure')`, which every
-  generated element has whether or not its charge is zero, so charge-free
-  devices were refused and blamed for a charge they did not have — it now
-  asks the C matrix.
+  **A silent wrong answer found while doing it, and then the cause
+  removed.** The traced JAX PCNR path did not call the device at all — it
+  rebuilt every junction as `IS*(exp(v/VT)−1)` with one global VT,
+  reading `IS` *by name*. A device whose saturation current is not called
+  `IS` (the two-junction element has `ISE`/`ISC`) got `IS = 0`: a
+  junction carrying **no current**, and a confident wrong answer.
+
+  The first fix was to verify and refuse. The **second was to stop
+  guessing altogether**: the traced loop now asks each device for its own
+  junction current and conductance, through the same `pcnr_i`/`pcnr_didv`
+  the CPU path calls, with the generated elements emitting a jax-printed
+  twin. The junction set is static at trace time, so the per-junction
+  loop unrolls under `jit`. That removed **all three** of the traced
+  backend's restrictions at once — arbitrary junction shape, several
+  junctions per device, and charge storage (the assembly subtracts the
+  junction term at the node voltage and adds it at `v_lim`; it never
+  touched the charge) — closing the asymmetry where the CPU accepted
+  models the traced backend refused. Measured: a two-junction element
+  agrees with the CPU to six digits, a charge-storing one to 0.3% on a
+  2.6 V swing. The verify-and-refuse logic survives as the *fallback*,
+  for a device that supplies no traceable evaluation.
 * **non-exponential nonlinearity.** `pcnr_limit` currently derives
   `(VT, IS)` by reading the `exp` argument. For anything else there is
   no principled scale, and inventing one would be the kind of unvalidated

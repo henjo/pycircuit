@@ -1091,7 +1091,12 @@ def generate_code(cls):
         pcnr_funcs = []
         for spec_j in pcnr_spec:
             vs_ = spec_j['vsym']
+            ## The traced backend calls these under `jit`, so they need a
+            ## jax-printed twin; built lazily so importing the module does
+            ## not require jax.
+            _sym_j = dict(f=spec_j['f'], dfdv=spec_j['dfdv'], vsym=vs_)
             pcnr_funcs.append(dict(
+                sym=_sym_j,
                 terminals=spec_j['terminals'],
                 i=sympy.lambdify([vs_] + paramsyms + [TEMP], spec_j['f'],
                                  modules=NUMPY_MODULES, cse=True),
@@ -1406,17 +1411,41 @@ class BehaviouralMeta(type):
 
             cls.pcnr_junctions = tuple(tuple(f['terminals']) for f in pf)
 
-            def pcnr_i(v, params, epar, toolkit, jn=0, _pf=pf,
-                       _pn=_pn_pcnr):
-                cur = _pf[jn]['i'](v, *[params[q] for q in _pn],
-                                   _epar_T(epar))
+            def _pcnr_compiled(jn, which, toolkit, _pf=pf,
+                               _pn=_pn_pcnr):
+                """The numpy form, or its jax twin for a traced call."""
+                if not getattr(toolkit, 'jax', False):
+                    return _pf[jn]['i' if which == 'i' else 'didv']
+                cache = _pf[jn].setdefault('_jax', {})
+                if which not in cache:
+                    import jax.numpy as _jnp
+                    sym = _pf[jn]['sym']
+                    expr = sym['f'] if which == 'i' else sym['dfdv']
+                    cache[which] = sympy.lambdify(
+                        [sym['vsym']]
+                        + [sympy.Symbol(q) for q in _pn] + [TEMP],
+                        expr, modules=[{'_wrapfloor': _jnp.floor}, 'jax'],
+                        cse=True)
+                return cache[which]
+
+            def pcnr_i(v, params, epar, toolkit, jn=0, _pn=_pn_pcnr):
+                f = _pcnr_compiled(jn, 'i', toolkit)
+                cur = f(v, *[params[q] for q in _pn], _epar_T(epar))
                 return toolkit.array([cur, -cur])
 
-            def pcnr_didv(v, params, epar, toolkit, jn=0, _pf=pf,
-                          _pn=_pn_pcnr):
-                g = _pf[jn]['didv'](v, *[params[q] for q in _pn],
-                                    _epar_T(epar))
+            def pcnr_didv(v, params, epar, toolkit, jn=0, _pn=_pn_pcnr):
+                f = _pcnr_compiled(jn, 'didv', toolkit)
+                g = f(v, *[params[q] for q in _pn], _epar_T(epar))
                 return toolkit.array([g, -g])
+
+            def pcnr_scales(params, epar, jn=0, _pf=pf, _pn=_pn_pcnr):
+                """(VT, IS) for this junction -- what pnjlim needs, and
+                what the traced backend cannot read off an expression."""
+                args = [params[q] for q in _pn] + [_epar_T(epar)]
+                return (float(_pf[jn]['VT'](*args)),
+                        float(_pf[jn]['IS'](*args)))
+
+            cls.pcnr_scales = staticmethod(pcnr_scales)
 
             def pcnr_limit(vnew, vold, params, epar, toolkit, jn=0,
                            _pf=pf, _pn=_pn_pcnr):

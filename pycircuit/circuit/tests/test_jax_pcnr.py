@@ -221,9 +221,19 @@ def test_pcnr_with_tline_matches_cpu():
     assert dev < 1e-6, 'pcnr+TLine drifted from CPU: %.3e' % dev
 
 
-def test_pcnr_refuses_charge_storing_junctions():
-    """Mirror of the CPU augmented_system refusal."""
-    from pycircuit.circuit.jaxtransient import JAXTransient
+def test_pcnr_accepts_a_charge_storing_junction():
+    """The traced path used to refuse a charge-storing participant, and
+    the refusal is gone for the same reason it went on the CPU: the
+    assembly subtracts the junction term at the node voltage and adds it
+    at ``v_lim``, and never touches the charge, so the charge simply
+    stays in the MNA block with its derivative in ``J_MNA/MNA``.
+
+    What made it possible here was asking the DEVICE for its junction
+    instead of rebuilding ``IS*(exp(v/VT)-1)`` internally -- once the
+    device is called, its shape, its number of junctions and its charge
+    are all its own business.
+    """
+    from pycircuit.circuit.jaxtransient import JAXTransient, _junction_arrays
 
     class ChargedDiode(Diode):
         @staticmethod
@@ -236,8 +246,15 @@ def test_pcnr_refuses_charge_storing_junctions():
         c['vs'] = VS('a', gnd, v=1.0)
         c['D'] = ChargedDiode('a', 'b')
         c['R'] = R('b', gnd, r=1e3)
+        c.update_iparv()
+        meta = _junction_arrays(c)
+        assert meta is not None
+        assert meta[4] is not None      # device-supplied evaluation
         tran = JAXTransient(c, pcnr=True)
-        with pytest.raises(NotImplementedError, match='charge'):
-            tran.solve(gnd, tend=1e-6, timestep=1e-7, uic=True)
+        res = tran.solve(gnd, tend=1e-6, timestep=1e-7, uic=True)
+        y = np.asarray(res.v('b'), dtype=float).reshape(-1)
+        assert np.all(np.isfinite(y))
 
     _with_jax(run)
+
+
