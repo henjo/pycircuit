@@ -219,6 +219,16 @@ def to_long_channel(card, w, l, T=300.0):
     ## dependence only.
     alp = (_g(card, 'alpl') * iLE ** _g(card, 'alplexp', 1.0)
            * (1.0 + _g(card, 'alpw') * iWE))
+    ## `ALP1` and `ALP2` correct the channel-shortening factor in strong
+    ## and WEAK inversion respectively (:323-326).  `ALP2` is 4.5 on this
+    ## geometry -- assuming it zero was what left the near-threshold
+    ## output conductance far too low.
+    t1 = iLE ** _g(card, 'alp1lexp', 1.0)
+    alp1 = (_g(card, 'alp1l1') * t1 * (1.0 + _g(card, 'alp1w') * iWE)
+            / (1.0 + _g(card, 'alp1l2') * iLE * t1))
+    t2 = iLE ** _g(card, 'alp2lexp', 1.0)
+    alp2 = (_g(card, 'alp2l1') * t2 * (1.0 + _g(card, 'alp2w') * iWE)
+            / (1.0 + _g(card, 'alp2l2') * iLE * t2))
     vp = _g(card, 'vpo', 0.05)
 
     ## INTERFACE STATES (:267).  PSP does not normalise by the thermal
@@ -245,6 +255,7 @@ def to_long_channel(card, w, l, T=300.0):
         w=w, l=l, tox=tox, nsub=neff, vfb=vfb, phib=phib, u0=u0_eff,
         rs=max(rs, 0.0), rsg=_g(card, 'rsgo'), rsb=_g(card, 'rsbo'),
         ct=max(ct, 0.0), alp=max(alp, 0.0), vp=max(vp, 1.0e-6),
+        alp1=max(alp1, 0.0), alp2=max(alp2, 0.0),
         kp=max(kp, 0.0),
         mue=max(mue, 0.0), themu=max(_g(card, 'themuo'), 0.0),
         cs=max(cs, 0.0), thecs=max(_g(card, 'thecso'), 0.0),

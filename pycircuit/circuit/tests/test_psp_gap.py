@@ -280,22 +280,24 @@ class TestAgainstTheRealDevice(object):
         assert r[sat][-1] / r[sat][0] > 1.03, 'PSP climbs'
         assert g[sat][-1] / g[sat][0] > 1.01, 'so do we, now'
 
-    def test_the_short_device_is_still_the_worse_one(self, deck, ref):
-        """It is, but no longer by much.
+    def test_both_geometries_are_within_a_few_percent(self, deck, ref):
+        """Which one is worse has now INVERTED, twice.
 
-        This test used to assert the short device was at least 3x worse
-        than the long one.  It stopped being true when the `GPE`
-        width-adjustment bug was fixed -- the short device went from
-        ~12% to ~2% and the ratio fell to about 2x.  Rewritten rather
-        than relaxed, because the thing worth pinning changed: the point
-        is no longer "the omissions are large" but "they are bounded".
+        This test began by asserting the short device was at least 3x
+        worse than the long one -- true when the short device was ~12%
+        off.  The `GPE` fix took it to ~2%, and the `FdL` term took it to
+        ~1% while moving the LONG device to ~3.5%, so the short one is
+        now the more accurate of the two.
+
+        Rewritten rather than re-inverted: what is worth pinning is that
+        both are bounded, not which happens to lead.
         """
         _, r_l, g_l, _ = _compare(deck, ref['nmos_long_idvd'])
         _, r_s, g_s, _ = _compare(deck, ref['nmos_idvg_vd0p05'])
         long_err = np.median(np.abs(g_l / r_l - 1.0))
         short_err = np.median(np.abs(g_s / r_s - 1.0))
-        assert short_err > long_err
-        assert short_err < 0.05, 'short device %.3f' % short_err
+        assert long_err < 0.05, 'long %.3f' % long_err
+        assert short_err < 0.05, 'short %.3f' % short_err
 
 
 @needs_pdk
@@ -554,3 +556,107 @@ class TestPolysiliconDepletion(object):
                 assert f[0] == pytest.approx(-r[0], rel=1e-14), (vg, vd)
             q = np.asarray(e.q(np.array([0.5, vg, 0.0, 0.0])), float)
             assert abs(q.sum()) < 1e-16 * max(np.abs(q).max(), 1e-30)
+
+
+@needs_pdk
+class TestTheChannelShorteningFactor(object):
+    """`FdL`, and the assumption that hid it.
+
+    PSP multiplies the drain current by
+    `FdL = (1 + dL1 + dL1^2) * GdL` (`PSP103_module.include:1137`), where
+    `dL1 = dL + ALP1*(...) + ALP2*(qbm*r2^2*s2)`.  With `ALP1` and `ALP2`
+    zero this is exactly 1, and it was left out on that reading.
+
+    They are not zero.  PSP's own `lp_alp2` is 4.5 on a 0.13 um device --
+    found by the term-by-term comparison, not by inspecting the card,
+    since `ALP2` has no geometry-independent coefficient and its scaled
+    value comes out of `ALP2L1` through a length power.
+    """
+
+    def test_the_card_gives_a_large_weak_inversion_term(self, deck):
+        kw = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_nmos_psp', w=1e-6, l=0.13e-6,
+                              ng=1, m=1, pre_layout=1), w=1e-6, l=0.13e-6)
+        assert kw['alp2'] > 1.0, kw['alp2']
+        assert kw['alp1'] > 0.0
+
+    def test_dibl_is_not_what_carries_the_output_conductance(self, ref):
+        """Measured on the reference, and it is why `FdL` was looked for.
+
+        At Vg = 0.6 the reference current climbs 2.4x through saturation.
+        If that were a threshold effect, PSP's own `vth` would move
+        substantially with drain bias.  It moves 3.5 mV over 1.35 V --
+        2.6 mV/V, which matches our `CF` scaling exactly.  So DIBL is
+        genuinely small here and the climb is in the current formula.
+        """
+        s = ref['nmos_idvd_vg0p6']
+        v = np.asarray(s['v'], float)
+        i = np.abs(np.asarray(s['i_d'], float))
+        assert np.interp(1.4, v, i) / np.interp(0.2, v, i) > 1.8
+
+    def test_it_lifts_the_near_threshold_output_conductance(self, deck,
+                                                            ref):
+        """`ALP2` multiplies the BULK charge, so it acts near threshold.
+
+        Checked as a direction: switching it on must raise the saturated
+        current at low gate bias, and much less at high.
+        """
+        cm.default_toolkit = numeric
+        kw = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_nmos_psp', w=1e-6, l=0.13e-6,
+                              ng=1, m=1, pre_layout=1), w=1e-6, l=0.13e-6)
+        on = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                               cm.Node('b'), **kw)
+        off = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                                cm.Node('b'), **dict(kw, alp1=0.0,
+                                                     alp2=0.0))
+        on.update_iparv()
+        off.update_iparv()
+        lift = {}
+        for vg in (0.6, 1.8):
+            x = np.array([1.4, vg, 0.0, 0.0])
+            lift[vg] = (np.asarray(on.i(x), float)[0]
+                        / np.asarray(off.i(x), float)[0])
+        assert lift[0.6] > 1.4, lift
+        assert lift[0.6] > lift[1.8], lift
+
+    def test_it_more_than_halves_the_total_error(self, deck, ref):
+        """The reason it is kept despite costing the long device.
+
+        Mixed by COUNT -- better in three sweeps, worse in four -- but
+        the gains are large and the regressions small, so the summed
+        median error more than halves.  The regressions are the price of
+        our `dL` being an approximation to PSP's: `FdL` amplifies
+        whatever error `dL` carries, which makes the missing `Vdsat`
+        machinery the next thing worth building.
+        """
+        names = ('nmos_long_idvd', 'nmos_long_idvg', 'nmos_idvd_vg1p2',
+                 'nmos_idvd_vg0p6', 'nmos_idvg_vd0p05',
+                 'nmos_idvg_vd1p2', 'nmos_idvg_vb_m1')
+        cm.default_toolkit = numeric
+        tot = [0.0, 0.0]
+        for n in names:
+            s = ref[n]
+            kw = psp_scaling.to_long_channel(
+                deck.model_params('sg13g2_lv_nmos_psp', w=s['w'], l=s['l'],
+                                  ng=1, m=1, pre_layout=1),
+                w=s['w'], l=s['l'])
+            for k, over in enumerate((dict(alp1=0.0, alp2=0.0), {})):
+                e = PspMosLongChannel(cm.Node('d'), cm.Node('g'),
+                                      cm.Node('s'), cm.Node('b'),
+                                      **dict(kw, **over))
+                e.update_iparv()
+                v = np.asarray(s['v'], float)
+                r = np.abs(np.asarray(s['i_d'], float))
+                b = s['bias']
+                if s['sweep'] == 'Vd':
+                    g = np.array([np.asarray(e.i(np.array(
+                        [x, b['Vg'], b['Vs'], b['Vb']])), float)[0]
+                        for x in v])
+                else:
+                    g = np.array([np.asarray(e.i(np.array(
+                        [b['Vd'], x, b['Vs'], b['Vb']])), float)[0]
+                        for x in v])
+                m = r > 1e-6
+                tot[k] += np.median(np.abs(np.abs(g[m]) / r[m] - 1.0))
+        assert tot[1] < 0.5 * tot[0], 'off %.3f on %.3f' % (tot[0], tot[1])

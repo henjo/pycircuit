@@ -518,6 +518,9 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
     if mob is None:
         Gmob = _v(sympy.Integer(1), 'ids_Gmob')
         Gmob_dL = Gmob
+        GdL = _v(sympy.Integer(1), 'ids_GdL')
+        dL = _v(sympy.Integer(0), 'ids_dL')
+        s1 = _v(sympy.Integer(0), 'ids_s1')
         zsat = _v(sympy.Integer(0), 'ids_zsat')
         Gvsat = _v(sympy.Integer(1), 'ids_Gvsat')
     else:
@@ -596,6 +599,8 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
         alp = mob.get('alp', 0.0)
         if alp == 0.0 and not isinstance(alp, sympy.Expr):
             GdL = _v(sympy.Integer(1), 'ids_GdL')
+            dL = _v(sympy.Integer(0), 'ids_dL')
+            s1 = _v(sympy.Integer(0), 'ids_s1')
         else:
             ## `vds` arrives already symmetrised to a smooth `|Vds|`, so
             ## the excess must be measured against `|dps|` for the whole
@@ -617,7 +622,39 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
                    'ids_Gvsat')
 
     gvinv = _v(hdl.safe_div(1.0, Gvsat, eps=1e-30), 'ids_gvinv')
-    ids = _v(beta * qim1 * dps * gvinv, 'ids')
+
+    ## `FdL = (1 + dL1 + dL1^2) * GdL` (`PSP103_module.include:1137`).
+    ##
+    ## This was left out on the reading that `ALP1` and `ALP2` are zero,
+    ## which would make `dL1 = dL` and `FdL` exactly 1.  They are NOT:
+    ## PSP's own `lp_alp2` is 4.5 on a 0.13 um device.  `ALP2` multiplies
+    ## the BULK charge, so it dominates near threshold -- exactly where
+    ## the output conductance was worst.  At Vg = 0.6 the reference
+    ## current climbs 2.5x through saturation where the core without
+    ## this climbed 1.4x.
+    ##
+    ## And that climb is NOT a threshold effect: measured on the
+    ## reference, PSP's own `vth` moves only 3.5 mV over 1.35 V of drain
+    ## bias.  DIBL is genuinely small here; this is the term that
+    ## carries the output conductance.
+    alp1 = 0.0 if mob is None else mob.get('alp1', 0.0)
+    alp2 = 0.0 if mob is None else mob.get('alp2', 0.0)
+    if (not isinstance(alp1, sympy.Expr)
+            and not isinstance(alp2, sympy.Expr)
+            and alp1 == 0.0 and alp2 == 0.0):
+        FdL = _v(sympy.Integer(1), 'ids_FdL')
+    else:
+        inv_qim1 = _v(hdl.safe_div(1.0, qim1, eps=1e-30), 'ids_iq1')
+        r1 = _v(qim * inv_qim1, 'ids_r1')
+        r2 = _v(phit * alpha * inv_qim1, 'ids_r2')
+        s2 = _v(hdl.safe_ln(1.0 + mob['vds']
+                            * hdl.safe_div(1.0, mob['vp'], eps=1e-30)),
+                'ids_s2')
+        dL1 = _v(dL + alp1 * (inv_qim1 * r1 * s1)
+                 + alp2 * (qbm * r2 * r2 * s2), 'ids_dL1')
+        FdL = _v((1.0 + dL1 + dL1 * dL1) * GdL, 'ids_FdL')
+
+    ids = _v(beta * (FdL * qim1 * dps * gvinv), 'ids')
     return dict(ids=ids, qim=qim, qim1=qim1, alpha=alpha, dps=dps,
                 xgm=xgm, x_m=x_m, x_s=x_s, x_d=x_d, qbm=qbm,
                 Pm=Pm, Dm=Dm, sqm=sqm, Gmob=Gmob_dL, Gvsat=Gvsat,

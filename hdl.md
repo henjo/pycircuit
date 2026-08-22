@@ -1406,17 +1406,20 @@ geometry scaling into the element, and `benchmarks/psp_gap.py` compares
 the result against the committed PSP103 reference. Nothing is tuned: the
 parameters come from the card.
 
-| sweep | W | L | first | + QM | + Rs | + `CT` | + CLM |
-|---|---|---|---|---|---|---|---|
-| `nmos_long_idvd` | 10 µm | **1 µm** | 1.29 | 1.095 | 1.041 | 1.008 | **1.010** |
-| `nmos_long_idvg` | 10 µm | **1 µm** | — | — | — | 1.10 | **1.10** |
-| `nmos_idvd_vg1p2` | 1 µm | 0.13 µm | — | 1.221 | 1.115 | 0.985 | **1.021** |
-| `nmos_idvg_vd1p2` | 1 µm | 0.13 µm | — | — | 1.028 | 0.868 | **0.974** |
-| `nmos_idvg_vd0p05` | 1 µm | 0.13 µm | — | 1.703 | 1.288 | 1.115 | **1.117** |
+| sweep | W | L | first | +QM | +Rs | +`CT` | +CLM | +GPE | +poly | +`FdL` |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `nmos_long_idvd` | 10 µm | 1 µm | 1.29 | 1.095 | 1.041 | 1.008 | 1.010 | 1.009 | **0.998** | 1.035 |
+| `nmos_long_idvg` | 10 µm | 1 µm | — | — | — | 1.10 | 1.10 | 1.10 | — | **1.00** |
+| `nmos_idvd_vg1p2` | 1 µm | 0.13 µm | — | 1.221 | 1.115 | 0.985 | 1.021 | 0.959 | 0.950 | **0.996** |
+| `nmos_idvd_vg0p6` | 1 µm | 0.13 µm | — | — | — | — | — | 0.735 | 0.732 | **1.111** |
+| `nmos_idvg_vd1p2` | 1 µm | 0.13 µm | — | — | 1.028 | 0.868 | 0.974 | 0.898 | 0.892 | **1.032** |
+| `nmos_idvg_vd0p05` | 1 µm | 0.13 µm | — | 1.703 | 1.288 | 1.115 | 1.117 | 1.019 | **1.010** | 1.011 |
+| `nmos_idvg_vb_m1` | 1 µm | 0.13 µm | — | — | — | — | — | 1.023 | **1.011** | 1.014 |
 
-(median ratio, ours / PSP103.) The long device is the one to read — at
-L = 1 µm the physics the core omits matters least. **Within 1%** median
-and 3.7% worst, from a card, with no fitting anywhere.
+(median ratio, ours / PSP103.) Every sweep is now within a few percent,
+from a card, with no fitting anywhere. Which geometry is *most* accurate
+has inverted twice along the way, which is worth more than any single
+number: the long device led until `GPE`, the short device leads now.
 
 Each column is a term the *shape* of the previous residual named:
 
@@ -1522,6 +1525,33 @@ Each column is a term the *shape* of the previous residual named:
 > now *low* at high drain bias (0.90–0.96), where before it was high.
 > DIBL raises the drive, so its direction is now right — the term ruled
 > out earlier is worth revisiting, for the same reason CLM was.
+
+> **The channel-shortening factor `FdL` — 2026-08-23.** The residual left
+> the short device 27% low at Vg = 0.6, with the reference current
+> climbing **2.4× through saturation** where ours was flat. DIBL was the
+> obvious suspect and the measurement killed it: PSP's own `vth` moves
+> **3.5 mV over 1.35 V of drain bias** — 2.6 mV/V, which matches our `CF`
+> scaling exactly. So the climb happens at essentially constant threshold
+> and is in the current formula.
+>
+> It is `FdL = (1 + dL1 + dL1²)·GdL`
+> (`PSP103_module.include:1137`), which I had left out on the reading
+> that `ALP1` and `ALP2` are zero — they would make `dL1 = dL` and `FdL`
+> exactly 1. **They are not zero**: PSP's own `lp_alp2` is **4.5** on a
+> 0.13 µm device. That is not visible in the card, because `ALP2` has no
+> geometry-independent coefficient and its value comes out of `ALP2L1`
+> through a length power; only the term-by-term comparison showed it.
+>
+> `ALP2` multiplies the *bulk* charge, so it acts near threshold —
+> exactly where the deficit was. The worst sweep goes **0.732 → 1.111**,
+> and the summed median error across all seven sweeps **more than
+> halves**, 0.480 → 0.216.
+>
+> It is mixed by *count* — better in three sweeps, worse in four — and it
+> costs the long device (0.998 → 1.035). That is the price of our `dL`
+> being an approximation to PSP's: `FdL` amplifies whatever error `dL`
+> carries. Which makes the `Vdsat`/`Vdse` machinery, skipped twice
+> already, the next thing genuinely worth building.
 
 > **Polysilicon depletion, and a symmetry bug it exposed —
 > 2026-08-23.** The gate is not a perfect conductor: a depletion layer

@@ -305,6 +305,10 @@ class PspMosLongChannel(Behavioural):
                   unit='', default=0.0),
         Parameter(name='vp', desc='CLM logarithmic parameter', unit='V',
                   default=0.05),
+        Parameter(name='alp1', desc='CLM correction, strong inversion',
+                  unit='', default=0.0),
+        Parameter(name='alp2', desc='CLM correction, weak inversion',
+                  unit='', default=0.0),
         ## Polysilicon depletion; `kp = 0` is an ideal (metal) gate.
         Parameter(name='kp', desc='Polysilicon depletion factor', unit='',
                   default=0.0),
@@ -368,6 +372,7 @@ class PspMosLongChannel(Behavioural):
                      thecs=thecs, feta=feta, thesat=thesat,  # noqa: F821
                      rs=rs, rsg=rsg, rsb=rsb, vsb=vsbx,     # noqa: F821
                      alp=alp, vp=vp, vds=vdsx,              # noqa: F821
+                     alp1=alp1, alp2=alp2,                  # noqa: F821
                      kp=kp,                                 # noqa: F821
                      cox_area=cox, eps_si=EPS_SI))
         cox_tot = var(cox * w * l, 'cox_tot')                 # noqa: F821
