@@ -1075,3 +1075,140 @@ def test_symbolic_toolkit_gets_exact_expressions():
         assert_allclose(got, 1e-13 * np.exp(0.5), rtol=1e-12)
     finally:
         pycircuit.circuit.circuit.default_toolkit = saved
+
+
+## ------------------------------------------------------------------------
+## Phase D (hdl.md sec. 9): the deferred table -- what was implemented from
+## it, and what is refused on purpose.
+
+
+def test_discontinuity_is_parsed_and_ignored():
+    """`$discontinuity` is advisory. Accepting and ignoring it costs
+    nothing and lets a model written for another simulator compile
+    unchanged (41 call sites in the vacask library); rejecting it would
+    fail those models over a hint they can do without."""
+    import sympy
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       discontinuity)
+    from pycircuit.utilities.param import Parameter
+
+    class D(Behavioural):
+        instparams = [Parameter(name='g', desc='g', unit='S', default=1e-3)]
+
+        @staticmethod
+        def analog(plus, minus):
+            b = Branch(plus, minus)
+            return Contribution(b.I, g * b.V + discontinuity(1))  # noqa
+
+    pycircuit.circuit.circuit.default_toolkit = numeric
+    el = D('p', 'n', g=2e-3)
+    el.update_iparv()
+    assert_allclose(float(np.asarray(el.i(np.array([1.0, 0.0])), float)[0]),
+                    2e-3, rtol=1e-12)
+
+
+def _laplace_amp(cls, f, tend_cycles=30, pts=400):
+    import warnings
+    from pycircuit.circuit.elements import VSin
+    pycircuit.circuit.circuit.default_toolkit = numeric
+    c = SubCircuit()
+    na, nb = c.add_node('a'), c.add_node('b')
+    c['vs'] = VSin(na, gnd, va=1.0, freq=f)
+    c['F'] = cls(na, gnd, nb, gnd)
+    c['Rl'] = R(nb, gnd, r=1e6)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = Transient(c, toolkit=numeric, uic=True).solve(
+            tend=tend_cycles / f, timestep=1.0 / (f * pts))
+    y = np.asarray(res.v('b').y, float)
+    t = np.asarray(res.v('b').x[0], float)
+    return float(np.max(np.abs(y[t > (tend_cycles - 10) / f])))
+
+
+TAU = 1e-4
+
+
+def _laplace_filter(num, den):
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       laplace_nd)
+
+    class _F(Behavioural):
+        instparams = []
+
+        @staticmethod
+        def analog(inp, inn, outp, outn):
+            bi, bo = Branch(inp, inn), Branch(outp, outn)
+            return Contribution(bo.V, laplace_nd(bi.V, num, den))
+    return _F
+
+
+def test_laplace_nd_matches_the_analytic_response():
+    """A rational transfer function realised as STATE EQUATIONS -- N
+    unknowns in controllable canonical form for an order-N denominator,
+    so the simulator integrates them with its own method and the Jacobian
+    is exact through them.  Checked against |H(jw)| across three decades.
+    """
+    lp1 = _laplace_filter([1], [1, TAU])
+    fc = 1.0 / (2 * np.pi * TAU)
+    for f in (0.1 * fc, fc, 10 * fc):
+        got = _laplace_amp(lp1, f)
+        want = 1.0 / np.sqrt(1.0 + (2 * np.pi * f * TAU) ** 2)
+        assert_allclose(got, want, rtol=0.03), (f, got, want)
+
+    ## Second order: one state per order, so this one carries two.
+    lp2 = _laplace_filter([1], [1, 2 * 0.7 * TAU, TAU ** 2])
+    el = lp2('a', 'b', 'c', 'd')
+    el.update_iparv()
+    assert sum('_state' in str(nd) for nd in el.nodes) == 2
+    w = 2 * np.pi * fc
+    want = abs(1.0 / (1 + 2 * 0.7 * TAU * 1j * w + (TAU * 1j * w) ** 2))
+    assert_allclose(_laplace_amp(lp2, fc), want, rtol=0.03)
+
+
+def test_laplace_zp_expands_to_the_same_filter():
+    """Zero/pole form is converted to coefficients, so the realisation is
+    identical: a single real pole at -1/tau is 1/(1 + s*tau)."""
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       laplace_zp)
+
+    class ZP(Behavioural):
+        instparams = []
+
+        @staticmethod
+        def analog(inp, inn, outp, outn):
+            bi, bo = Branch(inp, inn), Branch(outp, outn)
+            ## one real pole at -1/TAU, no zeros
+            return Contribution(bo.V, laplace_zp(bi.V, [], [-1 / TAU, 0.0]))
+
+    fc = 1.0 / (2 * np.pi * TAU)
+    got = _laplace_amp(ZP, fc)
+    assert_allclose(got, 1.0 / np.sqrt(2.0), rtol=0.03)
+
+
+def test_improper_laplace_is_refused():
+    from pycircuit.circuit.hdl import laplace_nd
+    with pytest.raises(NotImplementedError, match='proper'):
+        laplace_nd(1.0, [1, 1, 1], [1, 1])
+
+
+def test_switch_branch_is_refused_clearly():
+    """V and I contributed to ONE branch is Verilog-A's switch branch:
+    the two are mutually exclusive under a condition, and selecting
+    between them per operating point changes the matrix structure every
+    iteration.  This compiler used to accept both unconditionally and
+    silently build a voltage source with a conductance in parallel --
+    defined, but not what the model says."""
+    from pycircuit.circuit.hdl import Behavioural, Branch, Contribution
+    from pycircuit.utilities.param import Parameter
+
+    pycircuit.circuit.circuit.default_toolkit = numeric
+    with pytest.raises(NotImplementedError, match='switch branch'):
+        class Sw(Behavioural):
+            instparams = [Parameter(name='g', desc='g', unit='S',
+                                    default=1e-3)]
+
+            @staticmethod
+            def analog(plus, minus):
+                b = Branch(plus, minus)
+                return (Contribution(b.I, g * b.V),      # noqa: F821
+                        Contribution(b.V, 0.5))

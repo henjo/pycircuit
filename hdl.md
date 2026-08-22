@@ -801,23 +801,62 @@ so this is plumbing, not derivation. Proof: the existing symbolic tests
 extended to a generated element. Risk: low. Value: mostly for the
 distortion/DDD analyses, which is where this repo's symbolic work lives.
 
-### Phase D — deferred, with the reason
+### Phase D — revisited 2026-08-22
 
-Not "someday" — these have a stated trigger, so the deferral can be
-argued with:
+Phase D was the *deferred* table: items with a stated trigger rather than
+a date. Revisiting it deliberately, three turned out to be worth doing
+now and the rest keep their deferral with the reasoning sharpened.
 
-| capability | why deferred | what would reopen it |
+**Done:**
+
+* **`$discontinuity` — parsed and ignored.** It is advisory: it lets a
+  simulator drop order rather than discover a corner by rejection, and
+  this one does that from breakpoints (`Cross`) instead. gnucap accepts
+  it and generates an empty body for the same reason. Accepting it costs
+  nothing and lets a model written elsewhere compile unchanged — 41 call
+  sites — where rejecting it would fail those models over a hint they
+  can do without.
+* **`laplace_nd` and `laplace_zp`.** The deferral said "0 call sites;
+  gnucap ships only 2 of 4 `zi_*` with two open bugs; an explicit
+  state-space element is probably the better answer even then". The last
+  clause is what changed: a rational transfer function **is** a
+  state-space element here, and the compiler already emits states for
+  `idt`, so the realisation is a generalisation of machinery that
+  existed rather than new solver work. An order-*N* denominator becomes
+  *N* unknowns in controllable canonical form, integrated by the
+  simulator's own method with an exact Jacobian through them — which a
+  convolution-based implementation cannot offer. Verified against
+  |H(jω)| across three decades for first and second order, and
+  `laplace_zp` expands to the same filter. Improper transfer functions
+  are refused (that is `ddt`'s job).
+* **Switch branches — now *refused*, which was the point.** The plan said
+  "diagnose and reject clearly rather than half-implement", and the
+  compiler was doing neither: V and I contributed to one branch were
+  silently accepted and built a voltage source with a conductance in
+  parallel — defined, but not what the model says. Named now.
+
+**A sympy trap found while doing it**, worth recording because it is
+invisible: `sympy.Float(0.0) == 0` is **False**. Sympy's `==` is
+structural, not numeric, so a real pole written as `(-1/tau, 0.0)` took
+the complex-conjugate branch and produced a filter of *twice* the
+intended order — no error, just the wrong answer. Use `.is_zero`.
+
+**Still deferred, with the trigger:**
+
+| capability | why | what would reopen it |
 |---|---|---|
-| `laplace_*`, `zi_*` | 0 call sites in both corpora; gnucap ships only 2 of 4 `zi_*` and documents two open bugs in them | a user needing a filter macromodel; an explicit state-space element is probably the better answer even then |
+| `zi_*` (Z-domain) | 0 call sites; needs a sample clock, i.e. an event-driven state the analog solver does not have | a mixed-signal model with a real sample rate |
 | `absdelay` | 4 sites, all transmission lines, and `elements.TLine` already covers that | a delay model that is not a T-line |
-| `transition`, `slew` | 0 real sites; gnucap's own `slew` is a self-described stub; `VPulse` exists | a digital-to-analog boundary model |
-| `last_crossing`, `noise_table` | 0 sites, and gnucap implements neither | demand |
-| conditional node collapse / switch branches | changes sparsity per iteration; needs gnucap's whole per-iteration re-stamping machine | a model that genuinely needs V and I on one branch under a condition — diagnose and refuse clearly until then |
-| `$discontinuity` | 41 sites, but it is advisory and gnucap's implementation is an empty body | nothing; **parse and ignore** is the cheapest correct answer and unblocks those 41 sites today |
+| `transition`, `slew` | 0 real call sites; gnucap's own `slew` is a self-described stub; `VPulse` exists. **Note the deferral is now weaker than it was**: `Cross` plus `accept_step` give exactly the event-and-history machinery these need, so the cost has dropped from "new infrastructure" to "a few days of care" | a digital-to-analog boundary model, or an op-amp macromodel wanting a real slew rate |
+| `last_crossing` | 0 sites, and gnucap does not implement it either. `Cross` now makes it cheap — it is the same prediction, returned as a value instead of a breakpoint | demand |
+| `noise_table` | 0 sites; unimplemented in gnucap | demand |
+| conditional node collapse | changes the sparsity pattern per iteration; needs gnucap's whole per-iteration re-stamping machine | a model that genuinely needs it — until then the switch-branch refusal names it |
+| `@timer` | 0 sites; a source-side concept, and `VPulse`/`VSin` cover the waveforms | a model that schedules its own events |
 
 ### Sequencing
 
-**The plan is complete** (2026-08-22): phases A, B and C are all done,
+**The plan is complete** (2026-08-22): phases A, B, C and the actionable
+part of D are all done,
 in the order given except that A1's two halves landed either side of B.
 What remains is phase D, which is deferred by design, plus `@timer`
 (zero call sites) and lifting the traced backend's PCNR restrictions —

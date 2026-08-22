@@ -166,6 +166,92 @@ def limexp(x, x0=80.0):
                            (sympy.exp(x0) * (1 + x - x0), True))
 
 
+def discontinuity(degree=0):
+    """Verilog-A's ``$discontinuity(degree)``: tell the solver the model
+    has a discontinuity in its ``degree``-th derivative here.
+
+    **Parsed and ignored, deliberately.**  It is advisory: it lets a
+    simulator drop integration order rather than discover the corner by
+    rejection, and pycircuit does that from breakpoints instead (see
+    ``Cross``).  gnucap accepts it and generates an empty body for the
+    same reason.  Accepting it costs nothing and lets a model written for
+    another simulator compile unchanged -- 41 call sites in the vacask
+    device library -- whereas rejecting it would fail those models for a
+    hint they can do without.  If it ever becomes load-bearing, the
+    honest implementation is to schedule a breakpoint, which is what
+    ``Cross`` already does.
+    """
+    return sympy.Integer(0)
+
+
+class _Laplace(sympy.Function):
+    """Marker for a laplace_* application; see :func:`laplace_nd`."""
+    nargs = (3,)
+
+
+def laplace_nd(expr, num, den):
+    """Verilog-A's ``laplace_nd(expr, num[], den[])``: apply the rational
+    transfer function ``H(s) = sum(num[k] s^k) / sum(den[k] s^k)``.
+
+    Coefficients ascend in powers of ``s``, as the LRM specifies.  The
+    filter is realised as **state equations**, not as a convolution: an
+    order-``N`` denominator introduces ``N`` unknowns in controllable
+    canonical form, so the simulator integrates them with its own method
+    and order and the Jacobian is exact through them.  That is the same
+    construction ``idt`` uses, generalised.
+
+    ``H`` must be proper (``len(num) <= len(den)``): an improper transfer
+    function differentiates its input, which is ``ddt``'s job and needs a
+    charge, not a state.
+    """
+    num = [sympy.sympify(c) for c in num]
+    den = [sympy.sympify(c) for c in den]
+    if len(den) < 2:
+        raise ValueError('laplace_nd needs a denominator of order >= 1; '
+                         'a constant gain is just multiplication')
+    if len(num) > len(den):
+        raise NotImplementedError(
+            'laplace_nd requires a proper transfer function '
+            '(len(num) <= len(den)); an improper one differentiates its '
+            'input, which is what ddt is for')
+    return _Laplace(sympy.sympify(expr), sympy.Tuple(*num),
+                    sympy.Tuple(*den))
+
+
+def laplace_zp(expr, zeros, poles):
+    """``laplace_zp(expr, zeros[], poles[])`` -- zeros and poles instead of
+    coefficients.  Each is a flat list of (real, imaginary) pairs, as the
+    LRM specifies, and the pair ``(r, i)`` contributes a factor
+    ``1 - s/(r + j i)`` (or ``1 - s/r`` when ``i`` is zero).
+
+    Converted to :func:`laplace_nd` by expanding the products, so the
+    realisation and everything downstream is identical.
+    """
+    sv = sympy.Symbol('_lap_s')
+
+    def poly_of(pairs):
+        expr_ = sympy.Integer(1)
+        it = list(pairs)
+        for k in range(0, len(it), 2):
+            re_, im_ = sympy.sympify(it[k]), sympy.sympify(it[k + 1])
+            ## `.is_zero`, NOT `== 0`: sympy's `==` is STRUCTURAL, so
+            ## `Float(0.0) == 0` is False and a real pole written with a
+            ## float imaginary part took the conjugate-pair branch --
+            ## silently producing a filter of twice the intended order.
+            if im_.is_zero:
+                if re_.is_zero:
+                    expr_ *= sv
+                else:
+                    expr_ *= (1 - sv / re_)
+            else:
+                ## A conjugate pair contributes a real quadratic.
+                mag2 = re_ ** 2 + im_ ** 2
+                expr_ *= (1 - 2 * re_ * sv / mag2 + sv ** 2 / mag2)
+        return sympy.Poly(sympy.expand(expr_), sv).all_coeffs()[::-1]
+
+    return laplace_nd(expr, poly_of(zeros), poly_of(poles))
+
+
 class _Limit(sympy.Function):
     """Marker for a limited probe; see :func:`limit_pnj`."""
     nargs = (3,)
@@ -602,12 +688,86 @@ def generate_code(cls):
                      and br.minus.name not in collapse]
         ibranch_keys = {branch_key(br) for br in vbranches}
 
+    ## SWITCH BRANCHES are refused, per hdl.md sec. 9 phase D.  In
+    ## Verilog-A a branch may be a potential source in one operating
+    ## region and a flow source in another, the two contributions being
+    ## mutually exclusive under a condition.  Implementing that means
+    ## re-deciding the stamp -- and the sparsity pattern -- every Newton
+    ## iteration, which is gnucap's whole `_pot` re-stamping machine.
+    ##
+    ## Accepting BOTH unconditionally, as this compiler silently did,
+    ## produces a defined but different element: a voltage source with a
+    ## conductance in parallel, which is not what the model says.  A
+    ## plausible wrong answer is the expensive failure, so it is named.
+    _v_branches = {branch_key(st.lhs.branch_or_node)
+                   for st in statements if st.lhs.quantity == 'V'}
+    _i_branches = {branch_key(st.lhs.branch_or_node)
+                   for st in statements if st.lhs.quantity == 'I'}
+    _both = _v_branches & _i_branches
+    if _both:
+        raise NotImplementedError(
+            'branch %s has both V and I contributions (a Verilog-A "switch '
+            'branch"). Selecting between them per operating point changes '
+            'the matrix structure each iteration and is not implemented; '
+            'accepting both unconditionally would give a voltage source '
+            'with a conductance in parallel, which is not what the model '
+            'says. Split the regions into separate elements, or use a '
+            'Piecewise inside ONE contribution.'
+            % ', '.join('(%s,%s)' % k for k in sorted(_both)))
+
     internalnodes = sorted(nodes - set(terminalnodes), key=lambda n: n.name)
 
     ## States: each distinct idt/idtmod APPLICATION is one state.  Walk in
     ## a deterministic order.
-    states = []          # (state_symbol, kind, args) with kind 'idt'/'idtmod'
+    states = []          # (state_symbol, kind, args); kind idt/idtmod/lap
     state_subst = {}
+
+    ## LAPLACE -> STATE EQUATIONS.  For H(s) = N(s)/D(s) with
+    ## D = d0 + d1 s + ... + dN s^N, controllable canonical form gives
+    ##
+    ##     z1' = z2,  z2' = z3,  ...,
+    ##     zN' = (u - d0 z1 - d1 z2 - ... - d_{N-1} zN) / dN
+    ##     y   = n0 z1 + n1 z2 + ...
+    ##
+    ## i.e. N first-order states, which is exactly what this compiler
+    ## already emits for `idt` -- one per integrator in the chain.  The
+    ## simulator then integrates them with its own method and order, and
+    ## the Jacobian is exact through them, which a convolution-based
+    ## implementation cannot offer.
+    for st in statements:
+        for app in sorted(st.rhs.atoms(_Laplace), key=sympy.default_sort_key):
+            if app in state_subst:
+                continue
+            u_expr, num, den = app.args
+            num = list(num)
+            den = list(den)
+            order = len(den) - 1
+            zs = []
+            for _k in range(order):
+                sym = _StateSymbol('_state%d' % len(states))
+                states.append((sym, 'lap', None))    # rhs filled in below
+                zs.append(sym)
+            ## z_k' = z_{k+1} for k < N; the last row carries the input.
+            rhs = []
+            for k in range(order - 1):
+                rhs.append(zs[k + 1])
+            last = u_expr
+            for k in range(order):
+                last = last - den[k] * zs[k]
+            rhs.append(last / den[order])
+            for k in range(order):
+                idx = len(states) - order + k
+                sym, _kind, _ = states[idx]
+                states[idx] = (sym, 'lap', (rhs[k],))
+            out = sympy.Integer(0)
+            for k, nk in enumerate(num):
+                if k < order:
+                    out += nk * zs[k]
+                elif nk != 0:
+                    ## num of the same order as den: the direct term
+                    ## n_N/d_N, plus its correction through the chain.
+                    out += nk * rhs[order - 1]
+            state_subst[app] = out
     for st in statements:
         for func_cls, kind in ((idt, 'idt'), (idtmod, 'idtmod')):
             for app in sorted(st.rhs.atoms(func_cls), key=sympy.default_sort_key):
@@ -626,6 +786,8 @@ def generate_code(cls):
                         sym - m * _wrapfloor((sym - o) / m)
 
     for _sym, _kind, args in states:
+        if args is None:
+            continue
         if any(a.atoms(idt) or a.atoms(idtmod) for a in args):
             raise NotImplementedError(
                 'nested idt/idtmod applications are not supported yet')
@@ -765,6 +927,8 @@ def generate_code(cls):
         qvec[k] += subst[sym]
         ivec[k] += -arg_i
         uvec[k] += -arg_u
+        if kind == 'lap':
+            continue
         if len(args) > 1:
             ic = resolve(args[1])
             if not _quantity_free(ic):
