@@ -208,60 +208,75 @@ def limexp(x, x0=80.0):
 ## settings), not a wrong answer.
 ## ----------------------------------------------------------------------
 
-#: Argument magnitude beyond which `exp` is continued rather than evaluated.
-#: PSP's `EXPL_THRESHOLD`.  exp(80) ~ 5.5e34, comfortably inside double
-#: range, so the clamped arms cannot overflow.
-EXPL_THRESHOLD = 80.0
+#: Argument magnitude beyond which `exp` is continued rather than
+#: evaluated: PSP's `se05`, which is ``ln(1e100)``.  Both PSP103
+#: (`Common103_macrodefs.include:69`) and the PSP-based `mosvar` use this
+#: value, NOT the 80 that `limexp` conventionally uses.
+EXPL_THRESHOLD = 2.3025850929940458e+02
+
+#: ``exp(EXPL_THRESHOLD)`` and its reciprocal, as PSP spells them.
+_KE05 = 1.0e-100
+_KE05INV = 1.0e100
+
+
+def _p3(u):
+    """PSP's ``P3`` -- the third-order Taylor polynomial of ``exp``.
+
+    ``1 + u + u**2/2 + u**3/6``.  Continuing ``exp`` with its own Taylor
+    series about the seam is what makes the `expl` family **C-3**
+    continuous rather than merely C1: three derivatives match, not one.
+    """
+    u = sympy.sympify(u)
+    return 1.0 + u * (1.0 + 0.5 * (u * (1.0 + u / 3.0)))
 
 
 def expl_high(x, x0=EXPL_THRESHOLD):
-    """``exp`` continued linearly ABOVE ``x0`` -- PSP's ``expl_high``.
+    """``exp`` continued above ``+x0`` -- PSP's ``expl_high``.
 
-    Same continuation as `limexp`, but with the exponential's argument
-    clamped so the discarded arm cannot overflow.  Use this one unless
-    the device is a junction that wants PCNR to recognise it; see
-    `limexp` for why the two differ.
+    Above the seam the value is ``1e100 * P3(x - x0)``.  Note this is a
+    genuinely different function from `limexp`, which continues linearly
+    from 80: at ``x = 100`` this returns ``exp(100)`` exactly, where
+    `limexp` returns ``exp(80)*21``, seven orders of magnitude away.  Use
+    this one when translating a PSP-family model, and `limexp` when you
+    want the LRM's function.
     """
     x = sympy.sympify(x)
-    return sympy.Piecewise((sympy.exp(sympy.Min(x, x0)), x < x0),
-                           (sympy.exp(x0) * (1 + x - x0), True))
+    ## Each arm sees an argument its own branch makes valid, so the
+    ## discarded one cannot overflow -- see the module's kernel notes.
+    return sympy.Piecewise(
+        (sympy.exp(sympy.Min(x, x0)), x < x0),
+        (_KE05INV * _p3(sympy.Max(x, x0) - x0), True))
 
 
 def expl_low(x, x0=EXPL_THRESHOLD):
-    """``exp`` continued hyperbolically BELOW ``-x0`` -- PSP's ``expl_low``.
+    """``exp`` continued below ``-x0`` -- PSP's ``expl_low``.
 
-    The continuation is ``exp(-x0) / (1 - x - x0)``, which matches value
-    and slope at ``x = -x0`` and stays strictly POSITIVE as ``x -> -inf``.
-    That last property is the point: plain ``exp`` underflows to exactly
-    zero around -745, and a model that divides by the result gets an
-    infinity out of a perfectly ordinary reverse bias.
+    Below the seam the value is ``1e-100 / P3(-x0 - x)``, which stays
+    strictly POSITIVE as ``x -> -inf`` where plain ``exp`` underflows to
+    exactly zero around -745.  That is the property the surface-potential
+    solver relies on: it divides by the result.
     """
     x = sympy.sympify(x)
-    ## Each arm is evaluated at an argument its own branch makes valid:
-    ## the tail sees `min(x, -x0)` so its denominator is >= 1, the
-    ## exponential sees `max(x, -x0)` so it cannot underflow.
-    tail = sympy.Min(x, -x0)
     return sympy.Piecewise(
-        (sympy.exp(-x0) / (1 - tail - x0), x < -x0),
+        (_KE05 / _p3(-x0 - sympy.Min(x, -x0)), x < -x0),
         (sympy.exp(sympy.Max(x, -x0)), True))
 
 
 def expl(x, x0=EXPL_THRESHOLD):
     """Two-sided clamped exponential -- PSP's ``expl``.
 
-    Hyperbolic below ``-x0``, linear above ``+x0``, ``exp`` between, C1
-    at both seams and finite for every double.  This is the workhorse:
-    it is what makes a surface-potential model evaluable at the
-    ridiculous biases Newton visits on its way to the solution.
+    ``exp`` between the seams, its own third-order Taylor continuation
+    outside them, C-3 at both.  Finite and strictly positive for every
+    double, which is what makes a surface-potential model evaluable at
+    the absurd biases Newton visits on its way to the solution.
+
+    PSP103 and JUNCAP200 call the family 31 times between them.
     """
     x = sympy.sympify(x)
-    lo = sympy.Min(x, -x0)
-    hi = sympy.Max(x, x0)
-    mid = sympy.Max(sympy.Min(x, x0), -x0)
     return sympy.Piecewise(
-        (sympy.exp(-x0) / (1 - lo - x0), x < -x0),
-        (sympy.exp(x0) * (1 + hi - x0), x > x0),
-        (sympy.exp(mid), True))
+        (_KE05 / _p3(-x0 - sympy.Min(x, -x0)), x < -x0),
+        (_KE05INV * _p3(sympy.Max(x, x0) - x0), x > x0),
+        (sympy.exp(sympy.Max(sympy.Min(x, x0), -x0)), True))
 
 
 def hypsmooth(x, eps):

@@ -29,12 +29,14 @@ MODULES = [{'Min': np.minimum, 'Max': np.maximum}, 'numpy']
 
 #: Everyday values plus every seam, plus the extremes that expose
 #: overflow and cancellation.
+SE05 = 2.3025850929940458e+02          # PSP's `se05` = ln(1e100)
+
 GRID = np.concatenate([
-    np.array([-1e300, -1e100, -1e10, -1000., -745., -100., -80. - 1e-9,
-              -80., -80. + 1e-9, -79., -1., -1e-9, -0.0, 0.0, 1e-9, 1.,
-              79., 80. - 1e-9, 80., 80. + 1e-9, 100., 709., 1000., 1e10,
-              1e100, 1e300]),
-    np.linspace(-150, 150, 1201)])
+    np.array([-1e300, -1e100, -1e10, -1000., -745., -SE05 - 1e-6, -SE05,
+              -SE05 + 1e-6, -100., -80., -1., -1e-9, -0.0, 0.0, 1e-9, 1.,
+              80., 100., SE05 - 1e-6, SE05, SE05 + 1e-6, 709., 1000.,
+              1e10, 1e100, 1e300]),
+    np.linspace(-300, 300, 1201)])
 
 #: Values a circuit quantity can actually take.  Beyond ~1e154 the
 #: radicand of `hypsmooth` overflows; that is documented, not fixed.
@@ -109,10 +111,10 @@ class TestNothingIsEverNonFinite(object):
     def test_expl_low_is_deliberately_one_sided(self):
         """`expl_low` guards only the lower tail -- like PSP's macro.
 
-        Above ~709 its exponential arm overflows, by design: it exists to
-        stop underflow to zero, and a model that can reach +709 should be
-        using two-sided `expl`.  Pinned so the asymmetry is a decision,
-        not a gap.
+        Above the seam its exponential arm eventually overflows, by
+        design: it exists to stop underflow to zero, and a model that can
+        reach that far up should be using two-sided `expl`.  Pinned so
+        the asymmetry is a decision, not a gap.
         """
         f, _ = _fns(hdl.expl_low(X))
         with warnings.catch_warnings():
@@ -146,20 +148,22 @@ class TestLimexpIsDeliberatelyNotSafe(object):
         assert not any(a.args[0] == X
                        for a in hdl.expl_high(X).atoms(sympy.exp))
 
-    def test_both_return_the_same_numbers(self):
-        fl, dl = _fns(hdl.limexp(X))
-        fh, dh = _fns(hdl.expl_high(X))
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
-            old = np.seterr(all='ignore')
-            try:
-                for v in (-100., -1., 0., 1., 79., 80., 81., 200., 1e6):
-                    assert float(fl(v)) == pytest.approx(float(fh(v)),
-                                                         rel=1e-15)
-                    assert float(dl(v)) == pytest.approx(float(dh(v)),
-                                                         rel=1e-15)
-            finally:
-                np.seterr(**old)
+    def test_they_are_genuinely_different_functions(self):
+        """Not two spellings of one thing -- pinned so nobody merges them.
+
+        `limexp` continues LINEARLY from 80; `expl_high` continues with
+        exp's own third-order Taylor from `se05` = 230.2585.  They agree
+        below 80 and diverge enormously above it: at x = 100 the LRM
+        function gives exp(80)*21 while PSP's gives exp(100) exactly,
+        seven orders of magnitude apart.
+        """
+        fl, _ = _fns(hdl.limexp(X))
+        fh, _ = _fns(hdl.expl_high(X))
+        for v in (-100., -1., 0., 1., 50., 79.):
+            assert float(fl(v)) == pytest.approx(float(fh(v)), rel=1e-15)
+        assert float(fh(100.)) == pytest.approx(np.exp(100.), rel=1e-15)
+        assert float(fl(100.)) == pytest.approx(np.exp(80.) * 21, rel=1e-12)
+        assert float(fh(100.)) / float(fl(100.)) > 1e6
 
     def test_and_only_expl_high_is_warning_free(self):
         big = np.array([100., 1000., 1e6])
@@ -170,12 +174,13 @@ class TestLimexpIsDeliberatelyNotSafe(object):
 class TestExponentialFamily(object):
 
     def test_agrees_with_exp_in_the_middle(self):
+        """Exactly `exp`, not an approximation to it, inside the seams."""
         f, d = _fns(hdl.expl(X))
-        for v in (-70., -10., -1., 0., 1., 10., 70.):
+        for v in (-200., -70., -10., -1., 0., 1., 10., 70., 200.):
             assert f(v) == pytest.approx(np.exp(v), rel=1e-13)
             assert d(v) == pytest.approx(np.exp(v), rel=1e-13)
 
-    @pytest.mark.parametrize('seam', [-80.0, 80.0])
+    @pytest.mark.parametrize('seam', [-SE05, SE05])
     def test_c1_at_the_seams(self, seam):
         """Value and slope join; Newton sees no step in the Jacobian."""
         f, d = _fns(hdl.expl(X))
@@ -184,6 +189,19 @@ class TestExponentialFamily(object):
         dl, dr = float(d(seam - h)), float(d(seam + h))
         assert fl == pytest.approx(fr, rel=1e-4)
         assert dl == pytest.approx(dr, rel=1e-4)
+
+    def test_the_continuation_is_exps_own_taylor_series(self):
+        """Which is what makes it C-3 rather than merely C1.
+
+        `P3(u) = 1 + u + u**2/2 + u**3/6` is the third-order Taylor
+        polynomial of `exp` about the seam, so three derivatives match
+        there, not one.
+        """
+        f, _ = _fns(hdl.expl(X))
+        for du in (0.1, 0.5, 1.0, 2.0):
+            got = float(f(SE05 + du)) / 1e100
+            want = 1 + du + du ** 2 / 2 + du ** 3 / 6
+            assert got == pytest.approx(want, rel=1e-12)
 
     def test_lower_tail_stays_strictly_positive(self):
         """The reason `expl_low` is hyperbolic rather than clamped.
@@ -197,10 +215,14 @@ class TestExponentialFamily(object):
             assert float(f(v)) > 0.0
         assert np.exp(-1000.) == 0.0        # what it is protecting against
 
-    def test_upper_tail_is_linear_not_exponential(self):
+    def test_upper_tail_is_cubic_not_exponential(self):
+        """Bounded growth is the point: `exp(1e6)` is not representable."""
         f, _ = _fns(hdl.expl(X))
-        a, b, c = float(f(100.)), float(f(200.)), float(f(300.))
-        assert (b - a) == pytest.approx(c - b, rel=1e-12)
+        big = float(f(1e6))
+        assert np.isfinite(big)
+        ## cubic in the overshoot: doubling it multiplies by ~8
+        r = float(f(SE05 + 2e5)) / float(f(SE05 + 1e5))
+        assert r == pytest.approx(8.0, rel=1e-3)
 
 
 class TestHypsmooth(object):

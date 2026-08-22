@@ -475,9 +475,9 @@ valid for every input:
 
 | function | what it is | note |
 |---|---|---|
-| `expl(x)` | two-sided clamped `exp` | hyperbolic below −80, linear above +80, C¹ at both seams |
+| `expl(x)` | two-sided clamped `exp` | PSP's: `exp` inside ±`se05` = 230.2585, its own 3rd-order Taylor outside, **C-3** at both seams |
 | `expl_low(x)` | lower tail only | stays **strictly positive**; plain `exp` underflows to exactly 0 below −745 |
-| `expl_high(x)` | upper tail only | same continuation as `limexp`, but clamped |
+| `expl_high(x)` | upper tail only | the upper half of the same |
 | `hypsmooth(x, eps)` | smooth `max(x, 0)` | no branch at all — the right first thing to reach for |
 | `safe_sqrt(x)` | `sqrt(hypsmooth(x))` | finite derivative below zero |
 | `safe_ln(x)` | `ln(hypsmooth(x))` | no `−inf` at zero |
@@ -507,10 +507,29 @@ the `a·b/(b² + ε²)` form.
 `exp(v/vt)` into `exp(min(v/vt, 80))`, and PCNR's shape detector no longer
 recognises a junction — the device silently loses its limiting. Since
 PCNR is exactly what bounds the argument, the overflow in the discarded
-arm is the better half of that trade. `expl_high` is the same
-continuation *with* the clamp, for models that are not junctions.
-`test_hdl_kernel.py::TestLimexpIsDeliberatelyNotSafe` pins the trade and
-checks the two agree numerically to 1e-15.
+arm is the better half of that trade.
+`test_hdl_kernel.py::TestLimexpIsDeliberatelyNotSafe` pins it.
+
+**`limexp` and `expl_high` are different functions, not two spellings.**
+`limexp` is the LRM's: continue *linearly* from 80. PSP's `expl_high`
+continues with exp's own third-order Taylor from `se05` = 230.2585. They
+agree below 80 and diverge enormously above: at `x = 100`, `limexp`
+gives `exp(80)·21` where `expl_high` gives `exp(100)` exactly — seven
+orders of magnitude apart. Use `limexp` for the LRM's function and the
+`expl` family when translating a PSP-family model.
+
+> **Correction (2026-08-22).** The `expl` family originally shipped here
+> with a threshold of 80 and linear/hyperbolic continuations, documented
+> as "PSP's `expl`". That was wrong on both counts. Reading the shipped
+> sources — `Common103_macrodefs.include:68-89`, and identically in the
+> PSP-based `mosvar` — PSP uses `se05 = ln(1e100) = 230.2585` and
+> continues with `P3(u) = 1 + u + u²/2 + u³/6`, exp's own Taylor series
+> about the seam, which is what makes the family **C-3** continuous
+> rather than merely C¹. The 80 appears to have been carried over from
+> `limexp`'s conventional threshold. Now corrected to match the source;
+> the both-arms-safe clamping is kept, since the vendor's own arms do
+> overflow. PSP103 and JUNCAP200 call the family **31** times between
+> them.
 
 Underflow is not guarded anywhere: `0.0` is the correctly-rounded answer
 for `exp(-1000)`, and it is the one benign IEEE condition. Overflow,
