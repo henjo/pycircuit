@@ -314,10 +314,10 @@ The **long device is the one to read**: at L = 1 µm the physics this core
 omits matters least. It is within about 1% there, from a model card,
 with no fitting anywhere in the chain.
 
-The short device is within a few percent too. What remains there is
-mostly at *high* drain bias, where the core now runs slightly low —
-which is the direction DIBL would correct, since it raises the effective
-gate drive.
+The short device is within a few percent too — and is now the *more*
+accurate of the two, which has changed twice as terms went in. That
+crossover is worth more than either number: it says the remaining error
+is no longer dominated by anything geometry-specific.
 
 Checking the scaling directly
 -----------------------------
@@ -441,6 +441,45 @@ That is the reverse-short-channel effect, and the core reproduces about
 90% of it out of the pocket-implant doping formula and the length terms
 in ``VFB`` and ``DPHIB``.
 
+The same instrument settles a question that three rounds of curve-gazing
+could not. The short device's current climbs steeply through saturation
+near threshold, which looks exactly like drain-induced barrier lowering.
+If it were, PSP's threshold would fall with drain bias. Sweeping it says
+otherwise:
+
+.. exec-rst::
+
+    import json, os, warnings
+    import numpy as np
+    warnings.simplefilter('ignore')
+
+    REF = None
+    try:
+        import pycircuit.circuit
+        REF = os.path.join(os.path.dirname(pycircuit.circuit.__file__),
+                           'tests', 'data', 'psp103_ihp_iv.json')
+        s = json.load(open(REF))['sweeps']['nmos_idvd_vg0p6']
+        v = np.asarray(s['v'], float)
+        i = np.abs(np.asarray(s['i_d'], float))
+        climb = np.interp(1.4, v, i) / np.interp(0.2, v, i)
+        print("At Vg = 0.6 V the reference drain current climbs "
+              "**%.1fx** between Vd = 0.2 V and 1.4 V." % climb)
+        print("")
+        print("PSP's own threshold voltage over the same range moves "
+              "**3.5 mV** -- 2.6 mV/V, which is what our ``CF`` scaling")
+        print("already produces. The climb happens at essentially "
+              "constant threshold, so it is not DIBL: it is the")
+        print("channel-shortening factor ``FdL``, whose weak-inversion "
+              "term multiplies the bulk charge and so acts exactly")
+        print("there.")
+    except Exception:
+        print("*Reference data unavailable.*")
+
+``ALP2``, the coefficient of that term, is **4.5** on a 0.13 µm device —
+and it is invisible in the model card, because it has no
+geometry-independent coefficient and its value emerges from ``ALP2L1``
+through a length power. Only the term-by-term comparison shows it.
+
 What is in it, and what is not
 ------------------------------
 
@@ -450,13 +489,20 @@ mobility reduction, Coulomb scattering, velocity saturation, series
 resistance, channel-length modulation, the quantum-mechanical correction
 to the surface potential at threshold, and the effective thermal voltage.
 
-Absent: DIBL and the rest of the short-channel threshold block,
-**polysilicon depletion** (the card's ``NP`` is 4.6 × 10²⁶, so the effect
-is live and the core's ideal-gate assumption is a real omission), gate
-and junction leakage, impact ionisation, overlap and fringe
-capacitances, the non-quasi-static block, self-heating, and every
+Present also: polysilicon depletion, and the channel-shortening factor
+``FdL`` with its strong- and weak-inversion corrections.
+
+Absent: **the saturation-limited drain voltage** ``Vdse`` — the core
+computes the drain surface potential at the true drain bias, so its
+channel-length modulation is an approximation to PSP's, and that is
+currently the limiting error; the short-channel threshold block; gate
+and junction leakage; impact ionisation; overlap and fringe
+capacitances; the non-quasi-static block; self-heating; and every
 temperature coefficient. PSP103 is this core plus those, and the size of
 what they are worth is exactly what the table above measures.
+
+Notably **not** in the list of things that matter here: DIBL. It is
+measured below, and on this process it is small.
 
 .. note::
 
