@@ -19,6 +19,7 @@ Circuit analyzer
     modules
     elements
     idtmod
+    hdl
     modular_engine
     time_stepping
     lte_dae

@@ -622,8 +622,12 @@ def generate_code(cls):
     ## exponential -- the case limiting exists for -- and the exponential
     ## scale is read off the expression rather than assumed.
     pcnr_spec = None
-    if (not states and not vbranches and len(terminalnodes) >= 2
-            and all(e == 0 for e in qvec)):
+    ## Charge is ALLOWED (the layer keeps it in the MNA block at the node
+    ## voltage -- see pcnr.augmented_system): a junction with capacitance is
+    ## the normal case, not an exotic one.  What still disqualifies an
+    ## element is a V-contribution or a generated state, because then the
+    ## device's current is not a function of one branch voltage alone.
+    if not states and not vbranches and len(terminalnodes) >= 2:
         nz = [k for k in range(n) if ivec[k] != 0]
         if len(nz) == 2:
             k_p, k_m = nz

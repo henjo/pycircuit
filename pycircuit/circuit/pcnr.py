@@ -82,19 +82,38 @@ def augmented_system(circuit, x, v_lim, junctions, epar=defaultepar,
         seen.add(instance)
         rows = nodemap[instance]
         sub = x[rows]
-        ## A participating device with charge storage would also contribute to
-        ## `iq`/`Geq`, and that contribution would have to move to its own
-        ## unknown too -- which is not implemented.  Refused rather than silently
-        ## left in the MNA block, where it would be evaluated at the node voltage
-        ## while the current is evaluated at `v_lim`: the exact inconsistency
-        ## PCNR exists to remove, reintroduced through the charge.
-        if J_extra is not None:
-            Csub = np.asarray(element.C(sub, epar), dtype=float)
-            if np.any(np.abs(Csub) > 0.0):
-                raise NotImplementedError(
-                    '%r has charge storage and a PCNR junction; the charge term '
-                    'would also have to move to the limited unknown, which is '
-                    'not implemented' % instance)
+        ## CHARGE STAYS IN THE MNA BLOCK, at the node voltage; only the
+        ## RESISTIVE current moves to the limited unknown.  This used to be
+        ## refused outright, on the grounds that leaving it here reintroduces
+        ## "the exact inconsistency PCNR exists to remove".  That reasoning
+        ## conflated two different things, and the refusal cost every junction
+        ## device with capacitance -- which is to say every real one.
+        ##
+        ## What PCNR removes is a CLASH BETWEEN DEVICES over a shared
+        ## linearisation point: two diodes on one branch each limiting
+        ## `e_a - e_b`, the second undoing the first, the outcome depending on
+        ## visit order.  A charge is not limited by anyone, so it has no
+        ## clash to remove and no owner to fight over.
+        ##
+        ## And the Newton system stays EXACTLY consistent: `g_mna`'s charge
+        ## part is a function of `x_MNA` and its derivative `Geq` is in
+        ## `J_MNA/MNA` where it belongs, while the device's current is a
+        ## function of `v_lim` alone and its derivative is in `J_MNA/lim`.
+        ## `J` is `dg/dx` for both blocks; nothing is taken at a different
+        ## point from the thing it differentiates.
+        ##
+        ## What IS given up is that the reactive part is not limited along
+        ## the iteration path.  At the answer that costs nothing: convergence
+        ## already requires `|g_lim|` below tolerance (`_solve_timestep_pcnr`
+        ## checks it), i.e. `v_lim == e_a - e_b`, so the charge was evaluated
+        ## at the voltage the current converged to.  The paper does not derive
+        ## the reactive case either -- its footnote 1 says PCNR "works for
+        ## differential-algebraic equations as well, but for simplicity, we
+        ## only consider algebraic equations".
+        ##
+        ## Proven, not argued: `test_pcnr_charge.py` finite-differences the
+        ## augmented residual to confirm `J_eff == df_eff/dx` with a
+        ## charge-storing participant, and compares pcnr on/off transients.
         g_mna[rows] -= np.asarray(element.i(sub, epar), dtype=float)
         J_mm[np.ix_(rows, rows)] -= np.asarray(element.G(sub, epar), dtype=float)
 

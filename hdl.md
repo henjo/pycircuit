@@ -330,11 +330,27 @@ sit above it, and the listing's `v_old ≤ 0` branch then evaluates
 both halves of that: the transcribed listing raises where our guarded
 version returns the step unchanged.
 
-**Where `limexp` still earns its place:** elements that do *not* qualify
-(a charge-storing junction, a state-carrying model, a polynomial or
-multi-branch nonlinearity), and every run with `pcnr=False`, which is the
-default. The two compose: with PCNR on, `limexp`'s clamp is simply never
-reached, because PCNR keeps the iterate in range.
+**Where `limexp` still earns its place** — and an earlier version of this
+section got this wrong, so the correction is the interesting part. It said
+that with PCNR on, `limexp`'s clamp "is simply never reached, because PCNR
+keeps the iterate in range". Measurement says the opposite, and the
+mechanism matters: `pcnr.augmented_system` assembles `cir.i(x)` — which
+*includes* the participant — and then subtracts that device's own `i(sub)`
+again, since its current is about to be re-stamped at `v_lim`. The
+cancellation is exact in arithmetic and worthless in floating point once
+the term is `inf`: **`inf − inf = nan` poisons the whole system.** PCNR
+bounds the *limited quantity*; it does not bound the node voltage at which
+the device's own `i()` is evaluated during assembly.
+
+Measured on a 20 V, 1 Ω forward drive: the raw-`exp` generated diode
+gives `i = inf` at the trial point and PCNR fails outright, while the
+`limexp` version stays finite (3.9e24) and converges to the same 0.849861
+the non-PCNR path finds. So the guidance is the reverse of what was
+written: **use `limexp` in a model you intend to run under PCNR**, not
+merely in one you don't. `test_limexp_is_what_makes_a_pcnr_participant_robust`
+pins it. `limexp` is also still the aid for elements that do not qualify
+at all (a state-carrying model, a polynomial or multi-branch
+nonlinearity) and for every `pcnr=False` run, which is the default.
 
 ### 3.3 Parameters
 
@@ -607,17 +623,30 @@ junction capacitance has charge, a BJT has two junctions sharing a base,
 a MOSFET has four terminals. The blockers are in the PCNR layer, not the
 DSL:
 
-* **charge.** `pcnr.augmented_system` raises when a participating device
-  has any `C` entry, and the refusal is correct as written: the charge
-  term is evaluated at the node voltage while the current is evaluated
-  at `v_lim`, which is exactly the inconsistency PCNR exists to remove.
-  The fix is to move the charge to the limited unknown too — `q(v_lim)`
-  and `dq/dv_lim` alongside `pcnr_i`/`pcnr_didv` — so the companion
-  terms are formed from the same quantity. The paper is explicit that
-  PCNR "works for differential-algebraic equations as well" but
-  (footnote 1) develops only the algebraic case, so the DAE bookkeeping
-  is ours to derive and must be tested against a transient, not just a
-  DC point.
+* **charge — DONE 2026-08-22, and the plan above was wrong about why.**
+  `pcnr.augmented_system` raised whenever a participant had any `C`
+  entry, on the stated grounds that leaving the charge in the MNA block
+  reintroduces "the exact inconsistency PCNR exists to remove". That
+  reasoning conflated two different things, and the refusal cost every
+  junction device with capacitance — which is to say every real one.
+  What PCNR removes is a **clash between devices** over a shared
+  linearisation point; a charge is limited by nobody, so it has no clash
+  and no owner to fight over. And the Newton system is **exactly
+  consistent** as it stands: `g_MNA`'s charge part is a function of
+  `x_MNA` with its derivative `Geq` in `J_MNA/MNA`, while the device's
+  current is a function of `v_lim` alone with its derivative in
+  `J_MNA/lim` — `J` is `dg/dx` for both blocks. The refusal is gone; the
+  claim is finite-differenced in `tests/test_pcnr_charge.py`, which also
+  checks a charge-storing participant's DC and transient against
+  `pcnr=False`. What is genuinely given up is that the reactive part is
+  not limited along the iteration path, which costs nothing at the
+  answer: convergence already requires `|g_lim|` below tolerance, i.e.
+  `v_lim` equals the node voltage the charge was evaluated at. Moving
+  the charge to the limited unknown as well (`q(v_lim)`, `dq/dv_lim`)
+  remains possible but is now an optimisation of the iteration path, not
+  a correctness fix — and the paper does not derive it either (footnote
+  1: PCNR "works for differential-algebraic equations as well, but for
+  simplicity, we only consider algebraic equations").
 * **multiple junctions per device.** The layer already carries a
   sequence of `(anode, cathode)` pairs per device and `limit_junctions`
   already handles the shared-terminal case with its `move` index (a
@@ -633,12 +662,12 @@ DSL:
   the element; derive a local scale `f/f'` and prove it on a benchmark
   before shipping it.
 
-  Proof: extend `test_elements_hdl.py`'s protocol-equality test to a
-  charge-storing diode against a hand-written reference, plus a transient
-  (not just DC) where PCNR and non-PCNR runs agree; a two-junction
+  Proof, for the multi-junction half still outstanding: a two-junction
   element against `elements`' BJT-shaped limiting. Risk: medium-high —
   it changes shared solver code that the hand-written devices also use,
-  so the existing PCNR tests are the regression gate.
+  so the existing PCNR tests are the regression gate. (The charge half
+  shipped with `tests/test_pcnr_charge.py`, 5 tests, and the DSL's
+  qualification rule dropped its no-charge condition accordingly.)
 
 **A2. `$limit`.** 273 call sites, the highest raw demand in the survey,
 and the fallback for every model A1 cannot reach. Needs two things the

@@ -218,13 +218,38 @@ def test_a_circuit_with_no_pcnr_device_falls_through():
     assert np.max(np.abs(np.asarray(res.v('b').y, dtype=float))) > 0.1
 
 
-def test_a_charge_storing_pcnr_device_is_refused():
-    """A participating device with charge storage would contribute to `iq`/`Geq`
-    too, and that term would have to move to the limited unknown as well.
+def test_a_charge_storing_pcnr_device_is_accepted():
+    """A participating device MAY store charge (hdl.md sec. 9, phase A1).
 
-    Left in the MNA block it would be evaluated at the NODE voltage while the
-    current is evaluated at `v_lim` -- exactly the inconsistency PCNR exists to
-    remove, reintroduced through the charge. Refused rather than silently wrong.
+    This test previously asserted the opposite, and the reasoning it
+    recorded was: leaving the charge in the MNA block evaluates it at the
+    NODE voltage while the current is evaluated at ``v_lim``, "exactly
+    the inconsistency PCNR exists to remove, reintroduced through the
+    charge".
+
+    That conflated two different things, and the refusal cost every
+    junction device with capacitance -- which is to say every real one:
+
+    * what PCNR removes is a CLASH BETWEEN DEVICES over a shared
+      linearisation point (two diodes on one branch, the second undoing
+      the first, the outcome depending on visit order).  A charge is
+      limited by nobody, so it has no clash to remove and no owner to
+      fight over;
+    * and the Newton system stays exactly consistent: ``g_MNA``'s charge
+      part is a function of ``x_MNA`` with its derivative ``Geq`` in
+      ``J_MNA/MNA``, while the device's current is a function of
+      ``v_lim`` alone with its derivative in ``J_MNA/lim``.  ``J`` is
+      ``dg/dx`` for both blocks -- finite-differenced in
+      ``test_pcnr_charge.py``, which also checks DC and transient against
+      ``pcnr=False``.
+
+    What is genuinely given up is that the reactive part is not limited
+    along the iteration path, and that costs nothing at the answer:
+    convergence already requires ``|g_lim|`` below tolerance, i.e.
+    ``v_lim`` equal to the node voltage the charge was evaluated at.
+    Measured on a diode with a nonlinear depletion charge: PCNR takes
+    the same 14 DC iterations with ``cj0`` of 0, 1e-11 and 1e-8, and the
+    same 63 transient steps as ``pcnr=False`` with identical waveforms.
     """
     c = SubCircuit()
     c['vs'] = VSin('a', gnd, va=1.0, freq=1e3)
@@ -233,14 +258,16 @@ def test_a_charge_storing_pcnr_device_is_refused():
 
     js = P.pcnr_junctions(c)
     d = c.elements['D']
-    ## Give the diode a non-zero capacitance stamp, which it does not have by
-    ## default, and check the guard fires rather than quietly proceeding.
     d.C = lambda x, epar=None: np.array([[1e-12, -1e-12], [-1e-12, 1e-12]])
     x = np.zeros(c.n)
-    with pytest.raises(NotImplementedError) as exc:
-        P.augmented_system(c, x, np.zeros(len(js)), js,
-                           J_extra=np.zeros((c.n, c.n)))
-    assert 'charge storage' in str(exc.value)
+
+    ## No longer raises -- and the blocks it returns are the ones the
+    ## consistency argument above describes.
+    g_mna, g_lim, J_mm, J_ml, J_lm, didv = P.augmented_system(
+        c, x, np.zeros(len(js)), js, J_extra=np.zeros((c.n, c.n)))
+    assert np.asarray(g_mna).shape == (c.n,)
+    assert np.asarray(J_ml).shape == (c.n, len(js))
+    assert np.asarray(J_lm).shape == (len(js), c.n)
 
 
 ## ---------------------------------------------------------------------------
