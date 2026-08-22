@@ -1446,10 +1446,43 @@ Each column is a term the *shape* of the previous residual named:
   dramatically on the short device (median |ratio−1| 0.098 → 0.033 on
   `nmos_idvd_vg1p2`, 0.132 → 0.026 on `nmos_idvg_vd1p2`). The long
   device barely moves, which is right: CLM is a short-channel effect;
-* what remains is the short-channel **threshold** block. The tell is
-  clean — the two sweeps CLM cannot touch, both at Vd = 0.05, are the
-  ones still ~1.12 off, while every high-drain sweep came within a few
-  percent. That is DIBL, and it is the next layer.
+* what remains sits on the short device at low drain bias — and it is
+  **not** what it looked like. See below.
+
+> **The threshold block: measured, and mostly already there —
+> 2026-08-23.** The residual pointed at the short-channel threshold, so
+> the obvious next layer was DIBL. Measuring first said otherwise, twice
+> over.
+>
+> `CF`, PSP's DIBL coefficient, scales to 1.1 × 10⁻⁷ on the long device
+> and contributes **under a millivolt** at Vd = 0.05 — which is exactly
+> where two of the three worst sweeps sit. DIBL cannot be the
+> explanation for a 12% error at a bias where it does nothing.
+>
+> So a better instrument was built. ngspice will print an OSDI model's
+> operating-point outputs, and PSP exposes its own **`vth`** — which
+> turns "is our scaling right?" from an inference about currents into a
+> direct comparison. A current can be right for compensating reasons; a
+> threshold cannot. The reference now records it at four geometries.
+>
+> | geometry | PSP shift vs long | our shift | error |
+> |---|---|---|---|
+> | L = 0.5 µm | +69.2 mV | +65.5 mV | −3.7 mV |
+> | L = 0.13 µm | +237.3 mV | +214.3 mV | −22.9 mV |
+> | L = 0.13 µm, W = 10 µm | +198.9 mV | +179.4 mV | −19.5 mV |
+>
+> The *absolute* values differ by a nearly constant 70–93 mV across a
+> 7.7× range of channel length, which makes that a definitional
+> difference — PSP's `vth` is its own extraction, not
+> `vfb + phib + γ√phib`. The *shift* is the comparable quantity, and we
+> already have **90% of the reverse-short-channel effect**, out of the
+> pocket-implant doping formula plus the length terms in `VFB` and
+> `DPHIB`.
+>
+> The missing 23 mV is worth about 3% of drain current at Vg = 1.2 —
+> **a quarter** of the ~12% the short device is off by. So the threshold
+> block is largely present, DIBL is not the next layer, and what remains
+> on the short device is predominantly a **gain** error.
 
 > **CLM was tried, measured, rejected, and then vindicated —
 > 2026-08-23.** The rejection stands as a record of the reasoning, and

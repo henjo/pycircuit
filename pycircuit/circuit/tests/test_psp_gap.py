@@ -297,3 +297,87 @@ class TestAgainstTheRealDevice(object):
         short_err = np.median(np.abs(g_s / r_s - 1.0))
         assert short_err > 3.0 * long_err
         assert short_err < 2.0, 'still the same order, not divergent'
+
+
+@needs_pdk
+class TestTheThresholdScaling(object):
+    """Our geometry scaling against PSP's OWN threshold voltage.
+
+    `vth` is an operating-point output of the model itself, so the
+    reference records it at four geometries.  That turns "is the scaling
+    right?" from an inference about currents into a direct comparison --
+    a current can be right for compensating reasons, a threshold cannot.
+
+    The ABSOLUTE values are not comparable: PSP's `vth` is its own
+    extraction, not `vfb + phib + gamma*sqrt(phib)`, and the two differ
+    by a nearly constant 70-93 mV.  A constant offset is a definitional
+    difference.  What IS comparable is the SHIFT between geometries,
+    which is pure physics -- the reverse-short-channel effect from the
+    pocket implants.
+    """
+
+    @staticmethod
+    def _our_vth(deck, w, l):
+        from pycircuit.circuit.constants import (eps0, epsRSi, epsRSiO2,
+                                                 qelectron)
+        card = deck.model_params('sg13g2_lv_nmos_psp', w=w, l=l, ng=1,
+                                 m=1, pre_layout=1)
+        kw = psp_scaling.to_long_channel(card, w=w, l=l)
+        cox = epsRSiO2 * eps0 / kw['tox']
+        gamma = np.sqrt(2 * qelectron * epsRSi * eps0 * kw['nsub']) / cox
+        return kw['vfb'] + kw['phib'] + gamma * np.sqrt(kw['phib'])
+
+    def test_the_reference_records_psp_s_own_threshold(self, ref):
+        import json
+        with open(REF) as fh:
+            data = json.load(fh)
+        assert 'vth' in data
+        assert set(data['vth']) == {'long', 'mid', 'short', 'wide_short'}
+        ## the reverse-short-channel effect: threshold RISES as L shrinks
+        v = data['vth']
+        assert v['long']['vth'] < v['mid']['vth'] < v['short']['vth']
+
+    def test_the_threshold_shift_with_length_is_within_ten_percent(
+            self, deck):
+        """The comparable quantity, and what it says.
+
+        Measured: PSP shifts +237 mV from L = 1 um to L = 0.13 um and we
+        shift +214 mV -- 90% of it, from the pocket-implant doping
+        formula plus the length terms in `VFB` and `DPHIB`.  The missing
+        23 mV is worth about 3% of drain current at Vg = 1.2, which is a
+        quarter of the ~12% the short device is actually off by.
+
+        So the short-device residual is NOT predominantly a threshold
+        error, and DIBL is not the next layer -- `CF` scales to 1e-7 on
+        the long device and contributes under a millivolt at Vd = 0.05,
+        where two of the worst sweeps sit.
+        """
+        import json
+        with open(REF) as fh:
+            v = json.load(fh)['vth']
+        base_psp = v['long']['vth']
+        base_our = self._our_vth(deck, v['long']['w'], v['long']['l'])
+        for name in ('mid', 'short', 'wide_short'):
+            e = v[name]
+            psp_shift = e['vth'] - base_psp
+            our_shift = self._our_vth(deck, e['w'], e['l']) - base_our
+            assert psp_shift > 0.02, name
+            rel = abs(our_shift - psp_shift) / psp_shift
+            assert rel < 0.12, '%s: %.1f%% off' % (name, 100 * rel)
+
+    def test_the_offset_is_constant_which_makes_it_definitional(self,
+                                                                deck):
+        """A constant offset is a different `vth`, not a wrong one.
+
+        If our scaling were wrong the discrepancy would move with
+        geometry.  It sits between 70 and 93 mV across a 7.7x range of
+        channel length, and the part that does move is the 10% of the
+        shift accounted for above.
+        """
+        import json
+        with open(REF) as fh:
+            v = json.load(fh)['vth']
+        offs = [self._our_vth(deck, e['w'], e['l']) - e['vth']
+                for e in v.values()]
+        assert all(-0.12 < o < -0.05 for o in offs), offs
+        assert max(offs) - min(offs) < 0.03

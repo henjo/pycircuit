@@ -122,6 +122,55 @@ def _run(pdk, spec):
                 i_b=[-v for v in i_b])
 
 
+#: Geometries at which to record PSP's own internal threshold voltage.
+#:
+#: `vth` is an operating-point output of the model itself, so recording
+#: it turns "is our scaling right?" from an inference about currents into
+#: a direct comparison.  Note it is PSP's OWN definition of threshold and
+#: not `vfb + phib + gamma*sqrt(phib)`; absolute values are not
+#: comparable across models, but the SHIFT between geometries is.
+VTH_GEOMETRIES = [
+    dict(name='long', w=10e-6, l=1e-6),
+    dict(name='mid', w=1e-6, l=0.5e-6),
+    dict(name='short', w=1e-6, l=0.13e-6),
+    dict(name='wide_short', w=10e-6, l=0.13e-6),
+]
+
+VTH_DECK = """* PSP103 internal vth: {name}
+.lib {pdk}/models/cornerMOSlv.lib mos_tt
+Vd d 0 dc 0.05
+Vg g 0 dc 1.2
+Vs s 0 dc 0
+Vb b 0 dc 0
+X1 d g s b sg13_lv_nmos w={w:g} l={l:g} ng=1 m=1
+.control
+osdi {pdk}/osdi/psp103.osdi
+op
+show all
+.endc
+.end
+"""
+
+
+def _vth(pdk, spec):
+    """PSP's own `vth` operating-point output, via `show`."""
+    import re
+    import subprocess
+    import tempfile
+    with tempfile.NamedTemporaryFile('w', suffix='.sp', delete=False) as fh:
+        fh.write(VTH_DECK.format(pdk=pdk, **spec))
+        path = fh.name
+    try:
+        out = subprocess.run(['ngspice', '-b', path], capture_output=True,
+                             text=True, timeout=300).stdout
+    finally:
+        os.unlink(path)
+    m = re.search(r'\bvth\s+([-\d.eE+]+)', out)
+    if not m:
+        raise RuntimeError('no vth in ngspice output for %s' % spec['name'])
+    return float(m.group(1))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--pdk', default=ngspice_ref.DEFAULT_PDK)
@@ -150,6 +199,14 @@ def main(argv=None):
         data['sweeps'][spec['name']] = res
         print('%d points, max |Id| = %.4g A'
               % (len(res['v']), max(abs(v) for v in res['i_d'])))
+
+    ## PSP's own threshold voltage, per geometry.
+    data['vth'] = {}
+    for spec in VTH_GEOMETRIES:
+        v = _vth(args.pdk, spec)
+        data['vth'][spec['name']] = dict(w=spec['w'], l=spec['l'], vth=v)
+        print('vth %-12s W=%-6.4g L=%-8.4g %.6f V'
+              % (spec['name'], spec['w'], spec['l'], v))
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, 'w') as fh:
