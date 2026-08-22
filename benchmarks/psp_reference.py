@@ -152,6 +152,38 @@ show all
 """
 
 
+#: PSP's own SCALED parameters, exposed as `lp_*` operating-point
+#: outputs.  Recording these turns the geometry-scaling layer from
+#: something inferred out of currents into something checkable term by
+#: term -- a current can be right for compensating reasons, a scaled
+#: parameter cannot.  This is how the `GPE` width-adjustment bug was
+#: found: `lp_betn` was 12% off while every other term matched exactly.
+LP_PARAMS = ('vfb', 'tox', 'neff', 'dphib', 'ct', 'cf', 'cfb', 'betn',
+             'mue', 'themu', 'cs', 'thecs', 'rs', 'np')
+
+
+def _op_outputs(pdk, spec, names):
+    """Named operating-point outputs of the OSDI model, via `show`."""
+    import re
+    import subprocess
+    import tempfile
+    with tempfile.NamedTemporaryFile('w', suffix='.sp', delete=False) as fh:
+        fh.write(VTH_DECK.format(pdk=pdk, **spec))
+        path = fh.name
+    try:
+        out = subprocess.run(['ngspice', '-b', path], capture_output=True,
+                             text=True, timeout=300).stdout
+    finally:
+        os.unlink(path)
+    got = {}
+    for n in names:
+        m = re.search(r'^\s*%s\s+([-\d.eE+]+)\s*$' % re.escape(n),
+                      out, re.M)
+        if m:
+            got[n] = float(m.group(1))
+    return got
+
+
 def _vth(pdk, spec):
     """PSP's own `vth` operating-point output, via `show`."""
     import re
@@ -202,11 +234,17 @@ def main(argv=None):
 
     ## PSP's own threshold voltage, per geometry.
     data['vth'] = {}
+    data['scaled'] = {}
     for spec in VTH_GEOMETRIES:
         v = _vth(args.pdk, spec)
         data['vth'][spec['name']] = dict(w=spec['w'], l=spec['l'], vth=v)
-        print('vth %-12s W=%-6.4g L=%-8.4g %.6f V'
-              % (spec['name'], spec['w'], spec['l'], v))
+        lp = _op_outputs(args.pdk, spec,
+                         ['lp_' + n for n in LP_PARAMS])
+        data['scaled'][spec['name']] = dict(
+            w=spec['w'], l=spec['l'],
+            **{k[3:]: val for k, val in lp.items()})
+        print('vth %-12s W=%-6.4g L=%-8.4g %.6f V   (%d scaled params)'
+              % (spec['name'], spec['w'], spec['l'], v, len(lp)))
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, 'w') as fh:

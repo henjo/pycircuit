@@ -280,23 +280,22 @@ class TestAgainstTheRealDevice(object):
         assert r[sat][-1] / r[sat][0] > 1.03, 'PSP climbs'
         assert g[sat][-1] / g[sat][0] > 1.01, 'so do we, now'
 
-    def test_the_short_device_is_measurably_worse(self, deck, ref):
-        """The omissions have a size, and it is recorded rather than hidden.
+    def test_the_short_device_is_still_the_worse_one(self, deck, ref):
+        """It is, but no longer by much.
 
-        At L = 0.13 um what remains is the short-channel THRESHOLD
-        block -- DIBL and friends.  The tell is that the two sweeps CLM
-        cannot touch, both at Vd = 0.05, are the ones still ~1.12 off,
-        while the sweeps at high drain bias came down to within a few
-        percent once CLM was in.  That is not a defect in the core; it
-        is the cost of the layer not yet built, and it says which to
-        build next.
+        This test used to assert the short device was at least 3x worse
+        than the long one.  It stopped being true when the `GPE`
+        width-adjustment bug was fixed -- the short device went from
+        ~12% to ~2% and the ratio fell to about 2x.  Rewritten rather
+        than relaxed, because the thing worth pinning changed: the point
+        is no longer "the omissions are large" but "they are bounded".
         """
         _, r_l, g_l, _ = _compare(deck, ref['nmos_long_idvd'])
         _, r_s, g_s, _ = _compare(deck, ref['nmos_idvg_vd0p05'])
         long_err = np.median(np.abs(g_l / r_l - 1.0))
         short_err = np.median(np.abs(g_s / r_s - 1.0))
-        assert short_err > 3.0 * long_err
-        assert short_err < 2.0, 'still the same order, not divergent'
+        assert short_err > long_err
+        assert short_err < 0.05, 'short device %.3f' % short_err
 
 
 @needs_pdk
@@ -381,3 +380,90 @@ class TestTheThresholdScaling(object):
                 for e in v.values()]
         assert all(-0.12 < o < -0.05 for o in offs), offs
         assert max(offs) - min(offs) < 0.03
+
+
+@needs_pdk
+class TestTheScalingTermByTerm(object):
+    """Our geometry scaling against PSP's OWN scaled parameters.
+
+    PSP exposes its post-scaling values as `lp_*` operating-point
+    outputs, and the reference records them at four geometries.  That
+    makes the scaling layer checkable **term by term** rather than
+    inferred from currents -- and the difference matters: a current can
+    be right for compensating reasons, a scaled parameter cannot.
+
+    This is how the `GPE` bug was found.  Every term matched exactly
+    except `betn`, which was 12% high, because `FBET1` and `LP1` are
+    width-adjusted before use (`PSP103_scaling.include:284-285`) and the
+    raw card values were being used.  No amount of staring at I-V curves
+    would have said which term; one comparison did.
+    """
+
+    #: What our scaling produces, keyed by PSP's name for it.  `neff` is
+    #: compared with the quantum correction OFF, because PSP applies that
+    #: to `phib` and `G_0` while we fold it into the doping -- equivalent
+    #: bookkeeping, different intermediate.
+    DIRECT = {'vfb': 'vfb', 'tox': 'tox', 'ct': 'ct', 'mue': 'mue',
+              'themu': 'themu', 'cs': 'cs', 'thecs': 'thecs', 'rs': 'rs'}
+
+    @pytest.fixture(scope='class')
+    def scaled(self):
+        import json
+        with open(REF) as fh:
+            return json.load(fh)['scaled']
+
+    def test_the_reference_records_them(self, scaled):
+        assert set(scaled) == {'long', 'mid', 'short', 'wide_short'}
+        for e in scaled.values():
+            assert 'betn' in e and 'neff' in e and 'vfb' in e
+
+    @pytest.mark.parametrize('geom', ['long', 'mid', 'short', 'wide_short'])
+    def test_every_directly_scaled_parameter_matches(self, deck, scaled,
+                                                     geom):
+        e = scaled[geom]
+        card = deck.model_params('sg13g2_lv_nmos_psp', w=e['w'], l=e['l'],
+                                 ng=1, m=1, pre_layout=1)
+        kw = psp_scaling.to_long_channel(card, w=e['w'], l=e['l'])
+        for psp_name, ours in self.DIRECT.items():
+            if psp_name not in e:
+                continue
+            assert kw[ours] == pytest.approx(e[psp_name], rel=1e-5), \
+                '%s %s: %r vs %r' % (geom, psp_name, kw[ours], e[psp_name])
+
+    @pytest.mark.parametrize('geom', ['long', 'mid', 'short', 'wide_short'])
+    def test_the_gain_factor_matches(self, deck, scaled, geom):
+        """`BETN = UO*WE*GWE/(GPE*LE)`, the term that was 12% off.
+
+        Our element takes an effective mobility rather than a `BETN`,
+        because it computes `beta = u0*cox*W/L` from the DRAWN
+        dimensions; `u0_eff * W/L` is the same quantity.
+        """
+        e = scaled[geom]
+        card = deck.model_params('sg13g2_lv_nmos_psp', w=e['w'], l=e['l'],
+                                 ng=1, m=1, pre_layout=1)
+        kw = psp_scaling.to_long_channel(card, w=e['w'], l=e['l'])
+        ours = kw['u0'] * e['w'] / e['l']
+        assert ours == pytest.approx(e['betn'], rel=1e-5), \
+            '%s: %r vs %r' % (geom, ours, e['betn'])
+
+    @pytest.mark.parametrize('geom', ['long', 'mid', 'short', 'wide_short'])
+    def test_the_effective_doping_matches_before_the_qm_correction(
+            self, deck, scaled, geom):
+        e = scaled[geom]
+        card = deck.model_params('sg13g2_lv_nmos_psp', w=e['w'], l=e['l'],
+                                 ng=1, m=1, pre_layout=1)
+        kw = psp_scaling.to_long_channel(dict(card, qmc=0.0), w=e['w'],
+                                         l=e['l'])
+        assert kw['nsub'] == pytest.approx(e['neff'], rel=1e-5)
+
+    def test_polysilicon_depletion_is_active_and_not_modelled(self,
+                                                              scaled):
+        """A known omission, recorded so it is not mistaken for noise.
+
+        `lp_np` is the poly gate doping, and it is 4.6e26 -- not the zero
+        that would switch the effect off.  The core assumes an ideal
+        gate (`eta_p = 1`), so some of the residual on every geometry is
+        this.
+        """
+        for e in scaled.values():
+            assert e.get('np', 0.0) > 1e26

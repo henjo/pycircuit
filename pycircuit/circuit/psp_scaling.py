@@ -169,10 +169,18 @@ def to_long_channel(card, w, l, T=300.0):
     ## Gain factor (:286-289).  `GPE` and `GWE` are the length and width
     ## corrections to mobility; `BETN = UO*WE/(GPE*LE)*GWE`, and
     ## `BET = BETN * Cox'` (`PSP103_macrodefs.include:368`).
-    gpe = max(1.0 + _g(card, 'fbet1') * _g(card, 'lp1', 1.0) / LE
-              * (1.0 - math.exp(-LE / _g(card, 'lp1', 1.0)))
-              + _g(card, 'fbet2') * _g(card, 'lp2', 1.0) / LE
-              * (1.0 - math.exp(-LE / _g(card, 'lp2', 1.0))), 1.0e-15)
+    ## `FBET1` and `LP1` are WIDTH-ADJUSTED before use (:284-285) -- the
+    ## trailing `e` in the source is not decoration.  Using the raw card
+    ## values made `GPE` 1.271 where PSP computes 1.4234, and since
+    ## `BETN = UO*WE*GWE/(GPE*LE)` that is a 12% gain error, which is
+    ## most of what the short device was off by.  Caught by comparing
+    ## against PSP's own `lp_betn` operating-point output.
+    fbet1e = _g(card, 'fbet1') * (1.0 + _g(card, 'fbet1w') * iWE)
+    lp1e = _g(card, 'lp1', 1.0) * max(1.0 + _g(card, 'lp1w') * iWE, 1.0e-3)
+    lp2 = _g(card, 'lp2', 1.0)
+    gpe = max(1.0 + fbet1e * lp1e / LE * (1.0 - math.exp(-LE / lp1e))
+              + _g(card, 'fbet2') * lp2 / LE
+              * (1.0 - math.exp(-LE / lp2)), 1.0e-15)
     gwe = (1.0 + _g(card, 'betw1') * iWE
            + _g(card, 'betw2') * iWE
            * math.log(1.0 + WE / _g(card, 'wbet', 1.0)))

@@ -1484,6 +1484,45 @@ Each column is a term the *shape* of the previous residual named:
 > block is largely present, DIBL is not the next layer, and what remains
 > on the short device is predominantly a **gain** error.
 
+> **The gain error, found term by term — 2026-08-23.** The `vth` trick
+> generalises: PSP exposes its whole post-scaling parameter set as
+> `lp_*` operating-point outputs, so the scaling layer can be checked
+> **term by term** instead of inferred from currents. The reference now
+> records fourteen of them at four geometries.
+>
+> Every term matched to five digits — `vfb`, `tox`, `ct`, `mue`,
+> `themu`, `cs`, `thecs`, `rs`, and `neff` with the quantum correction
+> off — **except `betn`, which was 12% high**. Back-solving gave PSP's
+> `GPE` as 1.4234 where ours was 1.271, and the reason is in the source:
+> `FBET1e = FBET1·(1 + FBET1W·iWE)` and `LP1e = LP1·max(1 + LP1W·iWE,
+> 1e-3)` (`PSP103_scaling.include:284-285`). The trailing `e` is not
+> decoration — both are **width-adjusted** before use, and the raw card
+> values were being used instead.
+>
+> Since `BETN = UO·WE·GWE/(GPE·LE)`, that was a 12% gain error, and it
+> is most of what the short device was off by:
+>
+> | sweep | before | after |
+> |---|---|---|
+> | `nmos_idvg_vd0p05` | 1.117 | **1.019** |
+> | `nmos_idvg_vb_m1` | 1.128 | **1.023** |
+> | `nmos_long_idvd` | 1.010 | 1.009 |
+>
+> The long device barely moves, which is the check: `GPE` is 1.02 there,
+> so the bug was invisible on the geometry that had been driving the
+> whole investigation. No amount of staring at I-V curves would have
+> said *which* term; one comparison did.
+>
+> The scaling is now guarded term by term, which is the strongest form
+> this check can take.
+>
+> Two things the comparison also surfaced: `lp_np` is 4.6 × 10²⁶, so
+> **polysilicon depletion is active** and the core's ideal-gate
+> assumption (`eta_p = 1`) is a real omission; and the short device is
+> now *low* at high drain bias (0.90–0.96), where before it was high.
+> DIBL raises the drive, so its direction is now right — the term ruled
+> out earlier is worth revisiting, for the same reason CLM was.
+
 > **CLM was tried, measured, rejected, and then vindicated —
 > 2026-08-23.** The rejection stands as a record of the reasoning, and
 > the sequel is the point: with `CT` in place the same code helps. Read
