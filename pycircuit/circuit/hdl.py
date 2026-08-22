@@ -728,6 +728,58 @@ class Cross(Statement):
         return nodes
 
 
+class Collapse(Statement):
+    """Collapse a branch's nodes when a PARAMETER condition holds.
+
+    Verilog-A's optional-parasitic idiom, which PSP103 uses seven times::
+
+        if ((R) > 0.0) I(N1,N2) <+ (G) * V(N1,N2);
+        else           V(N1,N2) <+ 0.0;
+
+    is written here as the contribution plus a `Collapse` saying when the
+    other arm applies::
+
+        br = Branch(n1, n2, 'rd')
+        return (Contribution(br.I, g * br.V),
+                Collapse(br, rd <= 0))
+
+    When the condition holds for an instance's parameters, that branch's
+    nodes become one and every contribution to it is dropped -- so a
+    ``g = 1/rd`` that would be infinite is never compiled, let alone
+    evaluated.  When it does not, the `Collapse` is simply absent and the
+    contributions stand.
+
+    The condition may mention **parameters only**, never a node voltage
+    or branch current.  That restriction is what makes this tractable: a
+    collapse decided by the operating point would change the matrix
+    sparsity every Newton iteration, whereas a parameter-driven one is
+    fixed the moment the instance is built.  Each distinct combination of
+    conditions is compiled once and cached on the class, and instances
+    are retargeted to the variant matching their parameters.
+
+    The cost of NOT doing this is measured in
+    ``benchmarks/collapse_cost.py``: carrying PSP's seven parasitics as
+    branches instead is 14x slower on a 100-device DC solve.
+    """
+
+    def __init__(self, branch, when):
+        if not isinstance(branch, Branch):
+            raise TypeError('Collapse takes a Branch, got %r' % (branch,))
+        self.branch = branch
+        self.when = sympy.sympify(when)
+        bad = [a for a in self.when.atoms() if isinstance(a, Quantity)]
+        if bad:
+            raise ValueError(
+                'Collapse condition may use parameters only, but mentions '
+                '%s. A collapse that depends on the operating point would '
+                'change the matrix sparsity every Newton iteration; keep '
+                'the branch and use a Piecewise in the contribution '
+                'instead.' % ', '.join(sorted(repr(b) for b in bad)))
+
+    def nodes(self):
+        return {self.branch.plus, self.branch.minus}
+
+
 class Contribution(Statement):
     """``Contribution(b.I, expr)`` or ``Contribution(b.V, expr)`` --
     the DSL form of Verilog-A's ``<+``."""
@@ -905,7 +957,42 @@ def generate_code(cls):
     if isinstance(statements, Statement):
         statements = (statements,)
     crossings = [st for st in statements if isinstance(st, Cross)]
-    statements = [st for st in statements if not isinstance(st, Cross)]
+    collapses = [st for st in statements if isinstance(st, Collapse)]
+    statements = [st for st in statements
+                  if not isinstance(st, (Cross, Collapse))]
+
+    ## PARAMETER-DRIVEN COLLAPSE.  `collapse_mask` says, per `Collapse`
+    ## declaration and in declaration order, whether THIS variant takes
+    ## the collapsed arm.  The class compiles with an all-False mask (so
+    ## a model that declares collapses still has a well-defined default
+    ## topology and parameter list); each instance is retargeted to the
+    ## variant its own parameters select.
+    collapse_mask = tuple(getattr(cls, '_hdl_collapse_mask', None)
+                          or (False,) * len(collapses))
+    if len(collapse_mask) != len(collapses):
+        raise ValueError('collapse mask %r does not match %d Collapse '
+                         'declarations' % (collapse_mask, len(collapses)))
+    _collapsed_keys = set()
+    for taken, st in zip(collapse_mask, collapses):
+        if not taken:
+            continue
+        br = st.branch
+        _collapsed_keys.add((br.plus.name, br.minus.name,
+                             getattr(br, 'name', None)))
+        ## Feed the existing unconditional machinery: a taken collapse IS
+        ## `V(a,b) <+ 0`, and every contribution to that branch goes away
+        ## -- including one whose coefficient is 1/R and would be
+        ## infinite, which is the whole point of the model's conditional.
+        statements.append(Contribution(Quantity('V', br), sympy.Integer(0)))
+    if _collapsed_keys:
+        statements = [
+            st for st in statements
+            if not (isinstance(st.lhs.branch_or_node, Branch)
+                    and (st.lhs.branch_or_node.plus.name,
+                         st.lhs.branch_or_node.minus.name,
+                         getattr(st.lhs.branch_or_node, 'name', None))
+                    in _collapsed_keys
+                    and not sympy.sympify(st.rhs).is_zero)]
 
     ## ------------------------------------------------------------------
     ## Pass 1 -- inventory: nodes, branches with current unknowns (every
@@ -1581,7 +1668,12 @@ def generate_code(cls):
                 given_names=given_names, limit_spec=limit_spec,
                 cross_spec=cross_spec, sym_spec=sym_spec,
                 has_ac=any(e != 0 for e in acvec),
-                chained=bool(chain_defs))
+                chained=bool(chain_defs),
+                collapse_mask=collapse_mask,
+                collapse_conds=[
+                    sympy.lambdify(paramsyms, st.when,
+                                   modules=NUMPY_MODULES)
+                    for st in collapses])
 
 
 def _fmt_branch(key):
@@ -1749,6 +1841,47 @@ def _symbolic_eval(self, which, x, epar):
     return vec
 
 
+def _collapse_mask_of(cls, paramvals):
+    """Which collapses this parameter set takes, in declaration order."""
+    conds = cls._hdl_info['collapse_conds']
+    n_par = len(cls._hdl_paramnames)
+    return tuple(bool(f(*paramvals[:n_par])) for f in conds)
+
+
+def _collapse_variant(cls, mask):
+    """The class compiled for `mask`, built once and cached.
+
+    A SUBCLASS rather than a per-instance table of functions: the
+    metaclass already compiles everything a class needs from its
+    `analog`, so re-entering it with the mask baked in gets correct
+    stamps, branches, PCNR participation, state metadata and pure forms
+    with no second code path to keep in step.  Instances are then
+    retargeted by assigning `__class__`.
+    """
+    base = getattr(cls, '_hdl_collapse_base', cls)
+    cache = base.__dict__.get('_hdl_mask_classes')
+    if cache is None:
+        cache = {}
+        base._hdl_mask_classes = cache
+    if mask in cache:
+        return cache[mask]
+    ## `analog` must appear in the class body or the metaclass will not
+    ## recompile, and `instparams` must be carried across or the
+    ## instparams consistency check would reject the variant.
+    var = BehaviouralMeta(
+        '%s_collapse%s' % (base.__name__,
+                           ''.join('1' if b else '0' for b in mask)),
+        (base,),
+        dict(analog=staticmethod(base.analog),
+             instparams=list(base.instparams),
+             _hdl_collapse_mask=mask,
+             _hdl_collapse_base=base,
+             __module__=base.__module__,
+             __doc__='%s with collapses %r taken.' % (base.__name__, mask)))
+    cache[mask] = var
+    return var
+
+
 def _args_of(self, epar):
     """The trailing argument list every compiled function expects:
     parameter values, then T, then the givenness flags."""
@@ -1805,6 +1938,22 @@ class BehaviouralMeta(type):
             ## time and the cache is dropped whenever they move.
             self.__dict__.pop('_hdl_Gc', None)
             self.__dict__.pop('_hdl_Cc', None)
+            ## A parameter that gates a collapse decides the element's
+            ## SIZE, and the size was baked into the circuit's node map
+            ## when this instance was built.  Changing it afterwards
+            ## would leave the map describing a different element, so say
+            ## so rather than solve a system nobody wrote.
+            seen = getattr(self, '_hdl_collapse_seen', None)
+            if seen is not None:
+                now = _collapse_mask_of(type(self), _params_of(self))
+                if now != seen:
+                    raise ValueError(
+                        '%s: a parameter that gates a node collapse changed '
+                        'after the element was built (%r -> %r). That '
+                        'changes the number of unknowns, which the circuit '
+                        'node map already fixed. Build a new instance '
+                        'instead of re-parameterising this one.'
+                        % (type(self).__name__, seen, now))
 
         def G(self, x, epar=defaultepar, params_tree=None):
             if info['chained']:
@@ -2148,6 +2297,18 @@ class Behavioural(circuit.Circuit, metaclass=BehaviouralMeta):
                 '`analog = staticmethod(Base.analog)` is enough to trigger '
                 'recompilation).'
                 % (type(self).__name__, declared, info['paramnames']))
+        ## PARAMETER-DRIVEN COLLAPSE: pick the variant this instance's
+        ## parameters select, before any node or branch is registered.
+        ## `super().__init__` has already copied the class's branch list,
+        ## so retargeting here means replacing it too.
+        if info['collapse_conds']:
+            mask = _collapse_mask_of(type(self), _params_of(self))
+            if mask != info['collapse_mask']:
+                var = _collapse_variant(type(self), mask)
+                self.__class__ = var
+                info = var._hdl_info
+                self.branches = list(var.branches)
+            self._hdl_collapse_seen = mask
         for name in info['internalnames'] + info['state_meta']['statenames']:
             self.add_node(name)
 

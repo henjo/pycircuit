@@ -26,7 +26,8 @@ from pycircuit.circuit.toolkit import numeric
 from pycircuit.circuit.elements import R, SubCircuit, VS
 from pycircuit.circuit.dcanalysis import DC
 from pycircuit.circuit.transient import Transient
-from pycircuit.circuit.hdl import Behavioural, Branch, Contribution, Node
+from pycircuit.circuit.hdl import (Behavioural, Branch, Collapse,
+                                   Contribution, Node)
 from pycircuit.utilities.param import Parameter
 
 
@@ -204,3 +205,170 @@ class TestCollapseKeepsBranchNames(object):
         res = DC(c, toolkit=numeric).solve()
         i_vs = float(res.i('vs.plus'))
         assert -i_vs == pytest.approx(1.0 / 1e3 + 1.0 / 2e3, rel=1e-9)
+
+
+class TestParameterDrivenCollapse(object):
+    """`Collapse(branch, when)` -- PSP's CollapsableR, expressed.
+
+    The condition may mention parameters only, so the topology is fixed
+    the moment an instance is built.  Each distinct combination is
+    compiled once and cached; instances are retargeted to theirs.
+    """
+
+    class Parasitic(Behavioural):
+        """A conductance behind an optional series resistance.
+
+        Written exactly as the model does: the resistor arm divides by
+        `rd`, which is only safe because the collapsed variant never
+        compiles that contribution at all.
+        """
+        instparams = [Parameter(name='rd', desc='series R', unit='ohm',
+                                default=0.0),
+                      Parameter(name='gcore', desc='core G', unit='S',
+                                default=1e-3)]
+
+        @staticmethod
+        def analog(p, m):
+            di = Node('di')
+            br = Branch(p, di, 'rd')
+            core = Branch(di, m)
+            return (Contribution(core.I, gcore * core.V),        # noqa: F821
+                    Contribution(br.I, br.V / rd),               # noqa: F821
+                    Collapse(br, rd <= 0))                       # noqa: F821
+
+    def test_the_collapsed_instance_costs_nothing(self):
+        e = self.Parasitic(Node('p'), Node('m'), rd=0.0, gcore=1e-3)
+        e.update_iparv()
+        assert e.n == 2, 'internal node should be absorbed'
+        assert len(e.branches) == 0
+
+    def test_the_uncollapsed_instance_keeps_the_node(self):
+        e = self.Parasitic(Node('p'), Node('m'), rd=50.0, gcore=1e-3)
+        e.update_iparv()
+        assert e.n == 3, 'internal node should survive'
+
+    def test_a_zero_resistance_never_divides_by_zero(self):
+        """The collapsed variant does not compile `V/rd` at all."""
+        import warnings
+        e = self.Parasitic(Node('p'), Node('m'), rd=0.0, gcore=1e-3)
+        e.update_iparv()
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            G = np.asarray(e.G(np.array([1.0, 0.0])), float)
+        assert np.allclose(G, 1e-3 * np.array([[1., -1.], [-1., 1.]]))
+
+    @pytest.mark.parametrize('rd', [0.0, 1e-9, 1.0, 50.0, 1e4])
+    def test_both_variants_give_the_series_combination(self, rd):
+        c = SubCircuit()
+        na = c.add_node('a')
+        c['vs'] = VS(na, gnd, v=1.0)
+        c['e'] = self.Parasitic(na, gnd, rd=rd, gcore=1e-3)
+        c.update_iparv()
+        res = DC(c, toolkit=numeric).solve()
+        want = -1.0 / (rd + 1e3)
+        assert float(res.i('vs.plus')) == pytest.approx(want, rel=1e-9)
+
+    def test_variants_are_compiled_once_and_shared(self):
+        """One class per mask, not one per instance."""
+        base = self.Parasitic
+        a = base(Node('p'), Node('m'), rd=0.0)
+        b = base(Node('p'), Node('m'), rd=0.0)
+        c = base(Node('p'), Node('m'), rd=5.0)
+        assert type(a) is type(b), 'same mask should share a class'
+        assert type(a) is not type(c)
+        ## rd > 0 is the class's own all-False mask, so it is not a
+        ## variant at all -- only the collapsed arm needed building.
+        assert type(c) is base
+        assert type(a) is not base
+        assert base.__dict__['_hdl_mask_classes'][(True,)] is type(a)
+
+    def test_both_variants_coexist_in_one_circuit(self):
+        c = SubCircuit()
+        na, nb = c.add_node('a'), c.add_node('b')
+        c['vs'] = VS(na, gnd, v=1.0)
+        c['e0'] = self.Parasitic(na, nb, rd=0.0, gcore=1e-3)
+        c['e1'] = self.Parasitic(nb, gnd, rd=250.0, gcore=1e-3)
+        c.update_iparv()
+        res = DC(c, toolkit=numeric).solve()
+        want = -1.0 / (1e3 + 250.0 + 1e3)
+        assert float(res.i('vs.plus')) == pytest.approx(want, rel=1e-9)
+
+    def test_moving_a_gating_parameter_afterwards_is_refused(self):
+        """It would change `n` behind the circuit's node map."""
+        e = self.Parasitic(Node('p'), Node('m'), rd=0.0, gcore=1e-3)
+        e.update_iparv()
+        with pytest.raises(ValueError, match='gates a node collapse'):
+            e.ipar.rd = 50.0
+            e.update_iparv()
+
+    def test_a_non_gating_parameter_may_still_move(self):
+        e = self.Parasitic(Node('p'), Node('m'), rd=0.0, gcore=1e-3)
+        e.update_iparv()
+        e.ipar.gcore = 4e-3
+        e.update_iparv()
+        G = np.asarray(e.G(np.array([1.0, 0.0])), float)
+        assert G[0, 0] == pytest.approx(4e-3, rel=1e-12)
+
+    def test_an_operating_point_condition_is_refused(self):
+        """A collapse that moves per iteration is a different feature."""
+        with pytest.raises(ValueError, match='parameters only'):
+            class Bad(Behavioural):
+                instparams = []
+
+                @staticmethod
+                def analog(p, m):
+                    b = Branch(p, m, 'x')
+                    return (Contribution(b.I, 1e-3 * b.V),
+                            Collapse(b, b.V > 0))
+
+
+class TestManyCollapsesTogether(object):
+    """PSP has seven of them; the mask is a combination, not a flag."""
+
+    class Seven(Behavioural):
+        instparams = ([Parameter(name='r%d' % k, desc='R%d' % k,
+                                 unit='ohm', default=0.0)
+                       for k in range(3)]
+                      + [Parameter(name='gcore', desc='G', unit='S',
+                                   default=1e-3)])
+
+        @staticmethod
+        def analog(p, m):
+            rs = (r0, r1, r2)                                    # noqa: F821
+            node, out = p, []
+            for k in range(3):
+                nxt = Node('i%d' % k)
+                br = Branch(node, nxt, 'r%d' % k)
+                out.append(Contribution(br.I, br.V / rs[k]))
+                out.append(Collapse(br, rs[k] <= 0))
+                node = nxt
+            core = Branch(node, m)
+            out.append(Contribution(core.I, gcore * core.V))      # noqa: F821
+            return tuple(out)
+
+    @pytest.mark.parametrize('rvals,nodes_kept', [
+        ((0.0, 0.0, 0.0), 0),
+        ((10.0, 0.0, 0.0), 1),
+        ((0.0, 20.0, 0.0), 1),
+        ((10.0, 20.0, 0.0), 2),
+        ((10.0, 20.0, 30.0), 3),
+    ])
+    def test_the_mask_selects_the_right_topology(self, rvals, nodes_kept):
+        e = self.Seven(Node('p'), Node('m'), gcore=1e-3,
+                       **{'r%d' % k: v for k, v in enumerate(rvals)})
+        e.update_iparv()
+        assert e.n == 2 + nodes_kept
+
+    @pytest.mark.parametrize('rvals', [
+        (0.0, 0.0, 0.0), (10.0, 0.0, 0.0), (0.0, 20.0, 0.0),
+        (10.0, 20.0, 0.0), (10.0, 20.0, 30.0), (0.0, 0.0, 30.0)])
+    def test_every_topology_gives_the_series_sum(self, rvals):
+        c = SubCircuit()
+        na = c.add_node('a')
+        c['vs'] = VS(na, gnd, v=1.0)
+        c['e'] = self.Seven(na, gnd, gcore=1e-3,
+                            **{'r%d' % k: v for k, v in enumerate(rvals)})
+        c.update_iparv()
+        res = DC(c, toolkit=numeric).solve()
+        want = -1.0 / (sum(rvals) + 1e3)
+        assert float(res.i('vs.plus')) == pytest.approx(want, rel=1e-9)

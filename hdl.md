@@ -209,6 +209,7 @@ recomputing per Newton iteration.
 | `Branch(a, b)` | `branch (a,b)` | anonymous |
 | `Branch(a, b, 'ch')` | `branch (a,b) ch;` | a **distinct** branch across the same pair, with its own current |
 | `simparam(name, default)` | `$simparam(name, default)` | resolved at compile time |
+| `Collapse(br, when)` | `if (R>0) I<+…; else V<+0;` | node collapse on a **parameter** condition |
 | `Node('mid')` | internal node declaration | discovered from use |
 
 `analog()` returns one `Contribution` or a tuple of them.
@@ -1136,9 +1137,45 @@ branch whose two ends meet is gone now. A third dropped branch *names*
 during the rewrite, merging two named branches that a collapse brought
 onto one node pair.
 
+**Parameter-driven collapse — DONE 2026-08-22.** `Collapse(branch, when)`
+alongside the resistor contribution:
+
+```python
+br = Branch(n1, n2, 'rd')
+return (Contribution(br.I, br.V / rd),
+        Collapse(br, rd <= 0))
+```
+
+When the condition holds for an instance's parameters, the branch's nodes
+merge and every contribution to it is dropped — so the `V/rd` that would
+be infinite is never compiled, which is the whole reason the model
+branches. The condition may mention **parameters only**; one that
+depended on the operating point would move the sparsity every Newton
+iteration, and is refused by name.
+
+Implemented by compiling a **subclass per mask** and retargeting the
+instance's `__class__`, rather than by teaching every generated method to
+look up a per-instance function table. The metaclass already compiles
+everything a class needs from its `analog`, so re-entering it with the
+mask baked in gets correct stamps, branches, PCNR participation, state
+metadata and pure forms with no second code path to keep in step.
+Variants are built on demand and cached on the base class, so N instances
+sharing a parameter set share one compilation. A gating parameter changed
+*after* construction raises: it would change the element's size behind a
+node map the circuit has already fixed.
+
+Measured on the same benchmark, the collapsed variant tracks the
+hand-written topology exactly:
+
+| devices | unknowns hand / branch / `Collapse` | DC solve hand / branch / `Collapse` |
+|---|---|---|
+| 20 | 23 / 303 / 23 | 1.13 / 5.87 / 1.72 ms |
+| 100 | 103 / 1503 / 103 | 6.99 / 99.3 / 8.10 ms |
+
+What is left for a running PSP103 card:
+
 | item | size | note |
 |---|---|---|
-| node collapse driven by parameter *values* | medium | needs per-instance topology: the mask is known once parameters bind, so compile lazily per mask and cache on the class. `self.nodes` is already per-instance; `cls.branches` and the compiled closures are not |
 | model-card ingestion | medium | the cards are not standalone: they reference `.param` multipliers a corner section must define first, and are `.include`d *inside* the subckt so the `.model` can see `pre_layout`, `ng`, `m` |
 | geometry scaling layer | medium | `PSP103_scaling.include`, 849 lines, pure parameter arithmetic — no solver involvement, so it is bulk rather than difficulty |
 | the surface-potential core | large | `PSP103_module.include`, 2371 lines; the actual translation, and what E1/E2 exist to make possible |
