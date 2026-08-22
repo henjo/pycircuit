@@ -1287,9 +1287,49 @@ and tested outside a model without that fallback existing at all.
 
 What is left for a running PSP103 card:
 
+**Model-card ingestion — DONE 2026-08-22.**
+`pycircuit/utilities/spicecard.py`. A foundry card is not a list of
+numbers: PSP103's is 359 parameters, most of them quoted expressions
+referencing `.param` multipliers a *corner section* defines,
+`.include`d from inside a `.subckt` so the card can also read instance
+parameters. None of it resolves without following that whole chain.
+
+```python
+deck = spicecard.read('cornerMOSlv.lib', section='mos_tt')
+p = deck.model_params('sg13g2_lv_nmos_psp', w=1e-6, l=0.13e-6, ng=1)
+```
+
+Measured on the real PDK: **371 parameters, all resolving to floats**,
+with the corner multipliers applied (`dphibo = −0.25737 × 0.9915` in
+`mos_tt`, and three distinct values across tt/ss/ff) and instance
+parameters reaching the card (`dlq` reads `pre_layout`, `cfrw` divides by
+`ng`). Every model family in the PDK reads: MOS lv/hv, the MoM
+capacitors, and the `r3_cmc` resistors.
+
+Not a netlist parser and not trying to be one — it reads the declarative
+part (`.lib` sections, `.include`, `.param`, `.subckt`, `.model`,
+`.if`) and skips the rest. Three decisions worth stating:
+
+* **`.LIB` sections are opt-in.** A corner file defines the same names
+  differently per section, so reading them all would silently give
+  whichever came last. Without a `section=` argument every block is
+  skipped.
+* **Statistical functions return their nominal value.** `agauss`,
+  `gauss`, `aunif`, `unif` describe a distribution; without a draw the
+  centre is the only defensible answer, and it is what a nominal corner
+  uses. Monte-Carlo is not implemented rather than faked.
+* **The expression namespace is closed.** A vendor file is *data*;
+  evaluating it over an open namespace would make reading a card
+  equivalent to running it. A test pins that `__import__` cannot be
+  reached.
+
+Two bugs the tests caught, both of which silently truncate rather than
+fail: a comment line *between* `+` continuations ended the logical line
+(real cards put commentary there), and circular `.include` detection was
+built but never actually tested against.
+
 | item | size | note |
 |---|---|---|
-| model-card ingestion | medium | the cards are not standalone: they reference `.param` multipliers a corner section must define first, and are `.include`d *inside* the subckt so the `.model` can see `pre_layout`, `ng`, `m` |
 | geometry scaling layer | medium | `PSP103_scaling.include`, 849 lines, pure parameter arithmetic — no solver involvement, so it is bulk rather than difficulty |
 | the rest of the surface-potential core | large | `PSP103_module.include`, 2371 lines. The `sp_s` kernel it is built on is done and validated; what remains is the current, charge and geometry layers around it |
 
