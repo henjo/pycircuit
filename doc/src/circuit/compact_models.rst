@@ -65,7 +65,7 @@ How well does it solve it? Evaluate the equation at the returned root:
     print("   :header-rows: 1")
     print("")
     print("   * - body factor")
-    print("     - worst |F| / scale")
+    print("     - worst residual / scale")
     for g in (0.3, 1.0, 3.0, 5.0):
         v = 1.0 + g * 0.70710678
         worst = 0.0
@@ -247,8 +247,9 @@ measurement otherwise.
 
     PDK = os.path.expanduser('~/source/IHP-Open-PDK/ihp-sg13g2/'
                              'libs.tech/ngspice/models')
-    REF = os.path.join('..', '..', '..', 'pycircuit', 'circuit', 'tests',
-                       'data', 'psp103_ihp_iv.json')
+    import pycircuit.circuit
+    REF = os.path.join(os.path.dirname(pycircuit.circuit.__file__),
+                       'tests', 'data', 'psp103_ihp_iv.json')
 
     rows = []
     try:
@@ -313,9 +314,132 @@ The **long device is the one to read**: at L = 1 µm the physics this core
 omits matters least. It is within about 1% there, from a model card,
 with no fitting anywhere in the chain.
 
-The short device is a few percent off at high drain bias and ~12% off in
-the linear region, which is the cost of the one layer still missing —
-the short-channel threshold block, DIBL.
+The short device is within a few percent too. What remains there is
+mostly at *high* drain bias, where the core now runs slightly low —
+which is the direction DIBL would correct, since it raises the effective
+gate drive.
+
+Checking the scaling directly
+-----------------------------
+
+Comparing currents tells you *that* something is wrong, not *what*. A
+current can be right for compensating reasons; a scaled parameter
+cannot.
+
+ngspice will print an OSDI model's operating-point outputs, and PSP
+exposes both its own threshold voltage and its whole **post-scaling
+parameter set** as ``lp_*`` outputs. The reference records fourteen of
+them at four geometries, so :mod:`pycircuit.circuit.psp_scaling` is
+checked term by term against the reference implementation rather than
+inferred from I–V curves.
+
+.. exec-rst::
+
+    import json, os, warnings
+    warnings.simplefilter('ignore')
+
+    PDK = os.path.expanduser('~/source/IHP-Open-PDK/ihp-sg13g2/'
+                             'libs.tech/ngspice/models')
+    import pycircuit.circuit
+    REF = os.path.join(os.path.dirname(pycircuit.circuit.__file__),
+                       'tests', 'data', 'psp103_ihp_iv.json')
+    NAMES = ('vfb', 'tox', 'ct', 'mue', 'themu', 'cs', 'thecs', 'rs')
+
+    try:
+        from pycircuit.circuit import psp_scaling
+        from pycircuit.utilities import spicecard
+        e = json.load(open(REF))['scaled']['short']
+        deck = spicecard.read(os.path.join(PDK, 'cornerMOSlv.lib'),
+                              section='mos_tt')
+        card = deck.model_params('sg13g2_lv_nmos_psp', w=e['w'], l=e['l'],
+                                 ng=1, m=1, pre_layout=1)
+        kw = psp_scaling.to_long_channel(card, w=e['w'], l=e['l'])
+        rows = [(n, e[n], kw[n]) for n in NAMES if n in e]
+        rows.append(('betn', e['betn'], kw['u0'] * e['w'] / e['l']))
+        ok = True
+    except Exception:
+        rows, ok = [], False
+
+    if ok:
+        print(".. list-table:: Scaled parameters, W = 1 um / L = 0.13 um")
+        print("   :header-rows: 1")
+        print("")
+        print("   * - parameter")
+        print("     - PSP103")
+        print("     - ours")
+        print("     - agree")
+        for n, p, o in rows:
+            rel = abs(o - p) / max(abs(p), 1e-30)
+            print("   * - ``%s``" % n)
+            print("     - %.6g" % p)
+            print("     - %.6g" % o)
+            print("     - %s" % ("yes" if rel < 1e-5 else "%.1f%%" % (100*rel)))
+    else:
+        print("*The IHP PDK is not installed here; "
+              "``benchmarks/psp_gap.py`` prints this comparison.*")
+
+That comparison is what found the one real bug in the scaling layer.
+Every term agreed to five digits except the gain factor ``BETN``, which
+was 12% high — because ``FBET1`` and ``LP1`` are **width-adjusted**
+before use (the trailing ``e`` in PSP's ``FBET1e``, ``LP1e``) and the raw
+card values were being used instead. The long device barely noticed, so
+the error was invisible on the geometry the whole investigation had been
+run on.
+
+The threshold scales correctly too. PSP's own ``vth`` differs from
+``vfb + phib + gamma*sqrt(phib)`` by a nearly constant 70–93 mV across a
+7.7× range of channel length — a definitional difference, not an error —
+while the *shift* between geometries, which is the comparable quantity,
+agrees to about 10%:
+
+.. exec-rst::
+
+    import json, os, warnings
+    import numpy as np
+    warnings.simplefilter('ignore')
+
+    PDK = os.path.expanduser('~/source/IHP-Open-PDK/ihp-sg13g2/'
+                             'libs.tech/ngspice/models')
+    import pycircuit.circuit
+    REF = os.path.join(os.path.dirname(pycircuit.circuit.__file__),
+                       'tests', 'data', 'psp103_ihp_iv.json')
+    try:
+        from pycircuit.circuit import psp_scaling
+        from pycircuit.utilities import spicecard
+        from pycircuit.circuit.constants import (eps0, epsRSi, epsRSiO2,
+                                                 qelectron)
+        v = json.load(open(REF))['vth']
+        deck = spicecard.read(os.path.join(PDK, 'cornerMOSlv.lib'),
+                              section='mos_tt')
+
+        def ours(w, l):
+            kw = psp_scaling.to_long_channel(
+                deck.model_params('sg13g2_lv_nmos_psp', w=w, l=l, ng=1,
+                                  m=1, pre_layout=1), w=w, l=l)
+            cox = epsRSiO2 * eps0 / kw['tox']
+            g = np.sqrt(2 * qelectron * epsRSi * eps0 * kw['nsub']) / cox
+            return kw['vfb'] + kw['phib'] + g * np.sqrt(kw['phib'])
+
+        b = v['long']
+        bo = ours(b['w'], b['l'])
+        print(".. list-table:: Threshold shift relative to L = 1 um")
+        print("   :header-rows: 1")
+        print("")
+        print("   * - geometry")
+        print("     - PSP103")
+        print("     - ours")
+        for k in ('mid', 'short', 'wide_short'):
+            e = v[k]
+            print("   * - W = %.0f um, L = %.2f um"
+                  % (e['w'] * 1e6, e['l'] * 1e6))
+            print("     - %+.1f mV" % (1e3 * (e['vth'] - b['vth'])))
+            print("     - %+.1f mV" % (1e3 * (ours(e['w'], e['l']) - bo)))
+    except Exception:
+        print("*The IHP PDK is not installed here.*")
+
+That is the reverse-short-channel effect, and the core reproduces about
+90% of it out of the pocket-implant doping formula and the length terms
+in ``VFB`` and ``DPHIB``.
 
 What is in it, and what is not
 ------------------------------
@@ -326,11 +450,13 @@ mobility reduction, Coulomb scattering, velocity saturation, series
 resistance, channel-length modulation, the quantum-mechanical correction
 to the surface potential at threshold, and the effective thermal voltage.
 
-Absent: DIBL and the rest of the short-channel threshold block, gate and
-junction leakage, impact ionisation, overlap and fringe capacitances,
-the non-quasi-static block, self-heating, and every temperature
-coefficient. PSP103 is this core plus those, and the size of what they
-are worth is exactly what the table above measures.
+Absent: DIBL and the rest of the short-channel threshold block,
+**polysilicon depletion** (the card's ``NP`` is 4.6 × 10²⁶, so the effect
+is live and the core's ideal-gate assumption is a real omission), gate
+and junction leakage, impact ionisation, overlap and fringe
+capacitances, the non-quasi-static block, self-heating, and every
+temperature coefficient. PSP103 is this core plus those, and the size of
+what they are worth is exactly what the table above measures.
 
 .. note::
 
