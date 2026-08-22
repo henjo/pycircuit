@@ -1425,12 +1425,42 @@ Each column is a term the *shape* of the previous residual named:
   mobility as an extra `Gmob` term (`THER = 2·BET·RS`) rather than adding
   a network element. That keeps the device four-terminal *and* symmetric,
   since `qim` is a midpoint quantity. Worth 1.095 → 1.041;
-* what remains now **falls** through saturation (1.074 at Vd = 0.8 →
-  1.025 at 1.4), because PSP's saturated current keeps climbing (+5.9%)
-  where ours is flat (+0.7%) → **channel-length modulation**, the next
-  layer;
+* what remains **falls** through saturation (1.074 at Vd = 0.8 → 1.025
+  at 1.4), because PSP's saturated current keeps climbing (+5.9%) where
+  ours is flat (+0.7%) — the signature of **channel-length modulation**;
 * the short device is still 1.29× off, which is the cost of the missing
   DIBL and short-channel block rather than a defect in the core.
+
+> **CLM was tried, measured, and rejected — 2026-08-23.** The saturation
+> tail is CLM's signature, and ruling out the alternative was easy with
+> data already committed: impact ionisation flows to the *bulk*, and the
+> reference's bulk current is 8×10⁻¹¹ A against a drain rise of
+> 8.6×10⁻⁵ A — **0.0%** of it.
+>
+> But adding CLM made the fit **worse in all six sweeps and better in
+> none** (long device median |ratio−1| 0.041 → 0.045; `nmos_idvd_vg0p6`
+> 0.158 → 0.185). Two reasons, both worth keeping:
+>
+> * PSP's `s1` is a *ratio* of logarithms involving `Vdse`, a smoothly
+>   saturation-limited drain voltage that it also uses for the drain
+>   surface potential (`PSP103_macrodefs.include:628-632`). This core
+>   computes that potential at the true drain bias, so `dps` saturates on
+>   its own and the second logarithm was dropped — which recovers the
+>   classic `ln(1 + (Vds − Vdsat)/VP)` form but captured only about a
+>   third of the measured rise. A faithful CLM needs PSP's `Vdsat`
+>   machinery (`Phi_0`, `Phi_2`, `asat`), which is a block of its own.
+> * More importantly: the device is already ~4% HIGH, and CLM only
+>   pushes it higher. **A term that is individually correct can worsen
+>   the fit when a compensating term is missing.** So the flat +4% is
+>   not missing CLM, and chasing CLM before finding it is the wrong
+>   order.
+>
+> Ruled out for the +4% by measurement: `Rxcor` (unity at Vsb = 0, which
+> every sweep uses), poly depletion (`NP` absent from the card), the edge
+> transistor (`SWEDGE = 0`), gate current (1e-6 of the drain current),
+> and temperature (the card's `TR = 27 °C` against the 300 K used, worth
+> 0.05% on the thermal voltage). The remaining candidates are the
+> `BETN` mapping through `GPE`/`GWE` and the mobility details.
 
 > **The quantum-mechanical correction, found by measuring.** The first
 > comparison ran **23–33% high** with a ratio that grew with current.
