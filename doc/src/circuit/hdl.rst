@@ -485,6 +485,10 @@ hand-written counterpart in
 Further reading
 ---------------
 
+* :ref:`compact_models` — what the language is ultimately for: a
+  production surface-potential MOSFET and a foundry MoM capacitor,
+  written in this DSL and measured against the vendor's own compiled
+  binaries.
 * ``hdl.md`` — research record, capability map against the Verilog-AMS
   LRM with call-site counts from 78 real device models, measured cost,
   the development plan, and the defects found while building it.
