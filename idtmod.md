@@ -870,7 +870,34 @@ PLL runs) the scalar form is the only right tool; `IdtmodCircular` is for when a
 globally smooth STATE matters more than ultimate phase accuracy — no discontinuity
 anywhere in the trajectory, and a quadrature (cos, sin) pair available internally.
 
-### 7.7 References for this section
+### 7.7 IdtmodQuadrature — the two states as outputs, no atan2
+
+The terminal-level answer to "when would the phasor form actually win": as
+implemented, `IdtmodCircular`'s output is the same sawtooth as `Idtmod`'s, so at
+the terminals it never wins. `IdtmodQuadrature` removes the sawtooth instead of
+re-deriving it: six terminals, the same Baumgarte-corrected phasor dynamics, and
+the two output branches carry the states directly —
+`v = amplitude·cos(2π·phase/modulus)` and `amplitude·sin(...)` — with **no wrapped
+output and no `atan2` anywhere**. Consequences:
+
+- Every node voltage and every state is smooth for all time: no wrap corner, no
+  `_WrapEvents` breakpoints, no events — measured, zero breakpoints fire where the
+  scalar and circular forms land one per cycle.
+- **Periodic-steady-state readiness** (the reason it exists as a separate
+  element): over one output period the state vector returns exactly to itself,
+  which shooting/PSS methods and their monodromy matrices are built on. The
+  scalar `Idtmod` phase structurally cannot do this — unwrapped it advances by
+  one modulus per period; wrapped it jumps. When a PSS/shooting analysis is
+  implemented, this is the phase-accumulator representation it can consume.
+- Natural macromodel for sinusoidal VCOs, I/Q sources, and mixer LOs (the
+  quadrature pair is the deliverable, not the phase).
+- `offset` is meaningless without a wrapped output and is dropped; `ic` is the
+  initial phase (starting angle `2π·ic/modulus`), always pinning DC and seeding
+  `uic`; `modulus`, `gamma`, and all `IdtmodCircular` semantics otherwise carry
+  over — including the accuracy regime (per-cycle carrier-rate lag, sec. 7.6):
+  when accumulated phase is the measurement, `Idtmod` remains the tool.
+
+### 7.8 References for this section
 
 - Baumgarte, *CMAME* 1:1–16 (1972) — https://www.sciencedirect.com/science/article/abs/pii/0045782572900187
 - Ascher, Chin, Petzold, Reich, *Numer. Math.* 67:131–149 (1994) —

@@ -22,7 +22,8 @@ from pycircuit.circuit import gnd
 from pycircuit.circuit.analysis import NoConvergenceError, SingularMatrix
 from pycircuit.circuit.dcanalysis import DC
 from pycircuit.circuit.elements import (SubCircuit, VS, R, Idt, Idtmod,
-                                        IdtmodCircular, floored_wrap)
+                                        IdtmodCircular, IdtmodQuadrature,
+                                        floored_wrap)
 from pycircuit.circuit.transient import Transient
 
 
@@ -631,3 +632,69 @@ def test_circular_trap_ringing_sentinel():
     assert alt_ringing > 0.9, alt_ringing
     assert alt_default < 0.1, alt_default
     assert err_ringing < 1.5 * err_default, (err_ringing, err_default)
+
+
+## ------------------------------------------------------------------------
+## IdtmodQuadrature: the two states ARE the outputs -- no atan2, no
+## sawtooth, no events anywhere (idtmod.md sec. 7).
+
+
+def _quadrature_circuit(**kw):
+    pycircuit.circuit.circuit.default_toolkit = numeric
+    c = SubCircuit()
+    nin = c.add_node('in')
+    nc, ns = c.add_node('outc'), c.add_node('outs')
+    c['vin'] = VS(nin, gnd, v=1.0)
+    c['Rc'] = R(nc, gnd, r=1e3)
+    c['Rs'] = R(ns, gnd, r=1e3)
+    c['X'] = IdtmodQuadrature(nin, gnd, nc, gnd, ns, gnd, **kw)
+    return c
+
+
+def test_quadrature_dc_pin_and_amplitude():
+    """DC pins the phasor at angle 2*pi*ic/modulus; amplitude scales the
+    outputs.  ic=0.25, modulus=1 -> theta = pi/2 -> (cos, sin) = (0, 1)."""
+    c = _quadrature_circuit(ic=0.25, modulus=1.0, amplitude=2.0)
+    res = DC(c, toolkit=numeric).solve()
+    assert abs(res.v('outc') - 0.0) < 1e-9
+    assert abs(res.v('outs') - 2.0) < 1e-9
+
+
+def test_quadrature_smooth_transient():
+    """The whole point of the element: quadrature sinusoids with NO events
+    -- zero breakpoints fire (contrast Idtmod/IdtmodCircular, which land
+    one per wrap), every node voltage smooth.  Waveforms track
+    cos/sin(2*pi*t) to the per-cycle trap lag of idtmod.md 7.6."""
+    import warnings
+    from pycircuit.circuit.integrator import TrapezoidalIntegrator
+    c = _quadrature_circuit(ic=0.0, modulus=1.0)
+    tran = Transient(c, toolkit=numeric, uic=True,
+                     integrator=TrapezoidalIntegrator())
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = tran.solve(tend=2.0, timestep=1e-2, fixed_timestep=True)
+    t = res.v('outc').x[0]
+    vc = res.v('outc').y
+    vs = res.v('outs').y
+    assert res.statistics.breakpoints_hit == 0
+    assert np.abs(vc[1:] - np.cos(2 * np.pi * t[1:])).max() < 2e-2
+    assert np.abs(vs[1:] - np.sin(2 * np.pi * t[1:])).max() < 2e-2
+    ## Quadrature invariant: the pair stays (near) the unit circle.
+    r = np.hypot(vc, vs)
+    assert np.abs(r[1:] - 1.0).max() < 1e-2
+
+
+def test_quadrature_uic_seed():
+    """uic seeding places the phasor at the ic angle, phase continues
+    from there: ic=0.5 -> theta = pi -> starts at (-1, 0)."""
+    import warnings
+    from pycircuit.circuit.integrator import TrapezoidalIntegrator
+    c = _quadrature_circuit(ic=0.5, modulus=1.0)
+    tran = Transient(c, toolkit=numeric, uic=True,
+                     integrator=TrapezoidalIntegrator())
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = tran.solve(tend=0.5, timestep=1e-2, fixed_timestep=True)
+    t = res.v('outc').x[0]
+    vc = res.v('outc').y
+    assert np.abs(vc[1:] - np.cos(2 * np.pi * (t[1:] + 0.5))).max() < 1e-2

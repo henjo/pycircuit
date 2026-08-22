@@ -1652,6 +1652,130 @@ class IdtmodCircular(_WrapEvents, Circuit):
     def u(self, t=0.0, epar=defaultepar, analysis=None, params_tree=None):
         return self.toolkit.zeros(self.n)
 
+
+class IdtmodQuadrature(Circuit):
+    """Quadrature phasor integrator -- the two states ARE the outputs.
+
+    The same Baumgarte-corrected phasor dynamics as ``IdtmodCircular``
+    (idtmod.md sec. 7), but with NO wrapped output and NO ``atan2``: the
+    two output branches carry the states directly,
+
+        v(cplus,cminus) = amplitude * cos(2*pi*phase/modulus)
+        v(splus,sminus) = amplitude * sin(2*pi*phase/modulus)
+
+    where ``d(phase)/dt = v(iplus,iminus)``.  Every node voltage and every
+    state is smooth for all time -- there is no sawtooth anywhere, hence no
+    wrap breakpoints, no events, and nothing for a step controller to
+    negotiate.  This is the natural macromodel for a sinusoidal VCO, an
+    I/Q source, or a mixer LO, and -- the reason it exists as a separate
+    element -- the representation suited to periodic-steady-state /
+    shooting analysis when one is implemented: over one output period the
+    state vector returns EXACTLY to itself, which the scalar ``Idtmod``
+    phase (advancing by one modulus per period, or jumping at the wrap)
+    structurally cannot do.
+
+    Same accuracy regime as ``IdtmodCircular``: the method's per-cycle
+    phase lag at the carrier rate (idtmod.md 7.6) -- use ``Idtmod`` when
+    accumulated phase is the measurement.  Same semantics: ``modulus`` must
+    be positive; ``ic`` (an initial phase, in output-value units: the
+    starting angle is ``2*pi*ic/modulus``) always pins the DC solution and
+    seeds ``uic=True``; ``gamma`` is the per-radian orbit-correction gain;
+    under ``JAXTransient`` use ``uic=True`` or ``x0``.  Not supported on
+    the symbolic toolkit.
+    """
+
+    terminals = ('iplus', 'iminus', 'cplus', 'cminus', 'splus', 'sminus')
+    branches = (Branch(Node('cplus'), Node('cminus')),
+                Branch(Node('splus'), Node('sminus')))
+    linear = False
+
+    instparams = [Parameter(name='ic',
+                            desc='Initial phase (output-value units); '
+                                 'forces the DC solution and seeds uic',
+                            unit='V', default=0.),
+                  Parameter(name='modulus',
+                            desc='Phase units per full rotation (> 0)',
+                            unit='V/V', default=1.),
+                  Parameter(name='gamma',
+                            desc='Baumgarte orbit-correction gain, per '
+                                 'radian of phase travel (0 disables)',
+                            unit='', default=1.),
+                  Parameter(name='amplitude', desc='Output amplitude',
+                            unit='V', default=1.)]
+
+    IC_KIND = 'state'
+
+    _cos_index = None
+
+    def __init__(self, *args, **kvargs):
+        super().__init__(*args, **kvargs)
+        self._cos_index = self.nodes.index(self.add_node('cos_node'))
+        self._sin_index = self.nodes.index(self.add_node('sin_node'))
+        self.update(self.ipar)
+
+    def update(self, subject):
+        if self._cos_index is None:
+            return
+        m = self.iparv.modulus
+        if m is None or m <= 0:
+            raise ValueError(
+                'IdtmodQuadrature requires modulus > 0: a phasor pair '
+                'cannot represent an unbounded plain integral.')
+        n = self.n
+        self._C = self.toolkit.matrix_from_entries(
+            (n, n), [(self._cos_index, self._cos_index, 1),
+                     (self._sin_index, self._sin_index, 1)])
+
+    def _params(self):
+        return {'modulus': self.iparv.modulus, 'gamma': self.iparv.gamma,
+                'ic': self.iparv.ic, 'amplitude': self.iparv.amplitude}
+
+    def state_ic(self):
+        th = 2.0 * math.pi * self.iparv.ic / self.iparv.modulus
+        return [(self._cos_index, math.cos(th)),
+                (self._sin_index, math.sin(th))]
+
+    @staticmethod
+    def eval_q_pure(x, params, epar, toolkit):
+        return toolkit.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                              x[6], x[7], 0.0, 0.0])
+
+    @staticmethod
+    def eval_i_pure(x, params, epar, toolkit):
+        ## Local x: [ip, in, cp, cn, sp, sn, c, s, i_cbr, i_sbr].
+        m = params.get('modulus', 1.0)
+        A = params.get('amplitude', 1.0)
+        c, s = x[6], x[7]
+        i_cbr, i_sbr = x[8], x[9]
+        out_c = -(x[2] - x[3]) + A * c
+        out_s = -(x[4] - x[5]) + A * s
+        if getattr(epar, 'analysis_kind', None) == 'dc':
+            th = 2.0 * toolkit.pi * params.get('ic', 0.0) / m
+            return toolkit.array([0.0, 0.0, i_cbr, -i_cbr, i_sbr, -i_sbr,
+                                  c - toolkit.cos(th),
+                                  s - toolkit.sin(th),
+                                  out_c, out_s])
+        gamma = params.get('gamma', 1.0)
+        w = 2.0 * toolkit.pi * (x[0] - x[1]) / m
+        corr = gamma * toolkit.abs(w) * (c * c + s * s - 1.0)
+        return toolkit.array([0.0, 0.0, i_cbr, -i_cbr, i_sbr, -i_sbr,
+                              w * s + corr * c,
+                              -w * c + corr * s,
+                              out_c, out_s])
+
+    def i(self, x, epar=defaultepar, params_tree=None):
+        return self.eval_i_pure(x, self._params(), epar, self.toolkit)
+
+    def G(self, x, epar=defaultepar, params_tree=None):
+        return self.toolkit.jacobian(self.eval_i_pure, x, self._params(),
+                                     epar)
+
+    def C(self, x, epar=defaultepar, params_tree=None):
+        return self._C
+
+    def u(self, t=0.0, epar=defaultepar, analysis=None, params_tree=None):
+        return self.toolkit.zeros(self.n)
+
 class VPWL(VS):
     """Independent piecewise linear voltage source"""
     instparams = VS.instparams + [
