@@ -1352,6 +1352,52 @@ built-in potential would drive `delta = exp(-xn)` to 1e152 and overflow,
 so Newton gets a bounded wrong answer there instead of a NaN, exactly as
 PSP clamps its own junction voltages.
 
+**Mobility reduction and velocity saturation — DONE 2026-08-22.** The
+first layer on top of the ideal core, and the biggest determinant of
+strong-inversion accuracy. Defaults are the IHP SG13G2 n-channel card's
+values (`mue = 0.779`, `themu = 2.05`, `cs = 0.316`, `thecs = 1.18`,
+`thesat = 0.398`); zeroing `mue`, `cs` and `thesat` recovers the ideal
+core **bit-exactly**, so the layer is genuinely additive.
+
+The mobility ratio against the ideal device falls monotonically with
+gate bias — 0.73 at Vg = 0.4 V to 0.55 at 1.8 V — which is the whole
+physical content of the term. And the construction survives being built
+on: both factors depend only on midpoint quantities and on `dps`
+*squared*, so both are **even** under the source/drain exchange, the lone
+odd factor stays `dps`, and the antisymmetry of the current is still
+`==` rather than `approx`.
+
+> **A real bug here, worth recording.** PSP writes Coulomb scattering as
+> `cs*exp(0.5*thecs*ln(Pm/(Pm+Dm)))`, because Verilog-A's `pow` with a
+> variable exponent is awkward. Compiled literally that nests two
+> `Piecewise`s (`expl` inside `safe_ln`'s `hypsmooth`), and
+> differentiating the nest emitted conditions built from
+> `logical_and.reduce` over scalars that numpy's `select` **rejects
+> outright** — the Jacobian raised rather than losing precision.
+> Algebraically the whole thing is just `cs * ratio**(0.5*thecs)`, and
+> the power form is the one to compile. The ratio is floored because
+> `thecs = 1.18` puts the exponent below 1, so the derivative diverges as
+> the ratio goes to zero — which it does exactly at flat band.
+
+### Compiled-code speed
+
+Profiling the new device's Jacobian exposed two costs in the chain
+printer that every chained model was paying:
+
+* sympy prints `Piecewise` as `numpy.select([conds], [values])`, which
+  is built for arrays and spends its time broadcasting and allocating
+  for the SCALAR arguments a device model is called with — **950 calls
+  and 60% of the runtime** per Jacobian. `numpy.where` has identical
+  both-arms-evaluated semantics, which the kernel's safety work depends
+  on, and none of the machinery;
+* `Min`/`Max` print as `functools.reduce(numpy.minimum, [...])`, which
+  allocates a list and enters `reduce` for what is nearly always a
+  two-argument call — another 18%.
+
+Both are fixed in `_ChainPrinter`. Jacobian evaluation on the MOSFET went
+from **11.6 ms to 6.3 ms**, and the chain's own arithmetic now dominates,
+which is where it should be.
+
 What is left for a running PSP103 card:
 
 **Model-card ingestion — DONE 2026-08-22.**

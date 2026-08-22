@@ -269,6 +269,23 @@ class PspMosLongChannel(Behavioural):
                   default=0.045),
         Parameter(name='phib', desc='Surface potential at threshold '
                   '(2*phi_F)', unit='V', default=0.9),
+        ## Mobility reduction and velocity saturation.  Defaults are the
+        ## IHP SG13G2 n-channel card's, so the device behaves like a real
+        ## 130 nm transistor rather than an ideal one; setting `mue`,
+        ## `cs` and `thesat` to zero recovers the ideal long-channel
+        ## core, which is what the construction tests exercise.
+        Parameter(name='mue', desc='Mobility reduction coefficient',
+                  unit='m/V', default=0.77874),
+        Parameter(name='themu', desc='Mobility reduction exponent',
+                  unit='', default=2.0546),
+        Parameter(name='cs', desc='Coulomb scattering parameter', unit='',
+                  default=0.3164),
+        Parameter(name='thecs', desc='Coulomb scattering exponent',
+                  unit='', default=1.1822),
+        Parameter(name='feta', desc='Effective field parameter', unit='',
+                  default=1.0),
+        Parameter(name='thesat', desc='Velocity saturation parameter',
+                  unit='1/V', default=0.39843),
     ]
 
     @staticmethod
@@ -294,7 +311,11 @@ class PspMosLongChannel(Behavioural):
 
         beta = var(u0 * cox * w / l, 'beta')                  # noqa: F821
 
-        core = psp_kernel.intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta)
+        core = psp_kernel.intrinsic(
+            xg, xn_s, xn_d, Gf, xi, phit, beta,
+            mob=dict(mue=mue, themu=themu, cs=cs,          # noqa: F821
+                     thecs=thecs, feta=feta, thesat=thesat,  # noqa: F821
+                     cox_area=cox, eps_si=EPS_SI))
         cox_tot = var(cox * w * l, 'cox_tot')                 # noqa: F821
         Qg, Qd, Qb = psp_kernel.charges_long_channel(core, xg, phit,
                                                      cox_tot)

@@ -1739,6 +1739,73 @@ def compile_chain(builder, args, wrt=None, modules_map=None):
     return fn
 
 
+class _ChainPrinter(object):
+    """`NumPyPrinter`, but `Piecewise` becomes nested `numpy.where`.
+
+    sympy prints a `Piecewise` as `numpy.select([conds], [values])`, and
+    `select` is built for arrays: for the SCALAR arguments a compiled
+    device model is called with, it spends its time broadcasting and
+    allocating.  Profiled on the surface-potential MOSFET's Jacobian --
+    950 `select` calls per evaluation, 60% of the total runtime.
+
+    `numpy.where` has exactly the same both-arms-evaluated semantics,
+    which the kernel's safety work depends on, and none of the
+    machinery.  Nested right-to-left, it reproduces `Piecewise`'s
+    first-match-wins ordering.
+    """
+
+    def __init__(self):
+        from sympy.printing.numpy import NumPyPrinter
+        outer = self
+
+        class _P(NumPyPrinter):
+            def _print_Piecewise(self, expr):
+                return outer._piecewise(self, expr)
+
+            def _print_Min(self, expr):
+                return outer._minmax(self, expr, 'minimum')
+
+            def _print_Max(self, expr):
+                return outer._minmax(self, expr, 'maximum')
+
+        self._p = _P()
+
+    @staticmethod
+    def _minmax(printer, expr, op):
+        """`Min`/`Max` as nested binary calls.
+
+        sympy prints these as `functools.reduce(numpy.minimum, [...])`,
+        which allocates a list and enters `reduce` for what is almost
+        always a two-argument call.  Measured at 18% of the Jacobian's
+        runtime on the surface-potential MOSFET.
+        """
+        parts = [printer.doprint(a) for a in expr.args]
+        out = parts[0]
+        for nxt in parts[1:]:
+            out = 'numpy.%s(%s, %s)' % (op, out, nxt)
+        return out
+
+    @staticmethod
+    def _piecewise(printer, expr):
+        import sympy as _s
+        args = list(expr.args)
+        ## A trailing `(value, True)` is the fall-through; without one
+        ## sympy leaves the result undefined outside the conditions, and
+        ## `nan` is the honest rendering of that.
+        if args and args[-1].cond == _s.true:
+            out = printer.doprint(args[-1].expr)
+            args = args[:-1]
+        else:
+            out = 'numpy.nan'
+        for e, c in reversed(args):
+            out = 'numpy.where(%s, %s, %s)' % (printer.doprint(c),
+                                               printer.doprint(e), out)
+        return out
+
+    def doprint(self, expr):
+        return self._p.doprint(expr)
+
+
 def _leaves(o):
     """Free symbols of an expression, or of a nested list of them."""
     if isinstance(o, (list, tuple)):
@@ -1762,8 +1829,7 @@ def _chain_compile(defs, outputs, args, want_jacobian_of=None, xsyms=None,
     mentions, so the work is linear in the number of definitions rather
     than exponential in their nesting depth.
     """
-    from sympy.printing.numpy import NumPyPrinter
-    printer = NumPyPrinter()
+    printer = _ChainPrinter()
 
     ## PRUNE to what the outputs actually reach.  A model's chain is
     ## shared by every compiled vector -- `i`, `q`, `u`, the AC stamp --

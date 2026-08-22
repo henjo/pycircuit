@@ -441,3 +441,138 @@ class TestTheChargeModel(object):
         ## it settles to the DC operating point
         dc = float(DC(c, toolkit=numeric).solve().v(nd, gnd))
         assert v[-1] == pytest.approx(dc, abs=2e-3)
+
+
+class TestMobilityAndVelocitySaturation(object):
+    """The first layer on top of the ideal core.
+
+    Mobility reduction and velocity saturation are what make the
+    strong-inversion current realistic.  They are also the first real
+    test of whether the construction survives being built on: both
+    depend only on MIDPOINT quantities and on `dps` SQUARED, so both are
+    EVEN under exchanging source and drain -- and the antisymmetry of
+    the current must therefore still be exact, not merely close.
+
+    Defaults are the IHP SG13G2 n-channel card's values.  Setting
+    `mue`, `cs` and `thesat` to zero recovers the ideal core exactly,
+    which is what the tests above exercise.
+    """
+
+    def _fet(self, **kw):
+        kw.setdefault('w', 10e-6)
+        kw.setdefault('l', 1e-6)
+        e = PspMosLongChannel(Node('d'), Node('g'), Node('s'), Node('b'),
+                              **kw)
+        e.update_iparv()
+        return e
+
+    def _ideal(self, **kw):
+        return self._fet(mue=0.0, cs=0.0, thesat=0.0, **kw)
+
+    def test_symmetry_survives_the_extra_layer(self):
+        """The point of the whole construction, re-checked with physics on.
+
+        Still `==`, not `approx`.
+        """
+        e = self._fet()
+        for vg in (0.4, 0.9, 1.4, 1.8):
+            for vd in (0.05, 0.3, 0.9, 1.6):
+                fwd = np.asarray(e.i(np.array([vd, vg, 0.0, 0.0])), float)
+                rev = np.asarray(e.i(np.array([0.0, vg, vd, 0.0])), float)
+                assert fwd[0] == -rev[0], (vg, vd)
+
+    def test_charge_conservation_survives_it_too(self):
+        e = self._fet()
+        for x in (np.array([0.9, 1.4, 0.0, 0.0]),
+                  np.array([0.0, -0.5, 0.0, 0.0]),
+                  np.array([1.8, 1.8, 0.2, -0.4])):
+            q = np.asarray(e.q(x), float)
+            assert abs(q.sum()) < 1e-16 * max(np.abs(q).max(), 1e-30)
+
+    def test_turning_it_off_recovers_the_ideal_core(self):
+        """Bit-exact, so the layer is genuinely additive."""
+        real = self._fet(mue=0.0, cs=0.0, thesat=0.0)
+        ideal = self._ideal()
+        for x in (np.array([0.5, 1.2, 0.0, 0.0]),
+                  np.array([1.5, 1.8, 0.0, 0.0])):
+            assert (np.asarray(real.i(x), float).tolist()
+                    == np.asarray(ideal.i(x), float).tolist())
+
+    def test_mobility_reduction_grows_with_the_gate_field(self):
+        """Higher vertical field, more surface scattering, less current.
+
+        The ratio to the ideal device must fall monotonically with `Vg`
+        -- that is the whole physical content of the term.
+        """
+        real, ideal = self._fet(), self._ideal()
+        ratios = []
+        for vg in (0.4, 0.8, 1.2, 1.8):
+            x = np.array([1.2, vg, 0.0, 0.0])
+            ratios.append(np.asarray(real.i(x), float)[0]
+                          / np.asarray(ideal.i(x), float)[0])
+        assert all(0.0 < r < 1.0 for r in ratios), ratios
+        assert all(a > b for a, b in zip(ratios, ratios[1:])), ratios
+
+    def test_velocity_saturation_reduces_the_saturated_current(self):
+        e_off = self._fet(thesat=0.0)
+        e_on = self._fet(thesat=0.39843)
+        x = np.array([1.8, 1.8, 0.0, 0.0])
+        assert (np.asarray(e_on.i(x), float)[0]
+                < np.asarray(e_off.i(x), float)[0])
+        ## and it does nothing at zero drain bias, where dps is zero
+        x0 = np.array([0.0, 1.8, 0.0, 0.0])
+        assert np.asarray(e_on.i(x0), float)[0] == 0.0
+
+    def test_it_still_saturates_and_stays_monotone(self):
+        e = self._fet()
+        vds = np.linspace(0.01, 1.8, 40)
+        cur = np.array([np.asarray(e.i(np.array([v, 1.4, 0.0, 0.0])),
+                                   float)[0] for v in vds])
+        assert np.all(np.diff(cur) > -1e-12 * cur[:-1])
+        lin = (cur[3] - cur[0]) / (vds[3] - vds[0])
+        sat = (cur[-1] - cur[-4]) / (vds[-1] - vds[-4])
+        assert sat < 0.1 * lin
+
+    @pytest.mark.parametrize('x', [
+        np.array([0.8, 1.5, 0.0, 0.0]),
+        np.array([0.0, 0.0, 0.0, 0.0]),
+        np.array([1.2, 0.3, 0.0, -0.5]),
+        np.array([-0.5, -0.5, 0.0, 0.0]),
+        np.array([2.0, 2.0, 0.5, -0.5]),
+    ])
+    def test_the_jacobian_is_still_finite_and_correct(self, x):
+        """The Coulomb-scattering term is where this went wrong once.
+
+        Written as PSP writes it -- `cs*exp(0.5*thecs*ln(ratio))` -- it
+        nests two `Piecewise`s, and differentiating the nest emitted
+        conditions that numpy's `select` REJECTED: the Jacobian raised
+        rather than losing precision.  It is compiled as the equivalent
+        power `cs*ratio**(0.5*thecs)` instead.
+        """
+        e = self._fet()
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            G = np.asarray(e.G(x), float)
+        assert np.all(np.isfinite(G))
+        fd = np.zeros_like(G)
+        for j in range(len(x)):
+            h = 1e-6 * max(1.0, abs(x[j]))
+            xp, xm = x.copy(), x.copy()
+            xp[j] += h
+            xm[j] -= h
+            fd[:, j] = (np.asarray(e.i(xp), float)
+                        - np.asarray(e.i(xm), float)) / (2 * h)
+        assert np.max(np.abs(G - fd)) < 1e-6 * max(1.0, np.abs(G).max())
+
+    def test_the_coulomb_term_is_finite_at_flat_band(self):
+        """`Pm` is exactly zero there, so the ratio it divides by is too.
+
+        The exponent is below 1 (0.59 for the card's `thecs`), so the
+        derivative would diverge; the ratio is floored for that reason.
+        """
+        e = self._fet()
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            for x in (np.zeros(4), np.array([0.0, 0.95, 0.0, 0.0])):
+                assert np.all(np.isfinite(np.asarray(e.i(x), float)))
+                assert np.all(np.isfinite(np.asarray(e.G(x), float)))

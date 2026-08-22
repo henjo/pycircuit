@@ -350,7 +350,8 @@ def surface_state(x, xn, delta, Gf, inv_Gf2):
 XN_FLOOR = 0.0
 
 
-def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5):
+def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
+              mob=None):
     """The intrinsic long-channel core: current, and what charge needs.
 
     PSP assembles the current as
@@ -371,10 +372,17 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5):
     `beta` is ``mu * Cox * W / L``; `phit` the thermal voltage; `xn_s`
     and `xn_d` the normalised quasi-Fermi levels at the two ends.
 
+    `mob`, if given, switches on mobility reduction and velocity
+    saturation: a dict of ``mue``, ``themu``, ``cs``, ``thecs``,
+    ``feta``, ``thesat``, ``cox_area`` and ``eps_si``.  Left out, the
+    device is the ideal long-channel one with ``Gmob = Gvsat = 1``,
+    which is what the construction tests use.
+
     Returns a dict: ``ids`` plus the midpoint quantities
-    (``qim``, ``qim1``, ``alpha``, ``dps``, ``xgm``) that
-    `charges_long_channel` needs, so that current and charge are built
-    from ONE evaluation of the surface potentials rather than two.
+    (``qim``, ``qim1``, ``alpha``, ``dps``, ``xgm``, ``Gmob``,
+    ``Gvsat``, ``zsat``) that `charges_long_channel` needs, so that
+    current and charge are built from ONE evaluation of the surface
+    potentials rather than two.
     """
     xg, xn_s, xn_d = map(sympy.sympify, (xg, xn_s, xn_d))
     Gf, xi, phit, beta = map(sympy.sympify, (Gf, xi, phit, beta))
@@ -434,9 +442,59 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5):
              * hdl.safe_div(1.0, xgm + Gf * sqm, eps=1e-30), 'ids_qim')
     qim1 = _v(qim + phit * alpha, 'ids_qim1')
     dps = _v(x_ds * phit, 'ids_dps')
-    ids = _v(beta * qim1 * dps, 'ids')
+    qbm = _v(sqm * Gf * phit, 'ids_qbm')
+
+    ## ---- mobility reduction and velocity saturation ---------------
+    ## Both depend only on MIDPOINT quantities and on `dps` SQUARED, so
+    ## neither can break the source/drain antisymmetry: `Gmob` and
+    ## `Gvsat` are even under the swap and the lone odd factor stays
+    ## `dps`.  That is not a happy accident -- it is why PSP evaluates
+    ## them at the midpoint.
+    if mob is None:
+        Gmob = _v(sympy.Integer(1), 'ids_Gmob')
+        zsat = _v(sympy.Integer(0), 'ids_zsat')
+        Gvsat = _v(sympy.Integer(1), 'ids_Gvsat')
+    else:
+        eta_mu = 0.5 * mob['feta']
+        qeff = _v(qbm + eta_mu * qim, 'ids_qeff')
+        ## PSP's `E_eff0 = 1e-8 * Cox' / eps_si` (module:737).
+        e_eff0 = _v(1.0e-8 * mob['cox_area'] / mob['eps_si'], 'ids_ee0')
+        base = _v(sympy.Max(e_eff0 * qeff * mob['mue'], 1e-300),
+                  'ids_mubase')
+        ## Coulomb scattering.  PSP writes this as
+        ## `cs*exp(0.5*thecs*ln(Pm/(Pm+Dm)))`, because Verilog-A's `pow`
+        ## with a variable exponent is awkward -- but algebraically it is
+        ## just `cs * ratio**(0.5*thecs)`, and the power form is the one
+        ## to compile.  Composing `expl` with `safe_ln` nests two
+        ## `Piecewise`s, and differentiating the nest emits conditions
+        ## built from `logical_and.reduce` over scalars that numpy's
+        ## `select` rejects outright: the Jacobian did not merely lose
+        ## precision, it raised.
+        ##
+        ## `ratio` is floored because the exponent is below 1 (thecs =
+        ## 1.18 gives 0.59), so the derivative `ratio**(0.5*thecs - 1)`
+        ## diverges as the ratio goes to zero -- which it does exactly at
+        ## flat band, where `Pm` is 0.  Below the floor the term is
+        ## constant, which is right: no inversion charge, no scattering
+        ## off it.
+        ratio = _v(sympy.Max(hdl.safe_div(Pm, Pm + Dm + 1.0e-14,
+                                          eps=1e-30), 1.0e-10),
+                   'ids_ratio')
+        coul = _v(mob['cs'] * ratio ** (0.5 * mob['thecs']), 'ids_coul')
+        Gmob = _v(1.0 + base ** mob['themu'] + coul, 'ids_Gmob')
+
+        thesat1 = _v(mob['thesat']
+                     * hdl.safe_div(1.0, Gmob, eps=1e-30), 'ids_ths')
+        zsat = _v(thesat1 * thesat1 * dps * dps, 'ids_zsat')
+        Gvsat = _v(0.5 * (Gmob * (1.0 + sympy.sqrt(1.0 + 2.0 * zsat))),
+                   'ids_Gvsat')
+
+    gvinv = _v(hdl.safe_div(1.0, Gvsat, eps=1e-30), 'ids_gvinv')
+    ids = _v(beta * qim1 * dps * gvinv, 'ids')
     return dict(ids=ids, qim=qim, qim1=qim1, alpha=alpha, dps=dps,
-                xgm=xgm, x_m=x_m, x_s=x_s, x_d=x_d)
+                xgm=xgm, x_m=x_m, x_s=x_s, x_d=x_d, qbm=qbm,
+                Pm=Pm, Dm=Dm, sqm=sqm, Gmob=Gmob, Gvsat=Gvsat,
+                zsat=zsat, gvinv=gvinv)
 
 
 def ids_long_channel(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5):
@@ -467,11 +525,15 @@ def charges_long_channel(core, xg, phit, cox):
     qim, alpha = core['qim'], core['alpha']
     qim1, dps, xgm = core['qim1'], core['dps'], core['xgm']
 
-    ## Voxm is the oxide voltage at the midpoint; H is the quantity PSP
-    ## calls the "effective" charge slope, which for the long-channel
-    ## device is just qim1/alpha.
+    ## Voxm is the oxide voltage at the midpoint.  `H` is PSP's
+    ## effective charge slope: `Gmob/Gvsat * qim1 / alpha1`, where
+    ## `alpha1` carries the velocity-saturation correction
+    ## (macrodefs:776-778).  With mobility off both reduce to 1 and this
+    ## is the ideal `qim1/alpha`.
     Voxm = _v(xgm * phit, 'q_Voxm')
-    H = _v(qim1 * hdl.safe_div(1.0, alpha, eps=1e-30), 'q_H')
+    gr = _v(core['Gmob'] * core['gvinv'], 'q_gr')
+    alpha1 = _v(alpha * (1.0 + 0.5 * (core['zsat'] * gr * gr)), 'q_a1')
+    H = _v(gr * qim1 * hdl.safe_div(1.0, alpha1, eps=1e-30), 'q_H')
     Fj = _v(0.5 * dps * hdl.safe_div(1.0, H, eps=1e-30), 'q_Fj')
     Fj2 = _v(Fj * Fj, 'q_Fj2')
     t6 = _v(alpha * dps * ONE_SIXTH, 'q_t6')
