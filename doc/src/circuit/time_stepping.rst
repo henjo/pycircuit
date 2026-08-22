@@ -151,8 +151,10 @@ expensive kind of defect a simulator can have — it does not fail, it lies.
 
 Two circuits legitimately have no operating point, and both are common:
 
-* an **ideal integrator** (``Idt``, ``Idtmod``) — its output is the unbounded
-  integral of a constant input, so no steady state exists;
+* an **ideal integrator** (``Idt``, ``Idtmod``) *without an* ``ic`` — its
+  output is the unbounded integral of a constant input, so no steady state
+  exists.  Giving the element an ``ic`` pins its DC solution instead (the
+  Verilog-A semantics; see :ref:`idtmod`) and removes the singularity;
 * a **charge pump** or any topology whose nodes reach ground only through
   reverse-biased junctions or capacitors — structurally singular at DC.
 

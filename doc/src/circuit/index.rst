@@ -18,6 +18,7 @@ Circuit analyzer
     theory
     modules
     elements
+    idtmod
     modular_engine
     time_stepping
     lte_dae
