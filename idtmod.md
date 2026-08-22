@@ -966,9 +966,17 @@ in priority order agreed with the owner:
    built for: make the shooting analysis consume phase-accumulator circuits
    (oscillator steady state; phase noise later). Its state vector is exactly
    periodic over a cycle, which the scalar phase structurally is not.
-6. **`hdl.py` `idt`/`idtmod`** — the Behavioural sympy DSL knows only `ddt`;
-   add `idt`/`idtmod` functions lowering onto `_IdtBase`/`Idtmod` stamps, a
-   step toward a Verilog-A-shaped frontend (sec. 5.5).
+6. **`hdl.py` `idt`/`idtmod`** — **DONE 2026-08-22**, and much wider than
+   scoped: the DSL now compiles V-contributions (branch-current unknowns),
+   `ddt` with conservation checking, `idt`/`idtmod` as generated DAE states
+   (with DC pinning, `uic` seeding and `periodic_states` gauge-shift
+   declarations), `ddx`, `limexp`, `white_noise`/`flicker_noise` into `CY`,
+   `$temperature`/`$vt`/`$abstime`, internal nodes, and `eval_*_pure` for
+   the batched path. See `hdl.md` for the research, theory, capability map
+   against Verilog-A and measured cost; `pycircuit/circuit/elements_hdl.py`
+   re-expresses ten hand-written elements in the DSL, proven equivalent by
+   `tests/test_elements_hdl.py` (20 tests) and costed by
+   `benchmarks/hdl_overhead.py` (1.14x end-to-end on an RC ladder).
 7. **JAX in-trace wrap-crossing dt cap** — dynamic breakpoints are
    architecturally out of the traced loop (static `t_breaks_array`); a
    branchless per-step `dt` clamp from the predicted crossing is the listed

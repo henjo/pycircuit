@@ -221,6 +221,23 @@ def refine(junctions, v_old, v_new, epar=defaultepar):
     out = np.array(v_new, dtype=float, copy=True)
     for idx, (_instance, element, _ra, _rb) in enumerate(junctions):
         toolkit = element.toolkit
+        ## THE DEVICE OWNS THE LAW FOR ITS OWN QUANTITY.  PCNR supplies the
+        ## architecture -- one unknown per limited quantity, nothing shared,
+        ## so no device's limiter can disturb another's -- and the device
+        ## supplies the limiter, which is the paper's modularity claim.  A
+        ## device that declares no `pcnr_limit` gets SPICE's `pnjlim` with
+        ## its `IS`, which is what every junction device wants and what the
+        ## hand-written `Diode` has always used.
+        limiter = getattr(element, 'pcnr_limit', None)
+        if limiter is not None:
+            params = getattr(element, '_pcnr_params', None)
+            if params is None:
+                params = {q.name: getattr(element.iparv, q.name)
+                          for q in element.instparams}
+                element._pcnr_params = params
+            out[idx] = float(limiter(float(v_new[idx]), float(v_old[idx]),
+                                     params, epar, toolkit))
+            continue
         VT = toolkit.kboltzmann * epar.T / toolkit.qelectron
         IS = getattr(element.iparv, 'IS', 0.0)
         out[idx] = _pnjlim(float(v_new[idx]), float(v_old[idx]), VT, IS, toolkit)
