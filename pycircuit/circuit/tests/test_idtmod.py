@@ -698,3 +698,175 @@ def test_quadrature_uic_seed():
     t = res.v('outc').x[0]
     vc = res.v('outc').y
     assert np.abs(vc[1:] - np.cos(2 * np.pi * (t[1:] + 0.5))).max() < 1e-2
+
+
+## ------------------------------------------------------------------------
+## Roadmap items 1-2 (idtmod.md sec. 8): class-keyed override trees and the
+## JAX DC ic pin.
+
+
+def test_solve_batched_instance_key_remaps_when_unambiguous():
+    """The override tree is keyed by CLASS name; an instance key whose class
+    has exactly one instance is remapped transparently (it used to be
+    refused with a message about classes -- the 'R1' stumble)."""
+    pytest.importorskip('jax')
+    import warnings
+    import jax.numpy as jnp
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.elements import C
+
+    saved = pycircuit.circuit.circuit.default_toolkit
+    try:
+        pycircuit.circuit.circuit.default_toolkit = jaxtoolkit
+        c = SubCircuit(toolkit=jaxtoolkit)
+        na, nb = c.add_node('a'), c.add_node('b')
+        c['vin'] = VS(na, gnd, v=1.0, toolkit=jaxtoolkit)
+        c['R1'] = R(na, nb, r=1e3, toolkit=jaxtoolkit)   # instance != class
+        c['C1'] = C(nb, gnd, c=1e-6, toolkit=jaxtoolkit)
+        tran = JAXTransient(c, reltol=1e-4)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve_batched(
+                refnode=gnd,
+                override_params_tree={'R1': {'r': jnp.array([[1e2], [1e4]])}},
+                tend=2e-4, timestep=1e-6, uic=True)
+    finally:
+        pycircuit.circuit.circuit.default_toolkit = saved
+
+    finals = [float(np.asarray(lane.v('b'), float).reshape(-1)[-1])
+              for lane in res]
+    ## Different lane resistances must produce genuinely different charging.
+    assert abs(finals[0] - finals[1]) > 1e-3, finals
+
+
+def test_solve_batched_instance_key_ambiguous_raises():
+    """With several instances of the class, an instance key cannot be
+    remapped (the override columns are ordered by group) -- refused with
+    the class spelling named."""
+    pytest.importorskip('jax')
+    import jax.numpy as jnp
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+
+    saved = pycircuit.circuit.circuit.default_toolkit
+    try:
+        pycircuit.circuit.circuit.default_toolkit = jaxtoolkit
+        c = SubCircuit(toolkit=jaxtoolkit)
+        na, nb = c.add_node('a'), c.add_node('b')
+        c['vin'] = VS(na, gnd, v=1.0, toolkit=jaxtoolkit)
+        c['Ra'] = R(na, nb, r=1e3, toolkit=jaxtoolkit)
+        c['Rb'] = R(nb, gnd, r=1e3, toolkit=jaxtoolkit)
+        tran = JAXTransient(c, reltol=1e-4)
+        with pytest.raises(NotImplementedError, match='CLASS'):
+            tran.solve_batched(
+                refnode=gnd,
+                override_params_tree={'Ra': {'r': jnp.array([[1e2], [1e4]])}},
+                tend=1e-5, timestep=1e-6, uic=True)
+    finally:
+        pycircuit.circuit.circuit.default_toolkit = saved
+
+
+def test_solve_batched_shift_excluded_by_class():
+    """The Phase-2 shift exclusion must match by CLASS (the tree key), not
+    instance name.  Sharp version: lane modulus 0.7 does NOT divide the
+    trace-time modulus 1.0, so a wrongly-active shift would translate the
+    state by non-multiples of the lane's modulus and break its congruence."""
+    pytest.importorskip('jax')
+    import warnings
+    import jax.numpy as jnp
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+
+    saved = pycircuit.circuit.circuit.default_toolkit
+    try:
+        pycircuit.circuit.circuit.default_toolkit = jaxtoolkit
+        c = SubCircuit(toolkit=jaxtoolkit)
+        nin, nout = c.add_node('in'), c.add_node('out')
+        c['vin'] = VS(nin, gnd, v=1.0, toolkit=jaxtoolkit)
+        c['R'] = R(nout, gnd, r=1e3, toolkit=jaxtoolkit)
+        c['X'] = Idtmod(nin, gnd, nout, gnd, modulus=1.0,
+                        toolkit=jaxtoolkit)   # instance name != class name
+        tran = JAXTransient(c, reltol=1e-4)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve_batched(
+                refnode=gnd,
+                override_params_tree={
+                    'Idtmod': {'modulus': jnp.array([[0.7], [1.0]])}},
+                tend=2.1, timestep=1e-2, uic=True)
+    finally:
+        pycircuit.circuit.circuit.default_toolkit = saved
+
+    for lane, m in zip(res, (0.7, 1.0)):
+        y = np.asarray(lane.v('out'), float).reshape(-1)
+        t = np.asarray(lane.v('out').x[0], float).reshape(-1)
+        d = np.abs(y[1:] - t[1:] % m)
+        d = np.minimum(d, m - d)
+        assert d.max() < 1e-6, (m, d.max())
+
+
+def test_jax_solve_dc_pin_without_uic():
+    """JAXTransient.solve without uic: an Idtmod ic pins the operating
+    point (through dcanalysis.DC) instead of tripping the ic-without-uic
+    guard, matching the CPU semantics."""
+    pytest.importorskip('jax')
+    import warnings
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+
+    saved = pycircuit.circuit.circuit.default_toolkit
+    try:
+        pycircuit.circuit.circuit.default_toolkit = jaxtoolkit
+        c = SubCircuit(toolkit=jaxtoolkit)
+        nin, nout = c.add_node('in'), c.add_node('out')
+        c['vin'] = VS(nin, gnd, v=1.0, toolkit=jaxtoolkit)
+        c['R'] = R(nout, gnd, r=1e3, toolkit=jaxtoolkit)
+        c['X'] = Idtmod(nin, gnd, nout, gnd, modulus=1.0, offset=-0.5,
+                        ic=0.25, toolkit=jaxtoolkit)
+        tran = JAXTransient(c, reltol=1e-4)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(gnd, tend=0.2, timestep=1e-2, uic=False,
+                             fixed_timestep=True)
+    finally:
+        pycircuit.circuit.circuit.default_toolkit = saved
+
+    y = np.asarray(res.v('out'), float).reshape(-1)
+    t = np.asarray(res.v('out').x[0], float).reshape(-1)
+    ## Ramp continuing from the pinned wrap(ic) = 0.25.
+    assert np.abs(y[1:] - (0.25 + t[1:])).max() < 1e-6
+
+
+def test_solve_batched_dc_pinned_without_uic():
+    """solve_batched's traced DC now carries the analysis_kind pin: an
+    ic-pinned Idtmod circuit biases per lane instead of raising
+    NoConvergenceError from the singular integrator row."""
+    pytest.importorskip('jax')
+    import warnings
+    import jax.numpy as jnp
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+
+    saved = pycircuit.circuit.circuit.default_toolkit
+    try:
+        pycircuit.circuit.circuit.default_toolkit = jaxtoolkit
+        c = SubCircuit(toolkit=jaxtoolkit)
+        nin, nout = c.add_node('in'), c.add_node('out')
+        c['vin'] = VS(nin, gnd, v=1.0, toolkit=jaxtoolkit)
+        c['R'] = R(nout, gnd, r=1e3, toolkit=jaxtoolkit)
+        c['X'] = Idtmod(nin, gnd, nout, gnd, modulus=1.0, offset=-0.5,
+                        ic=0.25, toolkit=jaxtoolkit)
+        tran = JAXTransient(c, reltol=1e-4)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve_batched(
+                refnode=gnd,
+                override_params_tree={'R': {'r': jnp.array([[5e2], [2e3]])}},
+                tend=0.2, timestep=1e-2, uic=False)
+    finally:
+        pycircuit.circuit.circuit.default_toolkit = saved
+
+    for lane in res:
+        y = np.asarray(lane.v('out'), float).reshape(-1)
+        assert abs(y[0] - 0.25) < 1e-6, y[0]

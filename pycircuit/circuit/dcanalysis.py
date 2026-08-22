@@ -91,23 +91,10 @@ class DC(Analysis):
         The solve runs with ``epar.analysis_kind == 'dc'`` so elements whose
         stamps differ at DC (the ``Idt``/``Idtmod`` ic pin, idtmod.md sec. 5.1)
         can see it from ``G``/``i``/``u`` alike -- ``analysis='dc'`` reaches
-        only ``u``.  Restored in ``finally``, and scoping is load-bearing:
-        ``Transient`` forwards its own epar into this inner DC, so a leaked
-        flag would pin every integrator for the whole transient that follows
-        (VACASK shipped exactly that bug through OSDI's EnableIntegration).
+        only ``u``.  Scoping notes on the shared ``analysis_kind`` helper.
         """
-        epar = self.epar
-        if 'analysis_kind' not in epar:
-            epar.append(Parameter(name='analysis_kind',
-                                  desc='Which analysis is evaluating the '
-                                       'circuit; set transiently by analyses',
-                                  default=None))
-        previous = epar.analysis_kind
-        epar.set(analysis_kind='dc')
-        try:
+        with analysis_kind(self.epar, 'dc'):
             return self._solve_dc(x0)
-        finally:
-            epar.set(analysis_kind=previous)
 
     def _solve_dc(self, x0=None):
         ## STAGE 8(d) -- see Circuit.reset_state.  A DC solve must not inherit a

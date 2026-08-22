@@ -924,7 +924,54 @@ output and no `atan2` anywhere**. Consequences:
 
 ---
 
-## 8. References (sections 1–5)
+## 8. Roadmap — follow-up work (2026-08-22)
+
+The idtmod plan proper (sections 5 and 7) is complete and pushed. What remains,
+in priority order agreed with the owner:
+
+**Near-term fixes (small, semantic-gap closers):**
+
+1. **`solve_batched` instance-name quirk** — **DONE 2026-08-22.** The tree is
+   class-keyed *by design* (per-class vmap groups); an instance key is now
+   remapped when unambiguous and refused with the class spelling otherwise.
+   The investigation also caught a latent Phase-2 bug: the periodic-shift
+   exclusion matched by instance name against class-keyed trees — now matches
+   by class (sharp test: swept modulus 0.7 against trace-time 1.0).
+2. **JAX DC pin** — **DONE 2026-08-22.** `solve`'s guard now exempts
+   state-kind ics (its DC already went through `dcanalysis.DC`);
+   `solve_batched`'s traced DC runs inside the shared `analysis_kind`
+   scope (new helper in analysis.py). Fixing it surfaced that the batched
+   path assembles through `eval_i_pure`, so the Idt/Idtmod pin moved to a
+   single fold-into-i convention shared by both paths (mixed ic/no-ic
+   groups fall back loudly to the singular no-ic behaviour, never a
+   silent pin).
+3. **Per-lane modulus in the traced gauge shift** — a swept `modulus` currently
+   drops the Phase-2 shift for that element (correct fallback, unbounded
+   state). Make `p_mods`/`p_offs` per-lane arrays fed from the override tree
+   so swept lanes keep the bounded-state property.
+4. **Doc-build health** — pre-existing dead `exec-rst` blocks (ginac import on
+   two pages, a `ValueError` on distortion_limits) warn "figures NOT live" on
+   every build. Fix or consciously retire; a live-doc system that ships dead
+   blocks erodes exactly the trust it exists to build.
+
+**Larger arcs (need scoping):**
+
+5. **PSS/shooting for phase circuits** — the payoff `IdtmodQuadrature` was
+   built for: make the shooting analysis consume phase-accumulator circuits
+   (oscillator steady state; phase noise later). Its state vector is exactly
+   periodic over a cycle, which the scalar phase structurally is not.
+6. **`hdl.py` `idt`/`idtmod`** — the Behavioural sympy DSL knows only `ddt`;
+   add `idt`/`idtmod` functions lowering onto `_IdtBase`/`Idtmod` stamps, a
+   step toward a Verilog-A-shaped frontend (sec. 5.5).
+7. **JAX in-trace wrap-crossing dt cap** — dynamic breakpoints are
+   architecturally out of the traced loop (static `t_breaks_array`); a
+   branchless per-step `dt` clamp from the predicted crossing is the listed
+   future work from Phase 3 (sec. 5.3).
+
+Also standing: the trap-ringing sentinel's reopening trigger (sec. 7.5) and
+the transient-rescue-in-trace trigger parked in the branch's own docs.
+
+## 9. References (sections 1–5)
 
 **Standards & canonical usage**
 - Verilog-AMS LRM 2.4.0, §4.5.2/4.5.4/4.5.5 —

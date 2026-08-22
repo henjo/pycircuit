@@ -22,6 +22,34 @@ class NoConvergenceError(Exception):
 class SingularMatrix(Exception):
     pass
 
+
+import contextlib
+
+@contextlib.contextmanager
+def analysis_kind(epar, kind):
+    """Scope ``epar.analysis_kind = kind`` for the duration of a solve.
+
+    Elements whose stamps differ per analysis (the ``Idt``/``Idtmod`` DC ic
+    pin, idtmod.md sec. 5.1) read this flag from the epar their ``G``/``i``/
+    ``u`` receive.  The ``finally`` restore is load-bearing: analyses share
+    epar objects (``Transient`` forwards its own into its inner ``DC``; the
+    JAX assemblies read ``defaultepar``), so a leaked flag pins every
+    integrator for whatever runs next -- VACASK shipped exactly that failure
+    through OSDI's EnableIntegration.  Nesting restores the previous value,
+    not None.
+    """
+    if 'analysis_kind' not in epar:
+        epar.append(Parameter(name='analysis_kind',
+                              desc='Which analysis is evaluating the '
+                                   'circuit; set transiently by analyses',
+                              default=None))
+    previous = epar.analysis_kind
+    epar.set(analysis_kind=kind)
+    try:
+        yield
+    finally:
+        epar.set(analysis_kind=previous)
+
 def reduced_row_names(cir, irefnode):
     """Names for the solver's rows, with the reference row removed.
 

@@ -1361,6 +1361,9 @@ class _IdtBase(Circuit):
         e = [0.0] * n
         e[br] = 1.0
         self._e_branch = tk.array(e)
+        e_idt = [0.0] * n
+        e_idt[idt] = 1.0
+        self._e_idt = tk.array(e_idt)
 
         self._C = tk.matrix_from_entries((n, n), [(idt, idt, 1)])
 
@@ -1384,17 +1387,18 @@ class _IdtBase(Circuit):
         return self._C
 
     def i(self, x, epar=defaultepar, params_tree=None):
-        G0 = self._G0_dc if self._dc_pinned(epar) else self._G0
-        return (self.toolkit.dot(G0, x)
+        if self._dc_pinned(epar):
+            ## The pin, constant folded into i() (no u part) so the SAME
+            ## convention serves this path and the batched eval_i_pure:
+            ## residual row idt is `s + wrap(ic) = 0` -> s = -wrap(ic), and
+            ## the branch row's `wrap(-s)` lands the output on wrap(ic).
+            return (self.toolkit.dot(self._G0_dc, x)
+                    + self._e_branch * self._wrap(-x[self._idt_index])
+                    + self._e_idt * self._wrap(self.iparv.ic))
+        return (self.toolkit.dot(self._G0, x)
                 + self._e_branch * self._wrap(-x[self._idt_index]))
 
     def u(self, t=0.0, epar=defaultepar, analysis=None, params_tree=None):
-        if self._dc_pinned(epar):
-            ## Residual row idt is `s + wrap(ic) = 0` -> s = -wrap(ic), so the
-            ## branch row's `wrap(-s)` lands the output on wrap(ic) exactly.
-            u = [0.0] * self.n
-            u[self._idt_index] = self._wrap(self.iparv.ic)
-            return self.toolkit.array(u)
         return self.toolkit.zeros(self.n)
 
 
@@ -1412,6 +1416,15 @@ class Idt(_IdtBase):
     @staticmethod
     def eval_i_pure(x, params, epar, toolkit):
         i_br = x[5]
+        ic = params.get('ic', None)
+        if getattr(epar, 'analysis_kind', None) == 'dc' and ic is not None:
+            ## The DC ic pin, same fold-into-i convention as i() above.  A
+            ## group whose 'ic' was dropped (some instance has None) falls
+            ## back to the transient row -- the honest LRM no-ic behaviour,
+            ## a loud singular DC rather than a silent pin to zero.
+            return toolkit.array([0.0, 0.0, i_br, -i_br,
+                                  x[4] + ic,
+                                  -(x[2] - x[3]) - x[4]])
         return toolkit.array([0.0, 0.0, i_br, -i_br,
                               x[0] - x[1],
                               -(x[2] - x[3]) - x[4]])
@@ -1493,10 +1506,16 @@ class Idtmod(_WrapEvents, _IdtBase):
         m = params.get('modulus', 1.0)
         o = params.get('offset', 0.0)
         i_br = x[5]
+        out_row = -(x[2] - x[3]) + floored_wrap(-x[4], m, o, toolkit)
+        ic = params.get('ic', None)
+        if getattr(epar, 'analysis_kind', None) == 'dc' and ic is not None:
+            ## The DC ic pin (see Idt.eval_i_pure for the fallback note).
+            return toolkit.array([0.0, 0.0, i_br, -i_br,
+                                  x[4] + floored_wrap(ic, m, o, toolkit),
+                                  out_row])
         return toolkit.array([0.0, 0.0, i_br, -i_br,
                               x[0] - x[1],
-                              -(x[2] - x[3]) + floored_wrap(-x[4], m, o,
-                                                            toolkit)])
+                              out_row])
 
 
 class IdtmodCircular(_WrapEvents, Circuit):

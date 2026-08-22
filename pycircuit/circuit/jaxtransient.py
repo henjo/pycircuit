@@ -2190,27 +2190,33 @@ class JAXTransient(Analysis):
         """Static (rows, moduli, offsets) arrays for the Phase-2 gauge shift,
         or ``None`` when nothing declares (idtmod.md 5.2).
 
-        ``exclude_names``: instance names whose declarations must be DROPPED
-        -- `solve_batched` passes its `override_params_tree` keys, because a
-        per-lane `modulus`/`offset` override makes the trace-time value here
-        wrong for the swept lanes.  Excluded elements simply fall back to the
-        Phase-1 behaviour (unbounded state, output wrapped in ``i()``), which
-        is correct, just without the bounded-state precision property.
+        ``exclude_names``: CLASS or instance names whose declarations must be
+        DROPPED -- `solve_batched` passes its `override_params_tree` keys
+        (class-keyed), because a per-lane `modulus`/`offset` override makes
+        the trace-time value here wrong for the swept lanes.  Matching by
+        class is load-bearing: the tree key is the class name, and an
+        instance named differently from its class would otherwise keep the
+        shift active against the wrong modulus.  Excluded elements fall back
+        to the Phase-1 behaviour (unbounded state, output wrapped in
+        ``i()``), which is correct, just without the bounded-state precision
+        property.
         """
         if not hasattr(self.cir, 'periodic_states'):
             return None
         entries = list(self.cir.periodic_states())
         if entries and exclude_names:
             excluded_rows = set()
+            names = set(exclude_names)
             elements = getattr(self.cir, 'elements', {})
-            for name in exclude_names:
-                element = elements.get(name)
-                if element is None or \
-                        not hasattr(element, 'periodic_states'):
+            for inst_name, element in elements.items():
+                if inst_name not in names and \
+                        type(element).__name__ not in names:
+                    continue
+                if not hasattr(element, 'periodic_states'):
                     continue
                 declared = element.periodic_states()
                 if declared:
-                    rows = self.cir.elementnodemap[name]
+                    rows = self.cir.elementnodemap[inst_name]
                     for local_row, _m, _o in declared:
                         excluded_rows.add(int(rows[local_row]))
             entries = [e for e in entries if int(e[0]) not in excluded_rows]
@@ -2330,15 +2336,47 @@ class JAXTransient(Analysis):
         ## made batchable.
         batchable = {cls.__name__
                      for cls in self.toolkit.evaluation_groups(self.cir)}
+        ## THE TREE IS KEYED BY CLASS NAME -- the vmapped groups are
+        ## per-class stacks, and `batched_contributions` consumes
+        ## `params_tree[cls.__name__]`.  Every test happened to name its
+        ## instance after its class (`c['R'] = R(...)`), which hid this from
+        ## users until an instance named 'R1' was refused with a message
+        ## about classes (roadmap item 1, idtmod.md sec. 8).  An INSTANCE
+        ## key is remapped when unambiguous -- its class has exactly one
+        ## instance -- and refused with the correct spelling otherwise,
+        ## because with several instances the override's per-instance column
+        ## order is the group order, which the caller must address by class.
+        elements = getattr(self.cir, 'elements', {})
+        remapped = {}
+        for key, value in override_params_tree.items():
+            if key in batchable:
+                remapped[key] = value
+                continue
+            element = elements.get(key)
+            cls_name = type(element).__name__ if element is not None else None
+            if cls_name in batchable:
+                siblings = [nm for nm, el in elements.items()
+                            if type(el).__name__ == cls_name]
+                if len(siblings) == 1:
+                    remapped[cls_name] = value
+                    continue
+                raise NotImplementedError(
+                    "override_params_tree names instance %r, but the tree is "
+                    "keyed by CLASS name and class %r has %d instances (%s): "
+                    "use {%r: ...} with one column per instance, in that "
+                    "order." % (key, cls_name, len(siblings),
+                                ', '.join(siblings), cls_name))
+            remapped[key] = value
+        override_params_tree = remapped
         unbatchable = set(override_params_tree) - batchable
         if unbatchable:
             raise NotImplementedError(
                 "override_params_tree names %s, which cannot be batched: only "
                 "element classes providing eval_i_pure/eval_q_pure participate "
-                "in vmapped evaluation (currently: %s). An override for any "
-                "other class would be silently ignored and every lane would "
-                "return the same waveform. Make the class batchable, or drop "
-                "the override."
+                "in vmapped evaluation (currently: %s), and the tree is keyed "
+                "by CLASS name. An override for any other class would be "
+                "silently ignored and every lane would return the same "
+                "waveform. Make the class batchable, or drop the override."
                 % (', '.join(sorted(repr(n) for n in unbatchable)),
                    ', '.join(sorted(batchable)) or 'none'))
 
@@ -2381,8 +2419,17 @@ class JAXTransient(Analysis):
                     maxiter=int(self.par.maxiter),
                     gmin_rows=_gmin_rows)
 
-            _dc_x0, _dc_conv = jax.jit(jax.vmap(_lane_dc))(
-                override_params_tree)
+            ## Roadmap item 2 (idtmod.md sec. 8): the ic-pin flag for the
+            ## traced DC.  The traced assemblies call circuit.i/G without an
+            ## epar, so elements read `defaultepar` -- the flag goes there,
+            ## and it is baked in at TRACE time (the jitted closure below is
+            ## fresh per call, so nothing stale is reused; the batched-eval
+            ## cache keys on epar values and separates the two states).
+            from pycircuit.circuit.circuit import defaultepar
+            from pycircuit.circuit.analysis import analysis_kind
+            with analysis_kind(defaultepar, 'dc'):
+                _dc_x0, _dc_conv = jax.jit(jax.vmap(_lane_dc))(
+                    override_params_tree)
             _bad = np.where(~np.asarray(_dc_conv))[0]
             if _bad.size:
                 raise NoConvergenceError(
@@ -2617,8 +2664,13 @@ class JAXTransient(Analysis):
 
         ## Same contract as the CPU (P12): ic without uic is a different
         ## feature (constraining the operating point) and is refused, not
-        ## silently ignored.
-        if (self.par.ic or self._descendant_has_ic(self.cir)) and not uic:
+        ## silently ignored.  `include_state=False`, as on the CPU: an
+        ## Idt/Idtmod ic PINS the DC operating point (LRM semantics), so it
+        ## is meaningful without uic -- and the DC below goes through
+        ## dcanalysis.DC, which sets the pin flag.
+        if (self.par.ic or self._descendant_has_ic(self.cir,
+                                                   include_state=False)) \
+                and not uic:
             raise ValueError(
                 "ic was given without uic=True. This implements SPICE's "
                 "initial conditions for the uic case only -- starting values "
