@@ -452,6 +452,7 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
     ## them at the midpoint.
     if mob is None:
         Gmob = _v(sympy.Integer(1), 'ids_Gmob')
+        Gmob_dL = Gmob
         zsat = _v(sympy.Integer(0), 'ids_zsat')
         Gvsat = _v(sympy.Integer(1), 'ids_Gvsat')
     else:
@@ -510,17 +511,47 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
 
         Gmob = _v(1.0 + base ** mob['themu'] + coul + gr, 'ids_Gmob')
 
+        ## CHANNEL-LENGTH MODULATION.  Beyond pinch-off the inversion
+        ## layer stops short of the drain, so the effective channel is
+        ## shorter and the current keeps rising where an ideal device's
+        ## is flat.
+        ##
+        ## PSP writes `s1` as a RATIO of logarithms involving `Vdse`, a
+        ## smoothly saturation-limited drain voltage it also uses for the
+        ## drain surface potential (`PSP103_macrodefs.include:628-632`).
+        ## This core computes that potential at the true drain bias, so
+        ## `dps` saturates on its own and the second logarithm is
+        ## dropped -- recovering the classic `ln(1 + (Vds - Vdsat)/VP)`
+        ## with `dps` standing in for the saturation voltage.  An
+        ## APPROXIMATION to PSP, not a translation of it.
+        ##
+        ## `hypsmooth` rather than `max(.,0)`: the excess is negative
+        ## through the whole linear region and a hard clamp would put a
+        ## kink in the middle of every I-V curve.
+        alp = mob.get('alp', 0.0)
+        if alp == 0.0 and not isinstance(alp, sympy.Expr):
+            GdL = _v(sympy.Integer(1), 'ids_GdL')
+        else:
+            excess = _v(hdl.hypsmooth(mob['vds'] - dps, 1e-3), 'ids_exc')
+            s1 = _v(hdl.safe_ln(1.0 + excess
+                                * hdl.safe_div(1.0, mob['vp'], eps=1e-30)),
+                    'ids_s1')
+            dL = _v(alp * s1, 'ids_dL')
+            GdL = _v(hdl.safe_div(1.0, 1.0 + dL + dL * dL, eps=1e-30),
+                     'ids_GdL')
+        Gmob_dL = _v(Gmob * GdL, 'ids_GmobdL')
+
         thesat1 = _v(mob['thesat']
-                     * hdl.safe_div(1.0, Gmob, eps=1e-30), 'ids_ths')
+                     * hdl.safe_div(1.0, Gmob_dL, eps=1e-30), 'ids_ths')
         zsat = _v(thesat1 * thesat1 * dps * dps, 'ids_zsat')
-        Gvsat = _v(0.5 * (Gmob * (1.0 + sympy.sqrt(1.0 + 2.0 * zsat))),
+        Gvsat = _v(0.5 * (Gmob_dL * (1.0 + sympy.sqrt(1.0 + 2.0 * zsat))),
                    'ids_Gvsat')
 
     gvinv = _v(hdl.safe_div(1.0, Gvsat, eps=1e-30), 'ids_gvinv')
     ids = _v(beta * qim1 * dps * gvinv, 'ids')
     return dict(ids=ids, qim=qim, qim1=qim1, alpha=alpha, dps=dps,
                 xgm=xgm, x_m=x_m, x_s=x_s, x_d=x_d, qbm=qbm,
-                Pm=Pm, Dm=Dm, sqm=sqm, Gmob=Gmob, Gvsat=Gvsat,
+                Pm=Pm, Dm=Dm, sqm=sqm, Gmob=Gmob_dL, Gvsat=Gvsat,
                 zsat=zsat, gvinv=gvinv)
 
 

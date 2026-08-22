@@ -227,32 +227,69 @@ class TestAgainstTheRealDevice(object):
         assert ratio.min() > 0.95, 'worst low %.3f' % ratio.min()
         assert ratio.max() < 1.16, 'worst high %.3f' % ratio.max()
 
-    def test_channel_length_modulation_is_what_remains(self, deck, ref):
-        """The residual has a shape, and it names the next layer.
+    def test_channel_length_modulation_helps_now(self, deck, ref):
+        """The term that was rejected once, and why it works now.
 
-        PSP's saturated current keeps rising with drain bias -- the
-        channel shortens -- where the core's is flat.  So the ratio
-        FALLS through saturation, and that fall is the size of the
-        missing CLM.  Pinned as a known gap rather than left to be
-        rediscovered.
+        CLM was implemented, measured and REVERTED earlier in this work:
+        it made every sweep worse.  The reason was not that it was
+        wrong -- it was that the device was still 4% high from the
+        missing effective thermal voltage, and CLM only pushes current
+        higher.  A term that is individually correct can worsen the fit
+        while a compensating error is present.
+
+        With `CT` in, the residual is centred and CLM helps: better in
+        four sweeps of seven, and dramatically so on the short device
+        (median |ratio-1| 0.098 -> 0.033 on `nmos_idvd_vg1p2`, 0.132 ->
+        0.026 on `nmos_idvg_vd1p2`).
+
+        Checked as a direction: it must RAISE the saturated current and
+        do nothing in the linear region.
+        """
+        sweep = ref['nmos_long_idvd']
+        w, l = sweep['w'], sweep['l']
+        card = deck.model_params('sg13g2_lv_nmos_psp', w=w, l=l, ng=1,
+                                 m=1, pre_layout=1)
+        kw = psp_scaling.to_long_channel(card, w=w, l=l)
+        assert kw['alp'] > 0.0
+
+        cm.default_toolkit = numeric
+        on = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                               cm.Node('b'), **kw)
+        off = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                                cm.Node('b'), **dict(kw, alp=0.0))
+        on.update_iparv()
+        off.update_iparv()
+        deep = np.array([1.5, 1.2, 0.0, 0.0])
+        lin = np.array([0.02, 1.2, 0.0, 0.0])
+        assert (np.asarray(on.i(deep), float)[0]
+                > np.asarray(off.i(deep), float)[0])
+        assert np.asarray(on.i(lin), float)[0] == pytest.approx(
+            np.asarray(off.i(lin), float)[0], rel=1e-3)
+
+    def test_our_saturated_current_now_rises_too(self, deck, ref):
+        """Before CLM the core's saturated current was flat.
+
+        PSP gains 5.9% between Vd = 0.8 and 1.4.  The core is not
+        expected to match that exactly -- the CLM here approximates
+        PSP's, which references a saturation-limited drain voltage this
+        core does not compute -- but it must now rise rather than sit
+        flat.
         """
         v, r, g, _ = _compare(deck, ref['nmos_long_idvd'])
         sat = v >= 0.8
-        assert sat.sum() > 5
-        ## PSP still climbs in saturation; we do not
-        assert r[sat][-1] / r[sat][0] > 1.03
-        assert g[sat][-1] / g[sat][0] < 1.02
-        ## so the ratio decreases across saturation
-        ratio = g / r
-        assert ratio[sat][-1] < ratio[sat][0]
+        assert r[sat][-1] / r[sat][0] > 1.03, 'PSP climbs'
+        assert g[sat][-1] / g[sat][0] > 1.01, 'so do we, now'
 
     def test_the_short_device_is_measurably_worse(self, deck, ref):
         """The omissions have a size, and it is recorded rather than hidden.
 
-        At L = 0.13 um the missing DIBL and channel-length modulation
-        dominate, and the ratio reaches ~1.29 even with series resistance
-        in.  That is not a defect in the core -- it is the cost of the
-        layers not yet built, and it is what says which to build next.
+        At L = 0.13 um what remains is the short-channel THRESHOLD
+        block -- DIBL and friends.  The tell is that the two sweeps CLM
+        cannot touch, both at Vd = 0.05, are the ones still ~1.12 off,
+        while the sweeps at high drain bias came down to within a few
+        percent once CLM was in.  That is not a defect in the core; it
+        is the cost of the layer not yet built, and it says which to
+        build next.
         """
         _, r_l, g_l, _ = _compare(deck, ref['nmos_long_idvd'])
         _, r_s, g_s, _ = _compare(deck, ref['nmos_idvg_vd0p05'])

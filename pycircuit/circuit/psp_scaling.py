@@ -194,6 +194,13 @@ def to_long_channel(card, w, l, T=300.0):
               * (1.0 + _g(card, 'thesatw') * iWE)
               * (1.0 + _g(card, 'thesatlw') * iLE * iWE))
 
+    ## Channel-length modulation (:321, :327).  The geometry-scaled
+    ## branch has NO geometry-independent term -- `ALP` is length
+    ## dependence only.
+    alp = (_g(card, 'alpl') * iLE ** _g(card, 'alplexp', 1.0)
+           * (1.0 + _g(card, 'alpw') * iWE))
+    vp = _g(card, 'vpo', 0.05)
+
     ## INTERFACE STATES (:267).  PSP does not normalise by the thermal
     ## voltage but by an EFFECTIVE one,
     ## `phit1 = phit * (1 + CT*dCTG) * (1 + dphit1)`
@@ -217,7 +224,7 @@ def to_long_channel(card, w, l, T=300.0):
     return dict(
         w=w, l=l, tox=tox, nsub=neff, vfb=vfb, phib=phib, u0=u0_eff,
         rs=max(rs, 0.0), rsg=_g(card, 'rsgo'), rsb=_g(card, 'rsbo'),
-        ct=max(ct, 0.0),
+        ct=max(ct, 0.0), alp=max(alp, 0.0), vp=max(vp, 1.0e-6),
         mue=max(mue, 0.0), themu=max(_g(card, 'themuo'), 0.0),
         cs=max(cs, 0.0), thecs=max(_g(card, 'thecso'), 0.0),
         feta=_g(card, 'fetao', 1.0), thesat=max(thesat, 0.0),

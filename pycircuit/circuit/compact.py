@@ -300,6 +300,11 @@ class PspMosLongChannel(Behavioural):
         ## voltage `phit*(1 + ct)`, not by `phit` itself.
         Parameter(name='ct', desc='Interface-states factor', unit='',
                   default=0.0),
+        ## Channel-length modulation; `alp = 0` disables it.
+        Parameter(name='alp', desc='Channel-length modulation factor',
+                  unit='', default=0.0),
+        Parameter(name='vp', desc='CLM logarithmic parameter', unit='V',
+                  default=0.05),
     ]
 
     @staticmethod
@@ -336,6 +341,7 @@ class PspMosLongChannel(Behavioural):
             mob=dict(mue=mue, themu=themu, cs=cs,          # noqa: F821
                      thecs=thecs, feta=feta, thesat=thesat,  # noqa: F821
                      rs=rs, rsg=rsg, rsb=rsb, vsb=bs.V,     # noqa: F821
+                     alp=alp, vp=vp, vds=bd.V - bs.V,       # noqa: F821
                      cox_area=cox, eps_si=EPS_SI))
         cox_tot = var(cox * w * l, 'cox_tot')                 # noqa: F821
         Qg, Qd, Qb = psp_kernel.charges_long_channel(core, xg, phit,

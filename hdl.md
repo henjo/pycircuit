@@ -1406,16 +1406,17 @@ geometry scaling into the element, and `benchmarks/psp_gap.py` compares
 the result against the committed PSP103 reference. Nothing is tuned: the
 parameters come from the card.
 
-| sweep | W | L | first pass | + QM | + series R | + `CT` |
-|---|---|---|---|---|---|---|
-| `nmos_long_idvd` | 10 µm | **1 µm** | 1.29 | 1.095 | 1.041 | **1.008** |
-| `nmos_long_idvg` | 10 µm | **1 µm** | — | — | — | **1.10** |
-| `nmos_idvd_vg1p2` | 1 µm | 0.13 µm | — | 1.221 | 1.115 | 0.985 |
-| `nmos_idvg_vd0p05` | 1 µm | 0.13 µm | — | 1.703 | 1.288 | 1.115 |
+| sweep | W | L | first | + QM | + Rs | + `CT` | + CLM |
+|---|---|---|---|---|---|---|---|
+| `nmos_long_idvd` | 10 µm | **1 µm** | 1.29 | 1.095 | 1.041 | 1.008 | **1.010** |
+| `nmos_long_idvg` | 10 µm | **1 µm** | — | — | — | 1.10 | **1.10** |
+| `nmos_idvd_vg1p2` | 1 µm | 0.13 µm | — | 1.221 | 1.115 | 0.985 | **1.021** |
+| `nmos_idvg_vd1p2` | 1 µm | 0.13 µm | — | — | 1.028 | 0.868 | **0.974** |
+| `nmos_idvg_vd0p05` | 1 µm | 0.13 µm | — | 1.703 | 1.288 | 1.115 | **1.117** |
 
 (median ratio, ours / PSP103.) The long device is the one to read — at
 L = 1 µm the physics the core omits matters least. **Within 1%** median
-and 3.5% worst, from a card, with no fitting anywhere.
+and 3.7% worst, from a card, with no fitting anywhere.
 
 Each column is a term the *shape* of the previous residual named:
 
@@ -1439,13 +1440,23 @@ Each column is a term the *shape* of the previous residual named:
   (1.288 → 1.115). The body factor is deliberately not rescaled: PSP
   builds `G_0` on the plain `phit` and only moves it under `SWFIX`, which
   defaults to 0;
-* what remains now **falls** through saturation (1.034 at Vd = 0.8 →
-  0.985 at 1.4) — **channel-length modulation**, and now that the flat
-  offset is gone the residual is centred rather than one-sided;
-* the short device is still 1.12× off, which is the cost of the missing
-  DIBL and short-channel block rather than a defect in the core.
+* **channel-length modulation, on the second attempt.** With the flat
+  offset gone the residual was centred rather than one-sided, and the
+  same CLM that had made every sweep worse now helps in four of seven —
+  dramatically on the short device (median |ratio−1| 0.098 → 0.033 on
+  `nmos_idvd_vg1p2`, 0.132 → 0.026 on `nmos_idvg_vd1p2`). The long
+  device barely moves, which is right: CLM is a short-channel effect;
+* what remains is the short-channel **threshold** block. The tell is
+  clean — the two sweeps CLM cannot touch, both at Vd = 0.05, are the
+  ones still ~1.12 off, while every high-drain sweep came within a few
+  percent. That is DIBL, and it is the next layer.
 
-> **CLM was tried, measured, and rejected — 2026-08-23.** The saturation
+> **CLM was tried, measured, rejected, and then vindicated —
+> 2026-08-23.** The rejection stands as a record of the reasoning, and
+> the sequel is the point: with `CT` in place the same code helps. Read
+> together they are the methodological lesson of this whole exercise.
+>
+> **The rejection.** The saturation
 > tail is CLM's signature, and ruling out the alternative was easy with
 > data already committed: impact ionisation flows to the *bulk*, and the
 > reference's bulk current is 8×10⁻¹¹ A against a drain rise of
@@ -1473,8 +1484,19 @@ Each column is a term the *shape* of the previous residual named:
 > every sweep uses), poly depletion (`NP` absent from the card), the edge
 > transistor (`SWEDGE = 0`), gate current (1e-6 of the drain current),
 > and temperature (the card's `TR = 27 °C` against the 300 K used, worth
-> 0.05% on the thermal voltage). The remaining candidates are the
-> `BETN` mapping through `GPE`/`GWE` and the mobility details.
+> 0.05% on the thermal voltage).
+>
+> **The sequel.** The +4% turned out to be the effective thermal voltage
+> (above). With that in, CLM was re-applied unchanged and now helps in
+> four sweeps of seven. Nothing about the CLM code changed between the
+> two measurements — only what it was sitting on top of.
+>
+> The lesson, and it is worth carrying: **a residual's shape tells you
+> which term is missing, but not which to add first.** When two terms are
+> missing and they pull opposite ways, adding either alone looks like a
+> regression. The order that works is to fix what is flat before what is
+> shaped, because a flat error contaminates every diagnosis made in its
+> presence.
 
 > **The quantum-mechanical correction, found by measuring.** The first
 > comparison ran **23–33% high** with a ratio that grew with current.
