@@ -977,6 +977,11 @@ in priority order agreed with the owner:
    re-expresses ten hand-written elements in the DSL, proven equivalent by
    `tests/test_elements_hdl.py` (20 tests) and costed by
    `benchmarks/hdl_overhead.py` (1.14x end-to-end on an RC ladder).
+   What remains of the DSL is planned in `hdl.md` sec. 9 (four phases,
+   each item with its measured demand, design, proof and risk); the
+   highest-value item there is widening PCNR's qualification -- charge-
+   storing junctions and multi-junction devices -- which is work in
+   `pcnr.py` rather than in the DSL.
 7. **JAX in-trace wrap-crossing dt cap** — dynamic breakpoints are
    architecturally out of the traced loop (static `t_breaks_array`); a
    branchless per-step `dt` clamp from the predicted crossing is the listed

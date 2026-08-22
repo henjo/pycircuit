@@ -310,13 +310,25 @@ tell you when to switch PCNR on:
   That is why `pcnr=False` remains pycircuit's default and why `limexp`
   still matters.
 
-One divergence found while reconciling, recorded rather than silently
-"fixed": the paper's `pnjlim` listing leaves a step unlimited when
-`|v_new − v_old| ≤ 2·V_T`, and pycircuit's `_limiting._pnjlim` has no
-such escape (it also adds a `v_new > 0` guard). Since `log(1+ε) ≈ ε` the
-difference is O(ε²) near the solution, so it changes no answer here — but
-it is shared code that the hand-written `Diode` also uses, so it is left
-alone and noted.
+One divergence found while reconciling, now **fixed to match the paper**:
+`_limiting._pnjlim` lacked Listing 1's escape, which leaves a step
+unlimited when `|v_new − v_old| ≤ 2·V_T`, and compressed every step taken
+above `vc` however small. Since `log(1+ε) ≈ ε` that moved no operating
+point — but "nearly the identity" is exactly what the escape exists to
+avoid: the paper's form makes limiting a **strict no-op** near the
+solution, which is what lets a simulator use "was limiting applied?" as a
+convergence signal (its footnote 3) rather than watching an O(ε²)
+perturbation. Both implementations were updated together — the scalar one
+and the branchless one the traced JAX/PCNR path uses — and
+`tests/test_limiting.py` now checks each against a verbatim transcription
+of Listing 1 and against the other.
+
+One departure from the listing is **kept, deliberately**: our `v_new > 0`
+guard. With a large `IS`, `vc` goes negative, so a negative `v_new` can
+sit above it, and the listing's `v_old ≤ 0` branch then evaluates
+`log(v_new/V_T)` at a negative argument — which raises. The test asserts
+both halves of that: the transcribed listing raises where our guarded
+version returns the step unchanged.
 
 **Where `limexp` still earns its place:** elements that do *not* qualify
 (a charge-storing junction, a state-carrying model, a polynomial or
@@ -571,24 +583,158 @@ Each was caught by a test that now guards it:
 
 ## 9. Roadmap
 
-1. **`$limit`** — 273 call sites, and the one convergence capability
-   still missing for models PCNR cannot take: iterate memory plus a
-   non-convergence channel. PCNR participation is already generated for
-   qualifying elements (§3.2a); widening *that* qualification — charge-
-   storing junctions, multi-branch devices — is the more valuable half of
-   this item, and it is work in the PCNR layer rather than in the DSL.
-2. **`$param_given`** and parameter ranges — trivial, and by call count
-   the most-used system function in real models.
-3. **Unconditional node collapse** — `V(a,b) <+ 0` merges nodes; adopt
-   gnucap's restriction to unconditionally-executed contributions.
-4. **Events** — `@cross`/`@timer` onto the existing `next_event`
-   machinery; promote when a macromodel needs it.
-5. **AC excitation** — an `ac`-variant `u` so behavioral sources can
-   drive small-signal analyses.
-6. **Symbolic-toolkit transient** — compile to sympy expressions rather
-   than numpy when the toolkit is symbolic.
+Ordered by (measured demand) × (what it unblocks) ÷ (cost). "Demand" is
+call sites across the vacask device library (59 models) and
+gnucap-models (19), counted in §6's survey; a capability with zero call
+sites in either is deferred on purpose and says so.
 
----
+Every item states what it touches, how it would be proven, and its risk.
+Two conventions from §8 apply to all of them and are not repeated per
+item: **a new operator is not done until a test exercises it inside a
+circuit** (defect 11 passed a standalone-function test and was still
+fatal in every element), and **the compiler must refuse what it cannot
+do, per element, rather than emit something plausible** (§3.2a's
+qualification rules are the pattern).
+
+### Phase A — convergence: finish what PCNR started
+
+**A1. Widen PCNR qualification.** *This is the most valuable item in the
+list and the one most likely to be mis-ranked, because it looks like
+infrastructure rather than a feature.* §3.2a generates the PCNR protocol
+only for a single-branch, charge-free, state-free, exponential element.
+Every real junction device fails at least one of those: a diode with
+junction capacitance has charge, a BJT has two junctions sharing a base,
+a MOSFET has four terminals. The blockers are in the PCNR layer, not the
+DSL:
+
+* **charge.** `pcnr.augmented_system` raises when a participating device
+  has any `C` entry, and the refusal is correct as written: the charge
+  term is evaluated at the node voltage while the current is evaluated
+  at `v_lim`, which is exactly the inconsistency PCNR exists to remove.
+  The fix is to move the charge to the limited unknown too — `q(v_lim)`
+  and `dq/dv_lim` alongside `pcnr_i`/`pcnr_didv` — so the companion
+  terms are formed from the same quantity. The paper is explicit that
+  PCNR "works for differential-algebraic equations as well" but
+  (footnote 1) develops only the algebraic case, so the DAE bookkeeping
+  is ours to derive and must be tested against a transient, not just a
+  DC point.
+* **multiple junctions per device.** The layer already carries a
+  sequence of `(anode, cathode)` pairs per device and `limit_junctions`
+  already handles the shared-terminal case with its `move` index (a
+  BJT's two junctions share the base, so limiting both by adjusting the
+  anode has the second undo the first). What is missing is generating
+  those pairs from an expression with two or more exponentials in
+  different branch voltages.
+* **non-exponential nonlinearity.** `pcnr_limit` currently derives
+  `(VT, IS)` by reading the `exp` argument. For anything else there is
+  no principled scale, and inventing one would be the kind of unvalidated
+  heuristic §7 rejected. Options, in order of honesty: leave it
+  unqualified (today's behaviour); let the *user* declare a limiter in
+  the element; derive a local scale `f/f'` and prove it on a benchmark
+  before shipping it.
+
+  Proof: extend `test_elements_hdl.py`'s protocol-equality test to a
+  charge-storing diode against a hand-written reference, plus a transient
+  (not just DC) where PCNR and non-PCNR runs agree; a two-junction
+  element against `elements`' BJT-shaped limiting. Risk: medium-high —
+  it changes shared solver code that the hand-written devices also use,
+  so the existing PCNR tests are the regression gate.
+
+**A2. `$limit`.** 273 call sites, the highest raw demand in the survey,
+and the fallback for every model A1 cannot reach. Needs two things the
+DSL has no route to today: memory of the previous iterate, and a channel
+to tell the solver "limiting fired, so this iteration is not converged"
+(the paper's footnote 3). `elements.Diode._vlim` and `VCVS_limited` show
+the hand-written shape; `SubCircuit.limit` already dispatches. The
+awkwardness is that a generated element is otherwise *stateless*, which
+is precisely what makes it fit PCNR — so `$limit` should be implemented
+as the non-PCNR path and documented as the lesser option, not as the
+default. Proof: a model that converges with `$limit` and demonstrably
+does not without it (the measurement that `limexp` alone could not
+produce here — see §3.2a, where pycircuit's continuation ladders rescued
+plain `exp` anyway). Risk: medium; the honest failure mode is shipping a
+capability whose benefit cannot be measured on this simulator's circuits.
+
+### Phase B — model surface: cheap, high-frequency, boring
+
+**B1. `$param_given` + parameter ranges + `aliasparam`.** By call count
+the most-used system function in the entire survey (**1871** vacask /
+**263** gnucap-models), and trivial: `Parameter` already carries
+`desc`/`unit`/`default`, so `$param_given` is a "was this defaulted"
+flag set when `ipar.set()` names it, ranges are a validator on
+`update_iparv`, and `aliasparam` is a name map. Touches
+`pycircuit/utilities/param.py` and the DSL's parameter binding. Proof:
+a model that branches on `$param_given` compiling to two different
+stamps; an out-of-range parameter refused with the range in the message.
+Risk: low — but it touches `param.py`, which every element uses, so the
+regression gate is the whole suite.
+
+**B2. Unconditional node collapse.** `V(a,b) <+ 0` should merge the two
+nodes and delete the unknown, which is the standard idiom for an
+optional series resistance (`if (rs) I(a,ia) <+ ...; else V(a,ia) <+ 0;`).
+Adopt gnucap's restriction to *unconditionally executed* contributions
+(`mg_in_analog.cc:2065-2073`): a conditional collapse changes the
+sparsity pattern per iteration and is Phase D. Implementation is a
+substitution before the unknown vector is built — merge the node symbols,
+drop the row. Proof: an element with `rs=0` producing exactly the stamp
+of the element without the branch, and node count reduced by one. Risk:
+low, and it is pure DSL work.
+
+**B3. AC excitation.** `u` is currently zeroed for `analysis='ac'` so a
+device's bias constants cannot leak into the small-signal drive (§2.4).
+The missing half is a *deliberate* AC source: an `ac`-variant vector, so
+a behavioural element can be an AC stimulus rather than merely
+transparent to one. Follows `VS.u`/`IS.u`'s analysis switch. Proof: an
+HDL source driving an AC analysis to the analytic transfer function.
+Risk: low.
+
+### Phase C — analyses the DSL cannot currently reach
+
+**C1. Events: `@cross`, `@timer`.** Zero call sites in either corpus, so
+this is *not* ranked on model demand — it is ranked on what it unblocks
+here: comparator, switch and oscillator macromodels, which are exactly
+the behavioural models a DSL is for. The machinery exists:
+`elements._WrapEvents` already implements the `accept_step` +
+`next_event` contract with the same first-order crossing prediction
+gnucap uses, and `SubCircuit.next_event` already polls. The work is
+generating a predictor for an arbitrary expression rather than the
+idtmod wrap. Proof: a comparator whose output edge lands on the crossing
+to solver tolerance, and a step-count comparison against the same model
+without the event. Risk: medium — event prediction interacts with the
+step controller, and §5.3 of `idtmod.md` records how that went for the
+wrap breakpoints.
+
+**C2. Symbolic-toolkit transient.** Compilation targets numpy/jax, so a
+symbolic transient of a generated element is out (AC works, since it
+uses `G`/`C` only). The fix is to keep the sympy expressions rather than
+lambdifying when the toolkit is symbolic — the expressions already exist,
+so this is plumbing, not derivation. Proof: the existing symbolic tests
+extended to a generated element. Risk: low. Value: mostly for the
+distortion/DDD analyses, which is where this repo's symbolic work lives.
+
+### Phase D — deferred, with the reason
+
+Not "someday" — these have a stated trigger, so the deferral can be
+argued with:
+
+| capability | why deferred | what would reopen it |
+|---|---|---|
+| `laplace_*`, `zi_*` | 0 call sites in both corpora; gnucap ships only 2 of 4 `zi_*` and documents two open bugs in them | a user needing a filter macromodel; an explicit state-space element is probably the better answer even then |
+| `absdelay` | 4 sites, all transmission lines, and `elements.TLine` already covers that | a delay model that is not a T-line |
+| `transition`, `slew` | 0 real sites; gnucap's own `slew` is a self-described stub; `VPulse` exists | a digital-to-analog boundary model |
+| `last_crossing`, `noise_table` | 0 sites, and gnucap implements neither | demand |
+| conditional node collapse / switch branches | changes sparsity per iteration; needs gnucap's whole per-iteration re-stamping machine | a model that genuinely needs V and I on one branch under a condition — diagnose and refuse clearly until then |
+| `$discontinuity` | 41 sites, but it is advisory and gnucap's implementation is an empty body | nothing; **parse and ignore** is the cheapest correct answer and unblocks those 41 sites today |
+
+### Sequencing
+
+B1 → B2 → B3 first: they are cheap, they are the highest-frequency
+things real models use, and none of them touch the solver. Then A1,
+which is the item that decides whether this DSL can express *production*
+device models or only behavioural ones — and which should be attempted
+before A2, because if PCNR can be widened far enough, `$limit` matters
+much less. C1 and C2 follow demand. Phase D stays deferred until its
+trigger fires.
 
 ## 10. References
 

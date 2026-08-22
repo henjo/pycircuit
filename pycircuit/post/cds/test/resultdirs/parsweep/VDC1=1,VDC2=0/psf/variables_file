@@ -1,0 +1,14 @@
+HEADER
+"PSFversion" "1.00"
+"simulator" "Eldo"
+"date" "17-Oct-2007 17:26:20"
+TYPE
+"variable" STRUCT(
+"value" FLOAT DOUBLE
+) PROP(
+"key" "element"
+)
+VALUE
+"VDC1" "variable" ( 1 ) PROP( )
+"VDC2" "variable" ( 0 ) PROP( )
+END

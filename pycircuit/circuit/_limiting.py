@@ -31,10 +31,26 @@ def _pnjlim(vnew, vold, VT, IS, toolkit):
     Above it the update is compressed logarithmically, which is what bounds the
     step without changing where the solution is -- the limiter only moves the
     point the next Jacobian is taken at, never the equations.
+
+    **A step of at most `2*VT` passes through unlimited**, per Listing 1 of
+    Aadithya, Keiter & Mei (the PCNR paper, doi 10.1007/978-3-030-44101-2_19):
+    `if vnew <= vc or abs(vnew - vold) <= 2.0*VT`.  This module previously
+    omitted that escape and compressed every step taken above `vc`, however
+    small.  The compression of a small step is nearly the identity
+    (`log(1+e) ~ e`), so no operating point moved -- but "nearly" is the point:
+    the paper's form makes limiting a STRICT no-op near the solution, which is
+    what lets a simulator use "was limiting applied?" as a convergence signal
+    (the paper's footnote 3) instead of watching an O(e^2) perturbation.
+
+    The `vnew > 0.0` guard is a DELIBERATE addition to the listing, kept: with a
+    large `IS`, `vc` goes negative, and the paper's `vold <= 0` branch then
+    evaluates `log(vnew/VT)` at a negative `vnew` and returns nan.
     """
     if IS <= 0.0:
         return vnew
     vc = VT * toolkit.log(VT / (IS * 1.414213562))
+    if abs(vnew - vold) <= 2.0 * VT:
+        return vnew
     if vnew > vc and vnew > 0.0:
         if vold > 0.0:
             arg = 1.0 + (vnew - vold) / VT
@@ -65,7 +81,10 @@ def _pnjlim_branchless(vnew, vold, VT, IS, log):
 
     is_pos = IS > 0.0
     vc = VT * log(_floor(VT / (_floor(IS) * 1.414213562)))
-    active = (vnew > vc) * (vnew > 0.0)
+    ## The paper's `abs(vnew - vold) <= 2*VT` escape, as a select -- the two
+    ## implementations must agree bit for bit (see test_limiting parity).
+    small_step = abs(vnew - vold) <= 2.0 * VT
+    active = (vnew > vc) * (vnew > 0.0) * (1 - small_step)
     pos_old = vold > 0.0
     arg = 1.0 + (vnew - vold) / VT
     arg_pos = arg > 0.0
