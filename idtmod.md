@@ -846,12 +846,29 @@ batched path. Deliberate semantic differences from `Idtmod`:
 - Not supported on the symbolic toolkit (`atan2`/`floor`).
 
 **The honest trade-off, measured:** the scalar `Idtmod` remains the primary
-recommendation. Its constant-input phase is exact to the ulp (Phase 2), while the
-phasor integrates curvature, so its global phase error accumulates with cycle count
-(Gear-2 lag ≈ 1.3e-2 after 2 cycles at default reltol; reduced by tightening reltol).
-`IdtmodCircular` is the right tool when a globally smooth STATE matters more than
-ultimate phase accuracy — trajectories with no discontinuity anywhere, and a
-quadrature (cos, sin) pair available internally.
+recommendation. Head-to-head (1 V input, modulus 1, fixed dt = 0.01, ωh ≈ 0.063;
+congruence error at end of run):
+
+| integrator | element | 2 cycles | 20 cycles | 200 cycles |
+|---|---|---|---|---|
+| Euler | Idtmod | 2.2e-16 | 3.1e-13 | 3.7e-11 |
+| Euler | IdtmodCircular | 1.2e-3 | 1.3e-2 | 1.3e-1 |
+| Trapezoidal | Idtmod | 6.7e-16 | 3.2e-13 | 3.7e-11 |
+| Trapezoidal | IdtmodCircular | 6.7e-4 | 6.7e-3 | 6.7e-2 |
+| Gear2 | Idtmod | 1.4e-15 | 3.2e-13 | 3.7e-11 |
+| Gear2 | IdtmodCircular | 2.6e-3 | 2.6e-2 | 2.6e-1 |
+
+Two different error regimes. `Idtmod` has NO method error for constant input (a
+linear phase is integrated exactly by every LMS formula — note the integrator-
+independence); the residue is float noise of accumulation, ~N·ulp. `IdtmodCircular`
+pays a **carrier-rate tax**: per-cycle phase lag of the method at the oscillation
+frequency — Euler ≈ (ωh)²/6, trap ≈ (ωh)²/12, Gear2 ≈ (ωh)²/3 per cycle, matching
+the table exactly — accumulating linearly with cycle count, present even for
+constant input, reducible quadratically in h but never absent. At 200 cycles the
+gap is ~9 orders of magnitude. For accumulated-phase measurements (jitter, long
+PLL runs) the scalar form is the only right tool; `IdtmodCircular` is for when a
+globally smooth STATE matters more than ultimate phase accuracy — no discontinuity
+anywhere in the trajectory, and a quadrature (cos, sin) pair available internally.
 
 ### 7.7 References for this section
 
