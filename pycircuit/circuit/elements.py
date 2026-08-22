@@ -1006,14 +1006,17 @@ class Diode(Circuit):
     pcnr_junctions = ((0, 1),)
 
     @staticmethod
-    def pcnr_i(v, params, epar, toolkit):
-        """Terminal currents as a function of the device's OWN unknown."""
+    def pcnr_i(v, params, epar, toolkit, jn=0):
+        """Terminal currents as a function of the device's OWN unknown.
+
+        `jn` selects which of this device's junctions is being asked
+        about; a diode has one, so it is ignored here."""
         VT = toolkit.kboltzmann * epar.T / toolkit.qelectron
         i = params.get('IS', 1e-13) * (toolkit.exp(v / VT) - 1.0)
         return toolkit.array([i, -i])
 
     @staticmethod
-    def pcnr_didv(v, params, epar, toolkit):
+    def pcnr_didv(v, params, epar, toolkit, jn=0):
         """d(terminal currents)/dv -- the whole of this device's Jacobian
         contribution, which under PCNR lands in J_MNA/lim rather than in
         J_MNA/MNA."""

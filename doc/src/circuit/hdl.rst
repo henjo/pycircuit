@@ -120,8 +120,12 @@ Operators
 
 ``ddt``, ``idt``, ``idtmod``, ``ddx``, ``limexp``, ``white_noise``,
 ``flicker_noise``, ``vt()``/``TEMP`` (``$temperature``/``$vt``), ``TIME``
-(``$abstime``), and any sympy function — ``exp``, ``log``, ``tanh``,
-``sqrt``, ``Piecewise`` for conditionals.
+(``$abstime``), ``param_given`` (``$param_given``), ``ac_stim``,
+``limit_pnj`` (``$limit``), and any sympy function — ``exp``, ``log``,
+``tanh``, ``sqrt``, ``Piecewise`` for conditionals.  Two statements
+besides ``Contribution``: ``Cross(expr, direction)`` for ``@cross``
+events, and ``Contribution(b.V, 0)`` which **collapses** a branch,
+merging an internal node away.
 
 Two of these carry decisions worth knowing about:
 
@@ -177,7 +181,48 @@ Declare them with the ordinary
 :class:`~pycircuit.utilities.param.Parameter`; inside ``analog()`` the
 names are bound as symbols, and values are read from the *resolved*
 parameters at call time, so hierarchical expressions (``r='2*rbase'``)
-reach the generated code.
+reach the generated code.  Parameters may declare a range
+(``minval``/``maxval``, Verilog-A's ``from [lo:hi]``), which is checked
+both when the value is set and after a string expression resolves, and a
+class may declare ``aliasparams = {alias: canonical}`` for the
+alternative spellings compact models carry by the dozen.
+
+``param_given('rs')`` answers Verilog-A's ``$param_given``: did the user
+supply this parameter, as opposed to letting it default?  It is a
+*runtime* value -- the element compiles once per class, while givenness
+belongs to each instance -- so use it in a ``Piecewise``:
+
+.. exec-rst::
+
+    import sympy
+    import numpy as np
+    import pycircuit.circuit.circuit as cm
+    from pycircuit.circuit.toolkit import numeric
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       param_given)
+    from pycircuit.utilities.param import Parameter
+
+    cm.default_toolkit = numeric
+
+    class Rsel(Behavioural):
+        instparams = [Parameter(name='g1', desc='g', unit='S', default=1e-3),
+                      Parameter(name='g2', desc='g', unit='S', default=5e-3)]
+
+        @staticmethod
+        def analog(plus, minus):
+            b = Branch(plus, minus)
+            g = sympy.Piecewise((g2, param_given('g2') > 0.5), (g1, True))
+            return Contribution(b.I, g * b.V)
+
+    x = np.array([1.0, 0.0])
+    a = Rsel('p', 'n'); a.update_iparv()
+    b = Rsel('p', 'n', g2=5e-3); b.update_iparv()
+    print("Defaulted, the element conducts %.0e S; given ``g2=5e-3`` -- the"
+          % float(np.asarray(a.i(x), float)[0]))
+    print("same value it would have defaulted to -- it conducts %.0e S."
+          % float(np.asarray(b.i(x), float)[0]))
+    print("Givenness is not \"differs from the default\", which is exactly")
+    print("why the operator exists.")
 
 What you get for free
 ---------------------

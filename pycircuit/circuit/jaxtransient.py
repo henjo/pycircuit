@@ -1214,18 +1214,113 @@ def _junction_arrays(circuit):
     if not junctions:
         return None
     for _inst, element, _ra, _rb in junctions:
-        if hasattr(element, 'eval_q_pure') or hasattr(type(element), 'q'):
-            ## Mirror of the CPU augmented_system refusal: a charge-storing
-            ## junction's iq would be evaluated at the node voltage while the
-            ## current moves to v_lim -- the exact inconsistency PCNR removes,
-            ## reintroduced through the charge.
+        ## Does it ACTUALLY store charge?  `hasattr(element,
+        ## 'eval_q_pure')` is not that question -- every generated element
+        ## carries that method whether or not its charge vector is zero,
+        ## so testing for it refused perfectly good charge-free devices
+        ## (and blamed a charge they did not have).
+        ##
+        ## But neither is `element.C` alone: on THIS backend a batched
+        ## element's capacitance is the autodiff of `eval_q_pure`, and a
+        ## device may leave `C` at the base class's zeros while declaring
+        ## a real charge there.  So ask both, and probe rather than
+        ## inspect -- a nonlinear charge can vanish at one point.
+        _has_charge = False
+        ## Probes must have DISTINCT entries: a charge that depends on a
+        ## voltage difference vanishes identically on a uniform vector,
+        ## so probing with `full(n, 0.3)` silently reported "no charge"
+        ## for exactly the devices this guard exists to catch.
+        _probes = (np.linspace(0.1, 0.4, element.n),
+                   np.linspace(-0.2, 0.5, element.n))
+        try:
+            for _xp in _probes:
+                _C = np.asarray(element.C(_xp), dtype=float)
+                if np.any(np.abs(_C) > 0.0):
+                    _has_charge = True
+                    break
+        except Exception:
+            _has_charge = True          # cannot tell: refuse, do not guess
+        _qp = getattr(element, 'eval_q_pure', None)
+        if not _has_charge and _qp is not None:
+            from pycircuit.circuit.circuit import defaultepar as _dp
+            try:
+                for _xp in _probes:
+                    _q = np.asarray(_qp(_xp, {p_.name: getattr(
+                        element.iparv, p_.name) for p_ in element.instparams},
+                        _dp, element.toolkit), dtype=float)
+                    if np.any(np.abs(_q) > 0.0):
+                        _has_charge = True
+                        break
+            except Exception:
+                _has_charge = True      # cannot tell: refuse, do not guess
+        if _has_charge:
+            ## NOTE the asymmetry, which is deliberate: the CPU path now
+            ## ALLOWS a charge-storing participant (the Newton system is
+            ## consistent -- see pcnr.augmented_system and
+            ## tests/test_pcnr_charge.py).  The traced path keeps the
+            ## refusal because it rebuilds the junction itself from
+            ## (IS, VT) rather than calling the device, so it has no way
+            ## to leave that device's charge alone in the MNA block.
+            ## Lifting it here means teaching the traced loop to call the
+            ## device, which is the same work as the check below.
             if hasattr(element, 'eval_q_pure'):
                 raise NotImplementedError(
                     '%r has charge storage and a PCNR junction; not '
                     'implemented (same refusal as the CPU path).' % _inst)
+    ## THE TRACED PATH REBUILDS THE JUNCTION FROM (IS, VT) -- see
+    ## `_junction_terms`, which computes `IS*(exp(v/VT)-1)` with a single
+    ## global VT.  That is the textbook diode and nothing else, while a
+    ## device may declare a PCNR junction of any shape: a generated
+    ## element with its own exponential scale, or with several junctions,
+    ## or with saturation currents not named `IS` at all.
+    ##
+    ## `getattr(..., 'IS', 0.0)` used to paper over that: a device without
+    ## an `IS` parameter silently got `IS = 0`, i.e. a junction carrying
+    ## NO CURRENT, and the run returned a confident wrong answer.  So the
+    ## device is now asked what its junction actually does and refused if
+    ## the traced form cannot reproduce it.
+    from pycircuit.circuit.circuit import defaultepar as _depar
+    VT_probe = float(_depar.kboltzmann if hasattr(_depar, 'kboltzmann')
+                     else 1.38e-23) * float(getattr(_depar, 'T', 300.0)) \
+        / 1.602e-19
+    IS_list, seen = [], {}
+    for inst, element, _ra, _rb in junctions:
+        jn = seen.get(inst, 0)
+        seen[inst] = jn + 1
+        IS_j = float(getattr(element.iparv, 'IS', 0.0))
+        IS_list.append(IS_j)
+        pcnr_i = getattr(element, 'pcnr_i', None)
+        if pcnr_i is None:
+            continue
+        params = {q.name: getattr(element.iparv, q.name)
+                  for q in element.instparams}
+        for v_probe in (0.3, 0.6):
+            try:
+                got = float(np.asarray(
+                    pcnr_i(v_probe, params, _depar, element.toolkit,
+                           jn=jn), dtype=float)[0])
+            except Exception as exc:
+                raise NotImplementedError(
+                    '%r declares a PCNR junction whose pcnr_i could not be '
+                    'evaluated for the traced backend (%s); run this '
+                    'circuit on the CPU backend, or with pcnr=False.'
+                    % (inst, exc)) from exc
+            want = IS_j * (np.exp(v_probe / VT_probe) - 1.0)
+            if not np.isclose(got, want, rtol=1e-6,
+                              atol=1e-30 + 1e-6 * abs(want)):
+                raise NotImplementedError(
+                    "%r declares a PCNR junction that the traced backend "
+                    "cannot reproduce: it rebuilds every junction as "
+                    "IS*(exp(v/VT)-1) with one global VT, and this device "
+                    "gives %.6g A at %.2f V where that form gives %.6g A "
+                    "(IS=%.6g). A device with its own exponential scale, "
+                    "with several junctions, or whose saturation current "
+                    "is not the `IS` parameter is not expressible there "
+                    "yet. Use the CPU backend, or pcnr=False."
+                    % (inst, got, v_probe, want, IS_j))
     ra = jnp.array([j[2] for j in junctions], dtype=jnp.int32)
     rb = jnp.array([j[3] for j in junctions], dtype=jnp.int32)
-    IS = jnp.array([float(getattr(j[1].iparv, 'IS', 0.0)) for j in junctions])
+    IS = jnp.array(IS_list)
     return ra, rb, IS
 
 

@@ -33,7 +33,7 @@ from pycircuit.circuit.transient import Transient
 from pycircuit.circuit.elements import SubCircuit, VS, VSin, R
 from pycircuit.circuit import pcnr as _pcnr
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution, ddt,
-                                   vt)
+                                   limexp, vt)
 from pycircuit.utilities.param import Parameter
 
 
@@ -231,3 +231,171 @@ def test_limexp_is_what_makes_a_pcnr_participant_robust():
     with pytest.raises(Exception):
         solve(diode(sympy.exp), True)
     assert_allclose(solve(diode(limexp), True), v_ref, rtol=1e-5)
+
+
+## ------------------------------------------------------------------------
+## Phase A1, multi-junction half: a device that owns SEVERAL limited
+## quantities -- which is the case PCNR's clash argument is actually about.
+
+
+class TwoJunction(Behavioural):
+    """Base-emitter and base-collector junctions sharing the base.
+
+    The BJT shape, and the case that could not be expressed at all before
+    the junction index reached the device protocol: the layer called
+    ``pcnr_i(v, ...)`` with no way to say WHICH junction it was asking
+    about.  Both junctions share the base node, so this is precisely the
+    situation PCNR exists for -- two limited quantities over overlapping
+    terminals, which under classical limiting fight over the same node.
+    """
+    instparams = [Parameter(name='ISE', desc='Ise', unit='A', default=1e-14),
+                  Parameter(name='ISC', desc='Isc', unit='A', default=1e-15)]
+
+    @staticmethod
+    def analog(base, emitter, collector):
+        be, bc = Branch(base, emitter), Branch(base, collector)
+        return (Contribution(be.I, ISE * (limexp(be.V / vt()) - 1)),  # noqa
+                Contribution(bc.I, ISC * (limexp(bc.V / vt()) - 1)))  # noqa
+
+
+def _two_junction_circuit():
+    pycircuit.circuit.circuit.default_toolkit = numeric
+    c = SubCircuit()
+    nb, ne, nc = c.add_node('b'), c.add_node('e'), c.add_node('c')
+    c['vb'] = VS(nb, gnd, v=0.75)
+    c['Re'] = R(ne, gnd, r=100.0)
+    c['Rc'] = R(nc, gnd, r=100.0)
+    c['Q'] = TwoJunction(nb, ne, nc)
+    c.update_iparv()
+    return c
+
+
+def test_two_junction_device_declares_both():
+    """Both junctions are declared, sharing terminal 0 (the base)."""
+    assert TwoJunction.pcnr_junctions == ((0, 1), (0, 2))
+    c = _two_junction_circuit()
+    js = _pcnr.pcnr_junctions(c)
+    assert len(js) == 2
+    assert all(j[0] == 'Q' for j in js)
+    ## They share the base row and differ in the other.
+    assert js[0][2] == js[1][2] and js[0][3] != js[1][3]
+
+
+def test_two_junction_device_answers_per_junction():
+    """``jn`` selects which junction: the two saturation currents differ
+    by 10x, so the returned currents must too."""
+    from pycircuit.circuit.circuit import defaultepar
+    params = {'ISE': 1e-14, 'ISC': 1e-15}
+    i0 = np.asarray(TwoJunction.pcnr_i(0.6, params, defaultepar, numeric,
+                                       jn=0), float)
+    i1 = np.asarray(TwoJunction.pcnr_i(0.6, params, defaultepar, numeric,
+                                       jn=1), float)
+    assert_allclose(i0[0] / i1[0], 10.0, rtol=1e-9)
+    assert_allclose(i0[1], -i0[0], rtol=1e-12)
+    g0 = np.asarray(TwoJunction.pcnr_didv(0.6, params, defaultepar, numeric,
+                                          jn=0), float)
+    g1 = np.asarray(TwoJunction.pcnr_didv(0.6, params, defaultepar, numeric,
+                                          jn=1), float)
+    assert_allclose(g0[0] / g1[0], 10.0, rtol=1e-9)
+    ## And the limiter is asked per junction too (different IS -> different
+    ## vc, so the limited value differs).
+    l0 = float(TwoJunction.pcnr_limit(5.0, 0.7, params, defaultepar,
+                                      numeric, jn=0))
+    l1 = float(TwoJunction.pcnr_limit(5.0, 0.7, params, defaultepar,
+                                      numeric, jn=1))
+    assert np.isfinite(l0) and np.isfinite(l1)
+
+
+def test_two_junction_device_solves_with_and_without_pcnr():
+    c = _two_junction_circuit()
+    off = DC(c, toolkit=numeric, pcnr=False).solve()
+    on = DC(c, toolkit=numeric, pcnr=True).solve()
+    for node in ('e', 'c'):
+        assert_allclose(float(on.v(node)), float(off.v(node)), rtol=1e-5)
+    ## Both junctions are actually conducting, so this exercises the
+    ## shared-base case rather than a degenerate one.
+    assert float(off.v('e')) > 0.05
+    assert float(off.v('c')) > 0.02
+
+
+def test_jax_pcnr_refuses_junctions_it_cannot_reproduce():
+    """The traced backend rebuilds every junction itself as
+    ``IS*(exp(v/VT)-1)`` with one global VT -- it does not call the
+    device.  So it must REFUSE any junction of a different shape.
+
+    It used to read ``getattr(element.iparv, 'IS', 0.0)``, which papered
+    over exactly this: a device whose saturation current is not named
+    ``IS`` -- the two-junction element above has ``ISE``/``ISC`` -- got
+    ``IS = 0``, i.e. a junction carrying NO CURRENT, and the run returned
+    a confident wrong answer.
+    """
+    pytest.importorskip('jax')
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import _junction_arrays
+    from pycircuit.circuit.elements import Diode
+
+    saved = pycircuit.circuit.circuit.default_toolkit
+    try:
+        pycircuit.circuit.circuit.default_toolkit = jaxtoolkit
+
+        ## The hand-written diode IS that shape, so it is accepted.
+        c = SubCircuit(toolkit=jaxtoolkit)
+        na, nb = c.add_node('a'), c.add_node('b')
+        c['vs'] = VS(na, gnd, v=1.0, toolkit=jaxtoolkit)
+        c['R'] = R(na, nb, r=1e3, toolkit=jaxtoolkit)
+        c['D'] = Diode(nb, gnd, IS=1e-13, toolkit=jaxtoolkit)
+        c.update_iparv()
+        assert _junction_arrays(c) is not None
+
+        ## The two-junction element is not, and says so instead of
+        ## silently computing zero junction current.
+        c2 = SubCircuit(toolkit=jaxtoolkit)
+        nb2, ne, nc = (c2.add_node('b'), c2.add_node('e'), c2.add_node('c'))
+        c2['vb'] = VS(nb2, gnd, v=0.75, toolkit=jaxtoolkit)
+        c2['Re'] = R(ne, gnd, r=100.0, toolkit=jaxtoolkit)
+        c2['Rc'] = R(nc, gnd, r=100.0, toolkit=jaxtoolkit)
+        c2['Q'] = TwoJunction(nb2, ne, nc, toolkit=jaxtoolkit)
+        c2.update_iparv()
+        with pytest.raises(NotImplementedError, match='cannot reproduce'):
+            _junction_arrays(c2)
+    finally:
+        pycircuit.circuit.circuit.default_toolkit = saved
+
+
+def test_jax_charge_refusal_asks_the_C_matrix():
+    """The traced path's charge refusal must test whether the device
+    ACTUALLY stores charge, not whether it happens to have an
+    ``eval_q_pure`` method -- every generated element has one, charge or
+    not, so the method test refused charge-free devices and blamed a
+    charge they did not have."""
+    pytest.importorskip('jax')
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import _junction_arrays
+
+    saved = pycircuit.circuit.circuit.default_toolkit
+    try:
+        pycircuit.circuit.circuit.default_toolkit = jaxtoolkit
+        c = SubCircuit(toolkit=jaxtoolkit)
+        na, nb = c.add_node('a'), c.add_node('b')
+        c['vs'] = VS(na, gnd, v=1.0, toolkit=jaxtoolkit)
+        c['R'] = R(na, nb, r=1e3, toolkit=jaxtoolkit)
+        ## A generated, charge-FREE diode: has eval_q_pure, stores nothing.
+        from pycircuit.circuit.hdl import Behavioural as _B
+        class _D(_B):
+            instparams = [Parameter(name='IS', desc='Is', unit='A',
+                                    default=1e-13)]
+
+            @staticmethod
+            def analog(plus, minus):
+                b = Branch(plus, minus)
+                return Contribution(b.I,
+                                    IS * (sympy.exp(b.V / vt()) - 1))  # noqa
+        el = _D(nb, gnd, IS=1e-13, toolkit=jaxtoolkit)
+        c['D'] = el
+        c.update_iparv()
+        assert hasattr(el, 'eval_q_pure')          # the misleading signal
+        assert not np.any(np.abs(np.asarray(el.C(np.zeros(el.n)),
+                                            float)) > 0)
+        assert _junction_arrays(c) is not None     # accepted, correctly
+    finally:
+        pycircuit.circuit.circuit.default_toolkit = saved

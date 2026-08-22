@@ -690,3 +690,388 @@ def test_subclass_changing_params_without_analog_is_refused():
     el.update_iparv()
     assert_allclose(np.asarray(el.G(np.zeros(2)), float)[0, 0], 2e-3,
                     rtol=1e-12)
+
+
+## ------------------------------------------------------------------------
+## Phase B (hdl.md sec. 9): the model surface -- $param_given, parameter
+## ranges, aliasparam, node collapse, AC excitation.
+
+
+def test_param_given_selects_a_formulation():
+    """`$param_given` is a runtime value, so one compiled class serves
+    instances that supplied the parameter and instances that did not --
+    which is the whole point, since compilation happens once per class."""
+    import sympy
+    from pycircuit.utilities.param import Parameter
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       param_given)
+
+    class Rsel(Behavioural):
+        instparams = [Parameter(name='g1', desc='g', unit='S', default=1e-3),
+                      Parameter(name='g2', desc='g', unit='S', default=5e-3)]
+
+        @staticmethod
+        def analog(plus, minus):
+            b = Branch(plus, minus)
+            g = sympy.Piecewise((g2, param_given('g2') > 0.5),   # noqa: F821
+                                (g1, True))                      # noqa: F821
+            return Contribution(b.I, g * b.V)
+
+    pycircuit.circuit.circuit.default_toolkit = numeric
+    x = np.array([1.0, 0.0])
+
+    default = Rsel('p', 'n'); default.update_iparv()
+    assert_allclose(float(np.asarray(default.i(x), float)[0]), 1e-3,
+                    rtol=1e-12)
+
+    ## Same value as the default, but GIVEN -- givenness is not "differs
+    ## from the default", which is exactly why the operator exists.
+    same = Rsel('p', 'n', g2=5e-3); same.update_iparv()
+    assert_allclose(float(np.asarray(same.i(x), float)[0]), 5e-3, rtol=1e-12)
+
+    other = Rsel('p', 'n', g2=2e-3); other.update_iparv()
+    assert_allclose(float(np.asarray(other.i(x), float)[0]), 2e-3, rtol=1e-12)
+
+
+def test_parameter_range_is_enforced():
+    from pycircuit.utilities.param import Parameter
+
+    p = Parameter(name='w', desc='width', unit='m', default=1e-6,
+                  minval=0.0, maxval=1e-3)
+    from pycircuit.utilities.param import ParameterDict
+    d = ParameterDict(p)
+    d.set(w=5e-4)
+    assert d.get('w') == 5e-4
+    with pytest.raises(ValueError, match='outside its declared range'):
+        d.set(w=2e-3)
+    with pytest.raises(ValueError, match='outside its declared range'):
+        d.set(w=-1.0)
+
+
+def test_aliasparam():
+    from pycircuit.utilities.param import Parameter
+    from pycircuit.circuit.hdl import Behavioural, Branch, Contribution
+
+    class D(Behavioural):
+        instparams = [Parameter(name='IS', desc='Is', unit='A',
+                                default=1e-13)]
+        aliasparams = {'isat': 'IS', 'js': 'IS'}
+
+        @staticmethod
+        def analog(plus, minus):
+            b = Branch(plus, minus)
+            return Contribution(b.I, IS * b.V)          # noqa: F821
+
+    pycircuit.circuit.circuit.default_toolkit = numeric
+    x = np.array([1.0, 0.0])
+    for kw in ({'IS': 3e-13}, {'isat': 3e-13}, {'js': 3e-13}):
+        el = D('p', 'n', **kw); el.update_iparv()
+        assert_allclose(float(np.asarray(el.i(x), float)[0]), 3e-13,
+                        rtol=1e-12)
+    with pytest.raises(ValueError, match='alias'):
+        D('p', 'n', IS=1e-13, isat=2e-13)
+
+
+def test_node_collapse_removes_the_internal_node():
+    """`V(a,b) <+ 0` on an internal node merges it away, so the optional
+    series resistance idiom costs nothing when the resistance is absent."""
+    import sympy
+    from pycircuit.utilities.param import Parameter
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Node,
+                                       Contribution)
+
+    def build(collapse):
+        class _D(Behavioural):
+            instparams = [Parameter(name='IS', desc='Is', unit='A',
+                                    default=1e-13)]
+
+            @staticmethod
+            def analog(plus, minus):
+                ia = Node('ia')
+                b_rs, b_j = Branch(plus, ia), Branch(ia, minus)
+                junction = Contribution(
+                    b_j.I, IS * (sympy.exp(b_j.V / 0.02585) - 1))  # noqa
+                if collapse:
+                    return (junction, Contribution(b_rs.V, 0))
+                return (junction,
+                        Contribution(b_rs.I, b_rs.V / 1e-9))   # tiny R
+        return _D
+
+    pycircuit.circuit.circuit.default_toolkit = numeric
+    col = build(True)('p', 'n'); col.update_iparv()
+    unc = build(False)('p', 'n'); unc.update_iparv()
+
+    ## Collapsed: the internal node is gone entirely.
+    assert col.n == 2, col.n
+    assert 'ia' not in [str(nd) for nd in col.nodes]
+    ## Uncollapsed: the node (and its row) survives.
+    assert unc.n == 3, unc.n
+
+    ## And the collapsed element is the plain junction.
+    v = 0.3
+    got = float(np.asarray(col.i(np.array([v, 0.0])), float)[0])
+    assert_allclose(got, 1e-13 * (np.exp(v / 0.02585) - 1), rtol=1e-9)
+
+
+def test_ac_stim_drives_a_small_signal_analysis():
+    """`ac_stim` is live in AC and identically zero elsewhere -- so a
+    behavioural element can BE a small-signal source."""
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       ac_stim)
+    from pycircuit.circuit.analysis_ss import AC
+
+    class IAC(Behavioural):
+        instparams = []
+
+        @staticmethod
+        def analog(plus, minus):
+            b = Branch(plus, minus)
+            return Contribution(b.I, ac_stim(1.0))
+
+    pycircuit.circuit.circuit.default_toolkit = numeric
+    el = IAC('p', 'n'); el.update_iparv()
+    ## Zero outside AC ...
+    assert_allclose(np.asarray(el.u(0.0), float), np.zeros(2), atol=0)
+    ## ... and a unit current in AC.
+    uac = np.asarray(el.u(0.0, analysis='ac'), complex)
+    assert_allclose(uac, np.array([1.0, -1.0], dtype=complex), atol=1e-15)
+
+    ## In a circuit: 1 A into 1 kohm is 1 kV.
+    c = SubCircuit()
+    na = c.add_node('a')
+    c['I1'] = IAC(gnd, na)
+    c['R1'] = R(na, gnd, r=1e3)
+    res = AC(c, toolkit=numeric).solve(freqs=1e3)
+    assert_allclose(abs(complex(res.v('a'))), 1e3, rtol=1e-9)
+
+
+## ------------------------------------------------------------------------
+## Phase A2 (hdl.md sec. 9): $limit, the fallback where PCNR cannot go.
+
+
+def _limited_diode(use_limit):
+    import sympy
+    from pycircuit.utilities.param import Parameter
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       limexp, limit_pnj, vt)
+
+    class _D(Behavioural):
+        instparams = [Parameter(name='IS', desc='Is', unit='A',
+                                default=1e-13)]
+
+        @staticmethod
+        def analog(plus, minus):
+            b = Branch(plus, minus)
+            v = limit_pnj(b.V, IS, vt()) if use_limit else b.V  # noqa: F821
+            return Contribution(b.I, IS * (limexp(v / vt()) - 1))  # noqa
+    return _D
+
+
+def test_limit_pnj_is_generated_only_when_asked():
+    assert hasattr(_limited_diode(True), 'limit')
+    assert not hasattr(_limited_diode(False), 'limit')
+
+
+def test_limit_pnj_compresses_a_wild_step():
+    """The point of a limiter: an undamped Newton step from a lightly
+    biased point overshoots enormously, and the model is then evaluated
+    somewhere it has no business being."""
+    pycircuit.circuit.circuit.default_toolkit = numeric
+    el = _limited_diode(True)('p', 'n', IS=1e-13)
+    el.update_iparv()
+    x0 = np.array([0.1, 0.0])
+    x = np.array([5.0, 0.0])                    # the wild step
+    out = el.limit(x, x0)
+    v = float(out[0] - out[1])
+    assert 0.1 < v < 0.5, v                     # compressed, not clamped
+    ## State-free: the input is not mutated, a limited COPY comes back.
+    assert x[0] == 5.0
+    ## A small step passes through untouched (the paper's 2*VT escape).
+    small = el.limit(np.array([0.11, 0.0]), x0)
+    assert_allclose(float(small[0] - small[1]), 0.11, rtol=1e-12)
+
+
+def test_limit_pnj_changes_the_path_not_the_solution():
+    """The defining property of limiting: it moves where the next
+    Jacobian is taken, never where the solution is."""
+    pycircuit.circuit.circuit.default_toolkit = numeric
+
+    def solve(cls, vsrc):
+        c = SubCircuit()
+        na, nb = c.add_node('a'), c.add_node('b')
+        c['vs'] = VS(na, gnd, v=vsrc)
+        c['R'] = R(na, nb, r=1e3)
+        c['D'] = cls(nb, gnd, IS=1e-13)
+        return float(DC(c, toolkit=numeric).solve().v('b'))
+
+    for vsrc in (5.0, 100.0):
+        plain = solve(_limited_diode(False), vsrc)
+        limited = solve(_limited_diode(True), vsrc)
+        assert_allclose(limited, plain, rtol=1e-7)
+        ## and it is a real forward-biased junction, not a trivial point
+        assert 0.5 < plain < 0.9
+
+
+## ------------------------------------------------------------------------
+## Phase C1 (hdl.md sec. 9): @cross events.
+
+
+def _comparator(use_cross):
+    import sympy
+    from pycircuit.utilities.param import Parameter
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       Cross)
+
+    class _Comp(Behavioural):
+        instparams = [Parameter(name='vref', desc='ref', unit='V',
+                                default=0.0),
+                      Parameter(name='gain', desc='g', unit='', default=50.0)]
+
+        @staticmethod
+        def analog(inp, inn, outp, outn):
+            bi, bo = Branch(inp, inn), Branch(outp, outn)
+            out = sympy.tanh(gain * (bi.V - vref))          # noqa: F821
+            sts = (Contribution(bo.V, out),)
+            if use_cross:
+                sts = sts + (Cross(bi.V - vref, 0),)        # noqa: F821
+            return sts
+    return _Comp
+
+
+def _run_comparator(use_cross):
+    import warnings
+    from pycircuit.circuit.elements import VSin
+    pycircuit.circuit.circuit.default_toolkit = numeric
+    c = SubCircuit()
+    ni, no = c.add_node('i'), c.add_node('o')
+    c['vs'] = VSin(ni, gnd, va=1.0, freq=1e3)
+    c['X'] = _comparator(use_cross)(ni, gnd, no, gnd, vref=0.0)
+    c['Rl'] = R(no, gnd, r=1e3)
+    tran = Transient(c, toolkit=numeric, uic=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = tran.solve(tend=2e-3, timestep=1e-6)
+    t = np.asarray(res.v('o').x[0], float)
+    edges = (0.5e-3, 1.0e-3, 1.5e-3)          # zero crossings of the sine
+    nearest = [float(np.min(np.abs(t - te))) for te in edges]
+    return res.statistics, nearest
+
+
+def test_cross_lands_timepoints_on_the_crossing():
+    """A declared crossing becomes a breakpoint, so the solver puts a
+    timepoint on the corner instead of discovering it by rejection.
+
+    Measured at introduction: without ``Cross`` the nearest sample to an
+    edge is 5.5e-6 to 1.4e-5 s away; with it, 5.4e-7 to 1.9e-6 s -- about
+    an order of magnitude closer, for ONE extra accepted step and no
+    rejections.  It is a first-order prediction, so it brackets the
+    corner rather than landing exactly on it, which is all the
+    break-step machinery needs.
+    """
+    s_off, near_off = _run_comparator(False)
+    s_on, near_on = _run_comparator(True)
+
+    assert s_off.breakpoints_hit == 0
+    assert s_on.breakpoints_hit >= 3            # one per edge crossed
+    assert max(near_on) < max(near_off) / 3.0, (near_on, near_off)
+    ## and it does not cost a step explosion
+    assert s_on.accepted_steps < s_off.accepted_steps * 1.5
+    assert s_on.rejected_steps <= s_off.rejected_steps + 2
+
+
+def test_cross_predictor_contract():
+    """`next_event` must be inf before two accepted points exist, must
+    respect the requested direction, and must return strictly future
+    times (the contract SubCircuit.next_event relies on)."""
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       Cross)
+    from pycircuit.utilities.param import Parameter
+
+    class Rising(Behavioural):
+        instparams = [Parameter(name='g', desc='g', unit='S', default=1e-3)]
+
+        @staticmethod
+        def analog(plus, minus):
+            b = Branch(plus, minus)
+            return (Contribution(b.I, g * b.V),        # noqa: F821
+                    Cross(b.V, +1))
+
+    pycircuit.circuit.circuit.default_toolkit = numeric
+    el = Rising('p', 'n')
+    el.update_iparv()
+    assert el.next_event(0.0) == np.inf            # nothing accepted yet
+    el.accept_step(0.0, np.array([-2.0, 0.0]))
+    assert el.next_event(0.0) == np.inf            # only one point
+    el.accept_step(1.0, np.array([-1.0, 0.0]))     # rising 1 V/s
+    assert_allclose(el.next_event(1.0), 2.0, rtol=1e-9)   # reaches 0 at t=2
+
+    ## Falling motion must NOT trigger a rising-only crossing.
+    el.reset_state()
+    el.accept_step(0.0, np.array([2.0, 0.0]))
+    el.accept_step(1.0, np.array([1.0, 0.0]))
+    assert el.next_event(1.0) == np.inf
+
+
+## ------------------------------------------------------------------------
+## Phase C2 (hdl.md sec. 9): the symbolic toolkit.
+
+
+def test_symbolic_toolkit_gets_exact_expressions():
+    """Under a symbolic toolkit the element must return sympy, exactly --
+    not the output of a numpy lambda that happens to survive symbols by
+    duck typing.  The difference is invisible for plain arithmetic and
+    fatal the moment the expression contains a `floor` or a `Piecewise`
+    (the wrap of an idtmod, the branch of a limexp)."""
+    import sympy
+    from pycircuit.circuit.toolkit import symbolic
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       limexp, ddt)
+    from pycircuit.utilities.param import Parameter
+
+    saved = pycircuit.circuit.circuit.default_toolkit
+    try:
+        pycircuit.circuit.circuit.default_toolkit = symbolic
+
+        class RC(Behavioural):
+            instparams = [Parameter(name='g', desc='g', unit='S',
+                                    default=1e-3),
+                          Parameter(name='c', desc='c', unit='F',
+                                    default=1e-9)]
+
+            @staticmethod
+            def analog(plus, minus):
+                b = Branch(plus, minus)
+                return Contribution(b.I, g * b.V + ddt(c * b.V))  # noqa
+
+        el = RC('p', 'n', toolkit=symbolic)
+        el.update_iparv()
+        v1, v2 = sympy.symbols('v1 v2')
+        i = el.i([v1, v2])
+        assert sympy.simplify(i[0] - 1e-3 * (v1 - v2)) == 0
+        q = el.q([v1, v2])
+        assert sympy.simplify(q[0] - 1e-9 * (v1 - v2)) == 0
+        G = el.G([v1, v2])
+        assert sympy.simplify(G[0, 0] - 1e-3) == 0
+        C = el.C([v1, v2])
+        assert sympy.simplify(C[0, 0] - 1e-9) == 0
+
+        ## A Piecewise survives symbolically -- this is what the numpy
+        ## path cannot do.
+        class Lim(Behavioural):
+            instparams = [Parameter(name='IS', desc='Is', unit='A',
+                                    default=1e-13)]
+
+            @staticmethod
+            def analog(plus, minus):
+                b = Branch(plus, minus)
+                return Contribution(b.I, IS * limexp(b.V))    # noqa: F821
+
+        el2 = Lim('p', 'n', toolkit=symbolic)
+        el2.update_iparv()
+        expr = el2.i([v1, v2])[0]
+        assert expr.has(sympy.Piecewise)
+        ## and it evaluates to the right number when the symbols are fixed
+        got = float(expr.subs({v1: 0.5, v2: 0.0}))
+        assert_allclose(got, 1e-13 * np.exp(0.5), rtol=1e-12)
+    finally:
+        pycircuit.circuit.circuit.default_toolkit = saved

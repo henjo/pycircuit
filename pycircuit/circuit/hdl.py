@@ -166,6 +166,75 @@ def limexp(x, x0=80.0):
                            (sympy.exp(x0) * (1 + x - x0), True))
 
 
+class _Limit(sympy.Function):
+    """Marker for a limited probe; see :func:`limit_pnj`."""
+    nargs = (3,)
+
+
+def limit_pnj(probe, IS, VT):
+    """Verilog-A's ``$limit(probe, "pnjlim", ...)``: ask the simulator to
+    bound this branch voltage's per-iteration excursion.
+
+    ``probe`` must be a branch potential (``b.V``); ``IS`` and ``VT`` are
+    the junction's saturation current and thermal voltage, which is what
+    SPICE's ``pnjlim`` needs to place its critical voltage.  The
+    expression evaluates to the probe itself, so it is written inline::
+
+        Contribution(b.I, IS * (limexp(limit_pnj(b.V, IS, vt()) / vt()) - 1))
+
+    The generated element implements the STATE-FREE limiter convention
+    (``SubCircuit.limit``): it returns a limited copy of the solution
+    sub-vector rather than keeping a private linearisation point.  That
+    is what the codebase prefers and what a traced backend could ever
+    support -- and it means the limiter moves the *solution*, so the
+    residual and Jacobian are never taken at different points, which is
+    the inconsistency classical limiting is criticised for.
+
+    Prefer PCNR (``pcnr=True``) where the element qualifies: it makes the
+    limited quantity an explicit unknown owned by this device, so two
+    devices sharing a node cannot fight over it.  ``limit_pnj`` is the
+    fallback for models PCNR cannot take, and for ordinary runs, where
+    ``pcnr=False`` is the default.
+    """
+    if not (isinstance(probe, Quantity) and probe.isbranch
+            and probe.quantity == 'V'):
+        raise ValueError('limit_pnj limits a branch potential (b.V); '
+                         'got %r' % (probe,))
+    return _Limit(probe, sympy.sympify(IS), sympy.sympify(VT))
+
+
+def param_given(name):
+    """Verilog-A's ``$param_given(name)``: 1.0 when the instance was given
+    that parameter explicitly, 0.0 when it fell back to its default.
+
+    A *runtime* value, not a compile-time one, because the element is
+    compiled once per class while givenness is a property of each
+    instance.  Use it in a ``Piecewise`` exactly as Verilog-A uses it in
+    an ``if``::
+
+        rs_eff = sympy.Piecewise((rs, param_given('rs') > 0.5), (0.0, True))
+
+    By call count this is the most-used system function in real compact
+    models, which is why it is here before more glamorous operators.
+    """
+    return sympy.Symbol('_hdl_given_%s' % name, real=True)
+
+
+def ac_stim(mag=1.0, phase=0.0):
+    """Verilog-A's ``ac_stim``: a small-signal excitation, live in AC
+    analysis and identically zero everywhere else.
+
+    Contributed like any other term -- ``Contribution(b.I, ac_stim(1.0))``
+    -- and routed to an AC-only source vector, so a behavioural element
+    can BE a small-signal stimulus rather than merely transparent to one.
+    """
+    return _AcStim(sympy.sympify(mag), sympy.sympify(phase))
+
+
+class _AcStim(sympy.Function):
+    nargs = (2,)
+
+
 def ddx(expr, probe):
     """Verilog-A ``ddx(expr, probe)``: the symbolic partial derivative of
     ``expr`` with respect to a ``V``/``I`` probe, other probes held fixed.
@@ -242,6 +311,46 @@ class Statement:
     pass
 
 
+class Cross(Statement):
+    """Verilog-A's ``@(cross(expr, direction))``: ask the transient solver
+    to place a timepoint where ``expr`` crosses zero.
+
+    ``direction`` is ``+1`` (rising), ``-1`` (falling) or ``0`` (either),
+    as in the LRM.  Returned alongside contributions::
+
+        return (Contribution(b_out.V, ...),
+                Cross(b_in.V - vref, +1))
+
+    The generated element predicts the crossing by linear extrapolation
+    from the last two ACCEPTED points and publishes it through
+    ``next_event``, which is the contract ``SubCircuit.next_event`` polls
+    and the same first-order prediction gnucap uses.  A prediction only
+    has to BRACKET the corner: the solver's break-step machinery lands on
+    it and drops the integration order across it.
+
+    Without this the controller finds a comparator's edge by rejecting
+    steps until the local error is small enough -- correct, but it smears
+    the corner and costs a rejection storm at every transition.
+    """
+
+    def __init__(self, expr, direction=0):
+        if direction not in (-1, 0, 1):
+            raise ValueError('cross direction must be -1, 0 or +1')
+        self.expr = sympy.sympify(expr)
+        self.direction = direction
+
+    def nodes(self):
+        nodes = set()
+        for atom in self.expr.atoms():
+            if isinstance(atom, Quantity):
+                if atom.isbranch:
+                    nodes.add(atom.branch_or_node.plus)
+                    nodes.add(atom.branch_or_node.minus)
+                else:
+                    nodes.add(atom.branch_or_node)
+        return nodes
+
+
 class Contribution(Statement):
     """``Contribution(b.I, expr)`` or ``Contribution(b.V, expr)`` --
     the DSL form of Verilog-A's ``<+``."""
@@ -300,8 +409,28 @@ def _split_terms(rhs, xset):
     rhs = sympy.expand(rhs)
     terms = rhs.args if rhs.is_Add else (rhs,)
 
-    iterms, qterms, uterms, nterms = [], [], [], []
+    iterms, qterms, uterms, nterms, acterms = [], [], [], [], []
     for term in terms:
+        acs = term.atoms(_AcStim)
+        if acs:
+            if isinstance(term, _AcStim):
+                app, coeff = term, sympy.Integer(1)
+            elif term.is_Mul:
+                apps = [f for f in term.args if isinstance(f, _AcStim)]
+                rest = [f for f in term.args if not isinstance(f, _AcStim)]
+                coeff = sympy.Mul(*rest)
+                if len(apps) != 1 or not xfree(coeff):
+                    raise NotImplementedError(
+                        'ac_stim may appear as a term or scaled by an '
+                        'x-independent factor; %r is neither' % (term,))
+                app = apps[0]
+            else:
+                raise NotImplementedError(
+                    'ac_stim may only appear additively: %r' % (term,))
+            mag, phase = app.args
+            acterms.append(coeff * mag * sympy.exp(sympy.I * phase
+                                                   * sympy.pi / 180))
+            continue
         noises = term.atoms(white_noise) | term.atoms(flicker_noise)
         if noises:
             if isinstance(term, (white_noise, flicker_noise)):
@@ -352,7 +481,7 @@ def _split_terms(rhs, xset):
         else:
             iterms.append(term)
     return (sympy.Add(*iterms), sympy.Add(*qterms), sympy.Add(*uterms),
-            nterms)
+            nterms, sympy.Add(*acterms))
 
 
 def generate_code(cls):
@@ -376,6 +505,8 @@ def generate_code(cls):
     statements = analogfunc(*terminalnodes)
     if isinstance(statements, Statement):
         statements = (statements,)
+    crossings = [st for st in statements if isinstance(st, Cross)]
+    statements = [st for st in statements if not isinstance(st, Cross)]
 
     ## ------------------------------------------------------------------
     ## Pass 1 -- inventory: nodes, branches with current unknowns (every
@@ -387,6 +518,8 @@ def generate_code(cls):
     def branch_key(branch):
         return (branch.plus.name, branch.minus.name)
 
+    for st in crossings:
+        nodes.update(st.nodes())
     for st in statements:
         nodes.update(st.nodes())
         if st.lhs.quantity == 'V':
@@ -400,6 +533,74 @@ def generate_code(cls):
                 if key not in ibranch_keys:
                     ibranch_keys.add(key)
                     vbranches.append(atom.branch_or_node)
+
+    ## ------------------------------------------------------------------
+    ## NODE COLLAPSE.  `V(a,b) <+ 0` is Verilog-A's way of shorting a
+    ## branch, and the standard idiom for an optional series resistance:
+    ##
+    ##     if (rs) I(a, ia) <+ V(a, ia)/rs;  else V(a, ia) <+ 0;
+    ##
+    ## Rather than carry a zero-volt source (a real branch unknown and a
+    ## row for it), the two nodes become one.  Restricted, as gnucap
+    ## restricts it, to UNCONDITIONAL contributions -- a collapse that
+    ## depends on the operating point would change the sparsity pattern
+    ## per iteration, which is a different and much larger feature.
+    ##
+    ## Only an INTERNAL node can be absorbed: terminals belong to the
+    ## parent circuit's node map and this element cannot merge them.  A
+    ## `V <+ 0` between two terminals therefore stays a zero-volt source,
+    ## which is exactly what it means and costs one unknown.
+    collapse = {}
+    kept_statements = []
+    for st in statements:
+        b = st.lhs.branch_or_node
+        if st.lhs.quantity == 'V' and sympy.sympify(st.rhs) == 0:
+            p_, m_ = b.plus, b.minus
+            p_int = p_ not in terminalnodes
+            m_int = m_ not in terminalnodes
+            if m_int:
+                collapse[m_.name] = p_.name
+                continue
+            if p_int:
+                collapse[p_.name] = m_.name
+                continue
+        kept_statements.append(st)
+    if collapse:
+        ## Chase chains (a -> b -> terminal) to a fixed point.
+        for _ in range(len(collapse) + 1):
+            collapse = {k: collapse.get(v, v) for k, v in collapse.items()}
+        statements = kept_statements
+        alias = {}
+        for nd in list(nodes):
+            tgt = collapse.get(nd.name)
+            if tgt is not None:
+                alias[nd] = next(o for o in nodes if o.name == tgt)
+        nodes = {alias.get(nd, nd) for nd in nodes}
+        ## Rewrite the surviving statements' node references.
+        for st in statements:
+            subs_q = {}
+            for atom in st.rhs.atoms(Quantity):
+                bn = atom.branch_or_node
+                if isinstance(bn, Branch):
+                    np_, nm_ = alias.get(bn.plus, bn.plus), \
+                        alias.get(bn.minus, bn.minus)
+                    if (np_, nm_) != (bn.plus, bn.minus):
+                        nb = Branch(np_, nm_)
+                        subs_q[atom] = Quantity(atom.quantity, nb)
+                elif bn in alias:
+                    subs_q[atom] = Quantity(atom.quantity, alias[bn])
+            if subs_q:
+                st.rhs = st.rhs.subs(subs_q)
+            lb = st.lhs.branch_or_node
+            np_, nm_ = alias.get(lb.plus, lb.plus), alias.get(lb.minus,
+                                                              lb.minus)
+            if (np_, nm_) != (lb.plus, lb.minus):
+                st.lhs = Quantity(st.lhs.quantity, Branch(np_, nm_))
+        ## Re-derive the branch inventory: a collapsed branch is gone.
+        vbranches = [br for br in vbranches
+                     if br.plus.name not in collapse
+                     and br.minus.name not in collapse]
+        ibranch_keys = {branch_key(br) for br in vbranches}
 
     internalnodes = sorted(nodes - set(terminalnodes), key=lambda n: n.name)
 
@@ -481,11 +682,29 @@ def generate_code(cls):
         expr = expr.subs(bsubs)
         return expr.subs(subst)
 
+    ## $limit: record (branch, IS, VT) for each limited probe, then
+    ## replace the marker by the probe itself -- it is a request to the
+    ## SOLVER, not a change to the equations.
+    limits = []
+    for st in statements:
+        subs_l = {}
+        for app in sorted(st.rhs.atoms(_Limit), key=sympy.default_sort_key):
+            probe, IS_l, VT_l = app.args
+            b_l = probe.branch_or_node
+            key = (index_of[('node', b_l.plus.name)],
+                   index_of[('node', b_l.minus.name)])
+            if not any(k[0] == key for k in limits):
+                limits.append((key, IS_l, VT_l))
+            subs_l[app] = probe
+        if subs_l:
+            st.rhs = st.rhs.subs(subs_l)
+
     ## ------------------------------------------------------------------
     ## Pass 2 -- assemble the residual vectors.
     ivec = [sympy.Integer(0)] * n
     qvec = [sympy.Integer(0)] * n
     uvec = [sympy.Integer(0)] * n
+    acvec = [sympy.Integer(0)] * n
     CYacc = {}
 
     for st in statements:
@@ -493,11 +712,12 @@ def generate_code(cls):
         p = index_of[('node', b.plus.name)]
         m_ = index_of[('node', b.minus.name)]
         if st.lhs.quantity == 'I':
-            ipart, qpart, upart, npart = _split_terms(resolve(st.rhs),
-                                                      set(xsyms))
+            ipart, qpart, upart, npart, acpart = _split_terms(
+                resolve(st.rhs), set(xsyms))
             ivec[p] += ipart; ivec[m_] -= ipart
             qvec[p] += qpart; qvec[m_] -= qpart
             uvec[p] += upart; uvec[m_] -= upart
+            acvec[p] += acpart; acvec[m_] -= acpart
             for psd in npart:
                 ## An I-contributed noise PSD stamps like a noisy
                 ## conductance: the R.CY pattern (elements.py).
@@ -512,8 +732,12 @@ def generate_code(cls):
             bi = index_of[('branch', branch_key(b))]
             ivec[p] += xsyms[bi]
             ivec[m_] -= xsyms[bi]
-            ipart, qpart, upart, npart = _split_terms(resolve(st.rhs),
-                                                      set(xsyms))
+            ipart, qpart, upart, npart, acpart = _split_terms(
+                resolve(st.rhs), set(xsyms))
+            if acpart != 0:
+                raise NotImplementedError(
+                    'ac_stim on a V-contributed branch is not supported '
+                    'yet; contribute it with I(...)')
             if npart:
                 raise NotImplementedError(
                     'noise contributions on a V-contributed branch are not '
@@ -528,8 +752,11 @@ def generate_code(cls):
     periodic = []    # (x-index, modulus expr, offset expr)  [idtmod only]
     for sym, kind, args in states:
         k = index_of[('state', sym.name)]
-        arg_i, arg_q, arg_u, arg_n = _split_terms(resolve(args[0]),
-                                                   set(xsyms))
+        arg_i, arg_q, arg_u, arg_n, arg_ac = _split_terms(
+            resolve(args[0]), set(xsyms))
+        if arg_ac != 0:
+            raise NotImplementedError('ac_stim inside idt/idtmod is not '
+                                      'supported')
         if arg_n:
             raise NotImplementedError('noise inside idt/idtmod is not '
                                       'supported')
@@ -566,6 +793,16 @@ def generate_code(cls):
                             if index_of[('state', s.name)] == k][0]] - ic
         uvec_dc[k] = sympy.Integer(0)
 
+    ## `$param_given` symbols actually referenced, in a stable order --
+    ## they become trailing arguments of every compiled function and are
+    ## bound per instance from `ipar`.
+    given_syms = sorted(
+        {a for vec in (ivec, qvec, uvec, acvec, ivec_dc)
+         for e in vec for a in e.free_symbols
+         if str(a).startswith('_hdl_given_')},
+        key=lambda a: str(a))
+    given_names = [str(a)[len('_hdl_given_'):] for a in given_syms]
+
     ## ------------------------------------------------------------------
     ## Jacobians and compilation.
     G = sympy.Matrix([ivec]).jacobian(xsyms)
@@ -584,12 +821,13 @@ def generate_code(cls):
     def compile_x(expr_or_list, extra=()):
         e = expr_or_list.subs(xsubs) if hasattr(expr_or_list, 'subs') else \
             [e_.subs(xsubs) for e_ in expr_or_list]
-        return sympy.lambdify([x] + paramsyms + [TEMP] + list(extra), e,
-                              modules=NUMPY_MODULES, cse=True)
+        return sympy.lambdify(
+            [x] + paramsyms + [TEMP] + given_syms + list(extra), e,
+            modules=NUMPY_MODULES, cse=True)
 
     def compile_t(exprs):
-        return sympy.lambdify([TIME] + paramsyms + [TEMP], exprs,
-                              modules=NUMPY_MODULES, cse=True)
+        return sympy.lambdify([TIME] + paramsyms + [TEMP] + given_syms,
+                              exprs, modules=NUMPY_MODULES, cse=True)
 
     funcs = dict(
         i=compile_x(ivec), i_dc=compile_x(ivec_dc),
@@ -597,12 +835,24 @@ def generate_code(cls):
         G=compile_x(G), G_dc=compile_x(G_dc),
         C=compile_x(C), CY=compile_x(CY, extra=(FREQ,)),
         u=compile_t(uvec), u_dc=compile_t(uvec_dc), dudt=compile_t(dudt),
+        uac=sympy.lambdify(paramsyms + [TEMP] + given_syms, acvec,
+                           modules=NUMPY_MODULES, cse=True),
     )
 
     ## Pure single-device forms for the JAX batched path (eval_i_pure /
     ## eval_q_pure) reuse the SAME symbolic vectors, compiled lazily with
     ## sympy's jax printer on first use (jax may not be installed).
     pure_spec = dict(ivec=ivec, qvec=qvec, xsyms=xsyms, n=n)
+
+    ## The SYMBOLIC forms, kept alongside the compiled ones.  A symbolic
+    ## toolkit asked for `i(x)` with symbols in `x` was being served by a
+    ## numpy lambda, which works by duck typing for plain arithmetic and
+    ## fails the moment the expression contains a `floor`, a `Piecewise`
+    ## or anything else numpy evaluates eagerly.  Substituting into these
+    ## is exact and cannot fail that way.
+    sym_spec = dict(i=ivec, q=qvec, G=list(G), C=list(C),
+                    xsyms=xsyms, paramsyms=paramsyms,
+                    given_syms=given_syms, shape=(n, n))
 
     ## ------------------------------------------------------------------
     ## PCNR participation (Aadithya/Keiter/Mei).  A device joins PCNR by
@@ -621,55 +871,74 @@ def generate_code(cls):
     ## limiter itself is generated when the current is recognisably
     ## exponential -- the case limiting exists for -- and the exponential
     ## scale is read off the expression rather than assumed.
+    ## PCNR participation, detected PER CONTRIBUTION rather than by
+    ## reverse-engineering the assembled `ivec`.  A device joins by making
+    ## each limited quantity an explicit unknown and evaluating at ITS OWN
+    ## copy, so the layer needs, per junction: the terminal pair it spans,
+    ## the terminal currents as a function of that quantity ALONE, and
+    ## their derivative -- it REMOVES the device's whole i/G contribution
+    ## and re-stamps it at `v_lim`.
+    ##
+    ## So the rule is: every I-contribution must be a function of its own
+    ## branch voltage alone, and at least one must be exponential (the
+    ## case limiting exists for).  A device may own SEVERAL such branches
+    ## -- a two-junction device is the point of this pass -- and each gets
+    ## its own limited unknown, which is exactly what removes the clash
+    ## PCNR is about.  Anything else (a V-contribution, a generated state,
+    ## a current spanning two branch voltages) disqualifies the element:
+    ## better to declare nothing than to claim a capability falsely.
     pcnr_spec = None
-    ## Charge is ALLOWED (the layer keeps it in the MNA block at the node
-    ## voltage -- see pcnr.augmented_system): a junction with capacitance is
-    ## the normal case, not an exotic one.  What still disqualifies an
-    ## element is a V-contribution or a generated state, because then the
-    ## device's current is not a function of one branch voltage alone.
     if not states and not vbranches and len(terminalnodes) >= 2:
-        nz = [k for k in range(n) if ivec[k] != 0]
-        if len(nz) == 2:
-            k_p, k_m = nz
-            if sympy.simplify(ivec[k_p] + ivec[k_m]) == 0:
-                vsym = sympy.Symbol('_pcnr_v', real=True)
-                f = ivec[k_p].subs(xsyms[k_p], vsym + xsyms[k_m])
-                f = sympy.simplify(sympy.expand(f))
-                if not (f.free_symbols & set(xsyms)):
-                    ## A function of the branch voltage alone.  Now the
-                    ## exponential scale: pnjlim needs (VT, IS), and both
-                    ## follow from the expression -- VT from the argument
-                    ## of the exponential, IS from VT*f'(0), which is
-                    ## exactly IS for the textbook IS*(exp(v/VT)-1).
-                    scales = set()
-                    for ex in f.atoms(sympy.exp):
-                        a = sympy.diff(ex.args[0], vsym)
-                        if a != 0 and not (a.free_symbols & {vsym}):
-                            scales.add(sympy.simplify(1 / a))
-                    if len(scales) == 1:
-                        VT_eff = scales.pop()
-                        IS_eff = sympy.simplify(
-                            VT_eff * sympy.diff(f, vsym).subs(vsym, 0))
-                        pcnr_spec = dict(
-                            terminals=(k_p, k_m), vsym=vsym, f=f,
-                            dfdv=sympy.diff(f, vsym),
-                            VT=VT_eff, IS=IS_eff)
+        cands, ok = [], True
+        for st in statements:
+            if st.lhs.quantity != 'I':
+                ok = False
+                break
+            b = st.lhs.branch_or_node
+            kp = index_of[('node', b.plus.name)]
+            km = index_of[('node', b.minus.name)]
+            ipart, _q, _u, _nz, _ac = _split_terms(resolve(st.rhs),
+                                                   set(xsyms))
+            if ipart == 0:
+                continue                     # pure charge/noise: harmless
+            vsym = sympy.Symbol('_pcnr_v', real=True)
+            f = sympy.expand(ipart.subs(xsyms[kp], vsym + xsyms[km]))
+            if f.free_symbols & set(xsyms):
+                ok = False                   # not a function of V(b) alone
+                break
+            scales = set()
+            for ex in f.atoms(sympy.exp):
+                a = sympy.diff(ex.args[0], vsym)
+                if a != 0 and not (a.free_symbols & {vsym}):
+                    scales.add(sympy.simplify(1 / a))
+            if len(scales) != 1:
+                ok = False                   # no single exponential scale
+                break
+            VT_eff = scales.pop()
+            cands.append(dict(terminals=(kp, km), vsym=vsym, f=f,
+                              dfdv=sympy.diff(f, vsym), VT=VT_eff,
+                              IS=sympy.simplify(
+                                  VT_eff * sympy.diff(f, vsym).subs(vsym, 0))))
+        if ok and cands:
+            pcnr_spec = cands
 
     pcnr_funcs = None
     if pcnr_spec is not None:
-        vs_ = pcnr_spec['vsym']
-        pcnr_funcs = dict(
-            terminals=pcnr_spec['terminals'],
-            i=sympy.lambdify([vs_] + paramsyms + [TEMP], pcnr_spec['f'],
-                             modules=NUMPY_MODULES, cse=True),
-            didv=sympy.lambdify([vs_] + paramsyms + [TEMP],
-                                pcnr_spec['dfdv'], modules=NUMPY_MODULES,
-                                cse=True),
-            VT=sympy.lambdify(paramsyms + [TEMP], pcnr_spec['VT'],
-                              modules=NUMPY_MODULES),
-            IS=sympy.lambdify(paramsyms + [TEMP], pcnr_spec['IS'],
-                              modules=NUMPY_MODULES),
-        )
+        pcnr_funcs = []
+        for spec_j in pcnr_spec:
+            vs_ = spec_j['vsym']
+            pcnr_funcs.append(dict(
+                terminals=spec_j['terminals'],
+                i=sympy.lambdify([vs_] + paramsyms + [TEMP], spec_j['f'],
+                                 modules=NUMPY_MODULES, cse=True),
+                didv=sympy.lambdify([vs_] + paramsyms + [TEMP],
+                                    spec_j['dfdv'], modules=NUMPY_MODULES,
+                                    cse=True),
+                VT=sympy.lambdify(paramsyms + [TEMP], spec_j['VT'],
+                                  modules=NUMPY_MODULES),
+                IS=sympy.lambdify(paramsyms + [TEMP], spec_j['IS'],
+                                  modules=NUMPY_MODULES),
+            ))
 
     state_meta = dict(
         statenames=statenodenames,
@@ -690,21 +959,73 @@ def generate_code(cls):
     const_G = not any((e.free_symbols & xset_) for e in G)
     const_C = not any((e.free_symbols & xset_) for e in C)
 
+    cross_spec = None
+    if crossings:
+        cross_exprs = [resolve(st.expr).subs(xsubs) for st in crossings]
+        cross_spec = dict(
+            f=sympy.lambdify([x] + paramsyms + [TEMP] + given_syms,
+                             cross_exprs, modules=NUMPY_MODULES, cse=True),
+            directions=[st.direction for st in crossings])
+
+    limit_spec = [((int(k[0]), int(k[1])),
+                   sympy.lambdify(paramsyms + [TEMP], IS_l,
+                                  modules=NUMPY_MODULES),
+                   sympy.lambdify(paramsyms + [TEMP], VT_l,
+                                  modules=NUMPY_MODULES))
+                  for k, IS_l, VT_l in limits]
+
     branchpairs = [branch_key(br) for br in vbranches]
     internalnames = [nd.name for nd in internalnodes]
 
     return dict(terminalnames=terminalnames, paramnames=paramnames,
                 funcs=funcs, pure_spec=pure_spec, state_meta=state_meta,
                 branchpairs=branchpairs, internalnames=internalnames,
-                const_G=const_G, const_C=const_C, pcnr_funcs=pcnr_funcs)
+                const_G=const_G, const_C=const_C, pcnr_funcs=pcnr_funcs,
+                given_names=given_names, limit_spec=limit_spec,
+                cross_spec=cross_spec, sym_spec=sym_spec,
+                has_ac=any(e != 0 for e in acvec))
 
 
 def _params_of(self):
-    return [getattr(self.iparv, name) for name in self._hdl_paramnames]
+    ## Values from the RESOLVED iparv, plus the givenness flags from
+    ## `ipar` -- givenness is a property of what the user wrote, and only
+    ## `ipar` records that (see ParameterDict.update_values).
+    vals = [getattr(self.iparv, name) for name in self._hdl_paramnames]
+    ipar = self.ipar
+    vals += [1.0 if ipar.is_given(nm) else 0.0
+             for nm in self._hdl_given_names]
+    return vals
 
 
 def _epar_T(epar):
     return getattr(epar, 'T', 300.0)
+
+
+def _symbolic_eval(self, which, x, epar):
+    """Exact substitution for a symbolic toolkit -- see `sym_spec`."""
+    spec = self._hdl_info['sym_spec']
+    subs = dict(zip(spec['xsyms'], list(x)))
+    subs.update(zip(spec['paramsyms'],
+                    [getattr(self.iparv, nm)
+                     for nm in self._hdl_paramnames]))
+    subs[TEMP] = _epar_T(epar)
+    ipar = self.ipar
+    subs.update({sym: (1.0 if ipar.is_given(nm) else 0.0)
+                 for sym, nm in zip(spec['given_syms'],
+                                    self._hdl_given_names)})
+    vec = [e.subs(subs) for e in spec[which]]
+    if which in ('G', 'C'):
+        n = spec['shape'][0]
+        return sympy.Matrix(n, n, vec)
+    return vec
+
+
+def _args_of(self, epar):
+    """The trailing argument list every compiled function expects:
+    parameter values, then T, then the givenness flags."""
+    n_par = len(self._hdl_paramnames)
+    vals = _params_of(self)
+    return vals[:n_par] + [_epar_T(epar)] + vals[n_par:]
 
 
 def _dc(epar):
@@ -718,6 +1039,7 @@ class BehaviouralMeta(type):
         info = generate_code(cls)
         funcs = info['funcs']
         cls._hdl_paramnames = info['paramnames']
+        cls._hdl_given_names = info['given_names']
         cls._hdl_info = info
         cls.terminals = info['terminalnames']
         ## Branch objects at class level, like every element: the base
@@ -732,9 +1054,11 @@ class BehaviouralMeta(type):
             cls.IC_KIND = 'state'
 
         def i(self, x, epar=defaultepar, params_tree=None):
+            if getattr(self.toolkit, 'symbolic', False):
+                return _symbolic_eval(self, 'i', x, epar)
             f = funcs['i_dc'] if _dc(epar) and state_meta['dc_pins'] \
                 else funcs['i']
-            return f(x, *_params_of(self), _epar_T(epar))
+            return f(x, *_args_of(self, epar))
 
         const_G, const_C = info['const_G'], info['const_C']
 
@@ -750,6 +1074,8 @@ class BehaviouralMeta(type):
             self.__dict__.pop('_hdl_Cc', None)
 
         def G(self, x, epar=defaultepar, params_tree=None):
+            if getattr(self.toolkit, 'symbolic', False):
+                return _symbolic_eval(self, 'G', x, epar)
             dc = _dc(epar) and state_meta['dc_pins']
             if const_G and not dc:
                 ## Constant stamp: computed once and handed back by
@@ -758,47 +1084,50 @@ class BehaviouralMeta(type):
                 ## closes).  Dropped by update() on any parameter change.
                 cached = self.__dict__.get('_hdl_Gc')
                 if cached is None:
-                    cached = np.asarray(funcs['G'](x, *_params_of(self),
-                                                   _epar_T(epar)))
+                    cached = np.asarray(funcs['G'](x, *_args_of(self, epar)))
                     self.__dict__['_hdl_Gc'] = cached
                 return cached
             f = funcs['G_dc'] if dc else funcs['G']
-            return np.asarray(f(x, *_params_of(self), _epar_T(epar)))
+            return np.asarray(f(x, *_args_of(self, epar)))
 
         def q(self, x, epar=defaultepar, params_tree=None):
-            return funcs['q'](x, *_params_of(self), _epar_T(epar))
+            if getattr(self.toolkit, 'symbolic', False):
+                return _symbolic_eval(self, 'q', x, epar)
+            return funcs['q'](x, *_args_of(self, epar))
 
         def C(self, x, epar=defaultepar, params_tree=None):
+            if getattr(self.toolkit, 'symbolic', False):
+                return _symbolic_eval(self, 'C', x, epar)
             if const_C:
                 cached = self.__dict__.get('_hdl_Cc')
                 if cached is None:
-                    cached = np.asarray(funcs['C'](x, *_params_of(self),
-                                                   _epar_T(epar)))
+                    cached = np.asarray(funcs['C'](x, *_args_of(self, epar)))
                     self.__dict__['_hdl_Cc'] = cached
                 return cached
-            return np.asarray(funcs['C'](x, *_params_of(self),
-                                         _epar_T(epar)))
+            return np.asarray(funcs['C'](x, *_args_of(self, epar)))
 
         def CY(self, x, w=0, epar=defaultepar):
             f_hz = np.abs(w) / (2 * np.pi)
-            return np.asarray(funcs['CY'](x, *_params_of(self),
-                                          _epar_T(epar), f_hz))
+            return np.asarray(funcs['CY'](x, *_args_of(self, epar), f_hz))
 
         def u(self, t=0.0, epar=defaultepar, analysis=None, params_tree=None):
             if analysis == 'ac':
-                ## No behavioral AC excitation yet -- and letting the DC/
-                ## transient source terms through would inject them as
-                ## spurious AC drives (the classic ABM bias-leak).
-                return np.zeros(self.n)
+                ## ONLY `ac_stim` terms drive a small-signal analysis.
+                ## The DC/transient source terms must NOT come through --
+                ## injecting a device's bias constants as an AC drive is
+                ## the classic ABM bias-leak (sec. 2.4).
+                if not info['has_ac']:
+                    return np.zeros(self.n)
+                return np.asarray(funcs['uac'](*_args_of(self, epar)),
+                                  dtype=complex)
             f = funcs['u_dc'] if _dc(epar) and state_meta['dc_pins'] \
                 else funcs['u']
-            return np.asarray(f(t, *_params_of(self), _epar_T(epar)),
-                              dtype=float)
+            return np.asarray(f(t, *_args_of(self, epar)), dtype=float)
 
         def dudt(self, t=0.0, epar=defaultepar, analysis=None,
                  params_tree=None):
-            return np.asarray(funcs['dudt'](t, *_params_of(self),
-                                            _epar_T(epar)), dtype=float)
+            return np.asarray(funcs['dudt'](t, *_args_of(self, epar)),
+                              dtype=float)
 
         def state_ic(self):
             out = []
@@ -832,6 +1161,75 @@ class BehaviouralMeta(type):
         if state_meta['periodic']:
             cls.periodic_states = periodic_states
 
+        ## @cross -- predict where each declared expression crosses zero
+        ## and publish it as a breakpoint.  Two accepted points give the
+        ## rate; that is all a first-order prediction needs, and a
+        ## prediction only has to BRACKET the corner.
+        cspec = info['cross_spec']
+        if cspec is not None:
+            def accept_step(self, t, x, epar=defaultepar, _cs=cspec):
+                vals = [float(v) for v in
+                        np.atleast_1d(_cs['f'](np.asarray(x, dtype=float),
+                                               *_args_of(self, epar)))]
+                prev = self.__dict__.get('_hdl_cross')
+                self.__dict__['_hdl_cross'] = (
+                    (prev[1] if prev else None), (float(t), vals))
+
+            def reset_state(self, epar=None):
+                self.__dict__.pop('_hdl_cross', None)
+
+            def next_event(self, t, _cs=cspec):
+                hist = self.__dict__.get('_hdl_cross')
+                if not hist or hist[0] is None:
+                    return self.toolkit.inf
+                (t0, v0), (t1, v1) = hist
+                if t1 <= t0:
+                    return self.toolkit.inf
+                best = self.toolkit.inf
+                for k, direction in enumerate(_cs['directions']):
+                    rate = (v1[k] - v0[k]) / (t1 - t0)
+                    if rate == 0.0:
+                        continue
+                    if direction and np.sign(rate) != direction:
+                        continue
+                    ## Time from the LAST accepted point to value zero.
+                    dt = -v1[k] / rate
+                    if dt <= 0.0:
+                        continue
+                    tc = t1 + dt
+                    if tc > t and tc < best:
+                        best = tc
+                return best
+
+            cls.accept_step = accept_step
+            cls.reset_state = reset_state
+            cls.next_event = next_event
+
+        ## $limit -- the state-free convention: return a LIMITED COPY of
+        ## the sub-vector.  The limiter moves the solution, so nothing is
+        ## ever evaluated at a point other than the one it linearises
+        ## about, and no private iterate memory is needed (x0 is handed
+        ## in).  Only generated when the model asked for it.
+        lspec = info['limit_spec']
+        if lspec:
+            from pycircuit.circuit._limiting import _pnjlim as _pnj
+
+            def limit(self, x, x0, epar=defaultepar, _ls=lspec):
+                out = np.array(x, dtype=float, copy=True)
+                x0a = np.asarray(x0, dtype=float)
+                args = _args_of(self, epar)
+                for (ra, rb), isf, vtf in _ls:
+                    vnew = float(out[ra] - out[rb])
+                    vold = float(x0a[ra] - x0a[rb])
+                    vlim = _pnj(vnew, vold, float(vtf(*args)),
+                                float(isf(*args)), self.toolkit)
+                    ## Move the ANODE, so a device whose junctions share a
+                    ## cathode does not have the second undo the first.
+                    out[ra] = out[rb] + vlim
+                return out
+
+            cls.limit = limit
+
         ## PCNR: hand the layer the three things it needs, plus the
         ## limiter for this device's own quantity (pcnr.refine's hook).
         ## Generated only for a recognisably exponential single-branch
@@ -842,21 +1240,25 @@ class BehaviouralMeta(type):
             from pycircuit.circuit._limiting import _pnjlim
             _pn_pcnr = info['paramnames']
 
-            cls.pcnr_junctions = (tuple(pf['terminals']),)
+            cls.pcnr_junctions = tuple(tuple(f['terminals']) for f in pf)
 
-            def pcnr_i(v, params, epar, toolkit, _pf=pf, _pn=_pn_pcnr):
-                cur = _pf['i'](v, *[params[q] for q in _pn], _epar_T(epar))
+            def pcnr_i(v, params, epar, toolkit, jn=0, _pf=pf,
+                       _pn=_pn_pcnr):
+                cur = _pf[jn]['i'](v, *[params[q] for q in _pn],
+                                   _epar_T(epar))
                 return toolkit.array([cur, -cur])
 
-            def pcnr_didv(v, params, epar, toolkit, _pf=pf, _pn=_pn_pcnr):
-                g = _pf['didv'](v, *[params[q] for q in _pn], _epar_T(epar))
+            def pcnr_didv(v, params, epar, toolkit, jn=0, _pf=pf,
+                          _pn=_pn_pcnr):
+                g = _pf[jn]['didv'](v, *[params[q] for q in _pn],
+                                    _epar_T(epar))
                 return toolkit.array([g, -g])
 
-            def pcnr_limit(vnew, vold, params, epar, toolkit,
+            def pcnr_limit(vnew, vold, params, epar, toolkit, jn=0,
                            _pf=pf, _pn=_pn_pcnr):
                 args = [params[q] for q in _pn] + [_epar_T(epar)]
-                return _pnjlim(vnew, vold, float(_pf['VT'](*args)),
-                               float(_pf['IS'](*args)), toolkit)
+                return _pnjlim(vnew, vold, float(_pf[jn]['VT'](*args)),
+                               float(_pf[jn]['IS'](*args)), toolkit)
 
             cls.pcnr_i = staticmethod(pcnr_i)
             cls.pcnr_didv = staticmethod(pcnr_didv)
@@ -932,7 +1334,25 @@ class Behavioural(circuit.Circuit, metaclass=BehaviouralMeta):
     sources via the ``TIME`` symbol.
     """
 
+    #: Verilog-A's ``aliasparam``: alternative accepted spellings,
+    #: ``{alias: canonical}``.  Compact models carry these by the dozen
+    #: (217 declarations in the vacask device library) because one device
+    #: is known by different parameter names in different foundries'
+    #: decks.  Declared per class::
+    #:
+    #:     aliasparams = {'isat': 'IS', 'js': 'IS'}
+    aliasparams = {}
+
     def __init__(self, *args, **kvargs):
+        aliases = type(self).aliasparams
+        if aliases:
+            for alias, canonical in aliases.items():
+                if alias in kvargs:
+                    if canonical in kvargs:
+                        raise ValueError(
+                            '%r was given both as %r and as its alias %r'
+                            % (canonical, canonical, alias))
+                    kvargs[canonical] = kvargs.pop(alias)
         super().__init__(*args, **kvargs)
         info = getattr(self, '_hdl_info', None)
         if info is None:

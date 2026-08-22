@@ -647,13 +647,34 @@ DSL:
   a correctness fix — and the paper does not derive it either (footnote
   1: PCNR "works for differential-algebraic equations as well, but for
   simplicity, we only consider algebraic equations").
-* **multiple junctions per device.** The layer already carries a
-  sequence of `(anode, cathode)` pairs per device and `limit_junctions`
-  already handles the shared-terminal case with its `move` index (a
-  BJT's two junctions share the base, so limiting both by adjusting the
-  anode has the second undo the first). What is missing is generating
-  those pairs from an expression with two or more exponentials in
-  different branch voltages.
+* **multiple junctions per device — DONE 2026-08-22.** The blocker was
+  in the protocol, not the generator: `pcnr_i(v, params, epar, toolkit)`
+  had no way to say *which* junction was being asked about, so a device
+  owning two of them could not be written even by hand. The layer now
+  passes a per-device junction index `jn` (computed by counting each
+  instance's pairs in declaration order; single-junction devices never
+  see anything but 0 and may ignore it), and the DSL detects junctions
+  **per contribution** rather than by reverse-engineering the assembled
+  `ivec` — each `I`-contribution that is a function of its own branch
+  voltage alone and carries a single exponential scale becomes one
+  limited quantity. Measured on a two-junction element sharing a base
+  (the BJT shape, and the clash case PCNR exists for): both junctions
+  declared, per-junction currents differing exactly as their saturation
+  currents do, and DC identical with PCNR on and off.
+
+  **A silent wrong answer found while doing it.** The traced JAX PCNR
+  path does not call the device at all — it rebuilds every junction as
+  `IS*(exp(v/VT)−1)` with one global VT, reading `IS` *by name* with
+  `getattr(element.iparv, 'IS', 0.0)`. A device whose saturation current
+  is not called `IS` (the two-junction element has `ISE`/`ISC`) got
+  `IS = 0`: a junction carrying **no current**, and a confident wrong
+  answer. It now evaluates the device's own `pcnr_i` at two probe
+  voltages and refuses with an explanatory message if the traced form
+  cannot reproduce it. The same pass fixed an over-broad refusal there:
+  the charge check asked `hasattr(element, 'eval_q_pure')`, which every
+  generated element has whether or not its charge is zero, so charge-free
+  devices were refused and blamed for a charge they did not have — it now
+  asks the C matrix.
 * **non-exponential nonlinearity.** `pcnr_limit` currently derives
   `(VT, IS)` by reading the `exp` argument. For anything else there is
   no principled scale, and inventing one would be the kind of unvalidated
@@ -686,7 +707,21 @@ capability whose benefit cannot be measured on this simulator's circuits.
 
 ### Phase B — model surface: cheap, high-frequency, boring
 
-**B1. `$param_given` + parameter ranges + `aliasparam`.** By call count
+**B1. `$param_given` + parameter ranges + `aliasparam` — DONE
+2026-08-22.** One design point was not obvious in advance: `$param_given`
+had to become a **runtime** value, not a compile-time one. The element is
+compiled once per *class* while givenness is a property of each
+*instance*, so the flag is bound per instance and used in a `Piecewise`
+exactly as Verilog-A uses it in an `if`. Note what the operator actually
+asks: not "does this differ from the default" but "did the user write
+it" — a parameter given its own default value is still *given*, and
+`test_param_given_selects_a_formulation` pins that distinction.
+`ParameterDict` now records which names were set (`is_given`), validates
+declared `minval`/`maxval` on both assignment and after string-expression
+resolution, and `update_values` deliberately does **not** mark the names
+it copies, since a resolved `iparv` has a value for everything.
+`aliasparams = {alias: canonical}` on the element class completes it.
+Original scoping: By call count
 the most-used system function in the entire survey (**1871** vacask /
 **263** gnucap-models), and trivial: `Parameter` already carries
 `desc`/`unit`/`default`, so `$param_given` is a "was this defaulted"
@@ -698,7 +733,15 @@ stamps; an out-of-range parameter refused with the range in the message.
 Risk: low — but it touches `param.py`, which every element uses, so the
 regression gate is the whole suite.
 
-**B2. Unconditional node collapse.** `V(a,b) <+ 0` should merge the two
+**B2. Unconditional node collapse — DONE 2026-08-22.** `V(a,b) <+ 0`
+now merges the nodes and deletes both the internal node and the branch
+unknown, so the optional-series-resistance idiom costs nothing when the
+resistance is absent (measured: `n` = 2 instead of 3, and the stamp is
+the plain junction). Two restrictions, both deliberate: chains are
+chased to a fixed point, and **only an internal node can be absorbed** —
+terminals belong to the parent circuit's node map, so a `V <+ 0` between
+two terminals stays an honest zero-volt source rather than being
+silently mis-collapsed. Original scoping: `V(a,b) <+ 0` should merge the two
 nodes and delete the unknown, which is the standard idiom for an
 optional series resistance (`if (rs) I(a,ia) <+ ...; else V(a,ia) <+ 0;`).
 Adopt gnucap's restriction to *unconditionally executed* contributions
@@ -709,7 +752,10 @@ drop the row. Proof: an element with `rs=0` producing exactly the stamp
 of the element without the branch, and node count reduced by one. Risk:
 low, and it is pure DSL work.
 
-**B3. AC excitation.** `u` is currently zeroed for `analysis='ac'` so a
+**B3. AC excitation — DONE 2026-08-22.** `ac_stim(mag, phase)` routes to
+an AC-only source vector: live in AC analysis, identically zero in DC and
+transient, and the bias-leak guard of §2.4 is unchanged (only `ac_stim`
+terms can drive a small-signal analysis). Original scoping: `u` is currently zeroed for `analysis='ac'` so a
 device's bias constants cannot leak into the small-signal drive (§2.4).
 The missing half is a *deliberate* AC source: an `ac`-variant vector, so
 a behavioural element can be an AC stimulus rather than merely
@@ -719,7 +765,15 @@ Risk: low.
 
 ### Phase C — analyses the DSL cannot currently reach
 
-**C1. Events: `@cross`, `@timer`.** Zero call sites in either corpus, so
+**C1. Events: `@cross` — DONE 2026-08-22** (`@timer` not done; it is a
+source-side concept with no call sites in either corpus). `Cross(expr,
+direction)` is returned alongside contributions; the element caches two
+accepted points, and `next_event` extrapolates the zero crossing
+linearly, honouring direction and the strictly-future contract.
+Measured on a comparator across a 1 kHz sine: without it the nearest
+timepoint to an edge is 5.5e-6–1.4e-5 s away, with it 5.4e-7–1.9e-6 s —
+about an order of magnitude closer, for **one** extra accepted step and
+no extra rejections. Original scoping: Zero call sites in either corpus, so
 this is *not* ranked on model demand — it is ranked on what it unblocks
 here: comparator, switch and oscillator macromodels, which are exactly
 the behavioural models a DSL is for. The machinery exists:
@@ -733,7 +787,13 @@ without the event. Risk: medium — event prediction interacts with the
 step controller, and §5.3 of `idtmod.md` records how that went for the
 wrap breakpoints.
 
-**C2. Symbolic-toolkit transient.** Compilation targets numpy/jax, so a
+**C2. Symbolic toolkit — DONE 2026-08-22.** Elements now keep their
+symbolic `i`/`q`/`G`/`C` alongside the compiled ones and substitute into
+them exactly when the toolkit is symbolic. This mattered more than
+"plumbing" suggests: the numpy lambda survived symbols by duck typing for
+plain arithmetic and failed the moment an expression contained a `floor`
+or a `Piecewise` — the wrap of an `idtmod`, the branch of a `limexp` —
+which is precisely the interesting case. Original scoping: Compilation targets numpy/jax, so a
 symbolic transient of a generated element is out (AC works, since it
 uses `G`/`C` only). The fix is to keep the sympy expressions rather than
 lambdifying when the toolkit is symbolic — the expressions already exist,
@@ -757,8 +817,14 @@ argued with:
 
 ### Sequencing
 
-B1 → B2 → B3 first: they are cheap, they are the highest-frequency
-things real models use, and none of them touch the solver. Then A1,
+**The plan is complete** (2026-08-22): phases A, B and C are all done,
+in the order given except that A1's two halves landed either side of B.
+What remains is phase D, which is deferred by design, plus `@timer`
+(zero call sites) and lifting the traced backend's PCNR restrictions —
+it rebuilds junctions itself rather than calling the device, so
+multi-junction and charge-storing participants are refused there and the
+refusals are now checked rather than assumed. Original sequencing: B
+first, then A1,
 which is the item that decides whether this DSL can express *production*
 device models or only behavioural ones — and which should be attempted
 before A2, because if PCNR can be widened far enough, `$limit` matters

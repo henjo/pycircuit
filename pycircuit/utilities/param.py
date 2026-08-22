@@ -6,11 +6,18 @@ import copy
 from .misc import ObserverSubject
 
 class Parameter(object):
-    def __init__(self, name, desc=None, unit=None, default=None):
+    def __init__(self, name, desc=None, unit=None, default=None,
+                 minval=None, maxval=None):
         self.name = name
         self.desc = desc
         self.default = default
         self.unit = unit
+        ## Verilog-A's `from [lo:hi]`.  Both ends optional and inclusive;
+        ## enforced by ParameterDict.set and after expression resolution,
+        ## so a range violation is reported where it is introduced rather
+        ## than as an inexplicable simulation failure later.
+        self.minval = minval
+        self.maxval = maxval
 
     def __eq__(self, a): 
         return self.__class__ is a.__class__ and self.name == a.name 
@@ -39,6 +46,14 @@ class ParameterDict(ObserverSubject):
         self._paramnames = []
         self._parameters = {}
         self._values = {}
+        ## Which parameters were given a value explicitly, as opposed to
+        ## inheriting their declared default.  Verilog-A exposes exactly
+        ## this as `$param_given`, and by call count it is the most used
+        ## system function in real compact models (1871 sites in the
+        ## vacask device library alone): models routinely select a
+        ## formulation on whether the user supplied a parameter, which is
+        ## not the same question as whether it equals its default.
+        self._given = set()
         self.append(*parameters)
         self.set(**kvargs)
 
@@ -60,9 +75,42 @@ class ParameterDict(ObserverSubject):
         for k,v in kvargs.items():
             if k not in self._values:
                 raise KeyError('parameter %s not in parameter dictionary'%k )
+            self._check_range(k, v)
             self._values[k] = v
-            
+            self._given.add(k)
+
         self.notify(kvargs.keys())
+
+    def _check_range(self, name, value):
+        """Enforce a Parameter's declared range, if it has one.
+
+        Verilog-A writes this as `from [lo:hi]`.  A range is only
+        checked for values that can be compared with numbers -- a
+        parameter carrying a string expression is resolved later, by
+        `eval_expressions`, and is checked then.
+        """
+        param = self._parameters.get(name)
+        if param is None:
+            return
+        lo = getattr(param, 'minval', None)
+        hi = getattr(param, 'maxval', None)
+        if lo is None and hi is None or value is None:
+            return
+        try:
+            below = lo is not None and value < lo
+            above = hi is not None and value > hi
+        except TypeError:
+            return          # symbolic or string: checked after resolution
+        if below or above:
+            raise ValueError(
+                'parameter %r = %r is outside its declared range [%s, %s]'
+                % (name, value,
+                   '-inf' if lo is None else lo,
+                   'inf' if hi is None else hi))
+
+    def is_given(self, name):
+        """Was `name` set explicitly, rather than left at its default?"""
+        return name in self._given
 
     def get(self, param):
         """Get value by parameter object or parameter name"""
@@ -76,6 +124,7 @@ class ParameterDict(ObserverSubject):
         newpd._values = copy.copy(self._values)
         newpd._parameters = copy.copy(self._parameters)
         newpd._paramnames = copy.copy(self._paramnames)
+        newpd._given = copy.copy(getattr(self, '_given', set()))
         newpd.append(*parameters)
         newpd.set(**kvargs)
 
@@ -138,8 +187,23 @@ class ParameterDict(ObserverSubject):
                 for param in self.parameters]
 
     def update_values(self, d):
-        """Update values from another paramdict"""
-        self.set(**d._values)
+        """Update values from another paramdict.
+
+        Does NOT mark the copied names as given: this is how a resolved
+        `iparv` is filled from `ipar`, and every parameter has a value
+        there whether the user supplied one or not.  Whether a parameter
+        was *given* is a property of what the user wrote, so it is carried
+        across from the source rather than invented here.  Ranges are
+        re-checked, which is where a violation introduced by a resolved
+        string expression is caught.
+        """
+        for k, v in d._values.items():
+            if k not in self._values:
+                raise KeyError('parameter %s not in parameter dictionary' % k)
+            self._check_range(k, v)
+            self._values[k] = v
+        self._given = set(getattr(d, '_given', ()))
+        self.notify(d._values.keys())
 
     def __getitem__(self, key):
         return self._parameters[key]

@@ -127,7 +127,17 @@ def augmented_system(circuit, x, v_lim, junctions, epar=defaultepar,
     g_lim = np.zeros(k)
     didv_list = []
 
+    ## A device may own MORE THAN ONE limited quantity -- a BJT's two
+    ## junctions, say -- so the device is told WHICH of its own junctions
+    ## is being asked about.  `pcnr_junctions` lists a device's pairs in
+    ## declaration order, so counting occurrences as we go gives each its
+    ## local index.  Single-junction devices never see anything but 0 and
+    ## may ignore the argument, which is why it is keyword-with-default.
+    _seen_of = {}
+
     for idx, (instance, element, ra, rb) in enumerate(junctions):
+        jn = _seen_of.get(instance, 0)
+        _seen_of[instance] = jn + 1
         v = float(v_lim[idx])
         ## Cached: rebuilding this per junction per Newton iteration is 60 dict
         ## comprehensions over `getattr` on a 60-device circuit, every iteration.
@@ -136,8 +146,9 @@ def augmented_system(circuit, x, v_lim, junctions, epar=defaultepar,
             params = {p.name: getattr(element.iparv, p.name)
                       for p in element.instparams}
             element._pcnr_params = params
-        i_terms = element.pcnr_i(v, params, epar, element.toolkit)
-        di_terms = element.pcnr_didv(v, params, epar, element.toolkit)
+        i_terms = element.pcnr_i(v, params, epar, element.toolkit, jn=jn)
+        di_terms = element.pcnr_didv(v, params, epar, element.toolkit,
+                                     jn=jn)
 
         ## The device's current now enters through its OWN unknown, so its
         ## contribution to J_MNA/MNA is zero and all of it lands in J_MNA/lim.
@@ -238,7 +249,10 @@ def refine(junctions, v_old, v_new, epar=defaultepar):
     than by ordering.
     """
     out = np.array(v_new, dtype=float, copy=True)
+    _seen_of = {}
     for idx, (_instance, element, _ra, _rb) in enumerate(junctions):
+        jn = _seen_of.get(_instance, 0)
+        _seen_of[_instance] = jn + 1
         toolkit = element.toolkit
         ## THE DEVICE OWNS THE LAW FOR ITS OWN QUANTITY.  PCNR supplies the
         ## architecture -- one unknown per limited quantity, nothing shared,
@@ -255,7 +269,7 @@ def refine(junctions, v_old, v_new, epar=defaultepar):
                           for q in element.instparams}
                 element._pcnr_params = params
             out[idx] = float(limiter(float(v_new[idx]), float(v_old[idx]),
-                                     params, epar, toolkit))
+                                     params, epar, toolkit, jn=jn))
             continue
         VT = toolkit.kboltzmann * epar.T / toolkit.qelectron
         IS = getattr(element.iparv, 'IS', 0.0)
