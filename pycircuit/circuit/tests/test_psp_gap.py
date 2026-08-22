@@ -80,19 +80,19 @@ def _compare(deck, sweep):
 @needs_pdk
 class TestAgainstTheRealDevice(object):
 
-    def test_the_long_device_agrees_within_eight_percent(self, deck, ref):
+    def test_the_long_device_agrees_within_four_percent(self, deck, ref):
         """W = 10 um, L = 1 um -- where the core is meant to be right.
 
-        The core has no channel-length modulation and no short-channel
-        physics, so this is not expected to be exact.  Measured range is
-        1.020 - 1.074; the bound is set just outside it, tight enough to
-        catch a real break in the chain.
+        The core still has no channel-length modulation and no
+        short-channel physics, so this is not exact.  Measured range is
+        0.980 - 1.035; the bound is set just outside it, tight enough to
+        catch a real break anywhere in the chain.
         """
         _, r, g, _ = _compare(deck, ref['nmos_long_idvd'])
         assert len(r) > 20
         ratio = g / r
-        assert 0.92 < ratio.min(), 'worst low %.3f' % ratio.min()
-        assert ratio.max() < 1.08, 'worst high %.3f' % ratio.max()
+        assert 0.96 < ratio.min(), 'worst low %.3f' % ratio.min()
+        assert ratio.max() < 1.04, 'worst high %.3f' % ratio.max()
 
     def test_the_agreement_is_flat_not_a_lucky_crossing(self, deck, ref):
         """A curve that crosses the reference could average out to 1.
@@ -104,7 +104,7 @@ class TestAgainstTheRealDevice(object):
         """
         _, r, g, _ = _compare(deck, ref['nmos_long_idvd'])
         ratio = g / r
-        assert ratio.max() - ratio.min() < 0.08
+        assert ratio.max() - ratio.min() < 0.07
 
     def test_the_scaled_parameters_are_physical(self, deck, ref):
         """A wrong scaling shows up here before it shows up in a curve."""
@@ -116,7 +116,7 @@ class TestAgainstTheRealDevice(object):
         assert 0.0 < kw['u0'] < 0.1
         assert all(v >= 0.0 for v in (kw['mue'], kw['themu'], kw['cs'],
                                       kw['thecs'], kw['thesat'],
-                                      kw['rs']))
+                                      kw['rs'], kw['ct']))
 
     def test_the_quantum_correction_is_what_closed_the_gap(self, deck, ref):
         """Recorded because it is how the term was found.
@@ -172,6 +172,60 @@ class TestAgainstTheRealDevice(object):
             x = np.array([vd, 1.2, 0.0, 0.0])
             assert (np.asarray(on.i(x), float)[0]
                     < np.asarray(off.i(x), float)[0])
+
+    def test_the_effective_thermal_voltage_closed_the_flat_offset(
+            self, deck, ref):
+        """The third term, and the one a Vg sweep was built to find.
+
+        PSP does not normalise by the thermal voltage but by an
+        EFFECTIVE one, `phit1 = phit*(1 + CT)` -- and the gate drive,
+        the quasi-Fermi levels and the charges are all in units of that
+        (`PSP103_macrodefs.include:503`).  The card sets `CTO = 0.0546`,
+        worth ~7% on this geometry.
+
+        It was found by measuring a LONG-DEVICE TRANSFER CURVE, added to
+        the reference for exactly this: a gain error gives a ratio flat
+        in Vg, a threshold or drive error gives one that varies.  The
+        measured ratio fell from 1.175 near threshold to 1.022 at
+        Vg = 1.5, which is a drive error, and `CT` is the only term of
+        that size and shape the core was missing.  It took the long
+        device from a median 1.041 to 1.008.
+
+        The body factor is deliberately NOT rescaled: PSP builds `G_0`
+        on the plain `phit` and only moves it under `SWFIX`, which
+        defaults to 0 and this card leaves unset.
+        """
+        sweep = ref['nmos_long_idvd']
+        w, l = sweep['w'], sweep['l']
+        card = deck.model_params('sg13g2_lv_nmos_psp', w=w, l=l, ng=1,
+                                 m=1, pre_layout=1)
+        kw = psp_scaling.to_long_channel(card, w=w, l=l)
+        assert kw['ct'] > 0.05, 'the card does specify one'
+
+        cm.default_toolkit = numeric
+        on = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                               cm.Node('b'), **kw)
+        off = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                                cm.Node('b'), **dict(kw, ct=0.0))
+        on.update_iparv()
+        off.update_iparv()
+        for vg in (0.6, 1.0, 1.5):
+            x = np.array([0.05, vg, 0.0, 0.0])
+            assert (np.asarray(on.i(x), float)[0]
+                    < np.asarray(off.i(x), float)[0])
+
+    def test_the_long_transfer_curve_agrees_too(self, deck, ref):
+        """The sweep that found `CT`, now a guard in its own right.
+
+        A Vd sweep at one gate bias can be matched by a wrong model with
+        a compensating error; a Vg sweep across five decades of current
+        cannot.
+        """
+        v, r, g, _ = _compare(deck, ref['nmos_long_idvg'])
+        assert len(r) > 20
+        ratio = g / r
+        assert ratio.min() > 0.95, 'worst low %.3f' % ratio.min()
+        assert ratio.max() < 1.16, 'worst high %.3f' % ratio.max()
 
     def test_channel_length_modulation_is_what_remains(self, deck, ref):
         """The residual has a shape, and it names the next layer.

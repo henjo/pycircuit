@@ -1406,15 +1406,16 @@ geometry scaling into the element, and `benchmarks/psp_gap.py` compares
 the result against the committed PSP103 reference. Nothing is tuned: the
 parameters come from the card.
 
-| sweep | W | L | first pass | + QM | + series R |
-|---|---|---|---|---|---|
-| `nmos_long_idvd` | 10 µm | **1 µm** | 1.29 | 1.095 | **1.041** |
-| `nmos_idvd_vg1p2` | 1 µm | 0.13 µm | — | 1.221 | 1.115 |
-| `nmos_idvg_vd0p05` | 1 µm | 0.13 µm | — | 1.703 | 1.288 |
+| sweep | W | L | first pass | + QM | + series R | + `CT` |
+|---|---|---|---|---|---|---|
+| `nmos_long_idvd` | 10 µm | **1 µm** | 1.29 | 1.095 | 1.041 | **1.008** |
+| `nmos_long_idvg` | 10 µm | **1 µm** | — | — | — | **1.10** |
+| `nmos_idvd_vg1p2` | 1 µm | 0.13 µm | — | 1.221 | 1.115 | 0.985 |
+| `nmos_idvg_vd0p05` | 1 µm | 0.13 µm | — | 1.703 | 1.288 | 1.115 |
 
 (median ratio, ours / PSP103.) The long device is the one to read — at
-L = 1 µm the physics the core omits matters least. **Within 4%**, from a
-card, with no fitting anywhere.
+L = 1 µm the physics the core omits matters least. **Within 1%** median
+and 3.5% worst, from a card, with no fitting anywhere.
 
 Each column is a term the *shape* of the previous residual named:
 
@@ -1425,10 +1426,23 @@ Each column is a term the *shape* of the previous residual named:
   mobility as an extra `Gmob` term (`THER = 2·BET·RS`) rather than adding
   a network element. That keeps the device four-terminal *and* symmetric,
   since `qim` is a midpoint quantity. Worth 1.095 → 1.041;
-* what remains **falls** through saturation (1.074 at Vd = 0.8 → 1.025
-  at 1.4), because PSP's saturated current keeps climbing (+5.9%) where
-  ours is flat (+0.7%) — the signature of **channel-length modulation**;
-* the short device is still 1.29× off, which is the cost of the missing
+* what then remained was a flat offset again, and the diagnostic for it
+  had to be *built*: a **long-device transfer curve** was added to the
+  reference, because a gain error gives a ratio flat in Vg while a drive
+  error gives one that varies. The measured ratio fell from 1.175 near
+  threshold to 1.022 at Vg = 1.5 — a drive error → **the effective
+  thermal voltage**. PSP does not normalise by `phit` but by
+  `phit1 = phit·(1 + CT)`, and the gate drive, the quasi-Fermi levels and
+  the charges are all in units of *that*
+  (`PSP103_macrodefs.include:503`). The card sets `CTO = 0.0546`, worth
+  ~7% here. 1.041 → **1.008**, and the short device improved with it
+  (1.288 → 1.115). The body factor is deliberately not rescaled: PSP
+  builds `G_0` on the plain `phit` and only moves it under `SWFIX`, which
+  defaults to 0;
+* what remains now **falls** through saturation (1.034 at Vd = 0.8 →
+  0.985 at 1.4) — **channel-length modulation**, and now that the flat
+  offset is gone the residual is centred rather than one-sided;
+* the short device is still 1.12× off, which is the cost of the missing
   DIBL and short-channel block rather than a defect in the core.
 
 > **CLM was tried, measured, and rejected — 2026-08-23.** The saturation

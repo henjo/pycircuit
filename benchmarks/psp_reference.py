@@ -62,6 +62,14 @@ SWEEPS = [
          sweep='Vd', start=0.0, stop=1.5, step=0.05,
          bias=dict(Vg=1.2, Vs=0.0, Vb=0.0),
          note='long/wide device -- geometry scaling, little short-channel'),
+    dict(name='nmos_long_idvg', device='sg13_lv_nmos', w=10e-6, l=1e-6,
+         sweep='Vg', start=0.0, stop=1.5, step=0.025,
+         bias=dict(Vd=0.05, Vs=0.0, Vb=0.0),
+         note='transfer characteristic of the LONG device -- the one '
+              'diagnostic that separates a gain error (ratio flat in Vg) '
+              'from a threshold or charge error (ratio varying with Vg), '
+              'on the geometry where short-channel physics does not '
+              'confound it'),
     dict(name='pmos_idvd_vg1p2', device='sg13_lv_pmos', w=1e-6, l=0.13e-6,
          sweep='Vd', start=-1.5, stop=0.0, step=0.05,
          bias=dict(Vg=-1.2, Vs=0.0, Vb=0.0),

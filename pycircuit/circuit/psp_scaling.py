@@ -194,6 +194,22 @@ def to_long_channel(card, w, l, T=300.0):
               * (1.0 + _g(card, 'thesatw') * iWE)
               * (1.0 + _g(card, 'thesatlw') * iLE * iWE))
 
+    ## INTERFACE STATES (:267).  PSP does not normalise by the thermal
+    ## voltage but by an EFFECTIVE one,
+    ## `phit1 = phit * (1 + CT*dCTG) * (1 + dphit1)`
+    ## (`PSP103_macrodefs.include:503`), and everything downstream --
+    ## the gate drive, the quasi-Fermi levels, the charges -- is in units
+    ## of that.  `CTG` is zero on this card so `dCTG` is 1, and `PSCE` is
+    ## absent so `dphit1` is 0, leaving `phit1 = phit*(1 + CT)`.
+    ##
+    ## Worth ~7% on the long device.  The body factor is NOT rescaled:
+    ## `G_0` is built on the plain `phit`, and PSP only moves it to
+    ## `phit1` when `SWFIX` is set, which defaults to 0 and this card
+    ## leaves unset.
+    ct = ((_g(card, 'cto') + _g(card, 'ctl') * iLE ** _g(card, 'ctlexp', 1.0))
+          * (1.0 + _g(card, 'ctw') * iWE)
+          * (1.0 + _g(card, 'ctlw') * iLE * iWE))
+
     ## Intrinsic series resistance (:304).  PSP applies it as a mobility
     ## term rather than a network element; see `psp_kernel`.
     rs = _g(card, 'rsw1') * iWE * (1.0 + _g(card, 'rsw2') * iWE)
@@ -201,6 +217,7 @@ def to_long_channel(card, w, l, T=300.0):
     return dict(
         w=w, l=l, tox=tox, nsub=neff, vfb=vfb, phib=phib, u0=u0_eff,
         rs=max(rs, 0.0), rsg=_g(card, 'rsgo'), rsb=_g(card, 'rsbo'),
+        ct=max(ct, 0.0),
         mue=max(mue, 0.0), themu=max(_g(card, 'themuo'), 0.0),
         cs=max(cs, 0.0), thecs=max(_g(card, 'thecso'), 0.0),
         feta=_g(card, 'fetao', 1.0), thesat=max(thesat, 0.0),

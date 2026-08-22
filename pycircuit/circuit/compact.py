@@ -295,20 +295,31 @@ class PspMosLongChannel(Behavioural):
                   default=0.0),
         Parameter(name='rsb', desc='Body-bias dependence of rs', unit='',
                   default=0.0),
+        ## Interface states.  PSP normalises the gate drive, the
+        ## quasi-Fermi levels and the charges by an EFFECTIVE thermal
+        ## voltage `phit*(1 + ct)`, not by `phit` itself.
+        Parameter(name='ct', desc='Interface-states factor', unit='',
+                  default=0.0),
     ]
 
     @staticmethod
     def analog(d, g, s, b):
         bd, bg, bs = Branch(d, b, 'd'), Branch(g, b, 'g'), Branch(s, b, 's')
 
-        phit = var(vt(), 'phit')
+        ## Two thermal voltages, deliberately.  The BODY FACTOR is built
+        ## on the plain one -- PSP's `G_0` is, and it only moves to the
+        ## effective one under `SWFIX`, which defaults off.  Everything
+        ## else -- gate drive, quasi-Fermi levels, charges, the current --
+        ## is in units of the effective one.
+        phit0 = var(vt(), 'phit0')
+        phit = var(phit0 * (1.0 + ct), 'phit')                # noqa: F821
         ## Oxide capacitance per unit area, and the body factor that
         ## follows from it.  `Gf` is gamma normalised by sqrt(phit),
         ## which is the form the surface-potential solver takes.
         cox = var(EPS_OX / tox, 'cox')                        # noqa: F821
         gamma = var(sympy.sqrt(2.0 * QELEC * EPS_SI * nsub)   # noqa: F821
                     / cox, 'gamma')
-        Gf = var(gamma / sympy.sqrt(phit), 'Gf')
+        Gf = var(gamma / sympy.sqrt(phit0), 'Gf')
         xi = var(1.0 + Gf * INV_SQRT2, 'xi')
 
         ## Normalised gate drive, and the quasi-Fermi levels at the two
