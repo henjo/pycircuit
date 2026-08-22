@@ -1172,6 +1172,40 @@ hand-written topology exactly:
 | 20 | 23 / 303 / 23 | 1.13 / 5.87 / 1.72 ms |
 | 100 | 103 / 1503 / 103 | 6.99 / 99.3 / 8.10 ms |
 
+**First production compact model — DONE 2026-08-22.** Before committing
+to PSP's 7417 lines, the whole pipeline is now proved end to end on a
+smaller real model. The PDK ships a ladder of them, each with its own
+compiled binary and model cards: `cap_cmomf` (166 lines), `cap_cmomi`
+(314), `r3_cmc` (1645), `mosvar` (1380), `psp103` (7417).
+
+`pycircuit/circuit/compact.py::CapCmomi` is the 314-line interdigitated
+MoM capacitor, translated from the shipped Verilog-A. It exercises,
+together and for the first time, essentially everything Phase E added:
+eight **named branches** (three pairs sharing a node pair — the skin arm
+is `L || R`, the substrate termination is `R || C`), `ddt` of a branch
+**current** as well as of a voltage, parameter-only conditionals
+selecting fitted coefficient sets by layer count / feed style /
+bottom-metal index, `floor` on a parameter expression, and clamps.
+
+Checked against IHP's own OSDI build of the same model, swept in ngspice
+over 1 MHz – 100 GHz for ten configurations reaching every coefficient
+branch:
+
+**worst relative impedance error 2.0×10⁻⁸**, over all cases and all
+frequencies — at the reference's own printed precision (ngspice `wrdata`
+writes 9 significant digits).
+
+The low-frequency capacitance is *additionally* checked against the
+vendor's tiling arithmetic done by hand, so a wrong reference cannot make
+a wrong model pass. Note what the model costs: the eight named branches
+need only **two** branch-current unknowns, because only the two inductors
+are voltage-defined.
+
+Notable: `Contribution(b.V, ddt(L * b.I))` — an inductor as a
+voltage-defined branch whose own current is inside the `ddt` — already
+worked (`LHdl`), and the two inductors here are the first use of it in a
+production model.
+
 What is left for a running PSP103 card:
 
 | item | size | note |

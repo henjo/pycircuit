@@ -23,13 +23,11 @@ Run:  python benchmarks/psp_reference.py [--pdk PATH] [--out PATH]
 import argparse
 import json
 import os
-import subprocess
 import sys
-import tempfile
+
+import ngspice_ref
 
 
-DEFAULT_PDK = os.path.expanduser(
-    '~/source/IHP-Open-PDK/ihp-sg13g2/libs.tech/ngspice')
 DEFAULT_OUT = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     '..', 'pycircuit', 'circuit', 'tests', 'data', 'psp103_ihp_iv.json')
@@ -95,74 +93,37 @@ wrdata {out} v({sn}) i(Vd) i(Vg) i(Vb)
 
 
 def _run(pdk, spec):
-    """Run one sweep.
+    """Run one sweep and return the terminal currents.
 
-    Data comes back through `wrdata` rather than `print`: ngspice splits
-    a wide `print` into SEPARATE tables once the columns exceed the
-    terminal width, which silently drops trailing vectors from anything
-    parsing the first table.  `wrdata` writes one row per point,
-    `(scale, value)` per vector, regardless of how many there are.
+    The deck records the DRAIN current always, never "the current in the
+    source being swept": for a Vg sweep that would be gate leakage, four
+    orders of magnitude below the quantity of interest and entirely
+    plausible-looking until plotted.
     """
-    tmpdir = tempfile.mkdtemp()
-    datafile = os.path.join(tmpdir, 'out.dat')
-    deckfile = os.path.join(tmpdir, 'deck.sp')
-    with open(deckfile, 'w') as fh:
-        fh.write(_deck(pdk, spec, datafile))
-    try:
-        out = subprocess.run(['ngspice', '-b', deckfile],
-                             capture_output=True, text=True, timeout=300)
-        if out.returncode != 0:
-            raise RuntimeError('ngspice failed for %s:\n%s'
-                               % (spec['name'], out.stderr[-2000:]))
-        if not os.path.exists(datafile):
-            raise RuntimeError('ngspice wrote no data for %s:\n%s'
-                               % (spec['name'], out.stdout[-2000:]))
-        rows = []
-        with open(datafile) as fh:
-            for line in fh:
-                parts = line.split()
-                ## (x, v) pairs: v(sn), i(Vd), i(Vg), i(Vb).  The DRAIN
-                ## current is always recorded, never "the current in the
-                ## source being swept" -- for a Vg sweep that would be
-                ## the gate leakage, which is four orders of magnitude
-                ## below the quantity of interest and looks like a
-                ## working reference until you plot it.
-                if len(parts) != 8:
-                    continue
-                vals = [float(v) for v in parts]
-                rows.append([vals[1], vals[3], vals[5], vals[7]])
-    finally:
-        for f in (datafile, deckfile):
-            if os.path.exists(f):
-                os.unlink(f)
-        os.rmdir(tmpdir)
-
-    if not rows:
-        raise RuntimeError('no data rows parsed for %s' % spec['name'])
-
-    ## The forced-voltage source current is NEGATIVE of the current into
-    ## the device terminal, so flip it -- what the reference stores is
-    ## terminal current, the sign convention every consumer wants.
-    return dict(
-        v=[r[0] for r in rows],
-        i_d=[-r[1] for r in rows],
-        i_g=[-r[2] for r in rows],
-        i_b=[-r[3] for r in rows],
-    )
+    ## Four vectors: the swept node voltage, then the three currents.
+    ## `_deck` is handed a literal '{out}' so the placeholder survives its
+    ## own `.format` and the harness fills in the data file.
+    _sweep, (v, i_d, i_g, i_b) = ngspice_ref.run(
+        _deck(pdk, spec, '{out}'), nvectors=4, label=spec['name'])
+    ## The forced-voltage source current is the NEGATIVE of the current
+    ## into the device terminal, so flip it -- what the reference stores
+    ## is terminal current, the convention every consumer wants.
+    return dict(v=v,
+                i_d=[-v for v in i_d],
+                i_g=[-v for v in i_g],
+                i_b=[-v for v in i_b])
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--pdk', default=DEFAULT_PDK)
+    ap.add_argument('--pdk', default=ngspice_ref.DEFAULT_PDK)
     ap.add_argument('--out', default=os.path.normpath(DEFAULT_OUT))
     args = ap.parse_args(argv)
 
     if not os.path.isdir(args.pdk):
         ap.error('PDK not found at %s' % args.pdk)
 
-    ver = subprocess.run(['ngspice', '--version'], capture_output=True,
-                         text=True).stdout.splitlines()
-    ver = next((l.strip() for l in ver if 'ngspice-' in l), 'unknown')
+    ver = ngspice_ref.version()
 
     data = dict(
         source='IHP-Open-PDK SG13G2, PSP 103.8.2 via OSDI',
