@@ -945,14 +945,20 @@ in priority order agreed with the owner:
    single fold-into-i convention shared by both paths (mixed ic/no-ic
    groups fall back loudly to the singular no-ic behaviour, never a
    silent pin).
-3. **Per-lane modulus in the traced gauge shift** — a swept `modulus` currently
-   drops the Phase-2 shift for that element (correct fallback, unbounded
-   state). Make `p_mods`/`p_offs` per-lane arrays fed from the override tree
-   so swept lanes keep the bounded-state property.
-4. **Doc-build health** — pre-existing dead `exec-rst` blocks (ginac import on
-   two pages, a `ValueError` on distortion_limits) warn "figures NOT live" on
-   every build. Fix or consciously retire; a live-doc system that ships dead
-   blocks erodes exactly the trust it exists to build.
+3. **Per-lane modulus in the traced gauge shift** — **DONE 2026-08-22.**
+   Swept elements' declarations are re-evaluated per lane pre-trace and the
+   lane arrays travel as vmapped arguments, so swept lanes keep the bounded
+   state (measured: state span < 1.6 lane-moduli where it was the whole
+   integral). A modulus swept across the degradation boundary makes the
+   declaration set lane-dependent — those rows drop to Phase-1 with a
+   warning, never a mis-shift.
+4. **Doc-build health** — **DONE 2026-08-22.** The two ginac pages now
+   detect the absent optional extension inside the block and render a
+   deliberate note (live again the moment the extension is built), keeping
+   the loud fallback for accidents. The distortion_limits death was a
+   transient-measured brentq bracket hugging its root: the +1 dB point
+   drifted to ~5.1e-4 past the 5e-4 upper edge as the solver evolved —
+   widened to 8e-4 with the reason recorded in the block.
 
 **Larger arcs (need scoping):**
 

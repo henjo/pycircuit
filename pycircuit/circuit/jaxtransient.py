@@ -2186,45 +2186,144 @@ class JAXTransient(Analysis):
         ## an intent; the controller grows geometrically from here anyway.
         return min(float(firststep), float(timestep))
 
-    def _periodic_state_arrays(self, exclude_names=()):
+    def _periodic_state_arrays(self):
         """Static (rows, moduli, offsets) arrays for the Phase-2 gauge shift,
-        or ``None`` when nothing declares (idtmod.md 5.2).
-
-        ``exclude_names``: CLASS or instance names whose declarations must be
-        DROPPED -- `solve_batched` passes its `override_params_tree` keys
-        (class-keyed), because a per-lane `modulus`/`offset` override makes
-        the trace-time value here wrong for the swept lanes.  Matching by
-        class is load-bearing: the tree key is the class name, and an
-        instance named differently from its class would otherwise keep the
-        shift active against the wrong modulus.  Excluded elements fall back
-        to the Phase-1 behaviour (unbounded state, output wrapped in
-        ``i()``), which is correct, just without the bounded-state precision
-        property.
-        """
+        or ``None`` when nothing declares (idtmod.md 5.2)."""
         if not hasattr(self.cir, 'periodic_states'):
             return None
         entries = list(self.cir.periodic_states())
-        if entries and exclude_names:
-            excluded_rows = set()
-            names = set(exclude_names)
-            elements = getattr(self.cir, 'elements', {})
-            for inst_name, element in elements.items():
-                if inst_name not in names and \
-                        type(element).__name__ not in names:
-                    continue
-                if not hasattr(element, 'periodic_states'):
-                    continue
-                declared = element.periodic_states()
-                if declared:
-                    rows = self.cir.elementnodemap[inst_name]
-                    for local_row, _m, _o in declared:
-                        excluded_rows.add(int(rows[local_row]))
-            entries = [e for e in entries if int(e[0]) not in excluded_rows]
         if not entries:
             return None
         return (jnp.array([int(e[0]) for e in entries], dtype=jnp.int32),
                 jnp.array([float(e[1]) for e in entries]),
                 jnp.array([float(e[2]) for e in entries]))
+
+    def _periodic_state_arrays_batched(self, override_params_tree,
+                                       batch_size):
+        """Per-lane (rows, moduli, offsets) for the Phase-2 shift under
+        ``solve_batched`` -- roadmap item 3 (idtmod.md sec. 8).
+
+        A swept ``modulus``/``offset`` used to DROP the element from the
+        shift (correct Phase-1 fallback, unbounded state); now the
+        declaration is re-evaluated per lane with the lane's parameter
+        column applied, so swept lanes KEEP the bounded-state property.
+        Pre-trace numpy work: swept top-level instances get their
+        parameters set per lane, ``periodic_states()`` is re-collected,
+        and the originals are restored in ``finally``.  Column order
+        within a class override is the group (elements-iteration) order,
+        same as ``batched_contributions`` consumes.
+
+        Lanes must agree on WHICH rows are periodic -- a modulus swept
+        across the idt-degradation boundary (positive to non-positive)
+        changes the declaration set -- and a disagreeing element's rows
+        are dropped to the Phase-1 fallback with a warning rather than
+        mis-shifted.
+
+        Returns ``(rows int32 (n,), mods (batch, n), offs (batch, n))``
+        or ``None`` when nothing declares.
+        """
+        if not hasattr(self.cir, 'periodic_states'):
+            return None
+        elements = getattr(self.cir, 'elements', {})
+
+        ## Which top-level declaring instances are swept, and their column
+        ## in the class's override arrays.
+        swept = []      # (inst_name, element, {param: (batch,) values})
+        for inst_name, element in elements.items():
+            if not hasattr(element, 'periodic_states'):
+                continue
+            cls_name = type(element).__name__
+            if cls_name not in (override_params_tree or {}):
+                continue
+            siblings = [nm for nm, el in elements.items()
+                        if type(el).__name__ == cls_name]
+            col = siblings.index(inst_name)
+            lane_params = {}
+            for key, arr in override_params_tree[cls_name].items():
+                if key not in getattr(element, 'iparv', ()):
+                    continue
+                a = np.atleast_2d(np.asarray(arr))
+                lane_params[key] = a[:, col]
+            if lane_params:
+                swept.append((inst_name, element, lane_params))
+
+        base = list(self.cir.periodic_states())
+        if not base and not swept:
+            return None
+
+        if not swept:
+            if not base:
+                return None
+            rows = [int(e[0]) for e in base]
+            mods = np.tile([float(e[1]) for e in base], (batch_size, 1))
+            offs = np.tile([float(e[2]) for e in base], (batch_size, 1))
+            return (jnp.array(rows, dtype=jnp.int32), jnp.array(mods),
+                    jnp.array(offs))
+
+        ## Re-evaluate the swept instances' declarations per lane.
+        swept_rows_of = {}   # inst_name -> [global rows] (lane-0 reference)
+        lane_decls = []      # per lane: {global_row: (m, o)}
+        saved = {name: dict(el.iparv._values)
+                 for name, el, _ in swept}
+        try:
+            for lane in range(batch_size):
+                decls = {}
+                for inst_name, element, lane_params in swept:
+                    element.iparv.set(**{k: float(v[lane])
+                                         for k, v in lane_params.items()})
+                    rows_map = self.cir.elementnodemap[inst_name]
+                    rows_here = []
+                    for local_row, m, o in element.periodic_states():
+                        g = int(rows_map[local_row])
+                        decls[g] = (float(m), float(o))
+                        rows_here.append(g)
+                    if lane == 0:
+                        swept_rows_of[inst_name] = rows_here
+                    elif rows_here != swept_rows_of[inst_name]:
+                        swept_rows_of[inst_name] = None   # inconsistent
+                lane_decls.append(decls)
+        finally:
+            for name, el, _ in swept:
+                el.iparv.set(**saved[name])
+
+        dropped = [nm for nm, rows in swept_rows_of.items() if rows is None]
+        if dropped:
+            warnings.warn(
+                'solve_batched: %s declare periodic states on some lanes '
+                'but not others (a modulus swept across the degradation '
+                'boundary?); the gauge shift is disabled for them and their '
+                'state runs unbounded (Phase-1 behaviour, still correct).'
+                % ', '.join(sorted(repr(n) for n in dropped)),
+                RuntimeWarning)
+        swept_rows = set()
+        for nm, rows in swept_rows_of.items():
+            if rows is not None:
+                swept_rows.update(rows)
+
+        ## Constant (unswept) rows come from the base declaration; the rows
+        ## of DROPPED instances must go too -- their trace-time modulus is
+        ## wrong for the swept lanes.
+        base_rows = {int(e[0]): (float(e[1]), float(e[2])) for e in base}
+        all_dropped_rows = set()
+        for nm in dropped:
+            rows_map = self.cir.elementnodemap[nm]
+            el = elements[nm]
+            for local_row, _m, _o in el.periodic_states():
+                all_dropped_rows.add(int(rows_map[local_row]))
+        rows = sorted((set(base_rows) - all_dropped_rows) | swept_rows)
+        if not rows:
+            return None
+
+        mods = np.empty((batch_size, len(rows)))
+        offs = np.empty((batch_size, len(rows)))
+        for j, row in enumerate(rows):
+            for lane in range(batch_size):
+                if row in lane_decls[lane]:
+                    mods[lane, j], offs[lane, j] = lane_decls[lane][row]
+                else:
+                    mods[lane, j], offs[lane, j] = base_rows[row]
+        return (jnp.array(rows, dtype=jnp.int32), jnp.array(mods),
+                jnp.array(offs))
 
     def _pcnr_setup(self):
         """(ra, rb, IS) arrays + VT, or (None, VT): static trace-time junction
@@ -2505,13 +2604,22 @@ class JAXTransient(Analysis):
         _state_mask = (self._jax_state_row_mask(self._initial_state(refnode))
                        if self.par.coupled_lte else None)
         _pcnr_meta, _pcnr_VT = self._pcnr_setup()
-        ## Phase-2 gauge shift; per-lane-overridden elements drop out (their
-        ## trace-time modulus would be wrong for the swept lanes).
-        _periodic = self._periodic_state_arrays(
-            exclude_names=tuple(override_params_tree or ()))
+        ## Phase-2 gauge shift, PER LANE (roadmap item 3): swept moduli/
+        ## offsets are re-declared per lane, so swept lanes keep the
+        ## bounded-state property.  The lane arrays travel as vmapped
+        ## arguments; the row set is static and shared.  Zero-width arrays
+        ## when nothing declares -- the shift compiles to a no-op then.
+        _pb = self._periodic_state_arrays_batched(override_params_tree,
+                                                  batch_size)
+        if _pb is None:
+            _p_rows = jnp.zeros((0,), dtype=jnp.int32)
+            _p_mods_lanes = jnp.ones((batch_size, 0))
+            _p_offs_lanes = jnp.zeros((batch_size, 0))
+        else:
+            _p_rows, _p_mods_lanes, _p_offs_lanes = _pb
 
-        def run_chunk(s, p_tree):
-            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method=self._eval_method(), params_tree=p_tree, reltol=self.par.reltol, abstol=self._newton_abstol(n), periodic_states=_periodic,
+        def run_chunk(s, p_tree, p_mods_lane, p_offs_lane):
+            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method=self._eval_method(), params_tree=p_tree, reltol=self.par.reltol, abstol=self._newton_abstol(n), periodic_states=(_p_rows, p_mods_lane, p_offs_lane),
                                    xtol=self._newton_xtol(n),
                                    maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis, s_gamma_min=_sgm, s_gamma_max=_sgx, s_eta=_seta, relref=self._relref(), n_nodes=len(self.cir.nodes), state_mask=_state_mask, dv_bounds=self._dv_step_bounds(),
                                    lte_reltol=self.par.reltol,
@@ -2572,7 +2680,8 @@ class JAXTransient(Analysis):
                 force_first_order=b_force_first
             )
             
-            final_state = batched_run_chunk(state, override_params_tree)
+            final_state = batched_run_chunk(state, override_params_tree,
+                                            _p_mods_lanes, _p_offs_lanes)
 
             ## PER-LANE COLLECTION, NO PADDING.  The old code trimmed every lane
             ## to the batch's rectangular [0, max_steps) window and FILLED

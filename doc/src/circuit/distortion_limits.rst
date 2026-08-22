@@ -734,9 +734,13 @@ merely an amplitude at a drive chosen for it.
         return 2*abs(S[keep])
 
     ## Bracket kept tight: each transient evaluation is a full simulation, and
-    ## a wide bracket costs build time without buying accuracy.
+    ## a wide bracket costs build time without buying accuracy.  Upper end
+    ## 8e-4, not the original 5e-4: the measured +1 dB point sits at ~5.1e-4
+    ## and drifted past the old edge as the adaptive solver evolved (f(5e-4)
+    ## was -0.054 when this block died on 2026-08-22) -- a live block whose
+    ## bracket hugs the root that tightly fails on every solver improvement.
     A_tr = brentq(lambda A: transient_H1(A)/(g0*A) - TARGET,
-                  2.0e-4, 5.0e-4, xtol=1e-8)
+                  2.0e-4, 8.0e-4, xtol=1e-8)
 
     def dev(A, P):
         g = graded_response(resp, A, taylor[:P-1], (w0,), max_power=P)

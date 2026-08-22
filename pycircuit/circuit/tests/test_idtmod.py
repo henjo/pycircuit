@@ -767,11 +767,16 @@ def test_solve_batched_instance_key_ambiguous_raises():
         pycircuit.circuit.circuit.default_toolkit = saved
 
 
-def test_solve_batched_shift_excluded_by_class():
-    """The Phase-2 shift exclusion must match by CLASS (the tree key), not
-    instance name.  Sharp version: lane modulus 0.7 does NOT divide the
-    trace-time modulus 1.0, so a wrongly-active shift would translate the
-    state by non-multiples of the lane's modulus and break its congruence."""
+def test_solve_batched_shift_follows_per_lane_modulus():
+    """Roadmap item 3: a swept modulus no longer drops the Phase-2 shift --
+    the declaration is re-evaluated per lane, so every lane keeps the
+    bounded state.  Sharp on two axes: lane modulus 0.7 does not divide
+    1.0, so a shift against the WRONG lane's modulus would translate the
+    state by non-multiples of the true modulus and break that lane's
+    congruence; and the instance is named 'X', so class-keying must hold
+    throughout.  Assertions: per-lane congruence at machine precision AND
+    the per-lane state span bounded by ~one lane modulus (before item 3
+    the swept case ran unbounded: span ~= the whole integral, 2.1)."""
     pytest.importorskip('jax')
     import warnings
     import jax.numpy as jnp
@@ -798,12 +803,15 @@ def test_solve_batched_shift_excluded_by_class():
     finally:
         pycircuit.circuit.circuit.default_toolkit = saved
 
+    s_row = _idt_state_row(c)
     for lane, m in zip(res, (0.7, 1.0)):
         y = np.asarray(lane.v('out'), float).reshape(-1)
         t = np.asarray(lane.v('out').x[0], float).reshape(-1)
         d = np.abs(y[1:] - t[1:] % m)
         d = np.minimum(d, m - d)
         assert d.max() < 1e-6, (m, d.max())
+        s = np.asarray(lane.x, float)[s_row]
+        assert s.max() - s.min() < 1.6 * m, (m, s.max() - s.min())
 
 
 def test_jax_solve_dc_pin_without_uic():
