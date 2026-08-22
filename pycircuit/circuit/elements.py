@@ -1218,6 +1218,72 @@ def floored_wrap(y, modulus, offset, toolkit):
     return y - modulus * toolkit.floor((y - offset) / modulus)
 
 
+class _WrapEvents:
+    """Phase-3 wrap breakpoints (idtmod.md 5.3), CPU solvers only.
+
+    The wrapped output is a sawtooth whose corner the adaptive controller
+    would otherwise discover by rejection; predicting the crossing lets the
+    solver LAND a step boundary on it and order-drop across the corner.
+    Shared by the scalar (``Idtmod``) and phasor-pair (``IdtmodCircular``)
+    circular integrators: both expose the wrapped value via
+    ``_event_output(x)`` and both have output rate ``v_ip - v_in`` exactly.
+    """
+
+    def _event_output(self, x):
+        """The wrapped output value at the element-local state ``x``."""
+        raise NotImplementedError
+
+    def accept_step(self, t, x, epar):
+        """Cache what the crossing prediction needs, in gauge-invariant
+        form: the WRAPPED output (unchanged by the Phase-2 shift, whenever
+        it runs relative to this call) and the rate read off the element's
+        own ODE right-hand side -- ``d(out)/dt = v_ip - v_in`` exactly, no
+        finite differencing, no two-point history."""
+        m = self.iparv.modulus
+        if m is None or m <= 0:
+            self._bp_cache = None
+            return
+        self._bp_cache = (float(t),
+                          float(self._event_output(x)),
+                          float(x[0] - x[1]))
+
+    def reset_state(self, epar=None):
+        self._bp_cache = None
+
+    def next_event(self, t):
+        """Predicted time the output next crosses a wrap boundary.
+
+        Linear prediction from the last ACCEPTED point; it only needs to
+        BRACKET the corner -- the solver's break-step machinery order-drops
+        across whatever lands there.  ``inf`` before the first accepted
+        step, in idt-degradation mode, and for a (near-)stalled phase.
+        Strictly greater than ``t``, per the ``next_event`` contract; a
+        prediction already at or behind ``t`` (the solver is sitting on the
+        corner) advances by whole periods.
+        """
+        cache = getattr(self, '_bp_cache', None)
+        if cache is None:
+            return self.toolkit.inf
+        t0, phase, rate = cache
+        m = self.iparv.modulus
+        offset = self.iparv.offset
+        if rate == 0.0:
+            return self.toolkit.inf
+        if rate > 0.0:
+            gap = (offset + m) - phase   # in (0, m]: the range is half-open
+        else:
+            gap = phase - offset         # in [0, m): can sit ON the corner
+            if gap <= 0.0:
+                gap = m
+        period = m / abs(rate)
+        t_cross = t0 + gap / abs(rate)
+        if t_cross <= t:
+            t_cross += (math.floor((t - t_cross) / period) + 1.0) * period
+            if t_cross <= t:     # float residue at extreme t/period ratios
+                return self.toolkit.inf
+        return t_cross
+
+
 class _IdtBase(Circuit):
     """Shared topology of the ``Idt``/``Idtmod`` integrators.
 
@@ -1351,7 +1417,7 @@ class Idt(_IdtBase):
                               -(x[2] - x[3]) - x[4]])
 
 
-class Idtmod(_IdtBase):
+class Idtmod(_WrapEvents, _IdtBase):
     """Circular (modulo) integrator -- Verilog-A ``idtmod``
 
     Output voltage is the time integral of the input voltage folded into
@@ -1413,63 +1479,8 @@ class Idtmod(_IdtBase):
             return []
         return [(self._idt_index, m, -(self.iparv.offset + m))]
 
-    ## ------------------------------------------------------------------
-    ## Phase-3 wrap breakpoints (idtmod.md 5.3), CPU solvers only.  The
-    ## output is a sawtooth whose corner the adaptive controller would
-    ## otherwise discover by rejection; predicting the crossing lets the
-    ## solver LAND a step boundary on it and order-drop across the corner
-    ## -- and, unlike the general event-and-reinit machinery, the Phase-2
-    ## gauge shift keeps the history valid at full order through it.
-
-    def accept_step(self, t, x, epar):
-        """Cache what the crossing prediction needs, in gauge-invariant
-        form: the WRAPPED phase (unchanged by the Phase-2 shift, whenever
-        it runs relative to this call) and the phase rate read off the
-        element's own ODE right-hand side -- ``dphase/dt = v_ip - v_in``
-        exactly, no finite differencing, no two-point history."""
-        m = self.iparv.modulus
-        if m is None or m <= 0:
-            self._bp_cache = None
-            return
-        self._bp_cache = (float(t),
-                          float(self._wrap(-x[self._idt_index])),
-                          float(x[0] - x[1]))
-
-    def reset_state(self, epar=None):
-        self._bp_cache = None
-
-    def next_event(self, t):
-        """Predicted time the output next crosses a wrap boundary.
-
-        Linear prediction from the last ACCEPTED point; it only needs to
-        BRACKET the corner -- the solver's break-step machinery order-drops
-        across whatever lands there.  ``inf`` before the first accepted
-        step, in idt-degradation mode, and for a (near-)stalled phase.
-        Strictly greater than ``t``, per the ``next_event`` contract; a
-        prediction already at or behind ``t`` (the solver is sitting on the
-        corner) advances by whole periods.
-        """
-        cache = getattr(self, '_bp_cache', None)
-        if cache is None:
-            return self.toolkit.inf
-        t0, phase, rate = cache
-        m = self.iparv.modulus
-        offset = self.iparv.offset
-        if rate == 0.0:
-            return self.toolkit.inf
-        if rate > 0.0:
-            gap = (offset + m) - phase   # in (0, m]: the range is half-open
-        else:
-            gap = phase - offset         # in [0, m): can sit ON the corner
-            if gap <= 0.0:
-                gap = m
-        period = m / abs(rate)
-        t_cross = t0 + gap / abs(rate)
-        if t_cross <= t:
-            t_cross += (math.floor((t - t_cross) / period) + 1.0) * period
-            if t_cross <= t:     # float residue at extreme t/period ratios
-                return self.toolkit.inf
-        return t_cross
+    def _event_output(self, x):
+        return self._wrap(-x[self._idt_index])
 
     @staticmethod
     def eval_q_pure(x, params, epar, toolkit):
@@ -1486,6 +1497,160 @@ class Idtmod(_IdtBase):
                               x[0] - x[1],
                               -(x[2] - x[3]) + floored_wrap(-x[4], m, o,
                                                             toolkit)])
+
+
+class IdtmodCircular(_WrapEvents, Circuit):
+    """Two-state circular integrator -- ``idtmod`` on the unit phasor.
+
+    Where ``Idtmod`` integrates a scalar phase and folds it (idtmod.md sec.
+    5.2), this element integrates the phase's unit phasor
+    ``(c, s) = (cos(2*pi*k/modulus), sin(2*pi*k/modulus))``::
+
+        dc/dt = -w*s - gamma*|w|*c*(r^2 - 1)
+        ds/dt = +w*c - gamma*|w|*s*(r^2 - 1),   w = 2*pi*(v_ip - v_in)/modulus
+
+    and recovers the wrapped output ``k = floored_wrap(modulus *
+    atan2(s, c) / (2*pi), modulus, offset)``.  The STATE is smooth for all
+    time -- no wrap, no gauge shift, no discontinuity anywhere in the
+    trajectory; the sawtooth exists only in the output map, where the
+    ``atan2`` branch cut is exactly cancelled by the wrap and the remaining
+    corner is the one ``idtmod`` semantics require (handled by the shared
+    ``_WrapEvents`` breakpoints).
+
+    The ``gamma`` terms are the Baumgarte-style orbit correction (idtmod.md
+    sec. 7): numerical integration does not conserve the circle invariant
+    ``r^2 = c^2 + s^2 = 1`` (Gear-type methods damp the radius, forward
+    rules grow it), and the correction makes the unit circle exponentially
+    attracting with rate ``2*gamma*|w|``: ``d(r^2)/dt = -2*gamma*|w|*r^2*
+    (r^2 - 1)``.  Scaling by ``|w|`` makes the gain dimensionless --
+    ``gamma`` is a per-radian-travelled recovery rate, so behaviour does not
+    depend on the oscillation frequency.  ``gamma=0`` disables it (useful to
+    demonstrate the drift; trapezoidal integration conserves the circle for
+    constant ``w`` even then).
+
+    Semantics notes vs ``Idtmod``: ``modulus`` must be positive (a phasor
+    cannot represent an unbounded plain integral, so there is no
+    idt-degradation mode); ``ic`` defaults to 0 and ALWAYS defines the DC
+    solution and the ``uic`` seed -- the phasor must start on the circle
+    (``(c, s) = (0, 0)`` is a degenerate equilibrium the dynamics cannot
+    leave).  Not supported on the symbolic toolkit (``atan2``/``floor``).
+    Under ``JAXTransient`` use ``uic=True`` (or ``x0``): its internal DC
+    solve does not carry the ``epar.analysis_kind`` pin and would settle on
+    the degenerate centre.
+    """
+
+    terminals = ('iplus', 'iminus', 'oplus', 'ominus')
+    branches = (Branch(Node('oplus'), Node('ominus')),)
+    linear = False
+
+    instparams = [Parameter(name='ic',
+                            desc='Initial output value; forces the DC '
+                                 'solution and seeds uic=True',
+                            unit='V', default=0.),
+                  Parameter(name='modulus', desc='Output modulus (> 0)',
+                            unit='V/V', default=1.),
+                  Parameter(name='offset', desc='offset voltage', unit='V',
+                            default=0.),
+                  Parameter(name='gamma',
+                            desc='Baumgarte orbit-correction gain, per '
+                                 'radian of phase travel (0 disables)',
+                            unit='', default=1.)]
+
+    IC_KIND = 'state'
+
+    _cos_index = None
+
+    def __init__(self, *args, **kvargs):
+        super().__init__(*args, **kvargs)
+        self._cos_index = self.nodes.index(self.add_node('cos_node'))
+        self._sin_index = self.nodes.index(self.add_node('sin_node'))
+        self._branch_index = self.n - 1
+        self.update(self.ipar)
+
+    def update(self, subject):
+        if self._cos_index is None:
+            return
+        m = self.iparv.modulus
+        if m is None or m <= 0:
+            raise ValueError(
+                'IdtmodCircular requires modulus > 0: a phasor pair cannot '
+                'represent an unbounded plain integral (use Idt/Idtmod for '
+                'the degradation mode).')
+        n = self.n
+        self._C = self.toolkit.matrix_from_entries(
+            (n, n), [(self._cos_index, self._cos_index, 1),
+                     (self._sin_index, self._sin_index, 1)])
+
+    def _params(self):
+        return {'modulus': self.iparv.modulus, 'offset': self.iparv.offset,
+                'gamma': self.iparv.gamma, 'ic': self.iparv.ic}
+
+    def _theta0(self):
+        """Phasor angle whose recovered output is ``wrap(ic)``."""
+        m = self.iparv.modulus
+        kw = floored_wrap(self.iparv.ic, m, self.iparv.offset, self.toolkit)
+        return 2.0 * self.toolkit.pi * kw / m
+
+    def state_ic(self):
+        th = self._theta0()
+        return [(self._cos_index, math.cos(th)),
+                (self._sin_index, math.sin(th))]
+
+    def _event_output(self, x):
+        m = self.iparv.modulus
+        return floored_wrap(
+            m * math.atan2(float(x[self._sin_index]),
+                           float(x[self._cos_index])) / (2.0 * math.pi),
+            m, self.iparv.offset, self.toolkit)
+
+    @staticmethod
+    def eval_q_pure(x, params, epar, toolkit):
+        return toolkit.array([0.0, 0.0, 0.0, 0.0, x[4], x[5], 0.0])
+
+    @staticmethod
+    def eval_i_pure(x, params, epar, toolkit):
+        m = params.get('modulus', 1.0)
+        o = params.get('offset', 0.0)
+        c, s, i_br = x[4], x[5], x[6]
+        two_pi = 2.0 * toolkit.pi
+        k = floored_wrap(m * toolkit.arctan2(s, c) / two_pi, m, o, toolkit)
+        out_row = -(x[2] - x[3]) + k
+        if getattr(epar, 'analysis_kind', None) == 'dc':
+            ## The ic pin, LRM-style: the phasor lands on the circle at the
+            ## angle whose output is wrap(ic).  Folded into i() (no u part),
+            ## so the finite-difference/autodiff Jacobian of this same
+            ## function is the DC stamp too.
+            ic = params.get('ic', 0.0)
+            kw = floored_wrap(ic, m, o, toolkit)
+            th = two_pi * kw / m
+            return toolkit.array([0.0, 0.0, i_br, -i_br,
+                                  c - toolkit.cos(th),
+                                  s - toolkit.sin(th),
+                                  out_row])
+        gamma = params.get('gamma', 1.0)
+        w = two_pi * (x[0] - x[1]) / m
+        corr = gamma * toolkit.abs(w) * (c * c + s * s - 1.0)
+        return toolkit.array([0.0, 0.0, i_br, -i_br,
+                              w * s + corr * c,
+                              -w * c + corr * s,
+                              out_row])
+
+    def i(self, x, epar=defaultepar, params_tree=None):
+        return self.eval_i_pure(x, self._params(), epar, self.toolkit)
+
+    def G(self, x, epar=defaultepar, params_tree=None):
+        ## Single source of truth: autodiff under JAX, central differences
+        ## under the numeric toolkit (the Semiconductor pattern).  The
+        ## |w| kink and the sawtooth corner make G exact a.e. only, same
+        ## story as Idtmod's wrap slope.
+        return self.toolkit.jacobian(self.eval_i_pure, x, self._params(),
+                                     epar)
+
+    def C(self, x, epar=defaultepar, params_tree=None):
+        return self._C
+
+    def u(self, t=0.0, epar=defaultepar, analysis=None, params_tree=None):
+        return self.toolkit.zeros(self.n)
 
 class VPWL(VS):
     """Independent piecewise linear voltage source"""

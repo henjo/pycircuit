@@ -41,7 +41,18 @@ alongside: `JAXTransient` now calls `reset_state` before its static breakpoint
 enumeration (Stage 8(d)'s "every analysis" contract; previously a stale element
 cache from a prior CPU run could leak into `collect_breakpoints`). JAX dynamic wrap
 breakpoints remain architecturally out (static `t_breaks_array`), as sec. 5.3
-documents.*
+documents. **Section 7 adds `IdtmodCircular`** (requested as "idtmod_circular"): the
+two-state phasor-pair variant with Baumgarte-style orbit correction — researched
+(Baumgarte 1972, Ascher et al. 1994, feedback-integrator gain theory, quaternion
+normalization feedback, DSP quadrature-oscillator AGC; no circuit-simulation
+precedent found) and implemented with a dimensionless per-radian gain `gamma`
+(default 1) whose effective per-step strength self-tracks the admissible bracket
+through the LTE controller. Measured: Gear-2, 50 cycles, γ=0 → radius decays to
+0.48; γ=1 → `max|r−1| = 1.1e-2`; trapezoidal at constant ω conserves the radius
+exactly after a single first-step order-drop injection of ½(ωh)², confirming the
+Cayley-transform prediction. The scalar `Idtmod` remains the primary
+recommendation (ulp-exact phase); the phasor form trades accumulating LTE-level
+phase error for a globally smooth state.*
 
 ---
 
@@ -659,7 +670,191 @@ The differentiator (§3.3 row 3). Files: `pycircuit/circuit/circuit.py`,
 
 ---
 
-## 6. References
+## 7. IdtmodCircular — the two-state circular integrator with Baumgarte orbit correction
+
+Section 3.3 listed the phasor-pair state as an alternative "to document, not recommend."
+This section is its full treatment: research into the drift problem and its cures, and
+the implemented element (`IdtmodCircular` in `pycircuit/circuit/elements.py`; named per
+the repo's CamelCase element convention, requested as "idtmod_circular").
+
+### 7.1 The idea
+
+Instead of a scalar phase state that must be folded, integrate the phase's unit phasor
+`(c, s) = (cos θ, sin θ)`, `θ = 2π·(k − offset-fold)/modulus`:
+
+```
+dc/dt = −ω·s − γ·|ω|·c·(r² − 1)
+ds/dt = +ω·c − γ·|ω|·s·(r² − 1),     ω = 2π·(v_ip − v_in)/modulus,  r² = c² + s²
+k     = floored_wrap(modulus·atan2(s, c)/(2π), modulus, offset)
+```
+
+The **state is smooth for all time** — no wrap, no Phase-2 gauge shift, no discontinuity
+anywhere in the trajectory. The `atan2` branch cut is exactly cancelled by the output
+wrap (both are mod-`modulus` in `k`), leaving only the one sawtooth corner idtmod
+semantics require — handled by the same `_WrapEvents` breakpoint prediction as `Idtmod`
+(the output rate is `v_ip − v_in` for both).
+
+### 7.2 Why orbit correction is needed: the drift problem
+
+Discretized rotation does not conserve the circle invariant `r² = 1`. The
+per-method behaviour, from the literature and confirmed by measurement:
+
+| method | `r²` behaviour (constant ω) | mechanism |
+|---|---|---|
+| forward Euler | grows ×(1+(ωh)²) per step | amplification factor > 1 on the imaginary axis |
+| backward Euler | decays ×1/(1+(ωh)²) | over-stability / numerical damping |
+| Gear2/BDF2 | decays (slower than BE) | numerical damping — Kundert's classic LC-tank observation: "if either Gear2 or backward Euler are used, the amplitude of the oscillation asymptotically decays" |
+| trapezoidal | **exactly conserved** | for linear constant-ω the trap update equals implicit midpoint = the Cayley transform of a skew matrix, which is orthogonal |
+| trapezoidal, varying ω(t) | O(h²·ω̇) drift per step | endpoint matrices differ; no single Cayley transform |
+
+Two important corrections to naive expectations, both verified:
+
+- **"Trapezoidal preserves quadratic invariants" is false in general** — trap is
+  Lobatto IIIA, symmetric but NOT symplectic (Hairer/Lubich/Wanner, *Geometric
+  Numerical Integration*, ch. IV/VI); only for the linear constant-coefficient case
+  does it coincide with the (invariant-conserving) implicit midpoint rule.
+- **Even trapezoidal runs drift in practice here**, because the Phase-3 wrap
+  breakpoints order-drop to Euler at every corner, and the run's first step is an
+  Euler step too. Measured: pure trap at constant ω with no wrap crossed shows exactly
+  ONE injection of ½(ωh)² = 7.9e-5 from the first-step order drop, then stays flat;
+  a 50-cycle Gear-2 run with γ=0 decays the radius to **0.48**. VACASK's own
+  oscillator demo (`demo/trannoise/osc.sim:52`) documents the same bind in
+  production: Gear chosen to avoid trap ringing, then "a small timestep to reduce
+  Gear's damping" — if users run Gear for ringing reasons, a phasor state WILL
+  spiral inward unless corrected.
+
+### 7.3 The Baumgarte correction
+
+Baumgarte's original method (J. Baumgarte, "Stabilization of constraints and integrals
+of motion in dynamical systems", *CMAME* 1:1–16, 1972) replaces a position constraint
+`g = 0` by the critically-damped `g̈ + 2α·ġ + β²·g = 0`. For a *first-order invariant*
+like ours the analogue is `ḣ + γ_eff·h = 0`, obtained by appending `−γ_eff·∇V` to the
+RHS with `V = ¼(r²−1)²`, `∇V = (c,s)·(r²−1)` — exactly the terms above. The radial
+error then obeys
+
+```
+d(r²)/dt = −2·γ·|ω|·r²·(r²−1)
+```
+
+so the unit circle is exponentially attracting with rate `2γ|ω|`. Two properties worth
+stating precisely:
+
+- **The correction is purely radial**: its contribution to the phase flow is
+  `(c·ṡ − s·ċ)_corr = c·(corr·s) − s·(corr·c) = 0`. It cannot bias the phase — only
+  rescue the radius. (The identical structure is standard for quaternion attitude
+  kinematics: `q̇ = ½Ω·q + η·(1−‖q‖²)·q`, e.g. arXiv:1107.1119; named as Baumgarte
+  stabilization over SO(3) by Gros et al., IEEE CDC 2015.)
+- **`(c,s) = (0,0)` is a degenerate equilibrium** the correction cannot leave
+  (`d(r²)/dt = 0` at r = 0) — which is why the element always pins/seeds on the
+  circle (sec. 7.5).
+
+### 7.4 Gain selection — the classic critique, and why γ is per-radian here
+
+The single most-cited weakness of Baumgarte stabilization is that parameter choice is
+ad hoc: "a popular method, but the choice of parameters to make it robust is unclear
+in practice" (Ascher, Chin, Petzold, Reich, "Stabilization of DAEs and invariant
+manifolds", *Numer. Math.* 67:131–149, 1994), and the admissible region depends on the
+integrator AND the step size (Flores et al., *JCND* 6(1), 2011) — γ is a property of
+(model, integrator, h), not of the model alone. The cleanest quantitative theory found
+("Feedback Integrators", arXiv:2512.01528) gives, for Euler discretization with
+per-step feedback strength `β = h·γ_eff`:
+
+```
+admissible:  β ∈ (0, 2/L),   optimal:  β* = 1/L,   L = sup‖∇²V‖ ≈ 2 near r = 1
+```
+
+i.e. `γ_eff·h ≲ 1` with `γ_eff ≈ 1/(2h)` near-optimal (consistent with Ascher's
+`γ ≈ 1/h` recommendation up to the factor-2 convention).
+
+`IdtmodCircular` cannot know `h` — elements never see the step size — so its gain is
+made **dimensionless per radian of phase travel**: the RHS term is `γ·|ω|·x·(r²−1)`,
+giving `β = γ·(|ω|·h) = γ·(phase per step)`. The LTE controller keeps phase-per-step
+roughly constant (a fraction of a radian), so `β` automatically lands inside the
+admissible bracket at any oscillation frequency, and the default `γ = 1` is safe
+without tuning. Measured (50 Gear-2 cycles at ωh ≈ 0.13): γ=0 → radius 0.48;
+γ=1 → `max|r−1| = 1.1e-2`, final `|r−1| < 3e-4`.
+
+### 7.5 Alternatives considered and rejected
+
+- **Post-step orthogonal projection** (`(c,s) ← (c,s)/r`, or the one-Newton-step
+  `×(3−r²)/2` renormalization from the quaternion literature): preferred in the ODE
+  literature — parameter-free, exact per step (Ascher et al.'s bottom line is "use
+  orthogonal projections whenever possible"). Rejected HERE because projection is not
+  a linear-multistep invariant: unlike Phase 2's translation gauge (which LMS
+  formulas provably cannot see), radial rescaling of the accepted state is
+  inconsistent with the stored q/x history, and rewriting history radially is
+  inexact. The Baumgarte term is pure RHS + Jacobian content — invisible to the
+  integrator machinery — which matches both Ascher's advice to "discretize the
+  stabilizing term simply, differently from the ODE" and VACASK's in-repo idiom of
+  filtering the predictor while leaving the solution untouched.
+- **Periodic renormalization** (INS practice: normalize every N steps at low rate):
+  same history-consistency objection, in milder form; noted, not needed.
+- **CORDIC-style precomputed gain correction**: inapplicable — CORDIC's magnitude
+  error is known a priori and constant; ours is solution- and history-dependent.
+
+**Negative finding:** no precedent was found for a phasor-pair idtmod state in any
+circuit simulator — Verilog-A VCO models integrate a scalar phase and wrap it; the
+quadrature VCOs in the literature are circuit topologies, not numerical techniques.
+`IdtmodCircular` is a transplant from multibody/aerospace/DSP into circuit
+simulation. The DSP world does carry the exact same correction: coupled-form
+quadrature oscillators drift off the unit circle and US patent 6,642,796 feeds
+`(sin²θ + cos²θ)` back into the loop gain — literally the `−γ(r²−1)` term, discrete.
+
+### 7.6 Implementation, semantics, and the honest trade-off
+
+Element `IdtmodCircular` (`elements.py`): 4 terminals as `Idtmod`, two private nodes
+(`cos_node`, `sin_node`) + output branch; single-source-of-truth `eval_i_pure`
+(autodiff Jacobian under JAX, central differences under numeric — the Semiconductor
+pattern); constant C (unit diagonal on the phasor rows); `eval_q_pure` for the
+batched path. Deliberate semantic differences from `Idtmod`:
+
+- `modulus` must be positive — a phasor cannot represent an unbounded plain integral,
+  so there is NO idt-degradation mode; `modulus <= 0` raises at construction.
+- `ic` defaults to 0 and ALWAYS defines the DC solution (pin folded into
+  `eval_i_pure`'s dc branch, so FD/autodiff of one function yields the DC stamp too)
+  and the `uic` seed (`IC_KIND='state'`, both phasor rows) — the state must start on
+  the circle, since the centre is a degenerate equilibrium.
+- Under `JAXTransient` use `uic=True` or `x0`: its internal DC solve does not carry
+  the `epar.analysis_kind` pin and would settle on the degenerate centre.
+- No `periodic_states()` — there is nothing to shift; the smooth state is the point.
+- Not supported on the symbolic toolkit (`atan2`/`floor`).
+
+**The honest trade-off, measured:** the scalar `Idtmod` remains the primary
+recommendation. Its constant-input phase is exact to the ulp (Phase 2), while the
+phasor integrates curvature, so its global phase error accumulates with cycle count
+(Gear-2 lag ≈ 1.3e-2 after 2 cycles at default reltol; reduced by tightening reltol).
+`IdtmodCircular` is the right tool when a globally smooth STATE matters more than
+ultimate phase accuracy — trajectories with no discontinuity anywhere, and a
+quadrature (cos, sin) pair available internally.
+
+### 7.7 References for this section
+
+- Baumgarte, *CMAME* 1:1–16 (1972) — https://www.sciencedirect.com/science/article/abs/pii/0045782572900187
+- Ascher, Chin, Petzold, Reich, *Numer. Math.* 67:131–149 (1994) —
+  https://link.springer.com/article/10.1007/s002110050020 (TR-92-17:
+  https://www.cs.ubc.ca/sites/default/files/tr/1992/TR-92-17.pdf ; note: the
+  "γ ≈ 1/h near-optimal" statement was confirmed at abstract level only)
+- Flores et al., "A Parametric Study on the Baumgarte Stabilization Method",
+  *JCND* 6(1) 011019 (2011); and the Eng. w/ Computers 2025 integrator-dependence study
+- "Feedback Integrators: gain selection under Euler discretization" — arXiv:2512.01528
+- Gros et al., "Baumgarte Stabilisation over the SO(3) Rotation Group for Control",
+  IEEE CDC 2015 — https://cdn.syscop.de/publications/Gros2015.pdf (equations not
+  independently verified — PDF undecodable during research)
+- Quaternion normalization feedback: arXiv:1107.1119; Deutschmann et al. 1993
+- Hairer, Lubich, Wanner, *Geometric Numerical Integration*, 2nd ed., ch. IV/VI
+  (https://www.unige.ch/~hairer/poly_geoint/intro.pdf)
+- Kundert, *The Designer's Guide to SPICE and Spectre*, App. A (Gear/BE damping vs
+  trapezoidal ringing; passage surfaced by search, page unverified)
+- Lyons, "A New Contender in the Quadrature Oscillator Race" —
+  https://www.dsprelated.com/showarticle/1467.php ; US patent 6,642,796
+- VACASK: `lib/coretran.cpp:1275` (trap ringing filter, "solution left untouched"),
+  `demo/trannoise/osc.sim:52` (Gear-vs-damping oscillator note)
+- Repo greps: **zero** Baumgarte hits in trilinos/xyce/vacask/gnucap/ngspice;
+  Trilinos "quaternion" hits are tensor type names only.
+
+---
+
+## 8. References (sections 1–5)
 
 **Standards & canonical usage**
 - Verilog-AMS LRM 2.4.0, §4.5.2/4.5.4/4.5.5 —

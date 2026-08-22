@@ -14,7 +14,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.numpy import cos, sin, tan, cosh, sinh, tanh, log, exp, pi, \
      ceil, floor, dot, linspace, eye, concatenate, sqrt, real, imag,\
-     ones, diff, all, maximum, size, conj, inf
+     ones, diff, all, maximum, size, conj, inf, arctan2, abs
 
 alltrue = all
 

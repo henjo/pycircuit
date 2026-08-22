@@ -22,7 +22,7 @@ from pycircuit.circuit import gnd
 from pycircuit.circuit.analysis import NoConvergenceError, SingularMatrix
 from pycircuit.circuit.dcanalysis import DC
 from pycircuit.circuit.elements import (SubCircuit, VS, R, Idt, Idtmod,
-                                        floored_wrap)
+                                        IdtmodCircular, floored_wrap)
 from pycircuit.circuit.transient import Transient
 
 
@@ -428,3 +428,141 @@ def test_periodic_contract_violation_raises():
     tran = Transient(c, toolkit=numeric, uic=True)
     with pytest.raises(ValueError, match='periodic_states'):
         tran.solve(tend=0.1, timestep=1e-2, fixed_timestep=True)
+
+
+## ------------------------------------------------------------------------
+## IdtmodCircular: the two-state phasor-pair variant with Baumgarte-style
+## orbit correction (idtmod.md sec. 7).
+
+
+def _circular_circuit(**kw):
+    pycircuit.circuit.circuit.default_toolkit = numeric
+    c = SubCircuit()
+    nin, nout = c.add_node('in'), c.add_node('out')
+    c['vin'] = VS(nin, gnd, v=1.0)
+    c['R1'] = R(nout, gnd, r=1e3)
+    c['X'] = IdtmodCircular(nin, gnd, nout, gnd, **kw)
+    return c
+
+
+def _phasor_rows(c):
+    names = [str(nd) for nd in c.nodes]
+    return ([i for i, nm in enumerate(names) if 'cos_node' in nm][0],
+            [i for i, nm in enumerate(names) if 'sin_node' in nm][0])
+
+
+def test_circular_modulus_must_be_positive():
+    """No idt-degradation mode: a phasor cannot represent an unbounded
+    integral, so modulus <= 0 is a loud construction error."""
+    with pytest.raises(ValueError, match='modulus'):
+        _circular_circuit(modulus=-1.0)
+
+
+def test_circular_dc_pins_output_to_ic():
+    c = _circular_circuit(modulus=1.0, offset=-0.5, ic=1.7)  # wrap -> -0.3
+    res = DC(c, toolkit=numeric).solve()
+    assert abs(res.v('out') - (-0.3)) < 1e-9
+    ## The phasor sits ON the circle at the pin.
+    ci, si = _phasor_rows(c)
+    r = np.hypot(float(res.x[ci]), float(res.x[si]))
+    assert abs(r - 1.0) < 1e-9
+
+
+def test_circular_transient_congruence():
+    """Ramp input: output tracks the wrapped ramp to LTE-level accuracy
+    and never leaves the range.  Unlike the scalar Idtmod -- whose
+    constant-input case is exact to the ulp -- the phasor integrates
+    curvature, so its GLOBAL phase error accumulates with cycle count
+    (Gear-2 phase lag; ~1.3e-2 after 2 cycles at the default reltol when
+    this was written).  Tightening reltol pulls it down, which is what
+    this test does to keep a meaningful bound."""
+    import warnings
+    c = _circular_circuit(modulus=1.0, offset=-0.5, ic=0.0)
+    tran = Transient(c, toolkit=numeric, reltol=1e-5)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = tran.solve(tend=2.2, timestep=1e-2)
+    y = res.v('out').y
+    t = res.v('out').x[0]
+    d = np.abs(y[1:] - (((t[1:] + 0.5) % 1.0) - 0.5))
+    d = np.minimum(d, 1.0 - d)
+    assert d.max() < 5e-3
+    assert np.all(y >= -0.5 - 1e-9) and np.all(y < 0.5 + 1e-9)
+    ## The shared _WrapEvents breakpoints land the corners here too.
+    assert res.statistics.breakpoints_hit >= 2
+
+
+def test_circular_baumgarte_orbit_correction():
+    """The reason gamma exists (idtmod.md sec. 7): Gear-2 damps the phasor
+    radius (measured at introduction: r fell to 0.48 in 50 cycles with
+    gamma=0 -- and trapezoidal drifts too, because the wrap-breakpoint
+    order-drops insert Euler steps at every corner), while the Baumgarte
+    term makes the unit circle exponentially attracting.  The correction
+    is purely radial (c*(corr*s) - s*(corr*c) == 0), so it cannot bias the
+    phase -- only rescue the radius."""
+    import warnings
+    from pycircuit.circuit.integrator import Gear2Integrator
+
+    def radius_span(gamma):
+        c = _circular_circuit(modulus=1.0, gamma=gamma, ic=0.0)
+        ci, si = _phasor_rows(c)
+        tran = Transient(c, toolkit=numeric, uic=True,
+                         integrator=Gear2Integrator())
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(tend=50.0, timestep=2e-2, fixed_timestep=True)
+        X = np.asarray(res.x, float)
+        r = np.hypot(X[ci], X[si])
+        return np.abs(r - 1.0).max(), abs(r[-1] - 1.0)
+
+    drift_off, final_off = radius_span(0.0)
+    drift_on, final_on = radius_span(1.0)
+    assert drift_off > 0.3, drift_off        # the disease, demonstrated
+    assert drift_on < 0.05, drift_on         # the cure, bounded ripple
+    assert final_on < 1e-2, final_on
+
+
+def test_circular_uic_seeds_on_circle():
+    import warnings
+    c = _circular_circuit(modulus=1.0, offset=-0.5, ic=1.25)  # wrap -> 0.25
+    from pycircuit.circuit.integrator import EulerIntegrator
+    tran = Transient(c, toolkit=numeric, uic=True,
+                     integrator=EulerIntegrator())
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = tran.solve(tend=0.2, timestep=1e-3, fixed_timestep=True)
+    y = res.v('out').y
+    t = res.v('out').x[0]
+    assert abs(y[1] - 0.25) < 1e-2
+    assert np.abs(y[1:] - (0.25 + t[1:])).max() < 5e-3
+
+
+def test_circular_jax_parity():
+    """i() and the autodiff G agree with the numeric path (which uses
+    central differences -- the Semiconductor pattern), away from the
+    sawtooth corner and the |w| kink."""
+    pytest.importorskip('jax')
+    from pycircuit.circuit.toolkit import jaxtoolkit
+
+    x_vals = [0.3, 0.0, 0.1, 0.0, 0.6, -0.8, 0.02]
+    results = {}
+    saved = pycircuit.circuit.circuit.default_toolkit
+    try:
+        for key, tk in (('numeric', numeric), ('jax', jaxtoolkit)):
+            pycircuit.circuit.circuit.default_toolkit = tk
+            cir = SubCircuit(toolkit=tk)
+            cir['E'] = IdtmodCircular('iplus', 'iminus', 'oplus', 'ominus',
+                                      modulus=1.0, offset=-0.5, gamma=0.7,
+                                      toolkit=tk)
+            cir.update_iparv()
+            el = cir['E']
+            x = tk.array(x_vals)
+            results[key] = (np.asarray(el.i(x), float),
+                            np.asarray(el.G(x), float))
+    finally:
+        pycircuit.circuit.circuit.default_toolkit = saved
+
+    i_num, G_num = results['numeric']
+    i_jax, G_jax = results['jax']
+    assert_array_almost_equal(i_num, i_jax)
+    np.testing.assert_allclose(G_num, G_jax, atol=1e-5)
