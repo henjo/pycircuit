@@ -1225,13 +1225,73 @@ voltage-defined branch whose own current is inside the `ddt` — already
 worked (`LHdl`), and the two inductors here are the first use of it in a
 production model.
 
+**The surface-potential kernel — DONE 2026-08-22.**
+`pycircuit/circuit/psp_kernel.py` translates PSP103's `sp_s`, `sigma`,
+`sigma2` and `MINA` — the *explicit* approximation to the root of the
+surface-potential equation, which is the heart of the model and the piece
+everything else rests on. PSP does not iterate for it: it computes a
+starting point and applies two closed-form corrections, so the whole
+thing is straight-line code the simulator can differentiate.
+
+It is checked **without a vendor binary or a model card**, two
+independent ways:
+
+* the surface-potential equation is evaluated at the returned root. That
+  residual is not quoted from a paper — it is the expression PSP's own
+  final correction computes as its `qC` term, so the test and the code
+  come from the same source. Worst over the physical envelope
+  (`Gf` 0.3–5, `xn` 15–45, `xg` −100…300): **≤ 6.7×10⁻⁸, typically
+  2×10⁻⁹**.
+* the DSL's forward-accumulated `d(sp)/d(xg)` is compared against the
+  **exact implicit derivative** `−F_xg/F_x` of that same equation —
+  agreeing to ~10⁻⁷. Translation and Jacobian, checked by different
+  routes.
+
+Two limits are pinned rather than avoided: the approximation degrades to
+~10⁻⁵ as `Gf → 0` (the equation becomes degenerate — the root turns into
+a double root) and at `xn = 0` (no inversion barrier). Both are far
+outside any real device.
+
+**Note the PDK ships two versions of `sp_s`.** The PSP-based `mosvar`
+varactor carries a simplified one without the ξ₀/ξ₁/ξ₂ terms, so it
+solves a slightly different equation. This implements PSP103's. Internal
+consistency was checked rather than assumed: the macro's `xi1` is exactly
+`dξ₀/dx = 4x/(2+x²)²`, which is what it must be for `pC` to be `−F′(x)`
+and the final step to be the Halley correction it is written as.
+
+**Three findings from making it safe**, each of which cost a debugging
+session:
+
+1. **`safe_div`'s `eps` is squared, so it has a floor.** The kernel first
+   used `eps = 1e-300`; `1e-300²` underflows to *exactly zero*, the
+   regularisation silently vanished, and flat band gave `0/0`. `safe_div`
+   now refuses an `eps` whose square underflows.
+2. **Both-arms-safe has to be applied at the REGIME level, not
+   operation by operation.** With every individual operation guarded and
+   every intermediate finite, the inversion arm at `xg = −77` still
+   produced `ei ~ 10¹¹⁴` — finite, but large enough that products in
+   `sigma2`'s *derivative* overflowed to `inf`, and `inf − inf = NaN`.
+   Chasing operations does not converge. Clamping each arm's **input to
+   its own validity domain** fixes the whole class at once, and is exact
+   where the arm is selected.
+3. **The chain rule leaks NaN out of unselected arms.** A `Piecewise`'s
+   partial derivative w.r.t. an intermediate used only in a discarded arm
+   is *zero* — and `0 × NaN` is `NaN`. So it is not enough for the
+   selected arm to be finite; every arm must be. This is the concrete
+   form of the `0 * inf` hazard the original research flagged.
+
+A fourth, smaller: `sp_s` **cannot** be built as one flattened
+expression — it does not finish in ten minutes, where the let-chain takes
+0.13 s. `hdl.compile_chain` was added so a kernel routine can be compiled
+and tested outside a model without that fallback existing at all.
+
 What is left for a running PSP103 card:
 
 | item | size | note |
 |---|---|---|
 | model-card ingestion | medium | the cards are not standalone: they reference `.param` multipliers a corner section must define first, and are `.include`d *inside* the subckt so the `.model` can see `pre_layout`, `ng`, `m` |
 | geometry scaling layer | medium | `PSP103_scaling.include`, 849 lines, pure parameter arithmetic — no solver involvement, so it is bulk rather than difficulty |
-| the surface-potential core | large | `PSP103_module.include`, 2371 lines; the actual translation, and what E1/E2 exist to make possible |
+| the rest of the surface-potential core | large | `PSP103_module.include`, 2371 lines. The `sp_s` kernel it is built on is done and validated; what remains is the current, charge and geometry layers around it |
 
 Deferred, unchanged from the original research verdict:
 

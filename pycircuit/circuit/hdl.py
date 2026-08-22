@@ -360,8 +360,21 @@ def safe_div(a, b, eps=1e-30):
     finite everywhere.  The price is that it is NOT ``a/b`` when ``b`` is
     genuinely of order ``eps`` -- pick ``eps`` below any denominator the
     model can legitimately produce.
+
+    **``eps`` is SQUARED**, so it cannot be made arbitrarily small: below
+    about 1.5e-154 the square underflows to exactly zero and the
+    regularisation silently disappears, leaving the ``0/0`` it exists to
+    prevent.  Measured -- `psp_kernel` first used ``eps = 1e-300`` and got
+    a NaN Jacobian at flat band, where the denominator is exactly zero.
+    Refused here rather than left to surface as a NaN.
     """
     a, b = sympy.sympify(a), sympy.sympify(b)
+    if float(eps) * float(eps) == 0.0:
+        raise ValueError(
+            'safe_div eps=%r is too small: it is squared, and %r**2 '
+            'underflows to exactly 0.0, so the denominator is left '
+            'unregularised and b == 0 gives 0/0. Use eps >= 1e-150.'
+            % (eps, eps))
     return a * b / (b * b + eps * eps)
 
 
@@ -1696,6 +1709,34 @@ def _fmt_branch(key):
     plus, minus, name = key
     return '(%s,%s)' % (plus, minus) if name is None else \
         '(%s,%s) named %r' % (plus, minus, name)
+
+
+def compile_chain(builder, args, wrt=None, modules_map=None):
+    """Compile a `var`-using expression builder OUTSIDE a model.
+
+    `builder` is a zero-argument callable that returns a sympy
+    expression, using `var()` freely for its intermediates.  `args` is
+    the resulting function's parameter list.  With `wrt` given (a list of
+    symbols), the compiled function returns the gradient with respect to
+    them instead of the value.
+
+    This exists because a kernel routine is worth testing on its own,
+    and the fallback of "just build one expression when no model is
+    compiling" is not available: the reuse that makes `var()` necessary
+    inside a model makes the standalone expression equally unbuildable.
+    (Measured on PSP's `sp_s`: the flattened form did not finish in ten
+    minutes; through the chain it compiles in under a second.)
+    """
+    _VAR_STACK.append([])
+    try:
+        expr = builder()
+    finally:
+        defs = _VAR_STACK.pop()
+    if wrt is None:
+        return _chain_compile(defs, [expr], args, modules_map=modules_map)
+    fn = _chain_compile(defs, [expr], args, want_jacobian_of=True,
+                        xsyms=list(wrt), modules_map=modules_map)
+    return fn
 
 
 def _leaves(o):
