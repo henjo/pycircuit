@@ -245,7 +245,10 @@ class PspMosLongChannel(Behavioural):
       bias;
     * one expression covers accumulation, depletion, weak and strong
       inversion, with no regional equations and no smoothing functions
-      pasted between them.
+      pasted between them;
+    * the four terminal charges sum to zero **structurally**, because
+      three of them are contributed on branches referred to the source
+      and the fourth is what is left.
 
     Parameters are the physical ones the core actually needs.  A real
     PSP card's 359 parameters mostly configure the layers that are not
@@ -291,11 +294,24 @@ class PspMosLongChannel(Behavioural):
 
         beta = var(u0 * cox * w / l, 'beta')                  # noqa: F821
 
-        ids = psp_kernel.ids_long_channel(xg, xn_s, xn_d, Gf, xi, phit,
-                                          beta)
-        ## Contributed drain-to-source.  pycircuit's `i[node]` is the
-        ## current flowing FROM the node INTO the device -- the same
-        ## convention a generated resistor uses, where `I(p,m) <+ V/r`
-        ## makes `i[p]` positive for `vp > vm`.  So for an n-channel with
-        ## the drain above the source, the drain entry is +Ids.
-        return Contribution(Branch(d, s, 'chan').I, ids)
+        core = psp_kernel.intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta)
+        cox_tot = var(cox * w * l, 'cox_tot')                 # noqa: F821
+        Qg, Qd, Qb = psp_kernel.charges_long_channel(core, xg, phit,
+                                                     cox_tot)
+
+        ## The charges are contributed on branches referred to the
+        ## SOURCE, exactly as PSP does it.  That makes
+        ## `Qs = -(Qg + Qd + Qb)` structural: the source row picks up the
+        ## negative of the other three because each branch subtracts
+        ## there, so charge conservation is a property of the topology
+        ## rather than something to check numerically.
+        ##
+        ## `i[node]` is the current flowing FROM the node INTO the
+        ## device -- the convention a generated resistor uses, where
+        ## `I(p,m) <+ V/r` makes `i[p]` positive for `vp > vm`.  So for
+        ## an n-channel with the drain above the source the drain entry
+        ## is +Ids.
+        return (Contribution(Branch(d, s, 'chan').I, core['ids']),
+                Contribution(Branch(g, s, 'qg').I, ddt(Qg)),
+                Contribution(Branch(b, s, 'qb').I, ddt(Qb)),
+                Contribution(Branch(d, s, 'qd').I, ddt(Qd)))

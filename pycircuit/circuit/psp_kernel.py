@@ -350,8 +350,8 @@ def surface_state(x, xn, delta, Gf, inv_Gf2):
 XN_FLOOR = 0.0
 
 
-def ids_long_channel(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5):
-    """The intrinsic long-channel drain current, PSP's way.
+def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5):
+    """The intrinsic long-channel core: current, and what charge needs.
 
     PSP assembles the current as
     ``Ids = BET*(FdL * qim1 * dps * Gvsatinv)``
@@ -370,6 +370,11 @@ def ids_long_channel(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5):
 
     `beta` is ``mu * Cox * W / L``; `phit` the thermal voltage; `xn_s`
     and `xn_d` the normalised quasi-Fermi levels at the two ends.
+
+    Returns a dict: ``ids`` plus the midpoint quantities
+    (``qim``, ``qim1``, ``alpha``, ``dps``, ``xgm``) that
+    `charges_long_channel` needs, so that current and charge are built
+    from ONE evaluation of the surface potentials rather than two.
     """
     xg, xn_s, xn_d = map(sympy.sympify, (xg, xn_s, xn_d))
     Gf, xi, phit, beta = map(sympy.sympify, (Gf, xi, phit, beta))
@@ -429,4 +434,62 @@ def ids_long_channel(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5):
              * hdl.safe_div(1.0, xgm + Gf * sqm, eps=1e-30), 'ids_qim')
     qim1 = _v(qim + phit * alpha, 'ids_qim1')
     dps = _v(x_ds * phit, 'ids_dps')
-    return _v(beta * qim1 * dps, 'ids')
+    ids = _v(beta * qim1 * dps, 'ids')
+    return dict(ids=ids, qim=qim, qim1=qim1, alpha=alpha, dps=dps,
+                xgm=xgm, x_m=x_m, x_s=x_s, x_d=x_d)
+
+
+def ids_long_channel(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5):
+    """The intrinsic long-channel drain current -- see `intrinsic`."""
+    return intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin)['ids']
+
+
+def charges_long_channel(core, xg, phit, cox):
+    """The intrinsic terminal charges, PSP's way.
+
+    `core` is what `intrinsic` returned.  `cox` is the TOTAL oxide
+    capacitance, ``Cox' * W * L``.  Returns ``(Qg, Qd, Qb)``; the source
+    charge is not returned because it is not independent -- contributing
+    these three on branches referred to the source makes
+    ``Qs = -(Qg + Qd + Qb)`` exactly, which is how charge conservation
+    becomes structural rather than something to verify numerically.
+
+    The drain/source split is PSP's ``SWQPART = 0``, the linear
+    distribution -- the Ward-Dutton partition, which tends to the
+    textbook 40/60 ratio in saturation.  (``SWQPART = 1`` assigns
+    everything to the source; not implemented, since it is not the
+    default and nothing here selects it.)
+
+    Long-channel intrinsic, so channel-length modulation is absent:
+    ``GdL = 1`` and ``QCLM = 0`` throughout, and the polysilicon
+    depletion factor ``eta_p`` is 1.
+    """
+    qim, alpha = core['qim'], core['alpha']
+    qim1, dps, xgm = core['qim1'], core['dps'], core['xgm']
+
+    ## Voxm is the oxide voltage at the midpoint; H is the quantity PSP
+    ## calls the "effective" charge slope, which for the long-channel
+    ## device is just qim1/alpha.
+    Voxm = _v(xgm * phit, 'q_Voxm')
+    H = _v(qim1 * hdl.safe_div(1.0, alpha, eps=1e-30), 'q_H')
+    Fj = _v(0.5 * dps * hdl.safe_div(1.0, H, eps=1e-30), 'q_Fj')
+    Fj2 = _v(Fj * Fj, 'q_Fj2')
+    t6 = _v(alpha * dps * ONE_SIXTH, 'q_t6')
+
+    ## Inverted: the general expressions.  Below flat band there is no
+    ## inversion charge and the gate charge is the oxide voltage alone.
+    QG_on = _v(Voxm + 0.5 * (dps * (Fj * ONE_THIRD)), 'q_QGon')
+    QD_on = _v(0.5 * (qim - t6 * (1.0 - Fj - 0.2 * Fj2)), 'q_QDon')
+    QI_on = _v(qim + t6 * Fj, 'q_QIon')
+
+    inv = xg > 0.0
+    QG = _v(sympy.Piecewise((QG_on, inv), (Voxm, True)), 'q_QG')
+    QD = _v(sympy.Piecewise((QD_on, inv), (0.0, True)), 'q_QD')
+    QI = _v(sympy.Piecewise((QI_on, inv), (0.0, True)), 'q_QI')
+    QB = _v(QG - QI, 'q_QB')
+
+    return (_v(QG * cox, 'q_Qg'), _v(-QD * cox, 'q_Qd'),
+            _v(-QB * cox, 'q_Qb'))
+
+
+

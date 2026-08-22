@@ -1317,6 +1317,30 @@ while a fitting error does not:
 The body effect appears without being put in by hand: a larger `Gf`
 degrades the subthreshold slope, in the right order.
 
+**The charge model** (`psp_kernel.charges_long_channel`) comes with the
+same character. `Qg`, `Qb` and `Qd` are contributed on branches referred
+to the source, so `Qs` is whatever is left and **charge conservation is
+structural** rather than numerical — measured exact to rounding, and the
+capacitance matrix's rows and columns both sum to zero, so no
+common-mode shift of all four terminals injects current.
+
+The drain/source split is PSP's `SWQPART = 0` linear distribution, and it
+reproduces the textbook Ward–Dutton result without being fitted to it:
+
+| Vds | Qd/(Qd+Qs) |
+|---|---|
+| 0 V | **0.5000** (exactly — symmetric channel) |
+| 0.5 V | 0.4304 |
+| ≥ 0.8 V | **0.395** (the 40/60 partition) |
+
+Swapping source and drain swaps `Qd` and `Qs` to **six ulp** — not
+bit-exact like the current, because the two are algebraically mirror
+images but not literally the same expression; the gate charge, symmetric
+in `dps`, does come back bit-identical. And below threshold the gate
+charge is terminated by the bulk to within 3×10⁻¹², the residue being
+the subthreshold inversion charge, which had better not be zero since it
+*is* subthreshold conduction.
+
 Two measured limits are pinned rather than smoothed away. The current is
 strictly monotone above **1e-18 A**; below that it is a difference of two
 surface potentials agreeing to nine digits, and the cancellation leaves a
