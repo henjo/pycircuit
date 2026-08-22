@@ -1352,7 +1352,7 @@ def pcnr_controller_jacobian(circuit, state, x, v_lim, j_ra, j_rb, j_IS, VT,
     return _scatter_junction_G(J, j_ra, j_rb, g_l, +1.0)
 
 
-def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15, pcnr_meta=None, pcnr_VT=0.025, tline_dG=None, analysis='tran', s_gamma_min=0.0, s_gamma_max=1.0, s_eta=jnp.inf, fixed_timestep=False, grid_dt=None, relref='sigglobal', n_nodes=None, provided_function=None, state_mask=None, dv_bounds=((jnp.inf, 0.0), (jnp.inf, 0.0))):
+def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15, pcnr_meta=None, pcnr_VT=0.025, tline_dG=None, analysis='tran', s_gamma_min=0.0, s_gamma_max=1.0, s_eta=jnp.inf, fixed_timestep=False, grid_dt=None, relref='sigglobal', n_nodes=None, provided_function=None, state_mask=None, dv_bounds=((jnp.inf, 0.0), (jnp.inf, 0.0)), periodic_states=None):
 
     ## The same epsilon `calculate_next_dt` uses to decide a breakpoint is "already
     ## reached".  They disagreed: after 500 steps of 1e-5 the accumulated `t` sits
@@ -1623,8 +1623,34 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                                             t_breaks_array, state.t + state.dt, order_p1,
                                             eta=s_eta)
 
-            x_hist_new = jnp.roll(state.x_history, shift=1, axis=0).at[0].set(x_curr)
-            q_hist_new = jnp.roll(state.q_history, shift=1, axis=0).at[0].set(q_curr)
+            ## PHASE-2 GAUGE SHIFT (idtmod.md 5.2), ACCEPT-ONLY AND BRANCHLESS.
+            ## Each declared periodic row is rewrapped by an exact n*modulus
+            ## translation applied to the accepted point AND the whole live
+            ## ring -- a uniform shift the multistep formulas and the divided-
+            ## difference LTE cannot see -- so the state stays bounded (the
+            ## floating-point property idtmod exists for).  `iq` is
+            ## derivative-domain and invariant; sig_max/ref_running use the
+            ## post-shift (bounded) values, which is itself part of the
+            ## payoff: an unbounded state inflates the sigglobal reference
+            ## and loosens every later tolerance in proportion to run time.
+            ## The candidate step's error_ratio was computed pre-shift, in
+            ## one consistent gauge.  `periodic_states=None` compiles to the
+            ## identical program as before -- the branch is trace-time.
+            if periodic_states is not None:
+                p_rows, p_mods, p_offs = periodic_states
+                _n_wraps = jnp.floor((x_curr[p_rows] - p_offs) / p_mods)
+                _d = _n_wraps * p_mods
+                x_acc = x_curr.at[p_rows].add(-_d)
+                q_acc = q_curr.at[p_rows].add(-_d)
+                x_hist_base = state.x_history.at[:, p_rows].add(-_d)
+                q_hist_base = state.q_history.at[:, p_rows].add(-_d)
+            else:
+                x_acc, q_acc = x_curr, q_curr
+                x_hist_base = state.x_history
+                q_hist_base = state.q_history
+
+            x_hist_new = jnp.roll(x_hist_base, shift=1, axis=0).at[0].set(x_acc)
+            q_hist_new = jnp.roll(q_hist_base, shift=1, axis=0).at[0].set(q_acc)
             iq_hist_new = jnp.roll(state.iq_history, shift=1, axis=0).at[0].set(i_curr)
             h_hist_new = jnp.roll(state.h_history, shift=1, axis=0).at[0].set(state.dt)
             if coupled and tline_params.shape[0] > 0:
@@ -1655,7 +1681,7 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                                        jnp.zeros_like(h_hist_new),
                                        h_hist_new)
 
-            res_buf = state.results_buffer.at[state.step_idx].set(x_curr)
+            res_buf = state.results_buffer.at[state.step_idx].set(x_acc)
             time_buf = state.time_buffer.at[state.step_idx].set(state.t + state.dt)
 
             n_tlines = tline_params.shape[0]
@@ -1682,13 +1708,16 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 ## Updated only on ACCEPT: a rejected step's x is not a signal the
                 ## circuit ever had, and letting it raise the reference would loosen
                 ## every later tolerance on the strength of a discarded iterate.
-                sig_max=jnp.maximum(state.sig_max, jnp.max(jnp.abs(x_curr))),
+                sig_max=jnp.maximum(state.sig_max, jnp.max(jnp.abs(x_acc))),
                 ## P7: accepted-only, like sig_max; `local` matches the
                 ## estimator's (current point vs the one before it).
+                ## Post-shift values on both: bounded periodic states must
+                ## not inflate the running references (see the gauge-shift
+                ## note above).
                 ref_running=jnp.maximum(
                     state.ref_running,
-                    jnp.maximum(jnp.abs(x_curr),
-                                jnp.abs(state.x_history[0]))),
+                    jnp.maximum(jnp.abs(x_acc),
+                                jnp.abs(x_hist_base[0]))),
                 ## CARRIED, not defaulted.  `do_accept` builds a fresh
                 ## TransientState rather than `_replace`-ing, so every field it
                 ## omits silently reverts to the NamedTuple default -- and these are
@@ -2157,6 +2186,40 @@ class JAXTransient(Analysis):
         ## an intent; the controller grows geometrically from here anyway.
         return min(float(firststep), float(timestep))
 
+    def _periodic_state_arrays(self, exclude_names=()):
+        """Static (rows, moduli, offsets) arrays for the Phase-2 gauge shift,
+        or ``None`` when nothing declares (idtmod.md 5.2).
+
+        ``exclude_names``: instance names whose declarations must be DROPPED
+        -- `solve_batched` passes its `override_params_tree` keys, because a
+        per-lane `modulus`/`offset` override makes the trace-time value here
+        wrong for the swept lanes.  Excluded elements simply fall back to the
+        Phase-1 behaviour (unbounded state, output wrapped in ``i()``), which
+        is correct, just without the bounded-state precision property.
+        """
+        if not hasattr(self.cir, 'periodic_states'):
+            return None
+        entries = list(self.cir.periodic_states())
+        if entries and exclude_names:
+            excluded_rows = set()
+            elements = getattr(self.cir, 'elements', {})
+            for name in exclude_names:
+                element = elements.get(name)
+                if element is None or \
+                        not hasattr(element, 'periodic_states'):
+                    continue
+                declared = element.periodic_states()
+                if declared:
+                    rows = self.cir.elementnodemap[name]
+                    for local_row, _m, _o in declared:
+                        excluded_rows.add(int(rows[local_row]))
+            entries = [e for e in entries if int(e[0]) not in excluded_rows]
+        if not entries:
+            return None
+        return (jnp.array([int(e[0]) for e in entries], dtype=jnp.int32),
+                jnp.array([float(e[1]) for e in entries]),
+                jnp.array([float(e[2]) for e in entries]))
+
     def _pcnr_setup(self):
         """(ra, rb, IS) arrays + VT, or (None, VT): static trace-time junction
         metadata.  Charge-storing junction devices are refused inside."""
@@ -2389,9 +2452,13 @@ class JAXTransient(Analysis):
         _state_mask = (self._jax_state_row_mask(self._initial_state(refnode))
                        if self.par.coupled_lte else None)
         _pcnr_meta, _pcnr_VT = self._pcnr_setup()
+        ## Phase-2 gauge shift; per-lane-overridden elements drop out (their
+        ## trace-time modulus would be wrong for the swept lanes).
+        _periodic = self._periodic_state_arrays(
+            exclude_names=tuple(override_params_tree or ()))
 
         def run_chunk(s, p_tree):
-            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method=self._eval_method(), params_tree=p_tree, reltol=self.par.reltol, abstol=self._newton_abstol(n),
+            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method=self._eval_method(), params_tree=p_tree, reltol=self.par.reltol, abstol=self._newton_abstol(n), periodic_states=_periodic,
                                    xtol=self._newton_xtol(n),
                                    maxiter=self.par.maxiter, trtol=self.par.TRTOL, analysis=self.par.analysis, s_gamma_min=_sgm, s_gamma_max=_sgx, s_eta=_seta, relref=self._relref(), n_nodes=len(self.cir.nodes), state_mask=_state_mask, dv_bounds=self._dv_step_bounds(),
                                    lte_reltol=self.par.reltol,
@@ -2628,10 +2695,11 @@ class JAXTransient(Analysis):
         _sgm, _sgx, _seta = self._standard_band()
         _state_mask = self._jax_state_row_mask(x0) if self.par.coupled_lte else None
         _pcnr_meta, _pcnr_VT = self._pcnr_setup()
+        _periodic = self._periodic_state_arrays()
 
         @jax.jit
         def run_chunk(s):
-            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method=self._eval_method(), reltol=self.par.reltol, abstol=self._newton_abstol(n),
+            return outer_time_loop(s, self.cir, tend, CHUNK_SIZE, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method=self._eval_method(), reltol=self.par.reltol, abstol=self._newton_abstol(n), periodic_states=_periodic,
                                    fixed_timestep=fixed_timestep, grid_dt=timestep,
                                    provided_function=provided_function,
                                    xtol=self._newton_xtol(n),

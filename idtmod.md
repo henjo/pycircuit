@@ -7,16 +7,24 @@ general DAE/ODE tooling treats wrapped integrated states, an audit of pycircuit'
 `Idtmod`, and a concrete three-phase implementation recommendation validated against the
 pycircuit solver code.
 
-*Status, 2026-08-22: research complete; **Phase 1 (section 5.1) is implemented** on
-`cna-jax-vectorization` (per the owner's direction) -- `floored_wrap`, the shared
-`_IdtBase`, pure `i()`, `eval_*_pure` batching, `ic` with DC pinning via
-`epar.analysis_kind`, and the `IC_KIND='state'` uic route; tests in
-`pycircuit/circuit/tests/test_idtmod.py` plus an `Idtmod` entry in the FD-Jacobian
-harness; full suite green (1075 passed). Two footnotes discovered while landing it:
-the float wrap can land one ulp outside the half-open range at exact multiples
-(documented on `floored_wrap`; harmless to periodic consumers), and the transient's
-ic-without-uic guard now exempts `IC_KIND='state'` since a state ic legitimately pins
-the DC point. Phases 2 and 3 (sections 5.2, 5.3) remain future work.*
+*Status, 2026-08-22: research complete; **Phases 1 AND 2 (sections 5.1, 5.2) are
+implemented** on `cna-jax-vectorization` (per the owner's direction). Phase 1:
+`floored_wrap`, the shared `_IdtBase`, pure `i()`, `eval_*_pure` batching, `ic` with
+DC pinning via `epar.analysis_kind`, the `IC_KIND='state'` uic route. Phase 2: the
+`periodic_states()` hook (Circuit/SubCircuit/Idtmod), the post-acceptance gauge shift
+on both CPU paths (`_apply_periodic_shifts`, with the `_q_cache` invalidation) and
+branchless inside the JAX `do_accept` (including post-shift `sig_max`/`ref_running`,
+so the sigglobal reference no longer inflates with run length); `solve_batched` drops
+the shift for elements whose modulus/offset are swept per-lane (Phase-1 fallback,
+still correct). **Measured payoff** (`test_long_run_precision_payoff`): phase error
+2.2e-16 -- one ulp, flat from tend=500 to 2000 -- with the shift, vs 1.4e-12 growing
+to 2.2e-11 without: five orders of magnitude, confirming sec. 3.3 row 3. Footnotes
+from landing: the float wrap can land one ulp outside the half-open range at exact
+multiples (documented on `floored_wrap`); the ic-without-uic guard exempts
+`IC_KIND='state'`; and the bounded state is decoupled from the time grid's
+accumulated rounding, so a sample landing exactly ON a wrap can report either limit
+-- sawtooth comparisons in tests are congruence-based (two-sided). Phase 3 (sec.
+5.3, wrap breakpoints + kink-gate extension) remains future work.*
 
 ---
 

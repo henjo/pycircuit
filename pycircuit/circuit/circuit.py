@@ -485,7 +485,28 @@ class Circuit():
         ``None`` means "no opinion", which is every element except `TLine`.
         """
         return None
-  
+
+    def periodic_states(self):
+        """``[(local_x_index, modulus, offset)]`` -- states defined only up to
+        ``n*modulus`` (idtmod.md sec. 5.2).
+
+        The transient solvers keep each declared row inside
+        ``[offset, offset + modulus)`` by subtracting ``n*modulus`` from the
+        accepted state AND every live history entry of that row -- an exact
+        gauge translation that linear-multistep formulas and their divided-
+        difference LTE estimates cannot see, so the state stays bounded (the
+        floating-point property ``idtmod`` exists for) at no accuracy cost.
+
+        Contract, per declared row:
+        * ``q[row] == x[row]`` (a unit C diagonal), so shifting the charge
+          history by the same amount IS shifting the state history.  The CPU
+          solver verifies this at collection time.
+        * Nothing in the system may couple to the unwrapped value -- the
+          element's own output must be periodic in the state (``Idtmod``
+          wraps in ``i()``).  A plain integral (``Idt``) must NOT declare.
+        """
+        return []
+
     def connect_terminals(self, **kvargs):
         """Connect nodes to terminals by using keyword arguments
 
@@ -1499,7 +1520,27 @@ class SubCircuit(Circuit):
                             if hasattr(element, 'max_timestep'))
                 if c is not None]
         return min(caps) if caps else None
-            
+
+    def periodic_states(self):
+        """Collect child declarations, remapped to this circuit's rows.
+
+        Recursive: a nested subcircuit remaps its own children first, and
+        each level translates through its ``elementnodemap`` -- the same
+        local-to-global mapping the stamps use, so private nodes resolve at
+        any depth.  See Circuit.periodic_states for the contract.
+        """
+        out = []
+        elementnodemap = self.elementnodemap
+        for instance, element in self.elements.items():
+            if not hasattr(element, 'periodic_states'):
+                continue
+            declared = element.periodic_states()
+            if declared:
+                rows = elementnodemap[instance]
+                for local_row, modulus, offset in declared:
+                    out.append((int(rows[local_row]), modulus, offset))
+        return out
+
     def update(self, subject):
         """This is called when an instance parameter is updated"""
         for element in self.elements.values():

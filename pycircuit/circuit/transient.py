@@ -821,6 +821,77 @@ class Transient(Analysis):
                 return q_cached
         return self.cir.q(x, self.epar)
 
+    def _collect_periodic_states(self):
+        """Poll the circuit's periodic-state declarations, once per solve.
+
+        Phase 2 of idtmod.md (sec. 5.2).  Polled AFTER parameters are
+        resolved (`modulus` may be a late-bound expression) and verified
+        against the one contract the gauge shift rests on: ``q[row] ==
+        x[row]``, i.e. the declared row's C row is a unit diagonal, so
+        shifting the charge ring by ``n*modulus`` IS shifting the state
+        ring.  A non-conforming declaration fails loudly here rather than
+        corrupting the LTE estimate silently mid-run.
+        """
+        if not hasattr(self.cir, 'periodic_states'):
+            return []
+        declared = self.cir.periodic_states()
+        if not declared:
+            return []
+        C = self.cir.C(self.toolkit.zeros(self.cir.n), self.epar)
+        rows = []
+        for row, m, o in declared:
+            c_row = np.asarray(C[int(row)], dtype=float)
+            expected = np.zeros_like(c_row)
+            expected[int(row)] = 1.0
+            if not np.allclose(c_row, expected):
+                raise ValueError(
+                    "periodic_states row %d violates its contract: the gauge "
+                    "shift requires q[row] == x[row] (a unit C diagonal on "
+                    "that row), but the assembled C row is %r. The declaring "
+                    "element cannot be wrapped this way." % (int(row), c_row))
+            rows.append((int(row), float(m), float(o)))
+        return rows
+
+    def _apply_periodic_shifts(self, x, X):
+        """Rewrap periodic states after an ACCEPTED step -- the gauge shift.
+
+        Subtracts ``n*modulus`` from the accepted ``x`` and from every live
+        history entry of that row: the trailing solution window (the last
+        <=3 entries of ``X`` -- all any integrator or controller reads) and
+        the whole ``_qlast`` ring.  ``_iqlast`` is derivative-domain and
+        invariant under a constant shift.  A uniform translation of the
+        entire read window is invisible to the multistep formulas and the
+        divided-difference LTE estimates (idtmod.md sec. 3.2), so this is
+        exact -- no event, no restart, no order drop.
+
+        Never called inside a Newton solve: within-step values may exceed
+        the window by up to the step's excursion, and the element's own
+        output wrap covers that.
+
+        ``_q_cache`` invalidation is load-bearing: `_q_at` memoises ``(x,
+        q)`` identity-first, and the in-place shift of ``x`` would keep the
+        identity while the cached charge goes stale -- serving it corrupts
+        the LTE estimate silently (the exact failure class `_q_at`'s own
+        docstring warns about).
+
+        Older entries of ``X`` keep whatever gauge they were recorded in;
+        only the element's branch OUTPUT is observable, and it is wrapped in
+        ``i()`` at every point.  The private state row's recorded waveform
+        is gauge-dependent and not user-meaningful (idtmod.md sec. 5.2).
+        """
+        shifted = False
+        for row, m, o in self._periodic_rows:
+            n_wraps = int(np.floor((float(x[row]) - o) / m))
+            if n_wraps != 0:
+                d = n_wraps * m
+                x[row] -= d
+                for k in range(1, min(3, len(X)) + 1):
+                    X[-k][row] -= d
+                self._qlast[:, row] -= d
+                shifted = True
+        if shifted:
+            self._q_cache = None
+
     def _initial_state(self, refnode):
         """The `uic=True` starting vector: zeros, plus whatever `ic` names.
 
@@ -2161,7 +2232,10 @@ class Transient(Analysis):
         ## Excursion-check running maxima are per-run state too.
         self._dv_run_v = 0.0
         self._dv_run_i = 0.0
-        
+        ## Phase-2 gauge shift (idtmod.md 5.2): polled after update_iparv so
+        ## late-bound moduli are resolved; static for the run.
+        self._periodic_rows = self._collect_periodic_states()
+
         X.append(copy(x))
         if hasattr(self.cir, 'accept_step'):
             self.cir.accept_step(0.0, X[-1], self.epar)
@@ -2611,6 +2685,10 @@ class Transient(Analysis):
             # This acts as a mathematical sliding window across the simulation time.
             self._iqlast = self.toolkit.concatenate((self.toolkit.array([self._iq]), self._iqlast))[:-1]
             self._qlast = self.toolkit.concatenate((self.toolkit.array([self._q_at(x)]), self._qlast))[:-1]
+            ## AFTER the ring push, so the newest ring entry shares the old
+            ## gauge with its elders when the increment lands on all of them.
+            if self._periodic_rows:
+                self._apply_periodic_shifts(x, X)
             ## Roll before overwriting: _dt_last2 takes the value _dt_last is
             ## about to lose.  Reversing these two lines makes _dt_last2 equal
             ## _dt_last and the estimator silently differences the wrong grid.
@@ -2706,7 +2784,10 @@ class Transient(Analysis):
         ## Excursion-check running maxima are per-run state too.
         self._dv_run_v = 0.0
         self._dv_run_i = 0.0
-        
+        ## Phase-2 gauge shift (idtmod.md 5.2): polled after update_iparv so
+        ## late-bound moduli are resolved; static for the run.
+        self._periodic_rows = self._collect_periodic_states()
+
         X.append(copy(x))
         if hasattr(self.cir, 'accept_step'):
             self.cir.accept_step(0.0, X[-1], self.epar)
@@ -3069,6 +3150,10 @@ class Transient(Analysis):
             self._no_history = False
             self._iqlast = self.toolkit.concatenate((self.toolkit.array([self._iq]), self._iqlast))[:-1]
             self._qlast = self.toolkit.concatenate((self.toolkit.array([self._q_at(x_curr)]), self._qlast))[:-1]
+            ## AFTER the ring push, so the newest ring entry shares the old
+            ## gauge with its elders when the increment lands on all of them.
+            if self._periodic_rows:
+                self._apply_periodic_shifts(x_curr, X)
 
             ## THE SOLVED STEP CARRIES FORWARD.  This is the whole point of the
             ## method -- `fang_timestep` returned the step size it solved for, and

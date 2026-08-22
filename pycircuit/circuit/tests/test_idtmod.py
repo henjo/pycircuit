@@ -68,8 +68,13 @@ def test_offset_congruence_transient():
     y = result.v('out').y
     t = result.v('out').x[0]
     expected = ((t[1:] + 0.5) % 1.0) - 0.5
-    assert_array_almost_equal(y[1:], expected)
-    assert np.all(y >= -0.5) and np.all(y < 0.5)
+    ## Two-sided: at a sample landing exactly ON the wrap the sawtooth is
+    ## double-valued and sub-ulp rounding picks the limit (see
+    ## test_Idtmod_modulo).  Congruence is the well-defined comparison.
+    d = np.abs(y[1:] - expected)
+    d = np.minimum(d, 1.0 - d)
+    assert_array_almost_equal(d, np.zeros_like(d))
+    assert np.all(y >= -0.5 - 1e-12) and np.all(y < 0.5 + 1e-12)
 
 
 def test_dc_pins_output_to_ic():
@@ -194,3 +199,130 @@ def test_solve_batched_sweeps_modulus():
         y = np.asarray(lane.v('out'), float).reshape(-1)
         assert y.max() < m + 1e-3
         assert y.min() >= -1e-3
+
+
+## ------------------------------------------------------------------------
+## Phase 2 (idtmod.md sec. 5.2): the post-acceptance gauge shift.
+
+
+def _idt_state_row(c):
+    """Row index of the element's private state in the assembled system."""
+    rows = [i for i, node in enumerate(c.nodes) if 'idt_node' in str(node)]
+    assert len(rows) == 1
+    return rows[0]
+
+
+def test_gauge_shift_keeps_state_bounded():
+    """The declared row is rewrapped after every accepted step: over many
+    wraps the recorded state spans about one modulus instead of growing
+    with the integral, and the output is untouched."""
+    c = _ramp_circuit(modulus=1.0, offset=-0.5)
+    assert c.periodic_states() == [(_idt_state_row(c), 1.0, -0.5)]
+
+    from pycircuit.circuit.integrator import EulerIntegrator
+    tran = Transient(c, toolkit=numeric, uic=True,
+                     integrator=EulerIntegrator())
+    result = tran.solve(tend=5.0, timestep=1e-2, fixed_timestep=True)
+    y = result.v('out').y
+    t = result.v('out').x[0]
+    d = np.abs(y[1:] - (((t[1:] + 0.5) % 1.0) - 0.5))
+    d = np.minimum(d, 1.0 - d)
+    assert d.max() < 1e-9
+    s = np.asarray(result.x[_idt_state_row(c)], float)
+    ## 5 wraps happened; unshifted the state would span ~5 moduli.
+    assert s.max() - s.min() < 1.5
+
+
+def test_long_run_precision_payoff():
+    """The measured claim the Phase-2 recommendation stands on (idtmod.md
+    5.4 item 4): the bounded state holds the phase to ~1 ulp regardless of
+    run length, while the unbounded state's error grows with the integral.
+
+    dt = 0.5 keeps the time grid exact in binary; v = 0.2 makes the
+    per-step phase increment (0.1) inexact, so state arithmetic must round
+    -- at the state's own magnitude.  The increment is 1/10 exactly, so
+    the analytic phase at step k is (k mod 10)/10: an exact, cyclic,
+    non-growing reference.  Measured at introduction: shift 2.2e-16 (flat
+    from tend=500 to 2000), no-shift 1.4e-12 at tend=500 growing to
+    2.2e-11 at tend=2000.
+    """
+    from pycircuit.circuit.integrator import EulerIntegrator
+
+    def run(shift):
+        pycircuit.circuit.circuit.default_toolkit = numeric
+        c = SubCircuit()
+        nin, nout = c.add_node('in'), c.add_node('out')
+        c['vin'] = VS(nin, gnd, v=0.2)
+        c['R1'] = R(nout, gnd, r=1e3)
+        c['Idtmod'] = Idtmod(nin, gnd, nout, gnd, modulus=1.0)
+        tran = Transient(c, toolkit=numeric, uic=True,
+                         integrator=EulerIntegrator())
+        if not shift:
+            ## Phase-1 behaviour: output wrap over an unbounded state.
+            tran._apply_periodic_shifts = lambda x, X: None
+        res = tran.solve(tend=500.0, timestep=0.5, fixed_timestep=True)
+        y = res.v('out').y
+        k = np.arange(len(y))
+        expected = (k % 10) / 10.0
+        d = np.abs(y[1:] - expected[1:])
+        d = np.minimum(d, 1.0 - d)
+        return d.max()
+
+    err_shift = run(True)
+    err_noshift = run(False)
+    assert err_shift < 1e-14, err_shift
+    assert err_noshift > 10 * err_shift, (err_noshift, err_shift)
+
+
+def test_jax_gauge_shift():
+    """The branchless shift inside the traced accept: bounded state and
+    congruence-correct output on the JAX backend."""
+    pytest.importorskip('jax')
+    import warnings
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+
+    saved = pycircuit.circuit.circuit.default_toolkit
+    try:
+        pycircuit.circuit.circuit.default_toolkit = jaxtoolkit
+        c = SubCircuit(toolkit=jaxtoolkit)
+        nin, nout = c.add_node('in'), c.add_node('out')
+        c['vin'] = VS(nin, gnd, v=1.0, toolkit=jaxtoolkit)
+        c['R'] = R(nout, gnd, r=1e3, toolkit=jaxtoolkit)
+        c['Idtmod'] = Idtmod(nin, gnd, nout, gnd, modulus=1.0, offset=-0.5,
+                             toolkit=jaxtoolkit)
+        tran = JAXTransient(c, reltol=1e-4)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(gnd, tend=3.0, timestep=1e-2, uic=True,
+                             fixed_timestep=True)
+    finally:
+        pycircuit.circuit.circuit.default_toolkit = saved
+
+    y = np.asarray(res.v('out'), float).reshape(-1)
+    t = np.asarray(res.v('out').x[0], float).reshape(-1)
+    d = np.abs(y[1:] - (((t[1:] + 0.5) % 1.0) - 0.5))
+    d = np.minimum(d, 1.0 - d)
+    assert d.max() < 1e-6
+    s = np.asarray(res.x, float)[_idt_state_row(c)]
+    assert s.max() - s.min() < 1.5
+
+
+def test_periodic_contract_violation_raises():
+    """A declaration whose row lacks the unit C diagonal must fail loudly at
+    collection -- shifting it would corrupt the LTE estimate silently."""
+    class BadIdtmod(Idtmod):
+        def periodic_states(self):
+            ## The output BRANCH row: its C row is all zeros, not a unit
+            ## diagonal, so q[row] != x[row] and the shift contract fails.
+            return [(self._branch_index, 1.0, -0.5)]
+
+    pycircuit.circuit.circuit.default_toolkit = numeric
+    c = SubCircuit()
+    nin, nout = c.add_node('in'), c.add_node('out')
+    c['vin'] = VS(nin, gnd, v=1.0)
+    c['R1'] = R(nout, gnd, r=1e3)
+    c['bad'] = BadIdtmod(nin, gnd, nout, gnd, modulus=1.0)
+    tran = Transient(c, toolkit=numeric, uic=True)
+    with pytest.raises(ValueError, match='periodic_states'):
+        tran.solve(tend=0.1, timestep=1e-2, fixed_timestep=True)

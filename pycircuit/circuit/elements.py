@@ -1395,6 +1395,23 @@ class Idtmod(_IdtBase):
             return y
         return floored_wrap(y, m, self.iparv.offset, self.toolkit)
 
+    def periodic_states(self):
+        """The state ``s = -phase`` is defined only up to ``n*modulus``: the
+        output is ``wrap(-s)``, periodic in ``s``, so the solvers may keep
+        ``s`` bounded by exact ``n*modulus`` translations (idtmod.md 5.2).
+        The window ``[-(offset+modulus), -offset)`` mirrors the output range
+        through the sign convention, so the wrap in ``i()`` never sees more
+        than one modulus of excursion between accepted steps.
+
+        NOT declared when ``modulus <= 0``: that is idt-degradation mode, a
+        plain integral whose absolute value is meaningful and must never be
+        wrapped.
+        """
+        m = self.iparv.modulus
+        if m is None or m <= 0:
+            return []
+        return [(self._idt_index, m, -(self.iparv.offset + m))]
+
     @staticmethod
     def eval_q_pure(x, params, epar, toolkit):
         return toolkit.array([0.0, 0.0, 0.0, 0.0, x[4], 0.0])

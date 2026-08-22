@@ -367,7 +367,16 @@ def test_Idtmod_modulo():
     x = result.v(nout).x[0]
     # vout = vin * t with constant input
     # Transient solver time alignment is now correct: y(t) evaluates at t
-    assert_array_almost_equal(y[1:], x[1:] % 1.0)
+    ## Two-sided (congruence) comparison: at a sample landing exactly ON the
+    ## wrap the sawtooth is double-valued, and WHICH limit the solver reports
+    ## is decided by sub-ulp rounding.  The Phase-2 gauge shift (idtmod.md
+    ## 5.2) keeps the state bounded -- more accurate than the accumulated `x`
+    ## grid it is compared against -- so the two no longer share correlated
+    ## drift and a boundary sample can land either side.  Distance modulo
+    ## the modulus treats both limits as the same point.
+    d = np.abs(y[1:] - x[1:] % 1.0)
+    d = np.minimum(d, 1.0 - d)
+    assert_array_almost_equal(d, np.zeros_like(d))
 
 if __name__ == '__main__':
     test_nullor_vva()
