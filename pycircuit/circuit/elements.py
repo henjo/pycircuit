@@ -1200,53 +1200,163 @@ class VCVS_limited(Circuit):
             ])
         return G
 
-class Idt(Circuit):
-    """Integrator
-    
-    Output voltage is the time integral of input voltage.
-    
+def floored_wrap(y, modulus, offset, toolkit):
+    """The Verilog-A ``idtmod`` wrap: fold ``y`` into ``[offset, offset+modulus)``.
+
+    ``y - modulus*floor((y - offset)/modulus)`` -- a *floored* modulo, so the
+    result lands in the half-open range for negative ``y`` too, and the LRM
+    congruence ``y = n*modulus + k`` holds with integer ``n``.  A C-style
+    truncating ``%`` breaks both properties for negative integrals (see
+    idtmod.md section 1.1).
+
+    When ``y - offset`` sits within rounding of an exact multiple of the
+    modulus, the float result can land one ulp outside the half-open range;
+    consumers of a wrapped value are periodic in it, so this is harmless
+    and deliberately not patched over with clamping branches.
     """
-    
+    return y - modulus * toolkit.floor((y - offset) / modulus)
+
+
+class _IdtBase(Circuit):
+    """Shared topology of the ``Idt``/``Idtmod`` integrators.
+
+    One private node carries the state ``s = -integral(v_iplus - v_iminus)dt``
+    (row ``idt_node``: ``(v_ip - v_in) + ds/dt = 0`` via the unit C-diagonal),
+    and the output branch row defines ``v_out = wrap(-s)``, where ``wrap`` is
+    the identity for ``Idt`` and the LRM floored modulo for ``Idtmod``.
+
+    DC semantics follow the LRM (see idtmod.md section 5.1): with an ``ic``
+    given, the DC solve pins the state so the output is ``wrap(ic)`` -- the
+    row is switched when the analysis marks ``epar.analysis_kind == 'dc'``.
+    Without an ``ic`` the integrator keeps its integral row at DC, which is
+    the LRM's no-ic branch: the operating point exists only if feedback
+    forces the integrand to zero (otherwise use ``uic=True``).
+    """
+
     terminals = ('iplus', 'iminus', 'oplus', 'ominus')
     branches = (Branch(Node('oplus'), Node('ominus')),)
-        
+
+    instparams = [Parameter(name='ic',
+                            desc='Initial output value; forces the DC solution '
+                                 'and seeds uic=True. None keeps the LRM no-ic '
+                                 'behaviour (integrand forced to zero at DC)',
+                            unit='V', default=None)]
+
+    ## The initial condition lives on the element's own private state row --
+    ## neither a branch current (`L`) nor a node-voltage difference (`C`) --
+    ## so it is applied by direct assignment through `state_ic()`.
+    IC_KIND = 'state'
+
+    ## `update()` is first called from `Circuit.__init__` before the private
+    ## node exists; this sentinel makes that call a no-op (see `__init__`).
+    _idt_index = None
+
     def __init__(self, *args, **kvargs):
         super().__init__(*args, **kvargs)
-        branchindex = -1 ## add last in matrix
-        idt_index = self.nodes.index(self.add_node('idt_node')) #note side effect
-        inpindex, innindex, outpindex, outnindex = \
-            (self.nodes.index(self.nodenames[name]) for name in self.terminals)
-        G = self.toolkit.matrix_from_entries(
-            (self.n,self.n),
-            [
-             (idt_index, inpindex, 1),
-             (idt_index, innindex, -1),
-             (outpindex, branchindex, 1),
-             (outnindex, branchindex, -1),
-             (branchindex, idt_index, -1),
-             (branchindex, outpindex, -1),
-             (branchindex, outnindex, 1),
-            ])
-        self._G = G
-        
-        C = self.toolkit.matrix_from_entries(
-            (self.n,self.n),
-            [
-             (idt_index, idt_index, 1),
-            ])
-        self._C = C
+        self._idt_index = self.nodes.index(self.add_node('idt_node'))
+        self._branch_index = self.n - 1
+        self.update(self.ipar)
 
-    def C(self, x, epar=defaultepar):
-        return self._C
-    
-    def G(self, x, epar=defaultepar):
+    def _wrap(self, y):
+        """Output map applied to the integral ``-s``; identity here."""
+        return y
+
+    def update(self, subject):
+        if self._idt_index is None:
+            return
+        tk = self.toolkit
+        n = self.n
+        idt, br = self._idt_index, self._branch_index
+        ip, in_, op, on = (self.nodes.index(self.nodenames[name])
+                           for name in self.terminals)
+
+        ## Built via matrix_from_entries so each toolkit gets its native
+        ## entry type -- the symbolic toolkit needs exact integers (1/s, not
+        ## 1.0/s).  The entries: integral row `(v_ip - v_in) + ds/dt = 0`,
+        ## branch current into the output nodes, and the output row
+        ## `-v_op + v_on + wrap(-s) = 0`, whose (br, idt) slope -1 is the
+        ## exact derivative of the wrap almost everywhere.
+        common = [(op, br, 1), (on, br, -1),
+                  (br, op, -1), (br, on, 1)]
+        tran_rows = [(idt, ip, 1), (idt, in_, -1)]
+        dc_rows = [(idt, idt, 1)]   # DC pin: `s + wrap(ic) = 0` with u
+        slope = [(br, idt, -1)]
+
+        self._G = tk.matrix_from_entries((n, n), tran_rows + common + slope)
+        self._G_dc = tk.matrix_from_entries((n, n), dc_rows + common + slope)
+
+        ## `i()` computes the branch row's wrap term itself; these carry the
+        ## linear remainder (the (br, idt) entry removed) plus a one-hot to
+        ## place the wrap -- pure array arithmetic, no in-place mutation, so
+        ## the same code runs under the numeric and JAX toolkits.
+        self._G0 = tk.matrix_from_entries((n, n), tran_rows + common)
+        self._G0_dc = tk.matrix_from_entries((n, n), dc_rows + common)
+        e = [0.0] * n
+        e[br] = 1.0
+        self._e_branch = tk.array(e)
+
+        self._C = tk.matrix_from_entries((n, n), [(idt, idt, 1)])
+
+    def _dc_pinned(self, epar):
+        return (self.iparv.ic is not None
+                and getattr(epar, 'analysis_kind', None) == 'dc')
+
+    def state_ic(self):
+        """``[(local_row, value)]`` seeds for ``uic=True`` (IC_KIND='state')."""
+        ic = self.iparv.ic
+        if ic is None:
+            return []
+        return [(self._idt_index, -self._wrap(ic))]
+
+    def G(self, x, epar=defaultepar, params_tree=None):
+        if self._dc_pinned(epar):
+            return self._G_dc
         return self._G
 
-class Idtmod(Circuit):
-    """Modulus integrator
-    
-    Output voltage is the time integral of input voltage,
-    modulo "modulus", and an offset.
+    def C(self, x, epar=defaultepar, params_tree=None):
+        return self._C
+
+    def i(self, x, epar=defaultepar, params_tree=None):
+        G0 = self._G0_dc if self._dc_pinned(epar) else self._G0
+        return (self.toolkit.dot(G0, x)
+                + self._e_branch * self._wrap(-x[self._idt_index]))
+
+    def u(self, t=0.0, epar=defaultepar, analysis=None, params_tree=None):
+        if self._dc_pinned(epar):
+            ## Residual row idt is `s + wrap(ic) = 0` -> s = -wrap(ic), so the
+            ## branch row's `wrap(-s)` lands the output on wrap(ic) exactly.
+            u = [0.0] * self.n
+            u[self._idt_index] = self._wrap(self.iparv.ic)
+            return self.toolkit.array(u)
+        return self.toolkit.zeros(self.n)
+
+
+class Idt(_IdtBase):
+    """Integrator
+
+    Output voltage is the time integral of input voltage.
+    """
+
+    @staticmethod
+    def eval_q_pure(x, params, epar, toolkit):
+        ## q on the private state row only: q[idt_node] = s.
+        return toolkit.array([0.0, 0.0, 0.0, 0.0, x[4], 0.0])
+
+    @staticmethod
+    def eval_i_pure(x, params, epar, toolkit):
+        i_br = x[5]
+        return toolkit.array([0.0, 0.0, i_br, -i_br,
+                              x[0] - x[1],
+                              -(x[2] - x[3]) - x[4]])
+
+
+class Idtmod(_IdtBase):
+    """Circular (modulo) integrator -- Verilog-A ``idtmod``
+
+    Output voltage is the time integral of the input voltage folded into
+    ``[offset, offset + modulus)`` with the LRM floored wrap (see idtmod.md).
+    ``modulus <= 0`` degrades to a plain ``Idt``, per the LRM's "not
+    specified" clause.
 
     >>> import pycircuit.circuit._numeric as numeric
     >>> from pycircuit.circuit.transient import Transient
@@ -1256,75 +1366,50 @@ class Idtmod(Circuit):
     >>> c['R'] = R(nout, gnd, r=1e3)
     >>> c['Idtmod'] = Idtmod(nin, gnd, nout, gnd, modulus=1.0)
 
-    ``uic=True`` is required, not incidental: an ideal integrator has no DC
-    operating point -- its output is the unbounded integral of a constant input --
-    so the bias solve is singular and the run must be told to start from zeros.
+    Without an ``ic``, ``uic=True`` is required: the LRM's no-ic branch
+    demands the integrand be forced to zero at DC, so a driven integrator's
+    bias solve is singular. Giving ``ic=`` pins the DC solution instead.
 
-    ``fixed_timestep=True`` is also deliberate: this example is documenting the
-    modulo wrap, so it wants output on the uniform grid it asks for. An adaptive
-    run opens at ``timestep*1e-3`` and grows from there (see ``firststep``), which
-    is right for accuracy and wrong for a doctest about output values.
+    ``fixed_timestep=True`` is deliberate: this example is documenting the
+    modulo wrap, so it wants output on the uniform grid it asks for. An
+    adaptive run opens at ``timestep*1e-3`` and grows from there (see
+    ``firststep``), which is right for accuracy and wrong for a doctest
+    about output values.
 
     >>> tran = Transient(c, toolkit=numeric, uic=True)
     >>> result = tran.solve(tend=1.5, timestep=0.5, fixed_timestep=True)
     >>> result.v(nout).y
     array([0. , 0.5, 0. , 0.5])
     """
-    instparams = [Parameter(name='modulus', desc='Output modulus',unit='V/V',
+    instparams = _IdtBase.instparams + [
+                  Parameter(name='modulus', desc='Output modulus', unit='V/V',
                             default=1.),
-                  Parameter(name='offset', desc='offset voltage',unit='V',
+                  Parameter(name='offset', desc='offset voltage', unit='V',
                             default=0.)]
-    
-    terminals = ('iplus', 'iminus', 'oplus', 'ominus')
-    branches = (Branch(Node('oplus'), Node('ominus')),)
-    linear = False
-        
-    def __init__(self, *args, **kvargs):
-        super().__init__(*args, **kvargs)
-        branchindex = -1 ## add last in matrix
-        self._idt_index = self.nodes.index(self.add_node('idt_node')) #note side effect
-        inpindex, innindex, outpindex, outnindex = \
-            (self.nodes.index(self.nodenames[name]) for name in self.terminals)
-        G = self.toolkit.matrix_from_entries(
-            (self.n,self.n),
-            [
-             (self._idt_index, inpindex, 1),
-             (self._idt_index, innindex, -1),
-             (outpindex, branchindex, 1),
-             (outnindex, branchindex, -1),
-             (branchindex, self._idt_index, -1),
-             (branchindex, outpindex, -1),
-             (branchindex, outnindex, 1),
-            ])
-        self._G = G
-        
-        C = self.toolkit.matrix_from_entries(
-            (self.n,self.n),
-            [
-             (self._idt_index, self._idt_index, 1),
-            ])
-        self._C = C
-        self.modulus = self.iparv.modulus
-        self.offset = self.iparv.offset
-        
-    def C(self, x, epar=defaultepar):
-        return self._C
-    
-    def G(self, x, epar=defaultepar):
-        return self._G
 
-    def i(self, x, epar=defaultepar):
-        _i = self.toolkit.dot(self._G, x)
-        branchindex = -1
-        
-        # Remove the linear term for v_idt
-        _i[branchindex] -= self._G[branchindex, self._idt_index] * x[self._idt_index]
-        
-        # Add the nonlinear modulo term
-        v_mod = (-x[self._idt_index] % self.modulus) + self.offset
-        _i[branchindex] += v_mod
-        
-        return _i
+    linear = False
+
+    def _wrap(self, y):
+        m = self.iparv.modulus
+        if m is None or m <= 0:
+            return y
+        return floored_wrap(y, m, self.iparv.offset, self.toolkit)
+
+    @staticmethod
+    def eval_q_pure(x, params, epar, toolkit):
+        return toolkit.array([0.0, 0.0, 0.0, 0.0, x[4], 0.0])
+
+    @staticmethod
+    def eval_i_pure(x, params, epar, toolkit):
+        ## Batched path: `modulus > 0` is required here -- the degrade-to-idt
+        ## branch is data-dependent and cannot be traced.
+        m = params.get('modulus', 1.0)
+        o = params.get('offset', 0.0)
+        i_br = x[5]
+        return toolkit.array([0.0, 0.0, i_br, -i_br,
+                              x[0] - x[1],
+                              -(x[2] - x[3]) + floored_wrap(-x[4], m, o,
+                                                            toolkit)])
 
 class VPWL(VS):
     """Independent piecewise linear voltage source"""

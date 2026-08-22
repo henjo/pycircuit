@@ -25,7 +25,7 @@ import pytest
 
 from pycircuit.circuit import circuit as circuit_module
 from pycircuit.circuit.elements import (SubCircuit, VCVS, VCVS_limited, VCCS,
-                                        Diode, R, G as Gelem)
+                                        Diode, Idtmod, R, G as Gelem)
 from pycircuit.circuit.toolkit import numeric
 
 
@@ -68,6 +68,18 @@ CASES = [
     ('Diode',
      lambda: Diode('plus', 'minus'),
      [[0.3, 0.0], [0.5, 0.1], [0.0, 0.0]]),
+    ## x = [v_ip, v_in, v_op, v_on, s, i_br].  The wrap's slope is exactly -1
+    ## almost everywhere, so G == d i/d x holds at any point NOT on the wrap
+    ## surface; these keep `-s` at least 0.2 from a boundary (offset -0.5 puts
+    ## the boundaries at n - 0.5), which is >> the 1e-7 FD step.  The surface
+    ## itself carries a jump of exactly `modulus` that no Jacobian can state --
+    ## see idtmod.md sec. 5.1.
+    ('Idtmod',
+     lambda: Idtmod('iplus', 'iminus', 'oplus', 'ominus',
+                    modulus=1.0, offset=-0.5),
+     [[0.1, 0.0, 0.3, 0.0, -0.3, 0.05],
+      [1.0, 0.2, 0.0, 0.0, 0.7, 0.0],
+      [-0.4, 0.0, 0.1, 0.0, 2.2, 0.1]]),
 ]
 
 

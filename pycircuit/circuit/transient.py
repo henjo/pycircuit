@@ -918,6 +918,18 @@ class Transient(Analysis):
             if ic is None:
                 continue
 
+            ## State-flavoured ICs (Idt/Idtmod) live on the element's own
+            ## private row -- neither a branch current nor a node-voltage
+            ## difference -- and the element hands back `(local_row, value)`
+            ## pairs it has already converted (e.g. wrapped into the modulus
+            ## range).  `elementnodemap` maps its local x-indices, private
+            ## nodes included, onto this circuit's rows.
+            if getattr(element, 'IC_KIND', 'current') == 'state':
+                rows = cir.elementnodemap[name]
+                for local_row, value in element.state_ic():
+                    x0[rows[local_row]] = value
+                continue
+
             ## Voltage-flavoured ICs constrain a difference of two node unknowns
             ## and are solved together, after this loop.
             if getattr(element, 'IC_KIND', 'current') != 'current':
@@ -1036,12 +1048,23 @@ class Transient(Analysis):
 
         return x0
 
-    def _descendant_has_ic(self, circuit):
-        """Does anything below this instance carry a set ``ic``?"""
+    def _descendant_has_ic(self, circuit, include_state=True):
+        """Does anything below this instance carry a set ``ic``?
+
+        ``include_state=False`` skips elements with ``IC_KIND='state'``
+        (Idt/Idtmod): their ``ic`` pins the DC operating point per the LRM,
+        so unlike ``L``/``C`` it is meaningful WITHOUT ``uic=True`` and must
+        not trip the guard that rejects that combination.  The nested-
+        subcircuit refusal in ``_apply_element_ics`` keeps the default, so a
+        state ic buried where the flat uic walk cannot reach it still fails
+        loudly instead of being dropped.
+        """
         for element in getattr(circuit, 'elements', {}).values():
             if getattr(getattr(element, 'iparv', None), 'ic', None) is not None:
-                return True
-            if self._descendant_has_ic(element):
+                if include_state or \
+                        getattr(element, 'IC_KIND', 'current') != 'state':
+                    return True
+            if self._descendant_has_ic(element, include_state=include_state):
                 return True
         return False
 
@@ -2106,7 +2129,11 @@ class Transient(Analysis):
         ## `.ic` to CONSTRAIN the operating point and then releases it, which is
         ## a different feature from the one implemented here. Raising says which
         ## one is missing rather than quietly doing neither.
-        if (self.par.ic or self._descendant_has_ic(self.cir)) and not self.par.uic:
+        ## `include_state=False`: an Idt/Idtmod `ic` pins the DC operating
+        ## point (LRM), so it is meaningful without uic and exempt here.
+        if (self.par.ic or self._descendant_has_ic(self.cir,
+                                                   include_state=False)) \
+                and not self.par.uic:
             raise ValueError(
                 "ic was given without uic=True. This implements SPICE's initial "
                 "conditions for the uic case only -- starting values for the "
