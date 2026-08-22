@@ -284,3 +284,149 @@ def sp_s(xg, xn, delta, Gf, xi, margin=1e-5):
     return sympy.Piecewise((sp_flat, sympy.Abs(xg) <= margin),
                            (sp_acc, xg < -margin),
                            (sp_inv, True))
+
+
+def surface_state(x, xn, delta, Gf, inv_Gf2):
+    """The charge quantities at one surface potential.
+
+    Given the normalised surface potential ``x`` at one end of the
+    channel, returns ``(E, P, sq, D)``:
+
+    * ``E = exp(-x)``, the depletion term;
+    * ``P = x - 1 + E``, whose square root ``sq`` gives the bulk charge;
+    * ``D = delta*(exp(x) - x - 1 - xi0)``, the inversion term -- which
+      is exactly the ``delta`` group of `spe_residual`, so the current
+      layer and the surface-potential solver are demonstrably built on
+      the same equation.
+
+    PSP splits each of these three ways to keep the exponentials in
+    range.  Here the middle form is used with `expl`, which is C-3 and
+    covers the whole line, and the SMALL-``x`` series is kept because it
+    is not a range guard -- it is there because ``x - 1 + exp(-x)``
+    cancels to nothing near zero, losing every significant digit.
+    """
+    x, xn, delta, Gf = map(sympy.sympify, (x, xn, delta, Gf))
+
+    ## Each arm clamped to its own side: the series is valid near zero,
+    ## the general form away from it (hdl.md sec. 3.2c).
+    small = 1.0e-5
+    xs = _v(sympy.Min(sympy.Abs(x), small), 'ss_xs')
+    xb = _v(sympy.Max(x, small), 'ss_xb')
+
+    E = _v(hdl.expl(-x), 'ss_E')
+    xi0 = _v(x * x / (2.0 + x * x), 'ss_xi0')
+
+    ## Near zero: P = x^2/2 * (1 - x/3*(1 - x/4)) to leading orders, and
+    ## sq follows in closed form rather than through the cancellation.
+    t_s = _v(sympy.sqrt(1.0 - ONE_THIRD * (xs * (1.0 - 0.25 * xs))), 'ss_ts')
+    P_small = _v(0.5 * (xs * xs
+                        * (1.0 - ONE_THIRD * (xs * (1.0 - 0.25 * xs)))),
+                 'ss_Ps')
+    sq_small = _v(INV_SQRT2 * (x * t_s), 'ss_sqs')
+    D_small = _v(ONE_SIXTH * delta * x * x * x * (1.0 + 1.75 * x), 'ss_Ds')
+
+    P_big = _v(xb - 1.0 + hdl.expl(-xb), 'ss_Pb')
+    sq_big = _v(hdl.safe_sqrt(P_big), 'ss_sqb')
+    D_big = _v(delta * (hdl.expl(xb) - xb - 1.0
+                        - xb * xb / (2.0 + xb * xb)), 'ss_Db')
+
+    near = sympy.Abs(x) < small
+    P = _v(sympy.Piecewise((P_small, near), (P_big, True)), 'ss_P')
+    sq = _v(sympy.Piecewise((sq_small, near), (sq_big, True)), 'ss_sq')
+    D = _v(sympy.Piecewise((D_small, near), (D_big, True)), 'ss_D')
+    return E, P, sq, D
+
+
+#: Floor on the normalised quasi-Fermi splitting.
+#:
+#: `xn < 0` means a junction forward-biased past its built-in potential
+#: -- outside the domain of any compact model, and numerically fatal
+#: here: `delta = exp(-xn)` reaches 1e152 by `xn = -352`, and the
+#: products it enters overflow to NaN.  A real device runs at xn ~ 35, so
+#: this never binds in operation; it exists because Newton visits places
+#: the device cannot go, and a bounded wrong answer there is worth far
+#: more than a NaN.  PSP clamps its junction voltages for the same
+#: reason.
+XN_FLOOR = 0.0
+
+
+def ids_long_channel(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5):
+    """The intrinsic long-channel drain current, PSP's way.
+
+    PSP assembles the current as
+    ``Ids = BET*(FdL * qim1 * dps * Gvsatinv)``
+    (`PSP103_module.include:1178`).  ``FdL`` is channel-length
+    modulation and ``Gvsatinv`` velocity saturation; with both at unity
+    -- the long-channel intrinsic device -- what remains is
+
+    .. math::  I_{ds} = \\beta \\, q_{im1} \\, \\Delta\\psi
+
+    the symmetric-linearisation charge-sheet current.  ``dps`` is the
+    surface-potential difference between the channel ends and ``qim1``
+    the inversion charge evaluated at the MIDPOINT potential, which is
+    what makes the result exactly antisymmetric under swapping source
+    and drain -- the property threshold-voltage models are famous for
+    getting wrong, and the reason surface-potential models exist.
+
+    `beta` is ``mu * Cox * W / L``; `phit` the thermal voltage; `xn_s`
+    and `xn_d` the normalised quasi-Fermi levels at the two ends.
+    """
+    xg, xn_s, xn_d = map(sympy.sympify, (xg, xn_s, xn_d))
+    Gf, xi, phit, beta = map(sympy.sympify, (Gf, xi, phit, beta))
+    xn_s = _v(sympy.Max(xn_s, XN_FLOOR), 'ids_xns')
+    xn_d = _v(sympy.Max(xn_d, XN_FLOOR), 'ids_xnd')
+
+    Gf2 = _v(Gf * Gf, 'ids_Gf2')
+    inv_Gf2 = _v(hdl.safe_div(1.0, Gf2, eps=1e-30), 'ids_invGf2')
+    d_s = _v(hdl.expl(-xn_s), 'ids_ds')
+    d_d = _v(hdl.expl(-xn_d), 'ids_dd')
+
+    x_s = _v(sp_s(xg, xn_s, d_s, Gf, xi, margin), 'ids_xs')
+    x_d = _v(sp_s(xg, xn_d, d_d, Gf, xi, margin), 'ids_xd')
+
+    Es, Ps, sqs, Ds = surface_state(x_s, xn_s, d_s, Gf, inv_Gf2)
+    Ed, Pd, sqd, Dd = surface_state(x_d, xn_d, d_d, Gf, inv_Gf2)
+
+    x_ds = _v(x_d - x_s, 'ids_xds')
+    x_m = _v(0.5 * (x_s + x_d), 'ids_xm')
+
+    ## The midpoint depletion term is the GEOMETRIC mean of the two ends,
+    ## which is what keeps the construction symmetric.
+    Em = _v(hdl.safe_sqrt(Es * Ed), 'ids_Em')
+    D_bar = _v(0.5 * (Ds + Dd), 'ids_Dbar')
+    Dm = _v(D_bar + 0.125 * (x_ds * x_ds * (Em - 2.0 * inv_Gf2)), 'ids_Dm')
+
+    ## Same small-x care as `surface_state`: `x - 1 + E` cancels at zero.
+    small = 1.0e-5
+    xms = _v(sympy.Min(sympy.Abs(x_m), small), 'ids_xms')
+    xmb = _v(sympy.Max(x_m, small), 'ids_xmb')
+    near_m = sympy.Abs(x_m) < small
+
+    t_m = _v(sympy.sqrt(1.0 - ONE_THIRD * (xms * (1.0 - 0.25 * xms))),
+             'ids_tm')
+    Pm_small = _v(0.5 * (xms * xms
+                         * (1.0 - ONE_THIRD * (xms * (1.0 - 0.25 * xms)))),
+                  'ids_Pms')
+    sqm_small = _v(INV_SQRT2 * (x_m * t_m), 'ids_sqms')
+    alpha_small = _v(1.0 + INV_SQRT2 * (Gf * (1.0 - 0.5 * x_m
+                                              + ONE_SIXTH * (x_m * x_m))
+                                        / t_m), 'ids_as')
+
+    Pm_big = _v(xmb - 1.0 + Em, 'ids_Pmb')
+    sqm_big = _v(hdl.safe_sqrt(Pm_big), 'ids_sqmb')
+    alpha_big = _v(1.0 + 0.5 * (Gf * (1.0 - Em)
+                                * hdl.safe_div(1.0, sqm_big, eps=1e-30)),
+                   'ids_ab')
+
+    Pm = _v(sympy.Piecewise((Pm_small, near_m), (Pm_big, True)), 'ids_Pm')
+    sqm = _v(sympy.Piecewise((sqm_small, near_m), (sqm_big, True)),
+             'ids_sqm')
+    alpha = _v(sympy.Piecewise((alpha_small, near_m), (alpha_big, True)),
+               'ids_alpha')
+
+    xgm = _v(Gf * hdl.safe_sqrt(Dm + Pm), 'ids_xgm')
+    qim = _v(phit * Gf2 * Dm
+             * hdl.safe_div(1.0, xgm + Gf * sqm, eps=1e-30), 'ids_qim')
+    qim1 = _v(qim + phit * alpha, 'ids_qim1')
+    dps = _v(x_ds * phit, 'ids_dps')
+    return _v(beta * qim1 * dps, 'ids')

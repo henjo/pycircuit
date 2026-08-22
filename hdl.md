@@ -1285,6 +1285,49 @@ expression — it does not finish in ten minutes, where the let-chain takes
 0.13 s. `hdl.compile_chain` was added so a kernel routine can be compiled
 and tested outside a model without that fallback existing at all.
 
+**A surface-potential MOSFET — DONE 2026-08-22.**
+`psp_kernel.ids_long_channel` assembles PSP's intrinsic drain current
+from the surface potentials at the two channel ends, and
+`compact.PspMosLongChannel` wraps it as an element. PSP builds the
+current as `Ids = BET*(FdL*qim1*dps*Gvsatinv)`
+(`PSP103_module.include:1178`); with channel-length modulation and
+velocity saturation at unity — the long-channel intrinsic device — what
+remains is `Ids = β·qim1·Δψ`, the symmetric-linearisation charge-sheet
+current.
+
+There is **no vendor reference** for this one, deliberately: it is PSP's
+core without the short-channel, mobility, series-resistance and geometry
+layers, so it is not the same device as any model card and comparing I–V
+curves would compare two different things. What is checked instead is
+what the formulation guarantees *by construction* — a stronger statement
+than a curve fit, because a construction error breaks these exactly
+while a fitting error does not:
+
+* **source and drain are exactly interchangeable** — swapping them
+  negates the current bit for bit. Threshold-voltage models are famously
+  asymmetric about `Vds = 0`, which shows up as spurious distortion in
+  passing gates and mixers; here symmetry falls out of evaluating the
+  inversion charge at the midpoint potential;
+* **exactly zero current at zero drain bias**, at any gate bias, with no
+  epsilon;
+* **one expression spans accumulation to strong inversion** — no
+  regional equations, no smoothing functions pasted between them, and
+  monotone over every decade.
+
+The body effect appears without being put in by hand: a larger `Gf`
+degrades the subthreshold slope, in the right order.
+
+Two measured limits are pinned rather than smoothed away. The current is
+strictly monotone above **1e-18 A**; below that it is a difference of two
+surface potentials agreeing to nine digits, and the cancellation leaves a
+few percent of wobble — one attoamp is a thousandth of any real
+subthreshold measurement floor, and the only cure would be more precision
+than a double has. And `psp_kernel.XN_FLOOR` bounds the normalised
+quasi-Fermi splitting at zero: a junction forward-biased past its
+built-in potential would drive `delta = exp(-xn)` to 1e152 and overflow,
+so Newton gets a bounded wrong answer there instead of a NaN, exactly as
+PSP clamps its own junction voltages.
+
 What is left for a running PSP103 card:
 
 **Model-card ingestion — DONE 2026-08-22.**

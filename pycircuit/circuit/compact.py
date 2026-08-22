@@ -14,9 +14,21 @@ Currently: `CapCmomi`.
 
 import sympy
 
+from pycircuit.circuit import psp_kernel
+from pycircuit.circuit.constants import (eps0, epsRSi, epsRSiO2,
+                                         qelectron as QELEC)
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution, Node,
-                                   ddt)
+                                   ddt, var, vt)
 from pycircuit.utilities.param import Parameter
+
+
+#: Permittivities, from the toolkit's own constants so a generated stamp
+#: matches a hand-written one exactly rather than nearly.
+EPS_OX = epsRSiO2 * eps0
+EPS_SI = epsRSi * eps0
+
+#: 1/sqrt(2), as PSP spells it.
+INV_SQRT2 = 7.0710678118654746e-01
 
 
 #: Weak anchor conductance so a floating port or internal island never
@@ -209,3 +221,81 @@ class CapCmomi(Behavioural):
             Contribution(br_lkp.I, GLEAK * br_lkp.V),
             Contribution(br_lkm.I, GLEAK * br_lkm.V),
         )
+
+
+class PspMosLongChannel(Behavioural):
+    """A surface-potential MOSFET: PSP's intrinsic long-channel core.
+
+    Not PSP103.  This is PSP's *centre* -- the surface potential solved
+    at each channel end by `psp_kernel.sp_s`, and the drain current
+    assembled from them by symmetric linearisation -- with every
+    short-channel, mobility, series-resistance, overlap, leakage and
+    geometry-scaling layer omitted.  PSP103 is that core plus 2371 lines
+    of those layers.
+
+    What it demonstrates is the part that was in doubt: that the DSL can
+    carry a surface-potential formulation at all.  Three properties come
+    out of the construction rather than out of fitting, and are the
+    reason this class of model displaced threshold-voltage models:
+
+    * the drain current is **exactly antisymmetric** under exchanging
+      source and drain, bit for bit -- because the inversion charge is
+      evaluated at the midpoint potential;
+    * it is **exactly zero** at zero drain-source bias, for any gate
+      bias;
+    * one expression covers accumulation, depletion, weak and strong
+      inversion, with no regional equations and no smoothing functions
+      pasted between them.
+
+    Parameters are the physical ones the core actually needs.  A real
+    PSP card's 359 parameters mostly configure the layers that are not
+    here, so this does not read one; `pycircuit.utilities.spicecard`
+    exists for when it can.
+    """
+
+    instparams = [
+        Parameter(name='w', desc='Channel width', unit='m', default=1e-6),
+        Parameter(name='l', desc='Channel length', unit='m', default=1e-6),
+        Parameter(name='tox', desc='Oxide thickness', unit='m',
+                  default=2.2e-9),
+        Parameter(name='nsub', desc='Substrate doping', unit='m^-3',
+                  default=5e23),
+        Parameter(name='vfb', desc='Flat-band voltage', unit='V',
+                  default=-0.95),
+        Parameter(name='u0', desc='Low-field mobility', unit='m^2/Vs',
+                  default=0.045),
+        Parameter(name='phib', desc='Surface potential at threshold '
+                  '(2*phi_F)', unit='V', default=0.9),
+    ]
+
+    @staticmethod
+    def analog(d, g, s, b):
+        bd, bg, bs = Branch(d, b, 'd'), Branch(g, b, 'g'), Branch(s, b, 's')
+
+        phit = var(vt(), 'phit')
+        ## Oxide capacitance per unit area, and the body factor that
+        ## follows from it.  `Gf` is gamma normalised by sqrt(phit),
+        ## which is the form the surface-potential solver takes.
+        cox = var(EPS_OX / tox, 'cox')                        # noqa: F821
+        gamma = var(sympy.sqrt(2.0 * QELEC * EPS_SI * nsub)   # noqa: F821
+                    / cox, 'gamma')
+        Gf = var(gamma / sympy.sqrt(phit), 'Gf')
+        xi = var(1.0 + Gf * INV_SQRT2, 'xi')
+
+        ## Normalised gate drive, and the quasi-Fermi levels at the two
+        ## channel ends.  Everything is referred to the bulk, which is
+        ## what keeps source and drain interchangeable.
+        xg = var((bg.V - vfb) / phit, 'xg')                   # noqa: F821
+        xn_s = var((phib + bs.V) / phit, 'xn_s')              # noqa: F821
+        xn_d = var((phib + bd.V) / phit, 'xn_d')              # noqa: F821
+
+        beta = var(u0 * cox * w / l, 'beta')                  # noqa: F821
+
+        ids = psp_kernel.ids_long_channel(xg, xn_s, xn_d, Gf, xi, phit,
+                                          beta)
+        ## Contributed drain-to-source.  pycircuit's `i[node]` is the
+        ## current flowing FROM the node INTO the device -- the same
+        ## convention a generated resistor uses, where `I(p,m) <+ V/r`
+        ## makes `i[p]` positive for `vp > vm`.  So for an n-channel with
+        ## the drain above the source, the drain entry is +Ids.
+        return Contribution(Branch(d, s, 'chan').I, ids)
