@@ -791,6 +791,22 @@ without tuning. Measured (50 Gear-2 cycles at ωh ≈ 0.13): γ=0 → radius 0.4
   same history-consistency objection, in milder form; noted, not needed.
 - **CORDIC-style precomputed gain correction**: inapplicable — CORDIC's magnitude
   error is known a priori and constant; ours is solution- and history-dependent.
+- **Low-pass-filtered Baumgarte correction**: practiced where the correction is an
+  EXPLICIT, sampled feedback loop around a noisy violation signal — real-time
+  physics/robotics engines (gain-limited, slop-deadzoned, compliance-relaxed
+  corrections; ODE's CFM is a leaky first-order-filtered constraint), co-simulation
+  force coupling (filtering the exchanged force avoids energy injection at the
+  sampling rate), and decimated INS quaternion renormalization. Filtering trades
+  correction bandwidth for noise rejection at the cost of phase lag. Not adopted
+  here: our violation `r²−1` is deterministic (no measurement noise, no contact
+  chatter), and the correction is co-solved IMPLICITLY inside Newton under A-stable
+  integrators — no sampling loop to alias against, which is the structural
+  difference from the settings that need the filter. One scenario could reopen
+  this: trapezoidal ringing appearing in `r²−1` and being fed back with
+  alternating sign. The idiomatic fix would then be VACASK's pattern (filter the
+  signal used by the correction, leave the solution untouched) — at the cost of
+  one extra filter state per element. Reconsider on evidence: ringing-coupled
+  radius oscillation, or step-size collapse traced to the γ term.
 
 **Negative finding:** no precedent was found for a phasor-pair idtmod state in any
 circuit simulator — Verilog-A VCO models integrate a scalar phase and wrap it; the
