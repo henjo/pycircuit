@@ -961,7 +961,14 @@ def generate_code(cls):
     kept_statements = []
     for st in statements:
         b = st.lhs.branch_or_node
-        if st.lhs.quantity == 'V' and sympy.sympify(st.rhs) == 0:
+        ## `.is_zero`, not `== 0`.  sympy's `==` is STRUCTURAL equality,
+        ## and `Float(0.0) == 0` is False -- so `V(a,b) <+ 0.0`, which is
+        ## how PSP's own CollapsableR macro spells it, silently did not
+        ## collapse while `V(a,b) <+ 0` did.  Same trap that once doubled
+        ## a filter's order by taking the complex-pole branch for a real
+        ## pole.
+        if st.lhs.quantity == 'V' and \
+                sympy.sympify(st.rhs).is_zero:
             p_, m_ = b.plus, b.minus
             p_int = p_ not in terminalnodes
             m_int = m_ not in terminalnodes
@@ -992,7 +999,11 @@ def generate_code(cls):
                     np_, nm_ = alias.get(bn.plus, bn.plus), \
                         alias.get(bn.minus, bn.minus)
                     if (np_, nm_) != (bn.plus, bn.minus):
-                        nb = Branch(np_, nm_)
+                        ## Carry the NAME through the rewrite.  A collapse
+                        ## renames nodes; it does not merge two named
+                        ## branches into one, and dropping the name here
+                        ## would do exactly that.
+                        nb = Branch(np_, nm_, name=bn.name)
                         subs_q[atom] = Quantity(atom.quantity, nb)
                 elif bn in alias:
                     subs_q[atom] = Quantity(atom.quantity, alias[bn])
@@ -1002,11 +1013,20 @@ def generate_code(cls):
             np_, nm_ = alias.get(lb.plus, lb.plus), alias.get(lb.minus,
                                                               lb.minus)
             if (np_, nm_) != (lb.plus, lb.minus):
-                st.lhs = Quantity(st.lhs.quantity, Branch(np_, nm_))
+                st.lhs = Quantity(st.lhs.quantity,
+                                  Branch(np_, nm_, name=lb.name))
         ## Re-derive the branch inventory: a collapsed branch is gone.
-        vbranches = [br for br in vbranches
-                     if br.plus.name not in collapse
-                     and br.minus.name not in collapse]
+        ## Re-derive the branch inventory.  A branch is GONE only if the
+        ## collapse brought its two ends onto the same node -- that is the
+        ## `V <+ 0` branch itself.  Every other branch survives with its
+        ## endpoints renamed; the earlier rule dropped any branch merely
+        ## TOUCHING a collapsed node, which silently deleted the
+        ## constitutive relation of whatever hung off the absorbed node.
+        _renamed = [Branch(alias.get(br.plus, br.plus),
+                           alias.get(br.minus, br.minus), name=br.name)
+                    for br in vbranches]
+        vbranches = [br for br in _renamed
+                     if br.plus.name != br.minus.name]
         ibranch_keys = {branch_key(br) for br in vbranches}
 
     ## SWITCH BRANCHES are refused, per hdl.md sec. 9 phase D.  In

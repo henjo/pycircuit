@@ -1093,9 +1093,52 @@ a construct the model does not use.
 
 What is left:
 
+**Optional series resistances — the workaround measured, the feature
+sized.** PSP's seven parasitics are each
+
+```
+if ((R) > 0.0) I(N1,N2) <+ (G) * V(N1,N2);
+else           V(N1,N2) <+ 0.0;
+```
+
+Read as topology that is a collapse decided by a parameter *value*, and
+the element's unknown count depends on its parameters. Read as algebra
+both arms are one relation, `V(N1,N2) <+ I(N1,N2)*R`, which the DSL
+already expresses: the MNA row is `-(v1 - v2) + i_br*R = 0`, the resistor
+for `R > 0` and an exact short for `R = 0`. Measured bit-exact at every
+resistance from 0 to 1e9 (`test_hdl_collapse.py`), where the conductance
+form divides by zero — which is why the model branches at all.
+
+It is a workaround, not the answer, and `benchmarks/collapse_cost.py`
+says how much of one. A chain of 100 devices each carrying the seven
+parasitics:
+
+| devices | unknowns collapsed | unknowns as branches | DC solve | slowdown |
+|---|---|---|---|---|
+| 5 | 8 | 78 | 0.57 → 0.95 ms | 1.7× |
+| 20 | 23 | 303 | 1.11 → 5.80 ms | 5.2× |
+| 50 | 53 | 753 | 3.61 → 37.9 ms | 10.5× |
+| 100 | 103 | 1503 | 7.02 → 100.6 ms | **14.3×** |
+
+Identical answers; purely a matrix-size argument, and a decisive one.
+In the IHP card most of the seven *are* zero for the ordinary device
+(`rsh`, `rshd`, `rvpoly` are 0; `rgo` and `rbulko` are gated on
+`rfmode`), so this is the common case rather than a corner.
+
+**A collapse bug found on the way, which would have hit PSP directly.**
+The collapse test was `sympify(rhs) == 0`, and sympy's `==` is
+*structural*: `Float(0.0) == 0` is False. So `V(a,b) <+ 0` collapsed
+while `V(a,b) <+ 0.0` silently did not — and `0.0` is exactly how PSP's
+own macro spells it. Now `.is_zero`. A second bug in the same code
+dropped any branch merely *touching* a collapsed node, deleting the
+constitutive relation of whatever hung off the absorbed node; only the
+branch whose two ends meet is gone now. A third dropped branch *names*
+during the rewrite, merging two named branches that a collapse brought
+onto one node pair.
+
 | item | size | note |
 |---|---|---|
-| node collapse driven by parameter *values* | medium | 7 `CollapsableR` instances; topology as a function of parameters, where B2 collapses only unconditionally |
+| node collapse driven by parameter *values* | medium | needs per-instance topology: the mask is known once parameters bind, so compile lazily per mask and cache on the class. `self.nodes` is already per-instance; `cls.branches` and the compiled closures are not |
 | model-card ingestion | medium | the cards are not standalone: they reference `.param` multipliers a corner section must define first, and are `.include`d *inside* the subckt so the `.model` can see `pre_layout`, `ng`, `m` |
 | geometry scaling layer | medium | `PSP103_scaling.include`, 849 lines, pure parameter arithmetic — no solver involvement, so it is bulk rather than difficulty |
 | the surface-potential core | large | `PSP103_module.include`, 2371 lines; the actual translation, and what E1/E2 exist to make possible |
