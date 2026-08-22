@@ -2405,6 +2405,12 @@ class JAXTransient(Analysis):
             dt_max = self._timestep_max(tend)
         dt_max = self._element_cap(dt_max)
             
+        ## Stage 8(d)'s contract ("called at the start of every analysis")
+        ## applied here too: a previous CPU run leaves per-element state --
+        ## e.g. Idtmod's Phase-3 crossing cache -- that would otherwise leak
+        ## into the STATIC breakpoint enumeration below.
+        if hasattr(self.cir, 'reset_state'):
+            self.cir.reset_state(getattr(self, 'epar', None))
         t_breaks_array = jnp.array(collect_breakpoints(
             self.cir, tend, float(self.par.minbreak)))
         
@@ -2636,6 +2642,12 @@ class JAXTransient(Analysis):
                 'this grid is degraded and nothing else will report it.'
                 % (timestep, float(dt_max)), RuntimeWarning)
     
+        ## Stage 8(d)'s contract ("called at the start of every analysis")
+        ## applied here too: a previous CPU run leaves per-element state --
+        ## e.g. Idtmod's Phase-3 crossing cache -- that would otherwise leak
+        ## into the STATIC breakpoint enumeration below.
+        if hasattr(self.cir, 'reset_state'):
+            self.cir.reset_state(getattr(self, 'epar', None))
         t_breaks_array = jnp.array(collect_breakpoints(
             self.cir, tend, float(self.par.minbreak)))
     

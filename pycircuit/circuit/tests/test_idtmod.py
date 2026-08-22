@@ -308,6 +308,108 @@ def test_jax_gauge_shift():
     assert s.max() - s.min() < 1.5
 
 
+## ------------------------------------------------------------------------
+## Phase 3 (idtmod.md sec. 5.3): wrap breakpoints on the CPU paths.
+
+
+def test_next_event_prediction():
+    """The element-level contract: inf before any accepted step, linear
+    prediction from the gauge-invariant (phase, rate) cache, whole-period
+    advance when the solver sits on the corner, inf for a stalled phase."""
+    pycircuit.circuit.circuit.default_toolkit = numeric
+    c = SubCircuit()
+    nin, nout = c.add_node('in'), c.add_node('out')
+    c['vin'] = VS(nin, gnd, v=1.0)
+    c['R1'] = R(nout, gnd, r=1e3)
+    c['Idtmod'] = Idtmod(nin, gnd, nout, gnd, modulus=1.0, offset=-0.5)
+    c.update_iparv()
+    el = c['Idtmod']
+
+    assert el.next_event(0.0) == np.inf
+
+    ## Accepted point at t=0.2: phase 0.2, rising at rate 1 -> corner
+    ## (offset+m = 0.5) at t = 0.5.  Local x = [ip, in, op, on, s, i_br].
+    el.accept_step(0.2, np.array([1.0, 0.0, 0.2, 0.0, -0.2, 0.0]), None)
+    assert abs(el.next_event(0.2) - 0.5) < 1e-12
+    ## Sitting exactly ON the predicted corner: advance one full period.
+    assert abs(el.next_event(0.5) - 1.5) < 1e-12
+
+    ## Falling phase: corner is the LOWER boundary (offset = -0.5).
+    el.accept_step(0.2, np.array([0.0, 1.0, 0.2, 0.0, -0.2, 0.0]), None)
+    assert abs(el.next_event(0.2) - 0.9) < 1e-12
+
+    ## Stalled: no crossing.
+    el.accept_step(0.2, np.array([0.0, 0.0, 0.2, 0.0, -0.2, 0.0]), None)
+    assert el.next_event(0.2) == np.inf
+
+    ## reset_state clears the cache (a fresh analysis must not inherit it).
+    el.reset_state()
+    assert el.next_event(0.0) == np.inf
+
+
+def test_wrap_breakpoints_land_adaptive():
+    """The adaptive controller lands a step boundary ON each predicted
+    crossing instead of discovering the corner by rejection."""
+    c = _ramp_circuit(modulus=1.0, offset=-0.5)
+    import warnings
+    tran = Transient(c, toolkit=numeric, uic=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = tran.solve(tend=2.2, timestep=1e-2)
+    t = res.v('out').x[0]
+    for t_cross in (0.5, 1.5):
+        assert np.min(np.abs(t - t_cross)) < 1e-9, t_cross
+    assert res.statistics.breakpoints_hit >= 2
+
+
+def test_many_wraps_no_step_collapse():
+    """22 wraps under BOTH controller paths: landed corners mean no history
+    ever straddles a wrap, so neither path pays a rejection storm -- the
+    outcome the kink-gate extension was reserved for and, measured, does
+    not need (idtmod.md 5.3).  Congruence stays at machine precision."""
+    import warnings
+    for coupled in (False, True):
+        c = _ramp_circuit(modulus=0.1, offset=-0.05)
+        tran = Transient(c, toolkit=numeric, uic=True)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(tend=2.2, timestep=1e-2, coupled_lte=coupled)
+        s = res.statistics
+        assert s.breakpoints_hit >= 20, (coupled, s.breakpoints_hit)
+        assert s.rejected_steps <= 10, (coupled, s.rejected_steps)
+        assert s.accepted_steps < 400, (coupled, s.accepted_steps)
+        y = res.v('out').y
+        t = res.v('out').x[0]
+        d = np.abs(y[1:] - (((t[1:] + 0.05) % 0.1) - 0.05))
+        d = np.minimum(d, 0.1 - d)
+        assert d.max() < 1e-12, (coupled, d.max())
+
+
+def test_wrap_under_default_integrator():
+    """The un-pinning (idtmod.md 5.3): with crossings landed and order
+    dropped across them, the wrap behaves under Gear-2 (the default) as it
+    does under Euler -- asserted congruence-style, since the sample exactly
+    ON a corner remains a knife-edge limit choice in any convention."""
+    import warnings
+    from pycircuit.circuit.integrator import (EulerIntegrator,
+                                              TrapezoidalIntegrator,
+                                              Gear2Integrator)
+    for integrator in (EulerIntegrator(), TrapezoidalIntegrator(),
+                       Gear2Integrator()):
+        c = _ramp_circuit(modulus=1.0)
+        tran = Transient(c, toolkit=numeric, uic=True,
+                         integrator=integrator)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(tend=2.2, timestep=1e-2)
+        y = res.v('out').y
+        t = res.v('out').x[0]
+        d = np.abs(y[1:] - t[1:] % 1.0)
+        d = np.minimum(d, 1.0 - d)
+        assert d.max() < 1e-9, (type(integrator).__name__, d.max())
+        assert np.all(y >= -1e-12) and np.all(y < 1.0 + 1e-12)
+
+
 def test_periodic_contract_violation_raises():
     """A declaration whose row lacks the unit C diagonal must fail loudly at
     collection -- shifting it would corrupt the LTE estimate silently."""

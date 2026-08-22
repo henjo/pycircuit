@@ -3,6 +3,7 @@
 # See LICENSE for details.
 
 from __future__ import division
+import math
 from .circuit import *
 from . import func as func
 from ._limiting import _pnjlim
@@ -1411,6 +1412,64 @@ class Idtmod(_IdtBase):
         if m is None or m <= 0:
             return []
         return [(self._idt_index, m, -(self.iparv.offset + m))]
+
+    ## ------------------------------------------------------------------
+    ## Phase-3 wrap breakpoints (idtmod.md 5.3), CPU solvers only.  The
+    ## output is a sawtooth whose corner the adaptive controller would
+    ## otherwise discover by rejection; predicting the crossing lets the
+    ## solver LAND a step boundary on it and order-drop across the corner
+    ## -- and, unlike the general event-and-reinit machinery, the Phase-2
+    ## gauge shift keeps the history valid at full order through it.
+
+    def accept_step(self, t, x, epar):
+        """Cache what the crossing prediction needs, in gauge-invariant
+        form: the WRAPPED phase (unchanged by the Phase-2 shift, whenever
+        it runs relative to this call) and the phase rate read off the
+        element's own ODE right-hand side -- ``dphase/dt = v_ip - v_in``
+        exactly, no finite differencing, no two-point history."""
+        m = self.iparv.modulus
+        if m is None or m <= 0:
+            self._bp_cache = None
+            return
+        self._bp_cache = (float(t),
+                          float(self._wrap(-x[self._idt_index])),
+                          float(x[0] - x[1]))
+
+    def reset_state(self, epar=None):
+        self._bp_cache = None
+
+    def next_event(self, t):
+        """Predicted time the output next crosses a wrap boundary.
+
+        Linear prediction from the last ACCEPTED point; it only needs to
+        BRACKET the corner -- the solver's break-step machinery order-drops
+        across whatever lands there.  ``inf`` before the first accepted
+        step, in idt-degradation mode, and for a (near-)stalled phase.
+        Strictly greater than ``t``, per the ``next_event`` contract; a
+        prediction already at or behind ``t`` (the solver is sitting on the
+        corner) advances by whole periods.
+        """
+        cache = getattr(self, '_bp_cache', None)
+        if cache is None:
+            return self.toolkit.inf
+        t0, phase, rate = cache
+        m = self.iparv.modulus
+        offset = self.iparv.offset
+        if rate == 0.0:
+            return self.toolkit.inf
+        if rate > 0.0:
+            gap = (offset + m) - phase   # in (0, m]: the range is half-open
+        else:
+            gap = phase - offset         # in [0, m): can sit ON the corner
+            if gap <= 0.0:
+                gap = m
+        period = m / abs(rate)
+        t_cross = t0 + gap / abs(rate)
+        if t_cross <= t:
+            t_cross += (math.floor((t - t_cross) / period) + 1.0) * period
+            if t_cross <= t:     # float residue at extreme t/period ratios
+                return self.toolkit.inf
+        return t_cross
 
     @staticmethod
     def eval_q_pure(x, params, epar, toolkit):

@@ -23,8 +23,25 @@ from landing: the float wrap can land one ulp outside the half-open range at exa
 multiples (documented on `floored_wrap`); the ic-without-uic guard exempts
 `IC_KIND='state'`; and the bounded state is decoupled from the time grid's
 accumulated rounding, so a sample landing exactly ON a wrap can report either limit
--- sawtooth comparisons in tests are congruence-based (two-sided). Phase 3 (sec.
-5.3, wrap breakpoints + kink-gate extension) remains future work.*
+-- sawtooth comparisons in tests are congruence-based (two-sided). **Phase 3 (sec.
+5.3) is also implemented**, with one measured deviation from the plan:
+`Idtmod.accept_step` caches the gauge-invariant `(wrapped phase, rate)` pair -- the
+rate read exactly off the element's own ODE right-hand side (`v_ip − v_in`), not
+finite-differenced, so the Phase-2 shift ordering is irrelevant -- and `next_event`
+predicts the crossing (whole-period advance when sitting on the corner; inf when
+stalled, un-seeded, or in idt-degradation mode). Measured: adaptive runs land steps
+on crossings to ~1e-15; 22 wraps under BOTH controller paths complete with <=3
+rejections and congruence at machine precision; a VSin-driven (varying-rate) VCO
+shows only ordinary LTE error. **The kink-gate extension was therefore NOT applied**:
+landed corners mean no history ever straddles a wrap, and the collapse it was
+reserved for does not occur -- the gate stays TLine-only, per the branch's
+gates-are-measurements convention. The Euler pin is retired in effect: a Gear-2/
+trap/Euler consistency test asserts congruence under all three. One repair landed
+alongside: `JAXTransient` now calls `reset_state` before its static breakpoint
+enumeration (Stage 8(d)'s "every analysis" contract; previously a stale element
+cache from a prior CPU run could leak into `collect_breakpoints`). JAX dynamic wrap
+breakpoints remain architecturally out (static `t_breaks_array`), as sec. 5.3
+documents.*
 
 ---
 
