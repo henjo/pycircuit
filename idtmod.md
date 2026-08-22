@@ -807,6 +807,16 @@ without tuning. Measured (50 Gear-2 cycles at ωh ≈ 0.13): γ=0 → radius 0.4
   signal used by the correction, leave the solution untouched) — at the cost of
   one extra filter state per element. Reconsider on evidence: ringing-coupled
   radius oscillation, or step-size collapse traced to the γ term.
+  **The trigger is now a live sentinel** (`test_circular_trap_ringing_sentinel`):
+  the mechanism is exact — trap on the radial mode `λ = 2γ|ω|` has amplification
+  `(1−λh/2)/(1+λh/2)`, negative for `λh > 2`, so `γ|ω|h > 1` rings the radius at
+  the step Nyquist. Measured: alternation fraction switches 0.00 → 1.00 cleanly
+  at the predicted boundary (γ=1,5 vs γ=20,40 at ωh=0.0628); the default γ=1
+  sits ~15× below it; and even in the fully-ringing regime the OUTPUT error is
+  unchanged (1.6e-3 vs 1.7e-3) — the ringing is confined to the radial mode by
+  the correction's phase-orthogonality, so the failure the filter would fix
+  cannot reach the waveform. The sentinel fails if a future change pushes the
+  default into the ringing regime, and this bullet is its remedy note.
 
 **Negative finding:** no precedent was found for a phasor-pair idtmod state in any
 circuit simulator — Verilog-A VCO models integrate a scalar phase and wrap it; the

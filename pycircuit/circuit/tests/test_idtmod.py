@@ -566,3 +566,68 @@ def test_circular_jax_parity():
     i_jax, G_jax = results['jax']
     assert_array_almost_equal(i_num, i_jax)
     np.testing.assert_allclose(G_num, G_jax, atol=1e-5)
+
+
+def test_circular_trap_ringing_sentinel():
+    """The sentinel for idtmod.md 7.5's reopening trigger: does the gamma
+    term couple trapezoidal ringing into the radius?
+
+    The mechanism is exact and predictable: trapezoidal applied to the
+    radial recovery mode d(r^2)/dt = -lam*(r^2-1), lam = 2*gamma*|w|, has
+    amplification (1 - lam*h/2)/(1 + lam*h/2), which turns NEGATIVE for
+    lam*h > 2 -- i.e. for gamma*|w|*h > 1 the correction itself rings the
+    radius at the step Nyquist.  Setup: one run inside a single wrap (no
+    breakpoint order-drops), so the only perturbation is the known
+    first-step Euler kick, and its recovery either decays smoothly or
+    alternates.  Measured at introduction (w*h = 0.0628): alternation
+    fraction 0.00 at gamma=1 and 5, 1.00 at gamma=20 and 40 -- a clean
+    switch exactly at the predicted boundary.
+
+    Three assertions:
+    1. provoked (gamma=20, lam*h = 2.5): the detector SEES the ringing --
+       proves the sentinel is live, not vacuously green;
+    2. default (gamma=1, lam*h = 0.13): NO ringing.  If a future change
+       to the correction scaling pushes the default into the ringing
+       regime, this fails -- and the documented remedy is VACASK's
+       filter-the-decision-signal pattern, NOT filtering the dynamics
+       (idtmod.md sec. 7.5);
+    3. containment: even in the fully-ringing regime the OUTPUT error is
+       unchanged (the correction is purely radial, so its ringing cannot
+       reach the phase) -- measured 1.6e-3 vs 1.7e-3 at introduction.
+    """
+    import warnings
+    from pycircuit.circuit.integrator import TrapezoidalIntegrator
+
+    def run(gamma, h=0.1):
+        pycircuit.circuit.circuit.default_toolkit = numeric
+        c = SubCircuit()
+        nin, nout = c.add_node('in'), c.add_node('out')
+        c['vin'] = VS(nin, gnd, v=1.0)
+        c['R1'] = R(nout, gnd, r=1e3)
+        c['X'] = IdtmodCircular(nin, gnd, nout, gnd, modulus=10.0,
+                                gamma=gamma, ic=1.0)
+        ci, si = _phasor_rows(c)
+        tran = Transient(c, toolkit=numeric, uic=True,
+                         integrator=TrapezoidalIntegrator())
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(tend=5.0, timestep=h, fixed_timestep=True)
+        X = np.asarray(res.x, float)
+        a = X[ci] ** 2 + X[si] ** 2 - 1.0
+        ## Sign-alternation fraction of consecutive r^2 differences during
+        ## the recovery from the first-step kick: ~1 when the radial mode
+        ## rings at Nyquist, ~0 for a smooth decay.
+        d = np.diff(a[2:40])
+        d = d[np.abs(d) > 1e-16]
+        alt = float(np.mean(d[1:] * d[:-1] < 0)) if len(d) > 2 else 0.0
+        y = res.v('out').y
+        t = res.v('out').x[0]
+        out_err = np.abs(y[1:] - (1.0 + t[1:])).max()
+        return alt, out_err
+
+    alt_ringing, err_ringing = run(20.0)   # lam*h = 2.5 > 2: must ring
+    alt_default, err_default = run(1.0)    # lam*h = 0.13:   must not
+
+    assert alt_ringing > 0.9, alt_ringing
+    assert alt_default < 0.1, alt_default
+    assert err_ringing < 1.5 * err_default, (err_ringing, err_default)
