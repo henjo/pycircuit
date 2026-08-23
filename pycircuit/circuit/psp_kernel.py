@@ -417,6 +417,7 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
     ax = 0.0 if mob is None else mob.get('ax', 0.0)
     if not isinstance(ax, sympy.Expr) and ax == 0.0:
         vdsat = None
+        vdse = None
         d_d = _v(hdl.expl(-xn_d), 'ids_dd')
         x_d = _v(sp_s(xg, xn_d, d_d, Gf, xi, margin), 'ids_xd')
     else:
@@ -687,14 +688,24 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
         ## shorter and the current keeps rising where an ideal device's
         ## is flat.
         ##
-        ## PSP writes `s1` as a RATIO of logarithms involving `Vdse`, a
-        ## smoothly saturation-limited drain voltage it also uses for the
-        ## drain surface potential (`PSP103_macrodefs.include:628-632`).
-        ## This core computes that potential at the true drain bias, so
-        ## `dps` saturates on its own and the second logarithm is
-        ## dropped -- recovering the classic `ln(1 + (Vds - Vdsat)/VP)`
-        ## with `dps` standing in for the saturation voltage.  An
-        ## APPROXIMATION to PSP, not a translation of it.
+        ## PSP writes `s1` as a RATIO of logarithms involving `Vdse`
+        ## (`PSP103_macrodefs.include:753`):
+        ##
+        ##     s1 = ln((1 + (Vds - dps)/VP) / (1 + (Vdse - dps)/VP))
+        ##
+        ## The second logarithm used to be dropped, because without a
+        ## saturation-limited drain voltage there was nothing to put in
+        ## it -- which recovered the classic `ln(1 + (Vds - Vdsat)/VP)`
+        ## with `dps` standing in for the saturation voltage, and was an
+        ## APPROXIMATION to PSP rather than a translation of it.  `Vdse`
+        ## exists now, so this is the real expression.
+        ##
+        ## The denominator matters more than it looks.  Both logarithms
+        ## grow together in the linear region, where `Vdse` tracks `Vds`,
+        ## so their ratio stays near 1 and `dL` stays near zero -- which
+        ## is the physical statement that there is no pinch-off region to
+        ## shorten.  The single-logarithm form had no way to say that and
+        ## leaned on `dps` to say it instead.
         ##
         ## `hypsmooth` rather than `max(.,0)`: the excess is negative
         ## through the whole linear region and a hard clamp would put a
@@ -709,10 +720,21 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
             ## the excess must be measured against `|dps|` for the whole
             ## factor to stay EVEN under the source/drain exchange.
             adps = _v(2.0 * hdl.hypsmooth(dps, 1e-6) - dps, 'ids_adps')
+            inv_vp = _v(hdl.safe_div(1.0, mob['vp'], eps=1e-30), 'ids_ivp')
             excess = _v(hdl.hypsmooth(mob['vds'] - adps, 1e-3), 'ids_exc')
-            s1 = _v(hdl.safe_ln(1.0 + excess
-                                * hdl.safe_div(1.0, mob['vp'], eps=1e-30)),
-                    'ids_s1')
+            s1n = _v(hdl.safe_ln(1.0 + excess * inv_vp), 'ids_s1n')
+            if vdse is None:
+                s1 = _v(s1n, 'ids_s1')
+            else:
+                ## `Vdse <= Vds` always, so the denominator's excess is
+                ## the smaller of the two and `s1` stays non-negative --
+                ## `dL` is a channel SHORTENING and a negative one would
+                ## be meaningless.  Smoothed the same way as the
+                ## numerator, so neither logarithm puts a kink in the
+                ## middle of an I-V curve.
+                excd = _v(hdl.hypsmooth(vdse - adps, 1e-3), 'ids_excd')
+                s1d = _v(hdl.safe_ln(1.0 + excd * inv_vp), 'ids_s1d')
+                s1 = _v(s1n - s1d, 'ids_s1')
             dL = _v(alp * s1, 'ids_dL')
             GdL = _v(hdl.safe_div(1.0, 1.0 + dL + dL * dL, eps=1e-30),
                      'ids_GdL')

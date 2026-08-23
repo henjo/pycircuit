@@ -1789,6 +1789,58 @@ built but never actually tested against.
 > 0.115 — and both are now recorded in the reference so the gap is
 > written down rather than remembered.
 
+> **The channel-length modulation, finally translated rather than
+> approximated — 2026-08-23.** Immediately after the saturation voltage
+> went in, and the largest single accuracy step this core has taken.
+>
+> PSP writes the pinch-off length as a RATIO of logarithms
+> (`PSP103_macrodefs.include:753`):
+>
+> ```
+> s1 = ln((1 + (Vds − dps)/VP) / (1 + (Vdse − dps)/VP))
+> ```
+>
+> The denominator had been dropped, and honestly labelled as "an
+> APPROXIMATION to PSP, not a translation of it", because without a
+> saturation-limited drain voltage there was nothing to put in it. What
+> was left recovered the classic `ln(1 + (Vds − Vdsat)/VP)` with `dps`
+> standing in for the saturation voltage. `Vdse` exists now, so this is
+> just the real expression.
+>
+> **Result across the six n-channel sweeps: every one improved, and
+> every one is now within 0.4%.**
+>
+> | sweep | before | after |
+> |---|---|---|
+> | `nmos_long_idvd` | 1.010 | **1.002** |
+> | `nmos_idvd_vg1p2` | 1.019 | **1.002** |
+> | `nmos_idvd_vg0p6` | 1.071 | **1.003** |
+> | `nmos_idvg_vd0p05` | 1.004 | **1.001** |
+> | `nmos_idvg_vd1p2` | 1.028 | **0.996** |
+> | `nmos_idvg_vb_m1` | 1.006 | **1.004** |
+>
+> Summed median error **0.138 → 0.016**, a factor of 8.6, with nothing
+> tuned and no parameter touched — every value still comes off the card
+> through the scaling layer.
+>
+> Why the denominator matters more than it looks: both logarithms grow
+> together in the linear region, where `Vdse` tracks `Vds`, so their
+> ratio stays near 1 and `dL` stays near zero. That is the physical
+> statement that there is no pinch-off region to shorten yet. The
+> single-logarithm form had no way to say it and leaned on `dps` to say
+> it instead, which is why its error showed up as output conductance in
+> the wrong places.
+>
+> **This also closes the CLM story recorded above.** CLM was tried,
+> measured, rejected, then vindicated unchanged once `CT` went in — and
+> the rejection note said a faithful version "needs PSP's `Vdsat`
+> machinery (`Phi_0`, `Phi_2`, `asat`), which is a block of its own".
+> That was correct, and the ordering it implied was correct: the block
+> had to exist before the term that consumes it could be written
+> properly. The whole sequence — reject on measurement, keep the
+> reasoning, build the prerequisite, come back — is the methodological
+> point of this exercise, and this is where it pays.
+
 Deferred, unchanged from the original research verdict:
 
 | item | why |

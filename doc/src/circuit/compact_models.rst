@@ -298,11 +298,11 @@ measurement otherwise.
                          np.median(np.abs(g[m]) / r[m])))
         note = "computed live against the installed PDK"
     except Exception:
-        rows = [('nmos_long_idvd', 10.0, 1.00, 1.010),
-                ('nmos_long_idvg', 10.0, 1.00, 1.10),
-                ('nmos_idvd_vg1p2', 1.0, 0.13, 1.021),
-                ('nmos_idvg_vd1p2', 1.0, 0.13, 0.974),
-                ('nmos_idvg_vd0p05', 1.0, 0.13, 1.117)]
+        rows = [('nmos_long_idvd', 10.0, 1.00, 1.002),
+                ('nmos_long_idvg', 10.0, 1.00, 1.000),
+                ('nmos_idvd_vg1p2', 1.0, 0.13, 1.002),
+                ('nmos_idvg_vd1p2', 1.0, 0.13, 0.996),
+                ('nmos_idvg_vd0p05', 1.0, 0.13, 1.001)]
         note = ("quoted from the committed measurement -- the IHP PDK is "
                 "not installed here")
 
@@ -322,13 +322,21 @@ measurement otherwise.
     print("*%s.*" % note)
 
 The **long device is the one to read**: at L = 1 µm the physics this core
-omits matters least. It is within about 1% there, from a model card,
-with no fitting anywhere in the chain.
+omits matters least. It is within a few tenths of a percent there, from
+a model card, with no fitting anywhere in the chain.
 
-The short device is within a few percent too — and is now the *more*
-accurate of the two, which has changed twice as terms went in. That
-crossover is worth more than either number: it says the remaining error
-is no longer dominated by anything geometry-specific.
+So is the short device — every sweep in the table is now inside 0.4%,
+and the two geometries have traded places more than once as terms went
+in. That they no longer separate is worth more than either number: it
+says the remaining error is not dominated by anything geometry-specific,
+and therefore not by the short-channel blocks this core still omits.
+
+Getting there was not a matter of adding terms in order of size. The
+largest single step was not a new block at all — it was going back to
+the channel-length modulation, which had been carrying a documented
+approximation for want of a saturation-limited drain voltage, and
+writing PSP's actual expression once ``Vdse`` existed to put in it. It
+took the summed error over the six sweeps down by a factor of eight.
 
 Checking the scaling directly
 -----------------------------
@@ -502,7 +510,9 @@ to the surface potential at threshold, and the effective thermal voltage.
 
 Present also: polysilicon depletion, the channel-shortening factor
 ``FdL`` with its strong- and weak-inversion corrections, and the
-saturation-limited drain voltage ``Vdse``.
+saturation-limited drain voltage ``Vdse`` — which the channel-length
+modulation then uses, as PSP does, so that term is now a translation of
+the vendor expression rather than an approximation to it.
 
 Absent: the body- and gate-bias modulations of the velocity-saturation
 parameter (``THESATB``, ``THESATG`` — both nonzero on this card); the
@@ -513,7 +523,7 @@ plus those, and the size of what they are worth is exactly what the
 table above measures.
 
 A saturating model needs a Newton limiter
-----------------------------------------
+-----------------------------------------
 
 ``Vdse`` pins the drain end of the channel at :math:`V_{dsat}`, which is
 its purpose and is the physical answer. The consequence is that the

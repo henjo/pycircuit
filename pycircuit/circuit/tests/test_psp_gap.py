@@ -753,14 +753,19 @@ class TestTheSaturationVoltage(object):
         assert scaled['short']['thesatb'] > 0.05
         assert scaled['short']['thesatg'] > 0.05
 
-    def test_no_sweep_is_more_than_a_tenth_out(self, deck, ref):
+    def test_every_sweep_is_within_one_percent(self, deck, ref):
         """The state of the whole comparison, as a regression guard.
 
         Nothing here is fitted: every parameter comes off the card
-        through the scaling layer.  Before the saturation voltage the
-        worst sweep was 11% out and the long device -- the one where the
-        omitted short-channel physics matters least, and therefore the
-        one worth reading -- had been pushed to 3.5% by `FdL`.
+        through the scaling layer.  The history this guard replaces is
+        worth keeping in view -- the worst sweep was 11% out before the
+        saturation voltage, 7% after it, and 0.3% once the saturation
+        voltage was fed back into the channel-length modulation, which
+        is what it had been missing all along.
+
+        Held at 1% rather than at the measured 0.4%: this is a guard
+        against regression, not a pin on numbers that should be free to
+        improve.
         """
         cm.default_toolkit = numeric
         worst = {}
@@ -769,5 +774,5 @@ class TestTheSaturationVoltage(object):
                      'nmos_idvg_vd1p2', 'nmos_idvg_vb_m1'):
             _, r, g, _ = _compare(deck, ref[name])
             worst[name] = abs(np.median(g / r) - 1.0)
-        assert max(worst.values()) < 0.10, worst
-        assert worst['nmos_long_idvd'] < 0.02, worst
+        assert max(worst.values()) < 0.01, worst
+        assert sum(worst.values()) < 0.04, worst
