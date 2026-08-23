@@ -310,6 +310,16 @@ class PspMosLongChannel(Behavioural):
                   unit='', default=0.0),
         Parameter(name='alp2', desc='CLM correction, weak inversion',
                   unit='', default=0.0),
+        Parameter(name='cf', desc='DIBL coefficient', unit='',
+                  default=0.0),
+        Parameter(name='cfb', desc='DIBL body-bias dependence', unit='',
+                  default=0.0),
+        Parameter(name='cfd', desc='DIBL drain-bias saturation', unit='1/V',
+                  default=0.0),
+        Parameter(name='thesatb', desc='Body-bias modulation of thesat',
+                  unit='1/V', default=0.0),
+        Parameter(name='thesatg', desc='Gate-bias modulation of thesat',
+                  unit='1/V', default=0.0),
         ## Linear/saturation transition sharpness.  PSP floors this at 2
         ## in its scaling, and the kernel floors it again -- a small `ax`
         ## makes the drain-voltage limiter soft enough to bite far below
@@ -383,7 +393,6 @@ class PspMosLongChannel(Behavioural):
         ## Normalised gate drive, and the quasi-Fermi levels at the two
         ## channel ends.  Everything is referred to the bulk, which is
         ## what keeps source and drain interchangeable.
-        xg = var((bg.V - vfb) / phit, 'xg')                   # noqa: F821
 
         beta = var(u0 * cox * w / l, 'beta')                  # noqa: F821
 
@@ -438,6 +447,27 @@ class PspMosLongChannel(Behavioural):
         vdsx = var(2.0 * psp_kernel.hdl.hypsmooth(vds, 1e-4) - vds, 'vdsx')
         vsbx = var(vsbst + 0.5 * (vds - vdsx), 'vsbx')
 
+        ## DRAIN-INDUCED BARRIER LOWERING
+        ## (`PSP103_macrodefs.include:473-476`).  A short channel lets
+        ## the drain field reach the source barrier and lower it, so the
+        ## device turns on earlier at high drain bias.  PSP models it as
+        ## a shift of the GATE DRIVE rather than of a threshold voltage
+        ## -- there is no threshold voltage in a surface-potential model
+        ## to shift.
+        ##
+        ## Built on the symmetrised `vdsx`/`vsbx`, so it is even under
+        ## the source/drain exchange and cannot break the antisymmetry
+        ## the way series resistance and channel-length modulation both
+        ## did before them.  `CFD` is zero on this card, which makes
+        ## `Vdsp = Vdsx`; the general form is kept because a card that
+        ## sets it would otherwise be silently mismodelled.
+        vdsp = var(2.0 * vdsx * psp_kernel.hdl.safe_div(
+            1.0, 1.0 + psp_kernel.hdl.safe_sqrt(1.0 + cfd * vdsx),  # noqa
+            eps=1e-30), 'vdsp')
+        delvg = var(cf * vdsp * (1.0 + cfb * vsbx), 'delvg')  # noqa: F821
+
+        xg = var((bg.V - vfb + delvg) / phit, 'xg')           # noqa: F821
+
         ## ORDERED TERMINALS.
         ##
         ## The saturation-limited drain voltage broke what the paragraph
@@ -471,6 +501,7 @@ class PspMosLongChannel(Behavioural):
                      rs=rs, rsg=rsg, rsb=rsb, vsb=vsbx,     # noqa: F821
                      alp=alp, vp=vp, vds=vdsx,              # noqa: F821
                      alp1=alp1, alp2=alp2, ax=ax,           # noqa: F821
+                     thesatb=thesatb, thesatg=thesatg,  # noqa: F821
                      kp=kp,                                 # noqa: F821
                      cox_area=cox, eps_si=EPS_SI))
         cox_tot = var(cox * w * l, 'cox_tot')                 # noqa: F821

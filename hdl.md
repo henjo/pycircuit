@@ -1841,6 +1841,55 @@ built but never actually tested against.
 > reasoning, build the prerequisite, come back — is the methodological
 > point of this exercise, and this is where it pays.
 
+> **Two more correct terms, both measured worse, both kept and switched
+> off — 2026-08-23.** DIBL (`CF`, `CFB`, `CFD`,
+> `PSP103_macrodefs.include:473-476`) and the body- and gate-bias
+> modulation of the velocity-saturation parameter (`THESATB`, `THESATG`,
+> `macrodefs:596-607`). Both implemented, both faithful, both off by
+> default behind `to_long_channel(..., all_terms=True)`.
+>
+> Summed median error over the six n-channel sweeps: **0.016** without
+> them, 0.034 with the `THESAT` modulation alone, **0.041** with both.
+>
+> What the evidence rules out is more useful than the numbers. **All
+> twenty-one scaled parameters the reference now records match PSP's own
+> `lp_*` outputs exactly at four geometries** — including `cf`, `cfb`,
+> `thesatb`, `thesatg`, `alp`, `alp1` and `alp2`. So the scaling layer is
+> not the problem, and neither are `FdL`'s coefficients. `s1`, `s2`,
+> `r1`, `r2` and `FdL` were re-read against the vendor source line by
+> line and are transcribed correctly. The terms are right.
+>
+> **Where it points.** Our `delVg` comes to **3.6 mV at Vds = 1.35**, and
+> PSP's own `vth` was measured moving **3.5 mV** over exactly that range.
+> At this device's 85 mV/decade, 3.6 mV is a **9% current change in weak
+> inversion**. So DIBL is a real part of the 2.4× climb at Vg = 0.6 —
+> the climb that `FdL` was accepted for explaining *in full*, on a
+> residual that already contained this omission. And the near-threshold
+> sweep is precisely where enabling DIBL now overshoots, 1.003 → 1.023,
+> while the two high-Vd sweeps it was predicted to help both improved
+> (0.011 → 0.006 and 0.011 → 0.003). `FdL` is the term to re-examine,
+> with these enabled.
+>
+> This is the third time on this branch that an individually correct term
+> has made the fit worse, and the second time it has been resolved by
+> leaving it out and recording why. The first was channel-length
+> modulation — which came back as the single largest accuracy gain the
+> model has taken. **Discarding correct physics because it exposes an
+> error elsewhere is how that error gets preserved**; switching it off
+> with the measurement attached is not.
+>
+> One numerical fix came out of the same work. `Vds*(1 + rat^ax)^(−1/ax)`
+> overflows by `rat = 1e46` for the long device's `ax = 6.5`, and then
+> `huge * (1 + inf)^(−1/ax)` is `huge * 0` — **NaN, not a large number**,
+> and a diverging Newton step reaches it. Rewritten as the two forms that
+> are each stable on their own side of `rat = 1`, the second being the
+> algebraically identical `Vdsat*(1 + rat^−ax)^(−1/ax)`. Each arm's input
+> is clamped to its own domain rather than the arms merely being selected
+> between, for the reason recorded earlier: a Piecewise's derivative
+> w.r.t. something used only in the discarded arm is zero, and zero times
+> NaN is NaN. Finite and correctly saturated out to `Vds = 1e60` now,
+> and still antisymmetric there.
+
 Deferred, unchanged from the original research verdict:
 
 | item | why |

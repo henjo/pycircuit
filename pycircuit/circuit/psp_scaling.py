@@ -104,11 +104,45 @@ def _neff(card, geo):
                    - _g(card, 'fol2') * iLE * iLE)
 
 
-def to_long_channel(card, w, l, T=300.0):
+def to_long_channel(card, w, l, T=300.0, all_terms=False):
     """Card + geometry -> `PspMosLongChannel` keyword arguments.
 
     `card` is what `spicecard.Deck.model_params` returned.  Returns a
     dict ready to splat into the element.
+
+    `all_terms=True` additionally wires up two blocks that are
+    implemented, verified term by term against PSP's own scaled
+    parameters, and CURRENTLY MAKE THE MEASURED FIT WORSE:
+
+    * **DIBL** -- `CF`, `CFB`, `CFD` (`macrodefs:473-476`);
+    * the **body- and gate-bias modulation of `THESAT`** -- `THESATB`,
+      `THESATG` (`macrodefs:596-607`).
+
+    Summed median error over the six n-channel sweeps: 0.016 without
+    them, 0.034 with the `THESAT` modulation alone, 0.041 with both.
+
+    They are off by default and kept in the tree deliberately, following
+    the precedent this model set with channel-length modulation -- which
+    was also correct, also measured worse, was left out with the
+    reasoning recorded, and turned out to be the single largest accuracy
+    gain the model ever took once the term it was compensating for
+    arrived.  Discarding correct physics because it exposes an error
+    elsewhere is how that error gets preserved.
+
+    What the evidence says about where the error is NOT: all twenty-one
+    scaled parameters the reference records -- including `cf`, `cfb`,
+    `thesat`, `thesatb`, `thesatg`, `alp`, `alp1` and `alp2` -- match
+    PSP's own `lp_*` outputs exactly at four geometries.  So the scaling
+    is right and the discrepancy is in a formula.
+
+    And where it probably IS: our `delVg` comes to 3.6 mV at Vds = 1.35,
+    which is precisely the 3.5 mV shift measured out of PSP's own `vth`.
+    In weak inversion, at this device's 85 mV/decade, 3.6 mV is a **9%**
+    current change -- so DIBL is a real part of the 2.4x climb at
+    Vg = 0.6 that was attributed wholly to `FdL`.  `FdL` was accepted on
+    a residual that already contained this omission, and the near-
+    threshold sweep is exactly where enabling DIBL now overshoots
+    (1.003 -> 1.023).  That is the term to re-examine, with these on.
     """
     geo = geometry(card, w, l)
     iLE, iWE, LE, WE = geo['iLE'], geo['iWE'], geo['LE'], geo['WE']
@@ -229,6 +263,24 @@ def to_long_channel(card, w, l, T=300.0):
     t2 = iLE ** _g(card, 'alp2lexp', 1.0)
     alp2 = (_g(card, 'alp2l1') * t2 * (1.0 + _g(card, 'alp2w') * iWE)
             / (1.0 + _g(card, 'alp2l2') * iLE * t2))
+    ## Drain-induced barrier lowering (:273-276), clipped at :714-717.
+    ## `CF` carries a LENGTH POWER and nothing else -- it is a purely
+    ## short-channel quantity, and on a 1 um device it scales to 1e-7,
+    ## which is why omitting it cost nothing there and about a percent
+    ## at 0.13 um.  PSP's companion `PSCE` block, which degrades the
+    ## subthreshold slope, is all-zero on this card and is not built.
+    cf = max(_g(card, 'cfl') * iLE ** _g(card, 'cflexp', 2.0)
+             * (1.0 + _g(card, 'cfw') * iWE), 0.0)
+    cfb = min(max(_g(card, 'cfbo'), 0.0), 1.0)
+    cfd = max(_g(card, 'cfdo'), 0.0)
+
+    ## Body- and gate-bias modulation of the velocity-saturation
+    ## parameter (:313-314).  Geometry-INDEPENDENT: PSP takes these
+    ## straight from the card with no length or width term at all.
+    ## Clips at :741-742.
+    thesatb = min(max(_g(card, 'thesatbo'), -0.5), 1.0)
+    thesatg = max(_g(card, 'thesatgo'), -0.5)
+
     ## Linear/saturation transition sharpness (:317), FLOORED AT 2
     ## (:743).  The floor is not cosmetic: this card scales `AX` to 0.88
     ## on a 0.13 um device, and an exponent below 1 makes the limiter
@@ -257,7 +309,7 @@ def to_long_channel(card, w, l, T=300.0):
     ## term rather than a network element; see `psp_kernel`.
     rs = _g(card, 'rsw1') * iWE * (1.0 + _g(card, 'rsw2') * iWE)
 
-    return dict(
+    kw = dict(
         w=w, l=l, tox=tox, nsub=neff, vfb=vfb, phib=phib, u0=u0_eff,
         rs=max(rs, 0.0), rsg=_g(card, 'rsgo'), rsb=_g(card, 'rsbo'),
         ct=max(ct, 0.0), alp=max(alp, 0.0), vp=max(vp, 1.0e-6),
@@ -267,3 +319,7 @@ def to_long_channel(card, w, l, T=300.0):
         cs=max(cs, 0.0), thecs=max(_g(card, 'thecso'), 0.0),
         feta=_g(card, 'fetao', 1.0), thesat=max(thesat, 0.0),
     )
+    if all_terms:
+        kw.update(thesatb=thesatb, thesatg=thesatg,
+                  cf=cf, cfb=cfb, cfd=cfd)
+    return kw

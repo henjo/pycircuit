@@ -350,6 +350,41 @@ def surface_state(x, xn, delta, Gf, inv_Gf2):
 XN_FLOOR = 0.0
 
 
+def _bias_mod(coeff, v, name):
+    """PSP's ``1 + t*v`` / ``1/(1 - t*v)`` pair.
+
+    Used wherever PSP modulates a parameter by a bias
+    (`PSP103_macrodefs.include:596-607`).  The second form is not a
+    different model, it is the same first-order modulation written so
+    that the factor stays POSITIVE when the coefficient is negative --
+    `1 + t*v` would cross zero and change the sign of whatever it
+    multiplies.  The two agree to first order in `t*v`.
+
+    The branch is on the COEFFICIENT, which is a parameter, so the
+    condition carries no bias dependence and the derivative is a plain
+    `where` on a constant -- none of the `Max`-on-an-expression trouble
+    documented in `intrinsic`.
+    """
+    coeff, v = sympy.sympify(coeff), sympy.sympify(v)
+    return _v(sympy.Piecewise(
+        (hdl.safe_div(1.0, 1.0 - coeff * v, eps=1e-30), coeff < 0),
+        (1.0 + coeff * v, True)), name)
+
+
+def _wsat(q, xitsb, thesatg, tag):
+    """PSP's gate-bias modulation of the velocity-saturation parameter.
+
+    ``wsat`` is a soft-limited inversion charge: ``100*q'/(100 + q')``
+    with ``q' = q*xitsb``, so for the ordinary sub-volt charges it IS
+    ``q'`` and it saturates rather than running away.  The returned
+    factor multiplies ``THESAT``.
+    """
+    q2 = _v(q * xitsb, 'ids_qx' + tag)
+    w = _v(100.0 * (q2 * hdl.safe_div(1.0, 100.0 + q2, eps=1e-30)),
+           'ids_wsat' + tag)
+    return _bias_mod(thesatg, w, 'ids_xitsg' + tag)
+
+
 def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
               mob=None):
     """The intrinsic long-channel core: current, and what charge needs.
@@ -418,6 +453,7 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
     if not isinstance(ax, sympy.Expr) and ax == 0.0:
         vdsat = None
         vdse = None
+        xitsb = None
         d_d = _v(hdl.expl(-xn_d), 'ids_dd')
         x_d = _v(sp_s(xg, xn_d, d_d, Gf, xi, margin), 'ids_xd')
     else:
@@ -438,8 +474,19 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
         rs_ = _v(sympy.Max(rs0, 1.0e-10), 'ids_ratios')
         gmob_s = _v(1.0 + bs_ ** mob['themu']
                     + mob['cs'] * rs_ ** (0.5 * mob['thecs']), 'ids_gmobs')
-        th1 = _v(mob['thesat'] * hdl.safe_div(1.0, gmob_s, eps=1e-30),
-                 'ids_th1s')
+        ## The body- and gate-bias modulations of `THESAT`
+        ## (`PSP103_macrodefs.include:596-607`).  `xitsb` is computed
+        ## HERE, once, and reused unchanged at the midpoint below --
+        ## PSP does the same, carrying it as `xitsb_dc`.  PSP guards
+        ## this whole block with `Ds > ke05` and leaves `xitsb` at zero
+        ## otherwise; we have no guard because we do not need one, `qis`
+        ## being proportional to `Ds` and therefore already vanishing
+        ## there, which makes `wsat` vanish and the factor collapse to 1.
+        xitsb = _bias_mod(mob.get('thesatb', 0.0), mob.get('vsb', 0.0),
+                          'ids_xitsb')
+        th1 = _v(mob['thesat'] * _wsat(qis, xitsb, mob.get('thesatg', 0.0),
+                                       's')
+                 * hdl.safe_div(1.0, gmob_s, eps=1e-30), 'ids_th1s')
         phi_inf = _v(qis * hdl.safe_div(1.0, alpha_s, eps=1e-30) + phit,
                      'ids_phiinf')
         ysat = _v(th1 * phi_inf * INV_SQRT2, 'ids_ysat')
@@ -496,7 +543,28 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
         ## zero at run time.  PSP clips AX at 2 (`PSP103_scaling:743`),
         ## so there is no legitimate zero; floor it and be done.
         axc = _v(sympy.Max(ax, 0.5), 'ids_axc')
-        vdse = _v(vds_in * (1.0 + rat ** axc) ** (-1.0 / axc), 'ids_vdse')
+
+        ## `Vds*(1 + rat^ax)^(-1/ax)`, written in the two forms that are
+        ## each stable on their own side of `rat = 1`.  Directly is fine
+        ## below 1 and overflows above it -- `rat^6.5` leaves double
+        ## range by `rat = 1e46`, which a diverging Newton step reaches
+        ## -- and `huge * (1 + inf)^(-1/ax)` is `huge * 0`, i.e. NaN.
+        ## Above 1, factoring `rat` out gives the algebraically identical
+        ## `Vdsat*(1 + rat^-ax)^(-1/ax)`, whose base is again below 1.
+        ##
+        ## Each arm's input is clamped to ITS OWN domain rather than the
+        ## arms merely being selected between: a Piecewise's derivative
+        ## w.r.t. something used only in the discarded arm is zero, and
+        ## zero times NaN is NaN.  Both are continuous at `rat = 1`,
+        ## where `Vds` and `Vdsat` coincide by definition.
+        rlo = _v(sympy.Max(sympy.Min(rat, 1.0), 1e-15), 'ids_rlo')
+        rhi = _v(sympy.Max(hdl.safe_div(1.0, rat, eps=1e-30), 1e-15),
+                 'ids_rhi')
+        rhic = _v(sympy.Min(rhi, 1.0), 'ids_rhic')
+        vdse = _v(sympy.Piecewise(
+            (vds_in * (1.0 + rlo ** axc) ** (-1.0 / axc), rat <= 1.0),
+            (vdsat * (1.0 + rhic ** axc) ** (-1.0 / axc), True)),
+            'ids_vdse')
         xn_d = _v(xn_s + vdse * hdl.safe_div(1.0, phit, eps=1e-30),
                   'ids_xnd2')
         d_d = _v(hdl.expl(-xn_d), 'ids_dd2')
@@ -740,7 +808,11 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
                      'ids_GdL')
         Gmob_dL = _v(Gmob * GdL, 'ids_GmobdL')
 
-        thesat1 = _v(mob['thesat']
+        ## Same modulation at the midpoint, with the MIDPOINT inversion
+        ## charge and the source-side `xitsb` (`macrodefs:757-765`).
+        tsg = (1.0 if xitsb is None
+               else _wsat(qim, xitsb, mob.get('thesatg', 0.0), 'm'))
+        thesat1 = _v(mob['thesat'] * tsg
                      * hdl.safe_div(1.0, Gmob_dL, eps=1e-30), 'ids_ths')
         zsat = _v(thesat1 * thesat1 * dps * dps, 'ids_zsat')
         Gvsat = _v(0.5 * (Gmob_dL * (1.0 + sympy.sqrt(1.0 + 2.0 * zsat))),

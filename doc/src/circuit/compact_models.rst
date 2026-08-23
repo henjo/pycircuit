@@ -514,13 +514,53 @@ saturation-limited drain voltage ``Vdse`` — which the channel-length
 modulation then uses, as PSP does, so that term is now a translation of
 the vendor expression rather than an approximation to it.
 
-Absent: the body- and gate-bias modulations of the velocity-saturation
-parameter (``THESATB``, ``THESATG`` — both nonzero on this card); the
-short-channel threshold block; gate and junction leakage; impact
-ionisation; overlap and fringe capacitances; the non-quasi-static block;
-self-heating; and every temperature coefficient. PSP103 is this core
-plus those, and the size of what they are worth is exactly what the
-table above measures.
+Implemented but **switched off**: drain-induced barrier lowering
+(``CF``, ``CFB``, ``CFD``) and the body- and gate-bias modulations of
+the velocity-saturation parameter (``THESATB``, ``THESATG``). Both are
+faithful — every parameter they use matches PSP's own scaled output
+exactly — and both currently make the measured fit worse, so
+``to_long_channel`` leaves them out unless asked with
+``all_terms=True``. See below.
+
+Absent: the rest of the short-channel threshold block; gate and junction
+leakage; impact ionisation; overlap and fringe capacitances; the
+non-quasi-static block; self-heating; and every temperature coefficient.
+PSP103 is this core plus those, and the size of what they are worth is
+exactly what the table above measures.
+
+Two of those omissions are worth naming as *permanently* invisible to
+the table: gate leakage and junction leakage are four to six orders of
+magnitude below its 1 µA floor on this process, and overlap and fringe
+capacitances contribute identically zero DC current. They matter for
+CV and AC work, not here.
+
+Correct terms that make the fit worse
+-------------------------------------
+
+Two blocks are implemented, verified, and disabled. That combination
+needs explaining, because the obvious reading — that they are wrong — is
+the one the evidence rules out.
+
+Every parameter they use matches PSP's own post-scaling value exactly,
+at four geometries; so do ``FdL``'s coefficients. The formulae were
+re-read against the vendor source line by line. Enabling them takes the
+summed error over the six sweeps from 0.016 to 0.041.
+
+What that means is that something else is absorbing their effect. The
+clue is where the damage lands. Our DIBL shift comes to 3.6 mV at
+:math:`V_{ds} = 1.35` V, and PSP's own threshold was measured moving
+3.5 mV over that range — but in weak inversion, at 85 mV/decade, 3.6 mV
+is a **9% change in current**. The 2.4× climb near threshold that
+``FdL`` was accepted for explaining in full therefore had a real DIBL
+component in it all along, and the near-threshold sweep is exactly where
+switching DIBL on now overshoots.
+
+This has happened before on this model, with channel-length modulation:
+correct, measured worse, left out with the reasoning recorded — and it
+returned later as the single largest accuracy gain the model has taken,
+once the term it had been compensating for arrived. Discarding correct
+physics because it exposes an error elsewhere is how that error gets
+preserved.
 
 A saturating model needs a Newton limiter
 -----------------------------------------

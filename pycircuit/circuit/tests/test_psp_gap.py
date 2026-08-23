@@ -776,3 +776,110 @@ class TestTheSaturationVoltage(object):
             worst[name] = abs(np.median(g / r) - 1.0)
         assert max(worst.values()) < 0.01, worst
         assert sum(worst.values()) < 0.04, worst
+
+
+class TestTheTermsThatDoNotHelpYet(object):
+    """DIBL and the `THESAT` bias modulations: correct, and off.
+
+    Both are implemented, and both make the measured fit WORSE, so
+    `to_long_channel` leaves them out unless asked (`all_terms=True`).
+    That is not a hedge -- it is the same call this model made about
+    channel-length modulation, which was also correct, also measured
+    worse, was left out with the reasoning recorded, and then turned out
+    to be the largest single accuracy gain the model ever took once the
+    term it had been compensating for arrived.
+
+    The tests below pin what the evidence actually establishes, so that
+    whoever picks this up does not have to re-derive it:
+
+    * the SCALING is not the problem -- every parameter involved matches
+      PSP's own `lp_*` output exactly, at four geometries;
+    * `FdL`'s parameters are not the problem either -- `alp`, `alp1` and
+      `alp2` match exactly too;
+    * enabling the terms costs accuracy, and it costs it in a specific
+      place: the near-threshold sweep.
+
+    Which is the clue.  Our `delVg` comes to 3.6 mV at Vds = 1.35, and
+    PSP's own `vth` was measured to move 3.5 mV over that range.  In
+    weak inversion at this device's 85 mV/decade, that is a 9% current
+    change -- so DIBL is a real part of the 2.4x climb at Vg = 0.6 that
+    `FdL` was accepted for explaining in full.
+    """
+
+    @pytest.fixture(scope='class')
+    def scaled(self):
+        with open(REF) as fh:
+            return json.load(fh)['scaled']
+
+    def _kw(self, deck, g, **kw):
+        return psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_nmos_psp', w=g['w'], l=g['l'],
+                              ng=1, m=1, pre_layout=1),
+            w=g['w'], l=g['l'], **kw)
+
+    @pytest.mark.parametrize('geom', ['long', 'mid', 'short', 'wide_short'])
+    @pytest.mark.parametrize('par', ['cf', 'cfb', 'thesatb', 'thesatg',
+                                     'alp', 'alp1', 'alp2'])
+    def test_every_parameter_involved_matches_psp(self, deck, scaled,
+                                                  geom, par):
+        """So the scaling layer is not where the discrepancy lives."""
+        got = self._kw(deck, scaled[geom], all_terms=True)[par]
+        assert got == pytest.approx(scaled[geom][par], rel=1e-5,
+                                    abs=1e-12), (geom, par)
+
+    def test_they_are_off_by_default(self, deck, scaled):
+        kw = self._kw(deck, scaled['short'])
+        assert 'cf' not in kw and 'thesatg' not in kw
+
+    def test_dibl_matches_psps_own_measured_threshold_shift(self, deck,
+                                                            scaled):
+        """3.6 mV computed against 3.5 mV measured out of PSP itself.
+
+        This is why the term is believed rather than suspected: it is
+        checked against a number extracted from the vendor model, not
+        against our own arithmetic.
+        """
+        kw = self._kw(deck, scaled['short'], all_terms=True)
+        delvg = kw['cf'] * 1.35 * (1.0 + kw['cfb'] * 0.0)
+        assert 3.0e-3 < delvg < 4.0e-3, delvg
+
+    def test_enabling_them_costs_accuracy_and_says_where(self, deck, ref):
+        """The measurement that keeps them off, and the clue it carries.
+
+        Worse overall -- and the damage is concentrated in the
+        near-threshold sweep, which is exactly where a weak-inversion
+        threshold shift acts and exactly where `FdL` was accepted.
+        """
+        cm.default_toolkit = numeric
+        names = ('nmos_long_idvd', 'nmos_idvd_vg1p2', 'nmos_idvd_vg0p6',
+                 'nmos_idvg_vd0p05', 'nmos_idvg_vd1p2', 'nmos_idvg_vb_m1')
+        err = {}
+        for on in (False, True):
+            tot = {}
+            for name in names:
+                sw = ref[name]
+                kw = psp_scaling.to_long_channel(
+                    deck.model_params('sg13g2_lv_nmos_psp', w=sw['w'],
+                                      l=sw['l'], ng=1, m=1, pre_layout=1),
+                    w=sw['w'], l=sw['l'], all_terms=on)
+                e = PspMosLongChannel(cm.Node('d'), cm.Node('g'),
+                                      cm.Node('s'), cm.Node('b'), **kw)
+                e.update_iparv()
+                v = np.asarray(sw['v'], float)
+                r = np.abs(np.asarray(sw['i_d'], float))
+                b = sw['bias']
+                if sw['sweep'] == 'Vd':
+                    g = np.array([np.asarray(e.i(np.array(
+                        [x, b['Vg'], b['Vs'], b['Vb']])), float)[0]
+                        for x in v])
+                else:
+                    g = np.array([np.asarray(e.i(np.array(
+                        [b['Vd'], x, b['Vs'], b['Vb']])), float)[0]
+                        for x in v])
+                m = r > 1e-6
+                tot[name] = abs(np.median(np.abs(g[m]) / r[m]) - 1.0)
+            err[on] = tot
+        assert sum(err[True].values()) > sum(err[False].values()), err
+        ## And it lands on the near-threshold sweep in particular.
+        assert (err[True]['nmos_idvd_vg0p6']
+                > 3.0 * err[False]['nmos_idvd_vg0p6']), err

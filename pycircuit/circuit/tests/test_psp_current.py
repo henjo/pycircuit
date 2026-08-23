@@ -633,14 +633,33 @@ class TestTheSaturationVoltage(object):
         assert g[0.3] > g[1.0] > g[5.0] > g[50.0] > 0.0, g
         assert g[0.3] / g[50.0] > 1e5, g
 
-    def test_the_current_stays_bounded_at_absurd_bias(self):
-        """Saturated, not overflowing.  A solver WILL evaluate here."""
+    @pytest.mark.parametrize('vd', [1e2, 1e4, 1e7, 1e40, 1e60])
+    def test_the_current_stays_bounded_at_absurd_bias(self, vd):
+        """Saturated, not overflowing.  A solver WILL evaluate here.
+
+        The far end of this range is not hypothetical.  `(1 + rat^ax)`
+        leaves double range by `rat = 1e46` for the long device's
+        `ax = 6.5`, and then `Vds * (1 + inf)^(-1/ax)` is `huge * 0`,
+        which is NaN rather than a large number.  A diverging Newton
+        step gets there, and a NaN in one row poisons the whole solve.
+        Warnings are errors here so an overflow cannot pass quietly.
+        """
         e = self._fet()
-        i0 = np.asarray(e.i(np.array([2.0, 1.8, 0.0, 0.0])), float)[0]
-        for vd in (1e2, 1e4, 1e7):
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            i0 = np.asarray(e.i(np.array([2.0, 1.8, 0.0, 0.0])), float)[0]
             i = np.asarray(e.i(np.array([vd, 1.8, 0.0, 0.0])), float)
-            assert np.all(np.isfinite(i))
-            assert i[0] < 1.5 * i0, (vd, i[0], i0)
+            G = np.asarray(e.G(np.array([vd, 1.8, 0.0, 0.0])), float)
+        assert np.all(np.isfinite(i)) and np.all(np.isfinite(G))
+        assert i[0] < 1.5 * i0, (vd, i[0], i0)
+
+    @pytest.mark.parametrize('vd', [1e7, 1e40])
+    def test_it_is_still_antisymmetric_out_there(self, vd):
+        """The two-armed `Vdse` must not break the terminal ordering."""
+        e = self._fet()
+        f = np.asarray(e.i(np.array([vd, 1.8, 0.0, 0.0])), float)[0]
+        r = np.asarray(e.i(np.array([0.0, 1.8, vd, 0.0])), float)[0]
+        assert f == pytest.approx(-r, rel=1e-12), (vd, f, r)
 
 
 class TestTheVoltageConditioning(object):

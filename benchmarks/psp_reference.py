@@ -169,7 +169,7 @@ LP_PARAMS = ('vfb', 'tox', 'neff', 'dphib', 'ct', 'cf', 'cfb', 'betn',
              ## `thesatb` and `thesatg` are recorded because they are
              ## NOT zero on this card and we do not model them yet -- a
              ## known gap is better written down than remembered.
-             'ax', 'thesat', 'thesatb', 'thesatg', 'alp')
+             'ax', 'thesat', 'thesatb', 'thesatg', 'alp', 'alp1', 'alp2')
 
 
 def _op_outputs(pdk, spec, names):
