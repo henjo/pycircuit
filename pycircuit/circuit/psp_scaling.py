@@ -221,6 +221,7 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
     gamma0 = math.sqrt(2.0 * qelectron * neff * epsRSi * eps0
                        / phit) / cox_prime
     qmc = _g(card, 'qmc')
+    qq = 0.0
     if qmc > 0.0:
         ## `QMN` for electrons, `QMP` for holes
         ## (`PSP103_module.include:727-734`).  A ratio of 1.25, and not
@@ -320,6 +321,16 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
     cfb = min(max(_g(card, 'cfbo'), 0.0), 1.0)
     cfd = max(_g(card, 'cfdo'), 0.0)
 
+    ## THE CV EFFECTIVE DIMENSIONS (:38-39), which are NOT the DC ones.
+    ## `LEcv = LE + DLQ`, `WEcv = WE + DWQ`, and the card sets both:
+    ## `dlq = -1.37e-8`, `dwq = -1e-8` for this n-channel.  PSP builds
+    ## its oxide capacitance for the CHARGE model out of these (:359),
+    ## so using the drawn dimensions overstates every capacitance -- by
+    ## 7% on the long device here, and the QM correction below adds
+    ## another 12% on top of that.
+    lecv = max(LE + _g(card, 'dlq'), 1.0e-9)
+    wecv = max(WE + _g(card, 'dwq'), 1.0e-9)
+
     ## BODY-BIAS MOBILITY CORRECTION (:299, clipped at :731).
     ## `Rxcor = (1 + 0.2*XCOR*Vsbx)/(1 + XCOR*Vsbx)` multiplies `Gmob`
     ## at both the source end and the midpoint (`macrodefs:576, 595,
@@ -389,7 +400,8 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
         cs=max(cs, 0.0), thecs=max(_g(card, 'thecso'), 0.0),
         feta=_g(card, 'fetao', 1.0), thesat=max(thesat, 0.0),
     )
-    kw.update(dnsub=dnsub, vnsub=vnsub, nslp=nslp, xcor=xcor)
+    kw.update(dnsub=dnsub, vnsub=vnsub, nslp=nslp, xcor=xcor,
+              wcv=wecv, lcv=lecv, qq=qq)
     if all_terms:
         kw.update(thesatb=thesatb, thesatg=thesatg,
                   cf=cf, cfb=cfb, cfd=cfd)

@@ -181,7 +181,7 @@ VTH_DECK = """* PSP103 internal vth: {name}
 Vd d 0 dc {vd:g}
 Vg g 0 dc {vg:g}
 Vs s 0 dc 0
-Vb b 0 dc 0
+Vb b 0 dc {vb:g}
 X1 d g s b {device} w={w:g} l={l:g} ng=1 m=1
 .control
 osdi {pdk}/osdi/psp103.osdi
@@ -190,6 +190,51 @@ show all
 .endc
 .end
 """
+
+
+#: Small-signal quantities and the charge model, at a grid of bias
+#: points.  Recording these opens a dimension the currents cannot reach.
+#:
+#: `gm`/`gds`/`gmb` are DERIVATIVES, and a derivative localises an error
+#: that an integrated current smears out: a drain current can be right
+#: at every point of a sweep while its slope is wrong in the middle,
+#: and the residual left on the n-channel has exactly that shape.
+#:
+#: The capacitances matter more.  Our charge model has been validated by
+#: CONSTRUCTION -- conservation exact, source/drain swap exact,
+#: Ward-Dutton partition reproducing the textbook 0.5 -> 0.4 -- and
+#: never once against the vendor.  Those properties say the bookkeeping
+#: is right; they say nothing about whether the charge itself is.  A
+#: model whose charges are wrong is unusable in transient and AC however
+#: good its DC is.
+#:
+#: One caveat governs the comparison: PSP's terminal capacitances
+#: include overlap and fringe contributions this core does not model.
+#: On the 0.13 um device that is about a fifth of `cgg`; on the 10 um /
+#: 1 um device it is a few percent, which is why the long geometry is
+#: the one to read here.
+OP_OUTPUTS = ('ids', 'gm', 'gds', 'gmb', 'vth',
+              'cgg', 'cgs', 'cgd', 'cgb',
+              'cdg', 'cdd', 'cds', 'cdb',
+              'csg', 'csd', 'css', 'csb',
+              'cbg', 'cbd', 'cbs', 'cbb')
+
+#: Bias grid.  Chosen to span the regimes the residual moves through --
+#: near threshold, moderate and strong inversion, at linear and
+#: saturated drain bias -- plus one reverse-body point.
+OP_BIASES = [
+    dict(vg=0.4, vd=0.05, vb=0.0), dict(vg=0.4, vd=1.2, vb=0.0),
+    dict(vg=0.8, vd=0.05, vb=0.0), dict(vg=0.8, vd=0.6, vb=0.0),
+    dict(vg=0.8, vd=1.2, vb=0.0),
+    dict(vg=1.2, vd=0.05, vb=0.0), dict(vg=1.2, vd=0.6, vb=0.0),
+    dict(vg=1.2, vd=1.2, vb=0.0),
+    dict(vg=1.2, vd=0.6, vb=-1.0),
+]
+
+OP_GEOMETRIES = [
+    dict(name='long', w=10e-6, l=1e-6),
+    dict(name='short', w=1e-6, l=0.13e-6),
+]
 
 
 #: PSP's own SCALED parameters, exposed as `lp_*` operating-point
@@ -220,7 +265,14 @@ LP_PARAMS = ('vfb', 'tox', 'neff', 'dphib', 'ct', 'cf', 'cfb', 'betn',
              ## mobility correction that is EXACTLY 1 at Vsb = 0, so it
              ## is invisible on every sweep but the body-biased one.
              'vp', 'rsg', 'rsb', 'dnsub', 'vnsub', 'nslp', 'cfd',
-             'feta', 'xcor')
+             'feta', 'xcor',
+             ## `cox` is the TOTAL oxide capacitance PSP builds the
+             ## charge model on, and it is not the geometric one: it
+             ## uses the CV effective dimensions (`scaling:38-39, 359`),
+             ## which the card shifts by `DLQ` and `DWQ`.  Recording it
+             ## turns "our capacitances are 24% high" into two separate
+             ## checkable numbers.
+             'cox')
 
 
 def _op_outputs(pdk, spec, names):
@@ -243,6 +295,28 @@ def _op_outputs(pdk, spec, names):
         if m:
             got[n] = float(m.group(1))
     return got
+
+
+def _op_grid(pdk, device, sign):
+    """Small-signal outputs and charges over `OP_BIASES`, per geometry.
+
+    One `op` per bias point.  Slow -- a couple of dozen ngspice runs --
+    and it is recorded data, so it is paid once.
+    """
+    out = {}
+    for geom in OP_GEOMETRIES:
+        pts = []
+        for b in OP_BIASES:
+            spec = dict(geom, device=device,
+                        vd=sign * b['vd'], vg=sign * b['vg'],
+                        vb=sign * b['vb'])
+            got = _op_outputs(pdk, spec, OP_OUTPUTS)
+            if not got:
+                continue
+            pts.append(dict(got, vg=sign * b['vg'], vd=sign * b['vd'],
+                            vb=sign * b['vb']))
+        out[geom['name']] = dict(w=geom['w'], l=geom['l'], points=pts)
+    return out
 
 
 def _vth(pdk, spec):
@@ -306,7 +380,8 @@ def main(argv=None):
             ('sg13_lv_nmos', (0.05, 1.2), 'vth', 'scaled'),
             ('sg13_lv_pmos', (-0.05, -1.2), 'vth_pmos', 'scaled_pmos')):
         for geom in VTH_GEOMETRIES:
-            spec = dict(geom, device=dev, vd=bias[0], vg=bias[1])
+            spec = dict(geom, device=dev, vd=bias[0], vg=bias[1],
+                        vb=0.0)
             v = _vth(args.pdk, spec)
             data[vkey][spec['name']] = dict(w=spec['w'], l=spec['l'],
                                             vth=v)
@@ -318,6 +393,14 @@ def main(argv=None):
             print('vth %-6s %-12s W=%-6.4g L=%-8.4g %9.6f V  (%d params)'
                   % (dev[-4:], spec['name'], spec['w'], spec['l'], v,
                      len(lp)))
+
+    ## Small-signal and charge outputs over a bias grid.
+    for key, dev, sign in (('op', 'sg13_lv_nmos', 1.0),
+                           ('op_pmos', 'sg13_lv_pmos', -1.0)):
+        data[key] = _op_grid(args.pdk, dev, sign)
+        n = sum(len(g['points']) for g in data[key].values())
+        print('%-8s %d bias points over %d geometries'
+              % (key, n, len(data[key])))
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, 'w') as fh:

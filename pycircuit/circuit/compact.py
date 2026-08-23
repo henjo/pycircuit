@@ -406,9 +406,18 @@ def _psp_mos_analog(T, pmos):
                      pmos=pmos, xcor=xcor,          # noqa: F821
                      kp=kp,                                 # noqa: F821
                      cox_area=cox, eps_si=EPS_SI))
-        cox_tot = var(cox * w * l, 'cox_tot')                 # noqa: F821
+        ## The total oxide capacitance the CHARGES see.  Two things
+        ## separate it from `cox*w*l`, and together they were worth 24%:
+        ## the CV effective dimensions, and the quantum-mechanical
+        ## reduction applied inside `cox_qm` below.  Zero `wcv`/`lcv`
+        ## means "no card said otherwise", so fall back to drawn.
+        cox_tot = var(cox * sympy.Piecewise((wcv, wcv > 0.0), (w, True))
+                      * sympy.Piecewise((lcv, lcv > 0.0), (l, True)),
+                      'cox_tot')                              # noqa: F821
+        cox_c = psp_kernel.cox_qm(core, cox_tot, qq, phit0,  # noqa: F821
+                                  pmos=pmos)
         Qg, Qd, Qb = psp_kernel.charges_long_channel(core, xg, phit,
-                                                     cox_tot)
+                                                     cox_c)
 
         ## The charges are contributed on branches referred to the
         ## SOURCE, exactly as PSP does it.  That makes
@@ -542,6 +551,17 @@ class PspMosLongChannel(Behavioural):
         Parameter(name='alp1', desc='CLM correction, strong inversion',
                   unit='', default=0.0),
         Parameter(name='alp2', desc='CLM correction, weak inversion',
+                  unit='', default=0.0),
+        ## The CV effective dimensions.  PSP builds the oxide
+        ## capacitance for the CHARGE model from these rather than from
+        ## the drawn ones (`PSP103_scaling.include:38-39, 359`); they
+        ## default to the drawn dimensions so an element built without a
+        ## card behaves as before.
+        Parameter(name='wcv', desc='Effective width for charges',
+                  unit='m', default=0.0),
+        Parameter(name='lcv', desc='Effective length for charges',
+                  unit='m', default=0.0),
+        Parameter(name='qq', desc='Quantum correction coefficient',
                   unit='', default=0.0),
         Parameter(name='xcor', desc='Body-bias mobility correction',
                   unit='1/V', default=0.0),

@@ -2211,6 +2211,64 @@ below), and every temperature coefficient.
 > is to ask the reference implementation what it thinks every parameter
 > is.
 
+> **The charge model was 24% wrong and nothing could see it —
+> 2026-08-23.** The most consequential finding on this branch, and the
+> one that says most about how the rest of it was validated.
+>
+> The charge model had been checked entirely by **construction**: charge
+> conservation exact, the source/drain swap exact, the Ward–Dutton
+> partition reproducing the textbook 0.5 → 0.4 unfitted. All passing,
+> all real properties, and **every one of them a ratio**. A uniform error
+> in the oxide capacitance divides out of all of them. The capacitances
+> were 22–30% high at every bias point and no test in the tree could
+> have noticed.
+>
+> **A model checked only against itself is checked for consistency, not
+> for correctness.** Those are different claims, and this branch had
+> been quietly making the first while sounding like the second.
+>
+> Two causes, both found by comparing to PSP's own operating-point
+> outputs at a grid of bias points:
+>
+> * PSP builds the charge model's oxide capacitance from the **CV
+>   effective dimensions** — `LEcv = LE + DLQ`, `WEcv = WE + DWQ`
+>   (`PSP103_scaling.include:38-39, 359`) — not from the drawn ones. The
+>   card sets `DLQ = −1.37e-8`, putting `LEcv` 7% under the drawn length.
+> * And it applies a **quantum-mechanical reduction** to it,
+>   `COX_qm = COX/(1 + qq·(qeff1² + qlim2)^(−1/6))`
+>   (`PSP103_module.include:1474-1478`), worth another 12%. The same `qq`
+>   already shifts `phib` and the body factor in the DC path; this is
+>   that physics acting on the charge instead — the inversion layer sits
+>   a little below the interface, which puts a capacitance in series with
+>   the oxide.
+>
+> | | before | after |
+> |---|---|---|
+> | n-channel long, `cgg` | 1.217–1.294 | **0.999–1.011** |
+> | n-channel short | — | 1.000–1.084 |
+> | p-channel long | — | 0.999–1.024 |
+> | p-channel short | — | 0.998–1.049 |
+>
+> Median 1.0007 on the long n-channel, several points inside 0.1%. The
+> short-device residual is overlap and fringe capacitance, which this
+> core does not model and which is about a fifth of `cgg` at 0.13 µm —
+> so the long geometry is the one to read.
+>
+> `lp_cox` is now recorded and matches exactly at all eight
+> geometry/channel-type combinations, which splits "the capacitances are
+> 24% high" into two separately checkable numbers. **Thirty-one scaled
+> parameters verified.** The DC current is untouched, as it must be —
+> `cox_tot` feeds only the charges.
+>
+> **How it was found.** Not from a residual — there was no residual to
+> see. PSP exposes `gm`, `gds`, `gmb` and the whole terminal capacitance
+> matrix as operating-point outputs; the reference now records them over
+> a nine-point bias grid at two geometries for both channel types. The
+> small-signal comparison was the original motive (`gm` and `gds` agree
+> to 1.3% on the long device, 3% on the short one, which localised the
+> remaining DC residual to one near-threshold corner) — and the
+> capacitance comparison, which came free with it, found this.
+
 Deferred, unchanged from the original research verdict:
 
 | item | why |

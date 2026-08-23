@@ -1471,3 +1471,168 @@ class TestTheBodyBiasMobilityCorrection(object):
             got[on] = np.median(g[m] / r[m])
         assert abs(got[False] - 1.0) > 0.02, got
         assert abs(got[True] - 1.0) < 0.005, got
+
+
+class TestTheChargeModelAgainstTheVendor(object):
+    """The charge model, compared to PSP for the first time.
+
+    Until now it had been validated entirely by CONSTRUCTION: charge
+    conservation exact, the source/drain swap exact, the Ward-Dutton
+    partition reproducing the textbook 0.5 -> 0.4.  Those are strong
+    properties and they were all passing.
+
+    They were also all RATIOS, and every one of them is invariant under
+    a uniform error in the oxide capacitance.  The capacitances were 24%
+    high and nothing in the tree could see it.  That is the lesson here:
+    a model checked only against itself is checked for consistency, not
+    for correctness, and the two are different claims.
+
+    Two things caused it, both now fixed:
+
+    * PSP builds the charge model's oxide capacitance from the **CV
+      effective dimensions** (`PSP103_scaling.include:38-39, 359`),
+      which the card shifts from the drawn ones by `DLQ` and `DWQ` --
+      7% on the long device here;
+    * and it applies a **quantum-mechanical reduction** to it,
+      `COX_qm = COX/(1 + qq*(qeff1^2 + qlim2)^(-1/6))`
+      (`PSP103_module.include:1474-1478`) -- another 12%.  The same `qq`
+      already shifts the threshold and the body factor; this is that
+      physics acting on the charge instead.
+
+    PSP's terminal capacitances include overlap and fringe
+    contributions this core does not model, which is why the LONG
+    geometry is the one to read: there they are a few percent, against
+    about a fifth of `cgg` at 0.13 um.
+    """
+
+    @pytest.fixture(scope='class')
+    def op(self):
+        with open(REF) as fh:
+            d = json.load(fh)
+        return d['op'], d['op_pmos']
+
+    def _fet(self, deck, model, cls, w, l):
+        cm.default_toolkit = numeric
+        e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
+                **psp_scaling.to_long_channel(
+                    deck.model_params(model, w=w, l=l, ng=1, m=1,
+                                      pre_layout=1), w=w, l=l))
+        e.update_iparv()
+        return e
+
+    @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
+    def test_the_oxide_capacitance_matches_psp(self, deck, kind):
+        """`lp_cox`, term by term -- which splits "our capacitances are
+        24% high" into two separate checkable numbers, and pins the one
+        that is pure geometry."""
+        with open(REF) as fh:
+            sc = json.load(fh)['scaled' if kind == 'nmos'
+                               else 'scaled_pmos']
+        for geom, e in sc.items():
+            card = deck.model_params('sg13g2_lv_%s_psp' % kind, w=e['w'],
+                                     l=e['l'], ng=1, m=1, pre_layout=1)
+            kw = psp_scaling.to_long_channel(card, w=e['w'], l=e['l'])
+            eps_ox = card.get('epsroxo', 3.9) * 8.8541878128e-12
+            ours = eps_ox / kw['tox'] * kw['wcv'] * kw['lcv']
+            assert ours == pytest.approx(e['cox'], rel=1e-4), (kind, geom)
+
+    def test_the_cv_dimensions_are_not_the_drawn_ones(self, deck):
+        """Which is half the error, and invisible without a card."""
+        kw = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_nmos_psp', w=10e-6, l=1e-6,
+                              ng=1, m=1, pre_layout=1), w=10e-6, l=1e-6)
+        ## The LENGTH is what matters: `LEcv = LE + DLQ` with
+        ## `LAP = 2.94e-8` and `DLQ = -1.37e-8` puts it 7% under the
+        ## drawn value, and that is where the geometric half of the 24%
+        ## came from.  The width moves the other way and barely at all
+        ## -- `WOT` is negative here, so `WEcv` ends up a shade WIDER
+        ## than drawn even after `DWQ`.  Asserted as measured rather
+        ## than as guessed, because guessing it wrong is easy.
+        assert kw['lcv'] < 0.94e-6, kw['lcv']
+        assert kw['lcv'] > 0.90e-6, kw['lcv']
+        assert 10.0e-6 < kw['wcv'] < 10.02e-6, kw['wcv']
+
+    @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
+    def test_the_gate_capacitance_matches_on_the_long_device(self, deck,
+                                                             op, kind):
+        """The measurement.  Every bias point, within 3%."""
+        n, p = op
+        gd = (p if kind == 'pmos' else n)['long']
+        cls = PspPmosLongChannel if kind == 'pmos' else PspMosLongChannel
+        e = self._fet(deck, 'sg13g2_lv_%s_psp' % kind, cls, gd['w'],
+                      gd['l'])
+        for pt in gd['points']:
+            x = np.array([pt['vd'], pt['vg'], 0.0, pt['vb']])
+            C = np.asarray(e.C(x), float)
+            assert C[1, 1] == pytest.approx(pt['cgg'], rel=0.03), \
+                (kind, pt['vg'], pt['vd'], pt['vb'], C[1, 1], pt['cgg'])
+
+    @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
+    def test_the_source_and_bulk_capacitances_match_too(self, deck, op,
+                                                        kind):
+        """`cgg` alone could be right for compensating reasons; the
+        partition between the terminals could not."""
+        n, p = op
+        gd = (p if kind == 'pmos' else n)['long']
+        cls = PspPmosLongChannel if kind == 'pmos' else PspMosLongChannel
+        e = self._fet(deck, 'sg13g2_lv_%s_psp' % kind, cls, gd['w'],
+                      gd['l'])
+        for pt in gd['points']:
+            x = np.array([pt['vd'], pt['vg'], 0.0, pt['vb']])
+            C = np.asarray(e.C(x), float)
+            ## Column order is (vd, vg, vs, vb); PSP reports `cgs` and
+            ## `cgb` as the negated cross terms.
+            assert -C[1, 2] == pytest.approx(pt['cgs'], rel=0.04), \
+                ('cgs', kind, pt['vg'], pt['vd'])
+            if abs(pt['cgb']) > 1e-16:
+                assert -C[1, 3] == pytest.approx(pt['cgb'], rel=0.10), \
+                    ('cgb', kind, pt['vg'], pt['vd'])
+
+    def test_both_corrections_are_needed(self, deck, op):
+        """Each on its own leaves the capacitance visibly wrong.
+
+        Worth pinning because either could be removed without any
+        construction property noticing -- which is exactly how they came
+        to be missing.
+        """
+        n, _ = op
+        gd = n['long']
+        base = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_nmos_psp', w=gd['w'], l=gd['l'],
+                              ng=1, m=1, pre_layout=1),
+            w=gd['w'], l=gd['l'])
+        pt = [q for q in gd['points']
+              if q['vg'] == 1.2 and q['vd'] == 0.05][0]
+        x = np.array([pt['vd'], pt['vg'], 0.0, pt['vb']])
+        got = {}
+        for tag, kw in (('both', base),
+                        ('no cv dims', dict(base, wcv=0.0, lcv=0.0)),
+                        ('no qm', dict(base, qq=0.0))):
+            e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                                  cm.Node('b'), **kw)
+            e.update_iparv()
+            got[tag] = np.asarray(e.C(x), float)[1, 1] / pt['cgg']
+        assert abs(got['both'] - 1.0) < 0.03, got
+        assert got['no cv dims'] > 1.05, got
+        assert got['no qm'] > 1.08, got
+
+    def test_conservation_still_holds_with_the_corrections(self, deck,
+                                                            op):
+        """The construction properties must survive being made correct.
+
+        They were never in doubt -- they are invariant under exactly the
+        kind of scale factor that was wrong -- but a change to the oxide
+        capacitance is the one thing that could plausibly break the
+        structural conservation, so it is checked rather than assumed.
+        """
+        n, _ = op
+        gd = n['long']
+        e = self._fet(deck, 'sg13g2_lv_nmos_psp', PspMosLongChannel,
+                      gd['w'], gd['l'])
+        for pt in gd['points']:
+            x = np.array([pt['vd'], pt['vg'], 0.0, pt['vb']])
+            C = np.asarray(e.C(x), float)
+            q = np.asarray(e.q(x), float)
+            assert abs(q.sum()) < 1e-24 * max(1.0, np.abs(q).max())
+            assert np.abs(C.sum(axis=0)).max() < 1e-12 * np.abs(C).max()
+            assert np.abs(C.sum(axis=1)).max() < 1e-12 * np.abs(C).max()

@@ -932,6 +932,37 @@ def ids_long_channel(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5):
     return intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin)['ids']
 
 
+def cox_qm(core, cox, qq, phit, pmos=False):
+    """PSP's quantum-mechanical correction to the OXIDE capacitance,
+    for the CHARGE model (`PSP103_module.include:1474-1478`):
+
+        COX_qm = COX / (1 + qq*(qeff1^2 + qlim2)^(-1/6))
+
+    with `qeff1 = qbm + eta_mu1*qim` and `qlim2 = 100*phit^2`
+    (`macrodefs:322`).
+
+    The inversion layer does not sit at the interface -- it peaks a
+    little way into the silicon -- which puts a capacitance in series
+    with the oxide and reduces the total.  PSP already applies the same
+    `qq` to `phib` and the body factor, where it shifts the threshold;
+    this is the same physics acting on the charge instead.
+
+    Worth about 12% here, and it was invisible for as long as the charge
+    model was only checked against itself: conservation, source/drain
+    symmetry and the Ward-Dutton partition are all RATIOS, and a uniform
+    error in the oxide capacitance divides out of every one of them.
+    """
+    if not isinstance(qq, sympy.Expr) and qq == 0.0:
+        return cox
+    eta1 = ONE_THIRD if pmos else 0.5
+    qeff1 = _v(core['qbm'] + eta1 * core['qim'], 'q_qeff1')
+    qlim2 = _v(100.0 * phit * phit, 'q_qlim2')
+    ## The base is bounded below by `qlim2 > 0`, so the negative power
+    ## needs no guard -- which is what `qlim2` is there for.
+    fac = _v(1.0 + qq * (qeff1 * qeff1 + qlim2) ** (-ONE_SIXTH), 'q_qmfac')
+    return _v(cox * hdl.safe_div(1.0, fac, eps=1e-30), 'q_coxqm')
+
+
 def charges_long_channel(core, xg, phit, cox):
     """The intrinsic terminal charges, PSP's way.
 

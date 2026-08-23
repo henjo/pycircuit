@@ -661,6 +661,38 @@ fitted anywhere in the chain. Every one of the thirty scaled parameters
 the model uses matches PSP's own value exactly, at four geometries, on
 both channel types.
 
+The charge model, and what construction properties cannot tell you
+------------------------------------------------------------------
+
+The three properties above are real, and for a long time they were the
+only checks the charge model had. They are also all **ratios** —
+conservation, the source/drain swap, the Ward–Dutton partition — and a
+uniform error in the oxide capacitance divides out of every one of them.
+
+The capacitances were 24% high at every bias point, and nothing in the
+test suite could have seen it.
+
+**A model checked only against itself is checked for consistency, not
+for correctness.** Two causes, both found by comparing against PSP's own
+operating-point outputs rather than against our own arithmetic:
+
+* PSP builds the charge model's oxide capacitance from the **CV
+  effective dimensions**, not the drawn ones — this card puts the
+  effective length 7% under the drawn value;
+* and it applies a **quantum-mechanical reduction** to that capacitance,
+  worth another 12%. The same correction already shifts the threshold in
+  the DC path; here it is the same physics acting on the charge, the
+  inversion layer sitting a little below the interface and putting a
+  capacitance in series with the oxide.
+
+With both, the gate capacitance matches PSP to **1%** across the bias
+grid on the long device, several points inside 0.1%. The short device is
+within 8%, the difference being overlap and fringe capacitance that this
+core does not model and that amounts to about a fifth of :math:`C_{gg}`
+at 0.13 µm.
+
+The DC current is untouched by any of it, as it must be.
+
 The subthreshold slope
 ----------------------
 
