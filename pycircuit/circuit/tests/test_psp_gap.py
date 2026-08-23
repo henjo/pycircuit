@@ -1822,16 +1822,33 @@ class TestChannelLengthModulationInTheCharges(object):
             assert C[1, 1] == pytest.approx(pt['cgg'], rel=1e-3), \
                 (kind, pt['vg'], pt['vd'], pt['vb'])
 
-    def test_what_is_left_on_the_short_device(self, deck, op):
-        """2%, and named rather than left as a mystery.
+    def test_psps_cgg_is_intrinsic_and_excludes_overlap(self, op):
+        """The thing it is easiest to get backwards, pinned.
 
-        PSP's terminal capacitances include overlap and fringe
-        contributions this core does not model.  On a 0.13 um device the
-        gate overlap alone is about a fifth of the intrinsic oxide
-        capacitance, so a couple of percent residual is the right order
-        for what remains -- and unlike the `GdL` error it does NOT
-        vanish in the linear region, which is how the two were told
-        apart.
+        PSP reports the overlap capacitances SEPARATELY -- `cgsol` and
+        `cgdol` -- so `cgg` is the intrinsic one and comparing it
+        against an intrinsic-only model is like-for-like.
+
+        This was briefly claimed the other way round, and the numbers
+        below are what settle it: the overlap is 11% of `cgg` on the
+        long device and 182% of it on the short one.  Had `cgg` included
+        them, an intrinsic-only model would be low by those amounts
+        rather than by tenths of a percent.
+        """
+        n, _ = op
+        for geom, lo, hi in (('long', 0.05, 0.20), ('short', 1.0, 3.0)):
+            pt = n[geom]['points'][5]
+            frac = (pt['cgsol'] + pt['cgdol']) / pt['cgg']
+            assert lo < frac < hi, (geom, frac)
+
+    def test_what_is_left_on_the_short_device(self, deck, op):
+        """2%, and NOT explained -- which is the honest statement.
+
+        It is not overlap: PSP reports that separately, as the test
+        above pins.  It is not channel-length modulation: that is in
+        now, and it was the linear-region agreement that identified it.
+        Recorded as an upper bound so that whatever explains it has
+        something to beat.
         """
         n, _ = op
         gd = n['short']

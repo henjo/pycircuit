@@ -214,6 +214,13 @@ show all
 #: 1 um device it is a few percent, which is why the long geometry is
 #: the one to read here.
 OP_OUTPUTS = ('ids', 'gm', 'gds', 'gmb', 'vth',
+              ## `cgsol`/`cgdol` are the OVERLAP capacitances, and PSP
+              ## reports them SEPARATELY from `cgg`.  Recording them is
+              ## what settles a question that is otherwise easy to get
+              ## backwards: `cgg` is the INTRINSIC capacitance, so a
+              ## comparison against an intrinsic-only model is
+              ## like-for-like and a residual in it is NOT overlap.
+              'cgsol', 'cgdol',
               'cgg', 'cgs', 'cgd', 'cgb',
               'cdg', 'cdd', 'cds', 'cdb',
               'csg', 'csd', 'css', 'csb',

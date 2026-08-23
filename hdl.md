@@ -2366,13 +2366,27 @@ below), and every temperature coefficient.
 > through the scaling layer, nothing fitted, agreeing with the vendor's
 > own implementation to a part in ten thousand.
 >
-> What remains on the short device is about 2%, and it is named rather
-> than left open: PSP's terminal capacitances include overlap and fringe
-> contributions this core does not model, and on a 0.13 µm device the
-> gate overlap alone is about a fifth of the intrinsic oxide
-> capacitance. Unlike the `GdL` error it does **not** vanish in the
-> linear region, which is exactly how the two were told apart — and that
-> discrimination is now a test.
+> **A correction to the entry above, made within the hour.** It said
+> the remaining 2% on the short device "is the overlap and fringe
+> capacitance". It is not, and the claim was wrong in a way worth
+> recording because it is easy to get backwards.
+>
+> **PSP reports the overlap capacitances SEPARATELY** — `cgsol` and
+> `cgdol`, alongside `cgg` — and `cgg` is the **intrinsic** capacitance.
+> `lp_cgov + lp_cfr = 6.54e-15` against `cgsol = 6.44e-15` confirms it.
+> So the comparison against an intrinsic-only model is like-for-like,
+> and a residual in it cannot be overlap.
+>
+> The check that settles it is blunt: on the long device the overlap is
+> 11% of `cgg` and on the short device it is **182%** of it. Had `cgg`
+> included them, an intrinsic-only model would be 11% and 65% low, not
+> 0.07% and 2%.
+>
+> That makes the headline result cleaner than claimed — the long device
+> agrees with PSP's *intrinsic* charge to 0.07% — and leaves the short
+> device's 2% genuinely open rather than explained away. Both `cgsol`
+> and `cgdol` are recorded now, and a test asserts the separation, so
+> nobody has to re-derive it.
 >
 > The DC current is untouched throughout: `GdL` and `eta_p` were already
 > in the current path, and only the charge path changed.

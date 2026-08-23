@@ -700,10 +700,17 @@ on both channel types** — charges from a foundry card, through the
 scaling layer, nothing fitted, agreeing with the vendor's own
 implementation to a part in ten thousand.
 
-The short device is within 2%, and that residual *is* the overlap and
-fringe capacitance, which on a 0.13 µm device is about a fifth of
-:math:`C_{gg}`. It does not vanish in the linear region, which is how it
-is told apart from the one that did.
+PSP reports the overlap and fringe capacitances **separately** from
+:math:`C_{gg}`, so this is an intrinsic-to-intrinsic comparison. That is
+worth stating because it is easy to assume otherwise: on a 0.13 µm
+device the overlap is 182% of the intrinsic :math:`C_{gg}`, and on the
+10 µm device 11%, so an intrinsic-only model compared against a total
+would be wrong by those amounts rather than by the tenths of a percent
+measured here.
+
+The short device is within 2%, and that residual is **not** explained.
+It is not overlap, for the reason just given, and it is not
+channel-length modulation, which is now in.
 
 The DC current is untouched by any of it, as it must be.
 
