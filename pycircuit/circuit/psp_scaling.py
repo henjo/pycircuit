@@ -559,3 +559,108 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
         kw.update(thesatb=thesatb, thesatg=thesatg,
                   cf=cf, cfb=cfb, cfd=cfd)
     return kw
+
+
+#: JUNCAP2's own reference temperature parameter.  It is NOT the MOSFET's
+#: `TR`: this card says 21 C where the transistor says 27 C, and assuming
+#: they were the same makes every junction capacitance about 2% low --
+#: which reads as a geometry error rather than as a temperature one.
+JUNCAP_VBILOW = 5.0e-2
+JUNCAP_A = 2.0
+JUNCAP_EPSCH = 0.1
+
+
+def junction_geometry(w, we, ng=1, z1=0.34e-6, z2=0.38e-6, wmin=0.15e-6):
+    """Bottom area and the two edge lengths of one junction.
+
+    `SWJUNCAP = 3` does not select components -- all three run -- it
+    selects where the geometry comes from (`PSP103_module.include:
+    867-883`): the drawn area and perimeter, with the GATE EDGE CARVED
+    OUT of the perimeter so it is not counted twice.
+
+    ``LG`` is the ELECTRICAL width `WE`, not the drawn `W`.  That is
+    worth stating because it is invisible until you compare two
+    geometries: `WE = W - 2*WOT` and `WOT` is negative on this card, so
+    the two differ by 0.02 um -- 2% on a 1 um device and 0.2% on a 10 um
+    one, which looks like a scaling error rather than like a definition.
+
+    `z1`, `z2` and `wmin` are the PDK SUBCIRCUIT's layout constants
+    (`sg13g2_moslv_mod.lib:67`), not model-card parameters, which is why
+    they are arguments here rather than read from the card.
+    """
+    wf = max(w / ng, wmin)
+    half = (ng - 1) / 2.0
+    area = wf * (z1 + half * z2)
+    perim = 2.0 * (wf * (half + 1.0) + z1 + half * z2)
+    return dict(ab=area / ng, ls=max(perim / ng - we, 0.0), lg=we)
+
+
+def junction(card, ab, ls, lg, T=300.0):
+    """JUNCAP2's bias-INDEPENDENT constants, per component.
+
+    Everything here is fixed once the card, the geometry and the
+    temperature are known, so it is Python rather than symbols and the
+    compiled expression carries none of it.
+
+    Only the source-side parameter set exists: `SWJUNASYM = 0` on this
+    card aliases every drain-side parameter to it
+    (`JUNCAP200_InitModel.include:41-84`), so the drain differs from the
+    source only through the geometry -- and for `ng = 1` not even that.
+
+    The temperature reference is JUNCAP's OWN `TRJ`, 21 C here against
+    the transistor's 27 C.
+    """
+    tkr = 273.15 + _g(card, 'trj', 21.0)
+    tkd = max(T, 273.15 - 250.0)
+    auxt = tkd / tkr
+    phitr = PSP_KBOL * tkr / PSP_QELE
+    phitd = PSP_KBOL * tkd / PSP_QELE
+    d_phigr = -(7.02e-4 * tkr * tkr) / (1108.0 + tkr)
+    d_phigd = -(7.02e-4 * tkd * tkd) / (1108.0 + tkd)
+
+    out = {}
+    geom = dict(bot=ab, sti=ls, gat=lg)
+    for c in ('bot', 'sti', 'gat'):
+        phig = _g(card, 'phig' + c, 1.16)
+        ## `ftd` is n_i(T)/n_i(Tref); everything else keys off it.
+        ftd = (auxt ** 1.5
+               * math.exp(0.5 * ((phig + d_phigr) / phitr
+                                 - (phig + d_phigd) / phitd)))
+        vbir = _g(card, 'vbir' + c, 1.0)
+        p = _g(card, 'p' + c, 0.5)
+        ubi = vbir * auxt - 2.0 * phitd * math.log(ftd)
+        ## A soft floor at 50 mV, written so the exponential cannot
+        ## overflow when `ubi` is far below it.
+        z = (JUNCAP_VBILOW - ubi) / phitd
+        vbi = ubi + phitd * (z + math.log1p(math.exp(-z)) if z > 0.0
+                             else math.log1p(math.exp(z)))
+        cjo = _g(card, 'cjor' + c, 1.0e-3) * (vbir / vbi) ** p
+        out[c] = dict(
+            p=p, vbi=vbi, cjo=cjo,
+            qpref=cjo * vbi / (1.0 - p), qpref2=JUNCAP_A * cjo,
+            idsat=_g(card, 'idsatr' + c, 1.0e-12) * ftd * ftd,
+            area=geom[c])
+
+    ## Instance-level constants.  `vfmin` is what guarantees the grading
+    ## power never sees a non-positive base: it holds `1 - vj/vbi` above
+    ## `2^(-1/pmax)` for EVERY component, which is 0.28 here.
+    vbimin = min(out[c]['vbi'] for c in out)
+    pmax = max(out[c]['p'] for c in out)
+    vfmin = vbimin * (1.0 - JUNCAP_A ** (-1.0 / pmax))
+
+    ## `VMAX` caps the ideal diode's exponent; a component with zero
+    ## saturation current does not participate (`macrodefs:156-171`),
+    ## and `idsatrgat` IS zero on this card.
+    imax = _g(card, 'imax', 1.0e-3)
+    vmax = []
+    for c in out:
+        js = out[c]['idsat'] * out[c]['area']
+        vmax.append(phitd * math.log(imax / js + 1.0) if js > 0.0
+                    else 1.0e8)
+    return dict(
+        jphit=phitd, jvfmin=vfmin, jvch=vbimin * JUNCAP_EPSCH,
+        jvmax=min(vmax),
+        ## The ideal term factors: one exponential times a total.
+        jisat=sum(out[c]['idsat'] * out[c]['area'] for c in out),
+        **{'j%s_%s' % (c, k): out[c][k]
+           for c in out for k in ('p', 'vbi', 'qpref', 'qpref2', 'area')})

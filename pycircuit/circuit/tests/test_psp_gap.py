@@ -2136,3 +2136,168 @@ class TestTemperatureScaling(object):
         from pycircuit.circuit import hdl
         sig = inspect.signature(psp_scaling.to_long_channel)
         assert sig.parameters['T'].default == hdl._epar_T(object())
+
+
+class TestTheJunction(object):
+    """JUNCAP2's charge, and the ideal diode that goes with it.
+
+    The junction capacitance is 8% of the intrinsic gate capacitance on
+    a 10 um device and 126% of it at 0.13 um -- most of what a transient
+    or AC simulation needs.  The junction CURRENT is around 1e-15 A
+    against a 4e-4 A drain current, so the charge is implemented in full
+    and of the current only the ideal diode term.
+
+    Three things the vendor source settles that measurement alone would
+    have got wrong, and each was worth finding before writing code:
+
+    * `SWJUNCAP = 3` is a GEOMETRY-SOURCE selector, not a component
+      selector (`PSP103_module.include:867-883`).  All three components
+      run; `= 3` only carves the gate edge out of the perimeter so it is
+      not counted twice.
+    * `LG` is the ELECTRICAL width `WE`, not the drawn `W`.  `WOT` is
+      negative on this card, so they differ by 0.02 um -- 2% on a 1 um
+      device and 0.2% on a 10 um one, which reads as a scaling error
+      rather than as a definition.
+    * JUNCAP has its OWN reference temperature, `TRJ = 21 C`, against
+      the transistor's 27 C.  Assuming they were the same makes every
+      capacitance about 2% low.
+    """
+
+    @pytest.fixture(scope='class')
+    def op(self):
+        with open(REF) as fh:
+            d = json.load(fh)
+        return d['op'], d['op_pmos']
+
+    def _pair(self, deck, kind, geom):
+        """The same device with the junction on and off."""
+        cm.default_toolkit = numeric
+        w, l = geom['w'], geom['l']
+        card = deck.model_params('sg13g2_lv_%s_psp' % kind, w=w, l=l,
+                                 ng=1, m=1, pre_layout=1)
+        kw = psp_scaling.to_long_channel(card, w=w, l=l, T=T27)
+        jg = psp_scaling.junction_geometry(
+            w, psp_scaling.geometry(card, w=w, l=l)['WE'])
+        jp = psp_scaling.junction(card, T=T27, **jg)
+        cls = PspPmosLongChannel if kind == 'pmos' else PspMosLongChannel
+        out = []
+        for extra in (jp, {}):
+            e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                    cm.Node('b'), **dict(kw, **extra))
+            e.update_iparv()
+            out.append(e)
+        return out
+
+    def test_the_geometry_is_the_electrical_width_not_the_drawn_one(
+            self, deck):
+        """The definition that a single geometry cannot reveal."""
+        card = deck.model_params('sg13g2_lv_nmos_psp', w=1e-6,
+                                 l=0.13e-6, ng=1, m=1, pre_layout=1)
+        geo = psp_scaling.geometry(card, w=1e-6, l=0.13e-6)
+        jg = psp_scaling.junction_geometry(1e-6, geo['WE'])
+        assert jg['lg'] == pytest.approx(geo['WE'], rel=1e-12)
+        assert jg['lg'] != pytest.approx(1e-6, rel=1e-6), \
+            'the drawn width would be wrong by 2% here'
+        assert jg['ab'] == pytest.approx(3.40e-13, rel=1e-3)
+        assert jg['ls'] == pytest.approx(1.66e-6, rel=1e-3)
+
+    def test_it_uses_its_own_reference_temperature(self, deck):
+        """`TRJ = 21 C`, not the transistor's `TR = 27 C`."""
+        card = deck.model_params('sg13g2_lv_nmos_psp', w=1e-6,
+                                 l=0.13e-6, ng=1, m=1, pre_layout=1)
+        assert card['trj'] == 21.0
+        assert card['tr'] == 27.0
+        jg = psp_scaling.junction_geometry(
+            1e-6, psp_scaling.geometry(card, w=1e-6, l=0.13e-6)['WE'])
+        at_trj = psp_scaling.junction(card, T=273.15 + 21.0, **jg)
+        at_tr = psp_scaling.junction(card, T=T27, **jg)
+        ## At its OWN reference the built-in voltage is the card's.
+        assert at_trj['jbot_vbi'] == pytest.approx(card['vbirbot'],
+                                                   rel=1e-9)
+        ## Six kelvin away it is not, and the capacitance moves with it.
+        assert at_tr['jbot_vbi'] < at_trj['jbot_vbi']
+        assert at_tr['jbot_qpref2'] > at_trj['jbot_qpref2']
+
+    @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
+    @pytest.mark.parametrize('geom', ['long', 'short'])
+    def test_the_capacitance_matches_psp(self, deck, op, kind, geom):
+        """Every bias point, both geometries, both channel types.
+
+        Measured as the DIFFERENCE the junction makes, against PSP's
+        `cjs + cjd`, because our bulk row carries the intrinsic bulk
+        capacitance too and PSP reports the two separately.
+        """
+        n, p = op
+        gd = (p if kind == 'pmos' else n)[geom]
+        on, off = self._pair(deck, kind, gd)
+        for pt in gd['points']:
+            a = np.asarray(on.C(on.bias(pt['vd'], pt['vg'], 0.0,
+                                        pt['vb'])), float)[3, 3]
+            b = np.asarray(off.C(off.bias(pt['vd'], pt['vg'], 0.0,
+                                          pt['vb'])), float)[3, 3]
+            assert a - b == pytest.approx(pt['cjs'] + pt['cjd'],
+                                          rel=1e-4), \
+                (kind, geom, pt['vg'], pt['vd'], pt['vb'])
+
+    def test_the_components_are_all_live(self, deck, op):
+        """None of the three is switched off by a zero prefactor.
+
+        `SWJUNCAP = 3` runs all three, and the split is roughly
+        85 / 7 / 8 -- so each is individually large enough that a
+        total-only comparison could hide a factor of two in one of them.
+        """
+        n, _ = op
+        pt = n['long']['points'][5]
+        tot = pt['cjsbot'] + pt['cjssti'] + pt['cjsgat']
+        assert pt['cjsbot'] / tot > 0.7
+        assert pt['cjssti'] / tot > 0.03
+        assert pt['cjsgat'] / tot > 0.03
+        assert tot == pytest.approx(pt['cjs'], rel=1e-6)
+
+    def test_it_leaves_the_drain_current_alone(self, deck, op):
+        """The junction is charge plus a diode to the BULK; the channel
+        current must not move."""
+        n, _ = op
+        on, off = self._pair(deck, 'nmos', n['long'])
+        for vd, vg in ((0.05, 1.2), (1.2, 0.8)):
+            a = np.asarray(on.i(on.bias(vd, vg)), float)[0]
+            b = np.asarray(off.i(off.bias(vd, vg)), float)[0]
+            assert a == pytest.approx(b, rel=1e-9)
+
+    def test_the_omitted_leakage_is_what_was_advertised(self, deck, op):
+        """Honest about what the ideal-diode-only current costs.
+
+        PSP's reverse leakage at -1.2 V is about 1e-15 A; ours is the
+        ideal term alone, four orders smaller.  Both are eleven or more
+        orders below the drain current, which is the whole argument for
+        leaving out the Shockley-Read-Hall, trap-assisted-tunnelling and
+        band-to-band terms -- fifteen of the twenty-nine lines per
+        component exist to shape that number.
+        """
+        n, _ = op
+        on, _off = self._pair(deck, 'nmos', n['short'])
+        ## Bulk BELOW the diffusions is reverse bias for an n-channel.
+        rev = abs(np.asarray(on.i(on.bias(0.0, 0.0, 0.0, -1.2)),
+                             float)[3])
+        assert rev < 1e-12, rev
+        ## And the diode still turns on the other way, which is the one
+        ## regime where junction current matters and the reason the
+        ## ideal term was kept rather than the current dropped entirely.
+        fwd = abs(np.asarray(on.i(on.bias(0.0, 0.0, 0.0, 1.2)),
+                             float)[3])
+        assert fwd > 1e-3, fwd
+
+    def test_conservation_and_finiteness_hold_with_it_on(self, deck, op):
+        """Both could plausibly have broken: the junction adds branches,
+        and its expressions are exponentials and fractional powers."""
+        n, _ = op
+        on, _ = self._pair(deck, 'nmos', n['long'])
+        for vd, vg in ((0.9, 1.4), (0.05, 0.6), (1.5, 1.8)):
+            q = np.asarray(on.q(on.bias(vd, vg)), float)
+            assert abs(q.sum()) < 4e-16 * max(1.0, np.abs(q).max())
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            for vd in (0.0, 1.2, -6.0, 1e3):
+                x = on.bias(vd, 1.8)
+                assert np.all(np.isfinite(np.asarray(on.i(x), float)))
+                assert np.all(np.isfinite(np.asarray(on.G(x), float)))

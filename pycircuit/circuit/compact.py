@@ -15,7 +15,8 @@ Currently: `CapCmomi`.
 import numpy as np
 import sympy
 
-from pycircuit.circuit import defaultepar, psp_kernel, psp_scaling
+from pycircuit.circuit import (defaultepar, juncap, psp_kernel,
+                               psp_scaling)
 from pycircuit.circuit.constants import (epsRSiO2, kboltzmann,
                                          qelectron)
 from pycircuit.circuit.hdl import (Behavioural, Branch, Collapse,
@@ -514,6 +515,34 @@ def _psp_mos_analog(T, pmos):
         q_gd = var(cfr * vgdp + cgov * _vov(vgdp, 'd'), 'q_gd')  # noqa
         q_gb = var(cgbov * vgb, 'q_gb')                          # noqa
 
+        ## THE JUNCTIONS.  `Vjun = -Vsb` in the internal convention, for
+        ## BOTH channel types: PSP writes `Vjun_s = -V(SI,BS)` for
+        ## n-channel and `+V(SI,BS)` for p-channel
+        ## (`PSP103_module.include:1035-1048`), which is the same thing
+        ## once the terminal voltages carry `T`.  Anode is the bulk, so
+        ## a negative `Vjun` is reverse bias.
+        ##
+        ## Not ordered: a junction sits on a physical diffusion, like
+        ## the overlap capacitance and for the same reason.
+        jpar = dict(jphit=jphit, jvfmin=jvfmin, jvch=jvch,   # noqa: F821
+                    jvmax=jvmax, jisat=jisat)                # noqa: F821
+        for _c, _vals in (('bot', (jbot_p, jbot_vbi, jbot_qpref,  # noqa
+                                   jbot_qpref2, jbot_area)),      # noqa
+                          ('sti', (jsti_p, jsti_vbi, jsti_qpref,  # noqa
+                                   jsti_qpref2, jsti_area)),      # noqa
+                          ('gat', (jgat_p, jgat_vbi, jgat_qpref,  # noqa
+                                   jgat_qpref2, jgat_area))):     # noqa
+            for _k, _v in zip(('p', 'vbi', 'qpref', 'qpref2', 'area'),
+                              _vals):
+                jpar['j%s_%s' % (_c, _k)] = _v
+
+        vjs = var(-vsb, 'vjun_s')
+        vjd = var(-vdb, 'vjun_d')
+        qj_s, qj_d = (juncap.charge(vjs, jpar, 's'),
+                      juncap.charge(vjd, jpar, 'd'))
+        ij_s, ij_d = (juncap.current(vjs, jpar, 's'),
+                      juncap.current(vjd, jpar, 'd'))
+
         ## MULTIPLICITY.  PSP multiplies every contribution by `MULT_i`
         ## (`MULT * NF`, `PSP103_scaling.include:828`); `m` devices in
         ## parallel carry `mult` times the current and charge, and
@@ -538,7 +567,18 @@ def _psp_mos_analog(T, pmos):
                 Contribution(Branch(gi, d, 'qovd').I,
                              ddt(mult * T * q_gd)),            # noqa: F821
                 Contribution(Branch(gi, b, 'qovb').I,
-                             ddt(mult * T * q_gb)))            # noqa: F821
+                             ddt(mult * T * q_gb)),            # noqa: F821
+                ## `I(BS,SI)` and `I(BD,DI)` (`module:1715-1716`,
+                ## `:1794-1795`) -- bulk-referenced, so conservation
+                ## stays structural here too.
+                Contribution(Branch(b, s, 'jqs').I,
+                             ddt(mult * T * qj_s)),            # noqa: F821
+                Contribution(Branch(b, d, 'jqd').I,
+                             ddt(mult * T * qj_d)),            # noqa: F821
+                Contribution(Branch(b, s, 'jis').I,
+                             mult * T * ij_s),                 # noqa: F821
+                Contribution(Branch(b, d, 'jid').I,
+                             mult * T * ij_d))                 # noqa: F821
 
 
     return analog
@@ -671,6 +711,52 @@ class PspMosLongChannel(Behavioural):
                   default=0.0),
         Parameter(name='ov_eps2', desc='Overlap SP smoothing', unit='',
                   default=1.0),
+        ## JUNCAP2's constants (`psp_scaling.junction`).  All are
+        ## bias-independent, so they arrive as numbers and none of the
+        ## temperature or geometry arithmetic reaches the compiled
+        ## expression.  The areas default to zero, which switches the
+        ## junction off entirely; the rest default to values that keep
+        ## the unused expressions finite.
+        Parameter(name='jphit', desc='Junction thermal voltage',
+                  unit='V', default=0.02585),
+        Parameter(name='jvfmin', desc='Forward-bias clamp', unit='V',
+                  default=0.5),
+        Parameter(name='jvch', desc='Clamp smoothing', unit='V',
+                  default=0.07),
+        Parameter(name='jvmax', desc='Ideal-diode linearisation point',
+                  unit='V', default=1.0),
+        Parameter(name='jisat', desc='Total saturation current',
+                  unit='A', default=0.0),
+        Parameter(name='jbot_p', desc='bot grading coefficient',
+                  unit='', default=0.5),
+        Parameter(name='jbot_vbi', desc='bot built-in voltage', unit='V',
+                  default=1.0),
+        Parameter(name='jbot_qpref', desc='bot charge prefactor', unit='',
+                  default=0.0),
+        Parameter(name='jbot_qpref2', desc='bot forward prefactor',
+                  unit='', default=0.0),
+        Parameter(name='jbot_area', desc='bot junction geometry', unit='',
+                  default=0.0),
+        Parameter(name='jsti_p', desc='sti grading coefficient',
+                  unit='', default=0.5),
+        Parameter(name='jsti_vbi', desc='sti built-in voltage', unit='V',
+                  default=1.0),
+        Parameter(name='jsti_qpref', desc='sti charge prefactor', unit='',
+                  default=0.0),
+        Parameter(name='jsti_qpref2', desc='sti forward prefactor',
+                  unit='', default=0.0),
+        Parameter(name='jsti_area', desc='sti junction geometry', unit='',
+                  default=0.0),
+        Parameter(name='jgat_p', desc='gat grading coefficient',
+                  unit='', default=0.5),
+        Parameter(name='jgat_vbi', desc='gat built-in voltage', unit='V',
+                  default=1.0),
+        Parameter(name='jgat_qpref', desc='gat charge prefactor', unit='',
+                  default=0.0),
+        Parameter(name='jgat_qpref2', desc='gat forward prefactor',
+                  unit='', default=0.0),
+        Parameter(name='jgat_area', desc='gat junction geometry', unit='',
+                  default=0.0),
         Parameter(name='rg', desc='Gate resistance', unit='ohm',
                   default=0.0),
         Parameter(name='mult', desc='Multiplicity (devices in parallel)',

@@ -536,9 +536,9 @@ the vendor expression rather than an approximation to it.
 Present also: drain-induced barrier lowering (``CF``, ``CFB``, ``CFD``),
 the body- and gate-bias modulations of the velocity-saturation parameter
 (``THESATB``, ``THESATG``), gate resistance on its own internal node,
-device multiplicity, overlap and fringe capacitance, and the full
+device multiplicity, overlap and fringe capacitance, the full
 temperature scaling — every parameter matches PSP's own value at 100 °C,
-73 K away from the card's reference. Passing ``all_terms=False`` to
+73 K away from the card's reference — and the junction charge. Passing ``all_terms=False`` to
 ``to_long_channel`` drops both, which exists so their effect stays
 measurable — see below, because deciding whether to keep them turned
 out to be a lesson about the measurement rather than about the terms.
@@ -562,10 +562,19 @@ comparison existed to measure it. It is large: at :math:`V_g = V_d =
 gate capacitance matches PSP to 0.06% on the long devices and 0.7% on
 the short ones.
 
-The junction capacitance is not, and it adds a further 8% and 126%. That
-is a second compact model — JUNCAP2 — rather than a block, so it is the
-next rung on the ladder rather than an addition to this element, and it
-is what remains of the roadmap in ``hdl.md``.
+The junction capacitance was the other half, a further 8% and 126%, and
+it is implemented now — matching PSP to six digits at every bias point on
+both geometries and both channel types. It lives in its own module
+(:mod:`pycircuit.circuit.juncap`), because JUNCAP2 is a separate compact
+model that PSP happens to include rather than a block of PSP.
+
+It is scoped by measurement rather than by completeness: the junction
+*current* is around :math:`10^{-15}` A against a :math:`4\times10^{-4}` A
+drain current, so of the current only the ideal diode term is
+implemented — the one part that matters in the one regime where junction
+current does, a forward-biased bulk. The recombination and tunnelling
+terms, which are most of the vendor's line count, exist to shape a
+number eleven orders below anything else in the model.
 
 Both channel types
 ------------------

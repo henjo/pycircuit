@@ -1770,7 +1770,8 @@ layer, which is where this model already puts that work.
 **Estimate ~120 lines**, and it needs the element to take a temperature
 rather than assume one.
 
-**3. Junction diodes and capacitance — JUNCAP2.** `SWJUNCAP = 3` with
+**3. Junction diodes and capacitance — JUNCAP2. DONE for the charge;
+the leakage terms deliberately not, see the dated entry below.** `SWJUNCAP = 3` with
 the full parameter set on the card. The *current* is invisible here
 (1e-15 A against 4e-4), but the *capacitance* is 8% of intrinsic on the
 long device and 126% on the short one. This is a second compact model,
@@ -1812,9 +1813,9 @@ hazard; the third is the largest accuracy gap and now has a benchmark
 that can see it; the fourth unlocks a whole analysis axis; the fifth is
 its own rung.
 
-**Items 1 to 4 are done** — gate resistance, multiplicity, overlap and
-fringe capacitance, and temperature. **JUNCAP2 is next, and it is the
-only large one left.**
+**Items 1 to 5 are done** — gate resistance, multiplicity, overlap and
+fringe capacitance, temperature, and JUNCAP2's charge. **Only noise is
+left, and it is a capability rather than a PSP block to translate.**
 
 > **The saturation voltage, a floor hidden in the scaling, and two
 > things it broke — 2026-08-23.** PSP does not evaluate the drain
@@ -2628,6 +2629,64 @@ only large one left.**
 > mystery. `to_long_channel`'s default `T` matches `_epar_T`'s, and a
 > test asserts that too: they are not linked, so a caller who sets
 > neither must not silently get two temperatures.
+
+> **Plan item 5: JUNCAP2 — 2026-08-23.** The junction capacitance
+> matches PSP to **1.000000** at every bias point, on both geometries and
+> both channel types.
+>
+> Scoped by measurement rather than by completeness. The junction
+> capacitance is 8% of the intrinsic gate capacitance on a 10 µm device
+> and 126% of it at 0.13 µm; the junction *current* is around 1e-15 A
+> against a 4e-4 A drain current — eleven orders down, contributing
+> nothing to an operating point, to `gm` or to `gds`. So the charge is
+> implemented in full and, of the current, only the ideal diode term —
+> three lines, and the one part that matters in the one regime where
+> junction current does: a forward-biased bulk. Left out with their
+> vendor lines recorded: Shockley–Read–Hall recombination, trap-assisted
+> tunnelling (fifteen of the twenty-nine lines per component, and the
+> whole reason for an `erfc` helper), band-to-band tunnelling, and
+> avalanche breakdown.
+>
+> **Three things the vendor source settled that measurement alone would
+> have got wrong**, and each was worth finding before writing code:
+>
+> * **`SWJUNCAP = 3` is a geometry-SOURCE selector, not a component
+>   selector** (`PSP103_module.include:867-883`). All three components
+>   run; `= 3` only carves the gate edge out of the perimeter so it is
+>   not double-counted. I had assumed it selected which components exist.
+> * **`LG` is the ELECTRICAL width `WE`, not the drawn `W`.** `WOT` is
+>   negative on this card, so the two differ by 0.02 µm — 2% on a 1 µm
+>   device and 0.2% on a 10 µm one. That is exactly the geometry-varying
+>   1–2% I had measured on the gate component and could not explain; it
+>   reads as a scaling error rather than as a definition.
+> * **JUNCAP has its own reference temperature, `TRJ = 21 °C`**, against
+>   the transistor's 27 °C. Assuming they were shared makes every
+>   junction capacitance about 2% low — again looking like geometry.
+>
+> Every bias-independent constant matches the vendor's own values
+> exactly: `vbi` 0.697746 / 0.779354 / 2.014860, `qpref`, `qpref2`,
+> `vfmin` 0.503344, `VMAX` 0.978815. Charge to five digits at every bias
+> from −3 V to +0.9 V, and `Cj(0) = 4.13833e-16` against PSP's recorded
+> `cjs` of 4.13833e-16.
+>
+> **The both-arms rule bit again, in a new place.** The ideal diode's
+> exponential arm is discarded above `VMAX` but still evaluated, and
+> `expl` continues polynomially above its threshold — so at an absurd
+> bias the cube overflowed and the *discarded* arm poisoned the
+> derivative. Clamped the arm's input to its own domain, which is the
+> identity where the arm is used. The junction voltage is additionally
+> bounded at ±1 kV before anything else touches it: a hundred times
+> breakdown and a thousand times the supply, so it never acts on a real
+> bias, and bounding the input once is cheaper than guarding an
+> exponential and three fractional powers separately.
+>
+> The junction is **off by default** — the areas default to zero — so it
+> is opt-in through `psp_scaling.junction`, and the DC comparison is
+> untouched. Conservation stays exactly zero. The antisymmetry moves
+> from 3e-16 to 3e-15, and that is physics rather than rounding: a diode
+> to the bulk whose bias depends on the drain voltage makes the *total*
+> drain current genuinely not odd under the exchange. The channel
+> current still is.
 
 Deferred, unchanged from the original research verdict:
 
