@@ -1957,6 +1957,54 @@ built but never actually tested against.
 > now covered by tests that run with warnings as errors, at bias points
 > lifted from a real stacked-pair solve.
 
+> **The metric was the mistake, not the physics — 2026-08-23.** The
+> entry above records DIBL and the `THESAT` bias modulations being built,
+> verified, and switched off because they made the fit worse. That
+> decision is reversed, and the reason is worth more than the terms are.
+>
+> They were ranked by the **median** ratio to PSP over each sweep.
+> Judged that way they lose: summed error over the six n-channel sweeps
+> 0.016 without them, 0.041 with. Judged by the **spread** of that ratio
+> across a sweep, they win overwhelmingly: summed spread over eleven
+> sweeps **1.80 without, 0.38 with**.
+>
+> The median says whether the **gain** is right. The spread says whether
+> the **bias dependence** is — which is the part the physics governs, and
+> the part a missing term actually breaks.
+>
+> **The p-channel is what settled it**, because it needs DIBL far more
+> than the n-channel does and disagreed loudly enough to expose the
+> compensation the n-channel had been hiding. On `pmos_idvg_vd1p2`:
+>
+> | | without | with |
+> |---|---|---|
+> | ratio at Vg = −1.5 | 1.025 | 1.086 |
+> | ratio at Vg = −0.4 | **0.435** | 1.104 |
+> | spread | **1.353** | **0.020** |
+>
+> Without the terms the ratio falls by more than half across the sweep —
+> the drive is simply wrong. With them it is **flat to two percent across
+> three decades of current**. A flat ratio is a gain error: one cause,
+> one number, a well-posed question. A ratio that sweeps is a broken bias
+> dependence, and no amount of a favourable median makes that the better
+> model.
+>
+> So the n-channel's better median without them was compensating errors —
+> the same pattern this model has now hit three times, except that this
+> time the compensation was invisible until a second channel type
+> disagreed. **Building the p-channel paid for itself by settling a
+> question about the n-channel.**
+>
+> Both blocks are on by default now; `all_terms=False` remains, so the
+> comparison stays reproducible. The benchmark prints the spread beside
+> the median, and its header says to read the spread first, because the
+> ranking that nearly lost these terms was made on a number that does not
+> measure what was being decided.
+>
+> What is left is a **gain offset** — about 2% on the n-channel and 2–9%
+> on the p-channel, largest on the short geometry. That is the next
+> thing, and it is a much better-posed question than what it replaced.
+
 Deferred, unchanged from the original research verdict:
 
 | item | why |

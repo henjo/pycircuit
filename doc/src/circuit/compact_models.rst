@@ -516,15 +516,15 @@ saturation-limited drain voltage ``Vdse`` — which the channel-length
 modulation then uses, as PSP does, so that term is now a translation of
 the vendor expression rather than an approximation to it.
 
-Implemented but **switched off**: drain-induced barrier lowering
-(``CF``, ``CFB``, ``CFD``) and the body- and gate-bias modulations of
-the velocity-saturation parameter (``THESATB``, ``THESATG``). Both are
-faithful — every parameter they use matches PSP's own scaled output
-exactly — and both currently make the measured fit worse, so
-``to_long_channel`` leaves them out unless asked with
-``all_terms=True``. See below.
+Present also: drain-induced barrier lowering (``CF``, ``CFB``, ``CFD``)
+and the body- and gate-bias modulations of the velocity-saturation
+parameter (``THESATB``, ``THESATG``). Passing ``all_terms=False`` to
+``to_long_channel`` drops both, which exists so their effect stays
+measurable — see below, because deciding whether to keep them turned
+out to be a lesson about the measurement rather than about the terms.
 
-Absent: the rest of the short-channel threshold block; gate and junction
+Absent: the rest of the short-channel threshold block (``PSCE``, which
+is all-zero on this card anyway); gate and junction
 leakage; impact ionisation; overlap and fringe capacitances; the
 non-quasi-static block; self-heating; and every temperature coefficient.
 PSP103 is this core plus those, and the size of what they are worth is
@@ -568,68 +568,44 @@ The polarity is carried as a Python value closed over when the class is
 created, never as a symbol, so each channel type compiles to an
 expression exactly the size it would be if the other did not exist.
 
-Correct terms that make the fit worse
--------------------------------------
+Read the spread before the median
+---------------------------------
 
-Two blocks are implemented, verified, and disabled. That combination
-needs explaining, because the obvious reading — that they are wrong — is
-the one the evidence rules out.
+The table above gives a median ratio per sweep. That number says whether
+the **gain** is right. It does not say whether the **bias dependence**
+is — and that is the part the physics governs, and the part a missing
+term actually breaks. For that, look at how much the ratio varies
+*across* a sweep.
 
-Every parameter they use matches PSP's own post-scaling value exactly,
-at four geometries; so do ``FdL``'s coefficients. The formulae were
-re-read against the vendor source line by line. Enabling them takes the
-summed error over the six sweeps from 0.016 to 0.041.
+The distinction is not academic here. Two blocks — drain-induced barrier
+lowering, and the bias modulations of the velocity-saturation parameter
+— were once ranked by the median, found to make it worse, and switched
+off. Ranked by the spread they are decisive: summed over eleven sweeps,
+1.80 without them against 0.38 with.
 
-What that means is that something else is absorbing their effect. The
-clue is where the damage lands. Our DIBL shift comes to 3.6 mV at
-:math:`V_{ds} = 1.35` V, and PSP's own threshold was measured moving
-3.5 mV over that range — but in weak inversion, at 85 mV/decade, 3.6 mV
-is a **9% change in current**. The 2.4× climb near threshold that
-``FdL`` was accepted for explaining in full therefore had a real DIBL
-component in it all along, and the near-threshold sweep is exactly where
-switching DIBL on now overshoots.
+The p-channel settled it, needing DIBL far more than the n-channel does.
+On its saturation transfer sweep the ratio without these terms falls
+from 1.03 to 0.44 across the sweep — a drive that is simply wrong. With
+them it is flat to two percent across three decades of current.
 
-This has happened before on this model, with channel-length modulation:
-correct, measured worse, left out with the reasoning recorded — and it
-returned later as the single largest accuracy gain the model has taken,
-once the term it had been compensating for arrived. Discarding correct
-physics because it exposes an error elsewhere is how that error gets
-preserved.
+A flat ratio is a gain error: one cause, one number, a well-posed
+question. A ratio that sweeps is a broken bias dependence. No amount of
+a favourable median makes the second the better model — and the better
+n-channel median without these terms turned out to be two errors
+cancelling, which only became visible when a second channel type
+disagreed.
 
-A saturating model needs a Newton limiter
------------------------------------------
+What remains is a gain offset of about 2% on the n-channel and 2–9% on
+the p-channel. That is the next question, and a far better-posed one.
 
-``Vdse`` pins the drain end of the channel at :math:`V_{dsat}`, which is
-its purpose and is the physical answer. The consequence is that the
-output conductance collapses once the device is well into saturation —
-:math:`dI_{ds}/dV_{ds}` falls to :math:`10^{-11}` by 500 V and
-:math:`10^{-28}` by :math:`10^{7}` V.
-
-That matters to the solver rather than to the designer. A Newton step
-that overshoots into that region does not come back: the row is
-numerically empty, and the matrix is reported singular. Two of these
-devices stacked, driving their own internal node, is enough to reach it.
-
-:class:`~pycircuit.circuit.compact.PspMosLongChannel` therefore
-implements ``limit()``, the part SPICE gives ``DEVfetlim``: each of the
-device's branch voltages may move at most ``vlimit`` volts per Newton
-iteration. It follows the tree's state-free convention — the limiter
-returns a limited *copy* of the solution sub-vector, so the residual and
-the Jacobian are never taken at different points. The source terminal is
-left where the solver put it, since it is some other device's drain and
-limiting it here would have the two elements undo each other.
-
-Terminal voltages are conditioned too, before the surface potential is
-solved: the lower of the two junctions is clipped smoothly at
-:math:`-0.95\,\phi_B`, so the quasi-Fermi level cannot pass the
-built-in potential. The clip costs a fraction of a millivolt where
-nothing needs limiting, which is why it can be applied unconditionally
-rather than behind a test — and a hard clamp in its place is worse than
-useless, since it freezes every conductance and leaves the solver with
-no gradient at all.
-
-Notably **not** in the list of things that matter here: DIBL. It is
-measured below, and on this process it is small.
+A note on DIBL, because this page said the opposite for a while. In
+absolute terms it *is* small on this process — PSP's own threshold moves
+3.5 mV over 1.35 V of drain bias, and that was measured rather than
+assumed. But small in millivolts is not small in current: in weak
+inversion, at 85 mV/decade, 3.5 mV is a 9% change, and on the p-channel
+saturation sweep leaving it out costs more than a factor of two at the
+bottom of the range. "Small parameter" and "negligible term" are
+different claims, and only the first was ever measured.
 
 .. note::
 

@@ -121,45 +121,49 @@ def channel_type(card):
     return -1.0 if _g(card, 'type', 1.0) < 0 else 1.0
 
 
-def to_long_channel(card, w, l, T=300.0, all_terms=False):
+def to_long_channel(card, w, l, T=300.0, all_terms=True):
     """Card + geometry -> `PspMosLongChannel` keyword arguments.
 
     `card` is what `spicecard.Deck.model_params` returned.  Returns a
     dict ready to splat into the element.
 
-    `all_terms=True` additionally wires up two blocks that are
-    implemented, verified term by term against PSP's own scaled
-    parameters, and CURRENTLY MAKE THE MEASURED FIT WORSE:
+    `all_terms=False` drops two blocks, and exists only so that their
+    effect can be measured:
 
     * **DIBL** -- `CF`, `CFB`, `CFD` (`macrodefs:473-476`);
     * the **body- and gate-bias modulation of `THESAT`** -- `THESATB`,
       `THESATG` (`macrodefs:596-607`).
 
-    Summed median error over the six n-channel sweeps: 0.016 without
-    them, 0.034 with the `THESAT` modulation alone, 0.041 with both.
+    They spent one commit switched off, on a measurement that turned out
+    to be the wrong measurement.  The correction is worth recording,
+    because the metric was the mistake rather than the physics.
 
-    They are off by default and kept in the tree deliberately, following
-    the precedent this model set with channel-length modulation -- which
-    was also correct, also measured worse, was left out with the
-    reasoning recorded, and turned out to be the single largest accuracy
-    gain the model ever took once the term it was compensating for
-    arrived.  Discarding correct physics because it exposes an error
-    elsewhere is how that error gets preserved.
+    Judged by the MEDIAN ratio to PSP over each sweep they look bad:
+    summed error over the six n-channel sweeps 0.016 without them and
+    0.041 with.  Judged by the SPREAD of that ratio across a sweep --
+    which is what says whether the bias dependence is right, the median
+    saying only whether the gain is -- they are decisive: summed spread
+    over eleven sweeps 1.80 without them and 0.38 with.
 
-    What the evidence says about where the error is NOT: all twenty-one
-    scaled parameters the reference records -- including `cf`, `cfb`,
-    `thesat`, `thesatb`, `thesatg`, `alp`, `alp1` and `alp2` -- match
-    PSP's own `lp_*` outputs exactly at four geometries.  So the scaling
-    is right and the discrepancy is in a formula.
+    The p-channel is what made it obvious, needing DIBL far more than
+    the n-channel does.  On `pmos_idvg_vd1p2` the ratio without these
+    terms sweeps from 1.03 down to 0.44 -- a drive that is simply wrong
+    -- and with them it is FLAT AT 1.086 across three decades of
+    current, spread 1.353 -> 0.020.  A flat ratio is a gain error: one
+    cause, one number, a well-posed question.  A ratio that sweeps is a
+    broken bias dependence, and no amount of a favourable median makes
+    that the better model.
 
-    And where it probably IS: our `delVg` comes to 3.6 mV at Vds = 1.35,
-    which is precisely the 3.5 mV shift measured out of PSP's own `vth`.
-    In weak inversion, at this device's 85 mV/decade, 3.6 mV is a **9%**
-    current change -- so DIBL is a real part of the 2.4x climb at
-    Vg = 0.6 that was attributed wholly to `FdL`.  `FdL` was accepted on
-    a residual that already contained this omission, and the near-
-    threshold sweep is exactly where enabling DIBL now overshoots
-    (1.003 -> 1.023).  That is the term to re-examine, with these on.
+    So the better n-channel median without them was compensating
+    errors, exactly as the pattern this model has now hit three times
+    predicts -- and this time the compensation was visible only because
+    a second channel type disagreed.
+
+    All twenty-one scaled parameters the reference records match PSP's
+    own `lp_*` outputs exactly at four geometries, on BOTH channel
+    types, so none of this is the scaling layer.  What is left is a gain
+    offset -- about 2% on the n-channel and 2-9% on the p-channel -- and
+    that is the next thing to chase.
     """
     ## Channel type.  The card carries the polarity HERE and nowhere
     ## else: every parameter on the p-channel card is a positive

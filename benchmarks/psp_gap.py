@@ -17,6 +17,13 @@ Run:  python benchmarks/psp_gap.py [--pdk PATH]
 The point is not the headline number but the SHAPE of the discrepancy,
 which says what to build next.  Reading it:
 
+  * READ THE SPREAD BEFORE THE MEDIAN.  The median says whether the
+    GAIN is right; the spread across a sweep says whether the bias
+    dependence is.  A flat ratio at 1.09 is one missing gain term -- a
+    well-posed question with one answer.  A ratio sweeping from 1.03 to
+    0.44 is a broken drive, and no median makes that the better model.
+    Ranking terms by their effect on the median once kept a correct
+    block switched off for a commit;
   * a ratio that is flat in Vds and near 1 on the long device means the
     threshold and gain factor are right;
   * a ratio that GROWS with current is series resistance -- the core has
@@ -115,8 +122,8 @@ def main(argv=None):
     print('Nothing tuned: parameters come from the card through the')
     print('scaling layer.  Ratio = ours / PSP103.')
     print()
-    print('%-20s %7s %7s %9s %9s %9s' %
-          ('sweep', 'W (um)', 'L (um)', 'median', 'min', 'max'))
+    print('%-20s %7s %7s %9s %9s %9s %9s' %
+          ('sweep', 'W (um)', 'L (um)', 'median', 'min', 'max', 'spread'))
     for name in SWEEPS:
         if name not in ref:
             continue
@@ -124,9 +131,10 @@ def main(argv=None):
         if not len(r):
             continue
         ratio = g / r
-        print('%-20s %7.1f %7.2f %9.3f %9.3f %9.3f'
+        print('%-20s %7.1f %7.2f %9.3f %9.3f %9.3f %9.3f'
               % (name, ref[name]['w'] * 1e6, ref[name]['l'] * 1e6,
-                 np.median(ratio), ratio.min(), ratio.max()))
+                 np.median(ratio), ratio.min(), ratio.max(),
+                 ratio.max() / ratio.min() - 1.0))
         sys.stdout.flush()
 
     print()

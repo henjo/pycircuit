@@ -759,7 +759,7 @@ class TestTheSaturationVoltage(object):
         assert scaled['short']['thesatb'] > 0.05
         assert scaled['short']['thesatg'] > 0.05
 
-    def test_every_sweep_is_within_one_percent(self, deck, ref):
+    def test_every_sweep_is_close_and_flat(self, deck, ref):
         """The state of the whole comparison, as a regression guard.
 
         Nothing here is fitted: every parameter comes off the card
@@ -769,9 +769,14 @@ class TestTheSaturationVoltage(object):
         voltage was fed back into the channel-length modulation, which
         is what it had been missing all along.
 
-        Held at 1% rather than at the measured 0.4%: this is a guard
+        Held at 3% rather than at the measured 2.3%: this is a guard
         against regression, not a pin on numbers that should be free to
         improve.
+
+        It was briefly 1%, on a model whose short-channel terms were
+        switched off.  That number was better and the model was not:
+        see `TestTheShortChannelTerms`, where the median turns out to be
+        the wrong thing to rank terms by.
         """
         cm.default_toolkit = numeric
         worst = {}
@@ -780,47 +785,41 @@ class TestTheSaturationVoltage(object):
                      'nmos_idvg_vd1p2', 'nmos_idvg_vb_m1'):
             _, r, g, _ = _compare(deck, ref[name])
             worst[name] = abs(np.median(g / r) - 1.0)
-        assert max(worst.values()) < 0.01, worst
-        assert sum(worst.values()) < 0.04, worst
+        assert max(worst.values()) < 0.03, worst
+        assert sum(worst.values()) < 0.08, worst
 
 
-class TestTheTermsThatDoNotHelpYet(object):
-    """DIBL and the `THESAT` bias modulations: correct, and off.
+class TestTheShortChannelTerms(object):
+    """DIBL and the `THESAT` bias modulations -- and the metric that
+    nearly kept them out.
 
-    Both are implemented, and both make the measured fit WORSE, so
-    `to_long_channel` leaves them out unless asked (`all_terms=True`).
-    That is not a hedge -- it is the same call this model made about
-    channel-length modulation, which was also correct, also measured
-    worse, was left out with the reasoning recorded, and then turned out
-    to be the largest single accuracy gain the model ever took once the
-    term it had been compensating for arrived.
+    They spent one commit switched off, on a measurement that turned out
+    to be the wrong measurement.  Judged by the MEDIAN ratio to PSP over
+    each sweep they looked bad; judged by the SPREAD of that ratio
+    across a sweep they are decisive.  The median says whether the GAIN
+    is right.  The spread says whether the BIAS DEPENDENCE is -- which
+    is the part the physics governs, and the part a missing term
+    breaks.
 
-    The tests below pin what the evidence actually establishes, so that
-    whoever picks this up does not have to re-derive it:
-
-    * the SCALING is not the problem -- every parameter involved matches
-      PSP's own `lp_*` output exactly, at four geometries;
-    * `FdL`'s parameters are not the problem either -- `alp`, `alp1` and
-      `alp2` match exactly too;
-    * enabling the terms costs accuracy, and it costs it in a specific
-      place: the near-threshold sweep.
-
-    Which is the clue.  Our `delVg` comes to 3.6 mV at Vds = 1.35, and
-    PSP's own `vth` was measured to move 3.5 mV over that range.  In
-    weak inversion at this device's 85 mV/decade, that is a 9% current
-    change -- so DIBL is a real part of the 2.4x climb at Vg = 0.6 that
-    `FdL` was accepted for explaining in full.
+    The p-channel is what settled it, needing DIBL far more than the
+    n-channel does, and disagreeing loudly enough to expose the
+    compensation the n-channel had been hiding.
     """
+
+    NAMES = ('nmos_long_idvd', 'nmos_idvd_vg1p2', 'nmos_idvd_vg0p6',
+             'nmos_idvg_vd0p05', 'nmos_idvg_vd1p2', 'nmos_idvg_vb_m1',
+             'pmos_long_idvd', 'pmos_long_idvg', 'pmos_idvd_vg1p2',
+             'pmos_idvg_vd1p2', 'pmos_idvg_vd0p05')
 
     @pytest.fixture(scope='class')
     def scaled(self):
         with open(REF) as fh:
             return json.load(fh)['scaled']
 
-    def _kw(self, deck, g, **kw):
+    def _kw(self, deck, g, model='sg13g2_lv_nmos_psp', **kw):
         return psp_scaling.to_long_channel(
-            deck.model_params('sg13g2_lv_nmos_psp', w=g['w'], l=g['l'],
-                              ng=1, m=1, pre_layout=1),
+            deck.model_params(model, w=g['w'], l=g['l'], ng=1, m=1,
+                              pre_layout=1),
             w=g['w'], l=g['l'], **kw)
 
     @pytest.mark.parametrize('geom', ['long', 'mid', 'short', 'wide_short'])
@@ -828,48 +827,51 @@ class TestTheTermsThatDoNotHelpYet(object):
                                      'alp', 'alp1', 'alp2'])
     def test_every_parameter_involved_matches_psp(self, deck, scaled,
                                                   geom, par):
-        """So the scaling layer is not where the discrepancy lives."""
-        got = self._kw(deck, scaled[geom], all_terms=True)[par]
+        """So none of this was ever the scaling layer."""
+        got = self._kw(deck, scaled[geom])[par]
         assert got == pytest.approx(scaled[geom][par], rel=1e-5,
                                     abs=1e-12), (geom, par)
 
-    def test_they_are_off_by_default(self, deck, scaled):
+    def test_they_are_on_by_default(self, deck, scaled):
         kw = self._kw(deck, scaled['short'])
-        assert 'cf' not in kw and 'thesatg' not in kw
+        assert 'cf' in kw and 'thesatg' in kw and 'thesatb' in kw
+        off = self._kw(deck, scaled['short'], all_terms=False)
+        assert 'cf' not in off, 'the A/B switch still has to work'
 
     def test_dibl_matches_psps_own_measured_threshold_shift(self, deck,
                                                             scaled):
         """3.6 mV computed against 3.5 mV measured out of PSP itself.
 
-        This is why the term is believed rather than suspected: it is
-        checked against a number extracted from the vendor model, not
+        Checked against a number extracted from the vendor model, not
         against our own arithmetic.
         """
-        kw = self._kw(deck, scaled['short'], all_terms=True)
+        kw = self._kw(deck, scaled['short'])
         delvg = kw['cf'] * 1.35 * (1.0 + kw['cfb'] * 0.0)
         assert 3.0e-3 < delvg < 4.0e-3, delvg
 
-    def test_enabling_them_costs_accuracy_and_says_where(self, deck, ref):
-        """The measurement that keeps them off, and the clue it carries.
+    def test_they_fix_the_bias_dependence(self, deck, ref):
+        """The measurement that decided it, on the metric that matters.
 
-        Worse overall -- and the damage is concentrated in the
-        near-threshold sweep, which is exactly where a weak-inversion
-        threshold shift acts and exactly where `FdL` was accepted.
+        Summed spread over the eleven sweeps: 1.80 without them, 0.38
+        with.  Held loosely, as a statement about the direction and
+        rough size of the effect rather than a pin on either number.
         """
         cm.default_toolkit = numeric
-        names = ('nmos_long_idvd', 'nmos_idvd_vg1p2', 'nmos_idvd_vg0p6',
-                 'nmos_idvg_vd0p05', 'nmos_idvg_vd1p2', 'nmos_idvg_vb_m1')
-        err = {}
+        spread = {}
         for on in (False, True):
-            tot = {}
-            for name in names:
+            tot = 0.0
+            for name in self.NAMES:
                 sw = ref[name]
+                pmos = 'pmos' in sw['device']
                 kw = psp_scaling.to_long_channel(
-                    deck.model_params('sg13g2_lv_nmos_psp', w=sw['w'],
-                                      l=sw['l'], ng=1, m=1, pre_layout=1),
+                    deck.model_params(
+                        'sg13g2_lv_pmos_psp' if pmos
+                        else 'sg13g2_lv_nmos_psp',
+                        w=sw['w'], l=sw['l'], ng=1, m=1, pre_layout=1),
                     w=sw['w'], l=sw['l'], all_terms=on)
-                e = PspMosLongChannel(cm.Node('d'), cm.Node('g'),
-                                      cm.Node('s'), cm.Node('b'), **kw)
+                cls = PspPmosLongChannel if pmos else PspMosLongChannel
+                e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                        cm.Node('b'), **kw)
                 e.update_iparv()
                 v = np.asarray(sw['v'], float)
                 r = np.abs(np.asarray(sw['i_d'], float))
@@ -883,12 +885,42 @@ class TestTheTermsThatDoNotHelpYet(object):
                         [b['Vd'], x, b['Vs'], b['Vb']])), float)[0]
                         for x in v])
                 m = r > 1e-6
-                tot[name] = abs(np.median(np.abs(g[m]) / r[m]) - 1.0)
-            err[on] = tot
-        assert sum(err[True].values()) > sum(err[False].values()), err
-        ## And it lands on the near-threshold sweep in particular.
-        assert (err[True]['nmos_idvd_vg0p6']
-                > 3.0 * err[False]['nmos_idvd_vg0p6']), err
+                q = np.abs(g[m]) / r[m]
+                tot += q.max() / q.min() - 1.0
+            spread[on] = tot
+        assert spread[True] < 0.4 * spread[False], spread
+
+    def test_the_p_channel_saturation_sweep_is_where_it_shows(self, deck,
+                                                              ref):
+        """The single measurement that reversed the decision.
+
+        Without DIBL the ratio sweeps from about 1.03 down to 0.44
+        across the sweep -- a drive that is simply wrong.  With it, the
+        ratio is flat to a couple of percent across three decades of
+        current, which is a GAIN error: one cause, one number, and a
+        well-posed question to ask next.
+        """
+        cm.default_toolkit = numeric
+        sw = ref['pmos_idvg_vd1p2']
+        b = sw['bias']
+        v = np.asarray(sw['v'], float)
+        r = np.abs(np.asarray(sw['i_d'], float))
+        m = r > 1e-6
+        out = {}
+        for on in (False, True):
+            kw = psp_scaling.to_long_channel(
+                deck.model_params('sg13g2_lv_pmos_psp', w=sw['w'],
+                                  l=sw['l'], ng=1, m=1, pre_layout=1),
+                w=sw['w'], l=sw['l'], all_terms=on)
+            e = PspPmosLongChannel(cm.Node('d'), cm.Node('g'),
+                                   cm.Node('s'), cm.Node('b'), **kw)
+            e.update_iparv()
+            g = np.array([np.asarray(e.i(np.array(
+                [b['Vd'], x, b['Vs'], b['Vb']])), float)[0] for x in v])
+            q = np.abs(g[m]) / r[m]
+            out[on] = q.max() / q.min() - 1.0
+        assert out[False] > 1.0, out
+        assert out[True] < 0.05, out
 
 
 class TestTheChannelTypes(object):
