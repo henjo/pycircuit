@@ -1721,10 +1721,95 @@ a saturating model turns out to require.
 Absent, and each with a reason rather than an omission: `PSCE` (all-zero
 on this card), gate leakage and junction leakage (four to six orders
 below the comparison's floor), impact ionisation (exponentially dead
-below ~2 V), overlap and fringe capacitances (identically zero DC
-current — they belong to a CV comparison this project does not yet
-have), NQS and self-heating (deferred by the original research verdict,
-below), and every temperature coefficient.
+below ~2 V), NQS and self-heating (deferred by the original research
+verdict, below), and every temperature coefficient. Overlap and fringe
+capacitance was on this list for the same reason — identically zero DC
+current — and has come off it, because the CV comparison it needed now
+exists. See the plan below.
+
+### What remains for the IHP models
+
+Audited 2026-08-23 against the card's own switches and PSP's own
+operating-point outputs, not from the parameter list. The card **enables**
+`SWIGATE`, `SWIMPACT`, `SWGIDL`, `SWJUNCAP = 3` and `SWIGN`; it disables
+`SWEDGE`, `SWNUD`, `SWDELVTAC`, `SWJUNASYM`, `SWJUNEXP` and `SWSOA`.
+
+**The DC drain current is essentially done for this card.** Everything
+below is either capacitance, temperature, or a term that measures four
+or more orders below the current it would correct.
+
+**1. Overlap and fringe capacitance — the largest gap by a wide margin.**
+
+| at Vg = Vd = 1.2 | 10 µm/1 µm | 1 µm/0.13 µm |
+|---|---|---|
+| intrinsic `cgg` | 8.58e-14 | 5.68e-16 |
+| overlap + fringe | 1.25e-14 (**15%**) | 1.29e-15 (**227%**) |
+| junction `cjs + cjd` | 6.87e-15 (**8%**) | 7.15e-16 (**126%**) |
+
+On a minimum-length device the parasitics are about **3.5× the
+intrinsic capacitance**. The DC model is accurate and the AC/transient
+model is missing most of its charge.
+
+Cheaper than the earlier research estimate of 80–120 lines, and the
+reason is worth knowing: **the overlap surface potential is
+CLOSED-FORM**, not an iterative solve
+(`PSP103_module.include:1182-1189`) —
+`SP_OV_xg = ½(xg_ov + sqrt(xg_ov² + eps²))` then one explicit
+expression for `x_ov`. Scaling at `PSP103_scaling.include:361-373`,
+charges at `:1558-1603`. On this card `LOVD = 0`, `CGBOVL ≈ 0` and
+`CFRDW = 0`, so only `CGOV` and `CFR` are live, and the accumulation
+branches (`FCGOVACC`, `CGOVACCG`) are absent. **Estimate ~50 lines.**
+
+**2. Temperature.** The card carries **28 non-zero `ST*` coefficients**
+and `TR = 27 °C`; the model is hard-wired at 300 K with no scaling at
+all, so no corner or temperature analysis is possible. PSP's
+`TempScaling` macro (`PSP103_macrodefs.include:306`) and 17
+temperature-scaled quantities. Mostly bulk arithmetic in the scaling
+layer, which is where this model already puts that work.
+**Estimate ~120 lines**, and it needs the element to take a temperature
+rather than assume one.
+
+**3. Junction diodes and capacitance — JUNCAP2.** `SWJUNCAP = 3` with
+the full parameter set on the card. The *current* is invisible here
+(1e-15 A against 4e-4), but the *capacitance* is 8% of intrinsic on the
+long device and 126% on the short one. This is a second compact model,
+not a block: 1206 lines across four vendor files.
+**Estimate large**; worth doing only after (1), and it is the natural
+next rung on the ladder rather than an addition to this element.
+
+**4. Gate resistance.** `lp_rg = 1.3 Ω`, non-zero, and PSP attaches it
+with `CollapsableR(ggate, RG_i, …, G, GP, "rgate")`
+(`PSP103_module.include:1718`) — **which is exactly what `Collapse()`
+was built for on this branch**. `RSE`, `RDE` and `RBULK` are all zero on
+this card, so the gate is the only one. **Estimate ~20 lines**, and it
+is the cheapest item here.
+
+**5. Multiplicity.** No `m`/`nf` parameter: a user instantiating `m = 2`
+silently gets one device. PSP multiplies every contribution by `MULT_i`.
+**Estimate ~10 lines**, and it is a correctness hazard rather than an
+accuracy one.
+
+**6. Noise.** `SWIGN = 1`; there is no noise model of any kind here.
+Thermal, flicker and induced-gate. **Estimate medium**, and it is a
+separate capability rather than a missing PSP block.
+
+Enabled on the card and measured negligible at this supply, against
+`ids = 4.0e-4` at Vg = Vd = 1.2 on a 0.13 µm device: gate current
+1.3e-11 (3e-8 of `ids`), impact ionisation 4.4e-10 (1e-6, but
+exponential — real above ~2 V), junction current 1.2e-15, GIDL ~0.
+**None of these is why the model is 1% off**, and building them will not
+move any number this project measures.
+
+One caveat on the deferrals: the **RF flavours**
+(`sg13g2_lv_nmos_psp_rf`) use `pspnqs103va`, so NQS is needed for those
+even though no standard card uses it — 583 lines
+(`PSP103_nqs_macrodefs.include`).
+
+**Order: gate resistance, multiplicity, overlap/fringe, temperature,
+then JUNCAP2.** The first two are trivial and remove a correctness
+hazard; the third is the largest accuracy gap and now has a benchmark
+that can see it; the fourth unlocks a whole analysis axis; the fifth is
+its own rung.
 
 > **The saturation voltage, a floor hidden in the scaling, and two
 > things it broke — 2026-08-23.** PSP does not evaluate the drain

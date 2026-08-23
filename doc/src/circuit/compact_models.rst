@@ -547,11 +547,23 @@ non-quasi-static block; self-heating; and every temperature coefficient.
 PSP103 is this core plus those, and the size of what they are worth is
 exactly what the table above measures.
 
-Two of those omissions are worth naming as *permanently* invisible to
-the table: gate leakage and junction leakage are four to six orders of
-magnitude below its 1 µA floor on this process, and overlap and fringe
-capacitances contribute identically zero DC current. They matter for
-CV and AC work, not here.
+Two of those omissions are invisible to the table *by construction*:
+gate leakage and junction leakage are four to six orders of magnitude
+below its 1 µA floor on this process, and overlap and fringe
+capacitances contribute identically zero DC current.
+
+That last one is no longer an excuse, though. Since this model acquired
+a capacitance comparison, the parasitics can be measured — and they are
+large. At :math:`V_g = V_d = 1.2` V the overlap and fringe capacitance
+is 15% of the intrinsic :math:`C_{gg}` on the 10 µm device and **227%**
+of it on the 0.13 µm one; the junction capacitance adds 8% and 126%. On
+a minimum-length device the parasitics are about **three and a half
+times** the intrinsic capacitance.
+
+So the honest summary is that the DC current is close to done for this
+process and the charge model is not: it is exact where it is
+implemented, and most of what a real transient or AC simulation needs is
+still absent. The roadmap in ``hdl.md`` sizes the work and orders it.
 
 Both channel types
 ------------------
