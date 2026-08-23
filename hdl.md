@@ -2476,6 +2476,59 @@ its own rung.
 > The DC current is untouched throughout: `GdL` and `eta_p` were already
 > in the current path, and only the charge path changed.
 
+> **Plan items 1 and 2: gate resistance and multiplicity — 2026-08-23.**
+> Both trivial as planned; the interesting part was a DSL bug the first
+> of them exposed.
+>
+> **Gate resistance.** `RG = (RINT + RVPOLY)/(W·L)` on this card
+> (`PSP103_scaling.include:604`, clipped at `:816`) — the sheet and
+> per-finger terms are absent — which reproduces PSP's own `lp_rg` of
+> **1.3025 Ω exactly** on a 10×1 µm device. Attached the way PSP
+> attaches it: an internal gate node behind a `Collapse`-able resistor
+> (`CollapsableR(ggate, RG_i, …, G, GP, "rgate")`,
+> `PSP103_module.include:1718`). With `rg = 0` the node is absorbed and
+> the branch never compiles, so the `1/rg` is safe. `RSE`, `RDE` and
+> `RBULK` are all zero here, so the gate is the only one.
+>
+> **Multiplicity.** `mult`, PSP's `MULT_i = MULT·NF`
+> (`scaling:828`). `m` devices in parallel carry `m` times the current
+> and charge and present `rg/m` — so the resistor's *conductance* scales
+> like everything else. Measured exactly: 2× and 3× on both current and
+> charge.
+>
+> **THE BUG: `Collapse` DID NOT REWRITE THE INTERMEDIATES.** A collapse
+> renames a node so a branch's two ends become one, and it rewrote only
+> the *statements*. That is complete on the flatten path, where a
+> statement's right-hand side holds every quantity it uses. It is not
+> complete on the **let-chain** path: there the right-hand side is
+> mostly `var()` symbols, and the branch voltages mentioning the
+> collapsed node live in those symbols' **definitions**. Those were left
+> pointing at a node that no longer existed, and the printer emitted a
+> bare `V` — a `NameError` at call time, from a model that compiled
+> without a word of complaint.
+>
+> It had gone unnoticed because the two features had only ever been
+> tested apart: `Collapse` was built and validated against the flatten
+> path, and this model is the first to use both. Any model using both
+> hits it on the first evaluation. Fixed by factoring the re-aliasing
+> and applying it to the intermediates as well, with a DSL-level
+> regression in `test_hdl_collapse.py` rather than only a PSP one.
+>
+> **And a smaller interface lesson.** Adding an internal node broke 52
+> tests that hand-built four-element node vectors, and it broke them
+> *loudly* only because the node happened to be appended last — inserted
+> anywhere else it would have addressed the wrong node silently. The
+> element now has `bias(vd, vg, vs, vb)`, which builds the vector of the
+> right length and puts internal nodes at their zero-current values, and
+> `gate_index`, because the intrinsic gate is no longer the terminal and
+> the capacitance comparisons have to say which one they mean. PSP
+> measures its own `cgg` at the same internal node. Hard-coded node
+> vectors were always a liability, and the plan adds more internal nodes
+> with JUNCAP2.
+>
+> The DC comparison is unchanged to the digit throughout — no current
+> flows into the gate, so the resistor is inert there.
+
 Deferred, unchanged from the original research verdict:
 
 | item | why |

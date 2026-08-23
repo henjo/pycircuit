@@ -360,6 +360,18 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
     lecv = max(LE + _g(card, 'dlq'), 1.0e-9)
     wecv = max(WE + _g(card, 'dwq'), 1.0e-9)
 
+    ## GATE RESISTANCE (:604, clipped at :816).  The full expression
+    ## carries a sheet-resistance term and a per-finger term; this card
+    ## sets neither (`RSHG` and `RGO` are absent), leaving
+    ## `RG = (RINT + RVPOLY)/(W*L)`, which reproduces PSP's own `lp_rg`
+    ## of 1.3025 ohm exactly on a 10x1 um device.
+    ##
+    ## `RSE`, `RDE` and `RBULK` are all zero on this card -- the source
+    ## and drain resistance PSP folds into the mobility instead, which
+    ## this model already does.  So the gate is the only terminal
+    ## resistance there is here.
+    rg = max((_g(card, 'rint') + _g(card, 'rvpoly')) / (w * l), 0.0)
+
     ## BODY-BIAS MOBILITY CORRECTION (:299, clipped at :731).
     ## `Rxcor = (1 + 0.2*XCOR*Vsbx)/(1 + XCOR*Vsbx)` multiplies `Gmob`
     ## at both the source end and the midpoint (`macrodefs:576, 595,
@@ -429,7 +441,7 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
         cs=max(cs, 0.0), thecs=max(_g(card, 'thecso'), 0.0),
         feta=_g(card, 'fetao', 1.0), thesat=max(thesat, 0.0),
     )
-    kw.update(dnsub=dnsub, vnsub=vnsub, nslp=nslp, xcor=xcor,
+    kw.update(dnsub=dnsub, vnsub=vnsub, nslp=nslp, xcor=xcor, rg=rg,
               wcv=wecv, lcv=lecv, qq=qq)
     if all_terms:
         kw.update(thesatb=thesatb, thesatg=thesatg,

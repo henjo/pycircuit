@@ -18,7 +18,8 @@ import sympy
 from pycircuit.circuit import defaultepar, psp_kernel, psp_scaling
 from pycircuit.circuit.constants import (epsRSiO2, kboltzmann,
                                          qelectron)
-from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution, Node,
+from pycircuit.circuit.hdl import (Behavioural, Branch, Collapse,
+                                   Contribution, Node,
                                    ddt, var, vt)
 from pycircuit.utilities.param import Parameter
 
@@ -264,7 +265,17 @@ def _psp_mos_analog(T, pmos):
     constant, in the scaling layer.  Everything else here is a sign.
     """
     def analog(d, g, s, b):
-        bd, bg, bs = Branch(d, b, 'd'), Branch(g, b, 'g'), Branch(s, b, 's')
+        ## GATE RESISTANCE, on an internal node behind a collapsible
+        ## resistor -- which is exactly how PSP attaches it
+        ## (`CollapsableR(ggate, RG_i, ..., G, GP, "rgate")`,
+        ## `PSP103_module.include:1718`), and exactly what `Collapse()`
+        ## was built for on this branch.  With `rg = 0` the node is
+        ## absorbed and the branch never compiles, so the `1/rg` below is
+        ## safe.  Everything intrinsic hangs off `gi`, not `g`.
+        gi = Node('gi')
+        br_rg = Branch(g, gi, 'rgate')
+
+        bd, bg, bs = Branch(d, b, 'd'), Branch(gi, b, 'g'), Branch(s, b, 's')
 
         ## The INTERNAL convention: every voltage below is `T*(node -
         ## bulk)`, so for a p-channel the whole body runs on
@@ -469,11 +480,22 @@ def _psp_mos_analog(T, pmos):
         ## multiplied by `T`: it is the internal source/drain interchange
         ## sign, a separate mechanism that already lives inside the
         ## internal convention.
-        return (Contribution(Branch(d, s, 'chan').I,
-                             T * sgn * core['ids']),
-                Contribution(Branch(g, s, 'qg').I, ddt(T * Qg)),
-                Contribution(Branch(b, s, 'qb').I, ddt(T * Qb)),
-                Contribution(Branch(d, s, 'qd').I, ddt(T * qd_t)))
+        ## MULTIPLICITY.  PSP multiplies every contribution by `MULT_i`
+        ## (`MULT * NF`, `PSP103_scaling.include:828`); `m` devices in
+        ## parallel carry `mult` times the current and charge, and
+        ## present `rg/mult` of gate resistance -- so the resistor's
+        ## CONDUCTANCE scales the same way everything else does.
+        return (Contribution(br_rg.I,
+                             mult * br_rg.V / rg),  # noqa: F821
+                Collapse(br_rg, rg <= 0),                      # noqa: F821
+                Contribution(Branch(d, s, 'chan').I,
+                             mult * T * sgn * core['ids']),    # noqa: F821
+                Contribution(Branch(gi, s, 'qg').I,
+                             ddt(mult * T * Qg)),              # noqa: F821
+                Contribution(Branch(b, s, 'qb').I,
+                             ddt(mult * T * Qb)),              # noqa: F821
+                Contribution(Branch(d, s, 'qd').I,
+                             ddt(mult * T * qd_t)))            # noqa: F821
 
 
     return analog
@@ -586,6 +608,10 @@ class PspMosLongChannel(Behavioural):
                   unit='m', default=0.0),
         Parameter(name='qq', desc='Quantum correction coefficient',
                   unit='', default=0.0),
+        Parameter(name='rg', desc='Gate resistance', unit='ohm',
+                  default=0.0),
+        Parameter(name='mult', desc='Multiplicity (devices in parallel)',
+                  unit='', default=1.0),
         Parameter(name='xcor', desc='Body-bias mobility correction',
                   unit='1/V', default=0.0),
         Parameter(name='dnsub', desc='Bias-dependent body factor',
@@ -620,6 +646,43 @@ class PspMosLongChannel(Behavioural):
     #: near a solution and tight enough that a Newton step cannot leave
     #: the region where the device has any gradient at all.
     vlimit = 1.0
+
+    def bias(self, vd, vg, vs=0.0, vb=0.0):
+        """The node-voltage vector for a given TERMINAL bias.
+
+        Use this rather than building the vector by hand.  The element
+        grows internal nodes as parasitics are switched on -- the gate
+        resistance puts one behind `g` right now, and the junction model
+        will add more -- so a hard-coded four-vector silently becomes
+        the wrong length, and before that it silently addresses the
+        wrong node.
+
+        Internal nodes are set to their zero-current values, which is
+        exact for a DC evaluation: no current flows into the gate, so
+        the internal gate sits at the external one.
+        """
+        x = np.zeros(self.n, dtype=float)
+        x[0], x[1], x[2], x[3] = vd, vg, vs, vb
+        for k, node in enumerate(self.nodes):
+            if str(node) == 'gi':
+                x[k] = vg
+        return x
+
+    @property
+    def gate_index(self):
+        """Row and column of the INTRINSIC gate in this element's
+        matrices.
+
+        With a gate resistance the intrinsic gate is an internal node,
+        not the terminal: every charge the model contributes hangs off
+        it, so the terminal's own row is empty and `C[1, 1]` is zero.
+        PSP measures its `cgg` at the same place -- its internal `GP` --
+        so this is the index a comparison against it wants.
+        """
+        for k, node in enumerate(self.nodes):
+            if str(node) == 'gi':
+                return k
+        return 1
 
     def limit(self, x, x0, epar=defaultepar):
         """Bound this device's branch voltages per Newton iteration.

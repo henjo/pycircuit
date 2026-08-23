@@ -1105,10 +1105,12 @@ def generate_code(cls):
             if tgt is not None:
                 alias[nd] = next(o for o in nodes if o.name == tgt)
         nodes = {alias.get(nd, nd) for nd in nodes}
-        ## Rewrite the surviving statements' node references.
-        for st in statements:
+
+        def _realias(expr):
+            """Point every node/branch reference in `expr` at its
+            surviving node.  Returns None when nothing changed."""
             subs_q = {}
-            for atom in st.rhs.atoms(Quantity):
+            for atom in expr.atoms(Quantity):
                 bn = atom.branch_or_node
                 if isinstance(bn, Branch):
                     np_, nm_ = alias.get(bn.plus, bn.plus), \
@@ -1122,8 +1124,30 @@ def generate_code(cls):
                         subs_q[atom] = Quantity(atom.quantity, nb)
                 elif bn in alias:
                     subs_q[atom] = Quantity(atom.quantity, alias[bn])
-            if subs_q:
-                st.rhs = st.rhs.subs(subs_q)
+            return expr.subs(subs_q) if subs_q else None
+
+        ## THE INTERMEDIATES HAVE TO BE REWRITTEN TOO, and for a while
+        ## they were not.  On the let-chain path a statement's RHS is
+        ## mostly `var()` SYMBOLS, and the branch voltages that mention
+        ## the collapsed node live in those symbols' DEFINITIONS rather
+        ## than in the statement.  Rewriting only the statements left the
+        ## definitions pointing at a node that no longer existed, and the
+        ## printer emitted a bare `V` -- a `NameError` at call time, from
+        ## a model that compiled without complaint.
+        ##
+        ## It went unnoticed because `Collapse` was built and tested
+        ## against the flatten path, where there are no intermediates to
+        ## miss.  Any model that uses both features hits it immediately.
+        for k, (sym_, expr_) in enumerate(intermediates):
+            new_ = _realias(expr_)
+            if new_ is not None:
+                intermediates[k] = (sym_, new_)
+
+        ## Rewrite the surviving statements' node references.
+        for st in statements:
+            new_ = _realias(st.rhs)
+            if new_ is not None:
+                st.rhs = new_
             lb = st.lhs.branch_or_node
             np_, nm_ = alias.get(lb.plus, lb.plus), alias.get(lb.minus,
                                                               lb.minus)

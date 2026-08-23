@@ -72,12 +72,10 @@ def _compare(deck, sweep):
     r = np.abs(np.asarray(sweep['i_d'], float))
     b = sweep['bias']
     if sweep['sweep'] == 'Vd':
-        got = np.array([np.asarray(e.i(np.array([x, b['Vg'], b['Vs'],
-                                                 b['Vb']])), float)[0]
+        got = np.array([np.asarray(e.i(e.bias(x, b['Vg'], b['Vs'], b['Vb'])), float)[0]
                         for x in v])
     else:
-        got = np.array([np.asarray(e.i(np.array([b['Vd'], x, b['Vs'],
-                                                 b['Vb']])), float)[0]
+        got = np.array([np.asarray(e.i(e.bias(b['Vd'], x, b['Vs'], b['Vb'])), float)[0]
                         for x in v])
     m = r > FLOOR
     return v[m], r[m], np.abs(got[m]), kw
@@ -175,7 +173,7 @@ class TestAgainstTheRealDevice(object):
         on.update_iparv()
         off.update_iparv()
         for vd in (0.05, 0.4, 0.9, 1.5):
-            x = np.array([vd, 1.2, 0.0, 0.0])
+            x = on.bias(vd, 1.2)
             assert (np.asarray(on.i(x), float)[0]
                     < np.asarray(off.i(x), float)[0])
 
@@ -216,7 +214,7 @@ class TestAgainstTheRealDevice(object):
         on.update_iparv()
         off.update_iparv()
         for vg in (0.6, 1.0, 1.5):
-            x = np.array([0.05, vg, 0.0, 0.0])
+            x = on.bias(0.05, vg)
             assert (np.asarray(on.i(x), float)[0]
                     < np.asarray(off.i(x), float)[0])
 
@@ -265,8 +263,8 @@ class TestAgainstTheRealDevice(object):
                                 cm.Node('b'), **dict(kw, alp=0.0))
         on.update_iparv()
         off.update_iparv()
-        deep = np.array([1.5, 1.2, 0.0, 0.0])
-        lin = np.array([0.02, 1.2, 0.0, 0.0])
+        deep = on.bias(1.5, 1.2)
+        lin = on.bias(0.02, 1.2)
         assert (np.asarray(on.i(deep), float)[0]
                 > np.asarray(off.i(deep), float)[0])
         assert np.asarray(on.i(lin), float)[0] == pytest.approx(
@@ -523,7 +521,7 @@ class TestPolysiliconDepletion(object):
         on.update_iparv()
         off.update_iparv()
         for vg in (0.6, 1.0, 1.4, 1.8):
-            x = np.array([0.05, vg, 0.0, 0.0])
+            x = on.bias(0.05, vg)
             r = (np.asarray(on.i(x), float)[0]
                  / np.asarray(off.i(x), float)[0])
             assert 0.95 < r < 1.0, 'Vg=%.1f ratio %.4f' % (vg, r)
@@ -557,10 +555,10 @@ class TestPolysiliconDepletion(object):
             'anything'
         for vg in (0.6, 1.2, 1.8):
             for vd in (0.05, 0.3, 0.9, 1.5):
-                f = np.asarray(e.i(np.array([vd, vg, 0.0, 0.0])), float)
-                r = np.asarray(e.i(np.array([0.0, vg, vd, 0.0])), float)
+                f = np.asarray(e.i(e.bias(vd, vg, 0.0, 0.0)), float)
+                r = np.asarray(e.i(e.bias(0.0, vg, vd, 0.0)), float)
                 assert f[0] == pytest.approx(-r[0], rel=1e-14), (vg, vd)
-            q = np.asarray(e.q(np.array([0.5, vg, 0.0, 0.0])), float)
+            q = np.asarray(e.q(e.bias(0.5, vg, 0.0, 0.0)), float)
             assert abs(q.sum()) < 4e-16 * max(np.abs(q).max(), 1e-30)
 
 
@@ -627,7 +625,7 @@ class TestTheChannelShorteningFactor(object):
         off.update_iparv()
         lift = {}
         for vg in (0.6, 1.8):
-            x = np.array([1.4, vg, 0.0, 0.0])
+            x = on.bias(1.4, vg)
             lift[vg] = (np.asarray(on.i(x), float)[0]
                         / np.asarray(off.i(x), float)[0])
         assert lift[0.6] > 1.4, lift
@@ -665,12 +663,10 @@ class TestTheChannelShorteningFactor(object):
                 r = np.abs(np.asarray(s['i_d'], float))
                 b = s['bias']
                 if s['sweep'] == 'Vd':
-                    g = np.array([np.asarray(e.i(np.array(
-                        [x, b['Vg'], b['Vs'], b['Vb']])), float)[0]
+                    g = np.array([np.asarray(e.i(e.bias(x, b['Vg'], b['Vs'], b['Vb'])), float)[0]
                         for x in v])
                 else:
-                    g = np.array([np.asarray(e.i(np.array(
-                        [b['Vd'], x, b['Vs'], b['Vb']])), float)[0]
+                    g = np.array([np.asarray(e.i(e.bias(b['Vd'], x, b['Vs'], b['Vb'])), float)[0]
                         for x in v])
                 m = r > 1e-6
                 tot[k] += np.median(np.abs(np.abs(g[m]) / r[m] - 1.0))
@@ -882,12 +878,10 @@ class TestTheShortChannelTerms(object):
                 r = np.abs(np.asarray(sw['i_d'], float))
                 b = sw['bias']
                 if sw['sweep'] == 'Vd':
-                    g = np.array([np.asarray(e.i(np.array(
-                        [x, b['Vg'], b['Vs'], b['Vb']])), float)[0]
+                    g = np.array([np.asarray(e.i(e.bias(x, b['Vg'], b['Vs'], b['Vb'])), float)[0]
                         for x in v])
                 else:
-                    g = np.array([np.asarray(e.i(np.array(
-                        [b['Vd'], x, b['Vs'], b['Vb']])), float)[0]
+                    g = np.array([np.asarray(e.i(e.bias(b['Vd'], x, b['Vs'], b['Vb'])), float)[0]
                         for x in v])
                 m = r > 1e-6
                 q = np.abs(g[m]) / r[m]
@@ -920,8 +914,7 @@ class TestTheShortChannelTerms(object):
             e = PspPmosLongChannel(cm.Node('d'), cm.Node('g'),
                                    cm.Node('s'), cm.Node('b'), **kw)
             e.update_iparv()
-            g = np.array([np.asarray(e.i(np.array(
-                [b['Vd'], x, b['Vs'], b['Vb']])), float)[0] for x in v])
+            g = np.array([np.asarray(e.i(e.bias(b['Vd'], x, b['Vs'], b['Vb'])), float)[0] for x in v])
             q = np.abs(g[m]) / r[m]
             out[on] = q.max() / q.min() - 1.0
         assert out[False] > 1.0, out
@@ -1070,16 +1063,16 @@ class TestTheChannelTypes(object):
         e = self._fet(deck)
         for vg in (-0.6, -1.2):
             for vd in (-0.1, -0.9):
-                f = np.asarray(e.i(np.array([vd, vg, 0.0, 0.0])),
+                f = np.asarray(e.i(e.bias(vd, vg, 0.0, 0.0)),
                                float)[0]
-                r = np.asarray(e.i(np.array([0.0, vg, vd, 0.0])),
+                r = np.asarray(e.i(e.bias(0.0, vg, vd, 0.0)),
                                float)[0]
                 assert f == pytest.approx(-r, rel=1e-13), (vg, vd)
 
     def test_it_conserves_charge_like_the_n_channel(self, deck):
         e = self._fet(deck)
-        for x in (np.array([-0.9, -1.4, 0.0, 0.0]),
-                  np.array([-0.05, -0.6, 0.0, 0.3])):
+        for x in (e.bias(-0.9, -1.4, 0.0, 0.0),
+                  e.bias(-0.05, -0.6, 0.0, 0.3)):
             q = np.asarray(e.q(x), float)
             assert abs(q.sum()) < 1e-24 * max(1.0, np.abs(q).max())
 
@@ -1089,6 +1082,7 @@ class TestTheChannelTypes(object):
                                    np.array([-0.05, -0.4, 0.0, 0.5])])
     def test_its_jacobian_is_finite_and_correct(self, deck, x):
         e = self._fet(deck)
+        x = e.bias(*x)
         with warnings.catch_warnings():
             warnings.simplefilter('error')
             i = np.asarray(e.i(x), float)
@@ -1106,7 +1100,7 @@ class TestTheChannelTypes(object):
 
     def test_the_current_conducts_with_the_right_polarity(self, deck):
         e = self._fet(deck)
-        i = np.asarray(e.i(np.array([-1.2, -1.2, 0.0, 0.0])), float)
+        i = np.asarray(e.i(e.bias(-1.2, -1.2, 0.0, 0.0)), float)
         assert i[0] < 0.0, 'drain sinks current for a p-channel'
         assert i[2] > 0.0, 'source sources it'
         assert i[1] == 0.0, 'no gate current in the intrinsic core'
@@ -1275,12 +1269,10 @@ class TestTheBiasDependentBodyFactor(object):
                 r = np.abs(np.asarray(sw['i_d'], float))
                 b = sw['bias']
                 if sw['sweep'] == 'Vd':
-                    g = np.array([np.asarray(e.i(np.array(
-                        [x, b['Vg'], b['Vs'], b['Vb']])), float)[0]
+                    g = np.array([np.asarray(e.i(e.bias(x, b['Vg'], b['Vs'], b['Vb'])), float)[0]
                         for x in v])
                 else:
-                    g = np.array([np.asarray(e.i(np.array(
-                        [b['Vd'], x, b['Vs'], b['Vb']])), float)[0]
+                    g = np.array([np.asarray(e.i(e.bias(b['Vd'], x, b['Vs'], b['Vb'])), float)[0]
                         for x in v])
                 m = r > 1e-6
                 tot += abs(np.median(np.abs(g[m]) / r[m]) - 1.0)
@@ -1342,8 +1334,7 @@ class TestTheSubthresholdSlope(object):
         v = np.asarray(sw['v'], float)
         r = np.abs(np.asarray(sw['i_d'], float))
         b = sw['bias']
-        g = np.abs(np.array([np.asarray(e.i(np.array(
-            [b['Vd'], x, b['Vs'], b['Vb']])), float)[0] for x in v]))
+        g = np.abs(np.array([np.asarray(e.i(e.bias(b['Vd'], x, b['Vs'], b['Vb'])), float)[0] for x in v]))
         theirs, ours = self._slope(v, r), self._slope(v, g)
         assert abs(ours - theirs) < 1.0, (name, theirs, ours)
 
@@ -1444,8 +1435,7 @@ class TestTheBodyBiasMobilityCorrection(object):
                               cm.Node('b'), **off)
         a.update_iparv()
         b.update_iparv()
-        for x in (np.array([0.05, 1.2, 0.0, 0.0]),
-                  np.array([1.2, 0.8, 0.0, 0.0])):
+        for x in (a.bias(0.05, 1.2), a.bias(1.2, 0.8)):
             ia = np.asarray(a.i(x), float)[0]
             ib = np.asarray(b.i(x), float)[0]
             assert abs(ia - ib) < 1e-5 * abs(ib), (x, ia, ib)
@@ -1466,8 +1456,7 @@ class TestTheBodyBiasMobilityCorrection(object):
                                   cm.Node('s'), cm.Node('b'),
                                   **(kw if on else dict(kw, xcor=0.0)))
             e.update_iparv()
-            g = np.abs(np.array([np.asarray(e.i(np.array(
-                [b['Vd'], x, b['Vs'], b['Vb']])), float)[0] for x in v]))
+            g = np.abs(np.array([np.asarray(e.i(e.bias(b['Vd'], x, b['Vs'], b['Vb'])), float)[0] for x in v]))
             got[on] = np.median(g[m] / r[m])
         assert abs(got[False] - 1.0) > 0.02, got
         assert abs(got[True] - 1.0) < 0.005, got
@@ -1566,10 +1555,12 @@ class TestTheChargeModelAgainstTheVendor(object):
         e = self._fet(deck, 'sg13g2_lv_%s_psp' % kind, cls, gd['w'],
                       gd['l'])
         for pt in gd['points']:
-            x = np.array([pt['vd'], pt['vg'], 0.0, pt['vb']])
+            x = e.bias(pt['vd'], pt['vg'], 0.0, pt['vb'])
             C = np.asarray(e.C(x), float)
-            assert C[1, 1] == pytest.approx(pt['cgg'], rel=0.002), \
-                (kind, pt['vg'], pt['vd'], pt['vb'], C[1, 1], pt['cgg'])
+            gi = e.gate_index
+            assert C[gi, gi] == pytest.approx(pt['cgg'], rel=0.002), \
+                (kind, pt['vg'], pt['vd'], pt['vb'],
+                 C[e.gate_index, e.gate_index], pt['cgg'])
 
     @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
     def test_the_source_and_bulk_capacitances_match_too(self, deck, op,
@@ -1582,14 +1573,17 @@ class TestTheChargeModelAgainstTheVendor(object):
         e = self._fet(deck, 'sg13g2_lv_%s_psp' % kind, cls, gd['w'],
                       gd['l'])
         for pt in gd['points']:
-            x = np.array([pt['vd'], pt['vg'], 0.0, pt['vb']])
+            x = e.bias(pt['vd'], pt['vg'], 0.0, pt['vb'])
             C = np.asarray(e.C(x), float)
+            gi = e.gate_index
             ## Column order is (vd, vg, vs, vb); PSP reports `cgs` and
-            ## `cgb` as the negated cross terms.
-            assert -C[1, 2] == pytest.approx(pt['cgs'], rel=0.01), \
+            ## `cgb` as the negated cross terms.  The ROW is the
+            ## intrinsic gate, which is an internal node once the gate
+            ## resistance is on.
+            assert -C[gi, 2] == pytest.approx(pt['cgs'], rel=0.01), \
                 ('cgs', kind, pt['vg'], pt['vd'])
             if abs(pt['cgb']) > 1e-16:
-                assert -C[1, 3] == pytest.approx(pt['cgb'], rel=0.10), \
+                assert -C[gi, 3] == pytest.approx(pt['cgb'], rel=0.10), \
                     ('cgb', kind, pt['vg'], pt['vd'])
 
     def test_both_corrections_are_needed(self, deck, op):
@@ -1607,7 +1601,6 @@ class TestTheChargeModelAgainstTheVendor(object):
             w=gd['w'], l=gd['l'])
         pt = [q for q in gd['points']
               if q['vg'] == 1.2 and q['vd'] == 0.05][0]
-        x = np.array([pt['vd'], pt['vg'], 0.0, pt['vb']])
         got = {}
         for tag, kw in (('both', base),
                         ('no cv dims', dict(base, wcv=0.0, lcv=0.0)),
@@ -1615,7 +1608,8 @@ class TestTheChargeModelAgainstTheVendor(object):
             e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
                                   cm.Node('b'), **kw)
             e.update_iparv()
-            got[tag] = np.asarray(e.C(x), float)[1, 1] / pt['cgg']
+            x = e.bias(pt['vd'], pt['vg'], 0.0, pt['vb'])
+            got[tag] = np.asarray(e.C(x), float)[e.gate_index, e.gate_index] / pt['cgg']
         assert abs(got['both'] - 1.0) < 0.03, got
         assert got['no cv dims'] > 1.05, got
         assert got['no qm'] > 1.08, got
@@ -1634,7 +1628,7 @@ class TestTheChargeModelAgainstTheVendor(object):
         e = self._fet(deck, 'sg13g2_lv_nmos_psp', PspMosLongChannel,
                       gd['w'], gd['l'])
         for pt in gd['points']:
-            x = np.array([pt['vd'], pt['vg'], 0.0, pt['vb']])
+            x = e.bias(pt['vd'], pt['vg'], 0.0, pt['vb'])
             C = np.asarray(e.C(x), float)
             q = np.asarray(e.q(x), float)
             assert abs(q.sum()) < 1e-24 * max(1.0, np.abs(q).max())
@@ -1712,8 +1706,7 @@ class TestThePhysicalConstants(object):
         v = np.asarray(sw['v'], float)
         r = np.asarray(sw['i_d'], float)
         b = sw['bias']
-        g = np.array([np.asarray(e.i(np.array(
-            [b['Vd'], x, b['Vs'], b['Vb']])), float)[0] for x in v])
+        g = np.array([np.asarray(e.i(e.bias(b['Vd'], x, b['Vs'], b['Vb'])), float)[0] for x in v])
         tgt = 1e-7 * sw['w'] / sw['l']
 
         def extract(cur):
@@ -1784,8 +1777,7 @@ class TestChannelLengthModulationInTheCharges(object):
             for pt in gd['points']:
                 if abs(pt['vd']) > 0.1:
                     continue
-                C = np.asarray(e.C(np.array(
-                    [pt['vd'], pt['vg'], 0.0, pt['vb']])), float)
+                C = np.asarray(e.C(e.bias(pt['vd'], pt['vg'], 0.0, pt['vb'])), float)
                 assert C[1, 1] == pytest.approx(pt['cgg'], rel=1e-3), \
                     (kind, gd['l'], pt['vg'], pt['vd'])
 
@@ -1795,12 +1787,13 @@ class TestChannelLengthModulationInTheCharges(object):
         gd = n['short']
         pt = [q for q in gd['points']
               if q['vg'] == 0.8 and q['vd'] == 1.2][0]
-        x = np.array([pt['vd'], pt['vg'], 0.0, pt['vb']])
-        on = np.asarray(self._fet(deck, 'nmos', gd).C(x), float)[1, 1]
+        e_on = self._fet(deck, 'nmos', gd)
+        e_off = self._fet(deck, 'nmos', gd, alp=0.0)
+        bias = (pt['vd'], pt['vg'], 0.0, pt['vb'])
+        on = np.asarray(e_on.C(e_on.bias(*bias)), float)[e_on.gate_index, e_on.gate_index]
         ## `alp = 0` removes channel-length modulation from the current
         ## AND the charges, which is what `GdL = 1` meant.
-        off = np.asarray(self._fet(deck, 'nmos', gd,
-                                   alp=0.0).C(x), float)[1, 1]
+        off = np.asarray(e_off.C(e_off.bias(*bias)), float)[e_off.gate_index, e_off.gate_index]
         assert abs(off / pt['cgg'] - 1.0) > 4.0 * abs(on / pt['cgg'] - 1.0)
         assert abs(on / pt['cgg'] - 1.0) < 0.03, on / pt['cgg']
 
@@ -1817,8 +1810,7 @@ class TestChannelLengthModulationInTheCharges(object):
         gd = (p if kind == 'pmos' else n)['long']
         e = self._fet(deck, kind, gd)
         for pt in gd['points']:
-            C = np.asarray(e.C(np.array(
-                [pt['vd'], pt['vg'], 0.0, pt['vb']])), float)
+            C = np.asarray(e.C(e.bias(pt['vd'], pt['vg'], 0.0, pt['vb'])), float)
             assert C[1, 1] == pytest.approx(pt['cgg'], rel=1e-3), \
                 (kind, pt['vg'], pt['vd'], pt['vb'])
 
@@ -1853,7 +1845,9 @@ class TestChannelLengthModulationInTheCharges(object):
         n, _ = op
         gd = n['short']
         e = self._fet(deck, 'nmos', gd)
-        worst = max(abs(np.asarray(e.C(np.array(
-            [pt['vd'], pt['vg'], 0.0, pt['vb']])), float)[1, 1]
-            / pt['cgg'] - 1.0) for pt in gd['points'])
+        gi = e.gate_index
+        worst = max(
+            abs(np.asarray(e.C(e.bias(pt['vd'], pt['vg'], 0.0,
+                                      pt['vb'])), float)[gi, gi]
+                / pt['cgg'] - 1.0) for pt in gd['points'])
         assert worst < 0.03, worst

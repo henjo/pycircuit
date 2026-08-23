@@ -219,7 +219,7 @@ class TestTheElement(object):
         the device, the same convention a generated resistor uses.
         """
         e = self._fet()
-        i = np.asarray(e.i(np.array([0.6, 1.5, 0.0, 0.0])), float)
+        i = np.asarray(e.i(e.bias(0.6, 1.5, 0.0, 0.0)), float)
         assert i[0] > 0, 'drain'
         assert i[2] < 0, 'source'
         assert i[1] == 0.0, 'no gate current in the intrinsic core'
@@ -243,8 +243,8 @@ class TestTheElement(object):
         happened.
         """
         e = self._fet()
-        fwd = np.asarray(e.i(np.array([0.7, 1.2, 0.0, 0.0])), float)
-        rev = np.asarray(e.i(np.array([0.0, 1.2, 0.7, 0.0])), float)
+        fwd = np.asarray(e.i(e.bias(0.7, 1.2, 0.0, 0.0)), float)
+        rev = np.asarray(e.i(e.bias(0.0, 1.2, 0.7, 0.0)), float)
         assert fwd[0] == pytest.approx(-rev[0], rel=1e-14)
         assert fwd[2] == pytest.approx(-rev[2], rel=1e-14)
 
@@ -260,7 +260,7 @@ class TestTheElement(object):
 
     def test_transconductance_and_output_conductance_are_positive(self):
         e = self._fet()
-        G = np.asarray(e.G(np.array([0.6, 1.2, 0.0, 0.0])), float)
+        G = np.asarray(e.G(e.bias(0.6, 1.2, 0.0, 0.0)), float)
         ## d(i_drain)/d(v_gate) and d(i_drain)/d(v_drain)
         assert G[0, 1] > 0, 'gm'
         assert G[0, 0] > 0, 'gds'
@@ -380,7 +380,7 @@ class TestTheChargeModel(object):
         e = self._fet()
         frac = {}
         for vd in (0.0, 0.05, 0.5, 1.2, 1.8):
-            q = np.asarray(e.q(np.array([vd, 1.2, 0.0, 0.0])), float)
+            q = np.asarray(e.q(e.bias(vd, 1.2, 0.0, 0.0)), float)
             frac[vd] = q[0] / (q[0] + q[2])
         assert frac[0.0] == pytest.approx(0.5, abs=1e-12)
         assert frac[1.8] == pytest.approx(0.40, abs=0.01)
@@ -401,8 +401,8 @@ class TestTheChargeModel(object):
         e = self._fet()
         for vg in (0.4, 0.8, 1.2, 1.8):
             for vd in (0.05, 0.3, 0.8, 1.5):
-                fwd = np.asarray(e.q(np.array([vd, vg, 0.0, 0.0])), float)
-                rev = np.asarray(e.q(np.array([0.0, vg, vd, 0.0])), float)
+                fwd = np.asarray(e.q(e.bias(vd, vg, 0.0, 0.0)), float)
+                rev = np.asarray(e.q(e.bias(0.0, vg, vd, 0.0)), float)
                 assert fwd[0] == pytest.approx(rev[2], rel=1e-14)
                 assert fwd[2] == pytest.approx(rev[0], rel=1e-14)
                 assert fwd[1] == pytest.approx(rev[1], rel=1e-14), \
@@ -419,7 +419,7 @@ class TestTheChargeModel(object):
         subthreshold current either.
         """
         e = self._fet()
-        q = np.asarray(e.q(np.array([0.0, -0.5, 0.0, 0.0])), float)
+        q = np.asarray(e.q(e.bias(0.0, -0.5, 0.0, 0.0)), float)
         assert q[1] > 0, 'gate charge'
         assert q[3] == pytest.approx(-q[1], rel=1e-10), 'bulk mirrors it'
         assert 0 < abs(q[0]) < 1e-10 * abs(q[1]), 'inversion charge is tiny'
@@ -427,7 +427,7 @@ class TestTheChargeModel(object):
 
     def test_gate_charge_grows_with_gate_bias(self):
         e = self._fet()
-        qg = [np.asarray(e.q(np.array([0.1, v, 0.0, 0.0])), float)[1]
+        qg = [np.asarray(e.q(e.bias(0.1, v, 0.0, 0.0)), float)[1]
               for v in np.linspace(-0.5, 2.0, 40)]
         assert all(b > a for a, b in zip(qg, qg[1:]))
 
@@ -441,7 +441,7 @@ class TestTheChargeModel(object):
         from pycircuit.circuit.compact import EPS_OX
         e = self._fet(w=10e-6, l=1e-6, tox=2.2e-9)
         cox_tot = EPS_OX / 2.2e-9 * 10e-6 * 1e-6
-        cgg = np.asarray(e.C(np.array([0.05, 1.8, 0.0, 0.0])),
+        cgg = np.asarray(e.C(e.bias(0.05, 1.8, 0.0, 0.0)),
                          float)[1, 1]
         assert 0.0 < cgg <= cox_tot * (1.0 + 1e-12)
         assert cgg > 0.5 * cox_tot, 'should be well into inversion'
@@ -506,8 +506,8 @@ class TestMobilityAndVelocitySaturation(object):
         e = self._fet()
         for vg in (0.4, 0.9, 1.4, 1.8):
             for vd in (0.05, 0.3, 0.9, 1.6):
-                fwd = np.asarray(e.i(np.array([vd, vg, 0.0, 0.0])), float)
-                rev = np.asarray(e.i(np.array([0.0, vg, vd, 0.0])), float)
+                fwd = np.asarray(e.i(e.bias(vd, vg, 0.0, 0.0)), float)
+                rev = np.asarray(e.i(e.bias(0.0, vg, vd, 0.0)), float)
                 assert fwd[0] == pytest.approx(-rev[0], rel=1e-14), (vg, vd)
 
     def test_charge_conservation_survives_it_too(self):
@@ -555,7 +555,7 @@ class TestMobilityAndVelocitySaturation(object):
     def test_it_still_saturates_and_stays_monotone(self):
         e = self._fet()
         vds = np.linspace(0.01, 1.8, 40)
-        cur = np.array([np.asarray(e.i(np.array([v, 1.4, 0.0, 0.0])),
+        cur = np.array([np.asarray(e.i(e.bias(v, 1.4, 0.0, 0.0)),
                                    float)[0] for v in vds])
         assert np.all(np.diff(cur) > -1e-12 * cur[:-1])
         lin = (cur[3] - cur[0]) / (vds[3] - vds[0])
@@ -636,7 +636,7 @@ class TestTheSaturationVoltage(object):
         e = self._fet()
         g = {}
         for vd in (0.3, 1.0, 5.0, 50.0):
-            G = np.asarray(e.G(np.array([vd, 1.8, 0.0, 0.0])), float)
+            G = np.asarray(e.G(e.bias(vd, 1.8, 0.0, 0.0)), float)
             g[vd] = G[0, 0]
         assert g[0.3] > g[1.0] > g[5.0] > g[50.0] > 0.0, g
         assert g[0.3] / g[50.0] > 1e5, g
@@ -655,9 +655,9 @@ class TestTheSaturationVoltage(object):
         e = self._fet()
         with warnings.catch_warnings():
             warnings.simplefilter('error')
-            i0 = np.asarray(e.i(np.array([2.0, 1.8, 0.0, 0.0])), float)[0]
-            i = np.asarray(e.i(np.array([vd, 1.8, 0.0, 0.0])), float)
-            G = np.asarray(e.G(np.array([vd, 1.8, 0.0, 0.0])), float)
+            i0 = np.asarray(e.i(e.bias(2.0, 1.8, 0.0, 0.0)), float)[0]
+            i = np.asarray(e.i(e.bias(vd, 1.8, 0.0, 0.0)), float)
+            G = np.asarray(e.G(e.bias(vd, 1.8, 0.0, 0.0)), float)
         assert np.all(np.isfinite(i)) and np.all(np.isfinite(G))
         assert i[0] < 1.5 * i0, (vd, i[0], i0)
 
@@ -699,8 +699,8 @@ class TestTheSaturationVoltage(object):
     def test_it_is_still_antisymmetric_out_there(self, vd):
         """The two-armed `Vdse` must not break the terminal ordering."""
         e = self._fet()
-        f = np.asarray(e.i(np.array([vd, 1.8, 0.0, 0.0])), float)[0]
-        r = np.asarray(e.i(np.array([0.0, 1.8, vd, 0.0])), float)[0]
+        f = np.asarray(e.i(e.bias(vd, 1.8, 0.0, 0.0)), float)[0]
+        r = np.asarray(e.i(e.bias(0.0, 1.8, vd, 0.0)), float)[0]
         assert f == pytest.approx(-r, rel=1e-12), (vd, f, r)
 
 
@@ -773,7 +773,7 @@ class TestTheVoltageConditioning(object):
         limiter keeps it moving.
         """
         e = self._fet()
-        g = [np.asarray(e.G(np.array([vd, 1.8, 0.0, 0.0])),
+        g = [np.asarray(e.G(e.bias(vd, 1.8, 0.0, 0.0)),
                         float)[0, 0] for vd in (-1.0, -1.5, -2.5)]
         assert len(set(g)) == 3, g
 
@@ -888,3 +888,102 @@ class TestTheNewtonLimiter(object):
         res = DC(c, toolkit=numeric).solve()
         vd, vm = float(res.v(nd, gnd)), float(res.v(nm, gnd))
         assert 0.0 < vm < vd < 1.8
+
+
+class TestTheGateResistanceAndMultiplicity(object):
+    """The two structural parasitics, and the DSL bug the first found.
+
+    PSP attaches its gate resistance with `CollapsableR(ggate, RG_i, ...,
+    G, GP, "rgate")` (`PSP103_module.include:1718`) -- an internal node
+    behind a resistor that disappears when `RG = 0`.  That is exactly
+    what `Collapse()` was built for earlier on this branch, so the model
+    side was four lines.
+
+    Wiring it up exposed a real DSL bug, though.  `Collapse` rewrites
+    node references so a collapsed branch's two ends become one, and it
+    rewrote only the STATEMENTS.  On the let-chain path a statement's
+    right-hand side is mostly `var()` symbols, and the branch voltages
+    that mention the collapsed node live in those symbols' DEFINITIONS.
+    Rewriting only the statements left the definitions pointing at a
+    node that no longer existed, and the printer emitted a bare `V` --
+    a `NameError` at call time from a model that compiled clean.
+
+    It had gone unnoticed because `Collapse` was built and tested
+    against the flatten path, where there are no intermediates to miss.
+    Any model using both features hits it on the first evaluation.
+    """
+
+    def _fet(self, **kw):
+        kw.setdefault('w', 10e-6)
+        kw.setdefault('l', 1e-6)
+        e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                              cm.Node('b'), **kw)
+        e.update_iparv()
+        return e
+
+    def test_zero_resistance_absorbs_the_node(self):
+        assert self._fet(rg=0.0).n == 4
+        assert self._fet(rg=1.3).n == 5
+
+    def test_the_collapsed_and_uncollapsed_devices_agree(self):
+        """The regression for the let-chain bug.
+
+        A collapsed instance has to evaluate, and to the same answer:
+        with no gate current there is no drop across the resistor, so
+        the two devices are the same device.
+        """
+        on, off = self._fet(rg=1.3), self._fet(rg=0.0)
+        for vd, vg in ((1.2, 1.2), (0.05, 0.8), (1.2, 0.4)):
+            a = np.asarray(on.i(on.bias(vd, vg)), float)[0]
+            b = np.asarray(off.i(off.bias(vd, vg)), float)[0]
+            assert a == pytest.approx(b, rel=1e-12), (vd, vg, a, b)
+
+    def test_the_resistor_is_actually_there(self):
+        """Not merely tolerated -- it has to conduct.
+
+        Driving the external gate while holding the internal one shows
+        the conductance, and it is `1/rg`.
+        """
+        e = self._fet(rg=50.0)
+        x = e.bias(0.6, 1.0)
+        x[e.gate_index] = 0.9          # 0.1 V across the resistor
+        i = np.asarray(e.i(x), float)
+        assert i[1] == pytest.approx(0.1 / 50.0, rel=1e-9), i[1]
+
+    def test_multiplicity_scales_current_and_charge(self):
+        one, three = self._fet(rg=1.3), self._fet(rg=1.3, mult=3.0)
+        x1, x3 = one.bias(1.2, 1.2), three.bias(1.2, 1.2)
+        assert (np.asarray(three.i(x3), float)[0]
+                == pytest.approx(3.0 * np.asarray(one.i(x1),
+                                                  float)[0], rel=1e-12))
+        assert (np.asarray(three.q(x3), float)[1]
+                == pytest.approx(3.0 * np.asarray(one.q(x1),
+                                                  float)[1], rel=1e-12))
+
+    def test_multiplicity_divides_the_gate_resistance(self):
+        """`mult` devices in parallel present `rg/mult`.
+
+        Which is the same statement as everything else scaling by
+        `mult`: the resistor's CONDUCTANCE scales like every other
+        contribution, rather than the resistance being left alone.
+        """
+        one, two = self._fet(rg=50.0), self._fet(rg=50.0, mult=2.0)
+        for e, expect in ((one, 0.1 / 50.0), (two, 2.0 * 0.1 / 50.0)):
+            x = e.bias(0.6, 1.0)
+            x[e.gate_index] = 0.9
+            assert np.asarray(e.i(x), float)[1] == pytest.approx(
+                expect, rel=1e-9)
+
+    def test_bias_puts_the_internal_gate_where_dc_puts_it(self):
+        """`bias()` exists so callers stop hard-coding node vectors.
+
+        A four-vector was right until the gate resistance added a fifth
+        node, and would have been silently wrong rather than loudly
+        wrong if the node had been inserted anywhere but last.
+        """
+        e = self._fet(rg=1.3)
+        x = e.bias(1.2, 0.8, 0.1, -0.2)
+        assert len(x) == e.n == 5
+        assert list(x[:4]) == [1.2, 0.8, 0.1, -0.2]
+        assert x[e.gate_index] == 0.8, 'no gate current, so no drop'
+        assert self._fet(rg=0.0).gate_index == 1

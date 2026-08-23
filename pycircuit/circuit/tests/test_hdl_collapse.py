@@ -27,7 +27,7 @@ from pycircuit.circuit.elements import R, SubCircuit, VS
 from pycircuit.circuit.dcanalysis import DC
 from pycircuit.circuit.transient import Transient
 from pycircuit.circuit.hdl import (Behavioural, Branch, Collapse,
-                                   Contribution, Node)
+                                   Contribution, Node, var)
 from pycircuit.utilities.param import Parameter
 
 
@@ -372,3 +372,82 @@ class TestManyCollapsesTogether(object):
         res = DC(c, toolkit=numeric).solve()
         want = -1.0 / (sum(rvals) + 1e3)
         assert float(res.i('vs.plus')) == pytest.approx(want, rel=1e-9)
+
+
+class TestCollapseOnTheLetChainPath(object):
+    """A collapse has to rewrite the INTERMEDIATES, not just the
+    statements.
+
+    `Collapse` renames a node so a branch's two ends become one, and it
+    used to rewrite only the statements it returned.  That is complete
+    on the flatten path, where a statement's right-hand side holds every
+    quantity it uses.  It is NOT complete on the let-chain path: there
+    the right-hand side is mostly `var()` symbols, and the branch
+    voltages mentioning the collapsed node live in those symbols'
+    DEFINITIONS.
+
+    The definitions were left pointing at a node that no longer existed,
+    and the printer emitted a bare `V` -- a `NameError` at call time,
+    from a model that had compiled without a word of complaint.  It went
+    unnoticed because the two features had only ever been tested apart.
+    """
+
+    class Chained(Behavioural):
+        """A conductance behind an optional resistor, written so that
+        the branch voltage reaches the statement through a `var()`."""
+
+        instparams = [Parameter(name='rd', desc='series R', unit='ohm',
+                                default=0.0),
+                      Parameter(name='gcore', desc='core G', unit='S',
+                                default=1e-3)]
+
+        @staticmethod
+        def analog(p, m):
+            di = Node('di')
+            br = Branch(p, di, 'rd')
+            core = Branch(di, m)
+            ## `var()` is what puts this on the let-chain path, and what
+            ## hides `core.V` from a statement-only rewrite.
+            v = var(core.V, 'vcore')
+            g = var(gcore * v, 'icore')                      # noqa: F821
+            return (Contribution(core.I, g),
+                    Contribution(br.I, br.V / rd),           # noqa: F821
+                    Collapse(br, rd <= 0))                   # noqa: F821
+
+    def test_the_collapsed_instance_evaluates(self):
+        """It used to raise `NameError: name 'V' is not defined`."""
+        e = self.Chained(Node('p'), Node('m'), rd=0.0, gcore=1e-3)
+        e.update_iparv()
+        assert e.n == 2, 'the internal node should be absorbed'
+        x = np.array([1.0, 0.0])
+        i = np.asarray(e.i(x), float)
+        assert np.all(np.isfinite(i))
+        assert i[0] == pytest.approx(1e-3, rel=1e-12)
+
+    def test_it_agrees_with_the_uncollapsed_device(self):
+        """A tiny series resistance is nearly no series resistance.
+
+        Compared at the `m` terminal, not at `p`.  The internal node has
+        to be given a value to evaluate at, and with it pinned at the
+        source voltage the resistor carries no drop by construction --
+        so the `p` current is zero for a reason that has nothing to do
+        with the model.  The core current is what both devices share.
+        """
+        off = self.Chained(Node('p'), Node('m'), rd=0.0, gcore=1e-3)
+        on = self.Chained(Node('p'), Node('m'), rd=1e-9, gcore=1e-3)
+        off.update_iparv()
+        on.update_iparv()
+        assert off.n == 2 and on.n == 3
+        a = np.asarray(off.i(np.array([1.0, 0.0])), float)[1]
+        b = np.asarray(on.i(np.array([1.0, 0.0, 1.0])), float)[1]
+        assert a == pytest.approx(b, rel=1e-12)
+        assert a == pytest.approx(-1e-3, rel=1e-12)
+
+    def test_the_jacobian_is_finite_either_way(self):
+        for rd in (0.0, 1e3):
+            e = self.Chained(Node('p'), Node('m'), rd=rd, gcore=1e-3)
+            e.update_iparv()
+            x = np.zeros(e.n)
+            x[0] = 1.0
+            G = np.asarray(e.G(x), float)
+            assert np.all(np.isfinite(G)), rd

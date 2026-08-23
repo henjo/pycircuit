@@ -100,12 +100,10 @@ def compare(deck, sweep):
     ref = np.abs(np.asarray(sweep['i_d'], float))
     b = sweep['bias']
     if sweep['sweep'] == 'Vd':
-        got = np.array([np.asarray(e.i(np.array([x, b['Vg'], b['Vs'],
-                                                 b['Vb']])), float)[0]
+        got = np.array([np.asarray(e.i(e.bias(x, b['Vg'], b['Vs'], b['Vb'])), float)[0]
                         for x in v])
     else:
-        got = np.array([np.asarray(e.i(np.array([b['Vd'], x, b['Vs'],
-                                                 b['Vb']])), float)[0]
+        got = np.array([np.asarray(e.i(e.bias(b['Vd'], x, b['Vs'], b['Vb'])), float)[0]
                         for x in v])
     m = ref > FLOOR
     return v[m], ref[m], np.abs(got[m]), kw
