@@ -407,6 +407,88 @@ class TestTheSubthresholdRegion(object):
         ## reverse-short-channel shift rather than a constant.
         assert n_short > n_long + 0.8, (n_long, n_short)
 
+    @staticmethod
+    def _card_kw(deck, sweep):
+        """Scaled parameters for the device a sweep names."""
+        w, l = sweep['w'], sweep['l']
+        pmos = 'pmos' in sweep['device']
+        return psp_scaling.to_long_channel(
+            deck.model_params(
+                'sg13g2_lv_pmos_psp' if pmos else 'sg13g2_lv_nmos_psp',
+                w=w, l=l, ng=1, m=1, pre_layout=1), w=w, l=l, T=T27)
+
+    #: The body-bias ladder, and what each rung measures.
+    LADDER = [('nmos_long_idvg_vb0p00', 0.0), ('nmos_long_idvg_vbm0p20', 0.2),
+              ('nmos_long_idvg_vbm0p40', 0.4), ('nmos_long_idvg_vbm0p70', 0.7),
+              ('nmos_long_idvg_vbm1p00', 1.0), ('nmos_long_idvg_vbm1p50', 1.5)]
+
+    def test_the_offset_grows_with_body_bias(self, deck, ref):
+        """Monotone in `Vsb`, which says it is not a `VFB` error.
+
+        A flat-band error is flat in body bias; this rises from +1.55 mV
+        at `Vsb = 0` to +2.71 mV at 1.5 V.  So whatever is left lives in
+        a term that body bias exercises -- the body factor, or the
+        `XCOR` mobility correction, which is identically 1 at `Vsb = 0`
+        and therefore contributes the whole of the difference and none
+        of the baseline.
+        """
+        got = [self._implied_vth(deck, ref[n])[0] for n, _ in self.LADDER]
+        assert all(b > a - 0.05 for a, b in zip(got, got[1:])), got
+        assert got[-1] - got[0] > 0.8, got
+
+    def test_the_two_candidates_cannot_be_separated_here(self, deck, ref):
+        """A NEGATIVE result, pinned so it is not re-attempted blind.
+
+        The two candidate terms have different shapes in principle -- a
+        body-factor error goes as `sqrt(phib + Vsb)`, `XCOR` as the
+        saturating `(1 + 0.2*XCOR*Vsb)/(1 + XCOR*Vsb)` -- so a ladder in
+        `Vsb` ought to tell them apart.  It does not, and the reason is
+        measurable rather than a matter of precision: over the `Vsb`
+        range this device can actually be measured in, the two bases are
+        **99.8% collinear**, and both are 99.7% collinear with a plain
+        straight line.
+
+        The range cannot be extended.  Below `Vg = 0` the reference
+        stops being diffusion subthreshold and becomes junction and GIDL
+        leakage, which PSP models and this element does not; the curve
+        flattens, `d ln I / dVg` goes to zero, and the measurement
+        divides by it.  Tried, and the numbers were nonsense.
+
+        So this is not "the fit was inconclusive".  It is that no fit to
+        this device can be conclusive, and separating the two needs a
+        different measurement rather than a better one.
+        """
+        vsb = np.array([v for _, v in self.LADDER])
+        kw = self._card_kw(deck, ref['nmos_long_idvg'])
+        phib, xcor = kw['phib'], kw['xcor']
+        b_sqrt = np.sqrt(phib + vsb) - np.sqrt(phib)
+        b_xcor = -np.log((1.0 + 0.2 * xcor * vsb) / (1.0 + xcor * vsb))
+        def corr(a, b):
+            a, b = a - a.mean(), b - b.mean()
+            return float(a @ b / np.sqrt((a @ a) * (b @ b)))
+        assert corr(b_sqrt, b_xcor) > 0.99, corr(b_sqrt, b_xcor)
+        assert corr(b_sqrt, vsb) > 0.99, corr(b_sqrt, vsb)
+
+    def test_the_body_factor_reading_of_it(self, deck, ref):
+        """IF it is all body factor, it is a 0.95% deficit.
+
+        Recorded as a bound on the size of whatever is left rather than
+        as a claim about which term it is -- the test above says the
+        two cannot be told apart, and this one says neither is large.
+        """
+        vsb = np.array([v for _, v in self.LADDER])
+        got = np.array([self._implied_vth(deck, ref[n])[0]
+                        for n, _ in self.LADDER])
+        kw = self._card_kw(deck, ref['nmos_long_idvg'])
+        basis = np.sqrt(kw['phib'] + vsb) - np.sqrt(kw['phib'])
+        A = np.vstack([np.ones_like(vsb), basis]).T
+        coef = np.linalg.lstsq(A, got, rcond=None)[0]
+        rms = np.sqrt(np.mean((A @ coef - got) ** 2))
+        assert rms < 0.25, rms
+        ## mV per sqrt(V), against a body factor of about 0.209
+        assert 1.0 < coef[1] < 3.0, coef
+        assert coef[1] * 1e-3 / 0.209 < 0.02, 'deficit under 2%%'
+
     def test_the_subthreshold_current_is_within_eleven_percent(self,
                                                                deck, ref):
         """The same statement in the units the sweeps use, so the
@@ -1798,6 +1880,51 @@ class TestTheChargeModelAgainstTheVendor(object):
             assert np.abs(C.sum(axis=1)).max() < 1e-12 * np.abs(C).max()
 
 
+@needs_pdk
+class TestTheDielectricComesFromTheCard(object):
+    """`EPSROX` is a card parameter, so the element must read it.
+
+    It used to be a module constant in `compact.py` while
+    `psp_scaling` read `EPSROXO` from the card.  Both are 3.9 on this
+    process, so the two agreed by LUCK -- and on a card with a
+    different gate dielectric they would have disagreed about `cox`,
+    silently, which is the body factor and the oxide capacitance at
+    once.  This branch has been caught three times by a coefficient
+    that happened to be harmless on the one card it was tested against;
+    this is the same shape, found before it cost anything.
+    """
+
+    def test_the_card_value_reaches_the_element(self, deck):
+        kw = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_nmos_psp', w=10e-6, l=1e-6,
+                              ng=1, m=1, pre_layout=1),
+            w=10e-6, l=1e-6, T=T27)
+        assert kw['epsrox'] == pytest.approx(3.9)
+
+    def test_changing_it_changes_the_current(self, deck):
+        """The guard that makes it not a coincidence: if the element
+        ignored the parameter this would pass unchanged."""
+        cm.default_toolkit = numeric
+        kw = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_nmos_psp', w=10e-6, l=1e-6,
+                              ng=1, m=1, pre_layout=1),
+            w=10e-6, l=1e-6, T=T27)
+        out = []
+        for eps in (3.9, 7.8):
+            e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                                  cm.Node('b'), **dict(kw, epsrox=eps))
+            e.update_iparv()
+            out.append(np.asarray(e.i(e.bias(0.05, 1.2)), float)[0])
+        ## Doubling the dielectric constant doubles `cox`, which raises
+        ## the drive and lowers the body factor -- the same direction as
+        ## halving the oxide thickness.  Measured: 1.35x at Vg = 1.2,
+        ## Vd = 0.05.  Less than 2x because the two effects do not
+        ## compound: more drive, but `BETN` and the body factor move
+        ## against it.
+        assert out[1] / out[0] > 1.25, out
+
+
+@needs_pdk
 class TestThePhysicalConstants(object):
     """The last residual was a physical constant, not a term.
 

@@ -438,9 +438,12 @@ class TestTheChargeModel(object):
         essentially the full oxide capacitance; it can approach that
         value but not pass it.
         """
-        from pycircuit.circuit.compact import EPS_OX
+        ## The dielectric constant is an element PARAMETER now, read
+        ## from the card, so the bound has to be built from the same
+        ## value the element used rather than from a module constant.
+        from pycircuit.circuit.compact import EPS0
         e = self._fet(w=10e-6, l=1e-6, tox=2.2e-9)
-        cox_tot = EPS_OX / 2.2e-9 * 10e-6 * 1e-6
+        cox_tot = e.ipar.epsrox * EPS0 / 2.2e-9 * 10e-6 * 1e-6
         cgg = np.asarray(e.C(e.bias(0.05, 1.8, 0.0, 0.0)),
                          float)[1, 1]
         assert 0.0 < cgg <= cox_tot * (1.0 + 1e-12)

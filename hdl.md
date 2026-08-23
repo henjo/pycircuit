@@ -3117,6 +3117,93 @@ took about sixty lines to extend.
 > published claim one entry ago; a key that names its contents reads
 > wrong at the one call site that is wrong.
 
+> **Following the n-channel threshold offset: narrowed, not closed —
+> 2026-08-23.** The lead was that the p-channel threshold is right and
+> the n-channel is not. Followed as far as it goes on the evidence
+> available; what it produced is a much smaller field, one latent bug,
+> and an honest stopping point.
+>
+> **The body-bias discriminator, which is what found the last one.** A
+> `VFB` error is flat in `Vsb`; a body-factor error grows as
+> `√(φB + Vsb)`. Measured on the same long n-channel device:
+>
+> | | ΔVth |
+> |---|---|
+> | `Vb = 0` | **+1.55 mV** |
+> | `Vb = −1` | **+2.59 mV** |
+>
+> It grows. Decomposed against `√(φB + Vsb)` that is a body-factor
+> deficit of **1.13%** plus a −0.6 mV constant — but the decomposition
+> is not clean, because `XCOR`, the body-bias mobility correction, is
+> *exactly* 1 at `Vsb = 0` and so lives entirely in the same
+> difference. Two candidates, one measurement; it does not separate
+> them.
+>
+> **What the audit ruled out.** The whole `phib`/`G_0`/QM path was
+> re-read against the vendor line by line and is a faithful
+> transcription: `Eg`, `phibFac`, `phib_dc`, `G_0_dc`, `qq` (with
+> `QMN`/`QMP`), `qb0`, `dphibq`, and the `G_0` rescaling
+> (`macrodefs:297-327`, `module:727-734`). The QM correction is applied
+> to **both** `phib` and `G_0`, as PSP does — our folding of the `G_0`
+> factor into the doping is `neff·g_fac²`, which is the same move.
+>
+> **The subthreshold slope cannot arbitrate.** A 1.13% body-factor
+> deficit moves `n` by 0.13% — 0.085 mV/decade out of 73.5 — which is
+> under the 0.24 mV/decade the slope already matches to. So "the slope
+> agrees" is consistent with the deficit rather than evidence against
+> it, which is worth stating because it looks like evidence.
+>
+> **One real bug found on the way, and it is the branch's recurring
+> shape.** `psp_scaling` reads `EPSROXO` from the card;
+> `compact.py` hardcoded the tree's 3.9. Both are 3.9 on this process,
+> so they agreed **by luck** — and on a card with a different gate
+> dielectric they would have disagreed about `cox`, silently, which is
+> the body factor and the oxide capacitance at once. Now a parameter,
+> with a test that changes it and checks the current moves. Nothing
+> measurable moves on this card, which is the point: it is no longer a
+> coincidence.
+>
+> **So the ladder was built** — six body biases from 0 to 1.5 V on the
+> long n-channel, added to `psp_reference.py` (regeneration purely
+> additive, every existing number bit-identical). The rise is clean and
+> monotone:
+>
+> | `Vsb` | 0 | 0.2 | 0.4 | 0.7 | 1.0 | 1.5 |
+> |---|---|---|---|---|---|---|
+> | ΔVth (mV) | +1.55 | +1.83 | +2.06 | +2.36 | +2.59 | +2.71 |
+>
+> **And it does not separate them, for a reason that is itself
+> measurable.** Fitting the three candidate shapes:
+>
+> | basis | rms residual |
+> |---|---|
+> | body factor, `√(φB+Vsb)` | **0.083 mV** |
+> | `XCOR`, `ln(Rxcor)` | 0.107 mV |
+> | a plain straight line | 0.112 mV |
+>
+> The body-factor form wins, and the margin is meaningless: the
+> per-rung spread is 1–3 mV. Over the `Vsb` range this device can be
+> measured in, **the two bases are 99.8% collinear**, and both are
+> 99.7% collinear with a straight line. No amount of precision in this
+> measurement separates them.
+>
+> **And the range cannot be extended.** Below `Vg = 0` the reference
+> stops being diffusion subthreshold and becomes junction and GIDL
+> leakage — which PSP models and this element does not. The curve
+> flattens, `d ln I / dVg` goes to zero, and the implied-threshold
+> measurement divides by it. Tried at −0.4 V; the numbers were
+> nonsense, and that failure is now a comment in the generator so the
+> next person does not repeat it.
+>
+> **Where it stands.** Read as body factor, the deficit is **0.95%**;
+> whichever term it is, it is under 2%. It is worth 4–10% of
+> subthreshold current and about 0.1% above threshold. This is a
+> negative result with a stated cause rather than an inconclusive one:
+> separating the two needs a *different* measurement, not a better
+> version of this one — a bias or geometry where one term is off, or a
+> vendor output that exposes the body factor after the QM correction,
+> which PSP does not provide.
+
 Deferred, unchanged from the original research verdict:
 
 | item | why |

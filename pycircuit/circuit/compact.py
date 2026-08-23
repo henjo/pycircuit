@@ -34,7 +34,7 @@ from pycircuit.utilities.param import Parameter
 ## factor was worth 2-6 mV of threshold: the last residual on this
 ## model, and the one thing standing between thirty-one exactly-matched
 ## parameters and the current.
-EPS_OX = epsRSiO2 * psp_scaling.PSP_EPS0
+EPS0 = psp_scaling.PSP_EPS0
 EPS_SI = psp_scaling.PSP_EPS_SI
 QELE = psp_scaling.PSP_QELE
 
@@ -297,7 +297,16 @@ def _psp_mos_analog(T, pmos):
         ## Oxide capacitance per unit area, and the body factor that
         ## follows from it.  `Gf` is gamma normalised by sqrt(phit),
         ## which is the form the surface-potential solver takes.
-        cox = var(EPS_OX / tox, 'cox')                        # noqa: F821
+        ## The dielectric constant comes from the CARD, not from a
+        ## module constant.  `psp_scaling` already reads `EPSROXO`
+        ## (`PSP103_parlist.include:257`); the element used to hardcode
+        ## the tree's 3.9, so the two agreed only by luck -- on a card
+        ## with a different gate dielectric the scaling layer and the
+        ## element would have disagreed about `cox`, silently, and that
+        ## is the body factor AND the oxide capacitance.  Both are 3.9
+        ## on this process, so nothing measurable moves; the point is
+        ## that it is no longer a coincidence.
+        cox = var(epsrox * EPS0 / tox, 'cox')                 # noqa: F821
         gamma = var(sympy.sqrt(2.0 * QELE * EPS_SI * nsub)    # noqa: F821
                     / cox, 'gamma')
         ## BIAS-DEPENDENT BODY FACTOR (`macrodefs:478-484`).  The
@@ -845,6 +854,10 @@ class PspMosLongChannel(Behavioural):
         ## having to say so twice.
         Parameter(name='swign', desc='Induced gate noise: 0=off, 1=on',
                   unit='', default=1.0),
+        ## `EPSROXO` (`PSP103_parlist.include:257`).  A parameter and
+        ## not a constant, because the card carries it.
+        Parameter(name='epsrox', desc='Gate dielectric permittivity',
+                  unit='', default=3.9),
         Parameter(name='rg', desc='Gate resistance', unit='ohm',
                   default=0.0),
         Parameter(name='mult', desc='Multiplicity (devices in parallel)',

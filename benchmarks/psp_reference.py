@@ -81,6 +81,31 @@ SWEEPS = [
          note='long device with reverse body bias -- the only sweep that '
               'exercises the body-bias mobility correction, which is '
               'identically 1 at Vsb = 0 and scales to zero at 0.13 um'),
+    ## THE BODY-BIAS LADDER.  Two body biases cannot separate the two
+    ## things that live in a body-bias difference: a body-factor error
+    ## grows as `sqrt(phib + Vsb)` and the `XCOR` mobility correction as
+    ## the saturating `(1 + 0.2*XCOR*Vsb)/(1 + XCOR*Vsb)`.  Both fit two
+    ## points equally well and neither fits five.  Added because the
+    ## n-channel subthreshold threshold offset grows with body bias and
+    ## the existing pair of sweeps could not say which term it is.
+] + [
+    dict(name='nmos_long_idvg_vb%s' % ('%.2f' % vb).replace('-', 'm')
+                                                  .replace('.', 'p'),
+         device='sg13_lv_nmos', w=10e-6, l=1e-6, sweep='Vg',
+         ## Starts at ZERO, and that is a limit rather than a choice.
+         ## Below Vg = 0 this device's reference current stops being
+         ## diffusion subthreshold and becomes junction and GIDL
+         ## LEAKAGE, which PSP models and this element does not: the
+         ## curve goes flat, `d ln I / dVg` goes to zero, and the
+         ## implied-threshold measurement divides by it.  Tried at
+         ## -0.4 V and the numbers were nonsense.  So the clean window
+         ## is Vg >= 0, which on this geometry is about three decades.
+         start=0.0, stop=1.0, step=0.025,
+         bias=dict(Vd=0.05, Vs=0.0, Vb=vb),
+         note='body-bias ladder: separates a sqrt(phib+Vsb) body-factor '
+              'error from the saturating XCOR mobility correction')
+    for vb in (0.0, -0.2, -0.4, -0.7, -1.0, -1.5)
+] + [
 
     dict(name='pmos_idvd_vg1p2', device='sg13_lv_pmos', w=1e-6, l=0.13e-6,
          sweep='Vd', start=-1.5, stop=0.0, step=0.05,
