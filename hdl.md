@@ -1890,6 +1890,73 @@ built but never actually tested against.
 > NaN is NaN. Finite and correctly saturated out to `Vds = 1e60` now,
 > and still antisymmetric there.
 
+> **The p-channel device — 2026-08-23.** `PspPmosLongChannel`, and the
+> striking thing is how little of it is p-channel-specific.
+>
+> PSP is written once and run for both polarities. It converts the
+> terminal voltages to an internal n-like convention on the way in
+> (`PSP103_module.include:1035-1048`), writes every equation for that
+> convention alone, and restores the polarity on every contribution on
+> the way out (`:1697-1795`). Its **849-line geometry-scaling layer
+> contains not one reference to the channel type**, and IHP's p-channel
+> card is not a mirrored set of numbers — every parameter is a positive
+> magnitude carrying the same signs as the n-channel one, `vfbo`
+> negative on both. The polarity lives in a single `type = -1` on the
+> `.model` line.
+>
+> Exactly **five** things genuinely differ, four of them in the kernel:
+>
+> * the effective-field weighting `eta_mu`, ½ for electrons and ⅓ for
+>   holes, at both the source end and the midpoint (`module:736-743`);
+> * `ysat = ysat/sqrt(1 + ysat)` in the saturation-voltage block
+>   (`macrodefs:609-613`);
+> * `zsat = zsat/(1 + thesat1·dps)` in velocity saturation
+>   (`macrodefs:766-771`) — these two being one statement, that holes
+>   follow `v ~ E/(1 + E/Ec)` where electrons follow
+>   `v ~ E/sqrt(1 + (E/Ec)²)`;
+> * `QMN → QMP` in the quantum correction (`module:727-734`), a ratio of
+>   1.2515 that moves `phib` and the body factor together.
+>
+> Everything else is a sign. `charges_long_channel`, `sp_s`,
+> `surface_state` and the Newton limiter needed no change at all.
+>
+> **Result on the first measurement, nothing p-channel-specific tuned:**
+> long device 1.029 and 1.019, short device 1.028 / 0.939 / 1.075. For
+> comparison the n-channel's first measurement was **1.29**, and took
+> eight terms to bring inside a percent.
+>
+> And every p-channel scaled parameter matches PSP's own `lp_*` exactly
+> at four geometries — `vfb`, `tox`, `ct`, `mue`, `themu`, `cs`,
+> `thecs`, `rs`, `ax`, `thesat`, `alp`, `alp1`, `alp2`, `cf`, `cfb`, and
+> `neff` once the quantum correction is switched off (we fold it into
+> the doping where PSP applies it to `phib`; the p-channel inflation
+> factor is 1.80–1.87 against the n-channel's 1.60–1.67, which is
+> `QMP/QMN` doing its job). The scaling layer needed no p-channel work
+> whatsoever, exactly as the vendor's does not.
+>
+> **How the polarity is carried matters.** `T` and `pmos` are Python
+> values closed over at class-creation time, not symbols, so each
+> channel type compiles to an expression exactly the size it would be if
+> the other did not exist. A symbolic polarity would double every branch
+> in the model and branch on something that cannot vary with bias. The
+> one trap: the DSL keys compilation on `analog` appearing in the CLASS
+> BODY, so a subclass that merely inherited it would silently reuse the
+> n-channel expression — and assigning `analog` after the class
+> statement produces a 0x0 element rather than an error.
+>
+> **Two overflows fixed on the way, neither cosmetic.** `safe_div`
+> regularises as `b/(b² + eps²)`, which squares its argument — the right
+> thing for a quantity that can change sign, and half the exponent range
+> thrown away for one that cannot. `expl` is allowed to return 1e100 by
+> construction, so `safe_div(1, expl(x))` inside the surface-potential
+> solver overflowed at biases a diverging Newton step reaches; it is a
+> floored reciprocal now. And the mobility's effective field feeds a
+> power with an exponent near 2, so it is clamped above as well as
+> below. An overflow to `inf` is not self-limiting: it becomes
+> `inf − inf` downstream, which is a NaN in a Jacobian row. Both are
+> now covered by tests that run with warnings as errors, at bias points
+> lifted from a real stacked-pair solve.
+
 Deferred, unchanged from the original research verdict:
 
 | item | why |

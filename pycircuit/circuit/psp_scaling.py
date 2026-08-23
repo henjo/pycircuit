@@ -104,6 +104,23 @@ def _neff(card, geo):
                    - _g(card, 'fol2') * iLE * iLE)
 
 
+def channel_type(card):
+    """+1 for an n-channel card, -1 for a p-channel one.
+
+    Deliberately NOT part of `to_long_channel`'s return value.  That
+    dict is splatted straight into the element as keyword arguments, so
+    anything in it has to be a parameter the element actually has, and
+    the channel type is not one -- it selects the CLASS.  Returning it
+    there would have turned every existing call site into a
+    `TypeError`, which is a poor way to learn about a new feature.
+
+    The card carries the polarity here and nowhere else: every parameter
+    on IHP's p-channel card is a positive magnitude with the same signs
+    as the n-channel one.
+    """
+    return -1.0 if _g(card, 'type', 1.0) < 0 else 1.0
+
+
 def to_long_channel(card, w, l, T=300.0, all_terms=False):
     """Card + geometry -> `PspMosLongChannel` keyword arguments.
 
@@ -144,6 +161,14 @@ def to_long_channel(card, w, l, T=300.0, all_terms=False):
     threshold sweep is exactly where enabling DIBL now overshoots
     (1.003 -> 1.023).  That is the term to re-examine, with these on.
     """
+    ## Channel type.  The card carries the polarity HERE and nowhere
+    ## else: every parameter on the p-channel card is a positive
+    ## magnitude with the same signs as the n-channel one (`vfbo` is
+    ## negative on both).  PSP does the same -- `PSP103_scaling.include`
+    ## contains not one `CHNL_TYPE` reference, the entire scaling layer
+    ## being channel-type agnostic.
+    chtype = channel_type(card)
+
     geo = geometry(card, w, l)
     iLE, iWE, LE, WE = geo['iLE'], geo['iWE'], geo['LE'], geo['WE']
 
@@ -193,7 +218,12 @@ def to_long_channel(card, w, l, T=300.0, all_terms=False):
                        / phit) / cox_prime
     qmc = _g(card, 'qmc')
     if qmc > 0.0:
-        qq = 0.4 * QMN * qmc * cox_prime ** (2.0 / 3.0)
+        ## `QMN` for electrons, `QMP` for holes
+        ## (`PSP103_module.include:727-734`).  A ratio of 1.25, and not
+        ## cosmetic: `qq` shifts both `phib` and the body factor, so it
+        ## moves the threshold and the body effect together.
+        qq = (0.4 * (QMP if chtype < 0 else QMN)
+              * qmc * cox_prime ** (2.0 / 3.0))
         qb0 = math.sqrt(phit * gamma0 * gamma0 * phib)
         dphibq = 0.75 * qq * qb0 ** (2.0 / 3.0)
         phib = phib + dphibq

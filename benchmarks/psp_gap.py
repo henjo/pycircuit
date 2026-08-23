@@ -47,7 +47,9 @@ REF = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..',
 
 #: n-channel sweeps from the committed reference, long device first.
 SWEEPS = ['nmos_long_idvd', 'nmos_idvd_vg1p2', 'nmos_idvd_vg0p6',
-          'nmos_idvg_vd0p05', 'nmos_idvg_vd1p2', 'nmos_idvg_vb_m1']
+          'nmos_idvg_vd0p05', 'nmos_idvg_vd1p2', 'nmos_idvg_vb_m1',
+          'pmos_long_idvd', 'pmos_long_idvg', 'pmos_idvd_vg1p2',
+          'pmos_idvg_vd1p2', 'pmos_idvg_vd0p05']
 
 #: Currents below this are not compared: the reference carries leakage
 #: and junction terms the core does not model at all, and they dominate
@@ -58,15 +60,19 @@ FLOOR = 1e-6
 def compare(deck, sweep):
     """Ratio of our drain current to PSP103's, over one sweep."""
     import pycircuit.circuit.circuit as cm
-    from pycircuit.circuit.compact import PspMosLongChannel
+    from pycircuit.circuit.compact import (PspMosLongChannel,
+                                           PspPmosLongChannel)
     from pycircuit.circuit import psp_scaling
 
     w, l = sweep['w'], sweep['l']
-    card = deck.model_params('sg13g2_lv_nmos_psp', w=w, l=l, ng=1, m=1,
-                             pre_layout=1)
+    ## The sweep names its own device, so the p-channel curves pick the
+    ## p-channel card and the p-channel class without a second code path.
+    pmos = 'pmos' in sweep['device']
+    model = 'sg13g2_lv_pmos_psp' if pmos else 'sg13g2_lv_nmos_psp'
+    cls = PspPmosLongChannel if pmos else PspMosLongChannel
+    card = deck.model_params(model, w=w, l=l, ng=1, m=1, pre_layout=1)
     kw = psp_scaling.to_long_channel(card, w=w, l=l)
-    e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
-                          cm.Node('b'), **kw)
+    e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'), **kw)
     e.update_iparv()
 
     v = np.asarray(sweep['v'], float)

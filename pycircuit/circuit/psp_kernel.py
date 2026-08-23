@@ -264,7 +264,15 @@ def sp_s(xg, xn, delta, Gf, xi, margin=1e-5):
     ## one expression and is C-3 rather than piecewise-continuous.
     ex0 = _v(hdl.expl(x0), 'ex0')
     d0_i = _v(delta * ex0, 'd0_i')
-    d1_i = _v(hdl.safe_div(1.0, ex0, eps=1e-30), 'd1_i')
+    ## A plain floored reciprocal rather than `safe_div`.  `ex0` is an
+    ## exponential and therefore strictly positive, so `safe_div`'s
+    ## regularisation -- which is `b/(b^2 + eps^2)` -- buys nothing here
+    ## and costs half the exponent range: it SQUARES `ex0`, and `expl`
+    ## is allowed to return 1e100 by construction, so the square
+    ## overflows on ordinary use of the model at a bias a diverging
+    ## Newton step reaches.  The floor is there only so the division
+    ## cannot meet a value that underflowed to zero.
+    d1_i = _v(1.0 / sympy.Max(ex0, 1e-300), 'd1_i')
 
     t_x = _v(1.0 / (2.0 + x0 * x0), 't_x')
     xi0_x = _v(x0 * x0 * t_x, 'xi0_x')
@@ -449,6 +457,13 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
     ## amplifies whatever error `dL` carries, which is why adding `FdL`
     ## cost the long device accuracy even while more than halving the
     ## total.  This closes that.
+    ## Channel type.  A PLAIN PYTHON BOOL, never a symbol: PSP decides
+    ## this once in `INITIAL_MODEL` (`PSP103_module.include:557-561`),
+    ## it cannot vary with bias, and branching on it here keeps the
+    ## compiled expression exactly the size it is for one channel type.
+    pmos = bool(mob.get('pmos', False)) if mob else False
+    eta_mu = ONE_THIRD if pmos else 0.5
+
     ax = 0.0 if mob is None else mob.get('ax', 0.0)
     if not isinstance(ax, sympy.Expr) and ax == 0.0:
         vdsat = None
@@ -466,9 +481,22 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
                      'ids_alphas')
         ## Mobility at the SOURCE end, same form as the midpoint one.
         e0 = _v(1.0e-8 * mob['cox_area'] / mob['eps_si'], 'ids_ee0s')
-        bs0 = _v(e0 * (qbs + 0.5 * mob['feta'] * qis) * mob['mue'],
+        ## `eta_mu` is 1/2 for electrons and 1/3 for holes
+        ## (`PSP103_module.include:736-743`) -- the inversion charge's
+        ## weight in the effective vertical field, which differs because
+        ## the two carrier types sit at different average depths below
+        ## the interface.
+        bs0 = _v(e0 * (qbs + eta_mu * mob['feta'] * qis) * mob['mue'],
                  'ids_mubs0')
-        bs_ = _v(sympy.Max(bs0, 1e-300), 'ids_mubs')
+        ## Bounded ABOVE as well as below.  `THEMU` is about 2 on this
+        ## card, so a base past 1e154 overflows the power -- and a
+        ## diverging Newton step, which is bounded in the device's
+        ## BRANCH voltages but not in the node voltages themselves,
+        ## reaches it.  The upper clamp is far outside any physical
+        ## effective field; it exists so the mobility degrades to "very
+        ## large" instead of to `inf`, which would go on to make an
+        ## `inf - inf` somewhere downstream.
+        bs_ = _v(sympy.Min(sympy.Max(bs0, 1e-300), 1e100), 'ids_mubs')
         rs0 = _v(hdl.safe_div(Ps, Ps + Ds + 1.0e-14, eps=1e-30),
                  'ids_ratios0')
         rs_ = _v(sympy.Max(rs0, 1.0e-10), 'ids_ratios')
@@ -490,6 +518,13 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
         phi_inf = _v(qis * hdl.safe_div(1.0, alpha_s, eps=1e-30) + phit,
                      'ids_phiinf')
         ysat = _v(th1 * phi_inf * INV_SQRT2, 'ids_ysat')
+        if pmos:
+            ## `macrodefs:609-613`.  This and the `zsat` form below are
+            ## the same physical statement: electrons follow
+            ## `v ~ E/sqrt(1 + (E/Ec)^2)` and holes `v ~ E/(1 + E/Ec)`,
+            ## so the hole branch is one power softer in the field.
+            ysat = _v(ysat * hdl.safe_div(
+                1.0, sympy.sqrt(1.0 + ysat), eps=1e-30), 'ids_ysatp')
         za = _v(2.0 * hdl.safe_div(1.0, 1.0 + sympy.sqrt(1.0 + 4.0 * ysat),
                                    eps=1e-30), 'ids_za')
         t1 = _v(za * ysat, 'ids_t1s')
@@ -696,11 +731,13 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
         zsat = _v(sympy.Integer(0), 'ids_zsat')
         Gvsat = _v(sympy.Integer(1), 'ids_Gvsat')
     else:
-        eta_mu = 0.5 * mob['feta']
-        qeff = _v(qbm + eta_mu * qim, 'ids_qeff')
+        eta_mu_m = eta_mu * mob['feta']
+        qeff = _v(qbm + eta_mu_m * qim, 'ids_qeff')
         ## PSP's `E_eff0 = 1e-8 * Cox' / eps_si` (module:737).
         e_eff0 = _v(1.0e-8 * mob['cox_area'] / mob['eps_si'], 'ids_ee0')
-        base = _v(sympy.Max(e_eff0 * qeff * mob['mue'], 1e-300),
+        base0 = _v(e_eff0 * qeff * mob['mue'], 'ids_mubase0')
+        ## See the note on `ids_mubs` above: clamped at both ends.
+        base = _v(sympy.Min(sympy.Max(base0, 1e-300), 1e100),
                   'ids_mubase')
         ## Coulomb scattering.  PSP writes this as
         ## `cs*exp(0.5*thecs*ln(Pm/(Pm+Dm)))`, because Verilog-A's `pow`
@@ -815,6 +852,12 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
         thesat1 = _v(mob['thesat'] * tsg
                      * hdl.safe_div(1.0, Gmob_dL, eps=1e-30), 'ids_ths')
         zsat = _v(thesat1 * thesat1 * dps * dps, 'ids_zsat')
+        if pmos:
+            ## `macrodefs:766-771`.  `dps >= 0` by the terminal ordering
+            ## and `thesat1 >= 0`, so the denominator is at least 1 and
+            ## needs no guard.
+            zsat = _v(zsat * hdl.safe_div(1.0, 1.0 + thesat1 * dps,
+                                          eps=1e-30), 'ids_zsatp')
         Gvsat = _v(0.5 * (Gmob_dL * (1.0 + sympy.sqrt(1.0 + 2.0 * zsat))),
                    'ids_Gvsat')
 

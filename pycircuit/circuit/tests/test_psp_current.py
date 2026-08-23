@@ -653,6 +653,40 @@ class TestTheSaturationVoltage(object):
         assert np.all(np.isfinite(i)) and np.all(np.isfinite(G))
         assert i[0] < 1.5 * i0, (vd, i[0], i0)
 
+    @pytest.mark.parametrize('x', [
+        np.array([0.0, 0.0, 0.0, 0.0]),
+        np.array([1.2, 1.8, 0.0, 0.0]),
+        np.array([-6.8, 1.8, 0.3, 0.0]),
+        np.array([12.0, 1.8, -0.6, 0.0]),
+        np.array([1e3, 1e3, 0.0, 0.0]),
+    ])
+    def test_nothing_overflows_anywhere_a_solver_goes(self, x):
+        """Warnings as errors, at biases a real solve actually visits.
+
+        The last three are iterates taken from a stacked pair on its way
+        to a solution -- the device's BRANCH voltages are bounded by the
+        limiter but the node voltages are not, so the model is evaluated
+        far outside anything physical and has to stay in range there.
+
+        Two places did not.  `safe_div` regularises as
+        `b/(b^2 + eps^2)`, which squares its argument -- fine for a
+        quantity that can change sign, and half the exponent range
+        thrown away for one that cannot.  `expl` is allowed to return
+        1e100 by construction, so a `safe_div` on it overflowed.  And
+        the mobility's effective field feeds a power with an exponent of
+        about 2, which overflows past 1e154.  An overflow to `inf` is
+        not self-limiting: it becomes `inf - inf` somewhere downstream,
+        and that is a NaN in a Jacobian row.
+        """
+        e = self._fet()
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            i = np.asarray(e.i(x), float)
+            G = np.asarray(e.G(x), float)
+            q = np.asarray(e.q(x), float)
+        assert np.all(np.isfinite(i)) and np.all(np.isfinite(G))
+        assert np.all(np.isfinite(q))
+
     @pytest.mark.parametrize('vd', [1e7, 1e40])
     def test_it_is_still_antisymmetric_out_there(self, vd):
         """The two-armed `Vdse` must not break the terminal ordering."""

@@ -7,13 +7,15 @@ pycircuit can express a **production compact model** — the kind a foundry
 ships — in the Behavioural HDL, and check it against the vendor's own
 compiled binary.
 
-Two devices live in :mod:`pycircuit.circuit.compact`:
+Three devices live in :mod:`pycircuit.circuit.compact`:
 
 * :class:`~pycircuit.circuit.compact.CapCmomi`, a translation of the IHP
   Open PDK's interdigitated metal-oxide-metal capacitor, which agrees
   with the vendor's OSDI build to **2 × 10⁻⁸** over 1 MHz – 100 GHz;
 * :class:`~pycircuit.circuit.compact.PspMosLongChannel`, the core of
-  PSP103 — the industry-standard surface-potential MOSFET.
+  PSP103 — the industry-standard surface-potential MOSFET;
+* :class:`~pycircuit.circuit.compact.PspPmosLongChannel`, the same
+  device run for holes.
 
 Every number and figure on this page is **recomputed when the
 documentation is built**. The research record and the development plan
@@ -533,6 +535,38 @@ the table: gate leakage and junction leakage are four to six orders of
 magnitude below its 1 µA floor on this process, and overlap and fringe
 capacitances contribute identically zero DC current. They matter for
 CV and AC work, not here.
+
+Both channel types
+------------------
+
+The p-channel device is the same core. That is not a simplification —
+it is how PSP is built, and the shape is worth seeing.
+
+PSP converts the terminal voltages to an internal, n-like convention on
+the way in, writes every equation for that convention alone, and
+restores the polarity on each contribution on the way out. Its
+849-line geometry-scaling layer contains **not one** reference to the
+channel type, and the foundry's p-channel card is not a mirrored set of
+numbers: every parameter is a positive magnitude carrying the same signs
+as the n-channel one, with the polarity living in a single ``type = -1``
+on the ``.model`` line.
+
+Exactly five things genuinely differ, four of them in the kernel: the
+effective-field weighting (½ for electrons, ⅓ for holes) at each channel
+end, the two velocity-saturation forms — holes follow
+:math:`v \sim E/(1 + E/E_c)` where electrons follow
+:math:`v \sim E/\sqrt{1 + (E/E_c)^2}` — and the quantum-mechanical
+constant. Everything else is a sign. The charge model, the
+surface-potential solver and the Newton limiter needed no change at all.
+
+Measured against IHP's own p-channel PSP103 on the first attempt, with
+nothing p-channel-specific tuned: **1.03 and 1.02** on the long device.
+The n-channel's first measurement was 1.29 and took eight terms to bring
+inside a percent.
+
+The polarity is carried as a Python value closed over when the class is
+created, never as a symbol, so each channel type compiles to an
+expression exactly the size it would be if the other did not exist.
 
 Correct terms that make the fit worse
 -------------------------------------

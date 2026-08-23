@@ -17,13 +17,15 @@ committed, but the model CARD is not, and reading it is half the point.
 """
 import json
 import os
+import warnings
 
 import numpy as np
 import pytest
 
 import pycircuit.circuit.circuit as cm
 from pycircuit.circuit.toolkit import numeric
-from pycircuit.circuit.compact import PspMosLongChannel
+from pycircuit.circuit.compact import (PspMosLongChannel,
+                                       PspPmosLongChannel)
 from pycircuit.circuit import psp_scaling
 from pycircuit.utilities import spicecard
 
@@ -56,11 +58,15 @@ def ref():
 def _compare(deck, sweep):
     cm.default_toolkit = numeric
     w, l = sweep['w'], sweep['l']
-    card = deck.model_params('sg13g2_lv_nmos_psp', w=w, l=l, ng=1, m=1,
-                             pre_layout=1)
+    ## The sweep names its own device, so the p-channel curves pick the
+    ## p-channel card and class without a second code path here.
+    pmos = 'pmos' in sweep['device']
+    card = deck.model_params(
+        'sg13g2_lv_pmos_psp' if pmos else 'sg13g2_lv_nmos_psp',
+        w=w, l=l, ng=1, m=1, pre_layout=1)
     kw = psp_scaling.to_long_channel(card, w=w, l=l)
-    e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
-                          cm.Node('b'), **kw)
+    cls = PspPmosLongChannel if pmos else PspMosLongChannel
+    e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'), **kw)
     e.update_iparv()
     v = np.asarray(sweep['v'], float)
     r = np.abs(np.asarray(sweep['i_d'], float))
@@ -883,3 +889,198 @@ class TestTheTermsThatDoNotHelpYet(object):
         ## And it lands on the near-threshold sweep in particular.
         assert (err[True]['nmos_idvd_vg0p6']
                 > 3.0 * err[False]['nmos_idvd_vg0p6']), err
+
+
+class TestTheChannelTypes(object):
+    """The p-channel device, and how little of it is p-channel-specific.
+
+    PSP is written once and run for both polarities.  It converts the
+    terminal voltages to an internal n-like convention on the way in
+    (`PSP103_module.include:1035-1048`), writes every equation for that
+    convention alone, and restores the polarity on every contribution on
+    the way out (`:1697-1795`).  Its 849-line geometry-scaling layer
+    contains not one reference to the channel type.
+
+    So does ours.  Exactly five things differ, four of them in the
+    kernel: the effective-field weighting at each channel end (1/2 for
+    electrons, 1/3 for holes) and the two velocity-saturation forms,
+    holes following `v ~ E/(1 + E/Ec)` where electrons follow
+    `v ~ E/sqrt(1 + (E/Ec)^2)`.  The fifth is the quantum-mechanical
+    constant.  Everything else is a sign.
+    """
+
+    GEOMS = ('long', 'mid', 'short', 'wide_short')
+    DIRECT = ('vfb', 'tox', 'ct', 'mue', 'themu', 'cs', 'thecs', 'rs',
+              'ax', 'thesat', 'alp', 'alp1', 'alp2', 'cf', 'cfb')
+
+    @pytest.fixture(scope='class')
+    def scaled_p(self):
+        with open(REF) as fh:
+            return json.load(fh)['scaled_pmos']
+
+    @pytest.fixture(scope='class')
+    def scaled_n(self):
+        with open(REF) as fh:
+            return json.load(fh)['scaled']
+
+    def _fet(self, deck, w=10e-6, l=1e-6):
+        cm.default_toolkit = numeric
+        card = deck.model_params('sg13g2_lv_pmos_psp', w=w, l=l, ng=1,
+                                 m=1, pre_layout=1)
+        e = PspPmosLongChannel(
+            cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
+            **psp_scaling.to_long_channel(card, w=w, l=l))
+        e.update_iparv()
+        return e
+
+    def test_the_card_carries_the_polarity_and_nothing_else_does(self,
+                                                                 deck):
+        """Both cards' `vfb` is NEGATIVE -- the p-channel one is not a
+        mirrored set of numbers, it is the same convention with
+        different values, and `type` alone distinguishes them."""
+        n = deck.model_params('sg13g2_lv_nmos_psp', w=1e-6, l=1e-6,
+                              ng=1, m=1, pre_layout=1)
+        p = deck.model_params('sg13g2_lv_pmos_psp', w=1e-6, l=1e-6,
+                              ng=1, m=1, pre_layout=1)
+        assert psp_scaling.channel_type(n) == 1.0
+        assert psp_scaling.channel_type(p) == -1.0
+        for c in (n, p):
+            assert c['vfbo'] < 0.0
+            assert c['uo'] > 0.0 and c['toxo'] > 0.0
+
+    @pytest.mark.parametrize('geom', GEOMS)
+    @pytest.mark.parametrize('par', DIRECT)
+    def test_every_scaled_parameter_matches_psp(self, deck, scaled_p,
+                                                geom, par):
+        """The whole scaling layer, checked on the OTHER channel type.
+
+        It needed no change at all, which is the claim this pins.
+        """
+        e = scaled_p[geom]
+        kw = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_pmos_psp', w=e['w'], l=e['l'],
+                              ng=1, m=1, pre_layout=1),
+            w=e['w'], l=e['l'], all_terms=True)
+        assert kw[par] == pytest.approx(e[par], rel=1e-5, abs=1e-12)
+
+    @pytest.mark.parametrize('geom', GEOMS)
+    def test_the_doping_matches_before_the_qm_correction(self, deck,
+                                                         scaled_p, geom):
+        """As for the n-channel: we fold the quantum correction into the
+        doping where PSP applies it to `phib` and the body factor, so
+        the comparison has to be made with it switched off."""
+        e = scaled_p[geom]
+        card = deck.model_params('sg13g2_lv_pmos_psp', w=e['w'], l=e['l'],
+                                 ng=1, m=1, pre_layout=1)
+        kw = psp_scaling.to_long_channel(dict(card, qmc=0.0), w=e['w'],
+                                         l=e['l'])
+        assert kw['nsub'] == pytest.approx(e['neff'], rel=1e-5)
+
+    @pytest.mark.parametrize('geom', GEOMS)
+    def test_holes_get_the_larger_quantum_constant(self, deck, scaled_n,
+                                                   scaled_p, geom):
+        """`QMP/QMN = 1.2515` (`PSP103_module.include:727-734`).
+
+        Not cosmetic: `qq` shifts `phib` AND the body factor, so it
+        moves the threshold and the body effect together.  Measured as
+        the ratio the quantum correction inflates the folded doping by,
+        which is larger for holes on every geometry.
+        """
+        def blow_up(model, e):
+            card = deck.model_params(model, w=e['w'], l=e['l'], ng=1,
+                                     m=1, pre_layout=1)
+            on = psp_scaling.to_long_channel(card, w=e['w'], l=e['l'])
+            off = psp_scaling.to_long_channel(dict(card, qmc=0.0),
+                                              w=e['w'], l=e['l'])
+            return on['nsub'] / off['nsub']
+        n = blow_up('sg13g2_lv_nmos_psp', scaled_n[geom])
+        p = blow_up('sg13g2_lv_pmos_psp', scaled_p[geom])
+        assert p > n > 1.0, (geom, n, p)
+
+    def test_the_hole_specific_kernel_terms_are_actually_active(self):
+        """The four kernel differences, exercised directly.
+
+        Compiled twice from the same numbers with only the channel-type
+        flag moved, so any difference in the answer is those four terms
+        and nothing else.  Guards against the flag being threaded
+        through but never read -- which would leave the p-channel
+        silently running electron physics.
+        """
+        import sympy
+        from pycircuit.circuit import hdl, psp_kernel
+        xg, xns, xnd = sympy.symbols('xg xns xnd', real=True)
+        base = dict(mue=2.3, themu=1.26, cs=0.94, thecs=1.46, feta=1.0,
+                    thesat=0.104, cox_area=1.7e-2, eps_si=1.04e-10,
+                    ax=5.3, rs=0.0, rsg=0.0, rsb=0.0, vsb=0.0, alp=0.004,
+                    vp=1e-5, vds=1.0, kp=0.0, alp1=0.004, alp2=0.005)
+        out = []
+        for pmos in (False, True):
+            f = hdl.compile_chain(
+                lambda: psp_kernel.intrinsic(
+                    xg, xns, xnd, 1.5, 2.06, 0.0259, 1e-4,
+                    mob=dict(base, pmos=pmos))['ids'],
+                [xg, xns, xnd])
+            out.append(float(np.asarray(f(45.0, 34.0, 72.0),
+                                        float).reshape(-1)[0]))
+        assert out[0] != out[1], out
+        assert 0.5 < out[1] / out[0] < 1.5, out
+
+    def test_it_is_antisymmetric_like_the_n_channel(self, deck):
+        e = self._fet(deck)
+        for vg in (-0.6, -1.2):
+            for vd in (-0.1, -0.9):
+                f = np.asarray(e.i(np.array([vd, vg, 0.0, 0.0])),
+                               float)[0]
+                r = np.asarray(e.i(np.array([0.0, vg, vd, 0.0])),
+                               float)[0]
+                assert f == pytest.approx(-r, rel=1e-13), (vg, vd)
+
+    def test_it_conserves_charge_like_the_n_channel(self, deck):
+        e = self._fet(deck)
+        for x in (np.array([-0.9, -1.4, 0.0, 0.0]),
+                  np.array([-0.05, -0.6, 0.0, 0.3])):
+            q = np.asarray(e.q(x), float)
+            assert abs(q.sum()) < 1e-24 * max(1.0, np.abs(q).max())
+
+    @pytest.mark.parametrize('x', [np.array([-0.6, -1.0, 0.0, 0.0]),
+                                   np.array([-1.2, -1.8, 0.0, 0.0]),
+                                   np.array([0.0, 0.0, 0.0, 0.0]),
+                                   np.array([-0.05, -0.4, 0.0, 0.5])])
+    def test_its_jacobian_is_finite_and_correct(self, deck, x):
+        e = self._fet(deck)
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            i = np.asarray(e.i(x), float)
+            G = np.asarray(e.G(x), float)
+        assert np.all(np.isfinite(i)) and np.all(np.isfinite(G))
+        fd = np.zeros_like(G)
+        for j in range(len(x)):
+            h = 1e-6 * max(1.0, abs(x[j]))
+            xp, xm = x.copy(), x.copy()
+            xp[j] += h
+            xm[j] -= h
+            fd[:, j] = (np.asarray(e.i(xp), float)
+                        - np.asarray(e.i(xm), float)) / (2 * h)
+        assert np.max(np.abs(G - fd)) < 1e-6 * max(1.0, np.abs(G).max())
+
+    def test_the_current_conducts_with_the_right_polarity(self, deck):
+        e = self._fet(deck)
+        i = np.asarray(e.i(np.array([-1.2, -1.2, 0.0, 0.0])), float)
+        assert i[0] < 0.0, 'drain sinks current for a p-channel'
+        assert i[2] > 0.0, 'source sources it'
+        assert i[1] == 0.0, 'no gate current in the intrinsic core'
+
+    @pytest.mark.parametrize('name', ['pmos_long_idvd', 'pmos_long_idvg',
+                                      'pmos_idvd_vg1p2',
+                                      'pmos_idvg_vd0p05'])
+    def test_the_gap_against_psps_own_p_channel(self, deck, ref, name):
+        """First measurement, nothing p-channel-specific tuned.
+
+        Held at 10%: the n-channel's first measurement was 29% out and
+        took eight terms to bring inside a percent, so this starting
+        point is a good deal better than that one -- but it is a
+        starting point, and the guard says so rather than pinning a
+        number that should move.
+        """
+        _, r, g, _ = _compare(deck, ref[name])
+        assert abs(np.median(g / r) - 1.0) < 0.10, np.median(g / r)

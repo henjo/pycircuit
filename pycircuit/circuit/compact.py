@@ -224,24 +224,243 @@ class CapCmomi(Behavioural):
         )
 
 
+def _psp_mos_analog(T, pmos):
+    """Build the analog body for one channel type.
+
+    PSP is written once and run for both polarities, and it does not do
+    that with a symbolic sign.  `CHNL_TYPE` is fixed once in
+    `INITIAL_MODEL` (`PSP103_module.include:557-561`), the terminal
+    voltages are converted to an internal n-like convention on the way
+    in (`:1035-1048`), every equation downstream is written for that
+    convention alone, and the polarity is restored on every
+    contribution on the way out (`:1697-1795`).
+
+    Same here, and for the same reason: `T` and `pmos` are Python
+    values closed over at class-creation time, so each channel type
+    compiles to an expression exactly the size it would be if the other
+    did not exist.  A symbolic polarity would double every branch in
+    the model, and branch on something that cannot vary with bias.
+
+    Only FIVE things genuinely differ between the two devices, and four
+    of them are in the kernel -- the effective-field weighting at both
+    channel ends, and the two velocity-saturation forms, holes
+    following `v ~ E/(1 + E/Ec)` where electrons follow
+    `v ~ E/sqrt(1 + (E/Ec)^2)`.  The fifth is the quantum-mechanical
+    constant, in the scaling layer.  Everything else here is a sign.
+    """
+    def analog(d, g, s, b):
+        bd, bg, bs = Branch(d, b, 'd'), Branch(g, b, 'g'), Branch(s, b, 's')
+
+        ## The INTERNAL convention: every voltage below is `T*(node -
+        ## bulk)`, so for a p-channel the whole body runs on
+        ## positive-for-conducting quantities exactly as the n-channel
+        ## does.  `T` is restored on the contributions at the end.
+        vdb = var(T * bd.V, 'vdb')
+        vgb = var(T * bg.V, 'vgb')
+        vsb = var(T * bs.V, 'vsb')
+
+        ## Two thermal voltages, deliberately.  The BODY FACTOR is built
+        ## on the plain one -- PSP's `G_0` is, and it only moves to the
+        ## effective one under `SWFIX`, which defaults off.  Everything
+        ## else -- gate drive, quasi-Fermi levels, charges, the current --
+        ## is in units of the effective one.
+        phit0 = var(vt(), 'phit0')
+        phit = var(phit0 * (1.0 + ct), 'phit')                # noqa: F821
+        ## Oxide capacitance per unit area, and the body factor that
+        ## follows from it.  `Gf` is gamma normalised by sqrt(phit),
+        ## which is the form the surface-potential solver takes.
+        cox = var(EPS_OX / tox, 'cox')                        # noqa: F821
+        gamma = var(sympy.sqrt(2.0 * QELEC * EPS_SI * nsub)   # noqa: F821
+                    / cox, 'gamma')
+        Gf = var(gamma / sympy.sqrt(phit0), 'Gf')
+        xi = var(1.0 + Gf * INV_SQRT2, 'xi')
+
+        ## Normalised gate drive, and the quasi-Fermi levels at the two
+        ## channel ends.  Everything is referred to the bulk, which is
+        ## what keeps source and drain interchangeable.
+
+        beta = var(u0 * cox * w / l, 'beta')                  # noqa: F821
+
+        ## SYMMETRISED BIAS VARIABLES.
+        ##
+        ## The intrinsic core is exactly antisymmetric under exchanging
+        ## source and drain because every quantity it uses is either a
+        ## midpoint one (even) or `dps` (odd).  The layers on top are not
+        ## automatically so: the series resistance reads a source-bulk
+        ## voltage and channel-length modulation reads `Vds`, and under
+        ## the exchange the first CHANGES and the second flips sign
+        ## through a function that is not odd.  Both broke the symmetry,
+        ## and neither was caught until a card supplied nonzero `rs` and
+        ## `alp` -- they default to zero, so every earlier symmetry test
+        ## had them switched off.
+        ##
+        ## PSP's answer is `Vsbx = Vsbstar + 0.5*(Vds - Vdsx)`
+        ## (`PSP103_macrodefs.include:472`), which evaluates to the
+        ## LOWER of the two junction voltages under either polarity, plus
+        ## a smoothed `|Vds|`.  Same construction here: `vdsx` is a
+        ## smooth `|Vds|` and `vsbx` follows PSP's formula, so both are
+        ## even and the antisymmetry survives.
+        ## CONDITIONING OF THE TERMINAL VOLTAGES
+        ## (`PSP103_macrodefs.include:330-334, 1104-1105`).
+        ##
+        ## The surface-potential solver needs the junction bias to stay
+        ## above roughly `-phib`; below that the quasi-Fermi level has
+        ## passed the built-in potential and the formulation stops
+        ## meaning anything.  The kernel used to enforce that with a hard
+        ## `max(xn, 0)`, which is fine for the VALUE and poison for the
+        ## Jacobian: the clamp freezes every conductance, so Newton
+        ## arrives with no gradient telling it how to get back.  A
+        ## two-transistor stack was enough to expose it -- both the old
+        ## and the new device swing out past the clamp on the way to the
+        ## solution, and only the one with a gradient there returns.
+        ##
+        ## PSP limits smoothly instead, and at the VOLTAGE rather than at
+        ## `xn`: take the lower of the two junctions, clip it at
+        ## `-0.95*phib` through `MINA`, and lift `Vsb` by whatever the
+        ## clip removed.  `phix1` re-centres it so that at ordinary bias
+        ## the whole construction shifts `Vsb` by ~1e-5 V and is
+        ## invisible.
+        phix = var(0.95 * phib, 'phix')                       # noqa: F821
+        aphi = var(0.0025 * phib * phib, 'aphi')              # noqa: F821
+        phix2 = var(0.5 * sympy.sqrt(aphi), 'phix2')
+        phix1 = var(psp_kernel.mina(phix - phix2, 0.0, aphi), 'phix1')
+        vlow = var(psp_kernel.mina(vdb, vsb, aphi) + phix, 'vlow')
+        vsbst = var(vsb - psp_kernel.mina(vlow, 0.0, aphi) + phix1,
+                    'vsbst')
+
+        vds = var(vdb - vsb, 'vds')
+        vdsx = var(2.0 * psp_kernel.hdl.hypsmooth(vds, 1e-4) - vds, 'vdsx')
+        vsbx = var(vsbst + 0.5 * (vds - vdsx), 'vsbx')
+
+        ## DRAIN-INDUCED BARRIER LOWERING
+        ## (`PSP103_macrodefs.include:473-476`).  A short channel lets
+        ## the drain field reach the source barrier and lower it, so the
+        ## device turns on earlier at high drain bias.  PSP models it as
+        ## a shift of the GATE DRIVE rather than of a threshold voltage
+        ## -- there is no threshold voltage in a surface-potential model
+        ## to shift.
+        ##
+        ## Built on the symmetrised `vdsx`/`vsbx`, so it is even under
+        ## the source/drain exchange and cannot break the antisymmetry
+        ## the way series resistance and channel-length modulation both
+        ## did before them.  `CFD` is zero on this card, which makes
+        ## `Vdsp = Vdsx`; the general form is kept because a card that
+        ## sets it would otherwise be silently mismodelled.
+        vdsp = var(2.0 * vdsx * psp_kernel.hdl.safe_div(
+            1.0, 1.0 + psp_kernel.hdl.safe_sqrt(1.0 + cfd * vdsx),  # noqa
+            eps=1e-30), 'vdsp')
+        delvg = var(cf * vdsp * (1.0 + cfb * vsbx), 'delvg')  # noqa: F821
+
+        xg = var((vgb - vfb + delvg) / phit, 'xg')           # noqa: F821
+
+        ## ORDERED TERMINALS.
+        ##
+        ## The saturation-limited drain voltage broke what the paragraph
+        ## above describes.  `Vdsat` is built from SOURCE-SIDE quantities
+        ## alone -- the inversion charge and mobility at the low end of
+        ## the channel -- so the core stopped being an odd function of
+        ## `Vds`: swapping the terminals changed which end `Vdsat` was
+        ## measured at, and the reverse current came out 16% larger.
+        ##
+        ## PSP does not solve this with a cleverer formula.  It orders
+        ## the terminals, computes the device forward, and swaps the
+        ## contributions on the way out.  Same here, using the
+        ## symmetrised variables that already exist: `vsbx` IS the lower
+        ## junction under either polarity, and `vdsx` is `|Vds|`.  So the
+        ## core always sees a forward device, and the sign is applied
+        ## afterwards.  The antisymmetry is now a property of the
+        ## TOPOLOGY rather than of the algebra, which is the only form of
+        ## it that survives adding non-odd physics.
+        xn_s = var((phib + vsbx) / phit, 'xn_s')              # noqa: F821
+        xn_d = var(xn_s + vdsx / phit, 'xn_d')
+
+        ## A smooth sign of `Vds`.  `vdsx` is `sqrt(Vds^2 + 4e^2)`, so
+        ## this is exactly +-1 away from the origin, is zero AT the
+        ## origin, and never divides by zero (`vdsx >= 2e`).
+        sgn = var(vds / vdsx, 'sgn')
+
+        core = psp_kernel.intrinsic(
+            xg, xn_s, xn_d, Gf, xi, phit, beta,
+            mob=dict(mue=mue, themu=themu, cs=cs,          # noqa: F821
+                     thecs=thecs, feta=feta, thesat=thesat,  # noqa: F821
+                     rs=rs, rsg=rsg, rsb=rsb, vsb=vsbx,     # noqa: F821
+                     alp=alp, vp=vp, vds=vdsx,              # noqa: F821
+                     alp1=alp1, alp2=alp2, ax=ax,           # noqa: F821
+                     thesatb=thesatb, thesatg=thesatg,  # noqa: F821
+                     pmos=pmos,
+                     kp=kp,                                 # noqa: F821
+                     cox_area=cox, eps_si=EPS_SI))
+        cox_tot = var(cox * w * l, 'cox_tot')                 # noqa: F821
+        Qg, Qd, Qb = psp_kernel.charges_long_channel(core, xg, phit,
+                                                     cox_tot)
+
+        ## The charges are contributed on branches referred to the
+        ## SOURCE, exactly as PSP does it.  That makes
+        ## `Qs = -(Qg + Qd + Qb)` structural: the source row picks up the
+        ## negative of the other three because each branch subtracts
+        ## there, so charge conservation is a property of the topology
+        ## rather than something to check numerically.
+        ##
+        ## `i[node]` is the current flowing FROM the node INTO the
+        ## device -- the convention a generated resistor uses, where
+        ## `I(p,m) <+ V/r` makes `i[p]` positive for `vp > vm`.  So for
+        ## an n-channel with the drain above the source the drain entry
+        ## is +Ids.
+        ## Undo the ordering.  `Qg` and `Qb` are even under the exchange
+        ## and pass through untouched; the channel charge splits between
+        ## the two ends and has to follow the terminals.  With
+        ## `Qch = -(Qg + Qb)` the forward result gives the HIGH end `Qd`
+        ## and the low end `Qch - Qd`, so interpolating on `sgn`
+        ## reproduces each exactly at either polarity and averages them
+        ## at `Vds = 0`, where the two ends are genuinely equal.
+        qch = var(-(Qg + Qb), 'qch')
+        qd_t = var(0.5 * qch + 0.5 * sgn * (2.0 * Qd - qch), 'qd_t')
+
+        ## Polarity restored, exactly as PSP restores it
+        ## (`PSP103_module.include:1701, 1788-1790`).  `sgn` is NOT
+        ## multiplied by `T`: it is the internal source/drain interchange
+        ## sign, a separate mechanism that already lives inside the
+        ## internal convention.
+        return (Contribution(Branch(d, s, 'chan').I,
+                             T * sgn * core['ids']),
+                Contribution(Branch(g, s, 'qg').I, ddt(T * Qg)),
+                Contribution(Branch(b, s, 'qb').I, ddt(T * Qb)),
+                Contribution(Branch(d, s, 'qd').I, ddt(T * qd_t)))
+
+
+    return analog
+
+
 class PspMosLongChannel(Behavioural):
-    """A surface-potential MOSFET: PSP's intrinsic long-channel core.
+    """A surface-potential MOSFET: PSP103's core, from a real card.
 
-    Not PSP103.  This is PSP's *centre* -- the surface potential solved
-    at each channel end by `psp_kernel.sp_s`, and the drain current
-    assembled from them by symmetric linearisation -- with every
-    short-channel, mobility, series-resistance, overlap, leakage and
-    geometry-scaling layer omitted.  PSP103 is that core plus 2371 lines
-    of those layers.
+    Not PSP103, but no longer only its centre.  The surface potential is
+    solved at each channel end by `psp_kernel.sp_s` and the drain
+    current assembled from them by symmetric linearisation; on top of
+    that sit mobility reduction, Coulomb scattering, velocity
+    saturation, series resistance, the saturation-limited drain voltage,
+    channel-length modulation with its channel-shortening factor, the
+    quantum-mechanical correction, polysilicon depletion and the
+    effective thermal voltage.  Parameters come from a foundry card
+    through `psp_scaling.to_long_channel`, with nothing fitted, and the
+    drain current agrees with IHP's own compiled PSP103 to within a few
+    tenths of a percent across six sweeps and two geometries.
 
-    What it demonstrates is the part that was in doubt: that the DSL can
-    carry a surface-potential formulation at all.  Three properties come
-    out of the construction rather than out of fitting, and are the
-    reason this class of model displaced threshold-voltage models:
+    Still absent: gate and junction leakage, impact ionisation, overlap
+    and fringe capacitances, the non-quasi-static block, self-heating,
+    and every temperature coefficient.  Two further blocks -- DIBL and
+    the bias modulations of the velocity-saturation parameter -- are
+    implemented but switched off, for reasons recorded on
+    `psp_scaling.to_long_channel`.
 
-    * the drain current is **exactly antisymmetric** under exchanging
-      source and drain, bit for bit -- because the inversion charge is
-      evaluated at the midpoint potential;
+    Four properties come out of the construction rather than out of
+    fitting, and are the reason this class of model displaced
+    threshold-voltage models:
+
+    * the drain current is **antisymmetric** under exchanging source and
+      drain, to a unit in the last place -- because the inversion charge
+      is evaluated at the midpoint potential, and because the terminals
+      are ordered rather than the formula being relied on to be odd;
     * it is **exactly zero** at zero drain-source bias, for any gate
       bias;
     * one expression covers accumulation, depletion, weak and strong
@@ -251,10 +470,8 @@ class PspMosLongChannel(Behavioural):
       three of them are contributed on branches referred to the source
       and the fourth is what is left.
 
-    Parameters are the physical ones the core actually needs.  A real
-    PSP card's 359 parameters mostly configure the layers that are not
-    here, so this does not read one; `pycircuit.utilities.spicecard`
-    exists for when it can.
+    See `PspPmosLongChannel` for the p-channel device, which is this one
+    with five terms changed.
     """
 
     instparams = [
@@ -370,167 +587,24 @@ class PspMosLongChannel(Behavioural):
                 out[k] = vs + vold + (lim if delta > 0.0 else -lim)
         return out
 
-    @staticmethod
-    def analog(d, g, s, b):
-        bd, bg, bs = Branch(d, b, 'd'), Branch(g, b, 'g'), Branch(s, b, 's')
+    analog = staticmethod(_psp_mos_analog(1.0, False))
 
-        ## Two thermal voltages, deliberately.  The BODY FACTOR is built
-        ## on the plain one -- PSP's `G_0` is, and it only moves to the
-        ## effective one under `SWFIX`, which defaults off.  Everything
-        ## else -- gate drive, quasi-Fermi levels, charges, the current --
-        ## is in units of the effective one.
-        phit0 = var(vt(), 'phit0')
-        phit = var(phit0 * (1.0 + ct), 'phit')                # noqa: F821
-        ## Oxide capacitance per unit area, and the body factor that
-        ## follows from it.  `Gf` is gamma normalised by sqrt(phit),
-        ## which is the form the surface-potential solver takes.
-        cox = var(EPS_OX / tox, 'cox')                        # noqa: F821
-        gamma = var(sympy.sqrt(2.0 * QELEC * EPS_SI * nsub)   # noqa: F821
-                    / cox, 'gamma')
-        Gf = var(gamma / sympy.sqrt(phit0), 'Gf')
-        xi = var(1.0 + Gf * INV_SQRT2, 'xi')
 
-        ## Normalised gate drive, and the quasi-Fermi levels at the two
-        ## channel ends.  Everything is referred to the bulk, which is
-        ## what keeps source and drain interchangeable.
+class PspPmosLongChannel(PspMosLongChannel):
+    """The p-channel device: the same core, run in PSP's own way.
 
-        beta = var(u0 * cox * w / l, 'beta')                  # noqa: F821
+    Terminals, parameters and the Newton limiter are inherited
+    unchanged.  The model card supplies the difference and nothing here
+    does: every parameter on IHP's p-channel card is a positive
+    magnitude carrying the same signs as the n-channel one -- `vfbo` is
+    negative on both -- and the polarity lives in a single `type = -1`
+    on the `.model` line.  PSP's 849-line geometry-scaling layer
+    contains not one reference to the channel type, for the same reason.
 
-        ## SYMMETRISED BIAS VARIABLES.
-        ##
-        ## The intrinsic core is exactly antisymmetric under exchanging
-        ## source and drain because every quantity it uses is either a
-        ## midpoint one (even) or `dps` (odd).  The layers on top are not
-        ## automatically so: the series resistance reads a source-bulk
-        ## voltage and channel-length modulation reads `Vds`, and under
-        ## the exchange the first CHANGES and the second flips sign
-        ## through a function that is not odd.  Both broke the symmetry,
-        ## and neither was caught until a card supplied nonzero `rs` and
-        ## `alp` -- they default to zero, so every earlier symmetry test
-        ## had them switched off.
-        ##
-        ## PSP's answer is `Vsbx = Vsbstar + 0.5*(Vds - Vdsx)`
-        ## (`PSP103_macrodefs.include:472`), which evaluates to the
-        ## LOWER of the two junction voltages under either polarity, plus
-        ## a smoothed `|Vds|`.  Same construction here: `vdsx` is a
-        ## smooth `|Vds|` and `vsbx` follows PSP's formula, so both are
-        ## even and the antisymmetry survives.
-        ## CONDITIONING OF THE TERMINAL VOLTAGES
-        ## (`PSP103_macrodefs.include:330-334, 1104-1105`).
-        ##
-        ## The surface-potential solver needs the junction bias to stay
-        ## above roughly `-phib`; below that the quasi-Fermi level has
-        ## passed the built-in potential and the formulation stops
-        ## meaning anything.  The kernel used to enforce that with a hard
-        ## `max(xn, 0)`, which is fine for the VALUE and poison for the
-        ## Jacobian: the clamp freezes every conductance, so Newton
-        ## arrives with no gradient telling it how to get back.  A
-        ## two-transistor stack was enough to expose it -- both the old
-        ## and the new device swing out past the clamp on the way to the
-        ## solution, and only the one with a gradient there returns.
-        ##
-        ## PSP limits smoothly instead, and at the VOLTAGE rather than at
-        ## `xn`: take the lower of the two junctions, clip it at
-        ## `-0.95*phib` through `MINA`, and lift `Vsb` by whatever the
-        ## clip removed.  `phix1` re-centres it so that at ordinary bias
-        ## the whole construction shifts `Vsb` by ~1e-5 V and is
-        ## invisible.
-        phix = var(0.95 * phib, 'phix')                       # noqa: F821
-        aphi = var(0.0025 * phib * phib, 'aphi')              # noqa: F821
-        phix2 = var(0.5 * sympy.sqrt(aphi), 'phix2')
-        phix1 = var(psp_kernel.mina(phix - phix2, 0.0, aphi), 'phix1')
-        vlow = var(psp_kernel.mina(bd.V, bs.V, aphi) + phix, 'vlow')
-        vsbst = var(bs.V - psp_kernel.mina(vlow, 0.0, aphi) + phix1,
-                    'vsbst')
+    Redefining `analog` is REQUIRED rather than decorative: the DSL keys
+    compilation on the name appearing in the class body, so a subclass
+    that merely inherited it would silently reuse the n-channel
+    expression and be wrong in a way nothing would report.
+    """
 
-        vds = var(bd.V - bs.V, 'vds')
-        vdsx = var(2.0 * psp_kernel.hdl.hypsmooth(vds, 1e-4) - vds, 'vdsx')
-        vsbx = var(vsbst + 0.5 * (vds - vdsx), 'vsbx')
-
-        ## DRAIN-INDUCED BARRIER LOWERING
-        ## (`PSP103_macrodefs.include:473-476`).  A short channel lets
-        ## the drain field reach the source barrier and lower it, so the
-        ## device turns on earlier at high drain bias.  PSP models it as
-        ## a shift of the GATE DRIVE rather than of a threshold voltage
-        ## -- there is no threshold voltage in a surface-potential model
-        ## to shift.
-        ##
-        ## Built on the symmetrised `vdsx`/`vsbx`, so it is even under
-        ## the source/drain exchange and cannot break the antisymmetry
-        ## the way series resistance and channel-length modulation both
-        ## did before them.  `CFD` is zero on this card, which makes
-        ## `Vdsp = Vdsx`; the general form is kept because a card that
-        ## sets it would otherwise be silently mismodelled.
-        vdsp = var(2.0 * vdsx * psp_kernel.hdl.safe_div(
-            1.0, 1.0 + psp_kernel.hdl.safe_sqrt(1.0 + cfd * vdsx),  # noqa
-            eps=1e-30), 'vdsp')
-        delvg = var(cf * vdsp * (1.0 + cfb * vsbx), 'delvg')  # noqa: F821
-
-        xg = var((bg.V - vfb + delvg) / phit, 'xg')           # noqa: F821
-
-        ## ORDERED TERMINALS.
-        ##
-        ## The saturation-limited drain voltage broke what the paragraph
-        ## above describes.  `Vdsat` is built from SOURCE-SIDE quantities
-        ## alone -- the inversion charge and mobility at the low end of
-        ## the channel -- so the core stopped being an odd function of
-        ## `Vds`: swapping the terminals changed which end `Vdsat` was
-        ## measured at, and the reverse current came out 16% larger.
-        ##
-        ## PSP does not solve this with a cleverer formula.  It orders
-        ## the terminals, computes the device forward, and swaps the
-        ## contributions on the way out.  Same here, using the
-        ## symmetrised variables that already exist: `vsbx` IS the lower
-        ## junction under either polarity, and `vdsx` is `|Vds|`.  So the
-        ## core always sees a forward device, and the sign is applied
-        ## afterwards.  The antisymmetry is now a property of the
-        ## TOPOLOGY rather than of the algebra, which is the only form of
-        ## it that survives adding non-odd physics.
-        xn_s = var((phib + vsbx) / phit, 'xn_s')              # noqa: F821
-        xn_d = var(xn_s + vdsx / phit, 'xn_d')
-
-        ## A smooth sign of `Vds`.  `vdsx` is `sqrt(Vds^2 + 4e^2)`, so
-        ## this is exactly +-1 away from the origin, is zero AT the
-        ## origin, and never divides by zero (`vdsx >= 2e`).
-        sgn = var(vds / vdsx, 'sgn')
-
-        core = psp_kernel.intrinsic(
-            xg, xn_s, xn_d, Gf, xi, phit, beta,
-            mob=dict(mue=mue, themu=themu, cs=cs,          # noqa: F821
-                     thecs=thecs, feta=feta, thesat=thesat,  # noqa: F821
-                     rs=rs, rsg=rsg, rsb=rsb, vsb=vsbx,     # noqa: F821
-                     alp=alp, vp=vp, vds=vdsx,              # noqa: F821
-                     alp1=alp1, alp2=alp2, ax=ax,           # noqa: F821
-                     thesatb=thesatb, thesatg=thesatg,  # noqa: F821
-                     kp=kp,                                 # noqa: F821
-                     cox_area=cox, eps_si=EPS_SI))
-        cox_tot = var(cox * w * l, 'cox_tot')                 # noqa: F821
-        Qg, Qd, Qb = psp_kernel.charges_long_channel(core, xg, phit,
-                                                     cox_tot)
-
-        ## The charges are contributed on branches referred to the
-        ## SOURCE, exactly as PSP does it.  That makes
-        ## `Qs = -(Qg + Qd + Qb)` structural: the source row picks up the
-        ## negative of the other three because each branch subtracts
-        ## there, so charge conservation is a property of the topology
-        ## rather than something to check numerically.
-        ##
-        ## `i[node]` is the current flowing FROM the node INTO the
-        ## device -- the convention a generated resistor uses, where
-        ## `I(p,m) <+ V/r` makes `i[p]` positive for `vp > vm`.  So for
-        ## an n-channel with the drain above the source the drain entry
-        ## is +Ids.
-        ## Undo the ordering.  `Qg` and `Qb` are even under the exchange
-        ## and pass through untouched; the channel charge splits between
-        ## the two ends and has to follow the terminals.  With
-        ## `Qch = -(Qg + Qb)` the forward result gives the HIGH end `Qd`
-        ## and the low end `Qch - Qd`, so interpolating on `sgn`
-        ## reproduces each exactly at either polarity and averages them
-        ## at `Vds = 0`, where the two ends are genuinely equal.
-        qch = var(-(Qg + Qb), 'qch')
-        qd_t = var(0.5 * qch + 0.5 * sgn * (2.0 * Qd - qch), 'qd_t')
-
-        return (Contribution(Branch(d, s, 'chan').I, sgn * core['ids']),
-                Contribution(Branch(g, s, 'qg').I, ddt(Qg)),
-                Contribution(Branch(b, s, 'qb').I, ddt(Qb)),
-                Contribution(Branch(d, s, 'qd').I, ddt(qd_t)))
+    analog = staticmethod(_psp_mos_analog(-1.0, True))

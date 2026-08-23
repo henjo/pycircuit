@@ -74,6 +74,34 @@ SWEEPS = [
          sweep='Vd', start=-1.5, stop=0.0, step=0.05,
          bias=dict(Vg=-1.2, Vs=0.0, Vb=0.0),
          note='p-channel output characteristic'),
+
+    ## The p-channel LONG device.  The one 130 nm p-channel curve above
+    ## was the least favourable geometry to judge a long-channel core on
+    ## -- it is where the omitted short-channel physics dominates, so a
+    ## ratio taken there says little about the core.  These mirror the
+    ## n-channel set the whole measurement programme is built on.
+    dict(name='pmos_long_idvd', device='sg13_lv_pmos', w=10e-6, l=1e-6,
+         sweep='Vd', start=-1.5, stop=0.0, step=0.05,
+         bias=dict(Vg=-1.2, Vs=0.0, Vb=0.0),
+         note='p-channel long/wide device -- geometry scaling, little '
+              'short-channel'),
+    dict(name='pmos_long_idvg', device='sg13_lv_pmos', w=10e-6, l=1e-6,
+         sweep='Vg', start=-1.5, stop=0.0, step=0.025,
+         bias=dict(Vd=-0.05, Vs=0.0, Vb=0.0),
+         note='p-channel transfer characteristic of the LONG device -- '
+              'separates a gain error from a threshold error on the '
+              'geometry where short-channel physics does not confound '
+              'it'),
+    dict(name='pmos_idvg_vd1p2', device='sg13_lv_pmos', w=1e-6, l=0.13e-6,
+         sweep='Vg', start=-1.5, stop=0.0, step=0.025,
+         bias=dict(Vd=-1.2, Vs=0.0, Vb=0.0),
+         note='p-channel transfer characteristic, saturation'),
+    dict(name='pmos_idvg_vd0p05', device='sg13_lv_pmos', w=1e-6,
+         l=0.13e-6, sweep='Vg', start=-1.5, stop=0.0, step=0.025,
+         bias=dict(Vd=-0.05, Vs=0.0, Vb=0.0),
+         note='p-channel transfer characteristic, linear region -- '
+              'subthreshold slope, and where the hole-specific '
+              'effective-field weighting shows'),
 ]
 
 
@@ -138,11 +166,11 @@ VTH_GEOMETRIES = [
 
 VTH_DECK = """* PSP103 internal vth: {name}
 .lib {pdk}/models/cornerMOSlv.lib mos_tt
-Vd d 0 dc 0.05
-Vg g 0 dc 1.2
+Vd d 0 dc {vd:g}
+Vg g 0 dc {vg:g}
 Vs s 0 dc 0
 Vb b 0 dc 0
-X1 d g s b sg13_lv_nmos w={w:g} l={l:g} ng=1 m=1
+X1 d g s b {device} w={w:g} l={l:g} ng=1 m=1
 .control
 osdi {pdk}/osdi/psp103.osdi
 op
@@ -245,16 +273,28 @@ def main(argv=None):
     ## PSP's own threshold voltage, per geometry.
     data['vth'] = {}
     data['scaled'] = {}
-    for spec in VTH_GEOMETRIES:
-        v = _vth(args.pdk, spec)
-        data['vth'][spec['name']] = dict(w=spec['w'], l=spec['l'], vth=v)
-        lp = _op_outputs(args.pdk, spec,
-                         ['lp_' + n for n in LP_PARAMS])
-        data['scaled'][spec['name']] = dict(
-            w=spec['w'], l=spec['l'],
-            **{k[3:]: val for k, val in lp.items()})
-        print('vth %-12s W=%-6.4g L=%-8.4g %.6f V   (%d scaled params)'
-              % (spec['name'], spec['w'], spec['l'], v, len(lp)))
+    ## The p-channel set goes under its OWN top-level keys rather than
+    ## into `scaled`/`vth`.  A test asserts the exact key set of
+    ## `scaled`, which is what makes it a completeness check rather than
+    ## a lookup; mixing channel types in would quietly destroy that.
+    data['vth_pmos'] = {}
+    data['scaled_pmos'] = {}
+    for dev, bias, vkey, skey in (
+            ('sg13_lv_nmos', (0.05, 1.2), 'vth', 'scaled'),
+            ('sg13_lv_pmos', (-0.05, -1.2), 'vth_pmos', 'scaled_pmos')):
+        for geom in VTH_GEOMETRIES:
+            spec = dict(geom, device=dev, vd=bias[0], vg=bias[1])
+            v = _vth(args.pdk, spec)
+            data[vkey][spec['name']] = dict(w=spec['w'], l=spec['l'],
+                                            vth=v)
+            lp = _op_outputs(args.pdk, spec,
+                             ['lp_' + n for n in LP_PARAMS])
+            data[skey][spec['name']] = dict(
+                w=spec['w'], l=spec['l'],
+                **{k[3:]: val for k, val in lp.items()})
+            print('vth %-6s %-12s W=%-6.4g L=%-8.4g %9.6f V  (%d params)'
+                  % (dev[-4:], spec['name'], spec['w'], spec['l'], v,
+                     len(lp)))
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, 'w') as fh:
