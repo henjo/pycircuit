@@ -86,11 +86,22 @@ What the construction guarantees
 Three properties fall out of the formulation rather than out of fitting.
 Each is checked here on a live device.
 
-**Source and drain are exactly interchangeable.** Swapping which end is
-called the source negates the current and changes nothing else — bit for
-bit, not approximately. Threshold-voltage models are famously asymmetric
+**Source and drain are interchangeable.** Swapping which end is called
+the source negates the current and changes nothing else, to within a
+unit in the last place. Threshold-voltage models are famously asymmetric
 about :math:`V_{ds} = 0`, which shows up as spurious distortion in
 passing gates and mixers.
+
+This was bit-exact until the saturation voltage went in. That quantity
+is built from the source end of the channel alone, so it is not an odd
+function of :math:`V_{ds}`, and no rearrangement makes it one. PSP does
+not look for one either: it **orders the terminals**, computes the
+device forward from the lower junction, and applies the sign on the way
+out. So the antisymmetry is now a property of the topology rather than
+of the algebra — a stronger guarantee, since the algebraic form had
+already been broken twice by layers that were not odd — and what it
+costs is that the two polarities reach the same number by different
+roundings.
 
 .. exec-rst::
 
@@ -114,7 +125,7 @@ passing gates and mixers.
     print("     - Vd")
     print("     - Id forward")
     print("     - -Id reversed")
-    print("     - identical")
+    print("     - relative difference")
     for vg in (0.6, 1.2, 1.8):
         for vd in (0.1, 0.8):
             f = np.asarray(e.i(np.array([vd, vg, 0.0, 0.0])), float)[0]
@@ -123,7 +134,7 @@ passing gates and mixers.
             print("     - %.1f V" % vd)
             print("     - %.6e A" % f)
             print("     - %.6e A" % r)
-            print("     - %s" % ("yes" if f == r else "NO"))
+            print("     - %.1e" % (abs(f - r) / abs(f)))
 
 **Charge is conserved structurally.** The gate, bulk and drain charges
 are contributed on branches referred to the source, so the source charge
@@ -489,17 +500,49 @@ mobility reduction, Coulomb scattering, velocity saturation, series
 resistance, channel-length modulation, the quantum-mechanical correction
 to the surface potential at threshold, and the effective thermal voltage.
 
-Present also: polysilicon depletion, and the channel-shortening factor
-``FdL`` with its strong- and weak-inversion corrections.
+Present also: polysilicon depletion, the channel-shortening factor
+``FdL`` with its strong- and weak-inversion corrections, and the
+saturation-limited drain voltage ``Vdse``.
 
-Absent: **the saturation-limited drain voltage** ``Vdse`` — the core
-computes the drain surface potential at the true drain bias, so its
-channel-length modulation is an approximation to PSP's, and that is
-currently the limiting error; the short-channel threshold block; gate
-and junction leakage; impact ionisation; overlap and fringe
-capacitances; the non-quasi-static block; self-heating; and every
-temperature coefficient. PSP103 is this core plus those, and the size of
-what they are worth is exactly what the table above measures.
+Absent: the body- and gate-bias modulations of the velocity-saturation
+parameter (``THESATB``, ``THESATG`` — both nonzero on this card); the
+short-channel threshold block; gate and junction leakage; impact
+ionisation; overlap and fringe capacitances; the non-quasi-static block;
+self-heating; and every temperature coefficient. PSP103 is this core
+plus those, and the size of what they are worth is exactly what the
+table above measures.
+
+A saturating model needs a Newton limiter
+----------------------------------------
+
+``Vdse`` pins the drain end of the channel at :math:`V_{dsat}`, which is
+its purpose and is the physical answer. The consequence is that the
+output conductance collapses once the device is well into saturation —
+:math:`dI_{ds}/dV_{ds}` falls to :math:`10^{-11}` by 500 V and
+:math:`10^{-28}` by :math:`10^{7}` V.
+
+That matters to the solver rather than to the designer. A Newton step
+that overshoots into that region does not come back: the row is
+numerically empty, and the matrix is reported singular. Two of these
+devices stacked, driving their own internal node, is enough to reach it.
+
+:class:`~pycircuit.circuit.compact.PspMosLongChannel` therefore
+implements ``limit()``, the part SPICE gives ``DEVfetlim``: each of the
+device's branch voltages may move at most ``vlimit`` volts per Newton
+iteration. It follows the tree's state-free convention — the limiter
+returns a limited *copy* of the solution sub-vector, so the residual and
+the Jacobian are never taken at different points. The source terminal is
+left where the solver put it, since it is some other device's drain and
+limiting it here would have the two elements undo each other.
+
+Terminal voltages are conditioned too, before the surface potential is
+solved: the lower of the two junctions is clipped smoothly at
+:math:`-0.95\,\phi_B`, so the quasi-Fermi level cannot pass the
+built-in potential. The clip costs a fraction of a millivolt where
+nothing needs limiting, which is why it can be applied unconditionally
+rather than behind a test — and a hard clamp in its place is worse than
+useless, since it freezes every conductance and leaves the solver with
+no gradient at all.
 
 Notably **not** in the list of things that matter here: DIBL. It is
 measured below, and on this process it is small.

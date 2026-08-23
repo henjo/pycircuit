@@ -12,9 +12,10 @@ Verilog-A sources, compiled OSDI binaries and extracted model cards.
 Currently: `CapCmomi`.
 """
 
+import numpy as np
 import sympy
 
-from pycircuit.circuit import psp_kernel
+from pycircuit.circuit import defaultepar, psp_kernel
 from pycircuit.circuit.constants import (eps0, epsRSi, epsRSiO2,
                                          qelectron as QELEC)
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution, Node,
@@ -309,10 +310,55 @@ class PspMosLongChannel(Behavioural):
                   unit='', default=0.0),
         Parameter(name='alp2', desc='CLM correction, weak inversion',
                   unit='', default=0.0),
+        ## Linear/saturation transition sharpness.  PSP floors this at 2
+        ## in its scaling, and the kernel floors it again -- a small `ax`
+        ## makes the drain-voltage limiter soft enough to bite far below
+        ## saturation.
+        Parameter(name='ax', desc='Linear/saturation transition factor',
+                  unit='', default=2.0),
         ## Polysilicon depletion; `kp = 0` is an ideal (metal) gate.
         Parameter(name='kp', desc='Polysilicon depletion factor', unit='',
                   default=0.0),
     ]
+
+    #: Largest per-iteration excursion, in volts, allowed on any of the
+    #: device's branch voltages.  1 V is loose enough to be inactive
+    #: near a solution and tight enough that a Newton step cannot leave
+    #: the region where the device has any gradient at all.
+    vlimit = 1.0
+
+    def limit(self, x, x0, epar=defaultepar):
+        """Bound this device's branch voltages per Newton iteration.
+
+        THIS IS NOT OPTIONAL FOR A SATURATING MODEL, which is a thing
+        the core only became when the drain voltage started being
+        limited to `Vdsat`.  Before that the current kept growing with
+        `Vds` and a Newton step that overshot still had a gradient
+        pointing home.  Now the current saturates -- correctly; that is
+        what `Vdse` is for -- and `dIds/dVds` falls to 1e-11 by 500 V and
+        1e-28 by 1e7.  A solver that lands out there is not slow, it is
+        stuck: the row goes numerically empty and the matrix is reported
+        singular.  A stacked pair driving its own internal node was
+        enough to walk out there and stay.
+
+        So this plays the part SPICE gives `DEVfetlim`, in the state-free
+        form the tree prefers (`SubCircuit.limit`): return a limited copy
+        of the sub-vector, so the residual and the Jacobian are always
+        taken at the same point.  The source is left where the solver put
+        it -- it is some other device's drain, and limiting it here would
+        have the two fight -- and the other three terminals are bounded
+        relative to it, which is what SPICE bounds too.
+        """
+        out = np.array(x, dtype=float, copy=True)
+        x0a = np.asarray(x0, dtype=float)
+        vs, vs0 = out[2], x0a[2]
+        lim = self.vlimit
+        for k in (0, 1, 3):
+            vold = x0a[k] - vs0
+            delta = (out[k] - vs) - vold
+            if abs(delta) > lim:
+                out[k] = vs + vold + (lim if delta > 0.0 else -lim)
+        return out
 
     @staticmethod
     def analog(d, g, s, b):
@@ -338,8 +384,6 @@ class PspMosLongChannel(Behavioural):
         ## channel ends.  Everything is referred to the bulk, which is
         ## what keeps source and drain interchangeable.
         xg = var((bg.V - vfb) / phit, 'xg')                   # noqa: F821
-        xn_s = var((phib + bs.V) / phit, 'xn_s')              # noqa: F821
-        xn_d = var((phib + bd.V) / phit, 'xn_d')              # noqa: F821
 
         beta = var(u0 * cox * w / l, 'beta')                  # noqa: F821
 
@@ -362,9 +406,63 @@ class PspMosLongChannel(Behavioural):
         ## a smoothed `|Vds|`.  Same construction here: `vdsx` is a
         ## smooth `|Vds|` and `vsbx` follows PSP's formula, so both are
         ## even and the antisymmetry survives.
+        ## CONDITIONING OF THE TERMINAL VOLTAGES
+        ## (`PSP103_macrodefs.include:330-334, 1104-1105`).
+        ##
+        ## The surface-potential solver needs the junction bias to stay
+        ## above roughly `-phib`; below that the quasi-Fermi level has
+        ## passed the built-in potential and the formulation stops
+        ## meaning anything.  The kernel used to enforce that with a hard
+        ## `max(xn, 0)`, which is fine for the VALUE and poison for the
+        ## Jacobian: the clamp freezes every conductance, so Newton
+        ## arrives with no gradient telling it how to get back.  A
+        ## two-transistor stack was enough to expose it -- both the old
+        ## and the new device swing out past the clamp on the way to the
+        ## solution, and only the one with a gradient there returns.
+        ##
+        ## PSP limits smoothly instead, and at the VOLTAGE rather than at
+        ## `xn`: take the lower of the two junctions, clip it at
+        ## `-0.95*phib` through `MINA`, and lift `Vsb` by whatever the
+        ## clip removed.  `phix1` re-centres it so that at ordinary bias
+        ## the whole construction shifts `Vsb` by ~1e-5 V and is
+        ## invisible.
+        phix = var(0.95 * phib, 'phix')                       # noqa: F821
+        aphi = var(0.0025 * phib * phib, 'aphi')              # noqa: F821
+        phix2 = var(0.5 * sympy.sqrt(aphi), 'phix2')
+        phix1 = var(psp_kernel.mina(phix - phix2, 0.0, aphi), 'phix1')
+        vlow = var(psp_kernel.mina(bd.V, bs.V, aphi) + phix, 'vlow')
+        vsbst = var(bs.V - psp_kernel.mina(vlow, 0.0, aphi) + phix1,
+                    'vsbst')
+
         vds = var(bd.V - bs.V, 'vds')
         vdsx = var(2.0 * psp_kernel.hdl.hypsmooth(vds, 1e-4) - vds, 'vdsx')
-        vsbx = var(bs.V + 0.5 * (vds - vdsx), 'vsbx')
+        vsbx = var(vsbst + 0.5 * (vds - vdsx), 'vsbx')
+
+        ## ORDERED TERMINALS.
+        ##
+        ## The saturation-limited drain voltage broke what the paragraph
+        ## above describes.  `Vdsat` is built from SOURCE-SIDE quantities
+        ## alone -- the inversion charge and mobility at the low end of
+        ## the channel -- so the core stopped being an odd function of
+        ## `Vds`: swapping the terminals changed which end `Vdsat` was
+        ## measured at, and the reverse current came out 16% larger.
+        ##
+        ## PSP does not solve this with a cleverer formula.  It orders
+        ## the terminals, computes the device forward, and swaps the
+        ## contributions on the way out.  Same here, using the
+        ## symmetrised variables that already exist: `vsbx` IS the lower
+        ## junction under either polarity, and `vdsx` is `|Vds|`.  So the
+        ## core always sees a forward device, and the sign is applied
+        ## afterwards.  The antisymmetry is now a property of the
+        ## TOPOLOGY rather than of the algebra, which is the only form of
+        ## it that survives adding non-odd physics.
+        xn_s = var((phib + vsbx) / phit, 'xn_s')              # noqa: F821
+        xn_d = var(xn_s + vdsx / phit, 'xn_d')
+
+        ## A smooth sign of `Vds`.  `vdsx` is `sqrt(Vds^2 + 4e^2)`, so
+        ## this is exactly +-1 away from the origin, is zero AT the
+        ## origin, and never divides by zero (`vdsx >= 2e`).
+        sgn = var(vds / vdsx, 'sgn')
 
         core = psp_kernel.intrinsic(
             xg, xn_s, xn_d, Gf, xi, phit, beta,
@@ -372,7 +470,7 @@ class PspMosLongChannel(Behavioural):
                      thecs=thecs, feta=feta, thesat=thesat,  # noqa: F821
                      rs=rs, rsg=rsg, rsb=rsb, vsb=vsbx,     # noqa: F821
                      alp=alp, vp=vp, vds=vdsx,              # noqa: F821
-                     alp1=alp1, alp2=alp2,                  # noqa: F821
+                     alp1=alp1, alp2=alp2, ax=ax,           # noqa: F821
                      kp=kp,                                 # noqa: F821
                      cox_area=cox, eps_si=EPS_SI))
         cox_tot = var(cox * w * l, 'cox_tot')                 # noqa: F821
@@ -391,7 +489,17 @@ class PspMosLongChannel(Behavioural):
         ## `I(p,m) <+ V/r` makes `i[p]` positive for `vp > vm`.  So for
         ## an n-channel with the drain above the source the drain entry
         ## is +Ids.
-        return (Contribution(Branch(d, s, 'chan').I, core['ids']),
+        ## Undo the ordering.  `Qg` and `Qb` are even under the exchange
+        ## and pass through untouched; the channel charge splits between
+        ## the two ends and has to follow the terminals.  With
+        ## `Qch = -(Qg + Qb)` the forward result gives the HIGH end `Qd`
+        ## and the low end `Qch - Qd`, so interpolating on `sgn`
+        ## reproduces each exactly at either polarity and averages them
+        ## at `Vds = 0`, where the two ends are genuinely equal.
+        qch = var(-(Qg + Qb), 'qch')
+        qd_t = var(0.5 * qch + 0.5 * sgn * (2.0 * Qd - qch), 'qd_t')
+
+        return (Contribution(Branch(d, s, 'chan').I, sgn * core['ids']),
                 Contribution(Branch(g, s, 'qg').I, ddt(Qg)),
                 Contribution(Branch(b, s, 'qb').I, ddt(Qb)),
-                Contribution(Branch(d, s, 'qd').I, ddt(Qd)))
+                Contribution(Branch(d, s, 'qd').I, ddt(qd_t)))

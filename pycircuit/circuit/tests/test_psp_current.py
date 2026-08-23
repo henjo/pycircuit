@@ -225,12 +225,28 @@ class TestTheElement(object):
         assert i[1] == 0.0, 'no gate current in the intrinsic core'
 
     def test_swapping_the_terminals_negates_the_current(self):
-        """Symmetry, at the element level rather than the kernel's."""
+        """Symmetry, at the element level rather than the kernel's.
+
+        To one ulp, where this used to be bit-exact.  That is a real
+        change and worth stating plainly: the element now ORDERS its
+        terminals -- it computes the device forward from the lower
+        junction and applies the sign afterwards, because the
+        saturation-limited drain voltage is built from source-side
+        quantities and is not an odd function of `Vds`.  Ordering makes
+        the antisymmetry structural, which is stronger than what it
+        replaced.  What it costs is the bit-exactness: under the two
+        polarities `vsbx` evaluates the same number by a different
+        sequence of roundings, so the two currents agree to a relative
+        3e-16 rather than to the last bit.  One ulp is float noise; the
+        alternative was an algebraic symmetry that silently failed the
+        moment non-odd physics was added, which is exactly what
+        happened.
+        """
         e = self._fet()
         fwd = np.asarray(e.i(np.array([0.7, 1.2, 0.0, 0.0])), float)
         rev = np.asarray(e.i(np.array([0.0, 1.2, 0.7, 0.0])), float)
-        assert fwd[0] == -rev[0]
-        assert fwd[2] == -rev[2]
+        assert fwd[0] == pytest.approx(-rev[0], rel=1e-14)
+        assert fwd[2] == pytest.approx(-rev[2], rel=1e-14)
 
     def test_geometry_scales_the_current(self):
         """Ids is proportional to W/L, and to nothing else here."""
@@ -370,8 +386,9 @@ class TestTheChargeModel(object):
         Unlike the current, whose antisymmetry is structural, `Qd` and
         `Qs` are computed by expressions that are algebraically mirror
         images but not literally the same, so the swap is exact only up
-        to rounding.  The GATE charge, being symmetric in `dps`, does
-        come back bit-identical.
+        to rounding.  The GATE charge is symmetric in `dps` and used to
+        come back bit-identical; with the terminals ordered it too is
+        exact only to an ulp.
         """
         e = self._fet()
         for vg in (0.4, 0.8, 1.2, 1.8):
@@ -380,7 +397,8 @@ class TestTheChargeModel(object):
                 rev = np.asarray(e.q(np.array([0.0, vg, vd, 0.0])), float)
                 assert fwd[0] == pytest.approx(rev[2], rel=1e-14)
                 assert fwd[2] == pytest.approx(rev[0], rel=1e-14)
-                assert fwd[1] == rev[1], 'gate charge is bit-exact'
+                assert fwd[1] == pytest.approx(rev[1], rel=1e-14), \
+                    'gate charge, to one ulp since terminals are ordered'
 
     def test_below_threshold_the_gate_charge_mirrors_the_bulk(self):
         """Below threshold the gate is terminated almost entirely by
@@ -472,14 +490,17 @@ class TestMobilityAndVelocitySaturation(object):
     def test_symmetry_survives_the_extra_layer(self):
         """The point of the whole construction, re-checked with physics on.
 
-        Still `==`, not `approx`.
+        To one ulp rather than bit-exact, for the reason given on
+        `test_swapping_the_terminals_negates_the_current`: the terminals
+        are ordered now, so the two polarities reach the same number
+        along different rounding paths.
         """
         e = self._fet()
         for vg in (0.4, 0.9, 1.4, 1.8):
             for vd in (0.05, 0.3, 0.9, 1.6):
                 fwd = np.asarray(e.i(np.array([vd, vg, 0.0, 0.0])), float)
                 rev = np.asarray(e.i(np.array([0.0, vg, vd, 0.0])), float)
-                assert fwd[0] == -rev[0], (vg, vd)
+                assert fwd[0] == pytest.approx(-rev[0], rel=1e-14), (vg, vd)
 
     def test_charge_conservation_survives_it_too(self):
         e = self._fet()
@@ -576,3 +597,233 @@ class TestMobilityAndVelocitySaturation(object):
             for x in (np.zeros(4), np.array([0.0, 0.95, 0.0, 0.0])):
                 assert np.all(np.isfinite(np.asarray(e.i(x), float)))
                 assert np.all(np.isfinite(np.asarray(e.G(x), float)))
+
+
+class TestTheSaturationVoltage(object):
+    """What `Vdse` does to the element, and what it cost.
+
+    See `test_psp_gap.TestTheSaturationVoltage` for the comparison
+    against PSP's own scaled parameters.  This file's concern is the
+    consequences for the element: it saturates now, and a saturating
+    device needs a Newton limiter.
+    """
+
+    def _fet(self, **kw):
+        kw.setdefault('w', 10e-6)
+        kw.setdefault('l', 1e-6)
+        e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                              cm.Node('b'), **kw)
+        e.update_iparv()
+        return e
+
+    def test_the_current_actually_saturates(self):
+        """The point of the whole construction.
+
+        Without `Vdse` the drain surface potential follows the applied
+        bias and the current keeps climbing.  With it the drain end is
+        pinned at `Vdsat` and the output conductance collapses -- which
+        is the physical answer, and is also why the limiter below had to
+        be written.
+        """
+        e = self._fet()
+        g = {}
+        for vd in (0.3, 1.0, 5.0, 50.0):
+            G = np.asarray(e.G(np.array([vd, 1.8, 0.0, 0.0])), float)
+            g[vd] = G[0, 0]
+        assert g[0.3] > g[1.0] > g[5.0] > g[50.0] > 0.0, g
+        assert g[0.3] / g[50.0] > 1e5, g
+
+    def test_the_current_stays_bounded_at_absurd_bias(self):
+        """Saturated, not overflowing.  A solver WILL evaluate here."""
+        e = self._fet()
+        i0 = np.asarray(e.i(np.array([2.0, 1.8, 0.0, 0.0])), float)[0]
+        for vd in (1e2, 1e4, 1e7):
+            i = np.asarray(e.i(np.array([vd, 1.8, 0.0, 0.0])), float)
+            assert np.all(np.isfinite(i))
+            assert i[0] < 1.5 * i0, (vd, i[0], i0)
+
+
+class TestTheVoltageConditioning(object):
+    """The smooth limiter on the junction bias, and the kink it replaced.
+
+    The kernel floors `xn` at zero, which is the quasi-Fermi level
+    reaching the built-in potential -- below that the formulation stops
+    meaning anything.  A hard floor is fine for the VALUE and poison for
+    the Jacobian: at exactly `Vd = -phib` the analytic derivative and a
+    finite difference disagreed by 60%, and below it every conductance
+    froze, so a solver that overshot had nothing telling it how to get
+    back.
+
+    That went unnoticed while the floor only ever bit the DRAIN end,
+    where the device is off and the sensitivity is negligible anyway.
+    The saturation voltage reads the SOURCE end, which multiplies
+    everything, and the kink became visible immediately.
+
+    PSP conditions the terminal voltages instead
+    (`PSP103_macrodefs.include:330-334, 1104-1105`): take the lower of
+    the two junctions, clip it at `-0.95*phib` through the smooth
+    `MINA`, and lift `Vsb` by whatever the clip removed.
+    """
+
+    def _fet(self, **kw):
+        kw.setdefault('w', 10e-6)
+        kw.setdefault('l', 1e-6)
+        e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                              cm.Node('b'), **kw)
+        e.update_iparv()
+        return e
+
+    @staticmethod
+    def _fd_error(e, x):
+        x = np.array(x, float)
+        G = np.asarray(e.G(x), float)
+        fd = np.zeros_like(G)
+        for j in range(len(x)):
+            h = 1e-7 * max(1.0, abs(x[j]))
+            xp, xm = x.copy(), x.copy()
+            xp[j] += h
+            xm[j] -= h
+            fd[:, j] = (np.asarray(e.i(xp), float)
+                        - np.asarray(e.i(xm), float)) / (2 * h)
+        return np.max(np.abs(G - fd)) / max(np.abs(G).max(), 1e-30)
+
+    def test_the_jacobian_is_right_at_the_old_kink(self):
+        """`Vd = -phib` exactly -- the bias the hard floor broke.
+
+        `phib` defaults to 0.9, so this is the one point where the old
+        `max(xn, 0)` sat exactly on its corner.  It used to be 0.6 out.
+        """
+        e = self._fet()
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            assert self._fd_error(e, [-0.9, 1.8, 0.0, 0.0]) < 1e-5
+
+    @pytest.mark.parametrize('vd', [-0.85, -0.9, -0.95, -1.5, -4.0])
+    def test_it_is_right_on_both_sides_too(self, vd):
+        e = self._fet()
+        assert self._fd_error(e, [vd, 1.8, 0.0, 0.0]) < 1e-5, vd
+
+    def test_the_conductance_does_not_freeze_below_the_limit(self):
+        """What the hard floor actually cost.
+
+        Below `-phib` the clamped formulation returned the same numbers
+        for every input, so the conductance was bit-identical at every
+        bias out there and Newton had no gradient at all.  The smooth
+        limiter keeps it moving.
+        """
+        e = self._fet()
+        g = [np.asarray(e.G(np.array([vd, 1.8, 0.0, 0.0])),
+                        float)[0, 0] for vd in (-1.0, -1.5, -2.5)]
+        assert len(set(g)) == 3, g
+
+    @staticmethod
+    def _vsbstar(vd, vs, phib=0.9):
+        """The conditioning, in closed form -- what the element builds."""
+        def mina(x, y, a):
+            return 0.5 * (x + y - np.sqrt((x - y) ** 2 + a))
+        phix = 0.95 * phib
+        aphi = 0.0025 * phib * phib
+        phix1 = mina(phix - 0.5 * np.sqrt(aphi), 0.0, aphi)
+        return vs - mina(mina(vd, vs, aphi) + phix, 0.0, aphi) + phix1
+
+    @pytest.mark.parametrize('vd,vs', [(0.0, 0.0), (1.5, 0.0), (0.0, 1.5),
+                                       (1.8, 0.9), (-0.5, 0.0)])
+    def test_it_is_invisible_at_ordinary_bias(self, vd, vs):
+        """It has to be a limiter, not a correction.
+
+        Wherever nothing needs limiting it must leave `Vsb` alone, or it
+        would be a silent shift in every threshold on the card.  A
+        fraction of a millivolt is what it costs, which is why it can be
+        applied unconditionally rather than behind a test.
+        """
+        assert abs(self._vsbstar(vd, vs) - vs) < 1e-3, (vd, vs)
+
+    def test_it_clamps_the_lower_junction(self):
+        """And where something DOES need limiting, it limits.
+
+        However far below `-phib` the lower terminal is driven, the
+        conditioned junction stops at about `-0.95*phib` -- so `phib +
+        Vsbx` stays positive and the kernel's own floor never binds.
+        """
+        for vd in (-1.0, -5.0, -50.0, -1e4):
+            eff = self._vsbstar(vd, 0.0) + (vd - abs(vd)) * 0.5
+            assert eff > -0.9, (vd, eff)
+            assert eff < -0.8, (vd, eff)
+
+
+class TestTheNewtonLimiter(object):
+    """`PspMosLongChannel.limit`, the part SPICE calls `DEVfetlim`.
+
+    A saturating device has no gradient far from its solution, so a
+    Newton step that overshoots by a few hundred volts does not come
+    back -- the row goes numerically empty and the matrix is reported
+    singular.  Two of these in a stack was enough to reach that state.
+    """
+
+    def _fet(self, **kw):
+        kw.setdefault('w', 10e-6)
+        kw.setdefault('l', 1e-6)
+        e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                              cm.Node('b'), **kw)
+        e.update_iparv()
+        return e
+
+    def test_it_bounds_a_large_step(self):
+        e = self._fet()
+        x0 = np.array([0.5, 0.5, 0.0, 0.0])
+        out = e.limit(np.array([500.0, -300.0, 0.0, 90.0]), x0)
+        assert out[0] == pytest.approx(0.5 + e.vlimit)
+        assert out[1] == pytest.approx(0.5 - e.vlimit)
+        assert out[3] == pytest.approx(0.0 + e.vlimit)
+
+    def test_it_leaves_a_small_step_alone(self):
+        """It must be inactive near a solution, or it caps convergence."""
+        e = self._fet()
+        x0 = np.array([0.8, 1.2, 0.1, 0.0])
+        x = np.array([0.83, 1.19, 0.1, 0.001])
+        assert np.allclose(e.limit(x, x0), x, rtol=0, atol=0)
+
+    def test_it_does_not_move_the_source(self):
+        """The source is some other device's drain.
+
+        Limiting it here would have two elements fight over the same
+        node, each undoing the other.  SPICE bounds the branch voltages
+        and leaves the reference terminal where the solver put it.
+        """
+        e = self._fet()
+        x = np.array([500.0, 500.0, 400.0, 500.0])
+        assert e.limit(x, np.zeros(4))[2] == 400.0
+
+    def test_it_does_not_mutate_its_argument(self):
+        """The state-free convention: return a limited COPY.
+
+        `SubCircuit.limit` writes the return value back; a limiter that
+        edited its argument would be editing a fancy-indexed temporary,
+        which is how limiting was silently a no-op in this tree once
+        before.
+        """
+        e = self._fet()
+        x = np.array([500.0, 500.0, 0.0, 0.0])
+        before = x.copy()
+        e.limit(x, np.zeros(4))
+        assert np.array_equal(x, before)
+
+    def test_a_stacked_pair_converges(self):
+        """The circuit that found it.
+
+        Both devices swing out past their saturation on the way to the
+        solution; without the limiter the solve reaches 6e7 V on the
+        internal node and reports a singular matrix.
+        """
+        cm.default_toolkit = numeric
+        c = SubCircuit()
+        nd, nm = c.add_node('d'), c.add_node('mid')
+        c['vdd'] = VS(c.add_node('vdd'), gnd, v=1.8)
+        c['rl'] = R('vdd', nd, r=5e3)
+        c['vg'] = VS(c.add_node('g'), gnd, v=1.8)
+        c['m1'] = PspMosLongChannel(nd, 'g', nm, gnd, w=10e-6, l=1e-6)
+        c['m2'] = PspMosLongChannel(nm, 'g', gnd, gnd, w=10e-6, l=1e-6)
+        c.update_iparv()
+        res = DC(c, toolkit=numeric).solve()
+        vd, vm = float(res.v(nd, gnd)), float(res.v(nm, gnd))
+        assert 0.0 < vm < vd < 1.8

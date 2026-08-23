@@ -1530,8 +1530,13 @@ Each column is a term the *shape* of the previous residual named:
 > the short device 27% low at Vg = 0.6, with the reference current
 > climbing **2.4× through saturation** where ours was flat. DIBL was the
 > obvious suspect and the measurement killed it: PSP's own `vth` moves
-> **3.5 mV over 1.35 V of drain bias** — 2.6 mV/V, which matches our `CF`
-> scaling exactly. So the climb happens at essentially constant threshold
+> **3.5 mV over 1.35 V of drain bias** — 2.6 mV/V. (Stated more exactly
+> than it was: we do not model DIBL at all — `CF`, `CFB` and `CFD` are
+> absent from the scaling layer — so the measurement is what licenses
+> the omission, not agreement with a term we have. PSP's own shift is
+> 3.2 mV at Vds = 1.2 V here, worth about 1% of the current at a
+> strong-inversion `gm/Id`.) So the climb happens at essentially constant
+> threshold
 > and is in the current formula.
 >
 > It is `FdL = (1 + dL1 + dL1²)·GdL`
@@ -1689,6 +1694,100 @@ built but never actually tested against.
 |---|---|---|
 | geometry scaling layer | medium | `PSP103_scaling.include`, 849 lines, pure parameter arithmetic — no solver involvement, so it is bulk rather than difficulty |
 | the rest of the surface-potential core | large | `PSP103_module.include`, 2371 lines. The `sp_s` kernel it is built on is done and validated; what remains is the current, charge and geometry layers around it |
+
+> **The saturation voltage, a floor hidden in the scaling, and two
+> things it broke — 2026-08-23.** PSP does not evaluate the drain
+> surface potential at the applied drain bias. It computes a saturation
+> voltage `Vdsat` from **source-side quantities alone**, smoothly limits
+> `Vds` to it, and uses the limited `Vdse` for the drain quasi-Fermi
+> level: `xn_d = xn_s + Vdse/φt` (`PSP103_macrodefs.include:596-632`).
+> This was the missing block behind two earlier compromises — the
+> dropped second logarithm in CLM's `s1`, and `FdL` amplifying an
+> approximate `dL`.
+>
+> Built whole: `xgs`, `qis`, `qbs` and a source-end `Gmob`, then `Φ₀`,
+> `Φ₂`, `asat`, `Φ_sat` and `Vdsat = Φ_sat − φt·ln(1 + …)`. Result
+> across the six n-channel sweeps, nothing tuned — five improved, one
+> regressed, summed median error **0.207 → 0.138**, and the long device
+> went **1.035 → 1.010** with its range tightened to 0.996–1.014.
+>
+> **First, though, it made things worse — by 14%, on the sweeps where it
+> should have changed nothing.** `Vd = 0.05` is far below saturation;
+> a limiter has no business acting there. It acted because the exponent
+> `AX` governing it is **floored at 2** in the scaling layer
+> (`PSP103_scaling.include:743`), and the card gives no hint: on a
+> 0.13 µm device `AXO/(1 + AXL·iLE)` evaluates to **0.88**, and an
+> exponent below one makes `(1 + (Vds/Vdsat)^AX)^(−1/AX)` soft enough to
+> bite everywhere. The floor is now verified against PSP's own `lp_ax`
+> at four geometries — exact at all four, and binding at both short
+> ones. `lp_ax`, `lp_thesat`, `lp_thesatb`, `lp_thesatg` and `lp_alp`
+> were added to the recorded reference for it; the regeneration was
+> purely additive, every existing number reproducing bit-identically.
+>
+> **It broke source/drain symmetry, and the fix is structural.**
+> `Vdsat` is built from the source end alone, so it is not an odd
+> function of `Vds` — the reverse current came out 16% larger than the
+> forward. There is no cleverer formula available, and PSP does not look
+> for one: it **orders the terminals**, computes the device forward from
+> the lower junction, and applies the sign on the way out. Same here,
+> reusing the `vsbx`/`vdsx` pair that already existed:
+> `xn_s = (φ_B + Vsbx)/φt`, `xn_d = xn_s + Vdsx/φt`, current
+> `sgn·Ids` with `sgn = Vds/Vdsx`, and the channel charge interpolated
+> back onto the real terminals. The antisymmetry is now a property of
+> the **topology** rather than of the algebra — which is the only form
+> of it that survives adding non-odd physics, and it had already failed
+> twice in the algebraic form. It costs the bit-exactness: the two
+> polarities reach the same number by different roundings, so the
+> agreement is 3 × 10⁻¹⁶ rather than the last bit.
+>
+> **And it exposed a hard clamp that had been fine only by luck.** The
+> kernel floors `xn` at zero — the quasi-Fermi level reaching the
+> built-in potential. A hard floor is fine for the value and poison for
+> the Jacobian: at exactly `Vd = −φ_B` the analytic derivative and a
+> finite difference disagreed by **60%**, and below it every conductance
+> froze bit-identically, so a solver that overshot had nothing telling
+> it how to return. It had gone unnoticed because the floor only ever
+> bit the *drain* end, where the device is off and the sensitivity is
+> negligible; `Vdsat` reads the *source* end, which multiplies
+> everything. Replaced with PSP's own conditioning
+> (`macrodefs:330-334, 1104-1105`): take the lower junction, clip it at
+> `−0.95·φ_B` through the smooth `MINA`, lift `Vsb` by what the clip
+> removed. Sub-millivolt at ordinary bias, so it applies
+> unconditionally. Jacobian error at the old kink: 0.6 → 3 × 10⁻⁷.
+>
+> **A saturating model needs a Newton limiter — that is new
+> infrastructure, not a workaround.** Saturation is the point of
+> `Vdse`, and its consequence is that `dIds/dVds` falls to 10⁻¹¹ by
+> 500 V and 10⁻²⁸ by 10⁷ V. A solver that lands out there is not slow,
+> it is stuck: the row goes numerically empty and the matrix is reported
+> singular. Two devices in a stack driving their own internal node were
+> enough to walk out there and stay — and the *old* model reached the
+> same absurd biases and escaped only because its current kept growing,
+> so the divergence was always latent. `PspMosLongChannel.limit` now
+> plays the part SPICE gives `DEVfetlim`, in the state-free convention
+> the tree prefers (return a limited copy, so residual and Jacobian are
+> never taken at different points). The source is left where the solver
+> put it — it is some other device's drain, and limiting it here would
+> have two elements undo each other.
+>
+> **One general lesson worth carrying, about the compiler rather than
+> the physics.** `sympy.Max(f, c)` must be applied to an **atom**, never
+> to an expression: it is differentiated by expanding `f` into every
+> branch condition, and when `f` contains a `hypsmooth`, sympy
+> rationalises it there as `2ε²/(√(z² + 4ε²) − z)` — whose denominator
+> cancels to *exactly* zero for any ordinary `z`, because `4ε²` sits far
+> below `z`'s last bit. The value was finite; the Jacobian divided by
+> zero. Naming the argument with `var()` first keeps it opaque and the
+> derivative stays a one-line `where`. The same shape of trap as
+> compiling Coulomb scattering as a power rather than nested
+> exponentials, and as `rat**ax` needing its base floored strictly above
+> zero (sympy writes that derivative as `ax·rat**ax/rat`).
+>
+> Still absent from the velocity-saturation term: `THESATB` and
+> `THESATG`, the body- and gate-bias modulations of `THESAT`
+> (`macrodefs:596-607`). Both are nonzero on this card — 0.082 and
+> 0.115 — and both are now recorded in the reference so the gap is
+> written down rather than remembered.
 
 Deferred, unchanged from the original research verdict:
 

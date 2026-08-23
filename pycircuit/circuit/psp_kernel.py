@@ -392,12 +392,115 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
     Gf2 = _v(Gf * Gf, 'ids_Gf2')
     inv_Gf2 = _v(hdl.safe_div(1.0, Gf2, eps=1e-30), 'ids_invGf2')
     d_s = _v(hdl.expl(-xn_s), 'ids_ds')
-    d_d = _v(hdl.expl(-xn_d), 'ids_dd')
-
     x_s = _v(sp_s(xg, xn_s, d_s, Gf, xi, margin), 'ids_xs')
-    x_d = _v(sp_s(xg, xn_d, d_d, Gf, xi, margin), 'ids_xd')
-
     Es, Ps, sqs, Ds = surface_state(x_s, xn_s, d_s, Gf, inv_Gf2)
+
+    ## The DRAIN end is deliberately not solved yet.  Where the
+    ## saturation voltage below is active it moves `xn_d`, and solving
+    ## the surface potential at the applied bias first would build a
+    ## whole `sp_s` -- the most expensive thing in this file -- only for
+    ## reachability pruning to throw it away again.
+
+    ## ---- the saturation-limited drain voltage ------------------------
+    ## PSP does not evaluate the drain surface potential at the applied
+    ## drain bias.  It computes a saturation voltage `Vdsat` from
+    ## SOURCE-SIDE quantities, smoothly limits `Vds` to it, and uses the
+    ## limited `Vdse` for the drain-side quasi-Fermi level
+    ## (`PSP103_macrodefs.include:596-632`).
+    ##
+    ## Leaving this out is what made the channel-length modulation an
+    ## approximation: `dL` compares `Vds` against `Vdse`, and with no
+    ## `Vdse` the second logarithm had to be dropped.  `FdL` then
+    ## amplifies whatever error `dL` carries, which is why adding `FdL`
+    ## cost the long device accuracy even while more than halving the
+    ## total.  This closes that.
+    ax = 0.0 if mob is None else mob.get('ax', 0.0)
+    if not isinstance(ax, sympy.Expr) and ax == 0.0:
+        vdsat = None
+        d_d = _v(hdl.expl(-xn_d), 'ids_dd')
+        x_d = _v(sp_s(xg, xn_d, d_d, Gf, xi, margin), 'ids_xd')
+    else:
+        xgs = _v(Gf * hdl.safe_sqrt(Ps + Ds), 'ids_xgs')
+        qis = _v(Gf2 * Ds * phit
+                 * hdl.safe_div(1.0, xgs + Gf * sqs, eps=1e-30), 'ids_qis')
+        qbs = _v(sqs * Gf * phit, 'ids_qbs')
+        alpha_s = _v(1.0 + 0.5 * (Gf * (1.0 - Es)
+                                  * hdl.safe_div(1.0, sqs, eps=1e-30)),
+                     'ids_alphas')
+        ## Mobility at the SOURCE end, same form as the midpoint one.
+        e0 = _v(1.0e-8 * mob['cox_area'] / mob['eps_si'], 'ids_ee0s')
+        bs0 = _v(e0 * (qbs + 0.5 * mob['feta'] * qis) * mob['mue'],
+                 'ids_mubs0')
+        bs_ = _v(sympy.Max(bs0, 1e-300), 'ids_mubs')
+        rs0 = _v(hdl.safe_div(Ps, Ps + Ds + 1.0e-14, eps=1e-30),
+                 'ids_ratios0')
+        rs_ = _v(sympy.Max(rs0, 1.0e-10), 'ids_ratios')
+        gmob_s = _v(1.0 + bs_ ** mob['themu']
+                    + mob['cs'] * rs_ ** (0.5 * mob['thecs']), 'ids_gmobs')
+        th1 = _v(mob['thesat'] * hdl.safe_div(1.0, gmob_s, eps=1e-30),
+                 'ids_th1s')
+        phi_inf = _v(qis * hdl.safe_div(1.0, alpha_s, eps=1e-30) + phit,
+                     'ids_phiinf')
+        ysat = _v(th1 * phi_inf * INV_SQRT2, 'ids_ysat')
+        za = _v(2.0 * hdl.safe_div(1.0, 1.0 + sympy.sqrt(1.0 + 4.0 * ysat),
+                                   eps=1e-30), 'ids_za')
+        t1 = _v(za * ysat, 'ids_t1s')
+        Phi_0 = _v(phi_inf * za
+                   * (1.0 + 0.86 * (t1 * (1.0 - t1 * za)
+                                    * hdl.safe_div(1.0, 1.0 + 4.0
+                                                   * (t1 * t1 * za),
+                                                   eps=1e-30))), 'ids_Phi0')
+        asat = _v(xgs + 0.5 * Gf2, 'ids_asat')
+        Phi_2 = _v(0.98 * (Gf2 * Ds * phit
+                           * hdl.safe_div(
+                               1.0, asat + hdl.safe_sqrt(asat * asat
+                                                         - Gf2 * Ds * 0.98),
+                               eps=1e-30)), 'ids_Phi2')
+        p02 = _v(Phi_0 + Phi_2, 'ids_p02')
+        pp2 = _v(2.0 * (Phi_0 * Phi_2), 'ids_pp2')
+        Phi_sat = _v(pp2 * hdl.safe_div(
+            1.0, p02 + hdl.safe_sqrt(p02 * p02 - 1.98 * pp2), eps=1e-30),
+            'ids_Phisat')
+        ## NOTE THE SHAPE OF THESE TWO LINES.  `Max` must be applied to
+        ## an ATOM -- a `_v` symbol -- never to an expression.  sympy
+        ## differentiates `Max(f, c)` by expanding `f` into the branch
+        ## conditions, so a large `f` is duplicated into every one of
+        ## them; and when `f` contains a `hypsmooth`, sympy rationalises
+        ## it there as `2e^2/(sqrt(z^2 + 4e^2) - z)`, whose denominator
+        ## cancels to EXACTLY zero for any ordinary `z` because `4e^2`
+        ## sits far below `z`'s last bit.  The value was finite and the
+        ## Jacobian divided by zero.  Naming the argument first keeps it
+        ## opaque and the derivative stays a one-line `where`.
+        lnarg = _v(sympy.Max(
+            1.0 + Phi_sat * (Phi_sat - 2.0 * asat * phit) * inv_Gf2
+            * hdl.safe_div(1.0, phit * phit * Ds, eps=1e-30),
+            1.0e-3), 'ids_lnarg')
+        vdsat0 = _v(Phi_sat - phit * sympy.log(lnarg), 'ids_vdsat0')
+        vdsat = _v(sympy.Max(vdsat0, 1.0e-6), 'ids_vdsat')
+
+        ## `Vds` is recoverable from the arguments, since `xn_d - xn_s`
+        ## IS `Vds/phit` by construction.  Limiting it and rebuilding
+        ## `xn_d` keeps the caller's interface unchanged.
+        vds_in = _v((xn_d - xn_s) * phit, 'ids_vdsin')
+        ## Floored strictly ABOVE zero, not at it.  sympy differentiates
+        ## `rat**ax` as `ax*rat**ax/rat`, so a base that reaches zero --
+        ## which it does at `Vds = 0`, the most ordinary bias there is --
+        ## divides by zero in the Jacobian while the value itself is
+        ## perfectly finite.  Same trap as the Coulomb scattering term.
+        rat0 = _v(vds_in * hdl.safe_div(1.0, vdsat, eps=1e-30), 'ids_vrat0')
+        rat = _v(sympy.Max(rat0, 1e-15), 'ids_vrat')
+        ## `ax` reaches here as a symbol when the caller is a compiled
+        ## element, so a Python-level `ax == 0` test cannot switch this
+        ## block off -- it would compile the branch anyway and divide by
+        ## zero at run time.  PSP clips AX at 2 (`PSP103_scaling:743`),
+        ## so there is no legitimate zero; floor it and be done.
+        axc = _v(sympy.Max(ax, 0.5), 'ids_axc')
+        vdse = _v(vds_in * (1.0 + rat ** axc) ** (-1.0 / axc), 'ids_vdse')
+        xn_d = _v(xn_s + vdse * hdl.safe_div(1.0, phit, eps=1e-30),
+                  'ids_xnd2')
+        d_d = _v(hdl.expl(-xn_d), 'ids_dd2')
+        x_d = _v(sp_s(xg, xn_d, d_d, Gf, xi, margin), 'ids_xd2')
+
     Ed, Pd, sqd, Dd = surface_state(x_d, xn_d, d_d, Gf, inv_Gf2)
 
     x_ds = _v(x_d - x_s, 'ids_xds')

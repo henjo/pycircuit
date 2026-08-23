@@ -229,6 +229,12 @@ def to_long_channel(card, w, l, T=300.0):
     t2 = iLE ** _g(card, 'alp2lexp', 1.0)
     alp2 = (_g(card, 'alp2l1') * t2 * (1.0 + _g(card, 'alp2w') * iWE)
             / (1.0 + _g(card, 'alp2l2') * iLE * t2))
+    ## Linear/saturation transition sharpness (:317), FLOORED AT 2
+    ## (:743).  The floor is not cosmetic: this card scales `AX` to 0.88
+    ## on a 0.13 um device, and an exponent below 1 makes the limiter
+    ## soft enough to bite at drain biases far below saturation -- it
+    ## cost 14% on the Vd = 0.05 sweeps before the clamp went in.
+    axp = max(_g(card, 'axo', 18.0) / (1.0 + _g(card, 'axl') * iLE), 2.0)
     vp = _g(card, 'vpo', 0.05)
 
     ## INTERFACE STATES (:267).  PSP does not normalise by the thermal
@@ -255,7 +261,7 @@ def to_long_channel(card, w, l, T=300.0):
         w=w, l=l, tox=tox, nsub=neff, vfb=vfb, phib=phib, u0=u0_eff,
         rs=max(rs, 0.0), rsg=_g(card, 'rsgo'), rsb=_g(card, 'rsbo'),
         ct=max(ct, 0.0), alp=max(alp, 0.0), vp=max(vp, 1.0e-6),
-        alp1=max(alp1, 0.0), alp2=max(alp2, 0.0),
+        alp1=max(alp1, 0.0), alp2=max(alp2, 0.0), ax=axp,
         kp=max(kp, 0.0),
         mue=max(mue, 0.0), themu=max(_g(card, 'themuo'), 0.0),
         cs=max(cs, 0.0), thecs=max(_g(card, 'thecso'), 0.0),

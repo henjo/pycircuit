@@ -586,8 +586,15 @@ class TestTheChannelShorteningFactor(object):
         At Vg = 0.6 the reference current climbs 2.4x through saturation.
         If that were a threshold effect, PSP's own `vth` would move
         substantially with drain bias.  It moves 3.5 mV over 1.35 V --
-        2.6 mV/V, which matches our `CF` scaling exactly.  So DIBL is
-        genuinely small here and the climb is in the current formula.
+        2.6 mV/V.  So DIBL is genuinely small here and the climb is in
+        the current formula.
+
+        To be exact about what that does and does not say: we do not
+        model DIBL AT ALL -- `CF`, `CFB` and `CFD` are absent from the
+        scaling layer.  The measurement is what licenses that omission,
+        not agreement with a term we have.  PSP's own shift works out to
+        3.2 mV at Vds = 1.2 V on this device, which at a strong-inversion
+        `gm/Id` is worth about 1% of the current.
         """
         s = ref['nmos_idvd_vg0p6']
         v = np.asarray(s['v'], float)
@@ -625,10 +632,12 @@ class TestTheChannelShorteningFactor(object):
 
         Mixed by COUNT -- better in three sweeps, worse in four -- but
         the gains are large and the regressions small, so the summed
-        median error more than halves.  The regressions are the price of
-        our `dL` being an approximation to PSP's: `FdL` amplifies
-        whatever error `dL` carries, which makes the missing `Vdsat`
-        machinery the next thing worth building.
+        median error more than halves.  The regressions were the price
+        of our `dL` being an approximation to PSP's -- `FdL` amplifies
+        whatever error `dL` carries -- which is what pointed at the
+        saturation voltage as the next thing to build.  It has been
+        built since (`TestTheSaturationVoltage`), and it took the long
+        device from 1.035 back to 1.010.
         """
         names = ('nmos_long_idvd', 'nmos_long_idvg', 'nmos_idvd_vg1p2',
                  'nmos_idvd_vg0p6', 'nmos_idvg_vd0p05',
@@ -660,3 +669,105 @@ class TestTheChannelShorteningFactor(object):
                 m = r > 1e-6
                 tot[k] += np.median(np.abs(np.abs(g[m]) / r[m] - 1.0))
         assert tot[1] < 0.5 * tot[0], 'off %.3f on %.3f' % (tot[0], tot[1])
+
+
+class TestTheSaturationVoltage(object):
+    """`Vdsat` and `Vdse` -- and the floor that made them work.
+
+    PSP does not evaluate the drain surface potential at the applied
+    drain bias.  It computes a saturation voltage from SOURCE-SIDE
+    quantities, smoothly limits `Vds` to it, and uses the limited
+    `Vdse` for the drain quasi-Fermi level
+    (`PSP103_macrodefs.include:596-632`).
+
+    Two things came out of building it.  The first is that the exponent
+    `AX` governing the limiter is FLOORED at 2 in the scaling layer
+    (`PSP103_scaling.include:743`), and the card gives no hint of it:
+    `AXO/(1 + AXL*iLE)` evaluates to 0.88 at 0.13 um.  Missing the floor
+    made the limiter soft enough to bite at drain biases far below
+    saturation and cost 14% on the Vd = 0.05 sweeps -- a sweep where
+    nothing should have changed at all, which is what gave it away.
+
+    The second is that `Vdsat` is built from the source end alone and is
+    therefore NOT an odd function of `Vds`, so it broke the exact
+    source/drain antisymmetry.  PSP's answer, and now ours, is to order
+    the terminals rather than to look for an odd formula -- see
+    `test_psp_current.TestTheElement`.
+    """
+
+    GEOMS = ('long', 'mid', 'short', 'wide_short')
+
+    @pytest.fixture(scope='class')
+    def scaled(self):
+        with open(REF) as fh:
+            return json.load(fh)['scaled']
+
+    @pytest.mark.parametrize('geom', GEOMS)
+    def test_our_ax_matches_psps_exactly(self, deck, scaled, geom):
+        """Term-by-term against PSP's own `lp_ax`, at four geometries.
+
+        This is the check that a current comparison cannot make: a
+        current can be right for compensating reasons, a scaled
+        parameter cannot.
+        """
+        g = scaled[geom]
+        kw = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_nmos_psp', w=g['w'], l=g['l'],
+                              ng=1, m=1, pre_layout=1),
+            w=g['w'], l=g['l'])
+        ## `rel=1e-5`, not tighter: ngspice prints the operating-point
+        ## outputs to six significant digits, so that IS the reference's
+        ## precision.  A tighter tolerance tests the printf format.
+        assert kw['ax'] == pytest.approx(g['ax'], rel=1e-5), (
+            geom, kw['ax'], g['ax'])
+
+    def test_the_floor_is_what_makes_the_short_device_match(self, deck,
+                                                            scaled):
+        """The floor BINDS, and the unclipped formula would miss badly.
+
+        Both short geometries land on exactly 2, and the long one does
+        not -- so 2 is a clamp being hit, not a coincidence of the
+        scaling.  The unclipped value is recomputed here from the card
+        so the test fails if someone removes the clamp.
+        """
+        card = deck.model_params('sg13g2_lv_nmos_psp', w=1e-6, l=0.13e-6,
+                                 ng=1, m=1, pre_layout=1)
+        geo = psp_scaling.geometry(card, w=1e-6, l=0.13e-6)
+        raw = card['axo'] / (1.0 + card['axl'] * geo['iLE'])
+        assert raw < 1.0, raw
+        assert scaled['short']['ax'] == 2.0
+        assert scaled['wide_short']['ax'] == 2.0
+        assert scaled['long']['ax'] > 2.0
+
+    def test_the_velocity_saturation_body_and_gate_terms_are_absent(
+            self, scaled):
+        """A gap written down rather than remembered.
+
+        PSP scales its saturation parameter by two further factors
+        before using it (`macrodefs:596-607`): `xitsb` in the body bias
+        and `xitsg` in the inversion charge.  Both coefficients are
+        nonzero on this card and neither is modelled, so `Vdsat` is
+        computed from an unmodulated `THESAT`.  Recorded here so the
+        next person measuring a residual knows where to look.
+        """
+        assert scaled['short']['thesatb'] > 0.05
+        assert scaled['short']['thesatg'] > 0.05
+
+    def test_no_sweep_is_more_than_a_tenth_out(self, deck, ref):
+        """The state of the whole comparison, as a regression guard.
+
+        Nothing here is fitted: every parameter comes off the card
+        through the scaling layer.  Before the saturation voltage the
+        worst sweep was 11% out and the long device -- the one where the
+        omitted short-channel physics matters least, and therefore the
+        one worth reading -- had been pushed to 3.5% by `FdL`.
+        """
+        cm.default_toolkit = numeric
+        worst = {}
+        for name in ('nmos_long_idvd', 'nmos_idvd_vg1p2',
+                     'nmos_idvd_vg0p6', 'nmos_idvg_vd0p05',
+                     'nmos_idvg_vd1p2', 'nmos_idvg_vb_m1'):
+            _, r, g, _ = _compare(deck, ref[name])
+            worst[name] = abs(np.median(g / r) - 1.0)
+        assert max(worst.values()) < 0.10, worst
+        assert worst['nmos_long_idvd'] < 0.02, worst

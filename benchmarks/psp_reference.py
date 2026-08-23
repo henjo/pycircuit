@@ -159,7 +159,17 @@ show all
 #: parameter cannot.  This is how the `GPE` width-adjustment bug was
 #: found: `lp_betn` was 12% off while every other term matched exactly.
 LP_PARAMS = ('vfb', 'tox', 'neff', 'dphib', 'ct', 'cf', 'cfb', 'betn',
-             'mue', 'themu', 'cs', 'thecs', 'rs', 'np')
+             'mue', 'themu', 'cs', 'thecs', 'rs', 'np',
+             ## The saturation-voltage group.  `ax` is here because its
+             ## scaling has a FLOOR (`PSP103_scaling.include:743` clips
+             ## it at 2) that the card gives no hint of: `AXO/(1+AXL*iLE)`
+             ## comes to 0.88 at 0.13 um, and an exponent below one makes
+             ## the drain-voltage limiter bite far below saturation.  The
+             ## only way to see the floor is to ask PSP what it used.
+             ## `thesatb` and `thesatg` are recorded because they are
+             ## NOT zero on this card and we do not model them yet -- a
+             ## known gap is better written down than remembered.
+             'ax', 'thesat', 'thesatb', 'thesatg', 'alp')
 
 
 def _op_outputs(pdk, spec, names):
