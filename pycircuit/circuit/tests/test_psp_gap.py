@@ -524,6 +524,57 @@ class TestTheSubthresholdRegion(object):
         assert 1.0 < coef[1] < 3.0, coef
         assert coef[1] * 1e-3 / 0.209 < 0.02, 'deficit under 2%%'
 
+    def test_the_residual_is_the_alp2_term(self, deck, ref):
+        """WHERE the weak-inversion residual lives, and why it is
+        n-channel only.
+
+        `FdL`'s `ALP2` term is `ALP2 * qbm * r2^2 * s2` with
+        `r2 = phit1*alpha/qim1` (`module:1132-1136`).  In STRONG
+        inversion `qim >> phit1*alpha` so `r2 -> 0` and the term dies;
+        in WEAK inversion `qim1 -> phit1*alpha` so `r2 -> 1` and it is
+        maximal.  Measured on the long n-channel: the term is 0.0001 at
+        `Vg = 1.2, Vd = 0.05` and about 0.08 in the subthreshold window.
+        **A term that acts only in weak inversion, which is exactly the
+        residual's signature.**
+
+        And it is the asymmetry: `lp_alp2` is 2.687 on the long
+        n-channel and 0.0053 on the long p-channel -- five hundred times
+        smaller -- so the p-channel effectively has no such term, and the
+        p-channel is the device that is RIGHT.
+
+        ⚠ What this does NOT say is that `ALP2` is transcribed wrongly.
+        `ALP1_i`/`ALP2_i` match `lp_*` exactly on both types and all four
+        geometries, and `dL1`, `r1`, `r2`, `s2`, `qbm`, `qim1`, `alpha`
+        and the midpoint construction have each been read against the
+        vendor and match.  Removing the term overshoots to -2%, so it is
+        not simply too large either.  This pins the LOCATION of the
+        residual and the reason for its shape; the mechanism is open.
+        """
+        base = self._card_kw(deck, ref['nmos_long_idvg'])
+        pbase = self._card_kw(deck, ref['pmos_long_idvg'])
+        ## the asymmetry, from the scaling layer
+        assert base['alp2'] > 100 * pbase['alp2'], (base['alp2'],
+                                                    pbase['alp2'])
+        ## and the leverage, from the current
+        with_it = self._implied_vth(deck, ref['nmos_long_idvg'])[0]
+        s = dict(ref['nmos_long_idvg'])
+        cm.default_toolkit = numeric
+        e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                              cm.Node('b'), **dict(base, alp2=0.0))
+        e.update_iparv()
+        b = s['bias']
+        v = np.asarray(s['v'], float)
+        r = np.abs(np.asarray(s['i_d'], float))
+        m = (r > self.LO) & (r < self.HI)
+        got = np.abs(np.array([
+            np.asarray(e.i(e.bias(b['Vd'], x, b['Vs'], b['Vb'])),
+                       float)[0] for x in v[m]]))
+        ## Without it the subthreshold level goes from 5% HIGH to 2% LOW
+        ## -- so the term carries more than the whole residual, and the
+        ## answer is not simply to drop it.
+        assert 0.95 < (got / r[m]).mean() < 1.0, (got / r[m]).mean()
+        assert with_it > 1.0
+
     def test_the_subthreshold_current_is_within_eleven_percent(self,
                                                                deck, ref):
         """The same statement in the units the sweeps use, so the

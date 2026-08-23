@@ -3346,6 +3346,48 @@ took about sixty lines to extend.
 > `eta_p` at the midpoint (`macrodefs:702`) where the source-end form
 > does not (`:568`). That is the next thing to read.
 
+> **The weak-inversion residual is the `ALP2` term — 2026-08-24.**
+> Located, with the n/p asymmetry explained. Found by BOUNDING rather
+> than reading: turn each candidate off and see which can move the
+> subthreshold level by the 5.4% in question.
+>
+> | term off | subthreshold ratio |
+> |---|---|
+> | (as-is) | 1.0549 |
+> | **`alp2`** | **0.9799** |
+> | `alp1`, `alp`, `kp`, `rs`, `thesat`, `feta` | 1.0549 (unchanged) |
+> | `mue`, `cs` | large, but they act above threshold too — and there the model is right |
+> | `ct` | large AND breaks the flatness — so `ct` is right, the slope being exact |
+>
+> **`ALP2`'s term is weak-inversion-specific by construction**, which is
+> the residual's signature exactly. `FdL` carries
+> `ALP2 · qbm · r2² · s2` with `r2 = φt1·α/qim1` (`module:1132-1136`);
+> in strong inversion `qim ≫ φt1·α` so `r2 → 0` and the term dies, and
+> in weak inversion `qim1 → φt1·α` so `r2 → 1` and it is maximal.
+> Measured on the long n-channel: **0.0001 at `Vg = 1.2, Vd = 0.05`, and
+> about 0.08 in the subthreshold window.**
+>
+> **And it is the asymmetry.** `lp_alp2` is **2.687** on the long
+> n-channel and **0.0053** on the long p-channel — five hundred times
+> smaller. The p-channel effectively has no such term, and the p-channel
+> is the device that is right (+0.03 mV against +1.72 mV). Every earlier
+> statement that "whatever is left is n-channel-specific" now has a name.
+>
+> **⚠ What this does NOT establish is that `ALP2` is transcribed
+> wrongly**, and the temptation to say so is the same one that produced
+> the "fourth power" error. `ALP1_i`/`ALP2_i` match `lp_*` exactly on
+> both types at all four geometries, and `dL1`, `r1`, `r2`, `s2`, `qbm`,
+> `qim1`, `alpha`, the midpoint construction (`x_m`, `Em = √(Es·Ed)`,
+> `D̄`, `Dm`) and `sp_s` itself have each been read against the vendor
+> and match. Removing the term overshoots to −2%, so it is not simply
+> too large either. **This pins the location and the shape; the
+> mechanism is open.**
+>
+> The bounding method is worth keeping separately from the result: it
+> eliminated six candidates in one run, and it distinguishes "this term
+> has enough leverage" from "this term is wrong" — which are different
+> claims, and conflating them is what went wrong two entries ago.
+
 Deferred, unchanged from the original research verdict:
 
 | item | why |
