@@ -2475,14 +2475,16 @@ class TestExtremeBiasWithCardParameters(object):
         return e
 
     #: Both the value and the Jacobian are finite through here, on both
-    #: signs and both channel types.  Measured: the n-channel holds to
-    #: 1e27 and the p-channel to 1e24, so the shared list stops at the
-    #: SMALLER -- and the per-type bounds are pinned separately in
-    #: `test_the_bound_is_where_it_is_measured_to_be`, because "both
-    #: types survive this far" and "this is how far each gets" are
-    #: different statements and only the second catches a regression in
-    #: the better one.
-    REACH = [1.0e2, 1.0e3, 1.0e4, 1.0e7, 1.0e12, 1.0e20, 1.0e24]
+    #: signs and both channel types.
+    #:
+    #: This used to read 1e24, with the n-channel holding to 1e27 and the
+    #: p-channel only to 1e24.  That asymmetry WAS `safe_div`'s
+    #: derivative range -- it depended on how large the model's own
+    #: intermediates happened to grow, which differs between the cards.
+    #: With the derivative regrouped (`hdl._rdiv`) both types reach 1e33
+    #: and reach it together, which is the better evidence that the
+    #: limit is now the arithmetic's rather than the model's.
+    REACH = [1.0e2, 1.0e3, 1.0e4, 1.0e7, 1.0e12, 1.0e20, 1.0e33]
 
     @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
     @pytest.mark.parametrize('sign', [1.0, -1.0])
@@ -2514,42 +2516,54 @@ class TestExtremeBiasWithCardParameters(object):
         ref = np.asarray(e.i(e.bias(2.0, 1.2, 0.0, 0.0)), float)[0]
         for v in self.REACH:
             got = np.asarray(e.i(e.bias(v, 1.2, 0.0, 0.0)), float)[0]
-            ## Twenty-five decades of drain bias buy under six decades
-            ## of current, which is what saturation looks like from
-            ## here.  Without `Vdse` it would be linear in `Vd`.
-            assert 0.0 < got < 1e6 * ref, (v, got, ref)
+            ## Thirty-three decades of drain bias buy under nine of
+            ## current, which is what saturation looks like from here.
+            ## Without `Vdse` it would be LINEAR in `Vd`, so the bound
+            ## that matters is the comparison with `v`, not its value.
+            assert 0.0 < got < 1e9 * ref, (v, got, ref)
+            assert got < ref * v, 'not saturating at %g' % v
 
-    @pytest.mark.parametrize('kind,last', [('nmos', 27), ('pmos', 24)])
+    @pytest.mark.parametrize('kind,last', [('nmos', 33), ('pmos', 33)])
     def test_the_bound_is_where_it_is_measured_to_be(self, deck, kind,
                                                      last):
         """The limit is RECORDED, not merely respected.
 
         Past these the Jacobian is still non-finite, and the cause is a
-        property of the compiler rather than of the model:
-        `safe_div(a, b)` regularises as `a*b/(b^2 + eps^2)`, so its
-        VALUE needs `|b| < ~1e154` while its DERIVATIVE squares that
-        denominator again and needs `|b| < ~1e77`.  A quarter of the
-        exponent range, and the drain-side surface-potential update
-        reaches it three decades sooner on the p-channel than on the
-        n-channel.
+        property of the compiler rather than of the model, and it has
+        already been moved once: `safe_div` regularises as
+        `a*b/(b^2 + eps^2)`, whose derivative used to square that
+        denominator a second time and so ran out at `|b| ~ 1e77` --
+        a QUARTER of the exponent range the value gets.  Regrouped
+        (`hdl._rdiv`) the derivative now holds as far as the value does,
+        and the bound moved from 1e27/1e24 to 1e33 on BOTH channel
+        types.
 
-        Pinned so a future change to `safe_div` has a number to beat,
-        and so the gap is not rediscovered as a bug.
+        What is left at 1e34 is the model's own intermediates leaving
+        range, not the arithmetic's.  Pinned so the next change has a
+        number to beat.
         """
         e = self._fet(deck, kind)
         t = 1.0 if kind == 'nmos' else -1.0
-        with np.errstate(all='ignore'):
-            ok = np.asarray(e.G(e.bias(t * 10.0 ** last, t * 1.2, 0.0,
-                                       0.0)), float)
-            bad = np.asarray(e.G(e.bias(t * 10.0 ** (last + 1), t * 1.2,
-                                        0.0, 0.0)), float)
-            val = np.asarray(e.i(e.bias(t * 10.0 ** (last + 1), t * 1.2,
-                                        0.0, 0.0)), float)
-        assert np.all(np.isfinite(ok)), kind
-        assert not np.all(np.isfinite(bad)), kind
-        ## The VALUE survives past where the derivative does -- which is
-        ## exactly why this had to be looked for rather than noticed.
-        assert np.all(np.isfinite(val)), kind
+        ## SCAN for the boundary rather than asserting a failure at one
+        ## bias.  A test that asserts something breaks at 1e34 fails the
+        ## day someone makes it not break, which is the wrong way round;
+        ## this one records how far it gets and demands only that it not
+        ## get worse.
+        reach = 0
+        for k in range(2, 40):
+            fine = True
+            for sgn in (1.0, -1.0):
+                x = e.bias(sgn * t * 10.0 ** k, t * 1.2, 0.0, 0.0)
+                with np.errstate(all='ignore'):
+                    fine &= bool(np.all(np.isfinite(
+                        np.asarray(e.i(x), float))))
+                    fine &= bool(np.all(np.isfinite(
+                        np.asarray(e.G(x), float))))
+            if not fine:
+                break
+            reach = k
+        assert reach >= last, '%s reaches only 1e%d (expected 1e%d)' % (
+            kind, reach, last)
 
 
 class TestTheJunction(object):

@@ -297,6 +297,52 @@ class TestTheHelperFunctions(object):
         ## checkable rather than merely finite.
         assert got == pytest.approx(190.73227733286575, rel=1e-9)
 
+    def test_the_root_is_exact_in_weak_inversion(self):
+        """A RESIDUAL IS NOT AN ERROR, and this is the difference.
+
+        `sp_s` has always been validated by the residual of the SPE at
+        the root it returns.  That is the right check for "does it solve
+        the equation", and the wrong one for "how far is the root out":
+        the root error is `residual / |dF/dx|`, and in WEAK INVERSION the
+        SPE is flat, so an impressively small residual can sit on a real
+        displacement.  In subthreshold the current goes as `exp(x)`, so
+        an error `d` in `x` is a current ratio `exp(d)` -- 0.05 is 5%.
+
+        Checked here against a 40-digit root of the same equation, at
+        `Gf` and `xn` values a real card produces.  Worst root error over
+        the window is under 1e-8, so the surface potential contributes a
+        current ratio of 1.000000 -- which is what ELIMINATES it as the
+        source of the weak-inversion residual the model still carries.
+        """
+        import mpmath as mp
+        mp.mp.dps = 40
+        XG, XN, D, GF, XI = sympy.symbols('XG XN D GF XI', real=True)
+        f = hdl.compile_chain(lambda: K.sp_s(XG, XN, D, GF, XI),
+                              [XG, XN, D, GF, XI])
+
+        def root(xg, xn, gf):
+            xi = 1.0 + gf / math.sqrt(2.0)
+            return float(np.asarray(f(xg, xn, math.exp(-xn), gf, xi),
+                                    float).reshape(-1)[0])
+
+        def exact(xg, xn, gf, guess):
+            d = mp.e ** (-mp.mpf(xn))
+            def F(x):
+                xi0 = x * x / (2 + x * x)
+                return ((mp.mpf(xg) - x) ** 2
+                        - mp.mpf(gf) ** 2 * (mp.e ** (-x) + x - 1
+                                             + d * (mp.e ** x - x - 1 - xi0)))
+            return float(mp.findroot(F, mp.mpf(guess)))
+
+        ## (Gf, xn) for the n- and p-channel long devices of the IHP
+        ## card, and a span of `xg` covering weak inversion on each.
+        for gf, xn, xgs in ((1.29899, 31.9029, (33.5, 37.1, 40.8, 44.4)),
+                            (1.86081, 33.6442, (33.5, 29.7, 25.9, 22.0))):
+            for xg in xgs:
+                a = root(xg, xn, gf)
+                b = exact(xg, xn, gf, a)
+                assert abs(a - b) < 1e-7, (gf, xn, xg, a - b)
+
     def test_the_residual_is_zero_at_flat_band(self):
         f = sympy.lambdify((X, XG, XN, GF),
                            K.spe_residual(X, XG, XN, GF), MODULES)

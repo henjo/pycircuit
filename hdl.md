@@ -537,7 +537,7 @@ valid for every input:
 | `hypsmooth(x, eps)` | smooth `max(x, 0)` | no branch at all — the right first thing to reach for |
 | `safe_sqrt(x)` | `sqrt(hypsmooth(x))` | finite derivative below zero |
 | `safe_ln(x)` | `ln(hypsmooth(x))` | no `−inf` at zero |
-| `safe_div(a, b)` | `a·b / (b² + ε²)` | finite at `b = 0`; value needs `|b| < ~1e154`, **derivative `< ~1e77`** |
+| `safe_div(a, b)` | `a·b / (b² + ε²)` | finite at `b = 0`; value **and derivative** hold to `|b| ~ 1e153` |
 | `safe_abs(x)` | `sqrt(x² + ε²)` | `Abs` differentiates to `0/0` at zero |
 
 Three findings from building these are worth stating, because each one
@@ -3262,6 +3262,89 @@ took about sixty lines to extend.
 > both needed and right). What it points at is whatever sets the
 > weak-inversion charge specifically — `phib`, `xn`, `delta` — on the
 > n-channel.
+
+> **`safe_div`'s derivative bought back two decades of exponent —
+> 2026-08-23.** The bound recorded two entries ago was a property of the
+> compiler, and it turned out to be fixable rather than fundamental.
+>
+> **The problem is structural, not a slip.** Any rational regularisation
+> has its denominator squared in its own derivative, so
+> `a·b/(b²+ε²)` differentiates to something carrying `(b²+ε²)²`. The
+> VALUE needs `|b| < 1e154`; the DERIVATIVE needed `|b| < 1e77`. **A
+> quarter of the exponent range, and the wrong quarter** — the Jacobian
+> dies before the residual does, so the value looks right and Newton is
+> poisoned.
+>
+> **The fix is a primitive whose derivative is written in terms of
+> itself.** `hdl._rdiv(b, ε) = b/(b²+ε²)` with
+>
+> ```
+> d/db  =  inv * (1 - 2*b*b*inv),      inv = 1/(b² + ε²)
+> ```
+>
+> There is no `inv²` anywhere in that, and `b·b·inv` is `b²/(b²+ε²)`,
+> which is **bounded in [0,1] for every real b**. So the whole
+> expression is bounded by `inv` itself and cannot overflow wherever the
+> value can be computed at all.
+>
+> **The obvious grouping is worse than the bug.** Written as
+> `-2·b·inv² + inv` — which is what sympy produces if you let it — the
+> `inv²` term UNDERFLOWS to zero for large `b` while the surviving
+> `+inv` does not, and the derivative comes out `+1/b²` where it should
+> be `−1/b²`. Finite, plausible, and the wrong sign. I built that
+> version first and only caught it by printing the exact value beside
+> it. **Underflow is not automatically the safe direction.**
+>
+> | | value | derivative |
+> |---|---|---|
+> | before | 1e154 | **1e77** |
+> | after | 1e153 | **1e153** |
+>
+> Exact to the last digit against `1/b` and `−1/b²` at every decade from
+> 1e−20 to 1e153, correct sign throughout, and still `1/ε²` at `b = 0`.
+>
+> **What it buys the model**, measured with card parameters:
+>
+> | | before | after |
+> |---|---|---|
+> | n-channel | 1e27 V | **1e33 V** |
+> | p-channel | 1e24 V | **1e33 V** |
+>
+> Six decades on the n-channel and nine on the p-channel — and **the
+> asymmetry is gone**, which is the better evidence: the two types
+> differed only because `safe_div`'s ceiling depended on how large each
+> card's own intermediates grew. What remains at 1e34 is the model's
+> intermediates leaving range, not the arithmetic's.
+>
+> The extreme-bias test now SCANS for the boundary instead of asserting
+> a failure at a fixed bias. A test that asserts something breaks fails
+> the day someone stops it breaking, which is the wrong way round.
+
+> **The surface potential is eliminated — 2026-08-23.** Continuing the
+> weak-inversion residual. The leading candidate was `sp_s` itself,
+> because it is a closed-form APPROXIMATION and had only ever been
+> validated by the RESIDUAL of the SPE at the root it returns.
+>
+> **A residual is not an error.** The root error is
+> `residual / |dF/dx|`, and in weak inversion the SPE is FLAT — so an
+> impressively small residual can sit on a real displacement, and in
+> subthreshold a displacement `d` in `x` is a current ratio `exp(d)`.
+> A residual of 2e-9 says nothing about a 5% current error until the
+> derivative is put beside it.
+>
+> Checked against a 40-digit root of the same equation at the `Gf` and
+> `xn` a real card produces: **root error under 1e-8 across the whole
+> weak-inversion window on both channel types**, i.e. a current ratio of
+> 1.000000 to seven digits. The surface potential is exact and is not
+> the cause. Pinned by test, because the elimination is the result.
+>
+> So the residual is DOWNSTREAM of `sp_s`, in the assembly of charge and
+> current from potentials that are themselves right. `qim1 = qim + φt1·α`
+> was checked against `macrodefs:733` and matches, including using the
+> EFFECTIVE thermal voltage. What has not yet been checked term by term
+> is `alpha`, which PSP builds in several branches — and notably carries
+> `eta_p` at the midpoint (`macrodefs:702`) where the source-end form
+> does not (`:568`). That is the next thing to read.
 
 Deferred, unchanged from the original research verdict:
 

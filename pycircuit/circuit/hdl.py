@@ -426,6 +426,91 @@ def safe_ln(x, eps=1e-30):
     return sympy.log(hypsmooth(x, eps))
 
 
+class _recip2(sympy.Function):
+    """``1/(b^2 + eps^2)``, with a derivative written in terms of ITSELF.
+
+    This exists for one reason: exponent range.  Any rational
+    regularisation has its denominator SQUARED in its own derivative, so
+    the naive ``a*b/(b^2 + eps^2)`` is differentiated to something
+    carrying ``(b^2 + eps^2)^2``.  That overflows at ``|b| ~ 1e77``,
+    while the VALUE survives to ``1e154`` -- so the Jacobian dies two
+    decades of exponent before the residual does, which is the worse way
+    round: the value looks right and Newton is poisoned.
+
+    Writing the derivative as ``-2*b*self**2`` instead forms the square
+    of the RECIPROCAL, which for a large denominator underflows to zero
+    gracefully rather than overflowing to ``inf`` and then to ``NaN``.
+    The two are identical mathematically; only the intermediate differs.
+    Measured: the Jacobian's range goes from ``1e77`` to ``1e154``, which
+    is the value's own limit and cannot be bettered without changing the
+    value too.
+
+    Printed as ``1/(b*b + e*e)`` through the modules map, the same way
+    `_wrapfloor` is printed as the toolkit's ``floor``.
+    """
+    nargs = (2,)
+
+    def fdiff(self, argindex=1):
+        if argindex != 1:
+            ## `eps` is a constant of the model, never differentiated.
+            return sympy.Integer(0)
+        b = self.args[0]
+        return -2 * b * self ** 2
+
+    ## `_imp_` is sympy's own hook for "this function has a numeric
+    ## implementation".  With it, a PLAIN `sympy.lambdify` works with no
+    ## modules map at all -- which matters because `safe_div` is public
+    ## and callers outside this module lambdify its result directly.
+    ## Requiring a namespace entry would have made the primitive a
+    ## breaking change to a published helper rather than an internal
+    ## improvement to it.
+    @staticmethod
+    def _imp_(b, e):
+        return 1.0 / (b * b + e * e)
+
+
+def _recip2_numpy(b, e):
+    """Runtime form of `_recip2`.  Kept beside it so the two cannot drift."""
+    return 1.0 / (b * b + e * e)
+
+
+class _rdiv(sympy.Function):
+    """``b/(b^2 + eps^2)`` -- the whole of `safe_div` bar its numerator.
+
+    A primitive rather than an expression so its DERIVATIVE can be
+    GROUPED, which is the entire point.  Written out, the derivative is
+    ``(eps^2 - b^2)/(b^2 + eps^2)^2``; whichever way that is arranged as
+    a sum it contains ``inv^2``, and for a large denominator ``inv^2``
+    underflows to zero while a surviving ``+inv`` term does not -- so the
+    derivative comes out ``+1/b^2`` where it should be ``-1/b^2``.
+    **Finite, plausible, and the wrong sign**, which is worse than the
+    overflow it replaced, because nothing looks wrong.
+
+    Grouped as ``inv * (1 - 2*b*b*inv)`` there is no ``inv^2`` at all:
+    ``b*b*inv`` is ``b^2/(b^2 + eps^2)``, which is bounded in ``[0, 1]``
+    for every real ``b``, so the product is bounded by ``inv`` itself.
+    Correct sign and correct magnitude for every ``b`` the VALUE can be
+    computed at, which is the most that can be asked.
+    """
+    nargs = (2,)
+
+    def fdiff(self, argindex=1):
+        if argindex != 1:
+            return sympy.Integer(0)
+        b, e = self.args
+        inv = _recip2(b, e)
+        return inv * (1 - 2 * b * b * inv)
+
+    @staticmethod
+    def _imp_(b, e):
+        return b / (b * b + e * e)
+
+
+def _rdiv_numpy(b, e):
+    """Runtime form of `_rdiv`."""
+    return b / (b * b + e * e)
+
+
 def safe_div(a, b, eps=1e-30):
     """``a/b`` regularised to ``a*b/(b^2 + eps^2)``.
 
@@ -441,6 +526,10 @@ def safe_div(a, b, eps=1e-30):
     genuinely of order ``eps`` -- pick ``eps`` below any denominator the
     model can legitimately produce.
 
+    The VALUE needs ``|b| < ~1e154``, where ``b*b`` leaves double range,
+    and the DERIVATIVE now needs the same rather than ``|b| < ~1e77``:
+    see `_recip2`, which exists exactly to buy back those two decades.
+
     **``eps`` is SQUARED**, so it cannot be made arbitrarily small: below
     about 1.5e-154 the square underflows to exactly zero and the
     regularisation silently disappears, leaving the ``0/0`` it exists to
@@ -455,7 +544,10 @@ def safe_div(a, b, eps=1e-30):
             'underflows to exactly 0.0, so the denominator is left '
             'unregularised and b == 0 gives 0/0. Use eps >= 1e-150.'
             % (eps, eps))
-    return a * b / (b * b + eps * eps)
+    ## Built on `_rdiv` rather than written out, so the DERIVATIVE stays
+    ## in double range as far as the value does -- see that class.  The
+    ## value printed is identical.
+    return a * _rdiv(b, sympy.Float(eps))
 
 
 #: What ``simparam`` can genuinely answer.  A name absent here is not a
@@ -1620,7 +1712,7 @@ def generate_code(cls):
     x = sympy.DeferredVector('x')
     xsubs = dict(zip(xsyms, [x[i] for i in range(n)]))
 
-    NUMPY_MODULES = [{'_wrapfloor': np.floor}, 'numpy']
+    NUMPY_MODULES = [{'_wrapfloor': np.floor, '_recip2': _recip2_numpy, '_rdiv': _rdiv_numpy}, 'numpy']
 
     def compile_x(expr_or_list, extra=()):
         e = expr_or_list.subs(xsubs) if hasattr(expr_or_list, 'subs') else \
@@ -1639,7 +1731,7 @@ def generate_code(cls):
         ## forward, so cost is linear in the number of intermediates
         ## rather than exponential in their nesting.
         chain_args = [x] + paramsyms + [TEMP] + given_syms
-        _mods = {'_wrapfloor': np.floor}
+        _mods = {'_wrapfloor': np.floor, '_recip2': _recip2_numpy, '_rdiv': _rdiv_numpy}
         ## The compiled signature takes the solution VECTOR, while the
         ## chain is written in terms of the scalar unknowns, so the body
         ## opens by unpacking one into the other.
@@ -1822,7 +1914,7 @@ def generate_code(cls):
             cross_f = _chain_compile(
                 chain_defs, [resolve(st.expr) for st in crossings],
                 [x] + paramsyms + [TEMP] + given_syms,
-                modules_map={'_wrapfloor': np.floor},
+                modules_map={'_wrapfloor': np.floor, '_recip2': _recip2_numpy, '_rdiv': _rdiv_numpy},
                 unpack=[(xs.name, 'x[%d]' % k)
                         for k, xs in enumerate(xsyms)])
         else:
@@ -1921,6 +2013,18 @@ class _ChainPrinter(object):
 
             def _print_Max(self, expr):
                 return outer._minmax(self, expr, 'maximum')
+
+            ## `NumPyPrinter` is strict about functions it does not know,
+            ## so the two `safe_div` primitives print themselves.  Kept
+            ## as CALLS rather than inlined: the argument may be a large
+            ## sub-expression and inlining would emit it three times.
+            def _print__recip2(self, expr):
+                return '_recip2(%s, %s)' % tuple(
+                    self._print(a) for a in expr.args)
+
+            def _print__rdiv(self, expr):
+                return '_rdiv(%s, %s)' % tuple(
+                    self._print(a) for a in expr.args)
 
         self._p = _P()
 
@@ -2068,6 +2172,15 @@ def _chain_compile(defs, outputs, args, want_jacobian_of=None, xsyms=None,
     ns = dict(modules_map or {})
     import functools
     import numpy
+    ## The DSL's own primitives, merged unconditionally.  They print as
+    ## calls, so a namespace missing one is a `NameError` at call time
+    ## from a model that compiled clean -- and `modules_map` comes from
+    ## the CALLER, so relying on every call site to pass them is relying
+    ## on every future call site too.  Set here, once, where the
+    ## namespace is actually built.
+    ns.setdefault('_wrapfloor', numpy.floor)
+    ns.setdefault('_recip2', _recip2_numpy)
+    ns.setdefault('_rdiv', _rdiv_numpy)
     ## NumPyPrinter prints Min/Max as `functools.reduce(numpy.minimum, ...)`,
     ## so both names have to be in the namespace, not just numpy's.
     ns.setdefault('numpy', numpy)
@@ -2431,7 +2544,7 @@ class BehaviouralMeta(type):
                     cache[which] = sympy.lambdify(
                         [sym['vsym']]
                         + [sympy.Symbol(q) for q in _pn] + [TEMP],
-                        expr, modules=[{'_wrapfloor': _jnp.floor}, 'jax'],
+                        expr, modules=[{'_wrapfloor': _jnp.floor, '_recip2': _recip2_numpy, '_rdiv': _rdiv_numpy}, 'jax'],
                         cse=True)
                 return cache[which]
 
@@ -2484,7 +2597,7 @@ class BehaviouralMeta(type):
                 vec = [e.subs(xs) for e in spec[which]]
                 cache[which] = sympy.lambdify(
                     [xv] + [sympy.Symbol(p2) for p2 in pnames] + [TEMP],
-                    vec, modules=[{'_wrapfloor': jnp.floor}, 'jax'],
+                    vec, modules=[{'_wrapfloor': jnp.floor, '_recip2': _recip2_numpy, '_rdiv': _rdiv_numpy}, 'jax'],
                     cse=True)
             return cache[which]
 
