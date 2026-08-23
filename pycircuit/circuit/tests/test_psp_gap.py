@@ -2169,7 +2169,7 @@ class TestTheJunction(object):
             d = json.load(fh)
         return d['op'], d['op_pmos']
 
-    def _pair(self, deck, kind, geom):
+    def _pair(self, deck, kind, geom, **over):
         """The same device with the junction on and off."""
         cm.default_toolkit = numeric
         w, l = geom['w'], geom['l']
@@ -2180,6 +2180,7 @@ class TestTheJunction(object):
             w, psp_scaling.geometry(card, w=w, l=l)['WE'])
         jp = psp_scaling.junction(card, T=T27, **jg)
         cls = PspPmosLongChannel if kind == 'pmos' else PspMosLongChannel
+        jp = dict(jp, **over)
         out = []
         for extra in (jp, {}):
             e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'),
@@ -2264,15 +2265,71 @@ class TestTheJunction(object):
             b = np.asarray(off.i(off.bias(vd, vg)), float)[0]
             assert a == pytest.approx(b, rel=1e-9)
 
-    def test_the_omitted_leakage_is_what_was_advertised(self, deck, op):
+    @pytest.mark.parametrize('geom', ['long', 'short'])
+    def test_the_reverse_leakage_matches_psp(self, deck, op, geom):
+        """The Shockley-Read-Hall, trap-assisted-tunnelling,
+        band-to-band and avalanche terms, together.
+
+        These were left out at first, on the grounds that they shape a
+        current eleven orders below the drain current.  That argument is
+        still true and they are implemented anyway: the ideal diode
+        alone gets the REVERSE characteristic wrong by four orders, and
+        a junction model that is wrong by four orders in reverse is not
+        a junction model.
+
+        Measured as the difference the junction makes to the drain
+        current, against PSP's `ijd`.
+        """
+        n, _ = op
+        gd = n[geom]
+        on, off = self._pair(deck, 'nmos', gd)
+        for pt in gd['points']:
+            if pt['ijd'] == 0.0:
+                continue
+            a = np.asarray(on.i(on.bias(pt['vd'], pt['vg'], 0.0,
+                                        pt['vb'])), float)[0]
+            b = np.asarray(off.i(off.bias(pt['vd'], pt['vg'], 0.0,
+                                          pt['vb'])), float)[0]
+            assert a - b == pytest.approx(pt['ijd'], rel=1e-3), \
+                (geom, pt['vg'], pt['vd'], pt['vb'])
+
+    def test_the_ideal_term_alone_would_not_do(self, deck, op):
+        """Why the leakage terms earn their lines.
+
+        With only the ideal diode the reverse current is four orders
+        too small.  This pins that, so the decision to implement them is
+        recorded as a measurement rather than as a preference.
+        """
+        n, _ = op
+        gd = n['long']
+        pt = [q for q in gd['points'] if q['vd'] == 1.2][0]
+        on, off = self._pair(deck, 'nmos', gd)
+        full = (np.asarray(on.i(on.bias(pt['vd'], pt['vg'], 0.0,
+                                        pt['vb'])), float)[0]
+                - np.asarray(off.i(off.bias(pt['vd'], pt['vg'], 0.0,
+                                            pt['vb'])), float)[0])
+        ideal = self._pair(deck, 'nmos', gd)[0]
+        ## Switch the three leakage prefactors off, leaving the ideal
+        ## diode: that is the state this model shipped in first.
+        bare, _ = self._pair(deck, 'nmos', gd, jbot_csrh=0.0,
+                             jsti_csrh=0.0, jgat_csrh=0.0,
+                             jbot_ctat=0.0, jsti_ctat=0.0,
+                             jgat_ctat=0.0, jbot_cbbt=0.0,
+                             jsti_cbbt=0.0, jgat_cbbt=0.0)
+        only_ideal = (np.asarray(bare.i(bare.bias(pt['vd'], pt['vg'],
+                                                  0.0, pt['vb'])),
+                                 float)[0]
+                      - np.asarray(off.i(off.bias(pt['vd'], pt['vg'],
+                                                  0.0, pt['vb'])),
+                                   float)[0])
+        assert full == pytest.approx(pt['ijd'], rel=1e-3)
+        assert abs(only_ideal) < 1e-3 * abs(full), (only_ideal, full)
+
+    def test_the_forward_diode_still_conducts(self, deck, op):
         """Honest about what the ideal-diode-only current costs.
 
-        PSP's reverse leakage at -1.2 V is about 1e-15 A; ours is the
-        ideal term alone, four orders smaller.  Both are eleven or more
-        orders below the drain current, which is the whole argument for
-        leaving out the Shockley-Read-Hall, trap-assisted-tunnelling and
-        band-to-band terms -- fifteen of the twenty-nine lines per
-        component exist to shape that number.
+        The one regime where junction current matters is a
+        forward-biased bulk, and it must still turn on.
         """
         n, _ = op
         on, _off = self._pair(deck, 'nmos', n['short'])

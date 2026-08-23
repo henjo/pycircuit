@@ -525,24 +525,21 @@ def _psp_mos_analog(T, pmos):
         ##
         ## Not ordered: a junction sits on a physical diffusion, like
         ## the overlap capacitance and for the same reason.
-        jpar = dict(jphit=jphit, jvfmin=jvfmin, jvch=jvch,   # noqa: F821
-                    jvmax=jvmax, jisat=jisat)                # noqa: F821
-        for _c, _vals in (('bot', (jbot_p, jbot_vbi, jbot_qpref,  # noqa
-                                   jbot_qpref2, jbot_area)),      # noqa
-                          ('sti', (jsti_p, jsti_vbi, jsti_qpref,  # noqa
-                                   jsti_qpref2, jsti_area)),      # noqa
-                          ('gat', (jgat_p, jgat_vbi, jgat_qpref,  # noqa
-                                   jgat_qpref2, jgat_area))):     # noqa
-            for _k, _v in zip(('p', 'vbi', 'qpref', 'qpref2', 'area'),
-                              _vals):
-                jpar['j%s_%s' % (_c, _k)] = _v
+        ## The parameter symbols are injected into this function's
+        ## globals by the DSL, so they are collected by NAME rather than
+        ## written out -- seventy of them.
+        _g_ = globals()
+        jpar = {n: _g_[n] for n, _ in _JUNCAP_SHARED}
+        for _c in ('bot', 'sti', 'gat'):
+            for _k, _ in _JUNCAP_PER_COMPONENT:
+                jpar['j%s_%s' % (_c, _k)] = _g_['j%s_%s' % (_c, _k)]
 
         vjs = var(-vsb, 'vjun_s')
         vjd = var(-vdb, 'vjun_d')
         qj_s, qj_d = (juncap.charge(vjs, jpar, 's'),
                       juncap.charge(vjd, jpar, 'd'))
-        ij_s, ij_d = (juncap.current(vjs, jpar, 's'),
-                      juncap.current(vjd, jpar, 'd'))
+        ij_s = juncap.current(vjs, jpar, 's') + juncap.leakage(vjs, jpar, 's')
+        ij_d = juncap.current(vjd, jpar, 'd') + juncap.leakage(vjd, jpar, 'd')
 
         ## CHANNEL NOISE, on the same branch the current is on
         ## (`PSP103_module.include:1948-1949`).  Both densities come out
@@ -597,6 +594,39 @@ def _psp_mos_analog(T, pmos):
 
 
     return analog
+
+
+
+#: JUNCAP2's per-component constants, and their defaults.  Kept beside
+#: the generator rather than in it so the list reads as data.
+_JUNCAP_PER_COMPONENT = (
+    ('p', 0.5), ('vbi', 1.0), ('qpref', 0.0), ('qpref2', 0.0),
+    ('area', 0.0), ('idsat', 0.0), ('csrh', 0.0), ('ctat', 0.0),
+    ('cbbt', 0.0), ('vbir', 1.0), ('vbirinv', 1.0), ('wdepnulr', 1.0),
+    ('wdepnulrinv', 1.0), ('omp', 0.5), ('oomp', 2.0), ('atat', 1.0),
+    ('btatpart', 1.0), ('fbbt', 0.0), ('vbr', 10.0), ('pbr', 4.0),
+    ('fstop', 1.0), ('vbrinv', 0.1), ('slope', 0.0), ('ftd', 1.0),
+)
+
+#: The shared ones.
+_JUNCAP_SHARED = (
+    ('jphit', 0.02585), ('jphitr', 0.02585), ('jvfmin', 0.5),
+    ('jvch', 0.07), ('jvmax', 1.0), ('jisat', 0.0), ('jvbimin', 1.0),
+    ('jvbbtlim', 0.5), ('jalphaav', 0.999), ('jperfc', 0.5178),
+    ('jberfc', 0.2699), ('jcerfc', 0.4379),
+)
+
+
+def _juncap_params():
+    """The junction's `Parameter` objects, generated."""
+    out = [Parameter(name=n, desc='JUNCAP %s' % n, unit='', default=d)
+           for n, d in _JUNCAP_SHARED]
+    for c in ('bot', 'sti', 'gat'):
+        out += [Parameter(name='j%s_%s' % (c, n),
+                          desc='JUNCAP %s %s' % (c, n), unit='',
+                          default=d)
+                for n, d in _JUNCAP_PER_COMPONENT]
+    return out
 
 
 class PspMosLongChannel(Behavioural):
@@ -732,46 +762,12 @@ class PspMosLongChannel(Behavioural):
         ## expression.  The areas default to zero, which switches the
         ## junction off entirely; the rest default to values that keep
         ## the unused expressions finite.
-        Parameter(name='jphit', desc='Junction thermal voltage',
-                  unit='V', default=0.02585),
-        Parameter(name='jvfmin', desc='Forward-bias clamp', unit='V',
-                  default=0.5),
-        Parameter(name='jvch', desc='Clamp smoothing', unit='V',
-                  default=0.07),
-        Parameter(name='jvmax', desc='Ideal-diode linearisation point',
-                  unit='V', default=1.0),
-        Parameter(name='jisat', desc='Total saturation current',
-                  unit='A', default=0.0),
-        Parameter(name='jbot_p', desc='bot grading coefficient',
-                  unit='', default=0.5),
-        Parameter(name='jbot_vbi', desc='bot built-in voltage', unit='V',
-                  default=1.0),
-        Parameter(name='jbot_qpref', desc='bot charge prefactor', unit='',
-                  default=0.0),
-        Parameter(name='jbot_qpref2', desc='bot forward prefactor',
-                  unit='', default=0.0),
-        Parameter(name='jbot_area', desc='bot junction geometry', unit='',
-                  default=0.0),
-        Parameter(name='jsti_p', desc='sti grading coefficient',
-                  unit='', default=0.5),
-        Parameter(name='jsti_vbi', desc='sti built-in voltage', unit='V',
-                  default=1.0),
-        Parameter(name='jsti_qpref', desc='sti charge prefactor', unit='',
-                  default=0.0),
-        Parameter(name='jsti_qpref2', desc='sti forward prefactor',
-                  unit='', default=0.0),
-        Parameter(name='jsti_area', desc='sti junction geometry', unit='',
-                  default=0.0),
-        Parameter(name='jgat_p', desc='gat grading coefficient',
-                  unit='', default=0.5),
-        Parameter(name='jgat_vbi', desc='gat built-in voltage', unit='V',
-                  default=1.0),
-        Parameter(name='jgat_qpref', desc='gat charge prefactor', unit='',
-                  default=0.0),
-        Parameter(name='jgat_qpref2', desc='gat forward prefactor',
-                  unit='', default=0.0),
-        Parameter(name='jgat_area', desc='gat junction geometry', unit='',
-                  default=0.0),
+        ##
+        ## Generated rather than written out: there are three components
+        ## with twenty-odd constants each, and a hand-written list of
+        ## seventy `Parameter(...)` lines is a place for a typo to hide
+        ## rather than something anyone will read.
+        ] + _juncap_params() + [
         ## Channel noise.  `fnt = 0` switches the thermal term off and
         ## `nfa = nfb = nfc = 0` the flicker one, which is the default:
         ## an element built without a card is noiseless.

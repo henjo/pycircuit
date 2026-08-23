@@ -67,6 +67,8 @@ PSP_EPSRSI = 11.8
 PSP_EPS_SI = PSP_EPSRSI * PSP_EPS0
 PSP_KBOL = 1.3806505e-23
 PSP_QELE = 1.6021918e-19
+PSP_HBAR = 1.05457168e-34
+PSP_MELE = 9.1093826e-31
 
 QMN = 5.951993
 QMP = 7.448711
@@ -584,6 +586,7 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
 JUNCAP_VBILOW = 5.0e-2
 JUNCAP_A = 2.0
 JUNCAP_EPSCH = 0.1
+JUNCAP_AERFC = 0.29214664
 
 
 def junction_geometry(w, we, ng=1, z1=0.34e-6, z2=0.38e-6, wmin=0.15e-6):
@@ -655,7 +658,34 @@ def junction(card, ab, ls, lg, T=300.0):
             p=p, vbi=vbi, cjo=cjo,
             qpref=cjo * vbi / (1.0 - p), qpref2=JUNCAP_A * cjo,
             idsat=_g(card, 'idsatr' + c, 1.0e-12) * ftd * ftd,
-            area=geom[c])
+            ftd=ftd, area=geom[c])
+        ## ---- reverse-leakage constants -------------------------------
+        ## `wdepnulr` uses the REFERENCE `CJOR`, not the temperature-
+        ## scaled `cjo` (`JUNCAP200_InitModel.include:205-207`), and the
+        ## two sidewall components carry a junction depth where the
+        ## bottom one does not.
+        xjun = 1.0 if c == 'bot' else _g(card, 'xjun' + c, 1.0e-7)
+        cjor = _g(card, 'cjor' + c, 1.0e-3)
+        wdepnulr = xjun * PSP_EPS_SI / cjor
+        ## Half the bandgap, floored at the thermal voltage (`:225-227`).
+        delta_e = max(0.5 * (phig + d_phigd), phitd)
+        out[c].update(
+            csrh=_g(card, 'csrh' + c, 100.0 if c == 'bot' else 1.0e-4),
+            ctat=_g(card, 'ctat' + c, 100.0 if c == 'bot' else 1.0e-4),
+            cbbt=_g(card, 'cbbt' + c,
+                    1.0e-12 if c == 'bot' else 1.0e-18),
+            vbir=vbir, vbirinv=1.0 / vbir,
+            wdepnulr=wdepnulr, wdepnulrinv=1.0 / wdepnulr,
+            omp=1.0 - p, oomp=1.0 / (1.0 - p),
+            atat=delta_e / phitd,
+            btatpart=math.sqrt(32.0 * _g(card, 'mefftat' + c, 0.25)
+                               * PSP_MELE * PSP_QELE * delta_e ** 3)
+            / (3.0 * PSP_HBAR),
+            ## Linear in temperature, not Arrhenius (`:240-245`).
+            fbbt=max(_g(card, 'fbbtr' + c, 1.0e9)
+                     * (1.0 + _g(card, 'stfbbt' + c, -1.0e-3)
+                        * (tkd - tkr)), 0.0),
+            vbr=_g(card, 'vbr' + c, 10.0), pbr=_g(card, 'pbr' + c, 4.0))
 
     ## Instance-level constants.  `vfmin` is what guarantees the grading
     ## power never sees a non-positive base: it holds `1 - vj/vbi` above
@@ -673,10 +703,34 @@ def junction(card, ab, ls, lg, T=300.0):
         js = out[c]['idsat'] * out[c]['area']
         vmax.append(phitd * math.log(imax / js + 1.0) if js > 0.0
                     else 1.0e8)
+    ## `vbbtlim` keeps the band-to-band term's `VBIR - vbbt` positive
+    ## (`macrodefs:204`); `alphaav` and the breakdown constants come
+    ## from `FREV` (`InitModel:248-261`).
+    alphaav = 1.0 - 1.0 / _g(card, 'frev', 1000.0)
+    perfc = math.sqrt(math.pi) * JUNCAP_AERFC
+    berfc = (-5.0 * JUNCAP_AERFC + 6.0 - perfc ** -2.0) / 3.0
+    extra = dict(jphitr=phitr, jalphaav=alphaav,
+                 jperfc=perfc, jberfc=berfc,
+                 jcerfc=1.0 - JUNCAP_AERFC - berfc,
+                 jvbbtlim=min(out[c]['vbir'] for c in out) - 5.0e-2)
+    for c in out:
+        vbr, pbr = out[c]['vbr'], out[c]['pbr']
+        fstop = 1.0 / (1.0 - alphaav ** pbr)
+        out[c]['fstop'] = fstop
+        out[c]['vbrinv'] = 1.0 / vbr
+        out[c]['slope'] = -(fstop * fstop * alphaav ** (pbr - 1.0)
+                            * pbr / vbr)
+
     return dict(
         jphit=phitd, jvfmin=vfmin, jvch=vbimin * JUNCAP_EPSCH,
+        jvbimin=vbimin, **extra,
         jvmax=min(vmax),
         ## The ideal term factors: one exponential times a total.
         jisat=sum(out[c]['idsat'] * out[c]['area'] for c in out),
         **{'j%s_%s' % (c, k): out[c][k]
-           for c in out for k in ('p', 'vbi', 'qpref', 'qpref2', 'area')})
+           for c in out
+           for k in ('p', 'vbi', 'qpref', 'qpref2', 'area', 'idsat',
+                     'csrh', 'ctat', 'cbbt', 'vbir', 'vbirinv',
+                     'wdepnulr', 'wdepnulrinv', 'omp', 'oomp', 'atat',
+                     'btatpart', 'fbbt', 'vbr', 'pbr', 'fstop',
+                     'vbrinv', 'slope', 'ftd')})
