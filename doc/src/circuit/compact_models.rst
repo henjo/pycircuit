@@ -268,7 +268,8 @@ measurement otherwise.
     try:
         import pycircuit.circuit.circuit as cm
         from pycircuit.circuit.toolkit import numeric
-        from pycircuit.circuit.compact import PspMosLongChannel
+        from pycircuit.circuit.compact import (PspMosLongChannel,
+                                               PspPmosLongChannel)
         from pycircuit.circuit import psp_scaling
         from pycircuit.utilities import spicecard
         cm.default_toolkit = numeric
@@ -276,15 +277,21 @@ measurement otherwise.
         deck = spicecard.read(os.path.join(PDK, 'cornerMOSlv.lib'),
                               section='mos_tt')
         for name in ('nmos_long_idvd', 'nmos_long_idvg',
-                     'nmos_idvd_vg1p2', 'nmos_idvg_vd1p2',
-                     'nmos_idvg_vd0p05'):
+                     'nmos_long_idvg_vb_m1', 'nmos_idvd_vg1p2',
+                     'nmos_idvg_vd1p2', 'nmos_idvg_vd0p05',
+                     'pmos_long_idvd', 'pmos_long_idvg',
+                     'pmos_idvd_vg1p2', 'pmos_idvg_vd1p2',
+                     'pmos_idvg_vd0p05'):
             s = ref[name]
             w, l = s['w'], s['l']
+            pmos = 'pmos' in s['device']
             kw = psp_scaling.to_long_channel(
-                deck.model_params('sg13g2_lv_nmos_psp', w=w, l=l, ng=1,
-                                  m=1, pre_layout=1), w=w, l=l)
-            e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
-                                  cm.Node('b'), **kw)
+                deck.model_params(
+                    'sg13g2_lv_pmos_psp' if pmos else 'sg13g2_lv_nmos_psp',
+                    w=w, l=l, ng=1, m=1, pre_layout=1), w=w, l=l)
+            cls = PspPmosLongChannel if pmos else PspMosLongChannel
+            e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                    cm.Node('b'), **kw)
             e.update_iparv()
             v = np.asarray(s['v'], float)
             r = np.abs(np.asarray(s['i_d'], float))
@@ -296,30 +303,40 @@ measurement otherwise.
                 g = np.array([np.asarray(e.i(np.array(
                     [b['Vd'], q, b['Vs'], b['Vb']])), float)[0] for q in v])
             m = r > 1e-6
-            rows.append((name, w * 1e6, l * 1e6,
-                         np.median(np.abs(g[m]) / r[m])))
+            q = np.abs(g[m]) / r[m]
+            rows.append((name, w * 1e6, l * 1e6, np.median(q),
+                         q.max() / q.min() - 1.0))
         note = "computed live against the installed PDK"
     except Exception:
-        rows = [('nmos_long_idvd', 10.0, 1.00, 1.002),
-                ('nmos_long_idvg', 10.0, 1.00, 1.000),
-                ('nmos_idvd_vg1p2', 1.0, 0.13, 1.002),
-                ('nmos_idvg_vd1p2', 1.0, 0.13, 0.996),
-                ('nmos_idvg_vd0p05', 1.0, 0.13, 1.001)]
+        rows = [('nmos_long_idvd', 10.0, 1.00, 0.996, 0.001),
+                ('nmos_long_idvg', 10.0, 1.00, 0.998, 0.017),
+                ('nmos_long_idvg_vb_m1', 10.0, 1.00, 0.999, 0.106),
+                ('nmos_idvd_vg1p2', 1.0, 0.13, 0.994, 0.010),
+                ('nmos_idvg_vd1p2', 1.0, 0.13, 1.003, 0.071),
+                ('nmos_idvg_vd0p05', 1.0, 0.13, 1.001, 0.066),
+                ('pmos_long_idvd', 10.0, 1.00, 0.994, 0.001),
+                ('pmos_long_idvg', 10.0, 1.00, 0.996, 0.022),
+                ('pmos_idvd_vg1p2', 1.0, 0.13, 0.999, 0.002),
+                ('pmos_idvg_vd1p2', 1.0, 0.13, 1.004, 0.061),
+                ('pmos_idvg_vd0p05', 1.0, 0.13, 1.000, 0.033)]
         note = ("quoted from the committed measurement -- the IHP PDK is "
                 "not installed here")
 
-    print(".. list-table:: Drain current, ours / PSP103 (median over the sweep)")
+    print(".. list-table:: Drain current, ours / PSP103 -- median over "
+          "the sweep, and how much the ratio varies across it")
     print("   :header-rows: 1")
     print("")
     print("   * - sweep")
     print("     - W")
     print("     - L")
     print("     - ratio")
-    for name, w, l, ratio in rows:
+    print("     - spread")
+    for name, w, l, ratio, spread in rows:
         print("   * - ``%s``" % name)
         print("     - %.0f um" % w)
         print("     - %.2f um" % l)
         print("     - %.3f" % ratio)
+        print("     - %.3f" % spread)
     print("")
     print("*%s.*" % note)
 

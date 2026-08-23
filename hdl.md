@@ -1695,6 +1695,37 @@ built but never actually tested against.
 | geometry scaling layer | medium | `PSP103_scaling.include`, 849 lines, pure parameter arithmetic — no solver involvement, so it is bulk rather than difficulty |
 | the rest of the surface-potential core | large | `PSP103_module.include`, 2371 lines. The `sp_s` kernel it is built on is done and validated; what remains is the current, charge and geometry layers around it |
 
+**Both of those were the estimate before any of it was built.** What the
+dated entries below record is that the DC core of both, for both channel
+types, is now done and measured. The state as it stands:
+
+| | |
+|---|---|
+| devices | n- and p-channel, `PspMosLongChannel` / `PspPmosLongChannel` |
+| driven from | two real IHP PSP103 cards, through the scaling layer, **nothing fitted** |
+| accuracy | **all 13 sweeps within 2.3%**; every p-channel sweep within 0.6%; two flat to a part in a thousand |
+| subthreshold swing | matches PSP to **≤0.24 mV/decade**, both channel types |
+| scaled parameters | **all 30 the model uses match PSP's own `lp_*` exactly**, four geometries, both channel types |
+| construction properties | source/drain antisymmetry (topological, to an ulp), exact zero at `Vds = 0`, structural charge conservation, one expression across all regimes |
+
+Present: surface-potential solver, drain current by symmetric
+linearisation, Ward–Dutton charges, mobility reduction, Coulomb
+scattering, velocity saturation and its body- and gate-bias modulations,
+series resistance, the body-bias mobility correction, the
+saturation-limited drain voltage, channel-length modulation with the
+channel-shortening factor, DIBL, the quantum-mechanical correction,
+polysilicon depletion with its length scaling, the bias-dependent body
+factor, and the effective thermal voltage. Plus a Newton limiter, which
+a saturating model turns out to require.
+
+Absent, and each with a reason rather than an omission: `PSCE` (all-zero
+on this card), gate leakage and junction leakage (four to six orders
+below the comparison's floor), impact ionisation (exponentially dead
+below ~2 V), overlap and fringe capacitances (identically zero DC
+current — they belong to a CV comparison this project does not yet
+have), NQS and self-heating (deferred by the original research verdict,
+below), and every temperature coefficient.
+
 > **The saturation voltage, a floor hidden in the scaling, and two
 > things it broke — 2026-08-23.** PSP does not evaluate the drain
 > surface potential at the applied drain bias. It computes a saturation

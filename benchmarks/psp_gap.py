@@ -26,17 +26,30 @@ which says what to build next.  Reading it:
     block switched off for a commit;
   * a ratio that is flat in Vds and near 1 on the long device means the
     threshold and gain factor are right;
-  * a ratio that GROWS with current is series resistance -- the core has
-    none, and PSP folds it into the mobility as an extra `Gmob` term;
-  * a large ratio on the SHORT device only is the short-channel block:
-    DIBL, channel-length modulation, and the much larger relative
-    contribution of series resistance at 0.13 um.
+  * a ratio that GROWS with current is series resistance, which PSP
+    folds into the mobility as an extra `Gmob` term;
+  * a ratio that differs between the two GEOMETRIES is a scaling term,
+    and the fastest way to find which one is not to reason about the
+    shape at all -- it is to compare every scaled parameter against
+    PSP's own `lp_*` operating-point outputs, which is what
+    `test_psp_gap.py` does at four geometries on both channel types.
+    Three terms have been found that way, each of them invisible in the
+    card because its coefficient was zero on the device being measured;
+  * a ratio that differs between the two CHANNEL TYPES is either a term
+    with a genuinely different form for holes -- there are exactly four
+    of those, all in `psp_kernel` -- or, more likely on the evidence so
+    far, a scaling that one of the two cards switches off.
 
 What the core deliberately lacks, and therefore what this measures the
-cost of: series resistance, channel-length modulation, DIBL and the rest
-of the short-channel parameters, gate and junction leakage, impact
-ionisation, overlap and fringe capacitances, and every temperature
-coefficient.
+cost of: `PSCE` (all-zero on this card anyway), gate and junction
+leakage, impact ionisation, overlap and fringe capacitances, the
+non-quasi-static block, self-heating, and every temperature coefficient.
+
+Three of those cannot appear here at ALL, which is worth stating rather
+than leaving for someone to rediscover: gate and junction leakage are
+four to six orders of magnitude below the 1e-6 A floor below, and
+overlap and fringe capacitances contribute identically zero DC current.
+They matter to a CV comparison, which this is not.
 """
 
 import argparse
@@ -139,11 +152,14 @@ def main(argv=None):
         sys.stdout.flush()
 
     print()
-    print('The long device is the one to read: at L = 1 um the')
-    print('short-channel physics the core omits matters least, so what is')
-    print('left there is mostly the missing series resistance.  At')
-    print('L = 0.13 um the omissions dominate and the ratio is not a')
-    print('measure of the core at all.')
+    print('The long device used to be the one to read, on the grounds')
+    print('that short-channel physics was omitted and mattered least')
+    print('there.  That is no longer why: the short-channel block is')
+    print('largely present now, and the two geometries agree, which is')
+    print('worth more than either number.  What separates the sweeps now')
+    print('is bias condition rather than geometry -- and the SPREAD')
+    print('column is the one to read, because it is the bias dependence')
+    print('that a missing term breaks.')
     print()
 
     ## The detail of the long device, where the comparison is meaningful.
