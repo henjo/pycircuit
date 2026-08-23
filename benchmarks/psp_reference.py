@@ -215,6 +215,15 @@ show all
 #: 1 um device it is a few percent, which is why the long geometry is
 #: the one to read here.
 OP_OUTPUTS = ('ids', 'gm', 'gds', 'gmb', 'vth',
+              ## Channel noise: the white drain density, the flicker
+              ## density at 1 Hz, and the corner between them.  All three
+              ## are bias-dependent, so they belong on the grid rather
+              ## than in the scaled-parameter list -- and `fknee` is
+              ## worth recording separately from the two densities
+              ## because it is their RATIO, so it checks the two against
+              ## each other rather than both against the current they
+              ## share.
+              'sid', 'sfl', 'fknee',
               ## The JUNCTION, per component.  `cjs`/`cjd` are the
               ## totals and `cjsbot`/`cjssti`/`cjsgat` the three parts
               ## `SWJUNCAP = 3` switches on -- recording them separately

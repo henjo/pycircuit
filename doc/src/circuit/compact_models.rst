@@ -538,7 +538,8 @@ the body- and gate-bias modulations of the velocity-saturation parameter
 (``THESATB``, ``THESATG``), gate resistance on its own internal node,
 device multiplicity, overlap and fringe capacitance, the full
 temperature scaling — every parameter matches PSP's own value at 100 °C,
-73 K away from the card's reference — and the junction charge. Passing ``all_terms=False`` to
+73 K away from the card's reference — the junction charge, and the
+channel's thermal and flicker noise. Passing ``all_terms=False`` to
 ``to_long_channel`` drops both, which exists so their effect stays
 measurable — see below, because deciding whether to keep them turned
 out to be a lesson about the measurement rather than about the terms.

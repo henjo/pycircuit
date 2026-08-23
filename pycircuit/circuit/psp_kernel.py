@@ -42,6 +42,7 @@ expressions, so they can be lambdified and tested directly.
 import sympy
 
 from pycircuit.circuit import hdl
+from pycircuit.circuit.psp_scaling import PSP_QELE
 
 
 #: PSP's own constants, by their macro names.
@@ -924,7 +925,7 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
     return dict(ids=ids, qim=qim, qim1=qim1, alpha=alpha, dps=dps,
                 xgm=xgm, x_m=x_m, x_s=x_s, x_d=x_d, qbm=qbm,
                 Pm=Pm, Dm=Dm, sqm=sqm, Gmob=Gmob_dL, Gvsat=Gvsat,
-                zsat=zsat, gvinv=gvinv, GdL=GdL, eta_p=eta_p)
+                zsat=zsat, gvinv=gvinv, GdL=GdL, eta_p=eta_p, FdL=FdL)
 
 
 def ids_long_channel(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5):
@@ -1038,4 +1039,78 @@ def charges_long_channel(core, xg, phit, cox):
             _v(-QB * cox, 'q_Qb'))
 
 
+def noise(core, mob, beta, phit, cox, nz):
+    """PSP's channel noise: thermal and flicker, as power spectral
+    densities on the channel branch.
 
+    `PSP103_module.include:1819-1841`.  Both come out of the SAME
+    surface-potential quantities the current does -- `qim`, `qim1`,
+    `alpha`, `dps`, `H` -- which is the point of a surface-potential
+    model's noise: there is nothing to fit separately.
+
+    Returns ``(Sid, Sfl)``: the white drain-current density in A^2/Hz,
+    and the flicker density at 1 Hz to be divided by ``f**EF``.
+
+    Induced gate noise is not here.  It needs the AC/NQS quantities and,
+    more awkwardly, it is CORRELATED with the drain noise -- PSP carries
+    `c_igid` and reduces the drain term by `(1 - c_igid^2)`.  A pair of
+    correlated sources is not something the DSL's per-branch noise
+    functions express, so implementing it would need the noise interface
+    extended first.  With it absent, `c_igid = 0` and the drain term is
+    the whole of `sqid**2`, which is what PSP computes when `SWIGN = 0`.
+    """
+    qim, qim1 = core['qim'], core['qim1']
+    alpha, dps = core['alpha'], core['dps']
+
+    ## `H` is the effective charge slope, the same quantity the charge
+    ## model builds (`macrodefs:776-778`); recomputed here from `core`
+    ## rather than threaded through, since it is three cheap lines.
+    gr = _v(core['Gmob'] * core['gvinv'], 'n_gr')
+    alpha1 = _v(alpha * (1.0 + 0.5 * (core['zsat'] * gr * gr)), 'n_a1')
+    H = _v(gr * qim1 * hdl.safe_div(1.0, alpha1, eps=1e-30), 'n_H')
+
+    ## ---- thermal ----------------------------------------------------
+    H0 = _v(qim1 * hdl.safe_div(1.0, alpha, eps=1e-30), 'n_H0')
+    t1 = _v(qim * hdl.safe_div(1.0, qim1, eps=1e-30), 'n_t1')
+    sqt2 = _v(0.5 * ONE_SIXTH * (dps * hdl.safe_div(1.0, H0, eps=1e-30)),
+              'n_sqt2')
+    t2 = _v(sqt2 * sqt2, 'n_t2')
+    r = _v(H0 * hdl.safe_div(1.0, H, eps=1e-30) - 1.0, 'n_r')
+    ## PSP's own floor, and it is doing real work: `lc` is squared into
+    ## a denominator, so a zero there is a division by zero rather than
+    ## a large number.
+    lc = _v(sympy.Max(1.0 - 12.0 * (r * t2), 1.0e-20), 'n_lc')
+    g_ideal = _v(beta * (core['FdL'] * qim1 * core['gvinv']), 'n_gid')
+    mid0 = _v(t1 + 12.0 * t2 - 24.0 * ((1.0 + t1) * t2 * r), 'n_mid0')
+    mid = _v(sympy.Max(mid0, 1.0e-40), 'n_mid')
+    ## `nt = 4*FNT*k*T`, written as `4*FNT*phit*q` so the thermal
+    ## voltage already in hand carries the temperature and no separate
+    ## `k` or `T` is needed.
+    nt = _v(nz['fnt'] * 4.0 * phit * PSP_QELE, 'n_nt')
+    sid = _v(nt * (g_ideal * mid
+                   * hdl.safe_div(1.0, lc * lc, eps=1e-30)), 'n_sid')
+
+    ## ---- flicker ----------------------------------------------------
+    ## Number-fluctuation flicker: the carrier density at the two
+    ## channel ends and its difference, in PSP's `Cox/q` units.
+    coq = _v(cox * (1.0 / PSP_QELE), 'n_coq')
+    n1 = _v(coq * (alpha * phit), 'n_N1')
+    nm1 = _v(coq * qim1, 'n_Nm1')
+    dn1 = _v(coq * (alpha * dps), 'n_dN1')
+    ## The logarithm's argument is a ratio of the two channel ends'
+    ## densities.  PSP guards neither, relying on `dN1 < 2*Nm1`; floored
+    ## here because the DSL differentiates it and a vanishing
+    ## denominator is a pole rather than a large number.
+    lo = _v(sympy.Max(nm1 - 0.5 * dn1, 1.0e-30), 'n_lo')
+    ratio = _v((nm1 + 0.5 * dn1) * hdl.safe_div(1.0, lo, eps=1e-30),
+               'n_rat')
+    sfl0 = _v((nz['nfa'] - nz['nfb'] * n1 + nz['nfc'] * (n1 * n1))
+              * hdl.safe_ln(sympy.Max(ratio, 1.0e-30))
+              + (nz['nfb'] + nz['nfc'] * (nm1 - 2.0 * n1)) * dn1,
+              'n_sfl0')
+    prefac = _v(phit * phit * beta * hdl.safe_div(1.0, coq, eps=1e-30),
+                'n_pre')
+    sfl = _v(sympy.Max(prefac * (core['ids'] * core['gvinv']) * sfl0
+                       * hdl.safe_div(1.0, n1, eps=1e-30), 0.0),
+             'n_sfl')
+    return sid, sfl

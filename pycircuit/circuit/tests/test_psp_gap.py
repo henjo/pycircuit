@@ -2301,3 +2301,118 @@ class TestTheJunction(object):
                 x = on.bias(vd, 1.8)
                 assert np.all(np.isfinite(np.asarray(on.i(x), float)))
                 assert np.all(np.isfinite(np.asarray(on.G(x), float)))
+
+
+class TestTheChannelNoise(object):
+    """Thermal and flicker noise, from the same surface-potential
+    quantities the current uses.
+
+    That is what a surface-potential model buys here: `qim`, `qim1`,
+    `alpha`, `dps` and `H` already exist, so there is no separate noise
+    model to fit -- the densities fall out of the charge distribution
+    along the channel (`PSP103_module.include:1819-1841`).
+
+    Induced gate noise is NOT implemented, and the reason is an
+    interface one rather than an effort one: it is CORRELATED with the
+    drain noise, PSP carrying `c_igid` and reducing the drain term by
+    `(1 - c_igid^2)`.  A pair of correlated sources is not something the
+    DSL's per-branch noise functions can express, so it would need the
+    noise interface extended first.  With it absent `c_igid = 0` and the
+    drain term is the whole of `sqid^2`, which is exactly what PSP
+    computes when `SWIGN = 0`.
+    """
+
+    @pytest.fixture(scope='class')
+    def op(self):
+        with open(REF) as fh:
+            return json.load(fh)['op']
+
+    def _fet(self, deck, geom, **over):
+        cm.default_toolkit = numeric
+        kw = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_nmos_psp', w=geom['w'],
+                              l=geom['l'], ng=1, m=1, pre_layout=1),
+            w=geom['w'], l=geom['l'], T=T27)
+        kw.update(over)
+        e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                              cm.Node('b'), **kw)
+        e.update_iparv()
+        return e
+
+    @staticmethod
+    def _split(e, x):
+        """Separate the white and flicker densities by measuring at two
+        frequencies -- `CY` gives their sum."""
+        f1, f2 = 1.0, 1.0e9
+        a = np.asarray(e.CY(x, 2 * np.pi * f1), float)[0, 0]
+        b = np.asarray(e.CY(x, 2 * np.pi * f2), float)[0, 0]
+        sfl = (a - b) / (1.0 / f1 - 1.0 / f2)
+        return a - sfl / f1, sfl
+
+    @pytest.mark.parametrize('geom', ['long', 'short'])
+    def test_both_densities_match_psp(self, deck, op, geom):
+        """Within half a percent, which is where the drain current they
+        are built from already sits."""
+        gd = op[geom]
+        e = self._fet(deck, gd)
+        for pt in gd['points']:
+            if pt['sid'] <= 0.0:
+                continue
+            x = e.bias(pt['vd'], pt['vg'], 0.0, pt['vb'])
+            sid, sfl = self._split(e, x)
+            assert sid == pytest.approx(pt['sid'], rel=0.02), \
+                ('sid', geom, pt['vg'], pt['vd'])
+            if pt['sfl'] > 0.0:
+                assert sfl == pytest.approx(pt['sfl'], rel=0.02), \
+                    ('sfl', geom, pt['vg'], pt['vd'])
+
+    def test_the_corner_frequency_matches(self, deck, op):
+        """`fknee` is the RATIO of the two densities, so it checks them
+        against each other rather than both against the current they
+        share -- an error common to both would cancel here and an error
+        in one would not.
+        """
+        gd = op['long']
+        e = self._fet(deck, gd)
+        for pt in gd['points']:
+            if not (pt['fknee'] > 0.0 and pt['sid'] > 0.0):
+                continue
+            x = e.bias(pt['vd'], pt['vg'], 0.0, pt['vb'])
+            sid, sfl = self._split(e, x)
+            assert sfl / sid == pytest.approx(pt['fknee'], rel=0.02), \
+                (pt['vg'], pt['vd'], sfl / sid, pt['fknee'])
+
+    def test_the_residual_is_the_current_it_is_built_from(self, deck, op):
+        """Both densities scale with the drain current, so their error
+        should be the current's error and not something of its own.
+
+        Pinning this is what distinguishes 'the noise formulas are
+        right' from 'the noise happens to be close'.
+        """
+        gd = op['long']
+        e = self._fet(deck, gd)
+        pt = gd['points'][5]
+        x = e.bias(pt['vd'], pt['vg'], 0.0, pt['vb'])
+        sid, sfl = self._split(e, x)
+        ids = np.asarray(e.i(x), float)[0] / pt['ids']
+        assert abs(sid / pt['sid'] - 1.0) < 5.0 * abs(ids - 1.0) + 2e-3
+        assert abs(sfl / pt['sfl'] - 1.0) < 5.0 * abs(ids - 1.0) + 2e-3
+
+    def test_it_is_off_without_a_card(self, deck, op):
+        """An element built with defaults is noiseless, so the noise
+        cannot leak into a model that never asked for it."""
+        e = self._fet(deck, op['long'], fnt=0.0, nfa=0.0, nfb=0.0,
+                      nfc=0.0)
+        CY = np.asarray(e.CY(e.bias(0.05, 1.2), 2 * np.pi), float)
+        assert np.all(CY == 0.0)
+
+    def test_thermal_and_flicker_can_be_switched_independently(self,
+                                                               deck, op):
+        gd = op['long']
+        x_of = lambda e: e.bias(0.05, 1.2)
+        th = self._fet(deck, gd, nfa=0.0, nfb=0.0, nfc=0.0)
+        fl = self._fet(deck, gd, fnt=0.0)
+        s_th, f_th = self._split(th, x_of(th))
+        s_fl, f_fl = self._split(fl, x_of(fl))
+        assert s_th > 0.0 and f_th == pytest.approx(0.0, abs=1e-30)
+        assert f_fl > 0.0 and s_fl == pytest.approx(0.0, abs=1e-30)

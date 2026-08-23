@@ -21,6 +21,7 @@ from pycircuit.circuit.constants import (epsRSiO2, kboltzmann,
                                          qelectron)
 from pycircuit.circuit.hdl import (Behavioural, Branch, Collapse,
                                    Contribution, Node,
+                                   flicker_noise, white_noise,
                                    ddt, var, vt)
 from pycircuit.utilities.param import Parameter
 
@@ -543,6 +544,15 @@ def _psp_mos_analog(T, pmos):
         ij_s, ij_d = (juncap.current(vjs, jpar, 's'),
                       juncap.current(vjd, jpar, 'd'))
 
+        ## CHANNEL NOISE, on the same branch the current is on
+        ## (`PSP103_module.include:1948-1949`).  Both densities come out
+        ## of the surface-potential quantities the current already used,
+        ## which is what a surface-potential model buys: there is no
+        ## separate noise model to fit.
+        n_sid, n_sfl = psp_kernel.noise(
+            core, None, beta, phit0, cox,
+            dict(fnt=fnt, nfa=nfa, nfb=nfb, nfc=nfc))   # noqa: F821
+
         ## MULTIPLICITY.  PSP multiplies every contribution by `MULT_i`
         ## (`MULT * NF`, `PSP103_scaling.include:828`); `m` devices in
         ## parallel carry `mult` times the current and charge, and
@@ -578,7 +588,12 @@ def _psp_mos_analog(T, pmos):
                 Contribution(Branch(b, s, 'jis').I,
                              mult * T * ij_s),                 # noqa: F821
                 Contribution(Branch(b, d, 'jid').I,
-                             mult * T * ij_d))                 # noqa: F821
+                             mult * T * ij_d),                 # noqa: F821
+                ## Noise densities are POWERS, so they carry `mult` but
+                ## not `T` -- a spectral density has no sign.
+                Contribution(Branch(d, s, 'chan').I,
+                             white_noise(mult * n_sid)          # noqa
+                             + flicker_noise(mult * n_sfl, ef)))  # noqa
 
 
     return analog
@@ -757,6 +772,19 @@ class PspMosLongChannel(Behavioural):
                   unit='', default=0.0),
         Parameter(name='jgat_area', desc='gat junction geometry', unit='',
                   default=0.0),
+        ## Channel noise.  `fnt = 0` switches the thermal term off and
+        ## `nfa = nfb = nfc = 0` the flicker one, which is the default:
+        ## an element built without a card is noiseless.
+        Parameter(name='fnt', desc='Thermal noise coefficient', unit='',
+                  default=0.0),
+        Parameter(name='nfa', desc='Flicker noise, first coefficient',
+                  unit='', default=0.0),
+        Parameter(name='nfb', desc='Flicker noise, second coefficient',
+                  unit='', default=0.0),
+        Parameter(name='nfc', desc='Flicker noise, third coefficient',
+                  unit='', default=0.0),
+        Parameter(name='ef', desc='Flicker noise exponent', unit='',
+                  default=1.0),
         Parameter(name='rg', desc='Gate resistance', unit='ohm',
                   default=0.0),
         Parameter(name='mult', desc='Multiplicity (devices in parallel)',

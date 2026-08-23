@@ -413,6 +413,21 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
     sp_delta1 = (sp_delta + gov2 * 0.5
                  - gov * math.sqrt(sp_delta + gov2 * 0.25 + sp_a))
 
+    ## CHANNEL NOISE (:376-384, clipped at :792-797).  The flicker
+    ## coefficients carry a length correction of their own -- `Lnoi`
+    ## and `ALPNOI` -- on top of the 1/(W*L) that `NFALW` already
+    ## implies.  `NFC` clips to ZERO here: the card's `NFCLW` is
+    ## negative and `NFC_i` is clipped low at 0 (`:796`), so the
+    ## quadratic term is off however it is written.
+    lnoi = max(1.0 - 2.0 * _g(card, 'lintnoi') * iLE / LEN, 1.0e-3)
+    lred = 1.0 / lnoi ** _g(card, 'alpnoi', 0.0)
+    nz_scale = lred * iWE * iLE
+    nfa = max(nz_scale * _g(card, 'nfalw'), 0.0)
+    nfb = max(nz_scale * _g(card, 'nfblw'), 0.0)
+    nfc = max(nz_scale * _g(card, 'nfclw'), 0.0)
+    ef = max(_g(card, 'efo', 1.0), 0.0)
+    fnt = max(_g(card, 'fnto', 1.0), 0.0)
+
     ## GATE RESISTANCE (:604, clipped at :816).  The full expression
     ## carries a sheet-resistance term and a per-finger term; this card
     ## sets neither (`RSHG` and `RGO` are absent), leaving
@@ -552,6 +567,7 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
         feta=_g(card, 'fetao', 1.0), thesat=max(thesat, 0.0),
     )
     kw.update(dnsub=dnsub, vnsub=vnsub, nslp=nslp, xcor=xcor, rg=rg,
+              nfa=nfa, nfb=nfb, nfc=nfc, ef=ef, fnt=fnt,
               cgov=cgov, cfr=cfr, cgbov=cgbov, gov=gov, gov2=gov2,
               ov_a=sp_a, ov_d1=sp_delta1, ov_eps2=sp_eps * sp_eps,
               wcv=wecv, lcv=lecv, qq=qq)

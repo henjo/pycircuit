@@ -1791,9 +1791,8 @@ silently gets one device. PSP multiplies every contribution by `MULT_i`.
 **Estimate ~10 lines**, and it is a correctness hazard rather than an
 accuracy one.
 
-**6. Noise.** `SWIGN = 1`; there is no noise model of any kind here.
-Thermal, flicker and induced-gate. **Estimate medium**, and it is a
-separate capability rather than a missing PSP block.
+**6. Noise — DONE for thermal and flicker; induced-gate not, see the
+dated entry below.**
 
 Enabled on the card and measured negligible at this supply, against
 `ids = 4.0e-4` at Vg = Vd = 1.2 on a 0.13 µm device: gate current
@@ -1813,9 +1812,11 @@ hazard; the third is the largest accuracy gap and now has a benchmark
 that can see it; the fourth unlocks a whole analysis axis; the fifth is
 its own rung.
 
-**Items 1 to 5 are done** — gate resistance, multiplicity, overlap and
-fringe capacitance, temperature, and JUNCAP2's charge. **Only noise is
-left, and it is a capability rather than a PSP block to translate.**
+**Every item on this plan is done**, with two deliberate and recorded
+exceptions: JUNCAP2's reverse-leakage terms, and induced gate noise —
+the first because it shapes a current eleven orders below anything else
+in the model, the second because it needs the noise interface extended
+to express correlated sources.
 
 > **The saturation voltage, a floor hidden in the scaling, and two
 > things it broke — 2026-08-23.** PSP does not evaluate the drain
@@ -2687,6 +2688,52 @@ left, and it is a capability rather than a PSP block to translate.**
 > to the bulk whose bias depends on the drain voltage makes the *total*
 > drain current genuinely not odd under the exchange. The channel
 > current still is.
+
+> **Plan item 6: channel noise — 2026-08-23. The last item.** Thermal
+> and flicker, matching PSP to **0.1-0.2%**.
+>
+> This is what a surface-potential model buys. Both densities come out of
+> quantities the current already computed — `qim`, `qim1`, `alpha`,
+> `dps`, `H` — so there is no separate noise model to fit
+> (`PSP103_module.include:1819-1841`). The thermal term is the charge
+> distribution along the channel; the flicker term is number
+> fluctuation, built from the carrier densities at the two channel ends
+> and their difference.
+>
+> | | PSP | ours | ratio |
+> |---|---|---|---|
+> | `sid` (thermal) | 5.62814e-23 | 5.62153e-23 | 0.99883 |
+> | `sfl` (flicker at 1 Hz) | 1.61468e-18 | 1.61145e-18 | 0.99800 |
+> | `fknee` | 28689 Hz | 28666 Hz | 0.99919 |
+> | `ids` | 1.66604e-04 | 1.66495e-04 | 0.99935 |
+>
+> **The residual is the current's residual, not the noise's.** Both
+> densities scale with `Ids`, and `Ids` on this device is itself 0.07%
+> low, so 0.1-0.2% is what a correct noise model built on it should
+> give. There is a test that pins exactly that — it is the difference
+> between "the formulas are right" and "the numbers happen to be
+> close". `fknee` earns its own test for the same reason: it is the
+> RATIO of the two densities, so an error common to both cancels in it
+> and an error in one does not.
+>
+> **Induced gate noise is not implemented, and the reason is an
+> interface one.** It is CORRELATED with the drain noise — PSP carries
+> `c_igid` and reduces the drain term by `(1 - c_igid^2)` — and a pair
+> of correlated sources is not something the DSL's per-branch
+> `white_noise`/`flicker_noise` can express. It would need the noise
+> interface extended first. With it absent `c_igid = 0`, and the drain
+> term is the whole of `sqid^2`, which is exactly what PSP computes when
+> `SWIGN = 0`.
+>
+> Two card simplifications worth recording so they are not rediscovered:
+> `NFC` clips to **zero** (the card's `NFCLW` is negative and `NFC_i` is
+> clipped low at 0), so the quadratic flicker term is off however it is
+> written; and `FNTEXC` is zero, so the excess-thermal-noise
+> recalculation — which would re-derive `Gvsat` without the mobility
+> effect — never runs.
+>
+> Noise is off by default: an element built without a card is noiseless,
+> and thermal and flicker can be switched independently, both tested.
 
 Deferred, unchanged from the original research verdict:
 
