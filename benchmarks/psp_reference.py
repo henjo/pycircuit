@@ -215,6 +215,17 @@ show all
 #: 1 um device it is a few percent, which is why the long geometry is
 #: the one to read here.
 OP_OUTPUTS = ('ids', 'gm', 'gds', 'gmb', 'vth',
+              ## The JUNCTION, per component.  `cjs`/`cjd` are the
+              ## totals and `cjsbot`/`cjssti`/`cjsgat` the three parts
+              ## `SWJUNCAP = 3` switches on -- recording them separately
+              ## is what turns a junction implementation from one number
+              ## to check into three, which is the difference between
+              ## finding a wrong component and knowing only that
+              ## something is wrong.  `ijs`/`ijd` are the currents, and
+              ## are recorded so their irrelevance stays measured rather
+              ## than assumed.
+              'cjs', 'cjd', 'cjsbot', 'cjssti', 'cjsgat',
+              'ijs', 'ijd',
               ## `cgsol`/`cgdol` are the OVERLAP capacitances, and PSP
               ## reports them SEPARATELY from `cgg`.  Recording them is
               ## what settles a question that is otherwise easy to get
