@@ -685,11 +685,25 @@ operating-point outputs rather than against our own arithmetic:
   inversion layer sitting a little below the interface and putting a
   capacitance in series with the oxide.
 
-With both, the gate capacitance matches PSP to **1%** across the bias
-grid on the long device, several points inside 0.1%. The short device is
-within 8%, the difference being overlap and fringe capacitance that this
-core does not model and that amounts to about a fifth of :math:`C_{gg}`
-at 0.13 µm.
+With both, the gate capacitance came to within 1% on the long device.
+The residual then named its own cause: in the **linear region** the two
+agreed to a part in ten thousand at both geometries, and the whole error
+was in **saturation**, growing with drain bias. That rules out overlap
+capacitance — a fixed capacitance in parallel does not switch itself off
+at low drain bias — and points at channel-length modulation, which had
+been left out of the charge model as a long-channel simplification while
+the current had used it all along. Putting it back, along with the
+polysilicon factor on the gate charge:
+
+**The long device now matches PSP to 0.07% across the whole bias grid,
+on both channel types** — charges from a foundry card, through the
+scaling layer, nothing fitted, agreeing with the vendor's own
+implementation to a part in ten thousand.
+
+The short device is within 2%, and that residual *is* the overlap and
+fringe capacitance, which on a 0.13 µm device is about a fifth of
+:math:`C_{gg}`. It does not vanish in the linear region, which is how it
+is told apart from the one that did.
 
 The DC current is untouched by any of it, as it must be.
 

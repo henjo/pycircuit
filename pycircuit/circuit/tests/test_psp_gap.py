@@ -1555,7 +1555,11 @@ class TestTheChargeModelAgainstTheVendor(object):
     @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
     def test_the_gate_capacitance_matches_on_the_long_device(self, deck,
                                                              op, kind):
-        """The measurement.  Every bias point, within 3%."""
+        """The measurement.  Every bias point on the long device,
+        within 0.2% -- which is what it became once channel-length
+        modulation and the polysilicon factor went into the CHARGES as
+        well as the current.  Before those, 1%; before the oxide
+        capacitance was corrected, 24%."""
         n, p = op
         gd = (p if kind == 'pmos' else n)['long']
         cls = PspPmosLongChannel if kind == 'pmos' else PspMosLongChannel
@@ -1564,7 +1568,7 @@ class TestTheChargeModelAgainstTheVendor(object):
         for pt in gd['points']:
             x = np.array([pt['vd'], pt['vg'], 0.0, pt['vb']])
             C = np.asarray(e.C(x), float)
-            assert C[1, 1] == pytest.approx(pt['cgg'], rel=0.03), \
+            assert C[1, 1] == pytest.approx(pt['cgg'], rel=0.002), \
                 (kind, pt['vg'], pt['vd'], pt['vb'], C[1, 1], pt['cgg'])
 
     @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
@@ -1582,7 +1586,7 @@ class TestTheChargeModelAgainstTheVendor(object):
             C = np.asarray(e.C(x), float)
             ## Column order is (vd, vg, vs, vb); PSP reports `cgs` and
             ## `cgb` as the negated cross terms.
-            assert -C[1, 2] == pytest.approx(pt['cgs'], rel=0.04), \
+            assert -C[1, 2] == pytest.approx(pt['cgs'], rel=0.01), \
                 ('cgs', kind, pt['vg'], pt['vd'])
             if abs(pt['cgb']) > 1e-16:
                 assert -C[1, 3] == pytest.approx(pt['cgb'], rel=0.10), \
@@ -1719,3 +1723,120 @@ class TestThePhysicalConstants(object):
 
         delta = (extract(g) - extract(r)) * 1e3
         assert abs(delta) < limit, (name, delta)
+
+
+class TestChannelLengthModulationInTheCharges(object):
+    """`GdL` and `QCLM` belong to the charge model too, and were missing.
+
+    They were left out as a long-channel simplification, and for a long
+    time nothing could measure the cost -- the charge model was checked
+    only against its own construction properties, which are ratios and
+    see neither a scale error nor a saturation-region one.
+
+    Against PSP's terminal capacitances the shape of the error names the
+    cause without any guessing:
+
+    * in the LINEAR region the two agreed to a part in ten thousand, at
+      both geometries -- so it was not overlap capacitance, which would
+      show everywhere;
+    * the whole error was in SATURATION, growing with drain bias and
+      with `ALP` -- 1% on the long device at `Vds = 1.2` and 8% on the
+      short one.
+
+    That is `GdL`, and it is the same `GdL` the current already used.
+    The polysilicon factor `eta_p` went in beside it, on the inversion
+    bracket of the gate charge where PSP puts it -- also a quantity the
+    current already carried.
+    """
+
+    @pytest.fixture(scope='class')
+    def op(self):
+        with open(REF) as fh:
+            d = json.load(fh)
+        return d['op'], d['op_pmos']
+
+    def _fet(self, deck, kind, geom, **over):
+        cm.default_toolkit = numeric
+        kw = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_%s_psp' % kind, w=geom['w'],
+                              l=geom['l'], ng=1, m=1, pre_layout=1),
+            w=geom['w'], l=geom['l'])
+        kw.update(over)
+        cls = PspPmosLongChannel if kind == 'pmos' else PspMosLongChannel
+        e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
+                **kw)
+        e.update_iparv()
+        return e
+
+    @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
+    def test_the_linear_region_was_never_the_problem(self, deck, op,
+                                                     kind):
+        """Which is what ruled out overlap capacitance.
+
+        Overlap is a fixed capacitance in parallel with the intrinsic
+        one; it does not switch itself off at low drain bias.  This
+        error did.
+        """
+        n, p = op
+        for gd in ((p if kind == 'pmos' else n)[g] for g in
+                   ('long', 'short')):
+            e = self._fet(deck, kind, gd)
+            for pt in gd['points']:
+                if abs(pt['vd']) > 0.1:
+                    continue
+                C = np.asarray(e.C(np.array(
+                    [pt['vd'], pt['vg'], 0.0, pt['vb']])), float)
+                assert C[1, 1] == pytest.approx(pt['cgg'], rel=1e-3), \
+                    (kind, gd['l'], pt['vg'], pt['vd'])
+
+    def test_it_is_worth_a_factor_of_four_in_saturation(self, deck, op):
+        """Measured on the short device, where `ALP` is largest."""
+        n, _ = op
+        gd = n['short']
+        pt = [q for q in gd['points']
+              if q['vg'] == 0.8 and q['vd'] == 1.2][0]
+        x = np.array([pt['vd'], pt['vg'], 0.0, pt['vb']])
+        on = np.asarray(self._fet(deck, 'nmos', gd).C(x), float)[1, 1]
+        ## `alp = 0` removes channel-length modulation from the current
+        ## AND the charges, which is what `GdL = 1` meant.
+        off = np.asarray(self._fet(deck, 'nmos', gd,
+                                   alp=0.0).C(x), float)[1, 1]
+        assert abs(off / pt['cgg'] - 1.0) > 4.0 * abs(on / pt['cgg'] - 1.0)
+        assert abs(on / pt['cgg'] - 1.0) < 0.03, on / pt['cgg']
+
+    @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
+    def test_the_long_device_is_now_exact(self, deck, op, kind):
+        """0.1% across the whole bias grid, both channel types.
+
+        This is the strongest statement the model can make about its
+        charges: they come from a foundry card through the scaling
+        layer, nothing is fitted, and they agree with the vendor's own
+        implementation to a part in a thousand.
+        """
+        n, p = op
+        gd = (p if kind == 'pmos' else n)['long']
+        e = self._fet(deck, kind, gd)
+        for pt in gd['points']:
+            C = np.asarray(e.C(np.array(
+                [pt['vd'], pt['vg'], 0.0, pt['vb']])), float)
+            assert C[1, 1] == pytest.approx(pt['cgg'], rel=1e-3), \
+                (kind, pt['vg'], pt['vd'], pt['vb'])
+
+    def test_what_is_left_on_the_short_device(self, deck, op):
+        """2%, and named rather than left as a mystery.
+
+        PSP's terminal capacitances include overlap and fringe
+        contributions this core does not model.  On a 0.13 um device the
+        gate overlap alone is about a fifth of the intrinsic oxide
+        capacitance, so a couple of percent residual is the right order
+        for what remains -- and unlike the `GdL` error it does NOT
+        vanish in the linear region, which is how the two were told
+        apart.
+        """
+        n, _ = op
+        gd = n['short']
+        e = self._fet(deck, 'nmos', gd)
+        worst = max(abs(np.asarray(e.C(np.array(
+            [pt['vd'], pt['vg'], 0.0, pt['vb']])), float)[1, 1]
+            / pt['cgg'] - 1.0) for pt in gd['points'])
+        assert worst < 0.03, worst

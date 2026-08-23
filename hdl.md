@@ -2333,6 +2333,50 @@ below), and every temperature coefficient.
 > still largest under body bias, and it is now pinned by tests as an
 > upper bound rather than described.
 
+> **Channel-length modulation belonged in the charges too —
+> 2026-08-23.** Immediately after the oxide capacitance was corrected,
+> and found the same way: by having a measurement that could see it.
+>
+> `GdL` and `QCLM` had been left out of the charge model as a
+> long-channel simplification, honestly labelled in the docstring. The
+> capacitance grid named the cause without any guessing:
+>
+> * in the **linear region** the two agreed to a part in ten thousand,
+>   at both geometries — so it was **not** overlap capacitance, which is
+>   a fixed capacitance in parallel and does not switch itself off at
+>   low drain bias;
+> * the whole error was in **saturation**, growing with drain bias and
+>   with `ALP` — 1% on the long device at `Vds = 1.2` and 8% on the short
+>   one.
+>
+> That is `GdL`, and it is the same `GdL` the current already used
+> (`PSP103_module.include:1488-1500`). The polysilicon factor `eta_p`
+> went in beside it, on the inversion bracket of the gate charge where
+> PSP puts it — also a quantity the current already carried.
+>
+> | | before | +GdL/QCLM | +eta_p |
+> |---|---|---|---|
+> | n long, worst | 1.0107 | 1.0053 | **1.0007** |
+> | n short, worst | 1.0842 | 1.0214 | 1.0208 |
+> | p long, worst | 1.0243 | — | **1.0001** |
+> | p short, worst | 1.0485 | — | 1.0116 |
+>
+> **The long device is now exact to 0.07% across the whole bias grid on
+> both channel types**, median 1.0000 — charges from a foundry card,
+> through the scaling layer, nothing fitted, agreeing with the vendor's
+> own implementation to a part in ten thousand.
+>
+> What remains on the short device is about 2%, and it is named rather
+> than left open: PSP's terminal capacitances include overlap and fringe
+> contributions this core does not model, and on a 0.13 µm device the
+> gate overlap alone is about a fifth of the intrinsic oxide
+> capacitance. Unlike the `GdL` error it does **not** vanish in the
+> linear region, which is exactly how the two were told apart — and that
+> discrimination is now a test.
+>
+> The DC current is untouched throughout: `GdL` and `eta_p` were already
+> in the current path, and only the charge path changed.
+
 Deferred, unchanged from the original research verdict:
 
 | item | why |

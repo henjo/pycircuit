@@ -924,7 +924,7 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
     return dict(ids=ids, qim=qim, qim1=qim1, alpha=alpha, dps=dps,
                 xgm=xgm, x_m=x_m, x_s=x_s, x_d=x_d, qbm=qbm,
                 Pm=Pm, Dm=Dm, sqm=sqm, Gmob=Gmob_dL, Gvsat=Gvsat,
-                zsat=zsat, gvinv=gvinv)
+                zsat=zsat, gvinv=gvinv, GdL=GdL, eta_p=eta_p)
 
 
 def ids_long_channel(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5):
@@ -979,9 +979,20 @@ def charges_long_channel(core, xg, phit, cox):
     everything to the source; not implemented, since it is not the
     default and nothing here selects it.)
 
-    Long-channel intrinsic, so channel-length modulation is absent:
-    ``GdL = 1`` and ``QCLM = 0`` throughout, and the polysilicon
-    depletion factor ``eta_p`` is 1.
+    CHANNEL-LENGTH MODULATION IS IN THE CHARGES TOO.  It used to be
+    left out here -- ``GdL = 1`` and ``QCLM = 0`` -- as a long-channel
+    simplification, and for a long time nothing could measure what that
+    cost, because the charge model was only ever checked against its own
+    construction properties.  Against PSP's terminal capacitances it is
+    plain: in the linear region the two agree to 1 part in 10000 at both
+    geometries, and the whole error is in SATURATION, growing with drain
+    bias and with ``ALP`` -- 1% on the long device at `Vds = 1.2` and 8%
+    on the short one.  That is `GdL`, and it is the same `GdL` the
+    current already used.
+
+    The polysilicon depletion factor ``eta_p`` is here too, on the same
+    inversion bracket PSP puts it on -- again the same quantity the
+    current already carried.
     """
     qim, alpha = core['qim'], core['alpha']
     qim1, dps, xgm = core['qim1'], core['dps'], core['xgm']
@@ -1001,9 +1012,21 @@ def charges_long_channel(core, xg, phit, cox):
 
     ## Inverted: the general expressions.  Below flat band there is no
     ## inversion charge and the gate charge is the oxide voltage alone.
-    QG_on = _v(Voxm + 0.5 * (dps * (Fj * ONE_THIRD)), 'q_QGon')
-    QD_on = _v(0.5 * (qim - t6 * (1.0 - Fj - 0.2 * Fj2)), 'q_QDon')
-    QI_on = _v(qim + t6 * Fj, 'q_QIon')
+    ## `PSP103_module.include:1488-1500`.  With `GdL = 1` every one of
+    ## these collapses to the long-channel form it replaces: `QCLM`
+    ## vanishes and the `GdL` factors drop out.
+    GdL = core.get('GdL', sympy.Integer(1))
+    QCLM = _v((1.0 - GdL) * (qim - 0.5 * (alpha * dps)), 'q_QCLM')
+    ## `eta_p` is the polysilicon depletion factor, and PSP applies it
+    ## to the whole inversion bracket of the gate charge -- the same
+    ## factor the current already carries, acting on the charge.
+    eta_p = core.get('eta_p', sympy.Integer(1))
+    QG_on = _v(Voxm + 0.5 * (eta_p * dps
+                             * (Fj * GdL * ONE_THIRD - 1.0 + GdL)),
+               'q_QGon')
+    QD_on = _v(0.5 * (GdL * GdL * (qim - t6 * (1.0 - Fj - 0.2 * Fj2))
+                      + QCLM * (1.0 + GdL)), 'q_QDon')
+    QI_on = _v(GdL * (qim + t6 * Fj) + QCLM, 'q_QIon')
 
     inv = xg > 0.0
     QG = _v(sympy.Piecewise((QG_on, inv), (Voxm, True)), 'q_QG')
