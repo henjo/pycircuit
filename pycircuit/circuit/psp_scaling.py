@@ -274,7 +274,19 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
     ## `np` floored at both `8e7/tox^2` and 5e24
     ## (`PSP103_macrodefs.include:315-319`).  The card's `NPO` is
     ## 4.6e26 -- not the zero that would switch the effect off.
-    np_card = _g(card, 'npo')
+    ##
+    ## AND IT IS GEOMETRY-SCALED: `NP = NPO*max(1e-6, 1 + NPL*iLE)`
+    ## (`PSP103_scaling.include:260`), clipped low at zero (`:705`).
+    ## That went missing for the same reason the `BETN` width adjustment
+    ## once did -- `NPL` is EXACTLY ZERO on the n-channel card, so the
+    ## scaling is invisible on the only device it was checked against.
+    ## The p-channel card sets `NPL = -0.0959`, which takes `NP` down to
+    ## 0.36 of its nominal value on a 0.13 um device: nearly a factor of
+    ## three more gate depletion than we were applying, and worth about
+    ## 8% of the drain current there.
+    np_card = _g(card, 'npo') * max(1.0e-6,
+                                    1.0 + _g(card, 'npl') * iLE)
+    np_card = max(np_card, 0.0)
     if np_card > 0.0:
         np_eff = max(max(np_card, 8.0e7 / (tox * tox)), 5.0e24)
         kp = (2.0 * cox_prime * cox_prime * phit

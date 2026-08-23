@@ -2005,6 +2005,46 @@ built but never actually tested against.
 > on the p-channel, largest on the short geometry. That is the next
 > thing, and it is a much better-posed question than what it replaced.
 
+> **A second geometry scaling that a zero coefficient hid — 2026-08-23.**
+> The p-channel's remaining gain offset was **the gate doping**, and the
+> cause is the same shape as the `BETN` bug found earlier on this branch.
+>
+> `NP = NPO·max(1e-6, 1 + NPL·iLE)` (`PSP103_scaling.include:260`). The
+> n-channel card sets `NPL = 0.0` **exactly**, so `lp_np` is the same
+> number at every geometry and the scaling is completely invisible on the
+> only device it had been checked against. The p-channel card sets
+> `NPL = −0.0959`, which takes the gate doping down to **0.36 of nominal**
+> on a 0.13 µm device — nearly three times the polysilicon depletion we
+> were applying.
+>
+> | geometry | PSP `lp_np` | ours before | ours now |
+> |---|---|---|---|
+> | p, L = 1 µm | 1.153e26 | 1.270e26 | 1.153e26 |
+> | p, L = 0.5 µm | 1.044e26 | 1.270e26 | 1.044e26 |
+> | p, L = 0.13 µm | **4.621e25** | 1.270e26 | **4.621e25** |
+>
+> Exact at all four geometries on both channel types now. Effect on the
+> p-channel, with the n-channel untouched as the control it should be:
+>
+> | sweep | before | after |
+> |---|---|---|
+> | `pmos_idvd_vg1p2` | 1.088 | **1.024** |
+> | `pmos_idvg_vd1p2` | 1.087 | **1.030** |
+> | `pmos_idvg_vd0p05` | 1.081 | **1.017** |
+> | `pmos_long_idvd` | 1.029 | 1.024 |
+> | `pmos_long_idvg` | 1.019 | 1.014 |
+>
+> **All eleven sweeps across both channel types are now within 3%**, from
+> two foundry cards, with nothing fitted anywhere in the chain.
+>
+> The lesson is not about `NP`. It is that **a card with a zero
+> coefficient does not test a scaling**, and that the term-by-term
+> comparison against PSP's own `lp_*` outputs is what catches it — the
+> same tool that caught `BETN`. Adding a second channel type doubled the
+> number of cards the scaling layer is exercised against, and
+> immediately found a term that a decade of n-channel measurement could
+> not have.
+
 Deferred, unchanged from the original research verdict:
 
 | item | why |

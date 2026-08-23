@@ -595,8 +595,25 @@ n-channel median without these terms turned out to be two errors
 cancelling, which only became visible when a second channel type
 disagreed.
 
-What remains is a gain offset of about 2% on the n-channel and 2–9% on
-the p-channel. That is the next question, and a far better-posed one.
+What remained after that was a gain offset — and asking that better-posed
+question found a second missing geometry scaling almost immediately.
+
+PSP scales the polysilicon gate doping with length,
+:math:`N_P = N_{PO}\,\max(10^{-6},\, 1 + N_{PL}\,i_{LE})`. The
+n-channel card sets :math:`N_{PL}` to exactly zero, so the scaling is
+completely invisible on it. The p-channel card sets −0.0959, which takes
+the gate doping down to 0.36 of nominal on a 0.13 µm device — nearly
+three times the gate depletion. Adding it took the p-channel short
+device from 1.088 to 1.024 and left the n-channel untouched, as it must.
+
+That is the second scaling this model has missed for the same reason: a
+coefficient that is zero on the only card it was checked against. **A
+card with a zero coefficient does not test a scaling.** Adding a second
+channel type doubled the number of cards the scaling layer is exercised
+against and found the term at once.
+
+All eleven sweeps across both channel types are now within 3%, from two
+foundry cards, with nothing fitted anywhere in the chain.
 
 A note on DIBL, because this page said the opposite for a while. In
 absolute terms it *is* small on this process — PSP's own threshold moves
