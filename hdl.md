@@ -3037,6 +3037,17 @@ took about sixty lines to extend.
 > wrong at one of them. The fix comments name it; renaming the key is
 > the better fix and is left for a branch that is not under review.
 >
+> **And the negative result, which is what the hunt was actually for.**
+> This began as an attempt to use `sig` as a 4x-amplified probe of the
+> short device's velocity-saturation residual. That premise is gone —
+> the amplification was the bug. What replaces it is more useful:
+> `CGeff` matches to 0.1% on the long devices, `cigid` to 0.1%, and
+> `sig` to 0.4% on three of four combinations, and all three run
+> through `Gvsat/Gmob_dL`. **So the velocity-saturation factor is
+> right, and the ~1–2% that remains on the short device in DC and in
+> intrinsic capacitance is NOT in it.** That rules out the leading
+> candidate and leaves the residual without a current lead.
+>
 > *Two measurements that cannot both be true are a finding, not a
 > nuisance.* The 31% `CGeff` gap and the 0.5% DC agreement were
 > irreconcilable, and the earlier entry had reconciled them by
