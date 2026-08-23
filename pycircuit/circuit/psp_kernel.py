@@ -72,6 +72,17 @@ def _v(expr, name):
     return hdl.var(expr, name)
 
 
+def maxa(x, y, a):
+    """PSP's ``MAXA`` -- a smooth maximum.
+
+    ``0.5*(x + y + sqrt((x-y)^2 + a))``, the companion to `mina`
+    (`PSP103_macrodefs.include:38`).  Branch-free, and the radicand is
+    bounded below by ``a > 0``.
+    """
+    x, y = sympy.sympify(x), sympy.sympify(y)
+    return 0.5 * (x + y + sympy.sqrt((x - y) ** 2 + a))
+
+
 def mina(x, y, a):
     """PSP's ``MINA`` -- a smooth minimum.
 

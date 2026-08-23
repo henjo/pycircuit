@@ -320,6 +320,15 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
     cfb = min(max(_g(card, 'cfbo'), 0.0), 1.0)
     cfd = max(_g(card, 'cfdo'), 0.0)
 
+    ## Bias-dependent body factor (:255-257, no geometry term at all).
+    ## `DNSUBO` is 4.4e-16 on the n-channel card -- zero in every sense
+    ## that matters -- and 0.0397 on the p-channel one, so this is the
+    ## THIRD term on this PDK that a zero coefficient hides from any
+    ## n-channel-only measurement.
+    dnsub = max(_g(card, 'dnsubo'), 0.0)
+    vnsub = _g(card, 'vnsubo')
+    nslp = max(_g(card, 'nslpo', 0.05), 1.0e-6)
+
     ## Body- and gate-bias modulation of the velocity-saturation
     ## parameter (:313-314).  Geometry-INDEPENDENT: PSP takes these
     ## straight from the card with no length or width term at all.
@@ -365,6 +374,7 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
         cs=max(cs, 0.0), thecs=max(_g(card, 'thecso'), 0.0),
         feta=_g(card, 'fetao', 1.0), thesat=max(thesat, 0.0),
     )
+    kw.update(dnsub=dnsub, vnsub=vnsub, nslp=nslp)
     if all_terms:
         kw.update(thesatb=thesatb, thesatg=thesatg,
                   cf=cf, cfb=cfb, cfd=cfd)

@@ -272,7 +272,23 @@ def _psp_mos_analog(T, pmos):
         cox = var(EPS_OX / tox, 'cox')                        # noqa: F821
         gamma = var(sympy.sqrt(2.0 * QELEC * EPS_SI * nsub)   # noqa: F821
                     / cox, 'gamma')
-        Gf = var(gamma / sympy.sqrt(phit0), 'Gf')
+        ## BIAS-DEPENDENT BODY FACTOR (`macrodefs:478-484`).  The
+        ## depletion charge a real device presents is not that of a
+        ## uniformly doped substrate: a pocket implant makes the
+        ## effective doping rise as the gate pulls the depletion edge
+        ## deeper, so `Gf` grows with gate drive.  PSP writes it as
+        ## `Gf = G_0*sqrt(1 + DNSUB*maxa(0, Vgb - VNSUB, NSLP))`, the
+        ## smooth maximum keeping it inactive below the onset without
+        ## putting a corner there.
+        ##
+        ## `DNSUB` is 4.4e-16 on this PDK's n-channel card and 0.0397 on
+        ## its p-channel one -- the third term here that a zero
+        ## coefficient hides from any measurement made on one channel
+        ## type alone.
+        g0 = var(gamma / sympy.sqrt(phit0), 'g0')
+        dns = var(dnsub * psp_kernel.maxa(vgb - vnsub, 0.0,  # noqa: F821
+                                          nslp), 'dns')      # noqa: F821
+        Gf = var(g0 * sympy.sqrt(1.0 + dns), 'Gf')
         xi = var(1.0 + Gf * INV_SQRT2, 'xi')
 
         ## Normalised gate drive, and the quasi-Fermi levels at the two
@@ -527,6 +543,12 @@ class PspMosLongChannel(Behavioural):
                   unit='', default=0.0),
         Parameter(name='alp2', desc='CLM correction, weak inversion',
                   unit='', default=0.0),
+        Parameter(name='dnsub', desc='Bias-dependent body factor',
+                  unit='1/V', default=0.0),
+        Parameter(name='vnsub', desc='Onset of the bias-dependent body '
+                  'factor', unit='V', default=0.0),
+        Parameter(name='nslp', desc='Smoothing of that onset', unit='V',
+                  default=0.05),
         Parameter(name='cf', desc='DIBL coefficient', unit='',
                   default=0.0),
         Parameter(name='cfb', desc='DIBL body-bias dependence', unit='',

@@ -606,14 +606,26 @@ the gate doping down to 0.36 of nominal on a 0.13 µm device — nearly
 three times the gate depletion. Adding it took the p-channel short
 device from 1.088 to 1.024 and left the n-channel untouched, as it must.
 
-That is the second scaling this model has missed for the same reason: a
-coefficient that is zero on the only card it was checked against. **A
-card with a zero coefficient does not test a scaling.** Adding a second
-channel type doubled the number of cards the scaling layer is exercised
-against and found the term at once.
+Then the same thing happened twice more. The bias-dependent body factor
+:math:`G_f = G_0\sqrt{1 + D_{NSUB}\,\mathrm{maxa}(0, V_{gb} - V_{NSUB},
+N_{SLP})}` — a pocket implant raising the effective doping as the gate
+pulls the depletion edge deeper — has a coefficient of
+:math:`4.4\times10^{-16}` on the n-channel card and 0.0397 on the
+p-channel one. Adding it took the p-channel from a few percent high to
+within 0.6% on every sweep, two of them flat to a part in a thousand,
+and left the n-channel exactly where it was.
 
-All eleven sweeps across both channel types are now within 3%, from two
-foundry cards, with nothing fitted anywhere in the chain.
+So: three terms in a row, each zero or inert on the n-channel card and
+alive on the p-channel one — the ``BETN`` width adjustment, the ``NP``
+length scaling, and ``DNSUB``. **A card with a zero coefficient does not
+test a scaling**, and a model validated against a single card has an
+unknown number of terms it has never exercised. A second card is not
+twice the validation; it is the difference between exercising a term and
+assuming it.
+
+All eleven sweeps across both channel types are within 2.3% now, and
+every p-channel sweep within 0.6%, from two foundry cards with nothing
+fitted anywhere in the chain.
 
 A note on DIBL, because this page said the opposite for a while. In
 absolute terms it *is* small on this process — PSP's own threshold moves

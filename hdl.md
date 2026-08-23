@@ -2045,6 +2045,48 @@ built but never actually tested against.
 > immediately found a term that a decade of n-channel measurement could
 > not have.
 
+> **The third term a zero coefficient hid — 2026-08-23.** The p-channel's
+> remaining few percent was the **bias-dependent body factor**, and by now
+> the shape of the discovery is more interesting than the term.
+>
+> `Gf = G_0·sqrt(1 + DNSUB·maxa(0, Vgb − VNSUB, NSLP))`
+> (`PSP103_macrodefs.include:478-484`). The depletion charge a real
+> device presents is not that of a uniformly doped substrate: a pocket
+> implant makes the effective doping rise as the gate pulls the depletion
+> edge deeper, so the body factor grows with gate drive.
+>
+> `DNSUBO` is **4.4 × 10⁻¹⁶** on this PDK's n-channel card and **0.0397**
+> on its p-channel one.
+>
+> | sweep | before | after | spread |
+> |---|---|---|---|
+> | `pmos_long_idvd` | 1.024 | **0.994** | 0.013 → **0.001** |
+> | `pmos_idvd_vg1p2` | 1.024 | **0.999** | 0.011 → **0.002** |
+> | `pmos_idvg_vd0p05` | 1.017 | **1.000** | 0.055 → 0.033 |
+> | `pmos_long_idvg` | 1.014 | **0.996** | 0.047 → 0.022 |
+> | `pmos_idvg_vd1p2` | 1.030 | **1.004** | 0.079 → 0.061 |
+>
+> The n-channel is untouched, as it must be. **Every p-channel sweep is
+> now within 0.6%**, two of them with the ratio flat to a part in a
+> thousand across the whole sweep — and the p-channel is now the more
+> accurate of the two devices, having started three commits ago at 7.5%.
+>
+> **That is three terms in a row found this way**: the `BETN` width
+> adjustment, the `NP` length scaling, and now `DNSUB`. Each was zero or
+> inert on the n-channel card and alive on the p-channel one. The pattern
+> is no longer a coincidence worth remarking on — it is the argument for
+> the second channel type. **A card with a zero coefficient does not test
+> a scaling**, and a model validated against one card has an unknown
+> number of terms it has never exercised. Two cards is not twice the
+> validation, it is the difference between exercising a term and
+> assuming it.
+>
+> What is left is on the **n-channel** now: `nmos_idvd_vg0p6` at 1.023,
+> and a weak-inversion excess of 5–11% in the lowest decade of the
+> transfer sweeps that decays to nothing by strong inversion. That is a
+> subthreshold-slope difference, and `CT` is fully accounted for
+> (`CTGO` and `CTBO` are both zero), so it is something else.
+
 Deferred, unchanged from the original research verdict:
 
 | item | why |

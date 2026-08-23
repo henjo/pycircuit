@@ -1187,3 +1187,98 @@ class TestThePolyDopingScaling(object):
         short = kp('sg13g2_lv_pmos_psp', 1e-6, 0.13e-6)
         long_ = kp('sg13g2_lv_pmos_psp', 10e-6, 1e-6)
         assert short > 2.0 * long_, (short, long_)
+
+
+class TestTheBiasDependentBodyFactor(object):
+    """`Gf = G_0*sqrt(1 + DNSUB*maxa(0, Vgb - VNSUB, NSLP))`
+    (`PSP103_macrodefs.include:478-484`).
+
+    The depletion charge a real device presents is not that of a
+    uniformly doped substrate: a pocket implant makes the effective
+    doping rise as the gate pulls the depletion edge deeper, so the body
+    factor grows with gate drive.
+
+    THE THIRD TERM ON THIS PDK HIDDEN BY A ZERO COEFFICIENT.  `DNSUBO`
+    is 4.4e-16 on the n-channel card -- zero in every sense that matters
+    -- and 0.0397 on the p-channel one.  After the `BETN` width
+    adjustment and the `NP` length scaling, the pattern is no longer a
+    coincidence worth remarking on; it is the reason a second channel
+    type earns its keep.
+    """
+
+    def _kw(self, deck, model, w, l):
+        return psp_scaling.to_long_channel(
+            deck.model_params(model, w=w, l=l, ng=1, m=1, pre_layout=1),
+            w=w, l=l)
+
+    def test_the_card_switches_it_on_for_holes_only(self, deck):
+        n = self._kw(deck, 'sg13g2_lv_nmos_psp', 1e-6, 0.13e-6)
+        p = self._kw(deck, 'sg13g2_lv_pmos_psp', 1e-6, 0.13e-6)
+        assert n['dnsub'] < 1e-12, n['dnsub']
+        assert p['dnsub'] > 0.01, p['dnsub']
+        assert p['nslp'] > 0.0, 'the smoothing must not be zero'
+
+    def test_it_has_no_geometry_dependence(self, deck):
+        """PSP takes these straight from the card (`scaling:255-257`)."""
+        a = self._kw(deck, 'sg13g2_lv_pmos_psp', 1e-6, 0.13e-6)
+        b = self._kw(deck, 'sg13g2_lv_pmos_psp', 10e-6, 1e-6)
+        for k in ('dnsub', 'vnsub', 'nslp'):
+            assert a[k] == b[k], k
+
+    def test_it_raises_the_body_factor_with_gate_drive(self):
+        """The smooth maximum, checked as a function rather than through
+        a current: inactive well below the onset, growing above it, and
+        with no corner at the onset itself."""
+        from pycircuit.circuit import psp_kernel
+        f = lambda v: float(psp_kernel.maxa(v, 0.0, 0.05))
+        assert f(-2.0) < 0.02
+        assert f(2.0) == pytest.approx(2.0, abs=0.02)
+        mid = f(0.0)
+        assert 0.0 < mid < 0.2, mid
+        ## Smooth: the centred difference at the corner is about a half,
+        ## not a jump between 0 and 1.
+        h = 1e-4
+        slope = (f(h) - f(-h)) / (2 * h)
+        assert 0.3 < slope < 0.7, slope
+
+    def test_it_is_what_takes_the_p_channel_to_within_a_percent(self,
+                                                                deck,
+                                                                ref):
+        """The measurement, on the sweeps it moves.
+
+        Switching `DNSUB` off leaves the p-channel a few percent high on
+        every geometry; with it the same sweeps land inside one percent.
+        The n-channel is unaffected either way, its coefficient being
+        zero -- which is the control this test needs to be worth
+        anything.
+        """
+        cm.default_toolkit = numeric
+        err = {}
+        for on in (True, False):
+            tot = 0.0
+            for name in ('pmos_long_idvd', 'pmos_idvd_vg1p2',
+                         'pmos_idvg_vd0p05'):
+                sw = ref[name]
+                kw = self._kw(deck, 'sg13g2_lv_pmos_psp', sw['w'],
+                              sw['l'])
+                if not on:
+                    kw['dnsub'] = 0.0
+                e = PspPmosLongChannel(cm.Node('d'), cm.Node('g'),
+                                       cm.Node('s'), cm.Node('b'), **kw)
+                e.update_iparv()
+                v = np.asarray(sw['v'], float)
+                r = np.abs(np.asarray(sw['i_d'], float))
+                b = sw['bias']
+                if sw['sweep'] == 'Vd':
+                    g = np.array([np.asarray(e.i(np.array(
+                        [x, b['Vg'], b['Vs'], b['Vb']])), float)[0]
+                        for x in v])
+                else:
+                    g = np.array([np.asarray(e.i(np.array(
+                        [b['Vd'], x, b['Vs'], b['Vb']])), float)[0]
+                        for x in v])
+                m = r > 1e-6
+                tot += abs(np.median(np.abs(g[m]) / r[m]) - 1.0)
+            err[on] = tot
+        assert err[True] < 0.3 * err[False], err
+        assert err[True] < 0.03, err
