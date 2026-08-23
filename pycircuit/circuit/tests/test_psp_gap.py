@@ -782,11 +782,15 @@ class TestTheSaturationVoltage(object):
         worst = {}
         for name in ('nmos_long_idvd', 'nmos_idvd_vg1p2',
                      'nmos_idvd_vg0p6', 'nmos_idvg_vd0p05',
-                     'nmos_idvg_vd1p2', 'nmos_idvg_vb_m1'):
+                     'nmos_idvg_vd1p2', 'nmos_idvg_vb_m1',
+                     'nmos_long_idvg_vb_m1',
+                     'pmos_long_idvd', 'pmos_long_idvg',
+                     'pmos_idvd_vg1p2', 'pmos_idvg_vd1p2',
+                     'pmos_idvg_vd0p05'):
             _, r, g, _ = _compare(deck, ref[name])
             worst[name] = abs(np.median(g / r) - 1.0)
         assert max(worst.values()) < 0.03, worst
-        assert sum(worst.values()) < 0.08, worst
+        assert sum(worst.values()) < 0.10, worst
 
 
 class TestTheShortChannelTerms(object):
@@ -808,6 +812,7 @@ class TestTheShortChannelTerms(object):
 
     NAMES = ('nmos_long_idvd', 'nmos_idvd_vg1p2', 'nmos_idvd_vg0p6',
              'nmos_idvg_vd0p05', 'nmos_idvg_vd1p2', 'nmos_idvg_vb_m1',
+             'nmos_long_idvg_vb_m1',
              'pmos_long_idvd', 'pmos_long_idvg', 'pmos_idvd_vg1p2',
              'pmos_idvg_vd1p2', 'pmos_idvg_vd0p05')
 
@@ -1358,3 +1363,111 @@ class TestTheSubthresholdSlope(object):
             'the drain current should reach the leakage floor'
         assert ib.max() < 1e-2 * self.LO, \
             'and the chosen window should sit far above it'
+
+
+class TestTheBodyBiasMobilityCorrection(object):
+    """`Rxcor = (1 + 0.2*XCOR*Vsbx)/(1 + XCOR*Vsbx)`
+    (`PSP103_macrodefs.include:576`), multiplying `Gmob` at both the
+    source end and the midpoint (`:595`, `:750`).
+
+    THE CLEANEST EXAMPLE ON THIS BRANCH OF A TERM NO MEASUREMENT COULD
+    SEE.  It is identically 1 at zero body bias, and every sweep in the
+    reference used a grounded body except one -- which sits on the
+    0.13 um geometry, where `XCOR` scales to exactly zero.  So the term
+    was invisible twice over, and its absence could not have shown up in
+    any number this project was tracking.
+
+    The fix was not a cleverer analysis, it was another measurement:
+    `nmos_long_idvg_vb_m1`, a body-biased sweep on the geometry where
+    `XCOR` is alive.  On it the term is worth 3.6%.
+
+    That is the same lesson as the three parameters a zero coefficient
+    hid, arrived at from the other direction: there, one card did not
+    exercise a scaling; here, one bias condition did not exercise a
+    term.  A model is only validated on the space its measurements
+    actually span.
+    """
+
+    @pytest.fixture(scope='class')
+    def scaled_both(self):
+        with open(REF) as fh:
+            d = json.load(fh)
+        return d['scaled'], d['scaled_pmos']
+
+    def _kw(self, deck, model, w, l, **kw):
+        return psp_scaling.to_long_channel(
+            deck.model_params(model, w=w, l=l, ng=1, m=1, pre_layout=1),
+            w=w, l=l, **kw)
+
+    @pytest.mark.parametrize('geom', ['long', 'mid', 'short', 'wide_short'])
+    @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
+    def test_it_matches_psp(self, deck, scaled_both, geom, kind):
+        n, p = scaled_both
+        e = (p if kind == 'pmos' else n)[geom]
+        ours = self._kw(deck, 'sg13g2_lv_%s_psp' % kind, e['w'],
+                        e['l'])['xcor']
+        assert ours == pytest.approx(e['xcor'], rel=1e-5, abs=1e-12), \
+            (kind, geom)
+
+    def test_it_clips_to_zero_on_the_short_n_channel(self, deck,
+                                                     scaled_both):
+        """Which is half of why it was invisible.
+
+        The one body-biased sweep this project had was on that geometry,
+        so even a reverse-biased body could not have exercised it.
+        """
+        n, _ = scaled_both
+        assert n['short']['xcor'] == 0.0
+        assert n['wide_short']['xcor'] == 0.0
+        assert n['long']['xcor'] > 0.01
+
+    def test_it_is_inert_at_zero_body_bias(self, deck):
+        """The other half of why it was invisible.
+
+        `Rxcor` is a ratio that is 1 by construction at `Vsbx = 0`, so
+        switching the term off changes essentially nothing on a grounded
+        body -- measured at 4e-7 relative, which is not zero for a
+        reason worth knowing.  `Vsbx` is the CONDITIONED body bias, and
+        the smooth `MINA` clip that produces it leaves it a fraction of
+        a millivolt from zero even when the body is grounded.  So the
+        term is inert to the resolution of the conditioning rather than
+        bit-exactly, and 4e-7 is that fraction of a millivolt times
+        `XCOR`.
+        """
+        cm.default_toolkit = numeric
+        kw = self._kw(deck, 'sg13g2_lv_nmos_psp', 10e-6, 1e-6)
+        assert kw['xcor'] > 0.01, 'the term must be live here'
+        off = dict(kw, xcor=0.0)
+        a = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                              cm.Node('b'), **kw)
+        b = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                              cm.Node('b'), **off)
+        a.update_iparv()
+        b.update_iparv()
+        for x in (np.array([0.05, 1.2, 0.0, 0.0]),
+                  np.array([1.2, 0.8, 0.0, 0.0])):
+            ia = np.asarray(a.i(x), float)[0]
+            ib = np.asarray(b.i(x), float)[0]
+            assert abs(ia - ib) < 1e-5 * abs(ib), (x, ia, ib)
+
+    def test_it_is_worth_three_percent_where_it_does_act(self, deck, ref):
+        """The measurement the sweep was added for."""
+        cm.default_toolkit = numeric
+        sw = ref['nmos_long_idvg_vb_m1']
+        assert sw['bias']['Vb'] == -1.0
+        kw = self._kw(deck, 'sg13g2_lv_nmos_psp', sw['w'], sw['l'])
+        v = np.asarray(sw['v'], float)
+        r = np.abs(np.asarray(sw['i_d'], float))
+        m = r > 1e-6
+        b = sw['bias']
+        got = {}
+        for on in (True, False):
+            e = PspMosLongChannel(cm.Node('d'), cm.Node('g'),
+                                  cm.Node('s'), cm.Node('b'),
+                                  **(kw if on else dict(kw, xcor=0.0)))
+            e.update_iparv()
+            g = np.abs(np.array([np.asarray(e.i(np.array(
+                [b['Vd'], x, b['Vs'], b['Vb']])), float)[0] for x in v]))
+            got[on] = np.median(g[m] / r[m])
+        assert abs(got[False] - 1.0) > 0.02, got
+        assert abs(got[True] - 1.0) < 0.005, got

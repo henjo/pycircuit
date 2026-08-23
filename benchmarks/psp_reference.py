@@ -70,6 +70,18 @@ SWEEPS = [
               'from a threshold or charge error (ratio varying with Vg), '
               'on the geometry where short-channel physics does not '
               'confound it'),
+    ## THE BODY-BIASED LONG DEVICE.  Added because `XCOR` -- a body-bias
+    ## mobility correction -- is exactly 1 at Vsb = 0 and therefore
+    ## untouched by every other sweep here, while scaling to zero on the
+    ## short geometry the one existing body-biased sweep uses.  It was a
+    ## term no measurement could see.  This is the measurement.
+    dict(name='nmos_long_idvg_vb_m1', device='sg13_lv_nmos', w=10e-6,
+         l=1e-6, sweep='Vg', start=0.0, stop=1.5, step=0.025,
+         bias=dict(Vd=0.05, Vs=0.0, Vb=-1.0),
+         note='long device with reverse body bias -- the only sweep that '
+              'exercises the body-bias mobility correction, which is '
+              'identically 1 at Vsb = 0 and scales to zero at 0.13 um'),
+
     dict(name='pmos_idvd_vg1p2', device='sg13_lv_pmos', w=1e-6, l=0.13e-6,
          sweep='Vd', start=-1.5, stop=0.0, step=0.05,
          bias=dict(Vg=-1.2, Vs=0.0, Vb=0.0),
@@ -197,7 +209,18 @@ LP_PARAMS = ('vfb', 'tox', 'neff', 'dphib', 'ct', 'cf', 'cfb', 'betn',
              ## `thesatb` and `thesatg` are recorded because they are
              ## NOT zero on this card and we do not model them yet -- a
              ## known gap is better written down than remembered.
-             'ax', 'thesat', 'thesatb', 'thesatg', 'alp', 'alp1', 'alp2')
+             'ax', 'thesat', 'thesatb', 'thesatg', 'alp', 'alp1', 'alp2',
+             ## Everything else the element takes and PSP will tell us.
+             ## The point of this list is to leave NOTHING the model uses
+             ## unchecked: three separate terms have now been found wrong
+             ## or missing because a coefficient was zero on the one card
+             ## they were tested against, and a parameter that is never
+             ## compared is a parameter that is being assumed.
+             ## `xcor` earns its place specially -- it is a body-bias
+             ## mobility correction that is EXACTLY 1 at Vsb = 0, so it
+             ## is invisible on every sweep but the body-biased one.
+             'vp', 'rsg', 'rsb', 'dnsub', 'vnsub', 'nslp', 'cfd',
+             'feta', 'xcor')
 
 
 def _op_outputs(pdk, spec, names):

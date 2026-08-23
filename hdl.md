@@ -2130,6 +2130,56 @@ built but never actually tested against.
 > slope correct below and the gain correct above. That is a much
 > narrower statement than the one it replaces.
 
+> **A term no measurement could see — 2026-08-23.** `Rxcor`, the
+> body-bias mobility correction:
+>
+> ```
+> Rxcor = (1 + 0.2·XCOR·Vsbx) / (1 + XCOR·Vsbx)
+> ```
+>
+> multiplying `Gmob` at both the source end and the midpoint
+> (`PSP103_macrodefs.include:576, 595, 750`). It is the cleanest example
+> on this branch of something the project could not have found by
+> looking harder at the numbers it had.
+>
+> `Rxcor` is **identically 1 at zero body bias**. Every sweep in the
+> reference used a grounded body except one — and that one sits on the
+> 0.13 µm geometry, where `XCOR` scales to **exactly zero**. So the term
+> was invisible twice over, and its absence could not have appeared in
+> any number this project was tracking.
+>
+> The fix was not a better analysis. It was another measurement:
+> `nmos_long_idvg_vb_m1`, a body-biased sweep on the geometry where
+> `XCOR` is alive. On it:
+>
+> | | median |
+> |---|---|
+> | without `Rxcor` | 0.9634 |
+> | with `Rxcor` | **0.9992** |
+>
+> and on the two grounded-body long-device sweeps the term changes the
+> current by 4 × 10⁻⁷ relative — not zero, and worth knowing why: `Vsbx`
+> is the *conditioned* body bias, and the smooth `MINA` clip that
+> produces it leaves it a fraction of a millivolt from zero even with the
+> body grounded. So the term is inert to the resolution of the
+> conditioning rather than bit-exactly.
+>
+> **How it was found is the point.** Not by chasing a residual — by
+> enumerating what PSP will tell us and checking *everything*. `ngspice`
+> lists 120-odd `lp_*` operating-point outputs; the reference was
+> recording 21 of them. Recording the rest and comparing every parameter
+> the element takes found `XCOR` immediately, as a term with a nonzero
+> value and no implementation. All thirty now match PSP exactly, at four
+> geometries, on both channel types.
+>
+> That closes the loop on the session's other lesson from the opposite
+> direction. Three parameters were missed because **one card did not
+> exercise a scaling**; this one was missed because **one bias condition
+> did not exercise a term**. A model is validated only over the space its
+> measurements actually span, and the cheapest way to widen that space
+> is to ask the reference implementation what it thinks every parameter
+> is.
+
 Deferred, unchanged from the original research verdict:
 
 | item | why |

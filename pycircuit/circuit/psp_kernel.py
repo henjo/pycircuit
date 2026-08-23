@@ -475,6 +475,19 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
     pmos = bool(mob.get('pmos', False)) if mob else False
     eta_mu = ONE_THIRD if pmos else 0.5
 
+    ## `Rxcor` (`PSP103_macrodefs.include:576`), which multiplies `Gmob`
+    ## at BOTH the source end and the midpoint (`:595`, `:750`).  It is
+    ## identically 1 at zero body bias, so it costs nothing where it does
+    ## not act; computed once here because PSP computes it once.
+    if mob is None:
+        rxcor = sympy.Integer(1)
+    else:
+        _xc = mob.get('xcor', 0.0)
+        _vsb = mob.get('vsb', 0.0)
+        rxcor = _v((1.0 + 0.2 * _xc * _vsb)
+                   * hdl.safe_div(1.0, 1.0 + _xc * _vsb, eps=1e-30),
+                   'ids_rxcor')
+
     ax = 0.0 if mob is None else mob.get('ax', 0.0)
     if not isinstance(ax, sympy.Expr) and ax == 0.0:
         vdsat = None
@@ -511,8 +524,9 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
         rs0 = _v(hdl.safe_div(Ps, Ps + Ds + 1.0e-14, eps=1e-30),
                  'ids_ratios0')
         rs_ = _v(sympy.Max(rs0, 1.0e-10), 'ids_ratios')
-        gmob_s = _v(1.0 + bs_ ** mob['themu']
-                    + mob['cs'] * rs_ ** (0.5 * mob['thecs']), 'ids_gmobs')
+        gmob_s = _v((1.0 + bs_ ** mob['themu']
+                     + mob['cs'] * rs_ ** (0.5 * mob['thecs']))
+                    * rxcor, 'ids_gmobs')
         ## The body- and gate-bias modulations of `THESAT`
         ## (`PSP103_macrodefs.include:596-607`).  `xitsb` is computed
         ## HERE, once, and reused unchanged at the midpoint below --
@@ -797,7 +811,8 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
                 'ids_rsgf')
             gr = _v(ther * (rhob * rsgf * qim), 'ids_GR')
 
-        Gmob = _v(1.0 + base ** mob['themu'] + coul + gr, 'ids_Gmob')
+        Gmob = _v((1.0 + base ** mob['themu'] + coul + gr) * rxcor,
+                  'ids_Gmob')
 
         ## CHANNEL-LENGTH MODULATION.  Beyond pinch-off the inversion
         ## layer stops short of the drain, so the effective channel is

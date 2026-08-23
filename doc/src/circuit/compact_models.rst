@@ -606,7 +606,8 @@ the gate doping down to 0.36 of nominal on a 0.13 µm device — nearly
 three times the gate depletion. Adding it took the p-channel short
 device from 1.088 to 1.024 and left the n-channel untouched, as it must.
 
-Then the same thing happened twice more. The bias-dependent body factor
+Then the same thing happened twice more, and a fourth time with a
+different cause. The bias-dependent body factor
 :math:`G_f = G_0\sqrt{1 + D_{NSUB}\,\mathrm{maxa}(0, V_{gb} - V_{NSUB},
 N_{SLP})}` — a pocket implant raising the effective doping as the gate
 pulls the depletion edge deeper — has a coefficient of
@@ -623,9 +624,25 @@ unknown number of terms it has never exercised. A second card is not
 twice the validation; it is the difference between exercising a term and
 assuming it.
 
-All eleven sweeps across both channel types are within 2.3% now, and
+The fourth was not a scaling but a *bias condition*. PSP corrects the
+mobility for body bias by a factor
+:math:`(1 + 0.2\,X_{COR}V_{sb})/(1 + X_{COR}V_{sb})`, which is
+identically 1 at :math:`V_{sb} = 0`. Every sweep here used a grounded
+body except one, and that one sits on the geometry where :math:`X_{COR}`
+scales to exactly zero — so the term was invisible twice over, and no
+amount of staring at the residuals could have found it. What found it
+was enumerating the hundred-odd operating-point outputs PSP exposes and
+checking *every* parameter the model takes, rather than the subset that
+happened to be recorded.
+
+Adding a body-biased sweep on the geometry where the term is alive:
+without it, 0.963; with it, **0.999**.
+
+All thirteen sweeps across both channel types are within 2.3% now, and
 every p-channel sweep within 0.6%, from two foundry cards with nothing
-fitted anywhere in the chain.
+fitted anywhere in the chain. Every one of the thirty scaled parameters
+the model uses matches PSP's own value exactly, at four geometries, on
+both channel types.
 
 The subthreshold slope
 ----------------------

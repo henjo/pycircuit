@@ -55,6 +55,7 @@ REF = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..',
 #: n-channel sweeps from the committed reference, long device first.
 SWEEPS = ['nmos_long_idvd', 'nmos_idvd_vg1p2', 'nmos_idvd_vg0p6',
           'nmos_idvg_vd0p05', 'nmos_idvg_vd1p2', 'nmos_idvg_vb_m1',
+          'nmos_long_idvg_vb_m1',
           'pmos_long_idvd', 'pmos_long_idvg', 'pmos_idvd_vg1p2',
           'pmos_idvg_vd1p2', 'pmos_idvg_vd0p05']
 

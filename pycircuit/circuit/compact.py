@@ -403,7 +403,7 @@ def _psp_mos_analog(T, pmos):
                      alp=alp, vp=vp, vds=vdsx,              # noqa: F821
                      alp1=alp1, alp2=alp2, ax=ax,           # noqa: F821
                      thesatb=thesatb, thesatg=thesatg,  # noqa: F821
-                     pmos=pmos,
+                     pmos=pmos, xcor=xcor,          # noqa: F821
                      kp=kp,                                 # noqa: F821
                      cox_area=cox, eps_si=EPS_SI))
         cox_tot = var(cox * w * l, 'cox_tot')                 # noqa: F821
@@ -543,6 +543,8 @@ class PspMosLongChannel(Behavioural):
                   unit='', default=0.0),
         Parameter(name='alp2', desc='CLM correction, weak inversion',
                   unit='', default=0.0),
+        Parameter(name='xcor', desc='Body-bias mobility correction',
+                  unit='1/V', default=0.0),
         Parameter(name='dnsub', desc='Bias-dependent body factor',
                   unit='1/V', default=0.0),
         Parameter(name='vnsub', desc='Onset of the bias-dependent body '

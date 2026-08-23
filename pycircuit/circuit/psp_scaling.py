@@ -320,6 +320,21 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
     cfb = min(max(_g(card, 'cfbo'), 0.0), 1.0)
     cfd = max(_g(card, 'cfdo'), 0.0)
 
+    ## BODY-BIAS MOBILITY CORRECTION (:299, clipped at :731).
+    ## `Rxcor = (1 + 0.2*XCOR*Vsbx)/(1 + XCOR*Vsbx)` multiplies `Gmob`
+    ## at both the source end and the midpoint (`macrodefs:576, 595,
+    ## 750`), so it raises the mobility under reverse body bias.
+    ##
+    ## It is EXACTLY 1 at Vsb = 0, which is why it went unbuilt for so
+    ## long: every sweep in the reference used a grounded body except
+    ## one, and that one is on the geometry where `XCOR` scales to
+    ## zero.  A term that no measurement touches is not a term that has
+    ## been shown not to matter.
+    xcor = max(_g(card, 'xcoro')
+               * (1.0 + _g(card, 'xcorl') * iLE)
+               * (1.0 + _g(card, 'xcorw') * iWE)
+               * (1.0 + _g(card, 'xcorlw') * iLE * iWE), 0.0)
+
     ## Bias-dependent body factor (:255-257, no geometry term at all).
     ## `DNSUBO` is 4.4e-16 on the n-channel card -- zero in every sense
     ## that matters -- and 0.0397 on the p-channel one, so this is the
@@ -374,7 +389,7 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
         cs=max(cs, 0.0), thecs=max(_g(card, 'thecso'), 0.0),
         feta=_g(card, 'fetao', 1.0), thesat=max(thesat, 0.0),
     )
-    kw.update(dnsub=dnsub, vnsub=vnsub, nslp=nslp)
+    kw.update(dnsub=dnsub, vnsub=vnsub, nslp=nslp, xcor=xcor)
     if all_terms:
         kw.update(thesatb=thesatb, thesatg=thesatg,
                   cf=cf, cfb=cfb, cfd=cfd)
