@@ -1760,7 +1760,8 @@ charges at `:1558-1603`. On this card `LOVD = 0`, `CGBOVL ≈ 0` and
 `CFRDW = 0`, so only `CGOV` and `CFR` are live, and the accumulation
 branches (`FCGOVACC`, `CGOVACCG`) are absent. **Estimate ~50 lines.**
 
-**2. Temperature.** The card carries **28 non-zero `ST*` coefficients**
+**2. Temperature — DONE, see the dated entry below.** The card carries
+**28 non-zero `ST*` coefficients**
 and `TR = 27 °C`; the model is hard-wired at 300 K with no scaling at
 all, so no corner or temperature analysis is possible. PSP's
 `TempScaling` macro (`PSP103_macrodefs.include:306`) and 17
@@ -1811,8 +1812,9 @@ hazard; the third is the largest accuracy gap and now has a benchmark
 that can see it; the fourth unlocks a whole analysis axis; the fifth is
 its own rung.
 
-**Items 1, 2 and 3 are done** — gate resistance, multiplicity, and
-overlap and fringe capacitance. **Temperature is next.**
+**Items 1 to 4 are done** — gate resistance, multiplicity, overlap and
+fringe capacitance, and temperature. **JUNCAP2 is next, and it is the
+only large one left.**
 
 > **The saturation voltage, a floor hidden in the scaling, and two
 > things it broke — 2026-08-23.** PSP does not evaluate the drain
@@ -2586,6 +2588,46 @@ overlap and fringe capacitance. **Temperature is next.**
 > The intrinsic-charge tests now build their devices with the overlap
 > switched off, because PSP reports `cgg` intrinsic and the comparison
 > is only like-for-like that way.
+
+> **Plan item 4: temperature — 2026-08-23.** The model was a 27 °C model
+> wearing whatever temperature the caller thought it had asked for. It
+> is temperature-capable now, and validated 73 K from the reference.
+>
+> PSP specifies every parameter at the card's `TR` and scales it to the
+> simulation temperature (`PSP103_macrodefs.include:291-294, 357-390`).
+> With `rTn = TKR/TKD`, almost everything is a power law
+> `X_T = X·(TKR/TKD)^ST_X`; the flat-band voltage is the one exception,
+> a quadratic in `delT`. `STVFB`, `STBET` and `STTHESAT` carry geometry
+> terms of their own (`scaling:231, 290, 312`); the rest are plain.
+>
+> **Every temperature-scaled parameter matches PSP exactly at 100 °C**,
+> at four geometries on both channel types — `vfb`, `ct`, `betn`, `mue`,
+> `themu`, `cs`, `thecs`, `rs`, `thesat`, `xcor`. 73 K is far enough
+> from the reference that a wrong exponent or a flipped sign cannot
+> hide, which a comparison at the reference alone could not say: there
+> the scaling is the identity and a sign error passes.
+>
+> `data['scaled_hot']` records it, so the check is against a recording
+> rather than against numbers in a docstring.
+>
+> **The sign convention is the trap.** `rTn` is REFERENCE over DEVICE,
+> so a positive `ST` makes the parameter FALL as the device heats — and
+> impact ionisation's `A2` alone takes `−STA2` (`:389`). Getting it
+> backwards yields a plausible temperature coefficient of the wrong
+> sign rather than anything that looks like a bug, so there is a test on
+> the DIRECTIONS as well as the values: mobility down, series resistance
+> up, flat-band up.
+>
+> **One inconsistency left deliberately, and bounded rather than
+> hidden.** The parameter comparisons are made at `TR = 27 °C`, which is
+> where the reference was recorded and also ngspice's default. The
+> element evaluating them still runs at `epar`'s default 300.0 K, 0.15 K
+> away, because threading an `epar` through every call site costs more
+> than the error does — **measured at under 0.01% of drain current**,
+> and now pinned by a test so it stays a decision rather than becoming a
+> mystery. `to_long_channel`'s default `T` matches `_epar_T`'s, and a
+> test asserts that too: they are not linked, so a caller who sets
+> neither must not silently get two temperatures.
 
 Deferred, unchanged from the original research verdict:
 

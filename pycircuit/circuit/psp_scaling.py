@@ -484,14 +484,71 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
     ## term rather than a network element; see `psp_kernel`.
     rs = _g(card, 'rsw1') * iWE * (1.0 + _g(card, 'rsw2') * iWE)
 
+    ## ---- TEMPERATURE ------------------------------------------------
+    ##
+    ## PSP specifies every parameter at the card's reference temperature
+    ## `TR` and scales it to the simulation temperature
+    ## (`PSP103_macrodefs.include:291-294, 357-390`).  With
+    ## `rTn = TKR/TKD` and `delT = TKD - TKR`, almost everything is a
+    ## power law -- `X_T = X * exp(ST_X * ln(rTn))`, which is
+    ## `X * (TKR/TKD)^ST_X` -- and the flat-band voltage is the one
+    ## exception, a quadratic in `delT`.
+    ##
+    ## The card carries 28 non-zero `ST*` coefficients, so this is not a
+    ## refinement: without it the model is a 27 C model wearing whatever
+    ## temperature the caller thought it asked for.  `STVFB`, `STBET`
+    ## and `STTHESAT` are themselves geometry-scaled (`:231, 290, 312`);
+    ## the rest are plain (`:270-312`).
+    ##
+    ## NOTE THE SIGN CONVENTION.  `rTn` is REFERENCE over DEVICE, so a
+    ## positive `ST` makes the parameter FALL as the device heats -- and
+    ## impact ionisation's `A2` alone takes `-STA2` (`:389`).  Easy to
+    ## get backwards, and it would read as a plausible temperature
+    ## coefficient of the wrong sign rather than as a bug.
+    ##
+    ## The caller must pass the SAME temperature the simulator will use:
+    ## this scales the parameters, and the element's own `vt()` follows
+    ## `epar`.  They are not linked, and disagreeing about the
+    ## temperature is a quiet way to be wrong.
+    tkr = 273.15 + _g(card, 'tr', 27.0)
+    r_tn = tkr / T
+    ln_rtn = math.log(r_tn)
+    del_t = T - tkr
+
+    def _tf(name):
+        return math.exp(_g(card, 'st' + name + 'o') * ln_rtn)
+
+    ## The three carrying geometry terms.
+    st_vfb = (_g(card, 'stvfbo') + _g(card, 'stvfbl') * iLE
+              + _g(card, 'stvfbw') * iWE
+              + _g(card, 'stvfblw') * iLE * iWE)
+    st_bet = (_g(card, 'stbeto') + _g(card, 'stbetl') * iLE
+              + _g(card, 'stbetw') * iWE
+              + _g(card, 'stbetlw') * iLE * iWE)
+    st_thesat = (_g(card, 'stthesato') + _g(card, 'stthesatl') * iLE
+                 + _g(card, 'stthesatw') * iWE
+                 + _g(card, 'stthesatlw') * iLE * iWE)
+
+    vfb = (vfb + st_vfb * del_t * (1.0 + _g(card, 'st2vfbo') * del_t)
+           + _g(card, 'delvto'))
+    ct = ct * _tf('ct')
+    u0_eff = u0_eff * math.exp(st_bet * ln_rtn)
+    themu = _g(card, 'themuo') * _tf('themu')
+    mue = mue * _tf('mue')
+    thecs = _g(card, 'thecso') * _tf('thecs')
+    cs = cs * _tf('cs')
+    xcor = xcor * _tf('xcor')
+    rs = rs * _tf('rs')
+    thesat = thesat * math.exp(st_thesat * ln_rtn)
+
     kw = dict(
         w=w, l=l, tox=tox, nsub=neff, vfb=vfb, phib=phib, u0=u0_eff,
         rs=max(rs, 0.0), rsg=_g(card, 'rsgo'), rsb=_g(card, 'rsbo'),
         ct=max(ct, 0.0), alp=max(alp, 0.0), vp=max(vp, 1.0e-6),
         alp1=max(alp1, 0.0), alp2=max(alp2, 0.0), ax=axp,
         kp=max(kp, 0.0),
-        mue=max(mue, 0.0), themu=max(_g(card, 'themuo'), 0.0),
-        cs=max(cs, 0.0), thecs=max(_g(card, 'thecso'), 0.0),
+        mue=max(mue, 0.0), themu=max(themu, 0.0),
+        cs=max(cs, 0.0), thecs=max(thecs, 0.0),
         feta=_g(card, 'fetao', 1.0), thesat=max(thesat, 0.0),
     )
     kw.update(dnsub=dnsub, vnsub=vnsub, nslp=nslp, xcor=xcor, rg=rg,

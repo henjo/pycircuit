@@ -178,6 +178,7 @@ VTH_GEOMETRIES = [
 
 VTH_DECK = """* PSP103 internal vth: {name}
 .lib {pdk}/models/cornerMOSlv.lib mos_tt
+.temp {tempc:g}
 Vd d 0 dc {vd:g}
 Vg g 0 dc {vg:g}
 Vs s 0 dc 0
@@ -314,7 +315,7 @@ def _op_grid(pdk, device, sign):
     for geom in OP_GEOMETRIES:
         pts = []
         for b in OP_BIASES:
-            spec = dict(geom, device=device,
+            spec = dict(geom, device=device, tempc=27.0,
                         vd=sign * b['vd'], vg=sign * b['vg'],
                         vb=sign * b['vb'])
             got = _op_outputs(pdk, spec, OP_OUTPUTS)
@@ -388,7 +389,7 @@ def main(argv=None):
             ('sg13_lv_pmos', (-0.05, -1.2), 'vth_pmos', 'scaled_pmos')):
         for geom in VTH_GEOMETRIES:
             spec = dict(geom, device=dev, vd=bias[0], vg=bias[1],
-                        vb=0.0)
+                        vb=0.0, tempc=27.0)
             v = _vth(args.pdk, spec)
             data[vkey][spec['name']] = dict(w=spec['w'], l=spec['l'],
                                             vth=v)
@@ -400,6 +401,27 @@ def main(argv=None):
             print('vth %-6s %-12s W=%-6.4g L=%-8.4g %9.6f V  (%d params)'
                   % (dev[-4:], spec['name'], spec['w'], spec['l'], v,
                      len(lp)))
+
+    ## THE SCALED PARAMETERS AT A SECOND TEMPERATURE.
+    ##
+    ## The card specifies everything at `TR = 27 C` and PSP scales it
+    ## from there; 100 C is 73 K away, far enough that a wrong exponent
+    ## or a flipped sign cannot hide.  Recording it turns the whole
+    ## temperature layer from something argued to something checked --
+    ## the same move the `lp_*` comparison made for geometry.
+    data['scaled_hot'] = {}
+    data['scaled_hot_pmos'] = {}
+    for dev, key in (('sg13_lv_nmos', 'scaled_hot'),
+                     ('sg13_lv_pmos', 'scaled_hot_pmos')):
+        for geom in VTH_GEOMETRIES:
+            spec = dict(geom, device=dev, vd=0.05, vg=1.2, vb=0.0,
+                        tempc=100.0)
+            lp = _op_outputs(args.pdk, spec,
+                             ['lp_' + n for n in LP_PARAMS])
+            data[key][geom['name']] = dict(
+                w=geom['w'], l=geom['l'], tempc=100.0,
+                **{k[3:]: val for k, val in lp.items()})
+        print('%-16s %d geometries at 100 C' % (key, len(data[key])))
 
     ## Small-signal and charge outputs over a bias grid.
     for key, dev, sign in (('op', 'sg13_lv_nmos', 1.0),

@@ -536,7 +536,9 @@ the vendor expression rather than an approximation to it.
 Present also: drain-induced barrier lowering (``CF``, ``CFB``, ``CFD``),
 the body- and gate-bias modulations of the velocity-saturation parameter
 (``THESATB``, ``THESATG``), gate resistance on its own internal node,
-device multiplicity, and overlap and fringe capacitance. Passing ``all_terms=False`` to
+device multiplicity, overlap and fringe capacitance, and the full
+temperature scaling — every parameter matches PSP's own value at 100 °C,
+73 K away from the card's reference. Passing ``all_terms=False`` to
 ``to_long_channel`` drops both, which exists so their effect stays
 measurable — see below, because deciding whether to keep them turned
 out to be a lesson about the measurement rather than about the terms.
@@ -562,9 +564,8 @@ the short ones.
 
 The junction capacitance is not, and it adds a further 8% and 126%. That
 is a second compact model — JUNCAP2 — rather than a block, so it is the
-next rung on the ladder rather than an addition to this element. The
-roadmap in ``hdl.md`` sizes the remaining work and orders it: temperature
-first, then junctions.
+next rung on the ladder rather than an addition to this element, and it
+is what remains of the roadmap in ``hdl.md``.
 
 Both channel types
 ------------------

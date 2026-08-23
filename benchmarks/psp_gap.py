@@ -92,7 +92,9 @@ def compare(deck, sweep):
     model = 'sg13g2_lv_pmos_psp' if pmos else 'sg13g2_lv_nmos_psp'
     cls = PspPmosLongChannel if pmos else PspMosLongChannel
     card = deck.model_params(model, w=w, l=l, ng=1, m=1, pre_layout=1)
-    kw = psp_scaling.to_long_channel(card, w=w, l=l)
+    ## The reference was generated at the card's `TR = 27 C`, which
+    ## is also ngspice's default, so the comparison is made there.
+    kw = psp_scaling.to_long_channel(card, w=w, l=l, T=273.15 + 27.0)
     e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'), **kw)
     e.update_iparv()
 

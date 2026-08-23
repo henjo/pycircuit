@@ -40,6 +40,15 @@ needs_pdk = pytest.mark.skipif(not os.path.isdir(PDK),
 
 #: Below this the reference is dominated by leakage and junction terms
 #: the core does not model at all.
+#: The card's reference temperature, and the one ngspice ran at when
+#: the reference was generated (`TR = 27 C`).  Every comparison against
+#: a recorded `lp_*` value has to be made HERE, because that is where
+#: the recording was made -- `to_long_channel` defaults to 300.0 K
+#: instead, matching the element's own `epar` default, and at 300.0 K
+#: the temperature scaling is a small but real correction rather than
+#: the identity.
+T27 = 273.15 + 27.0
+
 FLOOR = 1e-6
 
 
@@ -64,7 +73,7 @@ def _compare(deck, sweep):
     card = deck.model_params(
         'sg13g2_lv_pmos_psp' if pmos else 'sg13g2_lv_nmos_psp',
         w=w, l=l, ng=1, m=1, pre_layout=1)
-    kw = psp_scaling.to_long_channel(card, w=w, l=l)
+    kw = psp_scaling.to_long_channel(card, w=w, l=l, T=T27)
     cls = PspPmosLongChannel if pmos else PspMosLongChannel
     e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'), **kw)
     e.update_iparv()
@@ -138,8 +147,8 @@ class TestAgainstTheRealDevice(object):
                                  m=1, pre_layout=1)
         assert card['qmc'] > 0.0, 'the card does enable it'
 
-        with_qm = psp_scaling.to_long_channel(card, w=w, l=l)
-        without = psp_scaling.to_long_channel(dict(card, qmc=0.0), w=w, l=l)
+        with_qm = psp_scaling.to_long_channel(card, w=w, l=l, T=T27)
+        without = psp_scaling.to_long_channel(dict(card, qmc=0.0), w=w, l=l, T=T27)
         ## It raises the surface potential at threshold and the body
         ## factor -- both of which reduce current at a fixed gate bias.
         assert with_qm['phib'] > without['phib']
@@ -162,7 +171,7 @@ class TestAgainstTheRealDevice(object):
         w, l = sweep['w'], sweep['l']
         card = deck.model_params('sg13g2_lv_nmos_psp', w=w, l=l, ng=1,
                                  m=1, pre_layout=1)
-        kw = psp_scaling.to_long_channel(card, w=w, l=l)
+        kw = psp_scaling.to_long_channel(card, w=w, l=l, T=T27)
         assert kw['rs'] > 0.0, 'the card does specify one'
 
         cm.default_toolkit = numeric
@@ -203,7 +212,7 @@ class TestAgainstTheRealDevice(object):
         w, l = sweep['w'], sweep['l']
         card = deck.model_params('sg13g2_lv_nmos_psp', w=w, l=l, ng=1,
                                  m=1, pre_layout=1)
-        kw = psp_scaling.to_long_channel(card, w=w, l=l)
+        kw = psp_scaling.to_long_channel(card, w=w, l=l, T=T27)
         assert kw['ct'] > 0.05, 'the card does specify one'
 
         cm.default_toolkit = numeric
@@ -253,7 +262,7 @@ class TestAgainstTheRealDevice(object):
         w, l = sweep['w'], sweep['l']
         card = deck.model_params('sg13g2_lv_nmos_psp', w=w, l=l, ng=1,
                                  m=1, pre_layout=1)
-        kw = psp_scaling.to_long_channel(card, w=w, l=l)
+        kw = psp_scaling.to_long_channel(card, w=w, l=l, T=T27)
         assert kw['alp'] > 0.0
 
         cm.default_toolkit = numeric
@@ -327,7 +336,7 @@ class TestTheThresholdScaling(object):
                                                  qelectron)
         card = deck.model_params('sg13g2_lv_nmos_psp', w=w, l=l, ng=1,
                                  m=1, pre_layout=1)
-        kw = psp_scaling.to_long_channel(card, w=w, l=l)
+        kw = psp_scaling.to_long_channel(card, w=w, l=l, T=T27)
         cox = epsRSiO2 * eps0 / kw['tox']
         gamma = np.sqrt(2 * qelectron * epsRSi * eps0 * kw['nsub']) / cox
         return kw['vfb'] + kw['phib'] + gamma * np.sqrt(kw['phib'])
@@ -429,7 +438,7 @@ class TestTheScalingTermByTerm(object):
         e = scaled[geom]
         card = deck.model_params('sg13g2_lv_nmos_psp', w=e['w'], l=e['l'],
                                  ng=1, m=1, pre_layout=1)
-        kw = psp_scaling.to_long_channel(card, w=e['w'], l=e['l'])
+        kw = psp_scaling.to_long_channel(card, w=e['w'], l=e['l'], T=T27)
         for psp_name, ours in self.DIRECT.items():
             if psp_name not in e:
                 continue
@@ -447,7 +456,7 @@ class TestTheScalingTermByTerm(object):
         e = scaled[geom]
         card = deck.model_params('sg13g2_lv_nmos_psp', w=e['w'], l=e['l'],
                                  ng=1, m=1, pre_layout=1)
-        kw = psp_scaling.to_long_channel(card, w=e['w'], l=e['l'])
+        kw = psp_scaling.to_long_channel(card, w=e['w'], l=e['l'], T=T27)
         ours = kw['u0'] * e['w'] / e['l']
         assert ours == pytest.approx(e['betn'], rel=1e-5), \
             '%s: %r vs %r' % (geom, ours, e['betn'])
@@ -459,7 +468,7 @@ class TestTheScalingTermByTerm(object):
         card = deck.model_params('sg13g2_lv_nmos_psp', w=e['w'], l=e['l'],
                                  ng=1, m=1, pre_layout=1)
         kw = psp_scaling.to_long_channel(dict(card, qmc=0.0), w=e['w'],
-                                         l=e['l'])
+                                         l=e['l'], T=T27)
         assert kw['nsub'] == pytest.approx(e['neff'], rel=1e-5)
 
     def test_polysilicon_depletion_is_active_and_not_modelled(self,
@@ -493,7 +502,7 @@ class TestPolysiliconDepletion(object):
     def test_the_card_enables_it(self, deck):
         card = deck.model_params('sg13g2_lv_nmos_psp', w=1e-6, l=0.13e-6,
                                  ng=1, m=1, pre_layout=1)
-        kw = psp_scaling.to_long_channel(card, w=1e-6, l=0.13e-6)
+        kw = psp_scaling.to_long_channel(card, w=1e-6, l=0.13e-6, T=T27)
         assert kw['kp'] > 0.0
         ## 1.6e-3 for this oxide -- 1% of the charge slope at low gate
         ## bias, 4.5% at high, which is why it reads as a bias-dependent
@@ -513,7 +522,7 @@ class TestPolysiliconDepletion(object):
         cm.default_toolkit = numeric
         card = deck.model_params('sg13g2_lv_nmos_psp', w=10e-6, l=1e-6,
                                  ng=1, m=1, pre_layout=1)
-        kw = psp_scaling.to_long_channel(card, w=10e-6, l=1e-6)
+        kw = psp_scaling.to_long_channel(card, w=10e-6, l=1e-6, T=T27)
         on = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
                                cm.Node('b'), **kw)
         off = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
@@ -546,7 +555,7 @@ class TestPolysiliconDepletion(object):
         cm.default_toolkit = numeric
         card = deck.model_params('sg13g2_lv_nmos_psp', w=10e-6, l=1e-6,
                                  ng=1, m=1, pre_layout=1)
-        kw = psp_scaling.to_long_channel(card, w=10e-6, l=1e-6)
+        kw = psp_scaling.to_long_channel(card, w=10e-6, l=1e-6, T=T27)
         e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
                               cm.Node('b'), **kw)
         e.update_iparv()
@@ -580,7 +589,7 @@ class TestTheChannelShorteningFactor(object):
     def test_the_card_gives_a_large_weak_inversion_term(self, deck):
         kw = psp_scaling.to_long_channel(
             deck.model_params('sg13g2_lv_nmos_psp', w=1e-6, l=0.13e-6,
-                              ng=1, m=1, pre_layout=1), w=1e-6, l=0.13e-6)
+                              ng=1, m=1, pre_layout=1), w=1e-6, l=0.13e-6, T=T27)
         assert kw['alp2'] > 1.0, kw['alp2']
         assert kw['alp1'] > 0.0
 
@@ -615,7 +624,7 @@ class TestTheChannelShorteningFactor(object):
         cm.default_toolkit = numeric
         kw = psp_scaling.to_long_channel(
             deck.model_params('sg13g2_lv_nmos_psp', w=1e-6, l=0.13e-6,
-                              ng=1, m=1, pre_layout=1), w=1e-6, l=0.13e-6)
+                              ng=1, m=1, pre_layout=1), w=1e-6, l=0.13e-6, T=T27)
         on = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
                                cm.Node('b'), **kw)
         off = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
@@ -653,7 +662,7 @@ class TestTheChannelShorteningFactor(object):
             kw = psp_scaling.to_long_channel(
                 deck.model_params('sg13g2_lv_nmos_psp', w=s['w'], l=s['l'],
                                   ng=1, m=1, pre_layout=1),
-                w=s['w'], l=s['l'])
+                w=s['w'], l=s['l'], T=T27)
             for k, over in enumerate((dict(alp1=0.0, alp2=0.0), {})):
                 e = PspMosLongChannel(cm.Node('d'), cm.Node('g'),
                                       cm.Node('s'), cm.Node('b'),
@@ -716,7 +725,7 @@ class TestTheSaturationVoltage(object):
         kw = psp_scaling.to_long_channel(
             deck.model_params('sg13g2_lv_nmos_psp', w=g['w'], l=g['l'],
                               ng=1, m=1, pre_layout=1),
-            w=g['w'], l=g['l'])
+            w=g['w'], l=g['l'], T=T27)
         ## `rel=1e-5`, not tighter: ngspice prints the operating-point
         ## outputs to six significant digits, so that IS the reference's
         ## precision.  A tighter tolerance tests the printf format.
@@ -821,7 +830,7 @@ class TestTheShortChannelTerms(object):
         return psp_scaling.to_long_channel(
             deck.model_params(model, w=g['w'], l=g['l'], ng=1, m=1,
                               pre_layout=1),
-            w=g['w'], l=g['l'], **kw)
+            w=g['w'], l=g['l'], **kw, T=T27)
 
     @pytest.mark.parametrize('geom', ['long', 'mid', 'short', 'wide_short'])
     @pytest.mark.parametrize('par', ['cf', 'cfb', 'thesatb', 'thesatg',
@@ -869,7 +878,7 @@ class TestTheShortChannelTerms(object):
                         'sg13g2_lv_pmos_psp' if pmos
                         else 'sg13g2_lv_nmos_psp',
                         w=sw['w'], l=sw['l'], ng=1, m=1, pre_layout=1),
-                    w=sw['w'], l=sw['l'], all_terms=on)
+                    w=sw['w'], l=sw['l'], all_terms=on, T=T27)
                 cls = PspPmosLongChannel if pmos else PspMosLongChannel
                 e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'),
                         cm.Node('b'), **kw)
@@ -910,7 +919,7 @@ class TestTheShortChannelTerms(object):
             kw = psp_scaling.to_long_channel(
                 deck.model_params('sg13g2_lv_pmos_psp', w=sw['w'],
                                   l=sw['l'], ng=1, m=1, pre_layout=1),
-                w=sw['w'], l=sw['l'], all_terms=on)
+                w=sw['w'], l=sw['l'], all_terms=on, T=T27)
             e = PspPmosLongChannel(cm.Node('d'), cm.Node('g'),
                                    cm.Node('s'), cm.Node('b'), **kw)
             e.update_iparv()
@@ -963,7 +972,7 @@ class TestTheChannelTypes(object):
                                  m=1, pre_layout=1)
         e = PspPmosLongChannel(
             cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
-            **psp_scaling.to_long_channel(card, w=w, l=l))
+            **psp_scaling.to_long_channel(card, w=w, l=l, T=T27))
         e.update_iparv()
         return e
 
@@ -994,7 +1003,7 @@ class TestTheChannelTypes(object):
         kw = psp_scaling.to_long_channel(
             deck.model_params('sg13g2_lv_pmos_psp', w=e['w'], l=e['l'],
                               ng=1, m=1, pre_layout=1),
-            w=e['w'], l=e['l'], all_terms=True)
+            w=e['w'], l=e['l'], all_terms=True, T=T27)
         assert kw[par] == pytest.approx(e[par], rel=1e-5, abs=1e-12)
 
     @pytest.mark.parametrize('geom', GEOMS)
@@ -1007,7 +1016,7 @@ class TestTheChannelTypes(object):
         card = deck.model_params('sg13g2_lv_pmos_psp', w=e['w'], l=e['l'],
                                  ng=1, m=1, pre_layout=1)
         kw = psp_scaling.to_long_channel(dict(card, qmc=0.0), w=e['w'],
-                                         l=e['l'])
+                                         l=e['l'], T=T27)
         assert kw['nsub'] == pytest.approx(e['neff'], rel=1e-5)
 
     @pytest.mark.parametrize('geom', GEOMS)
@@ -1023,9 +1032,9 @@ class TestTheChannelTypes(object):
         def blow_up(model, e):
             card = deck.model_params(model, w=e['w'], l=e['l'], ng=1,
                                      m=1, pre_layout=1)
-            on = psp_scaling.to_long_channel(card, w=e['w'], l=e['l'])
+            on = psp_scaling.to_long_channel(card, w=e['w'], l=e['l'], T=T27)
             off = psp_scaling.to_long_channel(dict(card, qmc=0.0),
-                                              w=e['w'], l=e['l'])
+                                              w=e['w'], l=e['l'], T=T27)
             return on['nsub'] / off['nsub']
         n = blow_up('sg13g2_lv_nmos_psp', scaled_n[geom])
         p = blow_up('sg13g2_lv_pmos_psp', scaled_p[geom])
@@ -1180,7 +1189,7 @@ class TestThePolyDopingScaling(object):
         def kp(model, w, l):
             return psp_scaling.to_long_channel(
                 deck.model_params(model, w=w, l=l, ng=1, m=1,
-                                  pre_layout=1), w=w, l=l)['kp']
+                                  pre_layout=1), w=w, l=l, T=T27)['kp']
         assert kp('sg13g2_lv_nmos_psp', 1e-6, 0.13e-6) == \
             pytest.approx(kp('sg13g2_lv_nmos_psp', 10e-6, 1e-6), rel=1e-9)
         short = kp('sg13g2_lv_pmos_psp', 1e-6, 0.13e-6)
@@ -1208,7 +1217,7 @@ class TestTheBiasDependentBodyFactor(object):
     def _kw(self, deck, model, w, l):
         return psp_scaling.to_long_channel(
             deck.model_params(model, w=w, l=l, ng=1, m=1, pre_layout=1),
-            w=w, l=l)
+            w=w, l=l, T=T27)
 
     def test_the_card_switches_it_on_for_holes_only(self, deck):
         n = self._kw(deck, 'sg13g2_lv_nmos_psp', 1e-6, 0.13e-6)
@@ -1326,7 +1335,7 @@ class TestTheSubthresholdSlope(object):
             deck.model_params(
                 'sg13g2_lv_pmos_psp' if pmos else 'sg13g2_lv_nmos_psp',
                 w=sw['w'], l=sw['l'], ng=1, m=1, pre_layout=1),
-            w=sw['w'], l=sw['l'])
+            w=sw['w'], l=sw['l'], T=T27)
         cls = PspPmosLongChannel if pmos else PspMosLongChannel
         e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
                 **kw)
@@ -1388,7 +1397,7 @@ class TestTheBodyBiasMobilityCorrection(object):
     def _kw(self, deck, model, w, l, **kw):
         return psp_scaling.to_long_channel(
             deck.model_params(model, w=w, l=l, ng=1, m=1, pre_layout=1),
-            w=w, l=l, **kw)
+            w=w, l=l, **kw, T=T27)
 
     @pytest.mark.parametrize('geom', ['long', 'mid', 'short', 'wide_short'])
     @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
@@ -1510,7 +1519,7 @@ class TestTheChargeModelAgainstTheVendor(object):
         cm.default_toolkit = numeric
         kw = psp_scaling.to_long_channel(
             deck.model_params(model, w=w, l=l, ng=1, m=1, pre_layout=1),
-            w=w, l=l)
+            w=w, l=l, T=T27)
         kw.update(cgov=0.0, cfr=0.0, cgbov=0.0)
         e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
                 **kw)
@@ -1528,7 +1537,7 @@ class TestTheChargeModelAgainstTheVendor(object):
         for geom, e in sc.items():
             card = deck.model_params('sg13g2_lv_%s_psp' % kind, w=e['w'],
                                      l=e['l'], ng=1, m=1, pre_layout=1)
-            kw = psp_scaling.to_long_channel(card, w=e['w'], l=e['l'])
+            kw = psp_scaling.to_long_channel(card, w=e['w'], l=e['l'], T=T27)
             eps_ox = card.get('epsroxo', 3.9) * 8.8541878128e-12
             ours = eps_ox / kw['tox'] * kw['wcv'] * kw['lcv']
             assert ours == pytest.approx(e['cox'], rel=1e-4), (kind, geom)
@@ -1537,7 +1546,7 @@ class TestTheChargeModelAgainstTheVendor(object):
         """Which is half the error, and invisible without a card."""
         kw = psp_scaling.to_long_channel(
             deck.model_params('sg13g2_lv_nmos_psp', w=10e-6, l=1e-6,
-                              ng=1, m=1, pre_layout=1), w=10e-6, l=1e-6)
+                              ng=1, m=1, pre_layout=1), w=10e-6, l=1e-6, T=T27)
         ## The LENGTH is what matters: `LEcv = LE + DLQ` with
         ## `LAP = 2.94e-8` and `DLQ = -1.37e-8` puts it 7% under the
         ## drawn value, and that is where the geometric half of the 24%
@@ -1613,7 +1622,7 @@ class TestTheChargeModelAgainstTheVendor(object):
         base = psp_scaling.to_long_channel(
             deck.model_params('sg13g2_lv_nmos_psp', w=gd['w'], l=gd['l'],
                               ng=1, m=1, pre_layout=1),
-            w=gd['w'], l=gd['l'])
+            w=gd['w'], l=gd['l'], T=T27)
         pt = [q for q in gd['points']
               if q['vg'] == 1.2 and q['vd'] == 0.05][0]
         got = {}
@@ -1715,7 +1724,7 @@ class TestThePhysicalConstants(object):
         kw = psp_scaling.to_long_channel(
             deck.model_params('sg13g2_lv_nmos_psp', w=sw['w'], l=sw['l'],
                               ng=1, m=1, pre_layout=1),
-            w=sw['w'], l=sw['l'])
+            w=sw['w'], l=sw['l'], T=T27)
         e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
                               cm.Node('b'), **kw)
         e.update_iparv()
@@ -1771,7 +1780,7 @@ class TestChannelLengthModulationInTheCharges(object):
         kw = psp_scaling.to_long_channel(
             deck.model_params('sg13g2_lv_%s_psp' % kind, w=geom['w'],
                               l=geom['l'], ng=1, m=1, pre_layout=1),
-            w=geom['w'], l=geom['l'])
+            w=geom['w'], l=geom['l'], T=T27)
         kw.update(cgov=0.0, cfr=0.0, cgbov=0.0)
         kw.update(over)
         cls = PspPmosLongChannel if kind == 'pmos' else PspMosLongChannel
@@ -1902,7 +1911,7 @@ class TestTheOverlapAndFringeCapacitance(object):
         kw = psp_scaling.to_long_channel(
             deck.model_params('sg13g2_lv_%s_psp' % kind, w=geom['w'],
                               l=geom['l'], ng=1, m=1, pre_layout=1),
-            w=geom['w'], l=geom['l'])
+            w=geom['w'], l=geom['l'], T=T27)
         kw.update(over)
         cls = PspPmosLongChannel if kind == 'pmos' else PspMosLongChannel
         e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
@@ -1920,7 +1929,7 @@ class TestTheOverlapAndFringeCapacitance(object):
         kw = psp_scaling.to_long_channel(
             deck.model_params('sg13g2_lv_nmos_psp', w=e['w'], l=e['l'],
                               ng=1, m=1, pre_layout=1),
-            w=e['w'], l=e['l'])
+            w=e['w'], l=e['l'], T=T27)
         if geom == 'long':
             assert kw['cgov'] == pytest.approx(4.53951e-15, rel=1e-5)
             assert kw['cfr'] == pytest.approx(1.998e-15, rel=1e-4)
@@ -1994,3 +2003,136 @@ class TestTheOverlapAndFringeCapacitance(object):
             f = np.asarray(e.i(e.bias(vd, vg, 0.0, 0.0)), float)[0]
             r = np.asarray(e.i(e.bias(0.0, vg, vd, 0.0)), float)[0]
             assert f == pytest.approx(-r, rel=1e-13), (vg, vd)
+
+
+class TestTemperatureScaling(object):
+    """The card is a 27 C card, and PSP scales it from there.
+
+    28 non-zero `ST*` coefficients (`PSP103_macrodefs.include:357-390`),
+    so this is not a refinement: without it the model is a 27 C model
+    wearing whatever temperature the caller thought it asked for, and no
+    corner or temperature analysis is possible at all.
+
+    Almost everything is a power law -- `X_T = X*(TKR/TKD)^ST_X` -- with
+    the flat-band voltage the one exception, a quadratic in `delT`.
+    `STVFB`, `STBET` and `STTHESAT` carry geometry terms of their own.
+
+    Validated at 100 C, 73 K from the reference, which is far enough
+    that a wrong exponent or a flipped sign cannot hide.
+    """
+
+    #: PSP's `lp_*` name against the keyword `to_long_channel` returns.
+    PAIRS = (('vfb', 'vfb'), ('ct', 'ct'), ('mue', 'mue'),
+             ('themu', 'themu'), ('cs', 'cs'), ('thecs', 'thecs'),
+             ('rs', 'rs'), ('thesat', 'thesat'), ('xcor', 'xcor'))
+
+    @pytest.fixture(scope='class')
+    def hot(self):
+        with open(REF) as fh:
+            d = json.load(fh)
+        return d['scaled_hot'], d['scaled_hot_pmos']
+
+    @pytest.mark.parametrize('geom', ['long', 'mid', 'short',
+                                      'wide_short'])
+    @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
+    def test_every_parameter_matches_psp_at_100c(self, deck, hot, kind,
+                                                 geom):
+        n, p = hot
+        e = (p if kind == 'pmos' else n)[geom]
+        kw = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_%s_psp' % kind, w=e['w'],
+                              l=e['l'], ng=1, m=1, pre_layout=1),
+            w=e['w'], l=e['l'], T=273.15 + e['tempc'])
+        for ref_key, our_key in self.PAIRS:
+            assert kw[our_key] == pytest.approx(e[ref_key], rel=1e-5,
+                                                abs=1e-12), \
+                (kind, geom, ref_key)
+
+    @pytest.mark.parametrize('geom', ['long', 'short'])
+    def test_the_gain_factor_matches_at_100c(self, deck, hot, geom):
+        """`BETN` separately, since we carry it as an effective
+        mobility rather than as `BETN` itself."""
+        n, _ = hot
+        e = n[geom]
+        kw = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_nmos_psp', w=e['w'], l=e['l'],
+                              ng=1, m=1, pre_layout=1),
+            w=e['w'], l=e['l'], T=273.15 + e['tempc'])
+        assert kw['u0'] * e['w'] / e['l'] == pytest.approx(e['betn'],
+                                                           rel=1e-5)
+
+    def test_at_the_reference_temperature_nothing_moves(self, deck):
+        """The scaling has to be the identity at `TR`.
+
+        Which is the check that catches a sign error in `rTn`: getting
+        REFERENCE-over-DEVICE backwards leaves this passing and every
+        other temperature wrong in the opposite direction.
+        """
+        with open(REF) as fh:
+            cold = json.load(fh)['scaled']['long']
+        card = deck.model_params('sg13g2_lv_nmos_psp', w=cold['w'],
+                                 l=cold['l'], ng=1, m=1, pre_layout=1)
+        kw = psp_scaling.to_long_channel(card, w=cold['w'], l=cold['l'],
+                                         T=273.15 + card['tr'])
+        ## `rel=1e-5`, the reference's own precision: ngspice prints
+        ## its operating-point outputs to six significant digits, so a
+        ## tighter bound tests the printf format.
+        for ref_key, our_key in self.PAIRS:
+            assert kw[our_key] == pytest.approx(cold[ref_key], rel=1e-5,
+                                                abs=1e-12), ref_key
+
+    def test_the_trends_have_the_right_sign(self, deck):
+        """A power law with the exponent's sign wrong still passes a
+        single-point comparison if that point is the reference.  These
+        are the directions a device physicist would insist on.
+        """
+        card = deck.model_params('sg13g2_lv_nmos_psp', w=10e-6, l=1e-6,
+                                 ng=1, m=1, pre_layout=1)
+        cold = psp_scaling.to_long_channel(card, w=10e-6, l=1e-6, T=250.0)
+        hot = psp_scaling.to_long_channel(card, w=10e-6, l=1e-6, T=400.0)
+        assert hot['u0'] < cold['u0'], 'mobility falls with temperature'
+        assert hot['mue'] < cold['mue']
+        assert hot['thesat'] < cold['thesat']
+        assert hot['rs'] > cold['rs'], 'series resistance rises'
+        assert hot['vfb'] > cold['vfb'], 'flat-band rises, threshold falls'
+
+    def test_the_reference_temperature_mismatch_is_bounded(self, deck):
+        """A known, measured, and deliberately unclosed inconsistency.
+
+        The parameter comparisons are made at the card's `TR = 27 C`,
+        because that is where the reference was recorded.  The element
+        evaluating those parameters still runs at `epar`'s default of
+        300.0 K, 0.15 K away, because threading an `epar` through every
+        call site costs more than the error does.
+
+        This pins what the error IS, so it stays a decision rather than
+        becoming a mystery: 0.15 K is worth under a hundredth of a
+        percent of drain current.
+        """
+        import copy
+        from pycircuit.circuit import defaultepar
+        cm.default_toolkit = numeric
+        kw = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_nmos_psp', w=10e-6, l=1e-6,
+                              ng=1, m=1, pre_layout=1),
+            w=10e-6, l=1e-6, T=T27)
+        e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                              cm.Node('b'), **kw)
+        e.update_iparv()
+        hot = copy.copy(defaultepar)
+        hot.T = T27
+        x = e.bias(0.05, 1.2)
+        a = np.asarray(e.i(x), float)[0]
+        b = np.asarray(e.i(x, hot), float)[0]
+        assert abs(a / b - 1.0) < 2e-4, (a, b)
+
+    def test_the_default_temperature_matches_the_elements(self):
+        """`to_long_channel` scales the parameters and the element's own
+        `vt()` follows `epar`; they are not linked, so their DEFAULTS
+        have to agree or a caller who sets neither is quietly running
+        two temperatures at once.
+        """
+        import inspect
+        from pycircuit.circuit import hdl
+        sig = inspect.signature(psp_scaling.to_long_channel)
+        assert sig.parameters['T'].default == hdl._epar_T(object())
