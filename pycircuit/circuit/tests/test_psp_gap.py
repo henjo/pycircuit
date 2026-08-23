@@ -1282,3 +1282,79 @@ class TestTheBiasDependentBodyFactor(object):
             err[on] = tot
         assert err[True] < 0.3 * err[False], err
         assert err[True] < 0.03, err
+
+
+class TestTheSubthresholdSlope(object):
+    """The steepest physical check there is, and it was not being made.
+
+    The subthreshold swing is not a fitted quantity in a
+    surface-potential model.  It falls out of the electrostatics -- the
+    body factor, the surface potential, and the effective thermal
+    voltage -- so getting it right is a statement about the formulation
+    rather than about a parameter, and getting it wrong would mean the
+    weak-inversion charge is wrong in a way an integrated current can
+    hide.
+
+    Measured against PSP's own curves it agrees to a quarter of a
+    millivolt per decade on both channel types.
+
+    ONE TRAP, and it produced a wrong answer before it was noticed: the
+    reference records TOTAL terminal current, and PSP's junction leakage
+    is a flat 2e-12 A floor which our core does not model at all.  On
+    the body-biased sweep the drain current reaches that floor, so a
+    slope taken down to 1e-11 A measures PSP's leakage rather than its
+    channel -- and reports a 2.5 mV/decade discrepancy that does not
+    exist.  The window has to stay clear of it.
+    """
+
+    #: Three decades, the bottom of them some five hundred times the
+    #: 2e-12 A junction-leakage floor the reference carries.
+    LO, HI = 1e-9, 1e-6
+
+    NAMES = ('nmos_idvg_vd0p05', 'nmos_idvg_vd1p2', 'nmos_idvg_vb_m1',
+             'nmos_long_idvg', 'pmos_idvg_vd0p05', 'pmos_long_idvg')
+
+    def _slope(self, v, i):
+        m = (i > self.LO) & (i < self.HI)
+        assert m.sum() >= 4, 'not enough points in the window'
+        return 1e3 * np.median(np.abs(np.diff(v[m])
+                                      / np.diff(np.log10(i[m]))))
+
+    @pytest.mark.parametrize('name', NAMES)
+    def test_it_matches_psp(self, deck, ref, name):
+        cm.default_toolkit = numeric
+        sw = ref[name]
+        pmos = 'pmos' in sw['device']
+        kw = psp_scaling.to_long_channel(
+            deck.model_params(
+                'sg13g2_lv_pmos_psp' if pmos else 'sg13g2_lv_nmos_psp',
+                w=sw['w'], l=sw['l'], ng=1, m=1, pre_layout=1),
+            w=sw['w'], l=sw['l'])
+        cls = PspPmosLongChannel if pmos else PspMosLongChannel
+        e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
+                **kw)
+        e.update_iparv()
+        v = np.asarray(sw['v'], float)
+        r = np.abs(np.asarray(sw['i_d'], float))
+        b = sw['bias']
+        g = np.abs(np.array([np.asarray(e.i(np.array(
+            [b['Vd'], x, b['Vs'], b['Vb']])), float)[0] for x in v]))
+        theirs, ours = self._slope(v, r), self._slope(v, g)
+        assert abs(ours - theirs) < 1.0, (name, theirs, ours)
+
+    def test_the_reference_carries_a_leakage_floor(self, ref):
+        """The trap, pinned so the window is not widened by accident.
+
+        PSP's bulk current on the body-biased sweep is a CONSTANT
+        2e-12 A -- junction leakage, which this core does not model --
+        and the drain current comes down to meet it.  Any slope taken
+        through that region measures the leakage.
+        """
+        sw = ref['nmos_idvg_vb_m1']
+        ib = np.abs(np.asarray(sw['i_b'], float))
+        idd = np.abs(np.asarray(sw['i_d'], float))
+        assert ib.max() / ib.min() < 1.05, 'expected a flat floor'
+        assert idd.min() < 10.0 * ib.min(), \
+            'the drain current should reach the leakage floor'
+        assert ib.max() < 1e-2 * self.LO, \
+            'and the chosen window should sit far above it'

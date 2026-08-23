@@ -627,6 +627,28 @@ All eleven sweeps across both channel types are within 2.3% now, and
 every p-channel sweep within 0.6%, from two foundry cards with nothing
 fitted anywhere in the chain.
 
+The subthreshold slope
+----------------------
+
+Worth separating out, because it is the steepest check available and it
+is not a fitted quantity. In a surface-potential model the subthreshold
+swing falls out of the electrostatics — the body factor, the surface
+potential, the effective thermal voltage — so it says something about
+the formulation rather than about a parameter.
+
+Against PSP's own curves, over three decades of current, it agrees to
+**a quarter of a millivolt per decade on both channel types**.
+
+One caveat governs that number, and getting it wrong reports a defect
+that is not there. The reference records *total terminal current*, and
+PSP's junction leakage is a flat 2 pA floor that this core does not
+model at all. On the body-biased sweep the drain current comes down to
+meet it, so a slope taken through that region measures PSP's leakage
+rather than its channel — and says the swing is 2.5 mV/decade out when
+it is 0.2. The same caution applies to every ratio on this page: they
+are all against a current that includes terms deliberately absent here,
+which is why the comparison carries a 1 µA floor.
+
 A note on DIBL, because this page said the opposite for a while. In
 absolute terms it *is* small on this process — PSP's own threshold moves
 3.5 mV over 1.35 V of drain bias, and that was measured rather than

@@ -2087,6 +2087,49 @@ built but never actually tested against.
 > subthreshold-slope difference, and `CT` is fully accounted for
 > (`CTGO` and `CTBO` are both zero), so it is something else.
 
+> **The subthreshold slope is right, and the measurement that said
+> otherwise was measuring leakage — 2026-08-23.** A correction to the
+> entry above, which named a "subthreshold-slope difference" as what was
+> left on the n-channel.
+>
+> The subthreshold swing is not a fitted quantity in a surface-potential
+> model. It falls out of the electrostatics — body factor, surface
+> potential, effective thermal voltage — so it is a statement about the
+> formulation rather than about a parameter, and nothing in the tree was
+> checking it. Measured against PSP's own curves:
+>
+> | sweep | PSP | ours | diff |
+> |---|---|---|---|
+> | `nmos_idvg_vd0p05` | 85.40 | 85.37 | −0.03 |
+> | `nmos_idvg_vd1p2` | 83.39 | 83.15 | −0.24 |
+> | `nmos_idvg_vb_m1` | 81.41 | 81.62 | +0.21 |
+> | `nmos_long_idvg` | 73.60 | 73.49 | −0.11 |
+> | `pmos_idvg_vd0p05` | 90.98 | 90.99 | +0.01 |
+> | `pmos_long_idvg` | 74.56 | 74.51 | −0.05 |
+>
+> mV/decade, over 1e-9 to 1e-6 A. **A quarter of a millivolt per decade,
+> on both channel types, unfitted.**
+>
+> The first attempt said 2.5 mV/decade on `nmos_idvg_vb_m1` and that was
+> wrong. **The reference records TOTAL terminal current, and PSP's
+> junction leakage is a flat 2 × 10⁻¹² A floor which this core does not
+> model at all.** On the body-biased sweep the drain current comes down
+> to meet that floor, so a slope taken to 1e-11 A measures PSP's leakage
+> rather than its channel. Widen the window and the model appears to have
+> a defect it does not have.
+>
+> Worth stating as a general point about this whole comparison: every
+> ratio in it is against a current that includes terms we deliberately
+> do not model. The 1 µA floor on the gap benchmark exists for exactly
+> this reason, and any measurement that reaches below it is measuring
+> something else.
+>
+> So the residual on the n-channel is **not** the slope. It is in
+> **moderate inversion** — the ratio on the transfer sweeps runs about
+> 1.05–1.11 near 1 µA and decays to 1.00 by strong inversion, with the
+> slope correct below and the gain correct above. That is a much
+> narrower statement than the one it replaces.
+
 Deferred, unchanged from the original research verdict:
 
 | item | why |
