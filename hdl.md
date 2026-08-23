@@ -2269,6 +2269,70 @@ below), and every temperature coefficient.
 > remaining DC residual to one near-threshold corner) — and the
 > capacitance comparison, which came free with it, found this.
 
+> **The last residual was a physical constant — 2026-08-23.** After
+> thirty-one scaled parameters matching PSP exactly, the subthreshold
+> slope matching to a quarter of a millivolt per decade, `gm` and `gds`
+> matching on a bias grid and every formula re-read against the vendor
+> source, the n-channel threshold was still **2–6 mV low** — and worse
+> under body bias, which is the tell.
+>
+> PSP defines **`EPSRSI = 11.8`** (`Common103_macrodefs.include:61`).
+> `pycircuit.circuit.constants` carries **11.7**. Both are defensible
+> values for silicon; what is not defensible is comparing against a
+> reference that uses one while using the other.
+>
+> The body factor goes as `sqrt(eps_si)`, so 11.7 against 11.8 makes
+> `gamma` **0.43%** small — and because the body term grows as
+> `sqrt(phib + Vsb)`, the threshold error **grows with body bias**. That
+> is exactly why the body-biased sweeps were the worst ones, which had
+> looked like a missing body-effect term.
+>
+> **It survived every other check because no `lp_*` output exposes the
+> body factor.** PSP reports the doping, the flat-band voltage, the
+> oxide thickness and the oxide capacitance — everything the body factor
+> is built *from* — and not the body factor itself. Between thirty-one
+> exactly-matched parameters and the drain current sat one number nobody
+> had thought to compare, because it was not a parameter.
+>
+> Every sweep's spread improved, and the p-channel transfer curve by an
+> order of magnitude:
+>
+> | sweep | median | spread |
+> |---|---|---|
+> | `nmos_idvd_vg0p6` | 1.023 → **1.016** | 0.020 → 0.018 |
+> | `nmos_idvg_vd0p05` | 1.001 → **0.999** | 0.066 → **0.051** |
+> | `nmos_idvg_vb_m1` | 1.004 → **1.001** | 0.111 → **0.081** |
+> | `nmos_long_idvg_vb_m1` | 0.999 → **0.999** | 0.106 → **0.061** |
+> | `pmos_long_idvg` | 0.996 → **0.998** | 0.044 → **0.003** |
+> | `pmos_idvg_vd1p2` | 1.004 → **1.001** | 0.061 → **0.040** |
+>
+> **Every one of the twelve sweeps is now within 1.6%, and ten of them
+> within 0.4%.** `KBOL` and `QELE` differ too — 0.047% and 0.012%, about
+> 0.2 mV between them — and are now taken from PSP as well, on the
+> principle rather than for the number. All of it is local to the PSP
+> model; the tree keeps its own constants, and a test says so.
+>
+> Two things were tried and reverted, which is worth recording because
+> both looked right:
+>
+> * PSP's literal `Vgb1 = Vgs + Vsbstar` **broke the source/drain
+>   antisymmetry immediately**. The two expressions are the same
+>   quantity *in PSP*, because PSP evaluates it after its terminal
+>   interchange, so its `Vgs` is referred to the lower terminal. Ours is
+>   referred to the actual source, which changes under the exchange.
+>   The difference is the conditioning — a fraction of a millivolt — and
+>   not worth a structural property.
+> * Removing the `hypsmooth` on the channel-length-modulation excess, on
+>   the theory that its `eps` was inflating a small excess near
+>   threshold. It changes nothing measurable: in weak inversion `dps` is
+>   small, so the excess is essentially `Vds` and far above the
+>   smoothing. Reverted, because a change with no measured benefit that
+>   removes a guard is not an improvement.
+>
+> What is left is a threshold offset of 1.3–4.7 mV on the n-channel,
+> still largest under body bias, and it is now pinned by tests as an
+> upper bound rather than described.
+
 Deferred, unchanged from the original research verdict:
 
 | item | why |

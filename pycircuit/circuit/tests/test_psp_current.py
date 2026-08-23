@@ -341,7 +341,15 @@ class TestTheChargeModel(object):
     def test_charge_is_conserved_exactly(self, x):
         """The four terminal charges sum to zero, to rounding."""
         q = np.asarray(self._fet().q(x), float)
-        assert abs(q.sum()) < 1e-16 * max(np.abs(q).max(), 1e-30)
+        ## 4e-16, not 1e-16.  Conservation is STRUCTURAL -- three
+        ## charges are contributed on source-referred branches and the
+        ## fourth is what is left -- so what this measures is the
+        ## rounding of a four-term sum, which accumulates a few units in
+        ## the last place rather than one.  The old bound was one ulp
+        ## and had no margin: it survived until the oxide capacitance
+        ## changed and the magnitudes rounded differently, which is not
+        ## a fact about the model.
+        assert abs(q.sum()) < 4e-16 * max(np.abs(q).max(), 1e-30)
 
     @pytest.mark.parametrize('x', [
         np.array([0.1, 1.2, 0.0, 0.0]),
@@ -508,7 +516,7 @@ class TestMobilityAndVelocitySaturation(object):
                   np.array([0.0, -0.5, 0.0, 0.0]),
                   np.array([1.8, 1.8, 0.2, -0.4])):
             q = np.asarray(e.q(x), float)
-            assert abs(q.sum()) < 1e-16 * max(np.abs(q).max(), 1e-30)
+            assert abs(q.sum()) < 4e-16 * max(np.abs(q).max(), 1e-30)
 
     def test_turning_it_off_recovers_the_ideal_core(self):
         """Bit-exact, so the layer is genuinely additive."""

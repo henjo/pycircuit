@@ -655,11 +655,11 @@ happened to be recorded.
 Adding a body-biased sweep on the geometry where the term is alive:
 without it, 0.963; with it, **0.999**.
 
-All thirteen sweeps across both channel types are within 2.3% now, and
-every p-channel sweep within 0.6%, from two foundry cards with nothing
-fitted anywhere in the chain. Every one of the thirty scaled parameters
-the model uses matches PSP's own value exactly, at four geometries, on
-both channel types.
+All thirteen sweeps across both channel types are within 1.6% now, ten
+of the twelve measurable ones within 0.4%, from two foundry cards with
+nothing fitted anywhere in the chain. Every one of the thirty-one scaled
+parameters the model uses matches PSP's own value exactly, at four
+geometries, on both channel types.
 
 The charge model, and what construction properties cannot tell you
 ------------------------------------------------------------------

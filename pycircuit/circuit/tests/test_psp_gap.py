@@ -561,7 +561,7 @@ class TestPolysiliconDepletion(object):
                 r = np.asarray(e.i(np.array([0.0, vg, vd, 0.0])), float)
                 assert f[0] == pytest.approx(-r[0], rel=1e-14), (vg, vd)
             q = np.asarray(e.q(np.array([0.5, vg, 0.0, 0.0])), float)
-            assert abs(q.sum()) < 1e-16 * max(np.abs(q).max(), 1e-30)
+            assert abs(q.sum()) < 4e-16 * max(np.abs(q).max(), 1e-30)
 
 
 @needs_pdk
@@ -1636,3 +1636,86 @@ class TestTheChargeModelAgainstTheVendor(object):
             assert abs(q.sum()) < 1e-24 * max(1.0, np.abs(q).max())
             assert np.abs(C.sum(axis=0)).max() < 1e-12 * np.abs(C).max()
             assert np.abs(C.sum(axis=1)).max() < 1e-12 * np.abs(C).max()
+
+
+class TestThePhysicalConstants(object):
+    """The last residual was a physical constant, not a term.
+
+    After thirty-one scaled parameters matching PSP exactly, the
+    subthreshold slope matching to a quarter of a millivolt per decade,
+    and every formula re-read against the vendor source, the n-channel
+    threshold was still 2-6 mV low -- and worse under body bias, which
+    is the tell.
+
+    PSP defines `EPSRSI = 11.8` (`Common103_macrodefs.include:61`).
+    `pycircuit.circuit.constants` carries 11.7.  Both are defensible
+    values for silicon; what is not defensible is comparing against a
+    reference that uses one while using the other.
+
+    The body factor goes as `sqrt(eps_si)`, so 11.7 against 11.8 makes
+    `gamma` 0.43% small -- and because the body term grows as
+    `sqrt(phib + Vsb)`, the threshold error GROWS WITH BODY BIAS.  That
+    is why the body-biased sweeps were the worst ones.
+
+    IT SURVIVED EVERY OTHER CHECK BECAUSE NO `lp_*` OUTPUT EXPOSES THE
+    BODY FACTOR.  PSP reports the doping, the flat-band voltage, the
+    oxide thickness and the oxide capacitance -- everything the body
+    factor is built FROM -- and not the body factor itself.  Between
+    thirty-one exactly-matched parameters and the drain current sat one
+    number nobody had thought to compare, because it was not a
+    parameter.
+    """
+
+    def test_we_use_psps_constants_not_the_trees(self):
+        from pycircuit.circuit import compact, constants
+        assert psp_scaling.PSP_EPSRSI == 11.8
+        assert constants.epsRSi == 11.7, \
+            'the tree keeps its own value, and should'
+        assert compact.EPS_SI == psp_scaling.PSP_EPS_SI
+        assert psp_scaling.PSP_KBOL == 1.3806505e-23
+        assert psp_scaling.PSP_QELE == 1.6021918e-19
+
+    def test_the_difference_is_where_it_hurts(self):
+        """0.43% on the body factor, which is 2-6 mV of threshold."""
+        import math
+        assert math.sqrt(11.8 / 11.7) == pytest.approx(1.00426, abs=1e-5)
+
+    @pytest.mark.parametrize('name,limit', [
+        ('nmos_long_idvg', 2.0),
+        ('nmos_idvg_vd0p05', 3.5),
+        ('nmos_idvg_vb_m1', 5.0),
+        ('nmos_long_idvg_vb_m1', 3.0),
+    ])
+    def test_the_threshold_offset_is_small_and_bounded(self, deck, ref,
+                                                       name, limit):
+        """Extracted the same way from both curves, so it compares like
+        with like -- PSP's own `vth` is its own extraction and is not
+        comparable in absolute terms.
+
+        The bounds are where the constant fix left things.  They are
+        upper bounds on a residual, not targets: if something later
+        closes the rest, they should be tightened, not met.
+        """
+        cm.default_toolkit = numeric
+        sw = ref[name]
+        kw = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_nmos_psp', w=sw['w'], l=sw['l'],
+                              ng=1, m=1, pre_layout=1),
+            w=sw['w'], l=sw['l'])
+        e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                              cm.Node('b'), **kw)
+        e.update_iparv()
+        v = np.asarray(sw['v'], float)
+        r = np.asarray(sw['i_d'], float)
+        b = sw['bias']
+        g = np.array([np.asarray(e.i(np.array(
+            [b['Vd'], x, b['Vs'], b['Vb']])), float)[0] for x in v])
+        tgt = 1e-7 * sw['w'] / sw['l']
+
+        def extract(cur):
+            a = np.abs(cur)
+            m = a > 1e-12
+            return float(np.interp(np.log10(tgt), np.log10(a[m]), v[m]))
+
+        delta = (extract(g) - extract(r)) * 1e3
+        assert abs(delta) < limit, (name, delta)

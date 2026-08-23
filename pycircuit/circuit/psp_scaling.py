@@ -29,7 +29,7 @@ Usage::
 
 import math
 
-from pycircuit.circuit.constants import (eps0, epsRSi, epsRSiO2,
+from pycircuit.circuit.constants import (eps0, epsRSiO2,
                                          kboltzmann, qelectron)
 
 
@@ -39,6 +39,35 @@ WEN = 1.0e-6
 
 #: Quantum-mechanical correction constants
 #: (`PSP103_macrodefs.include:51-52`), n- and p-channel.
+## PSP'S OWN PHYSICAL CONSTANTS, and they are NOT the tree's.
+##
+## `Common103_macrodefs.include:60-61` sets `EPSO = 8.8541878176e-12`
+## and **`EPSRSI = 11.8`**, where `pycircuit.circuit.constants` carries
+## 11.7.  Both values are defensible for silicon; what is not defensible
+## is comparing against a reference that used one while using the other.
+##
+## The body factor goes as `sqrt(eps_si)`, so 11.7 against 11.8 makes
+## our `gamma` 0.43% small -- and because the body term grows as
+## `sqrt(phib + Vsb)`, the resulting threshold error GROWS WITH BODY
+## BIAS.  Measured: 2 mV on the grounded long device, 3.6 mV on the
+## grounded short one, 5.8 mV with `Vsb = 1`.  At 85 mV/decade that is
+## 5-11% of the weak-inversion current, which is precisely the residual
+## that survived every other check.
+##
+## It survived them because NO `lp_*` OUTPUT EXPOSES THE BODY FACTOR.
+## Thirty-one scaled parameters matched exactly, and the one number
+## between them and the current was a constant nobody had thought to
+## compare.
+## `KBOL` and `QELE` are on the same list (`:56-57`) and worth far less
+## -- 0.047% and 0.012%, about 0.2 mV of threshold between them -- but
+## they are free, and a model compared against a reference should not
+## be using different physical constants from it at all.
+PSP_EPS0 = 8.8541878176e-12
+PSP_EPSRSI = 11.8
+PSP_EPS_SI = PSP_EPSRSI * PSP_EPS0
+PSP_KBOL = 1.3806505e-23
+PSP_QELE = 1.6021918e-19
+
 QMN = 5.951993
 QMP = 7.448711
 
@@ -177,7 +206,7 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
     iLE, iWE, LE, WE = geo['iLE'], geo['iWE'], geo['LE'], geo['WE']
 
     tox = _g(card, 'toxo')
-    eps_ox = _g(card, 'epsroxo', epsRSiO2) * eps0
+    eps_ox = _g(card, 'epsroxo', epsRSiO2) * PSP_EPS0
     cox_prime = eps_ox / tox
 
     ## Flat-band voltage (:230) and effective doping (:250).
@@ -189,7 +218,7 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
     ## `phibFac` and `Eg` are the temperature-dependent parts; at 300 K
     ## they are what they are, and no temperature COEFFICIENT from the
     ## card is applied here.
-    phit = kboltzmann * T / qelectron
+    phit = PSP_KBOL * T / PSP_QELE
     eg = 1.179 - 9.025e-5 * T - 3.05e-7 * T * T
     phib_fac = max((1.045 + 4.5e-4 * T)
                    * (0.523 + 1.4e-3 * T - 1.48e-6 * T * T)
@@ -218,7 +247,7 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
     ## returned as an adjusted doping rather than an adjusted gamma --
     ## the element derives its body factor from `nsub`, and scaling that
     ## by the square of the `G_0` factor is the equivalent move.
-    gamma0 = math.sqrt(2.0 * qelectron * neff * epsRSi * eps0
+    gamma0 = math.sqrt(2.0 * PSP_QELE * neff * PSP_EPS_SI
                        / phit) / cox_prime
     qmc = _g(card, 'qmc')
     qq = 0.0
@@ -291,7 +320,7 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
     if np_card > 0.0:
         np_eff = max(max(np_card, 8.0e7 / (tox * tox)), 5.0e24)
         kp = (2.0 * cox_prime * cox_prime * phit
-              / (qelectron * np_eff * epsRSi * eps0))
+              / (PSP_QELE * np_eff * PSP_EPS_SI))
     else:
         kp = 0.0
 

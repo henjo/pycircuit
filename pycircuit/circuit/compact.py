@@ -15,9 +15,9 @@ Currently: `CapCmomi`.
 import numpy as np
 import sympy
 
-from pycircuit.circuit import defaultepar, psp_kernel
-from pycircuit.circuit.constants import (eps0, epsRSi, epsRSiO2,
-                                         qelectron as QELEC)
+from pycircuit.circuit import defaultepar, psp_kernel, psp_scaling
+from pycircuit.circuit.constants import (epsRSiO2, kboltzmann,
+                                         qelectron)
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution, Node,
                                    ddt, var, vt)
 from pycircuit.utilities.param import Parameter
@@ -25,8 +25,23 @@ from pycircuit.utilities.param import Parameter
 
 #: Permittivities, from the toolkit's own constants so a generated stamp
 #: matches a hand-written one exactly rather than nearly.
-EPS_OX = epsRSiO2 * eps0
-EPS_SI = epsRSi * eps0
+## PSP's own constants, not the tree's -- see the note beside them in
+## `psp_scaling`.  `EPSRSI` is 11.8 in the vendor source against 11.7 in
+## `pycircuit.circuit.constants`, and the 0.43% that puts on the body
+## factor was worth 2-6 mV of threshold: the last residual on this
+## model, and the one thing standing between thirty-one exactly-matched
+## parameters and the current.
+EPS_OX = epsRSiO2 * psp_scaling.PSP_EPS0
+EPS_SI = psp_scaling.PSP_EPS_SI
+QELE = psp_scaling.PSP_QELE
+
+## `vt()` is the DSL's thermal voltage and is built on the tree's
+## constants, which is right for the tree and wrong for a comparison
+## against PSP.  Correcting it by a constant ratio keeps its temperature
+## dependence -- which is the part that has to come from the simulator
+## -- while putting it on PSP's `KBOL` and `QELE`.  Worth 0.035%.
+_VT_TO_PSP = ((psp_scaling.PSP_KBOL / kboltzmann)
+              * (qelectron / psp_scaling.PSP_QELE))
 
 #: 1/sqrt(2), as PSP spells it.
 INV_SQRT2 = 7.0710678118654746e-01
@@ -264,13 +279,13 @@ def _psp_mos_analog(T, pmos):
         ## effective one under `SWFIX`, which defaults off.  Everything
         ## else -- gate drive, quasi-Fermi levels, charges, the current --
         ## is in units of the effective one.
-        phit0 = var(vt(), 'phit0')
+        phit0 = var(vt() * _VT_TO_PSP, 'phit0')
         phit = var(phit0 * (1.0 + ct), 'phit')                # noqa: F821
         ## Oxide capacitance per unit area, and the body factor that
         ## follows from it.  `Gf` is gamma normalised by sqrt(phit),
         ## which is the form the surface-potential solver takes.
         cox = var(EPS_OX / tox, 'cox')                        # noqa: F821
-        gamma = var(sympy.sqrt(2.0 * QELEC * EPS_SI * nsub)   # noqa: F821
+        gamma = var(sympy.sqrt(2.0 * QELE * EPS_SI * nsub)    # noqa: F821
                     / cox, 'gamma')
         ## BIAS-DEPENDENT BODY FACTOR (`macrodefs:478-484`).  The
         ## depletion charge a real device presents is not that of a
@@ -367,7 +382,15 @@ def _psp_mos_analog(T, pmos):
             eps=1e-30), 'vdsp')
         delvg = var(cf * vdsp * (1.0 + cfb * vsbx), 'delvg')  # noqa: F821
 
-        xg = var((vgb - vfb + delvg) / phit, 'xg')           # noqa: F821
+        ## `vgb`, NOT PSP's literal `Vgs + Vsbstar` (`macrodefs:470`).
+        ## The two are the same quantity in PSP, because PSP evaluates
+        ## that expression AFTER its source/drain interchange, so its
+        ## `Vgs` is referred to the lower terminal.  Ours is referred to
+        ## the actual source, which CHANGES under the exchange -- and
+        ## writing it that way cost the exact antisymmetry immediately.
+        ## The difference is the conditioning, a fraction of a millivolt,
+        ## and it is not worth a structural property.
+        xg = var((vgb - vfb + delvg) / phit, 'xg')            # noqa: F821
 
         ## ORDERED TERMINALS.
         ##
