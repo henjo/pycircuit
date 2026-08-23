@@ -335,18 +335,29 @@ class TestTheSubthresholdRegion(object):
     the physics is actually in.
     """
 
+    #: The LEAKAGE-FREE window, and it is not a detail.
+    #:
+    #: The reference records TOTAL terminal current, and PSP's junction
+    #: leakage is a flat ~2e-12 A floor this core does not model at all
+    #: (`TestTheSubthresholdSlope` found that the hard way).  A window
+    #: reaching below it measures PSP's leakage rather than its channel.
+    #: The first version of this class used `1e-14` and got answers that
+    #: were wrong by a third with three times the spread; these bounds
+    #: are the same ones the slope test settled on.
+    LO, HI = 1e-9, 1e-6
+
     #: Implied threshold offset, in mV, and the tolerated spread.
     #: MEASURED, and the numbers are the finding: the n-channel sits a
     #: few mV low and the p-channel is essentially exact, so whatever is
     #: left is n-channel-specific rather than a shared constant.
-    EXPECT = {'nmos_idvg_vd0p05': (3.2, 2.5),
-              'nmos_long_idvg': (1.6, 1.5),
-              'pmos_idvg_vd0p05': (-1.2, 1.5),
-              'pmos_long_idvg': (0.1, 1.0)}
+    EXPECT = {'nmos_idvg_vd0p05': (3.6, 2.0),
+              'nmos_long_idvg': (1.7, 0.5),
+              'pmos_idvg_vd0p05': (-1.2, 0.8),
+              'pmos_long_idvg': (0.0, 0.3)}
 
-    @staticmethod
-    def _implied_vth(deck, sweep):
-        """Return (mean, spread) of the implied `dVth` in mV."""
+    @classmethod
+    def _implied_vth(cls, deck, sweep):
+        """Return (mean dVth in mV, its spread, our slope / PSP's)."""
         cm.default_toolkit = numeric
         w, l = sweep['w'], sweep['l']
         pmos = 'pmos' in sweep['device']
@@ -354,9 +365,9 @@ class TestTheSubthresholdRegion(object):
             deck.model_params(
                 'sg13g2_lv_pmos_psp' if pmos else 'sg13g2_lv_nmos_psp',
                 w=w, l=l, ng=1, m=1, pre_layout=1), w=w, l=l, T=T27)
-        cls = PspPmosLongChannel if pmos else PspMosLongChannel
-        e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
-                **kw)
+        elem = PspPmosLongChannel if pmos else PspMosLongChannel
+        e = elem(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
+                 **kw)
         e.update_iparv()
         b = sweep['bias']
         v = np.asarray(sweep['v'], float)
@@ -364,15 +375,16 @@ class TestTheSubthresholdRegion(object):
         got = np.abs(np.array([
             np.asarray(e.i(e.bias(b['Vd'], x, b['Vs'], b['Vb'])),
                        float)[0] for x in v]))
-        ## Below 1e-14 A the reference itself is at its own noise floor.
-        ok = r > 1e-14
-        v, r, got = v[ok], r[ok], got[ok]
-        slope = np.gradient(np.log(r), v)          # d ln I / dVg
-        dv = np.log(got / r) / slope * 1e3         # mV
-        ## Weak inversion only: steeper than ~190 mV/decade.
-        sub = np.abs(slope) > 12.0
-        assert sub.sum() > 8, 'not enough subthreshold points'
-        return dv[sub].mean(), dv[sub].max() - dv[sub].min()
+        m = (r > cls.LO) & (r < cls.HI)
+        assert m.sum() >= 6, 'not enough points in the window'
+        ## A least-squares slope over the whole window, not a point
+        ## derivative: it is what makes 0.03% resolvable, and it is the
+        ## same quantity for both curves so the window cancels.
+        A = np.vstack([np.ones(m.sum()), v[m]]).T
+        slope = np.linalg.lstsq(A, np.log(r[m]), rcond=None)[0][1]
+        ours = np.linalg.lstsq(A, np.log(got[m]), rcond=None)[0][1]
+        dv = np.log(got[m] / r[m]) / slope * 1e3   # mV
+        return dv.mean(), dv.max() - dv.min(), ours / slope
 
     @pytest.mark.parametrize('name', sorted(EXPECT))
     def test_the_implied_threshold_offset(self, deck, ref, name):
@@ -384,10 +396,33 @@ class TestTheSubthresholdRegion(object):
         four to five decades of current.
         """
         want, tol = self.EXPECT[name]
-        mean, spread = self._implied_vth(deck, ref[name])
+        mean, spread, _ = self._implied_vth(deck, ref[name])
         assert mean == pytest.approx(want, abs=1.0), \
             '%s: %+.2f mV (expected %+.2f)' % (name, mean, want)
         assert spread < tol, '%s: spread %.2f mV' % (name, spread)
+
+    def test_the_slope_is_right_and_the_level_is_not(self, deck, ref):
+        """THE discriminator, and it changes what the residual is.
+
+        Gain and electrostatics are separable, and this is where:
+        `XCOR`, `RSB`, `BETN` and the mobility are GAIN -- they scale the
+        current and leave `d ln I / dVg` untouched.  The body factor is
+        ELECTROSTATIC -- it sets the ideality, so it moves the slope.
+
+        Measured on the long devices, in the leakage-free window: the
+        slope matches to **0.03%** on both channel types while the level
+        is 1.7 mV out on the n-channel and 0.03 mV on the p-channel.
+
+        A correct slope with a wrong level is not a threshold error and
+        not a body-factor error.  It is a WEAK-INVERSION GAIN error --
+        and it cannot be a plain gain error either, because above
+        threshold the same device is within 0.1%.  That is a much
+        narrower thing to look for than "the threshold is off", which is
+        what this was called before the window was fixed.
+        """
+        for name, lim in (('nmos_long_idvg', 3e-4), ('pmos_long_idvg', 5e-4)):
+            _, _, ratio = self._implied_vth(deck, ref[name])
+            assert abs(ratio - 1.0) < lim, (name, ratio)
 
     def test_the_n_channel_is_the_one_that_is_off(self, deck, ref):
         """The asymmetry IS the lead, so it is pinned rather than
@@ -401,11 +436,11 @@ class TestTheSubthresholdRegion(object):
         n_long = self._implied_vth(deck, ref['nmos_long_idvg'])[0]
         n_short = self._implied_vth(deck, ref['nmos_idvg_vd0p05'])[0]
         p_long = self._implied_vth(deck, ref['pmos_long_idvg'])[0]
-        assert abs(p_long) < 1.0, p_long
-        assert n_long > 0.8, n_long
+        assert abs(p_long) < 0.5, p_long
+        assert n_long > 1.0, n_long
         ## and it GROWS as the channel shortens, so part of it is the
         ## reverse-short-channel shift rather than a constant.
-        assert n_short > n_long + 0.8, (n_long, n_short)
+        assert n_short > n_long + 1.0, (n_long, n_short)
 
     @staticmethod
     def _card_kw(deck, sweep):
@@ -434,7 +469,7 @@ class TestTheSubthresholdRegion(object):
         """
         got = [self._implied_vth(deck, ref[n])[0] for n, _ in self.LADDER]
         assert all(b > a - 0.05 for a, b in zip(got, got[1:])), got
-        assert got[-1] - got[0] > 0.8, got
+        assert got[-1] - got[0] > 1.0, got
 
     def test_the_two_candidates_cannot_be_separated_here(self, deck, ref):
         """A NEGATIVE result, pinned so it is not re-attempted blind.

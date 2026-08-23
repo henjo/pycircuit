@@ -3079,17 +3079,27 @@ took about sixty lines to extend.
 >
 > | device | implied ΔVth | spread |
 > |---|---|---|
-> | n-channel, 10 µm | **+1.6 mV** | 1.0 mV |
-> | n-channel, 0.13 µm | **+3.2 mV** | 2.1 mV |
-> | p-channel, 10 µm | **+0.1 mV** | — |
-> | p-channel, 0.13 µm | **−1.2 mV** | — |
+> | n-channel, 10 µm | **+1.72 mV** | 0.20 mV |
+> | n-channel, 0.13 µm | **+3.57 mV** | 1.32 mV |
+> | p-channel, 10 µm | **+0.03 mV** | 0.07 mV |
+> | p-channel, 0.13 µm | **−1.24 mV** | 0.47 mV |
 >
-> Flat over four to five decades, so it is a threshold offset. And it
-> **quantitatively closes the corner** that started this: the worst
+> **⚠ These are the corrected, leakage-free numbers.** The first version
+> of this measurement used a window reaching to 1e-14 A — below PSP's
+> ~2e-12 A junction-leakage floor, which this core does not model. It
+> was measuring PSP's leakage. `TestTheSubthresholdSlope` had found and
+> documented exactly that trap; I walked into it anyway. The window is
+> now the one that test settled on, 1e-9 to 1e-6 A, and the spreads fell
+> by a factor of three to five, which is how the contamination shows.
+>
+> It **quantitatively closes the corner** that started this: the worst
 > remaining DC point was `Vg = 0.4, Vd = 0.05` on the short n-channel,
 > `ids = 1.096`. At 85 mV/decade a +3.5 mV offset is a 9.6% current
-> error — the corner is the threshold offset, exactly, with nothing left
-> over.
+> error — the corner is accounted for exactly, with nothing left over.
+>
+> **But calling it a threshold offset was premature** — see the entry
+> below, which splits it into slope and level and finds the slope
+> exact.
 >
 > **⚠ And it corrects a number this branch has been quoting for weeks.**
 > `TestTheThresholdScaling` compares a proxy,
@@ -3203,6 +3213,55 @@ took about sixty lines to extend.
 > version of this one — a bias or geometry where one term is off, or a
 > vendor output that exposes the body factor after the QM correction,
 > which PSP does not provide.
+
+> **Splitting slope from level: it is not a threshold error — 2026-08-23.**
+> The way out of the collinearity impasse was not a better fit to the
+> `Vsb` shape. It was to use an observable where the candidates differ
+> **qualitatively**: `XCOR`, `RSB`, `BETN` and the mobility are GAIN —
+> they scale current and leave `d ln I/dVg` untouched — while the body
+> factor is ELECTROSTATIC and moves the slope. Slope and level, measured
+> separately, separate them.
+>
+> Measured on the long devices in the leakage-free window, with a
+> least-squares slope over the whole window rather than a point
+> derivative:
+>
+> | | slope ours / PSP | level |
+> |---|---|---|
+> | n-channel, 10 µm | **0.99987** | +1.72 mV |
+> | p-channel, 10 µm | **1.00034** | +0.03 mV |
+>
+> **The slope is right to 0.03% and the level is not.** So it is neither
+> a body-factor error nor a threshold error — and it is not a plain gain
+> error either, because above threshold the same device is within 0.1%
+> while in weak inversion it is 5.4% high with a flat ratio
+> (1.0507–1.0571). What is left is a **weak-inversion-specific level
+> error, n-channel only, worth about 1.7 mV**. That is a far narrower
+> thing to look for than "the threshold is off".
+>
+> **Two corrections to my own work, and the second is the instructive
+> one.**
+>
+> *The tolerance tables and the earlier ΔVth numbers were measured in a
+> contaminated window* and are corrected above.
+>
+> *And an intermediate conclusion was wrong and is retracted.* In the
+> contaminated window the slope ratio came out 0.995 — flat in `Vsb` —
+> which read as a clean 0.5% slope error and would have pointed at the
+> thermal voltage. It was PSP's junction leakage flattening the bottom
+> of its own curve. In the clean window the same measurement gives
+> 0.9999. **A measurement that produces a tidy, interpretable answer is
+> not thereby a correct one**, and the check that caught it was noticing
+> that an existing test had documented this exact floor.
+>
+> **What this rules out**, and it is most of the field: the body factor
+> (slope would move), `XCOR`/`RSB`/mobility (a gain error would not
+> vanish above threshold), `phit1` (checked line by line — `dCTG = 1`
+> because `CTG = 0`, `dphit1 = 0` because `PSCE = 0`), and the QM block
+> (transcribed exactly; the `G_0` inflation is 27.7% here and clearly
+> both needed and right). What it points at is whatever sets the
+> weak-inversion charge specifically — `phib`, `xn`, `delta` — on the
+> n-channel.
 
 Deferred, unchanged from the original research verdict:
 
