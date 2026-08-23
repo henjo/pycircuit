@@ -314,6 +314,132 @@ class TestAgainstTheRealDevice(object):
 
 
 @needs_pdk
+class TestTheSubthresholdRegion(object):
+    """The decades BELOW the sweep comparison's floor.
+
+    `_compare` masks at `FLOOR = 1e-6` A, so five decades of every
+    transfer curve have never been compared against the vendor at all --
+    which matters, because that is where a threshold error lives.  Above
+    threshold a few millivolts of `Vth` is a tenth of a percent of
+    current and invisible; at 85 mV/decade it is ten percent.
+
+    The measurement here is not a current ratio, it is a VOLTAGE.  In
+    weak inversion `I ~ exp(Vg / (n*phit))`, so
+
+        dVth = ln(ours/psp) / (d ln I_psp / dVg)
+
+    turns the ratio into the threshold offset that would produce it.
+    Two things follow that a ratio alone cannot say: whether the offset
+    is FLAT across the region -- if it is, it is a threshold error and
+    nothing else -- and how big it is in millivolts, which is the unit
+    the physics is actually in.
+    """
+
+    #: Implied threshold offset, in mV, and the tolerated spread.
+    #: MEASURED, and the numbers are the finding: the n-channel sits a
+    #: few mV low and the p-channel is essentially exact, so whatever is
+    #: left is n-channel-specific rather than a shared constant.
+    EXPECT = {'nmos_idvg_vd0p05': (3.2, 2.5),
+              'nmos_long_idvg': (1.6, 1.5),
+              'pmos_idvg_vd0p05': (-1.2, 1.5),
+              'pmos_long_idvg': (0.1, 1.0)}
+
+    @staticmethod
+    def _implied_vth(deck, sweep):
+        """Return (mean, spread) of the implied `dVth` in mV."""
+        cm.default_toolkit = numeric
+        w, l = sweep['w'], sweep['l']
+        pmos = 'pmos' in sweep['device']
+        kw = psp_scaling.to_long_channel(
+            deck.model_params(
+                'sg13g2_lv_pmos_psp' if pmos else 'sg13g2_lv_nmos_psp',
+                w=w, l=l, ng=1, m=1, pre_layout=1), w=w, l=l, T=T27)
+        cls = PspPmosLongChannel if pmos else PspMosLongChannel
+        e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
+                **kw)
+        e.update_iparv()
+        b = sweep['bias']
+        v = np.asarray(sweep['v'], float)
+        r = np.abs(np.asarray(sweep['i_d'], float))
+        got = np.abs(np.array([
+            np.asarray(e.i(e.bias(b['Vd'], x, b['Vs'], b['Vb'])),
+                       float)[0] for x in v]))
+        ## Below 1e-14 A the reference itself is at its own noise floor.
+        ok = r > 1e-14
+        v, r, got = v[ok], r[ok], got[ok]
+        slope = np.gradient(np.log(r), v)          # d ln I / dVg
+        dv = np.log(got / r) / slope * 1e3         # mV
+        ## Weak inversion only: steeper than ~190 mV/decade.
+        sub = np.abs(slope) > 12.0
+        assert sub.sum() > 8, 'not enough subthreshold points'
+        return dv[sub].mean(), dv[sub].max() - dv[sub].min()
+
+    @pytest.mark.parametrize('name', sorted(EXPECT))
+    def test_the_implied_threshold_offset(self, deck, ref, name):
+        """A few millivolts, and FLAT -- so it is a threshold offset.
+
+        Flatness is the part that identifies it.  A slope error or a
+        bias-dependent term would give an implied `dVth` that walks
+        across the region; these sit within a couple of millivolts over
+        four to five decades of current.
+        """
+        want, tol = self.EXPECT[name]
+        mean, spread = self._implied_vth(deck, ref[name])
+        assert mean == pytest.approx(want, abs=1.0), \
+            '%s: %+.2f mV (expected %+.2f)' % (name, mean, want)
+        assert spread < tol, '%s: spread %.2f mV' % (name, spread)
+
+    def test_the_n_channel_is_the_one_that_is_off(self, deck, ref):
+        """The asymmetry IS the lead, so it is pinned rather than
+        described.
+
+        The p-channel threshold is right to a millivolt at both
+        geometries and the n-channel is not, which rules out anything
+        shared -- a physical constant, the thermal voltage, the oxide
+        capacitance -- and points at something n-channel-specific.
+        """
+        n_long = self._implied_vth(deck, ref['nmos_long_idvg'])[0]
+        n_short = self._implied_vth(deck, ref['nmos_idvg_vd0p05'])[0]
+        p_long = self._implied_vth(deck, ref['pmos_long_idvg'])[0]
+        assert abs(p_long) < 1.0, p_long
+        assert n_long > 0.8, n_long
+        ## and it GROWS as the channel shortens, so part of it is the
+        ## reverse-short-channel shift rather than a constant.
+        assert n_short > n_long + 0.8, (n_long, n_short)
+
+    def test_the_subthreshold_current_is_within_eleven_percent(self,
+                                                               deck, ref):
+        """The same statement in the units the sweeps use, so the
+        coverage gap is closed in its own terms too."""
+        for name in sorted(self.EXPECT):
+            sw = ref[name]
+            cm.default_toolkit = numeric
+            w, l = sw['w'], sw['l']
+            pmos = 'pmos' in sw['device']
+            kw = psp_scaling.to_long_channel(
+                deck.model_params(
+                    'sg13g2_lv_pmos_psp' if pmos else 'sg13g2_lv_nmos_psp',
+                    w=w, l=l, ng=1, m=1, pre_layout=1), w=w, l=l, T=T27)
+            cls = PspPmosLongChannel if pmos else PspMosLongChannel
+            e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                    cm.Node('b'), **kw)
+            e.update_iparv()
+            b = sw['bias']
+            v = np.asarray(sw['v'], float)
+            r = np.abs(np.asarray(sw['i_d'], float))
+            m = (r > 1e-13) & (r < 1e-6)
+            ## The long device carries more current, so it has fewer
+            ## decades under the floor -- about 2.5 rather than 5.
+            assert m.sum() > 6, (name, int(m.sum()))
+            got = np.abs(np.array([
+                np.asarray(e.i(e.bias(b['Vd'], x, b['Vs'], b['Vb'])),
+                           float)[0] for x in v[m]]))
+            ratio = got / r[m]
+            assert 0.90 < ratio.min() and ratio.max() < 1.11, \
+                '%s: %.3f - %.3f' % (name, ratio.min(), ratio.max())
+
+
+@needs_pdk
 class TestTheThresholdScaling(object):
     """Our geometry scaling against PSP's OWN threshold voltage.
 
@@ -353,18 +479,29 @@ class TestTheThresholdScaling(object):
 
     def test_the_threshold_shift_with_length_is_within_ten_percent(
             self, deck):
-        """The comparable quantity, and what it says.
+        """The comparable quantity, and what it does NOT say.
 
-        Measured: PSP shifts +237 mV from L = 1 um to L = 0.13 um and we
-        shift +214 mV -- 90% of it, from the pocket-implant doping
-        formula plus the length terms in `VFB` and `DPHIB`.  The missing
-        23 mV is worth about 3% of drain current at Vg = 1.2, which is a
-        quarter of the ~12% the short device is actually off by.
+        Measured: PSP shifts +237 mV from L = 1 um to L = 0.13 um and
+        `_our_vth` shifts +214 mV -- 90% of it, from the pocket-implant
+        doping formula plus the length terms in `VFB` and `DPHIB`.
 
-        So the short-device residual is NOT predominantly a threshold
-        error, and DIBL is not the next layer -- `CF` scales to 1e-7 on
-        the long device and contributes under a millivolt at Vd = 0.05,
-        where two of the worst sweeps sit.
+        ⚠ **The missing 23 mV is an artefact of the PROXY, not the
+        model's error.**  `_our_vth` is a textbook
+        `vfb + phib + gamma*sqrt(phib)`, which is not what the model
+        computes -- it leaves out the QM correction folded into the
+        doping, poly depletion, and the bias-dependent body factor.
+        Measured properly, from the SUBTHRESHOLD CURRENT
+        (`TestTheSubthresholdRegion`), the model's threshold is 1.6 mV
+        low on the long n-channel and 3.2 mV low on the short one: the
+        geometry-dependent part is about 2 mV, not 23.  **The proxy
+        overstates the error tenfold.**
+
+        This test is therefore a check that the SCALING LAYER tracks
+        PSP's geometry trend, which it is good for, and not a
+        measurement of threshold accuracy, which it is not.  An earlier
+        version of this docstring drew a quantitative conclusion from it
+        ("worth about 3% of drain current ... a quarter of the ~12% the
+        short device is off by") and both halves of that are now wrong.
         """
         import json
         with open(REF) as fh:

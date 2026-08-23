@@ -937,7 +937,7 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
     ids = _v(beta * (FdL * qim1 * dps * gvinv), 'ids')
     return dict(ids=ids, qim=qim, qim1=qim1, alpha=alpha, dps=dps,
                 xgm=xgm, x_m=x_m, x_s=x_s, x_d=x_d, qbm=qbm,
-                Pm=Pm, Dm=Dm, sqm=sqm, Gmob=Gmob_dL, Gvsat=Gvsat,
+                Pm=Pm, Dm=Dm, sqm=sqm, Gmob_dL=Gmob_dL, Gvsat=Gvsat,
                 zsat=zsat, gvinv=gvinv, GdL=GdL, eta_p=eta_p, FdL=FdL)
 
 
@@ -1017,7 +1017,7 @@ def charges_long_channel(core, xg, phit, cox):
     ## (macrodefs:776-778).  With mobility off both reduce to 1 and this
     ## is the ideal `qim1/alpha`.
     Voxm = _v(xgm * phit, 'q_Voxm')
-    gr = _v(core['Gmob'] * core['gvinv'], 'q_gr')
+    gr = _v(core['Gmob_dL'] * core['gvinv'], 'q_gr')
     alpha1 = _v(alpha * (1.0 + 0.5 * (core['zsat'] * gr * gr)), 'q_a1')
     H = _v(gr * qim1 * hdl.safe_div(1.0, alpha1, eps=1e-30), 'q_H')
     Fj = _v(0.5 * dps * hdl.safe_div(1.0, H, eps=1e-30), 'q_Fj')
@@ -1073,7 +1073,7 @@ def noise(core, mob, beta, phit, cox, nz):
     ## `H` is the effective charge slope, the same quantity the charge
     ## model builds (`macrodefs:776-778`); recomputed here from `core`
     ## rather than threaded through, since it is three cheap lines.
-    gr = _v(core['Gmob'] * core['gvinv'], 'n_gr')
+    gr = _v(core['Gmob_dL'] * core['gvinv'], 'n_gr')
     alpha1 = _v(alpha * (1.0 + 0.5 * (core['zsat'] * gr * gr)), 'n_a1')
     H = _v(gr * qim1 * hdl.safe_div(1.0, alpha1, eps=1e-30), 'n_H')
 
@@ -1194,15 +1194,15 @@ def induced_gate_noise(core, shared, sid, cox_c, swign):
     ## that ratio is a function of `zsat` ALONE and `GdL` cancels out
     ## of it exactly.
     ##
-    ## `core['Gmob']` ALREADY HOLDS `Gmob_dL`, not `Gmob` -- see the
-    ## `intrinsic` return, which puts `Gmob=Gmob_dL` under that key.
-    ## Multiplying by `core['GdL']` as well, which is what reading
-    ## PSP's formula literally invites, leaves a spurious `1/GdL^2`
-    ## that grows with `Vds` through channel-length modulation and so
-    ## reads exactly like a velocity-saturation error.  Same form as
-    ## `charges_long_channel`'s `q_gr` two functions down, which is the
-    ## idiom to copy.
-    gr = _v(core['Gmob'] * core['gvinv'], 'g_ratio')
+    ## The key is `Gmob_dL` and not `Gmob` because it holds
+    ## `Gmob * GdL`.  It USED to be spelled `Gmob`, and that cost a
+    ## real bug: reading PSP's formula literally invites
+    ## `core['Gmob'] * core['GdL'] * core['gvinv']`, which carries
+    ## `GdL` twice and leaves a spurious `1/GdL^2` that grows with
+    ## `Vds` through channel-length modulation -- indistinguishable
+    ## from a velocity-saturation error.  A key that names its contents
+    ## reads wrong at the one call site that is wrong.
+    gr = _v(core['Gmob_dL'] * core['gvinv'], 'g_ratio')
     cgeff = _v(swign * cox_c * core['eta_p']
                * hdl.safe_div(1.0, gr * gr, eps=1e-30), 'g_cgeff')
 

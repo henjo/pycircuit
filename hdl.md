@@ -3057,6 +3057,66 @@ took about sixty lines to extend.
 > reason: the bug was exact at `Vds = 0.05` and 73% high at 1.2, so a
 > per-bias tolerance would have accommodated it.
 
+> **The subthreshold region had never been compared, and it is where
+> the last residual lives — 2026-08-23.** `_compare` masks the sweeps at
+> `FLOOR = 1e-6` A, so **five decades of every transfer curve had gone
+> unmeasured against the vendor**. That matters because it is exactly
+> where a threshold error is visible: above threshold a few millivolts
+> of `Vth` is a tenth of a percent of current, and at 85 mV/decade it is
+> ten percent.
+>
+> **Measure a voltage, not a ratio.** In weak inversion
+> `I ~ exp(Vg/(n·φt))`, so
+>
+> ```
+> ΔVth = ln(ours/psp) / (d ln I_psp / dVg)
+> ```
+>
+> turns the current ratio into the threshold offset that would produce
+> it. Two things follow that a ratio cannot say: whether the offset is
+> **flat** across the region — if it is, it is a threshold error and
+> nothing else — and how large it is in the unit the physics is in.
+>
+> | device | implied ΔVth | spread |
+> |---|---|---|
+> | n-channel, 10 µm | **+1.6 mV** | 1.0 mV |
+> | n-channel, 0.13 µm | **+3.2 mV** | 2.1 mV |
+> | p-channel, 10 µm | **+0.1 mV** | — |
+> | p-channel, 0.13 µm | **−1.2 mV** | — |
+>
+> Flat over four to five decades, so it is a threshold offset. And it
+> **quantitatively closes the corner** that started this: the worst
+> remaining DC point was `Vg = 0.4, Vd = 0.05` on the short n-channel,
+> `ids = 1.096`. At 85 mV/decade a +3.5 mV offset is a 9.6% current
+> error — the corner is the threshold offset, exactly, with nothing left
+> over.
+>
+> **⚠ And it corrects a number this branch has been quoting for weeks.**
+> `TestTheThresholdScaling` compares a proxy,
+> `vfb + phib + γ√phib`, which is *not* what the model computes — it
+> omits the QM correction folded into the doping, poly depletion, and
+> the bias-dependent body factor. The proxy says the short device misses
+> **22.9 mV** of PSP's shift. The current says the geometry-dependent
+> part is about **2 mV**. **The proxy overstates the error tenfold**,
+> and the conclusion drawn from it — "the missing 23 mV is worth ~3% of
+> drain current, a quarter of the ~12% the short device is off by" — is
+> wrong in both halves: the short device is no longer 12% off either.
+> The test stays, because tracking PSP's geometry *trend* is what it is
+> good for; its docstring now says what it is not good for.
+>
+> **The asymmetry is the lead.** The p-channel threshold is right to a
+> millivolt at both geometries and the n-channel is not, which rules out
+> anything shared — a physical constant, the thermal voltage, the oxide
+> capacitance — and points at something n-channel-specific. Part of it
+> grows with shortening (1.6 → 3.2 mV), so part is the
+> reverse-short-channel shift and part is a constant. Pinned by test;
+> not chased.
+>
+> Also renames `intrinsic()`'s returned `Gmob` key to `Gmob_dL`, which
+> is what it has always held. The old name cost a real bug and a wrong
+> published claim one entry ago; a key that names its contents reads
+> wrong at the one call site that is wrong.
+
 Deferred, unchanged from the original research verdict:
 
 | item | why |

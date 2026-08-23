@@ -572,6 +572,25 @@ shape function is known. Ours matches to 0.1% on the long devices. The drain
 density is unchanged by the split, identically: the correlated source
 and the reduced independent one sum back to :math:`S_{id}`.
 
+Below the comparison's 1 µA floor — five decades of every transfer curve
+— the model is checked as a *voltage* rather than a ratio. In weak
+inversion a current ratio is a threshold offset divided by the
+subthreshold slope, so the natural measurement is
+
+.. math::
+
+   \Delta V_{th} = \ln(I_{ours}/I_{PSP}) \; / \;
+                    (\mathrm{d}\ln I_{PSP}/\mathrm{d}V_g)
+
+which is flat across the region if — and only if — the discrepancy is a
+threshold offset. It is: +1.6 mV on the 10 µm n-channel, +3.2 mV on the
+0.13 µm one, and within a millivolt of zero on both p-channel devices.
+That accounts exactly for the worst remaining DC point, which is 9.6%
+high at :math:`V_g = 0.4`, :math:`V_d = 0.05` on the short n-channel —
+at 85 mV/decade a 3.5 mV offset *is* a 9.6% current error. The p-channel
+being right at both geometries rules out anything shared and leaves the
+remainder as something n-channel-specific.
+
 Absent: the rest of the short-channel threshold block (``PSCE``, which
 is all-zero on this card anyway); gate leakage; impact ionisation; the
 non-quasi-static block; and self-heating.
