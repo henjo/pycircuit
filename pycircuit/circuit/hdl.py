@@ -389,6 +389,32 @@ def safe_sqrt(x, eps=1e-12):
     return sympy.sqrt(hypsmooth(x, eps))
 
 
+def safe_abs(x, eps=1e-30):
+    """``abs(x)`` made DIFFERENTIABLE at zero, as ``sqrt(x*x + eps^2)``.
+
+    `sympy.Abs` is the trap here, and it is a quiet one because the
+    VALUE is always right.  Sympy does not know a model symbol is real,
+    so it differentiates ``Abs(u)`` as
+    ``(re(u)*re'(u) + im(u)*im'(u)) / Abs(u)`` -- which at ``u = 0`` is
+    ``0/0``.  A model can then be finite everywhere and have a NaN
+    Jacobian at the one bias where its argument vanishes, which is the
+    worse of the two failures: the value looks right and Newton is
+    poisoned.  Raising an ``Abs`` to a power compounds it, the printed
+    derivative carrying ``sign(u)/(u*Abs(u))``.
+
+    ``sqrt(x*x + eps^2)`` has derivative ``x/sqrt(x*x + eps^2)``, which
+    is bounded by 1 and equals 0 at the origin -- finite for every real
+    input, with no branch.  For ``|x| >> eps`` it agrees with ``abs(x)``
+    to relative order ``(eps/x)^2 / 2``.
+
+    Squares its argument, so it halves the exponent range: keep ``|x|``
+    under about 1e150, which for a voltage-derived quantity means
+    clamping the voltage first (`juncap.VJUN_CLAMP` is what does that
+    for the junction).
+    """
+    return sympy.sqrt(x * x + eps * eps)
+
+
 def safe_ln(x, eps=1e-30):
     """``ln(x)`` made finite for every real ``x``, by the same smoothing.
 

@@ -300,7 +300,20 @@ def leakage(v, par, tag=''):
         ## evaluated there, so the denominator is floored at the value
         ## it has at the crossover.  That is exact inside the branch and
         ## clamps at `fstop` outside it.
-        t4 = _v(sympy.Abs(vav * g('vbrinv')) ** g('pbr'), 'jt4' + ct)
+        ## `safe_abs`, not `Abs`, and not for the value's sake: `vav` is
+        ## a smoothed `min(v, 0)`, so under any real FORWARD bias it is
+        ## exactly zero -- and there both `Abs`'s own derivative and the
+        ## power's are `0/0`.  The value came out finite and the
+        ## JACOBIAN came out NaN, which is the worse of the two
+        ## failures: nothing looks wrong and Newton is poisoned.
+        ##
+        ## The smoothing also floors the power's base away from zero, so
+        ## one change fixes both shapes.  Agreement is to relative
+        ## `(1e-30/u)^2` wherever `u` is measurable at all, and `u` is
+        ## bounded by the +-1kV junction clamp so the square cannot
+        ## overflow.
+        avb = _v(hdl.safe_abs(vav * g('vbrinv')), 'javb' + ct)
+        t4 = _v(avb ** g('pbr'), 'jt4' + ct)
         fb_lo = _v(hdl.safe_div(
             1.0, sympy.Max(1.0 - t4, 1.0 / g('fstop')), eps=1e-30),
             'jfblo' + ct)

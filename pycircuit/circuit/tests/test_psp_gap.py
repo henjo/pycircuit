@@ -2138,6 +2138,121 @@ class TestTemperatureScaling(object):
         assert sig.parameters['T'].default == hdl._epar_T(object())
 
 
+class TestExtremeBiasWithCardParameters(object):
+    """Finiteness far outside anything physical, from a REAL card.
+
+    `test_psp_current.py` already covers this, and covers it well -- but
+    with DEFAULT parameters, and that turns out to be a different
+    question.  The defaults leave the junction off, `alp` and `rs` at
+    zero and the noise absent; a card turns all of them on and moves
+    every quantity the guards are sized against.  This branch has
+    learned that distinction twice before (the symmetry bug that only
+    card parameters could see, and the `AX` floor the card alone
+    exercises), so the regime is pinned here rather than assumed from
+    there.
+
+    Why it matters at all, at biases this absurd: the device's BRANCH
+    voltages are bounded by `limit()`, but its NODE voltages are not, so
+    a diverging solve evaluates the model far outside anything physical
+    and it has to stay in range there.  A NaN in one Jacobian row
+    poisons the whole solve rather than one entry -- and a NaN in the
+    JACOBIAN with a finite VALUE is the worse case, because nothing
+    looks wrong.
+    """
+
+    def _fet(self, deck, kind='nmos', **over):
+        cm.default_toolkit = numeric
+        cls, card = ((PspMosLongChannel, 'sg13g2_lv_nmos_psp')
+                     if kind == 'nmos'
+                     else (PspPmosLongChannel, 'sg13g2_lv_pmos_psp'))
+        kw = psp_scaling.to_long_channel(
+            deck.model_params(card, w=10e-6, l=1e-6, ng=1, m=1,
+                              pre_layout=1),
+            w=10e-6, l=1e-6, T=T27)
+        kw.update(over)
+        e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
+                **kw)
+        e.update_iparv()
+        return e
+
+    #: Both the value and the Jacobian are finite through here, on both
+    #: signs and both channel types.  Measured: the n-channel holds to
+    #: 1e27 and the p-channel to 1e24, so the shared list stops at the
+    #: SMALLER -- and the per-type bounds are pinned separately in
+    #: `test_the_bound_is_where_it_is_measured_to_be`, because "both
+    #: types survive this far" and "this is how far each gets" are
+    #: different statements and only the second catches a regression in
+    #: the better one.
+    REACH = [1.0e2, 1.0e3, 1.0e4, 1.0e7, 1.0e12, 1.0e20, 1.0e24]
+
+    @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
+    @pytest.mark.parametrize('sign', [1.0, -1.0])
+    def test_the_jacobian_stays_finite_with_a_card(self, deck, kind, sign):
+        """This is the regression that matters.
+
+        At `Vd = -1e3` the drain junction is FORWARD biased, so
+        JUNCAP2's avalanche argument is smoothed to exactly zero -- and
+        `Abs(u)` differentiates to `(re*re' + im*im')/Abs(u)`, which is
+        `0/0` there.  The current was finite and the conductance was
+        NaN.  1e3 volts is not hypothetical: two of these in a stack
+        walk out that far on the way to a solution.
+        """
+        e = self._fet(deck, kind)
+        t = 1.0 if kind == 'nmos' else -1.0
+        for v in self.REACH:
+            x = e.bias(sign * t * v, t * 1.2, 0.0, 0.0)
+            with np.errstate(all='ignore'):
+                i = np.asarray(e.i(x), float)
+                G = np.asarray(e.G(x), float)
+            assert np.all(np.isfinite(i)), (kind, sign * v, 'i')
+            assert np.all(np.isfinite(G)), (kind, sign * v, 'G')
+
+    def test_the_current_stays_bounded_too(self, deck):
+        """Finite is not enough -- it also has to SATURATE.  `Vdse`
+        pins the drain end, so the current may creep but must not run
+        away with the bias."""
+        e = self._fet(deck)
+        ref = np.asarray(e.i(e.bias(2.0, 1.2, 0.0, 0.0)), float)[0]
+        for v in self.REACH:
+            got = np.asarray(e.i(e.bias(v, 1.2, 0.0, 0.0)), float)[0]
+            ## Twenty-five decades of drain bias buy under six decades
+            ## of current, which is what saturation looks like from
+            ## here.  Without `Vdse` it would be linear in `Vd`.
+            assert 0.0 < got < 1e6 * ref, (v, got, ref)
+
+    @pytest.mark.parametrize('kind,last', [('nmos', 27), ('pmos', 24)])
+    def test_the_bound_is_where_it_is_measured_to_be(self, deck, kind,
+                                                     last):
+        """The limit is RECORDED, not merely respected.
+
+        Past these the Jacobian is still non-finite, and the cause is a
+        property of the compiler rather than of the model:
+        `safe_div(a, b)` regularises as `a*b/(b^2 + eps^2)`, so its
+        VALUE needs `|b| < ~1e154` while its DERIVATIVE squares that
+        denominator again and needs `|b| < ~1e77`.  A quarter of the
+        exponent range, and the drain-side surface-potential update
+        reaches it three decades sooner on the p-channel than on the
+        n-channel.
+
+        Pinned so a future change to `safe_div` has a number to beat,
+        and so the gap is not rediscovered as a bug.
+        """
+        e = self._fet(deck, kind)
+        t = 1.0 if kind == 'nmos' else -1.0
+        with np.errstate(all='ignore'):
+            ok = np.asarray(e.G(e.bias(t * 10.0 ** last, t * 1.2, 0.0,
+                                       0.0)), float)
+            bad = np.asarray(e.G(e.bias(t * 10.0 ** (last + 1), t * 1.2,
+                                        0.0, 0.0)), float)
+            val = np.asarray(e.i(e.bias(t * 10.0 ** (last + 1), t * 1.2,
+                                        0.0, 0.0)), float)
+        assert np.all(np.isfinite(ok)), kind
+        assert not np.all(np.isfinite(bad)), kind
+        ## The VALUE survives past where the derivative does -- which is
+        ## exactly why this had to be looked for rather than noticed.
+        assert np.all(np.isfinite(val)), kind
+
+
 class TestTheJunction(object):
     """JUNCAP2's charge, and the ideal diode that goes with it.
 

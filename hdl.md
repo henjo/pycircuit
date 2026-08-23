@@ -537,7 +537,8 @@ valid for every input:
 | `hypsmooth(x, eps)` | smooth `max(x, 0)` | no branch at all — the right first thing to reach for |
 | `safe_sqrt(x)` | `sqrt(hypsmooth(x))` | finite derivative below zero |
 | `safe_ln(x)` | `ln(hypsmooth(x))` | no `−inf` at zero |
-| `safe_div(a, b)` | `a·b / (b² + ε²)` | finite at `b = 0` |
+| `safe_div(a, b)` | `a·b / (b² + ε²)` | finite at `b = 0`; value needs `|b| < ~1e154`, **derivative `< ~1e77`** |
+| `safe_abs(x)` | `sqrt(x² + ε²)` | `Abs` differentiates to `0/0` at zero |
 
 Three findings from building these are worth stating, because each one
 broke a version that looked correct:
@@ -2915,6 +2916,74 @@ took about sixty lines to extend.
 > dominated by **flicker** noise — some four decades of it on the long
 > device. The white part has to be split out, which the existing drain
 > tests had always done and the new one initially did not.
+
+> **The extreme-bias hole, closed where it was reachable and MEASURED
+> where it is not — 2026-08-23.** The previous commit reported that with
+> card parameters the core went non-finite far outside anything
+> physical. Chased, and it was three separate things.
+>
+> **The one that mattered was at −10³ V, and it was reachable.** At that
+> bias the drain junction is FORWARD biased, so JUNCAP2's avalanche
+> argument is smoothed to exactly zero — and `sympy.Abs(u)` differen-
+> tiates to `(re·re' + im·im')/Abs(u)`, which is `0/0` there. The
+> current came out finite and the conductance came out **NaN**, which is
+> the worse of the two failures: nothing looks wrong and Newton is
+> poisoned. 10³ V is not hypothetical on this branch — two of these in a
+> stack is what motivated `limit()` in the first place.
+>
+> `safe_abs(x, eps) = sqrt(x*x + eps^2)` joins `safe_sqrt`/`safe_ln`/
+> `safe_div` in the family. Its derivative is `x/sqrt(x*x + eps^2)`,
+> bounded by 1 and zero at the origin, and it floors the power's base as
+> a side effect — so one change fixes both the `Abs` and the `|u|^p`
+> shapes. This is the **third** appearance of "the value is fine and the
+> derivative is `0/0`" on this branch (`XN_FLOOR`, `Max` on an
+> expression, now `Abs`), which is why it became a helper rather than a
+> local patch.
+>
+> **The second was pure evaluation ORDER, and cost nothing to fix.**
+> `_sigma_body` — PSP's `sigma`/`sigma2` initial-guess correction — held
+> none of its intermediates. Left bare they get substituted into one
+> another before printing, so `denom` ends up multiplied out inside the
+> numerator and the compiled form evaluates products the written form
+> never creates (`nu**4` against `a*nu*tau`). The same algebra typed
+> into a Python REPL returns 190.73 where the compiled chain returned
+> NaN. Binding four intermediates with `var()` moved the failure two
+> decades out and made the CURRENT finite through 10³⁹, up from 10³³.
+> **The let-chain is not an optimisation here, it is the arithmetic.**
+>
+> **The third is a documented limit of the compiler, not of the model.**
+> `safe_div(a, b) = a·b/(b² + eps²)`, so its VALUE needs `|b| < ~1e154`
+> and its DERIVATIVE — which squares that denominator again — needs
+> `|b| < ~1e77`. A quarter of the exponent range. The drain-side
+> surface-potential update reaches it, and that is the standing bound:
+>
+> | | both `i` and `G` finite through | first failure |
+> |---|---|---|
+> | n-channel, card parameters | **10²⁷ V** | 10²⁸ |
+> | p-channel, card parameters | **10²⁴ V** | 10²⁵ |
+>
+> Symmetric in sign, and 21 decades beyond the −10³ that was actually
+> reachable. Pinned by test rather than left as a remark, so a future
+> `safe_div` has a number to beat.
+>
+> **This was never only about absurd bias.** The suite carried 24
+> `invalid value encountered in scalar divide` warnings, raised by
+> `test_two_devices_in_series_share_a_current` and
+> `test_a_stacked_pair_converges` -- two ORDINARY two-transistor
+> circuits. They are gone now, all 24, from these two fixes. So the
+> `0/0` was being evaluated on the way to real solutions and had simply
+> never been traced; the extreme-bias sweep is what made it findable,
+> not what made it matter.
+>
+> **And the reason it was missed: the existing extreme-bias tests use
+> DEFAULT parameters.** Defaults leave the junction off, `alp` and `rs`
+> at zero and the noise absent. That is the third time on this branch
+> that a card has exercised something defaults could not — after the
+> symmetry bug and the `AX` floor — so the card-parameterised version
+> now exists as its own class rather than being assumed from the other.
+> Testing both channel types earned its keep immediately: the p-channel
+> fails three decades sooner, and a single-type test would have recorded
+> the n-channel bound as if it were the model's.
 
 Deferred, unchanged from the original research verdict:
 

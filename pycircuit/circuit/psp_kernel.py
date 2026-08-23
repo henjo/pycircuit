@@ -94,33 +94,45 @@ def mina(x, y, a):
     return 0.5 * (x + y - sympy.sqrt((x - y) ** 2 + a))
 
 
-def _sigma_body(a, ab, c, tau, eta):
+def _sigma_body(a, ab, c, tau, eta, tag):
     """Shared body of ``sigma`` and ``sigma2``.
 
     They differ only in whether the ``a`` in two places is ``a`` or
     ``a*b``; PSP ships them as separate macros, and writing the shared
     algebra once keeps them provably the same shape.
+
+    EVERY INTERMEDIATE IS HELD, and that is load-bearing rather than
+    tidy.  Left as bare sub-expressions these get substituted into one
+    another before printing, so `denom` ends up multiplied out inside
+    the numerator and the compiled form evaluates products the written
+    form never forms -- `nu**4` against `a*nu*tau` among them.  Written
+    as a chain the same algebra is finite at arguments where the
+    expanded form overflows to `inf` and then to `NaN`: measured, the
+    n-channel long device with card parameters lost its Jacobian at
+    ``Vd = 1e26`` and its current at ``1e34``, purely from evaluation
+    ORDER.  The `var()` let-chain exists for exactly this.
     """
-    nu = a + c
-    mutau = nu * nu + (0.5 * c * c - ab) * tau
+    nu = _v(a + c, 'sg_nu' + tag)
+    mutau = _v(nu * nu + (0.5 * c * c - ab) * tau, 'sg_mutau' + tag)
     ## `mutau` appears in a denominator twice.  It is not guaranteed
     ## nonzero by anything in the algebra, and a zero here would put a
     ## NaN into the surface potential -- and so into every current the
     ## model computes.  Regularised rather than guarded, because a guard
     ## would still evaluate the division in its untaken arm.
-    inv_mutau = hdl.safe_div(1.0, mutau, eps=1e-30)
-    denom = mutau + (nu * tau * tau * inv_mutau) * c * (c * c * ONE_THIRD
-                                                        - ab)
-    return eta + a * nu * tau * hdl.safe_div(1.0, denom, eps=1e-30)
+    inv_mutau = _v(hdl.safe_div(1.0, mutau, eps=1e-30), 'sg_imu' + tag)
+    denom = _v(mutau + (nu * tau * tau * inv_mutau)
+               * c * (c * c * ONE_THIRD - ab), 'sg_den' + tag)
+    return eta + _v(a * nu * tau, 'sg_num' + tag) \
+        * hdl.safe_div(1.0, denom, eps=1e-30)
 
 
-def sigma(a, c, tau, eta):
+def sigma(a, c, tau, eta, tag=''):
     """PSP's ``sigma`` -- the three-argument correction."""
     a, c, tau, eta = map(sympy.sympify, (a, c, tau, eta))
-    return _sigma_body(a, a, c, tau, eta)
+    return _sigma_body(a, a, c, tau, eta, tag)
 
 
-def sigma2(a, b, c, tau, eta):
+def sigma2(a, b, c, tau, eta, tag=''):
     """PSP's ``sigma2`` -- the four-argument variant.
 
     The vendor guards ``|tau| < 1e-120`` and returns ``eta``, because
@@ -131,7 +143,8 @@ def sigma2(a, b, c, tau, eta):
     """
     a, b, c, tau, eta = map(sympy.sympify, (a, b, c, tau, eta))
     return sympy.Piecewise((eta, sympy.Abs(tau) < 1e-120),
-                           (_sigma_body(a, a * b, c, tau, eta), True))
+                           (_sigma_body(a, a * b, c, tau, eta, tag),
+                            True))
 
 
 def spe_residual(x, xg, xn, Gf):
@@ -222,7 +235,7 @@ def sp_s(xg, xn, delta, Gf, xi, margin=1e-5):
     ## accumulation regime, but `eta_a` goes below -1 elsewhere and the
     ## log would take a non-positive argument.
     tau_a = _v(-eta_a + hdl.safe_ln(a_a * inv_Gf2), 'tau_a')
-    y0 = _v(sigma(a_a, c_a, tau_a, eta_a), 'y0')
+    y0 = _v(sigma(a_a, c_a, tau_a, eta_a, '_a'), 'y0')
     d0_a = _v(hdl.expl(y0), 'd0_a')
     d1_a = _v(hdl.safe_div(1.0, d0_a, eps=1e-30), 'd1_a')
     ## xi0 = y^2/(2+y^2) and its first two derivatives, which is what
@@ -269,7 +282,7 @@ def sp_s(xg, xn, delta, Gf, xi, margin=1e-5):
     c_i = _v(2.0 * ti + Gf2 * (1.0 - ei
                                - delta * (1.0 + xi1_e)), 'c_i')
     tau_i = _v(xn - eta_i + hdl.safe_ln(a_i * inv_Gf2), 'tau_i')
-    x0 = _v(sigma2(a_i, b_i, c_i, tau_i, eta_i), 'x0')
+    x0 = _v(sigma2(a_i, b_i, c_i, tau_i, eta_i, '_i'), 'x0')
 
     ## The vendor splits `delta0`/`delta1` three ways to keep both
     ## exp(x0) and exp(x0 - xn) inside range; `expl` does the same job in

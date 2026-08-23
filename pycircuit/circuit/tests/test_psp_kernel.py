@@ -253,22 +253,49 @@ class TestTheHelperFunctions(object):
         for a, b in ((1.0, 2.0), (-3.0, 5.0), (0.0, 0.0), (7.0, 7.0)):
             assert float(f(a, b)) <= min(a, b) + 1e-12
 
+    @staticmethod
+    def _chain(thunk, syms):
+        """`sigma` holds its intermediates, so it needs a chain around
+        it -- `compile_chain` is what supplies one outside a model."""
+        from pycircuit.circuit import hdl
+        f = hdl.compile_chain(thunk, list(syms))
+        return lambda *a: float(np.asarray(f(*a), float).reshape(-1)[0])
+
     def test_sigma_and_sigma2_agree_when_b_is_one(self):
         a, c, tau, eta = sympy.symbols('a c tau eta', real=True)
-        f1 = sympy.lambdify((a, c, tau, eta), K.sigma(a, c, tau, eta),
-                            MODULES)
-        f2 = sympy.lambdify((a, c, tau, eta),
-                            K.sigma2(a, 1.0, c, tau, eta), MODULES)
+        f1 = self._chain(lambda: K.sigma(a, c, tau, eta, '1'),
+                         (a, c, tau, eta))
+        f2 = self._chain(lambda: K.sigma2(a, 1.0, c, tau, eta, '2'),
+                         (a, c, tau, eta))
         for args in ((2.0, 3.0, 0.5, 1.0), (1e-3, 0.2, -2.0, 0.1),
                      (5.0, -1.0, 3.0, -2.0)):
-            assert float(f1(*args)) == pytest.approx(float(f2(*args)),
-                                                     rel=1e-12)
+            assert f1(*args) == pytest.approx(f2(*args), rel=1e-12)
 
     def test_sigma2_takes_the_vendors_tiny_tau_shortcut(self):
         a, b, c, tau, eta = sympy.symbols('a b c tau eta', real=True)
-        f = sympy.lambdify((a, b, c, tau, eta),
-                           K.sigma2(a, b, c, tau, eta), MODULES)
-        assert float(f(2.0, 1.0, 3.0, 1e-200, 7.0)) == 7.0
+        f = self._chain(lambda: K.sigma2(a, b, c, tau, eta, '3'),
+                        (a, b, c, tau, eta))
+        assert f(2.0, 1.0, 3.0, 1e-200, 7.0) == 7.0
+
+    def test_sigma2_survives_arguments_the_expanded_form_cannot(self):
+        """The reason the intermediates are held.
+
+        These are the values `sp_s` actually reaches on the long
+        n-channel device with card parameters at `Vd = 1e40` -- read out
+        of the compiled chain, not invented.  The algebra is finite
+        there; only the multiplied-out form is not, because it forms
+        `nu**4` against `a*nu*tau` and overflows to `inf`, then to NaN.
+        """
+        a, b, c, tau, eta = sympy.symbols('a b c tau eta', real=True)
+        f = self._chain(lambda: K.sigma2(a, b, c, tau, eta, '4'),
+                        (a, b, c, tau, eta))
+        got = f(1.6066290815057613e+69, 0.15631488971182095,
+                8.016555573326393e+34, 190.73227733286575, 0.0)
+        assert np.isfinite(got)
+        ## `a` dominates `c`, so the correction returns essentially
+        ## `eta + tau` -- which is what makes the expected value
+        ## checkable rather than merely finite.
+        assert got == pytest.approx(190.73227733286575, rel=1e-9)
 
     def test_the_residual_is_zero_at_flat_band(self):
         f = sympy.lambdify((X, XG, XN, GF),
