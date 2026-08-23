@@ -480,6 +480,40 @@ def _psp_mos_analog(T, pmos):
         ## multiplied by `T`: it is the internal source/drain interchange
         ## sign, a separate mechanism that already lives inside the
         ## internal convention.
+        ## OVERLAP AND FRINGE CHARGE.
+        ##
+        ## `VgsPrime` and `VgdPrime` are, in PSP's own words, the
+        ## "voltages NOT subject to S/D-interchange"
+        ## (`PSP103_module.include:1051-1055`) -- the ACTUAL terminal
+        ## voltages, not the ordered ones the channel uses.  That is
+        ## right and not an oversight: the overlap sits over a physical
+        ## diffusion, and which diffusion is momentarily the source does
+        ## not move it.  The pair stays even under the exchange because
+        ## the drain-side parameters mirror the source-side ones
+        ## (`SWJUNASYM = 0`), so the two charges simply swap.
+        vgsp = var(vgb - vsb, 'vgsp')
+        vgdp = var(vgb - vdb, 'vgdp')
+
+        def _vov(vgp, tag):
+            ## The overlap region's surface potential, in closed form
+            ## (`module:1182-1189`).  `spx` is a smoothed `max(xg_ov, 0)`
+            ## -- and because `ov_eps2` is ~2700 on this card the
+            ## radicands below never come near zero, so no guarding is
+            ## needed on either square root.
+            xgo = var(-vgp / phit0, 'xgov' + tag)
+            spx = var(0.5 * (xgo + sympy.sqrt(xgo * xgo + ov_eps2)),  # noqa
+                      'spx' + tag)
+            xov = var(-spx - gov2 * 0.5                            # noqa
+                      + gov * sympy.sqrt(spx + gov2 * 0.25 + ov_a)  # noqa
+                      + ov_d1, 'xov' + tag)                        # noqa
+            return var(-phit0 * (xgo + xov), 'vov' + tag)
+
+        ## PSP folds the overlap into the fringe charge and contributes
+        ## the sum (`module:1774-1775, 1791-1792`).
+        q_gs = var(cfr * vgsp + cgov * _vov(vgsp, 's'), 'q_gs')  # noqa
+        q_gd = var(cfr * vgdp + cgov * _vov(vgdp, 'd'), 'q_gd')  # noqa
+        q_gb = var(cgbov * vgb, 'q_gb')                          # noqa
+
         ## MULTIPLICITY.  PSP multiplies every contribution by `MULT_i`
         ## (`MULT * NF`, `PSP103_scaling.include:828`); `m` devices in
         ## parallel carry `mult` times the current and charge, and
@@ -495,7 +529,16 @@ def _psp_mos_analog(T, pmos):
                 Contribution(Branch(b, s, 'qb').I,
                              ddt(mult * T * Qb)),              # noqa: F821
                 Contribution(Branch(d, s, 'qd').I,
-                             ddt(mult * T * qd_t)))            # noqa: F821
+                             ddt(mult * T * qd_t)),            # noqa: F821
+                ## Each of these is a gate-referenced PAIR, so charge
+                ## conservation stays structural: every one adds at the
+                ## gate and subtracts at exactly one other terminal.
+                Contribution(Branch(gi, s, 'qovs').I,
+                             ddt(mult * T * q_gs)),            # noqa: F821
+                Contribution(Branch(gi, d, 'qovd').I,
+                             ddt(mult * T * q_gd)),            # noqa: F821
+                Contribution(Branch(gi, b, 'qovb').I,
+                             ddt(mult * T * q_gb)))            # noqa: F821
 
 
     return analog
@@ -608,6 +651,26 @@ class PspMosLongChannel(Behavioural):
                   unit='m', default=0.0),
         Parameter(name='qq', desc='Quantum correction coefficient',
                   unit='', default=0.0),
+        ## Overlap and fringe.  The `ov_*` trio are the closed-form
+        ## overlap surface potential's constants, computed once per
+        ## instance in the scaling layer -- they depend on the doping
+        ## and the overlap oxide, not on bias.
+        Parameter(name='cgov', desc='Gate-diffusion overlap capacitance',
+                  unit='F', default=0.0),
+        Parameter(name='cfr', desc='Outer fringe capacitance', unit='F',
+                  default=0.0),
+        Parameter(name='cgbov', desc='Gate-bulk overlap capacitance',
+                  unit='F', default=0.0),
+        Parameter(name='gov', desc='Overlap body factor', unit='',
+                  default=1.0),
+        Parameter(name='gov2', desc='Overlap body factor squared',
+                  unit='', default=1.0),
+        Parameter(name='ov_a', desc='Overlap SP fit coefficient',
+                  unit='', default=1.0),
+        Parameter(name='ov_d1', desc='Overlap SP offset', unit='',
+                  default=0.0),
+        Parameter(name='ov_eps2', desc='Overlap SP smoothing', unit='',
+                  default=1.0),
         Parameter(name='rg', desc='Gate resistance', unit='ohm',
                   default=0.0),
         Parameter(name='mult', desc='Multiplicity (devices in parallel)',

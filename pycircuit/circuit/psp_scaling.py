@@ -95,7 +95,17 @@ def geometry(card, w, l):
         * (1.0 + _g(card, 'wvarw') * iW)
     LE = max(l + dl - 2.0 * _g(card, 'lap'), 1.0e-9)
     WE = max(w + dw - 2.0 * _g(card, 'wot'), 1.0e-9)
-    return dict(LE=LE, WE=WE, iLE=LEN / LE, iWE=WEN / WE)
+    ## `Lcv`/`Wcv` are the CV dimensions WITHOUT the lateral-diffusion
+    ## subtraction (`PSP103_scaling.include:40-41`), which is what the
+    ## fringe and gate-bulk overlap terms scale on; `LEcv`/`WEcv` (:38-39)
+    ## are the ones with it, for the oxide capacitance and the gate
+    ## overlap.  Two different effective lengths, a line apart in the
+    ## vendor source, and easy to swap by accident.
+    dlq, dwq = _g(card, 'dlq'), _g(card, 'dwq')
+    return dict(LE=LE, WE=WE, iLE=LEN / LE, iWE=WEN / WE,
+                LEcv=max(LE + dlq, 1.0e-9), WEcv=max(WE + dwq, 1.0e-9),
+                Lcv=max(l + dl + dlq, 1.0e-9),
+                Wcv=max(w + dw + dwq, 1.0e-9))
 
 
 def _neff(card, geo):
@@ -357,8 +367,51 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
     ## so using the drawn dimensions overstates every capacitance -- by
     ## 7% on the long device here, and the QM correction below adds
     ## another 12% on top of that.
-    lecv = max(LE + _g(card, 'dlq'), 1.0e-9)
-    wecv = max(WE + _g(card, 'dwq'), 1.0e-9)
+    lecv, wecv = geo['LEcv'], geo['WEcv']
+
+    ## OVERLAP AND FRINGE CAPACITANCE (:359-373).
+    ##
+    ## `CGOV` is the gate-to-source/drain overlap over the diffusion,
+    ## `CFR` the outer fringe from the gate sidewall.  With
+    ## `SWJUNASYM = 0` -- this card -- the drain side mirrors the source
+    ## exactly (`:840-850`), which is what keeps the pair even under the
+    ## source/drain exchange.  `CGBOV` is the gate-to-bulk overlap and is
+    ## 4e-28 here, i.e. off; carried anyway because it is one term.
+    ##
+    ## The card sets no `FCGOVACC`, so the accumulation branches of the
+    ## overlap charge (`module:1560-1596`) are absent entirely.
+    lov = _g(card, 'lov')
+    toxov = _g(card, 'toxovo', 2.0e-9)
+    nov = min(max(_g(card, 'novo', 5.0e25), 1.0e23), 1.0e27)
+    cgov = max(eps_ox * wecv * lov / toxov, 0.0)
+    cfr = max(_g(card, 'cfrw') * geo['Wcv'] / WEN, 0.0)
+    cgbov = max(_g(card, 'cgbovl') * geo['Lcv'] / LEN, 0.0)
+
+    ## The overlap region has its own surface potential, and PSP solves
+    ## it in CLOSED FORM (`module:1182-1189`) rather than iterating: one
+    ## smoothed maximum and one explicit expression.  Everything the
+    ## expression needs except the bias is fixed per instance, so it is
+    ## computed here, in Python, and handed over as numbers -- the
+    ## compiled expression stays four lines long.
+    ##
+    ## `sp_ovInit` (`macrodefs:217-235`) is a piecewise FIT in `1/GOV`,
+    ## not a derivation; transcribed as such.
+    coxov = eps_ox / toxov
+    gov = math.sqrt(2.0 * PSP_QELE * nov * PSP_EPS_SI / phit) / coxov
+    gov2 = gov * gov
+    inv_gov = 1.0 / gov
+    sp_eps = 3.1 * gov + 8.5
+    sp_delta = 0.5 * sp_eps
+    if inv_gov < 0.06:
+        sp_a = 64.0 * inv_gov
+    elif inv_gov <= 0.45:
+        sp_a = 22.0 * inv_gov + 3.0
+    elif inv_gov <= 1.6:
+        sp_a = -7.2 * inv_gov + 15.5
+    else:
+        sp_a = gov
+    sp_delta1 = (sp_delta + gov2 * 0.5
+                 - gov * math.sqrt(sp_delta + gov2 * 0.25 + sp_a))
 
     ## GATE RESISTANCE (:604, clipped at :816).  The full expression
     ## carries a sheet-resistance term and a per-finger term; this card
@@ -442,6 +495,8 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
         feta=_g(card, 'fetao', 1.0), thesat=max(thesat, 0.0),
     )
     kw.update(dnsub=dnsub, vnsub=vnsub, nslp=nslp, xcor=xcor, rg=rg,
+              cgov=cgov, cfr=cfr, cgbov=cgbov, gov=gov, gov2=gov2,
+              ov_a=sp_a, ov_d1=sp_delta1, ov_eps2=sp_eps * sp_eps,
               wcv=wecv, lcv=lecv, qq=qq)
     if all_terms:
         kw.update(thesatb=thesatb, thesatg=thesatg,

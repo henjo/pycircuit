@@ -1738,7 +1738,7 @@ operating-point outputs, not from the parameter list. The card **enables**
 below is either capacitance, temperature, or a term that measures four
 or more orders below the current it would correct.
 
-**1. Overlap and fringe capacitance — the largest gap by a wide margin.**
+**1. Overlap and fringe capacitance — DONE, see the dated entry below.**
 
 | at Vg = Vd = 1.2 | 10 µm/1 µm | 1 µm/0.13 µm |
 |---|---|---|
@@ -1810,6 +1810,9 @@ then JUNCAP2.** The first two are trivial and remove a correctness
 hazard; the third is the largest accuracy gap and now has a benchmark
 that can see it; the fourth unlocks a whole analysis axis; the fifth is
 its own rung.
+
+**Items 1, 2 and 3 are done** — gate resistance, multiplicity, and
+overlap and fringe capacitance. **Temperature is next.**
 
 > **The saturation voltage, a floor hidden in the scaling, and two
 > things it broke — 2026-08-23.** PSP does not evaluate the drain
@@ -2528,6 +2531,61 @@ its own rung.
 >
 > The DC comparison is unchanged to the digit throughout — no current
 > flows into the gate, so the resistor is inert there.
+
+> **Plan item 3: overlap and fringe capacitance — 2026-08-23.** The
+> largest gap the audit named, and the one the DC comparison could never
+> have found: these contribute identically zero drain current, and on a
+> 0.13 µm device they are **227% of the intrinsic gate capacitance**. A
+> model without them is missing most of its charge however exact its
+> intrinsic part is, which is precisely where this one was.
+>
+> Cheaper than the first estimate for a reason worth recording: **the
+> overlap surface potential is CLOSED FORM**
+> (`PSP103_module.include:1182-1189`) — a smoothed maximum and one
+> explicit expression, not a Newton solve. Everything it needs except
+> the bias is fixed per instance, so `sp_ovInit`'s piecewise fit
+> (`macrodefs:217-235`) is evaluated once in the scaling layer and
+> handed over as numbers, and the compiled expression stays four lines.
+>
+> `cgov` and `cfr` match PSP's `lp_cgov` and `lp_cfr` exactly. The total
+> gate capacitance, against PSP's intrinsic plus the overlap it reports
+> separately:
+>
+> | | median | worst |
+> |---|---|---|
+> | n-channel long | 1.00002 | 1.0006 |
+> | n-channel short | 1.00137 | 1.0065 |
+> | p-channel long | 1.00020 | 1.0003 |
+> | p-channel short | 1.00195 | 1.0044 |
+>
+> **Within 0.7% everywhere and 0.06% on the long devices**, and the
+> short device is the one to watch since the overlap is more than twice
+> the intrinsic part there.
+>
+> Three details that mattered:
+>
+> * `VgsPrime` and `VgdPrime` are, in PSP's own words, the "voltages NOT
+>   subject to S/D-interchange" (`module:1051-1055`) — the **actual**
+>   terminal voltages, not the ordered ones the channel uses. That is
+>   right rather than an oversight: the overlap sits over a physical
+>   diffusion, and which diffusion is momentarily the source does not
+>   move it.
+> * The pair stays even under the exchange anyway, because
+>   `SWJUNASYM = 0` makes the drain-side parameters mirror the source's
+>   (`scaling:840-850`), so the two charges simply swap. Measured: the
+>   antisymmetry is still 3 × 10⁻¹⁶ and charge conservation is still
+>   **exactly** zero, both with the overlap on.
+> * `Lcv`/`Wcv` and `LEcv`/`WEcv` are different effective dimensions a
+>   line apart in the vendor source (`scaling:38-41`) — the fringe and
+>   gate-bulk terms scale on the first, the oxide and gate overlap on
+>   the second. Easy to swap by accident.
+>
+> The DC current is untouched, as it must be: this is charge only, and a
+> test says so to 1 part in 10¹⁴.
+>
+> The intrinsic-charge tests now build their devices with the overlap
+> switched off, because PSP reports `cgg` intrinsic and the comparison
+> is only like-for-like that way.
 
 Deferred, unchanged from the original research verdict:
 

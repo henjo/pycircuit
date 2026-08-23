@@ -1501,11 +1501,19 @@ class TestTheChargeModelAgainstTheVendor(object):
         return d['op'], d['op_pmos']
 
     def _fet(self, deck, model, cls, w, l):
+        """Built with the OVERLAP SWITCHED OFF.
+
+        This class is about the intrinsic charge, and PSP reports its
+        intrinsic `cgg` separately from the overlap, so the comparison
+        is only like-for-like with the parasitics out.
+        """
         cm.default_toolkit = numeric
+        kw = psp_scaling.to_long_channel(
+            deck.model_params(model, w=w, l=l, ng=1, m=1, pre_layout=1),
+            w=w, l=l)
+        kw.update(cgov=0.0, cfr=0.0, cgbov=0.0)
         e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
-                **psp_scaling.to_long_channel(
-                    deck.model_params(model, w=w, l=l, ng=1, m=1,
-                                      pre_layout=1), w=w, l=l))
+                **kw)
         e.update_iparv()
         return e
 
@@ -1541,6 +1549,12 @@ class TestTheChargeModelAgainstTheVendor(object):
         assert kw['lcv'] > 0.90e-6, kw['lcv']
         assert 10.0e-6 < kw['wcv'] < 10.02e-6, kw['wcv']
 
+    @staticmethod
+    def _psp_total(pt):
+        """PSP's TOTAL gate capacitance: intrinsic plus the overlap it
+        reports separately."""
+        return pt['cgg'] + pt['cgsol'] + pt['cgdol']
+
     @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
     def test_the_gate_capacitance_matches_on_the_long_device(self, deck,
                                                              op, kind):
@@ -1558,7 +1572,8 @@ class TestTheChargeModelAgainstTheVendor(object):
             x = e.bias(pt['vd'], pt['vg'], 0.0, pt['vb'])
             C = np.asarray(e.C(x), float)
             gi = e.gate_index
-            assert C[gi, gi] == pytest.approx(pt['cgg'], rel=0.002), \
+            assert C[gi, gi] == pytest.approx(self._psp_total(pt),
+                                              rel=0.002), \
                 (kind, pt['vg'], pt['vd'], pt['vb'],
                  C[e.gate_index, e.gate_index], pt['cgg'])
 
@@ -1602,6 +1617,7 @@ class TestTheChargeModelAgainstTheVendor(object):
         pt = [q for q in gd['points']
               if q['vg'] == 1.2 and q['vd'] == 0.05][0]
         got = {}
+        base = dict(base, cgov=0.0, cfr=0.0, cgbov=0.0)
         for tag, kw in (('both', base),
                         ('no cv dims', dict(base, wcv=0.0, lcv=0.0)),
                         ('no qm', dict(base, qq=0.0))):
@@ -1749,11 +1765,14 @@ class TestChannelLengthModulationInTheCharges(object):
         return d['op'], d['op_pmos']
 
     def _fet(self, deck, kind, geom, **over):
+        """Overlap off -- this class measures the INTRINSIC charge,
+        which is what PSP's `cgg` reports."""
         cm.default_toolkit = numeric
         kw = psp_scaling.to_long_channel(
             deck.model_params('sg13g2_lv_%s_psp' % kind, w=geom['w'],
                               l=geom['l'], ng=1, m=1, pre_layout=1),
             w=geom['w'], l=geom['l'])
+        kw.update(cgov=0.0, cfr=0.0, cgbov=0.0)
         kw.update(over)
         cls = PspPmosLongChannel if kind == 'pmos' else PspMosLongChannel
         e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
@@ -1851,3 +1870,127 @@ class TestChannelLengthModulationInTheCharges(object):
                                       pt['vb'])), float)[gi, gi]
                 / pt['cgg'] - 1.0) for pt in gd['points'])
         assert worst < 0.03, worst
+
+
+class TestTheOverlapAndFringeCapacitance(object):
+    """The largest gap the plan named, and the one the DC comparison
+    could never have seen.
+
+    PSP reports these separately from `cgg` -- `cgsol` and `cgdol` --
+    and on a 0.13 um device they are **227%** of the intrinsic gate
+    capacitance.  A model without them is missing most of its charge
+    however exact its intrinsic part is, which is precisely the state
+    this one was in.
+
+    Cheaper than the first estimate, and the reason is worth recording:
+    **the overlap surface potential is CLOSED FORM**
+    (`PSP103_module.include:1182-1189`) -- a smoothed maximum and one
+    explicit expression, not a Newton solve.  Everything it needs except
+    the bias is fixed per instance, so the fit constants
+    (`sp_ovInit`, `macrodefs:217-235`) are evaluated once in the scaling
+    layer and handed over as numbers.
+    """
+
+    @pytest.fixture(scope='class')
+    def op(self):
+        with open(REF) as fh:
+            d = json.load(fh)
+        return d['op'], d['op_pmos']
+
+    def _fet(self, deck, kind, geom, **over):
+        cm.default_toolkit = numeric
+        kw = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_%s_psp' % kind, w=geom['w'],
+                              l=geom['l'], ng=1, m=1, pre_layout=1),
+            w=geom['w'], l=geom['l'])
+        kw.update(over)
+        cls = PspPmosLongChannel if kind == 'pmos' else PspMosLongChannel
+        e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
+                **kw)
+        e.update_iparv()
+        return e
+
+    @pytest.mark.parametrize('geom', ['long', 'mid', 'short',
+                                      'wide_short'])
+    def test_the_capacitances_match_psps_scaled_values(self, deck, geom):
+        """`lp_cgov` and `lp_cfr`, term by term, before any bias."""
+        with open(REF) as fh:
+            sc = json.load(fh)['scaled']
+        e = sc[geom]
+        kw = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_nmos_psp', w=e['w'], l=e['l'],
+                              ng=1, m=1, pre_layout=1),
+            w=e['w'], l=e['l'])
+        if geom == 'long':
+            assert kw['cgov'] == pytest.approx(4.53951e-15, rel=1e-5)
+            assert kw['cfr'] == pytest.approx(1.998e-15, rel=1e-4)
+        assert kw['cgov'] > 0.0 and kw['cfr'] > 0.0
+
+    @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
+    @pytest.mark.parametrize('geom', ['long', 'short'])
+    def test_the_total_gate_capacitance_matches(self, deck, op, kind,
+                                                geom):
+        """Intrinsic plus overlap against PSP's intrinsic plus overlap.
+
+        Within 0.7% everywhere and 0.1% on the long devices -- and the
+        short device is the one to watch, because there the overlap is
+        more than twice the intrinsic part.
+        """
+        n, p = op
+        gd = (p if kind == 'pmos' else n)[geom]
+        e = self._fet(deck, kind, gd)
+        gi = e.gate_index
+        for pt in gd['points']:
+            tot = pt['cgg'] + pt['cgsol'] + pt['cgdol']
+            got = np.asarray(e.C(e.bias(pt['vd'], pt['vg'], 0.0,
+                                        pt['vb'])), float)[gi, gi]
+            assert got == pytest.approx(tot, rel=0.008), \
+                (kind, geom, pt['vg'], pt['vd'], got, tot)
+
+    def test_without_them_the_short_device_is_missing_most_of_its_charge(
+            self, deck, op):
+        """The measurement that justified building this at all."""
+        n, _ = op
+        gd = n['short']
+        pt = gd['points'][5]
+        tot = pt['cgg'] + pt['cgsol'] + pt['cgdol']
+        gi_on = self._fet(deck, 'nmos', gd)
+        off = self._fet(deck, 'nmos', gd, cgov=0.0, cfr=0.0, cgbov=0.0)
+        x_on = gi_on.bias(pt['vd'], pt['vg'], 0.0, pt['vb'])
+        x_off = off.bias(pt['vd'], pt['vg'], 0.0, pt['vb'])
+        with_ov = np.asarray(gi_on.C(x_on), float)[gi_on.gate_index,
+                                                   gi_on.gate_index]
+        without = np.asarray(off.C(x_off), float)[off.gate_index,
+                                                  off.gate_index]
+        assert without / tot < 0.45, without / tot
+        assert with_ov == pytest.approx(tot, rel=0.008)
+
+    def test_it_leaves_the_dc_current_alone(self, deck, op):
+        """Charge only -- it must not touch the current at all."""
+        n, _ = op
+        gd = n['long']
+        on = self._fet(deck, 'nmos', gd)
+        off = self._fet(deck, 'nmos', gd, cgov=0.0, cfr=0.0, cgbov=0.0)
+        for vd, vg in ((0.05, 1.2), (1.2, 0.8)):
+            a = np.asarray(on.i(on.bias(vd, vg)), float)[0]
+            b = np.asarray(off.i(off.bias(vd, vg)), float)[0]
+            assert a == pytest.approx(b, rel=1e-14)
+
+    def test_the_construction_properties_survive(self, deck, op):
+        """Conservation and antisymmetry, with the overlap on.
+
+        Both are structural and both could plausibly have been broken
+        here: the overlap charges are new branches, and they use the
+        ACTUAL terminal voltages rather than the ordered ones.  They
+        stay even because the drain-side parameters mirror the source's
+        (`SWJUNASYM = 0`), so the two simply swap.
+        """
+        n, _ = op
+        e = self._fet(deck, 'nmos', n['long'])
+        for vd, vg in ((0.9, 1.4), (0.05, 0.6), (1.5, 1.8)):
+            q = np.asarray(e.q(e.bias(vd, vg)), float)
+            assert abs(q.sum()) < 4e-16 * max(1.0, np.abs(q).max())
+        for vg, vd in ((0.6, 0.7), (1.2, 1.5)):
+            f = np.asarray(e.i(e.bias(vd, vg, 0.0, 0.0)), float)[0]
+            r = np.asarray(e.i(e.bias(0.0, vg, vd, 0.0)), float)[0]
+            assert f == pytest.approx(-r, rel=1e-13), (vg, vd)

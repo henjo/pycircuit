@@ -533,9 +533,10 @@ saturation-limited drain voltage ``Vdse`` — which the channel-length
 modulation then uses, as PSP does, so that term is now a translation of
 the vendor expression rather than an approximation to it.
 
-Present also: drain-induced barrier lowering (``CF``, ``CFB``, ``CFD``)
-and the body- and gate-bias modulations of the velocity-saturation
-parameter (``THESATB``, ``THESATG``). Passing ``all_terms=False`` to
+Present also: drain-induced barrier lowering (``CF``, ``CFB``, ``CFD``),
+the body- and gate-bias modulations of the velocity-saturation parameter
+(``THESATB``, ``THESATG``), gate resistance on its own internal node,
+device multiplicity, and overlap and fringe capacitance. Passing ``all_terms=False`` to
 ``to_long_channel`` drops both, which exists so their effect stays
 measurable — see below, because deciding whether to keep them turned
 out to be a lesson about the measurement rather than about the terms.
@@ -552,18 +553,18 @@ gate leakage and junction leakage are four to six orders of magnitude
 below its 1 µA floor on this process, and overlap and fringe
 capacitances contribute identically zero DC current.
 
-That last one is no longer an excuse, though. Since this model acquired
-a capacitance comparison, the parasitics can be measured — and they are
-large. At :math:`V_g = V_d = 1.2` V the overlap and fringe capacitance
-is 15% of the intrinsic :math:`C_{gg}` on the 10 µm device and **227%**
-of it on the 0.13 µm one; the junction capacitance adds 8% and 126%. On
-a minimum-length device the parasitics are about **three and a half
-times** the intrinsic capacitance.
+Overlap and fringe capacitance was on that list until the capacitance
+comparison existed to measure it. It is large: at :math:`V_g = V_d =
+1.2` V it is 15% of the intrinsic :math:`C_{gg}` on the 10 µm device and
+**227%** of it on the 0.13 µm one. It is implemented now, and the total
+gate capacitance matches PSP to 0.06% on the long devices and 0.7% on
+the short ones.
 
-So the honest summary is that the DC current is close to done for this
-process and the charge model is not: it is exact where it is
-implemented, and most of what a real transient or AC simulation needs is
-still absent. The roadmap in ``hdl.md`` sizes the work and orders it.
+The junction capacitance is not, and it adds a further 8% and 126%. That
+is a second compact model — JUNCAP2 — rather than a block, so it is the
+next rung on the ladder rather than an addition to this element. The
+roadmap in ``hdl.md`` sizes the remaining work and orders it: temperature
+first, then junctions.
 
 Both channel types
 ------------------
