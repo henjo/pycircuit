@@ -2671,6 +2671,12 @@ class TestTheInducedGateNoise(object):
         sfl = (a - b) / (1.0 / f1 - 1.0 / f2)
         return a - sfl / f1
 
+    def _nt(self, deck, geom, kind='nmos'):
+        """`nt = 4*FNT*k*T`, in PSP's own constants."""
+        from pycircuit.circuit.psp_scaling import PSP_KBOL, PSP_QELE
+        return (self._kw(deck, geom, kind)['fnt'] * 4.0
+                * (PSP_KBOL * T27 / PSP_QELE) * PSP_QELE)
+
     def _corr(self, e, x):
         """`c_igid`, as the correlation coefficient it is defined to be.
 
@@ -2713,54 +2719,83 @@ class TestTheInducedGateNoise(object):
             assert self._corr(e, x) == pytest.approx(pt['cigid'], rel=tol), \
                 (kind, geom, pt['vg'], pt['vd'], pt['vb'])
 
+    #: `sig` tolerance per (channel type, geometry) -- measured.  One
+    #: tolerance ACROSS ALL BIASES of a device, deliberately: the bug
+    #: this replaced was exact at `Vds = 0.05` and 73% high at 1.2, so a
+    #: per-bias tolerance would have accommodated it and a shared one
+    #: does not.  Anything that makes `CGeff` carry a spurious
+    #: `Vds`-dependence fails here.
+    SIG_TOL = {('nmos', 'long'): 0.005, ('nmos', 'short'): 0.09,
+               ('pmos', 'long'): 0.005, ('pmos', 'short'): 0.02}
+
     @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
-    def test_the_gate_density_matches_psp_on_the_long_device(self, deck,
-                                                             ops, kind):
-        """Within 5%, end to end through a noise analysis, both channel
-        types."""
-        gd = ops[kind]['long']
+    @pytest.mark.parametrize('geom', ['long', 'short'])
+    def test_the_gate_density_matches_psp(self, deck, ops, kind, geom):
+        """End to end through a noise analysis, every recorded bias.
+
+        Within 0.4% on both long devices and on the short p-channel.
+        The short n-channel runs to 8.4% low, and it is the same two
+        places its DRAIN density is already off -- deep subthreshold at
+        `Vg = 0.4`, where `sid` itself is 5-10% out -- rather than
+        anything the gate path adds.
+        """
+        gd = ops[kind][geom]
         kw = self._kw(deck, gd, kind)
+        tol = self.SIG_TOL[(kind, geom)]
         for pt in gd['points']:
             if pt['sig'] <= 0.0:
                 continue
             assert self._sig(kw, pt, kind=kind) \
-                == pytest.approx(pt['sig'], rel=0.06), \
-                (kind, pt['vg'], pt['vd'], pt['vb'])
+                == pytest.approx(pt['sig'], rel=tol), \
+                (kind, geom, pt['vg'], pt['vd'], pt['vb'])
 
     @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
-    def test_the_short_device_carries_velocity_saturation_to_the_fourth(
-            self, deck, ops, kind):
-        """A GAP, measured rather than described.
+    @pytest.mark.parametrize('geom', ['long', 'short'])
+    def test_the_coupling_capacitance_matches_psp(self, deck, ops, kind,
+                                                  geom):
+        """`CGeff` term by term -- against a quantity PSP does NOT export.
 
-        `sig` goes as `CGeff^2`, and `CGeff` carries
-        `(Gvsat/Gmob_dL)^2` -- so the velocity-saturation factor enters
-        the gate density to the FOURTH power, where the drain current
-        carries it to the first.  On the short device in saturation that
-        turns a residual invisible in `Ids` into 1.73.
+        It exports `sig` and `cigid`, and
 
-        Forcing that factor to 1 moves the same point to 0.42, so the
-        factor is both real and the dominant sensitivity -- the residual
-        is an inherited short-channel one being magnified, not a wrong
-        formula.  Recorded here as a band so a regression is caught and
-        the gap stays a number.
+            sig   = nt*w^2*CGeff^2*mig / (1 + w^2*CGeff^2*mig^2)
+            cigid = migid0 / sqrt(mig * mid),   mid = Sid/nt
 
-        In the LINEAR region, where there is no velocity saturation to
-        get wrong, the same device is exact to 0.4%.  The p-channel --
-        the more accurate device on this branch's DC sweeps too -- tops
-        out at 1.21 rather than 1.73, which is the same statement seen
-        through a smaller residual.
+        so with `migid0` -- a pure SHAPE function, which `cigid` already
+        validates independently -- PSP's `mig` follows from its own
+        `cigid` and `sid`, and then its `CGeff` follows from its own
+        `sig`.  Ours is read straight off the assembled matrices:
+        `C[noi, noi]` IS `CGeff`, and `CY[noi, noi]` is `nt*gmig`.
+
+        This is the `lp_*` method applied to something the vendor keeps
+        to itself, and it is what turned a residual that looked like
+        missing short-channel physics into a one-line transcription bug:
+        `core['Gmob']` already holds `Gmob_dL`, so multiplying by
+        `core['GdL']` too left a spurious `1/GdL^2` that grows with
+        `Vds` through channel-length modulation.
+
+        Within 0.1% on the long devices.
         """
-        gd = ops[kind]['short']
-        kw = self._kw(deck, gd, kind)
+        gd = ops[kind][geom]
+        e = self._fet(deck, gd, kind)
+        nm = [n.name for n in e.nodes]
+        i_d, i_n = nm.index('d'), nm.index('noi')
+        C_ours = np.asarray  # local alias, keeps the line short
+        nt = self._nt(deck, gd, kind)
+        w = 2.0 * np.pi * 1.0e3
+        tol = 0.005 if geom == 'long' else 0.05
         for pt in gd['points']:
-            if pt['sig'] <= 0.0:
+            if pt['sig'] <= 0.0 or pt['cigid'] <= 0.0:
                 continue
-            got = self._sig(kw, pt, kind=kind) / pt['sig']
-            if abs(pt['vd']) <= 0.1 and abs(pt['vg']) >= 0.8:
-                assert got == pytest.approx(1.0, rel=0.006), \
-                    ('linear', kind, pt['vg'], pt['vd'])
-            else:
-                assert 0.9 < got < 1.8, (kind, pt['vg'], pt['vd'], got)
+            x = e.bias(pt['vd'], pt['vg'], 0.0, pt['vb'])
+            pwr = self._white(e, x, i_n, i_n)
+            migid0 = self._white(e, x, i_d, i_n) / pwr
+            ours = C_ours(e.C(x), float)[i_n, i_n]
+            mid_p = pt['sid'] / nt
+            mig_p = migid0 ** 2 / (pt['cigid'] ** 2 * mid_p)
+            den = nt * w * w * mig_p - pt['sig'] * w * w * mig_p * mig_p
+            theirs = np.sqrt(pt['sig'] / den)
+            assert ours == pytest.approx(theirs, rel=tol), \
+                (kind, geom, pt['vg'], pt['vd'], ours, theirs)
 
     def test_the_drain_density_is_untouched_by_the_split(self, deck, op):
         """The correlated source and the reduced independent one sum

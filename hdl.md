@@ -2873,23 +2873,18 @@ took about sixty lines to extend.
 > |---|---|---|
 > | `cigid`, n-channel | within **0.1%** | within **3.2%** |
 > | `cigid`, p-channel | within **0.03%** | within **0.55%** |
-> | `sig` (real noise analysis, 1 kHz), n | within **5%** | 0.2% linear, up to **1.73** in saturation |
-> | `sig`, p | within **5%** | 0.4% linear, up to **1.21** in saturation |
+> | `sig` (real noise analysis, 1 kHz), n | within **0.4%** | within **8.4%** |
+> | `sig`, p | within **0.4%** | within **1.7%** |
 >
-> The **p-channel is the more accurate device here**, as it is on this
-> branch's DC sweeps — the same statement seen through a smaller
-> residual, which is what makes it evidence for the diagnosis below
-> rather than a separate result.
->
-> **The short-device gap is measured, not guessed.** `sig` goes as
-> `CGeff²` and `CGeff` carries `(Gvsat/Gmob_dL)²`, so the
-> velocity-saturation factor enters the gate density to the **fourth**
-> power where the drain current carries it to the first. Forcing that
-> factor to 1 moves the same point from 1.56 to 0.42 — so the factor is
-> both real and the dominant sensitivity, and the residual is an
-> inherited short-channel one being magnified rather than a wrong
-> formula. Recorded as a band, so a regression is caught and the gap
-> stays a number.
+> **⚠ THE `sig` ROW IS THE CORRECTED ONE.** As first published it read
+> 5% / “0.2% linear, up to 1.73 in saturation” / 5% / “up to 1.21”, and
+> the diagnosis that went with it — that the short device inherits the
+> velocity-saturation residual to the **fourth** power — was **wrong**.
+> It was a one-line transcription bug of mine, found and fixed in the
+> next entry. What remains on the short n-channel sits in the same two
+> deep-subthreshold points where its DRAIN density is already 5–10%
+> out, so it is the drain residual showing through rather than anything
+> the gate path adds.
 >
 > **The drain-drain entry of `CY` is unchanged, identically.** The
 > correlated source and the reduced independent one sum back to `Sid`
@@ -2984,6 +2979,72 @@ took about sixty lines to extend.
 > Testing both channel types earned its keep immediately: the p-channel
 > fails three decades sooner, and a single-type test would have recorded
 > the n-channel bound as if it were the model's.
+
+> **`CGeff` measured against a quantity PSP does not export, and the
+> "inherited short-channel residual" turned out to be my own bug —
+> 2026-08-23.** Two entries ago this branch published that the short
+> device's induced gate noise ran to **1.73** because `sig` carries the
+> velocity-saturation factor to the fourth power. **That was wrong.**
+> The DC current at those same bias points is within **0.5%**, and a
+> 13% error in that factor would have put it 11% out — the two claims
+> could not both be true, and following that contradiction is what
+> found the bug.
+>
+> **The instrument was the correlated-noise work itself.** PSP does not
+> export `CGeff`. It does export `sig` and `cigid`, and
+>
+> ```
+> sig   = nt·ω²·CGeff²·mig / (1 + ω²·CGeff²·mig²)
+> cigid = migid0 / sqrt(mig · mid),      mid = Sid/nt
+> ```
+>
+> so with `migid0` — a pure shape function, which `cigid` validates
+> independently — PSP's `mig` follows from its own `cigid` and `sid`,
+> and then PSP's `CGeff` follows from its own `sig`. Ours reads
+> straight off the assembled matrices: `C[noi,noi]` **is** `CGeff` and
+> `CY[noi,noi]` is `nt·gmig`. That is the `lp_*` method extended to
+> something the vendor keeps to itself.
+>
+> It separated the problem in one measurement: **`mig` matched to
+> ~0.5%** and the whole residual was in `CGeff`, exact at `Vds = 0.05`
+> on all four device/type combinations and growing with `Vds`.
+>
+> **The bug was one line.** `intrinsic()` returns `Gmob=Gmob_dL` under
+> the key `Gmob` — the key says `Gmob`, the value is `Gmob·GdL`.
+> Transcribing PSP's `CGeff = Gvsat²·COX_qm·eta_p/Gmob_dL²` literally,
+> I wrote `core['Gmob'] * core['GdL'] * core['gvinv']` and so carried
+> `GdL` twice. The leftover `1/GdL²` grows with `Vds` through
+> channel-length modulation — which is precisely what a
+> velocity-saturation error looks like. `charges_long_channel` had the
+> right idiom two functions away (`core['Gmob'] * core['gvinv']`).
+>
+> | `sig` vs PSP | before | after |
+> |---|---|---|
+> | n-channel, 10 µm | 0.997–1.049 | **0.9969–1.0004** |
+> | n-channel, 0.13 µm | 0.920–**1.730** | **0.9164–0.9993** |
+> | p-channel, 10 µm | 1.001–1.051 | **1.0008–1.0038** |
+> | p-channel, 0.13 µm | 0.997–1.210 | **0.9966–1.0169** |
+>
+> `CGeff` itself now matches to **0.1%** on the long devices and ≤4% on
+> the short ones. Three of the four combinations are inside 0.4%; the
+> short n-channel's remaining 8.4% is at `Vg = 0.4`, where its drain
+> density is already 5–10% out.
+>
+> **Two lessons, and the second is the general one.**
+>
+> *A dict key that lies is worse than a long name.* `Gmob` holding
+> `Gmob_dL` is a trap that reads correctly at every call site and is
+> wrong at one of them. The fix comments name it; renaming the key is
+> the better fix and is left for a branch that is not under review.
+>
+> *Two measurements that cannot both be true are a finding, not a
+> nuisance.* The 31% `CGeff` gap and the 0.5% DC agreement were
+> irreconcilable, and the earlier entry had reconciled them by
+> inventing a mechanism — "it enters to the fourth power" — that made
+> the contradiction sound like physics. The tolerance table now uses
+> **one tolerance across all biases of a device** for exactly this
+> reason: the bug was exact at `Vds = 0.05` and 73% high at 1.2, so a
+> per-bias tolerance would have accommodated it.
 
 Deferred, unchanged from the original research verdict:
 

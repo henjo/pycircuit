@@ -560,9 +560,15 @@ above the node's pole because an RC does that, not because the shape was
 written down; and the gate and drain noise are genuinely *correlated*
 rather than merely both present. Against PSP's operating-point outputs
 the correlation coefficient matches to 0.1% on a 10 µm n-channel device
-and 3.2% on a 0.13 µm one — 0.03% and 0.55% on the p-channel, which is
-the more accurate device here as it is on the DC sweeps — and the gate
-density to 5% on the long device of either type. The drain
+and 3.2% on a 0.13 µm one — 0.03% and 0.55% on the p-channel — and the
+gate density to 0.4% on both long devices and on the short p-channel.
+The short n-channel runs to 8.4% low, in the same deep-subthreshold
+points where its drain density is already 5–10% out.
+
+The effective coupling capacitance behind those numbers is checked
+directly, against a quantity PSP does not export: it reports ``sig`` and
+``cigid``, and the two together determine ``CGeff`` once the shared
+shape function is known. Ours matches to 0.1% on the long devices. The drain
 density is unchanged by the split, identically: the correlated source
 and the reduced independent one sum back to :math:`S_{id}`.
 

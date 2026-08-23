@@ -1188,10 +1188,21 @@ def induced_gate_noise(core, shared, sid, cox_c, swign):
     pwr = _v(swign * (nt * gmig), 'g_pwr')
     gcond = _v(sympy.Max(gmig, GMIG_FLOOR), 'g_gcond')
 
-    ## `CGeff = Gvsat^2 COX_qm eta_p / Gmob_dL^2` with
-    ## `Gmob_dL = Gmob * GdL` (`macrodefs:760, 771`); `gvinv` is already
-    ## `1/Gvsat`, so the ratio is one reciprocal rather than three.
-    gr = _v(core['Gmob'] * core['GdL'] * core['gvinv'], 'g_ratio')
+    ## `CGeff = Gvsat^2 COX_qm eta_p / Gmob_dL^2` (`module:1868`), so
+    ## the factor is `(Gvsat/Gmob_dL)^2` -- and since
+    ## `Gvsat = 0.5*Gmob_dL*(1 + sqrt(1 + 2*zsat))` (`macrodefs:771`)
+    ## that ratio is a function of `zsat` ALONE and `GdL` cancels out
+    ## of it exactly.
+    ##
+    ## `core['Gmob']` ALREADY HOLDS `Gmob_dL`, not `Gmob` -- see the
+    ## `intrinsic` return, which puts `Gmob=Gmob_dL` under that key.
+    ## Multiplying by `core['GdL']` as well, which is what reading
+    ## PSP's formula literally invites, leaves a spurious `1/GdL^2`
+    ## that grows with `Vds` through channel-length modulation and so
+    ## reads exactly like a velocity-saturation error.  Same form as
+    ## `charges_long_channel`'s `q_gr` two functions down, which is the
+    ## idiom to copy.
+    gr = _v(core['Gmob'] * core['gvinv'], 'g_ratio')
     cgeff = _v(swign * cox_c * core['eta_p']
                * hdl.safe_div(1.0, gr * gr, eps=1e-30), 'g_cgeff')
 
