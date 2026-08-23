@@ -296,6 +296,114 @@ def test_noise_contribution_generates_CY():
     assert_allclose(cy1 / cy2, 100.0, rtol=1e-12)   # 1/f: x100 at f/100
 
 
+def test_named_noise_sources_are_correlated():
+    """Two contributions sharing a NAME are ONE fluctuation reaching two
+    branches (LRM 2.4 sec. 4.5.16), so their ``CY`` block is rank one.
+
+    The distinction this pins is not decorative.  Two INDEPENDENT
+    sources of the same powers give the same diagonal and a zero
+    off-diagonal, and every circuit in which the two paths interfere
+    then gets the wrong answer -- which is precisely the regime the
+    feature exists for.
+    """
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       Parameter, white_noise)
+
+    class Pair(Behavioural):
+        terminals = ['a', 'b', 'c']
+        instparams = [Parameter(name='s', desc='p', unit='', default=1e-20),
+                      Parameter(name='k', desc='k', unit='', default=3.0),
+                      Parameter(name='u', desc='u', unit='', default=0.0)]
+
+        @staticmethod
+        def analog(a, b, c):
+            return (Contribution(Branch(a, c).I, white_noise(s, 'g')),  # noqa
+                    Contribution(Branch(b, c).I,
+                                 k * white_noise(s, 'g')),              # noqa
+                    Contribution(Branch(a, c).I, white_noise(u)))       # noqa
+
+    pycircuit.circuit.circuit.default_toolkit = numeric
+    e = Pair('a', 'b', 'c', s=1e-20, k=3.0, u=4e-20)
+    e.update_iparv()
+    CY = np.asarray(e.CY(np.zeros(e.n), 2 * np.pi), float) / 1e-20
+
+    ## The group's stamp vector is `1*(a-c) + 3*(b-c) = (1, 3, -4)`, so
+    ## its block is `w w^T`; the lone source adds its own 2x2 pattern.
+    w = np.array([1.0, 3.0, -4.0])
+    lone = np.zeros((3, 3))
+    lone[0, 0] = lone[2, 2] = 4.0
+    lone[0, 2] = lone[2, 0] = -4.0
+    assert_allclose(CY, np.outer(w, w) + lone, rtol=1e-12, atol=1e-12)
+
+    ## A scale factor multiplies the AMPLITUDE, so it appears SQUARED in
+    ## the density -- the b-b entry is `k^2`, not `k`.
+    assert_allclose(CY[1, 1], 9.0, rtol=1e-12)
+
+    ## Rank one, and positive semi-definite: a correlation matrix that
+    ## is neither is not a noise description at all.
+    grp = CY - lone
+    assert np.linalg.matrix_rank(grp, tol=1e-9) == 1
+    assert np.all(np.linalg.eigvalsh(CY) > -1e-9)
+
+
+def test_unnamed_noise_sources_are_independent():
+    """The same two contributions WITHOUT a name share nothing, so the
+    off-diagonal between the two branches is zero."""
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       Parameter, white_noise)
+
+    class Loose(Behavioural):
+        terminals = ['a', 'b', 'c']
+        instparams = [Parameter(name='s', desc='p', unit='', default=1e-20)]
+
+        @staticmethod
+        def analog(a, b, c):
+            return (Contribution(Branch(a, c).I, white_noise(s)),   # noqa
+                    Contribution(Branch(b, c).I, white_noise(s)))   # noqa
+
+    pycircuit.circuit.circuit.default_toolkit = numeric
+    e = Loose('a', 'b', 'c', s=1e-20)
+    e.update_iparv()
+    CY = np.asarray(e.CY(np.zeros(e.n), 2 * np.pi), float) / 1e-20
+    assert_allclose(CY[0, 1], 0.0, atol=1e-12)
+    assert_allclose(np.diag(CY), [1.0, 1.0, 2.0], rtol=1e-12)
+
+
+def test_a_correlation_group_must_share_one_power():
+    """Members of a group are ONE fluctuation, so two different powers
+    under one name is a contradiction rather than a shorthand -- with
+    two powers the cross term is `sqrt(S1 S2)` up to a SIGN that nothing
+    in the source text determines.  Refused, with the fix named."""
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       Parameter, white_noise)
+
+    with pytest.raises(NotImplementedError, match='scale factor'):
+        class Mismatch(Behavioural):
+            terminals = ['a', 'b', 'c']
+            instparams = [Parameter(name='s', desc='p', unit='',
+                                    default=1e-20)]
+
+            @staticmethod
+            def analog(a, b, c):
+                return (Contribution(Branch(a, c).I,
+                                     white_noise(s, 'g')),          # noqa
+                        Contribution(Branch(b, c).I,
+                                     white_noise(2 * s, 'g')))      # noqa
+
+        Mismatch('a', 'b', 'c').update_iparv()
+
+
+def test_a_noise_name_is_not_a_parameter():
+    """The name is inert: it must not become a `Symbol` that the
+    parameter machinery then goes looking for."""
+    from pycircuit.circuit.hdl import white_noise
+    import sympy
+    app = white_noise(sympy.Symbol('p'), 'igid')
+    assert app.free_symbols == {sympy.Symbol('p')}
+    assert app.noise_name == 'igid'
+    assert white_noise(sympy.Symbol('p')).noise_name is None
+
+
 def test_ddx_and_limexp():
     from pycircuit.circuit.hdl import ddx, limexp, Branch, Node
     import sympy

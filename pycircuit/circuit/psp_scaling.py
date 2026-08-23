@@ -429,6 +429,10 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
     nfc = max(nz_scale * _g(card, 'nfclw'), 0.0)
     ef = max(_g(card, 'efo', 1.0), 0.0)
     fnt = max(_g(card, 'fnto', 1.0), 0.0)
+    ## `SWIGN` is a plain switch, not a scaled parameter: it is read
+    ## off the card verbatim (`PSP103_parlist.include:48`).  Default 1,
+    ## which is both PSP's default and what this card sets.
+    swign = 1.0 if _g(card, 'swign', 1.0) >= 0.5 else 0.0
 
     ## GATE RESISTANCE (:604, clipped at :816).  The full expression
     ## carries a sheet-resistance term and a per-finger term; this card
@@ -569,7 +573,7 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
         feta=_g(card, 'fetao', 1.0), thesat=max(thesat, 0.0),
     )
     kw.update(dnsub=dnsub, vnsub=vnsub, nslp=nslp, xcor=xcor, rg=rg,
-              nfa=nfa, nfb=nfb, nfc=nfc, ef=ef, fnt=fnt,
+              nfa=nfa, nfb=nfb, nfc=nfc, ef=ef, fnt=fnt, swign=swign,
               cgov=cgov, cfr=cfr, cgbov=cgbov, gov=gov, gov2=gov2,
               ov_a=sp_a, ov_d1=sp_delta1, ov_eps2=sp_eps * sp_eps,
               wcv=wecv, lcv=lecv, qq=qq)

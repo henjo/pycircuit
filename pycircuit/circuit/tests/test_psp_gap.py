@@ -2369,14 +2369,10 @@ class TestTheChannelNoise(object):
     model to fit -- the densities fall out of the charge distribution
     along the channel (`PSP103_module.include:1819-1841`).
 
-    Induced gate noise is NOT implemented, and the reason is an
-    interface one rather than an effort one: it is CORRELATED with the
-    drain noise, PSP carrying `c_igid` and reducing the drain term by
-    `(1 - c_igid^2)`.  A pair of correlated sources is not something the
-    DSL's per-branch noise functions can express, so it would need the
-    noise interface extended first.  With it absent `c_igid = 0` and the
-    drain term is the whole of `sqid^2`, which is exactly what PSP
-    computes when `SWIGN = 0`.
+    Induced gate noise is in `TestTheInducedGateNoise` below.  It splits
+    the drain's white term into a correlated part and `(1 - c_igid^2)`
+    of the rest -- so the tests HERE, which measure the drain alone,
+    must be unaffected by it, and are.
     """
 
     @pytest.fixture(scope='class')
@@ -2473,3 +2469,259 @@ class TestTheChannelNoise(object):
         s_fl, f_fl = self._split(fl, x_of(fl))
         assert s_th > 0.0 and f_th == pytest.approx(0.0, abs=1e-30)
         assert f_fl > 0.0 and s_fl == pytest.approx(0.0, abs=1e-30)
+
+
+class TestTheInducedGateNoise(object):
+    """The channel's fluctuation does not only leave through the drain.
+
+    It couples capacitively to the gate as well, and -- being the SAME
+    fluctuation -- what arrives there is CORRELATED with what arrives at
+    the drain (`PSP103_module.include:1863-1881, 1942-1948`).  Both
+    halves of that sentence are testable and both are tested here: the
+    magnitude against PSP's `sig`, and the correlation against its
+    `cigid`.
+
+    PSP builds it as a NETWORK -- an auxiliary node carrying a
+    conductance, a capacitance and the shared source -- rather than as a
+    written-down `jw`, and so does this model.  That is why the `f^2`
+    rise below the pole and the flat region above it are testable at
+    all: they are what an RC does, not what anyone typed.
+    """
+
+    #: element class, card name and reference key, per channel type.
+    DEV = {'nmos': (PspMosLongChannel, 'sg13g2_lv_nmos_psp', 'op'),
+           'pmos': (PspPmosLongChannel, 'sg13g2_lv_pmos_psp', 'op_pmos')}
+
+    @pytest.fixture(scope='class')
+    def ops(self):
+        with open(REF) as fh:
+            d = json.load(fh)
+        return {'nmos': d['op'], 'pmos': d['op_pmos']}
+
+    @pytest.fixture(scope='class')
+    def op(self, ops):
+        return ops['nmos']
+
+    def _kw(self, deck, geom, kind='nmos', **over):
+        _, card, _ = self.DEV[kind]
+        kw = psp_scaling.to_long_channel(
+            deck.model_params(card, w=geom['w'], l=geom['l'], ng=1, m=1,
+                              pre_layout=1),
+            w=geom['w'], l=geom['l'], T=T27)
+        kw.update(over)
+        return kw
+
+    def _fet(self, deck, geom, kind='nmos', **over):
+        cm.default_toolkit = numeric
+        cls = self.DEV[kind][0]
+        e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
+                **self._kw(deck, geom, kind, **over))
+        e.update_iparv()
+        return e
+
+    def _sig(self, deck_kw, pt, f=1.0e3, kind='nmos'):
+        """The GATE current density, from a real noise analysis.
+
+        Measured as the current through an ideal source in the gate
+        lead, which is the definition of `sig` -- and, unlike reading a
+        `CY` entry, it exercises the whole path: the auxiliary node, the
+        capacitive coupling, and the adjoint solve that turns them into
+        a density at a terminal.
+        """
+        from pycircuit.circuit.circuit import SubCircuit, gnd
+        from pycircuit.circuit.elements import VS
+        from pycircuit.circuit.analysis_ss import Noise
+        cm.default_toolkit = numeric
+        c = SubCircuit()
+        nd, ng_, nb = c.add_nodes('d', 'g', 'b')
+        c['vd'] = VS(nd, gnd, v=pt['vd'])
+        c['vg'] = VS(ng_, gnd, v=pt['vg'])
+        c['vb'] = VS(nb, gnd, v=pt['vb'])
+        c['m1'] = self.DEV[kind][0](nd, ng_, gnd, nb, **deck_kw)
+        res = Noise(c, inputsrc='vd', outputsrc='vg').solve(f)
+        return float(np.real(res['Sinout']))
+
+    @staticmethod
+    def _white(e, x, i, j):
+        """The WHITE part of a `CY` entry.
+
+        Necessary, not fussy: at 1 kHz the drain entry is dominated by
+        FLICKER noise -- some four decades of it on the long device --
+        so reading `CY` there and calling it `Sid` measures the wrong
+        term entirely.
+        """
+        f1, f2 = 1.0, 1.0e9
+        a = np.asarray(e.CY(x, 2 * np.pi * f1), float)[i, j]
+        b = np.asarray(e.CY(x, 2 * np.pi * f2), float)[i, j]
+        sfl = (a - b) / (1.0 / f1 - 1.0 / f2)
+        return a - sfl / f1
+
+    def _corr(self, e, x):
+        """`c_igid`, as the correlation coefficient it is defined to be.
+
+        Read off `CY` between the drain row and the auxiliary row.  The
+        gate current is a frequency-dependent multiple of that auxiliary
+        source, and a correlation coefficient is invariant under
+        scaling, so this is `|c(i_g, i_d)|` without needing a frequency.
+        """
+        nm = [n.name for n in e.nodes]
+        i_d, i_n = nm.index('d'), nm.index('noi')
+        cross = self._white(e, x, i_d, i_n)
+        return cross / np.sqrt(self._white(e, x, i_n, i_n)
+                               * self._white(e, x, i_d, i_d))
+
+    #: `cigid` tolerance per (channel type, geometry) -- measured, not
+    #: chosen.  The p-channel is the better device here, as it is on
+    #: this branch's DC sweeps.
+    CORR_TOL = {('nmos', 'long'): 0.003, ('nmos', 'short'): 0.04,
+                ('pmos', 'long'): 0.001, ('pmos', 'short'): 0.008}
+
+    @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
+    @pytest.mark.parametrize('geom', ['long', 'short'])
+    def test_the_correlation_matches_psp(self, deck, ops, kind, geom):
+        """Within 0.1% on the long n-channel and 3.2% on the short one;
+        within 0.55% on the p-channel at both geometries.
+
+        `c_igid` is built from the channel's SHAPE functions alone --
+        `t1`, `t2`, `r` -- with `g_ideal`, `lc` and `CGeff` cancelling
+        out of it exactly.  So this checks the shape and nothing else,
+        which is what makes it a different measurement from `sig` below
+        rather than a second view of the same one.
+        """
+        gd = ops[kind][geom]
+        e = self._fet(deck, gd, kind)
+        tol = self.CORR_TOL[(kind, geom)]
+        for pt in gd['points']:
+            if pt['sid'] <= 0.0 or pt['cigid'] <= 0.0:
+                continue
+            x = e.bias(pt['vd'], pt['vg'], 0.0, pt['vb'])
+            assert self._corr(e, x) == pytest.approx(pt['cigid'], rel=tol), \
+                (kind, geom, pt['vg'], pt['vd'], pt['vb'])
+
+    @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
+    def test_the_gate_density_matches_psp_on_the_long_device(self, deck,
+                                                             ops, kind):
+        """Within 5%, end to end through a noise analysis, both channel
+        types."""
+        gd = ops[kind]['long']
+        kw = self._kw(deck, gd, kind)
+        for pt in gd['points']:
+            if pt['sig'] <= 0.0:
+                continue
+            assert self._sig(kw, pt, kind=kind) \
+                == pytest.approx(pt['sig'], rel=0.06), \
+                (kind, pt['vg'], pt['vd'], pt['vb'])
+
+    @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
+    def test_the_short_device_carries_velocity_saturation_to_the_fourth(
+            self, deck, ops, kind):
+        """A GAP, measured rather than described.
+
+        `sig` goes as `CGeff^2`, and `CGeff` carries
+        `(Gvsat/Gmob_dL)^2` -- so the velocity-saturation factor enters
+        the gate density to the FOURTH power, where the drain current
+        carries it to the first.  On the short device in saturation that
+        turns a residual invisible in `Ids` into 1.73.
+
+        Forcing that factor to 1 moves the same point to 0.42, so the
+        factor is both real and the dominant sensitivity -- the residual
+        is an inherited short-channel one being magnified, not a wrong
+        formula.  Recorded here as a band so a regression is caught and
+        the gap stays a number.
+
+        In the LINEAR region, where there is no velocity saturation to
+        get wrong, the same device is exact to 0.4%.  The p-channel --
+        the more accurate device on this branch's DC sweeps too -- tops
+        out at 1.21 rather than 1.73, which is the same statement seen
+        through a smaller residual.
+        """
+        gd = ops[kind]['short']
+        kw = self._kw(deck, gd, kind)
+        for pt in gd['points']:
+            if pt['sig'] <= 0.0:
+                continue
+            got = self._sig(kw, pt, kind=kind) / pt['sig']
+            if abs(pt['vd']) <= 0.1 and abs(pt['vg']) >= 0.8:
+                assert got == pytest.approx(1.0, rel=0.006), \
+                    ('linear', kind, pt['vg'], pt['vd'])
+            else:
+                assert 0.9 < got < 1.8, (kind, pt['vg'], pt['vd'], got)
+
+    def test_the_drain_density_is_untouched_by_the_split(self, deck, op):
+        """The correlated source and the reduced independent one sum
+        back to `Sid` IDENTICALLY, whatever the clip did.
+
+        Which is the invariant that lets the drain-noise tests above
+        stay exactly as they were: adding a correlated pair changes the
+        gate and the cross terms, and must change the drain-drain entry
+        by nothing at all.
+        """
+        gd = op['long']
+        on = self._fet(deck, gd)
+        off = self._fet(deck, gd, swign=0.0)
+        nm_on = [n.name for n in on.nodes]
+        nm_off = [n.name for n in off.nodes]
+        for pt in gd['points']:
+            if pt['sid'] <= 0.0:
+                continue
+            a = self._white(on, on.bias(pt['vd'], pt['vg'], 0.0, pt['vb']),
+                            nm_on.index('d'), nm_on.index('d'))
+            b = self._white(off, off.bias(pt['vd'], pt['vg'], 0.0, pt['vb']),
+                            nm_off.index('d'), nm_off.index('d'))
+            assert a == pytest.approx(b, rel=1e-12), (pt['vg'], pt['vd'])
+
+    def test_it_rises_as_f_squared_and_then_flattens(self, deck, op):
+        """The RC's signature, which is the reason for building it as a
+        network: below the pole the density goes as `f^2`, above it the
+        conductance stops mattering and the density flattens at the bare
+        source power `nt * gmig`.
+
+        Measured with `rg = 0` deliberately.  A gate resistance puts a
+        SECOND pole in the path -- this card's 1.3 ohm against the gate
+        capacitance lands near 1e12 Hz -- and the density rolls off
+        again above it.  That is real, and the model shows it; it is
+        just not the pole under test here.
+        """
+        gd = op['long']
+        kw = self._kw(deck, gd, rg=0.0)
+        pt = [p for p in gd['points']
+              if p['vg'] == 1.2 and p['vd'] == 0.6 and p['vb'] == 0.0][0]
+        lo1 = self._sig(kw, pt, f=1.0e3)
+        lo2 = self._sig(kw, pt, f=1.0e4)
+        assert lo2 / lo1 == pytest.approx(100.0, rel=0.02)
+        hi1 = self._sig(kw, pt, f=1.0e13)
+        hi2 = self._sig(kw, pt, f=1.0e14)
+        assert hi2 / hi1 == pytest.approx(1.0, rel=0.01)
+
+        ## And the plateau is not merely flat, it is at the RIGHT
+        ## level: far above the pole the capacitor's impedance wins and
+        ## the whole source current reaches the gate, so the density
+        ## there IS the source power on the auxiliary branch.
+        e = self._fet(deck, gd, rg=0.0)
+        nm = [n.name for n in e.nodes]
+        i_n = nm.index('noi')
+        pwr = self._white(e, e.bias(pt['vd'], pt['vg'], 0.0, pt['vb']),
+                          i_n, i_n)
+        assert hi2 == pytest.approx(pwr, rel=0.01)
+
+    def test_swign_switches_it_off_and_costs_a_row(self, deck, op):
+        """`SWIGN = 0` removes the term AND the node it lived on -- the
+        auxiliary branch collapses, so switching it off is free rather
+        than merely zeroed."""
+        gd = op['long']
+        on, off = self._fet(deck, gd), self._fet(deck, gd, swign=0.0)
+        assert 'noi' in [n.name for n in on.nodes]
+        assert 'noi' not in [n.name for n in off.nodes]
+        assert off.n == on.n - 1
+        pt = [p for p in gd['points'] if p['sig'] > 0.0][0]
+        assert self._sig(self._kw(deck, gd, swign=0.0), pt) \
+            == pytest.approx(0.0, abs=1e-45)
+
+    def test_it_needs_the_thermal_term(self, deck, op):
+        """The gate density is proportional to `nt`, so `fnt = 0` takes
+        it with the drain's white term -- an element that was told it
+        has no thermal noise cannot acquire some at the gate."""
+        gd = op['long']
+        pt = [p for p in gd['points'] if p['sig'] > 0.0][0]
+        assert self._sig(self._kw(deck, gd, fnt=0.0), pt) \
+            == pytest.approx(0.0, abs=1e-45)

@@ -538,23 +538,43 @@ the body- and gate-bias modulations of the velocity-saturation parameter
 (``THESATB``, ``THESATG``), gate resistance on its own internal node,
 device multiplicity, overlap and fringe capacitance, the full
 temperature scaling — every parameter matches PSP's own value at 100 °C,
-73 K away from the card's reference — the junction charge, and the
-channel's thermal and flicker noise. Passing ``all_terms=False`` to
-``to_long_channel`` drops both, which exists so their effect stays
-measurable — see below, because deciding whether to keep them turned
-out to be a lesson about the measurement rather than about the terms.
+73 K away from the card's reference — the junction charge and its full
+reverse leakage, and the channel's thermal, flicker and induced gate
+noise. Passing ``all_terms=False`` to ``to_long_channel`` drops the
+short-channel terms, which exists so their effect stays measurable —
+see below, because deciding whether to keep them turned out to be a
+lesson about the measurement rather than about the terms.
+
+The junction's reverse current is generation and tunnelling rather than
+diffusion, so the ideal diode alone is not a small error but a wrong
+one: at :math:`-3` V it gives ~1e-19 A where PSP gives −2.64e-15 A. All
+four JUNCAP2 mechanisms are present — Shockley–Read–Hall generation,
+trap-assisted tunnelling, band-to-band tunnelling and avalanche
+multiplication — and the current matches PSP to five digits at every
+recorded bias on both geometries.
+
+Induced gate noise is built the way PSP builds it, as an auxiliary node
+carrying a conductance, a capacitance and a source shared with the
+drain. The gate density therefore rises as :math:`f^2` and rolls off
+above the node's pole because an RC does that, not because the shape was
+written down; and the gate and drain noise are genuinely *correlated*
+rather than merely both present. Against PSP's operating-point outputs
+the correlation coefficient matches to 0.1% on a 10 µm n-channel device
+and 3.2% on a 0.13 µm one — 0.03% and 0.55% on the p-channel, which is
+the more accurate device here as it is on the DC sweeps — and the gate
+density to 5% on the long device of either type. The drain
+density is unchanged by the split, identically: the correlated source
+and the reduced independent one sum back to :math:`S_{id}`.
 
 Absent: the rest of the short-channel threshold block (``PSCE``, which
-is all-zero on this card anyway); gate and junction
-leakage; impact ionisation; overlap and fringe capacitances; the
-non-quasi-static block; self-heating; and every temperature coefficient.
+is all-zero on this card anyway); gate leakage; impact ionisation; the
+non-quasi-static block; and self-heating.
 PSP103 is this core plus those, and the size of what they are worth is
 exactly what the table above measures.
 
-Two of those omissions are invisible to the table *by construction*:
-gate leakage and junction leakage are four to six orders of magnitude
-below its 1 µA floor on this process, and overlap and fringe
-capacitances contribute identically zero DC current.
+One of those omissions is invisible to the table *by construction*:
+gate leakage is four to six orders of magnitude below its 1 µA floor on
+this process.
 
 Overlap and fringe capacitance was on that list until the capacitance
 comparison existed to measure it. It is large: at :math:`V_g = V_d =

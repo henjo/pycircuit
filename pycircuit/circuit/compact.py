@@ -546,9 +546,26 @@ def _psp_mos_analog(T, pmos):
         ## of the surface-potential quantities the current already used,
         ## which is what a surface-potential model buys: there is no
         ## separate noise model to fit.
-        n_sid, n_sfl = psp_kernel.noise(
+        n_sid, n_sfl, n_shared = psp_kernel.noise(
             core, None, beta, phit0, cox,
             dict(fnt=fnt, nfa=nfa, nfb=nfb, nfc=nfc))   # noqa: F821
+
+        ## INDUCED GATE NOISE, as PSP builds it: an auxiliary node
+        ## carrying a conductance, a capacitance and the shared source,
+        ## with the gate reading the capacitor's current
+        ## (`PSP103_module.include:1942-1948`).  The node is what makes
+        ## the frequency shape come out of the CIRCUIT -- the density
+        ## rises as `f^2` and rolls off above `1/(2 pi mig CGeff)`
+        ## because an RC does that, not because anyone wrote it down.
+        ign = psp_kernel.induced_gate_noise(core, n_shared, n_sid,
+                                            cox_c, swign)  # noqa: F821
+        noi = Node('noi')
+        br_noi = Branch(noi, s, 'noi')
+        ## `sqrt(mult)` on the coupled paths, not `mult`: these are
+        ## AMPLITUDES sharing one source, so the power they carry into
+        ## `CY` picks up `mult` when the amplitudes are squared there.
+        ## Writing `mult` here would give `mult^2` in the density.
+        sqm = var(sympy.sqrt(sympy.Max(mult, 0.0)), 'sqmult')  # noqa: F821
 
         ## MULTIPLICITY.  PSP multiplies every contribution by `MULT_i`
         ## (`MULT * NF`, `PSP103_scaling.include:828`); `m` devices in
@@ -586,11 +603,51 @@ def _psp_mos_analog(T, pmos):
                              mult * T * ij_s),                 # noqa: F821
                 Contribution(Branch(b, d, 'jid').I,
                              mult * T * ij_d),                 # noqa: F821
+                ## THE AUXILIARY NOISE NODE.  A conductance, a
+                ## capacitance and the shared source -- the network
+                ## whose impedance IS the frequency shape of the
+                ## induced gate density.
+                ##
+                ## Collapsed away entirely when the term is INERT, which
+                ## is `swign = 0` or `fnt = 0` -- the gate density is
+                ## proportional to `nt`, so a device with no thermal
+                ## noise has no induced gate noise either.  Both are
+                ## non-negative parameters, so their product tests both
+                ## at once.  Written this way an element built without a
+                ## card is exactly the four-node element it was: the row
+                ## is the price of the physics, not of the option.
+                Contribution(br_noi.I, br_noi.V * ign['gcond']),
+                Contribution(br_noi.I, ddt(ign['cgeff'] * br_noi.V)),
+                Contribution(br_noi.I, white_noise(ign['pwr'], 'igid')),
+                Collapse(br_noi, swign * fnt <= 0),            # noqa: F821
+                ## The gate reads the capacitor's current, HALF to each
+                ## channel end (`module:1945-1946`).  Split that way it
+                ## stays a gate-referenced pair, so the coupling adds no
+                ## net charge -- the same discipline the overlap
+                ## contributions above keep.
+                Contribution(Branch(gi, s, 'ign_s').I,
+                             ddt(-sqm * 0.5 * ign['cgeff'] * br_noi.V)),
+                Contribution(Branch(gi, d, 'ign_d').I,
+                             ddt(-sqm * 0.5 * ign['cgeff'] * br_noi.V)),
                 ## Noise densities are POWERS, so they carry `mult` but
-                ## not `T` -- a spectral density has no sign.
+                ## not `T` -- a spectral density has no sign.  The
+                ## channel's own white term is reduced by `c_igid^2`,
+                ## which the CORRELATED source below puts back: the two
+                ## still sum to `Sid`, and the drain-drain entry of `CY`
+                ## is therefore unchanged by any of this.  What changes
+                ## is the gate, and the CROSS terms -- which is the
+                ## whole point of the pair.
                 Contribution(Branch(d, s, 'chan').I,
-                             white_noise(mult * n_sid)          # noqa
-                             + flicker_noise(mult * n_sfl, ef)))  # noqa
+                             white_noise(mult * n_sid                 # noqa
+                                         * (1.0 - ign['c2']))
+                             + flicker_noise(mult * n_sfl, ef)),      # noqa
+                ## `sigVds` and no `CHNL_TYPE` -- PSP's own signs
+                ## (`module:1947`).  The relative sign between this and
+                ## the gate coupling is the physics; the absolute one
+                ## is not observable.
+                Contribution(Branch(d, s, 'chan').I,
+                             sgn * sqm * ign['migid']
+                             * white_noise(ign['pwr'], 'igid')))
 
 
     return analog
@@ -781,6 +838,13 @@ class PspMosLongChannel(Behavioural):
                   unit='', default=0.0),
         Parameter(name='ef', desc='Flicker noise exponent', unit='',
                   default=1.0),
+        ## `SWIGN` (`PSP103_parlist.include:48`).  Defaulting it ON
+        ## costs nothing when the thermal term is off -- the induced
+        ## gate density is proportional to `fnt` through `nt` -- and
+        ## makes a card that sets it, as this one does, behave without
+        ## having to say so twice.
+        Parameter(name='swign', desc='Induced gate noise: 0=off, 1=on',
+                  unit='', default=1.0),
         Parameter(name='rg', desc='Gate resistance', unit='ohm',
                   default=0.0),
         Parameter(name='mult', desc='Multiplicity (devices in parallel)',

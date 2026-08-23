@@ -224,6 +224,15 @@ OP_OUTPUTS = ('ids', 'gm', 'gds', 'gmb', 'vth',
               ## each other rather than both against the current they
               ## share.
               'sid', 'sfl', 'fknee',
+              ## INDUCED GATE NOISE.  `sig` is the gate density at 1 kHz
+              ## -- a frequency, not a 1 Hz reference, because the
+              ## density grows as f^2 and is meaningless extrapolated to
+              ## DC.  `cigid` is the correlation with the drain, which
+              ## is the whole reason the term is not just another
+              ## independent source: an implementation can get `sig`
+              ## right with `cigid` wrong, and the pair is what pins the
+              ## coupling rather than only its magnitude.
+              'sig', 'cigid',
               ## The JUNCTION, per component.  `cjs`/`cjd` are the
               ## totals and `cjsbot`/`cjssti`/`cjsgat` the three parts
               ## `SWJUNCAP = 3` switches on -- recording them separately

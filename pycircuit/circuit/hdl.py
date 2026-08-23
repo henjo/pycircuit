@@ -43,6 +43,7 @@ from pycircuit.circuit.circuit import defaultepar
 import pycircuit.utilities.param as param
 
 import sympy
+from sympy.core.symbol import Str
 import numpy as np
 
 import inspect
@@ -155,17 +156,70 @@ class _wrapfloor(sympy.Function):
         return sympy.Integer(0)
 
 
-class white_noise(sympy.Function):
-    """``white_noise(pwr)`` -- a flat current PSD on the contributed branch.
+def _conj(expr):
+    """Complex conjugate of a model expression, by flipping ``I``.
+
+    Every symbol a model can write -- a parameter, a node voltage, a
+    branch current, the temperature, the frequency -- is REAL, so the
+    only imaginary thing in an expression got there as an explicit
+    `sympy.I`.  Substituting ``I -> -I`` is therefore exact, and unlike
+    `sympy.conjugate` it leaves a real expression textually unchanged
+    instead of burying every symbol in an unevaluated ``conjugate(...)``
+    that the compiled matrix would then carry.
+    """
+    e = sympy.sympify(expr)
+    return e.subs(sympy.I, -sympy.I) if e.has(sympy.I) else e
+
+
+def _noise_name(args):
+    """Sympify a trailing noise NAME as `Str`, not as a `Symbol`.
+
+    Plain `sympify('igid')` yields ``Symbol('igid')``, which then shows up
+    in the statement's ``free_symbols`` and is hunted for as a parameter --
+    the name would have to be declared to be usable.  `Str` is atomic with
+    an empty ``free_symbols``, so a name is inert everywhere except where
+    this module deliberately reads it.
+    """
+    if args and isinstance(args[-1], str):
+        return args[:-1] + (Str(args[-1]),)
+    return args
+
+
+class _NamedNoise(sympy.Function):
+    """Shared plumbing for the noise functions: an optional trailing name.
+
+    Two sources contributed with the SAME name are PERFECTLY CORRELATED
+    (LRM 2.4 sec. 4.5.16) -- one physical fluctuation reaching the circuit
+    through more than one branch.  Contributed without a name, a source is
+    independent of every other.
+    """
+
+    def __new__(cls, *args, **kwargs):
+        return super().__new__(cls, *_noise_name(args), **kwargs)
+
+    @property
+    def noise_name(self):
+        """The correlation group, or None when this source stands alone."""
+        last = self.args[-1]
+        return last.name if isinstance(last, Str) else None
+
+
+class white_noise(_NamedNoise):
+    """``white_noise(pwr[, name])`` -- a flat current PSD on the branch.
 
     Contributes ONLY to the noise correlation matrix ``CY`` (LRM: noise
     functions return zero in DC/transient); ``pwr`` may use ``TEMP``.
+
+    A scale factor multiplies the AMPLITUDE, so ``k * white_noise(p)``
+    has PSD ``k**2 * p``.  That is what makes a named group composable:
+    the factors carry the (possibly complex, possibly signed) transfer
+    from the one fluctuation to each branch it reaches.
     """
     nargs = (1, 2)
 
 
-class flicker_noise(sympy.Function):
-    """``flicker_noise(pwr, exp)`` -- a ``pwr/f^exp`` current PSD."""
+class flicker_noise(_NamedNoise):
+    """``flicker_noise(pwr, exp[, name])`` -- a ``pwr/f^exp`` current PSD."""
     nargs = (2, 3)
 
 
@@ -911,19 +965,32 @@ def _split_terms(rhs, xset, tset=frozenset()):
                 rest = [f for f in term.args
                         if not isinstance(f, (white_noise, flicker_noise))]
                 coeff = sympy.Mul(*rest)
-                if len(napps) != 1 or not xfree(coeff):
+                ## The scale factor MAY depend on x, unlike `ddt`'s.
+                ## `ddt`'s restriction is a conservation argument --
+                ## `g(v)*ddt(v)` is not the derivative of any charge.  No
+                ## such argument applies here: `CY` is a function of the
+                ## operating point by construction (`CY(x, w)`), and the
+                ## power INSIDE the noise call has always been allowed to
+                ## depend on x, so forbidding it outside was a rule with
+                ## nothing behind it.
+                if len(napps) != 1:
                     raise NotImplementedError(
-                        'noise functions may appear as a term or scaled by '
-                        'an x-independent factor; %r is neither' % (term,))
+                        'a term may scale at most ONE noise function; %r '
+                        'has %d.  Two correlated sources are written as two '
+                        'contributions sharing a name.'
+                        % (term, len(napps)))
                 app = napps[0]
             else:
                 raise NotImplementedError(
                     'noise functions may only appear additively: %r' % (term,))
             if isinstance(app, white_noise):
-                psd = coeff * app.args[0]
+                pwr = app.args[0]
             else:
-                psd = coeff * app.args[0] / FREQ ** app.args[1]
-            nterms.append(psd)
+                pwr = app.args[0] / FREQ ** app.args[1]
+            ## `coeff` scales the AMPLITUDE, so it enters the PSD squared.
+            ## Kept factored out rather than pre-squared: a named group
+            ## needs the amplitude itself, to build the CROSS terms.
+            nterms.append((app.noise_name, coeff, pwr))
             continue
         ddts = term.atoms(ddt)
         if ddts:
@@ -1369,6 +1436,10 @@ def generate_code(cls):
     uvec = [sympy.Integer(0)] * n
     acvec = [sympy.Integer(0)] * n
     CYacc = {}
+    ## name -> [shared power, {row: summed amplitude}].  See `_NamedNoise`:
+    ## every member of a group is the SAME fluctuation, so the group has one
+    ## power and one injection vector, not one of each per contribution.
+    named_noise = {}
 
     for st in statements:
         b = st.lhs.branch_or_node
@@ -1381,13 +1452,26 @@ def generate_code(cls):
             qvec[p] += qpart; qvec[m_] -= qpart
             uvec[p] += upart; uvec[m_] -= upart
             acvec[p] += acpart; acvec[m_] -= acpart
-            for psd in npart:
-                ## An I-contributed noise PSD stamps like a noisy
-                ## conductance: the R.CY pattern (elements.py).
-                CYacc[(p, p)] = CYacc.get((p, p), 0) + psd
-                CYacc[(m_, m_)] = CYacc.get((m_, m_), 0) + psd
-                CYacc[(p, m_)] = CYacc.get((p, m_), 0) - psd
-                CYacc[(m_, p)] = CYacc.get((m_, p), 0) - psd
+            for name, amp, pwr in npart:
+                if name is None:
+                    ## An I-contributed noise PSD stamps like a noisy
+                    ## conductance: the R.CY pattern (elements.py).
+                    psd = amp ** 2 * pwr
+                    CYacc[(p, p)] = CYacc.get((p, p), 0) + psd
+                    CYacc[(m_, m_)] = CYacc.get((m_, m_), 0) + psd
+                    CYacc[(p, m_)] = CYacc.get((p, m_), 0) - psd
+                    CYacc[(m_, p)] = CYacc.get((m_, p), 0) - psd
+                    continue
+                group = named_noise.setdefault(name, [pwr, {}])
+                if group[0] != pwr:
+                    raise NotImplementedError(
+                        'noise sources named %r contribute different powers '
+                        '(%r and %r).  Members of a correlation group are ONE '
+                        'fluctuation, so they share one power; put what '
+                        'differs between branches in the scale factor, which '
+                        'multiplies the amplitude.' % (name, group[0], pwr))
+                group[1][p] = group[1].get(p, 0) + amp
+                group[1][m_] = group[1].get(m_, 0) - amp
         else:
             ## V-contribution: KCL rows carry the branch current; the
             ## branch row is -(v_p - v_m) + rhs = 0 (the elements.py
@@ -1409,6 +1493,26 @@ def generate_code(cls):
             ivec[bi] += -(vp - vm) + ipart
             qvec[bi] += qpart
             uvec[bi] += upart
+
+    ## ------------------------------------------------------------------
+    ## Correlated groups: one fluctuation reaching several branches.
+    ##
+    ## A group injects the current vector ``w * n``, with ``n`` a unit
+    ## process of power ``pwr`` and ``w`` the summed stamp of its members,
+    ## so its correlation matrix is the RANK-ONE ``pwr * w w^dagger``.  The
+    ## lone-source stamp above is the same expression with a single member:
+    ## ``w = amp * (e_p - e_m)`` gives back the 2x2 conductance pattern.
+    ##
+    ## Off-diagonal blocks are what a group is FOR.  They are the only way
+    ## to say that two branches carry the same noise -- summing two
+    ## independent sources of the same power says something different, and
+    ## says it wrong wherever the two paths interfere.
+    for name, (pwr, wvec) in named_noise.items():
+        rows = sorted(wvec)
+        for r_ in rows:
+            for c_ in rows:
+                CYacc[(r_, c_)] = (CYacc.get((r_, c_), 0)
+                                   + pwr * wvec[r_] * _conj(wvec[c_]))
 
     ## State equations: ds/dt = arg  ->  q-row s, i-row -arg.
     dc_pins = {}     # x-index -> (pin expression for i, seed expression)

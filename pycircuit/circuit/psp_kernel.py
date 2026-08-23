@@ -1048,16 +1048,11 @@ def noise(core, mob, beta, phit, cox, nz):
     `alpha`, `dps`, `H` -- which is the point of a surface-potential
     model's noise: there is nothing to fit separately.
 
-    Returns ``(Sid, Sfl)``: the white drain-current density in A^2/Hz,
-    and the flicker density at 1 Hz to be divided by ``f**EF``.
-
-    Induced gate noise is not here.  It needs the AC/NQS quantities and,
-    more awkwardly, it is CORRELATED with the drain noise -- PSP carries
-    `c_igid` and reduces the drain term by `(1 - c_igid^2)`.  A pair of
-    correlated sources is not something the DSL's per-branch noise
-    functions express, so implementing it would need the noise interface
-    extended first.  With it absent, `c_igid = 0` and the drain term is
-    the whole of `sqid**2`, which is what PSP computes when `SWIGN = 0`.
+    Returns ``(Sid, Sfl, shared)``: the white drain-current density in
+    A^2/Hz, the flicker density at 1 Hz to be divided by ``f**EF``, and
+    the channel-shape intermediates `induced_gate_noise` needs -- which
+    are shared rather than recomputed because they are the SAME
+    description of the channel, and two copies of it could drift apart.
     """
     qim, qim1 = core['qim'], core['qim1']
     alpha, dps = core['alpha'], core['dps']
@@ -1113,4 +1108,105 @@ def noise(core, mob, beta, phit, cox, nz):
     sfl = _v(sympy.Max(prefac * (core['ids'] * core['gvinv']) * sfl0
                        * hdl.safe_div(1.0, n1, eps=1e-30), 0.0),
              'n_sfl')
-    return sid, sfl
+    return sid, sfl, dict(t1=t1, t2=t2, sqt2=sqt2, r=r, lc=lc,
+                          g_ideal=g_ideal, nt=nt)
+
+
+#: Lower bound on the auxiliary node's conductance, in siemens.
+#:
+#: The induced-gate network below hangs on an internal node whose only
+#: DC connection is that conductance, so a zero there is a FLOATING NODE
+#: and a singular matrix, not merely a large impedance.  The bound is
+#: safe to state rather than hope about: the gate density it guards is
+#: ``Sig = w^2 CGeff^2 g nt / (g_cond^2 + w^2 CGeff^2) <= nt * g``
+#: whatever ``g_cond`` is, so wherever the floor is reached at all the
+#: quantity it perturbs is already below ``nt * 1e-12`` -- of order
+#: 1e-33 A^2/Hz, thirteen decades under any gate noise worth reporting.
+GMIG_FLOOR = 1.0e-12
+
+
+def induced_gate_noise(core, shared, sid, cox_c, swign):
+    """PSP's induced gate noise, as an auxiliary RC node and a
+    CORRELATED pair of sources (`PSP103_module.include:1863-1881,
+    1942-1948`).
+
+    The channel's charge fluctuation does not only leave through the
+    drain.  It also couples capacitively to the gate, giving a gate
+    current that grows as ``f`` and -- being the SAME fluctuation -- is
+    correlated with the drain noise.  Two things follow, and PSP models
+    both: the gate sees a density at all, and the drain's own density is
+    split into a correlated part and the remaining ``(1 - c^2)``.
+
+    Returns a dict for the element to stamp:
+
+    ``pwr``    the shared source power, on the auxiliary branch and,
+               scaled by ``migid``, on the channel branch,
+    ``gcond``  that branch's conductance,
+    ``cgeff``  the coupling capacitance to the gate,
+    ``migid``  the channel branch's share of the shared source (NOT
+               gated by ``swign`` -- ``pwr`` already is, and gating one
+               factor of a product twice would cube the switch),
+    ``c2``     ``c_igid**2``, by which the channel's INDEPENDENT source
+               is reduced.
+
+    The frequency dependence is deliberately NOT in any of them.  PSP
+    builds it from a real network -- a conductance and a capacitance on
+    an internal node -- so the ``f^2`` rise and the roll-off above
+    ``1/(2 pi mig CGeff)`` come out of the circuit rather than out of a
+    hand-written ``jw``.  Reproduced here as the same network, which is
+    what makes `PSP103_module.include:1969-1970`'s 1 kHz reference value
+    an EXACT check rather than a low-frequency one.
+    """
+    t1, t2, sqt2 = shared['t1'], shared['t2'], shared['sqt2']
+    r, lc, g_ideal, nt = (shared['r'], shared['lc'], shared['g_ideal'],
+                          shared['nt'])
+
+    ## `mig` is a RESISTANCE here (PSP contributes `V(NOIR)/mig`), and it
+    ## carries `1/g_ideal` -- so it runs to infinity as the channel
+    ## empties.  Built as its RECIPROCAL throughout: the conductance is
+    ## what the matrix wants, it is the quantity that stays finite, and
+    ## the source power `nt/mig` is then a product rather than a
+    ## quotient of two things that both approach zero.
+    mig0 = _v(t1 * (1.0 / 12.0) - t2 * (t1 + 0.2 - 12.0 * t2)
+              - 1.6 * (t2 * (t1 + 1.0 - 12.0 * t2) * r), 'g_mig0')
+    mig_r = _v(sympy.Max(mig0, 1.0e-40), 'g_migr')
+    gmig = _v(g_ideal * (lc * lc) * hdl.safe_div(1.0, mig_r, eps=1e-45),
+              'g_gmig')
+    pwr = _v(swign * (nt * gmig), 'g_pwr')
+    gcond = _v(sympy.Max(gmig, GMIG_FLOOR), 'g_gcond')
+
+    ## `CGeff = Gvsat^2 COX_qm eta_p / Gmob_dL^2` with
+    ## `Gmob_dL = Gmob * GdL` (`macrodefs:760, 771`); `gvinv` is already
+    ## `1/Gvsat`, so the ratio is one reciprocal rather than three.
+    gr = _v(core['Gmob'] * core['GdL'] * core['gvinv'], 'g_ratio')
+    cgeff = _v(swign * cox_c * core['eta_p']
+               * hdl.safe_div(1.0, gr * gr, eps=1e-30), 'g_cgeff')
+
+    ## `c_igid = migid0 / sqrt(mig * mid)` with PSP's `mid = Sid / nt`
+    ## (`module:1876-1878`).  In conductance form that square root has
+    ## no small denominator left in it.
+    migid0 = _v(hdl.safe_div(1.0, lc * lc, eps=1e-30) * sqt2
+                * (1.0 - 12.0 * t2
+                   - (t1 + 19.2 * t2 - 12.0 * (t1 * t2)) * r), 'g_mid0')
+    ## PSP clips `c_igid` to [0, 1] and then rebuilds `migid` from it.
+    ## The clip is a bound on `migid0` itself: unclipped the rebuild
+    ## returns `migid0` exactly, and the two ends of the clip are 0 and
+    ## `sqid/sqig = sqrt(Sid / (nt * gmig))`.  Written that way it needs
+    ## no division by the correlation coefficient.
+    sid_f = _v(sympy.Max(sid, 0.0), 'g_sidf')
+    gm_f = _v(sympy.Max(gmig, 1.0e-100), 'g_gmigf')
+    hi = _v(sympy.sqrt(hdl.safe_div(sid_f, nt * gm_f, eps=1e-150)),
+            'g_hi')
+    lo = _v(sympy.Min(migid0, hi), 'g_lo')
+    migid = _v(sympy.Max(lo, 0.0), 'g_migid')
+
+    ## The reduction of the channel's INDEPENDENT source.  PSP writes it
+    ## as `1 - c_igid^2`; the identity `migid^2 * pwr = c_igid^2 * Sid`
+    ## is exact by construction, so the factor is read straight off the
+    ## correlated source rather than from a second copy of the
+    ## coefficient -- which also makes the two sources sum to `Sid`
+    ## identically, whatever the clip did.
+    c2r = _v(migid * migid * pwr
+             * hdl.safe_div(1.0, sid_f, eps=1e-150), 'g_c2r')
+    c2 = _v(sympy.Min(c2r, 1.0), 'g_c2')
+    return dict(pwr=pwr, gcond=gcond, cgeff=cgeff, migid=migid, c2=c2)

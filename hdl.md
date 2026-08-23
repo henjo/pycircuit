@@ -108,6 +108,7 @@ Each contribution's right-hand side is expanded and routed term by term:
 | nothing x-dependent, but contains `TIME` | `u(t)` | a genuine independent excitation |
 | nothing x-dependent, no `TIME` | `i` | part of the static characteristic |
 | `white_noise`/`flicker_noise` | `CY` | small-signal PSD only (LRM: zero in DC/transient) |
+| `k*white_noise(p, "n")` | `CY` | `k` scales the **amplitude**; same `"n"` ⇒ one fluctuation |
 | anything else | `i` | static current |
 
 Three of those rows encode decisions worth defending:
@@ -223,8 +224,8 @@ recomputing per Newton iteration.
 | `idtmod(x, ic, m, o)` | `idtmod` | ✅ + floored wrap + gauge shift |
 | `ddx(expr, probe)` | `ddx` | ✅ exact symbolic partial |
 | `limexp(x)` | `limexp` | ✅ C¹ linear continuation above 80 |
-| `white_noise(p)` | `white_noise` | ✅ → `CY` |
-| `flicker_noise(p, e)` | `flicker_noise` | ✅ → `CY`, `p/f^e` |
+| `white_noise(p[, name])` | `white_noise` | ✅ → `CY`; same `name` ⇒ correlated |
+| `flicker_noise(p, e[, name])` | `flicker_noise` | ✅ → `CY`, `p/f^e` |
 | `vt()`, `TEMP` | `$vt`, `$temperature` | ✅ bound from `epar.T` |
 | `TIME` | `$abstime` | ✅ in source terms |
 | any sympy function | Table 9-11 math | ✅ `exp`, `log`, `tanh`, `sqrt`, `Piecewise`, … |
@@ -447,6 +448,61 @@ silently registering the device as having nothing to limit.
 
 The path is chosen per model: declare no intermediates and nothing
 changes. `_hdl_info['chained']` says which path a class took.
+
+### 3.2b2 Correlated noise: one fluctuation, several branches
+
+`white_noise(pwr, name)` and `flicker_noise(pwr, exp, name)` take an
+optional trailing NAME. Per LRM 2.4 § 4.5.16, sources contributed under
+the **same name within one instance are perfectly correlated** — they
+are not two sources that happen to match, they are *one physical
+fluctuation reaching the circuit through more than one branch*.
+
+```python
+Contribution(Branch(noi, s).I, white_noise(pwr, 'igid')),
+Contribution(Branch(d, s).I, k * white_noise(pwr, 'igid')),
+```
+
+Two rules make this composable, and both are consequences of the LRM
+rather than choices:
+
+**A scale factor multiplies the AMPLITUDE, so it enters the density
+squared.** `k * white_noise(p)` has PSD `k**2 * p`. That is what lets
+the factors carry the (signed, possibly complex) transfer from the one
+fluctuation to each branch it reaches, while the power stays the
+fluctuation's own.
+
+**A group has ONE power.** Two different powers under one name is a
+contradiction, not a shorthand: with `S1 != S2` the cross term is
+`sqrt(S1*S2)` up to a sign that nothing in the source text determines.
+The compiler refuses it and names the fix — put what differs between
+branches in the scale factor.
+
+The stamp follows directly. A group injects the current vector `w * n`
+with `n` a unit process of power `pwr` and `w` the summed branch stamp
+of its members, so its block of `CY` is the **rank-one** `pwr * w w†`.
+The lone-source stamp is the same expression with a single member:
+`w = k*(e_p - e_m)` gives back the familiar 2×2 conductance pattern, so
+nothing about uncorrelated sources changed.
+
+Two smaller things fell out of building it:
+
+- **The scale factor may depend on `x`,** unlike `ddt`'s. `ddt`'s
+  restriction is a conservation argument — `g(v)*ddt(v)` is not the
+  derivative of any charge. No such argument applies to noise: `CY` is a
+  function of the operating point by construction (`CY(x, w)`), and the
+  power *inside* the call had always been allowed to depend on `x`, so
+  forbidding it outside was a rule with nothing behind it.
+- **The name is inert.** It compiles to a `sympy` `Str`, not a `Symbol`,
+  so it has an empty `free_symbols` and never reaches the parameter
+  machinery. A name that had to be *declared* to be usable would be a
+  poor name.
+
+The frequency shape of a correlated pair usually does **not** belong in
+`CY`. PSP's induced gate noise is the worked example: the `f²` rise and
+the roll-off come from an auxiliary node carrying a real conductance and
+a real capacitance, so the shape is the circuit's, and `CY` stays real
+and frequency-independent. Reach for a `jw` in the density only when
+there is no network to write instead.
 
 ### 3.2c The math kernel, and both-arms-safe conditionals
 
@@ -1770,8 +1826,8 @@ layer, which is where this model already puts that work.
 **Estimate ~120 lines**, and it needs the element to take a temperature
 rather than assume one.
 
-**3. Junction diodes and capacitance — JUNCAP2. DONE for the charge;
-the leakage terms deliberately not, see the dated entry below.** `SWJUNCAP = 3` with
+**3. Junction diodes and capacitance — JUNCAP2. DONE, charge and
+leakage both; see the dated entries below.** `SWJUNCAP = 3` with
 the full parameter set on the card. The *current* is invisible here
 (1e-15 A against 4e-4), but the *capacitance* is 8% of intrinsic on the
 long device and 126% on the short one. This is a second compact model,
@@ -1791,8 +1847,8 @@ silently gets one device. PSP multiplies every contribution by `MULT_i`.
 **Estimate ~10 lines**, and it is a correctness hazard rather than an
 accuracy one.
 
-**6. Noise — DONE for thermal and flicker; induced-gate not, see the
-dated entry below.**
+**6. Noise — DONE: thermal, flicker and induced-gate. See the dated
+entries below.**
 
 Enabled on the card and measured negligible at this supply, against
 `ids = 4.0e-4` at Vg = Vd = 1.2 on a 0.13 µm device: gate current
@@ -1812,11 +1868,14 @@ hazard; the third is the largest accuracy gap and now has a benchmark
 that can see it; the fourth unlocks a whole analysis axis; the fifth is
 its own rung.
 
-**Every item on this plan is done**, with two deliberate and recorded
-exceptions: JUNCAP2's reverse-leakage terms, and induced gate noise —
-the first because it shapes a current eleven orders below anything else
-in the model, the second because it needs the noise interface extended
-to express correlated sources.
+**Every item on this plan is done.** The last two to go were the two
+that had been deliberately deferred and recorded as such — JUNCAP2's
+reverse-leakage terms, and induced gate noise. Both deferrals turned out
+to be worth revisiting rather than keeping: the first was wrong by orders
+of magnitude on this card (reverse current here is generation and
+tunnelling, not diffusion, so the ideal term alone gives ~1e-19 A where
+PSP gives -2.6e-15 A), and the second was blocked on an interface that
+took about sixty lines to extend.
 
 > **The saturation voltage, a floor hidden in the scaling, and two
 > things it broke — 2026-08-23.** PSP does not evaluate the drain
@@ -2716,14 +2775,33 @@ to express correlated sources.
 > RATIO of the two densities, so an error common to both cancels in it
 > and an error in one does not.
 >
-> **Induced gate noise is not implemented, and the reason is an
-> interface one.** It is CORRELATED with the drain noise — PSP carries
-> `c_igid` and reduces the drain term by `(1 - c_igid^2)` — and a pair
-> of correlated sources is not something the DSL's per-branch
-> `white_noise`/`flicker_noise` can express. It would need the noise
-> interface extended first. With it absent `c_igid = 0`, and the drain
-> term is the whole of `sqid^2`, which is exactly what PSP computes when
-> `SWIGN = 0`.
+> **Induced gate noise is implemented**, and getting there needed the
+> DSL's noise interface extended first — which is recorded in
+> § "Correlated noise" above. The channel's fluctuation also couples
+> capacitively to the gate, and being the SAME fluctuation what arrives
+> there is correlated with what arrives at the drain: PSP carries
+> `c_igid` and reduces the drain's independent term by `(1 - c_igid^2)`.
+>
+> Built as PSP builds it — an auxiliary node carrying a conductance, a
+> capacitance and the shared source — rather than as a written-down
+> `jw`. The `f^2` rise and the roll-off above `1/(2 pi mig CGeff)` then
+> come out of the CIRCUIT, which is what makes PSP's 1 kHz `sig` an
+> exact check rather than a low-frequency one.
+>
+> Measured: `cigid` within **0.1%** (long) and **3.2%** (short); `sig`
+> within **5%** on the long device through a real noise analysis. The
+> short device runs up to **1.73** in saturation and is exact to 0.2% in
+> the linear region — `sig` goes as `CGeff^2` and `CGeff` carries
+> `(Gvsat/Gmob_dL)^2`, so the velocity-saturation factor enters the gate
+> density to the FOURTH power where the drain current carries it to the
+> first. Forcing that factor to 1 moves the same point to 0.42, so the
+> residual is an inherited short-channel one being magnified, not a
+> wrong formula.
+>
+> The drain-drain entry of `CY` is unchanged by any of this, identically:
+> the correlated source and the reduced independent one sum back to
+> `Sid` whatever the clip did. That is the invariant that let the
+> drain-noise tests stay exactly as they were.
 >
 > Two card simplifications worth recording so they are not rediscovered:
 > `NFC` clips to **zero** (the card's `NFCLW` is negative and `NFC_i` is
@@ -2734,6 +2812,109 @@ to express correlated sources.
 >
 > Noise is off by default: an element built without a card is noiseless,
 > and thermal and flicker can be switched independently, both tested.
+
+> **JUNCAP2's reverse leakage — 2026-08-23.** The junction had the
+> ideal diode and the depletion charge; its reverse current was a
+> scoping decision, recorded as such. On this card that decision was
+> **wrong by orders of magnitude**: at −3 V the ideal term alone gives
+> ~1e-19 A where PSP gives −2.64e-15 A, because reverse current on this
+> junction is not diffusion at all. Four mechanisms now, all four from
+> the card: Shockley–Read–Hall generation in the depletion region,
+> trap-assisted tunnelling, band-to-band tunnelling, and the avalanche
+> multiplication that turns them into breakdown.
+>
+> Matches PSP to **five digits** at every recorded bias on both
+> geometries (ratios 0.99997–1.00003); the standalone kernel gives
+> −2.64101e-15 against −2.64100e-15 at −3 V and 8.64145e-05 against
+> 8.64200e-05 at +0.9 V. Derived constants exact: `vbbtlim = 0.65829`,
+> `fstop = 250.3753`, `alphaav = 0.999`.
+>
+> `_erfc_exp` is **branchless** — the DSL evaluates both arms of every
+> conditional, so the rational approximation is written to be finite on
+> either side rather than guarded into being.
+>
+> The middle of its three tests is the point:
+> `test_the_ideal_term_alone_would_not_do` measures what the previous
+> scoping cost, so a decision that had been recorded as a judgement is
+> now recorded as a **number**.
+>
+> **And it surfaced something it did not cause.** With card parameters
+> the core is non-finite at |Vd| ≥ 1e3 — verified **identical with the
+> junction off and on**, so this is pre-existing in the core, not
+> something JUNCAP2 introduced. The existing extreme-bias test uses
+> *default* parameters, which is why the regime was untested. Reported
+> rather than silently folded into the change.
+
+> **Induced gate noise, and the interface it was waiting for —
+> 2026-08-23.** This was deferred for an interface reason rather than an
+> effort one, and the interface turned out to be about sixty lines: the
+> DSL's noise functions now take an optional NAME, and sources sharing
+> one are perfectly correlated per LRM 2.4 § 4.5.16. See § 3.2b2 — the
+> stamp is the rank-one `pwr * w w†`, of which the familiar 2×2
+> conductance pattern is the single-member case, so nothing about
+> uncorrelated sources changed.
+>
+> **The frequency shape is not in `CY`.** PSP builds induced gate noise
+> as a NETWORK — an auxiliary node carrying a conductance, a capacitance
+> and the shared source, with the gate reading the capacitor's current —
+> and so does this model. The `f²` rise and the roll-off above
+> `1/(2 pi mig CGeff)` therefore come out of the circuit rather than out
+> of a hand-written `jw`, which is what makes PSP's 1 kHz `sig` an exact
+> check rather than a low-frequency one. Measured on the assembled
+> element: `f²` to 2% over a decade, then a plateau that equals the bare
+> source power `nt * gmig` to 1%.
+>
+> Two references were added to the recorded reference for it — `sig` and
+> `cigid` — and the regeneration was **purely additive**, every existing
+> number reproducing bit-identically.
+>
+> | | long | short |
+> |---|---|---|
+> | `cigid`, n-channel | within **0.1%** | within **3.2%** |
+> | `cigid`, p-channel | within **0.03%** | within **0.55%** |
+> | `sig` (real noise analysis, 1 kHz), n | within **5%** | 0.2% linear, up to **1.73** in saturation |
+> | `sig`, p | within **5%** | 0.4% linear, up to **1.21** in saturation |
+>
+> The **p-channel is the more accurate device here**, as it is on this
+> branch's DC sweeps — the same statement seen through a smaller
+> residual, which is what makes it evidence for the diagnosis below
+> rather than a separate result.
+>
+> **The short-device gap is measured, not guessed.** `sig` goes as
+> `CGeff²` and `CGeff` carries `(Gvsat/Gmob_dL)²`, so the
+> velocity-saturation factor enters the gate density to the **fourth**
+> power where the drain current carries it to the first. Forcing that
+> factor to 1 moves the same point from 1.56 to 0.42 — so the factor is
+> both real and the dominant sensitivity, and the residual is an
+> inherited short-channel one being magnified rather than a wrong
+> formula. Recorded as a band, so a regression is caught and the gap
+> stays a number.
+>
+> **The drain-drain entry of `CY` is unchanged, identically.** The
+> correlated source and the reduced independent one sum back to `Sid`
+> whatever the clip did, which is the invariant that let every existing
+> drain-noise test stay exactly as it was — and it is tested directly
+> rather than inferred from those tests still passing.
+>
+> Two smaller findings, both about the compiler rather than the physics:
+>
+> * **A noise scale factor may depend on `x`.** The DSL forbade it,
+>   copying `ddt`'s rule — but `ddt`'s rule is a conservation argument
+>   (`g(v)*ddt(v)` is not the derivative of any charge) and no such
+>   argument applies here. `CY` is a function of the operating point by
+>   construction, and the power *inside* the call had always been
+>   allowed to depend on `x`. A rule with nothing behind it.
+> * **A noise name must not be a `Symbol`.** Sympified naively it lands
+>   in `free_symbols` and the parameter machinery goes looking for it —
+>   a name that has to be declared to be usable is a poor name. It
+>   compiles to a `Str` instead, which is atomic and has no free symbols.
+>
+> One measurement error worth recording because it looked like a model
+> failure: reading `CY[d,d]` at 1 kHz and calling it `Sid` gave a
+> residual of four orders of magnitude. At that frequency the entry is
+> dominated by **flicker** noise — some four decades of it on the long
+> device. The white part has to be split out, which the existing drain
+> tests had always done and the new one initially did not.
 
 Deferred, unchanged from the original research verdict:
 
