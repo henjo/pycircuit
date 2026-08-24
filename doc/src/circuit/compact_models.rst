@@ -831,22 +831,59 @@ At which point the largest error in the comparison stopped being in the
 model at all.
 
 The reference decks carried no ``.options``, so ngspice swept them at
-its default ``abstol = 1e-12`` A. A ``dc`` sweep seeds each point from
-the previous one, so Newton needs few iterations and stops as soon as
+its defaults. A ``dc`` sweep seeds each point from the previous one, so
+Newton needs few iterations and stops as soon as
 :math:`r_{tol}|i| + a_{tol}` is met — which on currents of order
 :math:`10^{-5}` A left up to **9.6 × 10⁻⁴** of relative error in the
 recorded curves.
 
 That is not a well-behaved error bar. It is point-to-point, so it
-appears as a **kink at one gate voltage** rather than as an offset, and
-a kink invites a search for a mechanism. Two sweeps here showed a clean
-step of 7–9 × 10⁻⁴ at a single bias followed by a smooth decay, which is
-exactly what a small threshold shift switching on would look like.
+appears as a **kink at one bias** rather than as an offset, and a kink
+invites a search for a mechanism. Two transfer sweeps showed a clean
+step of 7–9 × 10⁻⁴ at a single gate voltage followed by a smooth decay,
+exactly what a small threshold shift switching on would look like; the
+output sweeps showed a run of four consecutive points dipping
+8 × 10⁻⁴ and snapping back, which reads as a saturation-knee defect and
+sent a hunt after ``THESATB``/``THESATG`` before it was measured.
 
-It is ``abstol`` alone. Swept from :math:`10^{-4}` to :math:`10^{-12}`,
-``reltol`` changes not one digit, and neither does ``vntol`` or
-``gmin``. At ``abstol = 1e-15`` every value is bit-identical to
-:math:`10^{-18}`.
+Which tolerance matters **depends on the sweep**:
+
+.. list-table:: Worst relative error against a fully converged solve
+   :header-rows: 1
+
+   * - sweep
+     - defaults
+     - ``abstol`` only
+     - ``reltol`` only
+     - both
+   * - transfer (``idvg``)
+     - 6.41e-04
+     - 4.30e-08
+     - 4.30e-08
+     - 4.30e-08
+   * - output (``idvd``)
+     - 7.97e-04
+     - 7.97e-04
+     - 6.61e-09
+     - 6.61e-09
+
+``reltol`` is the one that matters, and it fixes both. On an ``idvd``
+sweep in saturation the current barely moves from point to point, so
+:math:`r_{tol}|i|` is the binding term and no ``abstol`` can help.
+``vntol`` and ``gmin`` do nothing either way. Both are set:
+``reltol = 1e-6``, mid-plateau — flat from :math:`10^{-5}` to
+:math:`10^{-10}`, and ngspice fails to converge on the output sweep by
+:math:`10^{-11}` — and ``abstol = 1e-15``, which costs nothing and
+guards the low-current end.
+
+That table is also a small lesson in how to run the experiment. The
+first version of this measurement concluded the opposite — that
+``abstol`` alone accounted for everything and ``reltol`` did nothing —
+from a sweep of ``reltol`` over eight decades that changed not one
+digit. It changed nothing because ``abstol`` was *already tight in every
+run of that sweep*. Vary one knob against the **defaults**, not against
+your other fix, and check more than one kind of sweep before
+generalising.
 
 The ``op`` decks are unaffected and deliberately do not carry the
 option: a single operating point iterates to convergence with margin,

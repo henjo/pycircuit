@@ -155,9 +155,26 @@ Three things let it survive:
   small threshold shift switching on looks like. A plausible mechanism
   is exactly the wrong thing for a numerical artifact to resemble.
 
-Check which knob actually matters rather than tightening everything:
-here `reltol` swept over eight decades changed not one digit, and so did
-`vntol` and `gmin`. `abstol` alone accounted for all of it.
+**Vary one knob against the DEFAULTS, not against your other fix, and
+check more than one kind of run before generalising.** Getting this
+wrong here produced a confident, published, wrong answer:
+
+    sweep   defaults   abstol only   reltol only   both
+    idvg     6.41e-4      4.30e-8       4.30e-8    4.30e-8
+    idvd     7.97e-4      7.97e-4       6.61e-9    6.61e-9
+
+The first pass swept `reltol` over eight decades, saw not one digit
+change, and concluded `abstol` was the whole story. `reltol` changed
+nothing *because `abstol` was already tight in every run of that sweep*
+— a confounded experiment. And it was run on a transfer sweep only; on
+an output sweep in saturation the current barely moves point to point,
+so `reltol*|i|` is the binding term and `abstol` cannot help at all.
+The wrong conclusion reached a deck comment, a doc section, a test
+docstring and this skill before an untested sweep type contradicted it.
+
+Pick the setting from the middle of the plateau, not the tightest value
+that runs: `reltol` is flat from 1e-5 to 1e-10 here and ngspice fails to
+converge by 1e-11.
 
 **Check the per-point and the whole-solve cases separately.** A single
 `op` iterates to convergence with margin — all 271 of its outputs were

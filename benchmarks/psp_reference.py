@@ -149,31 +149,47 @@ def _deck(pdk, spec, out):
     return """* PSP103 reference: {name}
 .lib {pdk}/models/cornerMOSlv.lib mos_tt
 
-* ABSTOL IS NOT A DETAIL HERE, AND THE DEFAULT IS NOT GOOD ENOUGH.
+* THE SOLVER TOLERANCES ARE PART OF THE REFERENCE, AND THE DEFAULTS
+* ARE NOT GOOD ENOUGH.
 *
 * A `dc` sweep seeds each point from the previous one, so Newton needs
 * few iterations and stops as soon as `reltol*|i| + abstol` is met.  At
-* ngspice's default `abstol = 1e-12` that leaves up to 6.4e-4 of
-* relative error on a 1e-5 A drain current -- point to point, so it
-* reads as a KINK in the curve rather than as an offset, and it is the
-* dominant error in this file at every bias above the leakage floor.
+* ngspice's defaults that leaves up to 9.6e-4 of relative error on
+* currents of order 1e-5 A -- point to point, so it reads as a KINK in
+* the curve rather than as an offset, and it was the dominant error in
+* this file at every bias above the leakage floor.
 *
-* Measured: tightening `abstol` to 1e-15 moves the recorded current by
-* up to 9.6e-4 across these sweeps.  `reltol` does nothing -- swept from
-* 1e-4 to 1e-12 it changes not one digit -- and neither do `vntol` or
-* `gmin`.  It is `abstol` alone, and 1e-15 is comfortably converged:
-* every value is BIT-IDENTICAL from 1e-14 down to 1e-18.
+* WHICH KNOB MATTERS DEPENDS ON THE SWEEP, and measuring it on one
+* sweep type and generalising gave the wrong answer once already:
+*
+*   sweep   default   abstol only   reltol only   both
+*   idvg    6.41e-4      4.30e-8       4.30e-8    4.30e-8
+*   idvd    7.97e-4      7.97e-4       6.61e-9    6.61e-9
+*
+* `reltol` is the one that matters and it fixes BOTH.  `abstol` fixes
+* the transfer sweeps only: on an `idvd` sweep in saturation the current
+* barely moves from point to point, so `reltol*|i|` is the binding term
+* and no `abstol` can help.  `vntol` and `gmin` do nothing either way.
+*
+* `abstol` is kept as well because it costs nothing and guards the
+* low-current end, where `reltol*|i|` vanishes.
+*
+* Both are far inside convergence.  `reltol` is flat from 1e-5 to 1e-10
+* (and ngspice fails to converge on the `idvd` sweep by 1e-11, so 1e-6
+* is deliberately mid-plateau rather than as tight as possible);
+* `abstol` is bit-identical from 1e-14 to 1e-18.
 *
 * The `op` decks below do NOT need this and do not have it: a single
 * operating point iterates to convergence with margin, and all 271 of
 * its outputs are bit-identical either way.  It is specifically the
-* SWEEP that stops early.
+* SWEEP that stops early -- which is why regenerating moves every sweep
+* and not one bit of the `lp_*`, threshold, capacitance or noise data.
 *
 * This was invisible for as long as the model was further out than
 * 1e-3.  It became the limit on what could be measured once the model
 * reached 1e-4, at which point the reference's own convergence was the
 * floor rather than its physics.
-.options abstol=1e-15
+.options reltol=1e-6 abstol=1e-15
 
 {bias}
 V{sn} {sn} 0 dc 0

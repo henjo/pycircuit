@@ -41,10 +41,13 @@ The most expensive mistake is measuring the wrong thing carefully.
   measuring *its* floor, not the physics. Find the floor and stay above
   it.
 - **Is the reference CONVERGED?** If it came out of a solver it carries
-  that solver's tolerances. ngspice's default `abstol = 1e-12` left
-  9.6e-4 of error in the golden curves here — the largest single error
-  in the comparison, once the model was good enough to see it, and it
-  presents as a KINK at one bias rather than as an offset. Regenerate at
+  that solver's tolerances. ngspice's defaults left 9.6e-4 of error in
+  the golden curves here — the largest single error in the comparison
+  once the model was good enough to see it, and it presents as a KINK at
+  one bias rather than as an offset, which invites a hunt for a
+  mechanism. It cost two false leads: a "threshold shift switching on"
+  in the transfer sweeps and a "saturation-knee defect" in the output
+  sweeps, the latter sending me after `THESATB`/`THESATG`. Regenerate at
   a tightened tolerance and diff before concluding anything about
   physics. See `validation-design`, "The reference inherits its
   generator's tolerances".

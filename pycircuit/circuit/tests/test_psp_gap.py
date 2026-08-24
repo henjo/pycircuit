@@ -662,17 +662,40 @@ class TestTheReferenceIsAsSmoothAsAnAnalyticCurve(object):
 
     For a long time the largest error in this whole comparison was not
     in the model. The reference decks carried no `.options`, so ngspice
-    swept at its default `abstol = 1e-12` A -- and a `dc` sweep seeds
-    each point from the last, so Newton stops as soon as
-    `reltol*|i| + abstol` is met. That left up to **9.6e-4** of relative
-    error on currents of order 1e-5 A.
+    swept them at its defaults -- and a `dc` sweep seeds each point from
+    the last, so Newton stops as soon as `reltol*|i| + abstol` is met.
+    That left up to **9.6e-4** of relative error on currents of order
+    1e-5 A.
+
+    WHICH TOLERANCE MATTERS DEPENDS ON THE SWEEP, and getting that wrong
+    is instructive enough to keep:
+
+        sweep   default   abstol only   reltol only   both
+        idvg    6.41e-4      4.30e-8       4.30e-8    4.30e-8
+        idvd    7.97e-4      7.97e-4       6.61e-9    6.61e-9
+
+    `reltol` is the one that matters and it fixes both. On an `idvd`
+    sweep in saturation the current barely moves from point to point, so
+    `reltol*|i|` is the binding term and no `abstol` can help.
+
+    The first version of this measurement concluded the opposite -- that
+    `abstol` alone accounted for everything and `reltol` did nothing --
+    from a sweep of `reltol` over eight decades that changed not one
+    digit. It changed nothing because `abstol` was ALREADY TIGHT in
+    every run of that sweep: a confounded experiment, whose conclusion
+    then went into a deck comment, a doc section and a skill before the
+    `idvd` sweeps contradicted it. Vary one knob against the DEFAULTS,
+    not against your other fix.
 
     It was worth chasing as physics for exactly as long as it took to
     measure it, because it does not look like noise. It is
-    point-to-point, so it appears as a KINK at one gate voltage, and a
-    kink invites a mechanism. Two of the sweeps here showed a clean step
-    of 7-9e-4 at a single bias with a smooth decay after it, which is
-    what a small threshold shift switching on would look like.
+    point-to-point, so it appears as a KINK at one bias, and a kink
+    invites a mechanism. Two transfer sweeps showed a clean step of
+    7-9e-4 at a single gate voltage with a smooth decay after it -- what
+    a small threshold shift switching on would look like -- and the
+    `idvd` sweeps showed a run of four consecutive points dipping 8e-4
+    and snapping back, which was read as a saturation-knee defect and
+    sent a hunt after `THESATB`/`THESATG` before it was measured.
 
     HOW TO TELL THE TWO APART, which is the transferable part: a
     converged curve is SMOOTH, and smooth means a local polynomial
@@ -694,10 +717,15 @@ class TestTheReferenceIsAsSmoothAsAnAnalyticCurve(object):
         nmos_idvg_vd0p05    4.90e-04   1.34e-04   1.34e-04
         nmos_idvg_vb_m1     5.43e-04   1.91e-04   1.91e-04
         pmos_idvg_vd0p05    4.55e-04   4.19e-05   4.19e-05
+        nmos_long_idvd*     5.14e-04   1.55e-05   1.55e-05
+        pmos_long_idvd*     4.50e-04   5.03e-06   5.03e-06
+        pmos_idvd_vg1p2*    2.25e-04   2.74e-06   2.74e-06
+
+    (* over the saturation region only -- see `NAMES`.)
 
     After regeneration the reference matches the analytic curve to every
     digit printed -- the residual IS the truncation and nothing else.
-    Before it, the reference was three to eleven times rougher.
+    Before it, the reference was three to ninety times rougher.
     """
 
     #: `half` neighbours each side, polynomial degree.  Degree 5 over 8
@@ -705,14 +733,31 @@ class TestTheReferenceIsAsSmoothAsAnAnalyticCurve(object):
     #: the noise being looked for, low enough to stay conditioned.
     HALF, DEG = 4, 5
 
-    NAMES = ['nmos_idvg_vd0p05', 'nmos_idvg_vd1p2', 'nmos_idvg_vb_m1',
-             'pmos_idvg_vd0p05', 'pmos_idvg_vd1p2']
+    #: Sweep, and the minimum |sweep voltage| to measure over.
+    #:
+    #: The output sweeps need a window and the transfer sweeps do not.
+    #: An `idvd` curve has an enormous knee at `Vd ~ 0.25` where a
+    #: degree-5 fit carries 6e-3 of pure truncation -- which swamps the
+    #: 8e-4 being looked for, and DID: measured over the whole sweep the
+    #: reference and the analytic curve both read 6.08e-03 and the
+    #: statistic said "ratio 1.0, nothing here" while four points were
+    #: sitting 8e-4 low. Restricted to saturation, where the curve is
+    #: nearly straight, the same statistic separates them 30-90x.
+    #:
+    #: A discriminator has to be evaluated where the thing it
+    #: discriminates actually lives.
+    NAMES = [('nmos_idvg_vd0p05', 0.0), ('nmos_idvg_vd1p2', 0.0),
+             ('nmos_idvg_vb_m1', 0.0), ('pmos_idvg_vd0p05', 0.0),
+             ('pmos_idvg_vd1p2', 0.0),
+             ('nmos_long_idvd', 0.6), ('nmos_idvd_vg1p2', 0.6),
+             ('nmos_idvd_vg0p6', 0.6), ('pmos_long_idvd', 0.6),
+             ('pmos_idvd_vg1p2', 0.6)]
 
     @classmethod
-    def _roughness(cls, v, y):
+    def _roughness(cls, v, y, vmin=0.0):
         """Worst leave-one-out residual of a local fit to `log|y|`."""
         a = np.abs(np.asarray(y, float))
-        m = np.where(a > FLOOR)[0]
+        m = np.where((a > FLOOR) & (np.abs(v) >= vmin))[0]
         out = []
         for k in range(m.min() + cls.HALF, m.max() - cls.HALF + 1):
             idx = [j for j in range(k - cls.HALF, k + cls.HALF + 1)
@@ -733,12 +778,16 @@ class TestTheReferenceIsAsSmoothAsAnAnalyticCurve(object):
             cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'), **kw)
         e.update_iparv()
         b = sw['bias']
+        if sw['sweep'] == 'Vd':
+            return np.array([np.asarray(
+                e.i(e.bias(x, b['Vg'], b['Vs'], b['Vb'])),
+                float)[0] for x in v])
         return np.array([np.asarray(
             e.i(e.bias(b['Vd'], x, b['Vs'], b['Vb'])), float)[0] for x in v])
 
-    @pytest.mark.parametrize('name', NAMES)
+    @pytest.mark.parametrize('name,vmin', NAMES)
     def test_the_reference_is_no_rougher_than_the_analytic_curve(
-            self, deck, ref, name):
+            self, deck, ref, name, vmin):
         """The reference carries no convergence noise above truncation.
 
         Both curves are fitted the same way on the same grid, so the
@@ -747,12 +796,12 @@ class TestTheReferenceIsAsSmoothAsAnAnalyticCurve(object):
         """
         sw = ref[name]
         v = np.asarray(sw['v'], float)
-        r = self._roughness(v, sw['i_d'])
-        g = self._roughness(v, self._ours(deck, sw, v))
+        r = self._roughness(v, sw['i_d'], vmin)
+        g = self._roughness(v, self._ours(deck, sw, v), vmin)
         ## MEASURED: equal to every digit printed after regeneration.
         ## The bound allows the reference to be 40% rougher, which is
         ## still four times tighter than the pre-regeneration data was.
-        assert r < 1.4 * g + 2e-5, \
+        assert r < 1.4 * g + 2e-6, \
             '%s: reference roughness %.2e vs analytic %.2e' % (name, r, g)
 
     def test_the_generator_asks_for_that_convergence(self):
@@ -770,7 +819,9 @@ class TestTheReferenceIsAsSmoothAsAnAnalyticCurve(object):
         if not os.path.isfile(gen):
             pytest.skip('generator not in this tree')
         head, _, tail = open(gen).read().partition('VTH_DECK')
-        assert '.options abstol=1e-15' in head
+        assert '.options reltol=1e-6 abstol=1e-15' in head, \
+            'the sweep deck must tighten reltol -- and abstol, which ' \
+            'does not cover the idvd sweeps on its own'
         assert '.options' not in tail.split('"""')[1]
 
 
@@ -1474,19 +1525,39 @@ class TestTheSaturationVoltage(object):
         assert scaled['wide_short']['ax'] == 2.0
         assert scaled['long']['ax'] > 2.0
 
-    def test_the_velocity_saturation_body_and_gate_terms_are_absent(
+    def test_the_velocity_saturation_body_and_gate_terms_are_modelled(
             self, scaled):
-        """A gap written down rather than remembered.
+        """These were once a recorded gap. They are not one any more.
 
         PSP scales its saturation parameter by two further factors
         before using it (`macrodefs:596-607`): `xitsb` in the body bias
-        and `xitsg` in the inversion charge.  Both coefficients are
-        nonzero on this card and neither is modelled, so `Vdsat` is
-        computed from an unmodulated `THESAT`.  Recorded here so the
-        next person measuring a residual knows where to look.
+        and `xitsg` in the inversion charge. Both coefficients are
+        nonzero on this card, and `psp_kernel._wsat` now implements both
+        -- `xitsb` through `_bias_mod(THESATB, Vsbx)`, `xitsg` through
+        `_bias_mod(THESATG, wsat)` on the soft-limited charge, matching
+        the vendor line for line.
+
+        THIS TEST'S NAME AND DOCSTRING SAID THE OPPOSITE until 2026-08-24,
+        long after the terms went in, while its body only ever asserted
+        that the CARD's coefficients are nonzero -- which is true either
+        way and says nothing about whether we model them. It was written
+        as a signpost "so the next person measuring a residual knows
+        where to look", and it worked exactly as designed on a residual
+        it had nothing to do with: an 8e-4 dip in the `idvd` sweeps sent
+        me straight here, and the terms had been implemented for weeks.
+
+        A stale gap note is worse than no note. It is trusted like a
+        measurement and it is not one, so re-read what a signpost
+        actually asserts before following it.
         """
         assert scaled['short']['thesatb'] > 0.05
         assert scaled['short']['thesatg'] > 0.05
+        ## What the name now claims, asserted rather than described.
+        import inspect
+        from pycircuit.circuit import psp_kernel
+        src = inspect.getsource(psp_kernel._wsat)
+        assert 'xitsb' in src and 'thesatg' in src
+        assert '_bias_mod(thesatg' in src
 
     def test_every_sweep_is_close_and_flat(self, deck, ref):
         """The state of the whole comparison, as a regression guard.

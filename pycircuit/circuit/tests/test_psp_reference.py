@@ -173,11 +173,11 @@ class TestTheReferenceIsConverged(object):
     they are compared at.
 
     They were not, for a long time.  The decks carried no `.options`, so
-    ngspice ran at its default `abstol = 1e-12` A, and a `dc` sweep seeds
-    each point from the previous one -- few Newton iterations, and it
-    stops as soon as `reltol*|i| + abstol` is met.  MEASURED across
-    these sweeps, that leaves up to **9.6e-4** of relative error on
-    currents of order 1e-5 A.
+    ngspice ran them at its defaults, and a `dc` sweep seeds each point
+    from the previous one -- few Newton iterations, and it stops as soon
+    as `reltol*|i| + abstol` is met.  MEASURED across these sweeps, that
+    leaves up to **9.6e-4** of relative error on currents of order
+    1e-5 A.
 
     Three things make it worse than a plain 1e-3 error bar:
 
@@ -192,10 +192,19 @@ class TestTheReferenceIsConverged(object):
       down and nobody had reason to look.  At 1e-4 it was the DOMINANT
       error in the comparison, and the model was being blamed for it.
 
-    `reltol` is not the knob and neither is `vntol` or `gmin`: swept from
-    1e-4 to 1e-12, `reltol` changes not one digit.  `abstol` alone
-    accounts for all of it, and 1e-15 is far inside convergence -- every
-    value is bit-identical from 1e-14 down to 1e-18.
+    WHICH KNOB MATTERS DEPENDS ON THE SWEEP:
+
+        sweep   default   abstol only   reltol only   both
+        idvg    6.41e-4      4.30e-8       4.30e-8    4.30e-8
+        idvd    7.97e-4      7.97e-4       6.61e-9    6.61e-9
+
+    `reltol` is the one that matters and it fixes both.  On an `idvd`
+    sweep in saturation the current barely moves point to point, so
+    `reltol*|i|` is the binding term and no `abstol` can help.  `vntol`
+    and `gmin` do nothing either way.  Both are set: `reltol = 1e-6`,
+    mid-plateau (flat from 1e-5 to 1e-10, and ngspice fails to converge
+    on the `idvd` sweep by 1e-11), and `abstol = 1e-15`, which costs
+    nothing and guards the low-current end.
 
     The `op` decks are unaffected and deliberately do not carry the
     option: a single operating point iterates to convergence with
@@ -221,8 +230,9 @@ class TestTheReferenceIsConverged(object):
             pytest.skip('generator not in this tree')
         src = open(os.path.normpath(gen)).read()
         head, _, tail = src.partition('VTH_DECK')
-        assert '.options abstol=1e-15' in head, \
-            'the sweep deck must tighten abstol'
+        assert '.options reltol=1e-6 abstol=1e-15' in head, \
+            'the sweep deck must tighten reltol -- abstol alone does ' \
+            'not cover the idvd sweeps'
         assert '.options' not in tail.split('"""')[1], \
             'the op deck does not need it and should not carry it'
 
