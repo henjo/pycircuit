@@ -1013,7 +1013,19 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
 
     ids = _v(beta * (FdL * qim1 * dps * gvinv), 'ids')
     return dict(ids=ids, qim=qim, qim1=qim1, alpha=alpha, dps=dps,
-                xgm=xgm, x_m=x_m, x_s=x_s, x_d=x_d, qbm=qbm,
+                ## `x_mc`, NOT `x_m` -- the POLY-DEPLETION-CORRECTED
+                ## midpoint (`macrodefs:717`, `x_m = x_m + u_pd`).  PSP
+                ## corrects it IN PLACE, so everything downstream of
+                ## that line sees the corrected value and `x_m_dc` is
+                ## the corrected one.  Returning the raw midpoint under
+                ## this name was worth `u_pd = -0.0273`, which is 0.7 mV
+                ## of surface potential -- invisible in the current, and
+                ## 1.05% of the gate tunnelling current, because `Dsi`
+                ## is an EXPONENTIAL of it.
+                ##
+                ## Nothing but the gate-current block reads this key;
+                ## the charges and the current use `x_mc` directly.
+                xgm=xgm, x_m=x_mc, x_s=x_s, x_d=x_d, qbm=qbm,
                 Pm=Pm, Dm=Dm, sqm=sqm, Gmob_dL=Gmob_dL, Gvsat=Gvsat,
                 zsat=zsat, gvinv=gvinv, GdL=GdL, eta_p=eta_p, FdL=FdL,
                 xg=xg,

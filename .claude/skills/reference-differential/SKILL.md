@@ -203,6 +203,14 @@ found it, and say plainly that the mechanism is open.
     resistance `GR` was in the midpoint mobility and absent from the
     source-end one, 26% of that quantity.
 
+  - one quantity CORRECTED IN PLACE, so that every line after the
+    correction sees a different value under the same name. PSP writes
+    `x_m = x_m + u_pd` for polysilicon depletion; this element computed
+    the correction, used it for the charges and the current, and handed
+    the RAW midpoint to a third consumer. Worth 0.7 mV of surface
+    potential -- nothing in the drain current, 7% of the gate current,
+    because that one is an EXPONENTIAL of it. **When the reference
+    reassigns a name, every later reader means the new value.**
   - one QUANTITY computed once and USED at several sites — PSP's
     conditioned `Vsbstar` feeds both the quasi-Fermi level and the GATE
     DRIVE (`Vgb1 = Vgs + Vsbstar - VFB`); having it at the first site

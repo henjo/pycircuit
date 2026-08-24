@@ -893,19 +893,22 @@ class TestGateTunnelling(object):
     outputs rather than against the total:
 
         component            n-channel      p-channel
-        overlap (igs-igcs)   0.9998-1.0004  1.0000     <- exact
-        channel (igcs+igcd)  1.005-1.011    1.019-1.075
+        overlap (igs-igcs)   0.9998-1.0004  1.0000
+        channel (igcs+igcd)  1.00000        1.00000
 
-    The overlap is exact on both. The gate-to-CHANNEL term is 0.9% high
-    on electrons and 7% on holes, and that is open. It is recorded here
-    rather than tuned: the drain current it feeds is now at 1.7e-06,
-    which is the reference's own precision, so there is no residual left
-    to fit against and a correction would be a guess.
+    Both are exact. The channel term was 0.9% high on electrons and 7%
+    on holes for one commit; the cause is recorded in
+    `test_it_needs_the_poly_corrected_midpoint`.
 
     Separating the two needed `igcs`/`igcd` AND `igs`/`igd` in the
     reference -- PSP reports the channel halves and the totals, so the
-    overlap is their difference. Without that pair a 7% error in one of
-    two terms whose SUM is right is invisible.
+    overlap is their difference. Without that pair an error in one of
+    two terms whose SUM is nearly right is invisible.
+
+    The SPLIT is exact too, and separately: our source and drain halves
+    carry the same ratio to four decimals at every bias, while PSP's own
+    drain share runs from 0.48 down to 0.30 across this grid. The even
+    split is a linear-region LIMIT, not the model.
     """
 
     GEOM = dict(w=10e-6, l=1e-6)
@@ -992,18 +995,14 @@ class TestGateTunnelling(object):
         assert n >= 3, n
 
     #: MEASURED against PSP's own `igcs + igcd`, over the whole
-    #: operating-point grid.  The error GROWS WITH GATE DRIVE on both
-    #: channel types, which is the shape a future fix has to explain:
+    #: operating-point grid: 1.00000 at every point on both channel
+    #: types.
     #:
-    #:     |Vg|      0.4      0.8      1.2
-    #:     nmos    1.005    1.008    1.011
-    #:     pmos    1.019    1.054    1.075
-    #:
-    #: OPEN, and recorded rather than tuned.  The drain current this
-    #: feeds is now at 1.7e-06, the reference's own precision, so there
-    #: is no residual left to fit against and a correction would be a
-    #: guess dressed as a measurement.
-    CHANNEL_BAND = {'nmos': (1.004, 1.012), 'pmos': (1.015, 1.080)}
+    #: This was a recorded GAP for one commit -- 1.005-1.011 on
+    #: electrons and 1.019-1.075 on holes, growing with gate drive --
+    #: and the cause was `x_m`.  See `test_it_needs_the_poly_corrected
+    #: _midpoint`.
+    CHANNEL_BAND = {'nmos': (0.999, 1.001), 'pmos': (0.999, 1.001)}
 
     @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
     def test_the_channel_component_is_where_it_is_measured_to_be(
@@ -1079,6 +1078,57 @@ class TestGateTunnelling(object):
                     break
                 reach = k
             assert reach >= 33, '%s reaches only 1e%d' % (kind, reach)
+
+    def test_it_needs_the_poly_corrected_midpoint(self, deck):
+        """The whole of the 7%, and it was ONE quantity.
+
+        `Dsi` is `expl(x_m + (psi_t - alpha_b - Vm)/phit)`, so the
+        tunnelling current is an EXPONENTIAL of the midpoint surface
+        potential -- and PSP corrects `x_m` for polysilicon depletion IN
+        PLACE (`macrodefs:717`, `x_m = x_m + u_pd`). Everything after
+        that line, `x_m_dc` included, sees the corrected value.
+
+        This element computes the correction (the charges and the
+        current both use it) and returned the RAW midpoint under the
+        `x_m` key. Worth `u_pd = -0.0273` on the n-channel, which is 0.7
+        mV of surface potential: invisible in the drain current, 1.05%
+        of the gate current.
+
+        AND IT EXPLAINS THE ASYMMETRY. The correction is 0.069% of `x_m`
+        on the n-channel and 0.334% on the p-channel, because the
+        p-channel card sets `NPL = -0.0959` and takes the gate doping to
+        0.36 of nominal on a short device. Exponentiate a 5x larger
+        offset and you get the 7x larger error. A residual that differs
+        between channel types by a clean factor is pointing at a term
+        the two cards weight differently.
+
+        Found by strobing PSP's own internals through VACASK: `TP`,
+        `zg`, `Voxm`, `Vm`, `psi_t` and the partitioning all matched to
+        seven digits, `x_m` did not, and `ln(Dsi)` differed by exactly
+        the `x_m` difference. One run.
+        """
+        import inspect
+        from pycircuit.circuit import psp_kernel
+        src = inspect.getsource(psp_kernel.intrinsic)
+        assert 'x_m=x_mc' in src, \
+            'the core must return the POLY-CORRECTED midpoint'
+        ## And the consequence, measured: PSP's own `Igc0` at the bias
+        ## the strobe was taken at.
+        data = json.load(open(REF))
+        for kind, want in (('nmos', 4.17849187e-09),
+                           ('pmos', 7.03111530e-10)):
+            _, kw = self._fet(deck, kind)
+            cls = (PspPmosLongChannel if kind == 'pmos'
+                   else PspMosLongChannel)
+            ch = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                     cm.Node('b'), **dict(kw, igov=0.0, igovd=0.0))
+            ch.update_iparv()
+            t = 1.0 if kind == 'nmos' else -1.0
+            got = np.asarray(ch.i(ch.bias(t * 0.05, t * 1.2, 0.0, 0.0)),
+                             float)[self.GI]
+            ## `Igc0 * igc * Sg` is the total; `igc` is 1.003/1.002 here.
+            assert abs(got) == pytest.approx(want, rel=5e-3), \
+                (kind, got, want)
 
     def test_it_is_off_without_a_card(self):
         """Compile-time skip, so a card-less element is unchanged.

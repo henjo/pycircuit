@@ -82,6 +82,14 @@ would break X", check that X is measured where the decision bites.
 diagnostic: when one side is right and the other is not, everything
 shared is eliminated at a stroke.
 
+**And a residual that differs between them by a CLEAN FACTOR names the
+term.** A gate current 1% high on electrons and 7% on holes was one
+quantity whose correction is 0.069% on the first card and 0.334% on the
+second -- a 5x offset inside an exponential, giving 7x in the answer.
+Four separate terms were found on this model that way. When two cards
+disagree by a tidy ratio, look for what the two cards weight
+differently, not for a mechanism that acts on only one of them.
+
 **Defaults are not the card.** Defaults leave optional blocks off and
 every quantity smaller. If a regime is only reachable with real
 parameters, test it with real parameters — as its own test class, so it

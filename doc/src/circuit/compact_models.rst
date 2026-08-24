@@ -1089,13 +1089,39 @@ is their difference:
      - 1.005–1.011
      - 1.019–1.075
 
-The overlap is exact on both. The gate-to-channel term is high, and its
-error **grows with gate drive** — that is open, and recorded rather than
-tuned: the drain current it feeds is now at 1.7 × 10⁻⁶, the reference's
-own precision, so there is no residual left to fit against and a
-correction would be a guess dressed as a measurement. Separating the two
-required recording *both* pairs; without them a 7% error in one of two
-terms whose sum is right is invisible.
+Both are now exact. Separating them required recording *both* pairs;
+without them an error in one of two terms whose sum is nearly right is
+invisible. The **split** is exact too, and separately: our source and
+drain halves carry the same ratio to four decimals at every bias, while
+PSP's own drain share runs from 0.48 down to 0.30 across this grid — the
+even split is a linear-region limit, not the model.
+
+The channel term was 0.9% high on electrons and 7% on holes for one
+commit, and the whole of it was **one quantity**. :math:`D_{si}` is
+:math:`\exp(x_m + \ldots)`, so the tunnelling current is an
+*exponential* of the midpoint surface potential — and PSP corrects
+:math:`x_m` for polysilicon depletion **in place**
+(``x_m = x_m + u_pd``), so everything after that line sees the corrected
+value. This element computed the correction and returned the raw
+midpoint. It is worth :math:`u_{pd} = -0.0273` on the n-channel, 0.7 mV
+of surface potential: invisible in the drain current, 1.05% of the gate
+current.
+
+That also explains the asymmetry, which is the part worth keeping. The
+correction is 0.069% of :math:`x_m` on the n-channel and **0.334% on the
+p-channel**, because the p-channel card sets :math:`N_{PL} = -0.0959`
+and takes the gate doping to 0.36 of nominal. Exponentiate a 5× larger
+offset and you get the 7× larger error. **A residual that differs
+between two channel types by a clean factor is pointing at a term the
+two cards weight differently** — the same reasoning that found ``NP``,
+``DNSUB`` and the ``BETN`` width adjustment earlier on this page.
+
+It was found by strobing PSP's own internals through VACASK. ``TP``,
+``zg``, :math:`V_{oxm}`, :math:`V_m`, :math:`\psi_t` and the
+partitioning all matched to seven digits, :math:`x_m` did not, and
+:math:`\ln D_{si}` differed by *exactly* the :math:`x_m` difference.
+One run, after arithmetic on the bias dependence had failed to separate
+the candidates.
 
 **The numerics were the hard part**, and none of it showed at ordinary
 bias. Three overflows had to be fixed before the block held to
