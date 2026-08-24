@@ -891,15 +891,24 @@ class PspMosLongChannel(Behavioural):
     quantum-mechanical correction, polysilicon depletion and the
     effective thermal voltage.  Parameters come from a foundry card
     through `psp_scaling.to_long_channel`, with nothing fitted, and the
-    drain current agrees with IHP's own compiled PSP103 to within a few
-    tenths of a percent across six sweeps and two geometries.
+    drain current agrees with IHP's own compiled PSP103 to **1.3e-6 at
+    the worst point** of twelve sweeps, two geometries and both channel
+    types -- the reference's own printed precision.
 
-    Still absent: gate and junction leakage, impact ionisation, overlap
-    and fringe capacitances, the non-quasi-static block, self-heating,
-    and every temperature coefficient.  Two further blocks -- DIBL and
-    the bias modulations of the velocity-saturation parameter -- are
-    implemented but switched off, for reasons recorded on
-    `psp_scaling.to_long_channel`.
+    Since built, and no longer absent: the junction with its reverse
+    leakage, overlap and fringe capacitance, DIBL, the bias modulations
+    of the velocity-saturation parameter, every temperature coefficient,
+    channel thermal and flicker noise, induced gate noise, impact
+    ionisation, and gate tunnelling.  This paragraph listed all of them
+    as missing until 2026-08-24, and by then it had already sent one
+    investigation after a term that was implemented -- see
+    `test_psp_gap.py`,
+    `test_the_velocity_saturation_body_and_gate_terms_are_modelled`.
+    A stale gap note is worse than none: it is trusted like a
+    measurement and it is not one.
+
+    Still absent: the non-quasi-static block, self-heating, and the
+    edge transistor (`SWEDGE = 0` on this PDK's cards).
 
     Four properties come out of the construction rather than out of
     fitting, and are the reason this class of model displaced
