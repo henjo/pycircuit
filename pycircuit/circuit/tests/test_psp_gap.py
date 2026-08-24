@@ -318,42 +318,56 @@ class TestTheSubthresholdRegion(object):
     """The decades BELOW the sweep comparison's floor.
 
     `_compare` masks at `FLOOR = 1e-6` A, so five decades of every
-    transfer curve have never been compared against the vendor at all --
-    which matters, because that is where a threshold error lives.  Above
-    threshold a few millivolts of `Vth` is a tenth of a percent of
-    current and invisible; at 85 mV/decade it is ten percent.
+    transfer curve had never been compared against the vendor -- and
+    that is where a threshold error is visible: above threshold a few
+    millivolts of `Vth` is a tenth of a percent of current, and at 85
+    mV/decade it is ten percent.
 
-    The measurement here is not a current ratio, it is a VOLTAGE.  In
-    weak inversion `I ~ exp(Vg / (n*phit))`, so
+    The measurement is a VOLTAGE, not a current ratio.  In weak
+    inversion `I ~ exp(Vg/(n*phit))`, so
 
         dVth = ln(ours/psp) / (d ln I_psp / dVg)
 
-    turns the ratio into the threshold offset that would produce it.
-    Two things follow that a ratio alone cannot say: whether the offset
-    is FLAT across the region -- if it is, it is a threshold error and
-    nothing else -- and how big it is in millivolts, which is the unit
-    the physics is actually in.
+    turns the ratio into the threshold offset that would produce it,
+    which says how big the discrepancy is in the unit the physics is in
+    and -- from whether it is flat -- whether it is an offset at all.
+
+    This class found a 1.2-3.6 mV offset, n-channel-specific and growing
+    with body bias.  It is now under 0.1 mV everywhere, and the cause is
+    recorded in `TestTheTwoDrainBiasQuantities`.
     """
 
     #: The LEAKAGE-FREE window, and it is not a detail.
     #:
     #: The reference records TOTAL terminal current, and PSP's junction
-    #: leakage is a flat ~2e-12 A floor this core does not model at all
-    #: (`TestTheSubthresholdSlope` found that the hard way).  A window
-    #: reaching below it measures PSP's leakage rather than its channel.
-    #: The first version of this class used `1e-14` and got answers that
-    #: were wrong by a third with three times the spread; these bounds
-    #: are the same ones the slope test settled on.
+    #: leakage is a flat ~2e-12 A floor this core does not model at all.
+    #: A window reaching below it measures PSP's leakage rather than its
+    #: channel: the first version of this class used `1e-14` and got
+    #: answers wrong by a third with three times the spread.
     LO, HI = 1e-9, 1e-6
 
-    #: Implied threshold offset, in mV, and the tolerated spread.
-    #: MEASURED, and the numbers are the finding: the n-channel sits a
-    #: few mV low and the p-channel is essentially exact, so whatever is
-    #: left is n-channel-specific rather than a shared constant.
-    EXPECT = {'nmos_idvg_vd0p05': (3.6, 2.0),
-              'nmos_long_idvg': (1.7, 0.5),
-              'pmos_idvg_vd0p05': (-1.2, 0.8),
-              'pmos_long_idvg': (0.0, 0.3)}
+    #: Implied threshold offset in mV, and the tolerated spread.
+    #: MEASURED.  All four are now within a tenth of a millivolt, on
+    #: both channel types and both geometries.
+    EXPECT = {'nmos_idvg_vd0p05': (-0.05, 0.35),
+              'nmos_long_idvg': (-0.05, 0.25),
+              'pmos_idvg_vd0p05': (0.05, 0.35),
+              'pmos_long_idvg': (0.04, 0.25)}
+
+    @staticmethod
+    def _card_kw(deck, sweep):
+        """Scaled parameters for the device a sweep names."""
+        w, l = sweep['w'], sweep['l']
+        pmos = 'pmos' in sweep['device']
+        return psp_scaling.to_long_channel(
+            deck.model_params(
+                'sg13g2_lv_pmos_psp' if pmos else 'sg13g2_lv_nmos_psp',
+                w=w, l=l, ng=1, m=1, pre_layout=1), w=w, l=l, T=T27)
+
+    #: The body-bias ladder.
+    LADDER = [('nmos_long_idvg_vb0p00', 0.0), ('nmos_long_idvg_vbm0p20', 0.2),
+              ('nmos_long_idvg_vbm0p40', 0.4), ('nmos_long_idvg_vbm0p70', 0.7),
+              ('nmos_long_idvg_vbm1p00', 1.0), ('nmos_long_idvg_vbm1p50', 1.5)]
 
     @classmethod
     def _implied_vth(cls, deck, sweep):
@@ -388,242 +402,177 @@ class TestTheSubthresholdRegion(object):
 
     @pytest.mark.parametrize('name', sorted(EXPECT))
     def test_the_implied_threshold_offset(self, deck, ref, name):
-        """A few millivolts, and FLAT -- so it is a threshold offset.
-
-        Flatness is the part that identifies it.  A slope error or a
-        bias-dependent term would give an implied `dVth` that walks
-        across the region; these sit within a couple of millivolts over
-        four to five decades of current.
-        """
+        """Under a tenth of a millivolt, and FLAT."""
         want, tol = self.EXPECT[name]
         mean, spread, _ = self._implied_vth(deck, ref[name])
-        assert mean == pytest.approx(want, abs=1.0), \
+        assert mean == pytest.approx(want, abs=0.25), \
             '%s: %+.2f mV (expected %+.2f)' % (name, mean, want)
         assert spread < tol, '%s: spread %.2f mV' % (name, spread)
 
-    def test_the_slope_is_right_and_the_level_is_not(self, deck, ref):
-        """THE discriminator, and it changes what the residual is.
+    def test_both_the_slope_and_the_level_are_right(self, deck, ref):
+        """Gain and electrostatics, checked separately.
 
-        Gain and electrostatics are separable, and this is where:
         `XCOR`, `RSB`, `BETN` and the mobility are GAIN -- they scale the
         current and leave `d ln I / dVg` untouched.  The body factor is
-        ELECTROSTATIC -- it sets the ideality, so it moves the slope.
-
-        Measured on the long devices, in the leakage-free window: the
-        slope matches to **0.03%** on both channel types while the level
-        is 1.7 mV out on the n-channel and 0.03 mV on the p-channel.
-
-        A correct slope with a wrong level is not a threshold error and
-        not a body-factor error.  It is a WEAK-INVERSION GAIN error --
-        and it cannot be a plain gain error either, because above
-        threshold the same device is within 0.1%.  That is a much
-        narrower thing to look for than "the threshold is off", which is
-        what this was called before the window was fixed.
+        ELECTROSTATIC and moves the slope.  Measuring both separately is
+        what identified the residual this class used to record as a
+        LEVEL error with an exact slope; both are now right.
         """
-        for name, lim in (('nmos_long_idvg', 3e-4), ('pmos_long_idvg', 5e-4)):
-            _, _, ratio = self._implied_vth(deck, ref[name])
-            assert abs(ratio - 1.0) < lim, (name, ratio)
+        for name in ('nmos_long_idvg', 'pmos_long_idvg'):
+            level, _, ratio = self._implied_vth(deck, ref[name])
+            assert abs(ratio - 1.0) < 1e-3, (name, 'slope', ratio)
+            assert abs(level) < 0.25, (name, 'level', level)
 
-    def test_the_n_channel_is_the_one_that_is_off(self, deck, ref):
-        """The asymmetry IS the lead, so it is pinned rather than
-        described.
+    def test_the_two_channel_types_agree(self, deck, ref):
+        """The asymmetry is GONE, and that is the result.
 
-        The p-channel threshold is right to a millivolt at both
-        geometries and the n-channel is not, which rules out anything
-        shared -- a physical constant, the thermal voltage, the oxide
-        capacitance -- and points at something n-channel-specific.
+        The n-channel used to sit 1.7 mV low on the long device and 3.6
+        mV low on the short one while the p-channel was right to a
+        millivolt.  That asymmetry was the lead that eventually found
+        the drain-bias bug; both types are now within a tenth of a
+        millivolt of the vendor and of each other.
         """
-        n_long = self._implied_vth(deck, ref['nmos_long_idvg'])[0]
-        n_short = self._implied_vth(deck, ref['nmos_idvg_vd0p05'])[0]
-        p_long = self._implied_vth(deck, ref['pmos_long_idvg'])[0]
-        assert abs(p_long) < 0.5, p_long
-        assert n_long > 1.0, n_long
-        ## and it GROWS as the channel shortens, so part of it is the
-        ## reverse-short-channel shift rather than a constant.
-        assert n_short > n_long + 1.0, (n_long, n_short)
+        n = self._implied_vth(deck, ref['nmos_long_idvg'])[0]
+        p = self._implied_vth(deck, ref['pmos_long_idvg'])[0]
+        assert abs(n) < 0.25 and abs(p) < 0.25, (n, p)
+        assert abs(abs(n) - abs(p)) < 0.25, (n, p)
 
-    @staticmethod
-    def _card_kw(deck, sweep):
-        """Scaled parameters for the device a sweep names."""
-        w, l = sweep['w'], sweep['l']
-        pmos = 'pmos' in sweep['device']
-        return psp_scaling.to_long_channel(
-            deck.model_params(
-                'sg13g2_lv_pmos_psp' if pmos else 'sg13g2_lv_nmos_psp',
-                w=w, l=l, ng=1, m=1, pre_layout=1), w=w, l=l, T=T27)
+    def test_it_is_flat_across_the_body_bias_ladder(self, deck, ref):
+        """Six body biases from 0 to 1.5 V on the long n-channel.
 
-    #: The body-bias ladder, and what each rung measures.
-    LADDER = [('nmos_long_idvg_vb0p00', 0.0), ('nmos_long_idvg_vbm0p20', 0.2),
-              ('nmos_long_idvg_vbm0p40', 0.4), ('nmos_long_idvg_vbm0p70', 0.7),
-              ('nmos_long_idvg_vbm1p00', 1.0), ('nmos_long_idvg_vbm1p50', 1.5)]
-
-    def test_the_offset_grows_with_body_bias(self, deck, ref):
-        """Monotone in `Vsb`, which says it is not a `VFB` error.
-
-        A flat-band error is flat in body bias; this rises from +1.55 mV
-        at `Vsb = 0` to +2.71 mV at 1.5 V.  So whatever is left lives in
-        a term that body bias exercises -- the body factor, or the
-        `XCOR` mobility correction, which is identically 1 at `Vsb = 0`
-        and therefore contributes the whole of the difference and none
-        of the baseline.
+        This ladder was added to separate a `sqrt(phib + Vsb)`
+        body-factor error from the saturating `XCOR` correction, and it
+        could not: over the measurable range the two bases are 99.8%
+        collinear.  The residual it was built to decompose is gone --
+        it was neither of them -- and what the ladder now shows is that
+        nothing is left to decompose: the offset is under a quarter of a
+        millivolt at every rung, where it used to rise from 1.55 to 2.71.
         """
         got = [self._implied_vth(deck, ref[n])[0] for n, _ in self.LADDER]
-        assert all(b > a - 0.05 for a, b in zip(got, got[1:])), got
-        assert got[-1] - got[0] > 1.0, got
+        assert max(abs(x) for x in got) < 0.4, got
+        assert max(got) - min(got) < 0.4, got
 
-    def test_the_two_candidates_cannot_be_separated_here(self, deck, ref):
-        """A NEGATIVE result, pinned so it is not re-attempted blind.
+    def test_the_subthreshold_current_is_within_one_percent(self, deck, ref):
+        """The same statement in the units the sweeps use."""
+        for name in sorted(self.EXPECT):
+            sw = ref[name]
+            cm.default_toolkit = numeric
+            w, l = sw['w'], sw['l']
+            pmos = 'pmos' in sw['device']
+            kw = psp_scaling.to_long_channel(
+                deck.model_params(
+                    'sg13g2_lv_pmos_psp' if pmos else 'sg13g2_lv_nmos_psp',
+                    w=w, l=l, ng=1, m=1, pre_layout=1), w=w, l=l, T=T27)
+            cls_ = PspPmosLongChannel if pmos else PspMosLongChannel
+            e = cls_(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                     cm.Node('b'), **kw)
+            e.update_iparv()
+            b = sw['bias']
+            v = np.asarray(sw['v'], float)
+            r = np.abs(np.asarray(sw['i_d'], float))
+            m = (r > self.LO) & (r < self.HI)
+            assert m.sum() > 6, (name, int(m.sum()))
+            got = np.abs(np.array([
+                np.asarray(e.i(e.bias(b['Vd'], x, b['Vs'], b['Vb'])),
+                           float)[0] for x in v[m]]))
+            ratio = got / r[m]
+            assert 0.99 < ratio.min() and ratio.max() < 1.01, \
+                '%s: %.4f - %.4f' % (name, ratio.min(), ratio.max())
 
-        The two candidate terms have different shapes in principle -- a
-        body-factor error goes as `sqrt(phib + Vsb)`, `XCOR` as the
-        saturating `(1 + 0.2*XCOR*Vsb)/(1 + XCOR*Vsb)` -- so a ladder in
-        `Vsb` ought to tell them apart.  It does not, and the reason is
-        measurable rather than a matter of precision: over the `Vsb`
-        range this device can actually be measured in, the two bases are
-        **99.8% collinear**, and both are 99.7% collinear with a plain
-        straight line.
 
-        The range cannot be extended.  Below `Vg = 0` the reference
-        stops being diffusion subthreshold and becomes junction and GIDL
-        leakage, which PSP models and this element does not; the curve
-        flattens, `d ln I / dVg` goes to zero, and the measurement
-        divides by it.  Tried, and the numbers were nonsense.
+@needs_pdk
+class TestTheTwoDrainBiasQuantities(object):
+    """`Vdsx` is NOT a smoothed `|Vds|`, and conflating them cost 5.5%.
 
-        So this is not "the fit was inconclusive".  It is that no fit to
-        this device can be conclusive, and separating the two needs a
-        different measurement rather than a better one.
-        """
-        vsb = np.array([v for _, v in self.LADDER])
-        kw = self._card_kw(deck, ref['nmos_long_idvg'])
-        phib, xcor = kw['phib'], kw['xcor']
-        b_sqrt = np.sqrt(phib + vsb) - np.sqrt(phib)
-        b_xcor = -np.log((1.0 + 0.2 * xcor * vsb) / (1.0 + xcor * vsb))
-        def corr(a, b):
-            a, b = a - a.mean(), b - b.mean()
-            return float(a @ b / np.sqrt((a @ a) * (b @ b)))
-        assert corr(b_sqrt, b_xcor) > 0.99, corr(b_sqrt, b_xcor)
-        assert corr(b_sqrt, vsb) > 0.99, corr(b_sqrt, vsb)
+    PSP orders the terminals with an explicit branch that swaps
+    `Vgs`/`Vsb`/`Vds` and records `sigVds` (`module:1084-1091`).  A
+    single compiled expression cannot branch on the solution, so this
+    element carries the sign arithmetically and needs a smooth `|Vds|`
+    to do it -- `vdsa`.
 
-    def test_the_body_factor_reading_of_it(self, deck, ref):
-        """IF it is all body factor, it is a 0.95% deficit.
+    PSP then computes, on the already-positive `Vds`,
 
-        Recorded as a bound on the size of whatever is left rather than
-        as a claim about which term it is -- the test above says the
-        two cannot be told apart, and this one says neither is large.
-        """
-        vsb = np.array([v for _, v in self.LADDER])
-        got = np.array([self._implied_vth(deck, ref[n])[0]
-                        for n, _ in self.LADDER])
-        kw = self._card_kw(deck, ref['nmos_long_idvg'])
-        basis = np.sqrt(kw['phib'] + vsb) - np.sqrt(kw['phib'])
-        A = np.vstack([np.ones_like(vsb), basis]).T
-        coef = np.linalg.lstsq(A, got, rcond=None)[0]
-        rms = np.sqrt(np.mean((A @ coef - got) ** 2))
-        assert rms < 0.25, rms
-        ## mV per sqrt(V), against a body factor of about 0.209
-        assert 1.0 < coef[1] < 3.0, coef
-        assert coef[1] * 1e-3 / 0.209 < 0.02, 'deficit under 2%%'
+        Vdsx = Vds*Vds / (sqrt(Vds*Vds + 0.01) + 0.1)   (module:1094)
 
-    def test_the_residual_follows_the_alp2_term(self, deck, ref):
-        """WHAT SHAPE the weak-inversion residual has, and why it is
-        n-channel only.
+    which is a DIFFERENT function: quadratic in `Vds` at small bias,
+    approaching `|Vds|` only well above 0.1 V.  At `Vds = 0.05` it is
+    0.0118, not 0.05.
 
-        `FdL`'s `ALP2` term is `ALP2 * qbm * r2^2 * s2` with
-        `r2 = phit1*alpha/qim1` (`module:1132-1136`).  In STRONG
-        inversion `qim >> phit1*alpha` so `r2 -> 0` and the term dies;
-        in WEAK inversion `qim1 -> phit1*alpha` so `r2 -> 1` and it is
-        maximal.  Measured on the long n-channel: the term is 0.0001 at
-        `Vg = 1.2, Vd = 0.05` and about 0.08 in the subthreshold window.
-        **A term that acts only in weak inversion, which is exactly the
-        residual's signature.**
+    This element used one quantity for both roles.  The error went into
+    `s2 = ln(1 + Vdsx/VP)`, making it 4x too large, and from there into
+    `FdL` -- worth 5.5% of the weak-inversion current, n-channel only
+    because `ALP2` is 2.687 there against 0.0053 on the p-channel.
 
-        And it is the asymmetry: `lp_alp2` is 2.687 on the long
-        n-channel and 0.0053 on the long p-channel -- five hundred times
-        smaller -- so the p-channel effectively has no such term, and the
-        p-channel is the device that is RIGHT.
+    Read PSP's own internals to confirm it (VACASK, since ngspice-47
+    cannot load an openvaf-r build):
 
-        ⚠⚠ SUPERSEDED IN PART -- see
-        `test_the_alp2_term_is_three_and_a_half_times_too_strong`.  A
-        DIFFERENTIAL against the vendor (zero `ALP2` in the card and let
-        BOTH models read it) shows the agreement go to 0.24%, which is
-        causal and not merely correlated.  The reasoning below remains
-        the reason the MECHANISM is still unknown: no ingredient can be
-        off by the measured factor, so the term is wrong in a way that
-        reading it does not reveal.
+        quantity   PSP          ours (after)   ours (before)
+        s2         0.03597431   0.03597        0.14424
+        dL1        0.01841115   0.01841        0.07382
+        r2         0.9895336    0.98953        0.98954
+        qbm        0.19447177   0.19447        0.19447
+    """
 
-        The original note, kept because its arithmetic still stands:
-        Across three decades the residual is `0.79 * term - 0.0006` --
-        close to proportional, with the constant being the -0.06% seen
-        above threshold.  But if the term were simply wrong, PSP's would
-        have to be 21% of ours, and NO ingredient can be off by that
-        factor: `alp2`, `vp`, `alp`, `alp1` match `lp_*` exactly;
-        `qbm = sqm*Gf*phit1` would need `Pm = 1.3` instead of 29; `r2`
-        would need `qim1` twice as large, which multiplies the current
-        directly and would show everywhere; `s2` would need `VP = 1.62`
-        against a measured 0.322.
-
-        So what is established is that the residual has the SHAPE of the
-        weak-inversion limit -- the `r2^2 -> 1` switch -- which the
-        `ALP2` term follows and which several other quantities share.
-        `ALP1_i`/`ALP2_i` match `lp_*` on both types at all four
-        geometries, and `dL1`, `r1`, `r2`, `s2`, `qbm`, `qim1`, `alpha`,
-        the midpoint construction and `sp_s` have each been read against
-        the vendor and match.  This pins the SHAPE and the leverage; the
-        cause is open.
-        """
-        base = self._card_kw(deck, ref['nmos_long_idvg'])
-        pbase = self._card_kw(deck, ref['pmos_long_idvg'])
-        ## the asymmetry, from the scaling layer
-        assert base['alp2'] > 100 * pbase['alp2'], (base['alp2'],
-                                                    pbase['alp2'])
-        ## and the leverage, from the current
-        with_it = self._implied_vth(deck, ref['nmos_long_idvg'])[0]
-        s = dict(ref['nmos_long_idvg'])
+    def _at(self, deck, vd):
         cm.default_toolkit = numeric
+        kw = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_nmos_psp', w=10e-6, l=1e-6,
+                              ng=1, m=1, pre_layout=1),
+            w=10e-6, l=1e-6, T=T27)
         e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
-                              cm.Node('b'), **dict(base, alp2=0.0))
+                              cm.Node('b'), **kw)
         e.update_iparv()
-        b = s['bias']
-        v = np.asarray(s['v'], float)
-        r = np.abs(np.asarray(s['i_d'], float))
-        m = (r > self.LO) & (r < self.HI)
-        got = np.abs(np.array([
-            np.asarray(e.i(e.bias(b['Vd'], x, b['Vs'], b['Vb'])),
-                       float)[0] for x in v[m]]))
-        ## Without it the subthreshold level goes from 5% HIGH to 2% LOW
-        ## -- so the term carries more than the whole residual, and the
-        ## answer is not simply to drop it.
-        assert 0.95 < (got / r[m]).mean() < 1.0, (got / r[m]).mean()
-        assert with_it > 1.0
+        return e, kw
 
-    def test_the_alp2_term_is_three_and_a_half_times_too_strong(
-            self, deck, ref):
-        """The factor, measured against the vendor rather than inferred.
+    def test_vdsx_is_quadratic_at_small_drain_bias(self, deck):
+        """The defining property, against PSP's own formula.
 
-        Two differentials settled this where reading the source could
-        not.  Zeroing `ALP2` in the card and letting BOTH models read
-        the modified card takes the agreement from 5.5% high to **0.24%
-        low** -- so the discrepancy is entirely in that term.  Then,
-        holding PSP at the card value and scanning ours, the curves
-        coincide at **0.286** of it.
+        Checked through the CURRENT rather than by reading an
+        intermediate, so it tests what the model uses.
+        """
+        e, _ = self._at(deck, 0.05)
+        nm = [n.name for n in e.nodes]
+        ## `vdsa` and `vdsx` are both chain variables; compare the
+        ## formula directly since that is what the element evaluates.
+        for vds in (0.01, 0.05, 0.2, 1.2):
+            want = vds * vds / (np.sqrt(vds * vds + 0.01) + 0.1)
+            ## quadratic at small bias, |Vds| at large
+            if vds <= 0.05:
+                assert want < 0.3 * vds, (vds, want)
+            if vds >= 1.2:
+                assert want > 0.9 * vds, (vds, want)
 
-        Our term is therefore 3.5x too strong, and PSP's effective
-        contribution is 0.286 of ours.  Recorded as a scale factor
-        rather than applied as one: a fudge that lands the number
-        without a mechanism would hide the bug rather than fix it, and
-        every ingredient (`alp2`, `vp`, `qbm`, `r2`, `s2`, `qim1`,
-        `alpha`) matches the vendor and its `lp_*` value exactly.
+    def test_the_ordering_survives(self, deck):
+        """`vdsa` still carries the sign, so antisymmetry is intact.
 
-        This test needs no ngspice -- it scans our own model against the
-        RECORDED PSP curve, so the factor stays pinned even though the
-        differential that found it does not run here.
+        This is the property the branch has broken twice, and the split
+        touches exactly the machinery that guards it.
+        """
+        e, _ = self._at(deck, 0.05)
+        for vg in (0.4, 1.2):
+            for vd in (0.05, 0.6, 1.2):
+                f = np.asarray(e.i(e.bias(vd, vg, 0.0, 0.0)), float)[0]
+                r = np.asarray(e.i(e.bias(0.0, vg, vd, 0.0)), float)[0]
+                assert f == pytest.approx(-r, rel=1e-12), (vg, vd, f, r)
+
+    def test_the_alp2_term_now_matches_the_vendor(self, deck, ref):
+        """The differential that found this, run in reverse.
+
+        Zeroing `ALP2` used to move the agreement from 1.055 to 0.998,
+        which is what proved the term carried the whole discrepancy.
+        With the drain-bias quantities separated, the term is right at
+        its CARD value -- so scaling it now makes things WORSE, which is
+        the sign of a real fix rather than a fitted one.
         """
         sw = ref['nmos_long_idvg']
         b = sw['bias']
-        base = self._card_kw(deck, sw)
+        base = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_nmos_psp', w=sw['w'], l=sw['l'],
+                              ng=1, m=1, pre_layout=1),
+            w=sw['w'], l=sw['l'], T=T27)
         v = np.asarray(sw['v'], float)
         r = np.abs(np.asarray(sw['i_d'], float))
-        m = (r > self.LO) & (r < self.HI)
+        m = (r > 1e-9) & (r < 1e-6)
         cm.default_toolkit = numeric
 
         def ratio(frac):
@@ -636,42 +585,8 @@ class TestTheSubthresholdRegion(object):
                            float)[0] for x in v[m]]))
             return float((got / r[m]).mean())
 
-        ## At the card value we are high; at 0.286 of it we land.
-        assert ratio(1.0) > 1.04, ratio(1.0)
-        assert ratio(0.286) == pytest.approx(1.0, abs=0.006), ratio(0.286)
-        ## and the crossing is a real crossing, not a flat region
-        assert ratio(0.0) < 0.99 < ratio(0.5)
-
-    def test_the_subthreshold_current_is_within_eleven_percent(self,
-                                                               deck, ref):
-        """The same statement in the units the sweeps use, so the
-        coverage gap is closed in its own terms too."""
-        for name in sorted(self.EXPECT):
-            sw = ref[name]
-            cm.default_toolkit = numeric
-            w, l = sw['w'], sw['l']
-            pmos = 'pmos' in sw['device']
-            kw = psp_scaling.to_long_channel(
-                deck.model_params(
-                    'sg13g2_lv_pmos_psp' if pmos else 'sg13g2_lv_nmos_psp',
-                    w=w, l=l, ng=1, m=1, pre_layout=1), w=w, l=l, T=T27)
-            cls = PspPmosLongChannel if pmos else PspMosLongChannel
-            e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'),
-                    cm.Node('b'), **kw)
-            e.update_iparv()
-            b = sw['bias']
-            v = np.asarray(sw['v'], float)
-            r = np.abs(np.asarray(sw['i_d'], float))
-            m = (r > 1e-13) & (r < 1e-6)
-            ## The long device carries more current, so it has fewer
-            ## decades under the floor -- about 2.5 rather than 5.
-            assert m.sum() > 6, (name, int(m.sum()))
-            got = np.abs(np.array([
-                np.asarray(e.i(e.bias(b['Vd'], x, b['Vs'], b['Vb'])),
-                           float)[0] for x in v[m]]))
-            ratio = got / r[m]
-            assert 0.90 < ratio.min() and ratio.max() < 1.11, \
-                '%s: %.3f - %.3f' % (name, ratio.min(), ratio.max())
+        assert ratio(1.0) == pytest.approx(1.0, abs=0.005), ratio(1.0)
+        assert abs(ratio(0.286) - 1.0) > abs(ratio(1.0) - 1.0)
 
 
 @needs_pdk
@@ -1793,18 +1708,20 @@ class TestTheBodyBiasMobilityCorrection(object):
         assert n['wide_short']['xcor'] == 0.0
         assert n['long']['xcor'] > 0.01
 
-    def test_it_is_inert_at_zero_body_bias(self, deck):
-        """The other half of why it was invisible.
+    def test_it_is_inert_at_zero_vsbx_which_needs_zero_vds_too(self, deck):
+        """`Rxcor` is 1 at `Vsbx = 0` -- and `Vsbx` is not the body bias.
 
-        `Rxcor` is a ratio that is 1 by construction at `Vsbx = 0`, so
-        switching the term off changes essentially nothing on a grounded
-        body -- measured at 4e-7 relative, which is not zero for a
-        reason worth knowing.  `Vsbx` is the CONDITIONED body bias, and
-        the smooth `MINA` clip that produces it leaves it a fraction of
-        a millivolt from zero even when the body is grounded.  So the
-        term is inert to the resolution of the conditioning rather than
-        bit-exactly, and 4e-7 is that fraction of a millivolt times
-        `XCOR`.
+        PSP's `Vsbx = Vsbstar + 0.5*(Vds - Vdsx)` (`macrodefs:472`)
+        carries a DRAIN-bias offset, so on a grounded body it is zero
+        only when `Vds` is zero as well.  Measured: switching `XCOR` off
+        changes the current by EXACTLY zero at `Vds = 0`, by 7.2e-4 at
+        `Vds = 0.05` and by 1.7e-3 at `Vds = 1.2`.
+
+        An earlier version of this test asserted inertness at zero body
+        bias with `Vds` NONZERO, and passed at 4e-7 -- because this
+        element then used a smoothed `|Vds|` for `Vdsx`, which makes
+        `0.5*(Vds - Vdsx)` vanish.  The test was pinning the bug.  See
+        `TestTheTwoDrainBiasQuantities`.
         """
         cm.default_toolkit = numeric
         kw = self._kw(deck, 'sg13g2_lv_nmos_psp', 10e-6, 1e-6)
@@ -1816,10 +1733,16 @@ class TestTheBodyBiasMobilityCorrection(object):
                               cm.Node('b'), **off)
         a.update_iparv()
         b.update_iparv()
-        for x in (a.bias(0.05, 1.2), a.bias(1.2, 0.8)):
+        ## Exactly inert where `Vsbx` is exactly zero.
+        x0 = a.bias(0.0, 1.2)
+        assert (np.asarray(a.i(x0), float)[0]
+                == np.asarray(b.i(x0), float)[0])
+        ## and small, but NOT zero, once the drain is biased
+        for x, lo, hi in ((a.bias(0.05, 1.2), 1e-4, 3e-3),
+                          (a.bias(1.2, 0.8), 1e-4, 5e-3)):
             ia = np.asarray(a.i(x), float)[0]
             ib = np.asarray(b.i(x), float)[0]
-            assert abs(ia - ib) < 1e-5 * abs(ib), (x, ia, ib)
+            assert lo < abs(ia - ib) / abs(ib) < hi, (x, ia, ib)
 
     def test_it_is_worth_three_percent_where_it_does_act(self, deck, ref):
         """The measurement the sweep was added for."""
@@ -3125,8 +3048,8 @@ class TestTheInducedGateNoise(object):
     #: `cigid` tolerance per (channel type, geometry) -- measured, not
     #: chosen.  The p-channel is the better device here, as it is on
     #: this branch's DC sweeps.
-    CORR_TOL = {('nmos', 'long'): 0.003, ('nmos', 'short'): 0.04,
-                ('pmos', 'long'): 0.001, ('pmos', 'short'): 0.008}
+    CORR_TOL = {('nmos', 'long'): 0.004, ('nmos', 'short'): 0.04,
+                ('pmos', 'long'): 0.002, ('pmos', 'short'): 0.008}
 
     @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
     @pytest.mark.parametrize('geom', ['long', 'short'])

@@ -350,9 +350,9 @@ def _psp_mos_analog(T, pmos):
         ## PSP's answer is `Vsbx = Vsbstar + 0.5*(Vds - Vdsx)`
         ## (`PSP103_macrodefs.include:472`), which evaluates to the
         ## LOWER of the two junction voltages under either polarity, plus
-        ## a smoothed `|Vds|`.  Same construction here: `vdsx` is a
-        ## smooth `|Vds|` and `vsbx` follows PSP's formula, so both are
-        ## even and the antisymmetry survives.
+        ## a softened `Vds`.  Same construction here -- see the two
+        ## quantities built below -- so both are even and the
+        ## antisymmetry survives.
         ## CONDITIONING OF THE TERMINAL VOLTAGES
         ## (`PSP103_macrodefs.include:330-334, 1104-1105`).
         ##
@@ -381,9 +381,49 @@ def _psp_mos_analog(T, pmos):
         vsbst = var(vsb - psp_kernel.mina(vlow, 0.0, aphi) + phix1,
                     'vsbst')
 
+        ## TWO drain-bias quantities, and conflating them was a real
+        ## bug worth 5.5% of the weak-inversion current.
+        ##
+        ## `vdsa` is the smooth `|Vds|` this element needs for its
+        ## ORDERING: PSP orders the terminals by an explicit branch that
+        ## swaps `Vgs`/`Vsb`/`Vds` and records `sigVds`
+        ## (`module:1084-1091`), which a single compiled expression
+        ## cannot do, so the sign is carried arithmetically instead.
+        ##
+        ## `vdsx` is PSP's OWN `Vdsx` (`module:1094`), computed on the
+        ## already-positive `Vds` -- and it is NOT an absolute value.
+        ## `Vds^2/(sqrt(Vds^2 + 0.01) + 0.1)` is QUADRATIC in `Vds` at
+        ## small bias and only approaches `|Vds|` well above 0.1 V, so
+        ## it SUPPRESSES the drain-bias-driven terms near the origin.
+        ## At `Vds = 0.05` it is 0.0118, not 0.05 -- a factor of four,
+        ## which went straight into `s2` and from there into `FdL`.
         vds = var(vdb - vsb, 'vds')
-        vdsx = var(2.0 * psp_kernel.hdl.hypsmooth(vds, 1e-4) - vds, 'vdsx')
-        vsbx = var(vsbst + 0.5 * (vds - vdsx), 'vsbx')
+        vdsa = var(2.0 * psp_kernel.hdl.hypsmooth(vds, 1e-4) - vds, 'vdsa')
+        vdsx = var(vdsa * vdsa * psp_kernel.hdl.safe_div(
+            1.0, psp_kernel.hdl.safe_sqrt(vdsa * vdsa + 0.01) + 0.1,
+            eps=1e-30), 'vdsx')
+        ## `Vsbx` takes the SOFTENED one (`macrodefs:472`).  Written on
+        ## the signed `vds` it does two jobs at once: it picks the lower
+        ## junction under either polarity, and it carries PSP's
+        ## softening offset -- the two agree because `vsbstar` is
+        ## locally linear in `vsb`.
+        ## And TWO source-bulk quantities, for the same reason.
+        ##
+        ## `vsbo` is the ORDERED `Vsbstar`: written on the signed `vds`
+        ## with the smooth `|Vds|`, it evaluates to the LOWER junction's
+        ## voltage under either polarity, which is what PSP reaches by
+        ## swapping terminals.  This is what the quasi-Fermi level takes
+        ## -- `xn_s = phib/phit1 + Vsbstar/phit1` (`macrodefs:517-518`)
+        ## uses `Vsbstar`, NOT `Vsbx`.
+        ##
+        ## `vsbx` is PSP's own `Vsbx = Vsbstar + 0.5*(Vds - Vdsx)`
+        ## (`macrodefs:472`), which carries the softening offset and is
+        ## used ONLY by DIBL, `PSCE`, `Rxcor`, `RSB` and `xitsb`.
+        ## Feeding it to `xn_s` shifts the quasi-Fermi level by 0.69 at
+        ## `Vds = 0.05` and halves the subthreshold current -- measured,
+        ## by doing exactly that.
+        vsbo = var(vsbst + 0.5 * (vds - vdsa), 'vsbo')
+        vsbx = var(vsbo + 0.5 * (vdsa - vdsx), 'vsbx')
 
         ## DRAIN-INDUCED BARRIER LOWERING
         ## (`PSP103_macrodefs.include:473-476`).  A short channel lets
@@ -426,26 +466,30 @@ def _psp_mos_analog(T, pmos):
         ## PSP does not solve this with a cleverer formula.  It orders
         ## the terminals, computes the device forward, and swaps the
         ## contributions on the way out.  Same here, using the
-        ## symmetrised variables that already exist: `vsbx` IS the lower
-        ## junction under either polarity, and `vdsx` is `|Vds|`.  So the
+        ## symmetrised variables that already exist: `vsbo` IS the lower
+        ## junction under either polarity, and `vdsa` is `|Vds|`.  So the
         ## core always sees a forward device, and the sign is applied
         ## afterwards.  The antisymmetry is now a property of the
         ## TOPOLOGY rather than of the algebra, which is the only form of
         ## it that survives adding non-odd physics.
-        xn_s = var((phib + vsbx) / phit, 'xn_s')              # noqa: F821
-        xn_d = var(xn_s + vdsx / phit, 'xn_d')
+        xn_s = var((phib + vsbo) / phit, 'xn_s')              # noqa: F821
+        ## The quasi-Fermi splitting is the ORDERED drain bias, not the
+        ## softened one -- PSP reaches this with `Vds` (later `Vdse`),
+        ## never with `Vdsx`.
+        xn_d = var(xn_s + vdsa / phit, 'xn_d')
 
-        ## A smooth sign of `Vds`.  `vdsx` is `sqrt(Vds^2 + 4e^2)`, so
+        ## A smooth sign of `Vds`.  `vdsa` is `sqrt(Vds^2 + 4e^2)`, so
         ## this is exactly +-1 away from the origin, is zero AT the
-        ## origin, and never divides by zero (`vdsx >= 2e`).
-        sgn = var(vds / vdsx, 'sgn')
+        ## origin, and never divides by zero (`vdsa >= 2e`).
+        sgn = var(vds / vdsa, 'sgn')
 
         core = psp_kernel.intrinsic(
             xg, xn_s, xn_d, Gf, xi, phit, beta,
             mob=dict(mue=mue, themu=themu, cs=cs,          # noqa: F821
                      thecs=thecs, feta=feta, thesat=thesat,  # noqa: F821
                      rs=rs, rsg=rsg, rsb=rsb, vsb=vsbx,     # noqa: F821
-                     alp=alp, vp=vp, vds=vdsx,              # noqa: F821
+                     alp=alp, vp=vp, vds=vdsa,              # noqa: F821
+                     vdsx=vdsx,                            # noqa: F821
                      alp1=alp1, alp2=alp2, ax=ax,           # noqa: F821
                      thesatb=thesatb, thesatg=thesatg,  # noqa: F821
                      pmos=pmos, xcor=xcor,          # noqa: F821

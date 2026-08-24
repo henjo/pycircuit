@@ -927,7 +927,11 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
         inv_qim1 = _v(hdl.safe_div(1.0, qim1, eps=1e-30), 'ids_iq1')
         r1 = _v(qim * inv_qim1, 'ids_r1')
         r2 = _v(phit * alpha * inv_qim1, 'ids_r2')
-        s2 = _v(hdl.safe_ln(1.0 + mob['vds']
+        ## `s2` takes PSP's SOFTENED `Vdsx` (`module:1135`), where `s1`
+        ## above takes the ordered `Vds`.  They are different arguments
+        ## and PSP spells them differently; using `|Vds|` for both makes
+        ## `s2` four times too large at `Vds = 0.05`.
+        s2 = _v(hdl.safe_ln(1.0 + mob.get('vdsx', mob['vds'])
                             * hdl.safe_div(1.0, mob['vp'], eps=1e-30)),
                 'ids_s2')
         dL1 = _v(dL + alp1 * (inv_qim1 * r1 * s1)

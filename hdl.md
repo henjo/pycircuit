@@ -3456,6 +3456,85 @@ took about sixty lines to extend.
 > Ten separate quantities were read against the vendor and matched; the
 > differential found the error in two runs.
 
+> **ROOT CAUSE: `Vdsx` is not a smoothed `|Vds|` — 2026-08-24.** The
+> weak-inversion residual is gone, and with it the n/p asymmetry, the
+> body-bias growth and the threshold offset. Every subthreshold curve is
+> now within 0.5% of the vendor on both channel types and both
+> geometries.
+>
+> **How it was found.** `openvaf-r` builds OSDI that ngspice-47 cannot
+> load, so the vendor's own internals were unreachable — until VACASK,
+> which comes from the same author and does load it. Its
+> `sg13g2tovc` converter rebuilds the PDK for VACASK *and compiles the
+> Verilog-A*, so a patched copy of PSP103 with debug operating-point
+> outputs runs there. One bias point then said everything:
+>
+> | | PSP | ours (before) | |
+> |---|---|---|---|
+> | `r2` | 0.9895336 | 0.9895413 | ✓ |
+> | `qbm` | 0.19447177 | 0.19447436 | ✓ |
+> | `alpha` | 1.11484943 | 1.11484491 | ✓ |
+> | **`s2`** | **0.03597431** | **0.14424327** | **0.249** |
+> | `dL1` | 0.01841115 | 0.07381714 | 0.249 |
+>
+> **The mechanism.** PSP orders its terminals with an explicit branch
+> that swaps `Vgs`/`Vsb`/`Vds` and records `sigVds`
+> (`module:1084-1091`). *Then*, on the already-positive `Vds`, it
+> computes
+>
+> ```
+> Vdsx = Vds*Vds / (sqrt(Vds*Vds + 0.01) + 0.1)      (module:1094)
+> ```
+>
+> which is **quadratic in `Vds` at small bias** and only approaches
+> `|Vds|` well above 0.1 V. At `Vds = 0.05` it is **0.0118, not 0.05**.
+>
+> A compiled expression cannot branch on the solution, so this element
+> carries the sign arithmetically and needs a smooth `|Vds|` — and it
+> used that ONE quantity for both roles. The error went into
+> `s2 = ln(1 + Vdsx/VP)`, making it four times too large, and from there
+> into `FdL`. Which is why `ALP2` looked guilty: it is 2.687 on the
+> n-channel and 0.0053 on the p-channel, so the same `s2` error showed
+> up 500× more strongly on one type than the other.
+>
+> **Three quantities, not one.** `vdsa` (smooth `|Vds|`) for the
+> ordering, `xn_d` and `s1`; `vdsx` (PSP's) for `Vsbx`, `Vdsp` and `s2`.
+> And `Vsbx` needed the same split: `xn_s` takes **`Vsbstar`**
+> (`macrodefs:517-518`), not `Vsbx` — feeding it `Vsbx` shifts the
+> quasi-Fermi level by 0.69 and HALVES the subthreshold current, which
+> is exactly what the first attempt did.
+>
+> | sweep | ΔVth before | after |
+> |---|---|---|
+> | n-channel, 10 µm | +1.72 mV | **−0.05 mV** |
+> | n-channel, 0.13 µm | +3.57 mV | **−0.05 mV** |
+> | p-channel, 0.13 µm | −1.24 mV | **+0.05 mV** |
+> | body-bias ladder, 0 → 1.5 V | 1.55 → 2.71 mV | **−0.03 → +0.04 mV** |
+>
+> And across the DC sweeps: **eleven of twelve medians are 1.000**, worst
+> 0.993, spreads 0.001–0.015 — against a previous headline of "within
+> 2.3%, ten within 0.4%". `sig` went to 0.9985–0.9997 (n, long) and
+> 0.9986–1.0003 (p, short); `CGeff` to within 1.6% everywhere.
+>
+> **Tests that pinned the bug, now rewritten to pin the fix.** Eleven
+> failed, every one of them a test that had recorded the residual as a
+> measured band — which is what those bands are FOR. Two are worth
+> noting: `test_it_is_inert_at_zero_body_bias` asserted `XCOR` was inert
+> at `Vsb = 0` with `Vds` nonzero and passed at 4e-7, *because* our
+> `Vdsx` made `0.5*(Vds - Vdsx)` vanish. It was pinning the bug. It now
+> asserts inertness at `Vds = 0` (exactly zero) and 7e-4 at
+> `Vds = 0.05`. And the `ALP2` factor test is inverted: scaling the term
+> to 0.286 now makes things WORSE, which is the signature of a real fix
+> rather than a fitted one.
+>
+> **What is left**, and it is localised: the short n-channel in
+> saturation — `nmos_idvd_vg1p2` at 0.993, its `sid` 6.5% high, its
+> `sig` 0.930 at the worst point. The short p-channel is now exact
+> (0.9986–1.0003), so this is n-channel-specific in the
+> velocity-saturation regime, where PSP uses a different velocity-field
+> law for electrons than for holes. VACASK now makes that directly
+> checkable the same way.
+
 Deferred, unchanged from the original research verdict:
 
 | item | why |
