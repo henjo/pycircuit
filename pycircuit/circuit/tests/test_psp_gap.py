@@ -524,8 +524,8 @@ class TestTheSubthresholdRegion(object):
         assert 1.0 < coef[1] < 3.0, coef
         assert coef[1] * 1e-3 / 0.209 < 0.02, 'deficit under 2%%'
 
-    def test_the_residual_is_the_alp2_term(self, deck, ref):
-        """WHERE the weak-inversion residual lives, and why it is
+    def test_the_residual_follows_the_alp2_term(self, deck, ref):
+        """WHAT SHAPE the weak-inversion residual has, and why it is
         n-channel only.
 
         `FdL`'s `ALP2` term is `ALP2 * qbm * r2^2 * s2` with
@@ -542,13 +542,25 @@ class TestTheSubthresholdRegion(object):
         smaller -- so the p-channel effectively has no such term, and the
         p-channel is the device that is RIGHT.
 
-        ⚠ What this does NOT say is that `ALP2` is transcribed wrongly.
-        `ALP1_i`/`ALP2_i` match `lp_*` exactly on both types and all four
-        geometries, and `dL1`, `r1`, `r2`, `s2`, `qbm`, `qim1`, `alpha`
-        and the midpoint construction have each been read against the
-        vendor and match.  Removing the term overshoots to -2%, so it is
-        not simply too large either.  This pins the LOCATION of the
-        residual and the reason for its shape; the mechanism is open.
+        ⚠⚠ CORRELATION, NOT CAUSATION, and the arithmetic says so.
+        Across three decades the residual is `0.79 * term - 0.0006` --
+        close to proportional, with the constant being the -0.06% seen
+        above threshold.  But if the term were simply wrong, PSP's would
+        have to be 21% of ours, and NO ingredient can be off by that
+        factor: `alp2`, `vp`, `alp`, `alp1` match `lp_*` exactly;
+        `qbm = sqm*Gf*phit1` would need `Pm = 1.3` instead of 29; `r2`
+        would need `qim1` twice as large, which multiplies the current
+        directly and would show everywhere; `s2` would need `VP = 1.62`
+        against a measured 0.322.
+
+        So what is established is that the residual has the SHAPE of the
+        weak-inversion limit -- the `r2^2 -> 1` switch -- which the
+        `ALP2` term follows and which several other quantities share.
+        `ALP1_i`/`ALP2_i` match `lp_*` on both types at all four
+        geometries, and `dL1`, `r1`, `r2`, `s2`, `qbm`, `qim1`, `alpha`,
+        the midpoint construction and `sp_s` have each been read against
+        the vendor and match.  This pins the SHAPE and the leverage; the
+        cause is open.
         """
         base = self._card_kw(deck, ref['nmos_long_idvg'])
         pbase = self._card_kw(deck, ref['pmos_long_idvg'])

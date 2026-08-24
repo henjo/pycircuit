@@ -3373,15 +3373,34 @@ took about sixty lines to extend.
 > is the device that is right (+0.03 mV against +1.72 mV). Every earlier
 > statement that "whatever is left is n-channel-specific" now has a name.
 >
-> **⚠ What this does NOT establish is that `ALP2` is transcribed
-> wrongly**, and the temptation to say so is the same one that produced
-> the "fourth power" error. `ALP1_i`/`ALP2_i` match `lp_*` exactly on
-> both types at all four geometries, and `dL1`, `r1`, `r2`, `s2`, `qbm`,
-> `qim1`, `alpha`, the midpoint construction (`x_m`, `Em = √(Es·Ed)`,
-> `D̄`, `Dm`) and `sp_s` itself have each been read against the vendor
-> and match. Removing the term overshoots to −2%, so it is not simply
-> too large either. **This pins the location and the shape; the
-> mechanism is open.**
+> **⚠ CORRELATION, NOT CAUSATION — and the arithmetic settles it.**
+> Across three decades the residual is `0.79·term − 0.0006`, the
+> constant being the −0.06% seen above threshold. Close to
+> proportional. But if the term were simply wrong, PSP's would have to
+> be **21% of ours**, and no ingredient can be off by that factor:
+> `alp2`, `vp`, `alp`, `alp1` match `lp_*` exactly; `qbm = sqm·Gf·φt1`
+> would need `Pm = 1.3` instead of 29; `r2` would need `qim1` twice as
+> large, which multiplies the current directly and would show
+> everywhere; `s2` would need `VP = 1.62` against a measured 0.322.
+>
+> So what is established is that the residual has **the SHAPE of the
+> weak-inversion limit** — the `r2² → 1` switch — which the `ALP2` term
+> follows and which several other quantities share. `ALP1_i`/`ALP2_i`
+> match `lp_*` on both types at all four geometries, and `dL1`, `r1`,
+> `r2`, `s2`, `qbm`, `qim1`, `alpha`, the midpoint construction
+> (`x_m`, `Em = √(Es·Ed)`, `D̄`, `Dm`), `Gmob` (field, Coulomb, `GR`,
+> `Rxcor`), `Vsbstar`'s conditioning and `sp_s` itself have each been
+> read against the vendor and match. **Shape and leverage pinned; cause
+> open.**
+>
+> **And nothing ABSENT can account for it**, checked against the card's
+> own switches rather than assumed: `PSCE` is zero (`pscel = pscew = 0`,
+> so `dphit1 = 0` exactly), `SWEDGE`/`SWNUD`/`SWDELVTAC`/`SWQSAT` are
+> all 0, and the three that ARE enabled are measured negligible — gate
+> current is 3.1e-14 against a drain current of 6.4e-8, and the bulk
+> current is a **constant** −5.07e-14 across the whole sweep, i.e. a
+> leakage floor rather than a bias-dependent term. The reference's drain
+> current is channel current.
 >
 > The bounding method is worth keeping separately from the result: it
 > eliminated six candidates in one run, and it distinguishes "this term
