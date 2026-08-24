@@ -370,6 +370,12 @@ LP_PARAMS = ('vfb', 'tox', 'neff', 'dphib', 'ct', 'cf', 'cfb', 'betn',
              ## is invisible on every sweep but the body-biased one.
              'vp', 'rsg', 'rsb', 'dnsub', 'vnsub', 'nslp', 'cfd',
              'feta', 'xcor',
+             ## IMPACT IONISATION.  `a2` carries the only NEGATIVE
+             ## temperature exponent in the model (`macrodefs:389`
+             ## writes `exp(-STA2*ln_rTn)` where everything else writes
+             ## `exp(+ST*ln_rTn)`), so recording `sta2` next to it turns
+             ## that sign from something argued into something checked.
+             'a1', 'a2', 'sta2', 'a3', 'a4',
              ## `cox` is the TOTAL oxide capacitance PSP builds the
              ## charge model on, and it is not the geometric one: it
              ## uses the CV effective dimensions (`scaling:38-39, 359`),

@@ -1018,6 +1018,61 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
                 zsat=zsat, gvinv=gvinv, GdL=GdL, eta_p=eta_p, FdL=FdL)
 
 
+def impact(core, vds, phib, vsbo, a1, a2, a3, a4):
+    """PSP's impact-ionisation multiplication factor `mavl`.
+
+    `PSP103_module.include:1362-1369`:
+
+        delVsat = Vds - A3*dps
+        if delVsat > 0:
+            temp2 = A2_T*(1 + A4*(sqrt(phib + Vsbstar) - sqrt(phib)))
+                          / delVsat
+            mavl  = A1 * delVsat * expl(-temp2)
+
+    and the avalanche current is `mavl * Ids`, flowing from the HIGH
+    terminal to the bulk (`:1700, 1705`).  The caller applies it; this
+    returns the factor, which is even under the source/drain exchange
+    because every quantity in it is.
+
+    THE `delVsat > 0` BRANCH NEEDS NO CONDITIONAL, and that is worth
+    stating because writing one would be the natural move.
+
+    `f(x) = x*exp(-c/x)` for `x > 0`, extended by `0` for `x <= 0`, is
+    already C-infinity at the origin: every derivative of `exp(-c/x)`
+    carries a power of `1/x` against a factor that vanishes faster than
+    any power.  So the smooth extension IS the function PSP computes,
+    and a `Piecewise` here would only add a seam where the mathematics
+    has none.
+
+    What it does need is the ARGUMENT clamped, not the result.  As
+    `delVsat` falls through zero `c/delVsat` runs to `+inf` and then
+    changes sign, so `-temp2` goes to `-inf` (fine, `expl` floors it)
+    and then to `+inf` (not fine -- `expl` would return 1e100 and the
+    factor would explode exactly where it should vanish).  Flooring
+    `delVsat` at a small POSITIVE value keeps the exponent's argument on
+    the correct side and leaves the prefactor to do the vanishing: below
+    the floor `mavl` is `A1 * delta * exp(-c/delta)`, which underflows
+    to zero long before `delta` matters.
+    """
+    ## `dps` is PSP's `dps_dc`, the ordered surface-potential drop.
+    dvs0 = _v(vds - a3 * core['dps'], 'avl_dvs0')
+    ## Floored, not branched -- see the docstring.  `1e-9` is far below
+    ## any bias where the term is alive (`delVsat` reaches 0.5 V at the
+    ## top of a 1.5 V sweep) and far above the point where `c/delta`
+    ## would overflow: with `c` of order 20, `exp(-2e10)` is a clean
+    ## zero, not a NaN.
+    dvs = _v(sympy.Max(dvs0, 1.0e-9), 'avl_dvs')
+    ## The body-bias correction to the ionisation field.  `A4` is zero
+    ## on this PDK's p-channel card and 0.046 on its n-channel one --
+    ## the fourth term in this model that one card switches off.
+    body = _v(1.0 + a4 * (hdl.safe_sqrt(phib + vsbo)
+                          - hdl.safe_sqrt(phib)), 'avl_body')
+    arg = _v(a2 * body * hdl.safe_div(1.0, dvs, eps=1e-30), 'avl_arg')
+    ## `expl`, not `exp`: PSP's own bounded exponential, so a diverging
+    ## Newton step cannot make this overflow.
+    return _v(a1 * (dvs0 * hdl.expl(-arg)), 'avl_mavl')
+
+
 def ids_long_channel(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5):
     """The intrinsic long-channel drain current -- see `intrinsic`."""
     return intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin)['ids']

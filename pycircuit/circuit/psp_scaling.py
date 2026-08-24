@@ -351,6 +351,18 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
     t2 = iLE ** _g(card, 'alp2lexp', 1.0)
     alp2 = (_g(card, 'alp2l1') * t2 * (1.0 + _g(card, 'alp2w') * iWE)
             / (1.0 + _g(card, 'alp2l2') * iLE * t2))
+    ## IMPACT IONISATION (`PSP103_scaling.include:330-334`, clipped at
+    ## `:750-754`).  `A1` and `A3`/`A4` take the ordinary
+    ## `(1 + xL*iLE)*(1 + xW*iWE)` pair; `A2` takes NO geometry scaling
+    ## at all, which is not an omission -- it is the exponential's
+    ## argument, a field scale rather than a device one.
+    a1 = max(_g(card, 'a1o') * (1.0 + _g(card, 'a1l') * iLE)
+             * (1.0 + _g(card, 'a1w') * iWE), 0.0)
+    a2 = max(_g(card, 'a2o'), 0.0)
+    a3 = max(_g(card, 'a3o') * (1.0 + _g(card, 'a3l') * iLE)
+             * (1.0 + _g(card, 'a3w') * iWE), 0.0)
+    a4 = max(_g(card, 'a4o') * (1.0 + _g(card, 'a4l') * iLE)
+             * (1.0 + _g(card, 'a4w') * iWE), 0.0)
     ## Drain-induced barrier lowering (:273-276), clipped at :714-717.
     ## `CF` carries a LENGTH POWER and nothing else -- it is a purely
     ## short-channel quantity, and on a 1 um device it scales to 1e-7,
@@ -561,6 +573,14 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
     xcor = xcor * _tf('xcor')
     rs = rs * _tf('rs')
     thesat = thesat * math.exp(st_thesat * ln_rtn)
+    ## `A2_T = A2 * exp(-STA2*ln_rTn)` (`macrodefs:389`) -- the MINUS is
+    ## the point, and it is the only one in the whole temperature layer.
+    ## `A2` is the argument of a decaying exponential, so a coefficient
+    ## that makes every other parameter fall with temperature has to
+    ## make this one rise for the avalanche current to grow.  Written
+    ## with the tree's usual sign it would read as a plausible
+    ## coefficient of the wrong sign rather than as a bug.
+    a2 = a2 * math.exp(-_g(card, 'sta2o') * ln_rtn)
 
     kw = dict(
         w=w, l=l, tox=tox, nsub=neff, vfb=vfb, phib=phib, u0=u0_eff,
@@ -580,7 +600,8 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
               wcv=wecv, lcv=lecv, qq=qq)
     if all_terms:
         kw.update(thesatb=thesatb, thesatg=thesatg,
-                  cf=cf, cfb=cfb, cfd=cfd)
+                  cf=cf, cfb=cfb, cfd=cfd,
+                  a1=a1, a2=a2, a3=a3, a4=a4)
     return kw
 
 

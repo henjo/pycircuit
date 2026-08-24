@@ -36,6 +36,16 @@ The most expensive mistake is measuring the wrong thing carefully.
   terminal. Check the other terminals: if `i_g` and `i_b` are 1e-14
   against an `i_d` of 1e-8, the drain current is channel current and you
   may proceed.
+
+  **And when they are NOT negligible, they are the best instrument you
+  have.** The other terminals do not just contaminate the measurement,
+  they NAME what is missing from it. Two residuals here were identified
+  outright, with no differential and nothing fitted:
+  `ours + |i_b|` reproduced the vendor to 0.9999994 flat across a sweep
+  (impact ionisation, 152x better than the residual it replaced), and a
+  second was `-0.49 x i_g` constant across its window (gate current
+  splitting evenly onto a terminal). Record every terminal in a
+  reference, not only the interesting one.
 - **Is the window clean?** Reference curves have floors — leakage,
   numerical noise, a term you do not model. Measuring below one means
   measuring *its* floor, not the physics. Find the floor and stay above

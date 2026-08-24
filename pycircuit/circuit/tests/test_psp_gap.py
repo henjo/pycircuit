@@ -628,7 +628,23 @@ class TestTheTwoDrainBiasQuantities(object):
         This is the property the branch has broken twice, and the split
         touches exactly the machinery that guards it.
         """
-        e, _ = self._at(deck, 0.05)
+        ## `a1 = 0`: THE AVALANCHE IS NOT ANTISYMMETRIC AND MUST NOT BE.
+        ##
+        ## Impact ionisation flows from the HIGH terminal to the BULK
+        ## (`module:1700, 1705` pick `I(DI,BP)` or `I(SI,BP)` on
+        ## `sigVds`), so with it on the drain current is NOT an odd
+        ## function of `Vds` -- in PSP either.  The odd-function property
+        ## this test guards belongs to the CHANNEL, and switching the
+        ## avalanche off is what isolates it.
+        ##
+        ## Measured with `a1 = 0` the channel is odd to 1.8e-15 on the
+        ## n-channel and 3.2e-15 on the p-channel, so nothing was lost;
+        ## `TestImpactIonisation` asserts separately that the avalanche
+        ## goes to the high terminal and leaves the reverse drain alone.
+        e, kw = self._at(deck, 0.05)
+        e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                              cm.Node('b'), **dict(kw, a1=0.0))
+        e.update_iparv()
         for vg in (0.4, 1.2):
             for vd in (0.05, 0.6, 1.2):
                 f = np.asarray(e.i(e.bias(vd, vg, 0.0, 0.0)), float)[0]
@@ -836,6 +852,192 @@ class TestTheReferenceIsAsSmoothAsAnAnalyticCurve(object):
             'the sweep deck must tighten reltol -- and abstol, which ' \
             'does not cover the idvd sweeps on its own'
         assert '.options' not in tail.split('"""')[1]
+
+
+@needs_pdk
+class TestImpactIonisation(object):
+    """The avalanche current, and the last DC term this core lacked.
+
+    `nmos_idvd_vg0p6` sat at 9.4e-05 when every other sweep was inside
+    5e-06 -- flat to six digits up to `Vd = 1.15` and then falling,
+    ACCELERATING, to 0.999906 at 1.5 V. An exponential onset above a
+    threshold drain bias, at low gate drive, on the short device.
+
+    THE REFERENCE NAMED IT ITSELF, which is why this needed no
+    differential. PSP's avalanche current flows drain-to-bulk, so the
+    reference's own recorded `i_b` IS the missing quantity, and
+
+        ours + |i_b|  vs  PSP
+
+    is flat at **0.9999994 at every point** of the avalanche region --
+    152x better than the 9.4e-05 it replaces, and 36x on
+    `nmos_idvd_vg1p2`. Not a fit: nothing was adjusted to produce it.
+    On `nmos_long_idvd` it changes nothing, as it must, because
+    avalanche is negligible on a 1 um device.
+
+    That is a better instrument than a card differential and it was
+    sitting in the reference file the whole time. **When the reference
+    records the other terminals, a drain-current deficit can be
+    identified rather than inferred.**
+
+    The block itself (`module:1362-1369`) is six lines:
+
+        delVsat = Vds - A3*dps
+        temp2   = A2_T*(1 + A4*(sqrt(phib+Vsbstar) - sqrt(phib)))/delVsat
+        mavl    = A1 * delVsat * expl(-temp2)
+        Iimpact = mavl * Ids          -> from the HIGH terminal to bulk
+    """
+
+    GEOM = dict(w=1e-6, l=0.13e-6)
+
+    def _fet(self, deck, kind='nmos', **over):
+        cm.default_toolkit = numeric
+        cls = PspPmosLongChannel if kind == 'pmos' else PspMosLongChannel
+        kw = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_%s_psp' % kind,
+                              ng=1, m=1, pre_layout=1, **self.GEOM),
+            T=T27, **self.GEOM)
+        kw.update(over)
+        e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
+                **kw)
+        e.update_iparv()
+        return e, kw
+
+    @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
+    def test_the_scaled_parameters_match_psp(self, deck, kind):
+        """`A1`/`A3`/`A4` scale, `A2` does not -- and that is the vendor's
+        choice, not an omission: `A2` is the exponent's field scale.
+        """
+        data = json.load(open(REF))
+        key = 'scaled_pmos' if kind == 'pmos' else 'scaled'
+        for geom, w, l in [('long', 10e-6, 1e-6), ('short', 1e-6, 0.13e-6)]:
+            kw = psp_scaling.to_long_channel(
+                deck.model_params('sg13g2_lv_%s_psp' % kind, w=w, l=l,
+                                  ng=1, m=1, pre_layout=1),
+                w=w, l=l, T=T27)
+            for name in ('a1', 'a2', 'a3', 'a4'):
+                psp = data[key][geom][name]
+                ## PSP prints six significant figures, so 1e-5 IS
+                ## agreement -- a tighter bound here would be measuring
+                ## the reference's formatting.
+                assert kw[name] == pytest.approx(psp, rel=1e-5, abs=1e-12), \
+                    '%s %s %s: ours %.8g vs psp %.8g' % (kind, geom, name,
+                                                         kw[name], psp)
+        ## `A2` carries NO geometry dependence at all.
+        short = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_%s_psp' % kind, w=1e-6,
+                              l=0.13e-6, ng=1, m=1, pre_layout=1),
+            w=1e-6, l=0.13e-6, T=T27)
+        long_ = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_%s_psp' % kind, w=10e-6, l=1e-6,
+                              ng=1, m=1, pre_layout=1),
+            w=10e-6, l=1e-6, T=T27)
+        assert short['a2'] == long_['a2']
+        assert short['a1'] != long_['a1']
+
+    def test_the_bulk_current_matches_psps_own(self, deck, ref):
+        """The sharpest check available, and it is not the drain current.
+
+        The avalanche is the ONLY substrate path at these biases beyond
+        a flat junction floor, so PSP's recorded `i_b` is very nearly
+        the term itself. Comparing against it tests the avalanche
+        DIRECTLY rather than through its 0.4% contribution to `i_d`.
+        """
+        e, _ = self._fet(deck)
+        sw = ref['nmos_idvd_vg0p6']
+        v = np.asarray(sw['v'], float)
+        ib = np.asarray(sw['i_b'], float)
+        ## Above 1.25 V the avalanche dominates the junction floor that
+        ## contaminates `i_b` lower down; below it the RATIO is
+        ## measuring our junction model, not this one.
+        m = v >= 1.25
+        got = np.array([np.asarray(e.i(e.bias(x, 0.6, 0.0, 0.0)),
+                                   float)[3] for x in v[m]])
+        r = got / ib[m]
+        assert np.all(r > 0.99) and np.all(r < 1.01), r
+        ## And it converges as the avalanche outgrows the floor.
+        assert abs(r[-1] - 1.0) < abs(r[0] - 1.0)
+
+    def test_it_closes_the_sweep_it_was_found_on(self, deck, ref):
+        """9.41e-05 -> 6.8e-07, and the same term is worth 36x on the
+        high-drive output sweep."""
+        for name, was, now in (('nmos_idvd_vg0p6', 9.41e-05, 2e-06),
+                               ('nmos_idvd_vg1p2', 4.36e-05, 2e-06)):
+            _, r, g, _ = _compare(deck, ref[name])
+            with_it = float(np.max(np.abs(np.log(g / r))))
+            assert with_it < now, '%s: %.2e' % (name, with_it)
+            e, kw = self._fet(deck, a1=0.0)
+            cls = PspMosLongChannel
+            off = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                      cm.Node('b'), **dict(kw, a1=0.0))
+            off.update_iparv()
+            b = ref[name]['bias']
+            v = np.asarray(ref[name]['v'], float)
+            rr = np.abs(np.asarray(ref[name]['i_d'], float))
+            m = rr > FLOOR
+            go = np.abs(np.array([
+                np.asarray(off.i(off.bias(x, b['Vg'], b['Vs'], b['Vb'])),
+                           float)[0] for x in v[m]]))
+            assert float(np.max(np.abs(np.log(go / rr[m])))) > 0.5 * was
+
+    def test_it_goes_to_the_high_terminal_and_only_there(self, deck):
+        """The `(1 +- sgn)/2` split, measured.
+
+        PSP puts the avalanche on `I(DI,BP)` or `I(SI,BP)` depending on
+        `sigVds` (`module:1700, 1705`). Reversing the drain bias must
+        move the whole term to the other branch and leave the reverse
+        drain current untouched.
+        """
+        e, kw = self._fet(deck)
+        off = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                                cm.Node('b'), **dict(kw, a1=0.0))
+        off.update_iparv()
+        for vg, vd in ((0.6, 1.5), (1.2, 1.5), (1.2, 1.2)):
+            fwd = np.asarray(e.i(e.bias(vd, vg, 0.0, 0.0)), float)[0]
+            fwd0 = np.asarray(off.i(off.bias(vd, vg, 0.0, 0.0)), float)[0]
+            rev = np.asarray(e.i(e.bias(0.0, vg, vd, 0.0)), float)[0]
+            rev0 = np.asarray(off.i(off.bias(0.0, vg, vd, 0.0)), float)[0]
+            iavl = fwd - fwd0
+            assert iavl > 0, (vg, vd, iavl)
+            ## The reverse orientation's DRAIN sees none of it.
+            assert abs(rev - rev0) < 1e-6 * abs(iavl), (vg, vd)
+
+    def test_the_channel_is_still_exactly_antisymmetric(self, deck):
+        """What the avalanche did NOT break.
+
+        With `a1 = 0` the element is odd in `Vds` to 2e-15 on both
+        channel types -- unchanged. The asymmetry the avalanche
+        introduces is the term itself, not a defect in the ordering.
+        """
+        for kind, sgn in (('nmos', 1.0), ('pmos', -1.0)):
+            e, _ = self._fet(deck, kind, a1=0.0)
+            for vg in (0.6, 1.2):
+                for vd in (0.6, 1.2, 1.5):
+                    f = np.asarray(e.i(e.bias(sgn * vd, sgn * vg, 0.0,
+                                              0.0)), float)[0]
+                    r = np.asarray(e.i(e.bias(0.0, sgn * vg, sgn * vd,
+                                              0.0)), float)[0]
+                    assert f == pytest.approx(-r, rel=1e-12), (kind, vg, vd)
+
+    def test_it_conserves_charge_and_stays_finite(self, deck):
+        """A new branch pair is a new chance to leak current."""
+        e, _ = self._fet(deck)
+        for vg in (0.6, 1.2):
+            for vd in (0.05, 1.0, 1.5, 10.0):
+                i = np.asarray(e.i(e.bias(vd, vg, 0.0, 0.0)), float)
+                assert np.all(np.isfinite(i))
+                assert abs(i.sum()) < 1e-12 * max(1.0, np.abs(i).max())
+
+    def test_it_is_off_without_a_card(self):
+        """`a1` defaults to zero and the branch is skipped at COMPILE
+        time, so a card-less element is exactly what it was."""
+        cm.default_toolkit = numeric
+        e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                              cm.Node('b'))
+        e.update_iparv()
+        for vd in (0.5, 1.5, 5.0):
+            i = np.asarray(e.i(e.bias(vd, 1.2, 0.0, 0.0)), float)
+            assert abs(i[3]) < 1e-30, (vd, i[3])
 
 
 @needs_pdk
@@ -1480,8 +1682,21 @@ class TestPolysiliconDepletion(object):
         card = deck.model_params('sg13g2_lv_nmos_psp', w=10e-6, l=1e-6,
                                  ng=1, m=1, pre_layout=1)
         kw = psp_scaling.to_long_channel(card, w=10e-6, l=1e-6, T=T27)
+        ## `a1 = 0`: THE AVALANCHE IS NOT ANTISYMMETRIC AND MUST NOT BE.
+        ##
+        ## Impact ionisation flows from the HIGH terminal to the BULK
+        ## (`module:1700, 1705` pick `I(DI,BP)` or `I(SI,BP)` on
+        ## `sigVds`), so with it on the drain current is NOT an odd
+        ## function of `Vds` -- in PSP either.  The odd-function property
+        ## this test guards belongs to the CHANNEL, and switching the
+        ## avalanche off is what isolates it.
+        ##
+        ## Measured with `a1 = 0` the channel is odd to 1.8e-15 on the
+        ## n-channel and 3.2e-15 on the p-channel, so nothing was lost;
+        ## `TestImpactIonisation` asserts separately that the avalanche
+        ## goes to the high terminal and leaves the reverse drain alone.
         e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
-                              cm.Node('b'), **kw)
+                              cm.Node('b'), **dict(kw, a1=0.0))
         e.update_iparv()
         assert kw['rs'] > 0 and kw['alp'] > 0 and kw['kp'] > 0, \
             'the card must actually switch these on for this to test '\
@@ -1921,13 +2136,14 @@ class TestTheChannelTypes(object):
         with open(REF) as fh:
             return json.load(fh)['scaled']
 
-    def _fet(self, deck, w=10e-6, l=1e-6):
+    def _fet(self, deck, w=10e-6, l=1e-6, **over):
         cm.default_toolkit = numeric
         card = deck.model_params('sg13g2_lv_pmos_psp', w=w, l=l, ng=1,
                                  m=1, pre_layout=1)
+        kw = psp_scaling.to_long_channel(card, w=w, l=l, T=T27)
+        kw.update(over)
         e = PspPmosLongChannel(
-            cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
-            **psp_scaling.to_long_channel(card, w=w, l=l, T=T27))
+            cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'), **kw)
         e.update_iparv()
         return e
 
@@ -2394,6 +2610,11 @@ class TestTheBodyBiasMobilityCorrection(object):
         cm.default_toolkit = numeric
         kw = self._kw(deck, 'sg13g2_lv_nmos_psp', 10e-6, 1e-6)
         assert kw['xcor'] > 0.01, 'the term must be live here'
+        ## `a1 = 0` on BOTH sides.  The avalanche's `expl` tail is a
+        ## denormal ~1e-126 here and differs by an ulp between the two
+        ## elements, which is enough to fail an exact comparison of two
+        ## numbers that are themselves zero for every practical purpose.
+        kw = dict(kw, a1=0.0)
         off = dict(kw, xcor=0.0)
         a = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
                               cm.Node('b'), **kw)
@@ -3010,7 +3231,10 @@ class TestTheOverlapAndFringeCapacitance(object):
         (`SWJUNASYM = 0`), so the two simply swap.
         """
         n, _ = op
-        e = self._fet(deck, 'nmos', n['long'])
+        ## `a1 = 0` -- the avalanche is deliberately NOT antisymmetric
+        ## (see `TestImpactIonisation`); this class is about the overlap
+        ## charge, so the channel property is what it should isolate.
+        e = self._fet(deck, 'nmos', n['long'], a1=0.0)
         for vd, vg in ((0.9, 1.4), (0.05, 0.6), (1.5, 1.8)):
             q = np.asarray(e.q(e.bias(vd, vg)), float)
             assert abs(q.sum()) < 4e-16 * max(1.0, np.abs(q).max())
@@ -3242,11 +3466,24 @@ class TestExtremeBiasWithCardParameters(object):
             assert np.all(np.isfinite(i)), (kind, sign * v, 'i')
             assert np.all(np.isfinite(G)), (kind, sign * v, 'G')
 
-    def test_the_current_stays_bounded_too(self, deck):
-        """Finite is not enough -- it also has to SATURATE.  `Vdse`
-        pins the drain end, so the current may creep but must not run
-        away with the bias."""
-        e = self._fet(deck)
+    def test_the_channel_current_stays_bounded_too(self, deck):
+        """Finite is not enough -- the CHANNEL also has to SATURATE.
+        `Vdse` pins the drain end, so the current may creep but must not
+        run away with the bias.
+
+        `a1 = 0`, and this one is not bookkeeping.  Impact ionisation
+        does NOT saturate and is not supposed to: `mavl` is
+        `A1*delVsat*exp(-A2/delVsat)`, which tends to `A1*delVsat` as
+        the drain bias grows, so the avalanche current rises without
+        bound.  PSP does exactly this -- it is what avalanche breakdown
+        IS -- and a model that saturated there would be the wrong one.
+
+        So the saturation this test guards is a property of `Vdse` and
+        the channel, and the avalanche has to be switched off to see it.
+        What bounds the real device in a solver is the element's own
+        branch-voltage limiter, not the constitutive relation.
+        """
+        e = self._fet(deck, a1=0.0)
         ref = np.asarray(e.i(e.bias(2.0, 1.2, 0.0, 0.0)), float)[0]
         for v in self.REACH:
             got = np.asarray(e.i(e.bias(v, 1.2, 0.0, 0.0)), float)[0]

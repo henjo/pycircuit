@@ -538,6 +538,36 @@ def _psp_mos_analog(T, pmos):
                      pmos=pmos, xcor=xcor,          # noqa: F821
                      kp=kp,                                 # noqa: F821
                      cox_area=cox, eps_si=EPS_SI))
+        ## IMPACT IONISATION (`PSP103_module.include:1362-1369`).
+        ##
+        ## The avalanche current is `mavl * Ids` and it flows from the
+        ## HIGH terminal to the BULK -- `I(DI,BP)` when `sigVds > 0` and
+        ## `I(SI,BP)` when it is negative (`:1700, 1705`).  So it is not
+        ## a fourth term in the channel current; it is a separate branch
+        ## that takes current out of the channel and puts it into the
+        ## substrate, which is why leaving it out shows up as a DRAIN
+        ## current deficit exactly equal to the reference's own reported
+        ## bulk current.
+        ##
+        ## Every quantity `mavl` is built from is ORDERED and therefore
+        ## even under the source/drain exchange -- `vdsa` is `|Vds|`,
+        ## `dps` and `ids` are the forward device's -- so the polarity
+        ## lives entirely in WHICH branch carries it, and that is the
+        ## `(1 +- sgn)/2` split below.  Written that way the pair is
+        ## exactly antisymmetric and conserves charge structurally: each
+        ## half subtracts at the bulk.
+        ## Skipped at COMPILE time when `a1` is a plain zero, the way
+        ## every other optional block here is: an element built without
+        ## a card then carries no avalanche branch at all rather than a
+        ## branch evaluating to zero.
+        if isinstance(a1, sympy.Expr) or a1 != 0.0:           # noqa: F821
+            mavl = var(psp_kernel.impact(core, vdsa, phib,    # noqa: F821
+                                         vsbo, a1, a2, a3, a4),  # noqa
+                       'mavl')
+            iavl = var(mavl * core['ids'], 'iavl')
+        else:
+            mavl = iavl = None
+
         ## The total oxide capacitance the CHARGES see.  Two things
         ## separate it from `cox*w*l`, and together they were worth 24%:
         ## the CV effective dimensions, and the quantum-mechanical
@@ -673,6 +703,19 @@ def _psp_mos_analog(T, pmos):
                 Collapse(br_rg, rg <= 0),                      # noqa: F821
                 Contribution(Branch(d, s, 'chan').I,
                              mult * T * sgn * core['ids']),    # noqa: F821
+                ## THE AVALANCHE PAIR.  `(1 +- sgn)/2` selects the HIGH
+                ## terminal, which is what PSP's `if (sigVds > 0)`
+                ## selects (`module:1700, 1705`).  Both halves are
+                ## present at every bias and one of them is zero; at
+                ## `Vds = 0` each takes half, and `iavl` is itself zero
+                ## there, so the pair is continuous through the origin
+                ## rather than switching.
+                ##
+                ## Bulk-referenced, so conservation stays structural.
+                Contribution(Branch(d, b, 'iavl_d').I,
+                             mult * T * 0.5 * (1.0 + sgn) * iavl),
+                Contribution(Branch(s, b, 'iavl_s').I,
+                             mult * T * 0.5 * (1.0 - sgn) * iavl),
                 Contribution(Branch(gi, s, 'qg').I,
                              ddt(mult * T * Qg)),              # noqa: F821
                 Contribution(Branch(b, s, 'qb').I,
@@ -967,6 +1010,21 @@ class PspMosLongChannel(Behavioural):
                   unit='1/V', default=0.0),
         Parameter(name='thesatg', desc='Gate-bias modulation of thesat',
                   unit='1/V', default=0.0),
+        ## IMPACT IONISATION.  Default zero, so an element built without
+        ## a card is exactly the element it was -- the avalanche branch
+        ## contributes identically nothing when `a1` is zero, and the
+        ## whole block is skipped at COMPILE time rather than evaluating
+        ## to zero at run time.
+        Parameter(name='a1', desc='Impact-ionisation prefactor', unit='',
+                  default=0.0),
+        Parameter(name='a2', desc='Impact-ionisation field scale',
+                  unit='V', default=0.0),
+        Parameter(name='a3', desc='Saturation-voltage fraction for '
+                                  'impact ionisation', unit='',
+                  default=0.0),
+        Parameter(name='a4', desc='Body-bias dependence of the '
+                                  'ionisation field', unit='1/sqrt(V)',
+                  default=0.0),
         ## Linear/saturation transition sharpness.  PSP floors this at 2
         ## in its scaling, and the kernel floors it again -- a small `ax`
         ## makes the drain-voltage limiter soft enough to bite far below
