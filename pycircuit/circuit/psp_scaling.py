@@ -401,6 +401,27 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
     cfr = max(_g(card, 'cfrw') * geo['Wcv'] / WEN, 0.0)
     cgbov = max(_g(card, 'cgbovl') * geo['Lcv'] / LEN, 0.0)
 
+    ## GATE TUNNELLING CURRENT (`PSP103_scaling.include:337-346`,
+    ## clipped at `:755-768`).
+    ##
+    ## `IGINV` is an AREA current and `IGOV` an EDGE one, and the
+    ## scaling says so: `IGINVLW/(iWE*iLE)` grows as W*L while
+    ## `IGOVW*LOV/(LEN*iWE)` grows as W alone.  That is why gate current
+    ## is a LONG-device effect here -- 4.5e-05 of the drain current on
+    ## the 10x1 um geometry against 1.3e-06 on the 1x0.13 um one -- and
+    ## why leaving it out was invisible on every short-device sweep.
+    gco = min(max(_g(card, 'gcoo'), -10.0), 10.0)
+    iginv = max(_g(card, 'iginvlw') / (iWE * iLE), 0.0)
+    igov = max(_g(card, 'igovw') * lov / (LEN * iWE), 0.0)
+    gc2 = min(max(_g(card, 'gc2o'), 0.0), 10.0)
+    gc3 = min(max(_g(card, 'gc3o'), -10.0), 10.0)
+    ## `SWIGATE = 2` gives the overlap its own pair; at 1 it shares the
+    ## channel's (`:762-766`), which is what this card selects.
+    gc2ov, gc3ov = gc2, gc3
+    ## `CHIB` is the barrier height and is floored at 1 V, not at 0 --
+    ## it divides.
+    chib = max(_g(card, 'chibo', 3.1), 1.0)
+
     ## The overlap region has its own surface potential, and PSP solves
     ## it in CLOSED FORM (`module:1182-1189`) rather than iterating: one
     ## smoothed maximum and one explicit expression.  Everything the
@@ -573,6 +594,44 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
     xcor = xcor * _tf('xcor')
     rs = rs * _tf('rs')
     thesat = thesat * math.exp(st_thesat * ln_rtn)
+    ## `tf_ig = (T/TR)**STIG` (`module:788`).  NOTE THE DIRECTION.
+    ## Everywhere else this layer uses `rTn = TR/T`; the gate current
+    ## alone uses `rTa = T/TR`, its RECIPROCAL.  So a positive `STIG`
+    ## makes the tunnelling current RISE with temperature while a
+    ## positive `ST` anything-else makes its parameter fall.  That is
+    ## the second inverted temperature convention in the model, after
+    ## `STA2`, and both are single characters in the vendor source.
+    tf_ig = (T / tkr) ** _g(card, 'stigo')
+    iginv = iginv * tf_ig
+    igov = igov * tf_ig
+    ## `IGOVD = IGOV` under `SWJUNASYM = 0` (`scaling:845`), which is
+    ## what this card sets -- the drain side is not independently
+    ## parameterised.  `TOXOVD = TOXOV` in the same block (`:839`), so
+    ## `BOV_d = BOV` too and the two overlaps differ ONLY in their own
+    ## surface potential.  That is worth checking rather than assuming:
+    ## the card DOES set `toxovdo = 2e-9` against a `toxovo` of
+    ## 1.97e-9, and reading the card alone would say they differ.
+    igovd = igov
+
+    ## The tunnelling exponent's prefactor (`module:773-776`).  `B_fact`
+    ## is WKB through a triangular barrier, so it carries `sqrt(m*chib)`
+    ## over hbar and multiplies the oxide thickness the carrier has to
+    ## cross -- the channel's `TOX` for `Igc`, the overlap's `TOXOV` for
+    ## `Igov`.
+    b_fact = ((4.0 / 3.0)
+              * math.sqrt(2.0 * PSP_QELE * PSP_MELE * chib) / PSP_HBAR)
+    bch = b_fact * tox
+    bov = b_fact * toxov
+    ## `GCQ` caps `zg` when `GC3 < 0`, which it is on both cards: the
+    ## quadratic `GC2*zg + GC3*zg^2` turns over at `zg = -GC2/(2*GC3)`
+    ## and PSP clips just below the turning point at 0.99 of it
+    ## (`module:777-781`), so the exponent stays monotone.
+    gcq = -0.495 * gc2 / gc3 if gc3 < 0.0 else 0.0
+    ## `alpha_b = (phib + Eg)/2` (`macrodefs:335`) -- the band bending
+    ## from the Fermi level to mid-gap, which sets where the tunnelling
+    ## population sits.
+    alpha_b = 0.5 * (phib + eg)
+
     ## `A2_T = A2 * exp(-STA2*ln_rTn)` (`macrodefs:389`) -- the MINUS is
     ## the point, and it is the only one in the whole temperature layer.
     ## `A2` is the argument of a decaying exponential, so a coefficient
@@ -601,7 +660,11 @@ def to_long_channel(card, w, l, T=300.0, all_terms=True):
     if all_terms:
         kw.update(thesatb=thesatb, thesatg=thesatg,
                   cf=cf, cfb=cfb, cfd=cfd,
-                  a1=a1, a2=a2, a3=a3, a4=a4)
+                  a1=a1, a2=a2, a3=a3, a4=a4,
+                  gco=gco, iginv=iginv, igov=igov, igovd=igovd,
+                  gc2=gc2, gc3=gc3, gc2ov=gc2ov, gc3ov=gc3ov,
+                  chib=chib, bch=bch, bov=bov, gcq=gcq,
+                  alpha_b=alpha_b)
     return kw
 
 

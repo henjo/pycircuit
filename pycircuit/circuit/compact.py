@@ -634,13 +634,54 @@ def _psp_mos_analog(T, pmos):
             xov = var(-spx - gov2 * 0.5                            # noqa
                       + gov * sympy.sqrt(spx + gov2 * 0.25 + ov_a)  # noqa
                       + ov_d1, 'xov' + tag)                        # noqa
-            return var(-phit0 * (xgo + xov), 'vov' + tag)
+            return (var(-phit0 * (xgo + xov), 'vov' + tag), xov)
 
         ## PSP folds the overlap into the fringe charge and contributes
         ## the sum (`module:1774-1775, 1791-1792`).
-        q_gs = var(cfr * vgsp + cgov * _vov(vgsp, 's'), 'q_gs')  # noqa
-        q_gd = var(cfr * vgdp + cgov * _vov(vgdp, 'd'), 'q_gd')  # noqa
+        vov_s, xov_s = _vov(vgsp, 's')
+        vov_d, xov_d = _vov(vgdp, 'd')
+        q_gs = var(cfr * vgsp + cgov * vov_s, 'q_gs')  # noqa
+        q_gd = var(cfr * vgdp + cgov * vov_d, 'q_gd')            # noqa
         q_gb = var(cgbov * vgb, 'q_gb')                          # noqa
+
+        ## GATE TUNNELLING CURRENT (`PSP103_module.include:1198-1297`).
+        ##
+        ## Three components, and they do NOT all follow the terminal
+        ## interchange.  `Igcs`/`Igcd` are the two ends of the CHANNEL,
+        ## so they swap with the ordering; `Igsov`/`Igdov` sit over the
+        ## physical diffusions and use `VgsPrime`/`VgdPrime`, the
+        ## voltages PSP explicitly marks as "NOT subject to
+        ## S/D-interchange" (`module:1051-1055`), so they do not.
+        ##
+        ## Every one of the five is a GATE-REFERENCED pair, so charge
+        ## conservation stays structural exactly as it does for the
+        ## overlap charges above.
+        _gate_i = (isinstance(iginv, sympy.Expr)     # noqa: F821
+                   or iginv != 0.0)                  # noqa: F821
+        if _gate_i:
+            _gmob = dict(gco=gco, chib=chib, bch=bch,     # noqa: F821
+                         bov=bov, gcq=gcq, gc2=gc2,       # noqa: F821
+                         gc3=gc3, gc2ov=gc2ov,            # noqa: F821
+                         gc3ov=gc3ov, iginv=iginv,        # noqa: F821
+                         igov=igov, alpha_b=alpha_b)      # noqa: F821
+            ## `vgb - vsbcnd` IS PSP's `Vgs + Vsbstar` -- the same
+            ## identity the gate drive uses, and the reason that
+            ## quantity is held rather than recomputed.
+            igcs, igcd, igb_ = psp_kernel.gate_current(
+                core, phit, vgb - vsbcnd, vsbo, _gmob)
+            ig_ovs = psp_kernel.overlap_tunnel(vov_s, xov_s, vgsp,
+                                               _gmob, 's')
+            ig_ovd = psp_kernel.overlap_tunnel(vov_d, xov_d, vgdp,
+                                               dict(_gmob,
+                                                    igov=igovd),  # noqa
+                                               'd')
+            ## The channel pair follows the ordering; `(1 +- sgn)/2`
+            ## selects which physical terminal is the source end.
+            gsel = var(0.5 * (1.0 + sgn), 'gc_sel')
+            ig_s = var(gsel * igcs + (1.0 - gsel) * igcd, 'ig_s')
+            ig_d = var(gsel * igcd + (1.0 - gsel) * igcs, 'ig_d')
+        else:
+            ig_s = ig_d = igb_ = ig_ovs = ig_ovd = None
 
         ## THE JUNCTIONS.  `Vjun = -Vsb` in the internal convention, for
         ## BOTH channel types: PSP writes `Vjun_s = -V(SI,BS)` for
@@ -731,6 +772,19 @@ def _psp_mos_analog(T, pmos):
                              ddt(mult * T * q_gd)),            # noqa: F821
                 Contribution(Branch(gi, b, 'qovb').I,
                              ddt(mult * T * q_gb)),            # noqa: F821
+                ## GATE TUNNELLING (`module:1702-1712`).  Five
+                ## gate-referenced contributions, so conservation is
+                ## structural; `mult` and `T` as everywhere else.
+                Contribution(Branch(gi, s, 'igcs').I,
+                             mult * T * ig_s),                # noqa: F821
+                Contribution(Branch(gi, d, 'igcd').I,
+                             mult * T * ig_d),                # noqa: F821
+                Contribution(Branch(gi, b, 'igb').I,
+                             mult * T * igb_),                # noqa: F821
+                Contribution(Branch(gi, s, 'igsov').I,
+                             mult * T * ig_ovs),              # noqa: F821
+                Contribution(Branch(gi, d, 'igdov').I,
+                             mult * T * ig_ovd),              # noqa: F821
                 ## `I(BS,SI)` and `I(BD,DI)` (`module:1715-1716`,
                 ## `:1794-1795`) -- bulk-referenced, so conservation
                 ## stays structural here too.
@@ -1025,6 +1079,34 @@ class PspMosLongChannel(Behavioural):
         Parameter(name='a4', desc='Body-bias dependence of the '
                                   'ionisation field', unit='1/sqrt(V)',
                   default=0.0),
+        ## GATE TUNNELLING.  `iginv` defaults to zero and the whole
+        ## block is skipped at compile time, like the avalanche.
+        Parameter(name='iginv', desc='Gate-channel tunnelling prefactor',
+                  unit='A', default=0.0),
+        Parameter(name='igov', desc='Gate-overlap tunnelling prefactor',
+                  unit='A', default=0.0),
+        Parameter(name='igovd', desc='Gate-drain-overlap tunnelling '
+                                     'prefactor', unit='A', default=0.0),
+        Parameter(name='gco', desc='Gate-current band-offset', unit='',
+                  default=0.0),
+        Parameter(name='gc2', desc='Tunnelling probability, linear term',
+                  unit='', default=0.0),
+        Parameter(name='gc3', desc='Tunnelling probability, quadratic '
+                                   'term', unit='', default=0.0),
+        Parameter(name='gc2ov', desc='As gc2, for the overlap', unit='',
+                  default=0.0),
+        Parameter(name='gc3ov', desc='As gc3, for the overlap', unit='',
+                  default=0.0),
+        Parameter(name='chib', desc='Tunnelling barrier height',
+                  unit='V', default=3.1),
+        Parameter(name='bch', desc='WKB prefactor over the channel '
+                                   'oxide', unit='', default=0.0),
+        Parameter(name='bov', desc='WKB prefactor over the overlap '
+                                   'oxide', unit='', default=0.0),
+        Parameter(name='gcq', desc='Cap on the tunnelling exponent',
+                  unit='', default=0.0),
+        Parameter(name='alpha_b', desc='Half the sum of phib and the '
+                                       'bandgap', unit='V', default=0.0),
         ## Linear/saturation transition sharpness.  PSP floors this at 2
         ## in its scaling, and the kernel floors it again -- a small `ax`
         ## makes the drain-voltage limiter soft enough to bite far below

@@ -311,6 +311,18 @@ OP_OUTPUTS = ('ids', 'gm', 'gds', 'gmb', 'vth',
               ## than assumed.
               'cjs', 'cjd', 'cjsbot', 'cjssti', 'cjsgat',
               'ijs', 'ijd',
+              ## THE GATE CURRENT, PER COMPONENT.  `igcs`/`igcd` are the
+              ## CHANNEL halves and `igs`/`igd` the TOTALS, so the
+              ## OVERLAP components are recoverable as their difference
+              ## -- PSP does not report those directly, and without the
+              ## pair a 5% error in the balance between two terms whose
+              ## sum is right cannot be seen at all.  `igb` closes the
+              ## gate node: `ige = igs + igd + igb`.
+              ##
+              ## `igidl`/`igisl` are the gate-induced drain and source
+              ## leakage, recorded so their size stops being assumed.
+              'ige', 'igs', 'igd', 'igb', 'igcs', 'igcd',
+              'igidl', 'igisl',
               ## `cgsol`/`cgdol` are the OVERLAP capacitances, and PSP
               ## reports them SEPARATELY from `cgg`.  Recording them is
               ## what settles a question that is otherwise easy to get
@@ -376,6 +388,15 @@ LP_PARAMS = ('vfb', 'tox', 'neff', 'dphib', 'ct', 'cf', 'cfb', 'betn',
              ## `exp(+ST*ln_rTn)`), so recording `sta2` next to it turns
              ## that sign from something argued into something checked.
              'a1', 'a2', 'sta2', 'a3', 'a4',
+             ## GATE TUNNELLING.  `iginv` is an AREA current and `igov`
+             ## an EDGE one, so recording both at four geometries is
+             ## what checks that distinction rather than assuming it.
+             ## `stig` earns its place for the same reason `sta2` does:
+             ## it is the model's OTHER inverted temperature convention
+             ## (`module:788` uses `rTa = T/TR`, the reciprocal of the
+             ## `rTn` every other coefficient takes).
+             'gco', 'iginv', 'igov', 'igovd', 'stig',
+             'gc2', 'gc3', 'gc2ov', 'gc3ov', 'chib',
              ## `cox` is the TOTAL oxide capacitance PSP builds the
              ## charge model on, and it is not the geometric one: it
              ## uses the CV effective dimensions (`scaling:38-39, 359`),

@@ -51,6 +51,24 @@ T27 = 273.15 + 27.0
 
 FLOOR = 1e-6
 
+#: THE TERMINAL LEAKAGE PATHS, SWITCHED OFF.
+#:
+#: Each of these carries current from a channel terminal to somewhere
+#: that is NOT the other channel terminal -- the avalanche to the bulk,
+#: the gate tunnelling to the gate -- and each takes it from the HIGH
+#: terminal or from a physical diffusion rather than from an ordered
+#: one.  So with any of them on the drain current is NOT an odd function
+#: of `Vds`, and it is not in PSP either.
+#:
+#: The exact source/drain antisymmetry is a property of the CHANNEL, and
+#: this is what isolates it.  Kept as ONE named constant rather than
+#: four keywords repeated at eight call sites, so a test added later
+#: cannot half-remember it.
+#:
+#: Measured with these off, the element is odd to 2e-15 on both channel
+#: types -- unchanged by any of the terms that were added.
+NO_LEAKAGE = dict(a1=0.0, iginv=0.0, igov=0.0, igovd=0.0)
+
 
 @pytest.fixture(scope='module', autouse=True)
 def _at_the_reference_temperature():
@@ -643,7 +661,7 @@ class TestTheTwoDrainBiasQuantities(object):
         ## goes to the high terminal and leaves the reverse drain alone.
         e, kw = self._at(deck, 0.05)
         e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
-                              cm.Node('b'), **dict(kw, a1=0.0))
+                              cm.Node('b'), **dict(kw, **NO_LEAKAGE))
         e.update_iparv()
         for vg in (0.4, 1.2):
             for vd in (0.05, 0.6, 1.2):
@@ -855,6 +873,234 @@ class TestTheReferenceIsAsSmoothAsAnAnalyticCurve(object):
 
 
 @needs_pdk
+class TestGateTunnelling(object):
+    """Gate leakage: the last un-modelled terminal current.
+
+    Four sweeps sat above 1e-05 when the other eight were inside 2e-06,
+    and they were exactly the four with `|i_g|/|i_d|` above 2e-05 --
+    all of them LONG-device, because `IGINV` scales with gate AREA.
+
+    The reference names this one too. Fitting a single free split `f`
+    of the recorded `i_g` per sweep gives **|f| = 0.475 to 0.500 on all
+    four**, which is the gate-to-channel current dividing evenly
+    between source and drain. Nothing was fitted to build the model:
+    that number is what said the term was worth building.
+
+    Result: worst sweep **4.42e-05 -> 1.71e-06**, `nmos_long_idvd`
+    1.22e-05 -> 1.39e-07.
+
+    WHAT IS RIGHT AND WHAT IS NOT, measured against PSP's own component
+    outputs rather than against the total:
+
+        component            n-channel      p-channel
+        overlap (igs-igcs)   0.9998-1.0004  1.0000     <- exact
+        channel (igcs+igcd)  1.005-1.011    1.019-1.075
+
+    The overlap is exact on both. The gate-to-CHANNEL term is 0.9% high
+    on electrons and 7% on holes, and that is open. It is recorded here
+    rather than tuned: the drain current it feeds is now at 1.7e-06,
+    which is the reference's own precision, so there is no residual left
+    to fit against and a correction would be a guess.
+
+    Separating the two needed `igcs`/`igcd` AND `igs`/`igd` in the
+    reference -- PSP reports the channel halves and the totals, so the
+    overlap is their difference. Without that pair a 7% error in one of
+    two terms whose SUM is right is invisible.
+    """
+
+    GEOM = dict(w=10e-6, l=1e-6)
+
+    def _fet(self, deck, kind='nmos', **over):
+        cm.default_toolkit = numeric
+        cls = PspPmosLongChannel if kind == 'pmos' else PspMosLongChannel
+        kw = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_%s_psp' % kind, ng=1, m=1,
+                              pre_layout=1, **self.GEOM),
+            T=T27, **self.GEOM)
+        kw.update(over)
+        e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
+                **kw)
+        e.update_iparv()
+        return e, kw
+
+    #: The gate row is the INTERNAL gate node: `rg` is 1.3 ohm on this
+    #: card, so `g` and `gi` are separate and the tunnelling lands on
+    #: `gi`.  Reading index 1 gives exactly zero and looks like a term
+    #: that never fired.
+    GI = 4
+
+    @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
+    def test_the_scaled_parameters_match_psp(self, deck, kind):
+        data = json.load(open(REF))
+        key = 'scaled_pmos' if kind == 'pmos' else 'scaled'
+        for geom, w, l in [('long', 10e-6, 1e-6), ('short', 1e-6, 0.13e-6)]:
+            kw = psp_scaling.to_long_channel(
+                deck.model_params('sg13g2_lv_%s_psp' % kind, w=w, l=l,
+                                  ng=1, m=1, pre_layout=1),
+                w=w, l=l, T=T27)
+            for name in ('gco', 'iginv', 'igov', 'igovd', 'gc2', 'gc3',
+                         'gc2ov', 'gc3ov', 'chib'):
+                ## Six significant figures is what PSP prints.
+                assert kw[name] == pytest.approx(data[key][geom][name],
+                                                 rel=2e-5, abs=1e-12), \
+                    '%s %s %s' % (kind, geom, name)
+
+    def test_iginv_is_an_area_current_and_igov_an_edge_one(self, deck):
+        """The distinction the scaling encodes, asserted as a RATIO.
+
+        `IGINVLW/(iWE*iLE)` grows as `W*L` and `IGOVW*LOV/(LEN*iWE)` as
+        `W` alone, so between a 10x1 um and a 1x0.13 um device the two
+        scale by 57x and 10x. That is why gate current was invisible on
+        every short-device sweep and dominated four long-device ones.
+        """
+        big = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_nmos_psp', w=10e-6, l=1e-6,
+                              ng=1, m=1, pre_layout=1),
+            w=10e-6, l=1e-6, T=T27)
+        small = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_nmos_psp', w=1e-6, l=0.13e-6,
+                              ng=1, m=1, pre_layout=1),
+            w=1e-6, l=0.13e-6, T=T27)
+        assert big['iginv'] / small['iginv'] == pytest.approx(56.9, rel=0.05)
+        assert big['igov'] / small['igov'] == pytest.approx(9.82, rel=0.05)
+
+    @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
+    def test_the_overlap_component_matches_psp_exactly(self, deck, kind):
+        """1.0000 to 1.0004, and this is the sharp one.
+
+        PSP reports `igs`/`igd` (totals) and `igcs`/`igcd` (channel), so
+        the overlap is their difference and can be compared on its own.
+        """
+        data = json.load(open(REF))
+        key = 'op_pmos' if kind == 'pmos' else 'op'
+        g = data[key]['long']
+        _, kw = self._fet(deck, kind)
+        cls = PspPmosLongChannel if kind == 'pmos' else PspMosLongChannel
+        ov = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
+                 **dict(kw, iginv=0.0))
+        ov.update_iparv()
+        n = 0
+        for pt in g['points']:
+            psp = ((pt['igs'] - pt['igcs']) + (pt['igd'] - pt['igcd']))
+            if abs(psp) < 1e-16:
+                continue
+            got = np.asarray(ov.i(ov.bias(pt['vd'], pt['vg'], 0.0,
+                                          pt['vb'])), float)[self.GI]
+            assert abs(got / psp) == pytest.approx(1.0, abs=0.01), \
+                (kind, pt['vg'], pt['vd'], got, psp)
+            n += 1
+        assert n >= 3, n
+
+    #: MEASURED against PSP's own `igcs + igcd`, over the whole
+    #: operating-point grid.  The error GROWS WITH GATE DRIVE on both
+    #: channel types, which is the shape a future fix has to explain:
+    #:
+    #:     |Vg|      0.4      0.8      1.2
+    #:     nmos    1.005    1.008    1.011
+    #:     pmos    1.019    1.054    1.075
+    #:
+    #: OPEN, and recorded rather than tuned.  The drain current this
+    #: feeds is now at 1.7e-06, the reference's own precision, so there
+    #: is no residual left to fit against and a correction would be a
+    #: guess dressed as a measurement.
+    CHANNEL_BAND = {'nmos': (1.004, 1.012), 'pmos': (1.015, 1.080)}
+
+    @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
+    def test_the_channel_component_is_where_it_is_measured_to_be(
+            self, deck, kind):
+        """A band, not a target: this is a gap with a number on it."""
+        data = json.load(open(REF))
+        g = data['op_pmos' if kind == 'pmos' else 'op']['long']
+        _, kw = self._fet(deck, kind)
+        cls = PspPmosLongChannel if kind == 'pmos' else PspMosLongChannel
+        ch = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
+                 **dict(kw, igov=0.0, igovd=0.0))
+        ch.update_iparv()
+        lo, hi = self.CHANNEL_BAND[kind]
+        seen = 0
+        for pt in g['points']:
+            psp = pt['igcs'] + pt['igcd']
+            if abs(psp) < 1e-16:
+                continue
+            got = np.asarray(ch.i(ch.bias(pt['vd'], pt['vg'], 0.0,
+                                          pt['vb'])), float)[self.GI]
+            assert lo < abs(got / psp) < hi, (kind, pt['vg'], pt['vd'],
+                                              abs(got / psp))
+            seen += 1
+        assert seen >= 3, seen
+
+    @pytest.mark.parametrize('name,was', [('nmos_long_idvg_vb_m1', 4.42e-05),
+                                          ('nmos_long_idvd', 1.22e-05),
+                                          ('pmos_long_idvg', 2.21e-05),
+                                          ('pmos_long_idvd', 1.11e-05)])
+    def test_it_closes_the_four_sweeps_that_showed_it(self, deck, ref,
+                                                      name, was):
+        """All four were LONG-device, and that is the tell."""
+        _, r, g, _ = _compare(deck, ref[name])
+        now = float(np.max(np.abs(np.log(g / r))))
+        assert now < 2e-06, '%s: %.2e (was %.2e)' % (name, now, was)
+        assert now < was / 5.0
+
+    def test_it_conserves_charge_and_stays_finite_out_to_1e36(self, deck):
+        """THE NUMERICS ARE THE HARD PART OF THIS BLOCK.
+
+        Three separate overflows had to be fixed before it held, and
+        every one was invisible at ordinary bias:
+
+        * `expl_low` is a bare `exp` ABOVE its seam -- that is its
+          definition -- and the argument reaches 3900 at `Vds = -100`;
+        * `safe_ln` regularises as `sqrt(u^2 + eps)`, so it SQUARES its
+          argument and overflowed on a `u` of 4.4e222 that plain `log`
+          handles;
+        * `Dgate` is a PRODUCT OF TWO exponentials, each finite at
+          1e186 and the product not.
+
+        The last is why the block now carries the LOGARITHMS and never
+        forms `Dsi` or `Dgate`: `log(1 + e^z)` is bounded by `|z| + 0.7`.
+
+        And none of it could be found by switching `IGINV` to zero,
+        because the element compiles from SYMBOLIC parameters -- the
+        block is built regardless and `0 * inf = nan`. A term that is
+        "off" still has to be finite.
+        """
+        for kind, t in (('nmos', 1.0), ('pmos', -1.0)):
+            e, _ = self._fet(deck, kind)
+            reach = 0
+            for k in range(2, 40):
+                fine = True
+                for sgn in (1.0, -1.0):
+                    x = e.bias(sgn * t * 10.0 ** k, t * 1.2, 0.0, 0.0)
+                    with np.errstate(all='ignore'):
+                        i = np.asarray(e.i(x), float)
+                        fine &= bool(np.all(np.isfinite(i)))
+                        fine &= abs(i.sum()) < 1e-6 * max(
+                            1.0, float(np.abs(i).max()))
+                if not fine:
+                    break
+                reach = k
+            assert reach >= 33, '%s reaches only 1e%d' % (kind, reach)
+
+    def test_it_is_off_without_a_card(self):
+        """Compile-time skip, so a card-less element is unchanged.
+
+        And it really is a different ELEMENT: with `rg = 0` the internal
+        gate node collapses and the noise node with it, so a card-less
+        device has four rows where a carded one has six.  Reading a
+        fixed index would have been wrong here in the other direction.
+        """
+        cm.default_toolkit = numeric
+        e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                              cm.Node('b'))
+        e.update_iparv()
+        for vg in (0.5, 1.2, 1.8):
+            i = np.asarray(e.i(e.bias(0.5, vg, 0.0, 0.0)), float)
+            ## Every gate-referenced row, whichever they are.
+            assert abs(i[1]) < 1e-30, (vg, i[1])
+            assert abs(i[1:].sum() + i[0]) < 1e-12 * max(
+                1.0, float(np.abs(i).max()))
+
+
+@needs_pdk
 class TestImpactIonisation(object):
     """The avalanche current, and the last DC term this core lacked.
 
@@ -966,10 +1212,13 @@ class TestImpactIonisation(object):
             _, r, g, _ = _compare(deck, ref[name])
             with_it = float(np.max(np.abs(np.log(g / r))))
             assert with_it < now, '%s: %.2e' % (name, with_it)
-            e, kw = self._fet(deck, a1=0.0)
-            cls = PspMosLongChannel
-            off = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'),
-                      cm.Node('b'), **dict(kw, a1=0.0))
+            ## `a1 = 0` ALONE here, not `NO_LEAKAGE`: this element is
+            ## differenced against the full one, so the only thing that
+            ## may differ between them is the term being measured.
+            _, kw = self._fet(deck)
+            off = PspMosLongChannel(
+                cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                cm.Node('b'), **dict(kw, a1=0.0))
             off.update_iparv()
             b = ref[name]['bias']
             v = np.asarray(ref[name]['v'], float)
@@ -989,6 +1238,8 @@ class TestImpactIonisation(object):
         drain current untouched.
         """
         e, kw = self._fet(deck)
+        ## `a1 = 0` alone -- see above; this is a difference, not an
+        ## isolation.
         off = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
                                 cm.Node('b'), **dict(kw, a1=0.0))
         off.update_iparv()
@@ -1005,12 +1256,14 @@ class TestImpactIonisation(object):
     def test_the_channel_is_still_exactly_antisymmetric(self, deck):
         """What the avalanche did NOT break.
 
-        With `a1 = 0` the element is odd in `Vds` to 2e-15 on both
-        channel types -- unchanged. The asymmetry the avalanche
-        introduces is the term itself, not a defect in the ordering.
+        With the leakage paths off the element is odd in `Vds` to
+        2e-15 on both channel types -- unchanged. The asymmetry the
+        avalanche introduces is the term itself, not a defect in the
+        ordering, and the same is true of the gate current: see
+        `NO_LEAKAGE`.
         """
         for kind, sgn in (('nmos', 1.0), ('pmos', -1.0)):
-            e, _ = self._fet(deck, kind, a1=0.0)
+            e, _ = self._fet(deck, kind, **NO_LEAKAGE)
             for vg in (0.6, 1.2):
                 for vd in (0.6, 1.2, 1.5):
                     f = np.asarray(e.i(e.bias(sgn * vd, sgn * vg, 0.0,
@@ -1334,8 +1587,11 @@ class TestTheConditionedGateDrive(object):
         pmos = kind == 'pmos'
         sgn = -1.0 if pmos else 1.0
         cls = PspPmosLongChannel if pmos else PspMosLongChannel
+        ## `NO_LEAKAGE`: this test is about the CONDITIONING and the
+        ## ordering, both of which live in the channel.
         e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
-                **self._kw(deck, 1e-6, 0.13e-6, pmos))
+                **dict(self._kw(deck, 1e-6, 0.13e-6, pmos),
+                       **NO_LEAKAGE))
         e.update_iparv()
         for vb in (0.0, -0.4, -1.0, -1.5):
             for vg in (0.6, 1.2):
@@ -1696,7 +1952,7 @@ class TestPolysiliconDepletion(object):
         ## `TestImpactIonisation` asserts separately that the avalanche
         ## goes to the high terminal and leaves the reverse drain alone.
         e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
-                              cm.Node('b'), **dict(kw, a1=0.0))
+                              cm.Node('b'), **dict(kw, **NO_LEAKAGE))
         e.update_iparv()
         assert kw['rs'] > 0 and kw['alp'] > 0 and kw['kp'] > 0, \
             'the card must actually switch these on for this to test '\
@@ -2240,7 +2496,10 @@ class TestTheChannelTypes(object):
         assert 0.5 < out[1] / out[0] < 1.5, out
 
     def test_it_is_antisymmetric_like_the_n_channel(self, deck):
-        e = self._fet(deck)
+        """`NO_LEAKAGE`, for the reason recorded there: the avalanche
+        and the gate current both leave the channel, so neither is odd
+        in `Vds` and neither is supposed to be."""
+        e = self._fet(deck, **NO_LEAKAGE)
         for vg in (-0.6, -1.2):
             for vd in (-0.1, -0.9):
                 f = np.asarray(e.i(e.bias(vd, vg, 0.0, 0.0)),
@@ -2614,7 +2873,7 @@ class TestTheBodyBiasMobilityCorrection(object):
         ## denormal ~1e-126 here and differs by an ulp between the two
         ## elements, which is enough to fail an exact comparison of two
         ## numbers that are themselves zero for every practical purpose.
-        kw = dict(kw, a1=0.0)
+        kw = dict(kw, **NO_LEAKAGE)
         off = dict(kw, xcor=0.0)
         a = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
                               cm.Node('b'), **kw)
@@ -3234,7 +3493,7 @@ class TestTheOverlapAndFringeCapacitance(object):
         ## `a1 = 0` -- the avalanche is deliberately NOT antisymmetric
         ## (see `TestImpactIonisation`); this class is about the overlap
         ## charge, so the channel property is what it should isolate.
-        e = self._fet(deck, 'nmos', n['long'], a1=0.0)
+        e = self._fet(deck, 'nmos', n['long'], **NO_LEAKAGE)
         for vd, vg in ((0.9, 1.4), (0.05, 0.6), (1.5, 1.8)):
             q = np.asarray(e.q(e.bias(vd, vg)), float)
             assert abs(q.sum()) < 4e-16 * max(1.0, np.abs(q).max())
@@ -3482,8 +3741,16 @@ class TestExtremeBiasWithCardParameters(object):
         the channel, and the avalanche has to be switched off to see it.
         What bounds the real device in a solver is the element's own
         branch-voltage limiter, not the constitutive relation.
+
+        The GATE CURRENT is off here for the same reason and not the
+        same mechanism: its source/drain partitioning factor `igc` is a
+        ratio of hyperbolic functions of `dps/(2*u0)`, which grows
+        without bound as the channel's potential drop does.  PSP is
+        identical.  Two terms, two different reasons, one conclusion --
+        saturation is a property of the CHANNEL and the leakage terms
+        are not part of it.
         """
-        e = self._fet(deck, a1=0.0)
+        e = self._fet(deck, **NO_LEAKAGE)
         ref = np.asarray(e.i(e.bias(2.0, 1.2, 0.0, 0.0)), float)[0]
         for v in self.REACH:
             got = np.asarray(e.i(e.bias(v, 1.2, 0.0, 0.0)), float)[0]

@@ -49,6 +49,54 @@ first.
 positive value whenever the base can vanish, and always when the
 exponent is below 1 (the derivative diverges).
 
+### A "safe_" helper spends exponent range -- do not buy what you do not need
+
+`safe_ln` regularises as `log(0.5*(sqrt(u^2 + 4e-60) + u))`. It SQUARES
+its argument, so it overflows for `u > 1e154` where plain `log` would
+not have blinked. `safe_div` squares its `eps` and `hypsmooth` squares
+its; every one of them halves the exponent range it can carry.
+
+That is the right trade when the guard can fire. It is a pure loss when
+it cannot. Here the arguments were `1 + expl(...)`, at least 1 by
+construction, and using `safe_ln` on them cost a finiteness bound of
+1e36 and returned `-inf` from a quantity whose every ingredient was
+finite.
+
+**Before reaching for a `safe_` helper, ask what it is guarding against
+and whether that case is reachable.** If the argument is provably
+positive, the plain function is both correct and wider.
+
+### A PRODUCT of two bounded exponentials is not bounded
+
+`expl` is finite for every double, so `expl(a)` and `expl(b)` are both
+safe -- and `expl(a)*expl(b)` is not. Past its seam `expl` continues
+polynomially rather than saturating, so each factor reaches ~1e186 at
+extreme bias and the product overflows.
+
+When the code only ever needs the LOGARITHM of such a product, carry
+the exponents instead and never form it: `log(1 + e^z)` is bounded by
+`|z| + 0.7`, where `log(1 + e^a * e^b)` is bounded by nothing. Written
+branch-free as `max(z,0) + log(1 + exp(-|z|))`, the exponential only
+ever sees a non-positive argument.
+
+### A term switched OFF by a zero parameter is still evaluated
+
+If the model compiles from symbolic parameters, `if param != 0` is TRUE
+at build time whatever the value, so the block is in the expression
+regardless. Passing zero only multiplies the result by zero at the end
+-- and `0 * inf = nan`.
+
+Two consequences:
+
+- **a block must be finite even when its parameter is zero.** "It is off
+  on this card" is not a defence;
+- **zeroing a parameter is not a valid way to test whether a block is
+  the cause of a numerical failure.** It cost a wrong conclusion here:
+  the finiteness bound fell from 1e36 to 1e26, switching the parameter
+  off did not restore it, and the block was the cause anyway. Compare
+  against a build WITHOUT the code -- `git stash` -- not against a build
+  with the code and a zero coefficient.
+
 ### Budget the exponent range twice: value and derivative
 
 A regulariser that squares its denominator halves the usable range. Its

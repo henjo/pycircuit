@@ -1015,7 +1015,15 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
     return dict(ids=ids, qim=qim, qim1=qim1, alpha=alpha, dps=dps,
                 xgm=xgm, x_m=x_m, x_s=x_s, x_d=x_d, qbm=qbm,
                 Pm=Pm, Dm=Dm, sqm=sqm, Gmob_dL=Gmob_dL, Gvsat=Gvsat,
-                zsat=zsat, gvinv=gvinv, GdL=GdL, eta_p=eta_p, FdL=FdL)
+                zsat=zsat, gvinv=gvinv, GdL=GdL, eta_p=eta_p, FdL=FdL,
+                xg=xg,
+                ## `x_ds` is the CORRECTED one -- the block above
+                ## rebinds it from `x_dsc` -- and `vdse` is the
+                ## saturation-limited drain bias, `None` when the
+                ## velocity-saturation block is off.  Both are here for
+                ## the gate-current block, which needs the same
+                ## quantities the charges do.
+                x_ds=x_ds, vdse=vdse)
 
 
 def impact(core, vds, phib, vsbo, a1, a2, a3, a4):
@@ -1076,6 +1084,289 @@ def impact(core, vds, phib, vsbo, a1, a2, a3, a4):
 def ids_long_channel(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5):
     """The intrinsic long-channel drain current -- see `intrinsic`."""
     return intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin)['ids']
+
+
+def _softplus(z, tag):
+    """``log(1 + exp(z))``, branch-free and finite for every double.
+
+    ``max(z,0) + log(1 + exp(-|z|))``.  The exponential only ever sees a
+    NON-POSITIVE argument, so it is in ``(0, 1]`` and cannot overflow;
+    the result is bounded by ``|z| + 0.7`` where the literal form is
+    bounded by nothing.
+
+    Written with `Max`/`Min` rather than a `Piecewise` because both arms
+    of a Piecewise are evaluated anyway -- this way there is only one
+    arm and nothing to clamp.
+    """
+    zp = _v(sympy.Max(z, 0.0), 'sp_p' + tag)
+    zm = _v(sympy.Min(z, 0.0), 'sp_m' + tag)
+    return _v(zp + sympy.log(1.0 + sympy.exp(zm - zp)), 'sp' + tag)
+
+
+def _p3(u):
+    """PSP's `P3` -- exp's own third-order Taylor about zero.
+
+    `1 + u + u^2/2 + u^3/6` (`Common103_macrodefs.include`).  Used as
+    the POSITIVE-argument continuation of a bounded exponential, which
+    is what makes the seam C-3: the polynomial and `exp` agree in value
+    and in all three derivatives at the origin.
+    """
+    return _v(1.0 + u * (1.0 + u * (0.5 + u * ONE_SIXTH)), 'gc_p3')
+
+
+def _tunnel_tp(b, zg, gc2, gc3, tag):
+    """The WKB transmission prefactor `TP` (`module:1258-1264`).
+
+    `TP = P3(t)` for `t > 0` and `expl_low(t)` otherwise, with
+    `t = B*(-1.5 + zg*(GC2 + GC3*zg))`.  The two arms agree to third
+    order at `t = 0`, so the seam is invisible to the Jacobian; the
+    polynomial arm is what keeps a large positive argument from
+    exponentiating.
+    """
+    t = _v(b * (-1.5 + zg * (gc2 + gc3 * zg)), 'gc_t' + tag)
+    ## BOTH ARMS ARE EVALUATED, so each gets its OWN domain clamped
+    ## rather than being trusted to see only the values that select it.
+    ##
+    ## `expl_low(t)` is a bare `exp` for `t > -230`, so the unselected
+    ## low arm would exponentiate a large POSITIVE `t`; `Min(t, 0)` puts
+    ## it back on the side it is valid for, where the result is in
+    ## `(0, 1]`.  The polynomial arm takes `Max(t, 0)` for the same
+    ## reason.  Neither clamp changes the selected value.
+    tlo = _v(sympy.Min(t, 0.0), 'gc_tlo' + tag)
+    thi = _v(sympy.Max(t, 0.0), 'gc_thi' + tag)
+    return _v(sympy.Piecewise(
+        (1.0 + thi * (1.0 + thi * (0.5 + thi * ONE_SIXTH)), t > 0),
+        (hdl.expl_low(tlo), True)), 'gc_TP' + tag)
+
+
+def gate_current(core, phit, vgbs, vsbo, mob):
+    """PSP's gate tunnelling current, partitioned source/drain/bulk.
+
+    `PSP103_module.include:1240-1297`.  Returns `(igcs, igcd, igb)`.
+
+    `vgbs` is PSP's `Vgs + Vsbstar` -- the gate drive referred to the
+    CONDITIONED source, which is the same quantity the surface-potential
+    solve uses and which this element already carries as
+    `vgb - vsbcnd`.
+
+    THE PARTITIONING IS THE POINT.  It would be easy to add the total
+    and split it evenly, and on a linear-region sweep that is very
+    nearly right -- the measured split is 0.475 to 0.500 of the recorded
+    `i_g` on four independent sweeps.  But `igcd_h` is a function of
+    `dps/u0`, so the even split is a LIMIT and not the model: as the
+    drain end pinches off the tunnelling population stops being uniform
+    along the channel and the drain's share falls.  Fitting the 0.5
+    would have matched every sweep in this reference and been wrong in
+    saturation.
+    """
+    xgm, x_m, dps = core['xgm'], core['x_m'], core['dps']
+    x_ds, vdse = core['x_ds'], core['vdse']
+    Voxm = _v(xgm * phit, 'gc_Voxm')
+    ## `H` is the same effective charge slope the charges use
+    ## (`macrodefs:776-778`); recomputed here rather than threaded so
+    ## the two blocks cannot drift apart in one place only.
+    gr = _v(core['Gmob_dL'] * core['gvinv'], 'gc_gr')
+    alpha1 = _v(core['alpha'] * (1.0 + 0.5 * (core['zsat'] * gr * gr)),
+                'gc_a1')
+    H = _v(gr * core['qim1'] * hdl.safe_div(1.0, alpha1, eps=1e-30),
+           'gc_H')
+
+    ## The quasi-Fermi level the tunnelling electrons come from
+    ## (`module:1246-1247`).  With no velocity saturation `Vdse` is
+    ## `Vds` and `x_ds - Udse` is zero, so the log is `ln(1)` and `Vm`
+    ## is `Vsbstar + phit*x_ds/2` -- the channel midpoint.
+    if vdse is None:
+        udse = _v(x_ds, 'gc_udse')
+    else:
+        udse = _v(vdse * hdl.safe_div(1.0, phit, eps=1e-30), 'gc_udse')
+    ## `hdl.expl`, where PSP writes `expl_low` (`module:1245`).
+    ## `expl_low` is a BARE `exp` above its own seam -- that is its
+    ## definition, and PSP relies on `x_ds - Udse` staying near zero.
+    ## It does at any real bias and does not at the ones Newton visits:
+    ## at `Vds = -100` this argument reaches 3900 and `exp` overflows.
+    ## The two-sided form differs only above `x = 230`, where the value
+    ## is already 1e100.
+    et = _v(hdl.expl(x_ds - udse), 'gc_et')
+    ## PLAIN `log`, NOT `safe_ln` -- and this is the third member of a
+    ## family worth naming.  `safe_ln` regularises as
+    ## `log(0.5*(sqrt(u^2 + 4e-60) + u))`, so it SQUARES its argument
+    ## and overflows for `u > 1e154` even though `log` itself would not.
+    ## `safe_div` squares its eps for the same reason and `hypsmooth`
+    ## squares its; each halves the exponent range it can carry.
+    ##
+    ## Here the argument is `0.5*(1 + expl(...))`, and `expl` is
+    ## strictly positive, so it is at least 0.5 by construction and
+    ## never needs the guard.  Paying for a regulariser that cannot
+    ## fire, in range you do need, is the wrong trade.
+    Vm = _v(vsbo + phit * (0.5 * x_ds
+                           - sympy.log(0.5 * (1.0 + et))), 'gc_Vm')
+
+    Dch = _v(mob['gco'] * phit, 'gc_Dch')
+    psi_t = _v(mina(0.0, Voxm + Dch, 0.01), 'gc_psit')
+    zg0 = _v(hdl.safe_sqrt(Voxm * Voxm + 1.0e-6)
+             * hdl.safe_div(1.0, mob['chib'], eps=1e-30), 'gc_zg0')
+    ## `GC3 < 0` on both cards, so the cap is live.  Branching on the
+    ## PARAMETER, so the condition carries no bias dependence.
+    _gc3 = mob['gc3']
+    if isinstance(_gc3, sympy.Expr) or _gc3 < 0.0:
+        zg = _v(mina(zg0, mob['gcq'], 1.0e-6), 'gc_zg')
+    else:
+        zg = zg0
+
+    ## IN LOG SPACE, and this is not a micro-optimisation.
+    ##
+    ## PSP forms `Dsi` and `Dgate = Dsi*expl(...)` and then takes
+    ## `ln((1 + Dsi)/(1 + Dgate))`.  `Dgate` is a PRODUCT OF TWO
+    ## EXPONENTIALS, and `expl` is not bounded -- past its seam it
+    ## continues polynomially, so each factor reaches ~1e186 at
+    ## `|Vds| = 1e27` and the product overflows to `inf`.  The p-channel
+    ## finiteness bound fell from 1e36 to 1e26 on exactly that, and
+    ## because the element compiles from SYMBOLIC parameters the block
+    ## is built even when `IGINV` is zero -- so `0 * inf = nan` poisoned
+    ## a device with the gate current switched off.
+    ##
+    ## Neither quantity is ever needed on its own: only the two
+    ## logarithms are.  So carry the EXPONENTS and use `log(1 + e^z)`,
+    ## which is bounded by `|z| + 0.7`.  Below the seam this is
+    ## identical to PSP; above it, it is the graceful continuation and
+    ## PSP's is the one that overflows.
+    lnDsi = _v(x_m + (psi_t - mob['alpha_b'] - Vm)
+               * hdl.safe_div(1.0, phit, eps=1e-30), 'gc_lnDsi')
+    lnE = _v(-(vgbs - Vm) * hdl.safe_div(1.0, phit, eps=1e-30), 'gc_lnE')
+    TP = _tunnel_tp(mob['bch'], zg, mob['gc2'], _gc3, 'ch')
+    ## `ln((1+Dsi)/(1+Dgate))` as a DIFFERENCE of logs: both arguments
+    ## are >= 1 by construction, so each log is separately well behaved,
+    ## and the quotient would otherwise overflow when `Dsi` is large.
+    Igc0 = _v(mob['iginv'] * (TP * (_softplus(lnDsi, 'a')
+                                    - _softplus(lnDsi + lnE, 'b'))),
+              'gc_Igc0')
+
+    ## SOURCE/DRAIN PARTITIONING (`module:1266-1291`).  Two arms about
+    ## `x = dps/(2*u0)`, series below 1e-3 and closed form above,
+    ## exactly as PSP writes them -- the series exists because the
+    ## closed form is `(e^x - e^-x)/x`, which is 0/0 at the origin.
+    u0 = _v(mob['chib'] * hdl.safe_div(
+        1.0, (mob['gc2'] + 2.0 * _gc3 * zg) * mob['bch'], eps=1e-30),
+        'gc_u0')
+    x = _v(0.5 * (dps * hdl.safe_div(1.0, u0, eps=1e-30)), 'gc_x')
+    uh = _v(u0 * hdl.safe_div(1.0, H, eps=1e-30), 'gc_uh')
+    Bg = _v(uh * (1.0 - uh) * 0.5, 'gc_Bg')
+    Ag = _v(0.5 - 3.0 * Bg, 'gc_Ag')
+    xsq = _v(x * x, 'gc_xsq')
+    igc_s = _v(1.0 + xsq * (ONE_SIXTH + uh * ONE_THIRD
+                            + ONE_SIXTH * (xsq * (0.05 + 0.2 * uh))),
+               'gc_igcs_ser')
+    igcd_s = _v(0.5 * igc_s - ONE_SIXTH
+                * (x * (1.0 + xsq * (0.4 * (Bg + 0.25)
+                                     + 0.0285714285714
+                                     * (xsq * (0.125 + Bg))))),
+                'gc_igcd_ser')
+    ## BOTH ARMS ARE EVALUATED, so the closed form has to be finite
+    ## even where the series is selected -- but it does NOT have to be
+    ## correct there, which is what makes this cheap.
+    ##
+    ## No clamp on the exponentials: `1/expl(x)` is `expl(-x)`, so
+    ## neither divides, and `expl` is bounded above and below by
+    ## construction for any argument.  Writing it as a reciprocal needs
+    ## an eps so small that `safe_div` refuses it -- the eps is SQUARED
+    ## -- which was the guard correctly saying "do not divide here".
+    ##
+    ## And no clamp on `x` either.  The obvious move,
+    ## `Max(Abs(x), 1e-3) * sign(x)`, does not COMPILE: sympy
+    ## differentiates `sign` to `DiracDelta` and the printer rejects it.
+    ## `safe_div`'s `x/(x^2 + eps^2)` is the sign-preserving reciprocal
+    ## that this needs, and at `eps = 1e-6` it costs 1e-6 of relative
+    ## error at the seam, where `x*x = 1e-6 >> 1e-12`.
+    ex = _v(hdl.expl(x), 'gc_ex')
+    iex = _v(hdl.expl(-x), 'gc_iex')
+    inv_x = _v(hdl.safe_div(1.0, x, eps=1e-6), 'gc_invx')
+    sh = _v(ex - iex, 'gc_sh')
+    ch = _v(ex + iex, 'gc_ch')
+    igc_c = _v(0.5 * ((1.0 - uh) * sh * inv_x + uh * ch), 'gc_igcc')
+    igcd_c = _v(0.5 * (igc_c - sh * (Bg - Ag * inv_x * inv_x)
+                       - Ag * ch * inv_x), 'gc_igcdc')
+    ## `x*x < 1e-6` rather than `Abs(x) < 1e-3`: identical condition,
+    ## and it keeps `Abs` out of an expression that gets differentiated.
+    small = xsq < 1.0e-6
+    igc = _v(sympy.Piecewise((igc_s, small), (igc_c, True)), 'gc_igc')
+    igcd_h = _v(sympy.Piecewise((igcd_s, small), (igcd_c, True)),
+                'gc_igcdh')
+
+    ## `Sg` is a smooth step on `xg`: above flat band the current goes
+    ## to the CHANNEL, below it to the BULK (`module:1292`).
+    xg = core['xg']
+    Sg = _v(0.5 * (1.0 + xg * hdl.safe_div(
+        1.0, hdl.safe_sqrt(xg * xg + 1.0e-6), eps=1e-30)), 'gc_Sg')
+    Igc = _v(Igc0 * (igc * Sg), 'gc_Igc')
+    igcd = _v(Igc0 * (igcd_h * Sg), 'gc_Igcd')
+    igcs = _v(Igc - igcd, 'gc_Igcs')
+    igb = _v(Igc0 * (igc * (1.0 - Sg)), 'gc_Igb')
+    return igcs, igcd, igb
+
+
+def _mne(x, y, a, tag):
+    """PSP's smooth MINIMUM (`macrodefs:40-43`).
+
+    `2/(4-a) * (s - sqrt(s^2 - (4-a)*x*y))` with `s = x + y`.  Not the
+    `MINA` used elsewhere: this one is exact at `a = 0` and its
+    smoothing is RELATIVE to the product, which is what suits a pair
+    whose scale varies over decades.
+    """
+    t1 = 4.0 - a
+    t2 = _v(x + y, 'mne_s' + tag)
+    ## CONJUGATE FORM.  Written literally this is `t2 - sqrt(t2^2 - c)`,
+    ## which for large `t2` subtracts two nearly equal numbers and keeps
+    ## none of them: at `t2 = 1e9` the difference is 1e-9 of the terms
+    ## and rounds to zero.  Multiplying by `(t2 + sqrt)/(t2 + sqrt)`
+    ## turns it into `c/(t2 + sqrt(...))`, a quotient of positives with
+    ## nothing to cancel.  `hypsmooth` carries the same fix for the same
+    ## reason.
+    rad = _v(hdl.safe_sqrt(t2 * t2 - t1 * (x * y)), 'mne_r' + tag)
+    return _v(2.0 * (x * y) * hdl.safe_div(1.0, t2 + rad, eps=1e-30),
+              'mne' + tag)
+
+
+def _mxe(x, y, a, tag):
+    """PSP's smooth MAXIMUM (`macrodefs:45-48`), the `+` twin of `_mne`."""
+    t1 = 4.0 - a
+    t2 = _v(x + y, 'mxe_s' + tag)
+    return _v((2.0 / t1) * (t2 + hdl.safe_sqrt(t2 * t2 - t1 * (x * y))),
+              'mxe' + tag)
+
+
+def overlap_tunnel(vov, xov, vgp, mob, tag):
+    """Gate-to-overlap tunnelling, one side (`module:1199-1236`).
+
+    The two sides differ ONLY in their own overlap surface potential on
+    a card with `SWJUNASYM = 0`: `IGOVD = IGOV` and `TOXOVD = TOXOV`, so
+    `BOV_d = BOV` as well.  Checking that rather than assuming it
+    matters -- the card really does set `toxovdo` to a different number
+    from `toxovo`, and it is the SCALING that ties them together.
+
+    `vov`/`xov` are the overlap's surface potential and its normalised
+    form, which this element already computes for the overlap CHARGE;
+    `vgp` is the un-interchanged terminal voltage PSP calls
+    `VgsPrime`/`VgdPrime`, because the overlap sits over a physical
+    diffusion and does not move when the terminals swap roles.
+    """
+    zg0 = _v(hdl.safe_sqrt(vov * vov + 1.0e-6)
+             * hdl.safe_div(1.0, mob['chib'], eps=1e-30), 'ov_zg0' + tag)
+    _gc3 = mob['gc3ov']
+    if isinstance(_gc3, sympy.Expr) or _gc3 < 0.0:
+        zg = _v(mina(zg0, mob['gcq'], 1.0e-6), 'ov_zg' + tag)
+    else:
+        zg = zg0
+    TP = _tunnel_tp(mob['bov'], zg, mob['gc2ov'], _gc3, 'ov' + tag)
+    ## `Fs` bounds the tunnelling window: it follows the gate voltage
+    ## (`30*Vgp`) until the overlap's own band bending caps it above,
+    ## and never falls below `-3 - GCO`.  Both limits are applied with
+    ## PSP's `MNE`/`MXE` rather than hard clamps.
+    fs1 = _v(3.0 + xov, 'ov_fs1' + tag)
+    fs2 = _v(-3.0 - mob['gco'], 'ov_fs2' + tag)
+    fs3 = _v(30.0 * vgp, 'ov_fs3' + tag)
+    fs = _v(_mxe(fs2, _mne(fs1, fs3, 0.9, tag), 0.3, tag),
+            'ov_Fs' + tag)
+    return _v(mob['igov'] * (TP * fs), 'ov_Ig' + tag)
 
 
 def cox_qm(core, cox, qq, phit, pmos=False):
