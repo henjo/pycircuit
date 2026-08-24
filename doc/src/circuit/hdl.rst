@@ -174,6 +174,126 @@ described in :ref:`idtmod`. A whole circular integrator is one line:
     for line in src.splitlines():
         print("   " + line.rstrip())
 
+The math kernel
+```````````````
+
+``exp``, ``log`` and ``sqrt`` are enough for a behavioural element and
+not enough for a compact model, for two reasons that only show up once
+the element is differentiated.
+
+**Both arms of every conditional are evaluated.** A compiled
+``Piecewise`` becomes a ``where``, which selects *afterwards*.  The
+discarded arm still takes the square root of its negative number, still
+divides by its zero, and still contributes its NaN to anything that
+combines the two.
+
+**Clamping fixes the value and breaks the derivative.**
+``sqrt(Max(x, 0))`` differentiates to ``d(Max)/dx / (2*sqrt(Max(x,0)))``
+— which is ``0/0`` for every ``x <= 0``.  The current comes out right and
+the Jacobian comes out NaN, which is the worse failure: nothing looks
+wrong and Newton is silently poisoned.
+
+:mod:`pycircuit.circuit.hdl` therefore ships a small kernel of *smoothed*
+replacements, all of which are finite in value **and** in derivative
+everywhere:
+
+.. exec-rst::
+
+    import warnings
+    import numpy as np, sympy
+    warnings.simplefilter('ignore')
+    from pycircuit.circuit import hdl
+
+    x = sympy.Symbol('x')
+    rows = [('sqrt(Max(x,0))', sympy.sqrt(sympy.Max(x, 0))),
+            ('safe_sqrt(x)',   hdl.safe_sqrt(x)),
+            ('log(x)',         sympy.log(x)),
+            ('safe_ln(x)',     hdl.safe_ln(x)),
+            ('1/x',            1 / x),
+            ('safe_div(1, x)', hdl.safe_div(1.0, x))]
+    mods = [{'Max': np.maximum, 'Min': np.minimum,
+             'Heaviside': lambda a, *r: np.heaviside(a, 0.5)}, 'numpy']
+
+    def ev(g):
+        try:
+            v = float(g(0.0))
+            return '%.4g' % v if np.isfinite(v) else '**not finite**'
+        except Exception:
+            return '**raises**'
+
+    print(".. list-table:: Evaluated at x = 0, where every one of these "
+          "is used")
+    print("   :header-rows: 1")
+    print("")
+    print("   * - expression")
+    print("     - value")
+    print("     - derivative")
+    for name, e in rows:
+        f = sympy.lambdify(x, e, mods)
+        d = sympy.lambdify(x, sympy.diff(e, x), mods)
+        print("   * - ``%s``" % name)
+        print("     - %s" % ev(f))
+        print("     - %s" % ev(d))
+
+The family is ``expl`` / ``expl_low`` / ``expl_high`` (bounded
+exponentials, PSP's, continued by their own third-order Taylor and
+``C-3`` at the seams), ``hypsmooth`` (a smooth ``max(x, 0)``, and the
+right first thing to reach for), ``safe_sqrt``, ``safe_ln``,
+``safe_div``, ``safe_abs``, and ``limexp`` (the LRM's, deliberately left
+unclamped so PCNR can recognise it).
+
+**They are not free, and the cost is exponent range.**  Each regulariser
+squares something: ``safe_div`` squares its ``eps``, ``hypsmooth`` and
+``safe_abs`` square theirs, and ``safe_ln`` inherits ``hypsmooth``\ 's.
+Squaring halves the range the function can carry, so
+
+.. exec-rst::
+
+    import warnings
+    import numpy as np, sympy
+    warnings.simplefilter('ignore')
+    from pycircuit.circuit import hdl
+
+    x = sympy.Symbol('x')
+    f = sympy.lambdify(x, hdl.safe_ln(x), 'numpy')
+    g = sympy.lambdify(x, sympy.log(x), 'numpy')
+    print(".. list-table:: ``safe_ln`` against plain ``log``, large "
+          "argument")
+    print("   :header-rows: 1")
+    print("")
+    print("   * - x")
+    print("     - ``safe_ln(x)``")
+    print("     - ``log(x)``")
+    for v in (1e150, 1e160, 4.4e222):
+        a, b = float(f(v)), float(g(v))
+        fmt = lambda q: ('%.6g' % q) if np.isfinite(q) else '**inf**'
+        print("   * - %.1e" % v)
+        print("     - %s" % fmt(a))
+        print("     - %s" % fmt(b))
+
+So **ask what a guard is protecting against, and whether that case is
+reachable.**  If the argument is provably positive — ``1 + expl(...)``
+is at least 1 by construction — the plain function is both correct and
+wider, and reaching for the safe one buys nothing while spending range
+you may need.  This is not hypothetical: it cost a compact model here a
+drain current of ``-inf`` at a bias a diverging Newton step reaches,
+from an expression whose every ingredient was finite.
+
+Two related traps, both from the same model:
+
+* a **product** of two bounded exponentials is not bounded.  ``expl``
+  continues *polynomially* past its seam rather than saturating, so two
+  factors of ~1e186 overflow.  Where only the logarithm of the product
+  is needed, carry the exponents instead: ``log(1 + exp(z))`` is bounded
+  by ``|z| + 0.7``;
+* a smoothing **constant** needs a scale.  ``hypsmooth(x, 1e-3)`` whose
+  result is divided by a model parameter depends on the ratio, and that
+  parameter varied by 44000× between two cards of the same process.
+  Write the width relative to the scale it is compared against.
+
+``hdl.md`` §3.2c has the full kernel table and the measurements behind
+these.
+
 Parameters
 ``````````
 

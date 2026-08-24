@@ -6,6 +6,58 @@ the suite stands at **1005 passed, 3 skipped, 3 xfailed**; and the
 feature the branch exists for now carries a measured payoff number.
 This document is the map — each section points at the detailed record.
 
+> ## Addendum, 2026-08-24: a production compact model
+>
+> **Everything below describes the branch as of 2026-08-21.** Since then
+> the largest single body of work on it landed, and a reviewer entering
+> here would otherwise miss it. The suite now stands at **1868 passed,
+> 6 skipped, 3 xfailed**.
+>
+> The branch now carries **PSP103's core** — the industry-standard
+> surface-potential MOSFET — written in the Behavioural HDL, driven from
+> IHP's real 359-parameter SG13G2 model cards through a reimplementation
+> of the vendor's own geometry and temperature scaling, and measured
+> against the vendor's compiled binary.
+>
+> | | |
+> |---|---|
+> | devices | n- and p-channel, plus a MoM capacitor and JUNCAP2 junctions |
+> | driven from | two real foundry cards, **nothing fitted anywhere** |
+> | agreement | all twelve sweeps at median 1.000; **worst point 1.3e-6** |
+> | started at | 10% on the first end-to-end measurement |
+> | scaled parameters | all 46 recorded `lp_*` match the vendor's own |
+>
+> That is the reference's own printed precision: there is no open DC
+> residual. Every impact-ionisation and gate-current component matches
+> the vendor's per-component operating-point outputs exactly.
+>
+> **Why it matters for the branch's thesis.** The DSL's claim was that it
+> could express *production* device models, not only behavioural ones.
+> This is the evidence: 7400 lines of vendor Verilog-A worth of physics,
+> compiled with exact symbolic Jacobians, holding finite value and
+> derivative out to 1e36 of bias.
+>
+> **One caveat a reviewer should know.** The golden reference itself had
+> to be fixed partway through — generated at ngspice's default solver
+> tolerances it carried up to 9.6e-4 of error, which for a while was the
+> largest error in the comparison. Both regenerations were verified
+> **additive**: zero pre-existing non-sweep values changed.
+>
+> Where the record is:
+>
+> * `doc/src/circuit/compact_models.rst` — the reference page: theory,
+>   how to drive one, what is in it and what is not, every measurement
+>   recomputed at build time;
+> * `doc/src/circuit/examples/example11.*` — a runnable characterisation
+>   that checks itself against the vendor;
+> * `doc/psp103_retrospective_260824.html` — the narrative: every defect,
+>   the method that found it, and the six wrong turns;
+> * `hdl.md` §9 Phase E — the dated running record;
+> * `.claude/skills/` — four skills carrying the transferable method.
+>
+> Still deferred, unchanged: the non-quasi-static block, self-heating and
+> the edge transistor (no IHP card uses the last two).
+
 ## What the branch delivers
 
 **The JAX backend with `solve_batched`** — vmapped, jit-compiled
@@ -88,8 +140,11 @@ the suite.
    measurements and the meta-review record.
 3. `doc/phase0_baseline_260821.md` + `doc/batched_sweep_260821.md` —
    the before/after yardsticks.
-4. The suite: `pytest pycircuit/circuit/tests/` (1005 green as of this
-   summary; the conformance harness and dead-knob scan are the standing
-   gates).
+4. The suite: `pytest pycircuit` (1005 green as of this summary;
+   **1868 as of the 2026-08-24 addendum**; the conformance harness and
+   dead-knob scan are the standing gates).
+5. For the compact-model work, start at the retrospective named in the
+   addendum — it is the shortest route to what was done and why, and it
+   is honest about the wrong turns.
 
 Merging is the owner's call; nothing in this branch assumes it.
