@@ -94,6 +94,13 @@ def compare(deck, sweep):
     card = deck.model_params(model, w=w, l=l, ng=1, m=1, pre_layout=1)
     ## The reference was generated at the card's `TR = 27 C`, which
     ## is also ngspice's default, so the comparison is made there.
+    ## Evaluate at the temperature the reference was RECORDED at, not
+    ## at `epar`'s 300.0 K default.  The parameters are scaled at the
+    ## card's `TR = 27 C`; leaving the evaluation 0.15 K away is worth
+    ## 0.9995 on the noise density and was, for a while, the largest
+    ## remaining term in a comparison otherwise agreeing to 3e-5.
+    from pycircuit.circuit import defaultepar
+    defaultepar.T = 273.15 + 27.0
     kw = psp_scaling.to_long_channel(card, w=w, l=l, T=273.15 + 27.0)
     e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'), **kw)
     e.update_iparv()

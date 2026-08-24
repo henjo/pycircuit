@@ -52,6 +52,37 @@ T27 = 273.15 + 27.0
 FLOOR = 1e-6
 
 
+@pytest.fixture(scope='module', autouse=True)
+def _at_the_reference_temperature():
+    """Evaluate this whole module at the temperature the reference was
+    recorded at.
+
+    The parameters are scaled at the card's `TR = 27 C` because that is
+    where ngspice recorded, but the element evaluates at `epar`'s
+    default of 300.0 K -- 0.15 K away.  That was a deliberate,
+    documented trade for a long time: threading an `epar` through fifty
+    call sites cost more than the error did, which was under 0.01% of
+    drain current.
+
+    THE TRADE REVERSED once the model got good.  At 0.15 K the noise
+    density is off by `300.0/300.15 = 0.9995` -- `sid` goes as `nt` goes
+    as `phit` -- and 0.04% became the LARGEST remaining term in a
+    comparison otherwise agreeing to 3e-5.  A residual identical across
+    both geometries and both channel types is a constant, and a constant
+    is a condition mismatch rather than physics.
+
+    Set here rather than threaded, so a test added later cannot forget
+    it.  Module-scoped and restored, because `defaultepar` is shared.
+    """
+    from pycircuit.circuit import defaultepar
+    was = defaultepar.T
+    defaultepar.T = T27
+    try:
+        yield
+    finally:
+        defaultepar.T = was
+
+
 @pytest.fixture(scope='module')
 def deck():
     return spicecard.read(os.path.join(PDK, 'cornerMOSlv.lib'),
@@ -2436,21 +2467,37 @@ class TestTemperatureScaling(object):
         assert hot['rs'] > cold['rs'], 'series resistance rises'
         assert hot['vfb'] > cold['vfb'], 'flat-band rises, threshold falls'
 
-    def test_the_reference_temperature_mismatch_is_bounded(self, deck):
-        """A known, measured, and deliberately unclosed inconsistency.
+    def test_the_reference_temperature_mismatch_is_closed(self, deck):
+        """It used to be a deliberate, measured, unclosed inconsistency.
 
-        The parameter comparisons are made at the card's `TR = 27 C`,
-        because that is where the reference was recorded.  The element
-        evaluating those parameters still runs at `epar`'s default of
-        300.0 K, 0.15 K away, because threading an `epar` through every
-        call site costs more than the error does.
+        Parameters are scaled at the card's `TR = 27 C`, where the
+        reference was recorded; the element evaluated them at `epar`'s
+        default of 300.0 K.  Threading an `epar` through fifty call
+        sites cost more than the error did -- under 0.01% of drain
+        current -- so it was left, written down, and bounded by this
+        test.
 
-        This pins what the error IS, so it stays a decision rather than
-        becoming a mystery: 0.15 K is worth under a hundredth of a
-        percent of drain current.
+        **THE TRADE REVERSED once the model got good.**  0.15 K is worth
+        `300.0/300.15 = 0.9995` on the noise density (`sid` goes as `nt`
+        goes as `phit`), and 0.04% became the LARGEST remaining term in
+        a comparison otherwise agreeing to 3e-5.  A residual identical
+        across both geometries and both channel types is a constant, and
+        a constant is a condition mismatch rather than physics.
+
+        Closed by the module-scoped `_at_the_reference_temperature`
+        fixture rather than by threading, so a test added later cannot
+        forget it.  This test now asserts the two ARE matched, and keeps
+        the measurement of what the mismatch was worth so the reason for
+        the fixture stays legible:
+
+            quantity          300.0 K     300.15 K
+            ids               1.00015     1.00003
+            sid               0.99958     1.00001
         """
         import copy
         from pycircuit.circuit import defaultepar
+        ## The fixture is what makes this true.
+        assert defaultepar.T == T27
         cm.default_toolkit = numeric
         kw = psp_scaling.to_long_channel(
             deck.model_params('sg13g2_lv_nmos_psp', w=10e-6, l=1e-6,
@@ -2459,12 +2506,14 @@ class TestTemperatureScaling(object):
         e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
                               cm.Node('b'), **kw)
         e.update_iparv()
-        hot = copy.copy(defaultepar)
-        hot.T = T27
+        cold = copy.copy(defaultepar)
+        cold.T = 300.0
         x = e.bias(0.05, 1.2)
-        a = np.asarray(e.i(x), float)[0]
-        b = np.asarray(e.i(x, hot), float)[0]
-        assert abs(a / b - 1.0) < 2e-4, (a, b)
+        a = np.asarray(e.i(x), float)[0]           # at T27, via the fixture
+        b = np.asarray(e.i(x, cold), float)[0]
+        ## Still small -- it was never a large error, only a large one
+        ## RELATIVE to what is left.
+        assert 1e-5 < abs(a / b - 1.0) < 2e-4, (a, b)
 
     def test_the_default_temperature_matches_the_elements(self):
         """`to_long_channel` scales the parameters and the element's own

@@ -3590,6 +3590,38 @@ took about sixty lines to extend.
 > every term that *is* present is transcribed correctly. Both took
 > reading the vendor's own numbers.
 
+> **The last term was the harness, not the model — 2026-08-24.** With
+> both real bugs fixed, what remained was `ids` at 1.00015 and `sid` at
+> **0.99958 on all four** device/type combinations. A residual identical
+> across every geometry *and* both channel types is a CONSTANT, and a
+> constant is a condition mismatch rather than physics.
+>
+> It was 0.15 K. Parameters are scaled at the card's `TR = 27 °C` —
+> where ngspice recorded — while the element evaluated at `epar`'s
+> 300.0 K default. `sid ∝ nt ∝ φt`, so `300.0/300.15 = 0.9995` is
+> exactly the 0.04%.
+>
+> | | epar 300.0 | epar 300.15 |
+> |---|---|---|
+> | `ids` | 1.00015 | **1.00003** |
+> | `sid` | 0.99958 | **1.00001** |
+>
+> 3e-5 and 1e-5 — **the reference data's own printed precision**. There
+> is nothing left to measure against.
+>
+> Closed by a module-scoped autouse fixture rather than by threading an
+> `epar` through fifty-three call sites, so a test added later cannot
+> forget it.
+>
+> **⚠ And the trade-off that had to be revisited.** This mismatch was
+> documented, bounded and deliberately left for months —
+> `test_the_reference_temperature_mismatch_is_bounded` said in as many
+> words that threading `epar` cost more than the error did. That was
+> **correct when it was made**: the error was under 0.01% of drain
+> current and the model was 1.6% off. It became wrong only when
+> everything else reached 3e-5. A deliberate trade-off is a decision
+> about relative sizes, and it expires when one of those sizes changes.
+
 Deferred, unchanged from the original research verdict:
 
 | item | why |
