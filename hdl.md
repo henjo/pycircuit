@@ -1760,9 +1760,10 @@ types, is now done and measured. The state as it stands:
 |---|---|
 | devices | n- and p-channel, `PspMosLongChannel` / `PspPmosLongChannel` |
 | driven from | two real IHP PSP103 cards, through the scaling layer, **nothing fitted** |
-| accuracy | **all 13 sweeps within 2.3%**; every p-channel sweep within 0.6%; two flat to a part in a thousand |
-| subthreshold swing | matches PSP to **≤0.24 mV/decade**, both channel types |
-| scaled parameters | **all 30 the model uses match PSP's own `lp_*` exactly**, four geometries, both channel types |
+| accuracy | **all twelve sweeps at median 1.000, min 1.000, max 1.000**; worst point anywhere 1.3e-6 — the reference's own printed precision |
+| subthreshold swing | matches PSP to **≤0.24 mV/decade**, both channel types; implied threshold offset under 6 µV |
+| scaled parameters | **all 46 recorded `lp_*` match PSP**, four geometries, both channel types |
+| leakage | impact ionisation and gate tunnelling both match PSP's own per-component OP outputs exactly |
 | construction properties | source/drain antisymmetry (topological, to an ulp), exact zero at `Vds = 0`, structural charge conservation, one expression across all regimes |
 
 Present: surface-potential solver, drain current by symmetric
@@ -3621,6 +3622,186 @@ took about sixty lines to extend.
 > current and the model was 1.6% off. It became wrong only when
 > everything else reached 3e-5. A deliberate trade-off is a decision
 > about relative sizes, and it expires when one of those sizes changes.
+
+> **The gate drive is built on `Vsbstar`, not `Vsb` — 2026-08-24.** Two
+> body-biased sweeps peaked at 1.007 and 1.009 while the other ten read
+> 1.000. Converted to the unit the error lives in it was a **flat
+> 0.35 mV** gate-referred offset — one cause with one number.
+>
+> `macrodefs:470` is `Vgb1 = Vgs + Vsbstar - VFB_T`. The conditioned
+> source bias already reached `xn_s`; it was missing from the gate
+> drive. Predicted 331 µV at `Vsb = 1` **and 9.9 µV at `Vsb = 0`**, and
+> the second number is why the zero-body sweeps were never quite exact
+> either — one mechanism, two magnitudes three decades apart, neither
+> fitted. The six-rung body-bias ladder then matched rung by rung within
+> 3.5% over a 39× range.
+>
+> **THIS IS THE THIRD BUG OF ONE SHAPE**, after `Vdsx` and the
+> source-end `GR`: *a quantity the reference computes once and uses at
+> SEVERAL SITES*, transcribed at some of them. Term-by-term reading
+> cannot find it, because every term that is present is correct.
+>
+> It was also a recorded trade-off, and its comment gave two reasons.
+> The size argument was right and expired. The structural argument —
+> that transcribing PSP's literal sum would break the exact
+> source/drain antisymmetry — was **wrong**: written as a difference,
+> `Vgb - (Vsb - Vsbstar)`, the ordering cancels, because `Vsb - Vsbstar`
+> sees the junctions only through the symmetric `MINA(Vdb, Vsb, aphi)`.
+>
+> ⚠ **But it must be FORMED where the conditioning is.** Computing it as
+> a literal `vsb - vsbst` is a catastrophic cancellation that breaks
+> antisymmetry by 2% at `Vsb = 1e40`, caught by
+> `test_it_is_still_antisymmetric_out_there` and by nothing in
+> `test_psp_gap.py`, whose body-bias grid stops at 1.5 V. **Symmetric in
+> exact arithmetic is not symmetric in floating point.**
+
+> **⚠ THE REFERENCE ITSELF WAS THE FLOOR — 2026-08-24.** With the model
+> at 1e-4, the largest error in the comparison was no longer in the
+> model. `benchmarks/psp_reference.py` built its sweep decks with **no
+> `.options`**, so ngspice ran them at its defaults — and a `dc` sweep
+> seeds each point from the previous one, so Newton stops as soon as
+> `reltol*|i| + abstol` is met. Up to **9.6e-4** of relative error in
+> the committed golden curves.
+>
+> It does not look like noise, which is why it survived: the error is
+> point-to-point, so it reads as a **kink at one bias** with a smooth
+> decay after it — exactly what a small threshold shift switching on
+> looks like. It cost two false leads, one of them a hunt for a
+> saturation-knee defect.
+>
+> | sweep | defaults | abstol only | reltol only | both |
+> |---|---|---|---|---|
+> | `idvg` | 6.41e-4 | 4.30e-8 | 4.30e-8 | 4.30e-8 |
+> | `idvd` | 7.97e-4 | 7.97e-4 | 6.61e-9 | 6.61e-9 |
+>
+> `reltol` is the one that matters and it fixes both; on an `idvd` sweep
+> in saturation the current barely moves point to point, so `reltol*|i|`
+> binds and no `abstol` can help. Now `.options reltol=1e-6
+> abstol=1e-15`, mid-plateau deliberately (ngspice fails to converge on
+> the `idvd` sweep by `reltol=1e-11`).
+>
+> **The `op` decks do NOT need it and must not have it** — a single
+> operating point converges with margin, all 271 outputs bit-identical
+> either way. That asymmetry is what made the regeneration checkable:
+> both regenerations moved every sweep and **not one bit** of any
+> `lp_*`, `vth`, capacitance or noise value.
+>
+> ⚠ **And I published the wrong cause first.** The initial diagnosis was
+> "`abstol` alone, `reltol` does nothing" — from a sweep of `reltol` over
+> eight decades that changed not one digit. It changed nothing because
+> **`abstol` was already tight in every run of that sweep**, and the
+> sweep covered one analysis type, the one where `abstol` happens to
+> suffice. A confounded experiment, whose conclusion reached a deck
+> comment, a doc section, two test docstrings and a skill file before an
+> untested sweep type contradicted it. *Vary one knob against the
+> DEFAULTS, not against your other fix.*
+
+> **A smoothing constant needs a scale — 2026-08-24.** The
+> channel-shortening clamp was `hypsmooth(x, 1e-3)` — absolute, in
+> volts. The smoothed quantity is divided by `VP` and logged, so the
+> answer depends on `e/VP`, and **`VP` is 0.322 on the n-channel card
+> and 7.38e-6 on the p-channel one, a factor of 44000.** One constant
+> was 0.3% of one scale and 135× the other, and it was the whole
+> remaining p-channel error.
+>
+> Now `1e-3*VP`, chosen as the **knee** — the loosest smoothing that has
+> already converged, because a rounder corner is a better-behaved
+> Jacobian. Below it nothing improves.
+>
+> **The shape lied, and convincingly.** The residual grew with gate
+> drive, was largest at low `Vds`, vanished in saturation and appeared
+> on the short device only — textbook series resistance. It correlated
+> with `rs` at 0.98, `rs` had the right leverage, and `RSW2` is nonzero
+> on the p-channel card and *exactly zero* on the n-channel, which would
+> have explained the asymmetry beautifully. Four independent arguments,
+> all wrong: zeroing `RS` **and** `RSG` in a card read by both models
+> left the disagreement bit-identical. Fifteen candidates correlated
+> above 0.93 — that is collinearity, and the best-fitting one is not
+> thereby the true one. **A convergent story is not evidence; a
+> differential is.**
+
+> **Impact ionisation — DONE 2026-08-24.** `nmos_idvd_vg0p6` was the
+> last open sweep at 9.41e-5, flat to six digits up to `Vd = 1.15` and
+> then falling and *accelerating* — an exponential onset above a
+> threshold drain bias.
+>
+> **It needed no differential, because the reference records the other
+> terminals.** PSP's avalanche flows drain-to-bulk, so the recorded
+> `i_b` IS the missing quantity: `(ours + |i_b|)/PSP = 0.9999994` flat
+> across the avalanche region, nothing adjusted. Now 6.8e-7, and the
+> same move identified the other outstanding residual in passing —
+> `pmos_long_idvg`'s 2e-4 is gate current at `-0.49 × i_g` constant.
+> **Record every terminal in a reference, not only the interesting one.**
+>
+> Two properties CHANGED, both correct physics: the avalanche is **not
+> antisymmetric** (it flows from the HIGH terminal to the bulk, so `Id`
+> is no longer odd in `Vds` — in PSP either), and it **does not
+> saturate** (`mavl → A1·ΔVsat`, which is what breakdown is). Five tests
+> were asserting things that had stopped being true.
+
+> **Gate tunnelling — DONE 2026-08-24.** The last un-modelled terminal
+> current. Worst sweep **4.42e-5 → 1.71e-6**; `nmos_long_idvd` 88×
+> better. The four sweeps above 1e-5 were exactly the four with
+> `|i_g|/|i_d|` above 2e-5, all long-device: `IGINV` scales with gate
+> AREA and `IGOV` with the EDGE, 57× against 10× between the geometries.
+>
+> Recording PSP's `igcs`/`igcd` **and** `igs`/`igd` made the overlap
+> recoverable as their difference, which is what let the two components
+> be checked separately.
+>
+> **The numerics were the hard part**, and none showed at ordinary bias:
+> `expl_low` is a bare `exp` *above* its seam and the argument reaches
+> 3900 at `Vds = -100`; **`safe_ln` SQUARES its argument** and overflowed
+> on 4.4e222 that plain `log` handles; and `Dgate = Dsi*expl(...)` is a
+> **product of two exponentials**, each finite at 1e186. The block now
+> carries the LOGS and never forms either: `log(1+e^z)` is bounded by
+> `|z|+0.7`. Finiteness is back to 1e36, better than the 1e33 before.
+>
+> ⚠ **None of it could be found by setting `IGINV = 0`.** The element
+> compiles from SYMBOLIC parameters, so `if param != 0` is true at build
+> time whatever the value: the block is in the expression regardless and
+> zero only multiplies the result at the end, where `0 × inf = NaN`. I
+> used exactly that test, watched the bound stay bad with the term
+> "off", and concluded the block was innocent. It was the cause.
+> **Compare against a build WITHOUT the code.**
+
+> **The gate current needed the poly-corrected midpoint — 2026-08-24.**
+> The gate-to-channel component was 1% high on electrons and 7% on
+> holes, and the whole of it was ONE QUANTITY.
+>
+> `Dsi = expl(x_m + …)`, so the tunnelling current is an *exponential*
+> of the midpoint surface potential — and PSP corrects `x_m` for
+> polysilicon depletion **in place** (`macrodefs:717`, `x_m = x_m +
+> u_pd`), so every line after it sees the corrected value. This element
+> computed the correction, used it for the charges and the current, and
+> returned the RAW midpoint under the `x_m` key. Worth `u_pd = -0.0273`:
+> 0.7 mV of surface potential, invisible in the drain current, 1.05% of
+> the gate current.
+>
+> **A fourth variant of the same shape** — after one name for two
+> quantities, one term at one of two sites, and one quantity used at two
+> sites: *when the reference reassigns a name, every later reader means
+> the new value.*
+>
+> **The channel asymmetry named the term.** The correction is 0.069% of
+> `x_m` on the nmos card and 0.334% on the pmos one (`NPL = -0.0959`
+> takes the gate doping to 0.36 of nominal) — a 5× offset inside an
+> exponential gives 7× in the answer. A residual differing between two
+> cards by a *clean factor* points at a term the two cards weight
+> differently; that is now four terms found this way.
+>
+> Found by **strobing PSP through VACASK** after arithmetic on the bias
+> dependence failed to separate the candidates: `TP`, `zg`, `Voxm`,
+> `Vm`, `psi_t` and the partitioning all matched to seven digits, `x_m`
+> did not, and `ln(Dsi)` differed by *exactly* the `x_m` difference. One
+> run. `Igc0` now agrees to eight significant figures on both types.
+
+**The DC model is closed.** All twelve sweeps read median 1.000, min
+1.000, max 1.000; worst point anywhere **1.3e-6**, median sweep 6.2e-7 —
+the reference's own printed precision. Every avalanche and gate-current
+component matches PSP's own operating-point outputs exactly. No DC
+residual is open. `doc/psp103_retrospective_260824.html` is the
+narrative account, with the methods and the six wrong turns.
 
 Deferred, unchanged from the original research verdict:
 
