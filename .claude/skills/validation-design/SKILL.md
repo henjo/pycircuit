@@ -131,6 +131,54 @@ IDENTICAL across every geometry and both device types is a constant, and
 a constant is far more likely to be a condition mismatch than physics.
 Check temperature, bias convention, units and instance parameters first.
 
+## The reference inherits its generator's tolerances
+
+**A reference produced by a solver is only as converged as that solver
+was told to be, and that is part of the reference.**
+
+The golden curves here were swept in ngspice with no `.options`, so at
+its default `abstol = 1e-12` A. A `dc` sweep seeds each point from the
+previous one, so Newton stops as soon as `reltol*|i| + abstol` is met —
+up to **9.6e-4** of relative error on 1e-5 A currents. For a long time
+that was the LARGEST error in the whole comparison, and the model was
+being blamed for it.
+
+Three things let it survive:
+
+- it was two decades below the model's own error, so there was never a
+  reason to look — until the model got good, at which point it became
+  the floor without anything announcing the change;
+- it is invisible to every physics assertion on the reference. Swing,
+  DIBL, saturation current: none of them move at 1e-3;
+- **it does not look like noise.** It is point-to-point, so it reads as
+  a KINK at one bias with a smooth decay after it — which is what a
+  small threshold shift switching on looks like. A plausible mechanism
+  is exactly the wrong thing for a numerical artifact to resemble.
+
+Check which knob actually matters rather than tightening everything:
+here `reltol` swept over eight decades changed not one digit, and so did
+`vntol` and `gmin`. `abstol` alone accounted for all of it.
+
+**Check the per-point and the whole-solve cases separately.** A single
+`op` iterates to convergence with margin — all 271 of its outputs were
+bit-identical either way — while the *sweep* stopped early. So the
+operating-point data was never affected and only the curves needed
+regenerating. That asymmetry is worth knowing before you regenerate
+anything: it is what makes the regeneration checkable.
+
+### Telling convergence noise from physics
+
+A converged curve is smooth: a local polynomial through a point's
+neighbours predicts it. Noise breaks that; curvature does not.
+
+But **the residual of that fit is not the discriminator**, because a
+low-order fit through a genuine knee carries truncation error of the
+same size — 6e-4 here, which read as a defect on the first attempt.
+What discriminates is comparing the residual against a curve KNOWN to be
+analytic. A closed-form model's residual is pure truncation, so
+subtracting leaves only the reference's own noise. After regeneration
+the two matched to every digit printed.
+
 ## Recorded decisions have a shelf life
 
 **A deliberate trade-off is a judgement about RELATIVE sizes, and it

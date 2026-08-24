@@ -164,6 +164,90 @@ class TestItIsActuallyATransistor(object):
         assert np.max(np.abs(i)) < np.max(np.abs(inn))
 
 
+class TestTheReferenceIsConverged(object):
+    """The reference's own SOLVER TOLERANCE is part of the reference.
+
+    Every other test here asks whether the recorded physics is right.
+    This one asks something the physics tests cannot see: whether the
+    numbers were converged tightly enough to be worth the precision
+    they are compared at.
+
+    They were not, for a long time.  The decks carried no `.options`, so
+    ngspice ran at its default `abstol = 1e-12` A, and a `dc` sweep seeds
+    each point from the previous one -- few Newton iterations, and it
+    stops as soon as `reltol*|i| + abstol` is met.  MEASURED across
+    these sweeps, that leaves up to **9.6e-4** of relative error on
+    currents of order 1e-5 A.
+
+    Three things make it worse than a plain 1e-3 error bar:
+
+    * it is point-to-point, so it reads as a KINK in the curve rather
+      than as an offset, and a kink invites a search for a physical
+      mechanism that is not there;
+    * it is invisible to every physics assertion in this file.  A
+      subthreshold swing of 85 mV/dec, a DIBL of 65 mV, a saturation
+      current within 3% -- none of them move at 1e-3;
+    * it survived precisely because it did not matter.  While the model
+      under test was 1.6% out, the reference's own 0.1% was two decades
+      down and nobody had reason to look.  At 1e-4 it was the DOMINANT
+      error in the comparison, and the model was being blamed for it.
+
+    `reltol` is not the knob and neither is `vntol` or `gmin`: swept from
+    1e-4 to 1e-12, `reltol` changes not one digit.  `abstol` alone
+    accounts for all of it, and 1e-15 is far inside convergence -- every
+    value is bit-identical from 1e-14 down to 1e-18.
+
+    The `op` decks are unaffected and deliberately do not carry the
+    option: a single operating point iterates to convergence with
+    margin, and all 271 of its outputs are bit-identical either way.
+    That asymmetry is the whole mechanism -- it is the SWEEP that stops
+    early -- and it is why the `lp_*`, `vth`, capacitance and noise data
+    in this file did not move by a single bit when the sweeps were
+    regenerated.
+    """
+
+    def test_the_generator_tightens_abstol(self):
+        """The option is in the sweep deck, and it is not decoration.
+
+        Asserted against the generator source rather than the data,
+        because the data cannot show what tolerance produced it.  A
+        regeneration without this silently reintroduces 1e-3 of noise
+        into a comparison that now resolves 1e-5.
+        """
+        gen = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           '..', '..', '..', 'benchmarks',
+                           'psp_reference.py')
+        if not os.path.isfile(gen):
+            pytest.skip('generator not in this tree')
+        src = open(os.path.normpath(gen)).read()
+        head, _, tail = src.partition('VTH_DECK')
+        assert '.options abstol=1e-15' in head, \
+            'the sweep deck must tighten abstol'
+        assert '.options' not in tail.split('"""')[1], \
+            'the op deck does not need it and should not carry it'
+
+    def test_the_recorded_currents_carry_their_digits(self, ref):
+        """A weaker check that needs no model: the file is not rounded.
+
+        The discriminating test -- that the reference is as smooth as an
+        analytic curve -- lives in `test_psp_gap.py`, because telling
+        convergence noise from real curvature needs a smooth curve to
+        compare against and this module deliberately has no model.
+
+        What can be checked here is that nothing downstream of the
+        solver threw the precision away again.
+        """
+        for name in ('nmos_idvg_vd0p05', 'pmos_idvg_vd0p05'):
+            _, i, _ = _curve(ref, name)
+            ## At least eight significant digits on the large currents,
+            ## or `wrdata`/JSON has rounded and no solver tolerance can
+            ## help.
+            big = np.abs(i)[np.abs(i) > 1e-6]
+            digits = [len(('%.17g' % x).split('e')[0].replace('-', '')
+                          .replace('.', '').rstrip('0')) for x in big]
+            assert min(digits) >= 8, (name, min(digits))
+
+
 class TestCurrentsBalance(object):
 
     def test_kirchhoff_holds_at_every_point(self, ref):

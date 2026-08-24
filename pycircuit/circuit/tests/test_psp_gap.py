@@ -124,7 +124,7 @@ def _compare(deck, sweep):
 @needs_pdk
 class TestAgainstTheRealDevice(object):
 
-    def test_the_long_device_agrees_within_four_percent(self, deck, ref):
+    def test_the_long_device_agrees_to_a_part_in_a_thousand(self, deck, ref):
         """W = 10 um, L = 1 um -- where the core is meant to be right.
 
         The core still has no channel-length modulation and no
@@ -135,8 +135,11 @@ class TestAgainstTheRealDevice(object):
         _, r, g, _ = _compare(deck, ref['nmos_long_idvd'])
         assert len(r) > 20
         ratio = g / r
-        assert 0.96 < ratio.min(), 'worst low %.3f' % ratio.min()
-        assert ratio.max() < 1.04, 'worst high %.3f' % ratio.max()
+        ## MEASURED 0.99920 to 1.00001.  Was 0.96/1.04, from when the
+        ## comparison could not resolve better; the reference's own
+        ## convergence has since been fixed and the model with it.
+        assert 0.998 < ratio.min(), 'worst low %.5f' % ratio.min()
+        assert ratio.max() < 1.002, 'worst high %.5f' % ratio.max()
 
     def test_the_agreement_is_flat_not_a_lucky_crossing(self, deck, ref):
         """A curve that crosses the reference could average out to 1.
@@ -324,7 +327,7 @@ class TestAgainstTheRealDevice(object):
         assert r[sat][-1] / r[sat][0] > 1.03, 'PSP climbs'
         assert g[sat][-1] / g[sat][0] > 1.01, 'so do we, now'
 
-    def test_both_geometries_are_within_a_few_percent(self, deck, ref):
+    def test_both_geometries_agree_to_a_part_in_a_thousand(self, deck, ref):
         """Which one is worse has now INVERTED, twice.
 
         This test began by asserting the short device was at least 3x
@@ -340,8 +343,9 @@ class TestAgainstTheRealDevice(object):
         _, r_s, g_s, _ = _compare(deck, ref['nmos_idvg_vd0p05'])
         long_err = np.median(np.abs(g_l / r_l - 1.0))
         short_err = np.median(np.abs(g_s / r_s - 1.0))
-        assert long_err < 0.05, 'long %.3f' % long_err
-        assert short_err < 0.05, 'short %.3f' % short_err
+        ## MEASURED 9.5e-07 and 7.9e-06.  Was 0.05 each.
+        assert long_err < 0.002, 'long %.6f' % long_err
+        assert short_err < 0.002, 'short %.6f' % short_err
 
 
 @needs_pdk
@@ -538,8 +542,9 @@ class TestTheSubthresholdRegion(object):
                 np.asarray(e.i(e.bias(b['Vd'], x, b['Vs'], b['Vb'])),
                            float)[0] for x in v[m]]))
             ratio = got / r[m]
-            assert 0.99 < ratio.min() and ratio.max() < 1.01, \
-                '%s: %.4f - %.4f' % (name, ratio.min(), ratio.max())
+            ## MEASURED 0.99996 to 1.00020 across the four.
+            assert 0.999 < ratio.min() and ratio.max() < 1.001, \
+                '%s: %.5f - %.5f' % (name, ratio.min(), ratio.max())
 
 
 @needs_pdk
@@ -649,6 +654,124 @@ class TestTheTwoDrainBiasQuantities(object):
 
         assert ratio(1.0) == pytest.approx(1.0, abs=0.005), ratio(1.0)
         assert abs(ratio(0.286) - 1.0) > abs(ratio(1.0) - 1.0)
+
+
+@needs_pdk
+class TestTheReferenceIsAsSmoothAsAnAnalyticCurve(object):
+    """The reference's own CONVERGENCE, measured against a smooth curve.
+
+    For a long time the largest error in this whole comparison was not
+    in the model. The reference decks carried no `.options`, so ngspice
+    swept at its default `abstol = 1e-12` A -- and a `dc` sweep seeds
+    each point from the last, so Newton stops as soon as
+    `reltol*|i| + abstol` is met. That left up to **9.6e-4** of relative
+    error on currents of order 1e-5 A.
+
+    It was worth chasing as physics for exactly as long as it took to
+    measure it, because it does not look like noise. It is
+    point-to-point, so it appears as a KINK at one gate voltage, and a
+    kink invites a mechanism. Two of the sweeps here showed a clean step
+    of 7-9e-4 at a single bias with a smooth decay after it, which is
+    what a small threshold shift switching on would look like.
+
+    HOW TO TELL THE TWO APART, which is the transferable part: a
+    converged curve is SMOOTH, and smooth means a local polynomial
+    through a point's neighbours predicts it. Convergence noise breaks
+    that; real curvature does not. But the residual of such a fit is not
+    itself the discriminator, because a cubic through a moderate-
+    inversion knee carries genuine truncation error of the same size --
+    6e-4 here, which is what made the first version of this measurement
+    read the knee as a defect.
+
+    What discriminates is the COMPARISON of that residual against a
+    curve known to be analytic. Our own model is exactly that: it is a
+    closed-form expression, so any local-fit residual it shows is pure
+    truncation. Subtract, and only the reference's own noise is left.
+
+    The measurement, at a degree-5 fit over eight neighbours:
+
+        sweep                 before      after     ours
+        nmos_idvg_vd0p05    4.90e-04   1.34e-04   1.34e-04
+        nmos_idvg_vb_m1     5.43e-04   1.91e-04   1.91e-04
+        pmos_idvg_vd0p05    4.55e-04   4.19e-05   4.19e-05
+
+    After regeneration the reference matches the analytic curve to every
+    digit printed -- the residual IS the truncation and nothing else.
+    Before it, the reference was three to eleven times rougher.
+    """
+
+    #: `half` neighbours each side, polynomial degree.  Degree 5 over 8
+    #: neighbours: high enough that truncation at the knee is well below
+    #: the noise being looked for, low enough to stay conditioned.
+    HALF, DEG = 4, 5
+
+    NAMES = ['nmos_idvg_vd0p05', 'nmos_idvg_vd1p2', 'nmos_idvg_vb_m1',
+             'pmos_idvg_vd0p05', 'pmos_idvg_vd1p2']
+
+    @classmethod
+    def _roughness(cls, v, y):
+        """Worst leave-one-out residual of a local fit to `log|y|`."""
+        a = np.abs(np.asarray(y, float))
+        m = np.where(a > FLOOR)[0]
+        out = []
+        for k in range(m.min() + cls.HALF, m.max() - cls.HALF + 1):
+            idx = [j for j in range(k - cls.HALF, k + cls.HALF + 1)
+                   if j != k]
+            c = np.polyfit(v[idx] - v[k], np.log(a[idx]), cls.DEG)
+            out.append(abs(np.log(a[k]) - np.polyval(c, 0.0)))
+        return max(out)
+
+    @staticmethod
+    def _ours(deck, sw, v):
+        cm.default_toolkit = numeric
+        pmos = 'pmos' in sw['device']
+        kw = psp_scaling.to_long_channel(deck.model_params(
+            'sg13g2_lv_pmos_psp' if pmos else 'sg13g2_lv_nmos_psp',
+            w=sw['w'], l=sw['l'], ng=1, m=1, pre_layout=1),
+            w=sw['w'], l=sw['l'], T=T27)
+        e = (PspPmosLongChannel if pmos else PspMosLongChannel)(
+            cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'), **kw)
+        e.update_iparv()
+        b = sw['bias']
+        return np.array([np.asarray(
+            e.i(e.bias(b['Vd'], x, b['Vs'], b['Vb'])), float)[0] for x in v])
+
+    @pytest.mark.parametrize('name', NAMES)
+    def test_the_reference_is_no_rougher_than_the_analytic_curve(
+            self, deck, ref, name):
+        """The reference carries no convergence noise above truncation.
+
+        Both curves are fitted the same way on the same grid, so the
+        truncation term is common and cancels. What is left is the
+        reference's own solver error.
+        """
+        sw = ref[name]
+        v = np.asarray(sw['v'], float)
+        r = self._roughness(v, sw['i_d'])
+        g = self._roughness(v, self._ours(deck, sw, v))
+        ## MEASURED: equal to every digit printed after regeneration.
+        ## The bound allows the reference to be 40% rougher, which is
+        ## still four times tighter than the pre-regeneration data was.
+        assert r < 1.4 * g + 2e-5, \
+            '%s: reference roughness %.2e vs analytic %.2e' % (name, r, g)
+
+    def test_the_generator_asks_for_that_convergence(self):
+        """And it is the SWEEP deck that needs it, not the `op` deck.
+
+        A single operating point iterates to convergence with margin --
+        all 271 of its outputs are bit-identical either way -- so the
+        `lp_*`, `vth`, capacitance and noise data never carried this
+        error at all. That asymmetry is the mechanism, and it is why
+        regenerating moved the sweeps and not one bit of anything else.
+        """
+        gen = os.path.normpath(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            '..', '..', '..', 'benchmarks', 'psp_reference.py'))
+        if not os.path.isfile(gen):
+            pytest.skip('generator not in this tree')
+        head, _, tail = open(gen).read().partition('VTH_DECK')
+        assert '.options abstol=1e-15' in head
+        assert '.options' not in tail.split('"""')[1]
 
 
 @needs_pdk
@@ -898,7 +1021,9 @@ class TestTheConditionedGateDrive(object):
             return float((got / r[m]).max())
 
         assert top(off) == pytest.approx(was, abs=5e-4), top(off)
-        assert top(0.0) < 1.001, top(0.0)
+        ## MEASURED 1.00000 and 1.00004 against the converged reference,
+        ## where it was 1.00086 and 1.00004 against the noisy one.
+        assert top(0.0) < 1.0002, top(0.0)
 
 
 @needs_pdk
@@ -1373,14 +1498,17 @@ class TestTheSaturationVoltage(object):
         voltage was fed back into the channel-length modulation, which
         is what it had been missing all along.
 
-        Held at 3% rather than at the measured 2.3%: this is a guard
-        against regression, not a pin on numbers that should be free to
-        improve.
-
         It was briefly 1%, on a model whose short-channel terms were
         switched off.  That number was better and the model was not:
         see `TestTheShortChannelTerms`, where the median turns out to be
         the wrong thing to rank terms by.
+
+        NOW MEASURED AT 2.0e-4, worst of the twelve, and that one sweep
+        (`pmos_idvg_vd0p05`) is the only one above 2e-5.  The bound was
+        3%, held there deliberately as "a guard against regression, not
+        a pin on numbers that should be free to improve".  The numbers
+        did improve, by two orders of magnitude, and a guard 150x above
+        what it guards has stopped being one.  0.001 keeps 5x of room.
         """
         cm.default_toolkit = numeric
         worst = {}
@@ -1393,7 +1521,7 @@ class TestTheSaturationVoltage(object):
                      'pmos_idvg_vd0p05'):
             _, r, g, _ = _compare(deck, ref[name])
             worst[name] = abs(np.median(g / r) - 1.0)
-        assert max(worst.values()) < 0.03, worst
+        assert max(worst.values()) < 0.001, worst
         assert sum(worst.values()) < 0.10, worst
 
 

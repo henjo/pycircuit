@@ -149,6 +149,32 @@ def _deck(pdk, spec, out):
     return """* PSP103 reference: {name}
 .lib {pdk}/models/cornerMOSlv.lib mos_tt
 
+* ABSTOL IS NOT A DETAIL HERE, AND THE DEFAULT IS NOT GOOD ENOUGH.
+*
+* A `dc` sweep seeds each point from the previous one, so Newton needs
+* few iterations and stops as soon as `reltol*|i| + abstol` is met.  At
+* ngspice's default `abstol = 1e-12` that leaves up to 6.4e-4 of
+* relative error on a 1e-5 A drain current -- point to point, so it
+* reads as a KINK in the curve rather than as an offset, and it is the
+* dominant error in this file at every bias above the leakage floor.
+*
+* Measured: tightening `abstol` to 1e-15 moves the recorded current by
+* up to 9.6e-4 across these sweeps.  `reltol` does nothing -- swept from
+* 1e-4 to 1e-12 it changes not one digit -- and neither do `vntol` or
+* `gmin`.  It is `abstol` alone, and 1e-15 is comfortably converged:
+* every value is BIT-IDENTICAL from 1e-14 down to 1e-18.
+*
+* The `op` decks below do NOT need this and do not have it: a single
+* operating point iterates to convergence with margin, and all 271 of
+* its outputs are bit-identical either way.  It is specifically the
+* SWEEP that stops early.
+*
+* This was invisible for as long as the model was further out than
+* 1e-3.  It became the limit on what could be measured once the model
+* reached 1e-4, at which point the reference's own convergence was the
+* floor rather than its physics.
+.options abstol=1e-15
+
 {bias}
 V{sn} {sn} 0 dc 0
 X1 d g s b {device} w={w:g} l={l:g} ng=1 m=1
