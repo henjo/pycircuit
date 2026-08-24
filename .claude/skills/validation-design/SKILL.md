@@ -100,6 +100,21 @@ existing number reproduces bit-identically before trusting the new ones.
 model belong in the reference file too — a known gap written down is
 better than a known gap remembered.
 
+## Know where the floor is
+
+**The reference's own precision is the floor**, and agreeing to it is
+success, not a remaining gap. Recorded data carries maybe six
+significant figures; a ratio of 1.00003 against it is the last digit,
+not a 0.003% error to chase.
+
+**Distinguish a model residual from a harness one before chasing it.**
+The last 0.04% here was a **0.15 K** difference between the temperature
+the parameters were scaled at and the one the model was evaluated at —
+`sid ∝ φt`, so 300.0/300.15 = 0.9995 exactly. A residual that is
+IDENTICAL across every geometry and both device types is a constant, and
+a constant is far more likely to be a condition mismatch than physics.
+Check temperature, bias convention, units and instance parameters first.
+
 ## Before publishing a number
 
 - Did I measure in a clean window, or in the reference's noise?

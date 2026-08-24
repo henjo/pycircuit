@@ -110,6 +110,24 @@ That turns an overflowing `denominator**2` into an underflowing
   a dict capture after every assignment, and find the first non-finite
   variable. That converts "somewhere in 2000 lines" into one name.
 
+## One expression cannot branch on the solution
+
+A reference model may ORDER its terminals with a real `if` that swaps
+`Vgs`/`Vsb`/`Vds` and records a sign. A compiled expression cannot: the
+branch condition depends on the unknowns, so the sign has to be carried
+arithmetically instead — typically through a smooth `|Vds|`.
+
+That substitution is correct and necessary, and it creates a specific
+hazard: **the smooth `|Vds|` is now a quantity the reference does not
+have**, and it is easy to reuse it wherever the reference writes
+something with a similar name. Here the reference's own `Vdsx` is
+`Vds²/(√(Vds²+0.01)+0.1)` — a softened drain bias, not an absolute value
+— and using one quantity for both roles cost 5.5% of the current.
+
+Whenever you replace a branch with arithmetic, write down which of the
+reference's quantities your new one stands for, and check every OTHER
+use of that name separately.
+
 ## Warnings in a green suite are unfinished work
 
 24 `invalid value encountered in scalar divide` warnings sat in this

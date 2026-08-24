@@ -100,10 +100,18 @@ the reference's effective contribution as a fraction of yours.
 
 ### 5. Read the reference's own internals
 
-If the differential says a term is wrong and every ingredient still
-matches, the mechanism is invisible to reading and you need the
-reference to tell you its own numbers: add debug outputs to a COPY of
-the reference source, rebuild, run one point.
+**This is the step that ends it.** If the differential says a term is
+wrong and every ingredient still matches, the mechanism is invisible to
+reading, and you need the reference to tell you its own numbers: add
+debug outputs to a COPY of the reference source, rebuild, run one point.
+
+Two bugs here were found this way after ten term-by-term readings found
+nothing, and each took a single bias point. Strobe a whole CHAIN of
+intermediates at once, not one suspect: the ratios then localise the
+error themselves. `alpha`, `Gmob`, `FdL` at 1.000 with `dps` at 0.958
+says the error is upstream of `dps`; `zsat` at 0.929 being exactly
+`dps²` says it is not a separate error. One run replaced a week of
+inference.
 
 **Check first that you can rebuild the reference at all**, with an
 unmodified source, before spending time on the patch. Here that check
@@ -144,6 +152,25 @@ found it, and say plainly that the mechanism is open.
 - **A zero coefficient does not test a scaling**, and a bias no sweep
   visits tests nothing. Two cards is not twice the validation — it is
   the difference between exercising a term and assuming it.
+- **⚠ A QUANTITY THE REFERENCE COMPUTES TWICE.** Both final bugs here
+  had this shape, and it is invisible to term-by-term reading *because
+  every term that is present is transcribed correctly*:
+  - one NAME standing for two different quantities — PSP's `Vdsx` is
+    `Vds²/(√(Vds²+0.01)+0.1)`, NOT the smoothed `|Vds|` this element
+    also needed; using one for both made a log four times too large;
+  - one TERM present in one place and missing in the other — the series
+    resistance `GR` was in the midpoint mobility and absent from the
+    source-end one, 26% of that quantity.
+
+  When the reference evaluates the same physics at several points
+  (source end, midpoint, drain end), check each SITE, not just each
+  formula. And share the helper rather than writing the expression
+  twice — two copies is how the sites drift apart.
+- **Match the reference's own conditions exactly.** The last 0.04% here
+  was a **0.15 K** difference between the temperature the parameters
+  were scaled at and the one the model was evaluated at. Not a model
+  error at all; a harness one. Check temperature, bias convention and
+  units before concluding anything about physics.
 - **A key that lies is worse than a long name.** A dict entry named
   `Gmob` holding `Gmob_dL` reads correctly at every call site and is
   wrong at exactly one.
@@ -172,6 +199,19 @@ found it, and say plainly that the mechanism is open.
   rather than re-running the vendor per point.
 - PSP subthreshold: the reference carries a ~2e-12 A junction-leakage
   floor this core does not model. Use the window **1e-9 to 1e-6 A**.
+- **Reading PSP's own internals** — ngspice-47 cannot load an
+  `openvaf-r` build, but **VACASK** can (same author). Convert a COPY of
+  the PDK with
+  `PDK_ROOT=... PDK=ihp-sg13g2 PYTHONPATH=~/local/vacask/lib/vacask/python
+  python3 -m sg13g2tovc`; it rebuilds the PDK **and compiles the
+  Verilog-A**, so a patched PSP103 runs. Declare extra `OPP(...)`
+  outputs, assign them where the quantity is computed, `save
+  p('m1:nsg13_lv_nmos', dbg_x)`, read the `.raw` with
+  `rawfile.rawread`. The converter chokes on the local LDE edits in
+  `sg13g2_moslv_mod.lib` — use `git show HEAD:` versions in the copy.
+- Comparisons must set **`epar.T = 273.15 + 27`**: the parameters are
+  scaled at the card's `TR`, and leaving `epar` at its 300.0 K default
+  is a 0.15 K mismatch worth 0.04% of the noise density.
 
 ## Worked example
 
@@ -181,19 +221,27 @@ channel type only.
 
 Ten quantities were read against the vendor and matched. The surface
 potential was verified exact to 1e-8 against a 40-digit root. Every
-parameter matched `lp_*`. Nothing absent could account for it, checked
-against the card's own switches. The residual stayed.
+parameter matched the vendor's exported `lp_*`. Nothing absent could
+account for it, checked against the card's own switches. The residual
+stayed.
 
-Bounding eliminated six candidates in one run and left `ALP2`, whose
-term is weak-inversion-specific by construction — the right shape. That
-was *not* sufficient: no ingredient could be off by the required factor,
-and saying "it is the ALP2 term" on shape alone was wrong once already.
+Bounding eliminated six candidates in one run and left the term with
+the right shape — but no ingredient of it could be off by the required
+factor, and saying "it is that term" on shape alone was wrong once.
 
-The differential settled it in two runs. Zeroing `ALP2` in a copy of the
-card, read by **both** models, moved the agreement from 1.0549 to
-0.9976. Scanning ours against the vendor's fixed curve put the crossing
-at 0.286 — our term is 3.5× too strong.
+The differential settled WHERE: zeroing that term in a copy of the card,
+read by BOTH models, moved the agreement from 1.0549 to 0.9976.
 
-Mechanism still open. Recorded as a factor, pinned by a test that needs
-no vendor tooling, with the next step named: strobe `dL1`/`FdL` out of a
-rebuilt `.osdi`.
+Reading the reference's own internals settled WHY, in one bias point:
+`s2` was 0.14424 against PSP's 0.03597, every other ingredient exact.
+The cause was `Vdsx` — which is not the smoothed `|Vds|` its name
+suggests. A second strobe found the last residual the same way: the
+series resistance was missing from the source-end mobility.
+
+**All twelve sweeps then matched the vendor at median 1.000**, and with
+the evaluation temperature matched too, `ids` and the noise density come
+to 3e-5 — the reference's own printed precision.
+
+The lesson the whole exercise sharpens: **reading tests your reading.**
+Ten careful readings found nothing that two strobes of the reference's
+own numbers found immediately.
