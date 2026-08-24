@@ -3407,6 +3407,55 @@ took about sixty lines to extend.
 > has enough leverage" from "this term is wrong" — which are different
 > claims, and conflating them is what went wrong two entries ago.
 
+> **The differential against the vendor settles it: the `ALP2` term is
+> 3.5x too strong — 2026-08-24.** Two entries ago this branch said the
+> residual followed `ALP2`'s shape but that no ingredient could be off
+> by the required factor, so the cause was open. The way past that was
+> to stop comparing my reading of PSP against our code and start
+> comparing PSP against our code.
+>
+> **The strategy, in the order it was applied:**
+>
+> **1. Check the comparison itself.** The reference deck instantiates
+> `sg13_lv_nmos`, a SUBCIRCUIT — not a bare model. It inserts a voltage
+> source in series with the gate (`V_lde_nmos`, an LDE threshold shift)
+> and passes `sa`/`sb`/`sca`/`scb`/`scc` as instance parameters to
+> PSP's stress model, none of which we model. **Inert on this card** —
+> `KUO = KVSAT = 0`, every `KUOWE` coefficient is 0, and with
+> `sa = sb = 1u = SAREF = SBREF` the series source is exactly 0 V — but
+> it is a real hazard for a different card or non-default `sa`/`sb`, and
+> it was worth an hour to rule out rather than assume.
+>
+> **2. The differential.** Zero `ALP2` in a COPY of the card and let
+> **both** models read the copy:
+>
+> | | agreement in the leakage-free window |
+> |---|---|
+> | `ALP2` as the card gives it | **1.0549** |
+> | `ALP2` zeroed on both sides | **0.9976** |
+>
+> The discrepancy is entirely attributable to that term. This is causal,
+> not correlational, and it needed no reading of the source at all.
+>
+> **3. The factor.** Holding PSP at the card value and scanning ours,
+> the curves coincide at **0.286** of it — so our term is **3.5x too
+> strong** and PSP's effective contribution is 0.286 of ours.
+>
+> **Recorded as a scale factor, NOT applied as one.** A fudge that lands
+> the number without a mechanism would hide the bug rather than fix it.
+> Every ingredient still matches: `alp2`, `vp`, `alp`, `alp1` against
+> `lp_*` exactly; `qbm`, `r2`, `s2`, `qim1`, `alpha` against the vendor
+> text; and the compiled chain against those formulas digit by digit.
+> **So the term is wrong in a way that reading it does not reveal**, and
+> the next step is strategy 3 — add `$strobe` of `dL1`/`FdL` to a copy
+> of the Verilog-A, rebuild the `.osdi`, and read PSP's own value.
+>
+> The general lesson is the one that keeps recurring here, in its
+> sharpest form yet: **a textual comparison and a numerical one are
+> different tests, and when they disagree the numerical one is right.**
+> Ten separate quantities were read against the vendor and matched; the
+> differential found the error in two runs.
+
 Deferred, unchanged from the original research verdict:
 
 | item | why |

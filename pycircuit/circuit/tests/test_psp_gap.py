@@ -542,7 +542,16 @@ class TestTheSubthresholdRegion(object):
         smaller -- so the p-channel effectively has no such term, and the
         p-channel is the device that is RIGHT.
 
-        ⚠⚠ CORRELATION, NOT CAUSATION, and the arithmetic says so.
+        ⚠⚠ SUPERSEDED IN PART -- see
+        `test_the_alp2_term_is_three_and_a_half_times_too_strong`.  A
+        DIFFERENTIAL against the vendor (zero `ALP2` in the card and let
+        BOTH models read it) shows the agreement go to 0.24%, which is
+        causal and not merely correlated.  The reasoning below remains
+        the reason the MECHANISM is still unknown: no ingredient can be
+        off by the measured factor, so the term is wrong in a way that
+        reading it does not reveal.
+
+        The original note, kept because its arithmetic still stands:
         Across three decades the residual is `0.79 * term - 0.0006` --
         close to proportional, with the constant being the -0.06% seen
         above threshold.  But if the term were simply wrong, PSP's would
@@ -586,6 +595,52 @@ class TestTheSubthresholdRegion(object):
         ## answer is not simply to drop it.
         assert 0.95 < (got / r[m]).mean() < 1.0, (got / r[m]).mean()
         assert with_it > 1.0
+
+    def test_the_alp2_term_is_three_and_a_half_times_too_strong(
+            self, deck, ref):
+        """The factor, measured against the vendor rather than inferred.
+
+        Two differentials settled this where reading the source could
+        not.  Zeroing `ALP2` in the card and letting BOTH models read
+        the modified card takes the agreement from 5.5% high to **0.24%
+        low** -- so the discrepancy is entirely in that term.  Then,
+        holding PSP at the card value and scanning ours, the curves
+        coincide at **0.286** of it.
+
+        Our term is therefore 3.5x too strong, and PSP's effective
+        contribution is 0.286 of ours.  Recorded as a scale factor
+        rather than applied as one: a fudge that lands the number
+        without a mechanism would hide the bug rather than fix it, and
+        every ingredient (`alp2`, `vp`, `qbm`, `r2`, `s2`, `qim1`,
+        `alpha`) matches the vendor and its `lp_*` value exactly.
+
+        This test needs no ngspice -- it scans our own model against the
+        RECORDED PSP curve, so the factor stays pinned even though the
+        differential that found it does not run here.
+        """
+        sw = ref['nmos_long_idvg']
+        b = sw['bias']
+        base = self._card_kw(deck, sw)
+        v = np.asarray(sw['v'], float)
+        r = np.abs(np.asarray(sw['i_d'], float))
+        m = (r > self.LO) & (r < self.HI)
+        cm.default_toolkit = numeric
+
+        def ratio(frac):
+            e = PspMosLongChannel(
+                cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
+                **dict(base, alp2=base['alp2'] * frac))
+            e.update_iparv()
+            got = np.abs(np.array([
+                np.asarray(e.i(e.bias(b['Vd'], x, b['Vs'], b['Vb'])),
+                           float)[0] for x in v[m]]))
+            return float((got / r[m]).mean())
+
+        ## At the card value we are high; at 0.286 of it we land.
+        assert ratio(1.0) > 1.04, ratio(1.0)
+        assert ratio(0.286) == pytest.approx(1.0, abs=0.006), ratio(0.286)
+        ## and the crossing is a real crossing, not a flat region
+        assert ratio(0.0) < 0.99 < ratio(0.5)
 
     def test_the_subthreshold_current_is_within_eleven_percent(self,
                                                                deck, ref):
