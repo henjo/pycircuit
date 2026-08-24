@@ -51,6 +51,12 @@ far it gets and assert it has not got worse.
 saturation, 0.2% in the linear region" is a regression guard. "We do not
 model X well" is not.
 
+**And a recorded gap EXPIRES.** Four notes recording gaps were found
+stale in one session here, and one — a test named `..._are_absent` for
+terms implemented weeks earlier — sent a whole investigation the wrong
+way. A note is trusted like a measurement and has no owner once written.
+See `documenting-moving-code`.
+
 ## Choosing the coverage
 
 **Find the floors and masks.** A comparison helper with `FLOOR = 1e-6`
