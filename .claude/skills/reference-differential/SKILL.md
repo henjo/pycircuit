@@ -170,7 +170,11 @@ found it, and say plainly that the mechanism is open.
   was a **0.15 K** difference between the temperature the parameters
   were scaled at and the one the model was evaluated at. Not a model
   error at all; a harness one. Check temperature, bias convention and
-  units before concluding anything about physics.
+  units before concluding anything about physics — and note that this
+  one had been *documented and bounded* as an acceptable trade for
+  months. It was acceptable when the model was 1.6% off and stopped
+  being so at 3e-5. See `validation-design`, "Recorded decisions have a
+  shelf life".
 - **A key that lies is worse than a long name.** A dict entry named
   `Gmob` holding `Gmob_dL` reads correctly at every call site and is
   wrong at exactly one.

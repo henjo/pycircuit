@@ -115,6 +115,41 @@ IDENTICAL across every geometry and both device types is a constant, and
 a constant is far more likely to be a condition mismatch than physics.
 Check temperature, bias convention, units and instance parameters first.
 
+## Recorded decisions have a shelf life
+
+**A deliberate trade-off is a judgement about RELATIVE sizes, and it
+expires when one of those sizes changes.**
+
+A known mismatch here sat documented and bounded for months, with a test
+saying in as many words that fixing it cost more than the error did.
+That was *correct when it was made*: the error was under 0.01% of the
+measured quantity and the model was 1.6% off. It became the LARGEST
+remaining term once everything else reached 3e-5 — and nothing
+announced that, because a passing test that pins a bounded error keeps
+passing.
+
+So when the thing a decision was traded against moves, re-read the
+decision. Treat "known, measured, deliberately unclosed" as a claim with
+an expiry date, not a settled matter. The habit that catches it: after
+any large accuracy gain, go back through the *recorded* known-gaps and
+ask which are now the biggest thing left.
+
+## Fix a convention with a fixture, not with discipline
+
+If every comparison in a module must be made under some condition — a
+temperature, a bias convention, a unit — set it **once, centrally**,
+not at each of fifty call sites.
+
+Threading it through call sites is correct on the day you do it and
+wrong forever after, because the next test added will not know. A
+module-scoped autouse fixture (restoring what it changed) covers every
+existing site *and* every future one. That is the difference between a
+convention that holds and a convention that decays.
+
+Keep the measurement of what the condition was worth in the test that
+asserts it, so the fixture stays a reason rather than an unexplained
+line of setup.
+
 ## Before publishing a number
 
 - Did I measure in a clean window, or in the reference's noise?
