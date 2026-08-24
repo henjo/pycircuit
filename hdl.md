@@ -3535,6 +3535,61 @@ took about sixty lines to extend.
 > law for electrons than for holes. VACASK now makes that directly
 > checkable the same way.
 
+> **And the last one: `GR` was missing from the SOURCE-end mobility —
+> 2026-08-24.** The short n-channel in saturation is fixed, and with it
+> the last DC residual, the short-device thermal noise and the
+> short-device `CGeff`. **All twelve sweeps now sit at median 1.000**
+> with spreads of 0.001–0.009.
+>
+> Found by the same VACASK route, in two strobes. The first decomposed
+> the current at the failing bias:
+>
+> | | PSP | ours | |
+> |---|---|---|---|
+> | `alpha`, `Gmob`, `FdL` | — | — | ✓ |
+> | `dps` | 0.3439344 | 0.3295397 | **0.958** |
+> | `zsat` | 0.3765106 | 0.3495843 | 0.929 |
+>
+> Those multiply to exactly the measured `ids` ratio, and `zsat ∝ dps²`
+> — so everything traced to `dps`, hence to `Vdse`, hence to `Vdsat`
+> (0.50413 against our 0.46770). The second strobe took the Vdsat block
+> apart:
+>
+> | | PSP | ours | |
+> |---|---|---|---|
+> | `qis`, `xgs`, `asat`, `phi_inf`, `Phi_2`, `xitsb` | — | — | **1.000 ✓** |
+> | **`Gmob_s`** | 2.8995452 | 2.1473369 | **0.741** |
+> | `ysat` | 0.7025717 | 0.9488014 | 1.351 |
+>
+> `thesat1 = thesatloc·(temp/Gmob)`, so `1/0.741 = 1.350` is `ysat`'s
+> ratio exactly, and it propagated
+> `ysat → za → Phi_0 → Phi_sat → Vdsat → Vdse → dps`.
+>
+> **The cause.** PSP's source-end mobility is `(1 + Mutmp + GR)·Rxcor`
+> (`macrodefs:595`) — the same three terms as the midpoint, with the
+> source-side charge `qis` in place of `qim`. This element had `GR` at
+> the midpoint and **omitted it at the source end**. `RS` is 9.34 on
+> this card, so that is 26% of `Gmob_s`.
+>
+> `_ther` and `_rhob` are now shared helpers rather than duplicated
+> expressions, because two copies of the same quantity is how the two
+> ends drifted apart in the first place.
+>
+> | | before | after |
+> |---|---|---|
+> | `Vdsat` | 0.9277 | **1.0000** |
+> | `ids`, short nmos Vg=Vd=1.2 | 0.9942 | **1.0002** |
+> | `sid`, short nmos | 1.065 | **0.9996** |
+> | `CGeff`, short nmos | 0.9844 | **0.9998** |
+> | all twelve sweep medians | 0.993–1.001 | **1.000** |
+>
+> **Both of the last two bugs were the same shape**: a quantity PSP
+> computes in two places, which this element computed once and reused —
+> `Vdsx`/`|Vds|` conflated into one, and `GR` present at one end and
+> not the other. Neither is visible in a term-by-term reading, because
+> every term that *is* present is transcribed correctly. Both took
+> reading the vendor's own numbers.
+
 Deferred, unchanged from the original research verdict:
 
 | item | why |

@@ -383,6 +383,26 @@ def surface_state(x, xn, delta, Gf, inv_Gf2):
 XN_FLOOR = 0.0
 
 
+def _ther(beta, rs):
+    """PSP's `THER = 2*BET*RS` (`macrodefs:381`)."""
+    return _v(2.0 * beta * rs, 'ids_ther')
+
+
+def _rhob(mob):
+    """Body-bias dependence of the sheet resistance (`macrodefs:581-585`).
+
+    The two forms are PSP's, selected by the SIGN of a parameter, so the
+    condition is parameter-only and the topology stays fixed.  Shared by
+    the source end and the midpoint because PSP shares it -- they are
+    the same `rhob`, and computing it twice is how the two drift apart.
+    """
+    rsb = mob.get('rsb', 0.0)
+    vsb = mob.get('vsb', 0.0)
+    return _v(sympy.Piecewise(
+        (hdl.safe_div(1.0, 1.0 - rsb * vsb, eps=1e-30), rsb < 0),
+        (1.0 + rsb * vsb, True)), 'ids_rhob')
+
+
 def _bias_mod(coeff, v, name):
     """PSP's ``1 + t*v`` / ``1/(1 - t*v)`` pair.
 
@@ -538,8 +558,27 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
         rs0 = _v(hdl.safe_div(Ps, Ps + Ds + 1.0e-14, eps=1e-30),
                  'ids_ratios0')
         rs_ = _v(sympy.Max(rs0, 1.0e-10), 'ids_ratios')
+        ## SERIES RESISTANCE AT THE SOURCE END TOO.
+        ##
+        ## PSP's source-end mobility is `(1 + Mutmp + GR)*Rxcor`
+        ## (`macrodefs:595`) -- the SAME three terms as the midpoint,
+        ## with the source-side charge `qis` in place of `qim`.  This
+        ## element had `GR` at the midpoint and omitted it here, which
+        ## made `Gmob_s` 26% low; `thesat1 = thesatloc*(temp/Gmob)` then
+        ## came out 35% high, and that propagated
+        ## `ysat -> za -> Phi_0 -> Phi_sat -> Vdsat`, leaving `Vdsat` 7%
+        ## low and `Vdse` 4% low on the short n-channel in saturation.
+        _rs = mob.get('rs', 0.0)
+        if _rs == 0.0 and not isinstance(_rs, sympy.Expr):
+            grs = _v(sympy.Integer(0), 'ids_GRs')
+        else:
+            _rsg = mob.get('rsg', 0.0)
+            grs = _v(_ther(beta, _rs) * (_rhob(mob) * _v(sympy.Piecewise(
+                (1.0 - _rsg * qis, _rsg < 0),
+                (hdl.safe_div(1.0, 1.0 + _rsg * qis, eps=1e-30), True)),
+                'ids_rsgfs') * qis), 'ids_GRs')
         gmob_s = _v((1.0 + bs_ ** mob['themu']
-                     + mob['cs'] * rs_ ** (0.5 * mob['thecs']))
+                     + mob['cs'] * rs_ ** (0.5 * mob['thecs']) + grs)
                     * rxcor, 'ids_gmobs')
         ## The body- and gate-bias modulations of `THESAT`
         ## (`PSP103_macrodefs.include:596-607`).  `xitsb` is computed
@@ -812,13 +851,8 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
         if rs == 0.0 and not isinstance(rs, sympy.Expr):
             gr = _v(sympy.Integer(0), 'ids_GR')
         else:
-            ther = _v(2.0 * beta * rs, 'ids_ther')
-            ## Body-bias dependence of the sheet resistance; the two
-            ## forms are PSP's, selected by the SIGN of a parameter, so
-            ## the condition is parameter-only and the topology is fixed.
-            rhob = _v(sympy.Piecewise(
-                (hdl.safe_div(1.0, 1.0 - rsb * vsb, eps=1e-30), rsb < 0),
-                (1.0 + rsb * vsb, True)), 'ids_rhob')
+            ther = _ther(beta, rs)
+            rhob = _rhob(mob)
             rsgf = _v(sympy.Piecewise(
                 (1.0 - rsg * qim, rsg < 0),
                 (hdl.safe_div(1.0, 1.0 + rsg * qim, eps=1e-30), True)),
