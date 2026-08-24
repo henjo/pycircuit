@@ -268,16 +268,33 @@ found it, and say plainly that the mechanism is open.
   rather than re-running the vendor per point.
 - PSP subthreshold: the reference carries a ~2e-12 A junction-leakage
   floor this core does not model. Use the window **1e-9 to 1e-6 A**.
-- **Reading PSP's own internals** — ngspice-47 cannot load an
-  `openvaf-r` build, but **VACASK** can (same author). Convert a COPY of
-  the PDK with
-  `PDK_ROOT=... PDK=ihp-sg13g2 PYTHONPATH=~/local/vacask/lib/vacask/python
-  python3 -m sg13g2tovc`; it rebuilds the PDK **and compiles the
-  Verilog-A**, so a patched PSP103 runs. Declare extra `OPP(...)`
-  outputs, assign them where the quantity is computed, `save
-  p('m1:nsg13_lv_nmos', dbg_x)`, read the `.raw` with
-  `rawfile.rawread`. The converter chokes on the local LDE edits in
-  `sg13g2_moslv_mod.lib` — use `git show HEAD:` versions in the copy.
+- **Reading PSP's own internals — the full recipe.** ngspice-47 cannot
+  load an `openvaf-r` build, but **VACASK** can (same author). This
+  works, and each step below is a trap that cost time:
+
+  1. `cp -r` the PDK to scratch, then restore `cornerMOSlv.lib` and
+     `sg13g2_moslv_{mod,parm}.lib` from `git show HEAD:` — the converter
+     chokes on the local LDE edits;
+  2. patch the Verilog-A: add `` `OPM(dbg_x ,"" ,"...") `` beside an
+     existing `OPM`, and assign `dbg_x` where the quantity is computed.
+     **Do NOT also declare it `real` — `OPM` declares it**, and the
+     duplicate is a compile error;
+  3. `PDK_ROOT=<scratch> PDK=ihp-sg13g2
+     PYTHONPATH=~/local/vacask/lib/vacask/python python3 -m sg13g2tovc`
+     — it rebuilds the PDK *and* compiles the Verilog-A. When it says
+     only "Verilog-A compiler error", run `openvaf-r psp103.va` directly
+     to see what the error actually was;
+  4. symlink `../osdi/*.osdi` into `libs.tech/vacask/models/` and run
+     from that directory, or the deck cannot find them;
+  5. deck syntax is `control … endc` with `elaborate circuit("test")`
+     and `analysis op1 op` INSIDE the control block. **One `save` per
+     line** — `save a, b` is a syntax error;
+  6. read `op1.raw` with `rawfile.rawread(path).arrs[0]`, which is
+     `(hdr, arr)`; names are in `hdr['varnames']` as `inst.dbg_x`.
+
+  Strobe a whole CHAIN, not one suspect. The last bug here showed six
+  quantities matching to seven digits and one not, and the discrepancy
+  in the final answer equalled the discrepancy in that one exactly.
 - Comparisons must set **`epar.T = 273.15 + 27`**: the parameters are
   scaled at the card's `TR`, and leaving `epar` at its 300.0 K default
   is a 0.15 K mismatch worth 0.04% of the noise density.
