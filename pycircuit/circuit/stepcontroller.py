@@ -676,7 +676,7 @@ class SolutionLTEController(StepController):
     def lte_gradients(self, x_curr, x_hist, h_hist, h_curr, etol):
         """Fang's ``q^T`` and ``d`` for the LTE equation, both in closed form.
 
-        Returns ``(index, q_value, d)`` for
+        Returns ``(index, q_value, d)`` for::
 
             f_lte(v_m, h_m) = |v_i - P_i(h_m)| / etol_i - target
 
@@ -684,16 +684,17 @@ class SolutionLTEController(StepController):
         from the accepted history.
 
         **``q^T`` is a single nonzero.**  ``P`` is built from PAST solutions
-        only, so it does not depend on ``v_m`` at all, and
+        only, so it does not depend on ``v_m`` at all, and::
 
-            q^T = d f_lte / d v_m = sign(v_i - P_i) / etol_i  on column ``i``,
+            q^T = d f_lte / d v_m = sign(v_i - P_i) / etol_i  on column i,
                                     zero everywhere else.
 
         Returned as ``(index, value)`` rather than a dense row because a dense
         ``R^{1xN}`` of zeros is a poor way to say "one entry", and the bordered
         solve wants the index anyway.
 
-        **``d`` is the derivative of the extrapolation.**  Holding ``v_m`` fixed,
+        **``d`` is the derivative of the extrapolation.**  Holding ``v_m``
+        fixed::
 
             d = d f_lte / d h_m = -sign(v_i - P_i) P'_i(h_m) / etol_i.
 
