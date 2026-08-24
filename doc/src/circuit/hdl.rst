@@ -561,10 +561,21 @@ order of how much they matter:
 * There is a vectorised (JAX) evaluation path — no simulator in the
   survey vectorises behavioural evaluation across devices.
 
-And the honest other side: no ``$limit``, no ``laplace_*``, no
-``transition``/``slew``, no events yet — and, in common with every
-expression-based approach, **a contribution must be valid for every value
-the solver might try, not only for physical ones**. An expression with a
+And the honest other side. ``$limit``, ``laplace_*`` and ``@cross`` are
+now implemented — this sentence said otherwise until 2026-08-24, having
+been written before they landed, and it is corrected here rather than
+quietly deleted because a stale capability claim is worse than none: it
+is trusted like a measurement.
+
+What is genuinely absent is ``absdelay``, ``transition``/``slew``,
+``zi_*``, ``@timer`` and an event-latched discrete state — the last two
+of which are what a phase-frequency detector, a divider or a
+sample-and-hold need. ``doc/hdl_roadmap_260824.md`` in the repository
+plans them, with measured compile and evaluation costs.
+
+And, in common with every expression-based approach, **a contribution
+must be valid for every value the solver might try, not only for
+physical ones**. An expression with a
 square root or a division that a non-physical iterate can reach will
 produce ``nan`` and a "timestep too small" failure rather than a helpful
 message.

@@ -756,20 +756,44 @@ inlinable by construction), `Piecewise` conditionals, exact `G`/`C`,
 
 ### Not implemented, ranked by measured demand
 
+> **Correction (2026-08-24): six rows of the table below were stale and
+> understated the DSL.** They were written before phases B, C and D
+> landed on 2026-08-22 and were never revised, so a reader planning
+> migration work off this table would conclude the DSL cannot do things
+> it does — and one did. All six are implemented and tested:
+>
+> | listed as missing | actually at | test |
+> |---|---|---|
+> | `$limit` | `hdl.py:689` (`limit_pnj`) | `test_limit_pnj_compresses_a_wild_step` |
+> | `laplace_*` | `hdl.py:621`, `:654` | `test_laplace_nd_matches_the_analytic_response` |
+> | `@cross` | `hdl.py:891` (`Cross`) | `test_cross_lands_timepoints_on_the_crossing` |
+> | `$param_given` | `hdl.py:774` | `test_param_given_selects_a_formulation` |
+> | unconditional node collapse | `hdl.py:931` (`Collapse`) | `test_node_collapse_removes_the_internal_node` |
+> | AC excitation from HDL | `hdl.py:791` (`ac_stim`) | `test_ac_stim_drives_a_small_signal_analysis` |
+>
+> The rows below have been marked accordingly. **Genuinely still
+> missing:** `absdelay`, `transition`/`slew`, `zi_*`, `last_crossing`,
+> `noise_table`, `@timer`, and conditional node collapse (refused by
+> design). See `doc/hdl_roadmap_260824.md` §5 for what the behavioural
+> library needs from that list, which is a smaller set than it looks:
+> `transition()`, an event-latched discrete state and `@initial_step`
+> unlock the whole sampled-data half.
+
+
 | capability | class | usage (vacask/gnucap-models) | note |
 |---|---|---|---|
-| `$limit` | HARD | 273 / 0 | needs previous-iterate memory **and** a "not converged" channel. **PCNR participation is generated instead** (§3.2a) for qualifying elements, which is the better answer where it applies |
-| `$param_given` | TRIVIAL | 1871 / 263 | most-called system function in real models; needs a "was it defaulted" flag on `Parameter` |
-| unconditional node collapse (`V(a,b) <+ 0`) | TRIVIAL | common idiom | merge the node symbols before building `x` |
+| ~~`$limit`~~ **DONE** | HARD | 273 / 0 | needs previous-iterate memory **and** a "not converged" channel. **PCNR participation is generated instead** (§3.2a) for qualifying elements, which is the better answer where it applies |
+| ~~`$param_given`~~ **DONE** | TRIVIAL | 1871 / 263 | most-called system function in real models; needs a "was it defaulted" flag on `Parameter` |
+| ~~unconditional node collapse~~ **DONE** | TRIVIAL | common idiom | merge the node symbols before building `x` |
 | `@(initial_step)` | TRIVIAL | 2 / 0 | a phase flag |
-| `@cross`, `@timer` | EVENT | 0 / 0 | `elements._WrapEvents` already implements the contract (`accept_step` + `next_event`) — promote when a comparator/oscillator macromodel needs it |
+| ~~`@cross`~~ **DONE** / `@timer` | EVENT | 0 / 0 | `elements._WrapEvents` already implements the contract (`accept_step` + `next_event`) — promote when a comparator/oscillator macromodel needs it |
 | `absdelay` | HARD | 4 / 0 | history buffer; `elements.TLine` covers the real use |
 | `transition`, `slew` | EVENT | 0 / 0 | gnucap's `slew` is self-described as a stub |
-| `laplace_*`, `zi_*` | STATE | 0 / 0 | gnucap ships only 2 of 4 `zi_*`, with two open bugs |
+| ~~`laplace_*`~~ **DONE** / `zi_*` | STATE | 0 / 0 | gnucap ships only 2 of 4 `zi_*`, with two open bugs |
 | `last_crossing`, `noise_table` | EVENT/— | 0 / 0 | gnucap does not implement either |
 | conditional node collapse / switch branches | HARD | 1 idiom | changes sparsity per iteration; diagnose and reject rather than half-implement |
-| AC excitation from HDL | small | — | `u` is zeroed for AC; a behavioral AC source needs an `ac`-variant vector |
-| symbolic-toolkit transient | small | — | compilation targets numpy/jax; AC via `G`/`C` works |
+| ~~AC excitation from HDL~~ **DONE** | small | — | `u` is zeroed for AC; a behavioral AC source needs an `ac`-variant vector |
+| ~~symbolic-toolkit transient~~ **DONE** | small | — | compilation targets numpy/jax; AC via `G`/`C` works |
 
 The shape of that table is the point: **eleven of gnucap's fourteen
 Verilog-A-written SPICE primitives need nothing outside what is
