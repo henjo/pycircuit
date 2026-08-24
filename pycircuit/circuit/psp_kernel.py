@@ -900,7 +900,46 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
             ## factor to stay EVEN under the source/drain exchange.
             adps = _v(2.0 * hdl.hypsmooth(dps, 1e-6) - dps, 'ids_adps')
             inv_vp = _v(hdl.safe_div(1.0, mob['vp'], eps=1e-30), 'ids_ivp')
-            excess = _v(hdl.hypsmooth(mob['vds'] - adps, 1e-3), 'ids_exc')
+            ## THE SMOOTHING SCALE IS `VP`, NOT A CONSTANT.
+            ##
+            ## `hypsmooth(x, e)` rounds the corner of `max(x, 0)` over a
+            ## width of order `e`, and the result is immediately divided
+            ## by `VP` and put through a logarithm.  So what the answer
+            ## depends on is `e/VP`, and an ABSOLUTE `e` is only
+            ## meaningful on a card whose `VP` you already know.
+            ##
+            ## This was `1e-3` for both channel types.  `VP` is 0.322 on
+            ## this PDK's n-channel and **7.38e-06** on its p-channel --
+            ## a factor of 44000 -- so the same constant was 0.3% of the
+            ## n-channel's scale and 135x the p-channel's.  It was the
+            ## whole of the remaining p-channel error: 2.50e-04 on
+            ## `pmos_idvg_vd0p05` against 5.3e-06 on the n-channel
+            ## equivalent, and the residual survived zeroing every other
+            ## term in the model.
+            ##
+            ## `1e-3*VP` is the KNEE of the trade-off, chosen as the
+            ## LARGEST smoothing that still costs nothing -- the corner
+            ## stays as round as it can be for the Jacobian's sake.
+            ## Measured, worst |log ratio| over the twelve sweeps and
+            ## its median:
+            ##
+            ##     1e-3      2.50e-04   1.80e-05   <- was
+            ##     1e-2*VP   1.56e-04   3.16e-05
+            ##     1e-3*VP   9.41e-05   8.42e-06   <- knee
+            ##     1e-4*VP   9.35e-05   8.30e-06
+            ##     1e-5      9.35e-05   8.30e-06
+            ##
+            ## Below `1e-3*VP` nothing improves; the 9.4e-05 that
+            ## remains is `nmos_idvd_vg0p6` and has another cause.
+            ##
+            ## PSP itself does not clamp here at all -- it forms
+            ## `ln((1 + (Vds-dps)/VP)/(1 + (Vdse-dps)/VP))` directly
+            ## (`module:753`) and relies on the terminal ordering to
+            ## keep both arguments positive.  The clamp is ours, for the
+            ## antisymmetry, so its width is ours to get right.
+            eps_vp = _v(1.0e-3 * mob['vp'], 'ids_epsvp')
+            excess = _v(hdl.hypsmooth(mob['vds'] - adps, eps_vp),
+                        'ids_exc')
             s1n = _v(hdl.safe_ln(1.0 + excess * inv_vp), 'ids_s1n')
             if vdse is None:
                 s1 = _v(s1n, 'ids_s1')
@@ -911,7 +950,7 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
                 ## be meaningless.  Smoothed the same way as the
                 ## numerator, so neither logarithm puts a kink in the
                 ## middle of an I-V curve.
-                excd = _v(hdl.hypsmooth(vdse - adps, 1e-3), 'ids_excd')
+                excd = _v(hdl.hypsmooth(vdse - adps, eps_vp), 'ids_excd')
                 s1d = _v(hdl.safe_ln(1.0 + excd * inv_vp), 'ids_s1d')
                 s1 = _v(s1n - s1d, 'ids_s1')
             dL = _v(alp * s1, 'ids_dL')

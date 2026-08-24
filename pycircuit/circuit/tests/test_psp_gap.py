@@ -135,11 +135,11 @@ class TestAgainstTheRealDevice(object):
         _, r, g, _ = _compare(deck, ref['nmos_long_idvd'])
         assert len(r) > 20
         ratio = g / r
-        ## MEASURED 0.99920 to 1.00001.  Was 0.96/1.04, from when the
+        ## MEASURED 1.00000 to 1.00001.  Was 0.96/1.04, from when the
         ## comparison could not resolve better; the reference's own
         ## convergence has since been fixed and the model with it.
-        assert 0.998 < ratio.min(), 'worst low %.5f' % ratio.min()
-        assert ratio.max() < 1.002, 'worst high %.5f' % ratio.max()
+        assert 0.9999 < ratio.min(), 'worst low %.6f' % ratio.min()
+        assert ratio.max() < 1.0001, 'worst high %.6f' % ratio.max()
 
     def test_the_agreement_is_flat_not_a_lucky_crossing(self, deck, ref):
         """A curve that crosses the reference could average out to 1.
@@ -542,8 +542,21 @@ class TestTheSubthresholdRegion(object):
                 np.asarray(e.i(e.bias(b['Vd'], x, b['Vs'], b['Vb'])),
                            float)[0] for x in v[m]]))
             ratio = got / r[m]
-            ## MEASURED 0.99996 to 1.00020 across the four.
-            assert 0.999 < ratio.min() and ratio.max() < 1.001, \
+            ## MEASURED 0.99996 to 1.00020.  Three of the four are
+            ## inside 5e-5; `pmos_long_idvg` reaches 2.0e-4 and that is
+            ## GATE CURRENT, which this core does not model.
+            ##
+            ## Measured rather than assumed: over that sweep the deficit
+            ## is -0.49 x the reference's own recorded `i_g`, essentially
+            ## constant across the whole window, which is the
+            ## gate-to-channel current splitting about evenly between
+            ## source and drain.  The reference records TERMINAL current
+            ## and the split lands half of it on the drain.
+            ##
+            ## It shows here and not on the short devices because `i_g`
+            ## scales with gate AREA: on the 10x1 um device |i_g|/|i_d|
+            ## reaches 4.5e-05 and on the 1x0.13 um one only 1.3e-06.
+            assert 0.9999 < ratio.min() and ratio.max() < 1.0005, \
                 '%s: %.5f - %.5f' % (name, ratio.min(), ratio.max())
 
 
@@ -823,6 +836,142 @@ class TestTheReferenceIsAsSmoothAsAnAnalyticCurve(object):
             'the sweep deck must tighten reltol -- and abstol, which ' \
             'does not cover the idvd sweeps on its own'
         assert '.options' not in tail.split('"""')[1]
+
+
+@needs_pdk
+class TestTheSmoothingScaleIsVP(object):
+    """A smoothing constant is only meaningful against a scale.
+
+    The channel-shortening logarithm needs `Vds - dps` floored at zero,
+    because `dL` is a channel SHORTENING and a negative one is
+    meaningless. PSP does not floor it -- it forms
+    `ln((1 + (Vds-dps)/VP)/(1 + (Vdse-dps)/VP))` directly
+    (`module:753`) and relies on the terminal ordering -- so the clamp
+    is ours, added for the source/drain antisymmetry, and its WIDTH is
+    ours to get right.
+
+    It was `hypsmooth(x, 1e-3)`: an absolute constant, in volts.
+
+    But the smoothed quantity is immediately divided by `VP` and put
+    through a logarithm, so what the answer depends on is `e/VP` -- and
+    `VP` on this PDK is **0.322 on the n-channel and 7.38e-06 on the
+    p-channel, a factor of 44000**. The same constant was 0.3% of one
+    scale and 135x the other.
+
+    That was the entire remaining p-channel error, and it was the last
+    thing left in the whole comparison:
+
+        pmos_idvg_vd0p05   2.50e-04     nmos equivalent   5.3e-06
+
+    THE SEARCH IS THE INTERESTING PART, because the shape lied twice.
+    The residual grew with gate drive, was largest at low `Vds` and
+    vanished in saturation, on the short device only -- textbook series
+    resistance. It correlated with `rs` at 0.98, `rs` had the right
+    leverage (0.33% of current per 1% of `Rs`, so 0.06% of `Rs` would
+    have done it), and `RSW2` is nonzero on the p-channel card and
+    exactly zero on the n-channel, which would have explained the
+    asymmetry beautifully.
+
+    All of it was wrong. Zeroing `RS` **and** `RSG` in a card read by
+    BOTH models left the disagreement bit-identical: 0.999795 against
+    0.999796. Fifteen other candidates correlated above 0.93 with the
+    residual, which is what collinearity looks like and why the
+    best-fitting one is not thereby the true one.
+
+    What settled it was the differential over the CARD -- zero a term in
+    a copy of the model card, let both implementations read it:
+
+        zeroed              worst dev   fraction of baseline
+        (baseline)           2.50e-04         100%
+        a1o, gcoo, igovw,
+        cfl, cfbo, cto,
+        mueo, cso, thecso,
+        xcoro, fetao, axo,
+        thesato, rsw2        2.50e-04         100%   <- eliminated
+        alp2*                2.50e-04         100%   <- eliminated
+        alp* (all CLM)       5.32e-07           0%   <- collapses
+
+    Then the arithmetic finished it without another run. `dL = alp*s1`
+    and the `ALP1` term is `alp1*(qim1^-1 * r1 * s1)` -- both carry
+    `s1` -- while `ALP2`'s carries `s2`. `alp` alone gives 50% and
+    `alp1` alone 54% because they SHARE `s1`; `alp2` is eliminated
+    because it does not. One quantity left: `s1`.
+    """
+
+    #: MEASURED: worst |log(ours/psp)| over the twelve sweeps, and the
+    #: median of those, for each candidate smoothing.
+    #:
+    #: `1e-3*VP` is the KNEE and is chosen as the LARGEST smoothing that
+    #: still costs nothing -- a rounder corner is better for the
+    #: Jacobian, so the right pick is not the tightest value but the
+    #: loosest one that has converged.
+    #:
+    #:     1e-3      2.50e-04   1.80e-05   <- was
+    #:     1e-2*VP   1.56e-04   3.16e-05
+    #:     1e-3*VP   9.41e-05   8.42e-06   <- knee
+    #:     1e-4*VP   9.35e-05   8.30e-06
+    #:     1e-5      9.35e-05   8.30e-06
+    #:
+    #: The 9.41e-05 that remains is `nmos_idvd_vg0p6` and has another
+    #: cause: it does not move with this constant at all.
+    WORST, MEDIAN = 9.41e-05, 8.42e-06
+
+    def test_vp_differs_by_four_orders_between_the_channel_types(self, ref):
+        """The fact that makes an absolute constant indefensible."""
+        n = ref and None
+        data = json.load(open(REF))
+        vn = data['scaled']['short']['vp']
+        vp = data['scaled_pmos']['short']['vp']
+        assert vn == pytest.approx(0.32224, rel=1e-3)
+        assert vp == pytest.approx(7.3803e-06, rel=1e-3)
+        assert vn / vp > 4.0e4
+
+    def test_the_smoothing_scales_with_vp(self, deck):
+        """Not "is small" -- SCALES. Asserted structurally.
+
+        A test that the constant is currently 1e-3*VP would pass on any
+        rewrite that hardcoded the p-channel's value. What matters is
+        that the width tracks `VP`, so a card with a different `VP` is
+        handled without anyone revisiting this.
+        """
+        import inspect
+        from pycircuit.circuit import psp_kernel
+        src = inspect.getsource(psp_kernel.intrinsic)
+        assert "eps_vp = _v(1.0e-3 * mob['vp']" in src, \
+            'the channel-shortening smoothing must be VP-relative'
+        assert "hypsmooth(mob['vds'] - adps, eps_vp)" in src
+        assert "hypsmooth(vdse - adps, eps_vp)" in src
+
+    def test_every_sweep_agrees_to_a_part_in_ten_thousand(self, deck, ref):
+        """The whole comparison, in the unit the error lives in.
+
+        `log(ours/psp)` rather than a median ratio: it is signed, it is
+        symmetric in the two curves, and it does not hide a curve that
+        is right on average and wrong at both ends.
+        """
+        cm.default_toolkit = numeric
+        worst = {}
+        for name in ('nmos_long_idvd', 'nmos_idvd_vg1p2',
+                     'nmos_idvd_vg0p6', 'nmos_idvg_vd0p05',
+                     'nmos_idvg_vd1p2', 'nmos_idvg_vb_m1',
+                     'nmos_long_idvg_vb_m1', 'pmos_long_idvd',
+                     'pmos_long_idvg', 'pmos_idvd_vg1p2',
+                     'pmos_idvg_vd1p2', 'pmos_idvg_vd0p05'):
+            _, r, g, _ = _compare(deck, ref[name])
+            worst[name] = float(np.max(np.abs(np.log(g / r))))
+        assert max(worst.values()) < 2.0 * self.WORST, worst
+        assert np.median(list(worst.values())) < 3.0 * self.MEDIAN, worst
+
+    def test_the_p_channel_linear_sweep_is_the_one_this_fixed(
+            self, deck, ref):
+        """2.50e-04 to 4e-07, and it is not a fitted number.
+
+        Nothing here was tuned to this sweep: the constant is a fraction
+        of a scaled parameter and the fraction was chosen on the median
+        over all twelve.
+        """
+        _, r, g, _ = _compare(deck, ref['pmos_idvg_vd0p05'])
+        assert float(np.max(np.abs(np.log(g / r)))) < 5e-6
 
 
 @needs_pdk
@@ -1574,12 +1723,20 @@ class TestTheSaturationVoltage(object):
         see `TestTheShortChannelTerms`, where the median turns out to be
         the wrong thing to rank terms by.
 
-        NOW MEASURED AT 2.0e-4, worst of the twelve, and that one sweep
-        (`pmos_idvg_vd0p05`) is the only one above 2e-5.  The bound was
-        3%, held there deliberately as "a guard against regression, not
-        a pin on numbers that should be free to improve".  The numbers
-        did improve, by two orders of magnitude, and a guard 150x above
-        what it guards has stopped being one.  0.001 keeps 5x of room.
+        NOW MEASURED AT 5.5e-6, worst of the twelve.  The bound was 3%,
+        held there deliberately as "a guard against regression, not a
+        pin on numbers that should be free to improve".  The numbers did
+        improve, by three and a half orders of magnitude, and a guard
+        that far above what it guards has stopped being one.  This is
+        the third tightening of this bound in one session -- 3% to
+        0.001 when the reference's convergence was fixed, and 0.001 to
+        5e-5 when the channel-shortening smoothing was.  A bound worth
+        keeping is one that gets revisited every time the thing under it
+        moves.  5e-5 keeps 9x of room.
+
+        `TestTheSmoothingScaleIsVP` states the same thing in the unit
+        the error lives in, over the whole sweep rather than at its
+        median, and is the better guard of the two.
         """
         cm.default_toolkit = numeric
         worst = {}
@@ -1592,7 +1749,7 @@ class TestTheSaturationVoltage(object):
                      'pmos_idvg_vd0p05'):
             _, r, g, _ = _compare(deck, ref[name])
             worst[name] = abs(np.median(g / r) - 1.0)
-        assert max(worst.values()) < 0.001, worst
+        assert max(worst.values()) < 5e-5, worst
         assert sum(worst.values()) < 0.10, worst
 
 

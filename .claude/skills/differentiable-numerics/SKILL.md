@@ -128,6 +128,35 @@ Whenever you replace a branch with arithmetic, write down which of the
 reference's quantities your new one stands for, and check every OTHER
 use of that name separately.
 
+## A smoothing constant is meaningless without its scale
+
+`hypsmooth(x, e)`, `safe_div(a, b, eps)`, any regulariser — the constant
+is compared against something. Find out what, and write the constant
+RELATIVE to it.
+
+A channel-shortening clamp here used `hypsmooth(x, 1e-3)`, and the
+smoothed quantity was immediately divided by a scaled parameter `VP`
+and put through a logarithm. So the answer depended on `e/VP` — and
+`VP` was **0.322 on one channel type and 7.38e-6 on the other, a factor
+of 44000**. The same constant was 0.3% of one scale and 135x the other,
+and it was the entire remaining error on the second: 2.5e-4 against
+5.3e-6.
+
+Two things follow:
+
+- **an absolute constant encodes an assumption about a parameter you do
+  not control.** It was defensible on the card it was tuned against and
+  indefensible on the next one. Write `1e-3 * vp`, not `1e-3`;
+- **pick the LOOSEST value that has converged, not the tightest that
+  works.** A wider smoothing is a rounder corner and a better-behaved
+  Jacobian, so scan until the answer stops moving and then step back to
+  the knee. Here `1e-2*VP` was still costing accuracy and `1e-4*VP`
+  bought 1% over `1e-3*VP`, so `1e-3*VP` is the pick.
+
+Scan the constant over decades and tabulate. If the answer moves, the
+constant is doing physics rather than regularisation, and its value is a
+model parameter you have not admitted to having.
+
 ## Symmetric in exact arithmetic is not symmetric in floating point
 
 An exact structural property -- antisymmetry, conservation, a

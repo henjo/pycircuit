@@ -64,12 +64,32 @@ is a *candidate*; it is not the cause. Conflating the two is the single
 most common failure in this kind of work, and the most seductive,
 because the arithmetic looks like a proof.
 
+The strongest false lead here had FOUR independent things going for it:
+the regime was right (linear region, growing with gate drive, gone in
+saturation — textbook series resistance), the shape correlated at 0.98,
+the leverage was right to a factor of two, and the coefficient `RSW2` is
+nonzero on the p-channel card and *exactly zero* on the n-channel, which
+explained why only one channel type showed it. Every one of those is a
+real argument. The differential killed it in one run: zeroing `RS` and
+`RSG` in a card read by both models left the disagreement bit-identical,
+0.999795 against 0.999796. **A convergent story is not evidence; a
+differential is.**
+
 Read the eliminations as hard as the hits:
 
 - a term whose removal changes nothing is out;
 - a term that also acts in a regime where you already agree is out
   (it would have broken that agreement too);
 - a term whose removal breaks something currently exact is *right*.
+
+**When the differential collapses a GROUP, finish with arithmetic.**
+Zeroing the whole `ALP` block took a residual from 2.5e-4 to 5.3e-7,
+and the sub-terms then localised it with no further runs: `ALP` alone
+gave 50%, `ALP1` alone 54%, `ALP2` exactly 100% (i.e. nothing). `ALP`
+and `ALP1` multiply the SAME log `s1` and `ALP2` multiplies `s2`, so
+"each of two shares half, the third is inert" reads straight off the
+algebra as "the error is in `s1`". One quantity, from three runs you
+already had.
 
 ### 3. Choose an observable where the candidates differ qualitatively
 
@@ -222,7 +242,11 @@ found it, and say plainly that the mechanism is open.
 - Differential setup: `cp -r` the PDK to scratch and edit the one card
   file. **`shutil.copytree` produces a copy ngspice cannot use.**
 - ngspice **segfaults (rc = −11)** on some intermediate parameter
-  values. Scan your own model against the reference's recorded curve
+  values — and, separately, on a `wrdata` with an ABSOLUTE path. The
+  identical deck with a relative filename and `cwd` set runs fine. That
+  one cost a whole differential sweep reading "NGSPICE FAILED" on rows
+  including the unmodified baseline, which is the tell: when the
+  BASELINE fails, suspect the harness, not the perturbation. Scan your own model against the reference's recorded curve
   rather than re-running the vendor per point.
 - PSP subthreshold: the reference carries a ~2e-12 A junction-leakage
   floor this core does not model. Use the window **1e-9 to 1e-6 A**.
