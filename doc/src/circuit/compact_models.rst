@@ -308,17 +308,17 @@ measurement otherwise.
                          q.max() / q.min() - 1.0))
         note = "computed live against the installed PDK"
     except Exception:
-        rows = [('nmos_long_idvd', 10.0, 1.00, 0.996, 0.001),
-                ('nmos_long_idvg', 10.0, 1.00, 0.998, 0.017),
-                ('nmos_long_idvg_vb_m1', 10.0, 1.00, 0.999, 0.106),
-                ('nmos_idvd_vg1p2', 1.0, 0.13, 0.994, 0.010),
-                ('nmos_idvg_vd1p2', 1.0, 0.13, 1.003, 0.071),
-                ('nmos_idvg_vd0p05', 1.0, 0.13, 1.001, 0.066),
-                ('pmos_long_idvd', 10.0, 1.00, 0.994, 0.001),
-                ('pmos_long_idvg', 10.0, 1.00, 0.996, 0.022),
-                ('pmos_idvd_vg1p2', 1.0, 0.13, 0.999, 0.002),
-                ('pmos_idvg_vd1p2', 1.0, 0.13, 1.004, 0.061),
-                ('pmos_idvg_vd0p05', 1.0, 0.13, 1.000, 0.033)]
+        rows = [('nmos_long_idvd', 10.0, 1.00, 1.000, 0.001),
+                ('nmos_long_idvg', 10.0, 1.00, 1.000, 0.001),
+                ('nmos_long_idvg_vb_m1', 10.0, 1.00, 1.000, 0.000),
+                ('nmos_idvd_vg1p2', 1.0, 0.13, 1.000, 0.001),
+                ('nmos_idvg_vd1p2', 1.0, 0.13, 1.000, 0.001),
+                ('nmos_idvg_vd0p05', 1.0, 0.13, 1.000, 0.001),
+                ('pmos_long_idvd', 10.0, 1.00, 1.000, 0.001),
+                ('pmos_long_idvg', 10.0, 1.00, 1.000, 0.001),
+                ('pmos_idvd_vg1p2', 1.0, 0.13, 1.000, 0.001),
+                ('pmos_idvg_vd1p2', 1.0, 0.13, 1.000, 0.001),
+                ('pmos_idvg_vd0p05', 1.0, 0.13, 0.999, 0.001)]
         note = ("quoted from the committed measurement -- the IHP PDK is "
                 "not installed here")
 
@@ -724,11 +724,105 @@ happened to be recorded.
 Adding a body-biased sweep on the geometry where the term is alive:
 without it, 0.963; with it, **0.999**.
 
-All thirteen sweeps across both channel types are within 1.6% now, ten
-of the twelve measurable ones within 0.4%, from two foundry cards with
-nothing fitted anywhere in the chain. Every one of the thirty-one scaled
-parameters the model uses matches PSP's own value exactly, at four
-geometries, on both channel types.
+That took every sweep within 1.6%, ten of the twelve measurable ones
+within 0.4%, from two foundry cards with nothing fitted anywhere in the
+chain. Every one of the thirty-one scaled parameters the model uses
+matches PSP's own value exactly, at four geometries, on both channel
+types.
+
+A quantity the reference uses twice
+-----------------------------------
+
+What was left after that was not a missing term, and three rounds of
+re-reading the vendor source term by term did not find it. All three of
+the remaining discrepancies turned out to have the same shape, and it is
+a shape that reading cannot see.
+
+**The reference computes a quantity once and uses it at several places.
+We transcribed it at some of them.** Every formula that is present is
+then correct, every parameter matches, and the model is still wrong.
+Reading finds errors in the terms you are looking at; it cannot find a
+term you are not looking at because the reference put it somewhere you
+did not think to check.
+
+The three:
+
+*Two quantities, one name.* PSP's :math:`V_{dsx}` is
+:math:`V_{ds}^2/(\sqrt{V_{ds}^2 + 0.01} + 0.1)` — a *softened* drain
+bias, quadratic near the origin, reaching :math:`|V_{ds}|` only well
+above 0.1 V. This element separately needs a smooth :math:`|V_{ds}|`,
+because PSP orders its terminals with a branch that a single compiled
+expression cannot take. Those are different quantities and the name
+suggests they are the same one. At :math:`V_{ds} = 0.05` the softened
+one is 0.0118, a factor of four, which went into the channel-shortening
+logarithm: **5.5% of the weak-inversion current**.
+
+*One term, present at one site.* PSP evaluates the mobility at the
+midpoint of the channel and again at the source end. The series
+resistance contribution :math:`G_R` appears in both. Ours had it in the
+midpoint only — 26% of the source-end mobility, and from there into the
+saturation voltage.
+
+*One quantity, used at two sites.* PSP conditions the source-bulk bias
+with a smooth minimum, :math:`V_{sb}^*`, keeping the surface-potential
+solve away from the built-in potential. It then uses that conditioned
+value in two places: the quasi-Fermi level at the source, and the
+**gate drive** (:math:`V_{gb1} = V_{gs} + V_{sb}^* - V_{FB}`). This
+element had it in the first and used the raw :math:`V_{sb}` in the
+second.
+
+The last of those is worth 331 µV at :math:`V_{sb} = 1` — and 9.9 µV at
+:math:`V_{sb} = 0`, because the conditioning does not quite vanish at
+the 50 mV drain bias the sweeps use. Small, and it was the largest
+remaining discrepancy in the whole comparison: the two body-biased
+sweeps peaked at 1.007 and 1.009 while everything else read 1.000.
+
+It had also been **deliberately left**, with a comment giving two
+reasons. Both are instructive, because one was right and expired and the
+other was wrong from the start:
+
+* *"a fraction of a millivolt"* — correct, and it stopped mattering. A
+  fraction of a millivolt is nothing against a model 1.6% out and is the
+  largest term left in one agreeing to 3 × 10⁻⁵. A deliberate trade-off
+  is a judgement about *relative* sizes, and it expires silently when
+  one of the sizes moves. Nothing announces it: a passing test that pins
+  a bounded error goes on passing.
+* *"not worth a structural property"* — the element is exactly
+  antisymmetric under source/drain exchange, and PSP's :math:`V_{gs}` is
+  referred to the *lower* terminal, so transcribing the sum literally
+  does break that. True, and the wrong conclusion was drawn from it. The
+  same quantity written as a difference,
+
+  .. math::
+
+     V_{gs} + V_{sb}^* - V_{FB} \;=\; V_{gb} - V_{FB} - (V_{sb} - V_{sb}^*)
+
+  has no such problem: :math:`V_{sb} - V_{sb}^*` depends on the two
+  junctions only through :math:`\mathrm{MINA}(V_{db}, V_{sb}, a)`, which
+  is symmetric in them. It is exactly even under the exchange, and the
+  antisymmetry still holds to 7 × 10⁻¹⁵ at body bias.
+
+  With one catch, which the first version of the fix walked into.
+  Symmetric in exact arithmetic is not symmetric in floating point:
+  taking the correction as a literal :math:`V_{sb} - V_{sb}^*`
+  subtracts two numbers agreeing to three parts in :math:`10^{10}` at
+  :math:`V_{sb} = 1`, and to three parts in :math:`10^{44}` at
+  :math:`V_{sb} = 10^{40}`. The antisymmetry breaks by 2% out there —
+  not because the algebra is asymmetric but because the cancellation
+  is. Held as its own quantity where the conditioning is computed, the
+  large difference is never formed. The old comment's *instinct* was
+  sound even if its stated reason was not: the site did need care about
+  the antisymmetry. It needed the right form, not omission of the term.
+
+That the mechanism is the *right* one is not an argument from shape.
+A body-bias ladder of six rungs from 0 to 1.5 V measures the implied
+threshold offset at each; the conditioning computed from the vendor
+formula predicts all six within 3.5%, over a 39× range of the quantity,
+with nothing fitted. Leverage gives one matching magnitude. Six is the
+mechanism.
+
+All twelve sweeps now agree with the vendor at **median 1.000 with a
+spread of 0.001 or less**, both geometries, both channel types.
 
 The charge model, and what construction properties cannot tell you
 ------------------------------------------------------------------

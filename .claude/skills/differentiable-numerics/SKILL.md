@@ -128,6 +128,32 @@ Whenever you replace a branch with arithmetic, write down which of the
 reference's quantities your new one stands for, and check every OTHER
 use of that name separately.
 
+## Symmetric in exact arithmetic is not symmetric in floating point
+
+An exact structural property -- antisymmetry, conservation, a
+cancellation the model relies on -- can be broken by a CANCELLATION even
+when the algebra is perfect.
+
+Here a correction was written as `vsb - vsbst`, a difference of two
+quantities differing by 3e-4. At `Vsb = 1` that keeps ten digits; at
+`Vsb = 1e40` it keeps none, and the exact source/drain antisymmetry
+broke by 2% out there. The algebra was symmetric; the arithmetic was
+not.
+
+**Form a small quantity WHERE IT IS SMALL.** The conditioning above is
+`mina(vlow, 0, aphi) - phix1`, bounded by the smoothing constants and
+of order 1e-4 at every bias. Computing it there and letting the large
+quantity be derived FROM it (`vsbst = vsb - vsbcnd`) inverts the
+dependency and the cancellation never happens.
+
+The general form: when `big_a - big_b` is known to be small, there is
+almost always an expression for the small thing that does not mention
+the big ones. Find it. And prefer holding the small quantity as the
+primitive, deriving the big one, rather than the reverse.
+
+Test it at ABSURD magnitude, not merely at large. The bug here was
+invisible at 1.5 V and obvious at 1e7.
+
 ## Warnings in a green suite are unfinished work
 
 24 `invalid value encountered in scalar divide` warnings sat in this

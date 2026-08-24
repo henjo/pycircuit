@@ -378,8 +378,26 @@ def _psp_mos_analog(T, pmos):
         phix2 = var(0.5 * sympy.sqrt(aphi), 'phix2')
         phix1 = var(psp_kernel.mina(phix - phix2, 0.0, aphi), 'phix1')
         vlow = var(psp_kernel.mina(vdb, vsb, aphi) + phix, 'vlow')
-        vsbst = var(vsb - psp_kernel.mina(vlow, 0.0, aphi) + phix1,
-                    'vsbst')
+        ## `vsbcnd` is how much the conditioning REMOVES, held as its
+        ## own quantity rather than recovered later as `vsb - vsbst`.
+        ##
+        ## The two are equal in exact arithmetic and not in floating
+        ## point: at `Vsb = 1e7` the difference of two numbers that size
+        ## differing by 3e-4 keeps about three digits, and at 1e40 it
+        ## keeps none.  The gate drive below needs this quantity, and
+        ## taking it by subtraction there broke the exact source/drain
+        ## antisymmetry at absurd bias -- caught by
+        ## `test_it_is_still_antisymmetric_out_there`, which sweeps to
+        ## 1e40 V precisely because that is where a construction that
+        ## looks symmetric stops being one.
+        ##
+        ## Formed this way it never builds the large difference:
+        ## `mina(vlow, 0, aphi)` is bounded by `-sqrt(aphi)/2` and
+        ## `phix1` is a constant, so `vsbcnd` stays of order 1e-4 at
+        ## every bias, and `vsb - vsbst == vsbcnd` holds STRUCTURALLY
+        ## rather than to within cancellation error.
+        vsbcnd = var(psp_kernel.mina(vlow, 0.0, aphi) - phix1, 'vsbcnd')
+        vsbst = var(vsb - vsbcnd, 'vsbst')
 
         ## TWO drain-bias quantities, and conflating them was a real
         ## bug worth 5.5% of the weak-inversion current.
@@ -444,15 +462,40 @@ def _psp_mos_analog(T, pmos):
             eps=1e-30), 'vdsp')
         delvg = var(cf * vdsp * (1.0 + cfb * vsbx), 'delvg')  # noqa: F821
 
-        ## `vgb`, NOT PSP's literal `Vgs + Vsbstar` (`macrodefs:470`).
-        ## The two are the same quantity in PSP, because PSP evaluates
-        ## that expression AFTER its source/drain interchange, so its
-        ## `Vgs` is referred to the lower terminal.  Ours is referred to
-        ## the actual source, which CHANGES under the exchange -- and
-        ## writing it that way cost the exact antisymmetry immediately.
-        ## The difference is the conditioning, a fraction of a millivolt,
-        ## and it is not worth a structural property.
-        xg = var((vgb - vfb + delvg) / phit, 'xg')            # noqa: F821
+        ## THE GATE DRIVE IS BUILT ON `Vsbstar`, NOT ON `Vsb`
+        ## (`macrodefs:470`): `Vgb1 = Vgs + Vsbstar - VFB_T`.
+        ##
+        ## `Vsbstar` is the CONDITIONED source-bulk bias from above, and
+        ## PSP uses it at two sites -- here in the gate drive and again
+        ## in `xn_s` (`macrodefs:517`).  Using it at one site only is the
+        ## same shape of bug as `Vdsx` and the source-end `GR`: every
+        ## term that is PRESENT is right, and the reference simply
+        ## computes the quantity in a place we did not.
+        ##
+        ## This site was deliberately left as plain `vgb` for a long
+        ## time, on the argument that PSP's literal `Vgs + Vsbstar` is
+        ## referred to the LOWER terminal -- which ours is not -- so
+        ## transcribing it broke the exact source/drain antisymmetry.
+        ## That observation was right and the conclusion drawn from it
+        ## was not.  Write the correction as a DIFFERENCE instead of as
+        ## PSP's sum and the ordering cancels:
+        ##
+        ##     Vgs + Vsbstar - VFB  ==  Vgb - VFB - (Vsb - Vsbstar)
+        ##
+        ## and `Vsb - Vsbstar` is `MINA(vlow, 0, aphi) - phix1`, which
+        ## depends on the two junctions only through the symmetric
+        ## `vlow = MINA(Vdb, Vsb, aphi) + phix`.  So it is EXACTLY even
+        ## under the exchange, and the antisymmetry costs nothing.
+        ##
+        ## The trade-off was also correctly SIZED and is no longer worth
+        ## making: "a fraction of a millivolt" is 3.3e-4 V at `Vsb = 1`
+        ## and 9.9e-6 V at `Vsb = 0`, which was negligible against a
+        ## model 1.6% out and is the LARGEST remaining term against one
+        ## agreeing to 3e-5.  Both numbers are measured, on both
+        ## geometries, in `test_psp_gap.py`.
+        ## `vsbcnd` IS `Vsb - Vsbstar`, formed where the conditioning
+        ## is (see there) rather than by subtracting two large numbers.
+        xg = var((vgb - vsbcnd - vfb + delvg) / phit, 'xg')   # noqa: F821
 
         ## ORDERED TERMINALS.
         ##

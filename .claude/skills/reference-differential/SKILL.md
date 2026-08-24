@@ -162,10 +162,22 @@ found it, and say plainly that the mechanism is open.
     resistance `GR` was in the midpoint mobility and absent from the
     source-end one, 26% of that quantity.
 
+  - one QUANTITY computed once and USED at several sites — PSP's
+    conditioned `Vsbstar` feeds both the quasi-Fermi level and the GATE
+    DRIVE (`Vgb1 = Vgs + Vsbstar - VFB`); having it at the first site
+    only was 331 µV of threshold at `Vsb = 1`, and the largest
+    remaining discrepancy in the whole comparison.
+
   When the reference evaluates the same physics at several points
   (source end, midpoint, drain end), check each SITE, not just each
   formula. And share the helper rather than writing the expression
   twice — two copies is how the sites drift apart.
+
+  **The reading habit this asks for is different from the usual one.**
+  Grep the reference for every USE of a quantity's name, not for its
+  definition. You verify definitions by reading them; you can only
+  verify uses by ENUMERATING them, because the one you are missing is
+  by construction the one you are not looking at.
 - **Match the reference's own conditions exactly.** The last 0.04% here
   was a **0.15 K** difference between the temperature the parameters
   were scaled at and the one the model was evaluated at. Not a model

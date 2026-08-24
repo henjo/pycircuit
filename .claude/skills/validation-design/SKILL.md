@@ -35,6 +35,14 @@ that is exact in one regime and wrong in another is *accommodated* by a
 per-bias tolerance and *caught* by a shared one. A bug here was exact at
 `Vds = 0.05` and 73% high at 1.2; only a shared tolerance sees that.
 
+**A tolerance loose enough to straddle the before and after is not a
+regression guard.** Tightening a band from 0.25 to 0.02 here felt like
+a 12x improvement and would have caught NONE of the four zero-body
+sweeps: their error before the fix was 0.0097 and after it 0.0001. The
+test to run on a new tolerance is not "does it pass?" but **"does it
+FAIL on the code I just fixed?"** Revert the fix and watch. Anything
+that still passes is decoration.
+
 **Assert the positive; scan for boundaries.** A test asserting "this
 breaks above 1e28" fails the day someone stops it breaking. Scan for how
 far it gets and assert it has not got worse.
@@ -61,6 +69,14 @@ the difference between exercising a term and assuming it.**
 
 **A bias no sweep visits tests nothing.** A body-bias correction that is
 identically 1 at `Vsb = 0` is untested by every sweep at `Vsb = 0`.
+
+**This applies to the PROPERTIES you rely on, not just to the terms.**
+Every source/drain antisymmetry test in this tree ran at `Vb = 0` —
+where the term whose omission was justified by protecting that
+antisymmetry is ten microvolts and could not have broken anything
+measurable. The property was real, was tested, and was never tested in
+the regime where the risk lived. When a decision is justified by "it
+would break X", check that X is measured where the decision bites.
 
 **Test both signs, both channel types, both geometries.** Asymmetry is
 diagnostic: when one side is right and the other is not, everything

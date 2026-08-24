@@ -364,8 +364,11 @@ class TestTheSubthresholdRegion(object):
     and -- from whether it is flat -- whether it is an offset at all.
 
     This class found a 1.2-3.6 mV offset, n-channel-specific and growing
-    with body bias.  It is now under 0.1 mV everywhere, and the cause is
-    recorded in `TestTheTwoDrainBiasQuantities`.
+    with body bias.  It is now under two MICROvolts everywhere, and two
+    separate causes are recorded: the drain-bias one in
+    `TestTheTwoDrainBiasQuantities`, and the body-bias one -- which is
+    what the ladder below was built to see -- in
+    `TestTheConditionedGateDrive`.
     """
 
     #: The LEAKAGE-FREE window, and it is not a detail.
@@ -378,12 +381,28 @@ class TestTheSubthresholdRegion(object):
     LO, HI = 1e-9, 1e-6
 
     #: Implied threshold offset in mV, and the tolerated spread.
-    #: MEASURED.  All four are now within a tenth of a millivolt, on
-    #: both channel types and both geometries.
-    EXPECT = {'nmos_idvg_vd0p05': (-0.05, 0.35),
-              'nmos_long_idvg': (-0.05, 0.25),
-              'pmos_idvg_vd0p05': (0.05, 0.35),
-              'pmos_long_idvg': (0.04, 0.25)}
+    #: MEASURED, and the numbers are microvolts: -0.0003, -0.0001,
+    #: +0.0001, -0.0018 mV, spreads 0.0017 to 0.0065.
+    #:
+    #: The band is 0.006 mV, chosen so all four BITE.  Before the gate
+    #: drive was conditioned these read +0.0094, +0.0097, -0.0095,
+    #: -0.0114 -- ten microvolts, because at `Vsb = 0` the conditioning
+    #: is only `9.85e-6` V.  A band of 0.02 would have been comfortably
+    #: tighter than the 0.25 it replaced and would have caught NONE of
+    #: them: the zero-body curves would have gone on passing whether the
+    #: term was there or not.  A tolerance loose enough to straddle the
+    #: before and after is not a regression guard.
+    #:
+    #: These used to be non-zero TARGETS (-0.05, +0.04 ...) because a
+    #: real offset was being pinned.  There is no offset left to pin, so
+    #: they are zero, and a band around zero is the honest form.
+    EXPECT = {'nmos_idvg_vd0p05': (0.0, 0.02),
+              'nmos_long_idvg': (0.0, 0.02),
+              'pmos_idvg_vd0p05': (0.0, 0.02),
+              'pmos_long_idvg': (0.0, 0.02)}
+
+    #: The band on the MEAN, separate from the per-sweep spread above.
+    BAND = 0.006
 
     @staticmethod
     def _card_kw(deck, sweep):
@@ -436,7 +455,7 @@ class TestTheSubthresholdRegion(object):
         """Under a tenth of a millivolt, and FLAT."""
         want, tol = self.EXPECT[name]
         mean, spread, _ = self._implied_vth(deck, ref[name])
-        assert mean == pytest.approx(want, abs=0.25), \
+        assert mean == pytest.approx(want, abs=self.BAND), \
             '%s: %+.2f mV (expected %+.2f)' % (name, mean, want)
         assert spread < tol, '%s: spread %.2f mV' % (name, spread)
 
@@ -451,8 +470,8 @@ class TestTheSubthresholdRegion(object):
         """
         for name in ('nmos_long_idvg', 'pmos_long_idvg'):
             level, _, ratio = self._implied_vth(deck, ref[name])
-            assert abs(ratio - 1.0) < 1e-3, (name, 'slope', ratio)
-            assert abs(level) < 0.25, (name, 'level', level)
+            assert abs(ratio - 1.0) < 1e-4, (name, 'slope', ratio)
+            assert abs(level) < self.BAND, (name, 'level', level)
 
     def test_the_two_channel_types_agree(self, deck, ref):
         """The asymmetry is GONE, and that is the result.
@@ -465,8 +484,8 @@ class TestTheSubthresholdRegion(object):
         """
         n = self._implied_vth(deck, ref['nmos_long_idvg'])[0]
         p = self._implied_vth(deck, ref['pmos_long_idvg'])[0]
-        assert abs(n) < 0.25 and abs(p) < 0.25, (n, p)
-        assert abs(abs(n) - abs(p)) < 0.25, (n, p)
+        assert abs(n) < self.BAND and abs(p) < self.BAND, (n, p)
+        assert abs(abs(n) - abs(p)) < self.BAND, (n, p)
 
     def test_it_is_flat_across_the_body_bias_ladder(self, deck, ref):
         """Six body biases from 0 to 1.5 V on the long n-channel.
@@ -474,14 +493,26 @@ class TestTheSubthresholdRegion(object):
         This ladder was added to separate a `sqrt(phib + Vsb)`
         body-factor error from the saturating `XCOR` correction, and it
         could not: over the measurable range the two bases are 99.8%
-        collinear.  The residual it was built to decompose is gone --
-        it was neither of them -- and what the ladder now shows is that
-        nothing is left to decompose: the offset is under a quarter of a
-        millivolt at every rung, where it used to rise from 1.55 to 2.71.
+        collinear.  The residual it was built to decompose was neither
+        of them.
+
+        WHAT THE LADDER DID DO is show the shape of what was left, and
+        the shape is why it was findable.  The rungs ran
+
+            Vsb:  0.00   0.20   0.40   0.70   1.00   1.50
+            dVth: 0.010  0.121  0.196  0.274  0.324  0.375   mV
+
+        which SATURATES -- it is not the `sqrt(phib + Vsb)` of a body
+        factor and not the `Vsb/(1 + XCOR*Vsb)` of the mobility
+        correction either.  It is the shape of PSP's own smooth-min
+        conditioning of `Vsb`, and that is what it turned out to be;
+        `TestTheConditionedGateDrive` matches it rung by rung.
+
+        Every rung is now under ten MICROvolts.
         """
         got = [self._implied_vth(deck, ref[n])[0] for n, _ in self.LADDER]
-        assert max(abs(x) for x in got) < 0.4, got
-        assert max(got) - min(got) < 0.4, got
+        assert max(abs(x) for x in got) < 0.03, got
+        assert max(got) - min(got) < 0.03, got
 
     def test_the_subthreshold_current_is_within_one_percent(self, deck, ref):
         """The same statement in the units the sweeps use."""
@@ -618,6 +649,256 @@ class TestTheTwoDrainBiasQuantities(object):
 
         assert ratio(1.0) == pytest.approx(1.0, abs=0.005), ratio(1.0)
         assert abs(ratio(0.286) - 1.0) > abs(ratio(1.0) - 1.0)
+
+
+@needs_pdk
+class TestTheConditionedGateDrive(object):
+    """PSP builds the gate drive on `Vsbstar`, not on `Vsb`.
+
+    `macrodefs:470`:
+
+        Vgb1 = Vgs + Vsbstar - VFB_T
+
+    `Vsbstar` is the smooth-min CONDITIONING of the source-bulk bias
+    (`module:1104-1105`), which keeps the surface-potential solve away
+    from the built-in potential.  This element already had it -- it
+    reaches `xn_s` through `vsbo` (`macrodefs:517`) -- and used plain
+    `Vsb` in the gate drive.
+
+    SO THIS IS THE THIRD BUG OF THE SAME SHAPE, after `Vdsx` and the
+    source-end `GR`: a quantity the reference computes and then uses at
+    SEVERAL SITES, transcribed correctly at one of them and absent at
+    another.  It is invisible to reading the formulas because every
+    formula that is there is right.  The only thing that finds it is
+    reading the reference for where a quantity is USED rather than for
+    how it is computed.
+
+    IT WAS ALSO A RECORDED, DELIBERATE TRADE-OFF, and the comment
+    explaining why it was left said "a fraction of a millivolt, and it
+    is not worth a structural property".  Both halves deserve reading:
+
+    * the SIZE was right and stopped mattering.  A fraction of a
+      millivolt is nothing against a model 1.6% out and is the largest
+      term left in one agreeing to 3e-5.  A trade-off is a judgement
+      about relative sizes and expires when one of the sizes moves;
+    * the STRUCTURAL argument was wrong, and had been all along.  PSP's
+      `Vgs` is referred to the lower terminal, so transcribing the sum
+      literally does break the source/drain antisymmetry -- that part
+      was correctly observed.  But the same quantity written as a
+      DIFFERENCE has no such problem:
+
+          Vgs + Vsbstar - VFB  ==  Vgb - VFB - (Vsb - Vsbstar)
+
+      and `Vsb - Vsbstar` is `MINA(vlow, 0, aphi) - phix1`, which
+      touches the two junctions only through the SYMMETRIC
+      `vlow = MINA(Vdb, Vsb, aphi) + phix`.  It is exactly even under
+      the exchange.
+
+    THE SECOND POINT HAS A NUMERICAL CATCH, and the first version of
+    this fix walked into it.  Symmetric in exact arithmetic is not
+    symmetric in floating point: writing the correction literally as
+    `vsb - vsbst` subtracts two numbers that are equal to three parts in
+    1e10 at `Vsb = 1`, which is fine, and equal to three parts in 1e44
+    at `Vsb = 1e40`, which is not.  The antisymmetry then breaks by 2%
+    out there -- not because the algebra is asymmetric but because the
+    cancellation is.
+
+    `test_it_is_still_antisymmetric_out_there` in `test_psp_current.py`
+    caught it, at 1e7 and 1e40 V.  Nothing in THIS file would have: the
+    body-bias grid below reaches 1.5 V, and at 1.5 V the subtraction is
+    still exact to ten digits.  The element now holds the conditioning
+    as its own quantity where it is computed, so the large difference is
+    never formed and the identity is structural.
+
+    So the old comment's instinct was sound even though its stated
+    reason was not: this site really did need care about the
+    antisymmetry.  It needed the right FORM, not omission of the term.
+    """
+
+    #: The ladder, its body bias, and the implied threshold offset in mV
+    #: that the UNCONDITIONED drive produced at each rung.  MEASURED
+    #: before the fix.  The saturating shape is the signature: a body
+    #: factor would go as `sqrt(phib + Vsb)` and keep climbing.
+    WAS = [('nmos_long_idvg_vb0p00', 0.0, 0.0097),
+           ('nmos_long_idvg_vbm0p20', 0.2, 0.1212),
+           ('nmos_long_idvg_vbm0p40', 0.4, 0.1963),
+           ('nmos_long_idvg_vbm0p70', 0.7, 0.2736),
+           ('nmos_long_idvg_vbm1p00', 1.0, 0.3242),
+           ('nmos_long_idvg_vbm1p50', 1.5, 0.3750)]
+
+    @staticmethod
+    def _offset(kw, vdb, vsb):
+        """`Vsb - Vsbstar`, PSP's conditioning, in volts.
+
+        Written out here rather than pulled from the element so the
+        test is an INDEPENDENT statement of the vendor formula, not a
+        restatement of ours.
+        """
+        import math
+
+        def mina(x, y, a):
+            return 0.5 * (x + y - math.sqrt((x - y) * (x - y) + a))
+
+        phib = kw['phib']
+        phix = 0.95 * phib
+        aphi = 0.0025 * phib * phib
+        phix1 = mina(phix - 0.5 * math.sqrt(aphi), 0.0, aphi)
+        return mina(mina(vdb, vsb, aphi) + phix, 0.0, aphi) - phix1
+
+    @staticmethod
+    def _kw(deck, w, l, pmos=False):
+        return psp_scaling.to_long_channel(
+            deck.model_params(
+                'sg13g2_lv_pmos_psp' if pmos else 'sg13g2_lv_nmos_psp',
+                w=w, l=l, ng=1, m=1, pre_layout=1), w=w, l=l, T=T27)
+
+    def test_the_conditioning_is_the_size_of_the_residual(self, deck):
+        """Three hundred microvolts at `Vsb = 1`, ten at `Vsb = 0`.
+
+        Both numbers matter.  The first is the body-biased residual and
+        the second is why the ZERO-body sweeps were not quite exact
+        either -- one mechanism, two magnitudes three decades apart, and
+        neither of them fitted.
+        """
+        kw = self._kw(deck, 10e-6, 1e-6)
+        assert self._offset(kw, 0.05, 0.0) == pytest.approx(9.85e-6,
+                                                            rel=0.02)
+        assert self._offset(kw, 1.05, 1.0) == pytest.approx(3.304e-4,
+                                                            rel=0.02)
+
+    def test_it_is_not_zero_at_zero_body_bias_which_is_the_subtlety(
+            self, deck):
+        """`Vsbstar(0)` is `-9.85e-6`, not `0`.
+
+        `phix1` is chosen so the two `MINA`s cancel EXACTLY at
+        `Vdb = Vsb = 0`, and the reference sweeps sit at `Vds = 50 mV`,
+        not at zero.  So the conditioning never quite vanishes, and a
+        test written only at `Vds = 0` would have concluded it did.
+        """
+        kw = self._kw(deck, 10e-6, 1e-6)
+        assert self._offset(kw, 0.0, 0.0) == pytest.approx(0.0, abs=1e-12)
+        assert self._offset(kw, 0.05, 0.0) > 5e-6
+
+    def test_it_is_even_under_the_source_drain_exchange(self, deck):
+        """The structural claim, as arithmetic.
+
+        `Vsb - Vsbstar` depends on the junctions only through
+        `MINA(Vdb, Vsb, aphi)`, so exchanging them leaves it alone.
+        """
+        kw = self._kw(deck, 10e-6, 1e-6)
+        for a, b in [(1.05, 1.0), (0.05, 0.0), (2.2, 0.7), (1.5, 1.5)]:
+            assert self._offset(kw, a, b) == pytest.approx(
+                self._offset(kw, b, a), rel=1e-14), (a, b)
+
+    @pytest.mark.parametrize('kind', ['nmos', 'pmos'])
+    def test_the_antisymmetry_survives_it_under_body_bias(self, deck,
+                                                          kind):
+        """The test that was missing, and the reason the term stayed out.
+
+        Every antisymmetry test in this tree ran at `Vb = 0`, where the
+        conditioning is ten microvolts and could not break anything
+        measurable.  A bias no test visits tests nothing: the property
+        the old trade-off was defending was never actually being
+        measured in the regime where the term it excluded is large.
+
+        Here it is measured at four body biases up to 1.5 V, both
+        channel types, and it holds to 1e-12 -- which is the relative
+        agreement of two floating-point evaluations, not a tolerance.
+        """
+        cm.default_toolkit = numeric
+        pmos = kind == 'pmos'
+        sgn = -1.0 if pmos else 1.0
+        cls = PspPmosLongChannel if pmos else PspMosLongChannel
+        e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
+                **self._kw(deck, 1e-6, 0.13e-6, pmos))
+        e.update_iparv()
+        for vb in (0.0, -0.4, -1.0, -1.5):
+            for vg in (0.6, 1.2):
+                for vd in (0.05, 0.9):
+                    f = np.asarray(e.i(e.bias(sgn * vd, sgn * vg, 0.0,
+                                              sgn * vb)), float)[0]
+                    r = np.asarray(e.i(e.bias(0.0, sgn * vg, sgn * vd,
+                                              sgn * vb)), float)[0]
+                    assert f == pytest.approx(-r, rel=1e-12), \
+                        (kind, vb, vg, vd, f, r)
+
+    @pytest.mark.parametrize('vd', [1e3, 1e7, 1e40])
+    def test_the_correction_is_never_a_large_difference(self, deck, vd):
+        """The stability requirement, as a property of the quantity.
+
+        `Vsb - Vsbstar` is bounded by the conditioning constants --
+        `MINA(vlow, 0, aphi)` cannot exceed `sqrt(aphi)/2` in magnitude
+        and `phix1` is a constant -- so it stays of order 1e-4 at EVERY
+        bias.  A form that computes it by subtracting two `1e40`s does
+        not have that property, and that is the difference between an
+        identity that holds and one that holds until it matters.
+        """
+        kw = self._kw(deck, 10e-6, 1e-6)
+        import math
+        assert abs(self._offset(kw, vd, 0.0)) < 1e-3
+        assert abs(self._offset(kw, 0.0, vd)) < 1e-3
+        ## And it is still exactly even out there.
+        assert self._offset(kw, vd, 0.0) == pytest.approx(
+            self._offset(kw, 0.0, vd), rel=1e-14)
+        ## The bound, stated: half the smoothing scale plus the offset.
+        assert abs(self._offset(kw, vd, 0.0)) < \
+            0.5 * math.sqrt(0.0025 * kw['phib'] ** 2) + 1e-3
+
+    def test_it_predicts_the_ladder_rung_by_rung(self, deck, ref):
+        """CAUSATION, not shape-matching, and this is the whole case.
+
+        The offset the ladder measured at six body biases, against the
+        conditioning computed from the vendor formula at those same
+        biases.  The quantity ranges over 39x from rung to rung and the
+        two agree within 3.5% at every one, with nothing fitted -- no
+        scale factor, no free parameter, no chosen normalisation.
+
+        Leverage would have given one matching magnitude.  Six, across
+        a 39x range, is the mechanism.
+        """
+        kw = self._kw(deck, 10e-6, 1e-6)
+        for name, vsb, was in self.WAS:
+            b = ref[name]['bias']
+            pred = self._offset(kw, b['Vd'] - b['Vb'], b['Vs'] - b['Vb'])
+            assert pred * 1e3 == pytest.approx(was, rel=0.035), \
+                '%s: predicted %.1f uV, measured %.1f uV' % (
+                    name, pred * 1e6, was * 1e3)
+
+    @pytest.mark.parametrize('name,was', [('nmos_idvg_vb_m1', 1.0067),
+                                          ('nmos_long_idvg_vb_m1', 1.0092)])
+    def test_without_it_the_body_biased_sweeps_come_back(self, deck, ref,
+                                                         name, was):
+        """The before-and-after, without touching the element.
+
+        The conditioning does not depend on `Vgb`, so the unconditioned
+        model at gate voltage `Vg` is EXACTLY this one at `Vg + offset`.
+        That reconstructs the old behaviour by shifting the sweep rather
+        than by keeping a switch in the model for the benefit of a test,
+        and it reproduces the recorded maxima to four decimals.
+
+        These two sweeps were the largest remaining discrepancy in the
+        whole comparison when everything else had reached 1.000.
+        """
+        cm.default_toolkit = numeric
+        sw = ref[name]
+        kw = self._kw(deck, sw['w'], sw['l'])
+        e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                              cm.Node('b'), **kw)
+        e.update_iparv()
+        b = sw['bias']
+        off = self._offset(kw, b['Vd'] - b['Vb'], b['Vs'] - b['Vb'])
+        v = np.asarray(sw['v'], float)
+        r = np.abs(np.asarray(sw['i_d'], float))
+        m = r > FLOOR
+
+        def top(shift):
+            got = np.abs(np.array([
+                np.asarray(e.i(e.bias(b['Vd'], x + shift, b['Vs'],
+                                      b['Vb'])), float)[0] for x in v[m]]))
+            return float((got / r[m]).max())
+
+        assert top(off) == pytest.approx(was, abs=5e-4), top(off)
+        assert top(0.0) < 1.001, top(0.0)
 
 
 @needs_pdk
@@ -2074,11 +2355,18 @@ class TestThePhysicalConstants(object):
         import math
         assert math.sqrt(11.8 / 11.7) == pytest.approx(1.00426, abs=1e-5)
 
+    #: MEASURED, in mV, and all four are now at or below 0.0001 --
+    #: the reference's own printed precision.  The bounds were 2.0 to
+    #: 5.0 mV, where the constant fix left them, with a note saying they
+    #: were upper bounds to be TIGHTENED rather than met.  Tightened:
+    #: 0.01 mV is a 200x to 500x reduction and still a hundred times the
+    #: residual.  The body-biased pair was the loosest of the four and
+    #: is now the same as the rest, which is the point.
     @pytest.mark.parametrize('name,limit', [
-        ('nmos_long_idvg', 2.0),
-        ('nmos_idvg_vd0p05', 3.5),
-        ('nmos_idvg_vb_m1', 5.0),
-        ('nmos_long_idvg_vb_m1', 3.0),
+        ('nmos_long_idvg', 0.01),
+        ('nmos_idvg_vd0p05', 0.01),
+        ('nmos_idvg_vb_m1', 0.01),
+        ('nmos_long_idvg_vb_m1', 0.01),
     ])
     def test_the_threshold_offset_is_small_and_bounded(self, deck, ref,
                                                        name, limit):
