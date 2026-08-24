@@ -206,6 +206,57 @@ Below about 1 aA the current is a difference of two surface potentials
 that agree to nine digits, and the cancellation leaves a few percent of
 wobble. That is a thousandth of any real subthreshold measurement floor.
 
+How the current is assembled
+----------------------------
+
+Having the surface potential at both channel ends, the drain current
+follows without integrating along the channel. PSP writes it as
+
+.. math::
+
+    I_{ds} = \beta \, F_{\Delta L} \, q_{im1} \, \Delta\psi \,
+             G_{vsat}^{-1}
+
+and with channel-length modulation and velocity saturation at unity —
+the ideal long-channel device — what remains is the **symmetric
+linearisation** charge-sheet current,
+
+.. math::
+
+    I_{ds} = \beta \, q_{im1} \, \Delta\psi ,
+    \qquad \beta = \mu C_{ox} \frac{W}{L} .
+
+:math:`\Delta\psi` is the surface-potential difference between the two
+ends, and :math:`q_{im1}` is the inversion charge evaluated at the
+**midpoint** potential — not at either end, and not as an average of the
+two. That single choice is why the result is exactly antisymmetric under
+exchanging source and drain, which is the property threshold-voltage
+models are famous for getting wrong and the reason surface-potential
+models exist at all.
+
+Everything else in the model is a factor on that expression or a
+correction to its ingredients: mobility reduction and Coulomb scattering
+divide :math:`\beta`, velocity saturation contributes
+:math:`G_{vsat}^{-1}`, channel-length modulation contributes
+:math:`F_{\Delta L}`, series resistance is folded into the mobility
+rather than added as a resistor — which is what keeps the device
+four-terminal and symmetric — and polysilicon depletion and the
+quantum-mechanical correction move the oxide capacitance the charges
+see.
+
+The charges come from the *same* evaluation. ``intrinsic()`` returns the
+midpoint quantities alongside the current, so
+``charges_long_channel()`` builds :math:`Q_g`, :math:`Q_d` and
+:math:`Q_b` without solving the surface potential a second time. The
+terminal partition is Ward–Dutton, and it comes out of that construction
+rather than being imposed on it.
+
+Two terms deliberately break the antisymmetry, because the physics does:
+**impact ionisation** and **gate tunnelling** both take current out of
+the channel and into a third terminal, and both take it from whichever
+terminal is momentarily the drain. With them on, the drain current is no
+longer an odd function of :math:`V_{ds}` — in PSP either.
+
 Reading a real model card
 -------------------------
 
@@ -243,6 +294,72 @@ Three decisions worth knowing about:
 :mod:`pycircuit.circuit.psp_scaling` then implements PSP's geometry
 scaling for the parameters the core uses, so a card and a geometry
 produce the element's parameters with nothing hand-tuned.
+
+Using it
+--------
+
+The devices are ordinary pycircuit elements with four terminals in the
+order ``d, g, s, b``. :doc:`Example 11 <examples/example11>` is a
+complete, runnable characterisation — transfer curve, output curve and
+operating point, checked against the vendor's own recorded values. What
+follows is the reference for what that example does.
+
+**Building one.** The constructor takes *scaled* parameters, not a card,
+so the card is read and scaled first::
+
+    deck = spicecard.read('cornerMOSlv.lib', section='mos_tt')
+    card = deck.model_params('sg13g2_lv_nmos_psp', w=1e-6, l=0.13e-6,
+                             ng=1, m=1, pre_layout=1)
+    kw   = psp_scaling.to_long_channel(card, w=1e-6, l=0.13e-6, T=300.15)
+    fet  = PspMosLongChannel(d, g, s, b, **kw)
+
+Use :class:`~pycircuit.circuit.compact.PspPmosLongChannel` for holes.
+The card carries the polarity; the two classes differ only where the
+physics genuinely does, which is four terms in the kernel.
+
+**Say the temperature twice, and make it agree.** ``to_long_channel``
+scales the card's parameters *to* a temperature; the element evaluates
+*at* whatever ``defaultepar.T`` says. The two are not linked. Leaving
+them 0.15 K apart is worth 0.04 % of the noise density — nothing in the
+drain current, and it was the largest remaining error in this model's
+comparison for a while.
+
+**Two ways to drive it.** In a circuit, for a real DC solve::
+
+    c['M1'] = PspMosLongChannel(d, g, gnd, gnd, **kw)
+    res = DCSweep(c).solve('Vg', 'v', np.linspace(0.4, 1.2, 5))
+
+or directly on the element, which is exact and faster when the
+transistor is the whole problem::
+
+    fet.update_iparv()
+    i = fet.i(fet.bias(vd, vg, vs, vb))     # currents INTO the device
+
+**The element has more unknowns than terminals.** A gate node sits
+behind the gate resistance, and the induced-gate-noise network owns an
+auxiliary node; both collapse away when their parameters are zero. So
+the small-signal transconductance is the derivative with respect to the
+*internal* gate, and ``G[0, 1]`` is identically zero. Look nodes up by
+name::
+
+    n  = {str(node): k for k, node in enumerate(fet.nodes)}
+    G  = fet.G(x)
+    gm = G[n['d'], n['gi']]
+
+**What comes with it.** DC, AC, noise and transient, on the NumPy
+toolkit or the JAX one; the batched path evaluates many parameter sets
+at once and is worth 22× at 512 lanes. Noise is a full ``CY`` matrix, so
+the induced gate noise and its correlation with the drain are there
+rather than being a separate calculation.
+
+.. note::
+
+   These classes are **not** PSP103 and should not be substituted for it
+   in design work. They are PSP103's core, built to establish that the
+   Behavioural HDL can carry a surface-potential formulation, and
+   measured against the vendor so the claim has a number attached. The
+   non-quasi-static block, self-heating and the edge transistor are not
+   implemented.
 
 How close is it?
 ----------------
@@ -927,7 +1044,7 @@ After regeneration the reference matches the analytic curve to every
 digit printed. Before it, it was three to eleven times rougher.
 
 A smoothing constant needs a scale
----------------------------------
+----------------------------------
 
 What was left after that was one number, and it was ours.
 
