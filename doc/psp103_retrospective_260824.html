@@ -1,0 +1,347 @@
+<!--
+  PSP103 retrospective -- the compact-model campaign on this branch, its
+  findings and the methods that produced them.  Rendered:
+  section 03 covers how the DSL generates an element, 04 how to drive one
+  from a foundry card; both code samples are transcripts of runs, not
+  sketches.
+
+  THIS FILE IS AN ARTIFACT SOURCE, which is why it has no <!doctype>,
+  <html>, <head> or <body> of its own -- the publisher supplies them, and
+  adding them here would break republishing to the same URL.  Browsers
+  open it directly regardless.  Every number in it is measured; the
+  fonts are the one external host an artifact may load, and each has a
+  real fallback stack.
+-->
+<title>Chasing the Last Decade</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  --paper:#EDF0F1; --surface:#F8FAFA; --sunk:#E3E8E9;
+  --ink:#101A1D; --ink-2:#2C3B3F; --muted:#5E7075; --rule:#CBD5D6;
+  --accent:#00695C; --accent-soft:#D6E7E3; --was:#9C3A22; --was-soft:#F0DDD7;
+  --shadow:0 1px 2px rgba(16,26,29,.06),0 8px 24px -12px rgba(16,26,29,.18);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#0D1416; --surface:#141F22; --sunk:#0A1113;
+    --ink:#E4EBEC; --ink-2:#B8C6C8; --muted:#83979B; --rule:#26363A;
+    --accent:#4FC3B1; --accent-soft:#16302C; --was:#E08163; --was-soft:#33201A;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -12px rgba(0,0,0,.7);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0D1416; --surface:#141F22; --sunk:#0A1113;
+  --ink:#E4EBEC; --ink-2:#B8C6C8; --muted:#83979B; --rule:#26363A;
+  --accent:#4FC3B1; --accent-soft:#16302C; --was:#E08163; --was-soft:#33201A;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -12px rgba(0,0,0,.7);
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--paper); color:var(--ink);
+  font-family:"Source Serif 4",Georgia,serif; font-size:17px; line-height:1.65;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1080px;margin:0 auto;padding:0 28px}
+.col{max-width:66ch}
+h1,h2,h3,.label,.stat-v,th{font-family:Archivo,"Helvetica Neue",Arial,sans-serif}
+h1{font-size:clamp(2.3rem,5.4vw,3.6rem);line-height:1.02;letter-spacing:-.025em;font-weight:700;margin:0;text-wrap:balance}
+h2{font-size:1.42rem;letter-spacing:-.012em;font-weight:600;margin:0;text-wrap:balance}
+h3{font-size:1.02rem;letter-spacing:-.005em;font-weight:600;margin:0;text-wrap:balance}
+p{margin:0}
+a{color:var(--accent)}
+code,.mono,.num{font-family:"IBM Plex Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums}
+code{font-size:.87em;background:var(--sunk);padding:.1em .34em;border-radius:3px}
+.label{font-size:.685rem;text-transform:uppercase;letter-spacing:.14em;font-weight:600;color:var(--muted)}
+
+header{padding:72px 0 52px;border-bottom:1px solid var(--rule)}
+.eyebrow{color:var(--accent);margin-bottom:20px}
+.deck{font-size:1.16rem;color:var(--ink-2);margin-top:22px;max-width:62ch}
+.hero-figs{display:flex;flex-wrap:wrap;gap:14px;margin-top:38px}
+.fig{background:var(--surface);border:1px solid var(--rule);border-radius:5px;padding:14px 18px;min-width:150px;flex:1 1 150px}
+.fig .stat-v{font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums;font-size:1.5rem;font-weight:600;letter-spacing:-.02em;display:block;margin-top:5px}
+.fig.hi .stat-v{color:var(--accent)}
+.fig .sub{font-size:.76rem;color:var(--muted);margin-top:4px;line-height:1.4}
+
+section{padding:56px 0;border-bottom:1px solid var(--rule)}
+.sec-head{display:flex;gap:16px;align-items:baseline;margin-bottom:26px;flex-wrap:wrap}
+.sec-n{font-family:"IBM Plex Mono",monospace;font-size:.78rem;color:var(--accent);font-weight:500;padding-top:.2em}
+.stack{display:flex;flex-direction:column;gap:18px}
+.stack-tight{display:flex;flex-direction:column;gap:10px}
+
+/* log scale */
+.scale{margin:8px 0 0;background:var(--surface);border:1px solid var(--rule);border-radius:6px;padding:30px 26px 22px;overflow-x:auto}
+.scale-inner{min-width:640px}
+.axis{position:relative;height:2px;background:var(--rule);margin:46px 0 0}
+.dec{position:absolute;top:-7px;width:1px;height:16px;background:var(--rule)}
+.dec span{position:absolute;top:20px;left:50%;transform:translateX(-50%);font-family:"IBM Plex Mono",monospace;font-size:.7rem;color:var(--muted);white-space:nowrap}
+.mk{position:absolute;top:-5px;width:9px;height:9px;border-radius:50%;background:var(--was);transform:translateX(-50%);border:2px solid var(--surface)}
+.mk.now{background:var(--accent);width:13px;height:13px;top:-7px}
+.mk b{position:absolute;bottom:17px;left:50%;transform:translateX(-50%) rotate(-38deg);transform-origin:bottom left;font-family:Archivo,sans-serif;font-size:.7rem;font-weight:600;color:var(--ink-2);white-space:nowrap;letter-spacing:.01em}
+.scale-cap{font-size:.8rem;color:var(--muted);margin-top:52px;max-width:70ch}
+
+table{border-collapse:collapse;width:100%;font-size:.865rem}
+.tw{overflow-x:auto;border:1px solid var(--rule);border-radius:6px;background:var(--surface)}
+th{text-align:left;font-size:.68rem;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);font-weight:600;padding:12px 14px;border-bottom:1px solid var(--rule);white-space:nowrap}
+td{padding:11px 14px;border-bottom:1px solid var(--rule);vertical-align:top;line-height:1.5}
+tr:last-child td{border-bottom:none}
+td.n{font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums;white-space:nowrap;font-size:.82rem}
+td.was{color:var(--was);font-weight:500}
+.tag{display:inline-block;font-family:Archivo,sans-serif;font-size:.66rem;font-weight:600;letter-spacing:.045em;text-transform:uppercase;padding:2.5px 7px;border-radius:3px;background:var(--accent-soft);color:var(--accent);white-space:nowrap}
+
+.method{background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:5px;padding:20px 22px}
+.method h3{margin-bottom:8px}
+.method p{font-size:.95rem;color:var(--ink-2)}
+.method .ev{margin-top:11px;padding-top:11px;border-top:1px solid var(--rule);font-size:.83rem;color:var(--muted)}
+.method .ev b{color:var(--ink-2);font-weight:600}
+
+.err{background:var(--was-soft);border:1px solid var(--rule);border-radius:5px;padding:18px 20px}
+.err h3{color:var(--was);margin-bottom:7px;font-size:.97rem}
+.err p{font-size:.92rem;color:var(--ink-2)}
+
+.shape{background:var(--sunk);border-radius:5px;padding:18px 20px;font-size:.93rem}
+.shape b{font-family:Archivo,sans-serif;font-weight:600}
+ul{margin:0;padding-left:1.15em}
+li{margin-bottom:7px}
+li::marker{color:var(--accent)}
+pre{margin:0;background:var(--sunk);border:1px solid var(--rule);border-radius:5px;padding:16px 18px;overflow-x:auto;font-family:"IBM Plex Mono",monospace;font-size:.795rem;line-height:1.62;color:var(--ink-2)}
+pre code{background:none;padding:0;font-size:inherit}
+pre .c{color:var(--muted)}
+pre .k{color:var(--accent);font-weight:500}
+.figcap{font-size:.79rem;color:var(--muted);margin-top:9px;max-width:70ch}
+.pipe{display:flex;flex-wrap:wrap;gap:0;align-items:stretch;background:var(--surface);border:1px solid var(--rule);border-radius:6px;overflow:hidden}
+.pipe>div{flex:1 1 160px;padding:16px 18px;border-right:1px solid var(--rule);min-width:0}
+.pipe>div:last-child{border-right:none}
+.pipe .st{font-family:"IBM Plex Mono",monospace;font-size:.7rem;color:var(--accent);display:block;margin-bottom:6px}
+.pipe b{font-family:Archivo,sans-serif;font-size:.92rem;font-weight:600;display:block;margin-bottom:5px}
+.pipe p{font-size:.8rem;color:var(--muted);line-height:1.5}
+.two{display:grid;grid-template-columns:1fr;gap:18px}
+@media (min-width:860px){.two{grid-template-columns:1fr 1fr}}
+footer{padding:44px 0 72px;font-size:.84rem;color:var(--muted)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (max-width:640px){body{font-size:16px}header{padding:48px 0 36px}section{padding:40px 0}}
+</style>
+
+<div class="wrap">
+<header>
+  <div class="label eyebrow">PSP103 · IHP SG13G2 · pycircuit</div>
+  <h1>Chasing the Last Decade</h1>
+  <p class="deck">A surface-potential MOSFET, built in a symbolic DSL, taken from 10% agreement with a foundry's own compact model to the reference's own printed precision — with nothing fitted anywhere in the chain. This is what was found, and how.</p>
+  <div class="hero-figs">
+    <div class="fig"><span class="label">First measurement</span><span class="stat-v">10%</span><span class="sub">worst sweep, from a real card</span></div>
+    <div class="fig hi"><span class="label">Now</span><span class="stat-v">1.3×10⁻⁶</span><span class="sub">worst point of twelve sweeps</span></div>
+    <div class="fig"><span class="label">Improvement</span><span class="stat-v">~80,000×</span><span class="sub">across 56 commits</span></div>
+    <div class="fig"><span class="label">Fitted parameters</span><span class="stat-v">0</span><span class="sub">every value comes off the card</span></div>
+  </div>
+</header>
+
+<section>
+  <div class="sec-head"><span class="sec-n">01</span><h2>The descent</h2></div>
+  <div class="col stack" style="margin-bottom:26px">
+    <p>Each marker is a residual that was, at the time, the largest thing left. The scale is logarithmic because that is the unit this work is actually measured in — every fix moved the answer by a factor, not by an amount, and the interesting question was always <em>which</em> decade the next error lived in.</p>
+  </div>
+  <div class="scale"><div class="scale-inner">
+    <div class="axis">
+      <div class="dec" style="left:0%"><span>10⁻¹</span></div>
+      <div class="dec" style="left:19.2%"><span>10⁻²</span></div>
+      <div class="dec" style="left:38.5%"><span>10⁻³</span></div>
+      <div class="dec" style="left:57.7%"><span>10⁻⁴</span></div>
+      <div class="dec" style="left:76.9%"><span>10⁻⁵</span></div>
+      <div class="dec" style="left:96.2%"><span>10⁻⁶</span></div>
+      <div class="mk" style="left:0%"><b>10% first measurement</b></div>
+      <div class="mk" style="left:12.3%"><b>2.3% scaling terms</b></div>
+      <div class="mk" style="left:15.3%"><b>1.6% silicon permittivity</b></div>
+      <div class="mk" style="left:19.6%"><b>0.92% body bias</b></div>
+      <div class="mk" style="left:38.8%"><b>9.6e-4 reference convergence</b></div>
+      <div class="mk" style="left:49.2%"><b>2.5e-4 smoothing scale</b></div>
+      <div class="mk" style="left:59.4%"><b>9.4e-5 impact ionisation</b></div>
+      <div class="mk" style="left:65.7%"><b>4.4e-5 gate tunnelling</b></div>
+      <div class="mk now" style="left:94.3%"><b>1.3e-6 now</b></div>
+    </div>
+    <p class="scale-cap">Worst relative error over the comparison window, twelve sweeps, two channel types, two geometries, two foundry cards. The last four markers are the work of one session.</p>
+  </div></div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-n">02</span><h2>What the model is</h2></div>
+  <div class="col stack">
+    <p>A PSP103 core — surface potential solved in closed form, not a threshold-voltage model — expressed as a symbolic expression tree and compiled, with its Jacobian, by automatic differentiation. It reads a real 359-parameter foundry card through a geometry-scaling layer that reimplements the vendor's own scaling, and it is compared against curves generated by the vendor's compiled binary.</p>
+    <p>What it now contains: the intrinsic current and charge, geometry and temperature scaling, series resistance, velocity saturation, channel-length modulation, DIBL, polysilicon depletion, quantum-mechanical oxide correction, overlap and fringe capacitance, JUNCAP2 junctions with reverse leakage, channel thermal and flicker noise, induced gate noise with its drain correlation, impact ionisation, and gate tunnelling.</p>
+    <div class="shape">
+      Two properties are structural rather than checked: charge conservation and exact source/drain antisymmetry both follow from how the contributions are wired, not from an identity that has to hold numerically. That is what made the leakage terms interesting — they are the first physics in the model that legitimately <b>breaks</b> the antisymmetry, because they take current out of the channel and into a third terminal.
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-n">03</span><h2>How the model is generated</h2></div>
+  <div class="col stack" style="margin-bottom:26px">
+    <p>Nothing here is hand-differentiated. The element is written as <em>contribution statements</em> — the DSL's form of Verilog-A's <code>I(a,b) &lt;+ expr</code> — inside an <code>analog()</code> method whose arguments name the terminals. A metaclass compiles those equations symbolically into everything a simulator needs: the current and charge vectors, and their exact closed-form Jacobians.</p>
+  </div>
+  <div class="pipe">
+    <div><span class="st">written</span><b>Contributions</b><p>One expression per branch. Terminal voltages are symbols; <code>ddt()</code> marks a charge.</p></div>
+    <div><span class="st">compiled</span><b>Expression tree</b><p>Each additive term routes by kind — <code>ddt</code> to <em>q</em>, circuit-free terms to <em>u(t)</em>, the rest to <em>i</em>.</p></div>
+    <div><span class="st">differentiated</span><b>Exact Jacobians</b><p><code>G = ∂i/∂x</code> and <code>C = ∂q/∂x</code> as symbolic Jacobians — no finite differences, no chain rule by hand.</p></div>
+    <div><span class="st">emitted</span><b>Callable stamps</b><p>Lambdified with common-subexpression elimination, against NumPy or JAX.</p></div>
+  </div>
+  <p class="figcap">The same set of ideas every equation-defined device compiler uses — Qucs EDD, Xyce ABM, ngspice B-sources — done with a computer-algebra system so the Jacobians are exact rather than approximated.</p>
+
+  <div class="two" style="margin-top:34px">
+    <div class="stack-tight">
+      <span class="label">A complete element</span>
+      <pre><code><span class="k">class</span> Diode(Behavioural):
+    terminals = (<span class="c">'plus'</span>, <span class="c">'minus'</span>)
+    instparams = [Parameter(name=<span class="c">'isat'</span>, default=1e-15),
+                  Parameter(name=<span class="c">'tau'</span>,  default=1e-12)]
+
+    <span class="k">def</span> analog(plus, minus):
+        br = Branch(plus, minus)
+        i = var(isat * (sympy.exp(br.V / 0.025852) - 1.0), <span class="c">'id'</span>)
+        <span class="k">return</span> (Contribution(br.I, i),
+                Contribution(br.I, ddt(tau * i)))</code></pre>
+    </div>
+    <div class="stack-tight">
+      <span class="label">What comes out</span>
+      <pre><code>i(x)  = [ 1.201e-04  -1.201e-04 ]
+G(x)  = [ 4.646e-03  -4.646e-03
+         -4.646e-03   4.646e-03 ]
+q(x)  = [ 1.201e-16  -1.201e-16 ]</code></pre>
+      <p class="figcap">Twelve lines of physics; the residual, the exact conductance matrix and the charge vector are generated. The MOSFET is the same mechanism with a surface-potential solve inside it — <span class="mono">1,671</span> lines of kernel producing a chain of some <span class="mono">700</span> intermediates.</p>
+    </div>
+  </div>
+
+  <div class="col stack" style="margin-top:34px">
+    <h3>Two things this changes</h3>
+    <p><b>The derivative is a different program from the value.</b> It is generated, it is larger, and it divides by things the value never divides by. A model can be finite everywhere and have a NaN Jacobian at one bias — the worse failure, because nothing looks wrong and the solver is silently poisoned.</p>
+    <p><b>Both arms of every conditional are evaluated.</b> A compiled conditional becomes a <code>where</code>, which selects <em>afterwards</em>. The discarded arm still overflows and still contributes its NaN to anything combining the two, so each arm's <em>input</em> must be clamped to that arm's own domain. Three overflows in the last block written here were of exactly this kind.</p>
+    <p>The practical consequence is that <code>var()</code> is arithmetic, not optimisation: naming an intermediate fixes the order of operations, and bare sub-expressions get substituted into one another and multiplied out before printing. The same algebra typed into a REPL can return a finite number where the compiled chain returns NaN.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-n">04</span><h2>Using it</h2></div>
+  <div class="col stack" style="margin-bottom:24px">
+    <p>The element takes scaled parameters, not a card. The scaling layer reimplements the vendor's own geometry and temperature scaling, so one card and a <code>(W, L, T)</code> gives the ~60 values the element needs — and every one of them has been checked term by term against the vendor's own reported values at four geometries on both channel types.</p>
+  </div>
+  <pre><code><span class="c"># 1. read the foundry card and scale it for one geometry</span>
+deck = spicecard.read(PDK + <span class="c">'/cornerMOSlv.lib'</span>, section=<span class="c">'mos_tt'</span>)
+card = deck.model_params(<span class="c">'sg13g2_lv_nmos_psp'</span>, w=1e-6, l=0.13e-6,
+                         ng=1, m=1, pre_layout=1)
+kw   = psp_scaling.to_long_channel(card, w=1e-6, l=0.13e-6, T=300.15)
+
+<span class="c"># 2. build a circuit around it  (d, g, s, b)</span>
+c = SubCircuit()
+d, g = c.add_node(<span class="c">'d'</span>), c.add_node(<span class="c">'g'</span>)
+c[<span class="c">'Vd'</span>] = VS(d, gnd, v=1.2)
+c[<span class="c">'Vg'</span>] = VS(g, gnd, v=0.0)
+c[<span class="c">'M1'</span>] = PspMosLongChannel(d, g, gnd, gnd, **kw)
+
+<span class="c"># 3. sweep the gate and read the drain current</span>
+res = DCSweep(c).solve(<span class="c">'Vg'</span>, <span class="c">'v'</span>, np.linspace(0.4, 1.2, 5))
+</code></pre>
+  <div class="tw" style="margin-top:20px"><table>
+    <thead><tr><th>V<sub>g</sub></th><th>I<sub>d</sub>, this model</th><th>PSP103</th><th>ratio</th></tr></thead>
+    <tbody>
+      <tr><td class="n">0.40 V</td><td class="n">1.3176148e-06</td><td class="n">1.3176160e-06</td><td class="n">0.9999991</td></tr>
+      <tr><td class="n">0.60 V</td><td class="n">2.4022230e-05</td><td class="n">2.4022250e-05</td><td class="n">0.9999992</td></tr>
+      <tr><td class="n">0.80 V</td><td class="n">1.0102555e-04</td><td class="n">1.0102560e-04</td><td class="n">0.9999995</td></tr>
+      <tr><td class="n">1.00 V</td><td class="n">2.3479954e-04</td><td class="n">2.3479970e-04</td><td class="n">0.9999993</td></tr>
+      <tr><td class="n">1.20 V</td><td class="n">4.0052590e-04</td><td class="n">4.0052610e-04</td><td class="n">0.9999995</td></tr>
+    </tbody>
+  </table></div>
+  <p class="figcap">A 1 µm × 0.13 µm n-channel at V<sub>d</sub> = 1.2 V, run exactly as printed above, against the committed reference generated by IHP's own compiled binary. The vendor prints six significant figures; the agreement is at its last digit.</p>
+
+  <div class="col stack" style="margin-top:34px">
+    <h3>What you get, and what you should know</h3>
+    <ul>
+      <li><b>Four terminals</b> — <code>d, g, s, b</code> — plus internal nodes for gate resistance and the induced-gate-noise network, which collapse away when their parameters are zero.</li>
+      <li><b>DC, AC, noise and transient</b>, on the NumPy toolkit or the JAX one; the batched path evaluates many parameter sets at once and is worth <span class="mono">22×</span> at 512 lanes.</li>
+      <li><b>Both channel types</b> — <code>PspMosLongChannel</code> and <code>PspPmosLongChannel</code>. The card carries the polarity; the classes differ only where the physics genuinely does.</li>
+      <li><b>The p-channel card is a different card</b>, not mirrored numbers. Four terms were found here only because a coefficient that is zero on one card is alive on the other.</li>
+      <li><b>It is not PSP103</b> and should not be substituted for it in design work. It is PSP103's core, built to establish that the DSL can carry a surface-potential formulation, and measured so that the claim has a number attached.</li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-n">05</span><h2>The findings ledger</h2></div>
+  <div class="col" style="margin-bottom:22px"><p>Every entry is a real defect with a measured cost and the technique that exposed it. The column that matters is the last one: no two consecutive bugs were found the same way, and the method that found each is the reason it was found at all.</p></div>
+  <div class="tw"><table>
+    <thead><tr><th>What it was</th><th>Cost</th><th>Found by</th></tr></thead>
+    <tbody>
+      <tr><td><b>BETN width adjustment</b> — the <code>GPE</code> correction, absent</td><td class="n was">12%</td><td><span class="tag">parameter audit</span></td></tr>
+      <tr><td><b>NP length scaling</b> — gate doping, zero on one card</td><td class="n was">1.088 → 1.024</td><td><span class="tag">second card</span></td></tr>
+      <tr><td><b>DNSUB</b> — bias-dependent body factor, zero on one card</td><td class="n was">few % → 0.6%</td><td><span class="tag">second card</span></td></tr>
+      <tr><td><b>XCOR</b> — body-bias mobility, identically 1 where every sweep sat</td><td class="n was">0.963 → 0.999</td><td><span class="tag">enumerate outputs</span></td></tr>
+      <tr><td><b>Oxide capacitance in the charges</b> — CV dimensions and QM correction</td><td class="n was">24%</td><td><span class="tag">external quantity</span></td></tr>
+      <tr><td><b>Silicon permittivity</b> — 11.7 against the vendor's 11.8</td><td class="n was">2–6 mV of V<sub>th</sub></td><td><span class="tag">elimination</span></td></tr>
+      <tr><td><b>V<sub>dsx</sub></b> — one name, two different quantities</td><td class="n was">5.5%</td><td><span class="tag">strobe</span></td></tr>
+      <tr><td><b>G<sub>R</sub></b> — series resistance missing at the source end only</td><td class="n was">26% of G<sub>mob</sub></td><td><span class="tag">strobe</span></td></tr>
+      <tr><td><b>Evaluation temperature</b> — 0.15 K from where the reference was recorded</td><td class="n was">0.04% of S<sub>id</sub></td><td><span class="tag">constant residual</span></td></tr>
+      <tr><td><b>V<sub>sb</sub>* in the gate drive</b> — one quantity, used at two sites</td><td class="n was">331 µV</td><td><span class="tag">right unit</span></td></tr>
+      <tr><td><b>Reference solver tolerances</b> — <code>abstol</code>, then <code>reltol</code></td><td class="n was">9.6×10⁻⁴</td><td><span class="tag">reference floor</span></td></tr>
+      <tr><td><b>Smoothing constant</b> — absolute where the scale varies 44,000×</td><td class="n was">2.5×10⁻⁴</td><td><span class="tag">card differential</span></td></tr>
+      <tr><td><b>Impact ionisation</b> — not modelled</td><td class="n was">9.4×10⁻⁵</td><td><span class="tag">other terminals</span></td></tr>
+      <tr><td><b>Gate tunnelling</b> — not modelled</td><td class="n was">4.4×10⁻⁵</td><td><span class="tag">other terminals</span></td></tr>
+      <tr><td><b>Poly-corrected midpoint</b> — a name reassigned in place</td><td class="n was">7% of I<sub>g</sub></td><td><span class="tag">strobe</span></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-n">06</span><h2>One shape, five times</h2></div>
+  <div class="col stack" style="margin-bottom:22px">
+    <p>The five hardest bugs were all the same shape, and it is a shape that reading the source cannot see, because <em>every term that is present is transcribed correctly</em>. In each case the reference computes a quantity in one place and uses it somewhere the transcription did not follow.</p>
+  </div>
+  <div class="stack">
+    <div class="method"><h3>One name, two quantities</h3><p>PSP's <code>Vdsx</code> is <code>Vds²/(√(Vds²+0.01)+0.1)</code> — a <em>softened</em> drain bias, quadratic near the origin. The element separately needs a smooth <code>|Vds|</code>, because ordering the terminals with a branch is something a single compiled expression cannot do. Two different quantities; one suggestive name.</p><p class="ev"><b>5.5%</b> of the weak-inversion current, and at <code>Vds = 0.05</code> the two differ by a factor of four.</p></div>
+    <div class="method"><h3>One term, present at one site</h3><p>The mobility is evaluated at the channel midpoint and again at the source end. The series-resistance contribution appears in both. Ours had it in the midpoint only.</p><p class="ev"><b>26%</b> of the source-end mobility, which propagated into the saturation voltage.</p></div>
+    <div class="method"><h3>One quantity, used at two sites</h3><p>The conditioned source bias <code>Vsb*</code> feeds both the quasi-Fermi level and the gate drive. We had it in the first.</p><p class="ev"><b>331 µV</b> at <code>Vsb = 1</code> — and 9.9 µV at <code>Vsb = 0</code>, which is why the zero-body sweeps were never quite exact either.</p></div>
+    <div class="method"><h3>One name, reassigned in place</h3><p>PSP corrects the midpoint surface potential for polysilicon depletion by writing <code>x_m = x_m + u_pd</code>. Every line after that sees the corrected value. We computed the correction, used it for the charges and the current, and handed the raw midpoint to a third consumer.</p><p class="ev"><b>0.7 mV</b> of surface potential — nothing in the drain current, <b>7%</b> of the gate current, because that one is an exponential of it.</p></div>
+    <div class="method"><h3>One constant, two scales</h3><p>A smoothing width written as an absolute <code>1e-3</code>, divided by a scaled parameter that is <code>0.322</code> on one card and <code>7.38×10⁻⁶</code> on the other. The same constant was 0.3% of one scale and 135× the other.</p><p class="ev"><b>2.5×10⁻⁴</b>, entirely on the p-channel, and invisible on the card it was tuned against.</p></div>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-n">07</span><h2>The methods</h2></div>
+  <div class="col" style="margin-bottom:22px"><p>Ordered roughly by cost. Each is cheap relative to the one after it, and each earned its place by finding something here.</p></div>
+  <div class="stack">
+    <div class="method"><h3>Be wrong against something external</h3><p>A model checked only against itself is checked for <em>consistency</em>, not correctness. A charge model here passed exact conservation, exact source/drain symmetry and an unfitted Ward–Dutton partition — and was 24% wrong. Every one of those checks is a <em>ratio</em>, and a uniform error in the oxide capacitance divides out of all of them.</p><p class="ev"><b>What works instead:</b> a quantity the reference <em>exports</em>. PSP publishes its scaled parameters as operating-point outputs; comparing them term by term turns "is the scaling right?" from an inference about currents into a direct check. A current can be right for compensating reasons — a parameter cannot.</p></div>
+    <div class="method"><h3>Read the spread before the median</h3><p>The median ratio says whether the <em>gain</em> is right. The spread across a sweep says whether the <em>bias dependence</em> is — and that is what the physics governs and what a missing term breaks.</p><p class="ev">Two correct blocks were switched off here for making the median worse. Judged by spread they were worth 1.80 → 0.38, and the decision was reversed.</p></div>
+    <div class="method"><h3>Convert to the unit the error lives in</h3><p>A current ratio in an exponential regime is a <em>voltage</em>. Dividing by the local <code>d ln I / dV<sub>g</sub></code> says both how large the discrepancy is in millivolts and — from whether the result is flat — whether it is an offset at all.</p><p class="ev">A residual that read as a bias-dependent mess became a <b>flat 0.35 mV</b>, which is one cause with one number, and the cause followed within the hour.</p></div>
+    <div class="method"><h3>Bound, don't fit</h3><p>Turn each suspect off, one at a time, and see how far the number moves. Read the eliminations as hard as the hits: a term whose removal changes nothing is out; a term whose removal breaks something currently exact is right.</p><p class="ev"><b>Leverage is not error.</b> The strongest false lead here had four independent arguments — right regime, 0.98 shape correlation, right leverage, and a coefficient non-zero on one card and exactly zero on the other. All four were wrong.</p></div>
+    <div class="method"><h3>The differential over the shared input</h3><p>Modify the <em>model card</em> so a term is disabled, and let <em>both</em> implementations read the modified file. If the disagreement vanishes, the discrepancy is in that term — causally, without reading a line.</p><p class="ev">Fourteen candidates left a residual at exactly 100% of baseline; zeroing one block collapsed it to <b>5.3×10⁻⁷</b>. Arithmetic on the sub-terms then localised it to a single logarithm with no further runs.</p></div>
+    <div class="method"><h3>Strobe the reference's own internals</h3><p>When the differential says a term is wrong and every ingredient still matches, the mechanism is invisible to reading. Add debug outputs to a <em>copy</em> of the reference source, rebuild, run one bias point. Strobe a whole chain at once — the ratios then localise the error themselves.</p><p class="ev">Three bugs were found this way after repeated term-by-term readings found nothing, each in a single run. The last: six quantities matched to seven digits, one did not, and the discrepancy in the final answer equalled the discrepancy in that one <em>exactly</em>.</p></div>
+    <div class="method"><h3>Dump your own compiled chain</h3><p>Take the generated source, re-execute it with a capture after every assignment, and find the first non-finite variable. That turns "somewhere in two thousand lines" into one name.</p><p class="ev">Located three separate overflows in new code, each of which reported as a plausible physical failure at the terminals.</p></div>
+    <div class="method"><h3>Know where the reference's floor is</h3><p>Reference curves have floors — leakage, printed precision, and the solver's own convergence. Measuring below one measures <em>its</em> floor.</p><p class="ev">The golden data was converged to <b>10⁻³</b> while being compared at 10⁻⁴, and it did not look like noise: point-to-point error reads as a <em>kink at one bias</em>, which invites a search for a mechanism. It cost two false leads before it was measured.</p></div>
+    <div class="method"><h3>Record every terminal, not just the interesting one</h3><p>Reference data is <em>terminal</em> current, which includes every path to that terminal. When the other terminals are not negligible they stop being contamination and become the best instrument available: they name what is missing.</p><p class="ev">Two residuals were identified outright with no differential and nothing fitted — <code>ours + |i<sub>b</sub>|</code> reproduced the vendor at <b>0.9999994</b> flat across a sweep, and a second was <b>−0.49 × i<sub>g</sub></b> constant across its window.</p></div>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-n">08</span><h2>Where the method failed</h2></div>
+  <div class="col" style="margin-bottom:22px"><p>Six wrong turns, each of which produced a confident answer before it produced a correct one. These are the entries worth re-reading; the successes above are mostly the same few techniques applied patiently.</p></div>
+  <div class="stack">
+    <div class="err"><h3>A tidy answer is not a correct one</h3><p>A measurement window reaching below the reference's 2 pA leakage floor produced a clean, flat 0.5% that read exactly like a thermal-voltage error. The clean window gave 0.01%. The most dangerous result is the one that looks like an explanation.</p></div>
+    <div class="err"><h3>Three positions on one point</h3><p>A term with the right shape and enough leverage was called the cause, then corrected to correlation, then shown by differential to have been the cause after all. The middle position was the only honest one at the time — leverage had not yet been separated from error.</p></div>
+    <div class="err"><h3>A confounded experiment, published</h3><p>Sweeping one solver tolerance over eight decades showed no change, so it was declared irrelevant. It changed nothing because <em>the other tolerance was already tight in every run of that sweep</em> — and the sweep covered one kind of analysis, the one where the other knob happens to suffice. The wrong conclusion reached a deck comment, a documentation section, two test docstrings and a skill file before an untested case contradicted it.</p></div>
+    <div class="err"><h3>Zero is not an off switch</h3><p>The element compiles from <em>symbolic</em> parameters, so a block guarded by <code>if param != 0</code> is built whatever the value; passing zero only multiplies the result by zero at the end, and <code>0 × ∞ = NaN</code>. Setting a coefficient to zero and watching a failure persist was taken as proof the block was innocent. It was the cause. The valid control is a build without the code.</p></div>
+    <div class="err"><h3>An exit code is not evidence</h3><p>The simulator exits 0 on a <em>missing</em> model binary. A successful return was read as a successful rebuild, and an hour went into bisecting a patch that was never the problem. Assert on the output, not the status.</p></div>
+    <div class="err"><h3>A stale note is worse than no note</h3><p>A test named <code>..._terms_are_absent</code> pointed the next investigator at two terms that had been implemented weeks earlier; its body only ever asserted something unrelated and true. It worked exactly as designed, on a residual it had nothing to do with. A signpost is trusted like a measurement and is not one.</p></div>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="sec-n">09</span><h2>What holds it</h2></div>
+  <div class="col stack">
+    <p>The comparison is guarded by <span class="mono">144</span> tests in <span class="mono">29</span> classes, and the discipline that matters is not their number. A tolerance is only a regression guard if it <em>fails on the code you just fixed</em>: after each fix here, the band was reverted against and checked to bite. One band was tightened three times in a single session, from 3% to 0.001 to 5×10⁻⁵, because each fix made the previous bound decorative.</p>
+    <div class="shape"><b>A recorded trade-off has a shelf life.</b> Two of the last four bugs were documented, measured, and deliberately left — correctly, at the time, because the error was negligible against a model 1.6% out. Both became the largest remaining term once everything else reached 3×10⁻⁵, and nothing announced it: a passing test that pins a bounded error goes on passing. After any large accuracy gain, re-read the recorded known-gaps and ask which is now the biggest thing left.</p></div>
+    <p>Three skill files carry the transferable part — on finding numerical discrepancies against a reference, on designing comparisons that can fail, and on numerics for code that is symbolically differentiated. They contain only measurements from this work, not general advice.</p>
+  </div>
+</section>
+
+<footer><div class="col">
+  <p><span class="mono">pycircuit</span> · branch <span class="mono">cna-jax-vectorization</span> · 56 commits from the golden reference to the current state · suite 1868 passing. All twelve sweeps read median 1.000, min 1.000, max 1.000. Every avalanche and gate-current component matches the vendor's own operating-point outputs exactly. No DC residual is open.</p>
+</div></footer>
+</div>
