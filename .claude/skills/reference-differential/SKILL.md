@@ -102,8 +102,23 @@ the reference's effective contribution as a fraction of yours.
 
 If the differential says a term is wrong and every ingredient still
 matches, the mechanism is invisible to reading and you need the
-reference to tell you its own numbers: add printf/`$strobe` of the
-intermediates to a copy of the reference source, rebuild, run one point.
+reference to tell you its own numbers: add debug outputs to a COPY of
+the reference source, rebuild, run one point.
+
+**Check first that you can rebuild the reference at all**, with an
+unmodified source, before spending time on the patch. Here that check
+was skipped and cost an hour: `openvaf-r 20260616` produces OSDI that
+**ngspice-47 cannot load — it segfaults, deterministically, on a
+pristine rebuild**. The shipped `.osdi` was built with something else.
+Bisecting the patch was wasted work; the patch was never the problem.
+
+⚠ **`rc=0` does not prove the model loaded.** ngspice exits 0 on a
+MISSING `osdi` file, so a successful exit code is not evidence. Assert
+on the output, not the status.
+
+If the reference's own host cannot load your rebuild, use the compiler's
+sibling simulator (VACASK, for openvaf-r) rather than fighting the
+mismatch.
 
 ## Record the factor; do not apply it
 
