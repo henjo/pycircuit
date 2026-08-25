@@ -237,3 +237,67 @@ invisible at 1.5 V and obvious at 1e7.
 suite for a long time, raised by two ordinary two-transistor circuits.
 They were a `0/0` being evaluated on the way to real solutions. Tracing
 them was what turned an "absurd bias only" curiosity into a real fix.
+
+## A primitive is only as cheap as what the PRINTER turns it into
+
+Invisible from the sympy side, and it decides the cost.
+
+Measured on scalar inputs — which is what the Newton inner loop passes:
+
+    numpy.exp        0.10 us      numpy.amin      1.76 us
+    numpy.minimum    0.60 us      numpy.select    6.03 us
+    numpy.heaviside  0.60 us
+    numpy.where      0.94 us
+
+sympy's stock numpy printer lowers `Piecewise`, `Min`, `Max` **and**
+`Heaviside` all to `numpy.select` — the most expensive one available.
+So a 5-operation hand-written `Piecewise` and a 130-operation one
+measure the *same*, because you are timing dispatch, not arithmetic.
+**Operation counts are the wrong proxy for cost**, which matters
+because the obvious optimisation — simplify the expression — attacks
+the wrong quantity.
+
+So when you add a primitive:
+
+- **assert on what it EMITS**, not only on what it evaluates to. Dump
+  the generated source (`fn._src` for the chained path, `inspect.
+  getsource(lambdify(...))` for the eager one) and count the calls.
+  Every value-only test passes while a 9× dispatch regression walks in.
+- **an `fdiff` built out of `Piecewise` adds a dispatched call to every
+  derivative that touches it.** Prefer a form lowering to one cheap
+  primitive. Naming a `Function` after the backend's own function
+  (`sign`, `Abs`) gets it lowered for free on numpy *and* jax with no
+  registration at all.
+- **check both code generators.** They are different printers with
+  different tables, and a model that calls `var()` uses the second one.
+
+⚠ **And measure the path production models actually take.** A whole
+analysis here was built on `lambdify(modules=['numpy'])` and was wrong
+about every real model, because anything using `var()` compiles through
+a custom printer that had already replaced `select` with `where`. The
+refutation was in the file being optimised.
+
+## The dangerous value can be a PARAMETER, not a bias
+
+The rule everywhere else in this file is about biases: both arms are
+always evaluated, so both must be finite at any voltage Newton visits.
+There is a second source, and it is easier to miss because it does not
+move.
+
+`gamma * sqrt(max(vgp, 0) + gamma**2/4)` is finite at every bias. Set
+`gamma = 0` — a perfectly good "no body effect" card, and the one every
+textbook-asymptote test uses — and the root sits exactly at zero, where
+its derivative is infinite, so the product is `0 * inf = NaN`. Not at a
+corner. At the card's nominal operating point.
+
+A `+1e-12` inside the root fixes it and is twenty decades below
+anything real. But the habit is the point: **sweep the parameter space
+for degenerate values too, especially the tidy ones** — zero, one,
+equal parameters — and especially the values a *simplified* card uses,
+because those are what the tests that check your asymptotes will pick.
+
+Related, same shape: `param = 0` is not an off-switch. The element
+compiles from SYMBOLIC parameters, so the block is built regardless and
+`0 * inf` is still `NaN`. The valid off-switch is a `Collapse`
+condition, which is declared in `analog()` and is therefore part of the
+class.

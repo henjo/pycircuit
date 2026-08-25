@@ -118,3 +118,71 @@ And record the wrong turns. In a campaign of any length the successes
 are mostly the same few techniques applied patiently; the errors are
 where the transferable content is, and they are the entries a reader
 returns to.
+
+## A REASON decays faster than the conclusion it supports
+
+This is the highest-yield thing in this file, and it took six
+instances in one week to see.
+
+A note that says *"do X, because Y"* has two independent lifetimes.
+`X` is checked constantly — the code does it, the tests pin it, someone
+notices when it stops being true. `Y` is checked by nobody. So the
+normal end state of a durable rule is **right conclusion, decayed
+reason**, and nothing anywhere fails when that happens.
+
+Six from one campaign, every one still recommending the correct action:
+
+- *"`Max` only on an atom, or the Jacobian divides by zero."* The rule
+  is real; the divide-by-zero does not reproduce on the current sympy.
+  What actually happens is a `lambdify` that never terminates.
+- *"Use `expl` unless it's a junction."* The real condition was PCNR
+  eligibility. That correction then **expired within two days**, when
+  the thing that disqualified a model stopped disqualifying it.
+- *"`functools.reduce` costs 18% of the Jacobian."* `reduce` measures
+  *faster* than the bare call it was said to be costing.
+- *"This detector refuses the model because its current spans two
+  branch voltages."* It refuses it because a resistor's current is not
+  exponential. Each contribution *was* single-branch.
+- Two more written by whoever was correcting the previous one —
+  including one in a plan document that had been dated and audited the
+  same day.
+
+**Three of the six were introduced by the correction of an earlier
+one.** So this is not carelessness. It is what a stated reason does
+while the code under it keeps moving.
+
+What to do about it:
+
+- **Put the measurement next to the rule**, not the inference from it.
+  "Refused because `len(scales) != 1` fires on the first contribution"
+  can be re-run; "refused because it spans two branches" cannot, and
+  reads as true forever.
+- **When you correct a reason, date it and keep the old one**, briefly,
+  with how it was wrong. The wrong version is what stops the next
+  reader re-deriving it — and, twice here, the wrong version was the
+  one still being cited downstream.
+- **Suspect the reason first, not the rule.** When a rule seems
+  obsolete, check whether only its explanation rotted. Deleting a rule
+  because its stated reason no longer holds is the expensive mistake.
+- **Reading cannot catch this.** Every one of the six was found by
+  running something — a `_src` dump, a `hasattr`, a timing loop — and
+  most were one command away the entire time.
+
+## Line numbers are a measurement of something nobody holds still
+
+`file.py:1234` in prose decays on the next edit *above* it, silently,
+and looks authoritative while wrong.
+
+Measured here: twelve line references in one plan were stale **within a
+day** of being written, because the file grew ~1400 lines. They were
+re-verified against the current file — and all twelve were stale again
+**the next day** after another ~400.
+
+Cite the **symbol**: `generate_code`, `_ChainPrinter._minmax`,
+`limit_spec`. A symbol survives edits above it, is greppable, and fails
+loudly rather than pointing at an innocent line. Keep line numbers only
+where nothing else identifies the spot (an unnamed comment block), and
+expect to re-check them.
+
+The general form: **a reference is only as durable as the thing it is
+anchored to.** Anchor to names, not to positions.

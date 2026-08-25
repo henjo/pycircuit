@@ -734,6 +734,44 @@ stamps, where the hand-written element does almost nothing at all
 The 8× on `R.G` is 0.5 µs of Python call machinery, not expression
 walking.
 
+### What it costs at PRODUCTION size (2026-08-24)
+
+The table above compares against a hand-written element, and that
+comparison stops being available exactly where it starts to matter:
+there is no hand-written PSP103. `benchmarks/hdl_model_cost.py` walks
+the ladder instead, one change per rung.
+
+    rung                            i (µs)    G (µs)    G multiplier
+    diode, bare exp                   2.19      2.92    --
+    diode, expl (eager)              16.08     77.83    26.7×
+    diode, expl + var (chained)      26.23    243.01     3.1×
+    PSP103 nmos (chained)             1414     26523    18.8× (G/i)
+
+So the **safety primitives** cost ~27× on the Jacobian and the chained
+path ~3×, for identical physics. PSP's `G` compiles to 2675 lines
+issuing **14 030 numpy calls**, of which priced dispatch is ~40%; the
+other ~60% is arithmetic.
+
+Two conclusions worth carrying, both measured rather than argued:
+
+- **op counts are the wrong proxy for cost here.** A 5-operation
+  hand-written `Piecewise` and a 130-operation one both measure ~7 µs,
+  because you are timing dispatch. Simplifying expressions attacks the
+  wrong quantity.
+- **the number that matters is 14 030.** No printer change moves the
+  COUNT, only the price per item. Scalar code generation is worth ~1.7×;
+  a compiled backend would be 300–1000×. See
+  `doc/hdl_roadmap_260824.md` §8, which also records a wrong answer
+  reached on the way — measurements taken through
+  `lambdify(modules=['numpy'])` do NOT describe production models,
+  because every model that calls `var()` compiles through
+  `_ChainPrinter` instead.
+
+Compile cost at that size: **~68 s** for `PspMosLongChannel`, once.
+`elements_hdl` cold import is now **3.5 s** for its seventeen models,
+of which the Gummel-Poon BJT is ~1.4 s and an order-11 `laplace_zp`
+ladder ~0.4 s.
+
 ---
 
 ## 6. Capability map against Verilog-A
@@ -754,6 +792,24 @@ inlinable by construction), `Piecewise` conditionals, exact `G`/`C`,
 `dudt`, `CY`, DC-variant stamps, `state_ic`/`IC_KIND`, `periodic_states`,
 `eval_*_pure`.
 
+**Added 2026-08-24/25.** Math kernel: `maxc`/`minc` (usable on compound
+expressions, partials summing to exactly 1 at the tie), `safe_pow`
+(clamped base, build-time refusal when the clamp's own value or
+derivative leaves double range), `sign` and a real-domain `Abs` (both
+with a defined derivative), `softplus`, `mne`/`mxe`, `p3`, and RANGE
+contracts on every `safe_*` stating the safe input range, the derivative
+range, what the eps costs in exponent headroom and what happens outside.
+
+Limiting: `limit_fet` and `limit_vds` beside `limit_pnj`, with
+`limit_spec` carrying a limiter KIND rather than a hardcoded `(IS, VT)`
+pair.
+
+Diagnostics: `explain()`, `x_layout()`, `check_jacobians()`, and nine
+compile-time checks that name the class and the fix — three of which
+replace *silent* failures (a `self` argument becoming the first
+terminal, a class-body `terminals` being discarded, an internal `Node`
+merging into a same-named terminal).
+
 ### Not implemented, ranked by measured demand
 
 > **Correction (2026-08-24): six rows of the table below were stale and
@@ -764,12 +820,28 @@ inlinable by construction), `Piecewise` conditionals, exact `G`/`C`,
 >
 > | listed as missing | actually at | test |
 > |---|---|---|
-> | `$limit` | `hdl.py:689` (`limit_pnj`) | `test_limit_pnj_compresses_a_wild_step` |
-> | `laplace_*` | `hdl.py:621`, `:654` | `test_laplace_nd_matches_the_analytic_response` |
-> | `@cross` | `hdl.py:891` (`Cross`) | `test_cross_lands_timepoints_on_the_crossing` |
-> | `$param_given` | `hdl.py:774` | `test_param_given_selects_a_formulation` |
-> | unconditional node collapse | `hdl.py:931` (`Collapse`) | `test_node_collapse_removes_the_internal_node` |
-> | AC excitation from HDL | `hdl.py:791` (`ac_stim`) | `test_ac_stim_drives_a_small_signal_analysis` |
+> | `$limit` | `limit_pnj` | `test_limit_pnj_compresses_a_wild_step` |
+> | `laplace_*` | `laplace_nd`, `laplace_zp` | `test_laplace_nd_matches_the_analytic_response` |
+> | `@cross` | `Cross` | `test_cross_lands_timepoints_on_the_crossing` |
+> | `$param_given` | `param_given` | `test_param_given_selects_a_formulation` |
+> | unconditional node collapse | `Collapse` | `test_node_collapse_removes_the_internal_node` |
+> | AC excitation from HDL | `ac_stim` | `test_ac_stim_drives_a_small_signal_analysis` |
+>
+> (Symbol names, not line numbers, and deliberately: the line numbers
+> this table originally carried were stale twice inside two days, once
+> the same afternoon they were re-verified. `hdl.py` grew ~1800 lines
+> in that window.)
+>
+> **And a second correction, 2026-08-25.** Four of those six were
+> "implemented" in a sense that no production model could reach.
+> `BehaviouralMeta` returned early for any model with `pure_spec is
+> None` — which is every model that calls `var()` — and both the
+> `@cross` and `$limit` installs sit after that return. So `@cross` had
+> a passing test and could not work for anything anyone would actually
+> write, while `explain()` reported it as installed because it reads
+> what the COMPILER FOUND rather than what the CLASS GOT. Fixed. The
+> lesson is the table's own: a capability with no production user is a
+> capability nobody has run.
 >
 > The rows below have been marked accordingly. **Genuinely still
 > missing:** `absdelay`, `transition`/`slew`, `zi_*`, `last_crossing`,
@@ -3920,6 +3992,66 @@ device models or only behavioural ones — and which should be attempted
 before A2, because if PCNR can be widened far enough, `$limit` matters
 much less. C1 and C2 follow demand. Phase D stays deferred until its
 trigger fires.
+
+### Phase F — the roadmap campaign, 2026-08-24/25
+
+`doc/hdl_roadmap_260824.md` is the plan and the record; this is the
+index into it. Suite went 1874 → 2184 with zero failures.
+
+**Done.** Kernel additions (§6 above). The designer's surface: nine
+compile-time checks, non-mutating globals, `explain()`, `x_layout()`,
+`check_jacobians()`. FET limiting on the ordinary Newton path
+(roadmap §10.3a). PCNR admitting chained models (§10.2) — the detector
+now WALKS the chain rather than flattening it, which matters: the
+naive fix is to inline, and inlining is the thing the let-chain exists
+to prevent. Measured: PSP still compiles in 67.4 s against 67.7 s
+before, and the detector runs in 1.9 ms over its 748 definitions.
+Seven library models (thermal node, full SPICE diode, crystal, ferrite
+bead, skin-effect resistor, comparator, memristor, Gummel-Poon BJT,
+EKV core).
+
+**Five bugs of ONE shape, all found by building rather than reading:**
+downstream machinery written against the EAGER path, silently failing
+or refusing for the chained one — and every production model is
+chained, so these miss every toy test and hit every real model.
+
+1. `BehaviouralMeta` returned early for chained models before the
+   `@cross` and `$limit` installs, so neither ever reached a
+   production model;
+2. `$limit` markers were stripped from statements but not from `var()`
+   definitions;
+3. the state operators had the same bug, one loop away from the fix
+   already applied for (2);
+4. `_ChainPrinter` had no `_print__wrapfloor`, so `var(idtmod(...))`
+   allocated its state and then died in the printer;
+5. `$param_given` inside a `var()` compiled clean and raised
+   `NameError` at call time.
+
+Plus two of a different shape: `$limit` and `$param_given` in one
+model was a run-time `TypeError` (nothing had ever used both), and
+`uic` seeded a generated state by asking whether a parameter was
+*spelled* `ic` — a name check whose value was then never used, so a
+model whose seed is called `x0` started at zero with a correct DC
+operating point and no warning.
+
+**Open, with numbers so a fix can be measured:** the FET limiter's
+write-back moves nodes a source pins (225 Jacobian evaluations against
+25, a pinned gate displaced by up to 5e48 V); `check_jacobians` needs
+a "not resolvable" verdict (three sightings, two models, three
+mechanisms); there is no way to declare that a device needs a `GMIN`
+anchor. Roadmap §12.
+
+**The methodological result, which outlasts any of the above.** Six
+claims in this campaign were RIGHT IN CONCLUSION and WRONG IN THEIR
+STATED REASON — the `Max`-on-an-atom rule, `limexp`'s eligibility test
+(twice, in two days), `_ChainPrinter`'s `reduce` premise, the
+roadmap's own §8 first draft, and §10.2's `DiodeSpiceHdl` claim. Each
+was caught by measuring, never by reading, and most were one `_src`
+dump or one `hasattr` away the whole time. **A reason decays faster
+than the conclusion it supports, and nothing fails when it does** — so
+record the measurement next to the rule, which is what makes the decay
+visible later. Line numbers decay the same way and have been removed
+from this file and from the roadmap in favour of symbol names.
 
 ## 10. References
 
