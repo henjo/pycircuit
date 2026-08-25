@@ -42,7 +42,10 @@ compiler did -- terminals, the ``x``-vector layout, the parameter values
 the generated code will actually read, the symbolic vectors and the
 generated source -- and `check_jacobians(element, x)` differentiates
 ``i`` and ``q`` numerically against ``G`` and ``C`` and scans everything
-for non-finite entries.
+for non-finite entries.  It has THREE verdicts, not two: an entry the
+finite difference cannot resolve at this point -- a kink, a signal below
+the value's own quantum, a stiff card -- comes back UNRESOLVED rather
+than FAILED.
 """
 
 from pycircuit.circuit import circuit
@@ -54,6 +57,7 @@ from sympy.codegen.cfunctions import log1p as _log1p
 from sympy.core.symbol import Str
 import numpy as np
 
+import collections
 import inspect
 import re
 import types
@@ -1397,6 +1401,24 @@ def limit_pnj(probe, IS, VT):
     devices sharing a node cannot fight over it.  ``limit_pnj`` is the
     fallback for models PCNR cannot take, and for ordinary runs, where
     ``pcnr=False`` is the default.
+
+    ``IS`` and ``VT`` MAY be `var()` symbols (2026-08-25, roadmap 12.4)::
+
+        isT = var(area * IS * expl(factlog), 'isT')
+        vbe = var(limit_pnj(b.V, isT, nf * vt()), 'vbe')
+
+    They are resolved against the let-chain, not inlined, so a limiter
+    parameter written in terms of a deep chain costs what the chain
+    costs.  Before this they were lambdified over the parameter namespace
+    alone, where an intermediate symbol is not in scope: `lambdify`
+    then returns a function that hands BACK THE SYMBOL, and the first
+    Newton iteration raises ``TypeError: Cannot convert expression to
+    float`` from inside `limit()`.  That is why the Gummel-Poon BJT
+    spells its temperature-scaled saturation current twice.
+
+    What they may NOT do is depend on the solution: a limiter's
+    parameters are evaluated from the card, before the device is.  A
+    chain that reaches the iterate is refused at compile time, by name.
     """
     _limit_probe(probe, 'limit_pnj')
     return _LimitPnj(probe, sympy.sympify(IS), sympy.sympify(VT))
@@ -1418,12 +1440,23 @@ def limit_fet(probe, vto):
     per parameter set.  SPICE passes ``von``, the turn-on voltage the
     model recomputed this iteration, which in any model with a body
     effect depends on ``vbs``.  A bias-dependent ``vto`` is not
-    expressible in the per-probe ``limit_spec``, whose parameter
-    expressions are lambdified over ``paramsyms + [TEMP]`` and nothing
-    else; a model must pass its zero-bias threshold.  That makes the
-    limiter looser than SPICE's for a strongly body-biased device --
-    looser, not wrong: ``fetlim``'s job is to bound a step, and a bound
-    placed relative to the wrong threshold still bounds it.
+    expressible: a limiter runs BEFORE the device is evaluated, so its
+    parameters cannot read the iterate, and a chain that reaches one is
+    refused at compile time.  A model must pass its zero-bias threshold.
+    That makes the limiter looser than SPICE's for a strongly
+    body-biased device -- looser, not wrong: ``fetlim``'s job is to
+    bound a step, and a bound placed relative to the wrong threshold
+    still bounds it.  Measured on the EKV card at 2 V of body bias: the
+    true turn-on is 1.06 V against ``vto = 0.50``, so every clamp sits
+    565 mV low.
+
+    **Correction, 2026-08-25.**  This paragraph used to give the reason
+    as "lambdified over ``paramsyms + [TEMP]`` and nothing else".  That
+    was the mechanism, not the constraint, and it has expired: the
+    expressions now also see `var()` symbols and givenness flags
+    (roadmap 12.4).  The RULE is unchanged and is now enforced rather
+    than merely implied -- what forbids a bias-dependent ``vto`` is when
+    the limiter runs, not what its namespace happens to contain.
 
     Ordering: see :func:`limit_vds`.
     """
@@ -3079,9 +3112,10 @@ def generate_code(cls):
         ## express.  Widened rather than sliced at the call site, so a
         ## limiter's parameters may legitimately read a givenness flag.
         limit_spec.append(((ra, rb), kind_l, move,
-                           tuple(sympy.lambdify(
-                               paramsyms + [TEMP] + given_syms, e,
-                               modules=NUMPY_MODULES)
+                           tuple(_limit_par_fn(resolve(e), kind_l, chain_defs,
+                                               xsyms, xlabels,
+                                               paramsyms + [TEMP]
+                                               + given_syms, NUMPY_MODULES)
                                  for e in pars_l)))
 
     branchpairs = [branch_key(br) for br in vbranches]
@@ -3250,6 +3284,62 @@ def _leaves(o):
             out |= _leaves(e_)
         return out
     return set(getattr(o, 'free_symbols', ()))
+
+
+def _var_name(sym):
+    """The name the model author gave a `var()`, from its symbol."""
+    return re.sub(r'^_v\d+_', '', sym.name)
+
+
+def _limit_par_fn(expr, kind, chain_defs, xsyms, xlabels, args, modules):
+    """Compile one `$limit` parameter expression over `args`.
+
+    `args` is the ordinary `params + [T] + givenness` signature, and an
+    expression that mentions nothing else is lambdified over it exactly
+    as before.
+
+    **AN `_IntermediateSymbol` FROM `var()` IS RESOLVED AGAINST THE
+    CHAIN**, rather than left for `lambdify` to hand straight back as a
+    symbol -- which is what it does with a name it cannot resolve, so
+    the failure used to be a `TypeError: Cannot convert expression to
+    float` out of `limit()` on the first Newton iteration.  It is compiled
+    through `_chain_compile` -- the same path the PCNR detector's `VT`
+    and `IS` take -- so the chain is read, not INLINED, and a limiter
+    parameter written in terms of a hundred-deep MOSFET chain costs what
+    the chain costs rather than exponentially more.
+
+    A limiter's parameters are constants of the DEVICE: `pnjlim` wants a
+    saturation current and a thermal voltage, and it is called before the
+    device is evaluated.  So a chain definition that reads the solution
+    is refused here by name, which is the error that would otherwise have
+    been a wrong answer.
+    """
+    reach = _chain_prune(chain_defs, [expr])
+    if not reach:
+        return sympy.lambdify(args, expr, modules=modules)
+    what = {'pnj': 'limit_pnj', 'fet': 'limit_fet',
+            'vds': 'limit_vds'}.get(kind, kind)
+    bad = {}
+    for s_, e_ in reach + [(None, expr)]:
+        for xs in e_.free_symbols & set(xsyms):
+            bad.setdefault(xlabels[xsyms.index(xs)],
+                           'the expression' if s_ is None
+                           else 'var(%r)' % _var_name(s_))
+    if bad:
+        raise ValueError(
+            "%s's parameters are evaluated from the parameters alone, and "
+            "BEFORE the device is, so they cannot depend on the solution; "
+            "this one reaches %s. Write the parameter in terms of the card."
+            % (what, ', '.join('%s (through %s)' % kv
+                               for kv in sorted(bad.items()))))
+    late = sorted(_var_name(s) for s, e_ in reach if e_.has(TIME))
+    if late:
+        raise ValueError(
+            "%s's parameters cannot depend on time, and var(%s) does."
+            % (what, ') / var('.join(repr(v) for v in late)))
+    fn = _chain_compile(reach, [expr], args,
+                        modules_map=dict(_KERNEL_NUMPY, _wrapfloor=np.floor))
+    return lambda *a, _f=fn: _f(*a)[0]
 
 
 def _chain_prune(defs, outputs):
@@ -4351,6 +4441,78 @@ def explain(target, source=True, symbolic=True, maxlines=40):
     return '\n'.join(lines)
 
 
+## Per-entry verdicts.  UNRESOLVED sits BETWEEN the two, and it is not a
+## softer failure: it says the finite difference at this point carries
+## more noise than the discrepancy being reported, so the comparison has
+## no power here.  See `check_jacobians` for what puts an entry there.
+JAC_PASS, JAC_UNRESOLVED, JAC_FAIL = 0, 1, 2
+
+## Double precision's unit roundoff, used to size the roundoff floor.
+_JAC_EPS = float(np.finfo(float).eps)
+
+#: One entry of a :class:`JacobianCheck`, as listed by its
+#: :attr:`~JacobianCheck.unresolved` and :attr:`~JacobianCheck.failures`.
+#: ``reason`` is ``'roundoff'``, ``'truncation'`` or ``'kink'`` for an
+#: unresolved entry and ``''`` for a failing one.
+JacEntry = collections.namedtuple(
+    'JacEntry', 'which row col ana fd err floor reason')
+
+
+def _jac_widen(col, hk, frozen, xk, fd, rnd, trunc, rungs=8, clear=32.0):
+    """Re-probe a column at a wider step, for entries the step ``hk``
+    could not move at all, and write the result back into ``fd``/``rnd``.
+
+    ``col(s)`` evaluates the differentiated vector at ``x + s*hk*e_k``.
+    ``frozen`` selects the rows to work on.  Modifies ``fd``, ``rnd`` and
+    ``trunc`` in place, for those rows only.
+
+    The ladder climbs by a decade at a time and stops for a row once its
+    two-sided difference is ``clear`` times the SMALLEST non-zero
+    difference that row has shown -- which is what "the signal is above
+    the quantisation" means when the quantisation cannot be computed.
+    The roundoff floor is then that quantum divided by the widened step,
+    and the truncation floor comes from the two rungs either side, whose
+    steps differ by ten (so the ``h^2`` term differs by 99).
+
+    A row that never moves is left exactly as it was: ``fd = 0`` and no
+    floor, so a non-zero analytic entry against it still FAILS.
+    """
+    ## Widening past a fraction of the variable's own size stops being a
+    ## measurement of the derivative here, so the ladder is capped.
+    cap = 1e-2 * max(1.0, abs(xk))
+    todo = np.array(frozen, dtype=bool)
+    quantum = np.zeros_like(fd)
+    prev = np.zeros_like(fd)
+    have_prev = np.zeros_like(fd, dtype=bool)
+    for m in range(1, rungs + 1):
+        H = hk * 10.0 ** m
+        if H > cap:
+            break
+        d = col(10.0 ** m) - col(-10.0 ** m)
+        g = d / (2 * H)
+        moved = todo & (d != 0.0) & np.isfinite(d)
+        fresh = moved & (quantum == 0.0)
+        quantum[fresh] = np.abs(d[fresh])
+        done = moved & (np.abs(d) >= clear * quantum)
+        if np.any(done):
+            fd[done] = g[done]
+            rnd[done] = quantum[done] / (2 * H)
+            trunc[done] = np.where(have_prev[done],
+                                   2.0 * np.abs(prev[done] - g[done]) / 99.0,
+                                   0.0)
+            todo &= ~done
+        ## Whatever the last rung reached is the fallback for a row that
+        ## runs out of ladder: it is still better than a difference of
+        ## exactly zero, and its floor says how little it is worth.
+        keep = todo & moved
+        fd[keep] = g[keep]
+        rnd[keep] = quantum[keep] / (2 * H)
+        prev[moved] = g[moved]
+        have_prev[moved] = True
+        if not np.any(todo):
+            break
+
+
 class JacobianCheck(object):
     """The result of :func:`check_jacobians`; print it."""
 
@@ -4370,15 +4532,71 @@ class JacobianCheck(object):
 
     @property
     def ok(self):
+        """No FAILING entry and nothing non-finite.
+
+        An UNRESOLVED entry does not make this false -- see
+        :attr:`unresolved`, which is where a model author has to look to
+        find out what the check did *not* answer.
+        """
         return not self.nonfinite and all(r['ok'] for r in
                                           self.results.values())
+
+    @property
+    def resolved(self):
+        """True when every entry got a real verdict.
+
+        ``ok and resolved`` is the strong statement; ``ok and not
+        resolved`` means "nothing was caught, and here is what could not
+        have been".
+        """
+        return not any(r['nunresolved'] for r in self.results.values())
+
+    def _entries(self, want):
+        out = []
+        for which, r in self.results.items():
+            st = r['status']
+            for i, k in zip(*np.nonzero(st == want)):
+                i, k = int(i), int(k)
+                out.append(JacEntry(which, i, k, float(r['ana'][i, k]),
+                                    float(r['fd'][i, k]),
+                                    float(r['err_mat'][i, k]),
+                                    float(r['floor'][i, k]),
+                                    r['reason'][i][k] if want ==
+                                    JAC_UNRESOLVED else ''))
+        return sorted(out, key=lambda e: -e.err)
+
+    @property
+    def unresolved(self):
+        """``[JacEntry]``, worst first, for entries the finite difference
+        could not resolve."""
+        return self._entries(JAC_UNRESOLVED)
+
+    @property
+    def failures(self):
+        """``[JacEntry]``, worst first, for entries that genuinely
+        disagree."""
+        return self._entries(JAC_FAIL)
+
+    @property
+    def verdict(self):
+        """``'ok'``, ``'UNRESOLVED'``, ``'FAILED'`` or ``'NOT
+        COMPARABLE'`` -- the one-word summary the ``__repr__`` prints."""
+        if self.nonfinite:
+            return 'NOT COMPARABLE'
+        if not self.ok:
+            return 'FAILED'
+        return 'ok' if self.resolved else 'UNRESOLVED'
 
     def _label(self, k):
         return self.layout[k][1] if k < len(self.layout) else '?'
 
     def __repr__(self):
-        out = ['JacobianCheck(%s): %s' % (self.name,
-                                          'ok' if self.ok else 'FAILED')]
+        head = self.verdict
+        nu = sum(r['nunresolved'] for r in self.results.values())
+        if nu and head in ('ok', 'UNRESOLVED', 'FAILED'):
+            head += ' (%d entr%s not resolvable here)' % (
+                nu, 'y' if nu == 1 else 'ies')
+        out = ['JacobianCheck(%s): %s' % (self.name, head)]
         out.append('  x = %s' % np.array2string(self.x, precision=6))
         for which, r in self.results.items():
             against = 'i' if which == 'G' else 'q'
@@ -4392,14 +4610,31 @@ class JacobianCheck(object):
                 out.append('  %s vs %s: both identically zero' % (which,
                                                                   against))
                 continue
-            k = r['worst']
+            k = r['worst_resolved']
             out.append(
                 '  %s vs %s: worst |%s - d%s/dx| = %.3e at [%d,%d] '
                 '(%s / %s), %s = %.6e, fd = %.6e  %s'
-                % (which, against, which, against, r['err'], k[0], k[1],
+                % (which, against, which, against, r['err_mat'][k], k[0], k[1],
                    self._label(k[0]), self._label(k[1]), which,
                    r['ana'][k], r['fd'][k], 'ok' if r['ok'] else
                    'FAILS rtol=%g atol=%.3e' % (self.rtol, r['atol'])))
+            if r['nunresolved']:
+                e = [u for u in self.unresolved if u.which == which][0]
+                out.append(
+                    '  %s vs %s: %d entr%s UNRESOLVED -- the finite '
+                    'difference is noisier than the discrepancy, so the '
+                    'comparison says nothing there.' % (
+                        which, against, r['nunresolved'],
+                        'y is' if r['nunresolved'] == 1 else 'ies are'))
+                out.append(
+                    '      worst at [%d,%d] (%s / %s): %s = %.6e, fd = %.6e, '
+                    '|diff| = %.3e, noise floor %s (%s)'
+                    % (e.row, e.col, self._label(e.row), self._label(e.col),
+                       which, e.ana, e.fd, e.err,
+                       'UNBOUNDED -- the difference is not in its '
+                       'asymptotic regime at this step' if
+                       not np.isfinite(e.floor) else '%.3e' % e.floor,
+                       e.reason))
         if self.nonfinite:
             for what, idx in self.nonfinite[:12]:
                 out.append('  NON-FINITE: %s[%s]  (%s)' % (
@@ -4442,6 +4677,55 @@ def check_jacobians(element, x, epar=None, h=None, rtol=1e-5, atol=None):
     it is wrong*.  Tighten `rtol` and watch a known-bad model fail before
     trusting a pass.
 
+    **A third verdict: UNRESOLVED.**  A finite difference is not an
+    oracle, and three separate mechanisms make it report a large
+    discrepancy on a model that is right.  Each has been hit by a real
+    model in this tree, so each is measured per entry rather than
+    accommodated by a hand-written ``atol``:
+
+    * **roundoff** -- the entry's own signal is below the representable
+      step of the value it differentiates, and the difference returns
+      literal zero.  The ordinary floor is ``eps * max|f| / h``, but that
+      is derived from the OUTPUTS and a cancellation inside the model is
+      not visible there: EKV's ``q`` at deep cutoff is 4.2e-27 with a
+      real quantum of 4.1e-31, `eps` times an internal magnitude of
+      1.9e-15, so ``eps*|q|/h`` misses by ten decades.  For an entry that
+      does not move AT ALL the floor is therefore MEASURED -- the step is
+      widened by a decade at a time until the value clears its own
+      quantisation.  (Deep-cutoff EKV: ``C`` entries of 1.6e-25 F against
+      a difference of exactly 0.0, which widening turns into -1.26e-25
+      against an analytic -1.28e-25.)
+    * **truncation** -- a stiff card where the second difference is not
+      small.  Estimated per entry by RICHARDSON, not bounded a priori:
+      the same column is differenced at ``h`` and at ``2h``, and their
+      disagreement is three times the ``h^2`` term.  (A memristor with
+      ``dR/dx = 1e9``, where a 1e-7 step is a 1% change in ``R``.)
+    * **kink** -- the value is C0 but not C1 here, so a central
+      difference returns the AVERAGE of the two one-sided slopes while
+      the analytic Jacobian returns one of them.  No ``h`` helps: a jump
+      has no scale.  Detected from ``f`` ALONE, by whether the one-sided
+      disagreement ``|f(x+h) - 2f(x) + f(x-h)| / h`` shrinks with ``h``
+      (smooth: it halves; kink: it does not).
+
+    Note what that last one can and cannot say.  It detects that the
+    VALUE is kinked, which is a fact about the model independent of any
+    Jacobian, and it therefore does not excuse an error larger than the
+    jump.  It does hide an error SMALLER than the jump, and there is no
+    way around that: at a kink the derivative is genuinely
+    two-valued and a difference cannot pick.  So the honest report is
+    "not resolvable here", which is what this returns.
+
+    An UNRESOLVED entry does not fail: :attr:`JacobianCheck.ok` stays
+    true.  :attr:`JacobianCheck.resolved` is the stronger statement, and
+    :attr:`JacobianCheck.unresolved` lists what was skipped and why.
+    **The floors are per entry and never widen a resolvable one** -- on a
+    diode at 0.42 V the band is 4.4e-12 and the floors are 2.5e-15
+    (roundoff) and 7.1e-15 (truncation), three decades under -- so a
+    deliberately wrong Jacobian still FAILS.  There is a fourth
+    condition, with no floor at all: when the ``h^2`` term is a quarter
+    of the difference itself the expansion is not converging at this
+    step, and the entry is unresolved outright.
+
     Returns a :class:`JacobianCheck`; ``print()`` it.
     """
     cls, _info = _hdl_info_of(element)
@@ -4467,14 +4751,60 @@ def check_jacobians(element, x, epar=None, h=None, rtol=1e-5, atol=None):
         warnings.simplefilter('ignore', RuntimeWarning)
         with np.errstate(all='ignore'):
             for which, against in (('G', 'i'), ('C', 'q')):
-                fd = np.zeros((n, n))
+                ana = ev(which, x).reshape(n, n)
+                f0 = ev(against, x)
+                fd = np.zeros((n, n))          # central difference at h
+                fd2 = np.zeros((n, n))         # ... and at 2h, for Richardson
+                rnd = np.zeros((n, n))         # the roundoff floor
+                trunc = np.zeros((n, n))       # the truncation floor
+                asym1 = np.zeros((n, n))       # |f(x+h) - 2f(x) + f(x-h)| / h
+                asym2 = np.zeros((n, n))       # the same at 2h
                 for k in range(n):
                     hk = h if h is not None else max(1e-7, 1e-7 * abs(x[k]))
-                    xp, xm = x.copy(), x.copy()
-                    xp[k] += hk
-                    xm[k] -= hk
-                    fd[:, k] = (ev(against, xp) - ev(against, xm)) / (2 * hk)
-                ana = ev(which, x).reshape(n, n)
+
+                    def col(s, _k=k, _h=hk):
+                        xs = x.copy()
+                        xs[_k] += s * _h
+                        return ev(against, xs)
+
+                    fp1, fm1, fp2, fm2 = col(1.), col(-1.), col(2.), col(-2.)
+                    fd[:, k] = (fp1 - fm1) / (2 * hk)
+                    fd2[:, k] = (fp2 - fm2) / (4 * hk)
+                    ## The rounding of a DIFFERENCE is set by the size of
+                    ## the operands, not of the result -- that is exactly
+                    ## the case where the difference comes back 0.0.
+                    mag = np.max(np.abs(np.vstack([f0, fp1, fm1, fp2, fm2])),
+                                 axis=0)
+                    rnd[:, k] = _JAC_EPS * mag / hk
+                    trunc[:, k] = 2.0 * np.abs(fd2[:, k] - fd[:, k]) / 3.0
+                    ## One-sided disagreement.  Smooth: |f''|*h, so it
+                    ## HALVES with h.  Kinked: |f'(+) - f'(-)|, constant.
+                    asym1[:, k] = np.abs(fp1 - 2 * f0 + fm1) / hk
+                    asym2[:, k] = np.abs(fp2 - 2 * f0 + fm2) / (2 * hk)
+                    ## ---- FROZEN entries: WIDEN THE STEP AND MEASURE ---
+                    ## `f` came back bitwise identical at all four probe
+                    ## points while the analytic entry is not zero.  The
+                    ## roundoff formula above cannot size this, and
+                    ## MEASUREMENT SAYS SO: for EKV's normalised charges
+                    ## in deep cutoff the true quantum is 4.1e-31, which
+                    ## is `eps` times an INTERNAL magnitude of 1.9e-15 --
+                    ## ten decades above `eps*|q|` and 46x above
+                    ## `eps*max|q|`.  A cancellation inside the model is
+                    ## not visible from its outputs, so the floor has to
+                    ## be probed rather than derived.
+                    ##
+                    ## And widening is a real discriminator, not a
+                    ## whitewash: a value that is genuinely INDEPENDENT
+                    ## of `x[k]` stays frozen at every step up to the
+                    ## cap, and then a non-zero analytic entry still
+                    ## FAILS.  Only a value that does move, once its
+                    ## signal is clear of its own quantum, is excused.
+                    frozen = ((fp1 == f0) & (fm1 == f0) & (fp2 == f0)
+                              & (fm2 == f0) & (ana[:, k] != 0.0)
+                              & np.isfinite(f0))
+                    if np.any(frozen):
+                        _jac_widen(col, hk, frozen, x[k],
+                                   fd[:, k], rnd[:, k], trunc[:, k])
                 scale = float(max(np.max(np.abs(ana[np.isfinite(ana)]))
                                   if np.any(np.isfinite(ana)) else 0.0,
                                   np.max(np.abs(fd[np.isfinite(fd)]))
@@ -4485,12 +4815,64 @@ def check_jacobians(element, x, epar=None, h=None, rtol=1e-5, atol=None):
                 worst = np.unravel_index(int(np.argmax(err)), err.shape)
                 finite = bool(np.all(np.isfinite(ana))
                               and np.all(np.isfinite(fd)))
+                ## --- the three noise floors, per entry -----------------
+                ## A kink is a fact about `f` alone: the one-sided
+                ## disagreement stays PUT as `h` shrinks, where a smooth
+                ## function's halves.  The band is around 1 rather than
+                ## merely below 2, and that matters: a violently curved
+                ## value gives 0.5, and calling that a kink excused a
+                ## real 200x discrepancy on a stiff memristor card.
+                kink = (asym1 > 16.0 * rnd) & (asym1 > 0.0) \
+                    & (asym2 <= 1.4 * asym1) & (asym2 >= 0.7 * asym1)
+                ## The error a kink puts into a central difference is HALF the
+                ## jump -- the difference returns the average of the two arms
+                ## and the Jacobian returns one of them -- so the floor is
+                ## that with 50% of margin, not the whole jump.  Measured on
+                ## the memristor's clamp corners: |diff| = 2.17e-1 against an
+                ## `asym1` of 4.35e-1, exactly the half.
+                kinkf = np.where(kink, 0.75 * asym1, 0.0)
+                ## OUTSIDE THE ASYMPTOTIC REGIME there is no floor to
+                ## quote.  Richardson measures the `h^2` term; when that
+                ## term is a sizeable fraction of the difference itself,
+                ## the Taylor expansion the whole method rests on is not
+                ## converging at this step, and the difference is not an
+                ## estimate of anything.  Measured on a memristor with
+                ## `ron = 1, roff = 1e9` at the clamp corner: `R` moves
+                ## by 100x across one 1e-7 step, the difference reports
+                ## 3.5e6 against a correct 7.0e8, and no finite bound
+                ## covers that honestly.
+                nonasym = (trunc > 0.25 * np.abs(fd)) & (trunc > at) \
+                    & (trunc > 4.0 * rnd)
+                floors = np.dstack([rnd, np.where(nonasym, np.inf, trunc),
+                                    kinkf])
+                floors[np.isnan(floors)] = 0.0         # a NaN excuses nothing
+                extra = np.max(floors, axis=2)
+                which_f = np.argmax(floors, axis=2)
+                names = ('roundoff', 'truncation', 'kink')
+                reason = [[names[int(which_f[i, j])] for j in range(n)]
+                          for i in range(n)]
+                tol_pass = at + rtol * np.abs(fd)
+                tol_unres = np.maximum(at, extra) + rtol * np.abs(fd)
+                status = np.where(err <= tol_pass, JAC_PASS,
+                                  np.where(err <= tol_unres, JAC_UNRESOLVED,
+                                           JAC_FAIL))
+                if scale == 0.0:
+                    status[:] = JAC_PASS
+                nunres = int(np.count_nonzero(status == JAC_UNRESOLVED))
+                ## The headline entry is the worst RESOLVED one: reporting
+                ## an unresolved entry as "the worst" would put a number
+                ## nobody should read at the top of the report.
+                errr = np.where(status == JAC_UNRESOLVED, -1.0, err)
+                wres = (worst if np.all(errr < 0) else
+                        np.unravel_index(int(np.argmax(errr)), err.shape))
                 results[which] = dict(
                     ana=ana, fd=fd, scale=scale, atol=at, finite=finite,
                     err=float(err[worst]), worst=tuple(int(k) for k in worst),
-                    ok=bool(finite and (scale == 0.0 or
-                                        np.all(err <= at + rtol
-                                               * np.abs(fd)))))
+                    err_mat=err, status=status, floor=tol_unres,
+                    noise=extra, roundoff=rnd, truncation=trunc, kink=kink,
+                    reason=reason, nunresolved=nunres,
+                    worst_resolved=tuple(int(k) for k in wres),
+                    ok=bool(finite and not np.any(status == JAC_FAIL)))
                 for idx in zip(*np.nonzero(~np.isfinite(ana))):
                     nonfinite.append((which, tuple(int(k) for k in idx)))
                 ## The finite difference too, or a pair can be reported

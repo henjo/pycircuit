@@ -335,3 +335,54 @@ When exactness matters, assert on the **write** rather than on a
 recomputed difference: `(b + v) - b` is not `v`, and a rounding error
 is not what the test is trying to catch. Give the no-op case its own
 branch instead of folding it into one of the write forms.
+
+## An instrument's noise floor must be MEASURED, not derived
+
+When a comparison has a resolution limit, the tempting move is to write
+down a formula for it. Two things go wrong, and both were measured here
+while giving a Jacobian checker a third verdict.
+
+**A floor derived from the OUTPUTS cannot see a cancellation inside.**
+The recorded fix for "the finite difference returns exactly 0.0" was a
+per-entry floor of `eps·|value|/h`. On the very bias that motivated it —
+a charge of 4.2e-27 whose real representable step is 4.1e-31 — that is
+**ten decades too small**, because the step is `eps` times an *internal*
+magnitude of 1.9e-15 that never appears in any output. Even
+`eps·max|f|/h` over the whole vector misses by 2×. The diagnosis written
+one line above the formula was correct and said "computed as a
+difference of order-0.5 quantities that cancels"; the formula on the
+next line used the output anyway.
+
+What works is probing: widen the step a decade at a time until the value
+moves clear of its own quantisation, and use what you then measure. That
+also *keeps the failure power*, which a derived floor throws away: a
+value genuinely independent of the variable stays frozen at every step,
+so a non-zero analytic entry against it still fails. Test that case
+explicitly — it is the difference between an instrument and an excuse.
+
+**Distinguish "the model is ambiguous here" from "the comparison is
+noisy here".** A kink is a fact about the value: the one-sided
+disagreement `|f(x+h) - 2f(x) + f(x-h)|/h` halves with `h` for a smooth
+function and stays put at a corner. Detecting it never looks at the
+quantity being validated, so it cannot be gamed by a wrong one — and it
+bounds what the verdict hides: at a corner the derivative is genuinely
+two-valued, so an error smaller than the jump is not separable and an
+error larger than it is. **Assert that boundary from both sides** rather
+than describing it.
+
+**⚠ And check that your "deliberately corrupted" fixture is actually
+corrupt at the point you test it.** At a corner between a slope of `g`
+and a slope of `0`, a central difference returns `g/2` — so *halving*
+the analytic derivative lands exactly on it. `assert 0.5*g != g/2` is
+not a test anybody can pass, and it looked like the verdict was hiding a
+real error when it was arithmetic. The same coincidence turned up at a
+second corner in the same session. Corrupt by a factor that is outside
+the ambiguity you are testing near, and confirm the control fails.
+
+**Add machinery only where a measurement says it is needed.** A rule
+that marks an entry unresolvable buys nothing if no test point reaches
+it, and it costs failure power everywhere it applies. Write the cost
+down as a count: "at 4 of 108 probe points a 2× wrong Jacobian is not
+caught, because a difference at that step carries no information about
+the derivative there" is a bound someone can improve on. "It is
+conservative" is not.

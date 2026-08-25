@@ -667,6 +667,67 @@ relative tolerance passes an entry that is small *because it is wrong*.
 Before trusting a pass, tighten ``rtol`` and confirm a deliberately
 broken model fails.
 
+A third verdict: UNRESOLVED
+```````````````````````````
+
+A finite difference is not an oracle, and three mechanisms make it
+report a large discrepancy on a model that is right: a **kink**, where
+central differencing returns the average of two one-sided slopes and no
+``h`` helps because a jump has no scale; **roundoff**, where the entry's
+signal is below the representable step of the value it differentiates
+and the difference comes back exactly ``0.0``; and **truncation** on a
+stiff card.  Each was hit by a real model here before it was understood.
+
+Entries like that come back ``UNRESOLVED`` rather than ``FAILED``.  The
+floors are measured per entry, not assumed -- truncation by differencing
+the same column at ``h`` and ``2h``, a kink by whether the one-sided
+disagreement shrinks with ``h``, roundoff by widening the step until the
+value clears its own quantisation.  So:
+
+* ``res.ok`` is unchanged: no failing entry and nothing non-finite.  An
+  unresolved entry does not make it false;
+* ``res.resolved`` is the stronger claim -- every entry got a real
+  verdict;
+* ``res.verdict`` is ``'ok'``, ``'UNRESOLVED'``, ``'FAILED'`` or
+  ``'NOT COMPARABLE'``;
+* ``res.unresolved`` and ``res.failures`` list the entries, each with
+  its analytic value, the difference, the error, the floor and the
+  reason.
+
+.. exec-rst::
+
+    import numpy as np
+    import pycircuit.circuit.circuit as cm
+    from pycircuit.circuit.toolkit import numeric
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       maxc, check_jacobians)
+    from pycircuit.utilities.param import Parameter
+
+    cm.default_toolkit = numeric
+
+    class Rectifier(Behavioural):
+        instparams = [Parameter(name='g', desc='S', unit='S', default=1e-3)]
+
+        @staticmethod
+        def analog(plus, minus):
+            b = Branch(plus, minus)
+            return Contribution(b.I, g * maxc(b.V, 0.0))
+
+    el = Rectifier('p', 'n')
+    el.update_iparv()
+    print(".. code-block:: text")
+    print("")
+    for line in repr(check_jacobians(el, [0.0, 0.0])).splitlines():
+        print("   " + line)
+
+**What that verdict does and does not claim.**  The non-smoothness is a
+fact about the value, found without looking at the Jacobian at all.  At
+a corner the derivative is genuinely two-valued, so an error *smaller
+than the jump* cannot be separated from the ambiguity and is not
+reported; an error larger than it is.  ``UNRESOLVED`` is the honest
+statement of that, and it is why a model author should ask for
+``res.resolved`` at biases where the model ought to be smooth.
+
 What you get for free
 ---------------------
 
