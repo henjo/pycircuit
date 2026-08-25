@@ -1236,16 +1236,24 @@ class MemristorHdl(Behavioural):
     told why.  A `state(name, ic)` returning a symbol, plus a statement
     form for its equation, would be four lines and no explanation.
 
-    **And it cannot use `var()` anywhere**, which is the second half of
-    the same gap: the compiler collects `idt`/`idtmod`/`laplace_*`
+    **It used to be unable to use `var()` anywhere**, and that is why it
+    is written flat.  The compiler collected `idt`/`idtmod`/`laplace_*`
     applications by walking the *statements*, never the let-chain, so an
-    `idt` that appears only inside a `var()` definition never gets a
-    state allocated and the model dies in the printer with
-    ``Unsupported by _P: idt``.  `$limit` had exactly this bug and it
-    was fixed (`hdl.py`, "Intermediates FIRST, and this is not
-    tidiness"); the three state operators still have it.  Every
-    intermediate of this model mentions ``x``, so the model is written
-    flat -- which it can afford to be, and a MOSFET could not.
+    `idt` appearing only inside a `var()` definition never got a state
+    allocated and the model died in the printer with ``Unsupported by
+    _P: idt``.  `$limit` had exactly the same bug and had already been
+    fixed (`hdl.py`, "Intermediates FIRST, and this is not tidiness");
+    the three state operators had not.
+
+    **FIXED 2026-08-25** -- both state-collection loops now walk
+    intermediates as well as statements, and this model reported the
+    gap that prompted it.  The flat spelling below is therefore no
+    longer forced, and rewriting it with a let-chain is a reasonable
+    tidy-up; it is left flat because every intermediate here mentions
+    ``x`` anyway, so the chain would buy nothing but churn on a model
+    whose whole purpose is to be read.  A MOSFET could not have
+    afforded the flat form, which is what made the bug worth fixing
+    rather than documenting.
 
     The resistance reads a CLAMPED ``x``; the window reads the raw one.
     ``ron*x + roff*(1-x)`` passes through zero at ``x = roff/(roff-ron)``
