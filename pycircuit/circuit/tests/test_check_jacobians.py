@@ -480,22 +480,37 @@ class TestLimitParametersMayUseVar(object):
         assert kind == 'fet'
         assert float(pars[0](*hdl._args_of(el, defaultepar))) == 0.75
 
-    def test_a_var_that_reads_the_solution_is_refused_by_name(self):
-        """The check that makes the resolution safe rather than merely
-        convenient: a limiter's parameters are evaluated from the card,
-        BEFORE the device is, so one that reaches the iterate through
-        the chain is a compile-time error naming the node -- not a
-        silently wrong saturation current.
+    def test_a_var_that_reads_the_solution_is_evaluated_at_the_last_iterate(self):
+        """A limiter parameter may read the solution, and is then taken
+        at the LAST ACCEPTED iterate -- SPICE's `von` semantics.
+
+        This used to assert a compile-time refusal ("evaluated BEFORE the
+        device, so it cannot depend on the solution").  The order was
+        right and the conclusion did not follow: a limiter is handed
+        `x0` precisely so it can measure against it, and a parameter
+        evaluated there is as well-defined as `vold` is.  Inverted on
+        2026-08-25.
+
+        The check is DISCRIMINATING by construction: `IS` falls thirteen
+        decades per volt, so `pnjlim`'s critical voltage is ~0.73 V at
+        the last iterate (0 V) and ~1.4 V at the proposed one (0.9 V).
+        Limiting fires only if the parameter was taken at `x0`.
         """
+        from pycircuit.circuit.hdl import expl
+
         def analog(plus, minus):
             b = Branch(plus, minus)
-            bad = var(IS * (1.0 + b.V), 'isbad')             # noqa: F821
-            v = limit_pnj(b.V, bad, vt())
-            return Contribution(b.I, bad * (limexp(v / vt()) - 1))
+            isv = var(IS * expl(-0.7755 * b.V / vt()), 'isv')  # noqa: F821
+            v = limit_pnj(b.V, isv, vt())
+            return Contribution(b.I, isv * (limexp(v / vt()) - 1))
 
-        with pytest.raises(ValueError, match=r'(?s)limit_pnj.*cannot depend '
-                                             r'on the solution.*plus'):
-            _make('BadPnj', analog, (('IS', 1e-14),))
+        el = _inst(_make('SolPnj', analog, (('IS', 1e-14),)))
+        fn = el._hdl_info['limit_spec'][0][3][0]
+        assert fn._wants_x is True
+        out = el.limit(np.array([0.9, 0.0]), np.array([0.0, 0.0]))
+        assert out[0] < 0.9, out            # it bit: parameter taken at x0
+        ## and the constant parameter beside it is still a plain callable
+        assert el._hdl_info['limit_spec'][0][3][1]._wants_x is False
 
     def test_the_chain_is_read_not_inlined(self):
         """`var()` exists to stop an expression doubling at every level,

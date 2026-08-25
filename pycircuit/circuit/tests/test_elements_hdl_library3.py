@@ -1949,8 +1949,8 @@ def test_ekv_declares_fetlim_on_the_gate_and_limvds_on_the_drain():
     spec = el._hdl_info['limit_spec']
     assert [(s[0], s[1], s[2]) for s in spec] == \
         [((1, 2), 'fet', 1), ((0, 2), 'vds', 0)]
-    assert '2 $limit probes (fetlim on (g,s), limvds on (d,s))' \
-        in explain(el)
+    assert ('2 $limit probes (fetlim on (g,s) [params at last iterate], '
+            'limvds on (d,s))') in explain(el), explain(el)
     rng = np.random.default_rng(17)
     moved_source = 0
     for _ in range(300):
@@ -1978,30 +1978,25 @@ def test_ekv_declares_fetlim_on_the_gate_and_limvds_on_the_drain():
     assert moved_source > 10, moved_source
 
 
-def test_fetlims_parameter_only_vto_is_measurably_loose_under_body_bias():
-    """The documented limitation of `hdl.limit_fet`, measured on the
-    first model that has a body effect.
+def test_fetlim_is_placed_at_the_body_biased_turn_on():
+    """`limit_fet` now sees SPICE's ``von``, and the 565 mV is gone.
 
-    SPICE passes ``von``, the turn-on voltage recomputed each
-    iteration, which for any model with a body effect depends on
-    ``vbs``.  A limiter runs BEFORE the device is evaluated, so its
-    parameters cannot read the iterate at all -- a chain that reaches
-    one is now refused at compile time -- and a model can only pass its
-    ZERO-BIAS threshold.
+    SPICE passes ``fetlim`` a turn-on voltage recomputed each iteration
+    from the previous iterate's bulk bias.  Until 2026-08-25 this model
+    could only pass its zero-bias ``vto``, because a limiter parameter
+    that reached the solution was refused at compile time; at 2 V of
+    body bias that put every clamp **565 mV** below the real turn-on of
+    1.06 V.  (This test used to pin that looseness as a documented
+    limitation.  The limitation was a rule about ORDER -- "the limiter
+    runs before the device" -- whose conclusion did not follow: the
+    limiter is handed the last accepted iterate precisely so it can
+    measure against it.)
 
-    (The reason used to be given as "``limit_spec`` lambdifies its
-    parameters over the parameters and TEMP alone".  That was the
-    mechanism and it expired on 2026-08-25, when roadmap 12.4 let those
-    expressions read `var()` symbols too.  The limitation is unchanged;
-    what enforces it is the ORDER, not the namespace.)
-
-    For this card the real turn-on in terms of ``vgs`` is
-    ``vto + gamma*(sqrt(phi + vsb) - sqrt(phi))``, which at 2 V of body
-    bias is **1.06 V** against ``vto`` = 0.50 -- a 565 mV error in where
-    the limiter believes the device turns on.  The consequence is
-    exact: `fetlim`'s clamps sit 0.5 V and 4 V from ``vto``, so they are
-    all 565 mV low.  It is LOOSER, not wrong -- every clamp still bounds
-    the step -- and both halves of that are pinned here.
+    The model now writes ``von = vtoT + gamma*(sqrt(phi + vsb) -
+    sqrt(phi))`` and the parameter is evaluated at ``x0``.  So an off
+    device asked to jump to 100 V lands at ``von + 0.5``, where SPICE
+    puts it -- and the no-op band for a small step is untouched, so
+    "did limiting fire?" stays a usable convergence signal.
     """
     card = EKV
     vsb = 2.0
@@ -2009,28 +2004,27 @@ def test_fetlims_parameter_only_vto_is_measurably_loose_under_body_bias():
     von = card['vto'] + card['gamma'] * (math.sqrt(phit + vsb)
                                          - math.sqrt(phit))
     assert 1.05 < von < 1.08, von
-    assert von - card['vto'] > 0.55
     el = _mk(eh.EkvNmosHdl, 'd', 'g', 's', 'b', **card)
+    fet = [s for s in el._hdl_info['limit_spec'] if s[1] == 'fet'][0]
+    assert fet[3][0]._wants_x is True, 'von must read the bulk bias'
     rng = np.random.default_rng(23)
     for _ in range(200):
         x0 = np.array([vsb + 1.0, vsb + rng.uniform(0.0, 1.5), vsb, 0.0])
         x = np.array([vsb + 1.0, vsb + rng.uniform(-50.0, 50.0), vsb, 0.0])
         out = el.limit(x, x0)
-        ## Still bounded, which is the limiter's actual job.
         assert abs(out[1] - out[2]) < 60.0
-        ## and still a strict no-op for a step under 0.45 V, whatever
-        ## the body bias -- so "did limiting fire?" stays a usable
-        ## convergence signal.
         small = np.array([x0[0], x0[1] + 0.4, vsb, 0.0])
         assert (el.limit(small, x0) == small).all()
-    ## The measurable looseness: an off device asked to jump to 100 V
-    ## lands at ``vto + 0.5``, where SPICE with the right ``von`` would
-    ## have put it at ``von + 0.5`` -- 565 mV further on.
+    ## The measurement that used to record the looseness now records
+    ## its absence: the 100 V jump from an off device lands at von + 0.5.
     x0 = np.array([vsb + 1.0, vsb + 0.0, vsb, 0.0])
     out = el.limit(np.array([vsb + 1.0, vsb + 100.0, vsb, 0.0]), x0)
-    assert_allclose(out[1] - out[2], card['vto'] + 0.5, rtol=1e-12)
-    assert_allclose(von + 0.5 - (out[1] - out[2]), von - card['vto'],
-                    rtol=1e-12)
+    assert_allclose(out[1] - out[2], von + 0.5, rtol=1e-9)
+    ## and at ZERO body bias von == vto (to the temperature scaling), so
+    ## the isothermal, unbiased behaviour is exactly what it was.
+    x0 = np.array([1.0, 0.0, 0.0, 0.0])
+    out = el.limit(np.array([1.0, 100.0, 0.0, 0.0]), x0)
+    assert_allclose(out[1] - out[2], card['vto'] + 0.5, rtol=1e-9)
 
 
 #: The control element for the limiter experiments: `EkvNmosHdl`'s body

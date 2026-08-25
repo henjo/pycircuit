@@ -1788,73 +1788,66 @@ def test_thermal_bjt_jacobians_by_finite_differences(name, rth, x):
     assert res.ok, '%s\n%s' % (name, res)
 
 
-def test_a_self_heating_limiter_parameter_is_refused_by_name():
-    """⚠ **The finding this model produced**, kept as a test because it
-    is a rule a self-heating device meets and an isothermal one does not.
+def test_a_self_heating_limiter_sees_the_junction_at_its_own_temperature():
+    """**The finding this model produced, and its closure.**
 
-    `limit_pnj`'s parameters are evaluated from the card BEFORE the
-    device is, so they may not reach the solution -- and with a thermal
-    node the temperature-scaled saturation current DOES: ``isT`` depends
-    on ``T``, which is ``$temperature + V(th,tha)``.  The natural
-    spelling, the one the isothermal `GummelPoonNpnHdl` uses and the one
-    roadmap 12.4 went to some trouble to make legal, is refused at
-    compile time -- correctly, and by name.
+    With a thermal node the temperature-scaled saturation current
+    ``isT`` reaches the solution (``T = $temperature + V(th,tha)``), and
+    until 2026-08-25 `limit_pnj(bbe.V, isT, ...)` was refused at compile
+    time -- so the model carried a second, AMBIENT copy of ``isT`` for
+    the limiter alone, and placed its critical voltage against a
+    junction up to 100 K hotter than it thought.
 
-    `GummelPoonNpnThermalHdl` therefore passes the AMBIENT temperature to
-    the limiter (`_gp_core`'s ``tlim``).  That places the critical
-    voltage against a junction that may be a hundred kelvin hotter than
-    the limiter thinks; the same trade `limit_fet` records for its
-    parameter-only ``vto``, and looser rather than wrong.
+    A limiter parameter that reads the solution is now evaluated at the
+    LAST ACCEPTED iterate, which is SPICE's ``von`` semantics.  So: the
+    natural spelling compiles, the parameter is marked as solution-
+    dependent, the duplicate is gone, and the limiter's behaviour DOES
+    move with the thermal node -- the observable that used to be
+    asserted the other way round.
     """
     from pycircuit.circuit.hdl import (Branch, Contribution, var, expl,
-                                       limit_pnj, vt)
+                                       limit_pnj, vt, Behavioural)
     from pycircuit.utilities.param import Parameter
 
-    def build():
-        class _SelfHeatedLimiter(Behavioural):
-            instparams = [Parameter(name='IS0', desc='saturation current',
-                                    unit='A', default=1e-14),
-                          Parameter(name='rth', desc='thermal resistance',
-                                    unit='K/W', default=100.0),
-                          Parameter(name='cth', desc='thermal capacitance',
-                                    unit='J/K', default=0.0)]
+    class _SelfHeatedLimiter(Behavioural):
+        instparams = [Parameter(name='IS0', desc='saturation current',
+                                unit='A', default=1e-14),
+                      Parameter(name='rth', desc='thermal resistance',
+                                unit='K/W', default=100.0),
+                      Parameter(name='cth', desc='thermal capacitance',
+                                unit='J/K', default=0.0)]
 
-            @staticmethod
-            def analog(plus, minus, th, tha):
-                heat = eh.SelfHeating(th, tha, rth, cth)       # noqa: F821
-                b = Branch(plus, minus)
-                ## `isT` reaches the thermal node, which is the whole
-                ## point of a self-heating device -- and makes it
-                ## illegal as a limiter parameter.
-                isT = var(IS0 * expl(heat.T / 300.0), 'isT')   # noqa: F821
-                v = var(limit_pnj(b.V, isT, vt(heat.T)), 'vd')
-                i = var(isT * (expl(v / vt(heat.T)) - 1.0), 'id')
-                return ((Contribution(b.I, i),)
-                        + heat.dissipate(var(b.V * i, 'p')))
-        return _SelfHeatedLimiter
+        @staticmethod
+        def analog(plus, minus, th, tha):
+            heat = eh.SelfHeating(th, tha, rth, cth)       # noqa: F821
+            b = Branch(plus, minus)
+            isT = var(IS0 * expl(heat.T / 300.0), 'isT')   # noqa: F821
+            v = var(limit_pnj(b.V, isT, vt(heat.T)), 'vd')
+            i = var(isT * (expl(v / vt(heat.T)) - 1.0), 'id')
+            return ((Contribution(b.I, i),)
+                    + heat.dissipate(var(b.V * i, 'p')))
 
-    with pytest.raises(ValueError, match='cannot depend on the solution'):
-        build()
-    ## and the message names the offending terminals, which is what makes
-    ## this a five-minute fix rather than a bisection.
-    with pytest.raises(ValueError, match=r"reaches th \(through var"):
-        build()
+    el = _mk(_SelfHeatedLimiter, 'p', 'n', 'th', 'tha')
+    fns = el._hdl_info['limit_spec'][0][3]
+    assert all(f._wants_x for f in fns), 'both parameters read the node'
 
-    ## The shipped model does compile, declares its limiter on both
-    ## junctions, and its limiter is INDEPENDENT of the thermal node --
-    ## which is the observable consequence of passing the ambient
-    ## temperature, and the thing a future change would break silently.
+    ## The shipped model: no duplicate, its limiter parameters are the
+    ## device's own heated isT/vtT and are solution-dependent.
     el = _mk(eh.GummelPoonNpnThermalHdl, 'c', 'b', 'e', 'th', 'tha',
              rth=1000.0, **NPN_TH)
     assert [s[1] for s in el._hdl_info['limit_spec']] == ['pnj', 'pnj']
+    assert all(f._wants_x for s in el._hdl_info['limit_spec']
+               for f in s[3])
+    assert 'isL' not in ' '.join(str(k) for k in el._hdl_info['funcs'])
+    ## A hot junction has a LOWER critical voltage (IS rises with T), so
+    ## the same wild step is compressed differently once the thermal node
+    ## carries 200 K.  This is the assertion that was previously made the
+    ## other way round.
     x0 = np.array([1.0, 0.7, 0.0, 0.0, 0.0])
     x = np.array([1.0, 5.0, 0.0, 0.0, 0.0])
     cold = el.limit(x, x0)
-    for dT in (50.0, 200.0):
-        xh = x.copy()
-        x0h = x0.copy()
-        xh[3] = x0h[3] = dT
-        hot = el.limit(xh, x0h)
-        assert (hot[:3] == cold[:3]).all(), (dT, hot, cold)
-    ## and the limiter did bite, so this is not two no-ops agreeing.
-    assert not (cold == x).all()
+    xh, x0h = x.copy(), x0.copy()
+    xh[3] = x0h[3] = 200.0
+    hot = el.limit(xh, x0h)
+    assert not (cold == x).all(), 'the limiter did not bite'
+    assert not (hot[:3] == cold[:3]).all(), (hot, cold)

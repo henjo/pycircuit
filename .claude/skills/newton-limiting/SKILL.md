@@ -163,11 +163,18 @@ drop the smallest one that does, hold the least-drifted node in each
 component and derive the rest. That is the per-probe rule ("move the
 terminal that drifted further") stated for a tree.
 
-Likewise a limiter parameterised on a card value cannot follow a
-bias-dependent one: `fetlim` wants SPICE's `von`, recomputed each
-iteration through the body effect, and a parameter-only `vto` is
-measurably loose — 565 mV at 2 V of body bias in one case. Looser, not
-wrong: the step is still bounded. Say which it is.
+A limiter parameter that depends on the bias -- SPICE's `von`, the
+turn-on recomputed each iteration through the body effect; a
+self-heating device's saturation current at its *actual* temperature --
+is evaluated at the **last accepted iterate**. That is the only
+well-defined choice (the proposed iterate is the thing the limiter
+exists to distrust) and it is exactly what SPICE does. A rule here used
+to refuse such parameters outright -- "the limiter runs BEFORE the
+device, so its parameters cannot read the solution" -- which was right
+about the order and wrong about the conclusion, and cost one model
+565 mV of looseness and another a duplicated saturation current before
+it was measured. If a limiter parameter *cannot* follow the bias, say
+so; do not accept "looser, not wrong" without pricing it.
 
 ## Limiting does not fix a singular row
 
@@ -199,3 +206,21 @@ One caution when asserting exactness: check the **write**, not the
 recomputed difference. `(b + v) - b` is not `v`, and a rounding error
 is not what the test is trying to catch. Handle the no-op case
 explicitly rather than folding it into one of the write forms.
+
+
+## A device-level limiter is a capability, not a speed-up
+
+Three measurements, three devices, one direction:
+
+    two-probe FET star, 48-point grid    ties at 34, +1 at the rest
+    MOS level 1, 48-point grid           552 vs 554 -- nothing
+    Gummel-Poon, six cold starts         never better, once 13x worse
+                                         (92 vs 7 Jacobians)
+
+What grouping buys is *expressibility*: four probes over four terminals
+cannot compile per-probe at all, because the fourth finds both its
+terminals claimed. That is a real gap and it is the reason the
+mechanism exists. But **a two-probe device should not declare it**, and
+"the grouped form is more principled" is not a measurement. When an
+intervention's justification is a capability, do not expect -- or
+claim -- an iteration count.

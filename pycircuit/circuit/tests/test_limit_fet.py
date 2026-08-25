@@ -393,13 +393,17 @@ def test_limit_fet_on_an_element_is_the_bare_law_on_each_branch():
 def test_limit_probes_sharing_a_plus_terminal_do_not_undo_each_other():
     """The ordering rule, and the case it exists for.
 
-    Probes are written back by moving their PLUS terminal; two probes
-    sharing that terminal would have the second write undo the first
-    (the hazard `limit_junctions` handles with its `move` field for a
-    BJT's two junctions on one base).  `limit_spec` therefore picks the
-    MINUS terminal for the second, at compile time.  Here `V(g,s)` and
-    `V(g,d)` share `g`, so `d` moves for the second probe -- and BOTH
-    branches must come out carrying their own limited value.
+    Two probes sharing a terminal would have the second write undo the
+    first if both moved the same node (the hazard `limit_junctions`
+    handles with its `move` field for a BJT's two junctions on one
+    base).  Which node each probe moves is decided at RUN TIME -- the
+    terminal that drifted further from the last accepted point, the
+    shared one going to the larger correction (roadmap 12.1) -- and the
+    invariant is that the two corrections land on two DIFFERENT rows.
+    (This docstring used to describe the compile-time rule, "the second
+    probe takes its MINUS terminal"; that rule was replaced on
+    2026-08-25 and the assertions below were already about the
+    invariant rather than the node identities.)
     """
     from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
                                        limexp, limit_fet, vt)
@@ -839,3 +843,103 @@ def test_dc_solve_attributes_the_rescue_to_each_limiter(chained):
     ## ... and adding the second probe COSTS iterations, which is the
     ## shared-terminal constraint showing up as a number.
     assert its['both'] > its['fet'], its
+
+
+## ---------------------------------------------------------------------
+## Limiter parameters that read the solution (2026-08-25)
+## ---------------------------------------------------------------------
+
+def _von_fet(chained, grouped=False):
+    """A FET whose `limit_fet` threshold moves with the bulk bias --
+    `von = VTO + K * V(b,s)` -- so the parameter reads the solution."""
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       var, limexp, limit_fet, limit_vds,
+                                       limit_together, vt)
+
+    class _V(Behavioural):
+        instparams = [Parameter(name='VTO', desc='threshold', unit='V',
+                                default=0.5),
+                      Parameter(name='K', desc='body factor', unit='',
+                                default=0.5)]
+
+        @staticmethod
+        def analog(d, g, s, b):
+            bgs, bds, bbs = Branch(g, s), Branch(d, s), Branch(b, s)
+            von = VTO + K * bbs.V                                  # noqa
+            if chained:
+                von = var(von, 'von')
+            if grouped:
+                vgs, vds = limit_together(limit_fet(bgs.V, von),   # noqa
+                                          limit_vds(bds.V))
+            else:
+                vgs, vds = limit_fet(bgs.V, von), limit_vds(bds.V)
+            ids = 1e-6 * limexp((vgs - von) / (1.3 * vt())) \
+                * (1.0 - limexp(-vds / 0.5))
+            return Contribution(bds.I, var(ids, 'ids') if chained else ids)
+    return _V
+
+
+@pytest.mark.parametrize('chained', [False, True])
+@pytest.mark.parametrize('grouped', [False, True])
+def test_a_solution_dependent_parameter_is_taken_at_x0_not_x(chained,
+                                                             grouped):
+    """The discriminating check for roadmap 12.6(c).
+
+    `fetlim` from an OFF device compresses a wild gate step to
+    `von + 0.5`.  Put the bulk at one bias in the last accepted iterate
+    and at another in the proposed one: which `von` the clamp used is
+    then visible in the landing point.  SPICE's semantics -- and the
+    only well-defined choice -- is the last accepted iterate.
+    """
+    el = _von_fet(chained, grouped)('d', 'g', 's', 'b')
+    el.update_iparv()
+    fet = [sp for sp in el._hdl_info['limit_spec'] if sp[1] == 'fet'][0]
+    assert fet[3][0]._wants_x is True
+    ## x = (d, g, s, b).  vbs = 0.6 at x0, 2.4 at x.
+    x0 = np.array([1.0, 0.0, 0.0, 0.6])
+    x = np.array([1.0, 100.0, 0.0, 2.4])
+    out = el.limit(x, x0)
+    von_x0 = 0.5 + 0.5 * 0.6
+    von_x = 0.5 + 0.5 * 2.4
+    assert_allclose(out[1] - out[2], von_x0 + 0.5, rtol=1e-12)
+    assert abs((out[1] - out[2]) - (von_x + 0.5)) > 0.5    # and NOT x
+    ## the bulk itself is not a probe terminal and is never written
+    assert out[3] == x[3]
+
+
+def test_a_solution_dependent_parameter_on_both_generators_agrees():
+    """Flat and chained spellings of the same `von` must give the same
+    limiter -- the parameter goes through `_chain_compile` on one path
+    and through an unpack on the other."""
+    a = _von_fet(False)('d', 'g', 's', 'b'); a.update_iparv()
+    b = _von_fet(True)('d', 'g', 's', 'b'); b.update_iparv()
+    rng = np.random.default_rng(5)
+    for _ in range(300):
+        x0 = rng.uniform(-3.0, 3.0, 4)
+        x = rng.uniform(-40.0, 40.0, 4)
+        assert (a.limit(x, x0) == b.limit(x, x0)).all(), (x, x0)
+
+
+def test_a_time_dependent_limiter_parameter_is_still_refused():
+    """`x0` is well-defined for a limiter; `t` is not offered to it."""
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       limexp, limit_pnj, vt, TIME)
+    with pytest.raises(ValueError, match='cannot depend on time'):
+        class _T(Behavioural):
+            instparams = [Parameter(name='IS', desc='IS', unit='A',
+                                    default=1e-14)]
+
+            @staticmethod
+            def analog(plus, minus):
+                bb = Branch(plus, minus)
+                v = limit_pnj(bb.V, IS * (1.0 + TIME), vt())     # noqa
+                return Contribution(bb.I, IS * (limexp(v / vt()) - 1))
+
+
+def test_explain_names_a_solution_dependent_limiter_parameter():
+    from pycircuit.circuit.hdl import explain
+    el = _von_fet(True)('d', 'g', 's', 'b'); el.update_iparv()
+    text = explain(el)
+    assert 'fetlim on (g,s) [params at last iterate]' in text, text
+    assert 'limvds on (d,s)' in text and \
+        'limvds on (d,s) [params' not in text, text

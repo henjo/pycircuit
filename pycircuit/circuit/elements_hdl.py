@@ -1560,7 +1560,7 @@ def _with_params(func, ns):
     return types.FunctionType(func.__code__, ns, func.__name__,
                               func.__defaults__, func.__closure__)
 
-def _gp_core(T, npn, c, b, e, tlim=None):
+def _gp_core(T, npn, c, b, e):
     """The Gummel-Poon body itself, shared by the isothermal and the
     self-heating classes.  Returns ``(statements, (ict, ibc, ibe))``.
 
@@ -1574,30 +1574,22 @@ def _gp_core(T, npn, c, b, e, tlim=None):
     parameter namespace is the fix, and `_with_params` is the same
     mechanism applied by hand.
 
-    ``tlim`` is the temperature the two ``limit_pnj`` declarations place
-    their critical voltage from, defaulting to ``T``.  A self-heating
-    variant MUST pass one, and the reason is a rule of the DSL rather
-    than of the physics: a limiter's parameters are evaluated from the
-    card BEFORE the device is, so they may not reach the solution -- and
-    with a thermal node ``isT`` reaches it.  `generate_code` refuses the
-    model by name ("this one reaches th (through var('dT'))"), which is
-    the right answer and is how this was found.  Passing the AMBIENT
-    temperature makes the critical voltage the isothermal one; the
-    limiter is then placed against a junction that may be 100 K hotter
-    than it thinks, which moves ``vcrit`` by ``VT*ln(IS_hot/IS_cold)``.
-    Looser, not wrong -- the same trade `limit_fet` records for its
-    parameter-only ``vto``.
+    The two ``limit_pnj`` declarations read the DEVICE'S OWN ``isT`` and
+    ``vtT`` -- the heated ones, for the self-heating variant.  Until
+    2026-08-25 that was refused ("a limiter's parameters are evaluated
+    BEFORE the device is, so they may not reach the solution"), and this
+    function took a ``tlim`` argument so the thermal class could hand
+    the limiter an AMBIENT copy of the saturation current -- five
+    duplicated lines, and a critical voltage placed against a junction
+    up to 100 K hotter than it thought.  The refusal was right about
+    the order and wrong about the conclusion: a limiter is handed the
+    last accepted iterate precisely so it can measure against it, and
+    a parameter evaluated THERE is as well-defined as ``vold`` is.
+    `hdl._limit_par_fn` now does exactly that, and ``tlim`` is gone.
 
     The equations, the references and what is deliberately absent are in
     `_gummel_poon`.
     """
-    ## The limiter's own temperature path, built ONLY when it differs
-    ## from the device's.  Written as a build-time `if` on a Python
-    ## value, which is legal and is not a branch on the solution: it
-    ## chooses which expression to compile, not which arm to evaluate.
-    ## Keeping it conditional matters -- an unconditional second copy
-    ## would put `isT` in the chain twice for the isothermal model,
-    ## which is exactly the duplication roadmap 12.4 removed.
     ## Three internal nodes, one per parasitic resistance, each
     ## collapsed away when its resistance is zero -- which is
     ## SPICE's default for all three, so a bare instance has no
@@ -1697,16 +1689,12 @@ def _gp_core(T, npn, c, b, e, tlim=None):
     ## scaled one is the device's actual saturation current, so it
     ## is the one used here; the difference is recorded because it
     ## is a real, if small, divergence from the reference.
-    if tlim is None:
-        isL, vtL = isT, vtT
-    else:
-        vtL = _var(_vt(tlim), 'vtL')
-        ltrL = _var(sympy.log(tlim / tnom), 'ltratL')              # noqa
-        isL = _var(area * IS * _expl((tlim / tnom - 1.0)           # noqa
-                                     * eg / vtL + xti * ltrL),     # noqa
-                   'isL')
-    vbe = _var(limit_pnj(bbe.V, isL, nf * vtL), 'vbe')             # noqa
-    vbc = _var(limit_pnj(bbc.V, isL, nr * vtL), 'vbc')             # noqa
+    ## The heated `isT`/`vtT` themselves: a parameter that reaches the
+    ## solution is evaluated at the LAST ACCEPTED iterate (SPICE's `von`
+    ## semantics), so the limiter sees the junction at the temperature
+    ## it actually has.
+    vbe = _var(limit_pnj(bbe.V, isT, nf * vtT), 'vbe')             # noqa
+    vbc = _var(limit_pnj(bbc.V, isT, nr * vtT), 'vbc')             # noqa
 
     ## -- transport and base currents -------------------------------
     ifwd = _var(isT * (_expl(vbe / (nf * vtT)) - 1.0), 'ifwd')  # noqa
@@ -1932,11 +1920,14 @@ class GummelPoonNpnHdl(Behavioural):
       slope of the measured ``Ic(Vce)`` and not about a parameter.
 
     ``limit_pnj`` is declared on both junctions.  This is the first
-    model in the tree with TWO limited probes sharing a terminal, which
-    is the case ``limit_spec``'s compile-time write-back rule exists
-    for: the base-emitter probe moves the internal base, so the
-    base-collector probe is written by moving the internal collector
-    instead of undoing it.  ``explain()`` prints both.
+    model in the tree with TWO limited probes sharing a terminal (the
+    internal base).  Which node each probe moves is decided at RUN TIME
+    -- the terminal that drifted further from the last accepted point,
+    the shared base going to whichever junction applies the larger
+    correction (roadmap 12.1) -- so neither probe can undo the other.
+    (This used to describe a compile-time rule, "the base-emitter probe
+    moves the base, so the base-collector probe moves the collector";
+    that rule was replaced on 2026-08-25.)  ``explain()`` prints both.
 
     See `GummelPoonPnpHdl` for the p-n-p, which is this model with its
     branches declared the other way round and nothing else changed.
@@ -2024,7 +2015,7 @@ class GummelPoonNpnThermalHdl(Behavioural):
     def analog(c, b, e, th, tha):
         heat = SelfHeating(th, tha, rth, cth)                      # noqa
         stmts, (ict, ibc, ibe) = _with_params(_gp_core, globals())(
-            heat.T, +1, c, b, e, tlim=TEMP)
+            heat.T, +1, c, b, e)
         p = _var(Branch(c, e).V * (ict - ibc)
                  + Branch(b, e).V * (ibe + ibc), 'pdiss')
         return stmts + heat.dissipate(p)
@@ -2165,20 +2156,25 @@ def _ekv_analog(T, nmos):
 
         ## -- the three probes ------------------------------------------
         ## `limit_fet` on the gate drive and `limit_vds` on the drain,
-        ## which is SPICE's pair.  Their write-backs land on `g` and `d`
-        ## respectively (different terminals), so declaration order does
-        ## not matter here -- see `hdl.limit_vds`.
+        ## which is SPICE's pair.  WHICH terminal each write-back lands on
+        ## is decided at run time (the one that drifted further from the
+        ## last accepted point -- roadmap 12.1), so neither declaration
+        ## order nor a fixed node assignment enters into it.
         ##
-        ## `vto` and NOT the bias-dependent turn-on voltage: that is the
-        ## documented limitation of the per-probe `limit_spec`, whose
-        ## parameter expressions see the parameters and TEMP and nothing
-        ## else.  For this model the real turn-on in terms of `vgs` is
-        ## `vto + gamma*(sqrt(phi + vsb) - sqrt(phi))`, so a device with
-        ## 2 V of body bias is limited against a threshold ~0.5 V too
-        ## low.  That makes the bound looser, not wrong.
-        vgs = _var(limit_fet(bgs.V, vto), 'vgs')                   # noqa
-        vds = _var(limit_vds(bds.V), 'vds')
+        ## `von`, the BODY-BIASED turn-on, and not `vto`: SPICE passes
+        ## `fetlim` a `von` recomputed from the previous iterate's bulk
+        ## bias, and a limiter parameter that reads the solution is now
+        ## evaluated at exactly that point -- the last accepted iterate.
+        ## Until 2026-08-25 this was refused and the model passed its
+        ## zero-bias `vto`, which at 2 V of body bias put every clamp
+        ## 565 mV below where the device actually turns on.  `maxc`
+        ## inside the root because the parameter is evaluated NUMERICALLY
+        ## at a point Newton may have pushed into forward body bias.
         vsb = _var(bsb.V, 'vsb')
+        von = _var(vtoT + gamma * (sympy.sqrt(_maxc(phiT + vsb, 0.0))  # noqa
+                                   - sympy.sqrt(phiT)), 'von')
+        vgs = _var(limit_fet(bgs.V, von), 'vgs')
+        vds = _var(limit_vds(bds.V), 'vds')
         ## Referred to the BULK, which is what makes the model
         ## symmetric in source and drain.
         vgb = _var(vgs + vsb, 'vgb')
@@ -2627,11 +2623,12 @@ def _mos1_analog(T, nmos, limiting='group'):
         ## is what makes the declaration expressible; see `hdl.
         ## limit_together` and roadmap 10.3(b).
         ##
-        ## `vtoT`, not `vto`: the temperature-scaled threshold is a
-        ## function of the parameters and TEMP alone, which is exactly
-        ## what a limiter parameter is allowed to be.  It is still not
-        ## the BODY-BIASED turn-on SPICE passes, and that is the
-        ## documented looseness of `limit_fet`.
+        ## `von`, the BODY-BIASED turn-on SPICE passes to `fetlim`, built
+        ## from the RAW bulk-source potential with the same continuation
+        ## `vth` below uses.  A limiter parameter that reads the solution
+        ## is evaluated at the last accepted iterate (roadmap 12.6(c),
+        ## closed 2026-08-25), which is exactly SPICE's `von` semantics;
+        ## until then this passed `vtoT` and was measurably loose.
         ##
         ## `limiting` selects the declaration, and the three values exist
         ## so that the limiter can be measured against its ABSENCE on
@@ -2641,12 +2638,18 @@ def _mos1_analog(T, nmos, limiting='group'):
         ## use; `'probe'` is the per-probe declaration, which does not
         ## compile and is kept so that a test can say so; `'none'` is the
         ## unlimited device.
+        vbsl = _var(bbs.V, 'vbsl')
+        sargl = _var(sympy.Piecewise(
+            (sympy.sqrt(_maxc(phiT - vbsl, 0.25 * phiT)), vbsl <= 0.0),
+            (sympy.sqrt(phiT) / _maxc(1.0 + vbsl / (2.0 * phiT), 0.1),
+             True)), 'sargl')
+        von = _var(vtoT + gam * (sargl - sympy.sqrt(phiT)), 'von')
         if limiting == 'group':
             vgs, vds, vbs, vbd = limit_together(                   # noqa
-                limit_fet(bgs.V, vtoT), limit_vds(bds.V),
+                limit_fet(bgs.V, von), limit_vds(bds.V),
                 limit_pnj(bbs.V, isbs, vtT), limit_pnj(bbd.V, isbd, vtT))
         elif limiting == 'probe':
-            vgs, vds = limit_fet(bgs.V, vtoT), limit_vds(bds.V)
+            vgs, vds = limit_fet(bgs.V, von), limit_vds(bds.V)
             vbs = limit_pnj(bbs.V, isbs, vtT)
             vbd = limit_pnj(bbd.V, isbd, vtT)
         else:

@@ -811,6 +811,14 @@ probe has no terminal left to move.  Its first PRODUCTION user is
 four and on which the refusal is asserted. `sequential=True` on a group is
 `mos1load.c`'s ordering, offered and measured (it is not better).
 
+A limiter parameter may read the solution and is then evaluated at the
+LAST ACCEPTED iterate (2026-08-25) -- SPICE's `von` semantics. That
+retired the self-heating BJT's duplicated saturation current and EKV's
+parameter-only `vto` (565 mV loose under body bias). And the BJT does
+NOT adopt `limit_together`: measured never better and once 13x worse;
+grouping is a capability (four probes over four terminals), not a
+speed-up.
+
 Diagnostics: `explain()`, `x_layout()`, `check_jacobians()` -- which
 has THREE verdicts, an entry the finite difference cannot resolve at
 this point coming back UNRESOLVED rather than FAILED -- and nine

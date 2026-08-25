@@ -1540,27 +1540,30 @@ def limit_fet(probe, vto):
 
         vgs = limit_fet(bgs.V, VTO)
 
-    **``vto`` is evaluated from PARAMETERS AND TEMPERATURE ONLY**, once
-    per parameter set.  SPICE passes ``von``, the turn-on voltage the
-    model recomputed this iteration, which in any model with a body
-    effect depends on ``vbs``.  A bias-dependent ``vto`` is not
-    expressible: a limiter runs BEFORE the device is evaluated, so its
-    parameters cannot read the iterate, and a chain that reaches one is
-    refused at compile time.  A model must pass its zero-bias threshold.
-    That makes the limiter looser than SPICE's for a strongly
-    body-biased device -- looser, not wrong: ``fetlim``'s job is to
-    bound a step, and a bound placed relative to the wrong threshold
-    still bounds it.  Measured on the EKV card at 2 V of body bias: the
-    true turn-on is 1.06 V against ``vto = 0.50``, so every clamp sits
-    565 mV low.
+    **``vto`` may depend on the bias, and is then evaluated at the LAST
+    ACCEPTED iterate** -- which is SPICE's semantics: ``mos1load.c``
+    passes ``fetlim`` a ``von`` recomputed from the previous iterate's
+    bulk bias, not a card constant.  So a model with a body effect
+    writes its real turn-on::
 
-    **Correction, 2026-08-25.**  This paragraph used to give the reason
-    as "lambdified over ``paramsyms + [TEMP]`` and nothing else".  That
-    was the mechanism, not the constraint, and it has expired: the
-    expressions now also see `var()` symbols and givenness flags
-    (roadmap 12.4).  The RULE is unchanged and is now enforced rather
-    than merely implied -- what forbids a bias-dependent ``vto`` is when
-    the limiter runs, not what its namespace happens to contain.
+        von = vtoT + gamma * (sqrt(phiT + vsb) - sqrt(phiT))
+        vgs = limit_fet(bgs.V, von)
+
+    and the limiter is placed where the device actually turns on.  A
+    parameter that reads only the card is evaluated once per parameter
+    set, exactly as before.
+
+    **History, kept because both halves of it were wrong in turn
+    (2026-08-25).**  This used to say a bias-dependent ``vto`` "is not
+    expressible: a limiter runs BEFORE the device is evaluated, so its
+    parameters cannot read the iterate".  The order was right and the
+    conclusion did not follow -- a limiter is handed ``x0`` precisely so
+    it can measure against the last accepted point, and a parameter
+    evaluated THERE is as well-defined as ``vold`` is.  Before that, the
+    reason was given as a lambdify namespace, which was the mechanism
+    and not the rule.  The cost of the refusal was measured on the EKV
+    card at 2 V of body bias: true turn-on 1.06 V against ``vto`` =
+    0.50, every clamp 565 mV low.  Looser, not wrong -- and now gone.
 
     Ordering: see :func:`limit_vds`.
     """
@@ -3256,7 +3259,8 @@ def generate_code(cls):
                            tuple(_limit_par_fn(resolve(e), kind_l, chain_defs,
                                                xsyms, xlabels,
                                                paramsyms + [TEMP]
-                                               + given_syms, NUMPY_MODULES)
+                                               + given_syms, NUMPY_MODULES,
+                                               x=x)
                                  for e in pars_l)))
 
     ## `limit_groups`: `(sequential, [spec index, in DECLARATION order])`.
@@ -3444,55 +3448,65 @@ def _var_name(sym):
     return re.sub(r'^_v\d+_', '', sym.name)
 
 
-def _limit_par_fn(expr, kind, chain_defs, xsyms, xlabels, args, modules):
-    """Compile one `$limit` parameter expression over `args`.
+def _limit_par_fn(expr, kind, chain_defs, xsyms, xlabels, args, modules,
+                  x=None):
+    """Compile one `$limit` parameter expression.
 
     `args` is the ordinary `params + [T] + givenness` signature, and an
     expression that mentions nothing else is lambdified over it exactly
-    as before.
+    as before.  An `_IntermediateSymbol` from `var()` is resolved against
+    the chain -- READ, not inlined, through `_chain_compile`, the same
+    path the PCNR detector's `VT` and `IS` take -- so a limiter parameter
+    written in terms of a hundred-deep MOSFET chain costs what the chain
+    costs rather than exponentially more.
 
-    **AN `_IntermediateSymbol` FROM `var()` IS RESOLVED AGAINST THE
-    CHAIN**, rather than left for `lambdify` to hand straight back as a
-    symbol -- which is what it does with a name it cannot resolve, so
-    the failure used to be a `TypeError: Cannot convert expression to
-    float` out of `limit()` on the first Newton iteration.  It is compiled
-    through `_chain_compile` -- the same path the PCNR detector's `VT`
-    and `IS` take -- so the chain is read, not INLINED, and a limiter
-    parameter written in terms of a hundred-deep MOSFET chain costs what
-    the chain costs rather than exponentially more.
+    **A PARAMETER MAY READ THE SOLUTION, AND IS THEN EVALUATED AT THE
+    LAST ACCEPTED ITERATE** (2026-08-25).  This used to be refused by
+    name -- "a limiter runs BEFORE the device is, so its parameters
+    cannot depend on the solution" -- and the refusal was correct about
+    the ORDER and wrong about the CONCLUSION.  A limiter is handed `x0`,
+    the last accepted point, precisely so that it can measure the new
+    step against it; a parameter evaluated there is as well-defined as
+    `vold` is.  That is also exactly SPICE's semantics: `mos1load.c`
+    passes `fetlim` a `von` recomputed from the PREVIOUS iterate's bulk
+    bias, not a card constant.  Two production models had already paid
+    for the refusal -- EKV limited a body-biased device against a
+    threshold 565 mV low, and the self-heating BJT carried a second,
+    ambient-temperature copy of its saturation current for the limiter
+    alone.
 
-    A limiter's parameters are constants of the DEVICE: `pnjlim` wants a
-    saturation current and a thermal voltage, and it is called before the
-    device is evaluated.  So a chain definition that reads the solution
-    is refused here by name, which is the error that would otherwise have
-    been a wrong answer.
+    The returned callable carries `_wants_x`: when True its signature is
+    `(x0, *args)` and the generated `limit()` supplies the element's own
+    last-accepted sub-vector.  Time is still refused -- a limiter has no
+    `t` to offer.
     """
     reach = _chain_prune(chain_defs, [expr])
-    if not reach:
-        return sympy.lambdify(args, expr, modules=modules)
+    xset = set(xsyms)
     what = {'pnj': 'limit_pnj', 'fet': 'limit_fet',
             'vds': 'limit_vds'}.get(kind, kind)
-    bad = {}
-    for s_, e_ in reach + [(None, expr)]:
-        for xs in e_.free_symbols & set(xsyms):
-            bad.setdefault(xlabels[xsyms.index(xs)],
-                           'the expression' if s_ is None
-                           else 'var(%r)' % _var_name(s_))
-    if bad:
+    late = sorted(_var_name(s_) for s_, e_ in reach if e_.has(TIME))
+    if late or expr.has(TIME):
         raise ValueError(
-            "%s's parameters are evaluated from the parameters alone, and "
-            "BEFORE the device is, so they cannot depend on the solution; "
-            "this one reaches %s. Write the parameter in terms of the card."
-            % (what, ', '.join('%s (through %s)' % kv
-                               for kv in sorted(bad.items()))))
-    late = sorted(_var_name(s) for s, e_ in reach if e_.has(TIME))
-    if late:
-        raise ValueError(
-            "%s's parameters cannot depend on time, and var(%s) does."
-            % (what, ') / var('.join(repr(v) for v in late)))
-    fn = _chain_compile(reach, [expr], args,
-                        modules_map=dict(_KERNEL_NUMPY, _wrapfloor=np.floor))
-    return lambda *a, _f=fn: _f(*a)[0]
+            "%s's parameters cannot depend on time%s."
+            % (what, (', and var(%s) does' % ') / var('.join(
+                repr(v) for v in late)) if late else ''))
+    touches_x = bool(expr.free_symbols & xset) or any(
+        e_.free_symbols & xset for _s, e_ in reach)
+    mods = dict(_KERNEL_NUMPY, _wrapfloor=np.floor)
+    if touches_x:
+        inner = _chain_compile(
+            reach, [expr], [x] + args, modules_map=mods,
+            unpack=[(xs.name, 'x[%d]' % k) for k, xs in enumerate(xsyms)])
+        fn = lambda x0, *a, _f=inner: _f(x0, *a)[0]      # noqa: E731
+        fn._wants_x = True
+        return fn
+    if not reach:
+        fn = sympy.lambdify(args, expr, modules=modules)
+    else:
+        inner = _chain_compile(reach, [expr], args, modules_map=mods)
+        fn = lambda *a, _f=inner: _f(*a)[0]             # noqa: E731
+    fn._wants_x = False
+    return fn
 
 
 def _chain_prune(defs, outputs):
@@ -3989,6 +4003,15 @@ class BehaviouralMeta(type):
                 out = np.array(x, dtype=float, copy=True)
                 x0a = np.asarray(x0, dtype=float)
                 args = _args_of(self, epar)
+
+                def _pv(pfs_):
+                    ## A parameter that reads the solution is evaluated
+                    ## at the LAST ACCEPTED iterate -- SPICE's `von`
+                    ## semantics -- never at the unlimited `x`, which is
+                    ## the point the limiter exists to distrust.
+                    return [float(f(x0a, *args)
+                                  if getattr(f, '_wants_x', False)
+                                  else f(*args)) for f in pfs_]
                 ## WHICH TERMINAL ABSORBS THE CORRECTION IS A RUNTIME
                 ## QUESTION, and deciding it at compile time made the
                 ## limiter a divergence GENERATOR.
@@ -4037,7 +4060,7 @@ class BehaviouralMeta(type):
                 def _vlim_of(k, i0, i1, pfs_):
                     vn = float(out[i0] - out[i1])
                     vo = float(x0a[i0] - x0a[i1])
-                    pv_ = [float(f(*args)) for f in pfs_]
+                    pv_ = _pv(pfs_)
                     return vn, _lim(k, vn, vo, pv_, self.toolkit)
 
                 ## DEVICE-LEVEL groups first (`limit_together`, roadmap
@@ -4081,7 +4104,7 @@ class BehaviouralMeta(type):
                                                  _ls[j][0][0], _ls[j][0][1]))
                     for j in seq_order:
                         (ra, rb), kind, _mv, pfs = _ls[j]
-                        pv = [float(f(*args)) for f in pfs]
+                        pv = _pv(pfs)
                         vorig = float(out[ra] - out[rb])
                         vold = float(x0a[ra] - x0a[rb])
                         vin = vorig + shift.get(ra, 0.0) - shift.get(rb, 0.0)
@@ -4132,7 +4155,7 @@ class BehaviouralMeta(type):
                     (ra, rb), kind, move, pfs = _ls[i]
                     vnew = float(out[ra] - out[rb])
                     vold = float(x0a[ra] - x0a[rb])
-                    pv = [float(f(*args)) for f in pfs]
+                    pv = _pv(pfs)
                     vlim = _lim(kind, vnew, vold, pv, self.toolkit)
                     ## A LIMITER THAT DID NOT BITE MUST TOUCH NOTHING.
                     ## Writing `out[rb] = out[ra] - vlim` when `vlim` is
@@ -4606,10 +4629,13 @@ def explain(target, source=True, symbolic=True, maxlines=40):
         feats.append('%d $limit probe%s (%s)'
                      % (len(info['limit_spec']),
                         '' if len(info['limit_spec']) == 1 else 's',
-                        ', '.join('%s on (%s,%s)%s'
+                        ', '.join('%s on (%s,%s)%s%s'
                                   % ({'pnj': 'pnjlim', 'fet': 'fetlim',
                                       'vds': 'limvds'}[k],
-                                     _xl[ra], _xl[rb], _grp.get(_i, ''))
+                                     _xl[ra], _xl[rb], _grp.get(_i, ''),
+                                     ' [params at last iterate]'
+                                     if any(getattr(f, '_wants_x', False)
+                                            for f in _p) else '')
                                   for _i, ((ra, rb), k, _m, _p)
                                   in enumerate(info['limit_spec']))))
     feats.append('PCNR: %s' % ('%d junction(s)' % len(info['pcnr_funcs'])

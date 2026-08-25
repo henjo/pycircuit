@@ -842,7 +842,10 @@ the form it was argued — here is what actually landed.
     12.1     limiter write-back moves the wrong node DONE
     12.2     check_jacobians "not resolvable"        DONE 2026-08-25
     12.3     no way to declare a device needs gmin   DONE 2026-08-25
-    12.4     limit_pnj parameters cannot use var()   DONE 2026-08-25
+    12.4     limit_pnj parameters cannot use var()   DONE
+    12.6(c)  limiter params may read the solution   DONE (at last iterate)
+    12.4     limit_fet's parameter-only vto         DONE (von, body-biased)
+    10.3(b)  BJT adopting limit_together            MEASURED: NO (§12.7) 2026-08-25
     12.6     fourth library batch: findings          2026-08-25 (evening)
     5        Gummel-Poon BJT, EKV core, crystal,
              ferrite, skin-effect R, comparator,
@@ -1357,7 +1360,9 @@ Both facts are tests. This belongs at the simulator level as `gmin` (or
   expressions are lambdified over `paramsyms + [TEMP]` and nothing
   else". The rule is unchanged and now enforced; its reason is *when*
   the limiter runs, not what its namespace contains.
-- **`limit_fet`'s parameter-only `vto` bites, and the size is known:**
+- **`limit_fet`'s parameter-only `vto` bites, and the size is known**
+  *(CLOSED 2026-08-25, §12.7 -- `von` is now bias-dependent and the
+  565 mV is gone)*:
   for the EKV card at 2 V of body bias the true turn-on is 1.06 V
   against `vto = 0.50`, so every clamp sits **565 mV** low. Looser, not
   wrong — the step is still bounded and the no-op band intact.
@@ -1502,7 +1507,9 @@ anybody should write. A parameter namespace (item (a)) fixes this too:
 `p['lambda']` is legal Python.
 
 **(c) A self-heating device's limiter parameters reach the solution,
-and the DSL is right to refuse them.** `limit_pnj(bbe.V, isT, ...)` is
+and the DSL is right to refuse them.** *(CLOSED 2026-08-25 -- see
+§12.7: the refusal was right about the order and wrong about the
+conclusion, and is gone.)* `limit_pnj(bbe.V, isT, ...)` is
 the spelling §12.4 went to some trouble to make legal, and with a
 thermal node `isT` depends on `V(th,tha)`. `generate_code` refuses by
 name -- *"cannot depend on the solution; this one reaches th (through
@@ -1840,3 +1847,87 @@ Recorded so that "no" stays a real option rather than a failure:
   devices, 17 ms is a non-problem and the eight remaining library
   models are worth more. That is a question about use, not about the
   code, and it should be asked first.
+
+
+---
+
+## 12.7 Limiter parameters at the last accepted iterate (2026-08-25)
+
+Closes §12.6(c) and the `vto` item of §12.4, and answers the open
+question of whether the BJT should adopt `limit_together`.
+
+### The rule that was right about the order and wrong about the conclusion
+
+`_limit_par_fn` refused any limiter parameter that reached the solution:
+*"evaluated from the parameters alone, and BEFORE the device is, so
+they cannot depend on the solution."* The order is true. The conclusion
+does not follow: a limiter is handed `x0`, the last accepted iterate,
+precisely so it can measure the proposed step against it, and a
+parameter evaluated **there** is as well-defined as `vold` is. It is
+also exactly what SPICE does -- `mos1load.c` passes `fetlim` a `von`
+recomputed from the *previous* iterate's bulk bias, not a card
+constant.
+
+So a parameter that reads the solution is now compiled with `x` as a
+leading argument (through `_chain_compile`, chain read not inlined; an
+`unpack` for the flat path) and the generated `limit()` calls it with
+`x0`. The callable carries `_wants_x`; `explain()` prints
+`[params at last iterate]`. Time is still refused.
+
+Verified discriminatingly on both code generators: an `IS` that falls
+thirteen decades per volt gives `pnjlim` a critical voltage of ~0.73 V
+at `x0 = 0` and ~1.4 V at the proposed 0.9 V, so whether the clamp
+fires says which point it read. It fires.
+
+### What it retired
+
+- **The thermal BJT's second saturation current.** `_gp_core` took a
+  `tlim` argument so the self-heating class could hand the limiter an
+  ambient-temperature copy of `isT` -- five duplicated lines and a
+  critical voltage placed against a junction up to 100 K hotter than
+  it thought. Gone; the limiter reads the heated `isT`/`vtT` directly,
+  and the test that asserted the limiter was *independent* of the
+  thermal node now asserts that it moves with it.
+- **EKV's parameter-only `vto`.** Now `von = vtoT + gamma*(sqrt(phiT +
+  vsb) - sqrt(phiT))`, evaluated at `x0`. The 100 V jump from an off
+  device at 2 V of body bias lands at `von + 0.5 = 1.56 V` where it
+  used to land at `vto + 0.5 = 1.0 V`; at zero body bias nothing
+  changed. The test that pinned the 565 mV looseness now pins its
+  absence.
+- **Level 1's `vtoT`.** Same, with SPICE's forward-bias continuation
+  built on the raw `V(b,s)`.
+
+### Should the BJT adopt `limit_together`? Measured: no.
+
+Batch 4 left this as "worth adopting, but measure first". Measured on
+the shipped card, `gmin = 0`, plain `DC`, Jacobian evaluations:
+
+    circuit          start    per-probe   grouped   same answer
+    common-emitter    0 V        11         11        yes
+    common-emitter   -5 V        11         11        yes
+    common-emitter   20 V         7         92        yes
+    current mirror    0 V         9          9        yes
+    current mirror   -5 V         9          9        yes
+    current mirror   20 V        29         29        yes
+    (both, uniform 5 V start)  FAIL       FAIL     -- the ladder itself
+                                                     gives up; not a
+                                                     limiter question
+
+Grouped is never better and is once **13x worse**. The per-probe form
+stays. This is the third measurement pointing the same way (§10.3(b):
+ties or +1 on the 48-point grid; batch 4: 552 vs 554 on Level 1):
+**`limit_together` is a capability -- it makes four probes over four
+terminals expressible at all -- and not a speed-up**, and a two-probe
+device should not declare it.
+
+### A crash seen once and not isolated, recorded so it is not lost
+
+While writing the discriminating test: `IS * expl(-30.0 * b.V)` inside
+`analog()` crashed in **sympy's `Piecewise` constructor** --
+`KeyError: 'pop from an empty set'` from `_eval_rewrite_as_ITE` --
+before the compiler was reached. `b.V.free_symbols` is `set()` (a
+`Quantity` is atomic and reports none), and routing the same expression
+through `vt()` (which carries the `TEMP` symbol) works. But the minimal
+form `Piecewise((1.0, b.V < 1.0), (0.0, True))` does *not* reproduce
+it, so the trigger is narrower than "a condition on a bare Quantity".
+Not chased; the tests use `b.V / vt()` and this note is the only record.
