@@ -117,3 +117,35 @@ State plainly what you refreshed and what you deliberately left alone.
 "The roadmap and memory are current; `hdl.md` §7 still describes the
 old surface and I did not touch it" is a useful sentence. "Everything
 is up to date" is a claim you almost certainly cannot support.
+
+## Do not edit a document you have handed to a running agent
+
+An orchestration rule, learned by breaking it.
+
+A model-library agent was told "the tree is clean at `<sha>`" and asked
+to update the roadmap as part of its work. While it ran, three more
+commits landed on that same roadmap from the orchestrator. The agent
+read the file, read it again later, found it 180 lines longer with a
+status row it had previously seen saying something else — **and
+concluded it had misread its own earlier observation.** It had not.
+
+Nothing was lost (the edits were in different sections and merged
+cleanly), but the agent spent real effort reasoning about an anomaly
+that was manufactured, and it had no way to tell a moving file from its
+own error. That is the expensive part: **an agent cannot distinguish
+"the ground moved" from "I was wrong", so it will usually assume the
+second.**
+
+- Treat an assigned document like an assigned source file. If you told
+  an agent to update `PLAN.md`, `PLAN.md` is theirs until they report.
+- If you must edit it, **tell them** — a one-line message costs nothing
+  and converts a mystery into a fact.
+- State the baseline as a fact that may expire ("clean at `<sha>` as of
+  now; I may commit docs while you run") rather than as a standing
+  truth.
+
+The same applies to attribution. Sweeping your own edits into an
+agent's commit with `git add -A` produces a commit whose message
+credits a batch for changes it did not make — including, in that case,
+a file the agent had been explicitly forbidden to touch. Stage
+deliberately, or say in the message which parts were yours.

@@ -1543,12 +1543,23 @@ non-inverting input were all driving the AC analysis too. Every AC
 testbench in `test_elements_hdl_library4.py` now sets `vac` explicitly
 on every source and says why.
 
-**(f) `expl` is not finite for every double.** `differentiable-numerics`
-says it is, and `expl`'s own continuation is a third-order Taylor, so
-its cubic term overflows for arguments above about **2.6e70** -- a
-junction voltage of about 7e68 V. Measured on the MOSFET: `i` is finite
-through 1e68 V on the bulk node and not at 1e69. Academic, and recorded
-because the skill's phrasing is what a future author will reason from.
+**(f) `expl` is not finite for every double.** `expl`'s continuation is
+a third-order Taylor, so its cubic term overflows: bisected on the
+compiled function, the last finite argument is **4.76e69**, where it
+returns 1.798e308. On the MOSFET that is a bulk-node voltage between
+1e68 V (finite) and 1e69 V (not), so the gap is academic -- but
+`expl`'s own docstring and `differentiable-numerics` both said "finite
+for every double", and a guarantee that is nearly true is the kind that
+gets relied on at the one bias where it is not.
+
+> **CLOSED 2026-08-25, and this entry had the same defect it reports.**
+> Both places were corrected in the commit that landed this batch. And
+> the number above was first written here as "about 2.6e70", which was
+> an ESTIMATE from reading the Taylor form and was wrong by 5.5x; the
+> 4.76e69 is bisected on the function. An unmeasured number in a
+> friction log about unmeasured numbers -- eleventh instance in this
+> campaign of the shape §11 catalogues, and the cheapest kind to check.
+
 (The opamp's own boundary is `hypsmooth`'s: the Jacobian goes at
 1e107 V on a supply pin and the value at 1e160, both from a radicand
 that squares a quantity 1e4 larger than the argument.)
