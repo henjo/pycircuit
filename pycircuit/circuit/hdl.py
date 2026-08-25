@@ -3030,9 +3030,25 @@ def generate_code(cls):
     ## contribution reading anything `pcnr_i(v, params, T)` is not given
     ## (a `$param_given` flag, TIME).  Better to decline than to claim a
     ## capability falsely.
+    ## TWO ROUTES, tried in order (roadmap sec. 15, Stage 1):
+    ##
+    ##   1. the DECLARED-PROBE route -- the model carries `$limit` probes,
+    ##      and they ARE its limited unknowns: one block per device,
+    ##      `pcnr_i(v) -> R^t`, `pcnr_didv(v) -> R^{t x m}`, the declared
+    ##      limiter as the law.  This is what admits a transistor, whose
+    ##      transport current reads two junction voltages at once;
+    ##   2. the LEGACY scalar route below, unchanged, when there is no
+    ##      `limit_spec`: one junction per exponential branch, `IS`/`VT`
+    ##      read off the expression.  Every diode in the tree takes this
+    ##      route and produces the same numbers it always did.
     pcnr_spec = None
     pcnr_refusal = None
-    if not states and not vbranches and len(terminalnodes) >= 2:
+    pcnr_vector = None
+    if limits:
+        pcnr_vector, pcnr_refusal = _pcnr_declared_route(
+            limits, ivec, chain_defs, xsyms, xlabels, paramsyms, given_syms,
+            states, vbranches)
+    elif not states and not vbranches and len(terminalnodes) >= 2:
         cands, ok = [], True
         _xset = set(xsyms)
         _allowed = set(paramsyms) | {TEMP}
@@ -3301,6 +3317,40 @@ def generate_code(cls):
         if len(_idx) < 2:                                # pragma: no cover
             raise ValueError('a $limit group needs at least two probes')
 
+    ## The declared-probe route's compiled twin, built HERE because its
+    ## limiter reads `limit_spec`'s parameter callables (compiled just
+    ## above; compiling them a second time would be the same work twice).
+    ## `_chain_compile`'s forward-accumulation Jacobian over the probe
+    ## symbols gives the `t x m` block directly; a flat model takes
+    ## `lambdify` + `Matrix.jacobian`, as the legacy route does.
+    pcnr_vec = None
+    if pcnr_vector is not None:
+        _vs = pcnr_vector['vsyms']
+        _args_v = _vs + paramsyms + [TEMP]
+        _mods = dict(_KERNEL_NUMPY, _wrapfloor=np.floor)
+        if chain_defs:
+            _vec_i = _chain_compile(pcnr_vector['defs'], pcnr_vector['i_exprs'],
+                                    _args_v, modules_map=_mods)
+            _vec_d = _chain_compile(pcnr_vector['defs'], pcnr_vector['i_exprs'],
+                                    _args_v, want_jacobian_of=True, xsyms=_vs,
+                                    modules_map=_mods)
+            _vec_sym = None
+        else:
+            _jac = sympy.Matrix(pcnr_vector['i_exprs']).jacobian(_vs).tolist()
+            _vec_i = sympy.lambdify(_args_v, pcnr_vector['i_exprs'],
+                                    modules=NUMPY_MODULES, cse=True)
+            _vec_d = sympy.lambdify(_args_v, _jac, modules=NUMPY_MODULES,
+                                    cse=True)
+            _vec_sym = dict(i=pcnr_vector['i_exprs'], didv=_jac)
+        pcnr_vec = dict(probes=pcnr_vector['probes'], kinds=pcnr_vector['kinds'],
+                        m=len(_vs), t=pcnr_vector['t'], vsyms=_vs,
+                        i=_vec_i, didv=_vec_d, sym=_vec_sym,
+                        chain=(dict(defs=pcnr_vector['defs'],
+                                    out=pcnr_vector['i_exprs'])
+                               if chain_defs else None),
+                        limit_pars=[tuple(pf) for _k, _kind, _m, pf
+                                    in limit_spec])
+
     branchpairs = [branch_key(br) for br in vbranches]
     internalnames = [nd.name for nd in internalnodes]
 
@@ -3308,7 +3358,7 @@ def generate_code(cls):
                 funcs=funcs, pure_spec=pure_spec, state_meta=state_meta,
                 branchpairs=branchpairs, internalnames=internalnames,
                 const_G=const_G, const_C=const_C, pcnr_funcs=pcnr_funcs,
-                pcnr_refusal=pcnr_refusal,
+                pcnr_refusal=pcnr_refusal, pcnr_vector=pcnr_vec,
                 given_names=given_names, limit_spec=limit_spec,
                 limit_groups=limit_groups,
                 cross_spec=cross_spec, sym_spec=sym_spec,
@@ -3535,6 +3585,108 @@ def _limit_par_fn(expr, kind, chain_defs, xsyms, xlabels, args, modules,
         fn = lambda *a, _f=inner: _f(*a)[0]             # noqa: E731
     fn._wants_x = False
     return fn
+
+
+def _pcnr_declared_route(limits, ivec, chain_defs, xsyms, xlabels, paramsyms,
+                         given_syms, states, vbranches):
+    """Vector PCNR's detector: the DECLARED-PROBE route (roadmap sec. 15,
+    Stage 1).  Returns ``(spec, refusal)``, exactly one of them set.
+
+    A device with ``$limit`` probes qualifies when every resistive
+    current reaches the solution ONLY through those probes: the probe
+    vector is the device's block of limited unknowns, and the limiter it
+    declared is the law -- no exponential-scale test is run, because a
+    pnjlim on a probe already says what the current does there.
+
+    The check is the legacy detector's substitution generalised from one
+    branch to a probe SET.  The probes are edges over the device's rows;
+    each connected component gets a root potential and every other row is
+    written as ``root +/- v_j`` along the tree, so that ``x_a - x_b``
+    becomes ``v_j`` wherever a probe's branch voltage is read, and any
+    x-symbol that survives (a root, a row no probe reaches) names a
+    voltage the current reads that no probe limits.  Two probes that
+    close a cycle are refused: the third branch voltage would be a
+    combination of the others' unknowns, not one of its own.
+
+    Stage 1 takes ``pnj`` probes only; a ``fet``/``vds`` probe refuses
+    the device and says so (Stage 2).  Charge, noise and sources are not
+    looked at: charge stays in the MNA block (`pcnr.augmented_system`).
+    """
+    if states or vbranches:
+        return None, ('%s -- the device carries %s'
+                      % ('a generated state' if states
+                         else 'a branch-current unknown',
+                         '%d state(s)' % len(states) if states
+                         else '%d V-contributed branch(es)' % len(vbranches)))
+    probes = [(int(k[0]), int(k[1])) for k, _kind, _p, _g in limits]
+    kinds = [kind for _k, kind, _p, _g in limits]
+    for (a, b), kind in zip(probes, kinds):
+        if kind != 'pnj':
+            return None, ('probe (%s,%s) is a %s limiter -- vector PCNR '
+                          'takes pnjlim probes only in Stage 1; fetlim and '
+                          'limvds are Stage 2'
+                          % (xlabels[a], xlabels[b],
+                             {'fet': 'fetlim', 'vds': 'limvds'}.get(kind,
+                                                                    kind)))
+    vsyms = [sympy.Symbol('_pcnr_v%d' % j, real=True)
+             for j in range(len(probes))]
+
+    ## The spanning forest, by union of root-relative potentials.
+    pot, root_of = {}, {}
+    for j, (a, b) in enumerate(probes):
+        vj = vsyms[j]
+        if a in pot and b in pot:
+            if root_of[a] == root_of[b]:
+                return None, ('probes (%s) close a cycle at (%s,%s) -- its '
+                              'branch voltage would be a combination of the '
+                              'other probes\' unknowns, not one of its own'
+                              % (', '.join('(%s,%s)' % (xlabels[p], xlabels[q])
+                                           for p, q in probes),
+                                 xlabels[a], xlabels[b]))
+            ## Merge b's tree into a's: root_b = pot[a] - vj - (pot[b] - root_b)
+            rb_ = root_of[b]
+            rb_sym = xsyms[rb_]
+            new_root = pot[a] - vj - (pot[b] - rb_sym)
+            for node in [n_ for n_, r_ in root_of.items() if r_ == rb_]:
+                pot[node] = pot[node].subs(rb_sym, new_root)
+                root_of[node] = root_of[a]
+        elif a in pot:
+            pot[b] = pot[a] - vj
+            root_of[b] = root_of[a]
+        elif b in pot:
+            pot[a] = pot[b] + vj
+            root_of[a] = root_of[b]
+        else:
+            pot[a] = xsyms[a]
+            pot[b] = xsyms[a] - vj
+            root_of[a] = root_of[b] = a
+    sd = {xsyms[k]: e_ for k, e_ in pot.items() if e_ != xsyms[k]}
+    xset = set(xsyms)
+
+    def _sub_x(e_):
+        e2 = e_.subs(sd)
+        return sympy.expand(e2) if (e2.free_symbols & xset) else e2
+
+    defs_v = [(sym, _sub_x(e_)) for sym, e_ in _chain_prune(chain_defs, ivec)]
+    i_exprs = [_sub_x(e_) for e_ in ivec]
+    defsyms = {sym for sym, _e in defs_v}
+    allowed = set(paramsyms) | {TEMP} | set(vsyms) | defsyms
+    for label, e_ in [('var(%s)' % _var_name(sym), e2)
+                      for sym, e2 in defs_v] + \
+            [('I(%s)' % xlabels[k], e2) for k, e2 in enumerate(i_exprs)]:
+        fs = set(e_.free_symbols)
+        if fs & xset:
+            return None, ('%s reads %s, which no $limit probe limits -- under '
+                          'vector PCNR every resistive current must reach the '
+                          'solution only through the declared probes'
+                          % (label, ', '.join(sorted(
+                              xlabels[xsyms.index(q)] for q in fs & xset))))
+        extra = fs - allowed
+        if extra:
+            return None, ('%s reads %s, which pcnr_i is not handed'
+                          % (label, ', '.join(sorted(str(q) for q in extra))))
+    return dict(vsyms=vsyms, probes=probes, kinds=kinds, defs=defs_v,
+                i_exprs=i_exprs, t=len(xsyms)), None
 
 
 def _chain_prune(defs, outputs):
@@ -4285,6 +4437,76 @@ class BehaviouralMeta(type):
             cls.pcnr_didv = staticmethod(pcnr_didv)
             cls.pcnr_limit = staticmethod(pcnr_limit)
 
+        ## VECTOR PCNR, the declared-probe route: the device's `$limit`
+        ## probes are its block of limited unknowns.  `pcnr_probes` (not
+        ## `pcnr_junctions`) is the declaration `pcnr.PcnrDevice` reads for
+        ## this protocol; the three callables take and return whole blocks.
+        pv = info.get('pcnr_vector')
+        if pv is not None:
+            from pycircuit.circuit._limiting import apply_limit as _apply_lim
+            _pn_vec = info['paramnames']
+            _gn_vec = info['given_names']
+            _lpars = pv['limit_pars']
+            _lkinds = pv['kinds']
+            cls.pcnr_probes = tuple((tuple(p), k)
+                                    for p, k in zip(pv['probes'], pv['kinds']))
+
+            def _pcnr_vec_compiled(which, toolkit, _pv=pv, _pn=_pn_vec):
+                """The numpy form, or its jax twin for a traced call."""
+                if not getattr(toolkit, 'jax', False):
+                    return _pv[which]
+                cache = _pv.setdefault('_jax', {})
+                if which not in cache:
+                    import jax.numpy as _jnp
+                    args_ = list(_pv['vsyms']) \
+                        + [sympy.Symbol(q) for q in _pn] + [TEMP]
+                    if _pv['sym'] is None:
+                        ch = _pv['chain']
+                        cache[which] = _chain_compile(
+                            ch['defs'], ch['out'], args_,
+                            want_jacobian_of=(True if which == 'didv'
+                                              else None),
+                            xsyms=(_pv['vsyms'] if which == 'didv'
+                                   else None),
+                            modules_map=dict(_kernel_jax(_jnp), numpy=_jnp))
+                    else:
+                        cache[which] = sympy.lambdify(
+                            args_, _pv['sym'][which],
+                            modules=[_kernel_jax(_jnp), 'jax'], cse=True)
+                return cache[which]
+
+            def _vec_args(params, epar, _pn=_pn_vec):
+                return [params[q] for q in _pn] + [_epar_T(epar)]
+
+            def pcnr_i(v, params, epar, toolkit):
+                f = _pcnr_vec_compiled('i', toolkit)
+                return toolkit.array(f(*list(v), *_vec_args(params, epar)))
+
+            def pcnr_didv(v, params, epar, toolkit):
+                f = _pcnr_vec_compiled('didv', toolkit)
+                return toolkit.array(f(*list(v), *_vec_args(params, epar)))
+
+            def pcnr_limit(v_new, v_old, params, epar, toolkit, x_old_sub,
+                           _lp=_lpars, _lk=_lkinds, _gn=_gn_vec):
+                """Each probe's own declared law, over the block.  A
+                parameter that reads the solution (`_wants_x`) is
+                evaluated at the device's LAST ACCEPTED sub-vector --
+                the generated `limit()`'s semantics, SPICE's `von`."""
+                args = _vec_args(params, epar) \
+                    + [float(params.get('$given:' + nm, 0.0)) for nm in _gn]
+                out = np.array(v_new, dtype=float, copy=True)
+                for j, (kind, pfs) in enumerate(zip(_lk, _lp)):
+                    pars = [float(f(x_old_sub, *args)
+                                  if getattr(f, '_wants_x', False)
+                                  else f(*args)) for f in pfs]
+                    out[j] = _apply_lim(kind, float(v_new[j]), float(v_old[j]),
+                                        pars, toolkit)
+                return out
+
+            cls.pcnr_i = staticmethod(pcnr_i)
+            cls.pcnr_didv = staticmethod(pcnr_didv)
+            cls.pcnr_limit = staticmethod(pcnr_limit)
+
         ## eval_i_pure / eval_q_pure: compiled on first use with sympy's
         ## jax printer; the staticmethods exist only if that succeeds, so
         ## the class is admitted to the vmap groups exactly when the pure
@@ -4671,13 +4893,28 @@ def explain(target, source=True, symbolic=True, maxlines=40):
     ## the first refusal had to be replayed by hand to find out why
     ## (2026-08-25: PSP is refused by its GATE RESISTOR, not its drain
     ## current, and that took a re-measurement to learn).
-    feats.append('PCNR: %s' % ('%d junction(s)' % len(info['pcnr_funcs'])
-                               if info['pcnr_funcs'] else
-                               'does not qualify -- %s. (Rule: every current '
-                               'an exponential function of its own branch '
-                               'voltage alone, no states, no branch unknowns; '
-                               'charge and var() are allowed.)'
-                               % (info.get('pcnr_refusal') or 'unknown')))
+    _pv = info.get('pcnr_vector')
+    if _pv:
+        _xl = {k: nm for k, nm, _kind in layout}
+        feats.append('PCNR: vector route, %d probe%s over %d row%s (%s)'
+                     % (_pv['m'], '' if _pv['m'] == 1 else 's',
+                        _pv['t'], '' if _pv['t'] == 1 else 's',
+                        ', '.join('%s on (%s,%s)'
+                                  % ({'pnj': 'pnjlim', 'fet': 'fetlim',
+                                      'vds': 'limvds'}[k],
+                                     _xl[ra], _xl[rb])
+                                  for (ra, rb), k in zip(_pv['probes'],
+                                                         _pv['kinds']))))
+    else:
+        feats.append('PCNR: %s'
+                     % ('%d junction(s)' % len(info['pcnr_funcs'])
+                        if info['pcnr_funcs'] else
+                        'does not qualify -- %s. (Rule: with $limit probes, '
+                        'every current reaches the solution only through '
+                        'pnjlim probes; without, every current an exponential '
+                        'function of its own branch voltage alone; no states, '
+                        'no branch unknowns; charge and var() are allowed.)'
+                        % (info.get('pcnr_refusal') or 'unknown')))
     feats.append('JAX pure forms: %s'
                  % ('yes' if info['pure_spec'] else
                     'no (the let-chain path has none)'))

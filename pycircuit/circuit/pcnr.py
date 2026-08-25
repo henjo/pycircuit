@@ -24,6 +24,25 @@ than a rewrite.
 The Jacobian's ``lim/lim`` block is the identity, which is what makes the Schur
 elimination in :func:`predict` cost one extra solve against a matrix of the
 ORIGINAL size -- the paper's third key idea.
+
+**The unit is a DEVICE'S PROBE VECTOR** (vector PCNR, roadmap sec. 15, Stage 1,
+2026-08-25).  A device with ``m`` limited quantities over ``t`` rows owns a
+block ``v`` of ``m`` unknowns and answers with ``pcnr_i(v) -> R^t`` and
+``pcnr_didv(v) -> R^{t x m}`` -- a BJT's transport current ``f(vbe, vbc)`` is
+the case a scalar-per-branch protocol could not express.  Two device
+protocols are accepted:
+
+* **vector** -- the class declares ``pcnr_probes = (((ra, rb), kind), ...)``
+  (indices into its own rows, a limiter kind per probe) and
+  ``pcnr_i(v, params, epar, toolkit)``, ``pcnr_didv(...)`` and
+  ``pcnr_limit(v_new, v_old, params, epar, toolkit, x_old_sub)`` over the
+  whole block;
+* **scalar** (the original one, unchanged) -- ``pcnr_junctions = ((a, c),
+  ...)`` and per-junction ``pcnr_i(v, ..., jn=j) -> [i, -i]``.  This is the
+  ``m = 1`` special case, and :class:`PcnrDevice` adapts it: every hand-
+  written ``Diode``, every auto-detected DSL diode and the two-junction
+  test devices stamp EXACTLY as before, entry for entry, which
+  ``test_pcnr_vector.py`` asserts against a copy of the old formulas.
 """
 import numpy as np
 
@@ -31,41 +50,331 @@ from pycircuit.circuit.circuit import defaultepar
 from pycircuit.circuit._limiting import _pnjlim
 
 
-def pcnr_junctions(circuit):
-    """Every PCNR-participating junction in the circuit.
+_MISSING = object()
 
-    Returns a list of ``(instance, device, row_anode, row_cathode)`` in circuit
-    row coordinates.  A device opts in by declaring ``pcnr_junctions`` as a
-    sequence of ``(anode, cathode)`` indices into its own terminals.
+
+def _zero_vector(t):
+    def _i(x, epar=defaultepar, params_tree=None):
+        return np.zeros(t)
+    return _i
+
+
+def _zero_matrix(t):
+    def _G(x, epar=defaultepar, params_tree=None):
+        return np.zeros((t, t))
+    return _G
+
+
+class PcnrDevice(object):
+    """One participating device: its rows, its probes, and how to ask it.
+
+    ``rows`` are the device's rows in circuit coordinates (terminals, then
+    internal nodes -- ``elementnodemap``'s order, the one ``element.i(sub)``
+    is evaluated over); ``probes`` are ``(ra, rb)`` pairs in the same
+    coordinates; ``local`` the same pairs as indices into ``rows``;
+    ``kinds`` the limiter kind per probe.  ``off`` is the device's offset
+    into the flat ``v_lim``/``g_lim`` vectors, assigned by
+    :func:`pcnr_devices`.  ``scalar`` says which protocol the element
+    speaks; the adapter methods below hide the difference from every
+    consumer.
     """
+    __slots__ = ('instance', 'element', 'rows', 'probes', 'local', 'kinds',
+                 'off', 'scalar')
+
+    def __init__(self, instance, element, rows, local, kinds, scalar,
+                 off=0):
+        self.instance = instance
+        self.element = element
+        self.rows = None if rows is None else [int(r) for r in rows]
+        self.local = [(int(a), int(b)) for a, b in local]
+        self.probes = None if rows is None else \
+            [(self.rows[a], self.rows[b]) for a, b in self.local]
+        self.kinds = tuple(kinds)
+        self.scalar = bool(scalar)
+        self.off = int(off)
+
+    @property
+    def m(self):
+        return len(self.local)
+
+    @property
+    def t(self):
+        return len(self.rows)
+
+    def params(self):
+        """The device's parameter dict, cached on the element.
+
+        Rebuilding this per junction per Newton iteration was 60 dict
+        comprehensions over `getattr` on a 60-device circuit, every
+        iteration.  A generated element's `$param_given` flags ride along
+        under ``'$given:<name>'`` so a limiter parameter that reads one
+        (SPICE's `RBM defaults to RB`) can be evaluated without `self`.
+        """
+        element = self.element
+        params = getattr(element, '_pcnr_params', None)
+        if params is None:
+            params = {p.name: getattr(element.iparv, p.name)
+                     for p in element.instparams}
+            ipar = getattr(element, 'ipar', None)
+            for nm in getattr(element, '_hdl_given_names', ()) or ():
+                params['$given:' + nm] = (1.0 if ipar is not None
+                                          and ipar.is_given(nm) else 0.0)
+            element._pcnr_params = params
+        return params
+
+    ## -- the adapter -----------------------------------------------------
+    def stamp(self, v, params, epar, g_mna):
+        """Add the device's currents at its OWN ``v`` into ``g_mna`` and
+        return its ``t x m`` derivative block.
+
+        The scalar protocol is stamped per junction, in declaration order,
+        exactly as the original per-junction loop did -- not accumulated
+        into a block first -- so that a device whose junctions share a
+        row (the base of `TwoJunction`) adds the same numbers in the same
+        order and the result is bit-identical.
+        """
+        element = self.element
+        toolkit = element.toolkit
+        block = np.zeros((self.t, self.m))
+        if self.scalar:
+            for j, (la, lb) in enumerate(self.local):
+                vj = float(v[j])
+                i_terms = element.pcnr_i(vj, params, epar, toolkit, jn=j)
+                di_terms = element.pcnr_didv(vj, params, epar, toolkit,
+                                             jn=j)
+                g_mna[self.rows[la]] += float(i_terms[0])
+                g_mna[self.rows[lb]] += float(i_terms[1])
+                block[la, j] += float(di_terms[0])
+                block[lb, j] += float(di_terms[1])
+            return block
+        vv = np.asarray(v, dtype=float)
+        cur = np.asarray(element.pcnr_i(vv, params, epar, toolkit),
+                         dtype=float).reshape(self.t)
+        ## `add.at`, not fancy-index `+=`: a diode-connected transistor
+        ## has two terminals on ONE node, and `g[rows] += cur` would keep
+        ## only the last of the duplicates.
+        np.add.at(g_mna, self.rows, cur)
+        block[:, :] = np.asarray(element.pcnr_didv(vv, params, epar,
+                                                   toolkit),
+                                 dtype=float).reshape(self.t, self.m)
+        return block
+
+    def limit(self, v_new, v_old, params, epar, x_old_sub):
+        """The CORRECT phase for this device's block."""
+        element = self.element
+        toolkit = element.toolkit
+        limiter = getattr(element, 'pcnr_limit', None)
+        out = np.array(v_new, dtype=float, copy=True)
+        if not self.scalar:
+            if limiter is None:                          # pragma: no cover
+                raise TypeError('%r declares pcnr_probes but no pcnr_limit'
+                                % (self.instance,))
+            return np.asarray(limiter(out, np.asarray(v_old, dtype=float),
+                                      params, epar, toolkit, x_old_sub),
+                              dtype=float).reshape(self.m)
+        for j in range(self.m):
+            if limiter is not None:
+                out[j] = float(limiter(float(v_new[j]), float(v_old[j]),
+                                       params, epar, toolkit, jn=j))
+                continue
+            ## A device that declares no `pcnr_limit` gets SPICE's `pnjlim`
+            ## with its `IS`, which is what every junction device wants and
+            ## what the hand-written `Diode` has always used.
+            VT = toolkit.kboltzmann * epar.T / toolkit.qelectron
+            IS = getattr(element.iparv, 'IS', 0.0)
+            out[j] = _pnjlim(float(v_new[j]), float(v_old[j]), VT, IS,
+                             toolkit)
+        return out
+
+
+def _device_of(instance, element, rows):
+    """The record for one element, or None when it does not participate."""
+    probes = getattr(element, 'pcnr_probes', None)
+    if probes:
+        local = [tuple(p) for p, _k in probes]
+        kinds = [k for _p, k in probes]
+        return PcnrDevice(instance, element, rows, local, kinds, scalar=False)
+    pairs = getattr(element, 'pcnr_junctions', ())
+    if pairs:
+        return PcnrDevice(instance, element, rows, [tuple(p) for p in pairs],
+                          ['pnj'] * len(pairs), scalar=True)
+    return None
+
+
+def pcnr_devices(circuit):
+    """Every PCNR-participating device, with its offset into ``v_lim``."""
     found = []
     elements = getattr(circuit, 'elements', None)
     if not elements:
         return found
     nodemap = circuit.elementnodemap
+    off = 0
     for instance, element in elements.items():
-        for anode, cathode in getattr(element, 'pcnr_junctions', ()):
-            rows = nodemap[instance]
-            found.append((instance, element, int(rows[anode]), int(rows[cathode])))
+        dev = _device_of(instance, element, nodemap[instance])
+        if dev is None:
+            continue
+        dev.off = off
+        off += dev.m
+        found.append(dev)
     return found
+
+
+def pcnr_junction_pairs(circuit):
+    """The p-n junctions, as ``(instance, device, row_anode, row_cathode)``.
+
+    This is the GMIN-TARGET view: `dcanalysis._jrows` and
+    `jaxtransient._gmin_junction_rows` put a conductance across each pair
+    on the ordinary ``pcnr=False`` path too.  Only ``'pnj'`` probes are
+    listed -- a gmin across a FET's ``vgs`` would be a gate leak -- so a
+    device's ``fet``/``vds`` probes never reach a ladder.  The order is the
+    flat ``v_lim`` order, which is what lets a consumer that still thinks
+    in pairs (`fang_timestep`'s ``v_lim`` seed) stay correct while every
+    probe is a junction.
+    """
+    found = []
+    for dev in pcnr_devices(circuit):
+        for (ra, rb), kind in zip(dev.probes, dev.kinds):
+            if kind == 'pnj':
+                found.append((dev.instance, dev.element, ra, rb))
+    return found
+
+
+## The original name, kept for its consumers: it has always returned the
+## pair list, and `jaxtransient` (Stage 3, not touched here) unpacks it as
+## one.
+pcnr_junctions = pcnr_junction_pairs
+
+
+def _as_devices(circuit, junctions):
+    """Device records from either shape a caller may hold.
+
+    The tests hand `augmented_system` and `refine` the pair list
+    `pcnr_junctions` returns; they get the same records `pcnr_devices`
+    builds, grouped by instance in order.  A device's OWN declaration
+    decides its protocol and its probes, so a pair list is only used to
+    say which instances take part.
+    """
+    if not junctions:
+        return []
+    if all(isinstance(j, PcnrDevice) for j in junctions):
+        return list(junctions)
+    nodemap = circuit.elementnodemap if circuit is not None else None
+    out, seen, off = [], {}, 0
+    for instance, element, _ra, _rb in junctions:
+        if instance in seen:
+            continue
+        rows = nodemap[instance] if nodemap is not None else None
+        dev = _device_of(instance, element, rows)
+        if dev is None:                                  # pragma: no cover
+            raise ValueError('%r is in the junction list but declares no '
+                             'PCNR protocol' % (instance,))
+        dev.off = off
+        off += dev.m
+        seen[instance] = dev
+        out.append(dev)
+    return out
+
+
+def flat_probes(junctions):
+    """``(ra, rb)`` per flat limited unknown, in ``v_lim`` order."""
+    if junctions and all(isinstance(j, PcnrDevice) for j in junctions):
+        return [p for dev in junctions for p in dev.probes]
+    return [(int(ra), int(rb)) for _i, _e, ra, rb in junctions]
+
+
+def v_lim_init(junctions, x):
+    """Each device's unknowns seeded from the branch voltages they stand
+    for -- the paper's "independent initialization by different devices"."""
+    return np.array([float(x[ra] - x[rb]) for ra, rb in flat_probes(junctions)])
 
 
 def augmented_system(circuit, x, v_lim, junctions, epar=defaultepar,
                      u_extra=None, dense_blocks=True, J_extra=None):
     """Residual and Jacobian blocks of the coupled ``[x_MNA ; x_lim]`` system.
 
-    Returns ``(g_mna, g_lim, J_mm, J_ml, J_lm)``.  ``J_ll`` is not returned: it
-    is the identity by construction, and materialising it would invite someone to
-    use it.
+    Returns ``(g_mna, g_lim, J_mm, J_ml, J_lm, didv)``.  ``J_ll`` is not
+    returned: it is the identity by construction, and materialising it would
+    invite someone to use it.  ``didv`` is one ``(rows, probes, block)`` per
+    device -- the sparse form of ``J_ml`` that :func:`schur_reduce` and
+    :func:`predict` consume.
     """
     n = circuit.n
-    k = len(junctions)
+    devices = _as_devices(circuit, junctions)
+    k = sum(dev.m for dev in devices)
 
-    ## Ordinary assembly, then remove each PCNR device's own contribution -- the
-    ## device is about to be re-stamped at its own `v_lim` instead of at the node
-    ## voltage difference.
-    g_mna = np.array(circuit.i(x, epar), dtype=float)
-    J_mm = np.array(circuit.G(x, epar), dtype=float)
+    ## Ordinary assembly WITHOUT the participating devices: each is about to
+    ## be re-stamped at its own `v_lim` instead of at the node voltages, so
+    ## its ordinary `i`/`G` are replaced by zeros for the duration of the
+    ## two assembly calls (an instance attribute shadowing the class method;
+    ## restored in `finally`).  This is Design A of `doc/pcnr_native_design.md`
+    ## -- the skip set -- done from inside the layer.
+    ##
+    ## It used to ASSEMBLE EVERYTHING AND SUBTRACT `element.i(sub)` again,
+    ## and that is exact only in arithmetic.  A participant's current at
+    ## the NODE voltages is unbounded -- PCNR limits `v_lim`, not the nodes
+    ## -- and measured on a two-BJT mirror from a zero start (2026-08-25)
+    ## the iterate visits vbe = 5.2 V at the nodes while `v_lim` sits at
+    ## 0.8 V: `expl` keeps the current finite at ~1e72, the cancellation
+    ## leaves noise of ~1e56 in the base row, and WHICH noise depends on
+    ## the assembly's summation order, i.e. on instance order.  One order
+    ## converged in 11 iterations and the other in 179, from identical
+    ## states -- order dependence manufactured by the layer that exists to
+    ## remove it.  `inf - inf = nan` (`test_limexp_is_what_makes_a_pcnr_
+    ## participant_robust`) was the same defect at its limit.  Excluding
+    ## the device from the sum has no such term to cancel.
+    ##
+    ## CHARGE STAYS IN THE MNA BLOCK, at the node voltage; only the
+    ## RESISTIVE current moves to the limited unknown.  This used to be
+    ## refused outright, on the grounds that leaving it here reintroduces
+    ## "the exact inconsistency PCNR exists to remove".  That reasoning
+    ## conflated two different things, and the refusal cost every junction
+    ## device with capacitance -- which is to say every real one.
+    ##
+    ## What PCNR removes is a CLASH BETWEEN DEVICES over a shared
+    ## linearisation point: two diodes on one branch each limiting
+    ## `e_a - e_b`, the second undoing the first, the outcome depending on
+    ## visit order.  A charge is not limited by anyone, so it has no
+    ## clash to remove and no owner to fight over.
+    ##
+    ## And the Newton system stays EXACTLY consistent: `g_mna`'s charge
+    ## part is a function of `x_MNA` and its derivative `Geq` is in
+    ## `J_MNA/MNA` where it belongs, while the device's current is a
+    ## function of `v_lim` alone and its derivative is in `J_MNA/lim`.
+    ## `J` is `dg/dx` for both blocks; nothing is taken at a different
+    ## point from the thing it differentiates.
+    ##
+    ## What IS given up is that the reactive part is not limited along
+    ## the iteration path.  At the answer that costs nothing: convergence
+    ## already requires `|g_lim|` below tolerance (`_solve_timestep_pcnr`
+    ## checks it), i.e. `v_lim == e_a - e_b`, so the charge was evaluated
+    ## at the voltage the current converged to.  The paper does not derive
+    ## the reactive case either -- its footnote 1 says PCNR "works for
+    ## differential-algebraic equations as well, but for simplicity, we
+    ## only consider algebraic equations".  (A DIFFUSION charge is the
+    ## resistive current times a transit time, so on a BJT it is as wild
+    ## at the node voltages as the current was; that is the price of this
+    ## trade on the transient path, and it is not paid at DC.)
+    ##
+    ## Proven, not argued: `test_pcnr_charge.py` finite-differences the
+    ## augmented residual to confirm `J_eff == df_eff/dx` with a
+    ## charge-storing participant, and compares pcnr on/off transients.
+    saved = []
+    try:
+        for dev in devices:
+            el, t = dev.element, dev.t
+            saved.append((el, el.__dict__.get('i', _MISSING),
+                          el.__dict__.get('G', _MISSING)))
+            el.i = _zero_vector(t)
+            el.G = _zero_matrix(t)
+        g_mna = np.array(circuit.i(x, epar), dtype=float)
+        J_mm = np.array(circuit.G(x, epar), dtype=float)
+    finally:
+        for el, old_i, old_G in saved:
+            for name, old in (('i', old_i), ('G', old_G)):
+                if old is _MISSING:
+                    el.__dict__.pop(name, None)
+                else:
+                    el.__dict__[name] = old
     if u_extra is not None:
         g_mna = g_mna + np.asarray(u_extra, dtype=float)
     if J_extra is not None:
@@ -74,96 +383,38 @@ def augmented_system(circuit, x, v_lim, junctions, epar=defaultepar,
         ## already has them and `get_diff` is not free.
         J_mm = J_mm + np.asarray(J_extra, dtype=float)
 
-    nodemap = circuit.elementnodemap
-    seen = set()
-    for instance, element, _ra, _rb in junctions:
-        if instance in seen:
-            continue
-        seen.add(instance)
-        rows = nodemap[instance]
-        sub = x[rows]
-        ## CHARGE STAYS IN THE MNA BLOCK, at the node voltage; only the
-        ## RESISTIVE current moves to the limited unknown.  This used to be
-        ## refused outright, on the grounds that leaving it here reintroduces
-        ## "the exact inconsistency PCNR exists to remove".  That reasoning
-        ## conflated two different things, and the refusal cost every junction
-        ## device with capacitance -- which is to say every real one.
-        ##
-        ## What PCNR removes is a CLASH BETWEEN DEVICES over a shared
-        ## linearisation point: two diodes on one branch each limiting
-        ## `e_a - e_b`, the second undoing the first, the outcome depending on
-        ## visit order.  A charge is not limited by anyone, so it has no
-        ## clash to remove and no owner to fight over.
-        ##
-        ## And the Newton system stays EXACTLY consistent: `g_mna`'s charge
-        ## part is a function of `x_MNA` and its derivative `Geq` is in
-        ## `J_MNA/MNA` where it belongs, while the device's current is a
-        ## function of `v_lim` alone and its derivative is in `J_MNA/lim`.
-        ## `J` is `dg/dx` for both blocks; nothing is taken at a different
-        ## point from the thing it differentiates.
-        ##
-        ## What IS given up is that the reactive part is not limited along
-        ## the iteration path.  At the answer that costs nothing: convergence
-        ## already requires `|g_lim|` below tolerance (`_solve_timestep_pcnr`
-        ## checks it), i.e. `v_lim == e_a - e_b`, so the charge was evaluated
-        ## at the voltage the current converged to.  The paper does not derive
-        ## the reactive case either -- its footnote 1 says PCNR "works for
-        ## differential-algebraic equations as well, but for simplicity, we
-        ## only consider algebraic equations".
-        ##
-        ## Proven, not argued: `test_pcnr_charge.py` finite-differences the
-        ## augmented residual to confirm `J_eff == df_eff/dx` with a
-        ## charge-storing participant, and compares pcnr on/off transients.
-        g_mna[rows] -= np.asarray(element.i(sub, epar), dtype=float)
-        J_mm[np.ix_(rows, rows)] -= np.asarray(element.G(sub, epar), dtype=float)
-
     ## `dense_blocks=False` skips the (n,k) and (k,n) allocations entirely.
-    ## `predict`'s sparse path never reads them -- each column of J_ml has two
-    ## nonzeros and each row of J_lm has two, so the rank-one form carries the
-    ## same information in `didv` plus the junction rows.  Allocating and filling
-    ## them anyway was 2 x n x k doubles per Newton iteration for nothing.
+    ## `predict`'s sparse path never reads them -- each column of J_ml has t
+    ## nonzeros (the device's rows) and each row of J_lm has two, so the
+    ## rank-one form carries the same information in `didv`.  Allocating and
+    ## filling them anyway was 2 x n x k doubles per Newton iteration for
+    ## nothing.
     J_ml = np.zeros((n, k)) if dense_blocks else None
     J_lm = np.zeros((k, n)) if dense_blocks else None
     g_lim = np.zeros(k)
     didv_list = []
 
-    ## A device may own MORE THAN ONE limited quantity -- a BJT's two
-    ## junctions, say -- so the device is told WHICH of its own junctions
-    ## is being asked about.  `pcnr_junctions` lists a device's pairs in
-    ## declaration order, so counting occurrences as we go gives each its
-    ## local index.  Single-junction devices never see anything but 0 and
-    ## may ignore the argument, which is why it is keyword-with-default.
-    _seen_of = {}
-
-    for idx, (instance, element, ra, rb) in enumerate(junctions):
-        jn = _seen_of.get(instance, 0)
-        _seen_of[instance] = jn + 1
-        v = float(v_lim[idx])
-        ## Cached: rebuilding this per junction per Newton iteration is 60 dict
-        ## comprehensions over `getattr` on a 60-device circuit, every iteration.
-        params = getattr(element, '_pcnr_params', None)
-        if params is None:
-            params = {p.name: getattr(element.iparv, p.name)
-                      for p in element.instparams}
-            element._pcnr_params = params
-        i_terms = element.pcnr_i(v, params, epar, element.toolkit, jn=jn)
-        di_terms = element.pcnr_didv(v, params, epar, element.toolkit,
-                                     jn=jn)
-
-        ## The device's current now enters through its OWN unknown, so its
+    for dev in devices:
+        off, m = dev.off, dev.m
+        v = np.asarray(v_lim[off:off + m], dtype=float)
+        params = dev.params()
+        ## The device's current now enters through its OWN unknowns, so its
         ## contribution to J_MNA/MNA is zero and all of it lands in J_MNA/lim.
-        g_mna[ra] += float(i_terms[0])
-        g_mna[rb] += float(i_terms[1])
-        if dense_blocks:
-            J_ml[ra, idx] += float(di_terms[0])
-            J_ml[rb, idx] += float(di_terms[1])
-        didv_list.append((float(di_terms[0]), float(di_terms[1])))
-
-        ## g_lim = v - (e_a - e_b)
-        g_lim[idx] = v - (float(x[ra]) - float(x[rb]))
-        if dense_blocks:
-            J_lm[idx, ra] = -1.0
-            J_lm[idx, rb] = +1.0
+        block = dev.stamp(v, params, epar, g_mna)
+        rows = np.asarray(dev.rows, dtype=int)
+        for j, (ra, rb) in enumerate(dev.probes):
+            ## g_lim = v - (e_a - e_b)
+            g_lim[off + j] = float(v[j]) - (float(x[ra]) - float(x[rb]))
+            if dense_blocks:
+                np.add.at(J_ml[:, off + j], rows, block[:, j])
+                ## ACCUMULATED, not assigned: a diode-connected transistor's
+                ## base-collector probe spans ONE row (ra == rb), and its
+                ## incidence row is -1 + 1 = 0 -- which is what the sparse
+                ## path computes and what an assignment would have left
+                ## at +1.
+                J_lm[off + j, ra] += -1.0
+                J_lm[off + j, rb] += +1.0
+        didv_list.append((dev.rows, dev.probes, block))
 
     return g_mna, g_lim, J_mm, J_ml, J_lm, didv_list
 
@@ -185,24 +436,43 @@ def schur_reduce(g_mna, g_lim, J_mm, J_ml=None, J_lm=None, junctions=None,
     more here than the handful of lines it saves.
 
     ``J_ll`` being the identity is what makes the border collapse to a rank-k
-    update; with ``junctions``/``didv`` that is exploited directly, at ``O(k)``
-    rather than the ``O(n^2 k)`` of a dense ``J_ml @ J_lm``.
+    update; with ``didv`` that is exploited directly.  ``J_ml J_lm`` is a sum
+    over UNKNOWNS: column ``off+j`` of ``J_ml`` is the device's ``block[:, j]``
+    on its ``t`` rows, row ``off+j`` of ``J_lm`` is ``(-1 at ra_j, +1 at rb_j)``,
+    so each probe is one rank-one term touching ``2t`` entries -- ``O(sum m t)``
+    rather than the ``O(n^2 k)`` of a dense ``J_ml @ J_lm``.  A scalar diode is
+    the ``t = 2, m = 1`` case: the same four entries as before, in the same
+    order.  (``junctions`` is accepted and ignored: ``didv`` carries the rows.)
     """
-    if junctions is not None and didv is not None:
+    if didv is not None:
         schur = np.array(J_mm, copy=True)
         rhs_corr = np.zeros(len(g_mna))
-        for idx, (_inst, _el, ra, rb) in enumerate(junctions):
-            dia, dib = didv[idx]
-            ## column k of J_ml is (dia at ra, dib at rb); row k of J_lm is
-            ## (-1 at ra, +1 at rb).  Their outer product is these four entries.
-            schur[ra, ra] += dia
-            schur[ra, rb] -= dia
-            schur[rb, ra] += dib
-            schur[rb, rb] -= dib
-            rhs_corr[ra] += dia * g_lim[idx]
-            rhs_corr[rb] += dib * g_lim[idx]
+        off = 0
+        for rows, probes, block in didv:
+            rows = np.asarray(rows, dtype=int)
+            for j, (ra, rb) in enumerate(probes):
+                col = block[:, j]
+                np.add.at(schur[:, ra], rows, col)
+                np.subtract.at(schur[:, rb], rows, col)
+                np.add.at(rhs_corr, rows, col * g_lim[off + j])
+            off += len(probes)
         return g_mna - rhs_corr, schur
     return g_mna - J_ml @ g_lim, J_mm - J_ml @ J_lm
+
+
+def dx_lim_of(junctions, g_lim, dx_mna):
+    """``dx_lim = -(g_lim + J_lm dx_MNA)``, per limited unknown.
+
+    Row ``k`` of ``J_lm`` is ``(-1 at ra, +1 at rb)``, so this is the same
+    two-entry formula whatever the device's ``m``.  One definition, shared
+    by :func:`predict` and the transient's coupled path, which used to copy
+    it by hand.
+    """
+    probes = flat_probes(junctions)
+    dx_lim = np.empty(len(probes))
+    for k, (ra, rb) in enumerate(probes):
+        dx_lim[k] = -(g_lim[k] + (-dx_mna[ra] + dx_mna[rb]))
+    return dx_lim
 
 
 def predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode, junctions=None,
@@ -218,10 +488,8 @@ def predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode, junctions=None,
     **That collapse has to be exploited, not merely stated.** Forming
     ``J_ml @ J_lm`` as a dense ``(n,k)·(k,n)`` product costs ``O(n^2 k)`` and
     measured **+62% per iteration** against classic limiting on 60 diodes -- a
-    gate-13-4 failure that was entirely the implementation's. Each column of
-    ``J_ml`` has two nonzeros and each row of ``J_lm`` has two, so the product is
-    a sum of ``k`` rank-one terms touching four entries each: ``O(k)`` work, not
-    ``O(n^2 k)``. Pass ``junctions``/``didv`` to take that path.
+    gate-13-4 failure that was entirely the implementation's.  Pass
+    ``junctions``/``didv`` to take the sparse path.
     """
     f_eff, schur = schur_reduce(g_mna, g_lim, J_mm, J_ml, J_lm, junctions, didv)
     rhs = -f_eff
@@ -232,49 +500,55 @@ def predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode, junctions=None,
     dx_mna[keep] = dx_r
 
     if junctions is not None:
-        dx_lim = np.empty(len(g_lim))
-        for idx, (_inst, _el, ra, rb) in enumerate(junctions):
-            dx_lim[idx] = -(g_lim[idx] + (-dx_mna[ra] + dx_mna[rb]))
+        dx_lim = dx_lim_of(junctions, g_lim, dx_mna)
     else:
         dx_lim = -(g_lim + J_lm @ dx_mna)
     return dx_mna, dx_lim
 
 
-def refine(junctions, v_old, v_new, epar=defaultepar):
+def refine(junctions, v_old, v_new, epar=defaultepar, x_old=None):
     """The CORRECT phase: each device limits only the variables it owns.
 
     This is where PCNR differs from limiting in the way that matters. Nothing is
     shared, so applying one device's limiter cannot disturb another's -- the
     clash section 2 of the paper describes cannot arise, by construction rather
     than by ordering.
+
+    A device is handed its WHOLE block at once, plus its own slice of the
+    last accepted iterate ``x_old`` (a limiter parameter that follows the
+    bias -- SPICE's `von` -- is evaluated there).  There is no sequential
+    reading between probes: that was forced on the ordinary path by node
+    write-back, and PCNR writes no node.
     """
+    devices = _as_devices(None, junctions)
     out = np.array(v_new, dtype=float, copy=True)
-    _seen_of = {}
-    for idx, (_instance, element, _ra, _rb) in enumerate(junctions):
-        jn = _seen_of.get(_instance, 0)
-        _seen_of[_instance] = jn + 1
-        toolkit = element.toolkit
+    for dev in devices:
+        off, m = dev.off, dev.m
+        params = dev.params()
+        x_sub = None
+        if x_old is not None and dev.rows is not None:
+            x_sub = np.asarray(x_old, dtype=float)[np.asarray(dev.rows,
+                                                             dtype=int)]
         ## THE DEVICE OWNS THE LAW FOR ITS OWN QUANTITY.  PCNR supplies the
         ## architecture -- one unknown per limited quantity, nothing shared,
         ## so no device's limiter can disturb another's -- and the device
-        ## supplies the limiter, which is the paper's modularity claim.  A
-        ## device that declares no `pcnr_limit` gets SPICE's `pnjlim` with
-        ## its `IS`, which is what every junction device wants and what the
-        ## hand-written `Diode` has always used.
-        limiter = getattr(element, 'pcnr_limit', None)
-        if limiter is not None:
-            params = getattr(element, '_pcnr_params', None)
-            if params is None:
-                params = {q.name: getattr(element.iparv, q.name)
-                          for q in element.instparams}
-                element._pcnr_params = params
-            out[idx] = float(limiter(float(v_new[idx]), float(v_old[idx]),
-                                     params, epar, toolkit, jn=jn))
-            continue
-        VT = toolkit.kboltzmann * epar.T / toolkit.qelectron
-        IS = getattr(element.iparv, 'IS', 0.0)
-        out[idx] = _pnjlim(float(v_new[idx]), float(v_old[idx]), VT, IS, toolkit)
+        ## supplies the limiter, which is the paper's modularity claim.
+        out[off:off + m] = dev.limit(out[off:off + m], v_old[off:off + m],
+                                     params, epar, x_sub)
     return out
+
+
+def lim_converged(g_lim, v_new, reltol, abstol):
+    """Per-component: ``|g_lim,j| < reltol*max(|v_j|, 1) + abstol``.
+
+    Per COMPONENT, not against ``max|v_new|`` over the whole vector: with
+    vector devices a 40 V ``vds`` in the same vector would loosen a
+    ``vbe`` component forty-fold.  Where every device is a scalar diode
+    on one branch the two criteria coincide.
+    """
+    g = np.abs(np.asarray(g_lim, dtype=float))
+    scale = np.maximum(np.abs(np.asarray(v_new, dtype=float)), 1.0)
+    return bool(np.all(g < reltol * scale + abstol))
 
 
 def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
@@ -285,8 +559,8 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     converged.  There is no limiting of the MNA vector anywhere -- the only thing
     limited is each device's own unknown, in :func:`refine`.
     """
-    junctions = pcnr_junctions(circuit)
-    if not junctions:
+    devices = pcnr_devices(circuit)
+    if not devices:
         raise ValueError('no device in this circuit declares a PCNR junction')
 
     n = circuit.n
@@ -294,28 +568,26 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     x = np.zeros(n) if x0 is None else np.array(x0, dtype=float, copy=True)
     x[irefnode] = 0.0
 
-    ## Initialise each device's unknown from the branch voltage it stands for --
-    ## the paper's "independent initialization by different devices".
-    v_lim = np.array([float(x[ra] - x[rb]) for _i, _e, ra, rb in junctions])
+    v_lim = v_lim_init(devices, x)
 
     u = np.asarray(circuit.u(0.0, epar, analysis='dc'), dtype=float)
 
     for it in range(maxiter):
         g_mna, g_lim, J_mm, J_ml, J_lm, didv = augmented_system(
-            circuit, x, v_lim, junctions, epar, u_extra=u, dense_blocks=False)
+            circuit, x, v_lim, devices, epar, u_extra=u, dense_blocks=False)
 
         dx_mna, dx_lim = predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode,
-                                 junctions=junctions, didv=didv)
+                                 junctions=devices, didv=didv)
 
         x_new = x + dx_mna
         x_new[irefnode] = 0.0
         v_new = v_lim + dx_lim
 
         ## CORRECT: each device limits only what it owns.
-        v_new = refine(junctions, v_lim, v_new, epar)
+        v_new = refine(devices, v_lim, v_new, epar, x_old=x)
 
         converged = (np.max(np.abs(dx_mna)) < reltol * np.max(np.abs(x_new)) + abstol
-                     and np.max(np.abs(g_lim)) < reltol * max(np.max(np.abs(v_new)), 1.0) + abstol)
+                     and lim_converged(g_lim, v_new, reltol, abstol))
         x, v_lim = x_new, v_new
         if converged:
             return x, v_lim, it + 1

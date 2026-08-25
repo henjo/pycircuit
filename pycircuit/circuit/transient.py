@@ -1447,11 +1447,10 @@ class Transient(Analysis):
         ## measured as 0 PCNR steps against 4869 `Diode.limit` calls, and results
         ## bit-identical to `pcnr=False`.
         from pycircuit.circuit import pcnr as _pcnr
-        junctions = _pcnr.pcnr_junctions(self.cir) if self.par.pcnr else []
+        junctions = _pcnr.pcnr_devices(self.cir) if self.par.pcnr else []
         ## `v_lim` is per-time-point state, seeded from the incoming solution and
         ## carried across the iterations below.
-        v_lim = np.array([float(x[ra] - x[rb])
-                          for _i, _e, ra, rb in junctions])
+        v_lim = _pcnr.v_lim_init(junctions, x)
 
         ## The increment flavour: `dx0` is a solution update, not a residual.
         xtol = self._newton_xtol_vector()
@@ -1502,11 +1501,9 @@ class Transient(Analysis):
                 ## -- the MNA update is taken in full, which is the whole point.
                 x_stage1 = x + dx0
                 x_stage1[irefnode] = 0.0
-                dx_lim = np.array(
-                    [-(g_lim[k] + (-dx0[ra] + dx0[rb]))
-                     for k, (_i, _e, ra, rb) in enumerate(junctions)])
+                dx_lim = _pcnr.dx_lim_of(junctions, g_lim, dx0)
                 v_stage1 = _pcnr.refine(junctions, v_lim, v_lim + dx_lim,
-                                        self.epar)
+                                        self.epar, x_old=x)
             else:
                 x_stage1 = self.cir.limit(x + dx0, x, self.epar)
                 ## The limiter may shorten the step, so the convergence test must
@@ -1531,10 +1528,8 @@ class Transient(Analysis):
                 ## with `v_lim != e_a - e_b`, i.e. the diode evaluated at a voltage
                 ## that is not the node voltage, so the vector is not a solution of
                 ## the circuit at all -- and the LTE built from it then reads low.
-                converged_x = converged_x and bool(
-                    np.max(np.abs(g_lim))
-                    < reltol * max(float(np.max(np.abs(v_stage1))), 1.0)
-                    + self.par.vabstol)
+                converged_x = converged_x and _pcnr.lim_converged(
+                    g_lim, v_stage1, reltol, self.par.vabstol)
 
             ## `hold_h` -- the step size is IMPOSED, not free.  A step truncated
             ## onto a breakpoint or onto `tend` has its size decided by where it
@@ -1755,7 +1750,8 @@ class Transient(Analysis):
                 ## to catch.
                 v_lim = np.array(
                     [v_stage1[k] + (dxh[ra] - dxh[rb]) * dh
-                     for k, (_i, _e, ra, rb) in enumerate(junctions)])
+                     for k, (ra, rb) in enumerate(
+                         _pcnr.flat_probes(junctions))])
             else:
                 x, v_lim = x_stage1, v_stage1
             h = h_new
@@ -1952,10 +1948,10 @@ class Transient(Analysis):
         """
         from pycircuit.circuit import pcnr as _pcnr
 
-        junctions = _pcnr.pcnr_junctions(self.cir)
+        junctions = _pcnr.pcnr_devices(self.cir)
         irefnode = self.irefnode
         x = self.toolkit.array(x0, dtype=float).copy()
-        v_lim = np.array([float(x[ra] - x[rb]) for _i, _e, ra, rb in junctions])
+        v_lim = _pcnr.v_lim_init(junctions, x)
 
         xtol = self._newton_xtol_vector()
         reltol = self.par.reltol
@@ -1981,7 +1977,8 @@ class Transient(Analysis):
                                            didv=didv)
             x_new = x + dx_mna
             x_new[irefnode] = 0.0
-            v_new = _pcnr.refine(junctions, v_lim, v_lim + dx_lim, self.epar)
+            v_new = _pcnr.refine(junctions, v_lim, v_lim + dx_lim, self.epar,
+                                 x_old=x)
 
             ## BOTH residuals, not just the MNA one.
             ##
@@ -1995,9 +1992,8 @@ class Transient(Analysis):
             ## rectifier as a median accepted error of 0.0066 against a target of
             ## 0.81, while the actual waveform error was 2.5x worse than the
             ## classic path's.
-            lim_ok = bool(np.max(np.abs(g_lim))
-                          < reltol * max(float(np.max(np.abs(v_new))), 1.0)
-                          + self.par.vabstol)
+            lim_ok = _pcnr.lim_converged(g_lim, v_new, reltol,
+                                         self.par.vabstol)
             done = lim_ok and bool(self.toolkit.alltrue(
                 abs(dx_mna) < reltol * abs(x_new) + xtol))
             x, v_lim = x_new, v_new
@@ -2025,20 +2021,18 @@ class Transient(Analysis):
                 ## truncation error through a Jacobian missing the diode.
                 ##
                 ## The right matrix is the one `predict` factorises: the non-PCNR
-                ## part plus each junction's `didv` as a rank-one update.  At
+                ## part plus each probe's `didv` column as a rank-one update.  At
                 ## convergence `v_lim == e_a - e_b`, so it is exactly the
-                ## Jacobian of the residual with respect to `x`.
+                ## Jacobian of the residual with respect to `x` -- and it is
+                ## `schur_reduce`'s matrix, taken from there rather than
+                ## written out a second time (the copy that used to live here
+                ## knew only the two-terminal `(dia, dib)` shape).
                 _g2, _gl2, J_mm2, _Jml2, _Jlm2, didv2 = _pcnr.augmented_system(
                     self.cir, x, v_lim, junctions, self.epar,
                     u_extra=np.asarray(iq, dtype=float),
                     dense_blocks=False, J_extra=Geq)
-                J = np.array(J_mm2, dtype=float)
-                for idx, (_inst, _el, ra, rb) in enumerate(junctions):
-                    dia, dib = didv2[idx]
-                    J[ra, ra] += dia
-                    J[ra, rb] -= dia
-                    J[rb, ra] += dib
-                    J[rb, rb] -= dib
+                _f2, J = _pcnr.schur_reduce(_g2, _gl2, J_mm2, junctions=junctions,
+                                            didv=didv2)
                 J = self.toolkit.array(J, dtype=float)
                 f = self.toolkit.array(
                     self.cir.i(x, self.epar) + iq
