@@ -3741,7 +3741,82 @@ class BehaviouralMeta(type):
                 out = np.array(x, dtype=float, copy=True)
                 x0a = np.asarray(x0, dtype=float)
                 args = _args_of(self, epar)
-                for (ra, rb), kind, move, pfs in _ls:
+                ## WHICH TERMINAL ABSORBS THE CORRECTION IS A RUNTIME
+                ## QUESTION, and deciding it at compile time made the
+                ## limiter a divergence GENERATOR.
+                ##
+                ## The write-back is `out[ra] = out[rb] + vlim`, which
+                ## copies rb's ABSOLUTE value across the branch.  `vlim` is
+                ## bounded; `out[rb]` is not.  Measured on a stacked pair,
+                ## with the drain held near its rail by a 100k load:
+                ##
+                ##     it0  nm  +5.17e+07 -> +3.20e+01   (the lower device
+                ##                                        limits its own
+                ##                                        wild node)
+                ##     it1  nd  +4.00e+01 -> +6.14e+08   (the upper device
+                ##     it2  nd  +4.00e+01 -> +6.14e+09    then DESTROYS a
+                ##     it3  nd  +4.00e+01 -> +5.78e+10    perfectly good
+                ##                                        one)
+                ##
+                ## Newton had the drain at a sane 40 V and the limiter
+                ## dragged it out by a decade per iteration, because the
+                ## source node was wild and elements are limited in
+                ## instance order -- the upper device reads a node the
+                ## lower one has not fixed yet.  225 Jacobian evaluations
+                ## against 25 unlimited: limiting made it NINE TIMES worse.
+                ## The same mechanism moves a gate that a source pins.
+                ##
+                ## So move the terminal that has drifted FURTHER from the
+                ## last accepted point.  That is the node Newton is being
+                ## wild about; the other one -- a pinned gate, a
+                ## rail-clamped drain -- is information worth keeping
+                ## rather than overwriting.  The branch still ends at
+                ## exactly `vlim` either way; only which node pays changes.
+                ##
+                ## ORDER INDEPENDENCE IS PRESERVED, and it is not free:
+                ## two probes may not move the same terminal (that is what
+                ## the compile-time `move` was for), so the choice has to
+                ## be resolved against the OTHER probes, and doing that in
+                ## spec-list order would make the result depend on it.
+                ## The probes are therefore visited in a CANONICAL order
+                ## derived from the data -- widest drift first, ties broken
+                ## by row index -- so reversing the spec list changes
+                ## nothing.  `test_the_vgs_vds_star_is_order_independent`
+                ## asserts exactly that, by reversing it.
+                drift = np.abs(np.asarray(out, dtype=float) - x0a)
+
+                def _vlim_of(k, i0, i1, pfs_):
+                    vn = float(out[i0] - out[i1])
+                    vo = float(x0a[i0] - x0a[i1])
+                    pv_ = [float(f(*args)) for f in pfs_]
+                    if k == 'pnj':
+                        return vn, _pnj(vn, vo, pv_[1], pv_[0], self.toolkit)
+                    if k == 'fet':
+                        return vn, _fet(vn, vo, pv_[0], self.toolkit)
+                    return vn, _lvds(vn, vo, self.toolkit)
+
+                ## WHO GETS THE SHARED TERMINAL when two probes want it:
+                ## the one applying the LARGER correction.  A BJT's two
+                ## junctions both hang off the base and both see the same
+                ## drift when only the base has moved, so drift alone ties
+                ## and the tie-break decides real behaviour -- ordering by
+                ## `(ra, rb)` handed the base to the base-COLLECTOR probe
+                ## and left the base-emitter one writing the emitter,
+                ## which is backwards for a forward-biased device.
+                ##
+                ## The correction size is data-derived, so the order still
+                ## does not depend on the spec list's own order.  These
+                ## `vlim`s are for RANKING only; each probe recomputes its
+                ## own below against whatever earlier probes wrote.
+                _rank = [_vlim_of(k, p[0], p[1], pf)
+                         for p, k, _m, pf in _ls]
+                order = sorted(
+                    range(len(_ls)),
+                    key=lambda i: (-abs(_rank[i][1] - _rank[i][0]),
+                                   _ls[i][0][0], _ls[i][0][1]))
+                _moved = set()
+                for i in order:
+                    (ra, rb), kind, move, pfs = _ls[i]
                     vnew = float(out[ra] - out[rb])
                     vold = float(x0a[ra] - x0a[rb])
                     pv = [float(f(*args)) for f in pfs]
@@ -3751,12 +3826,24 @@ class BehaviouralMeta(type):
                         vlim = _fet(vnew, vold, pv[0], self.toolkit)
                     else:
                         vlim = _lvds(vnew, vold, self.toolkit)
-                    ## `move` is chosen at compile time (see limit_spec):
-                    ## the PLUS terminal, so a device whose junctions share
-                    ## a cathode does not have the second undo the first --
-                    ## or the MINUS one where an earlier probe has already
-                    ## claimed the plus.
-                    if move == ra:
+                    ## A LIMITER THAT DID NOT BITE MUST TOUCH NOTHING.
+                    ## Writing `out[rb] = out[ra] - vlim` when `vlim` is
+                    ## already `vnew` does not round-trip -- `a - (a - b)`
+                    ## is not `b` in floating point -- so the write alone
+                    ## broke "a step of at most 2*VT passes through
+                    ## exactly", which is what lets "did limiting fire?"
+                    ## be a convergence signal.  Skipping also leaves the
+                    ## terminal free for the other probe, which is what
+                    ## it would have wanted anyway.
+                    if vlim == vnew:
+                        continue
+                    cand = ra if drift[ra] >= drift[rb] else rb
+                    if cand in _moved:
+                        cand = rb if cand == ra else ra
+                    if cand in _moved:
+                        cand = move          # both spoken for
+                    _moved.add(cand)
+                    if cand == ra:
                         out[ra] = out[rb] + vlim
                     else:
                         out[rb] = out[ra] - vlim

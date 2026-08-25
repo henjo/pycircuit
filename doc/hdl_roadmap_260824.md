@@ -807,7 +807,51 @@ than by reading it, which is §5's thesis working: eleven library models
 across three batches produced more defects than any amount of review
 had.
 
-### 12.1 The FET limiter moves nodes a source pins — MEASURED, and it is bad
+### 12.1 The FET limiter moved nodes a source pins — FIXED 2026-08-25
+
+> **Resolved.** The write-back now chooses its terminal at RUNTIME:
+> whichever end of the branch has drifted further from the last accepted
+> point. Same circuit, same start:
+>
+>     limited, compile-time write-back    225 Jacobian evaluations
+>     limited, runtime write-back           8
+>     unlimited                            25
+>
+> and the worst displacement of a pinned gate went from **5e48 V** to
+> tens of volts. Limiting now helps where it previously hurt 9×.
+>
+> **The attribution flipped completely**, which is the part worth
+> keeping. Before: `fetlim` alone FAILED to converge, and the recorded
+> explanation was that SPICE's `fetlim` bounds a step to about a volt
+> and a volt is forty thermal voltages to a subthreshold exponential —
+> plausible, self-consistent, and not the reason. It failed because its
+> write-back always moved the gate. After: `fetlim` alone is the *best*
+> of the four (12 iterations against `limvds`'s 57). A seventh instance
+> of right-conclusion-wrong-reason, and this one had a measurement
+> attached to the wrong cause.
+>
+> Two smaller findings fell out of it. A limiter that did not bite must
+> write NOTHING — `a - (a - b)` is not `b`, so the write alone broke
+> "a step of at most 2·VT passes through exactly", which is what lets
+> "did limiting fire?" be a convergence signal. And when two probes want
+> the same shared terminal, the one applying the LARGER correction
+> should get it: a BJT's two junctions both hang off the base and see
+> identical drift, so the tie-break decides real behaviour, and ordering
+> by row index handed the base to the base-collector probe.
+>
+> Still open, now measured: `both` (30 iterations) is worse than `fet`
+> alone (12), because two probes may not move the same terminal and the
+> second is pushed onto a node it would not have chosen. That is what
+> §10.3(b)'s device-level limiter removes.
+>
+> And a side effect worth knowing: a stacked pair at (5 V, 2.5 V) that
+> used to raise `SingularMatrix` now converges, because the better
+> write-back keeps the iterate out of the cutoff region where the lower
+> device's conductance underflows to exactly zero. The hazard is NOT
+> gone — (40 V, 0.2 V) still reaches it — only harder to reach. §12.3
+> stands.
+
+#### The original finding, kept for the mechanism
 
 `limit_fet(V(g,s))` writes back as `x[g] = x[s] + vlim`, so it moves
 the **gate** — and a gate is almost always driven. `vlim` is bounded;

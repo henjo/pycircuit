@@ -800,22 +800,33 @@ def test_limit_pnj_write_back_on_two_junctions_sharing_a_base():
         x = rng.uniform(-20.0, 20.0, 6)
         x0 = rng.uniform(-20.0, 20.0, 6)
         out = el.limit(x, x0)
-        ## Probe 1 moves bi; probe 2 then reads the ALREADY-written
-        ## vector and moves ci.  Sequential, exactly like
-        ## `limit_junctions`.
-        isv, vtv = args[0]
-        bi1 = x[5] + _pnjlim(x[3] - x[5], x0[3] - x0[5], vtv, isv, numeric)
-        isv2, vtv2 = args[1]
-        ci2 = bi1 - _pnjlim(bi1 - x[4], x0[3] - x0[4], vtv2, isv2, numeric)
-        assert out[3] == bi1 and out[4] == ci2
-        ## Neither probe was undone: both junctions end up carrying
-        ## their own limited voltage.
-        assert out[3] - out[5] == bi1 - x[5]
-        assert out[3] - out[4] == bi1 - ci2
-        ## The terminals and the emitter are untouched.
-        assert (out[[0, 1, 2, 5]] == x[[0, 1, 2, 5]]).all()
+        ## WHICH node each probe moves is decided at RUNTIME now -- the
+        ## terminal that drifted further from the last accepted point,
+        ## with the shared base going to whichever junction is applying
+        ## the larger correction.  So this asserts the property the
+        ## compile-time rule existed to protect, rather than the
+        ## particular pair of indices it happened to produce:
+        ##
+        ##   * no probe is undone -- the two corrections land on two
+        ##     DIFFERENT rows, so each junction keeps its own limited
+        ##     voltage;
+        ##   * nothing outside this element's own three internal rows is
+        ##     touched;
+        ##   * and the result is bounded, which is the failure the
+        ##     runtime choice was introduced to remove.
+        movers = [i for i in range(6) if out[i] != x[i]]
+        assert len(set(movers)) == len(movers)
+        assert len(movers) <= 2, (movers, x, x0)
+        assert set(movers) <= {3, 4, 5}, (movers, x, x0)
+        for i in range(6):
+            if i not in movers:
+                assert out[i] == x[i]
+        assert np.all(np.isfinite(out))
+        assert np.max(np.abs(out)) <= np.max(np.abs(x)) + 40.0, (x, out)
+        ## The external terminals are never this element's to move.
+        assert (out[[0, 1, 2]] == x[[0, 1, 2]]).all()
         assert not np.shares_memory(out, x)
-        if out[3] != x[3] and out[4] != x[4]:
+        if len(movers) == 2:
             both_moved += 1
     assert both_moved > 50, both_moved
 
@@ -1915,12 +1926,17 @@ def test_ekv_stays_finite_where_no_device_belongs():
 def test_ekv_declares_fetlim_on_the_gate_and_limvds_on_the_drain():
     """The declaration, and the two things about it a reader needs.
 
-    The probes are ``V(g,s)`` and ``V(d,s)`` -- SPICE's pair -- and
-    their write-backs land on ``g`` and ``d``, which are different
-    terminals, so each probe ends up carrying exactly its own limited
-    value and the declaration order does not matter.  (Contrast the
-    BJT above, whose two junctions share the internal base and where
-    the order rule does bite.)
+    The probes are ``V(g,s)`` and ``V(d,s)`` -- SPICE's pair.  Both name
+    the source, so the two write-backs must land on different rows; each
+    probe then carries exactly its own limited value and the declaration
+    order does not matter.
+
+    WHICH row each takes is a runtime choice: the terminal that drifted
+    further from the last accepted point.  Fixing it at compile time --
+    always the gate, always the drain -- is what let a wild source drag
+    a sane drain out with it, a decade per iteration.  So this asserts
+    that each branch ends at its own limited value and that the body is
+    never touched, not a fixed pair of indices.
     """
     el = _mk(eh.EkvNmosHdl, 'd', 'g', 's', 'b', **EKV)
     assert el.terminals == ['d', 'g', 's', 'b']
@@ -1930,16 +1946,30 @@ def test_ekv_declares_fetlim_on_the_gate_and_limvds_on_the_drain():
     assert '2 $limit probes (fetlim on (g,s), limvds on (d,s))' \
         in explain(el)
     rng = np.random.default_rng(17)
+    moved_source = 0
     for _ in range(300):
         x = rng.uniform(-30.0, 30.0, 4)
         x0 = rng.uniform(-30.0, 30.0, 4)
         out = el.limit(x, x0)
-        vgs = _fetlim(x[1] - x[2], x0[1] - x0[2], EKV['vto'], numeric)
-        vds = _limvds(x[0] - x[2], x0[0] - x0[2], numeric)
-        assert out[2] == x[2] and out[3] == x[3]
-        assert out[1] == x[2] + vgs
-        assert out[0] == x[2] + vds
+        ## The bulk is not a probe terminal and is never written.
+        assert out[3] == x[3]
+        movers = [i for i in range(4) if out[i] != x[i]]
+        assert len(set(movers)) == len(movers)
+        assert len(movers) <= 2 and set(movers) <= {0, 1, 2}, movers
+        for i in range(4):
+            if i not in movers:
+                assert out[i] == x[i]
+        ## Each branch ends at a bounded value -- `_limvds` clamps vds
+        ## and `_fetlim` bounds the gate step, so neither branch may come
+        ## out wilder than it went in.
+        assert abs(out[1] - out[2]) <= max(abs(x[1] - x[2]), 60.0)
+        assert abs(out[0] - out[2]) <= max(abs(x[0] - x[2]), 60.0)
+        if out[2] != x[2]:
+            moved_source += 1
         assert not np.shares_memory(out, x)
+    ## And the source does give way sometimes -- under the old fixed
+    ## rule it never did, which was the defect.
+    assert moved_source > 10, moved_source
 
 
 def test_fetlims_parameter_only_vto_is_measurably_loose_under_body_bias():
@@ -2109,27 +2139,47 @@ def _cascode_stage(cls, rleak=1e9):
 
 def test_a_stacked_pair_without_a_dc_path_is_structurally_singular():
     """The hazard `_cascode_stage` documents, pinned so that it is a
-    known property rather than a surprise.  Limiting does NOT fix it --
-    a per-probe limiter bounds a STEP, and this is a row that has gone
-    empty."""
+    known property rather than a surprise.
+
+    Limiting does not REMOVE it -- a per-probe limiter bounds a step,
+    and this is a row that has gone empty -- but it does change which
+    circuits reach it, and that is worth recording rather than
+    discovering later.  At (vdd, vg) = (5, 2.5) this used to raise, and
+    now converges: the runtime write-back keeps the iterate out of the
+    cutoff region where the lower device's channel conductance
+    underflows to EXACTLY zero.  So the bias below is a harder one,
+    chosen because it still reaches the empty row.
+    """
     from pycircuit.circuit.analysis import SingularMatrix
-    ## Built by hand, because `_cascode_stage` always adds the leak.
-    cc = SubCircuit()
-    nd = cc.add_node('nd')
-    nm = cc.add_node('nm')
-    ng = cc.add_node('ng')
-    nvdd = cc.add_node('nvdd')
-    cc['vdd'] = VS(nvdd, gnd, v=5.0)
-    cc['vg'] = VS(ng, gnd, v=2.5)
-    cc['rd'] = R(nvdd, nd, r=2e3)
-    cc['m1'] = eh.EkvNmosHdl(nd, ng, nm, gnd, **LIM_CARD)
-    cc['m2'] = eh.EkvNmosHdl(nm, ng, gnd, gnd, **LIM_CARD)
+
+    def _pair(vdd, vg):
+        ## Built by hand, because `_cascode_stage` always adds the leak.
+        cc = SubCircuit()
+        nd = cc.add_node('nd')
+        nm = cc.add_node('nm')
+        ng = cc.add_node('ng')
+        nvdd = cc.add_node('nvdd')
+        cc['vdd'] = VS(nvdd, gnd, v=vdd)
+        cc['vg'] = VS(ng, gnd, v=vg)
+        cc['rd'] = R(nvdd, nd, r=2e3)
+        cc['m1'] = eh.EkvNmosHdl(nd, ng, nm, gnd, **LIM_CARD)
+        cc['m2'] = eh.EkvNmosHdl(nm, ng, gnd, gnd, **LIM_CARD)
+        return cc
+
+    ## Still reachable, and the message still names the row.
     with pytest.raises(SingularMatrix, match="'nm'"):
-        DC(cc).solve()
-    ## and the SAME circuit with a gigaohm to ground converges.
-    cc['rl'] = R(nm, gnd, r=1e9)
+        DC(_pair(40.0, 0.2)).solve()
+
+    ## The measurement of what the write-back fix bought: the bias this
+    ## test used to use now solves, with no leak resistor at all.
+    r_easy = DC(_pair(5.0, 2.5)).solve()
+    assert 0.4 < float(r_easy.v('nm', gnd)) < 0.5
+
+    ## and the hard one with a gigaohm to ground converges.
+    cc = _pair(40.0, 0.2)
+    cc['rl'] = R(cc.get_node('nm'), gnd, r=1e9)
     r5 = DC(cc).solve()
-    assert 0.4 < float(r5.v('nm', gnd)) < 0.5
+    assert np.isfinite(float(r5.v('nm', gnd)))
     ## The leak is a testbench artefact and not a fitting knob: three
     ## decades of it move the 40 V stage's answer by 2e-3.
     vals = []
@@ -2159,30 +2209,39 @@ def test_fet_limiting_cuts_the_iteration_count_on_a_hard_solve():
     assert n_raw / n_lim > 1.8, (n_lim, n_raw)
 
 
-def test_the_fet_write_back_moves_a_node_a_voltage_source_pins():
-    """**A finding, not a feature.**  The state-free ``$limit``
-    convention writes a probe's limited value back by moving one
-    terminal -- for ``limit_fet(V(g,s))`` that is the GATE, and a gate
-    is very often pinned by a driver.  Nothing checks that.
+def test_the_fet_write_back_moves_the_terminal_that_actually_drifted():
+    """**Was a finding; is now a fix, with the old numbers kept.**
 
-    Started from a uniform 10 V instead of from the origin, the same
-    40 V cascode takes **225** Jacobian evaluations with the limiters
-    and 25 without: limiting makes it NINE TIMES worse.  Instrumenting
-    `SubCircuit.limit` shows why -- 203 of those 225 iterations move
-    the gate node, which ``vg`` pins at 1.0 V, by as much as 5e48 V.
-    The write-back is ``x[g] = x[s] + vlim``, and while ``vlim`` is
-    bounded, ``x[s]`` is not; the result is a point that violates the
-    source's own equation, and the next residual is enormous.
+    The state-free ``$limit`` convention writes a probe's limited value
+    back by moving one terminal, and that terminal used to be chosen at
+    COMPILE time -- always the plus, so always the gate for
+    ``limit_fet(V(g,s))`` and always the drain for ``limit_vds(V(d,s))``.
 
-    Two devices sharing that gate makes it worse: each writes it in
-    turn and the second overwrites the first.
+    That made the limiter a divergence GENERATOR.  The write-back is
+    ``x[ra] = x[rb] + vlim``: ``vlim`` is bounded, ``x[rb]`` is not, so
+    a wild node hands its magnitude to a sane one.  Elements are limited
+    in instance order, so the upper device read a source node the lower
+    one had not fixed yet:
 
-    The test asserts the measured facts, and the numbers are recorded
-    so that a fix -- refusing to move a driven node, or a device-level
-    limiter that receives all of a device's voltages at once (roadmap
-    10.3(b)) -- can be measured against them.
+        it0  nm  +5.17e+07 -> +3.20e+01   (lower device fixes its node)
+        it1  nd  +4.00e+01 -> +6.14e+08   (upper device then destroys a
+        it2  nd  +4.00e+01 -> +6.14e+09    perfectly good drain, a
+        it3  nd  +4.00e+01 -> +5.78e+10    decade per iteration)
+
+    Newton had the drain at a sane 40 V.  Measured then and now, same
+    circuit, same start:
+
+        limited (compile-time write-back)   225 Jacobian evaluations
+        limited (runtime write-back)          8
+        unlimited                            25
+
+    and the worst single displacement of the gate -- which ``vg`` pins
+    at 1.0 V -- went from **5e48 V** to a few tens of volts.
+
+    The fix is to move whichever terminal has drifted further from the
+    last accepted point: that is the node Newton is being wild about,
+    and the other one is information worth keeping.
     """
-    x0 = None
     c_lim, _ = _cascode_stage(eh.EkvNmosHdl)
     x0 = np.full(c_lim.n, 10.0)
     x0[-1] = 0.0
@@ -2203,16 +2262,20 @@ def test_the_fet_write_back_moves_a_node_a_voltage_source_pins():
     n_lim, res_lim = _count_jacobians(c_lim, x0=x0)
     c_raw, _ = _cascode_stage(_ekv_no_limit())
     n_raw, res_raw = _count_jacobians(c_raw, x0=np.array(x0))
-    ## Both still find the same answer -- limiting never moves the
-    ## solution, only the path to it.
+    ## Both find the same answer -- limiting never moves the solution,
+    ## only the path to it.
     assert not isinstance(res_lim, Exception), res_lim
     assert not isinstance(res_raw, Exception), res_raw
     assert_allclose(float(res_lim.v('nd', gnd)),
                     float(res_raw.v('nd', gnd)), rtol=1e-6)
-    ## The cost, and the mechanism.
-    assert n_lim > 3 * n_raw, (n_lim, n_raw)
-    assert moves['gate'] > 0.5 * moves['n'], moves
-    assert moves['worst'] > 1e3, moves
+    ## Limiting now HELPS on the case where it used to hurt 9x.
+    assert n_lim < n_raw, (n_lim, n_raw)
+    ## The gate may still give way -- it is a legitimate choice when the
+    ## gate is what moved -- but never by a wild amount.  5e48 was the
+    ## number that said the write-back was broken.
+    assert moves['worst'] < 1e3, moves
+
+
 def _ekv_analog_unlimited():
     """`EkvNmosHdl`'s body with the two ``$limit`` declarations removed
     and nothing else changed -- the control for the test above."""

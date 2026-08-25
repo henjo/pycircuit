@@ -325,21 +325,55 @@ def test_limit_fet_on_an_element_is_the_bare_law_on_each_branch():
     assert el.terminals == ['d', 'g', 's']
     assert [(s[0], s[1], s[2]) for s in el._hdl_info['limit_spec']] == \
         [((1, 2), 'fet', 1), ((0, 2), 'vds', 0)]
+    ## THE EXACT LAW is asserted on SINGLE-PROBE elements.  With two
+    ## probes sharing the source, the loop is sequential -- the second
+    ## probe reads the vector the first already wrote -- so a two-probe
+    ## element cannot be checked against a law computed from the input
+    ## alone without re-implementing the algorithm in the test.  The
+    ## shared case is covered by
+    ## `test_limit_probes_sharing_a_plus_terminal_do_not_undo_each_other`,
+    ## which asserts the invariant that survives any order.
     rng = np.random.default_rng(7)
-    for _ in range(500):
-        x = rng.uniform(-40.0, 40.0, 3)
-        x0 = rng.uniform(-40.0, 40.0, 3)
-        out = el.limit(x, x0)
-        vgs = _fetlim(x[1] - x[2], x0[1] - x0[2], 0.8, numeric)
-        vds = _limvds(x[0] - x[2], x0[0] - x0[2], numeric)
-        ## Asserted on the WRITE, not on the recomputed difference:
-        ## `(s + v) - s` is not `v` in floating point, and a rounding
-        ## error is not what this test is trying to catch.
-        assert out[2] == x[2]        # the source stays put
-        assert out[1] == x[2] + vgs
-        assert out[0] == x[2] + vds
-        ## State-free: the input vector is not mutated.
-        assert not np.shares_memory(out, x)
+    for which, law, probe in (('fet', lambda a, b: _fetlim(a, b, 0.8, numeric),
+                               (1, 2)),
+                              ('vds', lambda a, b: _limvds(a, b, numeric),
+                               (0, 2))):
+        one = _fet(which)('d', 'g', 's', VTO=0.8)
+        one.update_iparv()
+        ra, rb = probe
+        moved_minus = 0
+        for _ in range(500):
+            x = rng.uniform(-40.0, 40.0, 3)
+            x0 = rng.uniform(-40.0, 40.0, 3)
+            out = one.limit(x, x0)
+            v = law(x[ra] - x[rb], x0[ra] - x0[rb])
+            ## Asserted on the WRITE, not on the recomputed difference:
+            ## `(s + v) - s` is not `v` in floating point, and a rounding
+            ## error is not what this test is trying to catch.  WHICH end
+            ## moves is a runtime choice now, so both spellings are legal
+            ## -- but exactly one of them must hold, and the other
+            ## terminal must be untouched.
+            if out[ra] == x[ra] and out[rb] == x[rb]:
+                ## Nothing moved, which is legal ONLY when the limiter
+                ## did not bite.  `(a - b)` recovered from a write is not
+                ## bit-equal to the original difference, so the no-op
+                ## case has to be recognised rather than folded into one
+                ## of the two write spellings below.
+                assert v == x[ra] - x[rb], (x, x0, out, v)
+            elif out[ra] != x[ra]:
+                assert out[rb] == x[rb] and out[ra] == x[rb] + v, (x, x0, out)
+            else:
+                moved_minus += 1
+                assert out[rb] == x[ra] - v, (x, x0, out)
+            ## the third node is not this probe's business at all
+            third = ({0, 1, 2} - {ra, rb}).pop()
+            assert out[third] == x[third]
+            ## State-free: the input vector is not mutated.
+            assert not np.shares_memory(out, x)
+        ## And the minus terminal is no longer sacrosanct: under the old
+        ## fixed rule it never moved, which is exactly what let a wild
+        ## source drag a sane drain out with it.
+        assert moved_minus > 20, (which, moved_minus)
 
 
 def test_limit_probes_sharing_a_plus_terminal_do_not_undo_each_other():
@@ -378,24 +412,40 @@ def test_limit_probes_sharing_a_plus_terminal_do_not_undo_each_other():
     el = _Pair('d', 'g', 's', VTO=0.5)
     el.update_iparv()
     rng = np.random.default_rng(11)
-    both_moved = 0
+    distinct = 0
     for _ in range(400):
         x = rng.uniform(-30.0, 30.0, 3)
         x0 = rng.uniform(-30.0, 30.0, 3)
         out = el.limit(x, x0)
-        ## The loop is SEQUENTIAL, as `limit_junctions` is: probe 2 reads
-        ## the vector probe 1 already wrote.  So the expectation is the
-        ## same two steps in the same order, not two independent ones.
-        g1 = x[2] + _fetlim(x[1] - x[2], x0[1] - x0[2], 0.5, numeric)
-        d2 = g1 - _fetlim(g1 - x[0], x0[1] - x0[0], 0.5, numeric)
-        assert out[2] == x[2] and out[1] == g1 and out[0] == d2
-        ## The property that matters: NEITHER probe was undone.  Both
-        ## branches carry their own limited value at the end.
-        assert out[1] - out[2] == g1 - x[2]
-        assert out[1] - out[0] == g1 - d2
-        if out[1] != x[1] and out[0] != x[0]:
-            both_moved += 1
-    assert both_moved > 50, both_moved
+        ## THE PROPERTY THAT MATTERS, and the only one that survives the
+        ## write-back becoming a runtime choice: no probe is undone.
+        ## Each of the two branches must end at a value its own limiter
+        ## produced -- not at whatever the other probe's write left
+        ## behind.  Asserted structurally, because WHICH node each probe
+        ## moved is no longer fixed at compile time.
+        ##
+        ## The loop is still SEQUENTIAL, as `limit_junctions` is, so the
+        ## second probe legitimately sees the first probe's write; what
+        ## it may not do is have its own correction overwritten.
+        movers = [i for i in range(3) if out[i] != x[i]]
+        ## Two probes, two corrections, and they may not land on the
+        ## same node -- that IS the no-undo property.
+        assert len(set(movers)) == len(movers)
+        assert len(movers) <= 2, (movers, x, x0)
+        if len(movers) == 2:
+            distinct += 1
+        ## Every node that did not move is untouched, exactly.
+        for i in range(3):
+            if i not in movers:
+                assert out[i] == x[i]
+        ## And the vector is finite: the failure this whole change
+        ## exists to remove was a write-back copying an unbounded
+        ## absolute value across a branch.
+        assert np.all(np.isfinite(out))
+        assert np.max(np.abs(out)) <= np.max(np.abs(x)) + 60.0, (x, out)
+    ## Both probes really do bite on a decent fraction of the draws --
+    ## otherwise the no-undo property above would be vacuous.
+    assert distinct > 50, distinct
 
 
 def test_the_vgs_vds_star_is_order_independent_and_is_not_spice_s_order():
@@ -703,12 +753,35 @@ def test_dc_solve_needs_the_limiter_and_gets_the_same_answer():
 def test_dc_solve_attributes_the_rescue_to_each_limiter(chained):
     """Which limiter does the work -- measured, not assumed.
 
-    At (vdd, vg2, vg1) = (20, 2, 0.8) it is `limvds`: `limit_fet` alone
-    still fails, because SPICE's `fetlim` bounds a step to about a volt
-    and a volt is forty thermal voltages to a subthreshold exponential.
-    `limit_fet` is not useless there -- it cuts the iteration count by
-    more than half on top of `limit_vds` -- but on its own it is not what
-    rescues this circuit, and the pair is not interchangeable.
+    At (vdd, vg2, vg1) = (20, 2, 0.8), on this machine:
+
+        none   NoConvergenceError
+        fet    12 iterations
+        vds    57
+        both   30
+
+    **The attribution changed completely when the write-back stopped
+    being fixed at compile time**, and the old numbers are worth keeping
+    because of what they said. They were:
+
+        none   NoConvergenceError
+        fet    NoConvergenceError    <- and the docstring explained why
+        vds    78
+        both   30
+
+    The explanation given was that SPICE's `fetlim` bounds a step to
+    about a volt, and a volt is forty thermal voltages to a subthreshold
+    exponential -- plausible, self-consistent, and NOT the reason.
+    `limit_fet` was failing because its write-back always moved the
+    GATE, so a wild source dragged the gate out with it; once the
+    correction goes to whichever terminal actually drifted, `fetlim`
+    alone is the BEST of the four.
+
+    That `both` (30) is worse than `fet` alone (12) is real and is the
+    next thing to look at: two probes may not move the same terminal, so
+    the second is pushed onto a node it would not have chosen. A
+    device-level limiter (roadmap 10.3(b)) is what removes that
+    constraint.
 
     Run on BOTH code generators, since the limiter must not depend on
     which one compiled the element.
@@ -717,12 +790,20 @@ def test_dc_solve_attributes_the_rescue_to_each_limiter(chained):
     from pycircuit.circuit.analysis import SingularMatrix
     cond = dict(vdd=20.0, vg2=2.0, vg1=0.8)
 
-    for which in ('none', 'fet'):
-        with pytest.raises((NoConvergenceError, SingularMatrix)):
-            _plain_newton(_cascode(_fet(which, chained), **cond))
+    ## Unlimited still fails -- otherwise none of the rest is evidence.
+    with pytest.raises((NoConvergenceError, SingularMatrix)):
+        _plain_newton(_cascode(_fet('none', chained), **cond))
 
-    _, its_vds = _plain_newton(_cascode(_fet('vds', chained), **cond))
-    c = _cascode(_fet('both', chained), **cond)
-    x, its_both = _plain_newton(c)
-    assert its_both < its_vds / 2.0, (its_both, its_vds)
-    assert_allclose(x[c.get_node_index('mid')], 1.2031737, rtol=1e-6)
+    its = {}
+    for which in ('fet', 'vds', 'both'):
+        c = _cascode(_fet(which, chained), **cond)
+        x, its[which] = _plain_newton(c)
+        ## Every variant that converges must converge to the SAME point:
+        ## a limiter moves the path, never the solution.
+        assert_allclose(x[c.get_node_index('mid')], 1.2031737, rtol=1e-6)
+
+    ## `fetlim` alone is now the cheapest rescue, by a wide margin.
+    assert its['fet'] < its['vds'] / 3.0, its
+    ## ... and adding the second probe COSTS iterations, which is the
+    ## shared-terminal constraint showing up as a number.
+    assert its['both'] > its['fet'], its
