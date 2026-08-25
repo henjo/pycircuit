@@ -266,15 +266,21 @@ voltage.
 The DSL generates all three, plus the limiter, whenever the element
 qualifies:
 
-* exactly one current-contributed branch, no voltage contributions;
-* no charge (`q ≡ 0`) — the layer refuses charge on a participant,
-  since the charge term would have to move to the limited unknown too;
-* no `idt`/`idtmod` states;
-* the whole current is a function of that one branch voltage;
-* and the current is recognisably **exponential**, with the scale read
-  off the expression rather than assumed: `VT` from the argument of the
-  `exp`, and `IS` from `VT·f'(0)` — which is exactly `IS` for the
-  textbook `IS·(exp(v/VT) − 1)`.
+* no voltage contributions (no branch-current unknowns) and no
+  `idt`/`idtmod`/`laplace_*` states;
+* **every** current contribution a function of its *own* branch
+  voltage alone — one device may carry several such junctions, each
+  becoming its own limited unknown;
+* each recognisably **exponential**, with the scale read off the
+  expression rather than assumed: `VT` from the argument of the `exp`,
+  `IS` from `VT·f'(0)`; a *linear* contribution anywhere (a series or
+  gate resistor) has no scale and refuses the whole device.
+
+Charge is allowed (it stays in the MNA block; since 2026-08-22), and so
+is a `var()` let-chain (the detector walks it rather than flattening
+it; since 2026-08-25). *This list used to say "exactly one branch" and
+"no charge" — both false for months. Measured on 2026-08-25, 2 of 26
+shipped models qualify; `explain()` now names the rule that refused.*
 
 Measured (`test_generated_pcnr_protocol_matches_hand_written_diode`): a
 generated diode's `pcnr_i`, `pcnr_didv` and `pcnr_limit` equal the

@@ -1931,3 +1931,189 @@ through `vt()` (which carries the `TEMP` symbol) works. But the minimal
 form `Piecewise((1.0, b.V < 1.0), (0.0, True))` does *not* reproduce
 it, so the trigger is narrower than "a condition on a bare Quantity".
 Not chased; the tests use `b.V / vt()` and this note is the only record.
+
+
+---
+
+## 15. "Is PCNR possible with all models?" -- measured 2026-08-25
+
+**No: 2 of 26 shipped models qualify, and for transistors the obstacle
+is structural.** PCNR has one scalar limited unknown per two-terminal
+branch; a MOSFET's current is `f(vgs, vds, vbs)` and a BJT's transport
+current `f(vbe, vbc)`. Every model, default card, first refusal:
+
+    VBRANCH  (a branch-current unknown)   9   L, VSin, VCVS, RThermal,
+                                              DiodeSpiceThermal,
+                                              GummelPoonNpnThermal, Xtal,
+                                              Comparator, OpAmp
+    STATES   (idt / laplace_*)            5   Idt, Idtmod, FerriteBead,
+                                              RSkin, Memristor
+    MULTI-V  (reads other node voltages)  6   GummelPoon x2, Ekv x2,
+                                              MosLevel1 x2
+    linear   (no exponential scale)       3   R, G, and PSP at its FIRST
+                                              contribution I(g,gi)/rg
+    none     (no resistive current)       1   C
+    QUALIFY                               2   DiodeHdl; DiodeSpiceHdl at
+                                              rs = 0 only
+
+"Partial participation" (qualifying junctions join, the rest stays in
+MNA) was checked as a cheap shortcut and **does not** rescue the thermal
+models: at `rth > 0` their junction current reads the thermal node
+through `isT`, so it is MULTI-V in its own right. It would admit the
+`rs > 0` diode and little else.
+
+`explain()` now names the rule that refused (it used to say only "does
+not qualify"; PSP's gate-resistor refusal took a re-measurement to
+learn). `hdl.md` §3.2a's qualification bullets, which said "exactly one
+branch" and "no charge" for months, are corrected.
+
+### Vector PCNR: three premises corrected before anything was built
+
+1. **The O(k) Schur trick survives vector unknowns.** `J_ml J_lm` is a
+   sum over *unknowns*, not devices; a device with m probes over t
+   terminals is m rank-one updates touching 2t entries.
+   `doc/pcnr_native_design.md` §6(a) already said so.
+2. **`refine` does not need sequential reading.** That was forced on the
+   ordinary path by node write-back; PCNR has none. `limit_together` is
+   not a consumer of vector PCNR -- under PCNR a four-probe MOSFET is
+   expressible per-probe trivially.
+3. **Chained models do have a traced PCNR twin** (`_pcnr_compiled`).
+   The traced path's obstacle is that `jaxtransient`'s junction
+   machinery is hard-wired to the two-terminal `[i, -i]` pnjlim shape.
+
+And one trap for whoever builds it: `pcnr_junctions` pairs are consumed
+as **gmin targets** by `dcanalysis._jrows` and
+`jaxtransient._gmin_junction_rows`, on the ordinary path too. A `fet`
+or `vds` probe must never reach them -- a gmin across `vgs` is a gate
+leak.
+
+### The gate, and where it stands
+
+PCNR removes exactly one thing: two devices limiting the SAME branch
+voltage fighting over a shared node. On transistors this was looked for
+once before -- `doc/transient_work_plan.md` ("A hypothesis I tested and
+had to withdraw"), `doc/pcnr_native_design.md` §8 -- and **did not
+reproduce**: the second limiter reads the already-limited value and
+composes with it. Every PCNR benchmark and test in the tree is diodes.
+
+The full design, staged with the measurement first and an exit
+condition written in advance, is in the plan file this section was
+written from; the measurement's result follows.
+
+### Stage 0 result: the clash REPRODUCES on FETs (2026-08-25)
+
+Two independent measurements, both plain Newton (`StandardNewton`, no
+ladder, no gmin anchor -- a `DC()` solve rescues every case below and
+would have hidden all of it), Jacobian counts, each circuit built in
+BOTH instance orders. Same equations, same x layout; only
+`SubCircuit.limit`'s visit order differs.
+
+**Measurement 1** -- 28 cases (mirror with a body-bias mismatch, diff
+pair with a resistive tail, cascode, BJT mirror; EKV, Level 1, Gummel-
+Poon; starts 0 / -5 / +20 V / one wild node): **25 order-independent, 3
+signatures**:
+
+    diff pair   EKV       start 0      5 vs 7        order-dependent count
+    cascode     Level 1   start +20    FAIL vs 12    order-dependent failure
+    BJT mirror  GP        start +20    FAIL vs 7     order-dependent failure
+
+Traced, iteration by iteration (the 1e45/1e109 figures that appear in
+such traces are the size of the Newton PROPOSALS being corrected, not
+limiter outputs -- checked before reading anything into them):
+
+- *cascode, Level 1, +20 V, M2 first*: M2's bulk-junction probes push
+  the shared `bulk` node up by +9.5, +19.5, +49.5, +140 V on successive
+  iterations and M1's push it back down by almost the same each time.
+  A geometric tug-of-war over one node; diverges. M1 first: settles.
+- *BJT mirror, +20 V, q1 first*: q1 limits the shared base; q2's
+  base-collector probe is then anchored off the ALREADY-LIMITED base
+  and lands the collector 2.8 V forward of it -- deep saturation,
+  overflow. q2 first: the same probe anchors off the unlimited base,
+  lands sane, converges in 7. Which point a derived node is anchored
+  from depends on who wrote the shared node first.
+
+**Measurement 2** (the design agent's, ideal 200 uA tail source,
+5 kOhm loads, inputs 2.5 +- vin, `[M1 first, M2 first]`):
+
+    vin          -1.0          -0.3        0        0.3         1.0
+    both       [45, 14]      [26, 14]  [15, 15]  [14, 26]  [14, NoConv]
+    group      [45, 14]      [26, 14]  [15, 15]  [14, 26]  [14, NoConv]
+    Level 1    6 / 6 everywhere (polynomial channel, nothing to fall off)
+
+Antisymmetric in `vin`, as a clash must be. Mechanism at iteration 0,
+`vin = 1.0`: Newton proposes tail ~ -1.45e8 V; **M1's `fetlim` alone
+wants tail = 2.5 V, M2's wants 0.5 V**, and dictionary order decides
+which the tail gets. *(Corrected the same night by a trace: it is NOT
+"last writer wins". M2, visited first, writes tail = 0.5; M1 then sees
+the tail drifted only 0.5 V against its gate's 3.5 V from the zero
+start, and its own move-the-wilder-node rule moves the SOURCE-PINNED
+GATE `inp` to 1.5 V. Newton restores the gate and M1 is left at
+vgs = 3 V from there on. Visited first, M1 writes 2.5 and M2 simply
+does not bite -- composition, as the earlier BJT search found. So the
+write-back rule of §12.1 is what turns a conflict into a wrong move;
+the conflict itself is the paper's.)* In the losing order M1 is left at `vgs = 3 V` on a
+subthreshold exponential and the tail creeps up by `N*VT` per
+iteration until Newton falls over. `limit_together` cannot help -- it
+is per DEVICE and this is BETWEEN devices. `DC()`'s ladder rescues
+both orders to the same 2.818678 V.
+
+**This is the paper's Figure 1 with FETs in place of diodes, and the
+§10.4 gate is passed.** The one prior search for it (`transient_work_
+plan.md`, two parallel BJTs) looked at a shared-GATE case, which
+composes; the clash lives where two devices' limiters want DIFFERENT
+values on one shared node -- a tail, a bulk, a derived collector.
+
+**Before Stage 1: price the cheaper competitor.** `device_writeback`
+already resolves competing probes WITHIN a device by a spanning
+forest. Lifting it to `SubCircuit.limit` -- one forest over every
+element's targets -- is classical limiting with no new unknowns. If it
+makes the diff pair order-independent at ~14, vector PCNR's case is
+capability again. If "two constraints on one node with different
+values" forces the forest to drop one (it is a conflict, not a cycle),
+that is the number that commissions Stage 1. Spike in progress; result
+recorded below when it lands. Vector PCNR itself is NOT started, per
+the approved scope.
+
+### The cheaper competitor, priced: a circuit-level forest is order-independent and WORSE
+
+`_limiting.CIRCUIT_LEVEL` (default off) + `element_targets()` +
+`SubCircuit.limit` collecting every element's probe targets into ONE
+`device_writeback` over the whole circuit. Plain Newton, gmin = 0:
+
+    diff pair `both`   -1.0      -0.3       0       0.3      1.0
+    baseline         [45,14]   [26,14]  [15,15]  [14,26]  [14,F]
+    forest           [F, F]    [43,43]  [15,15]  [43,43]  [F, F]
+    forest+pinned    [F, F]    [32,32]  [15,15]  [32,32]  [F, F]
+
+    cascode L1 +20 V   (20,2,.8)  (40,2,.8)  (5,2,.8)  (20,2,.8,vb=-2)
+    baseline           [17,10]    [F,10]     [F,12]    [F,21]
+    forest             [13,13]    [12,12]    [19,19]   [21,21]
+
+    48-point grid      both     group    mos4-group
+    baseline           909/0    927/0    896/0
+    forest            1878/8   1842/8   1866/9
+    forest+pinned     1052/0   1051/0   1175/2
+
+**Order-independent: yes. Better: no -- it fails in BOTH orders where
+the baseline failed in one.** Two devices asking one node for 2.5 V and
+0.5 V is a conflict, not a cycle: `(inp,tail)` and `(inn,tail)` are two
+edges of a star, so the forest keeps both, anchors on the least-drifted
+node and derives `tail = 0.5` then `inp = 1.5` -- a source-pinned gate
+moved 2 V, the exact §12.1 failure, now reached identically in both
+orders. Pinning VS nodes turns the conflict into a dropped edge, but
+WHICH edge is decided by anchor choice, and that hands the tail to M2,
+the device that is OFF. **Nothing in `|x - x0|` or in the correction
+sizes knows which device is on.** The forest can only pick a loser
+without the information to pick the right one.
+
+Not adopted; left in the tree behind the switch, because the test that
+records this (`test_a_circuit_level_forest_is_order_independent_and_
+worse`) measures the intervention against its absence, per
+`validation-design`.
+
+**This is the number that commissions Stage 1.** The clash is real, the
+classical fix cannot resolve it in principle, and PCNR removes it by
+construction -- each device limits its OWN `vgs` unknown and the tail
+is solved from both currents at their own limited voltages. Vector PCNR
+is still NOT started: the approved scope was Stage 0 only, and this
+result goes back to the user.

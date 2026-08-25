@@ -3031,6 +3031,7 @@ def generate_code(cls):
     ## (a `$param_given` flag, TIME).  Better to decline than to claim a
     ## capability falsely.
     pcnr_spec = None
+    pcnr_refusal = None
     if not states and not vbranches and len(terminalnodes) >= 2:
         cands, ok = [], True
         _xset = set(xsyms)
@@ -3038,6 +3039,8 @@ def generate_code(cls):
         for st in statements:
             if st.lhs.quantity != 'I':
                 ok = False
+                pcnr_refusal = ('a V-contribution (%s) -- PCNR limits '
+                                'currents' % st.lhs)
                 break
             b = st.lhs.branch_or_node
             kp = index_of[('node', b.plus.name)]
@@ -3065,9 +3068,18 @@ def generate_code(cls):
                 _fs |= _e2.free_symbols
             if _fs & _xset:
                 ok = False                   # not a function of V(b) alone
+                pcnr_refusal = ('%s reads other node voltages (%s) -- its '
+                                'current is not a function of its own branch '
+                                'voltage alone' % (st.lhs, ', '.join(
+                                    sorted(xlabels[xsyms.index(q)]
+                                           for q in _fs & _xset))))
                 break
             if _fs - _allowed - {vsym} - {sym for sym, _e2 in defs_j}:
                 ok = False        # reads what pcnr_i is not handed
+                pcnr_refusal = ('%s reads %s, which pcnr_i is not handed'
+                                % (st.lhs, ', '.join(sorted(str(q) for q in
+                                   _fs - _allowed - {vsym}
+                                   - {sym for sym, _e2 in defs_j}))))
                 break
 
             ## (b) -- the derivative chain, built once and reused for
@@ -3093,6 +3105,11 @@ def generate_code(cls):
                         scales.add(sympy.simplify(1 / a))
             if len(scales) != 1:
                 ok = False                   # no single exponential scale
+                pcnr_refusal = ('%s has %s exponential scale%s -- a linear '
+                                'contribution refuses the whole device, and '
+                                'so does one with two different scales'
+                                % (st.lhs, len(scales) or 'no',
+                                   '' if len(scales) == 1 else 's'))
                 break
             VT_eff = scales.pop()
             if defs_j:
@@ -3111,6 +3128,16 @@ def generate_code(cls):
                                       VT_eff * dfdv.subs(vsym, 0))))
         if ok and cands:
             pcnr_spec = cands
+        elif ok and not cands:
+            pcnr_refusal = 'no resistive current contribution at all'
+    else:
+        pcnr_refusal = ('%s -- the device carries %s'
+                        % ('a generated state' if states else
+                           'a branch-current unknown' if vbranches else
+                           'fewer than two terminals',
+                           '%d state(s)' % len(states) if states else
+                           '%d V-contributed branch(es)' % len(vbranches)
+                           if vbranches else 'one terminal'))
 
     pcnr_funcs = None
     if pcnr_spec is not None:
@@ -3281,6 +3308,7 @@ def generate_code(cls):
                 funcs=funcs, pure_spec=pure_spec, state_meta=state_meta,
                 branchpairs=branchpairs, internalnames=internalnames,
                 const_G=const_G, const_C=const_C, pcnr_funcs=pcnr_funcs,
+                pcnr_refusal=pcnr_refusal,
                 given_names=given_names, limit_spec=limit_spec,
                 limit_groups=limit_groups,
                 cross_spec=cross_spec, sym_spec=sym_spec,
@@ -4638,14 +4666,18 @@ def explain(target, source=True, symbolic=True, maxlines=40):
                                             for f in _p) else '')
                                   for _i, ((ra, rb), k, _m, _p)
                                   in enumerate(info['limit_spec']))))
+    ## Name WHICH rule refused.  The reason used to exist only inside
+    ## generate_code, so "does not qualify" was all a reader ever saw and
+    ## the first refusal had to be replayed by hand to find out why
+    ## (2026-08-25: PSP is refused by its GATE RESISTOR, not its drain
+    ## current, and that took a re-measurement to learn).
     feats.append('PCNR: %s' % ('%d junction(s)' % len(info['pcnr_funcs'])
                                if info['pcnr_funcs'] else
-                               'does not qualify -- needs every current to '
-                               'be an exponential function of its own branch '
-                               'voltage alone, with no states and no branch '
-                               'unknowns. Charge is allowed, and so is var(): '
-                               'the detector walks the let-chain rather than '
-                               'flattening it'))
+                               'does not qualify -- %s. (Rule: every current '
+                               'an exponential function of its own branch '
+                               'voltage alone, no states, no branch unknowns; '
+                               'charge and var() are allowed.)'
+                               % (info.get('pcnr_refusal') or 'unknown')))
     feats.append('JAX pure forms: %s'
                  % ('yes' if info['pure_spec'] else
                     'no (the let-chain path has none)'))
