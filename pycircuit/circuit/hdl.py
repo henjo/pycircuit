@@ -1327,8 +1327,41 @@ def laplace_zp(expr, zeros, poles):
 
 
 class _Limit(sympy.Function):
-    """Marker for a limited probe; see :func:`limit_pnj`."""
+    """Base marker for a limited probe; see :func:`limit_pnj`.
+
+    Never instantiated itself -- one subclass per limiter KIND, so that
+    `atoms(_Limit)` still collects every limited probe in one pass while
+    each kind carries its own argument list.  `kind` is the string the
+    generated `limit()` dispatches on.
+    """
+    kind = None
+
+
+class _LimitPnj(_Limit):
+    """`$limit(probe, "pnjlim", IS, VT)`; see :func:`limit_pnj`."""
     nargs = (3,)
+    kind = 'pnj'
+
+
+class _LimitFet(_Limit):
+    """`$limit(probe, "fetlim", vto)`; see :func:`limit_fet`."""
+    nargs = (2,)
+    kind = 'fet'
+
+
+class _LimitVds(_Limit):
+    """`$limit(probe, "limvds")`; see :func:`limit_vds`."""
+    nargs = (1,)
+    kind = 'vds'
+
+
+def _limit_probe(probe, who):
+    """Validate a limiter's probe argument, shared by the three kinds."""
+    if not (isinstance(probe, Quantity) and probe.isbranch
+            and probe.quantity == 'V'):
+        raise ValueError('%s limits a branch potential (b.V); '
+                         'got %r' % (who, probe))
+    return probe
 
 
 def limit_pnj(probe, IS, VT):
@@ -1356,11 +1389,75 @@ def limit_pnj(probe, IS, VT):
     fallback for models PCNR cannot take, and for ordinary runs, where
     ``pcnr=False`` is the default.
     """
-    if not (isinstance(probe, Quantity) and probe.isbranch
-            and probe.quantity == 'V'):
-        raise ValueError('limit_pnj limits a branch potential (b.V); '
-                         'got %r' % (probe,))
-    return _Limit(probe, sympy.sympify(IS), sympy.sympify(VT))
+    _limit_probe(probe, 'limit_pnj')
+    return _LimitPnj(probe, sympy.sympify(IS), sympy.sympify(VT))
+
+
+def limit_fet(probe, vto):
+    """Verilog-A's ``$limit(probe, "fetlim", vto)``: bound a FET gate
+    voltage's per-iteration excursion.
+
+    ``probe`` must be a branch potential (``b.V``) -- SPICE's ``vgs``, or
+    ``vgd`` for a device run in reverse.  ``vto`` is the voltage the law
+    measures the excursion against; see :func:`pycircuit.circuit._limiting._fetlim`
+    for the four regimes.  The expression evaluates to the probe itself,
+    so it is written inline exactly as :func:`limit_pnj` is::
+
+        vgs = limit_fet(bgs.V, VTO)
+
+    **``vto`` is evaluated from PARAMETERS AND TEMPERATURE ONLY**, once
+    per parameter set.  SPICE passes ``von``, the turn-on voltage the
+    model recomputed this iteration, which in any model with a body
+    effect depends on ``vbs``.  A bias-dependent ``vto`` is not
+    expressible in the per-probe ``limit_spec``, whose parameter
+    expressions are lambdified over ``paramsyms + [TEMP]`` and nothing
+    else; a model must pass its zero-bias threshold.  That makes the
+    limiter looser than SPICE's for a strongly body-biased device --
+    looser, not wrong: ``fetlim``'s job is to bound a step, and a bound
+    placed relative to the wrong threshold still bounds it.
+
+    Ordering: see :func:`limit_vds`.
+    """
+    _limit_probe(probe, 'limit_fet')
+    return _LimitFet(probe, sympy.sympify(vto))
+
+
+def limit_vds(probe):
+    """Verilog-A's ``$limit(probe, "limvds")``: bound a FET's ``vds``.
+
+    ``probe`` must be a branch potential (``b.V``).  Takes no parameters
+    -- SPICE's ``limvds`` is a bare piecewise clamp with hard-coded
+    breakpoints at 3.5 V and 4 V; see
+    :func:`pycircuit.circuit._limiting._limvds`.
+
+    **Ordering, and where this differs from SPICE.**  The generated
+    ``limit()`` walks the declared probes in order, each reading the
+    partially-limited vector, and writes each probe's limited value by
+    moving one terminal: its ``plus``, or its ``minus`` if an earlier
+    probe already moved the ``plus`` (the rule generalises the BJT case
+    ``limit_junctions`` handles with its ``move`` field -- two junctions
+    sharing a base would otherwise have the second write undo the
+    first).  For the usual MOSFET declaration -- ``limit_fet(V(g,s))``
+    and ``limit_vds(V(d,s))`` -- the two writes land on different
+    terminals (``g`` and ``d``), so **each probe ends up carrying exactly
+    its own limited value and the declaration order does not matter**.
+
+    SPICE's order DOES matter, and this is the difference.
+    ``mos1load.c`` limits ``vgs`` first and then recomputes
+    ``vds = vgs - vgd`` from the *unlimited* ``vgd`` before calling
+    ``limvds`` -- so its ``vds`` is shifted by exactly the amount the
+    gate was compressed, ``delta = vgs_lim - vgs``, and its ``vgd`` is
+    preserved instead.  Here ``limvds`` sees the unshifted ``vds`` and it
+    is ``vgd`` that moves.  Both are limited points and both leave the
+    solution untouched -- a limiter only chooses where the next Jacobian
+    is taken -- but they are not the same point, and no per-probe
+    limiter can produce SPICE's: the coupling runs through a THIRD
+    branch (``vgd``) that neither probe names.  Expressing it needs the
+    device-level, vector-valued limiter of roadmap 10.3(b), which
+    receives all of a device's voltages at once.
+    """
+    _limit_probe(probe, 'limit_vds')
+    return _LimitVds(probe)
 
 
 class _IntermediateSymbol(sympy.Symbol):
@@ -2368,22 +2465,46 @@ def generate_code(cls):
         expr = expr.subs(bsubs)
         return expr.subs(subst)
 
-    ## $limit: record (branch, IS, VT) for each limited probe, then
-    ## replace the marker by the probe itself -- it is a request to the
-    ## SOLVER, not a change to the equations.
+    ## $limit: record (branch, KIND, that kind's parameter expressions) for
+    ## each limited probe, then replace the marker by the probe itself -- it
+    ## is a request to the SOLVER, not a change to the equations.  The kind
+    ## is carried rather than assumed: `pnjlim` takes (IS, VT), `fetlim`
+    ## takes (vto) and `limvds` takes nothing, and the generated `limit()`
+    ## dispatches on it.
     limits = []
-    for st in statements:
+
+    def _strip_limits(expr):
+        """Record every `$limit` marker in `expr` and return it unmarked."""
         subs_l = {}
-        for app in sorted(st.rhs.atoms(_Limit), key=sympy.default_sort_key):
-            probe, IS_l, VT_l = app.args
+        for app in sorted(expr.atoms(_Limit), key=sympy.default_sort_key):
+            probe = app.args[0]
+            pars = tuple(app.args[1:])
             b_l = probe.branch_or_node
             key = (index_of[('node', b_l.plus.name)],
                    index_of[('node', b_l.minus.name)])
-            if not any(k[0] == key for k in limits):
-                limits.append((key, IS_l, VT_l))
+            prev = [k for k in limits if k[0] == key]
+            if prev and prev[0][1] != app.kind:
+                raise ValueError(
+                    'branch %s is limited twice, as %r and as %r; one probe '
+                    'carries one limiter'
+                    % (_fmt_branch(branch_key(b_l)), prev[0][1], app.kind))
+            if not prev:
+                limits.append((key, app.kind, pars))
             subs_l[app] = probe
-        if subs_l:
-            st.rhs = st.rhs.subs(subs_l)
+        return expr.subs(subs_l) if subs_l else expr
+
+    ## Intermediates FIRST, and this is not tidiness: a `var()` definition
+    ## is never visited by the statement loop, so before this a
+    ## `var(limit_pnj(...))` carried its marker all the way into
+    ## `_chain_compile` and died there with "Unsupported ... _Limit".  Any
+    ## real MOSFET is chained -- that is what `var()` is for -- so $limit
+    ## was unusable by exactly the models 10.3(a) exists to serve.
+    for _k, (_sym, _expr) in enumerate(intermediates):
+        _new = _strip_limits(_expr)
+        if _new is not _expr:
+            intermediates[_k] = (_sym, _new)
+    for st in statements:
+        st.rhs = _strip_limits(st.rhs)
 
     ## ------------------------------------------------------------------
     ## Intermediates (`var`): resolve each definition in order, and work
@@ -2783,12 +2904,33 @@ def generate_code(cls):
         cross_spec = dict(f=cross_f,
                           directions=[st.direction for st in crossings])
 
-    limit_spec = [((int(k[0]), int(k[1])),
-                   sympy.lambdify(paramsyms + [TEMP], IS_l,
-                                  modules=NUMPY_MODULES),
-                   sympy.lambdify(paramsyms + [TEMP], VT_l,
-                                  modules=NUMPY_MODULES))
-                  for k, IS_l, VT_l in limits]
+    ## Which terminal each probe's limited value is written back to.
+    ## Default: the PLUS terminal, which is what the single-probe case has
+    ## always done.  If an earlier probe already moved that terminal, move
+    ## the MINUS one instead -- otherwise the second write undoes the first,
+    ## which is the same hazard `limit_junctions` handles with its `move`
+    ## field for a BJT's two junctions sharing a base.  With both terminals
+    ## already pinned there is no choice left that keeps every probe's value,
+    ## and saying so beats writing a silently wrong one.
+    limit_spec, _moved = [], set()
+    for k, kind_l, pars_l in limits:
+        ra, rb = int(k[0]), int(k[1])
+        if ra not in _moved:
+            move = ra
+        elif rb not in _moved:
+            move = rb
+        else:
+            raise ValueError(
+                'the $limit probes over-determine this device: both '
+                'terminals of branch (%s,%s) have already been moved by '
+                'earlier probes, so this one cannot be written back without '
+                'undoing them.  A device-level limiter is what this needs.'
+                % (xlabels[ra], xlabels[rb]))
+        _moved.add(move)
+        limit_spec.append(((ra, rb), kind_l, move,
+                           tuple(sympy.lambdify(paramsyms + [TEMP], e,
+                                                modules=NUMPY_MODULES)
+                                 for e in pars_l)))
 
     branchpairs = [branch_key(br) for br in vbranches]
     internalnames = [nd.name for nd in internalnodes]
@@ -3298,6 +3440,15 @@ class BehaviouralMeta(type):
                     out.append((k, m, float(of(*_params_of(self)))))
             return out
 
+        ## An `if/else`, NOT an early `return` -- and that is a FIX, not a
+        ## refactor.  `pure_spec is None` is exactly the let-chain path
+        ## (`var()`), and the `return` that used to stand here jumped over
+        ## everything below it: a chained model got no `@cross` events and
+        ## no `$limit` limiter, silently, however loudly it declared them.
+        ## `explain()` still listed both, because it reads `info` and not
+        ## the class.  Any production compact model is chained -- that is
+        ## what `var()` is for -- so the two features were unavailable to
+        ## precisely the models they exist for.
         if info['pure_spec'] is None:
             cls.linear = False
             cls.i, cls.G, cls.q, cls.C, cls.CY = i, G, q, C, CY
@@ -3306,24 +3457,24 @@ class BehaviouralMeta(type):
                 cls.state_ic = state_ic
             if state_meta['periodic']:
                 cls.periodic_states = periodic_states
-            return
-        xset2 = set(info['pure_spec']['xsyms'])
-        Gmat = sympy.Matrix([info['pure_spec']['ivec']]).jacobian(
-            info['pure_spec']['xsyms'])
-        cls.linear = (not any((e.free_symbols & xset2) for e in Gmat)
-                      ## a wrap or Piecewise is discontinuous even where its
-                      ## slope is constant almost everywhere
-                      and not any(e.atoms(_wrapfloor) or
-                                  e.atoms(sympy.Piecewise)
-                                  for e in info['pure_spec']['ivec']))
+        else:
+            xset2 = set(info['pure_spec']['xsyms'])
+            Gmat = sympy.Matrix([info['pure_spec']['ivec']]).jacobian(
+                info['pure_spec']['xsyms'])
+            cls.linear = (not any((e.free_symbols & xset2) for e in Gmat)
+                          ## a wrap or Piecewise is discontinuous even where
+                          ## its slope is constant almost everywhere
+                          and not any(e.atoms(_wrapfloor) or
+                                      e.atoms(sympy.Piecewise)
+                                      for e in info['pure_spec']['ivec']))
 
-        cls.update = update
-        cls.i, cls.G, cls.q, cls.C, cls.CY = i, G, q, C, CY
-        cls.u, cls.dudt = u, dudt
-        if state_meta['dc_pins']:
-            cls.state_ic = state_ic
-        if state_meta['periodic']:
-            cls.periodic_states = periodic_states
+            cls.update = update
+            cls.i, cls.G, cls.q, cls.C, cls.CY = i, G, q, C, CY
+            cls.u, cls.dudt = u, dudt
+            if state_meta['dc_pins']:
+                cls.state_ic = state_ic
+            if state_meta['periodic']:
+                cls.periodic_states = periodic_states
 
         ## @cross -- predict where each declared expression crosses zero
         ## and publish it as a breakpoint.  Two accepted points give the
@@ -3376,20 +3527,33 @@ class BehaviouralMeta(type):
         ## in).  Only generated when the model asked for it.
         lspec = info['limit_spec']
         if lspec:
-            from pycircuit.circuit._limiting import _pnjlim as _pnj
+            from pycircuit.circuit._limiting import (_pnjlim as _pnj,
+                                                     _fetlim as _fet,
+                                                     _limvds as _lvds)
 
             def limit(self, x, x0, epar=defaultepar, _ls=lspec):
                 out = np.array(x, dtype=float, copy=True)
                 x0a = np.asarray(x0, dtype=float)
                 args = _args_of(self, epar)
-                for (ra, rb), isf, vtf in _ls:
+                for (ra, rb), kind, move, pfs in _ls:
                     vnew = float(out[ra] - out[rb])
                     vold = float(x0a[ra] - x0a[rb])
-                    vlim = _pnj(vnew, vold, float(vtf(*args)),
-                                float(isf(*args)), self.toolkit)
-                    ## Move the ANODE, so a device whose junctions share a
-                    ## cathode does not have the second undo the first.
-                    out[ra] = out[rb] + vlim
+                    pv = [float(f(*args)) for f in pfs]
+                    if kind == 'pnj':
+                        vlim = _pnj(vnew, vold, pv[1], pv[0], self.toolkit)
+                    elif kind == 'fet':
+                        vlim = _fet(vnew, vold, pv[0], self.toolkit)
+                    else:
+                        vlim = _lvds(vnew, vold, self.toolkit)
+                    ## `move` is chosen at compile time (see limit_spec):
+                    ## the PLUS terminal, so a device whose junctions share
+                    ## a cathode does not have the second undo the first --
+                    ## or the MINUS one where an earlier probe has already
+                    ## claimed the plus.
+                    if move == ra:
+                        out[ra] = out[rb] + vlim
+                    else:
+                        out[rb] = out[ra] - vlim
                 return out
 
             cls.limit = limit
@@ -3812,9 +3976,19 @@ def explain(target, source=True, symbolic=True, maxlines=40):
                         '' if len(info['cross_spec']['directions']) == 1
                         else 's'))
     if info['limit_spec']:
-        feats.append('%d $limit probe%s' % (len(info['limit_spec']),
-                                            '' if len(info['limit_spec']) == 1
-                                            else 's'))
+        _xl = {k: nm for k, nm, _kind in layout}
+        ## Name the KIND: with three of them a bare count no longer says
+        ## what the model asked for, and this line is the only place a
+        ## reader can see it without recompiling.
+        feats.append('%d $limit probe%s (%s)'
+                     % (len(info['limit_spec']),
+                        '' if len(info['limit_spec']) == 1 else 's',
+                        ', '.join('%s on (%s,%s)'
+                                  % ({'pnj': 'pnjlim', 'fet': 'fetlim',
+                                      'vds': 'limvds'}[k],
+                                     _xl[ra], _xl[rb])
+                                  for (ra, rb), k, _m, _p
+                                  in info['limit_spec'])))
     feats.append('PCNR: %s' % ('%d junction(s)' % len(info['pcnr_funcs'])
                                if info['pcnr_funcs'] else
                                'does not qualify -- needs every current to '

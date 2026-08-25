@@ -129,3 +129,153 @@ def limit_junctions(x, x0, junctions, VT, IS_for, toolkit):
         else:
             out[cathode] = out[anode] - vlim
     return out
+
+
+def _fetlim(vnew, vold, vto, toolkit):
+    """SPICE's `fetlim`: bound the per-iteration excursion of a FET gate voltage.
+
+    Transcribed from **ngspice-47**, `src/spicelib/devices/devsup.c`,
+    `DEVfetlim` (the same routine as SPICE3f5's `Include/devsup.c`, with the
+    one change noted below).  The law is a piecewise *step* bound rather than
+    a logarithmic compression: it is not an exponential that is being tamed
+    here but a threshold, so what matters is how far the point may move
+    RELATIVE TO `vto` in one iteration, and on which side of `vto` it starts.
+
+    Three regimes, on `(vold, delv = vnew - vold)`:
+
+    * `vold >= vto + 3.5` -- strongly on.  Going further on, a step is capped
+      at `vtsthi = 2*|vold - vto| + 2`; coming off far enough to cross back
+      under `vto + 3.5`, the new point lands no lower than `vto + 2`.
+    * `vto <= vold < vto + 3.5` -- the middle region.  The new point is simply
+      confined to `[vto - 0.5, vto + 4]`.
+    * `vold < vto` -- off.  Going further off, capped at `vtsthi`; turning on,
+      never past `vto + 0.5` in one step.
+
+    The bounds are never tighter than 2 V (`vtsthi >= 2`), and the middle
+    region's clamps sit 0.5 V and 4 V from `vto`, so **every step of 0.45 V
+    or less passes through EXACTLY**, whatever `vold` and `vto` are -- the
+    limiter is a strict no-op near the solution, the same property
+    `_pnjlim` has from its `2*VT` escape, obtained here by a different
+    mechanism.  (0.45 is asserted, not asymptotic: see
+    `test_fetlim_is_a_strict_no_op_near_the_solution`.)
+
+    **`vtstlo` does not appear above because both of its branches are
+    unreachable.**  The C computes it and tests it twice; neither test can
+    fire.  Off, turning on, the branch needs `vnew <= vto + 0.5` with
+    `vold < vto`, so `delv <= (vto - vold) + 0.5`, while
+    `vtstlo = (vto - vold) + 1`.  On, coming off, it needs `vnew >= vto +
+    3.5` with `vold >= vto + 3.5`, so `-delv <= (vold - vto) - 3.5`, again
+    below `vtstlo`.  That matters for reading the two sources: ngspice's
+    header credits Alan Gillespie with "a new definition for vtstlo"
+    (`|vold-vto| + 1` where SPICE3f5 had `vtsthi/2 + 2 = |vold-vto| + 3`),
+    and the two are indistinguishable in every input -- checked
+    algebraically above and by exhaustive sweep in
+    `test_fetlim_vtstlo_is_dead_code_in_devfetlim`.  So the ngspice-47
+    lineage claimed here costs nothing and buys nothing; it is stated
+    because a reader will find the difference in the C and deserves to
+    know it is inert.
+
+    Note that `_pnjlim` above does NOT follow ngspice -- it follows the PCNR
+    paper's listing, which is the SPICE3f5 `pnjlim`, and ngspice's `pnjlim`
+    IS materially different (Gillespie's negative-voltage limiting).  The two
+    functions have different lineages, each stated where it is.
+
+    `vto` is SPICE's `von`, the actual turn-on voltage -- which in a real
+    MOSFET model is BIAS DEPENDENT (body effect), recomputed each iteration.
+    Nothing in this function assumes otherwise; the restriction that the DSL
+    can only pass a parameter-level constant is `hdl.limit_fet`'s, and is
+    documented there.
+
+    `toolkit` is unused -- the law is `abs`/`min`/`max` and no transcendental
+    -- and is kept in the signature so every limiter in this module is called
+    the same way.
+    """
+    vtsthi = abs(2.0 * (vold - vto)) + 2.0
+    ## Dead in both of its uses below -- kept so this stays a transcription
+    ## of the C rather than an edit of it.  See the docstring for why.
+    vtstlo = abs(vold - vto) + 1.0
+    vtox = vto + 3.5
+    delv = vnew - vold
+
+    if vold >= vto:
+        if vold >= vtox:
+            if delv <= 0.0:
+                ## Going off.
+                if vnew >= vtox:
+                    if -delv > vtstlo:        # unreachable
+                        vnew = vold - vtstlo
+                else:
+                    vnew = max(vnew, vto + 2.0)
+            else:
+                ## Staying on.
+                if delv >= vtsthi:
+                    vnew = vold + vtsthi
+        else:
+            ## Middle region.
+            if delv <= 0.0:
+                vnew = max(vnew, vto - 0.5)
+            else:
+                vnew = min(vnew, vto + 4.0)
+    else:
+        ## Off.
+        if delv <= 0.0:
+            if -delv > vtsthi:
+                vnew = vold - vtsthi
+        else:
+            vtemp = vto + 0.5
+            if vnew <= vtemp:
+                if delv > vtstlo:             # unreachable
+                    vnew = vold + vtstlo
+            else:
+                vnew = vtemp
+    return vnew
+
+
+def _limvds(vnew, vold, toolkit):
+    """SPICE's `limvds`: bound the per-iteration excursion of a FET's `vds`.
+
+    Transcribed from **ngspice-47**, `src/spicelib/devices/devsup.c`,
+    `DEVlimvds` -- byte for byte the same routine as SPICE3f5's, unlike
+    `fetlim`.  For `vold >= 3.5` a rising `vds` may at most triple (`3*vold +
+    2`) and a falling one may not drop below 2 while it is still above 3.5;
+    below 3.5, `vds` is confined to `[-0.5, 4]`.
+
+    This is what stops a saturating model being evaluated at hundreds of
+    volts.  `compact.py`'s `PspMosLongChannel.limit` records what happens
+    without it: `dIds/dVds` falls to 1e-11 by 500 V, so a solver that lands
+    out there has a numerically empty row and is reported singular rather
+    than slow.  That method is worth reading beside this one, and worth
+    reading carefully: it names `DEVfetlim` as the part it plays, but it
+    bounds d, g and b alike by a single symmetric `|delta| <= vlimit = 1 V`
+    about the source, which is neither `fetlim` nor `limvds` -- it is a
+    third, blunter law that happens to cover both jobs.  The failure its
+    docstring describes is specifically the one THIS function exists for.
+
+    **The `vold < 0` fold is a DELIBERATE addition**, and it is not invented:
+    `DEVlimvds` alone assumes a forward-mode device, and clamping at `-0.5`
+    would drag any reverse-biased `vds` up to -0.5 -- so the routine is NOT a
+    no-op near a solution with `vds < -0.5`, which is a limiter's one
+    indispensable property.  SPICE handles that at the device level rather
+    than in `devsup.c`: `mos1load.c` selects on the sign of the previous
+    `vds` and calls `-DEVlimvds(-vds, -vds_old)` in the reverse branch.  The
+    fold here is exactly that call, moved inside so that a per-probe
+    declaration -- which cannot see the device's mode -- still gets it.  With
+    the fold the routine is a strict no-op for a small step about any `vold`.
+
+    `toolkit` is unused; see `_fetlim`.
+    """
+    if vold < 0.0:
+        ## Reverse mode: mos1load.c's `vds = -DEVlimvds(-vds, -vds_old)`.
+        return -_limvds(-vnew, -vold, toolkit)
+
+    if vold >= 3.5:
+        if vnew > vold:
+            vnew = min(vnew, 3.0 * vold + 2.0)
+        elif vnew < 3.5:
+            vnew = max(vnew, 2.0)
+    else:
+        if vnew > vold:
+            vnew = min(vnew, 4.0)
+        else:
+            vnew = max(vnew, -0.5)
+    return vnew
