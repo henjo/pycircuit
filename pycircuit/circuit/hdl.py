@@ -3066,9 +3066,22 @@ def generate_code(cls):
                 'undoing them.  A device-level limiter is what this needs.'
                 % (xlabels[ra], xlabels[rb]))
         _moved.add(move)
+        ## `given_syms` BELONGS IN THIS SIGNATURE.  Every other compiled
+        ## function in this file is called with `_args_of`, which is
+        ## `params + [T] + givenness flags`; this one alone was lambdified
+        ## over `paramsyms + [TEMP]` and then called with the wider list.
+        ## A model declaring BOTH a `$limit` probe and `$param_given`
+        ## therefore compiled clean and raised `TypeError: takes N
+        ## positional arguments but N+1 were given` from inside `limit()`
+        ## on the first Newton iteration.  Nothing had ever used the two
+        ## together until the Gummel-Poon BJT wanted `param_given('rbm')`
+        ## for SPICE's `RBM defaults to RB`, which a default VALUE cannot
+        ## express.  Widened rather than sliced at the call site, so a
+        ## limiter's parameters may legitimately read a givenness flag.
         limit_spec.append(((ra, rb), kind_l, move,
-                           tuple(sympy.lambdify(paramsyms + [TEMP], e,
-                                                modules=NUMPY_MODULES)
+                           tuple(sympy.lambdify(
+                               paramsyms + [TEMP] + given_syms, e,
+                               modules=NUMPY_MODULES)
                                  for e in pars_l)))
 
     branchpairs = [branch_key(br) for br in vbranches]
