@@ -79,10 +79,10 @@ class PcnrDevice(object):
     consumer.
     """
     __slots__ = ('instance', 'element', 'rows', 'probes', 'local', 'kinds',
-                 'off', 'scalar')
+                 'off', 'scalar', 'redundant')
 
     def __init__(self, instance, element, rows, local, kinds, scalar,
-                 off=0):
+                 off=0, redundant=()):
         self.instance = instance
         self.element = element
         self.rows = None if rows is None else [int(r) for r in rows]
@@ -92,6 +92,15 @@ class PcnrDevice(object):
         self.kinds = tuple(kinds)
         self.scalar = bool(scalar)
         self.off = int(off)
+        ## Probes that closed a cycle in the declaration (Stage 2): no
+        ## unknown of their own -- ``((la, lb), kind, coeffs)`` with
+        ## ``coeffs`` the signed combination of this device's unknowns that
+        ## is their branch voltage.  Their LAW is applied by the device's
+        ## `pcnr_limit`; here they matter as gmin targets when they are
+        ## junctions.
+        self.redundant = tuple(((int(a), int(b)), k, tuple(int(c_) for c_
+                                                           in c))
+                               for (a, b), k, c in redundant)
 
     @property
     def m(self):
@@ -193,7 +202,8 @@ def _device_of(instance, element, rows):
     if probes:
         local = [tuple(p) for p, _k in probes]
         kinds = [k for _p, k in probes]
-        return PcnrDevice(instance, element, rows, local, kinds, scalar=False)
+        return PcnrDevice(instance, element, rows, local, kinds, scalar=False,
+                          redundant=getattr(element, 'pcnr_redundant', ()))
     pairs = getattr(element, 'pcnr_junctions', ())
     if pairs:
         return PcnrDevice(instance, element, rows, [tuple(p) for p in pairs],
@@ -230,12 +240,26 @@ def pcnr_junction_pairs(circuit):
     flat ``v_lim`` order, which is what lets a consumer that still thinks
     in pairs (`fang_timestep`'s ``v_lim`` seed) stay correct while every
     probe is a junction.
+
+    A device's REDUNDANT junctions (a MOSFET's `(b,d)`, which closed the
+    cycle and has no unknown of its own) are listed after its own
+    unknowns' pairs: a gmin belongs across both bulk junctions, as SPICE
+    puts it, and which of the two the declaration happened to name last
+    is not a physical distinction.  They carry no ``v_lim`` slot, so a
+    pair-shaped ``v_lim`` consumer is correct only while every probe of
+    every device is a tree junction -- which is the case it already
+    required (a device with any ``fet``/``vds`` probe was never
+    pair-shaped).
     """
     found = []
     for dev in pcnr_devices(circuit):
         for (ra, rb), kind in zip(dev.probes, dev.kinds):
             if kind == 'pnj':
                 found.append((dev.instance, dev.element, ra, rb))
+        for (la, lb), kind, _c in dev.redundant:
+            if kind == 'pnj':
+                found.append((dev.instance, dev.element, dev.rows[la],
+                              dev.rows[lb]))
     return found
 
 
@@ -506,6 +530,93 @@ def predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode, junctions=None,
     return dx_mna, dx_lim
 
 
+def limit_block(probes, coeffs, v_new, v_old, laws):
+    """A device's laws applied over its tree of unknowns (Stage 2).
+
+    ``probes`` are ``(a, b)`` row pairs for EVERY probe whose law is
+    applied -- the ``m`` tree probes first, then any redundant ones --
+    and ``coeffs[p]`` is the signed combination of the ``m`` unknowns that
+    is probe ``p``'s branch voltage (an identity row for a tree probe).
+    ``laws[p](vnew, vold)`` is its limiter.  Returns the ``m`` limited
+    unknowns.
+
+    **Without a redundant probe this is the per-probe loop, exactly**:
+    each unknown is its own law's output, bit for bit, which is what
+    keeps every Stage-1 participant's numbers where they were.
+
+    **With one, the laws over-determine the unknowns** -- SPICE's MOSFET
+    set has `(b,d) = (b,s) - (d,s)` and three limited values need not
+    sum to zero -- and the rule is `limit_together`'s write-back rule
+    (`_limiting.device_writeback`), restated for a tree of branch
+    voltages instead of a forest over nodes: take the probes in order of
+    DECREASING correction, keep each that does not close a cycle, and
+    solve the unknowns from the kept set.  The one dropped is the one
+    asking for the least, and the rule is a function of the data, so
+    declaration order cannot matter.  There is no anchor to choose here
+    -- the unknowns ARE branch voltages -- which is the part of the
+    node write-back that PCNR made unnecessary.
+
+    If no law bit, ``v_new`` is returned untouched: the strict no-op
+    near the solution that lets "did limiting fire?" stay a signal.  If
+    the kept set is the tree itself, the limited values are assigned
+    directly (no potentials are formed, so nothing is rounded).
+    """
+    m = len(v_new)
+    vn = np.asarray(v_new, dtype=float)
+    vo = np.asarray(v_old, dtype=float)
+    C = np.asarray(coeffs, dtype=float).reshape(len(probes), m)
+    raw = C @ vn
+    old = C @ vo
+    lim = np.array([float(law(float(r), float(o)))
+                    for law, r, o in zip(laws, raw, old)])
+    bit = [p for p in range(len(probes)) if lim[p] != raw[p]]
+    if not bit:
+        return np.array(vn, copy=True)
+    if len(probes) == m:
+        return lim
+    ## Kruskal on |correction|, ties by row pair -- the data decides.
+    parent = {}
+
+    def _find(n):
+        parent.setdefault(n, n)
+        while parent[n] != n:
+            parent[n] = parent[parent[n]]
+            n = parent[n]
+        return n
+
+    kept = []
+    for p in sorted(range(len(probes)),
+                    key=lambda q: (-abs(lim[q] - raw[q]),
+                                   probes[q][0], probes[q][1])):
+        a, b = probes[p]
+        ka, kb = _find(a), _find(b)
+        if ka == kb:
+            continue
+        parent[ka] = kb
+        kept.append(p)
+    if sorted(kept) == list(range(m)):
+        return lim[:m]
+    ## Potentials over the kept tree, then each unknown as a difference.
+    adj = {}
+    for p in kept:
+        a, b = probes[p]
+        adj.setdefault(a, []).append((b, -lim[p]))
+        adj.setdefault(b, []).append((a, +lim[p]))
+    pot = {}
+    for start in adj:
+        if start in pot:
+            continue
+        pot[start] = 0.0
+        stack = [start]
+        while stack:
+            u = stack.pop()
+            for w, sgn in adj[u]:
+                if w not in pot:
+                    pot[w] = pot[u] + sgn
+                    stack.append(w)
+    return np.array([pot[a] - pot[b] for a, b in probes[:m]])
+
+
 def refine(junctions, v_old, v_new, epar=defaultepar, x_old=None):
     """The CORRECT phase: each device limits only the variables it owns.
 
@@ -552,12 +663,28 @@ def lim_converged(g_lim, v_new, reltol, abstol):
 
 
 def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
-             reltol=1e-6, abstol=1e-12):
+             reltol=1e-6, abstol=1e-12, iabstol=1e-12):
     """DC operating point by PCNR.  Returns ``(x, v_lim, iterations)``.
 
     The flow is Figure 2's: initialise, then repeat predict-then-correct until
     converged.  There is no limiting of the MNA vector anywhere -- the only thing
     limited is each device's own unknown, in :func:`refine`.
+
+    **Convergence is `StandardNewton`'s test, per component** (Stage 2,
+    2026-08-25): every ``|dx_i| < reltol*max(|x_i|, |x_i'|) + abstol``,
+    every ``|f_i| < reltol*(|J||x| + |f|)_i + iabstol``, and every limited
+    unknown consistent (:func:`lim_converged`).  It used to be
+    ``max|dx| < reltol*max|x_new|`` over the WHOLE vector -- and the
+    vector holds the sources' branch currents.  On a FET cascode from a
+    40 V supply the first iterate put the supply's current at 7.5e27 A,
+    the tolerance on every node became 7e23 V, and the solve declared
+    victory in 5 iterations at a point whose KCL residual was 7.5e27:
+    a "converged" non-solution, 688 V from the answer.  Diodes never
+    exposed it because a diode's current at a limited ``v_lim`` is
+    bounded; a FET's ``vgs`` unknown is limited but the current at it
+    still overflows the row.  The residual test is what separates a
+    small step from a small residual -- at a 1e29 S point the Newton
+    step is small BECAUSE the row is stiff, not because it is solved.
     """
     devices = pcnr_devices(circuit)
     if not devices:
@@ -586,12 +713,26 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
         ## CORRECT: each device limits only what it owns.
         v_new = refine(devices, v_lim, v_new, epar, x_old=x)
 
-        converged = (np.max(np.abs(dx_mna)) < reltol * np.max(np.abs(x_new)) + abstol
+        keep = np.arange(n) != irefnode
+        conv_x = bool(np.all(np.abs(dx_mna)[keep]
+                             < reltol * np.maximum(np.abs(x_new), np.abs(x))[keep]
+                             + abstol))
+        ## The residual the step was computed from, judged the way
+        ## `StandardNewton` judges its own: against the currents that
+        ## actually flow in the row.
+        f_eff, J_eff = schur_reduce(g_mna, g_lim, J_mm, junctions=devices,
+                                    didv=didv)
+        i_scale = np.abs(J_eff) @ np.abs(x_new) + np.abs(f_eff)
+        conv_f = bool(np.all(np.abs(f_eff)[keep]
+                             < reltol * i_scale[keep] + iabstol))
+        converged = (conv_x and conv_f
                      and lim_converged(g_lim, v_new, reltol, abstol))
         x, v_lim = x_new, v_new
         if converged:
             return x, v_lim, it + 1
 
     raise RuntimeError(
-        'PCNR did not converge in %d iterations: max|g_lim| = %g'
-        % (maxiter, float(np.max(np.abs(g_lim)))))
+        'PCNR did not converge in %d iterations: max|g_lim| = %g, '
+        'max|dx| = %g, max|f| = %g'
+        % (maxiter, float(np.max(np.abs(g_lim))), float(np.max(np.abs(dx_mna))),
+           float(np.max(np.abs(f_eff)))))

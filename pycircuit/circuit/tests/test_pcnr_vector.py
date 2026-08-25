@@ -258,11 +258,18 @@ def test_the_charge_diode_at_5_v_took_14_iterations_because_of_the_subtraction()
     conductance was gone from the row, the step was nonsense, and the
     node bounced between 5 V and ``v_lim`` for seven round trips.  With
     the participant excluded from the assembly the resistor survives and
-    the same solve takes 8 monotone iterations to the same point.
+    the same solve takes 9 monotone iterations to the same point.
+
+    (9, not the 8 first recorded: Stage 2 gave `solve_dc` a RESIDUAL
+    test beside the step test, and at iteration 8 the residual is
+    5.3e-7 A, 4.7x over `StandardNewton`'s tolerance for that row --
+    the old criterion never looked at it.  Iteration 9 brings it to
+    3e-11.  The old solver's 14 is unchanged because its criterion is
+    the one it always had.)
     """
     xo, _vo, io = _old_solve_dc(_charge_diode(vsrc=5.0), gnd)
     xn, _vn, i_n = P.solve_dc(_charge_diode(vsrc=5.0), gnd)
-    assert io == 14 and i_n == 8, (io, i_n)
+    assert io == 14 and i_n == 9, (io, i_n)
     assert_allclose(xn, xo, rtol=0, atol=1e-8)
 
 
@@ -450,12 +457,20 @@ def test_the_refusals_name_their_rule():
     th.update_iparv()
     assert 'var(dT) reads th, tha, which no $limit probe limits' in explain(
         th, source=False, symbolic=False)
+    ## Stage 2: a `fet`/`vds` probe is a PCNR unknown like any other.
     f = _fet('both')('d', 'g', 's')
     f.update_iparv()
-    assert 'probe (g,s) is a fetlim limiter -- vector PCNR takes pnjlim ' \
-           'probes only in Stage 1; fetlim and limvds are Stage 2' \
-           in explain(f, source=False, symbolic=False)
-    assert not hasattr(f, 'pcnr_i')
+    assert 'PCNR: vector route, 2 probes over 3 rows (fetlim on (g,s), ' \
+           'limvds on (d,s))' in explain(f, source=False, symbolic=False)
+    assert hasattr(f, 'pcnr_i')
+    ## EKV reads its bulk-source potential RAW (no probe on that branch,
+    ## and `von` is built from it), so the route refuses it by the
+    ## unlimited-branch rule -- the only rule left that refuses a MOSFET.
+    ekv = eh.EkvNmosHdl('d', 'g', 's', 'b')
+    ekv.update_iparv()
+    assert 'PCNR: does not qualify -- var(vsb) reads b, g, which no $limit ' \
+           'probe limits' in explain(ekv, source=False, symbolic=False)
+    assert not hasattr(ekv, 'pcnr_i')
 
 
 def test_the_gmin_pair_view_lists_pnj_probes_only_in_v_lim_order():
@@ -673,8 +688,14 @@ def test_the_stage_0_bjt_mirror_under_pcnr_is_order_independent_at_every_start()
          0 V    [9, 9]         [9, 9]
         -5 V    [9, 9]         [9, 9]
         +5 V    [FAIL, FAIL]   [164, 164]   converges where plain cannot
-       +10 V    [7, 7]         [6, 6]
+       +10 V    [7, 7]         [7, 7]       (was [6, 6]; see below)
        +20 V    [FAIL, 7]      [FAIL, FAIL] the Stage 0 signature
+
+    The +10 V PCNR entry was 6 until Stage 2 gave `solve_dc` a residual
+    test: at iteration 6 the base row's residual is 1.3e-5 A, 4.2x over
+    the tolerance `StandardNewton` applies to the same row, and the old
+    step-only criterion accepted it.  Every other entry, +5 V's 164
+    included, is unchanged by the stricter test.
 
     Three claims, each asserted below:
 
@@ -716,7 +737,7 @@ def test_the_stage_0_bjt_mirror_under_pcnr_is_order_independent_at_every_start()
             if its is not None:
                 assert err < 1e-5, (start, pcnr)
     assert table[0.0][1][0][0] == 9 and table[-5.0][1][0][0] == 9, table
-    assert table[10.0][1][0][0] == 6 and table[10.0][0][0][0] == 7, table
+    assert table[10.0][1][0][0] == 7 and table[10.0][0][0][0] == 7, table
     ## claim 2 -- the control, as measured (the winning order at 7).
     assert table[20.0][0][0][0] is None and table[20.0][0][1][0] == 7, table
     ## +5 V: plain fails both orders, PCNR converges both (slowly).
@@ -797,3 +818,279 @@ def test_solve_dc_uses_the_per_component_criterion():
     ## converged, and the last consultation is the one that stopped it.
     assert 1 <= len(calls) <= its and its > 3
     assert np.all(np.abs(calls[-1]) < 1e-6 + 1e-12)
+
+
+## ======================================================================
+## 7.  Stage 2: FET probes (`fetlim`/`limvds`) and a redundant probe.
+## ======================================================================
+
+def _aug_fd(c, x, v, devs, eps=1e-6):
+    """Finite-difference ``d[g_mna; g_lim]/d[x; v]`` against the assembled
+    ``[[J_mm, J_ml], [J_lm, I]]``.  Returns (assembled, fd)."""
+    u = np.asarray(c.u(0.0, defaultepar, analysis='dc'), dtype=float)
+
+    def g(xx, vv):
+        gm, gl, *_r = P.augmented_system(c, xx, vv, devs, defaultepar,
+                                         u_extra=u, dense_blocks=False)
+        return np.concatenate((gm, gl))
+
+    gm, gl, J_mm, J_ml, J_lm, _d = P.augmented_system(
+        c, x, v, devs, defaultepar, u_extra=u, dense_blocks=True)
+    k = len(v)
+    J = np.block([[J_mm, J_ml], [J_lm, np.eye(k)]])
+    z = np.concatenate((x, v))
+    fd = np.zeros_like(J)
+    for j in range(len(z)):
+        dz = np.zeros(len(z))
+        dz[j] = eps
+        fd[:, j] = (g(*np.split(z + dz, [c.n])) - g(*np.split(z - dz, [c.n]))) \
+            / (2 * eps)
+    return J, fd
+
+
+def _mos4_cascode():
+    from pycircuit.circuit.tests.test_device_limiter import _mos4, _cascode4
+    return _cascode4(_mos4('group'), 20.0, 2.0, 0.8)
+
+
+def _l1_cascode(vb=-0.5, **card):
+    c = SubCircuit()
+    c['vdd'] = VS('vdd', gnd, v=20.0)
+    c['vg2'] = VS('g2', gnd, v=2.0)
+    c['vg1'] = VS('g1', gnd, v=0.8)
+    c['vb'] = VS('bulk', gnd, v=vb)
+    c['M2'] = eh.MosLevel1Hdl('vdd', 'g2', 'mid', 'bulk', **card)
+    c['M1'] = eh.MosLevel1Hdl('mid', 'g1', gnd, 'bulk', **card)
+    return c
+
+
+@pytest.mark.parametrize('mk', [_mos4_cascode, _l1_cascode],
+                         ids=['mos4-group', 'level1'])
+def test_the_augmented_jacobian_is_the_derivative_with_fet_probes(mk):
+    """``J == d[g_mna; g_lim]/d[x; v]`` by central differences on a
+    cascode of four-probe MOSFETs -- three unknowns each (`fetlim` on
+    `vgs`, `limvds` on `vds`, `pnjlim` on `vbs`), the redundant `(b,d)`
+    read off the tree.  Level 1 carries its charge; at DC it is inert
+    and the block is the resistive derivative."""
+    c = mk()
+    devs = P.pcnr_devices(c)
+    assert [d.kinds for d in devs] == [('fet', 'vds', 'pnj')] * 2
+    x = np.zeros(c.n)
+    for nm, val in (('vdd', 20.0), ('g2', 2.0), ('g1', 0.8), ('bulk', -0.5),
+                    ('mid', 1.1)):
+        x[c.get_node_index(nm)] = val
+    v = P.v_lim_init(devs, x) + np.array([0.02, -0.1, 0.01, -0.03, 0.2, 0.0])
+    J, fd = _aug_fd(c, x, v, devs)
+    scale = np.max(np.abs(J))
+    assert_allclose(J, fd, rtol=1e-5, atol=2e-6 * scale)
+    ## Mutation control: a `fet` probe's `didv` column dropped from J_ml
+    ## is caught -- that column is the drain current's slope in `vgs`.
+    bad = J.copy()
+    bad[:c.n, c.n] = 0.0
+    assert not np.allclose(bad, fd, rtol=1e-5, atol=2e-6 * scale)
+
+
+def test_the_cycle_is_carried_as_a_tree_and_the_redundant_probe_is_named():
+    """`_mos4` declares `(g,s)`, `(d,s)`, `(b,s)`, `(b,d)`; the last closes
+    a triangle.  The device's unknowns are the first three, `(b,d)` is
+    recorded with its combination `+(b,s) -(d,s)` and its `pnjlim`, and
+    `explain()` says so.  At convergence every unknown equals its branch
+    voltage and the implied `vbd` equals the branch it stands for."""
+    from pycircuit.circuit.tests.test_device_limiter import _mos4
+    el = _mos4('group')('d', 'g', 's', 'b')
+    el.update_iparv()
+    assert el.pcnr_probes == (((1, 2), 'fet'), ((0, 2), 'vds'),
+                              ((3, 2), 'pnj'))
+    assert el.pcnr_redundant == (((3, 0), 'pnj', (0, -1, 1)),)
+    txt = explain(el, source=False, symbolic=False)
+    assert 'PCNR: vector route, 3 probes over 4 rows (fetlim on (g,s), ' \
+           'limvds on (d,s), pnjlim on (b,s))' in txt
+    assert 'PCNR redundant probe: pnjlim on (b,d) = -(d,s) +(b,s)' in txt
+    c = _mos4_cascode()
+    x, v_lim, _its = P.solve_dc(c, gnd, reltol=1e-9, abstol=1e-12)
+    for dev in P.pcnr_devices(c):
+        for j, (ra, rb) in enumerate(dev.probes):
+            assert abs(v_lim[dev.off + j] - (x[ra] - x[rb])) < 1e-12
+        for (la, lb), _k, coeffs in dev.redundant:
+            implied = float(np.dot(coeffs, v_lim[dev.off:dev.off + dev.m]))
+            assert abs(implied - (x[dev.rows[la]] - x[dev.rows[lb]])) < 1e-12
+
+
+def test_limit_block_is_the_per_probe_loop_without_a_redundant_probe():
+    """Bit for bit: a tree of probes is limited probe by probe, and a
+    block no law touched is returned as it came."""
+    probes = [(1, 2), (0, 2)]
+    ident = [[1, 0], [0, 1]]
+    laws = [lambda vn, vo: min(vn, vo + 1.0), lambda vn, vo: vn]
+    out = P.limit_block(probes, ident, [5.0, 3.3], [0.5, 3.0], laws)
+    assert list(out) == [1.5, 3.3]
+    same = P.limit_block(probes, ident, [0.7, 3.3], [0.5, 3.0], laws)
+    assert list(same) == [0.7, 3.3]
+
+
+def test_limit_block_resolves_a_cycle_by_dropping_the_smallest_correction():
+    """Three laws on two unknowns (`vbd = vbs - vds`): the kept pair is
+    the two asking for MORE, the third follows from them.  Which probe
+    was declared redundant changes nothing about the resolved branch
+    voltages -- the rule is a function of the data (`limit_together`'s
+    write-back rule, for a tree of branch voltages)."""
+    clamp = lambda hi: (lambda vn, vo: min(vn, hi))          # noqa: E731
+    floor = lambda lo: (lambda vn, vo: max(vn, lo))          # noqa: E731
+    keep = lambda vn, vo: vn                                 # noqa: E731
+    ## unknowns (vds, vbs); redundant vbd = vbs - vds.  Raw: vds = 10,
+    ## vbs = 0.9, vbd = -9.1.  limvds-like clamp on vds to 4 (corr 6),
+    ## pnj-like clamp on vbs to 0.8 (corr 0.1), vbd's law: no bite.
+    a = P.limit_block([(0, 2), (3, 2), (3, 0)], [[1, 0], [0, 1], [-1, 1]],
+                      [10.0, 0.9], [2.0, 0.7], [clamp(4.0), clamp(0.8), keep])
+    ## vds = 4 and vbs = 0.8 are both honoured; vbd = -3.2 follows.
+    assert list(a) == [4.0, 0.8]
+    ## Now let vbd's law bite HARDER than vbs's: it asks for -5 (corr 4.1)
+    ## against vbs's 0.1.  vbs is the one dropped: vbs = vbd + vds = -1.
+    b = P.limit_block([(0, 2), (3, 2), (3, 0)], [[1, 0], [0, 1], [-1, 1]],
+                      [10.0, 0.9], [2.0, 0.7],
+                      [clamp(4.0), clamp(0.8), floor(-5.0)])
+    assert_allclose(b, [4.0, -1.0], rtol=0, atol=1e-15)
+    ## Same laws, `vbd` carried as the unknown and `vbs` redundant:
+    ## unknowns (vds, vbd), vbs = vbd + vds.  The four branch voltages
+    ## resolve identically.
+    b2 = P.limit_block([(0, 2), (3, 0), (3, 2)], [[1, 0], [0, 1], [1, 1]],
+                       [10.0, -9.1], [2.0, -1.3],
+                       [clamp(4.0), floor(-5.0), clamp(0.8)])
+    assert_allclose([b2[0], b2[1] + b2[0]], b, rtol=0, atol=1e-15)
+
+
+def test_von_reads_x_old_sub_under_pcnr_on_level_1():
+    """SPICE's body-biased `von` through the vector route: `fetlim`'s
+    threshold is evaluated at the device's LAST ACCEPTED sub-vector, so
+    two `x_old` bulk biases clamp the same `vgs` proposal to two
+    different values -- and the clamp moves the way the body effect
+    says (a more negative `vbs` raises `von`)."""
+    el = eh.MosLevel1Hdl('d', 'g', 's', 'b', gamma=0.9)
+    el.update_iparv()
+    pr = {p.name: getattr(el.iparv, p.name) for p in el.instparams}
+    pr['$given:gamma'] = 1.0
+    v_new = np.array([6.0, 1.0, -0.5])     # vgs proposal far above von
+    v_old = np.array([0.0, 1.0, -0.5])
+    x_a = np.array([1.0, 0.0, 0.0, 0.0])   # d, g, s, b: vbs = 0
+    x_b = np.array([1.0, 0.0, 0.0, -3.0])  # vbs = -3
+    a = el.pcnr_limit(v_new, v_old, pr, defaultepar, numeric, x_a)
+    b = el.pcnr_limit(v_new, v_old, pr, defaultepar, numeric, x_b)
+    ## `fetlim` off-and-turning-on lands at `von + 0.5`.
+    assert a[0] != b[0] and b[0] > a[0] + 0.5, (a, b)
+    assert a[1] == b[1] == 1.0 and a[2] == b[2] == -0.5
+    ## and `refine` routes the circuit's `x_old` to it.  (`gamma` must be
+    ## GIVEN: the default card's is 0, no body effect, and the two
+    ## `x_old` then clamp identically -- which is not a defect, it is
+    ## `von` with nothing to follow.)
+    c = _l1_cascode(gamma=0.9)
+    for dev in P.pcnr_devices(c):
+        if dev.instance == 'M1':
+            break
+    ib = c.get_node_index('bulk')
+    v0 = np.zeros(6)
+    vn = np.zeros(6)
+    vn[dev.off] = 6.0
+    x0 = np.zeros(c.n)
+    x1 = np.zeros(c.n)
+    x1[ib] = -3.0
+    r0 = P.refine(P.pcnr_devices(c), v0, vn, defaultepar, x_old=x0)
+    r1 = P.refine(P.pcnr_devices(c), v0, vn, defaultepar, x_old=x1)
+    assert r1[dev.off] > r0[dev.off] + 0.4, (r0, r1)
+
+
+def test_the_gmin_pair_view_lists_only_the_junctions_of_a_mosfet():
+    """With `_mos4` in the circuit the pair view holds the two bulk
+    junctions per device -- `(b,s)` from the tree and the redundant
+    `(b,d)` -- and never `(g,s)` or `(d,s)`: a gmin across `vgs` is a
+    gate leak."""
+    c = _mos4_cascode()
+    pairs = P.pcnr_junctions(c)
+    devs = {d.instance: d for d in P.pcnr_devices(c)}
+    assert len(pairs) == 4
+    for inst, _el, ra, rb in pairs:
+        d = devs[inst]
+        assert ra == d.rows[3] and rb in (d.rows[2], d.rows[0])
+        assert (ra, rb) not in [(d.rows[1], d.rows[2])]     # never (g,s)
+    ## Mutation control: the tree's `fet`/`vds` pairs exist and are not
+    ## listed.
+    all_tree = [(ra, rb) for d in devs.values() for ra, rb in d.probes]
+    listed = [(ra, rb) for _i, _e, ra, rb in pairs]
+    assert all(p not in listed for p, k in zip(all_tree, [k for d in
+               devs.values() for k in d.kinds]) if k != 'pnj')
+
+
+@pytest.mark.parametrize('which', ['mos4', 'fet'])
+def test_pcnr_and_the_ordinary_path_agree_on_the_cascode(which):
+    """To 1e-9 on the node voltages at `reltol = 1e-9` on both paths; the
+    sources' branch currents to the same relative accuracy."""
+    from pycircuit.circuit.tests.test_device_limiter import _mos4, _cascode4
+    from pycircuit.circuit.tests.test_limit_fet import _fet, _cascode
+    if which == 'mos4':
+        mk = lambda: _cascode4(_mos4('group'), 20.0, 2.0, 0.8)   # noqa
+    else:
+        mk = lambda: _cascode(_fet('both'), 20.0, 2.0, 0.8)      # noqa
+    c = mk()
+    off = np.asarray(DC(c, toolkit=numeric, reltol=1e-9).solve().x, float)
+    x, _v, _its = P.solve_dc(mk(), gnd, reltol=1e-9, abstol=1e-12)
+    nn = len(c.nodes)
+    assert_allclose(x[:nn], off[:nn], rtol=0, atol=1e-9)
+    assert_allclose(x[nn:], off[nn:], rtol=1e-9, atol=1e-15)
+    assert 0.5 < float(x[c.get_node_index('mid')]) < 2.0
+
+
+def test_solve_dc_judges_the_residual_and_not_only_the_step():
+    """THE FAKE CONVERGENCE, pinned.  `_fet('both')` cascode at
+    `(40, 1, 1.2)`: the first iterate puts the supply's branch current at
+    7.5e27 A.  The old criterion, ``max|dx| < reltol*max|x_new|`` over
+    the WHOLE vector, then tolerated 7e23 V on every node and declared
+    convergence in 5 iterations at ``mid = -2.12`` with a KCL residual
+    of 7.5e27 -- 688 V (in the branch current, 2 V at the node) from
+    the answer.  With `StandardNewton`'s per-component step AND
+    residual tests the solve lands where `DC()` does."""
+    from pycircuit.circuit.tests.test_limit_fet import _fet, _cascode
+    c = _cascode(_fet('both'), 40.0, 1.0, 1.2)
+    ref = np.asarray(DC(_cascode(_fet('none'), 40.0, 1.0, 1.2),
+                        toolkit=numeric).solve().x, float)
+    x, _v, its = P.solve_dc(c, gnd, reltol=1e-4, abstol=1e-6, maxiter=100)
+    im = c.get_node_index('mid')
+    assert abs(x[im] - ref[im]) < 1e-3, (x[im], ref[im])
+    F = np.asarray(c.i(x) + c.u(0, analysis='dc'), float)
+    F[c.get_node_index(gnd)] = 0.0
+    assert np.max(np.abs(F)) < 1e-6, np.max(np.abs(F))
+    assert its > 5
+
+
+def test_the_redundant_law_is_load_bearing_on_level_1():
+    """THE CYCLE DECISION'S MEASUREMENT.  The alternative -- carry the
+    tree and DROP the redundant `(b,d)` law -- was priced: with it a
+    no-op, Level 1's cascode from a uniform 20 V start fails at all 48
+    grid points (`vbd = vbs - vds` is then unbounded forward and the
+    bulk-drain diode overflows); with the law applied over the tree 38
+    converge.  `_mos4` from the same start: 1676 Jacobians and 4
+    failures against 2838 and 5.  One point of that, as the pin."""
+    real = P.limit_block
+
+    def noop_redundant(probes, coeffs, v_new, v_old, laws):
+        m = len(v_new)
+        return real(probes, coeffs, v_new, v_old,
+                    list(laws[:m]) + [lambda a, b: a] * (len(laws) - m))
+
+    def run():
+        c = _l1_cascode()
+        x0 = np.full(c.n, 20.0)
+        x0[c.get_node_index(gnd)] = 0.0
+        try:
+            _x, _v, its = P.solve_dc(c, gnd, x0=x0, reltol=1e-4,
+                                     abstol=1e-6, maxiter=100)
+        except (RuntimeError, np.linalg.LinAlgError):
+            return None
+        return its
+
+    applied = run()
+    P.limit_block = noop_redundant
+    try:
+        dropped = run()
+    finally:
+        P.limit_block = real
+    assert applied is not None and applied <= 20, applied
+    assert dropped is None, dropped

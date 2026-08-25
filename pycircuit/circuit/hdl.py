@@ -3326,7 +3326,7 @@ def generate_code(cls):
     pcnr_vec = None
     if pcnr_vector is not None:
         _vs = pcnr_vector['vsyms']
-        _args_v = _vs + paramsyms + [TEMP]
+        _args_v = _vs + paramsyms + [TEMP] + given_syms
         _mods = dict(_KERNEL_NUMPY, _wrapfloor=np.floor)
         if chain_defs:
             _vec_i = _chain_compile(pcnr_vector['defs'], pcnr_vector['i_exprs'],
@@ -3343,6 +3343,8 @@ def generate_code(cls):
                                     cse=True)
             _vec_sym = dict(i=pcnr_vector['i_exprs'], didv=_jac)
         pcnr_vec = dict(probes=pcnr_vector['probes'], kinds=pcnr_vector['kinds'],
+                        spec_idx=pcnr_vector['spec_idx'],
+                        redundant=pcnr_vector['redundant'],
                         m=len(_vs), t=pcnr_vector['t'], vsyms=_vs,
                         i=_vec_i, didv=_vec_d, sym=_vec_sym,
                         chain=(dict(defs=pcnr_vector['defs'],
@@ -3590,27 +3592,39 @@ def _limit_par_fn(expr, kind, chain_defs, xsyms, xlabels, args, modules,
 def _pcnr_declared_route(limits, ivec, chain_defs, xsyms, xlabels, paramsyms,
                          given_syms, states, vbranches):
     """Vector PCNR's detector: the DECLARED-PROBE route (roadmap sec. 15,
-    Stage 1).  Returns ``(spec, refusal)``, exactly one of them set.
+    Stages 1 and 2).  Returns ``(spec, refusal)``, exactly one of them set.
 
     A device with ``$limit`` probes qualifies when every resistive
     current reaches the solution ONLY through those probes: the probe
     vector is the device's block of limited unknowns, and the limiter it
     declared is the law -- no exponential-scale test is run, because a
-    pnjlim on a probe already says what the current does there.
+    pnjlim on a probe already says what the current does there, and a
+    fetlim/limvds probe says the device asked for that law on that
+    branch.
 
     The check is the legacy detector's substitution generalised from one
     branch to a probe SET.  The probes are edges over the device's rows;
     each connected component gets a root potential and every other row is
-    written as ``root +/- v_j`` along the tree, so that ``x_a - x_b``
+    written as ``root +/- v_j`` along a spanning TREE, so that ``x_a - x_b``
     becomes ``v_j`` wherever a probe's branch voltage is read, and any
     x-symbol that survives (a root, a row no probe reaches) names a
-    voltage the current reads that no probe limits.  Two probes that
-    close a cycle are refused: the third branch voltage would be a
-    combination of the others' unknowns, not one of its own.
+    voltage the current reads that no probe limits.
 
-    Stage 1 takes ``pnj`` probes only; a ``fet``/``vds`` probe refuses
-    the device and says so (Stage 2).  Charge, noise and sources are not
-    looked at: charge stays in the MNA block (`pcnr.augmented_system`).
+    **A probe that closes a cycle is REDUNDANT, not refused** (Stage 2).
+    SPICE's own MOSFET set -- `(g,s)`, `(d,s)`, `(b,s)`, `(b,d)` -- has
+    `(b,d) = (b,s) - (d,s)`, and a fourth unknown for it would be a
+    linear combination of the other three, not a quantity of its own.
+    The device's PCNR unknowns are the tree's probes (``m = t - 1`` per
+    connected component); the redundant probe's branch voltage is read
+    off the tree (``coeffs`` is its signed combination of the unknowns),
+    and its LIMITER is still applied: `pcnr.limit_block` resolves all of
+    a device's laws over the tree by the same rule `limit_together`'s
+    write-back uses.  Which probe is the redundant one is decided by
+    declaration order (the first to close a cycle) and only affects
+    which unknowns are carried, never which laws are honoured.
+
+    Charge, noise and sources are not looked at: charge stays in the MNA
+    block (`pcnr.augmented_system`).
     """
     if states or vbranches:
         return None, ('%s -- the device carries %s'
@@ -3618,31 +3632,31 @@ def _pcnr_declared_route(limits, ivec, chain_defs, xsyms, xlabels, paramsyms,
                          else 'a branch-current unknown',
                          '%d state(s)' % len(states) if states
                          else '%d V-contributed branch(es)' % len(vbranches)))
-    probes = [(int(k[0]), int(k[1])) for k, _kind, _p, _g in limits]
-    kinds = [kind for _k, kind, _p, _g in limits]
-    for (a, b), kind in zip(probes, kinds):
-        if kind != 'pnj':
-            return None, ('probe (%s,%s) is a %s limiter -- vector PCNR '
-                          'takes pnjlim probes only in Stage 1; fetlim and '
-                          'limvds are Stage 2'
-                          % (xlabels[a], xlabels[b],
-                             {'fet': 'fetlim', 'vds': 'limvds'}.get(kind,
-                                                                    kind)))
-    vsyms = [sympy.Symbol('_pcnr_v%d' % j, real=True)
-             for j in range(len(probes))]
+    all_probes = [(int(k[0]), int(k[1])) for k, _kind, _p, _g in limits]
+    all_kinds = [kind for _k, kind, _p, _g in limits]
+    vsyms, probes, kinds, spec_idx = [], [], [], []
+    redundant = []           # (spec index, (a, b), kind, coeffs over vsyms)
 
-    ## The spanning forest, by union of root-relative potentials.
+    ## The spanning tree, by union of root-relative potentials.  A
+    ## probe's own symbol is allocated only when it becomes a tree edge.
     pot, root_of = {}, {}
-    for j, (a, b) in enumerate(probes):
-        vj = vsyms[j]
+    for j, (a, b) in enumerate(all_probes):
+        if a in pot and b in pot and root_of[a] == root_of[b]:
+            expr = sympy.expand(pot[a] - pot[b])
+            coeffs = [int(expr.coeff(vs)) for vs in vsyms]
+            if sympy.expand(expr - sum(c_ * vs for c_, vs
+                                       in zip(coeffs, vsyms))) != 0:
+                raise AssertionError(       # pragma: no cover
+                    'redundant probe (%s,%s) is not a +/-1 combination of '
+                    'the tree: %s' % (xlabels[a], xlabels[b], expr))
+            redundant.append((j, (a, b), all_kinds[j], coeffs))
+            continue
+        vj = sympy.Symbol('_pcnr_v%d' % len(vsyms), real=True)
+        vsyms.append(vj)
+        probes.append((a, b))
+        kinds.append(all_kinds[j])
+        spec_idx.append(j)
         if a in pot and b in pot:
-            if root_of[a] == root_of[b]:
-                return None, ('probes (%s) close a cycle at (%s,%s) -- its '
-                              'branch voltage would be a combination of the '
-                              'other probes\' unknowns, not one of its own'
-                              % (', '.join('(%s,%s)' % (xlabels[p], xlabels[q])
-                                           for p, q in probes),
-                                 xlabels[a], xlabels[b]))
             ## Merge b's tree into a's: root_b = pot[a] - vj - (pot[b] - root_b)
             rb_ = root_of[b]
             rb_sym = xsyms[rb_]
@@ -3670,7 +3684,10 @@ def _pcnr_declared_route(limits, ivec, chain_defs, xsyms, xlabels, paramsyms,
     defs_v = [(sym, _sub_x(e_)) for sym, e_ in _chain_prune(chain_defs, ivec)]
     i_exprs = [_sub_x(e_) for e_ in ivec]
     defsyms = {sym for sym, _e in defs_v}
-    allowed = set(paramsyms) | {TEMP} | set(vsyms) | defsyms
+    ## `given_syms` are handed to `pcnr_i` beside the parameters (the
+    ## `$given:<name>` flags in the device's param dict), so a chain that
+    ## reads a `$param_given` -- Level 1's `gamma` -- qualifies.
+    allowed = set(paramsyms) | {TEMP} | set(vsyms) | defsyms | set(given_syms)
     for label, e_ in [('var(%s)' % _var_name(sym), e2)
                       for sym, e2 in defs_v] + \
             [('I(%s)' % xlabels[k], e2) for k, e2 in enumerate(i_exprs)]:
@@ -3685,8 +3702,9 @@ def _pcnr_declared_route(limits, ivec, chain_defs, xsyms, xlabels, paramsyms,
         if extra:
             return None, ('%s reads %s, which pcnr_i is not handed'
                           % (label, ', '.join(sorted(str(q) for q in extra))))
-    return dict(vsyms=vsyms, probes=probes, kinds=kinds, defs=defs_v,
-                i_exprs=i_exprs, t=len(xsyms)), None
+    return dict(vsyms=vsyms, probes=probes, kinds=kinds, spec_idx=spec_idx,
+                redundant=redundant, defs=defs_v, i_exprs=i_exprs,
+                t=len(xsyms)), None
 
 
 def _chain_prune(defs, outputs):
@@ -4444,12 +4462,31 @@ class BehaviouralMeta(type):
         pv = info.get('pcnr_vector')
         if pv is not None:
             from pycircuit.circuit._limiting import apply_limit as _apply_lim
+            from pycircuit.circuit import pcnr as _pcnr_mod
             _pn_vec = info['paramnames']
             _gn_vec = info['given_names']
             _lpars = pv['limit_pars']
             _lkinds = pv['kinds']
             cls.pcnr_probes = tuple((tuple(p), k)
                                     for p, k in zip(pv['probes'], pv['kinds']))
+            ## The redundant probes (a cycle in the declaration): local
+            ## rows, kind, and the signed combination of the tree unknowns
+            ## that IS their branch voltage.  `pcnr.PcnrDevice` lists them
+            ## as gmin targets when they are junctions; `pcnr_limit` below
+            ## honours their laws over the tree.
+            cls.pcnr_redundant = tuple((tuple(p), k, tuple(c))
+                                       for _j, p, k, c in pv['redundant'])
+            ## `(kind, parameter callables)` for every probe whose law is
+            ## applied, TREE probes first (in unknown order), then the
+            ## redundant ones -- the order `limit_block` takes them in.
+            _laws = [(k, _lpars[j]) for j, k in zip(pv['spec_idx'], _lkinds)] \
+                + [(k, _lpars[j]) for j, _p, k, _c in pv['redundant']]
+            _all_probes = list(pv['probes']) + [p for _j, p, _k, _c
+                                                in pv['redundant']]
+            _m_tree = len(pv['probes'])
+            _coeffs = [[1 if q == j else 0 for q in range(_m_tree)]
+                       for j in range(_m_tree)] \
+                + [list(c) for _j, _p, _k, c in pv['redundant']]
 
             def _pcnr_vec_compiled(which, toolkit, _pv=pv, _pn=_pn_vec):
                 """The numpy form, or its jax twin for a traced call."""
@@ -4459,7 +4496,9 @@ class BehaviouralMeta(type):
                 if which not in cache:
                     import jax.numpy as _jnp
                     args_ = list(_pv['vsyms']) \
-                        + [sympy.Symbol(q) for q in _pn] + [TEMP]
+                        + [sympy.Symbol(q) for q in _pn] + [TEMP] \
+                        + [sympy.Symbol('_hdl_given_%s' % q, real=True)
+                           for q in _gn_vec]
                     if _pv['sym'] is None:
                         ch = _pv['chain']
                         cache[which] = _chain_compile(
@@ -4475,8 +4514,9 @@ class BehaviouralMeta(type):
                             modules=[_kernel_jax(_jnp), 'jax'], cse=True)
                 return cache[which]
 
-            def _vec_args(params, epar, _pn=_pn_vec):
-                return [params[q] for q in _pn] + [_epar_T(epar)]
+            def _vec_args(params, epar, _pn=_pn_vec, _gn=_gn_vec):
+                return [params[q] for q in _pn] + [_epar_T(epar)] \
+                    + [float(params.get('$given:' + nm, 0.0)) for nm in _gn]
 
             def pcnr_i(v, params, epar, toolkit):
                 f = _pcnr_vec_compiled('i', toolkit)
@@ -4487,21 +4527,29 @@ class BehaviouralMeta(type):
                 return toolkit.array(f(*list(v), *_vec_args(params, epar)))
 
             def pcnr_limit(v_new, v_old, params, epar, toolkit, x_old_sub,
-                           _lp=_lpars, _lk=_lkinds, _gn=_gn_vec):
+                           _laws=_laws, _probes=_all_probes,
+                           _coeffs=_coeffs):
                 """Each probe's own declared law, over the block.  A
                 parameter that reads the solution (`_wants_x`) is
                 evaluated at the device's LAST ACCEPTED sub-vector --
-                the generated `limit()`'s semantics, SPICE's `von`."""
-                args = _vec_args(params, epar) \
-                    + [float(params.get('$given:' + nm, 0.0)) for nm in _gn]
-                out = np.array(v_new, dtype=float, copy=True)
-                for j, (kind, pfs) in enumerate(zip(_lk, _lp)):
+                the generated `limit()`'s semantics, SPICE's `von`.
+                `pcnr.limit_block` applies the laws: directly when the
+                probes are a tree, by `limit_together`'s rule (largest
+                corrections win, the smallest on a cycle yields) when a
+                redundant probe's law is in play too."""
+                args = _vec_args(params, epar)
+                fns = []
+                for kind, pfs in _laws:
                     pars = [float(f(x_old_sub, *args)
                                   if getattr(f, '_wants_x', False)
                                   else f(*args)) for f in pfs]
-                    out[j] = _apply_lim(kind, float(v_new[j]), float(v_old[j]),
-                                        pars, toolkit)
-                return out
+                    fns.append(lambda vn, vo, _k=kind, _p=pars:
+                               _apply_lim(_k, vn, vo, _p, toolkit))
+                ## Looked up at call time so that a measurement can swap
+                ## the rule (`test_device_limiter.py` measures the redundant
+                ## law against its absence).
+                return _pcnr_mod.limit_block(_probes, _coeffs, v_new, v_old,
+                                             fns)
 
             cls.pcnr_i = staticmethod(pcnr_i)
             cls.pcnr_didv = staticmethod(pcnr_didv)
@@ -4905,6 +4953,16 @@ def explain(target, source=True, symbolic=True, maxlines=40):
                                      _xl[ra], _xl[rb])
                                   for (ra, rb), k in zip(_pv['probes'],
                                                          _pv['kinds']))))
+        for _p, _k, _c in [(p, k, c) for _j, p, k, c in _pv['redundant']]:
+            feats.append('PCNR redundant probe: %s on (%s,%s) = %s -- its '
+                         'branch voltage is read off the tree unknowns and '
+                         'its law is applied over them'
+                         % ({'pnj': 'pnjlim', 'fet': 'fetlim',
+                             'vds': 'limvds'}[_k], _xl[_p[0]], _xl[_p[1]],
+                            ' '.join(('%s(%s,%s)' % ('+' if c_ > 0 else '-',
+                                                     _xl[pa], _xl[pb]))
+                                     for c_, (pa, pb) in zip(_c, _pv['probes'])
+                                     if c_).lstrip('+')))
     else:
         feats.append('PCNR: %s'
                      % ('%d junction(s)' % len(info['pcnr_funcs'])

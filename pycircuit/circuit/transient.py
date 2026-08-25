@@ -2051,7 +2051,13 @@ class Transient(Analysis):
         ## a worse answer than solving it the ordinary way.
         if self.par.pcnr:
             from pycircuit.circuit import pcnr as _pcnr
-            if _pcnr.pcnr_junctions(self.cir):
+            ## Gate PARTICIPATION on the device records, not on the
+            ## pnj-only pair view: that view exists for the gmin ladders
+            ## and is empty for a circuit of pure fetlim/limvds devices,
+            ## so `pcnr=True` on a MOSFET differential pair used to fall
+            ## through to the ordinary solver SILENTLY (vector PCNR
+            ## Stage 2, 2026-08-26).
+            if _pcnr.pcnr_devices(self.cir):
                 return self._solve_timestep_pcnr(x0, t, provided_function)
 
         n=self.cir.n

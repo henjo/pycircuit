@@ -145,7 +145,13 @@ class DC(Analysis):
 
         if self.par.pcnr:
             from pycircuit.circuit import pcnr as _pcnr
-            if _pcnr.pcnr_junctions(self.cir):
+            ## Gate PARTICIPATION on the device records, not on the
+            ## pnj-only pair view: that view exists for the gmin ladders
+            ## and is empty for a circuit of pure fetlim/limvds devices,
+            ## so `pcnr=True` on a MOSFET differential pair used to fall
+            ## through to the ordinary solver SILENTLY (vector PCNR
+            ## Stage 2, 2026-08-26).
+            if _pcnr.pcnr_devices(self.cir):
                 x, _v_lim, _its = _pcnr.solve_dc(
                     self.cir, self.cir.nodes[self.irefnode], x0=x0,
                     epar=self.epar, maxiter=self.par.maxiter,

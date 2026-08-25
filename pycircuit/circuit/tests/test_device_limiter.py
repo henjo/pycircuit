@@ -817,3 +817,168 @@ def test_a_circuit_level_forest_is_order_independent_and_worse(
         for its, tail in row:
             if its is not None:
                 assert_allclose(tail, DIFF_TAIL[abs(vin)], rtol=1e-5)
+
+
+## --- Stage 2: the same clash under vector PCNR ---------------------------
+
+def _pcnr_solve(c, x0=None, maxiter=100):
+    """`pcnr.solve_dc` -- no ladder, no anchor, no node limiting.  NOT
+    `DC(pcnr=True)`: that entry gates on `pcnr_junctions()`, the
+    pnj-only gmin pair view, so a circuit of `fetlim`/`limvds` devices
+    and no junction falls through to the ordinary solver there."""
+    from pycircuit.circuit import pcnr as P
+    try:
+        x, _v, its = P.solve_dc(c, gnd, x0=x0, reltol=1e-4, abstol=1e-6,
+                                maxiter=maxiter)
+    except (RuntimeError, np.linalg.LinAlgError, FloatingPointError,
+            OverflowError, ValueError):
+        return None, None
+    return its, x
+
+
+def _diffpair_row_pcnr(cls, vin):
+    row = []
+    for m2_first in (False, True):
+        c = _diffpair(cls, vin, m2_first)
+        its, x = _pcnr_solve(c)
+        row.append((its, None if x is None
+                    else float(x[c.get_node_index('tail')])))
+    return row
+
+
+@pytest.mark.filterwarnings('ignore:overflow encountered')
+def test_the_diff_pair_under_pcnr_is_order_independent_and_converges():
+    """THE NUMBER THE VECTOR-PCNR EFFORT EXISTS FOR (roadmap 15, Stage 2).
+    Same circuit as `test_two_devices_on_one_tail_are_resolved_by_
+    instance_order`, `[M1 first, M2 first]`, Jacobian evaluations::
+
+        vin          -1.0       -0.3        0        0.3       1.0
+        plain      [45, 14]   [26, 14]  [15, 15]  [14, 26]  [14, FAIL]
+        PCNR       [22, 22]   [23, 23]  [15, 15]  [23, 23]  [22, 22]
+
+    Two claims, asserted separately:
+
+    1. **Order-independent**: equal counts in both orders at every
+       `vin`, and a symmetric table in `vin` -- there is no shared node
+       for the two `fetlim`s to fight over, by construction.
+    2. **Converges** everywhere plain Newton did, AND at `vin = +1.0`
+       where the losing order failed.  Every tail equals `DC()`'s.
+
+    The price: 22 against the winning order's 14 -- the winning order
+    got lucky (M1 wrote the tail first), PCNR pays for not depending on
+    luck.  Windows are wide; the shape is what is pinned.
+    """
+    cls = _fet('both')
+    rows = {vin: _diffpair_row_pcnr(cls, vin) for vin in DIFF_VIN}
+    for vin, row in rows.items():
+        assert row[0][0] == row[1][0], (vin, row)                  # claim 1
+        assert row[0][0] is not None and row[0][0] <= 40, (vin, row)  # 2
+        assert_allclose(row[0][1], DIFF_TAIL[abs(vin)], rtol=1e-5)
+        assert_allclose(row[1][1], DIFF_TAIL[abs(vin)], rtol=1e-5)
+    assert rows[1.0][0][0] == rows[-1.0][0][0], rows
+    assert rows[0.3][0][0] == rows[-0.3][0][0], rows
+    assert rows[0.0][0][0] <= 20, rows
+
+
+@pytest.mark.filterwarnings('ignore:overflow encountered')
+def test_the_level_1_cascode_from_20_v_under_pcnr():
+    """Stage 0's bulk tug-of-war (`[17,10]`, `[F,10]`, `[F,12]`, `[F,21]`
+    at the time; re-measured on plain Newton below) under PCNR, both
+    orders, uniform 20 V start::
+
+        (vdd, vg2, vg1[, vb])   plain            PCNR
+        (20, 2, 0.8)            [13, 8]          [12, 12]
+        (40, 2, 0.8)            [17, 8]          [12, 12]
+        (5, 2, 0.8)             [31, 9]          [19, 19]
+        (20, 2, 0.8, vb = -2)   [13, 8]          [FAIL, FAIL]
+
+    Order-independent at every point; converges at three; fails in
+    BOTH orders at the fourth.  Traced: from the all-off start the
+    middle node is held by nothing, the first Newton step proposes
+    `mid = 4.9e9`, PCNR limits no node, and by the fourth iteration
+    `mid` is 3e117 and the matrix singular.  The ordinary path's
+    limiter writes the bounded branch voltage INTO the node; PCNR has
+    no such write, which is Stage 1's second obstacle on a FET.  The
+    plain Newton column differs from Stage 0's record because `von`
+    now follows the bulk bias (roadmap 12.6(c)), which is what Stage 0
+    measured without.
+    """
+    from pycircuit.circuit.elements_hdl import MosLevel1Hdl
+
+    def mk(vdd, vg2, vg1, vb=-0.5, m2_first=False):
+        c = SubCircuit()
+        c['vdd'] = VS('vdd', gnd, v=vdd)
+        c['vg2'] = VS('g2', gnd, v=vg2)
+        c['vg1'] = VS('g1', gnd, v=vg1)
+        c['vb'] = VS('bulk', gnd, v=vb)
+        devs = [('M2', ('vdd', 'g2', 'mid', 'bulk')),
+                ('M1', ('mid', 'g1', gnd, 'bulk'))]
+        for nm, nodes in (devs[::-1] if m2_first else devs):
+            c[nm] = MosLevel1Hdl(*nodes)
+        return c
+
+    table = {}
+    for pt in ((20.0, 2.0, 0.8), (40.0, 2.0, 0.8), (5.0, 2.0, 0.8),
+               (20.0, 2.0, 0.8, -2.0)):
+        row = []
+        for m2 in (False, True):
+            c = mk(*pt, m2_first=m2)
+            x0 = np.full(c.n, 20.0)
+            x0[c.get_node_index(gnd)] = 0.0
+            its, x = _pcnr_solve(c, x0)
+            row.append((its, None if x is None
+                        else float(x[c.get_node_index('mid')])))
+        table[pt] = row
+    for pt, row in table.items():
+        assert row[0][0] == row[1][0], (pt, row)          # order-independent
+    for pt in ((20.0, 2.0, 0.8), (40.0, 2.0, 0.8), (5.0, 2.0, 0.8)):
+        assert table[pt][0][0] is not None and table[pt][0][0] <= 30, table
+        assert_allclose(table[pt][0][1], table[pt][1][1], rtol=1e-6)
+    assert table[(20.0, 2.0, 0.8, -2.0)][0][0] is None, table
+
+
+@pytest.mark.filterwarnings('ignore:overflow encountered')
+@pytest.mark.parametrize('cls_name', ['fet-both', 'mos4-group'])
+def test_the_grid_under_pcnr_converges_everywhere_plain_newton_did(cls_name):
+    """The 48-point cascode grid, PCNR against plain Newton, measured::
+
+        variant       plain          PCNR (maxiter 100)   PCNR (200)
+        fet both      909 / 0 fail   1281 / 0 fail        1281 / 0
+        mos4 group    896 / 0 fail   1278 / 1 fail        1430 / 0
+                                     (20, 2, 1.2) at 152
+
+    PCNR costs ~40% more over the grid and every answer agrees on the
+    nodes.  The one point over 100 is a `limvds` limit cycle (`vds`
+    21 -> clamp 2 -> 4 -> 14 -> 21 -> ...) riding Newton's `N*VT`-per-
+    step creep down a 1e25 A subthreshold exponential; it is slow, not
+    divergent.  The window is wide; what is pinned is "nothing that
+    converged stops converging" at a 200 budget, and the answers.
+    """
+    from pycircuit.circuit.tests.test_limit_fet import _cascode
+    if cls_name == 'fet-both':
+        cls, mk = _fet('both'), _cascode
+    else:
+        cls, mk = _mos4('group'), _cascode4
+    tot_p, tot_q = 0, 0
+    for cond in GRID:
+        ip, xp = _count_x(cls, cond, mk)
+        c = mk(cls, *cond)
+        iq, xq = _pcnr_solve(c, maxiter=200)
+        assert ip is not None and iq is not None, (cond, ip, iq)
+        nn = len(c.nodes)
+        assert_allclose(xq[:nn], xp[:nn], rtol=0, atol=1e-3)
+        tot_p += ip
+        tot_q += iq
+    assert 800 < tot_p < 1000, tot_p
+    assert 1000 < tot_q < 1700, tot_q
+
+
+def _count_x(cls, cond, mk):
+    from pycircuit.circuit.nrsolver import NoConvergenceError
+    from pycircuit.circuit.analysis import SingularMatrix
+    c = mk(cls, *cond)
+    try:
+        x, its = _plain_newton(c, maxiter=100)
+        return its, x
+    except (NoConvergenceError, SingularMatrix):
+        return None, None
