@@ -1423,3 +1423,125 @@ at 1-5 ns each. The operation count is now 3471 dispatched calls over
 to it. **Do not quote §8's ratios without re-running
 `benchmarks/hdl_model_cost.py`** -- this section exists because they
 were quoted once already, four weeks stale, in the space of one day.
+
+---
+
+## 14. The backend decision, and the work that answers it
+
+§8 diagnosed the Jacobian's cost and §13 re-measured it. Neither
+decides anything. This section states the decision, and specifies the
+work that would turn it from an argument into a measurement.
+
+### 14.1 What is being decided
+
+**Whether this DSL is a research instrument or something a real circuit
+can be put through.**
+
+PSP's Jacobian costs **17.3 ms**. The arithmetic that matters is not
+that number but what it becomes:
+
+    100 devices, one Newton iteration            1.7 s of Jacobian
+    1000-step transient, 5 iterations per step   ~2.4 hours
+    a compiled C compact model, same job         ~10 us per device
+
+Everything else in this plan improves the DSL for the person *writing*
+a model. This is the only item that changes who can *use* one.
+
+### 14.2 Where the cost is, measured today
+
+    G = 17304 us over 2675 generated lines
+      dispatched numpy calls   3471   ~2.8 ms   ~16%
+      everything else                 ~14.5 ms  ~84%
+
+The 84% is **the Python interpreter**: straight-line float arithmetic
+over 2675 lines, plus 2775 `_recip2`/`_rdiv` Python-level calls. No
+printer change reaches it.
+
+### 14.3 The options, priced
+
+| option | worth | effort | verdict |
+|---|---|---|---|
+| do nothing | — | — | legitimate if 17 ms blocks nothing you run |
+| scalar codegen (`math`, `if`/`else`) | **~1.2x** | days | **dead as a standalone item** — §8 priced it at 1.7x and the kernel work took the rest |
+| compiled backend (C / LLVM / numba) | unknown | weeks+ | the only option that reaches parity |
+
+**The cheap option died while nobody was looking**, and that is the most
+useful thing §13 found. It was overtaken by a change made for
+ergonomics. It survives only as a component of the third option.
+
+### 14.4 The number this plan is NOT entitled to quote
+
+§8 said a compiled backend would be "300-1000x", extrapolated from
+**14030 operations at 1-5 ns each**. That count is now **3471**. The
+extrapolation has not been redone and **must not be repeated until it
+is**. This campaign has produced ten claims that were right in
+conclusion and wrong in their stated reason, and several were exactly
+this: a figure that was true when taken, quoted after the ground moved.
+
+### 14.5 The work: a spike, not a build
+
+**Do not choose between C, LLVM and numba by argument.** Build the
+smallest thing that measures each, on the real model, and let the
+numbers choose. Estimated one day.
+
+**Input.** `PspMosLongChannel`'s compiled `G` chain — 2675 lines of
+straight-line scalar float code with `where`/`min`/`max`/`exp` and two
+helper calls. It is already in the shape every candidate wants;
+`_chain_compile` and `_ChainPrinter` are the replacement point.
+
+**Candidates, cheapest first:**
+
+1. **numba** on the existing generated source. No new code generator at
+   all — the chained path already emits its ideal input. Measure
+   compile time as well as run time: a 2675-line function may cost more
+   to JIT than a device model can amortise.
+2. **C via cffi**, emitted from the same chain. Most control, most
+   work, no runtime dependency beyond a compiler.
+3. **LLVM via llvmlite**. No external toolchain; between the two on
+   effort.
+
+**Measure, for each:**
+
+    per-call G time at the same bias        (against 17304 us)
+    compile/JIT time, once per class        (against 66.4 s)
+    agreement with the numpy path           bitwise, or to 1 ulp,
+                                            over a bias sweep INCLUDING
+                                            the extremes the safety
+                                            primitives exist for
+    behaviour at +-1e30 and beyond          both arms still finite?
+
+**Acceptance.** A candidate is worth building out if it reaches **at
+least 50x** on `G` while agreeing with the numpy path over the full
+sweep. Below 10x it is not worth the surface area. Between the two,
+report and decide.
+
+### 14.6 What it must not break, and this is the whole risk
+
+The DSL's value is exact symbolic derivatives with **provable finiteness
+under any Newton iterate**. A backend that is fast and loses either is
+worth nothing here.
+
+- **both arms of every conditional are still evaluated.** A backend
+  that "optimises" a branch away changes the safety semantics the
+  kernel is built on; `differentiable-numerics` records what that
+  costs.
+- **the range contracts still hold.** `safe_*` primitives spend
+  exponent headroom deliberately; a different float path can move where
+  they overflow.
+- **the extremes are the test, not the typical bias.** Agreement at
+  1.2 V proves nothing. The sweep must include the biases that motivated
+  `expl` and `hypsmooth` in the first place.
+
+### 14.7 What would make the answer "don't"
+
+Recorded so that "no" stays a real option rather than a failure:
+
+- the spike shows under 10x — the interpreter is not the bottleneck it
+  looks like;
+- JIT or compile cost per class exceeds what a simulation amortises;
+- agreement at the extremes cannot be had without giving up the
+  finiteness properties;
+- **or nobody is actually blocked.** If the circuits being run are ten
+  devices, 17 ms is a non-problem and the eight remaining library
+  models are worth more. That is a question about use, not about the
+  code, and it should be asked first.
