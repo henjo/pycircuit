@@ -55,6 +55,26 @@ element          HDL capability it exercises
                  shows what is missing, since a state that appears in
                  its own derivative cannot be written with ``idt`` at
                  all
+``GummelPoonNpnHdl``  the SPICE Gummel-Poon bipolar transistor: one
+``GummelPoonPnpHdl``  transport current divided by the base charge
+                 ``qb``, which carries both Early voltages and both
+                 high-injection knees; four base-current components;
+                 base resistance modulated by ``qb``; both junctions'
+                 depletion and diffusion charge with the ``xcjc``
+                 split across the base resistance; the SPICE
+                 temperature path; shot, flicker and thermal noise --
+                 and the first model with TWO ``limit_pnj`` probes
+                 sharing a terminal, which is the case the
+                 write-back rule exists for
+``EkvNmosHdl``   EKV 2.6's long-channel core: weak, moderate and
+``EkvPmosHdl``   strong inversion from ONE interpolation function,
+                 the four terminal charges with the Ward-Dutton
+                 partition, and the first production user of
+                 ``limit_fet``, ``limit_vds`` and ``softplus``.  An
+                 independent formulation of what
+                 `compact.PspMosLongChannel` solves exactly, which is
+                 what makes the cross-check in
+                 ``test_elements_hdl_library3.py`` worth having
 ===============  ====================================================
 
 Hand-written elements remain the defaults (``elements.py``): they carry
@@ -69,7 +89,9 @@ import sympy
 from pycircuit.utilities.param import Parameter
 from pycircuit.circuit.hdl import (Behavioural, Branch, Node, Contribution,
                                    Collapse, Cross, ddt, idt, idtmod,
-                                   laplace_nd, laplace_zp, TIME, TEMP)
+                                   laplace_nd, laplace_zp, TIME, TEMP,
+                                   limit_pnj, limit_fet, limit_vds,
+                                   param_given)
 
 ## ---------------------------------------------------------------------
 ## ALIASED WITH A LEADING UNDERSCORE.  The reason it was NECESSARY is
@@ -149,6 +171,9 @@ from pycircuit.circuit.hdl import safe_abs as _safe_abs
 from pycircuit.circuit.hdl import safe_div as _safe_div
 from pycircuit.circuit.hdl import maxc as _maxc
 from pycircuit.circuit.hdl import minc as _minc
+from pycircuit.circuit.hdl import safe_pow as _safe_pow
+from pycircuit.circuit.hdl import safe_sqrt as _safe_sqrt
+from pycircuit.circuit.hdl import softplus as _softplus
 from pycircuit.circuit.hdl import white_noise as _white_noise
 from pycircuit.circuit.hdl import flicker_noise as _flicker_noise
 from pycircuit.circuit.hdl import KBOLTZMANN as _KB
@@ -1284,3 +1309,822 @@ class MemristorHdl(Behavioural):
         w = 1 - _safe_abs(x - stp) ** (2 * p)                          # noqa
         return (Contribution(b.I, i),
                 Contribution(bx.V, muv * ron / d ** 2 * i * w))        # noqa
+
+
+## ======================================================================
+## The SPICE Gummel-Poon BJT -- roadmap item 3
+## ======================================================================
+
+
+def _pn_depletion_charge(v, cj, vjx, mx, fcx, tag):
+    """SPICE's junction depletion charge, with the ``fc`` linearisation.
+
+    The same construction the diode above uses, written once more --
+    deliberately, and the difference is the point.  `_spice_diode`
+    builds the floored power base BY HAND (three lines, a floor-placement
+    argument and a smoothing-width scan) because `hdl.safe_pow` did not
+    exist when it was written, and its comment says so and keeps the
+    hand-rolled version as a record of the friction.  This is what the
+    same block costs now::
+
+        _safe_pow(1 - v/vj, 1 - m, lo=0.5*(1 - fc))
+
+    one call, and the floor argument moves from a paragraph in the model
+    to the kernel's own docstring.  The floor is at HALF the seam value
+    ``1 - fc``, i.e. strictly inside the arm that is always discarded
+    above the seam, so `safe_pow`'s hard `maxc` clamp is the right
+    instrument: it is never reached by a selected evaluation.
+
+    ``fc`` and ``m`` are clamped to SPICE's own limits (`fc < 1`,
+    `m < 1`), because the model divides by ``1 - fc`` and by ``1 - m``.
+    ngspice does this in `bjttemp.c`/`diotemp.c` with an outright
+    assignment and a warning; here it is a `minc`, which is the same
+    number for every card that is not already broken.
+    """
+    ## Parameter-only clamps: no bias reaches them, so their derivative
+    ## with respect to a solution variable is exactly zero and the hard
+    ## corner costs nothing.
+    fcc = _var(_minc(fcx, 0.9999), 'fc' + tag)
+    mc = _var(_minc(mx, 0.9), 'm' + tag)
+    fcvj = _var(fcc * vjx, 'fcvj' + tag)
+    ub = _var(_safe_pow(1.0 - v / vjx, 1.0 - mc, lo=0.5 * (1.0 - fcc)),
+              'ub' + tag)
+    qlo = _var(cj * vjx * (1.0 - ub) / (1.0 - mc), 'qlo' + tag)
+    f1 = _var(vjx * (1.0 - (1.0 - fcc) ** (1.0 - mc)) / (1.0 - mc),
+              'f1' + tag)
+    f2 = _var((1.0 - fcc) ** (1.0 + mc), 'f2' + tag)
+    f3 = _var(1.0 - fcc * (1.0 + mc), 'f3' + tag)
+    qhi = _var(cj * (f1 + (f3 * (v - fcvj)
+                           + mc / (2.0 * vjx) * (v * v - fcvj * fcvj)) / f2),
+               'qhi' + tag)
+    return _var(sympy.Piecewise((qlo, v < fcvj), (qhi, True)), 'qj' + tag)
+
+
+def _spice_bjt_params():
+    """The SPICE Gummel-Poon card, in SPICE's own names and defaults.
+
+    ``is`` is a Python keyword, so the saturation current keeps the
+    file's spelling ``IS``; everything else is lower-cased SPICE.
+
+    Two of these names are traps worth stating rather than discovering.
+    ``var`` is SPICE's REVERSE Early voltage and it collides by name
+    with `hdl.var`, the let-chain binder -- which is precisely why this
+    module imports that as ``_var`` (see the import block: the alias was
+    kept for readability after the bug that forced it was fixed, and
+    here is the case that would have needed it anyway).  ``nc`` is the
+    base-collector leakage emission coefficient, not a node count.
+
+    SPICE's "0 means infinite" convention is kept for ``vaf``, ``var``,
+    ``ikf`` and ``ikr``: a zero Early voltage or knee current has no
+    physical reading, and every card in existence uses the convention.
+    """
+    return [
+        Parameter(name='IS', desc='Transport saturation current at tnom',
+                  unit='A', default=1e-16),
+        Parameter(name='bf', desc='Ideal maximum forward beta', unit='',
+                  default=100.0),
+        Parameter(name='nf', desc='Forward current emission coefficient',
+                  unit='', default=1.0),
+        Parameter(name='vaf', desc='Forward Early voltage (0 = infinite)',
+                  unit='V', default=0.0),
+        Parameter(name='ikf', desc='Forward knee current (0 = infinite)',
+                  unit='A', default=0.0),
+        Parameter(name='ise', desc='Base-emitter leakage saturation '
+                  'current', unit='A', default=0.0),
+        Parameter(name='ne', desc='Base-emitter leakage emission '
+                  'coefficient', unit='', default=1.5),
+        Parameter(name='br', desc='Ideal maximum reverse beta', unit='',
+                  default=1.0),
+        Parameter(name='nr', desc='Reverse current emission coefficient',
+                  unit='', default=1.0),
+        Parameter(name='var', desc='Reverse Early voltage (0 = infinite)',
+                  unit='V', default=0.0),
+        Parameter(name='ikr', desc='Reverse knee current (0 = infinite)',
+                  unit='A', default=0.0),
+        Parameter(name='isc', desc='Base-collector leakage saturation '
+                  'current', unit='A', default=0.0),
+        Parameter(name='nc', desc='Base-collector leakage emission '
+                  'coefficient', unit='', default=2.0),
+        Parameter(name='rb', desc='Zero-bias base resistance', unit='ohm',
+                  default=0.0),
+        ## A NEGATIVE default as the "unset" sentinel, and it is a
+        ## workaround for a live defect rather than a preference.
+        ## SPICE's ``RBM`` defaults to ``RB``, which a default VALUE
+        ## cannot express -- a card that deliberately says ``rbm = 0``
+        ## wants a base resistance that collapses to nothing at high
+        ## injection, and a card that says nothing wants a constant
+        ## ``rb``.  `hdl.param_given` is exactly the instrument for
+        ## that, and this model was written with it.
+        ##
+        ## It cannot be used HERE, because `$param_given` and `$limit`
+        ## in the same model break the generated `limit()` at run time:
+        ## `limit_spec`'s parameter expressions are lambdified over
+        ## `paramsyms + [TEMP]` (`hdl.py`, `generate_code`) while the
+        ## generated `limit()` calls them with `_args_of(self, epar)`,
+        ## which appends the givenness flags -- so the call is one
+        ## argument too long and raises `TypeError:
+        ## _lambdifygenerated() takes 38 positional arguments but 39
+        ## were given`.  Nothing had ever used the two together.
+        ## Reported in the batch's friction log; the fix is one slice
+        ## at the call site or one wider lambdify at the definition.
+        ##
+        ## A negative resistance is not a physical card, so it is a
+        ## sound sentinel -- but it is a sentinel, and the difference
+        ## matters: `rbm = -1` and "rbm not given" are the same thing
+        ## here and are two different things in SPICE.
+        Parameter(name='rbm', desc='Minimum base resistance at high '
+                  'current (negative = follow rb)', unit='ohm',
+                  default=-1.0),
+        Parameter(name='re', desc='Emitter resistance', unit='ohm',
+                  default=0.0),
+        Parameter(name='rc', desc='Collector resistance', unit='ohm',
+                  default=0.0),
+        Parameter(name='cje', desc='Zero-bias base-emitter depletion '
+                  'capacitance', unit='F', default=0.0),
+        Parameter(name='vje', desc='Base-emitter built-in potential',
+                  unit='V', default=0.75),
+        Parameter(name='mje', desc='Base-emitter grading coefficient',
+                  unit='', default=0.33),
+        Parameter(name='tf', desc='Ideal forward transit time', unit='s',
+                  default=0.0),
+        Parameter(name='xtf', desc='Bias coefficient of tf', unit='',
+                  default=0.0),
+        Parameter(name='vtf', desc='Vbc dependence of tf (0 = none)',
+                  unit='V', default=0.0),
+        Parameter(name='itf', desc='High-current parameter of tf',
+                  unit='A', default=0.0),
+        Parameter(name='cjc', desc='Zero-bias base-collector depletion '
+                  'capacitance', unit='F', default=0.0),
+        Parameter(name='vjc', desc='Base-collector built-in potential',
+                  unit='V', default=0.75),
+        Parameter(name='mjc', desc='Base-collector grading coefficient',
+                  unit='', default=0.33),
+        Parameter(name='xcjc', desc='Fraction of cjc connected to the '
+                  'INTERNAL base node', unit='', default=1.0),
+        Parameter(name='tr', desc='Ideal reverse transit time', unit='s',
+                  default=0.0),
+        Parameter(name='fc', desc='Forward-bias depletion coefficient',
+                  unit='', default=0.5),
+        Parameter(name='xtb', desc='Forward and reverse beta temperature '
+                  'exponent', unit='', default=0.0),
+        Parameter(name='eg', desc='Energy gap', unit='eV', default=1.11),
+        Parameter(name='xti', desc='Saturation-current temperature '
+                  'exponent', unit='', default=3.0),
+        Parameter(name='kf', desc='Flicker-noise coefficient', unit='',
+                  default=0.0),
+        Parameter(name='af', desc='Flicker-noise exponent', unit='',
+                  default=1.0),
+        Parameter(name='area', desc='Area scaling factor', unit='',
+                  default=1.0),
+        Parameter(name='tnom', desc='Parameter measurement temperature',
+                  unit='K', default=300.15),
+    ]
+
+
+def _gummel_poon(T, npn):
+    """Build the ``analog()`` body of a Gummel-Poon BJT of one polarity.
+
+    ``npn`` is +1 for an n-p-n and -1 for a p-n-p, closed over at class
+    creation exactly as `compact._psp_mos_analog` closes over the
+    channel type: the polarity cannot vary with bias, so branching on it
+    at run time would double the compiled expression to no purpose.
+    Every internal voltage below is ``npn*(terminal - terminal)``, so the
+    body is written once for the n-p-n convention, and the polarity is
+    restored on the contributions.
+
+    Equations: Massobrio & Antognetti, *Semiconductor Device Modeling
+    with SPICE*, 2nd ed., ch. 2 -- the integral charge-control model of
+    Gummel & Poon (BSTJ 49, 827, 1970) as SPICE2 reduced it, which is
+    what ngspice's `bjt` implements.  The pieces, in the order they are
+    written:
+
+    * forward and reverse transport currents ``IF``/``IR``;
+    * the normalised base charge ``qb = q1/2*(1 + sqrt(1 + 4*q2))``,
+      with ``q1`` carrying the two Early voltages and ``q2`` the two
+      high-injection knees;
+    * the transport current ``ICT = (IF - IR)/qb`` -- ONE current, which
+      is what makes this a charge-control model rather than two diodes
+      and a pair of alphas;
+    * four base-current components: ideal forward ``IF/BF``, ideal
+      reverse ``IR/BR``, and the two non-ideal recombination terms
+      ``ISE``/``NE`` and ``ISC``/``NC``, which are what bend the Gummel
+      plot's base current at low injection;
+    * base, emitter and collector resistances on internal nodes, the
+      base one MODULATED by ``qb`` (base-width modulation makes the
+      base spreading resistance fall as the device turns on);
+    * depletion charge on both junctions with SPICE's ``fc``
+      linearisation, diffusion charge ``tf_eff*IF`` and ``tr*IR``, and
+      the ``xcjc`` split of the collector capacitance between the
+      internal and the external base node;
+    * the SPICE temperature path for ``IS``, ``BF``/``BR``, the leakage
+      currents, both junction potentials and both capacitances;
+    * shot noise on the base and collector currents, flicker noise on
+      the base current, thermal noise on all three resistances.
+
+    **Not implemented, named rather than left to be discovered:** the
+    substrate junction (``cjs``/``vjs``/``mjs``), which needs a fourth
+    pin that would float on every card that does not give it -- use a
+    `DiodeSpiceHdl` between collector and substrate; ``irb``, the
+    current where base resistance falls to half, whose SPICE form is
+    ``3*(rb - rbm)*(tan(z) - z)/(z*tan(z)^2)`` with a removable
+    singularity at ``z = 0`` that no both-arms-safe form expresses
+    cheaply (the ``qb`` modulation SPICE uses when ``irb`` is unset IS
+    implemented, and is what nearly every card relies on); and ``ptf``,
+    excess phase, which is a delay and therefore wants ``absdelay``.
+    """
+    def analog(c, b, e):
+        ## Three internal nodes, one per parasitic resistance, each
+        ## collapsed away when its resistance is zero -- which is
+        ## SPICE's default for all three, so a bare instance has no
+        ## internal nodes at all and the `1/rb` is never compiled.
+        bi, ci, ei = Node('bi'), Node('ci'), Node('ei')
+        brb, brc, bre = Branch(b, bi), Branch(c, ci), Branch(e, ei)
+        ## POLARITY LIVES IN THE BRANCH TERMINAL ORDER, and nowhere
+        ## else.  A p-n-p's branches are declared reversed, so `bbe.V`
+        ## is the n-p-n-convention forward bias for both devices and
+        ## every expression below is written once; a `Contribution` on
+        ## the reversed branch then delivers the current in the
+        ## reversed direction too, which is exactly the polarity flip
+        ## SPICE applies term by term on the way out.
+        ##
+        ## Doing it this way rather than with a `type` factor is not
+        ## only tidier: `limit_pnj` limits a BRANCH POTENTIAL in the
+        ## solution vector, so a p-n-p whose junction voltage is
+        ## `-V(bi,ei)` would have the limiter bound the wrong sign --
+        ## compressing reverse excursions and letting forward ones
+        ## through.  Reversing the branch puts the limiter on the
+        ## quantity that actually has the exponential in it.
+        ##
+        ## The two junctions SHARE THE INTERNAL BASE as one terminal.
+        ## For the n-p-n it is the PLUS of both, which is the case
+        ## `limit_spec`'s write-back rule exists for: the first probe
+        ## moves `bi`, so the second must move its own minus (`ci`) or
+        ## it would undo the first.  For the p-n-p the base is the
+        ## minus of both, the plus terminals differ, and each probe
+        ## moves its own -- the same rule, taking its other branch.
+        ##
+        ## The transport current is its own branch from internal
+        ## collector to internal emitter -- ONE current source, not two.
+        ##
+        ## The external fraction of the collector capacitance
+        ## (`1 - xcjc`) hangs off the EXTERNAL base, behind rb.  That is
+        ## the whole point of the parameter: the collector-base overlap
+        ## capacitance is distributed along the base resistance.
+        if npn > 0:
+            bbe, bbc, bct = Branch(bi, ei), Branch(bi, ci), Branch(ci, ei)
+            bbx = Branch(b, ci)
+        else:
+            bbe, bbc, bct = Branch(ei, bi), Branch(ci, bi), Branch(ei, ci)
+            bbx = Branch(ci, b)
+
+        ## -- temperature ------------------------------------------------
+        vtT = _var(_vt(T), 'vtT')
+        trat = _var(T / tnom, 'trat')                              # noqa
+        ltr = _var(sympy.log(trat), 'ltrat')
+        ## SPICE's `factlog`, `bjttemp.c`: one exponent shared by the
+        ## transport current and (scaled by 1/NE, 1/NC) the two leakage
+        ## currents.  `expl` rather than `exp` for the same reason the
+        ## diode above uses it -- the argument is bounded above on any
+        ## sensible card, so the two are the same function there, and a
+        ## card with a small emission coefficient stays finite.
+        factlog = _var((trat - 1.0) * eg / vtT + xti * ltr, 'factlog')  # noqa
+        isT = _var(area * IS * _expl(factlog), 'isT')              # noqa
+        ## `XTB` moves both betas and, inversely, both leakage currents
+        ## -- SPICE divides the leakage by the same factor it multiplies
+        ## beta by, which is what keeps the low-injection Gummel plot's
+        ## SHAPE roughly fixed with temperature.
+        bfac = _var(_expl(xtb * ltr), 'bfac')                      # noqa
+        bfT = _var(bf * bfac, 'bfT')                               # noqa
+        brT = _var(br * bfac, 'brT')                               # noqa
+        iseT = _var(area * ise * _expl(factlog / ne) / bfac, 'iseT')   # noqa
+        iscT = _var(area * isc * _expl(factlog / nc) / bfac, 'iscT')   # noqa
+        ## Junction potentials and capacitances: the diode's path, per
+        ## junction.  `egn` is the gap at tnom, `egT` at T.
+        egT = _var(1.16 - 7.02e-4 * T ** 2 / (T + 1108.0), 'egT')
+        egn = _var(1.16 - 7.02e-4 * tnom ** 2 / (tnom + 1108.0),   # noqa
+                   'egtnom')
+        vjeT = _var(vje * trat - 3.0 * vtT * ltr                   # noqa
+                    - egn * trat + egT, 'vjeT')
+        vjcT = _var(vjc * trat - 3.0 * vtT * ltr                   # noqa
+                    - egn * trat + egT, 'vjcT')
+        cjeT = _var(area * cje * (1.0 + mje * (4e-4 * (T - tnom)   # noqa
+                                               - (vjeT / vje - 1.0))),
+                    'cjeT')
+        cjcT = _var(area * cjc * (1.0 + mjc * (4e-4 * (T - tnom)   # noqa
+                                               - (vjcT / vjc - 1.0))),
+                    'cjcT')
+
+        ## -- the two junction voltages, LIMITED ------------------------
+        ## `limit_pnj`'s parameters are lambdified over the parameters
+        ## and TEMP alone, so they must be written WITHOUT `var()`: an
+        ## intermediate symbol is not in that namespace and the compile
+        ## fails with a bare NameError from inside the lambdified
+        ## parameter function.  Hence the duplicated expression -- the
+        ## chain has `isT`, and the limiter declaration needs the same
+        ## arithmetic spelled out again.
+        _isr = area * IS * _expl((T / tnom - 1.0) * eg / _vt(T)    # noqa
+                                 + xti * sympy.log(T / tnom))     # noqa
+        ## ngspice computes its critical voltage from the UNSCALED
+        ## saturation current (`bjttemp.c` sets `tVcrit` before
+        ## `bjtload.c` multiplies by area), and uses the same one for
+        ## both junctions.  Passing the area-scaled current instead
+        ## moves `vc` by `VT*ln(area)` -- 26 mV per decade of area, on a
+        ## quantity that only decides where compression BEGINS.  The
+        ## scaled one is the device's actual saturation current, so it
+        ## is the one used here; the difference is recorded because it
+        ## is a real, if small, divergence from the reference.
+        vbe = _var(limit_pnj(bbe.V, _isr, nf * _vt(T)), 'vbe')     # noqa
+        vbc = _var(limit_pnj(bbc.V, _isr, nr * _vt(T)), 'vbc')     # noqa
+
+        ## -- transport and base currents -------------------------------
+        ifwd = _var(isT * (_expl(vbe / (nf * vtT)) - 1.0), 'ifwd')  # noqa
+        irev = _var(isT * (_expl(vbc / (nr * vtT)) - 1.0), 'irev')  # noqa
+
+        ## SPICE's "0 means infinite" for the Early voltages and the
+        ## knee currents.  The reciprocal is taken inside the guarded
+        ## arm AND floored, because both arms of a `Piecewise` are
+        ## evaluated: `1/vaf` at `vaf = 0` is `inf`, and an `inf` in a
+        ## discarded arm is only harmless until something multiplies it
+        ## by the selected arm's zero derivative.
+        def _recip(p):
+            return sympy.Piecewise((sympy.Float(0.0), p <= 0.0),
+                                   (1.0 / _maxc(p, 1e-30), True))
+        rvaf = _var(_recip(vaf), 'rvaf')                           # noqa
+        rvar = _var(_recip(var), 'rvar')                           # noqa
+        rikf = _var(_recip(area * ikf), 'rikf')                    # noqa
+        rikr = _var(_recip(area * ikr), 'rikr')                    # noqa
+
+        ## THE BASE CHARGE.  `q1` is the Early (base-width modulation)
+        ## factor and `q2` the high-injection one; `qb` is what every
+        ## transport current is divided by.
+        ##
+        ## The floor on `q1`'s denominator is a domain guard, not a fit:
+        ## it fires only when a junction is forward-biased to within 1%
+        ## of an Early voltage -- 99 V on a 100 V card -- which no
+        ## physical bias reaches and a wild Newton iterate does.
+        q1d = _var(_maxc(1.0 - vbc * rvaf - vbe * rvar, 1e-2), 'q1d')
+        q1 = _var(1.0 / q1d, 'q1')
+        q2 = _var(ifwd * rikf + irev * rikr, 'q2')
+        ## `1 + 4*q2` is >= 1 - 4*IS*(1/IKF + 1/IKR) by construction, so
+        ## the floor is unreachable in the selected region and exists to
+        ## keep the square root's argument in its domain for a Newton
+        ## iterate that has driven both junctions hard into reverse.
+        qb = _var(q1 * 0.5 * (1.0 + sympy.sqrt(_maxc(1.0 + 4.0 * q2,
+                                                     1e-8))), 'qb')
+
+        ict = _var((ifwd - irev) / qb, 'ict')
+        ibe = _var(ifwd / bfT + iseT * (_expl(vbe / (ne * vtT))    # noqa
+                                        - 1.0), 'ibe')
+        ibc = _var(irev / brT + iscT * (_expl(vbc / (nc * vtT))    # noqa
+                                        - 1.0), 'ibc')
+
+        ## -- charge ----------------------------------------------------
+        ## The transit-time modulation, SPICE's
+        ## `tf_eff = TF*(1 + XTF*(IF/(IF + ITF))^2 * exp(VBC/(1.44*VTF)))`.
+        ##
+        ## `safe_div` rather than a division: with `itf = 0` -- SPICE's
+        ## default, and the case where SPICE skips the factor entirely
+        ## -- the ratio is `IF/IF`, and `safe_div` returns 1 for any
+        ## current well above its epsilon and 0 at exactly zero
+        ## current, where the charge it multiplies is zero anyway.  That
+        ## reproduces SPICE's branch without a branch.
+        tfr = _var(_safe_div(ifwd, ifwd + area * itf), 'tfr')      # noqa
+        ## `vtf = 0` means "no Vbc dependence".  The discarded arm is
+        ## floored at 1 mV so that it cannot overflow while it is being
+        ## discarded -- a card with `0 < vtf < 1e-3` would be clamped,
+        ## and no such card exists.
+        tfx = _var(sympy.Piecewise(
+            (sympy.Float(1.0), vtf <= 0.0),                        # noqa
+            (_expl(vbc / (1.44 * _maxc(vtf, 1e-3))), True)), 'tfx')  # noqa
+        tff = _var(tf * (1.0 + xtf * tfr * tfr * tfx), 'tff')      # noqa
+
+        qbe = _var(tff * ifwd
+                   + _pn_depletion_charge(vbe, cjeT, vjeT, mje,    # noqa
+                                          fc, 'e'), 'qbe')         # noqa
+        qbc = _var(tr * irev                                       # noqa
+                   + xcjc * _pn_depletion_charge(vbc, cjcT, vjcT,  # noqa
+                                                 mjc, fc, 'c'),    # noqa
+                   'qbc')
+        ## The external fraction, on its own branch and therefore its
+        ## own voltage: `V(b, ci)`, not `V(bi, ci)`.  With `rb = 0` the
+        ## two are the same node pair and this is arithmetically the
+        ## rest of `cjc`; with `rb > 0` it is the distributed part.
+        qbx = _var((1.0 - xcjc)                                    # noqa
+                   * _pn_depletion_charge(bbx.V, cjcT, vjcT, mjc,  # noqa
+                                          fc, 'x'), 'qbx')         # noqa
+
+        ## -- base resistance -------------------------------------------
+        ## `rbm < 0` means "unset", i.e. `rbm = rb` (SPICE).  See the
+        ## parameter's own comment for why this is a sentinel and not
+        ## `param_given`, which is the right instrument and is currently
+        ## incompatible with `$limit`.
+        rbmx = _var(sympy.Piecewise(
+            (rb, rbm < 0.0), (rbm, True)), 'rbmx')                 # noqa
+        ## Base-width modulation: the spreading resistance falls as the
+        ## base charge grows.  `qb >= 0.5*q1 > 0` structurally, so this
+        ## is a division by something bounded away from zero.
+        rbb = _var((rbmx + (rb - rbmx) / qb) / area, 'rbb')        # noqa
+
+        ## -- statements ------------------------------------------------
+        ## Every expression above is in the n-p-n convention; the
+        ## p-n-p's polarity is already carried by its reversed branch
+        ## declarations, so nothing here is multiplied by a sign.
+        stmts = (
+            Contribution(bct.I, ict),
+            Contribution(bbe.I, ibe + ddt(qbe)),
+            Contribution(bbc.I, ibc + ddt(qbc)),
+            Contribution(bbx.I, ddt(qbx)),
+            Contribution(brb.I, brb.V / rbb),
+            Collapse(brb, rb <= 0.0),                              # noqa
+            Contribution(brc.I, brc.V * area / rc),                # noqa
+            Collapse(brc, rc <= 0.0),                              # noqa
+            Contribution(bre.I, bre.V * area / re),                # noqa
+            Collapse(bre, re <= 0.0),                              # noqa
+        )
+
+        ## -- noise -----------------------------------------------------
+        ## Shot noise is `2*q*|I|` on each of the two independent
+        ## carrier streams -- the base current and the collector
+        ## current -- and they are independent, which is why they are
+        ## two uncorrelated contributions on two different branches and
+        ## not one on the emitter.  `safe_abs` because a PSD may not be
+        ## negative and both currents are negative over part of the
+        ## range.
+        icol = _var(_safe_abs(ict - ibc), 'icabs')
+        ibas = _var(_safe_abs(ibe + ibc), 'ibabs')
+        noise = (
+            Contribution(bct.I, _white_noise(2.0 * _QE * icol)),
+            Contribution(bbe.I, _white_noise(2.0 * _QE * ibas)),
+            Contribution(bbe.I, _flicker_noise(kf * ibas ** af, 1)),  # noqa
+            ## Thermal noise of the three parasitics.  Each goes away
+            ## with its branch when the resistance collapses, which is
+            ## the correct behaviour and comes for free.  The base one
+            ## is BIAS-DEPENDENT, because `rbb` is.
+            Contribution(brb.I, _white_noise(4.0 * _KB * T / rbb)),
+            Contribution(brc.I,
+                         _white_noise(4.0 * _KB * T * area / rc)),  # noqa
+            Contribution(bre.I,
+                         _white_noise(4.0 * _KB * T * area / re)),  # noqa
+        )
+        return stmts + noise
+    return analog
+
+
+class GummelPoonNpnHdl(Behavioural):
+    """The SPICE Gummel-Poon n-p-n bipolar transistor.
+
+    Terminals ``(c, b, e)``.  Parameters and defaults are SPICE's, so a
+    bare ``GummelPoonNpnHdl('c', 'b', 'e')`` is an ideal transport
+    device with ``bf = 100``, no parasitic resistance, no charge, no
+    leakage and no high-injection roll-off, and every block is switched
+    on by giving its parameter.
+
+    What makes this the charge-control model rather than two diodes:
+    there is ONE transport current ``(IF - IR)/qb`` between collector
+    and emitter, and the base charge ``qb`` in its denominator carries
+    both Early voltages and both high-injection knees at once.  Two
+    consequences are worth stating because they are what the model is
+    tested on:
+
+    * **beta is not a parameter of the current**, it is a measured
+      ratio.  ``bf`` sets the ideal base current ``IF/BF``; the measured
+      ``Ic/Ib`` is ``BF/qb``, so it falls to ``BF/2`` exactly where
+      ``qb = 2``, which is ``IF = 2*IKF`` -- i.e. at a COLLECTOR current
+      of exactly ``IKF``.  That identity is what ``ikf`` means and it is
+      what the Gummel plot measures;
+    * **the Early effect is an output conductance**, ``go = Ic/(VAF +
+      VCE - VBE)`` in forward active, which is a statement about the
+      slope of the measured ``Ic(Vce)`` and not about a parameter.
+
+    ``limit_pnj`` is declared on both junctions.  This is the first
+    model in the tree with TWO limited probes sharing a terminal, which
+    is the case ``limit_spec``'s compile-time write-back rule exists
+    for: the base-emitter probe moves the internal base, so the
+    base-collector probe is written by moving the internal collector
+    instead of undoing it.  ``explain()`` prints both.
+
+    See `GummelPoonPnpHdl` for the p-n-p, which is this model with its
+    branches declared the other way round and nothing else changed.
+    """
+    instparams = _spice_bjt_params()
+
+    analog = staticmethod(_gummel_poon(TEMP, +1))
+
+
+class GummelPoonPnpHdl(Behavioural):
+    """The SPICE Gummel-Poon p-n-p bipolar transistor.
+
+    `GummelPoonNpnHdl` with every branch declared with its terminals
+    exchanged, which is the whole of the difference: the equations are
+    written once in the n-p-n convention and the polarity lives in the
+    branch orientation (see `_gummel_poon`).  Parameters are the same
+    card with the same signs -- a p-n-p's ``IS``, ``cje`` and ``vaf``
+    are positive magnitudes exactly as an n-p-n's are, and the device
+    conducts for ``V(e) > V(b) > V(c)``.
+
+    Redefining ``analog`` here is REQUIRED and not decorative: the DSL
+    keys compilation on the name appearing in the class body, so a
+    subclass that merely inherited it would silently reuse the n-p-n
+    expression and be wrong with nothing to report it.
+    """
+    instparams = _spice_bjt_params()
+
+    analog = staticmethod(_gummel_poon(TEMP, -1))
+
+
+## ======================================================================
+## EKV 2.6 -- roadmap item 9
+## ======================================================================
+
+
+def _ekv_params():
+    """The EKV long-channel card.
+
+    Names are the EKV 2.6 documentation's, lower-cased.  ``cox`` and
+    ``kp`` are both here and are NOT redundant: ``kp = mu*cox`` sets the
+    current and ``cox`` alone sets the charge, and a card may give one
+    without the other.  ``cox = 0`` is the default and switches the
+    charge model off entirely -- the charges are a PRODUCT with ``cox``,
+    never a quotient, so zero really is zero and not an infinity waiting
+    to be multiplied by one.
+    """
+    return [
+        Parameter(name='vto', desc='Long-channel threshold voltage',
+                  unit='V', default=0.5),
+        Parameter(name='gamma', desc='Body effect factor',
+                  unit='V^0.5', default=0.7),
+        Parameter(name='phi', desc='Bulk Fermi potential (2*phi_F)',
+                  unit='V', default=0.7),
+        Parameter(name='kp', desc='Transconductance parameter mu*Cox',
+                  unit='A/V^2', default=50e-6),
+        Parameter(name='cox', desc='Gate oxide capacitance per area '
+                  '(0 = no charge model)', unit='F/m^2', default=0.0),
+        Parameter(name='theta', desc='Mobility reduction coefficient',
+                  unit='1/V', default=0.0),
+        Parameter(name='w', desc='Channel width', unit='m', default=1e-6),
+        Parameter(name='l', desc='Channel length', unit='m', default=1e-6),
+        Parameter(name='tcv', desc='Threshold voltage temperature '
+                  'coefficient', unit='V/K', default=0.0),
+        Parameter(name='bex', desc='Mobility temperature exponent',
+                  unit='', default=0.0),
+        Parameter(name='kf', desc='Flicker-noise coefficient', unit='',
+                  default=0.0),
+        Parameter(name='af', desc='Flicker-noise exponent', unit='',
+                  default=1.0),
+        Parameter(name='ef', desc='Flicker-noise frequency exponent',
+                  unit='', default=1.0),
+        Parameter(name='tnom', desc='Parameter measurement temperature',
+                  unit='K', default=300.15),
+    ]
+
+
+def _ekv_analog(T, nmos):
+    """Build the ``analog()`` body of an EKV long-channel MOSFET.
+
+    Reference: C. Enz, F. Krummenacher and E. Vittoz, "An analytical MOS
+    transistor model valid in all regions of operation and dedicated to
+    low-voltage and low-current applications", *Analog Integrated
+    Circuits and Signal Processing* **8**, 83-114 (1995), and the EKV
+    v2.6 model documentation (Bucher, Lallement, Enz, Theodoloz and
+    Krummenacher, EPFL, 1998).  The charge expressions are the
+    charge-based formulation of Enz and Vittoz, *Charge-Based MOS
+    Transistor Modeling* (Wiley, 2006), ch. 4.
+
+    **The interpolation function is the whole point.**  One expression
+
+        i_f = ln(1 + exp((VP - VS)/(2*UT)))^2
+
+    covers weak, moderate and strong inversion with no regional
+    equations and nothing pasted between them.  Its two limits are the
+    two textbook laws and they are what the tests assert:
+
+    * ``x << 0``: ``ln(1 + e^x) -> e^x``, so ``i_f -> e^{(VP-VS)/UT}``
+      and the drain current is exponential in the gate voltage with the
+      slope factor ``n`` -- ``ln(10)*n*UT`` per decade, the subthreshold
+      swing;
+    * ``x >> 0``: ``ln(1 + e^x) -> x``, so
+      ``ID -> (n*beta/2)*[(VP - VS)^2 - (VP - VD)^2]``, the square law,
+      and ``(n*beta/2)*(VP - VS)^2`` in saturation.
+
+    The join is not a smoothing function: it is one analytic function
+    whose asymptotes are those two, which is what "all-region" means and
+    what distinguishes this family from a threshold-voltage model with
+    a subthreshold patch.
+
+    ``ln(1 + exp(x))`` is `hdl.softplus`, which is total: the literal
+    form overflows at ``x = 710`` and the value it was about to return
+    was 710.  This is that function's first production user.
+
+    **Implemented:** the pinch-off voltage with its body effect, the
+    bias-dependent slope factor, the all-region interpolation, simple
+    mobility reduction (``theta``), the four terminal charges with the
+    Ward-Dutton partition, the EKV temperature path for ``vto``, ``kp``
+    and ``phi``, channel thermal noise from the Klaassen-Prins integral
+    and flicker noise.
+
+    **Not implemented, named rather than left to be discovered:**
+    velocity saturation (``ucrit``), channel-length modulation
+    (``lambda``), short- and narrow-channel charge sharing
+    (``leta``/``weta``/``dl``/``dw``), reverse short-channel effect
+    (``q0``/``lk``), impact ionisation (``iba``/``ibb``/``ibn``), gate
+    and junction leakage, and the source/drain sheet resistance.  What
+    is here is the long-channel core, which is the part that is worth
+    cross-checking against a surface-potential model: everything in that
+    list is a correction bolted on top of it, and including them would
+    only make the comparison harder to read.
+    """
+    def analog(d, g, s, b):
+        ## POLARITY IN THE BRANCH ORDER, exactly as `_gummel_poon` does
+        ## it and for the same reason: `limit_fet` and `limit_vds` bound
+        ## a branch potential in the SOLUTION vector, so a p-channel
+        ## whose gate drive is `-V(g,s)` would have `fetlim` compress
+        ## the wrong direction.  Declaring the branches reversed puts
+        ## every probe on the n-channel-convention quantity, which is
+        ## also what SPICE's own `mos1load.c` limits.
+        if nmos > 0:
+            bgs, bds, bsb = Branch(g, s), Branch(d, s), Branch(s, b)
+            bdb, bgb = Branch(d, b), Branch(g, b)
+        else:
+            bgs, bds, bsb = Branch(s, g), Branch(s, d), Branch(b, s)
+            bdb, bgb = Branch(b, d), Branch(b, g)
+
+        ## -- temperature (EKV 2.6, section "Temperature effects") ------
+        ut = _var(_vt(T), 'ut')
+        trat = _var(T / tnom, 'trat')                              # noqa
+        ltr = _var(sympy.log(trat), 'ltrat')
+        egT = _var(1.16 - 7.02e-4 * T ** 2 / (T + 1108.0), 'egT')
+        egn = _var(1.16 - 7.02e-4 * tnom ** 2 / (tnom + 1108.0),   # noqa
+                   'egtnom')
+        vtoT = _var(vto - tcv * (T - tnom), 'vtoT')                # noqa
+        ## `safe_pow` with the base floored relative to the ratio's own
+        ## scale: `trat` is a temperature ratio and cannot legitimately
+        ## be below 1e-3 (0.3 K), and `bex` is negative on every real
+        ## card, so an unfloored base is a genuine pole.
+        kpT = _var(kp * _safe_pow(trat, bex, lo=1e-3), 'kpT')      # noqa
+        phiT = _var(phi * trat - 3.0 * ut * ltr                    # noqa
+                    - egn * trat + egT, 'phiT')
+
+        ## -- the three probes ------------------------------------------
+        ## `limit_fet` on the gate drive and `limit_vds` on the drain,
+        ## which is SPICE's pair.  Their write-backs land on `g` and `d`
+        ## respectively (different terminals), so declaration order does
+        ## not matter here -- see `hdl.limit_vds`.
+        ##
+        ## `vto` and NOT the bias-dependent turn-on voltage: that is the
+        ## documented limitation of the per-probe `limit_spec`, whose
+        ## parameter expressions see the parameters and TEMP and nothing
+        ## else.  For this model the real turn-on in terms of `vgs` is
+        ## `vto + gamma*(sqrt(phi + vsb) - sqrt(phi))`, so a device with
+        ## 2 V of body bias is limited against a threshold ~0.5 V too
+        ## low.  That makes the bound looser, not wrong.
+        vgs = _var(limit_fet(bgs.V, vto), 'vgs')                   # noqa
+        vds = _var(limit_vds(bds.V), 'vds')
+        vsb = _var(bsb.V, 'vsb')
+        ## Referred to the BULK, which is what makes the model
+        ## symmetric in source and drain.
+        vgb = _var(vgs + vsb, 'vgb')
+        vdb = _var(vds + vsb, 'vdb')
+
+        ## -- pinch-off voltage and slope factor ------------------------
+        vgp = _var(vgb - vtoT + phiT + gamma * sympy.sqrt(phiT),   # noqa
+                   'vgp')
+        ## `maxc(vgp, 0)` inside the root, because the arm below is
+        ## selected for `vgp <= 0` and the root's argument goes negative
+        ## there.  The `1e-12` is not a smoothing: it exists so that the
+        ## IDEAL body-effect-free device (`gamma = 0`, a legitimate card
+        ## and the one the construction tests use) does not evaluate
+        ## `0 * d(sqrt(0))/dvgp` = `0 * inf` = NaN.  With any real
+        ## `gamma` the `gamma^2/4` term dominates it by twenty decades.
+        vgr = _var(sympy.sqrt(_maxc(vgp, 0.0) + 0.25 * gamma ** 2  # noqa
+                              + 1e-12), 'vgr')
+        ## EKV's own `if (VGprime > 0) ... else VP = -PHI`.  The join is
+        ## C1: the value is `-PHI` and the slope is `1 - gamma/gamma = 0`
+        ## on both sides of `vgp = 0`.
+        vp = _var(sympy.Piecewise(
+            (vgp - phiT - gamma * (vgr - 0.5 * gamma), vgp > 0.0),  # noqa
+            (-phiT, True)), 'vp')
+        ## `vp + phi >= 0` STRUCTURALLY (the `vgp > 0` arm is the
+        ## increasing function `vgp - gamma*sqrt(vgp + g^2/4) + g^2/2`,
+        ## which is zero at `vgp = 0`), and `4*ut` is 0.1 V on top of
+        ## that.  So this square root needs no regulariser, and it does
+        ## not get one: every `safe_` helper spends exponent range, and
+        ## spending it on a guard that cannot fire is a pure loss
+        ## (hdl.md 3.2c).
+        nq = _var(1.0 + gamma / (2.0 * sympy.sqrt(vp + phiT        # noqa
+                                                  + 4.0 * ut)), 'nq')
+
+        ## -- the interpolation function --------------------------------
+        beta = _var(kpT * w / l / (1.0 + theta * _maxc(vp, 0.0)),  # noqa
+                    'beta')
+        ispec = _var(2.0 * nq * beta * ut * ut, 'ispec')
+        xf = _var((vp - vsb) / (2.0 * ut), 'xf')
+        xr = _var((vp - vdb) / (2.0 * ut), 'xr')
+        sf = _var(_softplus(xf), 'sf')
+        sr = _var(_softplus(xr), 'sr')
+        iff = _var(sf * sf, 'iff')
+        irr = _var(sr * sr, 'irr')
+        ids = _var(ispec * (iff - irr), 'ids')
+
+        ## -- the four terminal charges ---------------------------------
+        ## The charge-based result: with `i = q^2 + q` the normalised
+        ## charge density at a channel end is `q = sqrt(1/4 + i) - 1/2`,
+        ## and the Ward-Dutton partition of the total inversion charge
+        ## integrates in closed form to the two cubics below.  Their
+        ## normalisation is `W*L*cox*n*UT`, which is fixed by the
+        ## symmetric case: at `Vds = 0` both reduce to `q_s`, and
+        ## `Q_I = -W*L*cox*n*UT*(qsn + qdn)` is then the uniform-channel
+        ## charge `-n*cox*(VP - VS)*W*L`.
+        ##
+        ## `0.25 + iff >= 0.25` because `iff` is a square, so these
+        ## roots need no guard either, and `(sxf + sxr)^2 >= 1` for the
+        ## same reason, so neither does the division.
+        sxf = _var(sympy.sqrt(0.25 + iff), 'sxf')
+        sxr = _var(sympy.sqrt(0.25 + irr), 'sxr')
+        sden = _var((sxf + sxr) ** 2, 'sden')
+        qdn = _var(4.0 / 15.0 * (3.0 * sxr ** 3 + 6.0 * sxr ** 2 * sxf
+                                 + 4.0 * sxr * sxf ** 2 + 2.0 * sxf ** 3)
+                   / sden - 0.5, 'qdn')
+        qsn = _var(4.0 / 15.0 * (3.0 * sxf ** 3 + 6.0 * sxf ** 2 * sxr
+                                 + 4.0 * sxf * sxr ** 2 + 2.0 * sxr ** 3)
+                   / sden - 0.5, 'qsn')
+        cwl = _var(w * l * cox, 'cwl')                             # noqa
+        qd = _var(-cwl * nq * ut * qdn, 'qd')
+        qs = _var(-cwl * nq * ut * qsn, 'qs')
+        ## The bulk charge, linearised about pinch-off exactly as the
+        ## current is: `dQb'/dV = -cox*gamma/(2*sqrt(psi)) = -cox*(n-1)`
+        ## and `V - VP = Qinv'/(n*cox)`, so
+        ## `Qb' = -cox*gamma*sqrt(phi + VP) - (n-1)/n*Qinv'`.  The
+        ## depletion root IS reachable at zero -- `vp = -phi` is deep
+        ## accumulation -- so this one is smoothed, with a width
+        ## relative to `phi` rather than absolute.
+        qb = _var(-cwl * gamma * sympy.sqrt(                       # noqa
+            _hypsmooth(phiT + vp, 1e-6 * phi))                     # noqa
+            - (nq - 1.0) / nq * (qd + qs), 'qb')
+        ## Charge neutrality is STRUCTURAL: the gate takes what is left,
+        ## so the four sum to zero to the last bit whatever the physics
+        ## above does.
+        qg = _var(-(qd + qs + qb), 'qg')
+
+        ## -- noise -----------------------------------------------------
+        ## Channel thermal noise from the Klaassen-Prins integral,
+        ## `S = 4*k*T*mu*|Q_I|/L^2`, which in these variables is
+        ## `4*k*T*beta*n*UT*(qsn + qdn)`.  Two limits check it: at
+        ## `Vds = 0` it is exactly `4*k*T*gds` (Nyquist), and in
+        ## saturation it is `(2/3)*4*k*T*n*gm`.  Both are asserted in
+        ## the tests rather than the formula being taken on trust.
+        gn = _var(beta * nq * ut * _maxc(qsn + qdn, 0.0), 'gn')
+        noise = (
+            Contribution(bds.I, _white_noise(4.0 * _KB * T * gn)),
+            ## EKV normalises flicker noise by `cox*W*L`; with `cox`
+            ## defaulting to zero that would be a division by zero, so
+            ## the normalisation is folded into `kf` here as it is in
+            ## the diode above.  `safe_abs` because a PSD may not be
+            ## negative and `ids` is negative for a reversed device.
+            Contribution(bds.I, _flicker_noise(
+                kf * _safe_abs(ids) ** af, ef)),                   # noqa
+        )
+        return (Contribution(bds.I, ids),
+                Contribution(bdb.I, ddt(qd)),
+                Contribution(bgb.I, ddt(qg)),
+                Contribution(bsb.I, ddt(qs))) + noise
+    return analog
+
+
+class EkvNmosHdl(Behavioural):
+    """EKV 2.6 long-channel n-channel MOSFET.  Terminals ``(d, g, s, b)``.
+
+    One expression covers weak, moderate and strong inversion; see
+    `_ekv_analog` for the equations, the references and the list of
+    what is deliberately absent.
+
+    This model exists in the library for two reasons beyond being a
+    MOSFET.  It is the first production user of `hdl.limit_fet` and
+    `hdl.limit_vds`, and of `hdl.softplus`.  And it is an INDEPENDENT
+    FORMULATION of the same physics as `compact.PspMosLongChannel`:
+    PSP solves the surface potential and EKV linearises the depletion
+    charge about pinch-off, so where the two agree the agreement is
+    evidence about both, and where they disagree the size of the
+    disagreement is the price of the linearisation.  The cross-check is
+    in ``test_elements_hdl_library3.py`` and its result is reported
+    there rather than asserted here.
+    """
+    instparams = _ekv_params()
+
+    analog = staticmethod(_ekv_analog(TEMP, +1))
+
+
+class EkvPmosHdl(Behavioural):
+    """EKV 2.6 long-channel p-channel MOSFET.  Terminals ``(d, g, s, b)``.
+
+    `EkvNmosHdl` with every branch declared with its terminals
+    exchanged; the card carries positive magnitudes for both devices
+    (``vto`` is the magnitude of the threshold, ``gamma`` and ``phi``
+    are positive) and the device conducts for
+    ``V(s) > V(g) + vto`` and ``V(s) > V(d)``.
+
+    Redefining ``analog`` here is REQUIRED and not decorative -- see
+    `GummelPoonPnpHdl`.
+    """
+    instparams = _ekv_params()
+
+    analog = staticmethod(_ekv_analog(TEMP, -1))
