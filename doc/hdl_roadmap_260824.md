@@ -1370,3 +1370,56 @@ Both facts are tests. This belongs at the simulator level as `gmin` (or
 That is §3's kernel additions paying for themselves in the only
 currency that counts here: what an author has to think about that is
 not physics.
+
+---
+
+## 13. Re-measured 2026-08-25 (evening): §8's numbers moved, and so did its conclusion
+
+§8 was measured before the kernel additions of §3 landed. Re-measured on
+the same machine, same card, same bias:
+
+    quantity                     2026-08-24      now      change
+    PSP compile+instantiate         67.4 s      66.4 s     --
+    i                               1414 us     1282 us    -9%
+    G                              26523 us    17304 us    -35%
+    G generated lines               2675        2675       --
+    G dispatch calls               14030        3471       -75%
+    G/i                             18.8x       13.5x
+
+**The kernel work paid for itself in a currency it was not aimed at.**
+`maxc`/`minc` were added for *ergonomics* -- to remove the undocumented
+"`Max` only on an atom" rule -- and rebuilding `expl`/`hypsmooth` on
+them cut the Jacobian's dispatched calls by three quarters and its
+runtime by a third. Nothing in §3 predicted that, and §8's own
+"op counts are the wrong proxy" caution is why: the win came from
+emitting FEWER CALLS, not from a smaller expression. The line count did
+not move at all.
+
+### What this does to the backend decision
+
+Priced at the measured scalar costs, dispatch is now roughly
+
+    2642 where x 0.94 + 454 min/max x 0.60 + 303 exp x 0.10  =  ~2.8 ms
+
+of 17.3 ms — **about 16%, where §8 measured 40%.** So:
+
+- **scalar code generation is now worth ~1.2x, not ~1.7x.** It has
+  been overtaken by a change made for other reasons, and on these
+  numbers it is no longer worth doing on its own.
+- **the remaining ~84% is the Python interpreter**, not numpy: 2675
+  lines of straight-line float arithmetic plus 2775 `_recip2`/`_rdiv`
+  Python-level calls. That is not a dispatch problem any printer change
+  can reach.
+
+**This strengthens the compiled-backend case and weakens every
+alternative to it.** The cost is now interpretation itself, and only a
+backend that stops interpreting removes it. `_chain_compile` and
+`_ChainPrinter` remain the replacement point.
+
+**And it is a warning about §8's own remaining numbers.** The 300-1000x
+estimate for a compiled backend was extrapolated from 14030 operations
+at 1-5 ns each. The operation count is now 3471 dispatched calls over
+2675 lines, so that extrapolation needs redoing before anyone commits
+to it. **Do not quote §8's ratios without re-running
+`benchmarks/hdl_model_cost.py`** -- this section exists because they
+were quoted once already, four weeks stale, in the space of one day.
