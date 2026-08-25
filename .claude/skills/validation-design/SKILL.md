@@ -256,3 +256,82 @@ line of setup.
   sound like physics.
 - **A tidy, interpretable answer is not thereby a correct one.** The
   most dangerous result is the one that looks like a clean explanation.
+
+## Test the INTERVENTION against its absence, not just its arithmetic
+
+A component that exists to *improve* something — a limiter, a
+preconditioner, a cache, a smoothing, a heuristic — has no correct
+output to check. It has only a better or worse outcome. So the tests
+that come naturally are all about its internals, and all of them can
+pass while it does the opposite of its job.
+
+Measured here: a Newton limiter whose value matched the reference
+implementation over millions of points, which was a no-op near the
+solution, which compressed a wild step to the reference's own number,
+and which ran identically on both code generators — was making
+convergence **nine times worse**. The defect was in where the limited
+value was *written*, which no test of the limiting law can see.
+
+So for anything whose purpose is improvement, keep one test that:
+
+1. is **worse or fails without it** — otherwise the test is measuring
+   nothing;
+2. produces the **same answer with and without** — an optimisation that
+   changes the result is a bug, and this is the assertion that finds
+   it;
+3. **bypasses whatever else would rescue the case.** A retry ladder, a
+   fallback path or a coarser tolerance will paper over the entire
+   effect. Here it meant calling the plain solver directly instead of
+   the analysis that wraps it.
+
+Count the thing the improvement is supposed to reduce — iterations,
+evaluations, bytes — not wall-clock.
+
+## ⚠ A bad measurement with a plausible story attached stops being a bug
+
+This is the failure mode that let the above survive, and it is subtler
+than not measuring.
+
+The circuit-scale test **existed**. It measured that one limiter alone
+failed to converge, and recorded that as a *characteristic*, with an
+explanation: the limiter bounds a step to about a volt, and a volt is
+forty thermal voltages to a subthreshold exponential. True,
+self-consistent, and not the reason — the real cause was the write-back
+bug. Once fixed, that limiter became the best of the four.
+
+**A component measurably doing the opposite of its purpose is a defect
+report, not a property.** When the number disagrees with what the thing
+is for, suspect the thing before you explain the number. An explanation
+that arrives quickly and sounds like domain physics is precisely how a
+wrong measurement gets closed and written down.
+
+Related and already in `reference-differential`: do not reconcile two
+measurements that cannot both be true by inventing a mechanism that
+makes the contradiction sound like physics. This is the same trap with
+one measurement instead of two.
+
+## Separate the invariant from the incidental, or every improvement fails
+
+When a shared convention changes, the tests that pin it tell you what
+they were really protecting — and usually each one has mixed a genuine
+invariant with an implementation detail that happened to be true.
+
+Four tests here had to be rewritten for one behaviour change. Each was
+asserting both:
+
+- **invariant** — every probe ends carrying its own value, nothing is
+  undone, nothing outside the element is touched, the result is
+  bounded, the *solution* is unchanged;
+- **incidental** — which of two equally valid nodes was written, and in
+  what order.
+
+Assert the first. A test that pins the second fails on every
+improvement and its failure carries no information — you cannot tell a
+regression from a better implementation, so you end up rewriting the
+test to match whatever the code now does, which is how a suite quietly
+stops being evidence.
+
+When exactness matters, assert on the **write** rather than on a
+recomputed difference: `(b + v) - b` is not `v`, and a rounding error
+is not what the test is trying to catch. Give the no-op case its own
+branch instead of folding it into one of the write forms.
