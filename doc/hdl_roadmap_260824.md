@@ -749,9 +749,7 @@ the form it was argued — here is what actually landed.
     4        the six syntactic checks                DONE (nine of them)
     4        explain()                               DONE
     4        check_jacobians()                       DONE
-    5        thermal node                            DONE
-    5        full SPICE diode                        DONE
-    5        the other thirteen models               not started
+    5        thermal node, full SPICE diode          DONE
     6        Phase 1 make the record true            DONE
     6        Phase 2 designer's surface              DONE
     6        Phase 3 kernel additions                DONE
@@ -759,12 +757,16 @@ the form it was argued — here is what actually landed.
     10.2     PCNR admits chained models              DONE
     10.3(a)  FET limiting, ordinary Newton path      DONE
     10.3(b)  FET limiting inside PCNR (vector)       not started
+    12.1     limiter write-back moves the wrong node DONE
+    12.2     check_jacobians "not resolvable"        not started
+    12.3     no way to declare a device needs gmin   not started
+    12.4     limit_pnj parameters cannot use var()   not started
     5        Gummel-Poon BJT, EKV core, crystal,
              ferrite, skin-effect R, comparator,
              memristor                               DONE
     5        the remaining eight models              not started
 
-Suite: 1874 tests at `4d359e5` before this work, **2184 passed / 7
+Suite: 1874 tests at `4d359e5` before this work, **2189 passed / 7
 skipped / 3 xfailed / 0 failed** as of `cb477a8`. `sphinx -W` clean.
 
 **Corrections this campaign made to its own record.** Four claims were
