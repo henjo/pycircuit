@@ -804,7 +804,9 @@ Limiting: `limit_fet` and `limit_vds` beside `limit_pnj`, with
 `limit_spec` carrying a limiter KIND rather than a hardcoded `(IS, VT)`
 pair.
 
-Diagnostics: `explain()`, `x_layout()`, `check_jacobians()`, and nine
+Diagnostics: `explain()`, `x_layout()`, `check_jacobians()` -- which
+has THREE verdicts, an entry the finite difference cannot resolve at
+this point coming back UNRESOLVED rather than FAILED -- and nine
 compile-time checks that name the class and the fix — three of which
 replace *silent* failures (a `self` argument becoming the first
 terminal, a class-body `terminals` being discarded, an internal `Node`
@@ -4034,18 +4036,21 @@ model was a run-time `TypeError` (nothing had ever used both), and
 model whose seed is called `x0` started at zero with a correct DC
 operating point and no warning.
 
-**Open, with numbers so a fix can be measured:** the FET limiter's
-write-back moves nodes a source pins (225 Jacobian evaluations against
-25, a pinned gate displaced by up to 5e48 V); `check_jacobians` needs
-a "not resolvable" verdict (three sightings, two models, three
-mechanisms); there is no way to declare that a device needs a `GMIN`
-anchor. Roadmap §12.
+**Closed since, with numbers:** the FET limiter's write-back moved
+nodes a source pins (225 Jacobian evaluations against 25, a pinned gate
+displaced by up to 5e48 V) -- now 8; `check_jacobians` had no "not
+resolvable" verdict (three sightings, two models, three mechanisms) --
+it now has one, and building it found a fourth mechanism and proved the
+recorded formula for the fix ten decades wrong; `limit_pnj`'s
+parameters could not be written with `var()`. Roadmap §12.
 
-**The methodological result, which outlasts any of the above.** Six
+**The methodological result, which outlasts any of the above.** Nine
 claims in this campaign were RIGHT IN CONCLUSION and WRONG IN THEIR
 STATED REASON — the `Max`-on-an-atom rule, `limexp`'s eligibility test
 (twice, in two days), `_ChainPrinter`'s `reduce` premise, the
-roadmap's own §8 first draft, and §10.2's `DiodeSpiceHdl` claim. Each
+roadmap's own §8 first draft, §10.2's `DiodeSpiceHdl` claim, §12.1's
+`fetlim` attribution, §12.2's proposed noise-floor formula and §12.4's
+stated failure mode. Each
 was caught by measuring, never by reading, and most were one `_src`
 dump or one `hasattr` away the whole time. **A reason decays faster
 than the conclusion it supports, and nothing fails when it does** — so

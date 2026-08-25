@@ -1859,42 +1859,48 @@ def test_ekv_flicker_noise_is_one_over_f():
 ## ----------------------------------------------------------------------
 ## 2.4  Jacobians and finiteness
 
-@pytest.mark.parametrize('name,card,x,atol', [
-    ('weak inversion', EKV, [1.0, 0.1, 0.0, 0.0], None),
-    ('moderate', EKV, [1.0, 0.55, 0.0, 0.0], None),
-    ('strong saturation', EKV, [2.0, 2.0, 0.0, 0.0], None),
-    ('triode', EKV, [0.05, 2.0, 0.0, 0.0], None),
-    ('vds zero', EKV, [1.0, 2.0, 1.0, 0.0], None),
-    ('body bias', EKV, [3.0, 2.5, 1.0, -1.0], None),
+@pytest.mark.parametrize('name,card,x,resolved', [
+    ('weak inversion', EKV, [1.0, 0.1, 0.0, 0.0], True),
+    ('moderate', EKV, [1.0, 0.55, 0.0, 0.0], True),
+    ('strong saturation', EKV, [2.0, 2.0, 0.0, 0.0], True),
+    ('triode', EKV, [0.05, 2.0, 0.0, 0.0], True),
+    ('vds zero', EKV, [1.0, 2.0, 1.0, 0.0], True),
+    ('body bias', EKV, [3.0, 2.5, 1.0, -1.0], True),
     ## Right at the `vgp = 0` seam of the pinch-off Piecewise.
-    ('pinch-off seam', EKV, [1.0, -0.2856, 0.0, 0.0], None),
-    ## DEEP CUTOFF NEEDS AN EXPLICIT `atol`, and the reason is worth
-    ## recording because it is the third time this campaign has hit it.
-    ## `check_jacobians` uses ONE band for the whole matrix,
-    ## `atol = 1e-7 * max|entry|`, deliberately -- a per-entry relative
-    ## tolerance passes an entry that is small because it is WRONG.
-    ## Here every entry of C is around 1e-25 F, so the band is 1e-32,
-    ## and the finite difference cannot resolve that: the normalised
-    ## charges `qsn`/`qdn` are computed as a difference of order-0.5
-    ## quantities that cancels to 5.6e-13, so they carry ~1e-16 of
-    ## absolute rounding, while the derivative moves them by 1e-17 over
-    ## the 1e-7 step.  The reported "FAILS" compares a correct 1.6e-25
-    ## against a finite difference of EXACTLY 0.0.
+    ('pinch-off seam', EKV, [1.0, -0.2856, 0.0, 0.0], True),
+    ## DEEP CUTOFF IS NOT RESOLVABLE, and this is the point that bought
+    ## `check_jacobians` its third verdict.  Every entry of `C` here is
+    ## around 1e-25 F, so the one-band tolerance is 1e-32, and the
+    ## difference at the default 1e-7 step comes back EXACTLY 0.0: the
+    ## normalised charges are computed as a cancellation, so `q`'s
+    ## representable step is `eps` times an INTERNAL magnitude of
+    ## 1.9e-15, not times `|q|` itself.
     ##
-    ## The model is right; the instrument has run out of resolution.  A
-    ## per-entry NOISE FLOOR -- max(atol, eps*|q|/h) -- would report
-    ## these as unresolved rather than as failures.  1e-24 F is twenty
-    ## decades below any capacitance this device has at any usable bias,
-    ## so it cannot hide a real error.
-    ('accumulation', EKV, [1.0, -3.0, 0.0, 0.0], 1e-24),
-    ('ideal device', EKV_IDEAL, [2.0, 2.0, 0.0, 0.0], None),
-    ('ideal at the seam', EKV_IDEAL, [1.0, -0.2, 0.0, 0.0], 1e-24),
+    ## This used to be pinned with a hand-written `atol = 1e-24` and a
+    ## comment proposing `max(atol, eps*|q|/h)` as the general fix.  That
+    ## formula is TEN DECADES too small here (9.4e-36 against a real
+    ## quantum of 4.1e-31), and even `eps*max|q|/h` misses by 2x, so the
+    ## floor is now MEASURED: `check_jacobians` widens the step until the
+    ## value moves clear of its own quantisation.  Doing that turns a
+    ## difference of 0.0 into -1.26e-25 against an analytic -1.28e-25 --
+    ## 1.5% agreement where there was none at all -- and the entries are
+    ## reported UNRESOLVED rather than either FAILED or silently passed.
+    ('accumulation', EKV, [1.0, -3.0, 0.0, 0.0], False),
+    ('ideal device', EKV_IDEAL, [2.0, 2.0, 0.0, 0.0], True),
+    ('ideal at the seam', EKV_IDEAL, [1.0, -0.2, 0.0, 0.0], False),
 ])
-def test_ekv_jacobians_by_finite_differences(name, card, x, atol):
+def test_ekv_jacobians_by_finite_differences(name, card, x, resolved):
     el = _mk(eh.EkvNmosHdl, 'd', 'g', 's', 'b', **card)
-    res = check_jacobians(el, np.array(x, dtype=float), rtol=3e-5,
-                          atol=atol)
+    res = check_jacobians(el, np.array(x, dtype=float), rtol=3e-5)
     assert res.ok, '%s\n%s' % (name, res)
+    ## `ok` alone would be satisfied by an instrument that gave up
+    ## everywhere, so the two states are pinned separately: every
+    ## ordinary bias must be fully RESOLVED, and the two cutoff points
+    ## must report themselves unresolved rather than pass quietly.
+    assert res.resolved is resolved, '%s\n%s' % (name, res)
+    if not resolved:
+        assert all(u.reason == 'roundoff' for u in res.unresolved), \
+            '%s\n%s' % (name, res)
 
 
 def test_ekv_stays_finite_where_no_device_belongs():
@@ -1978,9 +1984,16 @@ def test_fetlims_parameter_only_vto_is_measurably_loose_under_body_bias():
 
     SPICE passes ``von``, the turn-on voltage recomputed each
     iteration, which for any model with a body effect depends on
-    ``vbs``.  The per-probe ``limit_spec`` lambdifies its parameters
-    over the parameters and TEMP alone, so a model can only pass its
+    ``vbs``.  A limiter runs BEFORE the device is evaluated, so its
+    parameters cannot read the iterate at all -- a chain that reaches
+    one is now refused at compile time -- and a model can only pass its
     ZERO-BIAS threshold.
+
+    (The reason used to be given as "``limit_spec`` lambdifies its
+    parameters over the parameters and TEMP alone".  That was the
+    mechanism and it expired on 2026-08-25, when roadmap 12.4 let those
+    expressions read `var()` symbols too.  The limitation is unchanged;
+    what enforces it is the ORDER, not the namespace.)
 
     For this card the real turn-on in terms of ``vgs`` is
     ``vto + gamma*(sqrt(phi + vsb) - sqrt(phi))``, which at 2 V of body
@@ -2039,12 +2052,17 @@ def _ekv_no_limit():
     return _NOLIMIT_CACHE[0]
 
 
-def _count_jacobians(cir, x0=None):
+def _count_jacobians(cir, x0=None, gmin=None):
     """Solve a circuit's DC point and count Jacobian evaluations.
 
     One per Newton iteration, which is the currency a limiter is judged
-    in.  Returns ``(count, node_voltage_getter)`` or ``(count, None)``
-    when the solve failed.
+    in.  Returns ``(count, result)`` or ``(count, exception)`` when the
+    solve failed.
+
+    ``gmin`` reaches `DC`'s anchor (roadmap §12.3).  Pass ``0.0`` to
+    measure a limiter against a bare solve: the anchor rescues an empty
+    row on its own, so with it left at the default a test comparing
+    "with limiting" to "without" is measuring the anchor as well.
     """
     calls = []
     orig = cir.G
@@ -2054,8 +2072,9 @@ def _count_jacobians(cir, x0=None):
         return orig(*a, **kw)
 
     cir.G = counted
+    kw = {} if gmin is None else dict(gmin=gmin)
     try:
-        res = DC(cir).solve(x0=x0)
+        res = DC(cir, **kw).solve(x0=x0)
     except Exception as exc:                     # noqa: BLE001
         return len(calls), exc
     return len(calls), res
@@ -2085,22 +2104,39 @@ def test_fet_limiting_rescues_a_solve_that_otherwise_goes_singular():
 
     A milliamp forced into a diode-connected EKV device from a current
     source, started from the origin.  With the limiters the DC analysis
-    converges in seven Jacobian evaluations; with the SAME model and
-    only the two ``$limit`` declarations removed it fails outright with
-    a singular matrix, because a Newton step drives ``VP - VD`` so far
-    negative that ``ln(1 + e^x)`` underflows to exactly 0.0 and the
-    drain row becomes empty.
+    converges in a handful of Jacobian evaluations; with the SAME model
+    and only the two ``$limit`` declarations removed, a Newton step
+    drives ``VP - VD`` so far negative that ``ln(1 + e^x)`` underflows
+    to exactly 0.0 and the drain row becomes empty.
 
-    This is the case the roadmap's item 10.3(a) was written for, and it
-    is the first time anything in the tree has exercised it.
+    **Updated 2026-08-25.** That empty row used to end the solve with a
+    `SingularMatrix`; roadmap §12.3 added a gmin anchor that now rescues
+    it, so the assertion is made at ``gmin = 0`` -- the state this test
+    was written to measure -- and the rescue is asserted separately.
+    Both halves matter: without the anchor the limiters are what save
+    the solve, and with it the two routes must agree, because a
+    limiter buys a shorter PATH and an anchor buys a well-posed step,
+    and neither is allowed to move the answer.
     """
     n_lim, res = _count_jacobians(*[_forced_current_stage(eh.EkvNmosHdl)[0]])
     assert not isinstance(res, Exception), res
     assert n_lim < 15, n_lim
+
+    ## Without the limiters AND without the anchor: still singular.
     c2, _nd = _forced_current_stage(_ekv_no_limit())
-    _n2, res2 = _count_jacobians(c2)
+    _n2, res2 = _count_jacobians(c2, gmin=0.0)
     from pycircuit.circuit.analysis import SingularMatrix
     assert isinstance(res2, SingularMatrix), res2
+
+    ## Without the limiters but WITH the anchor: rescued, and it lands
+    ## on the limited model's own answer.  This is the assertion that
+    ## would catch an anchor which quietly moved the solution.
+    c3, nd3 = _forced_current_stage(_ekv_no_limit())
+    _n3, res3 = _count_jacobians(c3)
+    assert not isinstance(res3, Exception), res3
+    assert_allclose(float(res3.v(nd3, gnd)),
+                    float(res.v(_forced_current_stage(eh.EkvNmosHdl)[1], gnd)),
+                    rtol=1e-6)
     ## and the point it converged to is a real one: 0.3 V of drain-source
     ## voltage carrying a milliamp, i.e. deep triode.
     c3, nd3 = _forced_current_stage(eh.EkvNmosHdl)
@@ -2137,7 +2173,7 @@ def _cascode_stage(cls, rleak=1e9):
     return c, nd
 
 
-def test_a_stacked_pair_without_a_dc_path_is_structurally_singular():
+def test_a_stacked_pair_without_a_dc_path_is_singular_at_the_start_not_at_the_answer():
     """The hazard `_cascode_stage` documents, pinned so that it is a
     known property rather than a surprise.
 
@@ -2166,13 +2202,27 @@ def test_a_stacked_pair_without_a_dc_path_is_structurally_singular():
         cc['m2'] = eh.EkvNmosHdl(nm, ng, gnd, gnd, **LIM_CARD)
         return cc
 
-    ## Still reachable, and the message still names the row.
-    with pytest.raises(SingularMatrix, match="'nm'"):
-        DC(_pair(40.0, 0.2)).solve()
+    ## **The name of this test used to say "structurally singular", and
+    ## that was wrong.**  Measured while building the gmin anchor
+    ## (roadmap §12.3): this circuit is singular at ITERATE 0 and
+    ## perfectly well posed at its answer, where the `nm` conductance is
+    ## 3.8e-8 S -- four decades above the anchor that gets it there.  An
+    ## empty row here is a numerical fact about a starting point, not a
+    ## structural fact about the netlist, and the two need different
+    ## remedies.  With the anchor it now converges.
+    r_anchored = DC(_pair(40.0, 0.2)).solve()
+    assert np.isfinite(float(r_anchored.v('nm', gnd)))
 
-    ## The measurement of what the write-back fix bought: the bias this
-    ## test used to use now solves, with no leak resistor at all.
-    r_easy = DC(_pair(5.0, 2.5)).solve()
+    ## At gmin = 0 the empty row is still reachable, and the message
+    ## still names it.  This is the state the test was written to pin.
+    with pytest.raises(SingularMatrix, match="'nm'"):
+        DC(_pair(40.0, 0.2), gmin=0.0).solve()
+
+    ## The measurement of what the write-back fix bought, taken at
+    ## gmin = 0 so that it is the limiter being measured and not the
+    ## anchor: the bias this test used to use now solves with neither a
+    ## leak resistor nor an anchor.
+    r_easy = DC(_pair(5.0, 2.5), gmin=0.0).solve()
     assert 0.4 < float(r_easy.v('nm', gnd)) < 0.5
 
     ## and the hard one with a gigaohm to ground converges.

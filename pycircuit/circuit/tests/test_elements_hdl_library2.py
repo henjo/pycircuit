@@ -986,38 +986,60 @@ def test_memristor_jacobians_and_finiteness():
     """
     xsing = MEM['roff'] / (MEM['roff'] - MEM['ron'])
     assert_allclose(xsing, 1.006289, rtol=1e-5)
-    for kw in ({}, dict(p=3.0)):
+    ## EVERY CARD, EVERY STATE, AND THE EXTREME BIASES, and until
+    ## `check_jacobians` grew its UNRESOLVED verdict none of those three
+    ## could be swept.  Each was excluded for a different reason and all
+    ## three were properties of central differencing, not of the model:
+    ##
+    ## * ``x = 0`` and ``x = 1`` are the corners of the
+    ##   ``minc(maxc(x, 0), 1)`` clamp, so the difference straddles a
+    ##   jump in the SLOPE and returns the average of the two arms while
+    ##   the Jacobian returns one of them.  No ``h`` helps; a jump has no
+    ##   scale.  The instrument now detects the kink from the VALUE
+    ##   alone -- the one-sided disagreement stays put as ``h`` shrinks
+    ##   where a smooth function's halves -- and says so;
+    ## * ``ron = 1, roff = 1e9`` has ``dR/dx = 1e9``, so a 1e-7 step is a
+    ##   1% change in ``R`` and the difference carries 1e-4 of truncation
+    ##   error.  Four points of this sweep FAILED before the fix (worst:
+    ##   ``G = 9.998e1`` against a difference of ``9.999e1`` at
+    ##   ``x = 1 - 1e-5``).  There is still no single ``h`` that serves
+    ##   both this card and the default one -- measured: 1e-9 fixes this
+    ##   card and breaks the default at ``x = 20`` -- which is why the
+    ##   truncation term is now MEASURED per entry by Richardson rather
+    ##   than tuned away;
+    ## * at ``|v| = 1e4`` with ``p = 3`` the drive is 1e6 and the state
+    ##   moves it by 1e-11 over the difference step, below one ulp of the
+    ##   value, so the difference measured roundoff (5.8e-4 against an
+    ##   analytic 5.9e-5).
+    npts, resolved_pts, corners = 0, 0, 0
+    for kw in ({}, dict(p=3.0), dict(ron=1.0, roff=1e9)):
         el = _mk(eh.MemristorHdl, 'a', 'b', **dict(MEM, **kw))
-        ## The state values deliberately AVOID 0.0 and 1.0 exactly:
-        ## those are the corners of the `minc(maxc(x, 0), 1)` clamp, and
-        ## `check_jacobians`'s central difference straddles them.  They
-        ## are covered by `test_the_model_has_three_kinks_...` instead;
-        ## 1e-5 is a hundred times the finite-difference step, so these
-        ## points are inside an arm rather than merely near one.
-        ## |v| stays moderate here, and the extreme biases are checked
-        ## for FINITENESS below instead.  At |v| = 1e4 with p = 3 the
-        ## drive is 1e6 and the state moves it by 1e-11 over the
-        ## difference step -- below one ulp of the value -- so the
-        ## finite difference measures roundoff (5.8e-4 against an
-        ## analytic 5.9e-5) and reports a failure that is a property of
-        ## differencing, not of the model.  `check_jacobians` has no way
-        ## to say "this entry is not resolvable at this point"; its one
-        ## tolerance band is scaled to the largest entry of the matrix,
-        ## which does not help an entry whose own signal is below the
-        ## VALUE's ulp.
-        for xst in (1e-5, 0.5, 1 - 1e-5, xsing, 1.5, -0.4, 20.0):
-            for v in (0.7, -0.7, 10.0, -10.0):
+        for xst in (0.0, 1e-5, 0.5, 1 - 1e-5, 1.0, xsing, 1.5, -0.4, 20.0):
+            for v in (0.7, -0.7, 10.0, -10.0, 1e4, -1e4):
                 chk = check_jacobians(el, [v, 0.0, 1e-5, xst, 0.0])
                 assert chk.ok, (kw, xst, v, str(chk))
+                npts += 1
+                resolved_pts += bool(chk.resolved)
+                ## The clamp corners must be REPORTED as kinks, not
+                ## passed quietly: on the two soft cards that is the only
+                ## thing wrong with them, so the reason is pinned exactly.
+                if kw.get('ron') is None and xst in (0.0, 1.0):
+                    corners += 1
+                    assert {u.reason for u in chk.unresolved} == {'kink'}, \
+                        (kw, xst, v, str(chk))
+    ## AND MOST OF THE SWEEP MUST STILL RESOLVE.  Every `chk.ok` above
+    ## would also be satisfied by an instrument that had quietly stopped
+    ## checking and called everything unresolved, so the count is pinned.
+    ## Measured 2026-08-25: 122 of 162 points fully resolved; of the 40
+    ## that are not, 24 are the clamp corners of the two soft cards, 12
+    ## are the stiff card at `x = 1 - 1e-5` and `x = 1` (truncation), 3
+    ## are its corner at `x = 0`, and one is `p = 3` at `x = 1.00629,
+    ## v = -1e4` (roundoff -- mechanism 2, on a card that has it).
+    assert npts == 162
+    assert corners == 24
+    assert resolved_pts >= 122, resolved_pts
     ## Finiteness is swept over a WIDER set than the finite-difference
-    ## check, including a 1 : 1e9 on/off contrast.  That card is left
-    ## out of the FD sweep on purpose: ``dR/dx`` is 1e9 there, so a
-    ## 1e-7 step in the state moves ``R`` by 1% and a central difference
-    ## carries 1e-4 of truncation error -- which the analytic Jacobian
-    ## is then blamed for.  There is no single ``h`` that serves both
-    ## this card and the default one (measured: 1e-9 fixes this card and
-    ## breaks the default at ``x = 20``), and that is a property of
-    ## differencing rather than a gap in the model.
+    ## check: |v| up to 1e6 and states out to +-1e3.
     for kw in ({}, dict(p=3.0), dict(ron=1.0, roff=1e9)):
         el = _mk(eh.MemristorHdl, 'a', 'b', **dict(MEM, **kw))
         with warnings.catch_warnings():
@@ -1034,8 +1056,7 @@ def test_memristor_jacobians_and_finiteness():
 
 
 def test_the_model_has_three_kinks_and_they_are_where_the_physics_is():
-    """A recorded property, not a defect -- and the reason
-    `check_jacobians` is not swept over these three points.
+    """A recorded property, not a defect.
 
     The model is C0 everywhere and C1 everywhere except at exactly
     three places, each of which is a physical boundary:
@@ -1050,13 +1071,21 @@ def test_the_model_has_three_kinks_and_they_are_where_the_physics_is():
       has genuinely saturated.
 
     `check_jacobians` central-differences with a step of 1e-7, so at any
-    of the three it straddles a jump and reports a large discrepancy
-    that is arithmetically correct and says nothing about the model.
-    Shrinking ``h`` does not help; a jump has no scale.  What IS checked
-    here is the pair of claims that make the kinks acceptable: the value
-    is continuous across each (the difference across the seam falls
-    linearly with the step), and the one-sided derivatives are the two
-    finite numbers the equations say they are.
+    of the three it straddles a jump and reports a discrepancy that is
+    arithmetically correct and says nothing about the model.  Shrinking
+    ``h`` does not help; a jump has no scale.
+
+    (Until 2026-08-25 that was also the reason the sweep above skipped
+    these points.  It no longer is: `check_jacobians` detects the kink
+    from the VALUE -- the one-sided disagreement stays put as ``h``
+    shrinks where a smooth function's halves -- and reports UNRESOLVED,
+    so the corners are swept and asserted there.  This test keeps the
+    stronger, model-side claim, which no verdict can make.)
+
+    What IS checked here is the pair of claims that make the kinks
+    acceptable: the value is continuous across each (the difference
+    across the seam falls linearly with the step), and the one-sided
+    derivatives are the two finite numbers the equations say they are.
     """
     el = _mk(eh.MemristorHdl, 'a', 'b', **MEM)
     k = MEM['muv'] * MEM['ron'] / MEM['d'] ** 2

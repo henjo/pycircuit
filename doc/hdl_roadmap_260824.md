@@ -758,18 +758,21 @@ the form it was argued — here is what actually landed.
     10.3(a)  FET limiting, ordinary Newton path      DONE
     10.3(b)  FET limiting inside PCNR (vector)       not started
     12.1     limiter write-back moves the wrong node DONE
-    12.2     check_jacobians "not resolvable"        not started
-    12.3     no way to declare a device needs gmin   not started
-    12.4     limit_pnj parameters cannot use var()   not started
+    12.2     check_jacobians "not resolvable"        DONE 2026-08-25
+    12.3     no way to declare a device needs gmin   DONE 2026-08-25
+    12.4     limit_pnj parameters cannot use var()   DONE 2026-08-25
     5        Gummel-Poon BJT, EKV core, crystal,
              ferrite, skin-effect R, comparator,
              memristor                               DONE
     5        the remaining eight models              not started
 
 Suite: 1874 tests at `4d359e5` before this work, **2189 passed / 7
-skipped / 3 xfailed / 0 failed** as of `cb477a8`. `sphinx -W` clean.
+skipped / 3 xfailed / 0 failed** as of `cb477a8`. After 12.2, 12.3 and
+12.4: **2220 passed / 7 skipped / 3 xfailed** in 695 s, plus the two
+`test_elements_hdl_library3.py` assertions 12.3 deliberately overturned
+and left for that file's owner. `sphinx -W` clean.
 
-**Corrections this campaign made to its own record.** Four claims were
+**Corrections this campaign made to its own record.** Nine claims were
 found right in conclusion and wrong in their stated reason:
 
 - the `Max`-on-an-atom rule (the divide-by-zero symptom does not
@@ -785,13 +788,27 @@ found right in conclusion and wrong in their stated reason:
 - §10.2's "does not admit `DiodeSpiceHdl`" and the reason given for it
   (the default card qualifies; and what refuses `rs = 2` is that a
   resistor's current is not exponential, not a two-branch dependence);
+- §12.1's `fetlim` attribution (the write-back moved the wrong node; the
+  recorded explanation about a volt being forty thermal voltages was
+  plausible and not the cause);
+- **§12.2's own proposed fix**, `max(atol, eps·|value|/h)` — ten decades
+  too small on the very bias that motivated it, because the quantum is
+  set by an internal cancellation the outputs do not show. The
+  *diagnosis* on the line above it was exactly right and named that
+  cancellation; the formula on the next line used the output anyway;
+- **§12.4's stated failure mode**, "not in scope ... a bare `NameError`
+  from inside the lambdified parameter function". Measured: the class
+  compiles, the parameter function returns the sympy Symbol, and the
+  first Newton iteration raises `TypeError: Cannot convert expression to
+  float`. `hdl.py` had the correct version of this the whole time, in
+  the comment on the source vectors.
 
 **The pattern is worth naming: a reason decays faster than the
 conclusion it supports, and nothing fails when it does.** Every one was
 caught by taking a measurement rather than by reading, and most were
-one `_src` dump or one `hasattr` away the whole time. Three of the five
-were written by whoever was correcting the previous one -- including
-two of mine -- so this is not a failure of care, it is what happens to
+one `_src` dump or one `hasattr` away the whole time. Most were
+written by whoever was correcting the previous one -- so this is not a
+failure of care, it is what happens to
 a stated reason when the code under it keeps moving. Line numbers in this document decayed the same way, twice: twelve were
 stale within a day of being written because `hdl.py` grew ~1400 lines,
 were re-verified, and were all stale again the next day after another
@@ -852,6 +869,11 @@ had.
 > device's conductance underflows to exactly zero. The hazard is NOT
 > gone — (40 V, 0.2 V) still reaches it — only harder to reach. §12.3
 > stands.
+>
+> **2026-08-25:** §12.3 landed, and (40 V, 0.2 V) now converges. The
+> hazard is still real — the row still goes bit-exactly empty at iterate
+> 0 — but the solver now has an anchor for it, and the answer it returns
+> is a `gmin = 0` solution, not an anchored one.
 
 #### The original finding, kept for the mechanism
 
@@ -880,7 +902,107 @@ with the limiters and raises `SingularMatrix` without them; the 40 V
 cascode from the origin is 9 with and 25 without, same answer. The
 limiters earn their place. The write-back rule does not.
 
-### 12.2 `check_jacobians` needs a "not resolvable" verdict — third sighting
+### 12.2 `check_jacobians` needs a "not resolvable" verdict — FIXED 2026-08-25
+
+> **Resolved, and THE PROPOSED FORMULA WAS WRONG BY TEN DECADES.**
+>
+> `check_jacobians` now has three per-entry verdicts —
+> `JAC_PASS` / `JAC_UNRESOLVED` / `JAC_FAIL` — surfaced as
+> `res.verdict` (`'ok'` / `'UNRESOLVED'` / `'FAILED'` /
+> `'NOT COMPARABLE'`), as `res.resolved` beside the existing `res.ok`,
+> and as `res.unresolved` / `res.failures` lists of `JacEntry`
+> records carrying the analytic value, the difference, the error, the
+> floor and the reason. `res.ok` stays true when entries are merely
+> unresolved, so no existing assertion changes meaning; `res.resolved`
+> is the stronger claim and has to be asked for.
+>
+> **What the item got wrong.** It prescribed a floor of
+> `max(atol, eps·|value|/h)`, and both models' comments proposed the
+> same. Measured on EKV at `vgs = -3 V`, the bias that motivated it:
+>
+>     eps*|q|/h        (the proposal)      9.4e-36
+>     eps*max|q|/h     (vector form)       9.0e-26
+>     the real quantum / 2h                2.1e-24
+>     the entry it must cover              1.6e-25
+>
+> The proposal is **ten decades too small** and even the vector form
+> misses by 2×, because the cancellation that sets `q`'s representable
+> step happens on an **internal magnitude of 1.9e-15** that no output
+> shows. A floor derived from the outputs cannot see it. So the
+> roundoff floor is **measured**: when a value comes back bitwise
+> identical at all four probe points, the step is widened by a decade
+> at a time until the value clears its own quantisation, and the floor
+> is that quantum over the widened step. On the EKV point that turns a
+> difference of *exactly 0.0* into `-1.26e-25` against an analytic
+> `-1.28e-25` — 1.5% corroboration where there had been none.
+>
+> **Widening is a discriminator, not a whitewash.** A value genuinely
+> independent of `x[k]` stays frozen at every rung, and a non-zero
+> analytic entry against it still FAILS. That case has its own test.
+>
+> The other two floors are measured too. **Truncation** comes from
+> Richardson — the same column differenced at `h` and `2h`, whose
+> disagreement is three times the `h²` term. **A kink is detected from
+> the VALUE alone**: the one-sided disagreement
+> `|f(x+h) - 2f(x) + f(x-h)| / h` halves with `h` for a smooth
+> function and stays put at a corner. That detector never looks at the
+> Jacobian, which is what makes it a fact about the model.
+>
+> **Is a kink distinguishable from a real error? Partly, and the limit
+> is measured.** The non-smoothness is distinguishable — it is a
+> property of `f`. What is *not* distinguishable is an error smaller
+> than the jump, because at a corner the derivative is genuinely
+> two-valued. The floor is 0.75 of the jump, so on `i = g·max(v,0)` at
+> `v = 0` an analytic entry anywhere in `[-0.25g, 1.25g]` passes and
+> anything outside fails. That band is asserted from both sides rather
+> than described.
+>
+> **A fourth mechanism turned up that the item did not list**: a step
+> so large that the Taylor expansion is not converging at all. On the
+> memristor's `ron = 1, roff = 1e9` card at `x = 1`, `R` moves by 100×
+> across one 1e-7 step and the difference reports 3.5e6 against a
+> correct 7.0e8. No finite floor covers that honestly, so when
+> Richardson's term is a quarter of the difference itself the entry is
+> UNRESOLVED with an unbounded floor.
+>
+> **The cost of that rule, measured, as a count.** Run the memristor's
+> whole 162-point sweep against a deliberately HALVED `G`: **156
+> caught, 6 missed**, and all six are the stiff card at `x = 1`. Not
+> because the rule is loose — because a 1e-7 central difference at that
+> point carries no information about the derivative, and because at a
+> corner whose forward arm is flat a halved Jacobian coincides exactly
+> with the average the difference returns. The alternative is a FALSE
+> FAILED on a correct model, which is what 12.2 exists to remove.
+>
+> **A coincidence worth knowing before writing a test here.** At a
+> corner between a slope of `g` and a slope of `0`, the central
+> difference sits at `g/2` — so a *halved* analytic Jacobian lands
+> exactly on it. `assert 0.5*g != g/2` is not a test anybody can pass.
+> The same coincidence appears at the memristor's stiff clamp corner.
+> Corrupt by three, not by a half, when the point is a kink.
+>
+> **Workarounds removed.** EKV's two hand-written `atol = 1e-24`
+> overrides are gone. The memristor's finite-difference sweep gained
+> the `ron = 1, roff = 1e9` card (4 real FAILURES before, 0 after), the
+> clamp corners `x = 0` and `x = 1`, and `|v| = 1e4` — 162 points where
+> there were 56, of which **122 are fully resolved** and the other 40
+> say which mechanism stopped them.
+>
+> **The cost**, since it is a diagnostic that library tests call
+> hundreds of times: four evaluations per column instead of two, plus
+> the ladder where it fires. Measured — BJT (n = 6) 3.4 ms → **6.4 ms**
+> per call, EKV (n = 4) 0.8 ms → **2.1 ms**, EKV in deep cutoff where
+> the ladder runs **2.7 ms**. The memristor test now covers 162 points
+> where it covered 56 and the file still runs in ~20 s.
+>
+> **The floors do not widen a resolvable entry**, which is the property
+> that keeps the instrument an instrument. On a diode at 0.42 V the
+> band is 4.4e-12 and the floors are 2.5e-15 (roundoff) and 7.1e-15
+> (truncation) — three decades under. `test_check_jacobians.py`
+> asserts that, and runs every deliberately-built mechanism a second
+> time with a corrupted derivative.
+
+#### The original finding, kept for the mechanism
 
 Two independent models, three distinct mechanisms, all reporting FAILED
 where the model is right:
@@ -903,7 +1025,150 @@ than FAILED.** Both models currently carry hand-written `atol`
 overrides with the diagnosis in a comment beside them, which is the
 workaround this would remove.
 
-### 12.3 No way to say "this device needs a GMIN anchor"
+> The conclusion held; **the formula in that last paragraph is wrong by
+> ten decades** and is corrected above. An eighth
+> right-in-conclusion-wrong-in-its-reason, and this one was written by
+> whoever had just diagnosed the bias correctly — the diagnosis
+> ("computed as a difference of order-0.5 quantities that cancels") is
+> exactly right and names an internal magnitude, and the formula
+> proposed on the very next line uses the OUTPUT.
+
+### 12.3 No way to say "this device needs a GMIN anchor" — FIXED 2026-08-25
+
+> **Resolved, and the item's own framing was wrong in two places.**
+>
+> `DC` now takes a `gmin` parameter (default **1e-12 S**, SPICE's
+> `GMIN`, `gmin=0` to disable) and `nrsolver.GminAnchorNewton` sits
+> **outermost** in the DC chain. What it engages on is the correction
+> that mattered: every layer below it engages on `NoConvergenceError`,
+> and a singularity passes straight through all four of them by
+> §stage-6(a) design, which is exactly why an empty row had no rescue at
+> all. The anchor takes the singularity, and only that.
+>
+> **The item said "structurally singular". It is not.** The stacked
+> pair is singular *at iterate 0*, where both devices are in cutoff and
+> the `nm` column is bit-exactly zero, and perfectly well posed *at its
+> answer*, where the same conductance is **3.8e-8 S** — four decades
+> above the anchor that got it there. That distinction is the whole
+> item: **gmin must rescue a numerically-empty row and must not disguise
+> a structurally-empty one**, and the two are the same matrix shape.
+>
+> Two gates tell them apart, both asked about the `gmin = 0` system
+> because that is the only system the caller asked about:
+>
+> 1. `_structural_singularity` on the pure Jacobian **at the converged
+>    point**. Still-empty column → reject and name it. Catches the
+>    capacitor-only node and the current-source-only node.
+> 2. **the answer must not depend on the anchor** — re-solve at
+>    `gmin/10` and require agreement to the solver's own `conv_x`. A
+>    quantity gmin is holding up moves a decade when gmin does.
+>
+> **And the answer normally owes gmin nothing at all**, because the
+> ladder finishes with a plain `gmin = 0` solve from the anchored seed.
+> On every circuit measured for this item that solve converges, so gmin
+> is a homotopy path and never a term:
+>
+>     gmin        v(nm), 40 V stacked pair    anchor retained?
+>     1e-13       0.01805186588               no
+>     1e-12       0.01805186588               no
+>     1e-11       0.01805186588               no
+>     1e-10       0.01805186588               no
+>
+> Four decades of gmin, 4e-14 V of movement. And it is the *right*
+> answer, checked by taking the anchor away in the limit:
+>
+>     explicit leak from nm to gnd   v(nm)             rel. to anchored
+>     1e9  Ohm                       0.017588037157    2.57e-2
+>     1e12 Ohm                       0.018051385528    2.66e-5
+>     1e14 Ohm                       0.018051861024    2.69e-7
+>     1e16 Ohm                       0.018051865779    5.60e-9
+>
+> — which also says the **1 GOhm testbench leak the library tests use is
+> 2.6% off**, i.e. the anchor is the more faithful of the two.
+>
+> **The model's refusal was right, and now has a number.** A *permanent*
+> 1 pS to ground — what a naive always-on gmin would be — moves the EKV
+> drain current by **15% at `vgs = 0`**, 4.4% at 0.05 V, 1.3% at 0.10 V.
+> The shipped anchor moves it by **nothing**: `np.array_equal` on the
+> whole solution vector, because on a solve that succeeds the anchor is
+> not in the matrix at any iterate.
+>
+> **Cost.** 24 Jacobian assemblies for the rescued 40 V pair against 5
+> before the unanchored solve gives up. Zero on any circuit that already
+> converged.
+>
+> **Gate 2 has teeth on a real circuit, measured by sabotage.** Delete
+> the final `gmin = 0` solve so the anchor becomes permanent, and gate 2
+> *rejects the 40 V stacked pair itself* — the `vdd` branch current
+> moves from -5.688e-10 A to -4.968e-10 A when gmin drops a decade,
+> **68x** its own convergence tolerance. At that bias the supply current
+> is leakage of the same order as the anchor, so "1 pS is negligible" is
+> false there and the gate says so. Two other sabotages were run and
+> caught: anchoring branch rows as well as node rows (1 test), and
+> setting the default `gmin` to 0 (6 of 12 tests).
+>
+> **One incidental bug, found by the gate's own message.**
+> `analysis.reduced_row_names` built branch names with
+> `getattr(b, 'name', i)`. The attribute EXISTS on a `Branch` and is
+> usually `None`, so the default never applied and every branch row in
+> every diagnostic in this tree was called `'branch None'`. Fixed to
+> `getattr(b, 'name', None) or i`.
+>
+> **A gate that reads well and is fooled, recorded because it was the
+> first design.** Gate 2 was going to be "does the anchored answer
+> satisfy the unanchored KCL to `reltol * I_scale + abstol`?" —
+> `conv_f` on the pure system. `I_scale` is `|J|.|x|`, so an anchor that
+> drives a node to 5e8 V inflates the tolerance by the same factor it
+> inflated the answer: the 1 mA island below misses by 5e-4 A against a
+> tolerance of **100 A** and sails through. *A tolerance computed from
+> the corrupted answer cannot detect the corruption.* Pinned as a test.
+>
+> **Where the distinction is imperfect, stated plainly.** The verdict is
+> a property of the ANSWER, not of the netlist. A node whose only DC
+> path runs through a device that is still exactly off at the answer is
+> reported structural — defensible ("nothing determines it") but it
+> means the same netlist can be rescued at one bias and refused at
+> another. And one shape is accepted with the anchor **retained**: an
+> island with no injection has infinitely many solutions, every common
+> mode satisfies KCL exactly, and gmin picks the minimum-norm one — what
+> every SPICE does. `DC.gmin_anchor_retained` and a logged warning are
+> how a caller finds out; it is the only circuit found in this campaign
+> that sets it.
+>
+> **Scope: DC only.** The transient's inner Newton has no anchor, and
+> `doc/transient_review.md`'s "no gmin stamping in the transient loop"
+> row still stands.
+>
+> **Two behaviour changes in a file this work does not own**, both of
+> them the recorded claim this item exists to overturn. Left alone, as
+> instructed; each needs its singular assertion inverting or pinning at
+> `gmin=0` by whoever owns `test_elements_hdl_library3.py`.
+>
+> - `test_a_stacked_pair_without_a_dc_path_is_structurally_singular`
+>   asserts `pytest.raises(SingularMatrix)` on `DC(_pair(40, 0.2))`.
+>   That call now converges to `v(nm) = 0.0180519`. The rest of the test
+>   — the 5 V bias, the leak-resistor insensitivity — is unaffected.
+> - `test_fet_limiting_rescues_a_solve_that_otherwise_goes_singular`
+>   asserts `isinstance(res2, SingularMatrix)` for the milliamp-forced
+>   diode-connected EKV **with its `$limit` declarations removed**. The
+>   anchor rescues it — and this is the more interesting of the two,
+>   because it lands on **the limited model's own answer**:
+>
+>       limited     v(nd) = 0.3069549236
+>       unlimited   v(nd) = 0.3069549236   (anchor not retained)
+>       relative difference                 5.7e-11
+>
+>   So the limiters buy a shorter path and not a different answer, and
+>   the anchor is an independent route to the same point. That
+>   measurement is *not* pinned by a test in this work: reproducing it
+>   needs `_ekv_no_limit`, which strips `$limit` from the analog block
+>   and lives in the file this work must not edit. `test_gmin_anchor.py`
+>   deliberately does not copy it — a first attempt did, using a
+>   `limit_spec = ()` subclass, and that attribute does not exist on
+>   `EkvNmosHdl`, so the "unlimited" model was the limited one and the
+>   test compared a number with itself and passed.
+
+#### The original finding, kept for the mechanism
 
 EKV's channel conductance underflows to *exactly* zero in deep cutoff —
 `softplus(-800)` is `0.0`, not a denormal — so a stacked pair with no
@@ -918,12 +1183,51 @@ Both facts are tests. This belongs at the simulator level as `gmin` (or
 
 ### 12.4 Smaller, each with its cost known
 
-- **`limit_pnj`'s parameters cannot be written with `var()`.** They are
-  lambdified over the parameter namespace, so an `_IntermediateSymbol`
-  is not in scope. The BJT spells its temperature-scaled `IS` twice as
-  a result. Resolving `var()` symbols against the chain before
-  lambdifying removes the duplicate; refusing loudly at compile time
-  would at least remove the guessing.
+- ~~**`limit_pnj`'s parameters cannot be written with `var()`.**~~
+  **FIXED 2026-08-25 — the first route, resolution.** A limiter
+  parameter that mentions a `var()` symbol is now compiled through
+  `_chain_compile` against the let-chain, the same path the PCNR
+  detector's `VT` and `IS` take, so the chain is **read, not inlined**
+  — a parameter written over a 40-deep chain costs what the chain
+  costs, and there is a test that says so. A parameter that mentions
+  nothing but the card still goes through `sympy.lambdify` exactly as
+  before, so nothing on the common path moved.
+
+  Resolution turned out to be cleaner than refusal *because it forces
+  the question refusal would have dodged*: what a limiter parameter may
+  legitimately be. It is evaluated from the card, once, BEFORE the
+  device is evaluated — so a chain that reaches the iterate is now
+  refused by name at compile time ("`limit_pnj`'s parameters ... cannot
+  depend on the solution; this one reaches plus (through
+  var('isbad'))"), which is a class of wrong answer that had no error
+  attached to it at all before. Time-dependent chains are refused the
+  same way.
+
+  **And the failure mode this item states is wrong** — a ninth
+  right-in-conclusion-wrong-in-its-reason. It says the symbol "is not
+  in scope", and `elements_hdl.py`'s comment beside the duplicate says
+  "the compile fails with a bare `NameError` from inside the lambdified
+  parameter function". Measured against the unfixed code: the class
+  compiles, the instance constructs, and the parameter function
+  *returns the sympy Symbol* — `[_v0_isT, 0.02584269662921349]`. The
+  failure is `TypeError: Cannot convert expression to float` from
+  inside `limit()` on the first Newton iteration. `hdl.py` already had
+  this right, a hundred lines away, in the comment on the source
+  vectors: "lambdify handed one it cannot resolve produces a function
+  that quietly evaluates to nothing useful rather than complaining".
+
+  **`elements_hdl.py`'s Gummel-Poon BJT can now drop `_isr`** and write
+  `limit_pnj(bbe.V, isT, nf * _vt(T))`. Verified by rebuilding the
+  model with the substitution applied: the limiter parameters are
+  bit-identical (9.772967086868698e-17, 0.02584269662921349) and
+  `limit()` agrees to 0.0 over 200 random (x, x0) pairs. Not done here
+  — `elements_hdl.py` was not this change's to edit.
+
+  This also **expired the stated reason in `limit_fet`'s docstring**,
+  which forbade a bias-dependent `vto` because "the parameter
+  expressions are lambdified over `paramsyms + [TEMP]` and nothing
+  else". The rule is unchanged and now enforced; its reason is *when*
+  the limiter runs, not what its namespace contains.
 - **`limit_fet`'s parameter-only `vto` bites, and the size is known:**
   for the EKV card at 2 V of body bias the true turn-on is 1.06 V
   against `vto = 0.50`, so every clamp sits **565 mV** low. Looser, not

@@ -1623,15 +1623,14 @@ def _gummel_poon(T, npn):
                     'cjcT')
 
         ## -- the two junction voltages, LIMITED ------------------------
-        ## `limit_pnj`'s parameters are lambdified over the parameters
-        ## and TEMP alone, so they must be written WITHOUT `var()`: an
-        ## intermediate symbol is not in that namespace and the compile
-        ## fails with a bare NameError from inside the lambdified
-        ## parameter function.  Hence the duplicated expression -- the
-        ## chain has `isT`, and the limiter declaration needs the same
-        ## arithmetic spelled out again.
-        _isr = area * IS * _expl((T / tnom - 1.0) * eg / _vt(T)    # noqa
-                                 + xti * sympy.log(T / tnom))     # noqa
+        ## This used to spell the temperature-scaled saturation current
+        ## TWICE -- once as `isT` in the chain, once bare here -- because
+        ## `limit_pnj`'s parameters were lambdified over the parameters
+        ## and TEMP alone, so an intermediate symbol was not in scope.
+        ## Roadmap §12.4 fixed that: the compiler now resolves a `var()`
+        ## symbol against the chain (reading it, not inlining it), so the
+        ## natural spelling works and the duplicate is gone.
+        ##
         ## ngspice computes its critical voltage from the UNSCALED
         ## saturation current (`bjttemp.c` sets `tVcrit` before
         ## `bjtload.c` multiplies by area), and uses the same one for
@@ -1641,8 +1640,8 @@ def _gummel_poon(T, npn):
         ## scaled one is the device's actual saturation current, so it
         ## is the one used here; the difference is recorded because it
         ## is a real, if small, divergence from the reference.
-        vbe = _var(limit_pnj(bbe.V, _isr, nf * _vt(T)), 'vbe')     # noqa
-        vbc = _var(limit_pnj(bbc.V, _isr, nr * _vt(T)), 'vbc')     # noqa
+        vbe = _var(limit_pnj(bbe.V, isT, nf * vtT), 'vbe')         # noqa
+        vbc = _var(limit_pnj(bbc.V, isT, nr * vtT), 'vbc')         # noqa
 
         ## -- transport and base currents -------------------------------
         ifwd = _var(isT * (_expl(vbe / (nf * vtT)) - 1.0), 'ifwd')  # noqa
