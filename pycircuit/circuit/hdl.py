@@ -272,28 +272,37 @@ def limexp(x, x0=80.0):
     `explain()` prints which one a model is.
 
     A device qualifies only if it introduces no state and no branch
-    unknown, every current it contributes is a function of its own
-    branch voltage alone, one of them is recognisably exponential, and
-    the whole model compiles WITHOUT `var()` -- behind an intermediate
-    symbol the detector cannot see the exponential, so a let-chain model
-    declines PCNR by construction.  (Charge does not disqualify a
+    unknown and EVERY current it contributes is an exponential function
+    of its own branch voltage alone.  (Charge does not disqualify a
     device: `pcnr.augmented_system` used to refuse one and no longer
-    does -- `test_pcnr_charge.py`.  A flat exponential diode with a
-    `ddt` charge still declares `pcnr_i`; what bites is `var()` and any
-    second branch, such as a series `rs`.)
+    does -- `test_pcnr_charge.py`.  Neither does `var()`, since
+    roadmap 10.2: the detector walks the let-chain instead of reading
+    the assembled expression, so a chained junction qualifies exactly
+    as its flat twin does.)
 
-    Measured on `elements_hdl.DiodeSpiceHdl`, which is a `var()` chain
-    with a series node: `hasattr(el, 'pcnr_i')` is False for every
-    parameter set tried, `cjo = tt = rs = 0` included.  So every
-    realistic diode in this tree is outside PCNR, and `limexp` in one
-    buys nothing.
+    Measured on `elements_hdl.DiodeSpiceHdl`, a `var()` chain with an
+    optional series node: `hasattr(el, 'pcnr_i')` is True for the
+    default card and for `cjo = tt = rs = 0`, and False for
+    `rs = 2`.  The refusal is worth stating exactly, because the
+    obvious reason is the wrong one: with `rs` present, EACH of the two
+    contributions is still a function of its own branch voltage alone
+    -- what refuses the device is that the series resistor's current is
+    not exponential, and the rule is every current, not some current.
+
+    `compact.PspMosLongChannel` is refused for the same reason and at
+    its very first contribution: `I(g,gi) <+ V(g,gi)/rg`, a plain
+    resistor.  Its drain current would fail anyway -- it is
+    irreducibly `f(vgs, vds, vbs)` and no scalar branch unknown
+    expresses it (roadmap 10.3) -- but that is not the refusal that
+    fires.
 
     A model that cannot qualify pays `limexp`'s deliberate unsafety for
     nothing: 120 `overflow encountered in exp` warnings on a single 5 V
     self-heating DC solve, none under `expl`, and the same solution to
     the last digit.  **Reach for `expl` unless the model is a bare
-    exponential junction that PCNR actually takes** -- PSP-style models
-    included, since a chained model declines PCNR anyway.
+    exponential junction that PCNR actually takes** -- FET models
+    included, and any junction that carries a series resistance as a
+    second contribution.
     """
     x = sympy.sympify(x)
     return sympy.Piecewise((sympy.exp(x), x < x0),
@@ -2343,6 +2352,20 @@ def generate_code(cls):
     states = []          # (state_symbol, kind, args); kind idt/idtmod/lap
     state_subst = {}
 
+    ## Intermediates FIRST, and this is not tidiness -- it is the same
+    ## reasoning as `_strip_limits` below.  A `var()` definition is never
+    ## visited by the statement loop, so before this a `var(idt(...))`
+    ## carried its `idt` all the way into `_chain_compile` and died there
+    ## with "Unsupported ... idt".  It was in one way WORSE than the
+    ## $limit case: `resolve()` does apply `state_subst` to intermediates,
+    ## so mentioning the same application in a statement as well made it
+    ## work -- whether a model compiled depended on where ELSE the author
+    ## had happened to write it.  Any real model is chained -- that is
+    ## what `var()` is for -- so state operators were unusable by exactly
+    ## the models they exist to serve.
+    _state_srcs = ([_e for _s, _e in intermediates]
+                   + [st.rhs for st in statements])
+
     ## LAPLACE -> STATE EQUATIONS.  For H(s) = N(s)/D(s) with
     ## D = d0 + d1 s + ... + dN s^N, controllable canonical form gives
     ##
@@ -2355,8 +2378,8 @@ def generate_code(cls):
     ## simulator then integrates them with its own method and order, and
     ## the Jacobian is exact through them, which a convolution-based
     ## implementation cannot offer.
-    for st in statements:
-        for app in sorted(st.rhs.atoms(_Laplace), key=sympy.default_sort_key):
+    for _src in _state_srcs:
+        for app in sorted(_src.atoms(_Laplace), key=sympy.default_sort_key):
             if app in state_subst:
                 continue
             u_expr, num, den = app.args
@@ -2389,9 +2412,10 @@ def generate_code(cls):
                     ## n_N/d_N, plus its correction through the chain.
                     out += nk * rhs[order - 1]
             state_subst[app] = out
-    for st in statements:
+    for _src in _state_srcs:
         for func_cls, kind in ((idt, 'idt'), (idtmod, 'idtmod')):
-            for app in sorted(st.rhs.atoms(func_cls), key=sympy.default_sort_key):
+            for app in sorted(_src.atoms(func_cls),
+                              key=sympy.default_sort_key):
                 if app in state_subst:
                     continue
                 sym = _StateSymbol('_state%d' % len(states))
@@ -2662,8 +2686,16 @@ def generate_code(cls):
     ## `$param_given` symbols actually referenced, in a stable order --
     ## they become trailing arguments of every compiled function and are
     ## bound per instance from `ipar`.
+    ## The CHAIN is scanned too, and for the same reason the state
+    ## operators and `$limit` had to be: on the let-chain path the
+    ## assembled vectors are mostly `var()` symbols, so a
+    ## `$param_given` used inside a definition appeared in none of them,
+    ## became no argument, and the generated function raised
+    ## `NameError: _hdl_given_x` at call time -- from a model that
+    ## compiled without a word.
     given_syms = sorted(
-        {a for vec in (ivec, qvec, uvec, acvec, ivec_dc)
+        {a for vec in (ivec, qvec, uvec, acvec, ivec_dc,
+                       [e_ for _s2, e_ in chain_defs])
          for e in vec for a in e.free_symbols
          if str(a).startswith('_hdl_given_')},
         key=lambda a: str(a))
@@ -2803,14 +2835,44 @@ def generate_code(cls):
     ## PCNR is about.  Anything else (a V-contribution, a generated state,
     ## a current spanning two branch voltages) disqualifies the element:
     ## better to declare nothing than to claim a capability falsely.
-    ## PCNR shape detection reads the exponential out of the assembled
-    ## expression.  Behind a `var()` the exponential is an opaque symbol,
-    ## so the detector would silently see none -- refuse explicitly rather
-    ## than quietly declaring the device un-limitable.
+    ## THE CHAINED PATH IS ADMITTED TOO, and the detector never flattens
+    ## the chain to do it.  Reading `f.atoms(sympy.exp)` off an assembled
+    ## expression is what a `var()` defeats -- behind an intermediate the
+    ## exponential is an opaque symbol, so the detector saw none and the
+    ## gate refused rather than declare the device un-limitable silently.
+    ## Restoring the old reading by INLINING the chain is the one thing
+    ## `var()` exists to prevent (measured on PSP's `sp_s`: the flattened
+    ## form did not finish in ten minutes).  It is also unnecessary --
+    ## only two facts about the flattened expression are wanted, and both
+    ## are available by walking the chain:
+    ##
+    ##   (a) which branch voltages the contribution reaches.  Prune the
+    ##       chain to what this contribution reads (`_chain_prune`), put
+    ##       V(kp) = v + V(km) into each definition SEPARATELY, and
+    ##       require that no x-symbol survives in any of them.  That is
+    ##       the same statement as the flat `f.free_symbols & xsyms`
+    ##       test, made one definition at a time.
+    ##   (b) the exponential scale.  Forward-accumulate d/dv over the
+    ##       pruned chain (`_chain_forward_d`), which yields d(arg)/dv
+    ##       for every `exp(arg)` in it as a SMALL expression over the
+    ##       derivative chain -- the machinery `_chain_compile`'s
+    ##       Jacobian already uses.
+    ##
+    ## Both are linear in the number of definitions.  With no chain the
+    ## pruned chain is empty, `_chain_d` degenerates to `sympy.diff` and
+    ## this is the flat detector unchanged.
+    ##
+    ## The refusals that are still correct are kept: a generated state, a
+    ## branch-current unknown, a V-contribution, a current spanning two
+    ## branch voltages, no single exponential scale -- and, new here, a
+    ## contribution reading anything `pcnr_i(v, params, T)` is not given
+    ## (a `$param_given` flag, TIME).  Better to decline than to claim a
+    ## capability falsely.
     pcnr_spec = None
-    if (not chain_defs and not states and not vbranches
-            and len(terminalnodes) >= 2):
+    if not states and not vbranches and len(terminalnodes) >= 2:
         cands, ok = [], True
+        _xset = set(xsyms)
+        _allowed = set(paramsyms) | {TEMP}
         for st in statements:
             if st.lhs.quantity != 'I':
                 ok = False
@@ -2819,51 +2881,128 @@ def generate_code(cls):
             kp = index_of[('node', b.plus.name)]
             km = index_of[('node', b.minus.name)]
             ipart, _q, _u, _nz, _ac = _split_terms(resolve(st.rhs),
-                                                   set(xsyms))
+                                                   xset_split, tdep_syms)
             if ipart == 0:
                 continue                     # pure charge/noise: harmless
             vsym = sympy.Symbol('_pcnr_v', real=True)
-            f = sympy.expand(ipart.subs(xsyms[kp], vsym + xsyms[km]))
-            if f.free_symbols & set(xsyms):
+            _vsub = {xsyms[kp]: vsym + xsyms[km]}
+
+            def _sub_x(e_, _s=_vsub, _x=_xset):
+                ## `expand` only where there is something left to cancel.
+                ## On a chain each definition is small, but expanding one
+                ## that has nothing to gain is still the operation
+                ## `_split_terms` refuses to perform on a whole model.
+                e2 = e_.subs(_s)
+                return sympy.expand(e2) if (e2.free_symbols & _x) else e2
+
+            defs_j = [(sym, _sub_x(e_))
+                      for sym, e_ in _chain_prune(chain_defs, [ipart])]
+            f = _sub_x(ipart)
+            _fs = set(f.free_symbols)
+            for _s2, _e2 in defs_j:
+                _fs |= _e2.free_symbols
+            if _fs & _xset:
                 ok = False                   # not a function of V(b) alone
                 break
+            if _fs - _allowed - {vsym} - {sym for sym, _e2 in defs_j}:
+                ok = False        # reads what pcnr_i is not handed
+                break
+
+            ## (b) -- the derivative chain, built once and reused for
+            ## every exponential in the contribution AND for `didv`.
+            ddefs, dmap = _chain_forward_d(defs_j, vsym)
+            _defset = {sym for sym, _e2 in defs_j}
+            _comb = defs_j + ddefs
+            dfdv = _chain_d(f, vsym, _defset, dmap)
+
+            def _vfree(e_, _c=_comb, _v=vsym):
+                """Is `e_` constant in v, reading through the chain?"""
+                if _v in e_.free_symbols:
+                    return False
+                return not any(_v in ee.free_symbols
+                               for _s2, ee in _chain_prune(_c, [e_]))
+
             scales = set()
-            for ex in f.atoms(sympy.exp):
-                a = sympy.diff(ex.args[0], vsym)
-                if a != 0 and not (a.free_symbols & {vsym}):
-                    scales.add(sympy.simplify(1 / a))
+            for _e2 in [e2 for _s2, e2 in defs_j] + [f]:
+                for ex in sorted(_e2.atoms(sympy.exp),
+                                 key=sympy.default_sort_key):
+                    a = _chain_d(ex.args[0], vsym, _defset, dmap)
+                    if a != 0 and _vfree(a):
+                        scales.add(sympy.simplify(1 / a))
             if len(scales) != 1:
                 ok = False                   # no single exponential scale
                 break
             VT_eff = scales.pop()
-            cands.append(dict(terminals=(kp, km), vsym=vsym, f=f,
-                              dfdv=sympy.diff(f, vsym), VT=VT_eff,
-                              IS=sympy.simplify(
-                                  VT_eff * sympy.diff(f, vsym).subs(vsym, 0))))
+            if defs_j:
+                ## `IS = VT * di/dv|_(v=0)`, but the derivative lives in
+                ## the chain, so v=0 is substituted into the CHAIN rather
+                ## than into a flattened expression; the compile below
+                ## uses the zeroed copy.
+                cands.append(dict(terminals=(kp, km), vsym=vsym,
+                                  VT=VT_eff, IS=VT_eff * dfdv,
+                                  chain=dict(defs=defs_j, ddefs=ddefs,
+                                             out=f, dout=dfdv)))
+            else:
+                cands.append(dict(terminals=(kp, km), vsym=vsym, f=f,
+                                  dfdv=dfdv, VT=VT_eff, chain=None,
+                                  IS=sympy.simplify(
+                                      VT_eff * dfdv.subs(vsym, 0))))
         if ok and cands:
             pcnr_spec = cands
 
     pcnr_funcs = None
     if pcnr_spec is not None:
         pcnr_funcs = []
+
+        def _chain_one(defs_, out_, args_):
+            """One scalar-valued function compiled through the chain."""
+            fn_ = _chain_compile(
+                defs_, [out_], args_,
+                modules_map=dict(_KERNEL_NUMPY, _wrapfloor=np.floor))
+            return lambda *a_, _f=fn_: _f(*a_)[0]
+
         for spec_j in pcnr_spec:
             vs_ = spec_j['vsym']
-            ## The traced backend calls these under `jit`, so they need a
-            ## jax-printed twin; built lazily so importing the module does
-            ## not require jax.
-            _sym_j = dict(f=spec_j['f'], dfdv=spec_j['dfdv'], vsym=vs_)
+            ch_ = spec_j['chain']
+            if ch_ is None:
+                ## The traced backend calls these under `jit`, so they
+                ## need a jax-printed twin; built lazily so importing the
+                ## module does not require jax.
+                _sym_j = dict(f=spec_j['f'], dfdv=spec_j['dfdv'], vsym=vs_)
+                pcnr_funcs.append(dict(
+                    sym=_sym_j, chain=None,
+                    terminals=spec_j['terminals'],
+                    i=sympy.lambdify([vs_] + paramsyms + [TEMP], spec_j['f'],
+                                     modules=NUMPY_MODULES, cse=True),
+                    didv=sympy.lambdify([vs_] + paramsyms + [TEMP],
+                                        spec_j['dfdv'], modules=NUMPY_MODULES,
+                                        cse=True),
+                    VT=sympy.lambdify(paramsyms + [TEMP], spec_j['VT'],
+                                      modules=NUMPY_MODULES),
+                    IS=sympy.lambdify(paramsyms + [TEMP], spec_j['IS'],
+                                      modules=NUMPY_MODULES),
+                ))
+                continue
+            ## The chained twin of the four, compiled through
+            ## `_chain_compile` in place of `sympy.lambdify`: the chain
+            ## is never flattened, here or in the detector above.  `VT`
+            ## is v-free by construction (that is what admitted the
+            ## contribution), so pruning drops every v-dependent
+            ## definition from its body and it needs no `v` argument;
+            ## `IS` reads the SAME chain with v = 0 substituted into each
+            ## definition.
+            _args_v = [vs_] + paramsyms + [TEMP]
+            _comb = ch_['defs'] + ch_['ddefs']
+            _zeroed = [(sym, e_.subs(vs_, 0)) for sym, e_ in _comb]
+            _ch_j = dict(defs=ch_['defs'], ddefs=ch_['ddefs'],
+                         out=ch_['out'], dout=ch_['dout'], vsym=vs_)
             pcnr_funcs.append(dict(
-                sym=_sym_j,
+                sym=None, chain=_ch_j,
                 terminals=spec_j['terminals'],
-                i=sympy.lambdify([vs_] + paramsyms + [TEMP], spec_j['f'],
-                                 modules=NUMPY_MODULES, cse=True),
-                didv=sympy.lambdify([vs_] + paramsyms + [TEMP],
-                                    spec_j['dfdv'], modules=NUMPY_MODULES,
-                                    cse=True),
-                VT=sympy.lambdify(paramsyms + [TEMP], spec_j['VT'],
-                                  modules=NUMPY_MODULES),
-                IS=sympy.lambdify(paramsyms + [TEMP], spec_j['IS'],
-                                  modules=NUMPY_MODULES),
+                i=_chain_one(ch_['defs'], ch_['out'], _args_v),
+                didv=_chain_one(_comb, ch_['dout'], _args_v),
+                VT=_chain_one(_comb, spec_j['VT'], paramsyms + [TEMP]),
+                IS=_chain_one(_zeroed, spec_j['IS'], paramsyms + [TEMP]),
             ))
 
     state_meta = dict(
@@ -3043,6 +3182,15 @@ class _ChainPrinter(object):
                 return '_step(%s, %s)' % tuple(
                     self._print(a) for a in expr.args)
 
+            ## The idtmod wrap.  It reaches this printer only through a
+            ## chained model -- and until `var()` definitions were
+            ## searched for state operators, no chained model could HAVE
+            ## an idtmod, so the gap could not show.  Fixing that
+            ## uncovered this one immediately: `var(idtmod(...))`
+            ## compiled the state correctly and then died here.
+            def _print__wrapfloor(self, expr):
+                return '_wrapfloor(%s)' % self._print(expr.args[0])
+
         self._p = _P()
 
     @staticmethod
@@ -3091,6 +3239,63 @@ def _leaves(o):
     return set(getattr(o, 'free_symbols', ()))
 
 
+def _chain_prune(defs, outputs):
+    """The definitions `outputs` actually reach, in `defs` order.
+
+    A model's chain is shared by every compiled vector -- `i`, `q`, `u`,
+    the AC stamp -- but each of those reads only part of it, and the PCNR
+    detector reads a still smaller part (one contribution's).  Walking
+    the DAG backwards from the outputs is linear in the number of
+    definitions; it is the alternative to INLINING the chain, which is
+    the one thing `var()` exists to prevent.
+    """
+    defmap = {sym: e_ for sym, e_ in defs}
+    wanted, stack = set(), []
+    for o in outputs:
+        stack.extend(_leaves(o))
+    while stack:
+        sym = stack.pop()
+        if sym in wanted or sym not in defmap:
+            continue
+        wanted.add(sym)
+        stack.extend(defmap[sym].free_symbols)
+    return [(sym, e_) for sym, e_ in defs if sym in wanted]
+
+
+def _chain_d(expr, v, defset, dmap):
+    """One forward-accumulation step: d(expr)/dv through the chain.
+
+    `dmap` maps each already-processed definition symbol to the SYMBOL
+    holding its own derivative, so the result stays a small expression
+    referring to those symbols rather than the flattened derivative --
+    which is the same trick `_chain_compile`'s Jacobian uses, and the
+    reason the work is linear in the number of definitions instead of
+    exponential in their nesting depth.
+    """
+    g = sympy.diff(expr, v)
+    for d in expr.free_symbols:
+        if d in defset:
+            g = g + sympy.diff(expr, d) * dmap[d]
+    return g
+
+
+def _chain_forward_d(defs, v):
+    """Forward-accumulate d/dv over a whole chain.
+
+    Returns `(ddefs, dmap)`: `ddefs` is the derivative chain in
+    dependency order, ready to be concatenated after `defs` and handed to
+    `_chain_compile`, and `dmap[sym]` names the symbol carrying
+    d(sym)/dv.
+    """
+    defset = {sym for sym, _ in defs}
+    ddefs, dmap = [], {}
+    for sym, expr in defs:
+        gs = sympy.Symbol('_dpcnr_%s' % sym.name, real=True)
+        ddefs.append((gs, _chain_d(expr, v, defset, dmap)))
+        dmap[sym] = gs
+    return ddefs, dmap
+
+
 def _chain_compile(defs, outputs, args, want_jacobian_of=None, xsyms=None,
                    modules_map=None, unpack=()):
     """Compile a let-chain into one Python function.
@@ -3106,23 +3311,11 @@ def _chain_compile(defs, outputs, args, want_jacobian_of=None, xsyms=None,
     """
     printer = _ChainPrinter()
 
-    ## PRUNE to what the outputs actually reach.  A model's chain is
-    ## shared by every compiled vector -- `i`, `q`, `u`, the AC stamp --
-    ## but each of those reads only part of it.  Emitting the whole chain
-    ## would put symbols in the body that this signature cannot supply
-    ## (the source sub-chain reads TIME, which `i` is not given), and
-    ## would differentiate definitions nothing downstream uses.
-    defmap = {sym: e_ for sym, e_ in defs}
-    wanted, stack = set(), []
-    for o in outputs:
-        stack.extend(_leaves(o))
-    while stack:
-        sym = stack.pop()
-        if sym in wanted or sym not in defmap:
-            continue
-        wanted.add(sym)
-        stack.extend(defmap[sym].free_symbols)
-    defs = [(sym, e_) for sym, e_ in defs if sym in wanted]
+    ## PRUNE to what the outputs actually reach.  Emitting the whole
+    ## chain would put symbols in the body that this signature cannot
+    ## supply (the source sub-chain reads TIME, which `i` is not given),
+    ## and would differentiate definitions nothing downstream uses.
+    defs = _chain_prune(defs, outputs)
 
     lines, body = [], []
     for name, code in unpack:
@@ -3579,12 +3772,29 @@ class BehaviouralMeta(type):
                 if which not in cache:
                     import jax.numpy as _jnp
                     sym = _pf[jn]['sym']
-                    expr = sym['f'] if which == 'i' else sym['dfdv']
-                    cache[which] = sympy.lambdify(
-                        [sym['vsym']]
-                        + [sympy.Symbol(q) for q in _pn] + [TEMP],
-                        expr, modules=[_kernel_jax(_jnp), 'jax'],
-                        cse=True)
+                    if sym is None:
+                        ## The chained twin: the same let-chain printed
+                        ## into a jax namespace.  `_ChainPrinter` emits
+                        ## `numpy.<f>` calls, so binding the NAME `numpy`
+                        ## to `jax.numpy` is the whole swap.
+                        ch = _pf[jn]['chain']
+                        defs_ = ch['defs'] if which == 'i' else \
+                            ch['defs'] + ch['ddefs']
+                        out_ = ch['out'] if which == 'i' else ch['dout']
+                        f_ = _chain_compile(
+                            defs_, [out_],
+                            [ch['vsym']]
+                            + [sympy.Symbol(q) for q in _pn] + [TEMP],
+                            modules_map=dict(_kernel_jax(_jnp),
+                                             numpy=_jnp))
+                        cache[which] = lambda *a_, _f=f_: _f(*a_)[0]
+                    else:
+                        expr = sym['f'] if which == 'i' else sym['dfdv']
+                        cache[which] = sympy.lambdify(
+                            [sym['vsym']]
+                            + [sympy.Symbol(q) for q in _pn] + [TEMP],
+                            expr, modules=[_kernel_jax(_jnp), 'jax'],
+                            cse=True)
                 return cache[which]
 
             def pcnr_i(v, params, epar, toolkit, jn=0, _pn=_pn_pcnr):
@@ -3993,10 +4203,10 @@ def explain(target, source=True, symbolic=True, maxlines=40):
                                if info['pcnr_funcs'] else
                                'does not qualify -- needs every current to '
                                'be an exponential function of its own branch '
-                               'voltage alone, with no states, no branch '
-                               'unknowns and no var() (a let-chain hides the '
-                               'exponential from the detector). Charge is '
-                               'allowed'))
+                               'voltage alone, with no states and no branch '
+                               'unknowns. Charge is allowed, and so is var(): '
+                               'the detector walks the let-chain rather than '
+                               'flattening it'))
     feats.append('JAX pure forms: %s'
                  % ('yes' if info['pure_spec'] else
                     'no (the let-chain path has none)'))

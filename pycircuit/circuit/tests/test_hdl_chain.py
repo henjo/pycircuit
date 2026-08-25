@@ -266,16 +266,30 @@ class TestTermClassification(object):
 class TestCapabilityRefusals(object):
     """What the chain path gives up, it must give up loudly."""
 
-    def test_pcnr_is_declined_not_silently_missed(self):
-        """A diode behind a `var` has no visible exponential.
+    def test_pcnr_is_no_longer_one_of_them(self):
+        """This used to be a refusal, and roadmap 10.2 removed it.
 
-        The PCNR shape detector reads the exponential straight out of the
-        expression.  Behind an intermediate it would find none and would
-        register the device as "nothing to limit" -- which looks
-        identical to a linear device.  The compiler must decline instead.
+        The PCNR shape detector read the exponential straight out of the
+        expression; behind an intermediate it found none, so the compiler
+        declined rather than register the device as "nothing to limit".
+        It now WALKS the chain -- prune to one contribution, substitute
+        the branch voltage into each definition, forward-accumulate d/dv
+        for the exponentials -- and the chained diode qualifies exactly
+        as its eager twin does, with the same recovered scales.
+        `test_chained_first_class.py` is where that is pinned in detail.
         """
-        assert _DiodeChained._hdl_info['pcnr_funcs'] is None
+        assert _DiodeChained._hdl_info['pcnr_funcs'] is not None
         assert _DiodeEager._hdl_info['pcnr_funcs'] is not None
+        from pycircuit.circuit import defaultepar
+        got = []
+        for cls in (_DiodeEager, _DiodeChained):
+            el = cls('a', 'b', IS=2e-14, N=1.3)
+            el.update_iparv()
+            got.append(el.pcnr_scales(
+                {k: getattr(el.iparv, k) for k in el._hdl_paramnames},
+                defaultepar))
+        assert got[0][0] == pytest.approx(got[1][0], rel=1e-14)
+        assert got[0][1] == pytest.approx(got[1][1], rel=1e-14)
 
     def test_no_constant_stamp_claim(self):
         assert _DiodeChained._hdl_info['const_G'] is False

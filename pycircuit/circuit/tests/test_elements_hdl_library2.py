@@ -1185,23 +1185,23 @@ def test_explain_reports_the_capability_each_model_was_chosen_for():
     assert any('pinned at DC by its ic' in k for _i, _n, k in lay)
 
 
-def test_var_still_hides_the_state_operators_from_the_compiler():
-    """The reason `MemristorHdl` is written flat, pinned as a measured
-    fact so that it expires when it is fixed.
+def test_var_no_longer_hides_the_state_operators_from_the_compiler():
+    """This test EXPIRED, which is what it was written to do.
 
-    The compiler collects `idt`, `idtmod` and `laplace_*` applications by
-    walking the CONTRIBUTION STATEMENTS.  A `var()` definition is not a
-    statement, so an application that appears only inside one never gets
-    a state allocated, survives to the printer and dies there with
-    ``Unsupported by _P: idt`` -- nine frames deep, naming neither
-    `var()` nor the model.
+    It used to record the reason `MemristorHdl` is written flat: the
+    compiler collected `idt`, `idtmod` and `laplace_*` applications by
+    walking the CONTRIBUTION STATEMENTS, so an application appearing
+    only inside a `var()` definition never got a state allocated,
+    survived to the printer and died there with ``Unsupported by _P:
+    idt`` -- nine frames deep, naming neither `var()` nor the model.
 
-    `$limit` had exactly this bug and it is now fixed (`hdl.py`,
-    "Intermediates FIRST, and this is not tidiness"), which is why that
-    half of this test asserts a SUCCESS.  The three state operators
-    still have it.  Written as a test rather than as a comment because a
-    comment recording a gap has no owner and does not fail when the gap
-    closes.
+    `$limit` had exactly the same bug and was fixed first (`hdl.py`,
+    "Intermediates FIRST, and this is not tidiness"); the state
+    operators now take the same treatment, so both halves assert a
+    SUCCESS.  Written as a test rather than as a comment precisely
+    because a comment recording a gap has no owner and does not fail
+    when the gap closes -- this one failed the day it closed.
+    `test_chained_first_class.py` carries the detailed pins.
     """
     import sympy
     from pycircuit.utilities.param import Parameter
@@ -1223,12 +1223,16 @@ def test_var_still_hides_the_state_operators_from_the_compiler():
                         Contribution(bx.V, b.V))
         return _T
 
-    for op in (lambda b, bx: var(idt(bx.V, 0.5), 'x'),
-               lambda b, bx: var(idtmod(bx.V, 0.0, 1.0, 0.0), 'x'),
-               lambda b, bx: var(laplace_nd(b.V, [1], [1, 1e-6]), 'x')):
-        with pytest.raises(Exception) as ei:
-            build(op)
-        assert 'Unsupported' in str(ei.value), str(ei.value)
+    for op, nstates in ((lambda b, bx: var(idt(bx.V, 0.5), 'x'), 1),
+                        (lambda b, bx: var(idtmod(bx.V, 0.0, 1.0, 0.0),
+                                           'x'), 1),
+                        (lambda b, bx: var(laplace_nd(b.V, [1], [1, 1e-6]),
+                                           'x'), 1)):
+        cls = build(op)
+        ## Compiling is not the claim -- the STATE is.  A compiler that
+        ## dropped the application silently would also "compile".
+        assert cls._hdl_info['chained'] is True
+        assert len(cls._hdl_info['state_meta']['statenames']) == nstates
 
     ## and the one that was fixed
     class _Lim(Behavioural):

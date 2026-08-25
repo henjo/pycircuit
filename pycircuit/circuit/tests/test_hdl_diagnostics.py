@@ -540,15 +540,31 @@ class TestThePcnrEligibilityClaim(object):
     The condition it states is PCNR eligibility, and these pin the two
     halves of that claim so the docstring stays a measurement."""
 
-    @pytest.mark.parametrize('card', [
-        dict(),
-        dict(cjo=0.0, tt=0.0, rs=0.0),
-        dict(cjo=1e-12, tt=1e-9, rs=2.0),
+    @pytest.mark.parametrize('card, qualifies', [
+        (dict(), True),
+        (dict(cjo=0.0, tt=0.0, rs=0.0), True),
+        (dict(cjo=1e-12, tt=1e-9, rs=2.0), False),
     ])
-    def test_the_full_spice_diode_never_qualifies_for_pcnr(self, card):
+    def test_the_full_spice_diode_qualifies_only_without_rs(self, card,
+                                                            qualifies):
+        """What decides it is `rs`, and NOT for the stated reason.
+
+        This test used to read `never_qualifies_for_pcnr`, because
+        `var()` disqualified every chained model; roadmap 10.2 removed
+        that, and what is left is the series resistance.  Roadmap 10.2
+        predicted the outcome and gave the wrong reason for it -- it says
+        the rs diode's "current spans two branch voltages and the
+        free-symbol test still refuses it".  Measured, EACH of the two
+        contributions is a function of its own branch voltage alone
+        (that is what the internal node buys); what refuses the device is
+        that the series resistor's current is not exponential, and the
+        rule is every current, not some current.  With `rs = 0` the
+        collapse removes that contribution entirely and the diode
+        qualifies -- charge, chain and all.
+        """
         el = eh.DiodeSpiceHdl('a', 'b', **card)
         el.update_iparv()
-        assert not hasattr(el, 'pcnr_i')
+        assert hasattr(el, 'pcnr_i') is qualifies
         assert el._hdl_info['chained']
 
     def test_charge_alone_does_not_disqualify_a_device(self):
@@ -566,7 +582,15 @@ class TestThePcnrEligibilityClaim(object):
         assert hasattr(el, 'pcnr_i')
         assert 'PCNR: 1 junction' in explain(el, source=False, symbolic=False)
 
-    def test_a_var_chain_declines_pcnr(self):
+    def test_a_var_chain_qualifies_for_pcnr(self):
+        """The other half, and it reversed with roadmap 10.2.
+
+        The detector walks the let-chain instead of reading the assembled
+        expression, so a junction behind a `var()` recovers the same
+        `IS`/`VT` as its flat spelling.  `test_chained_first_class.py`
+        pins the numbers; this one pins the claim the `limexp` docstring
+        makes.
+        """
         def analog(plus, minus):
             b = Branch(plus, minus)
             i = var(IS * (sympy.exp(b.V / 0.026) - 1), 'i')      # noqa: F821
@@ -575,4 +599,7 @@ class TestThePcnrEligibilityClaim(object):
         el = _make('ChainedJunction', analog,
                    params=(('IS', 1e-14),))('a', 'b')
         el.update_iparv()
-        assert not hasattr(el, 'pcnr_i')
+        assert el._hdl_info['chained']
+        assert hasattr(el, 'pcnr_i')
+        assert 'PCNR: 1 junction' in explain(el, source=False,
+                                             symbolic=False)
