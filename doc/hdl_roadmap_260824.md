@@ -2117,3 +2117,71 @@ construction -- each device limits its OWN `vgs` unknown and the tail
 is solved from both currents at their own limited voltages. Vector PCNR
 is still NOT started: the approved scope was Stage 0 only, and this
 result goes back to the user.
+
+### Stage 1 delivered (2026-08-25): the BJT participates, and three things the design got wrong
+
+`pcnr.py` now has per-device records (`PcnrDevice`: rows, probes,
+kinds, offset), `augmented_system`/`schur_reduce`/`predict`/`refine`
+over device blocks, and an **adapter** that presents every existing
+scalar participant as m = 1 -- measured bit-identical on `g_lim`,
+`J_ml`, `J_lm`, `f_eff`/`J_eff` and `refine` against the old formulas,
+same iteration counts on the paper's Fig. 1 and `TwoJunction`. The
+declared-probe route in `generate_code` admits a device whose every
+current reaches the solution only through its `$limit` probes (pnj-only
+in this stage); `explain()` prints `vector route, 2 probes over 3 rows
+(pnjlim on (b,e), pnjlim on (b,c))` for the NPN. The O(k) Schur trick
+survives as predicted (verified equal to the dense product). Finite-
+difference `J == dg/d[x;v]` on the full NPN card with charge, 2e-4. Same
+answers as the ordinary path to 1e-9. `dcanalysis` untouched: the pair
+view is filtered to `pnj` probes, so no gmin ever lands across a `vgs`.
++29 tests; suite 2335 / 7 / 3 / 0.
+
+**1. "Assemble, then subtract the participant" is inexact, not merely
+fragile.** hdl.md 3.2a had recorded `inf - inf = nan` and concluded
+"use `limexp` under PCNR". With the participant kept finite, its
+current at the unlimited node reached 1e72 and the subtraction left
+~1e56 of ORDER-DEPENDENT noise: the same mirror took 11 iterations in
+one instance order and 179 in the other. The participant is now
+**excluded from assembly**, never evaluated at the node voltages. The
+raw-`exp` diode converges under PCNR; the `limexp` test was inverted;
+the charge diode's 14 DC iterations became 8, the 14 having been a
+defect of the cancellation. Twelfth right-conclusion-wrong-reason: the
+`nan` was real and the lesson drawn from it ("harden the participant")
+was the wrong one.
+
+**2. Order-independence is delivered; convergence from +20 V is not.**
+The Stage 0 acceptance case, full NPN card mirror, `[q1 first, q2 first]`:
+
+    start     plain Newton     PCNR
+    0 V        [9, 9]          [9, 9]
+    -5 V       [9, 9]          [9, 9]
+    +5 V       [FAIL, FAIL]    [164, 164]     <- rescued where the ordinary
+                                                 ladder itself gave up
+    +10 V      [7, 7]          [6, 6]
+    +20 V      [FAIL, 7]       [FAIL, FAIL]   <- order-independent, and fails
+
+The structural claim holds everywhere -- PCNR never depends on instance
+order. But from +20 V it fails in BOTH orders, and the trace says why:
+SPICE `pnjlim`'s `vold <= 0` branch maps a 9e45 V proposal to
+`vbc = 2.83 V`, 1e33 S, singular. Plain Newton's one-order "win" was a
+stale-anchor accident (2.83 V written against the not-yet-limited base,
+which then moved, leaving `vbc = -12.8 V`). Behind that sits a second
+obstacle: PCNR carries `-9e45` in the accepted iterate and the
+correction's ulp is 1e30. **So the +20 V case is a limiter-LAW question
+(what `pnjlim` does with an astronomically wild proposal), not an
+architecture one**, and it is the same question on both paths.
+
+**3. JAX + `pcnr=True` + a vector device now raises `NotImplementedError`
+at setup** where the BJT previously, silently, did not participate.
+Stage 3.
+
+Also fixed: a degenerate probe on one row (diode-connected `(nb,nb)`)
+must accumulate into dense `J_lm`, not assign. `transient.py`'s
+hand-written Schur loop and `fang_timestep`'s `dx_lim` copy are gone in
+favour of the shared functions. Per-component convergence replaces the
+`max|v|`-scaled one (the old criterion accepted `[2e-5, 0]` against
+`[0.7, 40]`).
+
+**Stage 2 (FETs) and Stage 3 (JAX) remain the user's call.** Stage 2 is
+where the diff-pair clash -- the case that commissioned all this -- gets
+its number.

@@ -340,27 +340,34 @@ sit above it, and the listing's `v_old ≤ 0` branch then evaluates
 both halves of that: the transcribed listing raises where our guarded
 version returns the step unchanged.
 
-**Where `limexp` still earns its place** — and an earlier version of this
-section got this wrong, so the correction is the interesting part. It said
-that with PCNR on, `limexp`'s clamp "is simply never reached, because PCNR
-keeps the iterate in range". Measurement says the opposite, and the
-mechanism matters: `pcnr.augmented_system` assembles `cir.i(x)` — which
-*includes* the participant — and then subtracts that device's own `i(sub)`
-again, since its current is about to be re-stamped at `v_lim`. The
-cancellation is exact in arithmetic and worthless in floating point once
-the term is `inf`: **`inf − inf = nan` poisons the whole system.** PCNR
-bounds the *limited quantity*; it does not bound the node voltage at which
-the device's own `i()` is evaluated during assembly.
+**Where `limexp` earns its place — corrected twice, and the second
+correction reverses the first.** An early version of this section said
+that under PCNR `limexp`'s clamp "is simply never reached". A
+measurement then said the opposite: `pcnr.augmented_system` assembled
+`cir.i(x)` *including* the participant and subtracted the device's own
+`i(sub)` again, so a raw-`exp` participant evaluated at a wild node gave
+`inf − inf = nan`, and the guidance became "use `limexp` in a model you
+intend to run under PCNR".
 
-Measured on a 20 V, 1 Ω forward drive: the raw-`exp` generated diode
-gives `i = inf` at the trial point and PCNR fails outright, while the
-`limexp` version stays finite (3.9e24) and converges to the same 0.849861
-the non-PCNR path finds. So the guidance is the reverse of what was
-written: **use `limexp` in a model you intend to run under PCNR**, not
-merely in one you don't. `test_limexp_is_what_makes_a_pcnr_participant_robust`
-pins it. `limexp` is also still the aid for elements that do not qualify
-at all (a state-carrying model, a polynomial or multi-branch
-nonlinearity) and for every `pcnr=False` run, which is the default.
+**That guidance expired on 2026-08-25, with vector PCNR Stage 1.** The
+subtract-then-re-stamp design was found to be not merely fragile at
+`inf` but *inexact everywhere it matters*: with `expl` keeping the
+participant finite, its current at the unlimited node reached 1e72 and
+the subtraction left ~1e56 of **order-dependent** noise — the same
+mirror took 11 iterations in one instance order and 179 in the other.
+The participant is now **excluded from the assembly** (its `i`/`G`
+shadowed for the two calls), so it is never evaluated at the node
+voltages at all. Consequences: the raw-`exp` diode converges under PCNR;
+`test_limexp_is_what_makes_a_pcnr_participant_robust` was inverted into
+`test_a_pcnr_participant_is_never_evaluated_at_the_node_voltages`; and
+the charge diode's DC count fell 14 → 8, the 14 having been a defect
+(`(1e-3 + 4.6e72) − 4.6e72 = 0` erased the source resistor's
+conductance on every other iterate).
+
+`limexp`/`expl` remain the aid for elements that do not qualify for
+PCNR at all and for every `pcnr=False` run, which is the default. Under
+PCNR, a participant's finiteness at wild nodes no longer matters,
+because it is not asked.
 
 ### 3.2b The let-chain: `var()`, and why a compact model needs it
 

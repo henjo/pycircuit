@@ -248,8 +248,13 @@ def test_a_charge_storing_pcnr_device_is_accepted():
     convergence already requires ``|g_lim|`` below tolerance, i.e.
     ``v_lim`` equal to the node voltage the charge was evaluated at.
     Measured on a diode with a nonlinear depletion charge: PCNR takes
-    the same 14 DC iterations with ``cj0`` of 0, 1e-11 and 1e-8, and the
-    same 63 transient steps as ``pcnr=False`` with identical waveforms.
+    the same DC iteration count with ``cj0`` of 0, 1e-11 and 1e-8, and
+    the same 63 transient steps as ``pcnr=False`` with identical
+    waveforms.  (That count was 14 until 2026-08-25 and is 8 now: the 14
+    was a defect of the old assemble-then-subtract assembly, which on
+    every other iterate computed ``(1e-3 + 4.6e72) - 4.6e72 = 0`` and
+    erased the source resistor's conductance.  The participant is no
+    longer evaluated at the node voltages -- see hdl.md 3.2a.)
     """
     c = SubCircuit()
     c['vs'] = VSin('a', gnd, va=1.0, freq=1e3)

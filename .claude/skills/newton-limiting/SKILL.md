@@ -224,3 +224,33 @@ mechanism exists. But **a two-probe device should not declare it**, and
 "the grouped form is more principled" is not a measurement. When an
 intervention's justification is a capability, do not expect -- or
 claim -- an iteration count.
+
+
+## Never evaluate a participant at the point you are about to overrule
+
+A limiting layer that re-stamps a device at a limited voltage must not
+first assemble that device at the UNLIMITED node and subtract it out.
+The cancellation is exact in arithmetic and worthless in floating point
+-- and not only at `inf`. Measured: a participant kept finite by `expl`
+reached 1e72 at a wild node, and `(J_node − J_node) + J_limited` left
+~1e56 of noise that depended on which device was assembled first: 11
+iterations in one instance order, 179 in the other. The first
+diagnosis, "`inf − inf = nan`, so harden the participant", was a true
+observation and the wrong lesson. Exclude the participant from the
+assembly instead; then its behaviour at nodes it is never evaluated at
+stops mattering at all.
+
+## Order-independence is not convergence
+
+PCNR (or any architecture giving each device its own limited unknown)
+buys ORDER-INDEPENDENCE by construction. It does not buy convergence.
+The acceptance case here -- a BJT mirror from a 20 V start where plain
+Newton was `[FAIL, 7]` by instance order -- became `[FAIL, FAIL]`: the
+same in both orders, and failing. Plain Newton's one-order "win" was a
+stale-anchor accident. What actually fails is the LAW: SPICE's `pnjlim`
+maps a 9e45 V proposal through its `vold <= 0` branch to a 2.83 V
+forward junction, 1e33 S, singular -- and that is the same law on both
+paths. When measuring an architectural change, separate the two claims:
+"does the answer depend on order?" and "does it converge?". They have
+different causes and different fixes, and a table that only shows the
+first will be read as showing the second.
