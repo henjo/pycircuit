@@ -802,7 +802,12 @@ range, what the eps costs in exponent headroom and what happens outside.
 
 Limiting: `limit_fet` and `limit_vds` beside `limit_pnj`, with
 `limit_spec` carrying a limiter KIND rather than a hardcoded `(IS, VT)`
-pair.
+pair; and `limit_together(...)`, which limits several probes of ONE
+device as a group -- the only way to declare SPICE's four-probe MOSFET
+(`fetlim` on `vgs`, `limvds` on `vds`, `pnjlim` on each bulk junction),
+which the per-probe write-back refuses to compile because the fourth
+probe has no terminal left to move. `sequential=True` on a group is
+`mos1load.c`'s ordering, offered and measured (it is not better).
 
 Diagnostics: `explain()`, `x_layout()`, `check_jacobians()` -- which
 has THREE verdicts, an entry the finite difference cannot resolve at
@@ -4003,7 +4008,8 @@ index into it. Suite went 1874 → 2184 with zero failures.
 **Done.** Kernel additions (§6 above). The designer's surface: nine
 compile-time checks, non-mutating globals, `explain()`, `x_layout()`,
 `check_jacobians()`. FET limiting on the ordinary Newton path
-(roadmap §10.3a). PCNR admitting chained models (§10.2) — the detector
+(roadmap §10.3a) and the device-level `limit_together` beside it
+(§10.3b, the non-PCNR half). PCNR admitting chained models (§10.2) — the detector
 now WALKS the chain rather than flattening it, which matters: the
 naive fix is to inline, and inlining is the thing the let-chain exists
 to prevent. Measured: PSP still compiles in 67.4 s against 67.7 s
@@ -4049,8 +4055,11 @@ claims in this campaign were RIGHT IN CONCLUSION and WRONG IN THEIR
 STATED REASON — the `Max`-on-an-atom rule, `limexp`'s eligibility test
 (twice, in two days), `_ChainPrinter`'s `reduce` premise, the
 roadmap's own §8 first draft, §10.2's `DiodeSpiceHdl` claim, §12.1's
-`fetlim` attribution, §12.2's proposed noise-floor formula and §12.4's
-stated failure mode. Each
+`fetlim` attribution, §12.2's proposed noise-floor formula, §12.4's
+stated failure mode, and §12.1's `both = 30` — a number copied from
+the before-table into the after-table without being re-run, which made
+a one-iteration difference read as 2.5x and justified a feature for
+the wrong reason. Each
 was caught by measuring, never by reading, and most were one `_src`
 dump or one `hasattr` away the whole time. **A reason decays faster
 than the conclusion it supports, and nothing fails when it does** — so

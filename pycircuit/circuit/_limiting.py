@@ -279,3 +279,121 @@ def _limvds(vnew, vold, toolkit):
         else:
             vnew = max(vnew, -0.5)
     return vnew
+
+
+def apply_limit(kind, vnew, vold, pars, toolkit):
+    """Dispatch one limiter KIND on its own parameter list.
+
+    One place where a `kind` string becomes a call, shared by the per-probe
+    write-back and the device-level one (`limit_together`, roadmap 10.3(b)).
+    It existed twice inside the generated `limit()` -- once for ranking and
+    once for the real pass -- and a third copy for the device path is how the
+    two spellings of `pnjlim`'s argument order (`pars` is `(IS, VT)`; the
+    function takes `(VT, IS)`) would eventually have diverged.
+    """
+    if kind == 'pnj':
+        return _pnjlim(vnew, vold, pars[1], pars[0], toolkit)
+    if kind == 'fet':
+        return _fetlim(vnew, vold, pars[0], toolkit)
+    if kind == 'vds':
+        return _limvds(vnew, vold, toolkit)
+    raise ValueError('unknown limiter kind %r' % (kind,))    # pragma: no cover
+
+
+def device_writeback(out, targets, drift, pinned=()):
+    """Write a whole DEVICE's limited branch voltages back at once.
+
+    `targets` is `(row_plus, row_minus, v_unlimited, v_limited)` per probe,
+    all four already numbers; `drift` is `|x - x0|` per row; `pinned` names
+    rows another probe has already written.  `out` is mutated in place and
+    the set of rows written is returned.
+
+    **This is the device-level generalisation of the per-probe rule, and
+    what it removes is the competition.**  The per-probe write-back moves
+    exactly one endpoint per probe, so two probes sharing a terminal have to
+    negotiate for it and the loser is pushed onto a node it would not have
+    chosen (roadmap 12.1).  Here the probes are a GRAPH -- nodes are
+    terminals, edges are branch-voltage constraints -- and a graph with no
+    cycle is satisfiable exactly:
+
+      1. take the constraints in order of DECREASING correction, adding each
+         to a spanning forest and dropping any that closes a cycle.  A cycle
+         is three probes whose limited values need not sum to zero
+         (`vgs - vds - vgd != 0`), so one of them cannot be honoured; the
+         one dropped is the one asking for the least;
+      2. in each component, hold the node that has drifted LEAST from the
+         last accepted point and derive every other node from it.  That is
+         the same judgement the per-probe rule makes ("move the terminal
+         that drifted further") stated for a whole tree instead of one edge,
+         and it keeps the property that made the runtime choice necessary:
+         a bounded branch voltage is only ever added to the SANEST node in
+         the device, never to whichever endpoint the declaration named.
+
+    Every kept probe therefore ends carrying exactly its own limited value,
+    with no probe undone and no ordering between them -- the forest and the
+    anchors are functions of the data, so reversing the probe list changes
+    nothing.
+
+    **If no probe bit, nothing is written at all** -- not even a round-trip
+    `out[a] = out[b] + (out[a] - out[b])`, which is not the identity in
+    floating point and would cost the "a small step passes through exactly"
+    property that lets `did limiting fire?` be a convergence signal.  A
+    probe that did not bite is still a CONSTRAINT when some other probe did:
+    that is how the device holds `vds` at the value Newton asked for while
+    it compresses `vgs`, which a per-probe limiter cannot do -- it would
+    move the shared source and let `vds` follow.
+    """
+    if not any(t[3] != t[2] for t in targets):
+        return set()
+
+    parent = {}
+
+    def _find(n):
+        parent.setdefault(n, n)
+        while parent[n] != n:
+            parent[n] = parent[parent[n]]
+            n = parent[n]
+        return n
+
+    ## Kruskal on |correction|, ties by row index -- data-derived, so the
+    ## result does not depend on the order the probes were declared in.
+    adj, nodes = {}, set()
+    for i in sorted(range(len(targets)),
+                    key=lambda k: (-abs(targets[k][3] - targets[k][2]),
+                                   targets[k][0], targets[k][1])):
+        ra, rb, _vn, vl = targets[i]
+        ka, kb = _find(ra), _find(rb)
+        if ka == kb:
+            continue
+        parent[ka] = kb
+        adj.setdefault(ra, []).append((rb, -vl))
+        adj.setdefault(rb, []).append((ra, +vl))
+        nodes.update((ra, rb))
+
+    comps = {}
+    for n in nodes:
+        comps.setdefault(_find(n), []).append(n)
+
+    written = set()
+    for members in comps.values():
+        ## The anchor: a row another probe already wrote if there is one --
+        ## rewriting it would undo that probe -- otherwise the least drifted.
+        anchor = min(members, key=lambda n: (0 if n in pinned else 1,
+                                             float(drift[n]), n))
+        seen, stack = {anchor}, [anchor]
+        while stack:
+            u = stack.pop()
+            for v, s in adj.get(u, ()):
+                if v in seen:
+                    continue
+                seen.add(v)
+                if v in pinned:
+                    ## A second already-written row in the same component.
+                    ## Writing it would undo the probe that put it there, so
+                    ## this constraint is dropped and the walk stops here --
+                    ## the same trade the cycle rule above makes.
+                    continue
+                out[v] = out[u] + s
+                written.add(v)
+                stack.append(v)
+    return written

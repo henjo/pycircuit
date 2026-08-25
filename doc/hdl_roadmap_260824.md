@@ -706,6 +706,61 @@ forced by the physics of the limiter, not merely convenient.
 
 (b) also makes 10.2 a prerequisite, since any real FET is chained.
 
+> **10.3(b) SPLITS IN TWO, and the first half landed 2026-08-25.**
+> The list above bundles a *device-level limiter* with *vector PCNR*,
+> and they are not the same project. The device-level limiter is
+> `limit_together`, on the ORDINARY Newton path, and it cost a day:
+>
+>     vgs, vds = limit_together(limit_fet(bgs.V, VTO), limit_vds(bds.V))
+>
+> Only the PCNR half — vector `v_lim`, block-valued `pcnr_i/didv`, a
+> `refine()` that hands a device its whole block — is still a project.
+>
+> **Two claims above are wrong, and both are wrong in the same
+> direction: they name SPICE's ORDERING as the thing that forces the
+> device-level form.**
+>
+> *First.* "The vector form is forced by the physics of the limiter,
+> not merely convenient." Measured, and it is not. SPICE's ordering is
+> now implementable (`limit_together(..., sequential=True)`) and it is
+> NOT better: over 48 operating points of the cascode in
+> `test_device_limiter.py`, 1029 Jacobian evaluations against 927 for
+> the order-independent form, and equal at the reference point. It is
+> a difference, offered for SPICE comparability; it is not physics.
+>
+> *Second, and this is the one that matters.* What actually forces the
+> device-level form is the WRITE-BACK, on a device with more than two
+> probes. SPICE's own MOSFET declaration is four probes — `fetlim` on
+> `vgs`, `limvds` on `vds`, `pnjlim` on each bulk junction — over four
+> terminals, and the per-probe write-back gives each probe a terminal
+> of its own, so the fourth finds both of its terminals claimed and
+> `generate_code` REFUSES TO COMPILE THE MODEL. The four-terminal
+> MOSFET is not expressible per-probe at all. Grouped it compiles, the
+> triangle `(b,s)-(b,d)-(d,s)` is resolved at run time by dropping the
+> smallest constraint, and on a body-biased cascode it takes 896
+> Jacobian evaluations against 3478 unlimited, with 6 of the 48 points
+> not converging at all without it.
+>
+> **What the device-level form does NOT buy is iterations.** On the
+> two-probe cascode it ties the per-probe form at 34 of 48 points and
+> costs exactly one iteration at the other 14 — 927 against 909. Said
+> plainly because §12.1's expectation was the opposite, and because the
+> number that expectation rested on was stale (see 12.1).
+>
+> **The design, in one paragraph.** A group's probes are read in a
+> canonical order (largest correction first, ties by row index), each
+> reading the shift the earlier ones left, and then written back as a
+> whole: the probes are a graph over the device's terminals, a maximum
+> spanning forest by correction size keeps every constraint that does
+> not close a cycle, and in each component the LEAST DRIFTED node is
+> held while every other node is derived from it. If no probe bit,
+> nothing is written. **Reading the probes independently instead —
+> every one from the unlimited vector — looks like the natural
+> device-level thing and OVER-CORRECTS**: probes share terminals, so
+> one write often satisfies the next probe outright, and enforcing a
+> correction that is no longer needed is what pushes the write onto a
+> source-pinned node. Measured, that mistake costs 1040 against 927.
+
 ### 10.4 Sequence, and the gate on the expensive one
 
 1. **10.3(a)**, FET limiting on the ordinary path. Independent of
@@ -714,6 +769,13 @@ forced by the physics of the limiter, not merely convenient.
    construction, and it removes one of the two capabilities `var()`
    costs (section 9).
 3. **10.3(b)**, vector PCNR. Its own project.
+
+**2026-08-25: items 1 and 2 are done, and so is the device-level
+limiter that was bundled into item 3.** What remains of item 3 is PCNR
+alone. The gate below is unchanged and is now the only thing standing
+between here and it — and the limiting to measure against is
+`limit_together`, not the per-probe form, since a four-terminal MOSFET
+can only be declared with it.
 
 **Gate item 3 on a measurement, the way section 8 gates the Jacobian
 work.** PCNR's value for a FET is real in principle — several
@@ -756,6 +818,7 @@ the form it was argued — here is what actually landed.
     8        printer/scalar codegen                  measured, not started
     10.2     PCNR admits chained models              DONE
     10.3(a)  FET limiting, ordinary Newton path      DONE
+    10.3(b)  device-level limiter (limit_together)   DONE
     10.3(b)  FET limiting inside PCNR (vector)       not started
     12.1     limiter write-back moves the wrong node DONE
     12.2     check_jacobians "not resolvable"        DONE 2026-08-25
@@ -770,9 +833,11 @@ Suite: 1874 tests at `4d359e5` before this work, **2189 passed / 7
 skipped / 3 xfailed / 0 failed** as of `cb477a8`. After 12.2, 12.3 and
 12.4: **2220 passed / 7 skipped / 3 xfailed** in 695 s, plus the two
 `test_elements_hdl_library3.py` assertions 12.3 deliberately overturned
-and left for that file's owner. `sphinx -W` clean.
+and left for that file's owner. `sphinx -W` clean. After
+`limit_together` (§10.3): **2239 passed / 7 skipped / 3 xfailed / 0
+failed**, the 17 new tests all in `test_device_limiter.py`.
 
-**Corrections this campaign made to its own record.** Nine claims were
+**Corrections this campaign made to its own record.** Ten claims were
 found right in conclusion and wrong in their stated reason:
 
 - the `Max`-on-an-atom rule (the divide-by-zero symptom does not
@@ -801,7 +866,16 @@ found right in conclusion and wrong in their stated reason:
   compiles, the parameter function returns the sympy Symbol, and the
   first Newton iteration raises `TypeError: Cannot convert expression to
   float`. `hdl.py` had the correct version of this the whole time, in
-  the comment on the source vectors.
+  the comment on the source vectors;
+- **§12.1's `both = 30`** (2026-08-25). The conclusion — two probes
+  competing for a terminal costs iterations — holds at that operating
+  point. The number does not: `both` was 13 at the very commit that
+  recorded 30, because 30 was copied down from the before-table and
+  never re-run, and across 48 operating points `both` is the cheapest
+  variant there is. **The cheapest reason to check is a number, and it
+  is the easiest to believe** — this one justified building a feature,
+  and the feature turned out to be worth building for something else
+  entirely (§10.3).
 
 **The pattern is worth naming: a reason decays faster than the
 conclusion it supports, and nothing fails when it does.** Every one was
@@ -862,6 +936,29 @@ had.
 > alone (12), because two probes may not move the same terminal and the
 > second is pushed onto a node it would not have chosen. That is what
 > §10.3(b)'s device-level limiter removes.
+>
+> > **THE 30 IS WRONG. It is 13, and it always was** (corrected
+> > 2026-08-25 by re-running the table at the commit that introduced
+> > it, `de78f42`). 30 is the number from the row ABOVE — the
+> > before-the-fix table — copied down into the after-table without
+> > being re-measured. `limit()`, `StandardNewton` and the test have
+> > not changed since, so the gap being paid for was never 2.5x; it is
+> > one iteration.
+> >
+> > The conclusion survives at this point and only at this point.
+> > Across the 48-operating-point grid of `test_device_limiter.py`,
+> > `both` is the CHEAPEST of the four per-probe variants — 909
+> > Jacobian evaluations against `fet`'s 1222 (which also fails to
+> > converge at one point) and `vds`'s 1404. "Adding a second, correct
+> > limiter costs iterations" is false as a general statement.
+> >
+> > And the device-level limiter does not remove the one iteration: it
+> > measures 927 over the same grid, never better at a point, one
+> > iteration worse at 14 of them. What it removes is a REFUSAL — see
+> > §10.3 — not a count. **Ninth instance in this campaign of a claim
+> > right in conclusion and wrong in its stated reason; this one's
+> > reason was a number nobody re-ran, which is the cheapest kind to
+> > check and the easiest to believe.**
 >
 > And a side effect worth knowing: a stacked pair at (5 V, 2.5 V) that
 > used to raise `SingularMatrix` now converges, because the better
@@ -1238,6 +1335,21 @@ Both facts are tests. This belongs at the simulator level as `gmin` (or
   sits exactly at zero with an infinite derivative. This is the
   `differentiable-numerics` rule in a form that skill does not spell
   out: the dangerous value was a *parameter*, not a bias.
+- **A per-probe write-back can UNDO another probe's branch, and the
+  size is known (2026-08-25).** "No probe is undone" was verified at
+  the level of NODES — no row is written twice — and that is not the
+  same claim. Two probes sharing a terminal: the one with the larger
+  correction takes the shared node, and the other probe's branch, which
+  hangs off it, follows and lands somewhere its own law never chose.
+  Measured over 813 random steps in which both probes of the
+  `(vgs, vds)` star bite: **27 of them (3.3%) leave a branch its own
+  law would still move, the worst by 36 V.** `limit_together` has no
+  such case (0 of 813) because it solves branch CONSTRAINTS rather than
+  applying node DISPLACEMENTS. Not fixed in the per-probe form: it
+  would mean re-solving after each write, which is the device-level
+  form with extra steps, and the per-probe form measures fine on the
+  grid regardless (909 against 927). Recorded so the next person does
+  not read the test name as the stronger claim.
 - **`hdl.var` vs SPICE's `VAR`.** `elements_hdl.py` aliases the
   let-chain binder as `_var`, and a comment now says that is "a
   readability choice, not a workaround". It is a workaround again: the

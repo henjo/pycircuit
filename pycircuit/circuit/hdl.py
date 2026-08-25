@@ -59,6 +59,7 @@ import numpy as np
 
 import collections
 import inspect
+import itertools
 import re
 import types
 import warnings
@@ -1346,26 +1347,121 @@ class _Limit(sympy.Function):
     `atoms(_Limit)` still collects every limited probe in one pass while
     each kind carries its own argument list.  `kind` is the string the
     generated `limit()` dispatches on.
+
+    **Each kind has TWO arities**: the probe plus that kind's own
+    parameters, and the same again with a three-integer GROUP TAG
+    appended -- `(gid, slot, sequential)` -- which is what
+    :func:`limit_together` writes onto a marker to say "this probe is
+    limited with the others in group `gid`, and it is the `slot`-th of
+    them".  The tag rides in `args` rather than in a side table because
+    the markers are sympy expressions embedded in the contribution: a
+    registry keyed on the marker object would be keyed on sympy's cache,
+    which merges structurally equal instances.
     """
     kind = None
 
 
 class _LimitPnj(_Limit):
     """`$limit(probe, "pnjlim", IS, VT)`; see :func:`limit_pnj`."""
-    nargs = (3,)
+    nargs = (3, 6)
     kind = 'pnj'
 
 
 class _LimitFet(_Limit):
     """`$limit(probe, "fetlim", vto)`; see :func:`limit_fet`."""
-    nargs = (2,)
+    nargs = (2, 5)
     kind = 'fet'
 
 
 class _LimitVds(_Limit):
     """`$limit(probe, "limvds")`; see :func:`limit_vds`."""
-    nargs = (1,)
+    nargs = (1, 4)
     kind = 'vds'
+
+
+## How many arguments after the probe belong to the LAW, per kind.  What
+## follows them, if anything, is the group tag.
+_LIMIT_NPAR = {'pnj': 2, 'fet': 1, 'vds': 0}
+
+## Group ids only ever have to be unique WITHIN one `analog()` body, but a
+## process-wide counter is what makes them so without threading state
+## through the DSL -- and it keeps two classes defined in one module from
+## sharing a tag through sympy's expression cache.
+_LIMIT_GROUP_IDS = itertools.count(1)
+
+
+def _limit_parts(app):
+    """Split a `_Limit` marker into `(probe, params, group)`.
+
+    `group` is `(gid, slot, sequential)` or None.  One place that knows
+    the tag's layout, because `generate_code` and `limit_together` both
+    have to agree about it.
+    """
+    npar = _LIMIT_NPAR[app.kind]
+    tail = app.args[1 + npar:]
+    grp = (int(tail[0]), int(tail[1]), bool(int(tail[2]))) if tail else None
+    return app.args[0], tuple(app.args[1:1 + npar]), grp
+
+
+def limit_together(*probes, sequential=False):
+    """Limit several of a device's probes AS ONE, roadmap 10.3(b).
+
+    Takes the ordinary per-probe declarations and returns them tagged as
+    one group, in the order given::
+
+        vgs, vds = limit_together(limit_fet(bgs.V, VTO), limit_vds(bds.V))
+
+    The per-probe forms are unchanged and keep working on their own; this
+    is an envelope around them, not a replacement, so a model adopts it by
+    wrapping one line.
+
+    **What the grouping buys is the WRITE-BACK.**  A per-probe limiter
+    moves one endpoint per probe, so two probes sharing a terminal have to
+    negotiate for it and one of them is pushed onto a node it would not
+    have chosen (roadmap 12.1).  A group is written back as a whole: the
+    probes are a graph over the device's terminals, the node that drifted
+    LEAST from the last accepted point is held, and every other node is
+    derived from it, so **every probe carries exactly its own limited
+    value and none is undone** -- see
+    :func:`pycircuit.circuit._limiting.device_writeback`.  A probe that
+    did not bite is still a constraint: the device holds `vds` where
+    Newton put it while it compresses `vgs`, instead of letting `vds`
+    follow the source node the other probe moved.
+
+    ``sequential=True`` asks for **SPICE's coupling** instead of
+    independent limiting.  `mos1load.c` limits `vgs`, then recomputes
+    `vds = vgs_lim - vgd` from the UNLIMITED `vgd` before calling
+    `limvds`, so its `vds` is shifted by exactly the compression the gate
+    took.  Here that is each probe in turn moving its MINUS terminal by
+    the correction it just applied, and the next probe reading the shifted
+    vector -- which is the same thing, since holding `vgd` while `vgs`
+    moves IS moving the source.  It is deliberately ORDER DEPENDENT; that
+    is what "in this order" means.
+
+    **Measured, and it is not an improvement here.**  On the cascode of
+    `test_device_limiter.py`, over 48 operating points, independent
+    grouping and SPICE's sequencing cost the same to within a couple of
+    iterations, and at the reference point (20 V, 2 V, 0.8 V) sequencing
+    is worse.  It is offered because it is SPICE's answer and a model
+    that wants bit-comparability with SPICE's ITERATES needs it, not
+    because it converges better; the default is independent.
+    """
+    if len(probes) < 2:
+        raise ValueError('limit_together needs at least two probes; one '
+                         'probe on its own is already a per-probe limiter')
+    gid = next(_LIMIT_GROUP_IDS)
+    out = []
+    for slot, app in enumerate(probes):
+        if not isinstance(app, _Limit):
+            raise ValueError('limit_together takes limit_pnj/limit_fet/'
+                             'limit_vds declarations; got %r' % (app,))
+        if _limit_parts(app)[2] is not None:
+            raise ValueError('this probe is already in a $limit group; a '
+                             'probe carries one limiter and one group')
+        out.append(type(app)(*app.args, sympy.Integer(gid),
+                             sympy.Integer(slot),
+                             sympy.Integer(1 if sequential else 0)))
+    return tuple(out)
 
 
 def _limit_probe(probe, who):
@@ -1473,16 +1569,31 @@ def limit_vds(probe):
     :func:`pycircuit.circuit._limiting._limvds`.
 
     **Ordering, and where this differs from SPICE.**  The generated
-    ``limit()`` walks the declared probes in order, each reading the
-    partially-limited vector, and writes each probe's limited value by
-    moving one terminal: its ``plus``, or its ``minus`` if an earlier
-    probe already moved the ``plus`` (the rule generalises the BJT case
-    ``limit_junctions`` handles with its ``move`` field -- two junctions
-    sharing a base would otherwise have the second write undo the
-    first).  For the usual MOSFET declaration -- ``limit_fet(V(g,s))``
-    and ``limit_vds(V(d,s))`` -- the two writes land on different
-    terminals (``g`` and ``d``), so **each probe ends up carrying exactly
-    its own limited value and the declaration order does not matter**.
+    ``limit()`` walks the declared probes in a canonical order -- largest
+    correction first -- each reading the partially-limited vector, and
+    writes each probe's limited value by moving ONE terminal: whichever
+    end drifted further from the last accepted point, or the other end if
+    an earlier probe already moved that one (the rule generalises the BJT
+    case ``limit_junctions`` handles with its ``move`` field -- two
+    junctions sharing a base would otherwise have the second write undo
+    the first).  The order is derived from the data, not from the
+    declaration, so **writing the two calls the other way round changes
+    nothing**.
+
+    **What is NOT true, and used to be claimed here (corrected
+    2026-08-25):** that each probe therefore ends up carrying exactly its
+    own limited value.  The old wording reasoned from the compile-time
+    write-back, where ``limit_fet(V(g,s))`` moved ``g`` and
+    ``limit_vds(V(d,s))`` moved ``d``.  Now that the terminal is chosen
+    at run time both probes can want the shared source, and the one that
+    gets it moves a node the other probe's branch hangs off -- so the
+    earlier probe's branch follows and lands somewhere its own law never
+    chose.  Measured over 813 random steps in which both probes bite: 27
+    of them (3.3%) end with a branch its own law would still move, the
+    worst by 36 V.  A per-probe write-back applies each correction as a
+    DISPLACEMENT of one node, which is not the same thing as satisfying a
+    branch constraint.  :func:`limit_together` is what satisfies them all
+    at once; the numbers are in `test_device_limiter.py`.
 
     SPICE's order DOES matter, and this is the difference.
     ``mos1load.c`` limits ``vgs`` first and then recomputes
@@ -1494,9 +1605,17 @@ def limit_vds(probe):
     solution untouched -- a limiter only chooses where the next Jacobian
     is taken -- but they are not the same point, and no per-probe
     limiter can produce SPICE's: the coupling runs through a THIRD
-    branch (``vgd``) that neither probe names.  Expressing it needs the
-    device-level, vector-valued limiter of roadmap 10.3(b), which
-    receives all of a device's voltages at once.
+    branch (``vgd``) that neither probe names.
+
+    **2026-08-25:** :func:`limit_together` now expresses it --
+    ``limit_together(limit_fet(bgs.V, VTO), limit_vds(bds.V),
+    sequential=True)`` is exactly `mos1load.c`'s sequence.  What has NOT
+    changed is which one to prefer: measured over 48 operating points of
+    the `test_device_limiter.py` cascode, SPICE's ordering is worse than
+    the independent one (1029 Jacobian evaluations against 927), and at
+    the reference point it is the same.  The paragraph above described
+    the gap as a limitation; it is better read as a difference, and the
+    default is still not SPICE's.
     """
     _limit_probe(probe, 'limit_vds')
     return _LimitVds(probe)
@@ -2534,8 +2653,7 @@ def generate_code(cls):
         """Record every `$limit` marker in `expr` and return it unmarked."""
         subs_l = {}
         for app in sorted(expr.atoms(_Limit), key=sympy.default_sort_key):
-            probe = app.args[0]
-            pars = tuple(app.args[1:])
+            probe, pars, grp = _limit_parts(app)
             b_l = probe.branch_or_node
             key = (index_of[('node', b_l.plus.name)],
                    index_of[('node', b_l.minus.name)])
@@ -2546,7 +2664,7 @@ def generate_code(cls):
                     'carries one limiter'
                     % (_fmt_branch(branch_key(b_l)), prev[0][1], app.kind))
             if not prev:
-                limits.append((key, app.kind, pars))
+                limits.append((key, app.kind, pars, grp))
             subs_l[app] = probe
         return expr.subs(subs_l) if subs_l else expr
 
@@ -3084,21 +3202,36 @@ def generate_code(cls):
     ## field for a BJT's two junctions sharing a base.  With both terminals
     ## already pinned there is no choice left that keeps every probe's value,
     ## and saying so beats writing a silently wrong one.
+    ## GROUPED probes (`limit_together`) are exempt from all of it: their
+    ## write-back is solved over the whole device at runtime, where a
+    ## constraint that cannot be honoured is dropped by size rather than by
+    ## declaration position, so there is nothing for a compile-time rule to
+    ## decide and no configuration it has to refuse.  `move` is still filled
+    ## in for them -- the plus terminal, the historical default -- so that
+    ## every `limit_spec` entry has the same shape; the grouped path never
+    ## reads it.
     limit_spec, _moved = [], set()
-    for k, kind_l, pars_l in limits:
+    _groups = collections.OrderedDict()
+    for k, kind_l, pars_l, grp_l in limits:
         ra, rb = int(k[0]), int(k[1])
-        if ra not in _moved:
+        if grp_l is not None:
             move = ra
+            _groups.setdefault(grp_l[0], (grp_l[2], []))[1].append(
+                (grp_l[1], len(limit_spec)))
+        elif ra not in _moved:
+            move = ra
+            _moved.add(move)
         elif rb not in _moved:
             move = rb
+            _moved.add(move)
         else:
             raise ValueError(
                 'the $limit probes over-determine this device: both '
                 'terminals of branch (%s,%s) have already been moved by '
                 'earlier probes, so this one cannot be written back without '
-                'undoing them.  A device-level limiter is what this needs.'
+                'undoing them.  Declare them with limit_together(), whose '
+                'write-back is solved over the whole device at once.'
                 % (xlabels[ra], xlabels[rb]))
-        _moved.add(move)
         ## `given_syms` BELONGS IN THIS SIGNATURE.  Every other compiled
         ## function in this file is called with `_args_of`, which is
         ## `params + [T] + givenness flags`; this one alone was lambdified
@@ -3118,6 +3251,17 @@ def generate_code(cls):
                                                + given_syms, NUMPY_MODULES)
                                  for e in pars_l)))
 
+    ## `limit_groups`: `(sequential, [spec index, in DECLARATION order])`.
+    ## Kept beside `limit_spec` rather than inside it because every reader
+    ## of a spec entry -- `explain`, `check_jacobians`, four test files --
+    ## unpacks it as a 4-tuple, and widening it would have been a change to
+    ## an interface for the sake of a field only `limit()` reads.
+    limit_groups = [(seq, [i for _slot, i in sorted(items)])
+                    for _gid, (seq, items) in _groups.items()]
+    for _seq, _idx in limit_groups:
+        if len(_idx) < 2:                                # pragma: no cover
+            raise ValueError('a $limit group needs at least two probes')
+
     branchpairs = [branch_key(br) for br in vbranches]
     internalnames = [nd.name for nd in internalnodes]
 
@@ -3126,6 +3270,7 @@ def generate_code(cls):
                 branchpairs=branchpairs, internalnames=internalnames,
                 const_G=const_G, const_C=const_C, pcnr_funcs=pcnr_funcs,
                 given_names=given_names, limit_spec=limit_spec,
+                limit_groups=limit_groups,
                 cross_spec=cross_spec, sym_spec=sym_spec,
                 has_ac=any(e != 0 for e in acvec),
                 chained=bool(chain_defs),
@@ -3823,11 +3968,16 @@ class BehaviouralMeta(type):
         ## in).  Only generated when the model asked for it.
         lspec = info['limit_spec']
         if lspec:
-            from pycircuit.circuit._limiting import (_pnjlim as _pnj,
-                                                     _fetlim as _fet,
-                                                     _limvds as _lvds)
+            from pycircuit.circuit._limiting import (apply_limit as _lim,
+                                                     device_writeback as _dwb)
+            lgroups = info.get('limit_groups') or []
+            _grouped = set()
+            for _s, _ix in lgroups:
+                _grouped.update(_ix)
+            lsingle = [i for i in range(len(lspec)) if i not in _grouped]
 
-            def limit(self, x, x0, epar=defaultepar, _ls=lspec):
+            def limit(self, x, x0, epar=defaultepar, _ls=lspec,
+                      _lg=lgroups, _l1=lsingle):
                 out = np.array(x, dtype=float, copy=True)
                 x0a = np.asarray(x0, dtype=float)
                 args = _args_of(self, epar)
@@ -3874,16 +4024,81 @@ class BehaviouralMeta(type):
                 ## nothing.  `test_the_vgs_vds_star_is_order_independent`
                 ## asserts exactly that, by reversing it.
                 drift = np.abs(np.asarray(out, dtype=float) - x0a)
+                _moved = set()
 
                 def _vlim_of(k, i0, i1, pfs_):
                     vn = float(out[i0] - out[i1])
                     vo = float(x0a[i0] - x0a[i1])
                     pv_ = [float(f(*args)) for f in pfs_]
-                    if k == 'pnj':
-                        return vn, _pnj(vn, vo, pv_[1], pv_[0], self.toolkit)
-                    if k == 'fet':
-                        return vn, _fet(vn, vo, pv_[0], self.toolkit)
-                    return vn, _lvds(vn, vo, self.toolkit)
+                    return vn, _lim(k, vn, vo, pv_, self.toolkit)
+
+                ## DEVICE-LEVEL groups first (`limit_together`, roadmap
+                ## 10.3(b)).  They see a pristine vector -- a group is a
+                ## statement about the whole device and the per-probe
+                ## probes below already know how to keep off a row another
+                ## probe wrote, which is not true the other way round.
+                for _seq, _idx in _lg:
+                    ## EACH PROBE READS WHAT THE EARLIER ONES DID, and it
+                    ## is the whole difference between a group that helps
+                    ## and one that hurts.  Limiting every probe from the
+                    ## SAME unlimited vector and then enforcing all of the
+                    ## results looks like the natural device-level thing
+                    ## and OVER-CORRECTS: probes share terminals, so one
+                    ## write often satisfies the next probe outright.
+                    ## Measured on the cascode of test_device_limiter, at
+                    ## (5 V, 3 V, 0.8 V): `vgs = 57.6` and `vds = 59.6`
+                    ## off a source-pinned gate and drain, with only the
+                    ## middle node wild.  Read together and enforced, the
+                    ## two clamps disagree about the shared node by 2.5 V,
+                    ## and the only way to honour both is to move the
+                    ## GATE -- the very failure 12.1 removed.  Read in
+                    ## sequence, the `vds` clamp alone brings the middle
+                    ## node back to 1.0 V and `vgs` no longer bites at
+                    ## all, so nothing but the wild node moves.
+                    ##
+                    ## The order is CANONICAL (largest correction first,
+                    ## ties by row index) exactly as the per-probe path's
+                    ## is, so reversing the declaration changes nothing.
+                    ## `sequential=True` replaces it with SPICE's, which
+                    ## is the declaration order and is meant to be.
+                    targets, shift, taken = [], {}, set()
+                    if _seq:
+                        seq_order = list(_idx)
+                    else:
+                        _rk = {j: _vlim_of(_ls[j][1], _ls[j][0][0],
+                                           _ls[j][0][1], _ls[j][3])
+                               for j in _idx}
+                        seq_order = sorted(
+                            _idx, key=lambda j: (-abs(_rk[j][1] - _rk[j][0]),
+                                                 _ls[j][0][0], _ls[j][0][1]))
+                    for j in seq_order:
+                        (ra, rb), kind, _mv, pfs = _ls[j]
+                        pv = [float(f(*args)) for f in pfs]
+                        vorig = float(out[ra] - out[rb])
+                        vold = float(x0a[ra] - x0a[rb])
+                        vin = vorig + shift.get(ra, 0.0) - shift.get(rb, 0.0)
+                        vlim = _lim(kind, vin, vold, pv, self.toolkit)
+                        if vlim != vin:
+                            if _seq:
+                                ## SPICE's coupling: `mos1load.c` limits
+                                ## `vgs`, then recomputes `vds` from the
+                                ## UNLIMITED `vgd` -- which is holding the
+                                ## gate and the drain and moving the
+                                ## SOURCE, i.e. always the minus terminal.
+                                n = rb
+                            else:
+                                n = ra if drift[ra] >= drift[rb] else rb
+                                if n in taken:
+                                    n = rb if n == ra else ra
+                            taken.add(n)
+                            shift[n] = (shift.get(n, 0.0)
+                                        + (vlim - vin) * (1 if n == ra
+                                                          else -1))
+                        targets.append((ra, rb, vorig, vlim))
+                    ## The shifts above are a READING order, not the
+                    ## write-back: which node finally pays is decided over
+                    ## the whole device, from the targets, below.
+                    _moved |= _dwb(out, targets, drift, _moved)
 
                 ## WHO GETS THE SHARED TERMINAL when two probes want it:
                 ## the one applying the LARGER correction.  A BJT's two
@@ -3898,24 +4113,19 @@ class BehaviouralMeta(type):
                 ## does not depend on the spec list's own order.  These
                 ## `vlim`s are for RANKING only; each probe recomputes its
                 ## own below against whatever earlier probes wrote.
-                _rank = [_vlim_of(k, p[0], p[1], pf)
-                         for p, k, _m, pf in _ls]
+                _rank = {i: _vlim_of(_ls[i][1], _ls[i][0][0], _ls[i][0][1],
+                                     _ls[i][3])
+                         for i in _l1}
                 order = sorted(
-                    range(len(_ls)),
+                    _l1,
                     key=lambda i: (-abs(_rank[i][1] - _rank[i][0]),
                                    _ls[i][0][0], _ls[i][0][1]))
-                _moved = set()
                 for i in order:
                     (ra, rb), kind, move, pfs = _ls[i]
                     vnew = float(out[ra] - out[rb])
                     vold = float(x0a[ra] - x0a[rb])
                     pv = [float(f(*args)) for f in pfs]
-                    if kind == 'pnj':
-                        vlim = _pnj(vnew, vold, pv[1], pv[0], self.toolkit)
-                    elif kind == 'fet':
-                        vlim = _fet(vnew, vold, pv[0], self.toolkit)
-                    else:
-                        vlim = _lvds(vnew, vold, self.toolkit)
+                    vlim = _lim(kind, vnew, vold, pv, self.toolkit)
                     ## A LIMITER THAT DID NOT BITE MUST TOUCH NOTHING.
                     ## Writing `out[rb] = out[ra] - vlim` when `vlim` is
                     ## already `vnew` does not round-trip -- `a - (a - b)`
@@ -4380,15 +4590,20 @@ def explain(target, source=True, symbolic=True, maxlines=40):
         ## Name the KIND: with three of them a bare count no longer says
         ## what the model asked for, and this line is the only place a
         ## reader can see it without recompiling.
+        _grp = {}
+        for _g, (_seq, _idx) in enumerate(info.get('limit_groups') or []):
+            for _i in _idx:
+                _grp[_i] = ' [group %d%s]' % (_g + 1,
+                                              ', SPICE order' if _seq else '')
         feats.append('%d $limit probe%s (%s)'
                      % (len(info['limit_spec']),
                         '' if len(info['limit_spec']) == 1 else 's',
-                        ', '.join('%s on (%s,%s)'
+                        ', '.join('%s on (%s,%s)%s'
                                   % ({'pnj': 'pnjlim', 'fet': 'fetlim',
                                       'vds': 'limvds'}[k],
-                                     _xl[ra], _xl[rb])
-                                  for (ra, rb), k, _m, _p
-                                  in info['limit_spec'])))
+                                     _xl[ra], _xl[rb], _grp.get(_i, ''))
+                                  for _i, ((ra, rb), k, _m, _p)
+                                  in enumerate(info['limit_spec']))))
     feats.append('PCNR: %s' % ('%d junction(s)' % len(info['pcnr_funcs'])
                                if info['pcnr_funcs'] else
                                'does not qualify -- needs every current to '

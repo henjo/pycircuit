@@ -60,6 +60,23 @@ suspect the component before you explain the measurement. An
 explanation that arrives quickly and sounds like physics is exactly how
 a wrong number gets closed.
 
+### And the cheapest failure of all: the number nobody re-ran
+
+The same table then recorded `both` = 30 against `fet` = 12 as the
+open problem a device-level limiter would fix. **`both` was 13**, at
+the very commit that wrote 30 — the 30 was the row above, the
+before-the-fix column, copied down into the after-table without being
+re-measured. A one-iteration difference read as 2.5x for a day and was
+used to justify a feature.
+
+**Re-run every number in a before/after table, including the ones you
+expect not to have moved.** A limiter's numbers move in whole
+directions when the write-back changes, and the row you did not
+re-measure is the row you will quote. Where the ratio matters, measure
+it over a GRID of operating points and sum: on one point `both` costs
+one iteration more than `fet`; over 48 points `both` is the cheapest
+variant there is, and the single-point conclusion is simply false.
+
 ## The write-back is where the bugs are
 
 In a state-free convention the limiter returns a limited copy of the
@@ -107,6 +124,44 @@ SPICE limits a MOSFET in a specific sequence: `fetlim(vgs)` first, then
 first, so the coupling runs through a third branch that neither probe
 names. **No per-probe limiter can reproduce that.** It needs a
 device-level limiter receiving all of a device's voltages at once.
+
+**But that sequence is not why you want one.** Built and measured: the
+device-level form can reproduce SPICE's ordering, and SPICE's ordering
+is *worse* — 1029 Jacobian evaluations against 927 for an
+order-independent reading, over 48 operating points. The real reason
+is the write-back, and it shows up as a **refusal, not a count**: a
+per-probe write-back gives each probe a terminal of its own, so
+SPICE's own four-probe MOSFET declaration — `fetlim(vgs)`,
+`limvds(vds)`, `pnjlim(vbs)`, `pnjlim(vbd)`, four probes over four
+terminals — has no terminal left for the fourth probe and *cannot be
+compiled at all*. Count how many probes a device wants before
+promising anything about how well two of them get along.
+
+### If you build one: read the probes in SEQUENCE, not together
+
+The natural device-level implementation — limit every probe from the
+same unlimited vector, then solve for node values satisfying all of
+them — **over-corrects**, measurably: 1040 against 927 on the same
+grid, and the extra iterations come from writes onto source-pinned
+nodes.
+
+The reason is worth keeping. Probes share terminals, so one write
+often satisfies the next probe outright. Measured: `vgs = 57.6 V` and
+`vds = 59.6 V` off a pinned gate and drain with only the middle node
+wild. Read in sequence, clamping `vds` brings that node back and `vgs`
+no longer bites at all, so nothing but the wild node moves. Read
+together, the two clamps disagree about the shared node by 2.5 V, and
+the only way to honour both is to move the **gate** — the exact
+failure the runtime write-back was built to remove.
+
+So: read in a canonical sequence (largest correction first, ties by row
+index — data-derived, so declaration order still cannot matter), each
+probe seeing what the earlier ones did; then write the whole device
+back at once. The write-back that is worth having is a spanning forest
+over the terminals — keep every constraint that does not close a cycle,
+drop the smallest one that does, hold the least-drifted node in each
+component and derive the rest. That is the per-probe rule ("move the
+terminal that drifted further") stated for a tree.
 
 Likewise a limiter parameterised on a card value cannot follow a
 bias-dependent one: `fetlim` wants SPICE's `von`, recomputed each

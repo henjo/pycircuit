@@ -235,10 +235,19 @@ def _fet(which='both', chained=False):
     """A saturating exponential FET: subthreshold in `vgs`, `Vdsat`-like
     saturation in `vds`.  Both are what a limiter exists for -- the first
     overflows, the second collapses `dIds/dVds` to nothing.
+
+    `which` selects the declaration under test: `'none'`, `'fet'`, `'vds'`,
+    `'both'` (two independent per-probe limiters), `'group'`
+    (`limit_together`, the device-level form of roadmap 10.3(b)) or
+    `'seq'` (the same group with SPICE's `mos1load.c` sequencing).  The
+    last two are used by `test_device_limiter.py`, which measures them
+    against `'both'` on this same circuit -- the comparison only means
+    anything if the MODEL is identical, which is why they live here beside
+    it rather than in a second copy.
     """
     from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
                                        var, limexp, limit_fet, limit_vds,
-                                       vt)
+                                       limit_together, vt)
 
     class _M(Behavioural):
         instparams = [Parameter(name='VTO', desc='threshold', unit='V',
@@ -253,10 +262,15 @@ def _fet(which='both', chained=False):
         @staticmethod
         def analog(d, g, s):
             bgs, bds = Branch(g, s), Branch(d, s)
-            vgs = limit_fet(bgs.V, VTO) if which in ('both', 'fet') \
-                else bgs.V                                          # noqa
-            vds = limit_vds(bds.V) if which in ('both', 'vds') \
-                else bds.V                                          # noqa
+            if which in ('group', 'seq'):
+                vgs, vds = limit_together(               # noqa
+                    limit_fet(bgs.V, VTO), limit_vds(bds.V),
+                    sequential=(which == 'seq'))
+            else:
+                vgs = limit_fet(bgs.V, VTO) if which in ('both', 'fet') \
+                    else bgs.V                                      # noqa
+                vds = limit_vds(bds.V) if which in ('both', 'vds') \
+                    else bds.V                                      # noqa
             ids = IS0 * limexp((vgs - VTO) / (N * vt())) \
                 * (1.0 - limexp(-vds / VE))                         # noqa
             if chained:
@@ -459,8 +473,12 @@ def test_the_vgs_vds_star_is_order_independent_and_is_not_spice_s_order():
     so its `limvds` argument is shifted by `delta = vgs_lim - vgs`.
 
     This test pins the size of that difference on a concrete step rather
-    than describing it, so the day a device-level limiter (roadmap
-    10.3(b)) closes the gap, the number here is what has to change.
+    than describing it.  The device-level limiter (roadmap 10.3(b)) can
+    now produce SPICE's number --
+    `limit_together(..., sequential=True)`, measured against the same
+    step in `test_device_limiter.py` -- but the PER-PROBE form measured
+    here is unchanged and is meant to stay so: this is still the
+    difference between the two, not a gap waiting to be closed.
     """
     el = _fet('both')('d', 'g', 's', VTO=0.5)
     el.update_iparv()
@@ -758,7 +776,19 @@ def test_dc_solve_attributes_the_rescue_to_each_limiter(chained):
         none   NoConvergenceError
         fet    12 iterations
         vds    57
-        both   30
+        both   13
+
+    **`both` was recorded as 30 here and in roadmap 12.1, and it never
+    was 30 after the write-back fix** (corrected 2026-08-25, by re-running
+    it at the commit that introduced the table).  30 is the number from
+    the row above it -- the BEFORE table -- copied down without being
+    re-measured, and it made a one-iteration difference read as a 2.5x
+    penalty.  The conclusion it was used for ("adding the second probe
+    costs iterations") is true at this point and by exactly one; across
+    the 48-point grid of `test_device_limiter.py` it is false, and `both`
+    is the cheapest of the four.  A ninth instance in this campaign of a
+    claim right in its conclusion and wrong in its stated reason -- here
+    the reason was a number nobody re-ran.
 
     **The attribution changed completely when the write-back stopped
     being fixed at compile time**, and the old numbers are worth keeping
@@ -777,11 +807,13 @@ def test_dc_solve_attributes_the_rescue_to_each_limiter(chained):
     correction goes to whichever terminal actually drifted, `fetlim`
     alone is the BEST of the four.
 
-    That `both` (30) is worse than `fet` alone (12) is real and is the
-    next thing to look at: two probes may not move the same terminal, so
-    the second is pushed onto a node it would not have chosen. A
-    device-level limiter (roadmap 10.3(b)) is what removes that
-    constraint.
+    That `both` (13) is worse than `fet` alone (12) is real, and it is
+    one iteration: two probes may not move the same terminal, so the
+    second is pushed onto a node it would not have chosen.  The
+    device-level limiter (roadmap 10.3(b), `limit_together`) removes that
+    constraint and measures 13 as well -- see
+    `test_device_limiter.py::test_the_grouped_form_costs_about_what_the_
+    per_probe_one_costs`.  What it buys is not this number.
 
     Run on BOTH code generators, since the limiter must not depend on
     which one compiled the element.
