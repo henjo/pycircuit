@@ -815,7 +815,12 @@ the form it was argued — here is what actually landed.
     6        Phase 1 make the record true            DONE
     6        Phase 2 designer's surface              DONE
     6        Phase 3 kernel additions                DONE
-    8        printer/scalar codegen                  measured, not started
+    8        printer/scalar codegen                  DEAD -- see §13/§14
+                                                     (~1.2x now, overtaken
+                                                      by the kernel work)
+    14       backend: the spike that decides it      NOT STARTED, and
+                                                     needs a decision
+                                                     before it starts
     10.2     PCNR admits chained models              DONE
     10.3(a)  FET limiting, ordinary Newton path      DONE
     10.3(b)  device-level limiter (limit_together)   DONE
