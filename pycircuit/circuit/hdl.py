@@ -709,9 +709,17 @@ def expl(x, x0=EXPL_THRESHOLD):
     """Two-sided clamped exponential -- PSP's ``expl``.
 
     ``exp`` between the seams, its own third-order Taylor continuation
-    outside them, C-3 at both.  Finite and strictly positive for every
-    double, which is what makes a surface-potential model evaluable at
-    the absurd biases Newton visits on its way to the solution.
+    outside them, C-3 at both.  Strictly positive everywhere, and finite
+    over the whole range a circuit is ever solved in, which is what
+    makes a surface-potential model evaluable at the absurd biases
+    Newton visits on its way to the solution.
+
+    This docstring used to say "finite for every double", and that is
+    FALSE: the cubic continuation overflows at an argument of 4.76e69,
+    where it returns 1.798e308.  Measured 2026-08-25 while writing a
+    level-1 MOSFET, which stays finite through 1e68 V on its bulk node,
+    so the gap is academic -- but a guarantee that is nearly true is
+    the kind that gets relied on at the one bias where it is not.
 
     PSP103 and JUNCAP200 call the family 31 times between them.
     """

@@ -806,7 +806,9 @@ pair; and `limit_together(...)`, which limits several probes of ONE
 device as a group -- the only way to declare SPICE's four-probe MOSFET
 (`fetlim` on `vgs`, `limvds` on `vds`, `pnjlim` on each bulk junction),
 which the per-probe write-back refuses to compile because the fourth
-probe has no terminal left to move. `sequential=True` on a group is
+probe has no terminal left to move.  Its first PRODUCTION user is
+`elements_hdl.MosLevel1Hdl` (2026-08-25), which declares exactly those
+four and on which the refusal is asserted. `sequential=True` on a group is
 `mos1load.c`'s ordering, offered and measured (it is not better).
 
 Diagnostics: `explain()`, `x_layout()`, `check_jacobians()` -- which
@@ -4003,7 +4005,9 @@ trigger fires.
 ### Phase F — the roadmap campaign, 2026-08-24/25
 
 `doc/hdl_roadmap_260824.md` is the plan and the record; this is the
-index into it. Suite went 1874 → 2184 with zero failures.
+index into it. Suite went 1874 → **2296** with zero failures
+(2026-08-25, after the fourth library batch; the 2184 this line
+used to quote was four batches stale).
 
 **Done.** Kernel additions (§6 above). The designer's surface: nine
 compile-time checks, non-mutating globals, `explain()`, `x_layout()`,
@@ -4014,9 +4018,15 @@ now WALKS the chain rather than flattening it, which matters: the
 naive fix is to inline, and inlining is the thing the let-chain exists
 to prevent. Measured: PSP still compiles in 67.4 s against 67.7 s
 before, and the detector runs in 1.9 ms over its 748 definitions.
-Seven library models (thermal node, full SPICE diode, crystal, ferrite
-bead, skin-effect resistor, comparator, memristor, Gummel-Poon BJT,
-EKV core).
+**Sixteen library elements** (2026-08-25): the self-heating thermal
+node on a resistor and on a diode, the full SPICE diode, a quartz
+resonator, a ferrite bead, a skin-effect resistor, a comparator, a
+memristor, the Gummel-Poon BJT in both polarities plus a self-heating
+n-p-n, EKV 2.6 in both polarities, the SPICE level-1 MOSFET in both
+polarities, and a Boyle-class opamp macromodel.  Twenty-six elements in
+`elements_hdl.py` in total, counting the original ten
+one-capability demonstrations.  (This line said "seven" and then listed
+nine; it is now counted rather than described.)
 
 **Five bugs of ONE shape, all found by building rather than reading:**
 downstream machinery written against the EAGER path, silently failing

@@ -999,10 +999,16 @@ Reference
 
 .. autofunction:: pycircuit.circuit.hdl.check_jacobians
 
-The worked catalogue is ``pycircuit/circuit/elements_hdl.py``: ten
-elements, each exercising one capability, each proven equivalent to its
+The worked catalogue is ``pycircuit/circuit/elements_hdl.py``:
+**twenty-six** elements as of 2026-08-25.  The first ten each exercise
+one language capability and each is proven equivalent to its
 hand-written counterpart in
-``pycircuit/circuit/tests/test_elements_hdl.py``.
+``pycircuit/circuit/tests/test_elements_hdl.py``; the rest are the
+Phase-6 library -- junction diode, quartz resonator, ferrite bead,
+skin-effect resistor, comparator, memristor, Gummel-Poon bipolar (both
+polarities, and a self-heating n-p-n), EKV 2.6 MOSFET, SPICE level-1
+MOSFET and a Boyle-class opamp macromodel -- tested in
+``test_elements_hdl_library.py`` through ``..._library4.py``.
 
 Further reading
 ---------------

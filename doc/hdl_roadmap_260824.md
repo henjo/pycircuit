@@ -39,6 +39,7 @@ Measured 2026-08-24 on this machine, not quoted from the record.
 | `RC` — two terms with `ddt` | 12 ms |
 | `Diode` — one exponential | 78 ms |
 | `elements_hdl` — all ten, cold import | **139 ms** |
+| `elements_hdl` — all **26**, cold import (2026-08-25) | **6.0 s** |
 | `compact.py` — PSP n+p and the MoM capacitor | **93.5 s** |
 
 ### Evaluation
@@ -75,6 +76,19 @@ at circuit scale, and it is the target of §2 and §3.
 
 **93.5 s of compile is paid by every process that imports the model.**
 It is cached nowhere across runs.
+
+> **2026-08-25: and so is `elements_hdl`'s, which is no longer small.**
+> The library was ten elements at 139 ms when this table was written and
+> is now 26 at **6.0 s** (measured three times, 5.9-6.1 s; 3.5 s at the
+> commit before the fourth batch). Every `import
+> pycircuit.circuit.elements_hdl` pays it, including every test session
+> and every `--collect-only`. Per class, with a warm sympy cache:
+> `MosLevel1Hdl` 327 ms, its p-channel twin 302 ms, `OpAmpHdl` 127 ms,
+> `GummelPoonNpnHdl` 496 ms. This is the same problem §2 records for
+> `compact.py` at a smaller scale, and it has the same answer -- the
+> persistent on-disk compile cache §3's S2 names as its companion item.
+> Nothing is broken; it is a number that has grown 43x without anyone
+> re-reading it, which is exactly the shape §11 keeps recording.
 
 ---
 
@@ -307,16 +321,16 @@ today's DSL unless noted.
 
 | # | model | family | ~lines | why now |
 |---|---|---|---|---|
-| 1 | **Self-heating thermal node** + Foster/Cauer ladder | electrothermal | 60 | ~10 lines per device, no new operator: the thermal node's "voltage" is ΔT, the device contributes `v·i` into it and reads `TEMP + V(th)` back. Retroactively upgrades every device, and closes a named gap in `PspMosLongChannel` |
+| 1 | **Self-heating thermal node** + Foster/Cauer ladder | electrothermal | 60 | ~10 lines per device, no new operator: the thermal node's "voltage" is ΔT, the device contributes `v·i` into it and reads `TEMP + V(th)` back. Retroactively upgrades every device, and closes a named gap in `PspMosLongChannel`. **DONE**; `GummelPoonNpnThermalHdl` added 2026-08-25, and the ladder is measured -- the thermal pin is a PARALLEL path to the device's own `rth`, not a series one (§12.6d) |
 | 2 | Full SPICE diode (N, RS, TT, CJ0/VJ/M, BV, shot+flicker noise) | semiconductor | 80 | today's `Diode` is a bare exponential; `juncap.py` already holds the kernels |
 | 3 | SPICE Gummel-Poon BJT | semiconductor | 300 | the most conspicuous absence in the repo |
-| 4 | Opamp macromodel (Boyle-class) | behavioural | 150 | deletes `macromodels.OpAmp`'s runtime-`import jax` lambdas; the most-used block in any testbench |
+| 4 | Opamp macromodel (Boyle-class) | behavioural | 150 | deletes `macromodels.OpAmp`'s runtime-`import jax` lambdas; the most-used block in any testbench. **DONE 2026-08-25** as `OpAmpHdl`; the `import jax` claim is TRUE and still live, but it is the smaller half -- see §11 |
 | 5 | Quartz crystal / BVD resonator | passive | 40 | nothing in the repo can simulate an oscillator's frequency-setting element |
 | 6 | VCO with real phase noise | behavioural | 40 | noise injected into the *frequency*, so jitter accumulates as a random walk — a capability the repo's own survey found in no other simulator |
 | 7 | Comparator with hysteresis | behavioural | 60 | the **first production user of `Cross`**, which Phase C1 built and nothing consumes |
 | 8 | Skin-effect R + ferrite bead | passive | 100 | the **first production users of `laplace_zp`**, likewise unconsumed |
 | 9 | EKV 2.6 MOSFET | semiconductor | 150 | one tenth of PSP's size, all-region, and an independent cross-check on the surface-potential kernel |
-| 10 | MOS Level 1 + Level 3 | semiconductor | 330 | legacy netlists and teaching |
+| 10 | MOS Level 1 + Level 3 | semiconductor | 330 | legacy netlists and teaching. **Level 1 DONE 2026-08-25** as `MosLevel1Hdl`/`MosLevel1PmosHdl`, and it is `limit_together`'s first production user; Level 3 not started |
 | 11 | Memristor (HP + Biolek window) | passive | 70 | the clearest small demonstration that `idt` is a real DAE state |
 | 12 | Mixer + PLL loop filter + charge pump + continuous ÷N | RF/behavioural | 140 | with #6, a complete usable PLL minus the tri-state PFD, from three existing capabilities that have no library user |
 | 13 | Photodiode / solar cell / LED | semiconductor | 210 | falls out of #1 and #2; the optical node is free in MNA |
@@ -829,10 +843,16 @@ the form it was argued — here is what actually landed.
     12.2     check_jacobians "not resolvable"        DONE 2026-08-25
     12.3     no way to declare a device needs gmin   DONE 2026-08-25
     12.4     limit_pnj parameters cannot use var()   DONE 2026-08-25
+    12.6     fourth library batch: findings          2026-08-25 (evening)
     5        Gummel-Poon BJT, EKV core, crystal,
              ferrite, skin-effect R, comparator,
              memristor                               DONE
-    5        the remaining eight models              not started
+    5        item 4  opamp macromodel                DONE 2026-08-25
+    5        item 10 MOS level 1 (n and p)           DONE 2026-08-25
+    5        item 1  self-heating BJT                DONE 2026-08-25
+    5        the remaining five: item 6 (VCO),
+             12 (mixer/PLL), 13 (photodiode),
+             15 (MESFET/HEMT), MOS level 3          not started
 
 Suite: 1874 tests at `4d359e5` before this work, **2189 passed / 7
 skipped / 3 xfailed / 0 failed** as of `cb477a8`. After 12.2, 12.3 and
@@ -841,6 +861,13 @@ skipped / 3 xfailed / 0 failed** as of `cb477a8`. After 12.2, 12.3 and
 and left for that file's owner. `sphinx -W` clean. After
 `limit_together` (§10.3): **2239 passed / 7 skipped / 3 xfailed / 0
 failed**, the 17 new tests all in `test_device_limiter.py`.
+
+**2026-08-25 (evening), after the fourth library batch (§12.6):
+2296 passed / 7 skipped / 3 xfailed / 0 failed**, the 57 new tests all
+in `test_elements_hdl_library4.py`.  Run in four chunks (682 + 698 +
+831 in `pycircuit/circuit/tests`, 85 elsewhere) because the whole suite
+in one process gets killed part-way on this machine.  `sphinx -W`
+clean.
 
 **Corrections this campaign made to its own record.** Ten claims were
 found right in conclusion and wrong in their stated reason:
@@ -1375,6 +1402,258 @@ Both facts are tests. This belongs at the simulator level as `gmin` (or
 That is §3's kernel additions paying for themselves in the only
 currency that counts here: what an author has to think about that is
 not physics.
+
+
+### 12.6 The fourth library batch, 2026-08-25 (evening)
+
+Three models -- `MosLevel1Hdl`/`MosLevel1PmosHdl`, `OpAmpHdl`,
+`GummelPoonNpnThermalHdl` -- and 57 tests in
+`test_elements_hdl_library4.py`. As before, the models found things
+review had not.
+
+#### What worked, said first because it is the unusual half
+
+Four pieces of machinery met a real model for the first time in this
+batch and **all four behaved**, which has not been true of any previous
+batch:
+
+- **`limit_together` is exactly what its docstring says it is.**
+  `MosLevel1Hdl` declares SPICE's own four probes -- `fetlim(vgs)`,
+  `limvds(vds)`, `pnjlim(vbs)`, `pnjlim(vbd)` -- and the per-probe form
+  refuses the production model with the message that names the fix:
+  *"the $limit probes over-determine this device: both terminals of
+  branch (b,di) have already been moved by earlier probes ... Declare
+  them with limit_together()"*. Nothing had to be worked around.
+- **`param_given` with `$limit` AND `Collapse` in one model.** First
+  time all three have been in one element. Works. (The §12.4 fix to
+  `limit_pnj`'s parameters, and `test_limit_with_param_given.py`, are
+  what made the first two combinable; the third had never been tried
+  with either.)
+- **`Collapse` takes a CONJUNCTION.** `Collapse(brd, And(rd <= 0,
+  rsh*nrd <= 0))` is what SPICE's "`rd` if given, else `rsh` times the
+  squares" needs, and it compiles and caches per variant like any other
+  condition.
+- **`check_jacobians`' UNRESOLVED verdict fires where it should and is
+  silent where it should not.** Ten points on the MOSFET: seven fully
+  resolved, three not, and both mechanisms are properties of the model
+  rather than of the checker --
+  *roundoff* on a reverse-biased junction conductance of ~1e-46 S
+  against a measured floor of 4.4e-23, and *truncation* at `vgs = vth`
+  exactly, where `(beta/2)*max(vgs - vth, 0)^2` is C1 but not C2 so a
+  central difference returns `beta*h/4` (4.4e-11 S against an analytic
+  3.9e-13 S). The control -- the same element with `G` and with `C`
+  multiplied by **three**, not by a half, per §12.2's corner
+  coincidence -- FAILS in both cases.
+- **the gmin anchor neither helped nor surprised.** It changed no
+  answer here (four decades of `gmin` move the forced-junction solve by
+  literally zero), and it twice REFUSED to manufacture one: for an
+  output current demanded beyond the opamp's `isc`, and for a
+  thermally-runaway BJT above its critical `rth`. Both refusals name
+  the node. §12.3's gate is doing the job it was built for.
+- **`explain()` prints the group** (`fetlim on (g,s) [group 1]`, four
+  times) and the compile-time messages were right every time they
+  fired, including the `NameError` for an un-imported `limit_together`,
+  which listed the class's declared parameters.
+- **`param_given` inside `var()`** works, which is not obvious given
+  that state operators inside `var()` were unreachable until Phase D
+  and `$limit` markers were being stripped from `var()` definitions as
+  recently as this campaign. Four of them are in `MosLevel1Hdl`'s
+  chain.
+- **the Gummel-Poon body moved out of its closure without moving a
+  number.** `_gummel_poon`'s nested `analog` became a module-level
+  `_gp_core` so the self-heating variant could share it, and
+  `test_elements_hdl_library3.py`'s 67 tests -- which include an
+  independent numpy transcription of the whole model and an RK4
+  integration of a common-emitter stage -- passed unchanged on the
+  first run. That is what a test file written against the physics
+  rather than the implementation buys.
+
+#### The friction, in the order it was met
+
+**(a) A helper shared by two classes cannot see its parameters, and the
+BJT's card has forty-two of them.** `hdl._analog_function` injects the
+parameter symbols into `analog()`'s OWN globals, so a module-level
+helper it calls has a different `__globals__` and the bare names do not
+resolve. `_spice_diode` pays for this by taking all nineteen of its
+parameters as explicit arguments; forty-two was not tolerable, so
+`elements_hdl` now has
+
+    def _with_params(func, ns):
+        return types.FunctionType(func.__code__, ns, func.__name__,
+                                  func.__defaults__, func.__closure__)
+
+    ## at the call site, inside analog():
+    _with_params(_gp_core, globals())(heat.T, +1, c, b, e)
+
+which is `_analog_function`'s own constructor applied by hand. **What
+should have been written is `def analog(c, b, e, th, tha, p)` with
+`p.bf`** -- roadmap S5's parameter namespace, which §11 records as DONE
+because the *leak* was fixed. The leak was; the ergonomic half was not,
+and this is what it costs. The workaround also does not compose: it
+only works from inside the defining module, because the namespace it
+copies has to be `elements_hdl`'s.
+
+**(b) Three SPICE MOSFET card names cannot be Python identifiers.**
+`LAMBDA` and `AS` are keywords and `IS` is one letter from being one.
+They ship here as `lambd`, `asrc` and `IS`. `globals()['lambda']`
+would in fact resolve inside `analog()` and `cls(**{'lambda': 0.02})`
+would set it, so the name is reachable -- but neither spelling is one
+anybody should write. A parameter namespace (item (a)) fixes this too:
+`p['lambda']` is legal Python.
+
+**(c) A self-heating device's limiter parameters reach the solution,
+and the DSL is right to refuse them.** `limit_pnj(bbe.V, isT, ...)` is
+the spelling §12.4 went to some trouble to make legal, and with a
+thermal node `isT` depends on `V(th,tha)`. `generate_code` refuses by
+name -- *"cannot depend on the solution; this one reaches th (through
+var('dT'))"* -- which is correct and was a five-minute fix rather than
+a bisection. The model now builds a SECOND, ambient-temperature copy of
+the saturation current for the limiter alone, under a build-time
+`if tlim is None`, so the isothermal element is untouched. The cost is
+five duplicated lines and a limiter placed against a junction that may
+be 100 K hotter than it thinks -- looser, not wrong, exactly as
+`limit_fet`'s parameter-only `vto` is. **What would remove it:** a
+limiter parameter evaluated at the LAST ACCEPTED iterate rather than
+from the card. That is information a limiter already has (it is handed
+`x0`), and it is the natural home for every "SPICE recomputes `von`
+each iteration" case, including `limit_fet`'s.
+
+**(d) `SelfHeating`'s thermal pin is a PARALLEL path, not a series
+one.** The docstring says the pin "can carry an external Foster or
+Cauer ladder", and it can -- but the device's own `rth` stays across
+the same `(th, tha)` branch, so the ladder is in parallel with it and
+the obvious way to say "no internal thermal resistance, use my ladder"
+is exactly the trap the same docstring warns about: `rth = 0`
+collapses the branch to a zero-volt source and SHORTS the ladder out.
+The only route today is a large `rth`, whose value then leaks into the
+answer -- measured, `rth = 1e6` against a 5000 K/W ladder still puts
+**0.5%** of the heat through the device's own path (the parallel value
+is 4975 K/W, not 5000). **The fix is small and is in
+the model rather than the DSL:** a `SelfHeating(..., external=True)`
+that simply does not emit the RC contribution, chosen by a build-time
+Python `if`, which is legal. Not done here; the test
+`test_the_thermal_pin_takes_an_external_foster_ladder` asserts the
+parallel behaviour against the exact parallel value so that the
+behaviour is pinned either way.
+
+**(e) `VS`'s `vac` defaults to 1.** Not an HDL matter, and it cost an
+hour: every node in an opamp AC testbench came back at exactly 1.0 and
+looked like a singular matrix, because the supplies and the
+non-inverting input were all driving the AC analysis too. Every AC
+testbench in `test_elements_hdl_library4.py` now sets `vac` explicitly
+on every source and says why.
+
+**(f) `expl` is not finite for every double.** `differentiable-numerics`
+says it is, and `expl`'s own continuation is a third-order Taylor, so
+its cubic term overflows for arguments above about **2.6e70** -- a
+junction voltage of about 7e68 V. Measured on the MOSFET: `i` is finite
+through 1e68 V on the bulk node and not at 1e69. Academic, and recorded
+because the skill's phrasing is what a future author will reason from.
+(The opamp's own boundary is `hypsmooth`'s: the Jacobian goes at
+1e107 V on a supply pin and the value at 1e160, both from a radicand
+that squares a quantity 1e4 larger than the argument.)
+
+#### The mutation check, and the two that got through first time
+
+Twenty-two deliberate corruptions of `elements_hdl.py`, each applied,
+run against the batch's own tests, and reverted. **Twenty were caught
+immediately. Two were not, and both were failures of the TEST rather
+than of the corruption:**
+
+- **the drain overlap capacitance moved to the source branch** --
+  `cgdo` replaced by `cgso` -- and the card had `cgso == cgdo`, so the
+  "corrupted" model was bit-identical to the correct one. This is
+  §12.2's warning in its other form: *check that a deliberately
+  corrupted fixture is actually corrupt at the point you test it.* Fixed
+  by giving the three overlap densities three different values, which
+  is better validation design anyway (`validation-design`: "a zero
+  coefficient does not test a scaling" -- an EQUAL coefficient does not
+  test a routing);
+- **the `-IBC` term deleted from the self-heating BJT's dissipation.**
+  Every bias in the test was forward active, where the reverse
+  transport current is 1e-16 A and the term is 1e-13 of the answer.
+  Fixed by adding two SATURATED biases (`Vce = 0.2 V` and `0.05 V`),
+  where the measured beta falls to a twentieth of `bf` and the term is
+  17% of the collector current.
+
+A third, added after the first pass, also got through and is recorded
+for the same reason: **removing the factor of 2 from SPICE's
+forward-bulk threshold continuation** changed nothing, because every
+bias point in the reference comparison had `Vbs <= 0` and that arm is
+never selected there. Two forward-bulk points were added and it is a
+6.4% error.
+
+All three are the same shape and it is the shape `validation-design`
+names: **a bias no sweep visits tests nothing, and neither does a
+coefficient no card distinguishes.** Corruptions were by a factor of
+three rather than a half wherever a corner was involved, per §12.2.
+
+#### The measurement that was worth taking
+
+**On a level-1 MOSFET, `fetlim` and `limvds` earn almost nothing and
+`pnjlim` earns everything.** Over a 48-point cascode grid with `gmin`
+off and no rescue ladder, limited and unlimited cost **552 and 554**
+Jacobian evaluations -- a difference of two. The reason is structural
+and worth stating because it does not generalise: **a level-1 channel
+is a POLYNOMIAL.** There is no subthreshold exponential for `fetlim` to
+compress, which is why `EkvNmosHdl` -- whose channel is `softplus^2`,
+exponential below threshold -- is where those two limiters were
+measured to be worth having.
+
+What is exponential in a level-1 MOSFET is the two bulk junctions, and
+there the four-probe group is decisive: forcing a current into the bulk
+node, over four decades from 1 uA to 1 A, **plain Newton without the
+limiters does not converge at any of them**, and with them it converges
+in **at most three** Jacobian evaluations, to the same answer the full
+`DC` rescue chain finds for the unlimited element (1e-13 relative).
+
+So §10.3's conclusion holds and its reason is confirmed on a production
+model: what `limit_together` buys is a CAPABILITY -- the four-probe
+declaration exists at all -- and the iteration count it buys depends
+entirely on which probes the device's physics actually needs.
+
+#### What the opamp found about the claim that motivated it
+
+§5 item 4 says an HDL opamp "deletes `macromodels.OpAmp`'s
+runtime-`import jax` lambdas". **Verified, and the claim is true, still
+live, and the smaller half of the difference.**
+
+- `macromodels.OpAmp` still carries `import jax.numpy as jnp` INSIDE
+  the closure it hands to `BSource`, so it runs on every evaluation and
+  on every finite-difference probe of one. The *element* half of that
+  pattern was fixed by `toolkit.derivative`; the *user callable* half
+  was not, because it is user code. 0.43 us per call, measured.
+- `BSource`'s Jacobian is `toolkit.derivative`, a central difference at
+  `eps = 1e-6`. Accurate at this bias (1.2e-10 relative on a `tanh`),
+  so this is a structural point -- two extra evaluations per entry, and
+  nothing a tracing backend can differentiate -- not an accuracy one.
+- **The accuracy difference is elsewhere, and it is large.**
+  `macromodels.OpAmp` limits its output with `Vspan*tanh(v/Vspan)`,
+  whose gain error is `(v/Vspan)^2/3`: **0.15% at 1 V out of a 15 V
+  swing and 12.6% at 8.7 V**, which is why its own test asserts the DC
+  gain only to 2e-3. `OpAmpHdl`'s `hypsmooth` pair, with a smoothing
+  width written relative to the swing, is **2e-8** at the same points.
+- **It is not a drop-in.** `macromodels.OpAmp` is a four-terminal
+  `SubCircuit` with a differential output and no supply pins;
+  `OpAmpHdl` has five terminals, two of which are the supplies it takes
+  its rails and its PSRR from. Anything wanting a floating output
+  reference should keep the old one, and `macromodels.OpAmp` is
+  therefore left in place.
+
+`OpAmpHdl` also carries what the old one has no expression for: slew
+-rate limiting, output current limiting, input offset voltage and bias
+and offset currents, CMRR and PSRR, and rails taken from real supply
+pins rather than from parameters.
+
+**One structural consequence of having no ground pin, recorded because
+a user will meet it.** The output is referred to the supply MIDPOINT --
+an element can only reach the nodes in its own signature, so "referred
+to the global ground" is not expressible from inside `analog()`, which
+is the same limitation `SelfHeating` records for its ambient pin. So
+moving one rail alone moves the reference and the output follows it: a
+naive PSRR measurement to ground reads 1.5 V per volt of `vcc` where
+the differential-supply measurement reads 2.0. Both numbers are in the
+test.
 
 ---
 

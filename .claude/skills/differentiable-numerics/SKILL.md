@@ -68,10 +68,19 @@ positive, the plain function is both correct and wider.
 
 ### A PRODUCT of two bounded exponentials is not bounded
 
-`expl` is finite for every double, so `expl(a)` and `expl(b)` are both
-safe -- and `expl(a)*expl(b)` is not. Past its seam `expl` continues
-polynomially rather than saturating, so each factor reaches ~1e186 at
-extreme bias and the product overflows.
+`expl` is finite over the whole range a circuit is ever solved in, so
+`expl(a)` and `expl(b)` are both safe -- and `expl(a)*expl(b)` is not.
+Past its seam `expl` continues polynomially rather than saturating, so
+each factor reaches ~1e186 at extreme bias and the product overflows.
+
+(Measured 2026-08-25, correcting this file and `expl`'s own docstring,
+both of which said "finite for every double": the cubic continuation
+overflows at an argument of **4.76e69**, where `expl` returns
+1.798e308. Every bias a solver visits is far below that -- a MOSFET
+here stays finite through 1e68 V on the bulk node -- so nothing
+changes in practice. It is corrected because "for every double" is
+what the next author reasons from, and a guarantee that is nearly true
+is the kind that gets relied on at the one bias where it is not.)
 
 When the code only ever needs the LOGARITHM of such a product, carry
 the exponents instead and never form it: `log(1 + e^z)` is bounded by
