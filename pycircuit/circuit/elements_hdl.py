@@ -38,6 +38,23 @@ element          HDL capability it exercises
                  temperature path, reverse breakdown, area scaling
 ``DiodeSpiceThermalHdl``  the same junction with the thermal node
                  bolted on -- four extra lines in ``analog()``
+``XtalHdl``      Butterworth-Van Dyke quartz resonator: a series R-L
+                 written as a potential contribution, two ``ddt``
+                 branches, and the two closed-form resonances an
+                 oscillator is built around
+``FerriteBeadHdl``  ``laplace_nd`` from network coefficients -- the
+                 parallel R-L-C every bead datasheet is a fit to
+``RSkinHdl``     ``laplace_zp``: an interlaced pole/zero ladder whose
+                 average slope is HALF, i.e. a rational approximation
+                 to the skin effect's ``sqrt(s)``
+``ComparatorHdl``  the first production user of ``Cross``: hysteresis
+                 as positive feedback (the latch is in the *solution*,
+                 not in a stored state) with the crossing declared at
+                 the closed-form fold voltage
+``MemristorHdl``  ``idt`` as a real DAE state -- and the model that
+                 shows what is missing, since a state that appears in
+                 its own derivative cannot be written with ``idt`` at
+                 all
 ===============  ====================================================
 
 Hand-written elements remain the defaults (``elements.py``): they carry
@@ -51,7 +68,8 @@ import sympy
 
 from pycircuit.utilities.param import Parameter
 from pycircuit.circuit.hdl import (Behavioural, Branch, Node, Contribution,
-                                   Collapse, ddt, idt, idtmod, TIME, TEMP)
+                                   Collapse, Cross, ddt, idt, idtmod,
+                                   laplace_nd, laplace_zp, TIME, TEMP)
 
 ## ---------------------------------------------------------------------
 ## ALIASED WITH A LEADING UNDERSCORE.  The reason it was NECESSARY is
@@ -128,6 +146,9 @@ from pycircuit.circuit.hdl import var as _var
 from pycircuit.circuit.hdl import expl as _expl
 from pycircuit.circuit.hdl import hypsmooth as _hypsmooth
 from pycircuit.circuit.hdl import safe_abs as _safe_abs
+from pycircuit.circuit.hdl import safe_div as _safe_div
+from pycircuit.circuit.hdl import maxc as _maxc
+from pycircuit.circuit.hdl import minc as _minc
 from pycircuit.circuit.hdl import white_noise as _white_noise
 from pycircuit.circuit.hdl import flicker_noise as _flicker_noise
 from pycircuit.circuit.hdl import KBOLTZMANN as _KB
@@ -694,3 +715,572 @@ class DiodeSpiceThermalHdl(Behavioural):
                                 cjo, vj, m, eg, xti, fc, bv, ibv,      # noqa
                                 kf, af, area, tnom)                    # noqa
         return stmts + heat.dissipate(p)
+
+
+## ======================================================================
+## Passive resonators and dispersive impedances -- roadmap items 5 and 8
+## ======================================================================
+
+
+def bvd_from_fs_q(fs, q, cm, c0):
+    """The four BVD elements from what a crystal datasheet actually prints.
+
+    A datasheet gives the series resonance ``fs``, the quality factor
+    ``q`` (or the ESR), the motional capacitance ``cm`` (often called
+    ``C1``, of order femtofarads) and the shunt capacitance ``c0``.  It
+    never gives the motional inductance, because it is millihenries and
+    nobody would believe it.  The two identities are
+
+    * ``lm = 1/((2*pi*fs)^2 * cm)`` -- the series resonance;
+    * ``rm = 2*pi*fs*lm/q = 1/(2*pi*fs*cm*q)`` -- the definition of Q for
+      a series RLC.
+
+    Returns the keyword dict `XtalHdl` takes.
+    """
+    ws = 2 * 3.141592653589793 * fs
+    lm = 1.0 / (ws * ws * cm)
+    return dict(lm=lm, cm=cm, rm=ws * lm / q, c0=c0)
+
+
+class XtalHdl(Behavioural):
+    """Quartz crystal / ceramic resonator -- the Butterworth-Van Dyke model.
+
+    The one element in the repo that can set an oscillator's frequency.
+    A motional arm ``rm``-``lm``-``cm`` in series, shunted by the holder
+    capacitance ``c0``::
+
+        p o--+--[ rm ]--[ lm ]--(m)--[ cm ]--+--o n
+             |                               |
+             +------------[ c0 ]-------------+
+
+    Written as three contributions: the series R-L is one branch whose
+    **potential** is contributed (``V = rm*I + ddt(lm*I)``, the inductor
+    idiom from `LHdl` with a resistive term added), and ``cm`` and ``c0``
+    are ordinary ``ddt`` current contributions.  The internal node ``m``
+    is the junction between the inductor and the motional capacitor.
+
+    The two resonances are the reason the model exists, and both are
+    closed form:
+
+    * **series** ``fs = 1/(2*pi*sqrt(lm*cm))`` -- the motional arm's
+      reactance vanishes and the impedance falls to ``rm``;
+    * **parallel** ``fp = fs*sqrt(1 + cm/c0)`` -- the motional arm is
+      inductive and cancels ``c0``; the impedance peaks at roughly
+      ``lm/(rm*(c0 + cm))``.
+
+    The *pulling range* ``fp - fs`` is what an oscillator's load
+    capacitance moves the frequency over, and it is set entirely by the
+    capacitance ratio ``c0/cm`` -- 200 to 400 for quartz, which is why a
+    crystal pulls a few hundred ppm and an LC tank does not.
+
+    Q is ``2*pi*fs*lm/rm``; for the default card it is 1.3e5, which is
+    also a warning: a transient that has to resolve a 1e5-Q resonance
+    needs to run for 1e5 cycles before the envelope settles.  AC is the
+    analysis this element is for.  `bvd_from_fs_q` converts a datasheet.
+
+    No parameter is ever a divisor here, so every card is finite --
+    including ``rm = 0`` (a lossless resonator) and ``c0 = 0`` (a bare
+    series arm).  That is not luck: it is what writing the motional arm
+    as a *potential* contribution buys, and it is why there is no
+    `Collapse` in this model.
+    """
+    instparams = [Parameter(name='lm', desc='Motional inductance', unit='H',
+                            default=8.0e-3),
+                  Parameter(name='cm', desc='Motional capacitance', unit='F',
+                            default=3.2e-15),
+                  Parameter(name='rm', desc='Motional resistance (ESR)',
+                            unit='ohm', default=12.0),
+                  Parameter(name='c0', desc='Shunt (holder) capacitance',
+                            unit='F', default=3.5e-12)]
+
+    @staticmethod
+    def analog(plus, minus):
+        mid = Node('m')
+        bmot = Branch(plus, mid, 'mot')
+        bcm = Branch(mid, minus, 'cm')
+        bc0 = Branch(plus, minus, 'c0')
+        return (Contribution(bmot.V, rm * bmot.I + ddt(lm * bmot.I)),  # noqa
+                Contribution(bcm.I, ddt(cm * bcm.V)),                  # noqa
+                Contribution(bc0.I, ddt(c0 * bc0.V)))                  # noqa
+
+
+class FerriteBeadHdl(Behavioural):
+    """Ferrite bead / lossy inductor, as the parallel R-L-C a datasheet fits.
+
+    A bead is an inductor below self-resonance, a resistor at it, and a
+    capacitor above it -- the impedance curve every bead datasheet plots.
+    That is exactly a parallel ``rp || ls || cp`` in series with the dc
+    winding resistance::
+
+        Z(s) = rdc + s*ls / (1 + s*ls/rp + s^2*ls*cp)
+
+    which is written here as one `laplace_nd` on the branch **current**::
+
+        Contribution(b.V, rdc*b.I
+                     + laplace_nd(b.I, [0, ls], [1, ls/rp, ls*cp]))
+
+    `laplace_nd` rather than `laplace_zp` and the reason is worth
+    recording: the poles are
+
+        s = (-1 +- sqrt(1 - 4*rp^2*cp/ls)) / (2*rp*cp)
+
+    a square root of a parameter expression whose RADICAND changes sign
+    -- real poles for a low-Q bead (the default card, ``Q = 0.32``), a
+    conjugate pair for a high-Q one.  Pole-zero form would need that
+    radical symbolic in every instance, with a branch on its sign;
+    coefficient form is three products.  **Whenever
+    the poles come from a physical network rather than from a fit,
+    `laplace_nd` is the honest spelling** -- `laplace_zp` earns its keep
+    when the roots are what you know (see `RSkinHdl`).
+
+    The three landmarks, all closed form and all independent of the
+    realisation:
+
+    * ``|Z| -> 2*pi*f*ls`` well below self-resonance;
+    * ``f0 = 1/(2*pi*sqrt(ls*cp))``, where ``|Z| = rdc + rp`` exactly and
+      the phase is zero -- this is the "impedance at 100 MHz" a
+      datasheet quotes;
+    * ``|Z| -> 1/(2*pi*f*cp)`` above it, the reason a bead stops working
+      where you most want it to.
+
+    Defaults are a 600 ohm-at-250-MHz signal bead.  ``rdc`` is a real
+    term, not a numerical guard: it is what limits the dc voltage drop
+    at the supply current, and it is the only thing the model has at
+    ``s = 0`` (the parallel L shorts the rest).
+    """
+    instparams = [Parameter(name='ls', desc='Bead inductance', unit='H',
+                            default=1.2e-6),
+                  Parameter(name='rp', desc='Impedance at self-resonance',
+                            unit='ohm', default=600.0),
+                  Parameter(name='cp', desc='Parallel (winding) capacitance',
+                            unit='F', default=0.35e-12),
+                  Parameter(name='rdc', desc='DC winding resistance',
+                            unit='ohm', default=0.08)]
+
+    @staticmethod
+    def analog(plus, minus):
+        b = Branch(plus, minus)
+        ## Ascending powers of s, as the LRM specifies for laplace_nd.
+        ## The numerator's leading 0 is the zero at the origin: a bead
+        ## is a SHORT at dc apart from `rdc`, and writing it as a
+        ## coefficient rather than as a `laplace_zp` root at zero keeps
+        ## the transfer function dimensionless-times-henries instead of
+        ## silently acquiring a 1/time (see `laplace_zp`'s convention).
+        return Contribution(b.V, rdc * b.I                             # noqa
+                            + laplace_nd(b.I, [0, ls],                 # noqa
+                                         [1, ls / rp, ls * cp]))       # noqa
+
+
+#: Pole/zero pairs in the default `RSkinHdl` ladder, and the decades of
+#: normalised frequency the fit is placed over.  STRUCTURAL, not
+#: parameters: `laplace_zp` takes a python LIST of roots, so its length
+#: is fixed when `analog()` runs, i.e. once per class -- the same reason
+#: `elements.VPWL` cannot move to the DSL (roadmap sec. 5).  Use
+#: `skin_effect_resistor()` for a different order.
+_SKIN_PAIRS, _SKIN_LO, _SKIN_HI = 11, -5.0, 5.0
+
+
+def _fractional_zp(alpha, lo, hi, pairs):
+    """Oustaloup's recursive approximation to ``s**alpha``, normalised.
+
+    Returns ``(zeros, poles, gain)`` for a rational ``H`` with
+    ``gain*H(s) ~ s**alpha`` over ``10**lo < |s| < 10**hi``, with
+    ``zeros``/``poles`` in `laplace_zp`'s flat ``[re, im, re, im, ...]``
+    form and ``H(0) = 1`` (`laplace_zp`'s normalisation, which is not
+    Oustaloup's -- hence the returned ``gain``).
+
+    Oustaloup, Levron, Mathieu & Nanot, "Frequency-band complex
+    noninteger differentiator: characterization and synthesis", *IEEE
+    Trans. Circuits Syst. I* **47**(1):25-39, 2000, eq. (18):
+
+        w_z[k] = wb*(wh/wb)**((k + n + (1-alpha)/2)/(2n+1))
+        w_p[k] = wb*(wh/wb)**((k + n + (1+alpha)/2)/(2n+1))
+        K      = wh**alpha,        k = -n .. n
+
+    i.e. ``2n+1`` real poles and zeros interlaced geometrically, the
+    zeros displaced below the poles by ``alpha`` of a cell.  A cell's
+    zero-pole pair contributes ``alpha`` of a decade of gain per decade,
+    which is the whole trick: **a fractional slope is an interlaced
+    ladder, and the fraction is the interlacing offset.**
+
+    ACCURACY, measured (`test_elements_hdl_library2`): with the defaults
+    -- 11 pairs over 10 decades -- the magnitude is within 1.7% and the
+    phase within 1.4 degrees of ``s**0.5`` over the middle 8 decades.
+    The outermost half-decade at each end is where the ladder runs out
+    and must not be used; that is what ``lo``/``hi`` being *wider* than
+    the advertised band is for.
+    """
+    import numpy as _np
+    n = (pairs - 1) // 2
+    ks = _np.arange(-n, n + 1)
+    wb, wh = 10.0 ** lo, 10.0 ** hi
+    ratio = wh / wb
+    wz = wb * ratio ** ((ks + n + (1 - alpha) / 2) / pairs)
+    wp = wb * ratio ** ((ks + n + (1 + alpha) / 2) / pairs)
+    ## Oustaloup's K is for the form `prod (s + wz)/(s + wp)`;
+    ## `laplace_zp` builds `prod (1 - s/root)`, which is the same
+    ## function divided by `prod wz/wp`.  Convert once, here, rather
+    ## than leaving a factor for every caller to rediscover.
+    gain = float(wh ** alpha * _np.prod(wz / wp))
+    zeros, poles = [], []
+    for z, p in zip(wz, wp):
+        ## A REAL root, so the imaginary member of the pair is 0.0 and
+        ## the root itself is NEGATIVE: `laplace_zp`'s factor is
+        ## `1 - s/root`, so a stable pole is a root in the left half
+        ## plane and writing `+wp` here would silently build an
+        ## unstable filter that still compiles and still solves at dc.
+        zeros += [-float(z), 0.0]
+        poles += [-float(p), 0.0]
+    return zeros, poles, gain
+
+
+def skin_effect_resistor(pairs=_SKIN_PAIRS, lo=_SKIN_LO, hi=_SKIN_HI):
+    """Build a skin-effect resistor class with a ladder of ``pairs``
+    pole/zero pairs placed over ``10**lo .. 10**hi`` times ``2*pi*fs``.
+
+    The order is a property of the CLASS, not of an instance -- see
+    `_SKIN_PAIRS`.  `RSkinHdl` is ``skin_effect_resistor()``.
+    """
+    zeros, poles, gain = _fractional_zp(0.5, lo, hi, pairs)
+
+    class RSkin(Behavioural):
+        __doc__ = """Skin-effect resistor: ``Z(s) = rdc*(1 + sqrt(s/ws))``.
+
+    Above the onset frequency the current crowds into a skin one
+    penetration depth thick, so the resistance rises as ``sqrt(f)`` and
+    an equal internal reactance rises with it -- the impedance phase
+    tends to **45 degrees**, not to 90.  That half-power law is not a
+    rational function of ``s``, and this element is the first thing in
+    the repo that needs `laplace_zp` for what it is for: an interlaced
+    ladder of %d real pole/zero pairs whose average slope is half.
+
+    ``ws = 2*pi*fs``, and ``fs`` is defined as **the frequency at which
+    the skin term equals the dc resistance** -- ``|sqrt(j*w/ws)| = 1``
+    there, so ``|Z(fs)| = rdc*|1 + sqrt(j)| = 1.8478*rdc`` and the phase
+    is 22.5 degrees.  For a round wire of radius ``a`` in a material of
+    conductivity ``sigma``, ``fs`` is where the penetration depth
+    ``sqrt(2/(w*mu*sigma))`` is about ``a/2``.
+
+    BAND.  The ladder is fitted over ``fs*1e%+.0f`` to ``fs*1e%+.0f``
+    and is accurate over the middle of that: measured, better than 2%%
+    in magnitude and 1.5 degrees in phase from ``fs*1e-4`` to
+    ``fs*1e+3``.  Outside it the element is still a well-behaved
+    passive impedance -- it flattens to a resistor at each end rather
+    than doing anything exciting -- but it is no longer this physics.
+    **A rational approximation of a fractional power has a band, and
+    the band is part of the model**; ask for a different one with
+    `skin_effect_resistor`.
+
+    The one artefact worth knowing: ``H(0) = 1`` for a pole-zero
+    product, and ``sqrt(0) = 0``, so the ladder cannot make the skin
+    term vanish at dc.  It leaves ``gain*H(0) = %.3e`` of it, i.e. the
+    dc resistance is ``rdc*(1 + %.3e)`` and not ``rdc``.  That is
+    0.%03d%% on the default ladder, it is exactly computable rather
+    than approximately small, and `test_skin_dc_floor_is_the_ladders_own`
+    pins it.
+    """ % (pairs, lo, hi, gain, gain, int(round(gain * 1e5)))
+
+        instparams = [Parameter(name='rdc', desc='DC resistance', unit='ohm',
+                                default=1.0),
+                      Parameter(name='fs', desc='Frequency at which the skin '
+                                'term equals rdc', unit='Hz', default=1e6)]
+
+        @staticmethod
+        def analog(plus, minus):
+            b = Branch(plus, minus)
+            ## The ladder is computed once, in NORMALISED frequency, and
+            ## scaled by `ws` here.  Two reasons, and the second is the
+            ## one that decides it:
+            ##
+            ## 1. `H(s/ws)` is the same filter for every instance, so
+            ##    the pole positions are `number * ws` and sympy's
+            ##    expansion of the order-11 product collects into
+            ##    coefficients `c_k/ws**k` with NUMERIC `c_k`.  Compile
+            ##    time is 0.3 s;
+            ## 2. with the band exponents symbolic too, the same product
+            ##    expands into 2**11 symbolic terms and the class does
+            ##    not finish compiling.  The SHAPE of a laplace ladder
+            ##    has to be numeric; only its scale can be a parameter.
+            ws = 2 * sympy.pi * fs                                     # noqa
+            zs = [z * ws if k % 2 == 0 else z
+                  for k, z in enumerate(zeros)]
+            ps = [p * ws if k % 2 == 0 else p
+                  for k, p in enumerate(poles)]
+            return Contribution(b.V, rdc * (b.I + gain                 # noqa
+                                            * laplace_zp(b.I, zs, ps)))
+
+    RSkin.__name__ = RSkin.__qualname__ = 'RSkin%d' % pairs
+    return RSkin
+
+
+RSkinHdl = skin_effect_resistor()
+RSkinHdl.__name__ = RSkinHdl.__qualname__ = 'RSkinHdl'
+
+
+## ======================================================================
+## Behavioural: the comparator with hysteresis -- roadmap item 7
+## ======================================================================
+
+
+class ComparatorHdl(Behavioural):
+    """Comparator with hysteresis, and the repo's first user of `Cross`.
+
+    Four terminals ``(inp, inn, outp, outn)``::
+
+        V(outp,outn) <+ vol + (voh - vol)/2 * (1 + q)
+        q            =  tanh(gain*(V(inp,inn) - vref + vhyst*q))
+
+    **The hysteresis is positive feedback, not stored state**, and that
+    is the whole design.  ``q`` -- the normalised decision, in (-1,1) --
+    appears on both sides of its own equation, so for a loop gain
+    ``gain*vhyst > 1`` the equation has three roots over a window of
+    input voltage and Newton stays on the branch it is already on.  A
+    real Schmitt trigger latches for exactly this reason, and it means
+    the element needs no event, no discrete state and no memory the
+    solver cannot see: the latch is in the *solution*, and rejecting a
+    timestep un-latches it correctly for free.
+
+    THE THRESHOLDS ARE NOT ``vref +- vhyst``.  They are the fold points
+    of that cubic-like curve, where ``dq/dvin`` becomes infinite:
+
+        qf   = sqrt(1 - 1/(gain*vhyst))
+        vth  = vhyst*qf - atanh(qf)/gain
+
+    and the loop is ``vref +- vth``, symmetric.  ``vth -> vhyst`` only
+    as ``gain -> infinity``; at ``gain*vhyst = 4`` it is 0.537 of it, so
+    a model that advertised ``vhyst`` as the trip point would be wrong
+    by a factor of two.  For ``gain*vhyst <= 1`` there is no fold, the
+    element is a plain saturating comparator, and the formula degrades
+    to ``vth = 0`` on its own -- which is the right answer.
+
+    ``Cross`` is declared at those two thresholds, one per direction,
+    and this is the first place in the repo where the difference is
+    measurable.  Measured (`test_cross_lands_the_comparator_edges`) on a
+    1 kHz sine into the default card: the nearest timepoint to a
+    threshold crossing goes from 7.4e-7..1.2e-5 s away to **3e-16 s on
+    three edges and 6.6e-7 on the fourth**.
+
+    That scatter is the finding, not a blemish.  `Cross` extrapolates
+    linearly from the last two accepted points and publishes ONE
+    prediction; a second, far better one only arrives if the controller
+    polls again after landing near the corner, and there is no
+    iteration to convergence.  So the worst edge of a run is the one
+    the predictor got only one shot at, and 6.6e-7 s is exactly what a
+    first-order prediction over a 4e-5 s step on a sine is worth.  A
+    caller should read `Cross` as "brackets the corner to first order",
+    which is what its docstring says, and not as "lands on it" -- even
+    though three times out of four it did.
+
+    It costs about **3x the accepted steps**, because every breakpoint
+    restarts the step controller at a small step and it has to grow
+    back; the existing `test_cross_lands_timepoints_on_the_crossing`
+    sees no such cost because its comparator does not latch and so has
+    no corner to resolve.  All three numbers are the honest report of
+    what `Cross` is for.
+
+    The model is written with `var()`, i.e. on the **chained** compile
+    path, and that is a deliberate regression guard rather than an
+    optimisation -- see the comment in ``analog()``.
+
+    ``q`` lives on an internal node ``lat``, referred to ``outn``, put
+    there by a **potential** contribution.  Nothing else touches that
+    node, so KCL there forces its branch current to zero and the node
+    injects exactly nothing into ``outn``: it is a scratch signal, not a
+    circuit.  That idiom -- an internal node written by a V-contribution
+    and read back -- is how a Verilog-A local variable that must be
+    *shared with the solver* is spelled here, and `MemristorHdl` needs
+    it for a different reason.
+    """
+    instparams = [Parameter(name='vref', desc='Reference (trip centre)',
+                            unit='V', default=0.0),
+                  Parameter(name='vhyst', desc='Half hysteresis at infinite '
+                            'gain', unit='V', default=0.2),
+                  Parameter(name='gain', desc='Small-signal gain', unit='1/V',
+                            default=20.0),
+                  Parameter(name='voh', desc='Output high', unit='V',
+                            default=1.0),
+                  Parameter(name='vol', desc='Output low', unit='V',
+                            default=-1.0)]
+
+    @staticmethod
+    def analog(inp, inn, outp, outn):
+        bin_ = Branch(inp, inn)
+        bout = Branch(outp, outn)
+        lat = Node('lat')
+        blat = Branch(lat, outn, 'q')
+        q = blat.V
+        ## The fold voltage, in closed form.  Both guards earn their
+        ## place and neither is a smoothing:
+        ##
+        ## * `safe_div(., lg, 1e-10)` because `vhyst = 0` (no hysteresis)
+        ##   is a legitimate card and `1/lg` would be a divide-by-zero
+        ##   raised on EVERY evaluation of the crossing function, not
+        ##   just on that card -- both arms of everything are evaluated.
+        ##   The eps is relative to a DIMENSIONLESS loop gain, which is
+        ##   the one place an absolute constant is defensible;
+        ## * `maxc(lg - 1, 0)` because below unity loop gain the radicand
+        ##   is negative and `sqrt` of it is NaN.  A hard clamp, not a
+        ##   smoothing: the floor sits at the fold's own disappearance,
+        ##   the physics below it really is "no fold", and the derivative
+        ##   of the clamped arm is an honest zero rather than the `0/0`
+        ##   a `sqrt(max(x,0))` would give (`differentiable-numerics`).
+        lg = _var(gain * vhyst, 'loopgain')                            # noqa
+        qf = _var(sympy.sqrt(_safe_div(_maxc(lg - 1, 0.0), lg, 1e-10)),
+                  'qfold')
+        vth = _var(vhyst * qf - sympy.atanh(qf) / gain, 'vth')         # noqa
+        ## `var()`, i.e. this model is deliberately CHAINED, and that is
+        ## not an optimisation -- three intermediates would inline
+        ## perfectly well.  It is a regression guard.  `Cross` was
+        ## installed on the class AFTER an early `return` taken by every
+        ## model that calls `var()`, so from the day `@cross` was built
+        ## until 2026-08-25 it silently did nothing on any model a real
+        ## author would write -- while `explain()` went on reporting
+        ## "1 @cross event", because it reads the compiler's record
+        ## rather than the class.  A capability with no production user
+        ## is a capability nobody has run.  This one now has one, on the
+        ## path where it was broken.
+        return (Contribution(blat.V,
+                             sympy.tanh(_var(gain * (bin_.V - vref     # noqa
+                                                     + vhyst * q),     # noqa
+                                             'arg'))),
+                Contribution(bout.V,
+                             vol + (voh - vol) / 2 * (1 + q)),         # noqa
+                ## One crossing per threshold, each with its own
+                ## direction: the rising edge can only happen at the
+                ## upper fold and the falling edge only at the lower, so
+                ## a direction-0 pair would ask the controller to land on
+                ## two corners that cannot occur.
+                Cross(bin_.V - vref - vth, +1),                        # noqa
+                Cross(bin_.V - vref + vth, -1))
+
+
+## ======================================================================
+## The memristor -- roadmap item 11
+## ======================================================================
+
+
+class MemristorHdl(Behavioural):
+    """HP / Strukov memristor with the Biolek window -- ``idt`` as a
+    genuine DAE state.
+
+    Strukov, Snider, Stewart & Williams, "The missing memristor found",
+    *Nature* **453**:80-83, 2008, with the boundary window of Biolek,
+    Biolek & Biolkova, "SPICE model of memristor with nonlinear dopant
+    drift", *Radioengineering* **18**(2):210-214, 2009::
+
+        R(x) = ron*x + roff*(1 - x)                 x in [0, 1]
+        i    = V(p,n)/R(x)
+        dx/dt = muv*ron/d^2 * i * f(x, i)
+        f(x, i) = 1 - (x - stp(-i))^(2p)            (Biolek)
+
+    ``x`` is the doped fraction of the film.  The signature is a
+    **pinched hysteresis loop**: the i-v curve passes exactly through
+    the origin (no current without voltage -- it is a resistor, not a
+    source) and opens into two lobes whose area shrinks as frequency
+    rises, because the state has less time to move per cycle.  At high
+    frequency it collapses to the straight line ``V/R(ic)``, and
+    `test_memristor_loop_collapses_at_high_frequency` measures exactly
+    that against the closed form.
+
+    Biolek's window is what keeps ``x`` inside [0,1] *and* releases it
+    again: ``stp(-i)`` is 1 when the current is negative, so the window
+    that is ``1 - x^(2p)`` while the state is being driven up becomes
+    ``1 - (x - 1)^(2p)`` when the current reverses.  Joglekar's earlier
+    ``1 - (2x - 1)^(2p)`` vanishes at BOTH ends regardless of current
+    direction, so a state that reaches a boundary is stuck there
+    forever; that is the "boundary lock" problem and it is why the
+    current-dependent form is the one worth having.
+
+    **This model is the reason to want a state primitive the DSL does
+    not have.**  Its state equation is ``dx/dt = g(x, ...)`` -- the
+    window depends on the state being integrated -- and `idt` cannot
+    express that, because an `idt` application cannot appear inside its
+    own argument.  What is written instead is::
+
+        xn = Node('xs'); bx = Branch(xn, minus, 'xdot')
+        x  = idt(bx.V, ic)                 # the state, read back
+        ...
+        Contribution(bx.V, muv*ron/d**2 * i * w)   # the state equation
+
+    an internal node whose potential *is* ``dx/dt``, driven by a
+    potential contribution and integrated by `idt`.  Nothing else
+    touches ``xn``, so KCL forces the branch current to zero and the
+    node injects nothing into the circuit; it is a scratch signal
+    (`ComparatorHdl` uses the same idiom for the latch).  The cost is
+    one extra node, one extra branch current and a reader who has to be
+    told why.  A `state(name, ic)` returning a symbol, plus a statement
+    form for its equation, would be four lines and no explanation.
+
+    **And it cannot use `var()` anywhere**, which is the second half of
+    the same gap: the compiler collects `idt`/`idtmod`/`laplace_*`
+    applications by walking the *statements*, never the let-chain, so an
+    `idt` that appears only inside a `var()` definition never gets a
+    state allocated and the model dies in the printer with
+    ``Unsupported by _P: idt``.  `$limit` had exactly this bug and it
+    was fixed (`hdl.py`, "Intermediates FIRST, and this is not
+    tidiness"); the three state operators still have it.  Every
+    intermediate of this model mentions ``x``, so the model is written
+    flat -- which it can afford to be, and a MOSFET could not.
+
+    The resistance reads a CLAMPED ``x``; the window reads the raw one.
+    ``ron*x + roff*(1-x)`` passes through zero at ``x = roff/(roff-ron)``
+    = 1.006 for the default card, six thousandths outside the physical
+    range and a division by zero when a Newton iterate visits it.
+    ``minc(maxc(x, 0), 1)`` is a hard clamp on an ATOM (the state symbol
+    itself -- `differentiable-numerics`: never on a compound), it is
+    exact everywhere the physics is defined, and outside [0,1] a
+    constant resistance is the correct saturated answer anyway.  The
+    window is deliberately left unclamped, because outside [0,1] it goes
+    negative and pushes the state back -- checked on all four
+    (sign of ``x``-excursion) x (sign of ``i``) combinations, it is
+    restoring in every one.
+
+    ``ic`` is spelled ``ic`` and not ``x0`` for a reason that is not
+    taste: `Transient`'s ``uic`` seeding looks up an instance parameter
+    **literally named ``ic``** before it will call the generated
+    ``state_ic()``, so with any other spelling the state silently starts
+    at zero while the DC pin (which reads the compiled ic function) is
+    perfectly correct.  The symptom is a transient that begins from the
+    wrong resistance and no error anywhere.
+    """
+    instparams = [Parameter(name='ron', desc='Resistance of the fully doped '
+                            'film', unit='ohm', default=100.0),
+                  Parameter(name='roff', desc='Resistance of the undoped '
+                            'film', unit='ohm', default=16e3),
+                  Parameter(name='muv', desc='Dopant mobility',
+                            unit='m^2/(V*s)', default=1e-14),
+                  Parameter(name='d', desc='Film thickness', unit='m',
+                            default=10e-9),
+                  Parameter(name='ic', desc='Initial doped fraction x(0)',
+                            unit='', default=0.1),
+                  Parameter(name='p', desc='Biolek window exponent',
+                            unit='', default=1.0)]
+
+    @staticmethod
+    def analog(plus, minus):
+        b = Branch(plus, minus)
+        xn = Node('xs')
+        bx = Branch(xn, minus, 'xdot')
+        ## The state.  `ic` pins it at dc (the LRM's "the initial
+        ## condition shall force the DC solution") and seeds `uic`.
+        x = idt(bx.V, ic)                                              # noqa
+        xr = _minc(_maxc(x, 0.0), 1.0)
+        i = b.V / (ron * xr + roff * (1 - xr))                         # noqa
+        ## Biolek's `stp(-i)`, as a Piecewise on the SOLUTION.  Both
+        ## arms are polynomials in a bounded quantity, so both are
+        ## finite at every bias and the both-arms rule costs nothing
+        ## here.  The window is discontinuous in `i` at `i = 0` and the
+        ## drive `i*f` is not: the drive is C0 through the reversal,
+        ## which is what the trajectory needs, and the jump lands in the
+        ## Jacobian where Newton can see it rather than in the answer.
+        stp = sympy.Piecewise((sympy.Integer(1), i < 0),
+                              (sympy.Integer(0), True))
+        ## `safe_abs(u)**(2*p)` rather than `u**(2*p)`: the exponent is a
+        ## PARAMETER, so sympy cannot know it is even, and `u**(2*p)` is
+        ## NaN for every negative `u` -- which is half the range of
+        ## `x - stp`.  For an even power the absolute value is an exact
+        ## identity, not an approximation, and `safe_abs` keeps the base
+        ## strictly positive so the derivative is finite at `u = 0` too.
+        w = 1 - _safe_abs(x - stp) ** (2 * p)                          # noqa
+        return (Contribution(b.I, i),
+                Contribution(bx.V, muv * ron / d ** 2 * i * w))        # noqa
