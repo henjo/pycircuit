@@ -344,6 +344,329 @@ belongs to each instance -- so use it in a ``Piecewise``:
     print("Givenness is not \"differs from the default\", which is exactly")
     print("why the operator exists.")
 
+Writing your first element
+--------------------------
+
+The whole loop on a real element -- a transconductor that saturates and
+carries its own output capacitance -- from the equations to a solved
+circuit.  Four rules cover almost everything:
+
+#. ``analog()`` is a **staticmethod**, and its argument names *are* the
+   terminals, in pin order;
+#. it **returns** its contribution statements (Verilog-A has no
+   ``return``; this is Python and you need one);
+#. every expression is **symbolic** -- ``sympy.tanh``, not
+   ``math.tanh`` -- because the compiler differentiates it;
+#. parameters are declared with
+   :class:`~pycircuit.utilities.param.Parameter` and used by bare name.
+
+.. exec-rst::
+
+    import numpy as np, sympy
+    import pycircuit.circuit.circuit as cm
+    from pycircuit.circuit.toolkit import numeric
+    from pycircuit.circuit import gnd
+    from pycircuit.circuit.elements import SubCircuit, VS, R
+    from pycircuit.circuit.dcanalysis import DC
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       ddt, check_jacobians)
+    from pycircuit.utilities.param import Parameter
+
+    cm.default_toolkit = numeric
+
+    class SoftGm(Behavioural):
+        instparams = [
+            Parameter(name='gm', desc='Transconductance', unit='S',
+                      default=1e-3),
+            Parameter(name='vsat', desc='Saturation voltage', unit='V',
+                      default=0.2),
+            Parameter(name='cout', desc='Output capacitance', unit='F',
+                      default=1e-12)]
+
+        @staticmethod
+        def analog(inp, inn, outp, outn):
+            bin_ = Branch(inp, inn)
+            bout = Branch(outp, outn)
+            return (Contribution(bout.I,
+                                 gm * vsat * sympy.tanh(bin_.V / vsat)),
+                    Contribution(bout.I, ddt(cout * bout.V)))
+
+    el = SoftGm('ip', 'in', 'op', 'on', gm=2e-3, vsat=0.2)
+    el.update_iparv()
+    print(".. code-block:: text")
+    print("")
+    for line in el.explain(source=False, symbolic=False).splitlines():
+        print("   " + line)
+
+``explain()`` is the first thing to call on a new element, because the
+one thing you cannot read off the source is the **x-vector layout**: the
+order of the unknowns that ``i``, ``q``, ``G`` and ``C`` use.  Terminals
+come first, then internal nodes, then ``idt``/``idtmod`` states -- which
+are not in your source at all -- then branch currents.  Reconstructing
+that order by hand from ``el.nodes`` and ``el.branches`` is how a model
+written this way earned an ``IndexError: index 5 is out of bounds for
+axis 0 with size 5``.
+
+The second thing to call is ``check_jacobians()``, which differentiates
+``i`` and ``q`` numerically and compares them against the ``G`` and
+``C`` the compiler derived, and scans everything for non-finite entries:
+
+.. exec-rst::
+
+    import numpy as np, sympy
+    import pycircuit.circuit.circuit as cm
+    from pycircuit.circuit.toolkit import numeric
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       ddt, check_jacobians)
+    from pycircuit.utilities.param import Parameter
+
+    cm.default_toolkit = numeric
+
+    class SoftGm(Behavioural):
+        instparams = [
+            Parameter(name='gm', desc='Transconductance', unit='S',
+                      default=1e-3),
+            Parameter(name='vsat', desc='Saturation voltage', unit='V',
+                      default=0.2),
+            Parameter(name='cout', desc='Output capacitance', unit='F',
+                      default=1e-12)]
+
+        @staticmethod
+        def analog(inp, inn, outp, outn):
+            bin_ = Branch(inp, inn)
+            bout = Branch(outp, outn)
+            return (Contribution(bout.I,
+                                 gm * vsat * sympy.tanh(bin_.V / vsat)),
+                    Contribution(bout.I, ddt(cout * bout.V)))
+
+    el = SoftGm('ip', 'in', 'op', 'on', gm=2e-3, vsat=0.2)
+    el.update_iparv()
+    print(".. code-block:: text")
+    print("")
+    for line in repr(check_jacobians(el, [0.05, 0.0, 1.0, 0.0])).splitlines():
+        print("   " + line)
+
+Then use it like any other element.  A 0.5 V input is 2.5 saturation
+voltages in, so the output current is well into ``tanh``'s flat region --
+which is the point of the model and the reason to check it against the
+closed form rather than against itself:
+
+.. exec-rst::
+
+    import numpy as np, sympy
+    import pycircuit.circuit.circuit as cm
+    from pycircuit.circuit.toolkit import numeric
+    from pycircuit.circuit import gnd
+    from pycircuit.circuit.elements import SubCircuit, VS, R
+    from pycircuit.circuit.dcanalysis import DC
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution, ddt)
+    from pycircuit.utilities.param import Parameter
+
+    cm.default_toolkit = numeric
+
+    class SoftGm(Behavioural):
+        instparams = [
+            Parameter(name='gm', desc='Transconductance', unit='S',
+                      default=1e-3),
+            Parameter(name='vsat', desc='Saturation voltage', unit='V',
+                      default=0.2),
+            Parameter(name='cout', desc='Output capacitance', unit='F',
+                      default=1e-12)]
+
+        @staticmethod
+        def analog(inp, inn, outp, outn):
+            bin_ = Branch(inp, inn)
+            bout = Branch(outp, outn)
+            return (Contribution(bout.I,
+                                 gm * vsat * sympy.tanh(bin_.V / vsat)),
+                    Contribution(bout.I, ddt(cout * bout.V)))
+
+    c = SubCircuit()
+    nin, nout = c.add_nodes('in', 'out')
+    c['vs'] = VS(nin, gnd, v=0.5)
+    c['gm'] = SoftGm(nin, gnd, gnd, nout, gm=2e-3, vsat=0.2)
+    c['rl'] = R(nout, gnd, r=1e3)
+    v = float(DC(c, toolkit=numeric).solve().v('out'))
+    closed = 2e-3 * 0.2 * np.tanh(0.5 / 0.2) * 1e3
+    print("Driven at 0.5 V into a 1 k load the element gives ``v(out) =")
+    print("%.6f V``; the closed form ``gm*vsat*tanh(vin/vsat)*RL`` is" % v)
+    print("%.6f V. The compiler derived the Jacobian of that ``tanh``," % closed)
+    print("and the DC solve converged on it.")
+
+When it goes wrong
+------------------
+
+The compiler defends its *semantic* invariants closely -- a switch
+branch, a state-scaled ``ddt``, an operating-point-dependent collapse
+and an ``instparams`` drift are all refused with a message saying what
+you wrote, why it cannot work, and what to write instead.  Its
+*syntactic* surface used to have no messages at all, and three of the
+mistakes below were **silent**: they produced a working element that was
+wired differently from the one you wrote.
+
+Every message in this table is produced by actually making the mistake,
+here, when this page is built -- so it cannot go stale.  Only the first
+sentence is shown; each message continues with the fix.
+
+.. exec-rst::
+
+    import math
+    import numpy as np, sympy
+    import pycircuit.circuit.circuit as cm
+    from pycircuit.circuit.toolkit import numeric
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Node,
+                                       Contribution)
+    from pycircuit.utilities.param import Parameter
+
+    cm.default_toolkit = numeric
+    P = [Parameter(name='g', desc='g', unit='S', default=1e-3)]
+
+    def build(name, analog, **extra):
+        d = dict(instparams=list(P), analog=staticmethod(analog))
+        d.update(extra)
+        return type(name, (Behavioural,), d)
+
+    def no_return(plus, minus):
+        Contribution(Branch(plus, minus).I, g * Branch(plus, minus).V)
+
+    def with_self(self, plus, minus):
+        return Contribution(Branch(plus, minus).I, g * Branch(plus, minus).V)
+
+    def good(plus, minus):
+        return Contribution(Branch(plus, minus).I, g * Branch(plus, minus).V)
+
+    def collide(plus, out):
+        n = Node('out')
+        return (Contribution(Branch(plus, n).I, g * Branch(plus, n).V),
+                Contribution(Branch(n, out).I, g * Branch(n, out).V))
+
+    def python_if(plus, minus):
+        b = Branch(plus, minus)
+        if b.V > 0:
+            return Contribution(b.I, g * b.V)
+        return Contribution(b.I, 0)
+
+    def float_math(plus, minus):
+        b = Branch(plus, minus)
+        return Contribution(b.I, g * math.exp(b.V / 0.026))
+
+    def undeclared(plus, minus):
+        return Contribution(Branch(plus, minus).I,
+                            gain * Branch(plus, minus).V)
+
+    cases = [
+        ("no ``return`` in ``analog()``", "compiler traceback",
+         lambda: build('NoReturn', no_return)),
+        ("``def analog(self, plus, minus)``", "**silent**",
+         lambda: build('WithSelf', with_self)),
+        ("``terminals`` in the class body", "**silent**",
+         lambda: build('Decl', good, terminals=('minus', 'plus'))),
+        ("``Node('out')`` beside an ``out`` terminal", "**silent**",
+         lambda: build('Collide', collide)),
+        ("``if b.V > 0``", "raw sympy",
+         lambda: build('IfOnV', python_if)),
+        ("``math.exp(b.V)``", "raw sympy",
+         lambda: build('FloatMath', float_math)),
+        ("a parameter no class declared", "``NameError`` at first call",
+         lambda: build('Undeclared', undeclared)),
+        ("three nodes for a two-pin element", "**silent**",
+         lambda: build('Ok1', good)('a', 'b', 'c')),
+        ("``R=1e3`` where the parameter is ``g``", "bare ``KeyError``",
+         lambda: build('Ok2', good)('a', 'b', R=1e3)),
+    ]
+
+    def first_sentence(text):
+        text = ' '.join(text.split())
+        for k in range(30, len(text)):
+            if text[k] == '.' and (k + 1 == len(text) or text[k + 1] == ' '):
+                return text[:k + 1]
+        return text
+
+    print(".. list-table::")
+    print("   :header-rows: 1")
+    print("   :widths: 26 16 58")
+    print("")
+    print("   * - what you wrote")
+    print("     - used to be")
+    print("     - what it says now")
+    for label, before, fn in cases:
+        try:
+            fn()
+        except Exception as e:
+            msg = first_sentence(str(e))
+        else:
+            msg = "NO ERROR -- this table is out of date"
+        print("   * - %s" % label)
+        print("     - %s" % before)
+        print("     - %s" % msg)
+
+Two instruments
+```````````````
+
+``explain(element)`` prints the compilation record: terminals, the
+x-vector layout, the parameters *as the generated code will read them*
+(so a hierarchical expression nothing has resolved is visible rather
+than silently defaulted), which compilation path the model took, what
+the compiler found in it -- states, collapses, crossings, ``$limit``
+probes, PCNR junctions, constant stamps, JAX pure forms -- the symbolic
+``i``/``q``/``G``/``C``, and the generated source.
+
+``check_jacobians(element, x)`` answers the question the NaN warnings
+above raise and never answer.  This is the classic one -- a depletion
+charge written the way the textbook writes it, which is finite over the
+whole physical range and ``inf`` at its edge:
+
+.. exec-rst::
+
+    import numpy as np, sympy
+    import pycircuit.circuit.circuit as cm
+    from pycircuit.circuit.toolkit import numeric
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       ddt, check_jacobians)
+    from pycircuit.utilities.param import Parameter
+
+    cm.default_toolkit = numeric
+
+    class Varicap(Behavioural):
+        instparams = [Parameter(name='cj0', desc='C', unit='F',
+                                default=1e-12),
+                      Parameter(name='vj', desc='V', unit='V', default=0.8)]
+
+        @staticmethod
+        def analog(plus, minus):
+            b = Branch(plus, minus)
+            q = 2 * cj0 * vj * (1 - sympy.sqrt(1 - b.V / vj))
+            return Contribution(b.I, ddt(q))
+
+    el = Varicap('p', 'n')
+    el.update_iparv()
+    print(".. code-block:: text")
+    print("")
+    for v in (0.0, 0.5, 0.79, 0.8, 1.2):
+        r = check_jacobians(el, [v, 0.0])
+        print("   v = %5.2f   ok = %-5s   C[0,0] = %.6g"
+              % (v, r.ok, r.results['C']['ana'][0, 0]))
+    print("")
+    print("and at the first bias that fails:")
+    print("")
+    print(".. code-block:: text")
+    print("")
+    for line in repr(check_jacobians(el, [0.8, 0.0])).splitlines():
+        print("   " + line)
+
+Nothing about that element looks wrong, it solves happily at every bias
+a physical circuit visits, and a Newton iterate that overshoots
+``vj`` turns the whole matrix to ``nan``.  ``safe_sqrt``, or the
+junction's own ``fc``-limited formulation, is the fix; the instrument is
+what tells you which bias to look at.
+
+The finite-difference step is ``max(1e-7, 1e-7*|x[k]|)`` per column, and
+the tolerance is **one band for the whole matrix** -- ``atol`` defaults
+to ``1e-7`` of its largest entry.  That is deliberate: a per-entry
+relative tolerance passes an entry that is small *because it is wrong*.
+Before trusting a pass, tighten ``rtol`` and confirm a deliberately
+broken model fails.
+
 What you get for free
 ---------------------
 
@@ -607,6 +930,12 @@ Reference
 .. autoclass:: pycircuit.circuit.hdl.Behavioural
 
 .. autoclass:: pycircuit.circuit.hdl.Contribution
+
+.. autofunction:: pycircuit.circuit.hdl.explain
+
+.. autofunction:: pycircuit.circuit.hdl.x_layout
+
+.. autofunction:: pycircuit.circuit.hdl.check_jacobians
 
 The worked catalogue is ``pycircuit/circuit/elements_hdl.py``: ten
 elements, each exercising one capability, each proven equivalent to its

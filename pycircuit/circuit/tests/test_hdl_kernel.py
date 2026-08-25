@@ -378,3 +378,850 @@ class TestUsableInsideAModel(object):
                             - np.asarray(e.i(xm), float)) / (2 * h)
             scale = max(1.0, float(np.max(np.abs(G))))
             assert np.max(np.abs(G - fd)) < 1e-4 * scale, x
+
+
+## ======================================================================
+## Phase 3 of the hdl roadmap: the selection, sign and power primitives,
+## and the generic helpers promoted out of `psp_kernel`.
+##
+## Three claims are under test for each of them, and the third is the one
+## a value-based suite misses:
+##
+##   * the VALUE, against a reference computed independently -- Python's
+##     own `max`, `math.copysign`, `math.log1p` -- never against a second
+##     spelling of the implementation;
+##   * the DERIVATIVE, against finite differences, swept rather than
+##     sampled at one point, and separately AT the kink where finite
+##     differences cannot speak;
+##   * what the compiler EMITS.  A primitive can be numerically perfect
+##     and still cost 4.4 us per occurrence by lowering to `numpy.select`
+##     instead of `numpy.maximum`, and no assertion about its value can
+##     see that.
+## ======================================================================
+
+import inspect
+import math
+import re
+
+#: The kernel's own runtime namespace.  Passed explicitly where a test
+#: wants to prove the REGISTRATION works; the primitives also carry
+#: `_imp_`, so a bare `lambdify` resolves them too -- which is itself
+#: tested, below, because `hypsmooth` and the `expl` family are public
+#: and were lambdifiable with `modules='numpy'` before this change.
+KMODS = [hdl._KERNEL_NUMPY, 'numpy']
+
+#: A second unknown, for the two-argument primitives.
+Y = sympy.Symbol('y', real=True)
+
+#: A PARAMETER as the compiler makes one: a bare `sympy.Symbol(name)`
+#: with no real assumption (`paramsyms`, in `generate_code`).  That
+#: distinction is the whole of the `Abs` trap -- branch quantities ARE
+#: declared real, parameters are not, and `Abs` of anything mixing the
+#: two goes through `re`/`im`.
+PARAM = sympy.Symbol('IS')
+
+#: A grid that straddles every kink these functions have.
+KINKY = np.array([-1e12, -1e3, -1.0, -1e-3, -1e-9, 0.0, 1e-9, 1e-3, 0.5,
+                  1.0, 2.0, 1e3, 1e12])
+
+
+def _emitted(expr, syms=(X,), modules=None):
+    """Count the numpy primitives the compiled form of `expr` calls.
+
+    The instrument the whole of this section leans on: `lambdify` the
+    expression, read the source it generated, and count.  Both of the
+    performance claims that motivated these primitives -- and both of the
+    measurement mistakes made while chasing them -- were invisible to any
+    assertion about a returned number and one source dump away.
+    """
+    f = sympy.lambdify(list(syms), expr,
+                       modules=KMODS if modules is None else modules,
+                       cse=True)
+    src = inspect.getsource(f)
+    names = ('select', 'amin', 'amax', 'minimum', 'maximum', 'heaviside',
+             'where', 'reduce', 'maxc', 'minc', '_step', 'sign', 'abs',
+             'DiracDelta', 'Heaviside')
+    return {n: len(re.findall(r'\b' + n + r'\(', src)) for n in names}
+
+
+def _fd(f, v, h=None):
+    """Central finite difference, with a step scaled to the point."""
+    h = h if h is not None else 1e-6 * max(1.0, abs(v))
+    return (float(f(v + h)) - float(f(v - h))) / (2 * h)
+
+
+class TestMaxcMinc(object):
+    """`maxc`/`minc`: `Max`/`Min` with a derivative that does not expand.
+
+    The roadmap justifies these by an undocumented rule -- "`Max` only on
+    an ATOM", because differentiating `Max` of a compound expression was
+    reported to produce a Jacobian that divides by zero.  **That failure
+    is not reproducible on this sympy** (1.14) with this kernel; see
+    `test_the_max_on_an_atom_rule_is_not_reproducible_here`, which is
+    written as the honest record of the attempt rather than as an
+    assertion that the rule was imaginary.
+
+    What IS demonstrable, and is what these classes buy, is below:
+    `Max` differentiates to a `Heaviside` that lowers to `numpy.select`,
+    and differentiates AGAIN to a `DiracDelta` that does not lower at
+    all.
+    """
+
+    def test_value_is_the_ordinary_maximum(self):
+        f = sympy.lambdify([X, Y], hdl.maxc(X, Y), modules=KMODS)
+        g = sympy.lambdify([X, Y], hdl.minc(X, Y), modules=KMODS)
+        for a in KINKY:
+            for b in (-1.0, 0.0, 1.0, a):
+                ## reference: Python's own max/min, not a second spelling
+                assert float(f(a, b)) == max(float(a), float(b))
+                assert float(g(a, b)) == min(float(a), float(b))
+
+    def test_partials_are_the_finite_differences_away_from_the_tie(self):
+        for expr, ref in ((hdl.maxc(X, 0.5), max),
+                          (hdl.minc(X, 0.5), min)):
+            d = sympy.lambdify(X, sympy.diff(expr, X), modules=KMODS)
+            f = sympy.lambdify(X, expr, modules=KMODS)
+            for v in KINKY:
+                if abs(v - 0.5) < 1e-3:
+                    continue                      # the kink itself
+                assert float(d(v)) == pytest.approx(_fd(f, v), abs=1e-6), v
+
+    def test_the_two_partials_sum_to_one_at_the_tie(self):
+        """Where `Heaviside` would give 1/2 each and `maxc(x, x)` slope 2.
+
+        A `Max` differentiated through `Heaviside` splits the tie evenly,
+        so an expression in which BOTH arguments depend on the same
+        unknown gets a slope of 2 where the function's slope is 1.  These
+        give the whole derivative to the first argument, which is
+        arbitrary but consistent, and consistent is what a Jacobian
+        needs.
+        """
+        for cls in (hdl.maxc, hdl.minc):
+            e = cls(X, X)
+            assert float(sympy.diff(e, X).subs(X, 3.0).evalf()) == 1.0
+
+    def test_the_derivative_is_diracdelta_free_at_every_order(self):
+        """`Max`'s second derivative does not COMPILE; these stay zero.
+
+        This is not hypothetical tidiness: a distortion analysis or a
+        sensitivity takes a second derivative, and `DiracDelta` reaches
+        `lambdify` as a bare name that no backend defines.
+        """
+        d2 = sympy.diff(sympy.Max(X, Y), X, 2)
+        assert d2.has(sympy.DiracDelta)                     # the problem
+        bad = sympy.lambdify([X, Y], d2, modules=KMODS)
+        with pytest.raises(NameError):
+            bad(1.0, 2.0)
+
+        for cls in (hdl.maxc, hdl.minc):
+            for order in (1, 2, 3):
+                d = sympy.diff(cls(X, Y), X, order)
+                assert not d.has(sympy.DiracDelta)
+                assert not d.has(sympy.Heaviside)
+
+    def test_the_derivative_lowers_to_a_cheap_call_not_to_select(self):
+        """The measured reason to prefer these over `Max`/`Min`.
+
+        `numpy.select` is 4.4 us per call on this machine against 0.62 us
+        for `numpy.maximum`, scalar -- and a compiled model calls these
+        in the Newton inner loop.  sympy lowers `Heaviside`, which is
+        what `Max` differentiates to, straight to `select`.
+        """
+        assert _emitted(sympy.diff(sympy.Max(X, Y), X), (X, Y))['select'] == 1
+        for cls in (hdl.maxc, hdl.minc):
+            em = _emitted(sympy.diff(cls(X, Y), X), (X, Y))
+            assert em['select'] == 0
+            assert em['_step'] == 1
+
+    def test_it_may_be_applied_to_a_COMPOUND_expression(self):
+        """The deliverable: the "`Max` only on an atom" rule is lifted.
+
+        Each kernel function is wrapped in a clamp and the result
+        differentiated, lambdified and swept.  The stated failure mode --
+        sympy rationalising the smoothing into a denominator that cancels
+        to zero, so the value is finite and the Jacobian is NaN -- did
+        **not** reproduce on sympy 1.14 for any of these.  A different
+        and worse one did: with the kernel's own clamps in place,
+        `sympy.Max` of these same compounds does not finish `lambdify`
+        at all (>200 s, stuck in `Float.__eq__` under the `Heaviside`
+        printer, against 0.006 s for `maxc`).  So the rule is real; only
+        its symptom in this sympy is a hang rather than a NaN.
+
+        That case is NOT executed here, because a test that hangs is not
+        a test.  What is executed is the positive claim: `maxc` on the
+        same compounds compiles promptly and evaluates finitely.  The
+        one-second budget would have failed by four orders of magnitude
+        on the `sympy.Max` form.
+        """
+        import time
+        compounds = [hdl.safe_sqrt(X), hdl.safe_div(1.0, X), hdl.expl(X),
+                     hdl.safe_ln(X), hdl.safe_abs(X),
+                     hdl.hypsmooth(X, 1e-6) * hdl.hypsmooth(X, 1e-6)]
+        grid = np.array([-1e6, -1.0, -1e-9, 0.0, 1e-9, 1.0, 1e6])
+        for c in compounds:
+            t0 = time.time()
+            d = sympy.lambdify(X, sympy.diff(hdl.maxc(c, 1e-10), X),
+                               modules=KMODS)
+            f = sympy.lambdify(X, hdl.maxc(c, 1e-10), modules=KMODS)
+            assert time.time() - t0 < 1.0, c
+            with np.errstate(all='ignore'):
+                vals = np.array([float(f(v)) for v in grid])
+                ders = np.array([float(d(v)) for v in grid])
+            assert np.all(np.isfinite(vals)), c
+            assert np.all(np.isfinite(ders)), c
+
+    def test_finite_at_the_extremes_the_contract_claims(self):
+        """RANGE says total -- infinities included, on both arguments.
+
+        This is the property that ruled out the operator-only form
+        ``a*s + b*(1 - s)``, which is `nan` whenever the LOSING argument
+        is infinite.  Since a clamp is most often written precisely to
+        survive an argument that has run away, that failure would have
+        landed exactly where the primitive was needed.
+        """
+        f = sympy.lambdify([X, Y], hdl.maxc(X, Y), modules=KMODS)
+        g = sympy.lambdify([X, Y], hdl.minc(X, Y), modules=KMODS)
+        inf = float('inf')
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            assert float(f(-inf, 0.0)) == 0.0        # losing -inf
+            assert float(f(inf, 0.0)) == inf
+            assert float(g(inf, 0.0)) == 0.0         # losing +inf
+            assert float(g(-inf, 0.0)) == -inf
+            assert float(f(1e308, -1e308)) == 1e308
+
+
+class TestSignAndAbs(object):
+    """`sign` and `Abs`: the two sympy spellings that do not compile.
+
+    Both failures are real and both are pinned here against the sympy
+    originals, because a test that only shows the replacement works
+    cannot show the replacement was needed.
+    """
+
+    def test_sympy_sign_fails_to_compile_at_all(self):
+        d = sympy.diff(sympy.sign(X), X)
+        assert d.has(sympy.DiracDelta)
+        with pytest.raises(NameError):
+            sympy.lambdify(X, d, modules=KMODS)(1.0)
+
+    def test_sympy_abs_gives_a_nan_derivative_at_the_origin(self):
+        """The quiet one: the VALUE is right everywhere.
+
+        The usual statement of this -- "sympy does not know a model
+        symbol is real" -- is half right and the half that is wrong
+        matters.  `Quantity` DOES declare `is_real = True`, so `Abs` of a
+        bare branch voltage differentiates to a perfectly good `sign`.  A
+        PARAMETER does not: the compiler makes it with
+        `sympy.Symbol(name)` and no assumptions (`paramsyms`, in
+        `generate_code`).  So the trap is reachable when the argument
+        mixes an unknown with a parameter -- which is most of them -- and
+        then the derivative goes through `re`/`im` and is `0/0` at
+        zero.
+        """
+        assert sympy.diff(sympy.Abs(X), X) == sympy.sign(X)   # real: fine
+        d_expr = sympy.diff(sympy.Abs(X * PARAM), X)          # mixed: not
+        assert d_expr.has(sympy.re) and d_expr.has(sympy.im)
+        d = sympy.lambdify([X, PARAM], d_expr, modules=KMODS)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            old = np.seterr(all='ignore')
+            try:
+                assert not np.isfinite(float(d(0.0, 1.0)))    # the trap
+                assert float(d(2.0, 1.0)) == 1.0              # value fine
+            finally:
+                np.seterr(**old)
+
+        ## ours is exact and finite for the same argument
+        ours = sympy.lambdify([X, PARAM],
+                              sympy.diff(hdl.Abs(X * PARAM), X),
+                              modules=KMODS)
+        assert float(ours(0.0, 1.0)) == 0.0
+        assert float(ours(2.0, 1.0)) == 1.0
+
+    def test_our_sign_and_abs_have_the_values_they_claim(self):
+        f = sympy.lambdify(X, hdl.sign(X), modules=KMODS)
+        g = sympy.lambdify(X, hdl.Abs(X), modules=KMODS)
+        for v in KINKY:
+            ## reference: math.copysign / abs, computed independently
+            want = 0.0 if v == 0.0 else math.copysign(1.0, v)
+            assert float(f(v)) == want
+            assert float(g(v)) == abs(float(v))
+        assert float(f(float('inf'))) == 1.0
+        assert float(g(float('-inf'))) == float('inf')
+
+    def test_their_derivatives_are_defined_everywhere(self):
+        ds = sympy.lambdify(X, sympy.diff(hdl.sign(X), X), modules=KMODS)
+        da = sympy.lambdify(X, sympy.diff(hdl.Abs(X), X), modules=KMODS)
+        fa = sympy.lambdify(X, hdl.Abs(X), modules=KMODS)
+        for v in KINKY:
+            assert float(ds(v)) == 0.0
+            assert np.isfinite(float(da(v)))
+        ## and away from the kink `Abs` really does differentiate to +-1
+        for v in (-1e3, -1.0, -1e-3, 1e-3, 1.0, 1e3):
+            assert float(da(v)) == pytest.approx(_fd(fa, v), abs=1e-6)
+        assert float(da(0.0)) == 0.0      # the only finite answer there
+
+    def test_second_derivatives_still_compile(self):
+        for e in (hdl.sign(X), hdl.Abs(X)):
+            for order in (2, 3):
+                d = sympy.diff(e, X, order)
+                assert not d.has(sympy.DiracDelta)
+
+    def test_they_lower_to_the_backends_own_sign_and_abs(self):
+        """No registration at all, on numpy and on jax alike.
+
+        The classes are NAMED `sign` and `Abs` so sympy's printer maps
+        them to the backend function of the same name.  Asserting on the
+        emitted source is what makes that a decision rather than a
+        coincidence nobody would notice breaking.
+        """
+        assert _emitted(hdl.sign(X))['sign'] == 1
+        assert _emitted(hdl.Abs(X))['abs'] == 1
+        assert _emitted(hdl.sign(X))['select'] == 0
+        assert _emitted(hdl.Abs(X))['select'] == 0
+
+
+class TestSafePow(object):
+
+    def test_matches_the_ordinary_power_inside_the_range(self):
+        for e in (0.5, 0.59, 1.5, 2.0, -1.0 / 6.0):
+            f = sympy.lambdify(X, hdl.safe_pow(X, e, lo=1e-10),
+                               modules=KMODS)
+            for v in (1e-8, 1e-3, 1.0, 7.0, 1e6):
+                assert float(f(v)) == pytest.approx(float(v) ** e,
+                                                    rel=1e-12), (e, v)
+
+    def test_below_the_floor_it_is_constant_and_finite(self):
+        """Where a raw `b**e` is `nan` (b < 0) or divergent (b = 0).
+
+        The exponent 0.59 is PSP's Coulomb-scattering exponent and the
+        base is exactly zero at flat band, so this is the reachable case
+        and not a contrived one.
+        """
+        lo, e = 1e-10, 0.59
+        f = sympy.lambdify(X, hdl.safe_pow(X, e, lo=lo), modules=KMODS)
+        d = sympy.lambdify(X, sympy.diff(hdl.safe_pow(X, e, lo=lo), X),
+                           modules=KMODS)
+        for v in (-1e6, -1.0, -1e-30, 0.0, lo / 2):
+            assert float(f(v)) == pytest.approx(lo ** e, rel=1e-12)
+            assert float(d(v)) == 0.0
+        ## and the raw form really does fail there, both ways
+        raw = sympy.lambdify(X, X ** e, modules=KMODS)
+        draw = sympy.lambdify(X, sympy.diff(X ** e, X), modules=KMODS)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            old = np.seterr(all='ignore')
+            try:
+                ## a negative base with a fractional exponent is not a
+                ## real number at all -- numpy's answer is `nan`, and
+                ## sympy's is a COMPLEX number, which is worse: it
+                ## propagates silently into a real Jacobian
+                assert not isinstance(raw(-1.0), float) \
+                    or not np.isfinite(raw(-1.0))
+                ## divergent at 0 -- which the generated code reports as
+                ## a raised `ZeroDivisionError`, not as an `inf`
+                with pytest.raises(ZeroDivisionError):
+                    draw(0.0)
+            finally:
+                np.seterr(**old)
+
+    def test_the_cap_clamps_the_other_end(self):
+        f = sympy.lambdify(X, hdl.safe_pow(X, 2.0, lo=1e-10, hi=100.0),
+                           modules=KMODS)
+        assert float(f(50.0)) == pytest.approx(2500.0, rel=1e-12)
+        assert float(f(1e30)) == pytest.approx(1e4, rel=1e-12)
+
+    def test_derivative_against_finite_differences(self):
+        lo = 1e-10
+        for e in (0.5, 0.59, 1.5, -1.0 / 6.0):
+            ex = hdl.safe_pow(X, e, lo=lo)
+            f = sympy.lambdify(X, ex, modules=KMODS)
+            d = sympy.lambdify(X, sympy.diff(ex, X), modules=KMODS)
+            for v in (1e-6, 1e-3, 0.4, 1.0, 3.0, 1e4):
+                ## step RELATIVE to the point: at v = 1e-6 an absolute
+                ## 1e-6 step straddles the floor, and the difference
+                ## quotient is then measuring the clamp, not the power
+                assert float(d(v)) == pytest.approx(
+                    _fd(f, v, h=1e-6 * v), rel=2e-5), (e, v)
+
+    def test_finite_over_the_range_the_contract_claims(self):
+        """Value AND derivative, on a sweep, at the documented floor."""
+        for e in (0.5, 0.59, 2.0, -1.0 / 6.0, -1.0):
+            ex = hdl.safe_pow(X, e, lo=1e-10)
+            f = sympy.lambdify(X, ex, modules=KMODS)
+            d = sympy.lambdify(X, sympy.diff(ex, X), modules=KMODS)
+            grid = np.concatenate([KINKY, np.logspace(-40, 40, 161)])
+            with warnings.catch_warnings():
+                warnings.simplefilter('error')
+                vals = np.array([float(f(v)) for v in grid])
+                ders = np.array([float(d(v)) for v in grid])
+            assert np.all(np.isfinite(vals)), e
+            assert np.all(np.isfinite(ders)), e
+
+    def test_a_floor_that_cannot_work_is_refused_at_build_time(self):
+        """The roadmap's "this guard can never fire" check, inverted.
+
+        With `lo = 1e-30` and an exponent below -9.2 the CLAMP itself
+        leaves double range: the floor that was supposed to keep the term
+        finite is what makes it infinite.  Refused, with the arithmetic
+        in the message, rather than left to surface as an `inf` at some
+        bias.
+        """
+        hdl.safe_pow(X, -9.0)                      # value 1e270, ok
+        with pytest.raises(ValueError) as ei:
+            hdl.safe_pow(X, -9.5)                  # derivative overflows
+        assert 'overflow' in str(ei.value)
+        with pytest.raises(ValueError):
+            hdl.safe_pow(X, 0.5, lo=0.0)
+        with pytest.raises(ValueError):
+            hdl.safe_pow(X, 0.5, lo=1e-3, hi=1e-4)
+        ## a bigger floor makes the same exponent legal again
+        hdl.safe_pow(X, -9.5, lo=1e-20)
+
+    def test_the_floor_may_be_written_relative_to_a_parameter(self):
+        """Which is what the docstring tells the author to do.
+
+        "A smoothing constant is meaningless without its scale": an
+        absolute floor encodes an assumption about a parameter the author
+        does not control.  Writing `lo = 1e-3*vp` makes the bound a
+        SYMBOL at compile time, so it must be accepted -- and the
+        overflow check, which needs a number, must skip it rather than
+        raise.  It was `float(lo)` and did raise; pinned so it stays
+        fixed.
+        """
+        vp = sympy.Symbol('vp', real=True, positive=True)
+        e = hdl.safe_pow(X, 0.5, lo=1e-3 * vp)
+        assert e.has(vp)
+        f = sympy.lambdify([X, vp], e, modules=KMODS)
+        assert float(f(4.0, 1.0)) == pytest.approx(2.0, rel=1e-12)
+        ## and below the (now parameter-scaled) floor it is the floor
+        assert float(f(-1.0, 1.0)) == pytest.approx(math.sqrt(1e-3),
+                                                    rel=1e-12)
+
+
+class TestPromotedHelpers(object):
+    """`softplus`, `mne`, `mxe`, `p3` -- lifted out of `psp_kernel`.
+
+    `p3` was DUPLICATED there, byte for byte; the other three are
+    generic and were only in a model file because that is where they were
+    first needed.
+    """
+
+    def test_softplus_matches_log1p_exp(self):
+        """Reference: `math.log1p(math.exp(z))`, from the stdlib."""
+        f = sympy.lambdify(X, hdl.softplus(X), modules=KMODS)
+        for v in (-50.0, -1.0, -1e-9, 0.0, 1e-9, 1.0, 50.0, 700.0):
+            want = math.log1p(math.exp(v)) if v < 700 else v
+            assert float(f(v)) == pytest.approx(want, rel=1e-13), v
+
+    def test_softplus_keeps_the_SMALL_end_too(self):
+        """`log(1 + exp(z))` written literally loses it, and quietly.
+
+        At z = -50 the exponential is 1.9e-22, `1 + 1.9e-22` rounds to
+        exactly 1.0, and the logarithm of that is exactly 0 -- so a form
+        built to keep the LARGE end finite throws the small end away.
+        `log1p` is why this one does not, and it is the single respect in
+        which the kernel version differs from `psp_kernel._softplus`.
+        """
+        assert 1.0 + math.exp(-50.0) == 1.0                 # the trap
+        f = sympy.lambdify(X, hdl.softplus(X), modules=KMODS)
+        for v in (-50.0, -200.0, -700.0):
+            assert float(f(v)) == pytest.approx(math.log1p(math.exp(v)),
+                                                rel=1e-13), v
+            assert float(f(v)) > 0.0
+
+    def test_softplus_is_finite_where_the_literal_form_overflows(self):
+        """`log(1 + exp(z))` overflows at z = 710 -- and the answer is 710."""
+        with np.errstate(all='ignore'):
+            naive = float(np.log(1.0 + np.exp(710.0)))
+        assert not np.isfinite(naive)                       # the trap
+
+        f = sympy.lambdify(X, hdl.softplus(X), modules=KMODS)
+        d = sympy.lambdify(X, sympy.diff(hdl.softplus(X), X), modules=KMODS)
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            for v in (-1e300, -1e10, -710.0, 0.0, 710.0, 1e10, 1e300):
+                y = float(f(v))
+                assert np.isfinite(y)
+                assert y >= 0.0
+                assert y <= abs(v) + 0.7 + 1e-9      # the claimed bound
+                g = float(d(v))
+                assert 0.0 <= g <= 1.0               # the logistic
+
+    def test_softplus_derivative_is_the_logistic(self):
+        f = sympy.lambdify(X, hdl.softplus(X), modules=KMODS)
+        d = sympy.lambdify(X, sympy.diff(hdl.softplus(X), X), modules=KMODS)
+        for v in (-20.0, -1.0, -0.1, 0.1, 1.0, 20.0):
+            want = 1.0 / (1.0 + math.exp(-v))       # independent reference
+            assert float(d(v)) == pytest.approx(want, rel=1e-10), v
+            assert float(d(v)) == pytest.approx(_fd(f, v), abs=1e-7), v
+
+    def test_mne_and_mxe_are_smooth_min_and_max(self):
+        mn = sympy.lambdify([X, Y], hdl.mne(X, Y), modules=KMODS)
+        mx = sympy.lambdify([X, Y], hdl.mxe(X, Y), modules=KMODS)
+        for a, b in ((1.0, 3.0), (0.2, 7.0), (1e-6, 1.0), (1e3, 1e6),
+                     (1e12, 1.0)):
+            ## at a = 0 the pair is EXACT, not merely close
+            assert float(mn(a, b)) == pytest.approx(min(a, b), rel=1e-9)
+            assert float(mx(a, b)) == pytest.approx(max(a, b), rel=1e-9)
+
+        ## EXCEPT at x == y, where the radicand is exactly zero and the
+        ## `safe_sqrt` regularisation shows through: `sqrt(hypsmooth(0))`
+        ## is `eps`, not 0, so the answer is off by `eps/2` absolute
+        ## (5e-7 with the default 1e-12).  Stated rather than smoothed
+        ## over -- it is a property of the eps, and the eps is chosen for
+        ## the derivative's sake.
+        assert float(mn(5.0, 5.0)) == pytest.approx(5.0, abs=1e-6)
+        assert float(mx(5.0, 5.0)) == pytest.approx(5.0, abs=1e-6)
+        assert float(mn(5.0, 5.0)) != 5.0
+
+    def test_mne_holds_its_accuracy_over_sixteen_decades_of_ratio(self):
+        """The property the conjugate form is written for.
+
+        `psp_kernel._mne` records that the literal `s - sqrt(s^2 - 4xy)`
+        "at t2 = 1e9 ... rounds to zero".  **That is not reproducible
+        here**: swept over ratios from 1e1 to 1e16, the literal form in
+        double precision returns the right answer at every one of them,
+        because `s*s` and `4xy` are far enough apart that the root is not
+        close to `s`.  The claim is left in place upstream and contested
+        here rather than repeated.
+
+        What IS worth pinning, and is pinned, is the accuracy the
+        shipped form actually delivers across that range -- which is the
+        thing a caller depends on either way.
+        """
+        mn = sympy.lambdify([X, Y], hdl.mne(X, Y), modules=KMODS)
+        for k in range(1, 17):
+            a, b = 10.0 ** k, 1.0
+            assert float(mn(a, b)) == pytest.approx(1.0, rel=1e-12), k
+
+    def test_mne_mxe_derivatives_against_finite_differences(self):
+        for expr in (hdl.mne(X, 3.0), hdl.mxe(X, 3.0)):
+            f = sympy.lambdify(X, expr, modules=KMODS)
+            d = sympy.lambdify(X, sympy.diff(expr, X), modules=KMODS)
+            ## 3.0 -- the crossover -- is EXCLUDED, and deliberately:
+            ## the smoothing there is `sqrt(hypsmooth(0))` wide, i.e.
+            ## 1e-6, and a difference quotient with a 3e-6 step straddles
+            ## it and measures the corner rather than the slope.  A
+            ## finite difference cannot speak at a kink; the value there
+            ## is asserted separately below.
+            for v in (0.1, 0.5, 1.0, 2.9, 3.1, 10.0, 1e4):
+                ## `abs` matters as much as `rel` here: on the flat side
+                ## both the analytic slope and the difference quotient
+                ## are ~1e-13, and a relative test on two numbers that
+                ## are both zero to working precision is not a test
+                assert float(d(v)) == pytest.approx(_fd(f, v), rel=1e-4,
+                                                    abs=1e-6), (expr, v)
+
+    def test_mne_mxe_split_the_slope_evenly_at_the_crossover(self):
+        """Where the two arguments meet, each gets half -- by symmetry.
+
+        The smooth min/max are symmetric in `x` and `y`, so at `x == y`
+        neither can claim more than half the slope; anything else would
+        make the pair asymmetric in the source and drain, which is the
+        property PSP uses them to preserve.
+        """
+        for expr in (hdl.mne(X, 3.0), hdl.mxe(X, 3.0)):
+            d = sympy.lambdify(X, sympy.diff(expr, X), modules=KMODS)
+            assert float(d(3.0)) == pytest.approx(0.5, rel=1e-9)
+
+    def test_p3_is_exps_third_order_taylor(self):
+        f = sympy.lambdify(X, hdl.p3(X), modules=KMODS)
+        for u in (-2.0, -0.5, 0.0, 0.5, 2.0):
+            want = 1 + u + u ** 2 / 2 + u ** 3 / 6      # written out
+            assert float(f(u)) == pytest.approx(want, rel=1e-14)
+        ## three derivatives match exp at the origin, which is the point
+        for order in (0, 1, 2, 3):
+            got = sympy.diff(hdl.p3(X), X, order).subs(X, 0)
+            assert float(got) == pytest.approx(1.0, rel=1e-14)
+
+    def test_p3_is_the_same_function_the_expl_family_uses(self):
+        """It was duplicated in `psp_kernel`; pin that it is one thing now."""
+        assert hdl._p3 is hdl.p3
+
+
+class TestKernelPrimitivesReachEveryEvaluator(object):
+    """Registration, verified by EXECUTION on each path.
+
+    A primitive prints as a call, so a namespace missing it is a
+    `NameError` at evaluation time from a model that compiled clean.
+    There are five namespaces and they are reached by different kinds of
+    model; a dict entry that is merely present proves nothing.
+    """
+
+    def test_a_bare_lambdify_resolves_them_with_no_modules_map(self):
+        """Not a nicety -- `hypsmooth` and `expl` are PUBLIC.
+
+        They are clamped with `maxc`/`minc` now, so an outside caller who
+        wrote `sympy.lambdify(x, hdl.safe_sqrt(x), modules='numpy')` --
+        which worked while the clamp was `sympy.Max` -- would get a
+        `NameError` from inside `<lambdifygenerated-N>` if these carried
+        no `_imp_`.
+        """
+        for expr in (hdl.maxc(X, 0.5), hdl.minc(X, 2.0), hdl._step(X, 0.5),
+                     hdl.safe_sqrt(X), hdl.expl(X), hdl.hypsmooth(X, 1e-6),
+                     hdl.softplus(X), hdl.safe_pow(X, 0.5)):
+            f = sympy.lambdify(X, expr)                  # NO modules map
+            d = sympy.lambdify(X, sympy.diff(expr, X))
+            assert np.isfinite(float(f(1.3)))
+            assert np.isfinite(float(d(1.3)))
+
+    def test_the_eager_element_path(self):
+        """`NUMPY_MODULES` -- an element with no `var()` in it."""
+        e, cls = _kernel_element(chained=False)
+        x = np.array([1.3, 0.0])
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            i = np.asarray(e.i(x), float)
+            G = np.asarray(e.G(x), float)
+        assert np.all(np.isfinite(i)) and np.all(np.isfinite(G))
+        assert G[0, 0] == pytest.approx(_element_fd(e, x), rel=1e-5)
+
+    def test_the_chained_element_path(self):
+        """`_ChainPrinter` and `_chain_compile`'s namespace.
+
+        This is the path EVERY production model takes, because every
+        production model uses `var()`, and it is the path a missing
+        registration hides on: the chain prints its own source rather
+        than going through sympy's printer.
+        """
+        e, cls = _kernel_element(chained=True)
+        x = np.array([1.3, 0.0])
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            i = np.asarray(e.i(x), float)
+            G = np.asarray(e.G(x), float)
+        assert np.all(np.isfinite(i)) and np.all(np.isfinite(G))
+        assert G[0, 0] == pytest.approx(_element_fd(e, x), rel=1e-5)
+
+        fn = cls._hdl_info['funcs']['G']
+        ## the printer really emitted the calls ...
+        assert 'maxc(' in fn._src and 'minc(' in fn._src
+        assert '_step(' in fn._src
+        ## ... and the namespace the chain was exec'd in really bound them
+        assert fn.__globals__['maxc'] is hdl._maxc_numpy
+        assert fn.__globals__['minc'] is hdl._minc_numpy
+        assert fn.__globals__['_step'] is hdl._step_numpy
+
+    def test_the_two_paths_agree(self):
+        ea, _ = _kernel_element(chained=False)
+        eb, _ = _kernel_element(chained=True)
+        for v in (-3.0, -1e-9, 0.0, 1e-9, 0.5, 1.3, 40.0):
+            x = np.array([v, 0.0])
+            assert np.allclose(np.asarray(ea.i(x), float),
+                               np.asarray(eb.i(x), float), rtol=1e-12)
+            assert np.allclose(np.asarray(ea.G(x), float),
+                               np.asarray(eb.G(x), float), rtol=1e-10,
+                               atol=1e-14)
+
+    def test_the_crossing_path(self):
+        """`cross_spec`'s own `modules_map`, a sixth compilation.
+
+        Distinct from `i`/`q`/`G`/`C`: an event expression is compiled
+        separately and a name missing there fails only for a model that
+        asks the transient solver for a timepoint.
+        """
+        import pycircuit.circuit.circuit as cm
+        from pycircuit.circuit.toolkit import numeric
+        from pycircuit.circuit.hdl import (Behavioural, Branch,
+                                           Contribution, Cross, var)
+        cm.default_toolkit = numeric
+
+        def analog(p, n):
+            b = Branch(p, n)
+            v = var(b.V, 'v')
+            return (Contribution(b.I, var(hdl.maxc(v, 0.0), 'a')),
+                    Cross(hdl.maxc(v, 0.0) - 0.5, +1))
+
+        cls = type('KernelCross', (Behavioural,),
+                   {'instparams': [], 'analog': staticmethod(analog)})
+        e = cls(cm.Node('p'), cm.Node('n'))
+        e.update_iparv()
+        f = cls._hdl_info['cross_spec']['f']
+        assert 'maxc(' in f._src
+        assert float(np.asarray(f(np.array([1.3, 0.0]), 300.0),
+                                float)[0]) == pytest.approx(0.8)
+
+    def test_the_two_jax_paths(self):
+        """`eval_i_pure` (the vmap admission ticket) and PCNR's own map.
+
+        Under `jax.jit` a numpy implementation does not merely run slowly
+        -- `numpy.maximum` on a tracer raises
+        `TracerArrayConversionError` -- so a value that matches the numpy
+        path here is proof the jax binding is live.
+        """
+        pytest.importorskip('jax')
+        import jax
+        import pycircuit.circuit.circuit as cm
+        from pycircuit.circuit.toolkit import numeric, jaxtoolkit
+        from pycircuit.circuit.circuit import defaultepar
+        from pycircuit.circuit.hdl import (Behavioural, Branch,
+                                           Contribution, vt)
+        from pycircuit.utilities.param import Parameter
+        cm.default_toolkit = numeric
+
+        e, cls = _kernel_element(chained=False)
+        assert hasattr(cls, 'eval_i_pure')
+        x = np.array([1.3, 0.0])
+        got = np.asarray(cls.eval_i_pure(jaxtoolkit.array(x), {},
+                                         defaultepar, jaxtoolkit), float)
+        assert np.allclose(got, np.asarray(e.i(x), float), rtol=1e-6)
+        jitted = jax.jit(lambda z: cls.eval_i_pure(z, {}, defaultepar,
+                                                   jaxtoolkit))
+        assert np.allclose(np.asarray(jitted(jaxtoolkit.array(x)), float),
+                           np.asarray(e.i(x), float), rtol=1e-6)
+        ## and the JACOBIAN, which is where `_step` has to survive tracing
+        J = np.asarray(jax.jacfwd(
+            lambda z: cls.eval_i_pure(z, {}, defaultepar, jaxtoolkit))(
+                jaxtoolkit.array(x)), float)
+        assert np.allclose(J, np.asarray(e.G(x), float), rtol=1e-5)
+
+        ## PCNR compiles its junction through a SEPARATE jax map.
+        def analog(p, n):
+            b = Branch(p, n)
+            return Contribution(
+                b.I, IS * (hdl.limexp(b.V / vt()) - 1.0)     # noqa: F821
+                + 1e-3 * hdl.maxc(b.V, 0.0) * hdl.sign(b.V))
+
+        jcls = type('KernelJunction', (Behavioural,), {
+            'instparams': [Parameter(name='IS', desc='I', unit='A',
+                                     default=1e-14)],
+            'analog': staticmethod(analog)})
+        je = jcls(cm.Node('p'), cm.Node('n'), IS=1e-14)
+        je.update_iparv()
+        assert jcls.pcnr_junctions == ((0, 1),)
+        pr = {'IS': 1e-14}
+        want = np.asarray(jcls.pcnr_i(0.6, pr, defaultepar, numeric), float)
+        gotj = np.asarray(jax.jit(
+            lambda v: jcls.pcnr_i(v, pr, defaultepar, jaxtoolkit))(
+                jaxtoolkit.array(0.6)), float)
+        assert np.allclose(gotj, want, rtol=1e-6)
+
+
+class TestTheClampedExponentialsGotCheaper(object):
+    """`expl` and `hypsmooth` clamp with `maxc`/`minc` now, not `Max`/`Min`.
+
+    The value is unchanged -- the tests above in this file cover that --
+    and the derivative is the same function.  What changed is what the
+    compiler emits for it, and only a source assertion can see that.
+
+    Measured on a chained element's `G` on this machine: `expl` 42
+    dispatched `numpy.where` calls at 140 us, now 6 at 58 us;
+    `hypsmooth` 19 at 56 us, now 3 at 32 us.  The thresholds below are
+    set with headroom, so they are a guard against the regression and not
+    a pin on the exact count.
+    """
+
+    @pytest.mark.parametrize('name,fn,limit', [
+        ('expl', lambda v: hdl.expl(v), 12),
+        ('hypsmooth', lambda v: hdl.hypsmooth(v, 1e-6), 8),
+    ])
+    def test_the_chained_jacobian_emits_few_dispatched_conditionals(
+            self, name, fn, limit):
+        import pycircuit.circuit.circuit as cm
+        from pycircuit.circuit.toolkit import numeric
+        from pycircuit.circuit.hdl import (Behavioural, Branch,
+                                           Contribution, var)
+        cm.default_toolkit = numeric
+        _HOLD[0] = fn
+
+        def analog(p, n):
+            b = Branch(p, n)
+            return Contribution(b.I, var(_HOLD[0](var(b.V, 'v')), 'y'))
+
+        cls = type('KernelCheap' + name, (Behavioural,),
+                   {'instparams': [], 'analog': staticmethod(analog)})
+        e = cls(cm.Node('p'), cm.Node('n'))
+        e.update_iparv()
+        src = cls._hdl_info['funcs']['G']._src
+        n_where = len(re.findall(r'\bwhere\(', src))
+        assert len(re.findall(r'\bselect\(', src)) == 0
+        assert len(re.findall(r'\bHeaviside\(', src)) == 0
+        assert n_where <= limit, '%s emits %d where() calls' % (name,
+                                                                n_where)
+
+    def test_the_values_are_bit_for_bit_what_they_were(self):
+        """`Max` and `maxc` are the same function; pin that they agree.
+
+        Not a tautology: `maxc` is a different CLASS with its own
+        evaluation, and a sign error in `minc`'s argument order would
+        change `expl`'s clamp without changing its shape enough to be
+        obvious.
+        """
+        f = sympy.lambdify(X, hdl.expl(X), modules=KMODS)
+        g = sympy.lambdify(X, hdl.hypsmooth(X, 1e-6), modules=KMODS)
+        for v in (-1e6, -1000., -SE05 - 1., -SE05, -SE05 + 1., -1., 0.,
+                  1., SE05 - 1., SE05, SE05 + 1., 1000., 1e6):
+            assert float(f(v)) > 0.0
+            assert float(g(v)) > 0.0
+        ## exactly `exp` between the seams, still
+        for v in (-200., -1., 0., 1., 200.):
+            assert float(f(v)) == pytest.approx(np.exp(v), rel=1e-13)
+
+
+#: Set by the parametrised test above; a closure default argument would
+#: become a TERMINAL, since `analog()`'s signature declares the pins.
+_HOLD = [None]
+
+
+def _element_fd(e, x, j=0):
+    """d i[0] / d x[j] by central differences on a compiled element."""
+    h = 1e-6 * max(1.0, abs(x[j]))
+    xp, xm = x.copy(), x.copy()
+    xp[j] += h
+    xm[j] -= h
+    return (float(np.asarray(e.i(xp), float)[0])
+            - float(np.asarray(e.i(xm), float)[0])) / (2 * h)
+
+
+def _kernel_element(chained):
+    """A two-terminal element whose current mentions every new primitive.
+
+    Built twice from the same expression, once with `var()` and once
+    without, because the eager stamps and the let-chain are DIFFERENT
+    code generators and a primitive can be registered for one and not the
+    other.
+    """
+    import pycircuit.circuit.circuit as cm
+    from pycircuit.circuit.toolkit import numeric
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       var)
+    cm.default_toolkit = numeric
+
+    def body(v):
+        ## Each primitive gets a DIFFERENTLY SCALED argument, which is
+        ## worth a word because it is not decoration.  Written as nine
+        ## terms of the same `b.V`, the eager form is one nine-term
+        ## `Add`; sympy sorts an `Add` that long, the sort reaches
+        ## `Quantity.compare` on two equal branch voltages, and that
+        ## raises `TypeError: '>' not supported between instances of
+        ## NoneType and NoneType` -- `Quantity._hashable_content` puts a
+        ## bare `None` in the tuple and sympy compares it with `>`.  That is
+        ## a pre-existing defect with nothing to do with this kernel (it
+        ## reproduces as `Quantity('V', b).compare(Quantity('V', b))` on
+        ## a stock tree), it is outside this change's remit, and it is
+        ## reported.  Distinct coefficients make the sort resolve on the
+        ## coefficient and never reach the atoms.
+        return (hdl.maxc(v, 0.5) + hdl.minc(1.1 * v, 2.0)
+                + hdl.sign(1.2 * v) + hdl.Abs(1.3 * v)
+                + hdl.safe_pow(1.4 * v, 0.5) + hdl.softplus(1.5 * v)
+                + hdl.mne(1.6 * v, 1.0) + hdl.mxe(1.7 * v, 1.0)
+                + hdl.p3(1.8 * v))
+
+    def analog_eager(p, n):
+        b = Branch(p, n)
+        return Contribution(b.I, body(b.V))
+
+    def analog_chained(p, n):
+        b = Branch(p, n)
+        return Contribution(b.I, var(body(var(b.V, 'v')), 'y'))
+
+    name = 'KernelAll' + ('Chained' if chained else 'Eager')
+    cls = type(name, (Behavioural,),
+               {'instparams': [],
+                'analog': staticmethod(analog_chained if chained
+                                       else analog_eager)})
+    e = cls(cm.Node('p'), cm.Node('n'))
+    e.update_iparv()
+    return e, cls

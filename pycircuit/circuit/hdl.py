@@ -36,6 +36,13 @@ here with sympy so the Jacobians are exact and closed-form):
   compiled with ``lambdify(..., cse=True)``.
 
 Residual convention (transient.py): ``i(x) + dq/dt + u(t) = 0``.
+
+Two public instruments come with it: `explain(element)` prints what the
+compiler did -- terminals, the ``x``-vector layout, the parameter values
+the generated code will actually read, the symbolic vectors and the
+generated source -- and `check_jacobians(element, x)` differentiates
+``i`` and ``q`` numerically against ``G`` and ``C`` and scans everything
+for non-finite entries.
 """
 
 from pycircuit.circuit import circuit
@@ -43,14 +50,33 @@ from pycircuit.circuit.circuit import defaultepar
 import pycircuit.utilities.param as param
 
 import sympy
+from sympy.codegen.cfunctions import log1p as _log1p
 from sympy.core.symbol import Str
 import numpy as np
 
 import inspect
-from copy import copy
+import re
+import types
+import warnings
+
+
+#: Stack of node registries, pushed while an `analog()` body runs.  It
+#: exists for ONE check: an internal `Node('out')` in an element that
+#: already has an `out` terminal.  Nodes are identified by name
+#: everywhere downstream, so the two used to merge in silence -- and the
+#: collision cannot be found after the fact, because sympy's expression
+#: cache freely hands back an equal atom built during an EARLIER
+#: compilation, carrying that compilation's node objects.  Recording the
+#: constructions themselves is the only reading that stays true.
+_NODE_TRACE = []
 
 
 class Node(circuit.Node):
+    def __init__(self, name=None, isglobal=False):
+        super().__init__(name, isglobal)
+        if _NODE_TRACE:
+            _NODE_TRACE[-1].append(self)
+
     @property
     def V(self):
         return Quantity('V', self)
@@ -239,11 +265,35 @@ def limexp(x, x0=80.0):
     ``exp(min(arg, 80))`` is not a junction it can recognise -- the
     device silently loses its limiting.
 
-    That trade is worth taking here because PCNR is exactly what bounds
-    the argument: a limited junction voltage does not reach 80 thermal
-    voltages.  Models that are NOT junctions, and PSP-style models
-    generally, should use `expl`, which is safe in both arms and gives up
-    nothing because a chained model declines PCNR anyway.
+    That trade is worth taking only where PCNR is what bounds the
+    argument: a limited junction voltage does not reach 80 thermal
+    voltages.  So the condition is **PCNR eligibility, not "is it a
+    junction"** -- and the two are much further apart than they look.
+    `explain()` prints which one a model is.
+
+    A device qualifies only if it introduces no state and no branch
+    unknown, every current it contributes is a function of its own
+    branch voltage alone, one of them is recognisably exponential, and
+    the whole model compiles WITHOUT `var()` -- behind an intermediate
+    symbol the detector cannot see the exponential, so a let-chain model
+    declines PCNR by construction.  (Charge does not disqualify a
+    device: `pcnr.augmented_system` used to refuse one and no longer
+    does -- `test_pcnr_charge.py`.  A flat exponential diode with a
+    `ddt` charge still declares `pcnr_i`; what bites is `var()` and any
+    second branch, such as a series `rs`.)
+
+    Measured on `elements_hdl.DiodeSpiceHdl`, which is a `var()` chain
+    with a series node: `hasattr(el, 'pcnr_i')` is False for every
+    parameter set tried, `cjo = tt = rs = 0` included.  So every
+    realistic diode in this tree is outside PCNR, and `limexp` in one
+    buys nothing.
+
+    A model that cannot qualify pays `limexp`'s deliberate unsafety for
+    nothing: 120 `overflow encountered in exp` warnings on a single 5 V
+    self-heating DC solve, none under `expl`, and the same solution to
+    the last digit.  **Reach for `expl` unless the model is a bare
+    exponential junction that PCNR actually takes** -- PSP-style models
+    included, since a chained model declines PCNR anyway.
     """
     x = sympy.sympify(x)
     return sympy.Piecewise((sympy.exp(x), x < x0),
@@ -273,15 +323,334 @@ _KE05 = 1.0e-100
 _KE05INV = 1.0e100
 
 
-def _p3(u):
+## ----------------------------------------------------------------------
+## Selection, sign and magnitude.
+##
+## `sympy.Max`, `sympy.Min`, `sympy.sign` and `sympy.Abs` all exist and
+## all four of them are traps in a compiled model:
+##
+##   * `Max`/`Min` differentiate to a `Heaviside`, which sympy's numpy
+##     printer lowers to `numpy.select` -- 4.4 us per call on this
+##     machine against 0.6 us for `numpy.maximum`, scalar, and a
+##     compiled model calls it in the Newton inner loop.  An eagerly
+##     compiled `expl` derivative emits FIVE of them; the chained one
+##     emits 42 `numpy.where` calls, and 6 once the clamps are the
+##     functions below;
+##   * their SECOND derivative is a `DiracDelta`, which no numeric
+##     backend prints -- so a distortion analysis or a sensitivity over
+##     a model containing a `Max` fails to compile;
+##   * applying `Max` to a COMPOUND expression is separately hazardous.
+##     The rule of thumb was "`Max`/`Min` go on ATOMS", justified by a
+##     Jacobian that divides by zero.  That symptom did NOT reproduce on
+##     sympy 1.14 (`test_hdl_kernel.py` records the attempt); a worse one
+##     did -- `sympy.Max` of a kernel compound does not finish `lambdify`
+##     at all, where `maxc` of the same compound takes 6 ms;
+##   * `sign` differentiates to `DiracDelta`, so a model using it fails
+##     to COMPILE;
+##   * `Abs` differentiates through `re`/`im` and is `0/0` at zero --
+##     not because sympy cannot know a model symbol is real, but because
+##     only SOME of them are.  `Quantity` declares `is_real`; a PARAMETER
+##     is a bare `sympy.Symbol` and does not, so `Abs` of an expression
+##     mixing an unknown with a parameter takes the complex path.
+##
+## The functions below are the same values with derivatives chosen to be
+## the almost-everywhere-correct ones: defined at the kink,
+## `DiracDelta`-free at every order, and lowered to a cheap primitive.
+## ----------------------------------------------------------------------
+
+
+class _step(sympy.Function):
+    """``1.0`` where ``a >= b``, ``0.0`` below -- the a.e. slope selector.
+
+    This is what `maxc`, `minc` and `sign` differentiate to, and it
+    exists so that they do not differentiate to `Heaviside` instead.
+    Two reasons, and the second is the one that matters:
+
+    * `Heaviside`'s own derivative is a `DiracDelta`, so a model that
+      merely took a SECOND derivative of a `Max` -- a distortion
+      analysis, a sensitivity -- would stop compiling.  `_step` has
+      ``fdiff -> 0``, which is exact everywhere except the measure-zero
+      tie, and there no finite Jacobian exists to be right about;
+    * sympy's numpy printer lowers `Heaviside` to `numpy.select`.
+
+    The implementation is one comparison and one multiplication, written
+    in plain Python operators so that the SAME function serves numpy
+    arrays, numpy scalars and jax tracers.  Comparisons are total on the
+    extended reals, so it is exact at ``+-inf`` as well, and on two
+    sympy expressions the multiplication raises `TypeError` promptly --
+    which is what `evalf` wants to hear, and is why this one needs no
+    explicit symbolic guard where `_maxc_numpy` does.
+    """
+    nargs = (2,)
+
+    def fdiff(self, argindex=1):
+        ## Zero on both sides.  The true derivative is zero everywhere
+        ## except the tie, where it is not a function at all.
+        return sympy.Integer(0)
+
+    @classmethod
+    def eval(cls, a, b):
+        if a.is_number and b.is_number and a.is_real and b.is_real:
+            return sympy.Float(1.0) if bool(a >= b) else sympy.Float(0.0)
+
+    ## `_imp_` is sympy's hook for "this has a numeric implementation",
+    ## so a PLAIN `lambdify` works with no modules map.  Safe to give
+    ## here -- and only here in this block -- because the implementation
+    ## is operator-only and therefore backend-neutral; `_imp_` takes
+    ## PRECEDENCE over a modules map, so a numpy-flavoured one would
+    ## quietly break the jax path.
+    @staticmethod
+    def _imp_(a, b):
+        return 1.0 * (a >= b)
+
+
+def _step_numpy(a, b):
+    """Runtime form of `_step`.  Kept beside it so the two cannot drift."""
+    return 1.0 * (a >= b)
+
+
+def _maxc_numpy(a, b):
+    """Runtime form of `maxc` -- ``numpy.maximum``, or jax's on a tracer.
+
+    Three requirements pull in different directions and this is the only
+    shape that meets all three.
+
+    * it must be the backend's own ``maximum``, not arithmetic.  The
+      operator form ``a*s + b*(1 - s)`` would be backend-neutral for
+      free, and it returns ``nan`` whenever the LOSING argument is
+      infinite (``0 * inf``) -- exactly the case a clamp is written to
+      survive;
+    * it must serve numpy AND jax from ONE function, because sympy's
+      ``_imp_`` hook takes precedence over any modules map, so a
+      numpy-only implementation would not merely be slow inside a traced
+      model, it would stop it compiling
+      (``TracerArrayConversionError``);
+    * it must cost nothing on the numpy path, which is the scalar Newton
+      inner loop.
+
+    Hence the try/except rather than a type test: an untaken ``except``
+    is free against ``numpy.maximum``'s own ~0.7 us, where inspecting
+    both arguments' types on every call is not.  A jax TRACER raises
+    (``TracerArrayConversionError`` is a ``TypeError``) and is caught
+    once per trace, not once per evaluation -- after that the
+    ``jnp.maximum`` is baked into the jaxpr.
+
+    The SYMBOLIC guard is not optional and is not cheap to omit.  Sympy's
+    ``evalf`` calls ``_imp_`` speculatively with the function's own
+    sympy arguments; ``numpy.maximum`` on two expressions then evaluates
+    ``a <= b``, which builds a `Relational`, which stringifies the whole
+    expression to compose its error message.  On a `safe_sqrt` derivative
+    that does not finish.  Measured: an unguarded version turned one
+    `lambdify` into a hang.  Raising `TypeError` is exactly what evalf
+    expects for "no numeric value here".
+    """
+    if isinstance(a, sympy.Basic) or isinstance(b, sympy.Basic):
+        raise TypeError('maxc has no symbolic evaluation')
+    try:
+        return np.maximum(a, b)
+    except TypeError:
+        import jax.numpy as jnp
+        return jnp.maximum(a, b)
+
+
+def _minc_numpy(a, b):
+    """Runtime form of `minc`; see `_maxc_numpy` for the shape."""
+    if isinstance(a, sympy.Basic) or isinstance(b, sympy.Basic):
+        raise TypeError('minc has no symbolic evaluation')
+    try:
+        return np.minimum(a, b)
+    except TypeError:
+        import jax.numpy as jnp
+        return jnp.minimum(a, b)
+
+
+class maxc(sympy.Function):
+    """``max(a, b)`` that may be applied to a COMPOUND expression.
+
+    The two-argument `sympy.Max` with a derivative that does not expand
+    its arguments: ``d/da = _step(a, b)``, ``d/db = 1 - _step(a, b)``.
+    That is the whole point.  The rule it lifts -- "`Max`/`Min` go on
+    ATOMS, bind the argument with `var()` first", undocumented and
+    obeyed by construction at about fifty sites -- is real, though not
+    for the reason usually given.  The stated symptom, a Jacobian that
+    divides by zero, did not reproduce on sympy 1.14.  What does happen,
+    measured, is that ``sympy.Max(<a kernel expression>, c)`` no longer
+    finishes `lambdify`: the `Heaviside` printer is left comparing
+    `Float`s inside the compound and does not come back within 200
+    seconds, where `maxc` of the same compound compiles in 6 ms.
+
+    The two partials sum to 1 at every point INCLUDING the tie, where
+    `Heaviside` would give 1/2 to each and `maxc(x, x)` would come out
+    with slope 2.
+
+    RANGE: total.  Exact for every pair of doubles, ``+-inf`` included,
+    because it lowers to the backend's own ``maximum`` rather than to
+    arithmetic.  That distinction is not cosmetic: the obvious
+    operator-only form ``a*s + b*(1 - s)`` returns ``nan`` whenever the
+    LOSING argument is infinite (``0 * inf``), which is exactly the case
+    a clamp is most often written to survive.
+    """
+    nargs = (2,)
+
+    def fdiff(self, argindex=1):
+        a, b = self.args
+        s = _step(a, b)
+        return s if argindex == 1 else 1 - s
+
+    ## `_imp_` so that a PLAIN `sympy.lambdify` works with no modules
+    ## map.  That is not a nicety: `hypsmooth` and the `expl` family are
+    ## PUBLIC and are clamped with these, so without it every outside
+    ## caller who lambdified `hdl.safe_sqrt(x)` with `modules='numpy'`
+    ## -- which worked while the clamp was `sympy.Max` -- would get a
+    ## `NameError` from inside `<lambdifygenerated-N>`.
+    ##
+    ## `_imp_` takes PRECEDENCE over a modules map, so it has to serve
+    ## every backend by itself; see `_maxc_numpy` for how.
+    @staticmethod
+    def _imp_(a, b):
+        return _maxc_numpy(a, b)
+
+    @classmethod
+    def eval(cls, a, b):
+        ## Fold two literals, so `maxc(1e-15, 0)` does not survive into
+        ## the generated source as a call.
+        if a.is_number and b.is_number and a.is_real and b.is_real:
+            return sympy.Max(a, b)
+
+
+class minc(sympy.Function):
+    """``min(a, b)`` on a compound expression -- the twin of `maxc`.
+
+    ``d/da = _step(b, a)`` (one where ``a <= b``), ``d/db`` its
+    complement, so the partials again sum to exactly 1 at the tie.
+
+    RANGE: total, for the same reason as `maxc`.
+    """
+    nargs = (2,)
+
+    def fdiff(self, argindex=1):
+        a, b = self.args
+        s = _step(b, a)
+        return s if argindex == 1 else 1 - s
+
+    @staticmethod
+    def _imp_(a, b):
+        return _minc_numpy(a, b)
+
+    @classmethod
+    def eval(cls, a, b):
+        if a.is_number and b.is_number and a.is_real and b.is_real:
+            return sympy.Min(a, b)
+
+
+class sign(sympy.Function):
+    """``sign(x)`` that COMPILES: ``-1``, ``0``, ``+1``, with ``fdiff -> 0``.
+
+    `sympy.sign` differentiates to a `DiracDelta`, which no numeric
+    backend prints -- so a model that used it failed at the lambdify
+    step, not at the Newton step, and the failure mode was a `NameError`
+    out of ``<lambdifygenerated-N>``.  The measured consequence is that
+    conditions get rewritten algebraically to dodge it (``x*x < 1e-6``
+    standing in for ``Abs(x) < 1e-3``), which is correct and unreadable.
+
+    The derivative here is 0, which is exact everywhere except the origin
+    -- and at the origin no finite derivative exists, so 0 is the only
+    answer a Jacobian can carry.  Being `DiracDelta`-free at EVERY order
+    also means a second derivative still compiles.
+
+    The class is deliberately named ``sign``: sympy's numpy printer maps
+    that name to the backend's own ``sign``, so it lowers to
+    ``numpy.sign`` on numpy and ``jnp.sign`` on jax with no registration
+    at all.
+
+    RANGE: total.  Exact for every double including ``+-inf``; ``nan``
+    in gives ``nan`` out, as it should.
+    """
+    nargs = (1,)
+
+    def fdiff(self, argindex=1):
+        return sympy.Integer(0)
+
+    @classmethod
+    def eval(cls, x):
+        if x.is_number and x.is_real:
+            return sympy.sign(x)
+
+
+class Abs(sympy.Function):
+    """``|x|`` on the REALS, with the real derivative ``sign(x)``.
+
+    `sympy.Abs` is a quiet trap: the value is always right, and it
+    differentiates to ``(re(u)*re'(u) + im(u)*im'(u))/Abs(u)``, which is
+    ``0/0`` at the origin.  The reason is narrower than "sympy does not
+    know a model symbol is real", and the narrowing matters: `Quantity`
+    DOES declare ``is_real = True``, so ``Abs`` of a bare branch voltage
+    is fine.  A PARAMETER is a plain ``sympy.Symbol`` with no
+    assumptions (see `generate_code`), so ``Abs`` of anything MIXING an
+    unknown with a parameter -- which is most model expressions -- takes
+    the complex path.  A model is then finite everywhere and has a NaN
+    Jacobian at the one bias where its argument vanishes -- the worse of
+    the two failures, because nothing looks wrong.  Raising an `Abs` to a power
+    compounds it, the printed derivative carrying ``sign(u)/(u*Abs(u))``.
+
+    This one differentiates to `sign`, above: defined at the origin,
+    where it takes the value 0, and `DiracDelta`-free at every order.
+
+    Choose between this and `safe_abs` by what the consumer does with
+    the result.  `safe_abs` is ``sqrt(x*x + eps*eps)``, SMOOTH at the
+    origin and therefore the right thing when the result is divided by,
+    logged, or raised to a power; it costs half the exponent range (it
+    squares its argument, so ``|x| < ~1e150``) and it is not exactly
+    ``|x|``.  `Abs` is exact, total over the whole double range, costs
+    nothing, and has a kink -- the right thing when the result is added,
+    compared, or multiplied.
+
+    RANGE: total.  Exact for every double including ``+-inf``.
+
+    The class is named ``Abs`` so that sympy's numpy printer lowers it to
+    the backend's own ``abs``, on numpy and on jax alike, with no
+    registration.  It is a drop-in replacement for ``sympy.Abs`` in a
+    model.
+    """
+    nargs = (1,)
+
+    def fdiff(self, argindex=1):
+        if argindex != 1:
+            return sympy.Integer(0)
+        return sign(self.args[0])
+
+    @classmethod
+    def eval(cls, x):
+        if x.is_number and x.is_real:
+            return sympy.Abs(x)
+
+
+
+def p3(u):
     """PSP's ``P3`` -- the third-order Taylor polynomial of ``exp``.
 
     ``1 + u + u**2/2 + u**3/6``.  Continuing ``exp`` with its own Taylor
     series about the seam is what makes the `expl` family **C-3**
     continuous rather than merely C1: three derivatives match, not one.
+
+    Public because it is the generic way to continue ANY bounded
+    exponential: a model that needs its own seam gets the same C-3 join
+    without re-deriving the coefficients, and `psp_kernel` had a second,
+    identical copy of it for exactly that reason.
+
+    RANGE: a plain cubic, so it is finite for ``|u| < ~1e102`` and
+    overflows above that.  Its derivative ``1 + u + u**2/2`` overflows a
+    little later, at ``~1e154`` -- the one member of the kernel whose
+    derivative outranges its value.  It is meant to be evaluated on the
+    OVERSHOOT past a seam, not on the raw argument.
     """
     u = sympy.sympify(u)
     return 1.0 + u * (1.0 + 0.5 * (u * (1.0 + u / 3.0)))
+
+
+#: Historic private spelling of `p3`, kept because the `expl` family
+#: below is written in terms of it.
+_p3 = p3
 
 
 def expl_high(x, x0=EXPL_THRESHOLD):
@@ -297,9 +666,15 @@ def expl_high(x, x0=EXPL_THRESHOLD):
     x = sympy.sympify(x)
     ## Each arm sees an argument its own branch makes valid, so the
     ## discarded one cannot overflow -- see the module's kernel notes.
+    ## The clamps are `maxc`/`minc` rather than `sympy.Max`/`Min`: the
+    ## VALUE is identical and the derivative is the same function, but
+    ## `Max`'s derivative is a `Heaviside` per occurrence, and this
+    ## family carries four of them.  Measured on a chained element's `G`,
+    ## `expl` went from 42 dispatched `numpy.where` calls at 140 us to 6
+    ## at 58 us, and `hypsmooth` from 19 at 56 us to 3 at 32 us.
     return sympy.Piecewise(
-        (sympy.exp(sympy.Min(x, x0)), x < x0),
-        (_KE05INV * _p3(sympy.Max(x, x0) - x0), True))
+        (sympy.exp(minc(x, x0)), x < x0),
+        (_KE05INV * _p3(maxc(x, x0) - x0), True))
 
 
 def expl_low(x, x0=EXPL_THRESHOLD):
@@ -312,8 +687,8 @@ def expl_low(x, x0=EXPL_THRESHOLD):
     """
     x = sympy.sympify(x)
     return sympy.Piecewise(
-        (_KE05 / _p3(-x0 - sympy.Min(x, -x0)), x < -x0),
-        (sympy.exp(sympy.Max(x, -x0)), True))
+        (_KE05 / _p3(-x0 - minc(x, -x0)), x < -x0),
+        (sympy.exp(maxc(x, -x0)), True))
 
 
 def expl(x, x0=EXPL_THRESHOLD):
@@ -328,9 +703,9 @@ def expl(x, x0=EXPL_THRESHOLD):
     """
     x = sympy.sympify(x)
     return sympy.Piecewise(
-        (_KE05 / _p3(-x0 - sympy.Min(x, -x0)), x < -x0),
-        (_KE05INV * _p3(sympy.Max(x, x0) - x0), x > x0),
-        (sympy.exp(sympy.Max(sympy.Min(x, x0), -x0)), True))
+        (_KE05 / _p3(-x0 - minc(x, -x0)), x < -x0),
+        (_KE05INV * _p3(maxc(x, x0) - x0), x > x0),
+        (sympy.exp(maxc(minc(x, x0), -x0)), True))
 
 
 def hypsmooth(x, eps):
@@ -353,17 +728,26 @@ def hypsmooth(x, eps):
     arms are valid for any input, so it does not matter that both are
     evaluated.
 
-    Limit: the radicand overflows for ``|x| > ~1e154``.  Circuit
-    quantities do not reach there, and clamping the argument to buy that
-    range back would cost a comparison on every evaluation of the most
-    frequently called function in the kernel.
+    RANGE: the radicand squares ``x``, so the value is finite for
+    ``|x| < ~1e154`` and overflows above it.  Circuit quantities DO
+    reach there -- see `safe_ln`, where an intermediate hit 4.4e222 --
+    so the bound is a real one and not a theoretical one; clamping the
+    argument to buy it back would cost a comparison on every evaluation
+    of the most frequently called function in the kernel.  The
+    derivative is bounded by 1 and costs no further range, which makes
+    `hypsmooth` the one member of the family whose Jacobian does NOT
+    die before its value.
+
+    ``eps`` is squared, so it cannot go below about 1.5e-154 without
+    underflowing to exactly zero and removing the regularisation
+    entirely.
     """
     x, eps = sympy.sympify(x), sympy.sympify(eps)
     ## Each arm sees an argument clamped to ITS OWN side.  Without that
     ## the conjugate arm, evaluated at large POSITIVE x, has `r - x`
     ## cancel to exactly zero and divides by it -- the mirror image of
     ## the cancellation it was written to avoid.
-    xp, xn = sympy.Max(x, 0), sympy.Min(x, 0)
+    xp, xn = maxc(x, 0.0), minc(x, 0.0)
     return sympy.Piecewise(
         (0.5 * (xp + sympy.sqrt(xp * xp + 4 * eps * eps)), x >= 0),
         (2 * eps * eps / (sympy.sqrt(xn * xn + 4 * eps * eps) - xn), True))
@@ -385,6 +769,19 @@ def safe_sqrt(x, eps=1e-12):
     reaching zero -- so the square root and its derivative are finite for
     every input, with no branch at all.  For ``x >> eps`` it agrees with
     ``sqrt(x)`` to relative order ``(eps/x)^2``.
+
+    RANGE: inherits `hypsmooth`'s, which SQUARES its argument -- the
+    value is finite for ``|x| < ~1e154`` and overflows above that, where
+    plain ``sqrt`` would have gone to 1e77 without blinking.  The
+    derivative is ``1/(2*sqrt(hypsmooth))``, bounded by ``1/(2*eps)`` --
+    with the default ``eps = 1e-12``, 5e11 -- and it reaches that bound
+    at ``x = 0``, not at the extremes.  Below zero the value decays like
+    ``eps/sqrt(|x|)`` and the derivative with it, so the negative tail
+    costs nothing.
+
+    ``eps`` is squared inside `hypsmooth`, so it cannot go below about
+    1.5e-154 without underflowing to zero and taking the regularisation
+    with it.
     """
     return sympy.sqrt(hypsmooth(x, eps))
 
@@ -393,14 +790,18 @@ def safe_abs(x, eps=1e-30):
     """``abs(x)`` made DIFFERENTIABLE at zero, as ``sqrt(x*x + eps^2)``.
 
     `sympy.Abs` is the trap here, and it is a quiet one because the
-    VALUE is always right.  Sympy does not know a model symbol is real,
-    so it differentiates ``Abs(u)`` as
-    ``(re(u)*re'(u) + im(u)*im'(u)) / Abs(u)`` -- which at ``u = 0`` is
-    ``0/0``.  A model can then be finite everywhere and have a NaN
-    Jacobian at the one bias where its argument vanishes, which is the
-    worse of the two failures: the value looks right and Newton is
-    poisoned.  Raising an ``Abs`` to a power compounds it, the printed
-    derivative carrying ``sign(u)/(u*Abs(u))``.
+    VALUE is always right: it differentiates to
+    ``(re(u)*re'(u) + im(u)*im'(u)) / Abs(u)``, which at ``u = 0`` is
+    ``0/0``, whenever ``u`` mixes an unknown with a PARAMETER -- see
+    `Abs`, above, for exactly when that is and why.  A model can then be
+    finite everywhere and have a NaN Jacobian at the one bias where its
+    argument vanishes, which is the worse of the two failures: the value
+    looks right and Newton is poisoned.  Raising an ``Abs`` to a power
+    compounds it, the printed derivative carrying ``sign(u)/(u*Abs(u))``.
+
+    Choose between this and `Abs` by what the consumer does with the
+    result: this one is SMOOTH and costs half the exponent range, `Abs`
+    is exact and total and has a kink.
 
     ``sqrt(x*x + eps^2)`` has derivative ``x/sqrt(x*x + eps^2)``, which
     is bounded by 1 and equals 0 at the origin -- finite for every real
@@ -422,6 +823,22 @@ def safe_ln(x, eps=1e-30):
     ``-inf`` at zero and no NaN below it, and no branch.  Note the result
     is genuinely large and negative for small ``x`` -- that is ``ln``
     doing its job, not an overflow.
+
+    RANGE: this is the helper whose cost was MEASURED and is worth
+    stating twice.  It goes through `hypsmooth`, so it SQUARES its
+    argument and is finite only for ``|x| < ~1e154`` -- where plain
+    ``log`` is finite for every positive double up to 1.8e308.  PSP's
+    gate tunnelling reaches an argument of 4.4e222 at ``Vds = 1e12`` and
+    the drain current came back ``-inf`` from an expression every
+    ingredient of which was finite.  The derivative is
+    ``1/hypsmooth(x, eps)``, bounded by ``1/eps`` -- 1e30 with the
+    default -- and reached at ``x = 0``.
+
+    **Ask what the guard is for before buying it.**  The arguments in
+    that measurement were ``1 + expl(...)``, at least 1 by construction,
+    so the guard could never fire and the 154 decades it cost were a
+    pure loss.  If the argument is provably positive, plain
+    ``sympy.log`` is both correct and 154 decades wider.
     """
     return sympy.log(hypsmooth(x, eps))
 
@@ -548,6 +965,230 @@ def safe_div(a, b, eps=1e-30):
     ## in double range as far as the value does -- see that class.  The
     ## value printed is identical.
     return a * _rdiv(b, sympy.Float(eps))
+
+
+def safe_pow(b, e, lo=1e-30, hi=None):
+    """``b**e`` with the base CONFINED to ``[lo, hi]`` -- a documented floor.
+
+    ``b**e`` is not a total function.  For ``b < 0`` and a non-integer
+    ``e`` it is undefined and the backend returns ``nan``; at ``b = 0``
+    with ``e < 1`` the VALUE may be fine while the derivative
+    ``e*b**e/b`` diverges.  Both cases are reachable at ordinary bias --
+    PSP's Coulomb-scattering ratio is exactly zero at flat band and its
+    exponent is 0.59 -- so every power in a real model is hand-floored,
+    and this is that floor with its reasoning attached.
+
+    The clamp is a HARD one (`maxc`, and `minc` when ``hi`` is given),
+    not a smoothing, and that is deliberate.  ``sqrt(max(x, 0))`` is the
+    classic broken clamp because the floor is at zero and the outer
+    function is singular there; with a floor strictly INSIDE the domain
+    the derivative below it is ``e*lo**(e-1) * 0``, an ordinary finite
+    number times zero.  Below the floor the term is constant, which is
+    usually the physics as well: no charge, no scattering off it.
+
+    ``lo`` MUST be given a value relative to the quantity's own scale.
+    An absolute constant encodes an assumption about a parameter you do
+    not control; the default 1e-30 is a backstop for a normalised ratio,
+    not a recommendation.
+
+    RANGE:
+
+    * the value is bounded by ``max(lo**e, hi**e)`` and by ``b**e`` for
+      an in-range base, so it is finite exactly while those are.  With
+      the default floor ``lo = 1e-30`` that means ``e > -10.2``;
+    * **the derivative dies first**, as it does for every regulariser
+      here.  It carries one further factor ``1/base``, so it is bounded
+      by ``|e| * lo**(e - 1)`` -- thirty decades above the value with the
+      default floor, and finite only for ``e > -9.2``.  That is the
+      number to budget against.  Both bounds are CHECKED at build time
+      below for a numeric exponent, and an exponent the floor cannot
+      carry is refused rather than left to surface as an ``inf``.  A
+      SYMBOLIC bound -- ``lo = 1e-3*vp``, which is the recommendation --
+      cannot be checked at compile time and is not;
+    * outside ``[lo, hi]`` the result is CONSTANT and its derivative is
+      exactly zero.  This is an approximation, not an identity: check
+      that the model does not need the tail it truncates.
+    """
+    b, e = sympy.sympify(b), sympy.sympify(e)
+    lo = sympy.sympify(lo)
+    hi = None if hi is None else sympy.sympify(hi)
+    ## `lo` MAY be an expression -- `1e-3*vp` rather than `1e-3` is the
+    ## recommendation above, and a smoothing constant written relative to
+    ## a parameter is a symbol at compile time.  Everything below that
+    ## needs a number therefore checks first, and a symbolic bound simply
+    ## goes unchecked rather than raising.
+    if lo.is_number and float(lo) <= 0.0:
+        raise ValueError(
+            'safe_pow lo=%r must be strictly positive: the floor exists '
+            'to keep the base off zero, where b**e has a divergent '
+            'derivative for e < 1 and is undefined for b < 0.' % (lo,))
+    if (hi is not None and hi.is_number and lo.is_number
+            and float(hi) <= float(lo)):
+        raise ValueError('safe_pow hi=%r is not above lo=%r' % (hi, lo))
+    ## A build-time check that the guard's OWN value is representable.
+    ## `lo` is chosen for the base and the exponent is chosen for the
+    ## physics, and it is easy to pick a pair whose combination leaves
+    ## double range -- at which point the floor that was supposed to keep
+    ## the term finite is what makes it infinite.
+    if e.is_number and e.is_real:
+        ev = float(e)
+        bounds = (lo,) if hi is None else (lo, hi)
+        for lim in (q for q in bounds if q.is_number and q.is_real):
+            ## Budgeted TWICE, value and derivative: the derivative
+            ## carries one more `1/base` and so leaves double range
+            ## thirty decades of exponent before the value does.
+            for what, power, scale in (('value', ev, 1.0),
+                                       ('derivative', ev - 1.0, abs(ev))):
+                try:
+                    val = scale * float(lim) ** power
+                except OverflowError:
+                    val = float('inf')
+                if not np.isfinite(val):
+                    raise ValueError(
+                        'safe_pow: the clamp itself overflows -- the %s at '
+                        'base %r with exponent %r is not representable, so '
+                        'the floor that is supposed to keep this term '
+                        'finite is what makes it infinite. Raise lo (or '
+                        'lower hi) until it is in range.'
+                        % (what, float(lim), ev))
+    base = maxc(b, lo)
+    if hi is not None:
+        base = minc(base, hi)
+    return base ** e
+
+
+def softplus(z):
+    """``log(1 + exp(z))``, branch-free and finite for every double.
+
+    Written ``max(z, 0) + log1p(exp(min(z, 0) - max(z, 0)))``, so the
+    exponential only ever sees a NON-POSITIVE argument and is therefore
+    in ``(0, 1]``.  The literal ``log(1 + exp(z))`` overflows at
+    ``z = 710`` and the value it was going to return was ``710``.
+
+    ``log1p`` rather than ``log(1 + ...)`` for the other end of the same
+    range.  At ``z = -50`` the exponential is 1.9e-22, ``1 + 1.9e-22``
+    rounds to exactly 1.0, and ``log`` of that is exactly 0 -- so the
+    branch-free form, having been built to keep the large end finite,
+    silently loses the small end entirely.  ``log1p`` carries it to
+    ``z = -700`` (measured: 9.86e-305, correct to every digit).  This is
+    the one respect in which the kernel version differs from
+    `psp_kernel._softplus`, which it otherwise reproduces.
+
+    The reason this belongs in the kernel rather than in one model is
+    the rule it embodies: **a PRODUCT of two bounded exponentials is not
+    bounded.**  `expl` is finite for every double, but past its seam it
+    continues polynomially rather than saturating, so ``expl(a)*expl(b)``
+    reaches 1e186 apiece and overflows.  Where only the LOGARITHM of
+    such a product is needed, carry the exponents and never form the
+    product: ``log(1 + e^a * e^b)`` is ``softplus(a + b)``, bounded by
+    ``|a + b| + 0.7``.
+
+    ``z`` appears three times in the result, so bind it with `var()`
+    first -- see that function on why a compact model needs a let-chain.
+
+    RANGE: total.  Finite and non-negative for every double, ``+-inf``
+    included; the derivative is the logistic function and is bounded by
+    1 everywhere.  It costs no exponent range at all, which makes it the
+    cheapest member of the kernel to reach for.
+    """
+    z = sympy.sympify(z)
+    zp, zm = maxc(z, 0.0), minc(z, 0.0)
+    return zp + _log1p(sympy.exp(zm - zp))
+
+
+def mne(x, y, a=0.0):
+    """PSP's smooth MINIMUM of ``x`` and ``y`` (``macrodefs:40-43``).
+
+    ``2/(4-a) * (s - sqrt(s^2 - (4-a)*x*y))`` with ``s = x + y``: exact
+    at ``a = 0``, and with smoothing RELATIVE to the product ``x*y``
+    rather than absolute, which is what suits a pair whose scale varies
+    over decades.  Not the same function as `minc`, which is the exact
+    minimum with a kink, nor as PSP's ``MINA``, whose smoothing is
+    absolute.
+
+    Evaluated in CONJUGATE form, ``2*x*y / (s + sqrt(...))``.  Written
+    literally it subtracts two nearly equal numbers: at ``s = 1e9`` the
+    difference is 1e-9 of the terms and rounds to zero, so the smooth
+    minimum of two large positives comes out exactly 0.  The conjugate
+    is a quotient of positives with nothing to cancel -- the same fix,
+    for the same reason, as `hypsmooth`'s negative arm.
+
+    RANGE: the radicand squares ``s``, so ``|x| + |y| < ~1e154``; beyond
+    that it overflows.  For ``x, y > 0`` the result is in
+    ``[0, min(x, y)]`` and the ``safe_div`` guard (``eps = 1e-30``) never
+    fires, since the denominator is a sum of positives.  For a MIXED
+    sign pair the radicand can exceed ``s^2`` and `safe_sqrt` is what
+    keeps it real.
+    """
+    x, y, a = sympy.sympify(x), sympy.sympify(y), sympy.sympify(a)
+    t1 = 4.0 - a
+    s = x + y
+    rad = safe_sqrt(s * s - t1 * (x * y))
+    return 2.0 * (x * y) * safe_div(1.0, s + rad, eps=1e-30)
+
+
+def mxe(x, y, a=0.0):
+    """PSP's smooth MAXIMUM (``macrodefs:45-48``), the ``+`` twin of `mne`.
+
+    ``2/(4-a) * (s + sqrt(s^2 - (4-a)*x*y))``.  No conjugate form is
+    needed or possible: the two terms are ADDED, so there is nothing to
+    cancel.
+
+    RANGE: as `mne` -- the radicand squares ``s``, so ``|x| + |y| <
+    ~1e154``.  For ``x, y > 0`` the result is in ``[max(x, y), 4/(4-a) *
+    max(x, y)]``.
+    """
+    x, y, a = sympy.sympify(x), sympy.sympify(y), sympy.sympify(a)
+    t1 = 4.0 - a
+    s = x + y
+    return (2.0 / t1) * (s + safe_sqrt(s * s - t1 * (x * y)))
+
+
+## ----------------------------------------------------------------------
+## Runtime registration of the kernel's primitives.
+##
+## A primitive is only half-built when the sympy class exists: it prints
+## as a CALL, so every namespace a compiled model is executed in has to
+## bind the name.  There are SIX such sites: the eager `NUMPY_MODULES`,
+## the let-chain's `_mods`, the crossing-event map, the chain's own
+## hand-built namespace in `_chain_compile`, and the two jax `lambdify`
+## maps (PCNR's junction and the batched pure forms).  A name missing
+## from one of them fails only for the models that take that path -- the
+## chain namespace is reached only by a model that uses `var()`, which is
+## every production model and no toy one, and the crossing map only by a
+## model that asks the transient solver for a timepoint.
+##
+## So the map is written ONCE, here, and every registration site is
+## derived from it.  `_wrapfloor` stays per-site because it is the one
+## entry whose implementation genuinely differs between backends.
+##
+## Every value here serves EVERY backend: either pure Python arithmetic,
+## valid on numpy scalars, numpy arrays and jax tracers alike, or the
+## dispatching pair `_maxc_numpy`/`_minc_numpy`.  One implementation per
+## primitive, so a dict entry cannot disagree with the `_imp_` that
+## overrides it -- `_wrapfloor` is the single exception, and it is
+## per-site because `numpy.floor` and `jnp.floor` are genuinely
+## different functions with no `_imp_` to reconcile them.
+## ----------------------------------------------------------------------
+
+_KERNEL_NUMPY = {
+    '_recip2': _recip2_numpy,
+    '_rdiv': _rdiv_numpy,
+    '_step': _step_numpy,
+    'maxc': _maxc_numpy,
+    'minc': _minc_numpy,
+}
+
+
+def _kernel_jax(jnp):
+    """`_KERNEL_NUMPY` plus the one entry that differs on jax.
+
+    `_wrapfloor` has no `_imp_`, so its binding comes from this map and
+    has to name the right module's `floor`.  Everything else in the
+    kernel dispatches on its argument and needs no swap.
+    """
+    return dict(_KERNEL_NUMPY, _wrapfloor=jnp.floor)
+
 
 
 #: What ``simparam`` can genuinely answer.  A name absent here is not a
@@ -1144,31 +1785,248 @@ def _split_terms(rhs, xset, tset=frozenset()):
             nterms, sympy.Add(*acterms))
 
 
+## ----------------------------------------------------------------------
+## The syntactic surface.
+##
+## The semantic checks below (switch branches, state-scaled `ddt`,
+## collapse conditions, instparams drift) were always here; what a
+## newcomer actually reaches was not.  Three of the mistakes in this
+## section used to be SILENT -- an argument named `self` became a
+## terminal, a class-body `terminals` was discarded, an internal
+## `Node('out')` merged into the `out` pin -- and a silent wrong answer
+## is the expensive failure, not a bad message.  Each check names the
+## class, says what is wrong, and says what to write instead.
+## ----------------------------------------------------------------------
+
+def _analog_function(func, paramnames, paramsyms):
+    """`func` rebound to a PRIVATE copy of its globals, with the
+    parameter symbols added.
+
+    The bare-name convention -- `analog()` writing `r` for the parameter
+    named `r` -- is load-bearing (63 `# noqa: F821` in `compact.py`
+    alone), so the names still have to resolve as globals.  What they
+    must NOT do is stay there: this used to be
+    `analogfunc.__globals__.update(...)`, and since `copy()` of a
+    function returns the same object, `__globals__` IS the defining
+    module's dict.  Two measured consequences: a parameter named `vt`
+    replaced `hdl.vt`, the FUNCTION, in `elements_hdl` for good; and a
+    class could reference a parameter that a DIFFERENT class had
+    declared and compile silently, failing later as a bare `NameError`
+    from inside `<lambdifygenerated-12>`.
+
+    A snapshot copy is exact here because the function is called once,
+    immediately, by `generate_code`: every module global it can legally
+    see already exists.  Writes from inside `analog()` land in the copy,
+    and `globals()` read from inside it still shows the parameters.
+    """
+    ns = dict(func.__globals__)
+    ns.update(zip(paramnames, paramsyms))
+    out = types.FunctionType(func.__code__, ns, func.__name__,
+                             func.__defaults__, func.__closure__)
+    out.__kwdefaults__ = func.__kwdefaults__
+    out.__dict__.update(func.__dict__)
+    return out
+
+
+def _check_analog_declaration(cls):
+    """Signature-level mistakes, checked before `analog()` is run."""
+    name = cls.__name__
+    func = cls.__dict__.get('analog', cls.analog)
+    if isinstance(func, classmethod):
+        raise TypeError(
+            '%s.analog() is a classmethod. It must be a staticmethod: its '
+            'argument names ARE the element terminals, so a `cls` first '
+            'argument would become a terminal called "cls".' % name)
+    if isinstance(func, staticmethod):
+        func = func.__func__
+    spec = inspect.getfullargspec(func)
+    if spec.args[:1] in (['self'], ['cls']):
+        rest = spec.args[1:] or ['plus', 'minus']
+        raise TypeError(
+            '%s.analog() takes %r as its first argument, so %r would become '
+            'the element\'s FIRST TERMINAL and every connection after it '
+            'would shift by one pin. analog() is a staticmethod whose '
+            'argument names are the terminals: write "@staticmethod" above '
+            'it and "def analog(%s)".'
+            % (name, spec.args[0], spec.args[0], ', '.join(rest)))
+    bad = []
+    if spec.varargs:
+        bad.append('*%s' % spec.varargs)
+    if spec.varkw:
+        bad.append('**%s' % spec.varkw)
+    if spec.kwonlyargs:
+        bad.append(', '.join('%s=' % a for a in spec.kwonlyargs))
+    if bad:
+        raise TypeError(
+            '%s.analog() declares %s, which cannot become terminals: a '
+            'terminal is one named positional argument, and the pin order '
+            'is the argument order. Write the terminals out.'
+            % (name, ' and '.join(bad)))
+    if not spec.args:
+        raise TypeError(
+            '%s.analog() declares no arguments, so the element has no '
+            'terminals and nothing can be connected to it. Name the '
+            'terminals as arguments: "def analog(plus, minus)".' % name)
+    ## A class-body `terminals` is DISCARDED -- the metaclass overwrites
+    ## it with analog()'s argument names.  Refused only when the two
+    ## DISAGREE, which is the case where the discarding changes the
+    ## element: a declaration that merely restates the signature is
+    ## redundant, not wrong, and several existing models carry one.
+    declared = cls.__dict__.get('terminals')
+    if declared is not None and list(declared) != list(spec.args):
+        raise TypeError(
+            '%s declares terminals = %r in the class body, which disagrees '
+            'with analog(%s). The declaration is DISCARDED -- an HDL '
+            'element\'s pin order is analog()\'s argument order -- so the '
+            'element would have been built with %r and every connection '
+            'silently placed by that list instead. Delete the declaration '
+            'and rename or reorder analog()\'s arguments.'
+            % (name, tuple(declared), ', '.join(spec.args),
+               tuple(spec.args)))
+
+
+def _run_analog(name, func, args, paramnames):
+    """Call the model's `analog()`, translating the errors an
+    ordinary-looking Python expression raises out of it: an undefined
+    bare name, a comparison used as a condition, and a float-domain
+    math function applied to a symbol."""
+    try:
+        return func(*args)
+    except NameError as e:
+        unknown = getattr(e, 'name', None)
+        if unknown is None:
+            m = re.search(r"name '([^']+)' is not defined", str(e))
+            unknown = m.group(1) if m else None
+        if unknown is None:
+            raise
+        raise NameError(
+            '%s.analog() uses the name %r, which is not defined: it is not '
+            'a declared instance parameter of %s (those are %s), and not a '
+            'global of the module it is written in. Parameter symbols are '
+            'bound from THIS class\'s instparams only -- a parameter '
+            'declared by another class used to be in scope here, so a model '
+            'like this compiled silently and failed later as a bare '
+            'NameError from inside generated code. Declare it: '
+            'instparams = [..., Parameter(name=%r, desc=..., unit=..., '
+            'default=...)]; if the name comes from a helper analog() calls, '
+            'fix it there.'
+            % (name, unknown, name,
+               ', '.join(repr(a) for a in paramnames) or '(none declared)',
+               unknown)) from None
+    except TypeError as e:
+        text = str(e)
+        if 'truth value of Relational' in text:
+            raise TypeError(
+                '%s.analog(): a circuit quantity was used where Python '
+                'wanted a bool (%s). Node voltages, branch currents and '
+                'parameters are SYMBOLS -- an "if", "and", "or", "not" or '
+                'a chained comparison over them has no answer at compile '
+                'time, because the element is compiled once and the '
+                'quantity is different at every operating point. Select '
+                'between arms at the VALUE level instead: '
+                'sympy.Piecewise((a, cond), (b, True)) for an exact switch, '
+                'or the smooth kernel forms (maxc, minc, mne, mxe) where '
+                'the Jacobian has to stay continuous. A condition on '
+                'parameters alone belongs in Collapse(branch, when) or in '
+                'param_given().' % (name, text)) from None
+        if 'convert expression to float' in text or \
+                ('loop of ufunc' in text and 'callable' in text):
+            raise TypeError(
+                '%s.analog(): a math or numpy function was applied to a '
+                'symbolic quantity (%s). Those evaluate floats; the model '
+                'builds an expression that is differentiated and compiled '
+                'later. Use the sympy or hdl kernel equivalents -- '
+                'sympy.exp (or hdl.expl / limexp), sympy.sqrt (or '
+                'safe_sqrt), sympy.log (or safe_ln), sympy.tanh, hdl.Abs, '
+                'hdl.sign -- which build expressions rather than numbers.'
+                % (name, text)) from None
+        raise
+
+
+def _check_node_collisions(name, terminalnames, terminalnodes, built):
+    """An internal `Node('out')` in an element with an `out` terminal.
+
+    Nodes are identified by NAME everywhere downstream (`Node.__hash__`
+    is `hash(self.name)`), so the internal node used to be absorbed into
+    the terminal without a word and its equation added to the pin's.
+
+    `built` is every `Node` CONSTRUCTED while `analog()` ran, from
+    `_NODE_TRACE`; identity against the terminal objects (which this
+    compiler made, before the trace opened) is then exact.  Reading the
+    finished statements instead does not work: sympy's cache returns an
+    equal `Quantity` atom built during a previous compilation, so the
+    node object in the expression is not necessarily the one the model
+    just wrote.
+    """
+    tnames = set(terminalnames)
+    for nd in built:
+        if nd.name in tnames and not any(nd is t for t in terminalnodes):
+            raise ValueError(
+                '%s.analog() builds its own Node(%r), but %r is already a '
+                'terminal of this element (it is an argument of analog()). '
+                'Nodes are identified by name, so the two would silently '
+                'become ONE node and the internal equation would be added '
+                'to the pin\'s. Rename the internal node, or use the '
+                'terminal argument itself if that is what you meant.'
+                % (name, nd.name, nd.name))
+
+
 def generate_code(cls):
     """Compile the class's ``analog()`` into the element interface.
 
     Returns a dict consumed by :class:`BehaviouralMeta`; see the module
     docstring for the compilation model.
     """
+    _check_analog_declaration(cls)
     terminalnames = inspect.getfullargspec(cls.analog)[0]
     terminalnodes = [Node(name) for name in terminalnames]
 
-    ## Inject parameter names as sympy symbols into the analog() globals so
-    ## the body refers to instance parameters by bare name; the compiled
-    ## functions take them as trailing arguments, supplied from the RESOLVED
-    ## self.iparv at call time.
-    analogfunc = copy(cls.analog)
+    ## Bind the parameter names as sympy symbols in a PRIVATE copy of the
+    ## analog() globals, so the body refers to instance parameters by bare
+    ## name; the compiled functions take them as trailing arguments,
+    ## supplied from the RESOLVED self.iparv at call time.  The copy is
+    ## what keeps the injection out of the defining module -- see
+    ## `_analog_function`.
     paramnames = [p.name for p in cls.instparams]
     paramsyms = [sympy.Symbol(name) for name in paramnames]
-    analogfunc.__globals__.update(dict(zip(paramnames, paramsyms)))
+    analogfunc = _analog_function(cls.analog, paramnames, paramsyms)
 
     _VAR_STACK.append([])
+    _NODE_TRACE.append([])
     try:
-        statements = analogfunc(*terminalnodes)
+        statements = _run_analog(cls.__name__, analogfunc,
+                                 terminalnodes, paramnames)
     finally:
         intermediates = _VAR_STACK.pop()
+        builtnodes = _NODE_TRACE.pop()
+    if statements is None:
+        raise TypeError(
+            '%s.analog() returned None. Verilog-A has no "return", but this '
+            'DSL is Python: analog() must RETURN its contribution '
+            'statements -- "return Contribution(b.I, g * b.V)", or a tuple '
+            'of statements. Written as bare expressions they are built and '
+            'thrown away, and the element would have no equations at all.'
+            % cls.__name__)
+    returned = statements
     if isinstance(statements, Statement):
         statements = (statements,)
+    else:
+        try:
+            statements = tuple(statements)
+        except TypeError:
+            statements = None
+    bad = returned if statements is None else \
+        next((st for st in statements if not isinstance(st, Statement)), None)
+    if bad is not None:
+        raise TypeError(
+            '%s.analog() returned %r, which is not a contribution '
+            'statement. An analog body returns Contribution(b.I, expr) or '
+            'Contribution(b.V, expr) -- optionally with Cross(...) and '
+            'Collapse(...) -- or a tuple of them. A bare expression says '
+            'nothing about which branch it belongs to.'
+            % (cls.__name__, bad))
+    _check_node_collisions(cls.__name__, terminalnames, terminalnodes,
+                           builtnodes)
     crossings = [st for st in statements if isinstance(st, Cross)]
     collapses = [st for st in statements if isinstance(st, Collapse)]
     statements = [st for st in statements
@@ -1712,7 +2570,7 @@ def generate_code(cls):
     x = sympy.DeferredVector('x')
     xsubs = dict(zip(xsyms, [x[i] for i in range(n)]))
 
-    NUMPY_MODULES = [{'_wrapfloor': np.floor, '_recip2': _recip2_numpy, '_rdiv': _rdiv_numpy}, 'numpy']
+    NUMPY_MODULES = [dict(_KERNEL_NUMPY, _wrapfloor=np.floor), 'numpy']
 
     def compile_x(expr_or_list, extra=()):
         e = expr_or_list.subs(xsubs) if hasattr(expr_or_list, 'subs') else \
@@ -1731,7 +2589,7 @@ def generate_code(cls):
         ## forward, so cost is linear in the number of intermediates
         ## rather than exponential in their nesting.
         chain_args = [x] + paramsyms + [TEMP] + given_syms
-        _mods = {'_wrapfloor': np.floor, '_recip2': _recip2_numpy, '_rdiv': _rdiv_numpy}
+        _mods = dict(_KERNEL_NUMPY, _wrapfloor=np.floor)
         ## The compiled signature takes the solution VECTOR, while the
         ## chain is written in terms of the scalar unknowns, so the body
         ## opens by unpacking one into the other.
@@ -1914,7 +2772,7 @@ def generate_code(cls):
             cross_f = _chain_compile(
                 chain_defs, [resolve(st.expr) for st in crossings],
                 [x] + paramsyms + [TEMP] + given_syms,
-                modules_map={'_wrapfloor': np.floor, '_recip2': _recip2_numpy, '_rdiv': _rdiv_numpy},
+                modules_map=dict(_KERNEL_NUMPY, _wrapfloor=np.floor),
                 unpack=[(xs.name, 'x[%d]' % k)
                         for k, xs in enumerate(xsyms)])
         else:
@@ -2024,6 +2882,23 @@ class _ChainPrinter(object):
 
             def _print__rdiv(self, expr):
                 return '_rdiv(%s, %s)' % tuple(
+                    self._print(a) for a in expr.args)
+
+            ## The selection primitives, same treatment.  A missing entry
+            ## here fails ONLY for a model that uses `var()` -- which is
+            ## every production model -- because the eager path prints
+            ## through sympy's own NumPyPrinter and this one prints its
+            ## own source.
+            def _print_maxc(self, expr):
+                return 'maxc(%s, %s)' % tuple(
+                    self._print(a) for a in expr.args)
+
+            def _print_minc(self, expr):
+                return 'minc(%s, %s)' % tuple(
+                    self._print(a) for a in expr.args)
+
+            def _print__step(self, expr):
+                return '_step(%s, %s)' % tuple(
                     self._print(a) for a in expr.args)
 
         self._p = _P()
@@ -2179,8 +3054,8 @@ def _chain_compile(defs, outputs, args, want_jacobian_of=None, xsyms=None,
     ## on every future call site too.  Set here, once, where the
     ## namespace is actually built.
     ns.setdefault('_wrapfloor', numpy.floor)
-    ns.setdefault('_recip2', _recip2_numpy)
-    ns.setdefault('_rdiv', _rdiv_numpy)
+    for _k, _v2 in _KERNEL_NUMPY.items():
+        ns.setdefault(_k, _v2)
     ## NumPyPrinter prints Min/Max as `functools.reduce(numpy.minimum, ...)`,
     ## so both names have to be in the namespace, not just numpy's.
     ns.setdefault('numpy', numpy)
@@ -2544,7 +3419,7 @@ class BehaviouralMeta(type):
                     cache[which] = sympy.lambdify(
                         [sym['vsym']]
                         + [sympy.Symbol(q) for q in _pn] + [TEMP],
-                        expr, modules=[{'_wrapfloor': _jnp.floor, '_recip2': _recip2_numpy, '_rdiv': _rdiv_numpy}, 'jax'],
+                        expr, modules=[_kernel_jax(_jnp), 'jax'],
                         cse=True)
                 return cache[which]
 
@@ -2597,7 +3472,7 @@ class BehaviouralMeta(type):
                 vec = [e.subs(xs) for e in spec[which]]
                 cache[which] = sympy.lambdify(
                     [xv] + [sympy.Symbol(p2) for p2 in pnames] + [TEMP],
-                    vec, modules=[{'_wrapfloor': jnp.floor, '_recip2': _recip2_numpy, '_rdiv': _rdiv_numpy}, 'jax'],
+                    vec, modules=[_kernel_jax(jnp), 'jax'],
                     cse=True)
             return cache[which]
 
@@ -2668,7 +3543,57 @@ class Behavioural(circuit.Circuit, metaclass=BehaviouralMeta):
                             '%r was given both as %r and as its alias %r'
                             % (canonical, canonical, alias))
                     kvargs[canonical] = kvargs.pop(alias)
-        super().__init__(*args, **kvargs)
+        ## CONNECTION COUNT.  `Circuit.__init__` builds its terminal hook
+        ## with `zip(self.terminals, args)`, and zip is silent about a
+        ## length mismatch: a three-terminal element given two nodes was
+        ## accepted and simply left its third pin unconnected, and a
+        ## fourth node was dropped.  Nothing downstream can tell that
+        ## from a deliberate name-based connection, which is why zero
+        ## arguments -- the `add_instance(..., plus=n1)` form -- is still
+        ## allowed.
+        terminals = list(type(self).terminals)
+        if args and len(args) != len(terminals):
+            raise TypeError(
+                '%s has %d terminals (%s) but was given %d connection '
+                'node%s. An HDL element\'s pins are analog()\'s argument '
+                'names, in that order; a mismatched list used to be zipped '
+                'silently, leaving pins unconnected or dropping nodes. '
+                'Connect all of them positionally, or none of them here and '
+                'all by name via add_instance(name, instance, %s=...).'
+                % (type(self).__name__, len(terminals),
+                   ', '.join(terminals), len(args),
+                   '' if len(args) == 1 else 's', terminals[0]))
+        try:
+            super().__init__(*args, **kvargs)
+        except KeyError as e:
+            ## `ParameterDict` raises a bare `KeyError: 'parameter R not in
+            ## parameter dictionary'` -- no class, no list of what would
+            ## have been accepted, and it is reached by every typo and
+            ## every case-wrong name.
+            detail = e.args[0] if e.args else ''
+            if not (isinstance(detail, str)
+                    and 'not in parameter dictionary' in detail):
+                raise
+            unknown = detail.split()[1]
+            names = [pp.name for pp in self.instparams]
+            hint = ''
+            low = {nm.lower(): nm for nm in names}
+            if unknown.lower() in low:
+                hint = (' Parameter names are case sensitive: did you mean '
+                        '%r?' % low[unknown.lower()])
+            elif unknown in terminals:
+                hint = (' %r is a TERMINAL of this element, not a parameter; '
+                        'terminals are connected positionally.' % unknown)
+            elif aliases and unknown in aliases:
+                hint = ' (%r is an alias for %r.)' % (unknown,
+                                                      aliases[unknown])
+            raise TypeError(
+                '%s has no parameter %r.%s It accepts: %s.%s'
+                % (type(self).__name__, unknown, hint,
+                   ', '.join(names) or '(none)',
+                   '' if not aliases else ' Aliases: %s.'
+                   % ', '.join('%s -> %s' % kv
+                               for kv in sorted(aliases.items())))) from None
         info = getattr(self, '_hdl_info', None)
         if info is None:
             return
@@ -2703,6 +3628,401 @@ class Behavioural(circuit.Circuit, metaclass=BehaviouralMeta):
 
     def next_event(self, t):
         return self.toolkit.inf
+
+    def explain(self, **kvargs):
+        """This instance's compilation record as text; see
+        :func:`explain`."""
+        return explain(self, **kvargs)
+
+    def check_jacobians(self, x, epar=None, **kvargs):
+        """Finite-difference this instance's G and C; see
+        :func:`check_jacobians`."""
+        return check_jacobians(self, x, epar=epar, **kvargs)
+
+
+## ----------------------------------------------------------------------
+## Instruments.
+##
+## Two public entry points for things that were private knowledge: what
+## the compiler DID with a model (`explain`), and whether the Jacobians
+## it derived still agree with the vectors they were derived from
+## (`check_jacobians`).  Both existed as ad-hoc code in tests and
+## notebooks -- an `x`-vector layout reverse-engineered from `el.nodes`
+## and `el.branches` (and got wrong: `IndexError: index 5 is out of
+## bounds for axis 0 with size 5`), and a 25-line hand-rolled finite
+## difference per model.
+## ----------------------------------------------------------------------
+
+def _hdl_info_of(target):
+    """`(class, _hdl_info)` for a compiled element class or instance."""
+    cls = target if isinstance(target, type) else type(target)
+    info = getattr(cls, '_hdl_info', None)
+    if info is None:
+        raise TypeError(
+            '%s is not a compiled HDL element: it has no _hdl_info, so it '
+            'was not built from an analog() body. explain() and '
+            'check_jacobians() read the compiler\'s own record; a '
+            'hand-written element has none.'
+            % getattr(cls, '__name__', repr(target)))
+    return cls, info
+
+
+def x_layout(target):
+    """The element's unknown vector, entry by entry.
+
+    Returns ``[(index, name, kind)]`` in ``Circuit.update_node_map``
+    order -- terminals, internal nodes, ``idt``/``idtmod``/laplace
+    states, branch currents -- which is the order of the ``x`` that
+    ``i``, ``q``, ``G`` and ``C`` take and of the rows and columns they
+    return.
+
+    Worth having as a function because the layout is *derivable* from
+    ``el.nodes`` and ``el.branches`` and deriving it is where people get
+    it wrong: the state nodes sit between the internal nodes and the
+    branch currents, and they are not in the model's source at all.
+    """
+    _cls, info = _hdl_info_of(target)
+    sm = info['state_meta']
+    out = []
+    for nm in info['terminalnames']:
+        out.append((len(out), nm, 'terminal'))
+    for nm in info['internalnames']:
+        out.append((len(out), nm, 'internal node'))
+    periodic = {k for k, _m, _o in sm['periodic']}
+    for nm in sm['statenames']:
+        k = len(out)
+        kind = 'state'
+        if k in periodic:
+            kind += ', bounded (idtmod)'
+        if k in sm['dc_pins']:
+            kind += ', pinned at DC by its ic'
+        out.append((k, nm, kind))
+    for k, key in enumerate(info['branchpairs']):
+        out.append((len(out), '_i_br%d' % k,
+                    'branch current through %s' % _fmt_branch(key)))
+    return out
+
+
+def _generated_source(f):
+    """The text `lambdify` or the let-chain compiler produced, or None."""
+    src = getattr(f, '_src', None)
+    if src is not None:
+        return src
+    try:
+        return inspect.getsource(f)
+    except (OSError, TypeError):
+        return None
+
+
+def _clip(text, maxlines, what):
+    lines = text.splitlines()
+    if maxlines is None or len(lines) <= maxlines:
+        return lines
+    return lines[:maxlines] + ['... %d more lines of %s (pass maxlines=None '
+                               'for all of it)' % (len(lines) - maxlines,
+                                                   what)]
+
+
+def explain(target, source=True, symbolic=True, maxlines=40):
+    """Everything the compiler knows about an element, as text.
+
+    Accepts a `Behavioural` subclass or an instance of one; with an
+    instance the parameter values the generated code will actually read
+    are shown too, so a parameter expression that nothing has resolved is
+    visible as a value rather than as a wrong answer later.
+
+    Reports, in order: the terminals, the full ``x``-vector layout (see
+    :func:`x_layout`), the parameters, which compilation path the model
+    took (eager `lambdify` or the ``var()`` let-chain), what the compiler
+    found in it (states, collapses, crossings, ``$limit``, PCNR
+    junctions, AC stimulus, constant stamps, JAX pure forms), the
+    symbolic ``i``/``q``/``G``/``C``, and the generated source.
+
+    ``source``/``symbolic`` switch the last two sections off; ``maxlines``
+    truncates each of them (``None`` for the whole text) -- a compact
+    model's generated ``G`` is tens of thousands of lines.
+    """
+    cls, info = _hdl_info_of(target)
+    inst = None if isinstance(target, type) else target
+    sm = info['state_meta']
+    lines = []
+    layout = x_layout(target)
+    ## An instance with collapses runs as a compiled VARIANT subclass,
+    ## so `type(el).__name__` is not the name anyone wrote.  Report both.
+    base = getattr(cls, '_hdl_collapse_base', None)
+    title = cls.__name__ if base is None else \
+        '%s (compiled variant %s)' % (base.__name__, cls.__name__)
+    lines.append('%s: %d terminal%s, %d unknown%s'
+                 % (title, len(info['terminalnames']),
+                    '' if len(info['terminalnames']) == 1 else 's',
+                    len(layout), '' if len(layout) == 1 else 's'))
+    lines.append('')
+    lines.append('x vector (the order i/q/G/C use):')
+    for k, nm, kind in layout:
+        lines.append('  x[%d]  %-12s %s' % (k, nm, kind))
+
+    lines.append('')
+    if info['paramnames']:
+        lines.append('parameters (%d):' % len(info['paramnames']))
+        for nm in info['paramnames']:
+            if inst is None:
+                lines.append('  %s' % nm)
+                continue
+            resolved = getattr(inst.iparv, nm, None)
+            written = inst.ipar.get(nm) if hasattr(inst.ipar, 'get') else None
+            note = ''
+            if written is not None and written != resolved:
+                ## The value the generated code reads is `iparv`.  A
+                ## difference means the parameter is an unresolved
+                ## expression, and the element is quietly running on the
+                ## DEFAULT -- the most confusing wrong answer this layer
+                ## produces, and invisible everywhere else.
+                note = ('   <- ipar says %r; update_iparv() has not resolved '
+                        'it, so the value on the left is what the generated '
+                        'code reads' % (written,))
+            lines.append('  %-12s = %r%s%s'
+                         % (nm, resolved,
+                            '' if nm not in info['given_names'] else
+                            '   [param_given]', note))
+    else:
+        lines.append('parameters: none')
+
+    lines.append('')
+    lines.append('compiled as: %s'
+                 % ('a let-chain (the model uses var(); i/q/G/C are '
+                    'generated Python, differentiated by forward '
+                    'accumulation)' if info['chained'] else
+                    'flat lambdify expressions'))
+    feats = []
+    if sm['statenames']:
+        feats.append('%d state%s' % (len(sm['statenames']),
+                                     '' if len(sm['statenames']) == 1 else 's'))
+    if sm['has_time_dependence']:
+        feats.append('time-dependent source u(t)')
+    if info['has_ac']:
+        feats.append('AC stimulus')
+    if info['collapse_conds']:
+        feats.append('%d collapse condition%s (this variant takes %r)'
+                     % (len(info['collapse_conds']),
+                        '' if len(info['collapse_conds']) == 1 else 's',
+                        info['collapse_mask']))
+    if info['cross_spec']:
+        feats.append('%d @cross event%s'
+                     % (len(info['cross_spec']['directions']),
+                        '' if len(info['cross_spec']['directions']) == 1
+                        else 's'))
+    if info['limit_spec']:
+        feats.append('%d $limit probe%s' % (len(info['limit_spec']),
+                                            '' if len(info['limit_spec']) == 1
+                                            else 's'))
+    feats.append('PCNR: %s' % ('%d junction(s)' % len(info['pcnr_funcs'])
+                               if info['pcnr_funcs'] else
+                               'does not qualify -- needs every current to '
+                               'be an exponential function of its own branch '
+                               'voltage alone, with no states, no branch '
+                               'unknowns and no var() (a let-chain hides the '
+                               'exponential from the detector). Charge is '
+                               'allowed'))
+    feats.append('JAX pure forms: %s'
+                 % ('yes' if info['pure_spec'] else
+                    'no (the let-chain path has none)'))
+    feats.append('constant G: %s, constant C: %s'
+                 % (info['const_G'], info['const_C']))
+    for f in feats:
+        lines.append('  ' + f)
+
+    spec = info['sym_spec']
+    if symbolic:
+        lines.append('')
+        if spec is None:
+            lines.append('symbolic i/q/G/C: not kept -- this model compiles '
+                         'through the let-chain, where the vectors are '
+                         'assignments rather than one expression. Read the '
+                         'generated source below instead.')
+        else:
+            n = spec['shape'][0]
+            text = []
+            for which in ('i', 'q'):
+                for k, e in enumerate(spec[which]):
+                    if e != 0:
+                        text.append('%s[%d] = %s' % (which, k, e))
+            for which in ('G', 'C'):
+                for k, e in enumerate(spec[which]):
+                    if e != 0:
+                        text.append('%s[%d,%d] = %s'
+                                    % (which, k // n, k % n, e))
+            lines.append('symbolic i/q/G/C (nonzero entries):')
+            lines += ['  ' + t for t in
+                      _clip('\n'.join(text), maxlines, 'symbolic entries')]
+
+    if source:
+        lines.append('')
+        src = _generated_source(info['funcs']['i'])
+        if src is None:
+            lines.append('generated source for i(x): unavailable')
+        else:
+            lines.append('generated source for i(x):')
+            lines += ['  ' + t for t in _clip(src, maxlines,
+                                              'generated source')]
+    return '\n'.join(lines)
+
+
+class JacobianCheck(object):
+    """The result of :func:`check_jacobians`; print it."""
+
+    def __init__(self, name, x, layout, results, nonfinite, rtol, atol):
+        #: Element class name.
+        self.name = name
+        #: The point the check was made at.
+        self.x = x
+        #: `x_layout` of the element, used to name rows and columns.
+        self.layout = layout
+        #: ``{'G': dict(...), 'C': dict(...)}`` -- per pair, the analytic
+        #: matrix, the finite difference, the worst entry and its error.
+        self.results = results
+        #: ``[(what, index)]`` for every non-finite entry found.
+        self.nonfinite = nonfinite
+        self.rtol, self.atol = rtol, atol
+
+    @property
+    def ok(self):
+        return not self.nonfinite and all(r['ok'] for r in
+                                          self.results.values())
+
+    def _label(self, k):
+        return self.layout[k][1] if k < len(self.layout) else '?'
+
+    def __repr__(self):
+        out = ['JacobianCheck(%s): %s' % (self.name,
+                                          'ok' if self.ok else 'FAILED')]
+        out.append('  x = %s' % np.array2string(self.x, precision=6))
+        for which, r in self.results.items():
+            against = 'i' if which == 'G' else 'q'
+            if not r['finite']:
+                out.append('  %s vs %s: NOT COMPARABLE -- non-finite entries '
+                           '(listed below); a finite-difference of a '
+                           'non-finite function says nothing'
+                           % (which, against))
+                continue
+            if r['scale'] == 0.0:
+                out.append('  %s vs %s: both identically zero' % (which,
+                                                                  against))
+                continue
+            k = r['worst']
+            out.append(
+                '  %s vs %s: worst |%s - d%s/dx| = %.3e at [%d,%d] '
+                '(%s / %s), %s = %.6e, fd = %.6e  %s'
+                % (which, against, which, against, r['err'], k[0], k[1],
+                   self._label(k[0]), self._label(k[1]), which,
+                   r['ana'][k], r['fd'][k], 'ok' if r['ok'] else
+                   'FAILS rtol=%g atol=%.3e' % (self.rtol, r['atol'])))
+        if self.nonfinite:
+            for what, idx in self.nonfinite[:12]:
+                out.append('  NON-FINITE: %s[%s]  (%s)' % (
+                    what, ','.join(str(i) for i in idx),
+                    ', '.join(self._label(i) for i in idx)))
+            if len(self.nonfinite) > 12:
+                out.append('  ... and %d more non-finite entries'
+                           % (len(self.nonfinite) - 12))
+        else:
+            out.append('  i, q, G, C: all finite')
+        return '\n'.join(out)
+
+
+def check_jacobians(element, x, epar=None, h=None, rtol=1e-5, atol=None):
+    """Differentiate ``i`` and ``q`` numerically and compare against the
+    ``G`` and ``C`` the compiler derived, at the point ``x``.
+
+    This is the instrument the NaN-Jacobian warnings in the
+    documentation never handed anyone.  It answers two different
+    questions at once, and they fail in different ways:
+
+    * **is the derivative right?**  Central differences of ``i`` against
+      ``G``, of ``q`` against ``C``.  For a generated element this
+      cannot fail by transcription -- both come from one expression --
+      but it does fail when a kernel primitive's ``fdiff`` is wrong, and
+      that is invisible in the value.
+    * **is anything non-finite?**  ``i``, ``q``, ``G`` and ``C`` are
+      scanned entry by entry, because a Jacobian usually goes NaN a long
+      way before the value does, and Newton then walks off silently.
+
+    ``x`` is the element's own unknown vector; :func:`x_layout` says what
+    each entry is.  ``epar`` defaults to ``defaultepar`` (300 K,
+    transient); pass a DC ``epar`` to check the DC variant of a model
+    with pinned states, since ``i``/``G`` switch together on it.
+
+    The step is ``max(1e-7, 1e-7*|x[k]|)`` per column unless ``h`` says
+    otherwise.  The tolerance is ONE band for the whole matrix --
+    ``atol`` defaults to ``1e-7`` of its largest entry -- deliberately: a
+    per-entry relative tolerance passes an entry that is small *because
+    it is wrong*.  Tighten `rtol` and watch a known-bad model fail before
+    trusting a pass.
+
+    Returns a :class:`JacobianCheck`; ``print()`` it.
+    """
+    cls, _info = _hdl_info_of(element)
+    if isinstance(element, type):
+        raise TypeError('check_jacobians needs an element INSTANCE (it '
+                        'evaluates it); got the class %s.' % cls.__name__)
+    if epar is None:
+        epar = defaultepar
+    layout = x_layout(element)
+    x = np.asarray(x, dtype=float)
+    n = len(layout)
+    if x.shape != (n,):
+        raise ValueError(
+            '%s takes an x of length %d, got %s. The layout is:\n%s'
+            % (cls.__name__, n, list(np.shape(x)),
+               '\n'.join('  x[%d]  %-12s %s' % e for e in layout)))
+
+    def ev(which, xv):
+        return np.asarray(getattr(element, which)(xv, epar), dtype=float)
+
+    results, nonfinite = {}, []
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        with np.errstate(all='ignore'):
+            for which, against in (('G', 'i'), ('C', 'q')):
+                fd = np.zeros((n, n))
+                for k in range(n):
+                    hk = h if h is not None else max(1e-7, 1e-7 * abs(x[k]))
+                    xp, xm = x.copy(), x.copy()
+                    xp[k] += hk
+                    xm[k] -= hk
+                    fd[:, k] = (ev(against, xp) - ev(against, xm)) / (2 * hk)
+                ana = ev(which, x).reshape(n, n)
+                scale = float(max(np.max(np.abs(ana[np.isfinite(ana)]))
+                                  if np.any(np.isfinite(ana)) else 0.0,
+                                  np.max(np.abs(fd[np.isfinite(fd)]))
+                                  if np.any(np.isfinite(fd)) else 0.0))
+                at = atol if atol is not None else 1e-7 * scale
+                err = np.abs(ana - fd)
+                err[~np.isfinite(err)] = np.inf
+                worst = np.unravel_index(int(np.argmax(err)), err.shape)
+                finite = bool(np.all(np.isfinite(ana))
+                              and np.all(np.isfinite(fd)))
+                results[which] = dict(
+                    ana=ana, fd=fd, scale=scale, atol=at, finite=finite,
+                    err=float(err[worst]), worst=tuple(int(k) for k in worst),
+                    ok=bool(finite and (scale == 0.0 or
+                                        np.all(err <= at + rtol
+                                               * np.abs(fd)))))
+                for idx in zip(*np.nonzero(~np.isfinite(ana))):
+                    nonfinite.append((which, tuple(int(k) for k in idx)))
+                ## The finite difference too, or a pair can be reported
+                ## NOT COMPARABLE with nothing listed under it: `i` can
+                ## be finite at `x` and infinite one step away, which is
+                ## itself worth seeing.
+                for idx in zip(*np.nonzero(~np.isfinite(fd))):
+                    nonfinite.append(('d%s/dx (finite difference)' % against,
+                                      tuple(int(k) for k in idx)))
+            for which in ('i', 'q'):
+                v = ev(which, x)
+                for idx in zip(*np.nonzero(~np.isfinite(v))):
+                    nonfinite.append((which, tuple(int(k) for k in idx)))
+    return JacobianCheck(cls.__name__, x, layout, results, nonfinite,
+                         rtol, atol if atol is not None else
+                         max(r['atol'] for r in results.values()))
 
 
 def isconstant(expr):
