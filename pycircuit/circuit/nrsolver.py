@@ -24,6 +24,16 @@ def _structural_singularity(J, row_names, toolkit):
     exact, needs no factorisation, and cannot be confused with a merely
     ill-conditioned matrix -- which continuation genuinely can help with and which
     must therefore keep its existing path.
+
+    ITEM 12.3 REFINED THE FIRST SENTENCE and it is worth reading as a correction
+    rather than an addition.  "Continuation cannot repair it" is still true; what
+    is NOT true is that nothing can.  An empty column can be an unknown that is
+    determined at the answer and merely underflowed on the way there, and the
+    repair for that is not a deformation of the system -- it is an ADDED ELEMENT,
+    a conductance to ground, which is a different thing from a homotopy even
+    though it is reached by one.  `GminAnchorNewton` does that, engages on this
+    exception precisely because nothing else does, and decides which of the two
+    cases it had by asking whether the column is still empty AT THE ANSWER.
     """
     try:
         A = abs(np.asarray(J, dtype=float))
@@ -528,6 +538,209 @@ class PseudoTransientNewton(NonLinearSolver):
         return _adaptive_conductance_ladder(
             solve_rung, solve_pure, x0, e_start=0.0, e_end=-12.0,
             e_max=6.0, label='pseudo-transient continuation')
+
+
+
+def _is_singular_failure(exc):
+    """Is this failure a singular linear system rather than a slow one?
+
+    ONE rule, used in two places.  `DC._newton` already translated a
+    `NoConvergenceError` carrying a singular-factorisation message into
+    `SingularMatrix` with exactly this test; `GminAnchorNewton` has to make the
+    same judgement one layer further in, and two copies of a string test would
+    have drifted apart the first time either was touched.
+    """
+    if isinstance(exc, SingularMatrix):
+        return True
+    msg = str(exc)
+    return 'Singular' in msg or 'linearsolver' in msg.lower()
+
+
+class GminAnchorNewton(NonLinearSolver):
+    """Rescue a row that has gone NUMERICALLY empty, with a `gmin` anchor.
+
+    Roadmap item 12.3.  This is the only member of the chain that engages on a
+    SINGULARITY rather than on a slow solve, and that is the whole point of it:
+    the four continuation ladders below engage on `NoConvergenceError`, and a
+    `SingularMatrix` passes straight through all of them by design -- as
+    `_structural_singularity` says, continuation perturbs a system that HAS a
+    solution and never adds a missing equation.
+
+    What item 12.3 found is that the premise has two cases inside it, and only
+    one of them is beyond help:
+
+      * **structurally empty** -- the unknown appears in no equation at the
+        ANSWER either.  A node reachable only through a capacitor; a node with
+        a current source and nothing else.  Nothing determines it, and an
+        anchor that determines it is manufacturing an answer.
+      * **numerically empty** -- the unknown appears in no equation AT THIS
+        ITERATE, because a conductance underflowed to exactly zero on the way.
+        `softplus(-800)` is `0.0`, not a denormal, so an EKV device in deep
+        cutoff contributes a bit-exact zero row; the 40 V stacked pair of
+        item 12.3 is singular at iterate 0 and perfectly well posed at its
+        solution, where the same conductance is 3.8e-8 S -- four decades above
+        the anchor that got it there.
+
+    An anchor repairs the second and disguises the first, so the class is built
+    around telling them apart.  A conductance `gmin` to ground is added to every
+    NODE row -- branch rows are left alone, because a conductance in a voltage
+    source's KVL equation is not a leaky element, it is a wrong equation -- and
+    the target is reached by SPICE-style stepping through the shared adaptive
+    exponent ladder.
+
+    THE PREFERRED OUTCOME IS THAT THE ANCHOR LEAVES.  After the ladder, a plain
+    `gmin = 0` solve is attempted from the anchored seed; on every circuit
+    measured for item 12.3 it converges, so `gmin` acted purely as a homotopy
+    path and the returned point is a solution of the untouched system, exact to
+    the last bit the solver can offer.  `anchor_retained` records which of the
+    two happened.
+
+    Only if that pure solve fails is an anchored answer returned, and then only
+    past two gates, both asked about the system with `gmin = 0` because that is
+    the only system the caller asked about:
+
+      1. `_structural_singularity` on the pure Jacobian at the converged point.
+         A column still empty there means the anchor was the ONLY thing
+         determining that unknown.  Reject, and name it.
+      2. **the answer must not depend on the anchor.**  Re-solve at `gmin/10`
+         and require the two answers to agree to the solver's own `conv_x`
+         criterion.  A quantity the anchor is holding up moves by a decade when
+         the anchor does; one the circuit determines does not move at all.
+
+    Gate 2 replaced a residual test -- "does the anchored answer satisfy the
+    unanchored KCL to `reltol * I_scale + abstol`?" -- which reads well and was
+    measured being fooled.  `I_scale` is `|J|.|x|`, so an anchor that drives a
+    node to 5e8 V inflates the tolerance it is judged against by the same
+    factor it inflated the answer: a 1 mA island fed with no return path missed
+    by 5e-4 A against a tolerance of 100 A and passed.  A tolerance computed
+    from the corrupted answer cannot detect the corruption.
+
+    `gmin = 0` disables the class completely: the singularity from the inner
+    chain propagates exactly as it did before item 12.3.
+    """
+
+    def __init__(self, base_solver: NonLinearSolver, node_rows, gmin=1e-12,
+                 rung_solver=None):
+        self.base_solver = base_solver
+        ## Row indices of the REDUCED system that are node (KCL) rows.
+        self.node_rows = list(node_rows)
+        self.gmin = float(gmin)
+        self.rung_solver = rung_solver if rung_solver is not None else base_solver
+        ## Set on every solve: False when the answer came from a pure gmin = 0
+        ## solve, True when the anchor had to stay in the matrix.
+        self.anchor_retained = False
+
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter,
+                     limiter=None, scaler=None, row_names=None, linsolver=None):
+        self.anchor_retained = False
+        try:
+            return self.base_solver.solve_system(
+                x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter,
+                limiter, scaler, row_names=row_names, linsolver=linsolver)
+        except (SingularMatrix, NoConvergenceError) as first:
+            if (self.gmin <= 0.0 or not self.node_rows
+                    or not _is_singular_failure(first)):
+                raise
+            singular = first
+
+        import numpy as _np
+
+        mask = _np.zeros(len(_np.asarray(x0)), dtype=float)
+        for _r in self.node_rows:
+            if 0 <= _r < len(mask):
+                mask[_r] = 1.0
+
+        def _anchored(g):
+            gv = mask * g
+            def eval_FJ_anchored(x):
+                F, J = eval_FJ(x)
+                return F + gv * x, J + toolkit.eye(len(J)) * gv
+            return eval_FJ_anchored
+
+        def _solve(x_seed, ev):
+            return self.rung_solver.solve_system(
+                x_seed, ev, toolkit, reltol, abstol, xtol, maxiter,
+                limiter, scaler, row_names=row_names, linsolver=linsolver)
+
+        def solve_rung(x_seed, g):
+            x, _ = _solve(x_seed, _anchored(g))
+            return x
+
+        def solve_pure(x_seed):
+            ## The anchor was only a path: solving the untouched system from the
+            ## anchored seed returns a point that owes gmin nothing at all, so
+            ## nothing has to be argued about how much 1 pS moved the answer.
+            try:
+                return _solve(x_seed, eval_FJ)
+            except (NoConvergenceError, SingularMatrix):
+                pass
+            x, its = _solve(x_seed, _anchored(self.gmin))
+            self._gate_structural(x, eval_FJ, toolkit, row_names, singular)
+            ## Gate 2: move the anchor a decade and see whether the answer
+            ## follows it.  Seeded from `x`, so this is a handful of iterations.
+            x_lo, _ = _solve(x, _anchored(self.gmin * 0.1))
+            self._gate_sensitivity(x, x_lo, reltol, xtol, row_names, singular)
+            self.anchor_retained = True
+            return x, its
+
+        ## The ladder marches DOWNWARD, so the start has to be above the
+        ## target: a caller asking for gmin = 1e-2 would otherwise get an
+        ## e_start below its own e_end and a one-rung ladder.
+        e_gmin = float(_np.log10(self.gmin))
+        e_start = max(-3.0, e_gmin + 3.0)
+        try:
+            return _adaptive_conductance_ladder(
+                solve_rung, solve_pure, x0, e_start=e_start, e_end=e_gmin,
+                e_max=max(0.0, e_start), label='gmin anchoring')
+        except NoConvergenceError as exc:
+            ## The entry condition was a singularity, so that is what the caller
+            ## is told about; the failed rescue is appended to it, not
+            ## substituted for it (stage 6's rule).
+            raise SingularMatrix(
+                '%s; a gmin anchor of %g S did not rescue it: %s'
+                % (singular, self.gmin, exc)) from singular
+
+    @staticmethod
+    def _row_name(row_names, i):
+        if row_names is not None and 0 <= i < len(row_names):
+            return "'%s'" % row_names[i]
+        return 'row %d' % i
+
+    def _gate_structural(self, x, eval_FJ, toolkit, row_names, singular):
+        """Gate 1 -- is the unknown still in no equation at the answer?"""
+        _F, J = eval_FJ(x)
+        why = _structural_singularity(J, row_names, toolkit)
+        if why is not None:
+            raise SingularMatrix(
+                'singular Jacobian: %s.  A gmin anchor of %g S was tried and '
+                'REJECTED: with the anchor removed the unknown is STILL in no '
+                'equation, so gmin would have been the only thing determining '
+                'it -- that is a manufactured answer, not a rescued one'
+                % (why, self.gmin)) from singular
+
+    def _gate_sensitivity(self, x, x_lo, reltol, xtol, row_names, singular):
+        """Gate 2 -- does the answer move when the anchor does?"""
+        import numpy as _np
+        try:
+            a = _np.asarray(x, dtype=float)
+            b = _np.asarray(x_lo, dtype=float)
+            xt = _np.broadcast_to(_np.asarray(xtol, dtype=float), a.shape)
+        except (TypeError, ValueError):
+            return                      # symbolic: nothing to measure
+        tol = reltol * _np.maximum(abs(a), abs(b)) + xt
+        with _np.errstate(divide='ignore', invalid='ignore'):
+            miss = _np.where(tol > 0, abs(a - b) / tol, 0.0)
+        if miss.size and float(_np.nanmax(miss)) > 1.0:
+            i = int(_np.nanargmax(miss))
+            raise SingularMatrix(
+                'the gmin anchor DETERMINES the answer and was rejected: '
+                'moving gmin from %g S to %g S moves %s from %.6g to %.6g '
+                '(%.3gx its own convergence tolerance), so that unknown is '
+                'held up by the anchor rather than by the circuit.  Give the '
+                'node a DC path'
+                % (self.gmin, self.gmin * 0.1,
+                   self._row_name(row_names, i), a[i], b[i], miss[i])
+            ) from singular
 
 
 class SchurCoupledNewton(NonLinearSolver):

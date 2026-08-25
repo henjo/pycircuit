@@ -63,6 +63,30 @@ class DC(Analysis):
                   Parameter(name='maxiter', 
                             desc='Maximum number of iterations', unit='', 
                             default=100),
+                  ## ROADMAP 12.3 -- the simulator-level anchor.
+                  ##
+                  ## SPICE's `GMIN`, and the same number SPICE3, ngspice and
+                  ## Spectre all default to -- and the same number
+                  ## `compact.PspMosLongChannel` already carries privately as
+                  ## `GLEAK`, which is the precedent item 12.3 was written to
+                  ## generalise.  At one volt it is one picoamp, which is
+                  ## exactly the default `iabstol`, so an anchor on a 1 V node
+                  ## sits at the solver's own current noise floor by
+                  ## construction rather than by argument.
+                  ##
+                  ## It is NOT in the matrix of a solve that succeeds.  The
+                  ## anchor is a rescue: it engages only after the chain has
+                  ## already raised `SingularMatrix`, and even then the answer
+                  ## returned is normally from a final `gmin = 0` solve.  That
+                  ## is what lets a weak-inversion measurement keep its
+                  ## picoamps -- see `GminAnchorNewton`.
+                  ##
+                  ## `gmin=0` disables it and restores the pre-12.3 behaviour
+                  ## exactly.
+                  Parameter(name='gmin',
+                            desc='Conductance to ground added to every node row '
+                                 'to rescue a numerically empty row; 0 disables',
+                            unit='S', default=1e-12),
                   Parameter(name='bypass',
                             desc='Enable device model bypassing', unit='',
                             default=False),
@@ -72,6 +96,11 @@ class DC(Analysis):
                   Parameter(name='epar', desc='Environment parameters',
                             default=defaultepar)
                   ]
+
+    ## ROADMAP 12.3.  A class-level default so it can be read after ANY
+    ## solve, including the PCNR branch that returns before the chain runs
+    ## -- a flag that exists only on one path is a flag callers cannot use.
+    gmin_anchor_retained = False
 
     def __init__(self, cir, toolkit=None, refnode=gnd, **kvargs):
         self.parameters = super().parameters + self.parameters
@@ -135,7 +164,8 @@ class DC(Analysis):
             dFdx = self.cir.G(x, self.epar)
             return f, dFdx
             
-        from pycircuit.circuit.nrsolver import (GminSteppingNewton,
+        from pycircuit.circuit.nrsolver import (GminAnchorNewton,
+                                                 GminSteppingNewton,
                                                  JunctionGminSteppingNewton,
                                                  PseudoTransientNewton,
                                                  SourceSteppingNewton)
@@ -167,11 +197,38 @@ class DC(Analysis):
         solver_chain = PseudoTransientNewton(source_chain,
                                              rung_solver=base_solver)
 
+        ## ROADMAP 12.3 -- OUTERMOST, and on a DIFFERENT exception from every
+        ## layer below it.  The four ladders above engage on
+        ## `NoConvergenceError`; a `SingularMatrix` passes straight through all
+        ## of them by design (stage 6(a)), which is precisely why an empty row
+        ## had no rescue at all.  The anchor takes that exception, and only
+        ## that one.  Node rows of the REDUCED system: branch rows must not be
+        ## anchored, because a conductance in a voltage source's KVL equation
+        ## is not a leaky element, it is a wrong equation.
+        _node_rows = [i - (i > self.irefnode)
+                      for i in range(len(self.cir.nodes)) if i != self.irefnode]
+        anchored_chain = GminAnchorNewton(solver_chain, _node_rows,
+                                          gmin=self.par.gmin,
+                                          rung_solver=base_solver)
+
         try:
-            x = self._newton(func, x0, solver_chain)
+            x = self._newton(func, x0, anchored_chain)
         except (NoConvergenceError, SingularMatrix) as last_e:
             logging.warning('Problems encountered: ' + str(last_e))
             raise last_e
+        ## Reported rather than hidden: a caller that needs to know whether the
+        ## number it just got still has 1 pS of invented conductance in it can
+        ## ask, and a `True` here is the signal to give the node a real path.
+        self.gmin_anchor_retained = anchored_chain.anchor_retained
+        if anchored_chain.anchor_retained:
+            logging.warning(
+                'the DC answer was anchored: a gmin of %g S to ground was '
+                'RETAINED because the unanchored system would not solve from '
+                'the anchored point.  It passed both of the anchor\'s gates -- '
+                'no unknown is missing from the Jacobian, and moving gmin a '
+                'decade does not move the answer -- so it is a solution; but '
+                'this circuit has a subnetwork with no DC path of its own, and '
+                'gmin chose among its solutions' % self.par.gmin)
 
         self.result = CircuitResult(self.cir, x)
         return self.result

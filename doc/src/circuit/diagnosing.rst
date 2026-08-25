@@ -28,11 +28,48 @@ failure.  Those two exception types are the first thing to read.
      - Meaning
      - What to do
    * - ``SingularMatrix``
-     - The system has no unique solution *as written*.
-     - Fix the circuit. Continuation will not help and is not tried.
+     - The system has no unique solution *as written*, and a ``gmin`` anchor
+       was tried and refused.
+     - Fix the circuit. Continuation will not help; see below for the one
+       thing that does, and why it declined here.
    * - ``NoConvergenceError``
      - A solution exists; Newton could not reach it.
      - Look at the named node, then at tolerances and the initial guess.
+
+.. _gmin-anchor:
+
+An empty row is not always a missing equation
+=============================================
+
+A column of exact zeros has two causes, and only one of them is fatal.
+
+* the unknown appears in no equation **at the answer either** -- a node
+  reachable only through a capacitor, or with nothing but a current source on
+  it.  Nothing determines it;
+* the unknown appears in no equation **at this iterate**, because a
+  conductance underflowed to exactly zero on the way there.  A MOSFET in deep
+  cutoff contributes a bit-exact zero row -- ``softplus(-800)`` is ``0.0``, not
+  a denormal -- so a stacked pair started from the origin can be singular at
+  iteration 0 and perfectly well posed at its solution.
+
+:class:`~pycircuit.circuit.dcanalysis.DC` takes a ``gmin`` parameter (default
+``1e-12`` S, SPICE's ``GMIN``; ``gmin=0`` disables it) and, on a singularity
+*only*, adds that conductance from every node to the reference, steps it down
+SPICE-style, and then **solves again with it removed**.  When that final solve
+converges -- which it does on every circuit this feature was built against --
+the answer you get is a solution of the untouched system and ``gmin`` was
+nothing but the road to it.
+
+The anchor refuses in two situations, and says which:
+
+* the unknown is *still* in no equation at the converged point (``a gmin
+  anchor ... was tried and REJECTED``);
+* the answer *moves* when ``gmin`` moves a decade (``the gmin anchor
+  DETERMINES the answer``).  Anything ``gmin`` is holding up scales with it.
+
+If the anchor has to stay -- an isolated subnetwork whose common mode nothing
+fixes -- the run succeeds, logs a warning, and sets
+``DC.gmin_anchor_retained``.  Consult it if picoamps matter to you.
 
 "No DC path to ground"
 ======================
@@ -45,11 +82,16 @@ determined by the equations, however sensible the circuit looks.
 
     SingularMatrix: singular Jacobian: 'floaty' appears in no equation, so
     nothing determines it -- for a node that means no DC path to ground
-    (add a resistor, or use uic=True to skip the operating point)
+    (add a resistor, or use uic=True to skip the operating point).  A gmin
+    anchor of 1e-12 S was tried and REJECTED: with the anchor removed the
+    unknown is STILL in no equation, so gmin would have been the only thing
+    determining it -- that is a manufactured answer, not a rescued one
 
-The node is named.  The two fixes are a large resistor to ground, or ``uic=True``
-to skip the operating point entirely and start the transient from zero -- which is
-the right answer when the circuit *has* no DC solution by design.
+The node is named, and so is the fact that the automatic rescue already ran and
+declined -- see :ref:`gmin-anchor`.  The two fixes are a large resistor to
+ground, or ``uic=True`` to skip the operating point entirely and start the
+transient from zero -- which is the right answer when the circuit *has* no DC
+solution by design.
 
 A convergence failure names the worst unknown
 =============================================

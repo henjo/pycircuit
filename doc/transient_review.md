@@ -615,7 +615,7 @@ The inner `DC(self.cir)` also inherits *nothing* — not `epar`, tolerances, `ma
 
 | aid | state |
 |---|---|
-| gmin stepping | present, DC only; injects gmin on **branch rows too**, which perturbs KVL; one failed rung aborts the ladder |
+| gmin stepping | present, DC only; `GminSteppingNewton` still injects gshunt on **branch rows too** (harmless only because it always finishes at `g = 0`); the ladder is adaptive since P18, and `GminAnchorNewton` (roadmap 12.3, 2026-08-25) masks the anchor to node rows |
 | source stepping | present, DC only; ladder `[0, 1e-2, 1e-1, 1.0]` — a **10x jump** from 0.1 to 1.0 on an exponential device, non-adaptive |
 | junction limiting | **`Diode` only** — see 5.1 |
 | damped Newton | `DampedNewton` exists but is **in no default chain** and is not composed with gmin/source stepping |

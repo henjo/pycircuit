@@ -64,7 +64,11 @@ def reduced_row_names(cir, irefnode):
     """
     try:
         names = [str(n.name) for n in cir.nodes]
-        names += ['branch %s' % getattr(b, 'name', i)
+        ## `getattr(b, 'name', i)` returned None, not `i`: the attribute
+        ## EXISTS on a Branch and is usually None, so the default never
+        ## applied and every branch row was called "branch None".  Found
+        ## by item 12.3's gate 2, which names the row it rejects.
+        names += ['branch %s' % (getattr(b, 'name', None) or i)
                   for i, b in enumerate(cir.branches)]
     except Exception:
         return None
