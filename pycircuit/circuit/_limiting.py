@@ -397,3 +397,58 @@ def device_writeback(out, targets, drift, pinned=()):
                 written.add(v)
                 stack.append(v)
     return written
+
+
+## ----------------------------------------------------------------------
+## Circuit-level resolution (roadmap 15, spike 2026-08-25)
+## ----------------------------------------------------------------------
+##
+## `SubCircuit.limit` lets every element write its own nodes back, in
+## dictionary order, so two elements that want DIFFERENT values on one
+## shared node are resolved by whoever writes last.  This is the adapter
+## that lets `SubCircuit.limit` instead COLLECT each element's probe
+## targets and run ONE `device_writeback` over the whole circuit.
+##
+## `CIRCUIT_LEVEL` is the switch; it exists so the intervention can be
+## measured against its absence in one process.  See
+## `test_device_limiter.py` section 5 for what the measurement said.
+CIRCUIT_LEVEL = False
+
+
+def element_targets(element, subx, subx0, epar, nodemap):
+    """Re-derive an element's probe targets from its own `limit()`.
+
+    Returns `(targets, limited)`: `targets` is `(ra, rb, vorig, vlim)` per
+    declared probe with rows already mapped into the CIRCUIT's `x`, or
+    `None` when the element has no `limit_spec` (a hand-written limiter
+    such as `Diode`, which keeps the per-element write-back); `limited` is
+    the element's own limited sub-vector, for that fallback.
+
+    `vlim` is read as `out[ra] - out[rb]` on the element's limited output,
+    so a probe whose constraint the device itself honoured carries exactly
+    its own law's value, and a probe the device let FOLLOW another
+    probe's write carries the value it ended with -- the device's whole
+    decision, re-stated as constraints.  An element whose output is
+    bit-identical to its input contributes nothing, which keeps the
+    "no probe bit, nothing written" property at the circuit level.
+
+    This is the duck-typed spike form.  The real integration would have
+    the generated `limit()` in `hdl.py` return its `targets` list directly
+    (it already builds one for grouped probes) instead of this adapter
+    reading them back off the written vector.
+    """
+    info = getattr(element, '_hdl_info', None)
+    spec = info.get('limit_spec') if isinstance(info, dict) else None
+    limited = element.limit(subx, subx0, epar)
+    if not spec or limited is None:
+        return None, limited
+    out = np.asarray(limited, dtype=float)
+    xin = np.asarray(subx, dtype=float)
+    if np.array_equal(out, xin):
+        return [], limited
+    targets = []
+    for (ra, rb), _kind, _move, _pfs in spec:
+        vorig = float(xin[ra] - xin[rb])
+        vlim = float(out[ra] - out[rb])
+        targets.append((int(nodemap[ra]), int(nodemap[rb]), vorig, vlim))
+    return targets, limited

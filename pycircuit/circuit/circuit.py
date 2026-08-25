@@ -1406,16 +1406,56 @@ class SubCircuit(Circuit):
         ## stamping paths below already hoist; these two did not, and the suite
         ## went from ~8 to ~16 minutes until they did.
         elementnodemap = self.elementnodemap
+        from . import _limiting
+        if not _limiting.CIRCUIT_LEVEL:
+            for instance, element in self.elements.items():
+                if hasattr(element, 'limit'):
+                    nodemap = elementnodemap[instance]
+                    subx = x[nodemap]
+                    subx0 = x0[nodemap]
+                    limited = element.limit(subx, subx0, epar)
+                    if limited is not None:
+                        ## The write-back the old code was missing.  Fancy-index
+                        ## assignment does reach `x`, unlike the read above.
+                        x[nodemap] = limited
+            return x
+
+        ## CIRCUIT-LEVEL RESOLUTION (roadmap 15 spike).  Every DSL element
+        ## contributes its probe targets; nobody writes.  Then one spanning
+        ## forest over the whole circuit decides which nodes move, exactly
+        ## as `device_writeback` does within a device -- so two elements
+        ## that both constrain a shared node are resolved by the data, not
+        ## by dictionary order.  Elements without a `limit_spec` keep the
+        ## per-element write-back.
+        targets = []
         for instance, element in self.elements.items():
             if hasattr(element, 'limit'):
                 nodemap = elementnodemap[instance]
                 subx = x[nodemap]
                 subx0 = x0[nodemap]
-                limited = element.limit(subx, subx0, epar)
-                if limited is not None:
-                    ## The write-back the old code was missing.  Fancy-index
-                    ## assignment does reach `x`, unlike the read above.
-                    x[nodemap] = limited
+                tg, limited = _limiting.element_targets(element, subx, subx0,
+                                                        epar, nodemap)
+                if tg is None:
+                    if limited is not None:
+                        x[nodemap] = limited
+                else:
+                    targets.extend(tg)
+        if targets:
+            drift = self.toolkit.abs(x - x0)
+            pinned = ()
+            if _limiting.CIRCUIT_LEVEL == 'pinned':
+                ## Variant B: nodes held by a voltage source are anchors
+                ## that may not be derived from anything.  Two anchors in
+                ## one component make the edge between them a CONFLICT,
+                ## which `device_writeback` drops rather than honours.
+                from .elements import VS
+                pinned = set()
+                for instance, element in self.elements.items():
+                    if isinstance(element, VS):
+                        pinned.update(int(r) for r in
+                                      elementnodemap[instance][:2])
+                pinned.add(self.get_node_index(gnd))
+            _limiting.device_writeback(x, targets, drift, pinned)
         return x
 
     def CY(self, x, w, epar=defaultepar):

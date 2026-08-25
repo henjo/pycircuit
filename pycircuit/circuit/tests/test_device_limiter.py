@@ -657,3 +657,163 @@ def test_the_four_terminal_mosfet_is_cheaper_with_the_group_across_the_grid():
                             atol=1e-6)
     assert fails['group'] == 0 and fails['none'] >= 4, fails
     assert total['group'] < total['none'] / 3.0, total
+
+
+## ------------------------------------------------------------------------
+## 5.  BETWEEN devices: the inter-device clash (roadmap 15, Stage 0) and
+##     the circuit-level forest that was priced against it (the spike).
+
+def _diffpair(cls, vin, m2_first=False, vdd=5.0):
+    """Differential pair: ideal 200 uA tail sink, 5 kOhm loads, inputs
+    `2.5 +- vin`.  `m2_first` flips the INSERTION order, which is the
+    order `SubCircuit.limit` visits the two devices in."""
+    from pycircuit.circuit.elements import IS, R
+    c = SubCircuit()
+    c['vdd'] = VS('vdd', gnd, v=vdd)
+    c['vp'] = VS('inp', gnd, v=2.5 + vin)
+    c['vn'] = VS('inn', gnd, v=2.5 - vin)
+    c['rl1'] = R('vdd', 'd1', r=5e3)
+    c['rl2'] = R('vdd', 'd2', r=5e3)
+    c['itail'] = IS('tail', gnd, i=200e-6)
+    devs = [('M1', ('d1', 'inp', 'tail')), ('M2', ('d2', 'inn', 'tail'))]
+    for name, nodes in (devs[::-1] if m2_first else devs):
+        c[name] = cls(*nodes)
+    return c
+
+
+def _diffpair_row(cls, vin):
+    """`[M1 first, M2 first]` Jacobian counts and tail voltages."""
+    from pycircuit.circuit.nrsolver import NoConvergenceError
+    from pycircuit.circuit.analysis import SingularMatrix
+    row = []
+    for m2_first in (False, True):
+        c = _diffpair(cls, vin, m2_first)
+        try:
+            x, its = _plain_newton(c)
+            row.append((its, float(x[c.get_node_index('tail')])))
+        except (NoConvergenceError, SingularMatrix):
+            row.append((None, None))
+    return row
+
+
+DIFF_VIN = (-1.0, -0.3, 0.0, 0.3, 1.0)
+DIFF_TAIL = {1.0: 2.818678, 0.3: 2.121207, 0.0: 1.845121}
+
+
+@pytest.fixture
+def _circuit_level(request):
+    """Switch `SubCircuit.limit` into the circuit-level forest for one
+    test and back out again, whatever happens."""
+    from pycircuit.circuit import _limiting
+    old = _limiting.CIRCUIT_LEVEL
+    _limiting.CIRCUIT_LEVEL = request.param
+    yield request.param
+    _limiting.CIRCUIT_LEVEL = old
+
+
+@pytest.mark.filterwarnings('ignore:overflow encountered')
+def test_two_devices_on_one_tail_are_resolved_by_instance_order():
+    """THE DOCUMENTED CLASH (roadmap 15, Stage 0), pinned as it stands.
+
+    Same equations, same `x` layout, both devices limited; only the order
+    `SubCircuit.limit` visits them differs.  Measured on this machine,
+    `[M1 first, M2 first]`:
+
+        vin        -1.0        -0.3        0        0.3       1.0
+        both     [45, 14]   [26, 14]  [15, 15]  [14, 26]  [14, FAIL]
+
+    Antisymmetric in `vin`, as a clash must be.  The mechanism, traced at
+    iteration 0 for `vin = 1.0` from a zero start (Newton proposes tail =
+    -1.45e8): M1's `fetlim` alone wants `tail = 2.5` (M1 is the device
+    that is ON) and M2's alone wants `tail = 0.5`.  Visited FIRST, M2
+    writes `tail = 0.5`; M1 then reads a tail that has "drifted" only
+    0.5 V against a gate that drifted 3.5 V from zero, and its own
+    move-the-wilder-node rule moves the pinned GATE to 1.5 V.  Newton
+    restores the gate, M1 sits at `vgs = 3 V` on a subthreshold
+    exponential, and the solve falls over.  Visited first, M1 writes
+    `tail = 2.5`, M2 then sees `vgs = -1 V` and does not bite at all.
+
+    `limit_together` cannot help: it is per DEVICE and this is between
+    devices.  `DC()`'s ladder rescues both orders to the same point,
+    which is why this runs on plain Newton.
+    """
+    from pycircuit.circuit.dcanalysis import DC
+    cls = _fet('both')
+    rows = {vin: _diffpair_row(cls, vin) for vin in DIFF_VIN}
+
+    ## Every order that converges lands on the ladder's answer.
+    ref = DC(_diffpair(_fet('none'), 1.0), toolkit=numeric).solve()
+    assert_allclose(float(ref.v('tail')), DIFF_TAIL[1.0], rtol=1e-6)
+    for vin, row in rows.items():
+        for its, tail in row:
+            if its is not None:
+                assert_allclose(tail, DIFF_TAIL[abs(vin)], rtol=1e-5)
+
+    ## The clash, as measured.  At vin = +1 the losing order fails
+    ## outright; at vin = -1 it converges, at 45 -- not a mirror image,
+    ## because the two exponentials are not evaluated at mirrored points
+    ## (the tail is 2.5 or 0.5 whoever wrote it).  Pinned as measured.
+    assert rows[1.0][1][0] is None, rows
+    assert rows[-1.0][0][0] is not None and rows[-1.0][0][0] > 30, rows
+    ## The winning order converges cheaply.
+    assert rows[1.0][0][0] <= 20 and rows[-1.0][1][0] <= 20, rows
+    ## ... and at |vin| = 0.3 the losing order costs a wide margin more.
+    assert rows[0.3][1][0] > 1.5 * rows[0.3][0][0], rows
+    assert rows[-0.3][0][0] > 1.5 * rows[-0.3][1][0], rows
+    ## Balanced, there is nothing to fight over.
+    assert rows[0.0][0][0] == rows[0.0][1][0] <= 20, rows
+
+
+@pytest.mark.filterwarnings('ignore:overflow encountered')
+@pytest.mark.parametrize('_circuit_level', [True, 'pinned'], indirect=True)
+def test_a_circuit_level_forest_is_order_independent_and_worse(
+        _circuit_level):
+    """THE SPIKE'S RESULT, and it is a refusal.
+
+    Lifting `device_writeback` to `SubCircuit.limit` -- every element's
+    probe targets, ONE spanning forest over the whole circuit -- makes
+    the diff pair order-INDEPENDENT and does not make it converge:
+
+        vin          -1.0       -0.3        0        0.3       1.0
+        forest     [F, F]    [43, 43]  [15, 15]  [43, 43]   [F, F]
+        +pinned    [F, F]    [32, 32]  [15, 15]  [32, 32]   [F, F]
+
+    and over the 48-point cascode grid (`both`, 909 with no failure as
+    the baseline) it costs 1878 with 8 failures (forest) and 1052 with
+    none (pinned anchors).  The only thing it cures is the Level-1
+    cascode's bulk tug-of-war from a uniform 20 V start, and the pinned
+    variant loses that again at 40 V.
+
+    WHY, traced at iteration 0, `vin = 1.0`: two devices asking one node
+    for 2.5 V and 0.5 V is a CONFLICT, not a cycle.  M1's `(inp, tail)`
+    and M2's `(inn, tail)` are two edges of a star, so the forest keeps
+    BOTH -- and the only way to honour both is to anchor on the least-
+    drifted node (`inn`) and derive `tail = 0.5` and then `inp = 1.5`: a
+    source-pinned gate moved by 2 V, which is precisely the failure the
+    runtime write-back was built to remove, now reached identically in
+    both orders.  Holding source-pinned nodes as anchors (the `'pinned'`
+    variant) turns the conflict into a dropped edge, but which edge is
+    dropped is decided by anchor choice -- least drift, i.e. `inn` at
+    1.5 V against `inp` at 3.5 V from a zero start -- and that hands the
+    tail to M2, the OFF device, again.  Nothing in `|x - x0|` knows that
+    M1 is the device that is on; the correction sizes differ by 2 V in
+    1.45e8 and the tie is decided by an artefact of the start vector.
+
+    So a circuit-level forest cannot resolve a genuine conflict; it can
+    only choose a loser without the information to choose the right one.
+    That is the number that decides whether vector PCNR gets built.  The
+    switch stays OFF; this test keeps the measurement honest.
+    """
+    cls = _fet('both')
+    rows = {vin: _diffpair_row(cls, vin) for vin in DIFF_VIN}
+    ## Order-independent: both orders do the same thing, at every point.
+    for vin, row in rows.items():
+        assert row[0][0] == row[1][0], (vin, row)
+    ## ... and the thing they do is fail where the better order succeeded.
+    assert rows[1.0][0][0] is None and rows[-1.0][0][0] is None, rows
+    assert rows[0.3][0][0] > 25 and rows[-0.3][0][0] > 25, rows
+    assert rows[0.0][0][0] <= 20, rows
+    for vin, row in rows.items():
+        for its, tail in row:
+            if its is not None:
+                assert_allclose(tail, DIFF_TAIL[abs(vin)], rtol=1e-5)
