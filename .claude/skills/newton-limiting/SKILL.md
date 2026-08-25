@@ -254,3 +254,41 @@ paths. When measuring an architectural change, separate the two claims:
 "does the answer depend on order?" and "does it converge?". They have
 different causes and different fixes, and a table that only shows the
 first will be read as showing the second.
+
+
+## A convergence test that only looks at the step will lie to you
+
+`solve_dc`'s criterion was `max|dx| < reltol * max|x_new|` over the
+whole unknown vector. Source branch currents are in that vector. On a
+cascode where the supply current reached 7.5e27 A, the tolerance
+became 7e23 V and the solver reported convergence in five iterations at
+a node 5e9 V off, with a KCL residual of 7.5e27 -- on 18 of 48 grid
+points, every one labelled converged. Diode circuits never exposed it,
+which is why it survived.
+
+Judge the RESIDUAL as well as the step, per component, scaled by that
+component's own magnitude. And when a solver's iteration counts are
+suspiciously low on a hard circuit, check what it converged TO before
+believing the count: two "improvements" here were fake convergences.
+
+## A participation gate keyed on the wrong view falls through silently
+
+`DC(pcnr=True)` gated participation on the pnj-only junction list
+built for the gmin ladders. For a circuit of pure `fetlim`/`limvds`
+devices that list is empty, so the circuit was solved WITHOUT PCNR and
+nothing said so. Every acceptance measurement had been taken through
+`pcnr.solve_dc` directly, which is the only reason it was noticed. A
+feature switch must gate on the thing it switches; and a measurement
+that bypasses the user-facing entry point has not tested it.
+
+## The clash is real, and vector PCNR removes it -- at a price
+
+The record on "two devices limiting one node" was "did not reproduce"
+for a year, because the one search looked at a shared GATE, which
+composes. It lives where two devices' laws want DIFFERENT values on one
+shared node: a differential pair's tail, a cascode's bulk, a derived
+collector. Under plain Newton the outcome is decided by instance order
+(`[14, NoConv]`); under vector PCNR it is `[22, 22]` -- order-
+independent, converging, ~50% dearer. What vector PCNR does NOT fix is
+a node no probe touches (driven to 1e117 from an all-off start); that
+is architectural on every path, and a separate problem.

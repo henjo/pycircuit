@@ -2185,3 +2185,82 @@ favour of the shared functions. Per-component convergence replaces the
 **Stage 2 (FETs) and Stage 3 (JAX) remain the user's call.** Stage 2 is
 where the diff-pair clash -- the case that commissioned all this -- gets
 its number.
+
+### Stage 2 delivered (2026-08-26): the diff-pair clash is gone, and the old solver had been declaring fake convergences
+
+`fetlim`/`limvds` probes are PCNR unknowns. A cycle in the declaration
+(`(b,s)`, `(b,d)`, `(d,s)`) is handled by taking a spanning TREE of
+probes as unknowns and applying the redundant probe's law over the tree
+(Kruskal on |correction|, `pcnr.limit_block`); `g_lim` consistency and
+the implied `vbd` are asserted to 1e-12 at convergence. Measured: with
+the redundant law made a no-op, Level 1 fails **48 of 48** grid points
+from a 20 V start -- `vbd = vbs - vds` is left unbounded forward and
+the bulk-drain diode overflows -- so the law over the tree is
+load-bearing, and `limit_together`'s coupling is NOT "trivially
+per-probe under PCNR" when the declaration has a cycle (a premise of
+the design, corrected). EKV is refused as predicted (`var(vsb) reads
+b, g, which no $limit probe limits`); the minimal admission is an
+identity probe kind (`limit_identity(b.V)`: an unknown with no law),
+proposed and not built. +15 tests; suite 2351 / 7 / 3 / 0.
+
+**The number this was commissioned for** -- `_fet('both')` diff pair,
+ideal tail, `[M1 first, M2 first]`:
+
+    vin        -1.0       -0.3        0        0.3       1.0
+    plain    [45,14]    [26,14]  [15,15]   [14,26]  [14,FAIL]
+    PCNR     [22,22]    [23,23]  [15,15]   [23,23]  [22,22]
+
+Order-independent at every point AND converging everywhere, including
+`vin = +1.0` where plain Newton failed in one order; tails equal to
+`DC()`'s in both orders. Price: 22 against the lucky order's 14.
+
+    48-point cascode grid    plain      PCNR (budget 200)
+    _fet('both')             909 / 0    1281 / 0
+    _mos4('group')           896 / 0    1430 / 0
+
+~40% dearer, every answer equal on the nodes; the slowest point (152)
+is a `limvds` limit cycle riding Newton's `N*VT`-per-step creep down a
+1e25 A exponential -- slow, not divergent.
+
+    Level-1 cascode, 20 V start     plain      PCNR
+    (20, 2, .8)                     [13, 8]    [12, 12]
+    (40, 2, .8)                     [17, 8]    [12, 12]
+    (5, 2, .8)                      [31, 9]    [19, 19]
+    (20, 2, .8, vb = -2)            [13, 8]    [FAIL, FAIL]
+
+Order-independent at all four, converging at three; the fourth is
+Stage 1's obstacle again -- from an all-off start `mid` is held by
+nothing, PCNR limits no NODE, and the iterate reaches -3.4e117 --
+architecture, the same on FETs as on BJTs. (The plain column no longer
+matches Stage 0's `[17,10] [F,10] [F,12] [F,21]`: `von` now follows the
+bulk bias, §12.6(c), which Stage 0 predates.)
+
+**Two defects in the EXISTING solver, found on the way:**
+
+1. **`solve_dc` was declaring fake convergences.** Its criterion was
+   `max|dx| < reltol * max|x_new|` over the whole vector, source branch
+   currents included. On the `fet` cascode at (40, 1, 1.2) the VDD
+   current hit 7.5e27 A, the node tolerance became 7e23 V, and it
+   "converged" in 5 iterations at `mid = -2.12 V` with a KCL residual
+   of 7.5e27 A -- **18 of 48 grid points, up to 5e9 V off**, all
+   reported as converged. Diodes never exposed it. Replaced by
+   `StandardNewton`'s per-component step test plus a residual test.
+   Two existing counts moved because of it (charge diode 8 -> 9, BJT
+   +10 V 6 -> 7): each had stopped with a residual 4-5x over tolerance
+   that the old criterion never examined.
+2. **`DC(pcnr=True)` gated PARTICIPATION on the pnj-only pair view**,
+   which exists for the gmin ladders and is EMPTY for a circuit of pure
+   `fetlim`/`limvds` devices -- so a MOSFET differential pair asked for
+   PCNR silently got the ordinary solver. Fixed in `dcanalysis` and
+   `transient` (gate on `pcnr_devices()`), with a test that counts the
+   `solve_dc` calls. Every Stage 2 table was taken through
+   `pcnr.solve_dc` directly, which is how the fall-through was noticed.
+
+**Bottom line for the question that started §15.** Vector PCNR does
+what it was commissioned for: the inter-device clash is gone in both
+orders, converging where plain Newton failed, at a ~40-60% iteration
+premium. It does not remove the unlimited-node failure (a node no probe
+touches, driven to 1e117), which is architectural and shared by every
+path. **Stage 3 (JAX) is the user's call**; a vector device under
+`pcnr=True` on the traced path currently raises `NotImplementedError`
+rather than silently not participating.
