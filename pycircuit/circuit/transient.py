@@ -985,20 +985,32 @@ class Transient(Analysis):
                         "`ic` instead." % name)
                 continue
 
-            ic = getattr(getattr(element, 'iparv', None), 'ic', None)
-            if ic is None:
-                continue
-
             ## State-flavoured ICs (Idt/Idtmod) live on the element's own
             ## private row -- neither a branch current nor a node-voltage
             ## difference -- and the element hands back `(local_row, value)`
             ## pairs it has already converted (e.g. wrapped into the modulus
             ## range).  `elementnodemap` maps its local x-indices, private
             ## nodes included, onto this circuit's rows.
+            ##
+            ## GATED ON `state_ic`, NOT ON A PARAMETER SPELLED `ic`.  This
+            ## test used to read `iparv.ic` first and then never use the
+            ## value on this path -- a NAME check.  A generated model whose
+            ## state seed is called anything else (`x0`, `phi0`) fell through
+            ## it, and `uic=True` started that state at zero while the DC pin
+            ## was perfectly correct: no error, no warning, a wrong waveform.
+            ## `IC_KIND == 'state'` and `state_ic` are installed under the
+            ## same condition (hdl.py, `state_meta['dc_pins']`), so this is
+            ## the same question asked of the thing that answers it.
             if getattr(element, 'IC_KIND', 'current') == 'state':
+                if not hasattr(element, 'state_ic'):
+                    continue
                 rows = cir.elementnodemap[name]
                 for local_row, value in element.state_ic():
                     x0[rows[local_row]] = value
+                continue
+
+            ic = getattr(getattr(element, 'iparv', None), 'ic', None)
+            if ic is None:
                 continue
 
             ## Voltage-flavoured ICs constrain a difference of two node unknowns
@@ -1131,9 +1143,19 @@ class Transient(Analysis):
         loudly instead of being dropped.
         """
         for element in getattr(circuit, 'elements', {}).values():
-            if getattr(getattr(element, 'iparv', None), 'ic', None) is not None:
-                if include_state or \
-                        getattr(element, 'IC_KIND', 'current') != 'state':
+            ## Same correction as `_apply_element_ics`: a state element
+            ## declares its seed through `state_ic`, not through a parameter
+            ## named `ic`.  Asking the old question here made the guard
+            ## UNDER-detect, which is the direction that silently drops an
+            ## initial condition instead of refusing it.
+            kind = getattr(element, 'IC_KIND', 'current')
+            if kind == 'state':
+                carries = hasattr(element, 'state_ic')
+            else:
+                carries = getattr(getattr(element, 'iparv', None),
+                                  'ic', None) is not None
+            if carries:
+                if include_state or kind != 'state':
                     return True
             if self._descendant_has_ic(element, include_state=include_state):
                 return True
