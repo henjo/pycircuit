@@ -2826,3 +2826,117 @@ let-chain to walk, the expressions are already flat, and
 Recorded rather than acted on: this is the roadmap's own rule for the
 backend work -- gate the expensive item on a measurement -- applied to
 the item that was next in line.
+
+## 23. §22's measurement, taken (2026-08-26): the device is not the cost, and the marshalling is
+
+§22 ranked three items and put a measurement first: *what fraction of an
+eager transient is device evaluation?* Taken. It answers both open
+backend items, and the answer to each is **no**.
+
+### The 5% inference in §22 was wrong
+
+§22 reasoned from "14.2 s with HDL elements against 13.5 s with
+hand-written ones" that device evaluation was ~5% and the solver
+dominated. That comparison **confounds two things**: both sides pay the
+same circuit-level assembly cost, so the difference measures only the
+gap between two element implementations, not the size of the phase they
+sit in. Profiled directly on the batched-sweep rectifier's single lane
+(4 elements, `tend=2ms`, `timestep=1e-5`):
+
+| phase | ms | share |
+|---|---|---|
+| circuit assembly (`cir.i/G/q/C/u`) | 77.9 | 59.4% |
+| — of which the **elements' own** `i/G/q/C` | **23.9** | **18.2%** |
+| — of which the **stamping loop** | 54.0 | 41.2% |
+| solver / LU / control | 53.3 | 40.6% |
+| total | 131.2 | |
+
+The phase is 59%, not 5%. But only the element half of it is what a C
+backend can touch, and that is **18.2%** -- a ceiling of **1.22x** even
+with device evaluation driven to zero.
+
+### The share grows with circuit size, and still does not clear 2x
+
+Four elements could understate it, so it was scaled -- n cascaded
+RC-diode stages, all eager classes:
+
+| devices | nodes | total ms | element ms | element share | ceiling |
+|---|---|---|---|---|---|
+| 4 | 2 | 61.2 | 10.8 | 17.6% | 1.21x |
+| 13 | 5 | 190.0 | 55.3 | 29.1% | 1.41x |
+| 49 | 17 | 606.9 | 239.3 | 39.4% | 1.65x |
+| 121 | 41 | 1338.0 | 579.2 | 43.3% | **1.76x** |
+
+It rises and flattens toward ~1.8x. Against the C backend's measured
+**212x** on PSP's Jacobian, an eager C backend is a different kind of
+item: same build cost, two orders of magnitude less return. **Do not
+build it**, and do not build S1 either -- S1's value was only ever
+"batching on top of C", and there is no model that can have both (§22).
+
+### What the profile actually points at
+
+The top cost centres in a 49-element run are not arithmetic:
+
+```
+2259 calls  0.174s  circuit.py:1674(_add_element_subvectors)
+794299 calls 0.147s  {built-in getattr}
+1781 calls  0.143s  circuit.py:1589(_add_element_submatrices)
+421670 calls 0.104s  param.py:218(ParameterDict.__getattr__)
+125029 calls 0.091s  hdl.py:5092(_args_of)
+198058 calls 0.083s  {ndarray.flatten}
+125029 calls 0.058s  hdl.py:5017(_params_of)
+480149 calls 0.046s  {built-in hasattr}
+```
+
+`_args_of` runs **125 029 times** and rebuilds the same list every time:
+one `getattr(self.iparv, name)` per parameter plus one `is_given` per
+given-flag, on every `i`/`G`/`q`/`C`/`u` call of every element of every
+Newton iteration of every timestep. **Parameters do not change during a
+transient.** This is marshalling, not physics, and it is pure repeat
+work.
+
+### Measured ceiling of caching it
+
+A per-instance cache keyed on `T` (no invalidation -- a ceiling probe,
+not an implementation):
+
+| devices | base ms | cached ms | speedup |
+|---|---|---|---|
+| 13 | 172.5 | 150.1 | 1.15x |
+| 49 | 533.4 | 445.0 | 1.20x |
+| 121 | 1149.5 | 955.7 | **1.20x** |
+
+Answers **bit-identical** at n=4 and n=16, first and last node,
+`max|diff| = 0.0`.
+
+So roughly **15 lines buys 1.20x** -- more than an entire eager C
+backend would return on a small circuit (1.21x), and about two-thirds of
+what one would return on a large one (1.76x), at a fraction of the cost
+and with no second code path to keep in step.
+
+### The one risk, and the hook that answers it
+
+A naive cache goes stale the moment a parameter is reassigned -- and
+sweeps, `.alter`, and temperature loops all do exactly that.
+`ParameterDict` already has the invalidation point: **`notify`**, called
+from both `__setattr__` (`param.py:230`) and `update_values`
+(`param.py:189`). The real version must clear the cache from there, not
+guess at a key. `T` still belongs in the key, since `epar.T` varies
+within a run without touching `ipar`.
+
+Not built -- measured and recorded, per the same rule §22 applied.
+
+### Ranking after this measurement
+
+1. **`_args_of` caching** -- 1.20x, ~15 lines, needs the `notify` hook.
+2. **The stamping loop** (`_add_element_subvectors` /
+   `_add_element_submatrices`, 41% of the transient and the single
+   largest phase) -- unexamined; 198 k `flatten` calls and 480 k
+   `hasattr` calls in it suggest the same repeat-work shape.
+3. ~~C backend for the eager path~~ -- **refused on measurement**,
+   ceiling 1.76x.
+4. ~~S1~~ -- **refused on measurement** (§22), no model can hold both
+   fast paths.
+
+Two of the four items the roadmap was carrying are now closed by
+measurement rather than by building them.
