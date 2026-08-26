@@ -1987,6 +1987,453 @@ class Quantity(sympy.AtomicExpr):
     __str__ = __repr__
 
 
+## ----------------------------------------------------------------------
+## select() -- the compiler's own both-arms domain propagation
+## ----------------------------------------------------------------------
+
+
+class SelectRefused(ValueError):
+    """`select` was handed a condition whose shape it cannot clamp.
+
+    Raised at BUILD time, from `select`, naming the condition and the
+    sympy class that made it unsupported.  It is a refusal, not a
+    failure: the model can always write the `Piecewise` and clamp by
+    hand, and `hdl.unclamped` says so in one word.
+    """
+
+
+class _Unclamped(object):
+    """The value `unclamped` returns; see there."""
+
+    __slots__ = ('expr',)
+
+    def __init__(self, expr):
+        self.expr = sympy.sympify(expr)
+
+
+def unclamped(expr):
+    """Mark one arm of a `select` as deliberately NOT clamped.
+
+    The escape hatch.  An arm wrapped in this is passed to `Piecewise`
+    exactly as written, and its condition still constrains the LATER
+    arms.  Use it when the arm is finite over the whole real line
+    anyway, when the clamp would cost more than it buys, or when
+    `select` refuses a shape it turns out you do not need clamped::
+
+        hdl.select((hdl.unclamped(1.0 + t * v), t < 0), (f(v), True))
+    """
+    return _Unclamped(expr)
+
+
+#: The atoms `select` will substitute for a clamped copy: a parameter or
+#: intermediate symbol, or a branch/node quantity.  Anything else on one
+#: side of a relational is a compound, and a compound cannot be clamped
+#: by substitution -- clamping `a*b` would mean choosing which factor to
+#: move.
+_CLAMPABLE = (sympy.Symbol, Quantity)
+
+
+def _select_atoms(expr):
+    """Every atom in `expr` that `select` is willing to clamp."""
+    out = set()
+    for a in expr.atoms(*_CLAMPABLE):
+        out.add(a)
+    return out
+
+
+def _abs_arg(e):
+    """`x` if `e` is ``|x|`` or ``x*x`` or ``x**2`` for a clampable `x`."""
+    if isinstance(e, (Abs, sympy.Abs)) and isinstance(e.args[0], _CLAMPABLE):
+        return e.args[0], False
+    if isinstance(e, sympy.Pow) and e.exp == 2 and \
+            isinstance(e.base, _CLAMPABLE):
+        return e.base, True
+    if isinstance(e, sympy.Mul) and len(e.args) == 2 and \
+            e.args[0] == e.args[1] and isinstance(e.args[0], _CLAMPABLE):
+        return e.args[0], True
+    return None, False
+
+
+def _refuse(cond, why):
+    raise SelectRefused(
+        'select cannot clamp the condition `%s`: %s.  Write the arm as '
+        'hdl.unclamped(...) if it needs no clamp, clamp it by hand in a '
+        'sympy.Piecewise, or pass strict=False to accept an unclamped '
+        'arm silently.' % (cond, why))
+
+
+def _select_constraints(cond, negate, out, bad):
+    """Append `(atom, side, bound, is_strict)` constraints for `cond`.
+
+    `side` is ``'lo'`` (the atom is bounded BELOW by `bound`),
+    ``'hi'``, or ``'out'`` (``|atom| >= bound``).  With `negate` the
+    constraints describe the complement, which is what the arms AFTER
+    this one are selected in.
+
+    Nothing is raised here.  Every fragment that could not be turned
+    into a box is appended to `bad` as ``(fragment, why)``, and
+    `select` decides whether the silence matters -- which it does
+    exactly when the ARM uses one of the fragment's symbols.  A refusal
+    over a condition an arm does not read would be noise, and noise is
+    how a strict mode gets turned off.
+    """
+    if cond is True or cond is sympy.true:
+        ## `True` constrains nothing, and its complement is empty --
+        ## which also constrains nothing, since no arm is selected there.
+        return
+    if cond is False or cond is sympy.false:
+        return
+    if isinstance(cond, sympy.Not):
+        return _select_constraints(cond.args[0], not negate, out, bad)
+    if isinstance(cond, (sympy.And, sympy.Or)):
+        ## An And is an intersection of boxes and composes; an Or is a
+        ## UNION, and the union of two boxes is not a box, so no
+        ## substitution can be the identity on all of it.  De Morgan
+        ## turns each into the other under negation.
+        conj = isinstance(cond, sympy.And) != bool(negate)
+        if not conj:
+            bad.append((cond, 'it is a %s in a position where the region '
+                        'is a UNION of boxes, and no min/max substitution '
+                        'is the identity on a union'
+                        % ('disjunction' if isinstance(cond, sympy.Or)
+                           else 'negated conjunction'),
+                        _select_atoms(cond)))
+            return
+        for a in cond.args:
+            _select_constraints(a, negate, out, bad)
+        return
+    if isinstance(cond, (sympy.Equality, sympy.Unequality)):
+        bad.append((cond, 'an equality constrains a measure-zero set (or '
+                    'its complement), which no clamp can reach',
+                    _select_atoms(cond)))
+        return
+    if not isinstance(cond, sympy.core.relational.Relational):
+        bad.append((cond, 'it is a %s, not a relational'
+                    % type(cond).__name__, _select_atoms(cond)))
+        return
+
+    ## Normalise to `lhs < rhs` or `lhs <= rhs`, folding the negation in.
+    ## `not (a < b)` is `a >= b`, i.e. `b <= a` -- the strictness flips
+    ## with the direction, which is the whole reason the two are tracked
+    ## separately.
+    lhs, rhs = cond.lhs, cond.rhs
+    isstrict = isinstance(cond, (sympy.StrictLessThan,
+                                 sympy.StrictGreaterThan))
+    if isinstance(cond, (sympy.StrictGreaterThan, sympy.GreaterThan)):
+        lhs, rhs = rhs, lhs
+    if negate:
+        lhs, rhs = rhs, lhs
+        isstrict = not isstrict
+    ## Now the region is `lhs < rhs` (or `<=`).
+    hit = False
+    if isinstance(lhs, _CLAMPABLE):
+        out.append((lhs, 'hi', rhs, isstrict))
+        hit = True
+    if isinstance(rhs, _CLAMPABLE):
+        out.append((rhs, 'lo', lhs, isstrict))
+        hit = True
+    ## `|x| < c` and its algebraic spelling `x*x < c`: an INTERVAL
+    ## around zero, which is a box and composes like one.  `c < |x|` is
+    ## the complement of one -- a union of two half-lines, not a box,
+    ## but still reachable by a substitution because the hole is
+    ## bounded; see `_punch`.
+    ##
+    ## Tried on BOTH sides, and after the atom rule rather than instead
+    ## of it, so that `|x| < c` with `c` a symbol clamps `c` from below
+    ## AND `x` into the interval.  A square whose bound is not a literal
+    ## is reported even when the other side DID yield a clamp: `x*x < c`
+    ## clamps `c`, which is not what an arm that divides by `x` needed.
+    for e, other, side in ((lhs, rhs, 'in'), (rhs, lhs, 'out')):
+        a, squared = _abs_arg(e)
+        if a is None:
+            continue
+        bound = other
+        if squared:
+            ## `x*x < c` bounds `|x|` by `sqrt(c)`, and a symbolic `c`
+            ## would need `sqrt` of a quantity whose sign nothing here
+            ## knows.  A non-negative literal is the case that occurs.
+            if not (bound.is_number and bound.is_real and bound >= 0):
+                bad.append((cond,
+                            'the square of `%s` is bounded by `%s`, which '
+                            'is not a non-negative literal, so the bound '
+                            'on `%s` itself is not available without '
+                            'assuming a sign' % (a, bound, a), {a}))
+                continue
+            bound = sympy.sqrt(bound)
+        if side == 'in':
+            out.append((a, 'lo', -bound, isstrict))
+            out.append((a, 'hi', bound, isstrict))
+        else:
+            out.append((a, 'out', bound, isstrict))
+        hit = True
+    if hit:
+        return
+    bad.append((cond, 'neither side is a symbol or a branch quantity '
+                '(`%s` is a %s, `%s` is a %s), so there is no atom to '
+                'substitute for a clamped copy.  Clamping the COMPOUND '
+                'is not offered, because a substitution cannot reliably '
+                'find one: sympy stores `1.0/(a*b)` as '
+                '`1.0*a**-1*b**-1`, in which `a*b` is not a node, so '
+                'the clamp would silently do nothing.  Bind the '
+                'compound with var() first and the condition has an '
+                'atom'
+                % (lhs, type(lhs).__name__, rhs, type(rhs).__name__),
+                _select_atoms(cond)))
+
+
+def _punch(v, c):
+    """``v`` pushed OUT of ``(-c, c)``, the identity where ``|v| >= c``.
+
+    The complement of an interval is not a box, so `minc`/`maxc` cannot
+    express it; this can, in four operations::
+
+        v + pm(v) * maxc(0, c - |v|)
+
+    with ``pm(v) = 2*_step(v, 0) - 1``, which is ``+-1`` and never 0.
+    Where ``|v| >= c`` the `maxc` is exactly ``0.0`` and the sum returns
+    `v` bit for bit; inside the hole the result is ``+-c``.
+
+    The argument ORDER of the `maxc` is load-bearing.  `maxc(0, u)`
+    differentiates to ``(1 - _step(0, u)) * du``, which is exactly zero
+    on ``u <= 0`` -- the TIE included, i.e. at ``|v| = c``, which is a
+    selected point whenever the arm's condition is non-strict.  Written
+    `maxc(u, 0)` the tie would go the other way and the derivative at
+    ``|v| = c`` would come out 0 instead of 1.
+    """
+    pm = 2.0 * _step(v, sympy.Integer(0)) - 1.0
+    return v + pm * maxc(sympy.Integer(0), c - Abs(v))
+
+
+def _clamped_symbol(atom, lo, hi, out, margin):
+    """The expression `atom` is replaced by inside one arm."""
+    rep = atom
+    if lo is not None:
+        b, isstrict = lo
+        rep = maxc(rep, b + margin if isstrict else b)
+    if hi is not None:
+        b, isstrict = hi
+        rep = minc(rep, b - margin if isstrict else b)
+    if out is not None:
+        b, isstrict = out
+        rep = _punch(rep, b + margin if isstrict else b)
+    return rep
+
+
+def _var_dependencies():
+    """symbol -> the symbols its `var()` definition transitively uses.
+
+    Empty outside a compile.  Used only by the shadow check below, so it
+    is built on demand and thrown away.
+    """
+    if not _VAR_STACK:
+        return {}
+    deps = {}
+    for sym, expr in _VAR_STACK[-1]:
+        direct = _select_atoms(expr)
+        acc = set(direct)
+        for d in direct:
+            acc |= deps.get(d, set())
+        deps[sym] = acc
+    return deps
+
+
+def select(*arms, **kw):
+    """A `Piecewise` that clamps each arm to its OWN condition's domain.
+
+    Both arms of a compiled conditional are evaluated -- the selection
+    happens afterwards -- so an arm that is never chosen at this bias
+    still runs, still raises floating-point flags, and still has its
+    derivative taken.  The rule the model has to obey is therefore
+    "every arm must be finite, and have a finite derivative, EVERYWHERE",
+    not merely where it is selected, and the way that rule is obeyed by
+    hand is a clamped copy of the input fed to the arm that does not
+    want it::
+
+        sympy.Piecewise((0.0, p <= 0.0), (1.0 / maxc(p, 1e-30), True))
+
+    That `maxc` is domain propagation the compiler could have done: the
+    second arm is selected exactly where ``p > 0``, so inside it `p` may
+    be replaced by any expression that equals `p` there.  `select` does
+    the substitution::
+
+        hdl.select((0.0, p <= 0.0), (1.0 / p, True), margin=1e-30)
+
+    Each arm is `Piecewise`'s ``(expr, cond)`` pair, last condition
+    ``True``.  For every arm, the region it is selected in -- its own
+    condition AND the complement of every earlier one -- is turned into
+    a box of bounds on individual symbols, and each bounded symbol is
+    replaced INSIDE THAT ARM by a `minc`/`maxc` clamped copy.
+
+    **The clamp is the identity where the arm is selected, in value and
+    in derivative, exactly.**  `minc(v, c)` returns `v` bit for bit
+    wherever ``v <= c``, and differentiates to ``_step(c, v) = 1``
+    there, with exactly zero weight on `c` -- so a clamped arm and a
+    hand-written one agree to the last bit of the residual AND of the
+    Jacobian.  The tie ``v == c`` is included on purpose: it is a
+    selected point when the condition is non-strict.
+
+    Supported conditions, and nothing else:
+
+    ==========================  ==================================
+    ``v < c``, ``v <= c``       ``v -> minc(v, c)``
+    ``v > c``, ``v >= c``       ``v -> maxc(v, c)``
+    ``a < v`` etc.              the mirror of the above
+    ``u < v`` (both atoms)      both, simultaneously
+    ``|v| < c``, ``v*v < c``    ``v -> minc(maxc(v, -c), c)``
+    ``|v| > c``                 pushed out of the hole; see `_punch`
+    ``And(...)``                the intersection of the boxes
+    ``Or(...)`` in a NEGATED
+    position (an earlier arm)   ditto, by De Morgan
+    ``True``                    the complement of the earlier arms
+    ==========================  ==================================
+
+    `c` may be any expression, including one that mentions `v` itself
+    (``vds < vdsat``): the substitution is simultaneous, so the bound is
+    evaluated at the UNCLAMPED `v` and no cycle is created.  It costs
+    nothing in finiteness either, because the bound was already being
+    evaluated -- by the condition.
+
+    Everything else is REFUSED, loudly, with `SelectRefused` naming the
+    condition and the reason: an `Or` in a positive position (a union of
+    boxes is not a box), an equality, a relational whose sides are both
+    compound (``a*b < c`` constrains neither factor).  A `select` that
+    quietly did not clamp would be worse than the `Piecewise` it
+    replaced, because the author would trust it.  `strict=False` turns
+    the refusals into silence, and `hdl.unclamped(expr)` marks ONE arm
+    as deliberately raw.
+
+    ``margin`` (default ``0.0``) is subtracted from every bound that
+    came from a STRICT inequality, on the side that keeps it inside the
+    selected region.  It exists because clamping to the boundary is not
+    always enough: ``p > 0`` clamps to ``maxc(p, 0)``, and an arm that
+    divides by `p` still divides by zero.  A margin makes the clamp
+    ``maxc(p, 1e-30)``, which is finite -- at the price that the clamp
+    is no longer the identity on the sliver ``0 < p < margin``.  That
+    is a real trade and it is why the default is zero: with
+    ``margin=0`` a selected value can never change.  A margin is only
+    ever applied to a strict bound, because a non-strict one has its
+    boundary INSIDE the selected region, where moving it would change
+    an answer.
+
+    The margin is an absolute number in the units of whatever it bounds,
+    so write it relative to that scale (``margin=1e-9*leff``) rather
+    than picking a constant that happens to work on one card.
+
+    **What it cannot do**, and refuses rather than pretending: a clamp
+    can only reach a symbol the arm MENTIONS.  If the arm uses an
+    intermediate that `var()` bound earlier from the same symbol --
+    ``vdsc = leff*vmax/us`` used in an arm conditioned on ``vmax > 0``
+    -- substituting `vmax` inside the arm does not change `vdsc`, and
+    the clamp is a no-op.  `select` detects exactly that case (the arm
+    depends on a constrained symbol ONLY through a `var()` intermediate)
+    and refuses.
+    """
+    margin = kw.pop('margin', 0.0)
+    strict = kw.pop('strict', True)
+    if kw:
+        raise TypeError('select() got unexpected keyword arguments %s'
+                        % sorted(kw))
+    if not arms:
+        raise TypeError('select() needs at least one arm')
+    margin = sympy.sympify(margin)
+
+    pairs = []
+    for arm in arms:
+        if not (isinstance(arm, (tuple, list)) and len(arm) == 2):
+            raise TypeError(
+                'select() takes (expr, cond) pairs, as sympy.Piecewise '
+                'does; got %r' % (arm,))
+        pairs.append(arm)
+
+    deps = None
+    built = []
+    for k, (expr, cond) in enumerate(pairs):
+        raw = isinstance(expr, _Unclamped)
+        if raw:
+            expr = expr.expr
+        expr = sympy.sympify(expr)
+        cond = sympy.sympify(cond)
+        if raw:
+            built.append((expr, cond))
+            continue
+        cons, bad = [], []
+        ## The arm's own condition, then the EARLIER ones negated.  An
+        ## earlier condition is a refinement: dropping it only widens
+        ## the region the clamp has to be the identity on, which is
+        ## safe.  For a `True` arm it is the OTHER way round -- the
+        ## complement of the earlier conditions is the only thing that
+        ## can clamp it -- so a fragment lost there is reported too.
+        _select_constraints(cond, False, cons, bad)
+        isdefault = cond is sympy.true
+        for j in range(k):
+            _select_constraints(sympy.sympify(pairs[j][1]), True, cons,
+                                bad if isdefault else [])
+        bysym = {}
+        for atom, side, bound, isstrict in cons:
+            slot = bysym.setdefault(atom, {'lo': None, 'hi': None,
+                                           'out': None})
+            have = slot[side]
+            if have is None:
+                slot[side] = (bound, isstrict)
+            else:
+                ## Two bounds on one symbol from a conjunction: keep the
+                ## TIGHTER, which is the one that makes the box smaller.
+                ## `maxc`/`minc` fold two literals at build time, so the
+                ## common case costs nothing at run time.
+                b, s = have
+                comb = (maxc(b, bound) if side == 'lo' else
+                        minc(b, bound) if side == 'hi' else
+                        maxc(b, bound))
+                slot[side] = (comb, s or isstrict)
+        rep = {}
+        atoms = _select_atoms(expr)
+        ## A condition fragment that is not a box leaves the arm
+        ## unclamped in the symbols it mentions.  That is a silent
+        ## no-op only if the arm USES one of them; when it does, this
+        ## is the refusal the whole design exists for.
+        if strict:
+            for frag, why, risk in bad:
+                miss = sorted(str(a) for a in risk & atoms)
+                if miss:
+                    _refuse(frag, '%s -- and this arm uses %s'
+                            % (why, ', '.join(miss)))
+        for atom, slot in bysym.items():
+            if slot['out'] is not None and (slot['lo'] is not None or
+                                            slot['hi'] is not None):
+                if strict:
+                    _refuse(cond, 'symbol `%s` is constrained both to a '
+                            'box and out of a hole, and the composition '
+                            'of the two is not the identity on the '
+                            'region' % atom)
+                continue
+            if atom not in atoms:
+                ## The arm does not mention it.  Either it genuinely
+                ## does not use it -- fine, nothing to clamp -- or it
+                ## reaches it through a `var()` intermediate, where a
+                ## substitution cannot follow.  The second is a silent
+                ## no-op and is refused.
+                if deps is None:
+                    deps = _var_dependencies()
+                shadow = [s for s in atoms
+                          if isinstance(s, _IntermediateSymbol)
+                          and atom in deps.get(s, ())]
+                if shadow and strict:
+                    raise SelectRefused(
+                        'select cannot clamp `%s` in the arm selected by '
+                        '`%s`: the arm does not mention it, it reaches it '
+                        'through the var() intermediate %s, and a '
+                        'substitution cannot follow a symbol into a '
+                        'definition that was already bound.  Clamp that '
+                        'intermediate where it is DEFINED, inline it into '
+                        'the arm, or mark the arm hdl.unclamped().'
+                        % (atom, cond,
+                           ', '.join(sorted(str(s) for s in shadow))))
+                continue
+            rep[atom] = _clamped_symbol(atom, slot['lo'], slot['hi'],
+                                        slot['out'], margin)
+        built.append((expr.xreplace(rep) if rep else expr, cond))
+    return sympy.Piecewise(*built)
+
 class Statement:
     pass
 

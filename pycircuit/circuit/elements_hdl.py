@@ -208,6 +208,7 @@ from pycircuit.circuit.hdl import safe_abs as _safe_abs
 from pycircuit.circuit.hdl import safe_div as _safe_div
 from pycircuit.circuit.hdl import maxc as _maxc
 from pycircuit.circuit.hdl import minc as _minc
+from pycircuit.circuit.hdl import select as _select
 from pycircuit.circuit.hdl import safe_pow as _safe_pow
 from pycircuit.circuit.hdl import safe_sqrt as _safe_sqrt
 from pycircuit.circuit.hdl import softplus as _softplus
@@ -1716,6 +1717,17 @@ def _gp_core(p, T, npn, c, b, e):
     ## evaluated: `1/vaf` at `vaf = 0` is `inf`, and an `inf` in a
     ## discarded arm is only harmless until something multiplies it
     ## by the selected arm's zero derivative.
+    ##
+    ## `hdl.select` cannot take this one over, and the reason is worth
+    ## the four lines: two of the four calls pass a PRODUCT
+    ## (`area*ikf`), so the condition is `area*ikf <= 0`, which
+    ## constrains neither factor on its own.  Clamping the product
+    ## itself would need a substitution for the compound -- and sympy
+    ## does not keep the compound: `1.0/(area*ikf)` is stored as
+    ## `1.0 * area**-1 * ikf**-1`, in which `area*ikf` is not a node,
+    ## so the substitution would silently do nothing.  Binding the
+    ## product with `var()` first would give `select` an atom to work
+    ## on; it also changes the emitted chain, so it is not done here.
     def _recip(p):
         return sympy.Piecewise((sympy.Float(0.0), p <= 0.0),
                                (1.0 / _maxc(p, 1e-30), True))
@@ -1762,10 +1774,13 @@ def _gp_core(p, T, npn, c, b, e):
     ## `vtf = 0` means "no Vbc dependence".  The discarded arm is
     ## floored at 1 mV so that it cannot overflow while it is being
     ## discarded -- a card with `0 < vtf < 1e-3` would be clamped,
-    ## and no such card exists.
-    tfx = _var(sympy.Piecewise(
+    ## and no such card exists.  That last sentence is the `margin`
+    ## trade `select` makes the author state out loud: with
+    ## `margin=0` the clamp would be `maxc(vtf, 0)` and the discarded
+    ## arm would divide by zero.
+    tfx = _var(_select(
         (sympy.Float(1.0), p.vtf <= 0.0),
-        (_expl(vbc / (1.44 * _maxc(p.vtf, 1e-3))), True)), 'tfx')
+        (_expl(vbc / (1.44 * p.vtf)), True), margin=1e-3), 'tfx')
     tff = _var(p.tf * (1.0 + p.xtf * tfr * tfr * tfx), 'tff')
 
     qbe = _var(tff * ifwd
@@ -2665,9 +2680,9 @@ def _mos1_analog(T, nmos, limiting='group'):
         ## compile and is kept so that a test can say so; `'none'` is the
         ## unlimited device.
         vbsl = _var(bbs.V, 'vbsl')
-        sargl = _var(sympy.Piecewise(
-            (sympy.sqrt(_maxc(phiT - vbsl, 0.25 * phiT)), vbsl <= 0.0),
-            (sympy.sqrt(phiT) / _maxc(1.0 + vbsl / (2.0 * phiT), 0.1),
+        sargl = _var(_select(
+            (sympy.sqrt(phiT - vbsl), vbsl <= 0.0),
+            (sympy.sqrt(phiT) / (1.0 + vbsl / (2.0 * phiT)),
              True)), 'sargl')
         von = _var(vtoT + gam * (sargl - sympy.sqrt(phiT)), 'von')
         if limiting == 'group':
@@ -2693,16 +2708,23 @@ def _mos1_analog(T, nmos, limiting='group'):
         vbx = _var(_maxc(vbs, vbd), 'vbx')
         ## SPICE's own continuation for a forward-biased bulk
         ## (`mos1load.c`): the square root below zero bias, its first-order
-        ## expansion above it.  Both arms are floored INSIDE their own
-        ## discarded region -- `phiT - vbx >= phiT` wherever the first arm
-        ## is selected, so the floor at `phiT/4` provably never fires
-        ## there, and `1 + vbx/(2*phiT) >= 1` wherever the second is, so
-        ## its floor never fires there either.  Neither floor is a
-        ## smoothing; each keeps an arm that is never used from being
-        ## infinite while it is being discarded.
-        sarg = _var(sympy.Piecewise(
-            (sympy.sqrt(_maxc(phiT - vbx, 0.25 * phiT)), vbx <= 0.0),
-            (sympy.sqrt(phiT) / _maxc(1.0 + vbx / (2.0 * phiT), 0.1),
+        ## expansion above it.  Both arms have to be finite in the region
+        ## they are NOT selected in, and `hdl.select` derives that from
+        ## the condition rather than the author choosing a floor: inside
+        ## the first arm `vbx` becomes `minc(vbx, 0)`, so the radicand is
+        ## at least `phiT`; inside the second it becomes `maxc(vbx, 0)`,
+        ## so the denominator is at least 1.  Where each arm IS selected
+        ## the clamp is the identity -- bit for bit, and in the
+        ## derivative too -- so this is the same model.
+        ##
+        ## What it replaces: two hand-picked constants (`0.25*phiT` and
+        ## `0.1`) which were correct, provably never reached, and
+        ## unrelated to the bound the condition already states.  The
+        ## same four lines appear at four sites (this one, `sargl`
+        ## above, and both of `_mos3_channel`/`_mos3_analog`).
+        sarg = _var(_select(
+            (sympy.sqrt(phiT - vbx), vbx <= 0.0),
+            (sympy.sqrt(phiT) / (1.0 + vbx / (2.0 * phiT)),
              True)), 'sarg')
         vth = _var(vtoT + gam * (sarg - sympy.sqrt(phiT)), 'vth')
         vgt = _var(_maxc(vgs - vth, 0.0), 'vgt')
@@ -3670,9 +3692,12 @@ def _mos3_channel(p, vgs, vds, vbs, c, tag):
         return _var(expr, name + tag)
 
     ## -- the bulk continuation (SPICE's, also Level 1's) --------------
-    sqphbs = v(sympy.Piecewise(
-        (sympy.sqrt(_maxc(phiT - vbs, 0.25 * phiT)), vbs <= 0.0),
-        (sympy.sqrt(phiT) / _maxc(1.0 + vbs / (2.0 * phiT), 0.1), True)),
+    ## The bulk continuation, clamped by `hdl.select` from each arm's
+    ## own condition rather than by a chosen floor; see `sarg` in
+    ## `_spice_mos1` for the argument and for what it replaces.
+    sqphbs = v(_select(
+        (sympy.sqrt(phiT - vbs), vbs <= 0.0),
+        (sympy.sqrt(phiT) / (1.0 + vbs / (2.0 * phiT)), True)),
         'sqphbs')
     phibs = v(sqphbs * sqphbs, 'phibs')
 
@@ -3752,9 +3777,16 @@ def _mos3_channel(p, vgs, vds, vbs, c, tag):
          vds <= vdsat),
         (dl_vmax, p.vmax > 0.0),
         (dl_novmax, True)), 'delxl0')
-    delxl = v(sympy.Piecewise(
-        (leff - leff * leff / (4.0 * _maxc(delxl0, 1e-30)),
-         delxl0 > 0.5 * leff),
+    ## The hand-written floor here was `_maxc(delxl0, 1e-30)` -- a
+    ## constant, chosen to be below anything the arm is selected at.
+    ## `select` derives the floor from the CONDITION instead: the arm
+    ## is selected where `delxl0 > 0.5*leff`, so that is the floor, and
+    ## `4*maxc(delxl0, 0.5*leff) >= 2*leff` needs no constant at all.
+    ## The two agree bit for bit wherever the arm is selected (both
+    ## return `delxl0` there, with derivative exactly 1) and differ
+    ## only in the discarded arm, which is the point.
+    delxl = v(_select(
+        (leff - leff * leff / (4.0 * delxl0), delxl0 > 0.5 * leff),
         (delxl0, True)), 'delxl')
     xlfact = v(1.0 / (1.0 - delxl / leff), 'xlfact')
     ## -- subthreshold ----------------------------------------------------
@@ -3867,9 +3899,9 @@ def _mos3_analog(T, nmos):
 
         ## -- the four probes, as one group (SPICE's set) ------------
         vbsl = _var(bbs.V, 'vbsl')
-        sargl = _var(sympy.Piecewise(
-            (sympy.sqrt(_maxc(phiT - vbsl, 0.25 * phiT)), vbsl <= 0.0),
-            (sympy.sqrt(phiT) / _maxc(1.0 + vbsl / (2.0 * phiT), 0.1),
+        sargl = _var(_select(
+            (sympy.sqrt(phiT - vbsl), vbsl <= 0.0),
+            (sympy.sqrt(phiT) / (1.0 + vbsl / (2.0 * phiT)),
              True)), 'sargl')
         vonl = _var(vbiT + gam * sargl, 'vonl')
         vgs, vds, vbs, vbd = limit_together(

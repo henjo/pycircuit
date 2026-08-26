@@ -822,7 +822,9 @@ the form it was argued — here is what actually landed.
     3        kernel: limit_delta                     not started
     3        S1  pure form for chained path          not started
     3        S2  generalised variants                not started
-    3        S3  automatic domain clamping           research
+    3        S3  automatic domain clamping           DONE (sec. 21): hdl.select,
+                                                     6 of 20 sites converted,
+                                                     bit-identical
     3        S4  automatic intermediate holding      research
     4        the six syntactic checks                DONE (nine of them)
     4        explain()                               DONE
@@ -2696,3 +2698,60 @@ suffers it was wrong.
 
 A c-mode suite run leaves ~440 small `.so` files (~157 MB with the
 pickles) in the user cache; `_hdl_cache.clear()` removes them.
+
+
+---
+
+## 21. S3 -- automatic both-arms domain clamping (2026-08-26)
+
+`hdl.select((expr, cond), ..., (default, True))`: a `Piecewise` that
+substitutes, inside each arm, a clamped copy of every symbol the arm's
+own selection region bounds. The hand-written
+
+    Piecewise((0.0, p <= 0.0), (1.0 / maxc(p, 1e-30), True))
+
+becomes `select((0.0, p <= 0.0), (1.0 / p, True), margin=1e-30)`, and
+the `maxc` is inserted by the compiler -- which is domain propagation
+the compiler always had the information to do.
+
+**Why it is exact.** `minc(v, c)` returns `v` bit for bit wherever
+`v <= c`, and differentiates to `_step(c, v) = 1` there with *exactly
+zero weight on `c`*. So a clamped arm agrees with a hand-written one to
+the last bit of the residual AND of the Jacobian -- which is the half
+that matters, since the chain rule multiplies a zero partial by the
+discarded arm's derivative and `0 x NaN` is `NaN`.
+
+**Supported, and nothing else:** `v < c` / `<=` / `>` / `>=` and their
+mirrors; `u < v` between two atoms (both clamped simultaneously);
+`|v| < c` and `v*v < c`; `|v| > c` (pushed out of the hole); `And` as
+the intersection of boxes; `Or` in a *negated* position by De Morgan;
+`True` as the complement of the earlier arms. `c` may mention `v`
+itself (`vds < vdsat`) because the substitution is simultaneous, so the
+bound is evaluated at the unclamped `v` and no cycle appears -- and it
+costs nothing in finiteness, because the condition was evaluating that
+bound anyway.
+
+**Everything else is REFUSED at build time** with `SelectRefused`
+naming the condition and the sympy class that made it unsupported --
+an `Or` in a positive position (a union of boxes is not a box), an
+equality, a relational whose sides are both compound. That refusal is
+the design's load-bearing half: **a `select` that silently failed to
+clamp would be worse than `Piecewise`**, because the author would trust
+it.
+
+**Adoption: 6 of the 20 surveyed sites**, all in `elements_hdl.py`
+(the four `_recip` guards in the Gummel-Poon, and two more).
+`psp_kernel.py` was NOT touched -- its four sites are inside a model
+validated to 1e-6 against a vendor, and the conversion was not worth
+the risk for this change.
+
+**Verified independently by the orchestrator:** all **37** library
+classes digested over 30 random biases x {i, G, q, C} with the
+adoption in place and again with `elements_hdl.py` reverted --
+**37 identical, 0 differ**. Suite **2622 / 6 / 3 / 0 in BOTH backend
+states**; `sphinx -W` clean.
+
+**What it does not absorb:** 14 of the 20 sites remain hand-clamped.
+The mechanism covers their shapes, so the residue is adoption work,
+not a limitation -- with `psp_kernel`'s four deliberately excluded
+until someone wants to re-validate PSP against the vendor afterwards.

@@ -427,6 +427,131 @@ binds no bare names at all.  `MosLevel1Hdl` still reads bare names and
 keeps ``lambd``/``asrc`` as the canonical spellings; SPICE's own are
 accepted on the instance through ``aliasparams``.
 
+Conditionals: both arms are evaluated
+-------------------------------------
+
+A ``Piecewise`` compiles to ``where``, which **picks afterwards**.  Both
+arms run at every bias, so an arm that is not selected still overflows,
+still raises floating-point flags, and still has its derivative taken --
+and the derivative is the half that matters, because the chain rule
+multiplies a zero partial by that arm's derivative and ``0 * nan`` is
+``nan``.
+
+The model obeys that rule by hand, with a clamped copy of the input fed
+to the arm that does not want it::
+
+    sympy.Piecewise((0.0, p <= 0.0), (1.0 / maxc(p, 1e-30), True))
+
+That ``maxc`` is domain propagation a compiler can do.  The second arm is
+selected exactly where ``p > 0``, so inside it ``p`` may be replaced by
+anything that equals ``p`` there.  :func:`~pycircuit.circuit.hdl.select`
+makes the substitution::
+
+    hdl.select((0.0, p <= 0.0), (1.0 / p, True), margin=1e-30)
+
+For each arm, the region it is selected in -- its own condition **and**
+the complement of every earlier one -- is turned into a box of bounds on
+individual symbols, and each bounded symbol is replaced inside that arm
+by a ``minc``/``maxc`` clamped copy.
+
+**The clamp is the identity where the arm is selected, in value and in
+derivative, exactly.**  ``minc(v, c)`` returns ``v`` bit for bit
+wherever ``v <= c``, and differentiates to ``_step(c, v) = 1`` there,
+with exactly zero weight on ``c`` -- so a converted arm returns the same
+bits from ``i``, ``G``, ``q`` and ``C`` as the hand-clamped one.  The
+tie ``v == c`` is included on purpose: it is a selected point whenever
+the condition is non-strict.
+
+Supported conditions, and nothing else:
+
+===============================  =====================================
+``v < c``, ``v <= c``            ``v -> minc(v, c)``
+``v > c``, ``v >= c``            ``v -> maxc(v, c)``
+``a < v``                        the mirror of the above
+``u < v`` (both atoms)           both, simultaneously
+``|v| < c``, ``v*v < c``         ``v -> minc(maxc(v, -c), c)``
+``|v| > c``                      pushed out of the hole
+``And(...)``                     the intersection of the boxes
+``Or(...)``, negated             ditto, by De Morgan
+``True``                         the complement of the earlier arms
+===============================  =====================================
+
+``c`` may be any expression, including one that mentions ``v`` itself
+(``vds < vdsat``): the substitution is simultaneous, so each bound is
+evaluated at the unclamped symbol and no cycle is created.  It costs
+nothing in finiteness either -- the bound was already being evaluated,
+by the condition.
+
+Everything else is **refused**, loudly, with ``SelectRefused`` naming
+the condition and the reason: an ``Or`` in a positive position (a union
+of boxes is not a box), an equality, a relational whose sides are both
+compound.  A ``select`` that quietly did not clamp would be worse than
+the ``Piecewise`` it replaced, because the author would trust it.  The
+refusal fires only when the arm actually *uses* one of the symbols the
+condition failed to bound -- a refusal over a condition the arm does not
+read is noise, and noise is how a strict mode gets turned off.
+``strict=False`` accepts any shape unclamped, and ``hdl.unclamped(expr)``
+marks one arm as deliberately raw.
+
+``margin`` (default ``0.0``) is subtracted from every bound that came
+from a **strict** inequality.  It exists because clamping to the
+boundary is not always enough: ``p > 0`` clamps to ``maxc(p, 0)``, and
+an arm that divides by ``p`` still divides by zero.  The price is that
+the clamp is no longer the identity on the sliver ``0 < p < margin`` --
+which is why the default is zero, so that a selected value can never
+change by accident.  A margin is never applied to a non-strict bound:
+there the boundary is *inside* the selected region, where moving it
+would change an answer.
+
+.. exec-rst::
+
+    import numpy as np
+    import sympy
+    from pycircuit.circuit import hdl
+
+    v = sympy.Symbol('v', real=True)
+    e = hdl.select((sympy.log(v - 1.0), v > 1.0), (0.0, True), margin=1e-6)
+    print("The arm the model wrote is ``log(v - 1)``; what is compiled is::\n")
+    print("    %s\n" % e.args[0].expr)
+    f = sympy.lambdify(v, e.args[0].expr, 'numpy')
+    g = sympy.lambdify(v, sympy.diff(e.args[0].expr, v), 'numpy')
+    x = np.array([-1e30, 0.5, 2.0])
+    print("Discarded at ``v = -1e30`` and ``v = 0.5``, where the unclamped")
+    print("arm is ``nan``, it is %s, with derivative %s;" % (f(x)[:2], g(x)[:2]))
+    print("selected at ``v = 2`` it is exactly ``log(1) = %s``." % f(x)[2])
+
+What it cannot do
+`````````````````
+
+A clamp can only reach a symbol the arm **mentions**.  If the arm uses
+an intermediate that ``var()`` bound earlier from the same symbol --
+``vdsc = leff*vmax/us``, used in an arm conditioned on ``vmax > 0`` --
+substituting ``vmax`` inside the arm does not change ``vdsc``, and the
+clamp is a no-op.  ``select`` detects exactly that case, and refuses.
+
+That is the binding limit, not a corner case.  Surveying the 33
+``Piecewise`` sites in ``elements_hdl.py`` and the 24 in
+``psp_kernel.py``: most arms are built from ``var()`` intermediates and
+never name the symbol their own condition constrains, so the clamp has
+nothing to substitute into.  Automatic domain propagation and automatic
+intermediate holding are the same problem seen twice, and a version of
+``select`` that reached inside the let-chain would have to clamp a
+*definition*, not an arm.
+
+Two smaller limits, both refusals rather than silence:
+
+* **a compound side.**  ``area*ikf <= 0`` constrains neither factor, and
+  clamping the product would need a substitution for the compound --
+  which sympy does not keep: ``1.0/(area*ikf)`` is stored as
+  ``1.0*area**-1*ikf**-1``, in which ``area*ikf`` is not a node, so the
+  substitution would silently do nothing.  Binding the product with
+  ``var()`` first gives the condition an atom;
+* **a singular arm at a selected point.**  ``select((sqrt(v), v >= 0),
+  ...)`` clamps to ``sqrt(maxc(v, 0))``, whose derivative is ``0/0``
+  below zero -- and no margin can fix it, because ``v = 0`` is a point
+  the arm is *selected* at.  That is not a clamping problem: smooth
+  instead of clip, with `safe_sqrt`.
+
 Writing your first element
 --------------------------
 
@@ -1158,6 +1283,10 @@ Reference
 .. autoclass:: pycircuit.circuit.hdl.Contribution
 
 .. autoclass:: pycircuit.circuit.hdl.ParamNamespace
+
+.. autofunction:: pycircuit.circuit.hdl.select
+
+.. autofunction:: pycircuit.circuit.hdl.unclamped
 
 .. autofunction:: pycircuit.circuit.hdl.explain
 
