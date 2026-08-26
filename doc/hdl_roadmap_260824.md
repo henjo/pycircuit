@@ -155,18 +155,27 @@ machinery knows it means "collapse".
 
 Generalising it to "elide any block whose parameters make it inert"
 needs: a new `Statement` subclass (`Collapse` is the template, including
-its parameters-only validator at `:971`), a partition at `:1172`, an
-application step beside `:1189`, a widened mask tuple, and a smarter
-freeze check — because a guard that removes *terms* but not *nodes*
-does not change the unknown count, so it may legally change after build.
+its parameters-only validator in `Collapse.__init__`), a partition and
+an application step beside the ones `generate_code` runs for
+`collapse_conds`, a widened mask tuple, and a smarter freeze check —
+because a guard that removes *terms* but not *nodes* does not change the
+unknown count, so it may legally change after build.
+
+*(Anchors were `hdl.py:971`, `:1172`, `:1189` when this was written on
+2026-08-24. All three are long stale — `Collapse` is now near line 2481
+— and are replaced with symbol names per `record-upkeep`.)*
 
 This fixes a trap that cost real time: **a block whose parameter is zero
 is still compiled and still evaluated**, because the element compiles
 from symbolic parameters, so `if param != 0` is true at build time
 whatever the value — and `0 × inf = NaN`. The model currently guards
-twelve blocks by hand with `if isinstance(p, sympy.Expr) or p != 0.0:`,
-which only fires for the *default* build; an instance whose card sets
-the parameter to zero still evaluates the whole block.
+these blocks by hand with build-time tests of the form
+`if not isinstance(p, sympy.Expr) and p == 0.0:`, which only fire for
+the *default* build; an instance whose card sets the parameter to zero
+still evaluates the whole block.
+
+*(Recorded as "twelve blocks" on 2026-08-24; counted again 2026-08-26 it
+is **nine**, in `psp_kernel.py`. The shape is unchanged.)*
 
 It is also the most direct attack on evaluation cost: a card that
 switches off gate current, avalanche and half the parasitics should not
@@ -3472,8 +3481,10 @@ observation in that is real. The conclusion is not.
 first Jacobian, the 4.9e9 first step came out of it, and once the seed is
 limited the node never leaves its basin -- with no node write involved.
 PCNR still writes no node; that was never what made this fail.
-**Sixteenth right-conclusion-wrong-reason**, and the docstring keeps the
-wrong version beside the right one.
+**Eighteenth right-conclusion-wrong-reason**, and the docstring keeps the
+wrong version beside the right one.  (Written as "sixteenth" when §27
+landed; §20 had already used sixteenth and seventeenth, so the count had
+gone backwards -- corrected on the next read of the document.)
 
 ### Three tests inverted, one re-aimed
 
