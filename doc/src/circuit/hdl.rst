@@ -1102,23 +1102,38 @@ Regenerated at build time:
     print("nothing at all and any call overhead dominates a 2x2 matrix.")
 
 End to end, an 8-stage RC ladder transient built from generated elements
-runs at about 1.15x the hand-written one and produces identical waveforms
-(``benchmarks/hdl_overhead.py`` measures both and asserts the agreement).
+runs at about **1.01x** the hand-written one -- parity, within run-to-run
+noise -- and produces identical waveforms (``benchmarks/hdl_overhead.py``
+measures both and asserts the agreement).
 
 .. note::
 
-   This figure read ``1.14x`` until 2026-08-26 and had quietly gone
-   stale: measured again on the same machine it was **1.22x** (median of
-   four runs), because the argument list every generated call is made
-   with was being rebuilt on every call -- 125 029 times in a 49-element
-   transient.  Memoising it, invalidated by the same ``iparv`` observer
-   that drops the constant stamps, brought the ladder back to 1.15x and
-   gained 1.16x on a 121-device transient, with bit-identical answers.
-   See ``benchmarks/args_cache.py`` and ``doc/hdl_roadmap_260824.md``
-   sec. 24.
+   This figure read ``1.14x`` until 2026-08-26, and it had quietly gone
+   stale: re-measured on the same machine it was **1.22x**.  Three
+   changes closed it, none of them touching any arithmetic, and all
+   bit-identical:
 
-   Quote these from a median of several runs: single runs of the ladder
-   benchmark ranged from 1.12x to 1.25x across the change.
+   * the argument list every generated call is made with was rebuilt on
+     every call -- 125 029 times in a 49-element transient.  It is now
+     memoised, invalidated by the same ``iparv`` observer that drops the
+     constant stamps.
+   * the assembly loop used ``flatten``, which always copies, where
+     ``ravel`` returns a view; the copy was discarded by the very next
+     ``concatenate``.  This one speeds up hand-written elements equally.
+   * the DC-pin test evaluated an ``epar`` lookup *before* the cheap flag
+     it was ANDed with, so all 37 library classes paid it and only 3 have
+     DC pins.
+
+   Together they are **1.40x** on a 121-device transient.  Per call the
+   generated elements are now *faster* than the hand-written ones
+   wherever there is real arithmetic (the diode's ``i`` is 0.47x); what
+   remains above 1.0 is the trivial linear stamp described below.  See
+   ``benchmarks/args_cache.py`` and ``doc/hdl_roadmap_260824.md``
+   sections 24-26.
+
+   Quote these from a median of several runs, and prefer an idle
+   machine: single runs of the ladder benchmark ranged from 0.97x to
+   1.05x while the test suite was running alongside it.
 
 The C backend
 -------------

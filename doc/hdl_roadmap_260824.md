@@ -3211,3 +3211,129 @@ on a deliberately transposed scatter.
 3. ~~stamping loop~~ -- **DONE**, 1.11x.
 4. ~~`_args_of` caching~~ -- **DONE**, 1.16x.
 5. ~~C backend for the eager path~~ / ~~S1~~ -- refused on measurement.
+
+## 26. Element evaluation (2026-08-26): two thirds of it was never the model
+
+§25 left element evaluation as the largest phase (61.8% of a stamp
+call). Opened, and the answer is that most of it was not evaluation.
+
+### The generated function is a fifth of what the method costs
+
+| element | `el.i()` | the generated `f(x, *args)` | wrapper |
+|---|---|---|---|
+| `RHdl` (eager) | 1236 ns | 277 ns | 959 ns |
+| `DiodeHdl` (eager) | 1439 ns | 473 ns | 966 ns |
+| `EkvNmosHdl` (chained) | 14776 ns | 13058 ns | 1718 ns |
+
+For a small eager element **the arithmetic is 22% of the call**. The
+rest is the method around it.
+
+⚠ **A confident wrong guess, recorded because it was nearly acted on.**
+959 ns is almost exactly the 1024 ns that a *missing* toolkit attribute
+costs (§25), and `i()` contains `getattr(self.toolkit, 'symbolic',
+False)` -- so the obvious reading was that `symbolic` misses and every
+element pays `Toolkit.__getattr__`'s raise. Measured before touching it:
+`symbolic` **resolves normally, in 39 ns**. The shape of a number
+matching a known mechanism is not evidence that it IS that mechanism.
+
+### Where it actually went
+
+| operation | ns | note |
+|---|---|---|
+| `_dc(epar)` | 425 | `getattr(epar, 'analysis_kind', ...)` on a `ParameterDict` |
+| `_args_of` (cache HIT) | 314 | the hit path itself, not the rebuild |
+| the generated `f` | 279 | the work |
+| `getattr(toolkit,'symbolic')` | 39 | |
+| `f.__dict__.get('_hdl_c')` | 38 | |
+| `info['chained']` | 28 | |
+
+### Fix 1 -- short-circuit on the cheap operand (`has_dc_pins`)
+
+Every site read `_dc(epar) and state_meta['dc_pins']`. Python evaluates
+the **left** operand first, so all 37 classes paid the 425 ns lookup and
+then discarded it -- and **only 3 of the 37 have DC pins at all**
+(`IdtmodHdl`, `MemristorHdl`, `VcoHdl`). Both operands are used for
+truthiness only at all five sites, so the order is free: hoisting
+`has_dc_pins = bool(state_meta['dc_pins'])` and testing it first means
+34 of 37 classes never call `_dc`.
+
+`el.i()`: **1236 -> 826 ns.**
+
+### Fix 2 -- identity before value in the `_args_of` key
+
+The §24 cache still cost 314 ns *on a hit*: an `isinstance` against a
+4-tuple, an `==`, and a `type()`. But `epar.T` is read from the same
+`ParameterDict` slot every time -- instrumented over a real transient,
+**one `T` object across 60 924 calls**. So an `is` settles the common
+case in a single pointer compare, placed *in front of* the value test
+rather than replacing it: a caller that rebuilds `T` merely falls
+through and pays what it used to. Strictly safer, never weaker.
+
+`_args_of` **314 -> 208 ns**; `el.i()` **826 -> 648 ns**, against 279 ns
+of arithmetic.
+
+### Measured, cumulative
+
+| devices | 62b6a3b | now | speedup |
+|---|---|---|---|
+| 13 | 168.9 ms | 136.1 ms | 1.24x |
+| 49 | 524.8 ms | 388.0 ms | 1.35x |
+| 121 | 1145.2 ms | 816.4 ms | **1.40x** |
+
+Answers **bit-identical to 62b6a3b**, `max|diff| = 0.0`. `el.i()` itself
+is **1.91x** (1236 -> 648 ns).
+
+### The DSL's end-to-end overhead is now PARITY
+
+The figure `hdl.rst` exists to publish -- generated elements against
+hand-written ones on the 8-stage ladder -- has closed:
+
+| | ratio |
+|---|---|
+| documented (stale) | 1.14x |
+| actually, at HEAD | 1.22x |
+| after §24 (`_args_of`) | 1.15x |
+| after §25 (`ravel`) | 1.15x (shared path -- helps both sides) |
+| **after §26** | **1.01x** (0.99-1.03 over five idle runs) |
+
+Per call the generated elements are now **faster than hand-written
+wherever there is real arithmetic** -- the diode's `i` is **0.47x**, its
+`G` 0.93x, the capacitor's `C` 0.62x. What is left above 1.0 is the
+trivial linear stamp (`R G` at 2.55x), where the hand-written element
+does almost nothing and any call overhead dominates a 2x2 matrix --
+which is what `hdl.rst` already said, and it is still the right
+explanation.
+
+⚠ Measured on an **idle** machine. The same benchmark run while the test
+suite was going gave 0.97-1.05x, a spread wide enough to read as
+"faster than hand-written" if a single run were quoted.
+
+### A test that did not discriminate, caught before it was believed
+
+The first version of `test_the_identity_fast_path_is_used` asserted that
+two calls return the same list. **It passed with the fast path deleted**
+-- the value+type path returns the cached object too, so the assertion
+was blind to the thing it named.
+
+Rewritten on **NaN**, which separates the two exactly: `nan is nan` is
+True for one object while `nan == nan` is False, so the entry can only be
+reused through the identity check. Verified to fail when the path is
+removed.
+
+This is the fourth test in this campaign that had to be re-aimed after
+being written, and the pattern is always the same: **the assertion was
+true of the code, but would have been true without the feature too.**
+Deleting the feature and re-running is the only check that catches it.
+
+### Ranking after this
+
+1. **`_dc` for the 3 DC-pin classes** and the `_args_of` hit's residual
+   208 ns -- both now small; no measurement demands them.
+2. `hasattr` on the toolkit -- 1.4-3.2%, blocked on the recorded
+   decision in `toolkit.py` (§25).
+3. The eager path returns a Python **list**, so `np.asarray` converts it
+   in the stamping loop every call. Moving the conversion into the
+   generated code does not remove it -- unmeasured whether anything can.
+4. ~~element evaluation~~ / ~~stamping loop~~ / ~~`_args_of`~~ -- DONE,
+   **1.40x cumulative**.
+5. ~~C backend for the eager path~~ / ~~S1~~ -- refused on measurement.

@@ -194,3 +194,46 @@ def test_an_int_temperature_does_not_answer_a_float_one():
     assert type(a_float[iT]) is float, 'int entry answered a float call'
     ## ...and going back to the int must still give an int
     assert type(hdl._args_of(el, _Epar(300))[iT]) is int
+
+
+def test_the_identity_fast_path_is_used():
+    ## Discriminating on NaN, because the obvious test does not
+    ## discriminate at all: asserting that two calls return the same list
+    ## passes whether the hit came from `is` or from the value+type
+    ## comparison, since both return the cached object.  (Written that way
+    ## first, and it passed with the fast path deleted.)
+    ##
+    ## A NaN temperature separates them: `nan is nan` is True for one
+    ## object, while `nan == nan` is False.  So the entry can only be
+    ## reused through the identity check -- without it every call misses,
+    ## rebuilds, and returns a NEW list.
+    el = eh.RHdl('a', gnd, r=1e3)
+    e = _Epar(float('nan'))
+    first = hdl._args_of(el, e)
+    assert hdl._args_of(el, e) is first, 'the identity fast path is gone'
+
+
+def test_a_caller_that_rebuilds_T_still_gets_the_right_answer():
+    ## Identity is STRICTER than value equality, so a caller handing a
+    ## freshly built float each time simply falls through to the value
+    ## test.  It must not get a wrong answer, and must not get a stale
+    ## one after a parameter changes.
+    el = eh.RHdl('a', gnd, r=1e3)
+    iT = len(el._hdl_paramnames)
+    for _ in range(3):
+        a = hdl._args_of(el, _Epar(float('3e2')))   # a new object each time
+        assert a[iT] == 300.0
+        assert a[_r_index(el)] == 1e3
+    el.ipar.r = 8e3
+    assert hdl._args_of(el, _Epar(float('3e2')))[_r_index(el)] == 8e3
+
+
+def test_identity_does_not_defeat_invalidation():
+    ## The dangerous combination: the SAME epar object (so the identity
+    ## key hits) across a parameter change.  `update()` must still have
+    ## dropped the entry.
+    el = eh.RHdl('a', gnd, r=1e3)
+    e = _Epar(300.0)
+    assert hdl._args_of(el, e)[_r_index(el)] == 1e3
+    el.ipar.r = 5e3
+    assert hdl._args_of(el, e)[_r_index(el)] == 5e3, 'identity hid a change'

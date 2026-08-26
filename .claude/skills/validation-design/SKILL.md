@@ -76,6 +76,29 @@ the difference between exercising a term and assuming it.**
 **A bias no sweep visits tests nothing.** A body-bias correction that is
 identically 1 at `Vsb = 0` is untested by every sweep at `Vsb = 0`.
 
+⚠ **DELETE THE FEATURE AND RE-RUN. IT IS THE ONLY CHECK THAT CATCHES A
+TEST WHICH DOES NOT DISCRIMINATE.** A test can be true of the code, pass
+reliably, name the right thing in its title — and still be blind to the
+feature it claims to pin, because the assertion would hold without it.
+Four tests in this tree have had that shape, each caught only by
+reverting the feature and watching the test pass anyway:
+
+- an identity fast path tested by "two calls return the same object" —
+  but the slower path returns the same cached object too. Re-aimed on
+  **NaN**, where `x is x` holds and `x == x` does not, so only the
+  identity check can satisfy it;
+- an aliasing guard that passes whether the code copies or not, because
+  the copy it was guarding was being made downstream anyway;
+- a limiter test that varied `IS` when `pnjlim`'s compression branch
+  does not read `IS` at all once `vold > 0`;
+- a "grouped limiting is better" assertion written as `both > fet`,
+  which stayed green while the published number in the docstring was
+  wrong.
+
+Run every new test once against the code WITHOUT the change. A test that
+passes both ways is measuring something else, and you will not find out
+which until it fails to catch a regression.
+
 **This applies to the PROPERTIES you rely on, not just to the terms.**
 Every source/drain antisymmetry test in this tree ran at `Vb = 0` —
 where the term whose omission was justified by protecting that

@@ -5118,11 +5118,21 @@ def _args_of(self, epar):
     that ever needs to mutate must copy first.
     """
     T = _epar_T(epar)
+    hit = self.__dict__.get('_hdl_args')
+    ## IDENTITY FIRST.  `epar.T` is read out of the same `ParameterDict`
+    ## slot every time, so in a real run it is the SAME object on every
+    ## call -- measured one `T` object across 60 924 calls of a transient.
+    ## `is` settles the common case in one pointer compare, where the
+    ## value+type test below costs an `isinstance` against a 4-tuple, an
+    ## `==` and a `type()`.  It is also strictly SAFER than the value
+    ## test, never weaker: a caller that rebuilds `T` each call merely
+    ## falls through to that test and pays what it used to.
+    if hit is not None and hit[0] is T:
+        return hit[1]
     ## A non-scalar T (a symbolic temperature, an array) would make the
     ## key comparison ambiguous or wrong, so such a call is simply not
     ## cached -- correctness first, and no production path does it.
     if isinstance(T, (float, int, np.floating, np.integer)):
-        hit = self.__dict__.get('_hdl_args')
         ## The type is part of the key, not just the value: `defaultepar`
         ## carries `T` as an INT, `300 == 300.0` is True, and matching on
         ## value alone would hand a float-T caller the int-T list.  That
@@ -5179,6 +5189,16 @@ class BehaviouralMeta(type):
         if state_meta['dc_pins']:
             cls.IC_KIND = 'state'
 
+        ## Hoisted so the DC-pin test can SHORT-CIRCUIT on it.  `_dc(epar)`
+        ## reads `analysis_kind` off a `ParameterDict`, which costs ~425 ns,
+        ## and it used to be the FIRST operand -- so every element paid it
+        ## and then threw the answer away on the second.  Only 3 of the 37
+        ## library classes have DC pins at all (`IdtmodHdl`, `MemristorHdl`,
+        ## `VcoHdl`); the other 34 now never call it.  Both operands are
+        ## used for truthiness only at all five sites, so the order is free
+        ## to change.
+        has_dc_pins = bool(state_meta['dc_pins'])
+
         def i(self, x, epar=defaultepar, params_tree=None):
             if info['chained']:
                 ## The DC pin applies on the chained path too.  Until
@@ -5187,7 +5207,7 @@ class BehaviouralMeta(type):
                 ## ic, ...)` kept its state equation at DC and the
                 ## operating point was singular; `IdtmodHdl` is flat and
                 ## never showed it.  Found by `VcoHdl` (fifth batch).
-                f = funcs['i_dc'] if _dc(epar) and state_meta['dc_pins'] \
+                f = funcs['i_dc'] if has_dc_pins and _dc(epar) \
                     else funcs['i']
                 ck = f.__dict__.get('_hdl_c')
                 if ck is not None:
@@ -5195,7 +5215,7 @@ class BehaviouralMeta(type):
                 return np.asarray(f(x, *_args_of(self, epar)), dtype=float)
             if getattr(self.toolkit, 'symbolic', False):
                 return _symbolic_eval(self, 'i', x, epar)
-            f = funcs['i_dc'] if _dc(epar) and state_meta['dc_pins'] \
+            f = funcs['i_dc'] if has_dc_pins and _dc(epar) \
                 else funcs['i']
             return f(x, *_args_of(self, epar))
 
@@ -5236,7 +5256,7 @@ class BehaviouralMeta(type):
 
         def G(self, x, epar=defaultepar, params_tree=None):
             if info['chained']:
-                f = funcs['G_dc'] if _dc(epar) and state_meta['dc_pins'] \
+                f = funcs['G_dc'] if has_dc_pins and _dc(epar) \
                     else funcs['G']
                 ck = f.__dict__.get('_hdl_c')
                 if ck is not None:
@@ -5244,7 +5264,7 @@ class BehaviouralMeta(type):
                 return np.asarray(f(x, *_args_of(self, epar)), dtype=float)
             if getattr(self.toolkit, 'symbolic', False):
                 return _symbolic_eval(self, 'G', x, epar)
-            dc = _dc(epar) and state_meta['dc_pins']
+            dc = has_dc_pins and _dc(epar)
             if const_G and not dc:
                 ## Constant stamp: computed once and handed back by
                 ## reference, as a hand-written linear element does
@@ -5300,7 +5320,7 @@ class BehaviouralMeta(type):
                     return np.zeros(self.n)
                 return np.asarray(funcs['uac'](*_args_of(self, epar)),
                                   dtype=complex)
-            f = funcs['u_dc'] if _dc(epar) and state_meta['dc_pins'] \
+            f = funcs['u_dc'] if has_dc_pins and _dc(epar) \
                 else funcs['u']
             return np.asarray(f(t, *_args_of(self, epar)), dtype=float)
 
