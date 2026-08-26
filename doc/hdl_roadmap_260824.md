@@ -811,7 +811,9 @@ now exist. Rather than rewrite them — the reasoning is worth keeping in
 the form it was argued — here is what actually landed.
 
     section  item                                    status
-    3        S5  parameter namespace                 DONE (_analog_function)
+    3        S5  parameter namespace                 DONE, both halves: the leak
+                                                     (_analog_function) and the
+                                                     surface (params_as, sec. 17)
     3        kernel: maxc/minc                       DONE
     3        kernel: safe_pow                        DONE
     3        kernel: sign, real-domain Abs           DONE
@@ -1511,7 +1513,7 @@ and this is what it costs. The workaround also does not compose: it
 only works from inside the defining module, because the namespace it
 copies has to be `elements_hdl`'s.
 
-**(b) Three SPICE MOSFET card names cannot be Python identifiers.**
+**(b) Three SPICE MOSFET card names cannot be Python identifiers.** *(CLOSED 2026-08-26, §17: `p['lambda']` in a `params_as` model, and `aliasparams` on Level 1.)*
 `LAMBDA` and `AS` are keywords and `IS` is one letter from being one.
 They ship here as `lambd`, `asrc` and `IS`. `globals()['lambda']`
 would in fact resolve inside `analog()` and `cls(**{'lambda': 0.02})`
@@ -2424,3 +2426,44 @@ broken, only unverified. The lesson is in `validation-design`: a
 chunked run is a coverage claim, and it must be reconciled against
 `--collect-only` EVERY time, not once. The recipe now derives its
 ranges from the file count.
+
+
+---
+
+## 17. The parameter namespace (2026-08-26): S5's second half
+
+`params_as = 'p'` on a `Behavioural` class makes `analog()`'s FIRST
+argument a `ParamNamespace`: `p.bf`, `p['lambda']`, `p.given('rb')`,
+`p.names`. Its attributes ARE the parameter symbols, so generated code,
+`_hdl_info` and `explain()` are byte-identical to the bare-name
+spelling -- pinned for an eager and a chained model, with a mutation
+control. Bare names stay the default and every other model is
+untouched; the two styles coexist across classes, not within one, and
+each style's mistakes get a message naming the class and the declared
+names.
+
+**Adopted where it removed a workaround:** `_gp_core(p, ...)` and
+`_spice_diode(p, a, c, T)` -- the latter down from 19 arguments -- with
+`_with_params` deleted. Bit-identity of the five affected classes
+(three BJTs, two SPICE diodes) is pinned as SHA-256 digests of
+`i/G/q/C` at three random points on a full card plus `explain()`,
+taken from the pre-change source and re-taken after: 20 of 20 equal.
+`MosLevel1Hdl` now declares SPICE's own `lambda` and `as` through
+`Behavioural.aliasparams` (which existed; `Parameter` itself has no
+aliases), canonical names unchanged.
+
+**Three things the brief got wrong**, all found by building it:
+
+1. *"The first argument named `p`"* as the opt-in would have broken
+   shipped tests -- `analog(p, n)` is a PIN spelling in ten existing
+   models. Hence the explicit class attribute.
+2. A keyword-named parameter needs SYMBOL MANGLING: the let-chain
+   printer emits `def _f(x, lambda, ...)` verbatim -- a SyntaxError --
+   and four JAX sites rebuild symbols from names. `_param_symbol()`
+   maps unsafe names to `_hdl_kw_<name>` at all five sites.
+3. A bare class and a `params_as` class with the SAME analog text would
+   have shared a cache key (different pin count). `params_as` is in the
+   key now, with a test.
+
+The claim that attribute access is visible to linters was not machine-
+checked: no linter is installed in the venv.
