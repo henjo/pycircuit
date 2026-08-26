@@ -3024,6 +3024,17 @@ times in one afternoon, and it earned its keep every time: **every
 intermediate measurement in this work was optimistic, and none of them
 was wrong by enough to look wrong.**
 
+📌 **AND 1.16x DID NOT STAY 1.16x EITHER -- the code did not change.**
+Re-run after §26, the same benchmark on the same unchanged cache reads
+**1.16x / 1.22x / 1.24x**. §26 removed a 425 ns `epar` lookup from the
+same method, and taking overhead out of the denominator raises the share
+this cache accounts for. **A speedup figure is a property of the whole
+call, not of the change alone**, so it expires whenever anything else in
+that call moves -- a fourth way for a number to go stale, and the only
+one where re-running the *same* benchmark on the *same* code gives a
+different answer. `benchmarks/args_cache.py` now says to re-run rather
+than quote.
+
 ### Tests
 
 `pycircuit/circuit/tests/test_hdl_argcache.py`, nine tests. The one that

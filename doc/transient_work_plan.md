@@ -1448,7 +1448,7 @@ warning is emitted when >1 thread is detected — without `threadpoolctl` the th
 cannot be reliably determined, and a warning on every run that might be wrong is worse
 than the documentation.
 
-**2b. Assembly: hoist the per-element probes, batch the scatter.** `circuit.py:1290-1402`.
+**2b. Assembly: hoist the per-element probes, batch the scatter.** `_add_element_submatrices` / `_add_element_subvectors`.
 `hasattr(self.toolkit, 'add_at')` fires once per element per stamp; `NumericToolkit` lacks
 it, so `Toolkit.__getattr__` builds a formatted error string and **raises 255 000 times**
 — 34% of total runtime is attribute-lookup machinery. Hoist the probes out of the loop and

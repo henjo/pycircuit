@@ -181,6 +181,17 @@ found it, and say plainly that the mechanism is open.
   the equation is flat where you are measuring, an impressively small
   residual can sit on a large displacement. Validating a solver by its
   residual says it solved the equation, not that the root is right.
+- **⚠ A MAGNITUDE THAT MATCHES A KNOWN MECHANISM IS NOT THAT
+  MECHANISM.** The same trap as "leverage is not error", in its most
+  seductive form: you already know a mechanism that costs *X*, you
+  measure an unexplained *X*, and the identification writes itself.
+  Here an element method had 959 ns unaccounted for, a *missing*
+  attribute lookup in that tree costs ~1024 ns, and the method visibly
+  contained such a lookup — three facts that agreed. Measured before
+  acting: that lookup **resolves normally, in 39 ns**, and the 959 ns
+  was two entirely different costs. The agreement of a number with a
+  familiar mechanism is a reason to measure that mechanism directly,
+  never a substitute for doing so.
 - **A tidy, interpretable answer is not thereby a correct one.** A
   contaminated window here produced a clean, flat 0.5% that read exactly
   like a thermal-voltage error. The clean window gave 0.01%.

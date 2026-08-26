@@ -976,7 +976,9 @@ in priority order agreed with the owner:
    against Verilog-A and measured cost; `pycircuit/circuit/elements_hdl.py`
    re-expresses ten hand-written elements in the DSL, proven equivalent by
    `tests/test_elements_hdl.py` (20 tests) and costed by
-   `benchmarks/hdl_overhead.py` (1.14x end-to-end on an RC ladder).
+   `benchmarks/hdl_overhead.py` (1.01x end-to-end on an RC ladder as of
+   2026-08-26 -- parity; it read 1.14x here and had drifted to 1.22x, see
+   `doc/hdl_roadmap_260824.md` sec. 24-26).
    What remains of the DSL is planned in `hdl.md` sec. 9 (four phases,
    each item with its measured demand, design, proof and risk); the
    highest-value item there is widening PCNR's qualification -- charge-

@@ -5096,9 +5096,11 @@ def _args_of(self, epar):
     MEMOISED on the instance, because this is hot: it runs once per
     `i`/`G`/`q`/`C`/`u` call, so once per element per Newton iteration
     per timestep -- 125 029 times in a 49-element transient, rebuilding
-    an identical list every time.  Measured 1.16x end-to-end on a
-    121-device transient, answers bit-identical
-    (`benchmarks/args_cache.py`; roadmap sec. 24).
+    an identical list every time.  Worth **1.24x** end-to-end on a
+    121-device transient, answers bit-identical -- but re-run
+    `benchmarks/args_cache.py` rather than quoting that: it read 1.16x
+    when it landed and 1.24x once sec. 26 took other overhead out of the
+    same method (roadmap sec. 24 and 26).
 
     Two things make the cache safe rather than a staleness bug:
 

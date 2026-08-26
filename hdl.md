@@ -719,33 +719,46 @@ smoothing escape hatch.
 
 ## 5. Cost — measured
 
-`benchmarks/hdl_overhead.py`, this machine, 2026-08-22:
+`benchmarks/hdl_overhead.py`, this machine, **2026-08-26**:
 
 | call | hand-written | HDL | ratio |
 |---|---|---|---|
-| `R.i` | 0.53 µs | 1.30 µs | 2.5× |
-| `R.G` | 0.07 µs | 0.55 µs | 8.2× |
-| `C.q` | 0.76 µs | 0.78 µs | 1.0× |
-| `C.C` | 0.26 µs | 0.11 µs | **0.4×** |
-| `Diode.i` | 1.88 µs | 1.78 µs | **0.95×** |
-| `Diode.G` | 1.61 µs | 2.44 µs | 1.5× |
+| `R.i` | 0.55 µs | 0.67 µs | 1.22× |
+| `R.G` | 0.07 µs | 0.17 µs | 2.55× |
+| `C.q` | 0.77 µs | 0.67 µs | **0.87×** |
+| `C.C` | 0.26 µs | 0.16 µs | **0.62×** |
+| `Diode.i` | 1.88 µs | 0.89 µs | **0.47×** |
+| `Diode.G` | 1.63 µs | 1.51 µs | **0.93×** |
 
-Compile cost: **6–9 ms per element, once**, at class definition;
-importing all ten of `elements_hdl` costs **136 ms** with the package
-already loaded. That is the price of the exactness — symbolic assembly,
-two Jacobians, `lambdify` with CSE — and it is why `elements.py` stays
-the default catalogue while `elements_hdl.py` is imported on demand.
+Compile cost: **0.6–0.9 ms per element**, once, at class definition —
+and served from the on-disk compile cache after that, so importing all
+**37** classes of `elements_hdl` costs **~220 ms** warm with the package
+already loaded (about 10 s cold, when the cache key changes). That is
+the price of the exactness — symbolic assembly, two Jacobians,
+`lambdify` with CSE — and it is why `elements.py` stays the default
+catalogue while `elements_hdl.py` is imported on demand.
 
 End-to-end, an 8-stage RC ladder transient (1000 steps, identical
-waveforms to 1.1e-15): **0.62 s hand-written vs 0.70 s HDL — 1.14×**.
+waveforms to 8.3e-16): **0.577 s hand-written vs 0.585 s HDL — 1.01×**,
+i.e. parity within run-to-run noise.
 
-Read it this way: for a *nonlinear* element the generated code is at
-parity or better, because both sides evaluate the same transcendental and
-the generated one is CSE'd. The remaining gap is on *trivial linear*
-stamps, where the hand-written element does almost nothing at all
-(`return self._G`) and any function-call overhead dominates a 2×2 matrix.
-The 8× on `R.G` is 0.5 µs of Python call machinery, not expression
-walking.
+Read it this way: for a *nonlinear* element the generated code is now
+**faster** than the hand-written one — both sides evaluate the same
+transcendental and the generated one is CSE'd. What is left above 1.0 is
+*trivial linear* stamps, where the hand-written element does almost
+nothing at all (`return self._G`) and any function-call overhead
+dominates a 2×2 matrix.
+
+> ⚠ **This table said 2.5× / 8.2× / 1.14× until 2026-08-26 and was four
+> months stale.** The end-to-end figure had also drifted the other way —
+> re-measured before the fix it was **1.22×**, not the 1.14× printed
+> here. Three changes closed it, none touching any arithmetic and all
+> bit-identical: memoising the per-call argument list, `ravel` instead of
+> `flatten` in the assembly loop, and short-circuiting the DC-pin test on
+> the cheap operand. Together **1.40×** on a 121-device transient. See
+> `doc/hdl_roadmap_260824.md` §24–26. The lesson is in `record-upkeep`:
+> a performance figure no test asserts will drift, and it drifts in the
+> flattering direction.
 
 ### What it costs at PRODUCTION size (2026-08-24)
 

@@ -57,9 +57,11 @@ tell you.** The triggers above all assume some change *targeted* the
 number. The worse case is the number no change targeted: it decays a
 little per commit, every suite stays green, and the prose keeps
 claiming the original. `hdl.rst` advertised the DSL's overhead as
-`1.14x` for weeks; re-measured on the same machine it was **1.25x**.
-The benchmark that produced it was still in the tree and still passing
-— it asserted the two waveforms AGREED, never that the ratio held.
+`1.14x` for weeks; re-measured on the same machine it was **1.22x**
+(median of four runs — a single run said 1.25x, and quoting that would
+have overstated the drift). The benchmark that produced it was still in
+the tree and still passing — it asserted the two waveforms AGREED, never
+that the ratio held.
 
 So: when you touch a code path, **re-run the published figures that
 measure it**, even when your change was not about performance. And
@@ -67,6 +69,21 @@ prefer a figure with a test around it — assert a bound the number must
 stay under, so the drift fails a run instead of aging in prose.
 **Published figures rot in the flattering direction**, because that is
 the direction nobody re-checks.
+
+⚠ **A SPEEDUP FIGURE IS A PROPERTY OF THE WHOLE CALL, NOT OF THE
+CHANGE.** "This cache is worth 1.16x" is not a fact about the cache. It
+is a fact about the cache *and everything else in that call*, so it
+expires when any of the rest moves — with no edit to the thing being
+measured. Here a memoisation measured 1.16x when it landed and **1.24x
+an hour later, unchanged**, because a later fix removed a 425 ns lookup
+from the same method and shrank the denominator.
+
+This is the only kind of staleness where **re-running the same benchmark
+on the same code gives a different answer**, so it defeats every check
+based on "did anyone touch this?". Where a figure attributes a share to
+one component, write "re-run this" beside it rather than a number to
+quote — and prefer publishing the *absolute* before/after, which does
+not move when its neighbours do.
 
 ⚠ **A RATIO THAT DID NOT MOVE IS NOT A NULL RESULT.** When the published
 figure compares two things that share a code path, a change to the

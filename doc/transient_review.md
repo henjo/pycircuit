@@ -149,8 +149,8 @@ J = 784 nnz, 4.18% dense). cProfile over 21 accepted steps, 6.44 s total:
 
 | | cumtime | share |
 |---|---|---|
-| `circuit.py:1366` `_add_element_subvectors` (i, q, u) | 4.21 s | 65% |
-| `circuit.py:1290` `_add_element_submatrices` (G, C) | 1.98 s | 31% |
+| `circuit.py` `_add_element_subvectors` (i, q, u) | 4.21 s | 65% |
+| `circuit.py` `_add_element_submatrices` (G, C) | 1.98 s | 31% |
 | **`np.linalg.solve`** | **0.133 s** | **2.1%** |
 | step controller | 0.021 s | 0.3% |
 
@@ -163,11 +163,32 @@ Inside assembly the top costs are not arithmetic:
 | builtin `getattr` | 0.893 s | 1 059 088 |
 | builtin `hasattr` | 0.317 s | 360 392 |
 
-**~34% of total runtime is attribute-lookup machinery.** `circuit.py:1341` and `:1390`
-call `hasattr(self.toolkit, 'add_at')` once per element per stamp; `NumericToolkit` has
-no `add_at`, so `Toolkit.__getattr__` fires, misses, and **constructs a formatted error
-string and raises** (`toolkit.py:66-68`) 255 000 times. A helpful error message is being
-paid for on the hot path.
+**~34% of total runtime is attribute-lookup machinery.** `_add_element_submatrices` and
+`_add_element_subvectors` call `hasattr(self.toolkit, 'add_at')` once per element per
+stamp; `NumericToolkit` has no `add_at`, so `Toolkit.__getattr__` fires, misses, and
+**constructs a formatted error string and raises** (`Toolkit.__getattr__`) 255 000 times.
+A helpful error message is being paid for on the hot path.
+
+> **Update 2026-08-26 — most of this section has been acted on.** The measurements above
+> stand as taken (2026-07-30, before any of it); this note says what is left.
+>
+> * `numpy.ufunc.at` — **gone from the numpy path**. STAGE 2b collects the indices and
+>   scatters once with `bincount`; `_scatter_1d`/`_scatter_2d` are now 7.3% of a stamp
+>   call.
+> * `hasattr` on the toolkit — **reduced, not removed**. The probes were hoisted out of
+>   the per-element loop, so the count is now per stamp CALL: 4624 misses per 13-device
+>   transient, ~4.6 ms, **3.2%** (1.4% at 49 devices). Negative memoisation would remove
+>   the rest and is **deliberately not done** — see the recorded decision in
+>   `toolkit.py`, which now carries these numbers.
+> * builtin `getattr` — the largest single remaining item was **not** in this loop at
+>   all: it was `hdl._args_of` rebuilding each element's argument list on every call,
+>   125 029 times in a 49-element transient. Now memoised.
+> * **the section's thesis is unchanged and was right**: assembly dominates and
+>   `np.linalg.solve` is a couple of percent. What moved is the split *inside* assembly —
+>   the element's own arithmetic is now 61.8% of a stamp call, the loop overhead 25.3%.
+>
+> Net effect of the 2026-08-26 work: **1.40x** on a 121-device transient, bit-identical.
+> Detail in `doc/hdl_roadmap_260824.md` §23–26.
 
 ### 2.1 Threaded BLAS makes the solve 19x slower
 
@@ -215,7 +236,7 @@ The maintainer flagged this as a missing topic. The finding is sharper than "mis
 
 ### 3.1 It is not missing, it is inapplicable — assembly is dense
 
-`circuit.py:1290` allocates `toolkit.zeros((n,n))` and elements stamp into it;
+`_add_element_submatrices` allocates `toolkit.zeros((n,n))` and elements stamp into it;
 `_numeric.py:28` is `np.linalg.solve`, i.e. LAPACK `dgesv`, dense LU with partial
 pivoting. There is no sparse storage, no symbolic phase, no fill-reducing ordering, no
 factor reuse, and no pivot-threshold control. **There is nothing to order.**

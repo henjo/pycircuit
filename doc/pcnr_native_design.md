@@ -115,7 +115,7 @@ def G(self, x, epar=defaultepar, params_tree=None):
     return self._add_element_submatrices('G', x, (epar,), params_tree=params_tree)
 ```
 
-`_add_element_submatrices` (`circuit.py:1508`) is not a simple loop. It carries:
+`_add_element_submatrices` (`circuit.py`) is not a simple loop. It carries:
 
 - an **evaluation-group** mechanism, so a toolkit can evaluate many instances of
   one class in bulk (`toolkit.batched_contributions`);

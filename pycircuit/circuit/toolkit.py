@@ -81,6 +81,16 @@ class Toolkit:
             ## out of the assembly loops in stage 2b instead, which is the fix
             ## that carries no such risk.
             ##
+            ## WHAT THAT DECISION COSTS, measured 2026-08-26 so it can be
+            ## revisited on evidence rather than rediscovered: a miss is
+            ## **~1024 ns**, and one transient makes **4624** of them on 13
+            ## devices (~4.6 ms, 3.2% of the run) and 5823 on 49 devices
+            ## (1.4%).  `add_at` and `build_sparse` are the whole of it.  The
+            ## share FALLS as the circuit grows, because the hoist made the
+            ## count per stamp CALL rather than per element -- so the case for
+            ## reopening this is weakest exactly where run time matters most.
+            ## See doc/hdl_roadmap_260824.md sec. 25.
+            ##
             ## Safe against runtime mutation of the *toolkit*: assigning
             ## `toolkit.foo = ...` writes the instance __dict__ directly and so
             ## overrides any memo.  It would NOT be safe against mutating the

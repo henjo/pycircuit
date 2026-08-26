@@ -16,19 +16,26 @@ bit-identical.  Run it from the repository root::
 
     python benchmarks/args_cache.py
 
-Recorded 2026-08-26 (4-core Linux, numpy backend)::
+Recorded 2026-08-26 (4-core Linux, numpy backend), re-run after the
+element-evaluation work of roadmap sec. 26::
 
       devs uncached_ms   cached_ms   speedup
-        13       171.5       155.3     1.10x
-        49       531.1       464.5     1.14x
-       121      1159.0      1002.5     1.16x
+        13       156.5       135.4     1.16x
+        49       463.3       380.2     1.22x
+       121      1001.5       809.4     1.24x
 
-Quote **1.16x**.  Two earlier figures for this same change were higher
-and both were wrong to publish: a ceiling probe taken before the
-implementation said 1.20x (it cached without invalidation, which is
-cheaper than the real thing), and a first interleaved run said 1.18x
-(taken before the cache key was made type-exact).  Each was re-measured
-rather than carried forward.
+Quote **1.24x**, and re-run this rather than quoting it: what the cache
+is worth **depends on what else the call does**.  It measured 1.16x when
+it landed and 1.24x an hour later, unchanged, because sec. 26 removed a
+425 ns `epar` lookup from the same method -- taking overhead out of the
+denominator raises the share this cache accounts for.  A speedup figure
+is a property of the whole call, not of the change alone.
+
+Two earlier figures were higher and both were wrong to publish: a
+ceiling probe taken before the implementation said 1.20x (it cached
+without invalidation, which is cheaper than the real thing), and a first
+interleaved run said 1.18x (taken before the cache key was made
+type-exact).
 """
 
 import time
