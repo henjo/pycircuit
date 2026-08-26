@@ -1490,7 +1490,7 @@ batch:
 
 #### The friction, in the order it was met
 
-**(a) A helper shared by two classes cannot see its parameters, and the
+**(a) A helper shared by two classes cannot see its parameters, and the *(CLOSED 2026-08-26, §17: `params_as` hands the helper a namespace; `_with_params` is gone.)*
 BJT's card has forty-two of them.** `hdl._analog_function` injects the
 parameter symbols into `analog()`'s OWN globals, so a module-level
 helper it calls has a different `__globals__` and the bare names do not
