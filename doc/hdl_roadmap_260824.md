@@ -844,7 +844,18 @@ the form it was argued — here is what actually landed.
                                                      ceiling 1.76x against the
                                                      C backend's measured
                                                      212x, for the same build
-    3        S2  generalised variants                not started
+    3        S2  generalised variants                REFUSED on measurement
+                                                     (sec. 29): eliding the
+                                                     blocks a default card
+                                                     makes inert -- 15% of the
+                                                     generated Jacobian,
+                                                     exponentials included --
+                                                     is 1.00x on numpy and
+                                                     1.00x in C, bit-identical.
+                                                     The cost is the
+                                                     REGULARISERS (minc/maxc,
+                                                     4.5 of 17.2 ms), not the
+                                                     physics
     3        S3  automatic domain clamping           DONE (sec. 21): hdl.select,
                                                      6 of 20 sites converted,
                                                      bit-identical
@@ -3606,3 +3617,99 @@ sites still compute what they used to. Re-running it properly means, for
 each converted arm, a card and a bias that **select that arm and put it
 near its boundary**, which is where a clamp can differ from the
 expression it replaced.
+
+## 29. S2 measured before building it (2026-08-26): the inert blocks are CHEAP
+
+§3 proposed S2 -- generalise the per-parameter-mask class-variant
+mechanism from "collapse nodes" to "elide any block whose parameters
+make it inert" -- and called it *"the most direct attack on evaluation
+cost: a card that switches off gate current, avalanche and half the
+parasitics should not pay for them on every Newton iteration."*
+
+Weeks of work, medium risk. Measured first, as §22 and §23 were.
+
+### The measurement is available without building anything
+
+`psp_kernel` **already contains the elision.** Its build-time guards fire
+when a parameter arrives as a NUMBER rather than a symbol -- and today it
+never is, which is precisely the trap S2 describes. Handing the kernel a
+literal `0.0` for the switches a card sets to zero produces exactly the
+code S2 would emit, so the two can be compiled side by side and compared.
+
+(The compile cache must be off: the variant's `analog` source and
+`instparams` are identical to the base's, so it hashes to the same key.)
+
+**And the default card is already the interesting case.** `alp`, `alp1`,
+`alp2`, `kp`, `rs`, `rsg`, `rsb`, `gc3`, `gco`, `iginv`, `igov` **all
+default to 0.0** -- channel-length modulation, series resistance and gate
+tunnelling are all switched off on a default build and all fully
+compiled.
+
+### Result: nothing, on either backend
+
+| elided | G source | numpy | C backend |
+|---|---|---|---|
+| the `mob` switches (`alp`, `kp`, `rs`, …) | 2675 → 2469 lines | **0.996x** | **1.000x** |
+| the whole **gate-current** block | 2675 → 2275 lines | **1.000x** | -- |
+
+Four interleaved runs each, minimum taken; spreads of 17.13–17.47 ms.
+Every comparison **bit-identical** in `i` and `G` (`max|diff| = 0.0`),
+which also confirms the kernel's guards are correct.
+
+Removing **15% of the generated Jacobian source**, exponentials included,
+changes the evaluation time by nothing measurable.
+
+### Why -- and the mechanism is the interesting part
+
+Executed primitive calls, counted per evaluation, base against
+gate-block-removed:
+
+```
+base      total/eval 27659   maxc=2911 minc=3833 rdiv=1605 recip2=1084 step=2046
+no gate   total/eval 27659   maxc=2911 minc=3833 rdiv=1605 recip2=1084 step=2046
+```
+
+**Identical to the last call.** The 400 removed lines contain **zero**
+calls to the smoothing primitives, which are what the cost is made of:
+
+| primitive | us/call | calls/eval | ms/eval |
+|---|---|---|---|
+| `minc` | 0.673 | 3833 | 2.578 |
+| `maxc` | 0.679 | 2911 | 1.977 |
+| `step` / `rdiv` / `recip2` | ~0.045 | 4735 | 0.205 |
+| **total** | | **11 479** | **4.76 = 28% of the 17.2 ms** |
+
+The optional physics blocks are plain array arithmetic -- C-level ufunc
+work that the call counter does not even see. The 845 emitted numpy
+calls the gate block costs are worth roughly **0.25 ms of 17.2 ms, 1.5%**,
+which is inside the run-to-run spread. So the null is not a measurement
+failure; it is the right answer.
+
+**The cost of a compact model is its REGULARISERS, not its physics.**
+`minc` and `maxc` alone -- the domain clamping that keeps both arms of
+every conditional finite -- are 4.5 ms of the 17.2 ms Jacobian, and they
+are spread through every block, including the ones no card switches off.
+
+### Verdict
+
+**S2 is REFUSED on measurement.** Its stated justification was evaluation
+cost, and eliding the blocks it targets buys 1.00x on numpy and 1.00x in
+C, on the card where the most blocks are inert.
+
+What remains true is the **correctness** half of §3's argument -- *a
+block whose parameter is zero is still compiled and still evaluated, and
+`0 x inf = NaN`*. That is a real trap and it is why the nine hand guards
+in `psp_kernel.py` exist. But hand guards are nine lines, and S2 is weeks
+with a variant-explosion risk. If the trap bites again, the cheap answer
+is another hand guard, or a checked helper -- not a compiler feature.
+
+Fifth item closed by measuring instead of building (§22 S1, §23
+C-for-eager, §25 toolkit memoisation, §28 the `select` residue, this).
+
+### What the measurement DOES point at
+
+If PSP's Jacobian is ever worth attacking again on the numpy path, the
+target is now named and quantified: **`minc`/`maxc`, 6744 calls and
+4.5 ms per evaluation**. They are Python-level functions called once per
+clamped subexpression. The C backend already removes them entirely
+(212x), which is why this is recorded rather than pursued.
