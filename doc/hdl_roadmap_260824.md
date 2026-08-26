@@ -820,7 +820,10 @@ the form it was argued — here is what actually landed.
     3        kernel: softplus/mne/mxe/p3 promoted    DONE
     3        kernel: range contracts                 DONE
     3        kernel: limit_delta                     not started
-    3        S1  pure form for chained path          not started
+    3        S1  pure form for chained path          NOT NEXT (sec. 22): the two
+                                                     fast paths are disjoint;
+                                                     C-for-eager is cheaper
+    3        C backend for the EAGER path            new, unmeasured (sec. 22)
     3        S2  generalised variants                not started
     3        S3  automatic domain clamping           DONE (sec. 21): hdl.select,
                                                      6 of 20 sites converted,
@@ -2755,3 +2758,71 @@ states**; `sphinx -W` clean.
 The mechanism covers their shapes, so the residue is adoption work,
 not a limitation -- with `psp_kernel`'s four deliberately excluded
 until someone wants to re-validate PSP against the vendor afterwards.
+
+
+---
+
+## 22. S1, measured before building it (2026-08-26): the two fast paths are DISJOINT
+
+S1 -- a pure form for the chained path -- has one remaining
+justification: `solve_batched`. Measured before committing days to it.
+
+**The 22.5x reproduces.** `benchmarks/batched_sweep.py`, unchanged, on
+this machine's GPU:
+
+    lanes    cpu loop    jax warm   speedup
+        8      819 ms     1726 ms      0.5x
+       32     3377        1932         1.7x
+      128    13451        2060         6.5x
+      512    53462        2577        20.7x
+
+**But the fast paths do not overlap at all.** Every `Behavioural` class
+in the library, partitioned:
+
+    chained  -> the C backend (20-270x)        22
+    pure_spec -> solve_batched (up to 20.7x)   15
+    BOTH                                        0
+    NEITHER                                     0
+
+A model is chained *because* it calls `var()`, which is what makes it
+too big to differentiate as a tree -- and that is exactly the property
+that denies it a `pure_spec`. So the 22 models that carry real physics
+(PSP, the BJTs, EKV, both MOS levels, the MESFETs) get C and cannot
+batch; the 15 that can batch (R, C, L, the ideal diode, the passives)
+get no C at all. Verified directly: running the batched-sweep
+rectifier with HDL elements and `set_backend('c')` changes nothing and
+reports `numpy (eager path: the C backend serves let-chain models
+only)` -- the backend refuses honestly rather than pretending.
+
+### What this does to S1
+
+S1's value is no longer "batching for the flagship model" in the
+abstract; it is **whatever batching wins ON TOP OF a C backend that is
+already 212x on PSP's Jacobian**. That is not measurable until one of
+the two exists for the same model, and it is plausibly small: the C
+path removes the per-evaluation cost that batching was amortising.
+
+### And a gap the roadmap never named
+
+The partition is symmetric, and only one half was ever written down.
+**The eager path has no C backend** -- 15 shipped classes, including
+every passive, evaluate through `lambdify` at numpy speed. Emitting C
+for the eager path looks *cheaper* than S1, not dearer: there is no
+let-chain to walk, the expressions are already flat, and
+`_CChainPrinter` exists. Neither has been measured against the other.
+
+**So S1 is NOT the next thing to build.** The honest ranking is:
+
+1. measure what fraction of an eager transient is device evaluation --
+   the rectifier CPU loop is 14.2 s for 128 lanes with HDL elements
+   against 13.5 s with hand-written ones, which suggests the SOLVER
+   dominates and that C for the eager path may buy little;
+2. if it does dominate, neither C-for-eager nor S1 is worth building,
+   and the batching win at 512 lanes is already the answer for the
+   models that can use it;
+3. if device evaluation is significant, C-for-eager is the cheaper of
+   the two and should go first.
+
+Recorded rather than acted on: this is the roadmap's own rule for the
+backend work -- gate the expensive item on a measurement -- applied to
+the item that was next in line.
