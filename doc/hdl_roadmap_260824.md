@@ -3823,7 +3823,24 @@ removes the Python-level primitives entirely (212x), so folding's −37%
 of them may buy much less there — and the C path is where a large model
 would actually run.
 
+> ✅ **Measured before building, §31: it stacks — 1.44x on C**
+> (82.2 → 57.2 µs), and the C build halves (27.1 → 14.8 s) because
+> there is less code to compile. That is what justified building it.
+
 ### Status
+
+> ✅ **BUILT, same day — see §31.** `hdl.fold_card`, 1.54x numpy /
+> 1.48x C on PSP, and it compiles faster than the symbolic form. The
+> accuracy question below is answered and carried into the API's
+> docstring, `hdl.rst` and the test module: **not bit-identical, so a
+> model validated against a reference must be re-validated folded.**
+>
+> §31 also records the design error this section did not anticipate:
+> folding only the parameters a card *mentions* leaves the rest
+> symbolic and measures **0.96x**. The API has to name what stays
+> VARIABLE.
+
+Written before the build, and all three held:
 
 **Not built.** It is the strongest remaining performance item by a wide
 margin, it has a real accuracy question attached, and the C-backend
