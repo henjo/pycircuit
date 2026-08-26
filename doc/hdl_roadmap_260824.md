@@ -2275,3 +2275,61 @@ touches, driven to 1e117), which is architectural and shared by every
 path. **Stage 3 (JAX) is the user's call**; a vector device under
 `pcnr=True` on the traced path currently raises `NotImplementedError`
 rather than silently not participating.
+
+### The "unlimited-node failure", re-measured (2026-08-26): not what was recorded, and the real gap fixed
+
+Listed after Stage 2 as "the one failure vector PCNR could not remove,
+architectural on every path". Re-measured at every ENTRY POINT rather
+than under the plain-Newton harness the Stage tables used:
+
+    Level-1 cascode (20,2,.8, vb=-2)   uniform 20 V start   zero start
+      DC() default (ladder + anchor)        52 (0.7796 V)    136 (0.7797 V)
+      DC(pcnr=True)                          24 (0.7796 V)     17 (0.7796 V)
+      pcnr.solve_dc direct                   30 (0.7797 V)     22 (0.7797 V)
+
+**It converges at every entry point, from both starts.** Stage 2's
+`[FAIL, FAIL]` at this point does not reproduce with this harness; the
+row is left in the Stage 2 table with this note beside it rather than
+deleted, because the two harnesses have not been reconciled.
+
+    BJT mirror, uniform 20 V start
+      DC() default                          146 (3.996 V)
+      DC(pcnr=True)                         FAIL LinAlgError
+      pcnr.solve_dc direct                  FAIL LinAlgError
+
+**This one is real, and it is an integration gap, not an architectural
+limit**: `DC(pcnr=True)` called `solve_dc` and returned. A PCNR failure
+was a hard failure, on a circuit the default path solves, because the
+PCNR path had NO rescue chain while the ordinary path has four ladders
+plus the anchor.
+
+Three native rescues were built as adaptive ladders around `solve_dc`
+(the driver `_adaptive_conductance_ladder` is generic and
+`augmented_system` already exposes the hooks) and **all three fail**
+on this circuit, in both instance orders:
+
+    gmin shunt to ground (e0 = -3)     FAIL after 673 / 727 evaluations
+    source stepping (lambda from 1e-3) FAIL at the FIRST rung
+    Jacobian damping (e0 = -3, -5)     FAIL after 673 / 727, 300 / 300
+
+The failure is PCNR's UNDAMPED first `predict` step from a wild start
+-- 9e45 V proposed, which `pnjlim`'s `vold <= 0` branch maps to a
+2.83 V forward junction, 1e33 S, singular -- and it is the same on
+every rung, because every rung takes that step. (A first damping
+attempt was inconclusive rather than negative: `solve_dc` raises
+`RuntimeError`, which the ladder driver does not catch, and 1 S of
+damping against 1 kOhm loads contracts by 0.999 per step. Wired
+properly, it is negative.)
+
+**Fix shipped:** `DC(pcnr=True)` and the transient's PCNR step fall
+back to the ordinary chain when PCNR raises, log it, and set
+`DC.pcnr_fell_back`. Order-independence is lost for THAT solve; the
+answer never is. Pinned by two tests -- the fallback fires on the
+mirror and matches `DC()`'s answer, and it does NOT fire on a solve
+PCNR handles (a fallback that always fires would pass the first test
+alone). The experiment hooks were removed from `solve_dc` after the
+measurement; they have no user.
+
+What remains genuinely open is narrower than the heading said: **a
+native rescue for PCNR from a wild start**, which would need a damped
+`predict` (not a damped rung), and has no measurement demanding it yet.

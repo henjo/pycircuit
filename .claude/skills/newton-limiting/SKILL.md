@@ -292,3 +292,33 @@ collector. Under plain Newton the outcome is decided by instance order
 independent, converging, ~50% dearer. What vector PCNR does NOT fix is
 a node no probe touches (driven to 1e117 from an all-off start); that
 is architectural on every path, and a separate problem.
+
+
+## Re-measure a recorded failure at the user-facing entry points before building against it
+
+An item was carried for two stages as "the one failure vector PCNR
+cannot remove, architectural on every path". Re-measured through
+`DC()` and `DC(pcnr=True)` rather than the plain-Newton harness the
+acceptance tables used, it converged at every entry point from both
+starts. The harness that found it was the right one for isolating a
+limiter's effect (no ladder, no anchor) and the wrong one for deciding
+whether users are affected. Both measurements are true; they answer
+different questions, and the record had conflated them.
+
+What survived the re-measurement was smaller and real: the PCNR path
+had no rescue chain at all, so a PCNR failure was a hard failure on a
+circuit the default path solves in 146 evaluations.
+
+## When a native rescue fails three ways in a day, fall back and flag
+
+Three ladders around PCNR -- gmin shunt, source stepping, Jacobian
+damping -- all failed on the same circuit, for the same reason: the
+undamped first step from a wild start is taken on every rung. The fix
+that shipped is a fallback to the ordinary chain with a logged warning
+and a flag on the analysis. That loses the intervention's property
+(order-independence) for one solve and never loses the answer.
+
+Two rules for a fallback: it must be TESTED NOT TO FIRE on a solve the
+intervention handles, or a fallback that always fires passes every
+other test; and the experiment hooks used to find out must be removed
+afterwards, because a parameter with no user is a claim with no test.
