@@ -345,6 +345,88 @@ belongs to each instance -- so use it in a ``Piecewise``:
     print("Givenness is not \"differs from the default\", which is exactly")
     print("why the operator exists.")
 
+Parameters as a namespace
+`````````````````````````
+
+The bare-name convention above has three limits, all measured on the
+shipped library.  A **helper shared by several classes** cannot read the
+parameters -- the compiler binds them into a private copy of
+``analog()``'s globals, and a helper has its own -- so the SPICE diode
+body took nineteen explicit arguments and the Gummel-Poon body was
+callable only through a hand-applied rebind of its globals.  A **Python
+keyword** cannot be a bare name, so SPICE's ``LAMBDA`` and ``AS`` ship
+on `MosLevel1Hdl` as ``lambd`` and ``asrc``.  And a linter sees every
+bare parameter as an undefined name (63 ``# noqa: F821`` in one file).
+
+``params_as = 'p'`` on the class hands ``analog()`` a
+:class:`~pycircuit.circuit.hdl.ParamNamespace` as its **first argument**
+instead of binding bare names; the terminals are the arguments after it.
+``p.g`` and ``p['g']`` are the *same* symbol the bare style binds, so
+the generated code, the compilation record and ``explain()`` are
+identical between the two spellings (``test_hdl_params.py`` pins that,
+and pins the five library adopters to hashes recorded before they were
+converted).  What changes is scope and spelling:
+
+.. exec-rst::
+
+    import numpy as np
+    import pycircuit.circuit.circuit as cm
+    from pycircuit.circuit.toolkit import numeric
+    from pycircuit.circuit.hdl import Behavioural, Branch, Contribution, var
+    from pycircuit.utilities.param import Parameter
+
+    cm.default_toolkit = numeric
+
+    def channel(p, d, s):
+        """Shared by both classes below; reads whichever card called it."""
+        b = Branch(d, s)
+        clm = var(1 + p['lambda'] * b.V, 'clm')       # a keyword-named parameter
+        return Contribution(b.I, p.kp * clm * b.V)
+
+    class Nch(Behavioural):
+        params_as = 'p'
+        instparams = [Parameter(name='kp', desc='k', unit='A/V^2', default=2e-5),
+                      Parameter(name='lambda', desc='clm', unit='1/V', default=0.0)]
+
+        @staticmethod
+        def analog(p, d, s):
+            return channel(p, d, s)
+
+    class Pch(Behavioural):
+        params_as = 'p'
+        instparams = [Parameter(name='kp', desc='k', unit='A/V^2', default=8e-6),
+                      Parameter(name='lambda', desc='clm', unit='1/V', default=0.0)]
+
+        @staticmethod
+        def analog(p, s, d):
+            return channel(p, d, s)
+
+    x = np.array([1.0, 0.0])
+    n = Nch('d', 's', **{'lambda': 0.5}); n.update_iparv()
+    q = Pch('s', 'd'); q.update_iparv()
+    print("Terminals are the arguments after ``p``: Nch %s, Pch %s."
+          % (list(Nch.terminals), list(Pch.terminals)))
+    print("One helper, two cards: Nch conducts %.1e A at 1 V with lambda = 0.5,"
+          % float(np.asarray(n.i(x), float)[0]))
+    print("Pch %.1e A with its own kp and lambda = 0." % float(np.asarray(q.i(x), float)[0]))
+
+``p.given('rs')`` is `param_given` with the name checked against the
+declaration, and ``p.names`` is the declared order.  A parameter that
+is not declared is refused **at compile time**, naming the class and
+the declared names, exactly as an undeclared bare name is; a bare name
+inside a ``params_as`` class gets a message saying where the parameters
+went.  A keyword-named parameter can only be declared by a
+``params_as`` class -- the bare style refuses it with the fix in the
+message -- and in generated source it appears under a mangled name
+(``_hdl_kw_lambda``), since no Python function can take an argument
+called ``lambda``; ``explain()`` lists it by its declared name.
+
+The two styles coexist across classes, not inside one: every model that
+reads bare names keeps working unchanged, and a ``params_as`` class
+binds no bare names at all.  `MosLevel1Hdl` still reads bare names and
+keeps ``lambd``/``asrc`` as the canonical spellings; SPICE's own are
+accepted on the instance through ``aliasparams``.
+
 Writing your first element
 --------------------------
 
@@ -992,6 +1074,8 @@ Reference
 .. autoclass:: pycircuit.circuit.hdl.Behavioural
 
 .. autoclass:: pycircuit.circuit.hdl.Contribution
+
+.. autoclass:: pycircuit.circuit.hdl.ParamNamespace
 
 .. autofunction:: pycircuit.circuit.hdl.explain
 

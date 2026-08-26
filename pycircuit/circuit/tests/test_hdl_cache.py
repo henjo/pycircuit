@@ -62,6 +62,9 @@ def _reclass(base, name=None):
                                           staticmethod)
                             else base.analog),
         instparams=list(base.instparams),
+        ## A `params_as` class hands analog() its namespace first; a
+        ## reclass that dropped it would make `p` a terminal.
+        params_as=getattr(base, 'params_as', None),
         __module__=base.__module__,
         __qualname__=base.__qualname__))
 

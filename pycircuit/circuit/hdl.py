@@ -59,6 +59,7 @@ import numpy as np
 
 import collections
 import inspect
+import keyword
 import itertools
 import re
 import types
@@ -1688,6 +1689,21 @@ def var(expr, name=None):
     return sym
 
 
+def _param_symbol(name):
+    """The symbol standing for the parameter called `name`.
+
+    `Symbol(name)` for every name that can be spelled in generated code.
+    A keyword-named parameter (SPICE's ``lambda``, ``as``; reachable
+    only through `ParamNamespace`) gets a mangled name, because the
+    let-chain printer emits ``def _f(x, lambda, ...)`` VERBATIM -- a
+    SyntaxError -- and every consumer that rebuilds the symbol from the
+    parameter name (four JAX sites) must agree on the spelling.
+    """
+    if name.isidentifier() and not keyword.iskeyword(name):
+        return sympy.Symbol(name)
+    return sympy.Symbol('_hdl_kw_' + re.sub(r'\W', '_', name))
+
+
 def param_given(name):
     """Verilog-A's ``$param_given(name)``: 1.0 when the instance was given
     that parameter explicitly, 0.0 when it fell back to its default.
@@ -1703,6 +1719,112 @@ def param_given(name):
     models, which is why it is here before more glamorous operators.
     """
     return sympy.Symbol('_hdl_given_%s' % name, real=True)
+
+
+class ParamNamespace(object):
+    """The parameters of one class, as an object handed to ``analog()``.
+
+    Opted into per class with ``params_as = 'p'`` (any identifier), which
+    makes the FIRST argument of ``analog()`` this object rather than a
+    terminal::
+
+        class Res(Behavioural):
+            params_as = 'p'
+            instparams = [Parameter(name='r', ...),
+                          Parameter(name='lambda', ...)]
+
+            @staticmethod
+            def analog(p, plus, minus):
+                b = Branch(plus, minus)
+                return Contribution(b.I, b.V / (p.r * (1 + p['lambda'])))
+
+    ``p.r`` and ``p['r']`` are the SAME `sympy.Symbol('r')` the bare-name
+    style binds -- this is a compile-time object whose attributes are
+    the parameter symbols, so the generated code, the compilation record
+    and `explain` are identical between the two spellings.  What it
+    changes is scope and spelling:
+
+    * a helper shared by several classes receives ``p`` as an ordinary
+      argument and reads ``p.bf``; the bare-name style cannot reach a
+      helper at all, since a helper has its own ``__globals__``
+      (`elements_hdl._gp_core` used to be rebound by hand for this);
+    * a parameter may carry ANY name, including a Python keyword --
+      SPICE's ``lambda`` and ``as`` -- reached as ``p['lambda']``;
+    * a linter sees an attribute access, not an undefined global, so
+      the ``# noqa: F821`` the bare style needs disappears.
+
+    ``p.given('rs')`` is `param_given` with the name checked against
+    the declaration; ``p.names`` is the declared order.  A name that
+    is not declared raises at compile time, naming the class and the
+    declared names, exactly as an undeclared bare name does.
+
+    In a ``params_as`` class the bare names are NOT injected: the two
+    styles coexist across classes, not inside one.
+    """
+    __slots__ = ('_cls', '_names', '_syms')
+
+    def __init__(self, clsname, names, syms):
+        object.__setattr__(self, '_cls', clsname)
+        object.__setattr__(self, '_names', tuple(names))
+        object.__setattr__(self, '_syms', dict(zip(names, syms)))
+
+    @property
+    def names(self):
+        """The declared parameter names, in declaration order."""
+        return self._names
+
+    def _missing(self, name):
+        return ('%s.analog() reads parameter %r, which %s does not '
+                'declare (its instparams are %s). Declare it: '
+                'instparams = [..., Parameter(name=%r, desc=..., unit=..., '
+                'default=...)].'
+                % (self._cls, name, self._cls,
+                   ', '.join(repr(a) for a in self._names)
+                   or '(none declared)', name))
+
+    def __getattr__(self, name):
+        ## `__slots__` fields and `names` resolve before this is reached,
+        ## so only parameter lookups arrive here.  Dunder probes
+        ## (`__array__`, `_sympy_`, `__iter__`...) from numpy and sympy
+        ## must see a plain AttributeError, and do.
+        try:
+            return self._syms[name]
+        except KeyError:
+            if name.startswith('__') or name.startswith('_'):
+                raise AttributeError(name)
+            raise AttributeError(self._missing(name)) from None
+
+    def __setattr__(self, name, value):
+        raise AttributeError(
+            '%s.analog(): the parameter namespace is read-only; %r cannot '
+            'be assigned. Parameters are declared in instparams and their '
+            'values come from the instance.' % (self._cls, name))
+
+    def __getitem__(self, name):
+        try:
+            return self._syms[name]
+        except KeyError:
+            raise KeyError(self._missing(name)) from None
+
+    def __contains__(self, name):
+        return name in self._syms
+
+    def __iter__(self):
+        return iter(self._names)
+
+    def __len__(self):
+        return len(self._names)
+
+    def given(self, name):
+        """`param_given`, with the name checked against the declaration:
+        a typo in the bare ``param_given('rz')`` compiles silently and
+        reads as never-given at every instance."""
+        if name not in self._syms:
+            raise KeyError(self._missing(name))
+        return param_given(name)
+
+    def __repr__(self):
+        return '<parameters of %s: %s>' % (self._cls, ', '.join(self._names))
 
 
 def ac_stim(mag=1.0, phase=0.0):
@@ -2119,15 +2241,27 @@ def _check_analog_declaration(cls):
     if isinstance(func, staticmethod):
         func = func.__func__
     spec = inspect.getfullargspec(func)
-    if spec.args[:1] in (['self'], ['cls']):
-        rest = spec.args[1:] or ['plus', 'minus']
+    args = list(spec.args)
+    pas = _params_as(cls)
+    if pas is not None:
+        if not args or args[0] != pas:
+            raise TypeError(
+                '%s sets params_as = %r, so analog()\'s FIRST argument must '
+                'be named %r and receives the parameter namespace; it is '
+                'analog(%s). Write "def analog(%s, %s)", or remove '
+                'params_as to use the bare-name style.'
+                % (name, pas, pas, ', '.join(args), pas,
+                   ', '.join(args) or 'plus, minus'))
+        args = args[1:]
+    if args[:1] in (['self'], ['cls']):
+        rest = args[1:] or ['plus', 'minus']
         raise TypeError(
             '%s.analog() takes %r as its first argument, so %r would become '
             'the element\'s FIRST TERMINAL and every connection after it '
             'would shift by one pin. analog() is a staticmethod whose '
             'argument names are the terminals: write "@staticmethod" above '
             'it and "def analog(%s)".'
-            % (name, spec.args[0], spec.args[0], ', '.join(rest)))
+            % (name, args[0], args[0], ', '.join(rest)))
     bad = []
     if spec.varargs:
         bad.append('*%s' % spec.varargs)
@@ -2141,18 +2275,20 @@ def _check_analog_declaration(cls):
             'terminal is one named positional argument, and the pin order '
             'is the argument order. Write the terminals out.'
             % (name, ' and '.join(bad)))
-    if not spec.args:
+    if not args:
         raise TypeError(
-            '%s.analog() declares no arguments, so the element has no '
+            '%s.analog() declares no %sarguments, so the element has no '
             'terminals and nothing can be connected to it. Name the '
-            'terminals as arguments: "def analog(plus, minus)".' % name)
+            'terminals as arguments: "def analog(%splus, minus)".'
+            % (name, '' if pas is None else 'terminal ',
+               '' if pas is None else pas + ', '))
     ## A class-body `terminals` is DISCARDED -- the metaclass overwrites
     ## it with analog()'s argument names.  Refused only when the two
     ## DISAGREE, which is the case where the discarding changes the
     ## element: a declaration that merely restates the signature is
     ## redundant, not wrong, and several existing models carry one.
     declared = cls.__dict__.get('terminals')
-    if declared is not None and list(declared) != list(spec.args):
+    if declared is not None and list(declared) != args:
         raise TypeError(
             '%s declares terminals = %r in the class body, which disagrees '
             'with analog(%s). The declaration is DISCARDED -- an HDL '
@@ -2161,10 +2297,28 @@ def _check_analog_declaration(cls):
             'silently placed by that list instead. Delete the declaration '
             'and rename or reorder analog()\'s arguments.'
             % (name, tuple(declared), ', '.join(spec.args),
-               tuple(spec.args)))
+               tuple(args)))
+    return args
 
 
-def _run_analog(name, func, args, paramnames):
+def _params_as(cls):
+    """The class's ``params_as`` declaration, validated: `None` for the
+    bare-name style, else the identifier naming analog()'s first
+    argument."""
+    pas = getattr(cls, 'params_as', None)
+    if pas is None:
+        return None
+    if not isinstance(pas, str) or not pas.isidentifier() \
+            or keyword.iskeyword(pas):
+        raise TypeError(
+            '%s sets params_as = %r, which is not a Python identifier. It '
+            'names analog()\'s first argument, the one that receives the '
+            'parameter namespace: params_as = \'p\'.'
+            % (cls.__name__, pas))
+    return pas
+
+
+def _run_analog(name, func, args, paramnames, params_as=None):
     """Call the model's `analog()`, translating the errors an
     ordinary-looking Python expression raises out of it: an undefined
     bare name, a comparison used as a condition, and a float-domain
@@ -2178,6 +2332,21 @@ def _run_analog(name, func, args, paramnames):
             unknown = m.group(1) if m else None
         if unknown is None:
             raise
+        if params_as is not None:
+            raise NameError(
+                '%s.analog() uses the name %r, which is not defined: it is '
+                'not a global of the module it is written in, and %s sets '
+                'params_as = %r, so its parameters (%s) are NOT bound as '
+                'bare names -- they are read as %s.%s or %s[%r]. If %r is '
+                'meant to be a parameter, declare it and read it through '
+                '%s; if the name comes from a helper analog() calls, pass '
+                '%s to the helper.'
+                % (name, unknown, name, params_as,
+                   ', '.join(repr(a) for a in paramnames)
+                   or '(none declared)',
+                   params_as, unknown if unknown.isidentifier() else 'name',
+                   params_as, unknown, unknown, params_as,
+                   params_as)) from None
         raise NameError(
             '%s.analog() uses the name %r, which is not defined: it is not '
             'a declared instance parameter of %s (those are %s), and not a '
@@ -2256,9 +2425,9 @@ def generate_code(cls):
     Returns a dict consumed by :class:`BehaviouralMeta`; see the module
     docstring for the compilation model.
     """
-    _check_analog_declaration(cls)
-    terminalnames = inspect.getfullargspec(cls.analog)[0]
+    terminalnames = _check_analog_declaration(cls)
     terminalnodes = [Node(name) for name in terminalnames]
+    params_as = _params_as(cls)
 
     ## Bind the parameter names as sympy symbols in a PRIVATE copy of the
     ## analog() globals, so the body refers to instance parameters by bare
@@ -2266,15 +2435,43 @@ def generate_code(cls):
     ## supplied from the RESOLVED self.iparv at call time.  The copy is
     ## what keeps the injection out of the defining module -- see
     ## `_analog_function`.
+    ##
+    ## A `params_as` class gets the SAME symbols through a
+    ## `ParamNamespace` as analog()'s first argument, and no bare names
+    ## at all -- which is what lets it declare a keyword-named parameter
+    ## (the bare style cannot bind `lambda` as a name, so it is refused
+    ## there rather than left to fail as a SyntaxError-shaped NameError).
     paramnames = [p.name for p in cls.instparams]
-    paramsyms = [sympy.Symbol(name) for name in paramnames]
-    analogfunc = _analog_function(cls.analog, paramnames, paramsyms)
+    paramsyms = [_param_symbol(name) for name in paramnames]
+    if params_as is None:
+        unreachable = [nm for nm in paramnames
+                       if not nm.isidentifier() or keyword.iskeyword(nm)]
+        if unreachable:
+            raise TypeError(
+                '%s declares the parameter%s %s, which cannot be read as '
+                'bare name%s inside analog(): %s. Set params_as = \'p\' '
+                'on the class and read %s as %s -- the namespace reaches '
+                'any declared name.'
+                % (cls.__name__, '' if len(unreachable) == 1 else 's',
+                   ', '.join(repr(nm) for nm in unreachable),
+                   '' if len(unreachable) == 1 else 's',
+                   'a Python keyword is not a valid name'
+                   if all(keyword.iskeyword(nm) for nm in unreachable)
+                   else 'not a valid Python identifier',
+                   'it' if len(unreachable) == 1 else 'them',
+                   ', '.join('p[%r]' % nm for nm in unreachable)))
+        analogfunc = _analog_function(cls.analog, paramnames, paramsyms)
+        callargs = terminalnodes
+    else:
+        analogfunc = _analog_function(cls.analog, [], [])
+        callargs = [ParamNamespace(cls.__name__, paramnames, paramsyms)] \
+            + terminalnodes
 
     _VAR_STACK.append([])
     _NODE_TRACE.append([])
     try:
         statements = _run_analog(cls.__name__, analogfunc,
-                                 terminalnodes, paramnames)
+                                 callargs, paramnames, params_as)
     finally:
         intermediates = _VAR_STACK.pop()
         builtnodes = _NODE_TRACE.pop()
@@ -4474,7 +4671,7 @@ class BehaviouralMeta(type):
                         f_ = _chain_compile(
                             defs_, [out_],
                             [ch['vsym']]
-                            + [sympy.Symbol(q) for q in _pn] + [TEMP],
+                            + [_param_symbol(q) for q in _pn] + [TEMP],
                             modules_map=dict(_kernel_jax(_jnp),
                                              numpy=_jnp))
                         cache[which] = lambda *a_, _f=f_: _f(*a_)[0]
@@ -4482,7 +4679,7 @@ class BehaviouralMeta(type):
                         expr = sym['f'] if which == 'i' else sym['dfdv']
                         cache[which] = sympy.lambdify(
                             [sym['vsym']]
-                            + [sympy.Symbol(q) for q in _pn] + [TEMP],
+                            + [_param_symbol(q) for q in _pn] + [TEMP],
                             expr, modules=[_kernel_jax(_jnp), 'jax'],
                             cse=True)
                 return cache[which]
@@ -4557,7 +4754,7 @@ class BehaviouralMeta(type):
                 if which not in cache:
                     import jax.numpy as _jnp
                     args_ = list(_pv['vsyms']) \
-                        + [sympy.Symbol(q) for q in _pn] + [TEMP] \
+                        + [_param_symbol(q) for q in _pn] + [TEMP] \
                         + [sympy.Symbol('_hdl_given_%s' % q, real=True)
                            for q in _gn_vec]
                     if _pv['sym'] is None:
@@ -4635,7 +4832,7 @@ class BehaviouralMeta(type):
                               [xv[i2] for i2 in range(spec['n'])]))
                 vec = [e.subs(xs) for e in spec[which]]
                 cache[which] = sympy.lambdify(
-                    [xv] + [sympy.Symbol(p2) for p2 in pnames] + [TEMP],
+                    [xv] + [_param_symbol(p2) for p2 in pnames] + [TEMP],
                     vec, modules=[_kernel_jax(jnp), 'jax'],
                     cse=True)
             return cache[which]
@@ -4696,6 +4893,13 @@ class Behavioural(circuit.Circuit, metaclass=BehaviouralMeta):
     #:
     #:     aliasparams = {'isat': 'IS', 'js': 'IS'}
     aliasparams = {}
+
+    #: The parameter namespace: ``params_as = 'p'`` makes analog()'s
+    #: FIRST argument a `ParamNamespace` (``p.bf``, ``p['lambda']``,
+    #: ``p.given('rb')``) instead of a terminal, and stops binding the
+    #: parameters as bare names.  `None` is the bare-name style.  The
+    #: compiled element is identical either way; see `ParamNamespace`.
+    params_as = None
 
     def __init__(self, *args, **kvargs):
         aliases = type(self).aliasparams

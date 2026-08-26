@@ -376,6 +376,7 @@ def key_for(cls):
         'python=%s' % sys.version,
         'class=%s.%s' % (cls.__module__, cls.__qualname__),
         'terminals=%r' % (cls.__dict__.get('terminals'),),
+        'params_as=%r' % (getattr(cls, 'params_as', None),),
         'mask=%r' % (getattr(cls, '_hdl_collapse_mask', None),),
         'params=' + '|'.join(_param_decl(p)
                              for p in getattr(cls, 'instparams', ())),
