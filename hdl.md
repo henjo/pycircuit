@@ -780,7 +780,17 @@ Two conclusions worth carrying, both measured rather than argued:
   because every model that calls `var()` compiles through
   `_ChainPrinter` instead.
 
-Compile cost at that size: **~68 s** for `PspMosLongChannel`, once.
+Compile cost at that size: **~41 s** for `PspMosLongChannel`'s compile
+alone (~66 s with instantiation and parameter resolution), once --
+**and once only: since 2026-08-26 an on-disk cache** (`_hdl_cache.py`,
+keyed on the analog source, the parameter declarations, the body's
+bindings and the compiler/library versions) serves a warm start in
+**0.6 s**, and `elements_hdl`'s 26-class import drops from 5.1 s to
+0.14 s. A cache hit is bit-identical to a cold compile on `i`, `G`,
+`q`, `C`, `CY`, `explain()` and the collapse variants; `PYCIRCUIT_HDL_
+CACHE=0` disables it. Profiling first found one waste worth 15% before
+caching anything: `G_dc` was a second full Jacobian compile, identical
+to `G` for every class without a DC-pinned state.
 `elements_hdl` cold import is now **3.5 s** for its seventeen models,
 of which the Gummel-Poon BJT is ~1.4 s and an order-11 `laplace_zp`
 ladder ~0.4 s.

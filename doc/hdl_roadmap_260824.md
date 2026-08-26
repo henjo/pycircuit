@@ -832,6 +832,8 @@ the form it was argued — here is what actually landed.
     8        printer/scalar codegen                  DEAD -- see §13/§14
                                                      (~1.2x now, overtaken
                                                       by the kernel work)
+    16       compile cache                           DONE: import 5.1 s -> 0.14 s,
+                                                     PSP 41 s -> 0.6 s
     14       backend: the spike that decides it      NOT STARTED, and
                                                      needs a decision
                                                      before it starts
@@ -2333,3 +2335,92 @@ measurement; they have no user.
 What remains genuinely open is narrower than the heading said: **a
 native rescue for PCNR from a wild start**, which would need a damped
 `predict` (not a damped rung), and has no measurement demanding it yet.
+
+
+---
+
+## 16. The compile cache (2026-08-26): profile first, then cache -- and a harness that had drifted
+
+### Profile, before any change (`elements_hdl` cold import, 26 classes, 6.0 s)
+
+    _chain_compile (chained path)        4.15 s   69%   3.58 s of it Jacobian
+                                                        compiles; inside, sympy
+                                                        diff ~ printing ~ half each
+    resolve()  (Quantity -> x subs)      ~1.0 s
+    _run_analog                          0.36 s
+    sympy.lambdify (eager path)          0.18 s
+    _pcnr_declared_route                 0.16 s
+    Matrix.jacobian (eager path)         0.11 s
+    _chain_prune / forward_d / simplify  0.03 / 0.00 / 0.00 s
+
+The cost is diffuse sympy work (assumptions engine, `Mul.flatten`, the
+printer), not one hot spot -- so a cache IS the right fix. The brief's
+suspicion of the PCNR detector's `simplify` was wrong: two calls, nil.
+
+**One waste fixed first, bit-identical:** `i_dc`/`G_dc`/`u_dc` were
+compiled separately although identical to `i`/`G`/`u` for every class
+without a DC-pinned state -- all 26 -- and `G_dc` on the chained path is
+a full forward-mode Jacobian compile. Shared when `dc_pins` is empty:
+**6.0 -> 5.1 s (-15%)**. `BehaviouralMeta` also recomputed
+`Matrix.jacobian(ivec)` to decide `linear`; it now reads the Jacobian
+it already has.
+
+### The cache (`_hdl_cache.py`)
+
+Key: format number; source hashes of `hdl.py` and `_hdl_cache.py`;
+sympy/numpy/Python versions; module + qualname; `inspect.getsource
+(analog)`; every instparam declaration; the collapse mask; class-body
+`terminals`; the class's module source and that of every pycircuit
+module a named global lives in; **and the body's bindings** -- closure
+cells, defaults, referenced globals (sympy by `srepr`, arrays by bytes,
+functions by source + their bindings). That last item was not in the
+brief and was REQUIRED: the suite builds classes with identical analog
+text whose behaviour is decided by an enclosing variable, and with
+source-only keys 28 tests failed on hits from the wrong twin.
+
+Refused (cold compile, status says why): unrecoverable source; a body
+that writes into a non-local; a global with no stable repr; a rebuilt
+namespace that would bind a loaded global to a different object.
+Cached: the whole `_hdl_info`, functions as generated source
+(`_src`) re-executed on load; `sym_spec`/`pure_spec` as pickled sympy.
+Not cached: the JAX twins, built lazily at first traced use.
+`$PYCIRCUIT_HDL_CACHE=0` disables; `_DEBUG=1` explains a miss;
+`cls._hdl_cache_status` always says which.
+
+Bit-identity: all 26 elements + 5 test models, `i,G,q,C,CY` bytes at
+four points, `explain()` text, `limit()` output, collapse variants --
+identical cold vs hit, in-process and across two interpreters.
+Invalidation: one character of `analog`, an instparam default, the
+format, the compiler hash, a helper module, a closure value -- all
+miss. Damage: garbage / truncated / foreign / unrebuildable entries
+miss and repair; two concurrent processes on one key leave a valid
+entry.
+
+### Numbers (fresh interpreter per column)
+
+                                       cache off   cold miss   warm hit
+    import elements_hdl (26 classes)     5.11 s      5.17 s     0.14 s
+    GummelPoonNpnThermalHdl              1.08        1.07       0.018
+    GummelPoonNpnHdl                     0.80        0.78       0.009
+    PspMosLongChannel (compact import)     --        41.4       0.59
+
+§13's "PSP compiles in ~66 s" included instantiation and parameter
+resolution; the compile alone is 41 s. Either way it is now 0.6 s
+warm. `benchmarks/hdl_model_cost.py --cache` reproduces the table.
+
+Suite: 2390 passed with the cache ENABLED and with it DISABLED (36 new
+tests; 2354 vs the 2353 baseline is one environment-dependent skip
+that passes here).
+
+### A harness that had drifted, found by this work
+
+The chunked suite recipe -- `sed -n '1,33p' / '34,66p' / '67,99p'` --
+was written when there were 97 test files. There are 101. Since
+`f029d6c` (vector PCNR Stage 1) `test_vss_gear2.py` has been outside
+every chunk, and every "verified 2335 / 2351 / 2353" in §15 was taken
+without it -- including across four commits that touched
+`transient.py`, which it tests. Re-run: it passes, so nothing was
+broken, only unverified. The lesson is in `validation-design`: a
+chunked run is a coverage claim, and it must be reconciled against
+`--collect-only` EVERY time, not once. The recipe now derives its
+ranges from the file count.

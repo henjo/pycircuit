@@ -386,3 +386,19 @@ down as a count: "at 4 of 108 probe points a 2× wrong Jacobian is not
 caught, because a difference at that step carries no information about
 the derivative there" is a bound someone can improve on. "It is
 conservative" is not.
+
+
+## A chunked test run is a COVERAGE claim -- reconcile it every time
+
+When a suite is too long for one command, it gets split into fixed
+ranges (`sed -n '1,33p'`, `'34,66p'`, `'67,99p'`). Those ranges were
+correct for 97 files. Four commits later there were 100, and the
+hundredth -- a transient-integrator test -- sat outside every chunk
+while four commits touched the transient. Every "verified N passed" in
+that window was taken without it. It passed when finally run; the
+point is that nobody knew.
+
+Reconcile the chunk totals against `--collect-only` on EVERY run, not
+once at the start, or derive the ranges from the file count. A harness
+drifts silently exactly like a record does, and "the suite is green"
+is only as true as the list of files it ran.
