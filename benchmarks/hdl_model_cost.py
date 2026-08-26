@@ -406,6 +406,94 @@ def _run_in_fresh_interpreter(script, cache_dir, enabled=True):
         os.unlink(out)
 
 
+def backend_section(with_psp=True):
+    """The C backend against the numpy path it is bitwise-equal to.
+
+    Per-call `i` and `G` on three library models and (with the PDK) the
+    PSP MOSFET, numpy vs `backend='c'`, plus what switching costs: the
+    attach time cold (C sources compiled by the system cc, in parallel)
+    and warm (`dlopen` only).  The bit-identity claim itself is a TEST
+    (`test_hdl_cbackend.py`); this section is the speed side of it.
+    """
+    import numpy as np
+    import pycircuit.circuit.circuit as cm
+    from pycircuit.circuit.toolkit import numeric
+    from pycircuit.circuit import elements_hdl as eh, hdl
+    from pycircuit.circuit import _hdl_cbackend as cb
+
+    cm.default_toolkit = numeric
+    cc, version = cb.find_compiler()
+    print('C backend (%s):' % (version if cc else 'NO COMPILER: ' + version))
+    if cc is None:
+        return None
+
+    def one(name, cls, e, x):
+        e.update_iparv()
+        with np.errstate(all='ignore'):
+            tn_i = _bench(lambda: e.i(x), 200, warmup=3) * 1e6
+            tn_G = _bench(lambda: e.G(x), 60, warmup=2) * 1e6
+            t0 = time.perf_counter()
+            hdl.set_backend('c', cls)
+            t_attach = time.perf_counter() - t0
+            status = cls._hdl_backend_status
+            if status != 'c':
+                print('  %-26s %s' % (name, status))
+                hdl.set_backend(None, cls)
+                return None
+            tc_i = _bench(lambda: e.i(x), 2000, warmup=20) * 1e6
+            tc_G = _bench(lambda: e.G(x), 2000, warmup=20) * 1e6
+            t0 = time.perf_counter()
+            hdl.set_backend('numpy', cls)
+            hdl.set_backend('c', cls)
+            t_warm = time.perf_counter() - t0
+            hdl.set_backend(None, cls)
+        row = dict(name=name, i_np=tn_i, i_c=tc_i, G_np=tn_G, G_c=tc_G,
+                   attach_s=t_attach, warm_s=t_warm)
+        print('  %-26s i %9.1f -> %6.1f us (%5.0fx)   G %9.1f -> %6.1f us '
+              '(%5.0fx)   attach %.2f s (warm %.3f s)'
+              % (name, tn_i, tc_i, tn_i / tc_i, tn_G, tc_G, tn_G / tc_G,
+                 t_attach, t_warm))
+        return row
+
+    rows = []
+    kw_bjt = dict(rc=2.0, re=1.0, rb=100.0)
+    for name, cls, kw, nbias in (
+            ('GummelPoonNpnHdl', eh.GummelPoonNpnHdl, kw_bjt, 6),
+            ('EkvNmosHdl', eh.EkvNmosHdl, {}, 4),
+            ('MosLevel3Hdl', eh.MosLevel3Hdl, {}, 6)):
+        e = cls(*[cm.Node('n%d' % k) for k in range(len(cls.terminals))],
+                **kw)
+        r = one(name, cls, e, np.linspace(-0.4, 0.4, nbias))
+        if r:
+            rows.append(r)
+
+    if with_psp and os.path.isdir(PDK):
+        from pycircuit.circuit import psp_scaling
+        from pycircuit.utilities import spicecard
+        deck = spicecard.read(os.path.join(PDK, 'cornerMOSlv.lib'),
+                              section='mos_tt')
+        w, l = 10e-6, 1e-6
+        kw = psp_scaling.to_long_channel(
+            deck.model_params('sg13g2_lv_nmos_psp', w=w, l=l, ng=1, m=1,
+                              pre_layout=1), w=w, l=l, T=T27)
+        print('  building the PSP MOSFET (warm: ~1 s; cold: ~40 s sympy '
+              '+ ~90 s cc) ...', flush=True)
+        from pycircuit.circuit.compact import PspMosLongChannel
+        e = PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'),
+                              cm.Node('b'), **kw)
+        e.update_iparv()
+        import numpy as np
+        with np.errstate(all='ignore'):
+            x = np.asarray(e.bias(1.2, 0.8, 0.0, 0.0), float)
+        r = one('PSP103 nmos', PspMosLongChannel, e, x)
+        if r:
+            rows.append(r)
+    elif with_psp:
+        print('  (PSP row skipped: IHP Open PDK not at %s)' % PDK)
+    print()
+    return rows
+
+
 def cache_section(with_psp=False):
     """Import and compile times, cache off / cold / warm.
 
@@ -539,7 +627,16 @@ def main():
                          'import and a BJT compile, cache off / cold / warm')
     ap.add_argument('--cache-psp', action='store_true',
                     help='with --cache: the PSP compile too (two of them)')
+    ap.add_argument('--backend', action='store_true',
+                    help='measure the C backend against numpy (per-call '
+                         'i/G, attach cold and warm) and exit')
     args = ap.parse_args()
+
+    if args.backend:
+        ## The compile cache stays ON here: the section measures
+        ## per-call cost and the attach, not the symbolic compile.
+        backend_section(with_psp=not args.no_psp)
+        return 0
 
     ## The ladder's compile column means a COLD compile.  Off, or every
     ## `_bench(build, ...)` repetition after the first would be a hit.

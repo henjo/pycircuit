@@ -84,7 +84,10 @@ from pycircuit.utilities import param
 #: Bump to invalidate every entry written by an older layout of the
 #: records below.  (The hdl.py source hash already invalidates on any
 #: change to the compiler; this is for changes to THIS module's format.)
-CACHE_FORMAT = 1
+#: 2: chain records carry the C rendering (`_csrc`/`_cshape`/`_clayout`
+#: or `_creason`) beside the numpy source, so a cache hit can feed the
+#: C backend without re-running sympy.
+CACHE_FORMAT = 2
 
 #: Module-level switch; the environment variable is consulted too.
 ENABLED = True
@@ -520,7 +523,15 @@ def _freeze_function(fn):
     if src is not None:
         from pycircuit.circuit import hdl
         _check_namespace(fn, hdl._chain_namespace(None), 'chain function')
-        return ('chain', src, fn.__name__)
+        ## The C rendering rides along as plain data: text and two small
+        ## tuples.  Without it a hit could never serve the C backend --
+        ## the sympy lists it is printed from no longer exist.
+        cmeta = None
+        if getattr(fn, '_csrc', None) is not None:
+            cmeta = (fn._csrc, tuple(fn._cshape), tuple(fn._clayout))
+        elif getattr(fn, '_creason', None) is not None:
+            cmeta = ('', getattr(fn, '_creason'), None)
+        return ('chain', src, fn.__name__, cmeta)
     rec = getattr(fn, '_hdl_lambdify', None)
     if rec is not None:             # rebuilt from a record: record again
         return rec
@@ -556,11 +567,16 @@ def _thaw_function(rec):
     if kind == 'first':
         return hdl._first_of(_thaw_function(rec[1]))
     if kind == 'chain':
-        _, src, name = rec
+        _, src, name, cmeta = rec
         ns = hdl._chain_namespace(None)
         exec(compile(src, '<hdl-chain>', 'exec'), ns)
         fn = ns[name]
         fn._src = src
+        if cmeta is not None:
+            if cmeta[0]:
+                fn._csrc, fn._cshape, fn._clayout = cmeta
+            else:
+                fn._creason = cmeta[1]
         return fn
     if kind == 'lambdify':
         _, src, imports, extras = rec
@@ -686,7 +702,7 @@ def clear():
         return 0
     n = 0
     for name in os.listdir(d):
-        if name.endswith('.pkl'):
+        if name.endswith(('.pkl', '.so')):
             try:
                 os.unlink(os.path.join(d, name))
                 n += 1

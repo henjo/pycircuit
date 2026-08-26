@@ -780,6 +780,14 @@ Two conclusions worth carrying, both measured rather than argued:
   because every model that calls `var()` compiles through
   `_ChainPrinter` instead.
 
+**BUILT 2026-08-26 (roadmap 20).** The C backend ships, default off:
+`PYCIRCUIT_HDL_BACKEND=c` or `hdl.set_backend('c', cls)`. Measured
+20-270x per class (MosLevel3 270x, PSP's `G` 212x, its `q`/`C` 89x/
+215x), bitwise identical to numpy apart from two named causes (numpy's
+own tanh, and the sign of exact zeros where numpy computes a subchain
+in int64). The suite is green in both states. Below is the spike that
+decided it.
+
 **Measured 2026-08-26 (roadmap 19):** emitting the same chain as C and
 compiling at `-O2` makes PSP's `G` **219-229x faster** (17.3 ms ->
 75-79 us) and `i` 159x, **bitwise identical** to the numpy path over

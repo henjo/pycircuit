@@ -57,6 +57,7 @@ from sympy.codegen.cfunctions import log1p as _log1p
 from sympy.core.symbol import Str
 import numpy as np
 
+import os
 import collections
 import inspect
 import keyword
@@ -3179,9 +3180,17 @@ def generate_code(cls):
         ## chain is written in terms of the scalar unknowns, so the body
         ## opens by unpacking one into the other.
         _unpack = [(xs.name, 'x[%d]' % k) for k, xs in enumerate(xsyms)]
+        ## The C text is printed for every chain that takes `x`, whatever
+        ## backend is selected: printing adds ~19% to a cold compile
+        ## (see `EMIT_C_SOURCE`), and carrying it means a class served
+        ## from the compile cache can switch backend with no symbolic
+        ## work at all -- the alternative, keying the cache on the
+        ## backend, would make `PYCIRCUIT_HDL_BACKEND=c` a 41 s cold
+        ## compile of the MOSFET again.
         cc = lambda out, jac: _chain_compile(
             chain_defs, out, chain_args, want_jacobian_of=jac,
-            xsyms=xsyms, modules_map=_mods, unpack=_unpack)
+            xsyms=xsyms, modules_map=_mods, unpack=_unpack,
+            emit_c=EMIT_C_SOURCE)
 
         ## The source vectors are x-free BY CONSTRUCTION -- that is what
         ## made them sources -- so they compile against the x-free part
@@ -3713,8 +3722,22 @@ class _ChainPrinter(object):
     """
 
     def __init__(self):
+        self._p = self._printer_class()()
+
+    @classmethod
+    def _printer_class(cls):
+        """The `NumPyPrinter` subclass this printer drives.
+
+        A classmethod rather than a body of `__init__` so that the C
+        printer below can derive from the SAME class and inherit every
+        decision made here -- `Piecewise` nesting, `Min`/`Max` as binary
+        calls, the DSL primitives as calls -- overriding only the leaf
+        syntax.  Two printers that agree on structure and differ only in
+        spelling is what makes bitwise agreement between the backends a
+        property of the emission rather than a hope.
+        """
         from sympy.printing.numpy import NumPyPrinter
-        outer = self
+        outer = cls
 
         class _P(NumPyPrinter):
             def _print_Piecewise(self, expr):
@@ -3764,7 +3787,7 @@ class _ChainPrinter(object):
             def _print__wrapfloor(self, expr):
                 return '_wrapfloor(%s)' % self._print(expr.args[0])
 
-        self._p = _P()
+        return _P
 
     @staticmethod
     def _minmax(printer, expr, op):
@@ -3800,6 +3823,343 @@ class _ChainPrinter(object):
 
     def doprint(self, expr):
         return self._p.doprint(expr)
+
+
+class CUnsupported(Exception):
+    """The C printer met an expression it has no faithful rendering for.
+
+    Raised at compile time, never at call time: a class whose chain
+    cannot be printed to C compiles on the numpy path and says so in
+    `cls._hdl_backend_status`.
+    """
+
+
+## What the numpy printer's fully-qualified names become in C.  Every
+## `numpy.<name>` the emitted Python calls must appear here; one that
+## does not raises `CUnsupported` at print time rather than emitting a
+## call the C compiler would resolve to something else.  `numpy.abs` is
+## `fabs`, `numpy.sign` the prelude's NaN-propagating `_sign`, and the
+## constants are C99's.
+_C_NAMES = {
+    'numpy.exp': 'exp', 'numpy.log': 'log', 'numpy.sqrt': 'sqrt',
+    'numpy.log1p': 'log1p', 'numpy.expm1': 'expm1',
+    'numpy.sin': 'sin', 'numpy.cos': 'cos', 'numpy.tan': 'tan',
+    'numpy.arcsin': 'asin', 'numpy.arccos': 'acos', 'numpy.arctan': 'atan',
+    'numpy.arctan2': 'atan2', 'numpy.hypot': 'hypot',
+    'numpy.sinh': 'sinh', 'numpy.cosh': 'cosh', 'numpy.tanh': 'tanh',
+    'numpy.floor': 'floor', 'numpy.ceil': 'ceil',
+    'numpy.abs': 'fabs', 'numpy.sign': '_sign',
+    'numpy.minimum': '_npmin', 'numpy.maximum': '_npmax',
+    'numpy.pi': 'M_PI', 'numpy.e': 'M_E',
+    'numpy.inf': 'INFINITY', 'numpy.nan': 'NAN',
+    ## The pycode printer emits the BUILTIN for these (numpy accepts
+    ## the builtin protocol), so they arrive without the numpy prefix.
+    'abs': 'fabs', 'sign': '_sign', 'math.floor': 'floor',
+}
+
+_C_RELOPS = {'==': '==', '!=': '!=', '<': '<', '<=': '<=', '>': '>',
+             '>=': '>='}
+
+
+class _CChainPrinter(_ChainPrinter):
+    """`_ChainPrinter`'s structure, C99's spelling.
+
+    Derives from the SAME `NumPyPrinter` subclass `_ChainPrinter` builds,
+    so `Add`, `Mul`, the sign handling, the numerator/denominator split,
+    parenthesisation and `Piecewise` nesting are the code the numpy path
+    runs.  What is overridden is the leaf syntax: numbers carry a decimal
+    point (C's `1/2` is integer division), symbols are looked up in
+    `symmap` (unknowns as `x[k]`, parameters as `p[k]`, intermediates as
+    `L_<name>`), comparisons and the Boolean connectives become the
+    prelude's `_land`/`_lor`, `Piecewise` becomes `_sel(c, a, b)` --
+    a CALL, so both arms are evaluated before the selection exactly as
+    `numpy.where(c, a, b)` evaluates them -- and every `numpy.<f>` is
+    mapped through `_C_NAMES`.
+
+    `Pow` is where fidelity is decided.  numpy's scalar `x ** n` is libm
+    `pow(x, n)` for every `n` (`benchmarks/backend_spike.py` measured
+    it; glibc's `pow(x, 2)` differs from `x*x` in 0.07% of arguments),
+    so the printer emits a real `pow` and the compiler is told not to
+    fold it (`-fno-builtin-pow`).  ONE exception, and it is a fact about
+    numpy rather than about C: `numpy.where` returns a 0-d ARRAY, and
+    `ndarray.__pow__` with exponent 2 is `numpy.square` -- `x*x`, not
+    `pow`.  So a square whose base is a `Piecewise`, or a chain symbol
+    bound to one (`array_syms`), is printed as `_sq`.  Exponents -1 and
+    1/2 take the same fast path in numpy, and land on `1.0/x` and
+    `sqrt` here, which agree with `pow` bitwise anyway.
+    """
+
+    def __init__(self, symmap, array_syms=()):
+        base = _ChainPrinter._printer_class()
+        array_syms = frozenset(array_syms)
+        import sympy as _s
+
+        class _CP(base):
+            def _module_format(self, fqn, register=True):
+                try:
+                    return _C_NAMES[fqn]
+                except KeyError:
+                    raise CUnsupported('no C rendering of %s' % fqn)
+
+            def emptyPrinter(self, expr):
+                raise CUnsupported('no C rendering of %s (%s)'
+                                   % (type(expr).__name__, expr))
+
+            _print_not_supported = emptyPrinter
+
+            def _print_Symbol(self, expr):
+                try:
+                    return symmap[expr.name]
+                except KeyError:
+                    raise CUnsupported('symbol %s is not an argument or a '
+                                       'chain definition' % expr.name)
+
+            def _print_Indexed(self, expr):
+                return '%s[%d]' % (expr.args[0], int(expr.args[1]))
+
+            def _print_Integer(self, expr):
+                return '%d.0' % expr.p
+
+            def _print_Rational(self, expr):
+                return '%d.0/%d.0' % (expr.p, expr.q)
+
+            _print_Half = _print_Rational
+
+            def _print_BooleanTrue(self, expr):
+                return '1.0'
+
+            def _print_BooleanFalse(self, expr):
+                return '0.0'
+
+            def _print_NaN(self, expr):
+                return 'NAN'
+
+            _print_ComplexInfinity = _print_NaN
+
+            def _print_Infinity(self, expr):
+                return 'INFINITY'
+
+            def _print_NegativeInfinity(self, expr):
+                return '(-INFINITY)'
+
+            def _hprint_Pow(self, expr, rational=False, sqrt=None):
+                from sympy.printing.precedence import precedence
+                PREC = precedence(expr)
+                base_ = expr.base
+                if expr.exp == _s.S.Half:
+                    return 'sqrt(%s)' % self._print(base_)
+                if -expr.exp == _s.S.Half:
+                    return '1.0/sqrt(%s)' % self._print(base_)
+                if expr.exp is _s.S.NegativeOne:
+                    return '1.0/%s' % self.parenthesize(base_, PREC,
+                                                        strict=False)
+                is_array = isinstance(base_, _s.Piecewise) or \
+                    (isinstance(base_, _s.Symbol) and base_ in array_syms)
+                if is_array and expr.exp == 2:
+                    return '_sq(%s)' % self._print(base_)
+                if is_array and expr.exp == -1:
+                    ## `ndarray.__pow__(-1.0)` is `reciprocal`, i.e. a
+                    ## correctly rounded division, where glibc's `pow`
+                    ## need not be.
+                    return '1.0/(%s)' % self._print(base_)
+                return 'pow(%s, %s)' % (self._print(base_),
+                                        self._print(expr.exp))
+
+            def _print_Relational(self, expr):
+                op = _C_RELOPS.get(expr.rel_op)
+                if op is None:
+                    raise CUnsupported('relation %s' % expr.rel_op)
+                return '(%s %s %s)' % (self._print(expr.lhs), op,
+                                       self._print(expr.rhs))
+
+            def _print_And(self, expr):
+                return self._nest('_land', expr.args)
+
+            def _print_Or(self, expr):
+                return self._nest('_lor', expr.args)
+
+            def _print_Not(self, expr):
+                return '_lnot(%s)' % self._print(expr.args[0])
+
+            def _nest(self, fn, args):
+                out = self._print(args[0])
+                for a in args[1:]:
+                    out = '%s(%s, %s)' % (fn, out, self._print(a))
+                return out
+
+            def _print_Min(self, expr):
+                return self._nest('_npmin', expr.args)
+
+            def _print_Max(self, expr):
+                return self._nest('_npmax', expr.args)
+
+            def _print_Piecewise(self, expr):
+                args = list(expr.args)
+                if args and args[-1].cond == _s.true:
+                    out = self._print(args[-1].expr)
+                    args = args[:-1]
+                else:
+                    out = 'NAN'
+                for e, c in reversed(args):
+                    out = '_sel(%s, %s, %s)' % (self._print(c),
+                                                self._print(e), out)
+                return out
+
+            def _print_maxc(self, expr):
+                return self._nest('_npmax', expr.args)
+
+            def _print_minc(self, expr):
+                return self._nest('_npmin', expr.args)
+
+            def _print__wrapfloor(self, expr):
+                return 'floor(%s)' % self._print(expr.args[0])
+
+        self._p = _CP()
+
+
+## The kernel's runtime contract in C, one definition per primitive,
+## kept beside `_KERNEL_NUMPY` for the same reason the numpy forms are
+## kept beside their sympy classes: so the two cannot drift apart.
+## Every helper is a FUNCTION.  C evaluates all arguments before the
+## call, so `_sel(c, a, b)` computes both arms exactly as Python does for
+## `numpy.where(c, a, b)`, and only then picks; a `?:` with the arms
+## inline would skip one, and `a*c + b*(1-c)` would turn a losing
+## infinite arm into NaN (`_maxc_numpy` records why that matters).
+## `_npmax`/`_npmin` are numpy's `maximum`/`minimum` verbatim: NaN in
+## either argument wins.  `c != 0.0` is numpy's truth test -- nonzero,
+## and NaN, are true.
+_KERNEL_C = r"""
+#include <math.h>
+static inline double _sel(double c, double a, double b) { return (c != 0.0) ? a : b; }
+static inline double _npmax(double a, double b) { return (a >= b || a != a) ? a : b; }
+static inline double _npmin(double a, double b) { return (a <= b || a != a) ? a : b; }
+static inline double _step(double a, double b) { return 1.0 * (a >= b); }
+static inline double _rdiv(double b, double e) { return b / (b * b + e * e); }
+static inline double _recip2(double b, double e) { return 1.0 / (b * b + e * e); }
+static inline double _sq(double a) { return a * a; }
+static inline double _sign(double a) { return (a != a) ? a : (a > 0.0) ? 1.0 : (a < 0.0) ? -1.0 : 0.0; }
+static inline double _land(double a, double b) { return (a != 0.0) && (b != 0.0); }
+static inline double _lor(double a, double b) { return (a != 0.0) || (b != 0.0); }
+static inline double _lnot(double a) { return (a == 0.0); }
+"""
+
+#: The exported symbol of every compiled chain; each lives in its own
+#: shared object, loaded RTLD_LOCAL, so the name cannot clash.
+_C_ENTRY = 'hdl_fn'
+
+#: Whether `generate_code` prints the C text alongside the numpy source
+#: for every x-taking chain.  On, whatever backend is selected --
+#: measured at +19% on a COLD library compile (8.4 -> 10.0 s for the
+#: 37-class library), paid once and then amortised by the compile
+#: cache, and in exchange `PYCIRCUIT_HDL_BACKEND=c` on a warm cache
+#: re-runs no sympy at all.  Nothing is COMPILED unless the C backend
+#: is chosen.
+EMIT_C_SOURCE = True
+
+#: Process-wide backend choice: `None` reads `$PYCIRCUIT_HDL_BACKEND`
+#: (default `'numpy'`); `'numpy'` or `'c'` overrides it.  Read at class
+#: compile time; `set_backend` changes it for classes built afterwards
+#: and re-attaches any class it is handed.  Per-class override: a class
+#: attribute `hdl_backend = 'c'` (inherited like any attribute).
+BACKEND = None
+
+_BACKENDS = ('numpy', 'c')
+
+
+def _backend_requested(cls):
+    """Which backend `cls` asked for: the class attribute, else the
+    module flag, else the environment, else numpy.  An unknown name
+    raises -- a typo in `PYCIRCUIT_HDL_BACKEND` must not quietly run
+    numpy while the user believes C is on."""
+    which = getattr(cls, 'hdl_backend', None)
+    if which is None:
+        which = BACKEND
+    if which is None:
+        which = os.environ.get('PYCIRCUIT_HDL_BACKEND', '').strip() or 'numpy'
+    if which not in _BACKENDS:
+        raise ValueError('unknown HDL backend %r (one of %s; check '
+                         'PYCIRCUIT_HDL_BACKEND)' % (which,
+                                                     '/'.join(_BACKENDS)))
+    return which
+
+
+def set_backend(which, cls=None):
+    """Select the evaluation backend: `'numpy'` (the default) or `'c'`.
+
+    With `cls` given, re-attaches that one class immediately and pins it
+    (sets `cls.hdl_backend`); without, sets the process-wide default for
+    classes compiled from then on.  `which=None` removes the pin (or the
+    process default) so the environment decides again.
+    `cls._hdl_backend_status` afterwards says what actually happened --
+    `'c'`, or `'numpy (<why not>)'`.
+    """
+    if which is not None and which not in _BACKENDS:
+        raise ValueError('unknown HDL backend %r' % (which,))
+    global BACKEND
+    if cls is None:
+        BACKEND = which
+        return
+    if which is None:
+        try:
+            del cls.hdl_backend
+        except AttributeError:
+            pass
+    else:
+        cls.hdl_backend = which
+    from pycircuit.circuit import _hdl_cbackend
+    _hdl_cbackend.attach(cls, cls._hdl_info)
+    ## A collapsing model RUNS as a compiled variant subclass with its
+    ## own `_hdl_info` (`_collapse_variant`); a pin on the base must
+    ## follow, or `set_backend('c', cls)` would silently leave every
+    ## existing instance on numpy.  Variants built later inherit
+    ## `hdl_backend` and attach themselves at creation.
+    base = getattr(cls, '_hdl_collapse_base', cls)
+    for variant in (base.__dict__.get('_hdl_mask_classes') or {}).values():
+        if variant is not cls:
+            _hdl_cbackend.attach(variant, variant._hdl_info)
+
+
+def _render_c(stmts, cells, args, xsyms):
+    """The C function for a chain: `(stmts, cells)` as `_chain_compile`
+    collected them, `args` the numpy signature `[x, *trailing]`.
+
+    Returns `(text, shape, layout)`: the function body without the
+    prelude, the output array's shape, and `(n_p, t_index)` -- the
+    length of the packed trailing-argument vector `p` and the index in
+    it of the temperature, which the element writes per call.
+    """
+    trailing = list(args[1:])
+    symmap = {}
+    for k, xs in enumerate(xsyms or ()):
+        symmap[xs.name] = 'x[%d]' % k
+    for k, a in enumerate(trailing):
+        symmap[a.name] = 'p[%d]' % k
+    array_syms = set()
+    for sym, expr in stmts:
+        symmap[sym.name] = 'L_' + sym.name
+        if isinstance(expr, sympy.Piecewise):
+            array_syms.add(sym)
+    printer = _CChainPrinter(symmap, array_syms)
+    lines = ['void %s(const double *x, const double *p, double *out) {'
+             % _C_ENTRY]
+    for sym, expr in stmts:
+        lines.append('  const double L_%s = %s;'
+                     % (sym.name, printer.doprint(expr)))
+    if cells and isinstance(cells[0], (list, tuple)):
+        ncol = len(cells[0])
+        if any(len(r) != ncol for r in cells):
+            raise CUnsupported('ragged output')
+        shape = (len(cells), ncol)
+        flat = [e_ for r in cells for e_ in r]
+    else:
+        shape = (len(cells),)
+        flat = list(cells)
+    for k, e_ in enumerate(flat):
+        lines.append('  out[%d] = %s;' % (k, printer.doprint(e_)))
+    lines.append('}')
+    t_index = [k for k, a in enumerate(trailing) if a == TEMP]
+    layout = (len(trailing), t_index[0] if t_index else None)
+    return '\n'.join(lines) + '\n', shape, layout
 
 
 def _leaves(o):
@@ -4050,7 +4410,7 @@ def _chain_forward_d(defs, v):
 
 
 def _chain_compile(defs, outputs, args, want_jacobian_of=None, xsyms=None,
-                   modules_map=None, unpack=()):
+                   modules_map=None, unpack=(), emit_c=False):
     """Compile a let-chain into one Python function.
 
     `defs` is `[(symbol, expr)]` in dependency order; `outputs` the list
@@ -4061,6 +4421,18 @@ def _chain_compile(defs, outputs, args, want_jacobian_of=None, xsyms=None,
     expressed in terms of the gradients of the definitions it actually
     mentions, so the work is linear in the number of definitions rather
     than exponential in their nesting depth.
+
+    The numpy source is always produced and is the reference: it is what
+    `explain()` shows, what the compile cache stores, and what the C
+    backend is tested against.  With `emit_c` the SAME statement list is
+    also printed to C (`_render_c`), and the function carries it as
+    `_csrc` with `_cshape` and `_clayout`; `_hdl_cbackend` compiles and
+    binds it when the backend is selected.  C is only emitted for the
+    `(x, *trailing)` signature -- `unpack` non-empty -- because that is
+    the one whose per-call cost matters and the one the packed
+    parameter vector fits.  A chain the C printer cannot render
+    (`CUnsupported`) leaves the attributes off and the reason in
+    `_creason`; the numpy function is unaffected.
     """
     printer = _ChainPrinter()
 
@@ -4070,26 +4442,16 @@ def _chain_compile(defs, outputs, args, want_jacobian_of=None, xsyms=None,
     ## and would differentiate definitions nothing downstream uses.
     defs = _chain_prune(defs, outputs)
 
-    lines, body = [], []
-    for name, code in unpack:
-        body.append('    %s = %s' % (name, code))
-
-    def emit(sym, expr):
-        body.append('    %s = %s' % (sym.name, printer.doprint(expr)))
-
+    ## The statements `(sym, expr)` in emission order and the output
+    ## cells (a list, or a list of rows), collected ONCE so that every
+    ## printer renders the same list.
+    stmts = []
     if want_jacobian_of is None:
-        for sym, expr in defs:
-            emit(sym, expr)
-
-        def render(o):
-            if isinstance(o, (list, tuple)):
-                return '[%s]' % ', '.join(render(e_) for e_ in o)
-            return printer.doprint(o)
-        ret = render(list(outputs))
+        stmts.extend(defs)
+        cells = list(outputs)
     else:
         ## Values first -- the gradients reference them.
-        for sym, expr in defs:
-            emit(sym, expr)
+        stmts.extend(defs)
         ## Forward accumulation.  The chain rule is applied only along
         ## the edges that exist: `expr.free_symbols` names exactly the
         ## upstream definitions this one reads, so the total work is
@@ -4111,8 +4473,8 @@ def _chain_compile(defs, outputs, args, want_jacobian_of=None, xsyms=None,
                 dsym[(sym, j)] = gs
                 dexpr[(sym, j)] = g
                 if not g.is_zero:
-                    emit(gs, g)
-        rows = []
+                    stmts.append((gs, g))
+        cells = []
         for out in outputs:
             parents = [d for d in out.free_symbols if d in defset]
             partials = {d: sympy.diff(out, d) for d in parents}
@@ -4123,9 +4485,20 @@ def _chain_compile(defs, outputs, args, want_jacobian_of=None, xsyms=None,
                     if dexpr[(d, j)].is_zero:
                         continue
                     g = g + partials[d] * dsym[(d, j)]
-                row.append(printer.doprint(g))
-            rows.append('[%s]' % ', '.join(row))
-        ret = '[%s]' % ', '.join(rows)
+                row.append(g)
+            cells.append(row)
+
+    lines, body = [], []
+    for name, code in unpack:
+        body.append('    %s = %s' % (name, code))
+    for sym, expr in stmts:
+        body.append('    %s = %s' % (sym.name, printer.doprint(expr)))
+
+    def render(o):
+        if isinstance(o, (list, tuple)):
+            return '[%s]' % ', '.join(render(e_) for e_ in o)
+        return printer.doprint(o)
+    ret = render(cells)
 
     lines.append('def _f(%s):' % ', '.join(a.name if hasattr(a, 'name')
                                            else str(a) for a in args))
@@ -4136,6 +4509,13 @@ def _chain_compile(defs, outputs, args, want_jacobian_of=None, xsyms=None,
     exec(compile(src, '<hdl-chain>', 'exec'), ns)
     fn = ns['_f']
     fn._src = src
+    if emit_c and unpack and xsyms:
+        try:
+            csrc, shape, layout = _render_c(stmts, cells, args, xsyms)
+        except CUnsupported as e:
+            fn._creason = str(e)
+        else:
+            fn._csrc, fn._cshape, fn._clayout = csrc, shape, layout
     return fn
 
 
@@ -4285,6 +4665,13 @@ class BehaviouralMeta(type):
         from pycircuit.circuit import _hdl_cache
         info = _hdl_cache.compiled_info(cls, generate_code)
         funcs = info['funcs']
+        ## The evaluation backend (numpy by default; C when selected).
+        ## Attached AFTER the compile so a cache hit can bind too, and
+        ## before the methods below close over `funcs` -- they consult
+        ## each function's `_hdl_c` at call time, so `set_backend` can
+        ## re-attach without touching the class.
+        from pycircuit.circuit import _hdl_cbackend
+        _hdl_cbackend.attach(cls, info)
         cls._hdl_paramnames = info['paramnames']
         cls._hdl_given_names = info['given_names']
         cls._hdl_info = info
@@ -4311,6 +4698,9 @@ class BehaviouralMeta(type):
                 ## never showed it.  Found by `VcoHdl` (fifth batch).
                 f = funcs['i_dc'] if _dc(epar) and state_meta['dc_pins'] \
                     else funcs['i']
+                ck = f.__dict__.get('_hdl_c')
+                if ck is not None:
+                    return ck(self, x, epar)
                 return np.asarray(f(x, *_args_of(self, epar)), dtype=float)
             if getattr(self.toolkit, 'symbolic', False):
                 return _symbolic_eval(self, 'i', x, epar)
@@ -4330,6 +4720,9 @@ class BehaviouralMeta(type):
             ## time and the cache is dropped whenever they move.
             self.__dict__.pop('_hdl_Gc', None)
             self.__dict__.pop('_hdl_Cc', None)
+            ## The C backend's packed parameter vector is a cache of
+            ## iparv too.
+            self.__dict__.pop('_hdl_cp', None)
             ## A parameter that gates a collapse decides the element's
             ## SIZE, and the size was baked into the circuit's node map
             ## when this instance was built.  Changing it afterwards
@@ -4351,6 +4744,9 @@ class BehaviouralMeta(type):
             if info['chained']:
                 f = funcs['G_dc'] if _dc(epar) and state_meta['dc_pins'] \
                     else funcs['G']
+                ck = f.__dict__.get('_hdl_c')
+                if ck is not None:
+                    return ck(self, x, epar)
                 return np.asarray(f(x, *_args_of(self, epar)), dtype=float)
             if getattr(self.toolkit, 'symbolic', False):
                 return _symbolic_eval(self, 'G', x, epar)
@@ -4370,6 +4766,9 @@ class BehaviouralMeta(type):
 
         def q(self, x, epar=defaultepar, params_tree=None):
             if info['chained']:
+                ck = funcs['q'].__dict__.get('_hdl_c')
+                if ck is not None:
+                    return ck(self, x, epar)
                 return np.asarray(funcs['q'](x, *_args_of(self, epar)),
                                   dtype=float)
             if getattr(self.toolkit, 'symbolic', False):
@@ -4378,6 +4777,9 @@ class BehaviouralMeta(type):
 
         def C(self, x, epar=defaultepar, params_tree=None):
             if info['chained']:
+                ck = funcs['C'].__dict__.get('_hdl_c')
+                if ck is not None:
+                    return ck(self, x, epar)
                 return np.asarray(funcs['C'](x, *_args_of(self, epar)),
                                   dtype=float)
             if getattr(self.toolkit, 'symbolic', False):
@@ -5231,6 +5633,10 @@ def explain(target, source=True, symbolic=True, maxlines=40):
                     'generated Python, differentiated by forward '
                     'accumulation)' if info['chained'] else
                     'flat lambdify expressions'))
+    ## Which backend the class actually RUNS -- not which was asked
+    ## for.  The status carries the reason whenever they differ.
+    lines.append('backend: %s'
+                 % getattr(cls, '_hdl_backend_status', 'numpy'))
     feats = []
     if sm['statenames']:
         feats.append('%d state%s' % (len(sm['statenames']),

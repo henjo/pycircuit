@@ -980,6 +980,88 @@ End to end, an 8-stage RC ladder transient built from generated elements
 runs at about 1.14x the hand-written one and produces identical waveforms
 (``benchmarks/hdl_overhead.py`` measures both and asserts the agreement).
 
+The C backend
+-------------
+
+A model that uses ``var()`` compiles to straight-line scalar Python --
+for the surface-potential MOSFET's Jacobian, some 21 000 interpreted
+calls per evaluation.  The same statements, printed to C and compiled
+by the system compiler, run two orders of magnitude faster and return
+**the same bytes**.  That second backend ships with the DSL and is off
+by default::
+
+    PYCIRCUIT_HDL_BACKEND=c python my_simulation.py
+
+or, from code, process-wide or per class::
+
+    from pycircuit.circuit import hdl
+    hdl.set_backend('c')                  # classes compiled from now on
+    hdl.set_backend('c', MyModel)         # this class, immediately
+
+``explain()`` prints which backend a class actually runs, and
+``cls._hdl_backend_status`` says the same thing programmatically:
+``'c'``, or ``'numpy (<why not>)'`` -- an eager-path class (no
+``var()``), a missing compiler, a failed build.  A request for C that
+cannot be served **falls back to numpy and warns**; it never silently
+degrades and never breaks the class.
+
+What it buys (measured 2026-08-26, gcc 15.2, one core;
+``benchmarks/hdl_model_cost.py --backend`` reproduces the table):
+
+.. list-table::
+   :header-rows: 1
+
+   * - model
+     - ``i`` numpy
+     - ``i`` C
+     - ``G`` numpy
+     - ``G`` C
+   * - Gummel-Poon BJT
+     - 112 us
+     - 4.2 us (27x)
+     - 347 us
+     - 4.5 us (77x)
+   * - MOS level 3
+     - 205 us
+     - 8.1 us (25x)
+     - 2011 us
+     - 8.1 us (248x)
+   * - PSP103 (359 parameters)
+     - 1288 us
+     - 10.6 us (121x)
+     - 17 349 us
+     - 81.8 us (212x)
+
+What it costs: the C text is printed at class-compile time whatever the
+backend (+19% on a cold compile, then held by the compile cache), and
+the shared objects are built by the system ``cc`` once per (source,
+flags) -- for PSP about 90 s, in parallel across ``i``/``G``/``q``/``C``,
+stored beside the compile cache and thereafter ``dlopen``-ed in
+milliseconds.  A warm store even serves a machine with **no compiler at
+all**.
+
+The fidelity contract is bit-identity with the numpy path, and it is a
+test, not an aspiration: every chained library element and the PSP
+MOSFET are compared byte-for-byte over sweeps that include ``+-1e30``
+(``test_hdl_cbackend.py``).  The compiler is told to keep every
+``pow``, ``exp``, ``log`` a real libm call (``-fno-builtin-*``, no
+fast-math, no FMA contraction), because gcc would otherwise fold
+``pow(x, 2.0)`` into the *more accurate* ``x*x`` and drift an ulp from
+numpy's glibc ``pow``.  Two measured exceptions, both named in the
+tests: numpy ships its own vectorised ``tanh`` (an ulp from libm's in
+~30% of arguments -- a ``tanh``-using model agrees bitwise with its
+source run against libm's ``tanh``, and to that ulp with numpy's), and
+the sign of exact zeros (numpy computes integer-typed subchains, whose
+zeros carry no sign; values compare equal).  Where the numpy path
+returns NaN, C returns the same NaN; where a degenerate parameter set
+makes the numpy path raise ``ZeroDivisionError`` from a pure-parameter
+division, C returns ``inf`` instead -- the one behavioural difference.
+
+The kernel's both-arms guarantee survives the translation because
+selection stays a function call: ``numpy.where(c, a, b)`` becomes
+``_sel(c, a, b)``, whose arguments C evaluates -- both of them --
+before the pick, exactly as Python does.
+
 Where this sits
 ---------------
 

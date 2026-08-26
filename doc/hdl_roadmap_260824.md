@@ -838,7 +838,8 @@ the form it was argued — here is what actually landed.
                                                      PSP 41 s -> 0.6 s
     14       backend: the spike                      DONE (sec. 19): C at -O2 is
                                                      219-229x, 0 ulp on 4985 pts
-    14       backend: BUILDING it                    the user's call
+    14       backend: BUILT                          DONE (sec. 20): 20-270x,
+                                                     bitwise, default numpy
     10.2     PCNR admits chained models              DONE
     10.3(a)  FET limiting, ordinary Newton path      DONE
     10.3(b)  device-level limiter (limit_together)   DONE
@@ -2611,3 +2612,76 @@ in §15's tables. No test can see a document shrink; the spike agent
 noticed because §14, the section it was working from, was gone. The
 file was restored from the previous commit and the row re-patched with
 the search scoped to the table.
+
+
+---
+
+## 20. The C backend, built (2026-08-26)
+
+§19's spike said "worth building out"; this is it. Default is still
+**numpy** -- `PYCIRCUIT_HDL_BACKEND=c`, `hdl.set_backend(which, cls)`
+or a per-class `hdl_backend` turns it on, `explain()` prints the
+backend, and `cls._hdl_backend_status` always says what actually
+happened (`'c'`, or `'numpy (<why not>)'`). C requested and
+unavailable warns and falls back; it never silently degrades.
+
+`_CChainPrinter` derives from the SAME `NumPyPrinter` subclass as
+`_ChainPrinter` (refactored to a classmethod), so Add/Mul structure,
+parenthesisation, Piecewise nesting and Min/Max binarisation are
+literally the numpy path's code -- only leaf syntax is overridden.
+`_KERNEL_C` sits beside `_KERNEL_NUMPY` with NaN semantics written as
+numpy defines them. `_hdl_cbackend.py` does compiler discovery, strict
+flags (`-O2 -fno-fast-math -ffp-contract=off -fno-builtin-pow/exp/log`)
+and the `.so` store; the cache carries the C text (format 2).
+
+**Measured (independently re-run by the orchestrator):**
+
+    class                numpy        C        speedup   bitwise
+    MosLevel3Hdl        1861 us     6.9 us      270x      yes
+    GummelPoonNpnHdl     340 us     7.6 us       45x      yes
+    EkvNmosHdl            93 us     4.6 us       20x      yes
+    PSP103 G           17 508 us    82.8 us      212x      yes
+    PSP103 i            1 282 us    10.7 us      120x      yes
+    PSP103 q / C                                 89x / 215x
+
+Suite **2547 / 6 / 3 / 0 in BOTH backend states**, chunks derived from
+N=105 and reconciled against `--collect-only` (2553).
+
+**Bit-identity, with its exceptions named rather than hidden.** PSP's
+`i`, `G`, `q` are byte-identical over the spike's full 4985-point
+sweep; `C` is value-identical with 384 sign-of-exact-zero byte
+differences. All 22 chained library classes x {i,G,q,C} over 56 points
+including +-1e30 are value-identical, and byte-identical except:
+
+1. **tanh** -- numpy ships its own, differing from libm by 1 ulp on
+   ~30% of arguments. Every tanh class is bitwise-identical to its own
+   source run with libm tanh, which converts the tolerance into a
+   cause;
+2. **the sign of exact zeros** -- numpy computes some subchains in
+   int64 (`where(c,1,0)`), where `-1 * 0 = +0`; C is all doubles, where
+   `-1.0 * 0.0 = -0.0`. Values compare equal.
+
+**Deviations from §19, each forced by a measurement:** the C text is
+emitted ALWAYS (+19% on a cold compile) so a warm cache switches
+backend with zero sympy -- keying the cache by backend would have made
+the switch a 41 s recompile; the compiler's identity lives in the `.so`
+FILENAME, not the key, so a warm store serves a machine with no
+compiler at all (tested); `q` and `C` are compiled too (89x, 215x);
+`T` is a slot in the packed parameters; and `set_backend` must chase
+collapse variants -- without that MosLevel3 ran at exactly 1x, caught
+by the benchmark and not by any test.
+
+**Nine brief claims wrong**, the sharpest being that `-fno-builtin-pow`
+is necessary but NOT sufficient: numpy's `**2` on the 0-d array a
+`where` returns is `square`, i.e. `x*x` -- the opposite correction --
+so the printer emits `_sq` for Piecewise-based bases at exponent 2 and
+real `pow` elsewhere. Sixteenth right-conclusion-wrong-reason.
+
+**Found by the sweep, for the model owners:** six chained classes raise
+`ZeroDivisionError` from `G` at DEFAULT parameters on the numpy path
+(`rc`/`re`/`rth`/`rs`/`rsh` = 0 pure-parameter denominators). C returns
+`inf` there. Pre-existing, unrelated to the backend, listed in
+`test_hdl_cbackend.py`'s `KW`.
+
+A c-mode suite run leaves ~440 small `.so` files (~157 MB with the
+pickles) in the user cache; `_hdl_cache.clear()` removes them.

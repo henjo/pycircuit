@@ -21,7 +21,12 @@ RECORDED from the pre-change source: the same card, the same three
 random points, the same ``i/G/q/C`` byte string, the same ``explain()``
 text.  The recipe is in `_digest`; the values were taken on 2026-08-26
 from commit cb99b18 with the cache disabled, and re-taken from the
-changed source before being written down here.
+changed source before being written down here.  When ``explain()``
+grew its ``backend:`` line (the C backend, 2026-08-26) that line was
+excluded from the hashed text rather than folded into new digests --
+it names the EVALUATION backend, which the suite legitimately varies
+-- and the stripped text still hashes to the ORIGINAL recorded
+values, so everything this record pins is intact.
 """
 
 import hashlib
@@ -635,7 +640,13 @@ def test_library_adopter_is_bit_identical_to_the_record(name, card, pins, n,
     el.update_iparv()
     assert len(hdl.x_layout(el)) == n
     assert _points(el, n) == points
-    assert _digest(el.explain(maxlines=None).encode()) == expl
+    ## The `backend:` line reports which EVALUATION backend is bound
+    ## (numpy or C, per $PYCIRCUIT_HDL_BACKEND) -- deliberately outside
+    ## this record, which pins the COMPILE: the suite runs in both
+    ## backend states and the compile is the same in both.
+    text = '\n'.join(ln for ln in el.explain(maxlines=None).splitlines()
+                     if not ln.startswith('backend:'))
+    assert _digest(text.encode()) == expl
 
 
 def test_the_record_can_fail():
