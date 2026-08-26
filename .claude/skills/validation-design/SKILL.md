@@ -402,3 +402,28 @@ Reconcile the chunk totals against `--collect-only` on EVERY run, not
 once at the start, or derive the ranges from the file count. A harness
 drifts silently exactly like a record does, and "the suite is green"
 is only as true as the list of files it ran.
+
+## Check a reported defect against the path USERS take
+
+A sweep reported that six shipped model classes "raise
+`ZeroDivisionError` at their default parameters". The exception was
+real and reproducible. The conclusion was wrong: it came from calling
+the class's UNCOLLAPSED BASE function directly, and no instance ever
+runs that — a `Collapse` declaration retargets every instance to a
+variant with the dividing branch removed, which is precisely what the
+zero-valued parameter is declared to mean. Measured across all 37
+classes at 28 bias points and four methods on the ordinary path:
+nothing raises.
+
+Two habits fall out of it:
+
+- **Reproduce a reported defect through the public entry point before
+  recording it.** A harness reaches inside; users do not. The same
+  exception can be a defect from one caller and correct behaviour from
+  another, and which one you saw decides whether it is a bug.
+- **A list of parameter overrides in a test is not a defect list.**
+  Ask why each override is there. "Classes whose defaults cannot be
+  evaluated" and "overrides that switch on the branches these classes
+  collapse away" describe the same dict and mean opposite things — and
+  the wrong reading propagated into a plan document and a memory file
+  before it was checked.

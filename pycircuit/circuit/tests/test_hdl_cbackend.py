@@ -69,9 +69,16 @@ needs_pdk = pytest.mark.skipif(not os.path.isdir(PDK),
 ## ----------------------------------------------------------------------
 ## Helpers.
 
-#: Parameter overrides for classes whose DEFAULTS the numpy path cannot
-#: evaluate (a pure-parameter denominator of exactly zero raises
-#: `ZeroDivisionError` from Python).  The docstring's third exception.
+#: Parameter overrides that turn ON the parasitic branches these classes
+#: collapse away at their defaults, so the sweep exercises them.
+#:
+#: NOT a defect list, and an earlier version of this comment said it was
+#: ("classes whose DEFAULTS the numpy path cannot evaluate").  Measured
+#: 2026-08-26 across all 37 library classes at 28 bias points and four
+#: methods: no class raises at its defaults.  What raises is the
+#: UNCOLLAPSED BASE function called directly -- which no instance runs,
+#: because `Collapse` retargets every instance to a variant with the
+#: dividing branch removed.  That is what `rc = 0` is declared to mean.
 KW = {'GummelPoonNpnHdl': dict(rc=2.0, re=1.0, rb=100.0),
       'GummelPoonPnpHdl': dict(rc=2.0, re=1.0, rb=100.0),
       'GummelPoonNpnThermalHdl': dict(rc=2.0, re=1.0, rb=100.0,

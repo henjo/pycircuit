@@ -2675,11 +2675,24 @@ is necessary but NOT sufficient: numpy's `**2` on the 0-d array a
 so the printer emits `_sq` for Piecewise-based bases at exponent 2 and
 real `pow` elsewhere. Sixteenth right-conclusion-wrong-reason.
 
-**Found by the sweep, for the model owners:** six chained classes raise
-`ZeroDivisionError` from `G` at DEFAULT parameters on the numpy path
-(`rc`/`re`/`rth`/`rs`/`rsh` = 0 pure-parameter denominators). C returns
-`inf` there. Pre-existing, unrelated to the backend, listed in
-`test_hdl_cbackend.py`'s `KW`.
+**A claim from the backend report, checked and WITHDRAWN
+(2026-08-26).** It said six chained classes "raise
+`ZeroDivisionError` from `G` at DEFAULT parameters on the numpy path".
+Measured across all 37 library classes at 28 bias points each --
+zero, four methods, defaults: **no class raises anything.** What does
+raise is the UNCOLLAPSED BASE function (`cls._hdl_info['funcs']['G']`
+called directly), and no instance ever runs it: `Collapse` retargets
+every instance to a variant with the dividing branch removed, which is
+exactly what `rc = 0` is declared to do. The `KW` overrides in
+`test_hdl_cbackend.py` are therefore a harness convenience -- they let
+the sweep exercise the parasitic branches -- and not a defect list.
+
+The behavioural difference the report noticed is real and narrower:
+where the numpy path would raise, C returns `inf`. That matters only
+for code that calls a base function directly, which is test-harness
+code. Seventeenth right-conclusion-wrong-reason of this campaign: the
+`ZeroDivisionError` was observed, and the conclusion drawn about who
+suffers it was wrong.
 
 A c-mode suite run leaves ~440 small `.so` files (~157 MB with the
 pickles) in the user cache; `_hdl_cache.clear()` removes them.
