@@ -780,6 +780,13 @@ Two conclusions worth carrying, both measured rather than argued:
   because every model that calls `var()` compiles through
   `_ChainPrinter` instead.
 
+**Measured 2026-08-26 (roadmap 19):** emitting the same chain as C and
+compiling at `-O2` makes PSP's `G` **219-229x faster** (17.3 ms ->
+75-79 us) and `i` 159x, **bitwise identical** to the numpy path over
+4985 bias points including ±1e30, with both arms of every conditional
+still evaluated. numba does not finish JIT-compiling the function.
+Building the backend is not yet decided.
+
 Compile cost at that size: **~41 s** for `PspMosLongChannel`'s compile
 alone (~66 s with instantiation and parameter resolution), once --
 **and once only: since 2026-08-26 an on-disk cache** (`_hdl_cache.py`,

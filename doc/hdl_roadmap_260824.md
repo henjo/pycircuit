@@ -836,9 +836,9 @@ the form it was argued — here is what actually landed.
                                                       by the kernel work)
     16       compile cache                           DONE: import 5.1 s -> 0.14 s,
                                                      PSP 41 s -> 0.6 s
-    14       backend: the spike that decides it      NOT STARTED, and
-                                                     needs a decision
-                                                     before it starts
+    14       backend: the spike                      DONE (sec. 19): C at -O2 is
+                                                     219-229x, 0 ulp on 4985 pts
+    14       backend: BUILDING it                    the user's call
     10.2     PCNR admits chained models              DONE
     10.3(a)  FET limiting, ordinary Newton path      DONE
     10.3(b)  device-level limiter (limit_together)   DONE
@@ -871,6 +871,1305 @@ the form it was argued — here is what actually landed.
     5        the remaining five: item 6 (VCO), 10
              (Level 3), 12, 13, 15                   DONE 2026-08-26 (sec. 18):
                                                      all fifteen built, 37 classes
+             12 (mixer/PLL), 13 (photodiode),
+             15 (MESFET/HEMT), MOS level 3          not started
+
+Suite: 1874 tests at `4d359e5` before this work, **2351 passed / 7
+skipped / 3 xfailed / 0 failed** as of `cb477a8`. After 12.2, 12.3 and
+12.4: **2220 passed / 7 skipped / 3 xfailed** in 695 s, plus the two
+`test_elements_hdl_library3.py` assertions 12.3 deliberately overturned
+and left for that file's owner. `sphinx -W` clean. After
+`limit_together` (§10.3): **2239 passed / 7 skipped / 3 xfailed / 0
+failed**, the 17 new tests all in `test_device_limiter.py`.
+
+**2026-08-25 (evening), after the fourth library batch (§12.6):
+2296 passed / 7 skipped / 3 xfailed / 0 failed**, the 57 new tests all
+in `test_elements_hdl_library4.py`.  Run in four chunks (682 + 698 +
+831 in `pycircuit/circuit/tests`, 85 elsewhere) because the whole suite
+in one process gets killed part-way on this machine.  `sphinx -W`
+clean.
+
+**Corrections this campaign made to its own record.** Ten claims were
+found right in conclusion and wrong in their stated reason:
+
+- the `Max`-on-an-atom rule (the divide-by-zero symptom does not
+  reproduce on sympy 1.14; a `lambdify` that never terminates does);
+- `limexp`'s "is it a junction" test (the real condition is PCNR
+  eligibility, and the disqualifier was `var()`, not charge — and that
+  correction has itself since expired, because §10.2 made `var()` stop
+  disqualifying anything. Two revisions in two days on one docstring);
+- `_ChainPrinter`'s `reduce` premise (`reduce` measures FASTER than the
+  bare call it was said to cost);
+- this plan's own section 8 first draft, which measured the eager path
+  and generalised it to production models;
+- §10.2's "does not admit `DiodeSpiceHdl`" and the reason given for it
+  (the default card qualifies; and what refuses `rs = 2` is that a
+  resistor's current is not exponential, not a two-branch dependence);
+- §12.1's `fetlim` attribution (the write-back moved the wrong node; the
+  recorded explanation about a volt being forty thermal voltages was
+  plausible and not the cause);
+- **§12.2's own proposed fix**, `max(atol, eps·|value|/h)` — ten decades
+  too small on the very bias that motivated it, because the quantum is
+  set by an internal cancellation the outputs do not show. The
+  *diagnosis* on the line above it was exactly right and named that
+  cancellation; the formula on the next line used the output anyway;
+- **§12.4's stated failure mode**, "not in scope ... a bare `NameError`
+  from inside the lambdified parameter function". Measured: the class
+  compiles, the parameter function returns the sympy Symbol, and the
+  first Newton iteration raises `TypeError: Cannot convert expression to
+  float`. `hdl.py` had the correct version of this the whole time, in
+  the comment on the source vectors;
+- **§12.1's `both = 30`** (2026-08-25). The conclusion — two probes
+  competing for a terminal costs iterations — holds at that operating
+  point. The number does not: `both` was 13 at the very commit that
+  recorded 30, because 30 was copied down from the before-table and
+  never re-run, and across 48 operating points `both` is the cheapest
+  variant there is. **The cheapest reason to check is a number, and it
+  is the easiest to believe** — this one justified building a feature,
+  and the feature turned out to be worth building for something else
+  entirely (§10.3).
+
+**The pattern is worth naming: a reason decays faster than the
+conclusion it supports, and nothing fails when it does.** Every one was
+caught by taking a measurement rather than by reading, and most were
+one `_src` dump or one `hasattr` away the whole time. Most were
+written by whoever was correcting the previous one -- so this is not a
+failure of care, it is what happens to
+a stated reason when the code under it keeps moving. Line numbers in this document decayed the same way, twice: twelve were
+stale within a day of being written because `hdl.py` grew ~1400 lines,
+were re-verified, and were all stale again the next day after another
+~400. **They have been replaced with symbol names throughout.** A
+symbol survives an edit above it; a line number is a measurement of
+something nobody is holding still, and re-verifying it is a chore that
+comes due again every time the file is touched.
+
+---
+
+## 12. Open items found by building, 2026-08-25
+
+Everything here was found by writing a model against the DSL rather
+than by reading it, which is §5's thesis working: eleven library models
+across three batches produced more defects than any amount of review
+had.
+
+### 12.1 The FET limiter moved nodes a source pins — FIXED 2026-08-25
+
+> **Resolved.** The write-back now chooses its terminal at RUNTIME:
+> whichever end of the branch has drifted further from the last accepted
+> point. Same circuit, same start:
+>
+>     limited, compile-time write-back    225 Jacobian evaluations
+>     limited, runtime write-back           8
+>     unlimited                            25
+>
+> and the worst displacement of a pinned gate went from **5e48 V** to
+> tens of volts. Limiting now helps where it previously hurt 9×.
+>
+> **The attribution flipped completely**, which is the part worth
+> keeping. Before: `fetlim` alone FAILED to converge, and the recorded
+> explanation was that SPICE's `fetlim` bounds a step to about a volt
+> and a volt is forty thermal voltages to a subthreshold exponential —
+> plausible, self-consistent, and not the reason. It failed because its
+> write-back always moved the gate. After: `fetlim` alone is the *best*
+> of the four (12 iterations against `limvds`'s 57). A seventh instance
+> of right-conclusion-wrong-reason, and this one had a measurement
+> attached to the wrong cause.
+>
+> Two smaller findings fell out of it. A limiter that did not bite must
+> write NOTHING — `a - (a - b)` is not `b`, so the write alone broke
+> "a step of at most 2·VT passes through exactly", which is what lets
+> "did limiting fire?" be a convergence signal. And when two probes want
+> the same shared terminal, the one applying the LARGER correction
+> should get it: a BJT's two junctions both hang off the base and see
+> identical drift, so the tie-break decides real behaviour, and ordering
+> by row index handed the base to the base-collector probe.
+>
+> Still open, now measured: `both` (30 iterations) is worse than `fet`
+> alone (12), because two probes may not move the same terminal and the
+> second is pushed onto a node it would not have chosen. That is what
+> §10.3(b)'s device-level limiter removes.
+>
+> > **THE 30 IS WRONG. It is 13, and it always was** (corrected
+> > 2026-08-25 by re-running the table at the commit that introduced
+> > it, `de78f42`). 30 is the number from the row ABOVE — the
+> > before-the-fix table — copied down into the after-table without
+> > being re-measured. `limit()`, `StandardNewton` and the test have
+> > not changed since, so the gap being paid for was never 2.5x; it is
+> > one iteration.
+> >
+> > The conclusion survives at this point and only at this point.
+> > Across the 48-operating-point grid of `test_device_limiter.py`,
+> > `both` is the CHEAPEST of the four per-probe variants — 909
+> > Jacobian evaluations against `fet`'s 1222 (which also fails to
+> > converge at one point) and `vds`'s 1404. "Adding a second, correct
+> > limiter costs iterations" is false as a general statement.
+> >
+> > And the device-level limiter does not remove the one iteration: it
+> > measures 927 over the same grid, never better at a point, one
+> > iteration worse at 14 of them. What it removes is a REFUSAL — see
+> > §10.3 — not a count. **Ninth instance in this campaign of a claim
+> > right in conclusion and wrong in its stated reason; this one's
+> > reason was a number nobody re-ran, which is the cheapest kind to
+> > check and the easiest to believe.**
+>
+> And a side effect worth knowing: a stacked pair at (5 V, 2.5 V) that
+> used to raise `SingularMatrix` now converges, because the better
+> write-back keeps the iterate out of the cutoff region where the lower
+> device's conductance underflows to exactly zero. The hazard is NOT
+> gone — (40 V, 0.2 V) still reaches it — only harder to reach. §12.3
+> stands.
+>
+> **2026-08-25:** §12.3 landed, and (40 V, 0.2 V) now converges. The
+> hazard is still real — the row still goes bit-exactly empty at iterate
+> 0 — but the solver now has an anchor for it, and the answer it returns
+> is a `gmin = 0` solution, not an anchored one.
+
+#### The original finding, kept for the mechanism
+
+`limit_fet(V(g,s))` writes back as `x[g] = x[s] + vlim`, so it moves
+the **gate** — and a gate is almost always driven. `vlim` is bounded;
+`x[s]` is not.
+
+On a 40 V cascode started from a uniform 10 V:
+
+    limited      225 Jacobian evaluations
+    unlimited     25
+
+and instrumenting `SubCircuit.limit` shows **203 of those 225
+iterations move a gate node pinned at 1.0 V by a source**, by as much
+as **5e48 V**. Two devices sharing that gate is worse: each writes it
+in turn and the second overwrites the first.
+
+This is a defect in §10.3(a) as shipped, not a limitation of it. The
+fix is either §10.3(b)'s device-level limiter or, far cheaper, refusing
+to move a node that a source pins — and the numbers above are recorded
+so a fix can be measured rather than argued.
+
+**It is a caveat, not a verdict.** Measured on the same machinery: a
+milliamp forced into a diode-connected EKV converges in 7 Jacobians
+with the limiters and raises `SingularMatrix` without them; the 40 V
+cascode from the origin is 9 with and 25 without, same answer. The
+limiters earn their place. The write-back rule does not.
+
+### 12.2 `check_jacobians` needs a "not resolvable" verdict — FIXED 2026-08-25
+
+> **Resolved, and THE PROPOSED FORMULA WAS WRONG BY TEN DECADES.**
+>
+> `check_jacobians` now has three per-entry verdicts —
+> `JAC_PASS` / `JAC_UNRESOLVED` / `JAC_FAIL` — surfaced as
+> `res.verdict` (`'ok'` / `'UNRESOLVED'` / `'FAILED'` /
+> `'NOT COMPARABLE'`), as `res.resolved` beside the existing `res.ok`,
+> and as `res.unresolved` / `res.failures` lists of `JacEntry`
+> records carrying the analytic value, the difference, the error, the
+> floor and the reason. `res.ok` stays true when entries are merely
+> unresolved, so no existing assertion changes meaning; `res.resolved`
+> is the stronger claim and has to be asked for.
+>
+> **What the item got wrong.** It prescribed a floor of
+> `max(atol, eps·|value|/h)`, and both models' comments proposed the
+> same. Measured on EKV at `vgs = -3 V`, the bias that motivated it:
+>
+>     eps*|q|/h        (the proposal)      9.4e-36
+>     eps*max|q|/h     (vector form)       9.0e-26
+>     the real quantum / 2h                2.1e-24
+>     the entry it must cover              1.6e-25
+>
+> The proposal is **ten decades too small** and even the vector form
+> misses by 2×, because the cancellation that sets `q`'s representable
+> step happens on an **internal magnitude of 1.9e-15** that no output
+> shows. A floor derived from the outputs cannot see it. So the
+> roundoff floor is **measured**: when a value comes back bitwise
+> identical at all four probe points, the step is widened by a decade
+> at a time until the value clears its own quantisation, and the floor
+> is that quantum over the widened step. On the EKV point that turns a
+> difference of *exactly 0.0* into `-1.26e-25` against an analytic
+> `-1.28e-25` — 1.5% corroboration where there had been none.
+>
+> **Widening is a discriminator, not a whitewash.** A value genuinely
+> independent of `x[k]` stays frozen at every rung, and a non-zero
+> analytic entry against it still FAILS. That case has its own test.
+>
+> The other two floors are measured too. **Truncation** comes from
+> Richardson — the same column differenced at `h` and `2h`, whose
+> disagreement is three times the `h²` term. **A kink is detected from
+> the VALUE alone**: the one-sided disagreement
+> `|f(x+h) - 2f(x) + f(x-h)| / h` halves with `h` for a smooth
+> function and stays put at a corner. That detector never looks at the
+> Jacobian, which is what makes it a fact about the model.
+>
+> **Is a kink distinguishable from a real error? Partly, and the limit
+> is measured.** The non-smoothness is distinguishable — it is a
+> property of `f`. What is *not* distinguishable is an error smaller
+> than the jump, because at a corner the derivative is genuinely
+> two-valued. The floor is 0.75 of the jump, so on `i = g·max(v,0)` at
+> `v = 0` an analytic entry anywhere in `[-0.25g, 1.25g]` passes and
+> anything outside fails. That band is asserted from both sides rather
+> than described.
+>
+> **A fourth mechanism turned up that the item did not list**: a step
+> so large that the Taylor expansion is not converging at all. On the
+> memristor's `ron = 1, roff = 1e9` card at `x = 1`, `R` moves by 100×
+> across one 1e-7 step and the difference reports 3.5e6 against a
+> correct 7.0e8. No finite floor covers that honestly, so when
+> Richardson's term is a quarter of the difference itself the entry is
+> UNRESOLVED with an unbounded floor.
+>
+> **The cost of that rule, measured, as a count.** Run the memristor's
+> whole 162-point sweep against a deliberately HALVED `G`: **156
+> caught, 6 missed**, and all six are the stiff card at `x = 1`. Not
+> because the rule is loose — because a 1e-7 central difference at that
+> point carries no information about the derivative, and because at a
+> corner whose forward arm is flat a halved Jacobian coincides exactly
+> with the average the difference returns. The alternative is a FALSE
+> FAILED on a correct model, which is what 12.2 exists to remove.
+>
+> **A coincidence worth knowing before writing a test here.** At a
+> corner between a slope of `g` and a slope of `0`, the central
+> difference sits at `g/2` — so a *halved* analytic Jacobian lands
+> exactly on it. `assert 0.5*g != g/2` is not a test anybody can pass.
+> The same coincidence appears at the memristor's stiff clamp corner.
+> Corrupt by three, not by a half, when the point is a kink.
+>
+> **Workarounds removed.** EKV's two hand-written `atol = 1e-24`
+> overrides are gone. The memristor's finite-difference sweep gained
+> the `ron = 1, roff = 1e9` card (4 real FAILURES before, 0 after), the
+> clamp corners `x = 0` and `x = 1`, and `|v| = 1e4` — 162 points where
+> there were 56, of which **122 are fully resolved** and the other 40
+> say which mechanism stopped them.
+>
+> **The cost**, since it is a diagnostic that library tests call
+> hundreds of times: four evaluations per column instead of two, plus
+> the ladder where it fires. Measured — BJT (n = 6) 3.4 ms → **6.4 ms**
+> per call, EKV (n = 4) 0.8 ms → **2.1 ms**, EKV in deep cutoff where
+> the ladder runs **2.7 ms**. The memristor test now covers 162 points
+> where it covered 56 and the file still runs in ~20 s.
+>
+> **The floors do not widen a resolvable entry**, which is the property
+> that keeps the instrument an instrument. On a diode at 0.42 V the
+> band is 4.4e-12 and the floors are 2.5e-15 (roundoff) and 7.1e-15
+> (truncation) — three decades under. `test_check_jacobians.py`
+> asserts that, and runs every deliberately-built mechanism a second
+> time with a corrupted derivative.
+
+#### The original finding, kept for the mechanism
+
+Two independent models, three distinct mechanisms, all reporting FAILED
+where the model is right:
+
+- a genuine **kink** (a window seam, a clamp corner) — central
+  differencing across a jump, and no `h` helps because a jump has no
+  scale;
+- an entry whose own signal is **below one ulp of the value** it
+  differentiates, so the FD returns exactly `0.0` (EKV's normalised
+  charges at deep cutoff: `C` entries ~1e-25 F against a band of
+  1e-32);
+- **truncation** on a stiff card where `dR/dx = 1e9`.
+
+There is no single `h` that serves all three — measured: `h = 1e-9`
+fixes the third and breaks the default card.
+
+**The fix, now well evidenced: report a per-entry noise floor
+`max(atol, eps·|value|/h)` and mark entries below it UNRESOLVED rather
+than FAILED.** Both models currently carry hand-written `atol`
+overrides with the diagnosis in a comment beside them, which is the
+workaround this would remove.
+
+> The conclusion held; **the formula in that last paragraph is wrong by
+> ten decades** and is corrected above. An eighth
+> right-in-conclusion-wrong-in-its-reason, and this one was written by
+> whoever had just diagnosed the bias correctly — the diagnosis
+> ("computed as a difference of order-0.5 quantities that cancels") is
+> exactly right and names an internal magnitude, and the formula
+> proposed on the very next line uses the OUTPUT.
+
+### 12.3 No way to say "this device needs a GMIN anchor" — FIXED 2026-08-25
+
+> **Resolved, and the item's own framing was wrong in two places.**
+>
+> `DC` now takes a `gmin` parameter (default **1e-12 S**, SPICE's
+> `GMIN`, `gmin=0` to disable) and `nrsolver.GminAnchorNewton` sits
+> **outermost** in the DC chain. What it engages on is the correction
+> that mattered: every layer below it engages on `NoConvergenceError`,
+> and a singularity passes straight through all four of them by
+> §stage-6(a) design, which is exactly why an empty row had no rescue at
+> all. The anchor takes the singularity, and only that.
+>
+> **The item said "structurally singular". It is not.** The stacked
+> pair is singular *at iterate 0*, where both devices are in cutoff and
+> the `nm` column is bit-exactly zero, and perfectly well posed *at its
+> answer*, where the same conductance is **3.8e-8 S** — four decades
+> above the anchor that got it there. That distinction is the whole
+> item: **gmin must rescue a numerically-empty row and must not disguise
+> a structurally-empty one**, and the two are the same matrix shape.
+>
+> Two gates tell them apart, both asked about the `gmin = 0` system
+> because that is the only system the caller asked about:
+>
+> 1. `_structural_singularity` on the pure Jacobian **at the converged
+>    point**. Still-empty column → reject and name it. Catches the
+>    capacitor-only node and the current-source-only node.
+> 2. **the answer must not depend on the anchor** — re-solve at
+>    `gmin/10` and require agreement to the solver's own `conv_x`. A
+>    quantity gmin is holding up moves a decade when gmin does.
+>
+> **And the answer normally owes gmin nothing at all**, because the
+> ladder finishes with a plain `gmin = 0` solve from the anchored seed.
+> On every circuit measured for this item that solve converges, so gmin
+> is a homotopy path and never a term:
+>
+>     gmin        v(nm), 40 V stacked pair    anchor retained?
+>     1e-13       0.01805186588               no
+>     1e-12       0.01805186588               no
+>     1e-11       0.01805186588               no
+>     1e-10       0.01805186588               no
+>
+> Four decades of gmin, 4e-14 V of movement. And it is the *right*
+> answer, checked by taking the anchor away in the limit:
+>
+>     explicit leak from nm to gnd   v(nm)             rel. to anchored
+>     1e9  Ohm                       0.017588037157    2.57e-2
+>     1e12 Ohm                       0.018051385528    2.66e-5
+>     1e14 Ohm                       0.018051861024    2.69e-7
+>     1e16 Ohm                       0.018051865779    5.60e-9
+>
+> — which also says the **1 GOhm testbench leak the library tests use is
+> 2.6% off**, i.e. the anchor is the more faithful of the two.
+>
+> **The model's refusal was right, and now has a number.** A *permanent*
+> 1 pS to ground — what a naive always-on gmin would be — moves the EKV
+> drain current by **15% at `vgs = 0`**, 4.4% at 0.05 V, 1.3% at 0.10 V.
+> The shipped anchor moves it by **nothing**: `np.array_equal` on the
+> whole solution vector, because on a solve that succeeds the anchor is
+> not in the matrix at any iterate.
+>
+> **Cost.** 24 Jacobian assemblies for the rescued 40 V pair against 5
+> before the unanchored solve gives up. Zero on any circuit that already
+> converged.
+>
+> **Gate 2 has teeth on a real circuit, measured by sabotage.** Delete
+> the final `gmin = 0` solve so the anchor becomes permanent, and gate 2
+> *rejects the 40 V stacked pair itself* — the `vdd` branch current
+> moves from -5.688e-10 A to -4.968e-10 A when gmin drops a decade,
+> **68x** its own convergence tolerance. At that bias the supply current
+> is leakage of the same order as the anchor, so "1 pS is negligible" is
+> false there and the gate says so. Two other sabotages were run and
+> caught: anchoring branch rows as well as node rows (1 test), and
+> setting the default `gmin` to 0 (6 of 12 tests).
+>
+> **One incidental bug, found by the gate's own message.**
+> `analysis.reduced_row_names` built branch names with
+> `getattr(b, 'name', i)`. The attribute EXISTS on a `Branch` and is
+> usually `None`, so the default never applied and every branch row in
+> every diagnostic in this tree was called `'branch None'`. Fixed to
+> `getattr(b, 'name', None) or i`.
+>
+> **A gate that reads well and is fooled, recorded because it was the
+> first design.** Gate 2 was going to be "does the anchored answer
+> satisfy the unanchored KCL to `reltol * I_scale + abstol`?" —
+> `conv_f` on the pure system. `I_scale` is `|J|.|x|`, so an anchor that
+> drives a node to 5e8 V inflates the tolerance by the same factor it
+> inflated the answer: the 1 mA island below misses by 5e-4 A against a
+> tolerance of **100 A** and sails through. *A tolerance computed from
+> the corrupted answer cannot detect the corruption.* Pinned as a test.
+>
+> **Where the distinction is imperfect, stated plainly.** The verdict is
+> a property of the ANSWER, not of the netlist. A node whose only DC
+> path runs through a device that is still exactly off at the answer is
+> reported structural — defensible ("nothing determines it") but it
+> means the same netlist can be rescued at one bias and refused at
+> another. And one shape is accepted with the anchor **retained**: an
+> island with no injection has infinitely many solutions, every common
+> mode satisfies KCL exactly, and gmin picks the minimum-norm one — what
+> every SPICE does. `DC.gmin_anchor_retained` and a logged warning are
+> how a caller finds out; it is the only circuit found in this campaign
+> that sets it.
+>
+> **Scope: DC only.** The transient's inner Newton has no anchor, and
+> `doc/transient_review.md`'s "no gmin stamping in the transient loop"
+> row still stands.
+>
+> **Two behaviour changes in a file this work does not own**, both of
+> them the recorded claim this item exists to overturn. Left alone, as
+> instructed; each needs its singular assertion inverting or pinning at
+> `gmin=0` by whoever owns `test_elements_hdl_library3.py`.
+>
+> - `test_a_stacked_pair_without_a_dc_path_is_structurally_singular`
+>   asserts `pytest.raises(SingularMatrix)` on `DC(_pair(40, 0.2))`.
+>   That call now converges to `v(nm) = 0.0180519`. The rest of the test
+>   — the 5 V bias, the leak-resistor insensitivity — is unaffected.
+> - `test_fet_limiting_rescues_a_solve_that_otherwise_goes_singular`
+>   asserts `isinstance(res2, SingularMatrix)` for the milliamp-forced
+>   diode-connected EKV **with its `$limit` declarations removed**. The
+>   anchor rescues it — and this is the more interesting of the two,
+>   because it lands on **the limited model's own answer**:
+>
+>       limited     v(nd) = 0.3069549236
+>       unlimited   v(nd) = 0.3069549236   (anchor not retained)
+>       relative difference                 5.7e-11
+>
+>   So the limiters buy a shorter path and not a different answer, and
+>   the anchor is an independent route to the same point. That
+>   measurement is *not* pinned by a test in this work: reproducing it
+>   needs `_ekv_no_limit`, which strips `$limit` from the analog block
+>   and lives in the file this work must not edit. `test_gmin_anchor.py`
+>   deliberately does not copy it — a first attempt did, using a
+>   `limit_spec = ()` subclass, and that attribute does not exist on
+>   `EkvNmosHdl`, so the "unlimited" model was the limited one and the
+>   test compared a number with itself and passed.
+
+#### The original finding, kept for the mechanism
+
+EKV's channel conductance underflows to *exactly* zero in deep cutoff —
+`softplus(-800)` is `0.0`, not a denormal — so a stacked pair with no
+other DC path to the intermediate node is structurally singular.
+`compact.PspMosLongChannel` carries a private `GLEAK = 1e-12` for
+precisely this, and the library model deliberately does **not**, because
+1 pS is a picoamp at a volt and would sit on top of the weak-inversion
+currents the model exists to measure.
+
+Both facts are tests. This belongs at the simulator level as `gmin` (or
+`gmin` stepping), not in every model that has an off region.
+
+### 12.4 Smaller, each with its cost known
+
+- ~~**`limit_pnj`'s parameters cannot be written with `var()`.**~~
+  **FIXED 2026-08-25 — the first route, resolution.** A limiter
+  parameter that mentions a `var()` symbol is now compiled through
+  `_chain_compile` against the let-chain, the same path the PCNR
+  detector's `VT` and `IS` take, so the chain is **read, not inlined**
+  — a parameter written over a 40-deep chain costs what the chain
+  costs, and there is a test that says so. A parameter that mentions
+  nothing but the card still goes through `sympy.lambdify` exactly as
+  before, so nothing on the common path moved.
+
+  Resolution turned out to be cleaner than refusal *because it forces
+  the question refusal would have dodged*: what a limiter parameter may
+  legitimately be. It is evaluated from the card, once, BEFORE the
+  device is evaluated — so a chain that reaches the iterate is now
+  refused by name at compile time ("`limit_pnj`'s parameters ... cannot
+  depend on the solution; this one reaches plus (through
+  var('isbad'))"), which is a class of wrong answer that had no error
+  attached to it at all before. Time-dependent chains are refused the
+  same way.
+
+  **And the failure mode this item states is wrong** — a ninth
+  right-in-conclusion-wrong-in-its-reason. It says the symbol "is not
+  in scope", and `elements_hdl.py`'s comment beside the duplicate says
+  "the compile fails with a bare `NameError` from inside the lambdified
+  parameter function". Measured against the unfixed code: the class
+  compiles, the instance constructs, and the parameter function
+  *returns the sympy Symbol* — `[_v0_isT, 0.02584269662921349]`. The
+  failure is `TypeError: Cannot convert expression to float` from
+  inside `limit()` on the first Newton iteration. `hdl.py` already had
+  this right, a hundred lines away, in the comment on the source
+  vectors: "lambdify handed one it cannot resolve produces a function
+  that quietly evaluates to nothing useful rather than complaining".
+
+  **`elements_hdl.py`'s Gummel-Poon BJT can now drop `_isr`** and write
+  `limit_pnj(bbe.V, isT, nf * _vt(T))`. Verified by rebuilding the
+  model with the substitution applied: the limiter parameters are
+  bit-identical (9.772967086868698e-17, 0.02584269662921349) and
+  `limit()` agrees to 0.0 over 200 random (x, x0) pairs. Not done here
+  — `elements_hdl.py` was not this change's to edit.
+
+  This also **expired the stated reason in `limit_fet`'s docstring**,
+  which forbade a bias-dependent `vto` because "the parameter
+  expressions are lambdified over `paramsyms + [TEMP]` and nothing
+  else". The rule is unchanged and now enforced; its reason is *when*
+  the limiter runs, not what its namespace contains.
+- **`limit_fet`'s parameter-only `vto` bites, and the size is known**
+  *(CLOSED 2026-08-25, §12.7 -- `von` is now bias-dependent and the
+  565 mV is gone)*:
+  for the EKV card at 2 V of body bias the true turn-on is 1.06 V
+  against `vto = 0.50`, so every clamp sits **565 mV** low. Looser, not
+  wrong — the step is still bounded and the no-op band intact.
+- **`0 × d(√0)` is reachable from a legitimate CARD, not just a wild
+  bias.** EKV's pinch-off root with `gamma = 0` — a perfectly good "no
+  body effect" card, and the one every textbook-asymptote test uses —
+  sits exactly at zero with an infinite derivative. This is the
+  `differentiable-numerics` rule in a form that skill does not spell
+  out: the dangerous value was a *parameter*, not a bias.
+- **A per-probe write-back can UNDO another probe's branch, and the
+  size is known (2026-08-25).** "No probe is undone" was verified at
+  the level of NODES — no row is written twice — and that is not the
+  same claim. Two probes sharing a terminal: the one with the larger
+  correction takes the shared node, and the other probe's branch, which
+  hangs off it, follows and lands somewhere its own law never chose.
+  Measured over 813 random steps in which both probes of the
+  `(vgs, vds)` star bite: **27 of them (3.3%) leave a branch its own
+  law would still move, the worst by 36 V.** `limit_together` has no
+  such case (0 of 813) because it solves branch CONSTRAINTS rather than
+  applying node DISPLACEMENTS. Not fixed in the per-probe form: it
+  would mean re-solving after each write, which is the device-level
+  form with extra steps, and the per-probe form measures fine on the
+  grid regardless (909 against 927). Recorded so the next person does
+  not read the test name as the stronger claim.
+- **`hdl.var` vs SPICE's `VAR`.** `elements_hdl.py` aliases the
+  let-chain binder as `_var`, and a comment now says that is "a
+  readability choice, not a workaround". It is a workaround again: the
+  Gummel-Poon BJT could not otherwise use SPICE's own parameter name
+  for the reverse Early voltage. §3's S5 fixed the leak, not the
+  collision.
+
+### 12.5 What the kernel work bought, measured across three batches
+
+    batch 1   three hand-rolled clamps, each with a floor-placement
+              argument and a smoothing-width scan
+    batch 2   zero hand-rolled clamps
+    batch 3   zero; `safe_pow` replaced the diode's three-line floored
+              power with one call, and `softplus` is the whole of EKV's
+              all-region behaviour (the literal form overflows at
+              x = 710 and returns 710)
+
+That is §3's kernel additions paying for themselves in the only
+currency that counts here: what an author has to think about that is
+not physics.
+
+
+### 12.6 The fourth library batch, 2026-08-25 (evening)
+
+Three models -- `MosLevel1Hdl`/`MosLevel1PmosHdl`, `OpAmpHdl`,
+`GummelPoonNpnThermalHdl` -- and 57 tests in
+`test_elements_hdl_library4.py`. As before, the models found things
+review had not.
+
+#### What worked, said first because it is the unusual half
+
+Four pieces of machinery met a real model for the first time in this
+batch and **all four behaved**, which has not been true of any previous
+batch:
+
+- **`limit_together` is exactly what its docstring says it is.**
+  `MosLevel1Hdl` declares SPICE's own four probes -- `fetlim(vgs)`,
+  `limvds(vds)`, `pnjlim(vbs)`, `pnjlim(vbd)` -- and the per-probe form
+  refuses the production model with the message that names the fix:
+  *"the $limit probes over-determine this device: both terminals of
+  branch (b,di) have already been moved by earlier probes ... Declare
+  them with limit_together()"*. Nothing had to be worked around.
+- **`param_given` with `$limit` AND `Collapse` in one model.** First
+  time all three have been in one element. Works. (The §12.4 fix to
+  `limit_pnj`'s parameters, and `test_limit_with_param_given.py`, are
+  what made the first two combinable; the third had never been tried
+  with either.)
+- **`Collapse` takes a CONJUNCTION.** `Collapse(brd, And(rd <= 0,
+  rsh*nrd <= 0))` is what SPICE's "`rd` if given, else `rsh` times the
+  squares" needs, and it compiles and caches per variant like any other
+  condition.
+- **`check_jacobians`' UNRESOLVED verdict fires where it should and is
+  silent where it should not.** Ten points on the MOSFET: seven fully
+  resolved, three not, and both mechanisms are properties of the model
+  rather than of the checker --
+  *roundoff* on a reverse-biased junction conductance of ~1e-46 S
+  against a measured floor of 4.4e-23, and *truncation* at `vgs = vth`
+  exactly, where `(beta/2)*max(vgs - vth, 0)^2` is C1 but not C2 so a
+  central difference returns `beta*h/4` (4.4e-11 S against an analytic
+  3.9e-13 S). The control -- the same element with `G` and with `C`
+  multiplied by **three**, not by a half, per §12.2's corner
+  coincidence -- FAILS in both cases.
+- **the gmin anchor neither helped nor surprised.** It changed no
+  answer here (four decades of `gmin` move the forced-junction solve by
+  literally zero), and it twice REFUSED to manufacture one: for an
+  output current demanded beyond the opamp's `isc`, and for a
+  thermally-runaway BJT above its critical `rth`. Both refusals name
+  the node. §12.3's gate is doing the job it was built for.
+- **`explain()` prints the group** (`fetlim on (g,s) [group 1]`, four
+  times) and the compile-time messages were right every time they
+  fired, including the `NameError` for an un-imported `limit_together`,
+  which listed the class's declared parameters.
+- **`param_given` inside `var()`** works, which is not obvious given
+  that state operators inside `var()` were unreachable until Phase D
+  and `$limit` markers were being stripped from `var()` definitions as
+  recently as this campaign. Four of them are in `MosLevel1Hdl`'s
+  chain.
+- **the Gummel-Poon body moved out of its closure without moving a
+  number.** `_gummel_poon`'s nested `analog` became a module-level
+  `_gp_core` so the self-heating variant could share it, and
+  `test_elements_hdl_library3.py`'s 67 tests -- which include an
+  independent numpy transcription of the whole model and an RK4
+  integration of a common-emitter stage -- passed unchanged on the
+  first run. That is what a test file written against the physics
+  rather than the implementation buys.
+
+#### The friction, in the order it was met
+
+**(a) A helper shared by two classes cannot see its parameters, and the *(CLOSED 2026-08-26, §17: `params_as` hands the helper a namespace; `_with_params` is gone.)*
+BJT's card has forty-two of them.** `hdl._analog_function` injects the
+parameter symbols into `analog()`'s OWN globals, so a module-level
+helper it calls has a different `__globals__` and the bare names do not
+resolve. `_spice_diode` pays for this by taking all nineteen of its
+parameters as explicit arguments; forty-two was not tolerable, so
+`elements_hdl` now has
+
+    def _with_params(func, ns):
+        return types.FunctionType(func.__code__, ns, func.__name__,
+                                  func.__defaults__, func.__closure__)
+
+    ## at the call site, inside analog():
+    _with_params(_gp_core, globals())(heat.T, +1, c, b, e)
+
+which is `_analog_function`'s own constructor applied by hand. **What
+should have been written is `def analog(c, b, e, th, tha, p)` with
+`p.bf`** -- roadmap S5's parameter namespace, which §11 records as DONE
+because the *leak* was fixed. The leak was; the ergonomic half was not,
+and this is what it costs. The workaround also does not compose: it
+only works from inside the defining module, because the namespace it
+copies has to be `elements_hdl`'s.
+
+**(b) Three SPICE MOSFET card names cannot be Python identifiers.** *(CLOSED 2026-08-26, §17: `p['lambda']` in a `params_as` model, and `aliasparams` on Level 1.)*
+`LAMBDA` and `AS` are keywords and `IS` is one letter from being one.
+They ship here as `lambd`, `asrc` and `IS`. `globals()['lambda']`
+would in fact resolve inside `analog()` and `cls(**{'lambda': 0.02})`
+would set it, so the name is reachable -- but neither spelling is one
+anybody should write. A parameter namespace (item (a)) fixes this too:
+`p['lambda']` is legal Python.
+
+**(c) A self-heating device's limiter parameters reach the solution,
+and the DSL is right to refuse them.** *(CLOSED 2026-08-25 -- see
+§12.7: the refusal was right about the order and wrong about the
+conclusion, and is gone.)* `limit_pnj(bbe.V, isT, ...)` is
+the spelling §12.4 went to some trouble to make legal, and with a
+thermal node `isT` depends on `V(th,tha)`. `generate_code` refuses by
+name -- *"cannot depend on the solution; this one reaches th (through
+var('dT'))"* -- which is correct and was a five-minute fix rather than
+a bisection. The model now builds a SECOND, ambient-temperature copy of
+the saturation current for the limiter alone, under a build-time
+`if tlim is None`, so the isothermal element is untouched. The cost is
+five duplicated lines and a limiter placed against a junction that may
+be 100 K hotter than it thinks -- looser, not wrong, exactly as
+`limit_fet`'s parameter-only `vto` is. **What would remove it:** a
+limiter parameter evaluated at the LAST ACCEPTED iterate rather than
+from the card. That is information a limiter already has (it is handed
+`x0`), and it is the natural home for every "SPICE recomputes `von`
+each iteration" case, including `limit_fet`'s.
+
+**(d) `SelfHeating`'s thermal pin is a PARALLEL path, not a series
+one.** The docstring says the pin "can carry an external Foster or
+Cauer ladder", and it can -- but the device's own `rth` stays across
+the same `(th, tha)` branch, so the ladder is in parallel with it and
+the obvious way to say "no internal thermal resistance, use my ladder"
+is exactly the trap the same docstring warns about: `rth = 0`
+collapses the branch to a zero-volt source and SHORTS the ladder out.
+The only route today is a large `rth`, whose value then leaks into the
+answer -- measured, `rth = 1e6` against a 5000 K/W ladder still puts
+**0.5%** of the heat through the device's own path (the parallel value
+is 4975 K/W, not 5000). **The fix is small and is in
+the model rather than the DSL:** a `SelfHeating(..., external=True)`
+that simply does not emit the RC contribution, chosen by a build-time
+Python `if`, which is legal. Not done here; the test
+`test_the_thermal_pin_takes_an_external_foster_ladder` asserts the
+parallel behaviour against the exact parallel value so that the
+behaviour is pinned either way.
+
+**(e) `VS`'s `vac` defaults to 1.** Not an HDL matter, and it cost an
+hour: every node in an opamp AC testbench came back at exactly 1.0 and
+looked like a singular matrix, because the supplies and the
+non-inverting input were all driving the AC analysis too. Every AC
+testbench in `test_elements_hdl_library4.py` now sets `vac` explicitly
+on every source and says why.
+
+**(f) `expl` is not finite for every double.** `expl`'s continuation is
+a third-order Taylor, so its cubic term overflows: bisected on the
+compiled function, the last finite argument is **4.76e69**, where it
+returns 1.798e308. On the MOSFET that is a bulk-node voltage between
+1e68 V (finite) and 1e69 V (not), so the gap is academic -- but
+`expl`'s own docstring and `differentiable-numerics` both said "finite
+for every double", and a guarantee that is nearly true is the kind that
+gets relied on at the one bias where it is not.
+
+> **CLOSED 2026-08-25, and this entry had the same defect it reports.**
+> Both places were corrected in the commit that landed this batch. And
+> the number above was first written here as "about 2.6e70", which was
+> an ESTIMATE from reading the Taylor form and was wrong by 5.5x; the
+> 4.76e69 is bisected on the function. An unmeasured number in a
+> friction log about unmeasured numbers -- eleventh instance in this
+> campaign of the shape §11 catalogues, and the cheapest kind to check.
+
+(The opamp's own boundary is `hypsmooth`'s: the Jacobian goes at
+1e107 V on a supply pin and the value at 1e160, both from a radicand
+that squares a quantity 1e4 larger than the argument.)
+
+#### The mutation check, and the two that got through first time
+
+Twenty-two deliberate corruptions of `elements_hdl.py`, each applied,
+run against the batch's own tests, and reverted. **Twenty were caught
+immediately. Two were not, and both were failures of the TEST rather
+than of the corruption:**
+
+- **the drain overlap capacitance moved to the source branch** --
+  `cgdo` replaced by `cgso` -- and the card had `cgso == cgdo`, so the
+  "corrupted" model was bit-identical to the correct one. This is
+  §12.2's warning in its other form: *check that a deliberately
+  corrupted fixture is actually corrupt at the point you test it.* Fixed
+  by giving the three overlap densities three different values, which
+  is better validation design anyway (`validation-design`: "a zero
+  coefficient does not test a scaling" -- an EQUAL coefficient does not
+  test a routing);
+- **the `-IBC` term deleted from the self-heating BJT's dissipation.**
+  Every bias in the test was forward active, where the reverse
+  transport current is 1e-16 A and the term is 1e-13 of the answer.
+  Fixed by adding two SATURATED biases (`Vce = 0.2 V` and `0.05 V`),
+  where the measured beta falls to a twentieth of `bf` and the term is
+  17% of the collector current.
+
+A third, added after the first pass, also got through and is recorded
+for the same reason: **removing the factor of 2 from SPICE's
+forward-bulk threshold continuation** changed nothing, because every
+bias point in the reference comparison had `Vbs <= 0` and that arm is
+never selected there. Two forward-bulk points were added and it is a
+6.4% error.
+
+All three are the same shape and it is the shape `validation-design`
+names: **a bias no sweep visits tests nothing, and neither does a
+coefficient no card distinguishes.** Corruptions were by a factor of
+three rather than a half wherever a corner was involved, per §12.2.
+
+#### The measurement that was worth taking
+
+**On a level-1 MOSFET, `fetlim` and `limvds` earn almost nothing and
+`pnjlim` earns everything.** Over a 48-point cascode grid with `gmin`
+off and no rescue ladder, limited and unlimited cost **552 and 554**
+Jacobian evaluations -- a difference of two. The reason is structural
+and worth stating because it does not generalise: **a level-1 channel
+is a POLYNOMIAL.** There is no subthreshold exponential for `fetlim` to
+compress, which is why `EkvNmosHdl` -- whose channel is `softplus^2`,
+exponential below threshold -- is where those two limiters were
+measured to be worth having.
+
+What is exponential in a level-1 MOSFET is the two bulk junctions, and
+there the four-probe group is decisive: forcing a current into the bulk
+node, over four decades from 1 uA to 1 A, **plain Newton without the
+limiters does not converge at any of them**, and with them it converges
+in **at most three** Jacobian evaluations, to the same answer the full
+`DC` rescue chain finds for the unlimited element (1e-13 relative).
+
+So §10.3's conclusion holds and its reason is confirmed on a production
+model: what `limit_together` buys is a CAPABILITY -- the four-probe
+declaration exists at all -- and the iteration count it buys depends
+entirely on which probes the device's physics actually needs.
+
+#### What the opamp found about the claim that motivated it
+
+§5 item 4 says an HDL opamp "deletes `macromodels.OpAmp`'s
+runtime-`import jax` lambdas". **Verified, and the claim is true, still
+live, and the smaller half of the difference.**
+
+- `macromodels.OpAmp` still carries `import jax.numpy as jnp` INSIDE
+  the closure it hands to `BSource`, so it runs on every evaluation and
+  on every finite-difference probe of one. The *element* half of that
+  pattern was fixed by `toolkit.derivative`; the *user callable* half
+  was not, because it is user code. 0.43 us per call, measured.
+- `BSource`'s Jacobian is `toolkit.derivative`, a central difference at
+  `eps = 1e-6`. Accurate at this bias (1.2e-10 relative on a `tanh`),
+  so this is a structural point -- two extra evaluations per entry, and
+  nothing a tracing backend can differentiate -- not an accuracy one.
+- **The accuracy difference is elsewhere, and it is large.**
+  `macromodels.OpAmp` limits its output with `Vspan*tanh(v/Vspan)`,
+  whose gain error is `(v/Vspan)^2/3`: **0.15% at 1 V out of a 15 V
+  swing and 12.6% at 8.7 V**, which is why its own test asserts the DC
+  gain only to 2e-3. `OpAmpHdl`'s `hypsmooth` pair, with a smoothing
+  width written relative to the swing, is **2e-8** at the same points.
+- **It is not a drop-in.** `macromodels.OpAmp` is a four-terminal
+  `SubCircuit` with a differential output and no supply pins;
+  `OpAmpHdl` has five terminals, two of which are the supplies it takes
+  its rails and its PSRR from. Anything wanting a floating output
+  reference should keep the old one, and `macromodels.OpAmp` is
+  therefore left in place.
+
+`OpAmpHdl` also carries what the old one has no expression for: slew
+-rate limiting, output current limiting, input offset voltage and bias
+and offset currents, CMRR and PSRR, and rails taken from real supply
+pins rather than from parameters.
+
+**One structural consequence of having no ground pin, recorded because
+a user will meet it.** The output is referred to the supply MIDPOINT --
+an element can only reach the nodes in its own signature, so "referred
+to the global ground" is not expressible from inside `analog()`, which
+is the same limitation `SelfHeating` records for its ambient pin. So
+moving one rail alone moves the reference and the output follows it: a
+naive PSRR measurement to ground reads 1.5 V per volt of `vcc` where
+the differential-supply measurement reads 2.0. Both numbers are in the
+test.
+
+---
+
+## 13. Re-measured 2026-08-25 (evening): §8's numbers moved, and so did its conclusion
+
+§8 was measured before the kernel additions of §3 landed. Re-measured on
+the same machine, same card, same bias:
+
+    quantity                     2026-08-24      now      change
+    PSP compile+instantiate         67.4 s      66.4 s     --
+    i                               1414 us     1282 us    -9%
+    G                              26523 us    17304 us    -35%
+    G generated lines               2675        2675       --
+    G dispatch calls               14030        3471       -75%
+    G/i                             18.8x       13.5x
+
+**The kernel work paid for itself in a currency it was not aimed at.**
+`maxc`/`minc` were added for *ergonomics* -- to remove the undocumented
+"`Max` only on an atom" rule -- and rebuilding `expl`/`hypsmooth` on
+them cut the Jacobian's dispatched calls by three quarters and its
+runtime by a third. Nothing in §3 predicted that, and §8's own
+"op counts are the wrong proxy" caution is why: the win came from
+emitting FEWER CALLS, not from a smaller expression. The line count did
+not move at all.
+
+### What this does to the backend decision
+
+Priced at the measured scalar costs, dispatch is now roughly
+
+    2642 where x 0.94 + 454 min/max x 0.60 + 303 exp x 0.10  =  ~2.8 ms
+
+of 17.3 ms — **about 16%, where §8 measured 40%.** So:
+
+- **scalar code generation is now worth ~1.2x, not ~1.7x.** It has
+  been overtaken by a change made for other reasons, and on these
+  numbers it is no longer worth doing on its own.
+- **the remaining ~84% is the Python interpreter**, not numpy: 2675
+  lines of straight-line float arithmetic plus 2775 `_recip2`/`_rdiv`
+  Python-level calls. That is not a dispatch problem any printer change
+  can reach.
+
+**This strengthens the compiled-backend case and weakens every
+alternative to it.** The cost is now interpretation itself, and only a
+backend that stops interpreting removes it. `_chain_compile` and
+`_ChainPrinter` remain the replacement point.
+
+**And it is a warning about §8's own remaining numbers.** The 300-1000x
+estimate for a compiled backend was extrapolated from 14030 operations
+at 1-5 ns each. The operation count is now 3471 dispatched calls over
+2675 lines, so that extrapolation needs redoing before anyone commits
+to it. **Do not quote §8's ratios without re-running
+`benchmarks/hdl_model_cost.py`** -- this section exists because they
+were quoted once already, four weeks stale, in the space of one day.
+
+---
+
+## 14. The backend decision, and the work that answers it
+
+§8 diagnosed the Jacobian's cost and §13 re-measured it. Neither
+decides anything. This section states the decision, and specifies the
+work that would turn it from an argument into a measurement.
+
+### 14.1 What is being decided
+
+**Whether this DSL is a research instrument or something a real circuit
+can be put through.**
+
+PSP's Jacobian costs **17.3 ms**. The arithmetic that matters is not
+that number but what it becomes:
+
+    100 devices, one Newton iteration            1.7 s of Jacobian
+    1000-step transient, 5 iterations per step   ~2.4 hours
+    a compiled C compact model, same job         ~10 us per device
+
+Everything else in this plan improves the DSL for the person *writing*
+a model. This is the only item that changes who can *use* one.
+
+### 14.2 Where the cost is, measured today
+
+    G = 17304 us over 2675 generated lines
+      dispatched numpy calls   3471   ~2.8 ms   ~16%
+      everything else                 ~14.5 ms  ~84%
+
+The 84% is **the Python interpreter**: straight-line float arithmetic
+over 2675 lines, plus 2775 `_recip2`/`_rdiv` Python-level calls. No
+printer change reaches it.
+
+### 14.3 The options, priced
+
+| option | worth | effort | verdict |
+|---|---|---|---|
+| do nothing | — | — | legitimate if 17 ms blocks nothing you run |
+| scalar codegen (`math`, `if`/`else`) | **~1.2x** | days | **dead as a standalone item** — §8 priced it at 1.7x and the kernel work took the rest |
+| compiled backend (C / LLVM / numba) | unknown | weeks+ | the only option that reaches parity |
+
+**The cheap option died while nobody was looking**, and that is the most
+useful thing §13 found. It was overtaken by a change made for
+ergonomics. It survives only as a component of the third option.
+
+### 14.4 The number this plan is NOT entitled to quote
+
+§8 said a compiled backend would be "300-1000x", extrapolated from
+**14030 operations at 1-5 ns each**. That count is now **3471**. The
+extrapolation has not been redone and **must not be repeated until it
+is**. This campaign has produced ten claims that were right in
+conclusion and wrong in their stated reason, and several were exactly
+this: a figure that was true when taken, quoted after the ground moved.
+
+### 14.5 The work: a spike, not a build
+
+**Do not choose between C, LLVM and numba by argument.** Build the
+smallest thing that measures each, on the real model, and let the
+numbers choose. Estimated one day.
+
+**Input.** `PspMosLongChannel`'s compiled `G` chain — 2675 lines of
+straight-line scalar float code with `where`/`min`/`max`/`exp` and two
+helper calls. It is already in the shape every candidate wants;
+`_chain_compile` and `_ChainPrinter` are the replacement point.
+
+**Candidates, cheapest first:**
+
+1. **numba** on the existing generated source. No new code generator at
+   all — the chained path already emits its ideal input. Measure
+   compile time as well as run time: a 2675-line function may cost more
+   to JIT than a device model can amortise.
+2. **C via cffi**, emitted from the same chain. Most control, most
+   work, no runtime dependency beyond a compiler.
+3. **LLVM via llvmlite**. No external toolchain; between the two on
+   effort.
+
+**Measure, for each:**
+
+    per-call G time at the same bias        (against 17304 us)
+    compile/JIT time, once per class        (against 66.4 s)
+    agreement with the numpy path           bitwise, or to 1 ulp,
+                                            over a bias sweep INCLUDING
+                                            the extremes the safety
+                                            primitives exist for
+    behaviour at +-1e30 and beyond          both arms still finite?
+
+**Acceptance.** A candidate is worth building out if it reaches **at
+least 50x** on `G` while agreeing with the numpy path over the full
+sweep. Below 10x it is not worth the surface area. Between the two,
+report and decide.
+
+### 14.6 What it must not break, and this is the whole risk
+
+The DSL's value is exact symbolic derivatives with **provable finiteness
+under any Newton iterate**. A backend that is fast and loses either is
+worth nothing here.
+
+- **both arms of every conditional are still evaluated.** A backend
+  that "optimises" a branch away changes the safety semantics the
+  kernel is built on; `differentiable-numerics` records what that
+  costs.
+- **the range contracts still hold.** `safe_*` primitives spend
+  exponent headroom deliberately; a different float path can move where
+  they overflow.
+- **the extremes are the test, not the typical bias.** Agreement at
+  1.2 V proves nothing. The sweep must include the biases that motivated
+  `expl` and `hypsmooth` in the first place.
+
+### 14.7 What would make the answer "don't"
+
+Recorded so that "no" stays a real option rather than a failure:
+
+- the spike shows under 10x — the interpreter is not the bottleneck it
+  looks like;
+- JIT or compile cost per class exceeds what a simulation amortises;
+- agreement at the extremes cannot be had without giving up the
+  finiteness properties;
+- **or nobody is actually blocked.** If the circuits being run are ten
+  devices, 17 ms is a non-problem and the eight remaining library
+  models are worth more. That is a question about use, not about the
+  code, and it should be asked first.
+
+
+---
+
+## 12.7 Limiter parameters at the last accepted iterate (2026-08-25)
+
+Closes §12.6(c) and the `vto` item of §12.4, and answers the open
+question of whether the BJT should adopt `limit_together`.
+
+### The rule that was right about the order and wrong about the conclusion
+
+`_limit_par_fn` refused any limiter parameter that reached the solution:
+*"evaluated from the parameters alone, and BEFORE the device is, so
+they cannot depend on the solution."* The order is true. The conclusion
+does not follow: a limiter is handed `x0`, the last accepted iterate,
+precisely so it can measure the proposed step against it, and a
+parameter evaluated **there** is as well-defined as `vold` is. It is
+also exactly what SPICE does -- `mos1load.c` passes `fetlim` a `von`
+recomputed from the *previous* iterate's bulk bias, not a card
+constant.
+
+So a parameter that reads the solution is now compiled with `x` as a
+leading argument (through `_chain_compile`, chain read not inlined; an
+`unpack` for the flat path) and the generated `limit()` calls it with
+`x0`. The callable carries `_wants_x`; `explain()` prints
+`[params at last iterate]`. Time is still refused.
+
+Verified discriminatingly on both code generators: an `IS` that falls
+thirteen decades per volt gives `pnjlim` a critical voltage of ~0.73 V
+at `x0 = 0` and ~1.4 V at the proposed 0.9 V, so whether the clamp
+fires says which point it read. It fires.
+
+### What it retired
+
+- **The thermal BJT's second saturation current.** `_gp_core` took a
+  `tlim` argument so the self-heating class could hand the limiter an
+  ambient-temperature copy of `isT` -- five duplicated lines and a
+  critical voltage placed against a junction up to 100 K hotter than
+  it thought. Gone; the limiter reads the heated `isT`/`vtT` directly,
+  and the test that asserted the limiter was *independent* of the
+  thermal node now asserts that it moves with it.
+- **EKV's parameter-only `vto`.** Now `von = vtoT + gamma*(sqrt(phiT +
+  vsb) - sqrt(phiT))`, evaluated at `x0`. The 100 V jump from an off
+  device at 2 V of body bias lands at `von + 0.5 = 1.56 V` where it
+  used to land at `vto + 0.5 = 1.0 V`; at zero body bias nothing
+  changed. The test that pinned the 565 mV looseness now pins its
+  absence.
+- **Level 1's `vtoT`.** Same, with SPICE's forward-bias continuation
+  built on the raw `V(b,s)`.
+
+### Should the BJT adopt `limit_together`? Measured: no.
+
+Batch 4 left this as "worth adopting, but measure first". Measured on
+the shipped card, `gmin = 0`, plain `DC`, Jacobian evaluations:
+
+    circuit          start    per-probe   grouped   same answer
+    common-emitter    0 V        11         11        yes
+    common-emitter   -5 V        11         11        yes
+    common-emitter   20 V         7         92        yes
+    current mirror    0 V         9          9        yes
+    current mirror   -5 V         9          9        yes
+    current mirror   20 V        29         29        yes
+    (both, uniform 5 V start)  FAIL       FAIL     -- the ladder itself
+                                                     gives up; not a
+                                                     limiter question
+
+Grouped is never better and is once **13x worse**. The per-probe form
+stays. This is the third measurement pointing the same way (§10.3(b):
+ties or +1 on the 48-point grid; batch 4: 552 vs 554 on Level 1):
+**`limit_together` is a capability -- it makes four probes over four
+terminals expressible at all -- and not a speed-up**, and a two-probe
+device should not declare it.
+
+### A crash seen once and not isolated, recorded so it is not lost
+
+While writing the discriminating test: `IS * expl(-30.0 * b.V)` inside
+`analog()` crashed in **sympy's `Piecewise` constructor** --
+`KeyError: 'pop from an empty set'` from `_eval_rewrite_as_ITE` --
+before the compiler was reached. `b.V.free_symbols` is `set()` (a
+`Quantity` is atomic and reports none), and routing the same expression
+through `vt()` (which carries the `TEMP` symbol) works. But the minimal
+form `Piecewise((1.0, b.V < 1.0), (0.0, True))` does *not* reproduce
+it, so the trigger is narrower than "a condition on a bare Quantity".
+Not chased; the tests use `b.V / vt()` and this note is the only record.
+
+
+---
+
+## 15. "Is PCNR possible with all models?" -- measured 2026-08-25
+
+**No: 2 of 26 shipped models qualify, and for transistors the obstacle
+is structural.** PCNR has one scalar limited unknown per two-terminal
+branch; a MOSFET's current is `f(vgs, vds, vbs)` and a BJT's transport
+current `f(vbe, vbc)`. Every model, default card, first refusal:
+
+    VBRANCH  (a branch-current unknown)   9   L, VSin, VCVS, RThermal,
+                                              DiodeSpiceThermal,
+                                              GummelPoonNpnThermal, Xtal,
+                                              Comparator, OpAmp
+    STATES   (idt / laplace_*)            5   Idt, Idtmod, FerriteBead,
+                                              RSkin, Memristor
+    MULTI-V  (reads other node voltages)  6   GummelPoon x2, Ekv x2,
+                                              MosLevel1 x2
+    linear   (no exponential scale)       3   R, G, and PSP at its FIRST
+                                              contribution I(g,gi)/rg
+    none     (no resistive current)       1   C
+    QUALIFY                               2   DiodeHdl; DiodeSpiceHdl at
+                                              rs = 0 only
+
+"Partial participation" (qualifying junctions join, the rest stays in
+MNA) was checked as a cheap shortcut and **does not** rescue the thermal
+models: at `rth > 0` their junction current reads the thermal node
+through `isT`, so it is MULTI-V in its own right. It would admit the
+`rs > 0` diode and little else.
+
+`explain()` now names the rule that refused (it used to say only "does
+not qualify"; PSP's gate-resistor refusal took a re-measurement to
+learn). `hdl.md` §3.2a's qualification bullets, which said "exactly one
+branch" and "no charge" for months, are corrected.
+
+### Vector PCNR: three premises corrected before anything was built
+
+1. **The O(k) Schur trick survives vector unknowns.** `J_ml J_lm` is a
+   sum over *unknowns*, not devices; a device with m probes over t
+   terminals is m rank-one updates touching 2t entries.
+   `doc/pcnr_native_design.md` §6(a) already said so.
+2. **`refine` does not need sequential reading.** That was forced on the
+   ordinary path by node write-back; PCNR has none. `limit_together` is
+   not a consumer of vector PCNR -- under PCNR a four-probe MOSFET is
+   expressible per-probe trivially.
+3. **Chained models do have a traced PCNR twin** (`_pcnr_compiled`).
+   The traced path's obstacle is that `jaxtransient`'s junction
+   machinery is hard-wired to the two-terminal `[i, -i]` pnjlim shape.
+
+And one trap for whoever builds it: `pcnr_junctions` pairs are consumed
+as **gmin targets** by `dcanalysis._jrows` and
+`jaxtransient._gmin_junction_rows`, on the ordinary path too. A `fet`
+or `vds` probe must never reach them -- a gmin across `vgs` is a gate
+leak.
+
+### The gate, and where it stands
+
+PCNR removes exactly one thing: two devices limiting the SAME branch
+voltage fighting over a shared node. On transistors this was looked for
+once before -- `doc/transient_work_plan.md` ("A hypothesis I tested and
+had to withdraw"), `doc/pcnr_native_design.md` §8 -- and **did not
+reproduce**: the second limiter reads the already-limited value and
+composes with it. Every PCNR benchmark and test in the tree is diodes.
+
+The full design, staged with the measurement first and an exit
+condition written in advance, is in the plan file this section was
+written from; the measurement's result follows.
+
+### Stage 0 result: the clash REPRODUCES on FETs (2026-08-25)
+
+Two independent measurements, both plain Newton (`StandardNewton`, no
+ladder, no gmin anchor -- a `DC()` solve rescues every case below and
+would have hidden all of it), Jacobian counts, each circuit built in
+BOTH instance orders. Same equations, same x layout; only
+`SubCircuit.limit`'s visit order differs.
+
+**Measurement 1** -- 28 cases (mirror with a body-bias mismatch, diff
+pair with a resistive tail, cascode, BJT mirror; EKV, Level 1, Gummel-
+Poon; starts 0 / -5 / +20 V / one wild node): **25 order-independent, 3
+signatures**:
+
+    diff pair   EKV       start 0      5 vs 7        order-dependent count
+    cascode     Level 1   start +20    FAIL vs 12    order-dependent failure
+    BJT mirror  GP        start +20    FAIL vs 7     order-dependent failure
+
+Traced, iteration by iteration (the 1e45/1e109 figures that appear in
+such traces are the size of the Newton PROPOSALS being corrected, not
+limiter outputs -- checked before reading anything into them):
+
+- *cascode, Level 1, +20 V, M2 first*: M2's bulk-junction probes push
+  the shared `bulk` node up by +9.5, +19.5, +49.5, +140 V on successive
+  iterations and M1's push it back down by almost the same each time.
+  A geometric tug-of-war over one node; diverges. M1 first: settles.
+- *BJT mirror, +20 V, q1 first*: q1 limits the shared base; q2's
+  base-collector probe is then anchored off the ALREADY-LIMITED base
+  and lands the collector 2.8 V forward of it -- deep saturation,
+  overflow. q2 first: the same probe anchors off the unlimited base,
+  lands sane, converges in 7. Which point a derived node is anchored
+  from depends on who wrote the shared node first.
+
+**Measurement 2** (the design agent's, ideal 200 uA tail source,
+5 kOhm loads, inputs 2.5 +- vin, `[M1 first, M2 first]`):
+
+    vin          -1.0          -0.3        0        0.3         1.0
+    both       [45, 14]      [26, 14]  [15, 15]  [14, 26]  [14, NoConv]
+    group      [45, 14]      [26, 14]  [15, 15]  [14, 26]  [14, NoConv]
+    Level 1    6 / 6 everywhere (polynomial channel, nothing to fall off)
+
+Antisymmetric in `vin`, as a clash must be. Mechanism at iteration 0,
+`vin = 1.0`: Newton proposes tail ~ -1.45e8 V; **M1's `fetlim` alone
+wants tail = 2.5 V, M2's wants 0.5 V**, and dictionary order decides
+which the tail gets. *(Corrected the same night by a trace: it is NOT
+"last writer wins". M2, visited first, writes tail = 0.5; M1 then sees
+the tail drifted only 0.5 V against its gate's 3.5 V from the zero
+start, and its own move-the-wilder-node rule moves the SOURCE-PINNED
+GATE `inp` to 1.5 V. Newton restores the gate and M1 is left at
+vgs = 3 V from there on. Visited first, M1 writes 2.5 and M2 simply
+does not bite -- composition, as the earlier BJT search found. So the
+write-back rule of §12.1 is what turns a conflict into a wrong move;
+the conflict itself is the paper's.)* In the losing order M1 is left at `vgs = 3 V` on a
+subthreshold exponential and the tail creeps up by `N*VT` per
+iteration until Newton falls over. `limit_together` cannot help -- it
+is per DEVICE and this is BETWEEN devices. `DC()`'s ladder rescues
+both orders to the same 2.818678 V.
+
+**This is the paper's Figure 1 with FETs in place of diodes, and the
+§10.4 gate is passed.** The one prior search for it (`transient_work_
+plan.md`, two parallel BJTs) looked at a shared-GATE case, which
+composes; the clash lives where two devices' limiters want DIFFERENT
+values on one shared node -- a tail, a bulk, a derived collector.
+
+**Before Stage 1: price the cheaper competitor.** `device_writeback`
+already resolves competing probes WITHIN a device by a spanning
+forest. Lifting it to `SubCircuit.limit` -- one forest over every
+element's targets -- is classical limiting with no new unknowns. If it
+makes the diff pair order-independent at ~14, vector PCNR's case is
+capability again. If "two constraints on one node with different
+values" forces the forest to drop one (it is a conflict, not a cycle),
+that is the number that commissions Stage 1. Spike in progress; result
+recorded below when it lands. Vector PCNR itself is NOT started, per
+the approved scope.
+
+### The cheaper competitor, priced: a circuit-level forest is order-independent and WORSE
+
+`_limiting.CIRCUIT_LEVEL` (default off) + `element_targets()` +
+`SubCircuit.limit` collecting every element's probe targets into ONE
+`device_writeback` over the whole circuit. Plain Newton, gmin = 0:
+
+    diff pair `both`   -1.0      -0.3       0       0.3      1.0
+    baseline         [45,14]   [26,14]  [15,15]  [14,26]  [14,F]
+    forest           [F, F]    [43,43]  [15,15]  [43,43]  [F, F]
+    forest+pinned    [F, F]    [32,32]  [15,15]  [32,32]  [F, F]
+
+    cascode L1 +20 V   (20,2,.8)  (40,2,.8)  (5,2,.8)  (20,2,.8,vb=-2)
+    baseline           [17,10]    [F,10]     [F,12]    [F,21]
+    forest             [13,13]    [12,12]    [19,19]   [21,21]
+
+    48-point grid      both     group    mos4-group
+    baseline           909/0    927/0    896/0
+    forest            1878/8   1842/8   1866/9
+    forest+pinned     1052/0   1051/0   1175/2
+
+**Order-independent: yes. Better: no -- it fails in BOTH orders where
+the baseline failed in one.** Two devices asking one node for 2.5 V and
+0.5 V is a conflict, not a cycle: `(inp,tail)` and `(inn,tail)` are two
+edges of a star, so the forest keeps both, anchors on the least-drifted
+node and derives `tail = 0.5` then `inp = 1.5` -- a source-pinned gate
+moved 2 V, the exact §12.1 failure, now reached identically in both
+orders. Pinning VS nodes turns the conflict into a dropped edge, but
+WHICH edge is decided by anchor choice, and that hands the tail to M2,
+the device that is OFF. **Nothing in `|x - x0|` or in the correction
+sizes knows which device is on.** The forest can only pick a loser
+without the information to pick the right one.
+
+Not adopted; left in the tree behind the switch, because the test that
+records this (`test_a_circuit_level_forest_is_order_independent_and_
+worse`) measures the intervention against its absence, per
+`validation-design`.
+
+**This is the number that commissions Stage 1.** The clash is real, the
+classical fix cannot resolve it in principle, and PCNR removes it by
+construction -- each device limits its OWN `vgs` unknown and the tail
+is solved from both currents at their own limited voltages. Vector PCNR
+is still NOT started: the approved scope was Stage 0 only, and this
+result goes back to the user.
+
+### Stage 1 delivered (2026-08-25): the BJT participates, and three things the design got wrong
+
+`pcnr.py` now has per-device records (`PcnrDevice`: rows, probes,
+kinds, offset), `augmented_system`/`schur_reduce`/`predict`/`refine`
+over device blocks, and an **adapter** that presents every existing
+scalar participant as m = 1 -- measured bit-identical on `g_lim`,
+`J_ml`, `J_lm`, `f_eff`/`J_eff` and `refine` against the old formulas,
+same iteration counts on the paper's Fig. 1 and `TwoJunction`. The
+declared-probe route in `generate_code` admits a device whose every
+current reaches the solution only through its `$limit` probes (pnj-only
+in this stage); `explain()` prints `vector route, 2 probes over 3 rows
+(pnjlim on (b,e), pnjlim on (b,c))` for the NPN. The O(k) Schur trick
+survives as predicted (verified equal to the dense product). Finite-
+difference `J == dg/d[x;v]` on the full NPN card with charge, 2e-4. Same
+answers as the ordinary path to 1e-9. `dcanalysis` untouched: the pair
+view is filtered to `pnj` probes, so no gmin ever lands across a `vgs`.
++29 tests; suite 2335 / 7 / 3 / 0.
+
+**1. "Assemble, then subtract the participant" is inexact, not merely
+fragile.** hdl.md 3.2a had recorded `inf - inf = nan` and concluded
+"use `limexp` under PCNR". With the participant kept finite, its
+current at the unlimited node reached 1e72 and the subtraction left
+~1e56 of ORDER-DEPENDENT noise: the same mirror took 11 iterations in
+one instance order and 179 in the other. The participant is now
+**excluded from assembly**, never evaluated at the node voltages. The
+raw-`exp` diode converges under PCNR; the `limexp` test was inverted;
+the charge diode's 14 DC iterations became 8, the 14 having been a
+defect of the cancellation. Twelfth right-conclusion-wrong-reason: the
+`nan` was real and the lesson drawn from it ("harden the participant")
+was the wrong one.
+
+**2. Order-independence is delivered; convergence from +20 V is not.**
+The Stage 0 acceptance case, full NPN card mirror, `[q1 first, q2 first]`:
+
+    start     plain Newton     PCNR
     0 V        [9, 9]          [9, 9]
     -5 V       [9, 9]          [9, 9]
     +5 V       [FAIL, FAIL]    [164, 164]     <- rescued where the ordinary
@@ -1244,3 +2543,71 @@ Schottky gates.
 
 Cache: cold import of 37 classes 9.3 s (Level 3 x2 is 2.2 s of it),
 warm 0.91 s, 37/37 hit, none refuse.
+
+
+---
+
+## 19. The backend spike, measured (2026-08-26): C at -O2 is 219-229x and bitwise exact
+
+§14.5's spike, run as specified (harness `benchmarks/backend_spike.py`,
+full report `doc/backend_spike_260826.md`). Sweep = 4096 extreme-grid
+combinations of ±1e30/±100/±1/0/0.7/1.2 on all four terminals plus 889
+reference-sweep biases = 4985 points; the orchestrator's independent
+re-run used 1189.
+
+    candidate                     G us     speedup   compile   agreement   finiteness   verdict
+    numpy (today)               17 356        1x         --
+    numba, default              JIT never finished (> 600 s on G)                       don't (14.7)
+    numba, NUMBA_OPT=0             622       28x       68 s     2.4e-10      kept        between; don't
+    C gcc -O2, bitwise-faithful   75-79    219-229x  22-32 s   0 ulp, all   kept        WORTH BUILDING OUT
+    C gcc -O2, x*x for **2          14     1235x     19 s      2.4e-10      kept        if 2.4e-10 accepted
+    llvmlite                      skipped: numba shows LLVM's optimiser is what does not finish
+
+`i`: 1.27 ms -> 8 us (159x), same fidelity.
+
+**Both-arms semantics survive** because they are a property of the
+CALL: arms are computed as arguments before `where` picks, and both
+candidates keep them as arguments (`_sel(c, a, b)` in C, an `@njit
+_where` in numba); neither uses inline `if/else` or `a*c + b*(1-c)`.
+The one ulp is instructive: every one of ~740 intermediates matches
+bitwise except `**2` -- numpy's scalar `**2` is glibc `pow`, not
+correctly rounded, and gcc folds `pow(x, 2)` to `x*x`, so the compiled
+path was MORE accurate and a cancellation in the derivative chain
+amplified 1 ulp to 2.4e-10. Bitwise fidelity costs 5.4x
+(`-fno-builtin-pow`, 5618 real `pow` calls) and is still 229x.
+§14.6's overflow-migration risk never occurred; the numpy path itself
+is NaN at 96 extreme points (Vb and Vs/Vd both at ±1e30), which is
+model-level and unchanged by any backend.
+
+**§13's census was wrong in reason.** "3471 calls, 16% dispatch, 84%
+interpreter" counted numpy calls; the real Python-level census of `G`
+is ~21 400 calls (`minc` 3833, `maxc` 2911, `_step` 2046, `_rdiv`/
+`_recip2` 2775, ~2800 comparisons ...) and the kernel helpers alone are
+~41% of the time. §14.5's "numba needs no new code generator" was
+wrong: three rewrites and it still does not JIT. §14.4's forbidden
+"300-1000x" was, by accident, about right (1235x non-faithful, 229x
+faithful). Fifteenth right-conclusion-wrong-reason.
+
+**What building it takes (days, not weeks):** a `_CChainPrinter`
+beside `_ChainPrinter`, printing the same sympy lists `_chain_compile`
+already walks (NOT re-parsing `_src`); a `_KERNEL_C` prelude beside
+`_KERNEL_NUMPY`; `backend=` on `_chain_compile`, keeping `_src` as the
+numpy reference for `explain()`, the cache and the tests; the `.so`
+keyed by C-source SHA + compiler in `_hdl_cache` with numpy fallback;
+an `(x, p, out)` convention with parameters packed once per
+`update_iparv`. cffi releases the GIL; ~0.6-1 MB per class. Tests: the
+bitwise sweep, a both-arms overflow model, a `pow` sentinel, a cache
+round-trip.
+
+**Whether to build it is the user's decision**, per §14.7 -- and its
+first question is unchanged: whether 17 ms per Jacobian blocks
+anything actually run.
+
+**A record incident from the same day, kept here because it is the
+kind that leaves no trace:** the commit before this one deleted
+§12-§15 of this file -- 1300 lines -- by patching a status-table row
+with a regex that searched for "the next numbered row" and found one
+in §15's tables. No test can see a document shrink; the spike agent
+noticed because §14, the section it was working from, was gone. The
+file was restored from the previous commit and the row re-patched with
+the search scoped to the table.

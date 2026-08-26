@@ -149,3 +149,22 @@ agent's commit with `git add -A` produces a commit whose message
 credits a batch for changes it did not make — including, in that case,
 a file the agent had been explicitly forbidden to touch. Stage
 deliberately, or say in the message which parts were yours.
+
+
+## Scope a table edit to the table -- and check the file did not shrink
+
+A status-table row was patched with a regex that replaced text "up to
+the next line that starts with a number". The next such line was in a
+section 1300 lines below. The commit deleted a third of the plan
+document, including the section a running agent was working from, and
+nothing failed: no test reads a document. The agent noticed only
+because its reference section had vanished.
+
+- Slice the document to the table (or the section) FIRST, edit inside
+  the slice, then splice it back. Never search past the region you
+  mean to change.
+- Before and after editing a record, compare something cheap that a
+  deletion would move: the line count, or the list of `## ` headings.
+  Print both. A record edit that shrinks the file by more than the
+  edit is a deletion, whatever the script intended.
+- Keep the previous commit's copy around until the diff has been read.
