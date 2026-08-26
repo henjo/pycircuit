@@ -1,6 +1,7 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
+import logging
 import contextlib
 import time
 import warnings
@@ -2058,7 +2059,16 @@ class Transient(Analysis):
             ## through to the ordinary solver SILENTLY (vector PCNR
             ## Stage 2, 2026-08-26).
             if _pcnr.pcnr_devices(self.cir):
-                return self._solve_timestep_pcnr(x0, t, provided_function)
+                try:
+                    return self._solve_timestep_pcnr(x0, t, provided_function)
+                except Exception as exc:               # noqa: BLE001
+                    ## Same fallback as DC(pcnr=True): a PCNR failure on one
+                    ## timestep falls through to the ordinary step solver
+                    ## rather than ending the transient.  See dcanalysis.
+                    logging.warning(
+                        'transient pcnr=True: PCNR failed at t=%g (%s: %s); '
+                        'ordinary solver for this step', t,
+                        type(exc).__name__, str(exc)[:80])
 
         n=self.cir.n
         dt = self._dt

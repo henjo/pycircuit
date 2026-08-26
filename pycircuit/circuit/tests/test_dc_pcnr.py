@@ -1,3 +1,4 @@
+import pytest
 def test_dc_pcnr_diode():
     """
     Test PCNR limiting in DC simulation with a diode driven by a large source.
@@ -70,3 +71,65 @@ def test_dc_pcnr_true_takes_a_circuit_with_no_junction_at_all():
         pcnr.solve_dc = orig
     assert calls[0] >= 1, 'pcnr=True fell through to the ordinary solver'
     assert abs(float(r.v('tail', gnd)) - 2.818678) < 1e-5
+
+
+def _bjt_mirror_20v(rev=False):
+    """The Stage 0/1 BJT mirror: from a uniform 20 V start PCNR's undamped
+    first step proposes ~9e45 V and pnjlim's law cannot recover it, in
+    either instance order; the ordinary chain solves it in ~146."""
+    import numpy as np
+    from pycircuit.circuit import gnd, elements_hdl as eh
+    from pycircuit.circuit.elements import SubCircuit, VS, R
+    import pycircuit.circuit.tests.test_elements_hdl_library3 as T
+    c = SubCircuit()
+    vcc = c.add_node('vcc'); nb = c.add_node('nb'); no = c.add_node('no')
+    c['vcc'] = VS(vcc, gnd, v=5.0)
+    c['rref'] = R(vcc, nb, r=4.3e3)
+    c['rl'] = R(vcc, no, r=1e3)
+    devs = [('q1', lambda: eh.GummelPoonNpnHdl(nb, nb, gnd, **T.NPN)),
+            ('q2', lambda: eh.GummelPoonNpnHdl(no, nb, gnd, **T.NPN))]
+    for n, f in (devs[::-1] if rev else devs):
+        c[n] = f()
+    x0 = np.full(c.n, 20.0)
+    x0[c.get_node_index(gnd)] = 0.0
+    return c, x0
+
+
+def test_dc_pcnr_true_falls_back_to_the_ordinary_chain_when_pcnr_fails():
+    """`DC(pcnr=True)` used to return straight from `pcnr.solve_dc`, so a
+    PCNR failure was a HARD failure on circuits the default path solves.
+    Three native rescues (gmin shunt, source stepping, Jacobian damping,
+    each as an adaptive ladder around solve_dc) were measured and all
+    fail here (2026-08-26).  So: fall back, flag it, keep the answer.
+    """
+    import logging
+    import numpy as np
+    from pycircuit.circuit import gnd, pcnr
+    from pycircuit.circuit.dcanalysis import DC
+    for rev in (False, True):
+        c, x0 = _bjt_mirror_20v(rev)
+        ## the precondition: PCNR itself fails on this start
+        with pytest.raises(Exception):
+            pcnr.solve_dc(c, gnd, x0=x0)
+        logging.disable(logging.CRITICAL)
+        try:
+            a = DC(c, pcnr=True)
+            r = a.solve(x0=x0)
+            ref = DC(c).solve(x0=x0)
+        finally:
+            logging.disable(logging.NOTSET)
+        assert a.pcnr_fell_back is True
+        assert abs(float(r.v('no', gnd)) - float(ref.v('no', gnd))) < 1e-6
+
+
+def test_dc_pcnr_true_does_not_fall_back_when_pcnr_converges():
+    """The flag is False on a solve PCNR handled itself -- otherwise the
+    test above could pass on a fallback that always fires."""
+    import numpy as np
+    from pycircuit.circuit import gnd
+    from pycircuit.circuit.dcanalysis import DC
+    c, x0 = _bjt_mirror_20v(False)
+    a = DC(c, pcnr=True)
+    r = a.solve()                     # zero start: PCNR converges in ~9
+    assert a.pcnr_fell_back is False
+    assert abs(float(r.v('no', gnd)) - 3.996) < 5e-3

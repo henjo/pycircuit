@@ -151,13 +151,31 @@ class DC(Analysis):
             ## so `pcnr=True` on a MOSFET differential pair used to fall
             ## through to the ordinary solver SILENTLY (vector PCNR
             ## Stage 2, 2026-08-26).
+            self.pcnr_fell_back = False
             if _pcnr.pcnr_devices(self.cir):
-                x, _v_lim, _its = _pcnr.solve_dc(
-                    self.cir, self.cir.nodes[self.irefnode], x0=x0,
-                    epar=self.epar, maxiter=self.par.maxiter,
-                    reltol=self.par.reltol, abstol=self.par.vabstol)
-                self.result = CircuitResult(self.cir, x)
-                return self.result
+                try:
+                    x, _v_lim, _its = _pcnr.solve_dc(
+                        self.cir, self.cir.nodes[self.irefnode], x0=x0,
+                        epar=self.epar, maxiter=self.par.maxiter,
+                        reltol=self.par.reltol, abstol=self.par.vabstol)
+                    self.result = CircuitResult(self.cir, x)
+                    return self.result
+                except Exception as exc:               # noqa: BLE001
+                    ## PCNR HAS NO RESCUE LADDER OF ITS OWN, and building one
+                    ## was tried and measured (2026-08-26): a gmin shunt,
+                    ## source stepping and Jacobian damping, each as an
+                    ## adaptive ladder around `solve_dc`, all fail on a BJT
+                    ## mirror from a 20 V start that the ordinary chain solves
+                    ## in 146 evaluations.  The failure is PCNR's undamped
+                    ## first step from a wild start, and it is the same on
+                    ## every rung.  So a PCNR failure falls through to the
+                    ## ordinary chain -- losing order-independence for THIS
+                    ## solve, never the answer -- and says so.
+                    logging.warning(
+                        'DC(pcnr=True): PCNR failed (%s: %s); falling back to '
+                        'the ordinary Newton chain for this solve',
+                        type(exc).__name__, str(exc)[:80])
+                    self.pcnr_fell_back = True
             ## No participating device: PCNR has nothing to do, and falling
             ## through to the ordinary solver is the honest answer rather than
             ## raising -- the circuit simply has no limited quantities.
