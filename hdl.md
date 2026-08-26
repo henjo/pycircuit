@@ -815,6 +815,14 @@ inlinable by construction), `Piecewise` conditionals, exact `G`/`C`,
 `dudt`, `CY`, DC-variant stamps, `state_ic`/`IC_KIND`, `periodic_states`,
 `eval_*_pure`.
 
+**Added 2026-08-26.** `limit_identity(probe)` -- a fourth `$limit` kind,
+`'id'`, with no law: it never bites on the ordinary path and declares
+a PCNR unknown, so a device whose current reads a branch no limiter
+covers (EKV's bulk) can join vector PCNR. Four kinds now: `pnjlim`,
+`fetlim`, `limvds`, `identity`. And a fix: chained (`var()`) models'
+`i()`/`G()` returned the transient stamps at DC, so a chained
+`idt`/`idtmod` was never DC-pinned; the VCO found it.
+
 **Added 2026-08-24/25.** Math kernel: `maxc`/`minc` (usable on compound
 expressions, partials summing to exactly 1 at the tie), `safe_pow`
 (clamped base, build-time refusal when the clamp's own value or

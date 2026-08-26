@@ -2467,3 +2467,77 @@ aliases), canonical names unchanged.
 
 The claim that attribute access is visible to linters was not machine-
 checked: no linter is installed in the venv.
+
+
+---
+
+## 18. Library batch 5 and `limit_identity` (2026-08-26): the list is built, and a DC-pin bug on the chained path
+
+Eleven new classes (26 -> 37): `VcoHdl` (phase noise injected into the
+FREQUENCY through an `idtmod` phase, so jitter random-walks -- output
+PSD `(2 pi va)^2 (sf + kff/f) / w^2` to 1e-9 over three decades),
+`DividerHdl` / `MixerHdl` / `ChargePumpHdl`, `PhotodiodeHdl` / `LedHdl`
+(single-diode closed forms, implicit I-V with `rs`+`rsh` to 1e-8, LED
+linear above threshold, optocoupler CTR), `MesfetCurticeHdl` /
+`MesfetStatzHdl` / `HemtAngelovHdl` (Curtice 1980, `mes1.va`, Angelov
+1992), `MosLevel3Hdl` / `Pmos` (a numpy transcription of `mos3load.c`
+with every knob on, 14 biases, 1e-9; = Level 1 at gamma = 0). All
+written with `params_as = 'p'` -- "the first thing reached for, zero
+workarounds"; `lambda` and `as` declared under SPICE's own names.
++64 tests, 20 mutations (18 caught, one test added for the survivor,
+one mutation inexpressible). Suite 2482 / 7 / 3 / 0.
+
+**`limit_identity(probe)`** -- kind `'id'`, no law, `apply_limit`
+returns `vnew` itself, never bites on the ordinary path (verified
+bitwise: 100 wild steps write nothing), refused by `limit_together`
+(a grouped probe that did not bite is held as a constraint, and an
+identity has nothing to hold). It declares a PCNR unknown, and EKV now
+qualifies: `PCNR: vector route, 3 probes over 4 rows (identity (no
+law) on (s,b), fetlim on (g,s), limvds on (d,s))`. Measured on the
+diff pair, EKV `w = 20 um`, `[M1 first, M2 first]`:
+
+    zero start   vin   -1.0    -0.3      0      0.3    1.0
+    plain            [7,5]   [7,5]   [7,7]   [5,7]  [5,7]    Stage 0's 5 vs 7
+    PCNR             [7,7]   [7,7]   [7,7]   [7,7]  [7,7]
+    +20 V start
+    plain            [6,6]   [6,6]   [6,6]   [6,6]  [6,6]
+    PCNR             [F,F]   [F,F]   [F,F]   [F,F]  [F,F]    at the FIRST predict
+
+Order-independence delivered; convergence equal from zero and WORSE
+from a uniform wild start: both channels cut off, the tail's whole
+conductance is 2e-19 S, plain Newton's LU pivots on it and the limiter
+repairs the step, PCNR's Schur complement rounds it to a zero pivot.
+That is the unlimited-node case of §15 again, on a FET -- and
+`DC(pcnr=True)` falls back and gets the answer, which is what the
+fallback of §15 was for.
+
+**A DSL bug, fixed outside the batch's stated scope:** on the chained
+(`var()`) path `i()`/`G()` returned the TRANSIENT stamps
+unconditionally, so an `idt`/`idtmod` with an `ic` was never DC-pinned
+and the operating point was singular. `IdtmodHdl` is flat and never
+showed it; the VCO did. Eight lines plus
+`test_a_chained_idtmod_is_pinned_at_dc`; reverting breaks six tests.
+Sixth instance this week of machinery written against the eager path
+and silently wrong for the chained one.
+
+**`Cross`, second production user, exonerated.** Batch 2's ten-decade
+accuracy scatter and 3x step cost were properties of its LATCHING
+comparator, not of `Cross`: on the divider it is uniformly first-order
+(worst edge 1.7e-5 -> 8.2e-6 s) at 1.03x the steps.
+
+Friction that remains: `idtmod(expr)` refuses noise in `expr` and
+V-contributions refuse noise, so frequency noise needs an internal node
+and a 1 S contribution; ONE LAW PER BRANCH -- SPICE's MESFET runs
+`pnjlim` and `fetlim` on the same `vgs`, which is not expressible;
+Level 3's source/drain exchange has no antisymmetric form, so it is a
+`Piecewise` with two channel chains (1.2-1.4 s per class, cold); a
+helper's internal node is unreachable from its caller (`_spice_diode`
+grew a `junction=` hook, bit-identical when unused); Level 1's `vtoT`
+omits `mos1temp.c`'s `(Eg(tnom) - Eg(T))/2` term (pinned; Level 3 has
+it). And the limiter measurement on a bounded tanh channel: the
+`fetlim`/`limvds` group COSTS iterations (Curtice `[5,5] [4,3] [6,3]`
+limited vs not); what earns its keep on a MESFET is `pnjlim` on the
+Schottky gates.
+
+Cache: cold import of 37 classes 9.3 s (Level 3 x2 is 2.2 s of it),
+warm 0.91 s, 37/37 hit, none refuse.
