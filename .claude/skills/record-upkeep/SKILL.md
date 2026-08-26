@@ -52,6 +52,22 @@ rows, and any suite/benchmark number quoted in prose. Add what the work
 found: an item now done, a new open item with its measurement, a claim
 the work disproved.
 
+⚠ **A PERFORMANCE FIGURE NO TEST ASSERTS WILL DRIFT, and nothing will
+tell you.** The triggers above all assume some change *targeted* the
+number. The worse case is the number no change targeted: it decays a
+little per commit, every suite stays green, and the prose keeps
+claiming the original. `hdl.rst` advertised the DSL's overhead as
+`1.14x` for weeks; re-measured on the same machine it was **1.25x**.
+The benchmark that produced it was still in the tree and still passing
+— it asserted the two waveforms AGREED, never that the ratio held.
+
+So: when you touch a code path, **re-run the published figures that
+measure it**, even when your change was not about performance. And
+prefer a figure with a test around it — assert a bound the number must
+stay under, so the drift fails a run instead of aging in prose.
+**Published figures rot in the flattering direction**, because that is
+the direction nobody re-checks.
+
 **4. Cross-references and anchors.** Grep the docs for references to
 what you touched. Prefer **symbol names over line numbers** — line
 numbers are a measurement of something nobody is holding still. Verify

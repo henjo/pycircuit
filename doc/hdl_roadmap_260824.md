@@ -2940,3 +2940,150 @@ Not built -- measured and recorded, per the same rule §22 applied.
 
 Two of the four items the roadmap was carrying are now closed by
 measurement rather than by building them.
+
+## 24. `_args_of` memoised (2026-08-26): §23's first item, built -- 1.16x
+
+§23 ranked the marshalling cache first and did not build it. Built now.
+
+### What it is
+
+`hdl._args_of` builds the trailing argument list every compiled function
+is called with -- parameter values, `T`, givenness flags. It runs once
+per `i`/`G`/`q`/`C`/`u` call, so once per element per Newton iteration
+per timestep: **125 029 times** in a 49-element transient, rebuilding an
+identical list every time. It is now memoised on the instance.
+
+### Invalidation is the whole design
+
+A value cache is worth exactly its invalidation, and this one reads
+**two** parameter dicts -- values from `iparv`, givenness flags from
+`ipar`. It hangs off the `iparv` observer (`update`), the same one that
+already drops the constant stamps `_hdl_Gc`/`_hdl_Cc` and the C
+backend's packed vector `_hdl_cp`. That covers both dicts, because the
+routes converge:
+
+```
+iparv written  -> notify -> update
+ipar  written  -> _ipar_changed -> update_iparv
+                             -> iparv.update_values -> notify -> update
+```
+
+So a sweep, an `.alter`, an `ipar.set()`, an explicit `update_iparv()`
+and a late-resolved parameter expression all invalidate. **`T` is in the
+KEY, not the cached list** -- `epar.T` varies within a run without
+touching either dict, so it must select between entries rather than be
+stored beside them. A non-scalar `T` (symbolic, array) is not cached at
+all: the key comparison would be ambiguous, and no production path does
+it.
+
+**The key is `(value, type)`, not just value** -- found while auditing
+rather than by a failure. `defaultepar` carries `T` as an **`int`**
+(300, not 300.0), and `300 == 300.0` is True in Python, so a key matched
+on value alone would hand a float-`T` caller the list built for int-`T`.
+Numerically harmless in every expression this tree evaluates, but it is
+a divergence from the uncached path, and the C backend work already
+recorded one bug where an integer subchain changed the sign of an exact
+zero. Comparing `type()` as well costs one `is` per hit against
+rebuilding the whole list. `test_an_int_temperature_does_not_answer_a_float_one`
+pins it and fails without the type check.
+
+Two further exposures checked and closed: **no caller mutates the
+returned list** (all nine sites unpack it or slice a copy -- audited, and the
+docstring now says a mutating caller must copy first); and **class
+retargeting for node collapse cannot outlive an entry**, because it runs
+in `__init__` before any evaluation and the variant carries identical
+`instparams`.
+
+### Measured
+
+`benchmarks/args_cache.py`, shipped implementation against an uncached
+twin, one process, interleaved, three repeats, minimum of each:
+
+| devices | uncached ms | cached ms | speedup |
+|---|---|---|---|
+| 13 | 171.5 | 155.3 | 1.10x |
+| 49 | 531.1 | 464.5 | 1.14x |
+| 121 | 1159.0 | 1002.5 | **1.16x** |
+
+Answers **bit-identical** at every size and repeat. The element phase
+fell from 43.3% to 36.3% of a 121-device transient -- the win came out
+of exactly the phase §23 predicted.
+
+⚠ **THIS NUMBER WAS PUBLISHED WRONG TWICE BEFORE LANDING AT 1.16x**,
+which is worth more than the number itself:
+
+| figure | where it came from | why it was too high |
+|---|---|---|
+| 1.20x | §23's ceiling probe | cached with NO invalidation -- cheaper than the real thing |
+| 1.18x | first interleaved A/B | taken before the key was made type-exact |
+| **1.16x** | final, machine idle | -- |
+
+Each was caught by re-running rather than by carrying the earlier figure
+forward. That is the rule from §11's `both = 30` incident applied three
+times in one afternoon, and it earned its keep every time: **every
+intermediate measurement in this work was optimistic, and none of them
+was wrong by enough to look wrong.**
+
+### Tests
+
+`pycircuit/circuit/tests/test_hdl_argcache.py`, nine tests. The one that
+gives the others meaning is `test_the_cache_is_actually_used` -- every
+other test in the file passes with the memoisation deleted, since they
+would then only be re-testing that `_args_of` reads live parameters.
+
+**The invalidation tests were verified to BITE**: with the
+`_hdl_args` pop removed from `update()`, five of the nine fail,
+including a parameter sweep frozen at `[0.01, 0.01, 0.01, 0.01]` --
+a resistor that ignores every value after the first.
+
+### It also caught a stale number in the user-facing docs
+
+`hdl.rst` claimed the DSL's end-to-end overhead was **1.14x** the
+hand-written elements on an 8-stage RC ladder. Re-measured on the same
+machine at HEAD, before this change, it was **1.22x** -- the figure had
+gone stale at some point in the campaign and nobody re-ran it. With the
+cache the same benchmark reads **1.15x** -- most of the drift recovered,
+and close to the figure the docs had been claiming all along.
+
+| 8-stage RC ladder | ratio, 4 runs | median |
+|---|---|---|
+| at HEAD (no cache) | 1.22 / 1.22 / 1.19 / 1.23 | **1.22x** |
+| with the cache | 1.16 / 1.15 / 1.15 / 1.16 | **1.15x** |
+
+⚠ Single runs of this benchmark said **1.25x** and **1.12x** -- the two
+extremes -- and quoting them would have overstated the change in both
+directions. Four runs each is what the numbers above rest on.
+
+`hdl.rst` now says 1.15x and carries a note recording that it read 1.14x
+until 2026-08-26 and had drifted to 1.22x. **The published figure was
+wrong in the direction that flatters the DSL**, which is the direction
+nobody checks -- the same failure mode as roadmap §11's `both = 30`, and
+the second time in this campaign a number went stale in prose while the
+test around it stayed green.
+
+Worth noting what this says about the cache's reach: the ladder is 17
+elements of ONE parameter each, the least favourable case there is, and
+it still gains ~1.10x in a direct A/B. The win is not in the arithmetic
+the parameters feed -- it is in `ParameterDict.__getattr__` and the
+attribute protocol, which cost the same whether a model has one
+parameter or forty.
+
+**A timing assertion was considered and NOT added**, and the reason is
+recorded rather than left implicit. A bound loose enough not to flake on
+a shared machine (say "under 1.6x") would not have caught the drift this
+work found -- 1.22x sails under it -- and a bound tight enough to catch
+it would fail on a busy runner. The guard is STRUCTURAL instead:
+`test_the_cache_is_actually_used` asserts the memoisation is live, which
+is the property whose loss caused the regression, and it cannot flake.
+The `record-upkeep` skill's new rule ("re-run the published figures that
+measure a path you touched") covers the rest, because that is a
+discipline question and not a test-shaped one.
+
+### Ranking after this
+
+1. **The stamping loop** -- `_add_element_subvectors` /
+   `_add_element_submatrices`, still the largest single phase (41%),
+   still unexamined, 198 k `flatten` and 480 k `hasattr` calls.
+2. ~~`_args_of` caching~~ -- **DONE**, 1.16x.
+3. ~~C backend for the eager path~~ -- refused on measurement (§23).
+4. ~~S1~~ -- refused on measurement (§22).

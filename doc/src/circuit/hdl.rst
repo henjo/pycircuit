@@ -1102,8 +1102,23 @@ Regenerated at build time:
     print("nothing at all and any call overhead dominates a 2x2 matrix.")
 
 End to end, an 8-stage RC ladder transient built from generated elements
-runs at about 1.14x the hand-written one and produces identical waveforms
+runs at about 1.15x the hand-written one and produces identical waveforms
 (``benchmarks/hdl_overhead.py`` measures both and asserts the agreement).
+
+.. note::
+
+   This figure read ``1.14x`` until 2026-08-26 and had quietly gone
+   stale: measured again on the same machine it was **1.22x** (median of
+   four runs), because the argument list every generated call is made
+   with was being rebuilt on every call -- 125 029 times in a 49-element
+   transient.  Memoising it, invalidated by the same ``iparv`` observer
+   that drops the constant stamps, brought the ladder back to 1.15x and
+   gained 1.16x on a 121-device transient, with bit-identical answers.
+   See ``benchmarks/args_cache.py`` and ``doc/hdl_roadmap_260824.md``
+   sec. 24.
+
+   Quote these from a median of several runs: single runs of the ladder
+   benchmark ranged from 1.12x to 1.25x across the change.
 
 The C backend
 -------------

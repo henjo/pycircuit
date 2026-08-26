@@ -5091,10 +5091,54 @@ def _collapse_variant(cls, mask):
 
 def _args_of(self, epar):
     """The trailing argument list every compiled function expects:
-    parameter values, then T, then the givenness flags."""
+    parameter values, then T, then the givenness flags.
+
+    MEMOISED on the instance, because this is hot: it runs once per
+    `i`/`G`/`q`/`C`/`u` call, so once per element per Newton iteration
+    per timestep -- 125 029 times in a 49-element transient, rebuilding
+    an identical list every time.  Measured 1.16x end-to-end on a
+    121-device transient, answers bit-identical
+    (`benchmarks/args_cache.py`; roadmap sec. 24).
+
+    Two things make the cache safe rather than a staleness bug:
+
+    * **`T` is in the key.**  `epar.T` varies within a run without
+      touching either parameter dict, so it cannot be cached alongside
+      the values -- it has to select between them.
+    * **`update()` drops it**, the same iparv observer that drops the
+      constant stamps and the C backend's packed vector.  That covers
+      BOTH dicts this function reads: a write to `iparv` notifies
+      directly, and a write to `ipar` reaches the same observer through
+      `_ipar_changed` -> `update_iparv` -> `iparv.update_values` ->
+      `notify` (circuit.py).  So a sweep, an `.alter` or a late-resolved
+      parameter expression all invalidate.
+
+    The list is returned by reference and every caller either unpacks it
+    (`f(x, *_args_of(...))`) or slices a copy; none mutates it.  A caller
+    that ever needs to mutate must copy first.
+    """
+    T = _epar_T(epar)
+    ## A non-scalar T (a symbolic temperature, an array) would make the
+    ## key comparison ambiguous or wrong, so such a call is simply not
+    ## cached -- correctness first, and no production path does it.
+    if isinstance(T, (float, int, np.floating, np.integer)):
+        hit = self.__dict__.get('_hdl_args')
+        ## The type is part of the key, not just the value: `defaultepar`
+        ## carries `T` as an INT, `300 == 300.0` is True, and matching on
+        ## value alone would hand a float-T caller the int-T list.  That
+        ## is numerically harmless here but it is a divergence from the
+        ## uncached path, and this tree has been bitten by an integer
+        ## subchain before (the C backend's sign-of-zero note).
+        if hit is not None and hit[0] == T and type(hit[0]) is type(T):
+            return hit[1]
+        n_par = len(self._hdl_paramnames)
+        vals = _params_of(self)
+        out = vals[:n_par] + [T] + vals[n_par:]
+        self.__dict__['_hdl_args'] = (T, out)
+        return out
     n_par = len(self._hdl_paramnames)
     vals = _params_of(self)
-    return vals[:n_par] + [_epar_T(epar)] + vals[n_par:]
+    return vals[:n_par] + [T] + vals[n_par:]
 
 
 def _dc(epar):
@@ -5170,6 +5214,9 @@ class BehaviouralMeta(type):
             ## The C backend's packed parameter vector is a cache of
             ## iparv too.
             self.__dict__.pop('_hdl_cp', None)
+            ## ...and so is the memoised trailing argument list that
+            ## every compiled function is called with (`_args_of`).
+            self.__dict__.pop('_hdl_args', None)
             ## A parameter that gates a collapse decides the element's
             ## SIZE, and the size was baked into the circuit's node map
             ## when this instance was built.  Changing it afterwards
