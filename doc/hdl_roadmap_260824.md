@@ -872,8 +872,6 @@ the form it was argued — here is what actually landed.
     5        the remaining five: item 6 (VCO), 10
              (Level 3), 12, 13, 15                   DONE 2026-08-26 (sec. 18):
                                                      all fifteen built, 37 classes
-             12 (mixer/PLL), 13 (photodiode),
-             15 (MESFET/HEMT), MOS level 3          not started
 
 Suite: 1874 tests at `4d359e5` before this work, **2351 passed / 7
 skipped / 3 xfailed / 0 failed** as of `cb477a8`. After 12.2, 12.3 and
