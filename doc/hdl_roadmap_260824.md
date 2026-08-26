@@ -226,8 +226,15 @@ bias.
 
 ### S4 — hold every intermediate automatically
 
-`var()`'s docstring still says naming is *"optional and only affects
-generated-code readability"*. The model's experience contradicts it
+> 📌 **Half of this is already done (2026-08-26 read-through).** The
+> docstring complaint below is **stale**: `var()` now opens *"This is
+> what makes a real compact model compilable"* and carries the 2**n
+> tree-growth measurement. What is still open is the compiler change --
+> the **342** `_v()` calls in `psp_kernel.py` are still hand-tagged,
+> unchanged since this was written.
+
+`var()`'s docstring used to say naming is *"optional and only affects
+generated-code readability"*. The model's experience contradicts that
 flatly: bare sub-expressions get substituted into one another before
 printing, so the compiled form evaluates products the written form never
 creates, and the n-channel device lost its Jacobian at `Vd = 1e26`
@@ -236,8 +243,9 @@ calls in `psp_kernel.py`.
 
 If the compiler held every non-atomic sub-expression automatically
 (structural hashing at build time), `var()` would go back to being the
-naming convenience its docstring claims. Until then the docstring is
-wrong and should say so.
+naming convenience its docstring once claimed. ~~Until then the
+docstring is wrong and should say so.~~ — done; the docstring now
+states the opposite, and correctly.
 
 ### S5 — a parameter namespace instead of `__globals__` mutation
 
@@ -862,6 +870,14 @@ the form it was argued — here is what actually landed.
                                                      ceiling 1.76x against the
                                                      C backend's measured
                                                      212x, for the same build
+    32       re-validate PSP folded, vs the vendor   OPEN, not started --
+                                                     the item sec. 31
+                                                     created.  Folding is
+                                                     not bit-identical and
+                                                     the 1.3e-6 vendor
+                                                     figure has NO test
+                                                     guarding it (the
+                                                     suite asserts 1e-4)
     30/31    card-constant folding                   DONE (sec. 31):
                                                      `hdl.fold_card`,
                                                      1.54x numpy / 1.48x C
@@ -3931,3 +3947,69 @@ Suite **2657 passed / 7 skipped / 3 xfailed / 0 failed**, reconciled as
 2663 collected + 4 module-level `importorskip`. `sphinx -W` clean.
 `benchmarks/card_constant_folding.py` reproduces the numbers;
 `hdl.rst` documents it with the warning attached.
+
+## 32. OPEN: re-validate PSP against the vendor with its card folded
+
+**Status: not started. This is the one item `fold_card` created, and it
+is the one that matters most, because that model's whole value is a
+number that folding is not guaranteed to preserve.**
+
+### Why it exists
+
+`hdl.fold_card` (§31) is **not bit-identical** and cannot be — folding
+reassociates arithmetic. §30 measured the drain current banded by
+magnitude and found **8.5e-16** relative in strong inversion and
+**2.7e-15** in the 1e-9…1e-6 A window, i.e. machine precision where it
+counts. That is strong evidence and it is **not the same thing** as
+having re-run the validation.
+
+`compact.PspMosLongChannel`'s claim is: *"agrees with IHP's own compiled
+PSP103 to 1.3e-6 at the worst point of twelve sweeps, two geometries and
+both channel types — the reference's own printed precision."* Nobody has
+checked that this survives folding.
+
+### Why the existing evidence does not settle it
+
+Three reasons, and they are the ones this campaign keeps rediscovering:
+
+1. **The measured window was not the validated one.** §30's banding used
+   a gate sweep at one drain bias. The vendor comparison is *twelve*
+   sweeps across two geometries, both channel types and a body-bias
+   ladder — including the `alp2` and subthreshold cases that took the
+   longest to close, and the `1e-9…1e-6 A` window has a **junction
+   leakage floor** beneath it that this core does not model.
+2. **The tolerance is 43x tighter than the test that guards it.**
+   `test_psp_gap.py` asserts a part in a thousand
+   (`0.9999 < ratio < 1.0001`); the 1.3e-6 is the *measured* worst point
+   and lives in prose. So **the suite would stay green through a
+   regression of three orders of magnitude** — the exact shape of §25's
+   drifted `hdl.rst` figure.
+3. **Folding at the vendor's card is not folding at defaults.** §31
+   showed defaults are not a physical card (they raise). The real card
+   supplies 66 of 153 parameters; the other 87 fold at *their defaults*,
+   and no measurement has looked at what that does to the terms those
+   defaults switch off.
+
+### What the work is
+
+Re-run `test_psp_gap.py`'s twelve-sweep comparison against
+`tests/data/psp103_ihp_iv.json` with the device built through
+`hdl.fold_card(..., instance=('w', 'l'), **card)` instead of directly,
+and report the worst point per sweep beside the unfolded number.
+
+Then one of:
+
+* **it holds at 1.3e-6** — record it, and add the folded build as a
+  second parametrisation of the existing tests so it cannot drift; or
+* **it degrades** — report by how much and in which sweep, and either
+  document folding as unsuitable for a vendor-validated model, or find
+  the term whose reassociation costs the precision.
+
+⚠ **Pin the number this time.** Whatever it comes to, assert it — the
+1.3e-6 currently has no test, which is why this item can even be asked.
+
+### Size
+
+Half a day. The harness, the reference data and the card loader all
+exist; `benchmarks/card_constant_folding.py` already builds the folded
+device from the same card.
