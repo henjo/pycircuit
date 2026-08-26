@@ -2954,6 +2954,26 @@ def generate_code(cls):
     ## there rather than left to fail as a SyntaxError-shaped NameError).
     paramnames = [p.name for p in cls.instparams]
     paramsyms = [_param_symbol(name) for name in paramnames]
+
+    ## CARD-CONSTANT FOLDING (roadmap sec. 30).  A class made by
+    ## `fold_card` carries the card's values here, and `analog()` is
+    ## handed the NUMBERS in place of those symbols -- so sympy folds
+    ## every parameter-only subexpression as the expression tree is
+    ## built.  Measured on PSP with a real IHP card: the generated `G`
+    ## goes 2675 -> 1971 lines, its `minc`/`maxc`/`_step`/`_rdiv` calls
+    ## 11 565 -> 7 251, and evaluation 17.90 -> 11.62 ms (1.54x on numpy,
+    ## 1.44x on the C backend, which also builds in half the time).
+    ##
+    ## `paramsyms` itself is NOT touched: the compiled function keeps its
+    ## full argument list, so `_args_of` and every caller are unchanged
+    ## and the folded arguments are simply unused.  That is what keeps
+    ## this a local change rather than a new calling convention.
+    fold = getattr(cls, '_hdl_fold_values', None)
+    if fold:
+        callsyms = [sympy.Float(fold[nm]) if nm in fold else sym
+                    for nm, sym in zip(paramnames, paramsyms)]
+    else:
+        callsyms = paramsyms
     if params_as is None:
         unreachable = [nm for nm in paramnames
                        if not nm.isidentifier() or keyword.iskeyword(nm)]
@@ -2971,11 +2991,11 @@ def generate_code(cls):
                    else 'not a valid Python identifier',
                    'it' if len(unreachable) == 1 else 'them',
                    ', '.join('p[%r]' % nm for nm in unreachable)))
-        analogfunc = _analog_function(cls.analog, paramnames, paramsyms)
+        analogfunc = _analog_function(cls.analog, paramnames, callsyms)
         callargs = terminalnodes
     else:
         analogfunc = _analog_function(cls.analog, [], [])
-        callargs = [ParamNamespace(cls.__name__, paramnames, paramsyms)] \
+        callargs = [ParamNamespace(cls.__name__, paramnames, callsyms)] \
             + terminalnodes
 
     _VAR_STACK.append([])
@@ -5089,6 +5109,179 @@ def _collapse_variant(cls, mask):
     return var
 
 
+def fold_card(cls, instance=(), **card):
+    """`cls` recompiled with these parameters folded in as CONSTANTS.
+
+    A SPICE `.model` card is fixed for every device that references it,
+    while geometry and multiplicity are set per instance.  Telling the
+    compiler which is which lets sympy fold every card-only
+    subexpression as the expression tree is built::
+
+        Nmos = hdl.fold_card(PspMosLongChannel, instance=('w', 'l'), **card)
+        m1 = Nmos('d', 'g', 's', 'b', w=10e-6, l=1e-6)
+
+    **Everything not named in `instance` is folded** -- at its `card`
+    value where one is given, and at its declared DEFAULT otherwise. That
+    is the whole point and it is easy to get wrong: folding only the
+    parameters a card happens to mention left 87 of PSP's 153 symbolic,
+    almost nothing folded, and measured **0.96x**. A parameter sitting at
+    its default is just as constant as one the card sets.
+
+    Measured on PSP with a real IHP sg13g2 card (roadmap sec. 30,
+    `benchmarks/card_constant_folding.py`):
+
+    ==============================  =========  =========
+    ..                              symbolic   folded
+    ==============================  =========  =========
+    generated ``G``                 2675 lines 1971 lines
+    ``minc``/``maxc``/... calls        11 565      7 251
+    evaluation, numpy                 17.90 ms   11.62 ms
+    evaluation, C backend              82.2 us    57.2 us
+    C build                            27.1 s     14.8 s
+    ==============================  =========  =========
+
+    **1.54x on numpy, 1.44x in C**, and the C build halves because there
+    is less code to compile.
+
+    **Why this and not "elide the inert blocks"** (S2, refused in sec.
+    29): a compact model's cost is its REGULARISERS, not its physics.
+    Eliding whole blocks removed 15% of the source and **zero**
+    smoothing-primitive calls, for 1.00x. Folding removes 37% of them,
+    because a clamp whose bound is now a literal often folds away
+    entirely. Folding also subsumes S2 -- with the values numeric, a
+    kernel's own build-time guards fire on their own.
+
+    **It is not bit-identical**, and that is inherent: folding
+    reassociates arithmetic. Measured on PSP's drain current, banded by
+    magnitude -- **8.5e-16** relative in strong inversion and **2.7e-15**
+    in the 1e-9..1e-6 A window the model is validated in, i.e. machine
+    precision where it counts. ⚠ At 40 RANDOM biases on all six nodes it
+    reaches **1.6e-6**, the size of PSP's whole vendor-validation budget;
+    that regime is not characterised, and a model validated against a
+    reference should be re-validated with its card folded before the
+    result is relied on.
+
+    A folded parameter can no longer vary, so setting one on an instance
+    raises rather than being quietly ignored -- the value is in the
+    compiled code, not in `iparv`.
+
+    Args:
+        cls: the `Behavioural` subclass to specialise.
+        instance: the parameters that stay variable -- geometry,
+            multiplicity, anything set per device. Everything else is
+            folded.
+        **card: values for folded parameters. Every name must be one of
+            `cls`'s parameters and every value a real number; any folded
+            parameter not named here keeps its declared default.
+
+    Returns:
+        A subclass, cached per (class, card) so the same card is compiled
+        once. The on-disk compile cache keys on the card too, so the
+        build cost is paid once per card per machine.
+    """
+    names = [p.name for p in cls.instparams]
+    unknown = sorted((set(card) | set(instance)) - set(names))
+    if unknown:
+        raise TypeError('%s has no parameter%s %s'
+                        % (cls.__name__, '' if len(unknown) == 1 else 's',
+                           ', '.join(repr(u) for u in unknown)))
+    clash = sorted(set(card) & set(instance))
+    if clash:
+        raise TypeError(
+            'fold_card was given %s both as a folded card value and as an '
+            'instance parameter; it must be one or the other'
+            % ', '.join(repr(c) for c in clash))
+    bad = sorted(k for k, v in card.items()
+                 if isinstance(v, bool) or not isinstance(v, (int, float)))
+    if bad:
+        raise TypeError(
+            'fold_card needs a real number for every folded parameter; '
+            '%s is not one. A parameter whose value is not known at '
+            'compile time cannot be folded -- leave it out and set it on '
+            'the instance.'
+            % ', '.join('%s=%r' % (k, card[k]) for k in bad))
+    ## Fold EVERY parameter that is not an instance parameter: the card's
+    ## value if it supplied one, the declared default if it did not.
+    keep = set(instance)
+    defaults = dict((p.name, p.default) for p in cls.instparams)
+    resolved = {}
+    for nm in names:
+        if nm in keep:
+            continue
+        v = card.get(nm, defaults.get(nm))
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            ## A parameter with no usable default and no card value stays
+            ## symbolic rather than guessing -- said once, in `explain`.
+            continue
+        resolved[nm] = float(v)
+    if not resolved:
+        return cls
+
+    base = getattr(cls, '_hdl_fold_base', cls)
+    key = (tuple(sorted(keep)),
+           tuple(sorted((k, v) for k, v in resolved.items())))
+    store = base.__dict__.get('_hdl_fold_classes')
+    if store is None:
+        store = {}
+        base._hdl_fold_classes = store
+    if key in store:
+        return store[key]
+
+    ## The folded parameters' DEFAULTS move to the card's values, so an
+    ## instance reports what it actually evaluates.  Without this the
+    ## element would advertise the base default while the compiled code
+    ## held the card's number -- and the consistency check in `update()`
+    ## would fire on every construction.
+    folded = dict(resolved)
+    params = []
+    for prm in base.instparams:
+        if prm.name in folded:
+            prm = prm.copy()
+            prm.default = folded[prm.name]
+        params.append(prm)
+
+    ## A value that is fine as a SYMBOL can be singular as a NUMBER: a
+    ## model guards `1/p` for the p it expects to be zero, but a folded
+    ## card evaluates every such quotient at build time, and a parameter
+    ## left at a 0.0 default turns one into ComplexInfinity.  That
+    ## surfaces from deep inside sympy's printer as `KeyError:
+    ## 'ComplexInfinity'`, which says nothing useful, so it is caught and
+    ## named here.  Measured: folding PSP or the Gummel-Poon at bare
+    ## DEFAULTS does exactly this -- defaults are not a physical card.
+    try:
+        var = _fold_variant(base, key, resolved, keep, params)
+    except Exception as exc:
+        if 'ComplexInfinity' in str(exc) or 'zoo' in str(exc):
+            raise ValueError(
+                'folding %s produced a singular expression: some folded '
+                'parameter makes a division exact-zero at compile time, '
+                'which the symbolic form never evaluated. This usually '
+                'means a parameter was left at a 0.0 default -- defaults '
+                'are not a physical card. Supply a real card, or name the '
+                'offending parameter in `instance` so it stays symbolic.'
+                % base.__name__) from exc
+        raise
+    store[key] = var
+    return var
+
+
+def _fold_variant(base, key, folded, keep, params):
+    """The subclass `fold_card` builds; separated so the compile can be
+    wrapped without burying the class body in a `try`."""
+    return BehaviouralMeta(
+        '%s_card%x' % (base.__name__, abs(hash(key)) & 0xffffff),
+        (base,),
+        dict(analog=staticmethod(base.analog),
+             instparams=params,
+             _hdl_fold_values=folded,
+             _hdl_fold_base=base,
+             __module__=base.__module__,
+             __doc__='%s with %d parameters folded in as constants '
+                     '(%s stay per-instance).'
+                     % (base.__name__, len(folded),
+                        ', '.join(sorted(keep)) or 'none')))
+
+
 def _args_of(self, epar):
     """The trailing argument list every compiled function expects:
     parameter values, then T, then the givenness flags.
@@ -5244,6 +5437,28 @@ class BehaviouralMeta(type):
             ## when this instance was built.  Changing it afterwards
             ## would leave the map describing a different element, so say
             ## so rather than solve a system nobody wrote.
+            ## A FOLDED parameter is not in `iparv` at all -- its value is
+            ## compiled into the expression tree.  Letting one be
+            ## reassigned would give an element that reports the new
+            ## value and evaluates the old, which is the quietest kind of
+            ## wrong answer.  Say so instead (roadmap sec. 30).
+            folded = getattr(type(self), '_hdl_fold_values', None)
+            if folded:
+                moved = [nm for nm, v in folded.items()
+                         if float(getattr(self.iparv, nm)) != v]
+                if moved:
+                    raise ValueError(
+                        '%s: %s folded into this class as a compile-time '
+                        'constant and cannot be changed on an instance '
+                        '(%s). Build another class with hdl.fold_card(), '
+                        'or leave the parameter out of the card so it '
+                        'stays an instance parameter.'
+                        % (type(self).__name__,
+                           ', '.join(sorted(moved)),
+                           ', '.join('%s: %r -> %r'
+                                     % (nm, folded[nm],
+                                        float(getattr(self.iparv, nm)))
+                                     for nm in sorted(moved))))
             seen = getattr(self, '_hdl_collapse_seen', None)
             if seen is not None:
                 now = _collapse_mask_of(type(self), _params_of(self))

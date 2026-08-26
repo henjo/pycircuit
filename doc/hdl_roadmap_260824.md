@@ -844,6 +844,14 @@ the form it was argued — here is what actually landed.
                                                      ceiling 1.76x against the
                                                      C backend's measured
                                                      212x, for the same build
+    30/31    card-constant folding                   DONE (sec. 31):
+                                                     `hdl.fold_card`,
+                                                     1.54x numpy / 1.48x C
+                                                     on PSP, compiles in
+                                                     17 s against 28.  NOT
+                                                     bit-identical -- a
+                                                     validated model must be
+                                                     re-validated folded
     3        S2  generalised variants                REFUSED on measurement
                                                      (sec. 29): eliding the
                                                      blocks a default card
@@ -3803,3 +3811,88 @@ would actually run.
 margin, it has a real accuracy question attached, and the C-backend
 interaction should be measured before anyone commits days to it.
 `benchmarks/card_constant_folding.py` reproduces all of the above.
+
+## 31. `hdl.fold_card` BUILT (2026-08-26): 1.54x numpy, 1.48x C
+
+§30 measured card-constant folding and left it unbuilt pending one
+question -- *does it stack on the C backend, which already removes the
+Python primitives entirely?* Measured first: **it does, 1.44x**. Built.
+
+### The API, and the design error the measurement caught
+
+```python
+Nmos = hdl.fold_card(PspMosLongChannel, instance=('w', 'l'), **card)
+m1 = Nmos('d', 'g', 's', 'b', w=10e-6, l=1e-6)
+```
+
+**Everything not named in `instance` is folded** -- at its `card` value
+where one is given, and at its **declared default** otherwise.
+
+The first version took only `**card` and folded exactly what was passed.
+That left **87 of PSP's 153 parameters symbolic**, almost nothing folded,
+and measured **0.96x -- a slowdown**. A parameter sitting at its default
+is just as constant as one the card sets. The API had to name what stays
+*variable*, not what is fixed, and that is what the user's own framing
+said: *"all parameters that are not part of the instantiation."*
+
+Pinned by `test_everything_outside_instance_is_folded`.
+
+### Measured, shipped API
+
+```
+                  G source     primitives    compile
+symbolic          2675 lines     11 565      ~28 s
+folded            1971 lines      7 251      17.2 s
+
+numpy   symbolic 17.73 ms   folded 11.55 ms   1.535x
+C       symbolic  83.5 us   folded  56.5 us   1.478x
+        max relative dG 1.44e-13
+```
+
+It **compiles faster too** -- 17.2 s against ~28 s -- because there is
+less code to print and lambdify. The C build halves for the same reason.
+
+### Three edges, each with a test
+
+**It is not bit-identical, and cannot be** (§30): folding reassociates
+arithmetic. Machine precision in PSP's validated window, 1.6e-6 at
+arbitrary internal-node biases. A model validated against a reference
+must be **re-validated with its card folded** -- said in the docstring,
+in `hdl.rst`, and in the test module's header.
+
+**A folded parameter cannot be changed.** Its value is in the compiled
+code, not in `iparv`, so setting one on an instance would give an
+element that *reports* the new value and *evaluates* the old. It raises,
+naming `fold_card`. The folded parameters' **defaults move to the card's
+values** so an instance reports what it actually evaluates -- which is
+also what makes the compile-cache keys differ (see below).
+
+**Folding at bare defaults is REFUSED.** A model guards `1/p` for the
+`p` it expects to be zero; a folded card evaluates that quotient at
+build time, and a parameter left at `0.0` makes it `ComplexInfinity` --
+which surfaces from inside sympy's printer as `KeyError:
+'ComplexInfinity'`, saying nothing. Caught and renamed. **Defaults are
+not a physical card**, and both PSP and the Gummel-Poon demonstrate it.
+
+### Two of my own tests did not discriminate, and the bite check caught both
+
+- *"the instance parameter stays variable"* first evaluated at two values
+  of `bf` and required the currents to differ. They did not -- at a
+  saturated operating point the terminal currents barely depend on the
+  forward beta. **The test was testing my choice of bias.** Rewritten
+  structurally: `bf` must still be a symbol in the emitted body.
+- *"two cards do not share a cache entry"* passed with the `fold=` key
+  entry **neutralised**. What actually separates the keys is the
+  rewritten **defaults**, which `_param_decl` already hashes. The test
+  now pins that mechanism, and says plainly that `fold=` is defence in
+  depth.
+
+Both found by deleting the feature and re-running -- `validation-design`'s
+rule, earning its place for the third time today.
+
+### Status
+
+Suite **2657 passed / 7 skipped / 3 xfailed / 0 failed**, reconciled as
+2663 collected + 4 module-level `importorskip`. `sphinx -W` clean.
+`benchmarks/card_constant_folding.py` reproduces the numbers;
+`hdl.rst` documents it with the warning attached.

@@ -1135,6 +1135,67 @@ measures both and asserts the agreement).
    machine: single runs of the ladder benchmark ranged from 0.97x to
    1.05x while the test suite was running alongside it.
 
+Folding a model card
+--------------------
+
+A SPICE ``.model`` card is fixed for every device that references it,
+while geometry is set per instance.  Telling the compiler which is which
+lets it fold every card-only subexpression as the expression tree is
+built::
+
+    from pycircuit.circuit import hdl
+
+    Nmos = hdl.fold_card(PspMosLongChannel, instance=('w', 'l'), **card)
+    m1 = Nmos('d', 'g', 's', 'b', w=10e-6, l=1e-6)
+
+Everything **not** named in ``instance`` is folded -- at its ``card``
+value where one is given, and at its declared default otherwise.  On
+PSP with a real IHP sg13g2 card:
+
+.. list-table::
+   :header-rows: 1
+
+   * -
+     - symbolic
+     - folded
+   * - generated ``G``
+     - 2675 lines
+     - 1971 lines
+   * - ``minc``/``maxc``/... calls
+     - 11 565
+     - 7 251
+   * - evaluation, numpy
+     - 17.73 ms
+     - **11.55 ms** (1.54x)
+   * - evaluation, C backend
+     - 83.5 us
+     - **56.5 us** (1.48x)
+   * - C build
+     - 27.1 s
+     - 14.8 s
+
+The win is in the *regularisers*, not the physics: a clamp whose bound
+is now a literal often folds away entirely.  Eliding whole inert blocks
+instead -- 15% of the source -- removes **no** such calls and measures
+1.00x (``doc/hdl_roadmap_260824.md`` sections 29 and 30).
+
+.. warning::
+
+   Folding **reassociates arithmetic, so it is not bit-identical**.  On
+   PSP's drain current the difference is 8.5e-16 relative in strong
+   inversion and 2.7e-15 in the 1e-9..1e-6 A window the model is
+   validated in -- machine precision where it counts -- but at arbitrary
+   biases on all internal nodes it reaches 1.6e-6, which is the size of
+   that model's entire vendor-validation budget.  **A model validated
+   against a reference must be re-validated with its card folded.**
+
+   Two further edges.  A folded parameter can no longer vary, so setting
+   one on an instance raises rather than being ignored.  And folding at
+   bare *defaults* is refused: a model guards ``1/p`` for the ``p`` it
+   expects to be zero, and a folded card evaluates that quotient at
+   compile time, so a parameter left at ``0.0`` makes it singular.
+   Defaults are not a physical card.
+
 The C backend
 -------------
 

@@ -381,6 +381,14 @@ def key_for(cls):
         'terminals=%r' % (cls.__dict__.get('terminals'),),
         'params_as=%r' % (getattr(cls, 'params_as', None),),
         'mask=%r' % (getattr(cls, '_hdl_collapse_mask', None),),
+        ## Card-constant folding (roadmap sec. 30): two cards fold to two
+        ## DIFFERENT compiled models from identical `analog` source and
+        ## identical `instparams`, so without this they would share a key
+        ## and the second card would silently run the first card's code.
+        ## `repr` of a float is exact and round-trips, so the key is
+        ## stable across runs.
+        'fold=%r' % (tuple(sorted(
+            (getattr(cls, '_hdl_fold_values', None) or {}).items())),),
         'params=' + '|'.join(_param_decl(p)
                              for p in getattr(cls, 'instparams', ())),
         'deps=' + '|'.join(deps),
