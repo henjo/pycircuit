@@ -838,7 +838,18 @@ the form it was argued — here is what actually landed.
     10.2     PCNR admits chained models              DONE
     10.3(a)  FET limiting, ordinary Newton path      DONE
     10.3(b)  device-level limiter (limit_together)   DONE
-    10.3(b)  FET limiting inside PCNR (vector)       not started
+    15       PCNR eligibility measured, explain()    DONE (2 of 26 qualify)
+             names the refusal
+    15       Stage 0: inter-device clash              MEASURED: reproduces
+    15       circuit-level write-back forest         MEASURED: dead
+    15       vector PCNR Stage 1 (BJT, CPU)          DONE
+    15       vector PCNR Stage 2 (FETs, CPU)         DONE -- diff pair
+                                                     [14,FAIL] -> [22,22]
+    15       vector PCNR Stage 3 (JAX)               PARKED by the user;
+                                                     traced path raises
+                                                     NotImplementedError
+    15       the unlimited-node failure              OPEN, architectural
+                                                     on every path
     12.1     limiter write-back moves the wrong node DONE
     12.2     check_jacobians "not resolvable"        DONE 2026-08-25
     12.3     no way to declare a device needs gmin   DONE 2026-08-25
@@ -857,7 +868,7 @@ the form it was argued — here is what actually landed.
              12 (mixer/PLL), 13 (photodiode),
              15 (MESFET/HEMT), MOS level 3          not started
 
-Suite: 1874 tests at `4d359e5` before this work, **2189 passed / 7
+Suite: 1874 tests at `4d359e5` before this work, **2351 passed / 7
 skipped / 3 xfailed / 0 failed** as of `cb477a8`. After 12.2, 12.3 and
 12.4: **2220 passed / 7 skipped / 3 xfailed** in 695 s, plus the two
 `test_elements_hdl_library3.py` assertions 12.3 deliberately overturned
