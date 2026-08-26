@@ -112,7 +112,7 @@ from pycircuit.circuit.hdl import (Behavioural, Branch, Node, Contribution,
                                    Collapse, Cross, ddt, idt, idtmod,
                                    laplace_nd, laplace_zp, TIME, TEMP,
                                    limit_pnj, limit_fet, limit_vds,
-                                   limit_together,
+                                   limit_identity, limit_together,
                                    param_given)
 
 ## ---------------------------------------------------------------------
@@ -599,9 +599,21 @@ def _spice_diode_params():
     ]
 
 
-def _spice_diode(p, a, c, T):
+def _spice_diode(p, a, c, T, junction=None):
     """The junction itself, shared by the isothermal and self-heating
-    classes.  Returns ``(statements, p_dissipated)``.
+    classes and by the optical devices.  Returns ``(statements,
+    p_dissipated, i_junction)``.
+
+    ``junction``, if given, is a callable ``junction(bd) -> expression``
+    that is contributed as an EXTRA current across the junction branch
+    ``bd`` (between the internal node behind ``rs`` and the cathode):
+    the photodiode's photocurrent and shunt belong there, in parallel
+    with the junction and behind the series resistance, and the branch
+    is local to this function.  2026-08-26, fifth batch: a helper's
+    internal node cannot be reached from the calling ``analog()``, so
+    the helper has to accept the caller's contribution rather than the
+    caller reaching in.  With ``junction=None`` nothing is added and
+    the generated code is what it was.
 
     ``p`` is the calling class's parameter namespace (``params_as =
     'p'``; `hdl.ParamNamespace`).  Until 2026-08-26 this function took
@@ -720,10 +732,12 @@ def _spice_diode(p, a, c, T):
         Collapse(brs, p.rs <= 0),
         Contribution(bd.I, idio),
         Contribution(bd.I, ddt(qtot)))
+    if junction is not None:
+        stmts = stmts + (Contribution(bd.I, junction(bd)),)
     ## Total static dissipation: the series chain carries one current, so
     ## the terminal-to-terminal voltage times it is the whole of it.  The
     ## charge term is deliberately absent -- storage does not dissipate.
-    return stmts, _var(Branch(a, c).V * idio, 'pdiss')
+    return stmts, _var(Branch(a, c).V * idio, 'pdiss'), idio
 class DiodeSpiceHdl(Behavioural):
     """The full SPICE level-1 junction diode.
 
@@ -776,7 +790,7 @@ class DiodeSpiceThermalHdl(Behavioural):
     @staticmethod
     def analog(p, plus, minus, th, tha):
         heat = SelfHeating(th, tha, p.rth, p.cth)
-        stmts, pdiss = _spice_diode(p, plus, minus, heat.T)
+        stmts, pdiss, _idio = _spice_diode(p, plus, minus, heat.T)
         return stmts + heat.dissipate(pdiss)
 
 
@@ -2151,7 +2165,16 @@ def _ekv_analog(T, nmos):
         ## 565 mV below where the device actually turns on.  `maxc`
         ## inside the root because the parameter is evaluated NUMERICALLY
         ## at a point Newton may have pushed into forward body bias.
-        vsb = _var(bsb.V, 'vsb')
+        ## `limit_identity` on the bulk: NOT a limiter -- it never moves
+        ## the branch -- but the declaration that admits this model to
+        ## vector PCNR (roadmap sec. 15).  The current reads `vgs`,
+        ## `vds` AND `vsb`; the first two have laws, the third had no
+        ## probe, and the declared-probe route refused the model with
+        ## "var(vsb) reads b, g, which no $limit probe limits".  With the
+        ## identity probe the device owns all three of its branch
+        ## unknowns and the tail-node clash cannot form on it.  Measured
+        ## in `test_limit_identity.py`.
+        vsb = _var(limit_identity(bsb.V), 'vsb')
         von = _var(vtoT + gamma * (sympy.sqrt(_maxc(phiT + vsb, 0.0))  # noqa
                                    - sympy.sqrt(phiT)), 'von')
         vgs = _var(limit_fet(bgs.V, von), 'vgs')
@@ -3026,3 +3049,910 @@ class OpAmpHdl(Behavioural):
             Contribution(bout.I, iscc * sympy.tanh(bout.V
                                                    / (routc * iscc))),
         )
+
+
+## ======================================================================
+## Fifth batch (2026-08-26): the VCO with real phase noise, the optical
+## devices, the PLL's small behavioural blocks, the MESFET/HEMT family
+## and MOS level 3.  Every class below is written with `params_as`: the
+## parameters arrive as ``p`` and are read as attributes, so a helper
+## shared by two classes takes ``p`` as an ordinary argument and a
+## SPICE keyword-named parameter (``as``, ``lambda``) is declared under
+## its own name and read as ``p['as']``.
+## ======================================================================
+
+_TWO_PI = 2 * sympy.pi
+
+
+class VcoHdl(Behavioural):
+    """A voltage-controlled oscillator whose noise is injected into the
+    FREQUENCY, so that jitter accumulates as a random walk.  Terminals
+    ``(cp, cn, outp, outn, ph)``::
+
+        f          = f0 + kvco*V(cp,cn) + n_f(t)
+        V(ph,outn) = idtmod(f, 0, modulus, 0)        # phase, in CYCLES
+        V(outp,outn) = va*sin(2*pi*V(ph,outn))
+
+    ``n_f`` is a white frequency noise of PSD ``sf`` (Hz^2/Hz) plus a
+    flicker frequency noise ``kff/f`` (Hz^2).  Because it enters the
+    integrand, the PHASE noise it produces is ``S_phi = sf/f_m^2``
+    (``L(f_m)`` falling at -20 dB/decade) and ``kff/f_m^3`` -- Leeson's
+    two slopes, from the integral itself and not from a shaped source.
+    A noise source added to the output would be flat, and a source
+    added to the phase would be flat in phase; neither accumulates.
+    The roadmap (#6) calls this "a capability the repo's own survey
+    found in no other simulator", and it is one line of DSL once the
+    noise is where it belongs.
+
+    **Where the noise actually lives, and why there is an internal
+    node.**  ``idtmod(expr)`` refuses a noise term in ``expr``
+    (`generate_code`: "noise inside idt/idtmod is not supported"), and
+    a V-contribution refuses one too.  So the frequency is put on an
+    internal node ``fn`` by a 1 S I-contribution -- ``I(fn,outn) <+
+    V(fn,outn) - f`` -- and the noise is contributed as a CURRENT on
+    that branch, which the 1 S turns into a frequency in Hz.  The phase
+    integrates ``V(fn,outn)``.  It costs a node and a paragraph, and is
+    recorded as friction (roadmap sec. 12, fifth batch).
+
+    ``modulus`` is in cycles: the phase node wraps at ``modulus`` so a
+    ``DividerHdl`` reading it with ``n = modulus`` sees a continuous
+    ``sin(2*pi*V(ph)/n)``.  The output is periodic in one cycle
+    whatever the modulus is.
+    """
+    params_as = 'p'
+    instparams = [
+        Parameter(name='f0', desc='Free-running frequency', unit='Hz',
+                  default=1e6),
+        Parameter(name='kvco', desc='Tuning gain', unit='Hz/V',
+                  default=1e5),
+        Parameter(name='va', desc='Output amplitude', unit='V', default=1.0),
+        Parameter(name='modulus', desc='Phase wrap, in cycles', unit='',
+                  default=1.0),
+        Parameter(name='sf', desc='White frequency-noise PSD',
+                  unit='Hz^2/Hz', default=0.0),
+        Parameter(name='kff', desc='Flicker frequency-noise coefficient '
+                  '(PSD kff/f)', unit='Hz^2', default=0.0),
+    ]
+
+    @staticmethod
+    def analog(p, cp, cn, outp, outn, ph):
+        bc, bo, bph = Branch(cp, cn), Branch(outp, outn), Branch(ph, outn)
+        fn = Node('fn')
+        bf = Branch(fn, outn)
+        freq = _var(p.f0 + p.kvco * bc.V, 'freq')
+        return (Contribution(bf.I, bf.V - freq),
+                Contribution(bf.I, _white_noise(p.sf)),
+                Contribution(bf.I, _flicker_noise(p.kff, 1)),
+                Contribution(bph.V, idtmod(bf.V, 0.0, p.modulus, 0.0)),
+                Contribution(bo.V, p.va * sympy.sin(_TWO_PI * bph.V)))
+
+
+class DividerHdl(Behavioural):
+    """A continuous ``/N`` frequency divider in the PHASE domain, and the
+    second production user of `Cross`.  Terminals
+    ``(inp, inn, outp, outn)``::
+
+        s            = sin(2*pi*V(inp,inn)/n)
+        V(outp,outn) = vol + (voh - vol)/2*(1 + tanh(gain*s))
+        @cross(s, 0)
+
+    The input is a PHASE in cycles -- `VcoHdl`'s ``ph`` terminal with
+    ``modulus = n`` (or any multiple of ``n``), so that the wrap lands
+    where ``s`` is already zero and the divided signal is continuous.
+    Kundert's PLL modelling writes a divider exactly so
+    (``phase_out = phase_in/N``); what is added here is the hard-limited
+    output and the `Cross` at each of its edges, which is what a
+    phase-frequency detector downstream would count.
+
+    There is no counter, no latched state and no memory: the roadmap's
+    "continuous" divider is the one that stays continuous by living in
+    the phase domain.  A divider that counts EDGES of a real waveform
+    needs event-latched integer state, which the DSL does not have
+    (roadmap sec. 5, "What the behavioural half needs").
+    """
+    params_as = 'p'
+    instparams = [
+        Parameter(name='n', desc='Division ratio', unit='', default=4.0),
+        Parameter(name='gain', desc='Output limiter gain', unit='',
+                  default=50.0),
+        Parameter(name='voh', desc='Output high', unit='V', default=1.0),
+        Parameter(name='vol', desc='Output low', unit='V', default=-1.0),
+    ]
+
+    @staticmethod
+    def analog(p, inp, inn, outp, outn):
+        bi, bo = Branch(inp, inn), Branch(outp, outn)
+        s = _var(sympy.sin(_TWO_PI * bi.V / p.n), 's')
+        return (Contribution(bo.V, p.vol + (p.voh - p.vol) / 2
+                             * (1 + sympy.tanh(p.gain * s))),
+                Cross(s, 0))
+
+
+class MixerHdl(Behavioural):
+    """An ideal multiplying mixer.  Terminals
+    ``(rfp, rfn, lop, lon, ifp, ifn)``::
+
+        V(ifp,ifn) = k * V(rfp,rfn) * V(lop,lon)
+
+    Two sines in give ``k*A*B/2`` at the difference and the sum
+    frequency and nothing else -- the trigonometric identity is the
+    whole model, and it is what the test asserts by projection.
+    """
+    params_as = 'p'
+    instparams = [Parameter(name='k', desc='Conversion constant',
+                            unit='1/V', default=1.0)]
+
+    @staticmethod
+    def analog(p, rfp, rfn, lop, lon, ifp, ifn):
+        brf, blo, bif = Branch(rfp, rfn), Branch(lop, lon), Branch(ifp, ifn)
+        return Contribution(bif.V, p.k * brf.V * blo.V)
+
+
+class ChargePumpHdl(Behavioural):
+    """A PLL charge pump.  Terminals ``(up, dn, outp, outn)``::
+
+        I(outn -> outp) = iup*sw(V(up,outn)) - idn*sw(V(dn,outn))
+        sw(v)           = (1 + tanh((v - vth)/vsw))/2
+
+    UP sources ``iup`` INTO ``outp``; DN sinks ``idn`` from it; both on
+    is the difference (a real pump's mismatch is ``iup != idn``), both
+    off is zero to the last bit of ``tanh``.  ``vsw`` is the switching
+    width of the tanh; a hard step would leave the controller no slope
+    to find the edge with.
+    """
+    params_as = 'p'
+    instparams = [
+        Parameter(name='iup', desc='UP current', unit='A', default=100e-6),
+        Parameter(name='idn', desc='DN current', unit='A', default=100e-6),
+        Parameter(name='vth', desc='Logic threshold', unit='V',
+                  default=0.5),
+        Parameter(name='vsw', desc='Switching width', unit='V',
+                  default=0.05),
+    ]
+
+    @staticmethod
+    def analog(p, up, dn, outp, outn):
+        bup, bdn, bo = Branch(up, outn), Branch(dn, outn), Branch(outp, outn)
+        su = _var((1 + sympy.tanh((bup.V - p.vth) / p.vsw)) / 2, 'su')
+        sd = _var((1 + sympy.tanh((bdn.V - p.vth) / p.vsw)) / 2, 'sd')
+        ## `I(outp,outn) <+ x` is a current INTO the element at outp, so
+        ## sourcing into the node is the negative.
+        return Contribution(bo.I, -p.iup * su + p.idn * sd)
+
+
+## ----------------------------------------------------------------------
+## Optical devices -- roadmap item 13.  The optical port is a pair of
+## terminals whose potential is an optical POWER in watts; a photodiode
+## reads it and an LED drives it, and MNA does not care that the "volt"
+## is a watt.  Both are the SPICE diode of `_spice_diode` with one
+## extra statement.
+## ----------------------------------------------------------------------
+
+def _optical_params():
+    return [
+        Parameter(name='resp', desc='Responsivity', unit='A/W',
+                  default=0.5),
+        ## SPICE's "no shunt" is a large resistance, and 1e30 ohm is the
+        ## arithmetic spelling of it: a 1e-30 S conductance is below the
+        ## solver's abstol on any node it touches.
+        Parameter(name='rsh', desc='Junction shunt resistance',
+                  unit='ohm', default=1e30),
+    ]
+
+
+class PhotodiodeHdl(Behavioural):
+    """A photodiode / solar cell: the SPICE diode with a photocurrent
+    across the junction and a shunt resistance.  Terminals
+    ``(a, c, optp, optn)``::
+
+        I(c -> a, across the junction) = resp * V(optp,optn)
+        I(junction)                   += V(junction)/rsh
+
+    The photocurrent flows from cathode to anode inside the device --
+    a lit photodiode sources current out of its anode -- and it sits
+    BEHIND the series resistance, in parallel with the junction, which
+    is the single-diode solar-cell circuit (Iph, D, Rsh, Rs).  With
+    ``rs = 0`` and ``rsh = inf`` its I-V is the closed form
+    ``I = Iph - IS*(exp(V/(n*Vt)) - 1)``, so ``Isc = Iph`` and
+    ``Voc = n*Vt*ln(1 + Iph/IS)``, which the tests assert; with both
+    parasitics the test solves the implicit form independently.
+
+    A solar cell is this class with a cell's card (``IS`` of nA, ``n``
+    around 1.3, a small ``rs``, a finite ``rsh``, ``resp`` scaled so
+    that ``V(opt) = 1`` is one sun).  The parameters are SPICE's plus
+    ``resp`` and ``rsh``; the full SPICE junction -- charge, breakdown,
+    temperature, noise -- comes from `_spice_diode` unchanged.
+    """
+    params_as = 'p'
+    instparams = _spice_diode_params() + _optical_params()
+
+    @staticmethod
+    def analog(p, a, c, optp, optn):
+        bopt = Branch(optp, optn)
+        iph = _var(p.resp * bopt.V, 'iph')
+        stmts, _pd, _i = _spice_diode(
+            p, a, c, TEMP, junction=lambda bd: -iph + bd.V / p.rsh)
+        return stmts
+
+
+class LedHdl(Behavioural):
+    """A light-emitting diode: the SPICE diode with an optical output.
+    Terminals ``(a, c, optp, optn)``::
+
+        V(optp,optn) = eta * max(I_junction - ith, 0)
+
+    ``eta`` is the slope efficiency in W/A and ``ith`` a threshold
+    current (0 for an LED; a laser diode has one).  The optical branch
+    is V-contributed, so it carries a branch-current unknown that a
+    photodiode's optical port -- which only reads the potential --
+    leaves at zero: the "current" through an optical node is nothing,
+    and MNA is happy to solve for it.  `_spice_diode`'s junction
+    current is the one reported to the port, so the light follows the
+    forward current and not the displacement or breakdown current.
+    """
+    params_as = 'p'
+    instparams = _spice_diode_params() + [
+        Parameter(name='eta', desc='Slope efficiency', unit='W/A',
+                  default=0.1),
+        Parameter(name='ith', desc='Threshold current', unit='A',
+                  default=0.0),
+    ]
+
+    @staticmethod
+    def analog(p, a, c, optp, optn):
+        bopt = Branch(optp, optn)
+        stmts, _pd, idio = _spice_diode(p, a, c, TEMP)
+        return stmts + (Contribution(bopt.V, p.eta * _maxc(idio - p.ith,
+                                                            0.0)),)
+
+
+## ----------------------------------------------------------------------
+## MESFET / HEMT -- roadmap item 15.  Three tanh-shaped channels.
+## ----------------------------------------------------------------------
+
+def _mesfet_params():
+    """SPICE's MESFET card (`mesdefs.h`), in SPICE's names -- including
+    ``lambda``, declared as itself and read as ``p['lambda']``."""
+    return [
+        Parameter(name='vto', desc='Pinch-off voltage', unit='V',
+                  default=-2.0),
+        Parameter(name='beta', desc='Transconductance parameter',
+                  unit='A/V^2', default=2.5e-3),
+        Parameter(name='alpha', desc='Saturation voltage parameter',
+                  unit='1/V', default=2.0),
+        Parameter(name='lambda', desc='Channel-length modulation',
+                  unit='1/V', default=0.0),
+        Parameter(name='b', desc='Doping tail extending parameter',
+                  unit='1/V', default=0.3),
+        Parameter(name='rd', desc='Drain ohmic resistance', unit='ohm',
+                  default=0.0),
+        Parameter(name='rs', desc='Source ohmic resistance', unit='ohm',
+                  default=0.0),
+        Parameter(name='cgs', desc='Zero-bias G-S junction capacitance',
+                  unit='F', default=0.0),
+        Parameter(name='cgd', desc='Zero-bias G-D junction capacitance',
+                  unit='F', default=0.0),
+        Parameter(name='pb', desc='Gate junction potential', unit='V',
+                  default=1.0),
+        Parameter(name='IS', desc='Gate junction saturation current',
+                  unit='A', default=1e-14),
+        Parameter(name='fc', desc='Forward-bias depletion coefficient',
+                  unit='', default=0.5),
+        Parameter(name='kf', desc='Flicker-noise coefficient', unit='',
+                  default=0.0),
+        Parameter(name='af', desc='Flicker-noise exponent', unit='',
+                  default=1.0),
+        Parameter(name='area', desc='Area factor', unit='', default=1.0),
+    ]
+
+
+class MesfetStatzHdl(Behavioural):
+    """The SPICE MESFET (Statz et al. 1987), as ngspice's `mesload.c`
+    has it.  Terminals ``(d, g, s)``::
+
+        Ids = beta*(1 + lambda*vds) * vgst^2/(1 + b*vgst)
+              * [1 - (1 - alpha*vds/3)^3]     for 0 < vds < 3/alpha
+              * 1                              for vds >= 3/alpha
+
+    with ``vgst = max(vgs - vto, 0)``; for ``vds < 0`` the source and
+    drain exchange roles (``vgd`` in place of ``vgs``, ``-vds``), which
+    is written as a `Piecewise` on ``vds`` with the two arms meeting
+    with equal value and slope at ``vds = 0``.  The gate is two
+    Schottky junctions, ``IS*(exp(v/Vt) - 1)`` each, with SPICE's
+    depletion charge (``cgs``/``cgd``/``pb``/``fc``), series ``rd`` /
+    ``rs`` on collapsible internal nodes, channel thermal noise
+    ``(8/3)*k*T*gm`` and flicker noise.
+
+    Reference: H. Statz, P. Newman, I. Smith, R. Pucel and H. Haus,
+    "GaAs FET device and circuit simulation in SPICE", *IEEE Trans.
+    Electron Devices* **34**, 160 (1987); the ``b`` doping-tail term
+    and the cubic saturation are theirs.  `mes1.va` (vacask's
+    transcription of `mesload.c`) was the line-by-line reference.
+
+    **The limiter declaration is NOT SPICE's, and the DSL is why.**
+    `mesload.c` runs ``pnjlim`` AND ``fetlim`` on the same ``vgs``, in
+    sequence; the DSL carries one law per branch (``branch is limited
+    twice`` is a compile-time refusal).  The gate junctions are the
+    exponentials, so they get ``pnjlim``, ``vds`` gets ``limvds``, and
+    the three close a triangle, so they are one `limit_together` group.
+    ``fetlim`` on the gate is what `MesfetCurticeHdl` and
+    `HemtAngelovHdl` declare -- they have no gate junction.
+    """
+    params_as = 'p'
+    instparams = _mesfet_params()
+
+    @staticmethod
+    def analog(p, d, g, s):
+        di, si = Node('di'), Node('si')
+        brd, brs = Branch(d, di), Branch(s, si)
+        bgs, bgd, bds = Branch(g, si), Branch(g, di), Branch(di, si)
+        vtT = _var(_vt(TEMP), 'vtT')
+        isT = _var(p.area * p.IS, 'isT')
+        vgs, vgd, vds = limit_together(limit_pnj(bgs.V, isT, vtT),
+                                       limit_pnj(bgd.V, isT, vtT),
+                                       limit_vds(bds.V))
+        vgs, vgd, vds = _var(vgs, 'vgs'), _var(vgd, 'vgd'), _var(vds, 'vds')
+        beta = _var(p.area * p.beta, 'betaa')
+        lam = p['lambda']
+
+        def channel(vg, vd, tag):
+            vgst = _var(_maxc(vg - p.vto, 0.0), 'vgst' + tag)
+            betap = _var(beta * (1 + lam * vd), 'betap' + tag)
+            core = _var(betap * vgst * vgst / (1 + p.b * vgst), 'core' + tag)
+            ## `1 - (1 - alpha*vd/3)^3` below `3/alpha`, 1 above -- and
+            ## the cubic IS 1 at `vd = 3/alpha` with zero slope, so the
+            ## `minc` is C1 rather than a clamp.
+            afact = _var(1 - p.alpha * _minc(vd, 3.0 / p.alpha) / 3,
+                         'afact' + tag)
+            lfact = _var(1 - afact ** 3, 'lfact' + tag)
+            return _var(core * lfact, 'ids' + tag)
+
+        ifwd = channel(vgs, vds, 'f')
+        irev = channel(vgd, -vds, 'r')
+        ids = _var(sympy.Piecewise((ifwd, vds >= 0.0), (-irev, True)), 'ids')
+        igs = _var(isT * (_expl(vgs / vtT) - 1), 'igs')
+        igd = _var(isT * (_expl(vgd / vtT) - 1), 'igd')
+        qgs = _var(_pn_depletion_charge(vgs, p.area * p.cgs, p.pb, 0.5,
+                                        p.fc, 'gs'), 'qgs')
+        qgd = _var(_pn_depletion_charge(vgd, p.area * p.cgd, p.pb, 0.5,
+                                        p.fc, 'gd'), 'qgd')
+        ## Channel noise: `mesnoise.c` uses `(8/3)*k*T*gm`.  For the
+        ## square-law core `gm = 2*Ids/vgst` up to the doping-tail
+        ## factor, which is what is used here; the floor keeps a
+        ## cut-off device (vgst = 0, Ids = 0) at 0/0 = 0.
+        gmn = _var(2 * _safe_abs(ids) / _maxc(
+            sympy.Piecewise((vgs - p.vto, vds >= 0.0), (vgd - p.vto, True)),
+            1e-3), 'gmn')
+        stmts = (
+            Contribution(bds.I, ids),
+            Contribution(bgs.I, igs + ddt(qgs)),
+            Contribution(bgd.I, igd + ddt(qgd)),
+            Contribution(brd.I, brd.V * p.area / p.rd),
+            Collapse(brd, p.rd <= 0.0),
+            Contribution(brs.I, brs.V * p.area / p.rs),
+            Collapse(brs, p.rs <= 0.0),
+            Contribution(bds.I, _white_noise(8.0 / 3.0 * _KB * TEMP * gmn)),
+            Contribution(bds.I, _flicker_noise(p.kf * _safe_abs(ids) ** p.af,
+                                               1)),
+            Contribution(brd.I, _white_noise(4 * _KB * TEMP * p.area / p.rd)),
+            Contribution(brs.I, _white_noise(4 * _KB * TEMP * p.area / p.rs)),
+        )
+        return stmts
+
+
+class MesfetCurticeHdl(Behavioural):
+    """Curtice's quadratic MESFET (1980).  Terminals ``(d, g, s)``::
+
+        Ids = beta * max(vgs - vto, 0)^2 * (1 + lambda*vds) * tanh(alpha*vds)
+
+    W. R. Curtice, "A MESFET model for use in the design of GaAs
+    integrated circuits", *IEEE Trans. Microwave Theory Tech.* **28**,
+    448 (1980), eq. (1).  Intrinsic channel only -- no gate junction,
+    no charge -- which is the equation as published and the one whose
+    ``tanh`` gives the `Statz` model its saturation limit at
+    ``alpha -> infinity``.  The ``tanh`` is odd, so the equation is
+    antisymmetric in ``vds`` at fixed ``vgs`` (it does not exchange
+    source and drain; Curtice's paper does not either).
+
+    ``limit_fet`` on the gate and ``limit_vds`` on the drain, as one
+    `limit_together` group: the channel is a polynomial times a bounded
+    function and cannot overflow, so what the limiters buy here is
+    measured rather than assumed (`test_elements_hdl_library5.py`).
+    """
+    params_as = 'p'
+    instparams = [
+        Parameter(name='vto', desc='Pinch-off voltage', unit='V',
+                  default=-2.0),
+        Parameter(name='beta', desc='Transconductance parameter',
+                  unit='A/V^2', default=2.5e-3),
+        Parameter(name='alpha', desc='Saturation voltage parameter',
+                  unit='1/V', default=2.0),
+        Parameter(name='lambda', desc='Channel-length modulation',
+                  unit='1/V', default=0.0),
+    ]
+
+    @staticmethod
+    def analog(p, d, g, s):
+        bgs, bds = Branch(g, s), Branch(d, s)
+        vgs, vds = limit_together(limit_fet(bgs.V, p.vto), limit_vds(bds.V))
+        vgs, vds = _var(vgs, 'vgs'), _var(vds, 'vds')
+        vgst = _var(_maxc(vgs - p.vto, 0.0), 'vgst')
+        ids = _var(p.beta * vgst * vgst * (1 + p['lambda'] * vds)
+                   * sympy.tanh(p.alpha * vds), 'ids')
+        return Contribution(bds.I, ids)
+
+
+class HemtAngelovHdl(Behavioural):
+    """Angelov's HEMT/MESFET model (1992).  Terminals ``(d, g, s)``::
+
+        Ids   = ipk * (1 + tanh(psi)) * (1 + lambda*vds) * tanh(alpha*vds)
+        psi   = p1*(vgs - vpk) + p2*(vgs - vpk)^2 + p3*(vgs - vpk)^3
+        alpha = alphar + alphas*(1 + tanh(psi))
+
+    I. Angelov, H. Zirath and N. Rorsman, "A new empirical nonlinear
+    model for HEMT and MESFET devices", *IEEE Trans. Microwave Theory
+    Tech.* **40**, 2258 (1992), eqs. (1)-(3).  ``ipk`` and ``vpk`` are
+    the current and gate voltage at PEAK transconductance: with
+    ``p2 = p3 = 0``, ``gm = ipk*p1*sech^2(psi)`` is largest at
+    ``vgs = vpk``, where ``Ids = ipk`` (saturated) -- both identities
+    of the parameterisation, and both asserted.  Intrinsic channel
+    only: Angelov's ``Cgs``/``Cgd`` are capacitance fits, not the
+    gradient of a charge, and the DSL contributes charge (the same
+    reason `MosLevel1Hdl` omits Meyer).
+
+    ``limit_fet(vgs, vpk)`` -- the law measures excursions against the
+    peak-gm voltage, the nearest thing this model has to a threshold --
+    and ``limit_vds``, grouped.
+    """
+    params_as = 'p'
+    instparams = [
+        Parameter(name='ipk', desc='Drain current at peak gm', unit='A',
+                  default=50e-3),
+        Parameter(name='vpk', desc='Gate voltage at peak gm', unit='V',
+                  default=-0.2),
+        Parameter(name='p1', desc='psi first-order coefficient',
+                  unit='1/V', default=1.5),
+        Parameter(name='p2', desc='psi second-order coefficient',
+                  unit='1/V^2', default=0.0),
+        Parameter(name='p3', desc='psi third-order coefficient',
+                  unit='1/V^3', default=0.0),
+        Parameter(name='alphar', desc='Saturation parameter, residual',
+                  unit='1/V', default=1.0),
+        Parameter(name='alphas', desc='Saturation parameter, gate-'
+                  'dependent part', unit='1/V', default=0.5),
+        Parameter(name='lambda', desc='Channel-length modulation',
+                  unit='1/V', default=0.02),
+    ]
+
+    @staticmethod
+    def analog(p, d, g, s):
+        bgs, bds = Branch(g, s), Branch(d, s)
+        vgs, vds = limit_together(limit_fet(bgs.V, p.vpk), limit_vds(bds.V))
+        vgs, vds = _var(vgs, 'vgs'), _var(vds, 'vds')
+        dv = _var(vgs - p.vpk, 'dv')
+        psi = _var(p.p1 * dv + p.p2 * dv ** 2 + p.p3 * dv ** 3, 'psi')
+        tp = _var(1 + sympy.tanh(psi), 'tp')
+        alpha = _var(p.alphar + p.alphas * tp, 'alpha')
+        ids = _var(p.ipk * tp * (1 + p['lambda'] * vds)
+                   * sympy.tanh(alpha * vds), 'ids')
+        return Contribution(bds.I, ids)
+
+
+## ----------------------------------------------------------------------
+## SPICE MOS level 3 -- roadmap item 10's second half
+## ----------------------------------------------------------------------
+
+def _mos3_params():
+    """The SPICE level-3 card, in SPICE's own names -- ``as`` included,
+    which the namespace lets a model declare outright."""
+    return [
+        Parameter(name='vto', desc='Zero-bias threshold voltage', unit='V',
+                  default=0.0),
+        Parameter(name='kp', desc='Transconductance parameter (0: from '
+                  'u0 and tox)', unit='A/V^2', default=0.0),
+        Parameter(name='u0', desc='Surface mobility', unit='cm^2/V/s',
+                  default=600.0),
+        Parameter(name='gamma', desc='Body effect factor (unset: from '
+                  'nsub and tox)', unit='V^0.5', default=0.0),
+        Parameter(name='phi', desc='Surface inversion potential (unset: '
+                  'from nsub)', unit='V', default=0.6),
+        Parameter(name='tox', desc='Oxide thickness', unit='m',
+                  default=1e-7),
+        Parameter(name='nsub', desc='Substrate doping', unit='cm^-3',
+                  default=0.0),
+        Parameter(name='xj', desc='Junction depth', unit='m', default=0.0),
+        Parameter(name='nfs', desc='Fast surface state density',
+                  unit='cm^-2', default=0.0),
+        Parameter(name='eta', desc='Static feedback (DIBL) coefficient',
+                  unit='', default=0.0),
+        Parameter(name='delta', desc='Width effect on threshold', unit='',
+                  default=0.0),
+        Parameter(name='theta', desc='Mobility degradation', unit='1/V',
+                  default=0.0),
+        Parameter(name='vmax', desc='Maximum drift velocity (0: none)',
+                  unit='m/s', default=0.0),
+        Parameter(name='kappa', desc='Saturation field factor', unit='',
+                  default=0.2),
+        Parameter(name='w', desc='Channel width', unit='m', default=1e-4),
+        Parameter(name='l', desc='Drawn channel length', unit='m',
+                  default=1e-4),
+        Parameter(name='ld', desc='Lateral diffusion', unit='m',
+                  default=0.0),
+        Parameter(name='wd', desc='Width reduction', unit='m', default=0.0),
+        Parameter(name='cgso', desc='Gate-source overlap capacitance per '
+                  'metre', unit='F/m', default=0.0),
+        Parameter(name='cgdo', desc='Gate-drain overlap capacitance per '
+                  'metre', unit='F/m', default=0.0),
+        Parameter(name='cgbo', desc='Gate-bulk overlap capacitance per '
+                  'metre', unit='F/m', default=0.0),
+        Parameter(name='cbd', desc='Zero-bias bulk-drain capacitance '
+                  '(0: cj*ad)', unit='F', default=0.0),
+        Parameter(name='cbs', desc='Zero-bias bulk-source capacitance '
+                  '(0: cj*as)', unit='F', default=0.0),
+        Parameter(name='IS', desc='Bulk junction saturation current',
+                  unit='A', default=1e-14),
+        Parameter(name='pb', desc='Bulk junction potential', unit='V',
+                  default=0.8),
+        Parameter(name='cj', desc='Bulk bottom capacitance per area',
+                  unit='F/m^2', default=0.0),
+        Parameter(name='cjsw', desc='Bulk sidewall capacitance per metre',
+                  unit='F/m', default=0.0),
+        Parameter(name='mj', desc='Bottom grading coefficient', unit='',
+                  default=0.5),
+        Parameter(name='mjsw', desc='Sidewall grading coefficient',
+                  unit='', default=0.33),
+        Parameter(name='fc', desc='Forward-bias depletion coefficient',
+                  unit='', default=0.5),
+        Parameter(name='js', desc='Bulk junction saturation current per '
+                  'area', unit='A/m^2', default=0.0),
+        Parameter(name='rd', desc='Drain ohmic resistance', unit='ohm',
+                  default=0.0),
+        Parameter(name='rs', desc='Source ohmic resistance', unit='ohm',
+                  default=0.0),
+        Parameter(name='rsh', desc='Sheet resistance', unit='ohm/sq',
+                  default=0.0),
+        Parameter(name='ad', desc='Drain diffusion area', unit='m^2',
+                  default=0.0),
+        Parameter(name='as', desc='Source diffusion area', unit='m^2',
+                  default=0.0),
+        Parameter(name='pd', desc='Drain diffusion perimeter', unit='m',
+                  default=0.0),
+        Parameter(name='ps', desc='Source diffusion perimeter', unit='m',
+                  default=0.0),
+        Parameter(name='nrd', desc='Drain squares', unit='', default=1.0),
+        Parameter(name='nrs', desc='Source squares', unit='', default=1.0),
+        Parameter(name='kf', desc='Flicker-noise coefficient', unit='',
+                  default=0.0),
+        Parameter(name='af', desc='Flicker-noise exponent', unit='',
+                  default=1.0),
+        Parameter(name='tnom', desc='Parameter measurement temperature',
+                  unit='K', default=300.15),
+    ]
+
+
+def _mos3_channel(p, vgs, vds, vbs, c, tag):
+    """One ARM of the level-3 channel: ``vds >= 0``, in the n-channel
+    convention.  ``c`` carries the card-derived constants (a dict);
+    returns ``(cdrain, von, vdsat)``, every intermediate named with
+    ``tag`` so the two arms coexist in one chain.
+
+    Transcribed from `mos3load.c` through `mos3.va` (vacask's
+    Verilog-A distillation of ngspice-44), in its order: the
+    forward-biased bulk continuation, ``fshort`` (Dang's charge-sharing
+    with SPICE's three coefficients), the body factor, ``eta``,
+    ``delta``, the ``nfs`` subthreshold slope, ``theta``, ``vmax``
+    saturation, the ``kappa`` channel-length modulation in its three
+    cases and the ``delxl > Leff/2`` continuation, the subthreshold
+    exponential.  Every ``if`` on the solution is a `Piecewise`;
+    every ``if`` on a parameter is a `Piecewise` on the parameter with
+    BOTH arms kept finite, because both are evaluated.
+    """
+    phiT, leff, weff, cox, vtT = c['phiT'], c['leff'], c['weff'], c['cox'], \
+        c['vtT']
+    gam, vbiT, kpT, u0T = c['gam'], c['vbiT'], c['kpT'], c['u0T']
+
+    def v(expr, name):
+        return _var(expr, name + tag)
+
+    ## -- the bulk continuation (SPICE's, also Level 1's) --------------
+    sqphbs = v(sympy.Piecewise(
+        (sympy.sqrt(_maxc(phiT - vbs, 0.25 * phiT)), vbs <= 0.0),
+        (sympy.sqrt(phiT) / _maxc(1.0 + vbs / (2.0 * phiT), 0.1), True)),
+        'sqphbs')
+    phibs = v(sqphbs * sqphbs, 'phibs')
+
+    ## -- fshort: short-channel charge sharing ---------------------------
+    ## `xd` (SPICE's coeffDepLayWidth) is sqrt(2*eps/(q*nsub)); zero
+    ## without nsub, and then fshort is 1.  Every divisor floored so
+    ## the discarded arm stays finite at `xj = 0`.
+    xjf = v(_maxc(p.xj, 1e-12), 'xjf')
+    wps = v(c['xd'] * sqphbs, 'wps')
+    wponxj = v(wps / xjf, 'wponxj')
+    wconxj = v(0.0631353 + 0.8013292 * wponxj - 0.01110777 * wponxj ** 2,
+               'wconxj')
+    arga = v(wconxj + p.ld / xjf, 'argafs')
+    argc = v(wponxj / (1.0 + wponxj), 'argcfs')
+    argb = v(sympy.sqrt(_maxc(1.0 - argc * argc, 1e-12)), 'argbfs')
+    fshort = v(sympy.Piecewise(
+        (1.0 - p.xj / leff * (arga * argb - p.ld / xjf),
+         sympy.And(p.xj > 0.0, p.nsub > 0.0)),
+        (1.0, True)), 'fshort')
+
+    ## -- body factor, threshold ---------------------------------------
+    gammas = v(gam * fshort, 'gammas')
+    fbody = v(0.5 * gammas / (2.0 * sqphbs) + c['narrow'] / weff, 'fbody')
+    qbonco = v(gammas * sqphbs + c['narrow'] * phibs / weff, 'qbonco')
+    vth = v(vbiT - c['etal'] * vds + qbonco, 'vth')
+    ## -- subthreshold slope factor (nfs) ------------------------------
+    xn = v(1.0 + c['csonco'] + qbonco / (2.0 * phibs), 'xn')
+    von = v(sympy.Piecewise((vth + vtT * xn, p.nfs > 0.0), (vth, True)),
+            'von')
+    vgsx = v(_maxc(vgs, von), 'vgsx')
+    ## -- mobility degradation and the saturation voltage --------------
+    onfg = v(1.0 + p.theta * (vgsx - vth), 'onfg')
+    fgate = v(1.0 / onfg, 'fgate')
+    us = v(u0T * 1e-4 * fgate, 'us')
+    vdsc = v(leff * _maxc(p.vmax, 1e-30) / us, 'vdsc')
+    arg0 = v((vgsx - vth) / (1.0 + fbody), 'arg0')
+    vdsat = v(sympy.Piecewise(
+        (arg0 + vdsc - sympy.sqrt(arg0 * arg0 + vdsc * vdsc), p.vmax > 0.0),
+        (arg0, True)), 'vdsat')
+    ## -- the current ---------------------------------------------------
+    vdsx = v(_minc(vds, vdsat), 'vdsx')
+    cdo = v(vgsx - vth - 0.5 * (1.0 + fbody) * vdsx, 'cdo')
+    beta = v(kpT * weff / leff * fgate, 'beta')
+    fdrain = v(sympy.Piecewise((1.0 / (1.0 + vdsx / vdsc), p.vmax > 0.0),
+                               (1.0, True)), 'fdrain')
+    cd0 = v(beta * cdo * vdsx * fdrain, 'cd0')
+    ## -- channel-length modulation (kappa) ------------------------------
+    ## Three cases, as `mos3load.c`: below vdsat without vmax the
+    ## quartic ramp; above vdsat without vmax the plain root; above
+    ## vdsat with vmax the `emax` form.  With vmax and below vdsat, or
+    ## with no nsub (alpha = 0), there is none.  The ratio `vds/vdsat`
+    ## is clamped at 1 -- it is only SELECTED below vdsat, where it is
+    ## at most 1, and unclamped it is a 1e120 in the discarded arm.
+    vdsatf = v(_maxc(vdsat, 1e-9), 'vdsatf')
+    ratio = v(_minc(vds / vdsatf, 1.0), 'ratio')
+    ka = v(p.kappa * c['alpha'], 'ka')
+    ## `sqrt(ka*vdsat/8)` is differentiated as `sqrt(u)/(2u)`, which is
+    ## 0/0 at `vdsat = 0` -- every cut-off device's reverse arm.  The
+    ## floor is twenty decades below any selected value.
+    dl_below = v(sympy.sqrt(_maxc(ka * vdsat, 1e-30) / 8.0) * ratio ** 4,
+                 'dlbelow')
+    ## Floored at 1e-30, NOT at 0: `sqrt(maxc(u, 0))` has derivative
+    ## `inf * 0 = NaN` wherever `u < 0`, and this arm is evaluated in
+    ## the reverse mode with `vds < 0` at every bias.  Selected, `u`
+    ## is at least `ka*vdsat/8 > 0` and the floor is never reached.
+    dl_novmax = v(sympy.sqrt(_maxc(ka * (vds - vdsat + vdsat / 8.0), 1e-30)),
+                  'dlnovmax')
+    cdsat = v(_maxc(cd0, 1e-30), 'cdsat')
+    gdsat = v(_maxc(cdsat * (1.0 - fdrain) / vdsc, 1e-12), 'gdsat')
+    emax = v(p.kappa * cdsat / (leff * gdsat), 'emax')
+    ea = v(0.5 * emax * c['alpha'], 'ea')
+    dl_vmax = v(sympy.sqrt(ea * ea + _maxc(ka * (vds - vdsat), 0.0) + 1e-60)
+                - ea, 'dlvmax')
+    delxl0 = v(sympy.Piecewise(
+        (0.0, c['alpha'] <= 0.0),
+        (sympy.Piecewise((0.0, p.vmax > 0.0), (dl_below, True)),
+         vds <= vdsat),
+        (dl_vmax, p.vmax > 0.0),
+        (dl_novmax, True)), 'delxl0')
+    delxl = v(sympy.Piecewise(
+        (leff - leff * leff / (4.0 * _maxc(delxl0, 1e-30)),
+         delxl0 > 0.5 * leff),
+        (delxl0, True)), 'delxl')
+    xlfact = v(1.0 / (1.0 - delxl / leff), 'xlfact')
+    ## -- subthreshold ----------------------------------------------------
+    wfact = v(sympy.Piecewise(
+        (_expl((vgs - von) / (vtT * _maxc(xn, 1.0))), vgs < von),
+        (1.0, True)), 'wfact')
+    cdrain = v(cd0 * xlfact * wfact, 'cdrain')
+    return cdrain, von, vdsat
+
+
+def _mos3_analog(T, nmos):
+    """Build the ``analog()`` body of a SPICE level-3 MOSFET.
+
+    Equations: `mos3load.c` / `mos3temp.c` (Berkeley SPICE3, ngspice-44
+    through vacask's `mos3.va`), which is the reference the tests
+    transcribe independently; the text is Massobrio & Antognetti,
+    *Semiconductor Device Modeling with SPICE*, 2nd ed., sec. 3.4.
+    The level-3 additions over level 1 are ``xj`` (short-channel
+    threshold), ``delta`` (narrow-channel), ``eta`` (DIBL), ``nfs``
+    (subthreshold), ``theta`` (mobility), ``vmax`` (velocity
+    saturation) and ``kappa`` (channel-length modulation); the
+    bulk-charge form of the current -- ``(1 + fbody)/2`` in the triode
+    term and ``vdsat = (vgs - vth)/(1 + fbody)`` -- is level 3's own,
+    and it coincides with level 1 only at ``gamma = 0``, which is the
+    limit the tests use.
+
+    **Source/drain exchange is a `Piecewise` on ``vds``**, unlike
+    level 1's single antisymmetric expression: the level-3 channel has
+    ``vdsat``, ``vmax`` and ``kappa`` in it and no identity makes it
+    antisymmetric.  The two arms share every card-derived quantity and
+    are built by `_mos3_channel` with a tag each; they meet at
+    ``vds = 0`` with equal value (0) and equal slope
+    (``beta*(vgs - vth)``).  It doubles the channel chain, and that is
+    the compile-time price of a model written the way SPICE branches.
+
+    Everything else -- both bulk junctions' current and depletion
+    charge, the overlap capacitances, ``rd``/``rs`` on collapsible
+    nodes, ``gamma``/``phi`` given-or-derived, the temperature path,
+    the noise -- is level 1's, restated through ``p``.  Meyer is absent
+    for level 1's reason.
+    """
+    def analog(p, d, g, s, b):
+        di, si = Node('di'), Node('si')
+        brd, brs = Branch(d, di), Branch(s, si)
+        if nmos > 0:
+            bgs, bds = Branch(g, si), Branch(di, si)
+            bbs, bbd = Branch(b, si), Branch(b, di)
+            bgd, bgb = Branch(g, di), Branch(g, b)
+        else:
+            bgs, bds = Branch(si, g), Branch(si, di)
+            bbs, bbd = Branch(si, b), Branch(di, b)
+            bgd, bgb = Branch(di, g), Branch(b, g)
+
+        ## -- geometry and the derived card --------------------------
+        leff = _var(_maxc(p.l - 2.0 * p.ld, 1e-9), 'leff')
+        weff = _var(_maxc(p.w - 2.0 * p.wd, 1e-9), 'weff')
+        cox = _var(_EPSOX / _maxc(p.tox, 1e-12), 'cox')
+        vtn = _var(_KB * p.tnom / _QE, 'vtnom')
+        nsm3 = _var(_maxc(p.nsub, 0.0) * 1e6, 'nsm3')
+        gd = _var(sympy.sqrt(2.0 * _QE * _EPSSI * nsm3) / cox, 'gamd')
+        phid = _var(2.0 * vtn * sympy.log(_maxc(nsm3 / (_NI_CM3 * 1e6),
+                                                1.0)), 'phid')
+        gg = _var(p.given('gamma'), 'ggam')
+        gp = _var(p.given('phi'), 'gphi')
+        gam = _var(gg * p.gamma + (1.0 - gg) * gd, 'gam')
+        phz = _var(_maxc(gp * p.phi + (1.0 - gp) * phid, 0.1), 'phz')
+        ## SPICE's `alpha = 2*eps_si/(q*nsub)` and `xd = sqrt(alpha)`:
+        ## zero without `nsub`, which switches fshort and kappa off.
+        alpha = _var(sympy.Piecewise((2.0 * _EPSSI / (_QE * _maxc(nsm3, 1.0)),
+                                      nsm3 > 0.0), (0.0, True)), 'alpha')
+        xd = _var(sympy.sqrt(alpha), 'xd')
+        narrow = _var(p.delta * 0.5 * sympy.pi * _EPSSI / cox, 'narrow')
+        etal = _var(p.eta * 8.15e-22 / (cox * leff ** 3), 'etal')
+        csonco = _var(_QE * p.nfs * 1e4 / cox, 'csonco')
+        kp0 = _var(sympy.Piecewise((p.kp, p.kp > 0.0),
+                                   (p.u0 * cox * 1e-4, True)), 'kp0')
+
+        ## -- temperature (`mos3temp.c`) ------------------------------
+        vtT = _var(_vt(T), 'vtT')
+        trat = _var(T / p.tnom, 'trat')
+        ltr = _var(sympy.log(trat), 'ltrat')
+        egT = _var(1.16 - 7.02e-4 * T ** 2 / (T + 1108.0), 'egT')
+        egn = _var(1.16 - 7.02e-4 * p.tnom ** 2 / (p.tnom + 1108.0),
+                   'egtnom')
+        phiT = _var(_maxc(phz * trat - 3.0 * vtT * ltr
+                          - egn * trat + egT, 0.1), 'phiT')
+        pbT = _var(p.pb * trat - 3.0 * vtT * ltr - egn * trat + egT, 'pbT')
+        ## `tVbi = vto - gamma*sqrt(phi) + (Eg(tnom) - Eg(T))/2
+        ##        + (phi(T) - phi)/2`, then `vth(T) = tVbi + gamma*sqrt
+        ## (phi(T))`.  The `(Eg(tnom) - Eg(T))/2` term is in mos1temp.c
+        ## and mos3temp.c alike; `MosLevel1Hdl` above omits it (its
+        ## docstring's `vbi(T)` line is incomplete).  Recorded, not
+        ## changed there: it is a `T != tnom` effect of ~0.5*dEg only.
+        vbiT = _var(p.vto - gam * sympy.sqrt(phz) + 0.5 * (egn - egT)
+                    + 0.5 * (phiT - phz), 'vbiT')
+        ratio4 = _var(_safe_pow(trat, -1.5, lo=1e-3), 'ratio4')
+        kpT = _var(kp0 * ratio4, 'kpT')
+        u0T = _var(p.u0 * ratio4, 'u0T')
+        factlog = _var(-egT / vtT + egn / vtn, 'factlog')
+        tshift = _var(4e-4 * (T - p.tnom) - (pbT / p.pb - 1.0), 'tshift')
+        cfacb = _var(1.0 + p.mj * tshift, 'cfacb')
+        cfacw = _var(1.0 + p.mjsw * tshift, 'cfacw')
+        isbd = _var(_maxc(sympy.Piecewise((p.js * p.ad, p.js * p.ad > 0.0),
+                                          (p.IS, True))
+                          * _expl(factlog), 1e-30), 'isbd')
+        isbs = _var(_maxc(sympy.Piecewise((p.js * p['as'],
+                                           p.js * p['as'] > 0.0),
+                                          (p.IS, True))
+                          * _expl(factlog), 1e-30), 'isbs')
+
+        ## -- the four probes, as one group (SPICE's set) ------------
+        vbsl = _var(bbs.V, 'vbsl')
+        sargl = _var(sympy.Piecewise(
+            (sympy.sqrt(_maxc(phiT - vbsl, 0.25 * phiT)), vbsl <= 0.0),
+            (sympy.sqrt(phiT) / _maxc(1.0 + vbsl / (2.0 * phiT), 0.1),
+             True)), 'sargl')
+        vonl = _var(vbiT + gam * sargl, 'vonl')
+        vgs, vds, vbs, vbd = limit_together(
+            limit_fet(bgs.V, vonl), limit_vds(bds.V),
+            limit_pnj(bbs.V, isbs, vtT), limit_pnj(bbd.V, isbd, vtT))
+        vgs, vds = _var(vgs, 'vgs'), _var(vds, 'vds')
+        vbs, vbd = _var(vbs, 'vbs'), _var(vbd, 'vbd')
+        vgd = _var(vgs - vds, 'vgd')
+
+        ## -- the channel, both modes --------------------------------
+        cst = dict(phiT=phiT, leff=leff, weff=weff, cox=cox, vtT=vtT,
+                   gam=gam, vbiT=vbiT, kpT=kpT, u0T=u0T, xd=xd,
+                   narrow=narrow, etal=etal, csonco=csonco, alpha=alpha)
+        idf, vonf, vdsatf = _mos3_channel(p, vgs, vds, vbs, cst, 'f')
+        idr, _vonr, _vdsatr = _mos3_channel(p, vgd, -vds, vbd, cst, 'r')
+        ids = _var(sympy.Piecewise((idf, vds >= 0.0), (-idr, True)), 'ids')
+
+        ## -- the two bulk junctions ---------------------------------
+        ibs = _var(isbs * (_expl(vbs / vtT) - 1.0), 'ibs')
+        ibd = _var(isbd * (_expl(vbd / vtT) - 1.0), 'ibd')
+        cbdb = _var(cfacb * sympy.Piecewise((p.cbd, p.cbd > 0.0),
+                                            (p.cj * p.ad, True)), 'cbdb')
+        cbsb = _var(cfacb * sympy.Piecewise((p.cbs, p.cbs > 0.0),
+                                            (p.cj * p['as'], True)), 'cbsb')
+        cbdw = _var(cfacw * p.cjsw * p.pd, 'cbdw')
+        cbsw = _var(cfacw * p.cjsw * p.ps, 'cbsw')
+        qbd = _var(_pn_depletion_charge(vbd, cbdb, pbT, p.mj, p.fc, 'bd')
+                   + _pn_depletion_charge(vbd, cbdw, pbT, p.mjsw, p.fc,
+                                          'bdw'), 'qbd')
+        qbs = _var(_pn_depletion_charge(vbs, cbsb, pbT, p.mj, p.fc, 'bs')
+                   + _pn_depletion_charge(vbs, cbsw, pbT, p.mjsw, p.fc,
+                                          'bsw'), 'qbs')
+        rdx = _var(sympy.Piecewise((p.rd, p.rd > 0.0), (p.rsh * p.nrd, True)),
+                   'rdx')
+        rsx = _var(sympy.Piecewise((p.rs, p.rs > 0.0), (p.rsh * p.nrs, True)),
+                   'rsx')
+
+        ## -- noise: (8/3)kT gm for a saturated channel, Nyquist for a
+        ## linear one, through the same bulk-charge form as the current
+        ## (`mos3noi.c` uses `(8/3)*k*T*(gm + gds + gmbs)`; here the
+        ## Klaassen-Prins integral over the level-3 triode expression).
+        vgtn = _var(_maxc(sympy.Piecewise((vgs, vds >= 0.0), (vgd, True))
+                          - sympy.Piecewise((vonf, vds >= 0.0),
+                                            (_vonr, True)), 0.0), 'vgtn')
+        vdsn = _var(_minc(_safe_abs(vds), sympy.Piecewise(
+            (vdsatf, vds >= 0.0), (_vdsatr, True))), 'vdsn')
+        gn = _var(_safe_div(vgtn * vgtn - vgtn * vdsn + vdsn * vdsn / 3.0,
+                            _maxc(vgtn - 0.5 * vdsn, 1e-9)) * kpT
+                  * weff / leff, 'gn')
+
+        stmts = (
+            Contribution(bds.I, ids),
+            Contribution(bbs.I, ibs + ddt(qbs)),
+            Contribution(bbd.I, ibd + ddt(qbd)),
+            Contribution(bgs.I, ddt(p.cgso * weff * bgs.V)),
+            Contribution(bgd.I, ddt(p.cgdo * weff * bgd.V)),
+            Contribution(bgb.I, ddt(p.cgbo * leff * bgb.V)),
+            Contribution(brd.I, brd.V / rdx),
+            Collapse(brd, sympy.And(p.rd <= 0.0, p.rsh * p.nrd <= 0.0)),
+            Contribution(brs.I, brs.V / rsx),
+            Collapse(brs, sympy.And(p.rs <= 0.0, p.rsh * p.nrs <= 0.0)),
+            Contribution(bds.I, _white_noise(4.0 * _KB * T * gn)),
+            Contribution(bds.I, _flicker_noise(
+                p.kf * _safe_abs(ids) ** p.af / (cox * leff ** 2), 1)),
+            Contribution(brd.I, _white_noise(4.0 * _KB * T / rdx)),
+            Contribution(brs.I, _white_noise(4.0 * _KB * T / rsx)),
+        )
+        return stmts
+    return analog
+
+
+class MosLevel3Hdl(Behavioural):
+    """SPICE level-3 n-channel MOSFET.  Terminals ``(d, g, s, b)``.
+
+    Parameters and defaults are SPICE's, ``as`` and all -- the first
+    model in the library to declare a keyword-named parameter under
+    its own name.  See `_mos3_analog` for the equations, the reference
+    and the source/drain `Piecewise`; `_mos3_channel` is the channel.
+    Limiting is level 1's four-probe `limit_together` group.
+
+    **Partial, and where.**  Shipped: the whole DC channel (``xj``,
+    ``delta``, ``eta``, ``nfs``, ``theta``, ``vmax``, ``kappa``, both
+    modes), both bulk junctions with depletion charge, overlap
+    capacitance, ``rd``/``rs``, the temperature path, channel and
+    flicker noise.  Absent: the Meyer intrinsic capacitances (level 1's
+    reason), ``xl``/``xw`` geometry offsets and ``delvto``.
+    """
+    params_as = 'p'
+    instparams = _mos3_params()
+
+    analog = staticmethod(_mos3_analog(TEMP, +1))
+
+
+class MosLevel3PmosHdl(Behavioural):
+    """SPICE level-3 p-channel MOSFET.  Terminals ``(d, g, s, b)``;
+    `MosLevel3Hdl` with every branch reversed, positive magnitudes on
+    the card (see `MosLevel1PmosHdl`)."""
+    params_as = 'p'
+    instparams = _mos3_params()
+
+    analog = staticmethod(_mos3_analog(TEMP, -1))

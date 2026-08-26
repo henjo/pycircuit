@@ -256,8 +256,11 @@ class TestAHelperSharedByTwoClasses(object):
         built for; ``_with_params`` is gone."""
         import inspect
         assert inspect.getfullargspec(eh._gp_core).args[0] == 'p'
+        ## `junction` (2026-08-26, fifth batch): the optical devices'
+        ## hook for an extra current across the helper's own junction
+        ## branch, optional and None by default.
         assert inspect.getfullargspec(eh._spice_diode).args == \
-            ['p', 'a', 'c', 'T']
+            ['p', 'a', 'c', 'T', 'junction']
         assert not hasattr(eh, '_with_params')
         for name in ('GummelPoonNpnHdl', 'GummelPoonPnpHdl',
                      'GummelPoonNpnThermalHdl', 'DiodeSpiceHdl',

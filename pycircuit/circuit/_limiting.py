@@ -297,6 +297,13 @@ def apply_limit(kind, vnew, vold, pars, toolkit):
         return _fetlim(vnew, vold, pars[0], toolkit)
     if kind == 'vds':
         return _limvds(vnew, vold, toolkit)
+    if kind == 'id':
+        ## `limit_identity`: a limited unknown with no law.  Returning
+        ## `vnew` ITSELF (not a copy, not `vold + (vnew - vold)`) is what
+        ## makes "did not bite" exact on both paths: the ordinary
+        ## write-back compares `vlim == vnew` and `pcnr.limit_block`
+        ## compares `lim != raw`.
+        return vnew
     raise ValueError('unknown limiter kind %r' % (kind,))    # pragma: no cover
 
 

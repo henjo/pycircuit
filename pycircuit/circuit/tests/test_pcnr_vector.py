@@ -463,14 +463,17 @@ def test_the_refusals_name_their_rule():
     assert 'PCNR: vector route, 2 probes over 3 rows (fetlim on (g,s), ' \
            'limvds on (d,s))' in explain(f, source=False, symbolic=False)
     assert hasattr(f, 'pcnr_i')
-    ## EKV reads its bulk-source potential RAW (no probe on that branch,
-    ## and `von` is built from it), so the route refuses it by the
-    ## unlimited-branch rule -- the only rule left that refuses a MOSFET.
+    ## EKV used to read its bulk-source potential RAW and was refused by
+    ## the unlimited-branch rule ("var(vsb) reads b, g, which no $limit
+    ## probe limits").  Since 2026-08-26 it declares `limit_identity` on
+    ## that branch and qualifies with three probes; the refusal is
+    ## still pinned, on the raw twin, in `test_limit_identity.py`.
     ekv = eh.EkvNmosHdl('d', 'g', 's', 'b')
     ekv.update_iparv()
-    assert 'PCNR: does not qualify -- var(vsb) reads b, g, which no $limit ' \
-           'probe limits' in explain(ekv, source=False, symbolic=False)
-    assert not hasattr(ekv, 'pcnr_i')
+    assert 'PCNR: vector route, 3 probes over 4 rows (identity (no law) ' \
+           'on (s,b), fetlim on (g,s), limvds on (d,s))' \
+           in explain(ekv, source=False, symbolic=False)
+    assert hasattr(ekv, 'pcnr_i')
 
 
 def test_the_gmin_pair_view_lists_pnj_probes_only_in_v_lim_order():

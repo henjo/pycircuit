@@ -1388,9 +1388,25 @@ class _LimitVds(_Limit):
     kind = 'vds'
 
 
+class _LimitId(_Limit):
+    """An identity probe -- a limited unknown with NO law; see
+    :func:`limit_identity`."""
+    nargs = (1, 4)
+    kind = 'id'
+
+
 ## How many arguments after the probe belong to the LAW, per kind.  What
 ## follows them, if anything, is the group tag.
-_LIMIT_NPAR = {'pnj': 2, 'fet': 1, 'vds': 0}
+_LIMIT_NPAR = {'pnj': 2, 'fet': 1, 'vds': 0, 'id': 0}
+
+#: The SPICE name of each kind's law, as `explain()` prints it, and the
+#: DSL function that declares it.  One table, because the three-entry
+#: dict literal used to be spelled at four sites and a fourth kind would
+#: have had to be added to each.
+_LIMIT_LAW = {'pnj': 'pnjlim', 'fet': 'fetlim', 'vds': 'limvds',
+              'id': 'identity (no law)'}
+_LIMIT_FN = {'pnj': 'limit_pnj', 'fet': 'limit_fet', 'vds': 'limit_vds',
+             'id': 'limit_identity'}
 
 ## Group ids only ever have to be unique WITHIN one `analog()` body, but a
 ## process-wide counter is what makes them so without threading state
@@ -1464,6 +1480,14 @@ def limit_together(*probes, sequential=False):
         if not isinstance(app, _Limit):
             raise ValueError('limit_together takes limit_pnj/limit_fet/'
                              'limit_vds declarations; got %r' % (app,))
+        if app.kind == 'id':
+            ## An identity probe never bites, and the grouped write-back
+            ## treats a probe that did not bite as a CONSTRAINT it holds
+            ## while the others move (`device_writeback`).  Holding a
+            ## branch that asked for nothing would be a law it does not
+            ## have.  Declare it beside the group, not in it.
+            raise ValueError('limit_identity has no law and cannot be '
+                             'grouped; declare it beside the group')
         if _limit_parts(app)[2] is not None:
             raise ValueError('this probe is already in a $limit group; a '
                              'probe carries one limiter and one group')
@@ -1474,7 +1498,7 @@ def limit_together(*probes, sequential=False):
 
 
 def _limit_probe(probe, who):
-    """Validate a limiter's probe argument, shared by the three kinds."""
+    """Validate a limiter's probe argument, shared by the four kinds."""
     if not (isinstance(probe, Quantity) and probe.isbranch
             and probe.quantity == 'V'):
         raise ValueError('%s limits a branch potential (b.V); '
@@ -1631,6 +1655,45 @@ def limit_vds(probe):
     """
     _limit_probe(probe, 'limit_vds')
     return _LimitVds(probe)
+
+
+def limit_identity(probe):
+    """A ``$limit`` probe with NO law: the branch potential is declared
+    as a limited unknown and left exactly where Newton put it.
+
+    Written inline like the other kinds and evaluating to the probe::
+
+        vsb = limit_identity(bsb.V)
+
+    **On the ordinary path it does nothing, and the nothing is exact.**
+    `apply_limit` returns ``vnew`` unchanged, the generated ``limit()``
+    sees ``vlim == vnew`` and writes nothing -- the same "a limiter that
+    did not bite must touch nothing" rule the real kinds obey, so the
+    convergence signal "did limiting fire?" is untouched by declaring
+    one.  It may not be put in a `limit_together` group, where a probe
+    that did not bite is held as a constraint; an identity probe would
+    then be holding a branch it has no opinion about.
+
+    **Under vector PCNR it is what admits a device whose current reads a
+    branch no other probe covers.**  The declared-probe route
+    (`_pcnr_declared_route`) qualifies a device only when every
+    resistive current reaches the solution through its probes, and it
+    is a structural rule, not a convergence one: a MOSFET reads
+    ``vgs``, ``vds`` AND ``vsb``, and `limit_fet`/`limit_vds` cover two
+    of the three.  ``limit_identity(bsb.V)`` gives the third its own
+    PCNR unknown, with the identity as its law.  The device's block is
+    then ``m = 3`` over four rows, each unknown owned by the device, and
+    the tail-node clash of roadmap sec. 15 cannot form on it any more
+    than on the other two.  The probe is NOT a junction: it never
+    appears in the gmin pair view (`pcnr.pcnr_junction_pairs` lists
+    ``'pnj'`` probes only), so no ladder puts a conductance across it.
+
+    `EkvNmosHdl` is the motivating case (``var(vsb) reads b, g, which no
+    $limit probe limits``), and its measurement is in
+    ``test_limit_identity.py``.
+    """
+    _limit_probe(probe, 'limit_identity')
+    return _LimitId(probe)
 
 
 class _IntermediateSymbol(sympy.Symbol):
@@ -3788,8 +3851,7 @@ def _limit_par_fn(expr, kind, chain_defs, xsyms, xlabels, args, modules,
     """
     reach = _chain_prune(chain_defs, [expr])
     xset = set(xsyms)
-    what = {'pnj': 'limit_pnj', 'fet': 'limit_fet',
-            'vds': 'limit_vds'}.get(kind, kind)
+    what = _LIMIT_FN.get(kind, kind)
     late = sorted(_var_name(s_) for s_, e_ in reach if e_.has(TIME))
     if late or expr.has(TIME):
         raise ValueError(
@@ -4241,8 +4303,15 @@ class BehaviouralMeta(type):
 
         def i(self, x, epar=defaultepar, params_tree=None):
             if info['chained']:
-                return np.asarray(funcs['i'](x, *_args_of(self, epar)),
-                                  dtype=float)
+                ## The DC pin applies on the chained path too.  Until
+                ## 2026-08-26 this returned `funcs['i']` unconditionally,
+                ## so a `var()` model with `idt(expr, ic)` or `idtmod(...,
+                ## ic, ...)` kept its state equation at DC and the
+                ## operating point was singular; `IdtmodHdl` is flat and
+                ## never showed it.  Found by `VcoHdl` (fifth batch).
+                f = funcs['i_dc'] if _dc(epar) and state_meta['dc_pins'] \
+                    else funcs['i']
+                return np.asarray(f(x, *_args_of(self, epar)), dtype=float)
             if getattr(self.toolkit, 'symbolic', False):
                 return _symbolic_eval(self, 'i', x, epar)
             f = funcs['i_dc'] if _dc(epar) and state_meta['dc_pins'] \
@@ -4280,8 +4349,9 @@ class BehaviouralMeta(type):
 
         def G(self, x, epar=defaultepar, params_tree=None):
             if info['chained']:
-                return np.asarray(funcs['G'](x, *_args_of(self, epar)),
-                                  dtype=float)
+                f = funcs['G_dc'] if _dc(epar) and state_meta['dc_pins'] \
+                    else funcs['G']
+                return np.asarray(f(x, *_args_of(self, epar)), dtype=float)
             if getattr(self.toolkit, 'symbolic', False):
                 return _symbolic_eval(self, 'G', x, epar)
             dc = _dc(epar) and state_meta['dc_pins']
@@ -5193,8 +5263,7 @@ def explain(target, source=True, symbolic=True, maxlines=40):
                      % (len(info['limit_spec']),
                         '' if len(info['limit_spec']) == 1 else 's',
                         ', '.join('%s on (%s,%s)%s%s'
-                                  % ({'pnj': 'pnjlim', 'fet': 'fetlim',
-                                      'vds': 'limvds'}[k],
+                                  % (_LIMIT_LAW[k],
                                      _xl[ra], _xl[rb], _grp.get(_i, ''),
                                      ' [params at last iterate]'
                                      if any(getattr(f, '_wants_x', False)
@@ -5213,17 +5282,14 @@ def explain(target, source=True, symbolic=True, maxlines=40):
                      % (_pv['m'], '' if _pv['m'] == 1 else 's',
                         _pv['t'], '' if _pv['t'] == 1 else 's',
                         ', '.join('%s on (%s,%s)'
-                                  % ({'pnj': 'pnjlim', 'fet': 'fetlim',
-                                      'vds': 'limvds'}[k],
-                                     _xl[ra], _xl[rb])
+                                  % (_LIMIT_LAW[k], _xl[ra], _xl[rb])
                                   for (ra, rb), k in zip(_pv['probes'],
                                                          _pv['kinds']))))
         for _p, _k, _c in [(p, k, c) for _j, p, k, c in _pv['redundant']]:
             feats.append('PCNR redundant probe: %s on (%s,%s) = %s -- its '
                          'branch voltage is read off the tree unknowns and '
                          'its law is applied over them'
-                         % ({'pnj': 'pnjlim', 'fet': 'fetlim',
-                             'vds': 'limvds'}[_k], _xl[_p[0]], _xl[_p[1]],
+                         % (_LIMIT_LAW[_k], _xl[_p[0]], _xl[_p[1]],
                             ' '.join(('%s(%s,%s)' % ('+' if c_ > 0 else '-',
                                                      _xl[pa], _xl[pb]))
                                      for c_, (pa, pb) in zip(_c, _pv['probes'])

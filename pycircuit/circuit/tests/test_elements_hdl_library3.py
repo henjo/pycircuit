@@ -1947,10 +1947,14 @@ def test_ekv_declares_fetlim_on_the_gate_and_limvds_on_the_drain():
     el = _mk(eh.EkvNmosHdl, 'd', 'g', 's', 'b', **EKV)
     assert el.terminals == ['d', 'g', 's', 'b']
     spec = el._hdl_info['limit_spec']
+    ## Since 2026-08-26 a third probe, `limit_identity` on (s,b), is
+    ## declared FIRST (it is the first `var()` in the body): no law, never
+    ## bites, and what admits EKV to vector PCNR (test_limit_identity.py).
     assert [(s[0], s[1], s[2]) for s in spec] == \
-        [((1, 2), 'fet', 1), ((0, 2), 'vds', 0)]
-    assert ('2 $limit probes (fetlim on (g,s) [params at last iterate], '
-            'limvds on (d,s))') in explain(el), explain(el)
+        [((2, 3), 'id', 2), ((1, 2), 'fet', 1), ((0, 2), 'vds', 0)]
+    assert ('3 $limit probes (identity (no law) on (s,b), fetlim on (g,s) '
+            '[params at last iterate], limvds on (d,s))') in explain(el), \
+        explain(el)
     rng = np.random.default_rng(17)
     moved_source = 0
     for _ in range(300):
@@ -2464,7 +2468,7 @@ def test_ekv_pmos_is_the_nmos_with_every_voltage_and_current_reversed():
     ## p-channel's `fetlim` bounds `V(s,g)` -- the quantity that has the
     ## turn-on in it -- and its write-back moves the SOURCE.
     assert [(s[0], s[1], s[2]) for s in p._hdl_info['limit_spec']] == \
-        [((2, 1), 'fet', 2), ((2, 0), 'vds', 0)]
+        [((3, 2), 'id', 3), ((2, 1), 'fet', 2), ((2, 0), 'vds', 0)]
 
 
 def test_ekv_pmos_conducts_in_a_dc_solve():
