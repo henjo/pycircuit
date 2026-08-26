@@ -271,7 +271,7 @@ does by reading the compiler's injection back out of `globals()`).
 | `safe_pow(b, e)` with a documented base range | six hand-floored, hand-capped power bases |
 | `sign` with `fdiff → 0`; real-domain `Abs` | `sign` failing to *compile* (`DiracDelta`), and conditions rewritten algebraically to dodge `Abs` |
 | `softplus`, `mne`/`mxe`, `bias_mod`, `p3` | generic helpers currently hand-built in `psp_kernel.py`; `p3` is outright duplicated |
-| `limit_delta(probe, vmax)` | 35 hand-written lines of FET Newton limiting per model |
+| `limit_delta(probe, vmax)` | 35 hand-written lines of FET Newton limiting per model — **and see the note below: it now has a named consumer** |
 | **range contracts** on every `safe_*`, and a build-time "this guard can never fire" check | the exponent-range audit the author now does in prose, per call site |
 
 ---
@@ -4013,3 +4013,62 @@ Then one of:
 Half a day. The harness, the reference data and the card loader all
 exist; `benchmarks/card_constant_folding.py` already builds the folded
 device from the same card.
+
+
+## 33. `limit_delta` has acquired a consumer (2026-08-26), and S4 has acquired a blocker
+
+Prioritising the two remaining kernel items against each other, after
+`fold_card` landed. They are not close.
+
+### `limit_delta` — half a day, and something is waiting for it
+
+The limiter family shipped complete except this one: `limit_pnj`,
+`limit_fet`, `limit_vds`, `limit_identity` and `limit_together` all
+exist. §3 justified `limit_delta` generically ("35 hand-written lines
+per model"). It now has a **specific** consumer, which §3 could not have
+known:
+
+`EkvNmosHdl` declares `limit_identity(bsb.V)` on its bulk, and the
+source says what that is: *"NOT a limiter -- it never moves the branch
+-- but the declaration that admits this model to vector PCNR."* The
+device owns all three branch unknowns, so the tail-node clash cannot
+form; but the bulk probe has **no law**.
+
+That is exactly why the EKV differential pair is the one circuit still
+riding the PCNR fallback (§27, §31): the wild-start fix was to limit the
+SEED through each device's own law, and an identity law clamps nothing.
+`limit_delta(bsb.V, vmax)` would give that probe a real law -- bound the
+change per iteration -- with no device physics required.
+
+**Ready-made acceptance case**: the EKV pair from a uniform 20 V start,
+which currently raises `LinAlgError` and falls back
+(`test_dc_pcnr.py::test_dc_pcnr_true_falls_back_...` runs on it *because*
+it still fails). Convergence there, order-independently, would close the
+last PCNR gap and retire a fallback.
+
+Risk is low: additive, with four templates to follow.
+
+### S4 — weeks, and blocked behind §32
+
+S4 would change what the compiler emits for **every** model. §31 just
+demonstrated what that means: `fold_card` changes emission and is
+machine-precision but **not bit-identical**. S4 deserves the same
+scrutiny.
+
+Which is the blocker: **PSP's 1.3e-6 vendor agreement has no test**
+(§32). Without one, there is no way to tell whether S4 preserved it —
+the suite asserts a part in a thousand and would stay green through a
+three-order-of-magnitude regression. **Doing S4 before §32 means
+changing every model's arithmetic with the flagship model's only real
+acceptance number unguarded.**
+
+Nothing is waiting on S4, either. 342 hand-tagged `_v()` calls is
+friction for whoever writes the next big model; it is not a defect, and
+no measurement asks for it.
+
+### Verdict
+
+**`limit_delta` first**, by a wide margin — days against weeks, a named
+consumer against none, a ready acceptance test against none, and low
+blast radius against total. **S4 is not merely lower priority; it is
+sequenced behind §32**, and §32 is half a day.
