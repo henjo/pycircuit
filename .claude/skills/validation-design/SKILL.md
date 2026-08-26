@@ -111,6 +111,15 @@ reverting the feature and watching the test pass anyway:
   the copy it was guarding was being made downstream anyway;
 - a limiter test that varied `IS` when `pnjlim`'s compression branch
   does not read `IS` at all once `vold > 0`;
+- an "this parameter is still variable" test that evaluated a device at
+  two values of it and required the outputs to differ — at the chosen
+  operating point they did not, because a saturated BJT's terminal
+  currents barely depend on its forward beta. **The test was measuring
+  the choice of bias, not the feature.** Replaced by a structural
+  assertion: the parameter must still appear as a *symbol* in the
+  emitted code. When "does X still matter?" is the question, prefer a
+  check on the artefact over a check on one operating point — the
+  artefact cannot be in the wrong regime;
 - a "grouped limiting is better" assertion written as `both > fet`,
   which stayed green while the published number in the docstring was
   wrong.

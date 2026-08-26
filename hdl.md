@@ -813,15 +813,48 @@ alone (~66 s with instantiation and parameter resolution), once --
 **and once only: since 2026-08-26 an on-disk cache** (`_hdl_cache.py`,
 keyed on the analog source, the parameter declarations, the body's
 bindings and the compiler/library versions) serves a warm start in
-**0.6 s**, and `elements_hdl`'s 26-class import drops from 5.1 s to
-0.14 s. A cache hit is bit-identical to a cold compile on `i`, `G`,
+**0.6 s**, and `elements_hdl`'s import drops from 5.1 s to 0.14 s (at
+the 26 classes of the day; it is 37 now). A cache hit is bit-identical to a cold compile on `i`, `G`,
 `q`, `C`, `CY`, `explain()` and the collapse variants; `PYCIRCUIT_HDL_
 CACHE=0` disables it. Profiling first found one waste worth 15% before
 caching anything: `G_dc` was a second full Jacobian compile, identical
 to `G` for every class without a DC-pinned state.
-`elements_hdl` cold import is now **3.5 s** for its seventeen models,
-of which the Gummel-Poon BJT is ~1.4 s and an order-11 `laplace_zp`
-ladder ~0.4 s.
+`elements_hdl` cold import is **~10 s** for its **37** classes (the
+"3.5 s for seventeen models" this line used to quote was two library
+batches stale), and ~0.2 s warm with the package already imported.
+
+### Folding a model card (2026-08-26, roadmap 30-31)
+
+A SPICE `.model` card is fixed for every device that references it,
+while geometry is set per instance. `hdl.fold_card(cls,
+instance=('w','l'), **card)` returns a variant compiled with every
+parameter **not** named in `instance` folded in as a literal — the
+card's value where one is given, the declared default otherwise.
+
+On PSP with a real IHP sg13g2 card:
+
+| | symbolic | folded |
+|---|---|---|
+| generated `G` | 2675 lines | 1971 lines |
+| `minc`/`maxc`/… calls | 11 565 | 7 251 |
+| evaluation, numpy | 17.73 ms | **11.55 ms** (1.54×) |
+| evaluation, C backend | 83.5 µs | **56.5 µs** (1.48×) |
+| compile | ~28 s | 17.2 s |
+
+The win is in the **regularisers**, not the physics — §3.2c's both-arms
+clamping is what a compact model actually spends its time on, and a
+clamp whose bound is now a literal often folds away entirely. Eliding
+whole *inert blocks* instead (roadmap S2) removes 15% of the source,
+**zero** primitive calls, and measures 1.00×.
+
+⚠ **Folding reassociates arithmetic, so it is not bit-identical.** On
+PSP's drain current: 8.5e-16 relative in strong inversion, 2.7e-15 in
+the 1e-9…1e-6 A window the model is validated in — machine precision
+where it counts — but 1.6e-6 at arbitrary internal-node biases, which is
+the size of that model's whole vendor-validation budget. **A model
+validated against a reference must be re-validated with its card
+folded.** Folding at bare *defaults* is refused: a model guards `1/p`
+for the `p` it expects to be zero, and folded that is `ComplexInfinity`.
 
 ---
 

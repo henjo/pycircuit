@@ -889,6 +889,19 @@ def intrinsic(xg, xn_s, xn_d, Gf, xi, phit, beta, margin=1e-5,
         ## `hypsmooth` rather than `max(.,0)`: the excess is negative
         ## through the whole linear region and a hard clamp would put a
         ## kink in the middle of every I-V curve.
+        ## WHEN DOES THIS GUARD EVER FIRE?  Not on an ordinary build: the
+        ## parameters arrive as sympy Symbols, so `isinstance(..., Expr)`
+        ## is true and the block is always compiled -- which is exactly
+        ## the trap roadmap sec. 3 named ("a zero parameter is not an
+        ## off-switch"), and why these tests looked like dead code for
+        ## most of this kernel's life.
+        ##
+        ## They fire under `hdl.fold_card` (roadmap sec. 31), which hands
+        ## the card's NUMBERS to `analog()`.  There are nine such guards
+        ## in this file and they are load-bearing there.  Measured (sec.
+        ## 29): eliding these blocks ALONE buys nothing -- they are cheap
+        ## and contain no smoothing primitives -- so keep them for the
+        ## finiteness they protect, not for speed.
         alp = mob.get('alp', 0.0)
         if alp == 0.0 and not isinstance(alp, sympy.Expr):
             GdL = _v(sympy.Integer(1), 'ids_GdL')

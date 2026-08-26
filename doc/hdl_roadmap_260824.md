@@ -148,6 +148,24 @@ primitive must be checked. `Piecewise` → `jnp.where` is already handled.
 
 ### S2 — generalise the variant mechanism to elide inert blocks
 
+> ⛔ **REFUSED ON MEASUREMENT, 2026-08-26 (§29).** The pitch below is
+> kept as written, because the *reason* it was wrong is the useful part.
+> Eliding the blocks a default PSP card makes inert — 15% of the
+> generated Jacobian, exponentials included — measures **1.00x on numpy
+> and 1.00x in C**, bit-identical. The blocks are cheap: they contain
+> **zero** smoothing-primitive calls, and a compact model's cost is its
+> **regularisers**, not its physics.
+>
+> The paragraph beginning *"It is also the most direct attack on
+> evaluation cost"* is the specific claim that failed. What *was* the
+> direct attack is **§30–31's card-constant folding** (`hdl.fold_card`,
+> 1.54x numpy / 1.48x C) — which subsumes this idea anyway, since with
+> the parameters numeric a kernel's own build-time guards fire on their
+> own.
+>
+> The **correctness** half below still stands: a block whose parameter is
+> zero is still compiled and still evaluated, and `0 × inf = NaN`.
+
 `_collapse_mask_of` / `_collapse_variant` already
 recompile-and-cache a class per parameter mask and retarget instances by
 assigning `__class__`. The mask is an **opaque tuple**; nothing in the
