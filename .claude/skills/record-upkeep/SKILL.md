@@ -68,6 +68,24 @@ stay under, so the drift fails a run instead of aging in prose.
 **Published figures rot in the flattering direction**, because that is
 the direction nobody re-checks.
 
+⚠ **A RATIO THAT DID NOT MOVE IS NOT A NULL RESULT.** When the published
+figure compares two things that share a code path, a change to the
+shared part speeds up *both* and the ratio sits still. Reading that as
+"nothing happened" buries a real win — here a 10% simulator-wide gain
+showed as an unchanged 1.15x. Check the absolute numbers on both sides
+before concluding a change did nothing.
+
+⚠ **A SPLIT TEST-RUN RECIPE GOES STALE THE MOMENT YOU ADD A TEST FILE.**
+If the suite is run in chunks derived from a file count, adding a file
+during the work silently drops it out of every chunk — it is then
+untested while the totals still look right. This has now happened twice
+in this tree, the second time *within a single session*, to a file
+written that same hour. Derive the ranges again after adding any test
+file, and **verify coverage rather than trusting the arithmetic**: diff
+the union of the chunks against the full file list, and reconcile the
+outcome count against `--collect-only` (they differ by exactly the
+module-level `importorskip` skips, which collection does not count).
+
 **4. Cross-references and anchors.** Grep the docs for references to
 what you touched. Prefer **symbol names over line numbers** — line
 numbers are a measurement of something nobody is holding still. Verify

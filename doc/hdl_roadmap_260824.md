@@ -3087,3 +3087,127 @@ discipline question and not a test-shaped one.
 2. ~~`_args_of` caching~~ -- **DONE**, 1.16x.
 3. ~~C backend for the eager path~~ -- refused on measurement (§23).
 4. ~~S1~~ -- refused on measurement (§22).
+
+## 25. The stamping loop, measured and reduced (2026-08-26): `flatten` was copying for nothing
+
+§23 left the stamping loop as the largest unexamined phase (41%). Opened.
+
+### Where a stamp call actually goes
+
+One `cir.i()` on 49 elements, phases timed by replicating each in
+isolation (accounted 95.6% of the call):
+
+| phase | us | share |
+|---|---|---|
+| element loop TOTAL | 109.93 | 87.2% |
+| — of which the element's own work | 77.99 | 61.8% |
+| — of which **loop overhead** | **31.93** | **25.3%** |
+| `_scatter_1d` | 9.20 | 7.3% |
+| prologue (`zeros` + probes) | 1.42 | 1.1% |
+| `batched_contributions` (no groups) | 0.05 | 0.0% |
+
+So the loop is 25.3% overhead at 651 ns per element, against 1637 ns of
+real work. The scatter -- the part STAGE 2b rewrote -- is already down to
+7.3% and is not where the remaining time is.
+
+### The 651 ns, itemised
+
+| operation | ns | per |
+|---|---|---|
+| `np.asarray(rhs).flatten()` | 397 | element |
+| `x[nodemap]` | 135 | element |
+| `idxmap.get(instance)` | 57 | element |
+| `getattr(element, meth)` | 41 | element |
+
+`flatten` is **61% of the overhead**, and it is waste: **`flatten` always
+copies**, while a generated 2-D stamp is already contiguous. Measured on
+the real G stamp, `np.asarray(rhs).flatten()` is **412 ns** against
+`ravel`'s **100 ns** -- a 4x difference, because `ravel` returns a view.
+
+The copy buys nothing, because the only consumer is the
+`np.concatenate` inside `_scatter_1d`/`_scatter_2d`, which allocates its
+own buffer regardless. Three sites changed (the two pending appends and
+the `build_sparse` append); the two `has_add_at` sites are the traced
+path and were left alone.
+
+### Measured
+
+| devices | flatten | ravel | speedup |
+|---|---|---|---|
+| 13 | 154.3 ms | 143.5 ms | 1.075x |
+| 49 | 463.3 ms | 421.2 ms | 1.100x |
+| 121 | 997.6 ms | 895.8 ms | **1.114x** |
+
+**Cumulative with §24's `_args_of` cache**, against 62b6a3b:
+
+| devices | 62b6a3b | now | speedup |
+|---|---|---|---|
+| 13 | 168.9 ms | 144.2 ms | 1.17x |
+| 49 | 524.8 ms | 423.4 ms | 1.24x |
+| 121 | 1145.2 ms | 903.0 ms | **1.27x** |
+
+Answers **bit-identical to 62b6a3b** at every size, `max|diff| = 0.0`.
+
+### This one is NOT a DSL win -- it is a simulator-wide one
+
+Worth stating plainly, because the two changes in §24 and §25 are
+different in kind. `_args_of` is DSL machinery: only generated elements
+pay it, so caching it narrowed the DSL's overhead RATIO (the 8-stage
+ladder went 1.22x -> 1.15x). The stamping loop is shared: **hand-written
+elements go through the identical assembly**, so `ravel` speeds them up
+too and the ratio does not move.
+
+On the `hdl_overhead.py` ladder the hand-written side went from ~0.63-0.69 s
+to ~0.58 s while the generated side went from ~0.72 s to ~0.67 s -- both
+about 10% faster, ratio unchanged at ~1.15x. **A ratio that stays put is
+not evidence that nothing happened**, and reading it that way would have
+buried this result: the ratio is blind to any change that helps both
+sides equally, which is exactly what a shared-path fix is.
+
+### What was NOT taken, and why
+
+`hasattr(toolkit, 'add_at')` costs **1024 ns** -- it misses, so it enters
+`Toolkit.__getattr__`, which formats an error message and raises.
+Counted per transient: **4624 failed lookups on 13 devices** (~4.6 ms,
+3.2% of that run) and 5823 on 49 devices (1.4%). `add_at` and
+`build_sparse` are the whole of it.
+
+The obvious fix is to memoise failures alongside successes -- and
+`toolkit.py` **records that decision already, and decided against it**:
+a negative cache "would also make an attribute that appears later
+permanently invisible", and the hot probes were hoisted out of the
+per-element loop in STAGE 2b instead. That hoist is why the count is now
+per stamp CALL rather than per element.
+
+**Left alone.** The residual is 1.4-3.2%, it does not grow with circuit
+size (it is per call, not per element), and reversing a recorded design
+decision for that is the user's call, not a silent refactor. Recorded
+here with the numbers so the decision can be revisited on evidence
+rather than rediscovered.
+
+### Tests
+
+`pycircuit/circuit/tests/test_stamp_assembly.py`, 7 tests. `ravel`
+trades a copy for a view, so the property they pin is that **nothing
+observable aliases**: the assembled matrix shares memory with no
+element stamp, writing to the result cannot corrupt an element, a cached
+constant stamp survives repeated assembly, and the assembled `G` equals
+a hand-built sum (not a golden number).
+
+Honest note on what bites: the aliasing tests pass under BOTH `flatten`
+and `ravel` -- they are regression guards for a future change that
+removes the copy `concatenate` provides, not proof of this one. The
+hand-sum test is the one that discriminates, and it was verified to fail
+on a deliberately transposed scatter.
+
+### Ranking after this
+
+1. **Element evaluation itself** -- now 61.8% of a stamp call and the
+   largest remaining phase by far. The eager path returns a Python
+   **list**, so `np.asarray` converts it on every call; the chained path
+   already returns an array. Unmeasured.
+2. `hasattr` on the toolkit -- 1.4-3.2%, blocked on the recorded
+   decision above.
+3. ~~stamping loop~~ -- **DONE**, 1.11x.
+4. ~~`_args_of` caching~~ -- **DONE**, 1.16x.
+5. ~~C backend for the eager path~~ / ~~S1~~ -- refused on measurement.
