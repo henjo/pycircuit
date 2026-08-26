@@ -95,6 +95,21 @@ element          HDL capability it exercises
                  `compact.PspMosLongChannel` solves exactly, which is
                  what makes the cross-check in
                  ``test_elements_hdl_library3.py`` worth having
+``VcoHdl``       a VCO whose noise is injected into the FREQUENCY
+                 through an ``idtmod`` phase, so jitter random-walks
+``DividerHdl``   continuous divide-by-N, the second production user
+                 of ``Cross``
+``MixerHdl``     a multiplying mixer
+``ChargePumpHdl``  UP/DN current pump for a PLL
+``PhotodiodeHdl``  the SPICE diode with a photocurrent and an optical
+``LedHdl``       node; solar-cell I-V and LED output linear above
+                 threshold
+``MesfetCurticeHdl``  Curtice 1980, Statz (``mes1.va``) and Angelov
+``MesfetStatzHdl``    1992: tanh-shaped channels with pnjlim on the
+``HemtAngelovHdl``    Schottky gates
+``MosLevel3Hdl`` SPICE MOS level 3 (n and p), a transcription of
+``MosLevel3PmosHdl``  ``mos3load.c`` with every knob; = level 1 at
+                 gamma = 0.  All eleven use ``params_as = 'p'``
 ===============  ====================================================
 
 Hand-written elements remain the defaults (``elements.py``): they carry
