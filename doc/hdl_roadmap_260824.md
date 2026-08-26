@@ -820,10 +820,21 @@ the form it was argued — here is what actually landed.
     3        kernel: softplus/mne/mxe/p3 promoted    DONE
     3        kernel: range contracts                 DONE
     3        kernel: limit_delta                     not started
-    3        S1  pure form for chained path          NOT NEXT (sec. 22): the two
-                                                     fast paths are disjoint;
-                                                     C-for-eager is cheaper
-    3        C backend for the EAGER path            new, unmeasured (sec. 22)
+    3        S1  pure form for chained path          REFUSED on measurement
+                                                     (sec. 22/23): the two fast
+                                                     paths are disjoint (22
+                                                     chained / 15 pure_spec /
+                                                     0 both), so S1 buys only
+                                                     batching on top of a C
+                                                     backend already at 212x
+    3        C backend for the EAGER path            REFUSED on measurement
+                                                     (sec. 23): the elements'
+                                                     own arithmetic is 18.2%
+                                                     of an eager transient,
+                                                     43.3% at 121 devices --
+                                                     ceiling 1.76x against the
+                                                     C backend's measured
+                                                     212x, for the same build
     3        S2  generalised variants                not started
     3        S3  automatic domain clamping           DONE (sec. 21): hdl.select,
                                                      6 of 20 sites converted,
