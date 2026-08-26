@@ -687,12 +687,23 @@ def test_the_stage_0_bjt_mirror_under_pcnr_is_order_independent_at_every_start()
     (which has no ladder and no anchor either), `[q1 first, q2 first]`,
     Jacobian evaluations::
 
-        start   plain          pcnr
-         0 V    [9, 9]         [9, 9]
-        -5 V    [9, 9]         [9, 9]
-        +5 V    [FAIL, FAIL]   [164, 164]   converges where plain cannot
-       +10 V    [7, 7]         [7, 7]       (was [6, 6]; see below)
-       +20 V    [FAIL, 7]      [FAIL, FAIL] the Stage 0 signature
+        start   plain          pcnr          pcnr before the
+                                             limited seed (2026-08-26)
+         0 V    [9, 9]         [9, 9]        [9, 9]
+        -5 V    [9, 9]         [9, 9]        [9, 9]
+        +5 V    [FAIL, FAIL]   [8, 8]        [164, 164]
+       +10 V    [7, 7]         [8, 8]        [7, 7]
+       +20 V    [FAIL, 7]      [8, 8]        [FAIL, FAIL]
+
+    **Claim 3 has expired, as the last paragraph below anticipated.**
+    `v_lim_init` used to seed each unknown with the RAW branch voltage, so
+    a uniform 20 V start seeded ``vbe = 20 V`` and the first Jacobian was
+    built at ``exp(20/vt)``: ``cond = 4.6e94``, first step 4.5e45 V.  The
+    seed is now passed through the device's own limiter (`solve_dc` only
+    -- the transient seeds from a CONVERGED point and still uses the raw
+    value).  +20 V converges in 8, +5 V costs 164 -> 8, and +10 V pays one
+    iteration for it.  The diagnosis recorded below was correct and is
+    kept: it is why the seed, not the step, was the thing to fix.
 
     The +10 V PCNR entry was 6 until Stage 2 gave `solve_dc` a residual
     test: at iteration 6 the base row's residual is 1.3e-5 A, 4.2x over
@@ -740,15 +751,22 @@ def test_the_stage_0_bjt_mirror_under_pcnr_is_order_independent_at_every_start()
             if its is not None:
                 assert err < 1e-5, (start, pcnr)
     assert table[0.0][1][0][0] == 9 and table[-5.0][1][0][0] == 9, table
-    assert table[10.0][1][0][0] == 7 and table[10.0][0][0][0] == 7, table
+    assert table[10.0][1][0][0] == 8 and table[10.0][0][0][0] == 7, table
     ## claim 2 -- the control, as measured (the winning order at 7).
     assert table[20.0][0][0][0] is None and table[20.0][0][1][0] == 7, table
-    ## +5 V: plain fails both orders, PCNR converges both (slowly).
+    ## +5 V: plain fails both orders, PCNR converges both.
     assert table[5.0][0] == [(None, None), (None, None)], table[5.0]
-    assert all(its is not None and its < 200 for its, _e in table[5.0][1]), \
+    assert all(its is not None and its < 20 for its, _e in table[5.0][1]), \
         table[5.0]
-    ## claim 3 -- recorded as measured; equality is what is asserted.
+    ## claim 3, INVERTED 2026-08-26 (the docstring anticipated this).  It
+    ## used to read "PCNR fails identically in both orders at +20 V" and
+    ## was asserted as equality precisely so a fix would pass it unchanged.
+    ## Equality still holds and is still the structural claim; what is new
+    ## is that both orders now CONVERGE, so assert that too -- otherwise
+    ## this row would silently accept a regression back to [FAIL, FAIL].
     assert table[20.0][1][0] == table[20.0][1][1], table[20.0]
+    assert all(its is not None and its < 20 for its, _e in table[20.0][1]), \
+        table[20.0]
 
 
 def test_the_papers_shape_two_bjts_with_is_four_decades_apart():
@@ -1097,3 +1115,81 @@ def test_the_redundant_law_is_load_bearing_on_level_1():
         P.limit_block = real
     assert applied is not None and applied <= 20, applied
     assert dropped is None, dropped
+
+
+## ---------------------------------------------------------------------------
+## The limited seed, and the damper that is off by default (roadmap sec. 15).
+## ---------------------------------------------------------------------------
+
+def test_a_sane_branch_voltage_is_seeded_unchanged():
+    """The clamp must be INERT on any start a circuit actually reaches.
+
+    This is what makes limiting the seed a free change rather than a
+    trade: every branch voltage a Gummel-Poon junction sees in normal
+    operation passes through untouched, and only values no junction can
+    hold are pulled in.
+    """
+    from pycircuit.circuit import pcnr
+    c = _mirror(card=dict(NPN))
+    devs = pcnr.pcnr_devices(c)
+    ib = c.get_node_index('nb')
+    for vbe in (0.0, 0.3, 0.7, 0.8):
+        x = np.zeros(c.n)
+        x[ib] = vbe
+        raw = np.array([float(x[a] - x[b])
+                        for a, b in pcnr.flat_probes(devs)])
+        got = pcnr.v_lim_init(devs, x, limit=True)
+        assert_allclose(got, raw, rtol=0, atol=0), vbe
+    ## ...and a value no junction can hold IS pulled in.
+    x = np.zeros(c.n)
+    x[ib] = 20.0
+    pulled = pcnr.v_lim_init(devs, x, limit=True)
+    assert float(np.max(np.abs(pulled))) < 1.0, pulled
+
+
+def test_the_seed_is_limited_only_where_the_start_is_arbitrary():
+    """`solve_dc` clamps its seed; the transient must not.
+
+    The transient seeds from the previous time point's ACCEPTED solution,
+    which is a real operating point and the best information available --
+    clamping it would discard that.  `limit` defaults to off for exactly
+    that reason, and the two transient call sites rely on the default.
+    """
+    from pycircuit.circuit import pcnr
+    c = _mirror(card=dict(NPN))
+    devs = pcnr.pcnr_devices(c)
+    x = np.zeros(c.n)
+    x[c.get_node_index('nb')] = 20.0
+    raw = pcnr.v_lim_init(devs, x)                    # default: no clamp
+    assert float(np.max(np.abs(raw))) == 20.0, raw
+    assert float(np.max(np.abs(
+        pcnr.v_lim_init(devs, x, limit=True)))) < 1.0
+
+
+def test_the_gmin_damper_is_off_by_default_and_documented_as_a_trade():
+    """`solve_dc(gmin=...)` regularises the Schur complement.
+
+    It is the only one of three dampers measured that addresses a RANK
+    DEFICIENCY rather than a step length, and it is off by default
+    because it trades circuits: the EKV pair below converges with it and
+    raises without, while cascode grid point (2, 2, 2) does the reverse
+    at every value from 1e-12 to 1e-6.
+    """
+    import inspect
+    from pycircuit.circuit import pcnr
+    from pycircuit.circuit.tests.test_limit_identity import _diffpair
+    assert inspect.signature(pcnr.solve_dc).parameters['gmin'].default == 0.0
+
+    c = _diffpair(0.0, False)
+    x0 = np.full(c.n, 20.0)
+    x0[c.get_node_index(gnd)] = 0.0
+    with pytest.raises(Exception):
+        pcnr.solve_dc(c, gnd, x0=x0)                  # undamped: rank deficient
+
+    c2 = _diffpair(0.0, False)
+    x, v, its = pcnr.solve_dc(c2, gnd, x0=x0, gmin=1e-9)
+    assert its < 20
+    ## the anchor is on the JACOBIAN only, so it cannot move the answer
+    ref = DC(_diffpair(0.0, False)).solve(x0=x0)
+    assert abs(float(x[c2.get_node_index('tail')])
+               - float(ref.v('tail', gnd))) < 1e-6

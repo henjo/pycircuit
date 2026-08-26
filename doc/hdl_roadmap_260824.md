@@ -858,16 +858,17 @@ the form it was argued — here is what actually landed.
     15       vector PCNR Stage 3 (JAX)               PARKED by the user;
                                                      traced path raises
                                                      NotImplementedError
-    15       the unlimited-node failure              NARROWED 2026-08-26 --
-                                                     NOT architectural; it
-                                                     converges at every
-                                                     entry point.  What is
-                                                     open is a native PCNR
-                                                     rescue from a wild
-                                                     start (damped
-                                                     `predict`); the
-                                                     integration gap is
-                                                     fixed by the fallback
+    15       the unlimited-node failure              DONE 2026-08-26 (sec.
+                                                     27).  It was the SEED,
+                                                     not the node: v_lim_init
+                                                     used raw branch
+                                                     voltages.  Mirror and
+                                                     cascode now converge
+                                                     from every start, both
+                                                     orders.  A gmin damper
+                                                     ships OFF (it trades
+                                                     circuits); the EKV pair
+                                                     stays on the fallback
     12.1     limiter write-back moves the wrong node DONE
     12.2     check_jacobians "not resolvable"        DONE 2026-08-25
     12.3     no way to declare a device needs gmin   DONE 2026-08-25
@@ -3356,3 +3357,123 @@ Deleting the feature and re-running is the only check that catches it.
 4. ~~element evaluation~~ / ~~stamping loop~~ / ~~`_args_of`~~ -- DONE,
    **1.40x cumulative**.
 5. ~~C backend for the eager path~~ / ~~S1~~ -- refused on measurement.
+
+## 27. The damped `predict`, built (2026-08-26): and the failure was mostly the SEED
+
+§15 left "a native rescue for PCNR from a wild start, which would need a
+damped `predict`". Built. The damping works, is off by default, and is
+**not** what fixed most of the problem.
+
+### Instrumenting the first step, before designing anything
+
+BJT mirror, uniform 20 V start, iteration by iteration:
+
+```
+start x       : [20, 20, 20, 0, 20]
+v_lim init    : [20, 0, 20, 0]        <-- vbe seeded at 20 V
+it 0  cond(S)=4.6e+94  max|g_mna|=1.6e+92  max|dx_mna|=4.5e+45
+      after refine: v = [0.849, 0, 0.849, 2.811]
+```
+
+**`v_lim_init` seeded the unknowns with the RAW branch voltages.** So the
+very first `augmented_system` evaluated the transport current at
+`exp(20/vt)` and the first step was computed from a Jacobian with
+condition number 1e94. `refine` then pulled `v` back to a sane 0.849 V --
+one step too late, with `x` already at -4.5e45.
+
+That is also **why no ladder could ever have worked** (§25): every rung
+began by building the same Jacobian at the same unlimited seed.
+
+### Fix 1 -- limit the seed (this is the one that mattered)
+
+`v_lim_init(..., limit=True)` passes the seed through each device's own
+law, exactly as `refine` does for every later iterate.
+
+| start | mirror before | after |
+|---|---|---|
+| 0 V | 10 | 10 |
+| −5 V | 10 | 10 |
+| +5 V | 165 | **9** |
+| +20 V | **LinAlgError** | **8** |
+
+It is **inert where the start is sane** -- seeds up to ~0.8 V come back
+unchanged on the Gummel-Poon card; 1 V → 0.094, 5 V → 0.136, 20 V →
+0.172. And it is scoped: **`solve_dc` clamps, the transient does not.**
+The transient seeds from the previous time point's *accepted solution*,
+which is a real operating point and the best information available;
+clamping it moved the rectifier's waveform 1.7e-8 V and its time points
+6.5e-12 s against the classic-limiting path it is required to track.
+
+### Fix 2 -- `gmin` on the Schur diagonal, OFF by default
+
+Two cheaper dampers were measured first and **both are wrong**:
+
+| damper | EKV diff pair | Level-1 cascode | grid (2,2,2) |
+|---|---|---|---|
+| truncate the step (`cap/max|dx|`) | fixed, 10 V…1e6 V | **broken at every cap** | -- |
+| backtrack on the residual norm | **not fixed** | 9 → 5 | -- |
+| `gmin` on the Schur diagonal | fixed | fixed | **broken, 1e-12…1e-6** |
+
+A magnitude cap is not a safe damper: **a huge step can be better than a
+truncated one.** A line search controls the step but cannot condition the
+matrix -- the step it accepts is still one whose *next* Jacobian is
+singular. Only regularising the matrix addresses the actual defect, which
+is a **rank deficiency**: the EKV pair from a wild start measures the
+Schur complement at **rank 8 of 9**, both channels cut off, 2e-19 S to
+the tail. A rank-deficient solve does not return a large step, it returns
+a meaningless one (3e48 V).
+
+The anchor goes on the **Jacobian only, never the residual**, so the
+converged point solves the untouched system -- matched to `DC()` at
+1e-11 on all three circuits.
+
+**It still defaults to off**, because it trades circuits: it rescues the
+EKV pair and breaks cascode grid point (2,2,2) at *every* value swept.
+"Nothing that converged stops converging" outranks rescuing a start the
+fallback already handles. It is also non-monotone -- the Level-1 cascode
+fails at 1e-14/1e-12/1e-11, converges from 1e-10 up, **and converges at
+exactly zero** -- so an iteration count from a wild start is not a stable
+acceptance number.
+
+### Measured, everything
+
+Every PCNR case, both instance orders, answers matched against `DC()`:
+
+```
+BJT mirror        0 V [10,10]   +5 V [9,9]   +20 V [8,8]   −5 V [10,10]
+EKV diff pair     0 V [8,8]     +20 V [9,9]   (with gmin=1e-9)
+Level-1 cascode   0 V [7,7]     +20 V [9,9]   all four grid points
+```
+
+Counts equal in both orders everywhere: **order-independence preserved**,
+which is what the fallback costs and this does not. And at the +5 V start
+**PCNR now converges in 9 where the ordinary chain -- four ladders plus
+the anchor -- fails outright.**
+
+### ⚠ The recorded diagnosis of the cascode was wrong
+
+`test_the_level_1_cascode_from_20_v_under_pcnr` explained its `[FAIL,
+FAIL]` row as structural: *"the middle node is held by nothing... PCNR
+limits no node... which is Stage 1's second obstacle on a FET."* Every
+observation in that is real. The conclusion is not.
+
+**The runaway was seeded, not structural.** `vgs = 20 V` went into the
+first Jacobian, the 4.9e9 first step came out of it, and once the seed is
+limited the node never leaves its basin -- with no node write involved.
+PCNR still writes no node; that was never what made this fail.
+**Sixteenth right-conclusion-wrong-reason**, and the docstring keeps the
+wrong version beside the right one.
+
+### Three tests inverted, one re-aimed
+
+- the mirror's **claim 3** (*"PCNR fails identically in both orders at
+  +20 V"*) -- written as an equality *specifically* so a later fix would
+  pass it unchanged, which it did. Now also asserts both CONVERGE, so a
+  regression to `[FAIL, FAIL]` cannot pass.
+- the cascode's fourth row -- was asserted `is None`.
+- **the fallback test had to move circuits.** Its precondition was that
+  PCNR fails on the mirror; that stopped being true. A precondition that
+  stops holding makes a test **vacuous**, and this one failed loudly
+  (`DID NOT RAISE`) rather than passing quietly -- the good outcome. It
+  now runs on the EKV pair, which still fails, and for a different
+  reason.

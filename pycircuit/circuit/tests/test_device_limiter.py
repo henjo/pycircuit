@@ -886,20 +886,36 @@ def test_the_level_1_cascode_from_20_v_under_pcnr():
     at the time; re-measured on plain Newton below) under PCNR, both
     orders, uniform 20 V start::
 
-        (vdd, vg2, vg1[, vb])   plain            PCNR
-        (20, 2, 0.8)            [13, 8]          [12, 12]
-        (40, 2, 0.8)            [17, 8]          [12, 12]
-        (5, 2, 0.8)             [31, 9]          [19, 19]
-        (20, 2, 0.8, vb = -2)   [13, 8]          [FAIL, FAIL]
+        (vdd, vg2, vg1[, vb])   plain            PCNR      PCNR before
+                                                            the limited
+                                                            seed
+        (20, 2, 0.8)            [13, 8]          [8, 8]     [12, 12]
+        (40, 2, 0.8)            [17, 8]          [8, 8]     [12, 12]
+        (5, 2, 0.8)             [31, 9]          [8, 8]     [19, 19]
+        (20, 2, 0.8, vb = -2)   [13, 8]          [9, 9]     [FAIL, FAIL]
 
-    Order-independent at every point; converges at three; fails in
-    BOTH orders at the fourth.  Traced: from the all-off start the
-    middle node is held by nothing, the first Newton step proposes
-    `mid = 4.9e9`, PCNR limits no node, and by the fourth iteration
-    `mid` is 3e117 and the matrix singular.  The ordinary path's
-    limiter writes the bounded branch voltage INTO the node; PCNR has
-    no such write, which is Stage 1's second obstacle on a FET.  The
-    plain Newton column differs from Stage 0's record because `von`
+    Order-independent at every point, and since 2026-08-26 convergent at
+    every point, all four to ``mid = 1.2000``.
+
+    ⚠ **THE RECORDED DIAGNOSIS OF THE FOURTH ROW WAS WRONG, and it is
+    kept here because the wrong version is the instructive one.**  It read:
+    "from the all-off start the middle node is held by nothing, the first
+    Newton step proposes `mid = 4.9e9`, PCNR limits no node, and by the
+    fourth iteration `mid` is 3e117 and the matrix singular.  The ordinary
+    path's limiter writes the bounded branch voltage INTO the node; PCNR
+    has no such write, which is Stage 1's second obstacle on a FET."
+    Every observation in that is real.  The CONCLUSION -- that the failure
+    is structural, because PCNR writes no node -- is not.
+
+    The runaway was SEEDED, not structural.  `v_lim_init` handed the first
+    Jacobian the raw branch voltages, so `vgs = 20 V` on M1, and the
+    4.9e9 first step was computed from that.  Limit the seed the same way
+    every later iterate is limited and the first step is sane, so `mid`
+    never leaves its basin and there is nothing for a node write to
+    rescue.  PCNR still writes no node; that was never what made this
+    fail.  (Roadmap sec. 15; sixteenth right-conclusion-wrong-reason.)
+
+    The plain Newton column differs from Stage 0's record because `von`
     now follows the bulk bias (roadmap 12.6(c)), which is what Stage 0
     measured without.
     """
@@ -931,10 +947,15 @@ def test_the_level_1_cascode_from_20_v_under_pcnr():
         table[pt] = row
     for pt, row in table.items():
         assert row[0][0] == row[1][0], (pt, row)          # order-independent
-    for pt in ((20.0, 2.0, 0.8), (40.0, 2.0, 0.8), (5.0, 2.0, 0.8)):
+    ## INVERTED 2026-08-26: the fourth point used to be asserted as a
+    ## FAILURE.  All four converge now, so all four are checked the same
+    ## way -- leaving the old row asserted as `is None` would have turned
+    ## the fix into a test failure and, worse, would have made a
+    ## regression back to FAIL look correct.
+    for pt in table:
         assert table[pt][0][0] is not None and table[pt][0][0] <= 30, table
         assert_allclose(table[pt][0][1], table[pt][1][1], rtol=1e-6)
-    assert table[(20.0, 2.0, 0.8, -2.0)][0][0] is None, table
+        assert abs(table[pt][0][1] - 1.2) < 1e-3, (pt, table[pt])
 
 
 @pytest.mark.filterwarnings('ignore:overflow encountered')

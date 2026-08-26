@@ -306,10 +306,49 @@ def flat_probes(junctions):
     return [(int(ra), int(rb)) for _i, _e, ra, rb in junctions]
 
 
-def v_lim_init(junctions, x):
+def v_lim_init(junctions, x, epar=defaultepar, limit=False):
     """Each device's unknowns seeded from the branch voltages they stand
-    for -- the paper's "independent initialization by different devices"."""
-    return np.array([float(x[ra] - x[rb]) for ra, rb in flat_probes(junctions)])
+    for -- the paper's "independent initialization by different devices" --
+    and then LIMITED by the device's own law, exactly as :func:`refine`
+    limits every later iterate.
+
+    **The seed used to be the raw branch voltage, and that was the whole
+    of the "unlimited-node failure" on junction devices.** From a uniform
+    20 V start a BJT mirror seeded `vbe = 20 V`, so the very first
+    `augmented_system` evaluated the transport current at `exp(20/vt)`:
+    `max|g_mna| = 1.6e92`, `cond(schur) = 4.6e94`, and the first step --
+    computed from that Jacobian, before any limiting could act -- proposed
+    4.5e45 V.  No ladder around the solve could help, because every rung
+    began by building the same Jacobian at the same unlimited seed
+    (roadmap sec. 15).
+
+    Limiting the seed costs nothing where the start is already sane: at a
+    zero start the raw seed is zero and every law returns it unchanged, so
+    the vector is bit-identical.  Measured on the mirror: uniform 0 V and
+    -5 V starts unchanged at 10 iterations, +5 V **165 -> 9**, +20 V
+    **LinAlgError -> 8**, both instance orders, same answer.
+
+    `x_old` is the start itself: a limiter parameter that follows the bias
+    (SPICE's `von`) has no earlier iterate to read at initialisation.
+
+    ⚠ **`limit` is off by default, and the distinction is the point: clamp
+    an ARBITRARY start, never a converged one.** :func:`solve_dc` passes
+    `limit=True` because its `x0` comes from the caller and may be
+    anything. The transient's two call sites do NOT, because they seed
+    from the previous time point's *accepted solution* -- a real operating
+    point, and the best information available. Clamping that would discard
+    it to no purpose, and it is measurable: doing so moved the rectifier's
+    waveform by 1.7e-8 V and its time points by 6.5e-12 s against the
+    classic-limiting path they are required to track.
+
+    The clamp is inert on any sane branch voltage in any case -- seeds up
+    to ~0.8 V come back unchanged on the Gummel-Poon card, and only 1 V
+    and beyond are pulled in (1 V -> 0.094, 5 V -> 0.136, 20 V -> 0.172).
+    """
+    raw = np.array([float(x[ra] - x[rb]) for ra, rb in flat_probes(junctions)])
+    if not limit:
+        return raw
+    return refine(junctions, np.zeros_like(raw), raw, epar, x_old=x)
 
 
 def augmented_system(circuit, x, v_lim, junctions, epar=defaultepar,
@@ -500,7 +539,7 @@ def dx_lim_of(junctions, g_lim, dx_mna):
 
 
 def predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode, junctions=None,
-            didv=None):
+            didv=None, gmin=0.0):
     """One Newton step on the coupled system, by Schur complement.
 
         dx_MNA = -(J_mm - J_ml J_lm)^-1 (g_mna - J_ml g_lim)
@@ -517,6 +556,32 @@ def predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode, junctions=None,
     """
     f_eff, schur = schur_reduce(g_mna, g_lim, J_mm, J_ml, J_lm, junctions, didv)
     rhs = -f_eff
+
+    ## THE DAMPING, and note WHERE it goes: on the Jacobian only, never on
+    ## the residual.  `f_eff` is what convergence is judged on, so the
+    ## converged point solves the untouched equations and the anchor cannot
+    ## bias the answer -- verified against `DC()` to 1e-11 on all three
+    ## circuits that needed it.  What it changes is the DIRECTION of the
+    ## step, which is the whole difficulty: on a wild start with every
+    ## device cut off, the Schur complement is RANK DEFICIENT (an EKV
+    ## differential pair at a uniform 20 V start measured rank 8 of 9, a
+    ## tail node with 2e-19 S to anywhere), and a rank-deficient solve does
+    ## not produce a large step, it produces a meaningless one -- 3e48 V.
+    ##
+    ## ⚠ Two cheaper things were measured first and BOTH are wrong:
+    ##   * truncating the step (`dx *= cap/max|dx|`) rescues the diff pair
+    ##     at every cap from 10 V to 1e6 V and BREAKS the Level-1 cascode
+    ##     at every one of them.  A huge step can be better than a
+    ##     truncated one, so a magnitude cap is not a safe damper.
+    ##   * backtracking on the residual norm improves the cascode (9 -> 5)
+    ##     and does NOT fix the diff pair, because the step it accepts is
+    ##     still one whose NEXT Jacobian is singular.  A line search
+    ##     controls the step; it cannot condition the matrix.
+    ## Only regularising the matrix addresses a rank deficiency.
+    if gmin:
+        schur = np.array(schur, dtype=float, copy=True)
+        d = np.arange(schur.shape[0])
+        schur[d, d] += gmin
 
     keep = [i for i in range(len(g_mna)) if i != irefnode]
     dx_r = np.linalg.solve(schur[np.ix_(keep, keep)], rhs[keep])
@@ -663,7 +728,7 @@ def lim_converged(g_lim, v_new, reltol, abstol):
 
 
 def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
-             reltol=1e-6, abstol=1e-12, iabstol=1e-12):
+             reltol=1e-6, abstol=1e-12, iabstol=1e-12, gmin=0.0):
     """DC operating point by PCNR.  Returns ``(x, v_lim, iterations)``.
 
     The flow is Figure 2's: initialise, then repeat predict-then-correct until
@@ -685,6 +750,40 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     still overflows the row.  The residual test is what separates a
     small step from a small residual -- at a 1e29 S point the Newton
     step is small BECAUSE the row is stiff, not because it is solved.
+
+    **`gmin` is a damper on the step, not a term in the equations.** It
+    anchors the Schur complement's diagonal inside :func:`predict` and
+    never touches the residual, so the point this converges to solves the
+    untouched system -- matched against `DC()` to 1e-11 on every circuit
+    that needed it. It is what lets PCNR survive a wild start, where the
+    reduced matrix goes RANK DEFICIENT (an EKV differential pair from a
+    uniform 20 V start measures rank 8 of 9) and an unregularised solve
+    returns not a large step but a meaningless one. ``gmin=0`` restores
+    the undamped behaviour.
+
+    ⚠⚠ **IT DEFAULTS TO OFF, because it is not free: it trades one
+    circuit for another.** With `gmin = 1e-9` the EKV differential pair
+    converges from a uniform 20 V start where it previously raised
+    `LinAlgError` -- and cascode grid point `(2, 2, 2)`, which converges
+    in 8 with no anchor, stops converging inside 200 iterations. That is
+    true at **every value swept, 1e-12 through 1e-6**, so there is no
+    window that buys the first without paying the second; the anchor
+    perturbs that point into a limit cycle rather than conditioning it.
+
+    The same shape defeated the two cheaper dampers (see :func:`predict`):
+    each fixes one circuit and breaks another. `800 < total < 1000` over
+    that grid with **nothing that converged stopping** is the property the
+    suite pins, and it outranks rescuing a start the fallback already
+    handles.
+
+    It is also non-monotone where it does help: a Level-1 cascode from a
+    uniform 20 V start fails at ``1e-14``/``1e-12``/``1e-11``, converges
+    from ``1e-10`` up, **and converges at exactly zero**. A perturbation
+    too small to condition the matrix is still large enough to move the
+    trajectory. Treat any iteration count from a wild start as unstable.
+
+    Turn it on deliberately, per solve, when a rank-deficient start is the
+    known problem -- and re-measure, do not assume.
     """
     devices = pcnr_devices(circuit)
     if not devices:
@@ -695,7 +794,8 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     x = np.zeros(n) if x0 is None else np.array(x0, dtype=float, copy=True)
     x[irefnode] = 0.0
 
-    v_lim = v_lim_init(devices, x)
+    ## `limit=True`: `x0` is the caller's, and may be a wild start.
+    v_lim = v_lim_init(devices, x, epar, limit=True)
 
     u = np.asarray(circuit.u(0.0, epar, analysis='dc'), dtype=float)
 
@@ -704,7 +804,7 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
             circuit, x, v_lim, devices, epar, u_extra=u, dense_blocks=False)
 
         dx_mna, dx_lim = predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode,
-                                 junctions=devices, didv=didv)
+                                 junctions=devices, didv=didv, gmin=gmin)
 
         x_new = x + dx_mna
         x_new[irefnode] = 0.0

@@ -101,13 +101,32 @@ def test_dc_pcnr_true_falls_back_to_the_ordinary_chain_when_pcnr_fails():
     Three native rescues (gmin shunt, source stepping, Jacobian damping,
     each as an adaptive ladder around solve_dc) were measured and all
     fail here (2026-08-26).  So: fall back, flag it, keep the answer.
+
+    ⚠ **The circuit changed on 2026-08-26 and that is the interesting
+    part.**  This test used to run on `_bjt_mirror_20v`, which no longer
+    fails: limiting the PCNR seed (`v_lim_init`) made it converge in 8.
+    A precondition that stops holding does not make the test pass -- it
+    makes it VACUOUS, and here it failed loudly (`DID NOT RAISE`), which
+    is the good outcome.
+
+    It now runs on the EKV differential pair from a uniform 20 V start,
+    which still fails and fails for a DIFFERENT reason: EKV declares
+    `limit_identity` -- a probe with no law -- so there is nothing for a
+    limited seed to clamp, and the Schur complement goes rank deficient
+    (8 of 9) with both channels cut off.  That is the case a damped
+    `predict` addresses, and it is deliberately still on the fallback
+    (see `pcnr.solve_dc`'s `gmin`, which is off by default because it
+    trades this circuit for a cascode grid point).
     """
     import logging
     import numpy as np
     from pycircuit.circuit import gnd, pcnr
     from pycircuit.circuit.dcanalysis import DC
+    from pycircuit.circuit.tests.test_limit_identity import _diffpair
     for rev in (False, True):
-        c, x0 = _bjt_mirror_20v(rev)
+        c = _diffpair(0.0, rev)
+        x0 = np.full(c.n, 20.0)
+        x0[c.get_node_index(gnd)] = 0.0
         ## the precondition: PCNR itself fails on this start
         with pytest.raises(Exception):
             pcnr.solve_dc(c, gnd, x0=x0)
@@ -115,11 +134,11 @@ def test_dc_pcnr_true_falls_back_to_the_ordinary_chain_when_pcnr_fails():
         try:
             a = DC(c, pcnr=True)
             r = a.solve(x0=x0)
-            ref = DC(c).solve(x0=x0)
+            ref = DC(_diffpair(0.0, rev)).solve(x0=x0)
         finally:
             logging.disable(logging.NOTSET)
         assert a.pcnr_fell_back is True
-        assert abs(float(r.v('no', gnd)) - float(ref.v('no', gnd))) < 1e-6
+        assert abs(float(r.v('tail', gnd)) - float(ref.v('tail', gnd))) < 1e-6
 
 
 def test_dc_pcnr_true_does_not_fall_back_when_pcnr_converges():
