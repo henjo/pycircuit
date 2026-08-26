@@ -3855,8 +3855,14 @@ def _mos3_analog(T, nmos):
         phz = _var(_maxc(gp * p.phi + (1.0 - gp) * phid, 0.1), 'phz')
         ## SPICE's `alpha = 2*eps_si/(q*nsub)` and `xd = sqrt(alpha)`:
         ## zero without `nsub`, which switches fshort and kappa off.
-        alpha = _var(sympy.Piecewise((2.0 * _EPSSI / (_QE * _maxc(nsm3, 1.0)),
-                                      nsm3 > 0.0), (0.0, True)), 'alpha')
+        ## `select`, not `Piecewise`: the arm is selected exactly where
+        ## `nsm3 > 0`, so the clamp that keeps the OTHER arm's evaluation
+        ## finite is derivable from the condition instead of hand-picked.
+        ## `margin=1.0` reproduces the previous `_maxc(nsm3, 1.0)` bit for
+        ## bit -- `nsm3` is a doping density near 1e21, so a 1.0 floor is
+        ## far below anything selected.
+        alpha = _var(_select((2.0 * _EPSSI / (_QE * nsm3), nsm3 > 0.0),
+                             (0.0, True), margin=1.0), 'alpha')
         xd = _var(sympy.sqrt(alpha), 'xd')
         narrow = _var(p.delta * 0.5 * sympy.pi * _EPSSI / cox, 'narrow')
         etal = _var(p.eta * 8.15e-22 / (cox * leff ** 3), 'etal')

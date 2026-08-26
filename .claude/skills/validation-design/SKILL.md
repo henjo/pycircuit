@@ -73,6 +73,26 @@ wrong or missing here because the one card they were tested against
 happened to zero them. **Two cards is not twice the validation — it is
 the difference between exercising a term and assuming it.**
 
+⚠ **A GUARD IS INSURANCE AGAINST THE TAIL, AND SAMPLING THE BULK CANNOT
+TEST IT.** Clamps, floors, regularisers and `safe_*` wrappers exist to
+change the answer only where the unguarded expression would be
+non-finite or absurd. Everywhere else they are the identity *by
+construction*. So a comparison over "random biases in a normal window"
+is guaranteed to agree whether the guard is present, absent, or wrong --
+it is not weak evidence, it is **no evidence**.
+
+Measured here: replacing the domain-clamping `select` with a plain
+`Piecewise`, so that **no clamping happened anywhere in a 37-class
+library**, produced a **bit-identical digest over 30 random biases per
+class**. The same recipe had been recorded as the acceptance evidence
+for adopting it.
+
+To test a guard you must visit the region it exists for: the boundary of
+its condition, the value that makes its denominator zero, the parameter
+default that switches it on. And confirm the region IS visited --
+`nsub` defaulting to `0` meant an entire arm was unreachable on every
+default card, so a deliberately wrong margin digested identically.
+
 **A bias no sweep visits tests nothing.** A body-bias correction that is
 identically 1 at `Vsb = 0` is untested by every sweep at `Vsb = 0`.
 

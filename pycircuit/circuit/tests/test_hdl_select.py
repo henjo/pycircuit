@@ -774,3 +774,90 @@ def test_the_adoption_record_can_fail():
     every digest moves with it."""
     assert _adopter_digest('GummelPoonNpnHdl', dict(_BJT, vtf=0.5),
                            ('c', 'b', 'e')) != _RECORDED['GummelPoonNpnHdl']
+
+
+def test_select_with_a_margin_reproduces_the_hand_clamped_piecewise():
+    """The `alpha` shape from MOS level 3 (roadmap sec. 21 adoption).
+
+    Hand-written::
+
+        Piecewise((k / maxc(n, 1.0), n > 0.0), (0.0, True))
+
+    and the `select` form that replaces it::
+
+        select((k / n, n > 0.0), (0.0, True), margin=1.0)
+
+    `margin` exists for exactly this: `n > 0` alone clamps to
+    ``maxc(n, 0)``, and an arm that divides by `n` still divides by zero.
+    Both forms are compiled and compared over the region where the arm is
+    SELECTED, over the boundary, and well outside it -- value and
+    derivative.
+    """
+    import numpy as np
+    import sympy
+    from pycircuit.circuit import hdl
+
+    n = sympy.Symbol('n', real=True)
+    k = 2.0
+
+    def hand():
+        return sympy.Piecewise((k / hdl.maxc(n, 1.0), n > 0.0),
+                               (sympy.Float(0.0), True))
+
+    def viaselect():
+        return hdl.select((k / n, n > 0.0), (sympy.Float(0.0), True),
+                          margin=1.0)
+
+    f_hand = hdl.compile_chain(hand, [n])
+    f_sel = hdl.compile_chain(viaselect, [n])
+    d_hand = hdl.compile_chain(hand, [n], wrt=[n])
+    d_sel = hdl.compile_chain(viaselect, [n], wrt=[n])
+
+    ## selected region (well inside), the boundary, and outside it
+    pts = [1e21, 1e16, 1e6, 100.0, 2.0, 1.0, 0.5, 0.0, -1.0, -1e16]
+    for v in pts:
+        a = float(np.asarray(f_hand(v)).ravel()[0])
+        b = float(np.asarray(f_sel(v)).ravel()[0])
+        assert a == b, (v, a, b)
+        da = float(np.asarray(d_hand(v)).ravel()[0])
+        db = float(np.asarray(d_sel(v)).ravel()[0])
+        assert da == db, ('derivative', v, da, db)
+
+    ## and the point of the whole thing: neither form is ever non-finite,
+    ## including at n = 0 where the unclamped arm would divide by zero.
+    for v in pts:
+        assert np.isfinite(float(np.asarray(f_sel(v)).ravel()[0])), v
+        assert np.isfinite(float(np.asarray(d_sel(v)).ravel()[0])), v
+
+
+def test_the_mos3_alpha_arm_is_reached_only_with_nsub_set():
+    """⚠ A digest over DEFAULT cards cannot see this conversion.
+
+    `nsm3 = maxc(nsub, 0) * 1e6`, and `nsub` defaults to 0 -- so at
+    default parameters the `nsm3 > 0` arm is never selected and any
+    margin whatsoever gives identical numbers.  Verified while making
+    this change: a deliberately wrong `margin=1e-30` digested BIT-
+    IDENTICALLY across all 37 library classes over 30 random biases.
+
+    So the card below is not decoration; it is the only reason this
+    change is tested at all.  See `validation-design`: a bias no sweep
+    visits tests nothing.
+    """
+    import numpy as np
+    from pycircuit.circuit import elements_hdl as eh
+    from pycircuit.circuit.circuit import defaultepar
+
+    default = eh.MosLevel3Hdl('d', 'g', 's', 'b')
+    default.update_iparv()
+    assert float(default.iparv.nsub) == 0.0, 'default nsub moved'
+
+    card = dict(nsub=1e16, vto=0.7, kp=2e-5, tox=2e-8, ld=1e-7, u0=600.0,
+                xj=2e-7, delta=0.5, eta=0.1, vmax=1e5, nfs=1e11)
+    el = eh.MosLevel3Hdl('d', 'g', 's', 'b', **card)
+    el.update_iparv()
+    rng = np.random.default_rng(11)
+    for _ in range(20):
+        x = rng.uniform(-2.0, 3.0, el.n)
+        for meth in ('i', 'G', 'q', 'C'):
+            v = np.asarray(getattr(el, meth)(x, defaultepar), dtype=float)
+            assert np.all(np.isfinite(v)), (meth, x)

@@ -3488,3 +3488,110 @@ wrong version beside the right one.
   (`DID NOT RAISE`) rather than passing quietly -- the good outcome. It
   now runs on the EKV pair, which still fails, and for a different
   reason.
+
+## 28. The `select` residue, surveyed (2026-08-26): §21's "adoption work" was wrong
+
+§21 converted 6 of 20 surveyed sites and recorded that the remaining 14
+were **"adoption work, not a limitation -- the mechanism covers their
+shapes."** Went to do that adoption. **The claim does not hold**, and the
+reason is structural rather than incidental.
+
+### What `select` can substitute, and what this codebase writes
+
+`select` replaces a **symbol appearing inside an arm expression** with a
+clamped copy derived from that arm's condition. So it needs the arm to
+*contain* the symbol.
+
+This codebase almost never writes them that way. Its house style binds
+every intermediate with `var()` first, so the arm is a **bare symbol**
+and any guard lives in the referenced definition, evaluated
+unconditionally somewhere above:
+
+```python
+qlo = _var(cj * vjx * (1.0 - ub) / (1.0 - mc), 'qlo')   # guard is in `ub`
+qhi = _var(cj * (f1 + ...), 'qhi')
+return _var(sympy.Piecewise((qlo, v < fcvj), (qhi, True)), 'qj')
+```
+
+There is nothing in `(qlo, v < fcvj)` for `select` to clamp. The same
+shape covers the depletion charges, `ids`, `isbd`/`isbs`, `cbdb`/`cbsb`,
+`rdx`/`rsx`, `rbmx`, `vp`, `vgtn`, `vdsn`, `kp0` and the Biolek `stp`.
+
+Two further shapes defeat it for different reasons:
+
+| shape | example | why |
+|---|---|---|
+| clamp **hoisted** into its own `var` | `xjf = maxc(p.xj, 1e-12)`, used by `fshort`; `vdsc = leff*maxc(p.vmax,1e-30)/us`, used by `fdrain` | the clamp is not in the arm and is shared by other users |
+| clamp on a **different symbol** than the condition bounds | `wfact`: condition is `vgs < von`, clamp is `maxc(xn, 1.0)` | the condition says nothing about `xn` |
+| **compound** argument | `_recip(p.area * p.ikf)` | already recorded at the site: the product is not a node, so the substitution silently does nothing |
+
+**Exactly one of the residue was convertible: `alpha` in MOS level 3**,
+where the clamp `maxc(nsm3, 1.0)` sits inside the arm and the condition
+is `nsm3 > 0.0`. Converted, with `margin=1.0` reproducing the hand clamp
+(`nsm3` is a doping density near 1e21, so a 1.0 floor is far below
+anything selected). `elements_hdl.py` is now 7 `select` against 32
+`Piecewise`; `psp_kernel.py`'s 24 remain deliberately untouched.
+
+**The honest status is therefore: `select` is done, and its adoption is
+done.** The remaining `Piecewise` sites are not waiting on anyone --
+they are a different shape, and converting them would mean first
+un-binding intermediates that `var()` exists to bind. That trade
+(§21 already noted it for `_recip`: "it also changes the emitted chain")
+is not obviously worth making, and no measurement asks for it.
+
+### ⚠ And the verification method §21 accepted is BLIND to this class of change
+
+§21's evidence was: *"all 37 library classes digested over 30 random
+biases x {i, G, q, C} with the adoption in place and again reverted --
+37 identical, 0 differ."* The same recipe was run here, and it reported
+**37 identical** for the `alpha` conversion too.
+
+Then the margin was deliberately set **wrong** -- `1e-30` instead of
+`1.0`, which is not the hand-written clamp at all -- and the digest still
+came back **bit-identical across all 37 classes**.
+
+The cause: `nsm3 = maxc(nsub, 0) * 1e6` and **`nsub` defaults to 0**, so
+at default cards the `nsm3 > 0` arm is never selected and the margin
+cannot matter. A digest over default parameters cannot see a change in
+an arm that default parameters do not select. `validation-design`
+already carries the rule -- *a bias no sweep visits tests nothing* -- and
+the digest walked into it.
+
+Validated instead on a card that reaches the arm (`nsub = 1e16`, plus
+the geometry the level-3 model needs): 1600 samples of `i`/`G`/`q`/`C`
+over 40 random biases, **bit-identical** against the pre-change source.
+Pinned by `test_select_with_a_margin_reproduces_the_hand_clamped_piecewise`,
+which compiles both forms and compares value AND derivative across the
+selected region, the boundary and outside it -- and by
+`test_the_mos3_alpha_arm_is_reached_only_with_nsub_set`, which exists to
+record why the default card is not enough.
+
+**And it is worse than one blind spot: the evidence for §21's SIX
+conversions was vacuous too.** Tested directly rather than left as a
+suspicion -- `select` was reduced to a plain `sympy.Piecewise`, so that
+**no clamping happened anywhere in the library**, and the digest was
+re-run:
+
+```
+select reduced to a plain Piecewise (NO clamping anywhere)
+  -> NO DIFFERENCE across all 37 classes
+```
+
+So "37 identical, 0 differ" would have been reported whether the
+clamping worked or not. It was never evidence for the adoption.
+
+**Why**, and this is the transferable part: a clamp is **insurance
+against the tail**. It only changes a number where an arm would
+otherwise be non-finite or wildly out of range -- and a digest over 30
+random biases in a normal window samples the **bulk**, where every arm
+is finite already and the clamp is the identity by construction. The
+method could not have worked.
+
+**This does NOT mean the conversions are wrong.** `select` itself is
+well covered: `test_hdl_select.py` exercises the mechanism directly, and
+neutralising the margin fails **19** of its tests. What was vacuous is
+the *adoption* evidence -- the step that claimed these particular six
+sites still compute what they used to. Re-running it properly means, for
+each converted arm, a card and a bias that **select that arm and put it
+near its boundary**, which is where a clamp can differ from the
+expression it replaced.
