@@ -842,6 +842,14 @@ NOT adopt `limit_together`: measured never better and once 13x worse;
 grouping is a capability (four probes over four terminals), not a
 speed-up.
 
+Parameters as a namespace (2026-08-26): `params_as = 'p'` makes
+`analog()`'s first argument a `ParamNamespace` -- `p.bf`, `p['lambda']`,
+`p.given('rb')` -- whose attributes ARE the parameter symbols, so
+generated code and `explain()` are identical to the bare spelling.
+Helpers shared by several classes take `p` as an argument (the
+Gummel-Poon core does; `_with_params` is gone). Keyword-named
+parameters are mangled to `_hdl_kw_<name>` in generated source.
+
 Diagnostics: `explain()`, `x_layout()`, `check_jacobians()` -- which
 has THREE verdicts, an entry the finite difference cannot resolve at
 this point coming back UNRESOLVED rather than FAILED -- and nine
