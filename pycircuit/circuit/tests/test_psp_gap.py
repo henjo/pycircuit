@@ -113,7 +113,15 @@ def ref():
         return json.load(fh)['sweeps']
 
 
-def _compare(deck, sweep):
+def _compare(deck, sweep, fold=False):
+    """The sweep, the reference and the model, above `FLOOR`.
+
+    `fold` builds the device through `hdl.fold_card` instead of directly
+    -- the card's parameters compiled in as literals, geometry left
+    per-instance.  Folding reassociates arithmetic, so it is not
+    bit-identical, and this is the switch that lets the vendor
+    comparison say what that costs (roadmap sec. 32).
+    """
     cm.default_toolkit = numeric
     w, l = sweep['w'], sweep['l']
     ## The sweep names its own device, so the p-channel curves pick the
@@ -124,6 +132,14 @@ def _compare(deck, sweep):
         w=w, l=l, ng=1, m=1, pre_layout=1)
     kw = psp_scaling.to_long_channel(card, w=w, l=l, T=T27)
     cls = PspPmosLongChannel if pmos else PspMosLongChannel
+    if fold:
+        from pycircuit.circuit import hdl
+        names = {p.name for p in cls.instparams}
+        card_kw = {k: v for k, v in kw.items()
+                   if k in names and isinstance(v, (int, float))
+                   and k not in ('w', 'l')}
+        cls = hdl.fold_card(cls, instance=('w', 'l'), **card_kw)
+        kw = {k: v for k, v in kw.items() if k in ('w', 'l')}
     e = cls(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'), **kw)
     e.update_iparv()
     v = np.asarray(sweep['v'], float)
@@ -4476,3 +4492,62 @@ class TestTheInducedGateNoise(object):
         pt = [p for p in gd['points'] if p['sig'] > 0.0][0]
         assert self._sig(self._kw(deck, gd, fnt=0.0), pt) \
             == pytest.approx(0.0, abs=1e-45)
+
+
+@needs_pdk
+@pytest.mark.parametrize('fold', [False, True], ids=['direct', 'folded'])
+def test_the_worst_point_over_every_sweep_is_pinned(deck, ref, fold):
+    """The number this whole module exists to produce, asserted at last.
+
+    `compact.PspMosLongChannel`'s docstring has claimed agreement with
+    IHP's compiled PSP103 "to 1.3e-6 at the worst point" for as long as
+    the model has been good -- and **nothing tested it**.  The tests
+    above assert a part in a THOUSAND on one sweep, so the suite would
+    have stayed green through a regression of three orders of magnitude.
+    That is the same shape as the `hdl.rst` overhead figure that drifted
+    from 1.14x to 1.22x under a green suite (roadmap sec. 25).
+
+    Measured 2026-08-26 over all 19 recorded sweeps -- both channel
+    types, both geometries, the whole body-bias ladder -- worst point
+    **1.305e-06**, in `nmos_long_idvg`.  The bound is set just outside
+    it.
+
+    The `folded` parametrisation is roadmap sec. 32: the same comparison
+    with the card compiled in as constants by `hdl.fold_card`.  Folding
+    reassociates arithmetic and is NOT bit-identical, so this is the
+    test that says what that costs against a real vendor reference.
+    Measured: **the same 1.305e-06**, with folded and direct agreeing to
+    6.7e-14 across every sweep.
+    """
+    worst, where = 0.0, None
+    for name in sorted(ref):
+        _, r, g, _ = _compare(deck, ref[name], fold=fold)
+        if not len(r):
+            continue
+        d = float(np.max(np.abs(g / r - 1.0)))
+        if d > worst:
+            worst, where = d, name
+    assert where is not None
+    assert worst < 1.5e-6, 'worst point %.4e on %s' % (worst, where)
+
+
+@needs_pdk
+def test_folding_the_card_does_not_move_the_vendor_agreement(deck, ref):
+    """Folded against direct, point by point -- not merely worst-to-worst.
+
+    Two builds could each sit at 1.3e-6 from the reference and be 2.6e-6
+    from each other, so comparing the two WORST POINTS proves nothing
+    about the folding.  This compares the curves.
+    """
+    worst, where = 0.0, None
+    for name in sorted(ref):
+        _, _, direct, _ = _compare(deck, ref[name], fold=False)
+        _, _, folded, _ = _compare(deck, ref[name], fold=True)
+        if not len(direct):
+            continue
+        d = float(np.max(np.abs(folded / direct - 1.0)))
+        if d > worst:
+            worst, where = d, name
+    assert where is not None
+    ## measured 6.7e-14 -- reassociation, nothing else
+    assert worst < 1e-12, 'folded differs by %.3e on %s' % (worst, where)

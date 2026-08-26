@@ -870,7 +870,14 @@ the form it was argued — here is what actually landed.
                                                      ceiling 1.76x against the
                                                      C backend's measured
                                                      212x, for the same build
-    32       re-validate PSP folded, vs the vendor   OPEN, not started --
+    32       re-validate PSP folded, vs the vendor   DONE 2026-08-26: worst
+                                                     point 1.305e-06 BOTH
+                                                     folded and direct over
+                                                     all 19 sweeps; the two
+                                                     agree to 6.7e-14.  The
+                                                     figure is now PINNED by
+                                                     a test -- it never was.
+                                                     Was raised as: OPEN --
                                                      the item sec. 31
                                                      created.  Folding is
                                                      not bit-identical and
@@ -3948,11 +3955,18 @@ Suite **2657 passed / 7 skipped / 3 xfailed / 0 failed**, reconciled as
 `benchmarks/card_constant_folding.py` reproduces the numbers;
 `hdl.rst` documents it with the warning attached.
 
-## 32. OPEN: re-validate PSP against the vendor with its card folded
+## 32. DONE: re-validate PSP against the vendor with its card folded
 
-**Status: not started. This is the one item `fold_card` created, and it
-is the one that matters most, because that model's whole value is a
-number that folding is not guaranteed to preserve.**
+> ✅ **Done 2026-08-26, same day it was raised.** Folding costs
+> **nothing**: worst point against IHP's compiled PSP103 is **1.305e-06
+> folded and 1.305e-06 direct**, over all 19 recorded sweeps, with the
+> two builds agreeing to **6.7e-14** point by point. And the number is
+> now **pinned by a test**, which was the real point. Results at the
+> bottom of this section.
+
+*(Written before the work:)* **This is the one item `fold_card` created,
+and it is the one that matters most, because that model's whole value is
+a number that folding is not guaranteed to preserve.**
 
 ### Why it exists
 
@@ -4013,6 +4027,45 @@ Then one of:
 Half a day. The harness, the reference data and the card loader all
 exist; `benchmarks/card_constant_folding.py` already builds the folded
 device from the same card.
+
+### RESULT (2026-08-26)
+
+`_compare` gained a `fold` switch rather than a second code path, so
+both builds run the identical comparison. Worst |ours/ref − 1| per
+sweep, above the 1e-6 floor:
+
+| | worst point |
+|---|---|
+| direct | **1.305e-06** (`nmos_long_idvg`) |
+| folded | **1.305e-06** (`nmos_long_idvg`) |
+| folded vs direct, point by point | **6.7e-14** worst of 19 sweeps |
+
+**Folding is free here.** The concern in reason 3 above -- that 87 of
+153 parameters fold at their *defaults* -- turned out not to bite: the
+worst sweep is the same one, at the same value.
+
+**Two tests, both verified to bite:**
+
+* `test_the_worst_point_over_every_sweep_is_pinned[direct|folded]`
+  bounds the worst point at 1.5e-6 over **every** sweep. A 1e-5
+  perturbation of the model -- eight times the bound, and *under* the
+  1e-4 the surrounding tests assert -- fails it.
+* `test_folding_the_card_does_not_move_the_vendor_agreement` compares
+  the two curves **point by point**, because two builds could each sit
+  1.3e-6 from the reference and 2.6e-6 from each other. A 1e-11
+  perturbation of the folded path alone fails it.
+
+**And reason 2 was worse than written.** The 1.3e-6 had no test at all,
+and the surrounding tests assert a part in a thousand -- so the suite
+would have stayed green through a **three-order-of-magnitude**
+regression, for the whole life of the model. That is now closed.
+
+⚠ **A stale count found on the way:** the model's docstring, this
+document and eight other places say *"twelve sweeps"*. The reference
+holds **19** -- it is regenerated additively, so twelve was true when
+written. Corrected in `compact.py` (the model's own public claim, and
+the one a user reads) with the old value kept visible; the dated
+narrative in `hdl.md` is left as the record of what was true then.
 
 
 ## 33. `limit_delta` has acquired a consumer (2026-08-26), and S4 has acquired a blocker

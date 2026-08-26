@@ -892,8 +892,24 @@ class PspMosLongChannel(Behavioural):
     effective thermal voltage.  Parameters come from a foundry card
     through `psp_scaling.to_long_channel`, with nothing fitted, and the
     drain current agrees with IHP's own compiled PSP103 to **1.3e-6 at
-    the worst point** of twelve sweeps, two geometries and both channel
-    types -- the reference's own printed precision.
+    the worst point** of the **19** recorded sweeps, two geometries and
+    both channel types -- the reference's own printed precision.  (This
+    line said "twelve sweeps", which was true when written; the
+    reference file is regenerated additively and now holds 19.  The
+    figure itself is unchanged: re-measured 2026-08-26 over all of them
+    it is **1.305e-06**, in `nmos_long_idvg`.)
+
+    That number is now **pinned by a test** --
+    `test_psp_gap.py::test_the_worst_point_over_every_sweep_is_pinned`
+    -- which it was not for most of this model's life: the surrounding
+    tests assert a part in a thousand, so the suite would have stayed
+    green through a regression of three orders of magnitude.
+
+    It holds with the card **folded** as well
+    (`hdl.fold_card`, roadmap sec. 31-32): folding reassociates
+    arithmetic and is not bit-identical, but folded and direct agree to
+    **6.7e-14** across every sweep, and the worst point against the
+    vendor is the same 1.305e-06.
 
     Since built, and no longer absent: the junction with its reverse
     leakage, overlap and fringe capacitance, DIBL, the bias modulations
