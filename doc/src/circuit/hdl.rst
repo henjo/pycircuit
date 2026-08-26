@@ -121,7 +121,8 @@ Operators
 ``ddt``, ``idt``, ``idtmod``, ``ddx``, ``limexp``, ``white_noise``,
 ``flicker_noise``, ``vt()``/``TEMP`` (``$temperature``/``$vt``), ``TIME``
 (``$abstime``), ``param_given`` (``$param_given``), ``ac_stim``,
-``limit_pnj``/``limit_fet``/``limit_vds`` (``$limit``),
+``limit_pnj``/``limit_fet``/``limit_vds``/``limit_delta``
+(``$limit``),
 ``limit_together`` (those probes limited as one device), and any sympy function — ``exp``, ``log``,
 ``tanh``, ``sqrt``, ``Piecewise`` for conditionals.  Two statements
 besides ``Contribution``: ``Cross(expr, direction)`` for ``@cross``

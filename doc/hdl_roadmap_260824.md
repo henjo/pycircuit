@@ -854,7 +854,12 @@ the form it was argued — here is what actually landed.
     3        kernel: sign, real-domain Abs           DONE
     3        kernel: softplus/mne/mxe/p3 promoted    DONE
     3        kernel: range contracts                 DONE
-    3        kernel: limit_delta                     not started
+    3        kernel: limit_delta                     DONE 2026-08-26 (sec.
+                                                     34): the family is
+                                                     complete.  Fixes the EKV
+                                                     diff pair 14/14 at
+                                                     vmax>=5; EKV itself NOT
+                                                     changed -- see sec. 34
     3        S1  pure form for chained path          REFUSED on measurement
                                                      (sec. 22/23): the two fast
                                                      paths are disjoint (22
@@ -4125,3 +4130,79 @@ no measurement asks for it.
 consumer against none, a ready acceptance test against none, and low
 blast radius against total. **S4 is not merely lower priority; it is
 sequenced behind §32**, and §32 is half a day.
+
+## 34. `limit_delta` BUILT (2026-08-26): the limiter family is complete
+
+§33 ranked it first: half a day, and something waiting for it. Built.
+
+```python
+vsb = limit_delta(bsb.V, 1.0)       # do not move this branch >1 V per step
+```
+
+`pnjlim` compresses a junction logarithmically, `fetlim` works about a
+threshold, `limvds` has hard-coded breakpoints — each needs a model that
+*has* such a quantity. `deltalim` needs nothing, which makes it the law
+for a branch whose model offers no better one. The kind table, the
+dispatch and the group validator now derive from one dictionary, so a
+sixth kind touches three lines rather than eight sites.
+
+**Not invented here.** `compact.PspMosLongChannel.limit` already bounds
+d, g and b alike by a symmetric `|delta| <= 1 V` about the source, by
+hand — and `_limvds`'s docstring already called that out as *"a third,
+blunter law"*. This is that law, named and shared, which is exactly what
+§3 asked for.
+
+### The acceptance case: it fixes the EKV diff pair completely
+
+`EkvNmosHdl` declares `limit_identity` on its bulk — a probe with **no
+law**, present only to admit the model to vector PCNR. §27's wild-start
+fix limits the *seed* through each device's own law, and an identity law
+clamps nothing, which is why this is the one circuit still falling back.
+
+Diff pair, both instance orders, seven `vin` values, `.` = converged:
+
+```
+             start 0 V                start +20 V
+identity     .. .. .. .. .. .. ..     XX XX XX XX XX XX XX
+delta  1     .. .. .. .. .. .. ..     .X .. .. .. .. .. X.
+delta  5     .. .. .. .. .. .. ..     .. .. .. .. .. .. ..
+delta 10     .. .. .. .. .. .. ..     .. .. .. .. .. .. ..
+```
+
+**14 of 14 failures become 14 of 14 convergences at `vmax >= 5`**, order-
+independently, with every zero-start result unchanged and every tail
+equal to `DC()`'s.
+
+⚠ **The bound is NOT monotone**, and 1 V — the value `compact.py` uses —
+is the wrong choice here: it leaves the two `|vin| = 1` cases
+**order-dependent**, which is the one property PCNR exists to provide.
+Swept at `vin = +1`: 0.1, 0.25, 0.5 fail; 1.0 half-works; 2.0 fails; 5.0
+and 10.0 work. Same chaotic signature as §27's `gmin` sweep, and the same
+lesson: **an iteration count from a wild start is not a stable
+acceptance number**, so pick the bound from a grid, never from one point.
+
+### EKV is deliberately NOT changed
+
+The measurement says it should be — and that is a separate decision:
+
+* it changes numerics for anyone using `EkvNmosHdl`;
+* `test_limit_identity.py` is built around that declaration. Its claims
+  2 and 3 assert EKV qualifies *via identity* and measure this very diff
+  pair with it, so the change invalidates a test module rather than
+  breaking a line of it;
+* the right `vmax` needs its own justification — 1 V is what the only
+  in-tree precedent uses and 1 V is the value that does not work here.
+
+So: the primitive ships, the measurement is recorded, and the model
+change is the user's call with the numbers in hand.
+
+### Tests
+
+`test_limit_delta.py`, 18 tests, both mechanisms verified to bite
+(neutralising the law fails 6; removing the positivity check fails 3).
+Covers the law itself (bites symmetrically; **returns `vnew` itself**
+when it does not, which is how both write-back paths detect "did
+limiting fire?"), the declaration through a real model, `explain()`,
+vector-PCNR qualification, a parameter-valued bound, refusal of a
+non-positive bound, and grouping — which a delta probe may join and an
+identity probe may not.

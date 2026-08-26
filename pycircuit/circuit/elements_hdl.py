@@ -127,7 +127,8 @@ from pycircuit.circuit.hdl import (Behavioural, Branch, Node, Contribution,
                                    Collapse, Cross, ddt, idt, idtmod,
                                    laplace_nd, laplace_zp, TIME, TEMP,
                                    limit_pnj, limit_fet, limit_vds,
-                                   limit_identity, limit_together,
+                                   limit_delta, limit_identity,
+                                   limit_together,
                                    param_given)
 
 ## ---------------------------------------------------------------------

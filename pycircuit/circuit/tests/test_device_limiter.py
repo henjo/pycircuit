@@ -161,8 +161,17 @@ def test_limit_together_rejects_what_is_not_a_limited_probe():
     b = Branch(Node('g'), Node('s'))
     with pytest.raises(ValueError, match='at least two probes'):
         limit_together(limit_fet(b.V, 0.5))
-    with pytest.raises(ValueError, match='limit_pnj/limit_fet/limit_vds'):
+    ## The message now derives from `_LIMIT_FN` rather than spelling the
+    ## kinds out, so a sixth limiter cannot be forgotten in it (that is
+    ## how `limit_delta` found this test, 2026-08-26).  What is asserted
+    ## is the PROPERTY -- it names the declarations it will accept, and
+    ## does NOT offer `limit_identity`, which cannot be grouped -- not
+    ## the wording.
+    with pytest.raises(ValueError) as e:
         limit_together(b.V, limit_vds(b.V))
+    msg = str(e.value)
+    assert 'limit_fet' in msg and 'limit_delta' in msg
+    assert 'limit_identity' not in msg
     ## A probe belongs to ONE group -- nesting would give it two, and the
     ## second tag would silently win.
     one, two = limit_together(limit_fet(b.V, 0.5), limit_vds(b.V))

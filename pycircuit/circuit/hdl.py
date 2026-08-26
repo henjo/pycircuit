@@ -1389,6 +1389,12 @@ class _LimitVds(_Limit):
     kind = 'vds'
 
 
+class _LimitDelta(_Limit):
+    """`$limit(probe, "deltalim", vmax)`; see :func:`limit_delta`."""
+    nargs = (2, 5)
+    kind = 'delta'
+
+
 class _LimitId(_Limit):
     """An identity probe -- a limited unknown with NO law; see
     :func:`limit_identity`."""
@@ -1398,16 +1404,16 @@ class _LimitId(_Limit):
 
 ## How many arguments after the probe belong to the LAW, per kind.  What
 ## follows them, if anything, is the group tag.
-_LIMIT_NPAR = {'pnj': 2, 'fet': 1, 'vds': 0, 'id': 0}
+_LIMIT_NPAR = {'pnj': 2, 'fet': 1, 'vds': 0, 'delta': 1, 'id': 0}
 
 #: The SPICE name of each kind's law, as `explain()` prints it, and the
 #: DSL function that declares it.  One table, because the three-entry
 #: dict literal used to be spelled at four sites and a fourth kind would
 #: have had to be added to each.
 _LIMIT_LAW = {'pnj': 'pnjlim', 'fet': 'fetlim', 'vds': 'limvds',
-              'id': 'identity (no law)'}
+              'delta': 'deltalim', 'id': 'identity (no law)'}
 _LIMIT_FN = {'pnj': 'limit_pnj', 'fet': 'limit_fet', 'vds': 'limit_vds',
-             'id': 'limit_identity'}
+             'delta': 'limit_delta', 'id': 'limit_identity'}
 
 ## Group ids only ever have to be unique WITHIN one `analog()` body, but a
 ## process-wide counter is what makes them so without threading state
@@ -1479,8 +1485,11 @@ def limit_together(*probes, sequential=False):
     out = []
     for slot, app in enumerate(probes):
         if not isinstance(app, _Limit):
-            raise ValueError('limit_together takes limit_pnj/limit_fet/'
-                             'limit_vds declarations; got %r' % (app,))
+            raise ValueError('limit_together takes a limiter declaration '
+                             '(%s); got %r'
+                             % ('/'.join(sorted(set(_LIMIT_FN.values())
+                                                - {'limit_identity'})),
+                                app))
         if app.kind == 'id':
             ## An identity probe never bites, and the grouped write-back
             ## treats a probe that did not bite as a CONSTRAINT it holds
@@ -1656,6 +1665,59 @@ def limit_vds(probe):
     """
     _limit_probe(probe, 'limit_vds')
     return _LimitVds(probe)
+
+
+def limit_delta(probe, vmax):
+    """`$limit(probe, "deltalim", vmax)`: bound this branch's movement.
+
+    The law with no device physics in it -- *do not move this branch more
+    than `vmax` volts in one Newton step*::
+
+        vsb = limit_delta(bsb.V, 1.0)
+
+    `pnjlim` compresses a junction logarithmically and `fetlim` works
+    about a threshold, so both need a model that HAS such a quantity.
+    `deltalim` needs nothing, which makes it the law for a branch whose
+    model offers no better one.
+
+    **It is not invented here.** `compact.PspMosLongChannel.limit`
+    already bounds d, g and b alike by a symmetric ``|delta| <= 1 V``
+    about the source, by hand, and its docstring explains the failure it
+    exists for: with the drain limited to `Vdsat` the current saturates,
+    ``dIds/dVds`` falls to 1e-11 by 500 V, and a solver that lands there
+    has a numerically empty row. This is that law, named and shared --
+    which is what roadmap §3 asked for ("35 hand-written lines of FET
+    Newton limiting per model").
+
+    **Its other use is vector PCNR**, and it is why this was built
+    (roadmap §33). `limit_identity` admits a device to PCNR by declaring
+    a branch as a limited unknown with NO law; `EkvNmosHdl` does that for
+    its bulk. But §27's wild-start fix works by passing the SEED through
+    each device's own law, and an identity law clamps nothing -- which is
+    why the EKV differential pair is the one circuit still falling back
+    to the ordinary solver. `limit_delta` gives such a probe a real law
+    without inventing physics for it.
+
+    Args:
+        probe: a branch potential (``b.V``).
+        vmax: the largest excursion allowed per iteration, in volts.
+            Must be a positive number or a parameter expression. A
+            non-positive bound would pin the branch at its previous value
+            for ever -- a stall, not a limit -- and is refused here.
+
+    See also :func:`limit_pnj`, :func:`limit_fet`, :func:`limit_vds`,
+    :func:`limit_identity`, and :func:`limit_together` for grouping.
+    """
+    _limit_probe(probe, 'limit_delta')
+    v = sympy.sympify(vmax)
+    if v.is_number and not v.is_positive:
+        raise ValueError(
+            'limit_delta needs a POSITIVE bound, got %r. A bound of zero '
+            'or less pins the branch at its previous value for ever, '
+            'which is a stall rather than a limit; use limit_identity if '
+            'the branch really should be left where Newton puts it.'
+            % (vmax,))
+    return _LimitDelta(probe, v)
 
 
 def limit_identity(probe):

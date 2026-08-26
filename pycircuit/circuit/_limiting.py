@@ -281,6 +281,48 @@ def _limvds(vnew, vold, toolkit):
     return vnew
 
 
+def _deltalim(vnew, vold, vmax, toolkit):
+    """Bound the per-iteration EXCURSION of a branch: ``|vnew - vold| <= vmax``.
+
+    The blunt law, and the one with no device physics in it.  Where
+    `pnjlim` compresses a junction logarithmically and `fetlim` works
+    about a threshold, this only says *do not move this branch more than
+    `vmax` volts in one step* -- so it applies to any branch at all,
+    including one whose model has no notion of a critical voltage.
+
+    **It is not invented for the DSL.**  `compact.PspMosLongChannel.limit`
+    already does exactly this by hand, and its docstring says why: with
+    the drain voltage limited to `Vdsat` the current saturates, so
+    ``dIds/dVds`` falls to 1e-11 by 500 V and 1e-28 by 1e7 -- a solver
+    that lands out there has a numerically empty row and is reported
+    singular rather than slow.  That method bounds d, g and b alike by a
+    symmetric ``|delta| <= 1 V`` about the source.  This is that law,
+    named and shared.
+
+    Two properties the other kinds also have, and which the write-back
+    depends on:
+
+    * **it returns `vnew` ITSELF when it does not bite**, not a copy and
+      not ``vold + (vnew - vold)`` -- the ordinary path decides "did
+      limiting fire?" by comparing `vlim == vnew`, and
+      `pcnr.limit_block` by `lim != raw`.  Reconstructing an equal value
+      would report a bite that did not happen;
+    * it is **symmetric**, so it cannot introduce a direction preference
+      into a model that has none.
+
+    `vmax` must be positive; a non-positive bound would pin the branch at
+    `vold` for ever, which is a stall rather than a limit, so it is
+    rejected where it is declared (:func:`pycircuit.circuit.hdl.limit_delta`)
+    rather than here on the hot path.
+    """
+    d = vnew - vold
+    if d > vmax:
+        return vold + vmax
+    if d < -vmax:
+        return vold - vmax
+    return vnew
+
+
 def apply_limit(kind, vnew, vold, pars, toolkit):
     """Dispatch one limiter KIND on its own parameter list.
 
@@ -297,6 +339,8 @@ def apply_limit(kind, vnew, vold, pars, toolkit):
         return _fetlim(vnew, vold, pars[0], toolkit)
     if kind == 'vds':
         return _limvds(vnew, vold, toolkit)
+    if kind == 'delta':
+        return _deltalim(vnew, vold, pars[0], toolkit)
     if kind == 'id':
         ## `limit_identity`: a limited unknown with no law.  Returning
         ## `vnew` ITSELF (not a copy, not `vold + (vnew - vold)`) is what
