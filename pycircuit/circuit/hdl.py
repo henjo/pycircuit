@@ -1638,6 +1638,13 @@ class _IntermediateSymbol(sympy.Symbol):
     def __new__(cls, name):
         return super().__new__(cls, name, real=True)
 
+    ## `Symbol` pickles as `cls(name, **assumptions)`, which this
+    ## one-argument `__new__` refuses; the assumption is fixed, so the
+    ## name alone rebuilds it.  Needed by the compile cache, where a
+    ## chained model's PCNR and limiter records carry its intermediates.
+    def __getnewargs_ex__(self):
+        return ((self.name,), {})
+
 
 #: Intermediates declared by the model body currently being compiled.
 #: Compilation happens once per class, at class-creation time, on one
@@ -1929,6 +1936,9 @@ class _StateSymbol(sympy.Symbol):
         ## real=True for the same reason as Quantity: a Piecewise over a
         ## state must be constructible.
         return super().__new__(cls, name, real=True)
+
+    def __getnewargs_ex__(self):        # see _IntermediateSymbol
+        return ((self.name,), {})
 
 
 def _split_terms(rhs, xset, tset=frozenset()):
@@ -2876,7 +2886,7 @@ def generate_code(cls):
     else:
         G = sympy.Matrix([ivec]).jacobian(xsyms)
         C = sympy.Matrix([qvec]).jacobian(xsyms)
-        G_dc = sympy.Matrix([ivec_dc]).jacobian(xsyms)
+        G_dc = sympy.Matrix([ivec_dc]).jacobian(xsyms) if dc_pins else G
     CY = sympy.zeros(n)
     for (r_, c_), psd in CYacc.items():
         CY[r_, c_] = psd
@@ -2932,20 +2942,39 @@ def generate_code(cls):
                           for r_ in range(n)],
                          chain_args + [FREQ],
                          modules_map=_mods, unpack=_unpack),
-                     u=cu(uvec, (TIME,)), u_dc=cu(uvec_dc, (TIME,)),
+                     u=cu(uvec, (TIME,)),
                      dudt=cu(dudt, (TIME,)), uac=cu(acvec))
-        funcs['i_dc'] = cc(ivec_dc, None)
-        funcs['G_dc'] = cc(ivec_dc, True)
+        ## The DC variants differ from the transient ones ONLY where a
+        ## state is pinned (`ivec_dc` is built from `ivec` by replacing
+        ## the pinned rows).  With nothing pinned they are the same
+        ## vectors, and compiling them again produced the same source
+        ## text at the same cost -- for `G_dc` a second forward-mode
+        ## Jacobian of the whole chain, measured at about a fifth of the
+        ## library's import time.  Share the function instead.
+        if dc_pins:
+            funcs['i_dc'] = cc(ivec_dc, None)
+            funcs['G_dc'] = cc(ivec_dc, True)
+            funcs['u_dc'] = cu(uvec_dc, (TIME,))
+        else:
+            funcs['i_dc'], funcs['G_dc'], funcs['u_dc'] = \
+                funcs['i'], funcs['G'], funcs['u']
     else:
       funcs = dict(
-        i=compile_x(ivec), i_dc=compile_x(ivec_dc),
+        i=compile_x(ivec),
         q=compile_x(qvec),
-        G=compile_x(G), G_dc=compile_x(G_dc),
+        G=compile_x(G),
         C=compile_x(C), CY=compile_x(CY, extra=(FREQ,)),
-        u=compile_t(uvec), u_dc=compile_t(uvec_dc), dudt=compile_t(dudt),
+        u=compile_t(uvec), dudt=compile_t(dudt),
         uac=sympy.lambdify(paramsyms + [TEMP] + given_syms, acvec,
                            modules=NUMPY_MODULES, cse=True),
-    )
+      )
+      if dc_pins:
+          funcs['i_dc'] = compile_x(ivec_dc)
+          funcs['G_dc'] = compile_x(G_dc)
+          funcs['u_dc'] = compile_t(uvec_dc)
+      else:
+          funcs['i_dc'], funcs['G_dc'], funcs['u_dc'] = \
+              funcs['i'], funcs['G'], funcs['u']
 
     ## Pure single-device forms for the JAX batched path (eval_i_pure /
     ## eval_q_pure) reuse the SAME symbolic vectors, compiled lazily with
@@ -3164,7 +3193,7 @@ def generate_code(cls):
             fn_ = _chain_compile(
                 defs_, [out_], args_,
                 modules_map=dict(_KERNEL_NUMPY, _wrapfloor=np.floor))
-            return lambda *a_, _f=fn_: _f(*a_)[0]
+            return _first_of(fn_)
 
         for spec_j in pcnr_spec:
             vs_ = spec_j['vsym']
@@ -3577,16 +3606,13 @@ def _limit_par_fn(expr, kind, chain_defs, xsyms, xlabels, args, modules,
         inner = _chain_compile(
             reach, [expr], [x] + args, modules_map=mods,
             unpack=[(xs.name, 'x[%d]' % k) for k, xs in enumerate(xsyms)])
-        fn = lambda x0, *a, _f=inner: _f(x0, *a)[0]      # noqa: E731
-        fn._wants_x = True
-        return fn
+        return _first_of(inner, wants_x=True)
     if not reach:
         fn = sympy.lambdify(args, expr, modules=modules)
-    else:
-        inner = _chain_compile(reach, [expr], args, modules_map=mods)
-        fn = lambda *a, _f=inner: _f(*a)[0]             # noqa: E731
-    fn._wants_x = False
-    return fn
+        fn._wants_x = False
+        return fn
+    inner = _chain_compile(reach, [expr], args, modules_map=mods)
+    return _first_of(inner, wants_x=False)
 
 
 def _pcnr_declared_route(limits, ivec, chain_defs, xsyms, xlabels, paramsyms,
@@ -3847,6 +3873,23 @@ def _chain_compile(defs, outputs, args, want_jacobian_of=None, xsyms=None,
     lines.extend(body)
     lines.append('    return %s' % ret)
     src = '\n'.join(lines)
+    ns = _chain_namespace(modules_map)
+    exec(compile(src, '<hdl-chain>', 'exec'), ns)
+    fn = ns['_f']
+    fn._src = src
+    return fn
+
+
+def _chain_namespace(modules_map):
+    """The namespace a chain-compiled function runs in.
+
+    Built in ONE place because two callers must agree on it: the
+    compiler above, and the on-disk cache (`_hdl_cache`), which
+    re-executes the stored source in a namespace rebuilt by this same
+    function and checks, before recording anything, that every global
+    the function loads is bound to the same object here as it was at
+    compile time.
+    """
     ns = dict(modules_map or {})
     import functools
     import numpy
@@ -3868,10 +3911,21 @@ def _chain_compile(defs, outputs, args, want_jacobian_of=None, xsyms=None,
               'less', 'greater', 'logical_and', 'logical_or', 'nan',
               'inf', 'amin', 'amax', 'minimum', 'maximum', 'where'):
         ns.setdefault(k, getattr(numpy, k, None))
-    exec(compile(src, '<hdl-chain>', 'exec'), ns)
-    fn = ns['_f']
-    fn._src = src
-    return fn
+    return ns
+
+
+def _first_of(fn, wants_x=None):
+    """`fn`'s first output as a scalar-valued callable.
+
+    A named wrapper rather than an inline lambda so the compile cache
+    can see through it: the wrapper carries the wrapped function as
+    `_hdl_inner` and, when given, the `_wants_x` flag `limit()` reads.
+    """
+    out = lambda *a_, _f=fn: _f(*a_)[0]      # noqa: E731
+    out._hdl_inner = fn
+    if wants_x is not None:
+        out._wants_x = wants_x
+    return out
 
 
 def _params_of(self):
@@ -3965,7 +4019,12 @@ class BehaviouralMeta(type):
     def __init__(cls, name, bases, dct):
         if 'analog' not in dct:
             return
-        info = generate_code(cls)
+        ## The signature checks run on every start; the compile itself
+        ## is served from the on-disk cache when its key matches (see
+        ## `_hdl_cache`), and `cls._hdl_cache_status` says which.
+        _check_analog_declaration(cls)
+        from pycircuit.circuit import _hdl_cache
+        info = _hdl_cache.compiled_info(cls, generate_code)
         funcs = info['funcs']
         cls._hdl_paramnames = info['paramnames']
         cls._hdl_given_names = info['given_names']
@@ -4120,8 +4179,10 @@ class BehaviouralMeta(type):
                 cls.periodic_states = periodic_states
         else:
             xset2 = set(info['pure_spec']['xsyms'])
-            Gmat = sympy.Matrix([info['pure_spec']['ivec']]).jacobian(
-                info['pure_spec']['xsyms'])
+            ## `sym_spec['G']` IS this Jacobian, computed once in
+            ## generate_code; differentiating `ivec` a second time here
+            ## bought nothing and is not available on a cache hit.
+            Gmat = info['sym_spec']['G']
             cls.linear = (not any((e.free_symbols & xset2) for e in Gmat)
                           ## a wrap or Piecewise is discontinuous even where
                           ## its slope is constant almost everywhere

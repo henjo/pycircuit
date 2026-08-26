@@ -31,15 +31,26 @@ compare the same rows.
 Costs are dominated by the MOSFET's ~90 s compile, so that row is built
 ONCE with no repetition, and is skipped entirely without the IHP PDK.
 
+The ladder's compile column is a COLD compile: the on-disk compile cache
+(`pycircuit.circuit._hdl_cache`) is switched off for it, or every row
+after the first build would measure a cache hit.  `--cache` adds the
+section that measures the cache itself -- library import and one big
+model's compile, cold against warm, each in a fresh interpreter.
+
 Run:  python benchmarks/hdl_model_cost.py
       python benchmarks/hdl_model_cost.py --json out.json
       python benchmarks/hdl_model_cost.py --no-psp     (seconds, not minutes)
+      python benchmarks/hdl_model_cost.py --cache --no-psp
+      python benchmarks/hdl_model_cost.py --cache --cache-psp   (~3 min)
 """
 
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 import warnings
 
@@ -341,6 +352,152 @@ def primitive_table():
     print()
 
 
+## ----------------------------------------------------------------------
+## The compile cache.
+
+_IMPORT_SCRIPT = r"""
+import json, sys, time
+t0 = time.perf_counter()
+import pycircuit.circuit.hdl
+t1 = time.perf_counter()
+from pycircuit.circuit import _hdl_cache as hc
+per = {}
+orig = hc.compiled_info
+def timed(cls, fn):
+    t = time.perf_counter()
+    try:
+        return orig(cls, fn)
+    finally:
+        per[cls.__name__] = time.perf_counter() - t
+hc.compiled_info = timed
+import pycircuit.circuit.elements_hdl as eh
+t2 = time.perf_counter()
+st = {}
+for n in dir(eh):
+    c = getattr(eh, n)
+    if isinstance(c, type) and hasattr(c, '_hdl_cache_status'):
+        st[c._hdl_cache_status.split(' ')[0].rstrip(':')] =             st.get(c._hdl_cache_status.split(' ')[0].rstrip(':'), 0) + 1
+json.dump(dict(hdl=t1 - t0, elements=t2 - t1, per=per, status=st),
+          open(sys.argv[1], 'w'))
+"""
+
+_PSP_SCRIPT = r"""
+import json, sys, time
+import pycircuit.circuit.hdl
+t0 = time.perf_counter()
+from pycircuit.circuit.compact import PspMosLongChannel
+t1 = time.perf_counter()
+json.dump(dict(compile=t1 - t0, status=PspMosLongChannel._hdl_cache_status),
+          open(sys.argv[1], 'w'))
+"""
+
+
+def _run_in_fresh_interpreter(script, cache_dir, enabled=True):
+    env = dict(os.environ, PYCIRCUIT_HDL_CACHE_DIR=cache_dir,
+               PYCIRCUIT_HDL_CACHE='1' if enabled else '0')
+    fd, out = tempfile.mkstemp(suffix='.json')
+    os.close(fd)
+    try:
+        subprocess.run([sys.executable, '-c', script, out], check=True,
+                       env=env)
+        with open(out) as fh:
+            return json.load(fh)
+    finally:
+        os.unlink(out)
+
+
+def cache_section(with_psp=False):
+    """Import and compile times, cache off / cold / warm.
+
+    Each measurement is a FRESH interpreter, because a class compiles
+    once per process: the first run with the cache on is the miss
+    (compile plus record), the second is the hit.
+    """
+    from pycircuit.circuit import _hdl_cache as hc
+    d = tempfile.mkdtemp(prefix='pycircuit-hdl-cache-bench-')
+    d2 = d
+    out = {}
+    try:
+        print('Compile cache (%s):' % hc.cache_dir())
+        print('  elements_hdl import, fresh interpreter each ...',
+              flush=True)
+        off = _run_in_fresh_interpreter(_IMPORT_SCRIPT, d, enabled=False)
+        cold = _run_in_fresh_interpreter(_IMPORT_SCRIPT, d)
+        warm = _run_in_fresh_interpreter(_IMPORT_SCRIPT, d)
+        assert cold['status'].get('miss') and warm['status'].get('hit'), \
+            (cold['status'], warm['status'])
+        out['import'] = dict(off=off, cold=cold, warm=warm)
+        print()
+        print('  %-28s %10s %10s %10s' % ('', 'cache off', 'cold (miss)',
+                                          'warm (hit)'))
+        print('  %-28s %10.3f %10.3f %10.3f  (hdl.py + sympy + numpy)'
+              % ('import hdl', off['hdl'], cold['hdl'], warm['hdl']))
+        print('  %-28s %10.3f %10.3f %10.3f  (%d classes)'
+              % ('import elements_hdl', off['elements'], cold['elements'],
+                 warm['elements'], len(warm['per'])))
+        names = sorted(off['per'], key=lambda n: -off['per'][n])
+        for n in names[:8]:
+            print('  %-28s %10.3f %10.3f %10.3f'
+                  % ('  ' + n, off['per'][n], cold['per'][n], warm['per'][n]))
+        rest = names[8:]
+        if rest:
+            print('  %-28s %10.3f %10.3f %10.3f'
+                  % ('  (%d others)' % len(rest),
+                     sum(off['per'][n] for n in rest),
+                     sum(cold['per'][n] for n in rest),
+                     sum(warm['per'][n] for n in rest)))
+        print()
+
+        ## One big class, in-process, so the ladder's number is comparable.
+        import pycircuit.circuit.circuit as cm
+        from pycircuit.circuit.toolkit import numeric
+        from pycircuit.circuit import elements_hdl as eh
+        from pycircuit.circuit.hdl import Behavioural
+        cm.default_toolkit = numeric
+        ## A second directory: the fresh-interpreter runs above already
+        ## wrote this class's entry into `d`, and the cold build below
+        ## must not find it.
+        d2 = tempfile.mkdtemp(prefix='pycircuit-hdl-cache-bench-')
+        os.environ['PYCIRCUIT_HDL_CACHE_DIR'] = d2
+
+        def build():
+            return type('GummelPoonNpnHdl', (Behavioural,), dict(
+                analog=staticmethod(eh.GummelPoonNpnHdl.analog),
+                instparams=list(eh.GummelPoonNpnHdl.instparams),
+                __module__=eh.GummelPoonNpnHdl.__module__))
+        hc.ENABLED = False
+        _time_once(build)                # warm sympy's own caches first
+        _, t_off = _time_once(build)
+        hc.ENABLED = True
+        c1, t_cold = _time_once(build)
+        c2, t_warm = _time_once(build)
+        assert c1._hdl_cache_status == 'miss' and \
+            c2._hdl_cache_status == 'hit', (c1._hdl_cache_status,
+                                            c2._hdl_cache_status)
+        out['bjt'] = dict(off=t_off, cold=t_cold, warm=t_warm)
+        print('  %-28s %10.3f %10.3f %10.3f  (class compile, in-process)'
+              % ('GummelPoonNpnHdl', t_off, t_cold, t_warm))
+
+        if with_psp:
+            if not os.path.isdir(PDK):
+                print('  (PSP skipped: IHP Open PDK not at %s)' % PDK)
+            else:
+                print('  compiling the PSP MOSFET twice (~2-3 min) ...',
+                      flush=True)
+                pc = _run_in_fresh_interpreter(_PSP_SCRIPT, d)
+                pw = _run_in_fresh_interpreter(_PSP_SCRIPT, d)
+                out['psp'] = dict(cold=pc, warm=pw)
+                print('  %-28s %10s %10.3f %10.3f  (%s / %s)'
+                      % ('PspMosLongChannel', '-', pc['compile'],
+                         pw['compile'], pc['status'], pw['status']))
+        print()
+    finally:
+        os.environ.pop('PYCIRCUIT_HDL_CACHE_DIR', None)
+        shutil.rmtree(d, ignore_errors=True)
+        shutil.rmtree(d2, ignore_errors=True)
+    return out
+
+
 def report(rows):
     print()
     print('%-28s %10s %10s %10s %7s  %-7s %s'
@@ -377,7 +534,23 @@ def main():
                     help='just the printer-dispatch and primitive tables')
     ap.add_argument('--json', metavar='PATH',
                     help='also write the rows as JSON, for later comparison')
+    ap.add_argument('--cache', action='store_true',
+                    help='measure the on-disk compile cache: library '
+                         'import and a BJT compile, cache off / cold / warm')
+    ap.add_argument('--cache-psp', action='store_true',
+                    help='with --cache: the PSP compile too (two of them)')
     args = ap.parse_args()
+
+    ## The ladder's compile column means a COLD compile.  Off, or every
+    ## `_bench(build, ...)` repetition after the first would be a hit.
+    from pycircuit.circuit import _hdl_cache
+    _hdl_cache.ENABLED = False
+
+    cache = None
+    if args.cache:
+        _hdl_cache.ENABLED = True
+        cache = cache_section(with_psp=args.cache_psp)
+        _hdl_cache.ENABLED = False
 
     dispatch_costs()
     primitive_table()
@@ -388,7 +561,7 @@ def main():
 
     if args.json:
         with open(args.json, 'w') as fh:
-            json.dump(dict(rows=rows), fh, indent=2)
+            json.dump(dict(rows=rows, cache=cache), fh, indent=2)
         print('wrote %s' % args.json)
     return 0
 
