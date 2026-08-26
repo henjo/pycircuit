@@ -858,8 +858,16 @@ the form it was argued — here is what actually landed.
     15       vector PCNR Stage 3 (JAX)               PARKED by the user;
                                                      traced path raises
                                                      NotImplementedError
-    15       the unlimited-node failure              OPEN, architectural
-                                                     on every path
+    15       the unlimited-node failure              NARROWED 2026-08-26 --
+                                                     NOT architectural; it
+                                                     converges at every
+                                                     entry point.  What is
+                                                     open is a native PCNR
+                                                     rescue from a wild
+                                                     start (damped
+                                                     `predict`); the
+                                                     integration gap is
+                                                     fixed by the fallback
     12.1     limiter write-back moves the wrong node DONE
     12.2     check_jacobians "not resolvable"        DONE 2026-08-25
     12.3     no way to declare a device needs gmin   DONE 2026-08-25
