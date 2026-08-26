@@ -3713,3 +3713,93 @@ target is now named and quantified: **`minc`/`maxc`, 6744 calls and
 4.5 ms per evaluation**. They are Python-level functions called once per
 clamped subexpression. The C backend already removes them entirely
 (212x), which is why this is recorded rather than pursued.
+
+## 30. Card parameters as compile-time constants (2026-08-26): 1.54x, and it is what S2 was reaching for
+
+Asked directly: *can evaluation be faster if every model-card parameter
+— everything not set at instantiation — is treated as a fixed constant?*
+Measured. **Yes: 1.54x on PSP's Jacobian**, to machine precision in the
+regime the model is validated in.
+
+This is the first item this session that measured **well**.
+
+### Two different mechanisms, and only one of them works
+
+| | what it removes | measured |
+|---|---|---|
+| **§29 S2** — elide blocks a card makes inert | whole blocks, 15% of the source | **1.00x** |
+| **§30 folding** — make every card parameter a literal | parameter-only arithmetic *throughout* | **1.54x** |
+
+§29 established that a compact model's cost is its **regularisers**, not
+its physics. Folding wins precisely because it attacks those: the
+`minc`/`maxc`/`_step`/`_rdiv` calls in the emitted source fall from
+**11 565 to 7 251, −37%**, because a clamp whose bound is now a literal
+often folds away entirely. Eliding blocks removed **zero** of them.
+
+**And folding subsumes S2**: with the parameters numeric, `psp_kernel`'s
+build-time guards fire on their own — which is exactly the trick §29 used
+to simulate S2 in the first place.
+
+### Measured
+
+Real IHP sg13g2 card (`cornerMOSlv.lib`, `mos_tt`, w = 10 µm, l = 1 µm),
+68 of 153 parameters supplied, compile cache off:
+
+```
+                  G source     primitive calls    G evaluation
+symbolic params   2675 lines        11 565        17.90 ms
+folded params     1971 lines         7 251        11.62 ms   1.54x
+```
+
+Four interleaved runs; spreads 17.90–18.12 and 11.61–11.64 ms.
+
+### Accuracy — and why the first number was misleading
+
+Folding reassociates arithmetic, so this is **not** bit-identical. What
+matters is where the difference lands:
+
+| observable | max relative difference |
+|---|---|
+| `G`, at the measured bias | 1.4e-13 |
+| drain current, strong inversion (>1e-6 A), 120 points | **8.5e-16** |
+| drain current, validated window (1e-9…1e-6 A) | **2.7e-15** |
+| `i` at 40 **random** biases on all six nodes | **1.6e-6** |
+
+⚠ The random-bias figure was measured **first**, and taken at face value
+it would have killed the idea: 1.6e-6 is the size of PSP's entire
+vendor-validation budget (1.3e-6 at the worst of twelve sweeps). Banding
+the same comparison by current magnitude on a real gate sweep shows the
+validated regime agrees to **machine precision**, and the 1.6e-6 comes
+from bias combinations no sweep visits — random values on internal nodes
+included. **A tolerance is meaningless without the window it applies
+in**, which is `validation-design`'s own rule, and it nearly cost a 1.54x
+result here.
+
+The random-bias regime is **not characterised** and would need to be
+before adopting this — it is recorded as an open question, not waved
+away.
+
+### What it would cost to build
+
+A compiled variant **per distinct model card**, which is the same
+variant-explosion risk §3 named for S2 — but with a better ratio: one
+card typically serves every transistor of that flavour in a design, so
+the variant count is the number of cards, not the number of masks.
+
+The two things that made it expensive when §3 was written are now in
+place: the **on-disk compile cache** (§16) makes the ~30 s build a
+one-time cost per card, and `_collapse_variant` already does
+compile-a-class-per-key and retarget-by-`__class__`, so the machinery
+exists and would be keyed on the card instead of a mask.
+
+**Unmeasured:** whether this stacks on the **C backend**. C already
+removes the Python-level primitives entirely (212x), so folding's −37%
+of them may buy much less there — and the C path is where a large model
+would actually run.
+
+### Status
+
+**Not built.** It is the strongest remaining performance item by a wide
+margin, it has a real accuracy question attached, and the C-backend
+interaction should be measured before anyone commits days to it.
+`benchmarks/card_constant_folding.py` reproduces all of the above.
