@@ -4911,3 +4911,53 @@ Fixed: `'pcnr_lift=%r'` is now part of `_hdl_cache.key_for`, with a test
 asserting the two keys differ and that the off-key is stable. **The
 general rule, which this cache did not previously state: anything that
 changes emission and is not a file must be in the key.**
+
+## 41. Gummel-Poon, addressed (2026-08-27): `var()` was hiding the cancellation
+
+§40 refused `GummelPoonNpnHdl` because its base-resistance coefficient
+`1/_v68_rbb` reads a probe. That was measured with a check that follows
+chain REFERENCES, and it over-refuses. SPICE's base resistance is
+
+    rbmx = var(Piecewise((rb, rbm < 0), (rbm, True)))
+    rbb  = var((rbmx + (rb - rbmx) / qb) / area)
+
+where `rbm < 0` is SPICE's sentinel for *not given*. When it is not
+given, `rbmx = rb`, `(rb - rbmx)` is an **exact zero**, the whole `qb`
+term vanishes, and **`rbb = rb/area` is a constant**.
+
+⚠ **sympy cannot see that while `rbmx` is a held `var()`.** It reads
+`25.0 - _v67_rbmx`, which is not zero. This is the same "`var()` is
+arithmetic" trap the DSL notes elsewhere, arriving as a *false refusal*
+rather than a wrong number: the compiler could not prove a conductance
+was constant because the model had helpfully named it.
+
+**Fix: resolve the chain and ask what survives**, rather than following
+references. `_reads_a_probe` now substitutes each chain definition
+(reverse order, one pass) before testing. The two answers are genuinely
+different physics, not two spellings:
+
+| card | `rbb` | verdict |
+|---|---|---|
+| `rbm` folded to its default | `rb/area`, constant | **liftable** |
+| `rbm` left symbolic | carries `qb` | correctly **refused** |
+
+So `fold_card` is what makes a BJT eligible -- which is what anyone
+shipping a production model does anyway, and is exactly what §30 built
+folding for.
+
+**Measured:** a folded Gummel-Poon common-emitter stage under PCNR
+reaches the ordinary path's operating point to **2.220e-17**. The
+unfolded card is still refused, and a test holds both.
+
+Bite-checked: reverting `_reads_a_probe` to reference-following fails
+the two new tests and passes the other 24, so they discriminate on
+exactly the change that matters.
+
+### Liftable set, current
+
+| model | needs |
+|---|---|
+| `MosLevel1Hdl`, `MosLevel3Hdl`, `MesfetStatzHdl` | nothing -- `rd`/`rs` cards work directly |
+| `GummelPoonNpnHdl` | `fold_card` (so `rbm` resolves) |
+| `GummelPoonNpnThermalHdl` | still refused: chain-variable survivor, `dT` drives physics exponentially |
+| `PhotodiodeHdl`, `LedHdl` | still refused: optical drive nodes / branch-current unknown |

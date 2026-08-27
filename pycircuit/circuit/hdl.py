@@ -4973,6 +4973,18 @@ def _affine_in_nodes(expr, node_syms, xset, probe_syms, defs_map=None):
     return rest, coeffs
 
 
+def _resolve_through_chain(expr, defs):
+    """`expr` with every chain variable replaced by its definition.
+
+    Substituting in REVERSE definition order resolves a chain of any
+    depth in one pass: a definition can only read those before it.
+    """
+    for sym, val in reversed(defs):
+        if expr.has(sym):
+            expr = expr.subs(sym, val)
+    return expr
+
+
 def _reads_a_probe(syms, probe_syms, defs_map, _seen=None):
     """Does `syms` reach a probe symbol, following chain definitions?
 
@@ -4983,16 +4995,30 @@ def _reads_a_probe(syms, probe_syms, defs_map, _seen=None):
     unknown, which the ordinary assembly cannot carry because it is
     built before `v_lim` is known.  Checking only the surface symbols
     would accept it and stamp a stale conductance every iteration.
+
+    ⚠ But following REFERENCES over-refuses, because `var()` hides
+    cancellation.  Gummel-Poon holds
+
+        rbmx = var(Piecewise((rb, rbm < 0), (rbm, True)))
+        rbb  = var((rbmx + (rb - rbmx) / qb) / area)
+
+    and `rbm < 0` is SPICE's "unset", meaning `rbmx = rb` and the whole
+    `qb` term is multiplied by an exact zero -- `rbb` is a constant.
+    sympy cannot see that while `rbmx` is a held symbol: it reads
+    `rb - _v67_rbmx`, which is not zero.  So a card that folds `rbm`
+    resolves to a constant conductance and one that leaves it symbolic
+    genuinely does not, and only substitution can tell them apart.
+
+    Hence: resolve the chain first, then ask what actually survives.
     """
     if syms & probe_syms:
         return True
-    _seen = set() if _seen is None else _seen
-    for s in syms & set(defs_map):
-        if s in _seen:
-            continue                         # pragma: no cover -- cycle belt
-        _seen.add(s)
-        if _reads_a_probe(set(defs_map[s].free_symbols), probe_syms,
-                          defs_map, _seen):
+    unresolved = syms & set(defs_map)
+    if not unresolved:
+        return False
+    defs = list(defs_map.items())
+    for s in sorted(unresolved, key=str):
+        if _resolve_through_chain(defs_map[s], defs).free_symbols & probe_syms:
             return True
     return False
 

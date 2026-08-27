@@ -310,3 +310,88 @@ def test_a_collapsed_variant_does_not_inherit_the_wrong_block():
         assert gl.shape == (plain.n, plain.n), (
             'inherited a block shaped %s for a %d-node device'
             % (gl.shape, plain.n))
+
+
+## ======================================================================
+## 4.  Gummel-Poon: the cancellation `var()` hides.
+## ======================================================================
+
+#: A real BJT card.  `fold_card` refuses bare defaults, and rightly --
+#: "defaults are not a physical card".
+GP_CARD = dict(IS=2.5e-14, bf=180.0, br=3.0, vaf=60.0, ne=1.6, nc=2.0,
+               ise=4e-15, isc=8e-15, rb=25.0, re=1.0, rc=8.0)
+
+
+def _folded_gp():
+    return hdl.fold_card(eh.GummelPoonNpnHdl, instance=(), **GP_CARD)
+
+
+def test_gummel_poon_is_refused_while_its_base_resistance_is_free():
+    """Unfolded, `rbb` really is bias-dependent and must be refused.
+
+    SPICE's base resistance is
+
+        rbmx = var(Piecewise((rb, rbm < 0), (rbm, True)))
+        rbb  = var((rbmx + (rb - rbmx) / qb) / area)
+
+    and `qb` is the base-charge factor, which moves with bias.  For a
+    general `rbm` that is a conductance that changes every iteration --
+    bilinear in `v_lim` and `x` -- and the ordinary assembly, built
+    before `v_lim` is known, cannot carry it.
+    """
+    el = eh.GummelPoonNpnHdl(Node('c'), Node('b'), Node('e'), **GP_CARD)
+    el.update_iparv()
+    assert not getattr(el, 'pcnr_probes', None)
+    assert 'no $limit probe limits' in (
+        type(el)._hdl_info.get('pcnr_refusal') or '')
+
+
+def test_a_folded_gummel_poon_card_qualifies():
+    """Folded, `rbm` is known -- and SPICE's "unset" makes `rbb` CONSTANT.
+
+    `rbm < 0` is SPICE's sentinel for "not given", and it means
+    `rbmx = rb`, so `(rb - rbmx)` is an exact zero and the whole `qb`
+    term vanishes: `rbb = rb / area`.
+
+    ⚠ sympy cannot see that while `rbmx` is a held `var()` -- it reads
+    `25.0 - _v67_rbmx`, which is not zero.  A probe test that follows
+    chain REFERENCES therefore over-refuses; one that RESOLVES the chain
+    and asks what survives gets it right.  That is the difference
+    between this test and the one above, and both must hold: folding
+    changes the physics of the coefficient, not merely its spelling.
+    """
+    el = _folded_gp()(Node('c'), Node('b'), Node('e'))
+    el.update_iparv()
+    assert getattr(el, 'pcnr_probes', None), (
+        type(el)._hdl_info.get('pcnr_refusal') or '')
+    assert getattr(type(el), 'pcnr_lin_G', None) is not None
+
+
+def test_a_folded_gummel_poon_reaches_the_same_operating_point():
+    """The gate, for the model this whole exercise started from."""
+    import numpy as np
+    from pycircuit.circuit.elements import SubCircuit, VS
+    from pycircuit.circuit import gnd, pcnr as P
+    from pycircuit.circuit.dcanalysis import DC
+
+    fold = _folded_gp()
+
+    def build():
+        c = SubCircuit()
+        c.add_node('c')
+        c.add_node('b')
+        c['vcc'] = VS('c', gnd, v=5.0)
+        c['vb'] = VS('b', gnd, v=0.75)
+        c['q1'] = fold('c', 'b', gnd)
+        return c
+
+    assert len(P.pcnr_devices(build())) == 1, 'the BJT is not participating'
+    x_ref = np.asarray(DC(build(), refnode=gnd).solve().x, dtype=float)
+    out = P.solve_dc(build(), gnd)
+    x_lim = np.asarray(out[0] if isinstance(out, tuple) else out, dtype=float)
+    den = max(1e-30, float(np.max(np.abs(x_ref))))
+    rel = float(np.max(np.abs(x_lim - x_ref))) / den
+    assert rel < 1e-9, (
+        'folded Gummel-Poon under PCNR reached a different operating '
+        'point, relative %.3e\n  ordinary %s\n  pcnr     %s'
+        % (rel, x_ref, x_lim))
