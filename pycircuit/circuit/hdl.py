@@ -5060,7 +5060,27 @@ def _pcnr_declared_route(limits, ivec, chain_defs, xsyms, xlabels, paramsyms,
     Charge, noise and sources are not looked at: charge stays in the MNA
     block (`pcnr.augmented_system`).
     """
-    if states or vbranches:
+    ## ⚠ `vbranches` USED TO REFUSE HERE TOO, and it was too strong.
+    ##
+    ## A V-contributed branch adds a current unknown to `x`, and that
+    ## row's equation is a voltage residual rather than KCL -- which
+    ## looked like a reason PCNR could not carry the device.  Measured
+    ## (roadmap sec. 44) it carries it correctly: `pcnr_i` is compiled
+    ## from the same `i_exprs` the ordinary assembly uses, so it
+    ## reproduces the voltage residual on that row exactly as the
+    ## element would have.  A self-heating BJT at `rth = 0`, where the
+    ## thermal branch collapses to a zero-volt source, and `LedHdl`,
+    ## which carries one outright, both reach the unlimited path's
+    ## operating point -- 9.0e-17 and 0.0e+00.
+    ##
+    ## What is NOT relaxed is `states`: an `idt`/`idtmod`/`laplace`
+    ## state is device MEMORY, not another algebraic unknown, and
+    ## nothing here has been measured against one.
+    ##
+    ## ⚠ The evidence covers the shapes the library has -- a collapsed
+    ## thermal branch and an optical-drive LED.  A V-branch doing
+    ## something else is untested, not blessed.
+    if states:
         return None, ('%s -- the device carries %s'
                       % ('a generated state' if states
                          else 'a branch-current unknown',

@@ -5114,3 +5114,63 @@ deleted, each keeping its superseded assertion in a comment: two
 the claim, and which had already expired once before under a different
 reason. Three EXPLAIN digests re-recorded with the bit-identical
 evidence beside them.
+
+## 44. The branch-unknown gate was too strong (2026-08-27)
+
+`_pcnr_declared_route` opened with
+
+    if states or vbranches:
+        return None, '... the device carries ...'
+
+-- a refusal on the PRESENCE of a V-contributed branch, not on whether
+it interacts with anything. The reasoning behind it is sound-sounding: a
+V-branch adds a current unknown to `x`, and that row's equation is a
+voltage residual rather than KCL, so stamping a current into it would be
+wrong.
+
+**Measured, it is not wrong.** `pcnr_i` is compiled from the same
+`i_exprs` the ordinary assembly uses, so it reproduces the voltage
+residual on that row exactly as the element would have. Relaxed:
+
+| device | agreement with the unlimited path |
+|---|---|
+| self-heating BJT at `rth = 0` (collapsed thermal branch) | **9.025e-17** |
+| `LedHdl` (carries a V-branch outright) | **0.000e+00** |
+
+Full suite with the gate relaxed: **2644 passed, and not one numerical
+failure** -- the only three were tests asserting the refusal itself.
+
+### ⚠ One of those three was mine, written an hour earlier
+
+`test_the_isothermal_limit_is_still_refused_and_should_be` said the
+`rth = 0` refusal was *"correct rather than incidental: it is the
+isothermal limit, where a thermal unknown means nothing"*. A fine
+argument, and not a measurement. Solving the circuit gives 9.025e-17.
+
+The collapsed branch does pin its probe to zero, so it is one unknown
+that cannot move -- which makes it **useless**, which is what I
+reasoned, and not **harmful**, which is what I asserted. Only the second
+justifies a refusal. The test is inverted, with that written in it.
+
+### What was NOT relaxed
+
+`states` -- an `idt`/`idtmod`/`laplace` state is device MEMORY, and
+nothing in PCNR has been measured against one. Pinned separately so the
+next relaxation has to argue for itself.
+
+⚠ And the evidence covers the shapes this library has: a collapsed
+thermal branch, and an optical-drive LED. A V-branch doing something
+else is untested, not blessed.
+
+### Where PCNR stands after §40-44
+
+**16 of 37 models eligible at defaults**, against 13 this morning and
+about 4 on cards a PDK would actually ship. Exactly one model with an
+exponential is still refused: `PhotodiodeHdl`, whose `iph` reads its
+optical drive nodes -- an INPUT rather than a parasitic, and the one
+remaining case that is about physics rather than plumbing.
+
+The arc from §40: the constraint was never really "PCNR cannot do this".
+It was three separate places where a model handed the solver a raw node
+difference and the solver, correctly, refused to guess. Two lines of
+model declaration and one over-broad gate.

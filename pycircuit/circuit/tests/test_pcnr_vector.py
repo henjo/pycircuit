@@ -460,10 +460,24 @@ def test_the_refusals_name_their_rule():
     txt = explain(el, source=False, symbolic=False)
     assert 'PCNR: does not qualify' not in txt, txt
     assert [k for _p, k in el.pcnr_probes].count('id') == 1, el.pcnr_probes
+    ## ⚠ EXPIRED 2026-08-27 (roadmap sec. 44), inverted not deleted.  It
+    ## read:
+    ##
+    ##   assert 'PCNR: does not qualify -- a branch-current unknown'
+    ##          in explain(th, ...)
+    ##
+    ## A V-contributed branch no longer refuses the device.  What still
+    ## does is a GENERATED STATE -- device memory -- and that is what
+    ## this now pins, because it is the half of the old rule that
+    ## survived.
     th = eh.GummelPoonNpnThermalHdl('c', 'b', 'e', 'th', 'tha')
     th.update_iparv()
-    assert 'PCNR: does not qualify -- a branch-current unknown' in explain(
-        th, source=False, symbolic=False)
+    assert 'does not qualify' not in explain(th, source=False,
+                                             symbolic=False)
+    idt = eh.IdtHdl(*['p%d' % i for i in range(len(eh.IdtHdl.terminals))])
+    idt.update_iparv()
+    assert 'PCNR: does not qualify -- a generated state' in explain(
+        idt, source=False, symbolic=False)
     ## ⚠ EXPIRED 2026-08-27, inverted rather than deleted.  It read:
     ##
     ##   assert 'var(dT) reads th, tha, which no $limit probe limits'

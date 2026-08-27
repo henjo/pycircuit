@@ -113,7 +113,6 @@ LIFTABLE_CARDS = [
 #: the reason.  Each one is a trap that a careless lift would sweep in.
 NOT_LIFTABLE = [
     ('PhotodiodeHdl', {}, 'reads optical drive nodes optn/optp'),
-    ('LedHdl', {}, 'carries a branch-current unknown'),
 ]
 
 
@@ -469,20 +468,72 @@ def test_a_self_heating_device_takes_pcnr():
     assert [k for _p, k in probes].count('id') >= 1
 
 
-def test_the_isothermal_limit_is_still_refused_and_should_be():
-    """At `rth = 0` the thermal branch COLLAPSES to a zero-volt source.
+def test_the_isothermal_limit_takes_pcnr_too():
+    """⚠ I asserted the opposite here an hour ago, from reasoning.
 
-    That leaves a genuine branch-current unknown, and the refusal is
-    correct rather than incidental: it is the isothermal limit, where a
-    thermal unknown means nothing.  Pinned so a later relaxation of the
-    branch-unknown rule has to think about this case rather than sweep
-    it in.
+    This test was written as `..._is_still_refused_and_should_be`, and
+    it said the refusal at `rth = 0` was "correct rather than
+    incidental: it is the isothermal limit, where a thermal unknown
+    means nothing".  That is a fine argument and it was not a
+    measurement.  Relaxing the branch-unknown gate (roadmap sec. 44) and
+    actually solving the circuit gives agreement with the unlimited path
+    to **9.025e-17**.
+
+    The thermal branch does collapse to a zero-volt source, and the
+    resulting probe is pinned to zero -- so it is one unknown that
+    cannot move.  That makes it USELESS, which is what I reasoned, and
+    not HARMFUL, which is what I asserted.  The two are different and
+    only one of them justifies a refusal.
     """
-    el = eh.GummelPoonNpnThermalHdl(*[Node('m%d' % i) for i in range(5)])
+    el = eh.GummelPoonNpnThermalHdl(*[Node('m%d' % i) for i in range(5)],
+                                    rb=25.0)
+    el.update_iparv()
+    assert getattr(el, 'pcnr_probes', None), \
+        type(el)._hdl_info.get('pcnr_refusal')
+
+
+def test_a_generated_state_is_still_refused():
+    """What the relaxation did NOT touch, and why.
+
+    `vbranches` was relaxed; `states` was not.  An `idt`/`idtmod`/
+    `laplace` state is device MEMORY -- the device's output depends on
+    its own history, not only on the present unknowns -- and nothing in
+    PCNR has been measured against one.  This pins the distinction so
+    the next relaxation has to argue for it separately.
+    """
+    el = eh.IdtHdl(*[Node('k%d' % i) for i in range(len(eh.IdtHdl.terminals))])
     el.update_iparv()
     assert not getattr(el, 'pcnr_probes', None)
-    assert 'branch-current unknown' in (
+    assert 'a generated state' in (
         type(el)._hdl_info.get('pcnr_refusal') or '')
+
+
+def test_a_device_carrying_a_branch_unknown_reaches_the_same_point():
+    """The gate for the relaxation itself.
+
+    `LedHdl` carries a V-contributed branch outright -- not a collapsed
+    one -- and is the model the relaxation actually buys.
+    """
+    import numpy as np
+    from pycircuit.circuit.elements import SubCircuit, VS
+    from pycircuit.circuit import gnd, pcnr as P
+    from pycircuit.circuit.dcanalysis import DC
+
+    def build():
+        c = SubCircuit()
+        c.add_node('a')
+        c.add_node('op')
+        c['v1'] = VS('a', gnd, v=2.0)
+        c['d1'] = eh.LedHdl('a', gnd, 'op', gnd)
+        return c
+
+    assert len(P.pcnr_devices(build())) == 1
+    x_ref = np.asarray(DC(build(), refnode=gnd).solve().x, dtype=float)
+    out = P.solve_dc(build(), gnd)
+    x_lim = np.asarray(out[0] if isinstance(out, tuple) else out, dtype=float)
+    den = max(1e-30, float(np.max(np.abs(x_ref))))
+    rel = float(np.max(np.abs(x_lim - x_ref))) / den
+    assert rel < 1e-9, 'LED under PCNR: relative %.3e' % rel
 
 
 @pytest.mark.parametrize('card', [
