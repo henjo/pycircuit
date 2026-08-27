@@ -3977,10 +3977,11 @@ def generate_code(cls):
     pcnr_spec = None
     pcnr_refusal = None
     pcnr_vector = None
+    pcnr_affine = {}
     if limits:
         pcnr_vector, pcnr_refusal = _pcnr_declared_route(
             limits, ivec, chain_defs, xsyms, xlabels, paramsyms, given_syms,
-            states, vbranches)
+            states, vbranches, affine_out=pcnr_affine)
     elif not states and not vbranches and len(terminalnodes) >= 2:
         cands, ok = [], True
         _xset = set(xsyms)
@@ -4293,6 +4294,7 @@ def generate_code(cls):
                 funcs=funcs, pure_spec=pure_spec, state_meta=state_meta,
                 branchpairs=branchpairs, internalnames=internalnames,
                 const_G=const_G, const_C=const_C, pcnr_funcs=pcnr_funcs,
+                pcnr_affine=pcnr_affine or None,
                 pcnr_refusal=pcnr_refusal, pcnr_vector=pcnr_vec,
                 given_names=given_names, limit_spec=limit_spec,
                 limit_groups=limit_groups,
@@ -4869,8 +4871,82 @@ def _limit_par_fn(expr, kind, chain_defs, xsyms, xlabels, args, modules,
     return _first_of(inner, wants_x=False)
 
 
+#: Consume the affine remainder (roadmap sec. 40) instead of refusing
+#: the device.  OFF until the operating-point agreement gate in
+#: `test_pcnr_affine.py` passes: a wrong lift changes answers silently,
+#: and convergence alone would not show it.
+PCNR_LIFT_AFFINE = False
+
+
+def _affine_in_nodes(expr, node_syms, xset, probe_syms, defs_map=None):
+    """Split `expr` into ``(rest, {node_sym: coeff})`` when it is affine.
+
+    Vector PCNR refuses any current that still reads a node voltage after
+    the declared probes have been substituted, because such a current
+    does not reach the solution through a limited unknown.  That rule is
+    correct for a NONLINEAR dependence and too strong for a linear one:
+    a term ``g * (x_a - x_b)`` is an ordinary conductance, Newton solves
+    it exactly, and limiting it would be meaningless.
+
+    Every real case measured on this branch is the second kind -- a
+    series resistance to an internal node.  Nine surviving expressions
+    across `GummelPoonNpnHdl` (``rb``), `MosLevel1Hdl`/`MosLevel3Hdl`
+    (``rd``/``rs``), `MesfetStatzHdl` and `GummelPoonNpnThermalHdl`, and
+    all nine have an identically zero second derivative in every node
+    symbol they read.
+
+    Returns ``None`` -- meaning the refusal stands -- when:
+
+    * the dependence is not affine (``d/dx`` still reads a node), or
+    * a coefficient reads a PROBE symbol.  That is a bilinear
+      ``v_lim * x`` term: a conductance that moves with the limited
+      unknown, which the ordinary MNA stamp cannot express because it is
+      assembled before `v_lim` is known.  None of the measured cases has
+      one, and refusing keeps the first version honest.
+    """
+    defs_map = {} if defs_map is None else defs_map
+    coeffs, rest = {}, expr
+    for q in sorted(node_syms, key=str):
+        c = sympy.diff(expr, q)
+        fs = set(c.free_symbols)
+        if fs & xset:
+            return None                      # d/dx still reads x: not affine
+        if _reads_a_probe(fs, probe_syms, defs_map):
+            return None                      # bilinear v_lim * x
+        coeffs[q] = c
+        rest = rest - c * q
+    rest = sympy.expand(rest)
+    if set(rest.free_symbols) & xset:
+        return None                          # pragma: no cover -- belt
+    return rest, coeffs
+
+
+def _reads_a_probe(syms, probe_syms, defs_map, _seen=None):
+    """Does `syms` reach a probe symbol, following chain definitions?
+
+    The direct test is not enough.  A coefficient measured on this
+    branch is ``1/_v68_rbb`` -- a CHAIN VARIABLE, not a parameter.  Its
+    own definition may read a probe, and then the coefficient is
+    probe-dependent after all: a conductance that moves with the limited
+    unknown, which the ordinary assembly cannot carry because it is
+    built before `v_lim` is known.  Checking only the surface symbols
+    would accept it and stamp a stale conductance every iteration.
+    """
+    if syms & probe_syms:
+        return True
+    _seen = set() if _seen is None else _seen
+    for s in syms & set(defs_map):
+        if s in _seen:
+            continue                         # pragma: no cover -- cycle belt
+        _seen.add(s)
+        if _reads_a_probe(set(defs_map[s].free_symbols), probe_syms,
+                          defs_map, _seen):
+            return True
+    return False
+
+
 def _pcnr_declared_route(limits, ivec, chain_defs, xsyms, xlabels, paramsyms,
-                         given_syms, states, vbranches):
+                         given_syms, states, vbranches, affine_out=None):
     """Vector PCNR's detector: the DECLARED-PROBE route (roadmap sec. 15,
     Stages 1 and 2).  Returns ``(spec, refusal)``, exactly one of them set.
 
@@ -4968,23 +5044,62 @@ def _pcnr_declared_route(limits, ivec, chain_defs, xsyms, xlabels, paramsyms,
     ## `$given:<name>` flags in the device's param dict), so a chain that
     ## reads a `$param_given` -- Level 1's `gamma` -- qualifies.
     allowed = set(paramsyms) | {TEMP} | set(vsyms) | defsyms | set(given_syms)
-    for label, e_ in [('var(%s)' % _var_name(sym), e2)
-                      for sym, e2 in defs_v] + \
-            [('I(%s)' % xlabels[k], e2) for k, e2 in enumerate(i_exprs)]:
+    ## The AFFINE REMAINDER, per current, when the node dependence that
+    ## would otherwise refuse the device turns out to be linear.  See
+    ## `_affine_in_nodes`: `{k: {node_sym: coeff}}` over `i_exprs`.
+    ## Recorded whether or not it is acted on, so a refusal can say
+    ## which class it is and a consumer can be built against real data.
+    linear_terms, first_why = {}, None
+    defs_map = dict(defs_v)
+    labelled = [('var(%s)' % _var_name(sym), e2, None)
+                for sym, e2 in defs_v] + \
+               [('I(%s)' % xlabels[k], e2, k) for k, e2 in enumerate(i_exprs)]
+    for label, e_, krow in labelled:
         fs = set(e_.free_symbols)
         if fs & xset:
-            return None, ('%s reads %s, which no $limit probe limits -- under '
-                          'vector PCNR every resistive current must reach the '
-                          'solution only through the declared probes'
-                          % (label, ', '.join(sorted(
-                              xlabels[xsyms.index(q)] for q in fs & xset))))
+            why = ('%s reads %s, which no $limit probe limits -- under '
+                   'vector PCNR every resistive current must reach the '
+                   'solution only through the declared probes'
+                   % (label, ', '.join(sorted(
+                       xlabels[xsyms.index(q)] for q in fs & xset))))
+            first_why = first_why or why
+            split = _affine_in_nodes(e_, fs & xset, xset, set(vsyms),
+                                     defs_map)
+            ## ⚠ A surviving CHAIN VARIABLE is never liftable, even when
+            ## it is itself affine.  `GummelPoonNpnThermalHdl` gives
+            ## `var(dT) = _x3 - _x4`: affine in the thermal nodes, and
+            ## `dT` then drives every temperature-dependent quantity in
+            ## the model -- exponentially.  Splitting the DEFINITION
+            ## linearly says nothing about how it reaches the current.
+            ## Only a survivor in a CURRENT is a conductance.
+            if split is None or krow is None:
+                linear_terms.clear()
+                break
+            linear_terms[label] = (krow, ) + split
+            continue
         extra = fs - allowed
         if extra:
             return None, ('%s reads %s, which pcnr_i is not handed'
                           % (label, ', '.join(sorted(str(q) for q in extra))))
+    lin_terms = None
+    if first_why is not None:
+        if affine_out is not None and linear_terms:
+            affine_out.update(linear_terms)
+        if not (linear_terms and PCNR_LIFT_AFFINE):
+            return None, first_why
+        ## THE LIFT.  Each affine survivor is a constant conductance:
+        ## take it out of the current PCNR will re-stamp at `v_lim`, and
+        ## hand it back as a (row, col, coeff) triple for the ordinary
+        ## MNA assembly to stamp at the node voltages, exactly as it
+        ## would on the `pcnr=False` path.
+        lin_terms = []
+        for _lbl, (krow, rest, coeffs) in linear_terms.items():
+            i_exprs[krow] = rest
+            for q, c in coeffs.items():
+                lin_terms.append((krow, xsyms.index(q), c))
     return dict(vsyms=vsyms, probes=probes, kinds=kinds, spec_idx=spec_idx,
                 redundant=redundant, defs=defs_v, i_exprs=i_exprs,
-                t=len(xsyms)), None
+                lin_terms=lin_terms, t=len(xsyms)), None
 
 
 def _chain_prune(defs, outputs):
@@ -6158,6 +6273,34 @@ class BehaviouralMeta(type):
             ## honours their laws over the tree.
             cls.pcnr_redundant = tuple((tuple(p), k, tuple(c))
                                        for _j, p, k, c in pv['redundant'])
+            ## THE AFFINE REMAINDER (roadmap sec. 40).  `lin_terms` is
+            ## `(row, col, coeff)`; the coefficients are parameter-only
+            ## by construction -- `_affine_in_nodes` refuses anything
+            ## that reaches a probe, transitively through the chain.  So
+            ## the conductance is CONSTANT at a given card and can be
+            ## built once, here, instead of per iteration.
+            _lin = pv.get('lin_terms')
+            if _lin:
+                _t_lin = pv['t']
+                _lin_fns = [(r, c, sympy.lambdify(paramsyms + [TEMP], e,
+                                                  modules=NUMPY_MODULES))
+                            for r, c, e in _lin]
+
+                def pcnr_lin_G(params, epar, toolkit, _fns=_lin_fns,
+                               _t=_t_lin, _pn=_pn_vec):
+                    """The device's constant conductance block.
+
+                    Stamped by the ordinary MNA assembly at the NODE
+                    voltages, which is where a linear term belongs;
+                    PCNR re-stamps only what is left at `v_lim`.
+                    """
+                    args = [params[nm] for nm in _pn] + [epar.T]
+                    out = np.zeros((_t, _t))
+                    for r, c, fn in _fns:
+                        out[r, c] += float(fn(*args))
+                    return out
+
+                cls.pcnr_lin_G = staticmethod(pcnr_lin_G)
             ## `(kind, parameter callables)` for every probe whose law is
             ## applied, TREE probes first (in unknown order), then the
             ## redundant ones -- the order `limit_block` takes them in.

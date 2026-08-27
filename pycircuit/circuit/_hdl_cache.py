@@ -371,6 +371,7 @@ def key_for(cls):
     bindings = _bindings(func)
     import numpy
     import sympy
+    from pycircuit.circuit import hdl as _hdl_mod
     parts = [
         'format=%d' % CACHE_FORMAT,
         'compiler=%s' % comp,
@@ -381,6 +382,16 @@ def key_for(cls):
         'terminals=%r' % (cls.__dict__.get('terminals'),),
         'params_as=%r' % (getattr(cls, 'params_as', None),),
         'mask=%r' % (getattr(cls, '_hdl_collapse_mask', None),),
+        ## A RUNTIME flag that changes what is compiled must be in the
+        ## key.  The dependency hashes cover `hdl.py`'s SOURCE, so an
+        ## edit invalidates -- but flipping `PCNR_LIFT_AFFINE` in a
+        ## running process changes the emitted model while leaving every
+        ## file byte-identical.  Without this line the two builds share
+        ## a key, and the second silently gets the first one's code.
+        ## Found the hard way: a probe run with the lift on wrote 924
+        ## entries that then served the lift-off suite, and the symptom
+        ## was a model that stopped being refused.
+        'pcnr_lift=%r' % (getattr(_hdl_mod, 'PCNR_LIFT_AFFINE', False),),
         ## Card-constant folding (roadmap sec. 30): two cards fold to two
         ## DIFFERENT compiled models from identical `analog` source and
         ## identical `instparams`, so without this they would share a key

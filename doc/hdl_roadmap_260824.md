@@ -4703,3 +4703,150 @@ Both assertions are load-bearing together: equality without the ratio is
 exactly what let `hdl.rst` drift from 1.14x to 1.25x with a green
 benchmark in the tree, and the ratio without equality could be "won" by
 quietly doing less work.
+
+## 40. Lifting PCNR's internal-node constraint (2026-08-27): the dependence is affine, and PCNR already has the hook
+
+### The problem, stated properly
+
+Vector PCNR refuses any current that still reads a node voltage once the
+declared `$limit` probes have been substituted: *"every resistive
+current must reach the solution only through the declared probes"*.
+
+**That rule is why PCNR does not work on the cards a PDK ships.**
+Measured, on model cards rather than defaults:
+
+| model | with defaults | with a parasitic |
+|---|---|---|
+| `DiodeSpiceHdl` | scalar | `rs=2` → **refused** |
+| `GummelPoonNpnHdl` | vector | `rb=100` → **refused** |
+| `MosLevel1Hdl` | vector | `rd=5` → **refused** |
+| `MosLevel3Hdl` | vector | `rs,rd=5` → **refused** |
+| `MesfetStatzHdl` | vector | `rs=2` → **refused** |
+
+⚠ This was known and pinned: `test_pcnr_vector.py::test_the_refusals_
+name_their_rule` asserts the `rb=10.0` refusal, and the PCNR tests set
+the parasitics to zero **in their docstrings** -- *"at `rb = re = rc =
+0` so that it qualifies"*. What was NOT recorded anywhere is the
+consequence: eligibility counts quoted from default cards (§15's "2 of
+26", and "13 of 37" measured this session) both overstate it. **A
+default card zeroes the parasitic that does the refusing** -- the same
+blindness §28 and §33 already recorded, in a third guise.
+
+### The measurement that says it is liftable
+
+The rule is right for a NONLINEAR node dependence and too strong for a
+linear one: a series resistance contributes `g * (x_a - x_b)`, an
+ordinary conductance that Newton solves exactly and that limiting would
+do nothing for.
+
+Instrumenting the detector and capturing every surviving expression:
+
+    I(c)     = _pcnr_v1*area/rc + _x0*area/rc - _x3*area/rc
+    var(dT)  = _x3 - _x4
+    I(d)     = (_pcnr_v0 - _pcnr_v1 + _x0 - _x1)/_v91_rdx
+
+**Nine survivors across the five refusing models, and every one has an
+identically zero second derivative in every node symbol it reads.** Not
+one coefficient depends on a probe. The shapes are conductances.
+
+### The hook that already exists
+
+`augmented_system` does not merely ignore a participating device -- it
+**shadows its `i`/`G` with `_zero_vector`/`_zero_matrix`** while it
+re-stamps the device at `v_lim` (`pcnr.py:428-431`). So the affine
+remainder has a natural home and needs no new assembly path: **shadow
+with the remainder instead of with zeros.** The linear part is then
+stamped by the ordinary MNA machinery exactly as it is on the
+`pcnr=False` path, and PCNR carries only the probe-dependent part.
+
+### Built so far
+
+`hdl._affine_in_nodes` -- the split, with the two refusals that keep it
+honest:
+
+* `d/dx` still reading a node ⇒ not affine ⇒ refuse (`x*x`, `exp(x)`);
+* a coefficient reading a PROBE ⇒ bilinear `v_lim * x` ⇒ refuse. That
+  is a conductance that MOVES with the limited unknown, and the ordinary
+  assembly is built before `v_lim` is known. No measured case has one.
+
+The refusal still stands and now names the class
+(`[affine remainder available]`), so the five models above are
+identified without any behaviour change. `test_pcnr_affine.py`, 15
+tests, bite-checked: with the detection disabled, **9 fail**.
+
+### What remains
+
+1. Compile the remainder as a stampable `i`/`G` pair.
+2. Shadow with it in `augmented_system` instead of zeros.
+3. Accept the device: return the spec rather than the refusal.
+4. Validate: `GummelPoonNpnHdl(rb=100)` under PCNR must reach the same
+   operating point as `pcnr=False`, and the diff-pair clash case must
+   stay fixed. **This is where a mistake would be silent**, so the gate
+   is agreement with the unlimited path, not convergence alone.
+
+⚠ Two of the seven non-qualifying nonlinear models are NOT this class
+and must not be swept in: `PhotodiodeHdl` reads optical drive nodes
+(`optn`, `optp`), and `LedHdl`/`DiodeSpiceThermalHdl` carry a
+branch-current unknown. The bite-check test asserts they are not
+claimed.
+
+### The lift, attempted (2026-08-27): detection correct, consumption WRONG, and the gate caught it
+
+Scaffolded behind `hdl.PCNR_LIFT_AFFINE` (default **False**, so nothing
+in the library changes). With it on, the three liftable models stop
+being refused -- **and the answer is wrong.**
+
+    vd=2.0, vg=1.5, MosLevel1Hdl(rd=5, w=10u, l=1u)
+
+      ordinary   internal drain node  1.998874596 V
+      PCNR lift  internal drain node  1.498874596 V
+
+Out by **exactly the gate voltage**: the drain resistor is zeroed out of
+the ordinary assembly and never re-stamped, because `lin_terms` arrives
+`None` and no `pcnr_lin_G` is attached. Detection (`_affine_in_nodes`,
+independently tested) is correct; consumption is not.
+
+⚠ **The device's terminal CURRENT still agreed to seven digits**
+(-2.2508079e-04 against -2.2508072e-04) **and the solver converged
+without complaint.** Only the operating-point comparison saw it. That is
+the entire argument for §40's gate being *agreement with the unlimited
+path* rather than convergence -- a limiter bug does not announce itself
+by failing to converge, it announces itself by converging somewhere
+else. Pinned as a `strict=True` xfail so it cannot be forgotten and
+cannot silently start passing.
+
+### Two corrections this work forced
+
+**1. "Not one coefficient depends on a probe" was wrong.** That was
+measured with a surface check on the coefficient's own symbols. A
+coefficient is typically a CHAIN VARIABLE -- `1/_v68_rbb` -- whose
+definition may itself read a probe. Checked transitively,
+`GummelPoonNpnHdl`'s base resistance **is** probe-dependent: Gummel-Poon
+models current crowding, so `rbb` moves with bias. `g*(x_a - x_b)` with
+`g` moving per iteration is bilinear, not a constant conductance, and it
+is correctly refused. Liftable set: **3 models, not 5** -- `MosLevel1`,
+`MosLevel3`, `MesfetStatz`.
+
+**2. A chain-variable survivor is never liftable**, even when affine.
+`GummelPoonNpnThermalHdl` gives `var(dT) = _x3 - _x4`: affine in the
+thermal nodes, and `dT` then drives every temperature-dependent quantity
+exponentially. Splitting a DEFINITION linearly says nothing about how it
+reaches the current. Only a survivor in a CURRENT is a conductance.
+
+### ⚠ And a real defect in the compile cache, found by being bitten
+
+`PCNR_LIFT_AFFINE` is a RUNTIME flag that changes what is compiled. The
+cache key covers `hdl.py`'s SOURCE (via the dependency hashes), so an
+edit invalidates -- but flipping a flag in a running process leaves
+every file byte-identical. **The two builds shared a key.**
+
+One probe with the lift on wrote **924 entries** that then served the
+lift-off suite, and the symptom was `MosLevel1Hdl(rd=5)` no longer being
+refused, with an *empty* refusal string, in a process where the flag was
+False. It read exactly like a bug in the detector and cost a confusing
+half hour.
+
+Fixed: `'pcnr_lift=%r'` is now part of `_hdl_cache.key_for`, with a test
+asserting the two keys differ and that the off-key is stable. **The
+general rule, which this cache did not previously state: anything that
+changes emission and is not a file must be in the key.**

@@ -59,6 +59,26 @@ def _zero_vector(t):
     return _i
 
 
+def _linear_vector(gl):
+    """``i(x) = gl @ x`` -- the remainder's own current.
+
+    `x` is already the element's LOCAL sub-vector: `circuit.py` slices
+    `subx = x[elementnodemap[instance]]` before calling `element.i`.
+    Re-indexing by the device's global `rows` here would read the wrong
+    entries, and would do it silently -- the shapes agree.
+    """
+    def _i(x, epar=defaultepar, params_tree=None):
+        return gl.dot(np.asarray(x, dtype=float))
+    return _i
+
+
+def _linear_matrix(gl):
+    """``G(x) = gl`` -- constant, so the node voltages are not read."""
+    def _G(x, epar=defaultepar, params_tree=None):
+        return gl
+    return _G
+
+
 def _zero_matrix(t):
     def _G(x, epar=defaultepar, params_tree=None):
         return np.zeros((t, t))
@@ -427,8 +447,25 @@ def augmented_system(circuit, x, v_lim, junctions, epar=defaultepar,
             el, t = dev.element, dev.t
             saved.append((el, el.__dict__.get('i', _MISSING),
                           el.__dict__.get('G', _MISSING)))
-            el.i = _zero_vector(t)
-            el.G = _zero_matrix(t)
+            ## THE AFFINE REMAINDER (roadmap sec. 40).  A participating
+            ## device is normally zeroed out of the ordinary assembly
+            ## and re-stamped at `v_lim`.  When part of its current is a
+            ## CONSTANT CONDUCTANCE -- a series resistance to an
+            ## internal node -- that part reaches the solution through
+            ## node voltages, not through any probe, and PCNR's rule
+            ## refuses the whole device for it.  Newton solves a linear
+            ## term exactly and limiting it would mean nothing, so the
+            ## remainder is shadowed IN rather than zeroed out, and the
+            ## ordinary assembly stamps it exactly as on `pcnr=False`.
+            lin = getattr(el, 'pcnr_lin_G', None)
+            if lin is None:
+                el.i = _zero_vector(t)
+                el.G = _zero_matrix(t)
+            else:
+                gl = np.asarray(lin(dev.params, epar, el.toolkit),
+                                dtype=float)
+                el.i = _linear_vector(gl)
+                el.G = _linear_matrix(gl)
         g_mna = np.array(circuit.i(x, epar), dtype=float)
         J_mm = np.array(circuit.G(x, epar), dtype=float)
     finally:
