@@ -1002,6 +1002,10 @@ the form it was argued — here is what actually landed.
     5        the remaining five: item 6 (VCO), 10
              (Level 3), 12, 13, 15                   DONE 2026-08-26 (sec. 18):
                                                      all fifteen built, 37 classes
+    38       published perf figures are unguarded    OPEN 2026-08-27 (sec. 38):
+             by any test                             no test asserts the 1.40x,
+                                                     1.54x, 1.22x or the parity
+                                                     claim; prose only
 
 Suite: 1874 tests at `4d359e5` before this work, **2351 passed / 7
 skipped / 3 xfailed / 0 failed** as of `cb477a8`. After 12.2, 12.3 and
@@ -4531,3 +4535,92 @@ one will make you refuse the right thing for the wrong reason.** This
 cost a day and the largest available win. The tell was there to be
 noticed: the tally said `zero-sign` on a *Jacobian* at ±1e30, where zeros
 are not what one should expect to find.
+
+## 38. Writing the branch up for a reviewer (2026-08-27): five wrong claims in my own draft, in thirty minutes
+
+The roadmap has no open items left except the one the user parked. The
+remaining bottleneck is not engineering: **551 commits, 442 files,
++160,343 / −3,904, none of it reviewed.** So the work became a document
+that lets the branch be reviewed by subsystem —
+`doc/branch_review_260827.md`.
+
+Summarising is not the same activity as building, and it has a failure
+mode of its own: **a summary is written from memory, and memory is
+exactly where the rot is.** Verifying each claim before writing it down
+caught five errors in half an hour, every one of them mine, and every
+one of them something I would have asserted to the repo owner with
+confidence.
+
+| I was about to write | Actually |
+|---|---|
+| "36 models" | **37.** `RSkinHdl` is built by the `skin_effect_resistor()` factory, so `grep '^class .*(Behavioural)'` cannot see it. Reflection finds it; text search does not. |
+| "toolkit memoisation — refused on measurement" | **Built**, and it is §24's 1.16x. I had it filed under the wrong outcome. |
+| "none of the root scratch files is referenced" | `example10.py` is a **documented example** — two `.rst` files include it. Deleting it would have broken the docs build. |
+| "`MesfetCurticeHdl`/`HemtAngelovHdl` are the under-evidenced models" | They are checked against their **published equations**, by finite-difference Jacobians, with limiters bite-checked. |
+| "library equivalence across all models, via recorded digests" | Digests pin **five** models. The library-wide guarantee is a different mechanism — the reflection-discovered C-backend parity sweep. |
+
+### The transferable part: a coverage proxy misleads in BOTH directions
+
+I reached twice for a cheap proxy for "how well is this model tested",
+and got two different wrong answers.
+
+- **Test files per model** said `MesfetCurticeHdl` and `HemtAngelovHdl`
+  were the weak spot. They have one test file, which happens to be a
+  *dedicated* one with published-equation checks in it.
+- **Test functions per model** corrected that, and is better — but it
+  still cannot see a model covered only through a parametrized sweep
+  over a reflected class list, which is precisely how every model gets
+  its floor here.
+
+A count is evidence about the count. Reading four test names settled in
+seconds what two proxies had got wrong. **Where a number is a stand-in
+for a judgement, print the number and then go and look.**
+
+### The finding worth acting on
+
+**No performance figure on this branch is asserted by any test.** The
+cumulative 1.40x, the DSL overhead at parity, `fold_card`'s 1.54x,
+`_autohold`'s 1.22x — all measured once, on one machine, recorded in
+prose. `hdl.rst`'s overhead figure has already drifted once under
+exactly these conditions (1.14x published, 1.25x when re-measured, with
+a green benchmark in the tree the whole time, because it asserted the
+waveforms agreed and never the ratio).
+
+This is a standing open item, not a closed one: a bound-assertion around
+each published figure would convert silent decay into a failing run.
+
+### The nine root scratch files, deleted (2026-08-27)
+
+A bare `pytest` at the repo root aborted during collection —
+`Interrupted: 5 errors` — because of five `test_*.py` files at the root
+with **no test functions** and broken imports, swept in by a
+`git add -A` on 2026-07-31 in a commit about `Toolkit.__getattr__`.
+Nine such files in all. They are gone; `pytest` from the root now
+collects **2,699 tests with no errors**.
+
+⚠ The first check — "is anything referencing them?" — was the wrong
+question, and asking only it would have been an expensive mistake twice
+over.
+
+- It nearly deleted **`example10.py`**, which *is* referenced: two
+  `.rst` files include it as a documented example. Grep for references
+  across `.rst` and `.md`, not just `.py`.
+- It would not have noticed that two of the nine were **prototypes of
+  code that shipped**: `scratch_coupled.py` is the origin of
+  `Transient._coupled_band`'s simultaneous `(dx, dh)` Schur solve, and
+  `temp_nl.py` is the origin of `jaxtransient.py`'s TLine ring buffer
+  and `interp_tlines`. Nothing was lost, but that was established by
+  **reading all nine and tracing each idea into the tree**, not by
+  grepping for their names.
+
+"Nothing references it" proves a deletion will not break a build. It
+says nothing about whether the content is worth keeping. Those are two
+different questions and only the second one is about value.
+
+The files had an active cost too: five of them set
+`circuit.default_toolkit = jax_toolkit` **at module scope**, and pytest
+imports every collected module into one process. `test_sym_dc.py` fails
+alone with `SymbolicToolkit has no attribute 'insert'` and fails under
+collection with a JAX dtype error, because a sibling had already
+replaced the global toolkit. **A broken file that reports the wrong
+reason costs more than a broken file.**
