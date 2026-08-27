@@ -258,3 +258,36 @@ file therefore failed under collection with a completely different error
 than it produced when run alone — a sibling had replaced the global
 first. Before drawing a conclusion from a failure in a batch, reproduce
 it in isolation.
+
+## A commit message is a record, and the shell can eat half of it
+
+`git commit -m "... `pcnr_vec = dict(...)` ..."` in a double-quoted
+shell string runs **command substitution** on everything between the
+backticks. The shell prints a syntax-error warning, `git` still commits,
+and the message reads:
+
+> *"generate_code then REBUILDS it as  instead of passing it through"*
+
+The sentence survives, grammatical and confident, with its subject
+deleted. Nothing fails. The commit is already pushed by the time anyone
+reads it.
+
+- **Write the message to a file and use `git commit -F`**, with a tool
+  that does no shell interpolation (a Python heredoc, an editor). This
+  is the fix, not "remember to escape backticks" -- escaping is one more
+  thing to get right per commit, and the failure is silent.
+- After committing anything with code in the message, **read it back**:
+  `git log -1 --format='%B'`. Check the phrases you meant to write are
+  there. Absence leaves no marker to grep for -- the substitution
+  removes the backticks too, so you cannot search for what is missing.
+- The one detectable trace is a **mid-sentence double space** where the
+  content used to be: `grep -nE "[a-z,)]  +[a-z]"` over recent messages
+  finds it. Worth running once after a session of code-heavy commits.
+
+⚠ **Fixing it means `--amend` and a force push.** That is fine seconds
+after the push and rude later; check `git rev-parse HEAD` against
+`origin/<branch>` first, use `--force-with-lease`, and confirm the tree
+is unchanged (`git rev-parse HEAD^{tree}`) so the amend is provably
+message-only. Ask before force-pushing a branch someone else is reading
+-- the message being wrong is cheaper than a reviewer's history moving
+under them.
