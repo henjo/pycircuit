@@ -464,10 +464,20 @@ def test_the_refusals_name_their_rule():
     th.update_iparv()
     assert 'PCNR: does not qualify -- a branch-current unknown' in explain(
         th, source=False, symbolic=False)
+    ## ⚠ EXPIRED 2026-08-27, inverted rather than deleted.  It read:
+    ##
+    ##   assert 'var(dT) reads th, tha, which no $limit probe limits'
+    ##          in explain(th, ...)
+    ##
+    ## `SelfHeating` now declares the thermal branch as a
+    ## `limit_identity` probe (roadmap sec. 43), so `dT` is a limited
+    ## unknown and every temperature-dependent current -- which is all
+    ## of them -- reaches the solution through declared probes.
     th = eh.GummelPoonNpnThermalHdl('c', 'b', 'e', 'th', 'tha', rth=100.0)
     th.update_iparv()
-    assert 'var(dT) reads th, tha, which no $limit probe limits' in explain(
-        th, source=False, symbolic=False)
+    assert 'does not qualify' not in explain(th, source=False,
+                                             symbolic=False)
+    assert [k for _p, k in th.pcnr_probes].count('id') >= 1, th.pcnr_probes
     ## Stage 2: a `fet`/`vds` probe is a PCNR unknown like any other.
     f = _fet('both')('d', 'g', 's')
     f.update_iparv()

@@ -464,7 +464,22 @@ class SelfHeating(object):
     def __init__(self, th, tha, rth, cth, tfloor=1.0):
         b = self.branch = Branch(th, tha)
         #: the temperature rise, in kelvin, as a named intermediate
-        self.dT = _var(b.V, 'dT')
+        ## Declared as a PCNR probe with NO law (roadmap sec. 43).
+        ## `b.V` is a raw node difference, and vector PCNR refuses any
+        ## device whose current reads one -- so self-heating cost these
+        ## models PCNR entirely, and it is the deepest possible
+        ## dependence to be refused for: `dT` sets `Tj`, which enters
+        ## every current through `exp(v/(n*k*Tj/q))`.  As a declared
+        ## unknown the whole chain is behind probes and the rule is
+        ## satisfied rather than waived.
+        ##
+        ## `limit_identity` applies no law, so it must not move a number
+        ## -- measured bit-identical on `i`/`G`/`q`/`C`.  At the default
+        ## `rth = 0` the branch collapses to a zero-volt source and the
+        ## device is refused for carrying a branch-current unknown,
+        ## which is correct: that is the isothermal limit, where a
+        ## thermal unknown means nothing.
+        self.dT = _var(limit_identity(b.V), 'dT')
         ## FLOORED.  `dT` is a solution variable, so a Newton iterate can
         ## put the junction below absolute zero, and every temperature
         ## formula below takes `log(T/tnom)` and divides by `k*T/q`.  A
@@ -675,7 +690,7 @@ def _spice_diode(p, a, c, T, junction=None):
                'cjT')
 
     ## -- static current ------------------------------------------------
-    vd = _var(bd.V, 'vd')
+    vd = _var(limit_pnj(bd.V, isT, p.n * vtT), 'vd')
     nvt = _var(p.n * vtT, 'nvt')
     ifwd = _var(isT * (_expl(vd / nvt) - 1), 'ifwd')
     ibrk = _var(p.ibv * _expl(-(vd + p.bv) / vtT), 'ibrk')
@@ -742,7 +757,13 @@ def _spice_diode(p, a, c, T, junction=None):
 
     ## -- statements ----------------------------------------------------
     stmts = noise + (
-        Contribution(brs.I, brs.V * p.area / p.rs),
+        ## The series resistance is a probe too (roadmap sec. 43).
+        ## `pdiss` is `Branch(a, c).V * idio` -- the TERMINAL
+        ## voltage, spanning both this resistance and the
+        ## junction -- so with `rs > 0` it reads raw nodes and
+        ## refuses the device.  Declaring this branch lets the
+        ## spanning tree resolve `x_a - x_c` into probe symbols.
+        Contribution(brs.I, limit_identity(brs.V) * p.area / p.rs),
         ## The Verilog-A optional-parasitic idiom, and the reason
         ## `rs = 0` (SPICE's default) is not a division by zero: the
         ## collapsed variant never compiles the `1/rs`.

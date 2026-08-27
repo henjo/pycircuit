@@ -5053,3 +5053,64 @@ Records updated: five tests asserted the old refusal and are inverted
 rather than deleted, with the superseded assertion kept in a comment;
 two probe-list assertions gained the entry; three explain digests
 re-recorded with the bit-identical evidence beside them.
+
+## 43. Self-heating and the series branch take PCNR too (2026-08-27)
+
+§42's one-line trick generalises. Three more declarations, each turning
+a raw node difference into a declared unknown:
+
+| where | was | now |
+|---|---|---|
+| `SelfHeating.__init__` | `dT = var(b.V)` | `dT = var(limit_identity(b.V))` |
+| `_spice_diode` | `vd = var(bd.V)` | `vd = var(limit_pnj(bd.V, isT, n*vtT))` |
+| `_spice_diode` | `Contribution(brs.I, brs.V * area/rs)` | `limit_identity(brs.V)` |
+
+**`dT` is the deepest dependence there was.** It is not a parasitic on
+the side: `dT` sets `Tj`, and `Tj` enters *every* current through
+`exp(v/(n*k*Tj/q))`. Self-heating therefore disqualified a device for
+the temperature the whole model is evaluated at.
+
+**The SPICE diode's `rs` was refused for a reason that is not the
+resistor.** `pdiss = Branch(a, c).V * idio` -- the TERMINAL voltage,
+spanning both the series resistance and the junction. Declaring the
+series branch lets the spanning tree resolve `x_a - x_c` into probe
+symbols. The junction itself now takes `limit_pnj` rather than being
+detected by the scalar route, which is the better mechanism anyway
+(§15 built the vector route to fix the inter-device clash).
+
+### Measured
+
+**Bit-identical `i`/`G`/`q`/`C` on all nine affected model/card
+combinations** -- `DiodeSpiceHdl`, `DiodeSpiceThermalHdl`,
+`GummelPoonNpnThermalHdl`, `RThermalHdl`, at several cards each. The
+recorded-digest test corroborates: three EXPLAIN digests moved, every
+POINT digest held.
+
+Operating-point agreement under PCNR, against the unlimited path:
+
+    DiodeSpiceHdl rs=2            0.000e+00
+    DiodeSpiceHdl plain           0.000e+00
+    DiodeSpiceThermal rth=200 rs=1 0.000e+00
+    GummelPoonNpnThermal rth=100  0.000e+00
+
+### Still refused, and correctly
+
+At the default `rth = 0` the thermal branch **collapses to a zero-volt
+source**, leaving a genuine branch-current unknown. That is the
+isothermal limit, where a thermal unknown means nothing. Pinned by a
+test so a later relaxation of the branch-unknown rule has to think
+about the case rather than sweep it in.
+
+A thermal diode at 0.8 V with `rth = 200` and no series resistance does
+not converge on EITHER path -- an actual thermal runaway, not a solver
+failure. PCNR does not rescue it and should not be claimed to.
+
+### Records
+
+Seven tests recorded the old refusals and are inverted rather than
+deleted, each keeping its superseded assertion in a comment: two
+`explain` refusal strings, a probe-kind list, a `limit_spec` list, and
+`test_the_full_spice_diode_qualifies_only_without_rs` -- whose NAME was
+the claim, and which had already expired once before under a different
+reason. Three EXPLAIN digests re-recorded with the bit-identical
+evidence beside them.

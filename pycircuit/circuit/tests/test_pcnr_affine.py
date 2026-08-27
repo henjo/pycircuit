@@ -112,9 +112,6 @@ LIFTABLE_CARDS = [
 #: Refused for a reason that is NOT the constant-conductance class, with
 #: the reason.  Each one is a trap that a careless lift would sweep in.
 NOT_LIFTABLE = [
-    ('GummelPoonNpnThermalHdl', dict(rth=100.0),
-     'the survivor is a CHAIN VARIABLE, var(dT) = _x3 - _x4, and dT '
-     'drives temperature-dependent physics exponentially downstream'),
     ('PhotodiodeHdl', {}, 'reads optical drive nodes optn/optp'),
     ('LedHdl', {}, 'carries a branch-current unknown'),
 ]
@@ -446,3 +443,100 @@ def test_the_identity_probe_did_not_move_a_single_number():
                                     for p in el.instparams},
                                    defaultepar, el.toolkit), dtype=float)
         assert np.all(np.isfinite(got)), got
+
+
+## ======================================================================
+## 5.  Self-heating and the series-resistance branch.
+## ======================================================================
+
+def test_a_self_heating_device_takes_pcnr():
+    """`dT` is the deepest dependence there is, and it is now a probe.
+
+    `SelfHeating` sets `dT = var(b.V)` -- a raw branch voltage -- and
+    `dT` then sets `Tj`, which enters every current through
+    `exp(v/(n*k*Tj/q))`.  That made self-heating disqualifying: not for
+    a parasitic on the side, but for the temperature the whole model is
+    evaluated at.
+
+    Declared as a `limit_identity` probe, the chain sits behind declared
+    unknowns and the device qualifies.
+    """
+    el = eh.GummelPoonNpnThermalHdl(
+        *[Node('n%d' % i) for i in range(5)], rth=100.0, rb=25.0)
+    el.update_iparv()
+    probes = getattr(el, 'pcnr_probes', None)
+    assert probes, type(el)._hdl_info.get('pcnr_refusal')
+    assert [k for _p, k in probes].count('id') >= 1
+
+
+def test_the_isothermal_limit_is_still_refused_and_should_be():
+    """At `rth = 0` the thermal branch COLLAPSES to a zero-volt source.
+
+    That leaves a genuine branch-current unknown, and the refusal is
+    correct rather than incidental: it is the isothermal limit, where a
+    thermal unknown means nothing.  Pinned so a later relaxation of the
+    branch-unknown rule has to think about this case rather than sweep
+    it in.
+    """
+    el = eh.GummelPoonNpnThermalHdl(*[Node('m%d' % i) for i in range(5)])
+    el.update_iparv()
+    assert not getattr(el, 'pcnr_probes', None)
+    assert 'branch-current unknown' in (
+        type(el)._hdl_info.get('pcnr_refusal') or '')
+
+
+@pytest.mark.parametrize('card', [
+    dict(rs=2.0), dict(rs=2.0, cjo=1e-12, tt=1e-9), dict(),
+], ids=['rs', 'rs_with_charge', 'plain'])
+def test_the_spice_diode_takes_pcnr_with_a_series_resistance(card):
+    """`rs` used to disqualify the SPICE diode outright.
+
+    Not because of the resistor -- because `pdiss` is
+    `Branch(a, c).V * idio`, the TERMINAL voltage, which spans both the
+    series resistance and the junction.  With the series branch
+    declared, the spanning tree resolves that terminal voltage into
+    probe symbols.
+    """
+    el = eh.DiodeSpiceHdl(Node('a'), Node('c'), **card)
+    el.update_iparv()
+    assert getattr(el, 'pcnr_probes', None), \
+        type(el)._hdl_info.get('pcnr_refusal')
+
+
+@pytest.mark.parametrize('name,pins,card', [
+    ('DiodeSpiceHdl', 2, dict(rs=2.0)),
+    ('DiodeSpiceThermalHdl', 4, dict(rth=200.0, rs=1.0)),
+    ('GummelPoonNpnThermalHdl', 5, dict(rth=100.0, rb=25.0)),
+], ids=['diode_rs', 'diode_thermal', 'bjt_thermal'])
+def test_the_new_probes_do_not_move_the_operating_point(name, pins, card):
+    """The gate.  An identity probe carries no law, so the solution it
+    reaches must be the one the unlimited path reaches."""
+    import numpy as np
+    from pycircuit.circuit.elements import SubCircuit, VS
+    from pycircuit.circuit import gnd, pcnr as P
+    from pycircuit.circuit.dcanalysis import DC
+
+    cls = getattr(eh, name)
+
+    def build():
+        c = SubCircuit()
+        c.add_node('a')
+        if pins >= 4:
+            c.add_node('tj')     # only when the device has a thermal port
+        c['v1'] = VS('a', gnd, v=0.8 if pins < 5 else 5.0)
+        wiring = {2: ['a', gnd],
+                  4: ['a', gnd, 'tj', gnd],
+                  5: ['a', 'b', gnd, 'tj', gnd]}[pins]
+        if pins == 5:
+            c.add_node('b')
+            c['vb'] = VS('b', gnd, v=0.78)
+        c['d1'] = cls(*wiring, **card)
+        return c
+
+    assert len(P.pcnr_devices(build())) == 1, 'device is not participating'
+    x_ref = np.asarray(DC(build(), refnode=gnd).solve().x, dtype=float)
+    out = P.solve_dc(build(), gnd)
+    x_lim = np.asarray(out[0] if isinstance(out, tuple) else out, dtype=float)
+    den = max(1e-30, float(np.max(np.abs(x_ref))))
+    rel = float(np.max(np.abs(x_lim - x_ref))) / den
+    assert rel < 1e-9, '%s: relative %.3e' % (name, rel)

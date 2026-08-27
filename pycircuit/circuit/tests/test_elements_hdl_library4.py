@@ -1835,9 +1835,16 @@ def test_a_self_heating_limiter_sees_the_junction_at_its_own_temperature():
     ## device's own heated isT/vtT and are solution-dependent.
     el = _mk(eh.GummelPoonNpnThermalHdl, 'c', 'b', 'e', 'th', 'tha',
              rth=1000.0, **NPN_TH)
-    assert [s[1] for s in el._hdl_info['limit_spec']] == ['pnj', 'pnj']
+    ## The `id` probe is the THERMAL branch, declared 2026-08-27 so a
+    ## self-heating device can take PCNR at all (roadmap sec. 43).  It
+    ## carries no law and no parameters, so it changes nothing this
+    ## test is about -- which is that the two junction limiters read
+    ## the device's own heated `isT`/`vtT`.  Filtered out below rather
+    ## than folded in, so the property stays legible.
+    kinds = [s[1] for s in el._hdl_info['limit_spec']]
+    assert sorted(kinds) == ['id', 'pnj', 'pnj'], kinds
     assert all(f._wants_x for s in el._hdl_info['limit_spec']
-               for f in s[3])
+               if s[1] == 'pnj' for f in s[3])
     assert 'isL' not in ' '.join(str(k) for k in el._hdl_info['funcs'])
     ## A hot junction has a LOWER critical voltage (IS rises with T), so
     ## the same wild step is compressed differently once the thermal node

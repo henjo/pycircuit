@@ -543,11 +543,19 @@ class TestThePcnrEligibilityClaim(object):
     @pytest.mark.parametrize('card, qualifies', [
         (dict(), True),
         (dict(cjo=0.0, tt=0.0, rs=0.0), True),
-        (dict(cjo=1e-12, tt=1e-9, rs=2.0), False),
+        ## ⚠ EXPIRED 2026-08-27 (roadmap sec. 43).  This row read
+        ## `False` and was the second half of the claim in the name:
+        ## a SPICE diode with a series resistance did not qualify,
+        ## because the resistor's current is not exponential and the
+        ## rule is EVERY current.  The series branch is now declared as
+        ## a `limit_identity` probe, so that current reaches the
+        ## solution through a declared unknown and the rule is met
+        ## rather than waived.  Kept and inverted, not deleted.
+        (dict(cjo=1e-12, tt=1e-9, rs=2.0), True),
     ])
-    def test_the_full_spice_diode_qualifies_only_without_rs(self, card,
+    def test_the_full_spice_diode_qualifies_with_rs_too_now(self, card,
                                                             qualifies):
-        """What decides it is `rs`, and NOT for the stated reason.
+        """`rs` used to decide this, and NOT for the stated reason.
 
         This test used to read `never_qualifies_for_pcnr`, because
         `var()` disqualified every chained model; roadmap 10.2 removed
