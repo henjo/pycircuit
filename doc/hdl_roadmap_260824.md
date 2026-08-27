@@ -5248,3 +5248,77 @@ temperature and the diode's series branch are things the device HAS;
 
 Bit-identical `i`/`G`/`q`/`C` on both cards tested, as an identity probe
 must be.
+
+## 46. Which models need limiting -- the criterion, measured (2026-08-27)
+
+§45 left 20 models PCNR-refused and the obvious question: is that
+correct, or merely unexamined? The `states` gate in particular refused
+on the same blanket-presence basis the V-branch gate did, and that one
+had already been wrong.
+
+**It is correct.** But the two criteria that look obviously right are
+both wrong, and that is the part worth keeping.
+
+### ✗ Does the current overflow?
+
+`DiodeHdl` leaves float range at **18.35 V** -- the classic `709*V_T`
+signature, and well inside what a Newton iterate reaches. But
+`DiodeSpiceHdl` and `GummelPoonNpnHdl` **never overflow at any
+voltage**, because the DSL's `expl` already bounds them, and they
+plainly still need limiting.
+
+Overflow measures whether the DSL has a regulariser, not whether the
+device needs a limiter.
+
+### ✗ How many decades does `|G|` span?
+
+A **false positive**. `ChargePumpHdl` spans **8.1 decades** over a
++/-1 V sweep -- more than `EkvNmosHdl` (6.8) or `PhotodiodeHdl` (4.7),
+both eligible. Its nonlinearity is a `tanh` with a narrow switching
+width, so the range comes from the TAILS going tiny: its max `|G|`
+actually **falls**, 1e-3 to 8e-12.
+
+Dynamic range conflates *G becomes huge* with *G becomes small*. Only
+the first is a problem for Newton.
+
+### ✓ The GROWTH LAW of `max|G|`
+
+Limiting exists because Newton steps into a region where the
+linearisation is worthless, and that is when the conductance grows
+**super-polynomially**. Measured, sweeping every row, `max|G|(10 V) /
+max|G|(1 V)`:
+
+| population | ratio |
+|---|---|
+| 13 eligible models (`Diode`, both `GummelPoon`, both `MosLevel`, `MesfetStatz`, `Led`, `Photodiode`, the thermals) | **1.95e+87** (`DiodeHdl` 1.56e+151) |
+| every refused model | **7.92e+03 and below** -- `Memristor` 7.9e3, `Mixer` 1.0e1, the rest at 1.0 |
+
+**Eighty-four orders of magnitude between the populations.** The
+threshold is not a tuned parameter; anything in six decades of slack
+gives the same answer.
+
+Built: `benchmarks/limiting_need.py` (the table, with both wrong
+criteria recorded) and
+`test_no_model_that_needs_limiting_is_refused_by_pcnr`. Bite-checked by
+removing the photodiode's probe: the guard names the model, its ratio
+**1.9468e+87**, and the refusal text.
+
+### ⚠ The criterion holds in ONE direction only
+
+A low ratio is **not** proof a device is safe. `EkvNmosHdl` reads
+**3.11e+01** here -- bounded, like the refused models -- and it
+genuinely needs limiting: a probe from zero bias never reaches its
+exponential region. `MesfetCurticeHdl` (1.6e1) and `HemtAngelovHdl`
+(1.0) are the same.
+
+So the guard asserts *everything that visibly needs limiting is
+eligible*, which is the half that can fail usefully. The conclusion
+that the 20 refusals are correct rests additionally on their
+nonlinearities being **structurally bounded** -- `tanh`, `maxc`/`minc`,
+products -- rather than merely un-probed.
+
+⚠ And the first version of the probe swept only row 0, which made
+`GummelPoonNpnHdl` and `MosLevel1Hdl` read **flat**, because their
+exponential lives on an internal junction. That nearly went into a
+report as data. Both the benchmark and the test sweep every row, and
+say why.

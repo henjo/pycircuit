@@ -654,3 +654,120 @@ def test_pcnr_solves_a_solar_cell_more_accurately(build, label):
     assert r_lim <= max(r_ord, 1e-14), (
         '%s: PCNR residual %.3e is worse than the ordinary path\'s %.3e'
         % (label, r_lim, r_ord))
+
+
+## ======================================================================
+## 7.  Nothing that needs limiting may be refused.
+## ======================================================================
+
+#: Branch volts to probe.  The top is deliberately outside any operating
+#: point: the question is what Newton sees when it OVERSHOOTS.
+_VOLTS = (1.0, 10.0)
+
+#: `max|G|(10 V) / max|G|(1 V)` above which a device is taken to need
+#: limiting.  Measured, the two populations sit at **1.95e+87** and
+#: **7.92e+03** -- eighty-four orders of magnitude apart -- so this
+#: threshold is not a tuned parameter.  1e12 is far above a plausible
+#: high-order polynomial (a 10th-order term gives 1e10 across that
+#: decade) and far below any of the exponentials.
+_NEEDS_LIMITING = 1e12
+
+
+def _max_g_growth(cls):
+    """``max|G|(10 V) / max|G|(1 V)``, sweeping EVERY row.
+
+    Sweeping only row 0 makes `GummelPoonNpnHdl` and `MosLevel1Hdl` look
+    flat, because their exponential lives on an internal junction.  That
+    nearly went into a report as data.
+
+    Mirrors `benchmarks/limiting_need.py`, which is the human-readable
+    version with the full table and the two criteria that do NOT work.
+    Deliberately reimplemented rather than imported: no test in this
+    tree imports from `benchmarks/`, and a guard should not acquire a
+    dependency on a report.
+    """
+    import numpy as np
+    from pycircuit.circuit.circuit import defaultepar
+
+    el = cls(*[Node('n%d' % i) for i in range(len(cls.terminals))])
+    el.update_iparv()
+    out = []
+    for v in _VOLTS:
+        best = 0.0
+        for row in range(el.n):
+            x = np.zeros(el.n)
+            x[row] = v
+            try:
+                g = np.asarray(el.G(x, defaultepar), dtype=float)
+            except Exception:
+                continue
+            m = float(np.max(np.abs(g)))
+            if np.isfinite(m):
+                best = max(best, m)
+        out.append(best)
+    if out[0] <= 0.0:
+        return None
+    return out[1] / out[0]
+
+
+def _library():
+    from pycircuit.circuit.hdl import Behavioural
+    return sorted(n for n, c in vars(eh).items()
+                  if isinstance(c, type) and issubclass(c, Behavioural)
+                  and c is not Behavioural and '_hdl_info' in c.__dict__)
+
+
+def test_no_model_that_needs_limiting_is_refused_by_pcnr():
+    """The property the whole PCNR arc (sec. 40-45) was aiming at.
+
+    Limiting exists because Newton steps into a region where the
+    linearisation is worthless, and that happens when the CONDUCTANCE
+    grows super-polynomially with a branch voltage the solver controls.
+    Not because a device is nonlinear, and not because its current
+    overflows -- `DiodeSpiceHdl` never overflows at any voltage, because
+    `expl` bounds it, and it needs limiting all the same.
+
+    Measured, the two populations are eighty-four orders of magnitude
+    apart, so this asserts a fact rather than a tuned bound.
+
+    ⚠ One direction only.  A LOW growth ratio is not proof a device is
+    safe: `EkvNmosHdl` reads bounded here because a probe from zero bias
+    never reaches its exponential region, and it does need limiting.
+    This test therefore says "everything that visibly needs limiting is
+    eligible", which is the half that can fail usefully.
+    """
+    offenders = []
+    for name in _library():
+        cls = getattr(eh, name)
+        try:
+            ratio = _max_g_growth(cls)
+        except Exception:
+            continue
+        if ratio is None or ratio <= _NEEDS_LIMITING:
+            continue
+        el = cls(*[Node('m%d' % i) for i in range(len(cls.terminals))])
+        el.update_iparv()
+        if not (getattr(el, 'pcnr_probes', None)
+                or getattr(el, 'pcnr_junctions', ())):
+            offenders.append((name, ratio,
+                              cls._hdl_info.get('pcnr_refusal') or ''))
+    assert not offenders, (
+        'model(s) whose conductance grows super-polynomially and which '
+        'PCNR refuses:\n' + '\n'.join(
+            '  %s  G(10)/G(1) = %.2e  -- %s' % o for o in offenders))
+
+
+def test_the_growth_probe_can_tell_the_two_populations_apart():
+    """The bite-check for the test above.
+
+    A guard that has never been shown to separate anything is not
+    evidence.  This asserts the gap is real and enormous -- an
+    exponential device against a bounded one -- so a future change that
+    flattened the probe (sweeping one row again, say) would fail here
+    rather than silently making the guard vacuous.
+    """
+    diode = _max_g_growth(eh.DiodeSpiceHdl)
+    tanh_block = _max_g_growth(eh.ComparatorHdl)
+    assert diode > 1e60, 'the exponential device no longer reads as one: %r' % diode
+    assert tanh_block is not None and tanh_block < 1e3, tanh_block
+    assert diode / tanh_block > 1e50, (diode, tanh_block)
