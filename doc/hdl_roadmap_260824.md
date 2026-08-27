@@ -1015,6 +1015,21 @@ the form it was argued — here is what actually landed.
                                                      checked with a calibrated slow-
                                                      down
 
+    40-44    PCNR on the cards a PDK ships           DONE 2026-08-27: 16 of 37
+                                                     models eligible, against ~4
+                                                     on real cards before.  Affine
+                                                     remainder for constant series
+                                                     R; probe declarations for GP
+                                                     rbb, SelfHeating dT and the
+                                                     diode series branch; and the
+                                                     V-branch gate relaxed (it
+                                                     refused on PRESENCE).  All
+                                                     gated on OPERATING-POINT
+                                                     agreement, 0.0e+00 to 9.0e-17.
+                                                     Only PhotodiodeHdl still
+                                                     refused with an exponential:
+                                                     iph reads optical INPUTS
+
 Suite: 1874 tests at `4d359e5` before this work, **2351 passed / 7
 skipped / 3 xfailed / 0 failed** as of `cb477a8`. After 12.2, 12.3 and
 12.4: **2220 passed / 7 skipped / 3 xfailed** in 695 s, plus the two

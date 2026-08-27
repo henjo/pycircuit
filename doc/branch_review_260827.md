@@ -27,7 +27,7 @@ half and its last stage is parked.
 ## 2. Scale
 
 ```
-559 commits    436 files    +161,671  -3,904
+564 commits    436 files    +162,238  -3,904
 ```
 
 | area | insertions | files |
@@ -94,22 +94,44 @@ after probe substitution -- which meant declaring a series resistance
 (`rb`, `rd`, `rs`) cost the device PCNR entirely. The PCNR tests zeroed
 those parameters, and said so in their own docstrings.
 
-The refusing dependence turned out to be **affine** in every case: a
-series resistance is a conductance, Newton solves it exactly, and
-limiting it means nothing. It is now stamped by the ordinary MNA
-assembly while PCNR carries only the probe-dependent part.
+That rule is right. What was wrong was that models kept handing the
+solver a raw node difference and the solver, correctly, refused to
+guess — and that one gate refused a whole class of device on the
+presence of a feature rather than its effect.
 
-| model | status |
+| status | models |
 |---|---|
-| `MosLevel1Hdl`, `MosLevel3Hdl`, `MesfetStatzHdl` | qualify with `rd`/`rs` declared |
-| `GummelPoonNpnHdl` | qualifies via `fold_card` (so SPICE's `rbm` sentinel resolves) |
-| `GummelPoonNpnThermalHdl`, `PhotodiodeHdl`, `LedHdl` | still refused, for reasons that are structural rather than incidental |
+| **Eligible** (16 of 37) | `DiodeHdl`, `DiodeSpiceHdl`, `DiodeSpiceThermalHdl`, `EkvNmos/Pmos`, `GummelPoonNpn/Pnp/NpnThermal`, `HemtAngelovHdl`, `LedHdl`, `MesfetCurticeHdl`, `MesfetStatzHdl`, `MosLevel1/1Pmos/3/3Pmos` |
+| **Refused, and it is about physics** | `PhotodiodeHdl` — `iph` reads its optical drive nodes, which are an *input*, not a parasitic |
+| **Refused, correctly** (20) | passives, sources and behavioural blocks with no exponential and nothing to limit; plus `IdtHdl`/`IdtmodHdl`, which carry a generated state (device memory) |
 
-Each lifted model is gated on reaching the **same operating point** as
-the unlimited path (1.5e-18 to 2.2e-17), not merely on converging --
-the first version of the lift converged happily with an internal node
-half a volt wrong and the terminal current still matching to seven
-digits.
+That is 16 against roughly **4** before this work — and the 4 were on
+cards with the parasitics deleted.
+
+It took three things, none of them solver machinery:
+
+1. **The affine remainder.** A series resistance is a constant
+   conductance; it belongs in the ordinary MNA stamp, not behind a
+   limiter. `MosLevel1/3`, `MesfetStatz`.
+2. **Three probe declarations.** Where a model handed the solver a raw
+   node difference, it now declares it: Gummel-Poon's base resistance,
+   `SelfHeating`'s thermal node (which sets the temperature *every*
+   current is evaluated at), and the SPICE diode's series branch.
+3. **One gate that was too strong.** A V-contributed branch used to
+   refuse a device on its presence; measured, PCNR carries it correctly.
+
+**Every one is gated on reaching the same operating point as the
+unlimited path**, not on converging — measured 0.0e+00 to 9.0e-17
+across the lot. That distinction is not pedantry: the first version of
+the affine lift converged happily with an internal node **half a volt
+wrong** and the terminal current still matching to seven digits.
+Convergence saw nothing.
+
+Two of the changes are numerically inert by construction — an identity
+probe applies no law — and that was measured rather than assumed:
+**bit-identical `i`/`G`/`q`/`C`** across every affected model and card.
+The recorded-digest tests corroborate independently, since only their
+`explain` text moved and every point digest held.
 
 ## 6. What is guarded, and what is not
 
@@ -266,35 +288,43 @@ include it, and deleting it would break the docs build. It stays.
 Use `.venv/bin/python -m pytest`, not a bare `python` — the system
 interpreter has none of the dependencies.
 
-Collection is **2,699 tests**: 2,612 in `pycircuit/circuit/tests` and 87
+Collection is **2,739 tests**: 2,652 in `pycircuit/circuit/tests` and 87
 elsewhere in the tree. The suite supports `pytest-xdist`, and `pytest.ini`
 records 52.9 s under `-n 8` against 55.1 s for the fast subset alone —
 which is why the `slow` marker is no longer deselected by default. Run it
 in parallel; serially and under load it takes well over an hour.
 
 A bare `pytest` from the repo root also works, as of the §8 cleanup:
-**2,699 tests collected, no errors.** Before that it aborted during
+**2,739 tests collected, no errors.** Before that it aborted during
 collection.
 
 ### Verified green at HEAD, 2026-08-27
 
 | | passed | skipped | xfailed | failed |
 |---|---:|---:|---:|---:|
-| `pycircuit/circuit/tests` | 2,608 | 3 | 3 | **0** |
+| `pycircuit/circuit/tests` | 2,647 | 4 | 3 | **0** |
 | rest of the tree | 85 | 4 | 0 | **0** |
-| **total** | **2,693** | **7** | **3** | **0** |
+| **total** | **2,732** | **8** | **3** | **0** |
 
-The main run took 23 min 20 s serially on a machine at load 16; use
-`-n 8`.
+Roughly **5–7 min under `-n 8`** with a warm compile cache, 11 min cold;
+over 20 min serially. Use the parallel form.
 
 The counts reconcile against `--collect-only` exactly, which is the
 check worth doing rather than trusting the totals: collection reports
-2,612 for `circuit/tests`, and 2,608 passed + 1 test-level skip + 3
-xfailed = 2,612. The remaining 2 skips are **module-level**
-`importorskip`s that collection does not count — `test_ginac_toolkit.py`
-and `test_symengine_toolkit.py`, both optional dependencies that are not
-installed here. Neither is a failure, but note that **two toolkit
-backends are therefore unexercised in this environment**.
+2,652 for `circuit/tests`, and 2,647 passed + 2 test-level skips + 3
+xfailed = **2,652**, the collected count. The other 2 skips are
+**module-level** `importorskip`s that collection does not count.
+
+The four skips are worth naming, because a skip is not a pass:
+
+- `test_ginac_toolkit.py` and `test_symengine_toolkit.py` — optional
+  dependencies not installed here, so **two toolkit backends are
+  unexercised in this environment**;
+- one superseded unittest, kept for a rewrite;
+- `test_perf_guards.py`'s own stability gate, which declines to measure
+  a 15% effect while eight xdist workers make the reference timings
+  spread 3×. It passes serially. That is the gate working, but it does
+  mean **the performance guard rarely runs under `-n 8`**.
 
 ## 10. Where the reasoning lives
 
