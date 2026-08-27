@@ -146,25 +146,30 @@ def test_each_regulariser_holds_its_argument():
         assert any(tag in h for h in held), (tag, held)
 
 
-def test_safe_div_deliberately_does_not_hold():
-    """It is the site where the value would be largest -- the biggest
-    bare arguments in the tree, 44 ops, 100 of the 434 -- and it is
-    excluded anyway.
+def test_safe_div_holds_too_and_the_exclusion_was_a_misreading():
+    """It is the site where the value is largest -- the biggest bare
+    arguments in the tree, 44 ops, 100 of the 434.
 
-    Holding there changes which subchain computes an exact zero, and the
-    C backend then disagrees with numpy on the SIGN of 16 zeros in PSP's
-    `G` (`{'equal': 989, 'zero-sign': 16, 'value': 0}` -- **no value
-    differs**).  The C backend's shipped guarantee is BITWISE identity,
-    and eroding a guarantee to buy speed is not a trade to make
-    silently.  Cost of the exclusion, PSP `G`: 17.680 ms unheld, 15.784
-    without `safe_div`, 14.121 with -- about half the available gain,
-    for an intact guarantee.  Roadmap sec. 36 leaves it open.
+    It was EXCLUDED for a day (roadmap sec. 36) because holding here made
+    `TestPspBitIdentity` report `{'equal': 989, 'zero-sign': 16,
+    'value': 0}` on `G`, read as "16 signed zeros".  A signed zero is
+    observable -- `1/-0.0` is `-inf` -- so refusing to erode the C
+    backend's bitwise guarantee was the right instinct on that reading.
+
+    The reading was wrong (sec. 37).  Traced, they are **240 NaN sign
+    bits** at 16 bias points, all at extreme biases where `G` is already
+    NaN in both paths.  IEEE-754 does not define that bit.  `_compare`
+    had folded "signed zero" and "NaN sign" into one label; it now
+    separates them, and the strict assertion still bans the first.
+
+    PSP `G`: 17.680 ms unheld, 15.784 without `safe_div`, **14.121 with
+    it**.
     """
     def body():
         hdl.var(BIG * 2.0, 'mine')
         return hdl.safe_div(1.0, BIG)
     held = [str(s) for s, _ in _chain_of(body)]
-    assert not any('sd_' in h for h in held), held
+    assert any('sd_' in h for h in held), held
 
 
 def test_holding_does_not_change_the_value():

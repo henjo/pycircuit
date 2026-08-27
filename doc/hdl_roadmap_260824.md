@@ -938,13 +938,13 @@ the form it was argued — here is what actually landed.
                                                      bit-identical
     3        S4  automatic intermediate holding      DONE, cut down (sec.
                                                      36): the regularisers
-                                                     hold their own args.
-                                                     PSP G 17.6 -> 15.8 ms.
-                                                     safe_div EXCLUDED (it
-                                                     would cost the C
-                                                     backend bitwise
-                                                     identity); full S4
-                                                     refused
+                                                     hold their own args,
+                                                     safe_div included.
+                                                     PSP G 1.22x faster.
+                                                     safe_div was excluded
+                                                     for a day on a
+                                                     misreading -- sec. 37.
+                                                     Full S4 refused
     4        the six syntactic checks                DONE (nine of them)
     4        explain()                               DONE
     4        check_jacobians()                       DONE
@@ -4403,11 +4403,15 @@ expressions are small either way, and the finiteness reach did not move.
 
 ### Phase 2 — `_autohold` in the regularisers
 
-`expl`, `hypsmooth`, `safe_ln`, `safe_pow`, `softplus` hold their own
-arguments, so the author does not have to. **PSP `G`: 17.6 → 15.8 ms,
-1.12x faster**, build unchanged, finiteness 1e36 unchanged — holding a
-repeated sub-expression computes it once instead of substituting it
-twice.
+`safe_div`, `expl`, `hypsmooth`, `safe_ln`, `safe_pow` and `softplus`
+hold their own arguments, so the author does not have to. **PSP `G` is
+1.22x faster** — 25 paired samples on a loaded machine, per-pair ratio
+median **1.216x** (p10 1.168, p90 1.284) — with the build unchanged and
+the finiteness reach still 1e36. Holding a repeated sub-expression
+computes it once instead of substituting it twice.
+
+(Without `safe_div`, which was the shipped state for a day, it is
+1.12x: 17.680 ms unheld, 15.784 without, 14.121 with.)
 
 ### ⚠⚠ The defect the four planned gates did not catch
 
@@ -4428,21 +4432,19 @@ Fixed by holding **only once the body has declared an intermediate
 itself** (`_VAR_STACK[-1]` non-empty): it is chained anyway by then, so
 holding more is free.
 
-### ⚠ And `safe_div` is deliberately excluded
+### ⚠ `safe_div` was excluded for a day, on a misreading — see §37
 
-The site where the value would be largest — the biggest bare arguments,
-100 of the 434. Holding there changes which subchain computes an exact
-zero, and the C backend then disagrees with numpy on the **sign of 16
-zeros** in PSP's `G` (`{'equal': 989, 'zero-sign': 16, 'value': 0}` —
-**no value differs**). The C backend's shipped guarantee is *bitwise*
-identity. Eroding a guarantee to buy speed is not a trade to make
-silently, so it is left to the user:
+The site where the value is largest — the biggest bare arguments, 100 of
+the 434. It was excluded because holding there made
+`TestPspBitIdentity` report `{'equal': 989, 'zero-sign': 16, 'value':
+0}` on `G`, read as *16 signed zeros*; a signed zero is observable
+(`1/-0.0` is `-inf`), so refusing to erode the C backend's bitwise
+guarantee was right **on that reading**.
 
-| | PSP `G` | C bitwise |
-|---|---|---|
-| no autohold | 17.680 ms | intact |
-| **shipped** (no `safe_div`) | **15.784 ms** | **intact** |
-| with `safe_div` | 14.121 ms | 16 signed zeros |
+**The reading was wrong.** Traced in §37: they are 240 **NaN sign bits**
+at 16 bias points, all where `G` is already NaN in both paths. IEEE-754
+does not define that bit. `safe_div` now holds, and the shipped figure
+is the one in the table below.
 
 ### Accuracy
 
@@ -4471,3 +4473,61 @@ Phases 0–2 done, about two days as estimated. **Phase 3 is not
 authorised and Phase 4 is refused** — the full form would intercept
 sympy construction for every model, and 52% of what it would hold is
 ≤3 ops.
+
+## 37. The "16 signed zeros" were 240 NaN sign bits (2026-08-27)
+
+§36 excluded `safe_div` from `_autohold` — the single most valuable site,
+100 of the 434 bare arguments and the largest of them — because enabling
+it made `TestPspBitIdentity` report:
+
+```
+('G', {'equal': 989, 'zero-sign': 16, 'value': 0})
+```
+
+read as *"16 signed zeros in PSP's `G`"*. The reasoning was sound on that
+reading: a signed zero is an **observable value** (`1/-0.0` is `-inf`),
+the C backend's shipped guarantee is bitwise identity, and the tree had
+already drawn a deliberate line — `C` may carry signed zeros (*"the
+integer-lattice exception — PSP's charge Jacobian has integer-valued zero
+cells"*), `i`, `G` and `q` may not. Crossing a line someone drew on
+purpose, to buy speed, was refused.
+
+### What they actually are
+
+Traced entry by entry:
+
+```
+240 byte-differing entries, 16 bias points
+by KIND : [('nan-payload', 240)]
+  numpy fff8000000000000   C 7ff8000000000000
+  bias (0.0, 1.2, 1e+30, -1e+30) -> G: 20 of 36 cells NaN
+```
+
+**Not one zero, signed or otherwise. Not one differing value.** They are
+NaN *sign bits*, at extreme biases where `G` is already NaN in both
+paths.
+
+**IEEE-754 does not define the sign of a NaN produced by arithmetic**,
+nothing preserves it, and no consumer can observe it — every use of a
+NaN yields a NaN. The exclusion was protecting a bit that is not a
+computation, and it cost 15.784 → 14.121 ms.
+
+### The instrument was ambiguous, and that is the transferable part
+
+`_compare` returned `'zero-sign'` whenever *values compared equal and
+bytes did not* — which is true of a signed zero **and** of two NaNs with
+different sign bits. One label, two findings of very different weight,
+and the label named only the serious one. So the tally read as the worse
+of the two possibilities every time.
+
+Split now: `'nan-bits'` and `'zero-sign'` are separate tallies. The
+strict assertion still requires `value == 0` and `zero-sign == 0` — a
+signed zero remains banned, because it is observable — while `nan-bits`
+is **recorded rather than ignored**: `G <= 32`, `i == 0`, `q == 0`, so a
+change that starts producing NaNs somewhere new still fails here.
+
+**A diagnostic that collapses two findings into the name of the graver
+one will make you refuse the right thing for the wrong reason.** This
+cost a day and the largest available win. The tell was there to be
+noticed: the tally said `zero-sign` on a *Jacobian* at ±1e30, where zeros
+are not what one should expect to find.

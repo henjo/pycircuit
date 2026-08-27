@@ -145,14 +145,39 @@ def _c_funcs(cls):
 
 
 def _compare(ref, out):
-    """`'equal'`, `'zero-sign'` (values equal, bytes differ only in the
-    sign of exact zeros) or `'value'`."""
+    """`'equal'`, `'nan-bits'`, `'zero-sign'` or `'value'`.
+
+    ⚠ **`'zero-sign'` used to mean two different things.**  It was
+    returned whenever the values all compared equal but the bytes did
+    not -- which is true of a signed zero AND of two NaNs with different
+    sign bits, and those are not the same finding.  Split 2026-08-27
+    (roadmap sec. 37), after a change was refused on the strength of "16
+    signed zeros in PSP's G" that turned out to be **240 NaN sign bits**
+    at 16 bias points, all of them points where `G` is already NaN in
+    both paths (`fff8000000000000` against `7ff8000000000000`).
+
+    The distinction matters because the two carry different weight.  A
+    signed zero is a real, observable value: `1/-0.0` is `-inf`.  **A
+    NaN's sign bit is not specified by IEEE-754** for the operations
+    that produce one, is not preserved through arithmetic, and cannot be
+    observed by any consumer -- every use of a NaN yields a NaN.
+    Requiring the two backends to agree on it is requiring something the
+    standard does not define.
+    """
     ref = np.asarray(ref, float)
     out = np.asarray(out, float)
     if ref.tobytes() == out.tobytes():
         return 'equal'
-    eq = (ref == out) | (np.isnan(ref) & np.isnan(out))
-    return 'zero-sign' if bool(eq.all()) else 'value'
+    both_nan = np.isnan(ref) & np.isnan(out)
+    eq = (ref == out) | both_nan
+    if not bool(eq.all()):
+        return 'value'
+    ## Every differing byte is inside a NaN?  Then the disagreement is
+    ## about a bit nothing defines.
+    rb = ref.view(np.uint64).reshape(ref.shape)
+    ob = out.view(np.uint64).reshape(out.shape)
+    differing = rb != ob
+    return 'nan-bits' if bool((differing & ~both_nan).sum() == 0) else 'zero-sign'
 
 
 def _sweep(e, cls, pts):
@@ -162,7 +187,8 @@ def _sweep(e, cls, pts):
     out = {}
     for name, f in _c_funcs(cls):
         kern = f.__dict__['_hdl_c']
-        tally = {'equal': 0, 'zero-sign': 0, 'value': 0}
+        tally = {'equal': 0, 'nan-bits': 0, 'zero-sign': 0,
+                 'value': 0}
         for x in pts:
             with np.errstate(all='ignore'):
                 ref = np.asarray(f(x, *args), float)
@@ -211,6 +237,10 @@ class TestLibraryBitIdentity(object):
                     ## the zero-sign exception -- and a function that is
                     ## MOSTLY zero-sign would mean something else is
                     ## wrong, so require byte-equality to dominate.
+                    ## `nan-bits` is counted separately and NOT bounded:
+                    ## a NaN's sign bit is not defined by IEEE-754 (see
+                    ## `_compare`).  A NaN that should not be there shows
+                    ## up in the twin finiteness tests, not here.
                     assert t['value'] == 0, (fname, t)
                     assert t['equal'] >= t['zero-sign'], (fname, t)
                 return
@@ -895,8 +925,31 @@ class TestPspBitIdentity(object):
         assert set(tallies) == {'i', 'G', 'q', 'C'}
         for k in ('i', 'G', 'q'):
             t = tallies[k]
+            ## Strict: no value may differ and no ZERO may change sign.
+            ##
+            ## `nan-bits` is deliberately not required to be zero, and
+            ## that is a 2026-08-27 correction rather than a relaxation.
+            ## It was folded into `zero-sign` before, and on that reading
+            ## a change was refused for "16 signed zeros in G" that were
+            ## really 240 NaN SIGN BITS at 16 bias points -- every one of
+            ## them a point where `G` is already NaN in both paths
+            ## (biases like +-1e30, 20 of 36 cells NaN).  IEEE-754 does
+            ## not define that bit, arithmetic does not preserve it, and
+            ## no consumer can see it.  Requiring it made the suite
+            ## sensitive to something that is not a computation.
+            ##
+            ## What still fails here: any differing VALUE, and any zero
+            ## whose sign flips -- `1/-0.0` is `-inf`, so that one is
+            ## observable and stays banned.
             assert t['value'] == 0 and t['zero-sign'] == 0, (k, t)
         assert tallies['C']['value'] == 0, tallies['C']
+        ## The NaN-bit count is asserted as a RECORDED number rather than
+        ## left free, so a change that starts producing NaNs somewhere
+        ## new is still caught here.  Measured 2026-08-27: 16 points on
+        ## `G`, none on `i` or `q`.
+        assert tallies['G']['nan-bits'] <= 32, tallies['G']
+        assert tallies['i']['nan-bits'] == 0, tallies['i']
+        assert tallies['q']['nan-bits'] == 0, tallies['q']
 
 
 if __name__ == '__main__':                        # pragma: no cover

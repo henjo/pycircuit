@@ -982,23 +982,28 @@ def safe_div(a, b, eps=1e-30):
     a NaN Jacobian at flat band, where the denominator is exactly zero.
     Refused here rather than left to surface as a NaN.
     """
-    ## ⚠ `safe_div` DELIBERATELY DOES NOT AUTO-HOLD, and it is the one
-    ## site where the value would be largest -- it takes the biggest bare
-    ## arguments in the tree (up to 44 ops, 100 of the 434).
+    ## `safe_div` holds too, and getting here took a wrong turn worth
+    ## recording.  It was EXCLUDED on 2026-08-26 because enabling it made
+    ## `TestPspBitIdentity` report `{'equal': 989, 'zero-sign': 16,
+    ## 'value': 0}` on `G`, read at the time as "16 signed zeros" -- and a
+    ## signed zero is observable (`1/-0.0` is `-inf`), so eroding the C
+    ## backend's bitwise guarantee for speed was refused.
     ##
-    ## Measured 2026-08-27: holding here changes which subchain computes
-    ## an exact zero, and the C backend then disagrees with numpy on the
-    ## SIGN of 16 zeros in PSP's `G` (`test_hdl_cbackend.py::
-    ## TestPspBitIdentity::test_the_spikes_sweep`, `{'equal': 989,
-    ## 'zero-sign': 16, 'value': 0}`).  **No value differs** -- but the C
-    ## backend's shipped guarantee is BITWISE identity, and eroding a
-    ## guarantee to buy speed is not a trade to make silently.
+    ## Traced 2026-08-27: they were **240 NaN SIGN BITS** at 16 bias
+    ## points, `fff8000000000000` against `7ff8000000000000`, every one
+    ## at an extreme bias (+-1e30) where `G` is ALREADY NaN in both
+    ## paths -- 20 of its 36 cells.  Not one zero, signed or otherwise,
+    ## and not one differing value.  `_compare` had folded both findings
+    ## into one label; it now separates them (roadmap sec. 37).
     ##
-    ## Isolated to this function: `expl` and `hypsmooth` hold with the
-    ## sweep still passing.  Cost of the exclusion, PSP `G`: 17.680 ms
-    ## unheld, **15.784 ms without `safe_div`**, 14.121 ms with it -- so
-    ## about half the available gain, for an intact guarantee.  Roadmap
-    ## sec. 36 records the option and leaves it open.
+    ## IEEE-754 does not define the sign of a NaN produced by arithmetic,
+    ## nothing preserves it, and no consumer can observe it.  So the
+    ## exclusion was protecting a bit that is not a computation, at the
+    ## cost of the largest single win available here: `safe_div` takes
+    ## the biggest bare arguments in the tree (44 ops, 100 of the 434),
+    ## and holding them is PSP `G` **15.8 -> 14.1 ms**.
+    a = _autohold(a, 'sd_a')
+    b = _autohold(b, 'sd_b')
     a, b = sympy.sympify(a), sympy.sympify(b)
     if float(eps) * float(eps) == 0.0:
         raise ValueError(
