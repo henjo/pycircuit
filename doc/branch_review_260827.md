@@ -103,20 +103,30 @@ is weakest and the weakness is not visible from the code.
   model cards, so a numerical change to them fails a run;
 - compile-time budget — a pathological model *warns*, with the reason.
 
-**NOT guarded — measured once, recorded in prose, and free to drift:**
+**Partly guarded — read the distinction, it is the useful part:**
 
-- **Every performance figure on this branch.** The cumulative 1.40× on
-  transients, DSL overhead at parity (1.22× → 1.01×), `fold_card` 1.54×,
-  `_autohold` 1.22×. **No test asserts any of them.** They were measured
-  on one machine, on one day. This has already bitten once in this
-  repo's history: a published overhead figure of `1.14x` was `1.25x` when
-  re-measured, with the benchmark still in the tree and still green —
-  because it asserted the two waveforms agreed, never that the ratio
-  held.
+- `fold_card` and `_autohold` have **direction** guards: a test asserts
+  the folded class emits fewer primitives than the symbolic one, and
+  another asserts the regularisers really hold. Neither optimisation can
+  silently stop working.
+- **No published magnitude is asserted** — not `fold_card`'s 1.54×, not
+  `_autohold`'s 1.22×, not the cumulative 1.40×. Pinning the first two
+  was measured and refused: on the card the folding test uses, folding
+  moves the primitive count 275 → 263, a 4.4% margin, so a bound there
+  would pin noise. The cumulative 1.40× compares against code that no
+  longer exists and is not a testable invariant at all.
+- The **end-to-end DSL overhead** had no guard of either kind and now
+  has one — `test_perf_guards.py`. It asserts the interleaved ladder
+  ratio stays under **1.15×** (published parity 1.01×, pre-optimisation
+  state 1.22×) *and* that both sides produce the same waveform in the
+  same number of steps. Either assertion alone is the bug that let
+  `hdl.rst` drift from 1.14× to 1.25× with a green benchmark in the
+  tree the whole time — it asserted the waveforms agreed and never that
+  the ratio held.
 
-If any of the performance claims matter for the merge decision,
-**re-measure rather than believe** — `benchmarks/` has the scripts, and
-they are the same ones the numbers came from.
+So: **if a performance claim in this document matters to your decision,
+only the overhead figure is defended by a test. Re-measure the rest**
+— `benchmarks/` holds the same scripts the numbers came from.
 
 ### Model coverage: a broad floor, a very uneven ceiling
 

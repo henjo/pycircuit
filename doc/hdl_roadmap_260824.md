@@ -1002,10 +1002,18 @@ the form it was argued — here is what actually landed.
     5        the remaining five: item 6 (VCO), 10
              (Level 3), 12, 13, 15                   DONE 2026-08-26 (sec. 18):
                                                      all fifteen built, 37 classes
-    38       published perf figures are unguarded    OPEN 2026-08-27 (sec. 38):
-             by any test                             no test asserts the 1.40x,
-                                                     1.54x, 1.22x or the parity
-                                                     claim; prose only
+    38       published perf figures are unguarded    DONE 2026-08-27 (sec. 39):
+             by any test                             sec. 38 OVERSTATED -- fold_
+                                                     card and _autohold already
+                                                     had DIRECTION guards.  A
+                                                     magnitude bound on those was
+                                                     REFUSED (4.4% margin = noise).
+                                                     The overhead figure, guarded by
+                                                     neither, now has test_perf_
+                                                     guards.py: interleaved ratio,
+                                                     confirm-before-failing, bite-
+                                                     checked with a calibrated slow-
+                                                     down
 
 Suite: 1874 tests at `4d359e5` before this work, **2351 passed / 7
 skipped / 3 xfailed / 0 failed** as of `cb477a8`. After 12.2, 12.3 and
@@ -4581,7 +4589,17 @@ for a judgement, print the number and then go and look.**
 **No performance figure on this branch is asserted by any test.** The
 cumulative 1.40x, the DSL overhead at parity, `fold_card`'s 1.54x,
 `_autohold`'s 1.22x — all measured once, on one machine, recorded in
-prose. `hdl.rst`'s overhead figure has already drifted once under
+prose.
+
+> ⚠ **CORRECTED 2026-08-27, same day (§39).** That sentence is
+> overstated, and the correction is the useful part. Two of the four
+> optimisations already have a **direction** guard: a test asserts
+> `fold_card` emits fewer primitives than the symbolic class, and
+> another asserts the regularisers really hold. Neither can silently
+> stop working. What none of the four has is a **magnitude** guard, and
+> the end-to-end DSL overhead had no guard of *either* kind. The
+> distinction matters because it changes what is worth building: three
+> of the figures needed nothing, and the fourth needed a real test. `hdl.rst`'s overhead figure has already drifted once under
 exactly these conditions (1.14x published, 1.25x when re-measured, with
 a green benchmark in the tree the whole time, because it asserted the
 waveforms agreed and never the ratio).
@@ -4624,3 +4642,64 @@ alone with `SymbolicToolkit has no attribute 'insert'` and fails under
 collection with a JAX dtype error, because a sibling had already
 replaced the global toolkit. **A broken file that reports the wrong
 reason costs more than a broken file.**
+
+## 39. A bound around the overhead figure (2026-08-27): three of the four needed nothing
+
+§38 proposed guarding every published performance figure. Measuring
+first cut that to one, and the cutting is the useful half.
+
+**What already existed.** `fold_card` and `_autohold` each have a
+DIRECTION guard — `test_everything_outside_instance_is_folded` asserts
+the folded class emits fewer primitives than the symbolic one, and
+`test_each_regulariser_holds_its_argument` asserts the regularisers
+hold. Neither optimisation can silently stop working, which is the
+failure that actually matters. §38 said otherwise and was wrong.
+
+**What was refused.** Strengthening those from `<` to `< 0.75 *`, to
+pin magnitude as well as direction. On the Gummel-Poon card that test
+uses, folding moves the primitive count **275 → 263** — a 4.4% margin.
+A bound there pins noise. The 38% reduction that produces the published
+1.54x lives on PSP, whose folded compile is **19.5 s**, too slow to
+spend on every run. Recorded rather than built.
+
+**What was built.** `test_perf_guards.py`: the end-to-end DSL overhead,
+the one figure with no guard of either kind, because it is *call*
+overhead and has no emitted-work proxy to assert on instead.
+
+### What the measurement design cost, and why it is not a `time.time()` assert
+
+| finding | number |
+|---|---|
+| Absolute wall time is unusable | the machine ranged **load 7 to 17** within the hour |
+| An in-run ratio is not load-immune either | the benchmark reported **0.86x** at load 7 against 1.01x quiet — it times all of A then all of B, so drift lands entirely on B. Fixed by **interleaving** A B A B and taking the min of each |
+| Shrinking the run is not a free saving | 1000 steps → min-ratio 0.966; 300 → 1.080; 150 → 1.131. Fewer steps is noisier **and biased upward**, because setup is amortised over less work |
+| A single reading flakes | **1 failure in 27 runs**, ~4%. Enough to fire every dozen full-suite runs and earn the test a reputation for crying wolf |
+
+The bound cannot simply be widened to absorb that: **1.22x is the state
+being guarded against**, so there is nowhere above 1.15x to go without
+making the test unable to fail for its own reason. Instead a breach is
+**confirmed, not believed** — re-measured once, and the less damning
+reading kept. Two independent excursions square the false-alarm rate; a
+real regression is a level shift, not an excursion, and breaches both
+times. The second measurement is only paid for when the first says
+something interesting.
+
+### The bite-check found the bug, as usual
+
+The injected slowdown was too small — **1.096x against a 1.15x bound**
+— so the harness could not have detected the regression it claimed to
+guard. Calibrating it produced a finding worth keeping:
+
+    1 dot of 2000 elements  ->  1.089x
+    3 dots of 400 elements  ->  1.167x
+    5 dots of 400 elements  ->  1.398x
+
+**Twenty-five times less arithmetic, and it costs more.** The price is
+the per-call numpy entry, not the flops — which is precisely why the
+DSL's overhead is a call-count question, and precisely why it has no
+emitted-work proxy and needed a timing test after all.
+
+Both assertions are load-bearing together: equality without the ratio is
+exactly what let `hdl.rst` drift from 1.14x to 1.25x with a green
+benchmark in the tree, and the ratio without equality could be "won" by
+quietly doing less work.
