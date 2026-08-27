@@ -1136,6 +1136,51 @@ measures both and asserts the agreement).
    machine: single runs of the ladder benchmark ranged from 0.97x to
    1.05x while the test suite was running alongside it.
 
+Naming intermediates, and what the compiler does for you
+--------------------------------------------------------
+
+A compact model names its intermediates with ``var()``, and that call is
+**load-bearing, not cosmetic**: without it every reference substitutes
+the whole definition, so an expression that mentions a previous result
+twice doubles the tree.  Measured on the surface-potential MOSFET --
+with the holds removed it does **not finish compiling in ten minutes**,
+against 62 s held.
+
+You do not have to hold a *regulariser's* argument yourself.
+``safe_div``, ``expl``, ``hypsmooth``, ``safe_ln``, ``safe_pow`` and
+``softplus`` hold theirs, which is where the risk concentrates -- 434 of
+1184 such calls in the PSP kernel were passing a bare expression.  It is
+worth **1.22x** on that model's Jacobian, because a held sub-expression
+is computed once instead of being substituted and recomputed.
+
+Two conditions keep that safe, and both matter:
+
+* it holds **only once your body has declared an intermediate of its
+  own**.  ``var()`` is what makes a model *chained*, and a chained model
+  has no ``eval_i_pure`` -- so it cannot be batched by ``solve_batched``
+  and cannot be traced.  An eager model that merely divides must not be
+  moved out of the batchable set behind the author's back;
+* it holds **only expressions above** ``hdl.AUTOHOLD_MIN_OPS``.  Naming a
+  two-operation expression adds a chain line and buys nothing -- across
+  the PSP kernel's 342 hand-written holds, 52% are three operations or
+  fewer.
+
+.. note::
+
+   Holding changes the *order* the arithmetic is evaluated in, not the
+   arithmetic, so results are **not bit-identical** -- measured at one
+   ulp (2.5e-16 on MOS level 3, 1.2e-15 on the thermal SPICE diode).
+   The vendor agreement and the extreme-bias finiteness bounds are
+   unchanged.
+
+If a compile ever takes pathologically long, the build says so
+(``hdl.COMPILE_WARN_SECONDS``, default 180 s) and names the usual cause,
+which is an intermediate used twice and not held.  Compile time is the
+only reliable signal for that: the *emitted* line count goes **down**
+when a hold is dropped, because the definition is inlined rather than
+named.  ``benchmarks/hold_value.py`` measures which holds a model
+actually depends on, by dropping them and rebuilding.
+
 Folding a model card
 --------------------
 

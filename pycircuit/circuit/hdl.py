@@ -1892,6 +1892,15 @@ def var(expr, name=None):
         qi = var(inversion_charge(sp), 'qi')
         return Contribution(b.I, W / L * mu * qi * ...)
 
+    **You do not have to hold a regulariser's argument yourself.**
+    `safe_div`, `expl`, `hypsmooth`, `safe_ln`, `safe_pow` and
+    `softplus` call `_autohold` on theirs -- but only once your body has
+    declared at least one intermediate of its own, and only for
+    expressions above `AUTOHOLD_MIN_OPS`.  That covers the site the
+    substitution problem concentrates at (434 of 1184 such calls in
+    `psp_kernel` took a bare argument) and is worth 1.22x on PSP's
+    Jacobian.  Everywhere else the call is yours to make.
+
     **The NAME is optional; the CALL is not.**  That distinction is the
     whole of this docstring, and the sentence that used to stand here --
     *"Naming is optional and only affects generated-code readability"* --

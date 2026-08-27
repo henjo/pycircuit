@@ -85,6 +85,18 @@ one component, write "re-run this" beside it rather than a number to
 quote — and prefer publishing the *absolute* before/after, which does
 not move when its neighbours do.
 
+⚠ **ON A BUSY MACHINE, PAIR THE VARIANTS IN ONE PROCESS.** Sequential
+runs of two variants do not share their load, so the ratio between them
+measures the machine as much as the change. Measured here on identical
+code: sequential runs gave anything from **1.04x to 1.26x**; building
+both variants in ONE process and interleaving their timings gave a
+per-pair median of **1.216x** with p10 1.168 and p90 1.284.
+
+Report the **per-pair ratio**, not the ratio of separately-taken
+minima — each pair then sees the same load, and the spread of the pairs
+tells you how much to trust it. When the machine cannot be quiet, this
+is the difference between a number and a guess.
+
 ⚠ **A RATIO THAT DID NOT MOVE IS NOT A NULL RESULT.** When the published
 figure compares two things that share a code path, a change to the
 shared part speeds up *both* and the ratio sits still. Reading that as

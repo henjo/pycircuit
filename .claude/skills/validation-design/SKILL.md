@@ -73,6 +73,38 @@ wrong or missing here because the one card they were tested against
 happened to zero them. **Two cards is not twice the validation — it is
 the difference between exercising a term and assuming it.**
 
+⚠ **A DIAGNOSTIC THAT COLLAPSES TWO FINDINGS INTO THE NAME OF THE GRAVER
+ONE WILL MAKE YOU REFUSE THE RIGHT THING FOR THE WRONG REASON.**
+
+A comparison here returned the label `zero-sign` whenever *the values
+compared equal but the bytes did not*. That is true of a signed zero —
+and equally true of two NaNs with different sign bits. One label, two
+findings of very different weight, and the label named only the serious
+one:
+
+* a **signed zero is observable**: `1/-0.0` is `-inf`. Worth refusing a
+  change over.
+* a **NaN's sign bit is not defined** by IEEE-754 for the operations
+  that produce one, is not preserved through arithmetic, and cannot be
+  seen by any consumer. Worth nothing.
+
+Reported as `{'zero-sign': 16}`, it read as sixteen signed zeros in a
+Jacobian, and a real optimisation was refused to protect them. Traced a
+day later they were **240 NaN sign bits at extreme biases where that
+Jacobian was already NaN in both implementations**. The refusal was
+sound reasoning on a reading the instrument had made impossible to
+check.
+
+Two habits fall out of it:
+
+* when a tally decides something, **read what the classifier actually
+  tests**, not what its label says. The two differ exactly when someone
+  merged cases that felt similar while writing it.
+* **the tell is usually there.** This one said "zero-sign" about a
+  Jacobian at 1e30, where zeros are not what one should expect to find.
+  A category that is surprising *for the thing being measured* is worth
+  one command to confirm before it decides anything.
+
 ⚠ **A GUARD IS INSURANCE AGAINST THE TAIL, AND SAMPLING THE BULK CANNOT
 TEST IT.** Clamps, floors, regularisers and `safe_*` wrappers exist to
 change the answer only where the unguarded expression would be

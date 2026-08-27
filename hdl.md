@@ -462,6 +462,49 @@ silently registering the device as having nothing to limit.
 The path is chosen per model: declare no intermediates and nothing
 changes. `_hdl_info['chained']` says which path a class took.
 
+#### Where the compiler holds for you (2026-08-27, roadmap §36)
+
+Roadmap S4 asked whether the compiler could hold *every* non-atomic
+sub-expression, so an author never had to call `var()`. Measured, that
+is the wrong shape — **52%** of the 342 holds `psp_kernel.py` writes are
+≤3 operations, i.e. naming rather than structure — while **434 of 1184**
+calls into the regularisers were receiving a *bare* expression, one of
+them 44 operations. The risk is concentrated, so the fix is:
+
+**`safe_div`, `expl`, `hypsmooth`, `safe_ln`, `safe_pow` and `softplus`
+hold their own arguments.** Worth **1.22×** on PSP's Jacobian.
+
+Two conditions, and the first is the one that keeps this from being a
+regression:
+
+* **only once the body has held something itself.** `var()` is what
+  makes a model chained, and a chained model has **no `eval_i_pure`** —
+  it drops out of `solve_batched` and off the traced path. §22 measured
+  the two fast paths as disjoint, so holding unconditionally would move
+  any eager model that divides or exponentiates out of the batchable
+  set. Caught by a test model, `KernelAllEager`, which lost
+  `eval_i_pure` outright — and *not* by a flip-check across all 37
+  library classes, which reported no flips, because the 15 batchable
+  ones are passives that never call a regulariser. **The library could
+  not have shown it.**
+* **only above `AUTOHOLD_MIN_OPS`**, so the 52% majority is left alone.
+
+Holding changes evaluation *order*, not arithmetic, so results are not
+bit-identical: one ulp, measured (2.5e-16 on MOS level 3, 1.2e-15 on the
+thermal SPICE diode). The vendor agreement and the extreme-bias
+finiteness bounds are unchanged.
+
+**And the measurement of a hold's value is now mechanical**:
+`benchmarks/hold_value.py` drops holds by name prefix and rebuilds. On
+PSP the `ids_*` holds are load-bearing for compilability — without them
+the build does not finish in five minutes — while `sg_*` and `avl_*` are
+not, for compilability *or* finiteness. The `sg_*` result is worth
+noting: `_sigma_body`'s docstring says its holds were what kept the
+Jacobian finite at `Vd = 1e26`, and dropping them today leaves the model
+finite to **1e36**. Something since (most likely `_rdiv`'s regrouping)
+made them no longer load-bearing for that; the docstring records what
+was true when they went in.
+
 ### 3.2b2 Correlated noise: one fluctuation, several branches
 
 `white_noise(pwr, name)` and `flicker_noise(pwr, exp, name)` take an
