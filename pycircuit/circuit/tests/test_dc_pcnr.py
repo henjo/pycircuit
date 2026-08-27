@@ -142,6 +142,9 @@ def test_dc_pcnr_true_falls_back_to_the_ordinary_chain_when_pcnr_fails():
             logging.disable(logging.NOTSET)
         ref = DC(_bjt_mirror_20v(rev)[0]).solve(x0=x0)
         assert a.pcnr_fell_back is True
+        ## and the richer form agrees -- 'fell-back' is distinguishable
+        ## from 'no-participants', which the boolean cannot do.
+        assert a.pcnr_status == 'fell-back'
         assert abs(float(r.v('no', gnd)) - float(ref.v('no', gnd))) < 1e-6
 
 
@@ -179,3 +182,93 @@ def test_dc_pcnr_true_does_not_fall_back_when_pcnr_converges():
     r = a.solve()                     # zero start: PCNR converges in ~9
     assert a.pcnr_fell_back is False
     assert abs(float(r.v('no', gnd)) - 3.996) < 5e-3
+
+
+## ======================================================================
+## `pcnr=True` is a REQUEST -- what actually happened is `pcnr_status`.
+## ======================================================================
+
+def _linear_only():
+    from pycircuit.circuit.circuit import SubCircuit, gnd
+    from pycircuit.circuit.elements import VS
+    from pycircuit.circuit import elements_hdl as eh
+    c = SubCircuit()
+    c.add_node('a')
+    c['v1'] = VS('a', gnd, v=1.0)
+    c['r1'] = eh.RHdl('a', gnd, r=1e3)
+    return c
+
+
+def _with_diode():
+    from pycircuit.circuit.circuit import SubCircuit, gnd
+    from pycircuit.circuit.elements import VS
+    from pycircuit.circuit import elements_hdl as eh
+    c = SubCircuit()
+    c.add_node('a')
+    c['v1'] = VS('a', gnd, v=1.0)
+    c['d1'] = eh.DiodeSpiceHdl('a', gnd)
+    return c
+
+
+def test_pcnr_status_is_always_defined_even_when_pcnr_is_off():
+    """It was assigned only inside `if self.par.pcnr`.
+
+    So a caller that checked `dc.pcnr_fell_back` after an ordinary solve
+    got an `AttributeError` rather than an answer -- the attribute
+    existed only when it was least interesting.
+    """
+    from pycircuit.circuit.circuit import gnd
+    from pycircuit.circuit.dcanalysis import DC
+
+    dc = DC(_with_diode(), refnode=gnd)          # pcnr defaults to False
+    dc.solve()
+    assert dc.pcnr_status == 'off'
+    assert dc.pcnr_fell_back is False
+
+
+def test_pcnr_status_separates_ran_from_did_nothing():
+    """⚠ THE DEFECT THIS EXISTS FOR.
+
+    `pcnr_fell_back` reads **False** both when PCNR solved the circuit
+    and when `pcnr=True` was asked for and no device declared a probe.
+    A caller could not tell "PCNR solved this" from "PCNR did nothing",
+    which is the silent fallthrough this module's own comment records
+    fixing for the MOSFET diff pair -- the participation GATE was fixed
+    and the REPORTING was not.
+    """
+    from pycircuit.circuit.circuit import gnd
+    from pycircuit.circuit.dcanalysis import DC
+    from pycircuit.circuit import pcnr as P
+
+    ran = DC(_with_diode(), refnode=gnd, pcnr=True)
+    ran.solve()
+    assert P.pcnr_devices(_with_diode()), 'the fixture stopped participating'
+    assert ran.pcnr_status == 'used'
+
+    nothing = DC(_linear_only(), refnode=gnd, pcnr=True)
+    nothing.solve()
+    assert not P.pcnr_devices(_linear_only())
+    assert nothing.pcnr_status == 'no-participants'
+
+    ## The old boolean cannot tell them apart, which is why the string
+    ## exists.  Asserted so a future change that tried to fold them back
+    ## into one flag has to notice.
+    assert ran.pcnr_fell_back is nothing.pcnr_fell_back is False
+
+
+def test_a_circuit_with_no_limited_device_still_solves_with_pcnr_on():
+    """`pcnr=True` must never make a solvable circuit unsolvable.
+
+    `pcnr.solve_dc` raises "no device in this circuit declares a PCNR
+    junction" when called directly; through `DC(pcnr=True)` that case
+    falls through to the ordinary chain and returns the answer.
+    """
+    import numpy as np
+    from pycircuit.circuit.circuit import gnd
+    from pycircuit.circuit.dcanalysis import DC
+
+    off = np.asarray(DC(_linear_only(), refnode=gnd).solve().x, dtype=float)
+    on = DC(_linear_only(), refnode=gnd, pcnr=True)
+    got = np.asarray(on.solve().x, dtype=float)
+    assert on.pcnr_status == 'no-participants'
+    assert np.allclose(got, off, rtol=0, atol=0), (got, off)

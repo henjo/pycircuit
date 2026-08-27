@@ -53,9 +53,24 @@ class DC(Analysis):
                   ## PCNR gives every limited quantity its own unknown, so devices
                   ## cannot interfere through a shared node; classic limiting is
                   ## what every existing test and circuit is tuned against.
+                  ## ⚠ `pcnr=True` is a REQUEST, not a guarantee, and the
+                  ## outcome is reported on the analysis object as
+                  ## `pcnr_status`, which is always one of:
+                  ##
+                  ##   'off'              the parameter was False
+                  ##   'used'             PCNR solved this
+                  ##   'no-participants'  asked for, but no device in the
+                  ##                      circuit declares a probe
+                  ##   'fell-back'        PCNR raised; the ordinary Newton
+                  ##                      chain solved it instead
+                  ##
+                  ## `pcnr_fell_back` is the older boolean and is kept, but
+                  ## it cannot separate the middle two: both read False.
+                  ## Check `pcnr_status` when it matters which happened.
                   Parameter(name='pcnr',
                             desc='Use Predictor/Corrector Newton-Raphson instead '
-                                 'of limiting (Aadithya et al.); off by default',
+                                 'of limiting (Aadithya et al.); off by default. '
+                                 'The outcome is reported as `pcnr_status`',
                             unit='', default=False),
                   Parameter(name='vabstol', 
                             desc='Absolute voltage error tolerance', unit='V', 
@@ -143,6 +158,13 @@ class DC(Analysis):
                     'x0 has %d entries but the circuit has %d unknowns'
                     % (len(x0), self.cir.n))
 
+        ## PCNR OUTCOME, always set -- see `pcnr_status` below.  It used
+        ## to be assigned only inside `if self.par.pcnr`, so a caller
+        ## that checked `dc.pcnr_fell_back` on an ordinary solve got an
+        ## AttributeError rather than an answer.
+        self.pcnr_status = 'off'
+        self.pcnr_fell_back = False
+
         if self.par.pcnr:
             from pycircuit.circuit import pcnr as _pcnr
             ## Gate PARTICIPATION on the device records, not on the
@@ -151,13 +173,13 @@ class DC(Analysis):
             ## so `pcnr=True` on a MOSFET differential pair used to fall
             ## through to the ordinary solver SILENTLY (vector PCNR
             ## Stage 2, 2026-08-26).
-            self.pcnr_fell_back = False
             if _pcnr.pcnr_devices(self.cir):
                 try:
                     x, _v_lim, _its = _pcnr.solve_dc(
                         self.cir, self.cir.nodes[self.irefnode], x0=x0,
                         epar=self.epar, maxiter=self.par.maxiter,
                         reltol=self.par.reltol, abstol=self.par.vabstol)
+                    self.pcnr_status = 'used'
                     self.result = CircuitResult(self.cir, x)
                     return self.result
                 except Exception as exc:               # noqa: BLE001
@@ -175,10 +197,26 @@ class DC(Analysis):
                         'DC(pcnr=True): PCNR failed (%s: %s); falling back to '
                         'the ordinary Newton chain for this solve',
                         type(exc).__name__, str(exc)[:80])
+                    self.pcnr_status = 'fell-back'
                     self.pcnr_fell_back = True
-            ## No participating device: PCNR has nothing to do, and falling
-            ## through to the ordinary solver is the honest answer rather than
-            ## raising -- the circuit simply has no limited quantities.
+            else:
+                ## No participating device: PCNR has nothing to do, and
+                ## falling through to the ordinary solver is the honest
+                ## answer rather than raising -- the circuit simply has no
+                ## limited quantities.
+                ##
+                ## ⚠ But it must SAY SO.  `pcnr_fell_back` stayed False
+                ## here, which is the same value it has when PCNR ran and
+                ## succeeded, so a caller could not tell "PCNR solved this"
+                ## from "PCNR was asked for and did nothing".  That is the
+                ## silent-fallthrough the note above records fixing for the
+                ## diff-pair case, in a second guise: the gate was fixed and
+                ## the REPORTING was not.
+                self.pcnr_status = 'no-participants'
+                logging.warning(
+                    'DC(pcnr=True): no device in this circuit declares a '
+                    'PCNR probe, so the ordinary Newton chain is used. '
+                    'Check `dc.pcnr_status` if this is unexpected.')
 
         def func(x):
             return self.cir.i(x, self.epar) + self.cir.u(0, analysis='dc', epar=self.epar), self.cir.G(x, self.epar)

@@ -5322,3 +5322,50 @@ products -- rather than merely un-probed.
 exponential lives on an internal junction. That nearly went into a
 report as data. Both the benchmark and the test sweep every row, and
 say why.
+
+## 47. `pcnr=True` is a request; `pcnr_status` is what happened (2026-08-27)
+
+`DC(pcnr=True)` could quietly not use PCNR, in two different ways, and
+the caller had no way to tell.
+
+**Defect 1 -- the attribute did not exist when it was not interesting.**
+`self.pcnr_fell_back = False` was assigned *inside* `if self.par.pcnr`,
+so a caller checking `dc.pcnr_fell_back` after an ordinary solve got an
+`AttributeError`.
+
+**Defect 2 -- the flag could not separate "ran" from "did nothing".**
+`pcnr_fell_back` reads **False** both when PCNR solved the circuit and
+when `pcnr=True` was asked for and *no device declared a probe*.
+Measured:
+
+    has a diode    participants=1   pcnr_fell_back=False
+    linear only    participants=0   pcnr_fell_back=False
+
+⚠ That is the **silent fallthrough this module's own comment records
+fixing** for the MOSFET differential pair (Stage 2, §15): participation
+used to be gated on the pnj-only pair view, which is empty for pure
+`fetlim`/`limvds` devices, so `pcnr=True` fell through without saying
+so. The GATE was fixed then. The REPORTING was not, and the same
+failure came back through the other door.
+
+**Fixed:** `pcnr_status`, always set, one of
+
+    'off'              the parameter was False
+    'used'             PCNR solved this
+    'no-participants'  asked for, no device declares a probe
+    'fell-back'        PCNR raised; ordinary Newton solved it instead
+
+and the no-participants case now `logging.warning`s. `pcnr_fell_back`
+is kept -- three tests read it -- and still means what it meant.
+
+Bite-checked: reverting the reporting fails three tests, one of them on
+the original `AttributeError`.
+
+### ⚠ `Transient` has the same gap and is NOT fixed here
+
+`transient.py:2062` carries the identical fallback and records nothing.
+It differs in an important way: it falls back **per timestep**, so the
+honest report is a COUNT of steps that lost PCNR, not a single state. A
+transient can therefore lose PCNR on some steps and leave no trace but
+log lines. Scoped and left, deliberately -- the counter is a different
+design and this section is about the DC path.
