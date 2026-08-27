@@ -603,12 +603,29 @@ _RECORDED = [
     ('GummelPoonNpnThermalHdl', _BJT, ('c', 'b', 'e', 'th', 'tha'), 8,
      ['d2bcfb160947baec', 'fde3cc1f8ae9d6db', '943ddcd06908762d'],
      '00b5ba240e8e9afc'),
+    ## ⚠ The two SPICE-diode `explain` digests were RE-RECORDED
+    ## 2026-08-27 for `_autohold` (roadmap sec. 36): the regularisers now
+    ## hold their own arguments, so the chain carries more named
+    ## intermediates and `explain()` lists them.
+    ##
+    ## `DiodeSpiceHdl`'s three POINT digests are UNCHANGED -- its numbers
+    ## did not move at all, only the text.  `DiodeSpiceThermalHdl`'s did
+    ## move, and were measured before re-recording: 2880 samples, 92 of
+    ## 920 comparable differ, **max relative 1.213e-15, median 1.568e-16**
+    ## -- reassociation at the last bit, because holding stops sympy
+    ## flattening across the boundary.
+    ##
+    ## Old explain digests: DiodeSpiceHdl 4faadd376cafc95a,
+    ## DiodeSpiceThermalHdl b2230da8487...dbfb58d3a752 (see git).
     ('DiodeSpiceHdl', _DIO, ('a', 'c'), 3,
      ['eadd075b306b20e0', 'ac934e5f1d3b6a30', 'de1b14f3dc3cb89c'],
-     '4faadd376cafc95a'),
+     'b79d989a3263018f'),
+    ## Old: points b2230da8487a876f / cda54034e9a55933 / 8361dbfb58d3a752,
+    ## explain 0dcf03f6b937d283.  Moved by 1.213e-15 relative -- see the
+    ## note above.
     ('DiodeSpiceThermalHdl', _DIO, ('a', 'c', 'th', 'tha'), 5,
-     ['b2230da8487a876f', 'cda54034e9a55933', '8361dbfb58d3a752'],
-     '0dcf03f6b937d283'),
+     ['2779caa138b9b423', 'a630e803c927764a', '5452a4a0006fbacb'],
+     '9d1c2ec275877d5c'),
 ]
 
 

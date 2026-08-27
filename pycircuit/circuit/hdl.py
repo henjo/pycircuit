@@ -64,6 +64,7 @@ import keyword
 import itertools
 import re
 import types
+import time
 import warnings
 
 
@@ -725,6 +726,7 @@ def expl(x, x0=EXPL_THRESHOLD):
 
     PSP103 and JUNCAP200 call the family 31 times between them.
     """
+    x = _autohold(x, 'expl_x')
     x = sympy.sympify(x)
     return sympy.Piecewise(
         (_KE05 / _p3(-x0 - minc(x, -x0)), x < -x0),
@@ -766,6 +768,7 @@ def hypsmooth(x, eps):
     underflowing to exactly zero and removing the regularisation
     entirely.
     """
+    x = _autohold(x, 'hyp_x')
     x, eps = sympy.sympify(x), sympy.sympify(eps)
     ## Each arm sees an argument clamped to ITS OWN side.  Without that
     ## the conjugate arm, evaluated at large POSITIVE x, has `r - x`
@@ -864,6 +867,7 @@ def safe_ln(x, eps=1e-30):
     pure loss.  If the argument is provably positive, plain
     ``sympy.log`` is both correct and 154 decades wider.
     """
+    x = _autohold(x, 'sln_x')
     return sympy.log(hypsmooth(x, eps))
 
 
@@ -978,6 +982,23 @@ def safe_div(a, b, eps=1e-30):
     a NaN Jacobian at flat band, where the denominator is exactly zero.
     Refused here rather than left to surface as a NaN.
     """
+    ## ⚠ `safe_div` DELIBERATELY DOES NOT AUTO-HOLD, and it is the one
+    ## site where the value would be largest -- it takes the biggest bare
+    ## arguments in the tree (up to 44 ops, 100 of the 434).
+    ##
+    ## Measured 2026-08-27: holding here changes which subchain computes
+    ## an exact zero, and the C backend then disagrees with numpy on the
+    ## SIGN of 16 zeros in PSP's `G` (`test_hdl_cbackend.py::
+    ## TestPspBitIdentity::test_the_spikes_sweep`, `{'equal': 989,
+    ## 'zero-sign': 16, 'value': 0}`).  **No value differs** -- but the C
+    ## backend's shipped guarantee is BITWISE identity, and eroding a
+    ## guarantee to buy speed is not a trade to make silently.
+    ##
+    ## Isolated to this function: `expl` and `hypsmooth` hold with the
+    ## sweep still passing.  Cost of the exclusion, PSP `G`: 17.680 ms
+    ## unheld, **15.784 ms without `safe_div`**, 14.121 ms with it -- so
+    ## about half the available gain, for an intact guarantee.  Roadmap
+    ## sec. 36 records the option and leaves it open.
     a, b = sympy.sympify(a), sympy.sympify(b)
     if float(eps) * float(eps) == 0.0:
         raise ValueError(
@@ -1033,6 +1054,7 @@ def safe_pow(b, e, lo=1e-30, hi=None):
       exactly zero.  This is an approximation, not an identity: check
       that the model does not need the tail it truncates.
     """
+    b = _autohold(b, 'spow_b')
     b, e = sympy.sympify(b), sympy.sympify(e)
     lo = sympy.sympify(lo)
     hi = None if hi is None else sympy.sympify(hi)
@@ -1115,6 +1137,7 @@ def softplus(z):
     1 everywhere.  It costs no exponent range at all, which makes it the
     cheapest member of the kernel to reach for.
     """
+    z = _autohold(z, 'sp_z')
     z = sympy.sympify(z)
     zp, zm = maxc(z, 0.0), minc(z, 0.0)
     return zp + _log1p(sympy.exp(zm - zp))
@@ -1777,6 +1800,67 @@ class _IntermediateSymbol(sympy.Symbol):
 #: Compilation happens once per class, at class-creation time, on one
 #: thread, so a module-level list is the whole mechanism.
 _VAR_STACK = []
+
+#: Smallest expression `_autohold` will bother naming.  An expression of
+#: one or two operations costs nothing to substitute twice, and holding
+#: it only adds a line to the chain -- measured across `psp_kernel`'s 342
+#: hand-tagged holds, **52% are <= 3 ops**, which is naming rather than
+#: structure.
+AUTOHOLD_MIN_OPS = 3
+
+
+def _autohold(x, name):
+    """Hold `x` as an intermediate if it is worth holding.
+
+    **This is roadmap S4, narrowed to the place the risk actually is.**
+    S4 proposed that the compiler hold *every* non-atomic sub-expression,
+    so an author need never remember `var()`.  Measured (sec. 36), that
+    is the wrong shape: 52% of the holds a real model writes are <= 3
+    ops, so "hold everything" mostly holds naming -- while **434 of 1184
+    calls into the regularisers below receive a bare, non-atomic
+    argument**, `safe_div` one of **44 ops**.  That is where an unheld
+    expression gets substituted into something else and evaluated in an
+    order the author never wrote, which is what `_sigma_body`'s docstring
+    describes and what S4 exists to prevent.
+
+    So the regularisers hold their own arguments, and the author does not
+    have to.
+
+    Three conditions, each load-bearing:
+
+    * **only while a model is compiling.**  `var()` raises outside
+      `analog()`, and every one of these functions is also called
+      directly -- from tests, from `apply_limit`, from the kernel's own
+      unit checks.  Outside a compile this is the identity.
+    * **only a sympy expression.**  A float or an int is already a leaf.
+    * **only above `AUTOHOLD_MIN_OPS`.**  Naming a two-op expression adds
+      a chain line and buys nothing.
+    """
+    ## ⚠⚠ **NEVER TURN AN EAGER MODEL INTO A CHAINED ONE.**  `var()` is
+    ## what makes a model chained, and a chained model has **no
+    ## `eval_i_pure`** -- so it loses `solve_batched` (20.7x at 512 lanes)
+    ## and the JAX path with it.  Sec. 22 measured the two fast paths as
+    ## DISJOINT; auto-holding inside a regulariser would quietly move any
+    ## eager model that divides or exponentiates from the batchable set
+    ## into the chained one.  Found by `KernelAllEager` in
+    ## `test_hdl_kernel.py`, which lost `eval_i_pure` outright -- and NOT
+    ## by the four gates this change was planned against, nor by a
+    ## flip-check over the 37 library classes, because the 15 batchable
+    ## ones are passives that never call a regulariser.
+    ##
+    ## `_VAR_STACK[-1]` being NON-EMPTY is the usable test: the body has
+    ## already declared an intermediate, so it is chained whatever this
+    ## does, and holding more is free.  A body that has held nothing yet
+    ## is left alone.
+    if (not _VAR_STACK or not _VAR_STACK[-1]
+            or not isinstance(x, sympy.Expr) or x.is_Atom):
+        return x
+    try:
+        if sympy.count_ops(x) < AUTOHOLD_MIN_OPS:
+            return x
+    except Exception:                                    # pragma: no cover
+        return x
+    return var(x, name)
 
 
 def var(expr, name=None):
@@ -5420,6 +5504,56 @@ def _dc(epar):
     return getattr(epar, 'analysis_kind', None) == 'dc'
 
 
+#: Wall-clock seconds a class may take to compile before the build says
+#: something.  A WARNING, never an error: a big model legitimately takes
+#: tens of seconds (`PspMosLongChannel` is ~62 s), and a slow machine is
+#: not a defect.  The threshold is set above the largest model in the
+#: tree with room to spare.
+COMPILE_WARN_SECONDS = 180.0
+
+
+def _warn_if_compile_is_pathological(cls, secs, info):
+    """Say so when a compile takes pathologically long.
+
+    **The signal a forgotten `var()` gives is compile TIME, and nothing
+    else.**  Measured 2026-08-27 on `PspMosLongChannel` (roadmap sec.
+    36): with every `_v()` hold dropped it does not finish in **ten
+    minutes**, against **62 s** held -- because an expression that
+    mentions a previous result twice doubles the tree, so a model nested
+    `n` deep has ``2**n`` occurrences and every sympy traversal walks all
+    of them.
+
+    Nothing else moves usefully.  The emitted line count goes DOWN when a
+    hold is dropped (the definition is inlined), the individual
+    expressions are small either way (median 3 ops across PSP's 342
+    holds), and the finiteness reach did not move at all on the holds
+    whose docstring blames evaluation order.  So a size or depth
+    threshold cannot find this; the clock can.
+
+    A warning rather than an error, because the threshold is a property
+    of the machine as much as of the model, and a build that refuses to
+    finish on a slow laptop would be worse than the problem.  It fires
+    once per class, at class-creation time -- which is the moment the
+    author added the line.
+    """
+    if secs < COMPILE_WARN_SECONDS:
+        return
+    ## A cache HIT is fast by construction; if one was slow, the slowness
+    ## is the cache's problem and not the model's, so say which.
+    status = getattr(cls, '_hdl_cache_status', None)
+    n_defs = len(info.get('chain_defs', ())) if isinstance(info, dict) else 0
+    warnings.warn(
+        '%s took %.0f s to compile (warning above %.0f s%s). If this is '
+        'unexpected, the usual cause is an intermediate that is used more '
+        'than once and NOT wrapped in var(): every reference substitutes '
+        'the whole definition, so the expression tree doubles at each '
+        'reuse. See hdl.var() and benchmarks/hold_value.py, which '
+        'measures which holds are load-bearing.'
+        % (cls.__name__, secs, COMPILE_WARN_SECONDS,
+           '' if status is None else ', cache %s' % status),
+        RuntimeWarning, stacklevel=3)
+
+
 class BehaviouralMeta(type):
     def __init__(cls, name, bases, dct):
         if 'analog' not in dct:
@@ -5429,7 +5563,10 @@ class BehaviouralMeta(type):
         ## `_hdl_cache`), and `cls._hdl_cache_status` says which.
         _check_analog_declaration(cls)
         from pycircuit.circuit import _hdl_cache
+        _t0 = time.perf_counter()
         info = _hdl_cache.compiled_info(cls, generate_code)
+        _warn_if_compile_is_pathological(cls, time.perf_counter() - _t0,
+                                         info)
         funcs = info['funcs']
         ## The evaluation backend (numpy by default; C when selected).
         ## Attached AFTER the compile so a cache hit can bind too, and

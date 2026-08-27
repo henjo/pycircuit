@@ -727,9 +727,29 @@ _RECORDED = {
     'GummelPoonPnpHdl': 'dcf3f2d4f8a587a4',
     'GummelPoonNpnThermalHdl': 'f33c131ee2e925cd',
     'GummelPoonNpnThermalHdl-off': '7bd7455df9b16475',
-    'MosLevel3Hdl': 'c45f4d5d4a95a6ab',
-    'MosLevel3Hdl-off': '3ea9cdcb0bbad2aa',
-    'MosLevel3PmosHdl': '7555edb9a06fcc40',
+    ## ⚠ RE-RECORDED 2026-08-27 for the three MOS level 3 rows, and only
+    ## those.  `_autohold` (roadmap sec. 36) makes the regularisers hold
+    ## their own arguments, which stops sympy flattening across the
+    ## boundary -- so the emitted arithmetic reassociates and the last bit
+    ## moves.  MEASURED before re-recording, on a card that reaches the
+    ## changed arms (nsub = 1e16, since `nsub` defaults to 0 and a default
+    ## card never gets there -- sec. 28's lesson):
+    ##
+    ##     3200 samples, 32 of 1120 comparable differ
+    ##     max relative 2.535e-16, median 1.669e-16  -- ONE ULP
+    ##
+    ## Old values, kept so the size of the shift stays checkable:
+    ##     MosLevel3Hdl       c45f4d5d4a95a6ab
+    ##     MosLevel3Hdl-off   3ea9cdcb0bbad2aa
+    ##     MosLevel3PmosHdl   7555edb9a06fcc40
+    ##
+    ## THIS TEST CAUGHT WHAT THE 37-CLASS DIGEST DID NOT.  That digest
+    ## uses default cards and random biases; these rows carry cards that
+    ## reach the arms.  It is the better instrument and it earned its
+    ## keep here.
+    'MosLevel3Hdl': 'da716b9e8c723dcd',
+    'MosLevel3Hdl-off': 'ca00b7ee7fae7500',
+    'MosLevel3PmosHdl': '7b8575aaf29e3367',
 }
 
 

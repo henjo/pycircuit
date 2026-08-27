@@ -936,7 +936,15 @@ the form it was argued — here is what actually landed.
     3        S3  automatic domain clamping           DONE (sec. 21): hdl.select,
                                                      6 of 20 sites converted,
                                                      bit-identical
-    3        S4  automatic intermediate holding      research
+    3        S4  automatic intermediate holding      DONE, cut down (sec.
+                                                     36): the regularisers
+                                                     hold their own args.
+                                                     PSP G 17.6 -> 15.8 ms.
+                                                     safe_div EXCLUDED (it
+                                                     would cost the C
+                                                     backend bitwise
+                                                     identity); full S4
+                                                     refused
     4        the six syntactic checks                DONE (nine of them)
     4        explain()                               DONE
     4        check_jacobians()                       DONE
@@ -4348,3 +4356,118 @@ The fourth is worth its own line: its docstring said *"a future damped
 test red"* — and it did exactly that. **It was right about the outcome
 and wrong about the cause.** What fixed it was not a damped `predict`
 but a seed with a law to apply.
+
+## 36. S4, cut down and measured (2026-08-27): the regularisers hold their own arguments
+
+S4 — *"hold every non-atomic sub-expression automatically"* — has sat as
+**research, weeks** since §3. Investigated properly, the full form is
+still not worth it, but a narrow slice is, and the investigation
+corrected the record S4 is argued from.
+
+### What the investigation found, before any code was written
+
+| question | measured |
+|---|---|
+| is `var()` load-bearing for **compilability**? | **yes, overwhelmingly** — with `_v` the identity, PSP does not finish in **10 min**, against 62 s held |
+| for **finiteness**, as recorded? | **the recorded case does not reproduce** — dropping the `sg_*` holds, whose docstring blames evaluation order for losing the Jacobian at `Vd = 1e26`, leaves the model finite to **1e36** |
+| how big are the holds? | median **3 ops**, max 54 — **52% are ≤3 ops**, i.e. naming |
+| where is the risk? | **434 of 1184** regulariser calls take a bare non-atomic argument, `safe_div` one of **44 ops** |
+
+So "hold everything" mostly holds naming, and the risk is concentrated
+at the regularisers. That is the slice.
+
+### Phase 1 — `benchmarks/hold_value.py`
+
+Drops holds by prefix and reports compile time, emitted size and
+finiteness reach. **342 assumed-necessary holds become a measured list:**
+
+```
+dropped              compile   G lines    finite to
+nothing (baseline)    132.0s      2860        1e+36
+sg_*                  133.0s      2800        1e+36
+ids_*                  >300s        --   DID NOT BUILD
+avl_*                 123.8s      2846        1e+36
+EVERYTHING             >300s        --   DID NOT BUILD
+```
+
+**The `ids_*` holds are load-bearing for compilability; `sg_*` and
+`avl_*` are not, for either property.** `">300s" is a result, not a
+hang` — and the harness had to learn that: the first survey sat for
+thirty minutes on one prefix with nothing printed, so each build now
+runs in a bounded subprocess.
+
+**A compile-time budget warning** ships with it (`hdl.COMPILE_WARN_SECONDS
+= 180`). Compile time is the *only* usable signal for a forgotten hold:
+the emitted line count goes **down** when a hold is dropped, the
+expressions are small either way, and the finiteness reach did not move.
+
+### Phase 2 — `_autohold` in the regularisers
+
+`expl`, `hypsmooth`, `safe_ln`, `safe_pow`, `softplus` hold their own
+arguments, so the author does not have to. **PSP `G`: 17.6 → 15.8 ms,
+1.12x faster**, build unchanged, finiteness 1e36 unchanged — holding a
+repeated sub-expression computes it once instead of substituting it
+twice.
+
+### ⚠⚠ The defect the four planned gates did not catch
+
+`var()` is what makes a model **chained**, and a chained model has **no
+`eval_i_pure`** — so it loses `solve_batched` (20.7x at 512 lanes) and
+the JAX path. §22 measured the two fast paths as **disjoint**;
+auto-holding unconditionally moves any eager model that divides or
+exponentiates out of the batchable set.
+
+**Caught by `KernelAllEager` in `test_hdl_kernel.py`, which lost
+`eval_i_pure` outright.** Not by the vendor gate, not by the finiteness
+gate, not by the 37-class digest — and not by a flip-check I ran across
+all 37 library classes, which reported *no flips*, because the 15
+batchable classes are passives that never call a regulariser. **The
+library could not have shown me this; only a test model did.**
+
+Fixed by holding **only once the body has declared an intermediate
+itself** (`_VAR_STACK[-1]` non-empty): it is chained anyway by then, so
+holding more is free.
+
+### ⚠ And `safe_div` is deliberately excluded
+
+The site where the value would be largest — the biggest bare arguments,
+100 of the 434. Holding there changes which subchain computes an exact
+zero, and the C backend then disagrees with numpy on the **sign of 16
+zeros** in PSP's `G` (`{'equal': 989, 'zero-sign': 16, 'value': 0}` —
+**no value differs**). The C backend's shipped guarantee is *bitwise*
+identity. Eroding a guarantee to buy speed is not a trade to make
+silently, so it is left to the user:
+
+| | PSP `G` | C bitwise |
+|---|---|---|
+| no autohold | 17.680 ms | intact |
+| **shipped** (no `safe_div`) | **15.784 ms** | **intact** |
+| with `safe_div` | 14.121 ms | 16 signed zeros |
+
+### Accuracy
+
+Not bit-identical, and cannot be: holding stops sympy flattening across
+the boundary, so the arithmetic reassociates. Measured on cards that
+**reach** the changed arms (§28's lesson — `nsub` defaults to 0, so a
+default card never gets there):
+
+| class | max relative | median |
+|---|---|---|
+| MOS level 3 (n and p) | **2.535e-16** | 1.669e-16 |
+| `DiodeSpiceThermalHdl` | **1.213e-15** | 1.568e-16 |
+| `DiodeSpiceHdl` | **unchanged** — only its `explain()` text moved | |
+
+One ulp. Five recorded digests re-recorded with the measurement beside
+them; the vendor figure (1.305e-06) and the finiteness ladder (1e33) are
+untouched.
+
+**`test_hdl_select.py`'s recorded digests caught what my own 37-class
+digest missed**, because they carry cards that reach the arms. It is the
+better instrument.
+
+### Status
+
+Phases 0–2 done, about two days as estimated. **Phase 3 is not
+authorised and Phase 4 is refused** — the full form would intercept
+sympy construction for every model, and 52% of what it would hold is
+≤3 ops.
