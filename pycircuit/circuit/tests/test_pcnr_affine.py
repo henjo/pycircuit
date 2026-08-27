@@ -395,3 +395,72 @@ def test_a_folded_gummel_poon_reaches_the_same_operating_point():
         'folded Gummel-Poon under PCNR reached a different operating '
         'point, relative %.3e\n  ordinary %s\n  pcnr     %s'
         % (rel, x_ref, x_lim))
+
+
+#: `rbm` decides whether Gummel-Poon's base resistance is a constant.
+#: `(rb - rbmx)` multiplies the whole bias-dependent `qb` term, so the
+#: question is only ever "is that difference zero", and the answer is
+#: not a property of the SENTINEL -- `rbm == rb` cancels just as
+#: exactly as `rbm < 0` does.  Card `rb` is 25.0.
+RBM_CASES = [
+    ({}, True, 'unset: SPICE reads rbm < 0 as "not given", so rbmx = rb'),
+    (dict(rbm=25.0), True, 'rbm == rb: the same exact cancellation'),
+    (dict(rbm=10.0), False, 'a real high-injection card: rb - rbm = 15'),
+    (dict(rbm=0.0), False, 'rb - rbm = 25'),
+]
+
+
+@pytest.mark.parametrize('extra,liftable,why', RBM_CASES,
+                         ids=['unset', 'rbm_eq_rb', 'rbm_10', 'rbm_0'])
+def test_rbm_decides_whether_the_base_resistance_is_a_conductance(
+        extra, liftable, why):
+    """The lift must follow the arithmetic, not the sentinel.
+
+    A check that special-cased "rbm < 0 means unset" would get `unset`
+    right and `rbm == rb` wrong.  Resolving the chain and asking what
+    survives gets both, and refuses the two cards where `qb` really is
+    still in the coefficient.
+    """
+    fold = hdl.fold_card(eh.GummelPoonNpnHdl, instance=(),
+                         **dict(GP_CARD, **extra))
+    el = fold(Node('c'), Node('b'), Node('e'))
+    el.update_iparv()
+    got = bool(getattr(el, 'pcnr_probes', None))
+    assert got is liftable, '%s -- %s' % (
+        'expected liftable' if liftable else 'expected refused', why)
+    assert (getattr(type(el), 'pcnr_lin_G', None) is not None) is liftable
+
+
+def test_a_refused_rbm_card_is_not_secretly_the_same_circuit():
+    """The refusal must be guarding something.
+
+    If `rbm = 10` gave the same answer as `rbm` unset, refusing it would
+    cost nothing and prove nothing -- the test above would pass for a
+    lift that was simply broken.  It does not: the operating point moves
+    by 1.07e-3, so `qb` is genuinely in the base resistance there.
+
+    And `rbm == rb` must be BIT-identical to unset, or the cancellation
+    this all rests on is approximate rather than exact.
+    """
+    import numpy as np
+    from pycircuit.circuit.elements import SubCircuit, VS
+    from pycircuit.circuit import gnd
+    from pycircuit.circuit.dcanalysis import DC
+
+    def op(**extra):
+        fold = hdl.fold_card(eh.GummelPoonNpnHdl, instance=(),
+                             **dict(GP_CARD, **extra))
+        c = SubCircuit()
+        c.add_node('c')
+        c.add_node('b')
+        c['vcc'] = VS('c', gnd, v=5.0)
+        c['vb'] = VS('b', gnd, v=0.78)
+        c['q1'] = fold('c', 'b', gnd)
+        return np.asarray(DC(c, refnode=gnd).solve().x, dtype=float)
+
+    unset, same, lower = op(), op(rbm=25.0), op(rbm=10.0)
+    assert float(np.max(np.abs(same - unset))) == 0.0, \
+        'rbm == rb is not bit-identical to unset -- the cancellation is ' \
+        'not exact, and the lift rests on it being exact'
+    assert float(np.max(np.abs(lower - unset))) > 1e-9, \
+        'rbm = 10 changes nothing, so refusing it guards nothing'

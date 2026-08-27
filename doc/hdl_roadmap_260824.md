@@ -4961,3 +4961,35 @@ exactly the change that matters.
 | `GummelPoonNpnHdl` | `fold_card` (so `rbm` resolves) |
 | `GummelPoonNpnThermalHdl` | still refused: chain-variable survivor, `dT` drives physics exponentially |
 | `PhotodiodeHdl`, `LedHdl` | still refused: optical drive nodes / branch-current unknown |
+
+### `rbm > 0`: the refusal is on the arithmetic, not the sentinel (2026-08-27)
+
+§41 said folding makes Gummel-Poon liftable "because `rbm < 0` means
+unset". That is the common case, and stating it that way would have
+been a rule about a *sentinel*. The check is on whether the arithmetic
+cancels, which is a stronger and more useful thing. Measured, card
+`rb = 25`:
+
+| `rbm` | `rb - rbmx` | verdict | why |
+|---|---|---|---|
+| unset (−1) | **0** | liftable | SPICE's "not given" ⇒ `rbmx = rb` |
+| `25.0` | **0** | **liftable** | numerically equal to `rb` -- cancels just as exactly |
+| `10.0` | 15 | refused | a real high-injection card; `qb` survives |
+| `0.0` | 25 | refused | `qb` survives |
+
+**A sentinel-based check would get row 2 wrong** and quietly refuse a
+card it could take. Resolving the chain and asking what survives gets
+all four.
+
+⚠ **And the refusal is guarding something.** If `rbm = 10` gave the same
+answer as unset, refusing it would prove nothing and the liftable tests
+would pass for a lift that was simply broken. It does not: the operating
+point moves by **1.07e-3**. Meanwhile `rbm == rb` is **bit-identical**
+to unset -- 0.0 difference, not merely small -- which is what the whole
+lift rests on. Both are asserted, because "refused" and "liftable" are
+only meaningful if the two cards actually differ and the two identical
+ones actually agree.
+
+The refused cards lose nothing but PCNR: the ordinary path solves them
+normally, and `pcnr.solve_dc` raises a plain "no device in this circuit
+declares a PCNR junction" rather than degrading silently.
