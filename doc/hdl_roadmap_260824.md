@@ -4790,7 +4790,68 @@ and must not be swept in: `PhotodiodeHdl` reads optical drive nodes
 branch-current unknown. The bite-check test asserts they are not
 claimed.
 
-### The lift, attempted (2026-08-27): detection correct, consumption WRONG, and the gate caught it
+### ⚠ THE "CONSUMPTION IS WRONG" VERDICT BELOW WAS ITSELF WRONG
+
+**Corrected same day. The lift works and is ON.** All three liftable
+models reach the unlimited path's operating point to **1.5e-18,
+1.1e-16 and 2.8e-17** relative. `PCNR_LIFT_AFFINE = True`.
+
+The cause of the wrong verdict is worth more than the verdict was.
+`_pcnr_declared_route` returns a spec dict; `generate_code` then
+**REBUILDS** it as `pcnr_vec = dict(probes=..., kinds=..., ...)` rather
+than passing it through. A field added to the route's return and not
+added to the rebuild is dropped in silence -- so the lift ran, computed
+`lin_terms`, and the class saw `None`. PCNR then zeroed the resistor and
+never re-stamped it, which is the 0.5 V error.
+
+I diagnosed that as "the lift is wrong" and wrote it into this document.
+It was one missing line in a dict literal. **A field that must be added
+in two places will eventually be added in one**; the rebuild now carries
+a comment saying so.
+
+Three further things the working version needed, each found only by
+running it:
+
+* the coefficients must be **back-substituted through the chain** before
+  compiling. They are not parameter expressions: the measured ones are
+  `1/_v91_rdx` and `area/rc`, the first a chain variable. Safe because
+  `_affine_in_nodes` has already proved no coefficient reaches a probe.
+* `paramsyms` is a `generate_code` local and does not exist in the
+  metaclass `__init__`, so the compile has to happen at the former.
+* the coefficients must be evaluated with **numpy scalars, not python
+  floats**. A compiled coefficient is a `select` over both arms and the
+  unselected arm is still evaluated: MOS level 1 emits
+  `select([rd > 0, True], [1/rd, 1/(nrd*rsh)])` and `nrd` defaults to 0.
+  Python raises `ZeroDivisionError`; numpy gives `inf`, which `select`
+  discards. The same both-arms hazard `hdl.select` exists for (sec. 21),
+  met in a new place.
+
+And one more, found only by running the FULL suite after enabling it:
+
+* **a collapsed variant must not inherit the conductance block.**
+  Card-collapse forks a subclass, so setting `pcnr_lin_G` only on the
+  classes that have a remainder leaves the others inheriting one sized
+  for the parent's geometry -- a `(6,6)` block dotted into a four-node
+  variant's local voltages. Three tests failed at once with
+  `shapes (6,6) and (4,) not aligned`, including a cascode convergence
+  case that looked like a solver regression and was not. It is now set
+  on every class that reaches the vector route, `None` included, and
+  pinned by a test.
+
+  ⚠ The narrow validation is the lesson. Three single-device DC circuits
+  agreed to 1e-18 and I read that as "the lift works". It worked for
+  three geometries out of the ones the library builds. **An agreement
+  gate proves the cases it runs, and card-collapse silently multiplies
+  the cases.**
+
+Final: **2633 passed / 3 skipped / 3 xfailed / 0 failed**, lift ON.
+`MosLevel1Hdl`, `MosLevel3Hdl` and `MesfetStatzHdl` now take PCNR with
+their series resistances declared -- cards a PDK would actually ship.
+
+The original (wrong) entry is kept below, because the SYMPTOM it records
+is the valuable part and is exactly what the gate is for.
+
+### The lift, first attempt (2026-08-27): the gate caught a silent wrong answer
 
 Scaffolded behind `hdl.PCNR_LIFT_AFFINE` (default **False**, so nothing
 in the library changes). With it on, the three liftable models stop

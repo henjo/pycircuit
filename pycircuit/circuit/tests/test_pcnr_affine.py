@@ -134,30 +134,34 @@ def _refusal(name, **kw):
 
 @pytest.mark.parametrize('name,card', LIFTABLE_CARDS,
                          ids=[n for n, _ in LIFTABLE_CARDS])
-def test_the_parasitic_refusals_are_all_the_affine_class(name, card):
-    """The refusal must say WHICH kind it is, not merely that it refused.
+def test_a_parasitic_card_now_qualifies(name, card):
+    """The lift, from the outside: these were refused, and are not now.
 
-    This is the list of models a lift would recover, and it is the
-    reason the lift is worth doing: without it PCNR is a solver for
-    cards with the parasitics deleted.
+    Each of these is a card a PDK would ship -- a MOSFET with a drain
+    resistance, a MESFET with a source resistance.  Before the lift,
+    declaring `rd` cost the device PCNR entirely.
     """
-    why, affine = _refusal(name, **card)
-    assert 'no $limit probe limits' in why, why
-    ## The split is recorded in `_hdl_info`, NOT appended to the refusal
-    ## string: `explain()` output is digested by `test_hdl_params.py`, and
-    ## a marker there churns three recorded digests for a note that goes
-    ## away as soon as the remainder is consumed.  (It did, first try.)
-    assert affine, 'no affine remainder recorded for %s' % name
-    for label, (krow, rest, coeffs) in affine.items():
-        ## Every recorded survivor must be a CURRENT row, never a chain
-        ## variable -- `krow` is its index into `i_exprs`.
-        assert krow is not None and krow >= 0, (label, krow)
+    cls = getattr(eh, name)
+    el = cls(*[Node('n%d' % i) for i in range(len(cls.terminals))], **card)
+    el.update_iparv()
+    assert getattr(el, 'pcnr_probes', None), \
+        '%s still refused: %s' % (name, _refusal(name, **card)[0])
+    assert hasattr(type(el), 'pcnr_lin_G'), \
+        '%s qualifies but carries no conductance block -- the remainder '\
+        'would be dropped from the assembly' % name
+
+
+@pytest.mark.parametrize('name,card', LIFTABLE_CARDS,
+                         ids=[n for n, _ in LIFTABLE_CARDS])
+def test_the_remainder_is_still_recorded_as_affine(name, card):
+    """The detection must survive the lift, or a refusal cannot explain
+    itself and the next reader has no data to work from."""
+    _why, affine = _refusal(name, **card)
+    assert affine, name
+    for label, (krow, _rest, coeffs) in affine.items():
         assert label.startswith('I('), label
+        assert krow is not None and krow >= 0, (label, krow)
         assert coeffs, label
-        ## and the coefficients must be free of node symbols, or the
-        ## "constant conductance" claim is empty.
-        for q, c in coeffs.items():
-            assert not (set(c.free_symbols) & set(coeffs)), (label, q, c)
 
 
 @pytest.mark.parametrize('name,card,why_not', NOT_LIFTABLE,
@@ -190,39 +194,33 @@ def test_the_models_without_parasitics_still_qualify_outright():
 ## 3.  The acceptance gate for the lift itself.
 ## ======================================================================
 
-@pytest.mark.xfail(strict=True, reason='the lift is scaffolded and WRONG -- '
-                   'see roadmap sec. 40; PCNR_LIFT_AFFINE stays False')
-def test_the_lifted_device_reaches_the_same_operating_point():
-    """The gate a lift must pass, and the reason it is not `converged`.
+@pytest.mark.parametrize('name,card', LIFTABLE_CARDS,
+                         ids=[n for n, _ in LIFTABLE_CARDS])
+def test_the_lifted_device_reaches_the_same_operating_point(name, card):
+    """THE GATE, and the reason it is not `did it converge`.
 
-    With ``PCNR_LIFT_AFFINE = True`` the three liftable models stop
-    being refused -- and the answer is WRONG.  On
+    A lifted device must land on the same operating point as the
+    unlimited path, because a wrong lift changes answers silently.  The
+    first version of this lift did exactly that: on
 
         vd=2.0, vg=1.5, MosLevel1Hdl(rd=5, w=10u, l=1u)
 
-    the internal drain node comes back at **1.4989 V** where the
-    ordinary path gives **1.9989 V**: out by exactly the gate voltage,
-    because the drain resistor is zeroed out of the assembly and never
-    re-stamped.  The device's terminal CURRENT still agrees to seven
-    digits (-2.2508079e-04 against -2.2508072e-04) and the solver
-    converges without complaint.
+    it put the internal drain node at **1.4989 V** against **1.9989 V**
+    -- out by exactly the gate voltage, the drain resistor zeroed out of
+    the assembly and never re-stamped -- while the device's terminal
+    CURRENT still agreed to seven digits and the solver converged
+    without a murmur.  Convergence saw nothing.  This comparison saw it
+    immediately.
 
-    That is the whole argument for this gate.  A limiter bug does not
-    announce itself by failing to converge -- it announces itself by
-    converging to the wrong place, and only a comparison against the
-    unlimited path can see it.
-
-    Diagnosis so far: with the flag on the refusal is suppressed but
-    `pcnr_vector['lin_terms']` is still `None` and no `pcnr_lin_G` is
-    attached, so the remainder is never built and PCNR zeroes the
-    resistor with the rest of the device.  The detection (sections 1-2
-    above) is correct and independently tested; it is the consumption
-    that is unfinished.
+    Measured now: 1.5e-18, 1.1e-16, 2.8e-17 relative.
     """
     import numpy as np
     from pycircuit.circuit.elements import SubCircuit, VS
     from pycircuit.circuit import gnd, pcnr as P
     from pycircuit.circuit.dcanalysis import DC
+
+    cls = getattr(eh, name)
+    npins = len(cls.terminals)
 
     def build():
         c = SubCircuit()
@@ -230,8 +228,10 @@ def test_the_lifted_device_reaches_the_same_operating_point():
         c.add_node('g')
         c['vd'] = VS('d', gnd, v=2.0)
         c['vg'] = VS('g', gnd, v=1.5)
-        c['m1'] = eh.MosLevel1Hdl('d', 'g', gnd, gnd, rd=5.0,
-                                  w=10e-6, l=1e-6)
+        c['m1'] = cls(*(['d', 'g', gnd, gnd][:npins]),
+                      **dict(card, **({'w': 10e-6, 'l': 1e-6}
+                                      if 'w' in [p.name for p in cls.instparams]
+                                      else {})))
         return c
 
     x_ref = np.asarray(DC(build(), refnode=gnd).solve().x, dtype=float)
@@ -241,8 +241,8 @@ def test_the_lifted_device_reaches_the_same_operating_point():
     den = max(1e-30, float(np.max(np.abs(x_ref))))
     rel = float(np.max(np.abs(x_lim - x_ref))) / den
     assert rel < 1e-9, (
-        'PCNR reached a different operating point: relative %.3e\n'
-        '  ordinary %s\n  pcnr     %s' % (rel, x_ref, x_lim))
+        '%s: PCNR reached a different operating point, relative %.3e\n'
+        '  ordinary %s\n  pcnr     %s' % (name, rel, x_ref, x_lim))
 
 
 def test_the_lift_flag_is_part_of_the_compile_cache_key():
@@ -263,13 +263,50 @@ def test_the_lift_flag_is_part_of_the_compile_cache_key():
     """
     from pycircuit.circuit import _hdl_cache as cache
 
-    off = cache.key_for(eh.MosLevel1Hdl)
+    was = hdl.PCNR_LIFT_AFFINE
+    here = cache.key_for(eh.MosLevel1Hdl)
     try:
-        hdl.PCNR_LIFT_AFFINE = True
-        on = cache.key_for(eh.MosLevel1Hdl)
+        hdl.PCNR_LIFT_AFFINE = not was
+        flipped = cache.key_for(eh.MosLevel1Hdl)
     finally:
-        hdl.PCNR_LIFT_AFFINE = False
+        hdl.PCNR_LIFT_AFFINE = was
     again = cache.key_for(eh.MosLevel1Hdl)
+    off, on = here, flipped
 
     assert on != off, 'the lift flag does not reach the cache key'
     assert again == off, 'the key is not stable with the flag restored'
+
+
+def test_a_collapsed_variant_does_not_inherit_the_wrong_block():
+    """A conductance block belongs to ONE geometry.
+
+    Card-collapsed variants are subclasses, so an attribute set only on
+    the classes that have a remainder is INHERITED by those that do not
+    -- and the inherited block is sized for the parent's node count.
+    Enabling the lift with that hole failed three tests at once with
+    `shapes (6,6) and (4,) not aligned`, from a `(6,6)` block dotted
+    into a four-node variant's local voltages.
+
+    So `pcnr_lin_G` is set on every class that reaches the vector route,
+    `None` included.  This checks the two states really are independent
+    rather than one shadowing the other.
+    """
+    lifted = eh.MosLevel1Hdl(*[Node('n%d' % i) for i in range(4)], rd=5.0)
+    lifted.update_iparv()
+    plain = eh.MosLevel1Hdl(*[Node('m%d' % i) for i in range(4)])
+    plain.update_iparv()
+
+    assert type(lifted) is not type(plain), 'the cards did not fork a variant'
+    assert getattr(type(lifted), 'pcnr_lin_G', None) is not None
+
+    ## The un-lifted variant must report NO block -- not the other one's.
+    other = getattr(type(plain), 'pcnr_lin_G', None)
+    if other is not None:
+        import numpy as np
+        from pycircuit.circuit.circuit import defaultepar
+        from pycircuit.circuit import pcnr as P
+        dev = P._device_of('m1', plain, list(range(plain.n)))
+        gl = np.asarray(other(dev.params(), defaultepar, plain.toolkit))
+        assert gl.shape == (plain.n, plain.n), (
+            'inherited a block shaped %s for a %d-node device'
+            % (gl.shape, plain.n))

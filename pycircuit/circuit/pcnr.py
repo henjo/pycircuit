@@ -462,7 +462,7 @@ def augmented_system(circuit, x, v_lim, junctions, epar=defaultepar,
                 el.i = _zero_vector(t)
                 el.G = _zero_matrix(t)
             else:
-                gl = np.asarray(lin(dev.params, epar, el.toolkit),
+                gl = np.asarray(lin(dev.params(), epar, el.toolkit),
                                 dtype=float)
                 el.i = _linear_vector(gl)
                 el.G = _linear_matrix(gl)

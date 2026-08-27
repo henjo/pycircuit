@@ -4285,7 +4285,22 @@ def generate_code(cls):
                                     out=pcnr_vector['i_exprs'])
                                if chain_defs else None),
                         limit_pars=[tuple(pf) for _k, _kind, _m, pf
-                                    in limit_spec])
+                                    in limit_spec],
+                        ## The affine remainder (roadmap sec. 40).  This
+                        ## dict is REBUILT from the route's spec rather
+                        ## than passed through, so a field added there
+                        ## and not added here is silently dropped -- the
+                        ## lift ran, `lin_terms` reached this line, and
+                        ## `pv.get('lin_terms')` was None at class
+                        ## build.  It cost a wrong conclusion recorded
+                        ## in the roadmap.
+                        ## Compiled HERE, not at class build: `paramsyms`
+                        ## is a `generate_code` local and does not exist
+                        ## in the metaclass `__init__`.
+                        lin_fns=_lin_fns_of(
+                            pcnr_vector.get('lin_terms'),
+                            pcnr_vector['defs'], paramsyms,
+                            NUMPY_MODULES))
 
     branchpairs = [branch_key(br) for br in vbranches]
     internalnames = [nd.name for nd in internalnodes]
@@ -4872,10 +4887,47 @@ def _limit_par_fn(expr, kind, chain_defs, xsyms, xlabels, args, modules,
 
 
 #: Consume the affine remainder (roadmap sec. 40) instead of refusing
-#: the device.  OFF until the operating-point agreement gate in
-#: `test_pcnr_affine.py` passes: a wrong lift changes answers silently,
-#: and convergence alone would not show it.
-PCNR_LIFT_AFFINE = False
+#: the device.  ON since 2026-08-27: the operating-point agreement gate
+#: in `test_pcnr_affine.py` passes for all three liftable models, to
+#: 1.5e-18 / 1.1e-16 / 2.8e-17 against the unlimited path.
+#:
+#: It is a flag rather than unconditional because a wrong lift changes
+#: answers SILENTLY -- the first version converged happily with the
+#: internal drain node out by a whole gate voltage -- so being able to
+#: switch it off and re-measure is worth the branch.  It is part of the
+#: compile cache key (`_hdl_cache.key_for`); flipping it without that
+#: serves one build's code to the other.
+PCNR_LIFT_AFFINE = True
+
+
+
+def _lin_fns_of(lin_terms, defs, paramsyms, modules):
+    """Compile the affine coefficients to callables of the parameters.
+
+    A coefficient is rarely a bare parameter expression: the measured
+    ones are `1/_v91_rdx` and `area/rc` -- the first a CHAIN VARIABLE.
+    `_affine_in_nodes` has already guaranteed that no coefficient
+    reaches a probe (transitively, through these same definitions), so
+    every definition one of them depends on is parameter-only and can be
+    back-substituted here.  Substituting in REVERSE definition order
+    resolves a chain of any depth in one pass, because a definition can
+    only read those before it.
+    """
+    if not lin_terms:
+        return None
+    out = []
+    for r, c, e in lin_terms:
+        for sym, val in reversed(defs):
+            if e.has(sym):
+                e = e.subs(sym, val)
+        left = set(e.free_symbols) - set(paramsyms) - {TEMP}
+        if left:
+            raise AssertionError(       # pragma: no cover
+                'affine coefficient still reads %s after back-substitution'
+                % sorted(str(q) for q in left))
+        out.append((r, c, sympy.lambdify(paramsyms + [TEMP], e,
+                                         modules=modules)))
+    return out
 
 
 def _affine_in_nodes(expr, node_syms, xset, probe_syms, defs_map=None):
@@ -6279,12 +6331,16 @@ class BehaviouralMeta(type):
             ## that reaches a probe, transitively through the chain.  So
             ## the conductance is CONSTANT at a given card and can be
             ## built once, here, instead of per iteration.
-            _lin = pv.get('lin_terms')
-            if _lin:
+            ## ⚠ Set on EVERY class that gets here, `None` included.  A
+            ## collapsed variant is a subclass, so leaving the attribute
+            ## unset makes it INHERIT the base's block -- built for the
+            ## base's node count.  That is a (6,6) conductance dotted
+            ## into a 4-vector, and it is how the first enabled run
+            ## failed.
+            cls.pcnr_lin_G = None
+            _lin_fns = pv.get('lin_fns')
+            if _lin_fns:
                 _t_lin = pv['t']
-                _lin_fns = [(r, c, sympy.lambdify(paramsyms + [TEMP], e,
-                                                  modules=NUMPY_MODULES))
-                            for r, c, e in _lin]
 
                 def pcnr_lin_G(params, epar, toolkit, _fns=_lin_fns,
                                _t=_t_lin, _pn=_pn_vec):
@@ -6294,10 +6350,21 @@ class BehaviouralMeta(type):
                     voltages, which is where a linear term belongs;
                     PCNR re-stamps only what is left at `v_lim`.
                     """
-                    args = [params[nm] for nm in _pn] + [epar.T]
+                    ## numpy scalars, not python floats.  A compiled
+                    ## coefficient is a `select` over both arms, and the
+                    ## UNSELECTED arm is still evaluated: MOS level 1's
+                    ## drain conductance emits
+                    ##   select([rd > 0, True], [1/rd, 1/(nrd*rsh)])
+                    ## and `nrd` defaults to 0.  In python arithmetic
+                    ## that raises ZeroDivisionError; in numpy it is inf,
+                    ## which `select` then discards.  This is the same
+                    ## both-arms hazard `hdl.select` exists for (sec. 21).
+                    args = [np.float64(params[nm]) for nm in _pn] + \
+                        [np.float64(epar.T)]
                     out = np.zeros((_t, _t))
-                    for r, c, fn in _fns:
-                        out[r, c] += float(fn(*args))
+                    with np.errstate(divide='ignore', invalid='ignore'):
+                        for r, c, fn in _fns:
+                            out[r, c] += float(fn(*args))
                     return out
 
                 cls.pcnr_lin_G = staticmethod(pcnr_lin_G)
