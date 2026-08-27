@@ -109,68 +109,23 @@ LIFTABLE_CARDS = [
     ('MesfetStatzHdl', dict(rs=2.0)),
 ]
 
-#: Refused for a reason that is NOT the constant-conductance class, with
-#: the reason.  Each one is a trap that a careless lift would sweep in.
-NOT_LIFTABLE = [
-    ('PhotodiodeHdl', {}, 'reads optical drive nodes optn/optp'),
-]
-
-
-def _refusal(name, **kw):
-    cls = getattr(eh, name)
-    el = cls(*[Node('n%d' % i) for i in range(len(cls.terminals))], **kw)
-    el.update_iparv()
-    info = type(el)._hdl_info
-    return (info.get('pcnr_refusal') or ''), (info.get('pcnr_affine') or {})
-
-
-@pytest.mark.parametrize('name,card', LIFTABLE_CARDS,
-                         ids=[n for n, _ in LIFTABLE_CARDS])
-def test_a_parasitic_card_now_qualifies(name, card):
-    """The lift, from the outside: these were refused, and are not now.
-
-    Each of these is a card a PDK would ship -- a MOSFET with a drain
-    resistance, a MESFET with a source resistance.  Before the lift,
-    declaring `rd` cost the device PCNR entirely.
-    """
-    cls = getattr(eh, name)
-    el = cls(*[Node('n%d' % i) for i in range(len(cls.terminals))], **card)
-    el.update_iparv()
-    assert getattr(el, 'pcnr_probes', None), \
-        '%s still refused: %s' % (name, _refusal(name, **card)[0])
-    assert hasattr(type(el), 'pcnr_lin_G'), \
-        '%s qualifies but carries no conductance block -- the remainder '\
-        'would be dropped from the assembly' % name
-
-
-@pytest.mark.parametrize('name,card', LIFTABLE_CARDS,
-                         ids=[n for n, _ in LIFTABLE_CARDS])
-def test_the_remainder_is_still_recorded_as_affine(name, card):
-    """The detection must survive the lift, or a refusal cannot explain
-    itself and the next reader has no data to work from."""
-    _why, affine = _refusal(name, **card)
-    assert affine, name
-    for label, (krow, _rest, coeffs) in affine.items():
-        assert label.startswith('I('), label
-        assert krow is not None and krow >= 0, (label, krow)
-        assert coeffs, label
-
-
-@pytest.mark.parametrize('name,card,why_not', NOT_LIFTABLE,
-                         ids=[n for n, _c, _w in NOT_LIFTABLE])
-def test_a_structurally_different_refusal_is_not_claimed_as_affine(
-        name, card, why_not):
-    """The bite-check for the test above.
-
-    `PhotodiodeHdl` reads optical drive nodes and `LedHdl` carries a
-    branch-current unknown.  Neither is an internal-node parasitic, and
-    a lift built for the affine class must not silently claim them --
-    otherwise the test above passes for every model and measures
-    nothing.
-    """
-    why, affine = _refusal(name, **card)
-    assert why, name
-    assert not affine, '%s was claimed as liftable, but %s' % (name, why_not)
+## ⚠ `NOT_LIFTABLE` USED TO LIVE HERE and is gone because it emptied.
+##
+## It listed the models refused for a reason that was not the
+## constant-conductance class -- Gummel-Poon's bias-dependent `rbb`, the
+## self-heating thermal node, the LED's branch unknown, the photodiode's
+## optical port -- and its test asserted none of them was wrongly
+## claimed as affine.  Every one has since been declared as a probe or
+## had its gate relaxed (roadmap sec. 42-45), so the list is empty and
+## an empty `parametrize` SKIPS rather than fails: a test that looks
+## green and measures nothing.
+##
+## The refusal paths it guarded are still covered, deliberately:
+##   * `test_a_nonlinear_dependence_is_still_refused` -- the affine
+##     split itself, on synthetic expressions;
+##   * `test_a_probe_dependent_coefficient_is_refused` -- bilinear;
+##   * `test_a_generated_state_is_still_refused` -- device memory, the
+##     half of the old branch/state gate that survived.
 
 
 def test_the_models_without_parasitics_still_qualify_outright():
@@ -591,3 +546,111 @@ def test_the_new_probes_do_not_move_the_operating_point(name, pins, card):
     den = max(1e-30, float(np.max(np.abs(x_ref))))
     rel = float(np.max(np.abs(x_lim - x_ref))) / den
     assert rel < 1e-9, '%s: relative %.3e' % (name, rel)
+
+
+## ======================================================================
+## 6.  The photodiode, and the gate that nearly hid the point.
+## ======================================================================
+
+SOLAR = dict(IS=1e-9, n=1.3, rs=0.1, rsh=1000.0, resp=0.035)
+
+
+def _cell(nsun, rload):
+    from pycircuit.circuit.elements import SubCircuit, VS, R
+    from pycircuit.circuit import gnd
+    c = SubCircuit()
+    c.add_node('o')
+    c.add_node('sun')
+    c['vs'] = VS('sun', gnd, v=nsun)
+    c['d1'] = eh.PhotodiodeHdl('o', gnd, 'sun', gnd, **SOLAR)
+    c['rl'] = R('o', gnd, r=rload)
+    return c
+
+
+def _string(n, rload):
+    from pycircuit.circuit.elements import SubCircuit, VS, R
+    from pycircuit.circuit import gnd
+    c = SubCircuit()
+    c.add_node('sun')
+    c['vs'] = VS('sun', gnd, v=1.0)
+    names = [gnd] + ['n%d' % k for k in range(1, n + 1)]
+    for nm in names[1:]:
+        c.add_node(nm)
+    c['rl'] = R(names[-1], gnd, r=rload)
+    for k in range(n):
+        c['d%d' % k] = eh.PhotodiodeHdl(names[k + 1], names[k], 'sun', gnd,
+                                        **SOLAR)
+    return c
+
+
+def test_the_photodiode_takes_pcnr():
+    """The optical port is a declared probe, so the device qualifies.
+
+    ⚠ It is also the one declaration that is a boundary CONDITION
+    rather than a device quantity.  Gummel-Poon's base resistance,
+    `SelfHeating`'s junction temperature and the diode's series branch
+    are all things the device HAS; `V(optp,optn)` is an input someone
+    drives.  Recorded because "declare it" stops discriminating if it is
+    the answer to every refusal.
+    """
+    el = eh.PhotodiodeHdl(Node('a'), Node('c'), Node('p'), Node('n'))
+    el.update_iparv()
+    assert getattr(el, 'pcnr_probes', None), \
+        type(el)._hdl_info.get('pcnr_refusal')
+    assert [k for _p, k in el.pcnr_probes].count('id') >= 1
+
+
+@pytest.mark.parametrize('build,label', [
+    (lambda: _cell(1.0, 1e5), '1 sun into 100k, near Voc'),
+    (lambda: _cell(50.0, 1e7), '50 suns into 10M'),
+    (lambda: _string(4, 1e5), 'a 4-cell series string'),
+], ids=['near_voc', 'extreme', 'string'])
+def test_pcnr_solves_a_solar_cell_more_accurately(build, label):
+    """⚠ THE GATE THAT NEARLY HID THE POINT.
+
+    Every other model on this branch is gated on AGREEING with the
+    ordinary path to 1e-9.  On these circuits that gate FAILS -- the two
+    differ by about 3e-9 -- and the first reading was "PCNR is wrong
+    here".
+
+    It is the other way round.  Measured residuals:
+
+        1 sun, 100k    ordinary 2.933e-09    PCNR 5.424e-16
+        50 sun, 10M    ordinary 3.113e-09    PCNR 6.545e-15
+        4-cell string  ordinary 4.231e-09    PCNR 7.932e-16
+        12-cell string ordinary 3.007e-09    PCNR 5.940e-15
+
+    -- five to six orders of magnitude, on a Jacobian conditioned at
+    41, so the residual maps almost one-to-one onto voltage error.  The
+    ordinary path stops at its tolerance; PCNR drives the residual to
+    machine precision.  The `disagreement` was the REFERENCE being
+    loose.
+
+    So this device is gated on its RESIDUAL rather than on agreement,
+    which is the honest comparison when neither side is known-correct
+    in advance.  It is also the convergence benefit I reported as
+    absent when investigating whether to declare this probe at all: I
+    checked that both converged and that they agreed, and never asked
+    which one was right.
+    """
+    from pycircuit.circuit import gnd, pcnr as P
+    from pycircuit.circuit.dcanalysis import DC
+    from pycircuit.circuit.circuit import defaultepar
+    import numpy as np
+
+    probe = build()
+    ref = probe.get_node_index(gnd)
+
+    def residual(x):
+        f = (np.asarray(probe.i(x, defaultepar), dtype=float)
+             + np.asarray(probe.u(0, analysis='dc'), dtype=float))
+        return float(np.max(np.abs(np.delete(f, ref))))
+
+    x_ord = np.asarray(DC(build(), refnode=gnd).solve().x, dtype=float)
+    out = P.solve_dc(build(), gnd)
+    x_lim = np.asarray(out[0] if isinstance(out, tuple) else out, dtype=float)
+
+    r_ord, r_lim = residual(x_ord), residual(x_lim)
+    assert r_lim <= max(r_ord, 1e-14), (
+        '%s: PCNR residual %.3e is worse than the ordinary path\'s %.3e'
+        % (label, r_lim, r_ord))

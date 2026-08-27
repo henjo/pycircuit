@@ -101,11 +101,10 @@ presence of a feature rather than its effect.
 
 | status | models |
 |---|---|
-| **Eligible** (16 of 37) | `DiodeHdl`, `DiodeSpiceHdl`, `DiodeSpiceThermalHdl`, `EkvNmos/Pmos`, `GummelPoonNpn/Pnp/NpnThermal`, `HemtAngelovHdl`, `LedHdl`, `MesfetCurticeHdl`, `MesfetStatzHdl`, `MosLevel1/1Pmos/3/3Pmos` |
-| **Refused, and it is about physics** | `PhotodiodeHdl` — `iph` reads its optical drive nodes, which are an *input*, not a parasitic |
+| **Eligible** (17 of 37) | `DiodeHdl`, `DiodeSpiceHdl`, `DiodeSpiceThermalHdl`, `EkvNmos/Pmos`, `GummelPoonNpn/Pnp/NpnThermal`, `HemtAngelovHdl`, `LedHdl`, `MesfetCurticeHdl`, `MesfetStatzHdl`, `MosLevel1/1Pmos/3/3Pmos`, `PhotodiodeHdl` |
 | **Refused, correctly** (20) | passives, sources and behavioural blocks with no exponential and nothing to limit; plus `IdtHdl`/`IdtmodHdl`, which carry a generated state (device memory) |
 
-That is 16 against roughly **4** before this work — and the 4 were on
+That is 17 — **every model with an exponential** — against roughly **4** before this work — and the 4 were on
 cards with the parasitics deleted.
 
 It took three things, none of them solver machinery:
@@ -119,6 +118,14 @@ It took three things, none of them solver machinery:
    current is evaluated at), and the SPICE diode's series branch.
 3. **One gate that was too strong.** A V-contributed branch used to
    refuse a device on its presence; measured, PCNR carries it correctly.
+
+⚠ On the photodiode the usual agreement gate **failed**, and the first
+reading was that PCNR was wrong. It was the reverse: near open circuit
+and in series strings the ordinary path stops at a residual of ~3e-9
+while PCNR reaches ~5e-16, on a Jacobian conditioned at 41. The
+disagreement was the *reference* being loose. That device is therefore
+gated on its residual rather than on agreement — the honest comparison
+when neither side is known-correct in advance.
 
 **Every one is gated on reaching the same operating point as the
 unlimited path**, not on converging — measured 0.0e+00 to 9.0e-17

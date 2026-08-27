@@ -5189,3 +5189,62 @@ The arc from §40: the constraint was never really "PCNR cannot do this".
 It was three separate places where a model handed the solver a raw node
 difference and the solver, correctly, refused to guess. Two lines of
 model declaration and one over-broad gate.
+
+## 45. The photodiode, and a gate that nearly hid its own point (2026-08-27)
+
+The last model with an exponential that PCNR would not take.
+`iph = var(resp * bopt.V)` reads the optical port -- a raw node
+difference -- so the device was refused. Declared:
+
+    iph = _var(p.resp * limit_identity(bopt.V), 'iph')
+
+**16 of 37 models eligible becomes 17, and every model with an
+exponential now qualifies.**
+
+### ⚠ I investigated this and reported the wrong conclusion
+
+Asked for both sides of the decision, I wrote that there was **no
+demonstrated convergence benefit**: a lit cell at 1, 10 and 50 suns into
+10 ohm to 10 M, and 4- and 12-cell series strings in both instance
+orders, all converge on the ordinary path and agree with PCNR. On that
+basis I recommended *not now*.
+
+The recommendation was answered "add it", and adding it produced the
+measurement I had not made. My agreement gate -- the same 1e-9 used for
+every other model -- **failed** on three of the five circuits, differing
+by about 3e-9. The first reading was "PCNR is wrong here".
+
+It is the other way round:
+
+| circuit | ordinary \|f\| | PCNR \|f\| |
+|---|---|---|
+| 1 sun, 100k (near Voc) | 2.933e-09 | **5.424e-16** |
+| 50 suns, 10M | 3.113e-09 | **6.545e-15** |
+| 4-cell string | 4.231e-09 | **7.932e-16** |
+| 12-cell string | 3.007e-09 | **5.940e-15** |
+
+Five to six orders of magnitude, on a Jacobian conditioned at **41** --
+so the residual maps almost one-to-one onto voltage error. The ordinary
+path stops at its tolerance; PCNR drives the residual to machine
+precision. **The "disagreement" was the REFERENCE being loose.**
+
+The investigation asked *did both converge* and *did they agree*, and
+never asked **which one was right**. `reference-differential` has the
+rule already -- *a residual is not an error, and root error is
+`residual / |dF/dx|`* -- and I applied it to neither side. An agreement
+gate silently assumes one party is correct.
+
+So this device is gated on its **residual**, not on agreement with the
+ordinary path, which is the honest comparison when neither side is
+known-correct in advance.
+
+### The caveat that still stands
+
+This is the one declaration that is a boundary CONDITION rather than a
+device quantity. Gummel-Poon's base resistance, `SelfHeating`'s junction
+temperature and the diode's series branch are things the device HAS;
+`V(optp,optn)` is an input someone drives. Recorded in the model, because
+"declare it" stops discriminating if it is the answer to every refusal.
+
+Bit-identical `i`/`G`/`q`/`C` on both cards tested, as an identity probe
+must be.

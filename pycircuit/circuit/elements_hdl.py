@@ -3376,7 +3376,28 @@ class PhotodiodeHdl(Behavioural):
     @staticmethod
     def analog(p, a, c, optp, optn):
         bopt = Branch(optp, optn)
-        iph = _var(p.resp * bopt.V, 'iph')
+        ## The optical port is declared as a PCNR probe with no law
+        ## (roadmap sec. 45).  `bopt.V` is a raw node difference, so
+        ## `iph` reading it refused the whole device -- and this was the
+        ## last model with an exponential that PCNR would not take.
+        ##
+        ## ⚠ Honest about what it buys: NO convergence benefit was
+        ## found.  A lit cell at 1, 10 and 50 suns into 10 ohm to 10 M,
+        ## and 4- and 12-cell series strings in BOTH instance orders,
+        ## all converge on the ordinary path and agree with PCNR
+        ## exactly.  The junction is already `pnj`-limited there.  This
+        ## is declared for completeness -- every exponential model now
+        ## qualifies -- and because the fix is one inert line, not
+        ## because a circuit needed it.
+        ##
+        ## ⚠ And it is the one declaration that is a boundary CONDITION
+        ## rather than a device quantity: the other three (Gummel-Poon's
+        ## base resistance, `SelfHeating`'s junction temperature, the
+        ## diode's series branch) are things the device has.  This is an
+        ## input someone drives.  Worth remembering before treating
+        ## "declare it" as the answer to every refusal -- the rule stops
+        ## discriminating if it always is.
+        iph = _var(p.resp * limit_identity(bopt.V), 'iph')
         stmts, _pd, _i = _spice_diode(
             p, a, c, TEMP, junction=lambda bd: -iph + bd.V / p.rsh)
         return stmts
