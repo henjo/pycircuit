@@ -226,12 +226,35 @@ bias.
 
 ### S4 — hold every intermediate automatically
 
-> 📌 **Half of this is already done (2026-08-26 read-through).** The
-> docstring complaint below is **stale**: `var()` now opens *"This is
-> what makes a real compact model compilable"* and carries the 2**n
-> tree-growth measurement. What is still open is the compiler change --
-> the **342** `_v()` calls in `psp_kernel.py` are still hand-tagged,
-> unchanged since this was written.
+> ⚠ **THAT ANNOTATION WAS HALF WRONG, corrected 2026-08-27.** It read:
+> *"the docstring complaint below is stale: `var()` now opens 'This is
+> what makes a real compact model compilable'"*. The **opening** line had
+> indeed been fixed. The **closing** line had not — the docstring still
+> ended with the exact sentence S4 complains about, *"Naming is optional
+> and only affects generated-code readability"*, contradicting its own
+> first paragraph. Reading the top of a docstring is not reading the
+> docstring. Fixed now, with the wrong sentence kept as a quotation.
+>
+> 📌 **And the finiteness half of the argument below does NOT reproduce.**
+> Measured 2026-08-27 by replacing `_v` with the identity for selected
+> holds and rebuilding PSP against a real IHP card:
+>
+> * **compilability — confirmed, dramatically.** All holds dropped: does
+>   not finish in **10 minutes**, against **62 s** held.
+> * **finiteness — not reproduced.** Dropping only the `sg_*` holds, the
+>   ones `_sigma_body`'s docstring says lost the Jacobian at `Vd = 1e26`
+>   *"purely from evaluation ORDER"*, leaves the model finite to
+>   **1e36** — unchanged from held. Something since (most likely
+>   `hdl._rdiv`'s regrouping, which moved the bound from 1e27/1e24 to
+>   1e33 on both channel types) has made those particular holds no longer
+>   load-bearing for finiteness. The docstring is left as written and
+>   annotated, not deleted: it records what was true when the holds went
+>   in.
+>
+> Two further measurements that shape the work: **52% of the holds are
+> ≤3 ops** (median 3, max 54) — so "hold everything" mostly holds naming;
+> and **434 of 1184 kernel-regulariser calls take a bare non-atomic
+> argument**, which is where the risk actually concentrates. See §36.
 
 `var()`'s docstring used to say naming is *"optional and only affects
 generated-code readability"*. The model's experience contradicts that

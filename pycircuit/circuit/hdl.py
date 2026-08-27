@@ -1803,7 +1803,15 @@ def var(expr, name=None):
         qi = var(inversion_charge(sp), 'qi')
         return Contribution(b.I, W / L * mu * qi * ...)
 
-    Naming is optional and only affects generated-code readability.
+    **The NAME is optional; the CALL is not.**  That distinction is the
+    whole of this docstring, and the sentence that used to stand here --
+    *"Naming is optional and only affects generated-code readability"* --
+    read as if the call were optional too.  It contradicted the opening
+    paragraph of its own docstring, it is the sentence roadmap S4 was
+    written to complain about, and it outlived the correction of the
+    opening line by a day.  Measured while removing it: with `var()`
+    made the identity, `PspMosLongChannel` does not finish compiling in
+    **ten minutes**, against **62 s** held.
     """
     if not _VAR_STACK:
         raise RuntimeError(
