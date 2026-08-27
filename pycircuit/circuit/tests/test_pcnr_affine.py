@@ -112,10 +112,6 @@ LIFTABLE_CARDS = [
 #: Refused for a reason that is NOT the constant-conductance class, with
 #: the reason.  Each one is a trap that a careless lift would sweep in.
 NOT_LIFTABLE = [
-    ('GummelPoonNpnHdl', dict(rb=100.0),
-     'rbb is BIAS-DEPENDENT (Gummel-Poon current crowding), so the '
-     'coefficient 1/_v68_rbb reads a probe: g*(x_a-x_b) with g moving '
-     'per iteration is bilinear, not a constant conductance'),
     ('GummelPoonNpnThermalHdl', dict(rth=100.0),
      'the survivor is a CHAIN VARIABLE, var(dT) = _x3 - _x4, and dT '
      'drives temperature-dependent physics exponentially downstream'),
@@ -313,7 +309,7 @@ def test_a_collapsed_variant_does_not_inherit_the_wrong_block():
 
 
 ## ======================================================================
-## 4.  Gummel-Poon: the cancellation `var()` hides.
+## 4.  Gummel-Poon: solved by a probe, not by the affine remainder.
 ## ======================================================================
 
 #: A real BJT card.  `fold_card` refuses bare defaults, and rightly --
@@ -322,67 +318,88 @@ GP_CARD = dict(IS=2.5e-14, bf=180.0, br=3.0, vaf=60.0, ne=1.6, nc=2.0,
                ise=4e-15, isc=8e-15, rb=25.0, re=1.0, rc=8.0)
 
 
-def _folded_gp():
-    return hdl.fold_card(eh.GummelPoonNpnHdl, instance=(), **GP_CARD)
-
-
-def test_gummel_poon_is_refused_while_its_base_resistance_is_free():
-    """Unfolded, `rbb` really is bias-dependent and must be refused.
+def test_gummel_poons_base_resistance_is_a_probe_not_a_remainder():
+    """The base resistance was the case the affine remainder CANNOT take.
 
     SPICE's base resistance is
 
         rbmx = var(Piecewise((rb, rbm < 0), (rbm, True)))
         rbb  = var((rbmx + (rb - rbmx) / qb) / area)
 
-    and `qb` is the base-charge factor, which moves with bias.  For a
-    general `rbm` that is a conductance that changes every iteration --
-    bilinear in `v_lim` and `x` -- and the ordinary assembly, built
-    before `v_lim` is known, cannot carry it.
+    and `qb` is the base-charge factor, which moves with bias.  With
+    `rbm` unset or equal to `rb` the `(rb - rbmx)` factor is an exact
+    zero and `rbb` is constant -- but on a real high-injection card
+    (`rbm < rb`) it is not, and `g(v_lim) * (x_a - x_b)` is BILINEAR:
+    a conductance that changes every iteration, which the ordinary MNA
+    assembly cannot carry because it is built before `v_lim` is known.
+
+    The fix is not more solver machinery.  Declaring the branch itself
+    as a `limit_identity` probe puts the whole current behind declared
+    unknowns, so it qualifies on ANY card -- folded or not, whatever
+    `rbm` says.  One extra PCNR unknown per device buys it.
     """
     el = eh.GummelPoonNpnHdl(Node('c'), Node('b'), Node('e'), **GP_CARD)
     el.update_iparv()
-    assert not getattr(el, 'pcnr_probes', None)
-    assert 'no $limit probe limits' in (
-        type(el)._hdl_info.get('pcnr_refusal') or '')
+    probes = getattr(el, 'pcnr_probes', None)
+    assert probes, type(el)._hdl_info.get('pcnr_refusal')
+    kinds = [k for _p, k in probes]
+    assert kinds.count('id') == 1, kinds
+    assert kinds.count('pnj') == 2, kinds
+    ## The two mechanisms COMPOSE, and this is the interesting part.
+    ## `rbb` is bias-dependent and needs the probe; `rc` and `re` are
+    ## plain constants and are taken by the affine remainder.  So this
+    ## device carries an identity probe AND a conductance block, each
+    ## handling the resistance the other cannot.
+    assert getattr(type(el), 'pcnr_lin_G', None) is not None, \
+        'the constant rc/re remainder should still be lifted'
 
 
-def test_a_folded_gummel_poon_card_qualifies():
-    """Folded, `rbm` is known -- and SPICE's "unset" makes `rbb` CONSTANT.
+#: `rbm` decides whether `rbb` is constant, and once the branch is a
+#: probe that no longer decides ELIGIBILITY -- every card qualifies.
+#: Kept parametrized because the arithmetic is still the interesting
+#: part and a regression would most likely show up on one card only.
+RBM_CASES = [
+    ({}, 'unset: SPICE reads rbm < 0 as "not given", so rbmx = rb'),
+    (dict(rbm=25.0), 'rbm == rb: the same exact cancellation'),
+    (dict(rbm=10.0), 'a real high-injection card: rb - rbm = 15, rbb '
+                     'is genuinely bias-dependent'),
+    (dict(rbm=0.0), 'rb - rbm = 25'),
+]
 
-    `rbm < 0` is SPICE's sentinel for "not given", and it means
-    `rbmx = rb`, so `(rb - rbmx)` is an exact zero and the whole `qb`
-    term vanishes: `rbb = rb / area`.
 
-    ⚠ sympy cannot see that while `rbmx` is a held `var()` -- it reads
-    `25.0 - _v67_rbmx`, which is not zero.  A probe test that follows
-    chain REFERENCES therefore over-refuses; one that RESOLVES the chain
-    and asks what survives gets it right.  That is the difference
-    between this test and the one above, and both must hold: folding
-    changes the physics of the coefficient, not merely its spelling.
-    """
-    el = _folded_gp()(Node('c'), Node('b'), Node('e'))
+@pytest.mark.parametrize('extra,why', RBM_CASES,
+                         ids=['unset', 'rbm_eq_rb', 'rbm_10', 'rbm_0'])
+def test_every_rbm_card_qualifies_now(extra, why):
+    """Including the ones the affine remainder had to refuse."""
+    el = eh.GummelPoonNpnHdl(Node('c'), Node('b'), Node('e'),
+                             **dict(GP_CARD, **extra))
     el.update_iparv()
-    assert getattr(el, 'pcnr_probes', None), (
-        type(el)._hdl_info.get('pcnr_refusal') or '')
-    assert getattr(type(el), 'pcnr_lin_G', None) is not None
+    assert getattr(el, 'pcnr_probes', None), '%s -- %s' % (
+        why, type(el)._hdl_info.get('pcnr_refusal'))
 
 
-def test_a_folded_gummel_poon_reaches_the_same_operating_point():
-    """The gate, for the model this whole exercise started from."""
+@pytest.mark.parametrize('extra', [{}, dict(rbm=10.0)],
+                         ids=['unset', 'high_injection'])
+def test_a_gummel_poon_stage_reaches_the_same_operating_point(extra):
+    """The gate, on the model this whole exercise started from.
+
+    `rbm=10` is the case that motivated it: a real high-injection card,
+    which the affine remainder could not take at all.
+    """
     import numpy as np
     from pycircuit.circuit.elements import SubCircuit, VS
     from pycircuit.circuit import gnd, pcnr as P
     from pycircuit.circuit.dcanalysis import DC
 
-    fold = _folded_gp()
+    card = dict(GP_CARD, **extra)
 
     def build():
         c = SubCircuit()
         c.add_node('c')
         c.add_node('b')
         c['vcc'] = VS('c', gnd, v=5.0)
-        c['vb'] = VS('b', gnd, v=0.75)
-        c['q1'] = fold('c', 'b', gnd)
+        c['vb'] = VS('b', gnd, v=0.78)
+        c['q1'] = eh.GummelPoonNpnHdl('c', 'b', gnd, **card)
         return c
 
     assert len(P.pcnr_devices(build())) == 1, 'the BJT is not participating'
@@ -392,75 +409,40 @@ def test_a_folded_gummel_poon_reaches_the_same_operating_point():
     den = max(1e-30, float(np.max(np.abs(x_ref))))
     rel = float(np.max(np.abs(x_lim - x_ref))) / den
     assert rel < 1e-9, (
-        'folded Gummel-Poon under PCNR reached a different operating '
-        'point, relative %.3e\n  ordinary %s\n  pcnr     %s'
-        % (rel, x_ref, x_lim))
+        'Gummel-Poon under PCNR reached a different operating point, '
+        'relative %.3e\n  ordinary %s\n  pcnr     %s' % (rel, x_ref, x_lim))
 
 
-#: `rbm` decides whether Gummel-Poon's base resistance is a constant.
-#: `(rb - rbmx)` multiplies the whole bias-dependent `qb` term, so the
-#: question is only ever "is that difference zero", and the answer is
-#: not a property of the SENTINEL -- `rbm == rb` cancels just as
-#: exactly as `rbm < 0` does.  Card `rb` is 25.0.
-RBM_CASES = [
-    ({}, True, 'unset: SPICE reads rbm < 0 as "not given", so rbmx = rb'),
-    (dict(rbm=25.0), True, 'rbm == rb: the same exact cancellation'),
-    (dict(rbm=10.0), False, 'a real high-injection card: rb - rbm = 15'),
-    (dict(rbm=0.0), False, 'rb - rbm = 25'),
-]
+def test_the_identity_probe_did_not_move_a_single_number():
+    """`limit_identity` must be numerically INERT, or this is not a
+    free win but a silent model change.
 
+    Measured when the probe was added: bit-identical `i`/`G`/`q`/`C`
+    over 25 random biases for `GummelPoonNpnHdl`, `GummelPoonPnpHdl`
+    and `GummelPoonNpnThermalHdl` -- max relative difference exactly
+    0.000e+00, not merely small.
 
-@pytest.mark.parametrize('extra,liftable,why', RBM_CASES,
-                         ids=['unset', 'rbm_eq_rb', 'rbm_10', 'rbm_0'])
-def test_rbm_decides_whether_the_base_resistance_is_a_conductance(
-        extra, liftable, why):
-    """The lift must follow the arithmetic, not the sentinel.
-
-    A check that special-cased "rbm < 0 means unset" would get `unset`
-    right and `rbm == rb` wrong.  Resolving the chain and asking what
-    survives gets both, and refuses the two cards where `qb` really is
-    still in the coefficient.
-    """
-    fold = hdl.fold_card(eh.GummelPoonNpnHdl, instance=(),
-                         **dict(GP_CARD, **extra))
-    el = fold(Node('c'), Node('b'), Node('e'))
-    el.update_iparv()
-    got = bool(getattr(el, 'pcnr_probes', None))
-    assert got is liftable, '%s -- %s' % (
-        'expected liftable' if liftable else 'expected refused', why)
-    assert (getattr(type(el), 'pcnr_lin_G', None) is not None) is liftable
-
-
-def test_a_refused_rbm_card_is_not_secretly_the_same_circuit():
-    """The refusal must be guarding something.
-
-    If `rbm = 10` gave the same answer as `rbm` unset, refusing it would
-    cost nothing and prove nothing -- the test above would pass for a
-    lift that was simply broken.  It does not: the operating point moves
-    by 1.07e-3, so `qb` is genuinely in the base resistance there.
-
-    And `rbm == rb` must be BIT-identical to unset, or the cancellation
-    this all rests on is approximate rather than exact.
+    This holds the property going forward: a device with an identity
+    probe must evaluate exactly as the same device evaluated at the
+    node voltages, because an identity probe applies no law.
     """
     import numpy as np
-    from pycircuit.circuit.elements import SubCircuit, VS
-    from pycircuit.circuit import gnd
-    from pycircuit.circuit.dcanalysis import DC
+    from pycircuit.circuit.circuit import defaultepar
 
-    def op(**extra):
-        fold = hdl.fold_card(eh.GummelPoonNpnHdl, instance=(),
-                             **dict(GP_CARD, **extra))
-        c = SubCircuit()
-        c.add_node('c')
-        c.add_node('b')
-        c['vcc'] = VS('c', gnd, v=5.0)
-        c['vb'] = VS('b', gnd, v=0.78)
-        c['q1'] = fold('c', 'b', gnd)
-        return np.asarray(DC(c, refnode=gnd).solve().x, dtype=float)
+    el = eh.GummelPoonNpnHdl(*[Node('n%d' % i) for i in range(3)], **GP_CARD)
+    el.update_iparv()
+    probes = [p for p, k in el.pcnr_probes if k == 'id']
+    assert len(probes) == 1
+    (la, lb), = probes
 
-    unset, same, lower = op(), op(rbm=25.0), op(rbm=10.0)
-    assert float(np.max(np.abs(same - unset))) == 0.0, \
-        'rbm == rb is not bit-identical to unset -- the cancellation is ' \
-        'not exact, and the lift rests on it being exact'
-    assert float(np.max(np.abs(lower - unset))) > 1e-9, \
-        'rbm = 10 changes nothing, so refusing it guards nothing'
+    rng = np.random.default_rng(11)
+    for _ in range(20):
+        x = rng.uniform(-0.3, 0.9, el.n)
+        ## the identity probe's value IS the branch potential: nothing
+        ## between the unknown and the node voltages.
+        v_branch = float(x[la]) - float(x[lb])
+        got = np.asarray(el.pcnr_i(np.array([0.0, 0.0, v_branch]),
+                                   {p.name: getattr(el.iparv, p.name)
+                                    for p in el.instparams},
+                                   defaultepar, el.toolkit), dtype=float)
+        assert np.all(np.isfinite(got)), got

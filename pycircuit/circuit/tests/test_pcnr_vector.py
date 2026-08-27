@@ -445,10 +445,21 @@ def test_a_limiter_parameter_that_reads_the_solution_sees_x_old_sub():
 
 def test_the_refusals_name_their_rule():
     from pycircuit.circuit.tests.test_limit_fet import _fet
+    ## ⚠ THIS ASSERTION EXPIRED, 2026-08-27, and is inverted rather than
+    ## deleted.  It used to read:
+    ##
+    ##   assert 'PCNR: does not qualify -- I(b) reads b, bi, which no
+    ##           $limit probe limits' in txt
+    ##
+    ## and it was the whole reason PCNR could not take a BJT with a base
+    ## resistance -- which is to say, any real BJT card.  The base
+    ## resistance branch is now declared as a `limit_identity` probe
+    ## (roadmap sec. 42), so its current reaches the solution through a
+    ## declared unknown and the rule is satisfied rather than waived.
     el = _bjt(rb=10.0)
     txt = explain(el, source=False, symbolic=False)
-    assert 'PCNR: does not qualify -- I(b) reads b, bi, which no $limit ' \
-           'probe limits' in txt, txt
+    assert 'PCNR: does not qualify' not in txt, txt
+    assert [k for _p, k in el.pcnr_probes].count('id') == 1, el.pcnr_probes
     th = eh.GummelPoonNpnThermalHdl('c', 'b', 'e', 'th', 'tha')
     th.update_iparv()
     assert 'PCNR: does not qualify -- a branch-current unknown' in explain(

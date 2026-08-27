@@ -778,8 +778,14 @@ def test_limit_pnj_write_back_on_two_junctions_sharing_a_base():
     el = _mk(eh.GummelPoonNpnHdl, 'c', 'b', 'e', **NPN_R)
     spec = el._hdl_info['limit_spec']
     ## (rows, kind, moved row).  bi = 3, ci = 4, ei = 5.
+    ## The third entry is the base-resistance branch, declared as a
+    ## `limit_identity` probe 2026-08-27 (roadmap sec. 42) so a BJT with
+    ## a base resistance can take PCNR at all.  It carries NO law, so it
+    ## changes nothing this test is about -- the two `pnj` probes and
+    ## their moved rows are unchanged -- and it is listed here because
+    ## the assertion is on the WHOLE spec.
     assert [(s[0], s[1], s[2]) for s in spec] == \
-        [((3, 5), 'pnj', 3), ((3, 4), 'pnj', 4)]
+        [((3, 5), 'pnj', 3), ((3, 4), 'pnj', 4), ((1, 3), 'id', 1)]
     ## The parameters the compiler lambdified: (IS, VT) per probe, with
     ## VT carrying nf for the first junction and nr for the second.
     ## `hdl._args_of` builds the trailing argument list a compiled
@@ -1343,8 +1349,14 @@ def test_pnp_limits_the_junction_voltage_that_has_the_exponential_in_it():
     """
     pnp = _mk(eh.GummelPoonPnpHdl, 'c', 'b', 'e', **NPN_R)
     spec = pnp._hdl_info['limit_spec']
+    ## The third entry is the base-resistance branch, declared as a
+    ## `limit_identity` probe 2026-08-27 (roadmap sec. 42) so a BJT with
+    ## a base resistance can take PCNR at all.  It carries NO law, so it
+    ## changes nothing this test is about -- the two `pnj` probes and
+    ## their moved rows are unchanged -- and it is listed here because
+    ## the assertion is on the WHOLE spec.
     assert [(s[0], s[1], s[2]) for s in spec] == \
-        [((5, 3), 'pnj', 5), ((4, 3), 'pnj', 4)]
+        [((5, 3), 'pnj', 5), ((4, 3), 'pnj', 4), ((1, 3), 'id', 1)]
     ## and it does the right thing: a step that would forward-bias the
     ## p-n-p's base-emitter junction to 40 V is compressed.
     x0 = np.array([-2.0, -0.7, 0.0, -0.7, -2.0, 0.0])

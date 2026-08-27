@@ -1820,7 +1820,21 @@ def _gp_core(p, T, npn, c, b, e):
         Contribution(bbe.I, ibe + ddt(qbe)),
         Contribution(bbc.I, ibc + ddt(qbc)),
         Contribution(bbx.I, ddt(qbx)),
-        Contribution(brb.I, brb.V / rbb),
+        ## The base-resistance branch is declared as a PCNR probe with
+        ## NO law (roadmap sec. 42).  Without it, `brb.V` is a raw node
+        ## difference, and vector PCNR refuses any device whose current
+        ## reads one -- so declaring `rb` cost this model PCNR on every
+        ## card.  `rbb` is bias-dependent through `qb` (SPICE's
+        ## high-injection base-width modulation), so the affine
+        ## remainder cannot take it either: `g(v_lim)*(x_a - x_b)` is
+        ## bilinear.  Making the branch a probe puts the whole current
+        ## behind declared unknowns and needs no solver machinery.
+        ##
+        ## `limit_identity` leaves the value exactly where Newton put
+        ## it, and MEASURED bit-identical on `i`/`G`/`q`/`C` over 25
+        ## random biases for all three Gummel-Poon classes.  It costs
+        ## one PCNR unknown per device.
+        Contribution(brb.I, limit_identity(brb.V) / rbb),
         Collapse(brb, p.rb <= 0.0),
         Contribution(brc.I, brc.V * p.area / p.rc),
         Collapse(brc, p.rc <= 0.0),

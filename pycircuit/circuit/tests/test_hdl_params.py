@@ -594,15 +594,25 @@ _DIO = dict(IS=3e-15, rs=1.7, n=1.05, tt=4e-9, cjo=2e-12, vj=0.7, m=0.4,
 #: recorded from cb99b18's `elements_hdl` -- the `_with_params` /
 #: nineteen-argument spelling -- with the cache disabled.
 _RECORDED = [
+    ## ⚠ The three Gummel-Poon EXPLAIN digests were re-recorded
+    ## 2026-08-27 (roadmap sec. 42): the base-resistance branch is now a
+    ## `limit_identity` PCNR probe, so `explain()` lists one more probe.
+    ##
+    ## Their POINT digests are UNCHANGED, and that is the evidence that
+    ## matters -- this test separates the two on purpose, and only the
+    ## text moved.  Independently measured: `i`/`G`/`q`/`C` are
+    ## BIT-identical across 25 random biases for all three classes, max
+    ## relative difference exactly 0.000e+00.  An identity probe applies
+    ## no law, so it must not move a number, and it did not.
     ('GummelPoonNpnHdl', _BJT, ('c', 'b', 'e'), 6,
      ['4d746c561ac7b430', '924f3d39a2c404df', '5ea1b16f597dd226'],
-     'e271508db4ed7615'),
+     '3b86779394634e8e'),
     ('GummelPoonPnpHdl', _BJT, ('c', 'b', 'e'), 6,
      ['2c024addadbe4ba4', '38dfed3011c5a3f5', 'e21e0a40a85e01bf'],
-     '45c2be858e1c0d9c'),
+     '2cdbb30b8f2ec50d'),
     ('GummelPoonNpnThermalHdl', _BJT, ('c', 'b', 'e', 'th', 'tha'), 8,
      ['d2bcfb160947baec', 'fde3cc1f8ae9d6db', '943ddcd06908762d'],
-     '00b5ba240e8e9afc'),
+     'c908030496155171'),
     ## ⚠ The two SPICE-diode `explain` digests were RE-RECORDED
     ## 2026-08-27 for `_autohold` (roadmap sec. 36): the regularisers now
     ## hold their own arguments, so the chain carries more named

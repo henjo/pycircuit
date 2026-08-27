@@ -4993,3 +4993,63 @@ ones actually agree.
 The refused cards lose nothing but PCNR: the ordinary path solves them
 normally, and `pcnr.solve_dc` raises a plain "no device in this circuit
 declares a PCNR junction" rather than degrading silently.
+
+## 42. High injection: solved by a probe, not by more solver (2026-08-27)
+
+§41 left `GummelPoonNpnHdl` liftable only on cards where `rbb` happens
+to be constant. On a real high-injection card (`rbm < rb`) it is not,
+and the term is **bilinear** -- `g(v_lim) * (x_a - x_b)`, a conductance
+that changes every iteration, which the ordinary MNA assembly cannot
+carry because it is built before `v_lim` is known.
+
+### The design that was NOT built
+
+Extending the lift to bilinear terms is tractable and was scoped: the
+shadow closes over `g` evaluated at the current `v_lim` (that part is
+nearly free, and gives `J_mm` correctly), and `stamp` gains the extra
+`dg/dv * (x_a - x_b)` contribution to `J_ml`, which needs `x` at stamp
+time -- available, since `augmented_system` already reads `x[ra]`.
+Perhaps a day, plus the convergence risk of a new coupling.
+
+### The one-line change that was
+
+**Declare the base-resistance branch as a `limit_identity` probe.**
+
+    Contribution(brb.I, limit_identity(brb.V) / rbb)
+
+`brb.V` was a raw node difference, which is exactly what PCNR's rule
+refuses. As a declared probe it is an unknown like any other, so the
+current reaches the solution legitimately -- and `rbb`'s dependence on
+`qb` stops mattering, because `qb` is itself a function of the two
+junction probes. **The device qualifies on ANY card, folded or not,
+whatever `rbm` says.** Cost: one PCNR unknown per device.
+
+`limit_identity` carries no law, so it must not move a number. Measured:
+**bit-identical `i`/`G`/`q`/`C` across 25 random biases for all three
+Gummel-Poon classes -- max relative difference exactly 0.000e+00.** The
+recorded-digest test corroborates independently: its POINT digests are
+unchanged and only the EXPLAIN text moved, which is the separation that
+test exists to make.
+
+Operating-point agreement under PCNR: **2.5e-17** (`rbm` unset) and
+**1.78e-16** (`rbm = 10`, the high-injection card the affine remainder
+could not take at all).
+
+### The two mechanisms compose
+
+Gummel-Poon now carries an identity probe AND a conductance block: the
+probe handles `rbb`, which is bias-dependent, and the affine remainder
+handles `rc` and `re`, which are plain constants. Each takes the
+resistance the other cannot.
+
+⚠ **The lesson is about reaching for the solver.** The bilinear
+extension was a real design and I had it costed before asking whether
+the model could simply declare what it already knew. A limiting
+framework's rule -- *every resistive current must reach the solution
+through a declared probe* -- is more usefully read as an instruction to
+the MODEL than as a constraint on the solver.
+
+Records updated: five tests asserted the old refusal and are inverted
+rather than deleted, with the superseded assertion kept in a comment;
+two probe-list assertions gained the entry; three explain digests
+re-recorded with the bit-identical evidence beside them.
