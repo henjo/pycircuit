@@ -70,32 +70,20 @@ stay under, so the drift fails a run instead of aging in prose.
 **Published figures rot in the flattering direction**, because that is
 the direction nobody re-checks.
 
-⚠ **A SPEEDUP FIGURE IS A PROPERTY OF THE WHOLE CALL, NOT OF THE
-CHANGE.** "This cache is worth 1.16x" is not a fact about the cache. It
-is a fact about the cache *and everything else in that call*, so it
-expires when any of the rest moves — with no edit to the thing being
-measured. Here a memoisation measured 1.16x when it landed and **1.24x
-an hour later, unchanged**, because a later fix removed a 425 ns lookup
-from the same method and shrank the denominator.
+⚠ **A SPEEDUP FIGURE EXPIRES WITHOUT ANYONE TOUCHING IT.** "This cache
+is worth 1.16x" is a fact about the cache *and everything else in that
+call*, so it moves when any of the rest does — here 1.16x became 1.24x
+in an hour with no edit to the cache. It is the only staleness where
+**re-running the same benchmark on the same code gives a different
+answer**, so it defeats every check based on "did anyone touch this?".
+Write "re-run this" beside such a figure rather than a number to quote.
+(`measure-before-building` has the mechanism.)
 
-This is the only kind of staleness where **re-running the same benchmark
-on the same code gives a different answer**, so it defeats every check
-based on "did anyone touch this?". Where a figure attributes a share to
-one component, write "re-run this" beside it rather than a number to
-quote — and prefer publishing the *absolute* before/after, which does
-not move when its neighbours do.
-
-⚠ **ON A BUSY MACHINE, PAIR THE VARIANTS IN ONE PROCESS.** Sequential
-runs of two variants do not share their load, so the ratio between them
-measures the machine as much as the change. Measured here on identical
-code: sequential runs gave anything from **1.04x to 1.26x**; building
-both variants in ONE process and interleaving their timings gave a
-per-pair median of **1.216x** with p10 1.168 and p90 1.284.
-
-Report the **per-pair ratio**, not the ratio of separately-taken
-minima — each pair then sees the same load, and the spread of the pairs
-tells you how much to trust it. When the machine cannot be quiet, this
-is the difference between a number and a guess.
+*How* to re-take a figure so the new one is trustworthy — interleaving,
+pairing the variants in one process on a busy machine, and why a
+profiler's per-call times are not the ones to publish — is
+`measure-before-building`. This skill is about noticing that the
+published one has rotted.
 
 ⚠ **A RATIO THAT DID NOT MOVE IS NOT A NULL RESULT.** When the published
 figure compares two things that share a code path, a change to the

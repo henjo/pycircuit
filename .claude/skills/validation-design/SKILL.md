@@ -8,6 +8,11 @@ description: Design measurements and tests that can actually catch an error — 
 A test that cannot fail is not evidence. Most of what follows is about
 the ways a comparison quietly loses its power to catch things.
 
+When the comparison is a *timing* rather than a value — deciding whether
+an optimisation is worth building, or whether one turned out to be —
+`measure-before-building` covers that, and its failure modes are
+different enough to be worth reading separately.
+
 ## Choosing the metric
 
 **Spread, not median.** The median ratio across a sweep says whether the
