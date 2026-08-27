@@ -516,3 +516,64 @@ Two habits fall out of it:
   collapse away" describe the same dict and mean opposite things — and
   the wrong reading propagated into a plan document and a memory file
   before it was checked.
+
+## A coverage COUNT is not a coverage judgement, and it misleads both ways
+
+Asked which models on a 37-model branch were under-evidenced, I reached
+for a cheap proxy twice and got two different wrong answers.
+
+- **Test files per model** nominated `MesfetCurticeHdl` and
+  `HemtAngelovHdl` — one file each. That file turned out to be a
+  *dedicated* one, checking both against their **published equations**,
+  validating Jacobians by finite differences, and bite-checking their
+  limiters against their own absence. They were among the better-tested
+  models in the library.
+- **Test functions per model**, via an AST walk, was a real improvement
+  and still blind in a way that mattered: it cannot see a model covered
+  through a **parametrized sweep over a reflected class list**, which is
+  exactly how every model on that branch gets its baseline. By that
+  metric several models looked untested that a reflection-driven
+  backend-parity test sweeps automatically.
+
+Both proxies are answers to the question "how many times does this name
+appear", which is not the question. Four test *names*, read in seconds,
+settled what two metrics had got backwards.
+
+- Print the count if it helps you rank where to look. Then **go and
+  look**, and let the reading overrule the number.
+- Before trusting a coverage metric, ask what registration mechanism it
+  cannot see: reflection, parametrized class lists, factory-built
+  classes, inherited test bases. A model built by a factory
+  (`skin_effect_resistor()`) is invisible to `grep '^class'` and present
+  to `issubclass` — the same blindness, one layer down.
+- When you report such a number to someone else, **report its blind
+  spot in the same sentence**. A count offered without one reads as a
+  measurement of quality, and it is a measurement of text.
+
+## Writing the summary is its own verification pass -- schedule it
+
+Summarising finished work for an outside reader is not a clerical step
+after the work; it is the first time the whole claim set is stated in
+one place, and it is written **from memory** — which is precisely where
+the rot is.
+
+Writing a reviewer's guide to a long campaign, and verifying each claim
+against the repo before committing it to the page, produced **five
+corrections in half an hour**, every one of them a thing that would
+otherwise have been asserted to the repo owner with confidence: a model
+count off by one, an item filed as "refused" that had actually been
+built and shipped, a "safe to delete" file that two documentation pages
+included, and two separate misreadings of which models were weakly
+tested.
+
+None of these were discovered by working. All were discovered by
+writing it down for someone else and checking before typing.
+
+- Treat the summary as a verification pass with a deliverable, and
+  budget for it accordingly.
+- Re-derive every number in it from the source, even the ones you
+  measured yourself last week — **especially** those, because they are
+  the ones you will not think to check.
+- The errors cluster in claims about *status* ("done", "refused",
+  "unused", "unreferenced"), not in claims about *physics*. Status is
+  what changes while your attention is elsewhere.

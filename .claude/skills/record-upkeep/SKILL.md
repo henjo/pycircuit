@@ -219,3 +219,42 @@ because its reference section had vanished.
   Print both. A record edit that shrinks the file by more than the
   edit is a deletion, whatever the script intended.
 - Keep the previous commit's copy around until the diff has been read.
+
+## "Nothing references it" is not "nothing is lost"
+
+Clearing nine committed scratch files out of a repo root, I ran the
+obvious check first: grep every name across the tree, confirm zero
+references, delete. That check is necessary and it is not sufficient,
+and on its own it would have been wrong twice.
+
+- **It nearly deleted a documented example.** `example10.py` sat among
+  the scratch files and looked exactly like them. Two `.rst` files
+  include it; removing it would have broken the docs build. The grep
+  found it only because the search covered `.rst` and `.md`, not just
+  `.py`. **Search the documentation sources, not only the code.**
+- **It could not see value.** Two of the nine turned out to be the
+  original prototypes of code that later shipped — one of a coupled
+  `(dx, dh)` Newton/step-size solve, one of a delay-line ring buffer for
+  a traced JAX loop. Nothing was lost by deleting them, but that was
+  established by **reading all nine and tracing each idea into the
+  current tree**, which took ten minutes and is the only thing that
+  could have established it.
+
+The two questions are different and only one of them is about value:
+
+| question | answered by | tells you |
+|---|---|---|
+| will deleting break something? | grep for references, across code **and** docs | whether it is safe |
+| is anything lost? | read it, then find where its idea lives now | whether it is worth keeping |
+
+Report both, separately. "Unreferenced, and its idea shipped as X" is a
+sentence someone can approve. "Nothing references it" invites a yes to a
+question they did not know they were being asked.
+
+⚠ **A file that is broken can still be broken for the wrong reason.**
+Five of those nine set a global (`circuit.default_toolkit`) at *module
+scope*, and pytest imports every collected module into one process. One
+file therefore failed under collection with a completely different error
+than it produced when run alone — a sibling had replaced the global
+first. Before drawing a conclusion from a failure in a batch, reproduce
+it in isolation.
