@@ -272,3 +272,99 @@ def test_a_circuit_with_no_limited_device_still_solves_with_pcnr_on():
     got = np.asarray(on.solve().x, dtype=float)
     assert on.pcnr_status == 'no-participants'
     assert np.allclose(got, off, rtol=0, atol=0), (got, off)
+
+
+## ======================================================================
+## The transient counterpart: a transient cannot have ONE status.
+## ======================================================================
+
+def _tran_diode():
+    from pycircuit.circuit.circuit import SubCircuit, gnd
+    from pycircuit.circuit.elements import VS, R
+    from pycircuit.circuit import elements_hdl as eh
+    c = SubCircuit()
+    c.add_node('a')
+    c['v1'] = VS('a', gnd, v=1.0)
+    c['d1'] = eh.DiodeSpiceHdl('a', gnd)
+    c['r1'] = R('a', gnd, r=1e3)
+    return c
+
+
+def test_a_transient_counts_the_steps_pcnr_carried():
+    """DC reports one `pcnr_status`; a transient cannot.
+
+    PCNR is attempted per timestep and can fall through on any of them,
+    so the honest report is a COUNT.  `transient.py` had the same
+    fallback DC did and recorded nothing at all -- a run could lose PCNR
+    on some steps and leave no trace but log lines.
+
+    The counts are SOLVER INVOCATIONS, not accepted steps: a rejected
+    step is solved and thrown away, and it is still a step PCNR did or
+    did not carry.
+    """
+    from pycircuit.circuit.circuit import gnd
+    from pycircuit.circuit.transient import Transient
+
+    off = Transient(_tran_diode(), pcnr=False)
+    off.solve(refnode=gnd, tend=2e-9, timestep=2e-10)
+    assert off.pcnr_status == 'off'
+    assert off.pcnr_solves == 0 and off.pcnr_fallbacks == 0
+
+    on = Transient(_tran_diode(), pcnr=True)
+    on.solve(refnode=gnd, tend=2e-9, timestep=2e-10)
+    assert on.pcnr_status == 'used'
+    assert on.pcnr_solves > 0, 'pcnr=True carried no step at all'
+    assert on.pcnr_fallbacks == 0
+
+
+def test_a_transient_says_when_nothing_participates():
+    """`pcnr=True` on an all-linear circuit is indistinguishable from
+    `pcnr=False` unless it says so.  Same defect DC carried."""
+    from pycircuit.circuit.circuit import SubCircuit, gnd
+    from pycircuit.circuit.elements import VS
+    from pycircuit.circuit import elements_hdl as eh
+    from pycircuit.circuit.transient import Transient
+
+    c = SubCircuit()
+    c.add_node('a')
+    c['v1'] = VS('a', gnd, v=1.0)
+    c['r1'] = eh.RHdl('a', gnd, r=1e3)
+    t = Transient(c, pcnr=True)
+    t.solve(refnode=gnd, tend=2e-9, timestep=2e-10)
+    assert t.pcnr_status == 'no-participants'
+    assert t.pcnr_solves == 0
+
+
+def test_a_partly_failing_transient_reports_partial():
+    """⚠ The case the counter exists for.
+
+    A transient that loses PCNR on SOME steps is the interesting one --
+    it is neither 'used' nor 'fell-back', and before this it looked
+    exactly like a clean PCNR run from outside.  Injected by making the
+    PCNR step solver fail on every third call.
+    """
+    import logging
+    from pycircuit.circuit.circuit import gnd
+    from pycircuit.circuit.transient import Transient
+
+    t = Transient(_tran_diode(), pcnr=True)
+    real = t._solve_timestep_pcnr
+    calls = {'n': 0}
+
+    def flaky(*a, **kw):
+        calls['n'] += 1
+        if calls['n'] % 3 == 0:
+            raise RuntimeError('injected PCNR failure')
+        return real(*a, **kw)
+
+    t._solve_timestep_pcnr = flaky
+    logging.disable(logging.CRITICAL)
+    try:
+        t.solve(refnode=gnd, tend=2e-9, timestep=2e-10)
+    finally:
+        logging.disable(logging.NOTSET)
+
+    assert t.pcnr_fallbacks > 0, 'the injection did not fire'
+    assert t.pcnr_solves > 0, 'nothing was carried by PCNR either'
+    assert t.pcnr_status == 'partial', (
+        t.pcnr_status, t.pcnr_solves, t.pcnr_fallbacks)

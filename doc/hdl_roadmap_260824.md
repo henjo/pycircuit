@@ -5361,11 +5361,32 @@ is kept -- three tests read it -- and still means what it meant.
 Bite-checked: reverting the reporting fails three tests, one of them on
 the original `AttributeError`.
 
-### ⚠ `Transient` has the same gap and is NOT fixed here
+### `Transient` -- the same gap, closed with a counter (sec. 48)
 
-`transient.py:2062` carries the identical fallback and records nothing.
-It differs in an important way: it falls back **per timestep**, so the
-honest report is a COUNT of steps that lost PCNR, not a single state. A
-transient can therefore lose PCNR on some steps and leave no trace but
-log lines. Scoped and left, deliberately -- the counter is a different
-design and this section is about the DC path.
+`transient.py:2062` carried the identical fallback and recorded
+nothing. It differs in a way that decides the shape of the fix: PCNR is
+attempted **per timestep** and can fall through on any of them, so
+there is no single state to report. A transient can lose PCNR on some
+steps and leave no trace but log lines.
+
+So it counts:
+
+    pcnr_solves      timesteps PCNR carried
+    pcnr_fallbacks   timesteps that fell through to the ordinary solver
+    pcnr_status      'off' | 'used' | 'no-participants'
+                     | 'partial' | 'fell-back'
+
+**`'partial'` is the case the counter exists for**: a run that loses
+PCNR on some steps is neither 'used' nor 'fell-back', and before this
+it looked exactly like a clean PCNR run from outside.
+
+⚠ The counts are **solver invocations, not accepted steps**. A rejected
+step is solved and then thrown away, and it is still a step PCNR did or
+did not carry -- conflating the two would make the number disagree with
+`statistics.accepted_steps` for a reason nobody could reconstruct.
+
+Measured on a diode transient: `pcnr=True` gives `used`, **58 solves, 0
+fallbacks**; the same circuit with `pcnr=False` gives `off, 0, 0`; an
+all-linear circuit gives `no-participants`. Bite-checked by injecting a
+failure on every third PCNR step -- status `partial`, both counters
+non-zero -- and by disabling the counters, which fails three tests.

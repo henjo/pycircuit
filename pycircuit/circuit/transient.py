@@ -2060,7 +2060,11 @@ class Transient(Analysis):
             ## Stage 2, 2026-08-26).
             if _pcnr.pcnr_devices(self.cir):
                 try:
-                    return self._solve_timestep_pcnr(x0, t, provided_function)
+                    out = self._solve_timestep_pcnr(x0, t, provided_function)
+                    self.pcnr_solves += 1
+                    self.pcnr_status = ('used' if not self.pcnr_fallbacks
+                                        else 'partial')
+                    return out
                 except Exception as exc:               # noqa: BLE001
                     ## Same fallback as DC(pcnr=True): a PCNR failure on one
                     ## timestep falls through to the ordinary step solver
@@ -2069,6 +2073,16 @@ class Transient(Analysis):
                         'transient pcnr=True: PCNR failed at t=%g (%s: %s); '
                         'ordinary solver for this step', t,
                         type(exc).__name__, str(exc)[:80])
+                    self.pcnr_fallbacks += 1
+                    self.pcnr_status = ('partial' if self.pcnr_solves
+                                        else 'fell-back')
+            else:
+                ## Asked for, and no device declares a probe.  Falling
+                ## through is right -- refusing would be a worse answer --
+                ## but it must SAY SO, or `pcnr=True` and `pcnr=False` are
+                ## indistinguishable from outside.  Same defect DC carried
+                ## until sec. 47.
+                self.pcnr_status = 'no-participants'
 
         n=self.cir.n
         dt = self._dt
@@ -2159,6 +2173,19 @@ class Transient(Analysis):
                                fixed_timestep, coupled_lte)
 
     def _solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False, coupled_lte=False):
+        ## PCNR OUTCOME, per run (roadmap sec. 48).  `pcnr=True` is a
+        ## request: PCNR can decline for the whole run (no device
+        ## declares a probe) or fail on individual timesteps and fall
+        ## through to the ordinary step solver.  DC reports a single
+        ## `pcnr_status`; a transient cannot, because the answer differs
+        ## per step -- so it COUNTS.
+        ##
+        ## These count SOLVER INVOCATIONS, not accepted steps: a rejected
+        ## step is solved and then thrown away, and it is still a step
+        ## PCNR did or did not carry.
+        self.pcnr_solves = 0
+        self.pcnr_fallbacks = 0
+        self.pcnr_status = 'off'
         ## STAGE 8(d) -- clear per-analysis element state BEFORE anything seeds it.
         ##
         ## Position matters and cost a test to learn: placed after the initial
