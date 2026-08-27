@@ -754,12 +754,26 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     **`gmin` is a damper on the step, not a term in the equations.** It
     anchors the Schur complement's diagonal inside :func:`predict` and
     never touches the residual, so the point this converges to solves the
-    untouched system -- matched against `DC()` to 1e-11 on every circuit
-    that needed it. It is what lets PCNR survive a wild start, where the
-    reduced matrix goes RANK DEFICIENT (an EKV differential pair from a
-    uniform 20 V start measures rank 8 of 9) and an unregularised solve
-    returns not a large step but a meaningless one. ``gmin=0`` restores
-    the undamped behaviour.
+    untouched system -- matched against `DC()` to 1e-11. ``gmin=0``
+    restores the undamped behaviour, and is the default.
+
+    ⚠⚠ **ITS MOTIVATING CIRCUIT IS GONE (2026-08-26).** This was built
+    for the EKV differential pair from a uniform 20 V start, where the
+    reduced matrix goes rank deficient (measured: rank 8 of 9, both
+    channels cut off, 2e-19 S to the tail) and an unregularised solve
+    returns not a large step but a meaningless one. That pair now
+    converges undamped: `limit_delta` on EKV's bulk gave the probe a law
+    for `v_lim_init`'s limited seed to apply (roadmap sec. 27, 34). A
+    72-configuration probe afterwards -- four circuit families, starts
+    from -40 V to +100 V, both instance orders -- found **nothing that
+    `solve_dc` fails on**.
+
+    So this damper currently rescues no circuit anyone can name, while
+    still costing cascode grid point (2, 2, 2) when switched on. It is
+    kept because "nothing I can find fails" is not "nothing fails", and
+    because it remains the only tool for a genuinely rank-deficient
+    start -- but it should not be reached for without a failing case in
+    hand.
 
     ⚠⚠ **IT DEFAULTS TO OFF, because it is not free: it trades one
     circuit for another.** With `gmin = 1e-9` the EKV differential pair

@@ -176,28 +176,37 @@ def _ekv_explain():
     return explain(eh.EkvNmosHdl, source=False, symbolic=False)
 
 
-def test_ekv_qualifies_for_vector_pcnr_through_the_identity_probe():
-    """The motivating case.  Before the declaration:
+def test_ekv_qualifies_for_vector_pcnr_through_its_bulk_probe():
+    """The motivating case.  Without a probe on the third branch:
     ``PCNR: does not qualify -- var(vsb) reads b, g, which no $limit
-    probe limits``.  After it, the three probes are the device's block
-    and `explain()` names the identity probe as what it is."""
+    probe limits``.  With one, the three probes are the device's block.
+
+    ⚠ **The bulk probe was `limit_identity` until 2026-08-26 and is now
+    `limit_delta` (roadmap sec. 34).**  What qualifies the device is
+    having a probe on that branch at all -- which is what this test is
+    for, and it is unchanged.  What the identity probe could NOT do is
+    limit the seed, and that was the last circuit on the PCNR fallback.
+    The identity mechanism itself is still supported and still tested,
+    in section 1, on a synthetic device; it simply has no library user
+    any more.
+    """
     txt = _ekv_explain()
-    assert ('3 $limit probes (identity (no law) on (s,b), fetlim on (g,s) '
+    assert ('3 $limit probes (deltalim on (s,b), fetlim on (g,s) '
             '[params at last iterate], limvds on (d,s))') in txt, txt
-    assert ('PCNR: vector route, 3 probes over 4 rows (identity (no law) '
-            'on (s,b), fetlim on (g,s), limvds on (d,s))') in txt, txt
+    assert ('PCNR: vector route, 3 probes over 4 rows (deltalim on (s,b), '
+            'fetlim on (g,s), limvds on (d,s))') in txt, txt
     assert 'does not qualify' not in txt
     el = eh.EkvNmosHdl(*[eh.Node(nm) for nm in 'dgsb'])
-    assert tuple(k for _p, k in el.pcnr_probes) == ('id', 'fet', 'vds')
+    assert tuple(k for _p, k in el.pcnr_probes) == ('delta', 'fet', 'vds')
     ## and the PMOS, whose branches are declared reversed
     txt = explain(eh.EkvPmosHdl, source=False, symbolic=False)
     assert 'PCNR: vector route, 3 probes over 4 rows' in txt, txt
-    assert 'identity (no law) on (b,s)' in txt, txt
+    assert 'deltalim on (b,s)' in txt, txt
 
 
-def test_the_refusal_still_fires_without_the_identity_probe():
+def test_the_refusal_still_fires_without_a_bulk_probe():
     """The control for the test above: the SAME EKV body with the raw
-    ``bsb.V`` is refused by name.  A qualification test that could not
+    ``bsb.V`` -- no probe of any kind -- is refused by name.  A qualification test that could not
     fail would be decoration."""
     from pycircuit.circuit.hdl import TEMP
     import pycircuit.circuit.elements_hdl as m
@@ -213,13 +222,13 @@ def test_the_refusal_still_fires_without_the_identity_probe():
 
 
 def _ekv_without_identity():
-    """`_ekv_analog(TEMP, +1)` with `limit_identity` made a no-op, built
-    by shadowing the name in the body's globals."""
+    """`_ekv_analog(TEMP, +1)` with the bulk probe made a no-op, built
+    by shadowing the declaring name in the body's globals."""
     import types
     import pycircuit.circuit.elements_hdl as m
     from pycircuit.circuit.hdl import TEMP
     g = dict(m._ekv_analog.__globals__)
-    g['limit_identity'] = lambda probe: probe
+    g['limit_delta'] = lambda probe, vmax: probe
     f = types.FunctionType(m._ekv_analog.__code__, g, '_ekv_analog',
                            m._ekv_analog.__defaults__,
                            m._ekv_analog.__closure__)
@@ -236,7 +245,8 @@ def test_the_gmin_pair_view_stays_pnj_only():
     assert P.pcnr_junction_pairs(c) == []
     devs = P.pcnr_devices(c)
     assert [d.instance for d in devs] == ['M1', 'M2']
-    assert all(d.m == 3 and d.kinds == ('id', 'fet', 'vds') for d in devs)
+    assert all(d.m == 3 and d.kinds == ('delta', 'fet', 'vds')
+               for d in devs)
     ## and a real junction in the same circuit is still listed
     c['D'] = eh.DiodeHdl('d1', gnd)
     pairs = P.pcnr_junction_pairs(c)
@@ -393,29 +403,42 @@ def test_the_ekv_diff_pair_from_zero_plain_newton_against_pcnr():
 @pytest.mark.filterwarnings('ignore:invalid value')
 def test_the_ekv_diff_pair_from_twenty_volts():
     """The same pair from a uniform +20 V start, Stage 1's wild-start
-    case.  Recorded at introduction (Jacobian evaluations)::
+    case.  **PCNR now converges here, and the test that used to record
+    its failure asserts the convergence instead.**
+
+    ::
 
         vin           -1.0      -0.3       0       0.3      1.0
         plain        [6, 6]    [6, 6]   [6, 6]   [6, 6]   [6, 6]
-        PCNR         [F, F]    [F, F]   [F, F]   [F, F]   [F, F]
+        PCNR         [8, 8]    [7, 7]   [7, 7]   [7, 7]   [8, 8]
+        PCNR before  [F, F]    [F, F]   [F, F]   [F, F]   [F, F]
 
-    PCNR fails at its FIRST `predict`, ``LinAlgError: Singular matrix``,
-    in both orders and from any uniform start of 2 V or more.  Mechanism:
-    a uniform start has both gates 17 V below the tail, both channels
-    are cut off with ``iff = irr = 0`` to the last bit, and the tail
-    node is held by nothing but the ideal current source -- its whole
-    conductance is the two devices' 2e-19 S.  The plain path's LU
-    happens to pivot on that 2e-19 and the limiter repairs the step;
-    PCNR's Schur complement has the same row to within rounding and
-    rounds it to a zero pivot.  Not order-dependent, not a wrong answer
-    -- an "unlimited node" failure of the kind sec. 15 records after
-    Stage 2, and `DC(pcnr=True)`'s fallback is what catches it.
+    The failure it used to record, kept because the mechanism is the
+    interesting part: PCNR failed at its FIRST `predict`,
+    ``LinAlgError: Singular matrix``, in both orders and from any
+    uniform start of 2 V or more.  A uniform start has both gates 17 V
+    below the tail, both channels cut off with ``iff = irr = 0`` to the
+    last bit, and the tail node held by nothing but the ideal current
+    source -- its whole conductance is the two devices' 2e-19 S.  The
+    plain path's LU happens to pivot on that 2e-19 and the limiter
+    repairs the step; PCNR's Schur complement rounded the same row to a
+    zero pivot.
 
-    Asserted: the structural claim (both orders do the same), plain
-    Newton's convergence, and every converged tail equal to ``DC()``'s.
-    The PCNR failure is RECORDED, not required: a future damped
-    `predict` that converges here should make this docstring stale, not
-    the test red.
+    What fixed it was **not** a damped `predict`.  Sec. 27 found the
+    wild-start failures were a SEED problem -- `v_lim_init` handed the
+    first Jacobian raw branch voltages -- and the fix passes the seed
+    through each device's own law.  This pair was the one circuit that
+    fix could not reach, because its bulk probe was `limit_identity`,
+    whose law is "leave it alone".  Sec. 34's `limit_delta` gave that
+    probe a real law and the failure went with it.
+
+    The old docstring said "a future damped `predict` that converges
+    here should make this docstring stale, not the test red" -- and the
+    test was written so that it did exactly that.  It was right about the
+    outcome and wrong about the cause.
+
+    Asserted now: both orders agree, **both converge**, and every tail
+    equals ``DC()``'s.
     """
     rows = {vin: _row(vin, 20.0, maxiter=200) for vin in VIN}
     for vin, row in rows.items():
@@ -423,6 +446,10 @@ def test_the_ekv_diff_pair_from_twenty_volts():
         (pl1, pc1), (pl2, pc2) = row
         assert pc1[0] == pc2[0], (vin, row)
         assert pl1[0] is not None and pl2[0] is not None, (vin, row)
+        ## PCNR converges here since sec. 34.  Asserted, not merely
+        ## recorded -- otherwise a regression back to [F, F] would pass.
+        assert pc1[0] is not None and pc2[0] is not None, (vin, row)
+        assert pc1[0] < 20, (vin, row)
         for its, tail in (pl1, pl2, pc1, pc2):
             if its is not None:
                 assert_allclose(tail, ref, rtol=1e-4)

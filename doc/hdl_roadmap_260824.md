@@ -856,10 +856,10 @@ the form it was argued — here is what actually landed.
     3        kernel: range contracts                 DONE
     3        kernel: limit_delta                     DONE 2026-08-26 (sec.
                                                      34): the family is
-                                                     complete.  Fixes the EKV
-                                                     diff pair 14/14 at
-                                                     vmax>=5; EKV itself NOT
-                                                     changed -- see sec. 34
+                                                     complete.  EKV adopted it
+                                                     on its bulk at 10 V (sec.
+                                                     35), which retired the
+                                                     last PCNR fallback
     3        S1  pure form for chained path          REFUSED on measurement
                                                      (sec. 22/23): the two fast
                                                      paths are disjoint (22
@@ -4206,3 +4206,122 @@ limiting fire?"), the declaration through a real model, `explain()`,
 vector-PCNR qualification, a parameter-valued bound, refusal of a
 non-positive bound, and grouping — which a delta probe may join and an
 identity probe may not.
+
+## 35. EKV switched to `limit_delta` (2026-08-26): the PCNR fallback has no vehicle left
+
+§34 built the primitive, measured that it fixes the EKV diff pair, and
+**deliberately did not change the model** — that being a separate call.
+Made now.
+
+```python
+vsb = _var(limit_delta(bsb.V, 5.0), 'vsb')   # was limit_identity(bsb.V)
+```
+
+### 10 V is chosen from TWO grids — and 5 V, chosen from one, was wrong
+
+The bound is not monotone, so it was swept on the full grid — seven
+`vin` values × both instance orders × a uniform 20 V start:
+
+```
+identity     XX XX XX XX XX XX XX
+delta  2     XX .. .. .. .. .. XX
+delta  3     .. .. .. .. .. .. ..
+delta  5     .. .. .. .. .. .. ..      <- chosen
+delta 10     .. .. .. .. .. .. ..
+delta 20     .. .. .. .. .. .. ..
+delta 50     XX XX XX XX XX XX XX      <- too loose to limit at all
+```
+
+**The working plateau is 3–20 V.** Below 3 it is partial *and
+order-dependent at |vin| = 1*, which is the one property PCNR exists to
+provide. **1 V — the value `compact.PspMosLongChannel.limit` uses by
+hand, and the obvious guess — does not work here.**
+
+5 V was picked from that grid, and the suite caught it. The 40 V cascode
+benchmark (`test_fet_limiting_cuts_the_iteration_count_on_a_hard_solve`)
+dropped from a ratio of 1.9 to 1.79 and failed its bound. Swept against
+*that* circuit, Jacobian evaluations:
+
+| bulk law | identity | δ1 | δ2 | δ3 | **δ5** | δ10 | δ20 |
+|---|---|---|---|---|---|---|---|
+| cascode | 13 | 20 | 16 | 13 | **14** | 13 | 12 |
+
+**5 V is the one value inside the plateau that costs that solve an
+iteration.** 10 V is inside both grids: fourteen of fourteen on the diff
+pair, and it ties the identity probe on the cascode. Shipped at 10.
+
+⚠ Two grids, two different answers about which end of the range is good.
+A bound picked from one circuit is a bound picked from a point, however
+many values of it were swept.
+
+Zero-start results and every converged tail are unchanged.
+
+### ⚠ Nothing makes PCNR fail any more
+
+Probed after the change: **72 configurations** — EKV diff pairs, the BJT
+mirror, Level-1 cascodes, `_fet` cascodes at three geometries — starts
+from **−40 V to +100 V**, both instance orders. `pcnr.solve_dc`
+**converged on every one**.
+
+That is a good result and an awkward one, because two tests used "PCNR
+fails here" as their **precondition**:
+
+* **the `DC(pcnr=True)` fallback test** has now run on three circuits.
+  It began on the BJT mirror (fixed by §27's seed), moved to the EKV
+  pair (fixed here), and has run out. It now **forces** the failure by
+  raising from `solve_dc` — a weaker test of *when* the fallback fires
+  and a better test of *what it does*, and one that cannot rot again.
+  A companion test asserts both former vehicles now go through PCNR.
+* **the `gmin` damper test** (§31) asserted "raises undamped, converges
+  with it". The first half is false now.
+
+**The fallback stays.** "Nothing I can find fails" is not "nothing
+fails", and it costs nothing when it never fires.
+
+### The gmin damper has lost its case
+
+§31 built it for exactly this circuit and shipped it **off** because it
+traded the pair for cascode grid point (2, 2, 2). The pair no longer
+needs it, so it now **rescues no circuit anyone can name** while still
+costing the grid point when switched on. Kept — it is the only tool for
+a genuinely rank-deficient start — but `solve_dc`'s docstring now says
+plainly that it should not be reached for without a failing case in
+hand.
+
+### `limit_identity` now has no user in the library
+
+It remains supported and tested (section 1 of `test_limit_identity.py`,
+on synthetic devices), and it is still the right declaration for a
+branch whose model genuinely has no opinion. It is simply no longer what
+any shipped model uses — because §27 made the *seed* the thing that
+matters, and a probe with no law has nothing to apply to it.
+
+### Five tests re-aimed, none patched
+
+Each kept its property and lost its incidental:
+
+| test | was | now |
+|---|---|---|
+| `..._qualifies_for_vector_pcnr_...` | qualifies *through the identity probe* | qualifies through **a bulk probe**; the kind is incidental |
+| `..._refusal_still_fires_...` | without *the identity probe* | without **a bulk probe of any kind** |
+| `..._gmin_pair_view_stays_pnj_only` | kinds `('id', 'fet', 'vds')` | `('delta', ...)`; the load-bearing `pairs == []` untouched |
+| `..._diff_pair_from_twenty_volts` | recorded `[F, F]`, deliberately not asserted | **asserts convergence** — otherwise a regression to `[F, F]` passes |
+| `..._gmin_damper_is_off_by_default_...` | "raises undamped, converges damped" | off by default, and **cannot move the answer** |
+| `..._declares_fetlim_on_the_gate_...` | "the bulk is never written" | the bulk **is** a probe terminal now, and is written 147/300 |
+
+**And one of those was a behavioural change, not a rename.** *"The bulk
+is not a probe terminal and is never written"* was true only because
+`limit_identity` never bit. A probe with a law has to write back, so the
+bulk now moves — and three probes contend for the shared source node
+where two did before. Measured: **3 of 600 branch-bound checks (0.5%)
+end with a branch wilder than it went in**, which is the same per-probe
+write-back interference `limit_vds`'s docstring already records at 3.3%
+over 813 two-probe steps. `limit_together` is what satisfies all the
+constraints at once, and EKV does not use it. Recorded in the test with
+the number, not smoothed away by loosening the bound.
+
+The fourth is worth its own line: its docstring said *"a future damped
+`predict` that converges here should make this docstring stale, not the
+test red"* — and it did exactly that. **It was right about the outcome
+and wrong about the cause.** What fixed it was not a damped `predict`
+but a seed with a law to apply.

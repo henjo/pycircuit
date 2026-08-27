@@ -465,12 +465,15 @@ def test_the_refusals_name_their_rule():
     assert hasattr(f, 'pcnr_i')
     ## EKV used to read its bulk-source potential RAW and was refused by
     ## the unlimited-branch rule ("var(vsb) reads b, g, which no $limit
-    ## probe limits").  Since 2026-08-26 it declares `limit_identity` on
-    ## that branch and qualifies with three probes; the refusal is
-    ## still pinned, on the raw twin, in `test_limit_identity.py`.
+    ## probe limits").  It has declared a probe on that branch since
+    ## 2026-08-26 and qualifies with three; the refusal is still pinned,
+    ## on the raw twin, in `test_limit_identity.py`.  That probe was
+    ## `limit_identity` for a day and is `limit_delta` now (sec. 34) --
+    ## what qualifies the device is having a probe there at all, and
+    ## what the identity one could not do was limit the seed.
     ekv = eh.EkvNmosHdl('d', 'g', 's', 'b')
     ekv.update_iparv()
-    assert 'PCNR: vector route, 3 probes over 4 rows (identity (no law) ' \
+    assert 'PCNR: vector route, 3 probes over 4 rows (deltalim ' \
            'on (s,b), fetlim on (g,s), limvds on (d,s))' \
            in explain(ekv, source=False, symbolic=False)
     assert hasattr(ekv, 'pcnr_i')
@@ -1166,14 +1169,26 @@ def test_the_seed_is_limited_only_where_the_start_is_arbitrary():
         pcnr.v_lim_init(devs, x, limit=True)))) < 1.0
 
 
-def test_the_gmin_damper_is_off_by_default_and_documented_as_a_trade():
+def test_the_gmin_damper_is_off_by_default_and_has_lost_its_case():
     """`solve_dc(gmin=...)` regularises the Schur complement.
 
-    It is the only one of three dampers measured that addresses a RANK
-    DEFICIENCY rather than a step length, and it is off by default
-    because it trades circuits: the EKV pair below converges with it and
-    raises without, while cascode grid point (2, 2, 2) does the reverse
-    at every value from 1e-12 to 1e-6.
+    It was built in sec. 31 for one circuit: the EKV differential pair
+    from a wild start, which raised `LinAlgError` undamped and converged
+    with it.  It shipped OFF anyway, because it traded that circuit for
+    cascode grid point (2, 2, 2) at every value from 1e-12 to 1e-6.
+
+    ⚠ **That justification is gone.** `limit_delta` on EKV's bulk (sec.
+    34) makes the pair converge undamped, and a 72-configuration probe
+    afterwards found nothing that `solve_dc` fails on. So the damper now
+    rescues **no circuit anyone can name**, while still costing the grid
+    point when switched on.
+
+    It is kept rather than removed -- "nothing I can find fails" is not
+    "nothing fails", and it is the only tool for a genuinely rank-
+    deficient start -- but its default must stay off, and what this test
+    can still assert is the property that made it safe to ship at all:
+    **the anchor is on the JACOBIAN only, never the residual, so it
+    cannot move the answer.**
     """
     import inspect
     from pycircuit.circuit import pcnr
@@ -1183,13 +1198,17 @@ def test_the_gmin_damper_is_off_by_default_and_documented_as_a_trade():
     c = _diffpair(0.0, False)
     x0 = np.full(c.n, 20.0)
     x0[c.get_node_index(gnd)] = 0.0
-    with pytest.raises(Exception):
-        pcnr.solve_dc(c, gnd, x0=x0)                  # undamped: rank deficient
 
-    c2 = _diffpair(0.0, False)
-    x, v, its = pcnr.solve_dc(c2, gnd, x0=x0, gmin=1e-9)
-    assert its < 20
-    ## the anchor is on the JACOBIAN only, so it cannot move the answer
+    ## undamped: converges now (it did not when the damper was built)
+    x_off, _, its_off = pcnr.solve_dc(_diffpair(0.0, False), gnd, x0=x0)
+    assert its_off < 20
+
+    ## damped: same answer, because gmin never touches the residual
+    x_on, _, its_on = pcnr.solve_dc(c, gnd, x0=x0, gmin=1e-9)
+    assert its_on < 20
+    i_tail = c.get_node_index('tail')
+    assert abs(float(x_on[i_tail]) - float(x_off[i_tail])) < 1e-6
+
+    ## ...and against the ordinary path too
     ref = DC(_diffpair(0.0, False)).solve(x0=x0)
-    assert abs(float(x[c2.get_node_index('tail')])
-               - float(ref.v('tail', gnd))) < 1e-6
+    assert abs(float(x_on[i_tail]) - float(ref.v('tail', gnd))) < 1e-6

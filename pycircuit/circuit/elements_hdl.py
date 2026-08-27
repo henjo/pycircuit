@@ -2196,16 +2196,50 @@ def _ekv_analog(T, nmos):
         ## 565 mV below where the device actually turns on.  `maxc`
         ## inside the root because the parameter is evaluated NUMERICALLY
         ## at a point Newton may have pushed into forward body bias.
-        ## `limit_identity` on the bulk: NOT a limiter -- it never moves
-        ## the branch -- but the declaration that admits this model to
-        ## vector PCNR (roadmap sec. 15).  The current reads `vgs`,
-        ## `vds` AND `vsb`; the first two have laws, the third had no
-        ## probe, and the declared-probe route refused the model with
-        ## "var(vsb) reads b, g, which no $limit probe limits".  With the
-        ## identity probe the device owns all three of its branch
-        ## unknowns and the tail-node clash cannot form on it.  Measured
-        ## in `test_limit_identity.py`.
-        vsb = _var(limit_identity(bsb.V), 'vsb')
+        ## THE BULK PROBE.  The current reads `vgs`, `vds` AND `vsb`;
+        ## SPICE's limiter set covers the first two, and the declared-
+        ## probe route refuses a device whose current reaches the
+        ## solution through an unlimited branch -- it said "var(vsb)
+        ## reads b, g, which no $limit probe limits".  So the third
+        ## branch needs a probe for the model to enter vector PCNR at
+        ## all, and with one the device owns all three of its unknowns
+        ## and the tail-node clash cannot form on it (roadmap sec. 15).
+        ##
+        ## It was `limit_identity` -- a probe with NO law -- from Stage 2
+        ## until 2026-08-26.  That admitted the model and nothing more,
+        ## and sec. 27's wild-start fix is precisely to pass the SEED
+        ## through each device's own law: an identity law clamps nothing,
+        ## so this was the one circuit left falling back to the ordinary
+        ## solver from a wild start.
+        ##
+        ## `limit_delta` (sec. 34) gives it a real law without inventing
+        ## physics the model does not have.  Measured on the diff pair,
+        ## seven `vin` values x both instance orders x a uniform 20 V
+        ## start: identity fails **14 of 14**, this converges **14 of
+        ## 14**, order-independently, with every zero-start result and
+        ## every converged tail unchanged.
+        ##
+        ## ⚠ 10 V IS CHOSEN FROM TWO GRIDS, NOT A POINT -- the bound is
+        ## not monotone, and the two circuits that care disagree about
+        ## which end of the range is good.
+        ##
+        ## Diff pair, wild start (14 cases): <= 2 V partial, and
+        ## ORDER-DEPENDENT at |vin| = 1, which is the one property PCNR
+        ## exists to provide; **3 to 20 V all fourteen**; 50 V fails
+        ## everything, being too loose to limit at all.
+        ##
+        ## 40 V cascode from the origin, Jacobian evaluations (the
+        ## `test_fet_limiting_cuts_the_iteration_count_on_a_hard_solve`
+        ## benchmark): identity 13, delta 1 -> 20, 2 -> 16, 3 -> 13,
+        ## **5 -> 14**, 10 -> 13, 20 -> 12.
+        ##
+        ## So 5 V -- picked first, from the diff-pair grid alone -- is
+        ## the ONE value inside the plateau that costs this solve an
+        ## iteration. 10 V is inside both: all fourteen on the pair, and
+        ## it ties the identity probe on the cascode.  1 V -- the value
+        ## `compact.PspMosLongChannel.limit` uses by hand, and the
+        ## obvious guess -- is the worst of the lot at 20.
+        vsb = _var(limit_delta(bsb.V, 10.0), 'vsb')
         von = _var(vtoT + gamma * (sympy.sqrt(_maxc(phiT + vsb, 0.0))  # noqa
                                    - sympy.sqrt(phiT)), 'von')
         vgs = _var(limit_fet(bgs.V, von), 'vgs')
