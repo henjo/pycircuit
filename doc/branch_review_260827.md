@@ -27,20 +27,20 @@ half and its last stage is parked.
 ## 2. Scale
 
 ```
-551 commits    442 files    +160,343  -3,904
+559 commits    436 files    +161,671  -3,904
 ```
 
 | area | insertions | files |
 |---|---:|---:|
-| tests | 58,674 | 113 |
-| `pycircuit/` source | 39,941 | 135 |
-| doc | 39,534 | 82 |
+| tests | 59,366 | 115 |
+| `pycircuit/` source | 40,225 | 135 |
+| doc | 40,247 | 83 |
 | benchmarks | 13,903 | 73 |
-| repo root / other | 6,255 | 32 |
-| `.claude/` skills | 2,036 | 7 |
+| repo root / other | 5,761 | 23 |
+| `.claude/` skills | 2,169 | 7 |
 
 Tests outweigh source. That is deliberate and is the main reason the
-branch is defensible at all — see §5.
+branch is defensible at all — see §6.
 
 ## 3. Suggested reading order
 
@@ -86,7 +86,32 @@ IHP's compiled `.osdi`. Note the file's own warning — it is generated,
 and regeneration must be additive (every existing number must reproduce
 bit-identically), or the comparison silently re-baselines onto itself.
 
-## 5. What is guarded, and what is not
+## 5. PCNR now works on the cards a PDK ships
+
+**PCNR now works on the cards a PDK ships.** Until 2026-08-27 the vector
+PCNR solver refused any device whose current still read a node voltage
+after probe substitution -- which meant declaring a series resistance
+(`rb`, `rd`, `rs`) cost the device PCNR entirely. The PCNR tests zeroed
+those parameters, and said so in their own docstrings.
+
+The refusing dependence turned out to be **affine** in every case: a
+series resistance is a conductance, Newton solves it exactly, and
+limiting it means nothing. It is now stamped by the ordinary MNA
+assembly while PCNR carries only the probe-dependent part.
+
+| model | status |
+|---|---|
+| `MosLevel1Hdl`, `MosLevel3Hdl`, `MesfetStatzHdl` | qualify with `rd`/`rs` declared |
+| `GummelPoonNpnHdl` | qualifies via `fold_card` (so SPICE's `rbm` sentinel resolves) |
+| `GummelPoonNpnThermalHdl`, `PhotodiodeHdl`, `LedHdl` | still refused, for reasons that are structural rather than incidental |
+
+Each lifted model is gated on reaching the **same operating point** as
+the unlimited path (1.5e-18 to 2.2e-17), not merely on converging --
+the first version of the lift converged happily with an internal node
+half a volt wrong and the terminal current still matching to seven
+digits.
+
+## 6. What is guarded, and what is not
 
 This is the section to read sceptically, because it is where the branch
 is weakest and the weakness is not visible from the code.
@@ -170,7 +195,7 @@ concluding anything from a count — including this one.*
 So "37 models" and "37 validated models" are different statements, and
 only the first is claimed here.
 
-## 6. Deliberately not done
+## 7. Deliberately not done
 
 Five items were investigated and then **closed by measurement** — the
 measurement said the gain was absent or the cost too high, and the code
@@ -193,7 +218,7 @@ closed than to re-discover.
 **Parked, not refused:** vector PCNR Stage 3 (JAX), by the branch
 author's decision.
 
-## 7. Repo-root hygiene (done, 2026-08-27)
+## 8. Repo-root hygiene (done, 2026-08-27)
 
 The repo root carried **nine committed scratch files**, swept in by a
 `git add -A` on 2026-07-31 in a commit about something unrelated. Five
@@ -228,7 +253,7 @@ broken file.
 example — `doc/src/circuit/examples/example10.rst` and `index.rst`
 include it, and deleting it would break the docs build. It stays.
 
-## 8. Running the suite
+## 9. Running the suite
 
 `pytest.ini` documents the intended invocation, and it is not a bare
 `pytest`:
@@ -247,7 +272,7 @@ records 52.9 s under `-n 8` against 55.1 s for the fast subset alone —
 which is why the `slow` marker is no longer deselected by default. Run it
 in parallel; serially and under load it takes well over an hour.
 
-A bare `pytest` from the repo root also works, as of the §7 cleanup:
+A bare `pytest` from the repo root also works, as of the §8 cleanup:
 **2,699 tests collected, no errors.** Before that it aborted during
 collection.
 
@@ -271,7 +296,7 @@ and `test_symengine_toolkit.py`, both optional dependencies that are not
 installed here. Neither is a failure, but note that **two toolkit
 backends are therefore unexercised in this environment**.
 
-## 9. Where the reasoning lives
+## 10. Where the reasoning lives
 
 - `doc/hdl_roadmap_260824.md` — 4,533 lines, 39 sections: the full
   campaign log, including every refused item with the measurement that
