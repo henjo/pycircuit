@@ -27,16 +27,16 @@ half and its last stage is parked.
 ## 2. Scale
 
 ```
-564 commits    436 files    +162,238  -3,904
+569 commits    437 files    +163,110  -3,903
 ```
 
 | area | insertions | files |
 |---|---:|---:|
-| tests | 59,366 | 115 |
-| `pycircuit/` source | 40,225 | 135 |
-| doc | 40,247 | 83 |
-| benchmarks | 13,903 | 73 |
-| repo root / other | 5,761 | 23 |
+| tests | 60,038 | 117 |
+| `pycircuit/` source | 40,365 | 135 |
+| doc | 40,738 | 83 |
+| benchmarks | 14,068 | 74 |
+| repo root / other | 5,732 | 21 |
 | `.claude/` skills | 2,169 | 7 |
 
 Tests outweigh source. That is deliberate and is the main reason the
@@ -140,6 +140,64 @@ probe applies no law — and that was measured rather than assumed:
 The recorded-digest tests corroborate independently, since only their
 `explain` text moved and every point digest held.
 
+### Why the 20 refusals are the right 20 (§46)
+
+The obvious question about a table like the one above is whether the
+refused half was examined or merely left alone. It was examined, and
+the two criteria that look obviously right are both wrong: **overflow**
+measures whether the DSL has a regulariser, not whether the device
+needs a limiter (`DiodeSpiceHdl` and `GummelPoonNpnHdl` never overflow
+at any voltage and plainly need limiting), and **`|G|` dynamic range**
+conflates *G becomes huge* with *G becomes tiny* (`ChargePumpHdl`
+spans 8.1 decades on a `tanh`, more than `EkvNmosHdl` at 6.8).
+
+What separates the populations is the **growth law of `max|G|`**.
+Sweeping every row, `max|G|(10 V) / max|G|(1 V)` is **1.95e+87** across
+the eligible models against **7.9e+03 and below** for every refused one
+— 84 orders of magnitude, so the threshold is not a tuned parameter.
+`benchmarks/limiting_need.py` holds the table with both wrong criteria
+recorded; `test_no_model_that_needs_limiting_is_refused_by_pcnr` is the
+guard.
+
+⚠ **It holds in one direction only, and the document should not be read
+as claiming more.** A low ratio is not proof a device is safe:
+`EkvNmosHdl` reads **3.11e+01** — bounded, like the refused models —
+and genuinely needs limiting, because a probe from zero bias never
+reaches its exponential region. The guard therefore asserts only
+*everything that visibly needs limiting is eligible*, which is the half
+that can fail usefully. That the 20 refusals are correct rests
+additionally on their nonlinearities being structurally bounded
+(`tanh`, `maxc`/`minc`, products) rather than merely un-probed.
+
+### Asking for PCNR is not getting it (§47)
+
+`pcnr=True` is a request. Both analyses now report what happened, which
+is the thing a reviewer re-running these claims will want:
+
+```python
+dc.pcnr_status      # 'off' | 'used' | 'no-participants' | 'fell-back'
+
+t.pcnr_status       # the same, plus 'partial'
+t.pcnr_solves       # timesteps PCNR carried
+t.pcnr_fallbacks    # timesteps that fell through to the ordinary solver
+```
+
+Before this, `DC` could quietly not use PCNR in two different ways with
+no way to tell — the flag was assigned *inside* `if self.par.pcnr`, so
+reading it after an ordinary solve raised `AttributeError`, and it read
+`False` both when PCNR solved the circuit and when nothing declared a
+probe. `Transient` attempts PCNR **per timestep**, so it has no single
+state to report and counts instead; `'partial'` — losing PCNR on some
+steps — used to look from outside exactly like a clean PCNR run.
+
+⚠ The transient counts are **solver invocations, not accepted steps**,
+so `pcnr_solves` will generally exceed `statistics.accepted_steps`. A
+rejected step is solved and then thrown away, and it was still a step
+PCNR did or did not carry. Raised as an open trade-off and **settled
+2026-08-31 by the branch author** — counting accepted steps only was
+refused, because it hides solver work that actually happened. The two
+numbers are not meant to reconcile.
+
 ## 6. What is guarded, and what is not
 
 This is the section to read sceptically, because it is where the branch
@@ -155,7 +213,11 @@ is weakest and the weakness is not visible from the code.
 - **five** models are digest-pinned — `GummelPoonNpn/Pnp/NpnThermal`,
   `DiodeSpice`, `DiodeSpiceThermal` — recorded output digests on real
   model cards, so a numerical change to them fails a run;
-- compile-time budget — a pathological model *warns*, with the reason.
+- compile-time budget — a pathological model *warns*, with the reason;
+- **PCNR eligibility** — no model whose `max|G|` grows
+  super-polynomially may be refused by PCNR (§46), and the DC and
+  Transient status reporting is bite-checked: disabling either fails
+  three tests, one of them on `pcnr=True` carrying no step at all.
 
 **Partly guarded — read the distinction, it is the useful part:**
 
@@ -176,7 +238,9 @@ is weakest and the weakness is not visible from the code.
   same number of steps. Either assertion alone is the bug that let
   `hdl.rst` drift from 1.14× to 1.25× with a green benchmark in the
   tree the whole time — it asserted the waveforms agreed and never that
-  the ratio held.
+  the ratio held. Its stability gate skips under load rather than
+  measuring badly, so it does not run on every invocation: across three
+  full runs on 2026-08-31 it ran and passed twice and skipped once (§9).
 
 So: **if a performance claim in this document matters to your decision,
 only the overhead figure is defended by a test. Re-measure the rest**
@@ -295,47 +359,62 @@ include it, and deleting it would break the docs build. It stays.
 Use `.venv/bin/python -m pytest`, not a bare `python` — the system
 interpreter has none of the dependencies.
 
-Collection is **2,739 tests**: 2,652 in `pycircuit/circuit/tests` and 87
+Collection is **2,744 tests**: 2,657 in `pycircuit/circuit/tests` and 87
 elsewhere in the tree. The suite supports `pytest-xdist`, and `pytest.ini`
 records 52.9 s under `-n 8` against 55.1 s for the fast subset alone —
 which is why the `slow` marker is no longer deselected by default. Run it
 in parallel; serially and under load it takes well over an hour.
 
 A bare `pytest` from the repo root also works, as of the §8 cleanup:
-**2,739 tests collected, no errors.** Before that it aborted during
+**2,744 tests collected, no errors.** Before that it aborted during
 collection.
 
-### Verified green at HEAD, 2026-08-27
+### Verified green at HEAD, 2026-08-31
 
 | | passed | skipped | xfailed | failed |
 |---|---:|---:|---:|---:|
-| `pycircuit/circuit/tests` | 2,647 | 4 | 3 | **0** |
-| rest of the tree | 85 | 4 | 0 | **0** |
-| **total** | **2,732** | **8** | **3** | **0** |
+| `pycircuit/circuit/tests` | 2,652 | 4 | 3 | **0** |
+| rest of the tree | 85 | 3 | 0 | **0** |
+| **total** | **2,737** | **7** | **3** | **0** |
 
-Roughly **5–7 min under `-n 8`** with a warm compile cache, 11 min cold;
-over 20 min serially. Use the parallel form.
+Measured **9–10 min under `-n 8`** with a warm compile cache — three
+full runs today at 553 s, 578 s and 610 s. (An earlier edition of this
+section said 5–7 min; that figure is not reproducible on this machine
+and has been replaced by what was measured rather than adjusted.) Over
+20 min serially. Use the parallel form.
 
 The counts reconcile against `--collect-only` exactly, which is the
-check worth doing rather than trusting the totals: collection reports
-2,652 for `circuit/tests`, and 2,647 passed + 2 test-level skips + 3
-xfailed = **2,652**, the collected count. The other 2 skips are
-**module-level** `importorskip`s that collection does not count.
+check worth doing rather than trusting the totals: 2,737 passed + 7
+skipped + 3 xfailed = 2,747, less the **3 module-level skips that
+collection does not count**, gives **2,744** — the collected total.
 
-The four skips are worth naming, because a skip is not a pass:
+The skips are worth naming, because a skip is not a pass:
 
 - `test_ginac_toolkit.py` and `test_symengine_toolkit.py` — optional
   dependencies not installed here, so **two toolkit backends are
   unexercised in this environment**;
-- one superseded unittest, kept for a rewrite;
+- `pycircuit/sim/gnucap/tests/test_gnucap.py` — gnucap not installed, so
+  the **gnucap simulator interface is unexercised** too. It skips at
+  module level, which means it never appears in a collected count: a
+  per-directory tally of `circuit`, `post` and `utilities` reconciles
+  perfectly and still misses it entirely. Only `-rs` on the whole tree
+  shows it.
+- two `Skip failing test` unittests under `post`/`utilities`, and one
+  superseded unittest kept for a rewrite;
 - `test_perf_guards.py`'s own stability gate, which declines to measure
-  a 15% effect while eight xdist workers make the reference timings
-  spread 3×. It passes serially. That is the gate working, but it does
-  mean **the performance guard rarely runs under `-n 8`**.
+  a 15% effect when the reference timings spread past 1.25× within one
+  measurement. That is the gate working.
+
+⚠ **The last one is load-dependent, so this table is not bit-stable.**
+Across three runs today the perf guard **ran and passed twice** and
+skipped once (spread 2.29×), which moves the totals by one between
+otherwise identical runs — the 2,652/4 row above reads 2,653/3 on a run
+where it passes. If your numbers differ from this table by exactly one
+test, this is why; check `-rs` before concluding anything.
 
 ## 10. Where the reasoning lives
 
-- `doc/hdl_roadmap_260824.md` — 4,533 lines, 39 sections: the full
+- `doc/hdl_roadmap_260824.md` — 5,392 lines, sections 0–47: the full
   campaign log, including every refused item with the measurement that
   refused it. Not a review document; a record.
 - `doc/hdl.rst` — the DSL's user-facing documentation.
