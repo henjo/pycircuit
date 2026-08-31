@@ -87,7 +87,16 @@ from pycircuit.utilities import param
 #: 2: chain records carry the C rendering (`_csrc`/`_cshape`/`_clayout`
 #: or `_creason`) beside the numpy source, so a cache hit can feed the
 #: C backend without re-running sympy.
-CACHE_FORMAT = 2
+## 3 (2026-08-31): the generated `pcnr_limit_branchless` and the
+## `_hdl_limit_par` ingredients that let a limiter parameter be recompiled
+## for a traced toolkit (roadmap sec. 49.3).  Both are EMISSION changes, and
+## a format bump is how emission changes invalidate: the `_dependency_hashes`
+## do cover `hdl.py`'s source, but an entry restored from cache does not run
+## `_limit_par_fn` again, so the attribute it now attaches was simply absent
+## on every cache hit -- the generated device kept working and silently could
+## not be traced.  Same shape as the PCNR_LIFT_AFFINE trap recorded below,
+## reached from the other direction.
+CACHE_FORMAT = 3
 
 #: Module-level switch; the environment variable is consulted too.
 ENABLED = True

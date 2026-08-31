@@ -4873,17 +4873,84 @@ def _limit_par_fn(expr, kind, chain_defs, xsyms, xlabels, args, modules,
     touches_x = bool(expr.free_symbols & xset) or any(
         e_.free_symbols & xset for _s, e_ in reach)
     mods = dict(_KERNEL_NUMPY, _wrapfloor=np.floor)
+    ## THE INGREDIENTS ARE KEPT, not just the compiled function (roadmap
+    ## sec. 49.3).  This chain used to be compiled against `_KERNEL_NUMPY`
+    ## and nothing else, which made a limiter parameter unusable from a
+    ## traced loop -- and a parameter that READS THE SOLUTION is traced
+    ## along with it, so vector PCNR on the JAX backend stopped at any
+    ## device whose limiter has one (EKV's `von`; Gummel-Poon has none,
+    ## which is why it worked and EKV did not).  `_limit_par_for` compiles
+    ## the jax twin from these on demand and caches it, exactly as
+    ## `_pcnr_vec_compiled` does for `pcnr_i`/`pcnr_didv`.
     if touches_x:
+        unpack = [(xs.name, 'x[%d]' % k) for k, xs in enumerate(xsyms)]
         inner = _chain_compile(
-            reach, [expr], [x] + args, modules_map=mods,
-            unpack=[(xs.name, 'x[%d]' % k) for k, xs in enumerate(xsyms)])
-        return _first_of(inner, wants_x=True)
+            reach, [expr], [x] + args, modules_map=mods, unpack=unpack)
+        out = _first_of(inner, wants_x=True)
+        out._hdl_limit_par = (reach, expr, [x] + args, unpack, True)
+        return out
     if not reach:
         fn = sympy.lambdify(args, expr, modules=modules)
         fn._wants_x = False
+        try:
+            fn._hdl_limit_par = (None, expr, args, None, False)
+        except AttributeError:                      # pragma: no cover
+            pass                                    # a builtin: no twin
         return fn
     inner = _chain_compile(reach, [expr], args, modules_map=mods)
-    return _first_of(inner, wants_x=False)
+    out = _first_of(inner, wants_x=False)
+    out._hdl_limit_par = (reach, expr, args, None, False)
+    return out
+
+
+def _limit_par_for(fn, toolkit):
+    """``fn``, or its jax twin, compiled once and cached on it.
+
+    The numpy form is returned unchanged for every non-traced toolkit, so
+    the CPU path evaluates exactly the function it always did.
+    """
+    if not getattr(toolkit, 'jax', False):
+        return fn
+    cached = getattr(fn, '_hdl_limit_par_jax', None)
+    if cached is not None:
+        return cached
+    ing = getattr(fn, '_hdl_limit_par', None)
+    if ing is None:
+        ## ⚠ NOT a silent fall-through.  Returning the numpy function here
+        ## would hand a traced loop something that cannot take a tracer, and
+        ## the failure would surface as a TracerArrayConversionError several
+        ## frames deep inside a compiled chain, naming nothing useful.
+        ##
+        ## The one way to reach this is a COMPILE-CACHE HIT: a cold build
+        ## attaches the ingredients, and the cache's rehydration path
+        ## reconstructs these functions without running `_limit_par_fn`, so
+        ## a warm process has the generated code and not the ingredients.
+        ## Measured: the same class reports ingredients present on the first
+        ## run into an empty cache dir and absent on the second.
+        raise NotImplementedError(
+            'this limiter parameter cannot be recompiled for a traced '
+            'toolkit: it was restored from the HDL compile cache, which '
+            'does not carry the sympy ingredients a jax twin is built from '
+            '(a cold build does). Clear the cache '
+            '(PYCIRCUIT_HDL_CACHE_DIR, or ~/.cache/pycircuit/hdl) or set '
+            'PYCIRCUIT_HDL_CACHE=0 for this run. Carrying the ingredients '
+            'through the cache is roadmap sec. 49.3.')
+    import jax.numpy as _jnp
+    reach, expr, sig_args, unpack, wants_x = ing
+    if reach is None:
+        twin = sympy.lambdify(sig_args, expr, modules=_jnp)
+        twin._wants_x = False
+    else:
+        twin = _first_of(
+            _chain_compile(reach, [expr], sig_args,
+                           modules_map=dict(_kernel_jax(_jnp), numpy=_jnp),
+                           **({'unpack': unpack} if unpack else {})),
+            wants_x=wants_x)
+    try:
+        fn._hdl_limit_par_jax = twin
+    except AttributeError:                          # pragma: no cover
+        pass
+    return twin
 
 
 #: Consume the affine remainder (roadmap sec. 40) instead of refusing
@@ -6529,10 +6596,15 @@ class BehaviouralMeta(type):
                 args = _vec_args(params, epar)
                 out = []
                 for j, (kind, pfs) in enumerate(_laws):
-                    ## No `float()`: a traced parameter stays traced.
-                    pars = [f(x_old_sub, *args)
-                            if getattr(f, '_wants_x', False) else f(*args)
-                            for f in pfs]
+                    ## No `float()`: a traced parameter stays traced.  And
+                    ## the parameter FUNCTION is taken for this toolkit --
+                    ## a chain compiled against numpy cannot accept one.
+                    pars = []
+                    for f in pfs:
+                        g = _limit_par_for(f, toolkit)
+                        pars.append(g(x_old_sub, *args)
+                                    if getattr(g, '_wants_x', False)
+                                    else g(*args))
                     out.append(_apply_lim_bl(kind, v_new[j], v_old[j], pars,
                                              toolkit.log))
                 return toolkit.array(out)

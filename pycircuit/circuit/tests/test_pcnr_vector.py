@@ -1327,31 +1327,75 @@ def test_the_traced_twin_traces_and_differentiates():
     assert np.all(np.isfinite(jac)), jac
 
 
-def test_a_solution_reading_limiter_parameter_is_not_traceable_yet():
-    """⚠ EXPIRING TEST -- invert it when the blocker below is fixed.
+def test_a_solution_reading_limiter_parameter_traces_on_a_cold_build():
+    """⚠ EXPIRING TEST -- and it documents a CACHE limitation, not a law one.
 
-    `EkvNmosHdl`'s `fet` law takes a parameter that READS THE SOLUTION
-    (SPICE's `von`, `_wants_x`). Those parameter chains are compiled against
-    the numpy kernel unconditionally -- `hdl.py`, ``mods = dict(_KERNEL_NUMPY,
-    _wrapfloor=np.floor)`` -- so the function cannot accept a tracer, and the
-    twin traces only for a device whose limiter parameters are constants
-    (Gummel-Poon does; EKV does not).
+    `EkvNmosHdl`'s `fet` law takes a parameter that reads the solution
+    (SPICE's `von`, `_wants_x`). `_limit_par_for` compiles a jax twin for it
+    from ingredients `_limit_par_fn` attaches at build time, which works --
+    on a COLD build. The HDL compile cache's rehydration path reconstructs
+    these functions without running `_limit_par_fn`, so a warm process has the
+    generated code and not the ingredients. Measured: the same class reports
+    them present on a first run into an empty cache dir and absent on the
+    second.
 
-    The fix is to give those chains the toolkit-aware treatment
-    `_pcnr_vec_compiled` already gives `pcnr_i`/`pcnr_didv`: keep the sympy
-    expression and compile a jax twin lazily. Until then this asserts the
-    limitation so it cannot be mistaken for a passing capability -- and when
-    it is fixed, this test fails and should be replaced by the positive one.
+    Rather than hand a traced loop a numpy function that dies several frames
+    deep, `_limit_par_for` REFUSES with that explanation. This asserts the
+    refusal so the limitation cannot be mistaken for a capability; carrying
+    the ingredients through the cache is roadmap sec. 49.3, and when that
+    lands this test fails and should be replaced by the positive one.
+
+    Gummel-Poon is unaffected either way: its limiter parameters are
+    constants, so it needs no twin at all.
+    """
+    pytest.importorskip('jax')
+    import jax.numpy as jnp
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.circuit import defaultepar
+    from pycircuit.circuit.hdl import _limit_par_for
+
+    cls, params = _vec_dev('EkvNmosHdl', 4, jaxtoolkit)
+    laws = cls.pcnr_limit_branchless.__defaults__[0]
+    wants_x = [pf for _k, pfs in laws for pf in pfs
+               if getattr(pf, '_wants_x', False)]
+    assert wants_x, 'EKV should have a solution-reading limiter parameter'
+
+    for pf in wants_x:
+        if hasattr(pf, '_hdl_limit_par'):
+            ## Cold build: the twin is available and the law traces.
+            assert _limit_par_for(pf, jaxtoolkit) is not pf
+        else:
+            ## Warm cache: refused, by name, with the remedy.
+            with pytest.raises(NotImplementedError, match='compile cache'):
+                _limit_par_for(pf, jaxtoolkit)
+
+
+def test_gummel_poon_traces_regardless_of_the_cache():
+    """The device whose limiter parameters are CONSTANTS needs no twin.
+
+    Kept beside the EKV test deliberately: if a change ever breaks only one
+    of the two, which one says whether the fault is in the parameter chain or
+    in the law.
     """
     pytest.importorskip('jax')
     import jax
     import jax.numpy as jnp
     from pycircuit.circuit.toolkit import jaxtoolkit
     from pycircuit.circuit.circuit import defaultepar
-    cls, params = _vec_dev('EkvNmosHdl', 4, jaxtoolkit)
+
+    cls, params = _vec_dev('GummelPoonNpnHdl', 3, jaxtoolkit)
     m = len(cls.pcnr_probes)
-    with pytest.raises(Exception) as exc:
-        jax.jit(lambda a, b: cls.pcnr_limit_branchless(
-            a, b, params, defaultepar, jaxtoolkit, jnp.zeros(8)))(
-                jnp.linspace(0.6, 1.1, m), jnp.linspace(0.5, 0.9, m))
-    assert 'Tracer' in exc.typename, exc.typename
+    v_new, v_old = jnp.linspace(0.6, 1.1, m), jnp.linspace(0.5, 0.9, m)
+
+    def f(a, b):
+        return cls.pcnr_limit_branchless(a, b, params, defaultepar,
+                                         jaxtoolkit, jnp.zeros(8))
+
+    eager = np.asarray(f(v_new, v_old), dtype=float)
+    assert np.array_equal(eager, np.asarray(jax.jit(f)(v_new, v_old),
+                                            dtype=float))
+    cls_n, params_n = _vec_dev('GummelPoonNpnHdl', 3, numeric)
+    cpu = np.asarray(cls_n.pcnr_limit(np.asarray(v_new), np.asarray(v_old),
+                                      params_n, defaultepar, numeric,
+                                      np.zeros(8)), dtype=float)
+    assert np.array_equal(eager, cpu), (eager, cpu)

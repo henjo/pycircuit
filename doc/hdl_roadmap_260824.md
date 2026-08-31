@@ -5741,11 +5741,36 @@ constants, which is the whole reason it traces and EKV does not.
 
 **The fix is the treatment `_pcnr_vec_compiled` already gives `pcnr_i` and
 `pcnr_didv`**: keep the sympy expression, compile a jax twin lazily under
-`_kernel_jax`. That is a change to the compile machinery rather than to a law,
-which is why it is recorded here rather than started at the end of a long
-session. An EXPIRING test asserts the limitation
-(`test_a_solution_reading_limiter_parameter_is_not_traceable_yet`) so it cannot
-be mistaken for a capability, and says to invert it when fixed.
+`_kernel_jax`.
+
+**BUILT 2026-08-31 as `_limit_par_for`, and it works on a COLD BUILD** --
+EkvNmosHdl then traces, `jit` equals eager, the Jacobian is finite and the
+answer is bit-equal to the CPU limiter.
+
+⚠ **AND IT IS DEFEATED BY THE COMPILE CACHE, which is the finding.** The
+ingredients are attached by `_limit_par_fn` at build time; the cache's
+rehydration path reconstructs these functions WITHOUT running it, so a warm
+process has the generated code and not the ingredients. Measured, same class,
+same cache dir:
+
+    first run into an empty cache   ingredients present   traces
+    second run (cache hit)          ingredients absent    does not
+
+Bumping `CACHE_FORMAT` 2 -> 3 was necessary -- this is an emission change and
+the roadmap's own PCNR_LIFT_AFFINE trap says emission changes must move the
+key -- but NOT sufficient: the bump invalidates old entries, and the newly
+written ones drop the ingredients just the same. **The payload has to carry
+them**, which is a third layer (the cache format itself) and is where this
+stops.
+
+⚠ **The failure is now LOUD.** `_limit_par_for` refuses with the cause and the
+remedy (clear the cache, or `PYCIRCUIT_HDL_CACHE=0`) rather than returning a
+numpy function that dies several frames deep inside a compiled chain naming
+nothing. §47's rule, applied to a path that had every opportunity to repeat it.
+
+An EXPIRING test asserts whichever state the process is in -- twin available on
+a cold build, refusal on a warm one -- and says to replace it with the positive
+form when the payload carries the ingredients.
 
 ⚠ **G1's circuit is the EKV pair**, so this blocker is on the critical path
 after all -- §49.1 said the redundant-probe rule was off it, and that is still
