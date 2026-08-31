@@ -21,8 +21,12 @@ that the benchmark fixture was an **unstable circuit**, then that it was an **un
 one**, and separately that the transient engine had four defects. The fixture is now
 repaired and compensated; the transient engine is partly repaired and fully reviewed. The third
 regeneration of the tables is **done**; what remains on the symbolic side is **only T4**,
-the transient-vs-perturbation comparison that started all of it — and that is blocked on
-transient work, not on anything here.
+the transient-vs-perturbation comparison that started all of it.
+
+⚠ **T4 is no longer blocked** (verified 2026-08-31, see 4.3): the transient work it waited
+on landed, and gate 0.2a not only passed but refuted its own premise. What stands between
+T4 and a number now is cost — hours per amplitude until `x0` is seeded from the linear
+two-tone steady state, which is unimplemented.
 
 ---
 
@@ -138,25 +142,36 @@ because this one still needs doing.
   does the *old* value, which reads exactly like a third kind of staleness. Read the
   rendered table.
 
-### 4.3 T4 — the IM3 transient comparison, BLOCKED
+### 4.3 T4 — the IM3 transient comparison, UNBLOCKED 2026-08-31 (was: BLOCKED)
 
 `benchmarks/nonlinear_leapfrog_sweep.py`. Two-tone IM3 (100/110 kHz, product at 90 kHz),
 because **HD3 is unmeasurable here by any transient at any cost**: the third harmonic at
 300 kHz is attenuated 160 000x by the filter's own stopband while the fundamental loses
 only 106x. IM3 lands beside the fundamentals and is 277x larger.
 
-**Blocked on `doc/transient_work_plan.md` stage 4g.** The harness sets
-`TrapezoidalIntegrator()` and drives two `VSin` tones — which is exactly the mechanism that
-seeds the trapezoidal LTE estimator's parasitic `(-1)^n` mode, making its error O(1/h). The
-integrator was chosen on a step-count comparison a contaminated estimator could have
-produced. **Gate 0.2a of the transient plan re-verifies this; do not quote a T4 number
-before it passes.**
+⚠ **UNBLOCKED, verified 2026-08-31 — this paragraph stood for a month after its own
+blocker cleared.** It read: *blocked on stage 4g; gate 0.2a re-verifies this; do not quote
+a T4 number before it passes.* Gate 0.2a **passed**, and its premise was **refuted**: the
+integrator choice is not contaminated, the 10x stands, and stage 4 never had to re-measure
+it — the plan records that as the largest single saving stage 0 produced. Stage 4g landed
+the same day (4g(a) `45f4fe0`, 4g(b) as 4i `1122c31`). T4 is the oldest open thread on the
+repo and nothing is holding it back.
+
+The original concern, kept because it explains the harness design: it sets
+`TrapezoidalIntegrator()` and drives two `VSin` tones, which is the mechanism that seeds
+the trapezoidal LTE estimator's parasitic `(-1)^n` mode. That mode was real and was fixed;
+it just never reached this harness.
 
 Cost, as last measured (on the *uncompensated* fixture, so re-measure): ~6.8 h per
 amplitude, dominated by settling rather than stepping. The compensation cut tau 208 ->
 73.5 us, which should reduce that ~2.8x. The larger lever is **seeding `x0` with the linear
 two-tone steady state** — the circuit is linear apart from a cubic contributing ~1e-4, so
 one AC solve removes nearly all the settling. Not implemented.
+
+⚠ **So T4 is unblocked but not yet affordable**, and that is the real gate now rather than
+0.2a. Implement the `x0` seeding before spending hours per amplitude; it is testable
+functionally rather than by wall clock, which also means it can be built on a loaded
+machine.
 
 ---
 

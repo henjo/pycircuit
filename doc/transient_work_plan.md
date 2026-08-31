@@ -1,69 +1,40 @@
 # Transient subsystem — the work plan
 
-> ## RESUME HERE — state as of 2026-08-01
+> ## RESUME HERE — the plan is EXECUTED; audited 2026-08-31
 >
-> Last commit changing **default simulator behaviour**: `3a56c45` (9(g) — the JAX opening
-> step and `dt_max`). Since then `def248c` (7a) and `433ead2` (7b) changed the CPU path
-> bit-identically: 7b's sparse solver is **opt-in**, and the default is still
-> `numpy.linalg.solve`.
+> **This document is now a record, not a queue.** Its previous resume block described
+> 2026-08-01 and its Stage 4 status table described 2026-07-31; the campaign ran on for
+> another four weeks without either being updated, so both described open work that no
+> longer existed. Audited commit by commit on 2026-08-31 — every stage this plan
+> defines is landed, withdrawn, or refused with a measurement.
 >
-> **The suite has 4 pre-existing COLLECTION ERRORS** — `pycircuit/post/cds/test/*` cannot
-> import `pexpect` — which `pytest -q`'s tail does not show. Those four modules have never
-> run; "N passed" excludes them. See traps 15 and 16.
-> A newer HEAD does not by itself mean the code has moved underneath this block; check
-> `git log --oneline 3a56c45..HEAD -- pycircuit/`. Branch `cna-jax-vectorization`
-> (`git@github.com:henjo/pycircuit.git`) — **check `git status -sb` before assuming it is
-> pushed**; several commits have sat unpushed at a time in this work.
+> **What the stale block claimed, against what is true:**
 >
-> **Suite: 844 passed, 6 skipped, 0 failed** (`-m "" --timeout=400`). Runtimes this session
-> ranged 676 s to 1941 s on near-identical source, entirely from other jobs on the box —
-> see trap 2 before reading anything into one. Nominal
-> ~8-13 min, but one run of the identical tree took **31m41s** purely from machine load —
-> see trap 2. **Doc build: succeeded, 2 warnings, 0 ERROR, 0 degraded `exec-rst` blocks** —
-> re-verified 2026-08-01 after D2, by reading the built page rather than the exit code: both
-> generated tables in `lte_dae.html` hold live numbers. The two warning *lines*
-> were read, not just counted: both are pre-existing autodoc failures importing
-> `pycircuit.post.cds`. It was 3 warnings until 0.3d, when `example6.rst` was found broken
-> by an earlier change in this session; see trap 11. Working tree clean.
+> | it said | actually |
+> |---|---|
+> | Stage 7 remaining: 7c, 7d | both landed — 7c KLU through ctypes (`linearsolver.py`), 7d deleted `pybsmatrix.py` and fixed the sparse test; `7713902` re-measured 7c after 2+.5 and KLU now WINS at n >= 1000 |
+> | 2+.5 queued | `1497855` — construction O(N^2.23) -> **O(N^1.15), 108x at N=400** |
+> | 2+.4 queued | **WITHDRAWN** (`8e50459`), its own reconsider-if named a condition that never came true |
+> | Stages 8, 10, 11, 12 untouched | all landed — 8(a)/8(b)/8(d), 10.1/10.3, stage 11 (PAC withdrawn, PSS repaired), 12A/12B |
+> | Suite 844 passed, 6 skipped | **2,753 passed / 7 skipped / 3 xfailed / 0 failed** (2026-08-31) |
+> | 4 pre-existing COLLECTION ERRORS (`post/cds`, `pexpect`) | gone — `post/cds` collects 12 tests cleanly |
+>
+> ⚠ **The one item still genuinely open** is the JAX Newton loop's convergence test:
+> `jaxtransient.py` still exits on `F_norm = jnp.sum(jnp.abs(F))`, a scalar norm, and the
+> per-row flavour split was done only for the LTE. Verified in the code, not inferred from
+> this document. The P13/P5 architecture-review residuals and 5+.4 (large-signal MOSFET,
+> sequenced into stage 10) are the other named survivors and were not re-verified here.
+>
+> **Where the live records are.** `doc/branch_review_260827.md` is the reviewer's entry
+> point and carries current suite figures; `doc/hdl_roadmap_260824.md` carries the DSL and
+> PCNR campaign. Read those before this one.
 >
 > Transient regression tests live in `pycircuit/circuit/tests/test_transient_repairs.py`
 > (renamed from `test_transient_stage1.py`); its docstring maps sections to plan stages.
 >
-> ### The next action, concretely
->
-> **Stage 9 is COMPLETE** — (a) shared `_lte_kernels.py`, (b) tolerances settable, (c)
-> per-row LTE tolerance + `sigglobal`, (d) the breakpoint hang, (e) non-converged Newton,
-> (f) `lte_formula` removed, (g) the opening step + `dt_max`, and gates 9-1..9-3. Its own
-> thesis held up: **every defect it found was a fix that existed on one backend and not the
-> other** — 4i's Gear-2 constant, stage 3's opening step, 9(d)'s breakpoint scan — never a
-> new bug.
->
-> **Stage 7 is part-done.** 7a (reference-node removal, 2.0-4.6x, bit-identical) and 7b (a
-> `LinearSolver` strategy: `DenseSolver` default, `SuperLUSolver`, `AutoSolver` selecting on
-> **fill, not `n`**) are in. **Remaining: 7c (KLU) and 7d (delete `pybsmatrix.py`, and fix
-> `test_sparse_toolkit.py`, which passes today while never exercising the sparse path).**
->
-> **Recommended next: 7d before 7c.** 7d is cheap and removes a test that currently gives
-> false assurance. 7c's declared ">= 3x on factor+solve" would land as roughly another
-> 1.1-1.3x end to end, because **the solve is only ~8% of a transient** — 7b measured
-> 1.09x at n=402, 1.20x at n=802, 1.25x at n=1202 against isolated solver wins of 28-74x.
->
-> **Both open decisions are now TAKEN — see "DECISIONS TAKEN, 2026-08-01".** D1: factor
-> reuse is **deferred**, not rejected — it saves ~2.7%% of runtime at today's sizes and costs
-> bit-identity, and becomes worth ~20%% only once 2+.5 makes n=5000 circuits buildable. D2:
-> `max_step` is now a parameter on both backends, defaulting to `None` (= `timestep`), so
-> the default moves nothing while a quiescent run can ask for SPICE's `tend/50` and get
-> **8.9x fewer steps at equal accuracy**.
->
-> **Also queued, with gates already declared:** 2+.4 (assemble the reduced system directly)
-> and **2+.5 (circuit construction is O(N^2.27) — 24.8 s to build an 800-element ladder)**.
-> **Do 2+.5 first**: it is smaller, and 2+.4's gates are unmeasurable until a circuit that
-> size can be built at all. 2+.5 is also why 7b's `n=2000` row was killed rather than
-> measured.
->
-> Still open by design: 5+.4 (large-signal MOSFET, sequenced into stage 10), the JAX Newton
-> loop's scalar-norm convergence test (the per-row flavour split is done only for the LTE),
-> and the P13/P5 architecture-review residuals. Stages 8, 10, 11, 12 untouched.
+> ⚠ Runtimes in this document are not comparable: this machine carries unrelated jobs, and
+> one run of an identical tree took **31m41s** purely from load. See trap 2 before reading
+> anything into a single timing.
 
 **Status: the plan below was written 2026-07-30, when nothing had run. Stages 0-3 and part
 of 4 have since been executed; their `OUTCOME:` lines are filled in from real runs. The
@@ -6205,21 +6176,30 @@ events", which is the only meaningful answer for a symbolic time.
 
 ### Stage 4 status
 
-| item | state |
+⚠ **AUDITED 2026-08-31. The table that stood here was written the same day as the work
+it described and never updated.** It listed ten items as "not started" — every one of
+them landed, was superseded, or was refused, and the commits doing so are dated
+**2026-07-31, the same day**. A reviewer reading it saw ten open items on the transient
+engine that do not exist, and two of the rows were worse than merely stale: `0.3d` read
+"not started" when its own entry measurements had already refuted it, inviting someone
+to build a thing that had been disproven, and `4f` read "needs 4a-4e" for a parameter
+that no longer exists and whose name now raises `TypeError`.
+
+| item | state, verified against the code |
 |---|---|
-| 4a PI gains | not started |
-| 4a-bis two-threshold controller | not started (hypothesis, from the papers) |
-| 4b MAX_REJECT force-accept | not started |
+| 4a PI gains | **DONE** `1be99da` — gains are per unit order; the missing division made the loop unstable at both orders, and the corrected closed-loop radius is now order-independent |
+| 4a-bis two-threshold controller | **PRICED, SHIPPED INERT** — evaluated under stage 12A (`8562743`). Only the `γ_max > 1` half pays: rejections 19→1, 4→3, 48→33 at 1.00x accuracy cost, but worth at most the ~3% of steps the entry measurement found being rejected. Defaults stay historical. |
+| 4b MAX_REJECT force-accept | **DONE** `abf4db8` (with 4e); `MAX_REJECT = 3` and the anti-livelock guarantee live in `transient.py`. Refined later by `eddeebd` — growth retries no longer trip the escape hatch. |
 | 4c Euler variable-step bias | **DONE** — spread 4.03x -> 1.01x |
-| 4d trapezoidal `'ywr'` | **blocked on 4g(b)** |
-| 4e `check_order_drop` direction | not started |
-| 4f default `lte_formula` | last — needs 4a-4e; the margin is now only 1.038x |
+| 4d trapezoidal `'ywr'` | **DONE** `2c78690` — resolved once 4g(b)/4i fixed the reference; it was never blocked on 4g the way this plan said, but on a contaminated reference |
+| 4e `check_order_drop` direction | **DONE** `abf4db8` — on every integrator, called from `transient.py` |
+| 4f default `lte_formula` | **MOOT** — `lte_formula` was removed from both backends in stage 9(f) (`d060b13`), taking a broken estimator with it. `integrator.py` carries the why, and `lte_formula=` now raises `TypeError` rather than being silently ignored. |
 | 4g(a) breakpoints | **DONE** — 120/1236 -> 3/1596 |
-| 4g(b) mode-free estimator | **required, designed, not started** |
-| 4h `fixed_timestep` | not started |
-| gear2-classic ratio dependence | **NEW**, measurable now, not started |
-| 0.3d `chgtol` guard | not started |
-| `relref` default / `lteratio` | not started |
+| 4g(b) mode-free estimator | **DONE as 4i** `1122c31` — one `q'''` estimator for both second-order methods, taken from the charge |
+| 4h `fixed_timestep` | **DONE** `b392ad1` — it now actually fixes the timestep |
+| gear2-classic ratio dependence | **PROMOTED to 4i and resolved with it.** The sweep found the bias far larger than the 3.97x recorded here: **83.06x at r=0.008**, on the shipped default integrator, reachable after three consecutive rejections — the estimator told a collapsing controller the error was 83x worse than it was. |
+| 0.3d `chgtol` guard | **REFUSED** `03c51eb` — "the chgtol guard is NOT built: its own entry measurements refute it". Not open work. |
+| `relref` default / `lteratio` | **DONE** `2a8e0c7` (decision D3, second attempt) — `relref` defaults to `'sigglobal'`, as in Spectre |
 
 ---
 
