@@ -168,10 +168,32 @@ amplitude, dominated by settling rather than stepping. The compensation cut tau 
 two-tone steady state** — the circuit is linear apart from a cubic contributing ~1e-4, so
 one AC solve removes nearly all the settling. Not implemented.
 
-⚠ **So T4 is unblocked but not yet affordable**, and that is the real gate now rather than
-0.2a. Implement the `x0` seeding before spending hours per amplitude; it is testable
-functionally rather than by wall clock, which also means it can be built on a loaded
-machine.
+⚠ **The `x0` seeding is BUILT, 2026-08-31** — `linear_steady_state_x0` in the harness.
+It computes the linear circuit's state at t=0 by AC superposition (`x_ss(0) = Im{X}`,
+the conventions of `func.Sin` and `VS`'s AC stimulus agreeing because they share the
+`phase` parameter). Verified exact: `e(t=0) = 0` on the real circuit, and thereafter the
+seeded run deviates from the AC-predicted trajectory only by the integrator's own `h^2`
+error — 2.455e-05 at the harness tolerance against 2.670e-07 at 1000x tighter, a 92x fall
+for a 9.6x step reduction, which is the trapezoidal rule's order and nothing else. On an
+RC with a closed-form answer it reproduced `v_out(0)` to all printed digits.
+
+**T4 is now affordable, and mostly for a reason that has nothing to do with seeding.**
+numpy was threading a 139-unknown dense solve across every core: single-threaded is
+**14-20x faster** (`OMP_NUM_THREADS=1`, three interleaved pairs, and 14.2x with the cubic
+live). At 0.73 s per simulated microsecond a full 5-tau run is ~14 min per amplitude
+against the "hours" recorded above. The seeding then cuts the settle on top of that: the
+nonlinear-node IM3 is within **0.004%** of its 5-tau value by 2 tau, so most of the
+1.04 ms settle is no longer needed.
+
+⚠ **BUT DO NOT QUOTE AN OUTPUT IM3 YET.** Holding the settle fixed and tightening the
+tolerance 30x moves `IM3/fund` at the output by **4.07x** (7.157515e-04 -> 1.760965e-04)
+while the nl node moves 1.05% — and it is still moving at 30x, so the true value is not
+bracketed. The output probe is integrator-limited at this harness's tolerances. The cause
+is in the harness's own `TRAN_OPTS` comment: the tolerance was calibrated by driving
+`|vout|` error to -0.02%, but `IM3/fund` at the output is 1.6e-04, so the calibration
+metric is the same order as the measurand. **The remaining work for T4 is a tolerance
+ladder at fixed settle**, not more settling and not more seeding. The nl-node figure is
+trustworthy today.
 
 ---
 

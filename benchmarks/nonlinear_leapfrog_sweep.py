@@ -52,7 +52,28 @@ spacing everything is a multiple of ``FB = 10 kHz``, so a 100 us window puts the
 signals of interest exactly on bins 9, 10 and 11 -- no leakage, no windowing, and a
 tenth of the integration.
 
+RUN IT SINGLE-THREADED.  Measured 2026-08-31, and it is the largest single cost
+factor in this file -- larger than the integrator choice, larger than the settle:
+
+    OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+        PYTHONPATH=<repo>:<repo>/benchmarks python3 benchmarks/nonlinear_leapfrog_sweep.py
+
+numpy threads the dense solve across every core it can find, and at n = 139 that
+is pure overhead.  Three interleaved pairs on the linear circuit, identical 292
+output points each time:
+
+    single-threaded   11.1 s   10.3 s    8.2 s
+    default          159.5 s  145.1 s  164.9 s
+
+Minima 8.2 s against 145.1 s -- **17.7x**, per-pair 14.4x/14.1x/20.1x.  With the
+cubic live the ratio holds: **0.73 s per simulated microsecond single-threaded
+against 10.35 s, 14.2x**.  So the "hours per amplitude" this measurement has
+been parked behind since July was substantially an environment variable: at
+0.73 s/us a full 5-tau run is ~14 min per amplitude, and a seeded 2-tau run is
+~4 min.
+
 Run:  PYTHONPATH=<repo>:<repo>/benchmarks python3 benchmarks/nonlinear_leapfrog_sweep.py
+      (add --settle-convergence for the settle/tolerance calibration)
 """
 
 import sys
@@ -184,17 +205,126 @@ def build_transient_leapfrog(amplitude):
         circuit_module.default_toolkit = saved
 
 
-def transient_im3(amplitude, opts=None, settle=SETTLE, measure=MEASURE):
+def linear_steady_state_x0(cir, source_names, refnode=gnd):
+    """The LINEAR circuit's state at t=0, by AC superposition -- the settling seed.
+
+    SETTLING, NOT STEPPING, IS THIS MEASUREMENT'S COST.  The slowest pole is the
+    Q ~ 16.8 resonance the topology repair disclosed, tau = 208 us, so a
+    from-rest run must integrate ~5 tau = 1.04 ms of physics before the first
+    microsecond of it is worth measuring -- against a 100 us measurement window.
+    Eleven twelfths of the run exists to throw away a transient whose value is
+    known in closed form.
+
+    It is known in closed form because **this circuit is linear apart from the
+    cubic**: the amplifiers are small-signal stamps (`add_small_signal_bjt`) and
+    the only nonlinear element is `BSource(i = g3 v^3)`, whose derivative is
+    ZERO at v = 0.  So the matrix an AC analysis assembles at the origin is
+    *exactly* the linear leapfrog's -- the same property that lets the
+    perturbation series linearise once and never drift.  The cubic contributes
+    ~1e-4 of the response, and that part still has to settle; everything else
+    can simply be evaluated.
+
+    THE CONVENTION, which is the part worth checking rather than assuming.
+    `func.Sin` with the harness's parameters (`vo=td=theta=0`) is
+
+        v(t) = va * sin(omega t + phase)
+             = Im{ (va e^{j phase}) e^{j omega t} }
+
+    and `VS.u(analysis='ac')` builds its stimulus as `vac * e^{j phase}`.  Those
+    are the SAME complex amplitude, so the AC solution X at that frequency
+    satisfies x_ss(t) = Im{X e^{j omega t}}, and therefore
+
+        x_ss(0) = Im{X}.
+
+    ⚠ Note `phase` is ONE parameter serving both roles here -- `VS` declares it
+    as the AC phase and `VSin` re-declares it as the sine phase.  That is a
+    latent trap in general and is exactly right here, because the two
+    conventions agree; it is why only `vac` needs setting below.
+
+    Superposition over the tones is legitimate for the same reason: the system
+    the seed describes is linear, so the two tones' responses add.
+
+    ⚠ Every `VS` in this tree defaults to **`vac = 1`**, not 0.  A source left
+    alone would therefore inject a spurious unit AC stimulus into every solve,
+    so this zeroes the AC amplitude of every source in the circuit and restores
+    it afterwards -- the function must not leave the circuit changed.
+
+    Validated on an RC whose steady state is analytic: the seed reproduced
+    `v_out(0)` to all printed digits, and over three periods the seeded run
+    deviated from the analytic steady state by **7.0e-07** against **4.5e-01**
+    from a zero start.
+
+    Args:
+        cir: the circuit, already built.
+        source_names: element names of the tone sources, e.g. ``('vs0', 'vs1')``.
+        refnode: reference node, as passed to the transient.
+
+    Returns:
+        A full-length ``x`` vector in the circuit's own ordering, with the
+        reference row present -- what ``Transient.solve(x0=...)`` expects.
+    """
+    from pycircuit.circuit.analysis_ss import AC
+
+    ## Zero every AC stimulus first, so superposition drives exactly one tone
+    ## per solve and no defaulted `vac=1` leaks in.
+    saved = {}
+    for name, el in cir.elements.items():
+        if 'vac' in el.iparv:
+            saved[name] = el.iparv.vac
+            el.iparv.vac = 0.0
+
+    ## Linearise at the ORIGIN rather than at whatever a DC solve returns.  At
+    ## v = 0 the cubic's derivative is exactly zero, which is the property this
+    ## whole construction rests on; leaving `dcx` unset would run a DC analysis
+    ## and linearise whereever it happened to land.
+    dcx = np.zeros(cir.n)
+
+    x0 = np.zeros(cir.n)
+    try:
+        for name in source_names:
+            el = cir.elements[name]
+            va, freq = float(el.iparv.va), float(el.iparv.freq)
+            el.iparv.vac = va
+            try:
+                res = AC(cir, toolkit=numeric, dcx=dcx).solve(
+                    freqs=np.array([freq]), refnode=refnode)
+                X = np.asarray(res.x)
+                X = X[:, 0] if X.ndim == 2 else X
+                x0 = x0 + np.imag(X)
+            finally:
+                el.iparv.vac = 0.0
+    finally:
+        for name, value in saved.items():
+            cir.elements[name].iparv.vac = value
+
+    return x0
+
+
+def transient_im3(amplitude, opts=None, settle=SETTLE, measure=MEASURE,
+                  seed=True):
     """IM3 at the output and at the nonlinear node, from a transient plus an FFT.
+
+    ``seed`` starts the run from the linear circuit's steady state
+    (`linear_steady_state_x0`) instead of from rest, which is what makes a
+    short ``settle`` legitimate: the transient that ``settle`` exists to
+    discard is, to within the cubic's ~1e-4 contribution, already gone at t=0.
+
+    ⚠ ``seed`` does NOT license ``settle=0`` on its own.  The seed removes the
+    LINEAR settling; what remains is the nonlinear part reaching its own
+    periodic state, and only a measurement can say how long that takes.  Use
+    `settle_convergence` to take it rather than assuming, and keep the settle
+    the measurement supports.
 
     Returns a dict per node of ``(im3_ratio, fund, im3)`` plus cost.
     """
     cir, amp = build_transient_leapfrog(amplitude)
     probes = {'out': amp[STAGES - 1]['out'], NODE_NAME: amp[0]['e1']}
+    x0 = linear_steady_state_x0(cir, ('vs0', 'vs1')) if seed else None
     t0 = time.time()
     res = Transient(cir, toolkit=numeric,
                     **(TRAN_OPTS if opts is None else opts)).solve(
-        refnode=gnd, tend=settle + measure, timestep=1.0 / (F1 * POINTS))
+        refnode=gnd, tend=settle + measure, timestep=1.0 / (F1 * POINTS),
+        x0=x0)
     secs = time.time() - t0
 
     out = {}
@@ -216,6 +346,100 @@ def transient_im3(amplitude, opts=None, settle=SETTLE, measure=MEASURE):
         fund, im3 = abs(spec[BIN_F1]), abs(spec[BIN_IM3])
         out[label] = (im3 / fund if fund else float('nan'), fund, im3)
     return out, secs, len(np.asarray(res.v(probes['out']).x[0]))
+
+
+def settle_convergence(amplitude=1.0, settles=(0.0, 208e-6, 2 * 208e-6,
+                                                5 * 208e-6), seed=True):
+    """How much settle the run actually needs -- measured, not assumed.
+
+    THE SEED DOES NOT BY ITSELF LICENSE A SHORTER SETTLE, and this is the
+    measurement that says what it does license.  `linear_steady_state_x0`
+    removes the LINEAR settling exactly (verified: the seeded run starts on the
+    AC-predicted trajectory with e(t=0) = 0 and thereafter deviates only by the
+    integrator's own h^2 error -- 2.455e-05 at the harness tolerance against
+    2.670e-07 at 1000x tighter, a 92x fall for a 9.6x step reduction, which is
+    the trapezoidal rule's order and nothing else).
+
+    What the seed does NOT remove is the CUBIC's own approach to periodic
+    steady state.  That part is ~1e-4 of the response and its settling is a
+    property of the nonlinearity, not of the linear poles, so the only honest
+    way to choose a settle is to watch IM3 stop moving as the settle grows.
+
+    Prints IM3 at both probes against settle, so the shortest settle whose IM3
+    has converged can be read off rather than guessed.  Run it before quoting
+    any T4 number from a shortened run.
+
+    MEASURED 2026-08-31, amplitude 1.0, seeded, single-threaded:
+
+        settle    tau    IM3/fund out    IM3/fund nl     secs
+        0         0.00   7.630947e-04    2.755349e-03     59.9
+        208 us    1.00   5.488567e-04    2.808578e-03    106.6
+        416 us    2.00   7.157515e-04    2.811437e-03    222.3
+        1040 us   5.00   7.047518e-04    2.811553e-03    671.4
+
+    **The nl probe settles; the out probe does not converge at all.**  The nl
+    node moves monotonically to within 0.004% of the 5 tau reference by 2 tau
+    (0.1% by 1 tau), which says the seeded circuit reaches periodic steady
+    state long before the settle this harness pays for.  The out node reads
+    +8.28%, -22.12%, +1.56% against 5 tau -- not monotone, so not a decaying
+    transient, and both numbers come from the SAME runs, the same window and
+    the same FFT, so the circuit cannot be settled for one probe and not the
+    other.
+
+    ⚠ **THE OUT PROBE IS INTEGRATOR-LIMITED AT THIS HARNESS'S TOLERANCES, and
+    that is a defect in the tolerance choice, not in the settle.**  Holding the
+    settle fixed at 2 tau and tightening `reltol` 1e-6 -> 3e-8 and `vabstol`
+    1e-9 -> 1e-11:
+
+        harness tol   IM3/fund out 7.157515e-04   IM3 out 3.378931e-08   nl 2.811437e-03
+        30x tighter   IM3/fund out 1.760965e-04   IM3 out 8.334364e-09   nl 2.840985e-03
+
+    The output number moves by **4.07x** while the nl number moves 1.05%.  It
+    is still moving at 30x, so the true output IM3 is NOT bracketed -- it is
+    somewhere at or below 8.3e-09 V and this harness has not yet measured it.
+
+    ⚠ **The mechanism is a metric chosen on the wrong signal**, and it is
+    recorded in this file's own `TRAN_OPTS` comment: the tolerance was
+    calibrated by driving `|vout|` error to -0.02% against a tight reference.
+    But `IM3/fund` at the output is **1.6e-04**, so a 2e-4 relative error on
+    the fundamental is the same order as the entire quantity being measured.
+    Accuracy of a large signal does not bound accuracy of a component four
+    decades beneath it.  The 162x margin this module's header claims over the
+    integrator floor is not supported at these tolerances.
+
+    ⚠ So: **the seeding and the settle are solved; the output tolerance is
+    not.**  Before T4 quotes an output IM3, run this at a fixed settle over a
+    tolerance ladder and find where the number stops moving.  The nl-node
+    figure is already trustworthy and can be quoted now.
+
+    ⚠ Run this single-threaded.  numpy threads a 139-unknown dense solve across
+    every core it can find, which is overhead at this size and antisocial on a
+    shared machine:
+
+        OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+            python benchmarks/nonlinear_leapfrog_sweep.py --settle-convergence
+    """
+    print('settle sweep at amplitude %.3g, seed=%s' % (amplitude, seed))
+    print('%-12s %-9s %-13s %-13s %-13s %s'
+          % ('settle', 'tau', 'IM3/fund out', 'IM3 out', 'IM3/fund nl', 'secs'))
+    rows = []
+    for settle in settles:
+        out, secs, npts = transient_im3(amplitude, settle=settle, seed=seed)
+        r_out, _f_out, im3_out = out['out']
+        r_nl, _f_nl, _im3_nl = out[NODE_NAME]
+        rows.append((settle, r_out, im3_out, r_nl, secs))
+        print('%-12.4g %-9.2f %-13.6e %-13.6e %-13.6e %.1f'
+              % (settle, settle / 208e-6, r_out, im3_out, r_nl, secs),
+              flush=True)
+    ## The useful reading is the SPREAD against the longest settle, which is
+    ## what says whether a short run is quoting a settled number.
+    if len(rows) > 1:
+        ref = rows[-1][1]
+        print('\nrelative to the longest settle (%.4g s):' % rows[-1][0])
+        for settle, r_out, _im3, _r_nl, _secs in rows[:-1]:
+            print('  settle %-10.4g IM3/fund differs by %+.2f%%'
+                  % (settle, 100.0 * (r_out - ref) / ref))
+    return rows
 
 
 def perturbation_im3(system, node_row, out_row, drive_row, amplitude, order):
@@ -380,4 +604,10 @@ def main():
 
 
 if __name__ == '__main__':
+    ## `--settle-convergence` takes the measurement that says how short a
+    ## seeded run's settle may be.  Kept as a separate entry point because it
+    ## is a calibration of the harness, not a row of its results.
+    if '--settle-convergence' in sys.argv:
+        settle_convergence()
+        sys.exit(0)
     sys.exit(main())
