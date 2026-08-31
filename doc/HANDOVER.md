@@ -23,10 +23,12 @@ repaired and compensated; the transient engine is partly repaired and fully revi
 regeneration of the tables is **done**; what remains on the symbolic side is **only T4**,
 the transient-vs-perturbation comparison that started all of it.
 
-⚠ **T4 is no longer blocked** (verified 2026-08-31, see 4.3): the transient work it waited
-on landed, and gate 0.2a not only passed but refuted its own premise. What stands between
-T4 and a number now is cost — hours per amplitude until `x0` is seeded from the linear
-two-tone steady state, which is unimplemented.
+⚠ **T4 IS RUN, and it passes at the nonlinear node** (2026-08-31, see 4.3): the
+transient and the perturbation series agree to **−0.03%** at `s0_e1`, which is the
+comparison the whole thread was built to make. It was unblocked by gate 0.2a (which
+refuted its own premise), made affordable by running single-threaded (14–20x) and by
+the `x0` seeding, and it now has a number. The OUTPUT-node figure remains open and is
+not integrator-limited in the simple way it first appeared — see 4.3.
 
 ---
 
@@ -142,7 +144,7 @@ because this one still needs doing.
   does the *old* value, which reads exactly like a third kind of staleness. Read the
   rendered table.
 
-### 4.3 T4 — the IM3 transient comparison, UNBLOCKED 2026-08-31 (was: BLOCKED)
+### 4.3 T4 — the IM3 transient comparison: PASSES at the nl node, OPEN at the output (2026-08-31)
 
 `benchmarks/nonlinear_leapfrog_sweep.py`. Two-tone IM3 (100/110 kHz, product at 90 kHz),
 because **HD3 is unmeasurable here by any transient at any cost**: the third harmonic at
@@ -185,7 +187,45 @@ against the "hours" recorded above. The seeding then cuts the settle on top of t
 nonlinear-node IM3 is within **0.004%** of its 5-tau value by 2 tau, so most of the
 1.04 ms settle is no longer needed.
 
-⚠ **BUT DO NOT QUOTE AN OUTPUT IM3 YET.** Holding the settle fixed and tightening the
+### T4 RUN, 2026-08-31 — it passes at the nonlinear node
+
+**The two independent paths agree.** Perturbation series against transient, amplitude
+1.0, seeded, 2 tau settle. The series converges to six digits by U^9 (U^13:
+`IM3/f @out = 1.816614e-04`, `IM3/f @nl = 2.844758e-03`), so it is a fixed oracle with
+no integrator in it. The transient against it, over a tolerance ladder:
+
+| tolerance | IM3/f @out | vs pert | IM3/f @nl | vs pert | secs |
+|---|---|---|---|---|---|
+| harness (vabstol 1e-9, reltol 1e-6) | 7.157515e-04 | **+294.00%** | 2.811437e-03 | −1.17% | 234 |
+| 30x (1e-11, 3e-8) | 1.760965e-04 | −3.06% | 2.840985e-03 | −0.13% | 677 |
+| 300x (1e-13, 3e-9) | 1.696682e-04 | **−6.60%** | 2.843814e-03 | **−0.03%** | 1573 |
+
+**At the nl node this is T4 answered.** Monotone convergence onto the series —
+−1.17% → −0.13% → −0.03% — a different solver, a different representation and a
+different failure mode agreeing to 3 parts in 10^4. That is the property the
+transient-vs-perturbation gate exists to establish, and the amplifier's own
+`s0_e1` is where the nonlinearity acts, so it is the node that tests the nonlinear
+machinery rather than five stages of linear filtering.
+
+⚠ **At the OUTPUT it is not answered, and the shape of the failure is not what it
+first looked like.** The output moves +294% → −3.06% → −6.60%: it crosses the series
+value and keeps going, so it is NOT simply integrator-limited converging onto the
+oracle. Two variables remain unseparated, because all three rungs held the settle at
+2 tau:
+
+* **settle at the tight end.** The seed removes the LINEAR settling exactly, but the
+  cubic's own approach to periodic steady state reaches the output through five
+  filter stages. The output can still be settling where the nl node is not — and the
+  earlier settle sweep could not have seen this, since it ran at the harness
+  tolerance where the output sits under +294% of integrator error. **The check is
+  300x tolerance at 2 tau against 5 tau**; it was started and stopped before
+  producing a row.
+* **a residual not controlled by `reltol`.** The output IM3 is ~1.7e-08 V reached
+  through a cancellation five stages deep; the FFT resamples the solver's own steps
+  onto a uniform grid by linear interpolation, which is an error source tolerance
+  does not touch.
+
+⚠ **DO NOT QUOTE AN OUTPUT IM3 YET.** Holding the settle fixed and tightening the
 tolerance 30x moves `IM3/fund` at the output by **4.07x** (7.157515e-04 -> 1.760965e-04)
 while the nl node moves 1.05% — and it is still moving at 30x, so the true value is not
 bracketed. The output probe is integrator-limited at this harness's tolerances. The cause

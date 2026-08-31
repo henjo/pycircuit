@@ -412,6 +412,27 @@ def settle_convergence(amplitude=1.0, settles=(0.0, 208e-6, 2 * 208e-6,
     tolerance ladder and find where the number stops moving.  The nl-node
     figure is already trustworthy and can be quoted now.
 
+    THE LADDER WAS RUN, 2026-08-31, against the perturbation series (U^13:
+    out 1.816614e-04, nl 2.844758e-03), amplitude 1.0, settle 2 tau:
+
+        tolerance        IM3/f @out     vs pert    IM3/f @nl      vs pert
+        harness          7.157515e-04   +294.00%   2.811437e-03    -1.17%
+        30x              1.760965e-04     -3.06%   2.840985e-03    -0.13%
+        300x             1.696682e-04     -6.60%   2.843814e-03    -0.03%
+
+    **The nl node converges monotonically onto the series** -- T4 passes there,
+    two independent methods to 3 parts in 10^4.
+
+    ⚠ **The output CROSSES the series value and keeps going** (+294 -> -3.06 ->
+    -6.60), so it is not simply integrator-limited converging onto the oracle,
+    and the tolerance ladder alone does not explain it.  All three rungs held
+    settle at 2 tau, leaving two variables unseparated: the cubic's own
+    settling as seen through five filter stages (the seed removes only the
+    LINEAR settling), and an error `reltol` does not control -- the FFT
+    resamples the solver's non-uniform steps onto a uniform grid by LINEAR
+    interpolation, on a quantity reached through a five-stage cancellation.
+    The next measurement is 300x at 2 tau against 5 tau.
+
     ⚠ Run this single-threaded.  numpy threads a 139-unknown dense solve across
     every core it can find, which is overhead at this size and antisocial on a
     shared machine:
