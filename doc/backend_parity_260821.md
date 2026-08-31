@@ -41,7 +41,7 @@ Parameters and options, from the mechanical diff:
 | **P13** `bypass`/`bypasstol` | ✓ | absent | document — meaningless under vmap |
 | **P14** `minbreak` | ✓ | progress guard only, no spacing merge | align now (S) |
 | **P15** statistics vocabulary | `force_accepts`, `order_drops`, `breakpoints_hit`, timing | `forced_lte_steps`, `nonconverged_steps`, `signal_max` | partial align (S) |
-| **P16** TLine delay interpolation | quadratic (3-point Lagrange) | linear + ring-cap raise; **stamp defect fixed + step cap wired + std/pcnr paths verified to 5e-16 / 4.4e-10** (TLine port); quadratic upgrade still open | align later (M, interpolation order only) |
+| **P16** TLine delay interpolation | quadratic (3-point Lagrange) | linear + ring-cap raise; **stamp defect fixed + step cap wired + std/pcnr paths verified to 5e-16 / 4.4e-10** (TLine port); **quadratic upgrade EXECUTED 2026-08-21**, Phase B -- `interp_tlines` carries the CPU's 3-point stencil with a guarded linear fallback (`jaxtransient.py`). This cell read "still open" until the 2026-08-31 audit, four lines above the note recording it done | **DONE** |
 | **P17** solver strategy objects (`nrsolver`/`scaler`/`linearsolver`) | ✓, injectable | refused loudly | **document — permanent** (traced loop cannot dispatch) |
 | **P18** continuation (gmin/source stepping) | DC path; transient retries dt | dt retries only | roadmap, both sides |
 | **P19** `coupled_lte` (Fang), `pcnr` | ✓ | ✓ **PORTED** — 'approx' Fang + PCNR + PCNR-inside-Fang (`bordered` and TLine-under-coupled/pcnr stay CPU-only, refused loudly) | closed (see P19 note) |
