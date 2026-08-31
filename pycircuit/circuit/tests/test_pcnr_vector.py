@@ -1464,3 +1464,172 @@ def test_gummel_poon_traces_regardless_of_the_cache():
                                       params_n, defaultepar, numeric,
                                       np.zeros(8)), dtype=float)
     assert np.array_equal(eager, cpu), (eager, cpu)
+
+
+## ------------------------------------------------------------------------
+## Stage 3 (roadmap sec. 49): the traced DEVICE-shaped path.
+
+
+def _jax_bits():
+    pytest.importorskip('jax')
+    import jax.numpy as jnp
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import (_device_arrays,
+                                                pcnr_vector_blocks,
+                                                pcnr_vector_inner_loop)
+    return jnp, jaxtoolkit, _device_arrays, pcnr_vector_blocks, \
+        pcnr_vector_inner_loop
+
+
+def _mos_probe_circuit(toolkit):
+    import pycircuit.circuit.circuit as _cm
+    from pycircuit.circuit import elements_hdl as _eh
+    _cm.default_toolkit = toolkit
+    c = SubCircuit(toolkit=toolkit)
+    nd, ng = c.add_node('d'), c.add_node('g')
+    c['vg'] = VS(ng, gnd, v=1.2, toolkit=toolkit)
+    c['vd'] = VS(nd, gnd, v=1.8, toolkit=toolkit)
+    c['Rd'] = R(nd, gnd, r=1e4, toolkit=toolkit)
+    c['M'] = _eh.EkvNmosHdl(nd, ng, gnd, gnd, toolkit=toolkit)
+    return c
+
+
+def test_the_traced_blocks_equal_the_cpus_augmented_system():
+    """The assembly, before any Newton loop is trusted.
+
+    If these agree, the rest of Stage 3 is the loop rather than the maths --
+    which is why this is asserted separately from the solve below, at a
+    RANDOM (x, v_lim) rather than at a solution, where a wrong block could
+    still look right.
+    """
+    jnp, jaxtoolkit, _device_arrays, blocks, _loop = _jax_bits()
+    from pycircuit.circuit.circuit import defaultepar
+    from pycircuit.circuit.pcnr import pcnr_devices, augmented_system
+
+    c = _mos_probe_circuit(numeric)
+    devs = pcnr_devices(c)
+    n, k = c.n, sum(d.m for d in devs)
+    rng = np.random.default_rng(0)
+    x = rng.uniform(-0.3, 1.2, n)
+    v = rng.uniform(0.2, 0.9, k)
+    ref = augmented_system(c, x, v, devs, defaultepar)[:5]
+
+    cj = _mos_probe_circuit(jaxtoolkit)
+    got = blocks(cj, _device_arrays(cj, defaultepar), jnp.asarray(x),
+                 jnp.asarray(v), defaultepar, cj.n)
+    for name, a, b in zip(('g_mna', 'g_lim', 'J_mm', 'J_ml', 'J_lm'),
+                          ref, got):
+        a, b = np.asarray(a, float), np.asarray(b, float)
+        assert a.shape == b.shape, (name, a.shape, b.shape)
+        assert np.array_equal(a, b), (name, np.max(np.abs(a - b)))
+
+
+def test_vector_pcnr_finds_the_cpus_operating_point_on_the_diff_pair():
+    """G1 and G2 together, on the circuit Stage 2 was built for.
+
+    The EKV differential pair is what took Stage 2 from `[14, FAIL]` to
+    `[22, 22]` on the CPU -- two devices, three probes each, which is the
+    inter-device clash vector PCNR was commissioned to remove.
+
+    ⚠ Gated on AGREEMENT, not on the solve succeeding. Sec. 40 records a
+    PCNR answer that converged happily with an internal node out by a whole
+    gate voltage and the terminal current still matching to seven digits;
+    convergence saw nothing.
+    """
+    jnp, jaxtoolkit, _device_arrays, _blocks, loop = _jax_bits()
+    import pycircuit.circuit.circuit as _cm
+    from pycircuit.circuit.circuit import defaultepar
+    from pycircuit.circuit import pcnr as _pcnr
+    from pycircuit.circuit.tests.test_limit_identity import _diffpair
+
+    _cm.default_toolkit = numeric
+    x_ref = np.asarray(_pcnr.solve_dc(_diffpair(0.0, False), gnd,
+                                      x0=np.zeros(_diffpair(0.0, False).n))[0],
+                       dtype=float)
+
+    _cm.default_toolkit = jaxtoolkit
+    cj = _diffpair(0.0, False)
+    devs = _device_arrays(cj, defaultepar)
+    assert len(devs) == 2 and [d.m for d in devs] == [3, 3], \
+        [(d.instance, d.m) for d in devs]
+    u = jnp.asarray(np.asarray(cj.u(0.0, defaultepar, analysis='dc'),
+                               dtype=float))
+    st = loop(cj, devs, jnp.zeros(cj.n), defaultepar, cj.n,
+              cj.get_node_index(gnd), reltol=1e-6, abstol=1e-12,
+              xtol=1e-12, maxiter=200, u_extra=u)
+    _cm.default_toolkit = numeric
+
+    assert bool(st.converged), 'traced vector PCNR did not converge'
+    assert np.max(np.abs(np.asarray(st.x, float) - x_ref)) < 1e-12, \
+        np.max(np.abs(np.asarray(st.x, float) - x_ref))
+
+
+def test_vector_pcnr_converges_from_several_starts():
+    """A limiter's job is to make the start not matter."""
+    jnp, jaxtoolkit, _device_arrays, _blocks, loop = _jax_bits()
+    import pycircuit.circuit.circuit as _cm
+    from pycircuit.circuit.circuit import defaultepar
+    from pycircuit.circuit.dcanalysis import DC
+
+    c = _mos_probe_circuit(numeric)
+    x_ref = np.asarray(DC(c, toolkit=numeric).solve().x, dtype=float)
+
+    cj = _mos_probe_circuit(jaxtoolkit)
+    devs = _device_arrays(cj, defaultepar)
+    n = cj.n
+    iref = cj.get_node_index(gnd)
+    u = jnp.asarray(np.asarray(cj.u(0.0, defaultepar, analysis='dc'),
+                               dtype=float))
+    for level in (0.0, 1.0, 20.0):
+        start = np.full(n, level)
+        ## The reference row is pinned, not solved: a start that puts a
+        ## voltage on it keeps it for ever, which is the solver being right
+        ## and the caller being wrong.
+        start[iref] = 0.0
+        st = loop(cj, devs, jnp.asarray(start), defaultepar, n, iref,
+                  reltol=1e-6, abstol=1e-12, xtol=1e-12, maxiter=200,
+                  u_extra=u)
+        _cm.default_toolkit = numeric
+        assert bool(st.converged), level
+        assert np.max(np.abs(np.asarray(st.x, float) - x_ref)) < 1e-9, level
+
+
+def test_a_redundant_probe_device_is_refused_at_setup():
+    """Named, before the compile, not somewhere inside a jitted loop."""
+    jnp, jaxtoolkit, _device_arrays, _blocks, _loop = _jax_bits()
+    import pycircuit.circuit.circuit as _cm
+    from pycircuit.circuit import elements_hdl as _eh
+    from pycircuit.circuit.circuit import defaultepar
+
+    _cm.default_toolkit = jaxtoolkit
+    c = SubCircuit(toolkit=jaxtoolkit)
+    nd, ng = c.add_node('d'), c.add_node('g')
+    c['vd'] = VS(nd, gnd, v=1.0, toolkit=jaxtoolkit)
+    c['M'] = _eh.MosLevel1Hdl(nd, ng, gnd, gnd, toolkit=jaxtoolkit)
+    try:
+        with pytest.raises(NotImplementedError, match='REDUNDANT probe'):
+            _device_arrays(c, defaultepar)
+    finally:
+        _cm.default_toolkit = numeric
+
+
+def test_a_scalar_only_circuit_falls_through_to_the_junction_path():
+    """G4: nothing that worked before is routed somewhere new.
+
+    `_device_arrays` returns None when no device declares `pcnr_probes`, so a
+    circuit of scalar-protocol junctions keeps P19's ported path exactly.
+    """
+    jnp, jaxtoolkit, _device_arrays, _blocks, _loop = _jax_bits()
+    import pycircuit.circuit.circuit as _cm
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.circuit import defaultepar
+
+    _cm.default_toolkit = jaxtoolkit
+    try:
+        c = SubCircuit(toolkit=jaxtoolkit)
+        n1 = c.add_node('a')
+        c['vs'] = VS(n1, gnd, v=0.7, toolkit=jaxtoolkit)
+        c['d'] = Diode(n1, gnd, toolkit=jaxtoolkit)
+        assert _device_arrays(c, defaultepar) is None
+    finally:
+        _cm.default_toolkit = numeric

@@ -1204,6 +1204,259 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
 ## as the CPU's augmented_system refuses them.
 ## ---------------------------------------------------------------------------
 
+## ---------------------------------------------------------------------------
+## VECTOR PCNR (roadmap sec. 49): the DEVICE-shaped path.
+##
+## `_junction_arrays` below is the pnj-only PAIR view, and it keeps its own
+## consumer -- the gmin ladders put a conductance across each junction pair on
+## the ordinary `pcnr=False` path, where a gmin across a FET's `vgs` would be a
+## gate leak.  Vector PCNR's unit is the DEVICE: one unknown per limited
+## quantity, `m` of them, of mixed kind.  Measured on a MosLevel1Hdl,
+## `pcnr_devices` reports 1 device with m=3 where `pcnr_junction_pairs`
+## reports 2 pairs -- different objects, different laws -- which is the
+## distinction Stage 2 turned on when `pcnr=True` on a MOSFET differential
+## pair fell through to the ordinary solver in silence.
+## ---------------------------------------------------------------------------
+
+
+class PcnrVectorDevice(NamedTuple):
+    """One participating device, in the shapes a trace can use."""
+    instance: Any
+    element: Any
+    rows: Any            # int32 (t,)   -- circuit rows, elementnodemap order
+    probe_a: Any         # int32 (m,)   -- circuit row of each probe's +
+    probe_b: Any         # int32 (m,)   -- and its -
+    off: int             # offset into the flat v_lim
+    m: int
+    t: int
+    params: Any
+    lin_G: Any           # sec. 40's affine remainder, or None
+
+
+def _device_arrays(circuit, epar):
+    """Static per-device metadata for the traced vector path, or None.
+
+    Returns None when no device declares `pcnr_probes`, so a circuit of
+    scalar-protocol junctions falls through to `_junction_arrays` and P19's
+    ported path unchanged -- Stage 3's G4.
+
+    Refusals happen HERE, at setup, with the device named, rather than
+    somewhere inside a jitted loop:
+
+    * a REDUNDANT probe (`MosLevel1Hdl`) -- `pcnr.limit_block`'s rule for an
+      over-determined set is a data-dependent sort, which a traced loop
+      cannot host.  `pcnr_limit_branchless` refuses it too; refusing at setup
+      is what makes the message arrive before the compile.
+    * a device with no `pcnr_limit_branchless` at all -- it would have no law
+      on this backend.
+    """
+    from pycircuit.circuit.pcnr import pcnr_devices
+    devs = [d for d in pcnr_devices(circuit) if not d.scalar]
+    if not devs:
+        return None
+    out = []
+    for dev in devs:
+        el = dev.element
+        if dev.redundant:
+            raise NotImplementedError(
+                "vector PCNR on the JAX backend cannot take %r (%s): it "
+                "declares a REDUNDANT probe, and `pcnr.limit_block`'s rule "
+                "for an over-determined set -- decreasing correction, drop "
+                "what closes a cycle -- is a data-dependent sort a traced "
+                "loop cannot host. Use Transient for this circuit."
+                % (dev.instance, type(el).__name__))
+        if getattr(el, 'pcnr_limit_branchless', None) is None:
+            raise NotImplementedError(
+                "vector PCNR on the JAX backend cannot take %r (%s): it "
+                "declares `pcnr_probes` but no traced limiter "
+                "(`pcnr_limit_branchless`), so it would have no law here."
+                % (dev.instance, type(el).__name__))
+        lin = getattr(el, 'pcnr_lin_G', None)
+        lin_G = None if lin is None else jnp.asarray(
+            np.asarray(lin(dev.params(), epar, el.toolkit), dtype=float))
+        out.append(PcnrVectorDevice(
+            instance=dev.instance, element=el,
+            rows=jnp.asarray(dev.rows, dtype=jnp.int32),
+            probe_a=jnp.asarray([a for a, _b in dev.probes], dtype=jnp.int32),
+            probe_b=jnp.asarray([b for _a, b in dev.probes], dtype=jnp.int32),
+            off=dev.off, m=dev.m, t=dev.t, params=dev.params(), lin_G=lin_G))
+    return out
+
+
+def _shadow_participants(devices):
+    """Zero (or affine-shadow) each participant for the ordinary assembly.
+
+    The CPU does this per Newton call because it must; here the assembly is
+    traced ONCE, so the shadow is applied while the body is traced and never
+    again.  Same rule, a fraction of the work.
+
+    sec. 40's affine remainder: a participant whose current carries a CONSTANT
+    conductance -- a series resistance to an internal node -- has that part
+    shadowed IN rather than zeroed, because it reaches the solution through
+    node voltages, not through any probe, and Newton solves a linear term
+    exactly.
+    """
+    saved = []
+    for d in devices:
+        el = d.element
+        saved.append((el, el.__dict__.get('i', None), el.__dict__.get('G', None)))
+        t, lin = d.t, d.lin_G
+        if lin is None:
+            el.i = lambda xx, epar=None, _t=t: jnp.zeros(_t)
+            el.G = lambda xx, epar=None, _t=t: jnp.zeros((_t, _t))
+        else:
+            el.i = lambda xx, epar=None, _g=lin: _g @ jnp.asarray(xx)
+            el.G = lambda xx, epar=None, _g=lin: _g
+    return saved
+
+
+def _restore_participants(saved):
+    for el, old_i, old_G in saved:
+        for name, old in (('i', old_i), ('G', old_G)):
+            if old is None:
+                el.__dict__.pop(name, None)
+            else:
+                el.__dict__[name] = old
+
+
+def pcnr_vector_blocks(circuit, devices, x, v_lim, epar, n,
+                       u_extra=None, J_extra=None):
+    """The augmented system's blocks, traced -- `pcnr.augmented_system`'s twin.
+
+    Returns ``(g_mna, g_lim, J_mm, J_ml, J_lm)``.  ``J_ll`` is the identity by
+    construction and is not formed, exactly as on the CPU.
+
+    The per-device loop is PYTHON, run at trace time: the device set is static
+    (it comes from the circuit, not from the state), so the traced graph gets
+    one block per device and the shapes never have to be padded to a common
+    `m`.  That costs graph size on a circuit with very many participants,
+    which is a recorded trade rather than a surprise.
+    """
+    k = sum(d.m for d in devices)
+    saved = _shadow_participants(devices)
+    try:
+        g_mna = jnp.asarray(circuit.i(x, epar))
+        J_mm = jnp.asarray(circuit.G(x, epar))
+    finally:
+        _restore_participants(saved)
+    if u_extra is not None:
+        g_mna = g_mna + jnp.asarray(u_extra)
+    if J_extra is not None:
+        J_mm = J_mm + jnp.asarray(J_extra)
+
+    J_ml = jnp.zeros((n, k))
+    J_lm = jnp.zeros((k, n))
+    g_lim = jnp.zeros(k)
+    for d in devices:
+        v = jax.lax.dynamic_slice(v_lim, (d.off,), (d.m,))
+        el = d.element
+        i_dev = jnp.asarray(el.pcnr_i(v, d.params, epar, el.toolkit))
+        block = jnp.asarray(el.pcnr_didv(v, d.params, epar, el.toolkit))
+        ## The device's current now enters through its OWN unknowns, so its
+        ## contribution to J_MNA/MNA is zero and all of it lands in J_MNA/lim.
+        g_mna = g_mna.at[d.rows].add(i_dev)
+        cols = jnp.arange(d.off, d.off + d.m)
+        J_ml = J_ml.at[jnp.ix_(d.rows, cols)].add(block)
+        ## g_lim = v - (e_a - e_b)
+        g_lim = jax.lax.dynamic_update_slice(
+            g_lim, v - (x[d.probe_a] - x[d.probe_b]), (d.off,))
+        ## ACCUMULATED, not assigned: a diode-connected transistor's probe can
+        ## span one row (ra == rb), whose incidence is -1 + 1 = 0.
+        J_lm = J_lm.at[cols, d.probe_a].add(-1.0)
+        J_lm = J_lm.at[cols, d.probe_b].add(+1.0)
+    return g_mna, g_lim, J_mm, J_ml, J_lm
+
+
+class PcnrVectorState(NamedTuple):
+    x: Any
+    v_lim: Any
+    iters: Any
+    converged: Any
+
+
+def pcnr_vector_inner_loop(circuit, devices, x_init, epar, n, irefnode,
+                           reltol=1e-4, abstol=1e-12, xtol=1e-12,
+                           maxiter=100, u_extra=None, J_extra=None):
+    """Newton on ``[x_MNA ; v_lim]``, device-shaped, inside a traced loop.
+
+    The CPU's `pcnr.solve_dc` structure exactly -- assemble the augmented
+    blocks, collapse them by the Schur identity `pcnr.schur_reduce` writes
+    once, solve the reduced MNA system, recover the limited unknowns from
+    ``J_ll = I``, then CORRECT each device's own block with its own law.
+    """
+    def v_from_x(x):
+        if not devices:
+            return jnp.zeros(0)
+        return jnp.concatenate([x[d.probe_a] - x[d.probe_b] for d in devices])
+
+    def body(ps: PcnrVectorState):
+        x, v_lim = ps.x, ps.v_lim
+        g_mna, g_lim, J_mm, J_ml, J_lm = pcnr_vector_blocks(
+            circuit, devices, x, v_lim, epar, n, u_extra, J_extra)
+
+        ## `pcnr.schur_reduce`'s formula, and the only place it is written
+        ## on this backend: J_ll is the identity by construction, so the
+        ## border collapses to a rank-k update.
+        J_eff = J_mm - J_ml @ J_lm
+        F_eff = g_mna - J_ml @ g_lim
+
+        J_sub = jnp.delete(jnp.delete(J_eff, irefnode, axis=0),
+                           irefnode, axis=1)
+        dx_sub = jnp.linalg.solve(J_sub, -jnp.delete(F_eff, irefnode))
+        dx = jnp.insert(dx_sub, irefnode, 0.0)
+        x_new = x + dx
+
+        ## J_ll = I, so the limited unknowns follow from the MNA step.
+        v_raw = v_lim - (g_lim + J_lm @ dx)
+
+        ## CORRECT: each device limits only the variables it owns, with its
+        ## OWN law, handed its whole block at once and its own slice of the
+        ## last accepted iterate (a parameter that follows the bias --
+        ## SPICE's `von` -- is evaluated there).  Nothing is shared, so one
+        ## device's limiter cannot disturb another's; that is the property
+        ## PCNR buys and the reason there is no ordering here.
+        if devices:
+            blocks = []
+            for d in devices:
+                el = d.element
+                blocks.append(jnp.asarray(el.pcnr_limit_branchless(
+                    jax.lax.dynamic_slice(v_raw, (d.off,), (d.m,)),
+                    jax.lax.dynamic_slice(v_lim, (d.off,), (d.m,)),
+                    d.params, epar, el.toolkit, x[d.rows])))
+            v_new = jnp.concatenate(blocks)
+        else:                                        # pragma: no cover
+            v_new = v_raw
+
+        I_scale = jnp.abs(J_eff) @ jnp.abs(x_new) + jnp.abs(F_eff)
+        ## THE REDUCED ROWS: the reference row is not an equation of the
+        ## solved system, and scoring it can never be satisfied.
+        conv_f = jnp.all(jnp.delete(
+            jnp.abs(F_eff) < reltol * I_scale + abstol, irefnode))
+        conv_x = jnp.all(jnp.abs(dx)
+                         < reltol * jnp.maximum(jnp.abs(x_new), jnp.abs(x))
+                         + xtol)
+        ## ⚠ PER COMPONENT, which is `pcnr.lim_converged`'s rule and NOT
+        ## what the scalar traced loop above does.  Against `max|v_new|`
+        ## over the whole vector, a 40 V `vds` sharing a device with a
+        ## `vbe` would loosen the `vbe` component forty-fold.  For a
+        ## circuit of scalar diodes the two criteria coincide, which is
+        ## why the older loop is right for its own case and wrong here.
+        lim_ok = jnp.all(jnp.abs(g_lim)
+                         < reltol * jnp.maximum(jnp.abs(v_new), 1.0) + abstol)
+        conv = jnp.logical_and(jnp.logical_and(conv_x, conv_f), lim_ok)
+        return PcnrVectorState(x=x_new, v_lim=v_new, iters=ps.iters + 1,
+                               converged=conv)
+
+    def cond(ps: PcnrVectorState):
+        return jnp.logical_and(jnp.logical_not(ps.converged),
+                               ps.iters < maxiter)
+
+    init = PcnrVectorState(x=x_init, v_lim=v_from_x(x_init),
+                           iters=jnp.asarray(0),
+                           converged=jnp.asarray(False))
+    return jax.lax.while_loop(cond, body, init)
+
+
 class PcnrState(NamedTuple):
     x: Any
     v_lim: Any

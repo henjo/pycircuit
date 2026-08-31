@@ -5806,3 +5806,54 @@ form when the payload carries the ingredients.
 after all -- §49.1 said the redundant-probe rule was off it, and that is still
 true, but this takes its place. The order is now: fix the parameter-chain
 compilation, then `_device_arrays`, then the traced assembly and loop.
+
+### 49.4 The traced solver: G1 and G2 met on the circuit Stage 2 was built for
+
+`_device_arrays`, `pcnr_vector_blocks` and `pcnr_vector_inner_loop` are in
+`jaxtransient.py`. The unit is the DEVICE, and `_junction_arrays` keeps its own
+consumer -- the gmin ladders on the `pcnr=False` path, where a conductance
+across a FET's `vgs` would be a gate leak.
+
+**The assembly is `pcnr.augmented_system`'s twin, and agrees with it exactly.**
+All five blocks -- `g_mna`, `g_lim`, `J_mm`, `J_ml`, `J_lm` -- match to
+**0.000e+00** at a RANDOM `(x, v_lim)`, on EKV and on Gummel-Poon. Asserted at
+a random point rather than at a solution, where a wrong block can still look
+right.
+
+⚠ **The exclusion is static here.** The CPU shadows a participant's `i`/`G` per
+Newton call because it must; the traced loop assembles once, so the shadow is
+applied while the body is traced and never again -- with §40's affine remainder
+shadowed IN rather than zeroed, so a series resistance does not cost the device
+PCNR.
+
+**G1/G2, the EKV differential pair** -- two devices, three probes each, the
+inter-device clash vector PCNR was commissioned for:
+
+    CPU  pcnr.solve_dc      9 iterations
+    JAX  vector PCNR        9 iterations, max|x - x_cpu| = 4.441e-16
+
+and from three starts (0 V, 1 V, 20 V uniform) it reaches the ordinary DC
+answer to 0.000e+00. **Gated on agreement, not on convergence** -- §40's
+recorded failure is a PCNR solve that converged with an internal node out by a
+whole gate voltage while the terminal current matched to seven digits.
+
+⚠ **One inherited criterion was wrong for this path and is fixed here.**
+`pcnr.lim_converged` scores the limited residual PER COMPONENT, and says why:
+"with vector devices a 40 V `vds` in the same vector would loosen a `vbe`
+component forty-fold". The scalar traced loop uses the global
+`max|g_lim| < reltol*max(|v|)` form, which is right for a circuit of
+one-branch diodes -- where the two coincide -- and wrong the moment a device
+owns several unknowns of different scale.
+
+⚠ **NOT YET WIRED.** `_pcnr_setup` still gates on `_junction_arrays`, so
+`JAXTransient(pcnr=True)` on a vector device raises as before. The machinery is
+tested directly; routing it, and the transient's per-timestep use of it, is the
+next step -- with G3 (no silent fall-through, `pcnr_status` parity) and G5
+(cost against the CPU's 40-60% iteration premium) still to take.
+
+Two starts cost me a debugging pass each and are worth recording. The source
+vector: `augmented_system` takes `u_extra`, and without it the loop solves
+`i(x) = 0`, converges in one iteration and returns the start unchanged -- false
+convergence that looks like success. And the reference row is PINNED, not
+solved, so a start with a voltage on it keeps that voltage for ever; that is
+the solver being right and the caller being wrong.
