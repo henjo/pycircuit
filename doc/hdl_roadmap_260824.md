@@ -4660,6 +4660,12 @@ reason costs more than a broken file.**
 
 ## 39. A bound around the overhead figure (2026-08-27): three of the four needed nothing
 
+⚠ **The guard this section builds could not report a regression, and
+that was not found until §48 (2026-08-31).** Everything below about
+*which* figures deserve a guard stands; what did not stand is the claim
+that the one guard built here would fail on decay. Read §48 before
+trusting this section's closing paragraphs.
+
 §38 proposed guarding every published performance figure. Measuring
 first cut that to one, and the cutting is the useful half.
 

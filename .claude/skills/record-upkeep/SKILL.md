@@ -162,6 +162,40 @@ rule because its stated reason expired is the expensive mistake.
 "docs updated" after touching one file, when four are stale, is worse
 than saying nothing, because it stops the next person looking.
 
+## Audit the NAVIGATION SURFACES, not the body
+
+Three stale records were found in one session here, and all three were
+the same kind of thing: a status table, a resume block, and a suite
+count. The reasoning underneath every one of them was sound. **Records
+rot at the top**, in the parts written to be read first and skimmed
+thereafter.
+
+The worst case measured: a plan document's Stage 4 status table listed
+ten items as "not started". Every one had landed, been superseded, or
+been refused -- **by commits dated the same day the table was written**.
+It was written mid-campaign, the campaign continued past it, and the
+table was never revisited. It then stood for four weeks as the first
+thing any reader of that document saw.
+
+⚠ **A stale "not started" is far more expensive than a stale "done".**
+A stale "done" costs someone a re-check. A stale "not started" costs
+them the work itself. Two rows there were of the second kind: one item
+read "not started" when its own entry measurements had already refuted
+it -- inviting someone to build a thing that had been disproven -- and
+another read "needs items 4a-4e" for a parameter that no longer existed
+and whose name now raises `TypeError`.
+
+**So when a campaign closes an item, edit the table in the same commit**,
+not at the end of the session. And when picking up any document, date
+its navigation surfaces before trusting them: `git blame` the status
+table and compare against `git log` since. If the table is older than
+the last commit to the subsystem it describes, audit it before planning
+from it.
+
+⚠ **This is a review cost, not just untidiness.** Where the bottleneck
+is somebody else reading the branch, a document that overstates open
+work spends their attention on items that do not exist.
+
 ## Closing the loop
 
 State plainly what you refreshed and what you deliberately left alone.

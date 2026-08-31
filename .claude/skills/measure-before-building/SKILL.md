@@ -73,6 +73,60 @@ published `both = 30` when the value was 13 *and had been 13 at that very
 commit* — measured mid-fix, three changes later, never re-run. The test
 passed, because the wrong number lived only in a docstring.
 
+## On a machine you do not control, sample more -- do not abstain
+
+A busy machine is a reason to take more samples, not a reason to give
+up, and the statistic you gate on decides which of those you get.
+
+Measured under four concurrent unrelated jobs, load 17 of 24 cores.
+Minimum-of-N estimates of the same ratio, three independent trials:
+
+| samples/side | trial 0 | trial 1 | trial 2 | spread |
+|---|---|---|---|---|
+| 3 | 1.008 | 0.916 | 1.054 | **14%** |
+| 12 | 1.018 | 1.007 | 1.003 | **1.5%** |
+
+At 3 samples the spread is the entire headroom of the bound being
+asserted; at 12 it is 1.5% and centred on the published value. Noise
+only ever ADDS time, so the minimum converges from above -- the only
+question is how many samples it costs to find the floor, and under load
+the floor is found late.
+
+⚠ **Gate on whether the ESTIMATE reproduces, not on whether the MACHINE
+held still.** A guard here measured the spread of raw timings inside one
+measurement and abandoned the run above 1.25x. That statistic reads
+1.86x-3.35x in exactly the trials whose estimates agreed to 1.5% -- it
+measures the machine, and the question is the number. Gating on it would
+have abstained on every good measurement. Take two independent estimates
+and require THEM to agree.
+
+⚠ **Retry before abstaining.** A machine busy on average is still quiet
+in patches. Bounded retries (four, here) turned an abstain-half-the-time
+guard into three clean runs out of three, and the cost is paid only when
+the first pair disagrees -- a quiet machine still pays for exactly two.
+
+⚠ **CPU time is NOT a load-immune instrument -- measured, not assumed.**
+The obvious fix is to time `process_time` instead of the wall clock, on
+the theory that contention shows up as descheduling. Recorded
+simultaneously on identical work under that load: drift
+`2.371 / 1.149 / 3.353` wall against `2.371 / 1.149 / 3.353` CPU.
+Identical to three decimals. Contention there did not deschedule the
+process; it slowed it. Check before switching instruments.
+
+⚠ **"A coarse effect needs fewer samples" conflates two things.** A
+bite-check resolving a 1.40x injected slowdown was given 3 samples on
+that reasoning and abstained immediately, at 1.147x disagreement against
+a 1.05x limit. A reproducibility gate constrains the PRECISION OF THE
+ESTIMATE, which is +/-14% at 3 samples however large the effect being
+measured. A coarse effect needs fewer samples to SEPARATE; it needs
+exactly as many to REPRODUCE.
+
+⚠ **Calibrate against the adverse condition when that is the condition.**
+Waiting for an idle machine is only available if one is coming. Where
+the box carries other people's work for hours, thresholds calibrated on
+a quiet machine describe a situation that never occurs -- and a guard
+that works only when quiet does not guard.
+
 ## Reading the result
 
 ⚠ **A ratio that did not move is not a null result.** When the published

@@ -1107,6 +1107,10 @@ runs at about **1.01x** the hand-written one -- parity, within run-to-run
 noise -- and produces identical waveforms (``benchmarks/hdl_overhead.py``
 measures both and asserts the agreement).
 
+**Re-verified 2026-08-31**, on a machine carrying unrelated load
+throughout: interleaved minimum-of-12 estimates read ``1.018``, ``1.007``
+and ``1.003`` across three independent trials.  The figure holds.
+
 .. note::
 
    This figure read ``1.14x`` until 2026-08-26, and it had quietly gone

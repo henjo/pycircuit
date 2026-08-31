@@ -376,6 +376,59 @@ So for anything whose purpose is improvement, keep one test that:
 Count the thing the improvement is supposed to reduce — iterations,
 evaluations, bytes — not wall-clock.
 
+## A bite-check proves the harness can see -- ask WHICH PATH it took
+
+A guard with a demonstrated bite is the strong form of evidence, and it
+has a failure mode that looks exactly like the strong form.
+
+Measured here. A performance guard asserted `ratio < bound`, and a
+bite-check drove the same measurement with a deliberately slowed element
+and required it to breach. Both passed for weeks. The guard could not
+report a regression at all.
+
+The two tests took **different paths through the shared helper**. The
+helper re-measured only when the reading looked damning, and its
+"is the machine stable enough" gate sat inside that arm:
+
+    breached = ratio >= bound if want == 'below' else ratio <= bound
+    if breached:
+        _require_a_still_machine(...)   # skips the test
+        ...
+
+* A real regression: `want='below'`, ratio high, `breached` TRUE ->
+  reaches the gate -> on any busy machine, **skips**. The one outcome
+  the guard existed to report was the one it could not report.
+* The bite-check: `want='above'`, and a successful bite means
+  `breached` FALSE -> returns before the gate is ever consulted.
+
+So the bite-check exercised the branch a regression never takes, and
+"the guard has been shown to bite" was true and did not mean what
+everyone read it to mean. Driving the guard's own path with the
+bite-check's own slowed element raised `Skipped` where a failure was due.
+
+**So:** when a guard and its bite-check share a helper, write down the
+branch each one takes. If they differ, the bite-check is evidence about
+the harness, not about the guard. Parametrise the shared decision over
+both directions, or assert the guard FAILS on injected damage through
+the identical call the real check makes.
+
+⚠ **And gate on validity for EVERY outcome, not just the alarming one.**
+The same helper never checked readability when the reading looked
+comfortable, on the recorded argument that "a reading that is already
+comfortable needs no defending". Measured, the noise was two-sided: the
+same true 1.01x ratio read anywhere in 0.916-1.054x, so a 1.20x
+regression reads 1.09x and PASSES -- silently, exactly when the
+instrument is least able to see. A pass taken with an unread instrument
+is not a pass; it is an abstention wearing a pass's clothes.
+
+⚠ **The reason this survived review is worth more than the bug.** Every
+test in that file needed a quiet machine to say anything, and the
+machine was never quiet. Extracting the decision into a pure function of
+`(ratio, disagreement)` took the count of tests that run on any machine
+at any load from 0 to 16, and they run in a second. **Separate the
+DECISION from the MEASUREMENT**, and the decision becomes testable at
+every branch without owning the conditions.
+
 ## ⚠ A bad measurement with a plausible story attached stops being a bug
 
 This is the failure mode that let the above survive, and it is subtler
