@@ -5857,3 +5857,44 @@ vector: `augmented_system` takes `u_extra`, and without it the loop solves
 convergence that looks like success. And the reference row is PINNED, not
 solved, so a start with a voltage on it keeps that voltage for ever; that is
 the solver being right and the caller being wrong.
+
+### 49.5 Wired — and the charge, not the current, is what limits the transient
+
+`_pcnr_setup` now routes on the DEVICE view first, so a circuit whose
+participants declare `pcnr_probes` reaches the vector solver instead of reading
+as empty in the pair view and falling through to the ordinary Newton in
+silence. Both `pcnr_meta` consumers were taught the new shape: the per-timestep
+Newton and the step controller's Jacobian, the latter through
+`pcnr_vector_controller_jacobian` -- `schur_reduce`'s docstring records that
+open-coding `circuit.G(x)` there once produced a step count **6.6x too large**.
+
+⚠ **AND THE TRANSIENT CANNOT RUN YET, for a reason that is not PCNR's.**
+Measured: **no class declaring `pcnr_probes` has a traceable `q`** -- twelve
+classes, none with `eval_q_pure`, and `circuit.q` raises
+`TracerArrayConversionError` for every one.
+
+**The asymmetry is the interesting part, and it explains why DC works.** PCNR
+SHADOWS a participant's `i`/`G` out of the ordinary assembly and re-stamps its
+current at `v_lim` through `pcnr_i`, which does trace -- so the device's own
+`i` never runs, and `EkvNmosHdl`, whose `i` does NOT trace, nevertheless solves
+to machine precision at DC (§49.4). Its `q` is not shadowed: **charge stays in
+the MNA block at the node voltages**, the CPU's documented trade, so a
+transient calls it and stops there.
+
+So vector PCNR on the traced backend is, today:
+
+    DC          works, agrees with the CPU to 4.4e-16 on the Stage 2 diff pair
+    transient   refused at setup, by reason
+
+⚠ **The refusal had to be added, because wiring made things worse before it
+made them better.** Before this work, `JAXTransient(pcnr=True)` on a vector
+device raised `NotImplementedError` from the junction path. After routing, it
+reached the vector solver and died as a `TracerArrayConversionError` several
+frames inside a compiled chain. A setup-time probe (`jax.eval_shape` over the
+charge assembly, once) restores a named refusal. **Routing a path before its
+failure mode is as good as the one it replaces is a regression, even when the
+new path is better.**
+
+**What unblocks the transient is a traceable charge on the participating
+devices** -- `eval_q_pure`, the same treatment the batchable classes already
+have -- which is DSL work, not PCNR work, and is where G3 and G5 wait.

@@ -1633,3 +1633,42 @@ def test_a_scalar_only_circuit_falls_through_to_the_junction_path():
         assert _device_arrays(c, defaultepar) is None
     finally:
         _cm.default_toolkit = numeric
+
+
+def test_a_transient_refuses_when_the_charge_assembly_cannot_be_traced():
+    """⚠ The CHARGE is what limits vector PCNR on the traced backend, and
+    the asymmetry is the finding.
+
+    PCNR shadows a participant's `i`/`G` out of the ordinary assembly and
+    re-stamps its current at `v_lim` through `pcnr_i`, which traces -- so the
+    DEVICE's own `i` never runs, and a device whose `i` cannot be traced
+    solves perfectly well at DC. That is why the DC tests above pass with
+    `EkvNmosHdl`, whose `i` does NOT trace.
+
+    Its `q` is a different matter: charge stays in the MNA block at the node
+    voltages -- the CPU's documented trade, exact at the answer because
+    convergence requires `v_lim == e_a - e_b` -- so a transient calls it.
+    Measured 2026-08-31: no class declaring `pcnr_probes` has a traceable `q`.
+
+    So the transient refuses AT SETUP, naming the reason, rather than failing
+    as a TracerArrayConversionError several frames inside a compiled chain.
+    When a vector device gains a traceable charge, this test should start
+    failing and be replaced by the positive one.
+    """
+    pytest.importorskip('jax')
+    import pycircuit.circuit.circuit as _cm
+    from pycircuit.circuit import elements_hdl as _eh
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+
+    _cm.default_toolkit = jaxtoolkit
+    try:
+        c = SubCircuit(toolkit=jaxtoolkit)
+        nd, ng = c.add_node('d'), c.add_node('g')
+        c['vd'] = VS(nd, gnd, v=1.0, toolkit=jaxtoolkit)
+        c['M'] = _eh.EkvNmosHdl(nd, ng, gnd, gnd, toolkit=jaxtoolkit)
+        with pytest.raises(NotImplementedError, match='traceable charge'):
+            JAXTransient(c, pcnr=True).solve(refnode=gnd, tend=1e-9,
+                                             timestep=1e-10, uic=True)
+    finally:
+        _cm.default_toolkit = numeric

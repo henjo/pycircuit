@@ -1376,7 +1376,8 @@ class PcnrVectorState(NamedTuple):
 
 def pcnr_vector_inner_loop(circuit, devices, x_init, epar, n, irefnode,
                            reltol=1e-4, abstol=1e-12, xtol=1e-12,
-                           maxiter=100, u_extra=None, J_extra=None):
+                           maxiter=100, u_extra=None, J_extra=None,
+                           extra_fn=None):
     """Newton on ``[x_MNA ; v_lim]``, device-shaped, inside a traced loop.
 
     The CPU's `pcnr.solve_dc` structure exactly -- assemble the augmented
@@ -1391,8 +1392,13 @@ def pcnr_vector_inner_loop(circuit, devices, x_init, epar, n, irefnode,
 
     def body(ps: PcnrVectorState):
         x, v_lim = ps.x, ps.v_lim
+        ## `extra_fn` is how the TRANSIENT gets in.  Its companion terms are
+        ## functions of `x` -- the charge stays in the MNA block at the node
+        ## voltages, which is the CPU's documented trade -- so they cannot be
+        ## passed as constants the way DC's source vector can.
+        ue, Je = (u_extra, J_extra) if extra_fn is None else extra_fn(x)
         g_mna, g_lim, J_mm, J_ml, J_lm = pcnr_vector_blocks(
-            circuit, devices, x, v_lim, epar, n, u_extra, J_extra)
+            circuit, devices, x, v_lim, epar, n, ue, Je)
 
         ## `pcnr.schur_reduce`'s formula, and the only place it is written
         ## on this backend: J_ll is the identity by construction, so the
@@ -1455,6 +1461,74 @@ def pcnr_vector_inner_loop(circuit, devices, x_init, epar, n, irefnode,
                            iters=jnp.asarray(0),
                            converged=jnp.asarray(False))
     return jax.lax.while_loop(cond, body, init)
+
+
+def pcnr_vector_controller_jacobian(circuit, state, x, v_lim, devices, epar,
+                                    eval_method, first_order,
+                                    params_tree=None, tline_dG=None):
+    """`J_eff` at the accepted point, for the step controller.
+
+    `pcnr.schur_reduce`'s docstring records why this is not `circuit.G(x)`:
+    when that was open-coded instead, the step count came out 6.6x too large.
+    The controller wants the matrix the step was actually taken with.
+    """
+    q_C = circuit.q(x, params_tree=params_tree)
+    C_C = circuit.C(x, params_tree=params_tree)
+    _i_C, G_eq = compute_integration(q_C, C_C, state, method=eval_method,
+                                     first_order=first_order)
+    J_extra = G_eq if tline_dG is None else G_eq + tline_dG
+    _g, _gl, J_mm, J_ml, J_lm = pcnr_vector_blocks(
+        circuit, devices, x, v_lim, epar, x.shape[0], None, J_extra)
+    return J_mm - J_ml @ J_lm
+
+
+def pcnr_vector_timestep(state: TransientState, circuit, irefnode, devices,
+                         tline_params, tline_indices, epar,
+                         eval_method='euler', reltol=1e-4, abstol=1e-12,
+                         xtol=1e-12, maxiter=100, params_tree=None,
+                         tline_dG=None, analysis='tran',
+                         provided_function=None, first_order=None):
+    """One timestep of vector PCNR: `pcnr_inner_loop`'s device-shaped twin.
+
+    Everything the residual carries beyond ``circuit.i`` -- the companion
+    charge current, the sources, the delay-line EMFs -- is assembled here and
+    handed to the solver as `extra_fn`, because it is a function of ``x`` and
+    not a constant: the CHARGE STAYS IN THE MNA BLOCK at the node voltages,
+    while only the resistive current moves to the limited unknown. That is the
+    CPU's documented trade (`pcnr.augmented_system`), and what makes it exact
+    at the answer is that convergence requires ``|g_lim|`` below tolerance,
+    i.e. ``v_lim == e_a - e_b``, so the charge was evaluated at the voltage
+    the current converged to.
+    """
+    t_new = state.t + state.dt
+    ## As `pcnr_inner_loop` does: the effective order is a property of the
+    ## state, not something the call site has to know.
+    if first_order is None:
+        first_order = effective_first_order(state)
+
+    def extra_fn(x):
+        q_C = circuit.q(x, params_tree=params_tree)
+        C_C = circuit.C(x, params_tree=params_tree)
+        I_u = circuit.u(t_new, analysis=analysis, params_tree=params_tree)
+        if provided_function is not None:
+            I_u = I_u + provided_function(t_new)
+        I_u = apply_tline_sources(I_u, t_new, tline_params, tline_indices,
+                                  state.tline_history, state.tline_head)
+        i_C, G_eq = compute_integration(q_C, C_C, state, method=eval_method,
+                                        first_order=first_order)
+        u_extra = i_C + I_u
+        J_extra = G_eq
+        if tline_dG is not None:
+            u_extra = u_extra + tline_dG @ x
+            J_extra = J_extra + tline_dG
+        return u_extra, J_extra
+
+    ## The predictor knows the system size; the call site should not have to.
+    x_pred = extrapolate_predictor(state)
+    return pcnr_vector_inner_loop(
+        circuit, devices, x_pred, epar, x_pred.shape[0], irefnode,
+        reltol=reltol, abstol=abstol, xtol=xtol, maxiter=maxiter,
+        extra_fn=extra_fn)
 
 
 class PcnrState(NamedTuple):
@@ -1797,14 +1871,25 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
             ## junction's limited quantity as its own unknown.  This backend's
             ## ONLY junction-robustness mechanism -- classic limiting cannot
             ## run in a traced loop.
-            j_ra, j_rb, j_IS, j_VT, j_fns = pcnr_meta
-            pstate = pcnr_inner_loop(
-                state, circuit, irefnode, j_ra, j_rb, j_IS, pcnr_VT,
-                tline_params, tline_indices, j_VT=j_VT, j_fns=j_fns,
-                eval_method=eval_method, reltol=reltol, abstol=abstol,
-                xtol=xtol, maxiter=maxiter, params_tree=params_tree,
-                tline_dG=tline_dG, analysis=analysis,
-                provided_function=provided_function)
+            if pcnr_meta[0] == 'vector':
+                ## VECTOR PCNR (sec. 49), routed on the DEVICE view.
+                _vdevs, _vepar = pcnr_meta[1], pcnr_meta[2]
+                pstate = pcnr_vector_timestep(
+                    state, circuit, irefnode, _vdevs, tline_params,
+                    tline_indices, _vepar, eval_method=eval_method,
+                    reltol=reltol, abstol=abstol, xtol=xtol, maxiter=maxiter,
+                    params_tree=params_tree, tline_dG=tline_dG,
+                    analysis=analysis,
+                    provided_function=provided_function)
+            else:
+                j_ra, j_rb, j_IS, j_VT, j_fns = pcnr_meta
+                pstate = pcnr_inner_loop(
+                    state, circuit, irefnode, j_ra, j_rb, j_IS, pcnr_VT,
+                    tline_params, tline_indices, j_VT=j_VT, j_fns=j_fns,
+                    eval_method=eval_method, reltol=reltol, abstol=abstol,
+                    xtol=xtol, maxiter=maxiter, params_tree=params_tree,
+                    tline_dG=tline_dG, analysis=analysis,
+                    provided_function=provided_function)
             nr_state = NewtonState(x=pstate.x, xdiff=jnp.zeros_like(pstate.x),
                                    F_norm=jnp.asarray(0.0),
                                    iters=pstate.iters,
@@ -1838,12 +1923,19 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
         ## costs accuracy.  0.2b measured the `J^-1` mapping this branch avoided at
         ## 1-3% of a step, well under its own 10% keep-it threshold.
         if pcnr_meta is not None and not coupled:
-            j_ra, j_rb, j_IS, j_VT, j_fns = pcnr_meta
-            J = pcnr_controller_jacobian(circuit, state, x_curr, pcnr_v_lim,
-                                         j_ra, j_rb, j_IS, pcnr_VT,
-                                         eval_method, first_order,
-                                         params_tree=params_tree,
-                                         tline_dG=tline_dG, j_fns=j_fns)
+            if pcnr_meta[0] == 'vector':
+                J = pcnr_vector_controller_jacobian(
+                    circuit, state, x_curr, pcnr_v_lim, pcnr_meta[1],
+                    pcnr_meta[2], eval_method, first_order,
+                    params_tree=params_tree, tline_dG=tline_dG)
+            else:
+                j_ra, j_rb, j_IS, j_VT, j_fns = pcnr_meta
+                J = pcnr_controller_jacobian(circuit, state, x_curr,
+                                             pcnr_v_lim,
+                                             j_ra, j_rb, j_IS, pcnr_VT,
+                                             eval_method, first_order,
+                                             params_tree=params_tree,
+                                             tline_dG=tline_dG, j_fns=j_fns)
         else:
             J = circuit.G(x_curr, params_tree=params_tree) + Geq
             if tline_dG is not None:
@@ -2792,12 +2884,55 @@ class JAXTransient(Analysis):
             / float(self.toolkit.qelectron)
         if not self.par.pcnr:
             return None, VT
+        ## VECTOR FIRST (roadmap sec. 49).  A device declaring `pcnr_probes`
+        ## owns `m` unknowns of mixed kind, and the PAIR view cannot see
+        ## them: it lists only `pnj` probes, so a circuit of pure
+        ## fetlim/limvds devices reads as EMPTY there and `pcnr=True` would
+        ## fall through to the ordinary solver in silence.  That is Stage 2's
+        ## defect on the CPU and sec. 47's failure mode; routing on the
+        ## device view is what stops it recurring here.
+        devices = _device_arrays(self.cir, epar)
+        if devices is not None:
+            ## ⚠ THE CHARGE IS THE LIMIT HERE, not the current.  Vector
+            ## PCNR shadows a participant's `i`/`G` out of the ordinary
+            ## assembly and re-stamps it at `v_lim` through `pcnr_i`, which
+            ## traces -- so the DEVICE's own `i` never runs, and a device
+            ## whose `i` cannot be traced is still fine.  Its `q` is not
+            ## shadowed: charge stays in the MNA block at the node voltages,
+            ## which is the CPU's documented trade, so the transient DOES
+            ## call it.  Measured 2026-08-31: no class declaring
+            ## `pcnr_probes` has a traceable `q` today.
+            ##
+            ## Probed once, here, rather than left to fail as a
+            ## TracerArrayConversionError several frames inside a compiled
+            ## chain -- which is what this refusal replaced, and is worse
+            ## than the NotImplementedError it replaced in turn.
+            self._pcnr_vector_check_q()
+            return ('vector', devices, epar), VT
         meta = _junction_arrays(self.cir)
         if meta is None:
             ## No participating device: fall through to the plain Newton,
             ## as the CPU's solve_timestep does.
             return None, VT
         return meta, VT
+
+    def _pcnr_vector_check_q(self):
+        """Refuse at setup if the charge assembly cannot be traced."""
+        import jax as _jax
+        from pycircuit.circuit.circuit import defaultepar as _dp
+        try:
+            _jax.eval_shape(lambda x: jnp.asarray(self.cir.q(x, _dp)),
+                            jax.ShapeDtypeStruct((self.cir.n,), jnp.float64))
+        except Exception as exc:                     # noqa: BLE001
+            raise NotImplementedError(
+                "vector PCNR on the JAX backend needs a traceable charge "
+                "assembly, and this circuit's is not: %s. The DC solve does "
+                "not need it -- PCNR shadows a participant's i/G out and "
+                "re-stamps through `pcnr_i` -- but a transient does, because "
+                "charge stays in the MNA block at the node voltages. No "
+                "class declaring `pcnr_probes` has a traceable `q` today "
+                "(roadmap sec. 49.5); use Transient for this circuit."
+                % (type(exc).__name__,))
 
     def _standard_band(self):
         """The STANDARD path's (gamma_min, gamma_max, eta) -- P8.
