@@ -19,11 +19,22 @@
 > | Suite 844 passed, 6 skipped | **2,753 passed / 7 skipped / 3 xfailed / 0 failed** (2026-08-31) |
 > | 4 pre-existing COLLECTION ERRORS (`post/cds`, `pexpect`) | gone — `post/cds` collects 12 tests cleanly |
 >
-> ⚠ **The one item still genuinely open** is the JAX Newton loop's convergence test:
-> `jaxtransient.py` still exits on `F_norm = jnp.sum(jnp.abs(F))`, a scalar norm, and the
-> per-row flavour split was done only for the LTE. Verified in the code, not inferred from
-> this document. The P13/P5 architecture-review residuals and 5+.4 (large-signal MOSFET,
-> sequenced into stage 10) are the other named survivors and were not re-verified here.
+> ⚠ **CORRECTION, same day.** This block first said the JAX Newton loop's convergence
+> test "is still a scalar norm ... verified in the code". **That was wrong, and the way it
+> was wrong is worth more than the item.** `F_norm = jnp.sum(jnp.abs(F))` does exist in
+> `NewtonState` — but it is a DIAGNOSTIC. `cond_fun` tests `converged`, which stage F6(b)
+> built from the CPU's per-row criteria: `conv_f` elementwise against
+> `reltol*I_scale + abstol` over the reduced rows, `conv_x` against the step actually
+> taken, with `_newton_abstol(n)` putting `iabstol` on node rows and `vabstol` on branch
+> rows and `_newton_xtol(n)` the transposed pair. I grepped for the symbol, found a scalar
+> sum, and concluded it decided convergence. **Presence is not use** — and "verified in
+> the code" was the strongest claim available, which made the error likelier to be
+> believed than if I had hedged.
+>
+> **So this plan has no named open item left.** The P13/P5 architecture-review residuals
+> and 5+.4 (large-signal MOSFET, sequenced into stage 10) are the other named survivors;
+> 5+.4 is a recorded decision not to pull it forward, and neither was re-verified here —
+> treat them the way this correction should teach you to treat any unaudited row.
 >
 > **Where the live records are.** `doc/branch_review_260827.md` is the reviewer's entry
 > point and carries current suite figures; `doc/hdl_roadmap_260824.md` carries the DSL and
@@ -4252,7 +4263,14 @@ default to `tend/10` as `solve_batched` uses is a real decision and is NOT taken
 past the requested end, where `Transient` lands on it exactly. The final step is not
 clamped. Left open with its measurement rather than fixed inside this item.
 
-**Still open in 9(c):** the Newton loop's convergence test is a scalar norm
+**CLOSED by F6(b), 2026-08-31 audit** (this line stood as "still open" long after the
+work landed): the Newton loop's convergence test is per-row -- `conv_f` against
+`reltol*I_scale + abstol` elementwise over the reduced rows and `conv_x` against the step
+taken, with the CPU's flavour split (`iabstol` on node rows, `vabstol` on branch rows,
+transposed for the update test). The surviving `F_norm` is a diagnostic in `NewtonState`,
+not the test. Original text follows.
+
+**Was recorded as still open in 9(c):** the Newton loop's convergence test is a scalar norm
 (`conv_tol = abstol + reltol*F_norm0`), not the CPU's per-row residual test with `iabstol`
 on node rows and `vabstol` on branch rows. `reltol`/`vabstol` are now threaded to it, so it
 is settable, but the *flavour* split is done only for the LTE. Recorded so the remaining

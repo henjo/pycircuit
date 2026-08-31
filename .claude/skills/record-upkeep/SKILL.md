@@ -196,6 +196,30 @@ from it.
 is somebody else reading the branch, a document that overstates open
 work spends their attention on items that do not exist.
 
+## Presence is not use -- and "verified in the code" is a strong claim
+
+Auditing a plan's open items, I reported one as genuinely still open and wrote
+**"verified in the code, not inferred from this document"** beside it. The
+claim was that a JAX Newton loop still converged on a scalar norm, because
+`grep` found `F_norm = jnp.sum(jnp.abs(F))` in its state.
+
+The symbol was there. It decided nothing: the loop's condition tested a
+`converged` flag built from per-row criteria, and `F_norm` survived only as a
+diagnostic. The work had landed long before, and the plan's own "still open"
+line was as stale as the rows I had just corrected -- so the audit that fixed
+ten stale rows shipped an eleventh, in the same commit.
+
+- **Finding a symbol tells you it EXISTS. Read what consumes it.** For a
+  convergence test, that means the loop condition; for a flag, the branch; for
+  a tolerance, the comparison. One extra file-read separates the two.
+- ⚠ **"Verified in the code" is the strongest phrase available**, and it
+  suppresses the next reader's scepticism exactly when it is most needed. Spend
+  it only on what you actually traced end to end, and say which end.
+- A stale "still open" survives audits *because* it is the row nobody
+  celebrates closing. Check the open list against the code with the same
+  suspicion you bring to the done list -- see the section above on which
+  direction costs more.
+
 ## Closing the loop
 
 State plainly what you refreshed and what you deliberately left alone.
