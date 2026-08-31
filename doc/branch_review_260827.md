@@ -238,9 +238,15 @@ is weakest and the weakness is not visible from the code.
   same number of steps. Either assertion alone is the bug that let
   `hdl.rst` drift from 1.14× to 1.25× with a green benchmark in the
   tree the whole time — it asserted the waveforms agreed and never that
-  the ratio held. Its stability gate skips under load rather than
-  measuring badly, so it does not run on every invocation: across three
-  full runs on 2026-08-31 it ran and passed twice and skipped once (§9).
+  the ratio held. ⚠ It was also, until 2026-08-31, **unable to report a
+  regression**: its stillness gate sat downstream of the breach, so a
+  real slowdown on a machine too busy to measure came out as a skip,
+  and its bite-check took the opposite branch and never covered that
+  path. Rebuilt to gate on whether the estimate *reproduces*, to decide
+  readability before comparing rather than after, and to abstain loudly
+  when it cannot measure — with the decision extracted into a pure
+  function so 16 of its 18 tests need no quiet machine at all. Roadmap
+  §48 carries the measurements, including two candidate fixes refused.
 
 So: **if a performance claim in this document matters to your decision,
 only the overhead figure is defended by a test. Re-measure the rest**
@@ -359,34 +365,35 @@ include it, and deleting it would break the docs build. It stays.
 Use `.venv/bin/python -m pytest`, not a bare `python` — the system
 interpreter has none of the dependencies.
 
-Collection is **2,744 tests**: 2,657 in `pycircuit/circuit/tests` and 87
+Collection is **2,760 tests**: 2,673 in `pycircuit/circuit/tests` and 87
 elsewhere in the tree. The suite supports `pytest-xdist`, and `pytest.ini`
 records 52.9 s under `-n 8` against 55.1 s for the fast subset alone —
 which is why the `slow` marker is no longer deselected by default. Run it
 in parallel; serially and under load it takes well over an hour.
 
 A bare `pytest` from the repo root also works, as of the §8 cleanup:
-**2,744 tests collected, no errors.** Before that it aborted during
+**2,760 tests collected, no errors.** Before that it aborted during
 collection.
 
 ### Verified green at HEAD, 2026-08-31
 
 | | passed | skipped | xfailed | failed |
 |---|---:|---:|---:|---:|
-| `pycircuit/circuit/tests` | 2,652 | 4 | 3 | **0** |
+| `pycircuit/circuit/tests` | 2,668 | 4 | 3 | **0** |
 | rest of the tree | 85 | 3 | 0 | **0** |
-| **total** | **2,737** | **7** | **3** | **0** |
+| **total** | **2,753** | **7** | **3** | **0** |
 
-Measured **9–10 min under `-n 8`** with a warm compile cache — three
-full runs today at 553 s, 578 s and 610 s. (An earlier edition of this
-section said 5–7 min; that figure is not reproducible on this machine
-and has been replaced by what was measured rather than adjusted.) Over
-20 min serially. Use the parallel form.
+Measured **8.6–10 min under `-n 8`** with a warm compile cache — four
+full runs on 2026-08-31 at 519 s, 553 s, 578 s and 610 s, on a machine
+carrying unrelated load throughout. (An earlier edition of this section
+said 5–7 min; that figure is not reproducible here and has been
+replaced by what was measured rather than adjusted.) Over 20 min
+serially. Use the parallel form.
 
 The counts reconcile against `--collect-only` exactly, which is the
-check worth doing rather than trusting the totals: 2,737 passed + 7
-skipped + 3 xfailed = 2,747, less the **3 module-level skips that
-collection does not count**, gives **2,744** — the collected total.
+check worth doing rather than trusting the totals: 2,753 passed + 7
+skipped + 3 xfailed = 2,763, less the **3 module-level skips that
+collection does not count**, gives **2,760** — the collected total.
 
 The skips are worth naming, because a skip is not a pass:
 
@@ -401,16 +408,21 @@ The skips are worth naming, because a skip is not a pass:
   shows it.
 - two `Skip failing test` unittests under `post`/`utilities`, and one
   superseded unittest kept for a rewrite;
-- `test_perf_guards.py`'s own stability gate, which declines to measure
-  a 15% effect when the reference timings spread past 1.25× within one
-  measurement. That is the gate working.
+- `test_perf_guards.py`, which abstains when two independent
+  measurements of the DSL overhead disagree by more than 5% — in this
+  run by 1.070× after four attempts, with the raw timings spreading
+  4.01× under `-n 8` plus unrelated external load. It **warns as well
+  as skips**, so an unchecked figure appears in the warnings summary of
+  a plain run and not only behind `-rs`.
 
-⚠ **The last one is load-dependent, so this table is not bit-stable.**
-Across three runs today the perf guard **ran and passed twice** and
-skipped once (spread 2.29×), which moves the totals by one between
-otherwise identical runs — the 2,652/4 row above reads 2,653/3 on a run
-where it passes. If your numbers differ from this table by exactly one
-test, this is why; check `-rs` before concluding anything.
+⚠ **That last one is load-dependent, so this table is not bit-stable.**
+The abstention moves the totals by one — the 2,668/4 row above reads
+2,669/3 on a run where the guard measures. Run on its own at load ~15
+it passed three times out of three; under `-n 8` on top of that load it
+abstained. If your numbers differ from this table by exactly one test,
+this is why, and the warnings summary will say which way. See §48 of the
+roadmap for why abstaining is the correct outcome rather than a
+weakness: the guard this replaced could not report a regression at all.
 
 ## 10. Where the reasoning lives
 

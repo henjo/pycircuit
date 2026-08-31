@@ -5399,3 +5399,109 @@ fallbacks**; the same circuit with `pcnr=False` gives `off, 0, 0`; an
 all-linear circuit gives `no-participants`. Bite-checked by injecting a
 failure on every third PCNR step -- status `partial`, both counters
 non-zero -- and by disabling the counters, which fails three tests.
+
+## 48. The one magnitude guard could not report a regression (2026-08-31)
+
+Section 39 built `test_perf_guards.py` to convert silent performance
+decay into a failing run -- the branch's ONLY magnitude guard, since
+pinning `fold_card` and `_autohold` was measured and refused as
+noise-pinning.  Re-measuring the suite (sec. 9 of the reviewer's guide)
+showed it skipping on some runs and not others, which was the thread
+worth pulling.
+
+**It could not fail.** `_require_a_still_machine` was consulted only
+inside the `if breached:` arm of `_confirmed_ratio`, so the sequence for
+a real regression was breach -> gate -> abstain: on any machine too busy
+to measure, the one outcome the file exists to report was the one it
+could not report.  Demonstrated by driving the guard's own path with the
+file's calibrated `_SlowR` -- `Skipped` where a failure was due.
+
+⚠ **The bite-check could not have caught this, and looked like it
+should.** It drives `want='above'`, where a successful bite means
+breached=False and returns BEFORE any gate is consulted.  It exercises a
+different path from the one a real regression takes, so "the guard has
+been shown to bite" was true and did not mean what it appeared to.
+
+**And the comfortable side was never checked at all**, on the recorded
+argument that "a reading that is already comfortable needs no
+defending".  That argument is wrong: the bias runs both ways.  Measured
+at the then-current 3 samples a side under load, a true ~1.01x parity
+read anywhere in **0.916x to 1.054x** -- so a 1.20x regression reads
+1.09x and passes, silently, exactly when the machine is least able to
+see it.
+
+### Two candidate fixes, refused with numbers
+
+**CPU time as a load-immune instrument -- refused.** Wall clock and
+`time.process_time` recorded simultaneously on identical work under
+four concurrent openEMS runs: drift `2.371 / 1.149 / 3.353` wall against
+`2.371 / 1.149 / 3.353` CPU.  Identical to three decimals.  Contention
+here does not deschedule the process, so CPU time is not a different
+instrument.
+
+**Fewer samples for the coarse bite-check -- refused, same day, by its
+own first run.** The bite-check resolves a ~1.40x injected slowdown
+rather than a 15% effect, so it was given 3 samples on the reasoning
+that a coarse effect needs fewer.  It skipped immediately: two
+measurements disagreed by **1.147x** against a 1.05x limit.  The
+reasoning conflated separating an effect with reproducing an estimate.
+The gate constrains ESTIMATOR PRECISION, which at 3 samples is +/-14%
+however large the effect is.  Both callers use the same sample count.
+
+### What the fix is
+
+**Gate on reproducibility, not on stillness.** `drift` -- the spread of
+raw timings inside one measurement -- measures the MACHINE, and the
+question is whether the ESTIMATE reproduces.  They disagree completely:
+raw spread read 1.86x-3.35x in trials whose min-of-12 estimates agreed
+across trials to 1.5%.  Gating on drift would have abstained on every
+one of them.
+
+**Readability is decided first and for every outcome**, so a comfortable
+reading taken on an unreadable machine is an unread instrument rather
+than a pass.
+
+**Retry rather than abstain, bounded at four measurements.** Measured
+disagreement between consecutive N-sample estimates under load 17:
+
+| N | consecutive-pair disagreement | within 1.05 |
+|---|---|---|
+| 3 | 1.098 1.020 1.163 1.045 1.104 1.049 1.118 1.020 ... | 8 of 16 |
+| 6 | 1.131 1.084 1.025 1.054 1.009 1.058 1.013 1.022 | 4 of 8 |
+| 12 | 1.034 1.049 1.029 1.004 | 4 of 4 |
+| 24 | 1.081 1.032 | 1 of 2 |
+
+Agreement improves with N but never becomes reliable -- dependable 1.05
+would cost ~48 samples a side, minutes per test.  A busy machine has
+quiet patches, so a second or third attempt usually lands in one, and
+the cost is paid only when the first pair disagrees.  `PAIRS` rose 3 ->
+12 on the same table.
+
+⚠ Agreement is judged on the **two most recent** estimates, never the
+closest two of the set.  Shopping a growing set for its friendliest pair
+would find agreement most easily when both readings are wrong the same
+way.
+
+**Abstention is loud.** It warns before it skips, so an unchecked figure
+lands in the warnings summary of a plain run rather than only behind
+`-rs`, and the reason names both numbers: the disagreement is why the
+reading was dropped, the drift says whether the machine was why.
+
+### The part that is testable without a machine
+
+The decision is now a pure function of `(ratio, disagreement)`, so the
+paths a real regression takes are covered on any machine at any load, in
+under a second: **16 tests**, against 2 before.  That matters beyond
+convenience -- the reason the original hole survived review is that
+every existing test needed a quiet machine to say anything, and this
+machine has not been quiet for hours.
+
+Measured after the fix, three consecutive runs at load 13.8-15.7: **18
+passed, 18 passed, 18 passed**, no abstentions, at 92 s / 170 s / 85 s.
+The 170 s run is the retry earning its place rather than a cost.
+
+⚠ **The suite pays for this.** The file went from 2 tests to 18 and from
+roughly 30-45 s to 85-170 s.  `PAIRS` and `MAX_MEASUREMENTS` are the
+knobs if that is judged too expensive; lowering `MAX_DISAGREEMENT` is
+not, since 1.05 is what makes an estimate precise enough to assert a
+1.15x bound against a true 1.01x.

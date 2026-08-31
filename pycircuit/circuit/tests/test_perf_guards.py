@@ -32,7 +32,8 @@ be "won" by quietly doing less work.
 MEASUREMENT DESIGN.  Absolute timings are worthless here -- the machine
 this was written on ranged from load 7 to load 17 within the hour.
 Three choices make the number mean something, and a fourth
-(`_require_a_still_machine`) decides when it means nothing at all:
+(reproducibility, read by `_verdict`) decides when it means nothing at
+all:
 
 * Compare a RATIO measured inside one process, not a wall time.  Even
   that is not fully load-immune: an early run of the benchmark at load 7
@@ -55,6 +56,18 @@ Three choices make the number mean something, and a fourth
   in 27 runs, and the bound cannot be widened to absorb that without
   passing 1.22x, the state being guarded against.  See
   `_confirmed_ratio`.
+
+⚠ REVISED 2026-08-31, and the revision contradicts a claim above.  The
+skip message this file used to print advised re-running "on an idle
+machine", which assumed one would be available; on a shared machine it
+is not, and a guard that only works on a quiet box does not guard.
+Measured under four concurrent openEMS runs (load 17 of 24 cores), the
+minimum-of-N estimator DOES converge there -- it just needs samples:
+three independent trials read 1.008/0.916/1.054 at 3 samples a side and
+1.018/1.007/1.003 at 12.  So `PAIRS` rose to 12, and the readability
+gate moved off "did the machine hold still" (which reads 1.86x-3.35x in
+exactly those converged trials) and onto "did the estimate reproduce".
+The load is a reason to take more samples, not a reason to abstain.
 """
 
 import time
@@ -75,8 +88,38 @@ from pycircuit.circuit.transient import Transient
 TEND = 1e-3
 TIMESTEP = 1e-6
 
-#: Interleaved A B pairs.  The minimum of each side is taken.
-PAIRS = 3
+#: Interleaved A B pairs per measurement.  The minimum of each side is
+#: taken; noise only ever adds time, so the minimum converges from above
+#: and the only question is how many samples it costs to reach the floor.
+#:
+#: MEASURED 2026-08-31 on a machine at load 17 of 24 cores (four openEMS
+#: runs), which is the adverse condition worth calibrating against
+#: rather than an idle machine that was not available.  Three
+#: independent trials, min-of-N ratio against sample count:
+#:
+#:     samples/side    trial 0   trial 1   trial 2    spread
+#:        3             1.008     0.916     1.054      14%
+#:       12             1.018     1.007     1.003     1.5%
+#:
+#: At 3 the spread is the ENTIRE headroom of the 1.15 bound, and trial 1
+#: sat at 0.916 until its twelfth sample -- a 1.20x regression would
+#: have read 1.09x there and passed.  At 12 the three agree to 1.5% and
+#: centre on the published 1.01x.  Under load the floor is found late,
+#: and finding it is the whole measurement.
+PAIRS = 12
+
+#: ⚠ TRIED AND REFUSED, same day.  A `PAIRS_COARSE = 3` was given to the
+#: bite-check on the reasoning that it resolves a ~1.40x injected
+#: slowdown rather than a 15% effect, so it should need fewer samples.
+#: It skipped on its first run: two measurements disagreed by **1.147x**
+#: against the 1.05x limit.
+#:
+#: The reasoning conflated two different things.  The readability gate
+#: constrains the PRECISION OF THE ESTIMATE, and at 3 samples a side
+#: that precision is +/-14% (measured, see `PAIRS`) no matter how large
+#: the effect being measured is.  A coarse effect needs fewer samples to
+#: SEPARATE; it needs exactly as many to REPRODUCE.  Both callers
+#: therefore use the same PAIRS.
 
 #: The bound.  Measured min-ratio is 0.97-1.01 on a quiet machine and
 #: individual pairs range 0.96-1.11; the state BEFORE the sec. 23-26
@@ -137,81 +180,164 @@ def _interleaved_ratio(a, b, pairs=PAIRS):
     return min(tb) / min(ta), last_a, last_b, (ta, tb)
 
 
-#: How far the reference side's own timings may spread before the
-#: measurement is abandoned as unreadable.  See `_require_a_still_machine`.
-MAX_DRIFT = 1.25
+#: How far two INDEPENDENT measurements of the same ratio may disagree
+#: before the pair is abandoned as unreadable.
+#:
+#: This replaced a gate on `_drift` -- the spread of the raw timings
+#: within one measurement -- on 2026-08-31, because that statistic
+#: measures the MACHINE and the question is whether the ESTIMATE
+#: reproduces.  Measured, they disagree completely: in the three trials
+#: recorded at `PAIRS`, raw-sample spread read 1.86x to 3.35x while the
+#: min-of-12 estimate those same samples produced agreed across trials
+#: to 1.5%.  Gating on drift would have abstained on every one of them,
+#: and gating on it at PAIRS=3 abstained on a real regression (below).
+#:
+#: 1.05 is not a taste.  The assertion is `ratio < 1.15` against a true
+#: ~1.01, so the estimate must be good to well inside 14%; two estimates
+#: agreeing to 5% make it so.  Loosening to 1.15 would admit both
+#: failure modes at once -- a true 1.01 reading 1.16 (false alarm) and a
+#: true 1.20 reading 1.05 (false pass) -- which is the check paying for
+#: itself with the thing it was bought for.  So this stays, and SAMPLES
+#: are the knob.
+MAX_DISAGREEMENT = 1.05
+
+#: Measurements attempted before abstaining.  Measured 2026-08-31 under
+#: load 17, disagreement between consecutive N-sample estimates:
+#:
+#:     N= 3   1.098 1.020 1.163 1.045 1.104 1.049 1.118 1.020 ...  8/16 within 1.05
+#:     N= 6   1.131 1.084 1.025 1.054 1.009 1.058 1.013 1.022     4/8
+#:     N=12   1.034 1.049 1.029 1.004                             4/4
+#:     N=24   1.081 1.032                                         1/2
+#:
+#: Agreement improves with N but does not become RELIABLE: reaching 1.05
+#: dependably would take ~48 samples a side, minutes per test, on a
+#: suite that already runs 9-10 min.  Retrying is the cheaper lever --
+#: a busy machine has quiet moments, and a second or third attempt
+#: usually lands in one.  Cost is paid only when the first pair
+#: disagrees, so a quiet machine still pays for exactly two.
+MAX_MEASUREMENTS = 4
 
 
-def _require_a_still_machine(ta, tb):
-    """Skip rather than assert when the machine is not holding still.
+def _drift(ta, tb):
+    """Spread of the raw timings within one measurement.
 
-    Measured while the test suite itself was running under `-n 8`, the
-    reference side's eight timings came out
-
-        2.384  1.206  1.208  0.807  0.795  0.866  0.756  0.777
-
-    -- a **3.15x** ramp inside a single measurement, as the parallel run
-    finished and handed back cores.  A ratio taken across that is not a
-    slow measurement, it is a meaningless one: the two sides sample
-    different parts of the ramp, and the reading swung 0.86x to 1.35x on
-    consecutive trials with nothing changed.  1.35x would have failed the
-    1.15x bound and reported a regression that does not exist.
-
-    Note what does NOT work as a gate: comparing the reference against
-    ITSELF.  That was tried first and reads 0.994-0.996 even in the
-    middle of the ramp, because both sides are the same computation and
-    the bias cancels exactly where it needs to show.  The instrument
-    looks perfect precisely when it is least trustworthy.
-
-    So the gate is on the SPREAD of the reference side's own timings,
-    which is a direct measurement of whether the machine held still.
+    Kept because it is worth REPORTING when a measurement is thrown
+    away -- it says whether the machine or the method was at fault --
+    but it is no longer what any decision is taken on.  See
+    `MAX_DISAGREEMENT` for why, and note what does NOT work as a gate:
+    comparing the reference against ITSELF reads 0.994-0.996 even in the
+    middle of a ramp, because both sides are the same computation and
+    the bias cancels exactly where it needs to show.
     """
-    drift = max(max(ta) / min(ta), max(tb) / min(tb))
-    if drift > MAX_DRIFT:
-        pytest.skip(
-            'machine not stable enough to measure a %.0f%% effect: the '
-            'reference timings spread %.2fx within one measurement '
-            '(limit %.2fx). This is a skip, not a pass -- re-run on an '
-            'idle machine, or serially rather than under -n 8.'
-            % ((MAX_OVERHEAD - 1) * 100, drift, MAX_DRIFT))
+    return max(max(ta) / min(ta), max(tb) / min(tb))
 
 
-def _confirmed_ratio(a, b, bound, want='below'):
-    """Measure, and re-measure once before believing a breach.
+def _disagreement(r1, r2):
+    """How far two independent estimates of the same ratio sit apart."""
+    return max(r1, r2) / min(r1, r2)
 
-    Measured flake rate of a single reading against the bound below:
-    **one failure in 27 runs**, roughly 4%.  That is low enough to look
-    fine in development and high enough to fire every dozen or so full
-    suite runs -- which is how a performance test earns a reputation for
-    crying wolf and gets deleted.  Widening the bound instead is not
-    available: 1.22x is the state being guarded against, so there is
-    nowhere above 1.15x to go without making the test unable to fail for
-    its own reason.
 
-    So a breach is confirmed rather than believed.  Two independent
-    excursions in the same direction take the false-alarm rate to the
-    square of one, while a real regression -- which is not an excursion
-    but a level shift -- still breaches both times.  The second
-    measurement is only paid for when the first says something
-    interesting, so the common path stays at one measurement.
+def _verdict(ratio, disagreement, bound, want):
+    """'unreadable' | 'breach' | 'ok', decided without touching a clock.
 
-    `want` is where the caller needs the ratio to sit: 'below' for the
-    guard, 'above' for the bite-check.  On a re-measure the LESS damning
-    of the two readings is kept, which is the conservative choice for
-    both -- it can only make this function slower to complain.
+    READABILITY IS DECIDED FIRST, AND IN BOTH DIRECTIONS.  That ordering
+    is the fix of 2026-08-31.  Until then the stillness gate sat inside
+    the `if breached:` arm of `_confirmed_ratio`, which left two holes
+    pulling in opposite directions:
+
+    * A REAL REGRESSION WAS CONVERTED INTO A SKIP.  Breach, then gate,
+      then abstain -- so on any machine too busy to measure, the one
+      outcome this file exists to report was the one it could not
+      report.  Demonstrated on a machine at load 17: driving the guard's
+      own path with the calibrated `_SlowR` raised `Skipped` where a
+      failure was due.
+    * A COMFORTABLE READING WAS NEVER CHECKED AT ALL, on the argument
+      that "a reading that is already comfortable needs no defending".
+      That argument is wrong, because the bias runs BOTH ways: measured
+      at PAIRS=3 under load, the same parity read 0.916x to 1.054x
+      around a true ~1.01x, so a 1.20x regression reads 1.09x and
+      passes -- silently, exactly when the machine is least able to see
+      it.
+
+    ⚠ And the bite-check covers neither hole.  It drives `want='above'`,
+    where a successful bite means breached=False and returns before any
+    gate is consulted -- a different path from the one a real regression
+    takes.  `test_the_verdict_*` below cover this decision directly with
+    synthetic values, which is also the only way to exercise it without
+    owning the machine's load.
     """
     assert want in ('below', 'above'), want
-    ratio, ra, rb, (ta, tb) = _interleaved_ratio(a, b)
-    breached = ratio >= bound if want == 'below' else ratio <= bound
-    if breached:
-        ## Only gate when about to complain: a reading that is already
-        ## comfortable needs no defending, and skipping a happy test
-        ## would only hide the guard.
-        _require_a_still_machine(ta, tb)
-        again, ra, rb, (ta2, tb2) = _interleaved_ratio(a, b)
-        _require_a_still_machine(ta2, tb2)
-        ratio = min(ratio, again) if want == 'below' else max(ratio, again)
-    return ratio, ra, rb
+    if disagreement > MAX_DISAGREEMENT:
+        return 'unreadable'
+    if want == 'below':
+        return 'breach' if ratio >= bound else 'ok'
+    return 'breach' if ratio <= bound else 'ok'
+
+
+def _abstain(disagreement, drift):
+    """Decline to report, and make the declining visible.
+
+    A silent skip on a guard is indistinguishable from a skip for a
+    boring reason -- an uninstalled optional dependency, say -- and this
+    one means something quite different: the published figure went
+    UNCHECKED on that run.  So it warns before it skips, which puts it
+    in the warnings summary of a plain run rather than only behind
+    `-rs`.
+
+    Both numbers are reported because they say different things: the
+    disagreement is why the measurement was thrown away, the raw drift
+    says whether the machine was the reason.
+    """
+    reason = (
+        'the %.0f%% overhead bound was NOT checked on this run: two '
+        'independent measurements disagreed by %.3fx (limit %.2fx), so '
+        'neither is assertable. Raw timing spread within a measurement '
+        'was %.2fx. This is a skip, not a pass -- re-run when the '
+        'machine is quieter, or raise PAIRS.'
+        % ((MAX_OVERHEAD - 1) * 100, disagreement, MAX_DISAGREEMENT, drift))
+    warnings.warn(reason, RuntimeWarning, stacklevel=2)
+    pytest.skip(reason)
+
+
+def _confirmed_ratio(a, b, bound, want='below', pairs=PAIRS):
+    """Measure twice, and assert only on a number that reproduced.
+
+    The original measured once and re-measured only to confirm a breach,
+    which made the second measurement a defence against false ALARMS
+    alone.  Measured flake rate of a single reading against the bound
+    was one in 27 runs, and that reasoning still holds -- but it is
+    half the problem.  The other half is a reading that is wrong in the
+    comfortable direction, which no amount of re-measuring-on-breach can
+    see, because it never breaches.
+
+    So both measurements are taken always, and their agreement is the
+    readability gate.  Two independent excursions in the same direction
+    are what a false alarm would need; a real regression is not an
+    excursion but a level shift, and reproduces.
+
+    `want` is where the caller needs the ratio to sit: 'below' for the
+    guard, 'above' for the bite-check.  The LESS damning of the two
+    readings is kept, which is conservative for both -- it can only make
+    this function slower to complain.
+    """
+    assert want in ('below', 'above'), want
+    seen, drifts, disagreement = [], [], None
+    for _attempt in range(MAX_MEASUREMENTS):
+        r, ra, rb, (ta, tb) = _interleaved_ratio(a, b, pairs)
+        seen.append((r, ra, rb))
+        drifts.append(_drift(ta, tb))
+        if len(seen) < 2:
+            continue
+        ## The two MOST RECENT, not the best pair out of all of them:
+        ## picking the closest two from a growing set would let the
+        ## harness shop for agreement, and two readings agree most
+        ## easily when both are wrong in the same direction.
+        r_prev, r_now = seen[-2][0], seen[-1][0]
+        disagreement = _disagreement(r_prev, r_now)
+        if _verdict(r_now, disagreement, bound, want) != 'unreadable':
+            return ((min(r_prev, r_now) if want == 'below'
+                     else max(r_prev, r_now)), ra, rb)
+    _abstain(disagreement, max(drifts))
 
 
 @pytest.mark.slow
@@ -293,3 +419,176 @@ def test_the_parity_guard_can_actually_detect_a_regression():
         'the injected slowdown measured only %.3fx, which is under the '
         '%.2fx bound -- this harness cannot currently detect a regression '
         'of the size it claims to guard against' % (ratio, MAX_OVERHEAD))
+
+
+## ---------------------------------------------------------------------
+## The guard's own decision, tested without a clock.
+##
+## Everything above needs a machine quiet enough to measure a 15% effect.
+## These do not: `_verdict` is a pure function of (ratio, drift), so the
+## paths that a real regression takes can be exercised on any machine, at
+## any load, in microseconds.  That matters beyond convenience -- the
+## bite-check above drives `want='above'`, which returns before the gate
+## is consulted, so until these existed NOTHING covered the path a real
+## regression actually takes.  See `_verdict.__doc__`.
+## ---------------------------------------------------------------------
+
+@pytest.mark.parametrize('ratio,disagreement,want,expected', [
+    ## A regression that reproduced: report it.
+    (1.30, 1.01, 'below', 'breach'),
+    ## THE HOLE THIS CLOSES.  Same regression, but the two measurements
+    ## disagree, so neither is assertable: abstain.  Before the fix the
+    ## gate sat downstream of the breach and turned this into a SKIP --
+    ## the one outcome the file exists to report was the one it could
+    ## not report.
+    (1.30, 1.40, 'below', 'unreadable'),
+    ## Parity that reproduced: pass.
+    (0.95, 1.01, 'below', 'ok'),
+    ## THE OTHER HOLE.  A comfortable reading that did NOT reproduce is
+    ## not a pass, it is an unread instrument -- the bias runs both ways,
+    ## and at PAIRS=3 under load a true 1.01x read anywhere in
+    ## 0.916-1.054.  This used to be an unconditional pass.
+    (0.95, 1.40, 'below', 'unreadable'),
+    ## The bite-check's direction: a successful bite is 'ok'...
+    (1.40, 1.01, 'above', 'ok'),
+    ## ...a bite that failed to bite is the breach...
+    (1.00, 1.01, 'above', 'breach'),
+    ## ...and it is gated on reproducibility too, in both outcomes.
+    (1.40, 1.40, 'above', 'unreadable'),
+    (1.00, 1.40, 'above', 'unreadable'),
+])
+def test_the_verdict_gates_on_readability_before_comparing(
+        ratio, disagreement, want, expected):
+    """Readability is decided first, and for every outcome.
+
+    The parametrisation is the specification: two of these eight rows
+    are the 2026-08-31 fix, and both were silent passes or silent skips
+    before it.
+    """
+    assert _verdict(ratio, disagreement, MAX_OVERHEAD, want) == expected
+
+
+def test_the_verdict_treats_the_bound_as_a_breach_not_a_pass():
+    """Exactly at the bound is a breach, not a pass.
+
+    The assertion the guard finally makes is `ratio < MAX_OVERHEAD`, so
+    a verdict of 'ok' at exactly the bound would hand the test a value
+    its own assert then rejects -- a disagreement that would surface as
+    a confusing failure rather than a confirmed one.
+    """
+    assert _verdict(MAX_OVERHEAD, 1.0, MAX_OVERHEAD, 'below') == 'breach'
+    assert _verdict(MAX_OVERHEAD, 1.0, MAX_OVERHEAD, 'above') == 'breach'
+
+
+def test_disagreement_is_symmetric_and_bottoms_out_at_one():
+    """Order of the two measurements must not change the verdict."""
+    assert _disagreement(1.0, 1.0) == 1.0
+    assert _disagreement(1.10, 1.00) == pytest.approx(1.10)
+    assert _disagreement(1.00, 1.10) == pytest.approx(1.10)
+
+
+def test_the_drift_statistic_reads_the_worse_of_the_two_sides():
+    """Either side drifting makes the measurement unreadable.
+
+    The ratio is a quotient of the two minima, so instability on the DSL
+    side corrupts it exactly as much as instability on the reference
+    side -- and the reference side is the one the original docstring
+    described watching.
+    """
+    steady = [1.0, 1.0, 1.0]
+    assert _drift(steady, steady) == 1.0
+    assert _drift([1.0, 2.0, 1.0], steady) == pytest.approx(2.0)
+    assert _drift(steady, [1.0, 2.0, 1.0]) == pytest.approx(2.0)
+
+
+def test_an_abstention_is_loud_enough_to_find_afterwards():
+    """A silent skip on a guard is indistinguishable from a boring one.
+
+    A skipped optional-dependency test and a skipped performance guard
+    mean very different things -- the second says the published figure
+    went unchecked on that run.  So abstaining warns as well as skips,
+    which puts it in the warnings summary of a plain run rather than
+    only behind `-rs`.
+
+    ⚠ `pytest.raises(Exception)` does NOT catch this.  `Skipped` derives
+    from `BaseException` only, so the first draft of this test let the
+    skip escape and BECAME a skip -- passing its own review by silently
+    not running, which is the exact failure this file is about.  Catch
+    `pytest.skip.Exception` by name.
+    """
+    with pytest.warns(RuntimeWarning, match='NOT checked on this run'):
+        with pytest.raises(pytest.skip.Exception) as exc:
+            _abstain(1.4, 3.0)
+    ## Both numbers survive into the reason: the disagreement is why the
+    ## reading was dropped, the drift says whether the machine was why.
+    assert '1.400x' in str(exc.value), str(exc.value)
+    assert '3.00x' in str(exc.value), str(exc.value)
+
+
+def _canned(monkeypatch, ratios):
+    """Drive `_confirmed_ratio` off a scripted list of estimates.
+
+    The retry loop is live-path logic and the clock cannot be asked to
+    produce a disagreement on demand, so the measurement is replaced and
+    the DECISIONS are what get tested.  `calls` records how many
+    measurements were actually taken, which is the cost half of the
+    design.
+    """
+    calls = []
+
+    def fake(a, b, pairs=None):
+        r = ratios[len(calls)]
+        calls.append(r)
+        ## Timings are irrelevant here; only their drift is reported.
+        return r, ('wave_a', 7), ('wave_b', 7), ([1.0, 1.0], [1.0, 1.0])
+
+    monkeypatch.setattr('pycircuit.circuit.tests.test_perf_guards'
+                        '._interleaved_ratio', fake)
+    return calls
+
+
+def test_a_reproducible_pair_costs_exactly_two_measurements(monkeypatch):
+    """The quiet-machine path must not pay for the busy-machine one."""
+    calls = _canned(monkeypatch, [1.01, 1.02, 9.99, 9.99])
+    ratio, _, _ = _confirmed_ratio((R, C), (R, C), MAX_OVERHEAD, want='below')
+    assert len(calls) == 2, calls
+    ## 'below' keeps the less damning of the pair.
+    assert ratio == pytest.approx(1.01)
+
+
+def test_a_disagreeing_pair_is_retried_rather_than_abstained_on(monkeypatch):
+    """One bad measurement must not cost the run its only check.
+
+    Measured under load 17, consecutive 12-sample estimates disagreed
+    about half the time -- so abstaining on the first disagreement would
+    abstain on half of all runs, while a machine that is busy on average
+    is still quiet in patches.
+    """
+    calls = _canned(monkeypatch, [1.01, 1.40, 1.03, 1.02])
+    ratio, _, _ = _confirmed_ratio((R, C), (R, C), MAX_OVERHEAD, want='below')
+    assert len(calls) == 4, calls
+    assert ratio == pytest.approx(1.02)
+
+
+def test_agreement_is_judged_on_the_two_most_recent_only(monkeypatch):
+    """The harness must not shop the set for the friendliest pair.
+
+    1.01 and 1.02 agree, but they are not consecutive: 1.40 sits between
+    them.  Taking the closest two from a growing set would let a run pick
+    whichever pair suited it, and two readings agree most easily when
+    both are wrong the same way.
+    """
+    calls = _canned(monkeypatch, [1.01, 1.40, 1.02, 1.99])
+    with pytest.warns(RuntimeWarning):
+        with pytest.raises(pytest.skip.Exception):
+            _confirmed_ratio((R, C), (R, C), MAX_OVERHEAD, want='below')
+    assert len(calls) == MAX_MEASUREMENTS, calls
+
+
+def test_a_machine_that_never_settles_abstains_and_says_so(monkeypatch):
+    """Bounded, loud, and not a pass."""
+    calls = _canned(monkeypatch, [1.00, 1.50, 1.00, 1.50])
+    with pytest.warns(RuntimeWarning, match='NOT checked on this run'):
+        with pytest.raises(pytest.skip.Exception):
+            _confirmed_ratio((R, C), (R, C), MAX_OVERHEAD, want='below')
+    assert len(calls) == MAX_MEASUREMENTS, calls
