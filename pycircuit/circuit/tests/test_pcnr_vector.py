@@ -1635,40 +1635,58 @@ def test_a_scalar_only_circuit_falls_through_to_the_junction_path():
         _cm.default_toolkit = numeric
 
 
-def test_a_transient_refuses_when_the_charge_assembly_cannot_be_traced():
-    """⚠ The CHARGE is what limits vector PCNR on the traced backend, and
-    the asymmetry is the finding.
+def test_a_chained_compact_model_runs_a_pcnr_transient_on_the_jax_backend():
+    """The positive form of a test that expired the same day it was written.
 
-    PCNR shadows a participant's `i`/`G` out of the ordinary assembly and
-    re-stamps its current at `v_lim` through `pcnr_i`, which traces -- so the
-    DEVICE's own `i` never runs, and a device whose `i` cannot be traced
-    solves perfectly well at DC. That is why the DC tests above pass with
-    `EkvNmosHdl`, whose `i` does NOT trace.
+    It previously asserted that the transient REFUSED, because charge stays in
+    the MNA block at the node voltages and no class declaring `pcnr_probes`
+    had a traceable `q`. `_chained_jax` gave the chained path the jax backend
+    it lacked -- 25 of 38 library classes, every real compact model -- so the
+    refusal is gone and this asserts the capability instead.
 
-    Its `q` is a different matter: charge stays in the MNA block at the node
-    voltages -- the CPU's documented trade, exact at the answer because
-    convergence requires `v_lim == e_a - e_b` -- so a transient calls it.
-    Measured 2026-08-31: no class declaring `pcnr_probes` has a traceable `q`.
-
-    So the transient refuses AT SETUP, naming the reason, rather than failing
-    as a TracerArrayConversionError several frames inside a compiled chain.
-    When a vector device gains a traceable charge, this test should start
-    failing and be replaced by the positive one.
+    ⚠ The CPU reference runs TIGHT. Read against a default-tolerance CPU run
+    the disagreement is 4.5e-03 and does not improve as the JAX side is
+    tightened, which reads as a defect in the new path; it is the REFERENCE
+    being loose, at 85 points against the JAX run's thousands. Converged
+    against converged, the two agree to ~1e-5 relative. Same trap as T4's
+    output node, and it is easy to meet twice.
     """
     pytest.importorskip('jax')
     import pycircuit.circuit.circuit as _cm
     from pycircuit.circuit import elements_hdl as _eh
+    from pycircuit.circuit.elements import VSin, C as _C
     from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.transient import Transient
     from pycircuit.circuit.jaxtransient import JAXTransient
 
-    _cm.default_toolkit = jaxtoolkit
+    def build(tk):
+        _cm.default_toolkit = tk
+        c = SubCircuit(toolkit=tk)
+        nd, ng, nv = c.add_node('d'), c.add_node('g'), c.add_node('vdd')
+        c['vg'] = VSin(ng, gnd, va=0.4, vo=1.1, freq=1e6, toolkit=tk)
+        c['vd'] = VS(nv, gnd, v=1.8, toolkit=tk)
+        c['Rd'] = R(nv, nd, r=1e4, toolkit=tk)
+        c['Cd'] = _C(nd, gnd, c=1e-13, toolkit=tk)
+        c['M'] = _eh.EkvNmosHdl(nd, ng, gnd, gnd, toolkit=tk)
+        return c
+
+    tend, dt = 1e-6, 2e-8
     try:
-        c = SubCircuit(toolkit=jaxtoolkit)
-        nd, ng = c.add_node('d'), c.add_node('g')
-        c['vd'] = VS(nd, gnd, v=1.0, toolkit=jaxtoolkit)
-        c['M'] = _eh.EkvNmosHdl(nd, ng, gnd, gnd, toolkit=jaxtoolkit)
-        with pytest.raises(NotImplementedError, match='traceable charge'):
-            JAXTransient(c, pcnr=True).solve(refnode=gnd, tend=1e-9,
-                                             timestep=1e-10, uic=True)
+        cpu = Transient(build(numeric), toolkit=numeric, uic=True,
+                        reltol=1e-9).solve(refnode=gnd, tend=tend,
+                                           timestep=dt)
+        t_c = np.asarray(cpu.v('d').x[0], dtype=float)
+        y_c = np.asarray(cpu.v('d').y, dtype=float)
+
+        cj = build(jaxtoolkit)
+        res = JAXTransient(cj, pcnr=True, reltol=1e-8).solve(
+            refnode=gnd, tend=tend, timestep=dt, uic=True)
+        t_j = np.asarray(res.sweep_values, dtype=float).reshape(-1)
+        y_j = np.asarray(res.v('d'), dtype=float).reshape(-1)
     finally:
         _cm.default_toolkit = numeric
+
+    assert len(t_j) > 10, len(t_j)
+    err = np.max(np.abs(y_j - np.interp(t_j, t_c, y_c)))
+    span = float(np.max(np.abs(y_c)))
+    assert err < 1e-3 * span, (err, span)

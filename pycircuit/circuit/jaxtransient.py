@@ -1447,8 +1447,17 @@ def pcnr_vector_inner_loop(circuit, devices, x_init, epar, n, irefnode,
         ## `vbe` would loosen the `vbe` component forty-fold.  For a
         ## circuit of scalar diodes the two criteria coincide, which is
         ## why the older loop is right for its own case and wrong here.
+        ## ⚠ A SCALAR FLOOR, because `abstol` here is the per-ROW MNA vector
+        ## -- `iabstol` on node rows, `vabstol` on branch rows, length n --
+        ## and the limited unknowns live in a different space of length k.
+        ## Broadcasting one against the other is a shape error when they
+        ## differ and, worse, a silent mis-scoring when they happen to
+        ## match.  The limited unknowns are branch VOLTAGES, so the
+        ## voltage floor is the right one; the minimum is that or tighter.
+        lim_abstol = jnp.min(jnp.asarray(abstol))
         lim_ok = jnp.all(jnp.abs(g_lim)
-                         < reltol * jnp.maximum(jnp.abs(v_new), 1.0) + abstol)
+                         < reltol * jnp.maximum(jnp.abs(v_new), 1.0)
+                         + lim_abstol)
         conv = jnp.logical_and(jnp.logical_and(conv_x, conv_f), lim_ok)
         return PcnrVectorState(x=x_new, v_lim=v_new, iters=ps.iters + 1,
                                converged=conv)

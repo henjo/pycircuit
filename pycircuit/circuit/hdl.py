@@ -5443,6 +5443,72 @@ def _chain_compile(defs, outputs, args, want_jacobian_of=None, xsyms=None,
     return fn
 
 
+def _chained_eval(self, fn, x, epar):
+    """One chained evaluation: C kernel, jax twin, or numpy.
+
+    Written once because four methods need the same rule and a fifth will.
+    Order matters: the C kernel is an explicit backend selection and wins;
+    the jax twin follows, chosen by the INSTANCE'S TOOLKIT rather than by a
+    global switch, because that is what decides whether `x` can be a tracer;
+    numpy is the floor.
+    """
+    ck = fn.__dict__.get('_hdl_c')
+    if ck is not None:
+        return ck(self, x, epar)
+    if getattr(self.toolkit, 'jax', False):
+        jf = _chained_jax(fn)
+        if jf is not None:
+            ## The chain returns a nested list; the numpy path coerced it
+            ## with `np.asarray` and the assembly reshapes what it gets, so
+            ## the twin has to hand back an array too.
+            return self.toolkit.array(jf(x, *_args_of(self, epar)))
+    return np.asarray(fn(x, *_args_of(self, epar)), dtype=float)
+
+
+def _chained_jax(fn):
+    """``fn`` recompiled against the jax kernel, cached on it, or None.
+
+    THE CHAINED PATH'S MISSING BACKEND (roadmap sec. 49.6).  A chained model
+    -- which is every real compact model here, 25 of 38 classes -- assembles
+    through `numpy.asarray`, so **the JAX backend could not run one at all**,
+    with or without PCNR.  It carried a hook for the C backend (`_hdl_c`) and
+    none for jax.
+
+    This is that hook, and it is cheap because the pieces already existed: the
+    compiled function keeps its generated source in `_src`, and
+    `_chain_namespace` is the one place that says what namespace a chain runs
+    in -- the on-disk cache already re-executes `_src` through it.  Handing
+    that same source a jax-flavoured namespace gives a traceable twin.
+
+    ⚠ TRACEABLE IS NOT BATCHABLE, and sec. 22's disjointness is about the
+    other one.  A chained model has no `eval_i_pure` and so cannot join a
+    `vmap` group, where every lane must share one program; that stands.
+    Tracing only asks that the assembly be expressible in jax primitives,
+    which a chain printed from sympy is.
+    """
+    got = fn.__dict__.get('_hdl_jax')
+    if got is not None:
+        return got
+    src = fn.__dict__.get('_src')
+    if src is None:
+        return None
+    try:
+        import jax.numpy as _jnp
+    except ImportError:                              # pragma: no cover
+        return None
+    ns = _chain_namespace(dict(_kernel_jax(_jnp), numpy=_jnp))
+    exec(compile(src, '<hdl-chain-jax>', 'exec'), ns)
+    out = ns.get(fn.__name__)
+    if out is None:                                  # pragma: no cover
+        return None
+    out._src = src
+    try:
+        fn._hdl_jax = out
+    except AttributeError:                           # pragma: no cover
+        pass
+    return out
+
+
 def _chain_namespace(modules_map):
     """The namespace a chain-compiled function runs in.
 
@@ -5914,10 +5980,7 @@ class BehaviouralMeta(type):
                 ## never showed it.  Found by `VcoHdl` (fifth batch).
                 f = funcs['i_dc'] if has_dc_pins and _dc(epar) \
                     else funcs['i']
-                ck = f.__dict__.get('_hdl_c')
-                if ck is not None:
-                    return ck(self, x, epar)
-                return np.asarray(f(x, *_args_of(self, epar)), dtype=float)
+                return _chained_eval(self, f, x, epar)
             if getattr(self.toolkit, 'symbolic', False):
                 return _symbolic_eval(self, 'i', x, epar)
             f = funcs['i_dc'] if has_dc_pins and _dc(epar) \
@@ -5985,10 +6048,7 @@ class BehaviouralMeta(type):
             if info['chained']:
                 f = funcs['G_dc'] if has_dc_pins and _dc(epar) \
                     else funcs['G']
-                ck = f.__dict__.get('_hdl_c')
-                if ck is not None:
-                    return ck(self, x, epar)
-                return np.asarray(f(x, *_args_of(self, epar)), dtype=float)
+                return _chained_eval(self, f, x, epar)
             if getattr(self.toolkit, 'symbolic', False):
                 return _symbolic_eval(self, 'G', x, epar)
             dc = has_dc_pins and _dc(epar)
@@ -6007,22 +6067,14 @@ class BehaviouralMeta(type):
 
         def q(self, x, epar=defaultepar, params_tree=None):
             if info['chained']:
-                ck = funcs['q'].__dict__.get('_hdl_c')
-                if ck is not None:
-                    return ck(self, x, epar)
-                return np.asarray(funcs['q'](x, *_args_of(self, epar)),
-                                  dtype=float)
+                return _chained_eval(self, funcs['q'], x, epar)
             if getattr(self.toolkit, 'symbolic', False):
                 return _symbolic_eval(self, 'q', x, epar)
             return funcs['q'](x, *_args_of(self, epar))
 
         def C(self, x, epar=defaultepar, params_tree=None):
             if info['chained']:
-                ck = funcs['C'].__dict__.get('_hdl_c')
-                if ck is not None:
-                    return ck(self, x, epar)
-                return np.asarray(funcs['C'](x, *_args_of(self, epar)),
-                                  dtype=float)
+                return _chained_eval(self, funcs['C'], x, epar)
             if getattr(self.toolkit, 'symbolic', False):
                 return _symbolic_eval(self, 'C', x, epar)
             if const_C:

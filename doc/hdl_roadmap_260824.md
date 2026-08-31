@@ -5942,3 +5942,52 @@ JAX transient -- which is the backend's whole reason to exist -- and it turns
 largest single capability gap between the two backends, and it has been
 invisible because the batchable 13 are exactly the classes whose tests exercise
 the JAX path.
+
+### 49.7 The chained path gets a jax backend — and the traced transient runs
+
+`_chained_jax` beside `_hdl_c`, and `_chained_eval` so the rule that picks
+between them is written once for `i`, `G`, `q` and `C` rather than four times.
+
+**It was cheap because every piece already existed.** The compiled function
+keeps its generated source in `_src` -- that is how the on-disk cache rebuilds
+it -- and `_chain_namespace` is the single place that says what namespace a
+chain runs in. Handing that same source a `_kernel_jax` namespace produces a
+traceable twin, compiled on demand and cached on the function.
+
+Measured on `EkvNmosHdl`, a chained model the JAX backend could not evaluate at
+all an hour earlier:
+
+    circuit.i   TRACES   max|jax - numpy| = 0.000e+00
+    circuit.G   TRACES   max|jax - numpy| = 3.388e-21
+    circuit.q   TRACES   max|jax - numpy| = 0.000e+00
+    circuit.C   TRACES   max|jax - numpy| = 0.000e+00
+
+**And the transient §49.5 had to refuse now runs.** `JAXTransient(pcnr=True)`
+on that compact model, against a CPU reference at `reltol` 1e-9:
+
+    JAX reltol 1e-6    177 points   max|v(d) - cpu| = 2.663e-04
+    JAX reltol 1e-8    944 points                     2.000e-05
+    JAX reltol 1e-10  5077 points                     2.202e-05
+
+falling with tolerance and plateauing at the reference's own residual -- the
+two backends converging to the same waveform, ~1e-5 relative on a 1.79 V
+signal.
+
+⚠ **Compare converged against converged.** The first reading of this was
+4.5e-03 and did NOT improve with tolerance, which looked like a defect in the
+new path. It was the CPU reference running at its default tolerance: 85 points
+against JAX's 5077. Tightening the reference moved the disagreement by two
+orders. The same trap as T4's output node, met again in one day.
+
+⚠ **A shape error caught a scoring error.** The limited-unknown convergence
+test compared `g_lim` (length k) against `abstol`, which here is the per-ROW
+MNA vector (length n, `iabstol` on node rows and `vabstol` on branch rows).
+That is a shape error when the two differ -- which is how it surfaced -- and it
+would have been a SILENT mis-scoring had they happened to match. The limited
+unknowns are branch voltages and take a scalar floor.
+
+**What this unlocks is bigger than Stage 3**: every chained compact model is
+now evaluable on the JAX transient, which is 25 of 38 library classes and the
+reason that backend exists. §22's disjointness is untouched -- these classes
+still have no `eval_i_pure` and still cannot join a `vmap` group, so
+`solve_batched` is unchanged. Tracing was never what that measurement refused.
