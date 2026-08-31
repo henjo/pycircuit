@@ -379,24 +379,36 @@ collection.
 
 | | passed | skipped | xfailed | failed |
 |---|---:|---:|---:|---:|
-| `pycircuit/circuit/tests` | 2,668 | 4 | 3 | **0** |
+| `pycircuit/circuit/tests` | 2,669 | 3 | 3 | **0** |
 | rest of the tree | 85 | 3 | 0 | **0** |
-| **total** | **2,753** | **7** | **3** | **0** |
+| **total** | **2,754** | **6** | **3** | **0** |
 
-Measured **6.6 min under `-n 8`** with a warm compile cache, on a machine
-carrying unrelated load throughout — 398 s, once `threadpoolctl` became a
-dependency (2026-08-31). Before that the same suite took 519 s, 553 s,
-578 s and 610 s across four runs: each of the eight xdist workers was
-also letting numpy spawn a thread pool across all 24 cores, and the
-oversubscription cost the suite **1.30×**. (An older edition of this
-section said 5–7 min; that figure was never reproducible here and was
-replaced by measurement rather than adjusted toward.) Over 20 min
-serially. Use the parallel form.
+⚠ On a BUSY machine this reads **2,753 / 7** instead: the perf guard
+abstains rather than measure, and says so in the warnings summary. The
+row moves by exactly one test, and which way tells you about the
+machine, not the code.
+
+Measured **4.1 min under `-n 8`** on an idle machine (248 s), and **6.6
+min** (398 s) on the same tree while the box carried unrelated work.
+Both are 2026-08-31, after `threadpoolctl` became a dependency; before
+it the suite took 519–610 s across four loaded runs.
+
+⚠ **Do not read a suite time from this document without its machine
+state.** Absolute wall-clock here is load-dominated, and comparing two
+figures taken on different days measures the machine as much as the
+code: the 398 s and 248 s runs are the SAME tree. That trap is worked
+through with numbers in `doc/transient_work_plan.md` §2a-bis, where
+comparing across days produced a spurious 1.69× that a paired control
+reduced to 1.05×. (An older edition of this section said 5–7 min; never
+reproducible here, and replaced by measurement rather than adjusted
+toward.) Over 20 min serially. Use the parallel form.
 
 The counts reconcile against `--collect-only` exactly, which is the
-check worth doing rather than trusting the totals: 2,753 passed + 7
+check worth doing rather than trusting the totals: 2,754 passed + 6
 skipped + 3 xfailed = 2,763, less the **3 module-level skips that
-collection does not count**, gives **2,760** — the collected total.
+collection does not count**, gives **2,760** — the collected total. (It
+reconciles either way: the perf guard's abstention moves a test between
+the passed and skipped columns without changing the sum.)
 
 The skips are worth naming, because a skip is not a pass:
 
