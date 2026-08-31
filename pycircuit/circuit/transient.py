@@ -27,20 +27,22 @@ from pycircuit.circuit.stepcontroller import (MAX_GROWTH_RATIO,
 ## on the 139-unknown leapfrog: the whole transient runs **1.72x faster** with BLAS
 ## limited to one thread, on a 4-core box.
 ##
-## `threadpoolctl` is optional.  It is discovered the way `symengine` and
-## `_ginac_ext` already are; when it is absent nothing changes and
-## `blas_single_thread_available()` reports False, so the speedup can be had from
-## the environment instead (OMP_NUM_THREADS=1 etc.).  Making it a hard dependency
-## for a 1.72x is the maintainer's call, not this module's.
+## `threadpoolctl` IS NOW A DEPENDENCY (2026-08-31, maintainer's decision).
 ##
-## ⚠ 1.72x WAS MEASURED ON A 4-CORE BOX.  The overhead scales with the core count
-## the thread pool spans, so on a 24-core machine the same comparison measures
-## **14-20x** (2026-08-31: minima 8.2 s against 145.1 s over three interleaved
-## pairs on the leapfrog; 14.2x with a nonlinearity live).  The maintainer's call
-## above was framed against 1.72x and should be re-taken against this number.
-## Note `threadpoolctl` is NOT installed here, so the limiter below is a
-## nullcontext and the whole speedup currently depends on someone remembering
-## OMP_NUM_THREADS=1.
+## It was optional, on the strength of a 1.72x measured on a 4-CORE box, and
+## this comment used to say that making it a hard dependency for 1.72x was the
+## maintainer's call.  The overhead scales with the core count the thread pool
+## spans, so that number was a property of that machine: re-measured on 24
+## cores the same comparison gives **14-20x** (minima 8.2 s against 145.1 s
+## over three interleaved pairs on the leapfrog, identical step counts; 14.2x
+## with a nonlinearity live).  The call was re-taken against 14-20x and went
+## the other way.
+##
+## The import stays guarded anyway, and `blas_single_thread_available()` stays
+## in the API, so a stripped environment degrades to the status quo ante rather
+## than failing to import a circuit simulator.  What changed is that the
+## speedup no longer depends on someone remembering `OMP_NUM_THREADS=1` at the
+## shell -- which is how it was silently forfeited on this machine for weeks.
 try:
     from threadpoolctl import threadpool_limits as _threadpool_limits
 except ImportError:

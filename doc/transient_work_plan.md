@@ -1413,10 +1413,17 @@ With the cubic live, **0.73 s per simulated microsecond against 10.35 s, 14.2x**
 `nullcontext`. The environment fallback the module documents is doing all the work, and
 only when someone remembers to set it.
 
-`transient.py` defers the dependency question -- "making it a hard dependency for a 1.72x
-is the maintainer's call" -- and that sentence was written against 1.72x. At 14-20x on
-current hardware it is a different question, and it belongs to the maintainer with the new
-number in hand rather than the old one.
+**DECIDED 2026-08-31: `threadpoolctl` is now a dependency.** The question was deferred to
+the maintainer against 1.72x; re-taken against 14-20x it went the other way, and it is
+declared in `pyproject.toml`. Verified with NO environment variable set: the same leapfrog
+run that took 145-165 s now takes **9.4 s**, so the in-process limiter delivers what
+`OMP_NUM_THREADS=1` delivered, automatically and scoped to the analysis.
+
+The guarded import and `blas_single_thread_available()` stay, so a stripped environment
+degrades to the status quo ante instead of failing to import a circuit simulator. What
+changed is that the win no longer depends on someone remembering a shell variable -- which
+is exactly how it was forfeited on this machine for weeks while every transient benchmark
+here paid 14-20x.
 
 *The review's supporting figure does not reproduce.* It recorded "0.238 ms single-threaded
 against 4.462 ms with 4 threads" for a 136x136 solve. Measured here at n=139, 300 reps:

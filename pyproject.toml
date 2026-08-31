@@ -19,6 +19,15 @@ dependencies = [
     "jax",
     "pydot",
     "pytest-xdist>=3.8.0",
+    # Holds BLAS to one thread for the duration of a transient.  Not a
+    # convenience: on a 24-core box the thread-pool overhead across the many
+    # SMALL array operations in assembly costs 14-20x end to end (measured
+    # 2026-08-31; it was 1.72x on the 4-core machine where the trade-off was
+    # first weighed, and the penalty scales with the core count the pool
+    # spans).  `OMP_NUM_THREADS=1` gets the same win but is read at library
+    # load, so it cannot be scoped to one analysis and has to be remembered
+    # from outside Python.  See `_single_threaded_blas` in transient.py.
+    "threadpoolctl",
 ]
 
 [project.optional-dependencies]

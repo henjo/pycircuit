@@ -383,11 +383,14 @@ collection.
 | rest of the tree | 85 | 3 | 0 | **0** |
 | **total** | **2,753** | **7** | **3** | **0** |
 
-Measured **8.6–10 min under `-n 8`** with a warm compile cache — four
-full runs on 2026-08-31 at 519 s, 553 s, 578 s and 610 s, on a machine
-carrying unrelated load throughout. (An earlier edition of this section
-said 5–7 min; that figure is not reproducible here and has been
-replaced by what was measured rather than adjusted.) Over 20 min
+Measured **6.6 min under `-n 8`** with a warm compile cache, on a machine
+carrying unrelated load throughout — 398 s, once `threadpoolctl` became a
+dependency (2026-08-31). Before that the same suite took 519 s, 553 s,
+578 s and 610 s across four runs: each of the eight xdist workers was
+also letting numpy spawn a thread pool across all 24 cores, and the
+oversubscription cost the suite **1.30×**. (An older edition of this
+section said 5–7 min; that figure was never reproducible here and was
+replaced by measurement rather than adjusted toward.) Over 20 min
 serially. Use the parallel form.
 
 The counts reconcile against `--collect-only` exactly, which is the
