@@ -3679,8 +3679,19 @@ no traceback), so nothing is claimed for it. **The cause is now measured and sch
 the solver work this row was meant to measure never got the chance to run. 2+.5 is a
 prerequisite for measuring anything at n >= 1000.
 
-**Still open: 7c (KLU), 7d (`pybsmatrix` deletion and the sparse-toolkit test), and the
-`factor()` decision above.**
+**Was: "Still open: 7c (KLU), 7d (`pybsmatrix` deletion and the sparse-toolkit test),
+and the `factor()` decision above."**
+
+⚠ **7c AND 7d ARE DONE; corrected 2026-08-31.** KLU through ctypes lives in
+`linearsolver.py` with its measurements, and `7713902` re-measured it after 2+.5 --
+**KLU now WINS at n >= 1000 and `AutoSolver` is size-aware**. `pybsmatrix.py` is
+deleted and the sparse-toolkit test exercises the sparse path. The `factor()` decision
+is D1, **deferred not rejected**, recorded under "DECISIONS TAKEN".
+
+This line survived the 2026-08-31 audit's first pass because that pass corrected the
+document's RESUME BLOCK and its Stage 4 status table -- the two surfaces a reader
+consults first -- and this one is in the body, 3,600 lines down. A stale claim does not
+have to be in the summary to be read.
 
 **7c. KLU with `klu_refactor`, behind an optional import.** scipy's `splu` recomputes
 COLAMD on every call — **94% of its cost**. Reusing the symbolic phase needs KLU's
