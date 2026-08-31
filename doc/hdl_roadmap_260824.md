@@ -388,7 +388,7 @@ today's DSL unless noted.
 | 7 | Comparator with hysteresis | behavioural | 60 | the **first production user of `Cross`**, which Phase C1 built and nothing consumes |
 | 8 | Skin-effect R + ferrite bead | passive | 100 | the **first production users of `laplace_zp`**, likewise unconsumed |
 | 9 | EKV 2.6 MOSFET | semiconductor | 150 | one tenth of PSP's size, all-region, and an independent cross-check on the surface-potential kernel |
-| 10 | MOS Level 1 + Level 3 | semiconductor | 330 | legacy netlists and teaching. **Level 1 DONE 2026-08-25** as `MosLevel1Hdl`/`MosLevel1PmosHdl`, and it is `limit_together`'s first production user; Level 3 not started |
+| 10 | MOS Level 1 + Level 3 | semiconductor | 330 | legacy netlists and teaching. **Level 1 DONE 2026-08-25** as `MosLevel1Hdl`/`MosLevel1PmosHdl`, and it is `limit_together`'s first production user; **Level 3 DONE too** as `MosLevel3Hdl`/`MosLevel3PmosHdl` (`elements_hdl.py`) -- this cell read "Level 3 not started" until the 2026-08-31 audit, long after both classes shipped and were listed PCNR-eligible in the reviewer's guide |
 | 11 | Memristor (HP + Biolek window) | passive | 70 | the clearest small demonstration that `idt` is a real DAE state |
 | 12 | Mixer + PLL loop filter + charge pump + continuous ÷N | RF/behavioural | 140 | with #6, a complete usable PLL minus the tri-state PFD, from three existing capabilities that have no library user |
 | 13 | Photodiode / solar cell / LED | semiconductor | 210 | falls out of #1 and #2; the optical node is free in MNA |
