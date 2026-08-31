@@ -5768,6 +5768,15 @@ remedy (clear the cache, or `PYCIRCUIT_HDL_CACHE=0`) rather than returning a
 numpy function that dies several frames deep inside a compiled chain naming
 nothing. §47's rule, applied to a path that had every opportunity to repeat it.
 
+⚠ **And the first version of that refusal was too broad, which the first full
+suite run caught.** It fired whenever the ingredients were missing, rather than
+when a twin was actually NEEDED -- grounding every device whose limiter
+parameters are constants, Gummel-Poon among them, and failing two of this
+work's own tests. A parameter that does not read the solution never receives a
+tracer, so it needs no twin; only `_wants_x` does. Keying the refusal on that
+is the fix. Worth recording because a loud refusal is only an improvement on a
+silent fall-through while it refuses the right thing.
+
 An EXPIRING test asserts whichever state the process is in -- twin available on
 a cold build, refusal on a warm one -- and says to replace it with the positive
 form when the payload carries the ingredients.

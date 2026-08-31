@@ -4915,6 +4915,15 @@ def _limit_par_for(fn, toolkit):
     if cached is not None:
         return cached
     ing = getattr(fn, '_hdl_limit_par', None)
+    if ing is None and not getattr(fn, '_wants_x', False):
+        ## A parameter that does NOT read the solution never receives a
+        ## tracer: its arguments are the element's own parameter values and
+        ## the temperature, and it returns a concrete scalar that the
+        ## branchless law then uses.  It needs no twin, and refusing one
+        ## would ground every device whose limiter parameters are constants
+        ## -- Gummel-Poon among them, which is how this was caught: the
+        ## refusal below failed two of its own tests on the first full run.
+        return fn
     if ing is None:
         ## ⚠ NOT a silent fall-through.  Returning the numpy function here
         ## would hand a traced loop something that cannot take a tracer, and

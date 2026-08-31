@@ -1347,6 +1347,14 @@ def test_a_solution_reading_limiter_parameter_traces_on_a_cold_build():
 
     Gummel-Poon is unaffected either way: its limiter parameters are
     constants, so it needs no twin at all.
+
+    ⚠ That last sentence was ASSERTED before it was true. The first full
+    suite run failed two tests here, because the refusal was keyed on the
+    ingredients being missing rather than on the parameter actually needing a
+    twin -- so it grounded every device whose limiter parameters are
+    constants, Gummel-Poon included. A parameter that does not read the
+    solution never receives a tracer; only `_wants_x` does. The rule is now
+    keyed on that.
     """
     pytest.importorskip('jax')
     import jax.numpy as jnp
