@@ -22,7 +22,16 @@ feature is the backend's reason to exist, or cannot survive a traced loop).
 
 Parameters and options, from the mechanical diff:
 
-| Feature | CPU `Transient` | `JAXTransient` | Verdict |
+⚠ **READ THE VERDICT COLUMN AS "WHAT WAS DECIDED AT REVIEW TIME", NOT AS STATUS.**
+Every row was written before any of it was done, and **P1–P25 have since all been
+executed** (Phases A/B/C; the narrative sections below carry each one's outcome). A row
+reading "align now (S)" therefore describes a decision that was taken and carried out, not
+work outstanding. That is not a hypothetical misreading: on 2026-08-31 this table's P5 and
+P13 rows were cited elsewhere as "architecture-review residuals" still open, and both had
+been done for weeks. The rows are kept as written because the verdicts are the record;
+this note is the correction.
+
+| Feature | CPU `Transient` | `JAXTransient` | Verdict (as decided, 2026-08-21) |
 |---|---|---|---|
 | `reltol`, `iabstol`, `vabstol`, `lte_vabstol`, `lte_iabstol`, `maxiter`, `timestep_max`, `firststep`, `epar` | ✓ | ✓ | aligned (post-review; `max_step` renamed `timestep_max` and DECOUPLED from `timestep` by owner decision 2026-08-21 — None now means tend/50, SPICE's TMAX, so tolerance knobs are live on gentle circuits where the old timestep-as-cap froze the step count) |
 | t=0 point, tend landing, breakpoint order drop, force-accept accounting, per-row Newton, safety-factor law, statistics-on-result | ✓ | ✓ | aligned (Phases 1–3) |
@@ -30,7 +39,7 @@ Parameters and options, from the mechanical diff:
 | **P2** LTE-ratio knob | `LTERATIO = 7.0` class constant | `TRTOL` Parameter | **align now (S)** — reversed asymmetry |
 | **P3** `solve_batched` floor & naming | — | `dt_min=1e-15` vs solve's `1e-18`; arg `irefnode` vs `refnode` | **align now (S)** |
 | **P4** `refnode` default | `gnd` | `0` | **align now (S)** |
-| **P5** `analysis` parameter | `'tran'`, threaded | inherited, dead; loop hardcodes `'tran'` | **align now (S)** |
+| **P5** `analysis` parameter | `'tran'`, threaded | inherited, dead; loop hardcodes `'tran'` | **align now (S)** — **DONE**, verified 2026-08-31: `Parameter(name='analysis', default='tran')` declared and threaded as `self.par.analysis` at both `outer_time_loop` call sites, and the prescribed test exists — the dead-knob allowlist entry for `('JAXTransient', 'analysis')` is deleted (`test_backend_parity_phaseA.py`) |
 | **P6** integrator selection | `integrator=` Parameter (Euler/Trap/Gear2) | internal `'euler'/'gear'`, not exposed; hardcoded `'gear'` | **align (M)** + a default-order decision |
 | **P7** `relref` modes | `pointlocal`/`alllocal`/`sigglobal` | `sigglobal` only, hardwired | align later (M) |
 | **P8** LTE band (`lte_gamma_*`, `lte_eta`) | ✓ (standard + coupled) | absent; accept test hardcodes `err <= 1` | align later (M) |
@@ -38,7 +47,7 @@ Parameters and options, from the mechanical diff:
 | **P10** `outputstep` uniform-grid resample | ✓ | absent — but the resampler is backend-agnostic | **align now (S)** |
 | **P11** `provided_function` extra source | ✓ (`pf(t)`) | absent | align later (M, with a traceability constraint) |
 | **P12** initial conditions under `uic` | `ic` dict + element ICs + spanning-tree solve | reads `node.ic` attributes — **dead code, nothing sets them** (new finding) | **align (M)** — delete the dead path, reuse the CPU machinery |
-| **P13** `bypass`/`bypasstol` | ✓ | absent | document — meaningless under vmap |
+| **P13** `bypass`/`bypasstol` | ✓ | absent | document — meaningless under vmap — **DONE**, verified 2026-08-31: the line is in the `JAXTransient` docstring ("a non-concept here, not a missing feature") |
 | **P14** `minbreak` | ✓ | progress guard only, no spacing merge | align now (S) |
 | **P15** statistics vocabulary | `force_accepts`, `order_drops`, `breakpoints_hit`, timing | `forced_lte_steps`, `nonconverged_steps`, `signal_max` | partial align (S) |
 | **P16** TLine delay interpolation | quadratic (3-point Lagrange) | linear + ring-cap raise; **stamp defect fixed + step cap wired + std/pcnr paths verified to 5e-16 / 4.4e-10** (TLine port); **quadratic upgrade EXECUTED 2026-08-21**, Phase B -- `interp_tlines` carries the CPU's 3-point stencil with a guarded linear fallback (`jaxtransient.py`). This cell read "still open" until the 2026-08-31 audit, four lines above the note recording it done | **DONE** |

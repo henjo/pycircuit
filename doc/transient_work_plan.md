@@ -31,10 +31,15 @@
 > the code" was the strongest claim available, which made the error likelier to be
 > believed than if I had hedged.
 >
-> **So this plan has no named open item left.** The P13/P5 architecture-review residuals
-> and 5+.4 (large-signal MOSFET, sequenced into stage 10) are the other named survivors;
-> 5+.4 is a recorded decision not to pull it forward, and neither was re-verified here —
-> treat them the way this correction should teach you to treat any unaudited row.
+> **So this plan has no open item left, named or otherwise.** The "P13/P5
+> architecture-review residuals" named here earlier were **audited later the same day and
+> are DONE** — P5's `analysis` is a declared Parameter threaded from `self.par` with the
+> allowlist entry deleted as its own test prescribed, and P13's one-line docstring
+> statement is in `JAXTransient`. They looked open because
+> `doc/backend_parity_260821.md`'s summary table records the VERDICT DECIDED AT REVIEW
+> TIME, not status, so its rows still read "align now" for work long since carried out;
+> that table now says so at the top. 5+.4 (large-signal MOSFET) is a recorded decision
+> not to pull it forward, not an open item.
 >
 > **Where the live records are.** `doc/branch_review_260827.md` is the reviewer's entry
 > point and carries current suite figures; `doc/hdl_roadmap_260824.md` carries the DSL and
