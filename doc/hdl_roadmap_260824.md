@@ -5609,3 +5609,79 @@ before §40.
 grows a device-shaped sibling or is replaced by one, because gap 1 makes the
 existing per-junction metadata the wrong spine for this work — and the
 tempting local fix (gap 2's keyword) would build on that wrong spine.
+
+### 49.1 Feasibility, measured the same day — two gaps shrank, one grew, and the fork moved
+
+Probed before writing solver code. Three findings change the plan above.
+
+**The maths transfers, exactly.** Shadowing a participant's `i`/`G` works under
+the JAX toolkit, and the resulting excluded assembly matches the CPU's
+`augmented_system` **bit for bit** — `|J_mm - J_mm_jax| = 0.000e+00` on a
+`MosLevel1Hdl` at a fixed `(x, v_lim)`. And `pcnr_i`/`pcnr_didv` evaluate under
+JAX unchanged, returning `(6,)` and `(6, 3)`. So gap 2 really is only a calling
+convention, and the assembly half of Stage 3 is mechanical.
+
+⚠ **The exclusion is STATIC here, which the CPU's design obscures.** `pcnr.py`
+shadows `i`/`G` per Newton call because it must; the traced loop assembles once
+at trace time, so the shadow is applied while the body is traced and never
+again. That is cheaper than the CPU's arrangement, not merely equal to it.
+
+**Gap 3 is bigger than this section said.** It claimed `fetlim` and `limvds`
+must join the branchless `pnjlim`. Measured, by jitting each law:
+
+    id     TRACEABLE
+    pnj    TracerBoolConversionError
+    fet    TracerBoolConversionError
+    vds    TracerBoolConversionError
+    delta  TracerBoolConversionError
+
+**Four of five laws branch on values**, `pnj` included -- the traced path's
+existing "branchless pnjlim" is a SECOND implementation of that law, not the
+shared one. And the device's own `pcnr_limit` cannot be called at all: it dies
+at `hdl.py:6481`, `float(f(x_old_sub, *args))`, coercing a limiter parameter
+(SPICE's `von`, read off the last accepted sub-vector) to a Python scalar.
+
+**The redundant-probe rule is NOT on the critical path, which reprieves G1.**
+`pcnr.limit_block` resolves over-determined laws by taking probes in order of
+decreasing correction and dropping the one that closes a cycle -- a
+data-dependent sort, the hardest thing here to make branchless. But it only
+runs for a device with a REDUNDANT probe, and measured:
+
+    MosLevel1Hdl      3 probes + 1 redundant   -> needs the rule
+    EkvNmosHdl        3 probes, none           -> per-probe loop, exactly
+    GummelPoonNpnHdl  3 probes, none           -> per-probe loop, exactly
+
+G1's circuit is the **EKV** differential pair (`test_pcnr_vector.py` ->
+`test_limit_identity._diffpair`), which has no redundant probe. So the headline
+gate is reachable without the greedy rule, and `MosLevel1Hdl` can be refused
+explicitly in a first increment rather than blocking it.
+
+### 49.2 The fork, now worth deciding on evidence
+
+**(a) Reimplement four laws branchlessly inside `jaxtransient`.** Contained,
+no CPU blast radius -- and makes a second copy of each law, which the traced
+`pnjlim` already shows is a real pattern here rather than a hypothetical one.
+Two implementations of a limiting law will diverge; the only question is when.
+
+**(b) Make `_limiting.apply_limit` branchless by toolkit dispatch**, replacing
+each `if` with `toolkit.where`, and drop the `float()` at `hdl.py:6481`. Then
+ONE law serves both paths, the traced duplicate `pnjlim` can be retired, and
+the device's own `pcnr_limit` becomes callable from the trace -- which is the
+paper's modularity claim and this repo's stated single-source-of-truth rule.
+
+⚠ **(b) is right and it is not cheap.** It edits the CPU's limiting laws,
+which sit under digest-pinned models and the whole PCNR suite. It needs
+bit-identity on the CPU proven, not assumed -- `where` must reproduce each
+branch exactly, including at the boundary values the branches were written to
+separate.
+
+**Recommended: (b), gated on a bit-identity proof taken FIRST** — every law,
+over a sweep that includes each branch boundary, `where`-form against
+`if`-form, before any of it is wired to a solver. If that proof fails on any
+law, that law falls back to (a) and the reason is recorded.
+
+**Increment 1 is then:** tree-probe devices only (EKV, Gummel-Poon), a
+device-shaped `_device_arrays` sibling to `_junction_arrays` (the pair view
+keeps its own consumer -- gmin targets on the `pcnr=False` path), the traced
+augmented assembly proven against the CPU's, and `MosLevel1Hdl` refused by
+name until the redundant rule is traced.
