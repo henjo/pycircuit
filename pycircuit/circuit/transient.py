@@ -2173,7 +2173,7 @@ class Transient(Analysis):
                                fixed_timestep, coupled_lte)
 
     def _solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False, coupled_lte=False):
-        ## PCNR OUTCOME, per run (roadmap sec. 48).  `pcnr=True` is a
+        ## PCNR OUTCOME, per run (roadmap sec. 47).  `pcnr=True` is a
         ## request: PCNR can decline for the whole run (no device
         ## declares a probe) or fail on individual timesteps and fall
         ## through to the ordinary step solver.  DC reports a single
@@ -2183,6 +2183,12 @@ class Transient(Analysis):
         ## These count SOLVER INVOCATIONS, not accepted steps: a rejected
         ## step is solved and then thrown away, and it is still a step
         ## PCNR did or did not carry.
+        ##
+        ## SETTLED 2026-08-31 by the branch author, asked directly: this is
+        ## the honest number.  The consequence is intended -- `pcnr_solves +
+        ## pcnr_fallbacks` will generally EXCEED `statistics.accepted_steps`,
+        ## and that is not a bug to reconcile.  Do not "fix" these to track
+        ## accepted steps; that would hide work that actually happened.
         self.pcnr_solves = 0
         self.pcnr_fallbacks = 0
         self.pcnr_status = 'off'

@@ -5361,7 +5361,7 @@ is kept -- three tests read it -- and still means what it meant.
 Bite-checked: reverting the reporting fails three tests, one of them on
 the original `AttributeError`.
 
-### `Transient` -- the same gap, closed with a counter (sec. 48)
+### `Transient` -- the same gap, closed with a counter
 
 `transient.py:2062` carried the identical fallback and recorded
 nothing. It differs in a way that decides the shape of the fix: PCNR is
@@ -5384,6 +5384,15 @@ it looked exactly like a clean PCNR run from outside.
 step is solved and then thrown away, and it is still a step PCNR did or
 did not carry -- conflating the two would make the number disagree with
 `statistics.accepted_steps` for a reason nobody could reconstruct.
+
+**SETTLED 2026-08-31.** This was raised as an open trade-off and put to
+the branch author, who ruled: *keep counting solver invocations, that
+is the honest number.* So the consequence is intended, not an
+inconsistency awaiting repair -- `pcnr_solves + pcnr_fallbacks` will
+generally **exceed** `statistics.accepted_steps`, and anyone reconciling
+the two is removing information rather than adding it. The alternative
+(counting accepted steps only) is **refused**: it hides solver work that
+actually happened, which is the whole reason the counter exists.
 
 Measured on a diode transient: `pcnr=True` gives `used`, **58 solves, 0
 fallbacks**; the same circuit with `pcnr=False` gives `off, 0, 0`; an
