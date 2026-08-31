@@ -431,10 +431,18 @@ def settle_convergence(amplitude=1.0, settles=(0.0, 208e-6, 2 * 208e-6,
     decades beneath it.  The 162x margin this module's header claims over the
     integrator floor is not supported at these tolerances.
 
-    ⚠ So: **the seeding and the settle are solved; the output tolerance is
-    not.**  Before T4 quotes an output IM3, run this at a fixed settle over a
-    tolerance ladder and find where the number stops moving.  The nl-node
-    figure is already trustworthy and can be quoted now.
+    ⚠ **RESOLVED 2026-08-31, and the paragraph that stood here misdiagnosed
+    it.**  It said the settle was solved and only the tolerance was open, and
+    prescribed a tolerance ladder at fixed settle.  That ladder gave +294% ->
+    -3.06% -> -6.60% at the output: it CROSSED the series value and kept
+    going.  Both knobs were wrong at once.  Holding tolerance at 300x and
+    raising the settle instead gave -6.60% -> -0.74%, and the converged
+    configuration -- 300x, 5 tau, quadratic resampling -- agrees with the
+    perturbation series to **+0.01% at the nl node and -0.48% at the output**.
+
+    A ladder in one variable while another is wrong is not a convergence
+    study; it is a slice through a surface, and it can point away from the
+    answer.
 
     THE LADDER WAS RUN, 2026-08-31, against the perturbation series (U^13:
     out 1.816614e-04, nl 2.844758e-03), amplitude 1.0, settle 2 tau:

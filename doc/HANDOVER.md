@@ -23,12 +23,12 @@ repaired and compensated; the transient engine is partly repaired and fully revi
 regeneration of the tables is **done**; what remains on the symbolic side is **only T4**,
 the transient-vs-perturbation comparison that started all of it.
 
-⚠ **T4 IS RUN, and it passes at the nonlinear node** (2026-08-31, see 4.3): the
-transient and the perturbation series agree to **−0.03%** at `s0_e1`, which is the
-comparison the whole thread was built to make. It was unblocked by gate 0.2a (which
-refuted its own premise), made affordable by running single-threaded (14–20x) and by
-the `x0` seeding, and it now has a number. The OUTPUT-node figure remains open and is
-not integrator-limited in the simple way it first appeared — see 4.3.
+⚠ **T4 IS RUN AND ANSWERED AT BOTH PROBES** (2026-08-31, see 4.3): the transient and
+the perturbation series agree to **+0.01%** at `s0_e1` and **−0.48%** at the output —
+the comparison the whole thread was built to make, from two solvers sharing no code on
+the measurement side. It was unblocked by gate 0.2a (which refuted its own premise),
+made affordable by running single-threaded (14–20x) and by the `x0` seeding, and
+resolved by getting BOTH the tolerance and the settle right at once.
 
 ---
 
@@ -144,7 +144,7 @@ because this one still needs doing.
   does the *old* value, which reads exactly like a third kind of staleness. Read the
   rendered table.
 
-### 4.3 T4 — the IM3 transient comparison: PASSES at the nl node, OPEN at the output (2026-08-31)
+### 4.3 T4 — the IM3 transient comparison: ANSWERED at both probes (2026-08-31)
 
 `benchmarks/nonlinear_leapfrog_sweep.py`. Two-tone IM3 (100/110 kHz, product at 90 kHz),
 because **HD3 is unmeasurable here by any transient at any cost**: the third harmonic at
@@ -207,33 +207,39 @@ transient-vs-perturbation gate exists to establish, and the amplifier's own
 `s0_e1` is where the nonlinearity acts, so it is the node that tests the nonlinear
 machinery rather than five stages of linear filtering.
 
-⚠ **At the OUTPUT it is not answered, and the shape of the failure is not what it
-first looked like.** The output moves +294% → −3.06% → −6.60%: it crosses the series
-value and keeps going, so it is NOT simply integrator-limited converging onto the
-oracle. Two variables remain unseparated, because all three rungs held the settle at
-2 tau:
+⚠ **RESOLVED AT BOTH PROBES the same day — the block that stood here said the output
+was "not answered" and that the remaining work was a tolerance ladder. It was half
+right.**
 
-* **settle at the tight end.** The seed removes the LINEAR settling exactly, but the
-  cubic's own approach to periodic steady state reaches the output through five
-  filter stages. The output can still be settling where the nl node is not — and the
-  earlier settle sweep could not have seen this, since it ran at the harness
-  tolerance where the output sits under +294% of integrator error. **The check is
-  300x tolerance at 2 tau against 5 tau**; it was started and stopped before
-  producing a row.
-* **a residual not controlled by `reltol`.** The output IM3 is ~1.7e-08 V reached
-  through a cancellation five stages deep; the FFT resamples the solver's own steps
-  onto a uniform grid by linear interpolation, which is an error source tolerance
-  does not touch.
+**Converged configuration:** seeded, `reltol 3e-9` / `vabstol 1e-13` (300x the harness
+defaults), settle **5 tau**, quadratic resampling. Against the series (U^13:
+`out 1.816614e-04`, `nl 2.844758e-03`):
 
-⚠ **DO NOT QUOTE AN OUTPUT IM3 YET.** Holding the settle fixed and tightening the
-tolerance 30x moves `IM3/fund` at the output by **4.07x** (7.157515e-04 -> 1.760965e-04)
-while the nl node moves 1.05% — and it is still moving at 30x, so the true value is not
-bracketed. The output probe is integrator-limited at this harness's tolerances. The cause
-is in the harness's own `TRAN_OPTS` comment: the tolerance was calibrated by driving
-`|vout|` error to -0.02%, but `IM3/fund` at the output is 1.6e-04, so the calibration
-metric is the same order as the measurand. **The remaining work for T4 is a tolerance
-ladder at fixed settle**, not more settling and not more seeding. The nl-node figure is
-trustworthy today.
+| probe | transient | vs perturbation |
+|---|---|---|
+| `s0_e1` (where the nonlinearity is) | 2.844924e-03 | **+0.01%** |
+| output | 1.807923e-04 | **-0.48%** |
+
+Two independent paths — a different solver, a different representation, a different
+failure mode — agreeing to better than half a percent at both probes. **T4 is answered**,
+at **1087 s per amplitude** single-threaded against the ~6.8 h recorded above.
+
+⚠ **IT TOOK TWO VARIABLES, AND MOVING ONE AT A TIME READ AS NON-CONVERGENCE.** The
+tolerance ladder at a fixed 2 tau settle gave +294% -> -3.06% -> **-6.60%** — it crossed
+the series value and kept going, which looked like a real disagreement, or a floor that
+tightening could not reach. It was neither. Holding tolerance at 300x and moving the
+SETTLE instead gave **-6.60% -> -0.74%**, a factor of nine. Both knobs were wrong at
+once, and **a ladder in one variable while another is wrong is not a convergence
+study** — it is a slice through a surface, and it can point away from the answer.
+
+The seed is what put the settle under suspicion, and the distinction held exactly:
+`linear_steady_state_x0` removes the LINEAR settling (`e(t=0) = 0`), and what remained
+was the cubic's own approach to periodic steady state — which reaches the output through
+five filter stages, so the nl probe was settled at 2 tau while the output was not.
+
+The last 0.26 percentage points came from resampling at the integrator's order
+(`resample_uniform`, `c34881c`) rather than `np.interp`: -0.74% -> -0.48%, matching the
+~0.2% a synthetic test predicted for this grid's step spread.
 
 ---
 
