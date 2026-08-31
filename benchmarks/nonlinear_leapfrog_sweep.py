@@ -91,7 +91,7 @@ from pycircuit.circuit.elements import BSource
 from pycircuit.circuit.distortion import (GradedSpectrum, GradedVector,
                                           graded_response_mimo)
 from pycircuit.circuit.integrator import TrapezoidalIntegrator
-from pycircuit.circuit.transient import Transient
+from pycircuit.circuit.transient import Transient, resample_uniform
 
 
 ## The bin base.  Every frequency here is an integer multiple of it, so one 1/FB
@@ -336,7 +336,31 @@ def transient_im3(amplitude, opts=None, settle=SETTLE, measure=MEASURE,
         ## Resample the measured window onto an exact grid; the solver's own steps
         ## are not uniform, and the bins only land if the grid is.
         grid = np.linspace(t[-1] - measure, t[-1], npt, endpoint=False)
-        spec = np.fft.rfft(np.interp(grid, t, v)) / npt
+        ## QUADRATIC, matching the integrator's order -- `resample_uniform`
+        ## (transient.py, stage 10.2) rather than `np.interp`.  That function
+        ## was built to fix exactly this line and names this file in its
+        ## docstring; it went unadopted because its grid contract could not
+        ## express a TRAILING window with `endpoint=False`, which is what keeps
+        ## the tones on exact bins.  It takes an explicit `grid=` as of
+        ## 2026-08-31.
+        ##
+        ## ⚠ Measured, on a synthetic two-tone at this file's own IM3 ratio:
+        ## how much this matters depends ENTIRELY on the step-size spread of
+        ## the adaptive grid, not on the mean step.
+        ##
+        ##     spread    linear IM3 error    quadratic
+        ##      10x           +0.16%           +0.00%
+        ##     100x          +39.78%          -10.51%
+        ##    1000x        +97055%          +33767%
+        ##
+        ## At 1000x neither interpolant helps: the grid is not resolving the
+        ## signal and the fix is a smaller `max_step`, not a cleverer resample
+        ## (`resample_uniform`'s own caveat).  `POINTS` caps `max_step` here,
+        ## which is what keeps this run in the benign regime -- so that cap is
+        ## load-bearing for ACCURACY, not only for the unchecked breakpoint
+        ## steps its own comment describes.
+        _g, v_uniform = resample_uniform(t, v, grid=grid)
+        spec = np.fft.rfft(v_uniform) / npt
         ## The window is exactly 1/FB, so bin k IS k*FB and the constants can be
         ## used directly.  Asserted rather than assumed: a window that is not a
         ## whole number of 1/FB puts the tones between bins and the IM3 reading

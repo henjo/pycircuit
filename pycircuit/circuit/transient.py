@@ -77,7 +77,7 @@ def _single_threaded_blas():
         return contextlib.nullcontext()
     return _threadpool_limits(limits=1, user_api='blas')
 
-def resample_uniform(t, x, npoints=None, step=None):
+def resample_uniform(t, x, npoints=None, step=None, grid=None):
     """Interpolate a transient result onto a UNIFORM time grid.
 
     STAGE 10.2.  A transient returns the solver's own adaptive points, so their
@@ -109,19 +109,31 @@ def resample_uniform(t, x, npoints=None, step=None):
     resolving the signal, no interpolant recovers what was not sampled, and the
     right fix there is a smaller `max_step`, not a cleverer resample.
 
-    Give exactly one of ``npoints`` or ``step``.
+    Give exactly one of ``npoints``, ``step`` or ``grid``.
+
+    ``grid`` takes an explicit set of output times, for a caller whose window
+    this function cannot otherwise express.  It was added 2026-08-31 for the
+    caller this docstring already named: an FFT that needs a TRAILING window
+    with ``endpoint=False``, because dropping the duplicated period boundary is
+    what keeps the tones exactly on bins.  Neither ``npoints`` (which spans
+    ``t[0]..t[-1]`` inclusive) nor ``step`` (which starts at ``t[0]``) can say
+    that, which is the likely reason the named caller kept its own `np.interp`
+    for months after this function existed to replace it.
     """
     numpy = np
 
     t = numpy.asarray(t, dtype=float)
     x = numpy.asarray(x)
-    if (npoints is None) == (step is None):
-        raise ValueError('give exactly one of npoints or step')
+    given = sum(spec is not None for spec in (npoints, step, grid))
+    if given != 1:
+        raise ValueError('give exactly one of npoints, step or grid')
     if t.size < 3:
         raise ValueError('need at least 3 points to interpolate quadratically, '
                          'got %d' % t.size)
 
-    if npoints is not None:
+    if grid is not None:
+        grid = numpy.asarray(grid, dtype=float)
+    elif npoints is not None:
         grid = numpy.linspace(t[0], t[-1], int(npoints))
     else:
         ## `t[-1] + step/2` so a grid that divides the interval exactly still

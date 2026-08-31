@@ -2558,6 +2558,37 @@ def test_resample_preserves_shape_and_rejects_bad_arguments():
 
     with pytest.raises(ValueError, match='exactly one'):
         resample_uniform(t, y)
+
+
+def test_resample_accepts_an_explicit_grid():
+    """A caller whose window this function cannot otherwise express.
+
+    Added 2026-08-31 for the caller this function's own docstring named and
+    then could not serve: an FFT over a TRAILING window with
+    ``endpoint=False``. Dropping the duplicated period boundary is what keeps
+    tones on exact bins, and neither ``npoints`` (which spans ``t[0]..t[-1]``
+    inclusive) nor ``step`` (which starts at ``t[0]``) can say it -- so
+    `benchmarks/nonlinear_leapfrog_sweep.py` kept its own `np.interp`, at
+    linear order, on a second-order solution, for months after the fix
+    existed. A utility that names its caller and cannot be called by it is
+    not a fix.
+    """
+    from pycircuit.circuit.transient import resample_uniform
+    rng = np.random.default_rng(0)
+    t = np.sort(rng.uniform(0.0, 1.0, 400))
+    t[0], t[-1] = 0.0, 1.0
+    y = np.sin(2 * np.pi * 3.0 * t)
+
+    ## The shape the FFT caller needs: trailing half, endpoint excluded.
+    grid = np.linspace(0.5, 1.0, 64, endpoint=False)
+    g, v = resample_uniform(t, y, grid=grid)
+
+    assert np.array_equal(g, grid), 'the caller\'s grid must be honoured exactly'
+    assert np.abs(v - np.sin(2 * np.pi * 3.0 * grid)).max() < 1e-3
+
+    ## And it is one of three, not a fourth thing to combine with the others.
+    with pytest.raises(ValueError, match='exactly one'):
+        resample_uniform(t, y, npoints=10, grid=grid)
     with pytest.raises(ValueError, match='exactly one'):
         resample_uniform(t, y, npoints=5, step=0.1)
     with pytest.raises(ValueError, match='at least 3'):
