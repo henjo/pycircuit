@@ -365,25 +365,25 @@ include it, and deleting it would break the docs build. It stays.
 Use `.venv/bin/python -m pytest`, not a bare `python` — the system
 interpreter has none of the dependencies.
 
-Collection is **2,763 tests**: 2,676 in `pycircuit/circuit/tests` and 87
+Collection is **2,766 tests**: 2,679 in `pycircuit/circuit/tests` and 87
 elsewhere in the tree. The suite supports `pytest-xdist`, and `pytest.ini`
 records 52.9 s under `-n 8` against 55.1 s for the fast subset alone —
 which is why the `slow` marker is no longer deselected by default. Run it
 in parallel; serially and under load it takes well over an hour.
 
 A bare `pytest` from the repo root also works, as of the §8 cleanup:
-**2,763 tests collected, no errors.** Before that it aborted during
+**2,766 tests collected, no errors.** Before that it aborted during
 collection.
 
 ### Verified green at HEAD, 2026-08-31
 
 | | passed | skipped | xfailed | failed |
 |---|---:|---:|---:|---:|
-| `pycircuit/circuit/tests` | 2,672 | 3 | 3 | **0** |
+| `pycircuit/circuit/tests` | 2,675 | 3 | 3 | **0** |
 | rest of the tree | 85 | 3 | 0 | **0** |
-| **total** | **2,757** | **6** | **3** | **0** |
+| **total** | **2,760** | **6** | **3** | **0** |
 
-⚠ On a BUSY machine this reads **2,756 / 7** instead: the perf guard
+⚠ On a BUSY machine this reads **2,759 / 7** instead: the perf guard
 abstains rather than measure, and says so in the warnings summary. The
 row moves by exactly one test, and which way tells you about the
 machine, not the code.
@@ -404,9 +404,9 @@ reproducible here, and replaced by measurement rather than adjusted
 toward.) Over 20 min serially. Use the parallel form.
 
 The counts reconcile against `--collect-only` exactly, which is the
-check worth doing rather than trusting the totals: 2,757 passed + 6
-skipped + 3 xfailed = 2,766, less the **3 module-level skips that
-collection does not count**, gives **2,763** — the collected total. (It
+check worth doing rather than trusting the totals: 2,760 passed + 6
+skipped + 3 xfailed = 2,769, less the **3 module-level skips that
+collection does not count**, gives **2,766** — the collected total. (It
 reconciles either way: the perf guard's abstention moves a test between
 the passed and skipped columns without changing the sum.)
 

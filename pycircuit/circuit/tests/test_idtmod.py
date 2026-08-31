@@ -989,3 +989,92 @@ def test_the_wrap_cap_does_not_collapse_the_step_at_a_corner():
     ## And the output still spans the modulus rather than sticking at a corner.
     y = np.asarray(res.v('out'), float).reshape(-1)
     assert y.max() > 0.9 and y.min() < 0.1, (y.min(), y.max())
+
+
+def _circular_ringing_probe(gamma, gamma_tau, h=0.1):
+    """Alternation fraction, radial excursion and output error for one run.
+
+    Same construction as `test_circular_trap_ringing_sentinel`: fixed step,
+    inside a single wrap, so the only perturbation is the first-step Euler
+    kick and its recovery either decays or alternates.
+    """
+    import warnings
+    from pycircuit.circuit.integrator import TrapezoidalIntegrator
+    pycircuit.circuit.circuit.default_toolkit = numeric
+    c = SubCircuit()
+    nin, nout = c.add_node('in'), c.add_node('out')
+    c['vin'] = VS(nin, gnd, v=1.0)
+    c['R1'] = R(nout, gnd, r=1e3)
+    c['X'] = IdtmodCircular(nin, gnd, nout, gnd, modulus=10.0, gamma=gamma,
+                            gamma_tau=gamma_tau, ic=1.0)
+    ci, si = _phasor_rows(c)
+    tran = Transient(c, toolkit=numeric, uic=True,
+                     integrator=TrapezoidalIntegrator())
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = tran.solve(tend=5.0, timestep=h, fixed_timestep=True)
+    X = np.asarray(res.x, float)
+    a = X[ci] ** 2 + X[si] ** 2 - 1.0
+    d = np.diff(a[2:40])
+    d = d[np.abs(d) > 1e-16]
+    alt = float(np.mean(d[1:] * d[:-1] < 0)) if len(d) > 2 else 0.0
+    y, t = res.v('out').y, res.v('out').x[0]
+    return alt, float(np.max(np.abs(a[2:]))), np.abs(y[1:] - (1.0 + t[1:])).max()
+
+
+def test_gamma_tau_is_off_by_default_and_adds_no_state():
+    """The filter is STRUCTURAL: no parameter, no node, no changed matrix.
+
+    This is the assertion that makes the feature safe to carry. Sec. 7.5's
+    remedy was written down rather than built precisely because neither of its
+    reopening conditions fires, so the default path must be the one that
+    existed before it -- not "the same plus an inert row", which would still
+    change the Jacobian and the solve.
+    """
+    plain = IdtmodCircular(gnd, gnd, gnd, gnd, modulus=10.0)
+    assert plain._filt_index is None
+    n_plain = plain.n
+
+    filtered = IdtmodCircular(gnd, gnd, gnd, gnd, modulus=10.0, gamma_tau=1.0)
+    assert filtered._filt_index is not None
+    assert filtered.n == n_plain + 1, (n_plain, filtered.n)
+
+
+def test_gamma_tau_suppresses_the_radial_ringing_it_was_written_for():
+    """The remedy sec. 7.5 pre-wrote, built and shown to bite.
+
+    Provoked regime, gamma=20 (lam*h = 2.5 > 2). Unfiltered the radial mode
+    alternates at the step Nyquist on every sample; filtered it does not.
+    Measured at introduction: alternation 1.000 -> 0.111 at gamma_tau=1.
+    """
+    alt_raw, _rad_raw, _e_raw = _circular_ringing_probe(20.0, 0.0)
+    alt_filt, _rad_f, _e_f = _circular_ringing_probe(20.0, 1.0)
+
+    assert alt_raw > 0.9, ('the provoked case must ring, else this proves '
+                           'nothing', alt_raw)
+    assert alt_filt < 0.3, ('the filter did not suppress the ringing', alt_filt)
+
+
+def test_the_filter_trades_radius_tightness_for_smoothness():
+    """⚠ The filter makes the RADIUS WORSE, and that is the documented trade.
+
+    Sec. 7.5: "filtering trades correction bandwidth for noise rejection at
+    the cost of phase lag". A lagged violation signal means the correction
+    acts later, so the radius wanders further before being pulled back --
+    measured at introduction, max |r^2-1| goes 1.27e-04 -> 2.88e-03 in the
+    provoked regime, about 20x looser.
+
+    Asserted so that the looser radius is not later "fixed" as a regression:
+    it is the price of the feature, and a change that removes it has probably
+    removed the filtering too. The OUTPUT is what must not degrade, and it
+    does not -- radial error cannot reach the phase, since atan2(s, c) is
+    invariant under (c, s) -> a*(c, s).
+    """
+    _alt_raw, rad_raw, err_raw = _circular_ringing_probe(20.0, 0.0)
+    _alt_f, rad_filt, err_filt = _circular_ringing_probe(20.0, 1.0)
+
+    assert rad_filt > rad_raw, (
+        'the filter is expected to LOOSEN the radius (phase lag); if it no '
+        'longer does, check that it is still filtering', rad_raw, rad_filt)
+    ## The output is the thing that must survive: within 10%.
+    assert err_filt < 1.1 * err_raw, (err_raw, err_filt)

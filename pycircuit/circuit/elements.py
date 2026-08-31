@@ -1576,16 +1576,31 @@ class IdtmodCircular(_WrapEvents, Circuit):
                   Parameter(name='gamma',
                             desc='Baumgarte orbit-correction gain, per '
                                  'radian of phase travel (0 disables)',
-                            unit='', default=1.)]
+                            unit='', default=1.),
+                  Parameter(name='gamma_tau',
+                            desc='Low-pass the orbit correction: time '
+                                 'constant per radian of phase travel. '
+                                 '0 (default) applies the correction '
+                                 'directly and adds NO state',
+                            unit='', default=0.)]
 
     IC_KIND = 'state'
 
     _cos_index = None
+    _filt_index = None
 
     def __init__(self, *args, **kvargs):
         super().__init__(*args, **kvargs)
         self._cos_index = self.nodes.index(self.add_node('cos_node'))
         self._sin_index = self.nodes.index(self.add_node('sin_node'))
+        ## STRUCTURAL, and deliberately so: the filter state exists only when
+        ## it is asked for.  At the default `gamma_tau = 0` this element has
+        ## exactly the node set, matrix and Jacobian it had before the filter
+        ## was written -- not "an inert row", which would still change the
+        ## solve.  The cost of that is that `gamma_tau` cannot be swept per
+        ## lane in `solve_batched`: it decides a shape, not a value.
+        if self.iparv.gamma_tau > 0:
+            self._filt_index = self.nodes.index(self.add_node('corr_filt'))
         self._branch_index = self.n - 1
         self.update(self.ipar)
 
@@ -1599,13 +1614,16 @@ class IdtmodCircular(_WrapEvents, Circuit):
                 'represent an unbounded plain integral (use Idt/Idtmod for '
                 'the degradation mode).')
         n = self.n
-        self._C = self.toolkit.matrix_from_entries(
-            (n, n), [(self._cos_index, self._cos_index, 1),
-                     (self._sin_index, self._sin_index, 1)])
+        entries = [(self._cos_index, self._cos_index, 1),
+                   (self._sin_index, self._sin_index, 1)]
+        if self._filt_index is not None:
+            entries.append((self._filt_index, self._filt_index, 1))
+        self._C = self.toolkit.matrix_from_entries((n, n), entries)
 
     def _params(self):
         return {'modulus': self.iparv.modulus, 'offset': self.iparv.offset,
-                'gamma': self.iparv.gamma, 'ic': self.iparv.ic}
+                'gamma': self.iparv.gamma, 'ic': self.iparv.ic,
+                'gamma_tau': self.iparv.gamma_tau}
 
     def _theta0(self):
         """Phasor angle whose recovered output is ``wrap(ic)``."""
@@ -1615,8 +1633,14 @@ class IdtmodCircular(_WrapEvents, Circuit):
 
     def state_ic(self):
         th = self._theta0()
-        return [(self._cos_index, math.cos(th)),
-                (self._sin_index, math.sin(th))]
+        ic = [(self._cos_index, math.cos(th)),
+              (self._sin_index, math.sin(th))]
+        if self._filt_index is not None:
+            ## The seed lands ON the circle, so the violation it filters is
+            ## exactly zero -- starting the filter anywhere else would inject
+            ## a correction the state does not deserve.
+            ic.append((self._filt_index, 0.0))
+        return ic
 
     def _event_output(self, x):
         m = self.iparv.modulus
@@ -1627,13 +1651,20 @@ class IdtmodCircular(_WrapEvents, Circuit):
 
     @staticmethod
     def eval_q_pure(x, params, epar, toolkit):
+        if params.get('gamma_tau', 0.0) > 0:
+            ## x[6] is the filtered violation; the branch current moves to
+            ## x[7].  See `eval_i_pure` for why the filter is a state.
+            return toolkit.array([0.0, 0.0, 0.0, 0.0, x[4], x[5], x[6], 0.0])
         return toolkit.array([0.0, 0.0, 0.0, 0.0, x[4], x[5], 0.0])
 
     @staticmethod
     def eval_i_pure(x, params, epar, toolkit):
         m = params.get('modulus', 1.0)
         o = params.get('offset', 0.0)
-        c, s, i_br = x[4], x[5], x[6]
+        tau_g = params.get('gamma_tau', 0.0)
+        filtered = tau_g > 0
+        c, s = x[4], x[5]
+        i_br = x[7] if filtered else x[6]
         two_pi = 2.0 * toolkit.pi
         k = floored_wrap(m * toolkit.arctan2(s, c) / two_pi, m, o, toolkit)
         out_row = -(x[2] - x[3]) + k
@@ -1645,13 +1676,50 @@ class IdtmodCircular(_WrapEvents, Circuit):
             ic = params.get('ic', 0.0)
             kw = floored_wrap(ic, m, o, toolkit)
             th = two_pi * kw / m
-            return toolkit.array([0.0, 0.0, i_br, -i_br,
-                                  c - toolkit.cos(th),
-                                  s - toolkit.sin(th),
-                                  out_row])
+            rows = [0.0, 0.0, i_br, -i_br,
+                    c - toolkit.cos(th), s - toolkit.sin(th)]
+            if filtered:
+                ## On the pinned circle the violation is zero, so the filter
+                ## is pinned to zero with it -- an operating point that
+                ## carried a non-zero filtered violation would start the
+                ## transient correcting a circle it is already on.
+                rows.append(x[6] - 0.0)
+            rows.append(out_row)
+            return toolkit.array(rows)
         gamma = params.get('gamma', 1.0)
         w = two_pi * (x[0] - x[1]) / m
-        corr = gamma * toolkit.abs(w) * (c * c + s * s - 1.0)
+        aw = toolkit.abs(w)
+        violation = c * c + s * s - 1.0
+        if filtered:
+            ## VACASK'S PATTERN (idtmod.md sec. 7.5): filter the SIGNAL THE
+            ## CORRECTION READS, never the solution.  The state stays the
+            ## honest phasor; only the feedback sees a smoothed violation.
+            ##
+            ## `f` obeys  df/dt = (violation - f) / tau,  tau = gamma_tau/|w|
+            ## -- per radian of phase travel, exactly as `gamma` is, so the
+            ## behaviour is frequency-independent.  In residual form the
+            ## element contributes dq/dt + i = 0 with q = f, hence
+            ## i_f = (f - violation) * |w| / gamma_tau.
+            ##
+            ## ⚠ WHY THIS IS OFF BY DEFAULT.  Sec. 7.5 wrote this remedy
+            ## down rather than building it, gated on evidence, and BOTH of
+            ## its reopening conditions measure negative: the default gamma=1
+            ## sits ~15x below the gamma*|w|*h > 1 ringing boundary, and an
+            ## adaptive sweep over gamma 0..40 showed no step-size collapse
+            ## (0 rejections throughout, accepted steps 149/170/143/150/144).
+            ## Even fully ringing, the output is unaffected -- atan2(s, c) is
+            ## invariant under (c, s) -> a*(c, s), so radial error cannot
+            ## reach the phase.  The filter is therefore a REMEDY THAT IS
+            ## READY, not a fix that is needed, and it costs a state.
+            f = x[6]
+            corr = gamma * aw * f
+            filt_row = (f - violation) * aw / tau_g
+            return toolkit.array([0.0, 0.0, i_br, -i_br,
+                                  w * s + corr * c,
+                                  -w * c + corr * s,
+                                  filt_row,
+                                  out_row])
+        corr = gamma * aw * violation
         return toolkit.array([0.0, 0.0, i_br, -i_br,
                               w * s + corr * c,
                               -w * c + corr * s,

@@ -825,6 +825,34 @@ without tuning. Measured (50 Gear-2 cycles at ωh ≈ 0.13): γ=0 → radius 0.4
   cannot reach the waveform. The sentinel fails if a future change pushes the
   default into the ringing regime, and this bullet is its remedy note.
 
+  > **BUILT 2026-08-31, OFF BY DEFAULT** — `gamma_tau`, an owner decision taken
+  > with the evidence below in hand rather than against it. The remedy is now
+  > available instead of merely described; nothing changes unless it is asked
+  > for.
+  >
+  > **Both reopening conditions were tested first, and NEITHER fires.**
+  > (1) ringing: the default γ=1 sits ~15× below the `γ|ω|h > 1` boundary, as
+  > the sentinel already asserted. (2) **step-size collapse — tested
+  > 2026-08-31, adaptively, and absent**: over γ = 0, 1, 5, 20, 40 there were
+  > **0 rejections throughout** and accepted steps of 149/170/143/150/144, no
+  > trend. That second condition had never been measured; the sentinel runs at
+  > fixed step and checks output containment, not controller behaviour.
+  >
+  > **STRUCTURAL, so the default path is byte-for-byte the old one.** At
+  > `gamma_tau = 0` no node is added, `_C` is unchanged and `eval_i_pure` takes
+  > the original branch — not "the same plus an inert row", which would still
+  > change the Jacobian and the solve. The cost is that `gamma_tau` decides a
+  > shape, so it cannot be swept per lane in `solve_batched`.
+  >
+  > **It works, and it costs what this bullet predicted.** Provoked at γ=20
+  > (`λh = 2.5`), the alternation fraction falls **1.000 → 0.111** at
+  > `gamma_tau = 1`. And the radius gets **~20× looser** — max `|r²−1|`
+  > 1.27e-04 → 2.88e-03 — which is exactly "filtering trades correction
+  > bandwidth for noise rejection at the cost of phase lag", not a regression.
+  > A test asserts the loosening so that nobody later removes the lag and the
+  > filtering with it. Output error moves ~5% and is unaffected in kind, since
+  > radial error cannot reach the phase.
+
 **Negative finding:** no precedent was found for a phasor-pair idtmod state in any
 circuit simulator — Verilog-A VCO models integrate a scalar phase and wrap it; the
 quadrature VCOs in the literature are circuit topologies, not numerical techniques.
