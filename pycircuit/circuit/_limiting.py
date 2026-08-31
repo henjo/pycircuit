@@ -323,6 +323,110 @@ def _deltalim(vnew, vold, vmax, toolkit):
     return vnew
 
 
+## ---------------------------------------------------------------------------
+## BRANCHLESS TWINS (roadmap sec. 49.2).  `_pnjlim_branchless` came first, for
+## the traced PCNR path; these three complete the set so that every limiter
+## kind a vector device can declare has a form a `jax.lax.while_loop` can host.
+##
+## They are TWINS, not replacements: the branchy originals above stay exactly
+## as they are, so nothing on the CPU path moves and the digest-pinned models
+## are untouched by construction.  Each is pinned to its original by an
+## agreement test over a sweep that crosses every branch boundary.
+## ---------------------------------------------------------------------------
+
+
+def _sel(c, a, b):
+    """Branchless select: ``a`` where ``c``, else ``b``.
+
+    Arithmetic rather than a `where`, so this module stays import-free -- the
+    same choice `_pnjlim_branchless` makes, and it works identically on numpy
+    scalars, numpy arrays and traced jax arrays.
+
+    ⚠ **Exact only where both arms are FINITE.**  ``0.0 * x + 1.0 * y`` is
+    ``y`` exactly when ``x`` is finite, and ``nan`` when it is not, because
+    ``0 * inf = nan``.  That is why `_pnjlim_branchless` floors its ``log``
+    arguments BEFORE taking them rather than selecting afterwards.  The three
+    laws below are pure comparisons and `abs`/`min`/`max` on finite values --
+    their own docstrings say so -- and have no arm that can go non-finite, so
+    the plain select is safe for them and would not be for a fourth.
+    """
+    c = c * 1.0
+    return a * c + b * (1.0 - c)
+
+
+def _minimum(a, b):
+    """`min` as a select, so it takes arrays and tracers."""
+    return _sel(a <= b, a, b)
+
+
+def _maximum(a, b):
+    """`max` as a select, so it takes arrays and tracers."""
+    return _sel(a >= b, a, b)
+
+
+def _deltalim_branchless(vnew, vold, vmax):
+    """`_deltalim`, branchless.  See it for the law and why it exists."""
+    d = vnew - vold
+    return _sel(d > vmax, vold + vmax,
+                _sel(d < -vmax, vold - vmax, vnew))
+
+
+def _limvds_branchless(vnew, vold):
+    """`_limvds`, branchless -- including the reverse-mode fold.
+
+    The original recurses once for ``vold < 0`` (`mos1load.c`'s
+    ``-DEVlimvds(-vds, -vds_old)``).  A recursion cannot be selected over, so
+    it is UNROLLED into a sign: the law is applied to ``s*vnew``/``s*vold``
+    and the result carried back by the same ``s``.  Depth is exactly one, so
+    the unrolling is complete rather than truncated -- ``s*vold >= 0`` always
+    holds inside, which is the branch the recursion existed to reach.
+    """
+    s = _sel(vold < 0.0, -1.0, 1.0)
+    vn, vo = s * vnew, s * vold
+    rising = vn > vo
+    hi = _sel(rising, _minimum(vn, 3.0 * vo + 2.0),
+              _sel(vn < 3.5, _maximum(vn, 2.0), vn))
+    lo = _sel(rising, _minimum(vn, 4.0), _maximum(vn, -0.5))
+    return s * _sel(vo >= 3.5, hi, lo)
+
+
+def _fetlim_branchless(vnew, vold, vto):
+    """`_fetlim`, branchless.  A transcription of the transcription.
+
+    The two arms the original marks ``# unreachable`` are carried here too,
+    rather than dropped as dead: this stays a transcription of ngspice's
+    routine, and a select costs nothing where a branch cost nothing. If they
+    are truly unreachable the agreement test cannot tell the difference, and
+    if they are ever reached both forms move together.
+    """
+    vtsthi = abs(2.0 * (vold - vto)) + 2.0
+    vtstlo = abs(vold - vto) + 1.0
+    vtox = vto + 3.5
+    delv = vnew - vold
+    going_off = delv <= 0.0
+
+    ## vold >= vtox: on, well above threshold.
+    off_hi = _sel(vnew >= vtox,
+                  _sel(-delv > vtstlo, vold - vtstlo, vnew),
+                  _maximum(vnew, vto + 2.0))
+    on_hi = _sel(delv >= vtsthi, vold + vtsthi, vnew)
+    hi = _sel(going_off, off_hi, on_hi)
+
+    ## vto <= vold < vtox: the middle region.
+    mid = _sel(going_off, _maximum(vnew, vto - 0.5),
+               _minimum(vnew, vto + 4.0))
+
+    ## vold < vto: off.
+    vtemp = vto + 0.5
+    off_falling = _sel(-delv > vtsthi, vold - vtsthi, vnew)
+    off_rising = _sel(vnew <= vtemp,
+                      _sel(delv > vtstlo, vold + vtstlo, vnew),
+                      vtemp)
+    off = _sel(going_off, off_falling, off_rising)
+
+    return _sel(vold >= vto, _sel(vold >= vtox, hi, mid), off)
+
+
 def apply_limit(kind, vnew, vold, pars, toolkit):
     """Dispatch one limiter KIND on its own parameter list.
 

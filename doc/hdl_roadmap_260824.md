@@ -5669,11 +5669,37 @@ ONE law serves both paths, the traced duplicate `pnjlim` can be retired, and
 the device's own `pcnr_limit` becomes callable from the trace -- which is the
 paper's modularity claim and this repo's stated single-source-of-truth rule.
 
-⚠ **(b) is right and it is not cheap.** It edits the CPU's limiting laws,
-which sit under digest-pinned models and the whole PCNR suite. It needs
-bit-identity on the CPU proven, not assumed -- `where` must reproduce each
-branch exactly, including at the boundary values the branches were written to
-separate.
+⚠ **CORRECTION, same day: (b) is right AND cheap, and the sentence that stood
+here was wrong.** It said (b) "edits the CPU's limiting laws, which sit under
+digest-pinned models and the whole PCNR suite". It does not, because the
+pattern already exists: `_limiting.py` carries `_pnjlim` and
+`_pnjlim_branchless` SIDE BY SIDE -- "same law, arithmetic selects instead of
+Python `if`s, so it runs on numpy scalars/arrays and traced jax arrays alike"
+-- with `jaxtransient` importing the twin and the CPU keeping the original. I
+wrote the blast-radius claim from the call sites before reading the module.
+
+So (b) is ADDITIVE: three more twins beside their originals. Nothing on the
+CPU path moves, and the "bit-identity proof" is a unit test against the
+original rather than a suite-wide risk.
+
+**DONE 2026-08-31.** `_fetlim_branchless`, `_limvds_branchless` and
+`_deltalim_branchless` added, with `_sel`/`_minimum`/`_maximum` helpers.
+Bit-identical to their originals over every branch boundary (~1,900 `fetlim`
+comparisons across four `vto`, plus `limvds` and `deltalim` sweeps; zero
+mismatches), and all four laws now `jit`, `vmap` AND `grad` -- vmap is what
+`solve_batched` needs, grad what PCNR's Jacobian needs, and a law that traced
+but differentiated to a non-finite value would pass a jit check and still be
+useless. Bite-checked: removing `limvds`'s reverse-mode fold, and a 2.0 -> 2.5
+slip in `fetlim`, each fail their own test and only their own.
+
+⚠ Two things worth carrying. `_limvds` RECURSES once for `vold < 0`
+(`mos1load.c`'s reverse-mode call); a recursion cannot be selected over, so
+the twin unrolls it into a sign -- depth is exactly one, so the unrolling is
+complete rather than truncated. And the arithmetic select `a*c + b*(1-c)` is
+exact only where BOTH arms are finite (`0*inf = nan`), which is precisely why
+`_pnjlim_branchless` floors its `log` arguments before taking them instead of
+selecting afterwards; these three are pure `abs`/`min`/`max` on finite values
+and have no such arm.
 
 **Recommended: (b), gated on a bit-identity proof taken FIRST** — every law,
 over a sweep that includes each branch boundary, `where`-form against
