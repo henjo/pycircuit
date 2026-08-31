@@ -5000,6 +5000,13 @@ is cheaper** — drop the citation, rename the flag to describe the rejection lo
 actually is, and fix the four ignored inputs. Do not start this stage without deciding
 which of the two is wanted, because doing the cheap one first is wasted if this lands.
 
+⚠ **DECIDED AND DONE — this paragraph is the state before the fork was taken** (noted
+2026-08-31). Stage 12 landed: 12A (Fang's band and step damper, shipped inert and
+priced), 12B (eq (12), the closed-form `q^T`/`d`, source kinks as breakpoints), and
+`db4922a` closing its last three gates. The cheaper alternative was therefore NOT taken,
+and the citation is true. Read the paragraph above as the reasoning at the fork, not as a
+question still open.
+
 **Source:** G. Peter Fang, *"A new time-stepping method for circuit simulation"*, DAC 2013 —
 `/home/andreas/pycircuit_agy/papers/2463209.2488904.pdf`. Read it from rendered pages; the
 formulas do not survive text extraction. What 0.1d established, so it is not re-derived:
