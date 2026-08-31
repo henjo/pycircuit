@@ -43,6 +43,16 @@ from pycircuit.circuit.stepcontroller import (MAX_GROWTH_RATIO,
 ## than failing to import a circuit simulator.  What changed is that the
 ## speedup no longer depends on someone remembering `OMP_NUM_THREADS=1` at the
 ## shell -- which is how it was silently forfeited on this machine for weeks.
+##
+## ⚠ THIS LIMIT BELONGS TO THE TRANSIENT AND SHOULD NOT BE COPIED TO `DC` OR
+## `AC`.  Measured 2026-08-31 (work plan 2a-bis): the penalty is per-call
+## thread-pool overhead, crossing over around 50-100 solves, NOT a property of
+## problem size.  A transient runs thousands of small assemblies and solves in
+## a Python loop and so is destroyed by it; DC performs a handful of large
+## operations and PREFERS threads at every size measured (0.57x at n=28 down to
+## **0.43x at n=2503** -- limiting it would cost 2.3x), and AC never flips even
+## over a 500-point sweep (0.80x-0.98x).  Extending this context manager to
+## them is a measured regression, not an oversight.
 try:
     from threadpoolctl import threadpool_limits as _threadpool_limits
 except ImportError:

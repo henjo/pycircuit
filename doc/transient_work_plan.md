@@ -1425,6 +1425,69 @@ changed is that the win no longer depends on someone remembering a shell variabl
 is exactly how it was forfeited on this machine for weeks while every transient benchmark
 here paid 14-20x.
 
+### 2a-bis -- should the limiter go WIDER?  Investigated 2026-08-31: no, and here is why
+
+The 14-20x invited an obvious follow-up: `_single_threaded_blas()` reaches exactly one
+call site, so extend it to `DC`, `AC` and `pcnr`, and limit the test suite session-wide.
+**Measured first, and every part of that was refused.**
+
+**The variable is not problem size, it is CALL COUNT.** Holding n fixed at 139 and varying
+only how many solves are performed:
+
+| solves | single | default | ratio |
+|---|---|---|---|
+| 1 | 0.00065 s | 0.00018 s | 0.28x -- threads win |
+| 10 | 0.00193 s | 0.00178 s | 0.92x -- threads win |
+| 100 | 0.01450 s | 0.02017 s | **1.39x -- single wins** |
+| 1000 | 0.08979 s | 0.20989 s | **2.34x** |
+| 5000 | 0.44569 s | 1.53100 s | **3.44x** |
+
+The penalty is per-call thread-pool overhead and it crosses over around 50-100 calls. That
+is why a transient (thousands of small assemblies and solves in a Python loop) is destroyed
+by threads while a single solve is not -- and it means "small n" was never the right
+description of the effect.
+
+**DC: REFUSED, threads win at every size, and by more as n grows.** An R-ladder DC solve,
+interleaved, min of 3:
+
+| n | single | default | ratio |
+|---|---|---|---|
+| 28 | 0.0010 s | 0.0006 s | 0.57x |
+| 153 | 0.0044 s | 0.0039 s | 0.89x |
+| 1003 | 0.0722 s | 0.0512 s | 0.71x |
+| 2503 | 0.5666 s | 0.2445 s | **0.43x** |
+
+DC performs a handful of large operations, so the arithmetic dominates. Limiting it would
+cost up to 2.3x.
+
+**AC: REFUSED, neutral at best.** AC solves once per frequency point, so a long sweep looked
+like the "many small calls" case -- but its per-point work (building `s*C + G` and solving)
+is large enough that it never flips: 0.80x (n=73, 5 points), 0.98x (n=73, 500), 0.88x
+(n=403, 5), 0.84x (n=403, 500).
+
+**Suite-wide limiting: REFUSED at 1.05x.** Paired runs on an idle machine, minutes apart,
+identical outcomes (2754 passed / 6 skipped / 3 xfailed) every time:
+
+| configuration | wall | vs control |
+|---|---|---|
+| control, `-n 8` | 248.35 s | -- |
+| session-wide BLAS limit | 236.19 s | 1.05x |
+| `-n 16` | 231.01 s | 1.075x |
+| XLA CPU intra-op pool limited | 242.36 s | 1.02x |
+
+⚠ **A CONFOUND THAT WOULD HAVE MANUFACTURED A RESULT.** The 398 s figure recorded above
+was taken while the machine carried unrelated load; the session-limit run was taken on an
+idle one. Comparing them gives a spurious **1.69x** and would have justified the change.
+The paired control -- same machine, minutes apart -- is what reduced it to 1.05x. When a
+performance figure is compared against a baseline from another day, the machine is an
+uncontrolled variable.
+
+**So the limiter stays exactly where it is**, and its placement is now measured rather than
+inherited: `Transient` is the analysis whose call pattern the limit is for. `-n 16` is worth
+7% for anyone who wants it and is left as the caller's choice; the XLA pool -- which
+`threadpoolctl` cannot see at all (`threadpool_info()` reports only `blas/openblas`) -- is
+not worth touching at 1.02x.
+
 *The review's supporting figure does not reproduce.* It recorded "0.238 ms single-threaded
 against 4.462 ms with 4 threads" for a 136x136 solve. Measured here at n=139, 300 reps:
 **0.234 ms with the default thread count against 0.182 ms single-threaded** — a 1.29x
