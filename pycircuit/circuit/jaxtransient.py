@@ -1768,6 +1768,86 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 q_acc = q_curr.at[p_rows].add(-_d)
                 x_hist_base = state.x_history.at[:, p_rows].add(-_d)
                 q_hist_base = state.q_history.at[:, p_rows].add(-_d)
+
+                ## ARC 7 (idtmod.md sec. 5.3): the in-trace wrap-crossing dt
+                ## cap, which that section listed as future work because
+                ## `t_breaks_array` is static and a state-dependent event
+                ## cannot enter it.  It enters HERE instead: not as a
+                ## breakpoint, but as a cap on the next step, computed from
+                ## state the trace already holds.  Branchless -- no host
+                ## control flow, so it compiles inside `lax.while_loop`.
+                ##
+                ## ⚠ WHAT THIS DOES AND DOES NOT BUY, measured before it was
+                ## built.  A wrap is a discontinuity in the OUTPUT MAP, not in
+                ## the ODE: the gauge shift above keeps the state continuous
+                ## and the sawtooth is an exact `floored_wrap` of it, so there
+                ## is no kink for the integrator to resolve.  Accordingly it
+                ## buys NOTHING in accuracy or cost -- against a tight
+                ## reference on a varying integrand, JAX and the CPU agreed to
+                ## within 1-5% of each other's error (6.171e-03 vs 6.112e-03 at
+                ## reltol 1e-4; 2.925e-04 vs 2.775e-04 at 1e-6) at the same
+                ## step counts, and sec. 5.3's predicted step-collapse at wraps
+                ## DID NOT REPRODUCE (70 points against the CPU's 74, no
+                ## rejection storm).
+                ##
+                ## What it buys is SAMPLE PLACEMENT.  Measured on the exact
+                ## ramp, distance from the true corners: CPU (which has
+                ## breakpoints) 3.55e-15, JAX 3.29e-02 -- up to three output
+                ## timesteps past the corner.  That matters to a consumer that
+                ## RESAMPLES or edge-detects the output, because interpolating
+                ## a sawtooth across an unmarked corner returns values the
+                ## signal never takes (sec. 3.4's consumer discontinuity).
+                ##
+                ## THE PREDICTION is linear, from the step just accepted --
+                ## the CPU's own rule in sec. 5.3 ("the linearly predicted
+                ## crossing time").  It only has to BRACKET the corner; the
+                ## step is capped, not landed exactly, and the next step
+                ## re-predicts from there.
+                if not fixed_timestep:
+                    ## The previous ACCEPTED point is the head of the ring;
+                    ## `x_curr` is pre-shift and the ring is not yet shifted,
+                    ## so both are in one gauge and the slope is the step's.
+                    _rate = ((x_curr[p_rows] - state.x_history[0, p_rows])
+                             / state.dt)
+                    ## Post-shift the state lies in [offs, offs+mods), so the
+                    ## boundary being approached is the top going up and the
+                    ## bottom going down.
+                    _x_s = x_acc[p_rows]
+                    _dist = jnp.where(_rate > 0.0,
+                                      (p_offs + p_mods) - _x_s,
+                                      p_offs - _x_s)
+                    ## A point sitting exactly ON the boundary it is leaving
+                    ## must travel a whole modulus, not zero -- otherwise the
+                    ## cap collapses the next step to dt_min at every wrap,
+                    ## turning an accuracy-neutral change into a cost one.
+                    ##
+                    ## ⚠ DEFENSIVE AND UNEXERCISED, and said plainly rather
+                    ## than left to look tested.  The case needs a DESCENDING
+                    ## state landing exactly on `offs`: ascending, a landing
+                    ## on the top is shifted to `offs` and the next boundary
+                    ## going up is a full modulus away, so no zero arises.
+                    ## Descending was built and driven (v = -1 into modulus 1,
+                    ## three wraps) and the branch still never fires, because
+                    ## the cap lands just SHORT of the boundary in floating
+                    ## point -- the gauge shift has then already wrapped the
+                    ## state to the top and the distance is again a modulus.
+                    ## Removing this branch changed that run not at all
+                    ## (64 points, corners at 8e-15, both ways).  It is kept
+                    ## because "unreachable in the arithmetic I could
+                    ## construct" is not "unreachable", and the failure it
+                    ## prevents is a step collapse at every wrap.
+                    _eps = 1e-12 * p_mods
+                    _dist = jnp.where(jnp.abs(_dist) < _eps,
+                                      jnp.where(_rate > 0.0, p_mods, -p_mods),
+                                      _dist)
+                    ## Rate ~ 0 means no crossing is predicted at all.
+                    _moving = jnp.abs(_rate) > _eps
+                    _dt_cross = jnp.where(
+                        _moving, _dist / jnp.where(_moving, _rate, 1.0),
+                        jnp.inf)
+                    _wrap_dt = jnp.min(_dt_cross, initial=jnp.inf)
+                    next_dt = jnp.maximum(jnp.minimum(next_dt, _wrap_dt),
+                                          dt_min)
             else:
                 x_acc, q_acc = x_curr, q_curr
                 x_hist_base = state.x_history

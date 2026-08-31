@@ -623,6 +623,13 @@ The differentiator (§3.3 row 3). Files: `pycircuit/circuit/circuit.py`,
   cannot enter either. Document honestly as CPU-only; a branchless in-trace `dt` cap from
   the predicted crossing is listed as future work, not promised.
 
+  > **BUILT 2026-08-31** (arc 7). Still not a breakpoint — the event enters as a CAP on
+  > the next step, in `do_accept`, from the state and the slope just accepted. The
+  > "controller interaction" worry in the bullet above **did not reproduce** when
+  > measured; the benefit is sample placement (3.29e-02 → 4.00e-15 from the true
+  > corners). See the roadmap entry for the numbers and for why: a wrap is a
+  > discontinuity in the output map, not in the ODE.
+
 ### 5.4 Test plan
 
 1. **FD Jacobian**: add `Idtmod` to the finite-difference harness pattern
@@ -984,10 +991,29 @@ in priority order agreed with the owner:
    highest-value item there is widening PCNR's qualification -- charge-
    storing junctions and multi-junction devices -- which is work in
    `pcnr.py` rather than in the DSL.
-7. **JAX in-trace wrap-crossing dt cap** — dynamic breakpoints are
-   architecturally out of the traced loop (static `t_breaks_array`); a
-   branchless per-step `dt` clamp from the predicted crossing is the listed
-   future work from Phase 3 (sec. 5.3).
+7. **JAX in-trace wrap-crossing dt cap** — **DONE 2026-08-31.** Dynamic
+   breakpoints remain architecturally out of the traced loop (static
+   `t_breaks_array`); the crossing enters as a **cap on the next step**
+   instead, computed branchlessly in `do_accept` from the state and the slope
+   of the step just accepted. Corner placement on the JAX path went
+   **3.29e-02 → 4.00e-15**, matching the CPU's 3.55e-15.
+
+   ⚠ **Sec. 5.3's stated rationale did not reproduce, and the measurement is
+   the useful half.** That section expected the controller to treat each wrap
+   as a pulse edge and shrink toward minstep. It does not: measured before
+   building, JAX took 70 points against the CPU's 74 with no rejection storm,
+   and the two agreed to within 1–5% of each other's error at two tolerances
+   (6.171e-03 vs 6.112e-03 at reltol 1e-4; 2.925e-04 vs 2.775e-04 at 1e-6).
+
+   **A wrap is a discontinuity in the OUTPUT MAP, not in the ODE.** The Phase-2
+   gauge shift keeps the state continuous and the sawtooth is an exact
+   `floored_wrap` of it, so there is no kink for an integrator to resolve and a
+   breakpoint cannot improve integration. What it can do is place a SAMPLE, and
+   that is the whole benefit — which matters to a consumer that resamples or
+   edge-detects the output, since interpolating a sawtooth across an unmarked
+   corner returns values the signal never takes (sec. 3.4's consumer
+   discontinuity). Accuracy was unchanged-to-slightly-better afterwards
+   (5.043e-03 and 2.766e-04) at the same step counts.
 
 Also standing: the trap-ringing sentinel's reopening trigger (sec. 7.5) and
 the transient-rescue-in-trace trigger parked in the branch's own docs.

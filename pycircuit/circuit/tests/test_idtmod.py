@@ -878,3 +878,114 @@ def test_solve_batched_dc_pinned_without_uic():
     for lane in res:
         y = np.asarray(lane.v('out'), float).reshape(-1)
         assert abs(y[0] - 0.25) < 1e-6, y[0]
+
+
+## ------------------------------------------------------------------------
+## Arc 7 (idtmod.md sec. 5.3): the in-trace wrap-crossing dt cap.
+
+
+def test_jax_lands_on_wrap_corners():
+    """The JAX path places a sample ON each wrap, not up to three steps past.
+
+    ⚠ THIS IS A SAMPLE-PLACEMENT GUARD, NOT AN ACCURACY ONE, and the
+    distinction is the whole finding behind arc 7. A wrap is a discontinuity
+    in the OUTPUT MAP, not in the ODE: the Phase-2 gauge shift keeps the state
+    continuous and the sawtooth is an exact `floored_wrap` of it, so there is
+    no kink for the integrator to resolve. Measured before the cap was built,
+    JAX and the CPU agreed to within 1-5% of each other's error at two
+    tolerances and the same step counts, and sec. 5.3's predicted
+    step-collapse at wraps did not reproduce.
+
+    What DID differ was where the samples fell: the CPU (which has wrap
+    breakpoints) landed within 3.55e-15 of each corner, JAX within 3.29e-02 --
+    up to three output timesteps late. That matters to a consumer that
+    resamples or edge-detects the output, because interpolating a sawtooth
+    across an unmarked corner returns values the signal never takes (sec. 3.4).
+
+    1 V into modulus 1 puts the corners at exactly t = 1, 2, 3, so the target
+    is known rather than estimated.
+    """
+    pytest.importorskip('jax')
+    import warnings
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+
+    saved = pycircuit.circuit.circuit.default_toolkit
+    try:
+        pycircuit.circuit.circuit.default_toolkit = jaxtoolkit
+        c = SubCircuit(toolkit=jaxtoolkit)
+        nin, nout = c.add_node('in'), c.add_node('out')
+        c['vin'] = VS(nin, gnd, v=1.0, toolkit=jaxtoolkit)
+        c['R1'] = R(nout, gnd, r=1e3, toolkit=jaxtoolkit)
+        c['Idtmod'] = Idtmod(nin, gnd, nout, gnd, modulus=1.0,
+                             toolkit=jaxtoolkit)
+        tran = JAXTransient(c, reltol=1e-4)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(refnode=gnd, tend=3.4, timestep=1e-2, uic=True)
+        t = np.asarray(res.sweep_values, float).reshape(-1)
+    finally:
+        pycircuit.circuit.circuit.default_toolkit = saved
+
+    for corner in (1.0, 2.0, 3.0):
+        gap = float(np.min(np.abs(t - corner)))
+        ## Generous against the 4e-15 measured, tight against the 3.3e-02
+        ## that stood before the cap: three orders of margin either way, so
+        ## it cannot pass by accident and will not flake on step placement.
+        assert gap < 1e-9, \
+            'no sample within 1e-9 of the wrap at t=%g (nearest %.3e); the ' \
+            'in-trace dt cap is not capping' % (corner, gap)
+
+
+def test_the_wrap_cap_does_not_collapse_the_step_at_a_corner():
+    """Landing ON a wrap must not then cap the NEXT step to zero.
+
+    The failure this guards is specific and was designed against rather than
+    discovered: post-shift the state sits in ``[offset, offset+modulus)``, so
+    a point that lands exactly on the boundary it is leaving has distance zero
+    to "the next" crossing. Taken literally that caps every post-wrap step to
+    `dt_min` -- turning an accuracy-neutral change into a cost one, at exactly
+    the moment the cap is doing its job. A whole modulus is the right distance.
+
+    Asserted as a step COUNT, because that is what a collapse would blow up.
+
+    ⚠ THIS TEST PASSES WITH THE ZERO-DISTANCE BRANCH REMOVED, and that is
+    recorded rather than hidden: the branch is defensive and could not be made
+    to fire. Driving a descending state (v = -1) through three wraps gave the
+    same 64 points and the same 8e-15 corners with and without it, because the
+    cap lands just SHORT of the boundary in floating point and the gauge shift
+    has already wrapped the state to the top. So this guards the cap's COST in
+    general -- any future change that collapses steps at a wrap fails here --
+    and does NOT evidence that one branch. The corner test above is the one
+    that bites on the feature (1.5e-02 with the cap disabled).
+    """
+    pytest.importorskip('jax')
+    import warnings
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+
+    saved = pycircuit.circuit.circuit.default_toolkit
+    try:
+        pycircuit.circuit.circuit.default_toolkit = jaxtoolkit
+        c = SubCircuit(toolkit=jaxtoolkit)
+        nin, nout = c.add_node('in'), c.add_node('out')
+        c['vin'] = VS(nin, gnd, v=1.0, toolkit=jaxtoolkit)
+        c['R1'] = R(nout, gnd, r=1e3, toolkit=jaxtoolkit)
+        c['Idtmod'] = Idtmod(nin, gnd, nout, gnd, modulus=1.0,
+                             toolkit=jaxtoolkit)
+        tran = JAXTransient(c, reltol=1e-4)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tran.solve(refnode=gnd, tend=3.4, timestep=1e-2, uic=True)
+        t = np.asarray(res.sweep_values, float).reshape(-1)
+    finally:
+        pycircuit.circuit.circuit.default_toolkit = saved
+
+    ## Three wraps over 3.4 s at timestep 1e-2: the run took ~70 points before
+    ## the cap and must stay that order.  A collapse to dt_min would be
+    ## thousands.
+    assert len(t) < 400, \
+        'step collapse after a wrap: %d points for a 3.4 s run' % len(t)
+    ## And the output still spans the modulus rather than sticking at a corner.
+    y = np.asarray(res.v('out'), float).reshape(-1)
+    assert y.max() > 0.9 and y.min() < 0.1, (y.min(), y.max())
