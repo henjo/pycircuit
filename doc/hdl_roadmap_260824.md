@@ -5898,3 +5898,47 @@ new path is better.**
 **What unblocks the transient is a traceable charge on the participating
 devices** -- `eval_q_pure`, the same treatment the batchable classes already
 have -- which is DSL work, not PCNR work, and is where G3 and G5 wait.
+
+### 49.6 What actually blocks the traced transient: the CHAINED path has no jax backend
+
+Chasing §49.5's charge blocker to its root, and it is much larger than PCNR.
+
+**25 of 38 library classes are CHAINED**, which is every real compact model --
+`EkvNmos/Pmos`, both `GummelPoon`, `DiodeSpice`, `DiodeSpiceThermal`, all four
+`MosLevel`, PSP. The other 13 are eager: passives and simple behavioural
+blocks. And the chained assembly reads
+
+    if info['chained']:
+        ck = funcs['q'].__dict__.get('_hdl_c')      # the C backend hook
+        if ck is not None:
+            return ck(self, x, epar)
+        return np.asarray(funcs['q'](x, *_args_of(self, epar)), dtype=float)
+
+-- a hook for the **C** backend, and for jax a `np.asarray` that cannot take a
+tracer. So **the JAX backend cannot run any chained model at all**, with or
+without PCNR. That is why `EkvNmosHdl` fails under a plain `JAXTransient` too,
+which is worth stating plainly because it means §49.5's refusal is not a PCNR
+limitation wearing a PCNR message.
+
+⚠ **§22's disjointness does NOT refuse repairing this, and the distinction is
+the point.** §22 measured that a chained model has no `eval_i_pure` and so
+loses `solve_batched` -- that finding is about BATCHING, under `vmap`, where
+every lane must share one program. TRACING is a different capability: a
+`lax.while_loop` needs the assembly to be expressible in jax primitives, not to
+be uniform across lanes. Vector PCNR at DC already proves the difference --
+`EkvNmosHdl` solves there to 4.4e-16 (§49.4) precisely because PCNR shadows its
+untraceable `i` out and re-stamps through `pcnr_i`, which is jax-compiled.
+
+**The work is a `_hdl_jax` hook beside `_hdl_c`**, compiling the chain under
+`_kernel_jax` on demand and caching it -- the same pattern applied three times
+already today (`_pcnr_vec_compiled` for `pcnr_i`/`pcnr_didv`, `_limit_par_for`
+for limiter parameters, and the frozen-record carriage that makes both survive
+the compile cache). The machinery exists: `_chain_compile` already accepts
+`modules_map=dict(_kernel_jax(jnp), numpy=jnp)`.
+
+**What it would unlock is not only Stage 3.** It is every compact model on the
+JAX transient -- which is the backend's whole reason to exist -- and it turns
+§49.5's "transient refused" into G3 and G5 being takeable. It is also the
+largest single capability gap between the two backends, and it has been
+invisible because the batchable 13 are exactly the classes whose tests exercise
+the JAX path.
