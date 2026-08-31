@@ -1390,6 +1390,23 @@ criterion is unsatisfiable in principle for this change.**
 **71.367 s -> 41.396 s, i.e. 1.72x**, step count identical (324 both). **Below the declared
 >= 2x**, so the gate fails as written.
 
+⚠ **RE-MEASURED 2026-08-31 ON A 24-CORE BOX: 14-20x, and the trade-off this OUTCOME
+records has expired with the hardware.** The 1.72x above was taken on a 4-core machine.
+Thread-pool overhead scales with the core count the pool spans, so the penalty grows with
+the box: three interleaved pairs on the same leapfrog, identical 292 output points,
+**single-threaded 11.1/10.3/8.2 s against default 159.5/145.1/164.9 s** -- minima 17.7x.
+With the cubic live, **0.73 s per simulated microsecond against 10.35 s, 14.2x**.
+
+⚠ **And the in-process limiter is INERT here: `threadpoolctl` is still not installed**, so
+`blas_single_thread_available()` returns False and `_single_threaded_blas()` is a
+`nullcontext`. The environment fallback the module documents is doing all the work, and
+only when someone remembers to set it.
+
+`transient.py` defers the dependency question -- "making it a hard dependency for a 1.72x
+is the maintainer's call" -- and that sentence was written against 1.72x. At 14-20x on
+current hardware it is a different question, and it belongs to the maintainer with the new
+number in hand rather than the old one.
+
 *The review's supporting figure does not reproduce.* It recorded "0.238 ms single-threaded
 against 4.462 ms with 4 threads" for a 136x136 solve. Measured here at n=139, 300 reps:
 **0.234 ms with the default thread count against 0.182 ms single-threaded** — a 1.29x

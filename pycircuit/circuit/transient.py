@@ -32,6 +32,15 @@ from pycircuit.circuit.stepcontroller import (MAX_GROWTH_RATIO,
 ## `blas_single_thread_available()` reports False, so the speedup can be had from
 ## the environment instead (OMP_NUM_THREADS=1 etc.).  Making it a hard dependency
 ## for a 1.72x is the maintainer's call, not this module's.
+##
+## ⚠ 1.72x WAS MEASURED ON A 4-CORE BOX.  The overhead scales with the core count
+## the thread pool spans, so on a 24-core machine the same comparison measures
+## **14-20x** (2026-08-31: minima 8.2 s against 145.1 s over three interleaved
+## pairs on the leapfrog; 14.2x with a nonlinearity live).  The maintainer's call
+## above was framed against 1.72x and should be re-taken against this number.
+## Note `threadpoolctl` is NOT installed here, so the limiter below is a
+## nullcontext and the whole speedup currently depends on someone remembering
+## OMP_NUM_THREADS=1.
 try:
     from threadpoolctl import threadpool_limits as _threadpool_limits
 except ImportError:
