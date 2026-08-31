@@ -1327,55 +1327,112 @@ def test_the_traced_twin_traces_and_differentiates():
     assert np.all(np.isfinite(jac)), jac
 
 
-def test_a_solution_reading_limiter_parameter_traces_on_a_cold_build():
-    """⚠ EXPIRING TEST -- and it documents a CACHE limitation, not a law one.
+def test_a_solution_reading_limiter_parameter_traces_from_cache_too():
+    """The positive form of a test that expired twice in one day.
 
     `EkvNmosHdl`'s `fet` law takes a parameter that reads the solution
-    (SPICE's `von`, `_wants_x`). `_limit_par_for` compiles a jax twin for it
-    from ingredients `_limit_par_fn` attaches at build time, which works --
-    on a COLD build. The HDL compile cache's rehydration path reconstructs
-    these functions without running `_limit_par_fn`, so a warm process has the
-    generated code and not the ingredients. Measured: the same class reports
-    them present on a first run into an empty cache dir and absent on the
-    second.
+    (SPICE's `von`, `_wants_x`), so under tracing it is handed a TRACER --
+    and its chain was compiled against the numpy kernel. `_limit_par_for`
+    now recompiles it from sympy ingredients that `_limit_par_fn` attaches
+    and, since `CACHE_FORMAT` 4, the frozen function record carries through
+    the compile cache.
 
-    Rather than hand a traced loop a numpy function that dies several frames
-    deep, `_limit_par_for` REFUSES with that explanation. This asserts the
-    refusal so the limitation cannot be mistaken for a capability; carrying
-    the ingredients through the cache is roadmap sec. 49.3, and when that
-    lands this test fails and should be replaced by the positive one.
-
-    Gummel-Poon is unaffected either way: its limiter parameters are
-    constants, so it needs no twin at all.
-
-    ⚠ That last sentence was ASSERTED before it was true. The first full
-    suite run failed two tests here, because the refusal was keyed on the
-    ingredients being missing rather than on the parameter actually needing a
-    twin -- so it grounded every device whose limiter parameters are
-    constants, Gummel-Poon included. A parameter that does not read the
-    solution never receives a tracer; only `_wants_x` does. The rule is now
-    keyed on that.
+    ⚠ `x_old_sub` is built INSIDE the jitted function on purpose. Closing
+    over a `jnp.zeros` created outside makes it a compile-time constant that
+    a numpy chain can consume, and a probe written that way passed while the
+    feature did not work. The tracer has to be genuine for this to mean
+    anything.
     """
     pytest.importorskip('jax')
+    import jax
     import jax.numpy as jnp
     from pycircuit.circuit.toolkit import jaxtoolkit
     from pycircuit.circuit.circuit import defaultepar
-    from pycircuit.circuit.hdl import _limit_par_for
 
     cls, params = _vec_dev('EkvNmosHdl', 4, jaxtoolkit)
     laws = cls.pcnr_limit_branchless.__defaults__[0]
+    assert any(getattr(pf, '_wants_x', False) for _k, pfs in laws
+               for pf in pfs), 'EKV should read the solution somewhere'
+
+    def f(a, b):
+        ## Traced, not closed over -- see the docstring.
+        return cls.pcnr_limit_branchless(a, b, params, defaultepar,
+                                         jaxtoolkit, jnp.zeros(8))
+
+    m = len(cls.pcnr_probes)
+    v_new, v_old = jnp.linspace(0.6, 1.1, m), jnp.linspace(0.5, 0.9, m)
+    eager = np.asarray(f(v_new, v_old), dtype=float)
+    jitted = np.asarray(jax.jit(f)(v_new, v_old), dtype=float)
+    assert np.array_equal(eager, jitted), (eager, jitted)
+    jac = np.asarray(jax.jacobian(lambda a: f(a, v_old))(v_new))
+    assert np.all(np.isfinite(jac)), jac
+
+    ## Still the CPU's own answer, bit for bit.
+    cls_n, params_n = _vec_dev('EkvNmosHdl', 4, numeric)
+    cpu = np.asarray(cls_n.pcnr_limit(np.asarray(v_new), np.asarray(v_old),
+                                      params_n, defaultepar, numeric,
+                                      np.zeros(8)), dtype=float)
+    assert np.array_equal(eager, cpu), (eager, cpu)
+
+
+def test_the_cache_carries_what_a_traced_recompile_needs():
+    """A cache hit must not silently cost a capability.
+
+    The failure this guards is specific and was measured: with the
+    ingredients absent from the frozen record, the same class reported them
+    present on a first run into an empty cache dir and absent on the second,
+    so the device kept working and quietly could not be traced. Bumping the
+    format alone did NOT fix it -- that invalidates stale entries while the
+    newly written ones drop the ingredients just the same, which is the
+    difference between invalidating a cache and fixing what it stores.
+    """
+    from pycircuit.circuit import _hdl_cache
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.hdl import _limit_par_for
+
+    cls, _params = _vec_dev('EkvNmosHdl', 4, jaxtoolkit)
+    laws = cls.pcnr_limit_branchless.__defaults__[0]
     wants_x = [pf for _k, pfs in laws for pf in pfs
                if getattr(pf, '_wants_x', False)]
-    assert wants_x, 'EKV should have a solution-reading limiter parameter'
+    assert wants_x
 
     for pf in wants_x:
-        if hasattr(pf, '_hdl_limit_par'):
-            ## Cold build: the twin is available and the law traces.
-            assert _limit_par_for(pf, jaxtoolkit) is not pf
-        else:
-            ## Warm cache: refused, by name, with the remedy.
-            with pytest.raises(NotImplementedError, match='compile cache'):
-                _limit_par_for(pf, jaxtoolkit)
+        assert hasattr(pf, '_hdl_limit_par'), (
+            'a solution-reading limiter parameter reached the class without '
+            'its recompile ingredients -- a cache hit that costs tracing')
+        assert _limit_par_for(pf, jaxtoolkit) is not pf
+
+    ## And the record format is the one that carries them.
+    assert _hdl_cache.CACHE_FORMAT >= 4
+
+
+def test_the_freeze_thaw_round_trip_keeps_the_recompile_ingredients():
+    """The round trip DIRECTLY, so this bites on a cold cache too.
+
+    ⚠ The test above only fails when the cache is warm -- on a first run the
+    class is built rather than restored, so the ingredients are present
+    however the record is written. That is a hole: CI with a fresh cache
+    would pass over exactly the regression this work fixed. Freezing and
+    thawing here removes the dependence on cache state, which is the only
+    version of this assertion that holds in both conditions.
+    """
+    from pycircuit.circuit import _hdl_cache
+    from pycircuit.circuit.toolkit import jaxtoolkit
+
+    cls, _params = _vec_dev('EkvNmosHdl', 4, jaxtoolkit)
+    laws = cls.pcnr_limit_branchless.__defaults__[0]
+    pf = next(pf for _k, pfs in laws for pf in pfs
+              if getattr(pf, '_wants_x', False))
+    if not hasattr(pf, '_hdl_limit_par'):
+        pytest.skip('class was restored from cache without ingredients; the '
+                    'test above is the one that catches that')
+
+    thawed = _hdl_cache.thaw(_hdl_cache.freeze({'f': pf}))['f']
+    assert getattr(thawed, '_wants_x', None) is True
+    assert hasattr(thawed, '_hdl_limit_par'), (
+        'freeze/thaw dropped the recompile ingredients: a function restored '
+        'from cache would work and silently not be traceable')
+    assert thawed._hdl_limit_par is not None
 
 
 def test_gummel_poon_traces_regardless_of_the_cache():

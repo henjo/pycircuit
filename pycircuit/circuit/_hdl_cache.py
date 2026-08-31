@@ -96,7 +96,13 @@ from pycircuit.utilities import param
 ## on every cache hit -- the generated device kept working and silently could
 ## not be traced.  Same shape as the PCNR_LIFT_AFFINE trap recorded below,
 ## reached from the other direction.
-CACHE_FORMAT = 3
+## 4 (2026-08-31): the frozen function record carries `_hdl_limit_par` as
+## well as `_wants_x`, so a limiter parameter restored from cache can still
+## be recompiled for a traced toolkit.  Bumping 2 -> 3 invalidated the stale
+## entries but the newly written ones dropped the ingredients just the same,
+## which is the difference between invalidating a cache and fixing what it
+## stores.
+CACHE_FORMAT = 4
 
 #: Module-level switch; the environment variable is consulted too.
 ENABLED = True
@@ -636,14 +642,24 @@ def freeze(obj, memo=None):
     if isinstance(obj, types.FunctionType):
         token = memo.get(id(obj))
         if token is not None:
-            return (_FN, token, None, None)
+            return (_FN, token, None, None, None)
         token = len(memo)
         memo[id(obj)] = token
-        ## `_wants_x` is the one attribute the compiler hangs on a
-        ## function that its callers read (`limit()`); carried beside
-        ## the record whatever kind the function is.
+        ## TWO attributes the compiler hangs on a function that its callers
+        ## read.  `_wants_x` is read by `limit()`.  `_hdl_limit_par` is the
+        ## sympy ingredients `_limit_par_for` recompiles a limiter parameter
+        ## from for a traced toolkit -- and it MUST travel, because the thaw
+        ## path below rebuilds the function without running `_limit_par_fn`,
+        ## so a warm process would otherwise hold working code that cannot be
+        ## traced.  Measured before this was carried: the same class reported
+        ## the ingredients present on a first run into an empty cache dir and
+        ## absent on the second (roadmap sec. 49.3).
+        ##
+        ## The COMPILED jax twin is deliberately not carried -- it is derived,
+        ## and `_jax` is skipped below for the same reason.
         return (_FN, token, _freeze_function(obj),
-                getattr(obj, '_wants_x', None))
+                getattr(obj, '_wants_x', None),
+                getattr(obj, '_hdl_limit_par', None))
     if isinstance(obj, dict):
         return {k: freeze(v, memo) for k, v in obj.items() if k != '_jax'}
     if isinstance(obj, list):
@@ -658,13 +674,18 @@ def freeze(obj, memo=None):
 def thaw(obj, memo=None):
     if memo is None:
         memo = {}
-    if isinstance(obj, tuple) and len(obj) == 4 and obj[0] == _FN:
-        _, token, rec, wants_x = obj
+    if isinstance(obj, tuple) and len(obj) == 5 and obj[0] == _FN:
+        _, token, rec, wants_x, limit_par = obj
         if rec is None:
             return memo[token]
         fn = _thaw_function(rec)
         if wants_x is not None:
             fn._wants_x = wants_x
+        if limit_par is not None:
+            try:
+                fn._hdl_limit_par = limit_par
+            except AttributeError:              # pragma: no cover
+                pass
         memo[token] = fn
         return fn
     if isinstance(obj, dict):

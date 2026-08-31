@@ -5760,8 +5760,29 @@ Bumping `CACHE_FORMAT` 2 -> 3 was necessary -- this is an emission change and
 the roadmap's own PCNR_LIFT_AFFINE trap says emission changes must move the
 key -- but NOT sufficient: the bump invalidates old entries, and the newly
 written ones drop the ingredients just the same. **The payload has to carry
-them**, which is a third layer (the cache format itself) and is where this
-stops.
+them.**
+
+**DONE 2026-08-31 (`CACHE_FORMAT` 4).** The frozen function record already
+carried one attribute -- `_wants_x`, described there as "the one attribute the
+compiler hangs on a function that its callers read" -- and there are now two.
+`_hdl_limit_par` travels beside it; the COMPILED twin deliberately does not,
+being derived, the same reason the `_jax` key is skipped. The ingredients
+pickle at 314 and 1429 bytes for EKV's two laws. Measured after: the same
+class traces on a cold build AND on a cache hit, with `x_old_sub` genuinely
+traced.
+
+⚠ **Invalidating a cache and fixing what it stores are different repairs**,
+and the first looks like the second for exactly one run. The 2 -> 3 bump made
+the next run work -- because it was then a cold build -- and the run after that
+failed again.
+
+⚠ **AND THE OBVIOUS TESTS ONLY BITE WHEN THE CACHE IS WARM.** Asserting the
+class has its ingredients passes on any first run, because the class was built
+rather than restored, so CI with a fresh cache would sail past this regression.
+`test_the_freeze_thaw_round_trip_keeps_the_recompile_ingredients` freezes and
+thaws directly, which is the only form of the assertion that holds in both
+conditions -- verified by breaking the thaw and watching it fail on a COLD
+cache, where the other two pass.
 
 ⚠ **The failure is now LOUD.** `_limit_par_for` refuses with the cause and the
 remedy (clear the cache, or `PYCIRCUIT_HDL_CACHE=0`) rather than returning a
