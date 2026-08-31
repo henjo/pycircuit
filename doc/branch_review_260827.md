@@ -314,8 +314,10 @@ This is the branch's better habit and the reason the roadmap is worth
 keeping: an item that was measured and dropped is cheaper to leave
 closed than to re-discover.
 
-**Parked, not refused:** vector PCNR Stage 3 (JAX), by the branch
-author's decision.
+**Parked, not refused:** ~~vector PCNR Stage 3 (JAX), by the branch
+author's decision.~~ **OPENED 2026-08-31** at the author's request and
+scoped from measurement — roadmap §49. Nothing else is parked that a
+reviewer needs to weigh.
 
 ## 8. Repo-root hygiene (done, 2026-08-27)
 

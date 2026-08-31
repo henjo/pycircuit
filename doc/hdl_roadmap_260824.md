@@ -971,9 +971,9 @@ the form it was argued — here is what actually landed.
     15       vector PCNR Stage 1 (BJT, CPU)          DONE
     15       vector PCNR Stage 2 (FETs, CPU)         DONE -- diff pair
                                                      [14,FAIL] -> [22,22]
-    15       vector PCNR Stage 3 (JAX)               PARKED by the user;
-                                                     traced path raises
-                                                     NotImplementedError
+    15       vector PCNR Stage 3 (JAX)               OPENED 2026-08-31 by
+                                                     the user; scoped from
+                                                     measurement in sec. 49
     15       the unlimited-node failure              DONE 2026-08-26 (sec.
                                                      27).  It was the SEED,
                                                      not the node: v_lim_init
@@ -5511,3 +5511,101 @@ roughly 30-45 s to 85-170 s.  `PAIRS` and `MAX_MEASUREMENTS` are the
 knobs if that is judged too expensive; lowering `MAX_DISAGREEMENT` is
 not, since 1.05 is what makes an estimate precise enough to assert a
 1.15x bound against a true 1.01x.
+
+## 49. Vector PCNR Stage 3 (JAX): opened 2026-08-31, and scoped by probing rather than by reading
+
+Stage 3 was parked by the branch author after Stages 1 and 2 landed on the
+CPU. Opened at their request. This section is the plan, and the scope below
+is **measured**, because the one-line description in the status table turned
+out to be true but far too coarse to plan from.
+
+### What the traced path ALREADY has (do not rebuild it)
+
+P19 reversed the parity review's "one-sided by design" verdict and ported
+PCNR to JAX. Present today in `jaxtransient.py`:
+
+* `PcnrState` (`x`, `v_lim`, `iters`, `converged`) and `pcnr_inner_loop` — the
+  limited quantities live in the traced state, which is the insight that made
+  the port possible: classic limiting mutates per-device Python `_vlim`, which
+  a `lax.while_loop` cannot host, while PCNR's junction unknowns are just more
+  state vector.
+* `pcnr_controller_jacobian`, the rank-k Schur update as four scatter-adds per
+  junction, and the CORRECT phase as a branchless `pnjlim` over `v_lim`.
+* `_junction_arrays`: static trace-time metadata, and a setup-time refusal of
+  charge-storing junction devices, mirroring the CPU's `augmented_system`.
+
+### What is missing — four gaps, each measured on 2026-08-31
+
+**1. The unit is the wrong one.** `_pcnr_setup` gates on `pcnr_junctions`,
+which is an ALIAS for `pcnr_junction_pairs` — the pnj-only pair view. Vector
+PCNR's unit is the DEVICE (`pcnr_devices`, each carrying `m` probes). This is
+exactly the distinction Stage 2 turned on: `transient.py` records that the pair
+view "is empty for a circuit of pure `fetlim`/`limvds` devices, so `pcnr=True`
+on a MOSFET differential pair used to fall through to the ordinary solver
+SILENTLY". Measured on a `MosLevel1Hdl`: `pcnr_devices` → 1 device with
+**m = 3**; `pcnr_junction_pairs` → 2 pairs. Different objects, different laws.
+
+**2. A signature mismatch is what actually raises today.** `_junction_arrays`
+builds per-junction scalar callables by calling `pi(v, params, epar, tk, jn=jn)`
+and taking `[0]`. The HDL-generated device exposes
+`pcnr_i(v, params, epar, toolkit)` — **no `jn` keyword** — which takes the
+device's whole probe vector and returns the element's local row vector
+(shape `(6,)` for `MosLevel1Hdl`). So the current refusal reads
+
+    junction 0 of 'M' could not be evaluated for the traced backend
+    (pcnr_i() got an unexpected keyword argument ...)
+
+⚠ That message names a keyword-argument error, which invites someone to
+"fix the signature". **Do not**: the mismatch is a symptom of gap 1. The
+per-junction scalar callable is the wrong shape to ask a vector device for.
+
+**3. Mixed limiting kinds.** `MosLevel1Hdl.pcnr_probes` is
+`(((1,5),'fet'), ((4,5),'vds'), ((3,5),'pnj'))` — three probes, three
+DIFFERENT laws. The traced CORRECT phase applies `pnjlim` only. `fetlim` and
+`limvds` must join it, branchlessly (no host control flow, so `jnp.where` over
+a per-probe kind mask assembled at trace time).
+
+**4. The affine remainder (§40).** On the CPU the surviving affine dependence
+is stamped by the ordinary MNA assembly — `pcnr.py` shadows a participating
+device's `i`/`G` so the shadow IS the remainder — and PCNR carries only the
+probe-dependent part. The traced assembly needs the same split, or every
+device with a series resistance loses PCNR here exactly as it did on the CPU
+before §40.
+
+### Gates, declared before the work
+
+* **G1 — it does what Stage 2 did.** The MOSFET differential pair that took
+  Stage 2 from `[14, FAIL]` to `[22, 22]` on the CPU, run under
+  `JAXTransient(pcnr=True)`: converges from both orders where plain Newton
+  fails. Same circuit, same measure.
+* **G2 — agreement, not convergence.** §40's lesson: "a convergent PCNR answer
+  is not a correct one" — the first affine lift converged happily with an
+  internal node out by a whole gate voltage and terminal current still matching
+  to seven digits. Gate on agreement with the UNLIMITED path (CPU measured
+  0.0e+00 to 9.0e-17), not on the solve succeeding.
+* **G3 — no silent fall-through.** §47's defect, which this path is structurally
+  primed to repeat: a vector device under `pcnr=True` must never quietly not
+  participate. `pcnr_status`/`pcnr_solves`/`pcnr_fallbacks` parity with the CPU.
+* **G4 — no regression for what already works.** P19's scalar port stays
+  bit-identical where it applies.
+* **G5 — cost, measured not assumed.** The CPU carries a 40–60% iteration
+  premium for vector PCNR. Measure the traced equivalent; a materially worse
+  number is a finding, not a footnote.
+
+### What could refuse this, and should be allowed to
+
+* **`solve_batched`.** Per-device probe blocks whose `m` differs across lanes
+  are a shape problem, not a value problem. If per-lane participation cannot be
+  made static, batched vector PCNR is refused and says so — the ordinary
+  `solve` path is unaffected.
+* **Charge-storing participants stay refused**, as they are on both paths
+  today (§46: `states` was deliberately NOT relaxed with `vbranches`).
+* **`limit_together` (§10.3(b))** is device-level Python state. PCNR REPLACES
+  limiting rather than composing with it, so it is expected to be irrelevant
+  here — but that is an assumption, and the first measurement should confirm it
+  rather than inherit it.
+
+⚠ **The first task is not code.** It is to decide whether `_junction_arrays`
+grows a device-shaped sibling or is replaced by one, because gap 1 makes the
+existing per-junction metadata the wrong spine for this work — and the
+tempting local fix (gap 2's keyword) would build on that wrong spine.
