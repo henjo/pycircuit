@@ -6357,6 +6357,8 @@ class BehaviouralMeta(type):
         pv = info.get('pcnr_vector')
         if pv is not None:
             from pycircuit.circuit._limiting import apply_limit as _apply_lim
+            from pycircuit.circuit._limiting import (
+                apply_limit_branchless as _apply_lim_bl)
             from pycircuit.circuit import pcnr as _pcnr_mod
             _pn_vec = info['paramnames']
             _gn_vec = info['given_names']
@@ -6489,9 +6491,56 @@ class BehaviouralMeta(type):
                 return _pcnr_mod.limit_block(_probes, _coeffs, v_new, v_old,
                                              fns)
 
+            def pcnr_limit_branchless(v_new, v_old, params, epar, toolkit,
+                                      x_old_sub, _laws=_laws,
+                                      _probes=_all_probes, _coeffs=_coeffs,
+                                      _cn=cls.__name__):
+                """`pcnr_limit`'s traced twin (roadmap sec. 49.2).
+
+                Two things stop the CPU form running inside a
+                `jax.lax.while_loop`, and this addresses both.  The
+                limiter PARAMETERS are no longer coerced with `float()`
+                -- that is what raises when `x_old_sub` is a tracer,
+                since a parameter reading the solution (SPICE's `von`)
+                is traced too -- and the laws are the branchless twins,
+                dispatched by `apply_limit_branchless`.
+
+                ⚠ TREE PROBES ONLY.  `pcnr.limit_block`'s rule for an
+                over-determined set -- take the probes in order of
+                DECREASING correction and drop the one that closes a
+                cycle -- is a data-dependent sort, the one thing here
+                that does not become a select.  Without a redundant
+                probe that rule IS the per-probe loop (its own docstring
+                says so), which is what this does.  A device with one is
+                refused BY NAME rather than silently given a different
+                law: `EkvNmosHdl` and `GummelPoonNpnHdl` have none,
+                `MosLevel1Hdl` has one.
+                """
+                m = len(_coeffs[0]) if _coeffs else 0
+                if len(_probes) != m:
+                    raise NotImplementedError(
+                        "%s declares %d probes over %d unknowns -- a "
+                        "REDUNDANT probe -- and `pcnr.limit_block`'s rule "
+                        "for that (decreasing correction, drop what closes "
+                        "a cycle) is a data-dependent sort, which a traced "
+                        "loop cannot host. Vector PCNR on the JAX backend "
+                        "takes tree probes only; use Transient for this "
+                        "device." % (_cn, len(_probes), m))
+                args = _vec_args(params, epar)
+                out = []
+                for j, (kind, pfs) in enumerate(_laws):
+                    ## No `float()`: a traced parameter stays traced.
+                    pars = [f(x_old_sub, *args)
+                            if getattr(f, '_wants_x', False) else f(*args)
+                            for f in pfs]
+                    out.append(_apply_lim_bl(kind, v_new[j], v_old[j], pars,
+                                             toolkit.log))
+                return toolkit.array(out)
+
             cls.pcnr_i = staticmethod(pcnr_i)
             cls.pcnr_didv = staticmethod(pcnr_didv)
             cls.pcnr_limit = staticmethod(pcnr_limit)
+            cls.pcnr_limit_branchless = staticmethod(pcnr_limit_branchless)
 
         ## eval_i_pure / eval_q_pure: compiled on first use with sympy's
         ## jax printer; the staticmethods exist only if that succeeds, so

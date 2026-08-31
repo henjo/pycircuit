@@ -5711,3 +5711,43 @@ device-shaped `_device_arrays` sibling to `_junction_arrays` (the pair view
 keeps its own consumer -- gmin targets on the `pcnr=False` path), the traced
 augmented assembly proven against the CPU's, and `MosLevel1Hdl` refused by
 name until the redundant rule is traced.
+
+### 49.3 The traced limiter, built — and the one blocker left in the compiler
+
+**`pcnr_limit_branchless` is generated beside `pcnr_limit`** for every vector
+device, same twin pattern as the laws themselves. It drops the `float()` that
+raised (a limiter parameter reading the solution is traced too, so coercing it
+cannot work) and dispatches the branchless laws through
+`apply_limit_branchless`.
+
+Measured: it reproduces `pcnr_limit` **exactly** on `EkvNmosHdl` and
+`GummelPoonNpnHdl`, and Gummel-Poon now **traces** -- `jit` equals eager and
+the Jacobian is finite, which is what PCNR's own solve needs.
+
+⚠ **A REDUNDANT-PROBE DEVICE IS REFUSED BY NAME.** `limit_block`'s
+over-determined rule is a data-dependent sort, so `MosLevel1Hdl` (4 probes, 3
+unknowns) raises with that reason rather than silently receiving a different
+law -- which is §47's failure mode, and this path is where it would recur.
+
+⚠ **EKV DOES NOT TRACE YET, and the cause is one line in the compiler.** Its
+`fet` law takes a parameter that READS THE SOLUTION (SPICE's `von`,
+`_wants_x`), and those chains are compiled against the numpy kernel
+unconditionally:
+
+    mods = dict(_KERNEL_NUMPY, _wrapfloor=np.floor)      # hdl.py
+
+so the function cannot accept a tracer. Gummel-Poon's limiter parameters are
+constants, which is the whole reason it traces and EKV does not.
+
+**The fix is the treatment `_pcnr_vec_compiled` already gives `pcnr_i` and
+`pcnr_didv`**: keep the sympy expression, compile a jax twin lazily under
+`_kernel_jax`. That is a change to the compile machinery rather than to a law,
+which is why it is recorded here rather than started at the end of a long
+session. An EXPIRING test asserts the limitation
+(`test_a_solution_reading_limiter_parameter_is_not_traceable_yet`) so it cannot
+be mistaken for a capability, and says to invert it when fixed.
+
+⚠ **G1's circuit is the EKV pair**, so this blocker is on the critical path
+after all -- §49.1 said the redundant-probe rule was off it, and that is still
+true, but this takes its place. The order is now: fix the parameter-chain
+compilation, then `_device_arrays`, then the traced assembly and loop.

@@ -1247,3 +1247,111 @@ def test_the_gmin_damper_is_off_by_default_and_has_lost_its_case():
     ## ...and against the ordinary path too
     ref = DC(_diffpair(0.0, False)).solve(x0=x0)
     assert abs(float(x_on[i_tail]) - float(ref.v('tail', gnd))) < 1e-6
+
+
+## ------------------------------------------------------------------------
+## Vector PCNR Stage 3 (roadmap sec. 49.2): the traced limiter twin.
+
+
+def _vec_dev(name, nargs, toolkit):
+    import pycircuit.circuit.circuit as _cm
+    from pycircuit.circuit import elements_hdl as _eh
+    _cm.default_toolkit = toolkit
+    cls = getattr(_eh, name)
+    el = cls(*([None] * nargs), toolkit=toolkit)
+    params = {q.name: getattr(el.iparv, q.name) for q in el.instparams}
+    return cls, params
+
+
+def test_pcnr_limit_branchless_is_the_same_law_as_the_cpu_form():
+    """The traced twin must be the device's OWN law, not a second one.
+
+    PCNR's modularity claim is that the device supplies the limiter and the
+    architecture supplies only the one-unknown-per-quantity structure. A twin
+    that drifted from `pcnr_limit` would make the JAX backend's operating
+    point a different device's answer.
+    """
+    from pycircuit.circuit.circuit import defaultepar
+    for name, nargs in (('EkvNmosHdl', 4), ('GummelPoonNpnHdl', 3)):
+        cls, params = _vec_dev(name, nargs, numeric)
+        m = len(cls.pcnr_probes)
+        v_new = np.linspace(0.6, 1.1, m)
+        v_old = np.linspace(0.5, 0.9, m)
+        x_old = np.zeros(8)
+        a = np.asarray(cls.pcnr_limit(v_new, v_old, params, defaultepar,
+                                      numeric, x_old), dtype=float)
+        b = np.asarray(cls.pcnr_limit_branchless(v_new, v_old, params,
+                                                 defaultepar, numeric,
+                                                 x_old), dtype=float)
+        assert np.array_equal(a, b), (name, a, b)
+
+
+def test_a_redundant_probe_device_is_refused_by_name():
+    """`MosLevel1Hdl` has a redundant probe; the traced twin says so.
+
+    `pcnr.limit_block`'s rule for an over-determined set is a data-dependent
+    sort -- decreasing correction, drop what closes a cycle -- and that is the
+    one thing in this path that does not become a select. Refusing by name is
+    the alternative to silently applying a DIFFERENT law, which is the failure
+    mode sec. 47 spent its length on.
+    """
+    from pycircuit.circuit.circuit import defaultepar
+    cls, params = _vec_dev('MosLevel1Hdl', 4, numeric)
+    m = len(cls.pcnr_probes)
+    with pytest.raises(NotImplementedError, match='REDUNDANT probe'):
+        cls.pcnr_limit_branchless(np.linspace(0.6, 1.1, m),
+                                  np.linspace(0.5, 0.9, m), params,
+                                  defaultepar, numeric, np.zeros(8))
+
+
+def test_the_traced_twin_traces_and_differentiates():
+    """`jit` for the Newton loop, a finite Jacobian for PCNR's own solve."""
+    pytest.importorskip('jax')
+    import jax
+    import jax.numpy as jnp
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.circuit import defaultepar
+    cls, params = _vec_dev('GummelPoonNpnHdl', 3, jaxtoolkit)
+    m = len(cls.pcnr_probes)
+    v_new = jnp.linspace(0.6, 1.1, m)
+    v_old = jnp.linspace(0.5, 0.9, m)
+
+    def f(a, b):
+        return cls.pcnr_limit_branchless(a, b, params, defaultepar,
+                                         jaxtoolkit, jnp.zeros(8))
+
+    eager = np.asarray(f(v_new, v_old), dtype=float)
+    jitted = np.asarray(jax.jit(f)(v_new, v_old), dtype=float)
+    assert np.array_equal(eager, jitted), (eager, jitted)
+    jac = np.asarray(jax.jacobian(lambda a: f(a, v_old))(v_new))
+    assert np.all(np.isfinite(jac)), jac
+
+
+def test_a_solution_reading_limiter_parameter_is_not_traceable_yet():
+    """⚠ EXPIRING TEST -- invert it when the blocker below is fixed.
+
+    `EkvNmosHdl`'s `fet` law takes a parameter that READS THE SOLUTION
+    (SPICE's `von`, `_wants_x`). Those parameter chains are compiled against
+    the numpy kernel unconditionally -- `hdl.py`, ``mods = dict(_KERNEL_NUMPY,
+    _wrapfloor=np.floor)`` -- so the function cannot accept a tracer, and the
+    twin traces only for a device whose limiter parameters are constants
+    (Gummel-Poon does; EKV does not).
+
+    The fix is to give those chains the toolkit-aware treatment
+    `_pcnr_vec_compiled` already gives `pcnr_i`/`pcnr_didv`: keep the sympy
+    expression and compile a jax twin lazily. Until then this asserts the
+    limitation so it cannot be mistaken for a passing capability -- and when
+    it is fixed, this test fails and should be replaced by the positive one.
+    """
+    pytest.importorskip('jax')
+    import jax
+    import jax.numpy as jnp
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.circuit import defaultepar
+    cls, params = _vec_dev('EkvNmosHdl', 4, jaxtoolkit)
+    m = len(cls.pcnr_probes)
+    with pytest.raises(Exception) as exc:
+        jax.jit(lambda a, b: cls.pcnr_limit_branchless(
+            a, b, params, defaultepar, jaxtoolkit, jnp.zeros(8)))(
+                jnp.linspace(0.6, 1.1, m), jnp.linspace(0.5, 0.9, m))
+    assert 'Tracer' in exc.typename, exc.typename

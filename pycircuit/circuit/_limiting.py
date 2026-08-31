@@ -455,6 +455,33 @@ def apply_limit(kind, vnew, vold, pars, toolkit):
     raise ValueError('unknown limiter kind %r' % (kind,))    # pragma: no cover
 
 
+def apply_limit_branchless(kind, vnew, vold, pars, log):
+    """`apply_limit`'s traced twin: same dispatch, branchless laws.
+
+    ``log`` is passed in for the same reason `_pnjlim_branchless` takes it --
+    this module stays import-free -- and is unused by the other kinds, whose
+    laws are `abs`/`min`/`max` and no transcendental.
+
+    The argument order for ``'pnj'`` mirrors `apply_limit` exactly, including
+    the swap its docstring warns about: ``pars`` is ``(IS, VT)`` and the
+    function takes ``(VT, IS)``. That swap existing in two places is precisely
+    what `apply_limit` was created to stop diverging, so it is written here
+    once, next to it, rather than at the call site.
+    """
+    if kind == 'pnj':
+        return _pnjlim_branchless(vnew, vold, pars[1], pars[0], log)
+    if kind == 'fet':
+        return _fetlim_branchless(vnew, vold, pars[0])
+    if kind == 'vds':
+        return _limvds_branchless(vnew, vold)
+    if kind == 'delta':
+        return _deltalim_branchless(vnew, vold, pars[0])
+    if kind == 'id':
+        ## `vnew` ITSELF -- see `apply_limit` for why that matters.
+        return vnew
+    raise ValueError('unknown limiter kind %r' % (kind,))    # pragma: no cover
+
+
 def device_writeback(out, targets, drift, pinned=()):
     """Write a whole DEVICE's limited branch voltages back at once.
 
