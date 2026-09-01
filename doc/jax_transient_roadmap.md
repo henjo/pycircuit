@@ -121,6 +121,37 @@ put the continuation chain on both PCNR views.
   point fails.  Here it compiles into every step of every run: measured
   ~1 s of fixed compile plus ~14% per step.  Off by default; turn it on
   when a run reports `n_forced_nonconverged > 0`.
+- **The coupled 'bordered' eq (12) branch.**  Measured on the CPU 2026-09-01
+  before writing any JAX code (`benchmarks/coupled_bordered_gear2.py`,
+  reltol 1e-5), because `bordered` was recorded as mistuned under Gear-2 and
+  Gear-2 is what the JAX coupled path defaults to:
+
+  | circuit | integrator | bordered/approx points | newton |
+  |---|---|---|---|
+  | pulsed | euler | 1.02x | 1.10x |
+  | pulsed | **gear2** | **2.72x** | **2.24x** |
+  | smooth | euler | 0.96x | 1.05x |
+  | smooth | **gear2** | 0.97x | **1.18x** |
+
+  The integrator is what mistunes it: 1.02x under Euler against 2.72x under
+  Gear-2 on the same circuit, reproducing the recorded 1181-vs-350 signature.
+  **And the trade is gone.**  `bordered` exists to buy fewer Newton iterations
+  at the cost of a few more time points (the CPU record: 5.4% more points for
+  1.6% fewer iterations).  Under Gear-2 it costs MORE on both axes, on both
+  circuits.  A method that is worse in every measured dimension in the only
+  configuration this backend runs is not a gap; porting it would import a
+  defect and call it parity.
+
+  What would reopen it: a re-derivation of the denominator's `w'/w` pairing
+  that survives Gear-2 on the CPU.  ⚠ The obvious form of that is already a
+  recorded NEGATIVE result — slicing the history to the integrator's degree
+  "collapsed the bordered method to 5x the steps (3117 vs 611)" — so anyone
+  picking this up should read `transient.py`'s bordered branch comments first,
+  and should know that the *exact* bordered solve (the paper's `q^T dxh + d`
+  denominator) is separately recorded as abandoned on evidence and must not be
+  re-attempted: it is catastrophic cancellation, measured wrong-signed and 5x
+  too small.
+
 - **The rescue behind a `lax.cond`.**  The natural-looking design, and a
   trap: free under `jit`, but under `vmap` a batched predicate cannot
   branch, so `cond` becomes a `select` that evaluates both sides —
@@ -130,7 +161,10 @@ put the continuation chain on both PCNR views.
 
 ## CPU-only, with cause
 
-The coupled 'bordered' eq (12) branch — and that is now the whole list.
+**Nothing.** The list emptied on 2026-09-01. Trapezoidal and coupled +
+`fixed_timestep` were ported (above); the coupled **'bordered' eq (12) branch
+moved to *Refused, with cause*** on a measurement rather than a port — see
+below.
 
 *Trapezoidal integration left this list on 2026-09-01* — `integrator='trap'`.
 The entry had claimed "a variable-step trap estimator has not been written";

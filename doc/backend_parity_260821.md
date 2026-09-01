@@ -873,6 +873,32 @@ existing TLine tests before/after, per house rules.
   that should change; recorded here rather than silently mirrored, because a
   cross-backend disagreement found later reads as drift.
 
+  *(c) `bordered` measured, and refused rather than ported.*  The scope note
+  above says "re-derive `bordered`'s denominator pairing"; that was never
+  executed, and the JAX coupled path defaults to Gear-2 — the configuration
+  `bordered` is recorded as mistuned in.  Measured on the CPU first
+  (`benchmarks/coupled_bordered_gear2.py`, reltol 1e-5), which is where
+  experimenting is cheap:
+
+  | circuit | integrator | bordered/approx points | newton |
+  |---|---|---|---|
+  | pulsed | euler | 1.02x | 1.10x |
+  | pulsed | **gear2** | **2.72x** | **2.24x** |
+  | smooth | euler | 0.96x | 1.05x |
+  | smooth | **gear2** | 0.97x | **1.18x** |
+
+  The 1181-vs-350 signature reproduces: the integrator mistunes it, 1.02x
+  under Euler against 2.72x under Gear-2 on the same circuit.  The decisive
+  part is not the ratio though — it is that **the trade is gone**.  `bordered`
+  buys fewer Newton iterations for a few more time points (5.4% / 1.6% in the
+  original record); under Gear-2 it costs more of both, on both circuits.  So
+  it is refused on measurement rather than queued as a gap, and the JAX
+  CPU-only list is now empty.  Reopening needs a `w'/w` pairing that survives
+  Gear-2 on the CPU — noting that slicing the history to the integrator's
+  degree is an already-recorded negative result (5x the steps), and the exact
+  bordered solve is separately recorded as abandoned and not to be
+  re-attempted.
+
   *(b) coupled + vector PCNR crashed instead of refusing.*  PCNR-inside-Fang
   understands only the PAIR-view meta `(ra, rb, IS, VT, fns)`.  Handed the
   device-view `('vector', devices, epar)` — which is what EVERY real compact

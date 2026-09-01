@@ -2855,12 +2855,15 @@ class JAXTransient(Analysis):
       lane with its own adaptive (or coupled (x, h)) step sequence.  The
       CPU deliberately has no imitation of it.
 
-    * **CPU-only, with cause**: the coupled 'bordered' eq (12) branch.  That
-      is the whole list as of 2026-09-01, and it is not a queue -- `bordered`
-      is recorded as MISTUNED under Gear-2 (1181 time points where 'approx'
-      took 350), which is this backend's default, and its measured value is
-      near zero.  Porting it wants a CPU-side re-derivation first; see the
-      P19 note.
+    * **CPU-only**: nothing, as of 2026-09-01.  The coupled 'bordered'
+      eq (12) branch is REFUSED rather than missing: measured on the CPU
+      before any port (`benchmarks/coupled_bordered_gear2.py`), it costs
+      2.72x the time points and 2.24x the Newton iterations of 'approx' under
+      Gear-2 on the pulsed RC -- against 1.02x/1.10x under Euler, so the
+      integrator is what mistunes it, and Gear-2 is this backend's default.
+      Its whole purpose is to trade a few more time points for fewer Newton
+      iterations; under Gear-2 it loses on both.  Porting it would import a
+      defect and call it parity.  See the P19 note for what would reopen it.
 
       Two items left this list on 2026-09-01.  *Trapezoidal* is now
       `integrator='trap'` -- the record had said a variable-step estimator
