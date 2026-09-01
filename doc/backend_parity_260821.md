@@ -334,7 +334,10 @@ existing TLine tests before/after, per house rules.
   the JAX backend's nonlinear-robustness strategy, since that path has neither limiting
   nor PCNR today).  The CPU's +60–80 %/iteration PCNR cost figure does NOT transfer to
   vmapped execution and is re-measured, not assumed.  `bordered` and PCNR-inside-Fang
-  stay CPU-only until separately justified.
+  stay CPU-only until separately justified.  *(PCNR-inside-Fang did not stay
+  CPU-only: it landed the same day — see below.  A source comment beside
+  `fang_inner_loop` went on asserting it had not, for weeks, and was corrected
+  2026-09-01.)*
 
   **Executed same day** (commits `df28b7c`, `a9a0082`, `e591bca`): branchless
   bisection kernel; Fang 'approx' traced — rc step parity 127/127 CPU/JAX,
@@ -809,6 +812,38 @@ existing TLine tests before/after, per house rules.
   PCNR path.  That is the run whose rescue needs Ψ-tc to be doing real
   work, and therefore the one that would justify rescaling its rung
   exponents to the transient's own diagonal.
+
+  **Two P19 defects found 2026-09-01, while scoping the remaining CPU-only
+  items.** Neither was a roadmap item; both were found by reading the coupled
+  path rather than by a failing test, which is the point worth keeping.
+
+  *(a) The Fang `dh`-derivative ignored the chosen integrator.*  The residual
+  is assembled with `compute_integration(..., method=eval_method, ...)`, but
+  `p = d(iq)/dh` was hardcoded euler-or-gear2.  So `integrator='euler'` with
+  `coupled_lte=True` integrated with Euler and then, on every non-first-order
+  step, differentiated a **Gear-2** companion with respect to `h`: the residual
+  and its `h`-derivative described different methods, and Fang's step-size
+  Newton was solving a slightly wrong equation.  It converged on `x` anyway,
+  which is why nothing ever failed.  Measured across the fix (driven RC, Euler
+  both sides, reltol 1e-6):
+
+  | | max abs(jax − cpu) | JAX steps |
+  |---|---|---|
+  | before | 9.1162e-03 V (1.058% of span) | 16,522 |
+  | after | 3.8516e-03 V (0.447% of span) | 1,011 |
+
+  The step count is the louder half — a wrong `dh`-derivative made the
+  step-size Newton flail, taking **16x the steps to agree half as well**.  No
+  test covered `coupled_lte` with a non-default integrator; one does now
+  (`test_euler_coupled_uses_an_euler_dh_derivative`).
+
+  *(b) coupled + vector PCNR crashed instead of refusing.*  PCNR-inside-Fang
+  understands only the PAIR-view meta `(ra, rb, IS, VT, fns)`.  Handed the
+  device-view `('vector', devices, epar)` — which is what EVERY real compact
+  model produces — it used the literal string `'vector'` as an array index and
+  died several frames deep with "JAX does not support string indexing".  Now
+  refused at `_pcnr_setup`, naming the combination and the working alternative.
+  Wiring vector PCNR into Fang remains genuinely unported.
 
 ---
 

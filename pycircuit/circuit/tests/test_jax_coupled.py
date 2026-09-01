@@ -198,3 +198,108 @@ def test_jax_coupled_tline_matches_cpu_standard():
     ## over the measured 5e-16 without letting a controller regression hide.
     dev = float(np.max(np.abs(vc - np.interp(tc, tj, vj))))
     assert dev < 5e-13, 'coupled+TLine drifted from CPU: %.3e' % dev
+
+
+# ---------------------------------------------------------------------------
+# The coupled path's scope, and one mismatch inside it (2026-09-01)
+# ---------------------------------------------------------------------------
+
+def _euler_coupled_pair(reltol=1e-6, tend=2e-5, ts=2e-7):
+    """The same circuit, coupled, integrated with EULER on both backends."""
+    import pycircuit.circuit.circuit as _cm
+    from pycircuit.circuit.integrator import EulerIntegrator
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.jaxtransient import JAXTransient
+
+    def build(tk):
+        _cm.default_toolkit = tk
+        c = SubCircuit(toolkit=tk)
+        c['vs'] = VSin('a', gnd, va=1.0, freq=1e5, toolkit=tk)
+        c['R'] = R('a', 'b', r=1e3, toolkit=tk)
+        c['C'] = C('b', gnd, c=1e-9, toolkit=tk)
+        return c
+
+    saved = _cm.default_toolkit
+    try:
+        cpu = Transient(build(numeric), toolkit=numeric,
+                        integrator=EulerIntegrator(), reltol=reltol, uic=True)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            rc = cpu.solve(tend=tend, timestep=ts, coupled_lte=True)
+        tc = np.asarray(rc.v('b').x[0], float)
+        vc = np.asarray(rc.v('b').y, float)
+
+        j = JAXTransient(build(jaxtoolkit), coupled_lte=True,
+                         integrator='euler', reltol=reltol)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            rj = j.solve(gnd, tend=tend, timestep=ts, uic=True)
+        tj = np.asarray(rj.sweep_values, float).reshape(-1)
+        vj = np.asarray(rj.v('b'), float).reshape(-1)
+    finally:
+        _cm.default_toolkit = saved
+    return tc, vc, tj, vj
+
+
+def test_euler_coupled_uses_an_euler_dh_derivative():
+    """The Fang `p = d(iq)/dh` must describe the method the residual used.
+
+    It was hardcoded euler-or-gear2 while the residual is assembled with
+    `method=eval_method`, so `integrator='euler'` with `coupled_lte=True`
+    integrated with Euler and then differentiated a GEAR-2 companion with
+    respect to h on every non-first-order step.  Fang's step-size Newton was
+    solving a slightly wrong equation -- and it still converged on x, which
+    is exactly why nothing failed and the mismatch survived.
+
+    Measured across the fix on this circuit (2026-09-01):
+
+        before   max|jax - cpu| = 9.1162e-03 V (1.058% of span), 16522 steps
+        after    max|jax - cpu| = 3.8516e-03 V (0.447% of span),  1011 steps
+
+    The step count is the louder half: a wrong dh-derivative made the
+    step-size Newton flail, taking 16x the steps to agree half as well.  The
+    bounds below sit above the measured values with room, and would both
+    have failed before the fix.
+    """
+    tc, vc, tj, vj = _euler_coupled_pair()
+    span = float(np.max(np.abs(vc)))
+    dev = float(np.max(np.abs(vj - np.interp(tj, tc, vc))))
+    assert dev < 6e-3, 'euler+coupled drifted from the CPU: %.4e V' % dev
+    assert dev < 0.01 * span
+    ## the flailing signature, pinned independently of the waveform
+    assert len(tj) < 4000, 'step count regressed to the flailing regime: %d' \
+        % len(tj)
+
+
+def test_vector_pcnr_under_coupled_is_refused_not_crashed():
+    """PCNR-inside-Fang is PAIR-VIEW only, and must say so.
+
+    `fang_inner_loop` unpacks `pcnr_meta` as (ra, rb, IS, VT, fns).  Handed
+    the device-view 3-tuple `('vector', devices, epar)` it used the literal
+    string 'vector' as an array index and died with "JAX does not support
+    string indexing" several frames deep -- naming nothing a caller could
+    act on.  Every real compact model takes the device view, so this was
+    reachable by anyone combining a MOSFET with coupled_lte.
+    """
+    import pycircuit.circuit.circuit as _cm
+    from pycircuit.circuit import elements_hdl as _eh
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+
+    saved = _cm.default_toolkit
+    _cm.default_toolkit = jaxtoolkit
+    try:
+        c = SubCircuit(toolkit=jaxtoolkit)
+        nd, ng, nv = c.add_node('d'), c.add_node('g'), c.add_node('vdd')
+        c['vg'] = VSin(ng, gnd, va=0.4, vo=1.1, freq=1e6, toolkit=jaxtoolkit)
+        c['vd'] = VS(nv, gnd, v=1.8, toolkit=jaxtoolkit)
+        c['Rd'] = R(nv, nd, r=1e4, toolkit=jaxtoolkit)
+        c['Cd'] = C(nd, gnd, c=1e-13, toolkit=jaxtoolkit)
+        c['M'] = _eh.EkvNmosHdl(nd, ng, gnd, gnd, toolkit=jaxtoolkit)
+
+        tran = JAXTransient(c, pcnr=True, coupled_lte=True)
+        with pytest.raises(NotImplementedError, match='vector PCNR'):
+            tran._pcnr_setup()
+    finally:
+        _cm.default_toolkit = saved

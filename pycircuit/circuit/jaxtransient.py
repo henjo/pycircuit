@@ -1066,11 +1066,19 @@ def calculate_next_dt(dt, error_ratio, dt_min, dt_max, t_breaks_array, current_t
 ## correction with the eq (18) solution update, hold_h for imposed step sizes,
 ## the within-point excursion clamps and the thwarted-shrink saturation test.
 ## NOT ported (CPU-only until separately justified): the 'bordered' eq (12)
-## branch, PCNR-inside-Fang, grid_locked (no fixed_timestep on this backend
-## yet), and cir.limit (this element set has no limiter; nonlinear robustness
-## on this backend is PCNR's job, next stage).  The LTE degree follows the
-## effective order (F19): both degrees are computed and selected, which keeps
-## every shape static under the trace.
+## branch.  The LTE degree follows the effective order (F19): both degrees are
+## computed and selected, which keeps every shape static under the trace.
+##
+## ⚠ CORRECTED 2026-09-01.  This list used to name three more items, and all
+## three had since been done -- PCNR-inside-Fang (it is right below, keyed on
+## `pcnr_meta`), grid_locked "no fixed_timestep on this backend yet"
+## (`fixed_timestep` is a Parameter and gives bit-equal fixed-grid waveforms;
+## only the COMBINATION with coupled_lte is refused, in `solve`), and cir.limit
+## "PCNR's job, next stage" (PCNR shipped, both views).  A scope note written
+## beside the code it scopes is read as current, so it outranks the docstring
+## in a reader's mind while being the thing nobody updates.  **When this and
+## the JAXTransient class docstring disagree, the docstring is the ledger and
+## wins.**  What is genuinely still CPU-only lives there.
 ## ---------------------------------------------------------------------------
 
 class FangState(NamedTuple):
@@ -1260,8 +1268,21 @@ def fang_inner_loop(state: TransientState, circuit, irefnode,
             q1 = circuit.q(x1, params_tree=params_tree)
             q_prev = state.q_history[0]
             q_prev2 = state.q_history[1]
+            ## THE dh-DERIVATIVE MUST DESCRIBE THE METHOD THE RESIDUAL USED.
+            ## This used to be euler-or-gear2 unconditionally, while the
+            ## residual above is assembled with `method=eval_method` -- so
+            ## `integrator='euler'` with `coupled_lte=True` integrated with
+            ## Euler and then, on every non-first-order step, differentiated a
+            ## GEAR-2 companion with respect to h.  Fang's step-size Newton was
+            ## solving a slightly wrong equation; it still converged on x, which
+            ## is why nothing ever failed and the mismatch survived.
             p_e = euler_companion_dh(q1, q_prev, h)
-            p_g = bdf2_companion_dh(q1, q_prev, q_prev2, h, h0)
+            if eval_method == 'euler':
+                ## Euler all the way down: the first-order form IS the method,
+                ## so there is no second branch to select.
+                p_g = p_e
+            else:
+                p_g = bdf2_companion_dh(q1, q_prev, q_prev2, h, h0)
             ## Ordinary sources: analytic du/dt where the circuit provides
             ## it.  A circuit containing a TLine cannot -- TLine.dudt raises
             ## (on the CPU its u IS the delayed history, and the CPU coupled
@@ -3262,6 +3283,24 @@ class JAXTransient(Analysis):
             ## chain -- which is what this refusal replaced, and is worse
             ## than the NotImplementedError it replaced in turn.
             self._pcnr_vector_check_q()
+            if self.par.coupled_lte:
+                ## PCNR-INSIDE-FANG IS PAIR-VIEW ONLY.  `fang_inner_loop`
+                ## unpacks `pcnr_meta` as the 5-tuple (ra, rb, IS, VT, fns)
+                ## and indexes `x` with `j_ra`/`j_rb`; handed this 3-tuple it
+                ## used the literal string 'vector' as an array index and
+                ## died several frames deep with "JAX does not support string
+                ## indexing" -- a message that names nothing a caller can act
+                ## on.  Refused here instead, at setup, where the combination
+                ## is still visible.  Routing a path before its failure mode
+                ## is as good as the old one is a regression; this branch has
+                ## paid for that lesson twice already.
+                raise NotImplementedError(
+                    'coupled_lte with vector PCNR is not implemented on this '
+                    'backend: PCNR-inside-Fang handles only the pair view '
+                    '(devices declaring pn-junction probes), and this circuit '
+                    'has %d device(s) declaring pcnr_probes. Use '
+                    'coupled_lte=False (PCNR runs on the standard path), or '
+                    'the CPU Transient.' % len(devices))
             return ('vector', devices, epar), VT
         meta = _junction_arrays(self.cir)
         if meta is None:

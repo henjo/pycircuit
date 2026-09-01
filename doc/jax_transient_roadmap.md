@@ -1,67 +1,150 @@
 # JAX transient — limitations & refinement roadmap
 
-Status (2026-07): the JAX transient (`pycircuit/circuit/jaxtransient.py`) is now
-**algorithmically aligned** with the CPU transient (`transient.py`) on the
-LTE / step-control math — integration-method dispatch, method order, LTE-band
-step rejection, and the YWR DAE LTE (default) all match, verified in
-`tests/test_jaxtransient.py`.
+**Rewritten 2026-09-01.  Every status below was checked against the code on
+that date, not carried forward.**
 
-What remains is the CPU transient's **convergence-robustness machinery**. The
-JAX engine is currently a "happy-path" solver: on par for linear / mildly
-non-linear circuits, but the CPU path is still the reliable one for stiff,
-strongly non-linear circuits. Gaps below, worst first.
+The previous edition was a July-2026 snapshot that opened by calling this
+backend a *"happy-path solver"* and listed twelve gaps, worst first.  Of
+those twelve, **nine are done, two are permanently refused with cause, and
+one is genuinely open** (and smaller than it was written).  It had been
+stale for weeks in the expensive direction — a "not implemented" list is
+what people plan work from, so a rotted one costs someone a week — and it
+was made worse on 2026-09-01 by an edit that corrected item 3 and left the
+other eleven, which is the sharper version of the same lesson: **correcting
+one row of a status list you have just falsified is not maintenance, it is
+a partial correction that certifies the rest.**
 
-## Robustness / convergence (highest value)
+⚠ Two of the greps used to audit this document returned "present" off
+**comments explaining a feature's absence**.  Grep presence is not
+capability; each row below names the symbol that implements it.
 
-1. **Device limiting.** CPU applies `cir.limit(...)` (pn-junction / `pnjlim`)
-   inside every Newton iteration; JAX only has a uniform `max_dv=0.5` voltage
-   clamp in `newton_inner_loop`. This is the biggest convergence gap for
-   diodes/BJTs. *Port target #1.*
-2. **Breakpoint order reset.** JAX clamps `dt` onto breakpoints but does not
-   drop to 1st order + reset integrator history after crossing a discontinuity
-   (CPU: `was_break_step -> _is_first_step`). Risk: ringing/overshoot on sharp
-   edges (VPulse/PWL). *Port target #2.*
-3. **Nonlinear continuation.** ~~No gmin-stepping / source-stepping (CPU
-   `nrsolver.py` strategies). Hard operating points that need homotopy
-   fail.~~ **DONE** — DC got the full adaptive ladder
-   (`dc_with_continuation`: junction-gmin -> gshunt -> Psi-tc, P18/P25),
-   and the transient got the failed-time-point rescue on 2026-09-01
-   (`transient_point_rescue`, gated at the dt floor, on the plain Newton
-   and both PCNR views; `continuation` Parameter, default off because a
-   traced graph carries the branch whether or not it runs).  SOURCE
-   stepping stays absent on purpose: scaling u(t) mid-transient would
-   scale the integrator's companion history with it.
-4. **Jacobian scaling / equilibration.** No scaler strategies (CPU
-   `_get_scaler`: RowMax / L2 / Sinkhorn). Worse conditioning on wide
-   dynamic-range matrices.
-5. **Order-drop on aggressive shrink.** JAX falls back to Euler only for the
-   first 2 steps / `dt_prev==0`; lacks Gear2's `h_curr/h_last < 0.1` protection
-   (CPU `check_order_drop`).
-6. **Per-domain tolerances.** CPU uses separate `iabstol`/`vabstol` for node vs
-   branch rows and a `dx`+residual convergence test; JAX uses a single `abstol`
-   and an L1 residual-only test.
+## What this backend is for
 
-## Features / API
+`solve_batched` (P20): one compiled kernel integrating every parameter lane
+of a sweep concurrently, each lane with its own adaptive — or coupled
+`(x, h)` — step sequence.  The CPU deliberately has no imitation of it.
+The scalar `solve()` path exists and is at parity, but it is not the reason
+this backend exists, and several entries below only make sense read that
+way (a `lax.cond` that is free under `jit` is not free under `vmap`).
 
-7. **Integration-method selection.** JAX hardcodes `eval_method='gear'`;
-   expose `method=` (euler/trap/gear2) like the CPU path.
-8. **Coupled solver.** No `coupled_lte=True` (Fang DAC'13 Option A) equivalent.
-9. **Pluggable step controllers.** CPU has the `StepController` strategy
-   (`IntegralController`, `PIController`); JAX inlines one predictor.
-10. **Device model bypassing** (`bypass` / `bypasstol`) — absent.
-11. **Hooks:** no `provided_function` (feedback / Volterra) and no
-    `cir.accept_step(...)` callback for stateful elements.
-12. **DC init in `solve_batched`.** Starts at `x=0` ("For now, use 0"); only
-    scalar `solve()` computes a DC operating point.
+## The 2026-07 gap list, audited
 
-## Minor
+| # | gap as written | status | evidence |
+|---|---|---|---|
+| 1 | Device limiting (`pnjlim` inside every Newton iteration) | **DONE** | PCNR — `pcnr_inner_loop` (pair view) and `pcnr_vector_*` (device view, sec. 49), on `_pnjlim_branchless`. Also F16: the `max_dv` clamp the item complained about is now a Parameter, **default disabled** — the hardcoded 0.5 V made a 48 V rail unreachable in 100 iterations with a false "failed to converge" |
+| 2 | Breakpoint order reset | **DONE** | `force_first_order` in `TransientState`, consumed by `effective_first_order` (F11/F19). Deliberately keyed on the run-global step history, not chunk-local `step_idx` — the old predicate re-dropped order at every chunk boundary, measured as chunking turning a 59-step run into 61 |
+| 3 | Nonlinear continuation | **DONE** | DC: `dc_with_continuation` (junction-gmin → gshunt → Ψ-tc, P18/P25). Transient: `transient_point_rescue` (2026-09-01), gated at the dt floor, on the plain Newton **and both PCNR views**; `continuation` Parameter, default off. Source stepping stays out — see *Refused* |
+| 4 | Jacobian scaling / equilibration | **REFUSED (P17)** | `nrsolver`/`scaler`/`linearsolver` are refused in `__init__`, permanently: a traced `while_loop` cannot dispatch into per-iteration Python objects. Use `Transient` |
+| 5 | Order-drop on aggressive shrink | **PART DONE, part open** | see *Open* below — the zero-stability half is covered, the stalled-estimate half is not |
+| 6 | Per-domain tolerances (`iabstol`/`vabstol`, `dx`+residual) | **DONE** | F6(b): `_newton_abstol`/`_newton_xtol` build the per-row vectors (iabstol on node rows, vabstol on branch rows, transposed for the update test); `conv_f` and `conv_x` are both scored, per-row, on the consistent `(F(x), dx)` pair. The old single scalar was wrong three ways at once — flavour, reference and norm |
+| 7 | Integration-method selection | **DONE** | `integrator` Parameter (P6): 'gear' (default) or 'euler' |
+| 8 | Coupled solver (Fang DAC'13) | **DONE** | `coupled_lte` Parameter, `fang_inner_loop` (P19). PCNR-inside-Fang runs too |
+| 9 | Pluggable step controllers | **OPEN** | see *Open* below |
+| 10 | Device bypassing (`bypass`/`bypasstol`) | **REFUSED (P13)** | A non-concept here, not a missing feature: bypassing skips evaluating quiescent elements, and a vmapped evaluation group computes all lanes of all instances in one kernel. There is nothing to skip |
+| 11 | `provided_function` and `accept_step` | **DONE** | `provided_function` is supported (P11/F4 contract; must be jax-traceable, baked in at jit time). `accept_step` is not missing but *superseded*: the traced TLine ring buffer (`tline_history`/`tline_head`) replaced what the CPU's `accept_step` writes |
+| 12 | DC init in `solve_batched` (was `x=0`, "for now") | **DONE** | `solve_batched` calls `dc_with_continuation` |
+| — | `fixed_timestep`, `minbreak`, flexible `analysis` name | **DONE** | all three are Parameters; `fixed_timestep` gives bit-equal fixed-grid waveforms across backends |
 
-`fixed_timestep`, `minbreak` handling, and a flexible `analysis` name (JAX
-hardcodes `'tran'`).
+## Genuinely open
 
-## Suggested order of work
+**(A) The stalled-estimate order drop (half of old item 5).**  The item
+claimed JAX "lacks Gear2's `h_curr/h_last < 0.1` protection".  Audited, that
+is two different mechanisms and only one is missing:
 
-Port **#1 (device limiting)** and **#2 (breakpoint order reset)** first — those
-two close most of the real-world robustness gap. Then #3/#4 for hard DC/steps.
-The limiter must be JAX-friendly (branch-free / `jnp.where`-based) to stay
-inside the compiled `jax.lax.while_loop`.
+- *Zero-stability on growth* — **covered.**  Variable-step BDF-2's parasitic
+  root leaves the unit disc only on GROWTH, past
+  `ZERO_STABILITY_RATIO = 1+√2 ≈ 2.414`.  The JAX controller clamps growth at
+  the shared `MAX_GROWTH_RATIO = 2.0`, below the bound, and the force-accept
+  path keeps the dt floor rather than growing (the CPU's own defect here was
+  a force-accept path taking 10x, parasitic root 4.76).
+- *The shrink branch* — **not ported.**  It has nothing to do with
+  zero-stability: it is a heuristic for a STALLED ESTIMATE.  A step only
+  shrinks 10x below the last accepted one after several consecutive
+  rejections, and what rejects repeatedly is a 2nd-order estimate built on a
+  third difference of a solution that is not three times differentiable —
+  a discontinuity.  Measured value on the CPU (stiff RLC, reltol 1e-5):
+  fires **3–6 times a run**, and removing it took `Gear2('ywr')` and
+  `Gear2('classic')` from **0 force-accepts to 1 each**.  That is the size of
+  the prize, and it is why this is worth doing rather than closing.
+
+**(B) Pluggable step controllers.**  The CPU has a `StepController` strategy
+(`IntegralController`, `PIController`, `SolutionLTEController`); JAX inlines
+one law — F17's `target = safety**p` band aim in `calculate_next_dt`, written
+in the CPU's vocabulary so the two read as one rule.  Note this is **not**
+automatically covered by P17's refusal: P17 refuses per-ITERATION Python
+dispatch, whereas a step controller runs per step and its choice could be
+made statically at trace time, exactly as `integrator` already is.  So this
+is open, not refused — but nobody has asked for it.
+
+**(C) Ψ-tc's continuation rung exponents.**  `e_start=0`, `e_max=+6` are
+calibrated for DC diagonals.  At the transient dt floor the companion
+conductance is ~1e9, so every rung of that ladder is negligible against it.
+gmin and gshunt carry **every** rescue demonstrated so far, so this is a
+third resort that has not been reached.  Trigger: a forced-non-converged
+exit that survives `continuation=True` on the PCNR path.
+
+**(D) Chained compact models cannot batch.**  The chained HDL path gained a
+jax backend (§49.7) — 25 of 38 library classes, every real compact model,
+could not be evaluated on this backend at all before.  That is a
+**capability, not a speed-up**: the traced chained path is ~18x slower than
+the CPU (§49.8), and §22/23's disjointness still keeps those classes out of
+`solve_batched` — which is where this backend actually pays.  That
+disjointness, as measured there: the models carrying real physics (PSP, the
+BJTs, EKV, both MOS levels, the MESFETs) get the C backend and **cannot
+batch**, while the ones that can batch (R, C, L, the ideal diode, the
+passives) get no C at all — 22 / 15 / **0 both**.  (Read the two counts
+carefully: 25-of-38 is today's CHAINED total from §49.7; the 22 is §22/23's
+count of physics-carrying models on an earlier tree.  They answer different
+questions.)  This is the largest open item on the backend by value, and it
+is an `hdl.py` problem, not a transient one.
+
+**(E) Vector PCNR inside the coupled path.**  PCNR-inside-Fang understands
+only the PAIR view `(ra, rb, IS, VT, fns)`; the DEVICE view — which every real
+compact model produces — is not wired in.  Until 2026-09-01 that combination
+crashed with "JAX does not support string indexing" several frames deep; it is
+now **refused at `_pcnr_setup`**, naming the combination and the alternative.
+The refusal is the interim state, not the answer: wiring the device view into
+`fang_inner_loop` is the actual item, and it is the same shape as the work that
+put the continuation chain on both PCNR views.
+
+## Refused, with cause — do not re-propose without new measurement
+
+- **Source stepping in the transient rescue.**  Permanent.  Scaling `u(t)`
+  mid-transient would scale the integrator's companion history with it —
+  ill-posed.  Ψ-tc is the mid-transient-safe substitute: its anchor is a
+  state the circuit actually occupied and it scales nothing.  (DC has no
+  such constraint, and the CPU DC path does source-step.)
+- **P17, strategy objects** (`nrsolver`/`scaler`/`linearsolver`) — above.
+- **P13, `bypass`** — above.
+- **`continuation` defaulting ON.**  The CPU defaults it on because there
+  the chain is Python control flow, absent from the interpreter until a
+  point fails.  Here it compiles into every step of every run: measured
+  ~1 s of fixed compile plus ~14% per step.  Off by default; turn it on
+  when a run reports `n_forced_nonconverged > 0`.
+- **The rescue behind a `lax.cond`.**  The natural-looking design, and a
+  trap: free under `jit`, but under `vmap` a batched predicate cannot
+  branch, so `cond` becomes a `select` that evaluates both sides —
+  **59x with zero lanes failing**.  Gate the ladder's loop CONDITION
+  instead (0.9x, free).  Chain ladders by ANDing into the next `active`,
+  never by nesting conds.
+
+## CPU-only, with cause
+
+Trapezoidal integration (the uniform-grid trap branch was deleted as
+dead-but-plausible; a variable-step trap estimator has not been written),
+the coupled 'bordered' eq (12) branch, and coupled + `fixed_timestep`
+(`grid_locked` is not wired here — refused, not approximated).
+
+## Where the authoritative records live
+
+This file is a roadmap and will rot again.  The records that are maintained
+with the code are:
+
+- **`JAXTransient`'s class docstring** — the parity ledger in force, by
+  P-number.  When this file and that docstring disagree, the docstring wins.
+- **`doc/backend_parity_260821.md`** — the P-entry ledger, including every
+  deferral with its reopening trigger.
+- **`doc/branch_review_260827.md`** — what a reviewer needs to weigh, and
+  the suite totals.
+- **`test_backend_conformance.py`** — the agreement, pinned rather than
+  described.
