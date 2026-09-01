@@ -685,10 +685,51 @@ class PSS(Analysis):
          rank-deficient, and it fails exactly as it should:
          `LinAlgError: Singular matrix`, on 25 tests at once.
 
-         THE CORRECTED DESIGN: for a `b != 0` method the second unknown is
-         `iq_{-1}` ITSELF -- the `(x, iq)` state its monodromy already uses
-         -- closed by `iq_{-1} = iq_{N-1}`.  That is a different
-         formulation, not a seeding fix.  Not built.
+         ⚠ THE CORRECTED DESIGN WAS ALSO WRONG, and was also built and
+         measured before that was known.  It read: for a `b != 0` method
+         the second unknown is `iq_0` itself -- the `(x, iq)` state its
+         monodromy already uses -- closed by `iq_0 = iq_{N-1}`.
+
+         It works, and then it does not.  On the Q=20 resonator it cut the
+         outer solve to TWO residual evaluations (against euler's ten) and
+         returned a peak identical to the plain path's 19.98968, confirming
+         both that the prize is real and that trapezoidal's fixed point was
+         never in doubt.  But `spectral_radius` came back 1.000000 where
+         the circuit decays by exp(-pi/Q) = 0.854636 -- and that is the
+         tell:
+
+              npts   steps           outcome
+               200     199 (odd)     converged
+               201     200 (even)    LinAlgError
+               202     201 (odd)     converged
+               203     202 (even)    LinAlgError
+
+         Trapezoidal's `iq` recursion is `iq_n = ... - iq_{n-1}`, whose
+         homogeneous mode is `(-1)^n` -- UNDAMPED, exactly on the unit
+         circle.  Over an even number of steps it returns `+1`, so `I - M`
+         is singular and the solve dies; over an odd number it returns `-1`
+         and nothing shows.  A user choosing 201 points instead of 200 gets
+         a crash.
+
+         ⚠ BOTH FAILED ATTEMPTS SHARE ONE CAUSE: trapezoidal's `iq` is not
+         a coordinate a periodicity condition can pin.  Solving for a
+         previous STATE is rank-deficient (`d(iq)/dx = -G` is singular at
+         reactive nodes); solving for `iq` itself is degenerate (its mode is
+         marginally stable, so closing it is vacuous or singular).
+
+         SO THE PLAIN PATH IS CORRECT FOR TRAPEZOIDAL, not a legacy wart.
+         Its Euler manufacturing step SUPPLIES `iq_0` from the DAE
+         deterministically -- `-(i(x_0) + u(t_0))`, item 4d -- instead of
+         asking a marginal mode to close.  That is why trapezoidal has no
+         seam (1.3e-11 V) and converges where the enlargements do not.  The
+         inexact Jacobian (item 4b, ~30%) is the price, and well-posedness
+         is what it buys.
+
+         WHAT REMAINS UNTRIED: bordering the `(x, iq)` system with a row
+         that removes the alternating mode, the way the phase condition
+         removes the rotational one.  That is a third design and it is NOT
+         claimed to work; note only that the 2-evaluation result above says
+         the prize is worth someone's time.
 
          Kept from the attempt: `_install_history` now takes the entering
          step size `h_prev` separately.  `x_{-1}` sits one step BEFORE
