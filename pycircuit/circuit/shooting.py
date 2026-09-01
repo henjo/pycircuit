@@ -802,36 +802,56 @@ class PSS(Analysis):
              2x (vector length) rather than 8x (factorisation), so item 6
              removes H's reason to exist rather than competing with it.
 
-         ⚠ AND THE COST TO ATTACK IS PROBABLY NOT THE FACTORISATION.  The
-         final `J_phi` factorisation is one O(m^3); the SENSITIVITY
-         PROPAGATION that builds it runs `linearsolver(Jf, S)` once per
-         timestep with an `m`-column (or `2m`-column) right-hand side --
-         that is `m` back-substitutions per step, `N m` in total.
-         Matrix-free replaces it with ONE column per Krylov iteration:
-         `k N` for `k` iterations.
+         ⚠ AND THE COST TO ATTACK IS NOT THE FACTORISATION.  The final
+         `J_phi` factorisation is one O(m^3).  The SENSITIVITY PROPAGATION
+         that builds it is `N` steps of `_step_sensitivity`, and each of
+         those is O(m^3) TWICE OVER: `linearsolver(Jf, S)` with a 2m-column
+         right-hand side, and the `C @ P` products that form `S` and `Pq`
+         -- m x m against m x 2m.  Matrix-free replaces the whole step, not
+         half of it: it never forms `P`, so both go, leaving one matvec per
+         Krylov iteration.
 
-         MEASURED (2026-09-01, `benchmarks/pss_matrix_free_ceiling.py`) and
-         PARTIAL.  At m=40 the propagation is 2.2% of a traversal by one
-         method and 5.8-6.1% by an independent one, so the ceiling there is
-         1.01x-1.03x: matrix-free buys nothing at that size.
+         MEASURED (2026-09-02, `benchmarks/pss_matrix_free_ceiling.py`), on
+         a quiet box, single-threaded BLAS, every reading reproducible to
+         better than 0.5%:
 
-         ⚠ ABOVE m=40 THIS MACHINE COULD NOT MEASURE IT, and three methods
-         failed to make it so at load average 17-27.  A with/without
-         comparison returned a NEGATIVE propagation cost; paired ratios came
-         out below 1.0 three-to-four times in thirteen, which is impossible;
-         and the in-run method that should cancel load still swung
-         2.9% -> 19.1% at m=110 between runs.  So the item is NOT refused
-         and NOT justified -- it is unmeasured above m=40, and no number
-         from those runs should be quoted.
+               m   propagation   (solve alone)   ceiling k=20
+              40          4.8%            2.3%          1.02x
+             110         15.0%            6.2%          1.14x
+             242         38.1%           14.1%          1.54x
+             502         63.8%           21.3%          2.58x
+            1002         79.1%           24.9%          4.44x
 
-         What IS load-independent, counted exactly: per step the traversal
-         does TWO one-column solves (the inner Newton) and ONE solve with 2m
-         columns (the propagation).  And at m=40 both kinds together are
-         under 5% of a traversal, so most of the time is ASSEMBLY -- device
-         evaluation and matrix building -- which matrix-free does not touch.
-         Whatever the crossover is, the O(N^3) argument alone will overstate
-         it for this code.  The gate to re-run on a quiet box is whether the
-         propagation share passes ~30%.
+         THE GATE IS PASSED.  It was "does the propagation share pass
+         ~30%": it crosses near m=220 and reaches 79% at m=1002.  Item 6 is
+         JUSTIFIED above m~250 and stays POINTLESS at m=40.
+
+         ⚠ THIS OVERTURNS THIS DOCSTRING'S OWN 2026-09-01 RECORD, and the
+         box being quiet is NOT why.  That record read "the propagation is
+         2.2% of a traversal at m=40, ceiling 1.01x-1.03x", and it is what
+         happens when a measurement is named for the thing it was meant to
+         settle rather than the thing it timed: it accumulated
+         `toolkit.linearsolver` alone, which is under a third of the step
+         at every size measured.  The 2.2% was reproducible, stable, and
+         answering a different question.  ⚠ It also produced the confident
+         wrong sentence "most of the time is ASSEMBLY -- which matrix-free
+         does not touch"; at m=502 the propagation is 64% and assembly is
+         not what dominates.  The m=40 VERDICT survives on the corrected
+         number (4.8%, 1.02x) -- being right about m=40 is what made the
+         error cheap to keep.
+
+         ⚠ QUOTE THE THREADING CONDITION WITH THE NUMBER.  With BLAS
+         threads free the same sizes read 4.8 / 7.2 / 12.4 / 18.2%: the
+         `C @ P` products thread and the Python-level assembly does not.
+         Single-threaded is the trustworthy column here -- the threaded
+         traversal moved 2.64 s -> 4.02 s at m=502 between runs on this
+         box while every single-threaded reading held to 0.1%.  A machine
+         giving BLAS all its cores sees a smaller prize.
+
+         ⚠ AND `k=20` IS AN ASSUMPTION, NOT A MEASUREMENT.  The ceiling
+         charges matrix-free `k/m` of the propagation and nothing else, so
+         it is an upper bound on an upper bound.  What the Krylov solve
+         actually costs on these systems is unmeasured.
 
     Driving `Transient` -- done -- buys one integrator definition, the
     limiting/PCNR machinery, breakpoints and the order drop.  It does NOT

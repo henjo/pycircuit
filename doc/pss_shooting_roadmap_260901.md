@@ -1,4 +1,6 @@
-# PSS / shooting — state, records and open items (2026-09-01)
+# PSS / shooting — state, records and open items
+
+*Written 2026-09-01; item 6 re-measured and its verdict reversed 2026-09-02.*
 
 **Read this first if you are picking the shooting work back up.** The detailed record
 lives in the `PSS` class docstring in `pycircuit/circuit/shooting.py`, which is long
@@ -47,11 +49,30 @@ uniform run's −60.6. The uniform-grid restriction costs ~17× the points.
    relaxation oscillator is the first circuit that cannot tolerate it.
    *Gate:* does it converge with an exact outer Jacobian? `benchmarks/pss_lte_grid.py`
    is the target to hit.
-2. **Item 6, matrix-free variational shooting.** Ceiling measured at m=40 as
-   **1.01–1.03×** — buys nothing there. **Unmeasured above m=40**: three measurement
-   designs failed on a box at load 17–27. *Gate:* on a quiet machine, does the
-   propagation share pass ~30%? `benchmarks/pss_matrix_free_ceiling.py` carries the
-   harness and the three failed designs.
+2. **Item 6, matrix-free variational shooting — GATE PASSED 2026-09-02, ready to build.**
+   The gate was "on a quiet box, does the propagation share pass ~30%". It does:
+   single-threaded BLAS, it crosses 30% near m=220 and reaches 79% at m=1002.
+
+   | m | propagation | (solve alone) | ceiling k=20 |
+   |---|---|---|---|
+   | 40 | 4.8% | 2.3% | 1.02× |
+   | 110 | 15.0% | 6.2% | 1.14× |
+   | 242 | 38.1% | 14.1% | 1.54× |
+   | 502 | 63.8% | 21.3% | 2.58× |
+   | 1002 | 79.1% | 24.9% | 4.44× |
+
+   ⚠ **The old record was overturned by a fix to the harness, not by the quiet box.**
+   It read 2.2% at m=40, ceiling 1.01–1.03×, because it timed `toolkit.linearsolver`
+   alone. `_step_sensitivity` also forms `C @ P` — m×m against m×2m, O(m³), the same
+   order as the solve — and matrix-free eliminates those too, because it never forms
+   `P`. The old number was stable and reproducible; it was answering a different
+   question. Its **verdict** at m=40 survives on the corrected figure (4.8%, 1.02×).
+
+   ⚠ Quote the threading condition with the number: threads free, the same sizes read
+   4.8 / 7.2 / 12.4 / 18.2%. `k=20` is an assumption, so this is an upper bound on an
+   upper bound. `benchmarks/pss_matrix_free_ceiling.py` carries it and the three
+   measurement designs that failed on a loaded box.
+
 3. **Autonomous Gear-2 diagnostics.** The composed monodromy is 2m×2m and mixes physical
    multipliers with the discretisation's parasitic roots. Harmless for Gear-2 (its
    parasitic root is 1/3 per step, ~1e-95 over a period) and **not** harmless for a
@@ -75,6 +96,12 @@ Every one of these was settled by measurement, and each cost real time:
   the problem well-posed; the ~30% Jacobian error is what that costs.
 - **`doc/transient_review.md` §4.6's ringdown numbers do not transfer to PSS.** A
   periodic steady state has no transient to ring.
+- **A measurement named for the question it was meant to settle, not for what it timed.**
+  Item 6's harness accumulated `toolkit.linearsolver` and was called "the propagation
+  share". It was stable, reproducible, and under a third of the propagation, because
+  `_step_sensitivity`'s `C @ P` products are the same O(m³) and were counted as
+  "assembly". It read 2.2% where the answer was 4.8%, and at m=502 the gap is 21% vs
+  64% — the difference between "buys nothing" and a 2.6× ceiling.
 - **The recorded blocker for item 5 was stale**, and so was the claim that a variable-step
   trapezoidal estimator had never been written.
 
@@ -90,4 +117,4 @@ transient, the free-running limit cycle.
 | `pss_seam_cost.py` | what the cold-start seam costs, per method |
 | `pss_stiff_autonomous.py` | whether a stiff oscillator needs Gear-2 (it does not) |
 | `pss_lte_grid.py` | the LTE-chosen grid's prize, and the target to hit |
-| `pss_matrix_free_ceiling.py` | item 6's ceiling, and three failed measurement designs |
+| `pss_matrix_free_ceiling.py` | item 6's ceiling (gate passed, m>~250), and three failed measurement designs |
