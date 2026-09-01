@@ -96,6 +96,28 @@ class Integrator(ABC):
         """
         pass
         
+    def companion_coefficients(self, h_curr, h_last):
+        """``(alphas, b)`` of this method's companion recursion.
+
+        Every method here writes the companion current as
+
+            iq_n = sum_k alphas[k] q_{n-k}  +  b iq_{n-1}
+
+        and those numbers are all a caller needs to differentiate ONE STEP
+        with respect to the state it came from -- which is what a shooting
+        method's monodromy is made of.  Returned rather than transcribed
+        because the alternative is a third copy of the coefficients living
+        in `shooting.py`, and this file already records what transcribing an
+        integration constant costs (the 3/4 optimism, found three times).
+
+        `alphas[0]` multiplies the CURRENT charge, so `alphas[0] * C` is the
+        `geq` :meth:`compute_derivatives` returns; the rest are the past.
+        """
+        raise NotImplementedError(
+            '%s does not state its companion coefficients, so it cannot be '
+            'used where a per-step sensitivity is needed (shooting).'
+            % type(self).__name__)
+
     def companion_dh(self, q_curr, q_last, h_curr, h_last):
         """``d(iq)/dh`` at fixed solution -- the integrator half of Fang's ``p``.
 
@@ -176,6 +198,14 @@ class EulerIntegrator(Integrator):
     def check_order_drop(self, h_curr: float, h_last: float, is_first_step: bool) -> Integrator:
         # Euler is 1st order, no lower order to drop to.
         return self
+
+    def companion_coefficients(self, h_curr, _h_last):
+        ## iq_n = (q_n - q_{n-1})/h, and no iq history.  `_h_last` is
+        ## underscored because a one-step method genuinely does not read it
+        ## -- the uniform signature exists so the caller can ask any
+        ## integrator without knowing which, and the dead-knob scan is right
+        ## to want the difference visible.
+        return (1.0 / h_curr, -1.0 / h_curr), 0.0
         
     def compute_derivatives(self, q_curr, C_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit):
         return euler_companion(q_curr, C_curr, q_last[0], h_curr)
@@ -244,6 +274,13 @@ class TrapezoidalIntegrator(Integrator):
             return EulerIntegrator()
         return self
         
+    def companion_coefficients(self, h_curr, _h_last):
+        ## iq_n = 2(q_n - q_{n-1})/h - iq_{n-1}.  The `-1` is the term that
+        ## makes the period map carry `iq`, and the undamped (-1)^n mode the
+        ## LTE estimator has to avoid differencing.  One step back, so
+        ## `_h_last` is unread here -- see EulerIntegrator.
+        return (2.0 / h_curr, -2.0 / h_curr), -1.0
+
     def compute_derivatives(self, q_curr, C_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit):
         ## `2*C/h`, which is what `C/h/0.5` computed -- both are exact scalings by
         ## two in binary floating point, so this is bit-identical, not merely equal.
@@ -423,6 +460,16 @@ class Gear2Integrator(Integrator):
 
         return self
         
+    def companion_coefficients(self, h_curr, h_last):
+        ## The variable-step BDF-2 coefficients themselves -- iq_n is a
+        ## combination of THREE charges and carries no iq history, so `b` is
+        ## zero and the past reaches two steps back.  Taken from
+        ## `bdf2_alphas` rather than restated: fixed-step formulas are wrong
+        ## the moment the step changes, which is why they are computed at
+        ## all.
+        a0, a1, a2 = bdf2_alphas(h_curr, h_last)
+        return (a0, a1, a2), 0.0
+
     def compute_derivatives(self, q_curr, C_curr, h_curr, q_last, iq_last, h_last, is_first_step, toolkit):
         # --- VARIABLE STEP-SIZE BDF-2 (GEAR-2) DERIVATION ---
         # Traditional SPICE2 uses fixed-step BDF formulas which fail when dt changes.

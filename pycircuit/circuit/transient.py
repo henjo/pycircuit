@@ -789,6 +789,16 @@ class Transient(Analysis):
         ## repeating the whole assembly.  `_iq` has been kept here since
         ## stage 11; this is its other half.
         self._Geq = geq
+        ## And the two things that turn one step into a DERIVATIVE: the
+        ## capacitance matrix this step used, and the companion coefficients
+        ## of the integrator that actually ran -- `active_integrator`, not
+        ## `base_integrator`, so an order drop is reflected rather than
+        ## assumed away.  A caller differentiating the step (shooting) needs
+        ## the past `C` matrices as well as the current one, which `_Geq`
+        ## alone cannot supply once a method reaches back more than one step.
+        self._Cmat = C
+        self._companion_coeffs = self.active_integrator.companion_coefficients(
+            self._dt, h_last)
         ## The class actually running this step -- check_order_drop() may have
         ## dropped to a lower-order integrator than the one requested, so this
         ## is derived from the live object rather than compared against a

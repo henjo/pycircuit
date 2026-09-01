@@ -690,3 +690,67 @@ def test_trapezoidal_is_now_right_on_both_axes():
     ## the level-2 error the shooting solve cannot see
     assert 8.5 < peaks['euler'] < 9.2, \
         'euler peak moved to %.4f V' % peaks['euler']
+
+
+def test_gear2_shooting_converges_and_damps_between_euler_and_trap():
+    """BDF-2 reaches back TWO steps, and the propagation follows it.
+
+    Every method here writes its companion as
+    `iq_n = sum_k a_k q_{n-k} + b iq_{n-1}`, and the integrator now states
+    those coefficients rather than `shooting.py` transcribing them -- this
+    file has recorded three times what transcribing an integration constant
+    costs.  Euler is `b=0` with one past term, trapezoidal `b=-1` with one,
+    Gear-2 `b=0` with two; one recursion serves all three.
+
+    The physics is the check: on a Q=20 resonator against a 20 V analytic
+    peak, numerical damping should order euler >> gear2 > trap.  Measured
+    at landing -- euler 8.815 V, gear 19.766 V, trap 19.990 V.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+
+    peaks, iters = {}, {}
+    for method in ('euler', 'gear', 'trap'):
+        trace, nonconv, res = _shooting_trace(method, reltol=1e-9,
+                                              maxiterations=40)
+        assert not nonconv, '%s did not converge' % method
+        iters[method] = len(trace)
+        peaks[method] = float(np.max(np.abs(
+            np.asarray(res['tpss'].v('c'), dtype=float).ravel())))
+
+    ## all three are real Newtons: a handful of iterations to 1e-9
+    for m, k in iters.items():
+        assert k <= 20, '%s took %d shooting iterations' % (m, k)
+
+    ## and the damping orders as the methods do
+    assert peaks['euler'] < peaks['gear'] < peaks['trap'], \
+        'damping does not order euler < gear < trap: %r' % peaks
+    assert abs(peaks['gear'] - 20.0) < 1.0, \
+        'gear2 peak %.4f V, analytic 20 V' % peaks['gear']
+
+
+def test_pss_method_selection_cannot_fall_through_silently():
+    """A name that is accepted must select the integrator it names.
+
+    ⚠ Found while adding 'gear': the selection was
+    `EulerIntegrator() if method == 'euler' else TrapezoidalIntegrator()`,
+    so a newly accepted name ran TRAPEZOIDAL -- and it looked like it
+    worked, producing numbers identical to trap's to the last digit.  This
+    class has already paid once for a `method` Parameter that selected
+    nothing at all.
+    """
+    from pycircuit.circuit.integrator import (EulerIntegrator,
+                                              TrapezoidalIntegrator,
+                                              Gear2Integrator)
+    circuit.default_toolkit = circuit.numeric
+    want = {'euler': EulerIntegrator, 'trap': TrapezoidalIntegrator,
+            'trapezoidal': TrapezoidalIntegrator,
+            'gear': Gear2Integrator, 'gear2': Gear2Integrator}
+    for name, cls in want.items():
+        tr = PSS(_q20_rlc(), method=name)._transient()
+        assert isinstance(tr.par.integrator, cls), \
+            'method=%r selected %s' % (name, type(tr.par.integrator).__name__)
+
+    with pytest.raises(ValueError, match="'euler', 'trap' or 'gear'"):
+        PSS(_q20_rlc(), method='bdf3').solve(period=1e-3, timestep=1e-5,
+                                             maxiterations=2)

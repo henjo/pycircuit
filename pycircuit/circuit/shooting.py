@@ -66,21 +66,40 @@ class PSS(Analysis):
     = 0.8546` is that circuit's own per-period decay.  Non-convergence is
     reported now; it used to be discarded with `full_output=False`.
 
-    Trapezoidal needed more than the factor.  Its period map carries `iq` as
-    well as `x`, so an x-only monodromy is structurally incomplete -- and
-    measured, applying the Euler form to it converged SLOWER than no
-    Jacobian at all (0.90 against 0.855), a wrong Jacobian being worse than
-    none.  Differentiating both recursions together propagates
-    `d(x, iq)/dx0` for one extra matrix product per step, and Euler is the
-    same formula with the `iq` row identically zero.
+    Trapezoidal needed more than the factor, and Gear-2 more again.  Every
+    method here writes its companion as
 
-    ⚠ **THE TWO FAILURE MODES ARE ORTHOGONAL, and only trapezoidal escapes
-    both.**  On the Q=20 resonator against a 20 V analytic peak: Euler
-    converges the shooting equation in 5 iterations and lands at 8.815 V --
-    56% low, a level-2 discretisation error that levels 1 and 3 cannot see.
-    Trapezoidal converges in 6 and lands at 19.990 V.  A converged shooting
-    solve is not by itself evidence of a correct answer, which is why the
-    LTE report in the recorded scope below is worth more than it looks.
+        iq_n = sum_k a_k q_{n-k}  +  b iq_{n-1}
+
+    so ONE recursion differentiates all of them:
+
+        S    = sum_{k>=1} a_k C_{n-k} Px_{n-k}  +  b Pq
+        Px_n = -Jf_n^-1 S
+        Pq_n = a_0 C_n Px_n + S
+
+    Euler is `b = 0` reaching back one step, trapezoidal `b = -1` reaching
+    back one, Gear-2 `b = 0` reaching back two.  The coefficients come from
+    `Integrator.companion_coefficients` -- from the integrator that ACTUALLY
+    ran, so an order-dropped opening step contributes its own -- rather than
+    being transcribed here, which this tree has paid for three times.
+
+    An x-only monodromy is not merely less accurate for the methods with
+    memory: measured, applying the Euler form to trapezoidal converged
+    SLOWER than no Jacobian at all (0.90 against 0.855).  A wrong Jacobian
+    is worse than none.
+
+    ⚠ **THE TWO FAILURE MODES ARE ORTHOGONAL, and level 3 cannot see level
+    2.**  On the Q=20 resonator against a 20 V analytic peak, all three now
+    converge -- and they do not agree:
+
+        euler   5 iterations,  8.815 V   (56% low)
+        gear2   7 iterations, 19.766 V   (1.2% low)
+        trap    6 iterations, 19.990 V   (0.05% low)
+
+    That is each method's own numerical damping, invisible to levels 1 and
+    3, and it is why the LTE report in the recorded scope below is worth
+    more than it looks: a converged shooting solve is not by itself
+    evidence of a correct answer.
 
     (2) DOES NOT EXIST HERE, AND UNDER A SHOOTING METHOD IT CANNOT BE A
     CONTROLLER.  The grid is a fixed `linspace`; under `fixed_timestep` both
@@ -175,7 +194,7 @@ class PSS(Analysis):
                    unit='', default=1.0),
          Parameter(name='method',
                    desc="Integration method for the inner transient: 'trap' "
-                        "(default) or 'euler'",
+                        "(default), 'euler', or 'gear' (BDF-2)",
                    unit='',
                    default="trap")]        
 
@@ -209,10 +228,20 @@ class PSS(Analysis):
         if getattr(self, '_tran', None) is None:
             from pycircuit.circuit.transient import Transient
             from pycircuit.circuit.integrator import (EulerIntegrator,
-                                                      TrapezoidalIntegrator)
-            method = getattr(self.par, 'method', 'euler')
-            integ = (EulerIntegrator() if method == 'euler'
-                     else TrapezoidalIntegrator())
+                                                      TrapezoidalIntegrator,
+                                                      Gear2Integrator)
+            ## ⚠ A MAPPING, not an if/else on 'euler'.  Written as
+            ## `EulerIntegrator() if method == 'euler' else Trapezoidal...`
+            ## it silently ran trapezoidal for every other name -- caught
+            ## while adding 'gear', which produced numbers identical to
+            ## trap's to the last digit.  This class has already paid once
+            ## for a `method` that selected nothing; a dict raises KeyError
+            ## on a name nobody wired.
+            integ = {'euler': EulerIntegrator,
+                     'trap': TrapezoidalIntegrator,
+                     'trapezoidal': TrapezoidalIntegrator,
+                     'gear': Gear2Integrator,
+                     'gear2': Gear2Integrator}[self.par.method]()
             self._tran = Transient(
                 self.cir, toolkit=self.toolkit, integrator=integ,
                 reltol=self.par.reltol, iabstol=self.par.iabstol,
@@ -300,9 +329,12 @@ class PSS(Analysis):
         ## companion conductance the step actually used, which is the factor
         ## the monodromy needs; `_iq` is kept for the caller's own bookkeeping
         ## as before.
-        (self._Jf, self._Geq) = remove_row_col(
-            (J_full, tr._Geq), irefnode, toolkit)
-        self._C = self._Geq
+        (self._Jf, self._Geq, self._C) = remove_row_col(
+            (J_full, tr._Geq, tr._Cmat), irefnode, toolkit)
+        ## The coefficients of the integrator that ACTUALLY ran this step --
+        ## an order drop on the opening step reports Euler's, which is what
+        ## the propagation must use for that step.
+        self._coeffs = tr._companion_coeffs
         self._iq = tr._iq
 
         x = toolkit.concatenate((x_full[:irefnode], x_full[irefnode + 1:]))
@@ -338,11 +370,11 @@ class PSS(Analysis):
         ## Resolved here as well as in `solve_timestep`, because the SHOOTING
         ## Jacobian depends on which integrator the inner steps used.
         method = getattr(self.par, 'method', 'euler')
-        if method not in ('euler', 'trap', 'trapezoidal'):
+        if method not in ('euler', 'trap', 'trapezoidal', 'gear', 'gear2'):
             raise ValueError(
-                "method must be 'euler' or 'trap', not %r" % (method,))
+                "method must be 'euler', 'trap' or 'gear', not %r" % (method,))
 
-        ## THE SHOOTING JACOBIAN IS ONLY EXACT FOR A ONE-STEP METHOD.
+        ## THE SHOOTING JACOBIAN FOLLOWS THE INTEGRATOR'S OWN COEFFICIENTS.
         ##
         ## Backward Euler's per-step sensitivity is
         ##     dx_n/dx_{n-1} = Jf_n^-1 * C(x_{n-1})/h
@@ -401,10 +433,18 @@ class PSS(Analysis):
             ## is `(q_1 - q_0)/h` and its sensitivity to `x_1` is that step's
             ## own `Geq`.  Under Euler the row is identically zero and stays
             ## so.
-            Px = np.asarray(toolkit.eye(n-1))
-            Pq = (np.zeros((n - 1, n - 1)) if method == 'euler'
-                  else copy(np.asarray(self._Geq)))
-            C = copy(np.asarray(self._Geq))
+            ## `Px_k` is d(x_{n-k})/d(x0) and `Pq` is d(iq_n)/d(x0); `Cs_k`
+            ## is the capacitance matrix of step n-k.  Two of each, which is
+            ## as far back as any method here reaches.  Both rings open
+            ## seeded with the entering step, mirroring how the transient
+            ## seeds `_qlast` with `q0` repeated -- at the start of a period
+            ## there is no earlier point to differentiate against.
+            eye = np.asarray(toolkit.eye(n - 1))
+            Px = [eye, eye]
+            Cs = [copy(np.asarray(self._C)), copy(np.asarray(self._C))]
+            a_first, b_first = self._coeffs
+            Pq = (a_first[0] * Cs[0] if b_first else
+                  np.zeros((n - 1, n - 1)))
 
             ## Save C and transient jacobian for PAC analysis
             self.Cvec = [copy(self._C)]
@@ -430,16 +470,32 @@ class PSS(Analysis):
                 ## products with the monodromy matrix, never the matrix itself.
                 ## That is a rewrite; this is the same computation, correctly
                 ## expressed, and it is bit-comparable rather than merely close.
-                rhs = C @ Px + Pq
-                Px = self.toolkit.linearsolver(np.asarray(self._Jf), rhs)
-                if method != 'euler':
-                    Pq = np.asarray(self._Geq) @ Px - rhs
-                C = copy(np.asarray(self._Geq))
+                ## ONE RECURSION FOR EVERY METHOD.  Each writes its
+                ## companion as `iq_n = sum_k a_k q_{n-k} + b iq_{n-1}`, so
+                ## differentiating the step gives
+                ##
+                ##     S    = sum_{k>=1} a_k C_{n-k} Px_{n-k} + b Pq
+                ##     Px_n = -Jf_n^-1 S
+                ##     Pq_n = a_0 C_n Px_n + S
+                ##
+                ## Euler is `b = 0` with one past term, trapezoidal `b = -1`
+                ## with one, Gear-2 `b = 0` with two.  The coefficients come
+                ## from the integrator that ran, so an order-dropped step
+                ## contributes its own.
+                alphas, b = self._coeffs
+                S = b * Pq if b else np.zeros_like(Px[0])
+                for k in range(1, len(alphas)):
+                    S = S + alphas[k] * (Cs[k - 1] @ Px[k - 1])
+                Px_new = -self.toolkit.linearsolver(np.asarray(self._Jf), S)
+                C_new = np.asarray(self._C)
+                Pq = alphas[0] * (C_new @ Px_new) + S
+                Px = [Px_new, Px[0]]
+                Cs = [copy(C_new), Cs[0]]
 
             residual = x0 - x
 
             D = np.asarray(toolkit.eye(n-1))
-            return residual, D - alpha * Px
+            return residual, D - alpha * Px[0]
         
         ## THE SHOOTING RESIDUAL IS IN SOLUTION UNITS, NOT KCL UNITS.
         ## `x0 - phi(x0)` is a difference of SOLUTIONS -- volts on node rows,
