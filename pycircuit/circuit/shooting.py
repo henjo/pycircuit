@@ -725,11 +725,45 @@ class PSS(Analysis):
          inexact Jacobian (item 4b, ~30%) is the price, and well-posedness
          is what it buys.
 
-         WHAT REMAINS UNTRIED: bordering the `(x, iq)` system with a row
-         that removes the alternating mode, the way the phase condition
-         removes the rotational one.  That is a third design and it is NOT
-         claimed to work; note only that the 2-evaluation result above says
-         the prize is worth someone's time.
+         A THIRD DESIGN WAS DERIVED AND ALSO FAILS, IDENTICALLY.  Make
+         `iq_0` DEPENDENT rather than free -- `iq_0 := -(i(x_0) + u(t_0))`,
+         unknown `x_0` alone, seeds `P_x(0) = I` and `P_q(0) = -G(x_0)`.
+         It looked strictly better: m x m, no manufacturing step, exact
+         Jacobian, and it needs only the FORWARD derivative `-G`, never the
+         inverse that killed the first attempt.
+
+         Measured, it dies on the same line:
+
+              npts   steps           outcome        evals      rho
+               200     199 (odd)     converged          2   1.000000
+               201     200 (even)    LinAlgError        1        --
+               202     201 (odd)     converged          2   1.000000
+               203     202 (even)    LinAlgError        1        --
+
+         Making `iq_0` dependent does not avoid the alternating mode -- it
+         EXCITES it.  A perturbation `dx_0` gives `diq_0 = -G dx_0`, which
+         drives the `(-1)^n` mode, which returns undamped with multiplier
+         `(-1)^N`.  So the unit eigenvalue lands in `d x_end/d x_0` itself:
+         even the m x m monodromy reads 1.000000, against the circuit's
+         true 0.854636.
+
+         ⚠ THREE DESIGNS, ONE OBSTRUCTION, AND IT NAMES WHAT THE PLAIN PATH
+         IS FOR.  Every reformulation couples `iq_0` to `x_0` through `-G`,
+         and that coupling excites a mode that never decays.  The plain
+         path couples them through the EULER COMPANION instead -- its seed
+         is `a_0 C`, not `-G` -- and that coupling is not degenerate: it
+         reports 0.855 where all three of these report 1.000000.  The
+         manufacturing step is not scaffolding to be removed; it is what
+         makes trapezoidal's shooting problem well-posed, and the ~30%
+         Jacobian error is what that costs.
+
+         NOT PROPOSING A FOURTH.  Bordering the `(x, iq)` system to remove
+         the alternating mode remains formally available -- the analogy to
+         the phase condition is exact -- but the null direction there is a
+         property of the discretisation with no closed form to pin, unlike
+         `xdot(0)`, and three derivations in this item have now looked sound
+         and failed on contact.  Anyone taking it up should measure before
+         building: the falsifier is cheap and is even/odd step counts.
 
          Kept from the attempt: `_install_history` now takes the entering
          step size `h_prev` separately.  `x_{-1}` sits one step BEFORE
