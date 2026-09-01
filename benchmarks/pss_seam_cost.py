@@ -116,10 +116,35 @@ def peak_of(pss, X, node='c'):
     return float(np.max(np.abs(np.asarray([x[i] for x in X], dtype=float))))
 
 
+def solve_augmented(method, npts, f0=1e3, Q=20.0, reltol=1e-9):
+    """The shipped formulation, whatever it is for this method.
+
+    For a companion reaching two charges back this solves for `(x_0, x_{-1})`
+    jointly; for the others it is the plain path unchanged.  The gate is that
+    it REACHES `primed` -- the seam was the only difference, so removing it
+    must land on the cycle a real history produces, not merely nearer to it.
+    """
+    period = 1.0 / f0
+    circuit.default_toolkit = circuit.numeric
+    pss = PSS(q20_rlc(f0, Q), method=method, reltol=reltol)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = pss.solve(period=period, timestep=period / npts,
+                        maxiterations=40)
+    assert pss.converged, 'augmented %s/%d did not converge' % (method, npts)
+    return float(np.max(np.abs(
+        np.asarray(res['tpss'].v('c'), dtype=float).ravel()))), pss
+
+
 def run(method, npts, f0=1e3, Q=20.0, reltol=1e-3):
     period = 1.0 / f0
     circuit.default_toolkit = circuit.numeric
     pss = PSS(q20_rlc(f0, Q), method=method, reltol=reltol)
+    ## THE PLAIN FORMULATION, held here on purpose.  Gear-2 now solves for
+    ## its entering history, so measuring the shipped path would measure a
+    ## seam of zero and the record of what the seam WAS would be gone.  This
+    ## keeps the before, and `solve_augmented` supplies the after.
+    pss._augmented = lambda: False
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         res = pss.solve(period=period, timestep=period / npts,
@@ -162,9 +187,12 @@ def run(method, npts, f0=1e3, Q=20.0, reltol=1e-3):
         last = window
     primed = peak_of(pss, last)
 
+    fixed, apss = solve_augmented(method, npts, f0, Q)
     return dict(method=method, npts=npts, cold=cold, primed=primed,
                 analytic=Q, max_lte=pss.max_lte, total_lte=pss.total_lte,
-                seam_lte=pss.max_lte_seam, hist_spread=spread)
+                seam_lte=pss.max_lte_seam, hist_spread=spread,
+                fixed=fixed, augmented=apss.augmented,
+                fixed_seam=apss.max_lte_seam)
 
 
 def main(reltol=1e-9):
@@ -178,27 +206,41 @@ def main(reltol=1e-9):
           'reltol=%g' % reltol)
     print('primed = %d periods continued past the solve with NO re-seed\n'
           % SETTLE_PERIODS)
-    hdr = ('%-6s %5s | %9s %9s | %10s %10s | %9s %9s %9s'
-           % ('method', 'npts', 'PSS', 'primed', 'seam cost',
-              'interior', 'max_lte', 'total', 'seam_lte'))
+    hdr = ('%-6s %5s | %9s %9s %9s | %10s %10s | %10s %6s'
+           % ('method', 'npts', 'plain', 'primed', 'shipped', 'seam cost',
+              'interior', 'err after', 'gain'))
     print(hdr); print('-' * len(hdr))
     for r in rows:
         seam = abs(r['primed'] - r['cold'])
         interior = abs(r['primed'] - r['analytic'])
-        print('%-6s %5d | %9.5f %9.5f | %10.3e %10.3e | %9.4g %9.4g %9.4g'
-              % (r['method'], r['npts'], r['cold'], r['primed'],
-                 seam, interior, r['max_lte'], r['total_lte'],
-                 r['seam_lte']))
+        before = abs(r['cold'] - r['analytic'])
+        after = abs(r['fixed'] - r['analytic'])
+        print('%-6s %5d | %9.5f %9.5f %9.5f | %10.3e %10.3e | %10.3e %5.2fx'
+              % (r['method'], r['npts'], r['cold'], r['primed'], r['fixed'],
+                 seam, interior, after, before / after if after else
+                 float('inf')))
 
-    print('\nwhat the estimator says vs what it costs:')
+    print('\ndoes the fix REACH the cycle a real history produces?')
     for r in rows:
+        gap = abs(r['fixed'] - r['primed'])
+        print('  %-6s n=%-4d augmented=%-6s |shipped - primed| = %.2e  %s'
+              % (r['method'], r['npts'], r['augmented'], gap,
+                 'seam reported: %s' % r['fixed_seam']))
+
+    print('\nwhat the estimator says vs what it costs, where a seam exists'
+          ' at all:')
+    for r in rows:
+        if r['seam_lte'] is None:
+            ## Euler and trapezoidal: the companion never reads the entering
+            ## point, so the report no longer claims a seam for them.  That
+            ## `None` IS the corrected classification, not missing data.
+            continue
         seam = abs(r['primed'] - r['cold'])
         interior = abs(r['primed'] - r['analytic'])
-        lte_ratio = r['seam_lte'] / r['max_lte']
-        cost_ratio = seam / interior if interior else float('inf')
         print('  %-6s n=%-4d LTE says seam/interior = %8.1fx, '
               'the answer says %8.4fx'
-              % (r['method'], r['npts'], lte_ratio, cost_ratio))
+              % (r['method'], r['npts'], r['seam_lte'] / r['max_lte'],
+                 seam / interior if interior else float('inf')))
 
 
 if __name__ == '__main__':

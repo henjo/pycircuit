@@ -178,11 +178,38 @@ class PSS(Analysis):
          protective and 1.266e-01 is the residue it leaves.
 
          So `max_lte_seam` is a FLAG, not a magnitude -- at 100 points the
-         estimator's seam/interior ratio is 505x and the answer's is 1.18x
-         -- and the remedy it points at is not a finer grid but making the
-         entering history part of the shooting unknowns.  Not built; the
-         measured prize is Gear-2's error going 2.34e-1 -> 1.07e-1 at 100
-         points, at no extra cost per iteration.
+         estimator's seam/interior ratio is 505x and the answer's is 1.18x.
+
+      4b. AUGMENTED STATE FOR A TWO-STEP COMPANION -- DONE (2026-09-01),
+         and it is the remedy that measurement pointed at.  `(x_0, x_{-1})`
+         are unknowns together and both must close; see
+         `_traverse_augmented`.  Applied where the COMPANION reaches two
+         charges back (`_companion_reach`), which is Gear-2 alone -- euler
+         and trapezoidal keep the plain path because their seam measured
+         zero, and enlarging their system would double the unknowns to fix
+         nothing.
+
+         THE GATE WAS THE PREDICTION, NOT AN IMPROVEMENT.  If the seam is
+         the only difference between PSS's answer and the cycle a real
+         history produces, removing it must LAND on that cycle.  It does,
+         to 2.5e-07 V:
+
+              points   plain      primed     augmented   error     gain
+                 100   19.76639   19.89297   19.89297    2.34e-1 -> 1.07e-1  2.18x
+                 200   19.95451   19.98524   19.98524    4.55e-2 -> 1.48e-2  3.08x
+                 400   19.99008   19.99735   19.99735    9.92e-3 -> 2.65e-3  3.74x
+
+         ⚠ AND IT IS CHEAPER, WHICH WAS NOT THE EXPECTATION.  Two residual
+         evaluations against twelve, 4.3x faster wall-clock on that circuit.
+         The plain path seeds BOTH sensitivity rings with `I` -- which is
+         the flat-history assumption written into the Jacobian -- so its
+         Newton was inexact and nobody could see it, because Newton
+         converges anyway from an approximate Jacobian.  The augmented one
+         is exact.
+
+         Autonomous runs stay on the plain path: the period is already an
+         unknown there and the two enlargements have not been composed, so
+         an autonomous Gear-2 run keeps the seam it has always had.
 
     RECORDED SCOPE, in order, neither of these planned work yet:
 
@@ -296,6 +323,9 @@ class PSS(Analysis):
         self._lte = None
         self._lte_seam = False
         self._lte_valid = True
+        self._history_is_solved = False
+        ## Set by `solve`: whether the entering history joined the unknowns.
+        self.augmented = False
         ## Reported by `solve`: the peak normalised truncation error over the
         ## converged period, and where in the period it fell.  None until a
         ## solve has run, or when the grid was too short to difference.
@@ -323,6 +353,213 @@ class PSS(Analysis):
             if float(np.max(np.abs(u - u0))) > AUTONOMOUS_U_TOL * scale:
                 return False
         return True
+
+    ## The one mapping from `method` to a class.  Read by `_transient` to
+    ## build the integrator and by `_companion_reach` to ask how far it
+    ## reaches, so the two can never disagree about which method is running.
+    @classmethod
+    def _integrator_for(cls, method):
+        from pycircuit.circuit.integrator import (EulerIntegrator,
+                                                  TrapezoidalIntegrator,
+                                                  Gear2Integrator)
+        return {'euler': EulerIntegrator,
+                'trap': TrapezoidalIntegrator,
+                'trapezoidal': TrapezoidalIntegrator,
+                'gear': Gear2Integrator,
+                'gear2': Gear2Integrator}[method]()
+
+    def _companion_reach(self):
+        """How many charges back the chosen integrator's companion reads.
+
+        The mechanistic property that decides whether this analysis needs an
+        augmented state: a method reaching one charge back can be started
+        from a single unknown, one reaching two cannot.  Asked of the
+        integrator rather than inferred from `method`, so a fourth method
+        arrives with the right answer instead of the default one.
+        """
+        integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
+        alphas, _b = integ.companion_coefficients(1.0, 1.0)
+        return len(alphas) - 1
+
+    def _augmented(self):
+        """Whether the period map needs the entering history as an unknown.
+
+        MEASURED, NOT ASSUMED (`benchmarks/pss_seam_cost.py`).  A method
+        whose companion reads only `q_{n-1}` cannot see the fabricated
+        opening history at all -- euler's seam costs 5.1e-12 V and
+        trapezoidal's 1.3e-11 V, both zero -- so enlarging their system
+        would quadruple the shooting solve to fix nothing.  Gear-2 reads
+        `q_{n-2}`, which in the plain formulation is the entering stand-in,
+        and pays 1.266e-01 V at 100 points/period: 54% of its total error,
+        rising to 73% at 400 as the seam falls one order slower than the
+        interior.
+
+        Autonomous runs stay on the plain path for now: the period is
+        already an unknown there and the two enlargements have not been
+        composed.  Recorded rather than hidden -- an autonomous Gear-2 run
+        keeps the seam it has always had.
+        """
+        return self._companion_reach() >= 2 and not self.autonomous
+
+    def _step_sensitivity(self, Px, Cs, Pq, Jf, C_new):
+        """One step of the sensitivity recursion, for ANY seed width.
+
+        ONE RECURSION FOR EVERY METHOD (and now for either formulation).
+        Each writes its companion as `iq_n = sum_k a_k q_{n-k} + b iq_{n-1}`,
+        so differentiating the step gives
+
+            S    = sum_{k>=1} a_k C_{n-k} P_{n-k} + b Pq
+            P_n  = -Jf_n^-1 S
+            Pq_n = a_0 C_n P_n + S
+
+        `P` is `d x_j / d(unknowns)`: one block wide in the plain
+        formulation, two in the augmented one.  Nothing here depends on that
+        width, which is why the two systems share this and not a copy.
+
+        ⚠ A SOLVE, NOT AN INVERSE (stage 11).  `inv(Jf) @ ...` formed a dense
+        inverse per timestep per iteration and squared the condition number
+        it then multiplied through.
+        """
+        alphas, b = self._coeffs
+        S = b * Pq if b else np.zeros_like(Px[0])
+        for k in range(1, len(alphas)):
+            S = S + alphas[k] * (Cs[k - 1] @ Px[k - 1])
+        Px_new = -self.toolkit.linearsolver(Jf, S)
+        Pq_new = alphas[0] * (C_new @ Px_new) + S
+        return Px_new, Pq_new
+
+    def _traverse_augmented(self, x0_in, xm1_in, times, dt):
+        """One period from a SOLVED history, for a two-step companion.
+
+        The plain `_traverse` solves for a single entering state `x_in` and
+        manufactures `x(0)` from it with one order-dropped Euler step.  That
+        is sound for a companion reaching one charge back and measurably
+        wrong for one reaching two: the shooting condition constrains
+        `x(0) = x(P)`, it does NOT constrain `x_in` to be the orbit's own
+        `x(-dt)`, so `x_in` is an O(h^2) stand-in -- and Gear-2 reads it as
+        a history point.
+
+        Here BOTH `x(0)` and `x(-dt)` are unknowns and both are required to
+        close:
+
+            F = [ x_{N-1} - x_0 ,  x_{N-2} - x_{-1} ]
+
+        which is periodicity of the whole state a two-step method needs,
+        rather than of one slice of it.  The trajectory then opens at full
+        order off a history the solve is responsible for, so there is no
+        opening step to drop and no fabricated charge to read.
+
+        Returns `(x_last, x_prev, P_last, P_prev)`, the `P` being
+        `d x / d(x_0, x_{-1})` as one `n x 2n` block.
+        """
+        toolkit = self.toolkit
+        m = self.cir.n - 1
+
+        ## THE HISTORY IS INSTALLED, NOT SEEDED.  `_begin_run(x_{-1})` opens
+        ## the rings on the earlier point and the push puts `x_0` in front of
+        ## it, so the first real step reads `q(x_0)` and `q(x_{-1})` -- two
+        ## genuine solved points.  The flags then say what is true of them:
+        ## a step of `dt` has been taken (`_dt_last`), the run is no longer
+        ## opening (`_is_first_step`, `_no_history`), and `_dt_last2` stays
+        ## None because the THIRD charge is still `q(x_{-1})` repeated -- the
+        ## LTE estimator differences three, so its opening reading remains
+        ## unsound and the report goes on discarding it.
+        tr = self._install_history(x0_in, xm1_in, dt)
+
+        ## `P_0 = [I 0]`, `P_{-1} = [0 I]` -- the two unknowns, exactly.  The
+        ## plain path seeds BOTH rings with `I`, which is the flat-history
+        ## assumption written into the Jacobian; here there is nothing to
+        ## assume.
+        eye = np.asarray(toolkit.eye(m))
+        zero = np.zeros((m, m))
+        Px = [np.hstack((eye, zero)), np.hstack((zero, eye))]
+        Cs = [np.asarray(self._C_at(x0_in)), np.asarray(self._C_at(xm1_in))]
+        ## Zero because `_install_history` has already refused any companion
+        ## with a `b != 0` term: with `b = 0` the recursion never reads
+        ## `d(iq_{n-1})/d(unknowns)`, so there is nothing to seed.  A future
+        ## two-step method carrying `iq` would need it as a third unknown,
+        ## which is what that refusal says.
+        Pq = np.zeros((m, 2 * m))
+
+        ## Kept for PAC as the plain path does -- but opening EMPTY, because
+        ## on this path `x_0` is an unknown rather than the result of a step,
+        ## so there is no solved `(C, Jf)` pair at it to record.  The lists
+        ## therefore align with `times[1:]`, one shorter than `X`.  PAC is
+        ## withdrawn (`test_PAC_is_withdrawn`) and nothing else reads them;
+        ## stated here so its rewrite does not read a stale alignment out of
+        ## the plain path's shape.
+        self.Cvec = []
+        self.Jtvec = []
+        self.times = times
+
+        x, x_prev = copy(x0_in), copy(xm1_in)
+        P_prev = Px[1]
+        for t in times[1:]:
+            x_prev = x
+            x = copy(self.solve_timestep(x, t, dt))
+            self.Cvec.append(copy(self._C))
+            self.Jtvec.append(copy(self._Jf))
+
+            Jf = np.asarray(self._Jf)
+            C_new = np.asarray(self._C)
+            Px_new, Pq = self._step_sensitivity(Px, Cs, Pq, Jf, C_new)
+            P_prev = Px[0]
+            Px = [Px_new, Px[0]]
+            Cs = [copy(C_new), Cs[0]]
+
+        self._monodromy = Px[0][:, :m]
+        return x, x_prev, Px[0], P_prev
+
+    def _install_history(self, x0_in, xm1_in, dt):
+        """Open a run ON a solved two-point history rather than a seed.
+
+        `_begin_run(x_{-1})` opens the rings on the earlier point and the
+        push puts `x_0` in front of it, so the first real step reads
+        `q(x_0)` and `q(x_{-1})` -- two genuine solved points.  The flags
+        then say what is true of them: a step of `dt` has been taken, and
+        the run is no longer opening, so nothing drops order.
+
+        `_dt_last2` stays None on purpose.  The THIRD charge in the ring is
+        still `q(x_{-1})` repeated, and the LTE estimator differences three,
+        so its opening reading remains unsound and the report goes on
+        discarding it -- the augmented state fixes what the SOLUTION reads,
+        not what the estimator does.
+
+        Shared by `_traverse_augmented` and the final replay, because a
+        replay that opened differently from the solve would report a
+        waveform the residual was never driven to zero on.
+        """
+        tr = self._transient()
+        _alphas, b = tr._get_integrator().companion_coefficients(dt, dt)
+        if b:
+            raise NotImplementedError(
+                'the augmented state carries solved CHARGES, so a companion '
+                'with a b != 0 term needs iq_{-1} as an unknown of its own. '
+                'No such two-step method exists here (gear2 has b = 0); this '
+                'refuses rather than seeding an iq nothing solved for.')
+        tr._begin_run(self._insert_refnode(xm1_in), self.cir.n)
+        tr._dt = dt
+        ## The charge half of `_push_history`, without its `_iq` roll: no
+        ## step has been solved yet, so there is no companion current to
+        ## push -- and a `b = 0` companion never reads one, which the guard
+        ## above is what makes true.
+        q0 = tr.cir.q(self._insert_refnode(x0_in), tr.epar)
+        tr._qlast = self.toolkit.concatenate(
+            (self.toolkit.array([q0]), tr._qlast))[:-1]
+        tr._q_cache = None
+        tr._is_first_step = False
+        tr._no_history = False
+        tr._dt_last = dt
+        tr._dt_last2 = None
+        self._history_is_solved = True
+        return tr
+
+    def _C_at(self, x_reduced):
+        """The reduced capacitance at a point, without taking a step."""
+        tr = self._transient()
+        C = tr.cir.C(self._insert_refnode(x_reduced), tr.epar)
+        (C,) = remove_row_col((C,), self.irefnode, self.toolkit)
+        return C
 
     def _traverse(self, x_in, T, times, dt, want_dT):
         """One pass over the period, with the sensitivities accumulated.
@@ -454,11 +691,7 @@ class PSS(Analysis):
             ## trap's to the last digit.  This class has already paid once
             ## for a `method` that selected nothing; a dict raises KeyError
             ## on a name nobody wired.
-            integ = {'euler': EulerIntegrator,
-                     'trap': TrapezoidalIntegrator,
-                     'trapezoidal': TrapezoidalIntegrator,
-                     'gear': Gear2Integrator,
-                     'gear2': Gear2Integrator}[self.par.method]()
+            integ = self._integrator_for(self.par.method)
             self._tran = Transient(
                 self.cir, toolkit=self.toolkit, integrator=integ,
                 reltol=self.par.reltol, iabstol=self.par.iabstol,
@@ -604,7 +837,13 @@ class PSS(Analysis):
             _p = getattr(tr.active_integrator, 'ORDER', 1) + 1
             _reach = len(tr._companion_coeffs[0]) - 1
             self._lte_valid = _real_past >= _p
-            self._lte_seam = _reach >= _real_past
+            ## `_history_is_solved` is the augmented formulation saying the
+            ## deepest charge is an UNKNOWN the solve closed, not a stand-in
+            ## -- so there is no seam to report even though the companion
+            ## reaches that far.  Without this the fix would go on flagging
+            ## the defect it removed.
+            self._lte_seam = (_reach >= _real_past
+                              and not self._history_is_solved)
 
         ## The history advance is the accept path's, called rather than
         ## copied -- and `_dt_last` must roll AFTER the step, because
@@ -688,10 +927,24 @@ class PSS(Analysis):
 
         ## Resolved here as well as in `solve_timestep`, because the SHOOTING
         ## Jacobian depends on which integrator the inner steps used.
+        ##
+        ## ⚠ THE NAME IS VALIDATED BEFORE ANYTHING ASKS THE INTEGRATOR A
+        ## QUESTION.  `_augmented` resolves `method` to a class to ask how
+        ## far its companion reaches; run first, it turned an unknown name
+        ## into a `KeyError` from a dict several frames down, in place of the
+        ## `ValueError` this raises.  Two tests caught it, both written for
+        ## the class's earlier fall-through defects.
         method = getattr(self.par, 'method', 'euler')
         if method not in ('euler', 'trap', 'trapezoidal', 'gear', 'gear2'):
             raise ValueError(
                 "method must be 'euler', 'trap' or 'gear', not %r" % (method,))
+
+        ## Whether the entering history joins the unknowns.  Decided once,
+        ## here, because it chooses which system is solved -- like autonomy,
+        ## and after it, since the two are not composed yet.
+        augmented = self._augmented()
+        self.augmented = augmented
+        xm1_ss = None
 
         ## THE SHOOTING JACOBIAN FOLLOWS THE INTEGRATOR'S OWN COEFFICIENTS.
         ##
@@ -738,6 +991,37 @@ class PSS(Analysis):
                                                 want_dT=False)
             D = np.asarray(toolkit.eye(n - 1))
             return x0 - x_end, D - alpha * Mx
+
+        def func_augmented(z):
+            """Residual and Jacobian when the entering history is an unknown.
+
+            Unknowns are `(x_0, x_{-1})`; the equations are that BOTH close,
+
+                F = [ x_0 - x_{N-1} ,  x_{-1} - x_{N-2} ]
+                J = [[ I - A(N-1,0) , -A(N-1,-1) ],
+                     [   -A(N-2,0)  , I - A(N-2,-1) ]]
+
+            with `A(j,k) = d x_j / d x_k`, which is what `_traverse_augmented`
+            returns as one `n x 2n` block per row.  A two-step companion needs
+            two states to be continued, so periodicity of ONE of them is an
+            under-determined statement about the orbit -- which is the defect
+            this replaces, measured at 1.266e-01 V for Gear-2 at 100 points
+            per period.
+            """
+            m = n - 1
+            x0_in, xm1_in = z[:m], z[m:]
+            x_last, x_prev, P_last, P_prev = self._traverse_augmented(
+                x0_in, xm1_in, times, dt)
+
+            D = np.asarray(toolkit.eye(m))
+            J = np.zeros((2 * m, 2 * m))
+            J[:m, :m] = D - alpha * P_last[:, :m]
+            J[:m, m:] = -alpha * P_last[:, m:]
+            J[m:, :m] = -alpha * P_prev[:, :m]
+            J[m:, m:] = D - alpha * P_prev[:, m:]
+            F = np.concatenate((np.asarray(x0_in) - np.asarray(x_last),
+                                np.asarray(xm1_in) - np.asarray(x_prev)))
+            return F, J
 
         def func_autonomous(z):
             """Residual and Jacobian of the AUGMENTED system.
@@ -816,6 +1100,20 @@ class PSS(Analysis):
             ## answer is reported on a period the solver rejected.
             times, dt = toolkit.linspace(0.0, period, num=npts,
                                          endpoint=True, retstep=True)
+        elif augmented:
+            ## THE SEED IS THE OLD FORMULATION'S ASSUMPTION, written down:
+            ## `x_{-1} = x_0`.  It is what the plain path silently assumes
+            ## (it seeds both charge rings with the entering state), so an
+            ## augmented run starts exactly where a plain one starts and the
+            ## comparison between them is about the SOLVE, not the seed.
+            xa = np.asarray(x, dtype=float)
+            z0 = np.concatenate((xa, xa))
+            tol_z = np.concatenate((_tol, _tol))
+            z_ss, _info, _ier, _mesg = analysis.fsolve(
+                func_augmented, z0, maxiter=maxiterations,
+                reltol=_shoot_reltol, abstol=tol_z, xtol=tol_z,
+                toolkit=self.toolkit, full_output=True)
+            x0_ss, xm1_ss = z_ss[:n - 1], z_ss[n - 1:]
         else:
             x0_ss, _info, _ier, _mesg = analysis.fsolve(
                 func, x, maxiter=maxiterations, reltol=_shoot_reltol,
@@ -903,17 +1201,27 @@ class PSS(Analysis):
         ## each integrator solved ITS OWN equations to tolerance.  This
         ## number can: it is `|J^-1 Eg| / (TRTOL (reltol ref + lte_abstol))`,
         ## the quantity a transient would have rejected a step on.
-        X = [x0_ss]
-        iq_last = None
-        tr = self._begin_period(x0_ss)
+        ## ⚠ THE REPLAY MUST OPEN THE WAY THE SOLVE DID, or the waveform is
+        ## not the solution: a plain replay of an augmented answer would
+        ## reintroduce the very seam the augmented system exists to remove,
+        ## and the reported amplitude would not be the one the residual was
+        ## driven to zero on.
+        if augmented:
+            self._install_history(x0_ss, xm1_ss, dt)
+            tr = self._transient()
+            X = [np.asarray(x0_ss, dtype=float)]
+            walk = times[1:]
+        else:
+            X = [x0_ss]
+            tr = self._begin_period(x0_ss)
+            walk = times
         ## Fresh probe, so `relref='sigglobal'`'s running signal maximum is
         ## the period's, not something an earlier shooting iteration saw.
         tr._lte_probe = None
         self._want_lte = True
         lte_seen = []
-        for t in times:
-            x = self.solve_timestep(X[-1], t, dt, iq_last=iq_last)
-            iq_last = self._iq
+        for t in walk:
+            x = self.solve_timestep(X[-1], t, dt)
             if self._lte is not None:
                 lte_seen.append((float(self._lte), float(t), self._lte_seam,
                                  self._lte_valid))
@@ -1013,7 +1321,11 @@ class PSS(Analysis):
                    else '%.3g' % self.max_lte_seam),
                 RuntimeWarning, stacklevel=2)
 
-        X = toolkit.array(X[1:]).T
+        ## ⚠ THE PLAIN PATH'S FIRST ENTRY IS A SEED, THE AUGMENTED PATH'S IS
+        ## A SOLUTION.  Plain takes N steps from `x0_ss` and reports their
+        ## results; augmented starts AT `x_0` and takes N-1, so dropping the
+        ## first would drop a real point and shift the waveform by a step.
+        X = toolkit.array(X if augmented else X[1:]).T
 
         # Insert reference node voltage
         X = toolkit.concatenate((X[:irefnode], 

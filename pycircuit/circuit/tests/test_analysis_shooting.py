@@ -916,6 +916,31 @@ def _pss_lte(method, timestep=1e-5, reltol=1e-3, **kw):
     return peak, pss
 
 
+def _pss_plain(method, timestep=1e-5, reltol=1e-3, **kw):
+    """Force the pre-augmentation formulation, where a seam can exist.
+
+    Gear-2 now solves for its entering history, so its seam is gone by
+    construction -- which is the fix, and which leaves the seam machinery
+    with nothing to observe unless the old formulation can still be run.
+    This is deliberately a test-level override rather than a Parameter: a
+    user has no reason to ask for the formulation that measured 1.266e-01 V
+    of avoidable error.
+    """
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    pss = PSS(_q20_rlc(), method=method, reltol=reltol, **kw)
+    pss._augmented = lambda: False
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        res = pss.solve(period=1e-3, timestep=timestep, maxiterations=40)
+    pss._caught = [str(x.message) for x in caught
+                   if issubclass(x.category, RuntimeWarning)]
+    assert pss.converged and not pss.augmented
+    peak = float(np.max(np.abs(
+        np.asarray(res['tpss'].v('c'), dtype=float).ravel())))
+    return peak, pss
+
+
 def test_pss_reports_the_truncation_error_neither_newton_can_see():
     """THE THIRD LEVEL, and the only one that ranks the answers.
 
@@ -986,8 +1011,8 @@ def test_pss_lte_seam_is_separated_because_it_does_not_follow_the_grid():
     not fall when the grid is refined.  Reporting one number would let it
     hide the one a smaller timestep can fix.
     """
-    _p1, coarse = _pss_lte('gear', timestep=1e-5)
-    _p2, fine = _pss_lte('gear', timestep=5e-6)
+    _p1, coarse = _pss_plain('gear', timestep=1e-5)
+    _p2, fine = _pss_plain('gear', timestep=5e-6)
 
     ## the interior behaves like a transient's error: refine, it falls
     assert fine.max_lte < 0.5 * coarse.max_lte, \
@@ -1034,10 +1059,17 @@ def test_pss_lte_seam_is_reported_only_where_a_method_can_have_one():
         assert pss.max_lte is not None, \
             '%s reported no interior LTE at all' % method
 
-    _peak, gear = _pss_lte('gear')
-    assert gear.max_lte_seam is not None and gear.max_lte_seam > 1.0, \
-        'gear2 DOES read the entering unknown and must still report it: %r' \
-        % gear.max_lte_seam
+    ## Gear-2 DOES read the entering point, so on the plain formulation it
+    ## must still be flagged...
+    _peak, plain = _pss_plain('gear')
+    assert plain.max_lte_seam is not None and plain.max_lte_seam > 1.0, \
+        'gear2 reads the entering stand-in and must report it: %r' \
+        % plain.max_lte_seam
+    ## ...and must NOT be, once that point is an unknown the solve closed.
+    ## A flag that survived its own fix would be the worst of both.
+    _peak, aug = _pss_lte('gear')
+    assert aug.augmented and aug.max_lte_seam is None, \
+        'the solved history is not a seam: %r' % aug.max_lte_seam
 
 
 def test_pss_lte_floors_are_the_lte_ones_not_the_newton_ones():
@@ -1087,3 +1119,127 @@ def test_pss_lte_measurement_does_not_touch_the_solution():
     finally:
         Transient.step_lte = orig
     assert_array_equal(measured, unmeasured)
+
+
+def test_pss_augments_exactly_where_the_companion_needs_it():
+    """The formulation follows the integrator's reach, not its name.
+
+    MEASURED, in `benchmarks/pss_seam_cost.py`: a companion reading one
+    charge back cannot see the fabricated opening history at all -- euler's
+    seam costs 5.1e-12 V and trapezoidal's 1.3e-11 V, both zero -- so
+    enlarging their system would double the unknowns to fix nothing.
+    Gear-2 reads `q_{n-2}`, which in the plain formulation is the entering
+    stand-in, and pays 1.266e-01 V at 100 points per period.
+    """
+    circuit.default_toolkit = circuit.numeric
+    want = {'euler': 1, 'trap': 1, 'trapezoidal': 1, 'gear': 2, 'gear2': 2}
+    for name, reach in want.items():
+        got = PSS(_q20_rlc(), method=name)._companion_reach()
+        assert got == reach, '%s reaches %d charges back, not %d' % (
+            name, got, reach)
+
+    for name in ('euler', 'trap'):
+        _p, pss = _pss_lte(name)
+        assert pss.augmented is False, \
+            '%s has no seam to fix and must not pay for the augmented ' \
+            'system' % name
+    _p, gear = _pss_lte('gear')
+    assert gear.augmented is True
+
+
+def test_pss_augmented_state_removes_the_gear2_seam():
+    """The fix, against the number that predicted it.
+
+    The seam was measured by continuing 80 periods past the converged solve
+    with no re-seed, which reaches the limit cycle the same grid and method
+    produce from a real history: 19.89297 V at 100 points per period,
+    19.98524 at 200, 19.99735 at 400, against a plain-formulation PSS that
+    lands at 19.76639 / 19.95451 / 19.99008 and an analytic 20 V.
+
+    Making the entering history an unknown must reach the FIRST of those
+    numbers -- that is what "the seam is the only difference" means -- so
+    this asserts the prediction, not just an improvement.
+    """
+    circuit.default_toolkit = circuit.numeric
+    predicted = {100: 19.89297, 200: 19.98524, 400: 19.99735}
+    plain_err = {100: 2.336e-01, 200: 4.549e-02, 400: 9.924e-03}
+    for npts, target in predicted.items():
+        peak, pss = _pss_lte('gear', timestep=1e-3 / npts, reltol=1e-9)
+        assert pss.augmented and pss.converged
+        assert abs(peak - target) < 5e-5, \
+            'npts=%d landed at %.5f, not the primed limit cycle %.5f' % (
+                npts, peak, target)
+        ## and it is an improvement, by the factor the measurement predicted
+        assert abs(peak - 20.0) < 0.5 * plain_err[npts], \
+            'npts=%d error %.3e is not a clear gain on the plain %.3e' % (
+                npts, abs(peak - 20.0), plain_err[npts])
+        ## the seam is gone, and the report agrees it is gone
+        assert pss.max_lte_seam is None, \
+            'the solved history is not a seam: %r' % pss.max_lte_seam
+
+
+def test_pss_augmented_jacobian_is_the_exact_one():
+    """⚠ THE PLAIN PATH'S JACOBIAN CARRIES THE ASSUMPTION IT IS FIXING.
+
+    It seeds both sensitivity rings with `I`, which says `d x_{-1}/d x_0 =
+    I` -- the flat history written into the derivative.  Newton tolerates
+    that and converges anyway, which is why it was never visible.  With the
+    history solved for, the Jacobian is exact and the same circuit needs a
+    handful of residual evaluations instead of a dozen.
+
+    So the augmented system is not a cost: it doubles the unknowns of a
+    solve that is not the expensive part, and removes iterations from the
+    part that is.
+    """
+    import pycircuit.circuit.analysis as _an
+    circuit.default_toolkit = circuit.numeric
+
+    def evals(force_plain):
+        calls = [0]
+        orig = _an.fsolve
+
+        def spy(f, x0, *a, **kw):
+            def wrapped(*aa):
+                calls[0] += 1
+                return f(*aa)
+            wrapped.__qualname__ = getattr(f, '__qualname__', '')
+            return orig(wrapped, x0, *a, **kw)
+        pss = PSS(_q20_rlc(), method='gear', reltol=1e-9)
+        if force_plain:
+            pss._augmented = lambda: False
+        _an.fsolve = spy
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                pss.solve(period=1e-3, timestep=1e-5, maxiterations=40)
+        finally:
+            _an.fsolve = orig
+        assert pss.converged
+        return calls[0]
+
+    plain, aug = evals(True), evals(False)
+    assert aug < plain, \
+        'the exact Jacobian took %d residual evaluations against the ' \
+        'approximate one\'s %d' % (aug, plain)
+
+
+def test_pss_augmented_history_refuses_a_companion_it_cannot_seed():
+    """The augmented state carries charges, so `b != 0` needs a third unknown.
+
+    A companion with an `iq_{n-1}` term reads a value no charge determines;
+    seeding it with zeros would be inventing an initial condition the solve
+    never closed.  No such two-step method exists here -- Gear-2 has `b = 0`
+    -- so this is a refusal with a reason rather than dead code, and it is
+    what makes the zero `Pq` seed in `_traverse_augmented` true.
+    """
+    from pycircuit.circuit.integrator import Gear2Integrator
+    circuit.default_toolkit = circuit.numeric
+    pss = PSS(_q20_rlc(), method='gear')
+    orig = Gear2Integrator.companion_coefficients
+    try:
+        Gear2Integrator.companion_coefficients = \
+            lambda self, h, hl: (orig(self, h, hl)[0], -1.0)
+        with pytest.raises(NotImplementedError, match='iq_'):
+            pss.solve(period=1e-3, timestep=1e-5, maxiterations=4)
+    finally:
+        Gear2Integrator.companion_coefficients = orig
